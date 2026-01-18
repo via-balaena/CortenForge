@@ -1,0 +1,17 @@
+[package]
+name = "mesh-from-curves"
+version = "0.7.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Generate triangle meshes from curves (tubes, sweeps, lofts)"
+repository = "https://github.com/cortenforge/cortenforge"
+keywords = ["mesh", "curves", "tube", "sweep", "3d"]
+categories = ["algorithms", "graphics", "game-development"]
+
+[dependencies]
+mesh-types = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

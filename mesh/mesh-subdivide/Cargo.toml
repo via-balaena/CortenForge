@@ -1,0 +1,22 @@
+[package]
+name = "mesh-subdivide"
+description = "Mesh subdivision algorithms (Loop, midpoint) for CortenForge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mesh-types = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+hashbrown = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[lints]
+workspace = true

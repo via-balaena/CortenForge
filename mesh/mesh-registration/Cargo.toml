@@ -1,0 +1,27 @@
+# mesh-registration - Mesh alignment and registration for CortenForge
+#
+# Layer 0 crate: Zero Bevy dependencies
+
+[package]
+name = "mesh-registration"
+description = "Mesh alignment and registration: ICP, landmark-based, and rigid transforms"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mesh-types = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+kiddo = { workspace = true }
+rayon = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+rand = { workspace = true }

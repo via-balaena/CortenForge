@@ -1,0 +1,37 @@
+[package]
+name = "mesh-boolean"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Boolean operations (union, intersection, difference) for triangle meshes"
+keywords = ["mesh", "boolean", "csg", "union", "intersection"]
+categories = ["algorithms", "mathematics", "graphics"]
+
+[lints]
+workspace = true
+
+[dependencies]
+mesh-types = { workspace = true }
+mesh-repair = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+rayon = { workspace = true }
+hashbrown = { workspace = true }
+smallvec = { workspace = true }
+
+# GPU acceleration (optional)
+wgpu = { version = "24", optional = true }
+bytemuck = { version = "1.14", features = ["derive"], optional = true }
+pollster = { version = "0.4", optional = true }
+
+[dev-dependencies]
+mesh-io = { workspace = true }
+approx = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+default = []
+gpu = ["wgpu", "bytemuck", "pollster"]

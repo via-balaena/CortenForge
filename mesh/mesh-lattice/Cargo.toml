@@ -1,0 +1,35 @@
+# mesh-lattice - Lattice and infill generation for CortenForge
+#
+# Layer 0 crate: Zero Bevy dependencies
+
+[package]
+name = "mesh-lattice"
+description = "Lattice structure and infill pattern generation for 3D printing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["mesh", "lattice", "infill", "3d-printing", "gyroid"]
+categories = ["algorithms", "mathematics", "graphics"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Core mesh types
+mesh-types = { workspace = true }
+
+# Math
+nalgebra = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Collections
+hashbrown = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+rand = { workspace = true }

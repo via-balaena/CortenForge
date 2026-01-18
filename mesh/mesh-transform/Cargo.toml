@@ -1,0 +1,25 @@
+# mesh-transform - Mesh transformation and alignment for CortenForge
+#
+# Layer 0 crate: Zero Bevy dependencies
+
+[package]
+name = "mesh-transform"
+description = "Mesh transformation, alignment, PCA, and RANSAC plane fitting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mesh-types = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

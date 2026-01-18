@@ -1,0 +1,24 @@
+[package]
+name = "mesh-shell"
+description = "Generate printable shells around 3D meshes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["mesh", "3d", "shell", "offset", "printing"]
+categories = ["graphics", "algorithms"]
+
+[lints]
+workspace = true
+
+[dependencies]
+mesh-types = { workspace = true }
+mesh-repair = { workspace = true }
+mesh-offset = { workspace = true }
+nalgebra = { workspace = true }
+hashbrown = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

@@ -1,0 +1,37 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+description = "Development automation and quality enforcement for CortenForge"
+publish = false
+
+# This is a dev-only tool, not published to crates.io
+# See: https://github.com/matklad/cargo-xtask
+
+[dependencies]
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Colored terminal output
+owo-colors = "4"
+
+# Error handling
+anyhow = "1"
+
+# Process execution
+xshell = "0.2"
+
+# Regex for safety checks
+regex = "1"
+
+# TOML parsing for Cargo.toml analysis
+toml = "0.8"
+
+# Serde for config parsing
+serde = { version = "1", features = ["derive"] }
+
+# Walking directories
+walkdir = "2"
+
+# Date/time for completion records
+chrono = "0.4"

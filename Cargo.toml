@@ -1,0 +1,273 @@
+# CortenForge Workspace
+#
+# Industrial-grade foundation, unlimited application.
+# From humanoid robots to vehicles to medical simulation.
+#
+# A-grade or it doesn't ship. No exceptions.
+
+[workspace]
+resolver = "2"
+members = [
+    # Development tooling
+    "xtask",
+
+    # Mesh domain (active development)
+    "mesh/mesh-types",
+    "mesh/mesh-io",
+    "mesh/mesh-geodesic",
+    "mesh/mesh-transform",
+    "mesh/mesh-repair",
+    "mesh/mesh-sdf",
+    "mesh/mesh-offset",
+    "mesh/mesh-zones",
+    "mesh/mesh-from-curves",
+    "mesh/mesh-shell",
+    "mesh/mesh-measure",
+    "mesh/mesh-thickness",
+    "mesh/mesh-slice",
+    "mesh/mesh-decimate",
+    "mesh/mesh-subdivide",
+    "mesh/mesh-remesh",
+    "mesh/mesh-region",
+    "mesh/mesh-assembly",
+    "mesh/mesh-printability",
+    "mesh/mesh-boolean",
+    "mesh/mesh-registration",
+    "mesh/mesh-morph",
+    "mesh/mesh-scan",
+    "mesh/mesh-lattice",
+    "mesh/mesh-template",
+    "mesh/mesh-gpu",
+
+    # Geometry domain (pending)
+    # "geometry/curve-types",
+    # "geometry/lumen-geometry",
+
+    # Foundation (pending)
+    # "crates/cf-spatial",
+
+    # Routing domain (pending)
+    # "routing/route-types",
+    # "routing/route-pathfind",
+    # "routing/route-optimize",
+
+    # Machine learning domain (pending)
+    # "ml/ml-models",
+    # "ml/ml-inference",
+    # "ml/ml-dataset",
+    # "ml/ml-training",
+
+    # Computer vision domain (pending)
+    # "vision/vision-core",
+    # "vision/vision-capture",
+
+    # Simulation domain (pending)
+    # "sim/sim-core",
+    # "sim/sim-physics",
+
+    # Bevy SDK (Layer 1 - pending)
+    # "cortenforge",
+]
+
+# Exclude directories that aren't workspace members
+exclude = [
+    "templates",
+    "docs",
+]
+
+[workspace.package]
+version = "0.7.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/cortenforge/forge"
+authors = ["CortenForge Team"]
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "warn"
+todo = "deny"
+unimplemented = "deny"
+
+# ============================================================================
+# WORKSPACE DEPENDENCIES
+# ============================================================================
+# All crates should use { workspace = true } for these dependencies
+# to ensure version consistency across the workspace.
+
+[workspace.dependencies]
+# ---------------------------------------------------------------------------
+# Math Foundation
+# ---------------------------------------------------------------------------
+# nalgebra: Linear algebra, matches parry3d and avian for compatibility
+nalgebra = "0.33"
+# glam: Fast, simple math for games/graphics
+glam = "0.30"
+
+# ---------------------------------------------------------------------------
+# Error Handling
+# ---------------------------------------------------------------------------
+# thiserror: Derive macros for custom error types
+thiserror = "2.0"
+# anyhow: Flexible error handling for applications
+anyhow = "1.0"
+
+# ---------------------------------------------------------------------------
+# Serialization
+# ---------------------------------------------------------------------------
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# ---------------------------------------------------------------------------
+# Spatial & Collision
+# ---------------------------------------------------------------------------
+# parry3d: Collision detection, BVH, convex hulls
+parry3d = "0.17"
+# kiddo: High-performance KD-trees
+kiddo = "4.0"
+
+# ---------------------------------------------------------------------------
+# Pathfinding (Community crate - 1.7M downloads)
+# ---------------------------------------------------------------------------
+pathfinding = "4.0"
+
+# ---------------------------------------------------------------------------
+# Randomness
+# ---------------------------------------------------------------------------
+rand = "0.8"
+rand_chacha = "0.3"
+
+# ---------------------------------------------------------------------------
+# Parallelism
+# ---------------------------------------------------------------------------
+rayon = "1.10"
+
+# ---------------------------------------------------------------------------
+# Data Structures
+# ---------------------------------------------------------------------------
+hashbrown = "0.15"
+indexmap = "2.0"
+smallvec = "1.13"
+
+# ---------------------------------------------------------------------------
+# Machine Learning (Burn)
+# ---------------------------------------------------------------------------
+burn = "0.16"
+burn-ndarray = "0.16"
+burn-wgpu = "0.16"
+
+# ---------------------------------------------------------------------------
+# Image Processing
+# ---------------------------------------------------------------------------
+image = "0.25"
+
+# ---------------------------------------------------------------------------
+# Logging & Tracing
+# ---------------------------------------------------------------------------
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# ---------------------------------------------------------------------------
+# Bevy Ecosystem (Layer 1 only - not used by Layer 0 crates)
+# ---------------------------------------------------------------------------
+bevy = "0.15"
+avian3d = "0.2"
+bevy_egui = "0.31"
+
+# ---------------------------------------------------------------------------
+# Compression
+# ---------------------------------------------------------------------------
+zip = "2.1"
+
+# ---------------------------------------------------------------------------
+# Mesh I/O Formats
+# ---------------------------------------------------------------------------
+# PLY format support
+ply-rs = "0.1"
+# 3MF format support (XML parsing)
+quick-xml = "0.37"
+# STEP format support (CAD interchange) - truck ecosystem
+truck-stepio = "0.3"
+truck-modeling = "0.6"
+truck-topology = "0.6"
+truck-polymesh = "0.6"
+truck-meshalgo = "0.4"
+
+# ---------------------------------------------------------------------------
+# Testing
+# ---------------------------------------------------------------------------
+criterion = "0.5"
+proptest = "1.0"
+approx = "0.5"
+tempfile = "3.10"
+
+# ---------------------------------------------------------------------------
+# Internal Workspace Crates
+# ---------------------------------------------------------------------------
+# These are path dependencies for workspace members
+
+# Mesh domain
+mesh-types = { path = "mesh/mesh-types" }
+mesh-io = { path = "mesh/mesh-io" }
+mesh-repair = { path = "mesh/mesh-repair" }
+mesh-transform = { path = "mesh/mesh-transform" }
+mesh-geodesic = { path = "mesh/mesh-geodesic" }
+mesh-sdf = { path = "mesh/mesh-sdf" }
+mesh-offset = { path = "mesh/mesh-offset" }
+mesh-shell = { path = "mesh/mesh-shell" }
+mesh-zones = { path = "mesh/mesh-zones" }
+mesh-from-curves = { path = "mesh/mesh-from-curves" }
+mesh-measure = { path = "mesh/mesh-measure" }
+mesh-thickness = { path = "mesh/mesh-thickness" }
+mesh-slice = { path = "mesh/mesh-slice" }
+mesh-decimate = { path = "mesh/mesh-decimate" }
+mesh-subdivide = { path = "mesh/mesh-subdivide" }
+mesh-remesh = { path = "mesh/mesh-remesh" }
+mesh-region = { path = "mesh/mesh-region" }
+mesh-assembly = { path = "mesh/mesh-assembly" }
+mesh-printability = { path = "mesh/mesh-printability" }
+mesh-boolean = { path = "mesh/mesh-boolean" }
+mesh-registration = { path = "mesh/mesh-registration" }
+mesh-morph = { path = "mesh/mesh-morph" }
+mesh-scan = { path = "mesh/mesh-scan" }
+mesh-lattice = { path = "mesh/mesh-lattice" }
+mesh-template = { path = "mesh/mesh-template" }
+mesh-gpu = { path = "mesh/mesh-gpu" }
+
+# Geometry domain
+curve-types = { path = "geometry/curve-types" }
+lumen-geometry = { path = "geometry/lumen-geometry" }
+
+# Spatial foundation
+cf-spatial = { path = "crates/cf-spatial" }
+
+# Routing domain
+route-types = { path = "routing/route-types" }
+route-pathfind = { path = "routing/route-pathfind" }
+route-optimize = { path = "routing/route-optimize" }
+
+# ML domain
+ml-models = { path = "ml/ml-models" }
+ml-inference = { path = "ml/ml-inference" }
+ml-dataset = { path = "ml/ml-dataset" }
+ml-training = { path = "ml/ml-training" }
+
+# Vision domain
+vision-core = { path = "vision/vision-core" }
+vision-capture = { path = "vision/vision-capture" }
+
+# Sim domain
+sim-core = { path = "sim/sim-core" }
+sim-physics = { path = "sim/sim-physics" }
+
+# SDK
+cortenforge = { path = "cortenforge" }

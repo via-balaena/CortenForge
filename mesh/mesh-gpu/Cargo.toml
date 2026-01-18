@@ -1,0 +1,33 @@
+[package]
+name = "mesh-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "GPU-accelerated mesh processing using WGPU compute shaders"
+keywords = ["mesh", "3d", "gpu", "wgpu", "compute"]
+categories = ["graphics", "algorithms"]
+
+[lints]
+workspace = true
+
+[dependencies]
+mesh-types = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+wgpu = "24"
+bytemuck = { version = "1.14", features = ["derive"] }
+pollster = "0.4"
+
+[dev-dependencies]
+mesh-io = { workspace = true }
+mesh-sdf = { workspace = true }
+approx = { workspace = true }
+criterion = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "gpu_benchmarks"
+harness = false

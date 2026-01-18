@@ -1,0 +1,23 @@
+[package]
+name = "mesh-measure"
+description = "Measurement and dimensioning tools for 3D meshes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["mesh", "measurement", "3d", "cross-section", "bounding-box"]
+categories = ["graphics", "mathematics"]
+
+[lints]
+workspace = true
+
+[dependencies]
+mesh-types = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

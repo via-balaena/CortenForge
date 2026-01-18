@@ -1,0 +1,23 @@
+[package]
+name = "mesh-assembly"
+version = "0.7.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Multi-part assembly management for triangle meshes"
+keywords = ["mesh", "assembly", "3d", "3mf", "cad"]
+categories = ["graphics", "game-development", "science"]
+
+[features]
+default = ["export-3mf"]
+export-3mf = ["dep:zip"]
+
+[dependencies]
+mesh-types = { workspace = true }
+mesh-io = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+hashbrown = { workspace = true }
+zip = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

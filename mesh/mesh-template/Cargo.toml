@@ -1,0 +1,32 @@
+# mesh-template - Template fitting for CortenForge
+#
+# Layer 0 crate: Zero Bevy dependencies
+
+[package]
+name = "mesh-template"
+description = "Template fitting for parametric mesh customization: scan fitting, landmark-based deformation, and measurement constraints"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Core mesh types - required for template and target meshes
+mesh-types = { workspace = true }
+# RBF morphing - required for landmark-based deformation
+mesh-morph = { workspace = true }
+# ICP registration - required for scan alignment
+mesh-registration = { workspace = true }
+# Core math library - standard across CortenForge
+nalgebra = { workspace = true }
+# Error handling - standard for library error types
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+rand = { workspace = true }

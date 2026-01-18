@@ -1,0 +1,18 @@
+[package]
+name = "mesh-zones"
+version = "0.7.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Zone assignment and region labeling for triangle meshes"
+repository = "https://github.com/cortenforge/cortenforge"
+keywords = ["mesh", "zones", "regions", "segmentation", "3d"]
+categories = ["algorithms", "graphics", "game-development"]
+
+[dependencies]
+mesh-types = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+hashbrown = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

@@ -1,0 +1,20 @@
+[package]
+name = "mesh-repair"
+version = "0.7.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Mesh repair operations: validation, welding, degenerate removal, hole filling, winding correction, component analysis, self-intersection detection"
+repository = "https://github.com/cortenforge/cortenforge"
+keywords = ["mesh", "repair", "3d", "geometry", "manifold"]
+categories = ["algorithms", "graphics", "game-development"]
+
+[dependencies]
+mesh-types = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+hashbrown = { workspace = true }
+rayon = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

@@ -1,0 +1,141 @@
+# CortenForge Dependency Policy
+#
+# This file configures cargo-deny for dependency auditing.
+# Run: cargo deny check
+# Install: cargo install cargo-deny
+#
+# See: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# Minimum Supported Rust Version
+# We track stable, typically N-2
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "wasm32-unknown-unknown",
+]
+all-features = true
+
+# ============================================================================
+# ADVISORIES - Security vulnerability detection
+# ============================================================================
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Fail on any vulnerability
+vulnerability = "deny"
+# Warn on unmaintained crates
+unmaintained = "warn"
+# Warn on unsound code
+unsound = "warn"
+# Ignore yanked crates (they're often just deprecated)
+yanked = "warn"
+notice = "warn"
+
+# Temporarily ignore specific advisories (with justification)
+ignore = [
+    # Example:
+    # { id = "RUSTSEC-2022-0001", reason = "We don't use the affected feature" }
+]
+
+# ============================================================================
+# LICENSES - Ensure all dependencies are appropriately licensed
+# ============================================================================
+
+[licenses]
+# We're Apache-2.0, so we accept permissive licenses
+unlicensed = "deny"
+copyleft = "warn"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "MPL-2.0",  # Weak copyleft, acceptable for libraries
+]
+confidence-threshold = 0.8
+
+# Handle exceptions for specific crates
+exceptions = [
+    # Example:
+    # { name = "some-crate", allow = ["GPL-3.0"] }
+]
+
+# Some crates don't have license files but are clearly licensed
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[[licenses.clarify]]
+name = "webpki"
+expression = "ISC"
+license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
+
+# ============================================================================
+# BANS - Prevent unwanted dependencies
+# ============================================================================
+
+[bans]
+# Deny multiple versions of the same crate
+multiple-versions = "warn"
+# Wildcards are messy
+wildcards = "warn"
+# Allow private registries (for internal crates)
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Allow git dependencies (for pre-release testing)
+allow-git = false
+
+# Highlight/warn on these crates if they appear
+highlight = "all"
+
+# Crates we explicitly allow
+allow = [
+    # List of explicitly allowed crates (optional)
+]
+
+# Crates that must not appear in the dependency tree
+deny = [
+    # Example: block specific crates
+    # { name = "openssl", wrappers = [] },
+]
+
+# Skip checking specific versions (for version conflicts we accept)
+skip = [
+    # Example:
+    # { name = "syn", version = "1.0" },
+]
+
+# Skip checking entire crate trees
+skip-tree = [
+    # Example:
+    # { name = "windows-sys", version = "*" },
+]
+
+# ============================================================================
+# SOURCES - Control where dependencies can come from
+# ============================================================================
+
+[sources]
+# Only allow crates from crates.io
+unknown-registry = "deny"
+# Allow git sources during development (CI may be stricter)
+unknown-git = "warn"
+# Allow local path dependencies (for workspace members)
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+# Allow crates from specific GitHub orgs
+github = [
+    "cortenforge",
+]

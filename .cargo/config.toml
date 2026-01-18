@@ -1,0 +1,7 @@
+# Cargo configuration for CortenForge
+#
+# This enables the `cargo xtask` pattern for development commands.
+# See: https://github.com/matklad/cargo-xtask
+
+[alias]
+xtask = "run --package xtask --"

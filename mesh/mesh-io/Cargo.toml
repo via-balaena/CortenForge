@@ -1,0 +1,37 @@
+# mesh-io - Mesh file I/O for CortenForge
+#
+# Layer 0 crate: Zero Bevy dependencies
+
+[package]
+name = "mesh-io"
+description = "Mesh file I/O: STL, OBJ, PLY loading and saving"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+step = ["truck-stepio", "truck-modeling", "truck-topology", "truck-polymesh", "truck-meshalgo"]
+
+[dependencies]
+mesh-types = { workspace = true }
+thiserror = { workspace = true }
+ply-rs = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }
+
+# STEP format support (feature-gated due to heavy dependencies)
+truck-stepio = { workspace = true, optional = true }
+truck-modeling = { workspace = true, optional = true }
+truck-topology = { workspace = true, optional = true }
+truck-polymesh = { workspace = true, optional = true }
+truck-meshalgo = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3.15"

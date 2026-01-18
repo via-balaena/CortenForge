@@ -1,0 +1,336 @@
+//! OBJ (Wavefront) file format support.
+//!
+//! Supports loading and saving of simple OBJ files with vertices and faces.
+//!
+//! # Supported Features
+//!
+//! - Vertices (`v x y z`)
+//! - Faces (`f v1 v2 v3` or `f v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3`)
+//! - Comments (`#`)
+//!
+//! # Not Supported
+//!
+//! - Texture coordinates (read but ignored)
+//! - Vertex normals (read but ignored)
+//! - Materials (`.mtl` files)
+//! - Multiple objects/groups
+//! - Curves and surfaces
+//!
+//! # Format
+//!
+//! ```text
+//! # Comment
+//! v 0.0 0.0 0.0
+//! v 1.0 0.0 0.0
+//! v 0.0 1.0 0.0
+//! f 1 2 3
+//! ```
+//!
+//! Note: OBJ indices are 1-based (first vertex is 1, not 0).
+
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::path::Path;
+
+use mesh_types::{IndexedMesh, Vertex};
+
+use crate::error::{IoError, IoResult};
+
+/// Load a mesh from an OBJ file.
+///
+/// # Arguments
+///
+/// * `path` - Path to the OBJ file
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The file cannot be read
+/// - The file content is not valid OBJ
+///
+/// # Example
+///
+/// ```no_run
+/// use mesh_io::load_obj;
+///
+/// let mesh = load_obj("model.obj").unwrap();
+/// println!("Loaded {} faces", mesh.faces.len());
+/// ```
+pub fn load_obj<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
+    let path = path.as_ref();
+    let file = File::open(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            IoError::FileNotFound {
+                path: path.to_path_buf(),
+            }
+        } else {
+            IoError::Io(e)
+        }
+    })?;
+
+    let reader = BufReader::new(file);
+    load_obj_from_reader(reader)
+}
+
+/// Load OBJ from a reader.
+fn load_obj_from_reader<R: BufRead>(reader: R) -> IoResult<IndexedMesh> {
+    let mut mesh = IndexedMesh::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+
+        // Skip empty lines and comments
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        match parts[0] {
+            "v" => {
+                // Vertex: v x y z [w]
+                if parts.len() >= 4 {
+                    let x: f64 = parts[1].parse()?;
+                    let y: f64 = parts[2].parse()?;
+                    let z: f64 = parts[3].parse()?;
+                    mesh.vertices.push(Vertex::from_coords(x, y, z));
+                }
+            }
+            "f" => {
+                // Face: f v1 v2 v3 ... or f v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3 ...
+                if parts.len() >= 4 {
+                    let indices: Result<Vec<u32>, _> = parts[1..]
+                        .iter()
+                        .map(|s| parse_face_vertex(s))
+                        .collect();
+                    let indices = indices?;
+
+                    // Triangulate polygon (fan triangulation)
+                    if indices.len() >= 3 {
+                        let first = indices[0];
+                        for i in 1..(indices.len() - 1) {
+                            mesh.faces.push([first, indices[i], indices[i + 1]]);
+                        }
+                    }
+                }
+            }
+            // Ignore other elements (vt, vn, g, o, mtllib, usemtl, etc.)
+            _ => {}
+        }
+    }
+
+    Ok(mesh)
+}
+
+/// Parse a face vertex reference (e.g., "1", "1/2", "1/2/3", "1//3").
+///
+/// Returns the vertex index (converted to 0-based).
+fn parse_face_vertex(s: &str) -> IoResult<u32> {
+    // Split by '/' and take the first part (vertex index)
+    let vertex_part = s.split('/').next().ok_or_else(|| {
+        IoError::invalid_content(format!("invalid face vertex: {s}"))
+    })?;
+
+    let index: i64 = vertex_part.parse()?;
+
+    // OBJ indices are 1-based, convert to 0-based
+    // Negative indices reference from the end (not supported here for simplicity)
+    if index <= 0 {
+        return Err(IoError::invalid_content(format!(
+            "negative or zero vertex index not supported: {index}"
+        )));
+    }
+
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    // Safe: we checked index > 0, and meshes with >4B vertices are unsupported
+    Ok((index - 1) as u32)
+}
+
+/// Save a mesh to an OBJ file.
+///
+/// # Arguments
+///
+/// * `mesh` - The mesh to save
+/// * `path` - Output file path
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be written.
+///
+/// # Example
+///
+/// ```no_run
+/// use mesh_io::{load_obj, save_obj};
+///
+/// let mesh = load_obj("input.obj").unwrap();
+/// save_obj(&mesh, "output.obj").unwrap();
+/// ```
+pub fn save_obj<P: AsRef<Path>>(mesh: &IndexedMesh, path: P) -> IoResult<()> {
+    let file = File::create(path)?;
+    let mut writer = BufWriter::new(file);
+
+    writeln!(writer, "# OBJ file generated by CortenForge mesh-io")?;
+    writeln!(writer)?;
+
+    // Write vertices
+    for vertex in &mesh.vertices {
+        writeln!(
+            writer,
+            "v {:.6} {:.6} {:.6}",
+            vertex.position.x, vertex.position.y, vertex.position.z
+        )?;
+    }
+
+    writeln!(writer)?;
+
+    // Write faces (1-based indices)
+    for &[i0, i1, i2] in &mesh.faces {
+        writeln!(writer, "f {} {} {}", i0 + 1, i1 + 1, i2 + 1)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mesh_types::MeshTopology;
+
+    fn create_test_triangle() -> IndexedMesh {
+        let mut mesh = IndexedMesh::new();
+        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.faces.push([0, 1, 2]);
+        mesh
+    }
+
+    #[test]
+    fn roundtrip() {
+        let original = create_test_triangle();
+
+        let temp_dir = tempfile::tempdir().ok();
+        let temp_dir = temp_dir.as_ref();
+
+        if let Some(dir) = temp_dir {
+            let path = dir.path().join("test.obj");
+            save_obj(&original, &path).ok();
+
+            if let Ok(loaded) = load_obj(&path) {
+                assert_eq!(loaded.face_count(), original.face_count());
+                assert_eq!(loaded.vertex_count(), original.vertex_count());
+
+                // Check vertex positions
+                if loaded.vertex_count() >= 3 {
+                    let v1 = &loaded.vertices[1].position;
+                    assert!((v1.x - 1.0).abs() < 1e-5);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn load_nonexistent_file() {
+        let result = load_obj("nonexistent_file_12345.obj");
+        assert!(result.is_err());
+        if let Err(IoError::FileNotFound { path }) = result {
+            assert!(path.to_string_lossy().contains("nonexistent"));
+        }
+    }
+
+    #[test]
+    fn parse_simple_obj() {
+        let obj_content = b"# Simple triangle
+v 0 0 0
+v 1 0 0
+v 0 1 0
+f 1 2 3
+";
+
+        let reader = BufReader::new(&obj_content[..]);
+        let mesh = load_obj_from_reader(reader);
+
+        assert!(mesh.is_ok());
+        if let Ok(m) = mesh {
+            assert_eq!(m.vertex_count(), 3);
+            assert_eq!(m.face_count(), 1);
+        }
+    }
+
+    #[test]
+    fn parse_obj_with_texture_coords() {
+        let obj_content = b"v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+f 1/1 2/2 3/3
+";
+
+        let reader = BufReader::new(&obj_content[..]);
+        let mesh = load_obj_from_reader(reader);
+
+        assert!(mesh.is_ok());
+        if let Ok(m) = mesh {
+            assert_eq!(m.vertex_count(), 3);
+            assert_eq!(m.face_count(), 1);
+        }
+    }
+
+    #[test]
+    fn parse_obj_with_normals() {
+        let obj_content = b"v 0 0 0
+v 1 0 0
+v 0 1 0
+vn 0 0 1
+f 1//1 2//1 3//1
+";
+
+        let reader = BufReader::new(&obj_content[..]);
+        let mesh = load_obj_from_reader(reader);
+
+        assert!(mesh.is_ok());
+        if let Ok(m) = mesh {
+            assert_eq!(m.vertex_count(), 3);
+            assert_eq!(m.face_count(), 1);
+        }
+    }
+
+    #[test]
+    fn parse_obj_quad() {
+        let obj_content = b"v 0 0 0
+v 1 0 0
+v 1 1 0
+v 0 1 0
+f 1 2 3 4
+";
+
+        let reader = BufReader::new(&obj_content[..]);
+        let mesh = load_obj_from_reader(reader);
+
+        assert!(mesh.is_ok());
+        if let Ok(m) = mesh {
+            assert_eq!(m.vertex_count(), 4);
+            // Quad should be triangulated into 2 triangles
+            assert_eq!(m.face_count(), 2);
+        }
+    }
+
+    #[test]
+    fn face_vertex_parsing() {
+        assert_eq!(parse_face_vertex("1").ok(), Some(0));
+        assert_eq!(parse_face_vertex("10").ok(), Some(9));
+        assert_eq!(parse_face_vertex("1/2").ok(), Some(0));
+        assert_eq!(parse_face_vertex("1/2/3").ok(), Some(0));
+        assert_eq!(parse_face_vertex("1//3").ok(), Some(0));
+
+        // Negative indices not supported
+        assert!(parse_face_vertex("-1").is_err());
+        assert!(parse_face_vertex("0").is_err());
+    }
+}

@@ -1,0 +1,58 @@
+# CortenForge Clippy Configuration
+#
+# This sets project-wide clippy configuration.
+# Run: cargo clippy --all-targets --all-features -- -D warnings
+#
+# See: https://doc.rust-lang.org/clippy/
+
+# Avoid triggering on long types (common in generic code)
+type-complexity-threshold = 500
+
+# Allow slightly more complex functions (mesh algorithms can be intricate)
+cognitive-complexity-threshold = 30
+
+# Warn on single-character names except common ones
+single-char-binding-names-threshold = 4
+allowed-idents-below-min-chars = ["i", "j", "k", "x", "y", "z", "n", "t", "u", "v"]
+
+# Disallow certain types in public APIs
+disallowed-types = [
+    # Use Result instead of Option for error cases
+    # "std::option::Option",  # Too restrictive
+]
+
+# Disallow certain methods in library code (enforced via grep in xtask)
+# These are documented here for visibility:
+# - .unwrap() - Use ? or ok_or()
+# - .expect() - Use ? or ok_or()
+# - panic!() - Return Result instead
+# - todo!() - Not allowed in shipped code
+# - unimplemented!() - Not allowed in shipped code
+
+# Documentation requirements
+doc-valid-idents = [
+    "CortenForge",
+    "Bevy",
+    "STL",
+    "OBJ",
+    "PLY",
+    "GLTF",
+    "glTF",
+    "CAD",
+    "CAM",
+    "GPU",
+    "CPU",
+    "API",
+    "SDK",
+    "ECS",
+    "WASM",
+    "WebAssembly",
+    "SIMD",
+    "AVX",
+    "SSE",
+    "NEON",
+    "OpenGL",
+    "Vulkan",
+    "DirectX",
+    "Metal",
+]

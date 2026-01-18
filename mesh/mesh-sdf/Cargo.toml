@@ -1,0 +1,17 @@
+[package]
+name = "mesh-sdf"
+version = "0.7.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Signed distance field computation for triangle meshes"
+repository = "https://github.com/cortenforge/cortenforge"
+keywords = ["mesh", "sdf", "distance-field", "3d", "geometry"]
+categories = ["algorithms", "graphics", "game-development"]
+
+[dependencies]
+mesh-types = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

@@ -1,0 +1,29 @@
+[package]
+name = "mesh-scan"
+description = "3D scan processing: point clouds, cleanup, denoising, multi-scan alignment, and reconstruction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Internal workspace crates
+mesh-types = { workspace = true }
+mesh-repair = { workspace = true }
+mesh-registration = { workspace = true }
+
+# Math foundation
+nalgebra = { workspace = true }
+
+# Spatial indexing
+kiddo = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+rand = { workspace = true }
+tempfile = { workspace = true }

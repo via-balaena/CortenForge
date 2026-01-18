@@ -1,0 +1,17 @@
+[package]
+name = "mesh-printability"
+version = "0.7.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Print validation and manufacturing analysis for triangle meshes"
+keywords = ["mesh", "3d-printing", "validation", "manufacturing", "fdm"]
+categories = ["graphics", "game-development", "science"]
+
+[dependencies]
+mesh-types = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+hashbrown = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

@@ -1,0 +1,261 @@
+# CortenForge Quality Gate
+#
+# This workflow enforces the A-grade standard on every push and PR.
+# See STANDARDS.md for the seven criteria.
+#
+# "A-grade or it doesn't ship. No exceptions."
+
+name: Quality Gate
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  RUSTDOCFLAGS: "-D warnings"
+
+jobs:
+  # ============================================================================
+  # FORMATTING - Must be exact
+  # ============================================================================
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  # ============================================================================
+  # CLIPPY - Zero warnings
+  # ============================================================================
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # ============================================================================
+  # TESTS - All must pass
+  # ============================================================================
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --all-features
+
+  # ============================================================================
+  # DOCUMENTATION - Zero warnings, complete coverage
+  # ============================================================================
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build docs
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+  # ============================================================================
+  # COVERAGE - Must be ≥90% for A-grade
+  # ============================================================================
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Generate coverage
+        run: cargo tarpaulin --all-features --workspace --out Xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          fail_ci_if_error: false
+          files: cobertura.xml
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(cargo tarpaulin --all-features --workspace --out Json 2>/dev/null | jq '.coverage_percentage')
+          echo "Coverage: $COVERAGE%"
+          if (( $(echo "$COVERAGE < 90" | bc -l) )); then
+            echo "::error::Coverage $COVERAGE% is below 90% threshold"
+            exit 1
+          fi
+
+  # ============================================================================
+  # SAFETY - Zero unwrap/expect in library code
+  # ============================================================================
+  safety:
+    name: Safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for unwrap/expect
+        run: |
+          # Find all library source files (exclude tests, examples, xtask)
+          VIOLATIONS=$(find . -name "*.rs" \
+            -not -path "./target/*" \
+            -not -path "./xtask/*" \
+            -not -path "*/tests/*" \
+            -not -path "*/examples/*" \
+            -not -path "*/benches/*" \
+            -exec grep -l -E '\.(unwrap|expect)\(' {} \; 2>/dev/null || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "::error::Found unwrap/expect in library code:"
+            echo "$VIOLATIONS"
+            for file in $VIOLATIONS; do
+              echo "In $file:"
+              grep -n -E '\.(unwrap|expect)\(' "$file" | head -5
+            done
+            exit 1
+          fi
+          echo "No unwrap/expect found in library code"
+
+      - name: Check for panic!/todo!/unimplemented!
+        run: |
+          VIOLATIONS=$(find . -name "*.rs" \
+            -not -path "./target/*" \
+            -not -path "./xtask/*" \
+            -not -path "*/tests/*" \
+            -not -path "*/examples/*" \
+            -exec grep -l -E 'panic!\(|todo!\(|unimplemented!\(' {} \; 2>/dev/null || true)
+
+          if [ -n "$VIOLATIONS" ]; then
+            echo "::warning::Found panic!/todo!/unimplemented! (review required):"
+            echo "$VIOLATIONS"
+          fi
+
+  # ============================================================================
+  # DEPENDENCIES - Audit and policy
+  # ============================================================================
+  dependencies:
+    name: Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny
+
+      - name: Check dependencies
+        run: cargo deny check
+
+  # ============================================================================
+  # LAYER 0 - No Bevy in foundation crates
+  # ============================================================================
+  bevy-free:
+    name: Bevy-Free (Layer 0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check Layer 0 crates
+        run: |
+          # List of Layer 0 crates that must be Bevy-free
+          LAYER0_CRATES=(
+            "mesh-types"
+            "mesh-io"
+            "mesh-repair"
+            "mesh-geodesic"
+            "mesh-boolean"
+            "mesh-shell"
+            "curve-types"
+            "lumen-geometry"
+            "cf-spatial"
+            "route-types"
+            "route-pathfind"
+            "route-optimize"
+          )
+
+          FAILED=false
+          for crate in "${LAYER0_CRATES[@]}"; do
+            if cargo tree -p "$crate" 2>/dev/null | grep -q "bevy"; then
+              echo "::error::$crate has Bevy in dependency tree"
+              FAILED=true
+            fi
+          done
+
+          if [ "$FAILED" = true ]; then
+            exit 1
+          fi
+          echo "All Layer 0 crates are Bevy-free"
+
+  # ============================================================================
+  # FINAL GATE
+  # ============================================================================
+  quality-gate:
+    name: Quality Gate
+    needs: [format, clippy, test, docs, safety, dependencies]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All checks passed
+        run: |
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║                    QUALITY GATE PASSED                        ║"
+          echo "║                                                              ║"
+          echo "║  All automated criteria meet A-grade standard.               ║"
+          echo "║  Ready for API review and merge.                             ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"

@@ -1,0 +1,134 @@
+# CortenForge .gitignore
+
+# =============================================================================
+# Rust / Cargo
+# =============================================================================
+/target/
+**/*.rs.bk
+
+# Keep Cargo.lock for reproducible CI builds
+# (Recommended for workspaces even if primarily libraries)
+
+# =============================================================================
+# IDE / Editor
+# =============================================================================
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains (RustRover, IntelliJ)
+.idea/
+*.iml
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.dir-locals.el
+
+# =============================================================================
+# OS Generated
+# =============================================================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# =============================================================================
+# Build Artifacts
+# =============================================================================
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exe
+
+# =============================================================================
+# Coverage & Profiling
+# =============================================================================
+*.profraw
+*.profdata
+lcov.info
+coverage/
+tarpaulin-report.html
+cobertura.xml
+
+# =============================================================================
+# Documentation
+# =============================================================================
+# Generated docs (use cargo doc)
+/docs/api/
+
+# mdBook output
+/docs/book/book/
+
+# =============================================================================
+# Testing
+# =============================================================================
+# Proptest regression files (keep these in CI, ignore locally)
+# proptest-regressions/
+
+# Fuzzing
+/fuzz/artifacts/
+/fuzz/corpus/
+
+# =============================================================================
+# ML / Data
+# =============================================================================
+# Model weights (too large for git)
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.bin
+
+# Datasets
+/data/
+*.parquet
+*.arrow
+
+# Training outputs
+/checkpoints/
+/runs/
+/logs/
+
+# =============================================================================
+# Project Specific
+# =============================================================================
+# Temporary files
+*.tmp
+*.temp
+
+# Local configuration overrides
+.env
+.env.local
+*.local.toml
+*.local.json
+
+# Claude Code settings (user-specific)
+.claude/
+
+# Benchmark results (regenerate with cargo bench)
+/target/criterion/
+
+# =============================================================================
+# Old Repos (during migration)
+# =============================================================================
+# These are the original repos being migrated - keep for reference but don't track
+# /CortenForge/
+# /mesh/
+# /lumen-geometry/

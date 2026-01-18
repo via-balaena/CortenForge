@@ -1,0 +1,29 @@
+[package]
+name = "mesh-types"
+description = "Core mesh types for CortenForge: Vertex, IndexedMesh, Triangle, AABB"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["mesh", "3d", "geometry", "triangles", "cad"]
+categories = ["graphics", "mathematics", "data-structures"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Core math library - matches parry3d and avian for compatibility
+nalgebra = { workspace = true }
+
+# Serialization (optional)
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Approximate equality testing
+approx = { workspace = true }
+
+[features]
+default = []
+serde = ["dep:serde", "nalgebra/serde-serialize"]

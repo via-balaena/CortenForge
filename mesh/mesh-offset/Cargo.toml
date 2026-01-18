@@ -1,0 +1,18 @@
+[package]
+name = "mesh-offset"
+version = "0.7.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Mesh offset operations using signed distance fields"
+repository = "https://github.com/cortenforge/cortenforge"
+keywords = ["mesh", "offset", "shell", "3d", "geometry"]
+categories = ["algorithms", "graphics", "game-development"]
+
+[dependencies]
+mesh-types = { workspace = true }
+mesh-sdf = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
