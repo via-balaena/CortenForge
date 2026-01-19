@@ -375,7 +375,8 @@ pub fn concatenate_meshes(meshes: &[IndexedMesh]) -> IndexedMesh {
     clippy::float_cmp,
     clippy::similar_names,
     clippy::cast_lossless,
-    clippy::cloned_ref_to_slice_refs
+    clippy::cloned_ref_to_slice_refs,
+    clippy::redundant_clone
 )]
 mod tests {
     use super::*;
