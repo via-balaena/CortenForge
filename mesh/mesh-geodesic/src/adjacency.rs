@@ -95,6 +95,12 @@ impl AdjacencyList {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::map_unwrap_or
+)]
 mod tests {
     use super::*;
     use mesh_types::Vertex;

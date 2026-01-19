@@ -345,7 +345,8 @@ impl ContactStats {
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::float_cmp,
-    clippy::redundant_closure
+    clippy::redundant_closure,
+    clippy::redundant_closure_for_method_calls
 )]
 mod tests {
     use super::*;
