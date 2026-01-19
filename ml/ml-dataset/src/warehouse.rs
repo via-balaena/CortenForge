@@ -484,7 +484,7 @@ mod tests {
     fn manifest_serialization() {
         let mut manifest = WarehouseManifest::new("test", "1.0")
             .with_description("Test")
-            .with_created_at(1234567890);
+            .with_created_at(1_234_567_890);
         manifest.add_shard(ShardMetadata::new(0, 100, "shard.bin"));
 
         let json = manifest.to_json();
