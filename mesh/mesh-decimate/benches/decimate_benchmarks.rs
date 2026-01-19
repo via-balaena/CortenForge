@@ -6,7 +6,11 @@
 //! 1. First run: cargo bench -p mesh-decimate -- --save-baseline main
 //! 2. After changes: cargo bench -p mesh-decimate -- --baseline main
 
-#![allow(missing_docs, clippy::cast_possible_truncation)]
+#![allow(
+    missing_docs,
+    clippy::cast_possible_truncation,
+    clippy::assigning_clones
+)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use mesh_decimate::{DecimateParams, decimate_mesh};
