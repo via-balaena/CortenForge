@@ -231,7 +231,8 @@ pub fn compute_alignment_error(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::float_cmp,
-    clippy::similar_names
+    clippy::similar_names,
+    clippy::cast_lossless
 )]
 mod tests {
     use super::*;

@@ -360,7 +360,8 @@ pub fn denoise_mesh(mesh: &IndexedMesh, params: &DenoiseParams) -> ScanResult<De
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::redundant_clone,
-    clippy::needless_collect
+    clippy::needless_collect,
+    clippy::unreadable_literal
 )]
 mod tests {
     use super::*;
