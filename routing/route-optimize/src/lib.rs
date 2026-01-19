@@ -1,6 +1,8 @@
 // Temporary: Allow redundant_clone until the crate is refactored
 // TODO: Fix redundant clones and remove this allow
 #![allow(clippy::redundant_clone)]
+// Allow similar_names like smoother/smoothed, shortener/shortened which are intentional
+#![allow(clippy::similar_names)]
 
 //! Multi-objective route optimization algorithms.
 //!
