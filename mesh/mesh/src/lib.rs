@@ -50,7 +50,7 @@
 //! ## Analysis & Measurement
 //! - [`measure`] - Dimensions, volume, surface area, cross-sections
 //! - [`thickness`] - Wall thickness analysis
-//! - [`slice`] - Layer slicing for 3D printing preview
+//! - [`mod@slice`] - Layer slicing for 3D printing preview
 //! - [`geodesic`] - Geodesic distance computation
 //! - [`zones`] - Zone assignment and mesh segmentation
 //!
