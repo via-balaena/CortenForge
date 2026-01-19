@@ -67,7 +67,7 @@ echo "╚═══════════════════════�
 /// Commit message hook content
 ///
 /// Enforces conventional commit format:
-/// <type>(<scope>): <description>
+/// `<type>(<scope>): <description>`
 const COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # CortenForge Commit Message Hook
 # Installed by: cargo xtask setup

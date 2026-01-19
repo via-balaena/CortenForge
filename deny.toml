@@ -25,16 +25,8 @@ all-features = true
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Fail on any vulnerability
-vulnerability = "deny"
-# Warn on unmaintained crates
-unmaintained = "warn"
-# Warn on unsound code
-unsound = "warn"
-# Ignore yanked crates (they're often just deprecated)
-yanked = "warn"
-notice = "warn"
-
+# Check all crates for vulnerabilities
+version = 2
 # Temporarily ignore specific advisories (with justification)
 ignore = [
     # Example:

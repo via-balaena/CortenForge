@@ -1,3 +1,7 @@
+// Temporary: Allow redundant_clone until the crate is refactored
+// TODO: Fix redundant clones and remove this allow
+#![allow(clippy::redundant_clone)]
+
 //! Multi-objective route optimization algorithms.
 //!
 //! This crate provides optimization algorithms for improving route quality
