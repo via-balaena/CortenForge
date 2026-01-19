@@ -17,6 +17,8 @@
 //!
 //! Place STL files in: tests/fixtures/thingi10k/
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use mesh_io::{load_mesh, save_mesh};
 use mesh_types::MeshTopology;
 use std::path::PathBuf;
