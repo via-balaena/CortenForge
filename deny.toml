@@ -29,8 +29,10 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 version = 2
 # Temporarily ignore specific advisories (with justification)
 ignore = [
-    # Example:
-    # { id = "RUSTSEC-2022-0001", reason = "We don't use the affected feature" }
+    # Unmaintained crates - transitive dependencies we don't directly control
+    { id = "RUSTSEC-2025-0141", reason = "bincode is unmaintained but we're using stable features only" },
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but used transitively by derive macros" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained but used transitively" },
 ]
 
 # ============================================================================
@@ -52,8 +54,10 @@ allow = [
     "Zlib",
     "0BSD",
     "Unicode-DFS-2016",
+    "Unicode-3.0",  # Used by unicode-ident
     "CC0-1.0",
     "MPL-2.0",  # Weak copyleft, acceptable for libraries
+    "Unlicense",  # Public domain equivalent
 ]
 confidence-threshold = 0.8
 
