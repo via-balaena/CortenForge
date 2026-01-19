@@ -309,7 +309,12 @@ pub fn find_path<T: Default>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::float_cmp, clippy::expect_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::float_cmp,
+    clippy::expect_used,
+    clippy::len_zero
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
