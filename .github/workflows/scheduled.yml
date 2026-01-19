@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-outdated
         run: cargo install cargo-outdated
@@ -86,7 +86,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-mutants
         run: cargo install cargo-mutants
@@ -126,7 +126,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -151,7 +151,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-vet
         run: cargo install cargo-vet
@@ -181,7 +181,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install MSRV Rust
-        uses: dtolnay/rust-action@1.85
+        uses: dtolnay/rust-toolchain@1.85
 
       - name: Check builds with MSRV
         run: cargo check --all-features
