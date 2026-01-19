@@ -324,7 +324,13 @@ impl BoxMatcher {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::let_underscore_must_use
+)]
 mod tests {
     use super::*;
 

@@ -205,6 +205,7 @@ pub mod prelude {
 // =============================================================================
 
 #[cfg(test)]
+#[allow(clippy::let_underscore_must_use)]
 mod tests {
     use super::*;
 
