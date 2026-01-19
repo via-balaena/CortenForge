@@ -202,7 +202,7 @@ pub fn successors_for_grid<T: Default>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::float_cmp)]
+#[allow(clippy::unwrap_used, clippy::float_cmp, clippy::cast_precision_loss)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

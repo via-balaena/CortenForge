@@ -108,6 +108,7 @@ pub use neighbors::{NeighborGenerator, successors_for_grid};
 pub use smooth::PathSmoother;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::similar_names)]
 mod integration_tests {
     use super::*;
     use cf_spatial::{VoxelCoord, VoxelGrid};
