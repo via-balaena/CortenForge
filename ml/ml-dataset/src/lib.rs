@@ -15,8 +15,8 @@
 //!
 //! # Data Loading
 //!
-//! - [`load_sample`] - Load a single sample from disk
-//! - [`index_runs`] - Index available dataset runs
+//! - Load samples via `DatasetSample::load()` method
+//! - Index available dataset runs for processing
 //!
 //! # Layer 0 Crate
 //!
