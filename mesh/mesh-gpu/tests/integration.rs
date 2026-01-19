@@ -5,6 +5,8 @@
 //! cargo test -p mesh-gpu -- --ignored
 //! ```
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use mesh_gpu::{
     GpuContext, GpuSdfParams, GpuSdfResult, TileConfig, compute_sdf_gpu, try_compute_sdf_gpu,
 };
