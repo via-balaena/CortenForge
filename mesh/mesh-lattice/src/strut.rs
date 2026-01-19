@@ -234,6 +234,7 @@ pub fn estimate_strut_volume(length: f64, start_radius: f64, end_radius: f64) ->
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

@@ -261,7 +261,9 @@ fn apply_ffd_morph(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::float_cmp,
-    clippy::needless_range_loop
+    clippy::needless_range_loop,
+    clippy::uninlined_format_args,
+    clippy::redundant_closure_for_method_calls
 )]
 mod tests {
     use super::*;

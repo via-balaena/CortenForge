@@ -142,7 +142,8 @@ pub use result::MorphOutput;
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::float_cmp,
-    clippy::needless_range_loop
+    clippy::needless_range_loop,
+    clippy::uninlined_format_args
 )]
 mod integration_tests {
     use super::*;
