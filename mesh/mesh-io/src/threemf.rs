@@ -449,7 +449,8 @@ fn generate_model_xml(mesh: &IndexedMesh) -> IoResult<String> {
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::float_cmp,
-    clippy::needless_raw_string_hashes
+    clippy::needless_raw_string_hashes,
+    clippy::map_identity
 )]
 mod tests {
     use super::*;
