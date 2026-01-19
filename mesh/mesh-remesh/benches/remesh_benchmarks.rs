@@ -6,6 +6,8 @@
 //! 1. First run: cargo bench -p mesh-remesh -- --save-baseline main
 //! 2. After changes: cargo bench -p mesh-remesh -- --baseline main
 
+#![allow(missing_docs, clippy::cast_possible_truncation)]
+
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use mesh_remesh::{RemeshParams, remesh};
 use mesh_types::{IndexedMesh, Vertex};

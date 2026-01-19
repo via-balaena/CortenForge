@@ -268,6 +268,12 @@ impl DatasetSummary {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::needless_range_loop,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
 mod tests {
     use super::*;
 
