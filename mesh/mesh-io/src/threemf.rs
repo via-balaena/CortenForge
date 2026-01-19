@@ -445,6 +445,12 @@ fn generate_model_xml(mesh: &IndexedMesh) -> IoResult<String> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::unnecessary_raw_string_hashes
+)]
 mod tests {
     use super::*;
     use mesh_types::MeshTopology;

@@ -87,6 +87,7 @@ pub use nalgebra::{Isometry3, Point3, UnitQuaternion, Vector3};
 pub type Result<T> = std::result::Result<T, SimError>;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
 
