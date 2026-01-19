@@ -56,8 +56,8 @@ Humans review; machines enforce.
 TIER 1: Non-Negotiable Foundation        [COMPLETE]
 ├── cargo-audit (CVE scanning)           [x] In quality-gate.yml
 ├── SBOM generation (CycloneDX)          [x] In quality-gate.yml
-├── Pre-commit hooks                     [ ] Available via `cargo xtask setup`
-├── Conventional commits                 [ ] Not yet enforced
+├── Pre-commit hooks                     [x] Auto-installed via xtask/build.rs
+├── Conventional commits                 [x] Enforced by commit-msg hook
 ├── Signed commits/releases              [ ] Branch protection (manual)
 └── cargo-semver-checks                  [x] In quality-gate.yml
 
@@ -444,10 +444,10 @@ Track these metrics for health visibility:
 - [x] WASM CI target (Layer 0 crates)
 - [x] Mutation testing (weekly scheduled)
 - [x] Traceability infrastructure (requirements/ directory)
+- [x] Pre-commit hooks (auto-installed via xtask/build.rs)
+- [x] Conventional commit enforcement (commit-msg hook)
 
 ### Remaining (As Needed)
-- [ ] Pre-commit hooks (available via `cargo xtask setup`)
-- [ ] Conventional commit enforcement
 - [ ] Signed commits (GitHub branch protection)
 - [ ] Benchmark regression detection
 - [ ] Linux ARM64 CI target

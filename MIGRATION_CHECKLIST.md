@@ -183,8 +183,9 @@ SEPARATE TRACKS (independent):
   - `cargo xtask grade <crate>` - Grade a crate against A-grade standard
   - `cargo xtask complete <crate>` - Record A-grade completion
   - `cargo xtask ci` - Full CI suite
-  - `cargo xtask setup` - Install git hooks and verify tools
+  - `cargo xtask setup` - Manually install git hooks (auto-installed on build)
   - `cargo xtask uninstall` - Remove git hooks
+  - Git hooks auto-install via `xtask/build.rs` on first build
 
 ### Configuration Files
 
@@ -218,10 +219,11 @@ SEPARATE TRACKS (independent):
   - Supply chain verification (cargo-vet)
   - MSRV check
 
-### Pre-Commit Hooks
+### Pre-Commit Hooks (Auto-Installed)
 
 - [x] **pre-commit** - Format + Clippy + Safety scan
 - [x] **commit-msg** - Conventional commit enforcement
+- [x] **Auto-install** - Hooks installed automatically via `xtask/build.rs` on first build
 
 ### Traceability Infrastructure (ISO 26262 / IEC 62304 / DO-178C Ready)
 

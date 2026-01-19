@@ -15,12 +15,12 @@ We maintain **A-grade academic standards** for all code. This is the cultural fo
 ## Quick Start
 
 ```bash
-# Clone and setup
+# Clone the repository
 git clone https://github.com/cortenforge/forge.git
 cd forge
 
-# Install git hooks and verify tools
-cargo xtask setup
+# Build - git hooks are installed automatically
+cargo build
 
 # Check if your environment is ready
 cargo xtask check
@@ -31,6 +31,9 @@ cargo xtask grade <crate-name>
 # Run the full quality suite locally (same as CI)
 cargo xtask ci
 ```
+
+> **Note:** Git hooks (pre-commit and commit-msg) are automatically installed
+> when you first build the project. No manual setup required.
 
 ### Optional: Local Coverage (Linux only)
 
