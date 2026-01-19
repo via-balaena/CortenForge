@@ -9,7 +9,8 @@
 #![allow(
     missing_docs,
     clippy::cast_possible_truncation,
-    clippy::assigning_clones
+    clippy::assigning_clones,
+    clippy::significant_drop_tightening
 )]
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
