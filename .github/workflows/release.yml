@@ -43,7 +43,7 @@ jobs:
             os: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-action@stable
@@ -66,7 +66,7 @@ jobs:
     name: Generate SBOM
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-action@stable
@@ -96,7 +96,7 @@ jobs:
     outputs:
       changelog: ${{ steps.changelog.outputs.changelog }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -157,7 +157,7 @@ jobs:
     needs: [build, sbom, changelog]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download SBOM
         uses: actions/download-artifact@v4
@@ -209,7 +209,7 @@ jobs:
   #   runs-on: ubuntu-latest
   #   if: ${{ !contains(github.ref, '-') }}  # Only stable releases
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: actions/checkout@v6
   #
   #     - name: Install Rust
   #       uses: dtolnay/rust-action@stable
