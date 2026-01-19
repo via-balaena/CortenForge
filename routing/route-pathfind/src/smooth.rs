@@ -352,7 +352,7 @@ pub fn remove_collinear(path: &VoxelPath) -> VoxelPath {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::float_cmp)]
+#[allow(clippy::unwrap_used, clippy::float_cmp, clippy::similar_names)]
 mod tests {
     use super::*;
     use nalgebra::Point3;

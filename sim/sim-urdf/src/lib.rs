@@ -130,6 +130,7 @@ pub use types::{
 pub use validation::{ValidationResult, validate};
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use sim_core::World;

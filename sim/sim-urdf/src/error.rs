@@ -157,6 +157,7 @@ impl UrdfError {
 pub type Result<T> = std::result::Result<T, UrdfError>;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

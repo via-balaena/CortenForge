@@ -247,6 +247,7 @@ fn validate_mass_properties(robot: &UrdfRobot) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::types::{UrdfInertia, UrdfInertial, UrdfJoint, UrdfJointType, UrdfLink};
