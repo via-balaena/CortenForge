@@ -233,6 +233,12 @@ impl<T> StreamBuffer<T> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
 

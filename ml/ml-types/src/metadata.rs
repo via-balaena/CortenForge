@@ -175,6 +175,7 @@ impl Default for FrameMetadata {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::LabelSource;
