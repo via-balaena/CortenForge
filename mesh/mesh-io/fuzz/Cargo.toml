@@ -1,0 +1,45 @@
+[package]
+name = "mesh-io-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+mesh-io = { path = ".." }
+tempfile = "3"
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_stl"
+path = "fuzz_targets/fuzz_stl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_obj"
+path = "fuzz_targets/fuzz_obj.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ply"
+path = "fuzz_targets/fuzz_ply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_3mf"
+path = "fuzz_targets/fuzz_3mf.rs"
+test = false
+doc = false
+bench = false

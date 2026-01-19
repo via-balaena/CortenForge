@@ -20,7 +20,9 @@ pub enum LatticeError {
     InvalidCellSize(f64),
 
     /// The strut thickness is invalid.
-    #[error("strut thickness must be positive and less than cell size, got thickness={thickness}, cell_size={cell_size}")]
+    #[error(
+        "strut thickness must be positive and less than cell size, got thickness={thickness}, cell_size={cell_size}"
+    )]
     InvalidStrutThickness {
         /// The provided strut thickness.
         thickness: f64,

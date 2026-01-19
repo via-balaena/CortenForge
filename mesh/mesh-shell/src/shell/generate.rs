@@ -7,14 +7,14 @@
 // which exceeds practical limits.
 #![allow(clippy::cast_possible_truncation)]
 
-use mesh_offset::{offset_mesh, OffsetConfig};
+use mesh_offset::{OffsetConfig, offset_mesh};
 use mesh_repair::MeshAdjacency;
 use mesh_types::IndexedMesh;
 use nalgebra::Vector3;
 use tracing::{debug, info, warn};
 
 use super::rim::{generate_rim, generate_rim_for_sdf_shell};
-use super::validation::{validate_shell, ShellValidationResult};
+use super::validation::{ShellValidationResult, validate_shell};
 use crate::error::{ShellError, ShellResult};
 
 /// Method for generating the outer surface of the shell.
@@ -194,11 +194,16 @@ fn generate_shell_normal(
     // Step 5: Generate outer faces with offset indices (original winding for outward normals)
     let n32 = n as u32;
     for face in &inner_mesh.faces {
-        shell.faces.push([face[0] + n32, face[1] + n32, face[2] + n32]);
+        shell
+            .faces
+            .push([face[0] + n32, face[1] + n32, face[2] + n32]);
     }
 
     let inner_face_count = inner_mesh.faces.len();
-    debug!("Added {} inner + {} outer faces", inner_face_count, inner_face_count);
+    debug!(
+        "Added {} inner + {} outer faces",
+        inner_face_count, inner_face_count
+    );
 
     // Step 6: Find boundary edges and generate rim
     let (rim_faces, boundary_size) = generate_rim(inner_mesh, n);
@@ -521,8 +526,7 @@ mod tests {
             let len = normal.norm();
             assert!(
                 (len - 1.0).abs() < 0.01,
-                "Normal should be unit length, got {}",
-                len
+                "Normal should be unit length, got {len}"
             );
         }
     }

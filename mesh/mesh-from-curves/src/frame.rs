@@ -35,9 +35,7 @@ impl Frame {
     /// Computes a perpendicular normal and binormal.
     #[must_use]
     pub fn from_tangent(tangent: Vector3<f64>) -> Self {
-        let tangent = tangent
-            .try_normalize(f64::EPSILON)
-            .unwrap_or(Vector3::z());
+        let tangent = tangent.try_normalize(f64::EPSILON).unwrap_or(Vector3::z());
 
         // Find a perpendicular vector
         let normal = find_perpendicular(tangent);

@@ -83,11 +83,7 @@ pub fn ray_triangle_intersect(
     let t = f * edge2.dot(&q);
 
     // Intersection is behind ray origin
-    if t > epsilon {
-        Some(t)
-    } else {
-        None
-    }
+    if t > epsilon { Some(t) } else { None }
 }
 
 /// Test if an edge intersects a triangle.
@@ -677,7 +673,9 @@ mod tests {
         let below = Point3::new(0.0, 0.0, -3.0);
         let on_plane = Point3::new(1.0, 2.0, 0.0);
 
-        assert!((signed_distance_to_plane(&above, &plane_point, &plane_normal) - 5.0).abs() < 1e-10);
+        assert!(
+            (signed_distance_to_plane(&above, &plane_point, &plane_normal) - 5.0).abs() < 1e-10
+        );
         assert!(
             (signed_distance_to_plane(&below, &plane_point, &plane_normal) - (-3.0)).abs() < 1e-10
         );

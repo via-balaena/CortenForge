@@ -7,9 +7,11 @@
 #![allow(clippy::match_same_arms)]
 
 use crate::bvh::Bvh;
-use crate::classify::{classify_faces_auto, meshes_overlap, FaceLocation};
+use crate::classify::{FaceLocation, classify_faces_auto, meshes_overlap};
 use crate::config::{BooleanConfig, BooleanOp, CleanupLevel, CoplanarStrategy};
-use crate::coplanar::{coplanar_faces_a, coplanar_faces_b, find_coplanar_pairs, should_include_coplanar_face};
+use crate::coplanar::{
+    coplanar_faces_a, coplanar_faces_b, find_coplanar_pairs, should_include_coplanar_face,
+};
 use crate::edge_insert::insert_edges;
 use crate::error::{BooleanError, BooleanResult};
 use crate::intersect::triangles_intersect;
@@ -110,11 +112,18 @@ pub fn boolean_operation(
 
     if intersecting_pairs.is_empty() {
         // Meshes overlap in bounding box but don't actually intersect
-        return Ok(handle_non_intersecting(mesh_a, mesh_b, &bvh_b, operation, config));
+        return Ok(handle_non_intersecting(
+            mesh_a, mesh_b, &bvh_b, operation, config,
+        ));
     }
 
     // Find coplanar pairs
-    let coplanar_pairs = find_coplanar_pairs(mesh_a, mesh_b, &intersecting_pairs, config.coplanar_tolerance);
+    let coplanar_pairs = find_coplanar_pairs(
+        mesh_a,
+        mesh_b,
+        &intersecting_pairs,
+        config.coplanar_tolerance,
+    );
     let coplanar_a = coplanar_faces_a(&coplanar_pairs);
     let coplanar_b = coplanar_faces_b(&coplanar_pairs);
 
@@ -239,7 +248,10 @@ pub fn boolean_operation(
     // Apply cleanup
     apply_cleanup(&mut result, config);
 
-    Ok(BooleanOperationResult { mesh: result, stats })
+    Ok(BooleanOperationResult {
+        mesh: result,
+        stats,
+    })
 }
 
 /// Find all pairs of triangles that potentially intersect.
@@ -308,7 +320,9 @@ fn handle_non_overlapping(
             let offset = result.vertices.len() as u32;
             result.vertices.extend(mesh_b.vertices.iter().cloned());
             for face in &mesh_b.faces {
-                result.faces.push([face[0] + offset, face[1] + offset, face[2] + offset]);
+                result
+                    .faces
+                    .push([face[0] + offset, face[1] + offset, face[2] + offset]);
             }
             (result, mesh_a.faces.len(), mesh_b.faces.len())
         }
@@ -347,12 +361,14 @@ fn handle_non_intersecting(
     let a_sample = mesh_a.vertices.first().map(|v| v.position);
     let b_sample = mesh_b.vertices.first().map(|v| v.position);
 
-    let a_inside_b = a_sample
-        .is_some_and(|p| point_in_mesh_robust(&p, mesh_b, Some(bvh_b), config.classification_tolerance));
+    let a_inside_b = a_sample.is_some_and(|p| {
+        point_in_mesh_robust(&p, mesh_b, Some(bvh_b), config.classification_tolerance)
+    });
 
     let bvh_a = Bvh::build(mesh_a, config.bvh_leaf_size);
-    let b_inside_a = b_sample
-        .is_some_and(|p| point_in_mesh_robust(&p, mesh_a, Some(&bvh_a), config.classification_tolerance));
+    let b_inside_a = b_sample.is_some_and(|p| {
+        point_in_mesh_robust(&p, mesh_a, Some(&bvh_a), config.classification_tolerance)
+    });
 
     let (mesh, faces_from_a, faces_from_b) = match (operation, a_inside_b, b_inside_a) {
         // Union
@@ -363,7 +379,9 @@ fn handle_non_intersecting(
             let offset = result.vertices.len() as u32;
             result.vertices.extend(mesh_b.vertices.iter().cloned());
             for face in &mesh_b.faces {
-                result.faces.push([face[0] + offset, face[1] + offset, face[2] + offset]);
+                result
+                    .faces
+                    .push([face[0] + offset, face[1] + offset, face[2] + offset]);
             }
             (result, mesh_a.faces.len(), mesh_b.faces.len())
         }
@@ -457,17 +475,23 @@ fn add_face_to_result(
     let new_face: [u32; 3] = [
         *vertex_map.entry(face[0]).or_insert_with(|| {
             let idx = result.vertices.len() as u32;
-            result.vertices.push(source.vertices[face[0] as usize].clone());
+            result
+                .vertices
+                .push(source.vertices[face[0] as usize].clone());
             idx
         }),
         *vertex_map.entry(face[1]).or_insert_with(|| {
             let idx = result.vertices.len() as u32;
-            result.vertices.push(source.vertices[face[1] as usize].clone());
+            result
+                .vertices
+                .push(source.vertices[face[1] as usize].clone());
             idx
         }),
         *vertex_map.entry(face[2]).or_insert_with(|| {
             let idx = result.vertices.len() as u32;
-            result.vertices.push(source.vertices[face[2] as usize].clone());
+            result
+                .vertices
+                .push(source.vertices[face[2] as usize].clone());
             idx
         }),
     ];
@@ -534,7 +558,8 @@ fn weld_vertices(mesh: &mut IndexedMesh, tolerance: f64) {
 
 /// Remove faces where any two vertices are the same.
 fn remove_degenerate_faces(mesh: &mut IndexedMesh) {
-    mesh.faces.retain(|f| f[0] != f[1] && f[1] != f[2] && f[0] != f[2]);
+    mesh.faces
+        .retain(|f| f[0] != f[1] && f[1] != f[2] && f[0] != f[2]);
 }
 
 /// Remove vertices that are not referenced by any face.
@@ -618,7 +643,12 @@ pub fn union_with_config(
 ///
 /// Returns `BooleanError` if either mesh is empty or the operation fails.
 pub fn difference(mesh_a: &IndexedMesh, mesh_b: &IndexedMesh) -> BooleanResult<IndexedMesh> {
-    let result = boolean_operation(mesh_a, mesh_b, BooleanOp::Difference, &BooleanConfig::default())?;
+    let result = boolean_operation(
+        mesh_a,
+        mesh_b,
+        BooleanOp::Difference,
+        &BooleanConfig::default(),
+    )?;
     Ok(result.mesh)
 }
 
@@ -649,7 +679,12 @@ pub fn difference_with_config(
 ///
 /// Returns `BooleanError` if either mesh is empty or the operation fails.
 pub fn intersection(mesh_a: &IndexedMesh, mesh_b: &IndexedMesh) -> BooleanResult<IndexedMesh> {
-    let result = boolean_operation(mesh_a, mesh_b, BooleanOp::Intersection, &BooleanConfig::default())?;
+    let result = boolean_operation(
+        mesh_a,
+        mesh_b,
+        BooleanOp::Intersection,
+        &BooleanConfig::default(),
+    )?;
     Ok(result.mesh)
 }
 

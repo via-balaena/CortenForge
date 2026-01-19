@@ -78,7 +78,8 @@ pub fn remesh(mesh: &IndexedMesh, params: &RemeshParams) -> RemeshResult<RemeshO
     );
 
     // Convert to working representation
-    let mut vertices: Vec<[f64; 3]> = mesh.vertices
+    let mut vertices: Vec<[f64; 3]> = mesh
+        .vertices
         .iter()
         .map(|v| [v.position.x, v.position.y, v.position.z])
         .collect();
@@ -139,7 +140,10 @@ pub fn remesh(mesh: &IndexedMesh, params: &RemeshParams) -> RemeshResult<RemeshO
 
         debug!(
             "Iteration {}: {} splits, {} collapses, {} flips",
-            iter + 1, iter_splits, iter_collapses, iter_flips
+            iter + 1,
+            iter_splits,
+            iter_collapses,
+            iter_flips
         );
 
         // Early exit if no operations performed
@@ -189,7 +193,8 @@ fn compute_edge_statistics(mesh: &IndexedMesh) -> EdgeStatistics {
             if seen_edges.insert(edge) {
                 let p0 = &mesh.vertices[v0 as usize].position;
                 let p1 = &mesh.vertices[v1 as usize].position;
-                let length = ((p1.x - p0.x).powi(2) + (p1.y - p0.y).powi(2) + (p1.z - p0.z).powi(2)).sqrt();
+                let length =
+                    ((p1.x - p0.x).powi(2) + (p1.y - p0.y).powi(2) + (p1.z - p0.z).powi(2)).sqrt();
                 edge_lengths.push(length);
             }
         }
@@ -203,9 +208,11 @@ fn compute_edge_statistics(mesh: &IndexedMesh) -> EdgeStatistics {
     let max_length = edge_lengths.iter().copied().fold(0.0, f64::max);
     let avg_length = edge_lengths.iter().sum::<f64>() / edge_lengths.len() as f64;
 
-    let variance = edge_lengths.iter()
+    let variance = edge_lengths
+        .iter()
         .map(|&l| (l - avg_length).powi(2))
-        .sum::<f64>() / edge_lengths.len() as f64;
+        .sum::<f64>()
+        / edge_lengths.len() as f64;
     let std_dev = variance.sqrt();
 
     EdgeStatistics {
@@ -258,7 +265,8 @@ fn split_long_edges(
 
             let p0 = vertices[v0 as usize];
             let p1 = vertices[v1 as usize];
-            let length_sq = (p1[0] - p0[0]).powi(2) + (p1[1] - p0[1]).powi(2) + (p1[2] - p0[2]).powi(2);
+            let length_sq =
+                (p1[0] - p0[0]).powi(2) + (p1[1] - p0[1]).powi(2) + (p1[2] - p0[2]).powi(2);
 
             if length_sq > max_length_sq && !boundary_edges.contains(&edge) {
                 edges_to_split.push((v0, v1, length_sq));
@@ -286,17 +294,14 @@ fn split_long_edges(
 }
 
 /// Split a single edge by inserting a midpoint vertex.
-fn split_edge(
-    vertices: &mut Vec<[f64; 3]>,
-    faces: &mut Vec<[u32; 3]>,
-    v0: u32,
-    v1: u32,
-) -> bool {
+fn split_edge(vertices: &mut Vec<[f64; 3]>, faces: &mut Vec<[u32; 3]>, v0: u32, v1: u32) -> bool {
     // Find faces containing this edge
     let mut adjacent_faces: Vec<(usize, usize)> = Vec::new();
     for (fi, face) in faces.iter().enumerate() {
         for i in 0..3 {
-            if (face[i] == v0 && face[(i + 1) % 3] == v1) || (face[i] == v1 && face[(i + 1) % 3] == v0) {
+            if (face[i] == v0 && face[(i + 1) % 3] == v1)
+                || (face[i] == v1 && face[(i + 1) % 3] == v0)
+            {
                 adjacent_faces.push((fi, i));
                 break;
             }
@@ -367,7 +372,8 @@ fn collapse_short_edges(
 
             let p0 = vertices[v0 as usize];
             let p1 = vertices[v1 as usize];
-            let length_sq = (p1[0] - p0[0]).powi(2) + (p1[1] - p0[1]).powi(2) + (p1[2] - p0[2]).powi(2);
+            let length_sq =
+                (p1[0] - p0[0]).powi(2) + (p1[1] - p0[1]).powi(2) + (p1[2] - p0[2]).powi(2);
 
             if length_sq < min_length_sq && !boundary_edges.contains(&edge) {
                 edges_to_collapse.push((v0, v1, length_sq));
@@ -549,10 +555,8 @@ fn tangential_smooth(
     }
 
     // Find boundary vertices
-    let boundary_vertices: HashSet<u32> = boundary_edges
-        .iter()
-        .flat_map(|&(a, b)| [a, b])
-        .collect();
+    let boundary_vertices: HashSet<u32> =
+        boundary_edges.iter().flat_map(|&(a, b)| [a, b]).collect();
 
     // Compute new positions
     let mut new_positions: Vec<[f64; 3]> = vertices.to_vec();
@@ -653,8 +657,7 @@ mod tests {
     #[test]
     fn test_remesh_basic() {
         let mesh = make_triangle();
-        let params = RemeshParams::with_edge_length(0.3)
-            .with_iterations(3);
+        let params = RemeshParams::with_edge_length(0.3).with_iterations(3);
         let result = remesh(&mesh, &params).expect("remesh failed");
 
         // Should have more faces after splitting
@@ -664,8 +667,7 @@ mod tests {
     #[test]
     fn test_remesh_quad() {
         let mesh = make_quad();
-        let params = RemeshParams::with_edge_length(0.5)
-            .with_iterations(2);
+        let params = RemeshParams::with_edge_length(0.5).with_iterations(2);
         let result = remesh(&mesh, &params).expect("remesh failed");
 
         // Should remesh successfully

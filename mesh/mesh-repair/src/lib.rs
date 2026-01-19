@@ -49,19 +49,19 @@ pub mod winding;
 pub use adjacency::MeshAdjacency;
 pub use error::{RepairError, RepairResult};
 pub use repair::{
-    remove_degenerate_triangles, remove_degenerate_triangles_enhanced, remove_duplicate_faces,
-    remove_unreferenced_vertices, repair_mesh, weld_vertices, RepairParams,
-    RepairResult as RepairSummary,
+    RepairParams, RepairResult as RepairSummary, remove_degenerate_triangles,
+    remove_degenerate_triangles_enhanced, remove_duplicate_faces, remove_unreferenced_vertices,
+    repair_mesh, weld_vertices,
 };
-pub use validate::{validate_mesh, validate_mesh_with_options, MeshReport, ValidationOptions};
+pub use validate::{MeshReport, ValidationOptions, validate_mesh, validate_mesh_with_options};
 
 // Re-export commonly used items from submodules
 pub use components::{
-    find_connected_components, keep_largest_component, remove_small_components,
-    split_into_components, ComponentAnalysis,
+    ComponentAnalysis, find_connected_components, keep_largest_component, remove_small_components,
+    split_into_components,
 };
-pub use holes::{detect_holes, fill_holes, BoundaryLoop};
+pub use holes::{BoundaryLoop, detect_holes, fill_holes};
 pub use intersect::{
-    detect_self_intersections, has_self_intersections, IntersectionParams, SelfIntersectionResult,
+    IntersectionParams, SelfIntersectionResult, detect_self_intersections, has_self_intersections,
 };
 pub use winding::{count_inconsistent_faces, fix_winding_order};

@@ -38,9 +38,9 @@ pub mod bilateral;
 pub mod laplacian;
 pub mod taubin;
 
-pub use bilateral::{filter_bilateral, BilateralParams, BilateralResult};
-pub use laplacian::{smooth_laplacian, smooth_laplacian_iterations, LaplacianResult};
-pub use taubin::{smooth_taubin, smooth_taubin_iterations, TaubinParams, TaubinResult};
+pub use bilateral::{BilateralParams, BilateralResult, filter_bilateral};
+pub use laplacian::{LaplacianResult, smooth_laplacian, smooth_laplacian_iterations};
+pub use taubin::{TaubinParams, TaubinResult, smooth_taubin, smooth_taubin_iterations};
 
 use mesh_types::IndexedMesh;
 
@@ -364,11 +364,8 @@ mod tests {
         for i in 0..5 {
             for j in 0..5 {
                 let noise: f64 = rng.gen_range(-0.1..0.1);
-                mesh.vertices.push(Vertex::from_coords(
-                    f64::from(i),
-                    f64::from(j),
-                    noise,
-                ));
+                mesh.vertices
+                    .push(Vertex::from_coords(f64::from(i), f64::from(j), noise));
             }
         }
 
@@ -491,7 +488,7 @@ mod tests {
         };
 
         let display = format!("{result}");
-        assert!(display.contains("5"));
+        assert!(display.contains('5'));
         assert!(display.contains("0.123456"));
     }
 

@@ -82,9 +82,8 @@ pub fn load_3mf<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
     })?;
     let reader = BufReader::new(file);
 
-    let mut archive = ZipArchive::new(reader).map_err(|e| {
-        IoError::invalid_content(format!("invalid ZIP archive: {e}"))
-    })?;
+    let mut archive = ZipArchive::new(reader)
+        .map_err(|e| IoError::invalid_content(format!("invalid ZIP archive: {e}")))?;
 
     // Find and read the 3D model file
     let model_content = read_model_file(&mut archive)?;
@@ -108,25 +107,27 @@ fn read_model_file<R: Read + std::io::Seek>(archive: &mut ZipArchive<R>) -> IoRe
 
     // Try to find any .model file
     for i in 0..archive.len() {
-        let file = archive.by_index(i).map_err(|e| {
-            IoError::invalid_content(format!("failed to read archive entry: {e}"))
-        })?;
+        let file = archive
+            .by_index(i)
+            .map_err(|e| IoError::invalid_content(format!("failed to read archive entry: {e}")))?;
         let name = file.name().to_lowercase();
         if std::path::Path::new(&name)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("model"))
         {
             drop(file);
-            let mut file = archive.by_index(i).map_err(|e| {
-                IoError::invalid_content(format!("failed to read model file: {e}"))
-            })?;
+            let mut file = archive
+                .by_index(i)
+                .map_err(|e| IoError::invalid_content(format!("failed to read model file: {e}")))?;
             let mut content = String::new();
             file.read_to_string(&mut content)?;
             return Ok(content);
         }
     }
 
-    Err(IoError::invalid_content("3MF archive does not contain a model file"))
+    Err(IoError::invalid_content(
+        "3MF archive does not contain a model file",
+    ))
 }
 
 /// Parse the 3MF model XML content.
@@ -209,20 +210,25 @@ fn parse_vertex_element(element: &BytesStart<'_>) -> IoResult<Vertex> {
 
     for attr in element.attributes().flatten() {
         let key = attr.key.local_name();
-        let value = std::str::from_utf8(&attr.value).map_err(|e| {
-            IoError::invalid_content(format!("invalid UTF-8 in attribute: {e}"))
-        })?;
+        let value = std::str::from_utf8(&attr.value)
+            .map_err(|e| IoError::invalid_content(format!("invalid UTF-8 in attribute: {e}")))?;
 
         match key.as_ref() {
-            b"x" => x = value.parse().map_err(|e| {
-                IoError::invalid_content(format!("invalid x coordinate: {e}"))
-            })?,
-            b"y" => y = value.parse().map_err(|e| {
-                IoError::invalid_content(format!("invalid y coordinate: {e}"))
-            })?,
-            b"z" => z = value.parse().map_err(|e| {
-                IoError::invalid_content(format!("invalid z coordinate: {e}"))
-            })?,
+            b"x" => {
+                x = value
+                    .parse()
+                    .map_err(|e| IoError::invalid_content(format!("invalid x coordinate: {e}")))?;
+            }
+            b"y" => {
+                y = value
+                    .parse()
+                    .map_err(|e| IoError::invalid_content(format!("invalid y coordinate: {e}")))?;
+            }
+            b"z" => {
+                z = value
+                    .parse()
+                    .map_err(|e| IoError::invalid_content(format!("invalid z coordinate: {e}")))?;
+            }
             _ => {}
         }
     }
@@ -238,20 +244,25 @@ fn parse_triangle_element(element: &BytesStart<'_>, vertex_offset: u32) -> IoRes
 
     for attr in element.attributes().flatten() {
         let key = attr.key.local_name();
-        let value = std::str::from_utf8(&attr.value).map_err(|e| {
-            IoError::invalid_content(format!("invalid UTF-8 in attribute: {e}"))
-        })?;
+        let value = std::str::from_utf8(&attr.value)
+            .map_err(|e| IoError::invalid_content(format!("invalid UTF-8 in attribute: {e}")))?;
 
         match key.as_ref() {
-            b"v1" => v1 = value.parse().map_err(|e| {
-                IoError::invalid_content(format!("invalid v1 index: {e}"))
-            })?,
-            b"v2" => v2 = value.parse().map_err(|e| {
-                IoError::invalid_content(format!("invalid v2 index: {e}"))
-            })?,
-            b"v3" => v3 = value.parse().map_err(|e| {
-                IoError::invalid_content(format!("invalid v3 index: {e}"))
-            })?,
+            b"v1" => {
+                v1 = value
+                    .parse()
+                    .map_err(|e| IoError::invalid_content(format!("invalid v1 index: {e}")))?;
+            }
+            b"v2" => {
+                v2 = value
+                    .parse()
+                    .map_err(|e| IoError::invalid_content(format!("invalid v2 index: {e}")))?;
+            }
+            b"v3" => {
+                v3 = value
+                    .parse()
+                    .map_err(|e| IoError::invalid_content(format!("invalid v3 index: {e}")))?;
+            }
             _ => {}
         }
     }
@@ -284,31 +295,28 @@ pub fn save_3mf<P: AsRef<Path>>(mesh: &IndexedMesh, path: P) -> IoResult<()> {
     let file = File::create(path)?;
     let mut zip = ZipWriter::new(file);
 
-    let options = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     // Write [Content_Types].xml
-    zip.start_file("[Content_Types].xml", options).map_err(|e| {
-        IoError::invalid_content(format!("failed to create content types file: {e}"))
-    })?;
+    zip.start_file("[Content_Types].xml", options)
+        .map_err(|e| {
+            IoError::invalid_content(format!("failed to create content types file: {e}"))
+        })?;
     zip.write_all(CONTENT_TYPES_XML.as_bytes())?;
 
     // Write _rels/.rels
-    zip.start_file("_rels/.rels", options).map_err(|e| {
-        IoError::invalid_content(format!("failed to create rels file: {e}"))
-    })?;
+    zip.start_file("_rels/.rels", options)
+        .map_err(|e| IoError::invalid_content(format!("failed to create rels file: {e}")))?;
     zip.write_all(RELS_XML.as_bytes())?;
 
     // Write 3D/3dmodel.model
     let model_xml = generate_model_xml(mesh)?;
-    zip.start_file("3D/3dmodel.model", options).map_err(|e| {
-        IoError::invalid_content(format!("failed to create model file: {e}"))
-    })?;
+    zip.start_file("3D/3dmodel.model", options)
+        .map_err(|e| IoError::invalid_content(format!("failed to create model file: {e}")))?;
     zip.write_all(model_xml.as_bytes())?;
 
-    zip.finish().map_err(|e| {
-        IoError::invalid_content(format!("failed to finalize ZIP archive: {e}"))
-    })?;
+    zip.finish()
+        .map_err(|e| IoError::invalid_content(format!("failed to finalize ZIP archive: {e}")))?;
 
     Ok(())
 }
@@ -332,7 +340,8 @@ fn generate_model_xml(mesh: &IndexedMesh) -> IoResult<String> {
     let mut writer = Writer::new_with_indent(Cursor::new(&mut buffer), b' ', 2);
 
     // XML declaration
-    writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))
+    writer
+        .write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))
         .map_err(|e| IoError::invalid_content(format!("failed to write XML declaration: {e}")))?;
 
     // Root element: model
@@ -340,26 +349,31 @@ fn generate_model_xml(mesh: &IndexedMesh) -> IoResult<String> {
     model.push_attribute(("xmlns", NAMESPACE_3MF));
     model.push_attribute(("unit", "millimeter"));
     model.push_attribute(("xml:lang", "en-US"));
-    writer.write_event(Event::Start(model))
+    writer
+        .write_event(Event::Start(model))
         .map_err(|e| IoError::invalid_content(format!("failed to write model element: {e}")))?;
 
     // Resources element
-    writer.write_event(Event::Start(BytesStart::new("resources")))
+    writer
+        .write_event(Event::Start(BytesStart::new("resources")))
         .map_err(|e| IoError::invalid_content(format!("failed to write resources element: {e}")))?;
 
     // Object element (single object with id="1")
     let mut object = BytesStart::new("object");
     object.push_attribute(("id", "1"));
     object.push_attribute(("type", "model"));
-    writer.write_event(Event::Start(object))
+    writer
+        .write_event(Event::Start(object))
         .map_err(|e| IoError::invalid_content(format!("failed to write object element: {e}")))?;
 
     // Mesh element
-    writer.write_event(Event::Start(BytesStart::new("mesh")))
+    writer
+        .write_event(Event::Start(BytesStart::new("mesh")))
         .map_err(|e| IoError::invalid_content(format!("failed to write mesh element: {e}")))?;
 
     // Vertices
-    writer.write_event(Event::Start(BytesStart::new("vertices")))
+    writer
+        .write_event(Event::Start(BytesStart::new("vertices")))
         .map_err(|e| IoError::invalid_content(format!("failed to write vertices element: {e}")))?;
 
     for v in &mesh.vertices {
@@ -367,15 +381,18 @@ fn generate_model_xml(mesh: &IndexedMesh) -> IoResult<String> {
         vertex.push_attribute(("x", format!("{:.6}", v.position.x).as_str()));
         vertex.push_attribute(("y", format!("{:.6}", v.position.y).as_str()));
         vertex.push_attribute(("z", format!("{:.6}", v.position.z).as_str()));
-        writer.write_event(Event::Empty(vertex))
+        writer
+            .write_event(Event::Empty(vertex))
             .map_err(|e| IoError::invalid_content(format!("failed to write vertex: {e}")))?;
     }
 
-    writer.write_event(Event::End(BytesEnd::new("vertices")))
+    writer
+        .write_event(Event::End(BytesEnd::new("vertices")))
         .map_err(|e| IoError::invalid_content(format!("failed to close vertices: {e}")))?;
 
     // Triangles
-    writer.write_event(Event::Start(BytesStart::new("triangles")))
+    writer
+        .write_event(Event::Start(BytesStart::new("triangles")))
         .map_err(|e| IoError::invalid_content(format!("failed to write triangles element: {e}")))?;
 
     for &[v1, v2, v3] in &mesh.faces {
@@ -383,40 +400,48 @@ fn generate_model_xml(mesh: &IndexedMesh) -> IoResult<String> {
         triangle.push_attribute(("v1", v1.to_string().as_str()));
         triangle.push_attribute(("v2", v2.to_string().as_str()));
         triangle.push_attribute(("v3", v3.to_string().as_str()));
-        writer.write_event(Event::Empty(triangle))
+        writer
+            .write_event(Event::Empty(triangle))
             .map_err(|e| IoError::invalid_content(format!("failed to write triangle: {e}")))?;
     }
 
-    writer.write_event(Event::End(BytesEnd::new("triangles")))
+    writer
+        .write_event(Event::End(BytesEnd::new("triangles")))
         .map_err(|e| IoError::invalid_content(format!("failed to close triangles: {e}")))?;
 
     // Close mesh, object, resources
-    writer.write_event(Event::End(BytesEnd::new("mesh")))
+    writer
+        .write_event(Event::End(BytesEnd::new("mesh")))
         .map_err(|e| IoError::invalid_content(format!("failed to close mesh: {e}")))?;
-    writer.write_event(Event::End(BytesEnd::new("object")))
+    writer
+        .write_event(Event::End(BytesEnd::new("object")))
         .map_err(|e| IoError::invalid_content(format!("failed to close object: {e}")))?;
-    writer.write_event(Event::End(BytesEnd::new("resources")))
+    writer
+        .write_event(Event::End(BytesEnd::new("resources")))
         .map_err(|e| IoError::invalid_content(format!("failed to close resources: {e}")))?;
 
     // Build element (references the object)
-    writer.write_event(Event::Start(BytesStart::new("build")))
+    writer
+        .write_event(Event::Start(BytesStart::new("build")))
         .map_err(|e| IoError::invalid_content(format!("failed to write build element: {e}")))?;
 
     let mut item = BytesStart::new("item");
     item.push_attribute(("objectid", "1"));
-    writer.write_event(Event::Empty(item))
+    writer
+        .write_event(Event::Empty(item))
         .map_err(|e| IoError::invalid_content(format!("failed to write item: {e}")))?;
 
-    writer.write_event(Event::End(BytesEnd::new("build")))
+    writer
+        .write_event(Event::End(BytesEnd::new("build")))
         .map_err(|e| IoError::invalid_content(format!("failed to close build: {e}")))?;
 
     // Close model
-    writer.write_event(Event::End(BytesEnd::new("model")))
+    writer
+        .write_event(Event::End(BytesEnd::new("model")))
         .map_err(|e| IoError::invalid_content(format!("failed to close model: {e}")))?;
 
-    String::from_utf8(buffer).map_err(|e| {
-        IoError::invalid_content(format!("invalid UTF-8 in generated XML: {e}"))
-    })
+    String::from_utf8(buffer)
+        .map_err(|e| IoError::invalid_content(format!("invalid UTF-8 in generated XML: {e}")))
 }
 
 #[cfg(test)]

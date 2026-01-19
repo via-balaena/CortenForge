@@ -36,10 +36,10 @@ pub mod outlier;
 pub mod spike;
 
 pub use outlier::{
-    remove_mesh_outliers, remove_outliers, remove_outliers_with_result, OutlierParams,
-    OutlierRemovalResult,
+    OutlierParams, OutlierRemovalResult, remove_mesh_outliers, remove_outliers,
+    remove_outliers_with_result,
 };
-pub use spike::{remove_spikes, SpikeParams, SpikeRemovalResult};
+pub use spike::{SpikeParams, SpikeRemovalResult, remove_spikes};
 
 use mesh_repair::{find_connected_components, keep_largest_component};
 use mesh_types::IndexedMesh;
@@ -269,7 +269,8 @@ impl CleanupResult {
     /// Returns the number of vertices removed.
     #[must_use]
     pub fn vertices_removed(&self) -> usize {
-        self.original_vertices.saturating_sub(self.mesh.vertices.len())
+        self.original_vertices
+            .saturating_sub(self.mesh.vertices.len())
     }
 
     /// Returns the number of faces removed.
@@ -545,8 +546,8 @@ mod tests {
         assert!(display.contains("1000"));
         assert!(display.contains("50"));
         assert!(display.contains("10"));
-        assert!(display.contains("3"));
-        assert!(display.contains("2"));
+        assert!(display.contains('3'));
+        assert!(display.contains('2'));
     }
 
     #[test]

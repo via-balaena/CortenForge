@@ -3,9 +3,9 @@
 //! This module provides algorithms for refining the alignment of multiple
 //! overlapping scans into a consistent global coordinate frame.
 
-use std::collections::HashMap;
-use mesh_registration::{icp_align, IcpParams, IcpResult, RigidTransform};
+use mesh_registration::{IcpParams, IcpResult, RigidTransform, icp_align};
 use mesh_types::IndexedMesh;
+use std::collections::HashMap;
 
 use crate::error::{ScanError, ScanResult};
 
@@ -199,8 +199,8 @@ pub fn compute_pairwise_alignments(
 
         // Estimate overlap ratio from correspondence count
         #[allow(clippy::cast_precision_loss)]
-        let overlap_ratio = result.correspondence_count as f64
-            / scans[i + 1].vertices.len().max(1) as f64;
+        let overlap_ratio =
+            result.correspondence_count as f64 / scans[i + 1].vertices.len().max(1) as f64;
 
         alignments.push(PairwiseAlignment {
             source_idx: i + 1,

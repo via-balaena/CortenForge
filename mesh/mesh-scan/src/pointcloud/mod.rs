@@ -747,10 +747,7 @@ mod tests {
 
     #[test]
     fn test_point_cloud_bounds() {
-        let positions = vec![
-            Point3::new(0.0, 1.0, 2.0),
-            Point3::new(3.0, 4.0, 5.0),
-        ];
+        let positions = vec![Point3::new(0.0, 1.0, 2.0), Point3::new(3.0, 4.0, 5.0)];
         let cloud = PointCloud::from_positions(&positions);
         let bounds = cloud.bounds().unwrap();
 
@@ -770,10 +767,7 @@ mod tests {
 
     #[test]
     fn test_point_cloud_centroid() {
-        let positions = vec![
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(2.0, 4.0, 6.0),
-        ];
+        let positions = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 4.0, 6.0)];
         let cloud = PointCloud::from_positions(&positions);
         let centroid = cloud.centroid().unwrap();
 
@@ -810,10 +804,8 @@ mod tests {
 
     #[test]
     fn test_point_cloud_scale_centered() {
-        let mut cloud = PointCloud::from_positions(&[
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(2.0, 0.0, 0.0),
-        ]);
+        let mut cloud =
+            PointCloud::from_positions(&[Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)]);
         cloud.scale_centered(2.0);
 
         // Centroid is at (1, 0, 0)
@@ -849,7 +841,7 @@ mod tests {
 
         // Should have significantly fewer points
         assert!(downsampled.len() < cloud.len());
-        assert!(downsampled.len() >= 1);
+        assert!(!downsampled.is_empty());
     }
 
     #[test]
@@ -869,10 +861,7 @@ mod tests {
     #[test]
     fn test_point_cloud_has_normals() {
         let mut cloud = PointCloud::new();
-        cloud.push(CloudPoint::with_normal(
-            Point3::origin(),
-            Vector3::z(),
-        ));
+        cloud.push(CloudPoint::with_normal(Point3::origin(), Vector3::z()));
         assert!(cloud.has_normals());
 
         cloud.push(CloudPoint::new(Point3::origin()));

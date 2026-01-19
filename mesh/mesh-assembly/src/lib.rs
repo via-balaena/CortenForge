@@ -135,7 +135,7 @@ pub use assembly::Assembly;
 pub use bom::{BillOfMaterials, BomItem};
 pub use connection::{Connection, ConnectionParams, ConnectionType};
 pub use error::{AssemblyError, AssemblyResult};
-pub use export::{save_assembly, AssemblyExportFormat};
+pub use export::{AssemblyExportFormat, save_assembly};
 pub use part::Part;
 pub use validation::{AssemblyValidation, ClearanceResult, InterferenceResult};
 

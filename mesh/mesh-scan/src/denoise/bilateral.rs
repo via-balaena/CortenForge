@@ -23,10 +23,9 @@
 //! "Bilateral mesh denoising"
 //! ACM Transactions on Graphics (TOG), 22(3), 950-953.
 
-use std::collections::{HashMap, HashSet};
 use mesh_types::IndexedMesh;
 use nalgebra::Vector3;
-
+use std::collections::{HashMap, HashSet};
 
 /// Parameters for bilateral filtering.
 #[derive(Debug, Clone, Copy)]
@@ -145,7 +144,7 @@ pub struct BilateralResult {
 ///
 /// let result = filter_bilateral(&mesh, &BilateralParams::default(), false);
 /// ```
-#[must_use] 
+#[must_use]
 pub fn filter_bilateral(
     mesh: &IndexedMesh,
     params: &BilateralParams,
@@ -194,10 +193,7 @@ pub fn filter_bilateral(
                     return (Vector3::zeros(), false);
                 }
 
-                let vertex_normal = vertex_normals
-                    .get(&idx)
-                    .copied()
-                    .unwrap_or(Vector3::z());
+                let vertex_normal = vertex_normals.get(&idx).copied().unwrap_or(Vector3::z());
 
                 if let Some(neighbor_indices) = neighbors.get(&idx) {
                     if neighbor_indices.is_empty() {
@@ -209,10 +205,8 @@ pub fn filter_bilateral(
 
                     for &n in neighbor_indices {
                         let neighbor = &current.vertices[n as usize];
-                        let neighbor_normal = vertex_normals
-                            .get(&n)
-                            .copied()
-                            .unwrap_or(Vector3::z());
+                        let neighbor_normal =
+                            vertex_normals.get(&n).copied().unwrap_or(Vector3::z());
 
                         // Spatial weight
                         let dist = (neighbor.position - vertex.position).norm();
@@ -222,10 +216,11 @@ pub fn filter_bilateral(
                         let normal_diff = 1.0 - vertex_normal.dot(&neighbor_normal).abs();
                         let w_n = (-normal_diff * normal_diff
                             / (2.0 * params.sigma_normal * params.sigma_normal))
-                        .exp();
+                            .exp();
 
                         let weight = w_s * w_n;
-                        weighted_sum += (neighbor.position.coords - vertex.position.coords) * weight;
+                        weighted_sum +=
+                            (neighbor.position.coords - vertex.position.coords) * weight;
                         weight_sum += weight;
                     }
 
@@ -246,7 +241,9 @@ pub fn filter_bilateral(
         let mut total_disp = 0.0;
         let mut moved_count = 0_usize;
 
-        for (vertex, (displacement, applied)) in current.vertices.iter_mut().zip(displacements.iter()) {
+        for (vertex, (displacement, applied)) in
+            current.vertices.iter_mut().zip(displacements.iter())
+        {
             if *applied {
                 let dist = displacement.norm();
                 max_disp = max_disp.max(dist);

@@ -23,7 +23,9 @@ pub enum MorphError {
     InvalidLatticeDimensions(String),
 
     /// A constraint references an invalid vertex index.
-    #[error("constraint references invalid vertex index {index} (mesh has {vertex_count} vertices)")]
+    #[error(
+        "constraint references invalid vertex index {index} (mesh has {vertex_count} vertices)"
+    )]
     InvalidVertexIndex {
         /// The invalid index.
         index: usize,

@@ -1,0 +1,31 @@
+[package]
+name = "sensor-types"
+description = "Hardware-agnostic sensor data types for CortenForge: IMU, camera, depth, lidar, force, encoder, GPS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["sensor", "imu", "camera", "lidar", "robotics"]
+categories = ["science::robotics", "data-structures", "hardware-support"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Serialization (optional but commonly needed for sensor data)
+serde = { workspace = true, optional = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Approximate equality testing
+approx = { workspace = true }
+# JSON serialization for tests
+serde_json = { workspace = true }
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]

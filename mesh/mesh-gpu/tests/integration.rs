@@ -6,7 +6,7 @@
 //! ```
 
 use mesh_gpu::{
-    compute_sdf_gpu, try_compute_sdf_gpu, GpuContext, GpuSdfParams, GpuSdfResult, TileConfig,
+    GpuContext, GpuSdfParams, GpuSdfResult, TileConfig, compute_sdf_gpu, try_compute_sdf_gpu,
 };
 use mesh_types::{IndexedMesh, Vertex};
 
@@ -161,16 +161,14 @@ fn test_gpu_sdf_cube() {
     let center_dist = result.get(16, 16, 16).expect("center exists");
     assert!(
         center_dist < 0.0,
-        "Center should be inside (negative), got {}",
-        center_dist
+        "Center should be inside (negative), got {center_dist}"
     );
 
     // Verify corner is outside (positive distance)
     let corner_dist = result.get(0, 0, 0).expect("corner exists");
     assert!(
         corner_dist > 0.0,
-        "Corner should be outside (positive), got {}",
-        corner_dist
+        "Corner should be outside (positive), got {corner_dist}"
     );
 }
 
@@ -224,8 +222,5 @@ fn test_gpu_sdf_timing() {
         "Computation shouldn't take >10s"
     );
 
-    println!(
-        "64³ grid SDF computed in {:.2}ms",
-        result.compute_time_ms
-    );
+    println!("64³ grid SDF computed in {:.2}ms", result.compute_time_ms);
 }

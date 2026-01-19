@@ -4,11 +4,11 @@
 //! to a mesh based on the specified parameters.
 
 use crate::{
+    MorphError, MorphOutput, MorphParams, MorphResult,
     ffd::FfdLattice,
     params::MorphAlgorithm,
     rbf::RbfInterpolator,
     result::{compute_edge_stats, compute_signed_volume},
-    MorphError, MorphOutput, MorphParams, MorphResult,
 };
 use mesh_types::{IndexedMesh, MeshBounds};
 use rayon::prelude::*;
@@ -118,7 +118,12 @@ pub fn morph_mesh(mesh: &IndexedMesh, params: &MorphParams) -> MorphResult<Morph
     let mut max_displacement = 0.0;
     let mut total_displacement = 0.0;
 
-    for (i, (orig, deformed_v)) in mesh.vertices.iter().zip(deformed.vertices.iter()).enumerate() {
+    for (i, (orig, deformed_v)) in mesh
+        .vertices
+        .iter()
+        .zip(deformed.vertices.iter())
+        .enumerate()
+    {
         let disp = (deformed_v.position - orig.position).norm();
         if disp > 1e-10 && params.should_deform_vertex(i) {
             vertices_modified += 1;

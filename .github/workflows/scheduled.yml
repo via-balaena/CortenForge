@@ -1,0 +1,209 @@
+# CortenForge Scheduled Maintenance
+#
+# Runs periodic checks that are too expensive for every PR:
+# - Fresh security advisory scan
+# - Mutation testing (test quality verification)
+# - Dependency update check
+# - Benchmark regression monitoring
+#
+# See INFRASTRUCTURE.md for the full constraint specification.
+
+name: Scheduled Maintenance
+
+on:
+  schedule:
+    # Run weekly on Sunday at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ============================================================================
+  # SECURITY AUDIT (Fresh advisories)
+  # ============================================================================
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run security audit
+        run: cargo audit --deny warnings
+
+      - name: Check for yanked dependencies
+        run: cargo audit --deny yanked
+
+  # ============================================================================
+  # DEPENDENCY FRESHNESS
+  # ============================================================================
+  dependencies:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cargo-outdated
+        run: cargo install cargo-outdated
+
+      - name: Check outdated dependencies
+        run: |
+          echo "## Outdated Dependencies" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The following dependencies have newer versions available:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cargo outdated --workspace >> $GITHUB_STEP_SUMMARY 2>&1 || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # MUTATION TESTING (Test Quality)
+  # ============================================================================
+  mutation-testing:
+    name: Mutation Testing
+    runs-on: ubuntu-latest
+    # Mutation testing is slow, run on a subset of critical crates
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - mesh-types
+          - mesh-repair
+          - mesh-boolean
+          - sensor-types
+          - ml-types
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run mutation testing on ${{ matrix.crate }}
+        run: |
+          cargo mutants --package ${{ matrix.crate }} --timeout 300 -- --release
+        continue-on-error: true
+
+      - name: Report results
+        run: |
+          echo "## Mutation Testing: ${{ matrix.crate }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f mutants.out/missed.txt ]; then
+            MISSED=$(wc -l < mutants.out/missed.txt)
+            TOTAL=$(wc -l < mutants.out/caught.txt 2>/dev/null || echo 0)
+            TOTAL=$((TOTAL + MISSED))
+            SURVIVAL=$((MISSED * 100 / TOTAL))
+            echo "Survival rate: ${SURVIVAL}% (${MISSED}/${TOTAL} mutants survived)" >> $GITHUB_STEP_SUMMARY
+            if [ "$SURVIVAL" -gt 30 ]; then
+              echo "⚠️ High survival rate indicates weak test coverage" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "No mutation results found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ============================================================================
+  # BENCHMARK BASELINE
+  # ============================================================================
+  benchmark-baseline:
+    name: Benchmark Baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run benchmarks
+        run: cargo bench --all-features -- --save-baseline weekly
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-baseline
+          path: target/criterion
+          retention-days: 90
+
+  # ============================================================================
+  # SUPPLY CHAIN VERIFICATION
+  # ============================================================================
+  supply-chain:
+    name: Supply Chain Verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cargo-vet
+        run: cargo install cargo-vet
+
+      - name: Check supply chain
+        run: |
+          # Initialize if needed
+          cargo vet init 2>/dev/null || true
+          # Check for unvetted dependencies
+          cargo vet --locked || echo "::warning::Some dependencies are not vetted"
+
+      - name: Generate supply chain report
+        run: |
+          echo "## Supply Chain Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cargo vet dump-graph 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "cargo-vet not fully initialized" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ============================================================================
+  # MSRV CHECK
+  # ============================================================================
+  msrv:
+    name: MSRV Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MSRV Rust
+        uses: dtolnay/rust-action@1.85
+
+      - name: Check builds with MSRV
+        run: cargo check --all-features
+
+  # ============================================================================
+  # SUMMARY
+  # ============================================================================
+  summary:
+    name: Weekly Summary
+    needs: [security-audit, dependencies, mutation-testing, benchmark-baseline, supply-chain, msrv]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate summary
+        run: |
+          echo "# Weekly Maintenance Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Audit | ${{ needs.security-audit.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Dependencies | ${{ needs.dependencies.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Mutation Testing | ${{ needs.mutation-testing.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Benchmarks | ${{ needs.benchmark-baseline.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Supply Chain | ${{ needs.supply-chain.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| MSRV | ${{ needs.msrv.result }} |" >> $GITHUB_STEP_SUMMARY

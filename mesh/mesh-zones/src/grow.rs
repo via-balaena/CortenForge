@@ -274,10 +274,8 @@ mod tests {
         // 4 triangles in a strip
         let mut mesh = IndexedMesh::new();
         for i in 0..5 {
-            mesh.vertices
-                .push(Vertex::from_coords(i as f64, 0.0, 0.0));
-            mesh.vertices
-                .push(Vertex::from_coords(i as f64, 1.0, 0.0));
+            mesh.vertices.push(Vertex::from_coords(i as f64, 0.0, 0.0));
+            mesh.vertices.push(Vertex::from_coords(i as f64, 1.0, 0.0));
         }
         mesh.faces.push([0, 2, 1]);
         mesh.faces.push([2, 3, 1]);
@@ -368,7 +366,14 @@ mod tests {
         let adj = FaceAdjacency::from_mesh(&mesh);
         let mut zone_map = ZoneMap::new(mesh.faces.len());
 
-        let result = grow_region(&mesh, &adj, &mut zone_map, &[100], 1, &GrowConfig::default());
+        let result = grow_region(
+            &mesh,
+            &adj,
+            &mut zone_map,
+            &[100],
+            1,
+            &GrowConfig::default(),
+        );
 
         assert!(result.is_err());
     }

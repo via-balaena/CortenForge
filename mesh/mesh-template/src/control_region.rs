@@ -5,8 +5,8 @@
 
 use crate::MeasurementType;
 use mesh_types::IndexedMesh;
-use std::collections::HashSet;
 use nalgebra::{Point3, Vector3};
+use std::collections::HashSet;
 
 /// Definition of a region's geometric extent.
 ///
@@ -464,9 +464,7 @@ impl ControlRegion {
                 vertices
             }
 
-            RegionDefinition::MeasurementPlane {
-                origin, normal, ..
-            } => {
+            RegionDefinition::MeasurementPlane { origin, normal, .. } => {
                 // Find vertices near the measurement plane
                 let tolerance = 1.0; // 1mm tolerance for plane intersection
 

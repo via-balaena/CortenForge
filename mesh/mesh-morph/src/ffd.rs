@@ -445,10 +445,8 @@ mod tests {
         let mut lattice = FfdLattice::new(&bounds, config);
 
         // Apply a constraint at the center
-        let constraint = Constraint::displacement(
-            Point3::new(1.0, 1.0, 1.0),
-            Vector3::new(0.0, 0.0, 0.5),
-        );
+        let constraint =
+            Constraint::displacement(Point3::new(1.0, 1.0, 1.0), Vector3::new(0.0, 0.0, 0.5));
         lattice.apply_constraints(&[constraint]);
 
         // The center should have some displacement

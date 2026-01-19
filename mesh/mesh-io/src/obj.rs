@@ -103,10 +103,8 @@ fn load_obj_from_reader<R: BufRead>(reader: R) -> IoResult<IndexedMesh> {
             "f" => {
                 // Face: f v1 v2 v3 ... or f v1/vt1/vn1 v2/vt2/vn2 v3/vt3/vn3 ...
                 if parts.len() >= 4 {
-                    let indices: Result<Vec<u32>, _> = parts[1..]
-                        .iter()
-                        .map(|s| parse_face_vertex(s))
-                        .collect();
+                    let indices: Result<Vec<u32>, _> =
+                        parts[1..].iter().map(|s| parse_face_vertex(s)).collect();
                     let indices = indices?;
 
                     // Triangulate polygon (fan triangulation)
@@ -131,9 +129,10 @@ fn load_obj_from_reader<R: BufRead>(reader: R) -> IoResult<IndexedMesh> {
 /// Returns the vertex index (converted to 0-based).
 fn parse_face_vertex(s: &str) -> IoResult<u32> {
     // Split by '/' and take the first part (vertex index)
-    let vertex_part = s.split('/').next().ok_or_else(|| {
-        IoError::invalid_content(format!("invalid face vertex: {s}"))
-    })?;
+    let vertex_part = s
+        .split('/')
+        .next()
+        .ok_or_else(|| IoError::invalid_content(format!("invalid face vertex: {s}")))?;
 
     let index: i64 = vertex_part.parse()?;
 

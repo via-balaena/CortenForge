@@ -175,10 +175,7 @@ fn find_boundary_edges(faces: &[[u32; 3]]) -> Vec<(u32, u32)> {
 }
 
 /// Find boundary loops (ordered sequences of boundary vertices).
-fn find_boundary_loops(
-    faces: &[[u32; 3]],
-    vertices: &[mesh_types::Vertex],
-) -> Vec<Vec<u32>> {
+fn find_boundary_loops(faces: &[[u32; 3]], vertices: &[mesh_types::Vertex]) -> Vec<Vec<u32>> {
     let boundary_edges = find_boundary_edges(faces);
 
     if boundary_edges.is_empty() {
@@ -214,7 +211,9 @@ fn find_boundary_loops(
             current_loop.push(current);
 
             // Find next unvisited neighbor
-            let neighbors = vertex_neighbors.get(&current).map_or(&[][..], Vec::as_slice);
+            let neighbors = vertex_neighbors
+                .get(&current)
+                .map_or(&[][..], Vec::as_slice);
             let mut next = None;
 
             for &n in neighbors {
@@ -464,9 +463,7 @@ mod tests {
             for &idx in face {
                 assert!(
                     (idx as usize) < total_vertices,
-                    "Invalid vertex index {} >= {}",
-                    idx,
-                    total_vertices
+                    "Invalid vertex index {idx} >= {total_vertices}"
                 );
             }
         }

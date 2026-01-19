@@ -128,7 +128,7 @@ mod result;
 
 pub use constraint::Constraint;
 pub use error::{MorphError, MorphResult};
-pub use ffd::{bernstein_basis, binomial, FfdConfig};
+pub use ffd::{FfdConfig, bernstein_basis, binomial};
 pub use morph::morph_mesh;
 pub use params::{MorphAlgorithm, MorphParams};
 pub use rbf::RbfKernel;
@@ -179,10 +179,7 @@ mod integration_tests {
         // Translate all corners
         let mut params = MorphParams::rbf();
         for v in &mesh.vertices {
-            params = params.with_constraint(Constraint::point(
-                v.position,
-                v.position + offset,
-            ));
+            params = params.with_constraint(Constraint::point(v.position, v.position + offset));
         }
 
         let result = morph_mesh(&mesh, &params).unwrap();

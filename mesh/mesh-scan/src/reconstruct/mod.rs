@@ -42,7 +42,7 @@
 
 pub mod ball_pivoting;
 
-pub use ball_pivoting::{ball_pivoting, BallPivotingParams, BallPivotingResult};
+pub use ball_pivoting::{BallPivotingParams, BallPivotingResult, ball_pivoting};
 
 use mesh_types::IndexedMesh;
 

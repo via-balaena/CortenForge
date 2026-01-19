@@ -119,8 +119,8 @@
 
 pub mod bvh;
 pub mod classify;
-pub mod coplanar;
 pub mod config;
+pub mod coplanar;
 pub mod edge_insert;
 pub mod error;
 #[cfg(feature = "gpu")]
@@ -133,13 +133,13 @@ pub mod operation;
 pub use config::{BooleanConfig, BooleanOp, CleanupLevel, CoplanarStrategy};
 pub use error::{BooleanError, BooleanResult};
 pub use operation::{
-    boolean_operation, difference, difference_with_config, intersection, intersection_with_config,
-    union, union_with_config, BooleanOperationResult, BooleanStats,
+    BooleanOperationResult, BooleanStats, boolean_operation, difference, difference_with_config,
+    intersection, intersection_with_config, union, union_with_config,
 };
 
 pub use multi::{
-    concatenate_meshes, multi_intersection, multi_union, sequential_difference, MultiMeshResult,
-    MultiMeshStats,
+    MultiMeshResult, MultiMeshStats, concatenate_meshes, multi_intersection, multi_union,
+    sequential_difference,
 };
 
 // Re-export mesh types for convenience
@@ -157,7 +157,9 @@ pub use mesh_types::{IndexedMesh, Point3, Vector3, Vertex};
 pub mod prelude {
     pub use crate::config::{BooleanConfig, BooleanOp, CleanupLevel, CoplanarStrategy};
     pub use crate::error::{BooleanError, BooleanResult};
-    pub use crate::multi::{concatenate_meshes, multi_intersection, multi_union, sequential_difference};
+    pub use crate::multi::{
+        concatenate_meshes, multi_intersection, multi_union, sequential_difference,
+    };
     pub use crate::operation::{
         boolean_operation, difference, difference_with_config, intersection,
         intersection_with_config, union, union_with_config,

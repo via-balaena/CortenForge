@@ -32,10 +32,7 @@ pub fn run(crate_name: &str, skip_review: bool) -> Result<()> {
     // Check if we got automated A grade
     if !grade_output.contains("AUTOMATED") || grade_output.contains("Refactor required") {
         println!();
-        println!(
-            "{}",
-            "✗ Automated criteria not all A-grade.".red().bold()
-        );
+        println!("{}", "✗ Automated criteria not all A-grade.".red().bold());
         println!("Run `cargo xtask grade {}` to see details.", crate_name);
         std::process::exit(1);
     }
@@ -48,7 +45,10 @@ pub fn run(crate_name: &str, skip_review: bool) -> Result<()> {
 
     if !skip_review {
         println!();
-        println!("{}", "The API Design criterion requires manual review.".yellow());
+        println!(
+            "{}",
+            "The API Design criterion requires manual review.".yellow()
+        );
         println!();
         println!("Review checklist (from STANDARDS.md):");
         println!("  □ Follows Rust API Guidelines");
@@ -95,10 +95,7 @@ pub fn run(crate_name: &str, skip_review: bool) -> Result<()> {
         // Update project-wide log
         update_completion_log(crate_name, reviewer)?;
     } else {
-        println!(
-            "  {} Skipping review (--skip-review)",
-            "⚠".yellow()
-        );
+        println!("  {} Skipping review (--skip-review)", "⚠".yellow());
         write_completion(&crate_path, crate_name, "automated")?;
         update_completion_log(crate_name, "automated")?;
     }
@@ -116,7 +113,9 @@ pub fn run(crate_name: &str, skip_review: bool) -> Result<()> {
 }
 
 fn find_crate_path(crate_name: &str) -> Result<String> {
-    let locations = ["crates", "mesh", "geometry", "routing", "ml", "vision", "sim"];
+    let locations = [
+        "crates", "mesh", "geometry", "routing", "ml", "vision", "sim",
+    ];
 
     for loc in &locations {
         let path = format!("{}/{}", loc, crate_name);

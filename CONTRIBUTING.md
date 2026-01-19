@@ -19,6 +19,9 @@ We maintain **A-grade academic standards** for all code. This is the cultural fo
 git clone https://github.com/cortenforge/forge.git
 cd forge
 
+# Install git hooks and verify tools
+cargo xtask setup
+
 # Check if your environment is ready
 cargo xtask check
 
@@ -28,6 +31,20 @@ cargo xtask grade <crate-name>
 # Run the full quality suite locally (same as CI)
 cargo xtask ci
 ```
+
+### Optional: Local Coverage (Linux only)
+
+```bash
+# Install tarpaulin for local coverage checking
+cargo install cargo-tarpaulin
+
+# Check coverage for a crate
+cargo tarpaulin -p mesh-types --out Html
+open tarpaulin-report.html
+```
+
+This is optional - CI enforces ≥90% coverage regardless. But it's useful for checking
+coverage before pushing. Note: tarpaulin only works on Linux.
 
 ---
 

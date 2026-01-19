@@ -2,8 +2,8 @@
 
 use crate::Measurement;
 use mesh_types::IndexedMesh;
-use std::collections::HashMap;
 use nalgebra::Point3;
+use std::collections::HashMap;
 
 /// Parameters for fitting a template to targets.
 ///
@@ -164,7 +164,10 @@ impl FitParams {
     /// assert_eq!(params.landmark_targets.len(), 2);
     /// ```
     #[must_use]
-    pub fn with_landmark_targets(mut self, targets: impl IntoIterator<Item = (String, Point3<f64>)>) -> Self {
+    pub fn with_landmark_targets(
+        mut self,
+        targets: impl IntoIterator<Item = (String, Point3<f64>)>,
+    ) -> Self {
         for (name, target) in targets {
             self.landmark_targets.insert(name, target);
         }
@@ -204,7 +207,10 @@ impl FitParams {
     /// assert_eq!(params.measurement_targets.len(), 2);
     /// ```
     #[must_use]
-    pub fn with_measurements(mut self, measurements: impl IntoIterator<Item = (String, Measurement)>) -> Self {
+    pub fn with_measurements(
+        mut self,
+        measurements: impl IntoIterator<Item = (String, Measurement)>,
+    ) -> Self {
         for (name, measurement) in measurements {
             self.measurement_targets.insert(name, measurement);
         }
@@ -340,8 +346,7 @@ mod tests {
 
     #[test]
     fn test_with_measurement() {
-        let params = FitParams::new()
-            .with_measurement("waist", Measurement::exact(80.0));
+        let params = FitParams::new().with_measurement("waist", Measurement::exact(80.0));
 
         assert_eq!(params.measurement_targets.len(), 1);
         let m = params.measurement_targets.get("waist").unwrap();

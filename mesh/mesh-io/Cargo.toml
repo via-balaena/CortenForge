@@ -34,4 +34,9 @@ truck-polymesh = { workspace = true, optional = true }
 truck-meshalgo = { workspace = true, optional = true }
 
 [dev-dependencies]
-tempfile = "3.15"
+tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "io_benchmarks"
+harness = false

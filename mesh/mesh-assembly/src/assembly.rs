@@ -10,7 +10,7 @@ use nalgebra::Isometry3;
 use crate::bom::{BillOfMaterials, BomItem};
 use crate::connection::Connection;
 use crate::error::{AssemblyError, AssemblyResult};
-use crate::part::{compute_bbox, Part};
+use crate::part::{Part, compute_bbox};
 use crate::validation::{AssemblyValidation, ClearanceResult, InterferenceResult};
 
 /// A multi-part assembly.
@@ -170,8 +170,7 @@ impl Assembly {
         let part = self.parts.remove(part_id)?;
 
         // Remove connections involving this part
-        self.connections
-            .retain(|conn| !conn.involves_part(part_id));
+        self.connections.retain(|conn| !conn.involves_part(part_id));
 
         // Clear parent references from children
         for other_part in self.parts.values_mut() {
@@ -243,7 +242,10 @@ impl Assembly {
     /// Get root parts (parts with no parent).
     #[must_use]
     pub fn get_root_parts(&self) -> Vec<&Part> {
-        self.parts.values().filter(|p| p.parent_id().is_none()).collect()
+        self.parts
+            .values()
+            .filter(|p| p.parent_id().is_none())
+            .collect()
     }
 
     /// Compute the world transform for a part (including parent transforms).
@@ -381,16 +383,14 @@ impl Assembly {
         // Check connections
         for conn in &self.connections {
             if !self.parts.contains_key(conn.from_part()) {
-                result.invalid_connections.push((
-                    conn.clone(),
-                    format!("Missing part: {}", conn.from_part()),
-                ));
+                result
+                    .invalid_connections
+                    .push((conn.clone(), format!("Missing part: {}", conn.from_part())));
             }
             if !self.parts.contains_key(conn.to_part()) {
-                result.invalid_connections.push((
-                    conn.clone(),
-                    format!("Missing part: {}", conn.to_part()),
-                ));
+                result
+                    .invalid_connections
+                    .push((conn.clone(), format!("Missing part: {}", conn.to_part())));
             }
         }
 
@@ -427,17 +427,17 @@ impl Assembly {
         part_a: &str,
         part_b: &str,
     ) -> AssemblyResult<InterferenceResult> {
-        let mesh_a = self
-            .get_transformed_mesh(part_a)
-            .ok_or_else(|| AssemblyError::PartNotFound {
-                id: part_a.to_string(),
-            })?;
+        let mesh_a =
+            self.get_transformed_mesh(part_a)
+                .ok_or_else(|| AssemblyError::PartNotFound {
+                    id: part_a.to_string(),
+                })?;
 
-        let mesh_b = self
-            .get_transformed_mesh(part_b)
-            .ok_or_else(|| AssemblyError::PartNotFound {
-                id: part_b.to_string(),
-            })?;
+        let mesh_b =
+            self.get_transformed_mesh(part_b)
+                .ok_or_else(|| AssemblyError::PartNotFound {
+                    id: part_b.to_string(),
+                })?;
 
         // Compute bounding boxes for quick rejection
         let bbox_a = compute_bbox(&mesh_a);
@@ -465,17 +465,17 @@ impl Assembly {
         part_b: &str,
         min_required: f64,
     ) -> AssemblyResult<ClearanceResult> {
-        let mesh_a = self
-            .get_transformed_mesh(part_a)
-            .ok_or_else(|| AssemblyError::PartNotFound {
-                id: part_a.to_string(),
-            })?;
+        let mesh_a =
+            self.get_transformed_mesh(part_a)
+                .ok_or_else(|| AssemblyError::PartNotFound {
+                    id: part_a.to_string(),
+                })?;
 
-        let mesh_b = self
-            .get_transformed_mesh(part_b)
-            .ok_or_else(|| AssemblyError::PartNotFound {
-                id: part_b.to_string(),
-            })?;
+        let mesh_b =
+            self.get_transformed_mesh(part_b)
+                .ok_or_else(|| AssemblyError::PartNotFound {
+                    id: part_b.to_string(),
+                })?;
 
         // Compute approximate clearance using bounding boxes
         let bbox_a = compute_bbox(&mesh_a);

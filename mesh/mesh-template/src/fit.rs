@@ -1,11 +1,11 @@
 //! Fitting pipeline implementation.
 
 use crate::{
-    ControlRegion, FitParams, FitResult, FitStage, FitTemplate, MeasurementType,
-    RegionDefinition, TemplateError, TemplateResult,
+    ControlRegion, FitParams, FitResult, FitStage, FitTemplate, MeasurementType, RegionDefinition,
+    TemplateError, TemplateResult,
 };
 use mesh_morph::{Constraint, MorphParams};
-use mesh_registration::{icp_align, transform_mesh, IcpParams, RigidTransform};
+use mesh_registration::{IcpParams, RigidTransform, icp_align, transform_mesh};
 use mesh_types::IndexedMesh;
 use nalgebra::{Point3, Vector3};
 
@@ -54,16 +54,14 @@ pub fn fit_template(template: &FitTemplate, params: &FitParams) -> TemplateResul
 
     // Stage 2: Landmark deformation
     if !params.landmark_targets.is_empty() {
-        let (deformed_mesh, stage) =
-            apply_landmark_deformation(&mesh, template, params)?;
+        let (deformed_mesh, stage) = apply_landmark_deformation(&mesh, template, params)?;
         mesh = deformed_mesh;
         stages.push(stage);
     }
 
     // Stage 3: Measurement adjustment
     if !params.measurement_targets.is_empty() {
-        let (adjusted_mesh, stage) =
-            apply_measurement_adjustment(&mesh, template, params)?;
+        let (adjusted_mesh, stage) = apply_measurement_adjustment(&mesh, template, params)?;
         mesh = adjusted_mesh;
         stages.push(stage);
     }
@@ -90,9 +88,9 @@ fn apply_landmark_deformation(
 
     for (name, target) in &params.landmark_targets {
         // Get the current position of this landmark
-        let region = template.get_region(name).ok_or_else(|| TemplateError::RegionNotFound {
-            name: name.clone(),
-        })?;
+        let region = template
+            .get_region(name)
+            .ok_or_else(|| TemplateError::RegionNotFound { name: name.clone() })?;
 
         // Skip preserved regions
         if region.preserve {
@@ -135,8 +133,7 @@ fn apply_landmark_deformation(
     }
 
     // Apply RBF morphing
-    let morph_params = MorphParams::rbf()
-        .with_constraints(constraints);
+    let morph_params = MorphParams::rbf().with_constraints(constraints);
 
     let morph_result = mesh_morph::morph_mesh(mesh, &morph_params)?;
 
@@ -161,9 +158,9 @@ fn apply_measurement_adjustment(
 
     for (name, target_measurement) in &params.measurement_targets {
         // Get the measurement region
-        let region = template.get_region(name).ok_or_else(|| TemplateError::RegionNotFound {
-            name: name.clone(),
-        })?;
+        let region = template
+            .get_region(name)
+            .ok_or_else(|| TemplateError::RegionNotFound { name: name.clone() })?;
 
         // Extract measurement type and plane from region
         let (measurement_type, origin, normal) = match &region.definition {
@@ -185,8 +182,13 @@ fn apply_measurement_adjustment(
         }
 
         // Compute current measurement
-        let current_value =
-            compute_measurement(&current_mesh, &vertex_indices, measurement_type, origin, normal);
+        let current_value = compute_measurement(
+            &current_mesh,
+            &vertex_indices,
+            measurement_type,
+            origin,
+            normal,
+        );
 
         // Compute scale factor
         if let Some(scale) = target_measurement.scale_factor(current_value) {
@@ -234,7 +236,9 @@ fn get_region_centroid(region: &ControlRegion, mesh: &IndexedMesh) -> Point3<f64
             }
             closest
         }
-        _ => region.centroid_in_mesh(mesh).unwrap_or_else(|| region.centroid()),
+        _ => region
+            .centroid_in_mesh(mesh)
+            .unwrap_or_else(|| region.centroid()),
     }
 }
 
@@ -281,7 +285,11 @@ fn compute_measurement(
 }
 
 /// Computes circumference by projecting points onto a plane and computing perimeter.
-fn compute_circumference(vertices: &[Point3<f64>], origin: Point3<f64>, normal: Vector3<f64>) -> f64 {
+fn compute_circumference(
+    vertices: &[Point3<f64>],
+    origin: Point3<f64>,
+    normal: Vector3<f64>,
+) -> f64 {
     if vertices.len() < 3 {
         return 0.0;
     }
@@ -414,24 +422,15 @@ fn apply_measurement_scale(
                 }
                 MeasurementType::Width => {
                     // Scale along u axis only
-                    origin
-                        + normal * along_normal
-                        + u_axis * (along_u * scale)
-                        + v_axis * along_v
+                    origin + normal * along_normal + u_axis * (along_u * scale) + v_axis * along_v
                 }
                 MeasurementType::Height => {
                     // Scale along normal
-                    origin
-                        + normal * (along_normal * scale)
-                        + u_axis * along_u
-                        + v_axis * along_v
+                    origin + normal * (along_normal * scale) + u_axis * along_u + v_axis * along_v
                 }
                 MeasurementType::Depth => {
                     // Scale along v axis only
-                    origin
-                        + normal * along_normal
-                        + u_axis * along_u
-                        + v_axis * (along_v * scale)
+                    origin + normal * along_normal + u_axis * along_u + v_axis * (along_v * scale)
                 }
             };
 
@@ -589,8 +588,7 @@ mod tests {
         let template = FitTemplate::new(mesh)
             .with_control_region(ControlRegion::point("corner", Point3::new(0.0, 0.0, 0.0)));
 
-        let params =
-            FitParams::new().with_landmark_target("corner", Point3::new(0.0, 0.0, 0.0));
+        let params = FitParams::new().with_landmark_target("corner", Point3::new(0.0, 0.0, 0.0));
 
         let result = fit_template(&template, &params).unwrap();
         assert!(result.has_landmark_deformation());
@@ -634,8 +632,7 @@ mod tests {
         let template = FitTemplate::new(mesh.clone())
             .with_control_region(ControlRegion::point("corner", Point3::new(0.0, 0.0, 0.0)));
 
-        let params =
-            FitParams::new().with_landmark_target("corner", Point3::new(1.0, 0.0, 0.0));
+        let params = FitParams::new().with_landmark_target("corner", Point3::new(1.0, 0.0, 0.0));
 
         let error = calculate_fit_error(&mesh, &template, &params);
         // Error should be ~1.0 (distance from (0,0,0) to (1,0,0))

@@ -1,0 +1,58 @@
+# Repository Settings (via Probot Settings app)
+#
+# This file declares repository settings as code.
+# Requires: https://probot.github.io/apps/settings/
+#
+# If you install the Settings app, these become enforced.
+# Without it, this serves as documentation of intended settings.
+
+repository:
+  name: cortenforge
+  description: "Industrial-grade mesh processing, sensor fusion, and ML foundation. A-grade or it doesn't ship."
+  homepage: https://cortenforge.dev
+  topics:
+    - rust
+    - mesh-processing
+    - cad
+    - robotics
+    - 3d-printing
+    - sensor-fusion
+    - machine-learning
+  private: true  # Change to false when ready to open source
+  has_issues: true
+  has_projects: false
+  has_wiki: false
+  has_downloads: true
+  default_branch: main
+  allow_squash_merge: true
+  allow_merge_commit: false  # Keep history linear
+  allow_rebase_merge: true
+  delete_branch_on_merge: true
+  enable_automated_security_fixes: true
+  enable_vulnerability_alerts: true
+
+labels:
+  - name: "A-grade"
+    color: "0e8a16"
+    description: "Meets all quality criteria"
+  - name: "needs-work"
+    color: "d93f0b"
+    description: "Does not meet A-grade standard"
+  - name: "dependencies"
+    color: "0366d6"
+    description: "Dependency updates"
+  - name: "ci"
+    color: "fbca04"
+    description: "CI/CD changes"
+  - name: "rust"
+    color: "dea584"
+    description: "Rust code changes"
+  - name: "breaking-change"
+    color: "b60205"
+    description: "Contains breaking API changes"
+  - name: "security"
+    color: "d73a4a"
+    description: "Security-related"
+
+# Branch protection is managed via GitHub UI (rulesets)
+# because the Settings app has limited branch protection support

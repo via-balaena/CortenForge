@@ -18,10 +18,9 @@
 //! Taubin, G. (1995). "A signal processing approach to fair surface design"
 //! Proceedings of SIGGRAPH 1995.
 
-use std::collections::{HashMap, HashSet};
 use mesh_types::IndexedMesh;
 use nalgebra::Vector3;
-
+use std::collections::{HashMap, HashSet};
 
 /// Applies one iteration of Taubin smoothing.
 ///
@@ -35,7 +34,7 @@ use nalgebra::Vector3;
 /// # Returns
 ///
 /// The smoothed mesh and the maximum vertex displacement.
-#[must_use] 
+#[must_use]
 pub fn smooth_taubin(
     mesh: &IndexedMesh,
     lambda: f64,
@@ -76,7 +75,7 @@ pub fn smooth_taubin(
 /// # Returns
 ///
 /// The smoothed mesh and statistics about the operation.
-#[must_use] 
+#[must_use]
 pub fn smooth_taubin_iterations(
     mesh: &IndexedMesh,
     iterations: u32,

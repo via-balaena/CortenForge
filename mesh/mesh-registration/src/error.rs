@@ -36,7 +36,9 @@ pub enum RegistrationError {
     SvdFailed,
 
     /// Registration did not converge within the maximum iterations.
-    #[error("registration did not converge after {iterations} iterations (error: {final_error:.6})")]
+    #[error(
+        "registration did not converge after {iterations} iterations (error: {final_error:.6})"
+    )]
     DidNotConverge {
         /// Number of iterations performed.
         iterations: u32,

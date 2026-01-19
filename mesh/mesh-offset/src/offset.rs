@@ -9,7 +9,7 @@ use nalgebra::Point3;
 
 use crate::error::{OffsetError, OffsetResult};
 use crate::grid::ScalarGrid;
-use crate::marching_cubes::{marching_cubes, MarchingCubesConfig};
+use crate::marching_cubes::{MarchingCubesConfig, marching_cubes};
 
 /// Configuration for mesh offset operations.
 #[derive(Debug, Clone)]
@@ -110,7 +110,11 @@ impl OffsetConfig {
 /// let result = offset_mesh(&mesh, 0.1, &config);
 /// // Note: May fail on very simple meshes due to SDF computation
 /// ```
-pub fn offset_mesh(mesh: &IndexedMesh, distance: f64, config: &OffsetConfig) -> OffsetResult<IndexedMesh> {
+pub fn offset_mesh(
+    mesh: &IndexedMesh,
+    distance: f64,
+    config: &OffsetConfig,
+) -> OffsetResult<IndexedMesh> {
     // Validate inputs
     if mesh.faces.is_empty() {
         return Err(OffsetError::EmptyMesh);
@@ -132,16 +136,8 @@ pub fn offset_mesh(mesh: &IndexedMesh, distance: f64, config: &OffsetConfig) -> 
 
     // Extend bounds by the offset distance plus padding
     let extension = distance.abs() + config.padding as f64 * config.resolution;
-    let extended_min = Point3::new(
-        min.x - extension,
-        min.y - extension,
-        min.z - extension,
-    );
-    let extended_max = Point3::new(
-        max.x + extension,
-        max.y + extension,
-        max.z + extension,
-    );
+    let extended_min = Point3::new(min.x - extension, min.y - extension, min.z - extension);
+    let extended_max = Point3::new(max.x + extension, max.y + extension, max.z + extension);
 
     // Create SDF
     let sdf = SignedDistanceField::new(mesh.clone())?;
@@ -407,11 +403,7 @@ mod tests {
         let mesh = unit_cube();
         let sdf = SignedDistanceField::new(mesh).expect("should create SDF");
 
-        let mut grid = ScalarGrid::new(
-            (5, 5, 5),
-            Point3::new(-1.0, -1.0, -1.0),
-            0.5,
-        );
+        let mut grid = ScalarGrid::new((5, 5, 5), Point3::new(-1.0, -1.0, -1.0), 0.5);
 
         sample_sdf_to_grid(&sdf, &mut grid, 0.1);
 

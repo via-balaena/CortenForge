@@ -117,13 +117,17 @@ pub enum ShellIssue {
 impl std::fmt::Display for ShellIssue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotWatertight { boundary_edge_count } => {
+            Self::NotWatertight {
+                boundary_edge_count,
+            } => {
                 write!(
                     f,
                     "Shell is not watertight ({boundary_edge_count} boundary edges)"
                 )
             }
-            Self::NonManifold { non_manifold_edge_count } => {
+            Self::NonManifold {
+                non_manifold_edge_count,
+            } => {
                 write!(
                     f,
                     "Shell is not manifold ({non_manifold_edge_count} non-manifold edges)"
@@ -188,7 +192,9 @@ pub fn validate_shell(shell: &IndexedMesh) -> ShellValidationResult {
     // Check watertightness
     let is_watertight = boundary_edge_count == 0;
     if !is_watertight {
-        issues.push(ShellIssue::NotWatertight { boundary_edge_count });
+        issues.push(ShellIssue::NotWatertight {
+            boundary_edge_count,
+        });
         warn!(
             "Shell is not watertight: {} boundary edges",
             boundary_edge_count
@@ -198,7 +204,9 @@ pub fn validate_shell(shell: &IndexedMesh) -> ShellValidationResult {
     // Check manifoldness
     let is_manifold = non_manifold_edge_count == 0;
     if !is_manifold {
-        issues.push(ShellIssue::NonManifold { non_manifold_edge_count });
+        issues.push(ShellIssue::NonManifold {
+            non_manifold_edge_count,
+        });
         warn!(
             "Shell is not manifold: {} non-manifold edges",
             non_manifold_edge_count
@@ -443,14 +451,14 @@ mod tests {
         };
         let output = format!("{issue}");
         assert!(output.contains("watertight"));
-        assert!(output.contains("4"));
+        assert!(output.contains('4'));
 
         let issue = ShellIssue::NonManifold {
             non_manifold_edge_count: 2,
         };
         let output = format!("{issue}");
         assert!(output.contains("manifold"));
-        assert!(output.contains("2"));
+        assert!(output.contains('2'));
 
         let issue = ShellIssue::InconsistentWinding;
         let output = format!("{issue}");
@@ -463,7 +471,7 @@ mod tests {
         let issue = ShellIssue::DegenerateTriangles { count: 5 };
         let output = format!("{issue}");
         assert!(output.contains("degenerate"));
-        assert!(output.contains("5"));
+        assert!(output.contains('5'));
     }
 
     #[test]

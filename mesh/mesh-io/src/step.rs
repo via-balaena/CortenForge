@@ -82,9 +82,8 @@ pub fn load_step<P: AsRef<Path>>(path: P) -> IoResult<IndexedMesh> {
     })?;
 
     // Parse STEP file using ruststep
-    let exchange = truck_stepio::r#in::ruststep::parser::parse(&step_string).map_err(|e| {
-        IoError::invalid_content(format!("failed to parse STEP file: {e}"))
-    })?;
+    let exchange = truck_stepio::r#in::ruststep::parser::parse(&step_string)
+        .map_err(|e| IoError::invalid_content(format!("failed to parse STEP file: {e}")))?;
 
     if exchange.data.is_empty() {
         return Err(IoError::invalid_content(
@@ -134,8 +133,7 @@ fn append_polymesh_to_indexed(poly: &PolygonMesh, mesh: &mut IndexedMesh) {
 
     // Add vertices from positions
     for pos in poly.positions() {
-        mesh.vertices
-            .push(Vertex::from_coords(pos.x, pos.y, pos.z));
+        mesh.vertices.push(Vertex::from_coords(pos.x, pos.y, pos.z));
     }
 
     // Add faces - handle both tri and quad faces
@@ -253,8 +251,9 @@ fn create_triangle_face(
     p0: &truck_modeling::Point3,
     p1: &truck_modeling::Point3,
     p2: &truck_modeling::Point3,
-) -> Option<truck_topology::Face<truck_modeling::Point3, truck_modeling::Curve, truck_modeling::Surface>>
-{
+) -> Option<
+    truck_topology::Face<truck_modeling::Point3, truck_modeling::Curve, truck_modeling::Surface>,
+> {
     use truck_modeling::builder;
     use truck_polymesh::InnerSpace;
 

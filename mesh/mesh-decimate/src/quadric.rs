@@ -85,7 +85,10 @@ impl Quadric {
         // v^T * Q * v where v = [x, y, z, 1]
         x.mul_add(
             x.mul_add(self.a, 2.0 * y.mul_add(self.b, z.mul_add(self.c, self.d))),
-            y.mul_add(y.mul_add(self.e, 2.0 * z.mul_add(self.f, self.g)), z.mul_add(z.mul_add(self.h, 2.0 * self.i), self.j))
+            y.mul_add(
+                y.mul_add(self.e, 2.0 * z.mul_add(self.f, self.g)),
+                z.mul_add(z.mul_add(self.h, 2.0 * self.i), self.j),
+            ),
         )
     }
 

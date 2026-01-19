@@ -496,8 +496,7 @@ mod tests {
         let vol = cube.signed_volume();
         assert!(
             (vol - 1.0).abs() < 1e-10,
-            "Unit cube volume should be 1.0, got {}",
-            vol
+            "Unit cube volume should be 1.0, got {vol}"
         );
     }
 
@@ -507,8 +506,7 @@ mod tests {
         let area = cube.surface_area();
         assert!(
             (area - 6.0).abs() < 1e-10,
-            "Unit cube surface area should be 6.0, got {}",
-            area
+            "Unit cube surface area should be 6.0, got {area}"
         );
     }
 

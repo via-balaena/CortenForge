@@ -73,7 +73,10 @@ impl fmt::Display for ScanError {
         match self {
             Self::EmptyPointCloud => write!(f, "point cloud is empty"),
             Self::InsufficientPoints { required, actual } => {
-                write!(f, "insufficient points: need at least {required}, got {actual}")
+                write!(
+                    f,
+                    "insufficient points: need at least {required}, got {actual}"
+                )
             }
             Self::InvalidParameter { reason } => write!(f, "invalid parameter: {reason}"),
             Self::IoError(e) => write!(f, "I/O error: {e}"),
@@ -174,7 +177,10 @@ mod tests {
         let err = ScanError::ReconstructionFailed {
             reason: "no valid triangles".to_string(),
         };
-        assert_eq!(format!("{err}"), "reconstruction failed: no valid triangles");
+        assert_eq!(
+            format!("{err}"),
+            "reconstruction failed: no valid triangles"
+        );
     }
 
     #[test]

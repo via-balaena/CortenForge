@@ -378,9 +378,9 @@ where
     for iz in 0..resolution {
         for iy in 0..resolution {
             for ix in 0..resolution {
-                let x = min.x + ix as f64 * step.x;
-                let y = min.y + iy as f64 * step.y;
-                let z = min.z + iz as f64 * step.z;
+                let x = (ix as f64).mul_add(step.x, min.x);
+                let y = (iy as f64).mul_add(step.y, min.y);
+                let z = (iz as f64).mul_add(step.z, min.z);
 
                 // Sample the 8 corners of the cell
                 let corners = [
@@ -429,8 +429,13 @@ where
                 for edge in 0..12 {
                     if edges & (1 << edge) != 0 {
                         let [v0, v1] = EDGE_VERTICES[edge];
-                        edge_vertices[edge] =
-                            interpolate_vertex(corners[v0], corners[v1], values[v0], values[v1], threshold);
+                        edge_vertices[edge] = interpolate_vertex(
+                            corners[v0],
+                            corners[v1],
+                            values[v0],
+                            values[v1],
+                            threshold,
+                        );
                     }
                 }
 
@@ -527,10 +532,7 @@ mod tests {
     fn test_plane_isosurface() {
         // Plane at z=0
         let plane_sdf = |p: Point3<f64>| p.z;
-        let bounds = (
-            Point3::new(-5.0, -5.0, -5.0),
-            Point3::new(5.0, 5.0, 5.0),
-        );
+        let bounds = (Point3::new(-5.0, -5.0, -5.0), Point3::new(5.0, 5.0, 5.0));
         let mesh = extract_isosurface(&plane_sdf, bounds, 10, 0.0);
 
         // Should have triangles
@@ -546,10 +548,7 @@ mod tests {
     fn test_empty_field() {
         // Field entirely above threshold
         let positive_field = |_: Point3<f64>| 10.0;
-        let bounds = (
-            Point3::new(-5.0, -5.0, -5.0),
-            Point3::new(5.0, 5.0, 5.0),
-        );
+        let bounds = (Point3::new(-5.0, -5.0, -5.0), Point3::new(5.0, 5.0, 5.0));
         let mesh = extract_isosurface(&positive_field, bounds, 10, 0.0);
 
         // Should be empty

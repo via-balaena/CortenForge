@@ -67,7 +67,7 @@ pub use config::{PrintTechnology, PrinterConfig};
 pub use error::{PrintabilityError, PrintabilityResult};
 pub use issues::{IssueSeverity, PrintIssue, PrintIssueType};
 pub use orientation::{
-    apply_orientation, find_optimal_orientation, place_on_build_plate, OrientationResult,
+    OrientationResult, apply_orientation, find_optimal_orientation, place_on_build_plate,
 };
 pub use regions::{OverhangRegion, SupportRegion, ThinWallRegion};
-pub use validation::{validate_for_printing, PrintValidation};
+pub use validation::{PrintValidation, validate_for_printing};

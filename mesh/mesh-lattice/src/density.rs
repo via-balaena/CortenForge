@@ -208,7 +208,7 @@ impl DensityMap {
                 // This requires external distance computation.
                 // Without mesh context, we return the average.
                 // In practice, this is used with `evaluate_with_distance`.
-                (*surface_density + *core_density) / 2.0
+                f64::midpoint(*surface_density, *core_density)
             }
             Self::StressField {
                 stress_lookup,

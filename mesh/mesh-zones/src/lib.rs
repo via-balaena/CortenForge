@@ -70,6 +70,8 @@ mod zone_map;
 
 pub use adjacency::FaceAdjacency;
 pub use error::{ZoneError, ZoneResult};
-pub use grow::{flood_fill, grow_multiple_regions, grow_region, GrowConfig};
-pub use segment::{segment_by_components, segment_by_normal_direction, segment_mesh, SegmentConfig};
+pub use grow::{GrowConfig, flood_fill, grow_multiple_regions, grow_region};
+pub use segment::{
+    SegmentConfig, segment_by_components, segment_by_normal_direction, segment_mesh,
+};
 pub use zone_map::ZoneMap;

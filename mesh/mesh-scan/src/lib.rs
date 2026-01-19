@@ -155,17 +155,17 @@ pub mod pointcloud;
 pub mod reconstruct;
 
 // Re-export main types at crate root for convenience
-pub use cleanup::{cleanup_scan, CleanupParams, CleanupResult};
-pub use denoise::{denoise_mesh, DenoiseMethod, DenoiseParams, DenoiseResult};
+pub use cleanup::{CleanupParams, CleanupResult, cleanup_scan};
+pub use denoise::{DenoiseMethod, DenoiseParams, DenoiseResult, denoise_mesh};
 pub use error::{ScanError, ScanResult};
 pub use multiscan::{
-    align_and_merge, align_multiple_scans, merge_scans, MergeParams, MergeResult,
-    MultiAlignmentParams, MultiAlignmentResult, OverlapHandling,
+    MergeParams, MergeResult, MultiAlignmentParams, MultiAlignmentResult, OverlapHandling,
+    align_and_merge, align_multiple_scans, merge_scans,
 };
 pub use pointcloud::{CloudPoint, PointCloud};
 pub use reconstruct::{
-    reconstruct_surface, to_mesh, ReconstructionAlgorithm, ReconstructionParams,
-    ReconstructionResult,
+    ReconstructionAlgorithm, ReconstructionParams, ReconstructionResult, reconstruct_surface,
+    to_mesh,
 };
 
 #[cfg(test)]
@@ -197,7 +197,7 @@ mod tests {
         let params = CleanupParams::minimal();
         let result = cleanup_scan(&mesh, &params).unwrap();
 
-        assert!(result.mesh.vertices.len() > 0);
+        assert!(!result.mesh.vertices.is_empty());
     }
 
     #[test]
@@ -218,12 +218,16 @@ mod tests {
     fn test_multiscan_workflow() {
         let mut scan1 = IndexedMesh::new();
         for i in 0..5 {
-            scan1.vertices.push(Vertex::from_coords(f64::from(i), 0.0, 0.0));
+            scan1
+                .vertices
+                .push(Vertex::from_coords(f64::from(i), 0.0, 0.0));
         }
 
         let mut scan2 = IndexedMesh::new();
         for i in 0..5 {
-            scan2.vertices.push(Vertex::from_coords(f64::from(i) + 0.1, 0.0, 0.0));
+            scan2
+                .vertices
+                .push(Vertex::from_coords(f64::from(i) + 0.1, 0.0, 0.0));
         }
 
         let scans = vec![scan1, scan2];

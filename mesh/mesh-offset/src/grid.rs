@@ -62,20 +62,11 @@ impl ScalarGrid {
     /// * `cell_size` - Target cell size
     /// * `padding` - Extra cells to add around bounds
     #[must_use]
-    pub fn from_bounds(
-        min: Point3<f64>,
-        max: Point3<f64>,
-        cell_size: f64,
-        padding: usize,
-    ) -> Self {
+    pub fn from_bounds(min: Point3<f64>, max: Point3<f64>, cell_size: f64, padding: usize) -> Self {
         let extent = max - min;
         let padding_f = padding as f64 * cell_size;
 
-        let origin = Point3::new(
-            min.x - padding_f,
-            min.y - padding_f,
-            min.z - padding_f,
-        );
+        let origin = Point3::new(min.x - padding_f, min.y - padding_f, min.z - padding_f);
 
         let nx = ((extent.x + 2.0 * padding_f) / cell_size).ceil() as usize + 1;
         let ny = ((extent.y + 2.0 * padding_f) / cell_size).ceil() as usize + 1;
@@ -163,9 +154,8 @@ impl ScalarGrid {
         let (nx, ny, nz) = self.dimensions;
 
         (0..nz).flat_map(move |iz| {
-            (0..ny).flat_map(move |iy| {
-                (0..nx).map(move |ix| (ix, iy, iz, self.position(ix, iy, iz)))
-            })
+            (0..ny)
+                .flat_map(move |iy| (0..nx).map(move |ix| (ix, iy, iz, self.position(ix, iy, iz))))
         })
     }
 

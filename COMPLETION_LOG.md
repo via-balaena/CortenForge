@@ -53,14 +53,24 @@ Every crate in this log has passed:
 | 2026-01-18 | mesh-lattice | automated |
 | 2026-01-18 | mesh-template | automated |
 | 2026-01-18 | mesh-gpu | automated |
+| 2026-01-18 | mesh (umbrella) | automated |
+| 2026-01-18 | sensor-types | automated |
+| 2026-01-18 | sensor-fusion | automated |
+| 2026-01-18 | ml-types | automated |
+| 2026-01-18 | ml-models | automated |
+| 2026-01-18 | ml-dataset | automated |
+| 2026-01-18 | ml-training | automated |
 
 ---
 
 ## Summary
 
-- **Total A-Grade Crates:** 26
+- **Total A-Grade Crates:** 33 (26 mesh + 1 umbrella + 2 sensor + 4 ML)
 - **Last Updated:** 2026-01-18
 - **Note:** mesh-io includes all I/O formats (STL, OBJ, PLY, 3MF, STEP)
+- **Note:** mesh (umbrella) re-exports all mesh-* crates with unified prelude
+- **Note:** sensor-types and sensor-fusion form the sensor domain foundation
+- **Note:** ml-types, ml-models, ml-dataset, ml-training form the ML domain (Burn-native)
 
 ---
 

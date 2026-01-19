@@ -212,7 +212,7 @@ fn symmetric_eigen_decomposition(m: &Matrix3<f64>) -> Matrix3<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{unit_cube, Vertex};
+    use mesh_types::{Vertex, unit_cube};
 
     fn create_test_cube(size: f64) -> IndexedMesh {
         let mut cube = unit_cube();
@@ -303,7 +303,10 @@ mod tests {
 
         // Should have extents approximately 4x2x0
         let max_extent = extents.x.max(extents.y).max(extents.z);
-        let mid_extent = extents.x.min(extents.y.max(extents.z)).max(extents.y.min(extents.z));
+        let mid_extent = extents
+            .x
+            .min(extents.y.max(extents.z))
+            .max(extents.y.min(extents.z));
         assert!((max_extent - 4.0).abs() < 0.1);
         assert!((mid_extent - 2.0).abs() < 0.1);
     }

@@ -47,4 +47,4 @@ pub use query::{
     closest_point_on_triangle, point_in_mesh, point_segment_distance_squared,
     ray_triangle_intersect,
 };
-pub use sdf::{signed_distance, unsigned_distance, SignedDistanceField};
+pub use sdf::{SignedDistanceField, signed_distance, unsigned_distance};

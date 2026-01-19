@@ -39,6 +39,9 @@ members = [
     "mesh/mesh-template",
     "mesh/mesh-gpu",
 
+    # Umbrella crate (re-exports all mesh-* crates)
+    "mesh/mesh",
+
     # Geometry domain (pending)
     # "geometry/curve-types",
     # "geometry/lumen-geometry",
@@ -51,15 +54,15 @@ members = [
     # "routing/route-pathfind",
     # "routing/route-optimize",
 
-    # Machine learning domain (pending)
-    # "ml/ml-models",
-    # "ml/ml-inference",
-    # "ml/ml-dataset",
-    # "ml/ml-training",
+    # Sensor domain (active development)
+    "sensor/sensor-types",
+    "sensor/sensor-fusion",
 
-    # Computer vision domain (pending)
-    # "vision/vision-core",
-    # "vision/vision-capture",
+    # Machine learning domain (active development)
+    "ml/ml-types",
+    "ml/ml-models",
+    "ml/ml-dataset",
+    "ml/ml-training",
 
     # Simulation domain (pending)
     # "sim/sim-core",
@@ -243,6 +246,9 @@ mesh-lattice = { path = "mesh/mesh-lattice" }
 mesh-template = { path = "mesh/mesh-template" }
 mesh-gpu = { path = "mesh/mesh-gpu" }
 
+# Umbrella crate
+mesh = { path = "mesh/mesh" }
+
 # Geometry domain
 curve-types = { path = "geometry/curve-types" }
 lumen-geometry = { path = "geometry/lumen-geometry" }
@@ -255,15 +261,15 @@ route-types = { path = "routing/route-types" }
 route-pathfind = { path = "routing/route-pathfind" }
 route-optimize = { path = "routing/route-optimize" }
 
+# Sensor domain
+sensor-types = { path = "sensor/sensor-types" }
+sensor-fusion = { path = "sensor/sensor-fusion" }
+
 # ML domain
+ml-types = { path = "ml/ml-types" }
 ml-models = { path = "ml/ml-models" }
-ml-inference = { path = "ml/ml-inference" }
 ml-dataset = { path = "ml/ml-dataset" }
 ml-training = { path = "ml/ml-training" }
-
-# Vision domain
-vision-core = { path = "vision/vision-core" }
-vision-capture = { path = "vision/vision-capture" }
 
 # Sim domain
 sim-core = { path = "sim/sim-core" }

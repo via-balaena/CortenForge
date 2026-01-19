@@ -42,7 +42,10 @@ use crate::result::SubdivisionResult;
 /// assert_eq!(result.final_faces, 4);
 /// # Ok::<(), mesh_subdivide::SubdivideError>(())
 /// ```
-pub fn subdivide_mesh(mesh: &IndexedMesh, params: &SubdivideParams) -> SubdivideResult<SubdivisionResult> {
+pub fn subdivide_mesh(
+    mesh: &IndexedMesh,
+    params: &SubdivideParams,
+) -> SubdivideResult<SubdivisionResult> {
     // Validate input
     if mesh.vertices.is_empty() {
         return Err(SubdivideError::EmptyMesh);
@@ -98,12 +101,8 @@ pub fn subdivide_mesh(mesh: &IndexedMesh, params: &SubdivideParams) -> Subdivide
 /// Perform a single subdivision iteration.
 fn subdivide_once(mesh: &IndexedMesh, params: &SubdivideParams) -> IndexedMesh {
     match params.method {
-        SubdivisionMethod::Midpoint | SubdivisionMethod::Flat => {
-            subdivide_midpoint(mesh)
-        }
-        SubdivisionMethod::Loop => {
-            subdivide_loop(mesh, params)
-        }
+        SubdivisionMethod::Midpoint | SubdivisionMethod::Flat => subdivide_midpoint(mesh),
+        SubdivisionMethod::Loop => subdivide_loop(mesh, params),
     }
 }
 
@@ -121,9 +120,27 @@ fn subdivide_midpoint(mesh: &IndexedMesh) -> IndexedMesh {
         let v2 = face[2];
 
         // Get or create midpoint vertices for each edge
-        let m01 = get_or_create_midpoint(v0, v1, &mesh.vertices, &mut new_vertices, &mut edge_midpoints);
-        let m12 = get_or_create_midpoint(v1, v2, &mesh.vertices, &mut new_vertices, &mut edge_midpoints);
-        let m20 = get_or_create_midpoint(v2, v0, &mesh.vertices, &mut new_vertices, &mut edge_midpoints);
+        let m01 = get_or_create_midpoint(
+            v0,
+            v1,
+            &mesh.vertices,
+            &mut new_vertices,
+            &mut edge_midpoints,
+        );
+        let m12 = get_or_create_midpoint(
+            v1,
+            v2,
+            &mesh.vertices,
+            &mut new_vertices,
+            &mut edge_midpoints,
+        );
+        let m20 = get_or_create_midpoint(
+            v2,
+            v0,
+            &mesh.vertices,
+            &mut new_vertices,
+            &mut edge_midpoints,
+        );
 
         // Create 4 new triangles
         // Corner triangles
@@ -172,11 +189,7 @@ fn get_or_create_midpoint(
 
 /// Normalize edge so smaller vertex index comes first.
 const fn normalize_edge(v0: u32, v1: u32) -> (u32, u32) {
-    if v0 <= v1 {
-        (v0, v1)
-    } else {
-        (v1, v0)
-    }
+    if v0 <= v1 { (v0, v1) } else { (v1, v0) }
 }
 
 /// Loop subdivision - smoothing subdivision for triangle meshes.
@@ -219,16 +232,34 @@ fn subdivide_loop(mesh: &IndexedMesh, params: &SubdivideParams) -> IndexedMesh {
 
         // Get or create edge vertices
         let m01 = get_or_create_loop_edge_vertex(
-            v0, v1, &mesh.vertices, &mut new_vertices, &mut edge_midpoints,
-            &boundary_edges, &edge_faces, params.preserve_boundaries,
+            v0,
+            v1,
+            &mesh.vertices,
+            &mut new_vertices,
+            &mut edge_midpoints,
+            &boundary_edges,
+            &edge_faces,
+            params.preserve_boundaries,
         );
         let m12 = get_or_create_loop_edge_vertex(
-            v1, v2, &mesh.vertices, &mut new_vertices, &mut edge_midpoints,
-            &boundary_edges, &edge_faces, params.preserve_boundaries,
+            v1,
+            v2,
+            &mesh.vertices,
+            &mut new_vertices,
+            &mut edge_midpoints,
+            &boundary_edges,
+            &edge_faces,
+            params.preserve_boundaries,
         );
         let m20 = get_or_create_loop_edge_vertex(
-            v2, v0, &mesh.vertices, &mut new_vertices, &mut edge_midpoints,
-            &boundary_edges, &edge_faces, params.preserve_boundaries,
+            v2,
+            v0,
+            &mesh.vertices,
+            &mut new_vertices,
+            &mut edge_midpoints,
+            &boundary_edges,
+            &edge_faces,
+            params.preserve_boundaries,
         );
 
         // Create 4 new triangles
@@ -277,7 +308,10 @@ fn build_vertex_neighbors(mesh: &IndexedMesh) -> Vec<Vec<u32>> {
         }
     }
 
-    neighbors.into_iter().map(|s| s.into_iter().collect()).collect()
+    neighbors
+        .into_iter()
+        .map(|s| s.into_iter().collect())
+        .collect()
 }
 
 /// Build edge to adjacent faces mapping.
@@ -303,7 +337,11 @@ fn is_boundary_vertex(v: u32, boundary_edges: &HashSet<(u32, u32)>) -> bool {
 type Pos = nalgebra::Point3<f64>;
 
 /// Calculate new position for boundary vertex using Loop's boundary rule.
-fn boundary_vertex_position(v: u32, vertices: &[Vertex], boundary_edges: &HashSet<(u32, u32)>) -> Pos {
+fn boundary_vertex_position(
+    v: u32,
+    vertices: &[Vertex],
+    boundary_edges: &HashSet<(u32, u32)>,
+) -> Pos {
     // Find the two boundary neighbors
     let mut neighbors = Vec::new();
     for &(a, b) in boundary_edges {
@@ -457,9 +495,7 @@ mod tests {
     #[test]
     fn test_subdivide_too_large() {
         let mesh = make_triangle();
-        let params = SubdivideParams::new()
-            .with_iterations(2)
-            .with_max_faces(10); // 1 * 4^2 = 16 > 10
+        let params = SubdivideParams::new().with_iterations(2).with_max_faces(10); // 1 * 4^2 = 16 > 10
         let result = subdivide_mesh(&mesh, &params);
         assert!(matches!(result, Err(SubdivideError::MeshTooLarge { .. })));
     }

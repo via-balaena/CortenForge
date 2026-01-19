@@ -67,7 +67,7 @@ pub use beam::{Beam, BeamCap, BeamLatticeData, BeamSet};
 pub use density::DensityMap;
 pub use error::LatticeError;
 pub use generate::generate_lattice;
-pub use infill::{generate_infill, InfillParams, InfillResult};
+pub use infill::{InfillParams, InfillResult, generate_infill};
 pub use params::LatticeParams;
 pub use strut::{combine_struts, estimate_strut_volume, generate_strut, generate_strut_tapered};
 pub use tpms::{density_to_threshold, diamond, gyroid, iwp, make_shell, neovius, schwarz_p};

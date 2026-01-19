@@ -529,7 +529,7 @@ mod tests {
 
         // Two points on different edges
         let int_points = [
-            Point3::new(0.5, 0.0, 0.0), // On edge v0-v1
+            Point3::new(0.5, 0.0, 0.0),  // On edge v0-v1
             Point3::new(0.75, 0.5, 0.0), // On edge v1-v2
         ];
 

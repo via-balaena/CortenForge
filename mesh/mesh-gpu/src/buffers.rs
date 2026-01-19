@@ -222,7 +222,11 @@ impl MeshBuffers {
                 let offset = v.attributes.offset.unwrap_or(0.0);
                 let tag = v.attributes.zone_id.unwrap_or(0);
                 GpuVertex::with_offset(
-                    [v.position.x as f32, v.position.y as f32, v.position.z as f32],
+                    [
+                        v.position.x as f32,
+                        v.position.y as f32,
+                        v.position.z as f32,
+                    ],
                     offset,
                     tag,
                 )
@@ -608,7 +612,11 @@ impl TileConfig {
     /// let config = TileConfig::for_memory_budget(512 * 1024 * 1024);
     /// ```
     #[must_use]
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     // Precision loss: budget_bytes as f64 is acceptable for cube root calculation
     // Truncation/sign: cube root of positive u64 always fits in usize
     pub fn for_memory_budget(budget_bytes: u64) -> Self {

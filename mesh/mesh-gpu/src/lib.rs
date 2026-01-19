@@ -112,7 +112,7 @@ pub mod sdf;
 // Re-export commonly used types
 pub use context::{GpuAdapterInfo, GpuContext, GpuDevicePreference};
 pub use error::{GpuError, GpuResult};
-pub use sdf::{compute_sdf_gpu, try_compute_sdf_gpu, GpuSdfParams, GpuSdfResult, SdfPipeline};
+pub use sdf::{GpuSdfParams, GpuSdfResult, SdfPipeline, compute_sdf_gpu, try_compute_sdf_gpu};
 
 // Re-export buffer types for advanced usage
 pub use buffers::{GpuGridParams, GpuTriangle, GpuVertex, MeshBuffers, SdfGridBuffers, TileConfig};

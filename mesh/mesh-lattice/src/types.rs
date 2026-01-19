@@ -108,7 +108,7 @@ pub struct LatticeResult {
 impl LatticeResult {
     /// Creates a new lattice result.
     #[must_use]
-    pub fn new(mesh: IndexedMesh, actual_density: f64, cell_count: usize) -> Self {
+    pub const fn new(mesh: IndexedMesh, actual_density: f64, cell_count: usize) -> Self {
         Self {
             mesh,
             actual_density,
@@ -120,7 +120,7 @@ impl LatticeResult {
 
     /// Sets the total strut length.
     #[must_use]
-    pub fn with_strut_length(mut self, length: f64) -> Self {
+    pub const fn with_strut_length(mut self, length: f64) -> Self {
         self.total_strut_length = Some(length);
         self
     }

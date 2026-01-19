@@ -79,9 +79,7 @@ impl MeshAdjacency {
     /// Returns an empty slice if the vertex has no adjacent faces.
     #[must_use]
     pub fn faces_for_vertex(&self, v: u32) -> &[usize] {
-        self.vertex_to_faces
-            .get(&v)
-            .map_or(&[], Vec::as_slice)
+        self.vertex_to_faces.get(&v).map_or(&[], Vec::as_slice)
     }
 
     /// Iterate over all boundary edges (edges with exactly one adjacent face).

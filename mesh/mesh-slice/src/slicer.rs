@@ -321,7 +321,7 @@ fn estimate_filament_usage(contours: &[Contour], layer_height: f64, params: &Sli
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{unit_cube, Vertex};
+    use mesh_types::{Vertex, unit_cube};
 
     fn create_test_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();

@@ -346,8 +346,16 @@ impl Aabb {
     #[must_use]
     pub fn expanded(&self, margin: f64) -> Self {
         Self {
-            min: Point3::new(self.min.x - margin, self.min.y - margin, self.min.z - margin),
-            max: Point3::new(self.max.x + margin, self.max.y + margin, self.max.z + margin),
+            min: Point3::new(
+                self.min.x - margin,
+                self.min.y - margin,
+                self.min.z - margin,
+            ),
+            max: Point3::new(
+                self.max.x + margin,
+                self.max.y + margin,
+                self.max.z + margin,
+            ),
         }
     }
 
@@ -379,11 +387,9 @@ mod tests {
 
     #[test]
     fn aabb_from_points() {
-        let points = vec![
-            Point3::new(0.0, 0.0, 0.0),
+        let points = [Point3::new(0.0, 0.0, 0.0),
             Point3::new(10.0, 5.0, 3.0),
-            Point3::new(-2.0, 8.0, 1.0),
-        ];
+            Point3::new(-2.0, 8.0, 1.0)];
 
         let aabb = Aabb::from_points(points.iter());
         assert!((aabb.min.x - (-2.0)).abs() < f64::EPSILON);
@@ -403,10 +409,7 @@ mod tests {
 
     #[test]
     fn aabb_contains() {
-        let aabb = Aabb::new(
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(10.0, 10.0, 10.0),
-        );
+        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 10.0, 10.0));
 
         assert!(aabb.contains(&Point3::new(5.0, 5.0, 5.0)));
         assert!(aabb.contains(&Point3::new(0.0, 0.0, 0.0)));
@@ -428,29 +431,20 @@ mod tests {
 
     #[test]
     fn aabb_volume() {
-        let aabb = Aabb::new(
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(2.0, 3.0, 4.0),
-        );
+        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 3.0, 4.0));
         assert!((aabb.volume() - 24.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn aabb_surface_area() {
-        let aabb = Aabb::new(
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(2.0, 3.0, 4.0),
-        );
+        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 3.0, 4.0));
         // 2 * (2*3 + 3*4 + 4*2) = 2 * (6 + 12 + 8) = 52
         assert!((aabb.surface_area() - 52.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn aabb_expanded() {
-        let aabb = Aabb::new(
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(10.0, 10.0, 10.0),
-        );
+        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 10.0, 10.0));
         let expanded = aabb.expanded(2.0);
         assert!((expanded.min.x - (-2.0)).abs() < f64::EPSILON);
         assert!((expanded.max.x - 12.0).abs() < f64::EPSILON);
@@ -467,10 +461,7 @@ mod tests {
 
     #[test]
     fn aabb_corners() {
-        let aabb = Aabb::new(
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(1.0, 1.0, 1.0),
-        );
+        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 1.0));
         let corners = aabb.corners();
         assert_eq!(corners.len(), 8);
         // Check one corner

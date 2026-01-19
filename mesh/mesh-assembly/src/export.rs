@@ -131,8 +131,8 @@ fn save_stl_separate(assembly: &Assembly, path: &Path) -> AssemblyResult<()> {
 fn save_3mf(assembly: &Assembly, path: &Path) -> AssemblyResult<()> {
     use std::fs::File;
     use std::io::Write;
-    use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+    use zip::write::SimpleFileOptions;
 
     let file = File::create(path).map_err(|e| AssemblyError::Io {
         path: path.to_path_buf(),
@@ -376,10 +376,7 @@ mod tests {
             AssemblyExportFormat::from_path(Path::new("test.STL")),
             Some(AssemblyExportFormat::StlMerged)
         );
-        assert_eq!(
-            AssemblyExportFormat::from_path(Path::new("test.obj")),
-            None
-        );
+        assert_eq!(AssemblyExportFormat::from_path(Path::new("test.obj")), None);
     }
 
     #[test]

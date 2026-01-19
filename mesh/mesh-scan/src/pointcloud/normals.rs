@@ -32,7 +32,6 @@
 use kiddo::{KdTree, SquaredEuclidean};
 use nalgebra::{Matrix3, Point3, SymmetricEigen, Vector3};
 
-
 use super::PointCloud;
 use crate::error::{ScanError, ScanResult};
 
@@ -88,14 +87,7 @@ impl PointCloud {
         let normals: Vec<Vector3<f64>> = self
             .points
             .iter()
-            .map(|point| {
-                estimate_point_normal(
-                    &point.position,
-                    &kdtree,
-                    &self.points,
-                    k,
-                )
-            })
+            .map(|point| estimate_point_normal(&point.position, &kdtree, &self.points, k))
             .collect();
 
         // Assign normals to points
@@ -262,9 +254,7 @@ impl PointCloud {
 }
 
 /// Builds a KD-tree from the point cloud.
-fn build_kdtree(
-    points: &[super::CloudPoint],
-) -> ScanResult<KdTree<f64, 3>> {
+fn build_kdtree(points: &[super::CloudPoint]) -> ScanResult<KdTree<f64, 3>> {
     let mut kdtree: KdTree<f64, 3> = KdTree::new();
 
     for (i, point) in points.iter().enumerate() {
@@ -485,10 +475,8 @@ mod tests {
 
     #[test]
     fn test_estimate_normals_insufficient_points() {
-        let mut cloud = PointCloud::from_positions(&[
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(1.0, 0.0, 0.0),
-        ]);
+        let mut cloud =
+            PointCloud::from_positions(&[Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)]);
 
         let result = cloud.estimate_normals(10);
         assert!(matches!(result, Err(ScanError::InsufficientPoints { .. })));
@@ -533,7 +521,7 @@ mod tests {
         }
 
         // At least 80% should point outward (allowing for edge cases)
-        let ratio = outward_count as f64 / total_count as f64;
+        let ratio = f64::from(outward_count) / f64::from(total_count);
         assert!(
             ratio >= 0.8,
             "Expected most normals to point outward, got {outward_count}/{total_count} = {ratio}"
@@ -551,7 +539,10 @@ mod tests {
     fn test_orient_normals_no_normals() {
         let mut cloud = PointCloud::from_positions(&[Point3::origin()]);
         let result = cloud.orient_normals_outward();
-        assert!(matches!(result, Err(ScanError::NormalEstimationFailed { .. })));
+        assert!(matches!(
+            result,
+            Err(ScanError::NormalEstimationFailed { .. })
+        ));
     }
 
     #[test]

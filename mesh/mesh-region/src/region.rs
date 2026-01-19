@@ -253,7 +253,8 @@ impl MeshRegion {
                 || self.vertices.contains(&face[1])
                 || self.vertices.contains(&face[2])
             {
-                self.faces.insert(u32::try_from(face_idx).unwrap_or(u32::MAX));
+                self.faces
+                    .insert(u32::try_from(face_idx).unwrap_or(u32::MAX));
             }
         }
     }

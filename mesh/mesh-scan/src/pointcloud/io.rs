@@ -83,13 +83,14 @@ impl PointCloud {
     /// ```
     pub fn load<P: AsRef<Path>>(path: P) -> ScanResult<Self> {
         let path = path.as_ref();
-        let _format = PointCloudFormat::from_path(path).ok_or_else(|| ScanError::UnsupportedFormat {
-            format: path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("unknown")
-                .to_string(),
-        })?;
+        let _format =
+            PointCloudFormat::from_path(path).ok_or_else(|| ScanError::UnsupportedFormat {
+                format: path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+            })?;
 
         load_xyz(path)
     }
@@ -114,13 +115,14 @@ impl PointCloud {
     /// ```
     pub fn save<P: AsRef<Path>>(&self, path: P) -> ScanResult<()> {
         let path = path.as_ref();
-        let _format = PointCloudFormat::from_path(path).ok_or_else(|| ScanError::UnsupportedFormat {
-            format: path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("unknown")
-                .to_string(),
-        })?;
+        let _format =
+            PointCloudFormat::from_path(path).ok_or_else(|| ScanError::UnsupportedFormat {
+                format: path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+            })?;
 
         save_xyz(self, path)
     }
@@ -148,15 +150,21 @@ fn load_xyz<P: AsRef<Path>>(path: P) -> ScanResult<PointCloud> {
             continue; // Skip malformed lines
         }
 
-        let x = parts[0].parse::<f64>().map_err(|_| ScanError::InvalidParameter {
-            reason: format!("invalid x coordinate: {}", parts[0]),
-        })?;
-        let y = parts[1].parse::<f64>().map_err(|_| ScanError::InvalidParameter {
-            reason: format!("invalid y coordinate: {}", parts[1]),
-        })?;
-        let z = parts[2].parse::<f64>().map_err(|_| ScanError::InvalidParameter {
-            reason: format!("invalid z coordinate: {}", parts[2]),
-        })?;
+        let x = parts[0]
+            .parse::<f64>()
+            .map_err(|_| ScanError::InvalidParameter {
+                reason: format!("invalid x coordinate: {}", parts[0]),
+            })?;
+        let y = parts[1]
+            .parse::<f64>()
+            .map_err(|_| ScanError::InvalidParameter {
+                reason: format!("invalid y coordinate: {}", parts[1]),
+            })?;
+        let z = parts[2]
+            .parse::<f64>()
+            .map_err(|_| ScanError::InvalidParameter {
+                reason: format!("invalid z coordinate: {}", parts[2]),
+            })?;
 
         let mut point = CloudPoint::new(Point3::new(x, y, z));
 
@@ -386,7 +394,7 @@ mod tests {
         let mut file = File::create(&path).unwrap();
         writeln!(file, "# This is a comment").unwrap();
         writeln!(file, "// Another comment").unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(file, "0 0 0").unwrap();
         writeln!(file, "1 1 1").unwrap();
         drop(file);

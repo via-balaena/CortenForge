@@ -279,11 +279,7 @@ impl Transform3D {
         let mut result = mesh.clone();
 
         for vertex in &mut result.vertices {
-            let pos = Vector3::new(
-                vertex.position.x,
-                vertex.position.y,
-                vertex.position.z,
-            );
+            let pos = Vector3::new(vertex.position.x, vertex.position.y, vertex.position.z);
             let transformed = self.transform_point(pos);
             vertex.position.x = transformed.x;
             vertex.position.y = transformed.y;
@@ -420,9 +416,12 @@ mod tests {
     #[test]
     fn apply_to_mesh() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(mesh_types::Vertex::from_coords(1.0, 0.0, 0.0));
-        mesh.vertices.push(mesh_types::Vertex::from_coords(0.0, 1.0, 0.0));
-        mesh.vertices.push(mesh_types::Vertex::from_coords(0.0, 0.0, 1.0));
+        mesh.vertices
+            .push(mesh_types::Vertex::from_coords(1.0, 0.0, 0.0));
+        mesh.vertices
+            .push(mesh_types::Vertex::from_coords(0.0, 1.0, 0.0));
+        mesh.vertices
+            .push(mesh_types::Vertex::from_coords(0.0, 0.0, 1.0));
         mesh.faces.push([0, 1, 2]);
 
         let t = Transform3D::translation(10.0, 20.0, 30.0);
@@ -571,7 +570,10 @@ mod tests {
         assert_relative_eq!(transformed.vertices[0].position.y, 1.0, epsilon = 1e-10);
 
         // Normal should also rotate
-        let norm = transformed.vertices[0].attributes.normal.unwrap_or_else(Vector3::zeros);
+        let norm = transformed.vertices[0]
+            .attributes
+            .normal
+            .unwrap_or_else(Vector3::zeros);
         assert_relative_eq!(norm.x, 0.0, epsilon = 1e-10);
         assert_relative_eq!(norm.y, 1.0, epsilon = 1e-10);
     }

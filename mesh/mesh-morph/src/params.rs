@@ -403,9 +403,10 @@ mod tests {
     #[test]
     fn test_with_constraints() {
         let params = MorphParams::rbf()
-            .with_constraints(vec![
-                Constraint::point(Point3::origin(), Point3::new(1.0, 0.0, 0.0)),
-            ])
+            .with_constraints(vec![Constraint::point(
+                Point3::origin(),
+                Point3::new(1.0, 0.0, 0.0),
+            )])
             .with_constraint(Constraint::point(
                 Point3::new(1.0, 0.0, 0.0),
                 Point3::new(2.0, 0.0, 0.0),

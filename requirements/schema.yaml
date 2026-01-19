@@ -1,0 +1,200 @@
+# CortenForge Requirement Schema
+#
+# This defines the structure for all requirement YAML files.
+# Validates against this schema for consistency.
+#
+# Version: 1.0.0
+
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "https://cortenforge.dev/schemas/requirement-v1.yaml"
+
+title: CortenForge Requirement
+description: Schema for structured requirements with traceability
+
+type: object
+required:
+  - id
+  - title
+  - category
+  - priority
+  - status
+  - description
+  - verification
+
+properties:
+  id:
+    type: string
+    pattern: "^REQ-[A-Z]+-[0-9]{3}$"
+    description: Unique requirement identifier (e.g., REQ-MESH-001)
+
+  title:
+    type: string
+    minLength: 5
+    maxLength: 100
+    description: Short, descriptive title
+
+  category:
+    type: string
+    enum:
+      - functional      # What the system does
+      - performance     # How fast/efficient
+      - safety          # Safety-critical behavior
+      - security        # Security requirements
+      - interface       # API/integration requirements
+      - constraint      # Design constraints
+    description: Requirement category
+
+  priority:
+    type: string
+    enum:
+      - CRITICAL  # System fails without this
+      - HIGH      # Core functionality
+      - MEDIUM    # Important feature
+      - LOW       # Nice to have
+    description: Implementation priority
+
+  status:
+    type: string
+    enum:
+      - draft         # Not yet approved
+      - approved      # Approved, not implemented
+      - implemented   # Code exists
+      - verified      # Tests pass
+      - deprecated    # No longer applicable
+    description: Current status
+
+  description:
+    type: string
+    minLength: 20
+    description: Full requirement description
+
+  rationale:
+    type: string
+    description: Why this requirement exists
+
+  acceptance_criteria:
+    type: array
+    items:
+      type: string
+    description: Specific criteria for acceptance
+
+  verification:
+    type: object
+    required:
+      - method
+    properties:
+      method:
+        type: string
+        enum:
+          - test        # Automated tests
+          - review      # Code review
+          - analysis    # Static analysis
+          - inspection  # Manual inspection
+          - demo        # Demonstration
+      tests:
+        type: array
+        items:
+          type: object
+          required:
+            - crate
+            - function
+          properties:
+            crate:
+              type: string
+            function:
+              type: string
+            coverage:
+              type: string
+              enum: [full, partial]
+      review_record:
+        type: string
+        format: uri
+      analysis_tool:
+        type: string
+
+  implementation:
+    type: array
+    items:
+      type: object
+      required:
+        - crate
+      properties:
+        crate:
+          type: string
+        module:
+          type: string
+        function:
+          type: string
+    description: Where this is implemented
+
+  traces_to:
+    type: array
+    items:
+      type: string
+    description: What this requirement traces to (risks, parent reqs)
+
+  traces_from:
+    type: array
+    items:
+      type: string
+    description: What traces to this requirement (parent reqs)
+
+  dependencies:
+    type: array
+    items:
+      type: string
+      pattern: "^REQ-[A-Z]+-[0-9]{3}$"
+    description: Other requirements this depends on
+
+  history:
+    type: array
+    items:
+      type: object
+      required:
+        - date
+        - author
+        - change
+      properties:
+        date:
+          type: string
+          format: date
+        author:
+          type: string
+        change:
+          type: string
+    description: Change history
+
+  notes:
+    type: string
+    description: Additional notes
+
+# Examples for documentation
+examples:
+  - id: REQ-MESH-001
+    title: Mesh Topology Validation
+    category: functional
+    priority: HIGH
+    status: verified
+    description: |
+      The system shall detect non-manifold meshes including:
+      - Open (boundary) edges
+      - Self-intersecting triangles
+      - Degenerate triangles (zero area)
+      - Duplicate triangles
+    rationale: |
+      Non-manifold meshes cause failures in downstream operations.
+    verification:
+      method: test
+      tests:
+        - crate: mesh-repair
+          function: tests::test_detect_open_edges
+          coverage: full
+    implementation:
+      - crate: mesh-repair
+        module: validate
+    traces_to:
+      - RISK-001
+    history:
+      - date: "2026-01-18"
+        author: CortenForge Team
+        change: Initial requirement

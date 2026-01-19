@@ -66,7 +66,10 @@ pub fn run(ci_mode: bool) -> Result<()> {
         println!("{}", "✗ Some checks failed.".red().bold());
         std::process::exit(1);
     } else {
-        println!("{}", "⚠ Some checks failed. Fix before committing.".yellow());
+        println!(
+            "{}",
+            "⚠ Some checks failed. Fix before committing.".yellow()
+        );
         Ok(())
     }
 }
@@ -176,9 +179,12 @@ fn run_fmt_check(sh: &Shell) -> Result<()> {
 }
 
 fn run_clippy(sh: &Shell) -> Result<()> {
-    cmd!(sh, "cargo clippy --all-targets --all-features -- -D warnings")
-        .run()
-        .context("Clippy check failed")?;
+    cmd!(
+        sh,
+        "cargo clippy --all-targets --all-features -- -D warnings"
+    )
+    .run()
+    .context("Clippy check failed")?;
     Ok(())
 }
 
@@ -199,10 +205,13 @@ fn run_doc_check(sh: &Shell) -> Result<()> {
 
 fn run_safety_scan(sh: &Shell) -> Result<()> {
     // Scan all src/ directories for unwrap/expect/panic in library code
-    let output = cmd!(sh, "grep -rn --include='*.rs' -E '\\.(unwrap|expect)\\(' . 2>/dev/null")
-        .ignore_status()
-        .read()
-        .unwrap_or_default();
+    let output = cmd!(
+        sh,
+        "grep -rn --include='*.rs' -E '\\.(unwrap|expect)\\(' . 2>/dev/null"
+    )
+    .ignore_status()
+    .read()
+    .unwrap_or_default();
 
     let mut violations = 0;
     for line in output.lines() {
@@ -213,13 +222,14 @@ fn run_safety_scan(sh: &Shell) -> Result<()> {
             || line.contains("#[cfg(test)]")
             || line.contains("/examples/")
             || line.contains("/benches/")
-            || line.contains("/xtask/") // Allow in dev tooling
+            || line.contains("/xtask/")
+        // Allow in dev tooling
         {
             continue;
         }
 
         // Skip comments
-        let trimmed = line.split(':').last().unwrap_or("").trim();
+        let trimmed = line.split(':').next_back().unwrap_or("").trim();
         if trimmed.starts_with("//") || trimmed.starts_with("///") {
             continue;
         }

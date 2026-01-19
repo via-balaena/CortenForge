@@ -39,7 +39,7 @@ mod ransac;
 mod transform;
 
 pub use error::{TransformError, TransformResult};
-pub use pca::{pca_axes, pca_axes_checked, pca_from_points, PcaResult};
+pub use pca::{PcaResult, pca_axes, pca_axes_checked, pca_from_points};
 pub use plane::Plane;
-pub use ransac::{ransac_plane, ransac_plane_from_points, RansacConfig, RansacResult};
+pub use ransac::{RansacConfig, RansacResult, ransac_plane, ransac_plane_from_points};
 pub use transform::Transform3D;

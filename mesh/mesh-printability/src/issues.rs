@@ -184,7 +184,10 @@ mod tests {
     #[test]
     fn test_issue_type_as_str() {
         assert_eq!(PrintIssueType::ThinWall.as_str(), "Thin Wall");
-        assert_eq!(PrintIssueType::ExcessiveOverhang.as_str(), "Excessive Overhang");
+        assert_eq!(
+            PrintIssueType::ExcessiveOverhang.as_str(),
+            "Excessive Overhang"
+        );
         assert_eq!(PrintIssueType::NotWatertight.as_str(), "Not Watertight");
     }
 

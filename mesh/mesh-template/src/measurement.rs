@@ -347,7 +347,10 @@ mod tests {
 
     #[test]
     fn test_measurement_type_equality() {
-        assert_eq!(MeasurementType::Circumference, MeasurementType::Circumference);
+        assert_eq!(
+            MeasurementType::Circumference,
+            MeasurementType::Circumference
+        );
         assert_ne!(MeasurementType::Width, MeasurementType::Height);
     }
 }

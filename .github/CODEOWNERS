@@ -1,0 +1,31 @@
+# CortenForge Code Owners
+#
+# These owners are automatically requested for review on PRs
+# that modify matching files. Combined with branch protection
+# requiring approvals, this ensures the right people review.
+#
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+* @jonhillesheim
+
+# Critical infrastructure - requires owner review
+/.github/ @jonhillesheim
+/STANDARDS.md @jonhillesheim
+/INFRASTRUCTURE.md @jonhillesheim
+/CONTRIBUTING.md @jonhillesheim
+/SECURITY.md @jonhillesheim
+/Cargo.toml @jonhillesheim
+/deny.toml @jonhillesheim
+/rustfmt.toml @jonhillesheim
+/clippy.toml @jonhillesheim
+
+# Quality enforcement tooling
+/xtask/ @jonhillesheim
+
+# Foundation crates (high impact)
+/mesh/mesh-types/ @jonhillesheim
+/mesh/mesh-io/ @jonhillesheim
+/mesh/mesh-repair/ @jonhillesheim
+/sensor/sensor-types/ @jonhillesheim
+/ml/ml-types/ @jonhillesheim

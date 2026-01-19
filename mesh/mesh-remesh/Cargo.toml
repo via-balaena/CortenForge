@@ -17,6 +17,11 @@ hashbrown = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "remesh_benchmarks"
+harness = false
 
 [lints]
 workspace = true

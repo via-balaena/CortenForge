@@ -25,9 +25,9 @@
 //! let result = remove_spikes(&mesh, &params);
 //! ```
 
-use std::collections::{HashMap, HashSet};
 use mesh_types::{IndexedMesh, Vertex};
 use nalgebra::{Point3, Vector3};
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{ScanError, ScanResult};
 
@@ -377,7 +377,8 @@ fn detect_spikes(
             .collect();
 
         if let Some(protrusion) = compute_protrusion(&vertex.position, &neighbor_positions) {
-            let avg_edge_length = compute_average_edge_length(&vertex.position, &neighbor_positions);
+            let avg_edge_length =
+                compute_average_edge_length(&vertex.position, &neighbor_positions);
 
             if avg_edge_length > 0.0 && protrusion / avg_edge_length > params.max_protrusion_ratio {
                 spikes.push(*vertex_idx);
@@ -433,10 +434,7 @@ fn compute_average_normal(
     vertex_normals: &HashMap<u32, Vector3<f64>>,
     neighbors: &[u32],
 ) -> Vector3<f64> {
-    let sum: Vector3<f64> = neighbors
-        .iter()
-        .filter_map(|n| vertex_normals.get(n))
-        .sum();
+    let sum: Vector3<f64> = neighbors.iter().filter_map(|n| vertex_normals.get(n)).sum();
 
     let norm = sum.norm();
     if norm > 1e-10 {
@@ -501,10 +499,7 @@ fn compute_average_edge_length(vertex: &Point3<f64>, neighbors: &[Point3<f64>]) 
         return 0.0;
     }
 
-    let total: f64 = neighbors
-        .iter()
-        .map(|n| (n - vertex).norm())
-        .sum();
+    let total: f64 = neighbors.iter().map(|n| (n - vertex).norm()).sum();
 
     #[allow(clippy::cast_precision_loss)]
     {
@@ -652,7 +647,7 @@ mod tests {
         };
 
         let display = format!("{result}");
-        assert!(display.contains("5"));
+        assert!(display.contains('5'));
         assert!(display.contains("smoothed"));
     }
 
@@ -733,10 +728,7 @@ mod tests {
     #[test]
     fn test_compute_average_edge_length() {
         let vertex = Point3::new(0.0, 0.0, 0.0);
-        let neighbors = vec![
-            Point3::new(1.0, 0.0, 0.0),
-            Point3::new(0.0, 1.0, 0.0),
-        ];
+        let neighbors = vec![Point3::new(1.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)];
         let avg_len = compute_average_edge_length(&vertex, &neighbors);
 
         assert!((avg_len - 1.0).abs() < 1e-10);

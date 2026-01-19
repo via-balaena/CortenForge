@@ -144,7 +144,9 @@ pub fn dimensions(mesh: &IndexedMesh) -> Dimensions {
         width,
         depth,
         height,
-        diagonal: height.mul_add(height, width.mul_add(width, depth * depth)).sqrt(),
+        diagonal: height
+            .mul_add(height, width.mul_add(width, depth * depth))
+            .sqrt(),
         bounding_volume: width * depth * height,
         center: Point3::new(
             f64::midpoint(min.x, max.x),
@@ -157,7 +159,7 @@ pub fn dimensions(mesh: &IndexedMesh) -> Dimensions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{unit_cube, Vertex};
+    use mesh_types::{Vertex, unit_cube};
 
     fn create_test_cube(size: f64) -> IndexedMesh {
         let mut cube = unit_cube();

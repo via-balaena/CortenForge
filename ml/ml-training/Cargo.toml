@@ -1,0 +1,35 @@
+[package]
+name = "ml-training"
+description = "Training loops, loss functions, and box matching for CortenForge ML models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Internal
+ml-types = { workspace = true }
+ml-models = { workspace = true }
+ml-dataset = { workspace = true }
+
+# ML framework
+burn = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+burn-ndarray = { workspace = true }
+tempfile = { workspace = true }

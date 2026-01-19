@@ -163,7 +163,10 @@ pub fn detect_holes(_mesh: &IndexedMesh, adjacency: &MeshAdjacency) -> Vec<Bound
     info!(
         "Detected {} holes (boundary loops), sizes: {:?}",
         loops.len(),
-        loops.iter().map(BoundaryLoop::edge_count).collect::<Vec<_>>()
+        loops
+            .iter()
+            .map(BoundaryLoop::edge_count)
+            .collect::<Vec<_>>()
     );
 
     loops

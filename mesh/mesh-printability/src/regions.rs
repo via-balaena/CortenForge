@@ -128,8 +128,8 @@ mod tests {
 
     #[test]
     fn test_overhang_region() {
-        let region = OverhangRegion::new(Point3::new(5.0, 5.0, 5.0), 60.0, 50.0)
-            .with_faces(vec![10, 20]);
+        let region =
+            OverhangRegion::new(Point3::new(5.0, 5.0, 5.0), 60.0, 50.0).with_faces(vec![10, 20]);
 
         assert!((region.angle - 60.0).abs() < f64::EPSILON);
         assert!((region.area - 50.0).abs() < f64::EPSILON);

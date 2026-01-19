@@ -1,0 +1,39 @@
+[package]
+name = "ml-dataset"
+description = "Dataset lifecycle management for CortenForge: load, split, augment, warehouse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Internal
+ml-types = { workspace = true }
+sensor-types = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Random for splits
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+
+# Image processing (optional, for augmentation)
+image = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+default = []
+# Enable image loading/saving
+image = ["dep:image"]

@@ -68,7 +68,7 @@ mod vertex;
 
 // Re-export core types
 pub use bounds::Aabb;
-pub use mesh::{unit_cube, IndexedMesh};
+pub use mesh::{IndexedMesh, unit_cube};
 pub use traits::{MeshBounds, MeshTopology};
 pub use triangle::Triangle;
 pub use vertex::{Vertex, VertexAttributes, VertexColor};

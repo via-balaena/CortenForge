@@ -12,10 +12,9 @@
 //!
 //! where lambda controls the smoothing strength (typically 0.5).
 
-use std::collections::{HashMap, HashSet};
 use mesh_types::IndexedMesh;
 use nalgebra::Vector3;
-
+use std::collections::{HashMap, HashSet};
 
 /// Applies one iteration of Laplacian smoothing.
 ///
@@ -28,7 +27,7 @@ use nalgebra::Vector3;
 /// # Returns
 ///
 /// The smoothed mesh and the maximum vertex displacement.
-#[must_use] 
+#[must_use]
 pub fn smooth_laplacian(
     mesh: &IndexedMesh,
     lambda: f64,
@@ -110,7 +109,7 @@ pub fn smooth_laplacian(
 /// # Returns
 ///
 /// The smoothed mesh and statistics about the operation.
-#[must_use] 
+#[must_use]
 pub fn smooth_laplacian_iterations(
     mesh: &IndexedMesh,
     iterations: u32,

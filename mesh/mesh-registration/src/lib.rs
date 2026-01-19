@@ -116,9 +116,9 @@ mod landmark;
 mod transform;
 
 pub use error::{RegistrationError, RegistrationResult};
-pub use icp::{icp_align, icp_align_points, IcpParams, IcpResult};
+pub use icp::{IcpParams, IcpResult, icp_align, icp_align_points};
 pub use kabsch::{compute_rigid_transform, compute_weighted_rigid_transform};
-pub use landmark::{align_by_landmarks, align_points_to_points, Landmark, LandmarkParams};
+pub use landmark::{Landmark, LandmarkParams, align_by_landmarks, align_points_to_points};
 pub use transform::RigidTransform;
 
 /// Applies a rigid transform to a mesh, returning a new transformed mesh.
@@ -140,7 +140,10 @@ pub use transform::RigidTransform;
 /// assert!((transformed.vertices[0].position.x - 5.0).abs() < 1e-10);
 /// ```
 #[must_use]
-pub fn transform_mesh(mesh: &mesh_types::IndexedMesh, transform: &RigidTransform) -> mesh_types::IndexedMesh {
+pub fn transform_mesh(
+    mesh: &mesh_types::IndexedMesh,
+    transform: &RigidTransform,
+) -> mesh_types::IndexedMesh {
     let mut result = mesh.clone();
     for v in &mut result.vertices {
         let transformed = transform.transform_point(&v.position);
@@ -325,7 +328,11 @@ mod tests {
 
         assert!(result.converged);
         // ICP may have some residual error
-        assert!(result.rms_error < 2.0, "RMS error too large: {}", result.rms_error);
+        assert!(
+            result.rms_error < 2.0,
+            "RMS error too large: {}",
+            result.rms_error
+        );
     }
 
     #[test]

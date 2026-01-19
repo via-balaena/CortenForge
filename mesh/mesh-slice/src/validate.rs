@@ -442,7 +442,7 @@ pub fn validate_for_sla(mesh: &IndexedMesh, params: &SlaParams) -> SlaValidation
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{unit_cube, Vertex};
+    use mesh_types::{Vertex, unit_cube};
 
     fn create_test_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();

@@ -78,7 +78,10 @@ pub struct MultiMeshStats {
 /// let meshes = vec![sphere1, sphere2, sphere3, sphere4];
 /// let result = multi_union(&meshes, &BooleanConfig::default())?;
 /// ```
-pub fn multi_union(meshes: &[IndexedMesh], config: &BooleanConfig) -> BooleanResult<MultiMeshResult> {
+pub fn multi_union(
+    meshes: &[IndexedMesh],
+    config: &BooleanConfig,
+) -> BooleanResult<MultiMeshResult> {
     multi_boolean(meshes, BooleanOp::Union, config)
 }
 
@@ -188,7 +191,11 @@ fn tree_reduce_sequential(
         depth += 1;
     }
 
-    Ok((meshes.into_iter().next().unwrap_or_default(), operations, depth))
+    Ok((
+        meshes.into_iter().next().unwrap_or_default(),
+        operations,
+        depth,
+    ))
 }
 
 /// Parallel tree reduction using rayon.

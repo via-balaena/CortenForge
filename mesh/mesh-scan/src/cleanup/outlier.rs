@@ -37,7 +37,6 @@
 
 use kiddo::{KdTree, SquaredEuclidean};
 
-
 use crate::error::{ScanError, ScanResult};
 use crate::pointcloud::{CloudPoint, PointCloud};
 use mesh_types::IndexedMesh;
@@ -221,7 +220,10 @@ pub fn remove_outliers(cloud: &PointCloud, params: &OutlierParams) -> PointCloud
 /// println!("{}", result);
 /// ```
 #[must_use]
-pub fn remove_outliers_with_result(cloud: &PointCloud, params: &OutlierParams) -> OutlierRemovalResult {
+pub fn remove_outliers_with_result(
+    cloud: &PointCloud,
+    params: &OutlierParams,
+) -> OutlierRemovalResult {
     let original_count = cloud.points.len();
 
     if original_count <= params.k_neighbors {
@@ -272,11 +274,7 @@ fn compute_outlier_mask(cloud: &PointCloud, params: &OutlierParams) -> (Vec<bool
             let neighbors = kdtree.nearest_n::<SquaredEuclidean>(&query, params.k_neighbors + 1);
 
             // Skip the first neighbor (self) and compute mean distance
-            let sum: f64 = neighbors
-                .iter()
-                .skip(1)
-                .map(|n| n.distance.sqrt())
-                .sum();
+            let sum: f64 = neighbors.iter().skip(1).map(|n| n.distance.sqrt()).sum();
 
             #[allow(clippy::cast_precision_loss)]
             let mean = if neighbors.len() > 1 {
@@ -516,7 +514,7 @@ mod tests {
 
         let display = format!("{result}");
         assert!(display.contains("100"));
-        assert!(display.contains("5"));
+        assert!(display.contains('5'));
     }
 
     #[test]
@@ -552,8 +550,8 @@ mod tests {
         for i in 0..50 {
             mesh.vertices.push(Vertex::from_coords(
                 f64::from(i) * 0.1,
-                (i as f64) * 0.001,
-                (i as f64) * 0.002,
+                f64::from(i) * 0.001,
+                f64::from(i) * 0.002,
             ));
         }
         // Add outlier
@@ -580,7 +578,8 @@ mod tests {
 
         let mut mesh = IndexedMesh::new();
         for i in 0..5 {
-            mesh.vertices.push(Vertex::from_coords(f64::from(i), 0.0, 0.0));
+            mesh.vertices
+                .push(Vertex::from_coords(f64::from(i), 0.0, 0.0));
         }
 
         let params = OutlierParams::new().with_k_neighbors(10);
@@ -601,7 +600,7 @@ mod tests {
                 mesh.vertices.push(Vertex::from_coords(
                     f64::from(i),
                     f64::from(j),
-                    (i * 10 + j) as f64 * 0.001,
+                    f64::from(i * 10 + j) * 0.001,
                 ));
             }
         }

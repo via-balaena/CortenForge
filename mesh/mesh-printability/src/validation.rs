@@ -457,10 +457,12 @@ mod tests {
         let config = PrinterConfig::fdm_default().with_build_volume(5.0, 5.0, 5.0);
 
         let result = validate_for_printing(&mesh, &config).expect("Should succeed");
-        assert!(result
-            .issues
-            .iter()
-            .any(|i| i.issue_type == PrintIssueType::ExceedsBuildVolume));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.issue_type == PrintIssueType::ExceedsBuildVolume)
+        );
         assert!(!result.is_printable());
     }
 
@@ -470,10 +472,12 @@ mod tests {
         let config = PrinterConfig::fdm_default().with_build_volume(100.0, 100.0, 100.0);
 
         let result = validate_for_printing(&mesh, &config).expect("Should succeed");
-        assert!(!result
-            .issues
-            .iter()
-            .any(|i| i.issue_type == PrintIssueType::ExceedsBuildVolume));
+        assert!(
+            !result
+                .issues
+                .iter()
+                .any(|i| i.issue_type == PrintIssueType::ExceedsBuildVolume)
+        );
     }
 
     #[test]
@@ -482,10 +486,12 @@ mod tests {
         let config = PrinterConfig::fdm_default();
 
         let result = validate_for_printing(&mesh, &config).expect("Should succeed");
-        assert!(result
-            .issues
-            .iter()
-            .any(|i| i.issue_type == PrintIssueType::NotWatertight));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.issue_type == PrintIssueType::NotWatertight)
+        );
     }
 
     #[test]
@@ -494,10 +500,12 @@ mod tests {
         let config = PrinterConfig::fdm_default();
 
         let result = validate_for_printing(&mesh, &config).expect("Should succeed");
-        assert!(!result
-            .issues
-            .iter()
-            .any(|i| i.issue_type == PrintIssueType::NotWatertight));
+        assert!(
+            !result
+                .issues
+                .iter()
+                .any(|i| i.issue_type == PrintIssueType::NotWatertight)
+        );
     }
 
     #[test]
@@ -562,10 +570,12 @@ mod tests {
 
         let result = validate_for_printing(&mesh, &config).expect("Should succeed");
         // SLS doesn't check overhangs
-        assert!(!result
-            .issues
-            .iter()
-            .any(|i| i.issue_type == PrintIssueType::ExcessiveOverhang));
+        assert!(
+            !result
+                .issues
+                .iter()
+                .any(|i| i.issue_type == PrintIssueType::ExcessiveOverhang)
+        );
     }
 
     #[test]
@@ -573,12 +583,16 @@ mod tests {
         let config = PrinterConfig::fdm_default();
         let mut validation = PrintValidation::new(config);
 
-        validation
-            .support_regions
-            .push(SupportRegion::new(Point3::new(0.0, 0.0, 0.0), 100.0, 10.0));
-        validation
-            .support_regions
-            .push(SupportRegion::new(Point3::new(0.0, 0.0, 0.0), 200.0, 20.0));
+        validation.support_regions.push(SupportRegion::new(
+            Point3::new(0.0, 0.0, 0.0),
+            100.0,
+            10.0,
+        ));
+        validation.support_regions.push(SupportRegion::new(
+            Point3::new(0.0, 0.0, 0.0),
+            200.0,
+            20.0,
+        ));
 
         assert!((validation.total_support_volume() - 300.0).abs() < f64::EPSILON);
     }

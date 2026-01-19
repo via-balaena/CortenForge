@@ -667,11 +667,7 @@ fn build_edge_to_faces(faces: &[[u32; 3]]) -> HashMap<(u32, u32), Vec<u32>> {
 
 /// Normalize an edge so the smaller vertex index comes first.
 fn normalize_edge(v0: u32, v1: u32) -> (u32, u32) {
-    if v0 < v1 {
-        (v0, v1)
-    } else {
-        (v1, v0)
-    }
+    if v0 < v1 { (v0, v1) } else { (v1, v0) }
 }
 
 #[cfg(test)]
@@ -683,16 +679,12 @@ mod tests {
         let mut mesh = IndexedMesh::new();
 
         // 8 vertices of a 10x10x10 cube
-        mesh.vertices
-            .push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices
-            .push(Vertex::new(Point3::new(10.0, 0.0, 0.0)));
+        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
+        mesh.vertices.push(Vertex::new(Point3::new(10.0, 0.0, 0.0)));
         mesh.vertices
             .push(Vertex::new(Point3::new(10.0, 10.0, 0.0)));
-        mesh.vertices
-            .push(Vertex::new(Point3::new(0.0, 10.0, 0.0)));
-        mesh.vertices
-            .push(Vertex::new(Point3::new(0.0, 0.0, 10.0)));
+        mesh.vertices.push(Vertex::new(Point3::new(0.0, 10.0, 0.0)));
+        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 10.0)));
         mesh.vertices
             .push(Vertex::new(Point3::new(10.0, 0.0, 10.0)));
         mesh.vertices
@@ -846,8 +838,7 @@ mod tests {
         let mesh = create_test_cube();
 
         // Select vertices near z=0 plane
-        let selector =
-            RegionSelector::plane(Point3::new(0.0, 0.0, 0.0), Vector3::z(), 0.1);
+        let selector = RegionSelector::plane(Point3::new(0.0, 0.0, 0.0), Vector3::z(), 0.1);
 
         let (vertices, _) = selector.select(&mesh);
         assert_eq!(vertices.len(), 4); // Bottom 4 vertices

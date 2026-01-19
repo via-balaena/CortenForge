@@ -59,17 +59,17 @@
 mod error;
 mod obj;
 mod ply;
-mod stl;
 #[cfg(feature = "step")]
 mod step;
+mod stl;
 mod threemf;
 
 pub use error::{IoError, IoResult};
 pub use obj::{load_obj, save_obj};
 pub use ply::{load_ply, save_ply};
-pub use stl::{load_stl, save_stl};
 #[cfg(feature = "step")]
 pub use step::{load_step, save_step};
+pub use stl::{load_stl, save_stl};
 pub use threemf::{load_3mf, save_3mf};
 
 use std::path::Path;
@@ -248,8 +248,14 @@ mod tests {
 
     #[test]
     fn format_from_path_3mf() {
-        assert_eq!(MeshFormat::from_path("model.3mf"), Some(MeshFormat::ThreeMf));
-        assert_eq!(MeshFormat::from_path("model.3MF"), Some(MeshFormat::ThreeMf));
+        assert_eq!(
+            MeshFormat::from_path("model.3mf"),
+            Some(MeshFormat::ThreeMf)
+        );
+        assert_eq!(
+            MeshFormat::from_path("model.3MF"),
+            Some(MeshFormat::ThreeMf)
+        );
         assert_eq!(
             MeshFormat::from_path("/path/to/model.3mf"),
             Some(MeshFormat::ThreeMf)

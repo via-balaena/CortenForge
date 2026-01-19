@@ -141,13 +141,7 @@ fn process_cell(
 }
 
 /// Interpolate vertex position along an edge.
-fn interpolate_vertex(
-    p0: Point3<f64>,
-    p1: Point3<f64>,
-    v0: f64,
-    v1: f64,
-    iso: f64,
-) -> Point3<f64> {
+fn interpolate_vertex(p0: Point3<f64>, p1: Point3<f64>, v0: f64, v1: f64, iso: f64) -> Point3<f64> {
     let denom = v1 - v0;
     if denom.abs() < f64::EPSILON {
         return Point3::from((p0.coords + p1.coords) * 0.5);

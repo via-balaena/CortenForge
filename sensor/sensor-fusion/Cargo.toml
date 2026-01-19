@@ -1,0 +1,29 @@
+[package]
+name = "sensor-fusion"
+description = "Stream synchronization, temporal interpolation, and coordinate transforms for CortenForge sensors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Internal
+sensor-types = { workspace = true }
+
+# Math
+glam = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }

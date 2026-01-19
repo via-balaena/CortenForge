@@ -27,6 +27,7 @@
 mod check;
 mod complete;
 mod grade;
+mod setup;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -79,6 +80,12 @@ enum Commands {
 
     /// List all crates and their current grades
     Status,
+
+    /// Set up development environment (git hooks, verify tools)
+    Setup,
+
+    /// Remove git hooks installed by setup
+    Uninstall,
 }
 
 fn main() -> Result<()> {
@@ -93,5 +100,7 @@ fn main() -> Result<()> {
         } => complete::run(&crate_name, skip_review),
         Commands::Ci => check::run_ci(),
         Commands::Status => grade::status(),
+        Commands::Setup => setup::run(),
+        Commands::Uninstall => setup::uninstall(),
     }
 }

@@ -84,7 +84,9 @@ Here's what has been migrated vs what remains:
 
 ## Quick Status
 
-### Completed Crates (26)
+### Completed Crates (32)
+
+#### Mesh Domain (26 crates)
 | Crate | Tests | Status |
 |-------|-------|--------|
 | mesh-types | 35 unit, 33 doc | A-GRADE |
@@ -113,6 +115,20 @@ Here's what has been migrated vs what remains:
 | mesh-lattice | 84 unit, 28 doc | A-GRADE |
 | mesh-template | 102 unit, 46 doc | A-GRADE |
 | mesh-gpu | 35 unit, 9 integration | A-GRADE |
+
+#### Sensor Domain (2 crates)
+| Crate | Tests | Status |
+|-------|-------|--------|
+| sensor-types | 80+ unit, 20+ doc | A-GRADE |
+| sensor-fusion | 74 unit, 8 doc | A-GRADE |
+
+#### ML Domain (4 crates)
+| Crate | Tests | Status |
+|-------|-------|--------|
+| ml-types | 90+ unit, 15+ doc | A-GRADE |
+| ml-models | 45+ unit, 10+ doc | A-GRADE |
+| ml-dataset | 63 unit, 11 doc | A-GRADE |
+| ml-training | 89 unit, 10 doc | A-GRADE |
 
 ### Implementation Order
 
@@ -148,13 +164,17 @@ SEPARATE TRACKS (independent):
 
 ---
 
-## Quality Infrastructure (COMPLETE)
+## Quality Infrastructure (COMPLETE - SIEMENS-SCALE)
+
+> **See INFRASTRUCTURE.md for the full constraint specification.**
 
 ### Quality Documents
 
 - [x] **CONTRIBUTING.md** - The culture document ("A-grade or it doesn't ship")
 - [x] **STANDARDS.md** - Full quality criteria (Seven A-grade criteria)
 - [x] **COMPLETION_LOG.md** - Project-wide completion tracking
+- [x] **INFRASTRUCTURE.md** - Full constraint specification (Siemens-scale)
+- [x] **SECURITY.md** - Security policy, signed commits, vulnerability reporting
 
 ### Enforcement Tools
 
@@ -163,6 +183,8 @@ SEPARATE TRACKS (independent):
   - `cargo xtask grade <crate>` - Grade a crate against A-grade standard
   - `cargo xtask complete <crate>` - Record A-grade completion
   - `cargo xtask ci` - Full CI suite
+  - `cargo xtask setup` - Install git hooks and verify tools
+  - `cargo xtask uninstall` - Remove git hooks
 
 ### Configuration Files
 
@@ -171,9 +193,56 @@ SEPARATE TRACKS (independent):
 - [x] **deny.toml** - Dependency policy (cargo-deny)
 - [x] **.cargo/config.toml** - Enables `cargo xtask` alias
 
-### CI/CD
+### CI/CD (Siemens-Scale)
 
 - [x] **.github/workflows/quality-gate.yml** - GitHub Actions quality gate
+  - Format, Clippy, Tests (3 platforms + ARM64)
+  - Coverage (≥90% threshold)
+  - Safety scan (unwrap/expect detection)
+  - Security scan (cargo-audit)
+  - Dependency policy (cargo-deny)
+  - Semver checks (cargo-semver-checks)
+  - SBOM generation (CycloneDX)
+  - Layer 0 Bevy-free verification
+  - WASM compatibility check
+- [x] **.github/workflows/release.yml** - Release automation
+  - Multi-platform builds
+  - SBOM attached to releases
+  - Auto-generated changelog from conventional commits
+  - Signed releases
+- [x] **.github/workflows/scheduled.yml** - Weekly maintenance
+  - Fresh security advisories
+  - Dependency freshness check
+  - Mutation testing (cargo-mutants)
+  - Benchmark baseline
+  - Supply chain verification (cargo-vet)
+  - MSRV check
+
+### Pre-Commit Hooks
+
+- [x] **pre-commit** - Format + Clippy + Safety scan
+- [x] **commit-msg** - Conventional commit enforcement
+
+### Traceability Infrastructure (ISO 26262 / IEC 62304 / DO-178C Ready)
+
+- [x] **requirements/** - Structured requirements directory
+- [x] **requirements/schema.yaml** - Requirement schema definition
+- [x] **requirements/mesh/REQ-MESH-001.yaml** - Example requirement with full traceability
+
+### Test Infrastructure (COMPLETE)
+
+- [x] **Umbrella crate** - `mesh/mesh/` re-exports all 26 mesh-* crates with prelude
+- [x] **Fuzz testing** - `mesh/mesh-io/fuzz/` with 4 targets (STL, OBJ, PLY, 3MF)
+- [x] **Property-based testing** - `mesh/mesh-repair/tests/proptest_mesh.rs` (9 tests)
+- [x] **Visual regression** - `mesh/mesh-repair/tests/visual_regression.rs` (7 tests)
+- [x] **Thingi10k conformance** - `mesh/mesh-io/tests/thingi10k_conformance.rs`
+- [x] **Benchmarks** - 7 benchmark files across crates (io, repair, decimate, remesh, shell, boolean, gpu)
+- [x] **Mutation testing** - Weekly cargo-mutants runs on critical crates
+
+### Intentionally Not Migrated
+
+- **mesh-cli** - Apps own their CLI; no SDK-level CLI
+- **Pipeline config** - Redundant with modular crate architecture; apps define their own workflows
 
 ### Quality Checklist (Per Crate)
 
@@ -855,6 +924,543 @@ Has its own git repo - integrate when needed.
 
 These are independent of the mesh work and can be done in parallel when needed.
 
+---
+
+## Sensor and ML Architecture
+
+> **Philosophy**: Sim ↔ Real parity. Train in simulation, deploy to hardware. Same types, same inference path.
+>
+> **Burn-native**: Deep integration with Burn ML framework, not thin abstractions.
+> **Bevy-native**: Layer 1 will be pure ECS, not wrapped legacy code.
+
+### Key Design Decisions
+
+1. **No separate vision-types crate** - `Frame`, `DetectionResult`, `BoundingBox`, etc. are ML inference types, not general vision types. They live in `ml-types`.
+2. **Burn-native** - No generic `Detector` trait. Models return Burn tensors directly.
+3. **WGPU default** - GPU acceleration by default, NdArray as fallback feature.
+4. **Sim ↔ Real** - Same sensor types work for Bevy simulation AND real hardware.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              LAYER 1: Bevy SDK                               │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │                           cortenforge                                    ││
+│  │    CfMeshPlugin · CfSensorPlugin · CfMlPlugin · CfSimPlugin · CfUi     ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         LAYER 0: Pure Rust Foundation                        │
+│                           (Zero Bevy Dependencies)                           │
+├─────────────────────────┬───────────────────────────┬───────────────────────┤
+│       sensor/*          │          ml/*             │       mesh/*          │
+├─────────────────────────┼───────────────────────────┼───────────────────────┤
+│ sensor-types            │ ml-types                  │ (26 crates complete)  │
+│ sensor-fusion           │ ml-models                 │                       │
+│                         │ ml-dataset                │                       │
+│                         │ ml-training               │                       │
+└─────────────────────────┴───────────────────────────┴───────────────────────┘
+```
+
+### Data Flow: Sim ↔ Real Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          TRAINING LOOP                                       │
+│                                                                             │
+│   Simulation (Bevy)              Real World Hardware                        │
+│        │                              │                                     │
+│        ▼                              ▼                                     │
+│   Synthetic Sensor Data         Real Sensor Data                            │
+│   (sensor-types)                (sensor-types)                              │
+│        │                              │                                     │
+│        └──────────┬───────────────────┘                                     │
+│                   ▼                                                         │
+│         Mixed Dataset (ml-dataset)                                          │
+│                   │                                                         │
+│                   ▼                                                         │
+│         Training (ml-training)                                              │
+│                   │                                                         │
+│                   ▼                                                         │
+│         Trained Model (ml-models checkpoint)                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         INFERENCE + FEEDBACK (CI/CD)                         │
+│                                                                             │
+│   Deploy to Real World ──► Run Inference ──► Collect New Data               │
+│                                                    │                        │
+│                                                    ▼                        │
+│                                           Label (human/auto)                │
+│                                                    │                        │
+│                                                    ▼                        │
+│                                            Back to Dataset                  │
+│                                           (TFX-style pipeline)              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Dependency Graph
+
+```
+sensor-types (foundation - raw sensor data)
+      │
+      ├──────────────────────────────┐
+      ▼                              ▼
+sensor-fusion                   ml-types (includes Frame, DetectionResult, labels, metadata)
+                                     │
+                    ┌────────────────┼────────────────┐
+                    ▼                ▼                ▼
+               ml-models        ml-dataset      (uses sensor-types)
+                    │                │
+                    └────────┬───────┘
+                             ▼
+                        ml-training
+```
+
+---
+
+## Sensor Domain (2 crates)
+
+### sensor-types (A-GRADE COMPLETE) ← FOUNDATION
+
+**Purpose**: Hardware-agnostic sensor data types. Used by:
+- Real hardware drivers (ROS2, custom drivers)
+- Bevy simulation plugins (simulated sensors)
+- ML models (input data)
+- Dataset storage (serialized sensor readings)
+
+**Source**: New crate (no direct archive equivalent)
+
+**Design Note**: These are RAW sensor types. Processing/inference types (`Frame`, `DetectionResult`) go in `ml-types`.
+
+- [x] Create `sensor/sensor-types/Cargo.toml`
+- [x] Create `src/lib.rs` with module structure
+- [x] Create `src/time.rs` - `Timestamp`, `TimeRange`, `Duration`
+- [x] Create `src/frame.rs` - `CoordinateFrame`, `Pose3D`
+- [x] Create `src/imu.rs` - `ImuReading` (acceleration, angular velocity)
+- [x] Create `src/camera.rs` - `CameraFrame`, `CameraIntrinsics`, `CameraExtrinsics`
+- [x] Create `src/depth.rs` - `DepthMap`, `DepthPixel`
+- [x] Create `src/lidar.rs` - `LidarScan`, `LidarPoint`
+- [x] Create `src/force.rs` - `ForceTorqueReading`
+- [x] Create `src/encoder.rs` - `EncoderReading`, `JointState`
+- [x] Create `src/gps.rs` - `GpsReading`, `GpsAccuracy`
+- [x] Create `src/bundle.rs` - `SensorBundle` (multi-sensor container)
+- [x] Create `src/error.rs` - `SensorError`
+- [x] Write unit tests (80+ tests)
+- [x] Write doc tests (20+ tests)
+
+**Tests**: 80+ unit tests, 20+ doc tests
+
+**Dependencies**: `serde`, `thiserror`
+
+**Status**: A-GRADE COMPLETE
+
+---
+
+### sensor-fusion (A-GRADE COMPLETE)
+
+**Purpose**: Real-time stream synchronization, temporal alignment, spatial transforms, multi-rate buffering. Critical for combining multiple sensors into a coherent input for ML.
+
+**Source**: New crate (no direct archive equivalent)
+
+**Use Cases**:
+- Align IMU (1kHz) with camera (30Hz) for visual-inertial odometry
+- Transform LiDAR points from sensor frame to body frame
+- Buffer and interpolate sensor readings for consistent timestamps
+- Fuse depth + RGB into RGBD
+
+- [x] Create `sensor/sensor-fusion/Cargo.toml`
+- [x] Create `src/lib.rs`
+- [x] Create `src/sync.rs` - `StreamSynchronizer`, `SyncPolicy`, `SyncResult`
+- [x] Create `src/buffer.rs` - `StreamBuffer<T>`, time-ordered circular buffer
+- [x] Create `src/transform.rs` - `Transform3D`, `TransformChain` (rigid body transforms)
+- [x] Create `src/interpolation.rs` - `Interpolator`, `InterpolationMethod` (linear, nearest, previous, next)
+- [x] Create `src/error.rs` - `FusionError`
+- [x] Write unit tests (74 tests)
+- [x] Write doc tests (8 tests)
+
+| Feature | Description |
+|---------|-------------|
+| `StreamSynchronizer` | Align readings from multiple sensors to common timebase |
+| `SyncPolicy::Nearest` | Use temporally nearest reading (no interpolation) |
+| `SyncPolicy::Interpolate` | Linear interpolation between readings |
+| `SyncPolicy::DropUnmatched` | Skip streams without valid readings |
+| `StreamBuffer<T>` | Time-ordered circular buffer for streaming data |
+| `Transform3D` | Rigid body transform (rotation + translation) |
+| `TransformChain` | Named chain of transforms for sensor calibration |
+| `Interpolator` | Temporal interpolation with multiple methods |
+
+**Tests**: 74 unit tests, 8 doc tests
+
+**Dependencies**: `sensor-types`, `glam`, `serde`, `thiserror`
+
+**Status**: A-GRADE COMPLETE
+
+---
+
+## ML Domain (4 crates)
+
+> **Design Decision**: Burn-native. No generic `Detector` trait abstraction. Models return tensors directly.
+> Backend default: WGPU primary, NdArray as fallback feature flag.
+>
+> **IMPORTANT**: `ml-types` includes BOTH dataset schemas AND inference types (`Frame`, `DetectionResult`, etc.)
+> We merged vision-types into ml-types because all "vision" types are ML inference types.
+
+### ml-types (A-GRADE COMPLETE)
+
+**Purpose**: ALL ML-related types:
+1. **Inference types**: `Frame`, `DetectionResult`, `BoundingBox`, `SegmentationMask`, `KeypointSet`
+2. **Dataset schemas**: `DetectionLabel`, `LabelSource`, `CaptureMetadata`, `RunManifest`
+3. **Preprocessing**: `ImageStats`
+
+**Source**:
+- `/Users/jonhillesheim/forge/archive/CortenForge-old/crates/data_contracts/` (labels, metadata)
+- `/Users/jonhillesheim/forge/archive/CortenForge-old/crates/vision_core/src/interfaces.rs` (Frame, DetectionResult)
+
+**Design Note**: We merged what was planned as `vision-types` into `ml-types` because `Frame`, `DetectionResult`, etc. are ML inference types with no use outside ML context.
+
+- [x] Create `ml/ml-types/Cargo.toml`
+- [x] Create `src/lib.rs`
+- [x] Create `src/frame.rs` - `Frame` (processed image ready for inference)
+- [x] Create `src/detection.rs` - `DetectionResult`, `BoundingBox`
+- [x] Create `src/segmentation.rs` - `SegmentationMask`, `InstanceMask`
+- [x] Create `src/keypoints.rs` - `KeypointSet`, `Keypoint`, `Skeleton`
+- [x] Create `src/tracking.rs` - `TrackingState`, `TrackId`
+- [x] Create `src/label.rs` - `DetectionLabel`, `LabelSource`, `ClassLabel`
+- [x] Create `src/metadata.rs` - `CaptureMetadata`, `FrameMetadata`
+- [x] Create `src/manifest.rs` - `RunManifest`, `DatasetManifest`, schema versioning
+- [x] Create `src/stats.rs` - `ImageStats` (mean, std, aspect for normalization)
+- [x] Create `src/validation.rs` - Label validation utilities
+- [x] Create `src/error.rs` - `MlTypesError`
+- [x] Write unit tests (90+ tests)
+- [x] Write doc tests (15+ tests)
+
+**Tests**: 90+ unit tests, 15+ doc tests
+
+**Status**: A-GRADE COMPLETE
+
+**Inference Types** (from archived vision_core):
+
+| Type | Description | Source |
+|------|-------------|--------|
+| `Frame` | Processed image ready for ML | `vision_core::interfaces::Frame` |
+| `DetectionResult` | Inference output (boxes + scores) | `vision_core::interfaces::DetectionResult` |
+| `BoundingBox` | Normalized box `[x0, y0, x1, y1]` in 0..1 | New |
+| `SegmentationMask` | Per-pixel class labels | New |
+| `InstanceMask` | Per-pixel instance IDs | New |
+| `KeypointSet` | Body/object keypoints | New |
+| `Keypoint` | Single keypoint with confidence | New |
+| `Skeleton` | Keypoint connectivity graph | New |
+| `TrackingState` | Object tracking across frames | New |
+| `TrackId` | Unique track identifier | New |
+
+**Dataset Schema Types** (from archived data_contracts):
+
+| Type | Description | Source |
+|------|-------------|--------|
+| `DetectionLabel` | Ground truth box + class | `data_contracts::capture::DetectionLabel` |
+| `LabelSource` | Provenance enum: `SimAuto`, `Human`, `Model` | `data_contracts::capture::LabelSource` |
+| `ClassLabel` | Class ID + name | New |
+| `CaptureMetadata` | Per-frame metadata | `data_contracts::capture::CaptureMetadata` |
+| `FrameMetadata` | Lightweight frame info | New |
+| `RunManifest` | Dataset run metadata | `data_contracts::manifest::RunManifest` |
+| `DatasetManifest` | Multi-run dataset metadata | New |
+| `ImageStats` | Normalization stats (mean, std, aspect) | `data_contracts::preprocess::ImageStats` |
+
+**Frame struct details** (from archive):
+```rust
+pub struct Frame {
+    pub id: u64,
+    pub timestamp: f64,          // Sim or capture timestamp (seconds)
+    pub rgba: Option<Vec<u8>>,   // Optional raw RGBA8 data
+    pub size: (u32, u32),        // Image dimensions (width, height)
+    pub path: Option<PathBuf>,   // Optional on-disk location for lazy loading
+}
+```
+
+**DetectionResult struct details** (from archive):
+```rust
+pub struct DetectionResult {
+    pub frame_id: u64,
+    pub positive: bool,          // Any detection above threshold?
+    pub confidence: f32,         // Overall confidence
+    pub boxes: Vec<[f32; 4]>,    // Normalized boxes [x0,y0,x1,y1] in 0..1
+    pub scores: Vec<f32>,        // Per-box scores aligned with boxes
+}
+```
+
+**DetectionLabel struct details** (from archive):
+```rust
+pub struct DetectionLabel {
+    pub center_world: [f32; 3],           // 3D world position
+    pub bbox_px: Option<[f32; 4]>,        // Pixel coordinates
+    pub bbox_norm: Option<[f32; 4]>,      // Normalized 0..1
+    pub source: Option<LabelSource>,      // SimAuto, Human, or Model
+    pub source_confidence: Option<f32>,   // Confidence if Model-generated
+}
+```
+
+**Dependencies**: `sensor-types` (for `CameraFrame` → `Frame` conversion), `serde`, `thiserror`
+
+**Status**: NOT STARTED
+
+---
+
+### ml-models (A-GRADE COMPLETE)
+
+**Purpose**: Burn model architectures + checkpoint persistence. Self-contained models that know how to save/load themselves.
+
+**Source**:
+- `/Users/jonhillesheim/forge/archive/CortenForge-old/crates/models/src/lib.rs`
+- `/Users/jonhillesheim/forge/archive/CortenForge-old/crates/inference/src/factory.rs` (checkpoint loading)
+
+**Design Note**: We merged `ml-inference` into `ml-models`. A model should know how to serialize/deserialize itself.
+
+- [x] Create `ml/ml-models/Cargo.toml`
+- [x] Create `src/lib.rs`
+- [x] Create `src/classifier.rs` - `LinearClassifier`, `LinearClassifierConfig`
+- [x] Create `src/multibox.rs` - `MultiboxModel`, `MultiboxModelConfig`
+- [x] Create `src/checkpoint.rs` - `CheckpointFormat`, `CheckpointMetadata`
+- [x] Create `src/backend.rs` - Backend utilities
+- [x] Create `src/error.rs` - `ModelError`
+- [x] Write unit tests (45+ tests)
+- [x] Write doc tests (10+ tests)
+
+**Tests**: 45+ unit tests, 10+ doc tests
+
+**Status**: A-GRADE COMPLETE
+
+**LinearClassifier** (from archive):
+```rust
+#[derive(Debug, Module)]
+pub struct LinearClassifier<B: Backend> {
+    linear1: nn::Linear<B>,  // 4 → hidden
+    linear2: nn::Linear<B>,  // hidden → 1
+}
+
+pub struct LinearClassifierConfig {
+    pub hidden: usize,  // default: 64
+}
+
+// Forward: [B, 4] → relu → [B, 1] (logit)
+```
+
+**MultiboxModel** (from archive):
+```rust
+#[derive(Debug, Module)]
+pub struct MultiboxModel<B: Backend> {
+    stem: nn::Linear<B>,           // input_dim → hidden
+    blocks: Vec<nn::Linear<B>>,    // depth layers: hidden → hidden
+    box_head: nn::Linear<B>,       // hidden → max_boxes * 4
+    score_head: nn::Linear<B>,     // hidden → max_boxes
+    max_boxes: usize,
+    input_dim: usize,
+}
+
+pub struct MultiboxModelConfig {
+    pub hidden: usize,           // default: 128
+    pub depth: usize,            // default: 2
+    pub max_boxes: usize,        // default: 64
+    pub input_dim: Option<usize>, // default: 4, or 12 with features
+}
+
+// forward(): [B, D] → [B, max_boxes] scores
+// forward_multibox(): [B, D] → ([B, max_boxes, 4] boxes, [B, max_boxes] scores)
+```
+
+| Model | Description | Input → Output |
+|-------|-------------|----------------|
+| `LinearClassifier` | 2-layer feedforward | `[B, 4]` → `[B, 1]` (binary score) |
+| `MultiboxModel` | Multi-box detection | `[B, D]` → `([B, N, 4], [B, N])` (boxes, scores) |
+
+**Features**:
+- `backend-wgpu` (default) - GPU acceleration via WGPU
+- `backend-ndarray` - CPU fallback
+
+**Backend type aliases** (compile-time selection):
+```rust
+#[cfg(feature = "backend-wgpu")]
+pub type DefaultBackend = burn_wgpu::Wgpu<f32>;
+
+#[cfg(all(not(feature = "backend-wgpu"), feature = "backend-ndarray"))]
+pub type DefaultBackend = burn_ndarray::NdArray<f32>;
+```
+
+**Dependencies**: `burn`, `burn-wgpu` (optional), `burn-ndarray` (optional), `ml-types`, `thiserror`
+
+**Status**: NOT STARTED
+
+---
+
+### ml-dataset (A-GRADE COMPLETE)
+
+**Purpose**: Full dataset lifecycle - load, validate, split, augment, warehouse, record, visualize, prune.
+
+**Source**:
+- `/Users/jonhillesheim/forge/archive/CortenForge-old/crates/burn_dataset/`
+- `/Users/jonhillesheim/forge/archive/CortenForge-old/crates/capture_utils/`
+
+- [x] Create `ml/ml-dataset/Cargo.toml`
+- [x] Create `src/lib.rs`
+- [x] Create `src/sample.rs` - `DatasetSample`, `ResizeMode`
+- [x] Create `src/loader.rs` - `DatasetLoader`, `LoaderConfig`
+- [x] Create `src/splits.rs` - `split_dataset()`, `SplitConfig`, `DatasetSplits`
+- [x] Create `src/augment.rs` - `AugmentConfig`, `AugmentPipeline`
+- [x] Create `src/summary.rs` - `DatasetSummary` (statistics)
+- [x] Create `src/warehouse.rs` - `WarehouseManifest`, `ShardMetadata`, `ShardBuilder`
+- [x] Create `src/error.rs` - `DatasetError`
+- [x] Write unit tests (63 tests)
+- [x] Write doc tests (11 tests)
+
+**Tests**: 63 unit tests, 11 doc tests
+
+**Status**: A-GRADE COMPLETE
+
+**DatasetSample** (from archive):
+```rust
+pub struct DatasetSample {
+    pub frame_id: u64,
+    pub image_chw: Vec<f32>,  // Image in CHW layout, normalized to [0, 1]
+    pub width: u32,
+    pub height: u32,
+    pub boxes: Vec<[f32; 4]>, // Normalized bounding boxes
+}
+```
+
+**ShardMetadata** (from archive):
+```rust
+pub struct ShardMetadata {
+    pub id: String,
+    pub relative_path: String,
+    pub shard_version: u32,
+    pub samples: usize,
+    pub width: u32,
+    pub height: u32,
+    pub channels: u32,
+    pub max_boxes: usize,
+    pub checksum_sha256: Option<String>,
+    pub dtype: ShardDType,  // F32 or F16
+    pub endianness: Endianness,
+}
+```
+
+| Feature | Description | Source |
+|---------|-------------|--------|
+| `load_run_dataset()` | Load samples from filesystem | `burn_dataset::capture` |
+| `index_runs()` | Index all runs in a directory | `burn_dataset::capture` |
+| `split_runs_stratified()` | Train/val split by box count | `burn_dataset::splits` |
+| `TransformPipeline` | Augmentation chain (resize, normalize) | `burn_dataset::aug` |
+| `WarehouseManifest` | Shard-based storage manifest | `burn_dataset::warehouse` |
+| `WarehouseLoaders` | Load shards, iterate samples | `burn_dataset::warehouse` |
+| `BurnBatch` | Burn-compatible batch tensors | `burn_dataset::batch` |
+| `JsonRecorder` | Write frame metadata to JSON | `capture_utils` |
+| `generate_overlays()` | Render detection boxes on images | `capture_utils` |
+| `prune_run()` | Filter/copy dataset by criteria | `capture_utils` |
+
+**Features**:
+- `burn-runtime` - Enable Burn batch iteration (`BurnBatch`, `BatchIter`)
+
+**Dependencies**: `ml-types`, `sensor-types`, `burn` (optional), `serde`, `serde_json`, `image`, `thiserror`
+
+**Status**: NOT STARTED
+
+---
+
+### ml-training (A-GRADE COMPLETE)
+
+**Purpose**: Training loops, loss functions, optimization. Takes model + dataset, produces trained checkpoint.
+
+**Source**: `/Users/jonhillesheim/forge/archive/CortenForge-old/crates/training/`
+
+- [x] Create `ml/ml-training/Cargo.toml`
+- [x] Create `src/lib.rs`
+- [x] Create `src/config.rs` - `TrainingConfig`, `OptimizerConfig`, `LearningRateSchedule`
+- [x] Create `src/loss.rs` - `box_loss`, `classification_loss`, `detection_loss`, `compute_iou`, `giou_loss`
+- [x] Create `src/matching.rs` - `BoxMatcher`, `MatchResult`, `MatchStrategy`
+- [x] Create `src/trainer.rs` - `Trainer`, `TrainingState`
+- [x] Create `src/metrics.rs` - `EpochMetrics`, `TrainingMetrics`
+- [x] Create `src/error.rs` - `TrainingError`
+- [x] Write unit tests (89 tests)
+- [x] Write doc tests (10 tests)
+
+**Tests**: 89 unit tests, 10 doc tests (1 ignored)
+
+**Status**: A-GRADE COMPLETE
+
+**CollatedBatch** (from archive):
+```rust
+pub struct CollatedBatch<B: Backend> {
+    pub boxes: Tensor<B, 3>,     // [batch, max_boxes, 4]
+    pub box_mask: Tensor<B, 2>,  // [batch, max_boxes] - 1.0 where valid
+    pub features: Tensor<B, 2>,  // [batch, feature_dim] - image stats
+}
+```
+
+**TrainConfig** (derived from archive TrainArgs, without clap):
+```rust
+pub struct TrainConfig {
+    pub epochs: usize,
+    pub batch_size: usize,
+    pub learning_rate: f32,
+    pub max_boxes: usize,
+    pub lambda_box: f32,     // Loss weight for box regression
+    pub lambda_obj: f32,     // Loss weight for objectness
+    pub checkpoint_dir: PathBuf,
+}
+```
+
+**Loss computation** (from archive):
+- Box regression: L1 loss on matched predictions only
+- Objectness: BCE loss with sigmoid on predicted scores
+- Matching: Greedy IoU-based matching (assign each GT to best pred)
+
+| Feature | Description | Source |
+|---------|-------------|--------|
+| `collate()` | Batch collation with padding | `training::dataset` |
+| `collate_from_burn_batch()` | Collate from warehouse batch | `training::dataset` |
+| `run_train()` | Training loop with checkpoints | `training::util` |
+| `build_greedy_targets()` | GT-pred matching by IoU | `training::util` |
+| `iou_xyxy()` | IoU computation for boxes | `training::util` |
+| `TrainConfig` | Training hyperparameters | `training::util::TrainArgs` (without clap) |
+
+**Features**:
+- `backend-wgpu` (default) - GPU training
+- `backend-ndarray` - CPU fallback
+
+**Dependencies**: `ml-models`, `ml-dataset`, `ml-types`, `burn`, `thiserror`
+
+**Status**: NOT STARTED
+
+---
+
+## Migration Order
+
+```
+Phase 1: Foundation Types ✅ COMPLETE
+├── 1. sensor-types     ✅ A-GRADE (raw sensor data)
+└── 2. ml-types         ✅ A-GRADE (inference types + dataset schemas)
+
+Phase 2: ML Core ✅ COMPLETE
+├── 3. ml-models        ✅ A-GRADE (Burn architectures + checkpoint)
+├── 4. ml-dataset       ✅ A-GRADE (dataset lifecycle)
+└── 5. ml-training      ✅ A-GRADE (training loops)
+
+Phase 3: Sensor Fusion ✅ COMPLETE
+└── 6. sensor-fusion    ✅ A-GRADE (stream sync, transforms)
+
+Phase 4: Layer 1 Bevy SDK (after Layer 0 solid)
+└── 7. cortenforge      (CfSensorPlugin, CfMlPlugin, CfSimPlugin) - NOT STARTED
+```
+
+**Total: 6 new crates COMPLETE** (sensor-types, sensor-fusion, ml-types, ml-models, ml-dataset, ml-training)
+
+---
+
 ## Spatial Foundation
 
 ### cf-spatial (NOT STARTED)
@@ -888,49 +1494,26 @@ These are independent of the mesh work and can be done in parallel when needed.
 
 ---
 
-## ML Foundation
-
-### ml-models (NOT STARTED)
-- [ ] Extract from CortenForge/crates/models/
-
-### ml-inference (NOT STARTED)
-- [ ] Extract from CortenForge/crates/inference/
-
-### ml-dataset (NOT STARTED)
-- [ ] Extract from CortenForge/crates/burn_dataset/
-
-### ml-training (NOT STARTED)
-- [ ] Extract from CortenForge/crates/training/
-
----
-
-## Vision & Sim Foundation
-
-### vision-core (NOT STARTED)
-- [ ] Extract from CortenForge/crates/vision_core/
-
-### vision-capture (NOT STARTED)
-- [ ] Extract capture utilities
-
-### sim-core (NOT STARTED)
-- [ ] Extract from CortenForge/crates/sim_core/
-
-### sim-physics (NOT STARTED)
-- [ ] Physics abstractions
-
----
-
 ## Layer 1 - CortenForge Bevy SDK
 
 ### cortenforge crate (NOT STARTED)
 
 Only start after Layer 0 is solid.
 
-- [ ] `CfMeshPlugin`
-- [ ] `CfRoutingPlugin`
-- [ ] `CfVisionPlugin`
-- [ ] `CfSimPlugin`
-- [ ] `CfUiPlugin`
+- [ ] `CfMeshPlugin` - Mesh asset loading, repair systems
+- [ ] `CfSensorPlugin` - Simulated sensors, sensor components
+- [ ] `CfVisionPlugin` - Capture camera, GPU readback, frame buffer
+- [ ] `CfMlPlugin` - Async inference scheduling, detector resources
+- [ ] `CfSimPlugin` - Camera controller, autopilot, recorder systems
+- [ ] `CfUiPlugin` - Detection overlays, debug visualization
+
+**Bevy-specific systems migrated from archive:**
+- Camera systems (`setup_camera`, `camera_controller`, `pov_toggle_system`)
+- Capture plugin (`CapturePlugin` → `CfVisionPlugin`)
+- Inference runtime (`InferenceRuntimePlugin` → `CfMlPlugin`)
+- Sim config (`SimPlugin`, `SimConfig`, `SimRunMode`)
+- Autopilot (`AutoDrive`, `DatagenInit`)
+- Recorder (`RecorderConfig`, `RecorderState`)
 
 ---
 
@@ -941,30 +1524,23 @@ When adding new crates, update `/Users/jonhillesheim/forge/cortenforge/Cargo.tom
 ```toml
 [workspace]
 members = [
-    # ... existing ...
+    # Mesh (complete - 26 crates)
+    "mesh/mesh-types",
+    "mesh/mesh-io",
+    # ... all 26 mesh crates ...
 
-    # New mesh crates
-    "mesh/mesh-shell",
-    "mesh/mesh-decimate",
-    "mesh/mesh-subdivide",
-    "mesh/mesh-remesh",
-    "mesh/mesh-measure",
-    "mesh/mesh-thickness",
-    "mesh/mesh-slice",
-    "mesh/mesh-boolean",
-    "mesh/mesh-morph",
-    "mesh/mesh-registration",
-    "mesh/mesh-scan",
-    "mesh/mesh-printability",
-    "mesh/mesh-lattice",
-    "mesh/mesh-assembly",
-    "mesh/mesh-region",
-    "mesh/mesh-template",
-    "mesh/mesh-gpu",
+    # Sensor (2 crates)
+    "sensor/sensor-types",
+    "sensor/sensor-fusion",
+
+    # ML (4 crates - includes inference types, no separate vision crate)
+    "ml/ml-types",
+    "ml/ml-models",
+    "ml/ml-dataset",
+    "ml/ml-training",
 
     # Geometry
     "geometry/curve-types",
-    "geometry/lumen-geometry",
 
     # Spatial
     "crates/cf-spatial",
@@ -974,28 +1550,25 @@ members = [
     "routing/route-pathfind",
     "routing/route-optimize",
 
-    # ML
-    "ml/ml-models",
-    "ml/ml-inference",
-    "ml/ml-dataset",
-    "ml/ml-training",
-
-    # Vision/Sim
-    "vision/vision-core",
-    "vision/vision-capture",
-    "sim/sim-core",
-    "sim/sim-physics",
-
-    # SDK
+    # SDK (Layer 1)
     "cortenforge",
 ]
 
 [workspace.dependencies]
-# Add internal crate dependencies as they're created
-mesh-shell = { path = "mesh/mesh-shell" }
-mesh-decimate = { path = "mesh/mesh-decimate" }
-mesh-subdivide = { path = "mesh/mesh-subdivide" }
-# ... etc
+# Sensor
+sensor-types = { path = "sensor/sensor-types" }
+sensor-fusion = { path = "sensor/sensor-fusion" }
+
+# ML (no vision-types - merged into ml-types)
+ml-types = { path = "ml/ml-types" }
+ml-models = { path = "ml/ml-models" }
+ml-dataset = { path = "ml/ml-dataset" }
+ml-training = { path = "ml/ml-training" }
+
+# External - ML
+burn = "0.15"
+burn-wgpu = "0.15"
+burn-ndarray = "0.15"
 ```
 
 ---
@@ -1007,7 +1580,12 @@ mesh-subdivide = { path = "mesh/mesh-subdivide" }
 3. **lumen-geometry archived**: `/Users/jonhillesheim/forge/archive/lumen-geometry/` (separate git repo)
 4. Focus on clean, modular APIs that can be composed together
 5. Each crate should be usable independently (Layer 0 = no Bevy deps)
+6. **Sim ↔ Real parity**: Same sensor-types work for simulation AND real hardware
+7. **Burn-native**: Deep Burn integration, not generic ML traits
+8. **CI/CD ready**: Dataset and training crates support TFX-style pipelines
+9. **No vision-types crate**: `Frame`, `DetectionResult`, etc. are ML inference types → live in `ml-types`
+10. **6 new crates total**: sensor-types, sensor-fusion, ml-types, ml-models, ml-dataset, ml-training
 
 ---
 
-*Last updated: 2026-01-18 (mesh-gpu complete - 26 crates total, MESH DOMAIN COMPLETE)*
+*Last updated: 2026-01-18 (mesh domain complete, sensor/ml domains complete - 32 A-grade crates total)*

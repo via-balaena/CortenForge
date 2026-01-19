@@ -438,7 +438,7 @@ fn compute_points_bounds(points: &[Point3<f64>]) -> (Point3<f64>, Point3<f64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{unit_cube, Vertex};
+    use mesh_types::{Vertex, unit_cube};
 
     fn create_test_cube(size: f64) -> IndexedMesh {
         let mut cube = unit_cube();

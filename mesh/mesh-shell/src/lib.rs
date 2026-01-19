@@ -98,12 +98,12 @@ pub use builder::{ShellBuildResult, ShellBuilder};
 
 // Shell generation
 pub use shell::{
-    generate_shell, generate_shell_no_validation, ShellGenerationResult, ShellParams,
-    WallGenerationMethod,
+    ShellGenerationResult, ShellParams, WallGenerationMethod, generate_shell,
+    generate_shell_no_validation,
 };
 
 // Shell validation
-pub use shell::{validate_shell, ShellIssue, ShellValidationResult};
+pub use shell::{ShellIssue, ShellValidationResult, validate_shell};
 
 // Rim generation and boundary analysis
-pub use shell::{analyze_boundary, generate_rim, BoundaryAnalysis, RimResult};
+pub use shell::{BoundaryAnalysis, RimResult, analyze_boundary, generate_rim};

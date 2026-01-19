@@ -28,11 +28,10 @@
 //! let result = gpu.union(&mesh_a, &mesh_b, &GpuBooleanConfig::default())?;
 //! ```
 
-use crate::bvh::Aabb;
 use crate::classify::FaceLocation;
 use crate::error::{BooleanError, BooleanResult};
 use bytemuck::{Pod, Zeroable};
-use mesh_types::{IndexedMesh, Point3};
+use mesh_types::IndexedMesh;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -262,7 +261,7 @@ impl GpuContext {
             compute_pass.set_bind_group(0, &bind_group, &[]);
 
             let workgroup_size = 64;
-            let num_workgroups = (centroids.len() as u32 + workgroup_size - 1) / workgroup_size;
+            let num_workgroups = (centroids.len() as u32).div_ceil(workgroup_size);
             compute_pass.dispatch_workgroups(num_workgroups, 1, 1);
         }
 
@@ -357,7 +356,7 @@ struct GpuParams {
 }
 
 /// WGSL shader for ray casting.
-const RAY_CAST_SHADER: &str = r#"
+const RAY_CAST_SHADER: &str = r"
 struct Params {
     num_centroids: u32,
     num_triangles: u32,
@@ -446,7 +445,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     results[idx] = count;
 }
-"#;
+";
 
 /// Check if GPU acceleration is available.
 ///

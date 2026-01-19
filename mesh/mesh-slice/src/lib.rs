@@ -62,14 +62,14 @@ mod validate;
 
 // Re-export main types and functions
 pub use error::{SliceError, SliceResult};
-pub use export::{export_layer_svg, SvgExportParams};
+pub use export::{SvgExportParams, export_layer_svg};
 pub use layer::{Contour, Layer, LayerBounds, LayerStats};
 pub use params::SliceParams;
 pub use result::SliceResult as SliceOutput;
 pub use slicer::{slice_mesh, slice_preview};
 pub use validate::{
-    validate_for_fdm, validate_for_sla, FdmParams, FdmValidationResult, GapIssue,
-    SlaParams, SlaValidationResult, SmallFeatureIssue, ThinWallIssue,
+    FdmParams, FdmValidationResult, GapIssue, SlaParams, SlaValidationResult, SmallFeatureIssue,
+    ThinWallIssue, validate_for_fdm, validate_for_sla,
 };
 
 // Re-export nalgebra types for convenience

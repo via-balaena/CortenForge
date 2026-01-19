@@ -2,8 +2,8 @@
 
 use crate::{ControlRegion, FitParams, FitResult, RegionDefinition, TemplateResult};
 use mesh_types::IndexedMesh;
-use std::collections::HashMap;
 use nalgebra::Point3;
+use std::collections::HashMap;
 
 /// A template mesh with named control regions for fitting.
 ///
@@ -130,7 +130,10 @@ impl FitTemplate {
     /// assert_eq!(template.region_names().len(), 2);
     /// ```
     #[must_use]
-    pub fn with_control_regions(mut self, regions: impl IntoIterator<Item = ControlRegion>) -> Self {
+    pub fn with_control_regions(
+        mut self,
+        regions: impl IntoIterator<Item = ControlRegion>,
+    ) -> Self {
         for region in regions {
             self.control_regions.insert(region.name.clone(), region);
         }
@@ -413,8 +416,8 @@ mod tests {
     #[test]
     fn test_get_landmark_position_vertices() {
         let mesh = make_triangle();
-        let template = FitTemplate::new(mesh)
-            .with_control_region(ControlRegion::vertices("base", vec![0, 1]));
+        let template =
+            FitTemplate::new(mesh).with_control_region(ControlRegion::vertices("base", vec![0, 1]));
 
         // Centroid of vertices 0 (0,0,0) and 1 (1,0,0) is (0.5, 0, 0)
         let pos = template.get_landmark_position("base").unwrap();
@@ -449,8 +452,7 @@ mod tests {
         let template = FitTemplate::new(mesh);
         assert_eq!(template.region_count(), 0);
 
-        let template =
-            template.with_control_region(ControlRegion::point("test", Point3::origin()));
+        let template = template.with_control_region(ControlRegion::point("test", Point3::origin()));
         assert_eq!(template.region_count(), 1);
     }
 

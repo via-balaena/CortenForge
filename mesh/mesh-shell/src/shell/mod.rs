@@ -8,8 +8,8 @@ pub mod rim;
 pub mod validation;
 
 pub use generate::{
-    generate_shell, generate_shell_no_validation, ShellGenerationResult, ShellParams,
-    WallGenerationMethod,
+    ShellGenerationResult, ShellParams, WallGenerationMethod, generate_shell,
+    generate_shell_no_validation,
 };
-pub use rim::{analyze_boundary, generate_rim, BoundaryAnalysis, RimResult};
-pub use validation::{validate_shell, ShellIssue, ShellValidationResult};
+pub use rim::{BoundaryAnalysis, RimResult, analyze_boundary, generate_rim};
+pub use validation::{ShellIssue, ShellValidationResult, validate_shell};

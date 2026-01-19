@@ -7,7 +7,7 @@ use nalgebra::Vector3;
 
 use crate::adjacency::FaceAdjacency;
 use crate::error::{ZoneError, ZoneResult};
-use crate::grow::{grow_region, GrowConfig};
+use crate::grow::{GrowConfig, grow_region};
 use crate::zone_map::ZoneMap;
 
 /// Configuration for automatic segmentation.

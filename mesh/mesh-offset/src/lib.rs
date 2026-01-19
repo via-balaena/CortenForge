@@ -71,5 +71,5 @@ mod offset;
 
 pub use error::{OffsetError, OffsetResult};
 pub use grid::ScalarGrid;
-pub use marching_cubes::{marching_cubes, MarchingCubesConfig};
-pub use offset::{offset_mesh, offset_mesh_default, OffsetConfig};
+pub use marching_cubes::{MarchingCubesConfig, marching_cubes};
+pub use offset::{OffsetConfig, offset_mesh, offset_mesh_default};

@@ -136,8 +136,7 @@ pub fn decimate_mesh(mesh: &IndexedMesh, params: &DecimateParams) -> DecimationR
     };
 
     // Build initial edge collapse queue
-    let mut heap =
-        build_collapse_queue(mesh, &quadrics, &boundary_edges, &sharp_edges, params);
+    let mut heap = build_collapse_queue(mesh, &quadrics, &boundary_edges, &sharp_edges, params);
 
     // Track which vertices have been merged (maps old index -> new index)
     let mut vertex_remap: HashMap<u32, u32> = HashMap::new();
@@ -266,11 +265,7 @@ pub fn decimate_mesh(mesh: &IndexedMesh, params: &DecimateParams) -> DecimationR
 // ============================================================================
 
 const fn normalize_edge(v1: u32, v2: u32) -> (u32, u32) {
-    if v1 < v2 {
-        (v1, v2)
-    } else {
-        (v2, v1)
-    }
+    if v1 < v2 { (v1, v2) } else { (v2, v1) }
 }
 
 fn get_actual_vertex(mut v: u32, remap: &HashMap<u32, u32>) -> u32 {
@@ -346,7 +341,10 @@ fn compute_face_normal(mesh: &IndexedMesh, face: &[u32; 3]) -> Option<[f64; 3]> 
     ];
 
     let len = normal[0]
-        .mul_add(normal[0], normal[1].mul_add(normal[1], normal[2] * normal[2]))
+        .mul_add(
+            normal[0],
+            normal[1].mul_add(normal[1], normal[2] * normal[2]),
+        )
         .sqrt();
     if len < 1e-10 {
         return None;
@@ -373,7 +371,10 @@ fn compute_vertex_quadrics(mesh: &IndexedMesh) -> Vec<Quadric> {
         ];
 
         let len = normal[0]
-            .mul_add(normal[0], normal[1].mul_add(normal[1], normal[2] * normal[2]))
+            .mul_add(
+                normal[0],
+                normal[1].mul_add(normal[1], normal[2] * normal[2]),
+            )
             .sqrt();
         if len < 1e-10 {
             continue;

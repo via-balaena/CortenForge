@@ -92,7 +92,7 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     println!();
     println!(
         "{}",
-        format!("╔══════════════════════════════════════════════════════════════╗")
+        "╔══════════════════════════════════════════════════════════════╗".to_string()
             .bright_white()
             .bold()
     );
@@ -104,7 +104,7 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     );
     println!(
         "{}",
-        format!("╠══════════════════════════════════════════════════════════════╣")
+        "╠══════════════════════════════════════════════════════════════╣".to_string()
             .bright_white()
             .bold()
     );
@@ -118,7 +118,7 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     );
     println!(
         "{}",
-        format!("╠══════════════════════════════════════════════════════════════╣").bright_white()
+        "╠══════════════════════════════════════════════════════════════╣".to_string().bright_white()
     );
 
     let mut report = GradeReport {
@@ -172,7 +172,7 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
 
     println!(
         "{}",
-        format!("╠══════════════════════════════════════════════════════════════╣").bright_white()
+        "╠══════════════════════════════════════════════════════════════╣".to_string().bright_white()
     );
     println!(
         "{}",
@@ -198,7 +198,7 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     );
     println!(
         "{}",
-        format!("╚══════════════════════════════════════════════════════════════╝").bright_white()
+        "╚══════════════════════════════════════════════════════════════╝".to_string().bright_white()
     );
     println!();
 
@@ -222,7 +222,10 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
                 .red()
             );
             println!();
-            println!("Fix failing criteria and run: cargo xtask grade {}", crate_name);
+            println!(
+                "Fix failing criteria and run: cargo xtask grade {}",
+                crate_name
+            );
         }
     }
 
@@ -255,7 +258,11 @@ fn truncate(s: &str, max: usize) -> String {
 
 /// Find workspace root by looking for root Cargo.toml with [workspace]
 fn find_workspace_root(sh: &Shell) -> Result<String> {
-    let output = cmd!(sh, "cargo locate-project --workspace --message-format plain").read()?;
+    let output = cmd!(
+        sh,
+        "cargo locate-project --workspace --message-format plain"
+    )
+    .read()?;
     let cargo_toml = output.trim();
     let root = Path::new(cargo_toml)
         .parent()
@@ -266,7 +273,9 @@ fn find_workspace_root(sh: &Shell) -> Result<String> {
 /// Find the path to a crate within the workspace
 fn find_crate_path(_sh: &Shell, crate_name: &str) -> Result<String> {
     // Try common locations
-    let locations = ["crates", "mesh", "geometry", "routing", "ml", "vision", "sim"];
+    let locations = [
+        "crates", "mesh", "geometry", "routing", "ml", "vision", "sim",
+    ];
 
     for loc in &locations {
         let path = format!("{}/{}", loc, crate_name);
@@ -423,14 +432,18 @@ fn grade_safety(sh: &Shell, crate_path: &str) -> Result<CriterionResult> {
     }
 
     // First, find where test sections start in each file
-    let test_starts = cmd!(sh, "grep -rn '#\\[cfg(test)\\]' {src_path} --include='*.rs'")
-        .ignore_status()
-        .ignore_stderr()
-        .read()
-        .unwrap_or_default();
+    let test_starts = cmd!(
+        sh,
+        "grep -rn '#\\[cfg(test)\\]' {src_path} --include='*.rs'"
+    )
+    .ignore_status()
+    .ignore_stderr()
+    .read()
+    .unwrap_or_default();
 
     // Build a map of file -> test start line
-    let mut test_start_lines: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut test_start_lines: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     for line in test_starts.lines() {
         // Format: path/file.rs:123:#[cfg(test)]
         let parts: Vec<&str> = line.splitn(3, ':').collect();
@@ -476,7 +489,8 @@ fn grade_safety(sh: &Shell, crate_path: &str) -> Result<CriterionResult> {
 
             // Skip comments and doc comments
             let trimmed = content.trim();
-            if trimmed.starts_with("//") || trimmed.starts_with("///") || trimmed.starts_with("//!") {
+            if trimmed.starts_with("//") || trimmed.starts_with("///") || trimmed.starts_with("//!")
+            {
                 continue;
             }
 
@@ -601,7 +615,9 @@ pub fn status() -> Result<()> {
 
     // Parse JSON output to get package names
     // For now, just list directories
-    let locations = ["crates", "mesh", "geometry", "routing", "ml", "vision", "sim"];
+    let locations = [
+        "crates", "mesh", "geometry", "routing", "ml", "vision", "sim",
+    ];
 
     for loc in &locations {
         if Path::new(loc).exists() {

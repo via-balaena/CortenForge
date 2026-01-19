@@ -700,7 +700,7 @@ mod tests {
 
         // Check that values were copied to correct positions
         // tile (0,0,0) -> grid (1,1,1)
-        let idx = 1 + 1 * 4 + 1 * 4 * 4; // z + y*dz + x*dy*dz
+        let idx = 1 + 4 + 4 * 4; // z + y*dz + x*dy*dz
         assert_eq!(grid_values[idx], 1.0);
     }
 }

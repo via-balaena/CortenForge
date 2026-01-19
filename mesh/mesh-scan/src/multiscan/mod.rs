@@ -51,19 +51,18 @@ pub mod alignment;
 pub mod merge;
 
 pub use alignment::{
-    compute_pairwise_alignments, refine_global_alignment, GlobalAlignmentParams,
-    GlobalAlignmentResult, PairwiseAlignment,
+    GlobalAlignmentParams, GlobalAlignmentResult, PairwiseAlignment, compute_pairwise_alignments,
+    refine_global_alignment,
 };
-pub use merge::{merge_scans, MergeParams, MergeResult, OverlapHandling};
+pub use merge::{MergeParams, MergeResult, OverlapHandling, merge_scans};
 
-use mesh_registration::{icp_align, IcpParams, RigidTransform};
+use mesh_registration::{IcpParams, RigidTransform, icp_align};
 use mesh_types::IndexedMesh;
 
 use crate::error::{ScanError, ScanResult};
 
 /// Parameters for multi-scan alignment.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MultiAlignmentParams {
     /// ICP parameters for pairwise alignment.
     pub icp_params: IcpParams,
@@ -74,7 +73,6 @@ pub struct MultiAlignmentParams {
     /// Global alignment parameters (if `refine_globally` is true).
     pub global_params: GlobalAlignmentParams,
 }
-
 
 impl MultiAlignmentParams {
     /// Creates new parameters with defaults.
@@ -435,12 +433,8 @@ mod tests {
     fn test_align_and_merge() {
         let scans = vec![make_test_scan(0.0), make_test_scan(0.3)];
 
-        let (merge_result, alignment) = align_and_merge(
-            &scans,
-            &MultiAlignmentParams::fast(),
-            &MergeParams::fast(),
-        )
-        .unwrap();
+        let (merge_result, alignment) =
+            align_and_merge(&scans, &MultiAlignmentParams::fast(), &MergeParams::fast()).unwrap();
 
         assert_eq!(alignment.transforms.len(), 2);
         assert!(merge_result.merged_vertex_count > 0);

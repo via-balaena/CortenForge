@@ -23,13 +23,11 @@
 //!     .build();
 //! ```
 
-use mesh_offset::{offset_mesh, OffsetConfig};
+use mesh_offset::{OffsetConfig, offset_mesh};
 use mesh_types::IndexedMesh;
 
 use crate::error::{ShellError, ShellResult};
-use crate::shell::{
-    generate_shell, ShellGenerationResult, ShellParams, WallGenerationMethod,
-};
+use crate::shell::{ShellGenerationResult, ShellParams, WallGenerationMethod, generate_shell};
 
 /// Result from `ShellBuilder` containing the generated mesh and statistics.
 #[derive(Debug)]
@@ -391,10 +389,7 @@ mod tests {
     #[test]
     fn test_build_simple() {
         let mesh = create_open_box();
-        let result = ShellBuilder::new(&mesh)
-            .wall_thickness(2.0)
-            .fast()
-            .build();
+        let result = ShellBuilder::new(&mesh).wall_thickness(2.0).fast().build();
 
         assert!(result.is_ok());
         let shell = result.expect("should succeed");
@@ -405,8 +400,7 @@ mod tests {
     #[test]
     fn test_build_offset_only_requires_offset() {
         let mesh = create_open_box();
-        let result = ShellBuilder::new(&mesh)
-            .build_offset_only();
+        let result = ShellBuilder::new(&mesh).build_offset_only();
 
         assert!(result.is_err());
     }

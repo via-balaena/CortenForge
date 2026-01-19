@@ -191,7 +191,11 @@ pub fn align_by_landmarks(
     for (i, landmark) in landmarks.iter().enumerate() {
         let source_pt = landmark.resolve_source(Some(source)).ok_or_else(|| {
             landmark.source_index.map_or_else(
-                || RegistrationError::InvalidParameter(format!("landmark {i} missing source point")),
+                || {
+                    RegistrationError::InvalidParameter(format!(
+                        "landmark {i} missing source point"
+                    ))
+                },
                 |idx| RegistrationError::LandmarkOutOfBounds {
                     index: idx,
                     vertex_count: source.vertices.len(),
@@ -201,7 +205,11 @@ pub fn align_by_landmarks(
 
         let target_pt = landmark.resolve_target(Some(target)).ok_or_else(|| {
             landmark.target_index.map_or_else(
-                || RegistrationError::InvalidParameter(format!("landmark {i} missing target point")),
+                || {
+                    RegistrationError::InvalidParameter(format!(
+                        "landmark {i} missing target point"
+                    ))
+                },
                 |idx| RegistrationError::LandmarkOutOfBounds {
                     index: idx,
                     vertex_count: target.vertices.len(),
@@ -218,7 +226,12 @@ pub fn align_by_landmarks(
     let has_weights = weights.iter().any(|&w| (w - 1.0).abs() > 1e-10);
 
     if has_weights {
-        compute_weighted_rigid_transform(&source_points, &target_points, &weights, params.compute_scale)
+        compute_weighted_rigid_transform(
+            &source_points,
+            &target_points,
+            &weights,
+            params.compute_scale,
+        )
     } else {
         compute_rigid_transform(&source_points, &target_points, params.compute_scale)
     }
@@ -305,8 +318,8 @@ mod tests {
             Landmark::from_indices(2, 2),
         ];
 
-        let transform = align_by_landmarks(&source, &target, &landmarks, &LandmarkParams::default())
-            .unwrap();
+        let transform =
+            align_by_landmarks(&source, &target, &landmarks, &LandmarkParams::default()).unwrap();
 
         // Verify alignment
         for (s, t) in source.vertices.iter().zip(target.vertices.iter()) {
@@ -326,11 +339,15 @@ mod tests {
             Landmark::from_points(Point3::new(0.0, 1.0, 0.0), Point3::new(1.0, 1.0, 0.0)),
         ];
 
-        let transform = align_by_landmarks(&source, &target, &landmarks, &LandmarkParams::default())
-            .unwrap();
+        let transform =
+            align_by_landmarks(&source, &target, &landmarks, &LandmarkParams::default()).unwrap();
 
         // Should be a pure translation of (1, 0, 0)
-        assert_relative_eq!(transform.translation, Vector3::new(1.0, 0.0, 0.0), epsilon = 1e-6);
+        assert_relative_eq!(
+            transform.translation,
+            Vector3::new(1.0, 0.0, 0.0),
+            epsilon = 1e-6
+        );
     }
 
     #[test]
@@ -356,8 +373,8 @@ mod tests {
             Landmark::from_indices(3, 3).with_weight(0.001),
         ];
 
-        let transform = align_by_landmarks(&source, &target, &landmarks, &LandmarkParams::default())
-            .unwrap();
+        let transform =
+            align_by_landmarks(&source, &target, &landmarks, &LandmarkParams::default()).unwrap();
 
         // First three points should align better than the outlier
         // Note: with weighted fitting, the first 3 points won't be perfect
@@ -395,10 +412,7 @@ mod tests {
         let source = make_test_mesh(&[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]);
         let target = make_test_mesh(&[(5.0, 5.0, 0.0), (6.0, 5.0, 0.0)]);
 
-        let landmarks = vec![
-            Landmark::from_indices(0, 0),
-            Landmark::from_indices(1, 1),
-        ];
+        let landmarks = vec![Landmark::from_indices(0, 0), Landmark::from_indices(1, 1)];
 
         let result = align_by_landmarks(&source, &target, &landmarks, &LandmarkParams::default());
         assert!(matches!(

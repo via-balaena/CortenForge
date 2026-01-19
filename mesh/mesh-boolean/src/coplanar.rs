@@ -408,7 +408,10 @@ mod tests {
     #[test]
     fn test_should_include_coplanar_face() {
         // Include strategy
-        assert!(should_include_coplanar_face(true, CoplanarStrategy::Include));
+        assert!(should_include_coplanar_face(
+            true,
+            CoplanarStrategy::Include
+        ));
         assert!(!should_include_coplanar_face(
             false,
             CoplanarStrategy::Include

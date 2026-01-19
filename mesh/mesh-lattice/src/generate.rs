@@ -16,7 +16,7 @@ use nalgebra::Point3;
 /// # Arguments
 ///
 /// * `params` - Lattice configuration parameters
-/// * `bounds` - Bounding box as (min_corner, max_corner)
+/// * `bounds` - Bounding box as (`min_corner`, `max_corner`)
 ///
 /// # Returns
 ///
@@ -113,9 +113,9 @@ fn generate_cubic_lattice(
     for iz in 0..=cells_z {
         for iy in 0..=cells_y {
             for ix in 0..=cells_x {
-                let x = min.x + ix as f64 * cell_size;
-                let y = min.y + iy as f64 * cell_size;
-                let z = min.z + iz as f64 * cell_size;
+                let x = (ix as f64).mul_add(cell_size, min.x);
+                let y = (iy as f64).mul_add(cell_size, min.y);
+                let z = (iz as f64).mul_add(cell_size, min.z);
                 let node = Point3::new(x, y, z);
 
                 // Get density at this point
@@ -145,12 +145,12 @@ fn generate_cubic_lattice(
                             let key_start = quantize(node);
                             let key_end = quantize(end);
 
-                            let v1 = *vertex_map.entry(key_start).or_insert_with(|| {
-                                data.add_vertex(node)
-                            });
-                            let v2 = *vertex_map.entry(key_end).or_insert_with(|| {
-                                data.add_vertex(end)
-                            });
+                            let v1 = *vertex_map
+                                .entry(key_start)
+                                .or_insert_with(|| data.add_vertex(node));
+                            let v2 = *vertex_map
+                                .entry(key_end)
+                                .or_insert_with(|| data.add_vertex(end));
                             data.add_beam_with_radius(v1, v2, local_radius);
                         }
                     }
@@ -171,12 +171,12 @@ fn generate_cubic_lattice(
                             let key_start = quantize(node);
                             let key_end = quantize(end);
 
-                            let v1 = *vertex_map.entry(key_start).or_insert_with(|| {
-                                data.add_vertex(node)
-                            });
-                            let v2 = *vertex_map.entry(key_end).or_insert_with(|| {
-                                data.add_vertex(end)
-                            });
+                            let v1 = *vertex_map
+                                .entry(key_start)
+                                .or_insert_with(|| data.add_vertex(node));
+                            let v2 = *vertex_map
+                                .entry(key_end)
+                                .or_insert_with(|| data.add_vertex(end));
                             data.add_beam_with_radius(v1, v2, local_radius);
                         }
                     }
@@ -197,12 +197,12 @@ fn generate_cubic_lattice(
                             let key_start = quantize(node);
                             let key_end = quantize(end);
 
-                            let v1 = *vertex_map.entry(key_start).or_insert_with(|| {
-                                data.add_vertex(node)
-                            });
-                            let v2 = *vertex_map.entry(key_end).or_insert_with(|| {
-                                data.add_vertex(end)
-                            });
+                            let v1 = *vertex_map
+                                .entry(key_start)
+                                .or_insert_with(|| data.add_vertex(node));
+                            let v2 = *vertex_map
+                                .entry(key_end)
+                                .or_insert_with(|| data.add_vertex(end));
                             data.add_beam_with_radius(v1, v2, local_radius);
                         }
                     }
@@ -218,8 +218,8 @@ fn generate_cubic_lattice(
     let strut_volume = estimate_strut_volume(&mesh, radius);
     let actual_density = (strut_volume / bounds_volume).min(1.0);
 
-    let mut result = LatticeResult::new(mesh, actual_density, cell_count)
-        .with_strut_length(total_length);
+    let mut result =
+        LatticeResult::new(mesh, actual_density, cell_count).with_strut_length(total_length);
 
     if let Some(data) = beam_data {
         result = result.with_beam_data(data);
@@ -252,9 +252,9 @@ fn generate_octet_truss_lattice(
     for iz in 0..cells_z {
         for iy in 0..cells_y {
             for ix in 0..cells_x {
-                let x = min.x + ix as f64 * cell_size;
-                let y = min.y + iy as f64 * cell_size;
-                let z = min.z + iz as f64 * cell_size;
+                let x = (ix as f64).mul_add(cell_size, min.x);
+                let y = (iy as f64).mul_add(cell_size, min.y);
+                let z = (iz as f64).mul_add(cell_size, min.z);
 
                 // Cell corners
                 let corners = [
@@ -289,9 +289,18 @@ fn generate_octet_truss_lattice(
 
                 // Edge struts along the 12 edges
                 let edges = [
-                    (0, 1), (1, 2), (2, 3), (3, 0), // Bottom face
-                    (4, 5), (5, 6), (6, 7), (7, 4), // Top face
-                    (0, 4), (1, 5), (2, 6), (3, 7), // Vertical edges
+                    (0, 1),
+                    (1, 2),
+                    (2, 3),
+                    (3, 0), // Bottom face
+                    (4, 5),
+                    (5, 6),
+                    (6, 7),
+                    (7, 4), // Top face
+                    (0, 4),
+                    (1, 5),
+                    (2, 6),
+                    (3, 7), // Vertical edges
                 ];
 
                 for (i, j) in edges {
@@ -310,8 +319,7 @@ fn generate_octet_truss_lattice(
     let strut_volume = estimate_strut_volume(&mesh, radius);
     let actual_density = (strut_volume / bounds_volume).min(1.0);
 
-    Ok(LatticeResult::new(mesh, actual_density, cell_count)
-        .with_strut_length(total_length))
+    Ok(LatticeResult::new(mesh, actual_density, cell_count).with_strut_length(total_length))
 }
 
 /// Generates a TPMS-based lattice with specified type.
@@ -398,9 +406,9 @@ fn generate_voronoi_lattice(
     for iz in 0..=cells_z {
         for iy in 0..=cells_y {
             for ix in 0..=cells_x {
-                let x = min.x + ix as f64 * cell_size + random() * perturb;
-                let y = min.y + iy as f64 * cell_size + random() * perturb;
-                let z = min.z + iz as f64 * cell_size + random() * perturb;
+                let x = (ix as f64).mul_add(cell_size, min.x) + random() * perturb;
+                let y = (iy as f64).mul_add(cell_size, min.y) + random() * perturb;
+                let z = (iz as f64).mul_add(cell_size, min.z) + random() * perturb;
 
                 // Clamp to bounds
                 let x = x.clamp(min.x, max.x);
@@ -470,8 +478,7 @@ fn generate_voronoi_lattice(
     let strut_volume = estimate_strut_volume(&mesh, radius);
     let actual_density = (strut_volume / bounds_volume).min(1.0);
 
-    Ok(LatticeResult::new(mesh, actual_density, cell_count)
-        .with_strut_length(total_length))
+    Ok(LatticeResult::new(mesh, actual_density, cell_count).with_strut_length(total_length))
 }
 
 /// Estimates strut volume from mesh (approximate).

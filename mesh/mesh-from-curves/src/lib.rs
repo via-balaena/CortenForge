@@ -56,5 +56,5 @@ mod frame;
 mod tube;
 
 pub use error::{CurveError, CurveResult};
-pub use frame::{parallel_transport_frames, Frame};
-pub use tube::{tube_from_polyline, tube_variable_radius, TubeConfig};
+pub use frame::{Frame, parallel_transport_frames};
+pub use tube::{TubeConfig, tube_from_polyline, tube_variable_radius};

@@ -17,10 +17,10 @@
 //! - Point cloud must have oriented normals
 //! - Ball radius should be chosen based on point density
 
-use std::collections::{HashMap, HashSet};
 use kiddo::{KdTree, SquaredEuclidean};
 use mesh_types::{IndexedMesh, Vertex};
 use nalgebra::{Point3, Vector3};
+use std::collections::{HashMap, HashSet};
 
 use crate::error::{ScanError, ScanResult};
 use crate::pointcloud::PointCloud;
@@ -244,7 +244,10 @@ struct BallPosition {
 /// let result = ball_pivoting(&cloud, &params).unwrap();
 /// println!("{}", result);
 /// ```
-pub fn ball_pivoting(cloud: &PointCloud, params: &BallPivotingParams) -> ScanResult<BallPivotingResult> {
+pub fn ball_pivoting(
+    cloud: &PointCloud,
+    params: &BallPivotingParams,
+) -> ScanResult<BallPivotingResult> {
     if cloud.is_empty() {
         return Err(ScanError::EmptyPointCloud);
     }
@@ -325,9 +328,14 @@ pub fn ball_pivoting(cloud: &PointCloud, params: &BallPivotingParams) -> ScanRes
         }
 
         // Try to pivot the ball
-        if let Some((new_vertex, new_center)) =
-            pivot_ball(cloud, &tree, &edge, &ball_pos.center, params, &used_vertices)
-        {
+        if let Some((new_vertex, new_center)) = pivot_ball(
+            cloud,
+            &tree,
+            &edge,
+            &ball_pos.center,
+            params,
+            &used_vertices,
+        ) {
             let v0 = edge.v0;
             let v1 = edge.v1;
             let v2 = new_vertex;
@@ -505,9 +513,8 @@ fn compute_ball_center(
         return None;
     }
 
-    let circumcenter = Point3::from(
-        (alpha * p0.coords + beta * p1.coords + gamma * p2.coords) / denom,
-    );
+    let circumcenter =
+        Point3::from((alpha * p0.coords + beta * p1.coords + gamma * p2.coords) / denom);
 
     // Choose ball center direction based on point normal
     let direction = if tri_normal_unit.dot(normal) > 0.0 {
@@ -624,7 +631,8 @@ fn pivot_ball(
             let priority = if used.contains(&idx) { 1.0 } else { 0.0 };
             let score = priority + pivot_angle / std::f64::consts::PI;
 
-            if best_candidate.is_none() || score < best_candidate.as_ref().map_or(f64::MAX, |c| c.2) {
+            if best_candidate.is_none() || score < best_candidate.as_ref().map_or(f64::MAX, |c| c.2)
+            {
                 best_candidate = Some((idx, new_center, score));
             }
         }
@@ -664,10 +672,7 @@ mod tests {
             for j in 0..3 {
                 let x = f64::from(i);
                 let y = f64::from(j);
-                cloud.add_point_with_normal(
-                    Point3::new(x, y, 0.0),
-                    Vector3::new(0.0, 0.0, 1.0),
-                );
+                cloud.add_point_with_normal(Point3::new(x, y, 0.0), Vector3::new(0.0, 0.0, 1.0));
             }
         }
 
@@ -724,7 +729,10 @@ mod tests {
 
         let params = BallPivotingParams::default();
         let result = ball_pivoting(&cloud, &params);
-        assert!(matches!(result, Err(ScanError::NormalEstimationFailed { .. })));
+        assert!(matches!(
+            result,
+            Err(ScanError::NormalEstimationFailed { .. })
+        ));
     }
 
     #[test]

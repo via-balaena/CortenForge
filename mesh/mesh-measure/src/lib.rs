@@ -63,14 +63,14 @@ mod obb;
 
 // Re-export main types and functions
 pub use cross_section::{
-    area_at_height, circumference_at_height, cross_section, cross_sections, CrossSection,
+    CrossSection, area_at_height, circumference_at_height, cross_section, cross_sections,
 };
-pub use dimensions::{dimensions, Dimensions};
+pub use dimensions::{Dimensions, dimensions};
 pub use distance::{
-    closest_point_on_mesh, distance_to_mesh, measure_distance, DistanceMeasurement,
+    DistanceMeasurement, closest_point_on_mesh, distance_to_mesh, measure_distance,
 };
 pub use error::{MeasureError, MeasureResult};
-pub use obb::{oriented_bounding_box, OrientedBoundingBox};
+pub use obb::{OrientedBoundingBox, oriented_bounding_box};
 
 // Re-export nalgebra types for convenience
 pub use nalgebra::{Point3, Vector3};

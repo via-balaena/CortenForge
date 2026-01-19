@@ -54,7 +54,7 @@ impl Beam {
     /// assert_eq!(beam.v2, 1);
     /// ```
     #[must_use]
-    pub fn new(v1: u32, v2: u32, radius: f64) -> Self {
+    pub const fn new(v1: u32, v2: u32, radius: f64) -> Self {
         Self {
             v1,
             v2,
@@ -74,7 +74,7 @@ impl Beam {
     /// * `r1` - Radius at first vertex (mm)
     /// * `r2` - Radius at second vertex (mm)
     #[must_use]
-    pub fn tapered(v1: u32, v2: u32, r1: f64, r2: f64) -> Self {
+    pub const fn tapered(v1: u32, v2: u32, r1: f64, r2: f64) -> Self {
         Self {
             v1,
             v2,
@@ -87,7 +87,7 @@ impl Beam {
 
     /// Sets the cap style at both ends.
     #[must_use]
-    pub fn with_caps(mut self, cap: BeamCap) -> Self {
+    pub const fn with_caps(mut self, cap: BeamCap) -> Self {
         self.cap1 = cap;
         self.cap2 = cap;
         self
@@ -103,8 +103,8 @@ impl Beam {
 
     /// Returns the average radius of this beam.
     #[must_use]
-    pub fn average_radius(&self) -> f64 {
-        (self.r1 + self.r2) / 2.0
+    pub const fn average_radius(&self) -> f64 {
+        f64::midpoint(self.r1, self.r2)
     }
 }
 
@@ -187,7 +187,7 @@ impl BeamLatticeData {
     /// assert_eq!(data.default_radius, 0.5);
     /// ```
     #[must_use]
-    pub fn new(default_radius: f64) -> Self {
+    pub const fn new(default_radius: f64) -> Self {
         Self {
             vertices: Vec::new(),
             beams: Vec::new(),
@@ -279,7 +279,7 @@ impl BeamLatticeData {
                 let length = beam.length(&self.vertices)?;
                 // Volume of truncated cone: (π/3) * h * (r1² + r1*r2 + r2²)
                 let volume =
-                    (PI / 3.0) * length * (beam.r1.powi(2) + beam.r1 * beam.r2 + beam.r2.powi(2));
+                    (PI / 3.0) * length * beam.r2.mul_add(beam.r2, beam.r1.mul_add(beam.r1, beam.r1 * beam.r2));
                 Some(volume)
             })
             .sum()
@@ -289,7 +289,7 @@ impl BeamLatticeData {
     pub fn remove_short_beams(&mut self, min_length: f64) {
         self.beams.retain(|beam| {
             beam.length(&self.vertices)
-                .map_or(false, |len| len >= min_length)
+                .is_some_and(|len| len >= min_length)
         });
     }
 }

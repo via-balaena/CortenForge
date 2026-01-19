@@ -3,11 +3,11 @@
 //! This module provides algorithms for merging multiple aligned scans
 //! into a single unified mesh, handling overlapping regions and filling gaps.
 
-use std::collections::HashSet;
 use kiddo::{KdTree, SquaredEuclidean};
 use mesh_registration::RigidTransform;
 use mesh_types::{IndexedMesh, Vertex};
 use nalgebra::Point3;
+use std::collections::HashSet;
 
 use crate::error::{ScanError, ScanResult};
 
@@ -493,8 +493,11 @@ fn merge_with_priority(scans: &[IndexedMesh], threshold: f64, first_wins: bool) 
 
         for v in &scan.vertices {
             // Check if there's already a nearby vertex
-            let nearest =
-                merged_tree.nearest_one::<SquaredEuclidean>(&[v.position.x, v.position.y, v.position.z]);
+            let nearest = merged_tree.nearest_one::<SquaredEuclidean>(&[
+                v.position.x,
+                v.position.y,
+                v.position.z,
+            ]);
 
             #[allow(clippy::cast_possible_truncation)]
             if nearest.distance <= threshold_sq && !merged.vertices.is_empty() {
@@ -503,7 +506,10 @@ fn merge_with_priority(scans: &[IndexedMesh], threshold: f64, first_wins: bool) 
             } else {
                 // Add new vertex
                 let new_idx = merged.vertices.len() as u32;
-                merged_tree.add(&[v.position.x, v.position.y, v.position.z], u64::from(new_idx));
+                merged_tree.add(
+                    &[v.position.x, v.position.y, v.position.z],
+                    u64::from(new_idx),
+                );
                 merged.vertices.push(v.clone());
                 vertex_map.push(new_idx);
             }
@@ -586,9 +592,12 @@ mod tests {
 
     fn make_simple_mesh(offset_x: f64) -> IndexedMesh {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices.push(Vertex::from_coords(0.0 + offset_x, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(1.0 + offset_x, 0.0, 0.0));
-        mesh.vertices.push(Vertex::from_coords(0.5 + offset_x, 1.0, 0.0));
+        mesh.vertices
+            .push(Vertex::from_coords(0.0 + offset_x, 0.0, 0.0));
+        mesh.vertices
+            .push(Vertex::from_coords(1.0 + offset_x, 0.0, 0.0));
+        mesh.vertices
+            .push(Vertex::from_coords(0.5 + offset_x, 1.0, 0.0));
         mesh.faces.push([0, 1, 2]);
         mesh
     }

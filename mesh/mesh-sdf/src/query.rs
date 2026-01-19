@@ -138,11 +138,7 @@ pub fn ray_triangle_intersect(
     // Compute t (distance along ray)
     let t = f * edge2.dot(&q);
 
-    if t > EPSILON {
-        Some(t)
-    } else {
-        None
-    }
+    if t > EPSILON { Some(t) } else { None }
 }
 
 /// Check if a point is inside a mesh using ray casting.
@@ -188,11 +184,7 @@ pub fn point_in_mesh(point: Point3<f64>, mesh: &IndexedMesh) -> bool {
 ///
 /// The squared distance to the segment.
 #[must_use]
-pub fn point_segment_distance_squared(
-    point: Point3<f64>,
-    a: Point3<f64>,
-    b: Point3<f64>,
-) -> f64 {
+pub fn point_segment_distance_squared(point: Point3<f64>, a: Point3<f64>, b: Point3<f64>) -> f64 {
     let ab = b - a;
     let ap = point - a;
 

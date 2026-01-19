@@ -155,7 +155,7 @@ impl InfillParams {
 
     /// Sets the shell thickness.
     #[must_use]
-    pub fn with_shell_thickness(mut self, thickness: f64) -> Self {
+    pub const fn with_shell_thickness(mut self, thickness: f64) -> Self {
         self.shell_thickness = thickness.max(0.0);
         self
     }
@@ -172,14 +172,14 @@ impl InfillParams {
 
     /// Enables or disables solid caps.
     #[must_use]
-    pub fn with_solid_caps(mut self, enabled: bool) -> Self {
+    pub const fn with_solid_caps(mut self, enabled: bool) -> Self {
         self.solid_caps = enabled;
         self
     }
 
     /// Sets the number of solid cap layers.
     #[must_use]
-    pub fn with_solid_cap_layers(mut self, layers: usize) -> Self {
+    pub const fn with_solid_cap_layers(mut self, layers: usize) -> Self {
         self.solid_cap_layers = layers;
         self
     }
@@ -327,7 +327,7 @@ pub fn generate_infill(
     let size = max - min;
 
     // Compute interior bounds (inset by shell thickness + safety margin)
-    let inset = params.shell_thickness + params.lattice.cell_size * 0.5;
+    let inset = params.lattice.cell_size.mul_add(0.5, params.shell_thickness);
     let interior_min = Point3::new(min.x + inset, min.y + inset, min.z + inset);
     let interior_max = Point3::new(max.x - inset, max.y - inset, max.z - inset);
 
@@ -395,7 +395,11 @@ fn combine_meshes(a: &IndexedMesh, b: &IndexedMesh) -> IndexedMesh {
     vertices.extend(b.vertices.iter().cloned());
 
     for face in &b.faces {
-        faces.push([face[0] + base_index, face[1] + base_index, face[2] + base_index]);
+        faces.push([
+            face[0] + base_index,
+            face[1] + base_index,
+            face[2] + base_index,
+        ]);
     }
 
     IndexedMesh::from_parts(vertices, faces)
@@ -422,17 +426,23 @@ mod tests {
         // 12 triangles for the cube
         let faces = vec![
             // Front
-            [0, 1, 2], [0, 2, 3],
+            [0, 1, 2],
+            [0, 2, 3],
             // Back
-            [4, 6, 5], [4, 7, 6],
+            [4, 6, 5],
+            [4, 7, 6],
             // Top
-            [3, 2, 6], [3, 6, 7],
+            [3, 2, 6],
+            [3, 6, 7],
             // Bottom
-            [0, 5, 1], [0, 4, 5],
+            [0, 5, 1],
+            [0, 4, 5],
             // Right
-            [1, 5, 6], [1, 6, 2],
+            [1, 5, 6],
+            [1, 6, 2],
             // Left
-            [0, 3, 7], [0, 7, 4],
+            [0, 3, 7],
+            [0, 7, 4],
         ];
 
         IndexedMesh::from_parts(vertices, faces)
@@ -539,14 +549,8 @@ mod tests {
 
         let combined = combine_meshes(&a, &b);
 
-        assert_eq!(
-            combined.vertex_count(),
-            a.vertex_count() + b.vertex_count()
-        );
-        assert_eq!(
-            combined.face_count(),
-            a.face_count() + b.face_count()
-        );
+        assert_eq!(combined.vertex_count(), a.vertex_count() + b.vertex_count());
+        assert_eq!(combined.face_count(), a.face_count() + b.face_count());
     }
 
     #[test]

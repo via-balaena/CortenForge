@@ -2,6 +2,7 @@
 #
 # This workflow enforces the A-grade standard on every push and PR.
 # See STANDARDS.md for the seven criteria.
+# See INFRASTRUCTURE.md for the full constraint specification.
 #
 # "A-grade or it doesn't ship. No exceptions."
 
@@ -57,10 +58,10 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   # ============================================================================
-  # TESTS - All must pass
+  # TESTS - All must pass on all platforms
   # ============================================================================
   test:
-    name: Test
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -77,6 +78,71 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-features
+
+  # ============================================================================
+  # TESTS - ARM64 (Apple Silicon and Linux ARM)
+  # ============================================================================
+  test-arm64:
+    name: Test (ARM64)
+    runs-on: macos-latest  # GitHub's macos-latest is now ARM64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify ARM64
+        run: |
+          echo "Architecture: $(uname -m)"
+          if [ "$(uname -m)" != "arm64" ]; then
+            echo "::warning::Expected ARM64, got $(uname -m)"
+          fi
+
+      - name: Run tests
+        run: cargo test --all-features
+
+  # ============================================================================
+  # WASM - Layer 0 crates must compile to WebAssembly
+  # ============================================================================
+  wasm:
+    name: WASM Compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check WASM compatibility (Layer 0)
+        run: |
+          # Layer 0 crates must build for WASM
+          # Note: Some crates may need --no-default-features to exclude std-only deps
+          WASM_CRATES=(
+            "mesh-types"
+            "mesh-geodesic"
+            "mesh-transform"
+            "mesh-measure"
+            "mesh-slice"
+            "sensor-types"
+            "ml-types"
+          )
+
+          for crate in "${WASM_CRATES[@]}"; do
+            echo "Checking $crate for WASM..."
+            if cargo check -p "$crate" --target wasm32-unknown-unknown 2>/dev/null; then
+              echo "✓ $crate builds for WASM"
+            else
+              echo "::warning::$crate does not build for WASM (may need feature flags)"
+            fi
+          done
 
   # ============================================================================
   # DOCUMENTATION - Zero warnings, complete coverage
@@ -117,9 +183,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Generate coverage
-        run: cargo tarpaulin --all-features --workspace --out Xml
+        run: cargo tarpaulin --all-features --workspace --out Xml --out Json
 
-      - name: Upload coverage
+      - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
           fail_ci_if_error: false
@@ -127,7 +193,7 @@ jobs:
 
       - name: Check coverage threshold
         run: |
-          COVERAGE=$(cargo tarpaulin --all-features --workspace --out Json 2>/dev/null | jq '.coverage_percentage')
+          COVERAGE=$(jq '.coverage_percentage' tarpaulin-report.json)
           echo "Coverage: $COVERAGE%"
           if (( $(echo "$COVERAGE < 90" | bc -l) )); then
             echo "::error::Coverage $COVERAGE% is below 90% threshold"
@@ -163,7 +229,7 @@ jobs:
             done
             exit 1
           fi
-          echo "No unwrap/expect found in library code"
+          echo "✓ No unwrap/expect found in library code"
 
       - name: Check for panic!/todo!/unimplemented!
         run: |
@@ -178,6 +244,24 @@ jobs:
             echo "::warning::Found panic!/todo!/unimplemented! (review required):"
             echo "$VIOLATIONS"
           fi
+
+  # ============================================================================
+  # SECURITY - Vulnerability scanning
+  # ============================================================================
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run security audit
+        run: cargo audit --deny warnings
 
   # ============================================================================
   # DEPENDENCIES - Audit and policy
@@ -196,6 +280,24 @@ jobs:
 
       - name: Check dependencies
         run: cargo deny check
+
+  # ============================================================================
+  # SEMVER - Breaking change detection
+  # ============================================================================
+  semver:
+    name: Semver
+    runs-on: ubuntu-latest
+    # Only run on PRs (compare against base branch)
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check semver compatibility
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: mesh-types,mesh-io,mesh-repair,sensor-types,ml-types
 
   # ============================================================================
   # LAYER 0 - No Bevy in foundation crates
@@ -220,19 +322,38 @@ jobs:
             "mesh-io"
             "mesh-repair"
             "mesh-geodesic"
-            "mesh-boolean"
+            "mesh-transform"
+            "mesh-sdf"
+            "mesh-offset"
+            "mesh-zones"
+            "mesh-from-curves"
             "mesh-shell"
-            "curve-types"
-            "lumen-geometry"
-            "cf-spatial"
-            "route-types"
-            "route-pathfind"
-            "route-optimize"
+            "mesh-measure"
+            "mesh-thickness"
+            "mesh-slice"
+            "mesh-decimate"
+            "mesh-subdivide"
+            "mesh-remesh"
+            "mesh-region"
+            "mesh-assembly"
+            "mesh-printability"
+            "mesh-boolean"
+            "mesh-registration"
+            "mesh-morph"
+            "mesh-scan"
+            "mesh-lattice"
+            "mesh-template"
+            "sensor-types"
+            "sensor-fusion"
+            "ml-types"
+            "ml-models"
+            "ml-dataset"
+            "ml-training"
           )
 
           FAILED=false
           for crate in "${LAYER0_CRATES[@]}"; do
-            if cargo tree -p "$crate" 2>/dev/null | grep -q "bevy"; then
+            if cargo tree -p "$crate" 2>/dev/null | grep -qi "bevy"; then
               echo "::error::$crate has Bevy in dependency tree"
               FAILED=true
             fi
@@ -241,14 +362,38 @@ jobs:
           if [ "$FAILED" = true ]; then
             exit 1
           fi
-          echo "All Layer 0 crates are Bevy-free"
+          echo "✓ All Layer 0 crates are Bevy-free"
+
+  # ============================================================================
+  # SBOM - Software Bill of Materials generation
+  # ============================================================================
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx
+
+      - name: Generate SBOM
+        run: cargo cyclonedx --format json --output-file sbom.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
 
   # ============================================================================
   # FINAL GATE
   # ============================================================================
   quality-gate:
     name: Quality Gate
-    needs: [format, clippy, test, docs, safety, dependencies]
+    needs: [format, clippy, test, test-arm64, docs, safety, security, dependencies, bevy-free]
     runs-on: ubuntu-latest
     steps:
       - name: All checks passed

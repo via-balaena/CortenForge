@@ -233,14 +233,14 @@ impl LatticeParams {
 
     /// Sets the lattice type.
     #[must_use]
-    pub fn with_lattice_type(mut self, lattice_type: LatticeType) -> Self {
+    pub const fn with_lattice_type(mut self, lattice_type: LatticeType) -> Self {
         self.lattice_type = lattice_type;
         self
     }
 
     /// Sets the cell size.
     #[must_use]
-    pub fn with_cell_size(mut self, cell_size: f64) -> Self {
+    pub const fn with_cell_size(mut self, cell_size: f64) -> Self {
         self.cell_size = cell_size;
         self
     }
@@ -256,14 +256,14 @@ impl LatticeParams {
     /// assert_eq!(params.strut_thickness, 1.0);
     /// ```
     #[must_use]
-    pub fn with_strut_thickness(mut self, thickness: f64) -> Self {
+    pub const fn with_strut_thickness(mut self, thickness: f64) -> Self {
         self.strut_thickness = thickness;
         self
     }
 
     /// Sets the wall thickness (for TPMS lattices).
     #[must_use]
-    pub fn with_wall_thickness(mut self, thickness: f64) -> Self {
+    pub const fn with_wall_thickness(mut self, thickness: f64) -> Self {
         self.wall_thickness = thickness;
         self
     }
@@ -281,7 +281,7 @@ impl LatticeParams {
     /// assert!((params.density - 0.2).abs() < 0.001);
     /// ```
     #[must_use]
-    pub fn with_density(mut self, density: f64) -> Self {
+    pub const fn with_density(mut self, density: f64) -> Self {
         self.density = density.clamp(0.0, 1.0);
         self
     }
@@ -307,7 +307,7 @@ impl LatticeParams {
 
     /// Sets the minimum feature size.
     #[must_use]
-    pub fn with_min_feature_size(mut self, size: f64) -> Self {
+    pub const fn with_min_feature_size(mut self, size: f64) -> Self {
         self.min_feature_size = size;
         self
     }
@@ -323,7 +323,7 @@ impl LatticeParams {
 
     /// Sets whether to trim the lattice to bounds.
     #[must_use]
-    pub fn with_trim_to_bounds(mut self, trim: bool) -> Self {
+    pub const fn with_trim_to_bounds(mut self, trim: bool) -> Self {
         self.trim_to_bounds = trim;
         self
     }
@@ -339,7 +339,7 @@ impl LatticeParams {
     /// assert!(params.preserve_beam_data);
     /// ```
     #[must_use]
-    pub fn with_beam_export(mut self, enable: bool) -> Self {
+    pub const fn with_beam_export(mut self, enable: bool) -> Self {
         self.preserve_beam_data = enable;
         self
     }

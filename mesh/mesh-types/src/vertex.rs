@@ -384,7 +384,7 @@ mod tests {
     fn color_from_float() {
         let c = VertexColor::from_float(1.0, 0.5, 0.0);
         assert_eq!(c.r, 255);
-        assert!((c.g as i32 - 127).abs() <= 1);
+        assert!((i32::from(c.g) - 127).abs() <= 1);
         assert_eq!(c.b, 0);
     }
 
@@ -402,7 +402,7 @@ mod tests {
         let c = VertexColor::from_float(2.0, -1.0, 0.5);
         assert_eq!(c.r, 255);
         assert_eq!(c.g, 0);
-        assert!((c.b as i32 - 127).abs() <= 1);
+        assert!((i32::from(c.b) - 127).abs() <= 1);
     }
 
     #[test]

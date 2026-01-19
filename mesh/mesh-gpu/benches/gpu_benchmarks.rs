@@ -4,9 +4,9 @@
 //!
 //! These benchmarks compare GPU and CPU SDF computation performance.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
-use mesh_gpu::{try_compute_sdf_gpu, GpuContext, GpuSdfParams};
+use mesh_gpu::{GpuContext, GpuSdfParams, try_compute_sdf_gpu};
 use mesh_types::{IndexedMesh, Vertex};
 
 /// Create a cube mesh with specified size.
@@ -57,7 +57,7 @@ fn create_icosphere(subdivisions: u32) -> IndexedMesh {
     let mut mesh = IndexedMesh::new();
 
     // Golden ratio
-    let phi = (1.0 + 5.0_f64.sqrt()) / 2.0;
+    let phi = f64::midpoint(1.0, 5.0_f64.sqrt());
     let norm = (1.0 + phi * phi).sqrt();
     let a = 1.0 / norm;
     let b = phi / norm;
@@ -126,30 +126,10 @@ fn subdivide_mesh(mesh: &mut IndexedMesh) {
     let mut edge_midpoints: HashMap<(u32, u32), u32> = HashMap::new();
     let mut new_faces = Vec::new();
 
-    let mut get_midpoint = |mesh: &mut IndexedMesh,
-                            edge_midpoints: &mut HashMap<(u32, u32), u32>,
-                            i0: u32,
-                            i1: u32|
-     -> u32 {
-        let key = if i0 < i1 { (i0, i1) } else { (i1, i0) };
+    // Clone faces to avoid borrowing conflict
+    let old_faces = mesh.faces.clone();
 
-        if let Some(&idx) = edge_midpoints.get(&key) {
-            return idx;
-        }
-
-        let p0 = &mesh.vertices[i0 as usize].position;
-        let p1 = &mesh.vertices[i1 as usize].position;
-        let mid = (p0.coords + p1.coords) / 2.0;
-        let mid_normalized = mid.normalize();
-
-        let idx = mesh.vertices.len() as u32;
-        mesh.vertices
-            .push(Vertex::from_coords(mid_normalized.x, mid_normalized.y, mid_normalized.z));
-        edge_midpoints.insert(key, idx);
-        idx
-    };
-
-    for face in &mesh.faces {
+    for face in &old_faces {
         let i0 = face[0];
         let i1 = face[1];
         let i2 = face[2];
@@ -165,6 +145,35 @@ fn subdivide_mesh(mesh: &mut IndexedMesh) {
     }
 
     mesh.faces = new_faces;
+}
+
+/// Get midpoint vertex index, creating a new vertex if needed.
+#[allow(clippy::cast_possible_truncation)]
+fn get_midpoint(
+    mesh: &mut IndexedMesh,
+    edge_midpoints: &mut std::collections::HashMap<(u32, u32), u32>,
+    i0: u32,
+    i1: u32,
+) -> u32 {
+    let key = if i0 < i1 { (i0, i1) } else { (i1, i0) };
+
+    if let Some(&idx) = edge_midpoints.get(&key) {
+        return idx;
+    }
+
+    let p0 = &mesh.vertices[i0 as usize].position;
+    let p1 = &mesh.vertices[i1 as usize].position;
+    let mid = (p0.coords + p1.coords) / 2.0;
+    let mid_normalized = mid.normalize();
+
+    let idx = mesh.vertices.len() as u32;
+    mesh.vertices.push(Vertex::from_coords(
+        mid_normalized.x,
+        mid_normalized.y,
+        mid_normalized.z,
+    ));
+    edge_midpoints.insert(key, idx);
+    idx
 }
 
 fn bench_sdf_gpu_varying_grid_size(c: &mut Criterion) {
@@ -184,11 +193,8 @@ fn bench_sdf_gpu_varying_grid_size(c: &mut Criterion) {
             BenchmarkId::from_parameter(format!("{grid_size}³")),
             &grid_size,
             |b, &size| {
-                let params = GpuSdfParams::new(
-                    [size, size, size],
-                    [-2.0, -2.0, -2.0],
-                    4.0 / size as f32,
-                );
+                let params =
+                    GpuSdfParams::new([size, size, size], [-2.0, -2.0, -2.0], 4.0 / size as f32);
                 b.iter(|| {
                     let result = try_compute_sdf_gpu(black_box(&mesh), black_box(&params));
                     black_box(result)

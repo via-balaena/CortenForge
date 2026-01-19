@@ -110,7 +110,8 @@ pub fn compute_rigid_transform(
         rotation_matrix = v * u.transpose();
     }
 
-    let rotation = UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(rotation_matrix));
+    let rotation =
+        UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(rotation_matrix));
 
     // Compute scale if requested
     let scale = if compute_scale {
@@ -210,7 +211,8 @@ pub fn compute_weighted_rigid_transform(
         rotation_matrix = v * u.transpose();
     }
 
-    let rotation = UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(rotation_matrix));
+    let rotation =
+        UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(rotation_matrix));
 
     // Compute scale if requested
     let scale = if compute_scale {
@@ -358,7 +360,10 @@ mod tests {
     fn test_with_scale() {
         let source = make_triangle();
         let scale = 2.5;
-        let target: Vec<Point3<f64>> = source.iter().map(|p| Point3::from(p.coords * scale)).collect();
+        let target: Vec<Point3<f64>> = source
+            .iter()
+            .map(|p| Point3::from(p.coords * scale))
+            .collect();
 
         let transform = compute_rigid_transform(&source, &target, true).unwrap();
 
@@ -410,7 +415,8 @@ mod tests {
 
         // Equal weights should give same result as unweighted
         let weights = vec![1.0, 1.0, 1.0, 1.0];
-        let transform = compute_weighted_rigid_transform(&source, &target, &weights, false).unwrap();
+        let transform =
+            compute_weighted_rigid_transform(&source, &target, &weights, false).unwrap();
 
         assert_relative_eq!(transform.translation, translation, epsilon = 1e-6);
     }
@@ -457,7 +463,10 @@ mod tests {
         let source = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0)];
         let target = vec![Point3::new(1.0, 0.0, 0.0)];
         let result = compute_rigid_transform(&source, &target, false);
-        assert!(matches!(result, Err(RegistrationError::InvalidParameter(_))));
+        assert!(matches!(
+            result,
+            Err(RegistrationError::InvalidParameter(_))
+        ));
     }
 
     #[test]

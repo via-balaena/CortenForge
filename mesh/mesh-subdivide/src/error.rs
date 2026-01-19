@@ -18,7 +18,9 @@ pub enum SubdivideError {
     InvalidIterations(u32),
 
     /// Mesh would exceed maximum size.
-    #[error("Subdivision would exceed maximum mesh size ({current} -> {projected} faces, max {max})")]
+    #[error(
+        "Subdivision would exceed maximum mesh size ({current} -> {projected} faces, max {max})"
+    )]
     MeshTooLarge {
         /// Current face count.
         current: usize,

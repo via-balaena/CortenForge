@@ -128,7 +128,8 @@ pub fn tube_from_polyline(points: &[Point3<f64>], config: &TubeConfig) -> CurveR
             let cos_a = angle.cos();
             let sin_a = angle.sin();
 
-            let offset = frame.normal * cos_a * config.radius + frame.binormal * sin_a * config.radius;
+            let offset =
+                frame.normal * cos_a * config.radius + frame.binormal * sin_a * config.radius;
             let pos = Point3::from(point.coords + offset);
 
             // Normal points outward
@@ -271,8 +272,11 @@ pub fn tube_variable_radius(
     let n_segs = segments;
 
     // Generate vertices
-    for (ring_idx, ((point, frame), &radius)) in
-        points.iter().zip(frames.iter()).zip(radii.iter()).enumerate()
+    for (ring_idx, ((point, frame), &radius)) in points
+        .iter()
+        .zip(frames.iter())
+        .zip(radii.iter())
+        .enumerate()
     {
         for seg_idx in 0..n_segs {
             let angle = 2.0 * std::f64::consts::PI * (seg_idx as f64) / (n_segs as f64);
@@ -321,10 +325,7 @@ mod tests {
     use super::*;
 
     fn straight_line() -> Vec<Point3<f64>> {
-        vec![
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(0.0, 0.0, 10.0),
-        ]
+        vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 10.0)]
     }
 
     fn multi_segment() -> Vec<Point3<f64>> {

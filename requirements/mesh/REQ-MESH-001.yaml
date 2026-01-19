@@ -1,0 +1,92 @@
+# REQ-MESH-001: Mesh Topology Validation
+#
+# This is an example requirement demonstrating the traceability format.
+# See requirements/README.md for documentation.
+
+id: REQ-MESH-001
+title: Mesh Topology Validation
+category: functional
+priority: HIGH
+status: verified
+
+description: |
+  The mesh-repair crate shall detect and report non-manifold mesh conditions:
+
+  1. Open (boundary) edges - edges belonging to only one triangle
+  2. Non-manifold edges - edges belonging to more than two triangles
+  3. Degenerate triangles - triangles with zero or near-zero area
+  4. Duplicate triangles - identical triangles (same vertices)
+  5. Self-intersecting triangles - triangles that intersect each other
+
+  Detection shall be exposed via the `validate_mesh()` function which
+  returns a `MeshReport` containing all detected issues.
+
+rationale: |
+  Non-manifold meshes cause failures in downstream operations:
+  - Boolean operations require watertight manifold input
+  - Shell generation fails on open meshes
+  - 3D printing slicers reject non-manifold geometry
+  - SDF computation produces incorrect results
+
+  Early detection prevents cascading failures and provides
+  actionable feedback to users.
+
+acceptance_criteria:
+  - Open edges are detected with 100% accuracy
+  - Non-manifold edges are detected with 100% accuracy
+  - Degenerate triangles below configurable area threshold are flagged
+  - Duplicate triangles are detected regardless of vertex order
+  - Self-intersections are detected using BVH-accelerated queries
+  - Detection completes in O(n log n) time for n triangles
+
+verification:
+  method: test
+  tests:
+    - crate: mesh-repair
+      function: tests::validate::test_detect_open_edges
+      coverage: full
+    - crate: mesh-repair
+      function: tests::validate::test_detect_non_manifold_edge
+      coverage: full
+    - crate: mesh-repair
+      function: tests::validate::test_detect_degenerate_triangles
+      coverage: full
+    - crate: mesh-repair
+      function: tests::validate::test_detect_duplicate_triangles
+      coverage: full
+    - crate: mesh-repair
+      function: tests::intersect::test_self_intersection_detection
+      coverage: full
+    - crate: mesh-repair
+      function: tests::validate::test_watertight_cube
+      coverage: full
+
+implementation:
+  - crate: mesh-repair
+    module: validate
+    function: validate_mesh
+  - crate: mesh-repair
+    module: adjacency
+    function: MeshAdjacency::from_mesh
+  - crate: mesh-repair
+    module: intersect
+    function: detect_self_intersections
+
+traces_to:
+  - RISK-MANUF-001  # Manufacturing failure from invalid geometry
+  - RISK-QUAL-001   # Quality issues from undetected mesh problems
+
+traces_from:
+  - SYS-MESH-001    # System requirement: geometry processing
+
+dependencies: []
+
+history:
+  - date: "2026-01-18"
+    author: CortenForge Team
+    change: Initial requirement definition
+
+notes: |
+  This is a foundation requirement - almost all mesh operations
+  depend on valid topology. The MeshReport structure allows
+  callers to decide which issues are acceptable for their use case.

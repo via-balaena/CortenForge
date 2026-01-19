@@ -69,7 +69,6 @@ pub enum RbfKernel {
     },
 }
 
-
 impl RbfKernel {
     /// Evaluates the kernel function at distance r.
     ///
@@ -317,11 +316,7 @@ mod tests {
         // At r = 0, value should be 1/c
         assert_relative_eq!(kernel.evaluate(0.0), 1.0, epsilon = 1e-10);
         // At r = 1, c = 1: 1/sqrt(2)
-        assert_relative_eq!(
-            kernel.evaluate(1.0),
-            1.0 / 2.0_f64.sqrt(),
-            epsilon = 1e-10
-        );
+        assert_relative_eq!(kernel.evaluate(1.0), 1.0 / 2.0_f64.sqrt(), epsilon = 1e-10);
     }
 
     #[test]
@@ -338,7 +333,11 @@ mod tests {
         // Displacement should be zero at constraint points
         for c in &constraints {
             let disp = interp.evaluate(&c.source);
-            assert!(disp.norm() < 1e-6, "Expected zero displacement, got {:?}", disp);
+            assert!(
+                disp.norm() < 1e-6,
+                "Expected zero displacement, got {:?}",
+                disp
+            );
         }
     }
 
@@ -346,10 +345,22 @@ mod tests {
     fn test_rbf_interpolator_translation() {
         let offset = Vector3::new(1.0, 2.0, 3.0);
         let constraints = vec![
-            Constraint::point(Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 0.0) + offset),
-            Constraint::point(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 0.0, 0.0) + offset),
-            Constraint::point(Point3::new(0.0, 1.0, 0.0), Point3::new(0.0, 1.0, 0.0) + offset),
-            Constraint::point(Point3::new(0.0, 0.0, 1.0), Point3::new(0.0, 0.0, 1.0) + offset),
+            Constraint::point(
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(0.0, 0.0, 0.0) + offset,
+            ),
+            Constraint::point(
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0) + offset,
+            ),
+            Constraint::point(
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0) + offset,
+            ),
+            Constraint::point(
+                Point3::new(0.0, 0.0, 1.0),
+                Point3::new(0.0, 0.0, 1.0) + offset,
+            ),
         ];
 
         let interp = RbfInterpolator::new(&constraints, RbfKernel::ThinPlateSpline).unwrap();
@@ -370,7 +381,8 @@ mod tests {
             Constraint::point(Point3::new(2.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)),
         ];
 
-        let interp = RbfInterpolator::new(&constraints, RbfKernel::Gaussian { sigma: 1.0 }).unwrap();
+        let interp =
+            RbfInterpolator::new(&constraints, RbfKernel::Gaussian { sigma: 1.0 }).unwrap();
 
         // At constraint points, should get expected displacement
         let p0 = interp.transform(&Point3::new(0.0, 0.0, 0.0));

@@ -308,11 +308,23 @@ fn refine_plane_from_inliers(points: &[Vector3<f64>], inliers: &[usize]) -> Opti
     // The normal is the eigenvector corresponding to smallest eigenvalue
     // As an approximation, use the axis with largest determinant
     let normal = if det_x >= det_y && det_x >= det_z {
-        Vector3::new(det_x, cov_xz * cov_yz - cov_xy * cov_zz, cov_xy * cov_yz - cov_xz * cov_yy)
+        Vector3::new(
+            det_x,
+            cov_xz * cov_yz - cov_xy * cov_zz,
+            cov_xy * cov_yz - cov_xz * cov_yy,
+        )
     } else if det_y >= det_x && det_y >= det_z {
-        Vector3::new(cov_xz * cov_yz - cov_xy * cov_zz, det_y, cov_xy * cov_xz - cov_yz * cov_xx)
+        Vector3::new(
+            cov_xz * cov_yz - cov_xy * cov_zz,
+            det_y,
+            cov_xy * cov_xz - cov_yz * cov_xx,
+        )
     } else {
-        Vector3::new(cov_xy * cov_yz - cov_xz * cov_yy, cov_xy * cov_xz - cov_yz * cov_xx, det_z)
+        Vector3::new(
+            cov_xy * cov_yz - cov_xz * cov_yy,
+            cov_xy * cov_xz - cov_yz * cov_xx,
+            det_z,
+        )
     };
 
     Plane::new(centroid, normal)
@@ -342,11 +354,8 @@ mod tests {
         // Grid of points on z=0 plane
         for i in 0u32..5 {
             for j in 0u32..5 {
-                mesh.vertices.push(Vertex::from_coords(
-                    f64::from(i),
-                    f64::from(j),
-                    0.0,
-                ));
+                mesh.vertices
+                    .push(Vertex::from_coords(f64::from(i), f64::from(j), 0.0));
             }
         }
         mesh.faces.push([0, 1, 5]);

@@ -222,7 +222,7 @@ pub fn estimate_strut_volume(length: f64, start_radius: f64, end_radius: f64) ->
         // Truncated cone: (π/3) * h * (r1² + r1*r2 + r2²)
         (PI / 3.0)
             * length
-            * (start_radius.powi(2) + start_radius * end_radius + end_radius.powi(2))
+            * end_radius.mul_add(end_radius, start_radius.mul_add(start_radius, start_radius * end_radius))
     }
 }
 
@@ -234,11 +234,7 @@ mod tests {
 
     #[test]
     fn test_generate_strut_basic() {
-        let strut = generate_strut(
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(0.0, 0.0, 10.0),
-            0.5,
-        );
+        let strut = generate_strut(Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 0.0, 10.0), 0.5);
         assert!(strut.is_some());
 
         let mesh = strut.unwrap();
@@ -250,11 +246,7 @@ mod tests {
 
     #[test]
     fn test_generate_strut_zero_length() {
-        let strut = generate_strut(
-            Point3::new(1.0, 2.0, 3.0),
-            Point3::new(1.0, 2.0, 3.0),
-            0.5,
-        );
+        let strut = generate_strut(Point3::new(1.0, 2.0, 3.0), Point3::new(1.0, 2.0, 3.0), 0.5);
         assert!(strut.is_none());
     }
 
@@ -271,11 +263,7 @@ mod tests {
 
     #[test]
     fn test_generate_strut_along_x() {
-        let strut = generate_strut(
-            Point3::new(0.0, 0.0, 0.0),
-            Point3::new(10.0, 0.0, 0.0),
-            0.5,
-        );
+        let strut = generate_strut(Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 0.0, 0.0), 0.5);
         assert!(strut.is_some());
     }
 

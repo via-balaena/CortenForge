@@ -35,3 +35,6 @@ walkdir = "2"
 
 # Date/time for completion records
 chrono = "0.4"
+
+# Finding executables in PATH
+which = "7"

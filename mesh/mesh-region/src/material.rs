@@ -393,7 +393,10 @@ mod tests {
         assert_eq!(zone.properties().density, Some(1.2));
         assert_eq!(zone.properties().flexibility, Some(0.8));
         assert_eq!(zone.properties().color, Some((255, 128, 0)));
-        assert_eq!(zone.properties().get_custom("manufacturer"), Some("Polymaker"));
+        assert_eq!(
+            zone.properties().get_custom("manufacturer"),
+            Some("Polymaker")
+        );
     }
 
     #[test]
@@ -437,9 +440,18 @@ mod tests {
     fn test_material_names() {
         let mut map = MaterialMap::new();
 
-        map.add(MaterialZone::new(MeshRegion::from_vertices("a", [0]), "PLA"));
-        map.add(MaterialZone::new(MeshRegion::from_vertices("b", [1]), "TPU"));
-        map.add(MaterialZone::new(MeshRegion::from_vertices("c", [2]), "PLA"));
+        map.add(MaterialZone::new(
+            MeshRegion::from_vertices("a", [0]),
+            "PLA",
+        ));
+        map.add(MaterialZone::new(
+            MeshRegion::from_vertices("b", [1]),
+            "TPU",
+        ));
+        map.add(MaterialZone::new(
+            MeshRegion::from_vertices("c", [2]),
+            "PLA",
+        ));
 
         let names = map.material_names();
         assert_eq!(names.len(), 2);
@@ -451,9 +463,18 @@ mod tests {
     fn test_zones_for_material() {
         let mut map = MaterialMap::new();
 
-        map.add(MaterialZone::new(MeshRegion::from_vertices("a", [0]), "PLA"));
-        map.add(MaterialZone::new(MeshRegion::from_vertices("b", [1]), "TPU"));
-        map.add(MaterialZone::new(MeshRegion::from_vertices("c", [2]), "PLA"));
+        map.add(MaterialZone::new(
+            MeshRegion::from_vertices("a", [0]),
+            "PLA",
+        ));
+        map.add(MaterialZone::new(
+            MeshRegion::from_vertices("b", [1]),
+            "TPU",
+        ));
+        map.add(MaterialZone::new(
+            MeshRegion::from_vertices("c", [2]),
+            "PLA",
+        ));
 
         let pla_zones = map.zones_for_material("PLA");
         assert_eq!(pla_zones.len(), 2);

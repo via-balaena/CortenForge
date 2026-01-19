@@ -223,14 +223,10 @@ mod tests {
         let mut mesh = IndexedMesh::new();
 
         // Regular tetrahedron
-        mesh.vertices
-            .push(Vertex::from_coords(1.0, 1.0, 1.0));
-        mesh.vertices
-            .push(Vertex::from_coords(1.0, -1.0, -1.0));
-        mesh.vertices
-            .push(Vertex::from_coords(-1.0, 1.0, -1.0));
-        mesh.vertices
-            .push(Vertex::from_coords(-1.0, -1.0, 1.0));
+        mesh.vertices.push(Vertex::from_coords(1.0, 1.0, 1.0));
+        mesh.vertices.push(Vertex::from_coords(1.0, -1.0, -1.0));
+        mesh.vertices.push(Vertex::from_coords(-1.0, 1.0, -1.0));
+        mesh.vertices.push(Vertex::from_coords(-1.0, -1.0, 1.0));
 
         mesh.faces.push([0, 1, 2]);
         mesh.faces.push([0, 2, 3]);

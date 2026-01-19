@@ -413,12 +413,9 @@ mod tests {
     #[test]
     fn test_face_thickness_averaged() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices
-            .push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices
-            .push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
-        mesh.vertices
-            .push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
+        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
+        mesh.vertices.push(Vertex::new(Point3::new(1.0, 0.0, 0.0)));
+        mesh.vertices.push(Vertex::new(Point3::new(0.5, 1.0, 0.0)));
         mesh.faces.push([0, 1, 2]);
 
         let mut map = ThicknessMap::new(2.0);
@@ -469,12 +466,9 @@ mod tests {
     #[test]
     fn test_gradient() {
         let mut mesh = IndexedMesh::new();
-        mesh.vertices
-            .push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
-        mesh.vertices
-            .push(Vertex::new(Point3::new(5.0, 0.0, 0.0)));
-        mesh.vertices
-            .push(Vertex::new(Point3::new(10.0, 0.0, 0.0)));
+        mesh.vertices.push(Vertex::new(Point3::new(0.0, 0.0, 0.0)));
+        mesh.vertices.push(Vertex::new(Point3::new(5.0, 0.0, 0.0)));
+        mesh.vertices.push(Vertex::new(Point3::new(10.0, 0.0, 0.0)));
 
         let from = MeshRegion::from_vertices("from", [0]);
         let to = MeshRegion::from_vertices("to", [2]);

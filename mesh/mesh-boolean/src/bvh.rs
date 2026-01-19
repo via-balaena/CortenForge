@@ -256,7 +256,11 @@ impl Bvh {
     /// Uses rayon for parallel BVH construction when the mesh has
     /// more than `parallel_threshold` triangles.
     #[must_use]
-    pub fn build_parallel(mesh: &IndexedMesh, max_leaf_size: usize, parallel_threshold: usize) -> Self {
+    pub fn build_parallel(
+        mesh: &IndexedMesh,
+        max_leaf_size: usize,
+        parallel_threshold: usize,
+    ) -> Self {
         if mesh.faces.is_empty() {
             return Self {
                 root: None,
@@ -396,8 +400,22 @@ impl Bvh {
             || right_indices.len() >= parallel_threshold
         {
             rayon::join(
-                || Self::build_recursive_parallel(triangles, left_indices, max_leaf_size, parallel_threshold),
-                || Self::build_recursive_parallel(triangles, right_indices, max_leaf_size, parallel_threshold),
+                || {
+                    Self::build_recursive_parallel(
+                        triangles,
+                        left_indices,
+                        max_leaf_size,
+                        parallel_threshold,
+                    )
+                },
+                || {
+                    Self::build_recursive_parallel(
+                        triangles,
+                        right_indices,
+                        max_leaf_size,
+                        parallel_threshold,
+                    )
+                },
             )
         } else {
             (

@@ -1,0 +1,34 @@
+[package]
+name = "ml-types"
+description = "ML types for CortenForge: inference types (Frame, DetectionResult) and dataset schemas (labels, metadata)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["machine-learning", "detection", "dataset", "computer-vision", "inference"]
+categories = ["science::ml", "data-structures", "computer-vision"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Sensor types for CameraFrame -> Frame conversion
+sensor-types = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Approximate equality testing
+approx = { workspace = true }
+# Temporary files for tests
+tempfile = { workspace = true }
+
+[features]
+default = []

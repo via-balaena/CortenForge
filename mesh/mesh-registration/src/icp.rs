@@ -221,13 +221,15 @@ pub fn icp_align(
         final_count = correspondences.len();
 
         // Extract matched points
-        let (matched_source, matched_target): (Vec<Point3<f64>>, Vec<Point3<f64>>) = correspondences
-            .iter()
-            .map(|c| (transformed[c.source_idx], c.target_point))
-            .unzip();
+        let (matched_source, matched_target): (Vec<Point3<f64>>, Vec<Point3<f64>>) =
+            correspondences
+                .iter()
+                .map(|c| (transformed[c.source_idx], c.target_point))
+                .unzip();
 
         // Compute incremental transform
-        let incremental = compute_rigid_transform(&matched_source, &matched_target, params.compute_scale)?;
+        let incremental =
+            compute_rigid_transform(&matched_source, &matched_target, params.compute_scale)?;
 
         // Compose with current transform
         current_transform = incremental.compose(&current_transform);
@@ -307,8 +309,12 @@ pub fn icp_align_points(
             .collect();
 
         // Find correspondences
-        let correspondences =
-            find_correspondences_from_points(&transformed, target_points, &target_tree, max_dist_sq);
+        let correspondences = find_correspondences_from_points(
+            &transformed,
+            target_points,
+            &target_tree,
+            max_dist_sq,
+        );
 
         if correspondences.is_empty() {
             return Err(RegistrationError::NoCorrespondences);
@@ -317,13 +323,15 @@ pub fn icp_align_points(
         final_count = correspondences.len();
 
         // Extract matched points
-        let (matched_source, matched_target): (Vec<Point3<f64>>, Vec<Point3<f64>>) = correspondences
-            .iter()
-            .map(|c| (transformed[c.source_idx], c.target_point))
-            .unzip();
+        let (matched_source, matched_target): (Vec<Point3<f64>>, Vec<Point3<f64>>) =
+            correspondences
+                .iter()
+                .map(|c| (transformed[c.source_idx], c.target_point))
+                .unzip();
 
         // Compute incremental transform
-        let incremental = compute_rigid_transform(&matched_source, &matched_target, params.compute_scale)?;
+        let incremental =
+            compute_rigid_transform(&matched_source, &matched_target, params.compute_scale)?;
 
         // Compose with current transform
         current_transform = incremental.compose(&current_transform);
@@ -519,7 +527,11 @@ mod tests {
 
         assert!(result.converged);
         // ICP on random point clouds may have some residual error
-        assert!(result.rms_error < 0.1, "RMS error too large: {}", result.rms_error);
+        assert!(
+            result.rms_error < 0.1,
+            "RMS error too large: {}",
+            result.rms_error
+        );
     }
 
     #[test]
@@ -602,7 +614,11 @@ mod tests {
 
         assert!(result.converged);
         // Subsampling may reduce accuracy - allow more tolerance
-        assert!(result.rms_error < 1.0, "RMS error too large: {}", result.rms_error);
+        assert!(
+            result.rms_error < 1.0,
+            "RMS error too large: {}",
+            result.rms_error
+        );
         // With 50% subsample, should use fewer correspondences
         assert!(result.correspondence_count < source.vertices.len());
     }
@@ -647,7 +663,11 @@ mod tests {
 
         assert!(result.converged);
         // Allow some tolerance for small point sets
-        assert!(result.rms_error < 0.01, "RMS error too large: {}", result.rms_error);
+        assert!(
+            result.rms_error < 0.01,
+            "RMS error too large: {}",
+            result.rms_error
+        );
     }
 
     #[test]

@@ -315,7 +315,10 @@ impl Aabb {
 /// BVH node for acceleration structure.
 #[derive(Debug)]
 enum BvhNode {
-    Leaf { aabb: Aabb, face_idx: usize },
+    Leaf {
+        aabb: Aabb,
+        face_idx: usize,
+    },
     Internal {
         aabb: Aabb,
         left: Box<BvhNode>,
@@ -440,11 +443,7 @@ fn ray_triangle_intersect(
 
     let t = f * edge2.dot(&q);
 
-    if t > epsilon {
-        Some(t)
-    } else {
-        None
-    }
+    if t > epsilon { Some(t) } else { None }
 }
 
 /// Trace a ray through the BVH and find the closest intersection.
@@ -560,7 +559,7 @@ fn compute_vertex_normals(mesh: &IndexedMesh, triangles: &[Triangle]) -> Vec<Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::{unit_cube, Vertex};
+    use mesh_types::{Vertex, unit_cube};
 
     fn make_thin_box() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();

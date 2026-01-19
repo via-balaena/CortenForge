@@ -1,0 +1,78 @@
+# Unified Mesh Processing Library
+#
+# This umbrella crate re-exports all mesh-* crates for convenience.
+# Users can depend on this single crate to get the full mesh processing toolkit.
+
+[package]
+name = "mesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Complete mesh processing toolkit for 3D printing, CAD, and scan processing"
+keywords = ["mesh", "3d-printing", "geometry", "stl", "cad"]
+categories = ["graphics", "science", "algorithms"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Foundation
+mesh-types = { workspace = true }
+mesh-io = { workspace = true }
+mesh-transform = { workspace = true }
+
+# Core operations
+mesh-repair = { workspace = true }
+mesh-sdf = { workspace = true }
+mesh-offset = { workspace = true }
+mesh-shell = { workspace = true }
+
+# Topology operations
+mesh-decimate = { workspace = true }
+mesh-subdivide = { workspace = true }
+mesh-remesh = { workspace = true }
+
+# Analysis & measurement
+mesh-measure = { workspace = true }
+mesh-thickness = { workspace = true }
+mesh-slice = { workspace = true }
+mesh-geodesic = { workspace = true }
+mesh-zones = { workspace = true }
+
+# Deformation & registration
+mesh-morph = { workspace = true }
+mesh-registration = { workspace = true }
+mesh-template = { workspace = true }
+
+# Boolean operations
+mesh-boolean = { workspace = true }
+
+# 3D printing
+mesh-printability = { workspace = true }
+mesh-lattice = { workspace = true }
+
+# Scan processing
+mesh-scan = { workspace = true }
+
+# Assembly & regions
+mesh-assembly = { workspace = true }
+mesh-region = { workspace = true }
+
+# Curve-based mesh generation
+mesh-from-curves = { workspace = true }
+
+# GPU acceleration (optional)
+mesh-gpu = { workspace = true, optional = true }
+
+[features]
+default = []
+gpu = ["dep:mesh-gpu"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
