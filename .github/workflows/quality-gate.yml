@@ -188,8 +188,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Generate coverage
-        run: cargo tarpaulin --all-features --workspace --out Xml --out Json
+      - name: Generate coverage and check threshold
+        run: |
+          # Run tarpaulin with 90% threshold - fails if coverage below threshold
+          cargo tarpaulin --all-features --workspace --out Xml --fail-under 90
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -198,15 +200,6 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
           files: cobertura.xml
-
-      - name: Check coverage threshold
-        run: |
-          COVERAGE=$(jq '.coverage_percentage' tarpaulin-report.json)
-          echo "Coverage: $COVERAGE%"
-          if (( $(echo "$COVERAGE < 90" | bc -l) )); then
-            echo "::error::Coverage $COVERAGE% is below 90% threshold"
-            exit 1
-          fi
 
   # ============================================================================
   # SAFETY - Zero unwrap/expect in library code
