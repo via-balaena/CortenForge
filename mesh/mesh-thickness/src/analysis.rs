@@ -321,8 +321,8 @@ enum BvhNode {
     },
     Internal {
         aabb: Aabb,
-        left: Box<BvhNode>,
-        right: Box<BvhNode>,
+        left: Box<Self>,
+        right: Box<Self>,
     },
 }
 

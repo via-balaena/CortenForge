@@ -746,8 +746,8 @@ mod tests {
         let params = BallPivotingParams::new(2.0);
         let result = ball_pivoting(&cloud, &params).unwrap();
 
-        // Should create at least one triangle
-        assert!(result.triangle_count >= 0);
+        // Verify result is valid (triangle_count is usize)
+        let _ = result.triangle_count; // Just verify it exists
         assert_eq!(result.mesh.vertices.len(), 3);
     }
 
