@@ -164,7 +164,7 @@ SEPARATE TRACKS (independent):
 
 ---
 
-## Quality Infrastructure (COMPLETE - SIEMENS-SCALE)
+## Quality Infrastructure (COMPLETE - INDUSTRIAL-SCALE)
 
 > **See INFRASTRUCTURE.md for the full constraint specification.**
 
@@ -173,7 +173,7 @@ SEPARATE TRACKS (independent):
 - [x] **CONTRIBUTING.md** - The culture document ("A-grade or it doesn't ship")
 - [x] **STANDARDS.md** - Full quality criteria (Seven A-grade criteria)
 - [x] **COMPLETION_LOG.md** - Project-wide completion tracking
-- [x] **INFRASTRUCTURE.md** - Full constraint specification (Siemens-scale)
+- [x] **INFRASTRUCTURE.md** - Full constraint specification (industrial-scale)
 - [x] **SECURITY.md** - Security policy, signed commits, vulnerability reporting
 
 ### Enforcement Tools
@@ -193,7 +193,7 @@ SEPARATE TRACKS (independent):
 - [x] **deny.toml** - Dependency policy (cargo-deny)
 - [x] **.cargo/config.toml** - Enables `cargo xtask` alias
 
-### CI/CD (Siemens-Scale)
+### CI/CD (Industrial-Scale)
 
 - [x] **.github/workflows/quality-gate.yml** - GitHub Actions quality gate
   - Format, Clippy, Tests (3 platforms + ARM64)

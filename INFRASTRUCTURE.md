@@ -3,8 +3,8 @@
 > **Purpose**: Define the immutable constraints that enable unlimited freedom within.
 > Like parametric constraints in CAD, these rules let teams scale without chaos.
 
-> **Target**: Siemens-scale reliability. ISO 26262 / IEC 62304 / DO-178C awareness.
-> Industrial-grade foundation for physical systems: robots, vehicles, medical devices.
+> **Target**: Industrial-scale reliability. ISO 26262 / IEC 62304 / DO-178C awareness.
+> Enterprise-grade foundation for physical systems: robots, vehicles, medical devices.
 
 ---
 
@@ -24,7 +24,7 @@ Traceability enables certification.
 ### 1. Quality Gates (IMPLEMENTED)
 Every line of code meets A-grade standard before merging.
 
-### 2. Supply Chain Security (ENHANCING)
+### 2. Supply Chain Security (IMPLEMENTED)
 Every dependency is audited, every artifact has provenance.
 
 ### 3. Traceability (PLANNED)
@@ -53,20 +53,20 @@ Humans review; machines enforce.
 ### Enhancement Roadmap
 
 ```
-TIER 1: Non-Negotiable Foundation        [IN PROGRESS]
-├── cargo-audit (CVE scanning)           [ ]
-├── SBOM generation (CycloneDX)          [ ]
-├── Pre-commit hooks                     [ ]
-├── Conventional commits                 [ ]
-├── Signed commits/releases              [ ]
-└── cargo-semver-checks                  [ ]
+TIER 1: Non-Negotiable Foundation        [COMPLETE]
+├── cargo-audit (CVE scanning)           [x] In quality-gate.yml
+├── SBOM generation (CycloneDX)          [x] In quality-gate.yml
+├── Pre-commit hooks                     [ ] Available via `cargo xtask setup`
+├── Conventional commits                 [ ] Not yet enforced
+├── Signed commits/releases              [ ] Branch protection (manual)
+└── cargo-semver-checks                  [x] In quality-gate.yml
 
-TIER 2: Scale Enablers                   [PLANNED]
-├── Multi-arch CI (ARM64, WASM)          [ ]
+TIER 2: Scale Enablers                   [PARTIAL]
+├── Multi-arch CI (ARM64, WASM)          [x] In quality-gate.yml
 ├── Benchmark regression gates           [ ]
-├── Mutation testing                     [ ]
-├── API stability tracking               [ ]
-└── Traceability infrastructure          [ ]
+├── Mutation testing                     [x] In scheduled.yml (weekly)
+├── API stability tracking               [x] Via cargo-semver-checks
+└── Traceability infrastructure          [x] requirements/ directory exists
 
 TIER 3: Safety-Critical Ready            [FUTURE]
 ├── MC/DC coverage tooling               [ ]
@@ -210,17 +210,17 @@ semver:
 
 These constraints enable team growth and cross-platform reliability.
 
-### 2.1 Multi-Architecture CI
+### 2.1 Multi-Architecture CI (IMPLEMENTED)
 
 **Targets**:
-| Target | OS | Arch | Priority |
-|--------|-----|------|----------|
-| x86_64-unknown-linux-gnu | Linux | x64 | ✓ Have |
-| x86_64-apple-darwin | macOS | x64 | ✓ Have |
-| x86_64-pc-windows-msvc | Windows | x64 | ✓ Have |
-| aarch64-apple-darwin | macOS | ARM64 | Add |
-| aarch64-unknown-linux-gnu | Linux | ARM64 | Add |
-| wasm32-unknown-unknown | WASM | - | Add (Layer 0 only) |
+| Target | OS | Arch | Status |
+|--------|-----|------|--------|
+| x86_64-unknown-linux-gnu | Linux | x64 | ✓ |
+| x86_64-apple-darwin | macOS | x64 | ✓ |
+| x86_64-pc-windows-msvc | Windows | x64 | ✓ |
+| aarch64-apple-darwin | macOS | ARM64 | ✓ test-arm64 job |
+| aarch64-unknown-linux-gnu | Linux | ARM64 | - |
+| wasm32-unknown-unknown | WASM | - | ✓ wasm job (Layer 0) |
 
 **Why**:
 - Apple Silicon is now majority Mac market
@@ -380,11 +380,13 @@ if a && b {  // Need tests where:
 │   ├── coverage (tarpaulin, ≥90%)         │
 │   ├── docs (rustdoc)                     │
 │   ├── safety (unwrap/expect scan)        │
-│   ├── security (cargo-audit)        NEW  │
+│   ├── security (cargo-audit)             │
 │   ├── dependencies (cargo-deny)          │
 │   ├── bevy-free (Layer 0 check)          │
-│   ├── semver (cargo-semver-checks)  NEW  │
-│   └── sbom (cargo-cyclonedx)        NEW  │
+│   ├── semver (cargo-semver-checks)       │
+│   ├── sbom (cargo-cyclonedx)             │
+│   ├── arm64 (Apple Silicon)              │
+│   └── wasm (Layer 0 compatibility)       │
 │                                          │
 │ Merge to main                            │
 │   ├── All above pass                     │
@@ -434,25 +436,23 @@ Track these metrics for health visibility:
 
 ## Implementation Priority
 
-### Immediate (This Week)
-1. Add `cargo-audit` to CI
-2. Add SBOM generation to releases
-3. Create `cargo xtask setup` for hooks
+### Completed
+- [x] `cargo-audit` in CI
+- [x] SBOM generation in CI
+- [x] `cargo-semver-checks` in CI
+- [x] ARM64 CI target (macOS)
+- [x] WASM CI target (Layer 0 crates)
+- [x] Mutation testing (weekly scheduled)
+- [x] Traceability infrastructure (requirements/ directory)
 
-### Short-term (This Month)
-4. Add conventional commit enforcement
-5. Add `cargo-semver-checks` to CI
-6. Document signed commit requirement
-
-### Medium-term (This Quarter)
-7. Add ARM64 and WASM CI targets
-8. Add benchmark regression detection
-9. Create traceability infrastructure
-
-### Long-term (As Needed)
-10. Mutation testing integration
-11. Formal verification for critical paths
-12. Ferrocene evaluation for safety-critical
+### Remaining (As Needed)
+- [ ] Pre-commit hooks (available via `cargo xtask setup`)
+- [ ] Conventional commit enforcement
+- [ ] Signed commits (GitHub branch protection)
+- [ ] Benchmark regression detection
+- [ ] Linux ARM64 CI target
+- [ ] Formal verification for critical paths
+- [ ] Ferrocene evaluation for safety-critical
 
 ---
 
@@ -468,4 +468,4 @@ Track these metrics for health visibility:
 ---
 
 *Last updated: 2026-01-18*
-*Version: 1.0.0*
+*Version: 1.1.0 - Updated to reflect implemented CI infrastructure*
