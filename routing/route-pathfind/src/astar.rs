@@ -313,7 +313,8 @@ pub fn find_path<T: Default>(
     clippy::unwrap_used,
     clippy::float_cmp,
     clippy::expect_used,
-    clippy::len_zero
+    clippy::len_zero,
+    clippy::items_after_statements
 )]
 mod tests {
     use super::*;
