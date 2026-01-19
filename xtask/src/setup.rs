@@ -156,9 +156,10 @@ pub fn run() -> Result<()> {
     println!("{}", "Optional (Linux only):".bright_blue());
     println!("  cargo install cargo-tarpaulin");
     println!("  cargo tarpaulin -p <crate> --out Html");
+    println!("  cargo tarpaulin -p <crate> --fail-under 75  # Match CI threshold");
     println!();
     println!("  This lets you check coverage locally before pushing.");
-    println!("  CI enforces ≥90% coverage regardless - this is just for convenience.");
+    println!("  CI enforces ≥75% coverage (target: 90%). Mac/Windows users rely on CI.");
     println!();
 
     Ok(())

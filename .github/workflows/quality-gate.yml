@@ -192,15 +192,7 @@ jobs:
         run: |
           # Run tarpaulin with 75% threshold - fails if coverage below threshold
           # TODO: Increase to 90% as test coverage improves
-          cargo tarpaulin --all-features --workspace --out Xml --fail-under 75
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        continue-on-error: true
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-          files: cobertura.xml
+          cargo tarpaulin --all-features --workspace --fail-under 75
 
   # ============================================================================
   # SAFETY - Zero unwrap/expect in library code

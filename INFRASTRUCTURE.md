@@ -44,7 +44,7 @@ Humans review; machines enforce.
 | Formatting | rustfmt | CI blocks on diff |
 | Linting | clippy pedantic+nursery | CI blocks on warning |
 | Testing | cargo test | CI blocks on failure |
-| Coverage | tarpaulin | CI blocks if <90% |
+| Coverage | tarpaulin | CI blocks if <75% (target: 90%) |
 | Documentation | rustdoc | CI blocks on warning |
 | Safety | clippy unwrap_used/expect_used | CI blocks on lib code violation |
 | Dependencies | cargo-deny | CI blocks on advisory/license |
@@ -412,7 +412,7 @@ if a && b {  // Need tests where:
 │   ├── format (rustfmt)                   │
 │   ├── lint (clippy)                      │
 │   ├── test (3 platforms)                 │
-│   ├── coverage (tarpaulin, ≥90%)         │
+│   ├── coverage (tarpaulin, ≥75%)         │
 │   ├── docs (rustdoc)                     │
 │   ├── safety (clippy unwrap_used deny)   │
 │   ├── security (cargo-audit)             │
@@ -458,7 +458,7 @@ Track these metrics for health visibility:
 
 | Metric | Target | Current | Trend |
 |--------|--------|---------|-------|
-| Test Coverage | ≥90% | ~92% | → |
+| Test Coverage | ≥75% (target: 90%) | ~77% | → |
 | Clippy Warnings | 0 | 0 | → |
 | Doc Warnings | 0 | 0 | → |
 | Security Advisories | 0 | ? | - |
