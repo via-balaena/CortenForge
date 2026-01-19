@@ -82,10 +82,6 @@ license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
 multiple-versions = "warn"
 # Wildcards are messy
 wildcards = "warn"
-# Allow private registries (for internal crates)
-allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# Allow git dependencies (for pre-release testing)
-allow-git = false
 
 # Highlight/warn on these crates if they appear
 highlight = "all"
