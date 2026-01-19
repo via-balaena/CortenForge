@@ -333,6 +333,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Exact constant values from identity()
     fn pose_identity() {
         let pose = Pose3d::identity();
         assert_eq!(pose.position, [0.0, 0.0, 0.0]);
@@ -376,6 +377,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Exact constant values, direct copy
     fn transform_from_pose() {
         let pose = Pose3d::new([1.0, 2.0, 3.0], [1.0, 0.0, 0.0, 0.0]);
         let tf = Transform3d::from_pose(pose);
@@ -384,6 +386,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Exact constant values, direct copy
     fn transform_to_pose() {
         let tf = Transform3d::new([1.0, 0.0, 0.0, 0.0], [1.0, 2.0, 3.0], 2.0);
         let pose = tf.to_pose();

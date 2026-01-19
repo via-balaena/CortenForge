@@ -127,6 +127,10 @@ impl GpuContext {
     /// # Returns
     ///
     /// Vector of `FaceLocation` for each face in `mesh`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BooleanError`] if GPU computation fails.
     pub fn classify_faces(
         &self,
         mesh: &IndexedMesh,

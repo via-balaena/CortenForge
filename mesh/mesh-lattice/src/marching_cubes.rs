@@ -3,6 +3,11 @@
 //! This module provides a simplified marching cubes implementation
 //! for extracting surfaces from implicit functions (like TPMS).
 
+// Allow numeric casts inherent to voxel grid indexing
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_sign_loss)]
+
 use mesh_types::{IndexedMesh, Vertex};
 use nalgebra::Point3;
 

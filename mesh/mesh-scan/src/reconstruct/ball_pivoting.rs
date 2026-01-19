@@ -244,6 +244,7 @@ struct BallPosition {
 /// let result = ball_pivoting(&cloud, &params).unwrap();
 /// println!("{}", result);
 /// ```
+#[allow(clippy::too_many_lines)] // Surface reconstruction is inherently sequential
 pub fn ball_pivoting(
     cloud: &PointCloud,
     params: &BallPivotingParams,

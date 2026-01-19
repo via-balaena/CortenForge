@@ -3,6 +3,9 @@
 //! This module provides types for representing lattice structures as
 //! beam networks, compatible with the 3MF Beam Lattice Extension.
 
+// Allow numeric casts for vertex indexing
+#![allow(clippy::cast_possible_truncation)]
+
 use nalgebra::Point3;
 
 /// Cap style for beam endpoints.
@@ -278,8 +281,11 @@ impl BeamLatticeData {
             .filter_map(|beam| {
                 let length = beam.length(&self.vertices)?;
                 // Volume of truncated cone: (π/3) * h * (r1² + r1*r2 + r2²)
-                let volume =
-                    (PI / 3.0) * length * beam.r2.mul_add(beam.r2, beam.r1.mul_add(beam.r1, beam.r1 * beam.r2));
+                let volume = (PI / 3.0)
+                    * length
+                    * beam
+                        .r2
+                        .mul_add(beam.r2, beam.r1.mul_add(beam.r1, beam.r1 * beam.r2));
                 Some(volume)
             })
             .sum()

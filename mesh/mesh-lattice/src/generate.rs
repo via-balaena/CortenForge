@@ -1,4 +1,14 @@
 //! Lattice generation functions.
+//!
+//! This module performs geometric computations where numeric conversions between
+//! floating-point and integer types are fundamental to the algorithm (grid indexing,
+//! voxel counts, etc.). These conversions are intentional and safe within the
+//! expected bounds of lattice dimensions.
+
+// Allow numeric casts that are inherent to geometry algorithms
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_sign_loss)]
 
 use crate::beam::BeamLatticeData;
 use crate::error::LatticeError;
@@ -72,6 +82,8 @@ pub fn generate_lattice(
 }
 
 /// Generates a cubic lattice.
+#[allow(clippy::too_many_lines)] // Lattice generation is inherently sequential
+#[allow(clippy::unnecessary_wraps)] // Consistent API with generate_lattice
 fn generate_cubic_lattice(
     params: &LatticeParams,
     bounds: (Point3<f64>, Point3<f64>),
@@ -229,6 +241,7 @@ fn generate_cubic_lattice(
 }
 
 /// Generates an octet-truss lattice.
+#[allow(clippy::unnecessary_wraps)] // Consistent API with generate_lattice
 fn generate_octet_truss_lattice(
     params: &LatticeParams,
     bounds: (Point3<f64>, Point3<f64>),
@@ -323,6 +336,7 @@ fn generate_octet_truss_lattice(
 }
 
 /// Generates a TPMS-based lattice with specified type.
+#[allow(clippy::unnecessary_wraps)] // Consistent API with generate_lattice
 fn generate_tpms_lattice(
     params: &LatticeParams,
     bounds: (Point3<f64>, Point3<f64>),
@@ -362,7 +376,7 @@ fn generate_tpms_lattice(
     let max_dim = size.x.max(size.y).max(size.z);
     let samples_per_cell = params.resolution;
     let total_resolution = ((max_dim / cell_size) * samples_per_cell as f64).ceil() as usize;
-    let resolution = total_resolution.max(10).min(200); // Clamp to reasonable range
+    let resolution = total_resolution.clamp(10, 200);
 
     // Extract isosurface
     let mesh = extract_isosurface(&shell_sdf, bounds, resolution, 0.0);
@@ -376,6 +390,7 @@ fn generate_tpms_lattice(
 }
 
 /// Generates a Voronoi-style lattice (currently simplified as perturbed cubic).
+#[allow(clippy::unnecessary_wraps)] // Consistent API with generate_lattice
 fn generate_voronoi_lattice(
     params: &LatticeParams,
     bounds: (Point3<f64>, Point3<f64>),
@@ -397,7 +412,7 @@ fn generate_voronoi_lattice(
     // Simple LCG for deterministic random
     let mut seed: u64 = 42;
     let mut random = || -> f64 {
-        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
         ((seed >> 16) & 0x7fff) as f64 / 32768.0 - 0.5
     };
 

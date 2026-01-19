@@ -140,6 +140,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Exact constant values from zero()
     fn imu_zero() {
         let reading = ImuReading::zero(Timestamp::from_nanos(1000));
         assert_eq!(reading.acceleration, [0.0, 0.0, 0.0]);

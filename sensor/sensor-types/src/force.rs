@@ -253,6 +253,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Exact constant values, no computation
     fn ft_wrench() {
         let reading = ForceTorqueReading::new(
             Timestamp::zero(),

@@ -29,31 +29,17 @@ if ! cargo fmt --all -- --check 2>/dev/null; then
 fi
 echo "✓ Formatting OK"
 
-# Clippy check (uses cache)
+# Clippy check (library code only - tests are checked in CI)
 echo "→ Running clippy..."
-if ! cargo clippy --all-targets --all-features -- -D warnings 2>/dev/null; then
+if ! cargo clippy --all-features -- -D warnings 2>/dev/null; then
     echo "✗ Clippy check failed. Fix warnings before committing."
     exit 1
 fi
 echo "✓ Clippy OK"
 
-# Safety scan (fast grep)
-echo "→ Checking for unwrap/expect..."
-VIOLATIONS=$(find . -name "*.rs" \
-    -not -path "./target/*" \
-    -not -path "./xtask/*" \
-    -not -path "*/tests/*" \
-    -not -path "*/examples/*" \
-    -not -path "*/benches/*" \
-    -exec grep -l -E '\.(unwrap|expect)\(' {} \; 2>/dev/null || true)
-
-if [ -n "$VIOLATIONS" ]; then
-    echo "✗ Found unwrap/expect in library code:"
-    echo "$VIOLATIONS"
-    echo "Remove unwrap/expect from library code before committing."
-    exit 1
-fi
-echo "✓ Safety OK"
+# Note: unwrap/expect enforcement is handled by clippy via workspace lints
+# (clippy::unwrap_used = "deny" in Cargo.toml)
+# The grep-based scan was removed as it caught doc examples falsely.
 
 echo ""
 echo "╔═══════════════════════════════════════════════════════════════╗"

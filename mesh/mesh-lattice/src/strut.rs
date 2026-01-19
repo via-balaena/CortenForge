@@ -3,6 +3,10 @@
 //! This module provides functions for creating triangulated cylindrical
 //! struts, which are used to build strut-based lattice structures.
 
+// Allow numeric casts inherent to geometry (vertex indices, segment counts)
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::cast_precision_loss)]
+
 use mesh_types::{IndexedMesh, Vertex};
 use nalgebra::{Point3, Vector3};
 
@@ -222,7 +226,10 @@ pub fn estimate_strut_volume(length: f64, start_radius: f64, end_radius: f64) ->
         // Truncated cone: (π/3) * h * (r1² + r1*r2 + r2²)
         (PI / 3.0)
             * length
-            * end_radius.mul_add(end_radius, start_radius.mul_add(start_radius, start_radius * end_radius))
+            * end_radius.mul_add(
+                end_radius,
+                start_radius.mul_add(start_radius, start_radius * end_radius),
+            )
     }
 }
 

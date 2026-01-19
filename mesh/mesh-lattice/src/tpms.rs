@@ -37,7 +37,8 @@ pub fn gyroid(point: Point3<f64>, cell_size: f64) -> f64 {
     let y = point.y * scale;
     let z = point.z * scale;
 
-    z.sin().mul_add(x.cos(), x.sin().mul_add(y.cos(), y.sin() * z.cos()))
+    z.sin()
+        .mul_add(x.cos(), x.sin().mul_add(y.cos(), y.sin() * z.cos()))
 }
 
 /// Evaluates the Schwarz-P (Primitive) TPMS function.
@@ -87,7 +88,10 @@ pub fn diamond(point: Point3<f64>, cell_size: f64) -> f64 {
     let (sy, cy) = y.sin_cos();
     let (sz, cz) = z.sin_cos();
 
-    (cx * cy).mul_add(sz, (cx * sy).mul_add(cz, (sx * sy).mul_add(sz, sx * cy * cz)))
+    (cx * cy).mul_add(
+        sz,
+        (cx * sy).mul_add(cz, (sx * sy).mul_add(sz, sx * cy * cz)),
+    )
 }
 
 /// Evaluates the Neovius TPMS function.
@@ -134,8 +138,11 @@ pub fn iwp(point: Point3<f64>, cell_size: f64) -> f64 {
     let y = point.y * scale;
     let z = point.z * scale;
 
-    2.0f64.mul_add(z.cos().mul_add(x.cos(), x.cos().mul_add(y.cos(), y.cos() * z.cos())), -(2.0 * x).cos())
-        - (2.0 * y).cos()
+    2.0f64.mul_add(
+        z.cos()
+            .mul_add(x.cos(), x.cos().mul_add(y.cos(), y.cos() * z.cos())),
+        -(2.0 * x).cos(),
+    ) - (2.0 * y).cos()
         - (2.0 * z).cos()
 }
 

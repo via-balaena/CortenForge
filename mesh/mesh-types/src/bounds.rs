@@ -387,9 +387,11 @@ mod tests {
 
     #[test]
     fn aabb_from_points() {
-        let points = [Point3::new(0.0, 0.0, 0.0),
+        let points = [
+            Point3::new(0.0, 0.0, 0.0),
             Point3::new(10.0, 5.0, 3.0),
-            Point3::new(-2.0, 8.0, 1.0)];
+            Point3::new(-2.0, 8.0, 1.0),
+        ];
 
         let aabb = Aabb::from_points(points.iter());
         assert!((aabb.min.x - (-2.0)).abs() < f64::EPSILON);

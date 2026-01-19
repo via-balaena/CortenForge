@@ -433,7 +433,7 @@ mod tests {
 
         let inter = a.intersection(b);
         assert!(inter.is_some());
-        let inter = inter.map_or(TimeRange::new(Timestamp::zero(), Timestamp::zero()), |i| i);
+        let inter = inter.unwrap_or_else(|| TimeRange::new(Timestamp::zero(), Timestamp::zero()));
         assert_eq!(inter.start, Timestamp::from_nanos(150));
         assert_eq!(inter.end, Timestamp::from_nanos(200));
     }
