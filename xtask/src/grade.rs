@@ -268,7 +268,7 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Find workspace root by looking for root Cargo.toml with [workspace]
+/// Find workspace root by looking for root Cargo.toml with `[workspace]`
 fn find_workspace_root(sh: &Shell) -> Result<String> {
     let output = cmd!(
         sh,

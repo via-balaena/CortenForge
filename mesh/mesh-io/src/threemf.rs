@@ -7,7 +7,7 @@
 //!
 //! A 3MF file is a ZIP archive containing:
 //! - `3D/3dmodel.model` - Main model XML file
-//! - `[Content_Types].xml` - MIME type mappings
+//! - `\[Content_Types\].xml` - MIME type mappings
 //! - `_rels/.rels` - Relationships
 //!
 //! # Supported Features
