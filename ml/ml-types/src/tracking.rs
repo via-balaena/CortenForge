@@ -477,7 +477,8 @@ impl TrackRegistry {
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::float_cmp,
-    clippy::cast_lossless
+    clippy::cast_lossless,
+    clippy::cast_precision_loss
 )]
 mod tests {
     use super::*;

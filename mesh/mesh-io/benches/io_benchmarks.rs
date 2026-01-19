@@ -10,7 +10,8 @@
     missing_docs,
     clippy::cast_possible_truncation,
     clippy::assigning_clones,
-    clippy::significant_drop_tightening
+    clippy::significant_drop_tightening,
+    clippy::expect_used
 )]
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
