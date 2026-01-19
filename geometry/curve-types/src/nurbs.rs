@@ -473,6 +473,12 @@ impl Curve for Nurbs {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::redundant_clone
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
