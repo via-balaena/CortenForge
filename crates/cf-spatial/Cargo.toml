@@ -1,0 +1,35 @@
+[package]
+name = "cf-spatial"
+description = "Spatial data structures for CortenForge: VoxelGrid, OccupancyMap, raycasting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords = ["spatial", "voxel", "grid", "3d", "pathfinding"]
+categories = ["graphics", "mathematics", "data-structures", "algorithms"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Core math library - matches parry3d and avian for compatibility
+nalgebra = { workspace = true }
+
+# Error handling - standard for library error types
+thiserror = { workspace = true }
+
+# Serialization (optional)
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Approximate equality testing
+approx = { workspace = true }
+
+# Property-based testing
+proptest = { workspace = true }
+
+[features]
+default = []
+serde = ["dep:serde", "nalgebra/serde-serialize"]
