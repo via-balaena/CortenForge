@@ -38,9 +38,10 @@ ignore = [
 # ============================================================================
 
 [licenses]
+version = 2
 # We're Apache-2.0, so we accept permissive licenses
-unlicensed = "deny"
-copyleft = "warn"
+# In v2 format, all unlicensed and copyleft crates are denied by default
+# unless explicitly allowed
 allow = [
     "MIT",
     "Apache-2.0",
