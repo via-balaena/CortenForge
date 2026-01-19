@@ -49,10 +49,10 @@ members = [
     # Foundation (active development)
     "crates/cf-spatial",
 
-    # Routing domain (pending)
-    # "routing/route-types",
-    # "routing/route-pathfind",
-    # "routing/route-optimize",
+    # Routing domain (active development)
+    "routing/route-types",
+    "routing/route-pathfind",
+    "routing/route-optimize",
 
     # Sensor domain (active development)
     "sensor/sensor-types",
