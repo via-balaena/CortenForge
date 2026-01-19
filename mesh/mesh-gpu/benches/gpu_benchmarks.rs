@@ -7,8 +7,10 @@
 #![allow(
     missing_docs,
     clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
     clippy::assigning_clones,
-    clippy::significant_drop_tightening
+    clippy::significant_drop_tightening,
+    clippy::let_underscore_must_use
 )]
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
