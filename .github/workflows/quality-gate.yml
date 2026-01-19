@@ -133,6 +133,12 @@ jobs:
             "mesh-slice"
             "sensor-types"
             "ml-types"
+            "sim-types"
+            "sim-core"
+            "sim-contact"
+            "sim-constraint"
+            "sim-urdf"
+            "sim-physics"
           )
 
           for crate in "${WASM_CRATES[@]}"; do
@@ -297,7 +303,7 @@ jobs:
       - name: Check semver compatibility
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
-          package: mesh-types,mesh-io,mesh-repair,sensor-types,ml-types
+          package: mesh-types,mesh-io,mesh-repair,sensor-types,ml-types,sim-types,sim-core,sim-contact,sim-constraint,sim-urdf,sim-physics
 
   # ============================================================================
   # LAYER 0 - No Bevy in foundation crates
@@ -349,6 +355,12 @@ jobs:
             "ml-models"
             "ml-dataset"
             "ml-training"
+            "sim-types"
+            "sim-core"
+            "sim-contact"
+            "sim-constraint"
+            "sim-urdf"
+            "sim-physics"
           )
 
           FAILED=false

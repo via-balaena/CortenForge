@@ -1,0 +1,25 @@
+[package]
+name = "sim-types"
+description = "Core types for physics simulation: state, action, observation, dynamics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nalgebra = { workspace = true }
+glam = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[features]
+default = []
+serde = ["dep:serde", "nalgebra/serde-serialize", "glam/serde"]
+
+[lints]
+workspace = true

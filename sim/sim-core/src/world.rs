@@ -1,0 +1,1516 @@
+//! Simulation world container and entity management.
+//!
+//! The [`World`] is the central data structure for simulation state.
+//! It manages rigid bodies, their properties, and provides query interfaces.
+
+use hashbrown::HashMap;
+use nalgebra::{Matrix3, Point3, Vector3};
+use sim_constraint::{
+    BodyState as ConstraintBodyState, ConstraintSolver as JointConstraintSolver,
+    Joint as ConstraintJoint, JointLimits, JointMotor, JointType as ConstraintJointType,
+};
+use sim_contact::{ContactModel, ContactParams, ContactPoint, ContactSolver, ContactSolverConfig};
+use sim_types::{
+    BodyId, JointId, JointState, JointType, MassProperties, Observation, ObservationType, Pose,
+    RigidBodyState, SimError, SimulationConfig,
+};
+
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
+/// Collision shape for contact detection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum CollisionShape {
+    /// Sphere with given radius.
+    Sphere {
+        /// Sphere radius in meters.
+        radius: f64,
+    },
+    /// Infinite plane with normal and distance from origin.
+    /// The plane equation is: normal · x = distance
+    Plane {
+        /// Unit normal vector of the plane.
+        normal: Vector3<f64>,
+        /// Distance from origin along the normal.
+        distance: f64,
+    },
+    /// Axis-aligned box with half-extents.
+    Box {
+        /// Half-extents of the box in each axis.
+        half_extents: Vector3<f64>,
+    },
+}
+
+impl CollisionShape {
+    /// Create a sphere collision shape.
+    #[must_use]
+    pub fn sphere(radius: f64) -> Self {
+        Self::Sphere { radius }
+    }
+
+    /// Create a ground plane (Z-up at given height).
+    #[must_use]
+    pub fn ground_plane(height: f64) -> Self {
+        Self::Plane {
+            normal: Vector3::z(),
+            distance: height,
+        }
+    }
+
+    /// Create a plane with custom normal and distance.
+    #[must_use]
+    pub fn plane(normal: Vector3<f64>, distance: f64) -> Self {
+        Self::Plane {
+            normal: normal.normalize(),
+            distance,
+        }
+    }
+
+    /// Create a box collision shape.
+    #[must_use]
+    pub fn box_shape(half_extents: Vector3<f64>) -> Self {
+        Self::Box { half_extents }
+    }
+
+    /// Get the bounding sphere radius for broad-phase culling.
+    #[must_use]
+    pub fn bounding_radius(&self) -> f64 {
+        match self {
+            Self::Sphere { radius } => *radius,
+            Self::Plane { .. } => f64::INFINITY,
+            Self::Box { half_extents } => half_extents.norm(),
+        }
+    }
+}
+
+/// A rigid body in the simulation world.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Body {
+    /// Unique identifier.
+    pub id: BodyId,
+    /// Optional name for debugging.
+    pub name: Option<String>,
+    /// Current state (pose + twist).
+    pub state: RigidBodyState,
+    /// Mass properties (mass, inertia, COM offset).
+    pub mass_props: MassProperties,
+    /// Collision shape for contact detection.
+    pub collision_shape: Option<CollisionShape>,
+    /// Whether this body is static (immovable).
+    pub is_static: bool,
+    /// Whether this body is currently sleeping (inactive).
+    pub is_sleeping: bool,
+    /// Accumulated external force (cleared each step).
+    pub accumulated_force: Vector3<f64>,
+    /// Accumulated external torque (cleared each step).
+    pub accumulated_torque: Vector3<f64>,
+}
+
+impl Body {
+    /// Create a new dynamic body.
+    #[must_use]
+    pub fn new(id: BodyId, state: RigidBodyState, mass_props: MassProperties) -> Self {
+        Self {
+            id,
+            name: None,
+            state,
+            mass_props,
+            collision_shape: None,
+            is_static: false,
+            is_sleeping: false,
+            accumulated_force: Vector3::zeros(),
+            accumulated_torque: Vector3::zeros(),
+        }
+    }
+
+    /// Create a static (immovable) body.
+    #[must_use]
+    pub fn new_static(id: BodyId, pose: Pose) -> Self {
+        Self {
+            id,
+            name: None,
+            state: RigidBodyState::at_rest(pose),
+            mass_props: MassProperties::point_mass(f64::INFINITY),
+            collision_shape: None,
+            is_static: true,
+            is_sleeping: false,
+            accumulated_force: Vector3::zeros(),
+            accumulated_torque: Vector3::zeros(),
+        }
+    }
+
+    /// Set the body name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set the collision shape.
+    #[must_use]
+    pub fn with_collision_shape(mut self, shape: CollisionShape) -> Self {
+        self.collision_shape = Some(shape);
+        self
+    }
+
+    /// Apply a force at the center of mass.
+    pub fn apply_force(&mut self, force: Vector3<f64>) {
+        if !self.is_static {
+            self.accumulated_force += force;
+        }
+    }
+
+    /// Apply a torque.
+    pub fn apply_torque(&mut self, torque: Vector3<f64>) {
+        if !self.is_static {
+            self.accumulated_torque += torque;
+        }
+    }
+
+    /// Apply a force at a world-space point.
+    pub fn apply_force_at_point(&mut self, force: Vector3<f64>, point: Point3<f64>) {
+        if !self.is_static {
+            self.accumulated_force += force;
+            // Compute torque: r × F where r is from COM to point
+            let com_world = self
+                .state
+                .pose
+                .transform_point(&Point3::from(self.mass_props.center_of_mass));
+            let r = point - com_world;
+            self.accumulated_torque += r.cross(&force);
+        }
+    }
+
+    /// Clear accumulated forces and torques.
+    pub fn clear_forces(&mut self) {
+        self.accumulated_force = Vector3::zeros();
+        self.accumulated_torque = Vector3::zeros();
+    }
+
+    /// Check if the body should be awake based on velocity.
+    #[must_use]
+    pub fn should_sleep(&self, threshold: f64) -> bool {
+        if self.is_static {
+            return false;
+        }
+        self.state.twist.speed() < threshold && self.state.twist.angular_speed() < threshold
+    }
+
+    /// Wake up the body.
+    pub fn wake_up(&mut self) {
+        self.is_sleeping = false;
+    }
+
+    /// Compute linear acceleration from accumulated force.
+    #[must_use]
+    pub fn linear_acceleration(&self) -> Vector3<f64> {
+        if self.is_static || self.mass_props.mass <= 0.0 {
+            Vector3::zeros()
+        } else {
+            self.accumulated_force / self.mass_props.mass
+        }
+    }
+
+    /// Compute angular acceleration from accumulated torque.
+    #[must_use]
+    pub fn angular_acceleration(&self) -> Option<Vector3<f64>> {
+        if self.is_static {
+            return Some(Vector3::zeros());
+        }
+        self.mass_props
+            .inverse_inertia()
+            .map(|inv_i| inv_i * self.accumulated_torque)
+    }
+}
+
+/// A joint connecting two bodies.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Joint {
+    /// Unique identifier.
+    pub id: JointId,
+    /// Optional name for debugging.
+    pub name: Option<String>,
+    /// Type of joint constraint.
+    pub joint_type: JointType,
+    /// Parent body (anchor).
+    pub parent: BodyId,
+    /// Child body.
+    pub child: BodyId,
+    /// Current joint state.
+    pub state: JointState,
+    /// Anchor point on parent body (local coordinates).
+    pub parent_anchor: Point3<f64>,
+    /// Anchor point on child body (local coordinates).
+    pub child_anchor: Point3<f64>,
+    /// Joint axis (for revolute/prismatic joints, local to parent).
+    pub axis: Vector3<f64>,
+    /// Joint limits (optional).
+    pub limits: Option<JointLimits>,
+    /// Joint motor (optional).
+    pub motor: Option<JointMotor>,
+    /// Joint damping coefficient.
+    pub damping: f64,
+}
+
+impl Joint {
+    /// Create a new joint.
+    #[must_use]
+    pub fn new(id: JointId, joint_type: JointType, parent: BodyId, child: BodyId) -> Self {
+        Self {
+            id,
+            name: None,
+            joint_type,
+            parent,
+            child,
+            state: JointState::zero(),
+            parent_anchor: Point3::origin(),
+            child_anchor: Point3::origin(),
+            axis: Vector3::z(), // Default axis
+            limits: None,
+            motor: None,
+            damping: 0.0,
+        }
+    }
+
+    /// Set the joint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set initial joint state.
+    #[must_use]
+    pub fn with_state(mut self, state: JointState) -> Self {
+        self.state = state;
+        self
+    }
+
+    /// Set anchor points on parent and child bodies.
+    #[must_use]
+    pub fn with_anchors(mut self, parent_anchor: Point3<f64>, child_anchor: Point3<f64>) -> Self {
+        self.parent_anchor = parent_anchor;
+        self.child_anchor = child_anchor;
+        self
+    }
+
+    /// Set the joint axis (for revolute/prismatic joints).
+    #[must_use]
+    pub fn with_axis(mut self, axis: Vector3<f64>) -> Self {
+        self.axis = axis.normalize();
+        self
+    }
+
+    /// Set joint limits.
+    #[must_use]
+    pub fn with_limits(mut self, limits: JointLimits) -> Self {
+        self.limits = Some(limits);
+        self
+    }
+
+    /// Set joint motor.
+    #[must_use]
+    pub fn with_motor(mut self, motor: JointMotor) -> Self {
+        self.motor = Some(motor);
+        self
+    }
+
+    /// Set joint damping.
+    #[must_use]
+    pub fn with_damping(mut self, damping: f64) -> Self {
+        self.damping = damping;
+        self
+    }
+}
+
+/// Adapter to make a `world::Joint` implement the constraint solver's Joint trait.
+struct JointAdapter<'a>(&'a Joint);
+
+impl ConstraintJoint for JointAdapter<'_> {
+    fn parent(&self) -> BodyId {
+        self.0.parent
+    }
+
+    fn child(&self) -> BodyId {
+        self.0.child
+    }
+
+    fn dof(&self) -> usize {
+        match self.0.joint_type {
+            JointType::Fixed => 0,
+            JointType::Revolute | JointType::Prismatic => 1,
+            JointType::Spherical | JointType::Planar => 3, // Planar: 2 translations + 1 rotation
+            JointType::Cylindrical => 2,
+            JointType::Free => 6, // 3 translations + 3 rotations
+        }
+    }
+
+    fn joint_type(&self) -> ConstraintJointType {
+        match self.0.joint_type {
+            JointType::Fixed => ConstraintJointType::Fixed,
+            JointType::Revolute => ConstraintJointType::Revolute,
+            JointType::Prismatic => ConstraintJointType::Prismatic,
+            // Map Spherical, Planar, and Free to Spherical (3 DOF approximation)
+            JointType::Spherical | JointType::Planar | JointType::Free => {
+                ConstraintJointType::Spherical
+            }
+            // Map Cylindrical to Universal (2 DOF)
+            JointType::Cylindrical => ConstraintJointType::Universal,
+        }
+    }
+
+    fn limits(&self) -> Option<&JointLimits> {
+        self.0.limits.as_ref()
+    }
+
+    fn motor(&self) -> Option<&JointMotor> {
+        self.0.motor.as_ref()
+    }
+
+    fn damping(&self) -> f64 {
+        self.0.damping
+    }
+
+    fn parent_anchor(&self) -> Point3<f64> {
+        self.0.parent_anchor
+    }
+
+    fn child_anchor(&self) -> Point3<f64> {
+        self.0.child_anchor
+    }
+}
+
+/// The simulation world containing all entities.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct World {
+    /// Simulation configuration.
+    config: SimulationConfig,
+    /// Current simulation time.
+    time: f64,
+    /// Step counter.
+    step_count: u64,
+    /// All rigid bodies, indexed by ID.
+    bodies: HashMap<BodyId, Body>,
+    /// All joints, indexed by ID.
+    joints: HashMap<JointId, Joint>,
+    /// Next available body ID.
+    next_body_id: u64,
+    /// Next available joint ID.
+    next_joint_id: u64,
+    /// Body name to ID mapping.
+    body_names: HashMap<String, BodyId>,
+    /// Joint name to ID mapping.
+    joint_names: HashMap<String, JointId>,
+    /// Contact solver for computing contact forces.
+    #[cfg_attr(feature = "serde", serde(skip, default = "default_contact_solver"))]
+    contact_solver: ContactSolver,
+    /// Contact parameters (can be changed for domain randomization).
+    contact_params: ContactParams,
+    /// Joint constraint solver.
+    #[cfg_attr(feature = "serde", serde(skip, default = "default_constraint_solver"))]
+    constraint_solver: JointConstraintSolver,
+}
+
+#[cfg(feature = "serde")]
+fn default_contact_solver() -> ContactSolver {
+    ContactSolver::new(
+        ContactModel::new(ContactParams::default()),
+        ContactSolverConfig::default(),
+    )
+}
+
+#[cfg(feature = "serde")]
+fn default_constraint_solver() -> JointConstraintSolver {
+    JointConstraintSolver::new(sim_constraint::ConstraintSolverConfig::default())
+}
+
+impl Default for World {
+    fn default() -> Self {
+        Self::new(SimulationConfig::default())
+    }
+}
+
+impl World {
+    /// Create a new empty world with the given configuration.
+    #[must_use]
+    pub fn new(config: SimulationConfig) -> Self {
+        let contact_params = ContactParams::default();
+        let contact_model = ContactModel::new(contact_params);
+        let contact_solver = ContactSolver::new(contact_model, ContactSolverConfig::default());
+        let constraint_solver = JointConstraintSolver::default_solver();
+
+        Self {
+            config,
+            time: 0.0,
+            step_count: 0,
+            bodies: HashMap::new(),
+            joints: HashMap::new(),
+            next_body_id: 1,
+            next_joint_id: 1,
+            body_names: HashMap::new(),
+            joint_names: HashMap::new(),
+            contact_solver,
+            contact_params,
+            constraint_solver,
+        }
+    }
+
+    /// Create a world with custom contact parameters.
+    #[must_use]
+    pub fn with_contact_params(config: SimulationConfig, contact_params: ContactParams) -> Self {
+        let contact_model = ContactModel::new(contact_params);
+        let contact_solver = ContactSolver::new(contact_model, ContactSolverConfig::default());
+        let constraint_solver = JointConstraintSolver::default_solver();
+
+        Self {
+            config,
+            time: 0.0,
+            step_count: 0,
+            bodies: HashMap::new(),
+            joints: HashMap::new(),
+            next_body_id: 1,
+            next_joint_id: 1,
+            body_names: HashMap::new(),
+            joint_names: HashMap::new(),
+            contact_solver,
+            contact_params,
+            constraint_solver,
+        }
+    }
+
+    /// Get the current contact parameters.
+    #[must_use]
+    pub fn contact_params(&self) -> &ContactParams {
+        &self.contact_params
+    }
+
+    /// Update the contact parameters (for domain randomization).
+    pub fn set_contact_params(&mut self, params: ContactParams) {
+        self.contact_params = params;
+        let contact_model = ContactModel::new(params);
+        self.contact_solver = ContactSolver::new(contact_model, ContactSolverConfig::default());
+    }
+
+    /// Get the simulation configuration.
+    #[must_use]
+    pub fn config(&self) -> &SimulationConfig {
+        &self.config
+    }
+
+    /// Get the current simulation time.
+    #[must_use]
+    pub fn time(&self) -> f64 {
+        self.time
+    }
+
+    /// Get the step count.
+    #[must_use]
+    pub fn step_count(&self) -> u64 {
+        self.step_count
+    }
+
+    /// Get the timestep from configuration.
+    #[must_use]
+    pub fn timestep(&self) -> f64 {
+        self.config.timestep
+    }
+
+    /// Get the number of bodies.
+    #[must_use]
+    pub fn body_count(&self) -> usize {
+        self.bodies.len()
+    }
+
+    /// Get the number of joints.
+    #[must_use]
+    pub fn joint_count(&self) -> usize {
+        self.joints.len()
+    }
+
+    // =========================================================================
+    // Body Management
+    // =========================================================================
+
+    /// Add a body to the world and return its ID.
+    pub fn add_body(&mut self, state: RigidBodyState, mass_props: MassProperties) -> BodyId {
+        let id = BodyId::new(self.next_body_id);
+        self.next_body_id += 1;
+
+        let body = Body::new(id, state, mass_props);
+        self.bodies.insert(id, body);
+        id
+    }
+
+    /// Add a static body at the given pose.
+    pub fn add_static_body(&mut self, pose: Pose) -> BodyId {
+        let id = BodyId::new(self.next_body_id);
+        self.next_body_id += 1;
+
+        let body = Body::new_static(id, pose);
+        self.bodies.insert(id, body);
+        id
+    }
+
+    /// Add a pre-built body to the world.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the body ID already exists.
+    pub fn insert_body(&mut self, body: Body) -> sim_types::Result<()> {
+        if self.bodies.contains_key(&body.id) {
+            return Err(SimError::invalid_config(format!(
+                "body ID {} already exists",
+                body.id
+            )));
+        }
+
+        if let Some(ref name) = body.name {
+            self.body_names.insert(name.clone(), body.id);
+        }
+
+        // Update next_body_id if needed
+        if body.id.raw() >= self.next_body_id {
+            self.next_body_id = body.id.raw() + 1;
+        }
+
+        self.bodies.insert(body.id, body);
+        Ok(())
+    }
+
+    /// Get a body by ID.
+    #[must_use]
+    pub fn body(&self, id: BodyId) -> Option<&Body> {
+        self.bodies.get(&id)
+    }
+
+    /// Get a mutable reference to a body by ID.
+    #[must_use]
+    pub fn body_mut(&mut self, id: BodyId) -> Option<&mut Body> {
+        self.bodies.get_mut(&id)
+    }
+
+    /// Get a body by name.
+    #[must_use]
+    pub fn body_by_name(&self, name: &str) -> Option<&Body> {
+        self.body_names.get(name).and_then(|id| self.bodies.get(id))
+    }
+
+    /// Get a mutable reference to a body by name.
+    #[must_use]
+    pub fn body_by_name_mut(&mut self, name: &str) -> Option<&mut Body> {
+        self.body_names
+            .get(name)
+            .copied()
+            .and_then(move |id| self.bodies.get_mut(&id))
+    }
+
+    /// Remove a body from the world.
+    pub fn remove_body(&mut self, id: BodyId) -> Option<Body> {
+        let body = self.bodies.remove(&id)?;
+        if let Some(ref name) = body.name {
+            self.body_names.remove(name);
+        }
+        Some(body)
+    }
+
+    /// Iterate over all bodies.
+    pub fn bodies(&self) -> impl Iterator<Item = &Body> {
+        self.bodies.values()
+    }
+
+    /// Iterate over all bodies mutably.
+    pub fn bodies_mut(&mut self) -> impl Iterator<Item = &mut Body> {
+        self.bodies.values_mut()
+    }
+
+    /// Iterate over all body IDs.
+    pub fn body_ids(&self) -> impl Iterator<Item = BodyId> + '_ {
+        self.bodies.keys().copied()
+    }
+
+    // =========================================================================
+    // Joint Management
+    // =========================================================================
+
+    /// Add a joint to the world.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if either the parent or child body does not exist.
+    pub fn add_joint(
+        &mut self,
+        joint_type: JointType,
+        parent: BodyId,
+        child: BodyId,
+    ) -> sim_types::Result<JointId> {
+        // Validate that both bodies exist
+        if !self.bodies.contains_key(&parent) {
+            return Err(SimError::InvalidBodyId(parent.raw()));
+        }
+        if !self.bodies.contains_key(&child) {
+            return Err(SimError::InvalidBodyId(child.raw()));
+        }
+
+        let id = JointId::new(self.next_joint_id);
+        self.next_joint_id += 1;
+
+        let joint = Joint::new(id, joint_type, parent, child);
+        self.joints.insert(id, joint);
+        Ok(id)
+    }
+
+    /// Insert a pre-built joint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the joint ID already exists.
+    pub fn insert_joint(&mut self, joint: Joint) -> sim_types::Result<()> {
+        if self.joints.contains_key(&joint.id) {
+            return Err(SimError::invalid_config(format!(
+                "joint ID {} already exists",
+                joint.id
+            )));
+        }
+
+        if let Some(ref name) = joint.name {
+            self.joint_names.insert(name.clone(), joint.id);
+        }
+
+        if joint.id.raw() >= self.next_joint_id {
+            self.next_joint_id = joint.id.raw() + 1;
+        }
+
+        self.joints.insert(joint.id, joint);
+        Ok(())
+    }
+
+    /// Get a joint by ID.
+    #[must_use]
+    pub fn joint(&self, id: JointId) -> Option<&Joint> {
+        self.joints.get(&id)
+    }
+
+    /// Get a mutable reference to a joint by ID.
+    #[must_use]
+    pub fn joint_mut(&mut self, id: JointId) -> Option<&mut Joint> {
+        self.joints.get_mut(&id)
+    }
+
+    /// Iterate over all joints.
+    pub fn joints(&self) -> impl Iterator<Item = &Joint> {
+        self.joints.values()
+    }
+
+    /// Iterate over all joints mutably.
+    pub fn joints_mut(&mut self) -> impl Iterator<Item = &mut Joint> {
+        self.joints.values_mut()
+    }
+
+    // =========================================================================
+    // Force Application
+    // =========================================================================
+
+    /// Apply gravity to all dynamic bodies.
+    pub fn apply_gravity(&mut self) {
+        let gravity_accel = self.config.gravity.acceleration;
+        for body in self.bodies.values_mut() {
+            if !body.is_static && !body.is_sleeping {
+                let gravity_force = gravity_accel * body.mass_props.mass;
+                body.apply_force(gravity_force);
+            }
+        }
+    }
+
+    /// Clear all accumulated forces on all bodies.
+    pub fn clear_forces(&mut self) {
+        for body in self.bodies.values_mut() {
+            body.clear_forces();
+        }
+    }
+
+    // =========================================================================
+    // Observation
+    // =========================================================================
+
+    /// Create an observation of the current world state.
+    #[must_use]
+    pub fn observe(&self) -> Observation {
+        let mut obs = Observation::new(self.time);
+
+        // Body states
+        let body_states: Vec<_> = self.bodies.values().map(|b| (b.id, b.state)).collect();
+        if !body_states.is_empty() {
+            obs.add(ObservationType::BodyStates(body_states));
+        }
+
+        // Joint states
+        let joint_states: Vec<_> = self.joints.values().map(|j| (j.id, j.state)).collect();
+        if !joint_states.is_empty() {
+            obs.add(ObservationType::JointStates(joint_states));
+        }
+
+        obs
+    }
+
+    // =========================================================================
+    // Simulation Control
+    // =========================================================================
+
+    /// Advance the simulation time (called by stepper).
+    pub(crate) fn advance_time(&mut self, dt: f64) {
+        self.time += dt;
+        self.step_count += 1;
+    }
+
+    /// Reset simulation time to zero.
+    pub fn reset_time(&mut self) {
+        self.time = 0.0;
+        self.step_count = 0;
+    }
+
+    /// Check if simulation has reached max time (if configured).
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.config.max_time.is_some_and(|max| self.time >= max)
+    }
+
+    /// Validate the world state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The configuration is invalid
+    /// - Any body has non-finite state values (`NaN` or `Inf`)
+    /// - Any body has invalid mass properties
+    pub fn validate(&self) -> sim_types::Result<()> {
+        self.config.validate()?;
+
+        for body in self.bodies.values() {
+            if !body.state.is_finite() {
+                return Err(SimError::diverged(format!(
+                    "body {} has non-finite state",
+                    body.id
+                )));
+            }
+            body.mass_props.validate()?;
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Contact Detection and Resolution
+    // =========================================================================
+
+    /// Detect contacts between all bodies with collision shapes.
+    ///
+    /// Returns a list of contact points that can be passed to the contact solver.
+    #[must_use]
+    pub fn detect_contacts(&self) -> Vec<ContactPoint> {
+        if !self.config.enable_contacts {
+            return Vec::new();
+        }
+
+        let mut contacts = Vec::new();
+        let body_list: Vec<_> = self.bodies.values().collect();
+
+        // O(n²) broad phase - fine for small scenes
+        // TODO: Use cf-spatial BVH for larger scenes
+        for (i, body_a) in body_list.iter().enumerate() {
+            for body_b in body_list.iter().skip(i + 1) {
+                // Skip if both are static (they can't collide meaningfully)
+                if body_a.is_static && body_b.is_static {
+                    continue;
+                }
+
+                // Skip if either is sleeping
+                if body_a.is_sleeping || body_b.is_sleeping {
+                    continue;
+                }
+
+                // Detect contact between this pair
+                if let Some(contact) = self.detect_pair_contact(body_a, body_b) {
+                    contacts.push(contact);
+                }
+            }
+        }
+
+        contacts
+    }
+
+    /// Detect contact between a pair of bodies.
+    #[allow(clippy::unused_self)] // Will use self.config for contact margin in future
+    fn detect_pair_contact(&self, body_a: &Body, body_b: &Body) -> Option<ContactPoint> {
+        let shape_a = body_a.collision_shape.as_ref()?;
+        let shape_b = body_b.collision_shape.as_ref()?;
+
+        match (shape_a, shape_b) {
+            // Sphere-Sphere
+            (CollisionShape::Sphere { radius: r_a }, CollisionShape::Sphere { radius: r_b }) => {
+                ContactPoint::sphere_sphere(
+                    body_a.state.pose.position,
+                    *r_a,
+                    body_b.state.pose.position,
+                    *r_b,
+                    body_a.id,
+                    body_b.id,
+                )
+            }
+
+            // Sphere-Plane (sphere is body_a)
+            (CollisionShape::Sphere { radius }, CollisionShape::Plane { normal, distance }) => {
+                ContactPoint::sphere_plane(
+                    body_a.state.pose.position,
+                    *radius,
+                    *normal,
+                    *distance,
+                    body_a.id,
+                    body_b.id,
+                )
+            }
+
+            // Plane-Sphere (flip to sphere-plane)
+            (CollisionShape::Plane { normal, distance }, CollisionShape::Sphere { radius }) => {
+                // Flip so sphere is first, then flip the result
+                ContactPoint::sphere_plane(
+                    body_b.state.pose.position,
+                    *radius,
+                    *normal,
+                    *distance,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip())
+            }
+
+            // TODO: Box-Box, Box-Sphere, Box-Plane
+            _ => None,
+        }
+    }
+
+    /// Solve contacts and apply forces to bodies.
+    ///
+    /// This is the main contact resolution entry point. It:
+    /// 1. Detects all contacts
+    /// 2. Computes contact forces using the compliant model
+    /// 3. Applies forces to the affected bodies
+    ///
+    /// Returns the number of active contacts.
+    pub fn solve_contacts(&mut self) -> usize {
+        let contacts = self.detect_contacts();
+        if contacts.is_empty() {
+            return 0;
+        }
+
+        // Create a snapshot of body velocities for the solver
+        let body_velocities: HashMap<BodyId, (Vector3<f64>, Vector3<f64>, Point3<f64>)> = self
+            .bodies
+            .iter()
+            .map(|(id, b)| {
+                (
+                    *id,
+                    (
+                        b.state.twist.linear,
+                        b.state.twist.angular,
+                        b.state.pose.position,
+                    ),
+                )
+            })
+            .collect();
+
+        // Solve contacts
+        let result = self.contact_solver.solve(&contacts, |body_id, contact| {
+            // Get velocity at contact point for this body
+            if let Some(&(linear, angular, pos)) = body_velocities.get(&body_id) {
+                let r = contact.position - pos;
+                linear + angular.cross(&r)
+            } else {
+                Vector3::zeros()
+            }
+        });
+
+        // Apply forces to bodies
+        for force_result in &result.forces {
+            let contact = &force_result.contact;
+            let force = &force_result.force;
+
+            // Apply force to body A
+            if let Some(body_a) = self.bodies.get_mut(&contact.body_a) {
+                if !body_a.is_static {
+                    body_a.apply_force_at_point(force.total(), force.position);
+                    body_a.wake_up();
+                }
+            }
+
+            // Apply reaction force to body B
+            if let Some(body_b) = self.bodies.get_mut(&contact.body_b) {
+                if !body_b.is_static {
+                    body_b.apply_force_at_point(-force.total(), force.position);
+                    body_b.wake_up();
+                }
+            }
+        }
+
+        // Apply position corrections for deep penetrations
+        for correction in &result.position_corrections {
+            // Split correction between bodies based on mass
+            let mass_a = self
+                .bodies
+                .get(&correction.body_a)
+                .map_or(f64::INFINITY, |b| {
+                    if b.is_static {
+                        f64::INFINITY
+                    } else {
+                        b.mass_props.mass
+                    }
+                });
+            let mass_b = self
+                .bodies
+                .get(&correction.body_b)
+                .map_or(f64::INFINITY, |b| {
+                    if b.is_static {
+                        f64::INFINITY
+                    } else {
+                        b.mass_props.mass
+                    }
+                });
+
+            let total_inv_mass = 1.0 / mass_a + 1.0 / mass_b;
+            if total_inv_mass > 0.0 {
+                let ratio_a = (1.0 / mass_a) / total_inv_mass;
+                let ratio_b = (1.0 / mass_b) / total_inv_mass;
+
+                if let Some(body_a) = self.bodies.get_mut(&correction.body_a) {
+                    if !body_a.is_static {
+                        body_a.state.pose.position += correction.correction * ratio_a;
+                    }
+                }
+                if let Some(body_b) = self.bodies.get_mut(&correction.body_b) {
+                    if !body_b.is_static {
+                        body_b.state.pose.position -= correction.correction * ratio_b;
+                    }
+                }
+            }
+        }
+
+        result.forces.len()
+    }
+
+    /// Solve joint constraints and apply forces to bodies.
+    ///
+    /// This computes constraint forces that maintain joint connections
+    /// while respecting limits and motor commands.
+    ///
+    /// Returns the number of constraints solved.
+    pub fn solve_constraints(&mut self) -> usize {
+        if self.joints.is_empty() {
+            return 0;
+        }
+
+        // Create joint adapters for the solver
+        let joint_adapters: Vec<JointAdapter> = self.joints.values().map(JointAdapter).collect();
+
+        // Solve constraints
+        let result = self.constraint_solver.solve(&joint_adapters, |body_id| {
+            self.bodies.get(&body_id).map(|body| {
+                let rotation = body.state.pose.rotation.to_rotation_matrix();
+                let inv_mass = if body.is_static {
+                    0.0
+                } else {
+                    1.0 / body.mass_props.mass
+                };
+                let inv_inertia = if body.is_static {
+                    Matrix3::zeros()
+                } else {
+                    body.mass_props
+                        .inverse_inertia()
+                        .unwrap_or_else(Matrix3::zeros)
+                };
+
+                ConstraintBodyState {
+                    position: body.state.pose.position,
+                    rotation: *rotation.matrix(),
+                    linear_velocity: body.state.twist.linear,
+                    angular_velocity: body.state.twist.angular,
+                    inv_mass,
+                    inv_inertia,
+                    is_static: body.is_static,
+                }
+            })
+        });
+
+        // Apply forces to bodies
+        for joint_force in &result.forces {
+            // Apply force and torque to parent body
+            if let Some(parent) = self.bodies.get_mut(&joint_force.parent) {
+                if !parent.is_static {
+                    parent.accumulated_force += joint_force.force.parent_force;
+                    parent.accumulated_torque += joint_force.force.parent_torque;
+                    parent.wake_up();
+                }
+            }
+
+            // Apply force and torque to child body
+            if let Some(child) = self.bodies.get_mut(&joint_force.child) {
+                if !child.is_static {
+                    child.accumulated_force += joint_force.force.child_force;
+                    child.accumulated_torque += joint_force.force.child_torque;
+                    child.wake_up();
+                }
+            }
+        }
+
+        result.forces.len()
+    }
+
+    // =========================================================================
+    // Diagnostics
+    // =========================================================================
+
+    /// Compute the total kinetic energy of the system.
+    #[must_use]
+    pub fn total_kinetic_energy(&self) -> f64 {
+        self.bodies
+            .values()
+            .filter(|b| !b.is_static)
+            .map(|b| {
+                b.state
+                    .twist
+                    .kinetic_energy(b.mass_props.mass, &b.mass_props.inertia)
+            })
+            .sum()
+    }
+
+    /// Compute the total linear momentum of the system.
+    #[must_use]
+    pub fn total_linear_momentum(&self) -> Vector3<f64> {
+        self.bodies
+            .values()
+            .filter(|b| !b.is_static)
+            .map(|b| b.state.twist.linear_momentum(b.mass_props.mass))
+            .fold(Vector3::zeros(), |acc, p| acc + p)
+    }
+
+    /// Compute the system center of mass.
+    #[must_use]
+    pub fn center_of_mass(&self) -> Option<Point3<f64>> {
+        let mut total_mass = 0.0;
+        let mut weighted_pos = Vector3::zeros();
+
+        for body in self.bodies.values() {
+            if !body.is_static {
+                let mass = body.mass_props.mass;
+                total_mass += mass;
+                weighted_pos += body.state.pose.position.coords * mass;
+            }
+        }
+
+        if total_mass > 0.0 {
+            Some(Point3::from(weighted_pos / total_mass))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use nalgebra::UnitQuaternion;
+    use sim_types::Twist;
+
+    #[test]
+    fn test_world_creation() {
+        let world = World::default();
+        assert_eq!(world.body_count(), 0);
+        assert_eq!(world.joint_count(), 0);
+        assert_relative_eq!(world.time(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_add_body() {
+        let mut world = World::default();
+        let state = RigidBodyState::at_rest(Pose::from_position(Point3::new(1.0, 2.0, 3.0)));
+        let mass = MassProperties::sphere(1.0, 0.5);
+
+        let id = world.add_body(state, mass);
+
+        assert_eq!(world.body_count(), 1);
+        let body = world.body(id).expect("body should exist");
+        assert_eq!(body.id, id);
+        assert_relative_eq!(body.state.pose.position.x, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_add_static_body() {
+        let mut world = World::default();
+        let pose = Pose::from_position(Point3::new(0.0, 0.0, 0.0));
+
+        let id = world.add_static_body(pose);
+
+        let body = world.body(id).expect("body should exist");
+        assert!(body.is_static);
+        assert!(body.mass_props.is_static());
+    }
+
+    #[test]
+    fn test_body_by_name() {
+        let mut world = World::default();
+        let state = RigidBodyState::origin();
+        let mass = MassProperties::sphere(1.0, 0.5);
+
+        let body = Body::new(BodyId::new(1), state, mass).with_name("robot_base");
+        world.insert_body(body).expect("insert should succeed");
+
+        let found = world.body_by_name("robot_base");
+        assert!(found.is_some());
+        assert_eq!(found.map(|b| b.id), Some(BodyId::new(1)));
+    }
+
+    #[test]
+    fn test_add_joint() {
+        let mut world = World::default();
+        let body1 = world.add_body(RigidBodyState::origin(), MassProperties::sphere(1.0, 0.5));
+        let body2 = world.add_body(RigidBodyState::origin(), MassProperties::sphere(1.0, 0.5));
+
+        let joint_id = world
+            .add_joint(JointType::Revolute, body1, body2)
+            .expect("joint creation should succeed");
+
+        assert_eq!(world.joint_count(), 1);
+        let joint = world.joint(joint_id).expect("joint should exist");
+        assert_eq!(joint.parent, body1);
+        assert_eq!(joint.child, body2);
+    }
+
+    #[test]
+    fn test_add_joint_invalid_body() {
+        let mut world = World::default();
+        let body1 = world.add_body(RigidBodyState::origin(), MassProperties::sphere(1.0, 0.5));
+        let invalid_body = BodyId::new(999);
+
+        let result = world.add_joint(JointType::Revolute, body1, invalid_body);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_apply_force() {
+        let mut world = World::default();
+        let state = RigidBodyState::origin();
+        let mass = MassProperties::sphere(2.0, 0.5);
+        let id = world.add_body(state, mass);
+
+        {
+            let body = world.body_mut(id).expect("body should exist");
+            body.apply_force(Vector3::new(10.0, 0.0, 0.0));
+        }
+
+        let body = world.body(id).expect("body should exist");
+        assert_relative_eq!(body.accumulated_force.x, 10.0, epsilon = 1e-10);
+
+        // Check acceleration: a = F/m = 10/2 = 5
+        let accel = body.linear_acceleration();
+        assert_relative_eq!(accel.x, 5.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_static_body_ignores_force() {
+        let mut world = World::default();
+        let pose = Pose::identity();
+        let id = world.add_static_body(pose);
+
+        {
+            let body = world.body_mut(id).expect("body should exist");
+            body.apply_force(Vector3::new(100.0, 0.0, 0.0));
+        }
+
+        let body = world.body(id).expect("body should exist");
+        assert_relative_eq!(body.accumulated_force.norm(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_apply_gravity() {
+        let mut world = World::new(SimulationConfig::default());
+        let state = RigidBodyState::origin();
+        let mass = MassProperties::sphere(1.0, 0.5);
+        let id = world.add_body(state, mass);
+
+        world.apply_gravity();
+
+        let body = world.body(id).expect("body should exist");
+        // Earth gravity: -9.81 m/s² in Z
+        assert_relative_eq!(body.accumulated_force.z, -9.81, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_observe() {
+        let mut world = World::default();
+        let state = RigidBodyState::at_rest(Pose::from_position(Point3::new(1.0, 0.0, 0.0)));
+        let id = world.add_body(state, MassProperties::sphere(1.0, 0.5));
+
+        let obs = world.observe();
+
+        assert_relative_eq!(obs.time, 0.0, epsilon = 1e-10);
+        let body_state = obs.body_state(id);
+        assert!(body_state.is_some());
+        assert_relative_eq!(
+            body_state.map(|s| s.pose.position.x).unwrap_or(0.0),
+            1.0,
+            epsilon = 1e-10
+        );
+    }
+
+    #[test]
+    fn test_total_kinetic_energy() {
+        let mut world = World::default();
+
+        // Body moving at 2 m/s with mass 1 kg: KE = 0.5 * 1 * 4 = 2 J
+        let state =
+            RigidBodyState::new(Pose::identity(), Twist::linear(Vector3::new(2.0, 0.0, 0.0)));
+        world.add_body(state, MassProperties::point_mass(1.0));
+
+        let ke = world.total_kinetic_energy();
+        assert_relative_eq!(ke, 2.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_center_of_mass() {
+        let mut world = World::default();
+
+        // Two bodies of equal mass at (0,0,0) and (2,0,0)
+        // COM should be at (1,0,0)
+        let state1 = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.0)));
+        let state2 = RigidBodyState::at_rest(Pose::from_position(Point3::new(2.0, 0.0, 0.0)));
+
+        world.add_body(state1, MassProperties::sphere(1.0, 0.5));
+        world.add_body(state2, MassProperties::sphere(1.0, 0.5));
+
+        let com = world.center_of_mass().expect("should have COM");
+        assert_relative_eq!(com.x, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_validate_diverged() {
+        let mut world = World::default();
+        let state = RigidBodyState::new(
+            Pose::from_position(Point3::new(f64::NAN, 0.0, 0.0)),
+            Twist::zero(),
+        );
+        world.add_body(state, MassProperties::sphere(1.0, 0.5));
+
+        let result = world.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().is_diverged());
+    }
+
+    #[test]
+    fn test_remove_body() {
+        let mut world = World::default();
+        let id = world.add_body(RigidBodyState::origin(), MassProperties::sphere(1.0, 0.5));
+
+        assert_eq!(world.body_count(), 1);
+        let removed = world.remove_body(id);
+        assert!(removed.is_some());
+        assert_eq!(world.body_count(), 0);
+    }
+
+    #[test]
+    fn test_is_complete() {
+        let config = SimulationConfig::default().max_time(1.0);
+        let mut world = World::new(config);
+
+        assert!(!world.is_complete());
+        world.advance_time(0.5);
+        assert!(!world.is_complete());
+        world.advance_time(0.5);
+        assert!(world.is_complete());
+    }
+
+    #[test]
+    fn test_apply_force_at_point() {
+        let mut world = World::default();
+
+        // Body at origin with unit sphere mass properties
+        let state = RigidBodyState::origin();
+        let mass = MassProperties::sphere(1.0, 1.0);
+        let id = world.add_body(state, mass);
+
+        {
+            let body = world.body_mut(id).expect("body should exist");
+            // Apply force at point offset from COM
+            body.apply_force_at_point(Vector3::new(1.0, 0.0, 0.0), Point3::new(0.0, 0.0, 1.0));
+        }
+
+        let body = world.body(id).expect("body should exist");
+
+        // Force should be accumulated
+        assert_relative_eq!(body.accumulated_force.x, 1.0, epsilon = 1e-10);
+
+        // Torque should be r × F = (0,0,1) × (1,0,0) = (0,1,0)
+        assert_relative_eq!(body.accumulated_torque.y, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_body_with_rotation() {
+        let mut world = World::default();
+
+        let rotation = UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_2);
+        let pose = Pose::from_position_rotation(Point3::new(1.0, 0.0, 0.0), rotation);
+        let state = RigidBodyState::at_rest(pose);
+
+        let id = world.add_body(state, MassProperties::sphere(1.0, 0.5));
+        let body = world.body(id).expect("body should exist");
+
+        // Check that forward direction is rotated
+        let forward = body.state.pose.forward();
+        assert_relative_eq!(forward.x, -1.0, epsilon = 1e-10);
+        assert_relative_eq!(forward.y, 0.0, epsilon = 1e-10);
+    }
+
+    // =========================================================================
+    // Contact Detection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_collision_shape_bounding_radius() {
+        let sphere = CollisionShape::sphere(0.5);
+        assert_relative_eq!(sphere.bounding_radius(), 0.5, epsilon = 1e-10);
+
+        let box_shape = CollisionShape::box_shape(Vector3::new(1.0, 2.0, 3.0));
+        // Bounding radius is the diagonal: sqrt(1² + 2² + 3²) = sqrt(14)
+        assert_relative_eq!(
+            box_shape.bounding_radius(),
+            14.0_f64.sqrt(),
+            epsilon = 1e-10
+        );
+
+        let plane = CollisionShape::ground_plane(0.0);
+        assert!(plane.bounding_radius().is_infinite());
+    }
+
+    #[test]
+    fn test_detect_sphere_plane_contact() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Ground plane at z=0
+        let ground = Body::new_static(BodyId::new(1), Pose::identity())
+            .with_collision_shape(CollisionShape::ground_plane(0.0));
+        world.insert_body(ground).expect("insert should succeed");
+
+        // Sphere at z=0.4 with radius 0.5 (penetrating by 0.1)
+        let sphere_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.4)));
+        let sphere = Body::new(
+            BodyId::new(2),
+            sphere_state,
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(0.5));
+        world.insert_body(sphere).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert_eq!(contacts.len(), 1, "should detect one contact");
+
+        let contact = &contacts[0];
+        assert_relative_eq!(contact.penetration, 0.1, epsilon = 1e-10);
+        // Normal direction depends on which body is body_a (HashMap iteration order)
+        // The normal should be along Z axis (pointing from one body toward the other)
+        assert_relative_eq!(contact.normal.z.abs(), 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_detect_sphere_sphere_contact() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Two spheres with radius 0.5, centers 0.8 apart (penetrating by 0.2)
+        let sphere1_state =
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.0)));
+        let sphere1 = Body::new(
+            BodyId::new(1),
+            sphere1_state,
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(0.5));
+        world.insert_body(sphere1).expect("insert should succeed");
+
+        let sphere2_state =
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.8, 0.0, 0.0)));
+        let sphere2 = Body::new(
+            BodyId::new(2),
+            sphere2_state,
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(0.5));
+        world.insert_body(sphere2).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert_eq!(contacts.len(), 1, "should detect one contact");
+
+        let contact = &contacts[0];
+        assert_relative_eq!(contact.penetration, 0.2, epsilon = 1e-10);
+        // Normal points from body_b toward body_a
+        // The actual direction depends on which sphere is body_a (HashMap iteration order)
+        // Just verify it's along X axis with unit length
+        assert_relative_eq!(contact.normal.x.abs(), 1.0, epsilon = 1e-10);
+        assert_relative_eq!(contact.normal.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(contact.normal.z, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_no_contact_when_separated() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Ground plane at z=0
+        let ground = Body::new_static(BodyId::new(1), Pose::identity())
+            .with_collision_shape(CollisionShape::ground_plane(0.0));
+        world.insert_body(ground).expect("insert should succeed");
+
+        // Sphere at z=1.0 with radius 0.5 (not touching)
+        let sphere_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 1.0)));
+        let sphere = Body::new(
+            BodyId::new(2),
+            sphere_state,
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(0.5));
+        world.insert_body(sphere).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert!(contacts.is_empty(), "should detect no contacts");
+    }
+
+    #[test]
+    fn test_solve_contacts_generates_forces() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Ground plane at z=0
+        let ground = Body::new_static(BodyId::new(1), Pose::identity())
+            .with_collision_shape(CollisionShape::ground_plane(0.0));
+        world.insert_body(ground).expect("insert should succeed");
+
+        // Sphere at z=0.4 with radius 0.5 (penetrating by 0.1)
+        let sphere_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.4)));
+        let sphere = Body::new(
+            BodyId::new(2),
+            sphere_state,
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(0.5));
+        world.insert_body(sphere).expect("insert should succeed");
+
+        let contact_count = world.solve_contacts();
+        assert_eq!(contact_count, 1, "should have one contact");
+
+        // Check that the sphere received an upward force
+        let sphere = world.body(BodyId::new(2)).expect("sphere should exist");
+        assert!(
+            sphere.accumulated_force.z > 0.0,
+            "sphere should have upward contact force: {}",
+            sphere.accumulated_force.z
+        );
+    }
+}

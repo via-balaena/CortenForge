@@ -1,0 +1,28 @@
+[package]
+name = "sim-core"
+description = "Physics simulation core: world, stepping, integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sim-types = { workspace = true }
+sim-contact = { workspace = true }
+sim-constraint = { workspace = true }
+nalgebra = { workspace = true }
+hashbrown = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[features]
+default = []
+serde = ["dep:serde", "sim-types/serde", "sim-contact/serde", "sim-constraint/serde", "nalgebra/serde-serialize"]
+
+[lints]
+workspace = true

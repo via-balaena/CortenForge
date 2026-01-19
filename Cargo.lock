@@ -1469,6 +1469,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "curve-types"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra",
+ "serde",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2490,6 +2500,9 @@ name = "glam"
 version = "0.30.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
+dependencies = [
+ "serde_core",
+]
 
 [[package]]
 name = "glob"
@@ -5403,6 +5416,82 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "sim-constraint"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra",
+ "serde",
+ "sim-types",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "sim-contact"
+version = "0.1.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra",
+ "proptest",
+ "serde",
+ "sim-types",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "sim-core"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "hashbrown 0.15.5",
+ "nalgebra",
+ "serde",
+ "sim-constraint",
+ "sim-contact",
+ "sim-types",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "sim-physics"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra",
+ "sim-constraint",
+ "sim-contact",
+ "sim-core",
+ "sim-types",
+ "sim-urdf",
+]
+
+[[package]]
+name = "sim-types"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "glam",
+ "nalgebra",
+ "serde",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "sim-urdf"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra",
+ "quick-xml 0.37.5",
+ "serde",
+ "sim-constraint",
+ "sim-core",
+ "sim-types",
+ "tempfile",
+ "thiserror 2.0.17",
 ]
 
 [[package]]

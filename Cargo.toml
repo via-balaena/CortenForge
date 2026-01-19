@@ -42,9 +42,9 @@ members = [
     # Umbrella crate (re-exports all mesh-* crates)
     "mesh/mesh",
 
-    # Geometry domain (pending)
-    # "geometry/curve-types",
-    # "geometry/lumen-geometry",
+    # Geometry domain (active development)
+    "geometry/curve-types",
+    # "geometry/lumen-geometry",  # Archived, pull when needed
 
     # Foundation (active development)
     "crates/cf-spatial",
@@ -64,9 +64,13 @@ members = [
     "ml/ml-dataset",
     "ml/ml-training",
 
-    # Simulation domain (pending)
-    # "sim/sim-core",
-    # "sim/sim-physics",
+    # Simulation domain (active development)
+    "sim/sim-types",
+    "sim/sim-core",
+    "sim/sim-contact",
+    "sim/sim-constraint",
+    "sim/sim-urdf",
+    "sim/sim-physics",
 
     # Bevy SDK (Layer 1 - pending)
     # "cortenforge",
@@ -276,8 +280,12 @@ ml-dataset = { path = "ml/ml-dataset" }
 ml-training = { path = "ml/ml-training" }
 
 # Sim domain
+sim-types = { path = "sim/sim-types" }
 sim-core = { path = "sim/sim-core" }
+sim-contact = { path = "sim/sim-contact" }
+sim-constraint = { path = "sim/sim-constraint" }
 sim-physics = { path = "sim/sim-physics" }
+sim-urdf = { path = "sim/sim-urdf" }
 
 # SDK
 cortenforge = { path = "cortenforge" }

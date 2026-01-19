@@ -1,0 +1,33 @@
+[package]
+name = "sim-physics"
+description = "Unified physics simulation API - re-exports sim-types, sim-core, sim-constraint, sim-contact, and sim-urdf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sim-types = { workspace = true }
+sim-core = { workspace = true }
+sim-constraint = { workspace = true }
+sim-contact = { workspace = true }
+sim-urdf = { workspace = true }
+nalgebra = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[features]
+default = []
+serde = [
+    "sim-types/serde",
+    "sim-core/serde",
+    "sim-constraint/serde",
+    "sim-contact/serde",
+    "sim-urdf/serde",
+]
+
+[lints]
+workspace = true

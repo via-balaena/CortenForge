@@ -84,7 +84,7 @@ Here's what has been migrated vs what remains:
 
 ## Quick Status
 
-### Completed Crates (32)
+### Completed Crates (37)
 
 #### Mesh Domain (26 crates)
 | Crate | Tests | Status |
@@ -130,6 +130,23 @@ Here's what has been migrated vs what remains:
 | ml-dataset | 63 unit, 11 doc | A-GRADE |
 | ml-training | 89 unit, 10 doc | A-GRADE |
 
+#### Spatial Domain (1 crate)
+| Crate | Tests | Status |
+|-------|-------|--------|
+| cf-spatial | 145 unit, 86 doc | A-GRADE |
+
+#### Routing Domain (3 crates)
+| Crate | Tests | Status |
+|-------|-------|--------|
+| route-types | 158 unit, 68 doc | A-GRADE |
+| route-pathfind | 63 unit, 23 doc | A-GRADE |
+| route-optimize | 72 unit, 46 doc | A-GRADE |
+
+#### Geometry Domain (1 crate)
+| Crate | Tests | Status |
+|-------|-------|--------|
+| curve-types | 71 unit, 17 doc | A-GRADE |
+
 ### Implementation Order
 
 ```
@@ -141,24 +158,28 @@ MEDIUM PRIORITY (COMPLETE):
 ├── mesh-decimate, mesh-subdivide, mesh-remesh ✅
 └── mesh-measure, mesh-thickness, mesh-slice ✅
 
-LOWER PRIORITY (in progress):
+LOWER PRIORITY (COMPLETE):
 ├── mesh-region ✅
 ├── mesh-assembly ✅
 ├── mesh-printability ✅
-
-LOWER PRIORITY (as needed):
 ├── mesh-boolean ✅
 ├── mesh-registration ✅
 ├── mesh-morph ✅
 ├── mesh-scan ✅
 ├── mesh-lattice ✅
 ├── mesh-template ✅
-├── mesh-gpu ✅
-└── curve-types
+└── mesh-gpu ✅
 
-SEPARATE TRACKS (independent):
-├── cf-spatial + routing/* (for routing features)
-├── ml/* + vision/* + sim/* (for ML/vision features)
+SPATIAL + ROUTING (COMPLETE):
+├── cf-spatial ✅ (VoxelGrid, OccupancyMap, Raycasting, Overlap queries)
+├── route-types ✅ (Path, Constraints, Goals, Costs, Config)
+├── route-pathfind ✅ (A*, Heuristics, Smoothing)
+└── route-optimize ✅ (Clearance, Curvature, Pareto, Multi-objective)
+
+GEOMETRY (COMPLETE):
+└── curve-types ✅ (Polyline, Bezier, B-splines, NURBS, Arc, Helix)
+
+REMAINING (as needed):
 └── cortenforge (Bevy SDK - after Layer 0 is solid)
 ```
 
@@ -890,26 +911,35 @@ Shell generation - THE MAIN MISSING PIECE for 3D printing workflows.
 **Tests**: 102 unit tests, 46 doc tests
 **Dependencies**: 5 (mesh-types, mesh-morph, mesh-registration, nalgebra, thiserror)
 
-### geometry/curve-types (NOT STARTED)
+### geometry/curve-types (A-GRADE COMPLETE)
 
-- [ ] Create `geometry/curve-types/Cargo.toml`
-- [ ] `Curve3D` trait
-- [ ] `TubularCurve` trait
-- [ ] Polyline (already implicit in mesh-from-curves)
-- [ ] Bezier curves (cubic)
-- [ ] B-splines
-- [ ] NURBS (CAD-style)
-- [ ] Arc/Circle
+- [x] Create `geometry/curve-types/Cargo.toml`
+- [x] `Curve` trait with evaluation, tangent, arc-length, framing
+- [x] `Curve2D` trait for planar curves
+- [x] `TubularCurve` trait for curves with variable radius
+- [x] `Polyline` with arc-length parameterization, simplify, resample
+- [x] `QuadraticBezier`, `CubicBezier`, `BezierSpline` with continuity control
+- [x] `BSpline` with clamped/uniform knot vectors, knot insertion
+- [x] `Nurbs` with exact conic representation, circular_arc()
+- [x] `Arc`, `Circle` with trigonometric evaluation
+- [x] `Helix`, `ConicalHelix` for spiral curves
+- [x] `Frame`, `parallel_transport_frames()` for rotation-minimizing frames
+- [x] Curve operations: `reverse`, `split_at`, `join`, `extract`, `closest_point`, `intersections`
 
-| Feature | Priority | Notes |
-|---------|----------|-------|
-| Polyline | HIGH | Already implicit in mesh-from-curves |
-| Bezier curves | MEDIUM | Cubic Bezier |
-| B-splines | LOW | General splines |
-| NURBS | LOW | CAD-style curves |
-| Arc/Circle | MEDIUM | Circular arcs |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Polyline | A-GRADE | Full parameterization, simplify, resample |
+| QuadraticBezier | A-GRADE | Degree elevation to cubic |
+| CubicBezier | A-GRADE | De Casteljau split, Hermite construction |
+| BezierSpline | A-GRADE | C0/G1/C1/C2 continuity verification |
+| BSpline | A-GRADE | Clamped/uniform knots, knot insertion |
+| NURBS | A-GRADE | Exact circles/arcs via rational basis |
+| Arc/Circle | A-GRADE | Three-point construction, bounding box |
+| Helix | A-GRADE | Left/right handed, conical variant |
+| Parallel transport | A-GRADE | Double reflection method (Wang et al.) |
 
-**Note**: Only needed if mesh-from-curves or other crates need mathematical curves beyond polylines.
+**Tests**: 71 unit tests, 17 doc tests
+**Dependencies**: nalgebra, thiserror, approx (dev)
 
 ### lumen-geometry (ARCHIVED)
 
@@ -925,6 +955,8 @@ Has its own git repo - integrate when needed.
 # SEPARATE TRACKS
 
 These are independent of the mesh work and can be done in parallel when needed.
+
+> **Note**: cf-spatial and routing/* crates are now COMPLETE (see Spatial Foundation and Routing Foundation sections).
 
 ---
 
@@ -1455,44 +1487,106 @@ Phase 2: ML Core ✅ COMPLETE
 Phase 3: Sensor Fusion ✅ COMPLETE
 └── 6. sensor-fusion    ✅ A-GRADE (stream sync, transforms)
 
-Phase 4: Layer 1 Bevy SDK (after Layer 0 solid)
-└── 7. cortenforge      (CfSensorPlugin, CfMlPlugin, CfSimPlugin) - NOT STARTED
+Phase 4: Spatial + Routing ✅ COMPLETE
+├── 7. cf-spatial       ✅ A-GRADE (VoxelGrid, OccupancyMap, Raycasting)
+├── 8. route-types      ✅ A-GRADE (Paths, Constraints, Goals, Costs)
+├── 9. route-pathfind   ✅ A-GRADE (A*, Heuristics, Smoothing)
+└── 10. route-optimize  ✅ A-GRADE (Clearance, Curvature, Pareto)
+
+Phase 5: Layer 1 Bevy SDK (after Layer 0 solid)
+└── 11. cortenforge     (CfSensorPlugin, CfMlPlugin, CfSimPlugin) - NOT STARTED
 ```
 
-**Total: 6 new crates COMPLETE** (sensor-types, sensor-fusion, ml-types, ml-models, ml-dataset, ml-training)
+**Total: 10 new crates COMPLETE** (sensor-types, sensor-fusion, ml-types, ml-models, ml-dataset, ml-training, cf-spatial, route-types, route-pathfind, route-optimize)
 
 ---
 
 ## Spatial Foundation
 
-### cf-spatial (NOT STARTED)
+### cf-spatial (A-GRADE COMPLETE)
 
-- [ ] Create `crates/cf-spatial/Cargo.toml`
-- [ ] `VoxelGrid` struct
-- [ ] `OccupancyMap` (sparse storage)
-- [ ] Raycasting
-- [ ] Sphere overlap queries
+- [x] Create `crates/cf-spatial/Cargo.toml`
+- [x] `VoxelGrid<T>` - Regular 3D voxel lattice with efficient indexing
+- [x] `VoxelCoord` - Integer voxel coordinates
+- [x] `GridBounds` - Axis-aligned bounds in grid space
+- [x] `OccupancyMap` - Probabilistic occupancy grid (log-odds) for SLAM/sensor fusion
+- [x] `Ray`, `RaycastHit`, `VoxelTraversal` - Ray-voxel intersection
+- [x] `line_of_sight()`, `raycast()`, `raycast_all()` - Visibility queries
+- [x] `Aabb`, `Sphere` - Geometric primitives for overlap queries
+- [x] `query_aabb()`, `query_sphere()` - Spatial queries
+- [x] Write unit tests (145 tests)
+- [x] Write doc tests (86 tests)
+
+**Tests**: 145 unit tests, 86 doc tests
+
+**Status**: A-GRADE COMPLETE
 
 ---
 
 ## Routing Foundation
 
-### route-types (NOT STARTED)
-- [ ] Create `routing/route-types/Cargo.toml`
-- [ ] `Path3D`, `Waypoint`
-- [ ] `Route`, `RouteBundle`
-- [ ] Constraints
+### route-types (A-GRADE COMPLETE)
 
-### route-pathfind (NOT STARTED)
-- [ ] Create `routing/route-pathfind/Cargo.toml`
-- [ ] Voxel A* pathfinding
-- [ ] Path smoothing
-- [ ] Clearance inflation
+Core types for 3D routing: paths, constraints, goals, and costs.
 
-### route-optimize (NOT STARTED)
-- [ ] Create `routing/route-optimize/Cargo.toml`
-- [ ] Multi-objective optimization
-- [ ] Local search refinement
+- [x] Create `routing/route-types/Cargo.toml`
+- [x] `VoxelPath`, `ContinuousPath`, `Path` - Route representations
+- [x] `Waypoint` - Path nodes with metadata
+- [x] `Route`, `RouteStats` - Complete route solutions with metadata
+- [x] `RouteGoal`, `GoalPoint`, `Attractor` - Start/end, via points, attractors
+- [x] `RouteConstraints`, `PhysicalConstraints` - Clearance, bend radius
+- [x] `KeepOutZone`, `Aabb`, `Sphere` - Exclusion zones
+- [x] `CostWeights`, `RouteCost` - Multi-objective cost computation
+- [x] `AStarConfig`, `ThetaStarConfig`, `RrtStarConfig` - Algorithm configs
+- [x] `Heuristic` - Manhattan, Euclidean, Chebyshev, Octile
+- [x] `RoutingError` - Error types
+- [x] Write unit tests (158 tests)
+- [x] Write doc tests (68 tests)
+
+**Tests**: 158 unit tests, 68 doc tests
+
+**Status**: A-GRADE COMPLETE
+
+### route-pathfind (A-GRADE COMPLETE)
+
+Pathfinding algorithms for 3D voxel grids.
+
+- [x] Create `routing/route-pathfind/Cargo.toml`
+- [x] `VoxelAStar` - A* pathfinder with configurable heuristics
+- [x] `find_path()` - Convenience function for quick pathfinding
+- [x] `NeighborGenerator`, `successors_for_grid()` - 6 or 26 connectivity
+- [x] `compute_heuristic()` - Manhattan, Euclidean, Chebyshev, Octile
+- [x] `PathSmoother` - Line-of-sight based path simplification
+- [x] Via point routing support
+- [x] Blocked start/goal detection
+- [x] Write unit tests (63 tests)
+- [x] Write doc tests (23 tests)
+
+**Tests**: 63 unit tests, 23 doc tests
+
+**Status**: A-GRADE COMPLETE
+
+### route-optimize (A-GRADE COMPLETE)
+
+Multi-objective route optimization algorithms.
+
+- [x] Create `routing/route-optimize/Cargo.toml`
+- [x] `ClearanceOptimizer` - Maximize distance from obstacles
+- [x] `clearance_profile()`, `minimum_clearance()`, `average_clearance()`
+- [x] `PathShortener` - Remove redundant waypoints via line-of-sight
+- [x] `length_reduction()`, `reduction_ratio()`
+- [x] `curvature_profile()`, `count_bends()`, `satisfies_min_radius()`
+- [x] `CurvatureSmoother` - Path smoothness optimization
+- [x] `ObjectivePoint`, `dominates()`, `pareto_frontier()` - Pareto utilities
+- [x] `hypervolume_2d()` - Hypervolume indicator
+- [x] `MultiObjectiveOptimizer` - Generate Pareto-optimal route sets
+- [x] `filter_pareto()`, `select_best()` - Solution selection
+- [x] Write unit tests (72 tests)
+- [x] Write doc tests (46 tests)
+
+**Tests**: 72 unit tests, 46 doc tests
+
+**Status**: A-GRADE COMPLETE
 
 ---
 
@@ -1586,8 +1680,8 @@ burn-ndarray = "0.15"
 7. **Burn-native**: Deep Burn integration, not generic ML traits
 8. **CI/CD ready**: Dataset and training crates support TFX-style pipelines
 9. **No vision-types crate**: `Frame`, `DetectionResult`, etc. are ML inference types → live in `ml-types`
-10. **6 new crates total**: sensor-types, sensor-fusion, ml-types, ml-models, ml-dataset, ml-training
+10. **10 non-mesh crates total**: sensor-types, sensor-fusion, ml-types, ml-models, ml-dataset, ml-training, cf-spatial, route-types, route-pathfind, route-optimize
 
 ---
 
-*Last updated: 2026-01-18 (mesh domain complete, sensor/ml domains complete - 32 A-grade crates total)*
+*Last updated: 2026-01-19 (mesh domain complete, sensor/ml domains complete, spatial/routing domains complete, geometry/curve-types complete - 37 A-grade crates total)*
