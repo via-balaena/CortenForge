@@ -4,6 +4,12 @@
 //!
 //! These benchmarks compare GPU and CPU SDF computation performance.
 
+#![allow(
+    missing_docs,
+    clippy::cast_possible_truncation,
+    clippy::assigning_clones
+)]
+
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 use mesh_gpu::{GpuContext, GpuSdfParams, try_compute_sdf_gpu};

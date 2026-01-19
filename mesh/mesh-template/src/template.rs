@@ -334,7 +334,7 @@ impl FitTemplate {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::let_underscore_must_use)]
 mod tests {
     use super::*;
     use crate::Measurement;
