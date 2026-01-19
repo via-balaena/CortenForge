@@ -335,7 +335,8 @@ impl MorphParams {
     clippy::expect_used,
     clippy::float_cmp,
     clippy::needless_range_loop,
-    clippy::uninlined_format_args
+    clippy::uninlined_format_args,
+    clippy::panic
 )]
 mod tests {
     use super::*;
