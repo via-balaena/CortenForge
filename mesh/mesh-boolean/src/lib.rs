@@ -167,6 +167,15 @@ pub mod prelude {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::redundant_clone,
+    clippy::cast_lossless,
+    clippy::cast_precision_loss
+)]
 mod tests {
     use super::*;
 

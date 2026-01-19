@@ -585,6 +585,13 @@ pub fn try_compute_sdf_gpu(mesh: &IndexedMesh, params: &GpuSdfParams) -> Option<
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::redundant_clone
+)]
 mod tests {
     use super::*;
     use mesh_types::Vertex;

@@ -674,6 +674,13 @@ impl TileConfig {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::redundant_clone
+)]
 mod tests {
     use super::*;
 
