@@ -168,9 +168,9 @@ pub enum BvhNode {
         /// Bounding box of all triangles in this subtree.
         bbox: Aabb,
         /// Left child node.
-        left: Box<BvhNode>,
+        left: Box<Self>,
         /// Right child node.
-        right: Box<BvhNode>,
+        right: Box<Self>,
     },
 }
 

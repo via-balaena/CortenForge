@@ -411,7 +411,10 @@ jobs:
         run: cargo install cargo-cyclonedx
 
       - name: Generate SBOM
-        run: cargo cyclonedx --format json --output-cdx sbom.json
+        run: |
+          cargo cyclonedx --format json
+          # Find and rename the generated SBOM (name varies by workspace structure)
+          find . -name "*.cdx.json" -not -path "./target/*" | head -1 | xargs -I{} cp {} sbom.json
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4

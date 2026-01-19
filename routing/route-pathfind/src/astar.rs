@@ -319,6 +319,7 @@ mod tests {
         VoxelGrid::new(1.0)
     }
 
+    #[allow(dead_code)] // Test helper for future tests
     fn grid_with_wall(y: i32, z_range: std::ops::Range<i32>) -> VoxelGrid<bool> {
         let mut grid = VoxelGrid::new(1.0);
         // Create a wall at x=5, spanning y and z
