@@ -394,7 +394,7 @@ fn save_stl_ascii<W: Write>(mesh: &IndexedMesh, mut writer: W) -> IoResult<()> {
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::float_cmp,
-    clippy::unnecessary_raw_string_hashes
+    clippy::needless_raw_string_hashes
 )]
 mod tests {
     use super::*;

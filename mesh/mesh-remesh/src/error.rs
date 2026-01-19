@@ -30,7 +30,12 @@ pub enum RemeshError {
 pub type RemeshResult<T> = std::result::Result<T, RemeshError>;
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::single_char_pattern
+)]
 mod tests {
     use super::*;
 
