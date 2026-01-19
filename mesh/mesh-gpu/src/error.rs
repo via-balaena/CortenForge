@@ -116,7 +116,8 @@ pub type GpuResult<T> = Result<T, GpuError>;
     clippy::expect_used,
     clippy::float_cmp,
     clippy::similar_names,
-    clippy::redundant_clone
+    clippy::redundant_clone,
+    clippy::unnecessary_wraps
 )]
 mod tests {
     use super::*;

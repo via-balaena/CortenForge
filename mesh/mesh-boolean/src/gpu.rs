@@ -466,7 +466,8 @@ pub fn is_gpu_available() -> bool {
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::float_cmp,
-    clippy::similar_names
+    clippy::similar_names,
+    clippy::let_underscore_must_use
 )]
 mod tests {
     use super::*;
