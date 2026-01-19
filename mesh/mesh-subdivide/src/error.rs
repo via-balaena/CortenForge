@@ -35,6 +35,12 @@ pub enum SubdivideError {
 pub type SubdivideResult<T> = std::result::Result<T, SubdivideError>;
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::single_char_pattern
+)]
 mod tests {
     use super::*;
 

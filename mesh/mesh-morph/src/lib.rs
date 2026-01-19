@@ -138,6 +138,12 @@ pub use rbf::RbfKernel;
 pub use result::MorphOutput;
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::needless_range_loop
+)]
 mod integration_tests {
     use super::*;
     use approx::assert_relative_eq;

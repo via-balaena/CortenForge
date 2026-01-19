@@ -348,6 +348,12 @@ pub const fn binomial(n: usize, k: usize) -> usize {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::needless_range_loop
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
