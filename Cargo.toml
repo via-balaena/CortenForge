@@ -46,8 +46,8 @@ members = [
     # "geometry/curve-types",
     # "geometry/lumen-geometry",
 
-    # Foundation (pending)
-    # "crates/cf-spatial",
+    # Foundation (active development)
+    "crates/cf-spatial",
 
     # Routing domain (pending)
     # "routing/route-types",
@@ -94,11 +94,15 @@ missing_docs = "warn"
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 nursery = { level = "warn", priority = -1 }
-unwrap_used = "deny"
-expect_used = "deny"
+# unwrap/expect: warn at workspace level (for tests), deny in lib.rs (for library code)
+# See INFRASTRUCTURE.md "Safety Lint Policy" for the rationale.
+unwrap_used = "warn"
+expect_used = "warn"
 panic = "warn"
 todo = "deny"
 unimplemented = "deny"
+# Silent failure prevention: catch discarded Results and #[must_use] values
+let_underscore_must_use = "deny"
 
 # ============================================================================
 # WORKSPACE DEPENDENCIES

@@ -118,6 +118,9 @@
 //! let result = morph_mesh(&mesh, &params).unwrap();
 //! ```
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 mod constraint;
 mod error;
 mod ffd;

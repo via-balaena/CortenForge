@@ -131,9 +131,10 @@
 //! println!("Final mesh has {} vertices", denoised.mesh.vertices.len());
 //! ```
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![warn(missing_docs)]
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
-#![deny(clippy::unwrap_used, clippy::expect_used)]
 #![allow(clippy::module_name_repetitions)]
 // Allow certain pedantic lints that are too strict for this crate
 #![allow(clippy::struct_excessive_bools)] // CleanupParams needs multiple bool options

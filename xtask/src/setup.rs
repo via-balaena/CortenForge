@@ -142,8 +142,11 @@ pub fn run() -> Result<()> {
     println!();
     println!("Pre-commit hooks will now run before each commit:");
     println!("  • Formatting check (cargo fmt)");
-    println!("  • Clippy lint check");
-    println!("  • Safety scan (unwrap/expect detection)");
+    println!("  • Clippy lint check (library code)");
+    println!();
+    println!("Safety lint policy:");
+    println!("  • Library code: unwrap/expect denied (via lib.rs attributes)");
+    println!("  • Test code: unwrap/expect allowed (ecosystem standard)");
     println!();
     println!("Commit messages must follow conventional commits format:");
     println!("  • feat(scope): description");

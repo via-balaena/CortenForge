@@ -278,6 +278,8 @@ impl GpuContext {
         let buffer_slice = staging_buffer.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            // Channel send can fail if receiver is dropped, but we handle that below via rx.recv()
+            #[allow(clippy::let_underscore_must_use)]
             let _ = tx.send(result);
         });
         self.device.poll(wgpu::Maintain::Wait);
@@ -462,7 +464,7 @@ pub fn is_gpu_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesh_types::Vertex;
+    use mesh_types::{Point3, Vertex};
 
     fn create_unit_cube() -> IndexedMesh {
         let mut mesh = IndexedMesh::new();

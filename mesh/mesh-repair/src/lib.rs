@@ -37,6 +37,9 @@
 //! println!("Vertices welded: {}", result.vertices_welded);
 //! ```
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 mod adjacency;
 pub mod components;
 mod error;

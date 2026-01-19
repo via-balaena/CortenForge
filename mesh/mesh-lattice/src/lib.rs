@@ -52,6 +52,9 @@
 //! This is a Layer 0 crate with no Bevy dependencies. It can be used
 //! standalone or through the `cortenforge` Bevy SDK.
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 mod beam;
 mod density;
 mod error;

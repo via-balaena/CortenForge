@@ -139,7 +139,10 @@ pub fn export_layer_svg(layer: &Layer, params: &SvgExportParams) -> String {
             continue;
         }
 
+        // Build SVG path data
+        // Note: String::write_fmt is infallible, so we can safely ignore the Result
         let mut path = String::new();
+        #[allow(clippy::let_underscore_must_use)]
         for (i, point) in contour.points.iter().enumerate() {
             if i == 0 {
                 let _ = write!(path, "M {:.4} {:.4}", point.x, point.y);
@@ -157,6 +160,8 @@ pub fn export_layer_svg(layer: &Layer, params: &SvgExportParams) -> String {
             "none"
         };
 
+        // String::write_fmt is infallible
+        #[allow(clippy::let_underscore_must_use)]
         let _ = writeln!(
             svg,
             r#"    <path d="{}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"#,
@@ -169,7 +174,8 @@ pub fn export_layer_svg(layer: &Layer, params: &SvgExportParams) -> String {
 
     svg.push_str("  </g>\n");
 
-    // Add layer info text
+    // Add layer info text - String::write_fmt is infallible
+    #[allow(clippy::let_underscore_must_use)]
     let _ = write!(
         svg,
         "  <text x=\"10\" y=\"20\" font-family=\"monospace\" font-size=\"12\" fill=\"#666\">\n\

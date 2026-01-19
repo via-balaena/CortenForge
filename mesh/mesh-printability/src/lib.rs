@@ -56,6 +56,9 @@
 //!   - High detail and speed
 //!   - Minimum wall ~0.5mm
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 mod config;
 mod error;
 mod issues;

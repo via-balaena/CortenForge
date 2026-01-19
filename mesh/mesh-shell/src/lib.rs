@@ -87,6 +87,9 @@
 //!
 //! Use `.fast()` or `.high_quality()` on `ShellBuilder` to select.
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 mod builder;
 mod error;
 mod shell;

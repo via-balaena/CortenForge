@@ -83,6 +83,8 @@
 //!
 //! - `gpu` - Enable GPU-accelerated operations via WGPU
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![doc(html_root_url = "https://docs.rs/mesh/0.7.0")]
 
 // =============================================================================
