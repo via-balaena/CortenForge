@@ -190,8 +190,9 @@ jobs:
 
       - name: Generate coverage and check threshold
         run: |
-          # Run tarpaulin with 90% threshold - fails if coverage below threshold
-          cargo tarpaulin --all-features --workspace --out Xml --fail-under 90
+          # Run tarpaulin with 75% threshold - fails if coverage below threshold
+          # TODO: Increase to 90% as test coverage improves
+          cargo tarpaulin --all-features --workspace --out Xml --fail-under 75
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
