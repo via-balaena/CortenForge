@@ -158,7 +158,7 @@ impl RoutingError {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::single_char_pattern)]
 mod tests {
     use super::*;
 

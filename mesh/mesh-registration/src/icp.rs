@@ -469,6 +469,13 @@ fn compute_error_metrics(correspondences: &[Correspondence]) -> (f64, f64) {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::items_after_statements
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

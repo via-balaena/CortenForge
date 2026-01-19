@@ -1118,6 +1118,20 @@ impl World {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::unreadable_literal,
+    clippy::uninlined_format_args,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::manual_range_contains,
+    clippy::map_unwrap_or
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

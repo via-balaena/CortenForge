@@ -78,6 +78,7 @@ pub use path::{ContinuousPath, Path, VoxelPath, Waypoint};
 pub use route::{Route, RouteStats};
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod integration_tests {
     use super::*;
     use cf_spatial::VoxelCoord;

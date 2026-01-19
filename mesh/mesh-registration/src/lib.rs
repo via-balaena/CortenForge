@@ -227,6 +227,12 @@ pub fn compute_alignment_error(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
