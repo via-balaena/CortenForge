@@ -473,6 +473,13 @@ impl TrackRegistry {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::cast_lossless,
+    clippy::cast_precision_loss
+)]
 mod tests {
     use super::*;
 
@@ -646,7 +653,11 @@ mod tests {
         registry.update_unmatched_tracks(&[]); // This will delete tentative track
 
         assert_eq!(registry.len(), 1);
-        assert!(registry.get(id).is_some_and(super::TrackingState::should_delete));
+        assert!(
+            registry
+                .get(id)
+                .is_some_and(super::TrackingState::should_delete)
+        );
 
         registry.prune_deleted();
         assert_eq!(registry.len(), 0);

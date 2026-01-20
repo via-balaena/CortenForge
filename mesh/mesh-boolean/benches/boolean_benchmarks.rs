@@ -6,6 +6,13 @@
 //! 1. First run: cargo bench -p mesh-boolean -- --save-baseline main
 //! 2. After changes: cargo bench -p mesh-boolean -- --baseline main
 
+#![allow(
+    missing_docs,
+    clippy::cast_possible_truncation,
+    clippy::assigning_clones,
+    clippy::significant_drop_tightening
+)]
+
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use mesh_boolean::{difference, intersection, union};
 use mesh_types::{IndexedMesh, Vertex};

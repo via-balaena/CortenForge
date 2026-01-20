@@ -64,6 +64,9 @@
 //! - `OffsetConfig::default()` - Balanced quality and speed
 //! - `OffsetConfig::high_quality()` - Fine resolution for final output
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 mod error;
 mod grid;
 mod marching_cubes;

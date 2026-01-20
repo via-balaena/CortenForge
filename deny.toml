@@ -25,20 +25,14 @@ all-features = true
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Fail on any vulnerability
-vulnerability = "deny"
-# Warn on unmaintained crates
-unmaintained = "warn"
-# Warn on unsound code
-unsound = "warn"
-# Ignore yanked crates (they're often just deprecated)
-yanked = "warn"
-notice = "warn"
-
+# Check all crates for vulnerabilities
+version = 2
 # Temporarily ignore specific advisories (with justification)
 ignore = [
-    # Example:
-    # { id = "RUSTSEC-2022-0001", reason = "We don't use the affected feature" }
+    # Unmaintained crates - transitive dependencies we don't directly control
+    { id = "RUSTSEC-2025-0141", reason = "bincode is unmaintained but we're using stable features only" },
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained but used transitively by derive macros" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained but used transitively" },
 ]
 
 # ============================================================================
@@ -46,9 +40,10 @@ ignore = [
 # ============================================================================
 
 [licenses]
+version = 2
 # We're Apache-2.0, so we accept permissive licenses
-unlicensed = "deny"
-copyleft = "warn"
+# In v2 format, all unlicensed and copyleft crates are denied by default
+# unless explicitly allowed
 allow = [
     "MIT",
     "Apache-2.0",
@@ -59,8 +54,10 @@ allow = [
     "Zlib",
     "0BSD",
     "Unicode-DFS-2016",
+    "Unicode-3.0",  # Used by unicode-ident
     "CC0-1.0",
     "MPL-2.0",  # Weak copyleft, acceptable for libraries
+    "Unlicense",  # Public domain equivalent
 ]
 confidence-threshold = 0.8
 
@@ -90,10 +87,6 @@ license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
 multiple-versions = "warn"
 # Wildcards are messy
 wildcards = "warn"
-# Allow private registries (for internal crates)
-allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# Allow git dependencies (for pre-release testing)
-allow-git = false
 
 # Highlight/warn on these crates if they appear
 highlight = "all"

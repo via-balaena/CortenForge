@@ -243,6 +243,7 @@ impl TrainingMetrics {
 
     /// Returns a human-readable summary.
     #[must_use]
+    #[allow(clippy::let_underscore_must_use)] // String::write_fmt is infallible
     pub fn summary(&self) -> String {
         use std::fmt::Write;
 
@@ -281,6 +282,7 @@ impl TrainingMetrics {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
 

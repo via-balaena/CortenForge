@@ -241,6 +241,7 @@ fn closest_point_on_triangle(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use mesh_types::unit_cube;

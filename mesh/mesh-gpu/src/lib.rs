@@ -98,11 +98,11 @@
 //! - Zero clippy/doc warnings
 //! - Zero `unwrap`/`expect` in library code
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
-#![deny(clippy::expect_used)]
 
 pub mod buffers;
 pub mod context;

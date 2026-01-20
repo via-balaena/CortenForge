@@ -1,0 +1,34 @@
+[package]
+name = "sim-contact"
+version = "0.1.0"
+edition = "2021"
+description = "Compliant contact model for physics simulation - MuJoCo-inspired spring-damper contacts with friction cones"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cortenforge/cortenforge"
+keywords = ["physics", "simulation", "contact", "robotics", "mujoco"]
+categories = ["simulation", "science::robotics"]
+
+[features]
+default = ["std"]
+std = []
+serde = ["dep:serde", "nalgebra/serde-serialize"]
+
+[dependencies]
+nalgebra = { version = "0.33", default-features = false, features = ["std"] }
+sim-types = { path = "../sim-types" }
+thiserror = "2"
+
+# Optional
+serde = { version = "1.0", features = ["derive"], optional = true }
+
+[dev-dependencies]
+approx = "0.5"
+proptest = "1.4"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

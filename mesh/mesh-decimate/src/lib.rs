@@ -47,11 +47,11 @@
 //! 3. Iteratively collapse the edge with minimum cost until target is reached
 //! 4. Handle boundary and sharp feature preservation as configured
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
-#![deny(clippy::expect_used)]
 
 mod decimate;
 mod error;

@@ -50,7 +50,7 @@
 //! ## Analysis & Measurement
 //! - [`measure`] - Dimensions, volume, surface area, cross-sections
 //! - [`thickness`] - Wall thickness analysis
-//! - [`slice`] - Layer slicing for 3D printing preview
+//! - [`mod@slice`] - Layer slicing for 3D printing preview
 //! - [`geodesic`] - Geodesic distance computation
 //! - [`zones`] - Zone assignment and mesh segmentation
 //!
@@ -83,6 +83,8 @@
 //!
 //! - `gpu` - Enable GPU-accelerated operations via WGPU
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![doc(html_root_url = "https://docs.rs/mesh/0.7.0")]
 
 // =============================================================================
@@ -203,6 +205,7 @@ pub mod prelude {
 // =============================================================================
 
 #[cfg(test)]
+#[allow(clippy::let_underscore_must_use)]
 mod tests {
     use super::*;
 

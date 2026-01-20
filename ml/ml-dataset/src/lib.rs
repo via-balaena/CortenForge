@@ -15,8 +15,8 @@
 //!
 //! # Data Loading
 //!
-//! - [`load_sample`] - Load a single sample from disk
-//! - [`index_runs`] - Index available dataset runs
+//! - Load samples via `DatasetSample::load()` method
+//! - Index available dataset runs for processing
 //!
 //! # Layer 0 Crate
 //!
@@ -53,11 +53,11 @@
 //! - Zero clippy/doc warnings
 //! - Zero `unwrap`/`expect` in library code
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
-#![deny(clippy::expect_used)]
 
 mod error;
 mod sample;

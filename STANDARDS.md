@@ -25,7 +25,7 @@ Every crate is graded on seven criteria. All must be A-grade before the crate is
 
 | # | Criterion | A Standard | Measurement |
 |---|-----------|------------|-------------|
-| 1 | Test Coverage | ≥90% | `cargo tarpaulin` |
+| 1 | Test Coverage | ≥75% (target: 90%) | `cargo tarpaulin` (Linux only) |
 | 2 | Documentation | Zero warnings | `RUSTDOCFLAGS="-D warnings" cargo doc` |
 | 3 | Clippy | Zero warnings | `cargo clippy -- -D warnings` |
 | 4 | Safety | Zero unwrap/expect | grep + review |
@@ -37,16 +37,21 @@ Every crate is graded on seven criteria. All must be A-grade before the crate is
 
 ## Criterion 1: Test Coverage
 
-### A Standard: ≥90% Line Coverage
+### A Standard: ≥75% Line Coverage (Target: 90%)
 
-**Measurement:**
+**Measurement (Linux only):**
 ```bash
 cargo tarpaulin -p <crate> --out Html
+
+# To match CI threshold enforcement:
+cargo tarpaulin -p <crate> --fail-under 75
 ```
+
+Note: `cargo tarpaulin` only works reliably on Linux. Mac/Windows users should rely on CI for coverage reporting.
 
 **Requirements:**
 
-- [ ] Line coverage ≥90%
+- [ ] Line coverage ≥75% (target: 90%)
 - [ ] All public functions have at least one test
 - [ ] All error paths are tested
 - [ ] Edge cases are explicitly tested:

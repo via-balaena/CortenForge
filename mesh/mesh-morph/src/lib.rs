@@ -118,6 +118,9 @@
 //! let result = morph_mesh(&mesh, &params).unwrap();
 //! ```
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 mod constraint;
 mod error;
 mod ffd;
@@ -135,6 +138,13 @@ pub use rbf::RbfKernel;
 pub use result::MorphOutput;
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::needless_range_loop,
+    clippy::uninlined_format_args
+)]
 mod integration_tests {
     use super::*;
     use approx::assert_relative_eq;

@@ -334,6 +334,13 @@ impl DensityMap {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::suboptimal_flops,
+    clippy::uninlined_format_args
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

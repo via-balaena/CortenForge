@@ -186,6 +186,7 @@ impl From<serde_json::Error> for MlTypesError {
 pub type Result<T> = std::result::Result<T, MlTypesError>;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
 

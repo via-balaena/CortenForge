@@ -7,7 +7,7 @@
 //!
 //! A 3MF file is a ZIP archive containing:
 //! - `3D/3dmodel.model` - Main model XML file
-//! - `[Content_Types].xml` - MIME type mappings
+//! - `\[Content_Types\].xml` - MIME type mappings
 //! - `_rels/.rels` - Relationships
 //!
 //! # Supported Features
@@ -445,6 +445,13 @@ fn generate_model_xml(mesh: &IndexedMesh) -> IoResult<String> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::needless_raw_string_hashes,
+    clippy::map_identity
+)]
 mod tests {
     use super::*;
     use mesh_types::MeshTopology;

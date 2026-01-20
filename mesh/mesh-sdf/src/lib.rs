@@ -38,6 +38,9 @@
 //! - **Ray marching**: Efficient rendering of implicit surfaces
 //! - **Boolean operations**: Combine meshes using SDF operations (union, intersection, difference)
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 mod error;
 mod query;
 mod sdf;

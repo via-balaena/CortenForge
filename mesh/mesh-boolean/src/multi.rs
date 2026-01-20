@@ -369,6 +369,15 @@ pub fn concatenate_meshes(meshes: &[IndexedMesh]) -> IndexedMesh {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::cast_lossless,
+    clippy::cloned_ref_to_slice_refs,
+    clippy::redundant_clone
+)]
 mod tests {
     use super::*;
     use mesh_types::{Point3, Vertex};

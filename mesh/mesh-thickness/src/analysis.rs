@@ -321,8 +321,8 @@ enum BvhNode {
     },
     Internal {
         aabb: Aabb,
-        left: Box<BvhNode>,
-        right: Box<BvhNode>,
+        left: Box<Self>,
+        right: Box<Self>,
     },
 }
 
@@ -557,6 +557,7 @@ fn compute_vertex_normals(mesh: &IndexedMesh, triangles: &[Triangle]) -> Vec<Vec
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use mesh_types::{Vertex, unit_cube};

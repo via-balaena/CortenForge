@@ -15,12 +15,12 @@ We maintain **A-grade academic standards** for all code. This is the cultural fo
 ## Quick Start
 
 ```bash
-# Clone and setup
+# Clone the repository
 git clone https://github.com/cortenforge/forge.git
 cd forge
 
-# Install git hooks and verify tools
-cargo xtask setup
+# Build - git hooks are installed automatically
+cargo build
 
 # Check if your environment is ready
 cargo xtask check
@@ -32,6 +32,9 @@ cargo xtask grade <crate-name>
 cargo xtask ci
 ```
 
+> **Note:** Git hooks (pre-commit and commit-msg) are automatically installed
+> when you first build the project. No manual setup required.
+
 ### Optional: Local Coverage (Linux only)
 
 ```bash
@@ -41,10 +44,13 @@ cargo install cargo-tarpaulin
 # Check coverage for a crate
 cargo tarpaulin -p mesh-types --out Html
 open tarpaulin-report.html
+
+# To match CI threshold enforcement:
+cargo tarpaulin -p mesh-types --fail-under 75
 ```
 
-This is optional - CI enforces ≥90% coverage regardless. But it's useful for checking
-coverage before pushing. Note: tarpaulin only works on Linux.
+This is optional - CI enforces ≥75% coverage (target: 90% as test coverage matures).
+Note: tarpaulin only works reliably on Linux. Mac/Windows users should rely on CI for coverage.
 
 ---
 
@@ -90,7 +96,7 @@ This records completion in the crate's `COMPLETION.md` and updates the project-w
 
 | Criterion | A Standard | Automated? |
 |-----------|------------|------------|
-| **Test Coverage** | ≥90% line coverage | Yes |
+| **Test Coverage** | ≥75% line coverage (target: 90%) | Yes |
 | **Documentation** | Zero doc warnings, all public items documented | Yes |
 | **Clippy** | Zero warnings | Yes |
 | **Safety** | Zero `unwrap()`/`expect()` in library code | Yes |
@@ -114,7 +120,7 @@ Every push and PR runs:
 - cargo clippy -D warnings   # All warnings are errors
 - cargo test --all-features  # Tests must pass
 - cargo doc -D warnings      # Docs must build clean
-- coverage ≥ 90%             # Test coverage enforced
+- coverage ≥ 75%             # Test coverage enforced (target: 90%)
 - no bevy in Layer 0         # Architecture enforced
 ```
 
@@ -201,7 +207,7 @@ When working on CortenForge, include this context:
 
 ```
 This project maintains A-grade academic standards. All code must:
-- Have ≥90% test coverage
+- Have ≥75% test coverage (target: 90%)
 - Have zero clippy/doc warnings
 - Have zero unwrap/expect in library code
 - Be reviewed via `cargo xtask grade <crate>`

@@ -1,5 +1,8 @@
 //! Infill generation for hollow meshes with lattice interiors.
 
+// Allow numeric casts for vertex indexing
+#![allow(clippy::cast_possible_truncation)]
+
 use crate::error::LatticeError;
 use crate::generate::generate_lattice;
 use crate::params::LatticeParams;
@@ -327,7 +330,10 @@ pub fn generate_infill(
     let size = max - min;
 
     // Compute interior bounds (inset by shell thickness + safety margin)
-    let inset = params.lattice.cell_size.mul_add(0.5, params.shell_thickness);
+    let inset = params
+        .lattice
+        .cell_size
+        .mul_add(0.5, params.shell_thickness);
     let interior_min = Point3::new(min.x + inset, min.y + inset, min.z + inset);
     let interior_max = Point3::new(max.x - inset, max.y - inset, max.z - inset);
 
@@ -406,6 +412,7 @@ fn combine_meshes(a: &IndexedMesh, b: &IndexedMesh) -> IndexedMesh {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use mesh_types::Vertex;

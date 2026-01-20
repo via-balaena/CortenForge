@@ -648,6 +648,18 @@ impl FromIterator<Point3<f64>> for PointCloud {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::cast_lossless,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::redundant_clone,
+    clippy::needless_collect
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

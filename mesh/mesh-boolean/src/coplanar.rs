@@ -286,6 +286,12 @@ pub fn should_include_coplanar_face(is_from_first_mesh: bool, strategy: Coplanar
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
 

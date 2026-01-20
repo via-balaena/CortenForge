@@ -109,6 +109,9 @@
 //! - Use `max_correspondence_distance` to reject outliers
 //! - ICP uses KD-tree acceleration for O(n log n) nearest neighbor queries
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 mod error;
 mod icp;
 mod kabsch;
@@ -224,6 +227,13 @@ pub fn compute_alignment_error(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::cast_lossless
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

@@ -390,6 +390,13 @@ fn save_stl_ascii<W: Write>(mesh: &IndexedMesh, mut writer: W) -> IoResult<()> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::needless_raw_string_hashes,
+    clippy::map_identity
+)]
 mod tests {
     use super::*;
     use mesh_types::MeshTopology;

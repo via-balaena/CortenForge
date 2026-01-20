@@ -284,6 +284,13 @@ fn create_triangle_face(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::needless_raw_string_hashes,
+    clippy::let_underscore_must_use
+)]
 mod tests {
     use super::*;
 

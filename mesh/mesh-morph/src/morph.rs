@@ -257,6 +257,15 @@ fn apply_ffd_morph(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::needless_range_loop,
+    clippy::uninlined_format_args,
+    clippy::redundant_closure_for_method_calls,
+    clippy::iter_on_single_items
+)]
 mod tests {
     use super::*;
     use crate::Constraint;

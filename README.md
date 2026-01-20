@@ -4,7 +4,6 @@
 > From humanoid robots to vehicles to medical simulation.
 
 [![Quality Gate](https://github.com/cortenforge/forge/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/cortenforge/forge/actions/workflows/quality-gate.yml)
-[![Coverage](https://codecov.io/gh/cortenforge/forge/branch/main/graph/badge.svg)](https://codecov.io/gh/cortenforge/forge)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 ---

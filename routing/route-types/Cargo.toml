@@ -1,0 +1,26 @@
+[package]
+name = "route-types"
+description = "Core types for 3D routing: paths, constraints, goals, and costs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+cf-spatial = { workspace = true }
+nalgebra = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+proptest = { workspace = true }
+
+[features]
+default = []
+serde = ["dep:serde", "cf-spatial/serde", "nalgebra/serde-serialize"]

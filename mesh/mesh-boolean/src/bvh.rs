@@ -168,9 +168,9 @@ pub enum BvhNode {
         /// Bounding box of all triangles in this subtree.
         bbox: Aabb,
         /// Left child node.
-        left: Box<BvhNode>,
+        left: Box<Self>,
         /// Right child node.
-        right: Box<BvhNode>,
+        right: Box<Self>,
     },
 }
 
@@ -541,6 +541,12 @@ pub struct BvhStats {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names
+)]
 mod tests {
     use super::*;
     use mesh_types::Vertex;

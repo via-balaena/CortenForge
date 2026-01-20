@@ -134,6 +134,9 @@
 //! - `mesh-morph` for RBF/FFD deformation
 //! - `mesh-types` for core mesh data structures
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 mod control_region;
 mod error;
 mod fit;

@@ -329,6 +329,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Exact constant values, min/max selection
     fn lidar_scan_bounding_box() {
         let positions = vec![[-1.0, -2.0, -3.0], [1.0, 2.0, 3.0]];
         let scan = LidarScan::from_positions(Timestamp::zero(), positions, CoordinateFrame::Body);

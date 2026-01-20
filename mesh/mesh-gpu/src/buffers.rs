@@ -478,7 +478,8 @@ impl SdfGridBuffers {
         let slice = staging.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
-            // Channel send can fail if receiver is dropped, but we handle that below
+            // Channel send can fail if receiver is dropped, but we handle that below via rx.recv()
+            #[allow(clippy::let_underscore_must_use)]
             let _ = tx.send(result);
         });
 
@@ -673,6 +674,13 @@ impl TileConfig {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names,
+    clippy::redundant_clone
+)]
 mod tests {
     use super::*;
 

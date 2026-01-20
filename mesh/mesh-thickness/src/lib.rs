@@ -38,11 +38,11 @@
 //! - **Structural Analysis**: Find weak/thin areas in a model
 //! - **Quality Control**: Verify manufactured parts meet specifications
 
+// Safety: Deny unwrap/expect in library code. Tests may use them (workspace warns).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
-#![deny(clippy::unwrap_used)]
-#![deny(clippy::expect_used)]
 
 mod analysis;
 mod error;

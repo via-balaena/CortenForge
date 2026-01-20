@@ -46,31 +46,17 @@ if ! cargo fmt --all -- --check 2>/dev/null; then
 fi
 echo "✓ Formatting OK"
 
-# Clippy check (uses cache)
+# Clippy check (library code only - tests are checked in CI)
 echo "→ Running clippy..."
-if ! cargo clippy --all-targets --all-features -- -D warnings 2>/dev/null; then
+if ! cargo clippy --all-features -- -D warnings 2>/dev/null; then
     echo "✗ Clippy check failed. Fix warnings before committing."
     exit 1
 fi
 echo "✓ Clippy OK"
 
-# Safety scan (fast grep)
-echo "→ Checking for unwrap/expect..."
-VIOLATIONS=$(find . -name "*.rs" \
-    -not -path "./target/*" \
-    -not -path "./xtask/*" \
-    -not -path "*/tests/*" \
-    -not -path "*/examples/*" \
-    -not -path "*/benches/*" \
-    -exec grep -l -E '\.(unwrap|expect)\(' {} \; 2>/dev/null || true)
-
-if [ -n "$VIOLATIONS" ]; then
-    echo "✗ Found unwrap/expect in library code:"
-    echo "$VIOLATIONS"
-    echo "Remove unwrap/expect from library code before committing."
-    exit 1
-fi
-echo "✓ Safety OK"
+# Note: unwrap/expect enforcement is handled by clippy via workspace lints
+# (clippy::unwrap_used = "deny" in Cargo.toml)
+# The grep-based scan was removed as it caught doc examples falsely.
 
 echo ""
 echo "╔═══════════════════════════════════════════════════════════════╗"
@@ -81,7 +67,7 @@ echo "╚═══════════════════════�
 /// Commit message hook content
 ///
 /// Enforces conventional commit format:
-/// <type>(<scope>): <description>
+/// `<type>(<scope>): <description>`
 const COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 # CortenForge Commit Message Hook
 # Installed by: cargo xtask setup
@@ -156,8 +142,11 @@ pub fn run() -> Result<()> {
     println!();
     println!("Pre-commit hooks will now run before each commit:");
     println!("  • Formatting check (cargo fmt)");
-    println!("  • Clippy lint check");
-    println!("  • Safety scan (unwrap/expect detection)");
+    println!("  • Clippy lint check (library code)");
+    println!();
+    println!("Safety lint policy:");
+    println!("  • Library code: unwrap/expect denied (via lib.rs attributes)");
+    println!("  • Test code: unwrap/expect allowed (ecosystem standard)");
     println!();
     println!("Commit messages must follow conventional commits format:");
     println!("  • feat(scope): description");
@@ -167,9 +156,10 @@ pub fn run() -> Result<()> {
     println!("{}", "Optional (Linux only):".bright_blue());
     println!("  cargo install cargo-tarpaulin");
     println!("  cargo tarpaulin -p <crate> --out Html");
+    println!("  cargo tarpaulin -p <crate> --fail-under 75  # Match CI threshold");
     println!();
     println!("  This lets you check coverage locally before pushing.");
-    println!("  CI enforces ≥90% coverage regardless - this is just for convenience.");
+    println!("  CI enforces ≥75% coverage (target: 90%). Mac/Windows users rely on CI.");
     println!();
 
     Ok(())

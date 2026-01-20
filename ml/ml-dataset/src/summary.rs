@@ -169,6 +169,7 @@ impl DatasetSummary {
 
     /// Returns a human-readable summary string.
     #[must_use]
+    #[allow(clippy::let_underscore_must_use)] // String::write_fmt is infallible
     pub fn to_report(&self) -> String {
         use std::fmt::Write;
 
@@ -267,6 +268,12 @@ impl DatasetSummary {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::needless_range_loop,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
 mod tests {
     use super::*;
 

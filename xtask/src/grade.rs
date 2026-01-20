@@ -53,9 +53,13 @@ pub struct CriterionResult {
 /// Full grade report for a crate
 #[derive(Debug)]
 pub struct GradeReport {
+    /// Crate name (reserved for future JSON/report output)
+    #[allow(dead_code)]
     pub crate_name: String,
     pub criteria: Vec<CriterionResult>,
     pub automated_grade: Grade,
+    /// Whether manual API review is needed (reserved for future use)
+    #[allow(dead_code)]
     pub needs_review: bool,
 }
 
@@ -92,7 +96,8 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     println!();
     println!(
         "{}",
-        "╔══════════════════════════════════════════════════════════════╗".to_string()
+        "╔══════════════════════════════════════════════════════════════╗"
+            .to_string()
             .bright_white()
             .bold()
     );
@@ -104,7 +109,8 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     );
     println!(
         "{}",
-        "╠══════════════════════════════════════════════════════════════╣".to_string()
+        "╠══════════════════════════════════════════════════════════════╣"
+            .to_string()
             .bright_white()
             .bold()
     );
@@ -118,7 +124,9 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     );
     println!(
         "{}",
-        "╠══════════════════════════════════════════════════════════════╣".to_string().bright_white()
+        "╠══════════════════════════════════════════════════════════════╣"
+            .to_string()
+            .bright_white()
     );
 
     let mut report = GradeReport {
@@ -172,7 +180,9 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
 
     println!(
         "{}",
-        "╠══════════════════════════════════════════════════════════════╣".to_string().bright_white()
+        "╠══════════════════════════════════════════════════════════════╣"
+            .to_string()
+            .bright_white()
     );
     println!(
         "{}",
@@ -198,7 +208,9 @@ pub fn run(crate_name: &str, _format: &str) -> Result<()> {
     );
     println!(
         "{}",
-        "╚══════════════════════════════════════════════════════════════╝".to_string().bright_white()
+        "╚══════════════════════════════════════════════════════════════╝"
+            .to_string()
+            .bright_white()
     );
     println!();
 
@@ -256,7 +268,7 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Find workspace root by looking for root Cargo.toml with [workspace]
+/// Find workspace root by looking for root Cargo.toml with `[workspace]`
 fn find_workspace_root(sh: &Shell) -> Result<String> {
     let output = cmd!(
         sh,
