@@ -9,7 +9,7 @@ use nalgebra::{Isometry3, Matrix3, Point3, UnitQuaternion, Vector3};
 use serde::{Deserialize, Serialize};
 
 /// Unique identifier for a rigid body in the simulation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BodyId(pub u64);
 

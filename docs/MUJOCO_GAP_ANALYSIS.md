@@ -79,12 +79,12 @@ integrate_with_method_and_damping(
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
 | PGS (Gauss-Seidel) | Supported | Partial (relaxation param) | **Partial** | Medium | Low |
-| Newton solver | Default, 2-3 iterations | Missing | **Missing** | High | High |
+| Newton solver | Default, 2-3 iterations | `NewtonConstraintSolver` | **Implemented** | - | - |
 | Conjugate Gradient | Supported | Missing | **Missing** | Low | Medium |
-| Constraint islands | Auto-detected | Missing | **Missing** | Medium | Medium |
+| Constraint islands | Auto-detected | `ConstraintIslands` | **Implemented** | - | - |
 | Warm starting | Supported | Stub (`enable_warm_starting`) | **Stub** | Medium | Low |
 
-### Implementation Notes: Newton Solver
+### Implementation Notes: Newton Solver ✅ COMPLETED
 
 MuJoCo's Newton solver uses:
 - Analytical second-order derivatives
@@ -92,7 +92,80 @@ MuJoCo's Newton solver uses:
 - Exact line-search via 1D Newton iteration
 - Typically converges in 2-3 iterations
 
-**Files to modify:** `sim-contact/src/solver.rs`, new `sim-constraint/src/newton.rs`
+**Implemented:**
+- `NewtonConstraintSolver` with analytical Jacobians for all joint types
+- Cholesky factorization (with LU fallback) for effective mass matrix
+- Line search for improved convergence
+- Baumgarte stabilization for position correction
+- Configuration presets: `default()`, `robotics()`, `realtime()`
+
+**Usage:**
+```rust
+use sim_constraint::{NewtonConstraintSolver, NewtonSolverConfig, RevoluteJoint};
+use sim_types::BodyId;
+use nalgebra::Vector3;
+
+// Create solver (typically converges in 2-3 iterations)
+let mut solver = NewtonConstraintSolver::new(NewtonSolverConfig::default());
+
+// Or use presets
+let mut robotics_solver = NewtonConstraintSolver::new(NewtonSolverConfig::robotics());
+
+// Solve constraints
+let result = solver.solve(&joints, |id| get_body_state(id), dt);
+
+// Check convergence
+if result.converged {
+    println!("Converged in {} iterations", result.iterations_used);
+}
+```
+
+**Files:** `sim-constraint/src/newton.rs`
+
+### Implementation Notes: Constraint Islands ✅ COMPLETED
+
+Constraint islands are groups of bodies connected by constraints that can be
+solved independently. This enables significant performance optimizations:
+
+- **Smaller linear systems**: Each island solves a smaller matrix equation
+- **Static island skipping**: Islands where all bodies are static can be skipped
+- **Parallel solving potential**: Independent islands can be solved concurrently
+
+**Algorithm:**
+- Union-Find (Disjoint-Set Union) with path compression and union by rank
+- Time complexity: O(n × α(n)) ≈ O(n) where α is inverse Ackermann
+
+**Implemented:**
+- `ConstraintIslands` - Automatic island detection from joints
+- `Island` - Single island with body list and constraint indices
+- `IslandStatistics` - Analysis of island distribution
+- `NewtonConstraintSolver::solve_with_islands()` - Island-aware solving
+- `NewtonConstraintSolver::solve_islands()` - Solve with pre-computed islands
+
+**Usage:**
+```rust
+use sim_constraint::{ConstraintIslands, NewtonConstraintSolver, RevoluteJoint};
+use sim_types::BodyId;
+use nalgebra::Vector3;
+
+// Create joints (some bodies may be disconnected)
+let joints = vec![
+    RevoluteJoint::new(BodyId::new(0), BodyId::new(1), Vector3::z()),
+    RevoluteJoint::new(BodyId::new(1), BodyId::new(2), Vector3::z()),
+    // Separate island
+    RevoluteJoint::new(BodyId::new(10), BodyId::new(11), Vector3::z()),
+];
+
+// Automatic island detection and solving
+let mut solver = NewtonConstraintSolver::default();
+let result = solver.solve_with_islands(&joints, get_body_state, dt);
+
+// Or pre-compute islands for caching between frames
+let islands = ConstraintIslands::build(&joints);
+let result = solver.solve_islands(&joints, &islands, &get_body_state, dt);
+```
+
+**Files:** `sim-constraint/src/islands.rs`, `sim-constraint/src/newton.rs`
 
 ---
 
@@ -144,12 +217,12 @@ f_n ≥ 0, (f_t1/μ_1)² + (f_t2/μ_2)² ≤ f_n²
 | Capsule-capsule | Native | `ContactPoint::capsule_capsule` | **Implemented** | - | - |
 | Cylinder | Native | Missing | **Missing** | Medium | Medium |
 | Ellipsoid | Native | Missing | **Missing** | Low | Medium |
-| Convex mesh | GJK/EPA | Missing | **Missing** | Medium | High |
+| Convex mesh | GJK/EPA | `CollisionShape::ConvexMesh` | **Implemented** | - | - |
 | Height field | Native | Missing | **Missing** | Low | High |
 | SDF (signed distance) | Native | Missing | **Missing** | Low | High |
 | Broad-phase (sweep-prune) | Native | `SweepAndPrune` | **Implemented** | - | - |
 | Mid-phase (BVH per body) | Static AABB | Missing | **Missing** | Medium | Medium |
-| Narrow-phase (GJK/EPA) | Default | Missing | **Missing** | High | High |
+| Narrow-phase (GJK/EPA) | Default | `gjk_epa` module | **Implemented** | - | - |
 
 ### Implementation Notes: Collision Pipeline
 
@@ -159,9 +232,58 @@ The collision detection pipeline now uses:
    - `BruteForce` fallback for small scenes
    - Configurable via `BroadPhaseConfig`
 2. Mid-phase: AABB tree per complex body (not yet implemented)
-3. Narrow-phase: GJK for distance, EPA for penetration (not yet implemented)
+3. ✅ **Narrow-phase**: GJK for intersection testing, EPA for penetration depth
 
-**Files:** `sim-core/src/broad_phase.rs`, `sim-core/src/world.rs`
+**Files:** `sim-core/src/broad_phase.rs`, `sim-core/src/world.rs`, `sim-core/src/gjk_epa.rs`
+
+### Implementation Notes: GJK/EPA ✅ COMPLETED
+
+GJK (Gilbert-Johnson-Keerthi) and EPA (Expanding Polytope Algorithm) provide
+general convex collision detection for arbitrary convex shapes.
+
+**GJK Algorithm:**
+- Works in Minkowski difference space (A - B)
+- Iteratively builds a simplex to enclose the origin
+- Returns true if shapes intersect (origin inside Minkowski difference)
+- Complexity: O(n) iterations, each O(v) where v is vertex count
+
+**EPA Algorithm:**
+- Runs after GJK confirms intersection
+- Expands the GJK simplex into a polytope
+- Finds the closest face to the origin
+- Returns penetration depth and contact normal
+
+**Implemented:**
+- `CollisionShape::ConvexMesh` - Convex hull defined by vertices
+- `CollisionShape::tetrahedron()` - Helper for regular tetrahedra
+- Support functions for all shape types (sphere, box, capsule, plane, convex mesh)
+- `gjk_intersection()` - Fast intersection test
+- `gjk_epa_contact()` - Full contact information (point, normal, depth)
+- Automatic GJK/EPA fallback for capsule-box and other mixed collisions
+
+**Usage:**
+```rust
+use sim_core::CollisionShape;
+use nalgebra::{Point3, Vector3};
+
+// Create a convex mesh (e.g., from a convex hull)
+let vertices = vec![
+    Point3::new(-0.5, -0.5, -0.5),
+    Point3::new(0.5, -0.5, -0.5),
+    Point3::new(0.5, 0.5, -0.5),
+    Point3::new(-0.5, 0.5, -0.5),
+    Point3::new(-0.5, -0.5, 0.5),
+    Point3::new(0.5, -0.5, 0.5),
+    Point3::new(0.5, 0.5, 0.5),
+    Point3::new(-0.5, 0.5, 0.5),
+];
+let shape = CollisionShape::convex_mesh(vertices);
+
+// Or use the tetrahedron helper
+let tetra = CollisionShape::tetrahedron(0.5); // circumradius 0.5
+```
+
+**Files:** `sim-core/src/gjk_epa.rs`, `sim-core/src/world.rs`
 
 ---
 
@@ -173,6 +295,7 @@ The collision detection pipeline now uses:
 | Sphere | Yes | `CollisionShape::Sphere` | **Implemented** |
 | Box | Yes | `CollisionShape::Box` | **Implemented** |
 | Capsule | Yes | `CollisionShape::Capsule` | **Implemented** |
+| Convex Mesh | Yes (convexified) | `CollisionShape::ConvexMesh` | **Implemented** |
 | Cylinder | Yes | Missing | **Missing** |
 | Ellipsoid | Yes | Missing | **Missing** |
 | Mesh | Yes (convexified) | Missing | **Missing** |
@@ -323,10 +446,54 @@ Deformable simulation is a major undertaking. Consider using position-based dyna
 | Feature | MuJoCo | CortenForge | Status | Priority |
 |---------|--------|-------------|--------|----------|
 | Sparse matrix ops | Native | Missing | **Missing** | High |
-| Sleeping islands | Native | `is_sleeping` field (unused) | **Stub** | Medium |
-| Constraint islands | Auto | Missing | **Missing** | Medium |
+| Sleeping bodies | Native | `Body::is_sleeping`, `put_to_sleep()`, `wake_up()` | **Implemented** | - |
+| Constraint islands | Auto | `ConstraintIslands` | **Implemented** | - |
 | Multi-threading | Model-data separation | Not designed for | **Missing** | Low |
 | SIMD | Likely | nalgebra SIMD | **Partial** | Low |
+
+### Implementation Notes: Sleeping Bodies ✅ COMPLETED
+
+Sleeping (deactivation) is a performance optimization that skips simulation for
+stationary bodies. This significantly reduces computational cost for scenes with
+many resting objects.
+
+**How it works:**
+1. Bodies track `sleep_time` - how long they've been below the velocity threshold
+2. When `sleep_time >= sleep_time_threshold`, the body is put to sleep
+3. Sleeping bodies are skipped during integration, gravity, and damping
+4. Bodies wake up automatically when:
+   - Force or torque is applied (`apply_force`, `apply_torque`, `apply_force_at_point`)
+   - Contact forces are applied
+   - Joint constraint forces are applied
+
+**Configuration (in `SolverConfig`):**
+- `allow_sleeping: bool` - Enable/disable sleeping globally (default: `true`)
+- `sleep_threshold: f64` - Velocity threshold in m/s and rad/s (default: `0.01`)
+- `sleep_time_threshold: f64` - Time in seconds before sleeping (default: `0.5`)
+
+**Usage:**
+```rust
+use sim_core::{World, Stepper};
+use sim_types::SimulationConfig;
+
+// Default config has sleeping enabled
+let mut config = SimulationConfig::default();
+
+// Customize sleeping behavior
+config.solver.sleep_threshold = 0.05;      // More aggressive sleeping
+config.solver.sleep_time_threshold = 0.2;  // Sleep faster
+
+// Or disable sleeping for high-accuracy simulations
+config.solver.allow_sleeping = false;
+
+// Manual control
+if let Some(body) = world.body_mut(body_id) {
+    body.put_to_sleep();  // Force body to sleep
+    body.wake_up();       // Force body to wake
+}
+```
+
+**Files:** `sim-core/src/world.rs`, `sim-core/src/stepper.rs`, `sim-types/src/config.rs`
 
 ---
 
@@ -356,10 +523,10 @@ MJCF is MuJoCo's native XML format with richer features than URDF. Consider addi
 
 ### Phase 2: Solver Improvements (Medium Priority)
 
-1. **Newton solver**: For faster convergence
-2. **Constraint islands**: For performance
-3. **Sleeping**: Deactivate stationary bodies
-4. **GJK/EPA**: For convex mesh collision
+1. ~~**Newton solver**: For faster convergence~~ ✅ COMPLETED
+2. ~~**Constraint islands**: For performance~~ ✅ COMPLETED
+3. ~~**Sleeping**: Deactivate stationary bodies~~ ✅ COMPLETED
+4. ~~**GJK/EPA**: For convex mesh collision~~ ✅ COMPLETED
 
 ### Phase 3: Extended Features (Lower Priority)
 
@@ -375,9 +542,9 @@ MJCF is MuJoCo's native XML format with richer features than URDF. Consider addi
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `sim-types` | Data structures | `dynamics.rs`, `joint.rs`, `observation.rs` |
-| `sim-core` | Integration, World | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs` |
+| `sim-core` | Integration, World | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `gjk_epa.rs` |
 | `sim-contact` | Contact physics | `model.rs`, `friction.rs`, `solver.rs` |
-| `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs` |
+| `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs`, `newton.rs`, `islands.rs` |
 | `sim-sensor` | Sensor simulation | `imu.rs`, `force_torque.rs`, `touch.rs` |
 | `sim-urdf` | Robot loading | `loader.rs`, `parser.rs` |
 | `sim-physics` | Umbrella | `lib.rs` |

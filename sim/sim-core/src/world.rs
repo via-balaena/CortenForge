@@ -16,12 +16,13 @@ use sim_types::{
 };
 
 use crate::broad_phase::{BroadPhaseConfig, BroadPhaseDetector};
+use crate::gjk_epa::gjk_epa_contact;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// Collision shape for contact detection.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum CollisionShape {
     /// Sphere with given radius.
@@ -51,6 +52,19 @@ pub enum CollisionShape {
         half_length: f64,
         /// Radius of the capsule.
         radius: f64,
+    },
+    /// Convex mesh defined by a set of vertices.
+    ///
+    /// The vertices should form a convex hull. GJK/EPA algorithms are used
+    /// for collision detection with this shape type.
+    ///
+    /// **Important**: Vertices are stored in **local coordinates**. They will be
+    /// transformed to world space using the body's pose during collision detection.
+    ConvexMesh {
+        /// Vertices of the convex hull in local coordinates.
+        /// Should be a convex set of points (non-convex inputs may produce
+        /// incorrect collision results).
+        vertices: Vec<Point3<f64>>,
     },
 }
 
@@ -97,6 +111,44 @@ impl CollisionShape {
         }
     }
 
+    /// Create a convex mesh collision shape from vertices.
+    ///
+    /// The vertices should form a convex hull in local coordinates.
+    /// For best results, ensure the vertices are actually convex (e.g., compute
+    /// a convex hull first if the input might be non-convex).
+    ///
+    /// # Panics
+    ///
+    /// Panics if vertices is empty.
+    #[must_use]
+    pub fn convex_mesh(vertices: Vec<Point3<f64>>) -> Self {
+        assert!(
+            !vertices.is_empty(),
+            "ConvexMesh requires at least one vertex"
+        );
+        Self::ConvexMesh { vertices }
+    }
+
+    /// Create a convex mesh from a slice of vertices.
+    #[must_use]
+    pub fn convex_mesh_from_slice(vertices: &[Point3<f64>]) -> Self {
+        Self::convex_mesh(vertices.to_vec())
+    }
+
+    /// Create a regular tetrahedron centered at the origin with the given circumradius.
+    #[must_use]
+    pub fn tetrahedron(circumradius: f64) -> Self {
+        // Regular tetrahedron vertices
+        let a = circumradius;
+        let vertices = vec![
+            Point3::new(a, a, a),
+            Point3::new(a, -a, -a),
+            Point3::new(-a, a, -a),
+            Point3::new(-a, -a, a),
+        ];
+        Self::ConvexMesh { vertices }
+    }
+
     /// Get the bounding sphere radius for broad-phase culling.
     #[must_use]
     pub fn bounding_radius(&self) -> f64 {
@@ -108,6 +160,10 @@ impl CollisionShape {
                 half_length,
                 radius,
             } => half_length + radius,
+            Self::ConvexMesh { vertices } => {
+                // Maximum distance from origin to any vertex
+                vertices.iter().map(|v| v.coords.norm()).fold(0.0, f64::max)
+            }
         }
     }
 
@@ -149,6 +205,11 @@ pub struct Body {
     pub is_static: bool,
     /// Whether this body is currently sleeping (inactive).
     pub is_sleeping: bool,
+    /// Time the body has been below the sleep velocity threshold (seconds).
+    ///
+    /// When this exceeds the configured sleep time threshold, the body
+    /// will be put to sleep. Reset to zero when velocity exceeds threshold.
+    pub sleep_time: f64,
     /// Accumulated external force (cleared each step).
     pub accumulated_force: Vector3<f64>,
     /// Accumulated external torque (cleared each step).
@@ -167,6 +228,7 @@ impl Body {
             collision_shape: None,
             is_static: false,
             is_sleeping: false,
+            sleep_time: 0.0,
             accumulated_force: Vector3::zeros(),
             accumulated_torque: Vector3::zeros(),
         }
@@ -183,6 +245,7 @@ impl Body {
             collision_shape: None,
             is_static: true,
             is_sleeping: false,
+            sleep_time: 0.0,
             accumulated_force: Vector3::zeros(),
             accumulated_torque: Vector3::zeros(),
         }
@@ -203,20 +266,34 @@ impl Body {
     }
 
     /// Apply a force at the center of mass.
+    ///
+    /// If the body is sleeping, it will be woken up (unless the force is negligible).
     pub fn apply_force(&mut self, force: Vector3<f64>) {
         if !self.is_static {
             self.accumulated_force += force;
+            // Wake up sleeping bodies when significant force is applied
+            if self.is_sleeping && force.norm() > 1e-10 {
+                self.wake_up();
+            }
         }
     }
 
     /// Apply a torque.
+    ///
+    /// If the body is sleeping, it will be woken up (unless the torque is negligible).
     pub fn apply_torque(&mut self, torque: Vector3<f64>) {
         if !self.is_static {
             self.accumulated_torque += torque;
+            // Wake up sleeping bodies when significant torque is applied
+            if self.is_sleeping && torque.norm() > 1e-10 {
+                self.wake_up();
+            }
         }
     }
 
     /// Apply a force at a world-space point.
+    ///
+    /// If the body is sleeping, it will be woken up (unless the force is negligible).
     pub fn apply_force_at_point(&mut self, force: Vector3<f64>, point: Point3<f64>) {
         if !self.is_static {
             self.accumulated_force += force;
@@ -227,6 +304,10 @@ impl Body {
                 .transform_point(&Point3::from(self.mass_props.center_of_mass));
             let r = point - com_world;
             self.accumulated_torque += r.cross(&force);
+            // Wake up sleeping bodies when significant force is applied
+            if self.is_sleeping && force.norm() > 1e-10 {
+                self.wake_up();
+            }
         }
     }
 
@@ -246,8 +327,24 @@ impl Body {
     }
 
     /// Wake up the body.
+    ///
+    /// Resets the sleep timer and marks the body as active.
     pub fn wake_up(&mut self) {
         self.is_sleeping = false;
+        self.sleep_time = 0.0;
+    }
+
+    /// Put the body to sleep.
+    ///
+    /// Sleeping bodies are skipped during integration and force application,
+    /// providing a significant performance optimization for stationary objects.
+    /// The body's velocities are set to zero when sleeping.
+    pub fn put_to_sleep(&mut self) {
+        if !self.is_static {
+            self.is_sleeping = true;
+            // Zero out velocities to ensure the body is truly at rest
+            self.state.twist = sim_types::Twist::zero();
+        }
     }
 
     /// Compute linear acceleration from accumulated force.
@@ -1142,10 +1239,57 @@ impl World {
             }
 
             // =====================================================================
-            // Unsupported combinations (capsule-box, plane-plane)
+            // ConvexMesh collisions and Capsule-Box (GJK/EPA)
+            // =====================================================================
+
+            // ConvexMesh with any shape (A is ConvexMesh)
+            (CollisionShape::ConvexMesh { .. }, CollisionShape::ConvexMesh { .. })
+            | (CollisionShape::ConvexMesh { .. }, CollisionShape::Sphere { .. })
+            | (CollisionShape::ConvexMesh { .. }, CollisionShape::Box { .. })
+            | (CollisionShape::ConvexMesh { .. }, CollisionShape::Capsule { .. })
+            | (CollisionShape::ConvexMesh { .. }, CollisionShape::Plane { .. })
+            | (CollisionShape::Capsule { .. }, CollisionShape::Box { .. }) => {
+                self.detect_gjk_epa_contact(body_a, body_b, shape_a, shape_b)
+            }
+
+            // Flipped cases (B is ConvexMesh, or Box-Capsule)
+            (CollisionShape::Sphere { .. }, CollisionShape::ConvexMesh { .. })
+            | (CollisionShape::Box { .. }, CollisionShape::ConvexMesh { .. })
+            | (CollisionShape::Capsule { .. }, CollisionShape::ConvexMesh { .. })
+            | (CollisionShape::Plane { .. }, CollisionShape::ConvexMesh { .. })
+            | (CollisionShape::Box { .. }, CollisionShape::Capsule { .. }) => self
+                .detect_gjk_epa_contact(body_b, body_a, shape_b, shape_a)
+                .map(|c| c.flip()),
+
+            // =====================================================================
+            // Unsupported combinations (plane-plane)
             // =====================================================================
             _ => None,
         }
+    }
+
+    /// Detect contact using GJK/EPA algorithms.
+    ///
+    /// This is used for convex mesh collisions and any other combinations
+    /// where dedicated analytical methods are not available.
+    #[allow(clippy::unused_self)]
+    fn detect_gjk_epa_contact(
+        &self,
+        body_a: &Body,
+        body_b: &Body,
+        shape_a: &CollisionShape,
+        shape_b: &CollisionShape,
+    ) -> Option<ContactPoint> {
+        let gjk_contact =
+            gjk_epa_contact(shape_a, &body_a.state.pose, shape_b, &body_b.state.pose)?;
+
+        Some(ContactPoint::new(
+            gjk_contact.point,
+            gjk_contact.normal,
+            gjk_contact.penetration,
+            body_a.id,
+            body_b.id,
+        ))
     }
 
     /// Solve contacts and apply forces to bodies.
@@ -1781,6 +1925,205 @@ mod tests {
             sphere.accumulated_force.z > 0.0,
             "sphere should have upward contact force: {}",
             sphere.accumulated_force.z
+        );
+    }
+
+    // =========================================================================
+    // ConvexMesh (GJK/EPA) Contact Detection Tests
+    // =========================================================================
+
+    #[test]
+    fn test_convex_mesh_sphere_contact() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Convex cube at origin
+        let cube_vertices = vec![
+            Point3::new(-0.5, -0.5, -0.5),
+            Point3::new(0.5, -0.5, -0.5),
+            Point3::new(0.5, 0.5, -0.5),
+            Point3::new(-0.5, 0.5, -0.5),
+            Point3::new(-0.5, -0.5, 0.5),
+            Point3::new(0.5, -0.5, 0.5),
+            Point3::new(0.5, 0.5, 0.5),
+            Point3::new(-0.5, 0.5, 0.5),
+        ];
+        let cube_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.0)));
+        let cube = Body::new(
+            BodyId::new(1),
+            cube_state,
+            MassProperties::box_shape(1.0, Vector3::new(0.5, 0.5, 0.5)),
+        )
+        .with_collision_shape(CollisionShape::convex_mesh(cube_vertices));
+        world.insert_body(cube).expect("insert should succeed");
+
+        // Sphere overlapping with the cube
+        let sphere_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.8, 0.0, 0.0)));
+        let sphere = Body::new(
+            BodyId::new(2),
+            sphere_state,
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(0.5));
+        world.insert_body(sphere).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert_eq!(contacts.len(), 1, "should detect one contact");
+
+        let contact = &contacts[0];
+        // Cube face is at x=0.5, sphere surface reaches to x=0.3
+        // Penetration should be approximately 0.2
+        assert!(
+            contact.penetration > 0.0,
+            "penetration should be positive: {}",
+            contact.penetration
+        );
+        // Normal should be roughly along X axis
+        assert!(
+            contact.normal.x.abs() > 0.5,
+            "normal should point along X: {:?}",
+            contact.normal
+        );
+    }
+
+    #[test]
+    fn test_convex_mesh_convex_mesh_contact() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Two tetrahedra
+        let tetra_state_a =
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.0)));
+        let tetra_a = Body::new(
+            BodyId::new(1),
+            tetra_state_a,
+            MassProperties::sphere(1.0, 0.5), // Approximate mass
+        )
+        .with_collision_shape(CollisionShape::tetrahedron(0.5));
+        world.insert_body(tetra_a).expect("insert should succeed");
+
+        // Second tetrahedron overlapping
+        let tetra_state_b =
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.3, 0.0, 0.0)));
+        let tetra_b = Body::new(
+            BodyId::new(2),
+            tetra_state_b,
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::tetrahedron(0.5));
+        world.insert_body(tetra_b).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert_eq!(contacts.len(), 1, "should detect one contact");
+
+        let contact = &contacts[0];
+        assert!(
+            contact.penetration > 0.0,
+            "penetration should be positive: {}",
+            contact.penetration
+        );
+    }
+
+    #[test]
+    fn test_convex_mesh_no_contact_when_separated() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Convex cube at origin
+        let cube_vertices = vec![
+            Point3::new(-0.5, -0.5, -0.5),
+            Point3::new(0.5, -0.5, -0.5),
+            Point3::new(0.5, 0.5, -0.5),
+            Point3::new(-0.5, 0.5, -0.5),
+            Point3::new(-0.5, -0.5, 0.5),
+            Point3::new(0.5, -0.5, 0.5),
+            Point3::new(0.5, 0.5, 0.5),
+            Point3::new(-0.5, 0.5, 0.5),
+        ];
+        let cube_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.0)));
+        let cube = Body::new(
+            BodyId::new(1),
+            cube_state,
+            MassProperties::box_shape(1.0, Vector3::new(0.5, 0.5, 0.5)),
+        )
+        .with_collision_shape(CollisionShape::convex_mesh(cube_vertices));
+        world.insert_body(cube).expect("insert should succeed");
+
+        // Sphere far away from the cube
+        let sphere_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(3.0, 0.0, 0.0)));
+        let sphere = Body::new(
+            BodyId::new(2),
+            sphere_state,
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(0.5));
+        world.insert_body(sphere).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert!(contacts.is_empty(), "should detect no contacts");
+    }
+
+    #[test]
+    fn test_convex_mesh_bounding_radius() {
+        // Test that bounding radius works for convex mesh
+        let vertices = vec![
+            Point3::new(-1.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(0.0, 0.0, 2.0), // This is the furthest at distance 2
+        ];
+        let shape = CollisionShape::convex_mesh(vertices);
+        assert_relative_eq!(shape.bounding_radius(), 2.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tetrahedron_creation() {
+        // Test the tetrahedron helper
+        let tetra = CollisionShape::tetrahedron(1.0);
+        match tetra {
+            CollisionShape::ConvexMesh { vertices } => {
+                assert_eq!(vertices.len(), 4, "tetrahedron should have 4 vertices");
+                // All vertices should be at distance 1.732... from origin
+                // (since vertices are at (±1, ±1, ±1) positions)
+                for v in &vertices {
+                    let dist = v.coords.norm();
+                    assert_relative_eq!(dist, 3.0_f64.sqrt(), epsilon = 1e-10);
+                }
+            }
+            _ => panic!("expected ConvexMesh"),
+        }
+    }
+
+    #[test]
+    fn test_capsule_box_gjk_contact() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Capsule at origin (oriented along Z)
+        let capsule_state =
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.5)));
+        let capsule = Body::new(
+            BodyId::new(1),
+            capsule_state,
+            MassProperties::cylinder(1.0, 0.3, 0.5),
+        )
+        .with_collision_shape(CollisionShape::capsule(0.5, 0.3));
+        world.insert_body(capsule).expect("insert should succeed");
+
+        // Box overlapping with the capsule
+        let box_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.5, 0.0, 0.5)));
+        let box_body = Body::new(
+            BodyId::new(2),
+            box_state,
+            MassProperties::box_shape(1.0, Vector3::new(0.3, 0.3, 0.3)),
+        )
+        .with_collision_shape(CollisionShape::box_shape(Vector3::new(0.3, 0.3, 0.3)));
+        world.insert_body(box_body).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert_eq!(contacts.len(), 1, "should detect one contact via GJK/EPA");
+
+        let contact = &contacts[0];
+        assert!(
+            contact.penetration > 0.0,
+            "penetration should be positive: {}",
+            contact.penetration
         );
     }
 }

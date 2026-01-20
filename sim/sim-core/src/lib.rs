@@ -132,6 +132,7 @@
 )]
 
 pub mod broad_phase;
+pub mod gjk_epa;
 pub mod integrators;
 mod stepper;
 mod world;
