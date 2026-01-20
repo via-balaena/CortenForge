@@ -71,6 +71,42 @@ pub fn integrate_with_method(
         IntegrationMethod::RungeKutta4 => {
             RungeKutta4::integrate(state, linear_accel, angular_accel, dt);
         }
+        IntegrationMethod::ImplicitVelocity => {
+            // Use default damping (none) - for damped systems use integrate_implicit_with_damping
+            ImplicitVelocity::integrate(state, linear_accel, angular_accel, dt);
+        }
+    }
+}
+
+/// Dispatch to integrator with damping support for implicit methods.
+///
+/// For explicit methods, damping is applied separately after integration.
+/// For implicit methods (like `ImplicitVelocity`), damping is incorporated
+/// directly into the integration step for unconditional stability.
+pub fn integrate_with_method_and_damping(
+    method: IntegrationMethod,
+    state: &mut RigidBodyState,
+    linear_accel: Vector3<f64>,
+    angular_accel: Vector3<f64>,
+    linear_damping: f64,
+    angular_damping: f64,
+    dt: f64,
+) {
+    match method {
+        IntegrationMethod::ImplicitVelocity => {
+            ImplicitVelocity::integrate_with_damping(
+                state,
+                linear_accel,
+                angular_accel,
+                linear_damping,
+                angular_damping,
+                dt,
+            );
+        }
+        // For other methods, integrate normally (damping applied separately)
+        _ => {
+            integrate_with_method(method, state, linear_accel, angular_accel, dt);
+        }
     }
 }
 
@@ -213,6 +249,90 @@ impl Integrator for RungeKutta4 {
         // Velocity update
         state.twist.linear += linear_accel * dt;
         state.twist.angular += angular_accel * dt;
+    }
+}
+
+/// Implicit-in-velocity integration.
+///
+/// This method solves the implicit equation:
+/// ```text
+/// (M - h*D) * v_{t+h} = M * v_t + h * f
+/// ```
+///
+/// Where:
+/// - M is the mass/inertia matrix
+/// - D is the damping matrix (velocity-dependent force derivatives)
+/// - h is the timestep
+/// - f is the total force
+///
+/// For a body with scalar mass m and damping coefficient d:
+/// ```text
+/// v_{t+h} = (v_t + h * a) / (1 + h * d / m)
+/// ```
+///
+/// This is unconditionally stable for any timestep when D ≥ 0, making it
+/// ideal for:
+/// - Very stiff contacts (high contact damping)
+/// - Highly damped systems
+/// - Muscle models with activation dynamics
+///
+/// Without damping, this reduces to semi-implicit Euler.
+pub struct ImplicitVelocity;
+
+impl ImplicitVelocity {
+    /// Integrate with specified damping coefficients.
+    ///
+    /// This incorporates damping directly into the implicit solve, providing
+    /// unconditional stability even for very high damping values.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - Current rigid body state (modified in place)
+    /// * `linear_accel` - Linear acceleration (m/s²)
+    /// * `angular_accel` - Angular acceleration (rad/s²)
+    /// * `linear_damping` - Linear damping coefficient (1/s)
+    /// * `angular_damping` - Angular damping coefficient (1/s)
+    /// * `dt` - Timestep in seconds
+    pub fn integrate_with_damping(
+        state: &mut RigidBodyState,
+        linear_accel: Vector3<f64>,
+        angular_accel: Vector3<f64>,
+        linear_damping: f64,
+        angular_damping: f64,
+        dt: f64,
+    ) {
+        // Implicit velocity update:
+        // (1 + h*d) * v_{t+h} = v_t + h * a
+        // v_{t+h} = (v_t + h * a) / (1 + h * d)
+        //
+        // This is equivalent to solving:
+        // v_{t+h} - v_t = h * (a - d * v_{t+h})
+        // which implicitly includes damping
+
+        let linear_divisor = 1.0 + dt * linear_damping;
+        let angular_divisor = 1.0 + dt * angular_damping;
+
+        // Update velocity implicitly
+        state.twist.linear = (state.twist.linear + linear_accel * dt) / linear_divisor;
+        state.twist.angular = (state.twist.angular + angular_accel * dt) / angular_divisor;
+
+        // Update position using new velocity (semi-implicit style)
+        state.pose.position += state.twist.linear * dt;
+
+        // Update rotation using new angular velocity
+        integrate_rotation(&mut state.pose.rotation, &state.twist.angular, dt);
+    }
+}
+
+impl Integrator for ImplicitVelocity {
+    fn integrate(
+        state: &mut RigidBodyState,
+        linear_accel: Vector3<f64>,
+        angular_accel: Vector3<f64>,
+        dt: f64,
+    ) {
+        // Without damping, this reduces to semi-implicit Euler
+        Self::integrate_with_damping(state, linear_accel, angular_accel, 0.0, 0.0, dt);
     }
 }
 
@@ -421,6 +541,7 @@ mod tests {
             IntegrationMethod::SemiImplicitEuler,
             IntegrationMethod::VelocityVerlet,
             IntegrationMethod::RungeKutta4,
+            IntegrationMethod::ImplicitVelocity,
         ] {
             let mut state = make_state_with_velocity(Vector3::new(1.0, 0.0, 0.0));
             integrate_with_method(method, &mut state, Vector3::zeros(), Vector3::zeros(), 0.1);
@@ -471,6 +592,255 @@ mod tests {
             "Symplectic drift {} should be much less than Euler drift {}",
             drift_symplectic,
             drift_euler
+        );
+    }
+
+    // =========================================================================
+    // Implicit Velocity Integration Tests
+    // =========================================================================
+
+    #[test]
+    fn test_implicit_velocity_no_damping() {
+        // Without damping, implicit velocity should behave like semi-implicit Euler
+        let mut state_implicit = make_state_at_origin();
+        let mut state_semi = make_state_at_origin();
+        let accel = Vector3::new(0.0, 0.0, -9.81);
+
+        ImplicitVelocity::integrate(&mut state_implicit, accel, Vector3::zeros(), 1.0);
+        SemiImplicitEuler::integrate(&mut state_semi, accel, Vector3::zeros(), 1.0);
+
+        assert_relative_eq!(
+            state_implicit.pose.position.z,
+            state_semi.pose.position.z,
+            epsilon = 1e-10
+        );
+        assert_relative_eq!(
+            state_implicit.twist.linear.z,
+            state_semi.twist.linear.z,
+            epsilon = 1e-10
+        );
+    }
+
+    #[test]
+    fn test_implicit_velocity_with_damping() {
+        let mut state = make_state_with_velocity(Vector3::new(10.0, 0.0, 0.0));
+        let accel = Vector3::zeros();
+
+        // Apply heavy damping
+        ImplicitVelocity::integrate_with_damping(
+            &mut state,
+            accel,
+            Vector3::zeros(),
+            10.0, // linear damping
+            0.0,  // angular damping
+            1.0,  // dt
+        );
+
+        // With damping=10 and dt=1:
+        // v_{t+h} = (v_t + h * a) / (1 + h * d) = 10 / (1 + 10) = 10/11 ≈ 0.909
+        assert_relative_eq!(state.twist.linear.x, 10.0 / 11.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_implicit_velocity_stability_high_damping() {
+        // Test that implicit method remains stable with extreme damping
+        // Explicit methods would become unstable here
+        let mut state = make_state_with_velocity(Vector3::new(100.0, 0.0, 0.0));
+
+        // Extremely high damping that would cause explicit methods to explode
+        let damping = 1000.0;
+        let dt = 0.1;
+
+        ImplicitVelocity::integrate_with_damping(
+            &mut state,
+            Vector3::zeros(),
+            Vector3::zeros(),
+            damping,
+            0.0,
+            dt,
+        );
+
+        // Velocity should decrease (not explode)
+        assert!(state.twist.linear.x < 100.0);
+        assert!(state.twist.linear.x > 0.0);
+        assert!(!state.twist.linear.x.is_nan());
+        assert!(!state.twist.linear.x.is_infinite());
+    }
+
+    #[test]
+    fn test_implicit_velocity_convergence() {
+        // With very high damping, velocity should approach zero
+        let mut state = make_state_with_velocity(Vector3::new(100.0, 0.0, 0.0));
+
+        let damping = 100.0;
+        let dt = 0.01;
+
+        // Simulate for many steps
+        for _ in 0..1000 {
+            ImplicitVelocity::integrate_with_damping(
+                &mut state,
+                Vector3::zeros(),
+                Vector3::zeros(),
+                damping,
+                0.0,
+                dt,
+            );
+        }
+
+        // Velocity should have converged to near zero
+        assert!(
+            state.twist.linear.x.abs() < 1e-6,
+            "Velocity should converge to zero, got {}",
+            state.twist.linear.x
+        );
+    }
+
+    #[test]
+    fn test_implicit_velocity_with_force_and_damping() {
+        // Test equilibrium: constant force with damping reaches terminal velocity
+        let mut state = make_state_at_origin();
+        let force_accel = Vector3::new(10.0, 0.0, 0.0); // Acceleration from constant force
+        let damping = 2.0;
+        let dt = 0.01;
+
+        // Simulate until equilibrium
+        for _ in 0..10000 {
+            ImplicitVelocity::integrate_with_damping(
+                &mut state,
+                force_accel,
+                Vector3::zeros(),
+                damping,
+                0.0,
+                dt,
+            );
+        }
+
+        // At equilibrium: a = d * v_terminal => v_terminal = a / d = 10 / 2 = 5
+        assert_relative_eq!(state.twist.linear.x, 5.0, epsilon = 0.01);
+    }
+
+    #[test]
+    fn test_implicit_velocity_angular_damping() {
+        let mut state = RigidBodyState::new(
+            Pose::identity(),
+            Twist::angular(Vector3::new(0.0, 0.0, 10.0)),
+        );
+
+        // Apply angular damping
+        ImplicitVelocity::integrate_with_damping(
+            &mut state,
+            Vector3::zeros(),
+            Vector3::zeros(),
+            0.0,  // linear damping
+            10.0, // angular damping
+            1.0,  // dt
+        );
+
+        // Angular velocity should be damped: 10 / (1 + 10) = 10/11
+        assert_relative_eq!(state.twist.angular.z, 10.0 / 11.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_integrate_with_method_dispatch_includes_implicit() {
+        // Test that ImplicitVelocity is included in dispatch
+        let mut state = make_state_with_velocity(Vector3::new(1.0, 0.0, 0.0));
+        integrate_with_method(
+            IntegrationMethod::ImplicitVelocity,
+            &mut state,
+            Vector3::zeros(),
+            Vector3::zeros(),
+            0.1,
+        );
+
+        // Should advance position with constant velocity
+        assert_relative_eq!(state.pose.position.x, 0.1, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_integrate_with_method_and_damping() {
+        let mut state_implicit = make_state_with_velocity(Vector3::new(10.0, 0.0, 0.0));
+        let mut state_semi = make_state_with_velocity(Vector3::new(10.0, 0.0, 0.0));
+
+        // Implicit with damping should incorporate damping into the solve
+        integrate_with_method_and_damping(
+            IntegrationMethod::ImplicitVelocity,
+            &mut state_implicit,
+            Vector3::zeros(),
+            Vector3::zeros(),
+            5.0, // linear damping
+            0.0,
+            1.0,
+        );
+
+        // Semi-implicit should just integrate (damping applied separately)
+        integrate_with_method_and_damping(
+            IntegrationMethod::SemiImplicitEuler,
+            &mut state_semi,
+            Vector3::zeros(),
+            Vector3::zeros(),
+            5.0, // ignored for non-implicit
+            0.0,
+            1.0,
+        );
+
+        // Implicit should have damped velocity: 10 / (1 + 5) = 10/6 ≈ 1.667
+        assert_relative_eq!(state_implicit.twist.linear.x, 10.0 / 6.0, epsilon = 1e-10);
+
+        // Semi-implicit should have unchanged velocity (damping not applied in integrator)
+        assert_relative_eq!(state_semi.twist.linear.x, 10.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_implicit_vs_explicit_stability() {
+        // Demonstrate that implicit method handles stiff damping better
+        // Use a moderately stiff system that explicit methods struggle with
+
+        let initial_vel = Vector3::new(100.0, 0.0, 0.0);
+        let stiff_damping = 50.0; // High damping coefficient
+        let large_dt = 0.1; // Large timestep
+
+        // Implicit method
+        let mut state_implicit = make_state_with_velocity(initial_vel);
+        for _ in 0..100 {
+            ImplicitVelocity::integrate_with_damping(
+                &mut state_implicit,
+                Vector3::zeros(),
+                Vector3::zeros(),
+                stiff_damping,
+                0.0,
+                large_dt,
+            );
+        }
+
+        // Explicit with separate damping
+        let mut state_explicit = make_state_with_velocity(initial_vel);
+        for _ in 0..100 {
+            SemiImplicitEuler::integrate(
+                &mut state_explicit,
+                Vector3::zeros(),
+                Vector3::zeros(),
+                large_dt,
+            );
+            // Apply damping explicitly (this can cause instability)
+            state_explicit.twist =
+                apply_damping(&state_explicit.twist, stiff_damping, 0.0, large_dt);
+        }
+
+        // Both should converge, but implicit should be more stable
+        // With large dt and high damping, explicit damping overshoots
+        assert!(
+            !state_implicit.twist.linear.x.is_nan(),
+            "Implicit should not produce NaN"
+        );
+        assert!(
+            state_implicit.twist.linear.x >= 0.0,
+            "Implicit velocity should stay positive or zero"
+        );
+
+        // Implicit should have smoothly converged to near zero
+        assert!(
+            state_implicit.twist.linear.x.abs() < 1e-10,
+            "Implicit should converge to zero"
         );
     }
 }

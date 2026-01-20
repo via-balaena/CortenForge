@@ -69,6 +69,7 @@ members = [
     "sim/sim-core",
     "sim/sim-contact",
     "sim/sim-constraint",
+    "sim/sim-sensor",
     "sim/sim-urdf",
     "sim/sim-physics",
 
@@ -284,6 +285,7 @@ sim-types = { path = "sim/sim-types" }
 sim-core = { path = "sim/sim-core" }
 sim-contact = { path = "sim/sim-contact" }
 sim-constraint = { path = "sim/sim-constraint" }
+sim-sensor = { path = "sim/sim-sensor" }
 sim-physics = { path = "sim/sim-physics" }
 sim-urdf = { path = "sim/sim-urdf" }
 

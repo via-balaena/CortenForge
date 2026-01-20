@@ -76,7 +76,8 @@ pub use dynamics::{Action, ActionType, ExternalForce, Gravity, JointCommand, Joi
 pub use error::SimError;
 pub use joint::{JointAxis, JointId, JointLimits, JointState, JointStateExtended, JointType};
 pub use observation::{
-    ContactInfo, ContactStats, Observation, ObservationType, PoseObservation, VelocityObservation,
+    ContactInfo, ContactStats, Observation, ObservationType, PoseObservation, SensorObservation,
+    VelocityObservation,
 };
 
 // Re-export math types for convenience

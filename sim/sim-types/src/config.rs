@@ -283,6 +283,16 @@ pub enum IntegrationMethod {
     VelocityVerlet,
     /// 4th-order Runge-Kutta (high accuracy, expensive).
     RungeKutta4,
+    /// Implicit-in-velocity (stable for stiff/damped systems).
+    ///
+    /// Solves the implicit equation:
+    /// `(M - h*D) * v_{t+h} = M * v_t + h * f(v_t)`
+    ///
+    /// Where D captures velocity-dependent damping. This is critical for:
+    /// - Very stiff contacts
+    /// - Highly damped systems
+    /// - Muscle models with activation dynamics
+    ImplicitVelocity,
 }
 
 impl IntegrationMethod {
@@ -290,7 +300,7 @@ impl IntegrationMethod {
     #[must_use]
     pub const fn order(self) -> usize {
         match self {
-            Self::ExplicitEuler | Self::SemiImplicitEuler => 1,
+            Self::ExplicitEuler | Self::SemiImplicitEuler | Self::ImplicitVelocity => 1,
             Self::VelocityVerlet => 2,
             Self::RungeKutta4 => 4,
         }
@@ -302,12 +312,18 @@ impl IntegrationMethod {
         matches!(self, Self::SemiImplicitEuler | Self::VelocityVerlet)
     }
 
+    /// Check if this method is implicit (unconditionally stable).
+    #[must_use]
+    pub const fn is_implicit(self) -> bool {
+        matches!(self, Self::ImplicitVelocity)
+    }
+
     /// Get approximate relative computational cost (1 = cheapest).
     #[must_use]
     pub const fn relative_cost(self) -> usize {
         match self {
             Self::ExplicitEuler | Self::SemiImplicitEuler => 1,
-            Self::VelocityVerlet => 2,
+            Self::VelocityVerlet | Self::ImplicitVelocity => 2,
             Self::RungeKutta4 => 4,
         }
     }
@@ -320,6 +336,7 @@ impl std::fmt::Display for IntegrationMethod {
             Self::SemiImplicitEuler => write!(f, "Semi-Implicit Euler"),
             Self::VelocityVerlet => write!(f, "Velocity Verlet"),
             Self::RungeKutta4 => write!(f, "RK4"),
+            Self::ImplicitVelocity => write!(f, "Implicit Velocity"),
         }
     }
 }

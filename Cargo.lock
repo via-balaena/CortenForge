@@ -5469,6 +5469,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-sensor"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra",
+ "serde",
+ "sim-types",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "sim-types"
 version = "0.7.0"
 dependencies = [

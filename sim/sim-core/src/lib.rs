@@ -131,10 +131,15 @@
     clippy::suboptimal_flops,          // mul_add style changes aren't always clearer
 )]
 
+pub mod broad_phase;
 pub mod integrators;
 mod stepper;
 mod world;
 
+pub use broad_phase::{
+    Aabb, Axis, BroadPhase, BroadPhaseAlgorithm, BroadPhaseConfig, BroadPhaseDetector, BruteForce,
+    SweepAndPrune,
+};
 pub use stepper::{SimulationBuilder, StepResult, Stepper, StepperConfig};
 pub use world::{Body, CollisionShape, Joint, World};
 

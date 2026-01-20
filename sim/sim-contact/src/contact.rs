@@ -146,6 +146,454 @@ impl ContactPoint {
         })
     }
 
+    /// Create a contact point between a box and a sphere.
+    ///
+    /// The box is axis-aligned at the given center position.
+    ///
+    /// # Arguments
+    ///
+    /// * `box_center` - Center of the box in world coordinates
+    /// * `box_half_extents` - Half-extents of the box in each axis
+    /// * `sphere_center` - Center of the sphere in world coordinates
+    /// * `sphere_radius` - Radius of the sphere
+    /// * `body_box` - Body ID of the box
+    /// * `body_sphere` - Body ID of the sphere
+    #[must_use]
+    pub fn box_sphere(
+        box_center: Point3<f64>,
+        box_half_extents: Vector3<f64>,
+        sphere_center: Point3<f64>,
+        sphere_radius: f64,
+        body_box: BodyId,
+        body_sphere: BodyId,
+    ) -> Option<Self> {
+        // Find the closest point on the box to the sphere center
+        let relative = sphere_center - box_center;
+
+        // Clamp to box bounds
+        let closest = Vector3::new(
+            relative.x.clamp(-box_half_extents.x, box_half_extents.x),
+            relative.y.clamp(-box_half_extents.y, box_half_extents.y),
+            relative.z.clamp(-box_half_extents.z, box_half_extents.z),
+        );
+
+        let closest_point = box_center + closest;
+        let diff = sphere_center - closest_point;
+        let distance = diff.norm();
+
+        // Check if sphere center is inside the box
+        let inside = relative.x.abs() <= box_half_extents.x
+            && relative.y.abs() <= box_half_extents.y
+            && relative.z.abs() <= box_half_extents.z;
+
+        if inside {
+            // Sphere center is inside the box - find the closest face
+            let distances_to_faces = [
+                (
+                    box_half_extents.x - relative.x.abs(),
+                    0,
+                    relative.x.signum(),
+                ),
+                (
+                    box_half_extents.y - relative.y.abs(),
+                    1,
+                    relative.y.signum(),
+                ),
+                (
+                    box_half_extents.z - relative.z.abs(),
+                    2,
+                    relative.z.signum(),
+                ),
+            ];
+
+            // Find minimum distance to a face
+            let (min_dist, axis, sign) = distances_to_faces
+                .iter()
+                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                .copied()
+                .unwrap_or((0.0, 2, 1.0));
+
+            let penetration = min_dist + sphere_radius;
+
+            // Normal points from box toward sphere (outward from the closest face)
+            let mut normal = Vector3::zeros();
+            normal[axis] = if sign == 0.0 { 1.0 } else { sign };
+
+            // Contact point on the box surface
+            let mut contact_on_box = relative;
+            contact_on_box[axis] = box_half_extents[axis] * normal[axis];
+            let position = box_center + contact_on_box;
+
+            Some(Self {
+                position,
+                normal,
+                penetration,
+                body_a: body_box,
+                body_b: body_sphere,
+            })
+        } else if distance < sphere_radius {
+            // Sphere overlaps the box from outside
+            let penetration = sphere_radius - distance;
+            let normal = diff / distance; // Points from box toward sphere
+
+            // Contact point at midpoint of overlap
+            let position = closest_point + normal * (penetration * 0.5);
+
+            Some(Self {
+                position,
+                normal,
+                penetration,
+                body_a: body_box,
+                body_b: body_sphere,
+            })
+        } else {
+            None // No contact
+        }
+    }
+
+    /// Create a contact point between a box and a plane.
+    ///
+    /// The box is axis-aligned at the given center position.
+    /// Returns the deepest penetrating corner as a single contact point.
+    ///
+    /// # Arguments
+    ///
+    /// * `box_center` - Center of the box in world coordinates
+    /// * `box_half_extents` - Half-extents of the box in each axis
+    /// * `plane_normal` - Normal of the plane (pointing away from solid)
+    /// * `plane_distance` - Distance from origin to plane along normal
+    /// * `body_box` - Body ID of the box
+    /// * `body_plane` - Body ID of the plane
+    #[must_use]
+    pub fn box_plane(
+        box_center: Point3<f64>,
+        box_half_extents: Vector3<f64>,
+        plane_normal: Vector3<f64>,
+        plane_distance: f64,
+        body_box: BodyId,
+        body_plane: BodyId,
+    ) -> Option<Self> {
+        let normal = plane_normal.normalize();
+
+        // Find the corner of the box that is deepest into the plane
+        // This is the corner that is most opposite to the plane normal
+        let corner_offset = Vector3::new(
+            if normal.x >= 0.0 {
+                -box_half_extents.x
+            } else {
+                box_half_extents.x
+            },
+            if normal.y >= 0.0 {
+                -box_half_extents.y
+            } else {
+                box_half_extents.y
+            },
+            if normal.z >= 0.0 {
+                -box_half_extents.z
+            } else {
+                box_half_extents.z
+            },
+        );
+
+        let deepest_corner = box_center + corner_offset;
+        let corner_distance = deepest_corner.coords.dot(&normal) - plane_distance;
+
+        if corner_distance >= 0.0 {
+            return None; // No contact
+        }
+
+        let penetration = -corner_distance;
+        let position = deepest_corner + normal * (penetration * 0.5);
+
+        Some(Self {
+            position,
+            normal,
+            penetration,
+            body_a: body_box,
+            body_b: body_plane,
+        })
+    }
+
+    /// Create contact points between a box and a plane (manifold version).
+    ///
+    /// Returns all corners that are penetrating the plane.
+    #[must_use]
+    pub fn box_plane_manifold(
+        box_center: Point3<f64>,
+        box_half_extents: Vector3<f64>,
+        plane_normal: Vector3<f64>,
+        plane_distance: f64,
+        body_box: BodyId,
+        body_plane: BodyId,
+    ) -> Vec<Self> {
+        let normal = plane_normal.normalize();
+        let mut contacts = Vec::new();
+
+        // Check all 8 corners
+        for &sx in &[-1.0, 1.0] {
+            for &sy in &[-1.0, 1.0] {
+                for &sz in &[-1.0, 1.0] {
+                    let corner = box_center
+                        + Vector3::new(
+                            sx * box_half_extents.x,
+                            sy * box_half_extents.y,
+                            sz * box_half_extents.z,
+                        );
+
+                    let corner_distance = corner.coords.dot(&normal) - plane_distance;
+
+                    if corner_distance < 0.0 {
+                        let penetration = -corner_distance;
+                        let position = corner + normal * (penetration * 0.5);
+
+                        contacts.push(Self {
+                            position,
+                            normal,
+                            penetration,
+                            body_a: body_box,
+                            body_b: body_plane,
+                        });
+                    }
+                }
+            }
+        }
+
+        contacts
+    }
+
+    /// Create a contact point between two axis-aligned boxes.
+    ///
+    /// Uses the Separating Axis Theorem (SAT) to detect overlap and
+    /// compute the minimum penetration axis.
+    ///
+    /// # Arguments
+    ///
+    /// * `center_a` - Center of box A in world coordinates
+    /// * `half_extents_a` - Half-extents of box A
+    /// * `center_b` - Center of box B in world coordinates
+    /// * `half_extents_b` - Half-extents of box B
+    /// * `body_a` - Body ID of box A
+    /// * `body_b` - Body ID of box B
+    #[must_use]
+    pub fn box_box(
+        center_a: Point3<f64>,
+        half_extents_a: Vector3<f64>,
+        center_b: Point3<f64>,
+        half_extents_b: Vector3<f64>,
+        body_a: BodyId,
+        body_b: BodyId,
+    ) -> Option<Self> {
+        let diff = center_b - center_a;
+
+        // Check overlap on each axis and find minimum penetration
+        let overlap_x = (half_extents_a.x + half_extents_b.x) - diff.x.abs();
+        let overlap_y = (half_extents_a.y + half_extents_b.y) - diff.y.abs();
+        let overlap_z = (half_extents_a.z + half_extents_b.z) - diff.z.abs();
+
+        // If any overlap is negative, boxes are separated
+        if overlap_x <= 0.0 || overlap_y <= 0.0 || overlap_z <= 0.0 {
+            return None;
+        }
+
+        // Find the axis with minimum penetration (separating axis)
+        let (penetration, axis_idx) = if overlap_x <= overlap_y && overlap_x <= overlap_z {
+            (overlap_x, 0)
+        } else if overlap_y <= overlap_z {
+            (overlap_y, 1)
+        } else {
+            (overlap_z, 2)
+        };
+
+        // Normal points from B toward A
+        let mut normal = Vector3::zeros();
+        normal[axis_idx] = if diff[axis_idx] >= 0.0 { -1.0 } else { 1.0 };
+
+        // Contact point at the center of the overlap region
+        let contact_center = Point3::from((center_a.coords + center_b.coords) * 0.5);
+
+        // Adjust contact point to be on the surface of box A
+        let mut position = contact_center;
+        position[axis_idx] = center_a[axis_idx] + normal[axis_idx] * half_extents_a[axis_idx];
+
+        Some(Self {
+            position,
+            normal,
+            penetration,
+            body_a,
+            body_b,
+        })
+    }
+
+    /// Create a contact point between a capsule and a plane.
+    ///
+    /// A capsule is defined by two endpoints and a radius.
+    ///
+    /// # Arguments
+    ///
+    /// * `capsule_start` - Start point of the capsule axis
+    /// * `capsule_end` - End point of the capsule axis
+    /// * `capsule_radius` - Radius of the capsule
+    /// * `plane_normal` - Normal of the plane
+    /// * `plane_distance` - Distance from origin to plane
+    /// * `body_capsule` - Body ID of the capsule
+    /// * `body_plane` - Body ID of the plane
+    #[must_use]
+    pub fn capsule_plane(
+        capsule_start: Point3<f64>,
+        capsule_end: Point3<f64>,
+        capsule_radius: f64,
+        plane_normal: Vector3<f64>,
+        plane_distance: f64,
+        body_capsule: BodyId,
+        body_plane: BodyId,
+    ) -> Option<Self> {
+        let normal = plane_normal.normalize();
+
+        // Find the point on the capsule axis closest to the plane
+        let start_dist = capsule_start.coords.dot(&normal) - plane_distance;
+        let end_dist = capsule_end.coords.dot(&normal) - plane_distance;
+
+        // Use the endpoint that's closer to (or deeper into) the plane
+        let (closest_point, min_dist) = if start_dist < end_dist {
+            (capsule_start, start_dist)
+        } else {
+            (capsule_end, end_dist)
+        };
+
+        let penetration = capsule_radius - min_dist;
+
+        if penetration <= 0.0 {
+            return None;
+        }
+
+        // Contact point on capsule surface
+        let position = closest_point - normal * (capsule_radius - penetration * 0.5);
+
+        Some(Self {
+            position,
+            normal,
+            penetration,
+            body_a: body_capsule,
+            body_b: body_plane,
+        })
+    }
+
+    /// Create a contact point between a capsule and a sphere.
+    ///
+    /// # Arguments
+    ///
+    /// * `capsule_start` - Start point of the capsule axis
+    /// * `capsule_end` - End point of the capsule axis
+    /// * `capsule_radius` - Radius of the capsule
+    /// * `sphere_center` - Center of the sphere
+    /// * `sphere_radius` - Radius of the sphere
+    /// * `body_capsule` - Body ID of the capsule
+    /// * `body_sphere` - Body ID of the sphere
+    #[must_use]
+    pub fn capsule_sphere(
+        capsule_start: Point3<f64>,
+        capsule_end: Point3<f64>,
+        capsule_radius: f64,
+        sphere_center: Point3<f64>,
+        sphere_radius: f64,
+        body_capsule: BodyId,
+        body_sphere: BodyId,
+    ) -> Option<Self> {
+        // Find closest point on capsule axis to sphere center
+        let axis = capsule_end - capsule_start;
+        let axis_len_sq = axis.norm_squared();
+
+        let closest_on_axis = if axis_len_sq < 1e-10 {
+            // Degenerate capsule (a sphere)
+            capsule_start
+        } else {
+            let t = ((sphere_center - capsule_start).dot(&axis) / axis_len_sq).clamp(0.0, 1.0);
+            capsule_start + axis * t
+        };
+
+        // Now it's a sphere-sphere test
+        let diff = sphere_center - closest_on_axis;
+        let distance = diff.norm();
+
+        if distance < 1e-10 {
+            return None; // Degenerate case
+        }
+
+        let combined_radius = capsule_radius + sphere_radius;
+        let penetration = combined_radius - distance;
+
+        if penetration <= 0.0 {
+            return None;
+        }
+
+        let normal = diff / distance; // Points from capsule toward sphere
+
+        // Contact point at midpoint of overlap
+        let position = closest_on_axis + normal * (capsule_radius - penetration * 0.5);
+
+        Some(Self {
+            position,
+            normal,
+            penetration,
+            body_a: body_capsule,
+            body_b: body_sphere,
+        })
+    }
+
+    /// Create a contact point between two capsules.
+    ///
+    /// # Arguments
+    ///
+    /// * `start_a`, `end_a` - Axis endpoints of capsule A
+    /// * `radius_a` - Radius of capsule A
+    /// * `start_b`, `end_b` - Axis endpoints of capsule B
+    /// * `radius_b` - Radius of capsule B
+    /// * `body_a` - Body ID of capsule A
+    /// * `body_b` - Body ID of capsule B
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn capsule_capsule(
+        start_a: Point3<f64>,
+        end_a: Point3<f64>,
+        radius_a: f64,
+        start_b: Point3<f64>,
+        end_b: Point3<f64>,
+        radius_b: f64,
+        body_a: BodyId,
+        body_b: BodyId,
+    ) -> Option<Self> {
+        // Find closest points between two line segments
+        let (closest_a, closest_b) = closest_points_segments(start_a, end_a, start_b, end_b);
+
+        // Now it's a sphere-sphere test between the closest points
+        let diff = closest_a - closest_b;
+        let distance = diff.norm();
+
+        if distance < 1e-10 {
+            return None; // Degenerate case
+        }
+
+        let combined_radius = radius_a + radius_b;
+        let penetration = combined_radius - distance;
+
+        if penetration <= 0.0 {
+            return None;
+        }
+
+        let normal = diff / distance; // Points from B toward A
+
+        // Contact point at midpoint
+        let position = closest_b + normal * (radius_b + penetration * 0.5);
+
+        Some(Self {
+            position,
+            normal,
+            penetration,
+            body_a,
+            body_b,
+        })
+    }
+
     /// Check if this contact is valid (bodies are overlapping).
     #[must_use]
     pub fn is_active(&self) -> bool {
@@ -489,6 +937,73 @@ impl ContactForce {
     }
 }
 
+/// Find the closest points between two line segments.
+///
+/// Returns the closest point on segment A and the closest point on segment B.
+fn closest_points_segments(
+    start_a: Point3<f64>,
+    end_a: Point3<f64>,
+    start_b: Point3<f64>,
+    end_b: Point3<f64>,
+) -> (Point3<f64>, Point3<f64>) {
+    let d1 = end_a - start_a; // Direction of segment A
+    let d2 = end_b - start_b; // Direction of segment B
+    let r = start_a - start_b;
+
+    let a = d1.dot(&d1); // Squared length of segment A
+    let e = d2.dot(&d2); // Squared length of segment B
+    let f = d2.dot(&r);
+
+    // Check for degenerate segments
+    let eps = 1e-10;
+
+    if a <= eps && e <= eps {
+        // Both segments are points
+        return (start_a, start_b);
+    }
+
+    let (s, t) = if a <= eps {
+        // Segment A is a point
+        let t = (f / e).clamp(0.0, 1.0);
+        (0.0, t)
+    } else if e <= eps {
+        // Segment B is a point
+        let s = ((-d1.dot(&r)) / a).clamp(0.0, 1.0);
+        (s, 0.0)
+    } else {
+        // General case
+        let b = d1.dot(&d2);
+        let c = d1.dot(&r);
+        let denom = a * e - b * b;
+
+        // If segments are parallel, pick arbitrary s
+        let mut s = if denom.abs() > eps {
+            ((b * f - c * e) / denom).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        // Compute t for closest point on segment B
+        let mut t = (b * s + f) / e;
+
+        // Clamp t and recompute s if needed
+        if t < 0.0 {
+            t = 0.0;
+            s = (-c / a).clamp(0.0, 1.0);
+        } else if t > 1.0 {
+            t = 1.0;
+            s = ((b - c) / a).clamp(0.0, 1.0);
+        }
+
+        (s, t)
+    };
+
+    let closest_a = start_a + d1 * s;
+    let closest_b = start_b + d2 * t;
+
+    (closest_a, closest_b)
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -609,5 +1124,342 @@ mod tests {
         // (1,0,0) × (-10,0,100) = (0*100 - 0*0, 0*(-10) - 1*100, 1*0 - 0*(-10))
         //                       = (0, -100, 0)
         assert_relative_eq!(torque.y, -100.0, epsilon = 1e-10);
+    }
+
+    // =========================================================================
+    // Box collision tests
+    // =========================================================================
+
+    #[test]
+    fn test_box_sphere_contact() {
+        // Box centered at origin with half-extents (1, 1, 1)
+        // Sphere at (1.5, 0, 0) with radius 1.0 => penetrating 0.5
+        let contact = ContactPoint::box_sphere(
+            Point3::origin(),
+            Vector3::new(1.0, 1.0, 1.0),
+            Point3::new(1.5, 0.0, 0.0),
+            1.0,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        let contact = contact.expect("should have contact");
+        assert_relative_eq!(contact.penetration, 0.5, epsilon = 1e-10);
+        // Normal should point from box toward sphere (positive X)
+        assert_relative_eq!(contact.normal.x, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_box_sphere_contact_corner() {
+        // Sphere near corner of box
+        let contact = ContactPoint::box_sphere(
+            Point3::origin(),
+            Vector3::new(1.0, 1.0, 1.0),
+            Point3::new(1.5, 1.5, 0.0),
+            1.0,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        let contact = contact.expect("should have contact");
+        assert!(contact.penetration > 0.0);
+        // Normal should point roughly toward sphere
+        assert!(contact.normal.x > 0.0);
+        assert!(contact.normal.y > 0.0);
+    }
+
+    #[test]
+    fn test_box_sphere_no_contact() {
+        // Sphere far from box
+        let contact = ContactPoint::box_sphere(
+            Point3::origin(),
+            Vector3::new(1.0, 1.0, 1.0),
+            Point3::new(5.0, 0.0, 0.0),
+            1.0,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        assert!(contact.is_none());
+    }
+
+    #[test]
+    fn test_box_sphere_inside() {
+        // Sphere center inside the box
+        let contact = ContactPoint::box_sphere(
+            Point3::origin(),
+            Vector3::new(2.0, 2.0, 2.0),
+            Point3::new(0.5, 0.0, 0.0),
+            0.5,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        let contact = contact.expect("should have contact");
+        // Penetration = distance_to_face + radius
+        assert!(contact.penetration > 0.0);
+    }
+
+    #[test]
+    fn test_box_plane_contact() {
+        // Box at z=0.5 with half-extent 1.0, plane at z=0
+        // Deepest corner is at z=-0.5, penetrating by 0.5
+        let contact = ContactPoint::box_plane(
+            Point3::new(0.0, 0.0, 0.5),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            0.0,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        let contact = contact.expect("should have contact");
+        assert_relative_eq!(contact.penetration, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(contact.normal.z, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_box_plane_no_contact() {
+        // Box above plane
+        let contact = ContactPoint::box_plane(
+            Point3::new(0.0, 0.0, 2.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            0.0,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        assert!(contact.is_none());
+    }
+
+    #[test]
+    fn test_box_plane_manifold() {
+        // Box with 4 corners penetrating
+        let contacts = ContactPoint::box_plane_manifold(
+            Point3::new(0.0, 0.0, 0.5),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            0.0,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        // 4 bottom corners should be penetrating
+        assert_eq!(contacts.len(), 4);
+        for contact in &contacts {
+            assert!(contact.penetration > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_box_box_contact() {
+        // Two boxes overlapping on X axis
+        let contact = ContactPoint::box_box(
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Point3::new(1.5, 0.0, 0.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        let contact = contact.expect("should have contact");
+        // Overlap = (1+1) - 1.5 = 0.5
+        assert_relative_eq!(contact.penetration, 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_box_box_no_contact() {
+        // Two boxes separated
+        let contact = ContactPoint::box_box(
+            Point3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Point3::new(5.0, 0.0, 0.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        assert!(contact.is_none());
+    }
+
+    // =========================================================================
+    // Capsule collision tests
+    // =========================================================================
+
+    #[test]
+    fn test_capsule_plane_contact() {
+        // Capsule from (0,0,0) to (0,0,2) with radius 0.5
+        // Plane at z=-0.3 (capsule penetrating by 0.2)
+        let contact = ContactPoint::capsule_plane(
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 2.0),
+            0.5,
+            Vector3::new(0.0, 0.0, 1.0),
+            -0.3,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        let contact = contact.expect("should have contact");
+        // Penetration = radius - distance = 0.5 - 0.3 = 0.2
+        assert_relative_eq!(contact.penetration, 0.2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_capsule_plane_no_contact() {
+        // Capsule above plane
+        let contact = ContactPoint::capsule_plane(
+            Point3::new(0.0, 0.0, 2.0),
+            Point3::new(0.0, 0.0, 4.0),
+            0.5,
+            Vector3::new(0.0, 0.0, 1.0),
+            0.0,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        assert!(contact.is_none());
+    }
+
+    #[test]
+    fn test_capsule_sphere_contact() {
+        // Capsule from (-1,0,0) to (1,0,0) with radius 0.5
+        // Sphere at (0,1,0) with radius 0.7 (penetrating)
+        let contact = ContactPoint::capsule_sphere(
+            Point3::new(-1.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            0.5,
+            Point3::new(0.0, 1.0, 0.0),
+            0.7,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        let contact = contact.expect("should have contact");
+        // Combined radius 1.2, distance 1.0 => penetration 0.2
+        assert_relative_eq!(contact.penetration, 0.2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_capsule_sphere_end_contact() {
+        // Sphere near end of capsule
+        let contact = ContactPoint::capsule_sphere(
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 2.0),
+            0.5,
+            Point3::new(0.0, 0.0, 2.5),
+            0.3,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        let contact = contact.expect("should have contact");
+        // Distance from end to sphere center = 0.5, combined radius = 0.8
+        assert_relative_eq!(contact.penetration, 0.3, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_capsule_capsule_parallel() {
+        // Two parallel capsules
+        let contact = ContactPoint::capsule_capsule(
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 2.0),
+            0.5,
+            Point3::new(0.8, 0.0, 0.0),
+            Point3::new(0.8, 0.0, 2.0),
+            0.5,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        let contact = contact.expect("should have contact");
+        // Distance = 0.8, combined radius = 1.0 => penetration = 0.2
+        assert_relative_eq!(contact.penetration, 0.2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_capsule_capsule_perpendicular() {
+        // Two perpendicular capsules that are close but not intersecting axes
+        // Offset slightly in Z so they don't pass through exact same point
+        let contact = ContactPoint::capsule_capsule(
+            Point3::new(-1.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            0.3,
+            Point3::new(0.0, -1.0, 0.1),
+            Point3::new(0.0, 1.0, 0.1),
+            0.3,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        let contact = contact.expect("should have contact");
+        // Distance = 0.1, combined radius = 0.6 => penetration = 0.5
+        assert_relative_eq!(contact.penetration, 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_capsule_capsule_no_contact() {
+        // Two capsules far apart
+        let contact = ContactPoint::capsule_capsule(
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 2.0),
+            0.5,
+            Point3::new(5.0, 0.0, 0.0),
+            Point3::new(5.0, 0.0, 2.0),
+            0.5,
+            BodyId::new(0),
+            BodyId::new(1),
+        );
+
+        assert!(contact.is_none());
+    }
+
+    // =========================================================================
+    // Helper function tests
+    // =========================================================================
+
+    #[test]
+    fn test_closest_points_segments_parallel() {
+        let (p1, p2) = closest_points_segments(
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+        );
+
+        // Parallel segments - closest points should be at same x
+        assert_relative_eq!(p1.x, p2.x, epsilon = 1e-10);
+        assert_relative_eq!(p1.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(p2.y, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_closest_points_segments_crossing() {
+        let (p1, p2) = closest_points_segments(
+            Point3::new(-1.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, -1.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+        );
+
+        // Crossing at origin
+        assert_relative_eq!(p1.coords.norm(), 0.0, epsilon = 1e-10);
+        assert_relative_eq!(p2.coords.norm(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_closest_points_segments_endpoints() {
+        let (p1, p2) = closest_points_segments(
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+            Point3::new(3.0, 0.0, 0.0),
+        );
+
+        // Endpoints should be closest
+        assert_relative_eq!(p1.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(p2.x, 2.0, epsilon = 1e-10);
     }
 }

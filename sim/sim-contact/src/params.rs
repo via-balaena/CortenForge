@@ -67,7 +67,25 @@ pub struct ContactParams {
     /// - 0.3-0.5 = typical materials
     /// - 0.7-1.0 = rubber, high friction
     /// - >1.0 = sticky materials
+    ///
+    /// For isotropic friction, this is used directly.
+    /// For anisotropic friction, use `friction_anisotropy` to set the ratio.
     pub friction_coefficient: f64,
+
+    /// Friction anisotropy ratio (secondary/primary friction coefficient).
+    ///
+    /// This enables elliptic friction cones for anisotropic surfaces:
+    /// - `1.0` = isotropic (circular friction cone, default)
+    /// - `< 1.0` = lower friction in secondary direction
+    /// - `> 1.0` = higher friction in secondary direction
+    ///
+    /// The secondary friction coefficient is: `friction_coefficient * friction_anisotropy`
+    ///
+    /// Use cases:
+    /// - Treaded surfaces (different friction along/across treads)
+    /// - Brushed metal (anisotropic surface texture)
+    /// - Grooved surfaces (vinyl records, machined parts)
+    pub friction_anisotropy: f64,
 
     /// Rolling friction coefficient (m).
     ///
@@ -105,6 +123,7 @@ impl Default for ContactParams {
             stiffness_power: 1.0,      // Linear spring
             damping: 1_000.0,          // 1 kN·s/m - moderate damping
             friction_coefficient: 0.5, // Typical friction
+            friction_anisotropy: 1.0,  // Isotropic (circular cone)
             rolling_friction: 0.01,    // Small rolling resistance
             torsional_friction: 0.01,  // Small torsional resistance
             contact_margin: 0.0001,    // 0.1 mm margin
@@ -122,6 +141,7 @@ impl ContactParams {
             stiffness_power: 1.3,
             damping: 2_000.0,
             friction_coefficient: 0.9,
+            friction_anisotropy: 1.0,
             rolling_friction: 0.02,
             torsional_friction: 0.02,
             contact_margin: 0.0002,
@@ -137,6 +157,7 @@ impl ContactParams {
             stiffness_power: 1.0,
             damping: 5_000.0,
             friction_coefficient: 0.4,
+            friction_anisotropy: 1.0,
             rolling_friction: 0.005,
             torsional_friction: 0.005,
             contact_margin: 0.00005,
@@ -152,6 +173,7 @@ impl ContactParams {
             stiffness_power: 1.2,
             damping: 1_500.0,
             friction_coefficient: 0.35,
+            friction_anisotropy: 1.0,
             rolling_friction: 0.01,
             torsional_friction: 0.01,
             contact_margin: 0.0001,
@@ -167,6 +189,7 @@ impl ContactParams {
             stiffness_power: 1.1,
             damping: 2_000.0,
             friction_coefficient: 0.5,
+            friction_anisotropy: 1.0,
             rolling_friction: 0.015,
             torsional_friction: 0.015,
             contact_margin: 0.0001,
@@ -182,6 +205,7 @@ impl ContactParams {
             stiffness_power: 1.0,
             damping: 500.0,
             friction_coefficient: 0.3,
+            friction_anisotropy: 1.0,
             rolling_friction: 0.02,
             torsional_friction: 0.02,
             contact_margin: 0.001,
@@ -197,6 +221,7 @@ impl ContactParams {
             stiffness_power: 1.0,
             damping: 10_000.0,
             friction_coefficient: 0.5,
+            friction_anisotropy: 1.0,
             rolling_friction: 0.005,
             torsional_friction: 0.005,
             contact_margin: 0.00001,
@@ -209,9 +234,41 @@ impl ContactParams {
     pub fn frictionless() -> Self {
         Self {
             friction_coefficient: 0.0,
+            friction_anisotropy: 1.0,
             rolling_friction: 0.0,
             torsional_friction: 0.0,
             ..Default::default()
+        }
+    }
+
+    /// Create parameters for treaded surfaces (anisotropic friction).
+    ///
+    /// Higher friction across the treads (prevents sideways slip),
+    /// lower friction along the treads (allows rolling).
+    #[must_use]
+    pub fn treaded() -> Self {
+        Self {
+            friction_coefficient: 0.8,
+            friction_anisotropy: 0.5, // 50% friction along treads
+            ..Default::default()
+        }
+    }
+
+    /// Create parameters for brushed metal (anisotropic friction).
+    ///
+    /// Different friction along and across the brush direction.
+    #[must_use]
+    pub fn brushed_metal() -> Self {
+        Self {
+            stiffness: 500_000.0,
+            stiffness_power: 1.0,
+            damping: 5_000.0,
+            friction_coefficient: 0.5,
+            friction_anisotropy: 0.7, // 70% friction along brush direction
+            rolling_friction: 0.005,
+            torsional_friction: 0.005,
+            contact_margin: 0.00005,
+            restitution: 0.5,
         }
     }
 
@@ -241,6 +298,28 @@ impl ContactParams {
     pub fn with_friction(mut self, friction: f64) -> Self {
         self.friction_coefficient = friction;
         self
+    }
+
+    /// Set the friction anisotropy ratio.
+    ///
+    /// A value of 1.0 gives isotropic friction (circular cone).
+    /// Values < 1.0 give lower friction in the secondary direction.
+    #[must_use]
+    pub fn with_friction_anisotropy(mut self, anisotropy: f64) -> Self {
+        self.friction_anisotropy = anisotropy.max(0.0);
+        self
+    }
+
+    /// Check if friction is anisotropic (elliptic cone).
+    #[must_use]
+    pub fn is_anisotropic(&self) -> bool {
+        (self.friction_anisotropy - 1.0).abs() > 1e-6
+    }
+
+    /// Get the secondary friction coefficient.
+    #[must_use]
+    pub fn secondary_friction(&self) -> f64 {
+        self.friction_coefficient * self.friction_anisotropy
     }
 
     /// Set the restitution (bounciness).
@@ -296,6 +375,8 @@ impl ContactParams {
             damping: 2.0 * a.damping * b.damping / (a.damping + b.damping + 1e-10),
             // Geometric mean for friction
             friction_coefficient: (a.friction_coefficient * b.friction_coefficient).sqrt(),
+            // Geometric mean for anisotropy (preserves isotropy if both are isotropic)
+            friction_anisotropy: (a.friction_anisotropy * b.friction_anisotropy).sqrt(),
             rolling_friction: (a.rolling_friction * b.rolling_friction).sqrt(),
             torsional_friction: (a.torsional_friction * b.torsional_friction).sqrt(),
             // Max margin
@@ -516,6 +597,7 @@ impl DomainRandomization {
                 self.friction_range.1,
                 uniform_samples[2],
             ),
+            friction_anisotropy: base.friction_anisotropy, // Preserve anisotropy from base
             rolling_friction: base.rolling_friction * stiffness_mult.sqrt(), // Scale with main friction
             torsional_friction: base.torsional_friction * stiffness_mult.sqrt(),
             contact_margin: base.contact_margin,
