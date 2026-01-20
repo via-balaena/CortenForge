@@ -10,16 +10,16 @@
 
 ## What is CortenForge?
 
-CortenForge is an SDK for building physical things in software. It provides the computational foundation for:
+CortenForge is a Rust-native SDK for building physical things in software. It provides the computational foundation for:
 
-- **Mesh Processing** - Load, repair, transform, offset, shell generation
-- **Parametric Geometry** - Bezier curves, B-splines, tubular anatomy
-- **3D Routing** - Pathfinding for wire harnesses, pipes, tendons
+- **Mesh Processing** - 27 crates: load, repair, transform, boolean ops, lattices, scanning
+- **Parametric Geometry** - Bezier, B-spline, NURBS curves, arcs, helices
+- **3D Routing** - A* pathfinding on voxel grids, multi-objective optimization
+- **Physics Simulation** - Rigid body dynamics, constraints, contact models, URDF loading
 - **Machine Learning** - Model training and inference (Burn)
-- **Computer Vision** - Object detection and tracking
-- **Physics Simulation** - Rigid body dynamics (Avian)
+- **Computer Vision** - Object detection, tracking, sensor fusion
 
-Our code must be as reliable as the things built with it.
+The same code runs in simulation and on hardware. Our code must be as reliable as the things built with it.
 
 ---
 
@@ -28,7 +28,6 @@ Our code must be as reliable as the things built with it.
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              LAYER 1: Bevy SDK                               │
-│                                                                             │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
 │  │                           cortenforge                                    ││
 │  │  CfMeshPlugin · CfRoutingPlugin · CfVisionPlugin · CfSimPlugin · CfUi  ││
@@ -39,20 +38,20 @@ Our code must be as reliable as the things built with it.
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         LAYER 0: Pure Rust Foundation                        │
 │                           (Zero Bevy Dependencies)                           │
-├─────────────┬─────────────┬─────────────┬─────────────┬─────────────────────┤
-│   mesh/*    │ geometry/*  │  routing/*  │    ml/*     │  vision/* · sim/*   │
-├─────────────┼─────────────┼─────────────┼─────────────┼─────────────────────┤
-│ mesh-types  │ curve-types │ route-types │ ml-models   │ vision-core         │
-│ mesh-io     │ lumen-geo   │ route-path  │ ml-inference│ vision-capture      │
-│ mesh-repair │             │ route-opt   │ ml-dataset  │ sim-core            │
-│ mesh-offset │             │             │ ml-training │ sim-physics         │
-│ mesh-shell  │             │             │             │                     │
-│ mesh-zones  │             │             │             │                     │
-│ mesh-sdf    │             │             │             │                     │
-│ ...         │             │             │             │                     │
-├─────────────┴─────────────┴─────────────┴─────────────┴─────────────────────┤
+├──────────────┬──────────────┬──────────────┬──────────────┬─────────────────┤
+│   mesh/*     │  geometry/*  │   routing/*  │     sim/*    │   ml/* + more   │
+│   27 crates  │              │              │              │                 │
+├──────────────┼──────────────┼──────────────┼──────────────┼─────────────────┤
+│ mesh-types   │ curve-types  │ route-types  │ sim-types    │ ml-models       │
+│ mesh-io      │   bezier     │ route-path   │ sim-core     │ ml-inference    │
+│ mesh-repair  │   bspline    │ route-opt    │ sim-contact  │ ml-dataset      │
+│ mesh-boolean │   nurbs      │              │ sim-const    │ ml-training     │
+│ mesh-lattice │   arc/helix  │              │ sim-urdf     │ sensor-fusion   │
+│ mesh-scan    │              │              │ sim-physics  │ vision-core     │
+│ ...          │              │              │              │ cf-spatial      │
+├──────────────┴──────────────┴──────────────┴──────────────┴─────────────────┤
 │                              crates/cf-spatial                               │
-│                        (Voxel grids, spatial queries)                        │
+│                  Voxel grids, occupancy maps, raycasting                     │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -105,7 +104,9 @@ fn main() {
 
 ## Crate Overview
 
-### Mesh Domain (`mesh/`)
+**45+ crates** across 6 domains, all Layer 0 (zero Bevy dependencies).
+
+### Mesh Domain (`mesh/`) — 27 crates
 
 | Crate | Description |
 |-------|-------------|
@@ -124,16 +125,26 @@ fn main() {
 
 | Crate | Description |
 |-------|-------------|
-| `curve-types` | Bezier, B-spline, Catmull-Rom curves |
-| `lumen-geometry` | Tubular anatomy (colon, vessels) |
+| `curve-types` | Bezier, B-spline, NURBS, arcs, circles, helices with Frenet frames |
 
 ### Routing Domain (`routing/`)
 
 | Crate | Description |
 |-------|-------------|
-| `route-types` | Paths, routes, constraints |
-| `route-pathfind` | A* on voxel grids, collision-free paths |
-| `route-optimize` | Multi-objective route optimization |
+| `route-types` | Paths, routes, constraints, cost weights |
+| `route-pathfind` | A* on voxel grids (6/26 connectivity), path smoothing |
+| `route-optimize` | Clearance, curvature, shortening, Pareto optimization |
+
+### Simulation Domain (`sim/`)
+
+| Crate | Description |
+|-------|-------------|
+| `sim-types` | RigidBodyState, Pose, Twist, JointState, MassProperties |
+| `sim-core` | World container, integrators (Euler, Verlet, RK4), stepper |
+| `sim-constraint` | Joint types (revolute, prismatic, spherical), motors, limits |
+| `sim-contact` | MuJoCo-inspired contact model, friction (Coulomb, Stribeck) |
+| `sim-urdf` | URDF parser, kinematic tree validation, mass property validation |
+| `sim-physics` | Umbrella crate re-exporting all sim crates |
 
 ### ML Domain (`ml/`)
 
@@ -151,34 +162,27 @@ fn main() {
 | `vision-core` | Detection traits, frame types |
 | `vision-capture` | Camera capture, recording |
 
-### Simulation Domain (`sim/`)
-
-| Crate | Description |
-|-------|-------------|
-| `sim-core` | Simulation configuration |
-| `sim-physics` | Physics abstractions (Avian backend) |
-
 ### Foundation (`crates/`)
 
 | Crate | Description |
 |-------|-------------|
-| `cf-spatial` | Voxel grids, occupancy maps, spatial queries |
+| `cf-spatial` | Voxel grids, occupancy maps, raycasting, DDA traversal |
 
 ---
 
 ## Quality Standards
 
-We maintain **A-grade academic standards** for all code.
+We maintain **A-grade standards** for all code, enforced by CI.
 
-| Criterion | A Standard |
-|-----------|------------|
-| Test Coverage | ≥90% |
+| Criterion | Standard |
+|-----------|----------|
+| Test Coverage | ≥75% (target: 90%) |
 | Documentation | Zero warnings |
-| Clippy | Zero warnings |
+| Clippy | Zero warnings (pedantic + nursery) |
 | Safety | Zero `unwrap`/`expect` in library code |
-| Dependencies | Minimal, justified |
+| Dependencies | Audited (cargo-deny, cargo-audit) |
 | Bevy-free (Layer 0) | No bevy in dependency tree |
-| API Design | Idiomatic, intuitive |
+| Commits | Signed + conventional format |
 
 See [STANDARDS.md](./STANDARDS.md) for full details.
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the workflow.
@@ -200,7 +204,7 @@ cargo xtask complete <crate-name>
 git clone https://github.com/cortenforge/forge.git
 cd forge
 
-# Build everything
+# Build (auto-installs git hooks on first build)
 cargo build --workspace
 
 # Run tests
@@ -212,6 +216,8 @@ cargo xtask check
 # Grade a specific crate
 cargo xtask grade mesh-types
 ```
+
+Git hooks enforce formatting, clippy, and conventional commits automatically.
 
 ---
 
