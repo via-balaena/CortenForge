@@ -38,8 +38,8 @@
 use nalgebra::Vector3;
 
 use crate::{
-    ContactForce, ContactManifold, ContactParams, ContactPoint, FrictionCone, FrictionModel,
-    RegularizedFriction,
+    ContactForce, ContactManifold, ContactParams, ContactPoint, EllipticFrictionCone, FrictionCone,
+    FrictionModel, RegularizedFriction,
 };
 
 #[cfg(feature = "serde")]
@@ -104,6 +104,11 @@ pub enum FrictionModelType {
     RegularizedCoulomb,
     /// Stribeck curve with static/kinetic transition.
     Stribeck,
+    /// Elliptic friction cone (MuJoCo-style, supports anisotropic friction).
+    ///
+    /// Uses the elliptic cone constraint: (f_t1/μ_1)² + (f_t2/μ_2)² ≤ f_n²
+    /// When friction_anisotropy = 1.0, this is equivalent to a circular cone.
+    Elliptic,
 }
 
 impl ContactModel {
@@ -130,6 +135,23 @@ impl ContactModel {
         self.friction_model = model;
         self.use_regularized_friction = matches!(model, FrictionModelType::RegularizedCoulomb);
         self
+    }
+
+    /// Configure for elliptic (MuJoCo-style) friction cones.
+    ///
+    /// Elliptic cones support anisotropic friction when the contact params
+    /// have `friction_anisotropy != 1.0`. This is MuJoCo's default friction model.
+    #[must_use]
+    pub fn with_elliptic_friction(mut self) -> Self {
+        self.friction_model = FrictionModelType::Elliptic;
+        self.use_regularized_friction = false;
+        self
+    }
+
+    /// Check if using elliptic (anisotropic) friction.
+    #[must_use]
+    pub fn uses_elliptic_friction(&self) -> bool {
+        matches!(self.friction_model, FrictionModelType::Elliptic)
     }
 
     /// Set the regularization velocity for smooth friction.
@@ -262,6 +284,29 @@ impl ContactModel {
                     0.0, // No viscous component by default
                 );
                 model.compute_force(*tangent_velocity, normal_magnitude)
+            }
+
+            FrictionModelType::Elliptic => {
+                // Elliptic friction cone (MuJoCo-style)
+                // Supports anisotropic friction when friction_anisotropy != 1.0
+                let mu_1 = self.params.friction_coefficient;
+                let mu_2 = self.params.secondary_friction();
+                let cone = EllipticFrictionCone::new(mu_1, mu_2);
+
+                let speed = tangent_velocity.norm();
+                if speed < 1e-10 {
+                    Vector3::zeros()
+                } else {
+                    // Friction opposes motion - compute the maximum force in the direction
+                    // opposite to the velocity, then project it onto the elliptic cone
+                    let direction = -*tangent_velocity / speed;
+
+                    // For elliptic cones, the max force depends on direction
+                    // We compute the raw "desired" friction force and project it
+                    // Use a large initial force that will be clamped by projection
+                    let desired_force = direction * (mu_1.max(mu_2) * normal_magnitude * 2.0);
+                    cone.project(desired_force, normal_magnitude)
+                }
             }
         }
     }
@@ -618,14 +663,66 @@ mod tests {
             .with_friction_model(FrictionModelType::RegularizedCoulomb);
         let stribeck = ContactModel::new(ContactParams::default())
             .with_friction_model(FrictionModelType::Stribeck);
+        let elliptic = ContactModel::new(ContactParams::default())
+            .with_friction_model(FrictionModelType::Elliptic);
 
         let f1 = coulomb.compute_force(&contact, &velocity);
         let f2 = regularized.compute_force(&contact, &velocity);
         let f3 = stribeck.compute_force(&contact, &velocity);
+        let f4 = elliptic.compute_force(&contact, &velocity);
 
         // All should have friction opposing motion
         assert!(f1.friction.x < 0.0);
         assert!(f2.friction.x < 0.0);
         assert!(f3.friction.x < 0.0);
+        assert!(f4.friction.x < 0.0);
+    }
+
+    #[test]
+    fn test_elliptic_friction_isotropic() {
+        // With isotropic friction (anisotropy = 1.0), elliptic should behave like circular
+        let contact = make_contact(0.01);
+        let velocity = Vector3::new(0.1, 0.1, 0.0);
+
+        let circular = ContactModel::new(ContactParams::default())
+            .with_friction_model(FrictionModelType::Coulomb);
+        let elliptic = ContactModel::new(ContactParams::default())
+            .with_friction_model(FrictionModelType::Elliptic);
+
+        let f_circ = circular.compute_force(&contact, &velocity);
+        let f_ell = elliptic.compute_force(&contact, &velocity);
+
+        // Both should have similar friction magnitudes
+        let mag_circ = f_circ.friction.norm();
+        let mag_ell = f_ell.friction.norm();
+        assert_relative_eq!(mag_circ, mag_ell, epsilon = 0.01);
+    }
+
+    #[test]
+    fn test_elliptic_friction_anisotropic() {
+        // With anisotropic friction, force should depend on direction
+        let contact = make_contact(0.01);
+
+        // Anisotropic params: μ_x = 0.8, μ_y = 0.4
+        let params = ContactParams::default()
+            .with_friction(0.8)
+            .with_friction_anisotropy(0.5); // μ_y = 0.8 * 0.5 = 0.4
+
+        let model = ContactModel::new(params).with_elliptic_friction();
+
+        // Sliding in X direction (high friction axis)
+        let vel_x = Vector3::new(1.0, 0.0, 0.0);
+        let f_x = model.compute_force(&contact, &vel_x);
+
+        // Sliding in Y direction (low friction axis)
+        let vel_y = Vector3::new(0.0, 1.0, 0.0);
+        let f_y = model.compute_force(&contact, &vel_y);
+
+        // X friction should be higher than Y friction
+        assert!(f_x.friction.norm() > f_y.friction.norm());
+
+        // Ratio should be approximately 2:1 (0.8/0.4)
+        let ratio = f_x.friction.norm() / f_y.friction.norm();
+        assert_relative_eq!(ratio, 2.0, epsilon = 0.1);
     }
 }

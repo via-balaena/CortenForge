@@ -98,6 +98,38 @@ impl Observation {
         self.joint_states()
             .and_then(|states| states.iter().find(|(jid, _)| *jid == id).map(|(_, s)| s))
     }
+
+    /// Get sensor readings if present.
+    #[must_use]
+    pub fn sensors(&self) -> Option<&[SensorObservation]> {
+        for obs in &self.data {
+            if let ObservationType::Sensors(sensors) = obs {
+                return Some(sensors);
+            }
+        }
+        None
+    }
+
+    /// Check if there are any sensor readings.
+    #[must_use]
+    pub fn has_sensors(&self) -> bool {
+        self.sensors().is_some_and(|s| !s.is_empty())
+    }
+
+    /// Get a specific sensor reading by ID.
+    #[must_use]
+    pub fn sensor(&self, sensor_id: u64) -> Option<&SensorObservation> {
+        self.sensors()
+            .and_then(|sensors| sensors.iter().find(|s| s.sensor_id == sensor_id))
+    }
+
+    /// Get all sensor readings for a specific body.
+    #[must_use]
+    pub fn sensors_for_body(&self, body_id: BodyId) -> Vec<&SensorObservation> {
+        self.sensors()
+            .map(|sensors| sensors.iter().filter(|s| s.body_id == body_id).collect())
+            .unwrap_or_default()
+    }
 }
 
 /// Types of observations that can be included.
@@ -139,6 +171,130 @@ pub enum ObservationType {
         /// Data as a flat array of f64 values.
         data: Vec<f64>,
     },
+
+    /// Sensor readings from simulated sensors.
+    Sensors(Vec<SensorObservation>),
+}
+
+/// A sensor reading in the observation.
+///
+/// This is a generic representation that can hold data from any sensor type
+/// (IMU, force/torque, touch, etc.) without creating a dependency on sim-sensor.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct SensorObservation {
+    /// Unique sensor ID.
+    pub sensor_id: u64,
+    /// Body the sensor is attached to.
+    pub body_id: BodyId,
+    /// Type of sensor as a string (e.g., `imu`, `force_torque`, `touch`).
+    pub sensor_type: String,
+    /// Optional sensor name.
+    pub name: Option<String>,
+    /// Sensor data as key-value pairs.
+    /// Common keys: `accel_x`, `accel_y`, `accel_z`, `gyro_x`, etc.
+    pub data: Vec<(String, f64)>,
+}
+
+impl SensorObservation {
+    /// Create a new sensor observation.
+    #[must_use]
+    pub fn new(sensor_id: u64, body_id: BodyId, sensor_type: impl Into<String>) -> Self {
+        Self {
+            sensor_id,
+            body_id,
+            sensor_type: sensor_type.into(),
+            name: None,
+            data: Vec::new(),
+        }
+    }
+
+    /// Set the sensor name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Add a data field.
+    #[must_use]
+    pub fn with_field(mut self, key: impl Into<String>, value: f64) -> Self {
+        self.data.push((key.into(), value));
+        self
+    }
+
+    /// Add multiple data fields.
+    #[must_use]
+    pub fn with_fields(mut self, fields: impl IntoIterator<Item = (String, f64)>) -> Self {
+        self.data.extend(fields);
+        self
+    }
+
+    /// Get a field value by key.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<f64> {
+        self.data.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+    }
+
+    /// Get all field values as a flat vector (for ML input).
+    #[must_use]
+    pub fn values(&self) -> Vec<f64> {
+        self.data.iter().map(|(_, v)| *v).collect()
+    }
+
+    /// Create an IMU sensor observation.
+    #[must_use]
+    pub fn imu(sensor_id: u64, body_id: BodyId, accel: Vector3<f64>, gyro: Vector3<f64>) -> Self {
+        Self::new(sensor_id, body_id, "imu")
+            .with_field("accel_x", accel.x)
+            .with_field("accel_y", accel.y)
+            .with_field("accel_z", accel.z)
+            .with_field("gyro_x", gyro.x)
+            .with_field("gyro_y", gyro.y)
+            .with_field("gyro_z", gyro.z)
+    }
+
+    /// Create a force/torque sensor observation.
+    #[must_use]
+    pub fn force_torque(
+        sensor_id: u64,
+        body_id: BodyId,
+        force: Vector3<f64>,
+        torque: Vector3<f64>,
+    ) -> Self {
+        Self::new(sensor_id, body_id, "force_torque")
+            .with_field("force_x", force.x)
+            .with_field("force_y", force.y)
+            .with_field("force_z", force.z)
+            .with_field("torque_x", torque.x)
+            .with_field("torque_y", torque.y)
+            .with_field("torque_z", torque.z)
+    }
+
+    /// Create a touch sensor observation.
+    #[must_use]
+    pub fn touch(
+        sensor_id: u64,
+        body_id: BodyId,
+        in_contact: bool,
+        contact_count: usize,
+        contact_force: f64,
+        contact_normal: Option<Vector3<f64>>,
+    ) -> Self {
+        let mut obs = Self::new(sensor_id, body_id, "touch")
+            .with_field("in_contact", if in_contact { 1.0 } else { 0.0 })
+            .with_field("contact_count", contact_count as f64)
+            .with_field("contact_force", contact_force);
+
+        if let Some(n) = contact_normal {
+            obs = obs
+                .with_field("normal_x", n.x)
+                .with_field("normal_y", n.y)
+                .with_field("normal_z", n.z);
+        }
+
+        obs
+    }
 }
 
 /// Information about a contact point.

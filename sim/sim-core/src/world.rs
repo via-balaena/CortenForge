@@ -15,6 +15,8 @@ use sim_types::{
     RigidBodyState, SimError, SimulationConfig,
 };
 
+use crate::broad_phase::{BroadPhaseConfig, BroadPhaseDetector};
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +41,16 @@ pub enum CollisionShape {
     Box {
         /// Half-extents of the box in each axis.
         half_extents: Vector3<f64>,
+    },
+    /// Capsule (cylinder with hemispherical caps).
+    ///
+    /// Defined by half-length along the local Z-axis and radius.
+    /// The capsule extends from `-half_length` to `+half_length` on Z.
+    Capsule {
+        /// Half-length of the cylindrical portion along the Z-axis.
+        half_length: f64,
+        /// Radius of the capsule.
+        radius: f64,
     },
 }
 
@@ -73,6 +85,18 @@ impl CollisionShape {
         Self::Box { half_extents }
     }
 
+    /// Create a capsule collision shape.
+    ///
+    /// The capsule is oriented along the local Z-axis, extending from
+    /// `-half_length` to `+half_length`, with hemispherical caps of the given radius.
+    #[must_use]
+    pub fn capsule(half_length: f64, radius: f64) -> Self {
+        Self::Capsule {
+            half_length,
+            radius,
+        }
+    }
+
     /// Get the bounding sphere radius for broad-phase culling.
     #[must_use]
     pub fn bounding_radius(&self) -> f64 {
@@ -80,6 +104,29 @@ impl CollisionShape {
             Self::Sphere { radius } => *radius,
             Self::Plane { .. } => f64::INFINITY,
             Self::Box { half_extents } => half_extents.norm(),
+            Self::Capsule {
+                half_length,
+                radius,
+            } => half_length + radius,
+        }
+    }
+
+    /// Get the capsule endpoints in world coordinates given a body pose.
+    ///
+    /// Returns None if this is not a capsule shape.
+    #[must_use]
+    pub fn capsule_endpoints(&self, pose: &Pose) -> Option<(Point3<f64>, Point3<f64>)> {
+        match self {
+            Self::Capsule { half_length, .. } => {
+                // Capsule is aligned with local Z-axis
+                let local_start = Point3::new(0.0, 0.0, -*half_length);
+                let local_end = Point3::new(0.0, 0.0, *half_length);
+                Some((
+                    pose.transform_point(&local_start),
+                    pose.transform_point(&local_end),
+                ))
+            }
+            _ => None,
         }
     }
 }
@@ -413,6 +460,9 @@ pub struct World {
     /// Joint constraint solver.
     #[cfg_attr(feature = "serde", serde(skip, default = "default_constraint_solver"))]
     constraint_solver: JointConstraintSolver,
+    /// Broad-phase collision detector.
+    #[cfg_attr(feature = "serde", serde(skip, default = "default_broad_phase"))]
+    broad_phase: BroadPhaseDetector,
 }
 
 #[cfg(feature = "serde")]
@@ -426,6 +476,11 @@ fn default_contact_solver() -> ContactSolver {
 #[cfg(feature = "serde")]
 fn default_constraint_solver() -> JointConstraintSolver {
     JointConstraintSolver::new(sim_constraint::ConstraintSolverConfig::default())
+}
+
+#[cfg(feature = "serde")]
+fn default_broad_phase() -> BroadPhaseDetector {
+    BroadPhaseDetector::default()
 }
 
 impl Default for World {
@@ -456,6 +511,7 @@ impl World {
             contact_solver,
             contact_params,
             constraint_solver,
+            broad_phase: BroadPhaseDetector::default(),
         }
     }
 
@@ -479,6 +535,7 @@ impl World {
             contact_solver,
             contact_params,
             constraint_solver,
+            broad_phase: BroadPhaseDetector::default(),
         }
     }
 
@@ -808,31 +865,32 @@ impl World {
 
     /// Detect contacts between all bodies with collision shapes.
     ///
+    /// Uses broad-phase collision detection (sweep-and-prune) to efficiently
+    /// find potentially colliding pairs, then performs narrow-phase detection
+    /// on those pairs.
+    ///
     /// Returns a list of contact points that can be passed to the contact solver.
-    #[must_use]
-    pub fn detect_contacts(&self) -> Vec<ContactPoint> {
+    ///
+    /// # Performance
+    ///
+    /// - **Broad-phase**: O(n log n) sweep-and-prune for scenes with >32 bodies,
+    ///   O(n²) brute-force for smaller scenes.
+    /// - **Narrow-phase**: O(k) where k is the number of potentially colliding pairs.
+    pub fn detect_contacts(&mut self) -> Vec<ContactPoint> {
         if !self.config.enable_contacts {
             return Vec::new();
         }
 
+        // Collect bodies into a Vec for broad-phase processing
+        let body_list: Vec<_> = self.bodies.values().cloned().collect();
+
+        // Use broad-phase to find potentially colliding pairs
+        let potential_pairs = self.broad_phase.find_potential_pairs(&body_list);
+
+        // Narrow-phase: check each potential pair
         let mut contacts = Vec::new();
-        let body_list: Vec<_> = self.bodies.values().collect();
-
-        // O(n²) broad phase - fine for small scenes
-        // TODO: Use cf-spatial BVH for larger scenes
-        for (i, body_a) in body_list.iter().enumerate() {
-            for body_b in body_list.iter().skip(i + 1) {
-                // Skip if both are static (they can't collide meaningfully)
-                if body_a.is_static && body_b.is_static {
-                    continue;
-                }
-
-                // Skip if either is sleeping
-                if body_a.is_sleeping || body_b.is_sleeping {
-                    continue;
-                }
-
-                // Detect contact between this pair
+        for (id_a, id_b) in potential_pairs {
+            if let (Some(body_a), Some(body_b)) = (self.bodies.get(&id_a), self.bodies.get(&id_b)) {
                 if let Some(contact) = self.detect_pair_contact(body_a, body_b) {
                     contacts.push(contact);
                 }
@@ -842,13 +900,29 @@ impl World {
         contacts
     }
 
+    /// Get the broad-phase configuration.
+    #[must_use]
+    pub fn broad_phase_config(&self) -> &BroadPhaseConfig {
+        self.broad_phase.config()
+    }
+
+    /// Update the broad-phase configuration.
+    pub fn set_broad_phase_config(&mut self, config: BroadPhaseConfig) {
+        self.broad_phase.set_config(config);
+    }
+
     /// Detect contact between a pair of bodies.
     #[allow(clippy::unused_self)] // Will use self.config for contact margin in future
+    #[allow(clippy::too_many_lines)] // Complex collision detection logic
     fn detect_pair_contact(&self, body_a: &Body, body_b: &Body) -> Option<ContactPoint> {
         let shape_a = body_a.collision_shape.as_ref()?;
         let shape_b = body_b.collision_shape.as_ref()?;
 
         match (shape_a, shape_b) {
+            // =====================================================================
+            // Sphere collisions
+            // =====================================================================
+
             // Sphere-Sphere
             (CollisionShape::Sphere { radius: r_a }, CollisionShape::Sphere { radius: r_b }) => {
                 ContactPoint::sphere_sphere(
@@ -861,7 +935,7 @@ impl World {
                 )
             }
 
-            // Sphere-Plane (sphere is body_a)
+            // Sphere-Plane
             (CollisionShape::Sphere { radius }, CollisionShape::Plane { normal, distance }) => {
                 ContactPoint::sphere_plane(
                     body_a.state.pose.position,
@@ -873,9 +947,8 @@ impl World {
                 )
             }
 
-            // Plane-Sphere (flip to sphere-plane)
+            // Plane-Sphere (flip)
             (CollisionShape::Plane { normal, distance }, CollisionShape::Sphere { radius }) => {
-                // Flip so sphere is first, then flip the result
                 ContactPoint::sphere_plane(
                     body_b.state.pose.position,
                     *radius,
@@ -887,7 +960,190 @@ impl World {
                 .map(|c| c.flip())
             }
 
-            // TODO: Box-Box, Box-Sphere, Box-Plane
+            // =====================================================================
+            // Box collisions
+            // =====================================================================
+
+            // Box-Box
+            (
+                CollisionShape::Box { half_extents: he_a },
+                CollisionShape::Box { half_extents: he_b },
+            ) => ContactPoint::box_box(
+                body_a.state.pose.position,
+                *he_a,
+                body_b.state.pose.position,
+                *he_b,
+                body_a.id,
+                body_b.id,
+            ),
+
+            // Box-Sphere
+            (CollisionShape::Box { half_extents }, CollisionShape::Sphere { radius }) => {
+                ContactPoint::box_sphere(
+                    body_a.state.pose.position,
+                    *half_extents,
+                    body_b.state.pose.position,
+                    *radius,
+                    body_a.id,
+                    body_b.id,
+                )
+            }
+
+            // Sphere-Box (flip)
+            (CollisionShape::Sphere { radius }, CollisionShape::Box { half_extents }) => {
+                ContactPoint::box_sphere(
+                    body_b.state.pose.position,
+                    *half_extents,
+                    body_a.state.pose.position,
+                    *radius,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip())
+            }
+
+            // Box-Plane
+            (CollisionShape::Box { half_extents }, CollisionShape::Plane { normal, distance }) => {
+                ContactPoint::box_plane(
+                    body_a.state.pose.position,
+                    *half_extents,
+                    *normal,
+                    *distance,
+                    body_a.id,
+                    body_b.id,
+                )
+            }
+
+            // Plane-Box (flip)
+            (CollisionShape::Plane { normal, distance }, CollisionShape::Box { half_extents }) => {
+                ContactPoint::box_plane(
+                    body_b.state.pose.position,
+                    *half_extents,
+                    *normal,
+                    *distance,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip())
+            }
+
+            // =====================================================================
+            // Capsule collisions
+            // =====================================================================
+
+            // Capsule-Plane
+            (
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius,
+                },
+                CollisionShape::Plane {
+                    normal,
+                    distance: plane_dist,
+                },
+            ) => {
+                let (start, end) = shape_a.capsule_endpoints(&body_a.state.pose)?;
+                ContactPoint::capsule_plane(
+                    start,
+                    end,
+                    *radius,
+                    *normal,
+                    *plane_dist,
+                    body_a.id,
+                    body_b.id,
+                )
+            }
+
+            // Plane-Capsule (flip)
+            (
+                CollisionShape::Plane {
+                    normal,
+                    distance: plane_dist,
+                },
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius,
+                },
+            ) => {
+                let (start, end) = shape_b.capsule_endpoints(&body_b.state.pose)?;
+                ContactPoint::capsule_plane(
+                    start,
+                    end,
+                    *radius,
+                    *normal,
+                    *plane_dist,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip())
+            }
+
+            // Capsule-Sphere
+            (
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius: cap_radius,
+                },
+                CollisionShape::Sphere {
+                    radius: sphere_radius,
+                },
+            ) => {
+                let (start, end) = shape_a.capsule_endpoints(&body_a.state.pose)?;
+                ContactPoint::capsule_sphere(
+                    start,
+                    end,
+                    *cap_radius,
+                    body_b.state.pose.position,
+                    *sphere_radius,
+                    body_a.id,
+                    body_b.id,
+                )
+            }
+
+            // Sphere-Capsule (flip)
+            (
+                CollisionShape::Sphere {
+                    radius: sphere_radius,
+                },
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius: cap_radius,
+                },
+            ) => {
+                let (start, end) = shape_b.capsule_endpoints(&body_b.state.pose)?;
+                ContactPoint::capsule_sphere(
+                    start,
+                    end,
+                    *cap_radius,
+                    body_a.state.pose.position,
+                    *sphere_radius,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip())
+            }
+
+            // Capsule-Capsule
+            (
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius: r_a,
+                },
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius: r_b,
+                },
+            ) => {
+                let (start_a, end_a) = shape_a.capsule_endpoints(&body_a.state.pose)?;
+                let (start_b, end_b) = shape_b.capsule_endpoints(&body_b.state.pose)?;
+                ContactPoint::capsule_capsule(
+                    start_a, end_a, *r_a, start_b, end_b, *r_b, body_a.id, body_b.id,
+                )
+            }
+
+            // =====================================================================
+            // Unsupported combinations (capsule-box, plane-plane)
+            // =====================================================================
             _ => None,
         }
     }

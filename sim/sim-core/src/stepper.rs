@@ -801,6 +801,7 @@ mod tests {
             stiffness_power: 1.0,
             damping: 100.0, // Low damping to avoid energy injection
             friction_coefficient: 0.5,
+            friction_anisotropy: 1.0, // Isotropic friction
             rolling_friction: 0.01,
             torsional_friction: 0.01,
             contact_margin: 0.0001,
@@ -867,6 +868,7 @@ mod tests {
             stiffness_power: 1.0,
             damping: 100.0,
             friction_coefficient: 0.5,
+            friction_anisotropy: 1.0, // Isotropic friction
             rolling_friction: 0.01,
             torsional_friction: 0.01,
             contact_margin: 0.0001,
@@ -934,6 +936,7 @@ mod tests {
             stiffness_power: 1.0,
             damping: 100.0,
             friction_coefficient: 0.5,
+            friction_anisotropy: 1.0, // Isotropic friction
             rolling_friction: 0.01,
             torsional_friction: 0.01,
             contact_margin: 0.0001,
