@@ -93,8 +93,11 @@ mod params;
 mod solver;
 
 pub use contact::{ContactForce, ContactManifold, ContactPoint};
-pub use friction::{EllipticFrictionCone, FrictionCone, FrictionModel, RegularizedFriction};
-pub use model::ContactModel;
+pub use friction::{
+    CompleteFrictionModel, CompleteFrictionResult, EllipticFrictionCone, FrictionCone,
+    FrictionModel, PyramidalFrictionCone, RegularizedFriction, RollingFriction, TorsionalFriction,
+};
+pub use model::{ContactModel, FrictionModelType};
 pub use params::{ContactParams, DomainRandomization, MaterialPair, SurfaceMaterial};
 pub use solver::{ContactSolver, ContactSolverConfig};
 

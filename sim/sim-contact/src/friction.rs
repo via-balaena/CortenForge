@@ -25,6 +25,7 @@
 //! When `μ_1 = μ_2`, this reduces to the standard circular (isotropic) cone.
 
 use nalgebra::{Vector2, Vector3};
+use std::f64::consts::PI;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -691,6 +692,864 @@ impl RegularizedFriction {
     }
 }
 
+/// Torsional friction model for resistance to spinning.
+///
+/// Torsional (spinning) friction opposes rotation about the contact normal.
+/// This is modeled in MuJoCo as part of "condim 4-6" contacts.
+///
+/// The torsional friction torque is:
+/// ```text
+/// τ_torsion = -μ_torsion * r_contact * F_n * sign(ω_n)
+/// ```
+///
+/// Where:
+/// - `μ_torsion` is the torsional friction coefficient (dimensionless)
+/// - `r_contact` is the effective contact radius
+/// - `F_n` is the normal force magnitude
+/// - `ω_n` is the angular velocity about the contact normal
+///
+/// # MuJoCo condim Reference
+///
+/// - condim 1: Frictionless (only normal force)
+/// - condim 3: Tangential friction (adds 2D friction)
+/// - condim 4: Adds torsional friction (spinning resistance)
+/// - condim 6: Adds rolling friction (rolling resistance)
+///
+/// # Example
+///
+/// ```
+/// use sim_contact::TorsionalFriction;
+/// use nalgebra::Vector3;
+///
+/// // Create torsional friction model
+/// let friction = TorsionalFriction::new(0.05, 0.01); // μ=0.05, radius=1cm
+///
+/// // Compute torque opposing spinning
+/// let normal = Vector3::z();
+/// let angular_velocity = Vector3::new(0.0, 0.0, 5.0); // Spinning at 5 rad/s
+/// let normal_force = 100.0; // 100 N
+///
+/// let torque = friction.compute_torque(&normal, &angular_velocity, normal_force);
+/// assert!(torque.z < 0.0); // Torque opposes spinning
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TorsionalFriction {
+    /// Torsional friction coefficient (dimensionless).
+    ///
+    /// Typical values: 0.01 - 0.1
+    pub mu: f64,
+
+    /// Effective contact radius (meters).
+    ///
+    /// For a sphere, this is approximately 0.1-0.5 times the sphere radius.
+    /// For a flat contact, this is the radius of the contact patch.
+    pub contact_radius: f64,
+
+    /// Regularization angular velocity (rad/s).
+    ///
+    /// Below this velocity, friction increases linearly rather than
+    /// being constant. This avoids the discontinuity at zero angular velocity.
+    pub regularization_velocity: f64,
+}
+
+impl TorsionalFriction {
+    /// Create a new torsional friction model.
+    ///
+    /// # Arguments
+    ///
+    /// * `mu` - Torsional friction coefficient (dimensionless)
+    /// * `contact_radius` - Effective contact radius in meters
+    #[must_use]
+    pub fn new(mu: f64, contact_radius: f64) -> Self {
+        Self {
+            mu: mu.max(0.0),
+            contact_radius: contact_radius.max(1e-6),
+            regularization_velocity: 0.01, // 0.01 rad/s default
+        }
+    }
+
+    /// Create torsional friction with custom regularization.
+    #[must_use]
+    pub fn with_regularization(mut self, velocity: f64) -> Self {
+        self.regularization_velocity = velocity.max(1e-6);
+        self
+    }
+
+    /// Create from MuJoCo-style parameters.
+    ///
+    /// MuJoCo specifies torsional friction as a coefficient that gets
+    /// multiplied by the contact patch radius.
+    #[must_use]
+    pub fn from_mujoco(friction_coef: f64, contact_radius: f64) -> Self {
+        Self::new(friction_coef, contact_radius)
+    }
+
+    /// Compute the torsional friction torque.
+    ///
+    /// # Arguments
+    ///
+    /// * `normal` - Contact normal (unit vector)
+    /// * `angular_velocity` - Relative angular velocity (ω_A - ω_B)
+    /// * `normal_force` - Normal force magnitude (positive)
+    ///
+    /// # Returns
+    ///
+    /// Torque vector opposing the spinning motion.
+    #[must_use]
+    pub fn compute_torque(
+        &self,
+        normal: &Vector3<f64>,
+        angular_velocity: &Vector3<f64>,
+        normal_force: f64,
+    ) -> Vector3<f64> {
+        if normal_force <= 0.0 || self.mu <= 0.0 {
+            return Vector3::zeros();
+        }
+
+        // Extract the spinning component (rotation about normal)
+        let omega_n = angular_velocity.dot(normal);
+
+        if omega_n.abs() < 1e-12 {
+            return Vector3::zeros();
+        }
+
+        // Maximum torsional torque: μ * r * F_n
+        let max_torque = self.mu * self.contact_radius * normal_force;
+
+        // Apply regularization (smooth near zero velocity)
+        let normalized_speed = omega_n.abs() / self.regularization_velocity;
+        let scale = normalized_speed.tanh();
+
+        // Torque opposes spinning direction
+        let sign = -omega_n.signum();
+        let torque_magnitude = max_torque * scale;
+
+        normal * (torque_magnitude * sign)
+    }
+
+    /// Get the maximum torsional torque for a given normal force.
+    #[must_use]
+    pub fn max_torque(&self, normal_force: f64) -> f64 {
+        self.mu * self.contact_radius * normal_force.max(0.0)
+    }
+
+    /// Check if a given torque is within the torsional friction limit.
+    #[must_use]
+    pub fn torque_within_limit(&self, torque: f64, normal_force: f64) -> bool {
+        torque.abs() <= self.max_torque(normal_force) + 1e-10
+    }
+
+    /// Project a torque onto the torsional friction cone.
+    #[must_use]
+    pub fn project_torque(&self, torque: f64, normal_force: f64) -> f64 {
+        let max = self.max_torque(normal_force);
+        torque.clamp(-max, max)
+    }
+}
+
+impl Default for TorsionalFriction {
+    fn default() -> Self {
+        Self {
+            mu: 0.01,             // Small default torsional friction
+            contact_radius: 0.01, // 1cm contact radius
+            regularization_velocity: 0.01,
+        }
+    }
+}
+
+/// Rolling friction model for resistance to rolling motion.
+///
+/// Rolling friction opposes rotation perpendicular to the contact normal.
+/// This is modeled in MuJoCo as part of "condim 6-10" contacts.
+///
+/// The rolling friction torque is:
+/// ```text
+/// τ_roll = -μ_roll * r * F_n * normalize(ω_tangent)
+/// ```
+///
+/// Where:
+/// - `μ_roll` is the rolling friction coefficient (dimensionless)
+/// - `r` is the rolling radius
+/// - `F_n` is the normal force magnitude
+/// - `ω_tangent` is the angular velocity component perpendicular to normal
+///
+/// # Physical Interpretation
+///
+/// Rolling friction arises from:
+/// - Deformation of the rolling body and surface
+/// - Hysteresis in the contact materials
+/// - Surface roughness
+///
+/// # Example
+///
+/// ```
+/// use sim_contact::RollingFriction;
+/// use nalgebra::Vector3;
+///
+/// // Create rolling friction model
+/// let friction = RollingFriction::new(0.02, 0.05); // μ=0.02, radius=5cm
+///
+/// // Ball rolling in +X direction
+/// let normal = Vector3::z();
+/// let angular_velocity = Vector3::new(0.0, 10.0, 0.0); // Rolling about Y
+/// let normal_force = 50.0;
+///
+/// let torque = friction.compute_torque(&normal, &angular_velocity, normal_force);
+/// assert!(torque.y < 0.0); // Torque opposes rolling
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct RollingFriction {
+    /// Rolling friction coefficient (dimensionless).
+    ///
+    /// Typical values:
+    /// - Hard rubber on concrete: 0.01-0.02
+    /// - Ball bearings: 0.001-0.005
+    /// - Soft rubber: 0.02-0.05
+    pub mu: f64,
+
+    /// Rolling radius (meters).
+    ///
+    /// For a sphere, this is the sphere radius.
+    /// For a cylinder, this is the cylinder radius.
+    pub radius: f64,
+
+    /// Regularization angular velocity (rad/s).
+    pub regularization_velocity: f64,
+}
+
+impl RollingFriction {
+    /// Create a new rolling friction model.
+    ///
+    /// # Arguments
+    ///
+    /// * `mu` - Rolling friction coefficient (dimensionless)
+    /// * `radius` - Rolling radius in meters
+    #[must_use]
+    pub fn new(mu: f64, radius: f64) -> Self {
+        Self {
+            mu: mu.max(0.0),
+            radius: radius.max(1e-6),
+            regularization_velocity: 0.01,
+        }
+    }
+
+    /// Create rolling friction with custom regularization.
+    #[must_use]
+    pub fn with_regularization(mut self, velocity: f64) -> Self {
+        self.regularization_velocity = velocity.max(1e-6);
+        self
+    }
+
+    /// Create from MuJoCo-style parameters.
+    #[must_use]
+    pub fn from_mujoco(friction_coef: f64, radius: f64) -> Self {
+        Self::new(friction_coef, radius)
+    }
+
+    /// Compute the rolling friction torque.
+    ///
+    /// # Arguments
+    ///
+    /// * `normal` - Contact normal (unit vector)
+    /// * `angular_velocity` - Relative angular velocity (ω_A - ω_B)
+    /// * `normal_force` - Normal force magnitude (positive)
+    ///
+    /// # Returns
+    ///
+    /// Torque vector opposing the rolling motion.
+    #[must_use]
+    pub fn compute_torque(
+        &self,
+        normal: &Vector3<f64>,
+        angular_velocity: &Vector3<f64>,
+        normal_force: f64,
+    ) -> Vector3<f64> {
+        if normal_force <= 0.0 || self.mu <= 0.0 {
+            return Vector3::zeros();
+        }
+
+        // Extract the rolling component (rotation perpendicular to normal)
+        let omega_n = angular_velocity.dot(normal);
+        let omega_tangent = angular_velocity - normal * omega_n;
+        let omega_tangent_mag = omega_tangent.norm();
+
+        if omega_tangent_mag < 1e-12 {
+            return Vector3::zeros();
+        }
+
+        // Maximum rolling torque: μ * r * F_n
+        let max_torque = self.mu * self.radius * normal_force;
+
+        // Apply regularization
+        let normalized_speed = omega_tangent_mag / self.regularization_velocity;
+        let scale = normalized_speed.tanh();
+
+        // Torque opposes rolling direction
+        let direction = -omega_tangent / omega_tangent_mag;
+        direction * (max_torque * scale)
+    }
+
+    /// Compute the rolling resistance force.
+    ///
+    /// This is an alternative formulation that computes the equivalent
+    /// linear force that would be needed to overcome rolling friction.
+    ///
+    /// F_roll = μ * F_n / r
+    #[must_use]
+    pub fn compute_resistance_force(&self, normal_force: f64) -> f64 {
+        if self.radius > 1e-10 {
+            self.mu * normal_force / self.radius
+        } else {
+            0.0
+        }
+    }
+
+    /// Get the maximum rolling torque for a given normal force.
+    #[must_use]
+    pub fn max_torque(&self, normal_force: f64) -> f64 {
+        self.mu * self.radius * normal_force.max(0.0)
+    }
+
+    /// Project a torque vector onto the rolling friction cone.
+    #[must_use]
+    pub fn project_torque(&self, torque: Vector3<f64>, normal_force: f64) -> Vector3<f64> {
+        let max = self.max_torque(normal_force);
+        let mag = torque.norm();
+
+        if mag <= max {
+            torque
+        } else if mag > 1e-10 {
+            torque * (max / mag)
+        } else {
+            Vector3::zeros()
+        }
+    }
+}
+
+impl Default for RollingFriction {
+    fn default() -> Self {
+        Self {
+            mu: 0.01,
+            radius: 0.05, // 5cm default radius
+            regularization_velocity: 0.01,
+        }
+    }
+}
+
+/// Pyramidal (linearized) friction cone for constraint-based solvers.
+///
+/// The elliptic/circular friction cone is a quadratic constraint that can be
+/// difficult for linear solvers. Pyramidal cones approximate the cone with
+/// a finite number of flat faces, creating a polyhedral approximation.
+///
+/// # Advantages
+///
+/// - Linear constraints (suitable for LCP/QP solvers)
+/// - Exact projection (no iteration needed)
+/// - Can be solved with complementarity methods
+///
+/// # Trade-offs
+///
+/// - Less accurate than elliptic cones
+/// - More constraints to solve (num_faces vs 1)
+/// - Slight anisotropy in friction directions
+///
+/// # MuJoCo Context
+///
+/// MuJoCo uses elliptic cones by default, but pyramidal cones are common in
+/// other physics engines (Bullet, ODE) and are still supported as an alternative.
+///
+/// # Example
+///
+/// ```
+/// use sim_contact::PyramidalFrictionCone;
+/// use nalgebra::Vector3;
+///
+/// // 8-face pyramid (common choice)
+/// let cone = PyramidalFrictionCone::new(0.5, 8);
+///
+/// // Project a force onto the cone
+/// let force = Vector3::new(100.0, 0.0, 0.0);
+/// let normal_mag = 100.0; // Max friction = 50
+///
+/// let projected = cone.project(force, normal_mag);
+/// assert!(cone.contains(&projected, normal_mag));
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct PyramidalFrictionCone {
+    /// Friction coefficient.
+    pub mu: f64,
+
+    /// Number of faces in the pyramid (must be >= 3).
+    ///
+    /// Common choices:
+    /// - 4: Box approximation (fastest, least accurate)
+    /// - 8: Octagonal pyramid (good balance)
+    /// - 16: Hexadecagonal (high accuracy)
+    pub num_faces: usize,
+
+    /// Precomputed face normals in the tangent plane.
+    face_directions: Vec<Vector2<f64>>,
+
+    /// Precomputed face angles for containment tests.
+    face_angles: Vec<f64>,
+}
+
+impl PyramidalFrictionCone {
+    /// Create a new pyramidal friction cone.
+    ///
+    /// # Arguments
+    ///
+    /// * `mu` - Friction coefficient
+    /// * `num_faces` - Number of faces (clamped to 3-64)
+    #[must_use]
+    pub fn new(mu: f64, num_faces: usize) -> Self {
+        let num_faces = num_faces.clamp(3, 64);
+
+        // Compute face directions evenly distributed around the circle
+        let mut face_directions = Vec::with_capacity(num_faces);
+        let mut face_angles = Vec::with_capacity(num_faces);
+
+        for i in 0..num_faces {
+            let angle = 2.0 * PI * (i as f64) / (num_faces as f64);
+            face_angles.push(angle);
+            face_directions.push(Vector2::new(angle.cos(), angle.sin()));
+        }
+
+        Self {
+            mu: mu.max(0.0),
+            num_faces,
+            face_directions,
+            face_angles,
+        }
+    }
+
+    /// Create a 4-face (box) friction approximation.
+    ///
+    /// This is the fastest but least accurate approximation.
+    #[must_use]
+    pub fn box_approximation(mu: f64) -> Self {
+        Self::new(mu, 4)
+    }
+
+    /// Create an 8-face (octagonal) friction approximation.
+    ///
+    /// Good balance of accuracy and speed.
+    #[must_use]
+    pub fn octagonal(mu: f64) -> Self {
+        Self::new(mu, 8)
+    }
+
+    /// Create a high-accuracy pyramidal cone.
+    #[must_use]
+    pub fn high_accuracy(mu: f64) -> Self {
+        Self::new(mu, 16)
+    }
+
+    /// Get the face directions in the tangent plane.
+    #[must_use]
+    pub fn face_directions(&self) -> &[Vector2<f64>] {
+        &self.face_directions
+    }
+
+    /// Compute the effective friction coefficient at a given angle.
+    ///
+    /// Due to the polygonal approximation, the effective friction varies
+    /// slightly with direction.
+    #[must_use]
+    pub fn effective_mu_at_angle(&self, angle: f64) -> f64 {
+        // The pyramidal cone inscribes the circular cone
+        // Effective mu is reduced at face boundaries
+        let half_face_angle = PI / (self.num_faces as f64);
+
+        // Find the angle relative to the nearest face center
+        let normalized_angle = angle.rem_euclid(2.0 * PI);
+        let face_center_angle = 2.0 * PI / (self.num_faces as f64);
+        let offset_from_center = (normalized_angle % face_center_angle) - half_face_angle;
+
+        // Effective mu = mu * cos(offset)
+        self.mu * offset_from_center.abs().cos()
+    }
+
+    /// Project a tangential force onto the pyramidal friction cone.
+    ///
+    /// The pyramidal cone circumscribes the circular cone (vertices touch the circle).
+    /// This is the standard convention used in physics engines.
+    #[must_use]
+    pub fn project(&self, tangent_force: Vector3<f64>, normal_magnitude: f64) -> Vector3<f64> {
+        if normal_magnitude <= 0.0 || self.mu <= 0.0 {
+            return Vector3::zeros();
+        }
+
+        let f_t = Vector2::new(tangent_force.x, tangent_force.y);
+        let f_t_mag = f_t.norm();
+
+        if f_t_mag < 1e-12 {
+            return Vector3::zeros();
+        }
+
+        // Check if already inside
+        if self.contains_2d(&f_t, normal_magnitude) {
+            return tangent_force;
+        }
+
+        // Find the maximum friction in the direction of the force
+        let max_friction_in_direction = self.max_friction_in_direction(&f_t, normal_magnitude);
+
+        // Scale to that maximum
+        let scale = max_friction_in_direction / f_t_mag;
+        Vector3::new(tangent_force.x * scale, tangent_force.y * scale, 0.0)
+    }
+
+    /// Check if a 2D force is within the pyramidal cone.
+    fn contains_2d(&self, force: &Vector2<f64>, normal_magnitude: f64) -> bool {
+        let f_mag = force.norm();
+        if f_mag < 1e-10 {
+            return true;
+        }
+
+        // For each face, check if the force is on the interior side
+        // A pyramidal cone that circumscribes the circle has vertices at distance μ * f_n
+        // and face normals at angles between vertices
+        let face_angle = 2.0 * PI / (self.num_faces as f64);
+        let half_face_angle = face_angle / 2.0;
+
+        // Distance from origin to face edge (inscribed circle radius)
+        let inscribed_radius = self.mu * normal_magnitude * half_face_angle.cos();
+
+        // Check against each face - the force projected onto the face normal
+        // must be less than the inscribed radius
+        for dir in &self.face_directions {
+            // Face normal is perpendicular to face direction (pointing outward)
+            // The face normal points in the direction of the face
+            let face_normal = *dir;
+            let projection = force.dot(&face_normal);
+            if projection > inscribed_radius + 1e-10 {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Compute the maximum friction in a given direction.
+    fn max_friction_in_direction(&self, direction: &Vector2<f64>, normal_magnitude: f64) -> f64 {
+        let dir_mag = direction.norm();
+        if dir_mag < 1e-12 {
+            return 0.0;
+        }
+
+        let dir_normalized = direction / dir_mag;
+
+        // Find the angle of the direction
+        let angle = dir_normalized.y.atan2(dir_normalized.x);
+        let face_angle = 2.0 * PI / (self.num_faces as f64);
+        let half_face_angle = face_angle / 2.0;
+
+        // The inscribed radius gives us the distance to the face
+        let inscribed_radius = self.mu * normal_magnitude * half_face_angle.cos();
+
+        // Find angle offset from nearest face direction
+        let normalized_angle = angle.rem_euclid(2.0 * PI);
+        let face_idx = ((normalized_angle + half_face_angle) / face_angle).floor();
+        let face_center_angle = face_idx * face_angle;
+        let offset_from_face = normalized_angle - face_center_angle;
+
+        // The max friction at this angle is inscribed_radius / cos(offset)
+        // But we need to handle the case where offset is large
+        let cos_offset = offset_from_face.cos().abs().max(1e-10);
+        inscribed_radius / cos_offset
+    }
+
+    /// Check if a tangential force is within the pyramidal friction cone.
+    #[must_use]
+    pub fn contains(&self, tangent_force: &Vector3<f64>, normal_magnitude: f64) -> bool {
+        if normal_magnitude <= 0.0 {
+            return tangent_force.norm() < 1e-10;
+        }
+
+        let f_t = Vector2::new(tangent_force.x, tangent_force.y);
+        self.contains_2d(&f_t, normal_magnitude)
+    }
+
+    /// Generate the linear constraint matrices for an LCP/QP solver.
+    ///
+    /// Returns the matrix A and vector b such that A * f ≤ b represents
+    /// the friction cone constraint.
+    ///
+    /// Each row corresponds to one face of the pyramid.
+    #[must_use]
+    pub fn constraint_matrix(&self, normal_magnitude: f64) -> (Vec<[f64; 2]>, Vec<f64>) {
+        let half_face_angle = PI / (self.num_faces as f64);
+        let max_value = self.mu * normal_magnitude * half_face_angle.cos();
+
+        let mut a_rows = Vec::with_capacity(self.num_faces);
+        let mut b = Vec::with_capacity(self.num_faces);
+
+        for dir in &self.face_directions {
+            // Face normal (perpendicular to direction, both orientations)
+            let normal = Vector2::new(-dir.y, dir.x);
+            a_rows.push([normal.x, normal.y]);
+            b.push(max_value);
+        }
+
+        (a_rows, b)
+    }
+
+    /// Convert to an elliptic cone with approximately equivalent friction.
+    ///
+    /// Uses the inscribed circle radius.
+    #[must_use]
+    pub fn to_elliptic(&self) -> EllipticFrictionCone {
+        // The inscribed circle has radius mu * cos(π/n)
+        let effective_mu = self.mu * (PI / (self.num_faces as f64)).cos();
+        EllipticFrictionCone::isotropic(effective_mu)
+    }
+}
+
+impl Default for PyramidalFrictionCone {
+    fn default() -> Self {
+        Self::octagonal(0.5)
+    }
+}
+
+/// Combined friction model supporting torsional and rolling components.
+///
+/// This combines tangential friction, torsional friction, and rolling friction
+/// into a unified model, similar to MuJoCo's "condim 6" contacts.
+///
+/// # MuJoCo Contact Dimensionality
+///
+/// - condim 1: Normal force only (frictionless)
+/// - condim 3: Normal + 2D tangential friction
+/// - condim 4: condim 3 + torsional (spinning) friction
+/// - condim 6: condim 4 + 2D rolling friction
+///
+/// # Example
+///
+/// ```
+/// use sim_contact::{CompleteFrictionModel, TorsionalFriction, RollingFriction, EllipticFrictionCone};
+/// use nalgebra::Vector3;
+///
+/// // Full friction model with all components
+/// let friction = CompleteFrictionModel::new(
+///     EllipticFrictionCone::isotropic(0.5),
+///     Some(TorsionalFriction::new(0.03, 0.01)),
+///     Some(RollingFriction::new(0.02, 0.05)),
+/// );
+///
+/// let normal = Vector3::z();
+/// let tangent_vel = Vector3::new(0.1, 0.0, 0.0);
+/// let angular_vel = Vector3::new(0.0, 1.0, 0.5); // Rolling + spinning
+/// let normal_force = 100.0;
+///
+/// let result = friction.compute_force_and_torque(
+///     &normal,
+///     &tangent_vel,
+///     &angular_vel,
+///     normal_force,
+/// );
+///
+/// assert!(result.friction.x < 0.0); // Opposes sliding
+/// assert!(result.torsional_torque.z < 0.0); // Opposes spinning
+/// assert!(result.rolling_torque.y < 0.0); // Opposes rolling
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CompleteFrictionModel {
+    /// Tangential friction cone (sliding resistance).
+    pub tangential: EllipticFrictionCone,
+
+    /// Optional torsional friction (spinning resistance).
+    pub torsional: Option<TorsionalFriction>,
+
+    /// Optional rolling friction (rolling resistance).
+    pub rolling: Option<RollingFriction>,
+}
+
+/// Result of computing complete friction forces and torques.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CompleteFrictionResult {
+    /// Tangential friction force (in world coordinates).
+    pub friction: Vector3<f64>,
+
+    /// Torsional friction torque (about contact normal).
+    pub torsional_torque: Vector3<f64>,
+
+    /// Rolling friction torque (perpendicular to normal).
+    pub rolling_torque: Vector3<f64>,
+}
+
+impl CompleteFrictionResult {
+    /// Get the total torque (torsional + rolling).
+    #[must_use]
+    pub fn total_torque(&self) -> Vector3<f64> {
+        self.torsional_torque + self.rolling_torque
+    }
+
+    /// Check if all components are effectively zero.
+    #[must_use]
+    pub fn is_zero(&self, epsilon: f64) -> bool {
+        self.friction.norm() < epsilon
+            && self.torsional_torque.norm() < epsilon
+            && self.rolling_torque.norm() < epsilon
+    }
+}
+
+impl CompleteFrictionModel {
+    /// Create a new complete friction model.
+    #[must_use]
+    pub fn new(
+        tangential: EllipticFrictionCone,
+        torsional: Option<TorsionalFriction>,
+        rolling: Option<RollingFriction>,
+    ) -> Self {
+        Self {
+            tangential,
+            torsional,
+            rolling,
+        }
+    }
+
+    /// Create a model with only tangential friction (MuJoCo condim 3).
+    #[must_use]
+    pub fn tangential_only(mu: f64) -> Self {
+        Self {
+            tangential: EllipticFrictionCone::isotropic(mu),
+            torsional: None,
+            rolling: None,
+        }
+    }
+
+    /// Create a model with tangential and torsional friction (MuJoCo condim 4).
+    #[must_use]
+    pub fn with_torsional(mu: f64, torsional_mu: f64, contact_radius: f64) -> Self {
+        Self {
+            tangential: EllipticFrictionCone::isotropic(mu),
+            torsional: Some(TorsionalFriction::new(torsional_mu, contact_radius)),
+            rolling: None,
+        }
+    }
+
+    /// Create a complete model with all friction types (MuJoCo condim 6).
+    #[must_use]
+    pub fn complete(
+        mu: f64,
+        torsional_mu: f64,
+        contact_radius: f64,
+        rolling_mu: f64,
+        rolling_radius: f64,
+    ) -> Self {
+        Self {
+            tangential: EllipticFrictionCone::isotropic(mu),
+            torsional: Some(TorsionalFriction::new(torsional_mu, contact_radius)),
+            rolling: Some(RollingFriction::new(rolling_mu, rolling_radius)),
+        }
+    }
+
+    /// Get the MuJoCo-style contact dimensionality.
+    ///
+    /// - 1: Frictionless
+    /// - 3: Tangential only
+    /// - 4: Tangential + torsional
+    /// - 6: All friction types
+    #[must_use]
+    pub fn condim(&self) -> u8 {
+        if self.tangential.mu_1 <= 1e-10 && self.tangential.mu_2 <= 1e-10 {
+            1
+        } else if self.torsional.is_none() {
+            3
+        } else if self.rolling.is_none() {
+            4
+        } else {
+            6
+        }
+    }
+
+    /// Compute all friction forces and torques.
+    ///
+    /// # Arguments
+    ///
+    /// * `normal` - Contact normal (unit vector pointing from B to A)
+    /// * `tangent_velocity` - Relative tangential velocity at contact point
+    /// * `angular_velocity` - Relative angular velocity (ω_A - ω_B)
+    /// * `normal_force` - Normal force magnitude (positive)
+    #[must_use]
+    pub fn compute_force_and_torque(
+        &self,
+        normal: &Vector3<f64>,
+        tangent_velocity: &Vector3<f64>,
+        angular_velocity: &Vector3<f64>,
+        normal_force: f64,
+    ) -> CompleteFrictionResult {
+        let mut result = CompleteFrictionResult::default();
+
+        if normal_force <= 0.0 {
+            return result;
+        }
+
+        // Tangential friction
+        let speed = tangent_velocity.norm();
+        if speed > 1e-10 {
+            let direction = -*tangent_velocity / speed;
+            let desired_force =
+                direction * (self.tangential.mu_1.max(self.tangential.mu_2) * normal_force * 2.0);
+            result.friction = self.tangential.project(desired_force, normal_force);
+        }
+
+        // Torsional friction
+        if let Some(ref torsional) = self.torsional {
+            result.torsional_torque =
+                torsional.compute_torque(normal, angular_velocity, normal_force);
+        }
+
+        // Rolling friction
+        if let Some(ref rolling) = self.rolling {
+            result.rolling_torque = rolling.compute_torque(normal, angular_velocity, normal_force);
+        }
+
+        result
+    }
+
+    /// Create presets for common scenarios.
+    #[must_use]
+    pub fn rubber_ball(radius: f64) -> Self {
+        Self::complete(
+            0.8,          // High tangential friction
+            0.03,         // Moderate torsional
+            radius * 0.1, // Contact radius ~10% of ball radius
+            0.02,         // Moderate rolling resistance
+            radius,       // Rolling radius = ball radius
+        )
+    }
+
+    /// Preset for a wheel on pavement.
+    #[must_use]
+    pub fn wheel(radius: f64) -> Self {
+        Self::complete(
+            0.7,           // Good traction
+            0.01,          // Low torsional (tires grip)
+            radius * 0.05, // Small contact patch
+            0.01,          // Low rolling resistance
+            radius,        // Rolling radius = wheel radius
+        )
+    }
+
+    /// Preset for a box sliding on a surface.
+    #[must_use]
+    pub fn sliding_box() -> Self {
+        Self::with_torsional(
+            0.5,  // Moderate sliding friction
+            0.05, // Some torsional resistance
+            0.02, // Small contact patch
+        )
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -1040,5 +1899,358 @@ mod tests {
                 projected
             );
         }
+    }
+
+    // ==================== Torsional Friction Tests ====================
+
+    #[test]
+    fn test_torsional_friction_opposes_spinning() {
+        let friction = TorsionalFriction::new(0.05, 0.01);
+        let normal = Vector3::z();
+        let angular_velocity = Vector3::new(0.0, 0.0, 5.0); // Spinning at 5 rad/s
+        let normal_force = 100.0;
+
+        let torque = friction.compute_torque(&normal, &angular_velocity, normal_force);
+
+        // Torque should oppose spinning (negative Z since omega is positive Z)
+        assert!(torque.z < 0.0);
+    }
+
+    #[test]
+    fn test_torsional_friction_magnitude() {
+        let mu = 0.05;
+        let contact_radius = 0.01;
+        let friction = TorsionalFriction::new(mu, contact_radius).with_regularization(0.001); // Small regularization
+        let normal = Vector3::z();
+        let angular_velocity = Vector3::new(0.0, 0.0, 10.0); // Fast spin
+        let normal_force = 100.0;
+
+        let torque = friction.compute_torque(&normal, &angular_velocity, normal_force);
+
+        // At high velocity, torque should approach max: μ * r * F_n = 0.05 * 0.01 * 100 = 0.05
+        let expected_max = mu * contact_radius * normal_force;
+        assert_relative_eq!(torque.norm(), expected_max, epsilon = 0.001);
+    }
+
+    #[test]
+    fn test_torsional_friction_regularization() {
+        let friction = TorsionalFriction::new(0.05, 0.01).with_regularization(0.1);
+        let normal = Vector3::z();
+        let normal_force = 100.0;
+
+        // At very low angular velocity, torque should be small (regularized)
+        let slow_omega = Vector3::new(0.0, 0.0, 0.01);
+        let slow_torque = friction.compute_torque(&normal, &slow_omega, normal_force);
+
+        // At high angular velocity, torque should be near maximum
+        let fast_omega = Vector3::new(0.0, 0.0, 1.0);
+        let fast_torque = friction.compute_torque(&normal, &fast_omega, normal_force);
+
+        assert!(slow_torque.norm() < fast_torque.norm());
+    }
+
+    #[test]
+    fn test_torsional_friction_zero_normal_force() {
+        let friction = TorsionalFriction::new(0.05, 0.01);
+        let normal = Vector3::z();
+        let angular_velocity = Vector3::new(0.0, 0.0, 5.0);
+
+        let torque = friction.compute_torque(&normal, &angular_velocity, 0.0);
+        assert_relative_eq!(torque.norm(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_torsional_friction_no_spinning() {
+        let friction = TorsionalFriction::new(0.05, 0.01);
+        let normal = Vector3::z();
+        // Angular velocity perpendicular to normal (rolling, not spinning)
+        let angular_velocity = Vector3::new(5.0, 0.0, 0.0);
+        let normal_force = 100.0;
+
+        let torque = friction.compute_torque(&normal, &angular_velocity, normal_force);
+        assert_relative_eq!(torque.norm(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_torsional_friction_max_torque() {
+        let friction = TorsionalFriction::new(0.05, 0.01);
+        let normal_force = 100.0;
+
+        let max = friction.max_torque(normal_force);
+        assert_relative_eq!(max, 0.05, epsilon = 1e-10); // 0.05 * 0.01 * 100
+    }
+
+    // ==================== Rolling Friction Tests ====================
+
+    #[test]
+    fn test_rolling_friction_opposes_rolling() {
+        let friction = RollingFriction::new(0.02, 0.05);
+        let normal = Vector3::z();
+        // Rolling about Y axis (ball moving in +X direction)
+        let angular_velocity = Vector3::new(0.0, 10.0, 0.0);
+        let normal_force = 100.0;
+
+        let torque = friction.compute_torque(&normal, &angular_velocity, normal_force);
+
+        // Torque should oppose rolling (negative Y)
+        assert!(torque.y < 0.0);
+        assert_relative_eq!(torque.x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(torque.z, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_rolling_friction_magnitude() {
+        let mu = 0.02;
+        let radius = 0.05;
+        let friction = RollingFriction::new(mu, radius).with_regularization(0.001);
+        let normal = Vector3::z();
+        let angular_velocity = Vector3::new(0.0, 10.0, 0.0);
+        let normal_force = 100.0;
+
+        let torque = friction.compute_torque(&normal, &angular_velocity, normal_force);
+
+        // At high velocity, torque ≈ μ * r * F_n = 0.02 * 0.05 * 100 = 0.1
+        let expected_max = mu * radius * normal_force;
+        assert_relative_eq!(torque.norm(), expected_max, epsilon = 0.01);
+    }
+
+    #[test]
+    fn test_rolling_friction_no_rolling() {
+        let friction = RollingFriction::new(0.02, 0.05);
+        let normal = Vector3::z();
+        // Pure spinning (no rolling component)
+        let angular_velocity = Vector3::new(0.0, 0.0, 5.0);
+        let normal_force = 100.0;
+
+        let torque = friction.compute_torque(&normal, &angular_velocity, normal_force);
+        assert_relative_eq!(torque.norm(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_rolling_friction_2d_rolling() {
+        let friction = RollingFriction::new(0.02, 0.05);
+        let normal = Vector3::z();
+        // Rolling in both X and Y directions
+        let angular_velocity = Vector3::new(3.0, 4.0, 0.0);
+        let normal_force = 100.0;
+
+        let torque = friction.compute_torque(&normal, &angular_velocity, normal_force);
+
+        // Torque should oppose the rolling direction
+        // Direction should be opposite to angular velocity in XY plane
+        assert!(torque.x * angular_velocity.x < 0.0);
+        assert!(torque.y * angular_velocity.y < 0.0);
+    }
+
+    #[test]
+    fn test_rolling_friction_resistance_force() {
+        let friction = RollingFriction::new(0.02, 0.05);
+        let normal_force = 100.0;
+
+        let resistance = friction.compute_resistance_force(normal_force);
+        // F = μ * F_n / r = 0.02 * 100 / 0.05 = 40
+        assert_relative_eq!(resistance, 40.0, epsilon = 1e-10);
+    }
+
+    // ==================== Pyramidal Friction Cone Tests ====================
+
+    #[test]
+    fn test_pyramidal_cone_creation() {
+        let cone = PyramidalFrictionCone::new(0.5, 8);
+        assert_eq!(cone.num_faces, 8);
+        assert_eq!(cone.face_directions.len(), 8);
+        assert_relative_eq!(cone.mu, 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_pyramidal_cone_presets() {
+        let box_cone = PyramidalFrictionCone::box_approximation(0.5);
+        let octagonal = PyramidalFrictionCone::octagonal(0.5);
+        let high_accuracy = PyramidalFrictionCone::high_accuracy(0.5);
+
+        assert_eq!(box_cone.num_faces, 4);
+        assert_eq!(octagonal.num_faces, 8);
+        assert_eq!(high_accuracy.num_faces, 16);
+    }
+
+    #[test]
+    fn test_pyramidal_cone_inside() {
+        let cone = PyramidalFrictionCone::octagonal(0.5);
+        let force = Vector3::new(10.0, 0.0, 0.0);
+        let normal_mag = 100.0; // Max friction ≈ 50 * cos(π/8) ≈ 46
+
+        // Force well inside the cone
+        assert!(cone.contains(&force, normal_mag));
+    }
+
+    #[test]
+    fn test_pyramidal_cone_projection() {
+        let cone = PyramidalFrictionCone::octagonal(0.5);
+        let force = Vector3::new(100.0, 0.0, 0.0);
+        let normal_mag = 100.0;
+
+        let projected = cone.project(force, normal_mag);
+
+        // Should be inside after projection
+        assert!(cone.contains(&projected, normal_mag));
+        // Magnitude should be reduced
+        assert!(projected.norm() < force.norm());
+    }
+
+    #[test]
+    fn test_pyramidal_cone_projection_preserves_containment() {
+        let cone = PyramidalFrictionCone::octagonal(0.5);
+        let normal_mag = 100.0;
+
+        let test_forces = vec![
+            Vector3::new(1000.0, 0.0, 0.0),
+            Vector3::new(0.0, 1000.0, 0.0),
+            Vector3::new(500.0, 500.0, 0.0),
+            Vector3::new(-200.0, 300.0, 0.0),
+        ];
+
+        for force in test_forces {
+            let projected = cone.project(force, normal_mag);
+            assert!(
+                cone.contains(&projected, normal_mag),
+                "Projected force {:?} not contained in pyramid",
+                projected
+            );
+        }
+    }
+
+    #[test]
+    fn test_pyramidal_cone_inscribes_circle() {
+        // The pyramidal cone should always be inside the circular cone
+        let pyramid = PyramidalFrictionCone::octagonal(0.5);
+        let circle = FrictionCone::new(0.5);
+        let normal_mag = 100.0;
+
+        // Test forces at pyramid boundary
+        for i in 0..16 {
+            let angle = 2.0 * PI * (i as f64) / 16.0;
+            // Force at the circular cone boundary
+            let force = Vector3::new(50.0 * angle.cos(), 50.0 * angle.sin(), 0.0);
+
+            // This should be on/outside the pyramid boundary
+            // (pyramid inscribes the circle)
+            let in_circle = circle.contains(&force, normal_mag);
+            let in_pyramid = pyramid.contains(&force, normal_mag);
+
+            // If it's in the pyramid, it must be in the circle
+            if in_pyramid {
+                assert!(in_circle);
+            }
+        }
+    }
+
+    #[test]
+    fn test_pyramidal_cone_to_elliptic() {
+        let pyramid = PyramidalFrictionCone::octagonal(0.5);
+        let elliptic = pyramid.to_elliptic();
+
+        // Effective mu should be reduced by cos(π/8)
+        let expected_mu = 0.5 * (PI / 8.0).cos();
+        assert_relative_eq!(elliptic.mu_1, expected_mu, epsilon = 1e-10);
+        assert_relative_eq!(elliptic.mu_2, expected_mu, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_pyramidal_cone_constraint_matrix() {
+        let cone = PyramidalFrictionCone::new(0.5, 4);
+        let normal_mag = 100.0;
+
+        let (a, b) = cone.constraint_matrix(normal_mag);
+
+        assert_eq!(a.len(), 4);
+        assert_eq!(b.len(), 4);
+
+        // All b values should be equal (symmetric cone)
+        for b_val in &b {
+            assert_relative_eq!(*b_val, b[0], epsilon = 1e-10);
+        }
+    }
+
+    // ==================== Complete Friction Model Tests ====================
+
+    #[test]
+    fn test_complete_friction_model_creation() {
+        let model = CompleteFrictionModel::complete(0.5, 0.03, 0.01, 0.02, 0.05);
+
+        assert_eq!(model.condim(), 6);
+        assert!(model.torsional.is_some());
+        assert!(model.rolling.is_some());
+    }
+
+    #[test]
+    fn test_complete_friction_model_condim() {
+        let frictionless = CompleteFrictionModel::tangential_only(0.0);
+        let tangential = CompleteFrictionModel::tangential_only(0.5);
+        let with_torsional = CompleteFrictionModel::with_torsional(0.5, 0.03, 0.01);
+        let complete = CompleteFrictionModel::complete(0.5, 0.03, 0.01, 0.02, 0.05);
+
+        assert_eq!(frictionless.condim(), 1);
+        assert_eq!(tangential.condim(), 3);
+        assert_eq!(with_torsional.condim(), 4);
+        assert_eq!(complete.condim(), 6);
+    }
+
+    #[test]
+    fn test_complete_friction_model_compute() {
+        let model = CompleteFrictionModel::complete(0.5, 0.03, 0.01, 0.02, 0.05);
+        let normal = Vector3::z();
+        let tangent_vel = Vector3::new(1.0, 0.0, 0.0);
+        let angular_vel = Vector3::new(0.0, 5.0, 2.0); // Rolling + spinning
+        let normal_force = 100.0;
+
+        let result =
+            model.compute_force_and_torque(&normal, &tangent_vel, &angular_vel, normal_force);
+
+        // Friction should oppose sliding
+        assert!(result.friction.x < 0.0);
+
+        // Torsional should oppose spinning
+        assert!(result.torsional_torque.z < 0.0);
+
+        // Rolling should oppose rolling
+        assert!(result.rolling_torque.y < 0.0);
+    }
+
+    #[test]
+    fn test_complete_friction_zero_normal_force() {
+        let model = CompleteFrictionModel::complete(0.5, 0.03, 0.01, 0.02, 0.05);
+        let normal = Vector3::z();
+        let tangent_vel = Vector3::new(1.0, 0.0, 0.0);
+        let angular_vel = Vector3::new(0.0, 5.0, 2.0);
+
+        let result = model.compute_force_and_torque(&normal, &tangent_vel, &angular_vel, 0.0);
+
+        assert!(result.is_zero(1e-10));
+    }
+
+    #[test]
+    fn test_complete_friction_presets() {
+        let ball = CompleteFrictionModel::rubber_ball(0.1);
+        let wheel = CompleteFrictionModel::wheel(0.3);
+        let box_model = CompleteFrictionModel::sliding_box();
+
+        assert_eq!(ball.condim(), 6);
+        assert_eq!(wheel.condim(), 6);
+        assert_eq!(box_model.condim(), 4);
+    }
+
+    #[test]
+    fn test_complete_friction_result_total_torque() {
+        let torsional = Vector3::new(0.0, 0.0, 1.0);
+        let rolling = Vector3::new(1.0, 1.0, 0.0);
+
+        let result = CompleteFrictionResult {
+            friction: Vector3::zeros(),
+            torsional_torque: torsional,
+            rolling_torque: rolling,
+        };
+
+        let total = result.total_torque();
+        assert_relative_eq!(total, torsional + rolling, epsilon = 1e-10);
     }
 }

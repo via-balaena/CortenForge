@@ -180,9 +180,10 @@ let result = solver.solve_islands(&joints, &islands, &get_body_state, dt);
 | Nonlinear stiffness (d^p) | Core | `stiffness_power` param | **Implemented** | - | - |
 | Contact margin | Supported | `contact_margin` param | **Implemented** | - | - |
 | Elliptic friction cones | Default | `EllipticFrictionCone` | **Implemented** | - | - |
-| Pyramidal friction cones | Alternative | Implicit (Coulomb) | **Partial** | Low | Low |
-| Torsional friction | condim 4-6 | Missing | **Missing** | Medium | Medium |
-| Rolling friction | condim 6-10 | Missing | **Missing** | Low | High |
+| Pyramidal friction cones | Alternative | `PyramidalFrictionCone` | **Implemented** | - | - |
+| Torsional friction | condim 4-6 | `TorsionalFriction` | **Implemented** | - | - |
+| Rolling friction | condim 6-10 | `RollingFriction` | **Implemented** | - | - |
+| Complete friction model | condim 6 | `CompleteFrictionModel` | **Implemented** | - | - |
 | Contact pairs filtering | Supported | `contype`/`conaffinity` bitmasks | **Implemented** | - | - |
 | solref/solimp params | MuJoCo-specific | Different params | N/A | - | - |
 
@@ -202,6 +203,34 @@ f_n ≥ 0, (f_t1/μ_1)² + (f_t2/μ_2)² ≤ f_n²
 - Conversions between circular and elliptic cones
 
 **Files modified:** `sim-contact/src/friction.rs`, `sim-contact/src/model.rs`, `sim-contact/src/params.rs`
+
+### Implementation Notes: Advanced Friction Models ✅ COMPLETED
+
+MuJoCo uses contact dimensionality (`condim`) to specify which friction components are active:
+- **condim 1**: Normal force only (frictionless)
+- **condim 3**: Normal + 2D tangential friction (sliding)
+- **condim 4**: condim 3 + torsional friction (spinning resistance)
+- **condim 6**: condim 4 + 2D rolling friction (rolling resistance)
+
+**Torsional Friction:**
+Opposes rotation about the contact normal (spinning). Torque is:
+```
+τ_torsion = -μ_torsion * r_contact * F_n * sign(ω_n)
+```
+
+**Rolling Friction:**
+Opposes rotation perpendicular to the contact normal (rolling). Torque is:
+```
+τ_roll = -μ_roll * r_roll * F_n * normalize(ω_tangent)
+```
+
+**Pyramidal Friction Cones:**
+Linearized approximation of circular/elliptic cones using flat faces. Useful for:
+- LCP/QP constraint solvers requiring linear constraints
+- Exact projection (no iteration needed)
+- Complementarity-based contact methods
+
+The pyramid circumscribes the circular cone (vertices touch the circle). More faces = better accuracy but more constraints.
 
 ---
 
@@ -993,17 +1022,98 @@ Focus: All collision detection improvements, primarily in sim-core.
 
 **Files:** `sim-core/src/world.rs`, `sim-core/src/gjk_epa.rs`, `sim-core/src/broad_phase.rs`, `sim-core/src/mid_phase.rs`, `sim-mjcf/src/loader.rs`
 
-### Phase 6: Contact Physics
+### Phase 6: Contact Physics ✅ COMPLETED
 
 Focus: Advanced friction models in sim-contact.
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|
-| Torsional friction | §3 Contact | Medium | MuJoCo condim 4-6 for spinning resistance |
-| Rolling friction | §3 Contact | High | MuJoCo condim 6-10 |
-| Pyramidal friction cones | §3 Contact | Low | Alternative to elliptic (partial exists) |
+| ~~Torsional friction~~ | §3 Contact | Medium | ✅ MuJoCo condim 4-6 for spinning resistance |
+| ~~Rolling friction~~ | §3 Contact | High | ✅ MuJoCo condim 6-10 |
+| ~~Pyramidal friction cones~~ | §3 Contact | Low | ✅ Alternative to elliptic |
 
-**Files:** `sim-contact/src/friction.rs`, `sim-contact/src/model.rs`
+**Implemented:**
+
+**Torsional Friction (`sim-contact/src/friction.rs`):**
+- `TorsionalFriction` - Resistance to spinning (rotation about contact normal)
+- Configurable friction coefficient and contact radius
+- Regularization for smooth force response near zero velocity
+- `compute_torque()` - Compute torque opposing spinning motion
+- `max_torque()`, `project_torque()` - Friction limit helpers
+
+**Rolling Friction (`sim-contact/src/friction.rs`):**
+- `RollingFriction` - Resistance to rolling (rotation perpendicular to normal)
+- Configurable friction coefficient and rolling radius
+- `compute_torque()` - Compute torque opposing rolling motion
+- `compute_resistance_force()` - Equivalent linear resistance force
+- Regularization for smooth force response
+
+**Pyramidal Friction Cones (`sim-contact/src/friction.rs`, `model.rs`):**
+- `PyramidalFrictionCone` - Linearized approximation to circular/elliptic cones
+- Configurable number of faces (3-64, typical: 4, 8, or 16)
+- Presets: `box_approximation()`, `octagonal()`, `high_accuracy()`
+- `contains()`, `project()` - Cone containment and projection
+- `constraint_matrix()` - Generate linear constraints for LCP/QP solvers
+- `FrictionModelType::Pyramidal { num_faces }` - ContactModel integration
+
+**Complete Friction Model (`sim-contact/src/friction.rs`):**
+- `CompleteFrictionModel` - Unified tangential + torsional + rolling friction
+- MuJoCo-style `condim()` method returning contact dimensionality (1, 3, 4, or 6)
+- Factory methods: `tangential_only()`, `with_torsional()`, `complete()`
+- Presets: `rubber_ball()`, `wheel()`, `sliding_box()`
+- `CompleteFrictionResult` - Combined force and torque output
+
+**Usage:**
+```rust
+use sim_contact::{
+    TorsionalFriction, RollingFriction, PyramidalFrictionCone,
+    CompleteFrictionModel, ContactModel, FrictionModelType,
+};
+use nalgebra::Vector3;
+
+// Torsional friction (spinning resistance)
+let torsional = TorsionalFriction::new(0.05, 0.01); // μ=0.05, radius=1cm
+let normal = Vector3::z();
+let angular_vel = Vector3::new(0.0, 0.0, 5.0); // Spinning at 5 rad/s
+let torque = torsional.compute_torque(&normal, &angular_vel, 100.0);
+
+// Rolling friction
+let rolling = RollingFriction::new(0.02, 0.05); // μ=0.02, radius=5cm
+let angular_vel = Vector3::new(0.0, 10.0, 0.0); // Rolling about Y
+let torque = rolling.compute_torque(&normal, &angular_vel, 100.0);
+
+// Pyramidal friction cone (for LCP/QP solvers)
+let pyramid = PyramidalFrictionCone::octagonal(0.5);
+let force = Vector3::new(100.0, 0.0, 0.0);
+let projected = pyramid.project(force, 100.0); // Project to cone
+let (a, b) = pyramid.constraint_matrix(100.0); // Linear constraints
+
+// Complete friction model (MuJoCo condim 6)
+let model = CompleteFrictionModel::complete(
+    0.5,   // tangential μ
+    0.03,  // torsional μ
+    0.01,  // contact radius
+    0.02,  // rolling μ
+    0.05,  // rolling radius
+);
+assert_eq!(model.condim(), 6);
+
+let result = model.compute_force_and_torque(
+    &normal,
+    &Vector3::new(0.1, 0.0, 0.0), // tangent velocity
+    &Vector3::new(0.0, 5.0, 2.0), // angular velocity (rolling + spinning)
+    100.0, // normal force
+);
+
+// Use pyramidal cones in ContactModel
+let contact_model = ContactModel::default()
+    .with_pyramidal_friction(8); // 8-face pyramid
+```
+
+**Files:**
+- `sim-contact/src/friction.rs` - All friction model implementations
+- `sim-contact/src/model.rs` - `FrictionModelType::Pyramidal`, `with_pyramidal_friction()`
+- `sim-contact/src/lib.rs` - Public exports
 
 ### Phase 7: Actuators & Control
 
