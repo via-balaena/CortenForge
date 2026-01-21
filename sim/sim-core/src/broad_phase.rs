@@ -361,6 +361,24 @@ impl SweepAndPrune {
                     )
                 }
             }
+            CollisionShape::ConvexMesh { vertices } => {
+                // Transform all vertices to world space and compute bounds
+                let rotation = pose.rotation.to_rotation_matrix();
+                let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+                let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+
+                for vertex in vertices {
+                    let world_vertex = center + rotation * vertex.coords;
+                    min.x = min.x.min(world_vertex.x);
+                    min.y = min.y.min(world_vertex.y);
+                    min.z = min.z.min(world_vertex.z);
+                    max.x = max.x.max(world_vertex.x);
+                    max.y = max.y.max(world_vertex.y);
+                    max.z = max.z.max(world_vertex.z);
+                }
+
+                Aabb::new(min, max)
+            }
         };
 
         Some(aabb)

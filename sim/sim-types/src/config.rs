@@ -158,7 +158,16 @@ pub struct SolverConfig {
     /// Contact tolerance (penetration below this is acceptable).
     pub contact_tolerance: f64,
     /// Velocity threshold below which objects are considered at rest.
+    ///
+    /// Both linear velocity (m/s) and angular velocity (rad/s) must be
+    /// below this threshold for the body to be considered stationary.
     pub sleep_threshold: f64,
+    /// Time (in seconds) a body must remain below the sleep threshold
+    /// before it is put to sleep.
+    ///
+    /// This hysteresis prevents bodies from sleeping immediately after
+    /// a brief moment of low velocity, which helps avoid jittering.
+    pub sleep_time_threshold: f64,
     /// Whether to allow bodies to sleep (optimization).
     pub allow_sleeping: bool,
     /// Coefficient of restitution (bounciness) for contacts.
@@ -175,6 +184,7 @@ impl Default for SolverConfig {
             position_iterations: 4,
             contact_tolerance: 0.001,
             sleep_threshold: 0.01,
+            sleep_time_threshold: 0.5, // 0.5 seconds before sleeping
             allow_sleeping: true,
             default_restitution: 0.3,
             default_friction: 0.5,
@@ -192,6 +202,7 @@ impl SolverConfig {
             position_iterations: 8,
             contact_tolerance: 0.0001,
             sleep_threshold: 0.001,
+            sleep_time_threshold: 1.0, // Longer time before sleeping for accuracy
             allow_sleeping: false,
             ..Default::default()
         }
@@ -206,6 +217,7 @@ impl SolverConfig {
             position_iterations: 2,
             contact_tolerance: 0.005,
             sleep_threshold: 0.05,
+            sleep_time_threshold: 0.2, // Faster sleep for performance
             allow_sleeping: true,
             ..Default::default()
         }

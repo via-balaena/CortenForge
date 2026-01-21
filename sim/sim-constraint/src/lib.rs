@@ -19,6 +19,35 @@
 //! - **Damping**: Viscous friction at the joint
 //! - **Spring**: Passive stiffness toward a rest position
 //!
+//! # Constraint Solvers
+//!
+//! Two solvers are available:
+//!
+//! - [`ConstraintSolver`]: Gauss-Seidel iterative solver (8-16 iterations typical)
+//! - [`NewtonConstraintSolver`]: Newton-Raphson solver with analytical Jacobians
+//!   (2-3 iterations typical, faster convergence for stiff systems)
+//!
+//! # Constraint Islands
+//!
+//! For performance optimization, use [`ConstraintIslands`] to automatically detect
+//! independent groups of bodies that can be solved separately:
+//!
+//! ```
+//! use sim_constraint::{ConstraintIslands, NewtonConstraintSolver, RevoluteJoint};
+//! use sim_types::BodyId;
+//! use nalgebra::Vector3;
+//!
+//! let joints = vec![
+//!     RevoluteJoint::new(BodyId::new(0), BodyId::new(1), Vector3::z()),
+//!     // Disconnected pair forms separate island
+//!     RevoluteJoint::new(BodyId::new(2), BodyId::new(3), Vector3::z()),
+//! ];
+//!
+//! // Automatic island detection and solving
+//! let mut solver = NewtonConstraintSolver::default();
+//! // solver.solve_with_islands(&joints, get_body_state, dt);
+//! ```
+//!
 //! # Constraint Formulation
 //!
 //! Joints are formulated as bilateral constraints:
@@ -62,18 +91,22 @@
 #![warn(missing_docs)]
 #![allow(clippy::missing_const_for_fn)]
 
+mod islands;
 mod joint;
 mod limits;
 mod motor;
+mod newton;
 mod solver;
 mod types;
 
+pub use islands::{ConstraintIslands, Island, IslandStatistics};
 pub use joint::{
     FixedJoint, Joint, JointDof, JointType, PrismaticJoint, RevoluteJoint, SphericalJoint,
     UniversalJoint,
 };
 pub use limits::{JointLimits, LimitState, LimitStiffness};
 pub use motor::{JointMotor, MotorMode};
+pub use newton::{NewtonConstraintSolver, NewtonSolverConfig, NewtonSolverResult};
 pub use solver::{BodyState, ConstraintSolver, ConstraintSolverConfig, JointForce, SolverResult};
 pub use types::{ConstraintForce, JointState, JointVelocity};
 

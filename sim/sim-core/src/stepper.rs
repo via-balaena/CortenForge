@@ -189,7 +189,8 @@ impl Stepper {
     /// 5. Solve joint constraints (if enabled)
     /// 6. Integrate dynamics
     /// 7. Apply damping and velocity limits
-    /// 8. Advance time
+    /// 8. Update sleep state (put slow bodies to sleep, wake fast ones)
+    /// 9. Advance time
     ///
     /// Returns an observation of the world state after the step.
     ///
@@ -226,6 +227,11 @@ impl Stepper {
         if self.config.enable_constraints {
             world.solve_constraints();
         }
+
+        // Get sleep configuration
+        let allow_sleeping = world.config().solver.allow_sleeping;
+        let sleep_threshold = world.config().solver.sleep_threshold;
+        let sleep_time_threshold = world.config().solver.sleep_time_threshold;
 
         // 6. Integrate dynamics for each body
         for body in world.bodies_mut() {
@@ -269,9 +275,23 @@ impl Stepper {
                     );
                 }
             }
+
+            // 8. Update sleep state
+            if allow_sleeping {
+                if body.should_sleep(sleep_threshold) {
+                    // Body is below velocity threshold, accumulate sleep time
+                    body.sleep_time += dt;
+                    if body.sleep_time >= sleep_time_threshold {
+                        body.put_to_sleep();
+                    }
+                } else {
+                    // Body is moving, reset sleep timer
+                    body.sleep_time = 0.0;
+                }
+            }
         }
 
-        // 8. Advance time
+        // 9. Advance time
         world.advance_time(dt);
 
         // Check for divergence
@@ -942,7 +962,9 @@ mod tests {
             contact_margin: 0.0001,
             restitution: 0.0,
         };
-        let config = SimulationConfig::default().zero_gravity();
+        // Disable sleeping so stationary sphere doesn't go to sleep before collision
+        let mut config = SimulationConfig::default().zero_gravity();
+        config.solver.allow_sleeping = false;
         let mut world = World::with_contact_params(config, contact_params);
 
         // Sphere 1 at origin, moving in +X direction
@@ -1277,5 +1299,275 @@ mod tests {
 
         assert_relative_eq!(body1_force, 0.0, epsilon = 1e-10);
         assert_relative_eq!(body2_force, 0.0, epsilon = 1e-10);
+    }
+
+    // =========================================================================
+    // Sleeping Tests
+    // =========================================================================
+
+    #[test]
+    fn test_stationary_body_goes_to_sleep() {
+        // Create world with sleeping enabled and short sleep time
+        let mut config = SimulationConfig::default().zero_gravity();
+        config.solver.allow_sleeping = true;
+        config.solver.sleep_threshold = 0.01;
+        config.solver.sleep_time_threshold = 0.1; // 0.1 seconds
+
+        let mut world = World::new(config);
+
+        // Body at rest
+        let body_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::origin())),
+            MassProperties::sphere(1.0, 0.5),
+        );
+
+        let mut stepper = Stepper::with_config(StepperConfig::zero_gravity());
+
+        // Initially not sleeping
+        assert!(!world.body(body_id).expect("body").is_sleeping);
+
+        // Run for enough time to exceed sleep_time_threshold (0.1s at 240Hz = ~24 steps)
+        for _ in 0..50 {
+            stepper.step(&mut world).expect("step should succeed");
+        }
+
+        // Body should now be sleeping
+        let body = world.body(body_id).expect("body");
+        assert!(body.is_sleeping, "stationary body should be sleeping");
+        assert_relative_eq!(body.state.twist.linear.norm(), 0.0, epsilon = 1e-10);
+        assert_relative_eq!(body.state.twist.angular.norm(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_moving_body_does_not_sleep() {
+        let mut config = SimulationConfig::default().zero_gravity();
+        config.solver.allow_sleeping = true;
+        config.solver.sleep_threshold = 0.01;
+        config.solver.sleep_time_threshold = 0.1;
+
+        let mut world = World::new(config);
+
+        // Body with significant velocity
+        let body_id = world.add_body(
+            RigidBodyState::new(
+                Pose::from_position(Point3::origin()),
+                sim_types::Twist::linear(Vector3::new(1.0, 0.0, 0.0)),
+            ),
+            MassProperties::sphere(1.0, 0.5),
+        );
+
+        let mut stepper = Stepper::with_config(StepperConfig::zero_gravity());
+
+        // Run simulation
+        for _ in 0..50 {
+            stepper.step(&mut world).expect("step should succeed");
+        }
+
+        // Body should NOT be sleeping since it's moving
+        let body = world.body(body_id).expect("body");
+        assert!(!body.is_sleeping, "moving body should not sleep");
+        assert!(
+            body.state.twist.linear.x > 0.5,
+            "body should still be moving"
+        );
+    }
+
+    #[test]
+    fn test_sleeping_body_wakes_on_force() {
+        let mut config = SimulationConfig::default().zero_gravity();
+        config.solver.allow_sleeping = true;
+        config.solver.sleep_threshold = 0.01;
+        config.solver.sleep_time_threshold = 0.1;
+
+        let mut world = World::new(config);
+
+        let body_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::origin())),
+            MassProperties::sphere(1.0, 0.5),
+        );
+
+        let mut stepper = Stepper::with_config(StepperConfig::zero_gravity());
+
+        // Put body to sleep by running simulation
+        for _ in 0..50 {
+            stepper.step(&mut world).expect("step should succeed");
+        }
+        assert!(world.body(body_id).expect("body").is_sleeping);
+
+        // Apply a force
+        {
+            let body = world.body_mut(body_id).expect("body");
+            body.apply_force(Vector3::new(10.0, 0.0, 0.0));
+        }
+
+        // Body should be awake now
+        let body = world.body(body_id).expect("body");
+        assert!(!body.is_sleeping, "body should wake up after force applied");
+        assert_relative_eq!(body.sleep_time, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_sleeping_body_wakes_on_torque() {
+        let mut config = SimulationConfig::default().zero_gravity();
+        config.solver.allow_sleeping = true;
+        config.solver.sleep_threshold = 0.01;
+        config.solver.sleep_time_threshold = 0.1;
+
+        let mut world = World::new(config);
+
+        let body_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::origin())),
+            MassProperties::sphere(1.0, 0.5),
+        );
+
+        let mut stepper = Stepper::with_config(StepperConfig::zero_gravity());
+
+        // Put body to sleep
+        for _ in 0..50 {
+            stepper.step(&mut world).expect("step should succeed");
+        }
+        assert!(world.body(body_id).expect("body").is_sleeping);
+
+        // Apply a torque
+        {
+            let body = world.body_mut(body_id).expect("body");
+            body.apply_torque(Vector3::new(0.0, 0.0, 1.0));
+        }
+
+        // Body should be awake
+        let body = world.body(body_id).expect("body");
+        assert!(
+            !body.is_sleeping,
+            "body should wake up after torque applied"
+        );
+    }
+
+    #[test]
+    fn test_sleeping_disabled() {
+        let mut config = SimulationConfig::default().zero_gravity();
+        config.solver.allow_sleeping = false; // Disable sleeping
+
+        let mut world = World::new(config);
+
+        let body_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::origin())),
+            MassProperties::sphere(1.0, 0.5),
+        );
+
+        let mut stepper = Stepper::with_config(StepperConfig::zero_gravity());
+
+        // Run for a long time
+        for _ in 0..200 {
+            stepper.step(&mut world).expect("step should succeed");
+        }
+
+        // Body should NOT be sleeping when sleeping is disabled
+        let body = world.body(body_id).expect("body");
+        assert!(
+            !body.is_sleeping,
+            "body should not sleep when sleeping disabled"
+        );
+    }
+
+    #[test]
+    fn test_sleeping_body_skips_integration() {
+        let mut config = SimulationConfig::default().zero_gravity();
+        config.solver.allow_sleeping = true;
+        config.solver.sleep_threshold = 0.01;
+        config.solver.sleep_time_threshold = 0.1;
+
+        let mut world = World::new(config);
+
+        let body_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(1.0, 2.0, 3.0))),
+            MassProperties::sphere(1.0, 0.5),
+        );
+
+        let mut stepper = Stepper::with_config(StepperConfig::zero_gravity());
+
+        // Put body to sleep
+        for _ in 0..50 {
+            stepper.step(&mut world).expect("step should succeed");
+        }
+        assert!(world.body(body_id).expect("body").is_sleeping);
+
+        // Record position
+        let pos_before = world.body(body_id).expect("body").state.pose.position;
+
+        // Run more steps
+        for _ in 0..100 {
+            stepper.step(&mut world).expect("step should succeed");
+        }
+
+        // Position should not have changed (body is sleeping)
+        let pos_after = world.body(body_id).expect("body").state.pose.position;
+        assert_relative_eq!(pos_before.coords, pos_after.coords, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_sleep_time_accumulates() {
+        let mut config = SimulationConfig::default().zero_gravity();
+        config.solver.allow_sleeping = true;
+        config.solver.sleep_threshold = 0.01;
+        config.solver.sleep_time_threshold = 1.0; // Long threshold
+
+        let mut world = World::new(config);
+
+        let body_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::origin())),
+            MassProperties::sphere(1.0, 0.5),
+        );
+
+        let mut stepper = Stepper::with_config(StepperConfig::zero_gravity());
+        let dt = world.timestep();
+
+        // Run some steps (not enough to sleep)
+        for _ in 0..10 {
+            stepper.step(&mut world).expect("step should succeed");
+        }
+
+        // Sleep time should have accumulated
+        let body = world.body(body_id).expect("body");
+        assert!(!body.is_sleeping, "body should not be sleeping yet");
+        assert!(
+            body.sleep_time >= 10.0 * dt - 1e-10,
+            "sleep_time should accumulate, got {}",
+            body.sleep_time
+        );
+    }
+
+    #[test]
+    fn test_sleep_time_resets_on_motion() {
+        let mut config = SimulationConfig::default().zero_gravity();
+        config.solver.allow_sleeping = true;
+        config.solver.sleep_threshold = 0.01;
+        config.solver.sleep_time_threshold = 1.0;
+
+        let mut world = World::new(config);
+
+        let body_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::origin())),
+            MassProperties::sphere(1.0, 0.5),
+        );
+
+        let mut stepper = Stepper::with_config(StepperConfig::zero_gravity());
+
+        // Run some steps to accumulate sleep time
+        for _ in 0..10 {
+            stepper.step(&mut world).expect("step should succeed");
+        }
+
+        // Apply an impulse to make the body move
+        {
+            let body = world.body_mut(body_id).expect("body");
+            body.state.twist.linear = Vector3::new(1.0, 0.0, 0.0);
+        }
+
+        // Run one more step
+        stepper.step(&mut world).expect("step should succeed");
+
+        // Sleep time should have reset
+        let body = world.body(body_id).expect("body");
+        assert_relative_eq!(body.sleep_time, 0.0, epsilon = 1e-10);
     }
 }
