@@ -2,6 +2,8 @@
 
 This document provides a comprehensive comparison between MuJoCo's physics capabilities and CortenForge's current `sim-*` crate implementation. Use this as a roadmap for bridging the gap.
 
+> **Note:** All `sim-*` crates are in initial development (pre-1.0). Breaking changes to APIs are expected and acceptable. Prefer clean, correct implementations over backwards compatibility.
+
 ## Legend
 
 | Status | Meaning |
@@ -22,7 +24,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Explicit Euler | Supported | `ExplicitEuler` | **Implemented** | - | - |
 | Velocity Verlet | - | `VelocityVerlet` | **Implemented** | - | - |
 | Implicit-in-velocity | Core feature | `ImplicitVelocity` | **Implemented** | - | - |
-| Implicit-fast (no Coriolis) | Optimization | Missing | **Missing** | Medium | Medium |
+| Implicit-fast (no Coriolis) | Optimization | `ImplicitFast` | **Implemented** | - | - |
 
 ### Implementation Notes: Implicit Integration ✅ COMPLETED
 
@@ -82,7 +84,7 @@ integrate_with_method_and_damping(
 | Newton solver | Default, 2-3 iterations | `NewtonConstraintSolver` | **Implemented** | - | - |
 | Conjugate Gradient | Supported | Missing | **Missing** | Low | Medium |
 | Constraint islands | Auto-detected | `ConstraintIslands` | **Implemented** | - | - |
-| Warm starting | Supported | Stub (`enable_warm_starting`) | **Stub** | Medium | Low |
+| Warm starting | Supported | `warm_starting` config | **Implemented** | - | - |
 
 ### Implementation Notes: Newton Solver ✅ COMPLETED
 
@@ -709,7 +711,7 @@ for _ in 0..100 {
 
 | Feature | MuJoCo | CortenForge | Status | Priority |
 |---------|--------|-------------|--------|----------|
-| Sparse matrix ops | Native | Missing | **Missing** | High |
+| Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` | **Implemented** | - |
 | Sleeping bodies | Native | `Body::is_sleeping`, `put_to_sleep()`, `wake_up()` | **Implemented** | - |
 | Constraint islands | Auto | `ConstraintIslands` | **Implemented** | - |
 | Multi-threading | Model-data separation | Not designed for | **Missing** | Low |
@@ -863,6 +865,142 @@ let body_id = spawned.body_id("base").expect("base exists");
 3. ~~**Tendons**: For cable robots~~ ✅ COMPLETED
 4. ~~**Deformables**: For soft body simulation~~ ✅ COMPLETED
 
+### Phase 4: Solver & Performance ✅ COMPLETED
+
+Focus: Internal solver improvements for better performance.
+
+1. ~~**Sparse matrix operations**: CSR/CSC matrices for constraint Jacobians~~ ✅ COMPLETED
+2. ~~**Warm starting**: Initialize from previous frame's solution~~ ✅ COMPLETED
+3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ ✅ COMPLETED
+
+**Implemented:**
+
+**Sparse Matrix Operations (`sim-constraint/src/sparse.rs`):**
+- `SparseJacobian` - CSR format for efficient J*v and J^T*v operations
+- `SparseEffectiveMass` - CSC format for Cholesky factorization
+- `JacobianBuilder` - Triplet accumulation for building sparse matrices
+- `InvMassBlock` - Efficient 6x6 inverse mass/inertia storage
+- Automatic dense/sparse switching based on system size (threshold: 16 bodies)
+
+**Warm Starting (`sim-constraint/src/newton.rs`):**
+- `NewtonSolverConfig::warm_starting` - Enable/disable warm starting
+- `NewtonSolverConfig::warm_start_factor` - Scaling factor (0.8-0.95 typical)
+- `SolverStats` - Track warm start usage and convergence metrics
+- Lambda values cached between frames, scaled by warm start factor
+
+**Implicit-Fast Integration (`sim-core/src/integrators.rs`):**
+- `ImplicitFast` - Same as `ImplicitVelocity` but expects Coriolis-free accelerations
+- `IntegrationMethod::ImplicitFast` - Enum variant for dispatch
+- `IntegrationMethod::skips_coriolis()` - Query method
+- Same unconditional stability as `ImplicitVelocity`
+
+**Usage:**
+```rust
+use sim_constraint::{NewtonConstraintSolver, NewtonSolverConfig, SolverStats};
+use sim_core::integrators::{ImplicitFast, integrate_with_method};
+use sim_types::IntegrationMethod;
+
+// Enable warm starting (on by default)
+let config = NewtonSolverConfig::default()
+    .with_warm_starting(true)
+    .with_warm_start_factor(0.9)  // More conservative
+    .with_sparse(true);           // Enable sparse operations
+
+let mut solver = NewtonConstraintSolver::new(config);
+
+// Solve constraints
+let result = solver.solve(&joints, get_body_state, dt);
+
+// Check statistics
+let stats = solver.last_stats();
+println!("Used sparse: {}, warm start: {}", stats.used_sparse, stats.used_warm_start);
+
+// Use implicit-fast integration (no Coriolis)
+let mut state = /* ... */;
+let accel_no_coriolis = /* compute without Coriolis terms */;
+ImplicitFast::integrate(&mut state, accel_no_coriolis, angular_accel, dt);
+
+// Or via dispatch
+integrate_with_method(
+    IntegrationMethod::ImplicitFast,
+    &mut state,
+    accel_no_coriolis,
+    angular_accel,
+    dt,
+);
+```
+
+**Files:**
+- `sim-constraint/src/sparse.rs` - Sparse matrix types and operations
+- `sim-constraint/src/newton.rs` - Warm starting and sparse solver integration
+- `sim-core/src/integrators.rs` - `ImplicitFast` integrator
+- `sim-types/src/config.rs` - `IntegrationMethod::ImplicitFast` enum variant
+
+### Phase 5: Collision Completeness
+
+Focus: All collision detection improvements, primarily in sim-core.
+
+| Feature | Section | Complexity | Notes |
+|---------|---------|------------|-------|
+| Cylinder collision shape | §4 Collision, §5 Geoms | Medium | Common in MJCF models, currently approximated as capsule |
+| Ellipsoid collision shape | §4 Collision, §5 Geoms | Medium | Uncommon, can use convex mesh as fallback |
+| Mid-phase BVH per body | §4 Collision | Medium | AABB tree for complex meshes with many primitives |
+| Contact pairs filtering | §3 Contact | Low | Already parsed in MJCF, needs implementation |
+
+**Files:** `sim-core/src/world.rs`, `sim-core/src/collision.rs`, `sim-core/src/broad_phase.rs`
+
+### Phase 6: Contact Physics
+
+Focus: Advanced friction models in sim-contact.
+
+| Feature | Section | Complexity | Notes |
+|---------|---------|------------|-------|
+| Torsional friction | §3 Contact | Medium | MuJoCo condim 4-6 for spinning resistance |
+| Rolling friction | §3 Contact | High | MuJoCo condim 6-10 |
+| Pyramidal friction cones | §3 Contact | Low | Alternative to elliptic (partial exists) |
+
+**Files:** `sim-contact/src/friction.rs`, `sim-contact/src/model.rs`
+
+### Phase 7: Actuators & Control
+
+Focus: New actuator types and joint coupling in sim-constraint.
+
+| Feature | Section | Complexity | Notes |
+|---------|---------|------------|-------|
+| Integrated velocity actuator | §7 Actuators | Low | Velocity integration for smooth control |
+| General custom actuator | §7 Actuators | Medium | User-defined actuator interface |
+| Pneumatic cylinder actuator | §7 Actuators | Medium | Soft robotics |
+| Adhesion actuator | §7 Actuators | Medium | Gripping, climbing robots |
+| Joint coupling constraints | §10 Equality | Medium | Gear ratios, differential drives |
+
+**Files:** `sim-constraint/src/actuator.rs` (new), `sim-constraint/src/equality.rs` (new)
+
+### Phase 8: Sensors
+
+Focus: Additional sensor types in sim-sensor.
+
+| Feature | Section | Complexity | Notes |
+|---------|---------|------------|-------|
+| Rangefinder sensor | §8 Sensors | Medium | Ray-based distance measurement |
+| Magnetometer sensor | §8 Sensors | Low | Compass-like sensing |
+
+**Files:** `sim-sensor/src/rangefinder.rs` (new), `sim-sensor/src/magnetometer.rs` (new)
+
+### Phase 9: Advanced Features (Backlog)
+
+Focus: Large standalone features, each potentially its own PR.
+
+| Feature | Section | Complexity | Notes |
+|---------|---------|------------|-------|
+| Height field collision | §4 Collision, §5 Geoms | High | Terrain simulation |
+| SDF collision | §4 Collision, §5 Geoms | High | Signed distance fields |
+| Conjugate Gradient solver | §2 Solvers | Medium | Alternative to Newton/PGS |
+| Skinned meshes | §11 Deformables | High | Visual deformation for rendering |
+| Multi-threading | §12 Performance | Low | Model-data separation needed first |
+| MJB binary format | §13 Model Format | Low | Faster loading, MuJoCo-specific |
+| Tendon coupling constraints | §10 Equality | Low | Tendon-based equality constraints |
+| Flex edge constraints | §10 Equality | Low | Deformable edge length constraints |
+
 ---
 
 ## File Reference
@@ -872,7 +1010,7 @@ let body_id = spawned.body_id("base").expect("base exists");
 | `sim-types` | Data structures | `dynamics.rs`, `joint.rs`, `observation.rs` |
 | `sim-core` | Integration, World | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `gjk_epa.rs` |
 | `sim-contact` | Contact physics | `model.rs`, `friction.rs`, `solver.rs` |
-| `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs`, `newton.rs`, `islands.rs` |
+| `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs` |
 | `sim-sensor` | Sensor simulation | `imu.rs`, `force_torque.rs`, `touch.rs` |
 | `sim-urdf` | URDF loading | `loader.rs`, `parser.rs` |
 | `sim-mjcf` | MJCF loading | `loader.rs`, `parser.rs`, `types.rs`, `validation.rs` |

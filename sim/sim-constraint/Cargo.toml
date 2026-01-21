@@ -12,6 +12,7 @@ rust-version.workspace = true
 sim-types = { workspace = true }
 sim-muscle = { workspace = true, optional = true }
 nalgebra = { workspace = true }
+nalgebra-sparse = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
 
