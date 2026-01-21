@@ -2077,17 +2077,15 @@ mod tests {
     fn test_tetrahedron_creation() {
         // Test the tetrahedron helper
         let tetra = CollisionShape::tetrahedron(1.0);
-        match tetra {
-            CollisionShape::ConvexMesh { vertices } => {
-                assert_eq!(vertices.len(), 4, "tetrahedron should have 4 vertices");
-                // All vertices should be at distance 1.732... from origin
-                // (since vertices are at (±1, ±1, ±1) positions)
-                for v in &vertices {
-                    let dist = v.coords.norm();
-                    assert_relative_eq!(dist, 3.0_f64.sqrt(), epsilon = 1e-10);
-                }
-            }
-            _ => panic!("expected ConvexMesh"),
+        let CollisionShape::ConvexMesh { vertices } = tetra else {
+            unreachable!("tetrahedron() always returns ConvexMesh")
+        };
+        assert_eq!(vertices.len(), 4, "tetrahedron should have 4 vertices");
+        // All vertices should be at distance 1.732... from origin
+        // (since vertices are at (±1, ±1, ±1) positions)
+        for v in &vertices {
+            let dist = v.coords.norm();
+            assert_relative_eq!(dist, 3.0_f64.sqrt(), epsilon = 1e-10);
         }
     }
 
