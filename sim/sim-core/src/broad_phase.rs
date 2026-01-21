@@ -266,6 +266,7 @@ impl SweepAndPrune {
     }
 
     /// Compute the AABB for a body.
+    #[allow(clippy::too_many_lines)]
     fn compute_aabb(body: &Body) -> Option<Aabb> {
         let shape = body.collision_shape.as_ref()?;
         let pose = &body.state.pose;
@@ -378,6 +379,54 @@ impl SweepAndPrune {
                 }
 
                 Aabb::new(min, max)
+            }
+            CollisionShape::Cylinder {
+                half_length,
+                radius,
+            } => {
+                // Cylinder is oriented along local Z-axis.
+                // For a tight AABB, we need to compute the projection of the cylinder
+                // onto each axis. The cylinder's AABB is the union of the two circular
+                // end caps.
+                let rotation = pose.rotation.to_rotation_matrix();
+
+                // The cylinder axis in world space
+                let axis = rotation * Vector3::new(0.0, 0.0, *half_length);
+
+                // For each world axis, compute the extent contribution from:
+                // 1. The cylinder axis (contributes |axis.i|)
+                // 2. The circular cross-section perpendicular to the axis
+                //    (contributes radius * sqrt(1 - (local_axis_dir.i)^2))
+                let axis_z = Vector3::new(0.0, 0.0, 1.0);
+                let world_z = rotation * axis_z; // Unit axis direction
+
+                // Extent on each axis = |h*z_i| + r*sqrt(1 - z_i^2)
+                // where z_i is the i-th component of the unit cylinder axis
+                let extent_x = axis.x.abs() + radius * (1.0 - world_z.x.powi(2)).sqrt();
+                let extent_y = axis.y.abs() + radius * (1.0 - world_z.y.powi(2)).sqrt();
+                let extent_z = axis.z.abs() + radius * (1.0 - world_z.z.powi(2)).sqrt();
+
+                Aabb::from_center(center, Vector3::new(extent_x, extent_y, extent_z))
+            }
+            CollisionShape::Ellipsoid { radii } => {
+                // For a rotated ellipsoid, we compute the AABB by projecting
+                // onto each axis. The extent along axis i is:
+                // extent_i = sqrt(sum_j (R_ij * r_j)^2)
+                // where R is the rotation matrix and r are the radii.
+                let rotation = pose.rotation.to_rotation_matrix();
+
+                let extent_x = (rotation[(0, 0)] * radii.x).powi(2)
+                    + (rotation[(0, 1)] * radii.y).powi(2)
+                    + (rotation[(0, 2)] * radii.z).powi(2);
+                let extent_y = (rotation[(1, 0)] * radii.x).powi(2)
+                    + (rotation[(1, 1)] * radii.y).powi(2)
+                    + (rotation[(1, 2)] * radii.z).powi(2);
+                let extent_z = (rotation[(2, 0)] * radii.x).powi(2)
+                    + (rotation[(2, 1)] * radii.y).powi(2)
+                    + (rotation[(2, 2)] * radii.z).powi(2);
+
+                let half_extents = Vector3::new(extent_x.sqrt(), extent_y.sqrt(), extent_z.sqrt());
+                Aabb::from_center(center, half_extents)
             }
         };
 

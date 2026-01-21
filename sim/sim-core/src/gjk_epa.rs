@@ -226,6 +226,11 @@ pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) ->
         CollisionShape::Plane { normal, distance } => {
             support_plane(pose, normal, *distance, direction)
         }
+        CollisionShape::Cylinder {
+            half_length,
+            radius,
+        } => support_cylinder(pose, *half_length, *radius, direction),
+        CollisionShape::Ellipsoid { radii } => support_ellipsoid(pose, radii, direction),
     }
 }
 
@@ -333,6 +338,79 @@ fn support_plane(
     } else {
         base
     }
+}
+
+/// Support function for a cylinder.
+///
+/// A cylinder is like a capsule but with flat caps instead of hemispherical caps.
+/// The support point is either on the circular edge of a cap or on the cylindrical surface.
+fn support_cylinder(
+    pose: &Pose,
+    half_length: f64,
+    radius: f64,
+    direction: &Vector3<f64>,
+) -> Point3<f64> {
+    // Transform direction to local space
+    let local_dir = pose.rotation.inverse() * direction;
+
+    // Decompose direction into axial (Z) and radial (XY) components
+    let axial_component = local_dir.z;
+    let radial_dir = Vector3::new(local_dir.x, local_dir.y, 0.0);
+    let radial_norm = radial_dir.norm();
+
+    // Choose the cap based on axial direction
+    let local_z = if axial_component >= 0.0 {
+        half_length
+    } else {
+        -half_length
+    };
+
+    // Choose point on the circular edge based on radial direction
+    let (local_x, local_y) = if radial_norm > EPSILON {
+        let unit_radial = radial_dir / radial_norm;
+        (unit_radial.x * radius, unit_radial.y * radius)
+    } else {
+        // Direction is purely axial - any point on the cap edge works
+        (radius, 0.0)
+    };
+
+    let local_support = Point3::new(local_x, local_y, local_z);
+    pose.transform_point(&local_support)
+}
+
+/// Support function for an ellipsoid.
+///
+/// An ellipsoid is a scaled sphere. The support function scales the direction
+/// by the inverse radii, normalizes, then scales back by the radii.
+fn support_ellipsoid(pose: &Pose, radii: &Vector3<f64>, direction: &Vector3<f64>) -> Point3<f64> {
+    // Transform direction to local space
+    let local_dir = pose.rotation.inverse() * direction;
+
+    // Scale the direction by the radii (equivalent to finding support on unit sphere
+    // then scaling the result)
+    let scaled_dir = Vector3::new(
+        local_dir.x * radii.x,
+        local_dir.y * radii.y,
+        local_dir.z * radii.z,
+    );
+
+    let scaled_norm = scaled_dir.norm();
+    if scaled_norm < EPSILON {
+        // Degenerate direction - return center
+        return pose.position;
+    }
+
+    // The support point on the ellipsoid surface
+    // p = radii * normalized(radii * dir)
+    // = radii * (radii * dir) / |radii * dir|
+    // = radii^2 * dir / |radii * dir|
+    let local_support = Point3::new(
+        radii.x * scaled_dir.x / scaled_norm,
+        radii.y * scaled_dir.y / scaled_norm,
+        radii.z * scaled_dir.z / scaled_norm,
+    );
+
+    pose.transform_point(&local_support)
 }
 
 // =============================================================================
@@ -1013,5 +1091,173 @@ mod tests {
         let p2 = MinkowskiPoint::new(Point3::new(0.0, 1.0, 0.0), Point3::origin());
         simplex.push(p2);
         assert_eq!(simplex.len(), 2);
+    }
+
+    // =========================================================================
+    // Cylinder tests
+    // =========================================================================
+
+    #[test]
+    fn test_support_cylinder() {
+        let pose = Pose::identity();
+        let half_length = 1.0;
+        let radius = 0.5;
+
+        // Support in +Z direction (top cap center edge)
+        let support = support_cylinder(&pose, half_length, radius, &Vector3::z());
+        assert_relative_eq!(support.z, half_length, epsilon = 1e-10);
+
+        // Support in +X direction (side of cylinder)
+        let support = support_cylinder(&pose, half_length, radius, &Vector3::x());
+        assert_relative_eq!(support.x, radius, epsilon = 1e-10);
+
+        // Support in diagonal direction
+        let dir = Vector3::new(1.0, 0.0, 1.0).normalize();
+        let support = support_cylinder(&pose, half_length, radius, &dir);
+        assert_relative_eq!(support.z, half_length, epsilon = 1e-10);
+        assert_relative_eq!(support.x, radius, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_gjk_cylinder_sphere_intersecting() {
+        let shape_a = CollisionShape::cylinder(1.0, 0.5);
+        let shape_b = CollisionShape::sphere(0.5);
+
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(0.8, 0.0, 0.0); // Should overlap
+
+        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+    }
+
+    #[test]
+    fn test_gjk_cylinder_sphere_separated() {
+        let shape_a = CollisionShape::cylinder(1.0, 0.5);
+        let shape_b = CollisionShape::sphere(0.5);
+
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(2.0, 0.0, 0.0); // Far away
+
+        assert!(!gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+    }
+
+    #[test]
+    fn test_gjk_cylinder_plane_contact() {
+        let shape_a = CollisionShape::cylinder(1.0, 0.5);
+        let shape_b = CollisionShape::plane(Vector3::z(), 0.0);
+
+        // Cylinder centered at z=0.5, so bottom cap touches ground at z=-0.5
+        let pose_a = pose_at(0.0, 0.0, 0.5);
+        let pose_b = Pose::identity();
+
+        // Should be penetrating by 0.5
+        let contact = gjk_epa_contact(&shape_a, &pose_a, &shape_b, &pose_b);
+        assert!(contact.is_some());
+
+        let contact = contact.unwrap();
+        assert!(contact.penetration > 0.0);
+    }
+
+    #[test]
+    fn test_gjk_cylinder_cylinder_intersecting() {
+        let shape_a = CollisionShape::cylinder(1.0, 0.5);
+        let shape_b = CollisionShape::cylinder(1.0, 0.5);
+
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(0.8, 0.0, 0.0); // Should overlap
+
+        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+    }
+
+    // =========================================================================
+    // Ellipsoid tests
+    // =========================================================================
+
+    #[test]
+    fn test_support_ellipsoid() {
+        let pose = Pose::identity();
+        let radii = Vector3::new(2.0, 1.0, 0.5);
+
+        // Support in +X direction
+        let support = support_ellipsoid(&pose, &radii, &Vector3::x());
+        assert_relative_eq!(support.x, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(support.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(support.z, 0.0, epsilon = 1e-10);
+
+        // Support in +Y direction
+        let support = support_ellipsoid(&pose, &radii, &Vector3::y());
+        assert_relative_eq!(support.x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(support.y, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(support.z, 0.0, epsilon = 1e-10);
+
+        // Support in +Z direction
+        let support = support_ellipsoid(&pose, &radii, &Vector3::z());
+        assert_relative_eq!(support.x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(support.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(support.z, 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_support_ellipsoid_equals_sphere() {
+        // An ellipsoid with equal radii should behave like a sphere
+        let pose = pose_at(1.0, 2.0, 3.0);
+        let radii = Vector3::new(0.5, 0.5, 0.5);
+
+        let dir = Vector3::new(1.0, 1.0, 1.0).normalize();
+        let support_ellipsoid_pt = support_ellipsoid(&pose, &radii, &dir);
+        let support_sphere_pt = support_sphere(&pose, 0.5, &dir);
+
+        assert_relative_eq!(support_ellipsoid_pt.x, support_sphere_pt.x, epsilon = 1e-10);
+        assert_relative_eq!(support_ellipsoid_pt.y, support_sphere_pt.y, epsilon = 1e-10);
+        assert_relative_eq!(support_ellipsoid_pt.z, support_sphere_pt.z, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_gjk_ellipsoid_sphere_intersecting() {
+        let shape_a = CollisionShape::ellipsoid_xyz(2.0, 1.0, 0.5);
+        let shape_b = CollisionShape::sphere(0.5);
+
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(2.0, 0.0, 0.0); // Just touching at ellipsoid's long axis
+
+        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+    }
+
+    #[test]
+    fn test_gjk_ellipsoid_sphere_separated() {
+        let shape_a = CollisionShape::ellipsoid_xyz(2.0, 1.0, 0.5);
+        let shape_b = CollisionShape::sphere(0.5);
+
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(3.0, 0.0, 0.0); // Far away
+
+        assert!(!gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
+    }
+
+    #[test]
+    fn test_gjk_ellipsoid_plane_contact() {
+        let shape_a = CollisionShape::ellipsoid_xyz(2.0, 1.0, 0.5);
+        let shape_b = CollisionShape::plane(Vector3::z(), 0.0);
+
+        // Ellipsoid centered at z=0.3, so bottom (z-radius = 0.5) penetrates
+        let pose_a = pose_at(0.0, 0.0, 0.3);
+        let pose_b = Pose::identity();
+
+        let contact = gjk_epa_contact(&shape_a, &pose_a, &shape_b, &pose_b);
+        assert!(contact.is_some());
+
+        let contact = contact.unwrap();
+        // Penetration = 0.5 - 0.3 = 0.2
+        assert_relative_eq!(contact.penetration, 0.2, epsilon = 0.1);
+    }
+
+    #[test]
+    fn test_gjk_ellipsoid_ellipsoid_intersecting() {
+        let shape_a = CollisionShape::ellipsoid_xyz(1.0, 0.5, 0.5);
+        let shape_b = CollisionShape::ellipsoid_xyz(1.0, 0.5, 0.5);
+
+        let pose_a = pose_at(0.0, 0.0, 0.0);
+        let pose_b = pose_at(1.5, 0.0, 0.0); // Should overlap along X
+
+        assert!(gjk_intersection(&shape_a, &pose_a, &shape_b, &pose_b));
     }
 }

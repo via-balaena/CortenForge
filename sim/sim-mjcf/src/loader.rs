@@ -271,6 +271,14 @@ impl MjcfLoader {
             }
         }
 
+        // Transfer collision filtering from first geom (MuJoCo-compatible contype/conaffinity)
+        if let Some(first_geom) = mjcf_body.geoms.first() {
+            // Convert i32 to u32, clamping negative values to 0
+            let contype = first_geom.contype.max(0) as u32;
+            let conaffinity = first_geom.conaffinity.max(0) as u32;
+            body = body.with_collision_filter(contype, conaffinity);
+        }
+
         body
     }
 
@@ -338,16 +346,30 @@ impl MjcfLoader {
                 Some(CollisionShape::capsule(half_length, radius))
             }
             MjcfGeomType::Cylinder => {
-                // Approximate cylinder as capsule
+                // True cylinder shape (not approximated as capsule)
                 let radius = geom.size.first().copied().unwrap_or(0.05);
-                let half_length = geom.size.get(1).copied().unwrap_or(0.1);
-                Some(CollisionShape::capsule(half_length, radius))
+                let half_length = if let Some(fromto) = geom.fromto {
+                    // Compute length from fromto
+                    let start = Vector3::new(fromto[0], fromto[1], fromto[2]);
+                    let end = Vector3::new(fromto[3], fromto[4], fromto[5]);
+                    (end - start).norm() / 2.0
+                } else {
+                    geom.size.get(1).copied().unwrap_or(0.1)
+                };
+                Some(CollisionShape::cylinder(half_length, radius))
+            }
+            MjcfGeomType::Ellipsoid => {
+                // Ellipsoid shape with three radii
+                let rx = geom.size.first().copied().unwrap_or(0.1);
+                let ry = geom.size.get(1).copied().unwrap_or(rx);
+                let rz = geom.size.get(2).copied().unwrap_or(ry);
+                Some(CollisionShape::ellipsoid_xyz(rx, ry, rz))
             }
             MjcfGeomType::Plane => {
                 // Infinite plane
                 Some(CollisionShape::plane(Vector3::z(), 0.0))
             }
-            _ => None, // Mesh, ellipsoid, etc. not supported
+            _ => None, // Mesh, heightfield, etc. not supported
         }
     }
 
