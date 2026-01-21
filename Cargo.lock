@@ -5425,6 +5425,7 @@ dependencies = [
  "approx 0.5.1",
  "nalgebra",
  "serde",
+ "sim-muscle",
  "sim-types",
  "thiserror 2.0.18",
 ]
@@ -5470,6 +5471,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-mjcf"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra",
+ "quick-xml 0.37.5",
+ "serde",
+ "sim-constraint",
+ "sim-core",
+ "sim-types",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sim-muscle"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra",
+ "serde",
+ "sim-types",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "sim-physics"
 version = "0.7.0"
 dependencies = [
@@ -5484,6 +5511,17 @@ dependencies = [
 
 [[package]]
 name = "sim-sensor"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "nalgebra",
+ "serde",
+ "sim-types",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sim-tendon"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",

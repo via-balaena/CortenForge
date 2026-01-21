@@ -1,6 +1,6 @@
 [package]
-name = "sim-constraint"
-description = "Joint constraints and motors for articulated body simulation"
+name = "sim-tendon"
+description = "Tendon and cable simulation for cable-driven robots and biomechanics"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,6 @@ rust-version.workspace = true
 
 [dependencies]
 sim-types = { workspace = true }
-sim-muscle = { workspace = true, optional = true }
 nalgebra = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
@@ -20,7 +19,6 @@ approx = { workspace = true }
 
 [features]
 default = []
-muscle = ["dep:sim-muscle"]
 serde = ["dep:serde", "sim-types/serde", "nalgebra/serde-serialize"]
 
 [lints]
