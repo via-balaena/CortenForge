@@ -1297,7 +1297,6 @@ mod tests {
     #[test]
     fn test_adhesion_shear_ratio() {
         let actuator = AdhesionActuator::new(100.0).with_shear_ratio(0.6);
-        actuator.shear_ratio;
         assert_relative_eq!(actuator.shear_ratio, 0.6, epsilon = 1e-10);
     }
 
@@ -1364,7 +1363,7 @@ mod tests {
     #[test]
     fn test_custom_actuator_debug() {
         let actuator = CustomActuator::new("debug_test", 100.0, |_, _, _, _| 0.0);
-        let debug_str = format!("{:?}", actuator);
+        let debug_str = format!("{actuator:?}");
         assert!(debug_str.contains("debug_test"));
         assert!(debug_str.contains("100"));
     }
