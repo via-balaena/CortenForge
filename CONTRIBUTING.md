@@ -35,6 +35,46 @@ cargo xtask ci
 > **Note:** Git hooks (pre-commit and commit-msg) are automatically installed
 > when you first build the project. No manual setup required.
 
+### Local CI/CD (Recommended)
+
+**Always run local checks before pushing.** Don't wait for GitHub CI to catch issues.
+
+```bash
+# Quick check (format + clippy + tests) - run this before every push
+./scripts/local-quality-check.sh quick
+
+# Full quality gate (mirrors GitHub CI)
+./scripts/local-quality-check.sh
+
+# Individual checks
+./scripts/local-quality-check.sh fmt      # Format only
+./scripts/local-quality-check.sh clippy   # Clippy only
+./scripts/local-quality-check.sh test     # Tests only
+./scripts/local-quality-check.sh docs     # Documentation only
+./scripts/local-quality-check.sh safety   # unwrap/expect check
+./scripts/local-quality-check.sh deps     # Dependency policy
+./scripts/local-quality-check.sh bevy     # Bevy-free (Layer 0)
+./scripts/local-quality-check.sh wasm     # WASM compatibility
+./scripts/local-quality-check.sh coverage # Coverage threshold
+```
+
+### Using `act` for Full GitHub Actions Emulation
+
+If you have Docker installed, you can run the exact GitHub Actions workflows locally using [act](https://github.com/nektos/act):
+
+```bash
+# Install act (macOS)
+brew install act
+
+# Run the quality gate workflow
+act -j format -j clippy -j test
+
+# Run a specific job
+act -j clippy
+```
+
+The `.actrc` file is pre-configured for this project.
+
 ### Optional: Local Coverage (Linux only)
 
 ```bash

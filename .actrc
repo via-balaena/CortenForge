@@ -1,0 +1,14 @@
+# Act configuration for local GitHub Actions testing
+# https://github.com/nektos/act
+
+# Use medium-sized Ubuntu image (good balance of size vs compatibility)
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+
+# Use ARM64 images on Apple Silicon
+--container-architecture linux/amd64
+
+# Reuse containers for faster subsequent runs
+--reuse
+
+# Default to running the quality-gate workflow
+-W .github/workflows/quality-gate.yml
