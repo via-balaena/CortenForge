@@ -369,12 +369,12 @@ Free joints (6 DOF floating bodies) need:
 | Position servo | Yes | `JointMotor::position` | **Implemented** | - | - |
 | Velocity servo | Yes | `JointMotor::velocity` | **Implemented** | - | - |
 | PD control | Yes | `compute_force` with Kp/Kd | **Implemented** | - | - |
-| Integrated velocity | Yes | Missing | **Missing** | Medium | Low |
+| Integrated velocity | Yes | `IntegratedVelocityActuator` | **Implemented** | - | - |
 | Damper | Yes | Joint damping | **Implemented** | - | - |
-| Cylinder (pneumatic) | Yes | Missing | **Missing** | Low | Medium |
+| Cylinder (pneumatic) | Yes | `PneumaticCylinderActuator` | **Implemented** | - | - |
 | Muscle (Hill-type) | Yes | `HillMuscle` (via sim-muscle) | **Implemented** | - | - |
-| Adhesion | Yes | Missing | **Missing** | Low | Medium |
-| General (custom) | Yes | Missing | **Missing** | Medium | Medium |
+| Adhesion | Yes | `AdhesionActuator` | **Implemented** | - | - |
+| General (custom) | Yes | `CustomActuator<F>` | **Implemented** | - | - |
 
 ### Implementation Notes: Muscle Model ✅ COMPLETED
 
@@ -611,7 +611,7 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 |------------|--------|-------------|--------|----------|
 | Connect (ball) | Yes | Via SphericalJoint | **Partial** | Medium |
 | Weld | Yes | Via FixedJoint | **Implemented** | - |
-| Joint coupling | Yes | Missing | **Missing** | Medium |
+| Joint coupling | Yes | `JointCoupling`, `GearCoupling`, `DifferentialCoupling` | **Implemented** | - |
 | Tendon coupling | Yes | Missing | **Missing** | Low |
 | Flex (edge length) | Yes | Missing | **Missing** | Low |
 
@@ -1115,19 +1115,127 @@ let contact_model = ContactModel::default()
 - `sim-contact/src/model.rs` - `FrictionModelType::Pyramidal`, `with_pyramidal_friction()`
 - `sim-contact/src/lib.rs` - Public exports
 
-### Phase 7: Actuators & Control
+### Phase 7: Actuators & Control ✅ COMPLETED
 
 Focus: New actuator types and joint coupling in sim-constraint.
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|
-| Integrated velocity actuator | §7 Actuators | Low | Velocity integration for smooth control |
-| General custom actuator | §7 Actuators | Medium | User-defined actuator interface |
-| Pneumatic cylinder actuator | §7 Actuators | Medium | Soft robotics |
-| Adhesion actuator | §7 Actuators | Medium | Gripping, climbing robots |
-| Joint coupling constraints | §10 Equality | Medium | Gear ratios, differential drives |
+| ~~Integrated velocity actuator~~ | §7 Actuators | Low | ✅ Velocity integration for smooth control |
+| ~~General custom actuator~~ | §7 Actuators | Medium | ✅ User-defined actuator interface |
+| ~~Pneumatic cylinder actuator~~ | §7 Actuators | Medium | ✅ Soft robotics |
+| ~~Adhesion actuator~~ | §7 Actuators | Medium | ✅ Gripping, climbing robots |
+| ~~Joint coupling constraints~~ | §10 Equality | Medium | ✅ Gear ratios, differential drives |
 
-**Files:** `sim-constraint/src/actuator.rs` (new), `sim-constraint/src/equality.rs` (new)
+**Implemented:**
+
+**Actuator Trait (`sim-constraint/src/actuator.rs`):**
+- `Actuator` trait - Common interface for all actuator types
+- `set_command()`, `compute_force()`, `reset()`, `max_force()`, `has_dynamics()`
+- `BoxedActuator` type alias for trait objects
+- `IntoBoxedActuator` extension trait
+
+**Integrated Velocity Actuator:**
+- `IntegratedVelocityActuator` - MuJoCo-style velocity integration
+- Integrates velocity commands into internal position target
+- PD control to track integrated target position
+- Position limits with clamping
+- Configurable gains (kp, kd) and max velocity/force
+
+**Pneumatic Cylinder Actuator:**
+- `PneumaticCylinderActuator` - Double-acting cylinder with pressure dynamics
+- Separate extend/retract chambers with pressure state
+- Fill, exhaust, and leak rate constants
+- Coulomb and viscous friction modeling
+- Presets: `mckibben_small()`, `industrial_medium()`, `hydraulic()`
+
+**Adhesion Actuator:**
+- `AdhesionActuator` - Controllable adhesion for gripping/climbing
+- First-order activation dynamics with separate on/off time constants
+- Contact-dependent force (requires contact ratio input)
+- Shear adhesion ratio for sliding resistance
+- Presets: `electroadhesion()`, `gecko_adhesion()`, `suction_cup()`, `magnetic()`
+
+**Custom Actuator:**
+- `CustomActuator<F>` - User-defined actuator via closure
+- Generic over `FnMut(command, position, velocity, dt) -> force`
+- Automatic force clamping to max_force
+
+**Joint Coupling Constraints (`sim-constraint/src/equality.rs`):**
+- `JointCoupling` - Linear constraint: `Σᵢ cᵢ · qᵢ = offset`
+- `CouplingCoefficient` - Per-joint coefficient storage
+- `GearCoupling` - Specialized two-joint gear ratio
+- `DifferentialCoupling` - Two inputs to one output (averaging, difference, weighted)
+- `CouplingGroup` - Collection of couplings solved together
+- Factory methods: `gear()`, `mimic()`, `parallel()`, `anti_parallel()`
+- Baumgarte stabilization for position drift correction
+- Compliance and damping for soft constraints
+
+**Usage:**
+```rust
+use sim_constraint::{
+    Actuator, IntegratedVelocityActuator, PneumaticCylinderActuator,
+    AdhesionActuator, CustomActuator,
+    JointCoupling, GearCoupling, DifferentialCoupling, CouplingGroup,
+};
+use sim_types::JointId;
+
+// Integrated velocity actuator
+let mut actuator = IntegratedVelocityActuator::new(2.0, 100.0)  // max vel, max force
+    .with_position_limits(-1.5, 1.5)
+    .with_gains(1000.0, 100.0);
+
+actuator.set_command(0.5);  // 50% of max velocity
+let force = actuator.compute_force(position, velocity, dt);
+
+// Pneumatic cylinder
+let mut cylinder = PneumaticCylinderActuator::mckibben_small();
+cylinder.set_command(1.0);  // Full extend
+let force = cylinder.compute_force(position, velocity, dt);
+
+// Adhesion gripper
+let mut gripper = AdhesionActuator::gecko_adhesion(100.0);
+gripper.set_contact_ratio(1.0);  // Full contact
+gripper.set_command(1.0);  // Activate adhesion
+let adhesion_force = gripper.compute_force(position, velocity, dt);
+
+// Custom actuator (spring-damper)
+let custom = CustomActuator::new("spring_damper", 100.0, |cmd, pos, vel, _dt| {
+    500.0 * (cmd - pos) - 50.0 * vel  // PD controller
+});
+
+// Gear coupling (10:1 reduction)
+let gear = GearCoupling::reduction(JointId::new(0), JointId::new(1), 10.0);
+let output_pos = gear.output_from_input(input_pos);
+
+// Differential drive (average of two motors)
+let diff = DifferentialCoupling::averaging(
+    JointId::new(0),  // left motor
+    JointId::new(1),  // right motor
+    JointId::new(2),  // output wheel
+);
+let output = diff.compute_output(left_pos, right_pos);
+
+// Mimic joint (URDF-style)
+let mimic = JointCoupling::mimic(
+    JointId::new(0),  // leader
+    JointId::new(1),  // follower
+    2.0,              // multiplier
+    0.5,              // offset
+);
+
+// Coupling group for batch solving
+let group = CouplingGroup::new()
+    .with_gear(JointId::new(0), JointId::new(1), 2.0)
+    .with_mimic(JointId::new(2), JointId::new(3), 1.0, 0.0);
+
+let forces = group.compute_all_forces(get_position, get_velocity, dt);
+```
+
+**Files:**
+- `sim-constraint/src/actuator.rs` - Actuator trait and implementations
+- `sim-constraint/src/equality.rs` - Joint coupling constraints
+- `sim-constraint/src/lib.rs` - Public exports
 
 ### Phase 8: Sensors
 
@@ -1164,7 +1272,7 @@ Focus: Large standalone features, each potentially its own PR.
 | `sim-types` | Data structures | `dynamics.rs`, `joint.rs`, `observation.rs` |
 | `sim-core` | Integration, World | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `mid_phase.rs`, `gjk_epa.rs` |
 | `sim-contact` | Contact physics | `model.rs`, `friction.rs`, `solver.rs` |
-| `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs` |
+| `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `actuator.rs`, `equality.rs` |
 | `sim-sensor` | Sensor simulation | `imu.rs`, `force_torque.rs`, `touch.rs` |
 | `sim-urdf` | URDF loading | `loader.rs`, `parser.rs` |
 | `sim-mjcf` | MJCF loading | `loader.rs`, `parser.rs`, `types.rs`, `validation.rs` |

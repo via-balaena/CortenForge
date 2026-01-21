@@ -91,6 +91,8 @@
 #![warn(missing_docs)]
 #![allow(clippy::missing_const_for_fn)]
 
+pub mod actuator;
+pub mod equality;
 mod islands;
 mod joint;
 mod limits;
@@ -102,6 +104,13 @@ mod solver;
 mod sparse;
 mod types;
 
+pub use actuator::{
+    Actuator, AdhesionActuator, BoxedActuator, CustomActuator, IntegratedVelocityActuator,
+    IntoBoxedActuator, PneumaticCylinderActuator,
+};
+pub use equality::{
+    CouplingCoefficient, CouplingGroup, DifferentialCoupling, GearCoupling, JointCoupling,
+};
 pub use islands::{ConstraintIslands, Island, IslandStatistics};
 pub use joint::{
     FixedJoint, Joint, JointDof, JointType, PrismaticJoint, RevoluteJoint, SphericalJoint,
