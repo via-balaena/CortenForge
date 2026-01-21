@@ -338,7 +338,7 @@ impl Bvh {
 
     /// Query the BVH with a callback for each potentially overlapping primitive.
     ///
-    /// More efficient than [`query`] when you don't need to collect all results.
+    /// More efficient than [`Self::query`] when you don't need to collect all results.
     pub fn query_callback<F>(&self, query_aabb: &Aabb, mut callback: F)
     where
         F: FnMut(&BvhPrimitive),
