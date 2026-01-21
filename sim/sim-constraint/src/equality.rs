@@ -1012,4 +1012,248 @@ mod tests {
         let output = diff.compute_output(10.0, 20.0);
         assert_relative_eq!(output, 0.7f64.mul_add(10.0, 0.3 * 20.0), epsilon = 1e-10);
     }
+
+    #[test]
+    fn test_coupling_enable_disable() {
+        let mut coupling = JointCoupling::gear(JointId::new(0), JointId::new(1), 2.0);
+
+        assert!(coupling.is_enabled());
+
+        coupling.disable();
+        assert!(!coupling.is_enabled());
+
+        coupling.enable();
+        assert!(coupling.is_enabled());
+    }
+
+    #[test]
+    fn test_coupling_num_joints() {
+        let coupling = JointCoupling::gear(JointId::new(0), JointId::new(1), 2.0);
+        assert_eq!(coupling.num_joints(), 2);
+
+        let coupling3 = JointCoupling::new("triple")
+            .with_joint(JointId::new(0), 1.0)
+            .with_joint(JointId::new(1), -1.0)
+            .with_joint(JointId::new(2), 0.5);
+        assert_eq!(coupling3.num_joints(), 3);
+    }
+
+    #[test]
+    fn test_coupling_offset() {
+        let coupling = JointCoupling::mimic(JointId::new(0), JointId::new(1), 1.0, 0.5);
+        assert_relative_eq!(coupling.offset(), 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_coupling_with_baumgarte() {
+        let coupling =
+            JointCoupling::gear(JointId::new(0), JointId::new(1), 2.0).with_baumgarte(0.5);
+        assert_relative_eq!(coupling.baumgarte_factor, 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_coupling_with_compliance() {
+        let coupling =
+            JointCoupling::gear(JointId::new(0), JointId::new(1), 2.0).with_compliance(0.01);
+        assert_relative_eq!(coupling.compliance, 0.01, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_coupling_with_damping() {
+        let coupling = JointCoupling::gear(JointId::new(0), JointId::new(1), 2.0).with_damping(0.1);
+        assert_relative_eq!(coupling.damping, 0.1, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_coupling_default() {
+        let coupling = JointCoupling::default();
+        assert_eq!(coupling.name(), "coupling");
+        assert!(coupling.is_enabled());
+    }
+
+    #[test]
+    fn test_coupling_coefficients_accessor() {
+        let coupling = JointCoupling::gear(JointId::new(0), JointId::new(1), 2.0);
+        let coefficients = coupling.coefficients();
+        assert_eq!(coefficients.len(), 2);
+        assert_eq!(coefficients[0].joint, JointId::new(0));
+        assert_relative_eq!(coefficients[0].coefficient, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_gear_coupling_input_from_output() {
+        let gear = GearCoupling::new(JointId::new(0), JointId::new(1), 2.0);
+
+        let input = gear.input_from_output(4.0);
+        assert_relative_eq!(input, 2.0, epsilon = 1e-10);
+
+        // Test with zero ratio
+        let gear_zero = GearCoupling::new(JointId::new(0), JointId::new(1), 0.0);
+        let input_zero = gear_zero.input_from_output(4.0);
+        assert_relative_eq!(input_zero, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_gear_coupling_accessors() {
+        let gear = GearCoupling::new(JointId::new(0), JointId::new(1), 3.0);
+
+        assert_eq!(gear.input(), JointId::new(0));
+        assert_eq!(gear.output(), JointId::new(1));
+        assert_relative_eq!(gear.ratio(), 3.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_gear_coupling_with_compliance() {
+        let gear = GearCoupling::new(JointId::new(0), JointId::new(1), 2.0).with_compliance(0.05);
+        assert_relative_eq!(gear.coupling().compliance, 0.05, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_gear_coupling_with_damping() {
+        let gear = GearCoupling::new(JointId::new(0), JointId::new(1), 2.0).with_damping(0.2);
+        assert_relative_eq!(gear.coupling().damping, 0.2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_gear_coupling_mut() {
+        let mut gear = GearCoupling::new(JointId::new(0), JointId::new(1), 2.0);
+        gear.coupling_mut().disable();
+        assert!(!gear.coupling().is_enabled());
+    }
+
+    #[test]
+    fn test_differential_accessors() {
+        let diff = DifferentialCoupling::new(JointId::new(0), JointId::new(1), JointId::new(2));
+
+        assert_eq!(diff.input1(), JointId::new(0));
+        assert_eq!(diff.input2(), JointId::new(1));
+        assert_eq!(diff.output(), JointId::new(2));
+
+        let (c1, c2) = diff.coefficients();
+        assert_relative_eq!(c1, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(c2, 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_differential_with_compliance() {
+        let diff = DifferentialCoupling::new(JointId::new(0), JointId::new(1), JointId::new(2))
+            .with_compliance(0.01);
+        assert_relative_eq!(diff.coupling().compliance, 0.01, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_differential_with_damping() {
+        let diff = DifferentialCoupling::new(JointId::new(0), JointId::new(1), JointId::new(2))
+            .with_damping(0.5);
+        assert_relative_eq!(diff.coupling().damping, 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_differential_coupling_mut() {
+        let mut diff = DifferentialCoupling::new(JointId::new(0), JointId::new(1), JointId::new(2));
+        diff.coupling_mut().disable();
+        assert!(!diff.coupling().is_enabled());
+    }
+
+    #[test]
+    fn test_coupling_group_add() {
+        let mut group = CouplingGroup::new();
+        assert!(group.is_empty());
+
+        group.add(JointCoupling::gear(JointId::new(0), JointId::new(1), 2.0));
+        assert_eq!(group.len(), 1);
+        assert!(!group.is_empty());
+    }
+
+    #[test]
+    fn test_coupling_group_couplings_accessor() {
+        let group = CouplingGroup::new()
+            .with_gear(JointId::new(0), JointId::new(1), 2.0)
+            .with_gear(JointId::new(1), JointId::new(2), 3.0);
+
+        let couplings = group.couplings();
+        assert_eq!(couplings.len(), 2);
+    }
+
+    #[test]
+    fn test_coupling_group_couplings_mut() {
+        let mut group = CouplingGroup::new().with_gear(JointId::new(0), JointId::new(1), 2.0);
+
+        group.couplings_mut()[0].disable();
+        assert!(!group.couplings()[0].is_enabled());
+    }
+
+    #[test]
+    fn test_coupling_group_with_mimic() {
+        let group = CouplingGroup::new().with_mimic(JointId::new(0), JointId::new(1), 1.0, 0.5);
+        assert_eq!(group.len(), 1);
+    }
+
+    #[test]
+    fn test_coupling_group_compute_all_forces() {
+        let group = CouplingGroup::new().with_gear(JointId::new(0), JointId::new(1), 2.0);
+
+        // Position error
+        let get_pos = |id: JointId| {
+            if id.raw() == 0 { 1.0 } else { 0.0 }
+        };
+        let get_vel = |_: JointId| 0.0;
+
+        let forces = group.compute_all_forces(get_pos, get_vel, 0.01);
+        assert!(forces.contains_key(&JointId::new(0)));
+        assert!(forces.contains_key(&JointId::new(1)));
+    }
+
+    #[test]
+    fn test_compute_correction_empty() {
+        let coupling = JointCoupling::new("empty");
+        let correction = coupling.compute_correction(|_| 0.0, |_| 0.0, 0.01);
+        assert_relative_eq!(correction, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_compute_velocity_disabled() {
+        let coupling =
+            JointCoupling::gear(JointId::new(0), JointId::new(1), 2.0).with_enabled(false);
+        let velocity = coupling.compute_velocity(|_| 1.0);
+        assert_relative_eq!(velocity, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_compute_correction_disabled() {
+        let coupling =
+            JointCoupling::gear(JointId::new(0), JointId::new(1), 2.0).with_enabled(false);
+        let correction = coupling.compute_correction(|_| 1.0, |_| 1.0, 0.01);
+        assert_relative_eq!(correction, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_coupling_coefficient_new() {
+        let coef = CouplingCoefficient::new(JointId::new(5), 2.5);
+        assert_eq!(coef.joint, JointId::new(5));
+        assert_relative_eq!(coef.coefficient, 2.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_coupling_baumgarte_clamping() {
+        // Test clamping to 1.0
+        let coupling = JointCoupling::new("test").with_baumgarte(2.0);
+        assert_relative_eq!(coupling.baumgarte_factor, 1.0, epsilon = 1e-10);
+
+        // Test clamping to 0.0
+        let coupling2 = JointCoupling::new("test").with_baumgarte(-1.0);
+        assert_relative_eq!(coupling2.baumgarte_factor, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_coupling_compliance_non_negative() {
+        let coupling = JointCoupling::new("test").with_compliance(-0.5);
+        assert_relative_eq!(coupling.compliance, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_coupling_damping_non_negative() {
+        let coupling = JointCoupling::new("test").with_damping(-0.5);
+        assert_relative_eq!(coupling.damping, 0.0, epsilon = 1e-10);
+    }
 }

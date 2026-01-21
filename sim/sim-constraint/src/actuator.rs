@@ -1168,4 +1168,253 @@ mod tests {
         // Hydraulic has fastest dynamics
         assert!(hydraulic.fill_rate > industrial.fill_rate);
     }
+
+    #[test]
+    fn test_integrated_velocity_with_name() {
+        let actuator = IntegratedVelocityActuator::new(1.0, 10.0).with_name("test_actuator");
+        assert_eq!(actuator.name(), "test_actuator");
+    }
+
+    #[test]
+    fn test_integrated_velocity_disabled() {
+        let mut actuator = IntegratedVelocityActuator::new(1.0, 100.0).with_enabled(false);
+        actuator.set_command(1.0);
+        let force = actuator.compute_force(0.0, 0.0, 0.01);
+        assert_relative_eq!(force, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_integrated_velocity_max_velocity() {
+        let actuator = IntegratedVelocityActuator::new(5.0, 100.0);
+        assert_relative_eq!(actuator.max_velocity(), 5.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_integrated_velocity_default() {
+        let actuator = IntegratedVelocityActuator::default();
+        assert_relative_eq!(actuator.max_velocity(), 1.0, epsilon = 1e-10);
+        assert_relative_eq!(actuator.max_force(), 10.0, epsilon = 1e-10);
+        assert!(actuator.has_dynamics());
+    }
+
+    #[test]
+    fn test_integrated_velocity_initial_target() {
+        let actuator = IntegratedVelocityActuator::new(1.0, 10.0)
+            .with_position_limits(-2.0, 2.0)
+            .with_initial_target(0.5);
+        assert_relative_eq!(actuator.target_position(), 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_pneumatic_with_name() {
+        let actuator = PneumaticCylinderActuator::new(0.001, 500_000.0).with_name("pneumatic_test");
+        assert_eq!(actuator.name(), "pneumatic_test");
+    }
+
+    #[test]
+    fn test_pneumatic_with_rates() {
+        let actuator = PneumaticCylinderActuator::new(0.001, 500_000.0).with_rates(20.0, 25.0, 0.2);
+        assert_relative_eq!(actuator.fill_rate, 20.0, epsilon = 1e-10);
+        assert_relative_eq!(actuator.exhaust_rate, 25.0, epsilon = 1e-10);
+        assert_relative_eq!(actuator.leak_rate, 0.2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_pneumatic_disabled() {
+        let mut actuator = PneumaticCylinderActuator::new(0.001, 500_000.0).with_enabled(false);
+        actuator.set_command(1.0);
+        let force = actuator.compute_force(0.0, 0.0, 0.01);
+        assert_relative_eq!(force, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_pneumatic_reset() {
+        let mut actuator = PneumaticCylinderActuator::new(0.001, 500_000.0);
+
+        // Charge up
+        actuator.set_command(1.0);
+        for _ in 0..100 {
+            let _ = actuator.compute_force(0.0, 0.0, 0.01);
+        }
+
+        // Reset
+        actuator.reset();
+
+        // Should be back to atmospheric
+        assert_relative_eq!(actuator.command(), 0.0, epsilon = 1e-10);
+        assert_relative_eq!(
+            actuator.pressure_extend(),
+            actuator.atmospheric_pressure,
+            epsilon = 1e-10
+        );
+    }
+
+    #[test]
+    fn test_pneumatic_has_dynamics() {
+        let actuator = PneumaticCylinderActuator::default();
+        assert!(actuator.has_dynamics());
+    }
+
+    #[test]
+    fn test_pneumatic_with_moving_velocity() {
+        let mut actuator =
+            PneumaticCylinderActuator::new(0.001, 500_000.0).with_friction(10.0, 50.0);
+
+        actuator.set_command(1.0);
+        // With positive velocity, friction should oppose motion
+        let _force = actuator.compute_force(0.0, 1.0, 0.01);
+        // Just ensure it doesn't panic
+    }
+
+    #[test]
+    fn test_adhesion_with_name() {
+        let actuator = AdhesionActuator::new(100.0).with_name("adhesion_test");
+        assert_eq!(actuator.name(), "adhesion_test");
+    }
+
+    #[test]
+    fn test_adhesion_disabled() {
+        let mut actuator = AdhesionActuator::new(100.0).with_enabled(false);
+        actuator.set_contact_ratio(1.0);
+        actuator.set_command(1.0);
+        let force = actuator.compute_force(0.0, 0.0, 0.01);
+        assert_relative_eq!(force, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_adhesion_direction() {
+        let actuator = AdhesionActuator::new(100.0).with_direction(Vector3::new(1.0, 0.0, 0.0));
+        assert_relative_eq!(actuator.direction().x, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_adhesion_direction_zero_normalization() {
+        let actuator = AdhesionActuator::new(100.0).with_direction(Vector3::new(0.0, 0.0, 0.0));
+        // Should fall back to -Z
+        assert_relative_eq!(actuator.direction().z, -1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_adhesion_shear_ratio() {
+        let actuator = AdhesionActuator::new(100.0).with_shear_ratio(0.6);
+        actuator.shear_ratio;
+        assert_relative_eq!(actuator.shear_ratio, 0.6, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_adhesion_max_shear_force() {
+        let mut actuator = AdhesionActuator::new(100.0).with_shear_ratio(0.5);
+        actuator.set_contact_ratio(1.0);
+        actuator.set_command(1.0);
+
+        // Activate fully
+        for _ in 0..500 {
+            let _ = actuator.compute_force(0.0, 0.0, 0.001);
+        }
+
+        let shear = actuator.max_shear_force();
+        // Should be about 0.5 * 100 * 1.0 = 50
+        assert!(shear > 40.0);
+    }
+
+    #[test]
+    fn test_adhesion_deactivation() {
+        let mut actuator = AdhesionActuator::new(100.0).with_time_constants(0.01, 0.01);
+        actuator.set_contact_ratio(1.0);
+
+        // Activate
+        actuator.set_command(1.0);
+        for _ in 0..100 {
+            let _ = actuator.compute_force(0.0, 0.0, 0.001);
+        }
+
+        // Deactivate
+        actuator.set_command(0.0);
+        for _ in 0..100 {
+            let _ = actuator.compute_force(0.0, 0.0, 0.001);
+        }
+
+        assert!(actuator.adhesion_state() < 0.1);
+    }
+
+    #[test]
+    fn test_adhesion_default() {
+        let actuator = AdhesionActuator::default();
+        assert_relative_eq!(actuator.max_force(), 100.0, epsilon = 1e-10);
+        assert!(actuator.has_dynamics());
+    }
+
+    #[test]
+    fn test_custom_actuator_disabled() {
+        let mut actuator =
+            CustomActuator::new("test", 100.0, |cmd, _, _, _| cmd * 50.0).with_enabled(false);
+        actuator.set_command(1.0);
+        let force = actuator.compute_force(0.0, 0.0, 0.01);
+        assert_relative_eq!(force, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_custom_actuator_reset() {
+        let mut actuator = CustomActuator::new("test", 100.0, |cmd, _, _, _| cmd * 50.0);
+        actuator.set_command(1.0);
+        actuator.reset();
+        assert_relative_eq!(actuator.command(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_custom_actuator_debug() {
+        let actuator = CustomActuator::new("debug_test", 100.0, |_, _, _, _| 0.0);
+        let debug_str = format!("{:?}", actuator);
+        assert!(debug_str.contains("debug_test"));
+        assert!(debug_str.contains("100"));
+    }
+
+    #[test]
+    fn test_custom_actuator_force_clamping() {
+        let mut actuator = CustomActuator::new("clamped", 10.0, |cmd, _, _, _| cmd * 1000.0);
+        actuator.set_command(1.0);
+        let force = actuator.compute_force(0.0, 0.0, 0.01);
+        // Should be clamped to max_force
+        assert_relative_eq!(force, 10.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_custom_actuator_max_force() {
+        let actuator = CustomActuator::new("test", 50.0, |_, _, _, _| 0.0);
+        assert_relative_eq!(actuator.max_force(), 50.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_custom_actuator_has_dynamics() {
+        let actuator = CustomActuator::new("test", 50.0, |_, _, _, _| 0.0);
+        // Custom actuator default has_dynamics is false (from trait default)
+        assert!(!actuator.has_dynamics());
+    }
+
+    #[test]
+    fn test_integrated_velocity_command_clamping() {
+        let mut actuator = IntegratedVelocityActuator::new(1.0, 10.0);
+        actuator.set_command(5.0); // Should clamp to 1.0
+        assert_relative_eq!(actuator.command(), 1.0, epsilon = 1e-10);
+
+        actuator.set_command(-5.0); // Should clamp to -1.0
+        assert_relative_eq!(actuator.command(), -1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_pneumatic_command_clamping() {
+        let mut actuator = PneumaticCylinderActuator::default();
+        actuator.set_command(5.0);
+        assert_relative_eq!(actuator.command(), 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_adhesion_command_clamping() {
+        let mut actuator = AdhesionActuator::default();
+        actuator.set_command(5.0); // Adhesion clamps to 0-1
+        assert_relative_eq!(actuator.command(), 1.0, epsilon = 1e-10);
+
+        actuator.set_command(-5.0);
+        assert_relative_eq!(actuator.command(), 0.0, epsilon = 1e-10);
+    }
 }
