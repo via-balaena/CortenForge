@@ -1093,6 +1093,15 @@ fn skew_symmetric(v: &Vector3<f64>) -> Matrix3<f64> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 mod tests {
     use super::*;
     use crate::RevoluteJoint;

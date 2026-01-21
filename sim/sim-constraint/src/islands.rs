@@ -398,6 +398,15 @@ impl UnionFind {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 mod tests {
     use super::*;
     use crate::RevoluteJoint;
@@ -606,7 +615,6 @@ mod tests {
         let islands =
             ConstraintIslands::build_with_static_info(&joints, |id| id.0 == 2 || id.0 == 3);
 
-        let active: Vec<_> = islands.active_islands().collect();
-        assert_eq!(active.len(), 2);
+        assert_eq!(islands.active_islands().count(), 2);
     }
 }
