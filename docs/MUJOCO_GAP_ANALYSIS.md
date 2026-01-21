@@ -183,7 +183,7 @@ let result = solver.solve_islands(&joints, &islands, &get_body_state, dt);
 | Pyramidal friction cones | Alternative | Implicit (Coulomb) | **Partial** | Low | Low |
 | Torsional friction | condim 4-6 | Missing | **Missing** | Medium | Medium |
 | Rolling friction | condim 6-10 | Missing | **Missing** | Low | High |
-| Contact pairs filtering | Supported | Missing | **Missing** | Medium | Low |
+| Contact pairs filtering | Supported | `contype`/`conaffinity` bitmasks | **Implemented** | - | - |
 | solref/solimp params | MuJoCo-specific | Different params | N/A | - | - |
 
 ### Implementation Notes: Elliptic Friction Cones ✅ COMPLETED
@@ -217,13 +217,13 @@ f_n ≥ 0, (f_t1/μ_1)² + (f_t2/μ_2)² ≤ f_n²
 | Capsule-plane | Native | `ContactPoint::capsule_plane` | **Implemented** | - | - |
 | Capsule-sphere | Native | `ContactPoint::capsule_sphere` | **Implemented** | - | - |
 | Capsule-capsule | Native | `ContactPoint::capsule_capsule` | **Implemented** | - | - |
-| Cylinder | Native | Missing | **Missing** | Medium | Medium |
-| Ellipsoid | Native | Missing | **Missing** | Low | Medium |
+| Cylinder | Native | `CollisionShape::Cylinder` | **Implemented** | - | - |
+| Ellipsoid | Native | `CollisionShape::Ellipsoid` | **Implemented** | - | - |
 | Convex mesh | GJK/EPA | `CollisionShape::ConvexMesh` | **Implemented** | - | - |
 | Height field | Native | Missing | **Missing** | Low | High |
 | SDF (signed distance) | Native | Missing | **Missing** | Low | High |
 | Broad-phase (sweep-prune) | Native | `SweepAndPrune` | **Implemented** | - | - |
-| Mid-phase (BVH per body) | Static AABB | Missing | **Missing** | Medium | Medium |
+| Mid-phase (BVH per body) | Static AABB | `Bvh` | **Implemented** | - | - |
 | Narrow-phase (GJK/EPA) | Default | `gjk_epa` module | **Implemented** | - | - |
 
 ### Implementation Notes: Collision Pipeline
@@ -233,10 +233,13 @@ The collision detection pipeline now uses:
    - `SweepAndPrune` for scenes with >32 bodies
    - `BruteForce` fallback for small scenes
    - Configurable via `BroadPhaseConfig`
-2. Mid-phase: AABB tree per complex body (not yet implemented)
+2. ✅ **Mid-phase**: AABB tree per complex body for mesh primitive culling
+   - `Bvh` - Top-down BVH with median splitting
+   - `BvhPrimitive` - Triangle/primitive storage with AABB
+   - `bvh_from_triangle_mesh()` - Helper for building BVH from mesh
 3. ✅ **Narrow-phase**: GJK for intersection testing, EPA for penetration depth
 
-**Files:** `sim-core/src/broad_phase.rs`, `sim-core/src/world.rs`, `sim-core/src/gjk_epa.rs`
+**Files:** `sim-core/src/broad_phase.rs`, `sim-core/src/mid_phase.rs`, `sim-core/src/world.rs`, `sim-core/src/gjk_epa.rs`
 
 ### Implementation Notes: GJK/EPA ✅ COMPLETED
 
@@ -298,8 +301,8 @@ let tetra = CollisionShape::tetrahedron(0.5); // circumradius 0.5
 | Box | Yes | `CollisionShape::Box` | **Implemented** |
 | Capsule | Yes | `CollisionShape::Capsule` | **Implemented** |
 | Convex Mesh | Yes (convexified) | `CollisionShape::ConvexMesh` | **Implemented** |
-| Cylinder | Yes | Missing | **Missing** |
-| Ellipsoid | Yes | Missing | **Missing** |
+| Cylinder | Yes | `CollisionShape::Cylinder` | **Implemented** |
+| Ellipsoid | Yes | `CollisionShape::Ellipsoid` | **Implemented** |
 | Mesh | Yes (convexified) | Missing | **Missing** |
 | Height field | Yes | Missing | **Missing** |
 | SDF | Yes | Missing | **Missing** |
@@ -786,10 +789,10 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<body>` | Full | Hierarchical bodies with pos, quat, euler |
 | `<inertial>` | Full | mass, diaginertia, fullinertia |
 | `<joint>` | Full | hinge, slide, ball, free types |
-| `<geom>` | Partial | sphere, box, capsule, cylinder, plane |
+| `<geom>` | Partial | sphere, box, capsule, cylinder, ellipsoid, plane |
 | `<site>` | Parsed | Markers (not used in physics) |
 | `<actuator>` | Partial | motor, position, velocity |
-| `<contact>` | Parsed | Contact filtering (not implemented) |
+| `<contact>` | Full | Contact filtering via contype/conaffinity |
 
 **Supported Joint Types:**
 - `hinge` → `RevoluteJoint` (1 DOF rotation)
@@ -801,7 +804,8 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 - `sphere` → `CollisionShape::Sphere`
 - `box` → `CollisionShape::Box`
 - `capsule` → `CollisionShape::Capsule`
-- `cylinder` → Approximated as `CollisionShape::Capsule`
+- `cylinder` → `CollisionShape::Cylinder`
+- `ellipsoid` → `CollisionShape::Ellipsoid`
 - `plane` → `CollisionShape::Plane`
 
 **Usage:**
@@ -936,18 +940,58 @@ integrate_with_method(
 - `sim-core/src/integrators.rs` - `ImplicitFast` integrator
 - `sim-types/src/config.rs` - `IntegrationMethod::ImplicitFast` enum variant
 
-### Phase 5: Collision Completeness
+### Phase 5: Collision Completeness ✅ COMPLETED
 
 Focus: All collision detection improvements, primarily in sim-core.
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|
-| Cylinder collision shape | §4 Collision, §5 Geoms | Medium | Common in MJCF models, currently approximated as capsule |
-| Ellipsoid collision shape | §4 Collision, §5 Geoms | Medium | Uncommon, can use convex mesh as fallback |
-| Mid-phase BVH per body | §4 Collision | Medium | AABB tree for complex meshes with many primitives |
-| Contact pairs filtering | §3 Contact | Low | Already parsed in MJCF, needs implementation |
+| ~~Cylinder collision shape~~ | §4 Collision, §5 Geoms | Medium | ✅ Native cylinder support with GJK/EPA |
+| ~~Ellipsoid collision shape~~ | §4 Collision, §5 Geoms | Medium | ✅ Native ellipsoid support with GJK/EPA |
+| ~~Mid-phase BVH per body~~ | §4 Collision | Medium | ✅ AABB tree for complex meshes |
+| ~~Contact pairs filtering~~ | §3 Contact | Low | ✅ contype/conaffinity bitmasks |
 
-**Files:** `sim-core/src/world.rs`, `sim-core/src/collision.rs`, `sim-core/src/broad_phase.rs`
+**Implemented:**
+
+**Cylinder Collision Shape (`sim-core/src/world.rs`, `gjk_epa.rs`):**
+- `CollisionShape::Cylinder { half_length, radius }` - Flat-capped cylinder
+- `CollisionShape::cylinder(half_length, radius)` - Constructor
+- `support_cylinder()` - GJK support function with proper local direction handling
+- Tight AABB computation accounting for rotation
+- All collision pairs routed through GJK/EPA
+
+**Ellipsoid Collision Shape (`sim-core/src/world.rs`, `gjk_epa.rs`):**
+- `CollisionShape::Ellipsoid { radii }` - Axis-aligned ellipsoid
+- `CollisionShape::ellipsoid(radii)`, `ellipsoid_xyz(rx, ry, rz)` - Constructors
+- `support_ellipsoid()` - GJK support function using normalized gradient
+- AABB computation via rotation matrix column projection
+- All collision pairs routed through GJK/EPA
+
+**Mid-Phase BVH (`sim-core/src/mid_phase.rs`):**
+- `Bvh` - Top-down AABB tree for triangle meshes
+- `BvhPrimitive` - Stores AABB, index, and user data per primitive
+- `BvhNode` - Internal (with children) or leaf (with primitives)
+- `Bvh::build()` - Top-down construction with median splitting
+- `Bvh::query()` - Find all primitives overlapping an AABB
+- `Bvh::query_pairs()` - Self-intersection query
+- `bvh_from_triangle_mesh()` - Helper for building from triangle soup
+- Configurable `max_primitives_per_leaf` (default: 4)
+
+**Contact Pairs Filtering (`sim-core/src/world.rs`):**
+- `Body::contype: u32` - Body's collision type bitmask
+- `Body::conaffinity: u32` - Body's affinity bitmask
+- `Body::with_collision_filter(contype, conaffinity)` - Builder method
+- `Body::can_collide_with(&other)` - MuJoCo-compatible filter check
+- Check: `(a.contype & b.conaffinity) != 0 && (b.contype & a.conaffinity) != 0`
+- Defaults: `contype = 1`, `conaffinity = 1` (everything collides)
+- Integrated into `detect_pair_contact()` before shape tests
+
+**MJCF Loader Updates (`sim-mjcf/src/loader.rs`):**
+- Transfer `contype`/`conaffinity` from MJCF geoms to Body
+- Native `CollisionShape::Cylinder` for MJCF cylinders (no longer approximated)
+- Native `CollisionShape::Ellipsoid` for MJCF ellipsoids
+
+**Files:** `sim-core/src/world.rs`, `sim-core/src/gjk_epa.rs`, `sim-core/src/broad_phase.rs`, `sim-core/src/mid_phase.rs`, `sim-mjcf/src/loader.rs`
 
 ### Phase 6: Contact Physics
 
@@ -1008,7 +1052,7 @@ Focus: Large standalone features, each potentially its own PR.
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `sim-types` | Data structures | `dynamics.rs`, `joint.rs`, `observation.rs` |
-| `sim-core` | Integration, World | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `gjk_epa.rs` |
+| `sim-core` | Integration, World | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `mid_phase.rs`, `gjk_epa.rs` |
 | `sim-contact` | Contact physics | `model.rs`, `friction.rs`, `solver.rs` |
 | `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs` |
 | `sim-sensor` | Sensor simulation | `imu.rs`, `force_torque.rs`, `touch.rs` |

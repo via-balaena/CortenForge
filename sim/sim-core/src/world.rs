@@ -66,6 +66,25 @@ pub enum CollisionShape {
         /// incorrect collision results).
         vertices: Vec<Point3<f64>>,
     },
+    /// Cylinder (without hemispherical caps, unlike capsule).
+    ///
+    /// Defined by half-length along the local Z-axis and radius.
+    /// The cylinder extends from `-half_length` to `+half_length` on Z.
+    /// Uses GJK/EPA for collision detection.
+    Cylinder {
+        /// Half-length of the cylinder along the Z-axis.
+        half_length: f64,
+        /// Radius of the cylinder.
+        radius: f64,
+    },
+    /// Ellipsoid (scaled sphere).
+    ///
+    /// Defined by three radii along the local X, Y, and Z axes.
+    /// Uses GJK/EPA for collision detection.
+    Ellipsoid {
+        /// Radii along each local axis (X, Y, Z).
+        radii: Vector3<f64>,
+    },
 }
 
 impl CollisionShape {
@@ -149,6 +168,37 @@ impl CollisionShape {
         Self::ConvexMesh { vertices }
     }
 
+    /// Create a cylinder collision shape.
+    ///
+    /// The cylinder is oriented along the local Z-axis, extending from
+    /// `-half_length` to `+half_length`, with the given radius.
+    ///
+    /// Unlike capsules, cylinders have flat caps at both ends.
+    #[must_use]
+    pub fn cylinder(half_length: f64, radius: f64) -> Self {
+        Self::Cylinder {
+            half_length,
+            radius,
+        }
+    }
+
+    /// Create an ellipsoid collision shape.
+    ///
+    /// The ellipsoid is defined by three radii along the local X, Y, and Z axes.
+    /// An ellipsoid with equal radii is equivalent to a sphere.
+    #[must_use]
+    pub fn ellipsoid(radii: Vector3<f64>) -> Self {
+        Self::Ellipsoid { radii }
+    }
+
+    /// Create an ellipsoid collision shape from individual radii.
+    #[must_use]
+    pub fn ellipsoid_xyz(rx: f64, ry: f64, rz: f64) -> Self {
+        Self::Ellipsoid {
+            radii: Vector3::new(rx, ry, rz),
+        }
+    }
+
     /// Get the bounding sphere radius for broad-phase culling.
     #[must_use]
     pub fn bounding_radius(&self) -> f64 {
@@ -163,6 +213,17 @@ impl CollisionShape {
             Self::ConvexMesh { vertices } => {
                 // Maximum distance from origin to any vertex
                 vertices.iter().map(|v| v.coords.norm()).fold(0.0, f64::max)
+            }
+            Self::Cylinder {
+                half_length,
+                radius,
+            } => {
+                // Corner of the cylinder (on the circular edge at the end)
+                half_length.hypot(*radius)
+            }
+            Self::Ellipsoid { radii } => {
+                // Maximum of the three radii
+                radii.x.max(radii.y).max(radii.z)
             }
         }
     }
@@ -214,6 +275,19 @@ pub struct Body {
     pub accumulated_force: Vector3<f64>,
     /// Accumulated external torque (cleared each step).
     pub accumulated_torque: Vector3<f64>,
+    /// Collision type bitmask (MuJoCo-compatible).
+    ///
+    /// Bodies can only collide if `(A.contype & B.conaffinity) != 0`
+    /// AND `(B.contype & A.conaffinity) != 0`.
+    ///
+    /// Default is 1 (bit 0 set), meaning all bodies collide with each other
+    /// by default.
+    pub contype: u32,
+    /// Collision affinity bitmask (MuJoCo-compatible).
+    ///
+    /// Determines which collision types this body responds to.
+    /// Default is 1 (bit 0 set).
+    pub conaffinity: u32,
 }
 
 impl Body {
@@ -231,6 +305,8 @@ impl Body {
             sleep_time: 0.0,
             accumulated_force: Vector3::zeros(),
             accumulated_torque: Vector3::zeros(),
+            contype: 1,
+            conaffinity: 1,
         }
     }
 
@@ -248,6 +324,8 @@ impl Body {
             sleep_time: 0.0,
             accumulated_force: Vector3::zeros(),
             accumulated_torque: Vector3::zeros(),
+            contype: 1,
+            conaffinity: 1,
         }
     }
 
@@ -263,6 +341,31 @@ impl Body {
     pub fn with_collision_shape(mut self, shape: CollisionShape) -> Self {
         self.collision_shape = Some(shape);
         self
+    }
+
+    /// Set the collision filtering bitmasks.
+    ///
+    /// Bodies A and B can collide only if:
+    /// `(A.contype & B.conaffinity) != 0 && (B.contype & A.conaffinity) != 0`
+    ///
+    /// Common patterns:
+    /// - `contype=1, conaffinity=1` (default): Collides with everything
+    /// - `contype=0, conaffinity=1`: This body doesn't generate contacts, but others can collide with it
+    /// - `contype=1, conaffinity=0`: This body generates contacts, but nothing collides with it
+    /// - Use different bits to create collision groups (e.g., bit 1 for player, bit 2 for enemies)
+    #[must_use]
+    pub fn with_collision_filter(mut self, contype: u32, conaffinity: u32) -> Self {
+        self.contype = contype;
+        self.conaffinity = conaffinity;
+        self
+    }
+
+    /// Check if this body can collide with another body based on collision filtering.
+    ///
+    /// Returns true if the collision bitmasks allow contact generation.
+    #[must_use]
+    pub fn can_collide_with(&self, other: &Self) -> bool {
+        (self.contype & other.conaffinity) != 0 && (other.contype & self.conaffinity) != 0
     }
 
     /// Apply a force at the center of mass.
@@ -1012,6 +1115,11 @@ impl World {
     #[allow(clippy::unused_self)] // Will use self.config for contact margin in future
     #[allow(clippy::too_many_lines)] // Complex collision detection logic
     fn detect_pair_contact(&self, body_a: &Body, body_b: &Body) -> Option<ContactPoint> {
+        // Check collision filtering before shape tests
+        if !body_a.can_collide_with(body_b) {
+            return None;
+        }
+
         let shape_a = body_a.collision_shape.as_ref()?;
         let shape_b = body_b.collision_shape.as_ref()?;
 
@@ -1239,24 +1347,27 @@ impl World {
             }
 
             // =====================================================================
-            // ConvexMesh collisions and Capsule-Box (GJK/EPA)
+            // GJK/EPA fallback for ConvexMesh, Cylinder, Ellipsoid, and Capsule-Box
             // =====================================================================
 
-            // ConvexMesh with any shape (A is ConvexMesh)
-            (CollisionShape::ConvexMesh { .. }, CollisionShape::ConvexMesh { .. })
-            | (CollisionShape::ConvexMesh { .. }, CollisionShape::Sphere { .. })
-            | (CollisionShape::ConvexMesh { .. }, CollisionShape::Box { .. })
-            | (CollisionShape::ConvexMesh { .. }, CollisionShape::Capsule { .. })
-            | (CollisionShape::ConvexMesh { .. }, CollisionShape::Plane { .. })
+            // All cases where A is ConvexMesh, Cylinder, or Ellipsoid (or Capsule-Box)
+            (
+                CollisionShape::ConvexMesh { .. }
+                | CollisionShape::Cylinder { .. }
+                | CollisionShape::Ellipsoid { .. },
+                _,
+            )
             | (CollisionShape::Capsule { .. }, CollisionShape::Box { .. }) => {
                 self.detect_gjk_epa_contact(body_a, body_b, shape_a, shape_b)
             }
 
-            // Flipped cases (B is ConvexMesh, or Box-Capsule)
-            (CollisionShape::Sphere { .. }, CollisionShape::ConvexMesh { .. })
-            | (CollisionShape::Box { .. }, CollisionShape::ConvexMesh { .. })
-            | (CollisionShape::Capsule { .. }, CollisionShape::ConvexMesh { .. })
-            | (CollisionShape::Plane { .. }, CollisionShape::ConvexMesh { .. })
+            // Flipped cases where B is ConvexMesh, Cylinder, or Ellipsoid (or Box-Capsule)
+            (
+                _,
+                CollisionShape::ConvexMesh { .. }
+                | CollisionShape::Cylinder { .. }
+                | CollisionShape::Ellipsoid { .. },
+            )
             | (CollisionShape::Box { .. }, CollisionShape::Capsule { .. }) => self
                 .detect_gjk_epa_contact(body_b, body_a, shape_b, shape_a)
                 .map(|c| c.flip()),
@@ -2122,6 +2233,168 @@ mod tests {
             contact.penetration > 0.0,
             "penetration should be positive: {}",
             contact.penetration
+        );
+    }
+
+    // =========================================================================
+    // Collision Filtering Tests
+    // =========================================================================
+
+    #[test]
+    fn test_collision_filter_default() {
+        // Bodies with default filtering should collide
+        let body_a = Body::new(
+            BodyId::new(1),
+            RigidBodyState::origin(),
+            MassProperties::sphere(1.0, 0.5),
+        );
+        let body_b = Body::new(
+            BodyId::new(2),
+            RigidBodyState::origin(),
+            MassProperties::sphere(1.0, 0.5),
+        );
+
+        assert!(body_a.can_collide_with(&body_b));
+        assert!(body_b.can_collide_with(&body_a));
+    }
+
+    #[test]
+    fn test_collision_filter_disabled() {
+        // contype=0 means this body doesn't generate contacts
+        let body_a = Body::new(
+            BodyId::new(1),
+            RigidBodyState::origin(),
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_filter(0, 1); // contype=0 disables collisions from this body
+
+        let body_b = Body::new(
+            BodyId::new(2),
+            RigidBodyState::origin(),
+            MassProperties::sphere(1.0, 0.5),
+        );
+
+        assert!(!body_a.can_collide_with(&body_b));
+        assert!(!body_b.can_collide_with(&body_a)); // Both directions fail
+    }
+
+    #[test]
+    fn test_collision_filter_groups() {
+        // Use different bits for different collision groups
+        // Group 1 (bit 0), Group 2 (bit 1)
+        let body_group1_a = Body::new(
+            BodyId::new(1),
+            RigidBodyState::origin(),
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_filter(1, 1); // contype=1, conaffinity=1 (group 1 only)
+
+        let body_group1_b = Body::new(
+            BodyId::new(2),
+            RigidBodyState::origin(),
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_filter(1, 1);
+
+        let body_group2 = Body::new(
+            BodyId::new(3),
+            RigidBodyState::origin(),
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_filter(2, 2); // contype=2, conaffinity=2 (group 2 only)
+
+        // Bodies in same group should collide
+        assert!(body_group1_a.can_collide_with(&body_group1_b));
+
+        // Bodies in different groups should not collide
+        assert!(!body_group1_a.can_collide_with(&body_group2));
+        assert!(!body_group2.can_collide_with(&body_group1_a));
+    }
+
+    #[test]
+    fn test_collision_filter_cross_group() {
+        // A body that collides with multiple groups
+        let body_a = Body::new(
+            BodyId::new(1),
+            RigidBodyState::origin(),
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_filter(1, 3); // contype=1, conaffinity=3 (groups 1 and 2)
+
+        let body_b = Body::new(
+            BodyId::new(2),
+            RigidBodyState::origin(),
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_filter(2, 3); // contype=2, conaffinity=3 (groups 1 and 2)
+
+        // Both can collide with each other
+        assert!(body_a.can_collide_with(&body_b));
+        assert!(body_b.can_collide_with(&body_a));
+    }
+
+    #[test]
+    fn test_collision_filter_in_world() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Two overlapping spheres that should NOT collide (different groups)
+        let sphere_a = Body::new(
+            BodyId::new(1),
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.0))),
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(1.0))
+        .with_collision_filter(1, 1); // Group 1
+
+        let sphere_b = Body::new(
+            BodyId::new(2),
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.5, 0.0, 0.0))),
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(1.0))
+        .with_collision_filter(2, 2); // Group 2 (no overlap with group 1)
+
+        world.insert_body(sphere_a).expect("insert should succeed");
+        world.insert_body(sphere_b).expect("insert should succeed");
+
+        // Should detect NO contacts due to filtering
+        let contacts = world.detect_contacts();
+        assert!(
+            contacts.is_empty(),
+            "should not detect contacts between different collision groups"
+        );
+    }
+
+    #[test]
+    fn test_collision_filter_in_world_same_group() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Two overlapping spheres that SHOULD collide (same group)
+        let sphere_a = Body::new(
+            BodyId::new(1),
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.0))),
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(1.0))
+        .with_collision_filter(1, 1);
+
+        let sphere_b = Body::new(
+            BodyId::new(2),
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.5, 0.0, 0.0))),
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(1.0))
+        .with_collision_filter(1, 1);
+
+        world.insert_body(sphere_a).expect("insert should succeed");
+        world.insert_body(sphere_b).expect("insert should succeed");
+
+        // Should detect contacts
+        let contacts = world.detect_contacts();
+        assert_eq!(
+            contacts.len(),
+            1,
+            "should detect contact between bodies in same collision group"
         );
     }
 }

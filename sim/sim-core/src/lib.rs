@@ -134,6 +134,7 @@
 pub mod broad_phase;
 pub mod gjk_epa;
 pub mod integrators;
+pub mod mid_phase;
 mod stepper;
 mod world;
 
@@ -141,6 +142,7 @@ pub use broad_phase::{
     Aabb, Axis, BroadPhase, BroadPhaseAlgorithm, BroadPhaseConfig, BroadPhaseDetector, BruteForce,
     SweepAndPrune,
 };
+pub use mid_phase::{Bvh, BvhPrimitive, bvh_from_triangle_mesh};
 pub use stepper::{SimulationBuilder, StepResult, Stepper, StepperConfig};
 pub use world::{Body, CollisionShape, Joint, World};
 
