@@ -847,7 +847,7 @@ mod tests {
         assert_relative_eq!(error, 0.0, epsilon = 1e-10);
 
         // Positions violating constraint (both joints at 1.0, but joint 1 should be 0.5)
-        #[allow(clippy::if_same_then_else)]
+        #[allow(clippy::if_same_then_else, clippy::branches_sharing_code)]
         let get_pos_bad = |id: JointId| {
             if id.raw() == 0 { 1.0 } else { 1.0 }
         };
