@@ -145,7 +145,7 @@
     clippy::derivable_impls,
     clippy::imprecise_flops
 )]
-#![cfg_attr(test, allow(clippy::float_cmp))]
+#![cfg_attr(test, allow(clippy::float_cmp, clippy::let_underscore_must_use))]
 
 pub mod activation;
 pub mod curves;

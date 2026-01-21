@@ -120,7 +120,7 @@
     clippy::while_float,
     clippy::or_fun_call
 )]
-#![cfg_attr(test, allow(clippy::float_cmp))]
+#![cfg_attr(test, allow(clippy::float_cmp, clippy::let_underscore_must_use))]
 
 pub mod cable;
 pub mod error;

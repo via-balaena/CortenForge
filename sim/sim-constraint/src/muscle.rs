@@ -329,6 +329,7 @@ impl MuscleCommands {
 }
 
 #[cfg(test)]
+#[allow(clippy::let_underscore_must_use)]
 mod tests {
     use super::*;
     use crate::Vector3;

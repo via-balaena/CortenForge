@@ -266,11 +266,11 @@ pub struct MjcfGeom {
     /// Orientation (quaternion: w x y z).
     pub quat: Vector4<f64>,
     /// Size parameters (interpretation depends on type).
-    /// - Sphere: [radius]
-    /// - Capsule: [radius, half-length]
-    /// - Box: [x, y, z] half-extents
-    /// - Cylinder: [radius, half-length]
-    /// - Plane: [x, y, spacing] (spacing for grid visualization)
+    /// - Sphere: `[radius]`
+    /// - Capsule: `[radius, half-length]`
+    /// - Box: `[x, y, z]` half-extents
+    /// - Cylinder: `[radius, half-length]`
+    /// - Plane: `[x, y, spacing]` (spacing for grid visualization)
     pub size: Vec<f64>,
     /// Alternative specification using fromto (start and end points).
     pub fromto: Option<[f64; 6]>,

@@ -524,6 +524,7 @@ impl PulleyBuilder {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
