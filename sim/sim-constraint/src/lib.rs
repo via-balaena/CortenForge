@@ -99,6 +99,7 @@ mod motor;
 mod muscle;
 mod newton;
 mod solver;
+mod sparse;
 mod types;
 
 pub use islands::{ConstraintIslands, Island, IslandStatistics};
@@ -110,8 +111,9 @@ pub use limits::{JointLimits, LimitState, LimitStiffness};
 pub use motor::{JointMotor, MotorMode};
 #[cfg(feature = "muscle")]
 pub use muscle::{MuscleCommands, MuscleJoint, MuscleJointBuilder};
-pub use newton::{NewtonConstraintSolver, NewtonSolverConfig, NewtonSolverResult};
+pub use newton::{NewtonConstraintSolver, NewtonSolverConfig, NewtonSolverResult, SolverStats};
 pub use solver::{BodyState, ConstraintSolver, ConstraintSolverConfig, JointForce, SolverResult};
+pub use sparse::{InvMassBlock, JacobianBuilder, SparseEffectiveMass, SparseJacobian};
 pub use types::{ConstraintForce, JointState, JointVelocity};
 
 // Re-export types needed for constraint computation

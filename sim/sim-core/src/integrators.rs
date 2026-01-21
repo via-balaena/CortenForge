@@ -75,14 +75,18 @@ pub fn integrate_with_method(
             // Use default damping (none) - for damped systems use integrate_implicit_with_damping
             ImplicitVelocity::integrate(state, linear_accel, angular_accel, dt);
         }
+        IntegrationMethod::ImplicitFast => {
+            // Assumes accelerations were computed without Coriolis terms
+            ImplicitFast::integrate(state, linear_accel, angular_accel, dt);
+        }
     }
 }
 
 /// Dispatch to integrator with damping support for implicit methods.
 ///
 /// For explicit methods, damping is applied separately after integration.
-/// For implicit methods (like `ImplicitVelocity`), damping is incorporated
-/// directly into the integration step for unconditional stability.
+/// For implicit methods (like `ImplicitVelocity` and `ImplicitFast`), damping
+/// is incorporated directly into the integration step for unconditional stability.
 pub fn integrate_with_method_and_damping(
     method: IntegrationMethod,
     state: &mut RigidBodyState,
@@ -95,6 +99,18 @@ pub fn integrate_with_method_and_damping(
     match method {
         IntegrationMethod::ImplicitVelocity => {
             ImplicitVelocity::integrate_with_damping(
+                state,
+                linear_accel,
+                angular_accel,
+                linear_damping,
+                angular_damping,
+                dt,
+            );
+        }
+        IntegrationMethod::ImplicitFast => {
+            // Same damping handling as ImplicitVelocity, but caller should have
+            // computed accelerations without Coriolis terms
+            ImplicitFast::integrate_with_damping(
                 state,
                 linear_accel,
                 angular_accel,
@@ -336,6 +352,104 @@ impl Integrator for ImplicitVelocity {
     }
 }
 
+/// Implicit-fast integration (`MuJoCo` "implicitfast" equivalent).
+///
+/// This is a performance optimization of [`ImplicitVelocity`] that skips
+/// the computation of Coriolis and centrifugal terms in the inertia matrix.
+///
+/// # When to Use
+///
+/// Use this instead of `ImplicitVelocity` when:
+/// - Angular velocities are relatively low
+/// - The system has many bodies (>20) and you need performance
+/// - Slight accuracy loss in rotational dynamics is acceptable
+///
+/// # Performance
+///
+/// Skipping Coriolis terms saves O(n²) operations per body where n is the
+/// number of DOF, which can be significant for articulated systems.
+///
+/// # Accuracy Trade-off
+///
+/// The Coriolis effect creates fictitious forces that appear in rotating
+/// reference frames:
+/// - Centrifugal force: mv²/r outward
+/// - Coriolis force: 2m(ω × v)
+///
+/// For most robotics applications (humanoids, manipulators) at normal
+/// speeds, these forces are small compared to gravity and actuation forces.
+///
+/// `MuJoCo` uses this as its default "implicitfast" mode for performance.
+pub struct ImplicitFast;
+
+impl ImplicitFast {
+    /// Integrate with specified damping coefficients, skipping Coriolis terms.
+    ///
+    /// This is identical to [`ImplicitVelocity::integrate_with_damping`] but
+    /// the caller should have computed accelerations without Coriolis terms.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` - Current rigid body state (modified in place)
+    /// * `linear_accel` - Linear acceleration WITHOUT Coriolis (m/s²)
+    /// * `angular_accel` - Angular acceleration WITHOUT Coriolis (rad/s²)
+    /// * `linear_damping` - Linear damping coefficient (1/s)
+    /// * `angular_damping` - Angular damping coefficient (1/s)
+    /// * `dt` - Timestep in seconds
+    pub fn integrate_with_damping(
+        state: &mut RigidBodyState,
+        linear_accel: Vector3<f64>,
+        angular_accel: Vector3<f64>,
+        linear_damping: f64,
+        angular_damping: f64,
+        dt: f64,
+    ) {
+        // Implicit fast uses the same integration formula but with
+        // accelerations that were computed without Coriolis terms
+        let linear_divisor = 1.0 + dt * linear_damping;
+        let angular_divisor = 1.0 + dt * angular_damping;
+
+        state.twist.linear = (state.twist.linear + linear_accel * dt) / linear_divisor;
+        state.twist.angular = (state.twist.angular + angular_accel * dt) / angular_divisor;
+
+        state.pose.position += state.twist.linear * dt;
+        integrate_rotation(&mut state.pose.rotation, &state.twist.angular, dt);
+    }
+
+    /// Integrate without explicitly handling Coriolis (the main use case).
+    ///
+    /// The acceleration passed should already have Coriolis terms omitted
+    /// from the equations of motion computation.
+    pub fn integrate_no_coriolis(
+        state: &mut RigidBodyState,
+        linear_accel_no_coriolis: Vector3<f64>,
+        angular_accel_no_coriolis: Vector3<f64>,
+        dt: f64,
+    ) {
+        Self::integrate_with_damping(
+            state,
+            linear_accel_no_coriolis,
+            angular_accel_no_coriolis,
+            0.0,
+            0.0,
+            dt,
+        );
+    }
+}
+
+impl Integrator for ImplicitFast {
+    fn integrate(
+        state: &mut RigidBodyState,
+        linear_accel: Vector3<f64>,
+        angular_accel: Vector3<f64>,
+        dt: f64,
+    ) {
+        // For the trait implementation, we assume the caller has already
+        // computed accelerations without Coriolis terms
+        Self::integrate_no_coriolis(state, linear_accel, angular_accel, dt);
+    }
+}
+
 /// Integrate rotation using angular velocity.
 ///
 /// Uses the exponential map approximation for small angles:
@@ -542,6 +656,7 @@ mod tests {
             IntegrationMethod::VelocityVerlet,
             IntegrationMethod::RungeKutta4,
             IntegrationMethod::ImplicitVelocity,
+            IntegrationMethod::ImplicitFast,
         ] {
             let mut state = make_state_with_velocity(Vector3::new(1.0, 0.0, 0.0));
             integrate_with_method(method, &mut state, Vector3::zeros(), Vector3::zeros(), 0.1);
@@ -549,6 +664,46 @@ mod tests {
             // All methods should advance position with constant velocity
             assert_relative_eq!(state.pose.position.x, 0.1, epsilon = 1e-10);
         }
+    }
+
+    #[test]
+    fn test_implicit_fast_matches_implicit_velocity() {
+        // For simple cases (no Coriolis), ImplicitFast should match ImplicitVelocity
+        let mut state_fast = make_state_at_origin();
+        let mut state_velocity = make_state_at_origin();
+        let accel = Vector3::new(0.0, 0.0, -9.81);
+
+        ImplicitFast::integrate(&mut state_fast, accel, Vector3::zeros(), 0.01);
+        ImplicitVelocity::integrate(&mut state_velocity, accel, Vector3::zeros(), 0.01);
+
+        assert_relative_eq!(
+            state_fast.pose.position.z,
+            state_velocity.pose.position.z,
+            epsilon = 1e-10
+        );
+        assert_relative_eq!(
+            state_fast.twist.linear.z,
+            state_velocity.twist.linear.z,
+            epsilon = 1e-10
+        );
+    }
+
+    #[test]
+    fn test_implicit_fast_with_damping() {
+        let mut state = make_state_with_velocity(Vector3::new(10.0, 0.0, 0.0));
+        let accel = Vector3::zeros();
+
+        ImplicitFast::integrate_with_damping(
+            &mut state,
+            accel,
+            Vector3::zeros(),
+            10.0, // linear damping
+            0.0,  // angular damping
+            1.0,  // dt
+        );
+
+        // Same formula as ImplicitVelocity: v = (v + h*a) / (1 + h*d) = 10 / 11
+        assert_relative_eq!(state.twist.linear.x, 10.0 / 11.0, epsilon = 1e-10);
     }
 
     #[test]
