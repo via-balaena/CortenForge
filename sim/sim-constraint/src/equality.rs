@@ -846,10 +846,11 @@ mod tests {
         let error = coupling.compute_error(get_pos);
         assert_relative_eq!(error, 0.0, epsilon = 1e-10);
 
-        // Positions violating constraint
+        // Positions violating constraint (both joints at 1.0, but joint 1 should be 0.5)
+        #[allow(clippy::if_same_then_else)]
         let get_pos_bad = |id: JointId| {
             if id.raw() == 0 { 1.0 } else { 1.0 }
-        }; // Should be 0.5
+        };
 
         let error = coupling.compute_error(get_pos_bad);
         assert_relative_eq!(error, -1.0, epsilon = 1e-10); // 1.0 - 2.0*1.0 = -1.0
@@ -1009,6 +1010,6 @@ mod tests {
         );
 
         let output = diff.compute_output(10.0, 20.0);
-        assert_relative_eq!(output, 0.7 * 10.0 + 0.3 * 20.0, epsilon = 1e-10);
+        assert_relative_eq!(output, 0.7f64.mul_add(10.0, 0.3 * 20.0), epsilon = 1e-10);
     }
 }

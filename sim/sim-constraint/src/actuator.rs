@@ -791,8 +791,7 @@ impl Default for AdhesionActuator {
 
 /// A wrapper for user-defined actuator behavior.
 ///
-/// This allows users to implement custom actuator dynamics through a closure
-/// or by implementing the [`ActuatorFn`] trait.
+/// This allows users to implement custom actuator dynamics through a closure.
 ///
 /// # Example
 ///
