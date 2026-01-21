@@ -338,18 +338,92 @@ Free joints (6 DOF floating bodies) need:
 | Integrated velocity | Yes | Missing | **Missing** | Medium | Low |
 | Damper | Yes | Joint damping | **Implemented** | - | - |
 | Cylinder (pneumatic) | Yes | Missing | **Missing** | Low | Medium |
-| Muscle (Hill-type) | Yes | Missing | **Missing** | Low | High |
+| Muscle (Hill-type) | Yes | `HillMuscle` (via sim-muscle) | **Implemented** | - | - |
 | Adhesion | Yes | Missing | **Missing** | Low | Medium |
 | General (custom) | Yes | Missing | **Missing** | Medium | Medium |
 
-### Implementation Notes: Muscle Model
+### Implementation Notes: Muscle Model ✅ COMPLETED
 
 MuJoCo's muscle model includes:
 - Activation dynamics (3rd-order system)
 - Force-length-velocity relationships
 - Pennation angle
 
-This is specialized for biomechanics. Consider as optional extension.
+**Implemented in `sim-muscle` crate:**
+
+Created a comprehensive Hill-type muscle-tendon unit (MTU) model for biomechanical simulation:
+
+**Activation Dynamics (`activation.rs`):**
+- First-order excitation-to-activation filter with asymmetric time constants
+- Faster activation (τ_act ≈ 10-20 ms) than deactivation (τ_deact ≈ 40-80 ms)
+- Presets for fast-twitch (`ActivationDynamics::fast_twitch()`) and slow-twitch (`ActivationDynamics::slow_twitch()`)
+- Semi-implicit Euler integration for unconditional stability
+
+**Force Curves (`curves.rs`):**
+- `ActiveForceLengthCurve` - Bell-shaped curve centered at optimal fiber length
+- `PassiveForceLengthCurve` - Exponential rise at long lengths (connective tissue)
+- `ForceVelocityCurve` - Hill hyperbolic relationship for concentric/eccentric
+- `MuscleForceCurves` - Combined evaluation of all three relationships
+
+**Hill Muscle Model (`hill.rs`):**
+- `HillMuscle` - Complete muscle-tendon unit with state management
+- `HillMuscleConfig` - Configurable parameters (F_max, L_opt, L_slack, etc.)
+- Pennation angle effects with constant-width assumption
+- Rigid tendon (fast) and compliant tendon (accurate) modes
+- Predefined configurations: `biceps()`, `quadriceps()`, `gastrocnemius()`, `soleus()`
+
+**Kinematics (`kinematics.rs`):**
+- `ConstantMomentArm` - Fixed lever arm
+- `PolynomialMomentArm` - r(θ) as polynomial function
+- `SplineMomentArm` - Interpolation from measured data
+- `BiarticularlMuscleConfig` - Two-joint muscles (e.g., rectus femoris)
+- `MusclePath` - Via points and wrapping support (geometry only)
+
+**Integration with sim-constraint (optional `muscle` feature):**
+- `MuscleJoint` - RevoluteJoint with muscle group actuation
+- `MuscleJointBuilder` - Builder pattern for agonist/antagonist pairs
+- `MuscleCommands` - Command storage for RL interfaces
+- `MuscleActuator` trait - Common interface for muscle models
+
+**Usage:**
+```rust
+use sim_muscle::{HillMuscle, HillMuscleConfig, MuscleGroup};
+use sim_constraint::{MuscleJoint, RevoluteJoint}; // with "muscle" feature
+
+// Create biceps muscle
+let biceps = HillMuscle::new(HillMuscleConfig::biceps())
+    .with_name("biceps_brachii");
+
+// Create triceps muscle
+let triceps = HillMuscle::new(HillMuscleConfig::default())
+    .with_name("triceps_brachii");
+
+// Build muscle group (agonist/antagonist pair)
+let muscles = MuscleGroup::new()
+    .with_flexor(biceps)
+    .with_extensor(triceps);
+
+// Attach to joint
+let base_joint = RevoluteJoint::new(BodyId::new(0), BodyId::new(1), Vector3::z());
+let mut elbow = MuscleJoint::new(base_joint, muscles);
+
+// Control via excitation (0-1)
+elbow.set_muscle_excitation(0, 0.8);  // Activate biceps
+elbow.set_muscle_excitation(1, 0.2);  // Partial triceps
+
+// Compute joint torque
+let torque = elbow.compute_joint_force(velocity, dt);
+```
+
+**Files:**
+- `sim-muscle/src/activation.rs` - Activation dynamics
+- `sim-muscle/src/curves.rs` - Force-length-velocity relationships
+- `sim-muscle/src/hill.rs` - Hill muscle model
+- `sim-muscle/src/kinematics.rs` - Moment arm models
+- `sim-muscle/src/lib.rs` - Crate root with MuscleActuator trait
+- `sim-constraint/src/muscle.rs` - Joint integration (requires `muscle` feature)
+
+**New crate:** `sim-muscle/`
 
 ---
 
@@ -403,14 +477,97 @@ let obs = touch.read_as_observation(&contacts, 0.001);
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| Fixed tendons | Yes | Missing | **Missing** | Low | Medium |
-| Spatial tendons | Yes | Missing | **Missing** | Low | High |
-| Wrapping (sphere/cylinder) | Yes | Missing | **Missing** | Low | High |
-| Pulley systems | Yes | Missing | **Missing** | Low | Medium |
+| Fixed tendons | Yes | `FixedTendon` | **Implemented** | - | - |
+| Spatial tendons | Yes | `SpatialTendon` | **Implemented** | - | - |
+| Wrapping (sphere/cylinder) | Yes | `SphereWrap`, `CylinderWrap` | **Implemented** | - | - |
+| Pulley systems | Yes | `PulleySystem` | **Implemented** | - | - |
 
-### Implementation Notes
+### Implementation Notes: Tendons ✅ COMPLETED
 
-Tendons are primarily for biomechanics and cable-driven robots. Lower priority unless specifically needed.
+Created `sim-tendon` crate with comprehensive tendon/cable modeling for cable-driven robots and biomechanics:
+
+**Fixed Tendons (`fixed.rs`) - MuJoCo-style:**
+- `FixedTendon` - Linear coupling of joints: `L = L₀ + Σᵢ cᵢ qᵢ`
+- `TendonCoefficient` - Moment arm coupling coefficients
+- `FixedTendonGroup` - Multiple tendons controlled together
+- Presets: `differential()`, `parallel()` for common configurations
+- Support for range limits with soft limit forces
+
+**Spatial Tendons (`spatial.rs`):**
+- `SpatialTendon` - 3D cable routing through body attachment points
+- `SpatialTendonConfig` - Material properties, friction, range limits
+- Integration with wrapping geometries
+- Automatic force computation on connected bodies
+
+**Tendon Path (`path.rs`):**
+- `TendonPath` - Origin → via points → insertion path representation
+- `AttachmentPoint` - Attachment to bodies with local position and tangent
+- `TendonSegment` - Cached segment length and direction
+- Force distribution computation for body forces/torques
+
+**Cable Properties (`cable.rs`):**
+- `CableProperties` - Stiffness, damping, rest length, max tension
+- One-way spring model (cables can only pull, not push)
+- Presets: `steel_cable()`, `dyneema_cable()`, `biological_tendon()`, `soft_cable()`
+- `CableState` - Current length, velocity, tension, slack status
+
+**Wrapping Geometry (`wrapping.rs`):**
+- `SphereWrap` - Tendon wrapping over spherical surfaces (joints)
+- `CylinderWrap` - Tendon wrapping around cylindrical surfaces (pulleys)
+- `WrappingGeometry` - Enum for both types with transform support
+- `WrapResult` - Tangent points, arc length, wrap normal
+
+**Pulley Systems (`pulley.rs`):**
+- `Pulley` - Fixed or moving pulley with friction
+- `PulleySystem` - Multiple pulleys with mechanical advantage
+- `PulleyConfig` - Radius, bearing friction, wrap friction (Capstan effect)
+- `PulleyBuilder` - Presets for block-and-tackle, compound systems
+
+**Usage:**
+```rust
+use sim_tendon::{FixedTendon, SpatialTendon, TendonActuator, CableProperties};
+use sim_tendon::path::{TendonPath, AttachmentPoint};
+use sim_tendon::pulley::{PulleySystem, PulleyBuilder};
+use sim_types::{JointId, BodyId};
+use nalgebra::Point3;
+
+// Fixed tendon (MuJoCo-style joint coupling)
+let tendon = FixedTendon::new("differential")
+    .with_coefficient(JointId::new(0), 0.05)   // 5cm moment arm
+    .with_coefficient(JointId::new(1), -0.05)  // Opposite direction
+    .with_rest_length(0.5)
+    .with_cable(CableProperties::steel_cable(0.002));
+
+let force = tendon.compute_force(&[0.5, -0.5], &[0.0, 0.0]);
+
+// Spatial tendon (3D cable routing)
+let path = TendonPath::straight(
+    BodyId::new(0), Point3::new(0.0, 0.0, 0.1),
+    BodyId::new(1), Point3::new(0.0, 0.0, -0.1),
+);
+let mut spatial = SpatialTendon::new("biceps", path)
+    .with_cable(CableProperties::biological_tendon(20e-6));
+
+// Pulley system (2:1 mechanical advantage)
+let pulley = PulleyBuilder::block_and_tackle_2_1(
+    Point3::new(0.0, 0.0, 2.0),
+    BodyId::new(1),
+    Point3::origin(),
+    0.05,
+);
+```
+
+**Files:**
+- `sim-tendon/src/lib.rs` - Crate root with `TendonActuator` trait
+- `sim-tendon/src/cable.rs` - Cable material properties
+- `sim-tendon/src/fixed.rs` - MuJoCo-style fixed tendons
+- `sim-tendon/src/spatial.rs` - 3D spatial tendons
+- `sim-tendon/src/path.rs` - Tendon path geometry
+- `sim-tendon/src/wrapping.rs` - Sphere/cylinder wrapping
+- `sim-tendon/src/pulley.rs` - Pulley systems
+- `sim-tendon/src/error.rs` - Error types
+
+**New crate:** `sim-tendon/`
 
 ---
 
@@ -430,14 +587,121 @@ Tendons are primarily for biomechanics and cable-driven robots. Lower priority u
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| 1D (capsule chains) | Yes | Missing | **Missing** | Low | High |
-| 2D (triangle shells) | Yes | Missing | **Missing** | Low | Very High |
-| 3D (tetrahedra) | Yes | Missing | **Missing** | Low | Very High |
+| 1D (capsule chains) | Yes | `CapsuleChain` | **Implemented** | - | - |
+| 2D (triangle shells) | Yes | `Cloth` | **Implemented** | - | - |
+| 3D (tetrahedra) | Yes | `SoftBody` | **Implemented** | - | - |
 | Skinned meshes | Yes | Missing | **Missing** | Low | High |
 
-### Implementation Notes
+### Implementation Notes: Deformables ✅ COMPLETED
 
-Deformable simulation is a major undertaking. Consider using position-based dynamics (PBD) or XPBD for cables/cloth if needed.
+Created `sim-deformable` crate using XPBD (Extended Position-Based Dynamics) for stable, physically-accurate soft body simulation:
+
+**1D Deformables - Capsule Chains (`capsule_chain.rs`):**
+- `CapsuleChain` - Rope/cable simulation with configurable segments
+- Distance constraints for stretch resistance
+- Bending constraints for flexibility control
+- Presets: `rope()`, `steel_cable()`, `soft_cable()`, `hair()`, `chain()`
+- Builder pattern: `CapsuleChain::new()` or `CapsuleChain::from_points()`
+
+**2D Deformables - Cloth (`cloth.rs`):**
+- `Cloth` - Triangle mesh cloth/membrane simulation
+- Distance constraints along edges
+- Dihedral bending constraints for folding resistance
+- Grid cloth with `Cloth::grid()` and edge pinning
+- Presets: `cotton()`, `silk()`, `leather()`, `rubber()`, `paper()`, `membrane()`
+- Wind force simulation with `apply_wind()`
+
+**3D Deformables - Soft Bodies (`soft_body.rs`):**
+- `SoftBody` - Tetrahedral mesh volumetric simulation
+- Distance constraints for edge stiffness
+- Volume constraints for incompressibility
+- Shape primitives: `SoftBody::cube()`, `SoftBody::sphere()`
+- Presets: `rubber()`, `gelatin()`, `soft_tissue()`, `muscle()`, `foam()`
+- Surface triangle extraction for rendering/collision
+
+**XPBD Solver (`solver.rs`):**
+- `XpbdSolver` - Position-based dynamics solver
+- Unconditionally stable for any time step
+- Configurable iterations and substeps
+- Velocity damping and clamping
+- Presets: `realtime()`, `accurate()`, `soft()`, `stiff()`
+
+**Constraints (`constraints.rs`):**
+- `DistanceConstraint` - Maintains distance between particles
+- `BendingConstraint` - Maintains angles (chain or dihedral)
+- `VolumeConstraint` - Preserves tetrahedron volume
+
+**Material Model (`material.rs`):**
+- `Material` - Young's modulus, Poisson's ratio, density
+- Compliance computation for XPBD
+- Presets: `Rubber`, `Cloth`, `SoftTissue`, `Muscle`, `Gelatin`, `Foam`, etc.
+
+**Usage:**
+```rust
+use sim_deformable::{
+    CapsuleChain, CapsuleChainConfig,
+    Cloth, ClothConfig,
+    SoftBody, SoftBodyConfig,
+    XpbdSolver, SolverConfig,
+    DeformableBody,
+};
+use nalgebra::{Point3, Vector3};
+
+// 1D: Create a rope
+let mut rope = CapsuleChain::new(
+    "rope",
+    Point3::new(0.0, 0.0, 2.0),
+    Point3::new(5.0, 0.0, 2.0),
+    20,
+    CapsuleChainConfig::rope(0.01),
+);
+rope.pin_vertex(0);  // Fix start
+
+// 2D: Create a cloth flag
+let mut cloth = Cloth::grid(
+    "flag",
+    Point3::origin(),
+    Vector3::new(2.0, 0.0, 0.0),
+    Vector3::new(0.0, 0.0, -1.5),
+    20, 15,
+    ClothConfig::cotton(),
+);
+cloth.pin_edge("left");  // Pin left edge
+
+// 3D: Create a soft cube
+let mut jelly = SoftBody::cube(
+    "jelly",
+    Point3::new(0.0, 0.0, 1.0),
+    0.3,
+    2,  // subdivisions
+    SoftBodyConfig::gelatin(),
+);
+jelly.pin_bottom(0.05);  // Pin bottom vertices
+
+// Simulate
+let mut solver = XpbdSolver::new(SolverConfig::default());
+let gravity = Vector3::new(0.0, 0.0, -9.81);
+
+for _ in 0..100 {
+    solver.step(&mut rope, gravity, 1.0 / 60.0);
+    solver.step(&mut cloth, gravity, 1.0 / 60.0);
+    solver.step(&mut jelly, gravity, 1.0 / 60.0);
+}
+```
+
+**Files:**
+- `sim-deformable/src/lib.rs` - Crate root, `DeformableBody` trait
+- `sim-deformable/src/types.rs` - `DeformableId`, `Vertex`, `VertexFlags`
+- `sim-deformable/src/mesh.rs` - `Edge`, `Triangle`, `Tetrahedron`, `DeformableMesh`
+- `sim-deformable/src/material.rs` - Material properties and presets
+- `sim-deformable/src/constraints.rs` - XPBD constraints
+- `sim-deformable/src/solver.rs` - `XpbdSolver`
+- `sim-deformable/src/capsule_chain.rs` - 1D ropes/cables
+- `sim-deformable/src/cloth.rs` - 2D cloth/membranes
+- `sim-deformable/src/soft_body.rs` - 3D volumetric soft bodies
+- `sim-deformable/src/error.rs` - Error types
+
+**New crate:** `sim-deformable/`
 
 ---
 
@@ -502,12 +766,76 @@ if let Some(body) = world.body_mut(body_id) {
 | Feature | MuJoCo | CortenForge | Status | Priority |
 |---------|--------|-------------|--------|----------|
 | URDF loading | Supported | `sim-urdf` crate | **Implemented** | - |
-| MJCF loading | Native | Missing | **Missing** | Medium |
+| MJCF loading | Native | `sim-mjcf` crate | **Implemented** | - |
 | MJB (binary) | Native | Missing | **Missing** | Low |
 
-### Implementation Notes: MJCF Support
+### Implementation Notes: MJCF Support ✅ COMPLETED
 
-MJCF is MuJoCo's native XML format with richer features than URDF. Consider adding `sim-mjcf` crate for compatibility.
+Created `sim-mjcf` crate for MuJoCo XML format compatibility.
+
+**Supported Elements:**
+
+| Element | Support | Notes |
+|---------|---------|-------|
+| `<mujoco>` | Full | Root element, model name |
+| `<option>` | Partial | timestep, gravity, integrator |
+| `<default>` | Partial | Joint and geom defaults |
+| `<worldbody>` | Full | Body tree root |
+| `<body>` | Full | Hierarchical bodies with pos, quat, euler |
+| `<inertial>` | Full | mass, diaginertia, fullinertia |
+| `<joint>` | Full | hinge, slide, ball, free types |
+| `<geom>` | Partial | sphere, box, capsule, cylinder, plane |
+| `<site>` | Parsed | Markers (not used in physics) |
+| `<actuator>` | Partial | motor, position, velocity |
+| `<contact>` | Parsed | Contact filtering (not implemented) |
+
+**Supported Joint Types:**
+- `hinge` → `RevoluteJoint` (1 DOF rotation)
+- `slide` → `PrismaticJoint` (1 DOF translation)
+- `ball` → `SphericalJoint` (3 DOF rotation)
+- `free` → `FreeJoint` (6 DOF)
+
+**Supported Geom Types:**
+- `sphere` → `CollisionShape::Sphere`
+- `box` → `CollisionShape::Box`
+- `capsule` → `CollisionShape::Capsule`
+- `cylinder` → Approximated as `CollisionShape::Capsule`
+- `plane` → `CollisionShape::Plane`
+
+**Usage:**
+```rust
+use sim_mjcf::{load_mjcf_str, load_mjcf_file, MjcfLoader};
+use sim_core::World;
+
+// Load from string
+let mjcf = r#"
+    <mujoco model="robot">
+        <worldbody>
+            <body name="base" pos="0 0 1">
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+"#;
+let model = load_mjcf_str(mjcf).expect("should parse");
+
+// Spawn into world
+let mut world = World::default();
+let spawned = model.spawn_at_origin(&mut world).expect("should spawn");
+
+// Access by name
+let body_id = spawned.body_id("base").expect("base exists");
+```
+
+**Limitations:**
+- Mesh collision shapes not supported
+- Tendons not supported
+- Equality constraints not supported
+- Composite bodies not supported
+- Include files not supported
+- Assets (textures, materials) parsed but not loaded
+
+**Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `loader.rs`, `validation.rs`
 
 ---
 
@@ -530,10 +858,10 @@ MJCF is MuJoCo's native XML format with richer features than URDF. Consider addi
 
 ### Phase 3: Extended Features (Lower Priority)
 
-1. **MJCF loading**: For MuJoCo model compatibility
-2. **Muscle actuators**: For biomechanics
-3. **Tendons**: For cable robots
-4. **Deformables**: For soft body simulation
+1. ~~**MJCF loading**: For MuJoCo model compatibility~~ ✅ COMPLETED
+2. ~~**Muscle actuators**: For biomechanics~~ ✅ COMPLETED
+3. ~~**Tendons**: For cable robots~~ ✅ COMPLETED
+4. ~~**Deformables**: For soft body simulation~~ ✅ COMPLETED
 
 ---
 
@@ -546,7 +874,11 @@ MJCF is MuJoCo's native XML format with richer features than URDF. Consider addi
 | `sim-contact` | Contact physics | `model.rs`, `friction.rs`, `solver.rs` |
 | `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs`, `newton.rs`, `islands.rs` |
 | `sim-sensor` | Sensor simulation | `imu.rs`, `force_torque.rs`, `touch.rs` |
-| `sim-urdf` | Robot loading | `loader.rs`, `parser.rs` |
+| `sim-urdf` | URDF loading | `loader.rs`, `parser.rs` |
+| `sim-mjcf` | MJCF loading | `loader.rs`, `parser.rs`, `types.rs`, `validation.rs` |
+| `sim-muscle` | Muscle actuators | `activation.rs`, `curves.rs`, `hill.rs`, `kinematics.rs` |
+| `sim-tendon` | Tendon/cable systems | `fixed.rs`, `spatial.rs`, `path.rs`, `wrapping.rs`, `pulley.rs` |
+| `sim-deformable` | Soft body simulation | `capsule_chain.rs`, `cloth.rs`, `soft_body.rs`, `solver.rs`, `constraints.rs` |
 | `sim-physics` | Umbrella | `lib.rs` |
 
 ---
