@@ -1256,4 +1256,30 @@ mod tests {
         let coupling = JointCoupling::new("test").with_damping(-0.5);
         assert_relative_eq!(coupling.damping, 0.0, epsilon = 1e-10);
     }
+
+    #[test]
+    fn test_compute_correction_zero_effective_mass() {
+        // Create a coupling with zero coefficients
+        let coupling = JointCoupling::new("zero_coef")
+            .with_joint(JointId::new(0), 0.0)
+            .with_joint(JointId::new(1), 0.0);
+
+        let correction = coupling.compute_correction(|_| 1.0, |_| 1.0, 0.01);
+        // Should return 0 because effective_mass_inv is 0
+        assert_relative_eq!(correction, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_compute_correction_with_damping() {
+        // Test that damping affects the correction
+        let coupling = JointCoupling::gear(JointId::new(0), JointId::new(1), 2.0).with_damping(0.5);
+
+        // Position error
+        let get_pos = |id: JointId| if id.raw() == 0 { 1.0 } else { 0.0 };
+        let get_vel = |id: JointId| if id.raw() == 0 { 0.5 } else { 0.0 };
+
+        let correction = coupling.compute_correction(get_pos, get_vel, 0.01);
+        // Should return non-zero correction
+        assert!(correction.abs() > 0.0);
+    }
 }

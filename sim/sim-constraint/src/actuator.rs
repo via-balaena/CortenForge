@@ -1416,4 +1416,39 @@ mod tests {
         actuator.set_command(-5.0);
         assert_relative_eq!(actuator.command(), 0.0, epsilon = 1e-10);
     }
+
+    #[test]
+    fn test_adhesion_reset() {
+        let mut actuator = AdhesionActuator::new(100.0);
+        actuator.set_contact_ratio(1.0);
+        actuator.set_command(1.0);
+
+        // Activate
+        for _ in 0..100 {
+            let _ = actuator.compute_force(0.0, 0.0, 0.001);
+        }
+
+        assert!(actuator.adhesion_state() > 0.5);
+        assert!(actuator.command() > 0.5);
+
+        actuator.reset();
+
+        assert_relative_eq!(actuator.command(), 0.0, epsilon = 1e-10);
+        assert_relative_eq!(actuator.adhesion_state(), 0.0, epsilon = 1e-10);
+        assert_relative_eq!(actuator.contact_ratio, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_custom_actuator_name() {
+        let actuator = CustomActuator::new("my_custom", 100.0, |_, _, _, _| 0.0);
+        assert_eq!(actuator.name(), "my_custom");
+    }
+
+    #[test]
+    fn test_boxed_actuator_via_trait() {
+        // Test the IntoBoxedActuator trait explicitly
+        let actuator = IntegratedVelocityActuator::new(1.0, 10.0);
+        let boxed: BoxedActuator = IntoBoxedActuator::boxed(actuator);
+        assert!(!boxed.name().is_empty());
+    }
 }
