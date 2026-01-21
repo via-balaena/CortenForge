@@ -71,6 +71,7 @@ members = [
     "sim/sim-constraint",
     "sim/sim-sensor",
     "sim/sim-urdf",
+    "sim/sim-deformable",
     "sim/sim-physics",
 
     # Bevy SDK (Layer 1 - pending)
@@ -288,6 +289,7 @@ sim-constraint = { path = "sim/sim-constraint" }
 sim-sensor = { path = "sim/sim-sensor" }
 sim-physics = { path = "sim/sim-physics" }
 sim-urdf = { path = "sim/sim-urdf" }
+sim-deformable = { path = "sim/sim-deformable" }
 
 # SDK
 cortenforge = { path = "cortenforge" }
