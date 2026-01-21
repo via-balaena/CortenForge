@@ -39,7 +39,7 @@ use nalgebra::Vector3;
 
 use crate::{
     ContactForce, ContactManifold, ContactParams, ContactPoint, EllipticFrictionCone, FrictionCone,
-    FrictionModel, RegularizedFriction,
+    FrictionModel, PyramidalFrictionCone, RegularizedFriction,
 };
 
 #[cfg(feature = "serde")]
@@ -94,7 +94,7 @@ pub struct ContactModel {
 }
 
 /// Which friction model to use for tangential forces.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum FrictionModelType {
     /// Simple Coulomb friction (discontinuous at zero velocity).
@@ -109,6 +109,18 @@ pub enum FrictionModelType {
     /// Uses the elliptic cone constraint: (f_t1/μ_1)² + (f_t2/μ_2)² ≤ f_n²
     /// When friction_anisotropy = 1.0, this is equivalent to a circular cone.
     Elliptic,
+    /// Pyramidal (linearized) friction cone for constraint-based solvers.
+    ///
+    /// Approximates the circular/elliptic cone with flat faces.
+    /// - num_faces = 4: Box approximation (fastest)
+    /// - num_faces = 8: Octagonal (good balance)
+    /// - num_faces = 16: High accuracy
+    ///
+    /// Useful for LCP/QP solvers that require linear constraints.
+    Pyramidal {
+        /// Number of faces in the pyramid approximation.
+        num_faces: usize,
+    },
 }
 
 impl ContactModel {
@@ -132,8 +144,8 @@ impl ContactModel {
     /// Set the friction model type.
     #[must_use]
     pub fn with_friction_model(mut self, model: FrictionModelType) -> Self {
-        self.friction_model = model;
         self.use_regularized_friction = matches!(model, FrictionModelType::RegularizedCoulomb);
+        self.friction_model = model;
         self
     }
 
@@ -152,6 +164,28 @@ impl ContactModel {
     #[must_use]
     pub fn uses_elliptic_friction(&self) -> bool {
         matches!(self.friction_model, FrictionModelType::Elliptic)
+    }
+
+    /// Configure for pyramidal (linearized) friction cones.
+    ///
+    /// Pyramidal cones are useful for LCP/QP solvers that require linear constraints.
+    /// The number of faces controls accuracy vs. speed:
+    /// - 4: Box approximation (fastest, least accurate)
+    /// - 8: Octagonal (good balance)
+    /// - 16: High accuracy
+    #[must_use]
+    pub fn with_pyramidal_friction(mut self, num_faces: usize) -> Self {
+        self.friction_model = FrictionModelType::Pyramidal {
+            num_faces: num_faces.clamp(3, 64),
+        };
+        self.use_regularized_friction = false;
+        self
+    }
+
+    /// Check if using pyramidal (linearized) friction.
+    #[must_use]
+    pub fn uses_pyramidal_friction(&self) -> bool {
+        matches!(self.friction_model, FrictionModelType::Pyramidal { .. })
     }
 
     /// Set the regularization velocity for smooth friction.
@@ -305,6 +339,23 @@ impl ContactModel {
                     // We compute the raw "desired" friction force and project it
                     // Use a large initial force that will be clamped by projection
                     let desired_force = direction * (mu_1.max(mu_2) * normal_magnitude * 2.0);
+                    cone.project(desired_force, normal_magnitude)
+                }
+            }
+
+            FrictionModelType::Pyramidal { num_faces } => {
+                // Pyramidal (linearized) friction cone
+                // Uses a polygonal approximation that inscribes the circular cone
+                let cone = PyramidalFrictionCone::new(self.params.friction_coefficient, num_faces);
+
+                let speed = tangent_velocity.norm();
+                if speed < 1e-10 {
+                    Vector3::zeros()
+                } else {
+                    // Friction opposes motion
+                    let direction = -*tangent_velocity / speed;
+                    let desired_force =
+                        direction * (self.params.friction_coefficient * normal_magnitude * 2.0);
                     cone.project(desired_force, normal_magnitude)
                 }
             }
