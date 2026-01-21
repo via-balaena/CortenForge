@@ -673,7 +673,7 @@ mod tests {
     #[test]
     fn test_force_length_sensitivity() {
         let config = HillMuscleConfig::default();
-        let mut muscle = HillMuscle::new(config.clone());
+        let mut muscle = HillMuscle::new(config);
         let dt = 0.001;
 
         // Warm up
