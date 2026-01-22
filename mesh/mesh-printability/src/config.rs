@@ -234,4 +234,25 @@ mod tests {
         assert!((config.min_wall_thickness - 0.8).abs() < f64::EPSILON);
         assert!((config.max_overhang_angle - 50.0).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn test_mjf_default() {
+        let config = PrinterConfig::mjf_default();
+        assert_eq!(config.technology, PrintTechnology::Mjf);
+        assert!((config.max_overhang_angle - 90.0).abs() < f64::EPSILON);
+        assert!(config.max_bridge_span.is_infinite());
+    }
+
+    #[test]
+    fn test_technology_other() {
+        assert_eq!(PrintTechnology::Other.as_str(), "Other");
+        // Other technology defaults to requiring supports
+        assert!(PrintTechnology::Other.requires_supports());
+    }
+
+    #[test]
+    fn test_default_is_fdm() {
+        let config = PrinterConfig::default();
+        assert_eq!(config.technology, PrintTechnology::Fdm);
+    }
 }

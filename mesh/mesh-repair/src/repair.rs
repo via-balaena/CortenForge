@@ -815,4 +815,68 @@ mod tests {
         let result = RepairSummary::default();
         assert!(!result.had_changes());
     }
+
+    #[test]
+    fn repair_params_for_printing() {
+        let params = RepairParams::for_printing();
+        assert!((params.weld_epsilon - 0.001).abs() < 1e-9);
+        assert!((params.degenerate_area_threshold - 0.00001).abs() < 1e-12);
+        assert!((params.degenerate_aspect_ratio - 500.0).abs() < 1e-9);
+        assert!((params.degenerate_min_edge_length - 0.0001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn repair_params_builder_methods() {
+        let params = RepairParams::default()
+            .with_weld_epsilon(0.05)
+            .with_degenerate_area_threshold(0.002)
+            .with_degenerate_aspect_ratio(200.0)
+            .with_degenerate_min_edge_length(0.003)
+            .with_remove_unreferenced(false);
+
+        assert!((params.weld_epsilon - 0.05).abs() < 1e-12);
+        assert!((params.degenerate_area_threshold - 0.002).abs() < 1e-12);
+        assert!((params.degenerate_aspect_ratio - 200.0).abs() < 1e-12);
+        assert!((params.degenerate_min_edge_length - 0.003).abs() < 1e-12);
+        assert!(!params.remove_unreferenced);
+    }
+
+    #[test]
+    fn remove_degenerate_enhanced_by_aspect_ratio() {
+        let mut mesh = IndexedMesh::new();
+        // Create a very thin, elongated triangle (high aspect ratio)
+        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(100.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(50.0, 0.01, 0.0));
+        mesh.faces.push([0, 1, 2]);
+
+        // Remove with strict aspect ratio threshold
+        let removed = remove_degenerate_triangles_enhanced(&mut mesh, 1e-12, 10.0, 0.0);
+        assert_eq!(removed, 1);
+    }
+
+    #[test]
+    fn remove_degenerate_enhanced_by_min_edge() {
+        let mut mesh = IndexedMesh::new();
+        // Create triangle with one very short edge
+        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(0.001, 10.0, 0.0));
+        mesh.faces.push([0, 1, 2]);
+
+        // Remove triangles with edge shorter than 0.01
+        let removed = remove_degenerate_triangles_enhanced(&mut mesh, 1e-12, f64::INFINITY, 0.01);
+        // This triangle's edges are all longer than 0.01, so none removed
+        assert_eq!(removed, 0);
+
+        // Create triangle with truly short edge
+        let mut mesh2 = IndexedMesh::new();
+        mesh2.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh2.vertices.push(Vertex::from_coords(0.001, 0.0, 0.0)); // Very short edge
+        mesh2.vertices.push(Vertex::from_coords(0.5, 10.0, 0.0));
+        mesh2.faces.push([0, 1, 2]);
+
+        let removed2 = remove_degenerate_triangles_enhanced(&mut mesh2, 1e-12, f64::INFINITY, 0.01);
+        assert_eq!(removed2, 1);
+    }
 }
