@@ -659,12 +659,10 @@ impl ConstraintJoint for JointAdapter<'_> {
             JointType::Fixed => ConstraintJointType::Fixed,
             JointType::Revolute => ConstraintJointType::Revolute,
             JointType::Prismatic => ConstraintJointType::Prismatic,
-            // Map Spherical, Planar, and Free to Spherical (3 DOF approximation)
-            JointType::Spherical | JointType::Planar | JointType::Free => {
-                ConstraintJointType::Spherical
-            }
-            // Map Cylindrical to Universal (2 DOF)
-            JointType::Cylindrical => ConstraintJointType::Universal,
+            JointType::Spherical => ConstraintJointType::Spherical,
+            JointType::Planar => ConstraintJointType::Planar,
+            JointType::Free => ConstraintJointType::Free,
+            JointType::Cylindrical => ConstraintJointType::Cylindrical,
         }
     }
 

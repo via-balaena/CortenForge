@@ -9,9 +9,11 @@ use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
 use crate::types::{
-    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfDefault, MjcfGeom, MjcfGeomDefaults,
-    MjcfGeomType, MjcfInertial, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfModel, MjcfOption,
-    MjcfSite,
+    MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
+    MjcfDefault, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial,
+    MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh,
+    MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
+    MjcfSolverType, MjcfTendonDefaults,
 };
 
 /// Parse an MJCF string into a model.
@@ -63,6 +65,10 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         let defaults = parse_default(reader, e, None)?;
                         model.defaults.extend(defaults);
                     }
+                    b"asset" => {
+                        let meshes = parse_asset(reader)?;
+                        model.meshes = meshes;
+                    }
                     b"worldbody" => {
                         model.worldbody = parse_worldbody(reader)?;
                     }
@@ -70,7 +76,10 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         let actuators = parse_actuators(reader)?;
                         model.actuators = actuators;
                     }
-                    // Skip other elements (asset, contact, equality, tendon, etc.)
+                    b"equality" => {
+                        model.equality = parse_equality(reader)?;
+                    }
+                    // Skip other elements (contact, tendon, etc.)
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
@@ -101,12 +110,7 @@ fn parse_option<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 // Handle flag element
                 if e.name().as_ref() == b"flag" {
-                    if let Some(contact) = get_attribute_opt(e, "contact") {
-                        option.flag_contact = contact != "disable";
-                    }
-                    if let Some(gravity) = get_attribute_opt(e, "gravity") {
-                        option.flag_gravity = gravity != "disable";
-                    }
+                    option.flag = parse_flag_attrs(e)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"option" => break,
@@ -124,23 +128,135 @@ fn parse_option<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
 fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     let mut option = MjcfOption::default();
 
+    // Core simulation
     if let Some(ts) = parse_float_attr(e, "timestep") {
         option.timestep = ts;
     }
-    if let Some(grav) = get_attribute_opt(e, "gravity") {
-        option.gravity = parse_vector3(&grav)?;
-    }
     if let Some(integrator) = get_attribute_opt(e, "integrator") {
-        option.integrator = integrator;
+        if let Some(int) = MjcfIntegrator::from_str(&integrator) {
+            option.integrator = int;
+        }
+    }
+
+    // Solver configuration
+    if let Some(solver) = get_attribute_opt(e, "solver") {
+        if let Some(s) = MjcfSolverType::from_str(&solver) {
+            option.solver = s;
+        }
     }
     if let Some(iter) = parse_int_attr(e, "iterations") {
-        option.iterations = iter as usize;
+        option.iterations = iter.max(0) as usize;
     }
     if let Some(tol) = parse_float_attr(e, "tolerance") {
         option.tolerance = tol;
     }
+    if let Some(ls_iter) = parse_int_attr(e, "ls_iterations") {
+        option.ls_iterations = ls_iter.max(0) as usize;
+    }
+    if let Some(noslip) = parse_int_attr(e, "noslip_iterations") {
+        option.noslip_iterations = noslip.max(0) as usize;
+    }
+    if let Some(ccd) = parse_int_attr(e, "ccd_iterations") {
+        option.ccd_iterations = ccd.max(0) as usize;
+    }
+
+    // Contact configuration
+    if let Some(cone) = get_attribute_opt(e, "cone") {
+        if let Some(c) = MjcfConeType::from_str(&cone) {
+            option.cone = c;
+        }
+    }
+    if let Some(jacobian) = get_attribute_opt(e, "jacobian") {
+        if let Some(j) = MjcfJacobianType::from_str(&jacobian) {
+            option.jacobian = j;
+        }
+    }
+    if let Some(impratio) = parse_float_attr(e, "impratio") {
+        option.impratio = impratio;
+    }
+
+    // Physics environment
+    if let Some(grav) = get_attribute_opt(e, "gravity") {
+        option.gravity = parse_vector3(&grav)?;
+    }
+    if let Some(wind) = get_attribute_opt(e, "wind") {
+        option.wind = parse_vector3(&wind)?;
+    }
+    if let Some(magnetic) = get_attribute_opt(e, "magnetic") {
+        option.magnetic = parse_vector3(&magnetic)?;
+    }
+    if let Some(density) = parse_float_attr(e, "density") {
+        option.density = density;
+    }
+    if let Some(viscosity) = parse_float_attr(e, "viscosity") {
+        option.viscosity = viscosity;
+    }
+
+    // Constraint limits
+    if let Some(nconmax) = parse_int_attr(e, "nconmax") {
+        option.nconmax = nconmax.max(0) as usize;
+    }
+    if let Some(njmax) = parse_int_attr(e, "njmax") {
+        option.njmax = njmax.max(0) as usize;
+    }
+
+    // Overrides
+    if let Some(o_margin) = parse_float_attr(e, "o_margin") {
+        option.o_margin = o_margin;
+    }
+    if let Some(o_solimp) = get_attribute_opt(e, "o_solimp") {
+        let parts = parse_float_array(&o_solimp)?;
+        if parts.len() >= 5 {
+            option.o_solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    if let Some(o_solref) = get_attribute_opt(e, "o_solref") {
+        let parts = parse_float_array(&o_solref)?;
+        if parts.len() >= 2 {
+            option.o_solref = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(o_friction) = get_attribute_opt(e, "o_friction") {
+        let parts = parse_float_array(&o_friction)?;
+        if parts.len() >= 5 {
+            option.o_friction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
 
     Ok(option)
+}
+
+/// Parse flag element attributes.
+fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
+    let mut flag = MjcfFlag::default();
+
+    // Helper to parse enable/disable attributes
+    fn parse_flag(e: &BytesStart, name: &str, default: bool) -> bool {
+        get_attribute_opt(e, name).map_or(default, |v| v != "disable")
+    }
+
+    flag.constraint = parse_flag(e, "constraint", flag.constraint);
+    flag.equality = parse_flag(e, "equality", flag.equality);
+    flag.frictionloss = parse_flag(e, "frictionloss", flag.frictionloss);
+    flag.limit = parse_flag(e, "limit", flag.limit);
+    flag.contact = parse_flag(e, "contact", flag.contact);
+    flag.passive = parse_flag(e, "passive", flag.passive);
+    flag.gravity = parse_flag(e, "gravity", flag.gravity);
+    flag.clampctrl = parse_flag(e, "clampctrl", flag.clampctrl);
+    flag.warmstart = parse_flag(e, "warmstart", flag.warmstart);
+    flag.filterparent = parse_flag(e, "filterparent", flag.filterparent);
+    flag.actuation = parse_flag(e, "actuation", flag.actuation);
+    flag.refsafe = parse_flag(e, "refsafe", flag.refsafe);
+    flag.sensor = parse_flag(e, "sensor", flag.sensor);
+    flag.midphase = parse_flag(e, "midphase", flag.midphase);
+    flag.nativeccd = parse_flag(e, "nativeccd", flag.nativeccd);
+    flag.eulerdamp = parse_flag(e, "eulerdamp", flag.eulerdamp);
+    flag.override_contacts = parse_flag(e, "override", flag.override_contacts);
+    flag.energy = parse_flag(e, "energy", flag.energy);
+    flag.island = parse_flag(e, "island", flag.island);
+    flag.multiccd = parse_flag(e, "multiccd", flag.multiccd);
+
+    Ok(flag)
 }
 
 /// Parse default element and its nested defaults.
@@ -169,6 +285,21 @@ fn parse_default<R: BufRead>(
                     b"geom" => {
                         default.geom = Some(parse_geom_defaults(e)?);
                     }
+                    b"actuator" | b"motor" | b"position" | b"velocity" | b"general" => {
+                        default.actuator = Some(parse_actuator_defaults(e)?);
+                    }
+                    b"tendon" => {
+                        default.tendon = Some(parse_tendon_defaults(e)?);
+                    }
+                    b"sensor" => {
+                        default.sensor = Some(parse_sensor_defaults(e)?);
+                    }
+                    b"mesh" => {
+                        default.mesh = Some(parse_mesh_defaults(e)?);
+                    }
+                    b"site" => {
+                        default.site = Some(parse_site_defaults(e)?);
+                    }
                     b"default" => {
                         // Nested default class
                         let nested = parse_default(reader, e, Some(class.clone()))?;
@@ -183,6 +314,21 @@ fn parse_default<R: BufRead>(
                 }
                 b"geom" => {
                     default.geom = Some(parse_geom_defaults(e)?);
+                }
+                b"actuator" | b"motor" | b"position" | b"velocity" | b"general" => {
+                    default.actuator = Some(parse_actuator_defaults(e)?);
+                }
+                b"tendon" => {
+                    default.tendon = Some(parse_tendon_defaults(e)?);
+                }
+                b"sensor" => {
+                    default.sensor = Some(parse_sensor_defaults(e)?);
+                }
+                b"mesh" => {
+                    default.mesh = Some(parse_mesh_defaults(e)?);
+                }
+                b"site" => {
+                    default.site = Some(parse_site_defaults(e)?);
                 }
                 _ => {}
             },
@@ -239,6 +385,183 @@ fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     defaults.conaffinity = parse_int_attr(e, "conaffinity");
 
     Ok(defaults)
+}
+
+/// Parse actuator defaults.
+fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
+    let mut defaults = MjcfActuatorDefaults::default();
+
+    if let Some(ctrlrange) = get_attribute_opt(e, "ctrlrange") {
+        let parts = parse_float_array(&ctrlrange)?;
+        if parts.len() >= 2 {
+            defaults.ctrlrange = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(forcerange) = get_attribute_opt(e, "forcerange") {
+        let parts = parse_float_array(&forcerange)?;
+        if parts.len() >= 2 {
+            defaults.forcerange = Some((parts[0], parts[1]));
+        }
+    }
+    defaults.gear = parse_float_attr(e, "gear");
+    defaults.kp = parse_float_attr(e, "kp");
+    defaults.kv = parse_float_attr(e, "kv");
+
+    if let Some(ctrllimited) = get_attribute_opt(e, "ctrllimited") {
+        defaults.ctrllimited = Some(ctrllimited == "true");
+    }
+    if let Some(forcelimited) = get_attribute_opt(e, "forcelimited") {
+        defaults.forcelimited = Some(forcelimited == "true");
+    }
+
+    Ok(defaults)
+}
+
+/// Parse tendon defaults.
+fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults> {
+    let mut defaults = MjcfTendonDefaults::default();
+
+    if let Some(range) = get_attribute_opt(e, "range") {
+        let parts = parse_float_array(&range)?;
+        if parts.len() >= 2 {
+            defaults.range = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(limited) = get_attribute_opt(e, "limited") {
+        defaults.limited = Some(limited == "true");
+    }
+    defaults.stiffness = parse_float_attr(e, "stiffness");
+    defaults.damping = parse_float_attr(e, "damping");
+    defaults.frictionloss = parse_float_attr(e, "frictionloss");
+    defaults.width = parse_float_attr(e, "width");
+
+    if let Some(rgba) = get_attribute_opt(e, "rgba") {
+        defaults.rgba = Some(parse_vector4(&rgba)?);
+    }
+
+    Ok(defaults)
+}
+
+/// Parse sensor defaults.
+fn parse_sensor_defaults(e: &BytesStart) -> Result<MjcfSensorDefaults> {
+    let mut defaults = MjcfSensorDefaults::default();
+
+    defaults.noise = parse_float_attr(e, "noise");
+    defaults.cutoff = parse_float_attr(e, "cutoff");
+
+    if let Some(user) = get_attribute_opt(e, "user") {
+        defaults.user = Some(parse_float_array(&user)?);
+    }
+
+    Ok(defaults)
+}
+
+/// Parse mesh defaults.
+fn parse_mesh_defaults(e: &BytesStart) -> Result<MjcfMeshDefaults> {
+    let mut defaults = MjcfMeshDefaults::default();
+
+    if let Some(scale) = get_attribute_opt(e, "scale") {
+        defaults.scale = Some(parse_vector3(&scale)?);
+    }
+
+    Ok(defaults)
+}
+
+/// Parse site defaults.
+fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
+    let mut defaults = MjcfSiteDefaults::default();
+
+    defaults.site_type = get_attribute_opt(e, "type");
+    if let Some(size) = get_attribute_opt(e, "size") {
+        defaults.size = Some(parse_float_array(&size)?);
+    }
+    if let Some(rgba) = get_attribute_opt(e, "rgba") {
+        defaults.rgba = Some(parse_vector4(&rgba)?);
+    }
+
+    Ok(defaults)
+}
+
+/// Parse asset element (contains mesh, texture, material definitions).
+fn parse_asset<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfMesh>> {
+    let mut meshes = Vec::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                match elem_name.as_slice() {
+                    b"mesh" => {
+                        let mesh = parse_mesh(reader, e)?;
+                        meshes.push(mesh);
+                    }
+                    // Skip other asset types (texture, material, hfield, etc.)
+                    _ => skip_element(reader, &elem_name)?,
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                if e.name().as_ref() == b"mesh" {
+                    let mesh = parse_mesh_attrs(e)?;
+                    meshes.push(mesh);
+                }
+                // Skip other self-closing asset types
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"asset" => break,
+            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in asset".into())),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(meshes)
+}
+
+/// Parse mesh element.
+fn parse_mesh<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<MjcfMesh> {
+    let mesh = parse_mesh_attrs(start)?;
+    let mut buf = Vec::new();
+
+    // Meshes typically don't have children, but we still need to read to the end
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"mesh" => break,
+            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in mesh".into())),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(mesh)
+}
+
+/// Parse mesh attributes only.
+fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
+    let mut mesh = MjcfMesh::default();
+
+    mesh.name = get_attribute_opt(e, "name").unwrap_or_default();
+    mesh.file = get_attribute_opt(e, "file");
+
+    if let Some(scale) = get_attribute_opt(e, "scale") {
+        mesh.scale = parse_vector3(&scale)?;
+    }
+
+    // Parse embedded vertex data
+    if let Some(vertex) = get_attribute_opt(e, "vertex") {
+        mesh.vertex = Some(parse_float_array(&vertex)?);
+    }
+
+    // Parse embedded face data
+    if let Some(face) = get_attribute_opt(e, "face") {
+        let face_data = parse_float_array(&face)?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let face_indices: Vec<u32> = face_data.iter().map(|f| *f as u32).collect();
+        mesh.face = Some(face_indices);
+    }
+
+    Ok(mesh)
 }
 
 /// Parse worldbody element.
@@ -678,6 +1001,85 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
     Ok(actuator)
 }
 
+/// Parse equality constraints element.
+fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfEquality> {
+    let mut equality = MjcfEquality::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                match elem_name.as_slice() {
+                    b"connect" => {
+                        let connect = parse_connect_attrs(e)?;
+                        equality.connects.push(connect);
+                        // Skip to closing tag
+                        skip_element(reader, &elem_name)?;
+                    }
+                    // Skip other equality constraint types for now (weld, joint, tendon, etc.)
+                    _ => skip_element(reader, &elem_name)?,
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                if e.name().as_ref() == b"connect" {
+                    let connect = parse_connect_attrs(e)?;
+                    equality.connects.push(connect);
+                }
+                // Skip other self-closing equality constraint types
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"equality" => break,
+            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in equality".into())),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(equality)
+}
+
+/// Parse connect constraint attributes.
+fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
+    let mut connect = MjcfConnect::default();
+
+    connect.name = get_attribute_opt(e, "name");
+    connect.class = get_attribute_opt(e, "class");
+
+    // body1 is required
+    connect.body1 = get_attribute_opt(e, "body1")
+        .ok_or_else(|| MjcfError::missing_attribute("body1", "connect"))?;
+
+    // body2 is optional (defaults to world)
+    connect.body2 = get_attribute_opt(e, "body2");
+
+    // Parse anchor point
+    if let Some(anchor) = get_attribute_opt(e, "anchor") {
+        connect.anchor = parse_vector3(&anchor)?;
+    }
+
+    // Parse solver parameters
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            connect.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            connect.solref = Some([parts[0], parts[1]]);
+        }
+    }
+
+    // Parse active flag
+    if let Some(active) = get_attribute_opt(e, "active") {
+        connect.active = active != "false";
+    }
+
+    Ok(connect)
+}
+
 // ============================================================================
 // Helper functions
 // ============================================================================
@@ -965,5 +1367,825 @@ mod tests {
         // With extra whitespace
         let v = parse_vector3("  1   2   3  ").expect("should parse");
         assert_relative_eq!(v.x, 1.0, epsilon = 1e-10);
+    }
+
+    // ========================================================================
+    // Option parsing tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_option_all_attributes() {
+        let xml = r#"
+            <mujoco model="test">
+                <option
+                    timestep="0.005"
+                    integrator="RK4"
+                    solver="PGS"
+                    iterations="200"
+                    tolerance="1e-6"
+                    ls_iterations="100"
+                    noslip_iterations="10"
+                    ccd_iterations="25"
+                    cone="elliptic"
+                    jacobian="sparse"
+                    impratio="2.0"
+                    gravity="0 0 -10.5"
+                    wind="1 2 0"
+                    magnetic="0.1 0.2 0.3"
+                    density="1.2"
+                    viscosity="0.01"
+                    nconmax="500"
+                    njmax="1000"
+                    o_margin="0.002"
+                />
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let opt = &model.option;
+
+        // Core simulation
+        assert_relative_eq!(opt.timestep, 0.005, epsilon = 1e-10);
+        assert_eq!(opt.integrator, MjcfIntegrator::RK4);
+
+        // Solver configuration
+        assert_eq!(opt.solver, MjcfSolverType::PGS);
+        assert_eq!(opt.iterations, 200);
+        assert_relative_eq!(opt.tolerance, 1e-6, epsilon = 1e-15);
+        assert_eq!(opt.ls_iterations, 100);
+        assert_eq!(opt.noslip_iterations, 10);
+        assert_eq!(opt.ccd_iterations, 25);
+
+        // Contact configuration
+        assert_eq!(opt.cone, MjcfConeType::Elliptic);
+        assert_eq!(opt.jacobian, MjcfJacobianType::Sparse);
+        assert_relative_eq!(opt.impratio, 2.0, epsilon = 1e-10);
+
+        // Physics environment
+        assert_relative_eq!(opt.gravity.z, -10.5, epsilon = 1e-10);
+        assert_relative_eq!(opt.wind.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(opt.wind.y, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(opt.magnetic.x, 0.1, epsilon = 1e-10);
+        assert_relative_eq!(opt.density, 1.2, epsilon = 1e-10);
+        assert_relative_eq!(opt.viscosity, 0.01, epsilon = 1e-10);
+
+        // Constraint limits
+        assert_eq!(opt.nconmax, 500);
+        assert_eq!(opt.njmax, 1000);
+
+        // Overrides
+        assert_relative_eq!(opt.o_margin, 0.002, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_option_integrator_types() {
+        for (name, expected) in [
+            ("Euler", MjcfIntegrator::Euler),
+            ("RK4", MjcfIntegrator::RK4),
+            ("implicit", MjcfIntegrator::Implicit),
+            ("implicitfast", MjcfIntegrator::ImplicitFast),
+        ] {
+            let xml = format!(
+                r#"
+                <mujoco model="test">
+                    <option integrator="{name}"/>
+                    <worldbody/>
+                </mujoco>
+            "#
+            );
+
+            let model = parse_mjcf_str(&xml).expect("should parse");
+            assert_eq!(model.option.integrator, expected, "integrator: {name}");
+        }
+    }
+
+    #[test]
+    fn test_parse_option_solver_types() {
+        for (name, expected) in [
+            ("PGS", MjcfSolverType::PGS),
+            ("CG", MjcfSolverType::CG),
+            ("Newton", MjcfSolverType::Newton),
+        ] {
+            let xml = format!(
+                r#"
+                <mujoco model="test">
+                    <option solver="{name}"/>
+                    <worldbody/>
+                </mujoco>
+            "#
+            );
+
+            let model = parse_mjcf_str(&xml).expect("should parse");
+            assert_eq!(model.option.solver, expected, "solver: {name}");
+        }
+    }
+
+    #[test]
+    fn test_parse_option_with_flag() {
+        let xml = r#"
+            <mujoco model="test">
+                <option timestep="0.002">
+                    <flag
+                        contact="disable"
+                        gravity="disable"
+                        constraint="enable"
+                        warmstart="disable"
+                        energy="enable"
+                        island="enable"
+                    />
+                </option>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let flag = &model.option.flag;
+
+        assert!(!flag.contact);
+        assert!(!flag.gravity);
+        assert!(flag.constraint);
+        assert!(!flag.warmstart);
+        assert!(flag.energy);
+        assert!(flag.island);
+    }
+
+    #[test]
+    fn test_parse_option_self_closing_with_defaults() {
+        let xml = r#"
+            <mujoco model="test">
+                <option timestep="0.001"/>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let opt = &model.option;
+
+        // Specified value
+        assert_relative_eq!(opt.timestep, 0.001, epsilon = 1e-10);
+
+        // Defaults
+        assert_eq!(opt.integrator, MjcfIntegrator::Euler);
+        assert_eq!(opt.solver, MjcfSolverType::Newton);
+        assert_eq!(opt.iterations, 100);
+        assert_eq!(opt.cone, MjcfConeType::Pyramidal);
+        assert!(opt.flag.contact);
+        assert!(opt.flag.gravity);
+    }
+
+    #[test]
+    fn test_parse_option_override_arrays() {
+        let xml = r#"
+            <mujoco model="test">
+                <option
+                    o_solimp="0.9 0.95 0.001 0.5 2"
+                    o_solref="0.02 1"
+                    o_friction="1 0.005 0.0001 0.0001 0.0001"
+                />
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let opt = &model.option;
+
+        let solimp = opt.o_solimp.expect("should have o_solimp");
+        assert_relative_eq!(solimp[0], 0.9, epsilon = 1e-10);
+        assert_relative_eq!(solimp[1], 0.95, epsilon = 1e-10);
+        assert_relative_eq!(solimp[2], 0.001, epsilon = 1e-10);
+
+        let solref = opt.o_solref.expect("should have o_solref");
+        assert_relative_eq!(solref[0], 0.02, epsilon = 1e-10);
+        assert_relative_eq!(solref[1], 1.0, epsilon = 1e-10);
+
+        let friction = opt.o_friction.expect("should have o_friction");
+        assert_relative_eq!(friction[0], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(friction[1], 0.005, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_option_default_values() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let opt = &model.option;
+
+        // Check MuJoCo defaults
+        assert_relative_eq!(opt.timestep, 0.002, epsilon = 1e-10);
+        assert_relative_eq!(opt.gravity.z, -9.81, epsilon = 1e-10);
+        assert_eq!(opt.integrator, MjcfIntegrator::Euler);
+        assert_eq!(opt.solver, MjcfSolverType::Newton);
+        assert_eq!(opt.iterations, 100);
+        assert_relative_eq!(opt.tolerance, 1e-8, epsilon = 1e-15);
+        assert_eq!(opt.ls_iterations, 50);
+        assert_eq!(opt.ccd_iterations, 50);
+        assert_eq!(opt.cone, MjcfConeType::Pyramidal);
+        assert_eq!(opt.jacobian, MjcfJacobianType::Dense);
+        assert_relative_eq!(opt.impratio, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(opt.density, 0.0, epsilon = 1e-10);
+        assert!(opt.flag.contact);
+        assert!(opt.flag.gravity);
+        assert!(opt.flag.warmstart);
+    }
+
+    #[test]
+    fn test_option_helper_methods() {
+        let mut opt = MjcfOption::default();
+
+        // Gravity enabled by default
+        assert!(opt.gravity_enabled());
+        assert!(opt.contacts_enabled());
+
+        // Disable via flag
+        opt.flag.gravity = false;
+        assert!(!opt.gravity_enabled());
+
+        opt.flag.contact = false;
+        assert!(!opt.contacts_enabled());
+
+        // Effective margin
+        assert!(opt.effective_margin().is_none()); // Default is negative
+        opt.o_margin = 0.001;
+        assert_eq!(opt.effective_margin(), Some(0.001));
+    }
+
+    // ========================================================================
+    // Default parsing tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_default_joint() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <joint damping="0.5" stiffness="10.0" armature="0.01"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let joint_defaults = default.joint.as_ref().expect("should have joint defaults");
+        assert_relative_eq!(joint_defaults.damping.unwrap(), 0.5, epsilon = 1e-10);
+        assert_relative_eq!(joint_defaults.stiffness.unwrap(), 10.0, epsilon = 1e-10);
+        assert_relative_eq!(joint_defaults.armature.unwrap(), 0.01, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_default_geom() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <geom type="box" density="500" friction="0.8 0.01 0.001" rgba="1 0 0 1"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let geom_defaults = default.geom.as_ref().expect("should have geom defaults");
+        assert_eq!(geom_defaults.geom_type, Some(MjcfGeomType::Box));
+        assert_relative_eq!(geom_defaults.density.unwrap(), 500.0, epsilon = 1e-10);
+        let friction = geom_defaults.friction.unwrap();
+        assert_relative_eq!(friction.x, 0.8, epsilon = 1e-10);
+        let rgba = geom_defaults.rgba.unwrap();
+        assert_relative_eq!(rgba.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(rgba.y, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_default_actuator() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <motor gear="100" ctrlrange="-1 1" kp="50" kv="5" ctrllimited="true"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let actuator_defaults = default
+            .actuator
+            .as_ref()
+            .expect("should have actuator defaults");
+        assert_relative_eq!(actuator_defaults.gear.unwrap(), 100.0, epsilon = 1e-10);
+        assert_eq!(actuator_defaults.ctrlrange, Some((-1.0, 1.0)));
+        assert_relative_eq!(actuator_defaults.kp.unwrap(), 50.0, epsilon = 1e-10);
+        assert_relative_eq!(actuator_defaults.kv.unwrap(), 5.0, epsilon = 1e-10);
+        assert_eq!(actuator_defaults.ctrllimited, Some(true));
+    }
+
+    #[test]
+    fn test_parse_default_tendon() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <tendon stiffness="1000" damping="10" width="0.01" limited="true" range="0 0.5"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let tendon_defaults = default
+            .tendon
+            .as_ref()
+            .expect("should have tendon defaults");
+        assert_relative_eq!(tendon_defaults.stiffness.unwrap(), 1000.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon_defaults.damping.unwrap(), 10.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon_defaults.width.unwrap(), 0.01, epsilon = 1e-10);
+        assert_eq!(tendon_defaults.limited, Some(true));
+        assert_eq!(tendon_defaults.range, Some((0.0, 0.5)));
+    }
+
+    #[test]
+    fn test_parse_default_sensor() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <sensor noise="0.01" cutoff="100"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let sensor_defaults = default
+            .sensor
+            .as_ref()
+            .expect("should have sensor defaults");
+        assert_relative_eq!(sensor_defaults.noise.unwrap(), 0.01, epsilon = 1e-10);
+        assert_relative_eq!(sensor_defaults.cutoff.unwrap(), 100.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_nested_defaults() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <joint damping="0.1"/>
+                    <default class="arm">
+                        <joint damping="0.5" armature="0.01"/>
+                        <geom rgba="0.8 0.2 0.2 1"/>
+                    </default>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 2);
+
+        // Root default
+        let root = model
+            .defaults
+            .iter()
+            .find(|d| d.class.is_empty())
+            .expect("root");
+        assert!(root.parent_class.is_none());
+        let root_joint = root.joint.as_ref().expect("root joint");
+        assert_relative_eq!(root_joint.damping.unwrap(), 0.1, epsilon = 1e-10);
+
+        // Arm class
+        let arm = model
+            .defaults
+            .iter()
+            .find(|d| d.class == "arm")
+            .expect("arm");
+        assert_eq!(arm.parent_class, Some(String::new()));
+        let arm_joint = arm.joint.as_ref().expect("arm joint");
+        assert_relative_eq!(arm_joint.damping.unwrap(), 0.5, epsilon = 1e-10);
+        assert_relative_eq!(arm_joint.armature.unwrap(), 0.01, epsilon = 1e-10);
+        let arm_geom = arm.geom.as_ref().expect("arm geom");
+        assert_relative_eq!(arm_geom.rgba.unwrap().x, 0.8, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_default_self_closing() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <joint damping="0.5"/>
+                    <geom density="500"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        assert!(default.joint.is_some());
+        assert!(default.geom.is_some());
+    }
+
+    #[test]
+    fn test_parse_default_mesh() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <mesh scale="0.001 0.001 0.001"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let mesh_defaults = default.mesh.as_ref().expect("should have mesh defaults");
+        let scale = mesh_defaults.scale.unwrap();
+        assert_relative_eq!(scale.x, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(scale.y, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(scale.z, 0.001, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_default_site() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <site type="sphere" size="0.02" rgba="0 1 0 1"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let site_defaults = default.site.as_ref().expect("should have site defaults");
+        assert_eq!(site_defaults.site_type, Some("sphere".to_string()));
+        let size = site_defaults.size.as_ref().unwrap();
+        assert_relative_eq!(size[0], 0.02, epsilon = 1e-10);
+        let rgba = site_defaults.rgba.unwrap();
+        assert_relative_eq!(rgba.y, 1.0, epsilon = 1e-10);
+    }
+
+    // ========================================================================
+    // Asset parsing tests (mesh)
+    // ========================================================================
+
+    #[test]
+    fn test_parse_mesh_asset_from_file() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="robot_body" file="meshes/body.stl"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes.len(), 1);
+
+        let mesh = &model.meshes[0];
+        assert_eq!(mesh.name, "robot_body");
+        assert_eq!(mesh.file, Some("meshes/body.stl".to_string()));
+        // Default scale is 1.0
+        assert_relative_eq!(mesh.scale.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(mesh.scale.y, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(mesh.scale.z, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_mesh_asset_with_scale() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="scaled_mesh" file="model.obj" scale="0.001 0.001 0.001"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes.len(), 1);
+
+        let mesh = &model.meshes[0];
+        assert_eq!(mesh.name, "scaled_mesh");
+        assert_relative_eq!(mesh.scale.x, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(mesh.scale.y, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(mesh.scale.z, 0.001, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_mesh_asset_with_embedded_vertices() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="triangle" vertex="0 0 0 1 0 0 0 1 0"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes.len(), 1);
+
+        let mesh = &model.meshes[0];
+        assert_eq!(mesh.name, "triangle");
+        assert!(mesh.file.is_none());
+        assert!(mesh.has_embedded_data());
+        assert_eq!(mesh.vertex_count(), 3);
+
+        let vertices = mesh.vertex.as_ref().unwrap();
+        assert_eq!(vertices.len(), 9); // 3 vertices * 3 components
+        assert_relative_eq!(vertices[0], 0.0, epsilon = 1e-10);
+        assert_relative_eq!(vertices[3], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(vertices[7], 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_multiple_mesh_assets() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="mesh1" file="a.stl"/>
+                    <mesh name="mesh2" file="b.stl" scale="2 2 2"/>
+                    <mesh name="mesh3" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes.len(), 3);
+
+        assert_eq!(model.meshes[0].name, "mesh1");
+        assert_eq!(model.meshes[1].name, "mesh2");
+        assert_eq!(model.meshes[2].name, "mesh3");
+
+        assert_relative_eq!(model.meshes[1].scale.x, 2.0, epsilon = 1e-10);
+        assert_eq!(model.meshes[2].vertex_count(), 4);
+    }
+
+    #[test]
+    fn test_parse_geom_with_mesh_type() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="cube" vertex="0 0 0 1 0 0 1 1 0 0 1 0 0 0 1 1 0 1 1 1 1 0 1 1"/>
+                </asset>
+                <worldbody>
+                    <body name="link">
+                        <geom type="mesh" mesh="cube"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes.len(), 1);
+        assert_eq!(model.worldbody.children.len(), 1);
+
+        let body = &model.worldbody.children[0];
+        assert_eq!(body.geoms.len(), 1);
+
+        let geom = &body.geoms[0];
+        assert_eq!(geom.geom_type, MjcfGeomType::Mesh);
+        assert_eq!(geom.mesh, Some("cube".to_string()));
+    }
+
+    #[test]
+    fn test_model_mesh_lookup() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="mesh_a" file="a.stl"/>
+                    <mesh name="mesh_b" file="b.stl"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+
+        assert!(model.mesh("mesh_a").is_some());
+        assert!(model.mesh("mesh_b").is_some());
+        assert!(model.mesh("nonexistent").is_none());
+
+        let mesh_a = model.mesh("mesh_a").unwrap();
+        assert_eq!(mesh_a.file, Some("a.stl".to_string()));
+    }
+
+    // ========================================================================
+    // Equality constraint parsing tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_connect_constraint_basic() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect body1="body1" body2="body2" anchor="0.5 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.equality.connects.len(), 1);
+
+        let connect = &model.equality.connects[0];
+        assert_eq!(connect.body1, "body1");
+        assert_eq!(connect.body2, Some("body2".to_string()));
+        assert_relative_eq!(connect.anchor.x, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(connect.anchor.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(connect.anchor.z, 0.0, epsilon = 1e-10);
+        assert!(connect.active);
+    }
+
+    #[test]
+    fn test_parse_connect_constraint_with_name() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link1"/>
+                    <body name="link2"/>
+                </worldbody>
+                <equality>
+                    <connect name="ball_joint" body1="link1" body2="link2"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let connect = &model.equality.connects[0];
+        assert_eq!(connect.name, Some("ball_joint".to_string()));
+    }
+
+    #[test]
+    fn test_parse_connect_constraint_to_world() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="floating_body"/>
+                </worldbody>
+                <equality>
+                    <connect body1="floating_body" anchor="0 0 1"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let connect = &model.equality.connects[0];
+        assert_eq!(connect.body1, "floating_body");
+        assert!(connect.body2.is_none()); // Defaults to world
+        assert_relative_eq!(connect.anchor.z, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_connect_constraint_with_solver_params() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="body1"/>
+                    <body name="body2"/>
+                </worldbody>
+                <equality>
+                    <connect body1="body1" body2="body2"
+                             solref="0.02 1"
+                             solimp="0.9 0.95 0.001 0.5 2"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let connect = &model.equality.connects[0];
+
+        let solref = connect.solref.expect("should have solref");
+        assert_relative_eq!(solref[0], 0.02, epsilon = 1e-10);
+        assert_relative_eq!(solref[1], 1.0, epsilon = 1e-10);
+
+        let solimp = connect.solimp.expect("should have solimp");
+        assert_relative_eq!(solimp[0], 0.9, epsilon = 1e-10);
+        assert_relative_eq!(solimp[1], 0.95, epsilon = 1e-10);
+        assert_relative_eq!(solimp[2], 0.001, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_connect_constraint_inactive() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="body1"/>
+                    <body name="body2"/>
+                </worldbody>
+                <equality>
+                    <connect body1="body1" body2="body2" active="false"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let connect = &model.equality.connects[0];
+        assert!(!connect.active);
+    }
+
+    #[test]
+    fn test_parse_multiple_connect_constraints() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="a"/>
+                    <body name="b"/>
+                    <body name="c"/>
+                </worldbody>
+                <equality>
+                    <connect name="c1" body1="a" body2="b"/>
+                    <connect name="c2" body1="b" body2="c"/>
+                    <connect name="c3" body1="c" anchor="0 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.equality.connects.len(), 3);
+        assert_eq!(model.equality.connects[0].name, Some("c1".to_string()));
+        assert_eq!(model.equality.connects[1].name, Some("c2".to_string()));
+        assert_eq!(model.equality.connects[2].name, Some("c3".to_string()));
+    }
+
+    #[test]
+    fn test_parse_connect_constraint_missing_body1() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody/>
+                <equality>
+                    <connect body2="body2"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let result = parse_mjcf_str(xml);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, MjcfError::MissingAttribute { .. }));
+    }
+
+    #[test]
+    fn test_parse_empty_equality() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody/>
+                <equality/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert!(model.equality.is_empty());
+    }
+
+    #[test]
+    fn test_equality_len() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="a"/>
+                    <body name="b"/>
+                </worldbody>
+                <equality>
+                    <connect body1="a" body2="b"/>
+                    <connect body1="b"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.equality.len(), 2);
+        assert!(!model.equality.is_empty());
     }
 }

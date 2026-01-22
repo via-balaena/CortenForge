@@ -12,36 +12,372 @@ use serde::{Deserialize, Serialize};
 // Global Options
 // ============================================================================
 
+/// Integration method for simulation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MjcfIntegrator {
+    /// Explicit Euler integration (first-order).
+    #[default]
+    Euler,
+    /// 4th-order Runge-Kutta (high accuracy, expensive).
+    RK4,
+    /// Implicit-in-velocity integration (stable for stiff systems).
+    Implicit,
+    /// Implicit-fast (skips Coriolis terms for performance).
+    ImplicitFast,
+}
+
+impl MjcfIntegrator {
+    /// Parse integrator from MJCF string.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "euler" => Some(Self::Euler),
+            "rk4" => Some(Self::RK4),
+            "implicit" => Some(Self::Implicit),
+            "implicitfast" => Some(Self::ImplicitFast),
+            _ => None,
+        }
+    }
+
+    /// Get the MJCF string representation.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Euler => "Euler",
+            Self::RK4 => "RK4",
+            Self::Implicit => "implicit",
+            Self::ImplicitFast => "implicitfast",
+        }
+    }
+}
+
+/// Friction cone type for contact constraints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MjcfConeType {
+    /// Pyramidal approximation to friction cone (faster).
+    #[default]
+    Pyramidal,
+    /// Elliptic friction cone (more accurate).
+    Elliptic,
+}
+
+impl MjcfConeType {
+    /// Parse cone type from MJCF string.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "pyramidal" => Some(Self::Pyramidal),
+            "elliptic" => Some(Self::Elliptic),
+            _ => None,
+        }
+    }
+
+    /// Get the MJCF string representation.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pyramidal => "pyramidal",
+            Self::Elliptic => "elliptic",
+        }
+    }
+}
+
+/// Constraint solver algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MjcfSolverType {
+    /// Projected Gauss-Seidel (PGS) solver.
+    PGS,
+    /// Conjugate Gradient solver.
+    CG,
+    /// Newton solver (default, most accurate).
+    #[default]
+    Newton,
+}
+
+impl MjcfSolverType {
+    /// Parse solver type from MJCF string.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_uppercase().as_str() {
+            "PGS" => Some(Self::PGS),
+            "CG" => Some(Self::CG),
+            "NEWTON" => Some(Self::Newton),
+            _ => None,
+        }
+    }
+
+    /// Get the MJCF string representation.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PGS => "PGS",
+            Self::CG => "CG",
+            Self::Newton => "Newton",
+        }
+    }
+}
+
+/// Jacobian computation type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MjcfJacobianType {
+    /// Dense Jacobian matrix.
+    #[default]
+    Dense,
+    /// Sparse Jacobian matrix (better for large systems).
+    Sparse,
+    /// Automatic selection based on sparsity.
+    Auto,
+}
+
+impl MjcfJacobianType {
+    /// Parse jacobian type from MJCF string.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "dense" => Some(Self::Dense),
+            "sparse" => Some(Self::Sparse),
+            "auto" => Some(Self::Auto),
+            _ => None,
+        }
+    }
+
+    /// Get the MJCF string representation.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Dense => "dense",
+            Self::Sparse => "sparse",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+/// Simulation flags from `<flag>` element.
+///
+/// These control which features are enabled during simulation.
+/// Note: This struct intentionally has many boolean fields to match MuJoCo's flag element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[allow(clippy::struct_excessive_bools)]
+pub struct MjcfFlag {
+    /// Enable constraint force computation.
+    pub constraint: bool,
+    /// Enable equality constraints.
+    pub equality: bool,
+    /// Enable friction limit constraints.
+    pub frictionloss: bool,
+    /// Enable joint/tendon limit constraints.
+    pub limit: bool,
+    /// Enable contact force computation.
+    pub contact: bool,
+    /// Enable passive spring forces.
+    pub passive: bool,
+    /// Enable gravity force.
+    pub gravity: bool,
+    /// Enable Coriolis/centrifugal forces.
+    pub clampctrl: bool,
+    /// Enable warm-starting of constraint solver.
+    pub warmstart: bool,
+    /// Enable filtering of contact pairs.
+    pub filterparent: bool,
+    /// Enable actuation.
+    pub actuation: bool,
+    /// Enable reference configuration in computation.
+    pub refsafe: bool,
+    /// Enable sensor computation.
+    pub sensor: bool,
+    /// Enable mid-phase collision detection.
+    pub midphase: bool,
+    /// Enable native CCD (continuous collision detection).
+    pub nativeccd: bool,
+    /// Enable Euler angle damping.
+    pub eulerdamp: bool,
+    /// Override contacts (use constraint-based contacts).
+    pub override_contacts: bool,
+    /// Enable energy computation.
+    pub energy: bool,
+    /// Enable body sleeping/deactivation.
+    pub island: bool,
+    /// Enable multi-CCD (multiple CCD iterations).
+    pub multiccd: bool,
+}
+
+impl Default for MjcfFlag {
+    fn default() -> Self {
+        Self {
+            constraint: true,
+            equality: true,
+            frictionloss: true,
+            limit: true,
+            contact: true,
+            passive: true,
+            gravity: true,
+            clampctrl: true,
+            warmstart: true,
+            filterparent: true,
+            actuation: true,
+            refsafe: true,
+            sensor: true,
+            midphase: true,
+            nativeccd: true,
+            eulerdamp: true,
+            override_contacts: false,
+            energy: false,
+            island: false,
+            multiccd: false,
+        }
+    }
+}
+
 /// Global simulation options from `<option>` element.
+///
+/// These settings control the core simulation parameters including
+/// timestep, solver configuration, integration method, and physics options.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfOption {
-    /// Timestep in seconds.
+    // ========== Core Simulation ==========
+    /// Timestep in seconds (default: 0.002).
     pub timestep: f64,
+
+    /// Integration method (default: Euler).
+    pub integrator: MjcfIntegrator,
+
+    // ========== Solver Configuration ==========
+    /// Constraint solver algorithm (default: Newton).
+    pub solver: MjcfSolverType,
+
+    /// Maximum number of main solver iterations (default: 100).
+    pub iterations: usize,
+
+    /// Solver early termination tolerance (default: 1e-8).
+    pub tolerance: f64,
+
+    /// Maximum iterations for line search in CG/Newton solvers (default: 50).
+    pub ls_iterations: usize,
+
+    /// Iterations for no-slip solver (default: 0 = disabled).
+    pub noslip_iterations: usize,
+
+    /// Iterations for convex collision detection (default: 50).
+    pub ccd_iterations: usize,
+
+    // ========== Contact Configuration ==========
+    /// Friction cone type (default: Pyramidal).
+    pub cone: MjcfConeType,
+
+    /// Jacobian computation type (default: Dense).
+    pub jacobian: MjcfJacobianType,
+
+    /// Ratio of frictional-to-normal constraint impedance (default: 1.0).
+    ///
+    /// Higher values make friction constraints stiffer relative to normal forces.
+    pub impratio: f64,
+
+    // ========== Physics Environment ==========
     /// Gravity vector (default: 0 0 -9.81).
     pub gravity: Vector3<f64>,
-    /// Integration method: "Euler", "RK4", "implicit".
-    pub integrator: String,
-    /// Contact solver iterations.
-    pub iterations: usize,
-    /// Contact solver tolerance.
-    pub tolerance: f64,
-    /// Enable/disable contacts.
-    pub flag_contact: bool,
-    /// Enable/disable gravity.
-    pub flag_gravity: bool,
+
+    /// Wind/medium velocity vector (default: 0 0 0).
+    pub wind: Vector3<f64>,
+
+    /// Global magnetic flux direction (default: 0 -0.5 0).
+    pub magnetic: Vector3<f64>,
+
+    /// Medium density for lift/drag forces in kg/m³ (default: 0 = disabled).
+    pub density: f64,
+
+    /// Medium viscosity (default: 0 = disabled).
+    pub viscosity: f64,
+
+    // ========== Constraint Limits ==========
+    /// Maximum number of contacts (0 = unlimited, default: 0).
+    pub nconmax: usize,
+
+    /// Maximum number of constraint pairs (0 = unlimited, default: 0).
+    pub njmax: usize,
+
+    // ========== Overrides ==========
+    /// Override contact margin (negative = use geom-specific, default: -1).
+    pub o_margin: f64,
+
+    /// Override contact solimp parameters.
+    pub o_solimp: Option<[f64; 5]>,
+
+    /// Override contact solref parameters.
+    pub o_solref: Option<[f64; 2]>,
+
+    /// Override contact friction coefficients.
+    pub o_friction: Option<[f64; 5]>,
+
+    // ========== Flags (child element) ==========
+    /// Simulation flags controlling feature enable/disable.
+    pub flag: MjcfFlag,
 }
 
 impl Default for MjcfOption {
     fn default() -> Self {
         Self {
-            timestep: 0.002,                        // MuJoCo default
-            gravity: Vector3::new(0.0, 0.0, -9.81), // Z-up convention
-            integrator: "Euler".to_string(),
+            // Core simulation
+            timestep: 0.002, // MuJoCo default
+            integrator: MjcfIntegrator::default(),
+
+            // Solver configuration
+            solver: MjcfSolverType::default(),
             iterations: 100,
             tolerance: 1e-8,
-            flag_contact: true,
-            flag_gravity: true,
+            ls_iterations: 50,
+            noslip_iterations: 0,
+            ccd_iterations: 50,
+
+            // Contact configuration
+            cone: MjcfConeType::default(),
+            jacobian: MjcfJacobianType::default(),
+            impratio: 1.0,
+
+            // Physics environment
+            gravity: Vector3::new(0.0, 0.0, -9.81), // Z-up convention
+            wind: Vector3::zeros(),
+            magnetic: Vector3::new(0.0, -0.5, 0.0),
+            density: 0.0,
+            viscosity: 0.0,
+
+            // Constraint limits
+            nconmax: 0,
+            njmax: 0,
+
+            // Overrides (negative = use defaults)
+            o_margin: -1.0,
+            o_solimp: None,
+            o_solref: None,
+            o_friction: None,
+
+            // Flags
+            flag: MjcfFlag::default(),
+        }
+    }
+}
+
+impl MjcfOption {
+    /// Check if gravity is enabled (flag and non-zero gravity vector).
+    #[must_use]
+    pub fn gravity_enabled(&self) -> bool {
+        self.flag.gravity && self.gravity.norm() > 1e-10
+    }
+
+    /// Check if contacts are enabled.
+    #[must_use]
+    pub fn contacts_enabled(&self) -> bool {
+        self.flag.contact
+    }
+
+    /// Get effective contact margin (uses override if positive).
+    #[must_use]
+    pub fn effective_margin(&self) -> Option<f64> {
+        if self.o_margin >= 0.0 {
+            Some(self.o_margin)
+        } else {
+            None
         }
     }
 }
@@ -66,6 +402,14 @@ pub struct MjcfDefault {
     pub geom: Option<MjcfGeomDefaults>,
     /// Default actuator parameters.
     pub actuator: Option<MjcfActuatorDefaults>,
+    /// Default tendon parameters.
+    pub tendon: Option<MjcfTendonDefaults>,
+    /// Default sensor parameters.
+    pub sensor: Option<MjcfSensorDefaults>,
+    /// Default mesh parameters.
+    pub mesh: Option<MjcfMeshDefaults>,
+    /// Default site parameters.
+    pub site: Option<MjcfSiteDefaults>,
 }
 
 /// Default joint parameters.
@@ -116,6 +460,172 @@ pub struct MjcfActuatorDefaults {
     pub forcerange: Option<(f64, f64)>,
     /// Gear ratio.
     pub gear: Option<f64>,
+    /// Position gain (kp) for position actuators.
+    pub kp: Option<f64>,
+    /// Velocity gain (kv) for velocity actuators.
+    pub kv: Option<f64>,
+    /// Control limited.
+    pub ctrllimited: Option<bool>,
+    /// Force limited.
+    pub forcelimited: Option<bool>,
+}
+
+/// Default tendon parameters.
+///
+/// MuJoCo tendons can have these defaults specified in the `<default>` element.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfTendonDefaults {
+    /// Range limits [lower, upper] for tendon length.
+    pub range: Option<(f64, f64)>,
+    /// Whether range limits are enabled.
+    pub limited: Option<bool>,
+    /// Stiffness coefficient.
+    pub stiffness: Option<f64>,
+    /// Damping coefficient.
+    pub damping: Option<f64>,
+    /// Friction loss.
+    pub frictionloss: Option<f64>,
+    /// Tendon width for visualization.
+    pub width: Option<f64>,
+    /// RGBA color for visualization.
+    pub rgba: Option<Vector4<f64>>,
+}
+
+/// Default sensor parameters.
+///
+/// MuJoCo sensors can have these defaults specified in the `<default>` element.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfSensorDefaults {
+    /// Noise standard deviation.
+    pub noise: Option<f64>,
+    /// Cutoff frequency for low-pass filter (0 = no filter).
+    pub cutoff: Option<f64>,
+    /// User-defined data fields.
+    pub user: Option<Vec<f64>>,
+}
+
+/// Default mesh parameters.
+///
+/// MuJoCo mesh loading can have these defaults specified in the `<default>` element.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfMeshDefaults {
+    /// Mesh scale factors [x, y, z].
+    pub scale: Option<Vector3<f64>>,
+}
+
+// ============================================================================
+// Assets
+// ============================================================================
+
+/// A mesh asset from `<mesh>` element in the `<asset>` section.
+///
+/// MuJoCo meshes can reference external files or contain embedded vertices.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfMesh {
+    /// Asset name (used to reference the mesh from geoms).
+    pub name: String,
+    /// File path for external mesh (STL, OBJ, etc.).
+    pub file: Option<String>,
+    /// Scale factor for the mesh vertices.
+    pub scale: Vector3<f64>,
+    /// Embedded vertex data (if not loading from file).
+    /// Format: flat array of xyz coordinates.
+    pub vertex: Option<Vec<f64>>,
+    /// Embedded face data (if not loading from file).
+    /// Format: flat array of vertex indices (triangles).
+    pub face: Option<Vec<u32>>,
+}
+
+impl Default for MjcfMesh {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            file: None,
+            scale: Vector3::new(1.0, 1.0, 1.0),
+            vertex: None,
+            face: None,
+        }
+    }
+}
+
+impl MjcfMesh {
+    /// Create a new mesh asset with a name.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Create a mesh asset from a file path.
+    #[must_use]
+    pub fn from_file(name: impl Into<String>, file: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            file: Some(file.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Set the scale factor.
+    #[must_use]
+    pub fn with_scale(mut self, scale: Vector3<f64>) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    /// Check if this mesh has embedded data.
+    #[must_use]
+    pub fn has_embedded_data(&self) -> bool {
+        self.vertex.is_some()
+    }
+
+    /// Check if this mesh references an external file.
+    #[must_use]
+    pub fn has_file(&self) -> bool {
+        self.file.is_some()
+    }
+
+    /// Get the number of embedded vertices (if any).
+    #[must_use]
+    pub fn vertex_count(&self) -> usize {
+        self.vertex.as_ref().map_or(0, |v| v.len() / 3)
+    }
+
+    /// Get embedded vertices as Point3 array.
+    #[must_use]
+    pub fn vertices_as_points(&self) -> Vec<Point3<f64>> {
+        self.vertex.as_ref().map_or_else(Vec::new, |v| {
+            v.chunks_exact(3)
+                .map(|c| {
+                    Point3::new(
+                        c[0] * self.scale.x,
+                        c[1] * self.scale.y,
+                        c[2] * self.scale.z,
+                    )
+                })
+                .collect()
+        })
+    }
+}
+
+/// Default site parameters.
+///
+/// MuJoCo sites can have these defaults specified in the `<default>` element.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfSiteDefaults {
+    /// Site type (sphere, capsule, ellipsoid, cylinder, box).
+    pub site_type: Option<String>,
+    /// Site size.
+    pub size: Option<Vec<f64>>,
+    /// RGBA color.
+    pub rgba: Option<Vector4<f64>>,
 }
 
 // ============================================================================
@@ -401,6 +911,12 @@ pub enum MjcfJointType {
     Ball,
     /// Free joint (6 DOF).
     Free,
+    /// Cylindrical joint (2 DOF: rotation + translation along same axis).
+    /// Note: This is an extension to standard MJCF.
+    Cylindrical,
+    /// Planar joint (3 DOF: x, y translation + rotation about normal).
+    /// Note: This is an extension to standard MJCF.
+    Planar,
 }
 
 impl MjcfJointType {
@@ -411,6 +927,8 @@ impl MjcfJointType {
             "slide" => Some(Self::Slide),
             "ball" => Some(Self::Ball),
             "free" => Some(Self::Free),
+            "cylindrical" => Some(Self::Cylindrical),
+            "planar" => Some(Self::Planar),
             _ => None,
         }
     }
@@ -420,7 +938,8 @@ impl MjcfJointType {
     pub fn dof(&self) -> usize {
         match self {
             Self::Hinge | Self::Slide => 1,
-            Self::Ball => 3,
+            Self::Cylindrical => 2,
+            Self::Ball | Self::Planar => 3,
             Self::Free => 6,
         }
     }
@@ -557,6 +1076,138 @@ impl Default for MjcfSite {
             size: vec![0.01],
             rgba: Vector4::new(1.0, 0.0, 0.0, 1.0),
         }
+    }
+}
+
+// ============================================================================
+// Equality Constraints
+// ============================================================================
+
+/// Connect (ball) equality constraint from `<connect>` element.
+///
+/// This constraint enforces that two attachment points (one on each body)
+/// coincide in 3D space, acting like a ball-and-socket joint without any
+/// rotational constraints.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfConnect {
+    /// Optional constraint name.
+    pub name: Option<String>,
+    /// Default class for inheriting parameters.
+    pub class: Option<String>,
+    /// Name of the first body.
+    pub body1: String,
+    /// Name of the second body (optional, defaults to world).
+    pub body2: Option<String>,
+    /// Anchor point in body1's local frame.
+    pub anchor: Vector3<f64>,
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    /// Controls constraint softness/stiffness.
+    pub solimp: Option<[f64; 5]>,
+    /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    /// Controls constraint dynamics.
+    pub solref: Option<[f64; 2]>,
+    /// Whether this constraint is active.
+    pub active: bool,
+}
+
+impl Default for MjcfConnect {
+    fn default() -> Self {
+        Self {
+            name: None,
+            class: None,
+            body1: String::new(),
+            body2: None,
+            anchor: Vector3::zeros(),
+            solimp: None,
+            solref: None,
+            active: true,
+        }
+    }
+}
+
+impl MjcfConnect {
+    /// Create a new connect constraint between two bodies.
+    #[must_use]
+    pub fn new(body1: impl Into<String>, body2: impl Into<String>) -> Self {
+        Self {
+            body1: body1.into(),
+            body2: Some(body2.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a connect constraint to the world frame.
+    #[must_use]
+    pub fn to_world(body1: impl Into<String>) -> Self {
+        Self {
+            body1: body1.into(),
+            body2: None,
+            ..Default::default()
+        }
+    }
+
+    /// Set the anchor point in body1's frame.
+    #[must_use]
+    pub fn with_anchor(mut self, anchor: Vector3<f64>) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// Set the constraint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set solver reference parameters.
+    #[must_use]
+    pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
+        self.solref = Some(solref);
+        self
+    }
+
+    /// Set solver impedance parameters.
+    #[must_use]
+    pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
+        self.solimp = Some(solimp);
+        self
+    }
+}
+
+/// Container for equality constraints from `<equality>` element.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfEquality {
+    /// Connect (ball) constraints.
+    pub connects: Vec<MjcfConnect>,
+}
+
+impl MjcfEquality {
+    /// Create a new empty equality constraint container.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a connect constraint.
+    #[must_use]
+    pub fn with_connect(mut self, connect: MjcfConnect) -> Self {
+        self.connects.push(connect);
+        self
+    }
+
+    /// Check if there are any equality constraints.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.connects.is_empty()
+    }
+
+    /// Get the total number of equality constraints.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.connects.len()
     }
 }
 
@@ -816,10 +1467,14 @@ pub struct MjcfModel {
     pub option: MjcfOption,
     /// Default parameter classes.
     pub defaults: Vec<MjcfDefault>,
+    /// Mesh assets.
+    pub meshes: Vec<MjcfMesh>,
     /// Root worldbody containing the body tree.
     pub worldbody: MjcfBody,
     /// Actuators.
     pub actuators: Vec<MjcfActuator>,
+    /// Equality constraints.
+    pub equality: MjcfEquality,
 }
 
 impl Default for MjcfModel {
@@ -828,8 +1483,10 @@ impl Default for MjcfModel {
             name: "unnamed".to_string(),
             option: MjcfOption::default(),
             defaults: Vec::new(),
+            meshes: Vec::new(),
             worldbody: MjcfBody::new("world"),
             actuators: Vec::new(),
+            equality: MjcfEquality::default(),
         }
     }
 }
@@ -928,6 +1585,19 @@ impl MjcfModel {
             }
         }
         None
+    }
+
+    /// Get a mesh asset by name.
+    #[must_use]
+    pub fn mesh(&self, name: &str) -> Option<&MjcfMesh> {
+        self.meshes.iter().find(|m| m.name == name)
+    }
+
+    /// Add a mesh asset to the model.
+    #[must_use]
+    pub fn with_mesh(mut self, mesh: MjcfMesh) -> Self {
+        self.meshes.push(mesh);
+        self
     }
 }
 

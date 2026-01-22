@@ -8,40 +8,36 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ## 📊 Executive Summary
 
-**Overall completion: ~95%** of MuJoCo's core physics features are implemented.
+**Overall completion: ~97%** of MuJoCo's core physics features are implemented.
 
-### ✅ Fully Implemented (Phases 1-8 Complete)
+### ✅ Fully Implemented (Phases 1-9 Complete)
 - Integration methods (Euler, RK4, Verlet, Implicit)
-- Constraint solvers (Newton, CG, Islands, Warm Starting)
+- Constraint solvers (Newton, CG, **PGS with SOR**, Islands, Warm Starting)
 - Contact model (Compliant, Elliptic/Pyramidal friction, Torsional/Rolling)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH)
-- Joint types (Fixed, Revolute, Prismatic, Spherical, Universal)
+- Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free, Planar, Cylindrical**)
 - Actuators (Motors, Servos, Muscles, Pneumatic, Adhesion)
 - Sensors (IMU, Force/Torque, Touch, Rangefinder, Magnetometer)
 - Tendons & Deformables (Cloth, Soft bodies, XPBD solver)
 - Model loading (URDF, MJCF)
 
-### ❌ Missing Features (7 items - not yet started)
+### ❌ Missing Features (5 items - not yet started)
 
 | Priority | Feature | Impact | Effort | Section |
 |----------|---------|--------|--------|---------|
-| **1** | Free/Planar/Cylindrical joint solvers | High | Medium | [§6](#6-joint-types) |
-| **2** | Non-convex mesh collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
-| **3** | SDF collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
-| **4** | Skinned meshes | Low | High | [§11](#11-deformables-flex) |
-| **5** | Multi-threading | Medium | Medium | [§12](#12-performance-optimizations) |
-| **6** | MJB binary format | Low | Low | [§13](#13-model-format) |
-| **7** | Connect (ball) equality constraint | Low | Low | [§10](#10-equality-constraints) |
+| **1** | Non-convex mesh collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
+| **2** | SDF collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
+| **3** | Skinned meshes | Low | High | [§11](#11-deformables-flex) |
+| **4** | Multi-threading | Medium | Medium | [§12](#12-performance-optimizations) |
+| **5** | MJB binary format | Low | Low | [§13](#13-model-format) |
 
-### ⚠️ Partial Implementations (6 items - needs completion)
+### ⚠️ Partial Implementations (4 items - needs completion)
 
 | Feature | Current State | What's Missing | Section |
 |---------|---------------|----------------|---------|
-| PGS (Gauss-Seidel) solver | Has relaxation param | Full iterative solver with SOR | [§2](#2-constraint-solvers) |
 | SIMD optimization | Via nalgebra only | Explicit vectorization for hot paths | [§12](#12-performance-optimizations) |
-| MJCF `<option>` element | timestep, gravity, integrator | solver params, flags, collision options | [§13](#13-model-format) |
 | MJCF `<default>` element | Joint and geom defaults | Actuator, tendon, sensor defaults | [§13](#13-model-format) |
-| MJCF `<geom>` element | Primitives only | Mesh type support | [§13](#13-model-format) |
+| MJCF `<geom>` element | Primitives + mesh (convex) | Non-convex mesh collision | [§13](#13-model-format) |
 | MJCF `<actuator>` element | motor, position, velocity | cylinder, muscle, adhesion types | [§13](#13-model-format) |
 
 **For typical robotics use cases**, the current implementation is feature-complete. The missing items are for specialized scenarios (complex geometry, visual rendering, extreme performance). The partial implementations work for common cases but may need extension for advanced MuJoCo models.
@@ -124,7 +120,7 @@ integrate_with_method_and_damping(
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| PGS (Gauss-Seidel) | Supported | Partial (relaxation param) | **Partial** | Medium | Low |
+| PGS (Gauss-Seidel) | Supported | `PGSSolver` with SOR | **Implemented** | - | - |
 | Newton solver | Default, 2-3 iterations | `NewtonConstraintSolver` | **Implemented** | - | - |
 | Conjugate Gradient | Supported | `CGSolver` | **Implemented** | - | - |
 | Constraint islands | Auto-detected | `ConstraintIslands` | **Implemented** | - | - |
@@ -167,6 +163,72 @@ if result.converged {
 ```
 
 **Files:** `sim-constraint/src/newton.rs`
+
+### Implementation Notes: PGS (Gauss-Seidel) Solver ✅ COMPLETED
+
+The PGS solver implements a full iterative Projected Gauss-Seidel method with
+Successive Over-Relaxation (SOR), matching MuJoCo's PGS solver capabilities.
+
+**Algorithm:**
+For each constraint i, we iteratively solve:
+```
+λ_i^{new} = (b_i - Σ_{j<i} A_ij λ_j^{new} - Σ_{j>i} A_ij λ_j^{old}) / A_ii
+```
+
+With SOR, the update becomes:
+```
+λ_i^{new} = (1 - ω) * λ_i^{old} + ω * λ_i^{gauss-seidel}
+```
+
+Where ω is the relaxation factor:
+- ω = 1.0: Standard Gauss-Seidel
+- ω < 1.0: Under-relaxation (more stable, slower convergence)
+- ω > 1.0: Over-relaxation (faster convergence, typically 1.2-1.8)
+
+**Implemented:**
+- `PGSSolver` - Full iterative Gauss-Seidel solver
+- `PGSSolverConfig` - Configurable tolerance, max iterations, SOR factor
+- SOR support with configurable relaxation factor (0 < ω < 2)
+- Warm starting from previous frame's solution
+- Convergence tracking with optional residual history
+- Configuration presets: `default()`, `realtime()`, `mujoco()`, `fast()`, `high_accuracy()`
+
+**Usage:**
+```rust
+use sim_constraint::{PGSSolver, PGSSolverConfig, RevoluteJoint};
+use sim_types::BodyId;
+use nalgebra::Vector3;
+
+// Create PGS solver with MuJoCo-compatible settings
+let mut solver = PGSSolver::new(PGSSolverConfig::mujoco());
+
+// Or customize with SOR for faster convergence
+let config = PGSSolverConfig {
+    max_iterations: 100,
+    tolerance: 1e-6,
+    sor_factor: 1.3,  // Over-relaxation
+    warm_starting: true,
+    warm_start_factor: 0.9,
+    ..Default::default()
+};
+let mut solver = PGSSolver::new(config);
+
+// Solve constraints
+let result = solver.solve(&joints, |id| get_body_state(id), dt);
+
+// Check convergence
+if result.converged {
+    println!("Converged in {} iterations (residual: {:.2e})",
+        result.iterations_used, result.residual_norm);
+}
+
+// Access statistics
+let stats = solver.last_stats();
+println!("Used warm start: {}, SOR factor: {}",
+    stats.used_warm_start, stats.sor_factor);
+```
+
+**Files:** `sim-constraint/src/pgs.rs`
 
 ### Implementation Notes: Constraint Islands ✅ COMPLETED
 
@@ -423,33 +485,37 @@ Signed Distance Fields (SDF) provide smooth collision with complex geometry:
 | Slide (prismatic) | Yes | `PrismaticJoint` | **Implemented** | |
 | Ball (spherical) | Yes | `SphericalJoint` | **Implemented** | |
 | Universal | Yes | `UniversalJoint` | **Implemented** | |
-| Free (6 DOF) | Yes | `JointType::Free` | ⚠️ **Partial** | No constraint solver - **Priority 1** |
-| Planar | Yes | `JointType::Planar` | ⚠️ **Partial** | No constraint solver - **Priority 1** |
-| Cylindrical | Yes | `JointType::Cylindrical` | ⚠️ **Partial** | No constraint solver - **Priority 1** |
+| Free (6 DOF) | Yes | `FreeJoint` | **Implemented** | Full constraint solver support |
+| Planar | Yes | `PlanarJoint` | **Implemented** | Full constraint solver support |
+| Cylindrical | Yes | `CylindricalJoint` | **Implemented** | Full constraint solver support |
 
-### Implementation Notes: Free/Planar/Cylindrical Joints ❌ TODO (Priority 1)
+### Implementation Notes: Free/Planar/Cylindrical Joints ✅ COMPLETED
 
-These joint types exist as enum variants but lack constraint solver support:
+All three joint types are now fully implemented with constraint solver support:
 
-**Free joints (6 DOF floating bodies):**
+**FreeJoint (6 DOF floating bodies):**
 - Used for floating-base robots (quadrupeds, humanoids, drones)
-- Need quaternion integration for orientation
-- No positional constraints, but need mass matrix handling in solver
+- Zero constraints (all 6 DOF free)
+- Includes linear and angular damping
+- Methods: `set_position()`, `set_rotation()`, `compute_damping_force()`
 
-**Planar joints (3 DOF: x, y, rotation):**
+**PlanarJoint (3 DOF: x, y translation + rotation):**
 - Used for mobile robots on flat surfaces
-- Constrains motion to a plane
+- 3 constraints: 1 translation (perpendicular to plane) + 2 rotation (tilt)
+- Configurable plane normal
+- Methods: `set_position()`, `set_angle()`, `translation()`, `rotation()`
 
-**Cylindrical joints (2 DOF: rotation + translation along axis):**
+**CylindricalJoint (2 DOF: rotation + translation along axis):**
 - Combination of revolute + prismatic along same axis
-- Used for screw mechanisms
+- 4 constraints: 2 translation + 2 rotation (perpendicular to axis)
+- Supports separate rotation and translation limits, motors, and damping
+- Methods: `set_angle()`, `set_displacement()`, `compute_joint_forces()`
 
-**Implementation approach:**
-1. Add constraint Jacobians for each joint type in `sim-constraint/src/joint.rs`
-2. Update `NewtonConstraintSolver` to handle these joint types
-3. Add tests with floating-base robot models
-
-**Files to modify:** `sim-constraint/src/joint.rs`, `sim-constraint/src/newton.rs`, `sim-constraint/src/solver.rs`
+**Constraint solver support added to:**
+- `ConstraintSolver` (Gauss-Seidel): `solve_free_constraint()`, `solve_planar_constraint()`, `solve_cylindrical_constraint()`
+- `NewtonConstraintSolver`: Jacobian and error computation for all three types
+- `CGSolver`: Jacobian and error computation for all three types
+- MJCF loader: Updated to parse `cylindrical` and `planar` joint types
 
 ---
 
@@ -701,11 +767,77 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 
 | Constraint | MuJoCo | CortenForge | Status | Priority |
 |------------|--------|-------------|--------|----------|
-| Connect (ball) | Yes | Via SphericalJoint | **Partial** | Medium |
+| Connect (ball) | Yes | `ConnectConstraint` | **Implemented** | - |
 | Weld | Yes | Via FixedJoint | **Implemented** | - |
 | Joint coupling | Yes | `JointCoupling`, `GearCoupling`, `DifferentialCoupling` | **Implemented** | - |
 | Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Implemented** | - |
 | Flex (edge length) | Yes | `FlexEdgeConstraint` | **Implemented** | - |
+
+### Implementation Notes: Connect (Ball) Constraint ✅ COMPLETED
+
+The connect (ball) constraint enforces that two attachment points (one on each body) coincide in 3D space. It acts like a ball-and-socket joint without any rotational constraints - both bodies can rotate freely around the connection point.
+
+**Constraint Formulation:**
+```
+p1 + R1 * anchor - p2 = 0
+```
+
+Where:
+- `p1`, `p2` are the body positions
+- `R1` is the rotation matrix of body1
+- `anchor` is the local anchor point in body1's frame
+
+This results in 3 scalar constraints (one per axis).
+
+**Implementation:**
+- `ConnectConstraint` - Ball constraint between two bodies or body-to-world
+- `MjcfConnect` - MJCF representation for `<connect>` element parsing
+- `MjcfEquality` - Container for equality constraints in MJCF model
+- Full MJCF parser support for `<equality><connect>` elements
+- Baumgarte stabilization for position correction
+- Compliance and damping parameters for soft constraints
+- Solver reference (`solref`) and impedance (`solimp`) parameters
+
+**Usage:**
+```rust
+use sim_constraint::ConnectConstraint;
+use sim_types::BodyId;
+use nalgebra::Vector3;
+
+// Connect body1's tip to body2's origin
+let constraint = ConnectConstraint::new(
+    BodyId::new(0),
+    BodyId::new(1),
+    Vector3::new(0.0, 0.0, 1.0),  // anchor at body1's +Z tip
+);
+
+// Connect body to world (fixed point constraint)
+let world_constraint = ConnectConstraint::to_world(
+    BodyId::new(0),
+    Vector3::new(0.0, 0.0, 0.0),
+);
+
+// Via MJCF
+let mjcf = r#"
+    <mujoco model="test">
+        <worldbody>
+            <body name="body1"/>
+            <body name="body2"/>
+        </worldbody>
+        <equality>
+            <connect name="ball" body1="body1" body2="body2" anchor="0.5 0 0"/>
+        </equality>
+    </mujoco>
+"#;
+let model = load_mjcf_str(mjcf).expect("should parse");
+// model.connect_constraints contains the parsed constraints
+```
+
+**Files:**
+- `sim-constraint/src/equality.rs` - `ConnectConstraint` implementation
+- `sim-mjcf/src/types.rs` - `MjcfConnect`, `MjcfEquality` types
+- `sim-mjcf/src/parser.rs` - `<equality>` and `<connect>` element parsing
+- `sim-mjcf/src/loader.rs` - Conversion to `ConnectConstraint`
 
 ---
 
@@ -955,13 +1087,13 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | Element | Support | Notes |
 |---------|---------|-------|
 | `<mujoco>` | Full | Root element, model name |
-| `<option>` | Partial | timestep, gravity, integrator |
+| `<option>` | Full | All attributes, flags, solver params, collision options |
 | `<default>` | Partial | Joint and geom defaults |
 | `<worldbody>` | Full | Body tree root |
 | `<body>` | Full | Hierarchical bodies with pos, quat, euler |
 | `<inertial>` | Full | mass, diaginertia, fullinertia |
 | `<joint>` | Full | hinge, slide, ball, free types |
-| `<geom>` | Partial | sphere, box, capsule, cylinder, ellipsoid, plane |
+| `<geom>` | Full | sphere, box, capsule, cylinder, ellipsoid, plane, mesh |
 | `<site>` | Parsed | Markers (not used in physics) |
 | `<actuator>` | Partial | motor, position, velocity |
 | `<contact>` | Full | Contact filtering via contype/conaffinity |
@@ -979,6 +1111,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 - `cylinder` → `CollisionShape::Cylinder`
 - `ellipsoid` → `CollisionShape::Ellipsoid`
 - `plane` → `CollisionShape::Plane`
+- `mesh` → `CollisionShape::ConvexMesh` (convex hull)
 
 **Usage:**
 ```rust
@@ -1006,14 +1139,96 @@ let body_id = spawned.body_id("base").expect("base exists");
 ```
 
 **Limitations:**
-- Mesh collision shapes not supported
+- Non-convex meshes are converted to convex hulls
+- Height fields (hfield) and signed distance fields (sdf) not supported
 - Tendons not supported
-- Equality constraints not supported
+- Only connect equality constraints supported (weld, joint, distance coming soon)
 - Composite bodies not supported
 - Include files not supported
-- Assets (textures, materials) parsed but not loaded
+- Textures and materials parsed but not loaded (meshes are loaded)
 
-**Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `loader.rs`, `validation.rs`
+**Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `loader.rs`, `validation.rs`, `config.rs`
+
+### Implementation Notes: MJCF `<option>` Element ✅ COMPLETED
+
+Full support for MuJoCo's `<option>` element with all simulation configuration:
+
+**Solver Configuration:**
+- `timestep` - Simulation time step (default: 0.002)
+- `integrator` - Euler, RK4, implicit, implicitfast
+- `solver` - PGS, CG, Newton solver types
+- `iterations` - Solver iterations (default: 100)
+- `tolerance` - Solver convergence tolerance
+- `ls_iterations` - Line search iterations for CG/Newton
+- `noslip_iterations` - No-slip solver iterations
+- `ccd_iterations` - Continuous collision detection iterations
+
+**Contact Model:**
+- `cone` - Friction cone type (pyramidal, elliptic)
+- `jacobian` - Jacobian type (dense, sparse, auto)
+- `impratio` - Friction-to-normal impedance ratio
+- `nconmax` - Maximum contacts (0 = unlimited)
+- `njmax` - Maximum constraint rows
+
+**Physics Environment:**
+- `gravity` - 3D gravity vector (default: 0 0 -9.81)
+- `wind` - Wind velocity for aerodynamic effects
+- `magnetic` - Magnetic field direction
+- `density` - Medium density for drag
+- `viscosity` - Medium viscosity
+
+**Override Parameters:**
+- `o_margin` - Global contact margin override
+- `o_solimp` - Global solimp override [5 values]
+- `o_solref` - Global solref override [2 values]
+- `o_friction` - Global friction override [5 values]
+
+**Flags (`<flag>` child element):**
+All 20 MuJoCo flags supported:
+- `constraint`, `equality`, `frictionloss`, `limit`, `contact`
+- `passive`, `gravity`, `clampctrl`, `warmstart`, `filterparent`
+- `actuation`, `refsafe`, `sensor`, `midphase`, `eulerdamp`
+- `override`, `energy`, `fwdinv`, `island`, `nativeccd`
+
+**Configuration Types:**
+- `MjcfOption` - Complete option parsing with defaults
+- `MjcfFlag` - All 20 boolean flags
+- `MjcfIntegrator` - Euler, RK4, Implicit, ImplicitFast
+- `MjcfConeType` - Pyramidal, Elliptic
+- `MjcfSolverType` - PGS, CG, Newton
+- `MjcfJacobianType` - Dense, Sparse, Auto
+- `ExtendedSolverConfig` - Conversion to sim-types with extended settings
+
+**Usage:**
+```rust
+use sim_mjcf::{load_mjcf_str, ExtendedSolverConfig};
+
+let mjcf = r#"
+    <mujoco model="test">
+        <option timestep="0.001" integrator="RK4" gravity="0 0 -10">
+            <flag warmstart="true" contact="true"/>
+        </option>
+        <worldbody>
+            <body name="ball">
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody>
+    </mujoco>
+"#;
+
+let model = load_mjcf_str(mjcf).expect("should parse");
+
+// Access simulation config
+let sim_config = model.simulation_config();
+assert_eq!(sim_config.timestep, 0.001);
+
+// Access extended config with MJCF-specific settings
+let ext_config = &model.solver_config;
+assert!(ext_config.warmstart_enabled());
+assert!(ext_config.flags.contact);
+```
+
+**Files:** `sim-mjcf/src/types.rs`, `parser.rs`, `config.rs`, `loader.rs`, `validation.rs`
 
 ---
 
@@ -1025,26 +1240,30 @@ The following features are **not yet implemented**. They are ranked by importanc
 
 | Priority | Feature | Section | Complexity | Impact | Notes |
 |----------|---------|---------|------------|--------|-------|
-| **1** | Free/Planar/Cylindrical joint solvers | §6 Joints | Medium | High | Complete existing partial implementations |
-| **2** | Non-convex mesh collision | §5 Geoms | High | Medium | Triangle mesh without convexification |
-| **3** | SDF collision | §4, §5 | High | Medium | Signed distance fields for complex geometry |
-| **4** | Skinned meshes | §11 Deformables | High | Low | Visual deformation for rendering |
-| **5** | Multi-threading | §12 Performance | Medium | Medium | Requires model-data separation |
-| **6** | MJB binary format | §13 Model Format | Low | Low | Faster loading, MuJoCo-specific |
+| **1** | Non-convex mesh collision | §5 Geoms | High | Medium | Triangle mesh without convexification |
+| **2** | SDF collision | §4, §5 | High | Medium | Signed distance fields for complex geometry |
+| **3** | Skinned meshes | §11 Deformables | High | Low | Visual deformation for rendering |
+| **4** | Multi-threading | §12 Performance | Medium | Medium | Requires model-data separation |
+| **5** | MJB binary format | §13 Model Format | Low | Low | Faster loading, MuJoCo-specific |
 
 **Recommended implementation order:**
 
-1. **Free/Planar/Cylindrical joints** - These are marked "Partial" because the types exist but lack constraint solver support. Completing them enables floating-base robots and mobile platforms.
+1. **Non-convex mesh collision** - Currently meshes are convexified. True triangle mesh collision enables more accurate collision for complex shapes.
 
-2. **Non-convex mesh collision** - Currently meshes are convexified. True triangle mesh collision enables more accurate collision for complex shapes.
+2. **SDF collision** - Signed distance fields are useful for soft contacts with complex geometry and gradient-based optimization.
 
-3. **SDF collision** - Signed distance fields are useful for soft contacts with complex geometry and gradient-based optimization.
+3. **Skinned meshes** - Only needed for visual rendering of deformables, not physics.
 
-4. **Skinned meshes** - Only needed for visual rendering of deformables, not physics.
+4. **Multi-threading** - Performance optimization, requires architectural changes.
 
-5. **Multi-threading** - Performance optimization, requires architectural changes.
+5. **MJB binary format** - MuJoCo-specific, low priority unless loading speed is critical.
 
-6. **MJB binary format** - MuJoCo-specific, low priority unless loading speed is critical.
+### ✅ Recently Completed: Free/Planar/Cylindrical Joint Solvers
+
+These joint types now have full constraint solver support:
+- **FreeJoint**: 6 DOF floating base for quadrupeds, humanoids, drones
+- **PlanarJoint**: 3 DOF for mobile robots on flat surfaces
+- **CylindricalJoint**: 2 DOF for screw mechanisms (rotation + translation)
 
 ---
 
