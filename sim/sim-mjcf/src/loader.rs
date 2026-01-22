@@ -12,6 +12,7 @@ use sim_core::{Body, CollisionShape, Joint, World};
 use sim_types::{BodyId, JointId, JointType, MassProperties, Pose, RigidBodyState};
 
 use crate::config::ExtendedSolverConfig;
+use crate::defaults::DefaultResolver;
 use crate::error::{MjcfError, Result};
 use crate::parser::parse_mjcf_str;
 use crate::types::{
@@ -216,6 +217,9 @@ impl MjcfLoader {
         let mut body_to_id: HashMap<String, BodyId> = HashMap::new();
         let mut joint_to_id: HashMap<String, JointId> = HashMap::new();
 
+        // Create default resolver for applying default classes
+        let resolver = DefaultResolver::from_model(&model);
+
         // Assign IDs
         let mut next_body_id = 1u64;
         let mut next_joint_id = 1u64;
@@ -236,8 +240,8 @@ impl MjcfLoader {
             // Compute world pose by traversing parent chain
             let world_pose = compute_world_pose(body_name, &validation, &body_lookup);
 
-            // Create the body
-            let body = self.create_body(body_id, mjcf_body, world_pose);
+            // Create the body (with defaults applied to geoms)
+            let body = self.create_body_with_defaults(body_id, mjcf_body, world_pose, &resolver);
             bodies.push(body);
         }
 
@@ -258,20 +262,23 @@ impl MjcfLoader {
                 .get(body_name)
                 .ok_or_else(|| MjcfError::XmlParse(format!("body '{body_name}' not in map")))?;
 
-            // Create joints for this body
+            // Create joints for this body (with defaults applied)
             for mjcf_joint in &mjcf_body.joints {
                 let joint_id = JointId::new(next_joint_id);
                 next_joint_id += 1;
 
-                if !mjcf_joint.name.is_empty() {
-                    joint_to_id.insert(mjcf_joint.name.clone(), joint_id);
+                // Apply defaults to the joint
+                let resolved_joint = resolver.apply_to_joint(mjcf_joint);
+
+                if !resolved_joint.name.is_empty() {
+                    joint_to_id.insert(resolved_joint.name.clone(), joint_id);
                 }
 
                 // For MJCF, joints connect to parent (or world if no parent)
                 // If no parent, create a "world anchor" (fixed to world origin)
                 let actual_parent = parent_id.unwrap_or(BodyId::new(0)); // BodyId(0) represents world
 
-                let joint = self.create_joint(joint_id, mjcf_joint, actual_parent, child_id);
+                let joint = self.create_joint(joint_id, &resolved_joint, actual_parent, child_id);
                 joints.push(joint);
             }
         }
@@ -291,6 +298,7 @@ impl MjcfLoader {
     }
 
     /// Create a sim-core Body from an MJCF body.
+    #[allow(dead_code)]
     fn create_body(&self, id: BodyId, mjcf_body: &MjcfBody, pose: Pose) -> Body {
         // Compute mass properties from inertial or geoms
         let mass_props = if let Some(ref inertial) = mjcf_body.inertial {
@@ -312,6 +320,50 @@ impl MjcfLoader {
 
         // Transfer collision filtering from first geom (MuJoCo-compatible contype/conaffinity)
         if let Some(first_geom) = mjcf_body.geoms.first() {
+            // Convert i32 to u32, clamping negative values to 0
+            let contype = first_geom.contype.max(0) as u32;
+            let conaffinity = first_geom.conaffinity.max(0) as u32;
+            body = body.with_collision_filter(contype, conaffinity);
+        }
+
+        body
+    }
+
+    /// Create a sim-core Body from an MJCF body with defaults applied.
+    fn create_body_with_defaults(
+        &self,
+        id: BodyId,
+        mjcf_body: &MjcfBody,
+        pose: Pose,
+        resolver: &DefaultResolver,
+    ) -> Body {
+        // Apply defaults to all geoms
+        let resolved_geoms: Vec<MjcfGeom> = mjcf_body
+            .geoms
+            .iter()
+            .map(|g| resolver.apply_to_geom(g))
+            .collect();
+
+        // Compute mass properties from inertial or resolved geoms
+        let mass_props = if let Some(ref inertial) = mjcf_body.inertial {
+            MassProperties::new(inertial.mass, inertial.pos, inertial.inertia_matrix())
+        } else {
+            // Compute from resolved geoms
+            self.compute_mass_from_geoms(&resolved_geoms)
+        };
+
+        let state = RigidBodyState::at_rest(pose);
+        let mut body = Body::new(id, state, mass_props).with_name(&mjcf_body.name);
+
+        // Add collision shape from first resolved geom
+        if self.use_collision_shapes {
+            if let Some(collision_shape) = self.collision_shape_from_geoms(&resolved_geoms) {
+                body = body.with_collision_shape(collision_shape);
+            }
+        }
+
+        // Transfer collision filtering from first resolved geom
+        if let Some(first_geom) = resolved_geoms.first() {
             // Convert i32 to u32, clamping negative values to 0
             let contype = first_geom.contype.max(0) as u32;
             let conaffinity = first_geom.conaffinity.max(0) as u32;
@@ -740,5 +792,81 @@ mod tests {
             .expect("slide");
 
         assert_eq!(slide.joint_type, JointType::Prismatic);
+    }
+
+    #[test]
+    fn test_defaults_applied_to_joints() {
+        // Test that default classes are properly applied to joints
+        let xml = r#"
+            <mujoco model="defaults_test">
+                <default>
+                    <joint damping="0.5"/>
+                    <default class="stiff">
+                        <joint damping="2.0" stiffness="100.0"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="base">
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                        <body name="link1" pos="0 0 0.2">
+                            <!-- This joint uses root defaults (damping=0.5) -->
+                            <joint name="j1" type="hinge"/>
+                            <geom type="sphere" size="0.05"/>
+                            <body name="link2" pos="0 0 0.2">
+                                <!-- This joint uses "stiff" class (damping=2.0, stiffness=100.0) -->
+                                <joint name="j2" type="hinge" class="stiff"/>
+                                <geom type="sphere" size="0.05"/>
+                            </body>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        let j1_id = model.joint_to_id["j1"];
+        let j1 = model.joints.iter().find(|j| j.id == j1_id).expect("j1");
+        // j1 has no class, so it should get root defaults applied
+        assert_relative_eq!(j1.damping, 0.5, epsilon = 1e-10);
+
+        let j2_id = model.joint_to_id["j2"];
+        let j2 = model.joints.iter().find(|j| j.id == j2_id).expect("j2");
+        // j2 uses "stiff" class, so it should get damping=2.0
+        assert_relative_eq!(j2.damping, 2.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_defaults_model_with_actuators_tendons_sensors() {
+        // Test that a model with defaults for actuators, tendons, and sensors parses correctly
+        let xml = r#"
+            <mujoco model="full_defaults">
+                <default>
+                    <joint damping="1.0" armature="0.1"/>
+                    <geom density="2000"/>
+                    <motor gear="50" ctrlrange="-1 1"/>
+                    <tendon stiffness="500" damping="5"/>
+                    <sensor noise="0.01"/>
+                </default>
+                <worldbody>
+                    <body name="arm">
+                        <joint name="shoulder" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.5"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="shoulder_motor" joint="shoulder"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        assert_eq!(model.name, "full_defaults");
+        assert_eq!(model.bodies.len(), 1);
+        assert_eq!(model.joints.len(), 1);
+
+        // Check that joint defaults were applied
+        let shoulder = &model.joints[0];
+        assert_relative_eq!(shoulder.damping, 1.0, epsilon = 1e-10);
     }
 }

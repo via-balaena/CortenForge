@@ -402,6 +402,14 @@ pub struct MjcfDefault {
     pub geom: Option<MjcfGeomDefaults>,
     /// Default actuator parameters.
     pub actuator: Option<MjcfActuatorDefaults>,
+    /// Default tendon parameters.
+    pub tendon: Option<MjcfTendonDefaults>,
+    /// Default sensor parameters.
+    pub sensor: Option<MjcfSensorDefaults>,
+    /// Default mesh parameters.
+    pub mesh: Option<MjcfMeshDefaults>,
+    /// Default site parameters.
+    pub site: Option<MjcfSiteDefaults>,
 }
 
 /// Default joint parameters.
@@ -452,6 +460,74 @@ pub struct MjcfActuatorDefaults {
     pub forcerange: Option<(f64, f64)>,
     /// Gear ratio.
     pub gear: Option<f64>,
+    /// Position gain (kp) for position actuators.
+    pub kp: Option<f64>,
+    /// Velocity gain (kv) for velocity actuators.
+    pub kv: Option<f64>,
+    /// Control limited.
+    pub ctrllimited: Option<bool>,
+    /// Force limited.
+    pub forcelimited: Option<bool>,
+}
+
+/// Default tendon parameters.
+///
+/// MuJoCo tendons can have these defaults specified in the `<default>` element.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfTendonDefaults {
+    /// Range limits [lower, upper] for tendon length.
+    pub range: Option<(f64, f64)>,
+    /// Whether range limits are enabled.
+    pub limited: Option<bool>,
+    /// Stiffness coefficient.
+    pub stiffness: Option<f64>,
+    /// Damping coefficient.
+    pub damping: Option<f64>,
+    /// Friction loss.
+    pub frictionloss: Option<f64>,
+    /// Tendon width for visualization.
+    pub width: Option<f64>,
+    /// RGBA color for visualization.
+    pub rgba: Option<Vector4<f64>>,
+}
+
+/// Default sensor parameters.
+///
+/// MuJoCo sensors can have these defaults specified in the `<default>` element.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfSensorDefaults {
+    /// Noise standard deviation.
+    pub noise: Option<f64>,
+    /// Cutoff frequency for low-pass filter (0 = no filter).
+    pub cutoff: Option<f64>,
+    /// User-defined data fields.
+    pub user: Option<Vec<f64>>,
+}
+
+/// Default mesh parameters.
+///
+/// MuJoCo mesh loading can have these defaults specified in the `<default>` element.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfMeshDefaults {
+    /// Mesh scale factors [x, y, z].
+    pub scale: Option<Vector3<f64>>,
+}
+
+/// Default site parameters.
+///
+/// MuJoCo sites can have these defaults specified in the `<default>` element.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfSiteDefaults {
+    /// Site type (sphere, capsule, ellipsoid, cylinder, box).
+    pub site_type: Option<String>,
+    /// Site size.
+    pub size: Option<Vec<f64>>,
+    /// RGBA color.
+    pub rgba: Option<Vector4<f64>>,
 }
 
 // ============================================================================

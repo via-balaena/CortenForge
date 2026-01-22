@@ -147,6 +147,7 @@
 )]
 
 mod config;
+mod defaults;
 mod error;
 mod loader;
 mod parser;
@@ -155,13 +156,15 @@ mod validation;
 
 // Re-export main types
 pub use config::ExtendedSolverConfig;
+pub use defaults::DefaultResolver;
 pub use error::{MjcfError, Result};
 pub use loader::{LoadedModel, MjcfLoader, SpawnedModel, load_mjcf_file, load_mjcf_str};
 pub use parser::parse_mjcf_str;
 pub use types::{
-    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfDefault, MjcfFlag, MjcfGeom,
-    MjcfGeomType, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointType,
-    MjcfModel, MjcfOption, MjcfSite, MjcfSolverType,
+    MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfDefault,
+    MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator,
+    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMeshDefaults, MjcfModel,
+    MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendonDefaults,
 };
 pub use validation::{ValidationResult, validate};
 

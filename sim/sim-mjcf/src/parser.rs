@@ -9,9 +9,10 @@ use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
 use crate::types::{
-    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfDefault, MjcfFlag, MjcfGeom,
-    MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint,
-    MjcfJointDefaults, MjcfJointType, MjcfModel, MjcfOption, MjcfSite, MjcfSolverType,
+    MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfDefault,
+    MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator,
+    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMeshDefaults, MjcfModel,
+    MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendonDefaults,
 };
 
 /// Parse an MJCF string into a model.
@@ -276,6 +277,21 @@ fn parse_default<R: BufRead>(
                     b"geom" => {
                         default.geom = Some(parse_geom_defaults(e)?);
                     }
+                    b"actuator" | b"motor" | b"position" | b"velocity" | b"general" => {
+                        default.actuator = Some(parse_actuator_defaults(e)?);
+                    }
+                    b"tendon" => {
+                        default.tendon = Some(parse_tendon_defaults(e)?);
+                    }
+                    b"sensor" => {
+                        default.sensor = Some(parse_sensor_defaults(e)?);
+                    }
+                    b"mesh" => {
+                        default.mesh = Some(parse_mesh_defaults(e)?);
+                    }
+                    b"site" => {
+                        default.site = Some(parse_site_defaults(e)?);
+                    }
                     b"default" => {
                         // Nested default class
                         let nested = parse_default(reader, e, Some(class.clone()))?;
@@ -290,6 +306,21 @@ fn parse_default<R: BufRead>(
                 }
                 b"geom" => {
                     default.geom = Some(parse_geom_defaults(e)?);
+                }
+                b"actuator" | b"motor" | b"position" | b"velocity" | b"general" => {
+                    default.actuator = Some(parse_actuator_defaults(e)?);
+                }
+                b"tendon" => {
+                    default.tendon = Some(parse_tendon_defaults(e)?);
+                }
+                b"sensor" => {
+                    default.sensor = Some(parse_sensor_defaults(e)?);
+                }
+                b"mesh" => {
+                    default.mesh = Some(parse_mesh_defaults(e)?);
+                }
+                b"site" => {
+                    default.site = Some(parse_site_defaults(e)?);
                 }
                 _ => {}
             },
@@ -344,6 +375,101 @@ fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     }
     defaults.contype = parse_int_attr(e, "contype");
     defaults.conaffinity = parse_int_attr(e, "conaffinity");
+
+    Ok(defaults)
+}
+
+/// Parse actuator defaults.
+fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
+    let mut defaults = MjcfActuatorDefaults::default();
+
+    if let Some(ctrlrange) = get_attribute_opt(e, "ctrlrange") {
+        let parts = parse_float_array(&ctrlrange)?;
+        if parts.len() >= 2 {
+            defaults.ctrlrange = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(forcerange) = get_attribute_opt(e, "forcerange") {
+        let parts = parse_float_array(&forcerange)?;
+        if parts.len() >= 2 {
+            defaults.forcerange = Some((parts[0], parts[1]));
+        }
+    }
+    defaults.gear = parse_float_attr(e, "gear");
+    defaults.kp = parse_float_attr(e, "kp");
+    defaults.kv = parse_float_attr(e, "kv");
+
+    if let Some(ctrllimited) = get_attribute_opt(e, "ctrllimited") {
+        defaults.ctrllimited = Some(ctrllimited == "true");
+    }
+    if let Some(forcelimited) = get_attribute_opt(e, "forcelimited") {
+        defaults.forcelimited = Some(forcelimited == "true");
+    }
+
+    Ok(defaults)
+}
+
+/// Parse tendon defaults.
+fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults> {
+    let mut defaults = MjcfTendonDefaults::default();
+
+    if let Some(range) = get_attribute_opt(e, "range") {
+        let parts = parse_float_array(&range)?;
+        if parts.len() >= 2 {
+            defaults.range = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(limited) = get_attribute_opt(e, "limited") {
+        defaults.limited = Some(limited == "true");
+    }
+    defaults.stiffness = parse_float_attr(e, "stiffness");
+    defaults.damping = parse_float_attr(e, "damping");
+    defaults.frictionloss = parse_float_attr(e, "frictionloss");
+    defaults.width = parse_float_attr(e, "width");
+
+    if let Some(rgba) = get_attribute_opt(e, "rgba") {
+        defaults.rgba = Some(parse_vector4(&rgba)?);
+    }
+
+    Ok(defaults)
+}
+
+/// Parse sensor defaults.
+fn parse_sensor_defaults(e: &BytesStart) -> Result<MjcfSensorDefaults> {
+    let mut defaults = MjcfSensorDefaults::default();
+
+    defaults.noise = parse_float_attr(e, "noise");
+    defaults.cutoff = parse_float_attr(e, "cutoff");
+
+    if let Some(user) = get_attribute_opt(e, "user") {
+        defaults.user = Some(parse_float_array(&user)?);
+    }
+
+    Ok(defaults)
+}
+
+/// Parse mesh defaults.
+fn parse_mesh_defaults(e: &BytesStart) -> Result<MjcfMeshDefaults> {
+    let mut defaults = MjcfMeshDefaults::default();
+
+    if let Some(scale) = get_attribute_opt(e, "scale") {
+        defaults.scale = Some(parse_vector3(&scale)?);
+    }
+
+    Ok(defaults)
+}
+
+/// Parse site defaults.
+fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
+    let mut defaults = MjcfSiteDefaults::default();
+
+    defaults.site_type = get_attribute_opt(e, "type");
+    if let Some(size) = get_attribute_opt(e, "size") {
+        defaults.size = Some(parse_float_array(&size)?);
+    }
+    if let Some(rgba) = get_attribute_opt(e, "rgba") {
+        defaults.rgba = Some(parse_vector4(&rgba)?);
+    }
 
     Ok(defaults)
 }
@@ -1317,5 +1443,237 @@ mod tests {
         assert!(opt.effective_margin().is_none()); // Default is negative
         opt.o_margin = 0.001;
         assert_eq!(opt.effective_margin(), Some(0.001));
+    }
+
+    // ========================================================================
+    // Default parsing tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_default_joint() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <joint damping="0.5" stiffness="10.0" armature="0.01"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let joint_defaults = default.joint.as_ref().expect("should have joint defaults");
+        assert_relative_eq!(joint_defaults.damping.unwrap(), 0.5, epsilon = 1e-10);
+        assert_relative_eq!(joint_defaults.stiffness.unwrap(), 10.0, epsilon = 1e-10);
+        assert_relative_eq!(joint_defaults.armature.unwrap(), 0.01, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_default_geom() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <geom type="box" density="500" friction="0.8 0.01 0.001" rgba="1 0 0 1"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let geom_defaults = default.geom.as_ref().expect("should have geom defaults");
+        assert_eq!(geom_defaults.geom_type, Some(MjcfGeomType::Box));
+        assert_relative_eq!(geom_defaults.density.unwrap(), 500.0, epsilon = 1e-10);
+        let friction = geom_defaults.friction.unwrap();
+        assert_relative_eq!(friction.x, 0.8, epsilon = 1e-10);
+        let rgba = geom_defaults.rgba.unwrap();
+        assert_relative_eq!(rgba.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(rgba.y, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_default_actuator() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <motor gear="100" ctrlrange="-1 1" kp="50" kv="5" ctrllimited="true"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let actuator_defaults = default
+            .actuator
+            .as_ref()
+            .expect("should have actuator defaults");
+        assert_relative_eq!(actuator_defaults.gear.unwrap(), 100.0, epsilon = 1e-10);
+        assert_eq!(actuator_defaults.ctrlrange, Some((-1.0, 1.0)));
+        assert_relative_eq!(actuator_defaults.kp.unwrap(), 50.0, epsilon = 1e-10);
+        assert_relative_eq!(actuator_defaults.kv.unwrap(), 5.0, epsilon = 1e-10);
+        assert_eq!(actuator_defaults.ctrllimited, Some(true));
+    }
+
+    #[test]
+    fn test_parse_default_tendon() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <tendon stiffness="1000" damping="10" width="0.01" limited="true" range="0 0.5"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let tendon_defaults = default
+            .tendon
+            .as_ref()
+            .expect("should have tendon defaults");
+        assert_relative_eq!(tendon_defaults.stiffness.unwrap(), 1000.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon_defaults.damping.unwrap(), 10.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon_defaults.width.unwrap(), 0.01, epsilon = 1e-10);
+        assert_eq!(tendon_defaults.limited, Some(true));
+        assert_eq!(tendon_defaults.range, Some((0.0, 0.5)));
+    }
+
+    #[test]
+    fn test_parse_default_sensor() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <sensor noise="0.01" cutoff="100"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let sensor_defaults = default
+            .sensor
+            .as_ref()
+            .expect("should have sensor defaults");
+        assert_relative_eq!(sensor_defaults.noise.unwrap(), 0.01, epsilon = 1e-10);
+        assert_relative_eq!(sensor_defaults.cutoff.unwrap(), 100.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_nested_defaults() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <joint damping="0.1"/>
+                    <default class="arm">
+                        <joint damping="0.5" armature="0.01"/>
+                        <geom rgba="0.8 0.2 0.2 1"/>
+                    </default>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 2);
+
+        // Root default
+        let root = model
+            .defaults
+            .iter()
+            .find(|d| d.class.is_empty())
+            .expect("root");
+        assert!(root.parent_class.is_none());
+        let root_joint = root.joint.as_ref().expect("root joint");
+        assert_relative_eq!(root_joint.damping.unwrap(), 0.1, epsilon = 1e-10);
+
+        // Arm class
+        let arm = model
+            .defaults
+            .iter()
+            .find(|d| d.class == "arm")
+            .expect("arm");
+        assert_eq!(arm.parent_class, Some(String::new()));
+        let arm_joint = arm.joint.as_ref().expect("arm joint");
+        assert_relative_eq!(arm_joint.damping.unwrap(), 0.5, epsilon = 1e-10);
+        assert_relative_eq!(arm_joint.armature.unwrap(), 0.01, epsilon = 1e-10);
+        let arm_geom = arm.geom.as_ref().expect("arm geom");
+        assert_relative_eq!(arm_geom.rgba.unwrap().x, 0.8, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_default_self_closing() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <joint damping="0.5"/>
+                    <geom density="500"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        assert!(default.joint.is_some());
+        assert!(default.geom.is_some());
+    }
+
+    #[test]
+    fn test_parse_default_mesh() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <mesh scale="0.001 0.001 0.001"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let mesh_defaults = default.mesh.as_ref().expect("should have mesh defaults");
+        let scale = mesh_defaults.scale.unwrap();
+        assert_relative_eq!(scale.x, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(scale.y, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(scale.z, 0.001, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_default_site() {
+        let xml = r#"
+            <mujoco model="test">
+                <default>
+                    <site type="sphere" size="0.02" rgba="0 1 0 1"/>
+                </default>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.defaults.len(), 1);
+
+        let default = &model.defaults[0];
+        let site_defaults = default.site.as_ref().expect("should have site defaults");
+        assert_eq!(site_defaults.site_type, Some("sphere".to_string()));
+        let size = site_defaults.size.as_ref().unwrap();
+        assert_relative_eq!(size[0], 0.02, epsilon = 1e-10);
+        let rgba = site_defaults.rgba.unwrap();
+        assert_relative_eq!(rgba.y, 1.0, epsilon = 1e-10);
     }
 }
