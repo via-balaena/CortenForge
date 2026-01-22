@@ -41,6 +41,8 @@ pub enum ConstraintType {
     Volume,
     /// Collision constraint.
     Collision,
+    /// Flex edge constraint for flexible body edges.
+    FlexEdge,
 }
 
 /// A constraint that can be solved using XPBD.
@@ -53,6 +55,8 @@ pub enum Constraint {
     Bending(BendingConstraint),
     /// Volume constraint.
     Volume(VolumeConstraint),
+    /// Flex edge constraint.
+    FlexEdge(FlexEdgeConstraint),
 }
 
 impl Constraint {
@@ -63,6 +67,7 @@ impl Constraint {
             Self::Distance(_) => ConstraintType::Distance,
             Self::Bending(_) => ConstraintType::Bending,
             Self::Volume(_) => ConstraintType::Volume,
+            Self::FlexEdge(_) => ConstraintType::FlexEdge,
         }
     }
 
@@ -78,6 +83,7 @@ impl Constraint {
             }
             Self::Bending(c) => c.vertices.clone(),
             Self::Volume(c) => SmallVec::from_slice(&c.vertices),
+            Self::FlexEdge(c) => SmallVec::from_slice(&c.vertices),
         }
     }
 
@@ -88,6 +94,7 @@ impl Constraint {
             Self::Distance(c) => c.compliance,
             Self::Bending(c) => c.compliance,
             Self::Volume(c) => c.compliance,
+            Self::FlexEdge(c) => c.stretch_compliance,
         }
     }
 
@@ -107,6 +114,7 @@ impl Constraint {
             Self::Distance(c) => c.solve(positions, inv_masses, dt),
             Self::Bending(c) => c.solve(positions, inv_masses, dt),
             Self::Volume(c) => c.solve(positions, inv_masses, dt),
+            Self::FlexEdge(c) => c.solve(positions, inv_masses, dt),
         }
     }
 }
@@ -646,6 +654,525 @@ impl VolumeConstraint {
     }
 }
 
+// ============================================================================
+// Flex Edge Constraint
+// ============================================================================
+
+/// Edge constraint type for flex bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum FlexEdgeType {
+    /// Stretch-only constraint (inextensible).
+    Stretch,
+    /// Shear constraint (maintains angle).
+    Shear,
+    /// Combined stretch and shear.
+    StretchShear,
+    /// Twist constraint (torsion resistance).
+    Twist,
+}
+
+/// A flex edge constraint for flexible body edges.
+///
+/// Flex edge constraints model the mechanical behavior of flexible bodies
+/// like cables, ropes, tubes, and thin rods. They combine:
+///
+/// - **Stretch resistance**: Maintains edge length
+/// - **Shear resistance**: Maintains angle between consecutive edges
+/// - **Twist resistance**: Resists torsional deformation
+///
+/// # Flex Compatibility
+///
+/// This constraint is designed to be compatible with MuJoCo-style flex edge
+/// constraints, which are used to model flexible bodies composed of
+/// connected capsules or spheres.
+///
+/// # Constraint Formulation
+///
+/// For stretch: `C_stretch = |p1 - p0| - L_rest`
+///
+/// For shear (3 particles): `C_shear = (e1 · e2) / (|e1| |e2|) - cos(θ_rest)`
+///
+/// For twist: `C_twist = angle(frame1, frame2) - θ_rest`
+///
+/// # Example
+///
+/// ```ignore
+/// use sim_deformable::constraints::{FlexEdgeConstraint, FlexEdgeType};
+/// use nalgebra::Point3;
+///
+/// let positions = vec![
+///     Point3::new(0.0, 0.0, 0.0),
+///     Point3::new(1.0, 0.0, 0.0),
+///     Point3::new(2.0, 0.0, 0.0),
+/// ];
+///
+/// // Create a stretch-shear constraint for a flexible rod
+/// let constraint = FlexEdgeConstraint::stretch_shear_from_positions(
+///     [0, 1, 2],
+///     &positions,
+///     0.001,  // stretch compliance
+///     0.01,   // shear compliance
+/// );
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct FlexEdgeConstraint {
+    /// Vertex indices (2 for stretch, 3 for shear/twist).
+    pub vertices: [usize; 3],
+
+    /// Number of active vertices (2 or 3).
+    num_vertices: usize,
+
+    /// Edge type.
+    edge_type: FlexEdgeType,
+
+    /// Rest length for stretch constraint.
+    pub rest_length: f64,
+
+    /// Rest angle for shear constraint (radians).
+    pub rest_angle: f64,
+
+    /// Rest twist angle for twist constraint (radians).
+    pub rest_twist: f64,
+
+    /// Compliance for stretch (inverse stiffness).
+    pub stretch_compliance: f64,
+
+    /// Compliance for shear.
+    pub shear_compliance: f64,
+
+    /// Compliance for twist.
+    pub twist_compliance: f64,
+
+    /// Damping coefficient.
+    pub damping: f64,
+
+    /// Accumulated Lagrange multiplier for stretch.
+    lambda_stretch: f64,
+
+    /// Accumulated Lagrange multiplier for shear.
+    lambda_shear: f64,
+
+    /// Accumulated Lagrange multiplier for twist.
+    lambda_twist: f64,
+}
+
+impl FlexEdgeConstraint {
+    /// Create a stretch-only constraint.
+    #[must_use]
+    pub const fn stretch(v0: usize, v1: usize, rest_length: f64, compliance: f64) -> Self {
+        Self {
+            vertices: [v0, v1, 0],
+            num_vertices: 2,
+            edge_type: FlexEdgeType::Stretch,
+            rest_length,
+            rest_angle: 0.0,
+            rest_twist: 0.0,
+            stretch_compliance: compliance,
+            shear_compliance: 0.0,
+            twist_compliance: 0.0,
+            damping: 0.0,
+            lambda_stretch: 0.0,
+            lambda_shear: 0.0,
+            lambda_twist: 0.0,
+        }
+    }
+
+    /// Create a stretch constraint from current positions.
+    #[must_use]
+    pub fn stretch_from_positions(
+        v0: usize,
+        v1: usize,
+        positions: &[Point3<f64>],
+        compliance: f64,
+    ) -> Self {
+        let rest_length = (positions[v1] - positions[v0]).norm();
+        Self::stretch(v0, v1, rest_length, compliance)
+    }
+
+    /// Create a shear-only constraint (3 particles).
+    #[must_use]
+    pub const fn shear(vertices: [usize; 3], rest_angle: f64, compliance: f64) -> Self {
+        Self {
+            vertices,
+            num_vertices: 3,
+            edge_type: FlexEdgeType::Shear,
+            rest_length: 0.0,
+            rest_angle,
+            rest_twist: 0.0,
+            stretch_compliance: 0.0,
+            shear_compliance: compliance,
+            twist_compliance: 0.0,
+            damping: 0.0,
+            lambda_stretch: 0.0,
+            lambda_shear: 0.0,
+            lambda_twist: 0.0,
+        }
+    }
+
+    /// Create a shear constraint from current positions.
+    #[must_use]
+    pub fn shear_from_positions(
+        vertices: [usize; 3],
+        positions: &[Point3<f64>],
+        compliance: f64,
+    ) -> Self {
+        let rest_angle = Self::compute_angle(
+            &positions[vertices[0]],
+            &positions[vertices[1]],
+            &positions[vertices[2]],
+        );
+        Self::shear(vertices, rest_angle, compliance)
+    }
+
+    /// Create a combined stretch-shear constraint.
+    #[must_use]
+    pub const fn stretch_shear(
+        vertices: [usize; 3],
+        rest_length: f64,
+        rest_angle: f64,
+        stretch_compliance: f64,
+        shear_compliance: f64,
+    ) -> Self {
+        Self {
+            vertices,
+            num_vertices: 3,
+            edge_type: FlexEdgeType::StretchShear,
+            rest_length,
+            rest_angle,
+            rest_twist: 0.0,
+            stretch_compliance,
+            shear_compliance,
+            twist_compliance: 0.0,
+            damping: 0.0,
+            lambda_stretch: 0.0,
+            lambda_shear: 0.0,
+            lambda_twist: 0.0,
+        }
+    }
+
+    /// Create a stretch-shear constraint from current positions.
+    #[must_use]
+    pub fn stretch_shear_from_positions(
+        vertices: [usize; 3],
+        positions: &[Point3<f64>],
+        stretch_compliance: f64,
+        shear_compliance: f64,
+    ) -> Self {
+        let rest_length = (positions[vertices[1]] - positions[vertices[0]]).norm();
+        let rest_angle = Self::compute_angle(
+            &positions[vertices[0]],
+            &positions[vertices[1]],
+            &positions[vertices[2]],
+        );
+        Self::stretch_shear(
+            vertices,
+            rest_length,
+            rest_angle,
+            stretch_compliance,
+            shear_compliance,
+        )
+    }
+
+    /// Create a twist constraint from current positions.
+    #[must_use]
+    pub const fn twist(vertices: [usize; 3], rest_twist: f64, compliance: f64) -> Self {
+        Self {
+            vertices,
+            num_vertices: 3,
+            edge_type: FlexEdgeType::Twist,
+            rest_length: 0.0,
+            rest_angle: 0.0,
+            rest_twist,
+            stretch_compliance: 0.0,
+            shear_compliance: 0.0,
+            twist_compliance: compliance,
+            damping: 0.0,
+            lambda_stretch: 0.0,
+            lambda_shear: 0.0,
+            lambda_twist: 0.0,
+        }
+    }
+
+    /// Set damping coefficient.
+    #[must_use]
+    pub const fn with_damping(mut self, damping: f64) -> Self {
+        self.damping = if damping > 0.0 { damping } else { 0.0 };
+        self
+    }
+
+    /// Get the edge type.
+    #[must_use]
+    pub const fn edge_type(&self) -> FlexEdgeType {
+        self.edge_type
+    }
+
+    /// Get the number of vertices.
+    #[must_use]
+    pub const fn num_vertices(&self) -> usize {
+        self.num_vertices
+    }
+
+    /// Compute angle at p1 between edges (p0-p1) and (p1-p2).
+    fn compute_angle(p0: &Point3<f64>, p1: &Point3<f64>, p2: &Point3<f64>) -> f64 {
+        let e1 = p0 - p1;
+        let e2 = p2 - p1;
+
+        let len1 = e1.norm();
+        let len2 = e2.norm();
+
+        if len1 < 1e-10 || len2 < 1e-10 {
+            return std::f64::consts::PI;
+        }
+
+        let cos_angle = (e1.dot(&e2) / (len1 * len2)).clamp(-1.0, 1.0);
+        cos_angle.acos()
+    }
+
+    /// Reset all Lagrange multipliers (call at start of time step).
+    pub const fn reset(&mut self) {
+        self.lambda_stretch = 0.0;
+        self.lambda_shear = 0.0;
+        self.lambda_twist = 0.0;
+    }
+
+    /// Solve this constraint using XPBD.
+    ///
+    /// Returns the total constraint error magnitude.
+    pub fn solve(&mut self, positions: &mut [Point3<f64>], inv_masses: &[f64], dt: f64) -> f64 {
+        let mut total_error = 0.0;
+
+        match self.edge_type {
+            FlexEdgeType::Stretch => {
+                total_error += self.solve_stretch(positions, inv_masses, dt);
+            }
+            FlexEdgeType::Shear => {
+                total_error += self.solve_shear(positions, inv_masses, dt);
+            }
+            FlexEdgeType::StretchShear => {
+                total_error += self.solve_stretch(positions, inv_masses, dt);
+                total_error += self.solve_shear(positions, inv_masses, dt);
+            }
+            FlexEdgeType::Twist => {
+                total_error += self.solve_twist(positions, inv_masses, dt);
+            }
+        }
+
+        total_error
+    }
+
+    /// Solve stretch constraint.
+    fn solve_stretch(&mut self, positions: &mut [Point3<f64>], inv_masses: &[f64], dt: f64) -> f64 {
+        let v0 = self.vertices[0];
+        let v1 = self.vertices[1];
+
+        let w0 = inv_masses[v0];
+        let w1 = inv_masses[v1];
+        let w_sum = w0 + w1;
+
+        if w_sum < 1e-10 {
+            return 0.0;
+        }
+
+        let diff = positions[v1] - positions[v0];
+        let distance = diff.norm();
+
+        if distance < 1e-10 {
+            return 0.0;
+        }
+
+        // Constraint: C = distance - rest_length
+        let c = distance - self.rest_length;
+
+        // Gradient: normalized direction
+        let n = diff / distance;
+
+        // XPBD update
+        let alpha_tilde = self.stretch_compliance / (dt * dt);
+        let delta_lambda = alpha_tilde.mul_add(-self.lambda_stretch, -c) / (w_sum + alpha_tilde);
+
+        // Apply damping
+        let damping_factor = 1.0 / self.damping.mul_add(dt, 1.0);
+
+        positions[v0] -= n * (w0 * delta_lambda * damping_factor);
+        positions[v1] += n * (w1 * delta_lambda * damping_factor);
+
+        self.lambda_stretch += delta_lambda;
+
+        c.abs()
+    }
+
+    /// Solve shear constraint.
+    fn solve_shear(&mut self, positions: &mut [Point3<f64>], inv_masses: &[f64], dt: f64) -> f64 {
+        if self.num_vertices < 3 {
+            return 0.0;
+        }
+
+        let v0 = self.vertices[0];
+        let v1 = self.vertices[1];
+        let v2 = self.vertices[2];
+
+        let w0 = inv_masses[v0];
+        let w2 = inv_masses[v2];
+
+        let p0 = positions[v0];
+        let p1 = positions[v1];
+        let p2 = positions[v2];
+
+        // Edges from hinge vertex
+        let e1 = p0 - p1;
+        let e2 = p2 - p1;
+
+        let len1 = e1.norm();
+        let len2 = e2.norm();
+
+        if len1 < 1e-10 || len2 < 1e-10 {
+            return 0.0;
+        }
+
+        // Current angle
+        let cos_angle = (e1.dot(&e2) / (len1 * len2)).clamp(-1.0, 1.0);
+        let current_angle = cos_angle.acos();
+
+        // Constraint: C = angle - rest_angle
+        let c = current_angle - self.rest_angle;
+
+        if c.abs() < 1e-10 {
+            return 0.0;
+        }
+
+        // Use distance-based formulation (more stable)
+        // Rest distance from law of cosines
+        let rest_distance = (2.0 * len1 * len2)
+            .mul_add(-self.rest_angle.cos(), len1.mul_add(len1, len2 * len2))
+            .sqrt();
+
+        let current_distance = (p2 - p0).norm();
+
+        if current_distance < 1e-10 {
+            return 0.0;
+        }
+
+        let c_dist = current_distance - rest_distance;
+        let n = (p2 - p0) / current_distance;
+
+        let w_sum = w0 + w2;
+
+        if w_sum < 1e-10 {
+            return 0.0;
+        }
+
+        // XPBD update
+        let alpha_tilde = self.shear_compliance / (dt * dt);
+        let delta_lambda = alpha_tilde.mul_add(-self.lambda_shear, -c_dist) / (w_sum + alpha_tilde);
+
+        // Apply damping
+        let damping_factor = 1.0 / self.damping.mul_add(dt, 1.0);
+
+        positions[v0] -= n * (w0 * delta_lambda * damping_factor);
+        positions[v2] += n * (w2 * delta_lambda * damping_factor);
+
+        self.lambda_shear += delta_lambda;
+
+        c.abs()
+    }
+
+    /// Solve twist constraint.
+    fn solve_twist(&mut self, positions: &mut [Point3<f64>], inv_masses: &[f64], dt: f64) -> f64 {
+        if self.num_vertices < 3 {
+            return 0.0;
+        }
+
+        let v0 = self.vertices[0];
+        let v1 = self.vertices[1];
+        let v2 = self.vertices[2];
+
+        let w1 = inv_masses[v1];
+
+        let p0 = positions[v0];
+        let p1 = positions[v1];
+        let p2 = positions[v2];
+
+        // Edge direction (axis of twist)
+        let edge = p2 - p0;
+        let edge_len = edge.norm();
+
+        if edge_len < 1e-10 {
+            return 0.0;
+        }
+
+        let axis = edge / edge_len;
+
+        // Vector from midpoint to v1 (perpendicular component determines twist)
+        let midpoint = (p0.coords + p2.coords) / 2.0;
+        let to_v1 = p1 - Point3::from(midpoint);
+
+        // Project onto plane perpendicular to axis
+        let projected = to_v1 - axis * to_v1.dot(&axis);
+        let projected_len = projected.norm();
+
+        if projected_len < 1e-10 {
+            return 0.0;
+        }
+
+        // Current twist angle (simplified - uses projection magnitude)
+        // For a proper twist constraint, we'd track material frames
+        let c = projected_len - self.rest_twist.abs();
+
+        if c.abs() < 1e-10 {
+            return 0.0;
+        }
+
+        // Gradient direction (perpendicular to axis)
+        let grad = projected / projected_len;
+
+        // Only middle vertex moves for twist
+        if w1 < 1e-10 {
+            return 0.0;
+        }
+
+        // XPBD update
+        let alpha_tilde = self.twist_compliance / (dt * dt);
+        let delta_lambda = alpha_tilde.mul_add(-self.lambda_twist, -c) / (w1 + alpha_tilde);
+
+        positions[v1] += grad * (w1 * delta_lambda);
+
+        self.lambda_twist += delta_lambda;
+
+        c.abs()
+    }
+
+    /// Evaluate stretch error without solving.
+    #[must_use]
+    pub fn evaluate_stretch(&self, positions: &[Point3<f64>]) -> f64 {
+        let diff = positions[self.vertices[1]] - positions[self.vertices[0]];
+        diff.norm() - self.rest_length
+    }
+
+    /// Evaluate shear error without solving.
+    #[must_use]
+    pub fn evaluate_shear(&self, positions: &[Point3<f64>]) -> f64 {
+        if self.num_vertices < 3 {
+            return 0.0;
+        }
+
+        let current_angle = Self::compute_angle(
+            &positions[self.vertices[0]],
+            &positions[self.vertices[1]],
+            &positions[self.vertices[2]],
+        );
+
+        current_angle - self.rest_angle
+    }
+}
+
+impl Default for FlexEdgeConstraint {
+    fn default() -> Self {
+        Self::stretch(0, 1, 1.0, 0.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,5 +1287,190 @@ mod tests {
 
         let vol = Constraint::Volume(VolumeConstraint::new([0, 1, 2, 3], 1.0, 0.0));
         assert_eq!(vol.constraint_type(), ConstraintType::Volume);
+
+        let flex = Constraint::FlexEdge(FlexEdgeConstraint::stretch(0, 1, 1.0, 0.0));
+        assert_eq!(flex.constraint_type(), ConstraintType::FlexEdge);
+    }
+
+    // ========================================================================
+    // Flex Edge Constraint Tests
+    // ========================================================================
+
+    #[test]
+    fn test_flex_edge_stretch() {
+        let mut positions = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0), // Stretched
+        ];
+        let inv_masses = vec![1.0, 1.0];
+
+        let mut constraint = FlexEdgeConstraint::stretch(0, 1, 1.0, 0.0);
+
+        let error_before = constraint.evaluate_stretch(&positions);
+        assert!((error_before - 1.0).abs() < 1e-10);
+
+        let dt = 1.0 / 60.0;
+        constraint.solve(&mut positions, &inv_masses, dt);
+
+        let error_after = constraint.evaluate_stretch(&positions);
+        assert!(error_after.abs() < error_before.abs());
+    }
+
+    #[test]
+    fn test_flex_edge_stretch_from_positions() {
+        let positions = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(3.0, 4.0, 0.0)];
+
+        let constraint = FlexEdgeConstraint::stretch_from_positions(0, 1, &positions, 0.001);
+
+        assert!((constraint.rest_length - 5.0).abs() < 1e-10);
+        assert_eq!(constraint.edge_type(), FlexEdgeType::Stretch);
+    }
+
+    #[test]
+    fn test_flex_edge_shear() {
+        let mut positions = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(1.5, 1.0, 0.0), // Bent
+        ];
+        let inv_masses = vec![1.0, 1.0, 1.0];
+
+        // Rest angle is 180 degrees (straight)
+        let mut constraint = FlexEdgeConstraint::shear([0, 1, 2], std::f64::consts::PI, 0.001);
+
+        let error_before = constraint.evaluate_shear(&positions).abs();
+        assert!(error_before > 0.0);
+
+        let dt = 1.0 / 60.0;
+        constraint.solve(&mut positions, &inv_masses, dt);
+
+        // Error should decrease
+        let error_after = constraint.evaluate_shear(&positions).abs();
+        assert!(error_after < error_before);
+    }
+
+    #[test]
+    fn test_flex_edge_shear_from_positions() {
+        let positions = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0), // Straight line
+        ];
+
+        let constraint = FlexEdgeConstraint::shear_from_positions([0, 1, 2], &positions, 0.001);
+
+        // Rest angle should be PI (180 degrees, straight)
+        assert!((constraint.rest_angle - std::f64::consts::PI).abs() < 1e-10);
+        assert_eq!(constraint.edge_type(), FlexEdgeType::Shear);
+    }
+
+    #[test]
+    fn test_flex_edge_stretch_shear() {
+        let mut positions = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0), // Stretched
+            Point3::new(3.5, 1.0, 0.0), // Bent
+        ];
+        let inv_masses = vec![1.0, 1.0, 1.0];
+
+        let mut constraint = FlexEdgeConstraint::stretch_shear(
+            [0, 1, 2],
+            1.0,                  // rest length
+            std::f64::consts::PI, // rest angle (straight)
+            0.0,                  // rigid stretch
+            0.001,                // soft shear
+        );
+
+        let dt = 1.0 / 60.0;
+        let error = constraint.solve(&mut positions, &inv_masses, dt);
+
+        // Should have corrected some error
+        assert!(error > 0.0);
+        assert_eq!(constraint.edge_type(), FlexEdgeType::StretchShear);
+    }
+
+    #[test]
+    fn test_flex_edge_stretch_shear_from_positions() {
+        let positions = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(2.0, 0.0, 0.0),
+        ];
+
+        let constraint =
+            FlexEdgeConstraint::stretch_shear_from_positions([0, 1, 2], &positions, 0.001, 0.001);
+
+        assert!((constraint.rest_length - 1.0).abs() < 1e-10);
+        assert!((constraint.rest_angle - std::f64::consts::PI).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_flex_edge_with_damping() {
+        let constraint = FlexEdgeConstraint::stretch(0, 1, 1.0, 0.0).with_damping(0.5);
+
+        assert!((constraint.damping - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_flex_edge_reset() {
+        let mut constraint =
+            FlexEdgeConstraint::stretch_shear([0, 1, 2], 1.0, std::f64::consts::PI, 0.0, 0.0);
+
+        // Simulate some solving to accumulate lambda
+        constraint.lambda_stretch = 1.0;
+        constraint.lambda_shear = 2.0;
+
+        constraint.reset();
+
+        assert!((constraint.lambda_stretch).abs() < 1e-10);
+        assert!((constraint.lambda_shear).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_flex_edge_num_vertices() {
+        let stretch = FlexEdgeConstraint::stretch(0, 1, 1.0, 0.0);
+        assert_eq!(stretch.num_vertices(), 2);
+
+        let shear = FlexEdgeConstraint::shear([0, 1, 2], std::f64::consts::PI, 0.0);
+        assert_eq!(shear.num_vertices(), 3);
+    }
+
+    #[test]
+    fn test_flex_edge_default() {
+        let constraint = FlexEdgeConstraint::default();
+        assert_eq!(constraint.edge_type(), FlexEdgeType::Stretch);
+        assert!((constraint.rest_length - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_flex_edge_twist() {
+        // Positions are defined but not used - the twist constraint
+        // just needs vertex indices for this basic test
+        let _positions = [
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0), // Middle vertex
+            Point3::new(0.0, 0.0, 2.0),
+        ];
+
+        let constraint = FlexEdgeConstraint::twist([0, 1, 2], 0.0, 0.001);
+
+        assert_eq!(constraint.edge_type(), FlexEdgeType::Twist);
+        assert_eq!(constraint.num_vertices(), 3);
+    }
+
+    #[test]
+    fn test_flex_edge_pinned_vertices() {
+        let mut positions = vec![Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 0.0, 0.0)];
+        let inv_masses = vec![0.0, 0.0]; // Both pinned
+
+        let mut constraint = FlexEdgeConstraint::stretch(0, 1, 1.0, 0.0);
+
+        let dt = 1.0 / 60.0;
+        let error = constraint.solve(&mut positions, &inv_masses, dt);
+
+        // No movement should happen
+        assert!((positions[0].x - 0.0).abs() < 1e-10);
+        assert!((positions[1].x - 2.0).abs() < 1e-10);
+        assert!((error).abs() < 1e-10); // Error is 0 due to early return
     }
 }

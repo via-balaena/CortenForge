@@ -231,6 +231,32 @@ pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) ->
             radius,
         } => support_cylinder(pose, *half_length, *radius, direction),
         CollisionShape::Ellipsoid { radii } => support_ellipsoid(pose, radii, direction),
+        CollisionShape::HeightField { data } => {
+            // Height fields are not convex, so GJK/EPA is not ideal.
+            // Return an extreme point from the AABB as a fallback.
+            let (local_min, local_max) = data.aabb();
+            let local_dir = pose.rotation.inverse() * direction;
+
+            let local_support = Point3::new(
+                if local_dir.x >= 0.0 {
+                    local_max.x
+                } else {
+                    local_min.x
+                },
+                if local_dir.y >= 0.0 {
+                    local_max.y
+                } else {
+                    local_min.y
+                },
+                if local_dir.z >= 0.0 {
+                    local_max.z
+                } else {
+                    local_min.z
+                },
+            );
+
+            pose.transform_point(&local_support)
+        }
     }
 }
 

@@ -22,7 +22,7 @@ approx = { workspace = true }
 
 [features]
 default = []
-serde = ["dep:serde", "sim-types/serde", "sim-contact/serde", "sim-constraint/serde", "nalgebra/serde-serialize"]
+serde = ["dep:serde", "serde/rc", "sim-types/serde", "sim-contact/serde", "sim-constraint/serde", "nalgebra/serde-serialize"]
 
 [lints]
 workspace = true

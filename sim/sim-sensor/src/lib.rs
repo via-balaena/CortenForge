@@ -5,6 +5,8 @@
 //! - [`Imu`] - Inertial measurement unit (accelerometer + gyroscope)
 //! - [`ForceTorqueSensor`] - Measures forces and torques at a body or joint
 //! - [`TouchSensor`] - Detects contact with other bodies
+//! - [`Rangefinder`] - Ray-based distance measurement (LIDAR, ultrasonic, etc.)
+//! - [`Magnetometer`] - Magnetic field measurement for compass-like heading
 //!
 //! # Design Philosophy
 //!
@@ -45,12 +47,16 @@
 mod error;
 mod force_torque;
 mod imu;
+mod magnetometer;
+mod rangefinder;
 mod touch;
 mod types;
 
 pub use error::SensorError;
 pub use force_torque::{ForceTorqueReading, ForceTorqueSensor, ForceTorqueSensorConfig};
 pub use imu::{Imu, ImuConfig, ImuReading};
+pub use magnetometer::{Magnetometer, MagnetometerConfig, MagnetometerReading};
+pub use rangefinder::{Rangefinder, RangefinderConfig, RangefinderReading, RayCaster, RayHit};
 pub use touch::{TouchReading, TouchSensor, TouchSensorConfig};
 pub use types::{SensorData, SensorId, SensorReading, SensorType};
 

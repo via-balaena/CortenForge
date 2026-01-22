@@ -295,6 +295,23 @@ impl SensorObservation {
 
         obs
     }
+
+    /// Create a rangefinder sensor observation.
+    #[must_use]
+    pub fn rangefinder(sensor_id: u64, body_id: BodyId, distance: f64, hit: bool) -> Self {
+        Self::new(sensor_id, body_id, "rangefinder")
+            .with_field("distance", distance)
+            .with_field("hit", if hit { 1.0 } else { 0.0 })
+    }
+
+    /// Create a magnetometer sensor observation.
+    #[must_use]
+    pub fn magnetometer(sensor_id: u64, body_id: BodyId, magnetic_field: Vector3<f64>) -> Self {
+        Self::new(sensor_id, body_id, "magnetometer")
+            .with_field("mag_x", magnetic_field.x)
+            .with_field("mag_y", magnetic_field.y)
+            .with_field("mag_z", magnetic_field.z)
+    }
 }
 
 /// Information about a contact point.

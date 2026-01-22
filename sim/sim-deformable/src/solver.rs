@@ -319,6 +319,10 @@ impl XpbdSolver {
                         let mut c = *c;
                         c.solve(positions, inv_masses, dt)
                     }
+                    Constraint::FlexEdge(c) => {
+                        let mut c = c.clone();
+                        c.solve(positions, inv_masses, dt)
+                    }
                 };
 
                 max_error = max_error.max(error);
