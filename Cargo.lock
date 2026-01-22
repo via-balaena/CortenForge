@@ -5486,6 +5486,8 @@ name = "sim-mjcf"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "mesh-io",
+ "mesh-types",
  "nalgebra",
  "quick-xml 0.37.5",
  "serde",
@@ -5494,6 +5496,7 @@ dependencies = [
  "sim-types",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

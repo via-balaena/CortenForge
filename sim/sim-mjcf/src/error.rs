@@ -111,6 +111,24 @@ pub enum MjcfError {
         message: String,
     },
 
+    /// Reference to undefined mesh asset.
+    #[error("reference to undefined mesh asset: {mesh_name} in {context}")]
+    UndefinedMesh {
+        /// The mesh name that was referenced.
+        mesh_name: String,
+        /// The context where it was referenced.
+        context: String,
+    },
+
+    /// Mesh file could not be loaded.
+    #[error("failed to load mesh file '{path}': {message}")]
+    MeshLoadError {
+        /// The mesh file path.
+        path: String,
+        /// Error message.
+        message: String,
+    },
+
     /// File I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -207,6 +225,22 @@ impl MjcfError {
     pub fn invalid_option(option: impl Into<String>, message: impl Into<String>) -> Self {
         Self::InvalidOption {
             option: option.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Create an undefined mesh error.
+    pub fn undefined_mesh(mesh_name: impl Into<String>, context: impl Into<String>) -> Self {
+        Self::UndefinedMesh {
+            mesh_name: mesh_name.into(),
+            context: context.into(),
+        }
+    }
+
+    /// Create a mesh load error.
+    pub fn mesh_load_error(path: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::MeshLoadError {
+            path: path.into(),
             message: message.into(),
         }
     }

@@ -11,8 +11,9 @@ use crate::error::{MjcfError, Result};
 use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfDefault,
     MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator,
-    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMeshDefaults, MjcfModel,
-    MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendonDefaults,
+    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh, MjcfMeshDefaults,
+    MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType,
+    MjcfTendonDefaults,
 };
 
 /// Parse an MJCF string into a model.
@@ -64,6 +65,10 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         let defaults = parse_default(reader, e, None)?;
                         model.defaults.extend(defaults);
                     }
+                    b"asset" => {
+                        let meshes = parse_asset(reader)?;
+                        model.meshes = meshes;
+                    }
                     b"worldbody" => {
                         model.worldbody = parse_worldbody(reader)?;
                     }
@@ -71,7 +76,7 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         let actuators = parse_actuators(reader)?;
                         model.actuators = actuators;
                     }
-                    // Skip other elements (asset, contact, equality, tendon, etc.)
+                    // Skip other elements (contact, equality, tendon, etc.)
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
@@ -472,6 +477,88 @@ fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
     }
 
     Ok(defaults)
+}
+
+/// Parse asset element (contains mesh, texture, material definitions).
+fn parse_asset<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfMesh>> {
+    let mut meshes = Vec::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                match elem_name.as_slice() {
+                    b"mesh" => {
+                        let mesh = parse_mesh(reader, e)?;
+                        meshes.push(mesh);
+                    }
+                    // Skip other asset types (texture, material, hfield, etc.)
+                    _ => skip_element(reader, &elem_name)?,
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                if e.name().as_ref() == b"mesh" {
+                    let mesh = parse_mesh_attrs(e)?;
+                    meshes.push(mesh);
+                }
+                // Skip other self-closing asset types
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"asset" => break,
+            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in asset".into())),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(meshes)
+}
+
+/// Parse mesh element.
+fn parse_mesh<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<MjcfMesh> {
+    let mesh = parse_mesh_attrs(start)?;
+    let mut buf = Vec::new();
+
+    // Meshes typically don't have children, but we still need to read to the end
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"mesh" => break,
+            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in mesh".into())),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(mesh)
+}
+
+/// Parse mesh attributes only.
+fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
+    let mut mesh = MjcfMesh::default();
+
+    mesh.name = get_attribute_opt(e, "name").unwrap_or_default();
+    mesh.file = get_attribute_opt(e, "file");
+
+    if let Some(scale) = get_attribute_opt(e, "scale") {
+        mesh.scale = parse_vector3(&scale)?;
+    }
+
+    // Parse embedded vertex data
+    if let Some(vertex) = get_attribute_opt(e, "vertex") {
+        mesh.vertex = Some(parse_float_array(&vertex)?);
+    }
+
+    // Parse embedded face data
+    if let Some(face) = get_attribute_opt(e, "face") {
+        let face_data = parse_float_array(&face)?;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let face_indices: Vec<u32> = face_data.iter().map(|f| *f as u32).collect();
+        mesh.face = Some(face_indices);
+    }
+
+    Ok(mesh)
 }
 
 /// Parse worldbody element.
@@ -1675,5 +1762,153 @@ mod tests {
         assert_relative_eq!(size[0], 0.02, epsilon = 1e-10);
         let rgba = site_defaults.rgba.unwrap();
         assert_relative_eq!(rgba.y, 1.0, epsilon = 1e-10);
+    }
+
+    // ========================================================================
+    // Asset parsing tests (mesh)
+    // ========================================================================
+
+    #[test]
+    fn test_parse_mesh_asset_from_file() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="robot_body" file="meshes/body.stl"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes.len(), 1);
+
+        let mesh = &model.meshes[0];
+        assert_eq!(mesh.name, "robot_body");
+        assert_eq!(mesh.file, Some("meshes/body.stl".to_string()));
+        // Default scale is 1.0
+        assert_relative_eq!(mesh.scale.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(mesh.scale.y, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(mesh.scale.z, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_mesh_asset_with_scale() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="scaled_mesh" file="model.obj" scale="0.001 0.001 0.001"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes.len(), 1);
+
+        let mesh = &model.meshes[0];
+        assert_eq!(mesh.name, "scaled_mesh");
+        assert_relative_eq!(mesh.scale.x, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(mesh.scale.y, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(mesh.scale.z, 0.001, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_mesh_asset_with_embedded_vertices() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="triangle" vertex="0 0 0 1 0 0 0 1 0"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes.len(), 1);
+
+        let mesh = &model.meshes[0];
+        assert_eq!(mesh.name, "triangle");
+        assert!(mesh.file.is_none());
+        assert!(mesh.has_embedded_data());
+        assert_eq!(mesh.vertex_count(), 3);
+
+        let vertices = mesh.vertex.as_ref().unwrap();
+        assert_eq!(vertices.len(), 9); // 3 vertices * 3 components
+        assert_relative_eq!(vertices[0], 0.0, epsilon = 1e-10);
+        assert_relative_eq!(vertices[3], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(vertices[7], 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_multiple_mesh_assets() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="mesh1" file="a.stl"/>
+                    <mesh name="mesh2" file="b.stl" scale="2 2 2"/>
+                    <mesh name="mesh3" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes.len(), 3);
+
+        assert_eq!(model.meshes[0].name, "mesh1");
+        assert_eq!(model.meshes[1].name, "mesh2");
+        assert_eq!(model.meshes[2].name, "mesh3");
+
+        assert_relative_eq!(model.meshes[1].scale.x, 2.0, epsilon = 1e-10);
+        assert_eq!(model.meshes[2].vertex_count(), 4);
+    }
+
+    #[test]
+    fn test_parse_geom_with_mesh_type() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="cube" vertex="0 0 0 1 0 0 1 1 0 0 1 0 0 0 1 1 0 1 1 1 1 0 1 1"/>
+                </asset>
+                <worldbody>
+                    <body name="link">
+                        <geom type="mesh" mesh="cube"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.meshes.len(), 1);
+        assert_eq!(model.worldbody.children.len(), 1);
+
+        let body = &model.worldbody.children[0];
+        assert_eq!(body.geoms.len(), 1);
+
+        let geom = &body.geoms[0];
+        assert_eq!(geom.geom_type, MjcfGeomType::Mesh);
+        assert_eq!(geom.mesh, Some("cube".to_string()));
+    }
+
+    #[test]
+    fn test_model_mesh_lookup() {
+        let xml = r#"
+            <mujoco model="test">
+                <asset>
+                    <mesh name="mesh_a" file="a.stl"/>
+                    <mesh name="mesh_b" file="b.stl"/>
+                </asset>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+
+        assert!(model.mesh("mesh_a").is_some());
+        assert!(model.mesh("mesh_b").is_some());
+        assert!(model.mesh("nonexistent").is_none());
+
+        let mesh_a = model.mesh("mesh_a").unwrap();
+        assert_eq!(mesh_a.file, Some("a.stl".to_string()));
     }
 }

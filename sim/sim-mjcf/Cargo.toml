@@ -12,9 +12,12 @@ rust-version.workspace = true
 sim-types = { workspace = true }
 sim-core = { workspace = true }
 sim-constraint = { workspace = true }
+mesh-io = { workspace = true }
+mesh-types = { workspace = true }
 nalgebra = { workspace = true }
 quick-xml = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 serde = { workspace = true, optional = true }
 
 [dev-dependencies]

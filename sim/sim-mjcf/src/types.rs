@@ -516,6 +516,104 @@ pub struct MjcfMeshDefaults {
     pub scale: Option<Vector3<f64>>,
 }
 
+// ============================================================================
+// Assets
+// ============================================================================
+
+/// A mesh asset from `<mesh>` element in the `<asset>` section.
+///
+/// MuJoCo meshes can reference external files or contain embedded vertices.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfMesh {
+    /// Asset name (used to reference the mesh from geoms).
+    pub name: String,
+    /// File path for external mesh (STL, OBJ, etc.).
+    pub file: Option<String>,
+    /// Scale factor for the mesh vertices.
+    pub scale: Vector3<f64>,
+    /// Embedded vertex data (if not loading from file).
+    /// Format: flat array of xyz coordinates.
+    pub vertex: Option<Vec<f64>>,
+    /// Embedded face data (if not loading from file).
+    /// Format: flat array of vertex indices (triangles).
+    pub face: Option<Vec<u32>>,
+}
+
+impl Default for MjcfMesh {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            file: None,
+            scale: Vector3::new(1.0, 1.0, 1.0),
+            vertex: None,
+            face: None,
+        }
+    }
+}
+
+impl MjcfMesh {
+    /// Create a new mesh asset with a name.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Create a mesh asset from a file path.
+    #[must_use]
+    pub fn from_file(name: impl Into<String>, file: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            file: Some(file.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Set the scale factor.
+    #[must_use]
+    pub fn with_scale(mut self, scale: Vector3<f64>) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    /// Check if this mesh has embedded data.
+    #[must_use]
+    pub fn has_embedded_data(&self) -> bool {
+        self.vertex.is_some()
+    }
+
+    /// Check if this mesh references an external file.
+    #[must_use]
+    pub fn has_file(&self) -> bool {
+        self.file.is_some()
+    }
+
+    /// Get the number of embedded vertices (if any).
+    #[must_use]
+    pub fn vertex_count(&self) -> usize {
+        self.vertex.as_ref().map_or(0, |v| v.len() / 3)
+    }
+
+    /// Get embedded vertices as Point3 array.
+    #[must_use]
+    pub fn vertices_as_points(&self) -> Vec<Point3<f64>> {
+        self.vertex.as_ref().map_or_else(Vec::new, |v| {
+            v.chunks_exact(3)
+                .map(|c| {
+                    Point3::new(
+                        c[0] * self.scale.x,
+                        c[1] * self.scale.y,
+                        c[2] * self.scale.z,
+                    )
+                })
+                .collect()
+        })
+    }
+}
+
 /// Default site parameters.
 ///
 /// MuJoCo sites can have these defaults specified in the `<default>` element.
@@ -1228,6 +1326,8 @@ pub struct MjcfModel {
     pub option: MjcfOption,
     /// Default parameter classes.
     pub defaults: Vec<MjcfDefault>,
+    /// Mesh assets.
+    pub meshes: Vec<MjcfMesh>,
     /// Root worldbody containing the body tree.
     pub worldbody: MjcfBody,
     /// Actuators.
@@ -1240,6 +1340,7 @@ impl Default for MjcfModel {
             name: "unnamed".to_string(),
             option: MjcfOption::default(),
             defaults: Vec::new(),
+            meshes: Vec::new(),
             worldbody: MjcfBody::new("world"),
             actuators: Vec::new(),
         }
@@ -1340,6 +1441,19 @@ impl MjcfModel {
             }
         }
         None
+    }
+
+    /// Get a mesh asset by name.
+    #[must_use]
+    pub fn mesh(&self, name: &str) -> Option<&MjcfMesh> {
+        self.meshes.iter().find(|m| m.name == name)
+    }
+
+    /// Add a mesh asset to the model.
+    #[must_use]
+    pub fn with_mesh(mut self, mesh: MjcfMesh) -> Self {
+        self.meshes.push(mesh);
+        self
     }
 }
 

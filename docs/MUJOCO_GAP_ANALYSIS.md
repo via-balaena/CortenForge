@@ -40,7 +40,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | PGS (Gauss-Seidel) solver | Has relaxation param | Full iterative solver with SOR | [§2](#2-constraint-solvers) |
 | SIMD optimization | Via nalgebra only | Explicit vectorization for hot paths | [§12](#12-performance-optimizations) |
 | MJCF `<default>` element | Joint and geom defaults | Actuator, tendon, sensor defaults | [§13](#13-model-format) |
-| MJCF `<geom>` element | Primitives only | Mesh type support | [§13](#13-model-format) |
+| MJCF `<geom>` element | Primitives + mesh (convex) | Non-convex mesh collision | [§13](#13-model-format) |
 | MJCF `<actuator>` element | motor, position, velocity | cylinder, muscle, adhesion types | [§13](#13-model-format) |
 
 **For typical robotics use cases**, the current implementation is feature-complete. The missing items are for specialized scenarios (complex geometry, visual rendering, extreme performance). The partial implementations work for common cases but may need extension for advanced MuJoCo models.
@@ -960,7 +960,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<body>` | Full | Hierarchical bodies with pos, quat, euler |
 | `<inertial>` | Full | mass, diaginertia, fullinertia |
 | `<joint>` | Full | hinge, slide, ball, free types |
-| `<geom>` | Partial | sphere, box, capsule, cylinder, ellipsoid, plane |
+| `<geom>` | Full | sphere, box, capsule, cylinder, ellipsoid, plane, mesh |
 | `<site>` | Parsed | Markers (not used in physics) |
 | `<actuator>` | Partial | motor, position, velocity |
 | `<contact>` | Full | Contact filtering via contype/conaffinity |
@@ -978,6 +978,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 - `cylinder` → `CollisionShape::Cylinder`
 - `ellipsoid` → `CollisionShape::Ellipsoid`
 - `plane` → `CollisionShape::Plane`
+- `mesh` → `CollisionShape::ConvexMesh` (convex hull)
 
 **Usage:**
 ```rust
@@ -1005,12 +1006,13 @@ let body_id = spawned.body_id("base").expect("base exists");
 ```
 
 **Limitations:**
-- Mesh collision shapes not supported
+- Non-convex meshes are converted to convex hulls
+- Height fields (hfield) and signed distance fields (sdf) not supported
 - Tendons not supported
 - Equality constraints not supported
 - Composite bodies not supported
 - Include files not supported
-- Assets (textures, materials) parsed but not loaded
+- Textures and materials parsed but not loaded (meshes are loaded)
 
 **Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `loader.rs`, `validation.rs`, `config.rs`
 

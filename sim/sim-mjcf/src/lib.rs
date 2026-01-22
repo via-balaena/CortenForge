@@ -9,7 +9,8 @@
 //! - Parse MJCF XML from files or strings
 //! - Convert bodies to rigid bodies with mass properties
 //! - Convert joints to sim-core joint constraints
-//! - Support for primitive collision shapes (sphere, box, capsule, plane)
+//! - Support for primitive collision shapes (sphere, box, capsule, plane, cylinder, ellipsoid)
+//! - Support for mesh collision shapes (convex hull from embedded data or external files)
 //! - Support for actuators (motors, position/velocity servos)
 //! - Default class inheritance system
 //! - Kinematic tree validation
@@ -57,7 +58,7 @@
 //! - `<mujoco model="...">` - Root element, model name parsing
 //! - `<option>` - Global simulation options (gravity, timestep)
 //! - `<default>` - Default parameter classes
-//! - `<asset>` - Asset definitions (meshes, textures) - parsed but not loaded
+//! - `<asset>` - Asset definitions (meshes, textures, materials)
 //! - `<worldbody>` - Root of the body tree
 //!
 //! ## Bodies
@@ -82,9 +83,16 @@
 //! - `<geom type="sphere" size="r"/>` - Sphere collision shape
 //! - `<geom type="box" size="x y z"/>` - Box collision shape (half-extents)
 //! - `<geom type="capsule" size="r l"/>` - Capsule collision shape
-//! - `<geom type="cylinder" size="r l"/>` - Cylinder (approximated as capsule)
+//! - `<geom type="cylinder" size="r l"/>` - Cylinder collision shape
+//! - `<geom type="ellipsoid" size="rx ry rz"/>` - Ellipsoid collision shape
 //! - `<geom type="plane" size="x y z"/>` - Infinite plane
-//! - `<geom type="mesh"/>` - Mesh reference (not loaded)
+//! - `<geom type="mesh" mesh="asset_name"/>` - Mesh collision shape (convex hull)
+//!
+//! ## Mesh Assets
+//!
+//! - `<mesh name="..." file="path.stl"/>` - Load mesh from STL, OBJ, PLY, or 3MF file
+//! - `<mesh name="..." vertex="x y z ..."/>` - Embedded vertex data
+//! - `<mesh name="..." scale="sx sy sz"/>` - Scale factor for mesh vertices
 //!
 //! ## Actuators
 //!
@@ -99,7 +107,8 @@
 //!
 //! # Limitations
 //!
-//! - Mesh collision shapes are not supported (logged as warning)
+//! - Non-convex meshes are converted to convex hulls (may not match original geometry)
+//! - Height fields (hfield) and signed distance fields (sdf) are not supported
 //! - Tendons are not supported
 //! - Equality constraints are not supported
 //! - Composite bodies are not supported
@@ -163,8 +172,9 @@ pub use parser::parse_mjcf_str;
 pub use types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfDefault,
     MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator,
-    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMeshDefaults, MjcfModel,
-    MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendonDefaults,
+    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh, MjcfMeshDefaults,
+    MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType,
+    MjcfTendonDefaults,
 };
 pub use validation::{ValidationResult, validate};
 

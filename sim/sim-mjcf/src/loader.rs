@@ -16,7 +16,7 @@ use crate::defaults::DefaultResolver;
 use crate::error::{MjcfError, Result};
 use crate::parser::parse_mjcf_str;
 use crate::types::{
-    MjcfBody, MjcfGeom, MjcfGeomType, MjcfJoint, MjcfJointType, MjcfModel, MjcfOption,
+    MjcfBody, MjcfGeom, MjcfGeomType, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption,
 };
 use crate::validation::{ValidationResult, validate};
 
@@ -147,6 +147,8 @@ pub struct MjcfLoader {
     pub default_density: f64,
     /// Minimum mass for bodies (to avoid singular inertia matrices).
     pub min_mass: f64,
+    /// Base directory for resolving relative mesh file paths.
+    pub mesh_base_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for MjcfLoader {
@@ -155,6 +157,7 @@ impl Default for MjcfLoader {
             use_collision_shapes: true,
             default_density: 1000.0, // Water density
             min_mass: 0.001,         // 1 gram minimum
+            mesh_base_dir: None,
         }
     }
 }
@@ -180,14 +183,37 @@ impl MjcfLoader {
         self
     }
 
+    /// Set the base directory for resolving relative mesh file paths.
+    #[must_use]
+    pub fn with_mesh_base_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        self.mesh_base_dir = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
     /// Load MJCF from a file path.
+    ///
+    /// The directory containing the MJCF file will be used as the base
+    /// directory for resolving relative mesh file paths.
     ///
     /// # Errors
     ///
     /// Returns an error if the file cannot be read or parsed.
     pub fn load_file(&self, path: impl AsRef<Path>) -> Result<LoadedModel> {
+        let path = path.as_ref();
         let content = fs::read_to_string(path)?;
-        self.load_str(&content)
+
+        // Use the MJCF file's directory as the mesh base dir if not already set
+        let loader = if self.mesh_base_dir.is_none() {
+            let base_dir = path.parent().map(|p| p.to_path_buf());
+            Self {
+                mesh_base_dir: base_dir,
+                ..self.clone()
+            }
+        } else {
+            self.clone()
+        };
+
+        loader.load_str(&content)
     }
 
     /// Load MJCF from a string.
@@ -220,6 +246,10 @@ impl MjcfLoader {
         // Create default resolver for applying default classes
         let resolver = DefaultResolver::from_model(&model);
 
+        // Build mesh lookup from asset names
+        let mesh_lookup: HashMap<&str, &MjcfMesh> =
+            model.meshes.iter().map(|m| (m.name.as_str(), m)).collect();
+
         // Assign IDs
         let mut next_body_id = 1u64;
         let mut next_joint_id = 1u64;
@@ -241,7 +271,13 @@ impl MjcfLoader {
             let world_pose = compute_world_pose(body_name, &validation, &body_lookup);
 
             // Create the body (with defaults applied to geoms)
-            let body = self.create_body_with_defaults(body_id, mjcf_body, world_pose, &resolver);
+            let body = self.create_body_with_defaults(
+                body_id,
+                mjcf_body,
+                world_pose,
+                &resolver,
+                &mesh_lookup,
+            );
             bodies.push(body);
         }
 
@@ -298,6 +334,9 @@ impl MjcfLoader {
     }
 
     /// Create a sim-core Body from an MJCF body.
+    ///
+    /// Note: This is a legacy method that doesn't support mesh assets.
+    /// Use `create_body_with_defaults` for full mesh support.
     #[allow(dead_code)]
     fn create_body(&self, id: BodyId, mjcf_body: &MjcfBody, pose: Pose) -> Body {
         // Compute mass properties from inertial or geoms
@@ -311,9 +350,12 @@ impl MjcfLoader {
         let state = RigidBodyState::at_rest(pose);
         let mut body = Body::new(id, state, mass_props).with_name(&mjcf_body.name);
 
-        // Add collision shape from first geom
+        // Add collision shape from first geom (no mesh lookup)
         if self.use_collision_shapes {
-            if let Some(collision_shape) = self.collision_shape_from_geoms(&mjcf_body.geoms) {
+            let empty_mesh_lookup = HashMap::new();
+            if let Some(collision_shape) =
+                self.collision_shape_from_geoms(&mjcf_body.geoms, &empty_mesh_lookup)
+            {
                 body = body.with_collision_shape(collision_shape);
             }
         }
@@ -336,6 +378,7 @@ impl MjcfLoader {
         mjcf_body: &MjcfBody,
         pose: Pose,
         resolver: &DefaultResolver,
+        mesh_lookup: &HashMap<&str, &MjcfMesh>,
     ) -> Body {
         // Apply defaults to all geoms
         let resolved_geoms: Vec<MjcfGeom> = mjcf_body
@@ -357,7 +400,9 @@ impl MjcfLoader {
 
         // Add collision shape from first resolved geom
         if self.use_collision_shapes {
-            if let Some(collision_shape) = self.collision_shape_from_geoms(&resolved_geoms) {
+            if let Some(collision_shape) =
+                self.collision_shape_from_geoms(&resolved_geoms, mesh_lookup)
+            {
                 body = body.with_collision_shape(collision_shape);
             }
         }
@@ -405,13 +450,23 @@ impl MjcfLoader {
     }
 
     /// Create collision shape from geoms.
-    fn collision_shape_from_geoms(&self, geoms: &[MjcfGeom]) -> Option<CollisionShape> {
+    fn collision_shape_from_geoms(
+        &self,
+        geoms: &[MjcfGeom],
+        mesh_lookup: &HashMap<&str, &MjcfMesh>,
+    ) -> Option<CollisionShape> {
         // Use first geom for collision
-        geoms.first().and_then(|geom| self.geom_to_collision(geom))
+        geoms
+            .first()
+            .and_then(|geom| self.geom_to_collision(geom, mesh_lookup))
     }
 
     /// Convert MJCF geom to collision shape.
-    fn geom_to_collision(&self, geom: &MjcfGeom) -> Option<CollisionShape> {
+    fn geom_to_collision(
+        &self,
+        geom: &MjcfGeom,
+        mesh_lookup: &HashMap<&str, &MjcfMesh>,
+    ) -> Option<CollisionShape> {
         match geom.geom_type {
             MjcfGeomType::Sphere => {
                 let radius = geom.size.first().copied().unwrap_or(0.1);
@@ -460,8 +515,88 @@ impl MjcfLoader {
                 // Infinite plane
                 Some(CollisionShape::plane(Vector3::z(), 0.0))
             }
-            _ => None, // Mesh, heightfield, etc. not supported
+            MjcfGeomType::Mesh => {
+                // Convert mesh to convex hull collision shape
+                self.mesh_geom_to_collision(geom, mesh_lookup)
+            }
+            _ => None, // Heightfield, SDF not supported
         }
+    }
+
+    /// Convert a mesh geom to a convex mesh collision shape.
+    fn mesh_geom_to_collision(
+        &self,
+        geom: &MjcfGeom,
+        mesh_lookup: &HashMap<&str, &MjcfMesh>,
+    ) -> Option<CollisionShape> {
+        // Get the mesh asset name from the geom
+        let mesh_name = geom.mesh.as_ref()?;
+
+        // Look up the mesh asset
+        let Some(mesh_asset) = mesh_lookup.get(mesh_name.as_str()) else {
+            tracing::warn!("Mesh asset '{}' not found for geom", mesh_name);
+            return None;
+        };
+
+        // Try to get vertices from embedded data first
+        if mesh_asset.has_embedded_data() {
+            let vertices = mesh_asset.vertices_as_points();
+            if vertices.is_empty() {
+                tracing::warn!("Mesh asset '{}' has no vertices", mesh_name);
+                return None;
+            }
+            return Some(CollisionShape::convex_mesh(vertices));
+        }
+
+        // Try to load from file
+        if let Some(ref file_path) = mesh_asset.file {
+            return self.load_mesh_file(file_path, &mesh_asset.scale);
+        }
+
+        tracing::warn!(
+            "Mesh asset '{}' has no embedded data or file path",
+            mesh_name
+        );
+        None
+    }
+
+    /// Load a mesh file and convert to collision shape.
+    fn load_mesh_file(&self, file_path: &str, scale: &Vector3<f64>) -> Option<CollisionShape> {
+        // Resolve the path relative to the base directory
+        let full_path = if let Some(ref base_dir) = self.mesh_base_dir {
+            base_dir.join(file_path)
+        } else {
+            std::path::PathBuf::from(file_path)
+        };
+
+        // Load the mesh file using mesh-io
+        let indexed_mesh = match mesh_io::load_mesh(&full_path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("Failed to load mesh file '{}': {}", full_path.display(), e);
+                return None;
+            }
+        };
+
+        // Convert mesh vertices to collision shape vertices
+        let vertices: Vec<Point3<f64>> = indexed_mesh
+            .vertices
+            .iter()
+            .map(|v| {
+                Point3::new(
+                    v.position.x * scale.x,
+                    v.position.y * scale.y,
+                    v.position.z * scale.z,
+                )
+            })
+            .collect();
+
+        if vertices.is_empty() {
+            tracing::warn!("Mesh file '{}' has no vertices", full_path.display());
+            return None;
+        }
+
+        Some(CollisionShape::convex_mesh(vertices))
     }
 
     /// Create a sim-core Joint from an MJCF joint.
@@ -868,5 +1003,163 @@ mod tests {
         // Check that joint defaults were applied
         let shoulder = &model.joints[0];
         assert_relative_eq!(shoulder.damping, 1.0, epsilon = 1e-10);
+    }
+
+    // ========================================================================
+    // Mesh geom collision tests
+    // ========================================================================
+
+    #[test]
+    fn test_mesh_geom_with_embedded_vertices() {
+        // A simple tetrahedron with embedded vertex data
+        let xml = r#"
+            <mujoco model="mesh_test">
+                <asset>
+                    <mesh name="tetra" vertex="0 0 0 1 0 0 0.5 0.866 0 0.5 0.289 0.816"/>
+                </asset>
+                <worldbody>
+                    <body name="mesh_body">
+                        <geom type="mesh" mesh="tetra"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        assert_eq!(model.bodies.len(), 1);
+
+        let body = &model.bodies[0];
+        assert!(body.collision_shape.is_some());
+
+        // Check that it's a ConvexMesh shape
+        match &body.collision_shape {
+            Some(CollisionShape::ConvexMesh { vertices }) => {
+                assert_eq!(vertices.len(), 4);
+                // First vertex should be at origin
+                assert_relative_eq!(vertices[0].x, 0.0, epsilon = 1e-10);
+                assert_relative_eq!(vertices[0].y, 0.0, epsilon = 1e-10);
+                assert_relative_eq!(vertices[0].z, 0.0, epsilon = 1e-10);
+            }
+            _ => panic!("Expected ConvexMesh shape"),
+        }
+    }
+
+    #[test]
+    fn test_mesh_geom_with_scale() {
+        // Mesh with scale factor applied
+        let xml = r#"
+            <mujoco model="scaled_mesh">
+                <asset>
+                    <mesh name="cube" vertex="0 0 0 1 0 0 0 1 0 0 0 1" scale="0.1 0.1 0.1"/>
+                </asset>
+                <worldbody>
+                    <body name="scaled_body">
+                        <geom type="mesh" mesh="cube"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        let body = &model.bodies[0];
+
+        match &body.collision_shape {
+            Some(CollisionShape::ConvexMesh { vertices }) => {
+                assert_eq!(vertices.len(), 4);
+                // Second vertex should be at (0.1, 0, 0) due to scale
+                assert_relative_eq!(vertices[1].x, 0.1, epsilon = 1e-10);
+                assert_relative_eq!(vertices[1].y, 0.0, epsilon = 1e-10);
+                assert_relative_eq!(vertices[1].z, 0.0, epsilon = 1e-10);
+            }
+            _ => panic!("Expected ConvexMesh shape"),
+        }
+    }
+
+    #[test]
+    fn test_mesh_geom_missing_asset() {
+        // Reference to a mesh asset that doesn't exist
+        let xml = r#"
+            <mujoco model="missing_mesh">
+                <worldbody>
+                    <body name="body">
+                        <geom type="mesh" mesh="nonexistent"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        // Should still load, but without collision shape
+        let model = load_mjcf_str(xml).expect("should load");
+        let body = &model.bodies[0];
+
+        // The collision shape should be None because the mesh wasn't found
+        assert!(body.collision_shape.is_none());
+    }
+
+    #[test]
+    fn test_mesh_geom_among_other_geoms() {
+        // Body with multiple geoms including a mesh
+        let xml = r#"
+            <mujoco model="multi_geom">
+                <asset>
+                    <mesh name="custom" vertex="0 0 0 1 0 0 0 1 0"/>
+                </asset>
+                <worldbody>
+                    <body name="composite">
+                        <geom type="mesh" mesh="custom"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        let body = &model.bodies[0];
+
+        // First geom (mesh) should be used for collision
+        match &body.collision_shape {
+            Some(CollisionShape::ConvexMesh { vertices }) => {
+                assert_eq!(vertices.len(), 3);
+            }
+            _ => panic!("Expected ConvexMesh shape from first geom"),
+        }
+    }
+
+    #[test]
+    fn test_mesh_type_enum() {
+        use crate::types::MjcfGeomType;
+
+        assert_eq!(MjcfGeomType::from_str("mesh"), Some(MjcfGeomType::Mesh));
+        assert_eq!(MjcfGeomType::Mesh.as_str(), "mesh");
+    }
+
+    #[test]
+    fn test_mesh_vertices_as_points() {
+        use crate::types::MjcfMesh;
+
+        let mesh = MjcfMesh {
+            name: "test".to_string(),
+            file: None,
+            scale: Vector3::new(2.0, 2.0, 2.0),
+            vertex: Some(vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]),
+            face: None,
+        };
+
+        let points = mesh.vertices_as_points();
+        assert_eq!(points.len(), 3);
+
+        // Vertices should be scaled
+        assert_relative_eq!(points[0].x, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(points[1].y, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(points[2].z, 2.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_loader_with_mesh_base_dir() {
+        let loader = MjcfLoader::new().with_mesh_base_dir("/some/path");
+        assert_eq!(
+            loader.mesh_base_dir,
+            Some(std::path::PathBuf::from("/some/path"))
+        );
     }
 }
