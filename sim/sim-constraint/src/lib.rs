@@ -113,8 +113,8 @@ pub use actuator::{
 };
 pub use cg::{CGSolver, CGSolverConfig, CGSolverResult, CGSolverStats, Preconditioner};
 pub use equality::{
-    CouplingCoefficient, CouplingGroup, DifferentialCoupling, GearCoupling, JointCoupling,
-    TendonConstraint, TendonNetwork,
+    ConnectConstraint, CouplingCoefficient, CouplingGroup, DifferentialCoupling, GearCoupling,
+    JointCoupling, TendonConstraint, TendonNetwork,
 };
 pub use islands::{ConstraintIslands, Island, IslandStatistics};
 pub use joint::{

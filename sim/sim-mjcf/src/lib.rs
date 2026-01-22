@@ -110,7 +110,7 @@
 //! - Non-convex meshes are converted to convex hulls (may not match original geometry)
 //! - Height fields (hfield) and signed distance fields (sdf) are not supported
 //! - Tendons are not supported
-//! - Equality constraints are not supported
+//! - Only connect equality constraints are supported (weld, joint, distance coming soon)
 //! - Composite bodies are not supported
 //! - Include files are not supported
 //!
@@ -170,11 +170,11 @@ pub use error::{MjcfError, Result};
 pub use loader::{LoadedModel, MjcfLoader, SpawnedModel, load_mjcf_file, load_mjcf_str};
 pub use parser::parse_mjcf_str;
 pub use types::{
-    MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfDefault,
-    MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator,
-    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh, MjcfMeshDefaults,
-    MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType,
-    MjcfTendonDefaults,
+    MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
+    MjcfDefault, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial,
+    MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh,
+    MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
+    MjcfSolverType, MjcfTendonDefaults,
 };
 pub use validation::{ValidationResult, validate};
 

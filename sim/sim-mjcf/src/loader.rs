@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 
 use nalgebra::{Point3, Vector3};
-use sim_constraint::JointLimits;
+use sim_constraint::{ConnectConstraint, JointLimits};
 use sim_core::{Body, CollisionShape, Joint, World};
 use sim_types::{BodyId, JointId, JointType, MassProperties, Pose, RigidBodyState};
 
@@ -29,6 +29,8 @@ pub struct LoadedModel {
     pub bodies: Vec<Body>,
     /// Joints ready for insertion.
     pub joints: Vec<Joint>,
+    /// Connect (ball) equality constraints.
+    pub connect_constraints: Vec<ConnectConstraint>,
     /// Map from body name to body ID.
     pub body_to_id: HashMap<String, BodyId>,
     /// Map from joint name to joint ID.
@@ -319,6 +321,10 @@ impl MjcfLoader {
             }
         }
 
+        // Convert equality constraints
+        let connect_constraints =
+            self.convert_connect_constraints(&model.equality.connects, &body_to_id)?;
+
         // Convert options to solver config
         let solver_config = ExtendedSolverConfig::from(&model.option);
 
@@ -326,6 +332,7 @@ impl MjcfLoader {
             name: model.name,
             bodies,
             joints,
+            connect_constraints,
             body_to_id,
             joint_to_id,
             option: model.option,
@@ -597,6 +604,64 @@ impl MjcfLoader {
         }
 
         Some(CollisionShape::convex_mesh(vertices))
+    }
+
+    /// Convert MJCF connect constraints to sim-constraint ConnectConstraints.
+    fn convert_connect_constraints(
+        &self,
+        mjcf_connects: &[crate::types::MjcfConnect],
+        body_to_id: &HashMap<String, BodyId>,
+    ) -> Result<Vec<ConnectConstraint>> {
+        let mut constraints = Vec::new();
+
+        for mjcf_connect in mjcf_connects {
+            // Skip inactive constraints
+            if !mjcf_connect.active {
+                continue;
+            }
+
+            // Look up body1 ID
+            let body1_id = body_to_id
+                .get(&mjcf_connect.body1)
+                .copied()
+                .ok_or_else(|| {
+                    MjcfError::undefined_body(&mjcf_connect.body1, "connect constraint")
+                })?;
+
+            // Look up body2 ID (if specified, otherwise connects to world)
+            let body2_id =
+                if let Some(ref body2_name) = mjcf_connect.body2 {
+                    Some(body_to_id.get(body2_name).copied().ok_or_else(|| {
+                        MjcfError::undefined_body(body2_name, "connect constraint")
+                    })?)
+                } else {
+                    None
+                };
+
+            // Create the constraint
+            let mut constraint = if let Some(body2) = body2_id {
+                ConnectConstraint::new(body1_id, body2, mjcf_connect.anchor)
+            } else {
+                ConnectConstraint::to_world(body1_id, mjcf_connect.anchor)
+            };
+
+            // Set optional name
+            if let Some(ref name) = mjcf_connect.name {
+                constraint = constraint.with_name(name);
+            }
+
+            // Set solver parameters if provided
+            if let Some(solref) = mjcf_connect.solref {
+                constraint = constraint.with_solref(solref);
+            }
+            if let Some(solimp) = mjcf_connect.solimp {
+                constraint = constraint.with_solimp(solimp);
+            }
+
+            constraints.push(constraint);
+        }
+
+        Ok(constraints)
     }
 
     /// Create a sim-core Joint from an MJCF joint.
@@ -1161,5 +1226,172 @@ mod tests {
             loader.mesh_base_dir,
             Some(std::path::PathBuf::from("/some/path"))
         );
+    }
+
+    // ========================================================================
+    // Connect constraint tests
+    // ========================================================================
+
+    #[test]
+    fn test_connect_constraint_between_bodies() {
+        let xml = r#"
+            <mujoco model="connect_test">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect name="ball" body1="body1" body2="body2" anchor="0.5 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.connect_constraints.len(), 1);
+
+        let constraint = &model.connect_constraints[0];
+        assert_eq!(constraint.name(), "ball");
+        assert_eq!(constraint.body1(), model.body_to_id["body1"]);
+        assert_eq!(constraint.body2(), Some(model.body_to_id["body2"]));
+        assert_relative_eq!(constraint.anchor().x, 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_connect_constraint_to_world() {
+        let xml = r#"
+            <mujoco model="connect_world">
+                <worldbody>
+                    <body name="floating">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect body1="floating" anchor="0 0 1"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.connect_constraints.len(), 1);
+
+        let constraint = &model.connect_constraints[0];
+        assert!(constraint.is_world_constraint());
+        assert!(constraint.body2().is_none());
+    }
+
+    #[test]
+    fn test_connect_constraint_with_solver_params() {
+        let xml = r#"
+            <mujoco model="connect_params">
+                <worldbody>
+                    <body name="a">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="b">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect body1="a" body2="b"
+                             solref="0.02 1"
+                             solimp="0.9 0.95 0.001 0.5 2"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        let constraint = &model.connect_constraints[0];
+
+        let solref = constraint.solref().expect("should have solref");
+        assert_relative_eq!(solref[0], 0.02, epsilon = 1e-10);
+
+        let solimp = constraint.solimp().expect("should have solimp");
+        assert_relative_eq!(solimp[0], 0.9, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_connect_constraint_inactive_skipped() {
+        let xml = r#"
+            <mujoco model="connect_inactive">
+                <worldbody>
+                    <body name="a">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="b">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect body1="a" body2="b" active="false"/>
+                    <connect body1="a" body2="b" active="true"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        // Only the active constraint should be included
+        assert_eq!(model.connect_constraints.len(), 1);
+    }
+
+    #[test]
+    fn test_connect_constraint_undefined_body() {
+        let xml = r#"
+            <mujoco model="connect_bad">
+                <worldbody>
+                    <body name="real_body"/>
+                </worldbody>
+                <equality>
+                    <connect body1="nonexistent" body2="real_body"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let result = load_mjcf_str(xml);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(matches!(err, MjcfError::UndefinedBody { .. }));
+    }
+
+    #[test]
+    fn test_multiple_connect_constraints() {
+        let xml = r#"
+            <mujoco model="multi_connect">
+                <worldbody>
+                    <body name="a">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="b">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="c">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect name="c1" body1="a" body2="b"/>
+                    <connect name="c2" body1="b" body2="c"/>
+                    <connect name="c3" body1="c" anchor="0 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        assert_eq!(model.connect_constraints.len(), 3);
+
+        // Check names
+        assert_eq!(model.connect_constraints[0].name(), "c1");
+        assert_eq!(model.connect_constraints[1].name(), "c2");
+        assert_eq!(model.connect_constraints[2].name(), "c3");
+
+        // Third constraint should be to world
+        assert!(model.connect_constraints[2].is_world_constraint());
     }
 }

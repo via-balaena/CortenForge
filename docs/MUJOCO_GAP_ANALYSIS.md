@@ -21,7 +21,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Tendons & Deformables (Cloth, Soft bodies, XPBD solver)
 - Model loading (URDF, MJCF)
 
-### ❌ Missing Features (7 items - not yet started)
+### ❌ Missing Features (6 items - not yet started)
 
 | Priority | Feature | Impact | Effort | Section |
 |----------|---------|--------|--------|---------|
@@ -31,7 +31,6 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | **4** | Skinned meshes | Low | High | [§11](#11-deformables-flex) |
 | **5** | Multi-threading | Medium | Medium | [§12](#12-performance-optimizations) |
 | **6** | MJB binary format | Low | Low | [§13](#13-model-format) |
-| **7** | Connect (ball) equality constraint | Low | Low | [§10](#10-equality-constraints) |
 
 ### ⚠️ Partial Implementations (5 items - needs completion)
 
@@ -700,11 +699,77 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 
 | Constraint | MuJoCo | CortenForge | Status | Priority |
 |------------|--------|-------------|--------|----------|
-| Connect (ball) | Yes | Via SphericalJoint | **Partial** | Medium |
+| Connect (ball) | Yes | `ConnectConstraint` | **Implemented** | - |
 | Weld | Yes | Via FixedJoint | **Implemented** | - |
 | Joint coupling | Yes | `JointCoupling`, `GearCoupling`, `DifferentialCoupling` | **Implemented** | - |
 | Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Implemented** | - |
 | Flex (edge length) | Yes | `FlexEdgeConstraint` | **Implemented** | - |
+
+### Implementation Notes: Connect (Ball) Constraint ✅ COMPLETED
+
+The connect (ball) constraint enforces that two attachment points (one on each body) coincide in 3D space. It acts like a ball-and-socket joint without any rotational constraints - both bodies can rotate freely around the connection point.
+
+**Constraint Formulation:**
+```
+p1 + R1 * anchor - p2 = 0
+```
+
+Where:
+- `p1`, `p2` are the body positions
+- `R1` is the rotation matrix of body1
+- `anchor` is the local anchor point in body1's frame
+
+This results in 3 scalar constraints (one per axis).
+
+**Implementation:**
+- `ConnectConstraint` - Ball constraint between two bodies or body-to-world
+- `MjcfConnect` - MJCF representation for `<connect>` element parsing
+- `MjcfEquality` - Container for equality constraints in MJCF model
+- Full MJCF parser support for `<equality><connect>` elements
+- Baumgarte stabilization for position correction
+- Compliance and damping parameters for soft constraints
+- Solver reference (`solref`) and impedance (`solimp`) parameters
+
+**Usage:**
+```rust
+use sim_constraint::ConnectConstraint;
+use sim_types::BodyId;
+use nalgebra::Vector3;
+
+// Connect body1's tip to body2's origin
+let constraint = ConnectConstraint::new(
+    BodyId::new(0),
+    BodyId::new(1),
+    Vector3::new(0.0, 0.0, 1.0),  // anchor at body1's +Z tip
+);
+
+// Connect body to world (fixed point constraint)
+let world_constraint = ConnectConstraint::to_world(
+    BodyId::new(0),
+    Vector3::new(0.0, 0.0, 0.0),
+);
+
+// Via MJCF
+let mjcf = r#"
+    <mujoco model="test">
+        <worldbody>
+            <body name="body1"/>
+            <body name="body2"/>
+        </worldbody>
+        <equality>
+            <connect name="ball" body1="body1" body2="body2" anchor="0.5 0 0"/>
+        </equality>
+    </mujoco>
+"#;
+let model = load_mjcf_str(mjcf).expect("should parse");
+// model.connect_constraints contains the parsed constraints
+```
+
+**Files:**
+- `sim-constraint/src/equality.rs` - `ConnectConstraint` implementation
+- `sim-mjcf/src/types.rs` - `MjcfConnect`, `MjcfEquality` types
+- `sim-mjcf/src/parser.rs` - `<equality>` and `<connect>` element parsing
+- `sim-mjcf/src/loader.rs` - Conversion to `ConnectConstraint`
 
 ---
 
@@ -1009,7 +1074,7 @@ let body_id = spawned.body_id("base").expect("base exists");
 - Non-convex meshes are converted to convex hulls
 - Height fields (hfield) and signed distance fields (sdf) not supported
 - Tendons not supported
-- Equality constraints not supported
+- Only connect equality constraints supported (weld, joint, distance coming soon)
 - Composite bodies not supported
 - Include files not supported
 - Textures and materials parsed but not loaded (meshes are loaded)

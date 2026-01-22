@@ -1071,6 +1071,138 @@ impl Default for MjcfSite {
 }
 
 // ============================================================================
+// Equality Constraints
+// ============================================================================
+
+/// Connect (ball) equality constraint from `<connect>` element.
+///
+/// This constraint enforces that two attachment points (one on each body)
+/// coincide in 3D space, acting like a ball-and-socket joint without any
+/// rotational constraints.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfConnect {
+    /// Optional constraint name.
+    pub name: Option<String>,
+    /// Default class for inheriting parameters.
+    pub class: Option<String>,
+    /// Name of the first body.
+    pub body1: String,
+    /// Name of the second body (optional, defaults to world).
+    pub body2: Option<String>,
+    /// Anchor point in body1's local frame.
+    pub anchor: Vector3<f64>,
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    /// Controls constraint softness/stiffness.
+    pub solimp: Option<[f64; 5]>,
+    /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    /// Controls constraint dynamics.
+    pub solref: Option<[f64; 2]>,
+    /// Whether this constraint is active.
+    pub active: bool,
+}
+
+impl Default for MjcfConnect {
+    fn default() -> Self {
+        Self {
+            name: None,
+            class: None,
+            body1: String::new(),
+            body2: None,
+            anchor: Vector3::zeros(),
+            solimp: None,
+            solref: None,
+            active: true,
+        }
+    }
+}
+
+impl MjcfConnect {
+    /// Create a new connect constraint between two bodies.
+    #[must_use]
+    pub fn new(body1: impl Into<String>, body2: impl Into<String>) -> Self {
+        Self {
+            body1: body1.into(),
+            body2: Some(body2.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a connect constraint to the world frame.
+    #[must_use]
+    pub fn to_world(body1: impl Into<String>) -> Self {
+        Self {
+            body1: body1.into(),
+            body2: None,
+            ..Default::default()
+        }
+    }
+
+    /// Set the anchor point in body1's frame.
+    #[must_use]
+    pub fn with_anchor(mut self, anchor: Vector3<f64>) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// Set the constraint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set solver reference parameters.
+    #[must_use]
+    pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
+        self.solref = Some(solref);
+        self
+    }
+
+    /// Set solver impedance parameters.
+    #[must_use]
+    pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
+        self.solimp = Some(solimp);
+        self
+    }
+}
+
+/// Container for equality constraints from `<equality>` element.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfEquality {
+    /// Connect (ball) constraints.
+    pub connects: Vec<MjcfConnect>,
+}
+
+impl MjcfEquality {
+    /// Create a new empty equality constraint container.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a connect constraint.
+    #[must_use]
+    pub fn with_connect(mut self, connect: MjcfConnect) -> Self {
+        self.connects.push(connect);
+        self
+    }
+
+    /// Check if there are any equality constraints.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.connects.is_empty()
+    }
+
+    /// Get the total number of equality constraints.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.connects.len()
+    }
+}
+
+// ============================================================================
 // Body
 // ============================================================================
 
@@ -1332,6 +1464,8 @@ pub struct MjcfModel {
     pub worldbody: MjcfBody,
     /// Actuators.
     pub actuators: Vec<MjcfActuator>,
+    /// Equality constraints.
+    pub equality: MjcfEquality,
 }
 
 impl Default for MjcfModel {
@@ -1343,6 +1477,7 @@ impl Default for MjcfModel {
             meshes: Vec::new(),
             worldbody: MjcfBody::new("world"),
             actuators: Vec::new(),
+            equality: MjcfEquality::default(),
         }
     }
 }

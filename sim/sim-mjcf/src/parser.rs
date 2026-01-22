@@ -9,11 +9,11 @@ use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
 use crate::types::{
-    MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfDefault,
-    MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator,
-    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh, MjcfMeshDefaults,
-    MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType,
-    MjcfTendonDefaults,
+    MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
+    MjcfDefault, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial,
+    MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh,
+    MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
+    MjcfSolverType, MjcfTendonDefaults,
 };
 
 /// Parse an MJCF string into a model.
@@ -76,7 +76,10 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         let actuators = parse_actuators(reader)?;
                         model.actuators = actuators;
                     }
-                    // Skip other elements (contact, equality, tendon, etc.)
+                    b"equality" => {
+                        model.equality = parse_equality(reader)?;
+                    }
+                    // Skip other elements (contact, tendon, etc.)
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
@@ -998,6 +1001,85 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
     Ok(actuator)
 }
 
+/// Parse equality constraints element.
+fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfEquality> {
+    let mut equality = MjcfEquality::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                match elem_name.as_slice() {
+                    b"connect" => {
+                        let connect = parse_connect_attrs(e)?;
+                        equality.connects.push(connect);
+                        // Skip to closing tag
+                        skip_element(reader, &elem_name)?;
+                    }
+                    // Skip other equality constraint types for now (weld, joint, tendon, etc.)
+                    _ => skip_element(reader, &elem_name)?,
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                if e.name().as_ref() == b"connect" {
+                    let connect = parse_connect_attrs(e)?;
+                    equality.connects.push(connect);
+                }
+                // Skip other self-closing equality constraint types
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"equality" => break,
+            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in equality".into())),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(equality)
+}
+
+/// Parse connect constraint attributes.
+fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
+    let mut connect = MjcfConnect::default();
+
+    connect.name = get_attribute_opt(e, "name");
+    connect.class = get_attribute_opt(e, "class");
+
+    // body1 is required
+    connect.body1 = get_attribute_opt(e, "body1")
+        .ok_or_else(|| MjcfError::missing_attribute("body1", "connect"))?;
+
+    // body2 is optional (defaults to world)
+    connect.body2 = get_attribute_opt(e, "body2");
+
+    // Parse anchor point
+    if let Some(anchor) = get_attribute_opt(e, "anchor") {
+        connect.anchor = parse_vector3(&anchor)?;
+    }
+
+    // Parse solver parameters
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            connect.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            connect.solref = Some([parts[0], parts[1]]);
+        }
+    }
+
+    // Parse active flag
+    if let Some(active) = get_attribute_opt(e, "active") {
+        connect.active = active != "false";
+    }
+
+    Ok(connect)
+}
+
 // ============================================================================
 // Helper functions
 // ============================================================================
@@ -1910,5 +1992,200 @@ mod tests {
 
         let mesh_a = model.mesh("mesh_a").unwrap();
         assert_eq!(mesh_a.file, Some("a.stl".to_string()));
+    }
+
+    // ========================================================================
+    // Equality constraint parsing tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_connect_constraint_basic() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect body1="body1" body2="body2" anchor="0.5 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.equality.connects.len(), 1);
+
+        let connect = &model.equality.connects[0];
+        assert_eq!(connect.body1, "body1");
+        assert_eq!(connect.body2, Some("body2".to_string()));
+        assert_relative_eq!(connect.anchor.x, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(connect.anchor.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(connect.anchor.z, 0.0, epsilon = 1e-10);
+        assert!(connect.active);
+    }
+
+    #[test]
+    fn test_parse_connect_constraint_with_name() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link1"/>
+                    <body name="link2"/>
+                </worldbody>
+                <equality>
+                    <connect name="ball_joint" body1="link1" body2="link2"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let connect = &model.equality.connects[0];
+        assert_eq!(connect.name, Some("ball_joint".to_string()));
+    }
+
+    #[test]
+    fn test_parse_connect_constraint_to_world() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="floating_body"/>
+                </worldbody>
+                <equality>
+                    <connect body1="floating_body" anchor="0 0 1"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let connect = &model.equality.connects[0];
+        assert_eq!(connect.body1, "floating_body");
+        assert!(connect.body2.is_none()); // Defaults to world
+        assert_relative_eq!(connect.anchor.z, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_connect_constraint_with_solver_params() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="body1"/>
+                    <body name="body2"/>
+                </worldbody>
+                <equality>
+                    <connect body1="body1" body2="body2"
+                             solref="0.02 1"
+                             solimp="0.9 0.95 0.001 0.5 2"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let connect = &model.equality.connects[0];
+
+        let solref = connect.solref.expect("should have solref");
+        assert_relative_eq!(solref[0], 0.02, epsilon = 1e-10);
+        assert_relative_eq!(solref[1], 1.0, epsilon = 1e-10);
+
+        let solimp = connect.solimp.expect("should have solimp");
+        assert_relative_eq!(solimp[0], 0.9, epsilon = 1e-10);
+        assert_relative_eq!(solimp[1], 0.95, epsilon = 1e-10);
+        assert_relative_eq!(solimp[2], 0.001, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_connect_constraint_inactive() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="body1"/>
+                    <body name="body2"/>
+                </worldbody>
+                <equality>
+                    <connect body1="body1" body2="body2" active="false"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let connect = &model.equality.connects[0];
+        assert!(!connect.active);
+    }
+
+    #[test]
+    fn test_parse_multiple_connect_constraints() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="a"/>
+                    <body name="b"/>
+                    <body name="c"/>
+                </worldbody>
+                <equality>
+                    <connect name="c1" body1="a" body2="b"/>
+                    <connect name="c2" body1="b" body2="c"/>
+                    <connect name="c3" body1="c" anchor="0 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.equality.connects.len(), 3);
+        assert_eq!(model.equality.connects[0].name, Some("c1".to_string()));
+        assert_eq!(model.equality.connects[1].name, Some("c2".to_string()));
+        assert_eq!(model.equality.connects[2].name, Some("c3".to_string()));
+    }
+
+    #[test]
+    fn test_parse_connect_constraint_missing_body1() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody/>
+                <equality>
+                    <connect body2="body2"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let result = parse_mjcf_str(xml);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, MjcfError::MissingAttribute { .. }));
+    }
+
+    #[test]
+    fn test_parse_empty_equality() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody/>
+                <equality/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert!(model.equality.is_empty());
+    }
+
+    #[test]
+    fn test_equality_len() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="a"/>
+                    <body name="b"/>
+                </worldbody>
+                <equality>
+                    <connect body1="a" body2="b"/>
+                    <connect body1="b"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.equality.len(), 2);
+        assert!(!model.equality.is_empty());
     }
 }

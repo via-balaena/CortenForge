@@ -1,4 +1,4 @@
-//! Equality constraints for joint coupling.
+//! Equality constraints for joint coupling and body connections.
 //!
 //! This module provides constraints that couple multiple joints together,
 //! enabling mechanisms like:
@@ -48,7 +48,8 @@
 //! );
 //! ```
 
-use sim_types::JointId;
+use nalgebra::Vector3;
+use sim_types::{BodyId, JointId};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -1347,6 +1348,378 @@ impl TendonNetwork {
 }
 
 // ============================================================================
+// Connect (Ball) Constraint
+// ============================================================================
+
+/// A connect (ball) equality constraint between two bodies.
+///
+/// This constraint enforces that an anchor point on body1 coincides with
+/// the origin of body2 (or world if body2 is None), effectively creating
+/// a ball-and-socket connection.
+///
+/// Unlike a ball joint, this is a pure positional constraint with no
+/// rotational degrees of freedom coupling - both bodies can rotate
+/// freely around the connection point.
+///
+/// # Constraint Formulation
+///
+/// The constraint enforces:
+///
+/// ```text
+/// p1 + R1 * anchor - p2 = 0
+/// ```
+///
+/// Where:
+/// - `p1`, `p2` are the body positions
+/// - `R1` is the rotation matrix of body1
+/// - `anchor` is the local anchor point in body1's frame
+///
+/// This results in 3 scalar constraints (one per axis).
+///
+/// # Example
+///
+/// ```ignore
+/// use sim_constraint::equality::ConnectConstraint;
+/// use sim_types::BodyId;
+/// use nalgebra::Vector3;
+///
+/// // Connect body1's tip to body2's origin
+/// let constraint = ConnectConstraint::new(
+///     BodyId::new(0),
+///     BodyId::new(1),
+///     Vector3::new(0.0, 0.0, 1.0),  // anchor at body1's +Z tip
+/// );
+///
+/// // Connect body to world (fixed point constraint)
+/// let world_constraint = ConnectConstraint::to_world(
+///     BodyId::new(0),
+///     Vector3::new(0.0, 0.0, 0.0),
+/// );
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ConnectConstraint {
+    /// Constraint name (for debugging).
+    name: String,
+
+    /// First body (the body with the anchor point).
+    body1: BodyId,
+
+    /// Second body (None = world/ground).
+    body2: Option<BodyId>,
+
+    /// Anchor point in body1's local frame.
+    anchor: Vector3<f64>,
+
+    /// Baumgarte stabilization factor for position correction.
+    baumgarte_factor: f64,
+
+    /// Compliance (inverse stiffness). 0 = rigid constraint.
+    compliance: f64,
+
+    /// Damping coefficient for velocity-level constraint.
+    damping: f64,
+
+    /// Whether this constraint is enabled.
+    enabled: bool,
+
+    /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    solref: Option<[f64; 2]>,
+
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    solimp: Option<[f64; 5]>,
+}
+
+impl ConnectConstraint {
+    /// Create a new connect constraint between two bodies.
+    ///
+    /// # Arguments
+    ///
+    /// * `body1` - The first body (with the anchor point)
+    /// * `body2` - The second body to connect to
+    /// * `anchor` - The anchor point in body1's local frame
+    #[must_use]
+    pub fn new(body1: BodyId, body2: BodyId, anchor: Vector3<f64>) -> Self {
+        Self {
+            name: String::new(),
+            body1,
+            body2: Some(body2),
+            anchor,
+            baumgarte_factor: 0.2,
+            compliance: 0.0,
+            damping: 0.0,
+            enabled: true,
+            solref: None,
+            solimp: None,
+        }
+    }
+
+    /// Create a connect constraint to the world frame.
+    ///
+    /// This constrains the anchor point on body1 to stay at the world origin.
+    ///
+    /// # Arguments
+    ///
+    /// * `body1` - The body with the anchor point
+    /// * `anchor` - The anchor point in body1's local frame (constrained to world origin)
+    #[must_use]
+    pub fn to_world(body1: BodyId, anchor: Vector3<f64>) -> Self {
+        Self {
+            name: String::new(),
+            body1,
+            body2: None,
+            anchor,
+            baumgarte_factor: 0.2,
+            compliance: 0.0,
+            damping: 0.0,
+            enabled: true,
+            solref: None,
+            solimp: None,
+        }
+    }
+
+    /// Set the constraint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// Set the Baumgarte stabilization factor.
+    #[must_use]
+    pub fn with_baumgarte(mut self, factor: f64) -> Self {
+        self.baumgarte_factor = factor.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set the compliance (softness) of the constraint.
+    #[must_use]
+    pub fn with_compliance(mut self, compliance: f64) -> Self {
+        self.compliance = compliance.max(0.0);
+        self
+    }
+
+    /// Set the damping coefficient.
+    #[must_use]
+    pub fn with_damping(mut self, damping: f64) -> Self {
+        self.damping = damping.max(0.0);
+        self
+    }
+
+    /// Enable or disable the constraint.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Set solver reference parameters.
+    #[must_use]
+    pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
+        self.solref = Some(solref);
+        self
+    }
+
+    /// Set solver impedance parameters.
+    #[must_use]
+    pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
+        self.solimp = Some(solimp);
+        self
+    }
+
+    /// Get the constraint name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the first body ID.
+    #[must_use]
+    pub fn body1(&self) -> BodyId {
+        self.body1
+    }
+
+    /// Get the second body ID (None if constrained to world).
+    #[must_use]
+    pub fn body2(&self) -> Option<BodyId> {
+        self.body2
+    }
+
+    /// Get the anchor point in body1's frame.
+    #[must_use]
+    pub fn anchor(&self) -> Vector3<f64> {
+        self.anchor
+    }
+
+    /// Check if the constraint is enabled.
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Enable the constraint.
+    pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+
+    /// Disable the constraint.
+    pub fn disable(&mut self) {
+        self.enabled = false;
+    }
+
+    /// Get the Baumgarte stabilization factor.
+    #[must_use]
+    pub fn baumgarte_factor(&self) -> f64 {
+        self.baumgarte_factor
+    }
+
+    /// Get the compliance.
+    #[must_use]
+    pub fn compliance(&self) -> f64 {
+        self.compliance
+    }
+
+    /// Get the damping.
+    #[must_use]
+    pub fn damping(&self) -> f64 {
+        self.damping
+    }
+
+    /// Get the solver reference parameters.
+    #[must_use]
+    pub fn solref(&self) -> Option<[f64; 2]> {
+        self.solref
+    }
+
+    /// Get the solver impedance parameters.
+    #[must_use]
+    pub fn solimp(&self) -> Option<[f64; 5]> {
+        self.solimp
+    }
+
+    /// Check if this constraint connects to the world frame.
+    #[must_use]
+    pub fn is_world_constraint(&self) -> bool {
+        self.body2.is_none()
+    }
+
+    /// Get the number of constraint dimensions (always 3 for connect).
+    #[must_use]
+    pub fn dof(&self) -> usize {
+        3
+    }
+
+    /// Compute the constraint error given body poses.
+    ///
+    /// # Arguments
+    ///
+    /// * `get_pose` - Function that returns `(position, rotation_matrix)` for a body
+    ///
+    /// # Returns
+    ///
+    /// The position error vector (3D).
+    pub fn compute_error<F>(&self, get_pose: F) -> Vector3<f64>
+    where
+        F: Fn(BodyId) -> (Vector3<f64>, nalgebra::Matrix3<f64>),
+    {
+        if !self.enabled {
+            return Vector3::zeros();
+        }
+
+        let (p1, r1) = get_pose(self.body1);
+        let anchor_world = p1 + r1 * self.anchor;
+
+        self.body2.map_or(anchor_world, |body2| {
+            let (p2, _) = get_pose(body2);
+            anchor_world - p2
+        })
+    }
+
+    /// Compute the constraint velocity given body velocities.
+    ///
+    /// # Arguments
+    ///
+    /// * `get_velocity` - Function that returns `(linear_velocity, angular_velocity)` for a body
+    /// * `get_pose` - Function that returns `(position, rotation_matrix)` for a body
+    ///
+    /// # Returns
+    ///
+    /// The velocity error vector (3D).
+    pub fn compute_velocity<V, P>(&self, get_velocity: V, get_pose: P) -> Vector3<f64>
+    where
+        V: Fn(BodyId) -> (Vector3<f64>, Vector3<f64>),
+        P: Fn(BodyId) -> (Vector3<f64>, nalgebra::Matrix3<f64>),
+    {
+        if !self.enabled {
+            return Vector3::zeros();
+        }
+
+        let (v1, w1) = get_velocity(self.body1);
+        let (_, r1) = get_pose(self.body1);
+
+        // Velocity of anchor point: v1 + w1 × (R1 * anchor)
+        let anchor_world_offset = r1 * self.anchor;
+        let anchor_velocity = v1 + w1.cross(&anchor_world_offset);
+
+        self.body2.map_or(anchor_velocity, |body2| {
+            let (v2, _) = get_velocity(body2);
+            anchor_velocity - v2
+        })
+    }
+
+    /// Compute the constraint impulse needed to satisfy the constraint.
+    ///
+    /// Uses Baumgarte stabilization for position correction.
+    ///
+    /// # Arguments
+    ///
+    /// * `get_pose` - Function that returns `(position, rotation_matrix)` for a body
+    /// * `get_velocity` - Function that returns `(linear_velocity, angular_velocity)` for a body
+    /// * `dt` - Time step
+    ///
+    /// # Returns
+    ///
+    /// The impulse vector (3D) to apply.
+    pub fn compute_correction<P, V>(&self, get_pose: P, get_velocity: V, dt: f64) -> Vector3<f64>
+    where
+        P: Fn(BodyId) -> (Vector3<f64>, nalgebra::Matrix3<f64>),
+        V: Fn(BodyId) -> (Vector3<f64>, Vector3<f64>),
+    {
+        if !self.enabled {
+            return Vector3::zeros();
+        }
+
+        let position_error = self.compute_error(&get_pose);
+        let velocity_error = self.compute_velocity(&get_velocity, &get_pose);
+
+        // Apply Baumgarte stabilization
+        let bias = self.baumgarte_factor * position_error / dt;
+
+        // Add damping
+        // Note: Full implementation would compute proper effective mass
+        // based on body inertias. Here we return the raw correction.
+        -velocity_error - bias - self.damping * velocity_error
+    }
+}
+
+impl Default for ConnectConstraint {
+    fn default() -> Self {
+        Self {
+            name: "connect".to_string(),
+            body1: BodyId::new(0),
+            body2: None,
+            anchor: Vector3::zeros(),
+            baumgarte_factor: 0.2,
+            compliance: 0.0,
+            damping: 0.0,
+            enabled: true,
+            solref: None,
+            solimp: None,
+        }
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -2136,5 +2509,193 @@ mod tests {
 
         let tension = tendon.compute_tension(|_| -1.0, |_| 0.0, 0.01);
         assert_relative_eq!(tension, 0.0, epsilon = 1e-10);
+    }
+
+    // ========================================================================
+    // Connect Constraint Tests
+    // ========================================================================
+
+    #[test]
+    fn test_connect_constraint_creation() {
+        let constraint =
+            ConnectConstraint::new(BodyId::new(0), BodyId::new(1), Vector3::new(0.0, 0.0, 1.0));
+
+        assert_eq!(constraint.body1(), BodyId::new(0));
+        assert_eq!(constraint.body2(), Some(BodyId::new(1)));
+        assert_relative_eq!(constraint.anchor().z, 1.0, epsilon = 1e-10);
+        assert!(constraint.is_enabled());
+        assert!(!constraint.is_world_constraint());
+        assert_eq!(constraint.dof(), 3);
+    }
+
+    #[test]
+    fn test_connect_constraint_to_world() {
+        let constraint = ConnectConstraint::to_world(BodyId::new(0), Vector3::new(1.0, 0.0, 0.0));
+
+        assert_eq!(constraint.body1(), BodyId::new(0));
+        assert!(constraint.body2().is_none());
+        assert!(constraint.is_world_constraint());
+    }
+
+    #[test]
+    fn test_connect_constraint_with_name() {
+        let constraint = ConnectConstraint::new(BodyId::new(0), BodyId::new(1), Vector3::zeros())
+            .with_name("ball_joint");
+
+        assert_eq!(constraint.name(), "ball_joint");
+    }
+
+    #[test]
+    fn test_connect_constraint_builders() {
+        let constraint = ConnectConstraint::new(BodyId::new(0), BodyId::new(1), Vector3::zeros())
+            .with_baumgarte(0.5)
+            .with_compliance(0.01)
+            .with_damping(0.1)
+            .with_solref([0.02, 1.0])
+            .with_solimp([0.9, 0.95, 0.001, 0.5, 2.0]);
+
+        assert_relative_eq!(constraint.baumgarte_factor(), 0.5, epsilon = 1e-10);
+        assert_relative_eq!(constraint.compliance(), 0.01, epsilon = 1e-10);
+        assert_relative_eq!(constraint.damping(), 0.1, epsilon = 1e-10);
+
+        let solref = constraint.solref().unwrap();
+        assert_relative_eq!(solref[0], 0.02, epsilon = 1e-10);
+
+        let solimp = constraint.solimp().unwrap();
+        assert_relative_eq!(solimp[0], 0.9, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_connect_constraint_enable_disable() {
+        let mut constraint =
+            ConnectConstraint::new(BodyId::new(0), BodyId::new(1), Vector3::zeros());
+
+        assert!(constraint.is_enabled());
+
+        constraint.disable();
+        assert!(!constraint.is_enabled());
+
+        constraint.enable();
+        assert!(constraint.is_enabled());
+    }
+
+    #[test]
+    fn test_connect_constraint_disabled() {
+        let constraint = ConnectConstraint::new(BodyId::new(0), BodyId::new(1), Vector3::zeros())
+            .with_enabled(false);
+
+        // Should return zero error when disabled
+        let get_pose = |_: BodyId| (Vector3::new(10.0, 0.0, 0.0), nalgebra::Matrix3::identity());
+        let error = constraint.compute_error(get_pose);
+        assert_relative_eq!(error.norm(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_connect_constraint_error_computation() {
+        let constraint = ConnectConstraint::new(
+            BodyId::new(0),
+            BodyId::new(1),
+            Vector3::new(0.0, 0.0, 1.0), // Anchor at +Z
+        );
+
+        // Body 0 at origin, body 1 at (0, 0, 2)
+        // Anchor in world = (0, 0, 1), so error = (0, 0, 1) - (0, 0, 2) = (0, 0, -1)
+        let get_pose = |id: BodyId| {
+            if id.raw() == 0 {
+                (Vector3::zeros(), nalgebra::Matrix3::identity())
+            } else {
+                (Vector3::new(0.0, 0.0, 2.0), nalgebra::Matrix3::identity())
+            }
+        };
+
+        let error = constraint.compute_error(get_pose);
+        assert_relative_eq!(error.x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(error.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(error.z, -1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_connect_constraint_world_error() {
+        let constraint = ConnectConstraint::to_world(
+            BodyId::new(0),
+            Vector3::new(0.5, 0.0, 0.0), // Anchor at +X
+        );
+
+        // Body 0 at (1, 0, 0), anchor in world = (1.5, 0, 0)
+        // Error = anchor - world_origin = (1.5, 0, 0)
+        let get_pose = |_: BodyId| (Vector3::new(1.0, 0.0, 0.0), nalgebra::Matrix3::identity());
+
+        let error = constraint.compute_error(get_pose);
+        assert_relative_eq!(error.x, 1.5, epsilon = 1e-10);
+        assert_relative_eq!(error.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(error.z, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_connect_constraint_satisfied() {
+        let constraint =
+            ConnectConstraint::new(BodyId::new(0), BodyId::new(1), Vector3::new(0.0, 0.0, 1.0));
+
+        // Body 0 at origin with anchor at (0,0,1), body 1 at (0,0,1)
+        // Constraint is satisfied
+        let get_pose = |id: BodyId| {
+            if id.raw() == 0 {
+                (Vector3::zeros(), nalgebra::Matrix3::identity())
+            } else {
+                (Vector3::new(0.0, 0.0, 1.0), nalgebra::Matrix3::identity())
+            }
+        };
+
+        let error = constraint.compute_error(get_pose);
+        assert_relative_eq!(error.norm(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_connect_constraint_velocity() {
+        let constraint = ConnectConstraint::new(BodyId::new(0), BodyId::new(1), Vector3::zeros());
+
+        // Body 0 moving at (1, 0, 0), body 1 stationary
+        let get_velocity = |id: BodyId| {
+            if id.raw() == 0 {
+                (Vector3::new(1.0, 0.0, 0.0), Vector3::zeros())
+            } else {
+                (Vector3::zeros(), Vector3::zeros())
+            }
+        };
+        let get_pose = |_: BodyId| (Vector3::zeros(), nalgebra::Matrix3::identity());
+
+        let velocity = constraint.compute_velocity(get_velocity, get_pose);
+        assert_relative_eq!(velocity.x, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_connect_constraint_default() {
+        let constraint = ConnectConstraint::default();
+        assert_eq!(constraint.name(), "connect");
+        assert!(constraint.is_enabled());
+        assert!(constraint.is_world_constraint());
+    }
+
+    #[test]
+    fn test_connect_constraint_baumgarte_clamping() {
+        // Test clamping to 1.0
+        let constraint = ConnectConstraint::default().with_baumgarte(2.0);
+        assert_relative_eq!(constraint.baumgarte_factor(), 1.0, epsilon = 1e-10);
+
+        // Test clamping to 0.0
+        let constraint2 = ConnectConstraint::default().with_baumgarte(-1.0);
+        assert_relative_eq!(constraint2.baumgarte_factor(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_connect_constraint_compliance_non_negative() {
+        let constraint = ConnectConstraint::default().with_compliance(-0.5);
+        assert_relative_eq!(constraint.compliance(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_connect_constraint_damping_non_negative() {
+        let constraint = ConnectConstraint::default().with_damping(-0.5);
+        assert_relative_eq!(constraint.damping(), 0.0, epsilon = 1e-10);
     }
 }
