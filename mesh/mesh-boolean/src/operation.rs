@@ -611,12 +611,32 @@ fn remove_unreferenced_vertices(mesh: &mut IndexedMesh) {
 /// # Errors
 ///
 /// Returns `BooleanError` if either mesh is empty or the operation fails.
-pub fn union(mesh_a: &IndexedMesh, mesh_b: &IndexedMesh) -> BooleanResult<IndexedMesh> {
-    let result = boolean_operation(mesh_a, mesh_b, BooleanOp::Union, &BooleanConfig::default())?;
-    Ok(result.mesh)
+/// Compute the union of two meshes (A ∪ B).
+///
+/// Uses default configuration. For custom settings, use [`union_with_config`].
+///
+/// # Returns
+///
+/// The combined mesh containing all geometry from both inputs.
+/// Access just the mesh with `.mesh`, or inspect stats with `.stats`.
+///
+/// # Errors
+///
+/// Returns `BooleanError` if either mesh is empty or the operation fails.
+///
+/// # Example
+///
+/// ```ignore
+/// use mesh_boolean::union;
+///
+/// let result = union(&mesh_a, &mesh_b)?;
+/// println!("Union has {} faces", result.mesh.face_count());
+/// ```
+pub fn union(mesh_a: &IndexedMesh, mesh_b: &IndexedMesh) -> BooleanResult<BooleanOperationResult> {
+    boolean_operation(mesh_a, mesh_b, BooleanOp::Union, &BooleanConfig::default())
 }
 
-/// Convenience function for union with custom config.
+/// Compute the union of two meshes with custom configuration.
 ///
 /// # Errors
 ///
@@ -642,17 +662,41 @@ pub fn union_with_config(
 /// # Errors
 ///
 /// Returns `BooleanError` if either mesh is empty or the operation fails.
-pub fn difference(mesh_a: &IndexedMesh, mesh_b: &IndexedMesh) -> BooleanResult<IndexedMesh> {
-    let result = boolean_operation(
+/// Compute the difference of two meshes (A - B).
+///
+/// Subtracts mesh B from mesh A. Uses default configuration.
+/// For custom settings, use [`difference_with_config`].
+///
+/// # Returns
+///
+/// Mesh A with the volume of mesh B removed.
+/// Access just the mesh with `.mesh`, or inspect stats with `.stats`.
+///
+/// # Errors
+///
+/// Returns `BooleanError` if either mesh is empty or the operation fails.
+///
+/// # Example
+///
+/// ```ignore
+/// use mesh_boolean::difference;
+///
+/// let result = difference(&outer, &inner)?;
+/// println!("Difference has {} faces", result.mesh.face_count());
+/// ```
+pub fn difference(
+    mesh_a: &IndexedMesh,
+    mesh_b: &IndexedMesh,
+) -> BooleanResult<BooleanOperationResult> {
+    boolean_operation(
         mesh_a,
         mesh_b,
         BooleanOp::Difference,
         &BooleanConfig::default(),
-    )?;
-    Ok(result.mesh)
+    )
 }
 
-/// Convenience function for difference with custom config.
+/// Compute the difference of two meshes with custom configuration.
 ///
 /// # Errors
 ///
@@ -665,7 +709,19 @@ pub fn difference_with_config(
     boolean_operation(mesh_a, mesh_b, BooleanOp::Difference, config)
 }
 
-/// Convenience function for intersection operation.
+/// Compute the intersection of two meshes (A ∩ B).
+///
+/// Returns only the volume where both meshes overlap.
+/// Uses default configuration. For custom settings, use [`intersection_with_config`].
+///
+/// # Returns
+///
+/// The overlapping volume of both meshes.
+/// Access just the mesh with `.mesh`, or inspect stats with `.stats`.
+///
+/// # Errors
+///
+/// Returns `BooleanError` if either mesh is empty or the operation fails.
 ///
 /// # Example
 ///
@@ -673,22 +729,21 @@ pub fn difference_with_config(
 /// use mesh_boolean::intersection;
 ///
 /// let result = intersection(&mesh_a, &mesh_b)?;
+/// println!("Intersection has {} faces", result.mesh.face_count());
 /// ```
-///
-/// # Errors
-///
-/// Returns `BooleanError` if either mesh is empty or the operation fails.
-pub fn intersection(mesh_a: &IndexedMesh, mesh_b: &IndexedMesh) -> BooleanResult<IndexedMesh> {
-    let result = boolean_operation(
+pub fn intersection(
+    mesh_a: &IndexedMesh,
+    mesh_b: &IndexedMesh,
+) -> BooleanResult<BooleanOperationResult> {
+    boolean_operation(
         mesh_a,
         mesh_b,
         BooleanOp::Intersection,
         &BooleanConfig::default(),
-    )?;
-    Ok(result.mesh)
+    )
 }
 
-/// Convenience function for intersection with custom config.
+/// Compute the intersection of two meshes with custom configuration.
 ///
 /// # Errors
 ///
@@ -789,7 +844,7 @@ mod tests {
         let result = union(&cube_a, &cube_b).unwrap();
 
         // Should have all faces from both cubes
-        assert_eq!(result.faces.len(), 24);
+        assert_eq!(result.mesh.faces.len(), 24);
     }
 
     #[test]
@@ -800,7 +855,7 @@ mod tests {
         let result = difference(&cube_a, &cube_b).unwrap();
 
         // B doesn't affect A - should have all of A's faces
-        assert_eq!(result.faces.len(), 12);
+        assert_eq!(result.mesh.faces.len(), 12);
     }
 
     #[test]
@@ -811,7 +866,7 @@ mod tests {
         let result = intersection(&cube_a, &cube_b).unwrap();
 
         // No overlap - empty result
-        assert_eq!(result.faces.len(), 0);
+        assert_eq!(result.mesh.faces.len(), 0);
     }
 
     #[test]

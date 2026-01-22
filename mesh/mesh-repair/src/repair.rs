@@ -112,6 +112,60 @@ impl RepairParams {
             ..Default::default()
         }
     }
+
+    /// Set the vertex welding distance threshold.
+    ///
+    /// Vertices closer than this distance will be merged.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mesh_repair::RepairParams;
+    ///
+    /// let params = RepairParams::default()
+    ///     .with_weld_epsilon(0.01);
+    /// ```
+    #[must_use]
+    pub fn with_weld_epsilon(mut self, epsilon: f64) -> Self {
+        self.weld_epsilon = epsilon;
+        self
+    }
+
+    /// Set the minimum triangle area threshold.
+    ///
+    /// Triangles with area below this are removed as degenerate.
+    #[must_use]
+    pub fn with_degenerate_area_threshold(mut self, threshold: f64) -> Self {
+        self.degenerate_area_threshold = threshold;
+        self
+    }
+
+    /// Set the maximum triangle aspect ratio threshold.
+    ///
+    /// Triangles with aspect ratio above this are considered degenerate.
+    /// Use `f64::INFINITY` to disable this check.
+    #[must_use]
+    pub fn with_degenerate_aspect_ratio(mut self, ratio: f64) -> Self {
+        self.degenerate_aspect_ratio = ratio;
+        self
+    }
+
+    /// Set the minimum edge length threshold.
+    ///
+    /// Triangles with any edge shorter than this are removed.
+    /// Use `0.0` to disable this check.
+    #[must_use]
+    pub fn with_degenerate_min_edge_length(mut self, length: f64) -> Self {
+        self.degenerate_min_edge_length = length;
+        self
+    }
+
+    /// Set whether to remove unreferenced vertices after repair.
+    #[must_use]
+    pub fn with_remove_unreferenced(mut self, remove: bool) -> Self {
+        self.remove_unreferenced = remove;
+        self
+    }
 }
 
 /// Remove triangles with area below threshold.
@@ -499,7 +553,7 @@ fn normalize_face(face: [u32; 3]) -> [u32; 3] {
 /// let result = repair_mesh(&mut mesh, &RepairParams::default());
 /// ```
 #[must_use]
-pub fn repair_mesh(mesh: &mut IndexedMesh, params: &RepairParams) -> RepairResult {
+pub fn repair_mesh(mesh: &mut IndexedMesh, params: &RepairParams) -> RepairSummary {
     let initial_vertices = mesh.vertices.len();
     let initial_faces = mesh.faces.len();
 
@@ -524,7 +578,7 @@ pub fn repair_mesh(mesh: &mut IndexedMesh, params: &RepairParams) -> RepairResul
         0
     };
 
-    RepairResult {
+    RepairSummary {
         initial_vertices,
         initial_faces,
         final_vertices: mesh.vertices.len(),
@@ -538,7 +592,7 @@ pub fn repair_mesh(mesh: &mut IndexedMesh, params: &RepairParams) -> RepairResul
 
 /// Result of a repair operation.
 #[derive(Debug, Clone, Default)]
-pub struct RepairResult {
+pub struct RepairSummary {
     /// Number of vertices before repair.
     pub initial_vertices: usize,
     /// Number of faces before repair.
@@ -557,7 +611,7 @@ pub struct RepairResult {
     pub unreferenced_removed: usize,
 }
 
-impl RepairResult {
+impl RepairSummary {
     /// Check if any repairs were performed.
     #[must_use]
     pub fn had_changes(&self) -> bool {
@@ -568,7 +622,7 @@ impl RepairResult {
     }
 }
 
-impl std::fmt::Display for RepairResult {
+impl std::fmt::Display for RepairSummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -740,7 +794,7 @@ mod tests {
 
     #[test]
     fn repair_result_display() {
-        let result = RepairResult {
+        let result = RepairSummary {
             initial_vertices: 100,
             initial_faces: 50,
             final_vertices: 95,
@@ -758,7 +812,71 @@ mod tests {
 
     #[test]
     fn repair_result_no_changes() {
-        let result = RepairResult::default();
+        let result = RepairSummary::default();
         assert!(!result.had_changes());
+    }
+
+    #[test]
+    fn repair_params_for_printing() {
+        let params = RepairParams::for_printing();
+        assert!((params.weld_epsilon - 0.001).abs() < 1e-9);
+        assert!((params.degenerate_area_threshold - 0.00001).abs() < 1e-12);
+        assert!((params.degenerate_aspect_ratio - 500.0).abs() < 1e-9);
+        assert!((params.degenerate_min_edge_length - 0.0001).abs() < 1e-12);
+    }
+
+    #[test]
+    fn repair_params_builder_methods() {
+        let params = RepairParams::default()
+            .with_weld_epsilon(0.05)
+            .with_degenerate_area_threshold(0.002)
+            .with_degenerate_aspect_ratio(200.0)
+            .with_degenerate_min_edge_length(0.003)
+            .with_remove_unreferenced(false);
+
+        assert!((params.weld_epsilon - 0.05).abs() < 1e-12);
+        assert!((params.degenerate_area_threshold - 0.002).abs() < 1e-12);
+        assert!((params.degenerate_aspect_ratio - 200.0).abs() < 1e-12);
+        assert!((params.degenerate_min_edge_length - 0.003).abs() < 1e-12);
+        assert!(!params.remove_unreferenced);
+    }
+
+    #[test]
+    fn remove_degenerate_enhanced_by_aspect_ratio() {
+        let mut mesh = IndexedMesh::new();
+        // Create a very thin, elongated triangle (high aspect ratio)
+        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(100.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(50.0, 0.01, 0.0));
+        mesh.faces.push([0, 1, 2]);
+
+        // Remove with strict aspect ratio threshold
+        let removed = remove_degenerate_triangles_enhanced(&mut mesh, 1e-12, 10.0, 0.0);
+        assert_eq!(removed, 1);
+    }
+
+    #[test]
+    fn remove_degenerate_enhanced_by_min_edge() {
+        let mut mesh = IndexedMesh::new();
+        // Create triangle with one very short edge
+        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(10.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(0.001, 10.0, 0.0));
+        mesh.faces.push([0, 1, 2]);
+
+        // Remove triangles with edge shorter than 0.01
+        let removed = remove_degenerate_triangles_enhanced(&mut mesh, 1e-12, f64::INFINITY, 0.01);
+        // This triangle's edges are all longer than 0.01, so none removed
+        assert_eq!(removed, 0);
+
+        // Create triangle with truly short edge
+        let mut mesh2 = IndexedMesh::new();
+        mesh2.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh2.vertices.push(Vertex::from_coords(0.001, 0.0, 0.0)); // Very short edge
+        mesh2.vertices.push(Vertex::from_coords(0.5, 10.0, 0.0));
+        mesh2.faces.push([0, 1, 2]);
+
+        let removed2 = remove_degenerate_triangles_enhanced(&mut mesh2, 1e-12, f64::INFINITY, 0.01);
+        assert_eq!(removed2, 1);
     }
 }
