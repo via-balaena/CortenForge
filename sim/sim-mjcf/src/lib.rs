@@ -146,6 +146,7 @@
     clippy::use_self
 )]
 
+mod config;
 mod error;
 mod loader;
 mod parser;
@@ -153,12 +154,14 @@ mod types;
 mod validation;
 
 // Re-export main types
+pub use config::ExtendedSolverConfig;
 pub use error::{MjcfError, Result};
 pub use loader::{LoadedModel, MjcfLoader, SpawnedModel, load_mjcf_file, load_mjcf_str};
 pub use parser::parse_mjcf_str;
 pub use types::{
-    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfDefault, MjcfGeom, MjcfGeomType, MjcfInertial,
-    MjcfJoint, MjcfJointType, MjcfModel, MjcfOption, MjcfSite,
+    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfDefault, MjcfFlag, MjcfGeom,
+    MjcfGeomType, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointType,
+    MjcfModel, MjcfOption, MjcfSite, MjcfSolverType,
 };
 pub use validation::{ValidationResult, validate};
 

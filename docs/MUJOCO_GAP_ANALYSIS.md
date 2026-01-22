@@ -33,13 +33,12 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | **6** | MJB binary format | Low | Low | [§13](#13-model-format) |
 | **7** | Connect (ball) equality constraint | Low | Low | [§10](#10-equality-constraints) |
 
-### ⚠️ Partial Implementations (6 items - needs completion)
+### ⚠️ Partial Implementations (5 items - needs completion)
 
 | Feature | Current State | What's Missing | Section |
 |---------|---------------|----------------|---------|
 | PGS (Gauss-Seidel) solver | Has relaxation param | Full iterative solver with SOR | [§2](#2-constraint-solvers) |
 | SIMD optimization | Via nalgebra only | Explicit vectorization for hot paths | [§12](#12-performance-optimizations) |
-| MJCF `<option>` element | timestep, gravity, integrator | solver params, flags, collision options | [§13](#13-model-format) |
 | MJCF `<default>` element | Joint and geom defaults | Actuator, tendon, sensor defaults | [§13](#13-model-format) |
 | MJCF `<geom>` element | Primitives only | Mesh type support | [§13](#13-model-format) |
 | MJCF `<actuator>` element | motor, position, velocity | cylinder, muscle, adhesion types | [§13](#13-model-format) |
@@ -955,7 +954,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | Element | Support | Notes |
 |---------|---------|-------|
 | `<mujoco>` | Full | Root element, model name |
-| `<option>` | Partial | timestep, gravity, integrator |
+| `<option>` | Full | All attributes, flags, solver params, collision options |
 | `<default>` | Partial | Joint and geom defaults |
 | `<worldbody>` | Full | Body tree root |
 | `<body>` | Full | Hierarchical bodies with pos, quat, euler |
@@ -1013,7 +1012,88 @@ let body_id = spawned.body_id("base").expect("base exists");
 - Include files not supported
 - Assets (textures, materials) parsed but not loaded
 
-**Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `loader.rs`, `validation.rs`
+**Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `loader.rs`, `validation.rs`, `config.rs`
+
+### Implementation Notes: MJCF `<option>` Element ✅ COMPLETED
+
+Full support for MuJoCo's `<option>` element with all simulation configuration:
+
+**Solver Configuration:**
+- `timestep` - Simulation time step (default: 0.002)
+- `integrator` - Euler, RK4, implicit, implicitfast
+- `solver` - PGS, CG, Newton solver types
+- `iterations` - Solver iterations (default: 100)
+- `tolerance` - Solver convergence tolerance
+- `ls_iterations` - Line search iterations for CG/Newton
+- `noslip_iterations` - No-slip solver iterations
+- `ccd_iterations` - Continuous collision detection iterations
+
+**Contact Model:**
+- `cone` - Friction cone type (pyramidal, elliptic)
+- `jacobian` - Jacobian type (dense, sparse, auto)
+- `impratio` - Friction-to-normal impedance ratio
+- `nconmax` - Maximum contacts (0 = unlimited)
+- `njmax` - Maximum constraint rows
+
+**Physics Environment:**
+- `gravity` - 3D gravity vector (default: 0 0 -9.81)
+- `wind` - Wind velocity for aerodynamic effects
+- `magnetic` - Magnetic field direction
+- `density` - Medium density for drag
+- `viscosity` - Medium viscosity
+
+**Override Parameters:**
+- `o_margin` - Global contact margin override
+- `o_solimp` - Global solimp override [5 values]
+- `o_solref` - Global solref override [2 values]
+- `o_friction` - Global friction override [5 values]
+
+**Flags (`<flag>` child element):**
+All 20 MuJoCo flags supported:
+- `constraint`, `equality`, `frictionloss`, `limit`, `contact`
+- `passive`, `gravity`, `clampctrl`, `warmstart`, `filterparent`
+- `actuation`, `refsafe`, `sensor`, `midphase`, `eulerdamp`
+- `override`, `energy`, `fwdinv`, `island`, `nativeccd`
+
+**Configuration Types:**
+- `MjcfOption` - Complete option parsing with defaults
+- `MjcfFlag` - All 20 boolean flags
+- `MjcfIntegrator` - Euler, RK4, Implicit, ImplicitFast
+- `MjcfConeType` - Pyramidal, Elliptic
+- `MjcfSolverType` - PGS, CG, Newton
+- `MjcfJacobianType` - Dense, Sparse, Auto
+- `ExtendedSolverConfig` - Conversion to sim-types with extended settings
+
+**Usage:**
+```rust
+use sim_mjcf::{load_mjcf_str, ExtendedSolverConfig};
+
+let mjcf = r#"
+    <mujoco model="test">
+        <option timestep="0.001" integrator="RK4" gravity="0 0 -10">
+            <flag warmstart="true" contact="true"/>
+        </option>
+        <worldbody>
+            <body name="ball">
+                <geom type="sphere" size="0.1"/>
+            </body>
+        </worldbody>
+    </mujoco>
+"#;
+
+let model = load_mjcf_str(mjcf).expect("should parse");
+
+// Access simulation config
+let sim_config = model.simulation_config();
+assert_eq!(sim_config.timestep, 0.001);
+
+// Access extended config with MJCF-specific settings
+let ext_config = &model.solver_config;
+assert!(ext_config.warmstart_enabled());
+assert!(ext_config.flags.contact);
+```
+
+**Files:** `sim-mjcf/src/types.rs`, `parser.rs`, `config.rs`, `loader.rs`, `validation.rs`
 
 ---
 

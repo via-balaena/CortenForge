@@ -122,6 +122,15 @@ pub enum MjcfError {
     /// Include file not supported.
     #[error("include files are not supported: {0}")]
     IncludeNotSupported(String),
+
+    /// Invalid option value.
+    #[error("invalid option '{option}': {message}")]
+    InvalidOption {
+        /// The option with the invalid value.
+        option: String,
+        /// Description of why the value is invalid.
+        message: String,
+    },
 }
 
 impl MjcfError {
@@ -190,6 +199,14 @@ impl MjcfError {
     pub fn invalid_geom_size(geom_type: impl Into<String>, message: impl Into<String>) -> Self {
         Self::InvalidGeomSize {
             geom_type: geom_type.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Create an invalid option error.
+    pub fn invalid_option(option: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::InvalidOption {
+            option: option.into(),
             message: message.into(),
         }
     }

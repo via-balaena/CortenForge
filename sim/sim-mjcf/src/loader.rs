@@ -11,9 +11,12 @@ use sim_constraint::JointLimits;
 use sim_core::{Body, CollisionShape, Joint, World};
 use sim_types::{BodyId, JointId, JointType, MassProperties, Pose, RigidBodyState};
 
+use crate::config::ExtendedSolverConfig;
 use crate::error::{MjcfError, Result};
 use crate::parser::parse_mjcf_str;
-use crate::types::{MjcfBody, MjcfGeom, MjcfGeomType, MjcfJoint, MjcfJointType, MjcfModel};
+use crate::types::{
+    MjcfBody, MjcfGeom, MjcfGeomType, MjcfJoint, MjcfJointType, MjcfModel, MjcfOption,
+};
 use crate::validation::{ValidationResult, validate};
 
 /// A loaded model ready to be spawned into a simulation world.
@@ -29,6 +32,10 @@ pub struct LoadedModel {
     pub body_to_id: HashMap<String, BodyId>,
     /// Map from joint name to joint ID.
     pub joint_to_id: HashMap<String, JointId>,
+    /// Parsed MJCF options for simulation configuration.
+    pub option: MjcfOption,
+    /// Extended solver configuration derived from MJCF options.
+    pub solver_config: ExtendedSolverConfig,
 }
 
 /// Result of spawning a model into a world.
@@ -100,6 +107,33 @@ impl LoadedModel {
     /// Spawn at the origin with identity pose.
     pub fn spawn_at_origin(self, world: &mut World) -> Result<SpawnedModel> {
         self.spawn_into(world, Pose::identity())
+    }
+
+    /// Get the simulation configuration derived from MJCF options.
+    ///
+    /// This provides a `SimulationConfig` that can be used to configure
+    /// the physics simulation with the settings from the MJCF file.
+    #[must_use]
+    pub fn simulation_config(&self) -> sim_types::SimulationConfig {
+        sim_types::SimulationConfig::from(&self.option)
+    }
+
+    /// Get the timestep specified in the MJCF file.
+    #[must_use]
+    pub fn timestep(&self) -> f64 {
+        self.option.timestep
+    }
+
+    /// Check if gravity is enabled according to MJCF options.
+    #[must_use]
+    pub fn gravity_enabled(&self) -> bool {
+        self.option.gravity_enabled()
+    }
+
+    /// Check if contacts are enabled according to MJCF options.
+    #[must_use]
+    pub fn contacts_enabled(&self) -> bool {
+        self.option.contacts_enabled()
     }
 }
 
@@ -242,12 +276,17 @@ impl MjcfLoader {
             }
         }
 
+        // Convert options to solver config
+        let solver_config = ExtendedSolverConfig::from(&model.option);
+
         Ok(LoadedModel {
             name: model.name,
             bodies,
             joints,
             body_to_id,
             joint_to_id,
+            option: model.option,
+            solver_config,
         })
     }
 

@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{MjcfError, Result};
-use crate::types::{MjcfBody, MjcfModel};
+use crate::types::{MjcfBody, MjcfModel, MjcfOption};
 
 /// Validation result containing the flattened body tree structure.
 #[derive(Debug)]
@@ -24,6 +24,103 @@ pub struct ValidationResult {
     pub actuator_names: Vec<String>,
 }
 
+/// Validate MJCF simulation options.
+///
+/// This checks that all option values are physically reasonable:
+/// - Timestep is positive and not too large
+/// - Iteration counts are reasonable
+/// - Tolerance is positive
+/// - Impedance ratio is positive
+/// - Density and viscosity are non-negative
+///
+/// # Errors
+///
+/// Returns an error if any option value is invalid.
+pub fn validate_option(option: &MjcfOption) -> Result<()> {
+    // Timestep validation
+    if !option.timestep.is_finite() || option.timestep <= 0.0 {
+        return Err(MjcfError::invalid_option(
+            "timestep",
+            format!("must be positive and finite, got {}", option.timestep),
+        ));
+    }
+    if option.timestep > 1.0 {
+        return Err(MjcfError::invalid_option(
+            "timestep",
+            format!(
+                "value {} is unusually large (> 1 second), likely an error",
+                option.timestep
+            ),
+        ));
+    }
+
+    // Iteration count validation
+    if option.iterations == 0 {
+        return Err(MjcfError::invalid_option(
+            "iterations",
+            "must be at least 1",
+        ));
+    }
+
+    // Tolerance validation
+    if !option.tolerance.is_finite() || option.tolerance <= 0.0 {
+        return Err(MjcfError::invalid_option(
+            "tolerance",
+            format!("must be positive and finite, got {}", option.tolerance),
+        ));
+    }
+
+    // Impedance ratio validation
+    if !option.impratio.is_finite() || option.impratio <= 0.0 {
+        return Err(MjcfError::invalid_option(
+            "impratio",
+            format!("must be positive and finite, got {}", option.impratio),
+        ));
+    }
+
+    // Gravity vector validation
+    if !option.gravity.iter().all(|v| v.is_finite()) {
+        return Err(MjcfError::invalid_option(
+            "gravity",
+            "must have finite components",
+        ));
+    }
+
+    // Wind vector validation
+    if !option.wind.iter().all(|v| v.is_finite()) {
+        return Err(MjcfError::invalid_option(
+            "wind",
+            "must have finite components",
+        ));
+    }
+
+    // Density validation (can be zero to disable)
+    if !option.density.is_finite() || option.density < 0.0 {
+        return Err(MjcfError::invalid_option(
+            "density",
+            format!("must be non-negative and finite, got {}", option.density),
+        ));
+    }
+
+    // Viscosity validation
+    if !option.viscosity.is_finite() || option.viscosity < 0.0 {
+        return Err(MjcfError::invalid_option(
+            "viscosity",
+            format!("must be non-negative and finite, got {}", option.viscosity),
+        ));
+    }
+
+    // Override validation (if set)
+    if option.o_margin >= 0.0 && !option.o_margin.is_finite() {
+        return Err(MjcfError::invalid_option(
+            "o_margin",
+            format!("must be finite when positive, got {}", option.o_margin),
+        ));
+    }
+
+    Ok(())
+}
+
 /// Validate an MJCF model.
 ///
 /// This checks:
@@ -32,11 +129,14 @@ pub struct ValidationResult {
 /// - No duplicate actuator names
 /// - Actuators reference valid joints
 /// - Valid mass properties (if present)
+/// - Valid simulation options
 ///
 /// # Errors
 ///
 /// Returns an error if validation fails.
 pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
+    // Validate options first
+    validate_option(&model.option)?;
     // Check for duplicate names
     let mut body_names = HashSet::new();
     let mut joint_names = HashSet::new();
@@ -302,5 +402,126 @@ mod tests {
         let model = MjcfModel::new("empty");
         let result = validate(&model);
         assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // Option validation tests
+    // ========================================================================
+
+    #[test]
+    fn test_option_validation_valid() {
+        let option = MjcfOption::default();
+        assert!(validate_option(&option).is_ok());
+    }
+
+    #[test]
+    fn test_option_validation_invalid_timestep() {
+        let mut option = MjcfOption::default();
+
+        // Negative timestep
+        option.timestep = -0.001;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "timestep"
+        ));
+
+        // Zero timestep
+        option.timestep = 0.0;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "timestep"
+        ));
+
+        // Very large timestep
+        option.timestep = 2.0;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "timestep"
+        ));
+
+        // NaN timestep
+        option.timestep = f64::NAN;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "timestep"
+        ));
+    }
+
+    #[test]
+    fn test_option_validation_invalid_iterations() {
+        let mut option = MjcfOption::default();
+        option.iterations = 0;
+
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "iterations"
+        ));
+    }
+
+    #[test]
+    fn test_option_validation_invalid_tolerance() {
+        let mut option = MjcfOption::default();
+
+        option.tolerance = -1e-8;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "tolerance"
+        ));
+
+        option.tolerance = 0.0;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "tolerance"
+        ));
+    }
+
+    #[test]
+    fn test_option_validation_invalid_impratio() {
+        let mut option = MjcfOption::default();
+
+        option.impratio = -1.0;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "impratio"
+        ));
+
+        option.impratio = 0.0;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "impratio"
+        ));
+    }
+
+    #[test]
+    fn test_option_validation_invalid_gravity() {
+        let mut option = MjcfOption::default();
+        option.gravity = Vector3::new(f64::NAN, 0.0, -9.81);
+
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "gravity"
+        ));
+    }
+
+    #[test]
+    fn test_option_validation_invalid_density() {
+        let mut option = MjcfOption::default();
+        option.density = -1.0;
+
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "density"
+        ));
+    }
+
+    #[test]
+    fn test_option_validation_invalid_viscosity() {
+        let mut option = MjcfOption::default();
+        option.viscosity = -0.1;
+
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "viscosity"
+        ));
     }
 }

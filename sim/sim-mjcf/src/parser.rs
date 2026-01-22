@@ -9,9 +9,9 @@ use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
 use crate::types::{
-    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfDefault, MjcfGeom, MjcfGeomDefaults,
-    MjcfGeomType, MjcfInertial, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfModel, MjcfOption,
-    MjcfSite,
+    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfDefault, MjcfFlag, MjcfGeom,
+    MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint,
+    MjcfJointDefaults, MjcfJointType, MjcfModel, MjcfOption, MjcfSite, MjcfSolverType,
 };
 
 /// Parse an MJCF string into a model.
@@ -101,12 +101,7 @@ fn parse_option<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 // Handle flag element
                 if e.name().as_ref() == b"flag" {
-                    if let Some(contact) = get_attribute_opt(e, "contact") {
-                        option.flag_contact = contact != "disable";
-                    }
-                    if let Some(gravity) = get_attribute_opt(e, "gravity") {
-                        option.flag_gravity = gravity != "disable";
-                    }
+                    option.flag = parse_flag_attrs(e)?;
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"option" => break,
@@ -124,23 +119,135 @@ fn parse_option<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
 fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     let mut option = MjcfOption::default();
 
+    // Core simulation
     if let Some(ts) = parse_float_attr(e, "timestep") {
         option.timestep = ts;
     }
-    if let Some(grav) = get_attribute_opt(e, "gravity") {
-        option.gravity = parse_vector3(&grav)?;
-    }
     if let Some(integrator) = get_attribute_opt(e, "integrator") {
-        option.integrator = integrator;
+        if let Some(int) = MjcfIntegrator::from_str(&integrator) {
+            option.integrator = int;
+        }
+    }
+
+    // Solver configuration
+    if let Some(solver) = get_attribute_opt(e, "solver") {
+        if let Some(s) = MjcfSolverType::from_str(&solver) {
+            option.solver = s;
+        }
     }
     if let Some(iter) = parse_int_attr(e, "iterations") {
-        option.iterations = iter as usize;
+        option.iterations = iter.max(0) as usize;
     }
     if let Some(tol) = parse_float_attr(e, "tolerance") {
         option.tolerance = tol;
     }
+    if let Some(ls_iter) = parse_int_attr(e, "ls_iterations") {
+        option.ls_iterations = ls_iter.max(0) as usize;
+    }
+    if let Some(noslip) = parse_int_attr(e, "noslip_iterations") {
+        option.noslip_iterations = noslip.max(0) as usize;
+    }
+    if let Some(ccd) = parse_int_attr(e, "ccd_iterations") {
+        option.ccd_iterations = ccd.max(0) as usize;
+    }
+
+    // Contact configuration
+    if let Some(cone) = get_attribute_opt(e, "cone") {
+        if let Some(c) = MjcfConeType::from_str(&cone) {
+            option.cone = c;
+        }
+    }
+    if let Some(jacobian) = get_attribute_opt(e, "jacobian") {
+        if let Some(j) = MjcfJacobianType::from_str(&jacobian) {
+            option.jacobian = j;
+        }
+    }
+    if let Some(impratio) = parse_float_attr(e, "impratio") {
+        option.impratio = impratio;
+    }
+
+    // Physics environment
+    if let Some(grav) = get_attribute_opt(e, "gravity") {
+        option.gravity = parse_vector3(&grav)?;
+    }
+    if let Some(wind) = get_attribute_opt(e, "wind") {
+        option.wind = parse_vector3(&wind)?;
+    }
+    if let Some(magnetic) = get_attribute_opt(e, "magnetic") {
+        option.magnetic = parse_vector3(&magnetic)?;
+    }
+    if let Some(density) = parse_float_attr(e, "density") {
+        option.density = density;
+    }
+    if let Some(viscosity) = parse_float_attr(e, "viscosity") {
+        option.viscosity = viscosity;
+    }
+
+    // Constraint limits
+    if let Some(nconmax) = parse_int_attr(e, "nconmax") {
+        option.nconmax = nconmax.max(0) as usize;
+    }
+    if let Some(njmax) = parse_int_attr(e, "njmax") {
+        option.njmax = njmax.max(0) as usize;
+    }
+
+    // Overrides
+    if let Some(o_margin) = parse_float_attr(e, "o_margin") {
+        option.o_margin = o_margin;
+    }
+    if let Some(o_solimp) = get_attribute_opt(e, "o_solimp") {
+        let parts = parse_float_array(&o_solimp)?;
+        if parts.len() >= 5 {
+            option.o_solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    if let Some(o_solref) = get_attribute_opt(e, "o_solref") {
+        let parts = parse_float_array(&o_solref)?;
+        if parts.len() >= 2 {
+            option.o_solref = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(o_friction) = get_attribute_opt(e, "o_friction") {
+        let parts = parse_float_array(&o_friction)?;
+        if parts.len() >= 5 {
+            option.o_friction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
 
     Ok(option)
+}
+
+/// Parse flag element attributes.
+fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
+    let mut flag = MjcfFlag::default();
+
+    // Helper to parse enable/disable attributes
+    fn parse_flag(e: &BytesStart, name: &str, default: bool) -> bool {
+        get_attribute_opt(e, name).map_or(default, |v| v != "disable")
+    }
+
+    flag.constraint = parse_flag(e, "constraint", flag.constraint);
+    flag.equality = parse_flag(e, "equality", flag.equality);
+    flag.frictionloss = parse_flag(e, "frictionloss", flag.frictionloss);
+    flag.limit = parse_flag(e, "limit", flag.limit);
+    flag.contact = parse_flag(e, "contact", flag.contact);
+    flag.passive = parse_flag(e, "passive", flag.passive);
+    flag.gravity = parse_flag(e, "gravity", flag.gravity);
+    flag.clampctrl = parse_flag(e, "clampctrl", flag.clampctrl);
+    flag.warmstart = parse_flag(e, "warmstart", flag.warmstart);
+    flag.filterparent = parse_flag(e, "filterparent", flag.filterparent);
+    flag.actuation = parse_flag(e, "actuation", flag.actuation);
+    flag.refsafe = parse_flag(e, "refsafe", flag.refsafe);
+    flag.sensor = parse_flag(e, "sensor", flag.sensor);
+    flag.midphase = parse_flag(e, "midphase", flag.midphase);
+    flag.nativeccd = parse_flag(e, "nativeccd", flag.nativeccd);
+    flag.eulerdamp = parse_flag(e, "eulerdamp", flag.eulerdamp);
+    flag.override_contacts = parse_flag(e, "override", flag.override_contacts);
+    flag.energy = parse_flag(e, "energy", flag.energy);
+    flag.island = parse_flag(e, "island", flag.island);
+    flag.multiccd = parse_flag(e, "multiccd", flag.multiccd);
+
+    Ok(flag)
 }
 
 /// Parse default element and its nested defaults.
@@ -965,5 +1072,250 @@ mod tests {
         // With extra whitespace
         let v = parse_vector3("  1   2   3  ").expect("should parse");
         assert_relative_eq!(v.x, 1.0, epsilon = 1e-10);
+    }
+
+    // ========================================================================
+    // Option parsing tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_option_all_attributes() {
+        let xml = r#"
+            <mujoco model="test">
+                <option
+                    timestep="0.005"
+                    integrator="RK4"
+                    solver="PGS"
+                    iterations="200"
+                    tolerance="1e-6"
+                    ls_iterations="100"
+                    noslip_iterations="10"
+                    ccd_iterations="25"
+                    cone="elliptic"
+                    jacobian="sparse"
+                    impratio="2.0"
+                    gravity="0 0 -10.5"
+                    wind="1 2 0"
+                    magnetic="0.1 0.2 0.3"
+                    density="1.2"
+                    viscosity="0.01"
+                    nconmax="500"
+                    njmax="1000"
+                    o_margin="0.002"
+                />
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let opt = &model.option;
+
+        // Core simulation
+        assert_relative_eq!(opt.timestep, 0.005, epsilon = 1e-10);
+        assert_eq!(opt.integrator, MjcfIntegrator::RK4);
+
+        // Solver configuration
+        assert_eq!(opt.solver, MjcfSolverType::PGS);
+        assert_eq!(opt.iterations, 200);
+        assert_relative_eq!(opt.tolerance, 1e-6, epsilon = 1e-15);
+        assert_eq!(opt.ls_iterations, 100);
+        assert_eq!(opt.noslip_iterations, 10);
+        assert_eq!(opt.ccd_iterations, 25);
+
+        // Contact configuration
+        assert_eq!(opt.cone, MjcfConeType::Elliptic);
+        assert_eq!(opt.jacobian, MjcfJacobianType::Sparse);
+        assert_relative_eq!(opt.impratio, 2.0, epsilon = 1e-10);
+
+        // Physics environment
+        assert_relative_eq!(opt.gravity.z, -10.5, epsilon = 1e-10);
+        assert_relative_eq!(opt.wind.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(opt.wind.y, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(opt.magnetic.x, 0.1, epsilon = 1e-10);
+        assert_relative_eq!(opt.density, 1.2, epsilon = 1e-10);
+        assert_relative_eq!(opt.viscosity, 0.01, epsilon = 1e-10);
+
+        // Constraint limits
+        assert_eq!(opt.nconmax, 500);
+        assert_eq!(opt.njmax, 1000);
+
+        // Overrides
+        assert_relative_eq!(opt.o_margin, 0.002, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_option_integrator_types() {
+        for (name, expected) in [
+            ("Euler", MjcfIntegrator::Euler),
+            ("RK4", MjcfIntegrator::RK4),
+            ("implicit", MjcfIntegrator::Implicit),
+            ("implicitfast", MjcfIntegrator::ImplicitFast),
+        ] {
+            let xml = format!(
+                r#"
+                <mujoco model="test">
+                    <option integrator="{name}"/>
+                    <worldbody/>
+                </mujoco>
+            "#
+            );
+
+            let model = parse_mjcf_str(&xml).expect("should parse");
+            assert_eq!(model.option.integrator, expected, "integrator: {name}");
+        }
+    }
+
+    #[test]
+    fn test_parse_option_solver_types() {
+        for (name, expected) in [
+            ("PGS", MjcfSolverType::PGS),
+            ("CG", MjcfSolverType::CG),
+            ("Newton", MjcfSolverType::Newton),
+        ] {
+            let xml = format!(
+                r#"
+                <mujoco model="test">
+                    <option solver="{name}"/>
+                    <worldbody/>
+                </mujoco>
+            "#
+            );
+
+            let model = parse_mjcf_str(&xml).expect("should parse");
+            assert_eq!(model.option.solver, expected, "solver: {name}");
+        }
+    }
+
+    #[test]
+    fn test_parse_option_with_flag() {
+        let xml = r#"
+            <mujoco model="test">
+                <option timestep="0.002">
+                    <flag
+                        contact="disable"
+                        gravity="disable"
+                        constraint="enable"
+                        warmstart="disable"
+                        energy="enable"
+                        island="enable"
+                    />
+                </option>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let flag = &model.option.flag;
+
+        assert!(!flag.contact);
+        assert!(!flag.gravity);
+        assert!(flag.constraint);
+        assert!(!flag.warmstart);
+        assert!(flag.energy);
+        assert!(flag.island);
+    }
+
+    #[test]
+    fn test_parse_option_self_closing_with_defaults() {
+        let xml = r#"
+            <mujoco model="test">
+                <option timestep="0.001"/>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let opt = &model.option;
+
+        // Specified value
+        assert_relative_eq!(opt.timestep, 0.001, epsilon = 1e-10);
+
+        // Defaults
+        assert_eq!(opt.integrator, MjcfIntegrator::Euler);
+        assert_eq!(opt.solver, MjcfSolverType::Newton);
+        assert_eq!(opt.iterations, 100);
+        assert_eq!(opt.cone, MjcfConeType::Pyramidal);
+        assert!(opt.flag.contact);
+        assert!(opt.flag.gravity);
+    }
+
+    #[test]
+    fn test_parse_option_override_arrays() {
+        let xml = r#"
+            <mujoco model="test">
+                <option
+                    o_solimp="0.9 0.95 0.001 0.5 2"
+                    o_solref="0.02 1"
+                    o_friction="1 0.005 0.0001 0.0001 0.0001"
+                />
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let opt = &model.option;
+
+        let solimp = opt.o_solimp.expect("should have o_solimp");
+        assert_relative_eq!(solimp[0], 0.9, epsilon = 1e-10);
+        assert_relative_eq!(solimp[1], 0.95, epsilon = 1e-10);
+        assert_relative_eq!(solimp[2], 0.001, epsilon = 1e-10);
+
+        let solref = opt.o_solref.expect("should have o_solref");
+        assert_relative_eq!(solref[0], 0.02, epsilon = 1e-10);
+        assert_relative_eq!(solref[1], 1.0, epsilon = 1e-10);
+
+        let friction = opt.o_friction.expect("should have o_friction");
+        assert_relative_eq!(friction[0], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(friction[1], 0.005, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_option_default_values() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let opt = &model.option;
+
+        // Check MuJoCo defaults
+        assert_relative_eq!(opt.timestep, 0.002, epsilon = 1e-10);
+        assert_relative_eq!(opt.gravity.z, -9.81, epsilon = 1e-10);
+        assert_eq!(opt.integrator, MjcfIntegrator::Euler);
+        assert_eq!(opt.solver, MjcfSolverType::Newton);
+        assert_eq!(opt.iterations, 100);
+        assert_relative_eq!(opt.tolerance, 1e-8, epsilon = 1e-15);
+        assert_eq!(opt.ls_iterations, 50);
+        assert_eq!(opt.ccd_iterations, 50);
+        assert_eq!(opt.cone, MjcfConeType::Pyramidal);
+        assert_eq!(opt.jacobian, MjcfJacobianType::Dense);
+        assert_relative_eq!(opt.impratio, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(opt.density, 0.0, epsilon = 1e-10);
+        assert!(opt.flag.contact);
+        assert!(opt.flag.gravity);
+        assert!(opt.flag.warmstart);
+    }
+
+    #[test]
+    fn test_option_helper_methods() {
+        let mut opt = MjcfOption::default();
+
+        // Gravity enabled by default
+        assert!(opt.gravity_enabled());
+        assert!(opt.contacts_enabled());
+
+        // Disable via flag
+        opt.flag.gravity = false;
+        assert!(!opt.gravity_enabled());
+
+        opt.flag.contact = false;
+        assert!(!opt.contacts_enabled());
+
+        // Effective margin
+        assert!(opt.effective_margin().is_none()); // Default is negative
+        opt.o_margin = 0.001;
+        assert_eq!(opt.effective_margin(), Some(0.001));
     }
 }
