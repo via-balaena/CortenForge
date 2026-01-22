@@ -1063,6 +1063,7 @@ impl PGSSolver {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::cloned_ref_to_slice_refs)]
 mod tests {
     use super::*;
     use crate::RevoluteJoint;

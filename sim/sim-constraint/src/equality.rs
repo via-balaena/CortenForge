@@ -1724,6 +1724,7 @@ impl Default for ConnectConstraint {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
