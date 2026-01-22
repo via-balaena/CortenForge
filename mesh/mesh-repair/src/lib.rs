@@ -52,9 +52,8 @@ pub mod winding;
 pub use adjacency::MeshAdjacency;
 pub use error::{RepairError, RepairResult};
 pub use repair::{
-    RepairParams, RepairResult as RepairSummary, remove_degenerate_triangles,
-    remove_degenerate_triangles_enhanced, remove_duplicate_faces, remove_unreferenced_vertices,
-    repair_mesh, weld_vertices,
+    RepairParams, RepairSummary, remove_degenerate_triangles, remove_degenerate_triangles_enhanced,
+    remove_duplicate_faces, remove_unreferenced_vertices, repair_mesh, weld_vertices,
 };
 pub use validate::{MeshReport, ValidationOptions, validate_mesh, validate_mesh_with_options};
 

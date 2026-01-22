@@ -119,12 +119,20 @@ impl PrintValidation {
 /// # Example
 ///
 /// ```
-/// use mesh_types::IndexedMesh;
+/// use mesh_types::{IndexedMesh, Vertex};
 /// use mesh_printability::{validate_for_printing, PrinterConfig};
 ///
-/// let mesh = IndexedMesh::new();
-/// // Note: This would fail since the mesh is empty
-/// // let result = validate_for_printing(&mesh, &PrinterConfig::fdm_default());
+/// let mesh = IndexedMesh::from_parts(
+///     vec![
+///         Vertex::from_coords(0.0, 0.0, 0.0),
+///         Vertex::from_coords(10.0, 0.0, 0.0),
+///         Vertex::from_coords(5.0, 10.0, 0.0),
+///     ],
+///     vec![[0, 1, 2]],
+/// );
+///
+/// let result = validate_for_printing(&mesh, &PrinterConfig::fdm_default()).unwrap();
+/// assert!(result.issues.len() > 0); // Single triangle isn't watertight
 /// ```
 pub fn validate_for_printing(
     mesh: &IndexedMesh,

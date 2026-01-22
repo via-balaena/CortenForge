@@ -246,8 +246,8 @@ mod tests {
         let result = union(&cube_a, &cube_b);
         assert!(result.is_ok());
 
-        let mesh = result.unwrap();
-        assert_eq!(mesh.faces.len(), 24);
+        let op_result = result.unwrap();
+        assert_eq!(op_result.mesh.faces.len(), 24);
     }
 
     #[test]

@@ -15,21 +15,26 @@
 //! # Example
 //!
 //! ```
-//! use mesh_types::IndexedMesh;
+//! use mesh_types::{IndexedMesh, Vertex};
 //! use mesh_printability::{validate_for_printing, PrinterConfig};
 //!
-//! // Create a mesh (in practice, load from file)
-//! let mesh = IndexedMesh::new();
+//! // Create a simple triangle mesh
+//! let mesh = IndexedMesh::from_parts(
+//!     vec![
+//!         Vertex::from_coords(0.0, 0.0, 0.0),
+//!         Vertex::from_coords(10.0, 0.0, 0.0),
+//!         Vertex::from_coords(5.0, 10.0, 0.0),
+//!     ],
+//!     vec![[0, 1, 2]],
+//! );
 //!
-//! // Validate for FDM printing (will fail since mesh is empty)
-//! // let config = PrinterConfig::fdm_default();
-//! // let result = validate_for_printing(&mesh, &config).unwrap();
-//! //
-//! // if result.is_printable() {
-//! //     println!("Mesh is ready for printing!");
-//! // } else {
-//! //     println!("Issues found: {}", result.summary());
-//! // }
+//! // Validate for FDM printing
+//! let config = PrinterConfig::fdm_default();
+//! let result = validate_for_printing(&mesh, &config).unwrap();
+//!
+//! // Check if printable and show summary
+//! println!("Printable: {}", result.is_printable());
+//! println!("Summary: {}", result.summary());
 //! ```
 //!
 //! # Printer Technologies

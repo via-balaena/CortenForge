@@ -112,6 +112,60 @@ impl RepairParams {
             ..Default::default()
         }
     }
+
+    /// Set the vertex welding distance threshold.
+    ///
+    /// Vertices closer than this distance will be merged.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use mesh_repair::RepairParams;
+    ///
+    /// let params = RepairParams::default()
+    ///     .with_weld_epsilon(0.01);
+    /// ```
+    #[must_use]
+    pub fn with_weld_epsilon(mut self, epsilon: f64) -> Self {
+        self.weld_epsilon = epsilon;
+        self
+    }
+
+    /// Set the minimum triangle area threshold.
+    ///
+    /// Triangles with area below this are removed as degenerate.
+    #[must_use]
+    pub fn with_degenerate_area_threshold(mut self, threshold: f64) -> Self {
+        self.degenerate_area_threshold = threshold;
+        self
+    }
+
+    /// Set the maximum triangle aspect ratio threshold.
+    ///
+    /// Triangles with aspect ratio above this are considered degenerate.
+    /// Use `f64::INFINITY` to disable this check.
+    #[must_use]
+    pub fn with_degenerate_aspect_ratio(mut self, ratio: f64) -> Self {
+        self.degenerate_aspect_ratio = ratio;
+        self
+    }
+
+    /// Set the minimum edge length threshold.
+    ///
+    /// Triangles with any edge shorter than this are removed.
+    /// Use `0.0` to disable this check.
+    #[must_use]
+    pub fn with_degenerate_min_edge_length(mut self, length: f64) -> Self {
+        self.degenerate_min_edge_length = length;
+        self
+    }
+
+    /// Set whether to remove unreferenced vertices after repair.
+    #[must_use]
+    pub fn with_remove_unreferenced(mut self, remove: bool) -> Self {
+        self.remove_unreferenced = remove;
+        self
+    }
 }
 
 /// Remove triangles with area below threshold.
@@ -499,7 +553,7 @@ fn normalize_face(face: [u32; 3]) -> [u32; 3] {
 /// let result = repair_mesh(&mut mesh, &RepairParams::default());
 /// ```
 #[must_use]
-pub fn repair_mesh(mesh: &mut IndexedMesh, params: &RepairParams) -> RepairResult {
+pub fn repair_mesh(mesh: &mut IndexedMesh, params: &RepairParams) -> RepairSummary {
     let initial_vertices = mesh.vertices.len();
     let initial_faces = mesh.faces.len();
 
@@ -524,7 +578,7 @@ pub fn repair_mesh(mesh: &mut IndexedMesh, params: &RepairParams) -> RepairResul
         0
     };
 
-    RepairResult {
+    RepairSummary {
         initial_vertices,
         initial_faces,
         final_vertices: mesh.vertices.len(),
@@ -538,7 +592,7 @@ pub fn repair_mesh(mesh: &mut IndexedMesh, params: &RepairParams) -> RepairResul
 
 /// Result of a repair operation.
 #[derive(Debug, Clone, Default)]
-pub struct RepairResult {
+pub struct RepairSummary {
     /// Number of vertices before repair.
     pub initial_vertices: usize,
     /// Number of faces before repair.
@@ -557,7 +611,7 @@ pub struct RepairResult {
     pub unreferenced_removed: usize,
 }
 
-impl RepairResult {
+impl RepairSummary {
     /// Check if any repairs were performed.
     #[must_use]
     pub fn had_changes(&self) -> bool {
@@ -568,7 +622,7 @@ impl RepairResult {
     }
 }
 
-impl std::fmt::Display for RepairResult {
+impl std::fmt::Display for RepairSummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -740,7 +794,7 @@ mod tests {
 
     #[test]
     fn repair_result_display() {
-        let result = RepairResult {
+        let result = RepairSummary {
             initial_vertices: 100,
             initial_faces: 50,
             final_vertices: 95,
@@ -758,7 +812,7 @@ mod tests {
 
     #[test]
     fn repair_result_no_changes() {
-        let result = RepairResult::default();
+        let result = RepairSummary::default();
         assert!(!result.had_changes());
     }
 }
