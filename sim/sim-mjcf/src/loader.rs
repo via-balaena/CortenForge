@@ -677,6 +677,8 @@ impl MjcfLoader {
             MjcfJointType::Slide => JointType::Prismatic,
             MjcfJointType::Ball => JointType::Spherical,
             MjcfJointType::Free => JointType::Free,
+            MjcfJointType::Cylindrical => JointType::Cylindrical,
+            MjcfJointType::Planar => JointType::Planar,
         };
 
         let mut joint = Joint::new(id, joint_type, parent, child)

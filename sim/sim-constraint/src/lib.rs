@@ -10,6 +10,9 @@
 //! - [`FixedJoint`]: Rigid connection (welded parts)
 //! - [`SphericalJoint`] - Ball-and-socket (3 rotational DOF)
 //! - [`UniversalJoint`]: Two perpendicular rotation axes
+//! - [`FreeJoint`]: Floating base (6 DOF, no constraints)
+//! - [`PlanarJoint`]: Motion in a plane (x, y translation + rotation)
+//! - [`CylindricalJoint`]: Rotation and translation along same axis
 //!
 //! # Joint Features
 //!
@@ -118,8 +121,8 @@ pub use equality::{
 };
 pub use islands::{ConstraintIslands, Island, IslandStatistics};
 pub use joint::{
-    FixedJoint, Joint, JointDof, JointType, PrismaticJoint, RevoluteJoint, SphericalJoint,
-    UniversalJoint,
+    CylindricalJoint, FixedJoint, FreeJoint, Joint, JointDof, JointType, PlanarJoint,
+    PrismaticJoint, RevoluteJoint, SphericalJoint, UniversalJoint,
 };
 pub use limits::{JointLimits, LimitState, LimitStiffness};
 pub use motor::{JointMotor, MotorMode};

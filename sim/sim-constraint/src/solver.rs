@@ -215,6 +215,9 @@ impl ConstraintSolver {
             JointType::Prismatic => self.solve_prismatic_constraint(joint, parent, child),
             JointType::Spherical => self.solve_spherical_constraint(joint, parent, child),
             JointType::Universal => self.solve_universal_constraint(joint, parent, child),
+            JointType::Free => self.solve_free_constraint(joint, parent, child),
+            JointType::Planar => self.solve_planar_constraint(joint, parent, child),
+            JointType::Cylindrical => self.solve_cylindrical_constraint(joint, parent, child),
         }
     }
 
@@ -442,6 +445,160 @@ impl ConstraintSolver {
             -constraint_torque,
             constraint_force,
             constraint_torque,
+        )
+    }
+
+    /// Solve a free joint constraint (0 DOF constrained).
+    ///
+    /// Free joints have no positional constraints. They only apply damping forces
+    /// based on relative motion between parent and child.
+    #[allow(clippy::unused_self)]
+    fn solve_free_constraint<J: Joint>(
+        &self,
+        joint: &J,
+        parent: &BodyState,
+        child: &BodyState,
+    ) -> ConstraintForce {
+        // Free joints have no position constraints, only damping
+        let linear_damping = joint.damping();
+        let angular_damping = joint.damping();
+
+        // Relative velocities
+        let relative_linear = child.linear_velocity - parent.linear_velocity;
+        let relative_angular = child.angular_velocity - parent.angular_velocity;
+
+        // Apply damping only
+        let linear_force = -linear_damping * relative_linear;
+        let angular_torque = -angular_damping * relative_angular;
+
+        ConstraintForce::new(-linear_force, -angular_torque, linear_force, angular_torque)
+    }
+
+    /// Solve a planar joint constraint (3 DOF constrained).
+    ///
+    /// Planar joints constrain:
+    /// - 1 translational DOF (perpendicular to plane)
+    /// - 2 rotational DOF (tilt about in-plane axes)
+    #[allow(clippy::unused_self)]
+    fn solve_planar_constraint<J: Joint>(
+        &self,
+        joint: &J,
+        parent: &BodyState,
+        child: &BodyState,
+    ) -> ConstraintForce {
+        // Compute anchor positions in world frame
+        let parent_anchor_world = parent.position + parent.rotation * joint.parent_anchor().coords;
+        let child_anchor_world = child.position + child.rotation * joint.child_anchor().coords;
+
+        // Use Z as the plane normal by default
+        // (Real implementation would get this from the joint)
+        let normal = Vector3::z();
+
+        // Position error perpendicular to plane
+        let position_diff = child_anchor_world - parent_anchor_world;
+        let perpendicular_error = normal * normal.dot(&position_diff);
+
+        let stiffness = 10000.0;
+        let damping = 1000.0;
+
+        let r_parent = parent_anchor_world - parent.position;
+        let r_child = child_anchor_world - child.position;
+
+        let parent_anchor_vel = parent.linear_velocity + parent.angular_velocity.cross(&r_parent);
+        let child_anchor_vel = child.linear_velocity + child.angular_velocity.cross(&r_child);
+
+        // Perpendicular velocity error
+        let velocity_diff = child_anchor_vel - parent_anchor_vel;
+        let perpendicular_velocity = normal * normal.dot(&velocity_diff);
+
+        // Constraint force perpendicular to plane
+        let constraint_force = -stiffness * perpendicular_error - damping * perpendicular_velocity;
+
+        // Angular constraint: constrain rotation about in-plane axes
+        // Allow only rotation about the normal
+        let relative_omega = child.angular_velocity - parent.angular_velocity;
+
+        // Project out the rotation about normal (which is free)
+        let omega_about_normal = normal * normal.dot(&relative_omega);
+        let omega_perpendicular = relative_omega - omega_about_normal;
+
+        // Apply angular damping to perpendicular rotation (constrained)
+        let angular_damping = 1000.0;
+        let constraint_torque = -angular_damping * omega_perpendicular;
+
+        // Apply joint damping to free rotation about normal
+        let free_rotation_damping = -joint.damping() * omega_about_normal;
+
+        ConstraintForce::new(
+            -constraint_force,
+            -constraint_torque - free_rotation_damping,
+            constraint_force,
+            constraint_torque + free_rotation_damping,
+        )
+    }
+
+    /// Solve a cylindrical joint constraint (4 DOF constrained).
+    ///
+    /// Cylindrical joints constrain:
+    /// - 2 translational DOF (perpendicular to axis)
+    /// - 2 rotational DOF (perpendicular to axis)
+    #[allow(clippy::unused_self)]
+    fn solve_cylindrical_constraint<J: Joint>(
+        &self,
+        joint: &J,
+        parent: &BodyState,
+        child: &BodyState,
+    ) -> ConstraintForce {
+        // Compute anchor positions in world frame
+        let parent_anchor_world = parent.position + parent.rotation * joint.parent_anchor().coords;
+        let child_anchor_world = child.position + child.rotation * joint.child_anchor().coords;
+
+        // Use X as the axis by default
+        // (Real implementation would get this from the joint)
+        let axis = Vector3::x();
+
+        // Position error perpendicular to axis
+        let position_diff = child_anchor_world - parent_anchor_world;
+        let along_axis = axis * axis.dot(&position_diff);
+        let perpendicular_error = position_diff - along_axis;
+
+        let stiffness = 10000.0;
+        let damping = 1000.0;
+
+        let r_parent = parent_anchor_world - parent.position;
+        let r_child = child_anchor_world - child.position;
+
+        let parent_anchor_vel = parent.linear_velocity + parent.angular_velocity.cross(&r_parent);
+        let child_anchor_vel = child.linear_velocity + child.angular_velocity.cross(&r_child);
+
+        // Perpendicular velocity error
+        let velocity_diff = child_anchor_vel - parent_anchor_vel;
+        let velocity_along_axis = axis * axis.dot(&velocity_diff);
+        let perpendicular_velocity = velocity_diff - velocity_along_axis;
+
+        // Constraint force perpendicular to axis
+        let constraint_force = -stiffness * perpendicular_error - damping * perpendicular_velocity;
+
+        // Angular constraint: constrain rotation about axes perpendicular to main axis
+        let relative_omega = child.angular_velocity - parent.angular_velocity;
+
+        // Project out the rotation about the joint axis (which is free)
+        let omega_about_axis = axis * axis.dot(&relative_omega);
+        let omega_perpendicular = relative_omega - omega_about_axis;
+
+        // Apply angular damping to perpendicular rotation (constrained)
+        let angular_damping = 1000.0;
+        let constraint_torque = -angular_damping * omega_perpendicular;
+
+        // Apply joint damping to free DOFs (rotation about axis and translation along axis)
+        let free_rotation_damping = -joint.damping() * omega_about_axis;
+        let free_translation_damping = -joint.damping() * velocity_along_axis;
+
+        ConstraintForce::new(
+            -constraint_force - free_translation_damping,
+            -constraint_torque - free_rotation_damping,
+            constraint_force + free_translation_damping,
+            constraint_torque + free_rotation_damping,
         )
     }
 

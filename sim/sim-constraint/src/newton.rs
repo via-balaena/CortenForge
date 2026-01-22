@@ -627,6 +627,17 @@ impl NewtonConstraintSolver {
                     builder, row, parent_col, child_col, &r_parent, &r_child,
                 );
             }
+            JointType::Free => {
+                // Free joint has 0 constraints, nothing to fill
+            }
+            JointType::Planar => {
+                self.fill_planar_sparse(builder, row, parent_col, child_col, &r_parent, &r_child);
+            }
+            JointType::Cylindrical => {
+                self.fill_cylindrical_sparse(
+                    builder, row, parent_col, child_col, &r_parent, &r_child,
+                );
+            }
         }
     }
 
@@ -792,6 +803,92 @@ impl NewtonConstraintSolver {
         }
     }
 
+    /// Fill sparse Jacobian for planar joint (3 constrained DOF).
+    ///
+    /// Planar joints constrain: 1 translation (perpendicular to plane) + 2 rotations (tilt).
+    fn fill_planar_sparse(
+        &self,
+        builder: &mut JacobianBuilder,
+        row: usize,
+        parent_col: usize,
+        child_col: usize,
+        r_parent: &Vector3<f64>,
+        r_child: &Vector3<f64>,
+    ) {
+        // Use Z as plane normal (default XY plane)
+        let normal = Vector3::new(0.0, 0.0, 1.0);
+        let skew_parent = skew_symmetric(r_parent);
+        let skew_child = skew_symmetric(r_child);
+
+        // Row 0: Translation constraint perpendicular to plane (along Z)
+        for j in 0..3 {
+            builder.add(row, parent_col + j, -normal[j]);
+            builder.add(row, child_col + j, normal[j]);
+        }
+        // Angular contribution to position constraint
+        let skew_normal_parent = skew_parent.transpose() * normal;
+        let skew_normal_child = skew_child.transpose() * normal;
+        for j in 0..3 {
+            builder.add(row, parent_col + 3 + j, -skew_normal_parent[j]);
+            builder.add(row, child_col + 3 + j, skew_normal_child[j]);
+        }
+
+        // Rows 1-2: Rotation constraints (perpendicular to normal)
+        // Constrain rotation about X and Y axes (in-plane tilting)
+        let perp1 = Vector3::new(1.0, 0.0, 0.0);
+        let perp2 = Vector3::new(0.0, 1.0, 0.0);
+
+        for &(idx, ref perp) in &[(1, perp1), (2, perp2)] {
+            for j in 0..3 {
+                builder.add(row + idx, parent_col + 3 + j, -perp[j]);
+                builder.add(row + idx, child_col + 3 + j, perp[j]);
+            }
+        }
+    }
+
+    /// Fill sparse Jacobian for cylindrical joint (4 constrained DOF).
+    ///
+    /// Cylindrical joints constrain: 2 translations (perpendicular to axis) + 2 rotations (perpendicular to axis).
+    fn fill_cylindrical_sparse(
+        &self,
+        builder: &mut JacobianBuilder,
+        row: usize,
+        parent_col: usize,
+        child_col: usize,
+        r_parent: &Vector3<f64>,
+        r_child: &Vector3<f64>,
+    ) {
+        // Use X as joint axis (allows rotation and translation along X)
+        let perp1 = Vector3::new(0.0, 1.0, 0.0); // Y
+        let perp2 = Vector3::new(0.0, 0.0, 1.0); // Z
+        let skew_parent = skew_symmetric(r_parent);
+        let skew_child = skew_symmetric(r_child);
+
+        // Rows 0-1: Translation constraints perpendicular to axis (Y and Z)
+        for &(idx, ref perp) in &[(0, perp1), (1, perp2)] {
+            for j in 0..3 {
+                builder.add(row + idx, parent_col + j, -perp[j]);
+                builder.add(row + idx, child_col + j, perp[j]);
+            }
+
+            let skew_perp_parent = skew_parent.transpose() * perp;
+            let skew_perp_child = skew_child.transpose() * perp;
+            for j in 0..3 {
+                builder.add(row + idx, parent_col + 3 + j, -skew_perp_parent[j]);
+                builder.add(row + idx, child_col + 3 + j, skew_perp_child[j]);
+            }
+        }
+
+        // Rows 2-3: Rotation constraints (perpendicular to axis)
+        // Constrain rotation about Y and Z
+        for &(idx, ref perp) in &[(2, perp1), (3, perp2)] {
+            for j in 0..3 {
+                builder.add(row + idx, parent_col + 3 + j, -perp[j]);
+                builder.add(row + idx, child_col + 3 + j, perp[j]);
+            }
+        }
+    }
+
     /// Build the system structure from joints.
     fn build_system<'a, J, F>(
         &self,
@@ -918,6 +1015,21 @@ impl NewtonConstraintSolver {
             JointType::Universal => {
                 // 4 DOF constrained: 3 position + 1 rotation
                 self.fill_universal_jacobian(
+                    jacobian, row, parent_col, child_col, &r_parent, &r_child,
+                );
+            }
+            JointType::Free => {
+                // 0 DOF constrained: no Jacobian entries needed
+            }
+            JointType::Planar => {
+                // 3 DOF constrained: 1 position + 2 rotation
+                self.fill_planar_jacobian(
+                    jacobian, row, parent_col, child_col, &r_parent, &r_child,
+                );
+            }
+            JointType::Cylindrical => {
+                // 4 DOF constrained: 2 position + 2 rotation
+                self.fill_cylindrical_jacobian(
                     jacobian, row, parent_col, child_col, &r_parent, &r_child,
                 );
             }
@@ -1106,6 +1218,92 @@ impl NewtonConstraintSolver {
         }
     }
 
+    /// Fill Jacobian for planar joint (3 constrained DOF).
+    ///
+    /// Planar joints constrain: 1 translation (perpendicular to plane) + 2 rotations (tilt).
+    fn fill_planar_jacobian(
+        &self,
+        jacobian: &mut DMatrix<f64>,
+        row: usize,
+        parent_col: usize,
+        child_col: usize,
+        r_parent: &Vector3<f64>,
+        r_child: &Vector3<f64>,
+    ) {
+        // Use Z as plane normal (default XY plane)
+        let normal = Vector3::new(0.0, 0.0, 1.0);
+        let skew_parent = skew_symmetric(r_parent);
+        let skew_child = skew_symmetric(r_child);
+
+        // Row 0: Translation constraint perpendicular to plane (along Z)
+        for j in 0..3 {
+            jacobian[(row, parent_col + j)] = -normal[j];
+            jacobian[(row, child_col + j)] = normal[j];
+        }
+        // Angular contribution to position constraint
+        let skew_normal_parent = skew_parent.transpose() * normal;
+        let skew_normal_child = skew_child.transpose() * normal;
+        for j in 0..3 {
+            jacobian[(row, parent_col + 3 + j)] = -skew_normal_parent[j];
+            jacobian[(row, child_col + 3 + j)] = skew_normal_child[j];
+        }
+
+        // Rows 1-2: Rotation constraints (perpendicular to normal)
+        // Constrain rotation about X and Y axes (in-plane tilting)
+        let perp1 = Vector3::new(1.0, 0.0, 0.0);
+        let perp2 = Vector3::new(0.0, 1.0, 0.0);
+
+        for &(idx, perp) in &[(1, perp1), (2, perp2)] {
+            for j in 0..3 {
+                jacobian[(row + idx, parent_col + 3 + j)] = -perp[j];
+                jacobian[(row + idx, child_col + 3 + j)] = perp[j];
+            }
+        }
+    }
+
+    /// Fill Jacobian for cylindrical joint (4 constrained DOF).
+    ///
+    /// Cylindrical joints constrain: 2 translations (perpendicular to axis) + 2 rotations (perpendicular to axis).
+    fn fill_cylindrical_jacobian(
+        &self,
+        jacobian: &mut DMatrix<f64>,
+        row: usize,
+        parent_col: usize,
+        child_col: usize,
+        r_parent: &Vector3<f64>,
+        r_child: &Vector3<f64>,
+    ) {
+        // Use X as joint axis (allows rotation and translation along X)
+        let perp1 = Vector3::new(0.0, 1.0, 0.0); // Y
+        let perp2 = Vector3::new(0.0, 0.0, 1.0); // Z
+        let skew_parent = skew_symmetric(r_parent);
+        let skew_child = skew_symmetric(r_child);
+
+        // Rows 0-1: Translation constraints perpendicular to axis (Y and Z)
+        for &(idx, perp) in &[(0, perp1), (1, perp2)] {
+            for j in 0..3 {
+                jacobian[(row + idx, parent_col + j)] = -perp[j];
+                jacobian[(row + idx, child_col + j)] = perp[j];
+            }
+
+            let skew_perp_parent = skew_parent.transpose() * perp;
+            let skew_perp_child = skew_child.transpose() * perp;
+            for j in 0..3 {
+                jacobian[(row + idx, parent_col + 3 + j)] = -skew_perp_parent[j];
+                jacobian[(row + idx, child_col + 3 + j)] = skew_perp_child[j];
+            }
+        }
+
+        // Rows 2-3: Rotation constraints (perpendicular to axis)
+        // Constrain rotation about Y and Z
+        for &(idx, perp) in &[(2, perp1), (3, perp2)] {
+            for j in 0..3 {
+                jacobian[(row + idx, parent_col + 3 + j)] = -perp[j];
+                jacobian[(row + idx, child_col + 3 + j)] = perp[j];
+            }
+        }
+    }
+
     /// Compute constraint error vector.
     fn compute_constraint_error<J: Joint>(
         &self,
@@ -1198,6 +1396,26 @@ impl NewtonConstraintSolver {
                 for i in 0..3 {
                     error[row + i] = velocity_error[i] + beta_dt * position_error[i];
                 }
+                error[row + 3] = omega_error.z;
+            }
+            JointType::Free => {
+                // 0 errors: no constraints
+            }
+            JointType::Planar => {
+                // 3 errors: 1 position (perpendicular to plane) + 2 rotation (tilt)
+                // Using Z as plane normal
+                error[row] = velocity_error.z + beta_dt * position_error.z;
+                // Rotation about X and Y (tilt) are constrained
+                error[row + 1] = omega_error.x;
+                error[row + 2] = omega_error.y;
+            }
+            JointType::Cylindrical => {
+                // 4 errors: 2 position (perpendicular to axis) + 2 rotation (perpendicular to axis)
+                // Using X as joint axis
+                error[row] = velocity_error.y + beta_dt * position_error.y;
+                error[row + 1] = velocity_error.z + beta_dt * position_error.z;
+                // Rotation about Y and Z are constrained
+                error[row + 2] = omega_error.y;
                 error[row + 3] = omega_error.z;
             }
         }

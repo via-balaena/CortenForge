@@ -8,29 +8,28 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ## 📊 Executive Summary
 
-**Overall completion: ~95%** of MuJoCo's core physics features are implemented.
+**Overall completion: ~97%** of MuJoCo's core physics features are implemented.
 
-### ✅ Fully Implemented (Phases 1-8 Complete)
+### ✅ Fully Implemented (Phases 1-9 Complete)
 - Integration methods (Euler, RK4, Verlet, Implicit)
 - Constraint solvers (Newton, CG, Islands, Warm Starting)
 - Contact model (Compliant, Elliptic/Pyramidal friction, Torsional/Rolling)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH)
-- Joint types (Fixed, Revolute, Prismatic, Spherical, Universal)
+- Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free, Planar, Cylindrical**)
 - Actuators (Motors, Servos, Muscles, Pneumatic, Adhesion)
 - Sensors (IMU, Force/Torque, Touch, Rangefinder, Magnetometer)
 - Tendons & Deformables (Cloth, Soft bodies, XPBD solver)
 - Model loading (URDF, MJCF)
 
-### ❌ Missing Features (6 items - not yet started)
+### ❌ Missing Features (5 items - not yet started)
 
 | Priority | Feature | Impact | Effort | Section |
 |----------|---------|--------|--------|---------|
-| **1** | Free/Planar/Cylindrical joint solvers | High | Medium | [§6](#6-joint-types) |
-| **2** | Non-convex mesh collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
-| **3** | SDF collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
-| **4** | Skinned meshes | Low | High | [§11](#11-deformables-flex) |
-| **5** | Multi-threading | Medium | Medium | [§12](#12-performance-optimizations) |
-| **6** | MJB binary format | Low | Low | [§13](#13-model-format) |
+| **1** | Non-convex mesh collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
+| **2** | SDF collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
+| **3** | Skinned meshes | Low | High | [§11](#11-deformables-flex) |
+| **4** | Multi-threading | Medium | Medium | [§12](#12-performance-optimizations) |
+| **5** | MJB binary format | Low | Low | [§13](#13-model-format) |
 
 ### ⚠️ Partial Implementations (5 items - needs completion)
 
@@ -421,33 +420,37 @@ Signed Distance Fields (SDF) provide smooth collision with complex geometry:
 | Slide (prismatic) | Yes | `PrismaticJoint` | **Implemented** | |
 | Ball (spherical) | Yes | `SphericalJoint` | **Implemented** | |
 | Universal | Yes | `UniversalJoint` | **Implemented** | |
-| Free (6 DOF) | Yes | `JointType::Free` | ⚠️ **Partial** | No constraint solver - **Priority 1** |
-| Planar | Yes | `JointType::Planar` | ⚠️ **Partial** | No constraint solver - **Priority 1** |
-| Cylindrical | Yes | `JointType::Cylindrical` | ⚠️ **Partial** | No constraint solver - **Priority 1** |
+| Free (6 DOF) | Yes | `FreeJoint` | **Implemented** | Full constraint solver support |
+| Planar | Yes | `PlanarJoint` | **Implemented** | Full constraint solver support |
+| Cylindrical | Yes | `CylindricalJoint` | **Implemented** | Full constraint solver support |
 
-### Implementation Notes: Free/Planar/Cylindrical Joints ❌ TODO (Priority 1)
+### Implementation Notes: Free/Planar/Cylindrical Joints ✅ COMPLETED
 
-These joint types exist as enum variants but lack constraint solver support:
+All three joint types are now fully implemented with constraint solver support:
 
-**Free joints (6 DOF floating bodies):**
+**FreeJoint (6 DOF floating bodies):**
 - Used for floating-base robots (quadrupeds, humanoids, drones)
-- Need quaternion integration for orientation
-- No positional constraints, but need mass matrix handling in solver
+- Zero constraints (all 6 DOF free)
+- Includes linear and angular damping
+- Methods: `set_position()`, `set_rotation()`, `compute_damping_force()`
 
-**Planar joints (3 DOF: x, y, rotation):**
+**PlanarJoint (3 DOF: x, y translation + rotation):**
 - Used for mobile robots on flat surfaces
-- Constrains motion to a plane
+- 3 constraints: 1 translation (perpendicular to plane) + 2 rotation (tilt)
+- Configurable plane normal
+- Methods: `set_position()`, `set_angle()`, `translation()`, `rotation()`
 
-**Cylindrical joints (2 DOF: rotation + translation along axis):**
+**CylindricalJoint (2 DOF: rotation + translation along axis):**
 - Combination of revolute + prismatic along same axis
-- Used for screw mechanisms
+- 4 constraints: 2 translation + 2 rotation (perpendicular to axis)
+- Supports separate rotation and translation limits, motors, and damping
+- Methods: `set_angle()`, `set_displacement()`, `compute_joint_forces()`
 
-**Implementation approach:**
-1. Add constraint Jacobians for each joint type in `sim-constraint/src/joint.rs`
-2. Update `NewtonConstraintSolver` to handle these joint types
-3. Add tests with floating-base robot models
-
-**Files to modify:** `sim-constraint/src/joint.rs`, `sim-constraint/src/newton.rs`, `sim-constraint/src/solver.rs`
+**Constraint solver support added to:**
+- `ConstraintSolver` (Gauss-Seidel): `solve_free_constraint()`, `solve_planar_constraint()`, `solve_cylindrical_constraint()`
+- `NewtonConstraintSolver`: Jacobian and error computation for all three types
+- `CGSolver`: Jacobian and error computation for all three types
+- MJCF loader: Updated to parse `cylindrical` and `planar` joint types
 
 ---
 
@@ -1172,26 +1175,30 @@ The following features are **not yet implemented**. They are ranked by importanc
 
 | Priority | Feature | Section | Complexity | Impact | Notes |
 |----------|---------|---------|------------|--------|-------|
-| **1** | Free/Planar/Cylindrical joint solvers | §6 Joints | Medium | High | Complete existing partial implementations |
-| **2** | Non-convex mesh collision | §5 Geoms | High | Medium | Triangle mesh without convexification |
-| **3** | SDF collision | §4, §5 | High | Medium | Signed distance fields for complex geometry |
-| **4** | Skinned meshes | §11 Deformables | High | Low | Visual deformation for rendering |
-| **5** | Multi-threading | §12 Performance | Medium | Medium | Requires model-data separation |
-| **6** | MJB binary format | §13 Model Format | Low | Low | Faster loading, MuJoCo-specific |
+| **1** | Non-convex mesh collision | §5 Geoms | High | Medium | Triangle mesh without convexification |
+| **2** | SDF collision | §4, §5 | High | Medium | Signed distance fields for complex geometry |
+| **3** | Skinned meshes | §11 Deformables | High | Low | Visual deformation for rendering |
+| **4** | Multi-threading | §12 Performance | Medium | Medium | Requires model-data separation |
+| **5** | MJB binary format | §13 Model Format | Low | Low | Faster loading, MuJoCo-specific |
 
 **Recommended implementation order:**
 
-1. **Free/Planar/Cylindrical joints** - These are marked "Partial" because the types exist but lack constraint solver support. Completing them enables floating-base robots and mobile platforms.
+1. **Non-convex mesh collision** - Currently meshes are convexified. True triangle mesh collision enables more accurate collision for complex shapes.
 
-2. **Non-convex mesh collision** - Currently meshes are convexified. True triangle mesh collision enables more accurate collision for complex shapes.
+2. **SDF collision** - Signed distance fields are useful for soft contacts with complex geometry and gradient-based optimization.
 
-3. **SDF collision** - Signed distance fields are useful for soft contacts with complex geometry and gradient-based optimization.
+3. **Skinned meshes** - Only needed for visual rendering of deformables, not physics.
 
-4. **Skinned meshes** - Only needed for visual rendering of deformables, not physics.
+4. **Multi-threading** - Performance optimization, requires architectural changes.
 
-5. **Multi-threading** - Performance optimization, requires architectural changes.
+5. **MJB binary format** - MuJoCo-specific, low priority unless loading speed is critical.
 
-6. **MJB binary format** - MuJoCo-specific, low priority unless loading speed is critical.
+### ✅ Recently Completed: Free/Planar/Cylindrical Joint Solvers
+
+These joint types now have full constraint solver support:
+- **FreeJoint**: 6 DOF floating base for quadrupeds, humanoids, drones
+- **PlanarJoint**: 3 DOF for mobile robots on flat surfaces
+- **CylindricalJoint**: 2 DOF for screw mechanisms (rotation + translation)
 
 ---
 

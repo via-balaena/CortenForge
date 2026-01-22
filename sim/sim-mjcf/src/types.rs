@@ -911,6 +911,12 @@ pub enum MjcfJointType {
     Ball,
     /// Free joint (6 DOF).
     Free,
+    /// Cylindrical joint (2 DOF: rotation + translation along same axis).
+    /// Note: This is an extension to standard MJCF.
+    Cylindrical,
+    /// Planar joint (3 DOF: x, y translation + rotation about normal).
+    /// Note: This is an extension to standard MJCF.
+    Planar,
 }
 
 impl MjcfJointType {
@@ -921,6 +927,8 @@ impl MjcfJointType {
             "slide" => Some(Self::Slide),
             "ball" => Some(Self::Ball),
             "free" => Some(Self::Free),
+            "cylindrical" => Some(Self::Cylindrical),
+            "planar" => Some(Self::Planar),
             _ => None,
         }
     }
@@ -930,7 +938,8 @@ impl MjcfJointType {
     pub fn dof(&self) -> usize {
         match self {
             Self::Hinge | Self::Slide => 1,
-            Self::Ball => 3,
+            Self::Cylindrical => 2,
+            Self::Ball | Self::Planar => 3,
             Self::Free => 6,
         }
     }
