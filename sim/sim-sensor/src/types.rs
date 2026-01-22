@@ -50,6 +50,10 @@ pub enum SensorType {
     ForceTorque,
     /// Touch/contact sensor.
     Touch,
+    /// Rangefinder (distance measurement via ray casting).
+    Rangefinder,
+    /// Magnetometer (magnetic field measurement for compass heading).
+    Magnetometer,
 }
 
 impl std::fmt::Display for SensorType {
@@ -60,6 +64,8 @@ impl std::fmt::Display for SensorType {
             Self::Gyroscope => write!(f, "Gyroscope"),
             Self::ForceTorque => write!(f, "Force/Torque"),
             Self::Touch => write!(f, "Touch"),
+            Self::Rangefinder => write!(f, "Rangefinder"),
+            Self::Magnetometer => write!(f, "Magnetometer"),
         }
     }
 }
@@ -143,6 +149,20 @@ pub enum SensorData {
         /// Average contact normal (if in contact).
         contact_normal: Option<Vector3<f64>>,
     },
+
+    /// Rangefinder sensor reading.
+    Rangefinder {
+        /// Measured distance (meters).
+        distance: f64,
+        /// Whether a surface was hit within the valid range.
+        hit: bool,
+    },
+
+    /// Magnetometer sensor reading.
+    Magnetometer {
+        /// Magnetic field vector in sensor frame (Tesla).
+        magnetic_field: Vector3<f64>,
+    },
 }
 
 impl SensorData {
@@ -162,6 +182,18 @@ impl SensorData {
     #[must_use]
     pub fn is_touch(&self) -> bool {
         matches!(self, Self::Touch { .. })
+    }
+
+    /// Check if this is a rangefinder reading.
+    #[must_use]
+    pub fn is_rangefinder(&self) -> bool {
+        matches!(self, Self::Rangefinder { .. })
+    }
+
+    /// Check if this is a magnetometer reading.
+    #[must_use]
+    pub fn is_magnetometer(&self) -> bool {
+        matches!(self, Self::Magnetometer { .. })
     }
 
     /// Get IMU data if this is an IMU reading.
@@ -200,6 +232,24 @@ impl SensorData {
                 *contact_force,
                 contact_normal.as_ref(),
             )),
+            _ => None,
+        }
+    }
+
+    /// Get rangefinder data if this is a rangefinder reading.
+    #[must_use]
+    pub fn as_rangefinder(&self) -> Option<(f64, bool)> {
+        match self {
+            Self::Rangefinder { distance, hit } => Some((*distance, *hit)),
+            _ => None,
+        }
+    }
+
+    /// Get magnetometer data if this is a magnetometer reading.
+    #[must_use]
+    pub fn as_magnetometer(&self) -> Option<&Vector3<f64>> {
+        match self {
+            Self::Magnetometer { magnetic_field } => Some(magnetic_field),
             _ => None,
         }
     }
@@ -255,6 +305,12 @@ impl SensorData {
                     v.extend([0.0, 0.0, 0.0]);
                 }
                 v
+            }
+            Self::Rangefinder { distance, hit } => {
+                vec![*distance, if *hit { 1.0 } else { 0.0 }]
+            }
+            Self::Magnetometer { magnetic_field } => {
+                vec![magnetic_field.x, magnetic_field.y, magnetic_field.z]
             }
         }
     }

@@ -85,6 +85,14 @@ pub enum CollisionShape {
         /// Radii along each local axis (X, Y, Z).
         radii: Vector3<f64>,
     },
+    /// Height field for terrain collision.
+    ///
+    /// A 2D grid of height values defining a 3D surface.
+    /// Efficient for large terrain collision detection.
+    HeightField {
+        /// The height field data (shared reference for efficiency).
+        data: std::sync::Arc<crate::heightfield::HeightFieldData>,
+    },
 }
 
 impl CollisionShape {
@@ -199,6 +207,51 @@ impl CollisionShape {
         }
     }
 
+    /// Create a height field collision shape for terrain.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The height field data (wrapped in Arc for efficient sharing)
+    #[must_use]
+    pub fn heightfield(data: std::sync::Arc<crate::heightfield::HeightFieldData>) -> Self {
+        Self::HeightField { data }
+    }
+
+    /// Create a flat height field at a given height.
+    ///
+    /// # Arguments
+    ///
+    /// * `width` - Number of columns (samples along X)
+    /// * `depth` - Number of rows (samples along Y)
+    /// * `cell_size` - Size of each cell in meters
+    /// * `height` - Constant height value
+    #[must_use]
+    pub fn flat_terrain(width: usize, depth: usize, cell_size: f64, height: f64) -> Self {
+        let data = crate::heightfield::HeightFieldData::flat(width, depth, cell_size, height);
+        Self::HeightField {
+            data: std::sync::Arc::new(data),
+        }
+    }
+
+    /// Create a height field from a function.
+    ///
+    /// # Arguments
+    ///
+    /// * `width` - Number of columns (samples along X)
+    /// * `depth` - Number of rows (samples along Y)
+    /// * `cell_size` - Size of each cell in meters
+    /// * `f` - Function that takes (x, y) world coordinates and returns height
+    #[must_use]
+    pub fn terrain_from_fn<F>(width: usize, depth: usize, cell_size: f64, f: F) -> Self
+    where
+        F: Fn(f64, f64) -> f64,
+    {
+        let data = crate::heightfield::HeightFieldData::from_fn(width, depth, cell_size, f);
+        Self::HeightField {
+            data: std::sync::Arc::new(data),
+        }
+    }
+
     /// Get the bounding sphere radius for broad-phase culling.
     #[must_use]
     pub fn bounding_radius(&self) -> f64 {
@@ -224,6 +277,12 @@ impl CollisionShape {
             Self::Ellipsoid { radii } => {
                 // Maximum of the three radii
                 radii.x.max(radii.y).max(radii.z)
+            }
+            Self::HeightField { data } => {
+                // Bounding sphere radius from center of the height field
+                let (min, max) = data.aabb();
+                let center = nalgebra::center(&min, &max);
+                (max - center).norm()
             }
         }
     }
@@ -1347,6 +1406,97 @@ impl World {
             }
 
             // =====================================================================
+            // Height field collisions
+            // =====================================================================
+
+            // HeightField-Sphere
+            (CollisionShape::HeightField { data }, CollisionShape::Sphere { radius }) => self
+                .detect_heightfield_sphere_contact(
+                    data,
+                    &body_a.state.pose,
+                    body_b.state.pose.position,
+                    *radius,
+                    body_a.id,
+                    body_b.id,
+                ),
+
+            // Sphere-HeightField (flip)
+            (CollisionShape::Sphere { radius }, CollisionShape::HeightField { data }) => self
+                .detect_heightfield_sphere_contact(
+                    data,
+                    &body_b.state.pose,
+                    body_a.state.pose.position,
+                    *radius,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
+            // HeightField-Capsule
+            (
+                CollisionShape::HeightField { data },
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius,
+                },
+            ) => {
+                let (start, end) = shape_b.capsule_endpoints(&body_b.state.pose)?;
+                self.detect_heightfield_capsule_contact(
+                    data,
+                    &body_a.state.pose,
+                    start,
+                    end,
+                    *radius,
+                    body_a.id,
+                    body_b.id,
+                )
+            }
+
+            // Capsule-HeightField (flip)
+            (
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius,
+                },
+                CollisionShape::HeightField { data },
+            ) => {
+                let (start, end) = shape_a.capsule_endpoints(&body_a.state.pose)?;
+                self.detect_heightfield_capsule_contact(
+                    data,
+                    &body_b.state.pose,
+                    start,
+                    end,
+                    *radius,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip())
+            }
+
+            // HeightField-Box
+            (CollisionShape::HeightField { data }, CollisionShape::Box { half_extents }) => self
+                .detect_heightfield_box_contact(
+                    data,
+                    &body_a.state.pose,
+                    &body_b.state.pose,
+                    half_extents,
+                    body_a.id,
+                    body_b.id,
+                ),
+
+            // Box-HeightField (flip)
+            (CollisionShape::Box { half_extents }, CollisionShape::HeightField { data }) => self
+                .detect_heightfield_box_contact(
+                    data,
+                    &body_b.state.pose,
+                    &body_a.state.pose,
+                    half_extents,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
+            // =====================================================================
             // GJK/EPA fallback for ConvexMesh, Cylinder, Ellipsoid, and Capsule-Box
             // =====================================================================
 
@@ -1373,7 +1523,7 @@ impl World {
                 .map(|c| c.flip()),
 
             // =====================================================================
-            // Unsupported combinations (plane-plane)
+            // Unsupported combinations (plane-plane, height field-height field, etc.)
             // =====================================================================
             _ => None,
         }
@@ -1400,6 +1550,89 @@ impl World {
             gjk_contact.penetration,
             body_a.id,
             body_b.id,
+        ))
+    }
+
+    /// Detect contact between a height field and a sphere.
+    #[allow(clippy::unused_self)]
+    fn detect_heightfield_sphere_contact(
+        &self,
+        heightfield: &crate::heightfield::HeightFieldData,
+        hf_pose: &Pose,
+        sphere_center: Point3<f64>,
+        sphere_radius: f64,
+        hf_body_id: BodyId,
+        sphere_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact = crate::heightfield::heightfield_sphere_contact(
+            heightfield,
+            hf_pose,
+            sphere_center,
+            sphere_radius,
+        )?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            hf_body_id,
+            sphere_body_id,
+        ))
+    }
+
+    /// Detect contact between a height field and a capsule.
+    #[allow(clippy::unused_self, clippy::too_many_arguments)]
+    fn detect_heightfield_capsule_contact(
+        &self,
+        heightfield: &crate::heightfield::HeightFieldData,
+        hf_pose: &Pose,
+        capsule_start: Point3<f64>,
+        capsule_end: Point3<f64>,
+        capsule_radius: f64,
+        hf_body_id: BodyId,
+        capsule_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact = crate::heightfield::heightfield_capsule_contact(
+            heightfield,
+            hf_pose,
+            capsule_start,
+            capsule_end,
+            capsule_radius,
+        )?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            hf_body_id,
+            capsule_body_id,
+        ))
+    }
+
+    /// Detect contact between a height field and a box.
+    #[allow(clippy::unused_self)]
+    fn detect_heightfield_box_contact(
+        &self,
+        heightfield: &crate::heightfield::HeightFieldData,
+        hf_pose: &Pose,
+        box_pose: &Pose,
+        half_extents: &Vector3<f64>,
+        hf_body_id: BodyId,
+        box_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact = crate::heightfield::heightfield_box_contact(
+            heightfield,
+            hf_pose,
+            box_pose,
+            half_extents,
+        )?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            hf_body_id,
+            box_body_id,
         ))
     }
 

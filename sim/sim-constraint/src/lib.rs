@@ -21,11 +21,13 @@
 //!
 //! # Constraint Solvers
 //!
-//! Two solvers are available:
+//! Three solvers are available:
 //!
 //! - [`ConstraintSolver`]: Gauss-Seidel iterative solver (8-16 iterations typical)
 //! - [`NewtonConstraintSolver`]: Newton-Raphson solver with analytical Jacobians
 //!   (2-3 iterations typical, faster convergence for stiff systems)
+//! - [`CGSolver`]: Conjugate Gradient solver for large sparse systems
+//!   (optimal for 100+ constraints, supports preconditioning)
 //!
 //! # Constraint Islands
 //!
@@ -92,6 +94,7 @@
 #![allow(clippy::missing_const_for_fn)]
 
 pub mod actuator;
+mod cg;
 pub mod equality;
 mod islands;
 mod joint;
@@ -108,8 +111,10 @@ pub use actuator::{
     Actuator, AdhesionActuator, BoxedActuator, CustomActuator, IntegratedVelocityActuator,
     IntoBoxedActuator, PneumaticCylinderActuator,
 };
+pub use cg::{CGSolver, CGSolverConfig, CGSolverResult, CGSolverStats, Preconditioner};
 pub use equality::{
     CouplingCoefficient, CouplingGroup, DifferentialCoupling, GearCoupling, JointCoupling,
+    TendonConstraint, TendonNetwork,
 };
 pub use islands::{ConstraintIslands, Island, IslandStatistics};
 pub use joint::{

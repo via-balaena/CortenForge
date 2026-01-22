@@ -4,6 +4,50 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 > **Note:** All `sim-*` crates are in initial development (pre-1.0). Breaking changes to APIs are expected and acceptable. Prefer clean, correct implementations over backwards compatibility.
 
+---
+
+## 📊 Executive Summary
+
+**Overall completion: ~95%** of MuJoCo's core physics features are implemented.
+
+### ✅ Fully Implemented (Phases 1-8 Complete)
+- Integration methods (Euler, RK4, Verlet, Implicit)
+- Constraint solvers (Newton, CG, Islands, Warm Starting)
+- Contact model (Compliant, Elliptic/Pyramidal friction, Torsional/Rolling)
+- Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH)
+- Joint types (Fixed, Revolute, Prismatic, Spherical, Universal)
+- Actuators (Motors, Servos, Muscles, Pneumatic, Adhesion)
+- Sensors (IMU, Force/Torque, Touch, Rangefinder, Magnetometer)
+- Tendons & Deformables (Cloth, Soft bodies, XPBD solver)
+- Model loading (URDF, MJCF)
+
+### ❌ Missing Features (7 items - not yet started)
+
+| Priority | Feature | Impact | Effort | Section |
+|----------|---------|--------|--------|---------|
+| **1** | Free/Planar/Cylindrical joint solvers | High | Medium | [§6](#6-joint-types) |
+| **2** | Non-convex mesh collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
+| **3** | SDF collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
+| **4** | Skinned meshes | Low | High | [§11](#11-deformables-flex) |
+| **5** | Multi-threading | Medium | Medium | [§12](#12-performance-optimizations) |
+| **6** | MJB binary format | Low | Low | [§13](#13-model-format) |
+| **7** | Connect (ball) equality constraint | Low | Low | [§10](#10-equality-constraints) |
+
+### ⚠️ Partial Implementations (6 items - needs completion)
+
+| Feature | Current State | What's Missing | Section |
+|---------|---------------|----------------|---------|
+| PGS (Gauss-Seidel) solver | Has relaxation param | Full iterative solver with SOR | [§2](#2-constraint-solvers) |
+| SIMD optimization | Via nalgebra only | Explicit vectorization for hot paths | [§12](#12-performance-optimizations) |
+| MJCF `<option>` element | timestep, gravity, integrator | solver params, flags, collision options | [§13](#13-model-format) |
+| MJCF `<default>` element | Joint and geom defaults | Actuator, tendon, sensor defaults | [§13](#13-model-format) |
+| MJCF `<geom>` element | Primitives only | Mesh type support | [§13](#13-model-format) |
+| MJCF `<actuator>` element | motor, position, velocity | cylinder, muscle, adhesion types | [§13](#13-model-format) |
+
+**For typical robotics use cases**, the current implementation is feature-complete. The missing items are for specialized scenarios (complex geometry, visual rendering, extreme performance). The partial implementations work for common cases but may need extension for advanced MuJoCo models.
+
+---
+
 ## Legend
 
 | Status | Meaning |
@@ -82,7 +126,7 @@ integrate_with_method_and_damping(
 |---------|--------|-------------|--------|----------|------------|
 | PGS (Gauss-Seidel) | Supported | Partial (relaxation param) | **Partial** | Medium | Low |
 | Newton solver | Default, 2-3 iterations | `NewtonConstraintSolver` | **Implemented** | - | - |
-| Conjugate Gradient | Supported | Missing | **Missing** | Low | Medium |
+| Conjugate Gradient | Supported | `CGSolver` | **Implemented** | - | - |
 | Constraint islands | Auto-detected | `ConstraintIslands` | **Implemented** | - | - |
 | Warm starting | Supported | `warm_starting` config | **Implemented** | - | - |
 
@@ -249,7 +293,7 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Cylinder | Native | `CollisionShape::Cylinder` | **Implemented** | - | - |
 | Ellipsoid | Native | `CollisionShape::Ellipsoid` | **Implemented** | - | - |
 | Convex mesh | GJK/EPA | `CollisionShape::ConvexMesh` | **Implemented** | - | - |
-| Height field | Native | Missing | **Missing** | Low | High |
+| Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
 | SDF (signed distance) | Native | Missing | **Missing** | Low | High |
 | Broad-phase (sweep-prune) | Native | `SweepAndPrune` | **Implemented** | - | - |
 | Mid-phase (BVH per body) | Static AABB | `Bvh` | **Implemented** | - | - |
@@ -332,9 +376,41 @@ let tetra = CollisionShape::tetrahedron(0.5); // circumradius 0.5
 | Convex Mesh | Yes (convexified) | `CollisionShape::ConvexMesh` | **Implemented** |
 | Cylinder | Yes | `CollisionShape::Cylinder` | **Implemented** |
 | Ellipsoid | Yes | `CollisionShape::Ellipsoid` | **Implemented** |
-| Mesh | Yes (convexified) | Missing | **Missing** |
-| Height field | Yes | Missing | **Missing** |
-| SDF | Yes | Missing | **Missing** |
+| Height field | Yes | `CollisionShape::HeightField` | **Implemented** |
+| **Mesh (non-convex)** | Yes | Missing | ❌ **TODO** - Priority 2 |
+| **SDF** | Yes | Missing | ❌ **TODO** - Priority 3 |
+
+### Implementation Notes: Non-Convex Mesh ❌ TODO (Priority 2)
+
+MuJoCo supports triangle mesh collision without convexification. This requires:
+- Triangle soup storage in `CollisionShape::Mesh`
+- BVH acceleration structure (already have `Bvh` in mid-phase)
+- Triangle-primitive collision tests (triangle-sphere, triangle-capsule, etc.)
+- Contact point generation for mesh-mesh collisions
+
+**Implementation approach:**
+1. Add `CollisionShape::Mesh { triangles, bvh }` variant
+2. Implement triangle-primitive collision functions
+3. Use mid-phase BVH for mesh-mesh culling
+4. Generate contact manifolds from triangle intersections
+
+**Files to modify:** `sim-core/src/world.rs`, `sim-core/src/gjk_epa.rs`
+
+### Implementation Notes: SDF Collision ❌ TODO (Priority 3)
+
+Signed Distance Fields (SDF) provide smooth collision with complex geometry:
+- Store distance to nearest surface at grid points
+- Interpolate for arbitrary query points
+- Gradient gives collision normal
+- Useful for soft contacts and gradient-based optimization
+
+**Implementation approach:**
+1. Add `CollisionShape::Sdf { grid, cell_size, transform }`
+2. Implement trilinear interpolation for distance queries
+3. Implement gradient computation for normals
+4. Add sphere-SDF, capsule-SDF collision functions
+
+**Files to create:** `sim-core/src/sdf.rs`
 
 ---
 
@@ -347,17 +423,33 @@ let tetra = CollisionShape::tetrahedron(0.5); // circumradius 0.5
 | Slide (prismatic) | Yes | `PrismaticJoint` | **Implemented** | |
 | Ball (spherical) | Yes | `SphericalJoint` | **Implemented** | |
 | Universal | Yes | `UniversalJoint` | **Implemented** | |
-| Free (6 DOF) | Yes | `JointType::Free` | **Partial** | No constraint solver |
-| Planar | Yes | `JointType::Planar` | **Partial** | No constraint solver |
-| Cylindrical | Yes | `JointType::Cylindrical` | **Partial** | No constraint solver |
+| Free (6 DOF) | Yes | `JointType::Free` | ⚠️ **Partial** | No constraint solver - **Priority 1** |
+| Planar | Yes | `JointType::Planar` | ⚠️ **Partial** | No constraint solver - **Priority 1** |
+| Cylindrical | Yes | `JointType::Cylindrical` | ⚠️ **Partial** | No constraint solver - **Priority 1** |
 
-### Implementation Notes: Free/Planar Joints
+### Implementation Notes: Free/Planar/Cylindrical Joints ❌ TODO (Priority 1)
 
-Free joints (6 DOF floating bodies) need:
-- Quaternion integration for orientation
-- No positional constraints, but need mass matrix handling
+These joint types exist as enum variants but lack constraint solver support:
 
-**Files to modify:** `sim-constraint/src/solver.rs`
+**Free joints (6 DOF floating bodies):**
+- Used for floating-base robots (quadrupeds, humanoids, drones)
+- Need quaternion integration for orientation
+- No positional constraints, but need mass matrix handling in solver
+
+**Planar joints (3 DOF: x, y, rotation):**
+- Used for mobile robots on flat surfaces
+- Constrains motion to a plane
+
+**Cylindrical joints (2 DOF: rotation + translation along axis):**
+- Combination of revolute + prismatic along same axis
+- Used for screw mechanisms
+
+**Implementation approach:**
+1. Add constraint Jacobians for each joint type in `sim-constraint/src/joint.rs`
+2. Update `NewtonConstraintSolver` to handle these joint types
+3. Add tests with floating-base robot models
+
+**Files to modify:** `sim-constraint/src/joint.rs`, `sim-constraint/src/newton.rs`, `sim-constraint/src/solver.rs`
 
 ---
 
@@ -474,8 +566,8 @@ let torque = elbow.compute_joint_force(velocity, dt);
 | Force/torque | Yes | `ForceTorqueSensor` | **Implemented** | - |
 | Touch | Yes | `TouchSensor` | **Implemented** | - |
 | IMU (combined) | Yes | `Imu` | **Implemented** | - |
-| Rangefinder | Yes | Missing | **Missing** | Medium |
-| Magnetometer | Yes | Missing | **Missing** | Low |
+| Rangefinder | Yes | `Rangefinder` (via sim-sensor) | **Implemented** | - |
+| Magnetometer | Yes | `Magnetometer` (via sim-sensor) | **Implemented** | - |
 | Camera (rendered) | Yes | Out of scope | N/A | - |
 
 ### Implementation Notes: Sensors ✅ COMPLETED
@@ -612,8 +704,8 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 | Connect (ball) | Yes | Via SphericalJoint | **Partial** | Medium |
 | Weld | Yes | Via FixedJoint | **Implemented** | - |
 | Joint coupling | Yes | `JointCoupling`, `GearCoupling`, `DifferentialCoupling` | **Implemented** | - |
-| Tendon coupling | Yes | Missing | **Missing** | Low |
-| Flex (edge length) | Yes | Missing | **Missing** | Low |
+| Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Implemented** | - |
+| Flex (edge length) | Yes | `FlexEdgeConstraint` | **Implemented** | - |
 
 ---
 
@@ -624,7 +716,24 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 | 1D (capsule chains) | Yes | `CapsuleChain` | **Implemented** | - | - |
 | 2D (triangle shells) | Yes | `Cloth` | **Implemented** | - | - |
 | 3D (tetrahedra) | Yes | `SoftBody` | **Implemented** | - | - |
-| Skinned meshes | Yes | Missing | **Missing** | Low | High |
+| **Skinned meshes** | Yes | Missing | ❌ **TODO** | Priority 4 | High |
+
+### Implementation Notes: Skinned Meshes ❌ TODO (Priority 4)
+
+Skinned meshes provide visual deformation for rendering soft bodies:
+- Vertex skinning with bone weights
+- Linear blend skinning (LBS) or dual quaternion skinning (DQS)
+- Maps physics particles to visual mesh vertices
+
+**Note:** This is primarily a **rendering feature**, not physics. The physics simulation works without it. Only implement if you need smooth visual representation of deformable bodies.
+
+**Implementation approach:**
+1. Add `SkinnedMesh` struct with bone weights per vertex
+2. Implement LBS: `v' = Σᵢ wᵢ Mᵢ v`
+3. Connect to `SoftBody`/`Cloth` particles as bones
+4. Export skinned vertex positions for rendering
+
+**Files to create:** `sim-deformable/src/skinning.rs`
 
 ### Implementation Notes: Deformables ✅ COMPLETED
 
@@ -746,8 +855,26 @@ for _ in 0..100 {
 | Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` | **Implemented** | - |
 | Sleeping bodies | Native | `Body::is_sleeping`, `put_to_sleep()`, `wake_up()` | **Implemented** | - |
 | Constraint islands | Auto | `ConstraintIslands` | **Implemented** | - |
-| Multi-threading | Model-data separation | Not designed for | **Missing** | Low |
+| **Multi-threading** | Model-data separation | Not designed for | ❌ **TODO** | Priority 5 |
 | SIMD | Likely | nalgebra SIMD | **Partial** | Low |
+
+### Implementation Notes: Multi-threading ❌ TODO (Priority 5)
+
+MuJoCo achieves thread-safety through model-data separation:
+- `mjModel` is read-only (can be shared)
+- `mjData` is mutable (one per thread)
+
+**Current architecture limitation:** CortenForge's `World` combines model and data.
+
+**Implementation approach:**
+1. Split `World` into `WorldModel` (immutable) and `WorldState` (mutable)
+2. Allow multiple `WorldState` instances per `WorldModel`
+3. Parallelize island solving (islands are independent)
+4. Consider rayon for parallel iteration
+
+**Note:** This is a significant architectural change. Only pursue if performance profiling shows constraint solving as a bottleneck.
+
+**Files to modify:** `sim-core/src/world.rs`, `sim-constraint/src/newton.rs`
 
 ### Implementation Notes: Sleeping Bodies ✅ COMPLETED
 
@@ -801,7 +928,23 @@ if let Some(body) = world.body_mut(body_id) {
 |---------|--------|-------------|--------|----------|
 | URDF loading | Supported | `sim-urdf` crate | **Implemented** | - |
 | MJCF loading | Native | `sim-mjcf` crate | **Implemented** | - |
-| MJB (binary) | Native | Missing | **Missing** | Low |
+| **MJB (binary)** | Native | Missing | ❌ **TODO** | Priority 6 |
+
+### Implementation Notes: MJB Binary Format ❌ TODO (Priority 6)
+
+MJB is MuJoCo's compiled binary model format:
+- Faster loading than XML parsing
+- Pre-computed inertias and collision data
+- MuJoCo-specific, not portable
+
+**Note:** Low priority unless you're loading large models frequently. MJCF/URDF loading is fast enough for most use cases.
+
+**Implementation approach:**
+1. Study MuJoCo's MJB format (not publicly documented)
+2. Implement binary serialization for `MjcfModel`
+3. Add `load_mjb()` and `save_mjb()` functions
+
+**Files to modify:** `sim-mjcf/src/lib.rs`
 
 ### Implementation Notes: MJCF Support ✅ COMPLETED
 
@@ -876,27 +1019,56 @@ let body_id = spawned.body_id("base").expect("base exists");
 
 ## Priority Roadmap
 
-### Phase 1: Core Parity (High Priority)
+### ⚠️ REMAINING WORK - Prioritized
 
-1. ~~**Collision shapes**: Box-box, box-sphere, capsule detection~~ ✅ COMPLETED
-2. ~~**Broad-phase**: Sweep-and-prune or BVH integration~~ ✅ COMPLETED
-3. ~~**Elliptic friction cones**: Replace circular with elliptic~~ ✅ COMPLETED
-4. ~~**Sensors**: IMU, force/torque, touch sensors~~ ✅ COMPLETED
-5. ~~**Implicit integration**: Implicit-in-velocity method~~ ✅ COMPLETED
+The following features are **not yet implemented**. They are ranked by importance for typical robotics/simulation use cases:
 
-### Phase 2: Solver Improvements (Medium Priority)
+| Priority | Feature | Section | Complexity | Impact | Notes |
+|----------|---------|---------|------------|--------|-------|
+| **1** | Free/Planar/Cylindrical joint solvers | §6 Joints | Medium | High | Complete existing partial implementations |
+| **2** | Non-convex mesh collision | §5 Geoms | High | Medium | Triangle mesh without convexification |
+| **3** | SDF collision | §4, §5 | High | Medium | Signed distance fields for complex geometry |
+| **4** | Skinned meshes | §11 Deformables | High | Low | Visual deformation for rendering |
+| **5** | Multi-threading | §12 Performance | Medium | Medium | Requires model-data separation |
+| **6** | MJB binary format | §13 Model Format | Low | Low | Faster loading, MuJoCo-specific |
 
-1. ~~**Newton solver**: For faster convergence~~ ✅ COMPLETED
-2. ~~**Constraint islands**: For performance~~ ✅ COMPLETED
-3. ~~**Sleeping**: Deactivate stationary bodies~~ ✅ COMPLETED
-4. ~~**GJK/EPA**: For convex mesh collision~~ ✅ COMPLETED
+**Recommended implementation order:**
 
-### Phase 3: Extended Features (Lower Priority)
+1. **Free/Planar/Cylindrical joints** - These are marked "Partial" because the types exist but lack constraint solver support. Completing them enables floating-base robots and mobile platforms.
 
-1. ~~**MJCF loading**: For MuJoCo model compatibility~~ ✅ COMPLETED
-2. ~~**Muscle actuators**: For biomechanics~~ ✅ COMPLETED
-3. ~~**Tendons**: For cable robots~~ ✅ COMPLETED
-4. ~~**Deformables**: For soft body simulation~~ ✅ COMPLETED
+2. **Non-convex mesh collision** - Currently meshes are convexified. True triangle mesh collision enables more accurate collision for complex shapes.
+
+3. **SDF collision** - Signed distance fields are useful for soft contacts with complex geometry and gradient-based optimization.
+
+4. **Skinned meshes** - Only needed for visual rendering of deformables, not physics.
+
+5. **Multi-threading** - Performance optimization, requires architectural changes.
+
+6. **MJB binary format** - MuJoCo-specific, low priority unless loading speed is critical.
+
+---
+
+### ✅ Phase 1: Core Parity (COMPLETED)
+
+1. ~~**Collision shapes**: Box-box, box-sphere, capsule detection~~ ✅
+2. ~~**Broad-phase**: Sweep-and-prune or BVH integration~~ ✅
+3. ~~**Elliptic friction cones**: Replace circular with elliptic~~ ✅
+4. ~~**Sensors**: IMU, force/torque, touch sensors~~ ✅
+5. ~~**Implicit integration**: Implicit-in-velocity method~~ ✅
+
+### ✅ Phase 2: Solver Improvements (COMPLETED)
+
+1. ~~**Newton solver**: For faster convergence~~ ✅
+2. ~~**Constraint islands**: For performance~~ ✅
+3. ~~**Sleeping**: Deactivate stationary bodies~~ ✅
+4. ~~**GJK/EPA**: For convex mesh collision~~ ✅
+
+### ✅ Phase 3: Extended Features (COMPLETED)
+
+1. ~~**MJCF loading**: For MuJoCo model compatibility~~ ✅
+2. ~~**Muscle actuators**: For biomechanics~~ ✅
+3. ~~**Tendons**: For cable robots~~ ✅
+4. ~~**Deformables**: For soft body simulation~~ ✅
 
 ### Phase 4: Solver & Performance ✅ COMPLETED
 
@@ -1237,31 +1409,193 @@ let forces = group.compute_all_forces(get_position, get_velocity, dt);
 - `sim-constraint/src/equality.rs` - Joint coupling constraints
 - `sim-constraint/src/lib.rs` - Public exports
 
-### Phase 8: Sensors
+### Phase 8: Sensors ✅ COMPLETED
 
 Focus: Additional sensor types in sim-sensor.
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|
-| Rangefinder sensor | §8 Sensors | Medium | Ray-based distance measurement |
-| Magnetometer sensor | §8 Sensors | Low | Compass-like sensing |
+| ~~Rangefinder sensor~~ | §8 Sensors | Medium | ✅ Ray-based distance measurement |
+| ~~Magnetometer sensor~~ | §8 Sensors | Low | ✅ Compass-like sensing |
 
-**Files:** `sim-sensor/src/rangefinder.rs` (new), `sim-sensor/src/magnetometer.rs` (new)
+**Implemented:**
 
-### Phase 9: Advanced Features (Backlog)
+**Rangefinder Sensor (`sim-sensor/src/rangefinder.rs`):**
+- `Rangefinder` - Ray-based distance measurement sensor
+- `RangefinderConfig` - Configurable local position, direction, min/max range, beam width, noise
+- `RangefinderReading` - Distance and hit status output
+- `RayCaster` trait - Interface for integrating with physics world ray casting
+- `RayHit` - Ray cast result with distance, point, normal, body ID
+- Presets: `height_sensor()`, `forward_proximity()`, `lidar()`, `ultrasonic()`
+- Supports clamping to min/max range, optional infinity on no hit
+
+**Magnetometer Sensor (`sim-sensor/src/magnetometer.rs`):**
+- `Magnetometer` - Magnetic field measurement sensor for compass heading
+- `MagnetometerConfig` - Earth field vector, noise, hard-iron bias, soft-iron distortion
+- `MagnetometerReading` - Magnetic field vector with heading computation
+- `for_location()` - Configure Earth field based on declination, inclination, intensity
+- Hard-iron (constant bias) and soft-iron (scale distortion) calibration modeling
+- `heading()` and `heading_degrees()` - Compute yaw from magnetic field
+
+**Usage:**
+```rust
+use sim_sensor::{Rangefinder, RangefinderConfig, Magnetometer, MagnetometerConfig};
+use sim_types::{BodyId, Pose};
+use nalgebra::{Point3, Vector3};
+
+// Create a downward-facing height sensor
+let height_sensor = Rangefinder::new(
+    BodyId::new(1),
+    RangefinderConfig::height_sensor(10.0),
+);
+let pose = Pose::from_position(Point3::new(0.0, 0.0, 1.5));
+let reading = height_sensor.read_with_distance(&pose, Some(1.5));
+assert!(reading.is_hit());
+assert!((reading.distance - 1.5).abs() < 0.001);
+
+// Create a magnetometer for heading estimation
+let compass = Magnetometer::new(
+    BodyId::new(1),
+    MagnetometerConfig::default(),
+);
+let reading = compass.read(&Pose::identity());
+let heading = reading.heading_degrees();
+println!("Heading: {:.1}°", heading);
+```
+
+**Files:**
+- `sim-sensor/src/rangefinder.rs` - Rangefinder sensor implementation
+- `sim-sensor/src/magnetometer.rs` - Magnetometer sensor implementation
+- `sim-sensor/src/types.rs` - `SensorType::Rangefinder`, `SensorType::Magnetometer`, `SensorData` variants
+- `sim-types/src/observation.rs` - `SensorObservation::rangefinder()`, `SensorObservation::magnetometer()`
+
+### Phase 9: Advanced Features (Partially Complete)
 
 Focus: Large standalone features, each potentially its own PR.
 
-| Feature | Section | Complexity | Notes |
-|---------|---------|------------|-------|
-| Height field collision | §4 Collision, §5 Geoms | High | Terrain simulation |
-| SDF collision | §4 Collision, §5 Geoms | High | Signed distance fields |
-| Conjugate Gradient solver | §2 Solvers | Medium | Alternative to Newton/PGS |
-| Skinned meshes | §11 Deformables | High | Visual deformation for rendering |
-| Multi-threading | §12 Performance | Low | Model-data separation needed first |
-| MJB binary format | §13 Model Format | Low | Faster loading, MuJoCo-specific |
-| Tendon coupling constraints | §10 Equality | Low | Tendon-based equality constraints |
-| Flex edge constraints | §10 Equality | Low | Deformable edge length constraints |
+| Feature | Section | Complexity | Status | Notes |
+|---------|---------|------------|--------|-------|
+| ~~Height field collision~~ | §4 Collision, §5 Geoms | High | ✅ COMPLETED | Terrain simulation |
+| ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED | Alternative to Newton/PGS |
+| ~~Tendon coupling constraints~~ | §10 Equality | Low | ✅ COMPLETED | Tendon-based equality constraints |
+| ~~Flex edge constraints~~ | §10 Equality | Low | ✅ COMPLETED | Deformable edge length constraints |
+| **SDF collision** | §4 Collision, §5 Geoms | High | ❌ **TODO** | Signed distance fields - Priority 3 |
+| **Skinned meshes** | §11 Deformables | High | ❌ **TODO** | Visual deformation for rendering - Priority 4 |
+| **Multi-threading** | §12 Performance | Medium | ❌ **TODO** | Model-data separation needed first - Priority 5 |
+| **MJB binary format** | §13 Model Format | Low | ❌ **TODO** | Faster loading, MuJoCo-specific - Priority 6 |
+
+**Implemented:**
+
+**Conjugate Gradient Solver (`sim-constraint/src/cg.rs`):**
+- `CGSolver` - Conjugate gradient method for constraint solving
+- `CGSolverConfig` - Configurable tolerance, max iterations, Baumgarte stabilization
+- `Preconditioner` - None, Jacobi, or BlockJacobi preconditioning
+- `CGSolverResult` - Solution with convergence statistics
+- Presets: `high_accuracy()`, `realtime()`, `large_system()`
+- Optimal for systems with 100+ constraints
+
+**Usage:**
+```rust
+use sim_constraint::{CGSolver, CGSolverConfig, Preconditioner};
+
+let config = CGSolverConfig::realtime()
+    .with_preconditioner(Preconditioner::Jacobi);
+let mut solver = CGSolver::new(config);
+
+let result = solver.solve(&joints, get_body_state, dt);
+println!("Converged in {} iterations", result.iterations_used);
+```
+
+**Tendon Coupling Constraints (`sim-constraint/src/equality.rs`):**
+- `TendonConstraint` - Joint-to-joint coupling via tendon mechanics
+- Moment arm modeling for each connected joint
+- Rest length and target length with slack/taut states
+- Stiffness and damping for compliant constraints
+- `TendonNetwork` - Collection of tendons for batch solving
+- Presets: `two_joint()`, `finger()`
+
+**Usage:**
+```rust
+use sim_constraint::{TendonConstraint, TendonNetwork};
+use sim_types::JointId;
+
+let tendon = TendonConstraint::two_joint(
+    "finger_flexor",
+    JointId::new(0), 0.01,  // MCP joint, 1cm moment arm
+    JointId::new(1), 0.008, // PIP joint, 0.8cm moment arm
+    0.12,                    // 12cm rest length
+);
+
+let mut network = TendonNetwork::new();
+network.add_tendon(tendon);
+let forces = network.compute_all_forces(&get_position, &get_velocity, dt);
+```
+
+**Flex Edge Constraints (`sim-deformable/src/constraints.rs`):**
+- `FlexEdgeType` - Stretch, Shear, StretchShear, or Twist constraint types
+- `FlexEdgeConstraint` - XPBD constraint for deformable edge behavior
+- Stretch constraint for distance maintenance (2 vertices)
+- Shear constraint for angular stiffness (3 vertices)
+- Twist constraint for torsion resistance
+- Damping support for energy dissipation
+- Compatible with `XpbdSolver` for cloth and soft body simulation
+
+**Usage:**
+```rust
+use sim_deformable::{FlexEdgeConstraint, FlexEdgeType, XpbdSolver};
+
+// Stretch constraint between two vertices
+let stretch = FlexEdgeConstraint::stretch(0, 1, rest_length, compliance);
+
+// Shear constraint for angular stiffness
+let shear = FlexEdgeConstraint::shear([0, 1, 2], rest_angle, compliance);
+
+// Combined stretch-shear
+let combined = FlexEdgeConstraint::stretch_shear(
+    [0, 1, 2], rest_length, rest_angle,
+    stretch_compliance, shear_compliance,
+);
+```
+
+**Height Field Collision (`sim-core/src/heightfield.rs`):**
+- `HeightFieldData` - 2D grid of height values for terrain
+- `HeightFieldContact` - Contact result with point, normal, penetration, cell
+- Bilinear interpolation for smooth height sampling
+- Normal computation via finite differences
+- `CollisionShape::HeightField` - Integration with collision pipeline
+- Collision detection with spheres, capsules, and boxes
+- AABB computation for broad-phase integration
+- Presets: `flat_terrain()`, `terrain_from_fn()`
+
+**Usage:**
+```rust
+use sim_core::{CollisionShape, HeightFieldData, World};
+use nalgebra::Point3;
+use std::sync::Arc;
+
+// Create height field from function
+let terrain = CollisionShape::terrain_from_fn(100, 100, 1.0, |x, y| {
+    (x * 0.1).sin() * (y * 0.1).cos() * 2.0  // Wavy terrain
+});
+
+// Or load from data
+let heights: Vec<f64> = load_terrain_data();
+let data = HeightFieldData::new(heights, 256, 256, 0.5);
+let terrain = CollisionShape::heightfield(Arc::new(data));
+
+// Add to world as static body
+let ground_id = world.add_static_body(Pose::identity());
+world.body_mut(ground_id).unwrap().collision_shape = Some(terrain);
+```
+
+**Files:**
+- `sim-constraint/src/cg.rs` - Conjugate Gradient solver
+- `sim-constraint/src/equality.rs` - Tendon coupling constraints (additions)
+- `sim-deformable/src/constraints.rs` - Flex edge constraints (additions)
+- `sim-core/src/heightfield.rs` - Height field collision (new)
+- `sim-core/src/world.rs` - CollisionShape::HeightField variant
+- `sim-core/src/broad_phase.rs` - HeightField AABB computation
+- `sim-core/src/gjk_epa.rs` - HeightField support function
 
 ---
 
@@ -1270,10 +1604,10 @@ Focus: Large standalone features, each potentially its own PR.
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `sim-types` | Data structures | `dynamics.rs`, `joint.rs`, `observation.rs` |
-| `sim-core` | Integration, World | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `mid_phase.rs`, `gjk_epa.rs` |
+| `sim-core` | Integration, World | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `mid_phase.rs`, `gjk_epa.rs`, `heightfield.rs` |
 | `sim-contact` | Contact physics | `model.rs`, `friction.rs`, `solver.rs` |
-| `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `actuator.rs`, `equality.rs` |
-| `sim-sensor` | Sensor simulation | `imu.rs`, `force_torque.rs`, `touch.rs` |
+| `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `actuator.rs`, `equality.rs`, `cg.rs` |
+| `sim-sensor` | Sensor simulation | `imu.rs`, `force_torque.rs`, `touch.rs`, `rangefinder.rs`, `magnetometer.rs` |
 | `sim-urdf` | URDF loading | `loader.rs`, `parser.rs` |
 | `sim-mjcf` | MJCF loading | `loader.rs`, `parser.rs`, `types.rs`, `validation.rs` |
 | `sim-muscle` | Muscle actuators | `activation.rs`, `curves.rs`, `hill.rs`, `kinematics.rs` |

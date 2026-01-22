@@ -428,6 +428,34 @@ impl SweepAndPrune {
                 let half_extents = Vector3::new(extent_x.sqrt(), extent_y.sqrt(), extent_z.sqrt());
                 Aabb::from_center(center, half_extents)
             }
+            CollisionShape::HeightField { data } => {
+                // Get local AABB of height field
+                let (local_min, local_max) = data.aabb();
+
+                // Transform to world space
+                let rotation = pose.rotation.to_rotation_matrix();
+
+                // Transform all 8 corners of the local AABB to world space
+                let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+                let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+
+                for &lx in &[local_min.x, local_max.x] {
+                    for &ly in &[local_min.y, local_max.y] {
+                        for &lz in &[local_min.z, local_max.z] {
+                            let local_corner = Vector3::new(lx, ly, lz);
+                            let world_corner = center + rotation * local_corner;
+                            min.x = min.x.min(world_corner.x);
+                            min.y = min.y.min(world_corner.y);
+                            min.z = min.z.min(world_corner.z);
+                            max.x = max.x.max(world_corner.x);
+                            max.y = max.y.max(world_corner.y);
+                            max.z = max.z.max(world_corner.z);
+                        }
+                    }
+                }
+
+                Aabb::new(min, max)
+            }
         };
 
         Some(aabb)

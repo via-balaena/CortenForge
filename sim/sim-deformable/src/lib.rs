@@ -150,7 +150,8 @@ pub mod types;
 pub use capsule_chain::{CapsuleChain, CapsuleChainConfig};
 pub use cloth::{Cloth, ClothConfig};
 pub use constraints::{
-    BendingConstraint, Constraint, ConstraintType, DistanceConstraint, VolumeConstraint,
+    BendingConstraint, Constraint, ConstraintType, DistanceConstraint, FlexEdgeConstraint,
+    FlexEdgeType, VolumeConstraint,
 };
 pub use error::DeformableError;
 pub use material::{Material, MaterialPreset};

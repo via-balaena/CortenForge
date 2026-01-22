@@ -826,6 +826,527 @@ impl CouplingGroup {
 }
 
 // ============================================================================
+// Tendon Constraint
+// ============================================================================
+
+/// A tendon constraint that couples multiple joints through a cable/tendon path.
+///
+/// Tendons model inextensible cables that route through multiple joints,
+/// coupling their motion. Unlike simple gear couplings, tendons:
+///
+/// - Can have varying moment arms at each joint
+/// - Can be routed through multiple waypoints
+/// - Model the total tendon length as constant (or spring-like)
+/// - Support slack/taut states
+///
+/// # Constraint Formulation
+///
+/// The tendon constraint enforces:
+///
+/// ```text
+/// L_total = Σᵢ rᵢ · qᵢ + L_rest
+/// ```
+///
+/// Where `rᵢ` is the moment arm at joint i, `qᵢ` is the joint position,
+/// and `L_rest` is the rest length when all joints are at zero.
+///
+/// # Example
+///
+/// ```ignore
+/// use sim_constraint::equality::TendonConstraint;
+/// use sim_types::JointId;
+///
+/// // Finger tendon routing through three joints
+/// let tendon = TendonConstraint::new("flexor")
+///     .with_joint(JointId::new(0), 0.01)  // MCP joint, 10mm moment arm
+///     .with_joint(JointId::new(1), 0.008) // PIP joint, 8mm moment arm
+///     .with_joint(JointId::new(2), 0.005) // DIP joint, 5mm moment arm
+///     .with_rest_length(0.1);             // 100mm rest length
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TendonConstraint {
+    /// Constraint name (for debugging).
+    name: String,
+
+    /// Joints and their moment arms (`joint_id`, `moment_arm`).
+    /// Positive moment arm means tendon shortens when joint increases.
+    joints: Vec<(JointId, f64)>,
+
+    /// Rest length of the tendon when all joints are at zero.
+    rest_length: f64,
+
+    /// Total length the tendon should maintain (`rest_length` by default).
+    target_length: f64,
+
+    /// Stiffness of the tendon (N/m). 0 = inextensible constraint.
+    stiffness: f64,
+
+    /// Damping coefficient for tendon stretching.
+    damping: f64,
+
+    /// Whether the tendon can go slack (push vs pull only).
+    can_slack: bool,
+
+    /// Whether this constraint is enabled.
+    enabled: bool,
+
+    /// Baumgarte stabilization factor.
+    baumgarte_factor: f64,
+
+    /// Maximum tension force the tendon can apply.
+    max_tension: f64,
+}
+
+impl TendonConstraint {
+    /// Create a new tendon constraint.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            joints: Vec::new(),
+            rest_length: 0.0,
+            target_length: 0.0,
+            stiffness: 0.0, // Inextensible by default
+            damping: 0.0,
+            can_slack: true, // Default: can go slack (pull only)
+            enabled: true,
+            baumgarte_factor: 0.2,
+            max_tension: f64::INFINITY,
+        }
+    }
+
+    /// Add a joint with its moment arm to the tendon path.
+    ///
+    /// The moment arm determines how much the tendon length changes per unit
+    /// joint rotation. Positive moment arm means tendon shortens when joint
+    /// angle increases.
+    #[must_use]
+    pub fn with_joint(mut self, joint: JointId, moment_arm: f64) -> Self {
+        self.joints.push((joint, moment_arm));
+        self
+    }
+
+    /// Set the rest length of the tendon.
+    ///
+    /// This is the length when all joints are at zero position.
+    #[must_use]
+    pub fn with_rest_length(mut self, length: f64) -> Self {
+        self.rest_length = length.max(0.0);
+        self.target_length = self.rest_length;
+        self
+    }
+
+    /// Set the target length (for variable-length actuated tendons).
+    #[must_use]
+    pub fn with_target_length(mut self, length: f64) -> Self {
+        self.target_length = length.max(0.0);
+        self
+    }
+
+    /// Set the stiffness (0 = inextensible, >0 = elastic).
+    ///
+    /// For biological tendons, stiffness is typically 100-1000 N/mm.
+    #[must_use]
+    pub fn with_stiffness(mut self, stiffness: f64) -> Self {
+        self.stiffness = stiffness.max(0.0);
+        self
+    }
+
+    /// Set the damping coefficient.
+    #[must_use]
+    pub fn with_damping(mut self, damping: f64) -> Self {
+        self.damping = damping.max(0.0);
+        self
+    }
+
+    /// Set whether the tendon can go slack.
+    ///
+    /// If true (default), the tendon only applies pulling forces.
+    /// If false, the tendon acts as a rigid rod (bidirectional constraint).
+    #[must_use]
+    pub fn with_can_slack(mut self, can_slack: bool) -> Self {
+        self.can_slack = can_slack;
+        self
+    }
+
+    /// Set maximum tension force.
+    #[must_use]
+    pub fn with_max_tension(mut self, max_tension: f64) -> Self {
+        self.max_tension = max_tension.abs();
+        self
+    }
+
+    /// Set the Baumgarte stabilization factor.
+    #[must_use]
+    pub fn with_baumgarte(mut self, factor: f64) -> Self {
+        self.baumgarte_factor = factor.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Enable or disable the constraint.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Get the constraint name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the joints and moment arms.
+    #[must_use]
+    pub fn joints(&self) -> &[(JointId, f64)] {
+        &self.joints
+    }
+
+    /// Get the rest length.
+    #[must_use]
+    pub fn rest_length(&self) -> f64 {
+        self.rest_length
+    }
+
+    /// Get the target length.
+    #[must_use]
+    pub fn target_length(&self) -> f64 {
+        self.target_length
+    }
+
+    /// Get the stiffness.
+    #[must_use]
+    pub fn stiffness(&self) -> f64 {
+        self.stiffness
+    }
+
+    /// Check if enabled.
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Enable the constraint.
+    pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+
+    /// Disable the constraint.
+    pub fn disable(&mut self) {
+        self.enabled = false;
+    }
+
+    /// Compute the current tendon length given joint positions.
+    ///
+    /// # Arguments
+    ///
+    /// * `get_position` - Function to get joint position by ID
+    ///
+    /// # Returns
+    ///
+    /// The current tendon length: `L_rest + Σᵢ rᵢ · qᵢ`
+    #[must_use]
+    pub fn compute_length<F>(&self, get_position: F) -> f64
+    where
+        F: Fn(JointId) -> f64,
+    {
+        let mut length = self.rest_length;
+        for &(joint, moment_arm) in &self.joints {
+            length += moment_arm * get_position(joint);
+        }
+        length
+    }
+
+    /// Compute the tendon length rate given joint velocities.
+    #[must_use]
+    pub fn compute_length_rate<F>(&self, get_velocity: F) -> f64
+    where
+        F: Fn(JointId) -> f64,
+    {
+        let mut rate = 0.0;
+        for &(joint, moment_arm) in &self.joints {
+            rate += moment_arm * get_velocity(joint);
+        }
+        rate
+    }
+
+    /// Compute the length error (how much the tendon has stretched/compressed).
+    #[must_use]
+    pub fn compute_error<F>(&self, get_position: F) -> f64
+    where
+        F: Fn(JointId) -> f64,
+    {
+        if !self.enabled {
+            return 0.0;
+        }
+
+        let current_length = self.compute_length(get_position);
+        let error = current_length - self.target_length;
+
+        // If tendon can slack and is not taut, no constraint error
+        if self.can_slack && error > 0.0 {
+            return 0.0;
+        }
+
+        error
+    }
+
+    /// Check if the tendon is currently taut.
+    #[must_use]
+    pub fn is_taut<F>(&self, get_position: F) -> bool
+    where
+        F: Fn(JointId) -> f64,
+    {
+        let current_length = self.compute_length(get_position);
+        current_length <= self.target_length
+    }
+
+    /// Compute the tension force in the tendon.
+    ///
+    /// Returns 0 if tendon is slack (when `can_slack` is true).
+    #[must_use]
+    pub fn compute_tension<P, V>(&self, get_position: P, get_velocity: V, dt: f64) -> f64
+    where
+        P: Fn(JointId) -> f64,
+        V: Fn(JointId) -> f64,
+    {
+        if !self.enabled || self.joints.is_empty() {
+            return 0.0;
+        }
+
+        let length_error = self.compute_error(&get_position);
+
+        // Check slack condition
+        if self.can_slack && length_error > 0.0 {
+            return 0.0;
+        }
+
+        let length_rate = self.compute_length_rate(&get_velocity);
+
+        // Compute tension based on whether tendon is elastic or inextensible
+        let tension = if self.stiffness > 0.0 {
+            // Elastic tendon: F = k * stretch + c * stretch_rate
+            let stretch = -length_error; // Positive when tendon is stretched
+            self.stiffness.mul_add(stretch, self.damping * -length_rate)
+        } else {
+            // Inextensible tendon: compute impulse using Baumgarte stabilization
+            let mut effective_mass_inv = 0.0;
+            for &(_, moment_arm) in &self.joints {
+                effective_mass_inv += moment_arm * moment_arm;
+            }
+
+            if effective_mass_inv.abs() < 1e-10 {
+                return 0.0;
+            }
+
+            // Constraint impulse: corrects position and velocity errors
+            let bias = self.baumgarte_factor * (-length_error) / dt;
+            let target_velocity = self.damping.mul_add(-length_rate, -length_rate - bias);
+
+            (target_velocity / effective_mass_inv).abs()
+        };
+
+        // Clamp to max tension and ensure non-negative (pulling only)
+        if self.can_slack {
+            tension.clamp(0.0, self.max_tension)
+        } else {
+            tension.clamp(-self.max_tension, self.max_tension)
+        }
+    }
+
+    /// Compute the forces on each joint due to tendon tension.
+    ///
+    /// # Returns
+    ///
+    /// Vector of (`JointId`, torque) pairs.
+    #[must_use]
+    pub fn compute_joint_forces<P, V>(
+        &self,
+        get_position: P,
+        get_velocity: V,
+        dt: f64,
+    ) -> Vec<(JointId, f64)>
+    where
+        P: Fn(JointId) -> f64,
+        V: Fn(JointId) -> f64,
+    {
+        let tension = self.compute_tension(&get_position, &get_velocity, dt);
+
+        self.joints
+            .iter()
+            .map(|&(joint, moment_arm)| {
+                // Torque = moment_arm * tension
+                // Positive tension pulling negative moment arm creates positive torque
+                (joint, -moment_arm * tension)
+            })
+            .collect()
+    }
+
+    /// Convert to a `JointCoupling` for use with the general coupling solver.
+    ///
+    /// Note: This loses the slack/tension information and treats the tendon
+    /// as a rigid linear constraint.
+    #[must_use]
+    pub fn to_coupling(&self) -> JointCoupling {
+        let mut coupling = JointCoupling::new(&self.name)
+            .with_offset(self.target_length - self.rest_length)
+            .with_baumgarte(self.baumgarte_factor)
+            .with_enabled(self.enabled);
+
+        for &(joint, moment_arm) in &self.joints {
+            coupling = coupling.with_joint(joint, moment_arm);
+        }
+
+        coupling
+    }
+
+    /// Create a simple two-joint tendon (like a finger flexor).
+    #[must_use]
+    pub fn two_joint(
+        name: impl Into<String>,
+        proximal: JointId,
+        proximal_arm: f64,
+        distal: JointId,
+        distal_arm: f64,
+        rest_length: f64,
+    ) -> Self {
+        Self::new(name)
+            .with_joint(proximal, proximal_arm)
+            .with_joint(distal, distal_arm)
+            .with_rest_length(rest_length)
+    }
+
+    /// Create a finger tendon with three joints (MCP, PIP, DIP).
+    #[must_use]
+    pub fn finger(
+        name: impl Into<String>,
+        mcp: JointId,
+        pip: JointId,
+        dip: JointId,
+        moment_arms: (f64, f64, f64),
+        rest_length: f64,
+    ) -> Self {
+        Self::new(name)
+            .with_joint(mcp, moment_arms.0)
+            .with_joint(pip, moment_arms.1)
+            .with_joint(dip, moment_arms.2)
+            .with_rest_length(rest_length)
+    }
+}
+
+impl Default for TendonConstraint {
+    fn default() -> Self {
+        Self::new("tendon")
+    }
+}
+
+// ============================================================================
+// Tendon Network
+// ============================================================================
+
+/// A network of interconnected tendons.
+///
+/// Manages multiple tendons that may share joints and solves them together
+/// for consistent force distribution.
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct TendonNetwork {
+    /// The tendons in this network.
+    tendons: Vec<TendonConstraint>,
+}
+
+impl TendonNetwork {
+    /// Create a new empty tendon network.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a tendon to the network.
+    pub fn add(&mut self, tendon: TendonConstraint) {
+        self.tendons.push(tendon);
+    }
+
+    /// Add a tendon (builder pattern).
+    #[must_use]
+    pub fn with_tendon(mut self, tendon: TendonConstraint) -> Self {
+        self.add(tendon);
+        self
+    }
+
+    /// Get the number of tendons.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.tendons.len()
+    }
+
+    /// Check if empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tendons.is_empty()
+    }
+
+    /// Get the tendons.
+    #[must_use]
+    pub fn tendons(&self) -> &[TendonConstraint] {
+        &self.tendons
+    }
+
+    /// Get mutable access to tendons.
+    pub fn tendons_mut(&mut self) -> &mut [TendonConstraint] {
+        &mut self.tendons
+    }
+
+    /// Compute forces on all joints from all tendons.
+    pub fn compute_all_forces<P, V>(
+        &self,
+        get_position: P,
+        get_velocity: V,
+        dt: f64,
+    ) -> std::collections::HashMap<JointId, f64>
+    where
+        P: Fn(JointId) -> f64 + Copy,
+        V: Fn(JointId) -> f64 + Copy,
+    {
+        let mut forces = std::collections::HashMap::new();
+
+        for tendon in &self.tendons {
+            for (joint, force) in tendon.compute_joint_forces(get_position, get_velocity, dt) {
+                *forces.entry(joint).or_insert(0.0) += force;
+            }
+        }
+
+        forces
+    }
+
+    /// Get all joints involved in any tendon.
+    #[must_use]
+    pub fn all_joints(&self) -> Vec<JointId> {
+        let mut joints = std::collections::HashSet::new();
+        for tendon in &self.tendons {
+            for &(joint, _) in tendon.joints() {
+                joints.insert(joint);
+            }
+        }
+        joints.into_iter().collect()
+    }
+
+    /// Get tensions for all tendons.
+    #[must_use]
+    pub fn compute_tensions<P, V>(&self, get_position: P, get_velocity: V, dt: f64) -> Vec<f64>
+    where
+        P: Fn(JointId) -> f64 + Copy,
+        V: Fn(JointId) -> f64 + Copy,
+    {
+        self.tendons
+            .iter()
+            .map(|t| t.compute_tension(get_position, get_velocity, dt))
+            .collect()
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1281,5 +1802,339 @@ mod tests {
         let correction = coupling.compute_correction(get_pos, get_vel, 0.01);
         // Should return non-zero correction
         assert!(correction.abs() > 0.0);
+    }
+
+    // ========================================================================
+    // Tendon Constraint Tests
+    // ========================================================================
+
+    #[test]
+    fn test_tendon_constraint_creation() {
+        let tendon = TendonConstraint::new("test_tendon")
+            .with_joint(JointId::new(0), 0.01)
+            .with_joint(JointId::new(1), 0.008)
+            .with_rest_length(0.1);
+
+        assert_eq!(tendon.name(), "test_tendon");
+        assert_eq!(tendon.joints().len(), 2);
+        assert_relative_eq!(tendon.rest_length(), 0.1, epsilon = 1e-10);
+        assert!(tendon.is_enabled());
+    }
+
+    #[test]
+    fn test_tendon_compute_length() {
+        let tendon = TendonConstraint::new("test")
+            .with_joint(JointId::new(0), 0.01)  // 10mm moment arm
+            .with_joint(JointId::new(1), 0.02)  // 20mm moment arm
+            .with_rest_length(0.1); // 100mm rest
+
+        // At zero position, length = rest_length
+        let get_pos_zero = |_: JointId| 0.0;
+        assert_relative_eq!(tendon.compute_length(get_pos_zero), 0.1, epsilon = 1e-10);
+
+        // At 1 rad each, length = 0.1 + 0.01*1 + 0.02*1 = 0.13
+        let get_pos = |_: JointId| 1.0;
+        assert_relative_eq!(tendon.compute_length(get_pos), 0.13, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tendon_slack_condition() {
+        let tendon = TendonConstraint::new("test")
+            .with_joint(JointId::new(0), 0.01)
+            .with_rest_length(0.1)
+            .with_can_slack(true);
+
+        // Tendon is slack when current length > target length
+        // At q=0, length = 0.1 = target, so taut
+        let get_pos_zero = |_: JointId| 0.0;
+        assert!(tendon.is_taut(get_pos_zero));
+
+        // At q=1, length = 0.1 + 0.01 = 0.11 > 0.1, so slack
+        let get_pos_one = |_: JointId| 1.0;
+        assert!(!tendon.is_taut(get_pos_one));
+
+        // Error should be 0 when slack (since can_slack = true)
+        let error = tendon.compute_error(get_pos_one);
+        assert_relative_eq!(error, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tendon_no_slack() {
+        let tendon = TendonConstraint::new("test")
+            .with_joint(JointId::new(0), 0.01)
+            .with_rest_length(0.1)
+            .with_can_slack(false); // Rigid rod behavior
+
+        // At q=1, length = 0.11, error = 0.01 (stretched)
+        let get_pos = |_: JointId| 1.0;
+        let error = tendon.compute_error(get_pos);
+        assert_relative_eq!(error, 0.01, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tendon_elastic() {
+        let tendon = TendonConstraint::new("elastic")
+            .with_joint(JointId::new(0), 0.01)
+            .with_rest_length(0.1)
+            .with_stiffness(1000.0)  // 1000 N/m
+            .with_can_slack(false);
+
+        // At q=-1, length = 0.1 - 0.01 = 0.09 < 0.1 (compressed by 0.01m)
+        let get_pos = |_: JointId| -1.0;
+        let get_vel = |_: JointId| 0.0;
+
+        let tension = tendon.compute_tension(get_pos, get_vel, 0.01);
+        // stretch = 0.01 (target - current = 0.1 - 0.09)
+        // tension = k * stretch = 1000 * 0.01 = 10 N
+        assert_relative_eq!(tension, 10.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_tendon_joint_forces() {
+        let tendon = TendonConstraint::new("test")
+            .with_joint(JointId::new(0), 0.01)
+            .with_joint(JointId::new(1), 0.02)
+            .with_rest_length(0.1)
+            .with_stiffness(1000.0)
+            .with_can_slack(false);
+
+        // Stretched tendon
+        let get_pos = |_: JointId| -0.5;
+        let get_vel = |_: JointId| 0.0;
+
+        let forces = tendon.compute_joint_forces(get_pos, get_vel, 0.01);
+        assert_eq!(forces.len(), 2);
+
+        // Forces should be non-zero
+        assert!(forces[0].1.abs() > 0.0);
+        assert!(forces[1].1.abs() > 0.0);
+
+        // Force ratio should match moment arm ratio
+        // Joint 1 has 2x moment arm, so should have 2x force
+        assert_relative_eq!(forces[1].1 / forces[0].1, 2.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_tendon_two_joint_preset() {
+        let tendon = TendonConstraint::two_joint(
+            "finger_flexor",
+            JointId::new(0),
+            0.01,
+            JointId::new(1),
+            0.008,
+            0.1,
+        );
+
+        assert_eq!(tendon.joints().len(), 2);
+        assert_eq!(tendon.joints()[0].0, JointId::new(0));
+        assert_relative_eq!(tendon.joints()[0].1, 0.01, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tendon_finger_preset() {
+        let tendon = TendonConstraint::finger(
+            "fdp",
+            JointId::new(0),      // MCP
+            JointId::new(1),      // PIP
+            JointId::new(2),      // DIP
+            (0.01, 0.008, 0.005), // moment arms
+            0.15,                 // rest length
+        );
+
+        assert_eq!(tendon.joints().len(), 3);
+        assert_relative_eq!(tendon.rest_length(), 0.15, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tendon_to_coupling() {
+        let tendon = TendonConstraint::new("test")
+            .with_joint(JointId::new(0), 0.01)
+            .with_joint(JointId::new(1), 0.02)
+            .with_rest_length(0.1)
+            .with_target_length(0.12);
+
+        let coupling = tendon.to_coupling();
+
+        assert_eq!(coupling.coefficients().len(), 2);
+        assert_relative_eq!(coupling.offset(), 0.02, epsilon = 1e-10); // 0.12 - 0.1
+    }
+
+    #[test]
+    fn test_tendon_enable_disable() {
+        let mut tendon = TendonConstraint::new("test")
+            .with_joint(JointId::new(0), 0.01)
+            .with_rest_length(0.1);
+
+        assert!(tendon.is_enabled());
+
+        tendon.disable();
+        assert!(!tendon.is_enabled());
+
+        // Error should be 0 when disabled
+        let error = tendon.compute_error(|_| -1.0);
+        assert_relative_eq!(error, 0.0, epsilon = 1e-10);
+
+        tendon.enable();
+        assert!(tendon.is_enabled());
+    }
+
+    #[test]
+    fn test_tendon_max_tension() {
+        let tendon = TendonConstraint::new("test")
+            .with_joint(JointId::new(0), 0.01)
+            .with_rest_length(0.1)
+            .with_stiffness(100_000.0)  // Very stiff
+            .with_max_tension(100.0)   // Clamp to 100N
+            .with_can_slack(false);
+
+        // Large stretch
+        let get_pos = |_: JointId| -10.0;
+        let get_vel = |_: JointId| 0.0;
+
+        let tension = tendon.compute_tension(get_pos, get_vel, 0.01);
+        // Should be clamped to max
+        assert_relative_eq!(tension, 100.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_tendon_network() {
+        let network = TendonNetwork::new()
+            .with_tendon(
+                TendonConstraint::new("t1")
+                    .with_joint(JointId::new(0), 0.01)
+                    .with_rest_length(0.1),
+            )
+            .with_tendon(
+                TendonConstraint::new("t2")
+                    .with_joint(JointId::new(1), 0.02)
+                    .with_rest_length(0.15),
+            );
+
+        assert_eq!(network.len(), 2);
+        assert!(!network.is_empty());
+
+        let joints = network.all_joints();
+        assert_eq!(joints.len(), 2);
+    }
+
+    #[test]
+    fn test_tendon_network_forces() {
+        let network = TendonNetwork::new()
+            .with_tendon(
+                TendonConstraint::new("t1")
+                    .with_joint(JointId::new(0), 0.01)
+                    .with_rest_length(0.1)
+                    .with_stiffness(1000.0)
+                    .with_can_slack(false),
+            )
+            .with_tendon(
+                TendonConstraint::new("t2")
+                .with_joint(JointId::new(0), 0.02)  // Same joint, different tendon
+                .with_rest_length(0.1)
+                .with_stiffness(1000.0)
+                .with_can_slack(false),
+            );
+
+        let get_pos = |_: JointId| -0.5;
+        let get_vel = |_: JointId| 0.0;
+
+        let forces = network.compute_all_forces(get_pos, get_vel, 0.01);
+
+        // Joint 0 should have forces from both tendons combined
+        assert!(forces.contains_key(&JointId::new(0)));
+        assert!(forces[&JointId::new(0)].abs() > 0.0);
+    }
+
+    #[test]
+    fn test_tendon_network_tensions() {
+        let network = TendonNetwork::new()
+            .with_tendon(
+                TendonConstraint::new("t1")
+                    .with_joint(JointId::new(0), 0.01)
+                    .with_rest_length(0.1)
+                    .with_stiffness(1000.0)
+                    .with_can_slack(false),
+            )
+            .with_tendon(
+                TendonConstraint::new("t2")
+                    .with_joint(JointId::new(1), 0.02)
+                    .with_rest_length(0.1)
+                    .with_stiffness(2000.0)
+                    .with_can_slack(false),
+            );
+
+        let get_pos = |_: JointId| -0.5;
+        let get_vel = |_: JointId| 0.0;
+
+        let tensions = network.compute_tensions(get_pos, get_vel, 0.01);
+        assert_eq!(tensions.len(), 2);
+        assert!(tensions[0] > 0.0);
+        assert!(tensions[1] > 0.0);
+    }
+
+    #[test]
+    fn test_tendon_default() {
+        let tendon = TendonConstraint::default();
+        assert_eq!(tendon.name(), "tendon");
+        assert!(tendon.joints().is_empty());
+    }
+
+    #[test]
+    fn test_tendon_config_accessors() {
+        let tendon = TendonConstraint::new("test")
+            .with_stiffness(500.0)
+            .with_target_length(0.15);
+
+        assert_relative_eq!(tendon.stiffness(), 500.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon.target_length(), 0.15, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tendon_network_tendons_mut() {
+        let mut network = TendonNetwork::new().with_tendon(
+            TendonConstraint::new("t1")
+                .with_joint(JointId::new(0), 0.01)
+                .with_rest_length(0.1),
+        );
+
+        network.tendons_mut()[0].disable();
+        assert!(!network.tendons()[0].is_enabled());
+    }
+
+    #[test]
+    fn test_tendon_length_rate() {
+        let tendon = TendonConstraint::new("test")
+            .with_joint(JointId::new(0), 0.01)
+            .with_joint(JointId::new(1), 0.02)
+            .with_rest_length(0.1);
+
+        // Velocities: joint 0 at 1 rad/s, joint 1 at 2 rad/s
+        let get_vel = |id: JointId| if id.raw() == 0 { 1.0 } else { 2.0 };
+
+        // Rate = 0.01 * 1.0 + 0.02 * 2.0 = 0.05 m/s
+        let rate = tendon.compute_length_rate(get_vel);
+        assert_relative_eq!(rate, 0.05, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tendon_disabled_tension() {
+        let tendon = TendonConstraint::new("test")
+            .with_joint(JointId::new(0), 0.01)
+            .with_rest_length(0.1)
+            .with_stiffness(1000.0)
+            .with_enabled(false);
+
+        let tension = tendon.compute_tension(|_| -1.0, |_| 0.0, 0.01);
+        assert_relative_eq!(tension, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tendon_empty_joints_tension() {
+        let tendon = TendonConstraint::new("empty")
+            .with_rest_length(0.1)
+            .with_stiffness(1000.0);
+
+        let tension = tendon.compute_tension(|_| -1.0, |_| 0.0, 0.01);
+        assert_relative_eq!(tension, 0.0, epsilon = 1e-10);
     }
 }
