@@ -24,9 +24,11 @@
 //!
 //! # Constraint Solvers
 //!
-//! Three solvers are available:
+//! Four solvers are available:
 //!
-//! - [`ConstraintSolver`]: Gauss-Seidel iterative solver (8-16 iterations typical)
+//! - [`ConstraintSolver`]: Simple per-joint Gauss-Seidel solver (8-16 iterations typical)
+//! - [`PGSSolver`]: Full Projected Gauss-Seidel solver with SOR (100 iterations typical,
+//!   MuJoCo-compatible, supports warm-starting and convergence tracking)
 //! - [`NewtonConstraintSolver`]: Newton-Raphson solver with analytical Jacobians
 //!   (2-3 iterations typical, faster convergence for stiff systems)
 //! - [`CGSolver`]: Conjugate Gradient solver for large sparse systems
@@ -106,6 +108,7 @@ mod motor;
 #[cfg(feature = "muscle")]
 mod muscle;
 mod newton;
+mod pgs;
 mod solver;
 mod sparse;
 mod types;
@@ -129,6 +132,7 @@ pub use motor::{JointMotor, MotorMode};
 #[cfg(feature = "muscle")]
 pub use muscle::{MuscleCommands, MuscleJoint, MuscleJointBuilder};
 pub use newton::{NewtonConstraintSolver, NewtonSolverConfig, NewtonSolverResult, SolverStats};
+pub use pgs::{PGSSolver, PGSSolverConfig, PGSSolverResult, PGSSolverStats};
 pub use solver::{BodyState, ConstraintSolver, ConstraintSolverConfig, JointForce, SolverResult};
 pub use sparse::{InvMassBlock, JacobianBuilder, SparseEffectiveMass, SparseJacobian};
 pub use types::{ConstraintForce, JointState, JointVelocity};

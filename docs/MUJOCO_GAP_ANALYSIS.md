@@ -12,7 +12,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ### ✅ Fully Implemented (Phases 1-9 Complete)
 - Integration methods (Euler, RK4, Verlet, Implicit)
-- Constraint solvers (Newton, CG, Islands, Warm Starting)
+- Constraint solvers (Newton, CG, **PGS with SOR**, Islands, Warm Starting)
 - Contact model (Compliant, Elliptic/Pyramidal friction, Torsional/Rolling)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free, Planar, Cylindrical**)
@@ -31,11 +31,10 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | **4** | Multi-threading | Medium | Medium | [§12](#12-performance-optimizations) |
 | **5** | MJB binary format | Low | Low | [§13](#13-model-format) |
 
-### ⚠️ Partial Implementations (5 items - needs completion)
+### ⚠️ Partial Implementations (4 items - needs completion)
 
 | Feature | Current State | What's Missing | Section |
 |---------|---------------|----------------|---------|
-| PGS (Gauss-Seidel) solver | Has relaxation param | Full iterative solver with SOR | [§2](#2-constraint-solvers) |
 | SIMD optimization | Via nalgebra only | Explicit vectorization for hot paths | [§12](#12-performance-optimizations) |
 | MJCF `<default>` element | Joint and geom defaults | Actuator, tendon, sensor defaults | [§13](#13-model-format) |
 | MJCF `<geom>` element | Primitives + mesh (convex) | Non-convex mesh collision | [§13](#13-model-format) |
@@ -121,7 +120,7 @@ integrate_with_method_and_damping(
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| PGS (Gauss-Seidel) | Supported | Partial (relaxation param) | **Partial** | Medium | Low |
+| PGS (Gauss-Seidel) | Supported | `PGSSolver` with SOR | **Implemented** | - | - |
 | Newton solver | Default, 2-3 iterations | `NewtonConstraintSolver` | **Implemented** | - | - |
 | Conjugate Gradient | Supported | `CGSolver` | **Implemented** | - | - |
 | Constraint islands | Auto-detected | `ConstraintIslands` | **Implemented** | - | - |
@@ -164,6 +163,72 @@ if result.converged {
 ```
 
 **Files:** `sim-constraint/src/newton.rs`
+
+### Implementation Notes: PGS (Gauss-Seidel) Solver ✅ COMPLETED
+
+The PGS solver implements a full iterative Projected Gauss-Seidel method with
+Successive Over-Relaxation (SOR), matching MuJoCo's PGS solver capabilities.
+
+**Algorithm:**
+For each constraint i, we iteratively solve:
+```
+λ_i^{new} = (b_i - Σ_{j<i} A_ij λ_j^{new} - Σ_{j>i} A_ij λ_j^{old}) / A_ii
+```
+
+With SOR, the update becomes:
+```
+λ_i^{new} = (1 - ω) * λ_i^{old} + ω * λ_i^{gauss-seidel}
+```
+
+Where ω is the relaxation factor:
+- ω = 1.0: Standard Gauss-Seidel
+- ω < 1.0: Under-relaxation (more stable, slower convergence)
+- ω > 1.0: Over-relaxation (faster convergence, typically 1.2-1.8)
+
+**Implemented:**
+- `PGSSolver` - Full iterative Gauss-Seidel solver
+- `PGSSolverConfig` - Configurable tolerance, max iterations, SOR factor
+- SOR support with configurable relaxation factor (0 < ω < 2)
+- Warm starting from previous frame's solution
+- Convergence tracking with optional residual history
+- Configuration presets: `default()`, `realtime()`, `mujoco()`, `fast()`, `high_accuracy()`
+
+**Usage:**
+```rust
+use sim_constraint::{PGSSolver, PGSSolverConfig, RevoluteJoint};
+use sim_types::BodyId;
+use nalgebra::Vector3;
+
+// Create PGS solver with MuJoCo-compatible settings
+let mut solver = PGSSolver::new(PGSSolverConfig::mujoco());
+
+// Or customize with SOR for faster convergence
+let config = PGSSolverConfig {
+    max_iterations: 100,
+    tolerance: 1e-6,
+    sor_factor: 1.3,  // Over-relaxation
+    warm_starting: true,
+    warm_start_factor: 0.9,
+    ..Default::default()
+};
+let mut solver = PGSSolver::new(config);
+
+// Solve constraints
+let result = solver.solve(&joints, |id| get_body_state(id), dt);
+
+// Check convergence
+if result.converged {
+    println!("Converged in {} iterations (residual: {:.2e})",
+        result.iterations_used, result.residual_norm);
+}
+
+// Access statistics
+let stats = solver.last_stats();
+println!("Used warm start: {}, SOR factor: {}",
+    stats.used_warm_start, stats.sor_factor);
+```
+
+**Files:** `sim-constraint/src/pgs.rs`
 
 ### Implementation Notes: Constraint Islands ✅ COMPLETED
 
