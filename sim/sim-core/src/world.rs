@@ -1962,6 +1962,29 @@ impl World {
                 )
                 .map(|c| c.flip()),
 
+            // Sdf-HeightField
+            (CollisionShape::Sdf { data }, CollisionShape::HeightField { data: hf }) => self
+                .detect_sdf_heightfield_contact(
+                    data,
+                    &body_a.state.pose,
+                    hf,
+                    &body_b.state.pose,
+                    body_a.id,
+                    body_b.id,
+                ),
+
+            // HeightField-Sdf (flip)
+            (CollisionShape::HeightField { data: hf }, CollisionShape::Sdf { data }) => self
+                .detect_sdf_heightfield_contact(
+                    data,
+                    &body_b.state.pose,
+                    hf,
+                    &body_a.state.pose,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
             // =====================================================================
             // Triangle mesh collisions
             // =====================================================================
@@ -2396,6 +2419,29 @@ impl World {
             contact.penetration,
             sdf_body_id,
             mesh_body_id,
+        ))
+    }
+
+    /// Detect contact between an SDF and a height field.
+    #[allow(clippy::unused_self)]
+    fn detect_sdf_heightfield_contact(
+        &self,
+        sdf: &crate::sdf::SdfCollisionData,
+        sdf_pose: &Pose,
+        heightfield: &crate::heightfield::HeightFieldData,
+        heightfield_pose: &Pose,
+        sdf_body_id: BodyId,
+        heightfield_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact =
+            crate::sdf::sdf_heightfield_contact(sdf, sdf_pose, heightfield, heightfield_pose)?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            sdf_body_id,
+            heightfield_body_id,
         ))
     }
 

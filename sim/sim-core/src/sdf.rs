@@ -1203,6 +1203,149 @@ pub fn sdf_plane_contact(
     deepest_contact
 }
 
+/// Query an SDF for contact with a height field.
+///
+/// Samples height field grid points in the overlap region between the SDF AABB
+/// and the height field AABB, finding the deepest penetration where the height
+/// field surface intersects the SDF interior.
+///
+/// # Arguments
+///
+/// * `sdf` - The SDF collision data
+/// * `sdf_pose` - The pose of the SDF in world space
+/// * `heightfield` - The height field data
+/// * `heightfield_pose` - The pose of the height field in world space
+///
+/// # Returns
+///
+/// Contact information if the height field surface penetrates the SDF, with:
+/// - `point`: Contact point on the height field surface (world space)
+/// - `normal`: Surface normal at contact point (pointing outward from SDF)
+/// - `penetration`: Depth of the deepest height field point penetration
+#[must_use]
+pub fn sdf_heightfield_contact(
+    sdf: &SdfCollisionData,
+    sdf_pose: &Pose,
+    heightfield: &crate::heightfield::HeightFieldData,
+    heightfield_pose: &Pose,
+) -> Option<SdfContact> {
+    // Compute AABB overlap between SDF and height field in world space
+    let (sdf_aabb_min, sdf_aabb_max) = sdf.aabb();
+    let (hf_aabb_min, hf_aabb_max) = heightfield.aabb();
+
+    // Transform SDF AABB corners to world space
+    let sdf_world_min = sdf_pose.transform_point(&sdf_aabb_min);
+    let sdf_world_max = sdf_pose.transform_point(&sdf_aabb_max);
+
+    // Handle rotation by computing actual world-space AABB
+    let sdf_world_aabb_min = Point3::new(
+        sdf_world_min.x.min(sdf_world_max.x),
+        sdf_world_min.y.min(sdf_world_max.y),
+        sdf_world_min.z.min(sdf_world_max.z),
+    );
+    let sdf_world_aabb_max = Point3::new(
+        sdf_world_min.x.max(sdf_world_max.x),
+        sdf_world_min.y.max(sdf_world_max.y),
+        sdf_world_min.z.max(sdf_world_max.z),
+    );
+
+    // Transform height field AABB corners to world space
+    let hf_world_min = heightfield_pose.transform_point(&hf_aabb_min);
+    let hf_world_max = heightfield_pose.transform_point(&hf_aabb_max);
+
+    // Handle rotation by computing actual world-space AABB
+    let hf_world_aabb_min = Point3::new(
+        hf_world_min.x.min(hf_world_max.x),
+        hf_world_min.y.min(hf_world_max.y),
+        hf_world_min.z.min(hf_world_max.z),
+    );
+    let hf_world_aabb_max = Point3::new(
+        hf_world_min.x.max(hf_world_max.x),
+        hf_world_min.y.max(hf_world_max.y),
+        hf_world_min.z.max(hf_world_max.z),
+    );
+
+    // Check for AABB overlap
+    if sdf_world_aabb_max.x < hf_world_aabb_min.x
+        || sdf_world_aabb_min.x > hf_world_aabb_max.x
+        || sdf_world_aabb_max.y < hf_world_aabb_min.y
+        || sdf_world_aabb_min.y > hf_world_aabb_max.y
+        || sdf_world_aabb_max.z < hf_world_aabb_min.z
+        || sdf_world_aabb_min.z > hf_world_aabb_max.z
+    {
+        return None;
+    }
+
+    // Transform SDF world AABB to height field local space for cell iteration
+    let sdf_in_hf_min = heightfield_pose.inverse_transform_point(&sdf_world_aabb_min);
+    let sdf_in_hf_max = heightfield_pose.inverse_transform_point(&sdf_world_aabb_max);
+
+    // Get the overlap region in height field local coordinates
+    let overlap_min = Point3::new(
+        sdf_in_hf_min.x.min(sdf_in_hf_max.x).max(0.0),
+        sdf_in_hf_min.y.min(sdf_in_hf_max.y).max(0.0),
+        sdf_in_hf_min.z.min(sdf_in_hf_max.z),
+    );
+    let overlap_max = Point3::new(
+        sdf_in_hf_min
+            .x
+            .max(sdf_in_hf_max.x)
+            .min(heightfield.extent_x()),
+        sdf_in_hf_min
+            .y
+            .max(sdf_in_hf_max.y)
+            .min(heightfield.extent_y()),
+        sdf_in_hf_min.z.max(sdf_in_hf_max.z),
+    );
+
+    let mut deepest_contact: Option<SdfContact> = None;
+    let mut max_penetration = 0.0;
+
+    // Iterate over height field grid points in the overlap region
+    for (cx, cy) in heightfield.cells_in_aabb(overlap_min, overlap_max) {
+        // Check the four corners of each cell
+        for (dx, dy) in &[(0, 0), (1, 0), (0, 1), (1, 1)] {
+            let gx = cx + dx;
+            let gy = cy + dy;
+
+            // Get the height field vertex position in local space
+            if let Some(local_hf_point) = heightfield.vertex_position(gx, gy) {
+                // Transform to world space
+                let world_point = heightfield_pose.transform_point(&local_hf_point);
+
+                // Transform to SDF local space
+                let sdf_local = sdf_pose.inverse_transform_point(&world_point);
+
+                // Query SDF distance
+                if let Some(distance) = sdf.distance(sdf_local) {
+                    // Penetration is positive when inside the SDF (negative distance)
+                    let penetration = -distance;
+
+                    if penetration > max_penetration {
+                        max_penetration = penetration;
+
+                        // Get SDF normal at this point
+                        if let Some(sdf_local_normal) = sdf.gradient(sdf_local) {
+                            // The contact point is on the SDF surface
+                            let sdf_surface_local = sdf_local + sdf_local_normal * distance;
+                            let world_contact = sdf_pose.transform_point(&sdf_surface_local);
+                            let world_normal = sdf_pose.rotation * sdf_local_normal;
+
+                            deepest_contact = Some(SdfContact {
+                                point: world_contact,
+                                normal: world_normal,
+                                penetration,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    deepest_contact
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -2099,5 +2242,163 @@ mod tests {
 
         let c = contact.unwrap();
         assert!(c.penetration > 0.0);
+    }
+
+    // =========================================================================
+    // HeightField contact tests
+    // =========================================================================
+
+    #[test]
+    fn test_sdf_heightfield_contact_no_collision() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Height field entirely below the sphere (sphere at z=0 with radius 1, lowest point z=-1)
+        // Height field at z=-5, so entirely below
+        let hf = crate::heightfield::HeightFieldData::flat(10, 10, 1.0, -5.0);
+        let hf_pose = Pose::identity();
+
+        let contact = sdf_heightfield_contact(&sdf, &sdf_pose, &hf, &hf_pose);
+        assert!(
+            contact.is_none(),
+            "Height field far below SDF should have no contact"
+        );
+    }
+
+    #[test]
+    fn test_sdf_heightfield_contact_collision() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Height field at z=0.5, should intersect the sphere (radius 1, centered at origin)
+        let hf = crate::heightfield::HeightFieldData::flat(10, 10, 0.5, 0.5);
+        // Position height field so it overlaps with sphere center area
+        let hf_pose = Pose::from_position(Point3::new(-2.0, -2.0, 0.0));
+
+        let contact = sdf_heightfield_contact(&sdf, &sdf_pose, &hf, &hf_pose);
+        assert!(
+            contact.is_some(),
+            "Height field intersecting SDF should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0, "should have positive penetration");
+    }
+
+    #[test]
+    fn test_sdf_heightfield_contact_deep_penetration() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Height field at z=0 (passing through sphere center)
+        let hf = crate::heightfield::HeightFieldData::flat(10, 10, 0.5, 0.0);
+        let hf_pose = Pose::from_position(Point3::new(-2.0, -2.0, 0.0));
+
+        let contact = sdf_heightfield_contact(&sdf, &sdf_pose, &hf, &hf_pose);
+        assert!(
+            contact.is_some(),
+            "Height field at sphere center should have contact"
+        );
+
+        let c = contact.unwrap();
+        // At the center of the sphere, penetration should be approximately the radius
+        assert!(
+            c.penetration > 0.5,
+            "should have deep penetration (got {})",
+            c.penetration
+        );
+    }
+
+    #[test]
+    fn test_sdf_heightfield_contact_with_transformed_poses() {
+        let sdf = sphere_sdf(32);
+        // Translate the SDF by (5, 0, 0)
+        let sdf_pose = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
+
+        // Height field at z=0.5, positioned to overlap with SDF at (5, 0, 0)
+        let hf = crate::heightfield::HeightFieldData::flat(10, 10, 0.5, 0.5);
+        let hf_pose = Pose::from_position(Point3::new(3.0, -2.0, 0.0));
+
+        let contact = sdf_heightfield_contact(&sdf, &sdf_pose, &hf, &hf_pose);
+        assert!(
+            contact.is_some(),
+            "Height field intersecting translated SDF should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0);
+    }
+
+    #[test]
+    fn test_sdf_heightfield_contact_tilted_terrain() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Create a sloped height field: z = 0.5 * x
+        // This creates terrain that varies in height
+        let hf = crate::heightfield::HeightFieldData::from_fn(10, 10, 0.5, |x, _y| x * 0.3);
+        let hf_pose = Pose::from_position(Point3::new(-2.0, -2.0, 0.0));
+
+        let contact = sdf_heightfield_contact(&sdf, &sdf_pose, &hf, &hf_pose);
+        assert!(
+            contact.is_some(),
+            "Sloped height field intersecting SDF should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0);
+    }
+
+    #[test]
+    fn test_sdf_heightfield_contact_entirely_above() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Height field at z=5, entirely above the sphere
+        let hf = crate::heightfield::HeightFieldData::flat(10, 10, 1.0, 5.0);
+        let hf_pose = Pose::from_position(Point3::new(-2.0, -2.0, 0.0));
+
+        let contact = sdf_heightfield_contact(&sdf, &sdf_pose, &hf, &hf_pose);
+        assert!(
+            contact.is_none(),
+            "Height field entirely above SDF should have no contact"
+        );
+    }
+
+    #[test]
+    fn test_sdf_heightfield_contact_box_sdf() {
+        // Test with a box SDF instead of sphere
+        let sdf =
+            SdfCollisionData::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let sdf_pose = Pose::identity();
+
+        // Height field at z=0.3, should intersect the box (extends from -0.5 to 0.5 in Z)
+        let hf = crate::heightfield::HeightFieldData::flat(10, 10, 0.3, 0.3);
+        let hf_pose = Pose::from_position(Point3::new(-1.0, -1.0, 0.0));
+
+        let contact = sdf_heightfield_contact(&sdf, &sdf_pose, &hf, &hf_pose);
+        assert!(
+            contact.is_some(),
+            "Height field intersecting box SDF should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0);
+    }
+
+    #[test]
+    fn test_sdf_heightfield_contact_outside_xy_bounds() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Height field positioned far away in XY plane
+        let hf = crate::heightfield::HeightFieldData::flat(5, 5, 1.0, 0.0);
+        let hf_pose = Pose::from_position(Point3::new(10.0, 10.0, 0.0));
+
+        let contact = sdf_heightfield_contact(&sdf, &sdf_pose, &hf, &hf_pose);
+        assert!(
+            contact.is_none(),
+            "Height field outside XY bounds should have no contact"
+        );
     }
 }
