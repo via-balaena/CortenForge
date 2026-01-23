@@ -109,7 +109,7 @@ pub struct BodyState {
 }
 
 impl BodyState {
-    /// Create a static body state.
+    /// Create a static/fixed body state (infinite mass, cannot move).
     #[must_use]
     pub fn fixed(position: Point3<f64>) -> Self {
         Self {
@@ -121,6 +121,89 @@ impl BodyState {
             inv_inertia: Matrix3::zeros(),
             is_static: true,
         }
+    }
+
+    /// Create a dynamic body at rest with the given mass properties.
+    ///
+    /// # Arguments
+    ///
+    /// * `position` - World position of the body
+    /// * `mass` - Mass of the body (must be positive)
+    /// * `inertia` - Inertia tensor (diagonal elements, e.g., `[Ixx, Iyy, Izz]`)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use sim_constraint::BodyState;
+    /// use nalgebra::{Point3, Vector3};
+    ///
+    /// // Create a 1kg body with uniform inertia of 0.1
+    /// let body = BodyState::dynamic(
+    ///     Point3::new(0.0, 0.0, 1.0),
+    ///     1.0,
+    ///     Vector3::new(0.1, 0.1, 0.1),
+    /// );
+    /// ```
+    #[must_use]
+    pub fn dynamic(position: Point3<f64>, mass: f64, inertia: Vector3<f64>) -> Self {
+        let inv_mass = if mass > 0.0 { 1.0 / mass } else { 0.0 };
+        let inv_inertia = Matrix3::from_diagonal(&Vector3::new(
+            if inertia.x > 0.0 {
+                1.0 / inertia.x
+            } else {
+                0.0
+            },
+            if inertia.y > 0.0 {
+                1.0 / inertia.y
+            } else {
+                0.0
+            },
+            if inertia.z > 0.0 {
+                1.0 / inertia.z
+            } else {
+                0.0
+            },
+        ));
+
+        Self {
+            position,
+            rotation: Matrix3::identity(),
+            linear_velocity: Vector3::zeros(),
+            angular_velocity: Vector3::zeros(),
+            inv_mass,
+            inv_inertia,
+            is_static: false,
+        }
+    }
+
+    /// Create a dynamic body with initial velocity.
+    ///
+    /// # Arguments
+    ///
+    /// * `position` - World position of the body
+    /// * `mass` - Mass of the body (must be positive)
+    /// * `inertia` - Inertia tensor (diagonal elements)
+    /// * `linear_velocity` - Initial linear velocity
+    /// * `angular_velocity` - Initial angular velocity
+    #[must_use]
+    pub fn dynamic_with_velocity(
+        position: Point3<f64>,
+        mass: f64,
+        inertia: Vector3<f64>,
+        linear_velocity: Vector3<f64>,
+        angular_velocity: Vector3<f64>,
+    ) -> Self {
+        let mut state = Self::dynamic(position, mass, inertia);
+        state.linear_velocity = linear_velocity;
+        state.angular_velocity = angular_velocity;
+        state
+    }
+
+    /// Set the rotation matrix.
+    #[must_use]
+    pub fn with_rotation(mut self, rotation: Matrix3<f64>) -> Self {
+        self.rotation = rotation;
+        self
     }
 }
 
@@ -200,6 +283,39 @@ impl ConstraintSolver {
             forces,
             iterations_used: self.config.velocity_iterations,
         }
+    }
+
+    /// Solve constraints using a slice of body states indexed by `BodyId::raw()`.
+    ///
+    /// This is a convenience method for the common case where body states are stored
+    /// in a contiguous slice indexed by body ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `joints` - The joints to solve
+    /// * `bodies` - Slice of body states where `bodies[id.raw()]` gives the state for body `id`
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use sim_constraint::{ConstraintSolver, ConstraintSolverConfig, BodyState, RevoluteJoint};
+    /// use sim_types::BodyId;
+    /// use nalgebra::{Point3, Vector3};
+    ///
+    /// let bodies = vec![
+    ///     BodyState::fixed(Point3::origin()),
+    ///     BodyState::dynamic(Point3::new(0.0, 0.0, 1.0), 1.0, Vector3::new(0.1, 0.1, 0.1)),
+    /// ];
+    /// let joints = vec![
+    ///     RevoluteJoint::new(BodyId::new(0), BodyId::new(1), Vector3::z()),
+    /// ];
+    ///
+    /// let mut solver = ConstraintSolver::new(ConstraintSolverConfig::default());
+    /// let result = solver.solve_slice(&joints, &bodies);
+    /// ```
+    #[allow(clippy::cast_possible_truncation)] // BodyId fits in usize for practical use
+    pub fn solve_slice<J: Joint>(&mut self, joints: &[J], bodies: &[BodyState]) -> SolverResult {
+        self.solve(joints, |id| bodies.get(id.raw() as usize).copied())
     }
 
     /// Solve a single joint constraint.

@@ -21,6 +21,12 @@ rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx = { workspace = true }
+criterion = { workspace = true }
+rand = { workspace = true }
+
+[[bench]]
+name = "collision_benchmarks"
+harness = false
 
 [features]
 default = []

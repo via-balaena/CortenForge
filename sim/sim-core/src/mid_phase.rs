@@ -34,7 +34,7 @@
 //! ```
 
 use crate::broad_phase::{Aabb, Axis};
-use nalgebra::Point3;
+use nalgebra::{Isometry3, Point3};
 
 /// A primitive that can be stored in the BVH.
 ///
@@ -553,6 +553,91 @@ pub fn bvh_from_triangle_mesh(vertices: &[Point3<f64>], indices: &[usize]) -> Bv
     Bvh::build(primitives)
 }
 
+/// Query two BVHs for potentially colliding triangle pairs.
+///
+/// Performs dual-tree traversal of two BVHs, pruning branches where AABBs don't overlap.
+/// Returns candidate triangle pairs that may intersect, which should be tested with
+/// narrow-phase collision detection (e.g., `triangle_triangle_intersection`).
+///
+/// # Arguments
+///
+/// * `bvh_a` - BVH for mesh A (in mesh A's local space)
+/// * `bvh_b` - BVH for mesh B (in mesh B's local space)
+/// * `transform_a` - Transform from mesh A's local space to world space
+/// * `transform_b` - Transform from mesh B's local space to world space
+///
+/// # Returns
+///
+/// Vector of `(tri_index_a, tri_index_b)` pairs representing potentially colliding triangles.
+///
+/// # Example
+///
+/// ```ignore
+/// use sim_core::mid_phase::{query_bvh_pair, Bvh};
+/// use nalgebra::Isometry3;
+///
+/// let bvh_a = /* BVH for mesh A */;
+/// let bvh_b = /* BVH for mesh B */;
+/// let transform_a = Isometry3::identity();
+/// let transform_b = Isometry3::translation(1.0, 0.0, 0.0);
+///
+/// let pairs = query_bvh_pair(&bvh_a, &bvh_b, &transform_a, &transform_b);
+/// for (tri_a, tri_b) in pairs {
+///     // Test triangles for intersection
+/// }
+/// ```
+#[must_use]
+pub fn query_bvh_pair(
+    bvh_a: &Bvh,
+    bvh_b: &Bvh,
+    transform_a: &Isometry3<f64>,
+    transform_b: &Isometry3<f64>,
+) -> Vec<(usize, usize)> {
+    // Compute the relative transform: B's local space to A's local space
+    // If point_b is in B's local space, then:
+    //   world = transform_b * point_b
+    //   local_a = transform_a^-1 * world = transform_a^-1 * transform_b * point_b
+    let transform_b_to_a = transform_a.inverse() * transform_b;
+
+    // Use the existing query_pairs method with a transform function
+    bvh_a.query_pairs(bvh_b, |aabb_b| transform_aabb(aabb_b, &transform_b_to_a))
+}
+
+/// Transform an AABB by an isometry.
+///
+/// Since AABBs are axis-aligned, transforming by a rotation will generally
+/// produce a larger AABB that bounds the rotated box.
+fn transform_aabb(aabb: &Aabb, transform: &Isometry3<f64>) -> Aabb {
+    // Get the 8 corners of the AABB
+    let corners = [
+        Point3::new(aabb.min.x, aabb.min.y, aabb.min.z),
+        Point3::new(aabb.max.x, aabb.min.y, aabb.min.z),
+        Point3::new(aabb.min.x, aabb.max.y, aabb.min.z),
+        Point3::new(aabb.max.x, aabb.max.y, aabb.min.z),
+        Point3::new(aabb.min.x, aabb.min.y, aabb.max.z),
+        Point3::new(aabb.max.x, aabb.min.y, aabb.max.z),
+        Point3::new(aabb.min.x, aabb.max.y, aabb.max.z),
+        Point3::new(aabb.max.x, aabb.max.y, aabb.max.z),
+    ];
+
+    // Transform all corners and compute new AABB
+    let first = transform * corners[0];
+    let mut min = first;
+    let mut max = first;
+
+    for corner in &corners[1..] {
+        let transformed = transform * corner;
+        min.x = min.x.min(transformed.x);
+        min.y = min.y.min(transformed.y);
+        min.z = min.z.min(transformed.z);
+        max.x = max.x.max(transformed.x);
+        max.y = max.y.max(transformed.y);
+        max.z = max.z.max(transformed.z);
+    }
+
+    Aabb::new(min, max)
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -767,5 +852,117 @@ mod tests {
         assert!(pairs.iter().any(|&(a, b)| a == 0 && b == 0));
         // Second primitives should not overlap
         assert!(!pairs.iter().any(|&(a, b)| a == 1 && b == 1));
+    }
+
+    #[test]
+    fn test_query_bvh_pair_identity_transform() {
+        // Create two BVHs with overlapping primitives
+        let prims_a = vec![
+            BvhPrimitive::new(
+                Aabb::from_center(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0)),
+                0,
+            ),
+            BvhPrimitive::new(
+                Aabb::from_center(Point3::new(5.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0)),
+                1,
+            ),
+        ];
+        let prims_b = vec![BvhPrimitive::new(
+            Aabb::from_center(Point3::new(0.5, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0)),
+            0,
+        )];
+
+        let bvh_a = Bvh::build(prims_a);
+        let bvh_b = Bvh::build(prims_b);
+
+        // With identity transforms, the BVHs overlap at first primitive
+        let pairs = super::query_bvh_pair(
+            &bvh_a,
+            &bvh_b,
+            &Isometry3::identity(),
+            &Isometry3::identity(),
+        );
+
+        assert!(pairs.iter().any(|&(a, b)| a == 0 && b == 0));
+        assert!(!pairs.iter().any(|&(a, _)| a == 1));
+    }
+
+    #[test]
+    fn test_query_bvh_pair_with_translation() {
+        // Create two BVHs
+        let prims_a = vec![BvhPrimitive::new(
+            Aabb::from_center(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0)),
+            0,
+        )];
+        let prims_b = vec![BvhPrimitive::new(
+            Aabb::from_center(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0)),
+            0,
+        )];
+
+        let bvh_a = Bvh::build(prims_a);
+        let bvh_b = Bvh::build(prims_b);
+
+        // With identity transform for A and translation for B, they should not overlap
+        let transform_a = Isometry3::identity();
+        let transform_b = Isometry3::translation(10.0, 0.0, 0.0);
+
+        let pairs = super::query_bvh_pair(&bvh_a, &bvh_b, &transform_a, &transform_b);
+        assert!(pairs.is_empty(), "Separated BVHs should not produce pairs");
+
+        // With B translated close, they should overlap
+        let transform_b_close = Isometry3::translation(0.5, 0.0, 0.0);
+        let pairs_close = super::query_bvh_pair(&bvh_a, &bvh_b, &transform_a, &transform_b_close);
+        assert!(
+            !pairs_close.is_empty(),
+            "Overlapping BVHs should produce pairs"
+        );
+    }
+
+    #[test]
+    fn test_query_bvh_pair_with_rotation() {
+        // Create a long thin BVH for B
+        let prims_a = vec![BvhPrimitive::new(
+            Aabb::from_center(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0)),
+            0,
+        )];
+        // B is a long thin box along X
+        let prims_b = vec![BvhPrimitive::new(
+            Aabb::from_center(Point3::new(0.0, 0.0, 0.0), Vector3::new(3.0, 0.2, 0.2)),
+            0,
+        )];
+
+        let bvh_a = Bvh::build(prims_a);
+        let bvh_b = Bvh::build(prims_b);
+
+        // With identity transforms, they overlap
+        let pairs = super::query_bvh_pair(
+            &bvh_a,
+            &bvh_b,
+            &Isometry3::identity(),
+            &Isometry3::identity(),
+        );
+        assert!(!pairs.is_empty());
+
+        // With B translated far on X, they don't overlap
+        let transform_b = Isometry3::translation(5.0, 0.0, 0.0);
+        let pairs_far = super::query_bvh_pair(&bvh_a, &bvh_b, &Isometry3::identity(), &transform_b);
+        assert!(pairs_far.is_empty());
+    }
+
+    #[test]
+    fn test_transform_aabb() {
+        let aabb = Aabb::from_center(Point3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0));
+
+        // Identity transform should preserve the AABB
+        let identity = Isometry3::identity();
+        let result = super::transform_aabb(&aabb, &identity);
+        assert!((result.min.x - aabb.min.x).abs() < 1e-10);
+        assert!((result.max.x - aabb.max.x).abs() < 1e-10);
+
+        // Translation should shift the AABB
+        let translation = Isometry3::translation(5.0, 0.0, 0.0);
+        let result = super::transform_aabb(&aabb, &translation);
+        assert!((result.min.x - (-1.0 + 5.0)).abs() < 1e-10);
+        assert!((result.max.x - (1.0 + 5.0)).abs() < 1e-10);
     }
 }

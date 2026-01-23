@@ -408,8 +408,8 @@ impl MjcfLoader {
         let connect_constraints =
             self.convert_connect_constraints(&model.equality.connects, &body_to_id)?;
 
-        // Convert actuators
-        let (actuators, actuator_to_index) = self.convert_actuators(&model.actuators);
+        // Convert actuators (with defaults applied)
+        let (actuators, actuator_to_index) = self.convert_actuators(&model.actuators, &resolver);
 
         // Convert options to solver config
         let solver_config = ExtendedSolverConfig::from(&model.option);
@@ -1049,12 +1049,15 @@ impl MjcfLoader {
     fn convert_actuators(
         &self,
         mjcf_actuators: &[MjcfActuator],
+        resolver: &DefaultResolver,
     ) -> (Vec<LoadedActuator>, HashMap<String, usize>) {
         let mut actuators = Vec::new();
         let mut actuator_to_index = HashMap::new();
 
         for mjcf_actuator in mjcf_actuators {
-            let loaded = self.convert_single_actuator(mjcf_actuator);
+            // Apply defaults to the actuator
+            let resolved_actuator = resolver.apply_to_actuator(mjcf_actuator);
+            let loaded = self.convert_single_actuator(&resolved_actuator);
 
             if !loaded.name.is_empty() {
                 actuator_to_index.insert(loaded.name.clone(), actuators.len());
@@ -1610,6 +1613,64 @@ mod tests {
         // Check that joint defaults were applied
         let shoulder = &model.joints[0];
         assert_relative_eq!(shoulder.damping, 1.0, epsilon = 1e-10);
+
+        // Check that actuator defaults were applied
+        assert_eq!(model.actuators.len(), 1);
+        let actuator = &model.actuators[0];
+        assert_eq!(actuator.name, "shoulder_motor");
+        assert_relative_eq!(actuator.gear, 50.0, epsilon = 1e-10);
+        assert_eq!(actuator.ctrlrange, Some((-1.0, 1.0)));
+    }
+
+    #[test]
+    fn test_actuator_defaults_applied() {
+        // Test that actuator defaults are correctly applied to actuators
+        let xml = r#"
+            <mujoco model="actuator_defaults">
+                <default>
+                    <motor gear="100" ctrlrange="-2 2" forcerange="-50 50"/>
+                    <default class="weak">
+                        <motor gear="10" ctrlrange="-0.5 0.5"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="link">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.5"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="strong_motor" joint="j1"/>
+                    <motor name="weak_motor" joint="j1" class="weak"/>
+                    <motor name="override_motor" joint="j1" gear="200"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        assert_eq!(model.actuators.len(), 3);
+
+        // First actuator uses root defaults
+        let strong = &model.actuators[0];
+        assert_eq!(strong.name, "strong_motor");
+        assert_relative_eq!(strong.gear, 100.0, epsilon = 1e-10);
+        assert_eq!(strong.ctrlrange, Some((-2.0, 2.0)));
+        assert_eq!(strong.forcerange, Some((-50.0, 50.0)));
+
+        // Second actuator uses "weak" class defaults
+        let weak = &model.actuators[1];
+        assert_eq!(weak.name, "weak_motor");
+        assert_relative_eq!(weak.gear, 10.0, epsilon = 1e-10);
+        assert_eq!(weak.ctrlrange, Some((-0.5, 0.5)));
+        // forcerange should be inherited from root
+        assert_eq!(weak.forcerange, Some((-50.0, 50.0)));
+
+        // Third actuator overrides gear explicitly
+        let override_actuator = &model.actuators[2];
+        assert_eq!(override_actuator.name, "override_motor");
+        assert_relative_eq!(override_actuator.gear, 200.0, epsilon = 1e-10);
+        // Other values should come from root defaults
+        assert_eq!(override_actuator.ctrlrange, Some((-2.0, 2.0)));
     }
 
     // ========================================================================

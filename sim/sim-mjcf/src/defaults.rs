@@ -34,8 +34,8 @@ use std::collections::HashMap;
 
 use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfDefault, MjcfGeom, MjcfGeomDefaults, MjcfJoint,
-    MjcfJointDefaults, MjcfMeshDefaults, MjcfModel, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
-    MjcfTendonDefaults,
+    MjcfJointDefaults, MjcfMeshDefaults, MjcfModel, MjcfSensor, MjcfSensorDefaults, MjcfSite,
+    MjcfSiteDefaults, MjcfTendon, MjcfTendonDefaults,
 };
 
 /// Resolves and applies default classes to MJCF elements.
@@ -302,6 +302,98 @@ impl DefaultResolver {
             if (result.rgba - nalgebra::Vector4::new(1.0, 0.0, 0.0, 1.0)).norm() < 1e-10 {
                 if let Some(rgba) = defaults.rgba {
                     result.rgba = rgba;
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Apply defaults to a tendon, returning a new tendon with defaults applied.
+    ///
+    /// Values explicitly set on the tendon take precedence over defaults.
+    #[must_use]
+    pub fn apply_to_tendon(&self, tendon: &MjcfTendon) -> MjcfTendon {
+        let mut result = tendon.clone();
+
+        if let Some(defaults) = self.tendon_defaults(tendon.class.as_deref()) {
+            // Range: apply default if None
+            if result.range.is_none() {
+                result.range = defaults.range;
+            }
+
+            // Limited: apply default if false
+            if !result.limited {
+                if let Some(limited) = defaults.limited {
+                    result.limited = limited;
+                }
+            }
+
+            // Stiffness: apply default if zero
+            if result.stiffness == 0.0 {
+                if let Some(stiffness) = defaults.stiffness {
+                    result.stiffness = stiffness;
+                }
+            }
+
+            // Damping: apply default if zero
+            if result.damping == 0.0 {
+                if let Some(damping) = defaults.damping {
+                    result.damping = damping;
+                }
+            }
+
+            // Friction loss: apply default if zero
+            if result.frictionloss == 0.0 {
+                if let Some(frictionloss) = defaults.frictionloss {
+                    result.frictionloss = frictionloss;
+                }
+            }
+
+            // Width: apply default if at default value (0.003)
+            if (result.width - 0.003).abs() < 1e-10 {
+                if let Some(width) = defaults.width {
+                    result.width = width;
+                }
+            }
+
+            // RGBA: apply default if at default gray
+            if (result.rgba - nalgebra::Vector4::new(0.5, 0.5, 0.5, 1.0)).norm() < 1e-10 {
+                if let Some(rgba) = defaults.rgba {
+                    result.rgba = rgba;
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Apply defaults to a sensor, returning a new sensor with defaults applied.
+    ///
+    /// Values explicitly set on the sensor take precedence over defaults.
+    #[must_use]
+    pub fn apply_to_sensor(&self, sensor: &MjcfSensor) -> MjcfSensor {
+        let mut result = sensor.clone();
+
+        if let Some(defaults) = self.sensor_defaults(sensor.class.as_deref()) {
+            // Noise: apply default if zero
+            if result.noise == 0.0 {
+                if let Some(noise) = defaults.noise {
+                    result.noise = noise;
+                }
+            }
+
+            // Cutoff: apply default if zero
+            if result.cutoff == 0.0 {
+                if let Some(cutoff) = defaults.cutoff {
+                    result.cutoff = cutoff;
+                }
+            }
+
+            // User: apply default if empty
+            if result.user.is_empty() {
+                if let Some(ref user) = defaults.user {
+                    result.user.clone_from(user);
                 }
             }
         }
@@ -790,5 +882,164 @@ mod tests {
 
         // Nonexistent class should return None
         assert!(resolver.joint_defaults(Some("nonexistent")).is_none());
+    }
+
+    #[test]
+    fn test_apply_to_tendon() {
+        use crate::types::MjcfTendon;
+
+        let defaults = vec![MjcfDefault {
+            class: "cable".to_string(),
+            parent_class: None,
+            tendon: Some(MjcfTendonDefaults {
+                stiffness: Some(1000.0),
+                damping: Some(10.0),
+                width: Some(0.01),
+                rgba: Some(Vector4::new(1.0, 0.0, 0.0, 1.0)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let resolver = DefaultResolver::new(&defaults);
+
+        // Tendon with no explicit values
+        let tendon = MjcfTendon {
+            class: Some("cable".to_string()),
+            ..Default::default()
+        };
+
+        let resolved = resolver.apply_to_tendon(&tendon);
+        assert_relative_eq!(resolved.stiffness, 1000.0, epsilon = 1e-10);
+        assert_relative_eq!(resolved.damping, 10.0, epsilon = 1e-10);
+        assert_relative_eq!(resolved.width, 0.01, epsilon = 1e-10);
+        assert_relative_eq!(resolved.rgba.x, 1.0, epsilon = 1e-10);
+
+        // Tendon with explicit stiffness should keep it
+        let tendon_with_stiffness = MjcfTendon {
+            class: Some("cable".to_string()),
+            stiffness: 500.0,
+            ..Default::default()
+        };
+
+        let resolved = resolver.apply_to_tendon(&tendon_with_stiffness);
+        assert_relative_eq!(resolved.stiffness, 500.0, epsilon = 1e-10); // Kept explicit
+        assert_relative_eq!(resolved.damping, 10.0, epsilon = 1e-10); // Got default
+    }
+
+    #[test]
+    fn test_apply_to_sensor() {
+        use crate::types::MjcfSensor;
+
+        let defaults = vec![MjcfDefault {
+            class: "noisy".to_string(),
+            parent_class: None,
+            sensor: Some(MjcfSensorDefaults {
+                noise: Some(0.01),
+                cutoff: Some(100.0),
+                user: Some(vec![1.0, 2.0, 3.0]),
+            }),
+            ..Default::default()
+        }];
+
+        let resolver = DefaultResolver::new(&defaults);
+
+        // Sensor with no explicit values
+        let sensor = MjcfSensor {
+            class: Some("noisy".to_string()),
+            ..Default::default()
+        };
+
+        let resolved = resolver.apply_to_sensor(&sensor);
+        assert_relative_eq!(resolved.noise, 0.01, epsilon = 1e-10);
+        assert_relative_eq!(resolved.cutoff, 100.0, epsilon = 1e-10);
+        assert_eq!(resolved.user, vec![1.0, 2.0, 3.0]);
+
+        // Sensor with explicit noise should keep it
+        let sensor_with_noise = MjcfSensor {
+            class: Some("noisy".to_string()),
+            noise: 0.05,
+            ..Default::default()
+        };
+
+        let resolved = resolver.apply_to_sensor(&sensor_with_noise);
+        assert_relative_eq!(resolved.noise, 0.05, epsilon = 1e-10); // Kept explicit
+        assert_relative_eq!(resolved.cutoff, 100.0, epsilon = 1e-10); // Got default
+    }
+
+    #[test]
+    fn test_tendon_defaults_inheritance() {
+        use crate::types::MjcfTendon;
+
+        let defaults = vec![
+            MjcfDefault {
+                class: String::new(), // Root default
+                parent_class: None,
+                tendon: Some(MjcfTendonDefaults {
+                    stiffness: Some(100.0),
+                    damping: Some(1.0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            MjcfDefault {
+                class: "strong".to_string(),
+                parent_class: Some(String::new()),
+                tendon: Some(MjcfTendonDefaults {
+                    stiffness: Some(1000.0), // Override stiffness
+                    ..Default::default()     // Inherit damping
+                }),
+                ..Default::default()
+            },
+        ];
+
+        let resolver = DefaultResolver::new(&defaults);
+
+        let tendon = MjcfTendon {
+            class: Some("strong".to_string()),
+            ..Default::default()
+        };
+
+        let resolved = resolver.apply_to_tendon(&tendon);
+        assert_relative_eq!(resolved.stiffness, 1000.0, epsilon = 1e-10); // From "strong"
+        assert_relative_eq!(resolved.damping, 1.0, epsilon = 1e-10); // Inherited from root
+    }
+
+    #[test]
+    fn test_sensor_defaults_inheritance() {
+        use crate::types::MjcfSensor;
+
+        let defaults = vec![
+            MjcfDefault {
+                class: String::new(), // Root default
+                parent_class: None,
+                sensor: Some(MjcfSensorDefaults {
+                    noise: Some(0.001),
+                    cutoff: Some(50.0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            MjcfDefault {
+                class: "filtered".to_string(),
+                parent_class: Some(String::new()),
+                sensor: Some(MjcfSensorDefaults {
+                    cutoff: Some(10.0),   // Override cutoff with lower value
+                    ..Default::default()  // Inherit noise
+                }),
+                ..Default::default()
+            },
+        ];
+
+        let resolver = DefaultResolver::new(&defaults);
+
+        let sensor = MjcfSensor {
+            class: Some("filtered".to_string()),
+            ..Default::default()
+        };
+
+        let resolved = resolver.apply_to_sensor(&sensor);
+        assert_relative_eq!(resolved.noise, 0.001, epsilon = 1e-10); // Inherited from root
+        assert_relative_eq!(resolved.cutoff, 10.0, epsilon = 1e-10); // From "filtered"
     }
 }
