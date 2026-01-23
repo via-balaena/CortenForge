@@ -65,9 +65,9 @@ Tracking progress on remaining MuJoCo feature gaps and infrastructure improvemen
 - [x] **Add performance benchmarks using criterion**
   - Hot paths benchmarked:
     - [x] Mesh-mesh collision (`sim-core/benches/collision_benchmarks.rs`)
-    - [ ] Constraint solving
-    - [ ] BVH queries
-    - [ ] Triangle-primitive collision
+    - [x] Constraint solving (simple, PGS, Newton solvers + comparison)
+    - [x] BVH queries (construction, query, from_mesh)
+    - [x] Triangle-primitive collision (sphere, capsule, box, closest_point)
 
 ---
 
@@ -98,3 +98,6 @@ Tracking progress on remaining MuJoCo feature gaps and infrastructure improvemen
 | 2026-01-23 | SDF Milestone 6: Sdf ↔ Sdf | ✅ Complete |
 | 2026-01-23 | MJCF `<default>` element (Actuator, Tendon, Sensor) | ✅ Complete |
 | 2026-01-23 | Sync gap analysis document | ✅ Complete |
+| 2026-01-23 | Constraint solver benchmarks + API improvements | ✅ Complete |
+| 2026-01-23 | BVH benchmarks (construction, query, from_mesh) | ✅ Complete |
+| 2026-01-23 | Triangle-primitive collision benchmarks | ✅ Complete |
