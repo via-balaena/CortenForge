@@ -971,6 +971,146 @@ pub fn sdf_convex_mesh_contact(
     deepest_contact
 }
 
+/// Query an SDF for contact with a triangle mesh.
+///
+/// Samples all mesh vertices and optionally edge midpoints against the SDF,
+/// returning the deepest penetration contact.
+///
+/// # Arguments
+///
+/// * `sdf` - The SDF collision data
+/// * `sdf_pose` - The pose of the SDF in world space
+/// * `mesh` - The triangle mesh data
+/// * `mesh_pose` - The pose of the triangle mesh in world space
+///
+/// # Returns
+///
+/// Contact information if any mesh vertex penetrates the SDF surface, with:
+/// - `point`: Contact point on the SDF surface (world space)
+/// - `normal`: Surface normal at contact point (pointing outward from SDF)
+/// - `penetration`: Depth of the deepest vertex penetration
+#[must_use]
+pub fn sdf_triangle_mesh_contact(
+    sdf: &SdfCollisionData,
+    sdf_pose: &Pose,
+    mesh: &crate::mesh::TriangleMeshData,
+    mesh_pose: &Pose,
+) -> Option<SdfContact> {
+    // Early out: Check if mesh AABB overlaps with SDF AABB
+    let (sdf_aabb_min, sdf_aabb_max) = sdf.aabb();
+    let (mesh_aabb_min, mesh_aabb_max) = mesh.aabb();
+
+    // Transform SDF AABB corners to world space and compute world-space AABB
+    let sdf_world_min = sdf_pose.transform_point(&sdf_aabb_min);
+    let sdf_world_max = sdf_pose.transform_point(&sdf_aabb_max);
+    let sdf_world_aabb_min = Point3::new(
+        sdf_world_min.x.min(sdf_world_max.x),
+        sdf_world_min.y.min(sdf_world_max.y),
+        sdf_world_min.z.min(sdf_world_max.z),
+    );
+    let sdf_world_aabb_max = Point3::new(
+        sdf_world_min.x.max(sdf_world_max.x),
+        sdf_world_min.y.max(sdf_world_max.y),
+        sdf_world_min.z.max(sdf_world_max.z),
+    );
+
+    // Transform mesh AABB corners to world space and compute world-space AABB
+    let mesh_world_min = mesh_pose.transform_point(&mesh_aabb_min);
+    let mesh_world_max = mesh_pose.transform_point(&mesh_aabb_max);
+    let mesh_world_aabb_min = Point3::new(
+        mesh_world_min.x.min(mesh_world_max.x),
+        mesh_world_min.y.min(mesh_world_max.y),
+        mesh_world_min.z.min(mesh_world_max.z),
+    );
+    let mesh_world_aabb_max = Point3::new(
+        mesh_world_min.x.max(mesh_world_max.x),
+        mesh_world_min.y.max(mesh_world_max.y),
+        mesh_world_min.z.max(mesh_world_max.z),
+    );
+
+    // Check for AABB overlap
+    if sdf_world_aabb_max.x < mesh_world_aabb_min.x
+        || sdf_world_aabb_min.x > mesh_world_aabb_max.x
+        || sdf_world_aabb_max.y < mesh_world_aabb_min.y
+        || sdf_world_aabb_min.y > mesh_world_aabb_max.y
+        || sdf_world_aabb_max.z < mesh_world_aabb_min.z
+        || sdf_world_aabb_min.z > mesh_world_aabb_max.z
+    {
+        return None;
+    }
+
+    let mut deepest_contact: Option<SdfContact> = None;
+    let mut max_penetration = 0.0;
+
+    // Sample all mesh vertices against the SDF
+    for local_vertex in mesh.vertices() {
+        // Transform: mesh local -> world -> SDF local
+        let world_vertex = mesh_pose.transform_point(local_vertex);
+        let sdf_local = sdf_pose.inverse_transform_point(&world_vertex);
+
+        if let Some(distance) = sdf.distance(sdf_local) {
+            let penetration = -distance; // Positive when inside
+
+            if penetration > max_penetration {
+                max_penetration = penetration;
+
+                if let Some(local_normal) = sdf.gradient(sdf_local) {
+                    let local_contact = sdf_local + local_normal * distance;
+
+                    let world_contact = sdf_pose.transform_point(&local_contact);
+                    let world_normal = sdf_pose.rotation * local_normal;
+
+                    deepest_contact = Some(SdfContact {
+                        point: world_contact,
+                        normal: world_normal,
+                        penetration,
+                    });
+                }
+            }
+        }
+    }
+
+    // Also sample edge midpoints for better accuracy on large triangles
+    for tri in mesh.triangles() {
+        let (v0, v1, v2) = mesh.triangle_vertices(tri);
+
+        // Edge midpoints
+        let midpoints = [
+            Point3::from((v0.coords + v1.coords) * 0.5),
+            Point3::from((v1.coords + v2.coords) * 0.5),
+            Point3::from((v2.coords + v0.coords) * 0.5),
+        ];
+
+        for local_midpoint in &midpoints {
+            let world_midpoint = mesh_pose.transform_point(local_midpoint);
+            let sdf_local = sdf_pose.inverse_transform_point(&world_midpoint);
+
+            if let Some(distance) = sdf.distance(sdf_local) {
+                let penetration = -distance;
+
+                if penetration > max_penetration {
+                    max_penetration = penetration;
+
+                    if let Some(local_normal) = sdf.gradient(sdf_local) {
+                        let local_contact = sdf_local + local_normal * distance;
+
+                        let world_contact = sdf_pose.transform_point(&local_contact);
+                        let world_normal = sdf_pose.rotation * local_normal;
+
+                        deepest_contact = Some(SdfContact {
+                            point: world_contact,
+                            normal: world_normal,
+                            penetration,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    deepest_contact
+}
+
 /// Query an SDF for contact with an infinite plane.
 ///
 /// Samples SDF grid points that are near the surface (where |distance| is small)
@@ -1767,6 +1907,194 @@ mod tests {
         assert!(
             contact.is_some(),
             "Box SDF intersecting plane should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0);
+    }
+
+    // =========================================================================
+    // Triangle mesh contact tests
+    // =========================================================================
+
+    /// Create a simple tetrahedron mesh for testing
+    fn create_tetrahedron_mesh() -> crate::mesh::TriangleMeshData {
+        let vertices = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 1.0, 0.0),
+            Point3::new(0.5, 0.33, 0.8),
+        ];
+        let indices = vec![
+            0, 1, 2, // bottom
+            0, 1, 3, // front
+            1, 2, 3, // right
+            0, 2, 3, // left
+        ];
+        crate::mesh::TriangleMeshData::new(vertices, indices)
+    }
+
+    /// Create a simple cube mesh for testing
+    fn create_cube_mesh() -> crate::mesh::TriangleMeshData {
+        let vertices = vec![
+            // Bottom face
+            Point3::new(-0.5, -0.5, -0.5),
+            Point3::new(0.5, -0.5, -0.5),
+            Point3::new(0.5, 0.5, -0.5),
+            Point3::new(-0.5, 0.5, -0.5),
+            // Top face
+            Point3::new(-0.5, -0.5, 0.5),
+            Point3::new(0.5, -0.5, 0.5),
+            Point3::new(0.5, 0.5, 0.5),
+            Point3::new(-0.5, 0.5, 0.5),
+        ];
+        // Two triangles per face
+        let indices = vec![
+            // Bottom (-Z)
+            0, 1, 2, 0, 2, 3, // Top (+Z)
+            4, 6, 5, 4, 7, 6, // Front (-Y)
+            0, 5, 1, 0, 4, 5, // Back (+Y)
+            2, 7, 3, 2, 6, 7, // Left (-X)
+            0, 7, 4, 0, 3, 7, // Right (+X)
+            1, 6, 2, 1, 5, 6,
+        ];
+        crate::mesh::TriangleMeshData::new(vertices, indices)
+    }
+
+    #[test]
+    fn test_sdf_triangle_mesh_contact_no_collision() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Mesh far outside sphere - no contact
+        let mesh = create_tetrahedron_mesh();
+        let mesh_pose = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
+
+        let contact = sdf_triangle_mesh_contact(&sdf, &sdf_pose, &mesh, &mesh_pose);
+        assert!(
+            contact.is_none(),
+            "Mesh far from SDF should have no contact"
+        );
+    }
+
+    #[test]
+    fn test_sdf_triangle_mesh_contact_collision() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Tetrahedron intersecting the sphere
+        let mesh = create_tetrahedron_mesh();
+        let mesh_pose = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
+
+        let contact = sdf_triangle_mesh_contact(&sdf, &sdf_pose, &mesh, &mesh_pose);
+        assert!(
+            contact.is_some(),
+            "Mesh intersecting SDF should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0, "should have positive penetration");
+    }
+
+    #[test]
+    fn test_sdf_triangle_mesh_contact_deep_penetration() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Small tetrahedron at center of sphere (maximum penetration)
+        let mesh = create_tetrahedron_mesh();
+        let mesh_pose = Pose::from_position(Point3::new(-0.3, -0.3, -0.2));
+
+        let contact = sdf_triangle_mesh_contact(&sdf, &sdf_pose, &mesh, &mesh_pose);
+        assert!(contact.is_some(), "Mesh inside SDF should have contact");
+
+        let c = contact.unwrap();
+        // Should have significant penetration
+        assert!(
+            c.penetration > 0.3,
+            "should have deep penetration (got {})",
+            c.penetration
+        );
+    }
+
+    #[test]
+    fn test_sdf_triangle_mesh_contact_with_transformed_poses() {
+        let sdf = sphere_sdf(32);
+        // Translate the SDF by (5, 0, 0)
+        let sdf_pose = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
+
+        // Tetrahedron at (5, 0, 0) should be at origin of SDF local space
+        let mesh = create_tetrahedron_mesh();
+        let mesh_pose = Pose::from_position(Point3::new(5.5, 0.0, 0.0));
+
+        let contact = sdf_triangle_mesh_contact(&sdf, &sdf_pose, &mesh, &mesh_pose);
+        assert!(
+            contact.is_some(),
+            "Mesh at translated SDF location should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0);
+    }
+
+    #[test]
+    fn test_sdf_triangle_mesh_contact_with_rotation() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Cube rotated 45 degrees around Z-axis
+        use nalgebra::UnitQuaternion;
+        let rotation = UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_4);
+        let mesh = create_cube_mesh();
+        let mesh_pose = Pose::from_position_rotation(Point3::new(0.8, 0.0, 0.0), rotation);
+
+        let contact = sdf_triangle_mesh_contact(&sdf, &sdf_pose, &mesh, &mesh_pose);
+        assert!(
+            contact.is_some(),
+            "Rotated mesh intersecting SDF should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0);
+    }
+
+    #[test]
+    fn test_sdf_triangle_mesh_contact_cube_mesh() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Cube outside sphere - no contact
+        let mesh = create_cube_mesh();
+        let mesh_pose = Pose::from_position(Point3::new(3.0, 0.0, 0.0));
+        let contact = sdf_triangle_mesh_contact(&sdf, &sdf_pose, &mesh, &mesh_pose);
+        assert!(contact.is_none(), "Cube far from sphere should not contact");
+
+        // Cube intersecting sphere
+        let mesh_pose = Pose::from_position(Point3::new(0.9, 0.0, 0.0));
+        let contact = sdf_triangle_mesh_contact(&sdf, &sdf_pose, &mesh, &mesh_pose);
+        assert!(
+            contact.is_some(),
+            "Cube intersecting sphere should have contact"
+        );
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0);
+    }
+
+    #[test]
+    fn test_sdf_triangle_mesh_contact_box_sdf() {
+        // Test with a box SDF instead of sphere
+        let sdf =
+            SdfCollisionData::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let sdf_pose = Pose::identity();
+
+        // Tetrahedron intersecting the box
+        let mesh = create_tetrahedron_mesh();
+        let mesh_pose = Pose::from_position(Point3::new(0.3, 0.0, 0.0));
+
+        let contact = sdf_triangle_mesh_contact(&sdf, &sdf_pose, &mesh, &mesh_pose);
+        assert!(
+            contact.is_some(),
+            "Mesh intersecting box SDF should have contact"
         );
 
         let c = contact.unwrap();

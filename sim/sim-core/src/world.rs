@@ -1939,6 +1939,29 @@ impl World {
                 )
                 .map(|c| c.flip()),
 
+            // Sdf-TriangleMesh
+            (CollisionShape::Sdf { data }, CollisionShape::TriangleMesh { data: mesh }) => self
+                .detect_sdf_triangle_mesh_contact(
+                    data,
+                    &body_a.state.pose,
+                    mesh,
+                    &body_b.state.pose,
+                    body_a.id,
+                    body_b.id,
+                ),
+
+            // TriangleMesh-Sdf (flip)
+            (CollisionShape::TriangleMesh { data: mesh }, CollisionShape::Sdf { data }) => self
+                .detect_sdf_triangle_mesh_contact(
+                    data,
+                    &body_b.state.pose,
+                    mesh,
+                    &body_a.state.pose,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
             // =====================================================================
             // Triangle mesh collisions
             // =====================================================================
@@ -2351,6 +2374,28 @@ impl World {
             contact.penetration,
             sdf_body_id,
             plane_body_id,
+        ))
+    }
+
+    /// Detect contact between an SDF and a triangle mesh.
+    #[allow(clippy::unused_self)]
+    fn detect_sdf_triangle_mesh_contact(
+        &self,
+        sdf: &crate::sdf::SdfCollisionData,
+        sdf_pose: &Pose,
+        mesh: &std::sync::Arc<crate::mesh::TriangleMeshData>,
+        mesh_pose: &Pose,
+        sdf_body_id: BodyId,
+        mesh_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact = crate::sdf::sdf_triangle_mesh_contact(sdf, sdf_pose, mesh, mesh_pose)?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            sdf_body_id,
+            mesh_body_id,
         ))
     }
 

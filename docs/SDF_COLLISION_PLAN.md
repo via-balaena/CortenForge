@@ -13,7 +13,7 @@ Complete implementation of all SDF (Signed Distance Field) collision combination
 | Sdf ↔ Ellipsoid | ✅ Done | High | Low |
 | Sdf ↔ ConvexMesh | ✅ Done | High | Medium |
 | Sdf ↔ Plane | ✅ Done | Low | Low |
-| Sdf ↔ TriangleMesh | ❌ Missing | Medium | Medium |
+| Sdf ↔ TriangleMesh | ✅ Done | Medium | Medium |
 | Sdf ↔ HeightField | ❌ Missing | Medium | Medium |
 | Sdf ↔ Sdf | ❌ Missing | Medium | High |
 
@@ -384,11 +384,11 @@ Recommended order based on priority and dependencies:
 - [x] Unit tests for plane contact
 
 ### Milestone 4: TriangleMesh
-- [ ] Add vertex extraction helper to `TriangleMeshData`
-- [ ] Implement `sdf_triangle_mesh_contact()` in `sdf.rs`
-- [ ] Add Sdf-TriangleMesh dispatch in `world.rs`
-- [ ] Add TriangleMesh-Sdf dispatch (flipped) in `world.rs`
-- [ ] Unit tests for triangle mesh contact
+- [x] Add vertex extraction helper to `TriangleMeshData`
+- [x] Implement `sdf_triangle_mesh_contact()` in `sdf.rs`
+- [x] Add Sdf-TriangleMesh dispatch in `world.rs`
+- [x] Add TriangleMesh-Sdf dispatch (flipped) in `world.rs`
+- [x] Unit tests for triangle mesh contact
 
 ### Milestone 5: HeightField
 - [ ] Implement `sdf_heightfield_contact()` in `sdf.rs`
