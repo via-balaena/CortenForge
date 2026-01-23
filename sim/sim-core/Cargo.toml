@@ -12,6 +12,7 @@ rust-version.workspace = true
 sim-types = { workspace = true }
 sim-contact = { workspace = true }
 sim-constraint = { workspace = true }
+sim-simd = { workspace = true }
 nalgebra = { workspace = true }
 hashbrown = { workspace = true }
 thiserror = { workspace = true }

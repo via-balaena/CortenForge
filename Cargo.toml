@@ -76,6 +76,7 @@ members = [
     "sim/sim-tendon",
     "sim/sim-mjcf",
     "sim/sim-physics",
+    "sim/sim-simd",
 
     # Bevy SDK (Layer 1 - pending)
     # "cortenforge",
@@ -299,6 +300,7 @@ sim-deformable = { path = "sim/sim-deformable" }
 sim-muscle = { path = "sim/sim-muscle" }
 sim-tendon = { path = "sim/sim-tendon" }
 sim-mjcf = { path = "sim/sim-mjcf" }
+sim-simd = { path = "sim/sim-simd" }
 
 # SDK
 cortenforge = { path = "cortenforge" }

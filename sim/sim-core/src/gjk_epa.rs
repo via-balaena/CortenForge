@@ -54,6 +54,7 @@
 //! - Casey Muratori's GJK video series
 
 use nalgebra::{Point3, Vector3};
+use sim_simd::find_max_dot;
 use sim_types::Pose;
 
 use crate::CollisionShape;
@@ -369,28 +370,30 @@ fn support_capsule(
 }
 
 /// Support function for a convex mesh.
+///
+/// Uses SIMD-optimized batch dot products to find the support vertex
+/// efficiently for large meshes.
 fn support_convex_mesh(
     pose: &Pose,
     vertices: &[Point3<f64>],
     direction: &Vector3<f64>,
 ) -> Point3<f64> {
+    if vertices.is_empty() {
+        return pose.position;
+    }
+
     // Transform direction to local space for efficiency
     let local_dir = pose.rotation.inverse() * direction;
 
-    // Find the vertex with maximum dot product
-    let mut max_dot = f64::NEG_INFINITY;
-    let mut best_vertex = Point3::origin();
+    // Convert vertices to Vector3 for SIMD processing
+    // Note: Point3 and Vector3 have the same memory layout, so this is efficient
+    let vertex_vectors: Vec<Vector3<f64>> = vertices.iter().map(|p| p.coords).collect();
 
-    for vertex in vertices {
-        let dot = vertex.coords.dot(&local_dir);
-        if dot > max_dot {
-            max_dot = dot;
-            best_vertex = *vertex;
-        }
-    }
+    // Use SIMD-optimized find_max_dot for batch processing
+    let (best_idx, _max_dot) = find_max_dot(&vertex_vectors, &local_dir);
 
     // Transform to world space
-    pose.transform_point(&best_vertex)
+    pose.transform_point(&vertices[best_idx])
 }
 
 /// Support function for a plane.

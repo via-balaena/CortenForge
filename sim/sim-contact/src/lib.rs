@@ -86,12 +86,14 @@
 #![warn(missing_docs)]
 #![allow(clippy::missing_const_for_fn)]
 
+mod batch;
 mod contact;
 mod friction;
 mod model;
 mod params;
 mod solver;
 
+pub use batch::{BatchContactProcessor, BatchForceResult};
 pub use contact::{ContactForce, ContactManifold, ContactPoint};
 pub use friction::{
     CompleteFrictionModel, CompleteFrictionResult, EllipticFrictionCone, FrictionCone,

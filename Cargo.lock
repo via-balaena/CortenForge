@@ -5458,6 +5458,7 @@ dependencies = [
  "nalgebra",
  "proptest",
  "serde",
+ "sim-simd",
  "sim-types",
  "thiserror 2.0.18",
 ]
@@ -5472,6 +5473,7 @@ dependencies = [
  "serde",
  "sim-constraint",
  "sim-contact",
+ "sim-simd",
  "sim-types",
  "thiserror 2.0.18",
 ]
@@ -5542,6 +5544,17 @@ dependencies = [
  "serde",
  "sim-types",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sim-simd"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "criterion",
+ "nalgebra",
+ "proptest",
+ "rand 0.8.5",
 ]
 
 [[package]]
