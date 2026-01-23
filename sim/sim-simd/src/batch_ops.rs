@@ -376,7 +376,7 @@ pub fn batch_friction_force_4(
 // Linear Algebra Operations
 // =============================================================================
 
-/// Compute 4 AXPY operations: y[i] = a * x[i] + y[i]
+/// Compute 4 AXPY operations: `y[i] = a * x[i] + y[i]`
 ///
 /// This is a common operation in iterative solvers (CG, GMRES).
 #[inline]

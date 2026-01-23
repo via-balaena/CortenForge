@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::float_cmp)]
 
 use approx::assert_relative_eq;
-use nalgebra::{Point3, Vector3};
+use nalgebra::Vector3;
 
 use crate::*;
 

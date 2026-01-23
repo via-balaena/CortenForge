@@ -358,7 +358,7 @@ pub fn is_mjb_bytes(bytes: &[u8]) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::parse_mjcf_str;

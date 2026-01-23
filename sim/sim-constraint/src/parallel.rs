@@ -19,8 +19,8 @@
 //!
 //! ## Uses Newton Solver
 //!
-//! The parallel implementation uses [`NewtonConstraintSolver`] rather than
-//! [`ConstraintSolver`] because:
+//! The parallel implementation uses `NewtonConstraintSolver` rather than
+//! `ConstraintSolver` because:
 //! - Newton solver already has island-based solving infrastructure
 //! - It provides fast convergence (2-3 iterations vs 8-16 for Gauss-Seidel)
 //! - Each island can be solved independently without shared mutable state

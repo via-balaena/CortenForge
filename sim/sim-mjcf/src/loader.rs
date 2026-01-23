@@ -1788,7 +1788,7 @@ mod tests {
                 assert_eq!(data.vertex_count(), 4);
                 assert_eq!(data.triangle_count(), 2);
             }
-            other => panic!("Expected TriangleMesh shape, got {:?}", other),
+            other => panic!("Expected TriangleMesh shape, got {other:?}"),
         }
     }
 
