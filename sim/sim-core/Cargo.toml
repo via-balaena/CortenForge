@@ -12,16 +12,19 @@ rust-version.workspace = true
 sim-types = { workspace = true }
 sim-contact = { workspace = true }
 sim-constraint = { workspace = true }
+sim-simd = { workspace = true }
 nalgebra = { workspace = true }
 hashbrown = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx = { workspace = true }
 
 [features]
 default = []
+parallel = ["dep:rayon", "sim-constraint/parallel"]
 serde = ["dep:serde", "serde/rc", "sim-types/serde", "sim-contact/serde", "sim-constraint/serde", "nalgebra/serde-serialize"]
 
 [lints]

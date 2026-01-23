@@ -725,6 +725,10 @@ pub enum MjcfGeomType {
     Hfield,
     /// Signed distance field.
     Sdf,
+    /// Non-convex triangle mesh.
+    /// Unlike `Mesh` which is treated as a convex hull, this preserves
+    /// the original triangle structure for accurate non-convex collision.
+    TriangleMesh,
 }
 
 impl MjcfGeomType {
@@ -740,6 +744,7 @@ impl MjcfGeomType {
             "mesh" => Some(Self::Mesh),
             "hfield" => Some(Self::Hfield),
             "sdf" => Some(Self::Sdf),
+            "trimesh" | "triangle_mesh" | "nonconvex" => Some(Self::TriangleMesh),
             _ => None,
         }
     }
@@ -757,6 +762,7 @@ impl MjcfGeomType {
             Self::Mesh => "mesh",
             Self::Hfield => "hfield",
             Self::Sdf => "sdf",
+            Self::TriangleMesh => "trimesh",
         }
     }
 }
@@ -1340,12 +1346,14 @@ pub enum MjcfActuatorType {
     Velocity,
     /// General actuator with custom dynamics.
     General,
-    /// Muscle actuator.
+    /// Muscle actuator (Hill-type muscle model).
     Muscle,
-    /// Cylinder (pneumatic/hydraulic).
+    /// Cylinder (pneumatic/hydraulic actuator).
     Cylinder,
-    /// Damper (passive).
+    /// Damper (passive damping).
     Damper,
+    /// Adhesion actuator (controllable adhesion force).
+    Adhesion,
 }
 
 impl MjcfActuatorType {
@@ -1359,7 +1367,23 @@ impl MjcfActuatorType {
             "muscle" => Some(Self::Muscle),
             "cylinder" => Some(Self::Cylinder),
             "damper" => Some(Self::Damper),
+            "adhesion" => Some(Self::Adhesion),
             _ => None,
+        }
+    }
+
+    /// Get the MJCF string representation.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Motor => "motor",
+            Self::Position => "position",
+            Self::Velocity => "velocity",
+            Self::General => "general",
+            Self::Muscle => "muscle",
+            Self::Cylinder => "cylinder",
+            Self::Damper => "damper",
+            Self::Adhesion => "adhesion",
         }
     }
 }
@@ -1380,6 +1404,8 @@ pub struct MjcfActuator {
     pub site: Option<String>,
     /// Target tendon name.
     pub tendon: Option<String>,
+    /// Target body name (for adhesion actuators).
+    pub body: Option<String>,
     /// Gear ratio (torque/force scaling).
     pub gear: f64,
     /// Control range [lower, upper].
@@ -1394,6 +1420,46 @@ pub struct MjcfActuator {
     pub kp: f64,
     /// Velocity gain (for position/velocity actuators).
     pub kv: f64,
+
+    // ========================================================================
+    // Cylinder-specific attributes
+    // ========================================================================
+    /// Cylinder cross-sectional area (m²). Used as gain for cylinder actuators.
+    pub area: f64,
+    /// Cylinder diameter (m). Alternative to area; takes precedence if set.
+    pub diameter: Option<f64>,
+    /// Activation dynamics time constant (s) for cylinder.
+    pub timeconst: f64,
+    /// Bias parameters [prm0, prm1, prm2] for cylinder.
+    pub bias: [f64; 3],
+
+    // ========================================================================
+    // Muscle-specific attributes
+    // ========================================================================
+    /// Activation/deactivation time constants [act, deact] for muscle.
+    pub muscle_timeconst: (f64, f64),
+    /// Operating length range [lower, upper] in L0 units for muscle.
+    pub range: (f64, f64),
+    /// Peak active force (N). Negative triggers automatic computation.
+    pub force: f64,
+    /// Force scaling factor for muscle.
+    pub scale: f64,
+    /// Lower FLV curve position (L0 units).
+    pub lmin: f64,
+    /// Upper FLV curve position (L0 units).
+    pub lmax: f64,
+    /// Shortening velocity limit (L0/second).
+    pub vmax: f64,
+    /// Passive force at lmax (relative to peak force).
+    pub fpmax: f64,
+    /// Active force at lengthening (relative to peak force).
+    pub fvmax: f64,
+
+    // ========================================================================
+    // Adhesion-specific attributes
+    // ========================================================================
+    /// Gain in force units for adhesion (total force = control × gain).
+    pub gain: f64,
 }
 
 impl Default for MjcfActuator {
@@ -1405,6 +1471,7 @@ impl Default for MjcfActuator {
             joint: None,
             site: None,
             tendon: None,
+            body: None,
             gear: 1.0,
             ctrlrange: None,
             forcerange: None,
@@ -1412,6 +1479,23 @@ impl Default for MjcfActuator {
             forcelimited: false,
             kp: 1.0,
             kv: 0.0,
+            // Cylinder defaults (MuJoCo defaults)
+            area: 1.0,
+            diameter: None,
+            timeconst: 1.0,
+            bias: [0.0, 0.0, 0.0],
+            // Muscle defaults (MuJoCo defaults)
+            muscle_timeconst: (0.01, 0.04),
+            range: (0.75, 1.05),
+            force: -1.0, // Negative triggers automatic computation
+            scale: 200.0,
+            lmin: 0.5,
+            lmax: 1.6,
+            vmax: 1.5,
+            fpmax: 1.3,
+            fvmax: 1.2,
+            // Adhesion defaults
+            gain: 1.0,
         }
     }
 }
@@ -1451,6 +1535,269 @@ impl MjcfActuator {
             ..Default::default()
         }
     }
+
+    /// Create a cylinder (pneumatic/hydraulic) actuator for a joint.
+    #[must_use]
+    pub fn cylinder(name: impl Into<String>, joint: impl Into<String>, area: f64) -> Self {
+        Self {
+            name: name.into(),
+            actuator_type: MjcfActuatorType::Cylinder,
+            joint: Some(joint.into()),
+            area,
+            ..Default::default()
+        }
+    }
+
+    /// Create a muscle actuator for a joint.
+    #[must_use]
+    pub fn muscle(name: impl Into<String>, joint: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            actuator_type: MjcfActuatorType::Muscle,
+            joint: Some(joint.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Create an adhesion actuator for a body.
+    #[must_use]
+    pub fn adhesion(name: impl Into<String>, body: impl Into<String>, gain: f64) -> Self {
+        Self {
+            name: name.into(),
+            actuator_type: MjcfActuatorType::Adhesion,
+            body: Some(body.into()),
+            gain,
+            ..Default::default()
+        }
+    }
+}
+
+// ============================================================================
+// Skinned Mesh
+// ============================================================================
+
+/// A bone reference within a skin element.
+///
+/// MuJoCo `<skin>` elements contain `<bone>` children that reference bodies
+/// in the kinematic tree. Each bone has a bind pose that defines the
+/// initial transform at which vertex weights were assigned.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfSkinBone {
+    /// Name of the body this bone references.
+    pub body: String,
+    /// Bind position in the body's local frame.
+    pub bindpos: Vector3<f64>,
+    /// Bind orientation as quaternion (w, x, y, z).
+    pub bindquat: Vector4<f64>,
+}
+
+impl Default for MjcfSkinBone {
+    fn default() -> Self {
+        Self {
+            body: String::new(),
+            bindpos: Vector3::zeros(),
+            bindquat: Vector4::new(1.0, 0.0, 0.0, 0.0), // Identity quaternion
+        }
+    }
+}
+
+impl MjcfSkinBone {
+    /// Create a new skin bone referencing a body.
+    #[must_use]
+    pub fn new(body: impl Into<String>) -> Self {
+        Self {
+            body: body.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Set the bind position.
+    #[must_use]
+    pub fn with_bindpos(mut self, pos: Vector3<f64>) -> Self {
+        self.bindpos = pos;
+        self
+    }
+
+    /// Set the bind orientation.
+    #[must_use]
+    pub fn with_bindquat(mut self, quat: Vector4<f64>) -> Self {
+        self.bindquat = quat;
+        self
+    }
+
+    /// Get bind orientation as `UnitQuaternion`.
+    #[must_use]
+    pub fn bind_rotation(&self) -> UnitQuaternion<f64> {
+        let q = nalgebra::Quaternion::new(
+            self.bindquat[0],
+            self.bindquat[1],
+            self.bindquat[2],
+            self.bindquat[3],
+        );
+        UnitQuaternion::from_quaternion(q)
+    }
+}
+
+/// A vertex weight within a skin element.
+///
+/// Each `<vertex>` in a MuJoCo `<skin>` element specifies which bone(s)
+/// influence a particular vertex and with what weight.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfSkinVertex {
+    /// Vertex index in the mesh.
+    pub id: usize,
+    /// Index of the bone within the skin's bone list.
+    pub bone: usize,
+    /// Weight of this bone's influence on the vertex (0.0 to 1.0).
+    pub weight: f64,
+}
+
+impl MjcfSkinVertex {
+    /// Create a new skin vertex weight.
+    #[must_use]
+    pub const fn new(id: usize, bone: usize, weight: f64) -> Self {
+        Self { id, bone, weight }
+    }
+}
+
+/// A skinned mesh from `<skin>` element.
+///
+/// MuJoCo `<skin>` elements define visual meshes that are deformed based on
+/// body poses. The skin contains bones (body references) and vertex weights
+/// that define how each vertex is influenced by bone transforms.
+///
+/// # Example MJCF
+///
+/// ```xml
+/// <skin name="body_skin" material="skin_material">
+///     <bone body="torso" bindpos="0 0 0" bindquat="1 0 0 0"/>
+///     <bone body="upper_arm" bindpos="0.2 0 0" bindquat="1 0 0 0"/>
+///     <vertex id="0" bone="0" weight="1.0"/>
+///     <vertex id="1" bone="0" weight="0.5"/>
+///     <vertex id="1" bone="1" weight="0.5"/>
+/// </skin>
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfSkin {
+    /// Skin name.
+    pub name: String,
+    /// Associated mesh asset name (optional).
+    pub mesh: Option<String>,
+    /// Material name for rendering (optional).
+    pub material: Option<String>,
+    /// Bones (body references) that influence this skin.
+    pub bones: Vec<MjcfSkinBone>,
+    /// Vertex weights defining bone influences.
+    pub vertices: Vec<MjcfSkinVertex>,
+    /// Embedded vertex positions (if not using mesh asset).
+    /// Format: flat array of xyz coordinates.
+    pub vertex_positions: Option<Vec<f64>>,
+    /// Embedded face data (if not using mesh asset).
+    /// Format: flat array of vertex indices (triangles).
+    pub faces: Option<Vec<u32>>,
+    /// RGBA color for visualization.
+    pub rgba: Vector4<f64>,
+    /// Whether skinning is enabled.
+    pub inflate: f64,
+}
+
+impl Default for MjcfSkin {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            mesh: None,
+            material: None,
+            bones: Vec::new(),
+            vertices: Vec::new(),
+            vertex_positions: None,
+            faces: None,
+            rgba: Vector4::new(0.5, 0.5, 0.5, 1.0),
+            inflate: 0.0,
+        }
+    }
+}
+
+impl MjcfSkin {
+    /// Create a new skin with a name.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Set the mesh asset reference.
+    #[must_use]
+    pub fn with_mesh(mut self, mesh: impl Into<String>) -> Self {
+        self.mesh = Some(mesh.into());
+        self
+    }
+
+    /// Set the material reference.
+    #[must_use]
+    pub fn with_material(mut self, material: impl Into<String>) -> Self {
+        self.material = Some(material.into());
+        self
+    }
+
+    /// Add a bone to the skin.
+    #[must_use]
+    pub fn with_bone(mut self, bone: MjcfSkinBone) -> Self {
+        self.bones.push(bone);
+        self
+    }
+
+    /// Add a vertex weight.
+    #[must_use]
+    pub fn with_vertex(mut self, id: usize, bone: usize, weight: f64) -> Self {
+        self.vertices.push(MjcfSkinVertex::new(id, bone, weight));
+        self
+    }
+
+    /// Check if this skin has embedded geometry.
+    #[must_use]
+    pub fn has_embedded_geometry(&self) -> bool {
+        self.vertex_positions.is_some()
+    }
+
+    /// Get the number of bones.
+    #[must_use]
+    pub fn num_bones(&self) -> usize {
+        self.bones.len()
+    }
+
+    /// Get the number of vertex weights.
+    #[must_use]
+    pub fn num_vertex_weights(&self) -> usize {
+        self.vertices.len()
+    }
+
+    /// Get embedded vertices as Point3 array.
+    #[must_use]
+    pub fn vertices_as_points(&self) -> Vec<Point3<f64>> {
+        self.vertex_positions.as_ref().map_or_else(Vec::new, |v| {
+            v.chunks_exact(3)
+                .map(|c| Point3::new(c[0], c[1], c[2]))
+                .collect()
+        })
+    }
+
+    /// Collect all vertex weights grouped by vertex ID.
+    ///
+    /// Returns a map from vertex index to list of (bone_index, weight) pairs.
+    #[must_use]
+    pub fn weights_by_vertex(&self) -> std::collections::HashMap<usize, Vec<(usize, f64)>> {
+        let mut map: std::collections::HashMap<usize, Vec<(usize, f64)>> =
+            std::collections::HashMap::new();
+        for v in &self.vertices {
+            map.entry(v.id).or_default().push((v.bone, v.weight));
+        }
+        map
+    }
 }
 
 // ============================================================================
@@ -1475,6 +1822,8 @@ pub struct MjcfModel {
     pub actuators: Vec<MjcfActuator>,
     /// Equality constraints.
     pub equality: MjcfEquality,
+    /// Skinned meshes for visual deformation.
+    pub skins: Vec<MjcfSkin>,
 }
 
 impl Default for MjcfModel {
@@ -1487,6 +1836,7 @@ impl Default for MjcfModel {
             worldbody: MjcfBody::new("world"),
             actuators: Vec::new(),
             equality: MjcfEquality::default(),
+            skins: Vec::new(),
         }
     }
 }
@@ -1598,6 +1948,19 @@ impl MjcfModel {
     pub fn with_mesh(mut self, mesh: MjcfMesh) -> Self {
         self.meshes.push(mesh);
         self
+    }
+
+    /// Add a skin to the model.
+    #[must_use]
+    pub fn with_skin(mut self, skin: MjcfSkin) -> Self {
+        self.skins.push(skin);
+        self
+    }
+
+    /// Get a skin by name.
+    #[must_use]
+    pub fn skin(&self, name: &str) -> Option<&MjcfSkin> {
+        self.skins.iter().find(|s| s.name == name)
     }
 }
 

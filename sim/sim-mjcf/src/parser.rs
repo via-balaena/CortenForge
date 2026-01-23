@@ -13,7 +13,7 @@ use crate::types::{
     MjcfDefault, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial,
     MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh,
     MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
-    MjcfSolverType, MjcfTendonDefaults,
+    MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendonDefaults,
 };
 
 /// Parse an MJCF string into a model.
@@ -78,6 +78,11 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                     }
                     b"equality" => {
                         model.equality = parse_equality(reader)?;
+                    }
+                    b"deformable" => {
+                        // Deformable section contains skin elements
+                        let skins = parse_deformable(reader)?;
+                        model.skins = skins;
                     }
                     // Skip other elements (contact, tendon, etc.)
                     _ => skip_element(reader, &elem_name)?,
@@ -961,11 +966,13 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
         ..Default::default()
     };
 
+    // Common attributes
     actuator.name = get_attribute_opt(e, "name").unwrap_or_default();
     actuator.class = get_attribute_opt(e, "class");
     actuator.joint = get_attribute_opt(e, "joint");
     actuator.site = get_attribute_opt(e, "site");
     actuator.tendon = get_attribute_opt(e, "tendon");
+    actuator.body = get_attribute_opt(e, "body");
 
     if let Some(gear) = parse_float_attr(e, "gear") {
         actuator.gear = gear;
@@ -996,6 +1003,75 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
     }
     if let Some(kv) = parse_float_attr(e, "kv") {
         actuator.kv = kv;
+    }
+
+    // ========================================================================
+    // Cylinder-specific attributes
+    // ========================================================================
+    if let Some(area) = parse_float_attr(e, "area") {
+        actuator.area = area;
+    }
+    if let Some(diameter) = parse_float_attr(e, "diameter") {
+        actuator.diameter = Some(diameter);
+    }
+    if let Some(timeconst) = parse_float_attr(e, "timeconst") {
+        actuator.timeconst = timeconst;
+    }
+    if let Some(bias) = get_attribute_opt(e, "bias") {
+        let parts = parse_float_array(&bias)?;
+        if parts.len() >= 3 {
+            actuator.bias = [parts[0], parts[1], parts[2]];
+        }
+    }
+
+    // ========================================================================
+    // Muscle-specific attributes
+    // ========================================================================
+    // For muscle, timeconst is a pair [activation, deactivation]
+    if actuator_type == MjcfActuatorType::Muscle {
+        if let Some(tc) = get_attribute_opt(e, "timeconst") {
+            let parts = parse_float_array(&tc)?;
+            if parts.len() >= 2 {
+                actuator.muscle_timeconst = (parts[0], parts[1]);
+            } else if parts.len() == 1 {
+                // Single value means both are the same
+                actuator.muscle_timeconst = (parts[0], parts[0]);
+            }
+        }
+    }
+    if let Some(range) = get_attribute_opt(e, "range") {
+        let parts = parse_float_array(&range)?;
+        if parts.len() >= 2 {
+            actuator.range = (parts[0], parts[1]);
+        }
+    }
+    if let Some(force) = parse_float_attr(e, "force") {
+        actuator.force = force;
+    }
+    if let Some(scale) = parse_float_attr(e, "scale") {
+        actuator.scale = scale;
+    }
+    if let Some(lmin) = parse_float_attr(e, "lmin") {
+        actuator.lmin = lmin;
+    }
+    if let Some(lmax) = parse_float_attr(e, "lmax") {
+        actuator.lmax = lmax;
+    }
+    if let Some(vmax) = parse_float_attr(e, "vmax") {
+        actuator.vmax = vmax;
+    }
+    if let Some(fpmax) = parse_float_attr(e, "fpmax") {
+        actuator.fpmax = fpmax;
+    }
+    if let Some(fvmax) = parse_float_attr(e, "fvmax") {
+        actuator.fvmax = fvmax;
+    }
+
+    // ========================================================================
+    // Adhesion-specific attributes
+    // ========================================================================
+    if let Some(gain) = parse_float_attr(e, "gain") {
+        actuator.gain = gain;
     }
 
     Ok(actuator)
@@ -1078,6 +1154,174 @@ fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
     }
 
     Ok(connect)
+}
+
+// ============================================================================
+// Deformable / Skin parsing
+// ============================================================================
+
+/// Parse deformable section (contains skin elements).
+fn parse_deformable<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfSkin>> {
+    let mut skins = Vec::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                if elem_name.as_slice() == b"skin" {
+                    let skin = parse_skin(reader, e)?;
+                    skins.push(skin);
+                } else {
+                    // Skip other deformable elements (flex, etc.)
+                    skip_element(reader, &elem_name)?;
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                // Handle self-closing skin elements (unlikely but possible)
+                if e.name().as_ref() == b"skin" {
+                    let skin = parse_skin_attrs(e);
+                    skins.push(skin);
+                }
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"deformable" => break,
+            Ok(Event::Eof) => {
+                return Err(MjcfError::XmlParse("unexpected EOF in deformable".into()));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(skins)
+}
+
+/// Parse a skin element and its children.
+fn parse_skin<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<MjcfSkin> {
+    let mut skin = parse_skin_attrs(start);
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                match elem_name.as_slice() {
+                    b"bone" => {
+                        let bone = parse_skin_bone_attrs(e)?;
+                        skin.bones.push(bone);
+                        // Skip to closing tag if not self-closing
+                        skip_element(reader, &elem_name)?;
+                    }
+                    b"vertex" => {
+                        let vertex = parse_skin_vertex_attrs(e)?;
+                        skin.vertices.push(vertex);
+                        // Skip to closing tag if not self-closing
+                        skip_element(reader, &elem_name)?;
+                    }
+                    _ => skip_element(reader, &elem_name)?,
+                }
+            }
+            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                b"bone" => {
+                    let bone = parse_skin_bone_attrs(e)?;
+                    skin.bones.push(bone);
+                }
+                b"vertex" => {
+                    let vertex = parse_skin_vertex_attrs(e)?;
+                    skin.vertices.push(vertex);
+                }
+                _ => {}
+            },
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"skin" => break,
+            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in skin".into())),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(skin)
+}
+
+/// Parse skin element attributes.
+fn parse_skin_attrs(e: &BytesStart) -> MjcfSkin {
+    let mut skin = MjcfSkin::default();
+
+    skin.name = get_attribute_opt(e, "name").unwrap_or_default();
+    skin.mesh = get_attribute_opt(e, "mesh");
+    skin.material = get_attribute_opt(e, "material");
+
+    if let Some(rgba) = get_attribute_opt(e, "rgba") {
+        if let Ok(v) = parse_vector4(&rgba) {
+            skin.rgba = v;
+        }
+    }
+
+    if let Some(inflate) = parse_float_attr(e, "inflate") {
+        skin.inflate = inflate;
+    }
+
+    // Parse embedded vertex positions if present
+    if let Some(vertex) = get_attribute_opt(e, "vertex") {
+        if let Ok(verts) = parse_float_array(&vertex) {
+            skin.vertex_positions = Some(verts);
+        }
+    }
+
+    // Parse embedded face data if present
+    if let Some(face) = get_attribute_opt(e, "face") {
+        if let Ok(faces) = parse_int_array(&face) {
+            skin.faces = Some(faces);
+        }
+    }
+
+    skin
+}
+
+/// Parse skin bone element attributes.
+fn parse_skin_bone_attrs(e: &BytesStart) -> Result<MjcfSkinBone> {
+    let mut bone = MjcfSkinBone::default();
+
+    // body is required
+    bone.body =
+        get_attribute_opt(e, "body").ok_or_else(|| MjcfError::missing_attribute("body", "bone"))?;
+
+    if let Some(bindpos) = get_attribute_opt(e, "bindpos") {
+        bone.bindpos = parse_vector3(&bindpos)?;
+    }
+
+    if let Some(bindquat) = get_attribute_opt(e, "bindquat") {
+        bone.bindquat = parse_vector4(&bindquat)?;
+    }
+
+    Ok(bone)
+}
+
+/// Parse skin vertex element attributes.
+fn parse_skin_vertex_attrs(e: &BytesStart) -> Result<MjcfSkinVertex> {
+    // id is required (vertex index in mesh)
+    let id = parse_int_attr(e, "id").ok_or_else(|| MjcfError::missing_attribute("id", "vertex"))?
+        as usize;
+
+    // bone is required (bone index in skin)
+    let bone = parse_int_attr(e, "bone")
+        .ok_or_else(|| MjcfError::missing_attribute("bone", "vertex"))? as usize;
+
+    // weight defaults to 1.0 if not specified
+    let weight = parse_float_attr(e, "weight").unwrap_or(1.0);
+
+    Ok(MjcfSkinVertex::new(id, bone, weight))
+}
+
+/// Parse a space-separated array of unsigned integers.
+fn parse_int_array(s: &str) -> Result<Vec<u32>> {
+    s.split_whitespace()
+        .map(|p| {
+            p.parse::<u32>()
+                .map_err(|_| MjcfError::XmlParse(format!("invalid integer: {p}")))
+        })
+        .collect()
 }
 
 // ============================================================================
@@ -2187,5 +2431,207 @@ mod tests {
         let model = parse_mjcf_str(xml).expect("should parse");
         assert_eq!(model.equality.len(), 2);
         assert!(!model.equality.is_empty());
+    }
+
+    // ========================================================================
+    // Cylinder, Muscle, and Adhesion actuator parsing tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_cylinder_actuator() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="joint1" type="slide"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <cylinder name="cyl1" joint="joint1" area="0.002" timeconst="0.5" bias="1 2 3"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.actuators.len(), 1);
+
+        let cyl = &model.actuators[0];
+        assert_eq!(cyl.name, "cyl1");
+        assert_eq!(cyl.actuator_type, MjcfActuatorType::Cylinder);
+        assert_eq!(cyl.joint, Some("joint1".to_string()));
+        assert_relative_eq!(cyl.area, 0.002, epsilon = 1e-10);
+        assert_relative_eq!(cyl.timeconst, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(cyl.bias[0], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(cyl.bias[1], 2.0, epsilon = 1e-10);
+        assert_relative_eq!(cyl.bias[2], 3.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_cylinder_actuator_with_diameter() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="joint1" type="slide"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <cylinder name="cyl1" joint="joint1" diameter="0.05"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let cyl = &model.actuators[0];
+        assert!(cyl.diameter.is_some());
+        assert_relative_eq!(cyl.diameter.unwrap(), 0.05, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_muscle_actuator() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="joint1" type="hinge"/>
+                        <geom type="capsule" size="0.02" fromto="0 0 0 0 0 0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <muscle name="muscle1" joint="joint1" timeconst="0.02 0.06" range="0.8 1.1" force="500" scale="300" lmin="0.4" lmax="1.8" vmax="2.0" fpmax="1.5" fvmax="1.3"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.actuators.len(), 1);
+
+        let muscle = &model.actuators[0];
+        assert_eq!(muscle.name, "muscle1");
+        assert_eq!(muscle.actuator_type, MjcfActuatorType::Muscle);
+        assert_eq!(muscle.joint, Some("joint1".to_string()));
+
+        // Muscle-specific attributes
+        assert_relative_eq!(muscle.muscle_timeconst.0, 0.02, epsilon = 1e-10);
+        assert_relative_eq!(muscle.muscle_timeconst.1, 0.06, epsilon = 1e-10);
+        assert_relative_eq!(muscle.range.0, 0.8, epsilon = 1e-10);
+        assert_relative_eq!(muscle.range.1, 1.1, epsilon = 1e-10);
+        assert_relative_eq!(muscle.force, 500.0, epsilon = 1e-10);
+        assert_relative_eq!(muscle.scale, 300.0, epsilon = 1e-10);
+        assert_relative_eq!(muscle.lmin, 0.4, epsilon = 1e-10);
+        assert_relative_eq!(muscle.lmax, 1.8, epsilon = 1e-10);
+        assert_relative_eq!(muscle.vmax, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(muscle.fpmax, 1.5, epsilon = 1e-10);
+        assert_relative_eq!(muscle.fvmax, 1.3, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_muscle_actuator_defaults() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="joint1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <muscle name="muscle1" joint="joint1"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let muscle = &model.actuators[0];
+
+        // Check MuJoCo default values
+        assert_relative_eq!(muscle.muscle_timeconst.0, 0.01, epsilon = 1e-10);
+        assert_relative_eq!(muscle.muscle_timeconst.1, 0.04, epsilon = 1e-10);
+        assert_relative_eq!(muscle.range.0, 0.75, epsilon = 1e-10);
+        assert_relative_eq!(muscle.range.1, 1.05, epsilon = 1e-10);
+        assert_relative_eq!(muscle.force, -1.0, epsilon = 1e-10); // Negative triggers auto computation
+        assert_relative_eq!(muscle.scale, 200.0, epsilon = 1e-10);
+        assert_relative_eq!(muscle.lmin, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(muscle.lmax, 1.6, epsilon = 1e-10);
+        assert_relative_eq!(muscle.vmax, 1.5, epsilon = 1e-10);
+        assert_relative_eq!(muscle.fpmax, 1.3, epsilon = 1e-10);
+        assert_relative_eq!(muscle.fvmax, 1.2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_adhesion_actuator() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="gripper">
+                        <geom type="box" size="0.05 0.05 0.01"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <adhesion name="grip1" body="gripper" gain="100" ctrlrange="0 1"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.actuators.len(), 1);
+
+        let adhesion = &model.actuators[0];
+        assert_eq!(adhesion.name, "grip1");
+        assert_eq!(adhesion.actuator_type, MjcfActuatorType::Adhesion);
+        assert_eq!(adhesion.body, Some("gripper".to_string()));
+        assert_relative_eq!(adhesion.gain, 100.0, epsilon = 1e-10);
+        assert_eq!(adhesion.ctrlrange, Some((0.0, 1.0)));
+    }
+
+    #[test]
+    fn test_parse_mixed_actuator_types() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link1">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                    <body name="link2">
+                        <joint name="j2" type="slide"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                    <body name="gripper">
+                        <geom type="box" size="0.05 0.05 0.01"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="motor1" joint="j1" gear="50"/>
+                    <position name="pos1" joint="j1" kp="100"/>
+                    <cylinder name="cyl1" joint="j2" area="0.001"/>
+                    <muscle name="mus1" joint="j1" force="200"/>
+                    <adhesion name="adh1" body="gripper" gain="50"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.actuators.len(), 5);
+
+        assert_eq!(model.actuators[0].actuator_type, MjcfActuatorType::Motor);
+        assert_eq!(model.actuators[1].actuator_type, MjcfActuatorType::Position);
+        assert_eq!(model.actuators[2].actuator_type, MjcfActuatorType::Cylinder);
+        assert_eq!(model.actuators[3].actuator_type, MjcfActuatorType::Muscle);
+        assert_eq!(model.actuators[4].actuator_type, MjcfActuatorType::Adhesion);
+    }
+
+    #[test]
+    fn test_actuator_type_as_str() {
+        assert_eq!(MjcfActuatorType::Motor.as_str(), "motor");
+        assert_eq!(MjcfActuatorType::Position.as_str(), "position");
+        assert_eq!(MjcfActuatorType::Velocity.as_str(), "velocity");
+        assert_eq!(MjcfActuatorType::General.as_str(), "general");
+        assert_eq!(MjcfActuatorType::Muscle.as_str(), "muscle");
+        assert_eq!(MjcfActuatorType::Cylinder.as_str(), "cylinder");
+        assert_eq!(MjcfActuatorType::Damper.as_str(), "damper");
+        assert_eq!(MjcfActuatorType::Adhesion.as_str(), "adhesion");
     }
 }

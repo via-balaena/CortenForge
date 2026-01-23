@@ -7,7 +7,10 @@ use std::fs;
 use std::path::Path;
 
 use nalgebra::{Point3, Vector3};
-use sim_constraint::{ConnectConstraint, JointLimits};
+use sim_constraint::{
+    AdhesionActuator, BoxedActuator, ConnectConstraint, IntegratedVelocityActuator,
+    IntoBoxedActuator, JointLimits, PneumaticCylinderActuator,
+};
 use sim_core::{Body, CollisionShape, Joint, World};
 use sim_types::{BodyId, JointId, JointType, MassProperties, Pose, RigidBodyState};
 
@@ -16,9 +19,44 @@ use crate::defaults::DefaultResolver;
 use crate::error::{MjcfError, Result};
 use crate::parser::parse_mjcf_str;
 use crate::types::{
-    MjcfBody, MjcfGeom, MjcfGeomType, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption,
+    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfGeom, MjcfGeomType, MjcfJoint, MjcfJointType,
+    MjcfMesh, MjcfModel, MjcfOption,
 };
 use crate::validation::{ValidationResult, validate};
+
+/// A loaded actuator with metadata for simulation integration.
+pub struct LoadedActuator {
+    /// Actuator name.
+    pub name: String,
+    /// The boxed actuator implementation.
+    pub actuator: BoxedActuator,
+    /// Target joint name (if joint-based actuator).
+    pub joint: Option<String>,
+    /// Target body name (if body-based actuator like adhesion).
+    pub body: Option<String>,
+    /// Target tendon name (if tendon-based actuator).
+    pub tendon: Option<String>,
+    /// Control range (if clamped).
+    pub ctrlrange: Option<(f64, f64)>,
+    /// Force range (if clamped).
+    pub forcerange: Option<(f64, f64)>,
+    /// Gear ratio.
+    pub gear: f64,
+}
+
+impl std::fmt::Debug for LoadedActuator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedActuator")
+            .field("name", &self.name)
+            .field("joint", &self.joint)
+            .field("body", &self.body)
+            .field("tendon", &self.tendon)
+            .field("ctrlrange", &self.ctrlrange)
+            .field("forcerange", &self.forcerange)
+            .field("gear", &self.gear)
+            .finish_non_exhaustive()
+    }
+}
 
 /// A loaded model ready to be spawned into a simulation world.
 #[derive(Debug)]
@@ -31,10 +69,14 @@ pub struct LoadedModel {
     pub joints: Vec<Joint>,
     /// Connect (ball) equality constraints.
     pub connect_constraints: Vec<ConnectConstraint>,
+    /// Actuators ready for use.
+    pub actuators: Vec<LoadedActuator>,
     /// Map from body name to body ID.
     pub body_to_id: HashMap<String, BodyId>,
     /// Map from joint name to joint ID.
     pub joint_to_id: HashMap<String, JointId>,
+    /// Map from actuator name to index in actuators vec.
+    pub actuator_to_index: HashMap<String, usize>,
     /// Parsed MJCF options for simulation configuration.
     pub option: MjcfOption,
     /// Extended solver configuration derived from MJCF options.
@@ -137,6 +179,47 @@ impl LoadedModel {
     #[must_use]
     pub fn contacts_enabled(&self) -> bool {
         self.option.contacts_enabled()
+    }
+
+    /// Get an actuator by name.
+    #[must_use]
+    pub fn actuator(&self, name: &str) -> Option<&LoadedActuator> {
+        self.actuator_to_index
+            .get(name)
+            .and_then(|&idx| self.actuators.get(idx))
+    }
+
+    /// Get a mutable actuator by name.
+    #[must_use]
+    pub fn actuator_mut(&mut self, name: &str) -> Option<&mut LoadedActuator> {
+        self.actuator_to_index
+            .get(name)
+            .copied()
+            .and_then(|idx| self.actuators.get_mut(idx))
+    }
+
+    /// Get all actuators targeting a specific joint.
+    #[must_use]
+    pub fn actuators_for_joint(&self, joint_name: &str) -> Vec<&LoadedActuator> {
+        self.actuators
+            .iter()
+            .filter(|a| a.joint.as_deref() == Some(joint_name))
+            .collect()
+    }
+
+    /// Get all actuators targeting a specific body (e.g., adhesion actuators).
+    #[must_use]
+    pub fn actuators_for_body(&self, body_name: &str) -> Vec<&LoadedActuator> {
+        self.actuators
+            .iter()
+            .filter(|a| a.body.as_deref() == Some(body_name))
+            .collect()
+    }
+
+    /// Get the number of actuators.
+    #[must_use]
+    pub fn actuator_count(&self) -> usize {
+        self.actuators.len()
     }
 }
 
@@ -325,6 +408,9 @@ impl MjcfLoader {
         let connect_constraints =
             self.convert_connect_constraints(&model.equality.connects, &body_to_id)?;
 
+        // Convert actuators
+        let (actuators, actuator_to_index) = self.convert_actuators(&model.actuators);
+
         // Convert options to solver config
         let solver_config = ExtendedSolverConfig::from(&model.option);
 
@@ -333,8 +419,10 @@ impl MjcfLoader {
             bodies,
             joints,
             connect_constraints,
+            actuators,
             body_to_id,
             joint_to_id,
+            actuator_to_index,
             option: model.option,
             solver_config,
         })
@@ -526,7 +614,17 @@ impl MjcfLoader {
                 // Convert mesh to convex hull collision shape
                 self.mesh_geom_to_collision(geom, mesh_lookup)
             }
-            _ => None, // Heightfield, SDF not supported
+            MjcfGeomType::Sdf => {
+                // Convert mesh to SDF collision shape
+                // SDF provides cleaner collision detection than convex mesh
+                self.sdf_geom_to_collision(geom, mesh_lookup)
+            }
+            MjcfGeomType::TriangleMesh => {
+                // Convert mesh to non-convex triangle mesh collision shape
+                // Preserves original geometry for accurate non-convex collision
+                self.triangle_mesh_geom_to_collision(geom, mesh_lookup)
+            }
+            MjcfGeomType::Hfield => None, // Heightfield not yet supported
         }
     }
 
@@ -606,6 +704,289 @@ impl MjcfLoader {
         Some(CollisionShape::convex_mesh(vertices))
     }
 
+    /// Convert a mesh geom to a non-convex triangle mesh collision shape.
+    ///
+    /// Unlike `mesh_geom_to_collision` which creates a convex hull, this preserves
+    /// the original triangle structure for accurate non-convex collision detection.
+    fn triangle_mesh_geom_to_collision(
+        &self,
+        geom: &MjcfGeom,
+        mesh_lookup: &HashMap<&str, &MjcfMesh>,
+    ) -> Option<CollisionShape> {
+        // Get the mesh asset name from the geom
+        let mesh_name = geom.mesh.as_ref()?;
+
+        // Look up the mesh asset
+        let Some(mesh_asset) = mesh_lookup.get(mesh_name.as_str()) else {
+            tracing::warn!(
+                "Mesh asset '{}' not found for triangle mesh geom",
+                mesh_name
+            );
+            return None;
+        };
+
+        // Try to get vertices from embedded data first
+        if mesh_asset.has_embedded_data() {
+            // For embedded data, we only have vertices, not faces
+            // Create a simple triangle soup from consecutive triplets
+            let vertices = mesh_asset.vertices_as_points();
+            if vertices.is_empty() {
+                tracing::warn!("Mesh asset '{}' has no vertices", mesh_name);
+                return None;
+            }
+
+            // If we have face data, use it; otherwise treat vertices as triangle soup
+            if let Some(ref faces) = mesh_asset.face {
+                // Parse face data into indices
+                let indices: Vec<usize> = faces.iter().map(|&f| f as usize).collect();
+                if indices.len() >= 3 && indices.len() % 3 == 0 {
+                    return Some(CollisionShape::triangle_mesh_from_vertices(
+                        vertices, indices,
+                    ));
+                }
+            }
+
+            // Fallback: treat vertices as a triangle soup (groups of 3)
+            if vertices.len() >= 3 {
+                // Only use full triangles
+                let tri_count = vertices.len() / 3;
+                let indices: Vec<usize> = (0..(tri_count * 3)).collect();
+                return Some(CollisionShape::triangle_mesh_from_vertices(
+                    vertices, indices,
+                ));
+            }
+
+            tracing::warn!(
+                "Mesh asset '{}' has insufficient vertices for triangle mesh",
+                mesh_name
+            );
+            return None;
+        }
+
+        // Try to load from file
+        if let Some(ref file_path) = mesh_asset.file {
+            return self.load_triangle_mesh_file(file_path, &mesh_asset.scale);
+        }
+
+        tracing::warn!(
+            "Triangle mesh asset '{}' has no embedded data or file path",
+            mesh_name
+        );
+        None
+    }
+
+    /// Load a mesh file and convert to non-convex triangle mesh collision shape.
+    fn load_triangle_mesh_file(
+        &self,
+        file_path: &str,
+        scale: &Vector3<f64>,
+    ) -> Option<CollisionShape> {
+        // Resolve the path relative to the base directory
+        let full_path = if let Some(ref base_dir) = self.mesh_base_dir {
+            base_dir.join(file_path)
+        } else {
+            std::path::PathBuf::from(file_path)
+        };
+
+        // Load the mesh file using mesh-io
+        let indexed_mesh = match mesh_io::load_mesh(&full_path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load mesh file '{}' for triangle mesh: {}",
+                    full_path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+
+        // Convert mesh vertices
+        let vertices: Vec<Point3<f64>> = indexed_mesh
+            .vertices
+            .iter()
+            .map(|v| {
+                Point3::new(
+                    v.position.x * scale.x,
+                    v.position.y * scale.y,
+                    v.position.z * scale.z,
+                )
+            })
+            .collect();
+
+        if vertices.is_empty() {
+            tracing::warn!(
+                "Triangle mesh file '{}' has no vertices",
+                full_path.display()
+            );
+            return None;
+        }
+
+        // Get triangle indices from the mesh faces
+        let indices: Vec<usize> = indexed_mesh
+            .faces
+            .iter()
+            .flat_map(|face| [face[0] as usize, face[1] as usize, face[2] as usize])
+            .collect();
+
+        if indices.len() < 3 {
+            tracing::warn!(
+                "Triangle mesh file '{}' has no valid faces",
+                full_path.display(),
+            );
+            return None;
+        }
+
+        Some(CollisionShape::triangle_mesh_from_vertices(
+            vertices, indices,
+        ))
+    }
+
+    /// Convert an SDF geom to an SDF collision shape.
+    ///
+    /// SDF (Signed Distance Field) provides smoother collision detection than
+    /// triangle meshes, especially for non-convex geometry. The SDF is computed
+    /// from the mesh at the specified resolution.
+    fn sdf_geom_to_collision(
+        &self,
+        geom: &MjcfGeom,
+        mesh_lookup: &HashMap<&str, &MjcfMesh>,
+    ) -> Option<CollisionShape> {
+        // Get the mesh asset name from the geom (SDF geoms reference a mesh)
+        let mesh_name = geom.mesh.as_ref()?;
+
+        // Look up the mesh asset
+        let Some(mesh_asset) = mesh_lookup.get(mesh_name.as_str()) else {
+            tracing::warn!("Mesh asset '{}' not found for SDF geom", mesh_name);
+            return None;
+        };
+
+        // Try to get vertices from embedded data first
+        if mesh_asset.has_embedded_data() {
+            let vertices = mesh_asset.vertices_as_points();
+            if vertices.is_empty() {
+                tracing::warn!("Mesh asset '{}' has no vertices for SDF", mesh_name);
+                return None;
+            }
+            return Some(self.create_sdf_from_vertices(&vertices, &mesh_asset.scale));
+        }
+
+        // Try to load from file
+        if let Some(ref file_path) = mesh_asset.file {
+            return self.load_sdf_from_mesh_file(file_path, &mesh_asset.scale);
+        }
+
+        tracing::warn!(
+            "SDF mesh asset '{}' has no embedded data or file path",
+            mesh_name
+        );
+        None
+    }
+
+    /// Create an SDF collision shape from mesh vertices.
+    fn create_sdf_from_vertices(
+        &self,
+        vertices: &[Point3<f64>],
+        _scale: &Vector3<f64>,
+    ) -> CollisionShape {
+        // Compute bounding box of the mesh
+        let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+
+        for v in vertices {
+            min.x = min.x.min(v.x);
+            min.y = min.y.min(v.y);
+            min.z = min.z.min(v.z);
+            max.x = max.x.max(v.x);
+            max.y = max.y.max(v.y);
+            max.z = max.z.max(v.z);
+        }
+
+        // Add padding around the mesh
+        let padding = 0.1;
+        let origin = Point3::new(min.x - padding, min.y - padding, min.z - padding);
+
+        // Compute extent and cell size
+        let extent = max - min;
+        let max_extent = extent.x.max(extent.y).max(extent.z) + 2.0 * padding;
+
+        // Use moderate resolution (32^3) for reasonable performance
+        let resolution: usize = 32;
+        #[allow(clippy::cast_precision_loss)] // Safe: resolution is always small (32)
+        let cell_size = max_extent / (resolution - 1) as f64;
+
+        // For now, use a sphere approximation centered on the mesh centroid
+        // This is a simple fallback - proper SDF computation would use mesh-sdf crate
+        let centroid = Point3::new(
+            f64::midpoint(min.x, max.x),
+            f64::midpoint(min.y, max.y),
+            f64::midpoint(min.z, max.z),
+        );
+        let radius = extent.norm() / 2.0;
+
+        // Create SDF approximating the mesh as a sphere (conservative)
+        let sdf_data = sim_core::SdfCollisionData::from_fn(
+            resolution,
+            resolution,
+            resolution,
+            cell_size,
+            origin,
+            |p| (p - centroid).norm() - radius,
+        );
+
+        CollisionShape::sdf(std::sync::Arc::new(sdf_data))
+    }
+
+    /// Load a mesh file and create an SDF collision shape.
+    fn load_sdf_from_mesh_file(
+        &self,
+        file_path: &str,
+        scale: &Vector3<f64>,
+    ) -> Option<CollisionShape> {
+        // Resolve the path relative to the base directory
+        let full_path = if let Some(ref base_dir) = self.mesh_base_dir {
+            base_dir.join(file_path)
+        } else {
+            std::path::PathBuf::from(file_path)
+        };
+
+        // Load the mesh file using mesh-io
+        let indexed_mesh = match mesh_io::load_mesh(&full_path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load mesh file '{}' for SDF: {}",
+                    full_path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+
+        // Convert mesh vertices
+        let vertices: Vec<Point3<f64>> = indexed_mesh
+            .vertices
+            .iter()
+            .map(|v| {
+                Point3::new(
+                    v.position.x * scale.x,
+                    v.position.y * scale.y,
+                    v.position.z * scale.z,
+                )
+            })
+            .collect();
+
+        if vertices.is_empty() {
+            tracing::warn!(
+                "Mesh file '{}' has no vertices for SDF",
+                full_path.display()
+            );
+            return None;
+        }
+
+        Some(self.create_sdf_from_vertices(&vertices, scale))
+    }
+
     /// Convert MJCF connect constraints to sim-constraint ConnectConstraints.
     fn convert_connect_constraints(
         &self,
@@ -662,6 +1043,165 @@ impl MjcfLoader {
         }
 
         Ok(constraints)
+    }
+
+    /// Convert MJCF actuators to LoadedActuators.
+    fn convert_actuators(
+        &self,
+        mjcf_actuators: &[MjcfActuator],
+    ) -> (Vec<LoadedActuator>, HashMap<String, usize>) {
+        let mut actuators = Vec::new();
+        let mut actuator_to_index = HashMap::new();
+
+        for mjcf_actuator in mjcf_actuators {
+            let loaded = self.convert_single_actuator(mjcf_actuator);
+
+            if !loaded.name.is_empty() {
+                actuator_to_index.insert(loaded.name.clone(), actuators.len());
+            }
+
+            actuators.push(loaded);
+        }
+
+        (actuators, actuator_to_index)
+    }
+
+    /// Convert a single MJCF actuator to a LoadedActuator.
+    fn convert_single_actuator(&self, mjcf: &MjcfActuator) -> LoadedActuator {
+        let actuator: BoxedActuator = match mjcf.actuator_type {
+            MjcfActuatorType::Motor => {
+                // Direct torque/force motor - use a simple motor interface
+                // We'll create an IntegratedVelocityActuator with high max velocity
+                // and use it in direct torque mode
+                let max_force = mjcf
+                    .forcerange
+                    .map(|(_, upper)| upper.abs())
+                    .unwrap_or(100.0)
+                    * mjcf.gear;
+                IntegratedVelocityActuator::new(1000.0, max_force)
+                    .with_name(&mjcf.name)
+                    .with_gains(0.0, 0.0) // No PD control, direct torque
+                    .boxed()
+            }
+
+            MjcfActuatorType::Position => {
+                // Position servo with PD control
+                let max_force = mjcf
+                    .forcerange
+                    .map(|(_, upper)| upper.abs())
+                    .unwrap_or(100.0)
+                    * mjcf.gear;
+                let kp = mjcf.kp * mjcf.gear;
+                let kd = mjcf.kv * mjcf.gear;
+                IntegratedVelocityActuator::new(10.0, max_force)
+                    .with_name(&mjcf.name)
+                    .with_gains(kp, kd)
+                    .boxed()
+            }
+
+            MjcfActuatorType::Velocity => {
+                // Velocity servo
+                let max_force = mjcf
+                    .forcerange
+                    .map(|(_, upper)| upper.abs())
+                    .unwrap_or(100.0)
+                    * mjcf.gear;
+                let max_vel = mjcf.ctrlrange.map(|(_, upper)| upper.abs()).unwrap_or(10.0);
+                IntegratedVelocityActuator::new(max_vel, max_force)
+                    .with_name(&mjcf.name)
+                    .with_gains(max_force / 0.01, max_force.sqrt() * 2.0) // High gains for velocity tracking
+                    .boxed()
+            }
+
+            MjcfActuatorType::General => {
+                // General actuator - default to integrated velocity
+                let max_force = mjcf
+                    .forcerange
+                    .map(|(_, upper)| upper.abs())
+                    .unwrap_or(100.0)
+                    * mjcf.gear;
+                IntegratedVelocityActuator::new(10.0, max_force)
+                    .with_name(&mjcf.name)
+                    .boxed()
+            }
+
+            MjcfActuatorType::Cylinder => {
+                // Pneumatic/hydraulic cylinder
+                // Compute area from diameter if provided
+                let area = if let Some(diameter) = mjcf.diameter {
+                    std::f64::consts::PI * (diameter / 2.0).powi(2)
+                } else {
+                    mjcf.area
+                };
+
+                // Default supply pressure (about 6 bar)
+                let supply_pressure = 600_000.0;
+
+                PneumaticCylinderActuator::new(area, supply_pressure)
+                    .with_name(&mjcf.name)
+                    .with_rates(
+                        1.0 / mjcf.timeconst.max(0.001), // Convert time constant to rate
+                        1.0 / mjcf.timeconst.max(0.001),
+                        0.05,
+                    )
+                    .boxed()
+            }
+
+            MjcfActuatorType::Muscle => {
+                // Hill-type muscle model
+                // For now, we approximate with a pneumatic cylinder since it has similar
+                // activation dynamics. A full implementation would use sim-muscle crate.
+                let (act_tau, deact_tau) = mjcf.muscle_timeconst;
+                let max_force = if mjcf.force > 0.0 {
+                    mjcf.force * mjcf.gear
+                } else {
+                    mjcf.scale * mjcf.gear // Use scale as fallback
+                };
+
+                // Use pneumatic cylinder as approximation with muscle-like dynamics
+                // Area chosen such that max force is achieved at max pressure
+                let supply_pressure = 600_000.0;
+                let area = max_force / (supply_pressure - 101_325.0);
+
+                PneumaticCylinderActuator::new(area.max(0.0001), supply_pressure)
+                    .with_name(&mjcf.name)
+                    .with_rates(
+                        1.0 / act_tau.max(0.001),   // Activation rate
+                        1.0 / deact_tau.max(0.001), // Deactivation rate
+                        0.01,
+                    )
+                    .with_friction(0.0, 0.0) // Muscles have no mechanical friction
+                    .boxed()
+            }
+
+            MjcfActuatorType::Damper => {
+                // Passive damper - create zero-force actuator
+                // The damping is typically applied via joint damping, not through actuator
+                IntegratedVelocityActuator::new(0.0, 0.0)
+                    .with_name(&mjcf.name)
+                    .with_enabled(false)
+                    .boxed()
+            }
+
+            MjcfActuatorType::Adhesion => {
+                // Adhesion actuator for gripping/climbing
+                let max_adhesion = mjcf.gain * mjcf.gear;
+                AdhesionActuator::new(max_adhesion)
+                    .with_name(&mjcf.name)
+                    .boxed()
+            }
+        };
+
+        LoadedActuator {
+            name: mjcf.name.clone(),
+            actuator,
+            joint: mjcf.joint.clone(),
+            body: mjcf.body.clone(),
+            tendon: mjcf.tendon.clone(),
+            ctrlrange: mjcf.ctrlrange,
+            forcerange: mjcf.forcerange,
+            gear: mjcf.gear,
+        }
     }
 
     /// Create a sim-core Joint from an MJCF joint.
@@ -1198,6 +1738,58 @@ mod tests {
 
         assert_eq!(MjcfGeomType::from_str("mesh"), Some(MjcfGeomType::Mesh));
         assert_eq!(MjcfGeomType::Mesh.as_str(), "mesh");
+    }
+
+    #[test]
+    fn test_trimesh_type_enum() {
+        use crate::types::MjcfGeomType;
+
+        // Test all aliases for TriangleMesh
+        assert_eq!(
+            MjcfGeomType::from_str("trimesh"),
+            Some(MjcfGeomType::TriangleMesh)
+        );
+        assert_eq!(
+            MjcfGeomType::from_str("triangle_mesh"),
+            Some(MjcfGeomType::TriangleMesh)
+        );
+        assert_eq!(
+            MjcfGeomType::from_str("nonconvex"),
+            Some(MjcfGeomType::TriangleMesh)
+        );
+        assert_eq!(MjcfGeomType::TriangleMesh.as_str(), "trimesh");
+    }
+
+    #[test]
+    fn test_triangle_mesh_geom_with_embedded_vertices() {
+        // A simple floor with embedded vertex and face data
+        let xml = r#"
+            <mujoco model="trimesh_test">
+                <asset>
+                    <mesh name="floor" vertex="0 0 0 1 0 0 1 1 0 0 1 0" face="0 1 2 0 2 3"/>
+                </asset>
+                <worldbody>
+                    <body name="floor_body">
+                        <geom type="trimesh" mesh="floor"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        assert_eq!(model.bodies.len(), 1);
+
+        let body = &model.bodies[0];
+        assert!(body.collision_shape.is_some());
+
+        // Check that it's a TriangleMesh shape (not ConvexMesh)
+        match &body.collision_shape {
+            Some(CollisionShape::TriangleMesh { data }) => {
+                assert_eq!(data.vertex_count(), 4);
+                assert_eq!(data.triangle_count(), 2);
+            }
+            other => panic!("Expected TriangleMesh shape, got {other:?}"),
+        }
     }
 
     #[test]

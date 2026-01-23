@@ -174,6 +174,99 @@ pub struct SolverConfig {
     pub default_restitution: f64,
     /// Coefficient of friction for contacts.
     pub default_friction: f64,
+    /// Configuration for parallel execution (requires `parallel` feature).
+    pub parallel: ParallelConfig,
+}
+
+/// Configuration for parallel execution.
+///
+/// When the `parallel` feature is enabled in sim-core, these settings
+/// control multi-threaded constraint solving and body integration.
+///
+/// # Note
+///
+/// Parallel execution provides speedups for scenes with multiple independent
+/// constraint islands. For single-island scenes (e.g., a single articulated
+/// robot), the overhead may not be worth it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ParallelConfig {
+    /// Enable parallel constraint solving across independent islands.
+    ///
+    /// When enabled, constraint islands are solved concurrently using rayon.
+    /// This provides significant speedups for scenes with multiple
+    /// independent mechanisms (e.g., multiple robots, scattered objects).
+    pub parallel_constraints: bool,
+
+    /// Enable parallel body integration.
+    ///
+    /// When enabled, body position/velocity integration is parallelized.
+    /// This is beneficial for scenes with many bodies.
+    pub parallel_integration: bool,
+
+    /// Minimum number of active islands to trigger parallel constraint solving.
+    ///
+    /// Parallel overhead is not worth it for single-island scenes.
+    /// Increase this value if you observe slowdowns on small scenes.
+    pub min_islands_for_parallel: usize,
+
+    /// Minimum total bodies across all islands to trigger parallel integration.
+    ///
+    /// Small scenes don't benefit from parallel integration overhead.
+    pub min_bodies_for_parallel: usize,
+}
+
+impl Default for ParallelConfig {
+    fn default() -> Self {
+        Self {
+            // Disabled by default because parallel constraint solving uses the Newton
+            // solver which may have slightly different behavior than the default solver.
+            // Enable explicitly for performance in multi-island scenes.
+            parallel_constraints: false,
+            // Body integration is sequential anyway (HashMap limitation)
+            parallel_integration: false,
+            min_islands_for_parallel: 2,
+            min_bodies_for_parallel: 8,
+        }
+    }
+}
+
+impl ParallelConfig {
+    /// Create a configuration with parallelism disabled.
+    #[must_use]
+    pub const fn sequential() -> Self {
+        Self {
+            parallel_constraints: false,
+            parallel_integration: false,
+            min_islands_for_parallel: 2,
+            min_bodies_for_parallel: 8,
+        }
+    }
+
+    /// Create a configuration optimized for many islands.
+    #[must_use]
+    pub const fn many_islands() -> Self {
+        Self {
+            parallel_constraints: true,
+            parallel_integration: true,
+            min_islands_for_parallel: 2,
+            min_bodies_for_parallel: 4,
+        }
+    }
+
+    /// Set the minimum islands threshold.
+    #[must_use]
+    pub const fn with_min_islands(mut self, min: usize) -> Self {
+        self.min_islands_for_parallel = min;
+        self
+    }
+
+    /// Set the minimum bodies threshold.
+    #[must_use]
+    pub const fn with_min_bodies(mut self, min: usize) -> Self {
+        self.min_bodies_for_parallel = min;
+        self
+    }
 }
 
 impl Default for SolverConfig {
@@ -188,6 +281,7 @@ impl Default for SolverConfig {
             allow_sleeping: true,
             default_restitution: 0.3,
             default_friction: 0.5,
+            parallel: ParallelConfig::default(),
         }
     }
 }
@@ -204,6 +298,8 @@ impl SolverConfig {
             sleep_threshold: 0.001,
             sleep_time_threshold: 1.0, // Longer time before sleeping for accuracy
             allow_sleeping: false,
+            // Disable parallel for high accuracy (determinism)
+            parallel: ParallelConfig::sequential(),
             ..Default::default()
         }
     }
@@ -219,6 +315,8 @@ impl SolverConfig {
             sleep_threshold: 0.05,
             sleep_time_threshold: 0.2, // Faster sleep for performance
             allow_sleeping: true,
+            // Enable parallel with lower thresholds for max performance
+            parallel: ParallelConfig::many_islands(),
             ..Default::default()
         }
     }

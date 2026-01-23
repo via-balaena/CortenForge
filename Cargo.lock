@@ -317,6 +317,15 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "bincode"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
@@ -461,7 +470,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "594c44ac9f2996c2c0b92f5a44a1287d41fca3954182601a4a29b628a5973357"
 dependencies = [
  "ahash",
- "bincode",
+ "bincode 2.0.1",
  "burn-autodiff",
  "burn-candle",
  "burn-common",
@@ -5433,8 +5442,10 @@ name = "sim-constraint"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "hashbrown 0.15.5",
  "nalgebra",
  "nalgebra-sparse",
+ "rayon",
  "serde",
  "sim-muscle",
  "sim-types",
@@ -5449,6 +5460,7 @@ dependencies = [
  "nalgebra",
  "proptest",
  "serde",
+ "sim-simd",
  "sim-types",
  "thiserror 2.0.18",
 ]
@@ -5460,9 +5472,11 @@ dependencies = [
  "approx 0.5.1",
  "hashbrown 0.15.5",
  "nalgebra",
+ "rayon",
  "serde",
  "sim-constraint",
  "sim-contact",
+ "sim-simd",
  "sim-types",
  "thiserror 2.0.18",
 ]
@@ -5486,6 +5500,7 @@ name = "sim-mjcf"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "bincode 1.3.3",
  "mesh-io",
  "mesh-types",
  "nalgebra",
@@ -5532,6 +5547,17 @@ dependencies = [
  "serde",
  "sim-types",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "sim-simd"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "criterion",
+ "nalgebra",
+ "proptest",
+ "rand 0.8.5",
 ]
 
 [[package]]

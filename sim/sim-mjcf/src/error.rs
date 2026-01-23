@@ -149,6 +149,26 @@ pub enum MjcfError {
         /// Description of why the value is invalid.
         message: String,
     },
+
+    /// MJB binary format error - invalid magic bytes.
+    #[cfg(feature = "mjb")]
+    #[error("invalid MJB format: expected magic bytes 'MJB1', got {0:?}")]
+    InvalidMjbMagic([u8; 4]),
+
+    /// MJB binary format error - unsupported version.
+    #[cfg(feature = "mjb")]
+    #[error("unsupported MJB version: {0} (supported: 1)")]
+    UnsupportedMjbVersion(u32),
+
+    /// MJB binary deserialization error.
+    #[cfg(feature = "mjb")]
+    #[error("MJB deserialization error: {0}")]
+    MjbDeserialize(String),
+
+    /// MJB binary serialization error.
+    #[cfg(feature = "mjb")]
+    #[error("MJB serialization error: {0}")]
+    MjbSerialize(String),
 }
 
 impl MjcfError {

@@ -16,6 +16,7 @@ serde = ["dep:serde", "nalgebra/serde-serialize"]
 [dependencies]
 nalgebra = { version = "0.33", default-features = false, features = ["std"] }
 sim-types = { path = "../sim-types" }
+sim-simd = { path = "../sim-simd" }
 thiserror = "2"
 
 # Optional

@@ -225,7 +225,19 @@ impl Stepper {
 
         // 5. Solve joint constraints
         if self.config.enable_constraints {
-            world.solve_constraints();
+            #[cfg(feature = "parallel")]
+            {
+                let parallel_config = &world.config().solver.parallel;
+                if parallel_config.parallel_constraints {
+                    world.solve_constraints_parallel();
+                } else {
+                    world.solve_constraints();
+                }
+            }
+            #[cfg(not(feature = "parallel"))]
+            {
+                world.solve_constraints();
+            }
         }
 
         // Get sleep configuration
@@ -234,6 +246,74 @@ impl Stepper {
         let sleep_time_threshold = world.config().solver.sleep_time_threshold;
 
         // 6. Integrate dynamics for each body
+        #[cfg(feature = "parallel")]
+        {
+            let parallel_config = world.config().solver.parallel;
+            let body_count = world.body_count();
+
+            if parallel_config.parallel_integration
+                && body_count >= parallel_config.min_bodies_for_parallel
+            {
+                world.integrate_bodies_parallel(
+                    integration_method,
+                    dt,
+                    self.config.linear_damping,
+                    self.config.angular_damping,
+                    self.config.max_linear_velocity,
+                    self.config.max_angular_velocity,
+                    (sleep_threshold, sleep_time_threshold, allow_sleeping),
+                );
+            } else {
+                // Sequential fallback for small body counts
+                self.integrate_bodies_sequential(
+                    world,
+                    integration_method,
+                    dt,
+                    allow_sleeping,
+                    sleep_threshold,
+                    sleep_time_threshold,
+                );
+            }
+        }
+
+        #[cfg(not(feature = "parallel"))]
+        {
+            self.integrate_bodies_sequential(
+                world,
+                integration_method,
+                dt,
+                allow_sleeping,
+                sleep_threshold,
+                sleep_time_threshold,
+            );
+        }
+
+        // 9. Advance time
+        world.advance_time(dt);
+
+        // Check for divergence
+        world.validate()?;
+
+        // Create observation
+        let observation = world.observe();
+        let completed = world.is_complete();
+
+        Ok(StepResult {
+            observation,
+            completed,
+        })
+    }
+
+    /// Sequential body integration (used when parallel is disabled or for small body counts).
+    fn integrate_bodies_sequential(
+        &self,
+        world: &mut World,
+        integration_method: sim_types::IntegrationMethod,
+        dt: f64,
+        allow_sleeping: bool,
+        sleep_threshold: f64,
+        sleep_time_threshold: f64,
+    ) {
         for body in world.bodies_mut() {
             if body.is_static || body.is_sleeping {
                 continue;
@@ -255,7 +335,7 @@ impl Stepper {
                 dt,
             );
 
-            // 7. Apply damping
+            // Apply damping
             if self.config.linear_damping > 0.0 || self.config.angular_damping > 0.0 {
                 body.state.twist = crate::integrators::apply_damping(
                     &body.state.twist,
@@ -276,35 +356,18 @@ impl Stepper {
                 }
             }
 
-            // 8. Update sleep state
+            // Update sleep state
             if allow_sleeping {
                 if body.should_sleep(sleep_threshold) {
-                    // Body is below velocity threshold, accumulate sleep time
                     body.sleep_time += dt;
                     if body.sleep_time >= sleep_time_threshold {
                         body.put_to_sleep();
                     }
                 } else {
-                    // Body is moving, reset sleep timer
                     body.sleep_time = 0.0;
                 }
             }
         }
-
-        // 9. Advance time
-        world.advance_time(dt);
-
-        // Check for divergence
-        world.validate()?;
-
-        // Create observation
-        let observation = world.observe();
-        let completed = world.is_complete();
-
-        Ok(StepResult {
-            observation,
-            completed,
-        })
     }
 
     /// Run the simulation until completion or max steps.

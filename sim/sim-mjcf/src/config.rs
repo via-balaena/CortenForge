@@ -4,7 +4,7 @@
 //! into `sim-types` configuration structures that can be used by the simulation.
 
 use nalgebra::Vector3;
-use sim_types::{Gravity, IntegrationMethod, SimulationConfig, SolverConfig};
+use sim_types::{Gravity, IntegrationMethod, ParallelConfig, SimulationConfig, SolverConfig};
 
 use crate::types::{MjcfFlag, MjcfIntegrator, MjcfOption, MjcfSolverType};
 
@@ -41,6 +41,7 @@ impl From<&MjcfOption> for SimulationConfig {
             allow_sleeping: option.flag.island, // MJCF 'island' flag controls sleeping
             default_restitution: 0.3,           // Default - set per-geom in MJCF
             default_friction: 0.5,              // Default - set per-geom in MJCF
+            parallel: ParallelConfig::default(),
         };
 
         SimulationConfig {

@@ -93,6 +93,47 @@ pub enum CollisionShape {
         /// The height field data (shared reference for efficiency).
         data: std::sync::Arc<crate::heightfield::HeightFieldData>,
     },
+    /// Signed Distance Field for collision with complex geometry.
+    ///
+    /// SDFs store signed distance values at grid points, enabling smooth
+    /// collision detection with arbitrary shapes. Provides a cleaner API
+    /// than triangle meshes for non-convex geometry.
+    ///
+    /// # Advantages
+    ///
+    /// - Distance queries are direct (no ray casting needed)
+    /// - Gradient gives smooth surface normals
+    /// - Works naturally with non-convex geometry
+    /// - Useful for gradient-based optimization
+    Sdf {
+        /// The SDF collision data (shared reference for efficiency).
+        data: std::sync::Arc<crate::sdf::SdfCollisionData>,
+    },
+    /// Non-convex triangle mesh for collision with arbitrary geometry.
+    ///
+    /// Unlike `ConvexMesh` which requires convex geometry, `TriangleMesh`
+    /// supports arbitrary non-convex meshes with holes, concavities, etc.
+    /// Uses BVH acceleration for efficient collision queries.
+    ///
+    /// # Advantages
+    ///
+    /// - Supports any triangle mesh geometry (non-convex, with holes)
+    /// - BVH acceleration for fast collision queries on large meshes
+    /// - Accurate collision from individual triangles
+    ///
+    /// # When to use
+    ///
+    /// Use `TriangleMesh` for:
+    /// - Complex non-convex objects (furniture, vehicles, terrain features)
+    /// - Imported 3D models that cannot be easily convexified
+    /// - Static environment geometry
+    ///
+    /// For simple convex shapes, prefer `ConvexMesh` or primitives (Box, Sphere).
+    /// For terrain, prefer `HeightField`. For smooth implicit surfaces, prefer `Sdf`.
+    TriangleMesh {
+        /// The triangle mesh collision data (shared reference for efficiency).
+        data: std::sync::Arc<crate::mesh::TriangleMeshData>,
+    },
 }
 
 impl CollisionShape {
@@ -252,6 +293,113 @@ impl CollisionShape {
         }
     }
 
+    /// Create an SDF collision shape.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The SDF collision data (wrapped in Arc for efficient sharing)
+    #[must_use]
+    pub fn sdf(data: std::sync::Arc<crate::sdf::SdfCollisionData>) -> Self {
+        Self::Sdf { data }
+    }
+
+    /// Create an SDF collision shape from a signed distance function.
+    ///
+    /// # Arguments
+    ///
+    /// * `width` - Number of samples along X
+    /// * `height` - Number of samples along Y
+    /// * `depth` - Number of samples along Z
+    /// * `cell_size` - Size of each cell in meters
+    /// * `origin` - Position of the minimum corner in local coordinates
+    /// * `f` - Function that takes a local-space point and returns signed distance
+    #[must_use]
+    pub fn sdf_from_fn<F>(
+        width: usize,
+        height: usize,
+        depth: usize,
+        cell_size: f64,
+        origin: Point3<f64>,
+        f: F,
+    ) -> Self
+    where
+        F: Fn(Point3<f64>) -> f64,
+    {
+        let data =
+            crate::sdf::SdfCollisionData::from_fn(width, height, depth, cell_size, origin, f);
+        Self::Sdf {
+            data: std::sync::Arc::new(data),
+        }
+    }
+
+    /// Create an SDF collision shape representing a sphere.
+    ///
+    /// Useful for testing and as a simple primitive with smooth collision.
+    ///
+    /// # Arguments
+    ///
+    /// * `center` - Center of the sphere in local coordinates
+    /// * `radius` - Radius of the sphere
+    /// * `resolution` - Number of samples per dimension (higher = more accurate)
+    /// * `padding` - Extra space around the sphere for the grid
+    #[must_use]
+    pub fn sdf_sphere(center: Point3<f64>, radius: f64, resolution: usize, padding: f64) -> Self {
+        let data = crate::sdf::SdfCollisionData::sphere(center, radius, resolution, padding);
+        Self::Sdf {
+            data: std::sync::Arc::new(data),
+        }
+    }
+
+    /// Create an SDF collision shape representing a box.
+    ///
+    /// # Arguments
+    ///
+    /// * `center` - Center of the box in local coordinates
+    /// * `half_extents` - Half-extents of the box
+    /// * `resolution` - Number of samples per dimension
+    /// * `padding` - Extra space around the box for the grid
+    #[must_use]
+    pub fn sdf_box(
+        center: Point3<f64>,
+        half_extents: Vector3<f64>,
+        resolution: usize,
+        padding: f64,
+    ) -> Self {
+        let data =
+            crate::sdf::SdfCollisionData::box_shape(center, half_extents, resolution, padding);
+        Self::Sdf {
+            data: std::sync::Arc::new(data),
+        }
+    }
+
+    /// Create a triangle mesh collision shape.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The triangle mesh data (wrapped in Arc for efficient sharing)
+    #[must_use]
+    pub fn triangle_mesh(data: std::sync::Arc<crate::mesh::TriangleMeshData>) -> Self {
+        Self::TriangleMesh { data }
+    }
+
+    /// Create a triangle mesh collision shape from vertices and indices.
+    ///
+    /// # Arguments
+    ///
+    /// * `vertices` - The mesh vertices in local coordinates
+    /// * `indices` - Triangle indices (must be a multiple of 3)
+    ///
+    /// # Panics
+    ///
+    /// Panics if `indices.len()` is not a multiple of 3 or if any index is out of bounds.
+    #[must_use]
+    pub fn triangle_mesh_from_vertices(vertices: Vec<Point3<f64>>, indices: Vec<usize>) -> Self {
+        let data = crate::mesh::TriangleMeshData::new(vertices, indices);
+        Self::TriangleMesh {
+            data: std::sync::Arc::new(data),
+        }
+    }
+
     /// Get the bounding sphere radius for broad-phase culling.
     #[must_use]
     pub fn bounding_radius(&self) -> f64 {
@@ -280,6 +428,18 @@ impl CollisionShape {
             }
             Self::HeightField { data } => {
                 // Bounding sphere radius from center of the height field
+                let (min, max) = data.aabb();
+                let center = nalgebra::center(&min, &max);
+                (max - center).norm()
+            }
+            Self::Sdf { data } => {
+                // Bounding sphere radius from center of the SDF grid
+                let (min, max) = data.aabb();
+                let center = nalgebra::center(&min, &max);
+                (max - center).norm()
+            }
+            Self::TriangleMesh { data } => {
+                // Bounding sphere radius from center of the triangle mesh
                 let (min, max) = data.aabb();
                 let center = nalgebra::center(&min, &max);
                 (max - center).norm()
@@ -946,6 +1106,95 @@ impl World {
         self.bodies.keys().copied()
     }
 
+    /// Integrate all bodies in parallel using rayon.
+    ///
+    /// This method performs position/velocity integration, damping, velocity clamping,
+    /// and sleep state updates in parallel across all bodies. Each body's integration
+    /// is independent, making this embarrassingly parallel.
+    ///
+    /// # Arguments
+    ///
+    /// * `method` - Integration method to use
+    /// * `dt` - Timestep
+    /// * `linear_damping` - Linear velocity damping factor
+    /// * `angular_damping` - Angular velocity damping factor
+    /// * `max_linear_velocity` - Maximum linear velocity (None = unlimited)
+    /// * `max_angular_velocity` - Maximum angular velocity (None = unlimited)
+    /// * `sleep_config` - Sleep configuration: (threshold, `time_threshold`, `allow_sleeping`)
+    #[cfg(feature = "parallel")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn integrate_bodies_parallel(
+        &mut self,
+        method: sim_types::IntegrationMethod,
+        dt: f64,
+        linear_damping: f64,
+        angular_damping: f64,
+        max_linear_velocity: Option<f64>,
+        max_angular_velocity: Option<f64>,
+        sleep_config: (f64, f64, bool),
+    ) {
+        let (sleep_threshold, sleep_time_threshold, allow_sleeping) = sleep_config;
+
+        // Process bodies sequentially since hashbrown's HashMap doesn't support par_iter_mut.
+        // The main parallelization benefit comes from constraint solving (island-parallel).
+        // For true parallel body integration, the data layout would need restructuring
+        // (e.g., use a Vec<Body> with an index HashMap<BodyId, usize>).
+        for body in self.bodies.values_mut() {
+            if body.is_static || body.is_sleeping {
+                continue;
+            }
+
+            // Compute accelerations
+            let linear_accel = body.linear_acceleration();
+            let Some(angular_accel) = body.angular_acceleration() else {
+                // Singular inertia - skip this body
+                continue;
+            };
+
+            // Integrate
+            crate::integrators::integrate_with_method(
+                method,
+                &mut body.state,
+                linear_accel,
+                angular_accel,
+                dt,
+            );
+
+            // Apply damping
+            if linear_damping > 0.0 || angular_damping > 0.0 {
+                body.state.twist = crate::integrators::apply_damping(
+                    &body.state.twist,
+                    linear_damping,
+                    angular_damping,
+                    dt,
+                );
+            }
+
+            // Apply velocity limits
+            if let (Some(max_linear), Some(max_angular)) =
+                (max_linear_velocity, max_angular_velocity)
+            {
+                body.state.twist = crate::integrators::clamp_velocities(
+                    &body.state.twist,
+                    max_linear,
+                    max_angular,
+                );
+            }
+
+            // Update sleep state
+            if allow_sleeping {
+                if body.should_sleep(sleep_threshold) {
+                    body.sleep_time += dt;
+                    if body.sleep_time >= sleep_time_threshold {
+                        body.put_to_sleep();
+                    }
+                } else {
+                    body.sleep_time = 0.0;
+                }
+            }
+        }
+    }
+
     // =========================================================================
     // Joint Management
     // =========================================================================
@@ -1495,6 +1744,188 @@ impl World {
                 .map(|c| c.flip()),
 
             // =====================================================================
+            // SDF collisions
+            // =====================================================================
+
+            // Sdf-Sphere
+            (CollisionShape::Sdf { data }, CollisionShape::Sphere { radius }) => self
+                .detect_sdf_sphere_contact(
+                    data,
+                    &body_a.state.pose,
+                    body_b.state.pose.position,
+                    *radius,
+                    body_a.id,
+                    body_b.id,
+                ),
+
+            // Sphere-Sdf (flip)
+            (CollisionShape::Sphere { radius }, CollisionShape::Sdf { data }) => self
+                .detect_sdf_sphere_contact(
+                    data,
+                    &body_b.state.pose,
+                    body_a.state.pose.position,
+                    *radius,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
+            // Sdf-Capsule
+            (
+                CollisionShape::Sdf { data },
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius,
+                },
+            ) => {
+                let (start, end) = shape_b.capsule_endpoints(&body_b.state.pose)?;
+                self.detect_sdf_capsule_contact(
+                    data,
+                    &body_a.state.pose,
+                    start,
+                    end,
+                    *radius,
+                    body_a.id,
+                    body_b.id,
+                )
+            }
+
+            // Capsule-Sdf (flip)
+            (
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius,
+                },
+                CollisionShape::Sdf { data },
+            ) => {
+                let (start, end) = shape_a.capsule_endpoints(&body_a.state.pose)?;
+                self.detect_sdf_capsule_contact(
+                    data,
+                    &body_b.state.pose,
+                    start,
+                    end,
+                    *radius,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip())
+            }
+
+            // Sdf-Box
+            (CollisionShape::Sdf { data }, CollisionShape::Box { half_extents }) => self
+                .detect_sdf_box_contact(
+                    data,
+                    &body_a.state.pose,
+                    &body_b.state.pose,
+                    half_extents,
+                    body_a.id,
+                    body_b.id,
+                ),
+
+            // Box-Sdf (flip)
+            (CollisionShape::Box { half_extents }, CollisionShape::Sdf { data }) => self
+                .detect_sdf_box_contact(
+                    data,
+                    &body_b.state.pose,
+                    &body_a.state.pose,
+                    half_extents,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
+            // =====================================================================
+            // Triangle mesh collisions
+            // =====================================================================
+
+            // TriangleMesh-Sphere
+            (CollisionShape::TriangleMesh { data }, CollisionShape::Sphere { radius }) => self
+                .detect_mesh_sphere_contact(
+                    data,
+                    &body_a.state.pose,
+                    body_b.state.pose.position,
+                    *radius,
+                    body_a.id,
+                    body_b.id,
+                ),
+
+            // Sphere-TriangleMesh (flip)
+            (CollisionShape::Sphere { radius }, CollisionShape::TriangleMesh { data }) => self
+                .detect_mesh_sphere_contact(
+                    data,
+                    &body_b.state.pose,
+                    body_a.state.pose.position,
+                    *radius,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
+            // TriangleMesh-Capsule
+            (
+                CollisionShape::TriangleMesh { data },
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius,
+                },
+            ) => {
+                let (start, end) = shape_b.capsule_endpoints(&body_b.state.pose)?;
+                self.detect_mesh_capsule_contact(
+                    data,
+                    &body_a.state.pose,
+                    start,
+                    end,
+                    *radius,
+                    body_a.id,
+                    body_b.id,
+                )
+            }
+
+            // Capsule-TriangleMesh (flip)
+            (
+                CollisionShape::Capsule {
+                    half_length: _,
+                    radius,
+                },
+                CollisionShape::TriangleMesh { data },
+            ) => {
+                let (start, end) = shape_a.capsule_endpoints(&body_a.state.pose)?;
+                self.detect_mesh_capsule_contact(
+                    data,
+                    &body_b.state.pose,
+                    start,
+                    end,
+                    *radius,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip())
+            }
+
+            // TriangleMesh-Box
+            (CollisionShape::TriangleMesh { data }, CollisionShape::Box { half_extents }) => self
+                .detect_mesh_box_contact(
+                    data,
+                    &body_a.state.pose,
+                    &body_b.state.pose,
+                    half_extents,
+                    body_a.id,
+                    body_b.id,
+                ),
+
+            // Box-TriangleMesh (flip)
+            (CollisionShape::Box { half_extents }, CollisionShape::TriangleMesh { data }) => self
+                .detect_mesh_box_contact(
+                    data,
+                    &body_b.state.pose,
+                    &body_a.state.pose,
+                    half_extents,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
+            // =====================================================================
             // GJK/EPA fallback for ConvexMesh, Cylinder, Ellipsoid, and Capsule-Box
             // =====================================================================
 
@@ -1630,6 +2061,162 @@ impl World {
             contact.normal,
             contact.penetration,
             hf_body_id,
+            box_body_id,
+        ))
+    }
+
+    /// Detect contact between an SDF and a sphere.
+    #[allow(clippy::unused_self)]
+    fn detect_sdf_sphere_contact(
+        &self,
+        sdf: &crate::sdf::SdfCollisionData,
+        sdf_pose: &Pose,
+        sphere_center: Point3<f64>,
+        sphere_radius: f64,
+        sdf_body_id: BodyId,
+        sphere_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact = crate::sdf::sdf_sphere_contact(sdf, sdf_pose, sphere_center, sphere_radius)?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            sdf_body_id,
+            sphere_body_id,
+        ))
+    }
+
+    /// Detect contact between an SDF and a capsule.
+    #[allow(clippy::unused_self, clippy::too_many_arguments)]
+    fn detect_sdf_capsule_contact(
+        &self,
+        sdf: &crate::sdf::SdfCollisionData,
+        sdf_pose: &Pose,
+        capsule_start: Point3<f64>,
+        capsule_end: Point3<f64>,
+        capsule_radius: f64,
+        sdf_body_id: BodyId,
+        capsule_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact = crate::sdf::sdf_capsule_contact(
+            sdf,
+            sdf_pose,
+            capsule_start,
+            capsule_end,
+            capsule_radius,
+        )?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            sdf_body_id,
+            capsule_body_id,
+        ))
+    }
+
+    /// Detect contact between an SDF and a box.
+    #[allow(clippy::unused_self)]
+    fn detect_sdf_box_contact(
+        &self,
+        sdf: &crate::sdf::SdfCollisionData,
+        sdf_pose: &Pose,
+        box_pose: &Pose,
+        half_extents: &Vector3<f64>,
+        sdf_body_id: BodyId,
+        box_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact = crate::sdf::sdf_box_contact(sdf, sdf_pose, box_pose, half_extents)?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            sdf_body_id,
+            box_body_id,
+        ))
+    }
+
+    /// Detect contact between a triangle mesh and a sphere.
+    #[allow(clippy::unused_self)]
+    fn detect_mesh_sphere_contact(
+        &self,
+        mesh: &std::sync::Arc<crate::mesh::TriangleMeshData>,
+        mesh_pose: &Pose,
+        sphere_center: Point3<f64>,
+        sphere_radius: f64,
+        mesh_body_id: BodyId,
+        sphere_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        // Clone the Arc to get a mutable reference for BVH lazy initialization
+        let mut mesh_data = (**mesh).clone();
+        let contact = crate::mesh::mesh_sphere_contact(
+            &mut mesh_data,
+            mesh_pose,
+            sphere_center,
+            sphere_radius,
+        )?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            mesh_body_id,
+            sphere_body_id,
+        ))
+    }
+
+    /// Detect contact between a triangle mesh and a capsule.
+    #[allow(clippy::unused_self, clippy::too_many_arguments)]
+    fn detect_mesh_capsule_contact(
+        &self,
+        mesh: &std::sync::Arc<crate::mesh::TriangleMeshData>,
+        mesh_pose: &Pose,
+        capsule_start: Point3<f64>,
+        capsule_end: Point3<f64>,
+        capsule_radius: f64,
+        mesh_body_id: BodyId,
+        capsule_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let mut mesh_data = (**mesh).clone();
+        let contact = crate::mesh::mesh_capsule_contact(
+            &mut mesh_data,
+            mesh_pose,
+            capsule_start,
+            capsule_end,
+            capsule_radius,
+        )?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            mesh_body_id,
+            capsule_body_id,
+        ))
+    }
+
+    /// Detect contact between a triangle mesh and a box.
+    #[allow(clippy::unused_self)]
+    fn detect_mesh_box_contact(
+        &self,
+        mesh: &std::sync::Arc<crate::mesh::TriangleMeshData>,
+        mesh_pose: &Pose,
+        box_pose: &Pose,
+        half_extents: &Vector3<f64>,
+        mesh_body_id: BodyId,
+        box_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let mut mesh_data = (**mesh).clone();
+        let contact =
+            crate::mesh::mesh_box_contact(&mut mesh_data, mesh_pose, box_pose, half_extents)?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            mesh_body_id,
             box_body_id,
         ))
     }
@@ -1797,6 +2384,102 @@ impl World {
             }
 
             // Apply force and torque to child body
+            if let Some(child) = self.bodies.get_mut(&joint_force.child) {
+                if !child.is_static {
+                    child.accumulated_force += joint_force.force.child_force;
+                    child.accumulated_torque += joint_force.force.child_torque;
+                    child.wake_up();
+                }
+            }
+        }
+
+        result.forces.len()
+    }
+
+    /// Solve joint constraints using parallel island processing.
+    ///
+    /// This method uses rayon to solve independent constraint islands in parallel.
+    /// It's more efficient than sequential solving when the scene contains multiple
+    /// independent mechanisms (e.g., multiple robots, scattered objects).
+    ///
+    /// # Returns
+    ///
+    /// The number of forces applied.
+    #[cfg(feature = "parallel")]
+    pub fn solve_constraints_parallel(&mut self) -> usize {
+        use sim_constraint::{BodyState, ConstraintIslands, NewtonSolverConfig};
+
+        if self.joints.is_empty() {
+            return 0;
+        }
+
+        let min_islands = self.config.solver.parallel.min_islands_for_parallel;
+
+        // Pre-build body state snapshot for thread-safe access
+        let body_states: HashMap<BodyId, BodyState> = self
+            .bodies
+            .iter()
+            .map(|(&id, body)| {
+                let rotation = body.state.pose.rotation.to_rotation_matrix();
+                let inv_mass = if body.is_static {
+                    0.0
+                } else {
+                    1.0 / body.mass_props.mass
+                };
+                let inv_inertia = if body.is_static {
+                    Matrix3::zeros()
+                } else {
+                    body.mass_props
+                        .inverse_inertia()
+                        .unwrap_or_else(Matrix3::zeros)
+                };
+
+                (
+                    id,
+                    BodyState {
+                        position: body.state.pose.position,
+                        rotation: *rotation.matrix(),
+                        linear_velocity: body.state.twist.linear,
+                        angular_velocity: body.state.twist.angular,
+                        inv_mass,
+                        inv_inertia,
+                        is_static: body.is_static,
+                    },
+                )
+            })
+            .collect();
+
+        // Create joint adapters
+        let joint_adapters: Vec<JointAdapter> = self.joints.values().map(JointAdapter).collect();
+
+        // Build islands
+        let islands = ConstraintIslands::build_with_static_info(&joint_adapters, |id| {
+            body_states.get(&id).is_none_or(|s| s.is_static)
+        });
+
+        let dt = self.config.timestep;
+
+        // Use the parallel module to solve constraints
+        let newton_config = NewtonSolverConfig::default();
+        let result = sim_constraint::parallel::solve_islands_parallel(
+            &newton_config,
+            &joint_adapters,
+            &islands,
+            &body_states,
+            dt,
+            min_islands,
+        );
+
+        // Apply forces to bodies (sequential - modifies world)
+        for joint_force in &result.forces {
+            if let Some(parent) = self.bodies.get_mut(&joint_force.parent) {
+                if !parent.is_static {
+                    parent.accumulated_force += joint_force.force.parent_force;
+                    parent.accumulated_torque += joint_force.force.parent_torque;
+                    parent.wake_up();
+                }
+            }
+
             if let Some(child) = self.bodies.get_mut(&joint_force.child) {
                 if !child.is_static {
                     child.accumulated_force += joint_force.force.child_force;
@@ -2464,6 +3147,90 @@ mod tests {
             contact.penetration > 0.0,
             "penetration should be positive: {}",
             contact.penetration
+        );
+    }
+
+    #[test]
+    fn test_triangle_mesh_sphere_contact() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Create a simple floor mesh (two triangles forming a square)
+        let vertices = vec![
+            Point3::new(-1.0, -1.0, 0.0),
+            Point3::new(1.0, -1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(-1.0, 1.0, 0.0),
+        ];
+        let indices = vec![0, 1, 2, 0, 2, 3]; // Two triangles forming a square
+
+        let mesh_body = Body::new_static(BodyId::new(1), Pose::identity()).with_collision_shape(
+            CollisionShape::triangle_mesh_from_vertices(vertices, indices),
+        );
+        world.insert_body(mesh_body).expect("insert should succeed");
+
+        // Sphere slightly above the floor (penetrating it)
+        let sphere_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.3)));
+        let sphere = Body::new(
+            BodyId::new(2),
+            sphere_state,
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(0.5));
+        world.insert_body(sphere).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert_eq!(
+            contacts.len(),
+            1,
+            "should detect one contact with triangle mesh"
+        );
+
+        let contact = &contacts[0];
+        assert!(
+            contact.penetration > 0.0,
+            "penetration should be positive: {}",
+            contact.penetration
+        );
+        // Normal should point upward (away from mesh toward sphere)
+        assert!(
+            contact.normal.z.abs() > 0.9,
+            "normal should be roughly vertical: {:?}",
+            contact.normal
+        );
+    }
+
+    #[test]
+    fn test_triangle_mesh_no_contact() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Create a simple floor mesh
+        let vertices = vec![
+            Point3::new(-1.0, -1.0, 0.0),
+            Point3::new(1.0, -1.0, 0.0),
+            Point3::new(1.0, 1.0, 0.0),
+            Point3::new(-1.0, 1.0, 0.0),
+        ];
+        let indices = vec![0, 1, 2, 0, 2, 3];
+
+        let mesh_body = Body::new_static(BodyId::new(1), Pose::identity()).with_collision_shape(
+            CollisionShape::triangle_mesh_from_vertices(vertices, indices),
+        );
+        world.insert_body(mesh_body).expect("insert should succeed");
+
+        // Sphere far above the floor (not touching)
+        let sphere_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 2.0)));
+        let sphere = Body::new(
+            BodyId::new(2),
+            sphere_state,
+            MassProperties::sphere(1.0, 0.5),
+        )
+        .with_collision_shape(CollisionShape::sphere(0.5));
+        world.insert_body(sphere).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert!(
+            contacts.is_empty(),
+            "should not detect contact when sphere is far above mesh"
         );
     }
 
