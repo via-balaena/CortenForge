@@ -971,6 +971,98 @@ pub fn sdf_convex_mesh_contact(
     deepest_contact
 }
 
+/// Query an SDF for contact with an infinite plane.
+///
+/// Samples SDF grid points that are near the surface (where |distance| is small)
+/// and checks if they penetrate the plane. The plane equation is:
+/// `normal · point = plane_offset` (in world space, accounting for plane body position).
+///
+/// # Arguments
+///
+/// * `sdf` - The SDF collision data
+/// * `sdf_pose` - The pose of the SDF in world space
+/// * `plane_normal` - Unit normal vector of the plane (in world space)
+/// * `plane_offset` - Distance from world origin along the normal (includes plane body position)
+///
+/// # Returns
+///
+/// Contact information if the SDF surface intersects the plane, with:
+/// - `point`: Contact point on the SDF surface (world space)
+/// - `normal`: Plane normal (pointing from plane toward SDF)
+/// - `penetration`: Distance the deepest SDF surface point extends below the plane
+#[must_use]
+pub fn sdf_plane_contact(
+    sdf: &SdfCollisionData,
+    sdf_pose: &Pose,
+    plane_normal: &Vector3<f64>,
+    plane_offset: f64,
+) -> Option<SdfContact> {
+    // Sample SDF grid points and find the deepest penetration below the plane.
+    // We focus on points near the SDF surface (where |sdf_value| is small) since
+    // those are the actual collision boundary.
+
+    let mut deepest_contact: Option<SdfContact> = None;
+    let mut max_penetration = 0.0;
+
+    // Threshold for considering a point "near the surface"
+    // Use a fraction of the SDF extent to capture surface region
+    let surface_threshold = sdf.cell_size() * 2.0;
+
+    // Sample all grid points
+    for z in 0..sdf.depth() {
+        for y in 0..sdf.height() {
+            for x in 0..sdf.width() {
+                // Get the SDF value at this grid point
+                let sdf_value = sdf.get(x, y, z).unwrap_or(f64::MAX);
+
+                // Only consider points near or inside the surface
+                // (negative = inside, small positive = just outside surface)
+                if sdf_value > surface_threshold {
+                    continue;
+                }
+
+                // Convert grid indices to local SDF coordinates
+                let local_point = Point3::new(
+                    sdf.origin().x + x as f64 * sdf.cell_size(),
+                    sdf.origin().y + y as f64 * sdf.cell_size(),
+                    sdf.origin().z + z as f64 * sdf.cell_size(),
+                );
+
+                // Transform to world space
+                let world_point = sdf_pose.transform_point(&local_point);
+
+                // Compute signed distance to plane: positive = above plane, negative = below
+                // Plane equation: normal · point = plane_offset
+                // Distance from plane = (normal · point) - plane_offset
+                let dist_to_plane = plane_normal.dot(&world_point.coords) - plane_offset;
+
+                // Penetration is positive when the point is below the plane
+                let penetration = -dist_to_plane;
+
+                if penetration > max_penetration {
+                    max_penetration = penetration;
+
+                    // The contact point is on the SDF surface. Project the grid point
+                    // along the SDF gradient to find the actual surface point.
+                    let surface_point = sdf.gradient(local_point).map_or(world_point, |grad| {
+                        // Move from current point toward surface by sdf_value
+                        let surface_local = local_point - grad * sdf_value;
+                        sdf_pose.transform_point(&surface_local)
+                    });
+
+                    deepest_contact = Some(SdfContact {
+                        point: surface_point,
+                        normal: *plane_normal, // Normal points from plane toward SDF
+                        penetration,
+                    });
+                }
+            }
+        }
+    }
+
+    deepest_contact
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1511,6 +1603,173 @@ mod tests {
 
         let c = contact.unwrap();
         // Mesh at SDF center should have penetration
+        assert!(c.penetration > 0.0);
+    }
+
+    // =========================================================================
+    // Plane contact tests
+    // =========================================================================
+
+    #[test]
+    fn test_sdf_plane_contact_no_collision() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Plane at z = -5 (far below the sphere which is centered at origin with radius 1)
+        // With plane normal +z, points BELOW the plane (z < -5) would penetrate.
+        // Our sphere's lowest point is z = -1, which is ABOVE z = -5, so no penetration.
+        let plane_normal = Vector3::z();
+        let plane_offset = -5.0;
+
+        let contact = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        assert!(
+            contact.is_none(),
+            "SDF entirely above plane should have no contact"
+        );
+    }
+
+    #[test]
+    fn test_sdf_plane_contact_collision() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Plane at z = 0 (horizontal plane through sphere center)
+        // The bottom of the sphere (z = -1) should penetrate this plane
+        let plane_normal = Vector3::z();
+        let plane_offset = 0.0;
+
+        let contact = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        assert!(
+            contact.is_some(),
+            "SDF intersecting plane should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0, "should have positive penetration");
+        // Normal should be the plane normal (+Z)
+        assert_relative_eq!(c.normal.z, 1.0, epsilon = 0.01);
+        // Contact point should be below z = 0
+        assert!(
+            c.point.z < 0.5,
+            "contact point should be in lower hemisphere"
+        );
+    }
+
+    #[test]
+    fn test_sdf_plane_contact_deep_penetration() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Plane at z = 0.5 (sphere mostly below plane)
+        // The sphere extends from z = -1 to z = 1, so about 75% is below z = 0.5
+        let plane_normal = Vector3::z();
+        let plane_offset = 0.5;
+
+        let contact = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        assert!(
+            contact.is_some(),
+            "SDF mostly below plane should have contact"
+        );
+
+        let c = contact.unwrap();
+        // Deep penetration: bottom at z=-1, plane at z=0.5 -> penetration ~1.5
+        assert!(
+            c.penetration > 1.0,
+            "should have deep penetration (got {})",
+            c.penetration
+        );
+    }
+
+    #[test]
+    fn test_sdf_plane_contact_tilted_plane() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Tilted plane: normal pointing in +X+Z direction, passing through origin
+        let plane_normal = Vector3::new(1.0, 0.0, 1.0).normalize();
+        let plane_offset = 0.0;
+
+        let contact = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        assert!(
+            contact.is_some(),
+            "SDF intersecting tilted plane should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0, "should have positive penetration");
+        // Normal should be the tilted plane normal
+        assert_relative_eq!(c.normal, plane_normal, epsilon = 0.01);
+    }
+
+    #[test]
+    fn test_sdf_plane_contact_with_translated_sdf() {
+        let sdf = sphere_sdf(32);
+        // Translate the SDF by (0, 0, 2) - sphere center at z=2
+        let sdf_pose = Pose::from_position(Point3::new(0.0, 0.0, 2.0));
+
+        // Plane at z = 0
+        let plane_normal = Vector3::z();
+        let plane_offset = 0.0;
+
+        // Sphere is at z=2 with radius 1, so bottom is at z=1, above plane
+        let contact = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        assert!(
+            contact.is_none(),
+            "Translated SDF above plane should have no contact"
+        );
+
+        // Now plane at z = 1.5 (intersects the sphere)
+        let plane_offset = 1.5;
+        let contact = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        assert!(
+            contact.is_some(),
+            "Translated SDF intersecting plane should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0);
+    }
+
+    #[test]
+    fn test_sdf_plane_contact_inverted_normal() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Plane pointing downward (-Z), offset at z = 0
+        // This means "above" the plane is negative z
+        let plane_normal = -Vector3::z();
+        let plane_offset = 0.0;
+
+        let contact = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        assert!(
+            contact.is_some(),
+            "SDF intersecting inverted plane should have contact"
+        );
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0, "should have positive penetration");
+        // Normal should be -Z
+        assert_relative_eq!(c.normal.z, -1.0, epsilon = 0.01);
+    }
+
+    #[test]
+    fn test_sdf_plane_contact_box_sdf() {
+        // Test with a box SDF instead of sphere
+        let sdf =
+            SdfCollisionData::box_shape(Point3::origin(), Vector3::new(0.5, 0.5, 0.5), 32, 0.5);
+        let sdf_pose = Pose::identity();
+
+        // Plane at z = 0 (should intersect the box which extends from -0.5 to 0.5)
+        let plane_normal = Vector3::z();
+        let plane_offset = 0.0;
+
+        let contact = sdf_plane_contact(&sdf, &sdf_pose, &plane_normal, plane_offset);
+        assert!(
+            contact.is_some(),
+            "Box SDF intersecting plane should have contact"
+        );
+
+        let c = contact.unwrap();
         assert!(c.penetration > 0.0);
     }
 }

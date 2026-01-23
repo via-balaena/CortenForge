@@ -1916,6 +1916,29 @@ impl World {
                 )
                 .map(|c| c.flip()),
 
+            // Sdf-Plane
+            (CollisionShape::Sdf { data }, CollisionShape::Plane { normal, distance }) => self
+                .detect_sdf_plane_contact(
+                    data,
+                    &body_a.state.pose,
+                    normal,
+                    *distance + normal.dot(&body_b.state.pose.position.coords),
+                    body_a.id,
+                    body_b.id,
+                ),
+
+            // Plane-Sdf (flip)
+            (CollisionShape::Plane { normal, distance }, CollisionShape::Sdf { data }) => self
+                .detect_sdf_plane_contact(
+                    data,
+                    &body_b.state.pose,
+                    normal,
+                    *distance + normal.dot(&body_a.state.pose.position.coords),
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
             // =====================================================================
             // Triangle mesh collisions
             // =====================================================================
@@ -2306,6 +2329,28 @@ impl World {
             contact.penetration,
             sdf_body_id,
             mesh_body_id,
+        ))
+    }
+
+    /// Detect contact between an SDF and an infinite plane.
+    #[allow(clippy::unused_self)]
+    fn detect_sdf_plane_contact(
+        &self,
+        sdf: &crate::sdf::SdfCollisionData,
+        sdf_pose: &Pose,
+        plane_normal: &Vector3<f64>,
+        plane_offset: f64,
+        sdf_body_id: BodyId,
+        plane_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact = crate::sdf::sdf_plane_contact(sdf, sdf_pose, plane_normal, plane_offset)?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            sdf_body_id,
+            plane_body_id,
         ))
     }
 
