@@ -1,0 +1,377 @@
+# MuJoCo Conformance Verification
+
+> **Goal:** Systematically verify that CortenForge's sim-* crates correctly implement MuJoCo semantics.
+
+---
+
+## Overview
+
+CortenForge's simulation stack is "MuJoCo-inspired" but not a direct port. This document outlines verification approaches to ensure behavioral compatibility where it matters (sim-to-real transfer, model loading) while acknowledging intentional divergences.
+
+---
+
+## Verification Approaches
+
+### 1. MuJoCo Conformance Tests
+
+Run MuJoCo's own test suite against CortenForge implementations.
+
+**Strategy:**
+- Extract test cases from MuJoCo's C test suite
+- Translate to Rust test harness
+- Compare numerical outputs within tolerance
+
+**Key test categories:**
+| Category | MuJoCo Source | CortenForge Target |
+|----------|---------------|-------------------|
+| Forward dynamics | `test/engine_forward_test.cc` | sim-core |
+| Contact physics | `test/engine_collision_test.cc` | sim-contact |
+| Constraint solver | `test/engine_core_smooth_test.cc` | sim-constraint |
+| MJCF parsing | `test/xml_test.cc` | sim-mjcf |
+| Sensor readings | `test/sensor_test.cc` | sim-sensor |
+
+**Implementation:**
+```rust
+// tests/mujoco_conformance/forward_dynamics.rs
+
+#[test]
+fn test_free_fall_matches_mujoco() {
+    // MuJoCo reference: sphere drops 1m in ~0.45s under Earth gravity
+    let mut world = World::default();
+    let sphere = world.add_body(
+        RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 1.0))),
+        MassProperties::sphere(1.0, 0.1),
+    );
+
+    let dt = 0.002; // MuJoCo default timestep
+    let mut t = 0.0;
+
+    while t < 0.5 {
+        stepper.step(&mut world, dt);
+        t += dt;
+    }
+
+    let pos = world.body(sphere).state.pose.position;
+    // MuJoCo reference value (from mj_forward with same setup)
+    let mujoco_z = 0.0123; // captured from MuJoCo run
+
+    assert!((pos.z - mujoco_z).abs() < 1e-6, "Position diverged from MuJoCo reference");
+}
+```
+
+**Status:** `[ ] Not started`
+
+---
+
+### 2. Systematic MJCF Documentation Comparison
+
+Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by element.
+
+**MuJoCo XML Reference:** https://mujoco.readthedocs.io/en/stable/XMLreference.html
+
+**Comparison matrix:**
+
+#### Top-level elements
+| Element | MuJoCo | sim-mjcf | Notes |
+|---------|--------|----------|-------|
+| `<mujoco>` | ✓ | ✓ | Root element |
+| `<compiler>` | ✓ | ✓ | Partial: angle, coordinate |
+| `<option>` | ✓ | ✓ | Partial: timestep, gravity, integrator |
+| `<size>` | ✓ | ⚠️ | Memory hints, may not apply |
+| `<visual>` | ✓ | ❌ | L1 concern (sim-bevy) |
+| `<statistic>` | ✓ | ❌ | Auto-computed |
+| `<default>` | ✓ | ✓ | Class inheritance system |
+| `<custom>` | ✓ | ❌ | User data, low priority |
+| `<extension>` | ✓ | ❌ | Plugin system, low priority |
+| `<asset>` | ✓ | ⚠️ | Mesh, texture refs |
+| `<worldbody>` | ✓ | ✓ | Body hierarchy |
+| `<contact>` | ✓ | ✓ | Contact filtering |
+| `<equality>` | ✓ | ✓ | Equality constraints |
+| `<tendon>` | ✓ | ✓ | Fixed and spatial tendons |
+| `<actuator>` | ✓ | ✓ | Motors, position, velocity |
+| `<sensor>` | ✓ | ✓ | Various sensor types |
+| `<keyframe>` | ✓ | ❌ | State snapshots |
+
+#### Body/Geom/Joint attributes
+| Attribute | MuJoCo | sim-mjcf | Notes |
+|-----------|--------|----------|-------|
+| `body/@pos` | ✓ | ✓ | Position |
+| `body/@quat` | ✓ | ✓ | Orientation |
+| `body/@euler` | ✓ | ✓ | Euler angles |
+| `body/@axisangle` | ✓ | ⚠️ | Check implementation |
+| `body/@xyaxes` | ✓ | ⚠️ | Check implementation |
+| `body/@zaxis` | ✓ | ⚠️ | Check implementation |
+| `geom/@type` | ✓ | ✓ | sphere, box, capsule, cylinder, ellipsoid, plane, mesh |
+| `geom/@size` | ✓ | ✓ | Shape-dependent sizing |
+| `geom/@fromto` | ✓ | ✓ | Capsule/cylinder shorthand |
+| `geom/@contype` | ✓ | ✓ | Contact type bitmask |
+| `geom/@conaffinity` | ✓ | ✓ | Contact affinity bitmask |
+| `geom/@condim` | ✓ | ⚠️ | Contact dimensionality |
+| `geom/@friction` | ✓ | ✓ | Sliding, torsional, rolling |
+| `geom/@solref` | ✓ | ✓ | Solver reference params |
+| `geom/@solimp` | ✓ | ✓ | Solver impedance params |
+| `joint/@type` | ✓ | ✓ | hinge, slide, ball, free |
+| `joint/@axis` | ✓ | ✓ | Joint axis |
+| `joint/@range` | ✓ | ✓ | Position limits |
+| `joint/@limited` | ✓ | ✓ | Enable limits |
+| `joint/@damping` | ✓ | ✓ | Joint damping |
+| `joint/@stiffness` | ✓ | ✓ | Joint spring |
+| `joint/@armature` | ✓ | ⚠️ | Rotor inertia |
+
+**Action items:**
+- [ ] Create tracking issue for each ⚠️ item
+- [ ] Document intentional ❌ omissions in ARCHITECTURE.md
+- [ ] Add parsing tests for each ✓ attribute
+
+**Status:** `[ ] Not started`
+
+---
+
+### 3. Real-World Model Loading
+
+Load and validate models from established sources.
+
+#### MuJoCo Menagerie (Model Zoo)
+https://github.com/google-deepmind/mujoco_menagerie
+
+| Model | Category | Status | Notes |
+|-------|----------|--------|-------|
+| `franka_emika_panda` | Robot arm | [ ] | 7-DOF manipulator |
+| `universal_robots_ur5e` | Robot arm | [ ] | Industrial arm |
+| `unitree_go1` | Quadruped | [ ] | Walking robot |
+| `unitree_h1` | Humanoid | [ ] | Full humanoid |
+| `shadow_hand` | Dexterous hand | [ ] | High-DOF hand |
+| `anymal_c` | Quadruped | [ ] | ANYmal robot |
+| `berkeley_humanoid` | Humanoid | [ ] | Research humanoid |
+
+#### DeepMind Control Suite
+https://github.com/google-deepmind/dm_control
+
+| Domain | Task | Status | Notes |
+|--------|------|--------|-------|
+| `acrobot` | swingup | [ ] | Double pendulum |
+| `ball_in_cup` | catch | [ ] | Ball manipulation |
+| `cartpole` | balance | [ ] | Classic control |
+| `cheetah` | run | [ ] | Planar runner |
+| `finger` | spin | [ ] | Object manipulation |
+| `fish` | swim | [ ] | 3D swimming |
+| `hopper` | hop | [ ] | Single-leg hopper |
+| `humanoid` | walk | [ ] | Full humanoid |
+| `manipulator` | bring_ball | [ ] | Arm with objects |
+| `pendulum` | swingup | [ ] | Single pendulum |
+| `point_mass` | easy | [ ] | 2D navigation |
+| `reacher` | easy | [ ] | Planar arm |
+| `swimmer` | swimmer6 | [ ] | Multi-link swimmer |
+| `walker` | walk | [ ] | Bipedal walker |
+
+**Test procedure:**
+```rust
+#[test]
+fn test_load_panda() {
+    let mjcf = sim_mjcf::load("test_assets/franka_emika_panda/panda.xml")
+        .expect("Failed to load Panda MJCF");
+
+    // Verify structure
+    assert_eq!(mjcf.bodies.len(), 12); // 7 links + gripper + base
+    assert_eq!(mjcf.joints.len(), 9);  // 7 arm + 2 gripper
+    assert_eq!(mjcf.actuators.len(), 9);
+
+    // Convert to world
+    let world = sim_mjcf::to_world(&mjcf).expect("Failed to convert");
+
+    // Verify kinematics
+    assert!(world.bodies().count() > 0);
+}
+```
+
+**Status:** `[ ] Not started`
+
+---
+
+### 4. Numerical Trajectory Comparison
+
+Run identical simulations in MuJoCo and CortenForge, compare trajectories.
+
+**Methodology:**
+
+1. **Reference generation:**
+   - Run MuJoCo simulation (Python bindings)
+   - Record state trajectory at each timestep
+   - Export to JSON/binary format
+
+2. **CortenForge simulation:**
+   - Load same model
+   - Run with identical parameters
+   - Record state trajectory
+
+3. **Comparison:**
+   - Compute per-timestep error
+   - Track error accumulation
+   - Identify divergence points
+
+**Reference capture script (Python):**
+```python
+import mujoco
+import json
+
+def capture_trajectory(model_path, duration=5.0, dt=0.002):
+    model = mujoco.MjModel.from_xml_path(model_path)
+    data = mujoco.MjData(model)
+
+    trajectory = []
+    t = 0.0
+
+    while t < duration:
+        mujoco.mj_step(model, data)
+
+        trajectory.append({
+            "time": t,
+            "qpos": data.qpos.tolist(),
+            "qvel": data.qvel.tolist(),
+            "qacc": data.qacc.tolist(),
+        })
+
+        t += dt
+
+    return trajectory
+
+# Generate reference for pendulum
+traj = capture_trajectory("pendulum.xml")
+with open("pendulum_reference.json", "w") as f:
+    json.dump(traj, f)
+```
+
+**Comparison test (Rust):**
+```rust
+#[test]
+fn test_pendulum_trajectory_matches_mujoco() {
+    let reference: Vec<TrajectoryPoint> =
+        serde_json::from_str(include_str!("pendulum_reference.json"))
+            .expect("Failed to load reference");
+
+    let mjcf = sim_mjcf::load("pendulum.xml").unwrap();
+    let mut world = sim_mjcf::to_world(&mjcf).unwrap();
+
+    let dt = 0.002;
+    let mut max_position_error = 0.0;
+    let mut max_velocity_error = 0.0;
+
+    for (i, ref_point) in reference.iter().enumerate() {
+        // Step simulation
+        stepper.step(&mut world, dt);
+
+        // Compare positions
+        let qpos = world.joint_positions();
+        for (j, (ours, theirs)) in qpos.iter().zip(ref_point.qpos.iter()).enumerate() {
+            let error = (ours - theirs).abs();
+            max_position_error = max_position_error.max(error);
+        }
+
+        // Compare velocities
+        let qvel = world.joint_velocities();
+        for (j, (ours, theirs)) in qvel.iter().zip(ref_point.qvel.iter()).enumerate() {
+            let error = (ours - theirs).abs();
+            max_velocity_error = max_velocity_error.max(error);
+        }
+    }
+
+    // Allow small numerical differences (different floating point paths)
+    assert!(max_position_error < 1e-4, "Position error too large: {}", max_position_error);
+    assert!(max_velocity_error < 1e-3, "Velocity error too large: {}", max_velocity_error);
+}
+```
+
+**Error tolerance guidelines:**
+| Metric | Acceptable | Concerning | Failing |
+|--------|------------|------------|---------|
+| Position error (per step) | < 1e-6 | 1e-6 - 1e-4 | > 1e-4 |
+| Position drift (1s) | < 1e-4 | 1e-4 - 1e-2 | > 1e-2 |
+| Velocity error (per step) | < 1e-5 | 1e-5 - 1e-3 | > 1e-3 |
+| Contact force error | < 5% | 5% - 20% | > 20% |
+
+**Status:** `[ ] Not started`
+
+---
+
+## Intentional Divergences
+
+Some differences from MuJoCo are by design:
+
+| Area | MuJoCo | CortenForge | Rationale |
+|------|--------|-------------|-----------|
+| Memory model | Pre-allocated pools | Dynamic allocation | Rust idioms, safety |
+| Threading | OpenMP | Rayon | Rust ecosystem |
+| GPU | Custom CUDA | Future: wgpu | Cross-platform |
+| Contact solver | Custom sparse | nalgebra-sparse | Maintainability |
+| Visualization | Built-in | Separate L1 crate | Headless training |
+
+---
+
+## Test Infrastructure
+
+### Directory structure
+```
+sim/L0/tests/
+├── mujoco_conformance/
+│   ├── mod.rs
+│   ├── forward_dynamics.rs
+│   ├── contact_physics.rs
+│   ├── constraint_solver.rs
+│   └── reference_data/
+│       ├── pendulum_trajectory.json
+│       ├── cartpole_trajectory.json
+│       └── ...
+├── model_loading/
+│   ├── mod.rs
+│   ├── menagerie.rs
+│   └── dm_control.rs
+└── assets/
+    ├── mujoco_menagerie/  (git submodule)
+    └── dm_control/        (git submodule)
+```
+
+### CI integration
+```yaml
+# .github/workflows/mujoco_conformance.yml
+name: MuJoCo Conformance
+
+on: [push, pull_request]
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install MuJoCo (for reference generation)
+        run: pip install mujoco
+
+      - name: Generate reference trajectories
+        run: python scripts/generate_mujoco_references.py
+
+      - name: Run conformance tests
+        run: cargo test --package sim-core --features mujoco-conformance
+```
+
+---
+
+## Progress Tracking
+
+| Approach | Priority | Status | Owner | Notes |
+|----------|----------|--------|-------|-------|
+| Conformance tests | High | Not started | - | Foundation for validation |
+| Doc comparison | Medium | Not started | - | Guides implementation gaps |
+| Model loading | High | Not started | - | User-facing validation |
+| Trajectory comparison | High | Not started | - | Numerical correctness |
+
+---
+
+## References
+
+- [MuJoCo Documentation](https://mujoco.readthedocs.io/)
+- [MuJoCo XML Reference](https://mujoco.readthedocs.io/en/stable/XMLreference.html)
+- [MuJoCo GitHub (tests)](https://github.com/google-deepmind/mujoco/tree/main/test)
+- [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie)
+- [DeepMind Control Suite](https://github.com/google-deepmind/dm_control)
