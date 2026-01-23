@@ -17,7 +17,7 @@
 
 ### What's Missing
 - `TriangleMesh ↔ TriangleMesh` collision returns `None` (falls through in dispatch)
-- No triangle-triangle intersection algorithm
+- ~~No triangle-triangle intersection algorithm~~ ✅ **COMPLETED** (Milestone 1)
 - No dual-BVH traversal for mesh pairs
 
 ---
@@ -73,10 +73,40 @@
 
 ## Recommended Implementation Plan
 
-### Milestone 1: Triangle-Triangle Foundation (2-3 days)
+### Milestone 1: Triangle-Triangle Foundation ✅ COMPLETED
 
-**Files to modify:**
-- `sim-core/src/mesh.rs` - Add triangle-triangle intersection
+**Status:** Implemented in commit `5eb1264` on `feature-branch`
+
+**Files modified:**
+- `sim/sim-core/src/mesh.rs` - Added triangle-triangle intersection
+
+**What was implemented:**
+- `TriTriContact` struct for intersection results
+- `triangle_triangle_intersection()` function using 13-axis SAT algorithm
+- `triangle_aabbs_overlap()` for quick AABB rejection
+- `test_separating_axis()` for SAT axis testing
+- `compute_contact_point()` for contact point generation based on axis type
+- `closest_points_on_segments()` for edge-edge contact computation
+
+**Algorithm implemented:**
+1. Quick rejection: AABB of tri_a vs AABB of tri_b
+2. SAT with 13 potential separating axes (2 face normals + 9 edge cross products)
+3. Skip degenerate axes (parallel edges)
+4. If no separating axis found → intersection detected
+5. Compute contact from minimum penetration axis
+6. Contact point computed based on axis type (FaceA, FaceB, or EdgeEdge)
+
+**Tests added (14 new tests):**
+- Coplanar overlapping/separate triangles
+- Crossing triangles
+- Parallel separate/overlapping triangles
+- Edge-edge contacts
+- Vertex-face contacts
+- AABB rejection
+- Contact normal direction verification
+- Segment closest points
+- Identical triangles
+- Various interpenetration scenarios
 
 ```rust
 /// Result of triangle-triangle intersection test
@@ -99,13 +129,6 @@ pub fn triangle_triangle_intersection(
     tri_b: &[Point3<f64>; 3],
 ) -> Option<TriTriContact>
 ```
-
-**Algorithm steps:**
-1. Quick rejection: AABB of tri_a vs AABB of tri_b
-2. Coplanarity test (special case handling)
-3. SAT with 13 potential separating axes
-4. If no separating axis found → intersection
-5. Compute contact from minimum penetration axis
 
 ### Milestone 2: Dual-BVH Traversal (1-2 days)
 
@@ -232,10 +255,10 @@ Our implementation will **exceed MuJoCo's capabilities** by supporting true non-
 
 ## Success Criteria
 
-- [ ] Triangle-triangle intersection with correct contact generation
+- [x] Triangle-triangle intersection with correct contact generation ✅ (Milestone 1)
 - [ ] Dual-BVH traversal with O(log n) pruning
 - [ ] Integrated in collision dispatch
-- [ ] Unit tests for basic cases
+- [x] Unit tests for basic cases ✅ (14 tests added in Milestone 1)
 - [ ] Humanoid self-collision demo working
 - [ ] Performance: <5ms for 10k triangle pair test
 
@@ -243,13 +266,13 @@ Our implementation will **exceed MuJoCo's capabilities** by supporting true non-
 
 ## Timeline Estimate
 
-| Milestone | Effort | Dependencies |
-|-----------|--------|--------------|
-| Triangle-triangle intersection | 2-3 days | None |
-| Dual-BVH traversal | 1-2 days | M1 |
-| Integration & dispatch | 1 day | M2 |
-| Testing & optimization | 1-2 days | M3 |
-| **Total** | **5-8 days** | |
+| Milestone | Effort | Dependencies | Status |
+|-----------|--------|--------------|--------|
+| Triangle-triangle intersection | 2-3 days | None | ✅ **DONE** |
+| Dual-BVH traversal | 1-2 days | M1 | 🔜 Next |
+| Integration & dispatch | 1 day | M2 | Pending |
+| Testing & optimization | 1-2 days | M3 | Pending |
+| **Total** | **5-8 days** | | |
 
 ---
 
