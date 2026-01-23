@@ -19,16 +19,15 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Actuators (Motors, Servos, Muscles, Pneumatic, Adhesion)
 - Sensors (IMU, Force/Torque, Touch, Rangefinder, Magnetometer)
 - Tendons & Deformables (Cloth, Soft bodies, XPBD solver)
-- Model loading (URDF, MJCF)
+- Model loading (URDF, MJCF, **MJB binary format**)
 
-### ❌ Missing Features (4 items - not yet started)
+### ❌ Missing Features (3 items - not yet started)
 
 | Priority | Feature | Impact | Effort | Section |
 |----------|---------|--------|--------|---------|
 | **1** | Non-convex mesh collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
 | **2** | SDF collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
 | **3** | Multi-threading | Medium | Medium | [§12](#12-performance-optimizations) |
-| **4** | MJB binary format | Low | Low | [§13](#13-model-format) |
 
 ### ⚠️ Partial Implementations (3 items - needs completion)
 
@@ -1065,23 +1064,46 @@ if let Some(body) = world.body_mut(body_id) {
 |---------|--------|-------------|--------|----------|
 | URDF loading | Supported | `sim-urdf` crate | **Implemented** | - |
 | MJCF loading | Native | `sim-mjcf` crate | **Implemented** | - |
-| **MJB (binary)** | Native | Missing | ❌ **TODO** | Priority 6 |
+| MJB (binary) | Native | `sim-mjcf` crate (mjb feature) | **Implemented** | - |
 
-### Implementation Notes: MJB Binary Format ❌ TODO (Priority 6)
+### Implementation Notes: MJB Binary Format ✅ COMPLETED
 
-MJB is MuJoCo's compiled binary model format:
+MJB is a binary serialization format for MJCF models providing:
 - Faster loading than XML parsing
-- Pre-computed inertias and collision data
-- MuJoCo-specific, not portable
+- Pre-serialized model data ready for deserialization
+- Reduced file sizes through binary encoding
 
-**Note:** Low priority unless you're loading large models frequently. MJCF/URDF loading is fast enough for most use cases.
+**Implementation:**
+- `save_mjb_file()` / `save_mjb_bytes()` / `save_mjb_writer()` - Serialize `MjcfModel` to binary
+- `load_mjb_file()` / `load_mjb_bytes()` / `load_mjb_reader()` - Deserialize from binary
+- `is_mjb_file()` / `is_mjb_bytes()` - Check if data is valid MJB format
+- `MjbHeader` - File header with magic bytes, version, and flags
 
-**Implementation approach:**
-1. Study MuJoCo's MJB format (not publicly documented)
-2. Implement binary serialization for `MjcfModel`
-3. Add `load_mjb()` and `save_mjb()` functions
+**File Format:**
+1. Magic bytes: `MJB1` (4 bytes)
+2. Version: `u32` little-endian (4 bytes) - currently version 1
+3. Flags: `u32` little-endian (4 bytes) - reserved for future use
+4. Payload: bincode-encoded `MjcfModel` data
 
-**Files to modify:** `sim-mjcf/src/lib.rs`
+**Usage:**
+```rust
+use sim_mjcf::{parse_mjcf_str, load_mjb_file, save_mjb_file};
+
+// Parse MJCF and save to binary for faster loading later
+let model = parse_mjcf_str("<mujoco><worldbody/></mujoco>").unwrap();
+save_mjb_file(&model, "model.mjb").unwrap();
+
+// Load from binary (much faster than XML parsing)
+let loaded = load_mjb_file("model.mjb").unwrap();
+```
+
+**Feature Flag:** Requires `mjb` feature to be enabled:
+```toml
+[dependencies]
+sim-mjcf = { workspace = true, features = ["mjb"] }
+```
+
+**Files:** `sim-mjcf/src/mjb.rs`, `sim-mjcf/src/error.rs`
 
 ### Implementation Notes: MJCF Support ✅ COMPLETED
 
@@ -1248,7 +1270,6 @@ The following features are **not yet implemented**. They are ranked by importanc
 | **1** | Non-convex mesh collision | §5 Geoms | High | Medium | Triangle mesh without convexification |
 | **2** | SDF collision | §4, §5 | High | Medium | Signed distance fields for complex geometry |
 | **3** | Multi-threading | §12 Performance | Medium | Medium | Requires model-data separation |
-| **4** | MJB binary format | §13 Model Format | Low | Low | Faster loading, MuJoCo-specific |
 
 **Recommended implementation order:**
 
@@ -1258,9 +1279,15 @@ The following features are **not yet implemented**. They are ranked by importanc
 
 3. **Multi-threading** - Performance optimization, requires architectural changes.
 
-4. **MJB binary format** - MuJoCo-specific, low priority unless loading speed is critical.
+### ✅ Recently Completed: MJB Binary Format
 
-### ✅ Recently Completed: Free/Planar/Cylindrical Joint Solvers
+MJB binary format support added to `sim-mjcf` crate (requires `mjb` feature):
+- `save_mjb_file()` / `load_mjb_file()` - Serialize/deserialize models to/from binary files
+- `save_mjb_bytes()` / `load_mjb_bytes()` - In-memory binary serialization
+- `is_mjb_file()` / `is_mjb_bytes()` - Format detection
+- File format: magic bytes (`MJB1`) + version + flags + bincode-encoded `MjcfModel`
+
+### ✅ Previously Completed: Free/Planar/Cylindrical Joint Solvers
 
 These joint types now have full constraint solver support:
 - **FreeJoint**: 6 DOF floating base for quadrupeds, humanoids, drones
@@ -1703,7 +1730,7 @@ Focus: Large standalone features, each potentially its own PR.
 | **SDF collision** | §4 Collision, §5 Geoms | High | ❌ **TODO** | Signed distance fields - Priority 2 |
 | ~~Skinned meshes~~ | §11 Deformables | High | ✅ **COMPLETED** | Visual deformation for rendering |
 | **Multi-threading** | §12 Performance | Medium | ❌ **TODO** | Model-data separation needed first - Priority 3 |
-| **MJB binary format** | §13 Model Format | Low | ❌ **TODO** | Faster loading, MuJoCo-specific - Priority 4 |
+| ~~MJB binary format~~ | §13 Model Format | Low | ✅ **COMPLETED** | Faster loading via bincode serialization |
 
 **Implemented:**
 

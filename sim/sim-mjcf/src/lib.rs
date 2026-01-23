@@ -105,6 +105,22 @@
 //!
 //! - `<contact>` - Contact pair filtering (parsed but not implemented)
 //!
+//! # MJB Binary Format
+//!
+//! When the `mjb` feature is enabled, this crate also supports MuJoCo's binary
+//! format (MJB) for faster model loading:
+//!
+//! ```ignore
+//! use sim_mjcf::{load_mjcf_str, load_mjb_file, save_mjb_file};
+//!
+//! // Parse MJCF and save as binary
+//! let model = load_mjcf_str("<mujoco><worldbody/></mujoco>").unwrap();
+//! save_mjb_file(&model.model, "model.mjb").unwrap();
+//!
+//! // Later, load the binary format (much faster)
+//! let loaded = load_mjb_file("model.mjb").unwrap();
+//! ```
+//!
 //! # Limitations
 //!
 //! - Non-convex meshes are converted to convex hulls (may not match original geometry)
@@ -159,6 +175,8 @@ mod config;
 mod defaults;
 mod error;
 mod loader;
+#[cfg(feature = "mjb")]
+mod mjb;
 mod parser;
 mod types;
 mod validation;
@@ -179,6 +197,13 @@ pub use types::{
     MjcfSolverType, MjcfTendonDefaults,
 };
 pub use validation::{ValidationResult, validate};
+
+// MJB binary format support (requires "mjb" feature)
+#[cfg(feature = "mjb")]
+pub use mjb::{
+    MJB_HEADER_SIZE, MJB_MAGIC, MJB_VERSION, MjbHeader, is_mjb_bytes, is_mjb_file, load_mjb_bytes,
+    load_mjb_file, load_mjb_reader, save_mjb_bytes, save_mjb_file, save_mjb_writer,
+};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

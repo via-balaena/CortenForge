@@ -19,6 +19,7 @@ quick-xml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true, optional = true }
+bincode = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx = { workspace = true }
@@ -26,7 +27,8 @@ tempfile = { workspace = true }
 
 [features]
 default = []
-serde = ["dep:serde", "sim-types/serde", "sim-core/serde"]
+serde = ["dep:serde", "sim-types/serde"]
+mjb = ["serde", "dep:bincode"]
 
 [lints]
 workspace = true
