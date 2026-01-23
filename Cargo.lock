@@ -5470,8 +5470,10 @@ name = "sim-core"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "criterion",
  "hashbrown 0.15.5",
  "nalgebra",
+ "rand 0.8.5",
  "rayon",
  "serde",
  "sim-constraint",

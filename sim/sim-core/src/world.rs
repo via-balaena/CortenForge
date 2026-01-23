@@ -3416,4 +3416,309 @@ mod tests {
             "should detect contact between bodies in same collision group"
         );
     }
+
+    // =========================================================================
+    // TriangleMesh-TriangleMesh Collision Tests (Milestone 4)
+    // =========================================================================
+
+    /// Helper to create a simple cube mesh for testing.
+    fn create_test_cube_mesh() -> (Vec<Point3<f64>>, Vec<usize>) {
+        let vertices = vec![
+            // Bottom face
+            Point3::new(-0.5, -0.5, -0.5),
+            Point3::new(0.5, -0.5, -0.5),
+            Point3::new(0.5, 0.5, -0.5),
+            Point3::new(-0.5, 0.5, -0.5),
+            // Top face
+            Point3::new(-0.5, -0.5, 0.5),
+            Point3::new(0.5, -0.5, 0.5),
+            Point3::new(0.5, 0.5, 0.5),
+            Point3::new(-0.5, 0.5, 0.5),
+        ];
+        // Two triangles per face (12 triangles total)
+        let indices = vec![
+            // Bottom (-Z)
+            0, 1, 2, 0, 2, 3, // Top (+Z)
+            4, 6, 5, 4, 7, 6, // Front (-Y)
+            0, 5, 1, 0, 4, 5, // Back (+Y)
+            2, 7, 3, 2, 6, 7, // Left (-X)
+            0, 7, 4, 0, 3, 7, // Right (+X)
+            1, 6, 2, 1, 5, 6,
+        ];
+        (vertices, indices)
+    }
+
+    /// Helper to create a simple tetrahedron mesh for testing.
+    fn create_test_tetrahedron_mesh() -> (Vec<Point3<f64>>, Vec<usize>) {
+        let vertices = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 1.0, 0.0),
+            Point3::new(0.5, 0.33, 0.8),
+        ];
+        let indices = vec![
+            0, 1, 2, // bottom
+            0, 1, 3, // front
+            1, 2, 3, // right
+            0, 2, 3, // left
+        ];
+        (vertices, indices)
+    }
+
+    #[test]
+    fn test_triangle_mesh_mesh_contact() {
+        let mut world = World::new(SimulationConfig::default());
+
+        // Create two cube meshes
+        let (vertices_a, indices_a) = create_test_cube_mesh();
+        let (vertices_b, indices_b) = create_test_cube_mesh();
+
+        // Mesh A at origin (static)
+        let mesh_a = Body::new_static(BodyId::new(1), Pose::identity()).with_collision_shape(
+            CollisionShape::triangle_mesh_from_vertices(vertices_a, indices_a),
+        );
+        world.insert_body(mesh_a).expect("insert should succeed");
+
+        // Mesh B overlapping with A (dynamic body shifted 0.3 units in X for deeper penetration)
+        let mesh_b_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.3, 0.0, 0.0)));
+        let mesh_b = Body::new(
+            BodyId::new(2),
+            mesh_b_state,
+            MassProperties::box_shape(1.0, Vector3::new(0.5, 0.5, 0.5)),
+        )
+        .with_collision_shape(CollisionShape::triangle_mesh_from_vertices(
+            vertices_b, indices_b,
+        ));
+        world.insert_body(mesh_b).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert!(
+            !contacts.is_empty(),
+            "overlapping cube meshes should produce contacts"
+        );
+
+        // Verify contact properties - penetration can be >= 0 for valid contacts
+        let contact = &contacts[0];
+        assert!(
+            contact.penetration >= 0.0,
+            "penetration should be non-negative: {}",
+            contact.penetration
+        );
+    }
+
+    #[test]
+    fn test_triangle_mesh_mesh_no_contact() {
+        let mut world = World::new(SimulationConfig::default());
+
+        let (vertices_a, indices_a) = create_test_cube_mesh();
+        let (vertices_b, indices_b) = create_test_cube_mesh();
+
+        // Mesh A at origin
+        let mesh_a = Body::new_static(BodyId::new(1), Pose::identity()).with_collision_shape(
+            CollisionShape::triangle_mesh_from_vertices(vertices_a, indices_a),
+        );
+        world.insert_body(mesh_a).expect("insert should succeed");
+
+        // Mesh B far away (no contact expected)
+        let mesh_b_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(5.0, 0.0, 0.0)));
+        let mesh_b = Body::new(
+            BodyId::new(2),
+            mesh_b_state,
+            MassProperties::box_shape(1.0, Vector3::new(0.5, 0.5, 0.5)),
+        )
+        .with_collision_shape(CollisionShape::triangle_mesh_from_vertices(
+            vertices_b, indices_b,
+        ));
+        world.insert_body(mesh_b).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert!(
+            contacts.is_empty(),
+            "separate cube meshes should not produce contacts"
+        );
+    }
+
+    #[test]
+    fn test_triangle_mesh_mesh_tetrahedra() {
+        let mut world = World::new(SimulationConfig::default());
+
+        let (vertices_a, indices_a) = create_test_tetrahedron_mesh();
+        let (vertices_b, indices_b) = create_test_tetrahedron_mesh();
+
+        // Tetrahedron A at origin
+        let mesh_a = Body::new_static(BodyId::new(1), Pose::identity()).with_collision_shape(
+            CollisionShape::triangle_mesh_from_vertices(vertices_a, indices_a),
+        );
+        world.insert_body(mesh_a).expect("insert should succeed");
+
+        // Tetrahedron B overlapping (shifted to intersect)
+        let mesh_b_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.3, 0.3, 0.0)));
+        let mesh_b = Body::new(
+            BodyId::new(2),
+            mesh_b_state,
+            MassProperties::sphere(1.0, 0.5), // Approximate mass
+        )
+        .with_collision_shape(CollisionShape::triangle_mesh_from_vertices(
+            vertices_b, indices_b,
+        ));
+        world.insert_body(mesh_b).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert!(
+            !contacts.is_empty(),
+            "overlapping tetrahedra should produce contacts"
+        );
+    }
+
+    #[test]
+    fn test_triangle_mesh_mesh_rotated() {
+        let mut world = World::new(SimulationConfig::default());
+
+        let (vertices_a, indices_a) = create_test_cube_mesh();
+        let (vertices_b, indices_b) = create_test_cube_mesh();
+
+        // Mesh A at origin
+        let mesh_a = Body::new_static(BodyId::new(1), Pose::identity()).with_collision_shape(
+            CollisionShape::triangle_mesh_from_vertices(vertices_a, indices_a),
+        );
+        world.insert_body(mesh_a).expect("insert should succeed");
+
+        // Mesh B rotated 45 degrees around Z and positioned to overlap
+        let rotation = UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_4);
+        let pose_b = Pose::from_position_rotation(Point3::new(0.3, 0.3, 0.0), rotation);
+        let mesh_b_state = RigidBodyState::at_rest(pose_b);
+        let mesh_b = Body::new(
+            BodyId::new(2),
+            mesh_b_state,
+            MassProperties::box_shape(1.0, Vector3::new(0.5, 0.5, 0.5)),
+        )
+        .with_collision_shape(CollisionShape::triangle_mesh_from_vertices(
+            vertices_b, indices_b,
+        ));
+        world.insert_body(mesh_b).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert!(
+            !contacts.is_empty(),
+            "rotated overlapping cube meshes should produce contacts"
+        );
+    }
+
+    #[test]
+    fn test_triangle_mesh_mesh_identical_position() {
+        let mut world = World::new(SimulationConfig::default());
+
+        let (vertices_a, indices_a) = create_test_cube_mesh();
+        let (vertices_b, indices_b) = create_test_cube_mesh();
+
+        // Both meshes at the same position (maximum overlap)
+        let mesh_a = Body::new_static(BodyId::new(1), Pose::identity()).with_collision_shape(
+            CollisionShape::triangle_mesh_from_vertices(vertices_a, indices_a),
+        );
+        world.insert_body(mesh_a).expect("insert should succeed");
+
+        let mesh_b_state = RigidBodyState::at_rest(Pose::identity());
+        let mesh_b = Body::new(
+            BodyId::new(2),
+            mesh_b_state,
+            MassProperties::box_shape(1.0, Vector3::new(0.5, 0.5, 0.5)),
+        )
+        .with_collision_shape(CollisionShape::triangle_mesh_from_vertices(
+            vertices_b, indices_b,
+        ));
+        world.insert_body(mesh_b).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert!(
+            !contacts.is_empty(),
+            "identical position meshes should produce contacts"
+        );
+    }
+
+    #[test]
+    fn test_triangle_mesh_mesh_contact_normal_is_unit() {
+        let mut world = World::new(SimulationConfig::default());
+
+        let (vertices_a, indices_a) = create_test_cube_mesh();
+        let (vertices_b, indices_b) = create_test_cube_mesh();
+
+        // Mesh A at origin
+        let mesh_a = Body::new_static(BodyId::new(1), Pose::identity()).with_collision_shape(
+            CollisionShape::triangle_mesh_from_vertices(vertices_a, indices_a),
+        );
+        world.insert_body(mesh_a).expect("insert should succeed");
+
+        // Mesh B above A, penetrating downward
+        let mesh_b_state = RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 0.7)));
+        let mesh_b = Body::new(
+            BodyId::new(2),
+            mesh_b_state,
+            MassProperties::box_shape(1.0, Vector3::new(0.5, 0.5, 0.5)),
+        )
+        .with_collision_shape(CollisionShape::triangle_mesh_from_vertices(
+            vertices_b, indices_b,
+        ));
+        world.insert_body(mesh_b).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+        assert!(
+            !contacts.is_empty(),
+            "vertically overlapping meshes should produce contacts"
+        );
+
+        // The contact normal should be a unit vector
+        let contact = &contacts[0];
+        let normal_len = contact.normal.norm();
+        assert!(
+            (normal_len - 1.0).abs() < 0.01,
+            "contact normal should be unit length: {} (normal: {:?})",
+            normal_len,
+            contact.normal
+        );
+    }
+
+    #[test]
+    fn test_triangle_mesh_mesh_multiple_contacts() {
+        // Test that we get all contacts between two mesh pairs
+        let mut world = World::new(SimulationConfig::default());
+
+        let (vertices_a, indices_a) = create_test_cube_mesh();
+        let (vertices_b, indices_b) = create_test_cube_mesh();
+
+        // Mesh A at origin
+        let mesh_a = Body::new_static(BodyId::new(1), Pose::identity()).with_collision_shape(
+            CollisionShape::triangle_mesh_from_vertices(vertices_a, indices_a),
+        );
+        world.insert_body(mesh_a).expect("insert should succeed");
+
+        // Mesh B overlapping significantly with A
+        let mesh_b_state = RigidBodyState::at_rest(Pose::identity()); // Identical position
+        let mesh_b = Body::new(
+            BodyId::new(2),
+            mesh_b_state,
+            MassProperties::box_shape(1.0, Vector3::new(0.5, 0.5, 0.5)),
+        )
+        .with_collision_shape(CollisionShape::triangle_mesh_from_vertices(
+            vertices_b, indices_b,
+        ));
+        world.insert_body(mesh_b).expect("insert should succeed");
+
+        let contacts = world.detect_contacts();
+
+        // Should detect at least one contact when meshes fully overlap
+        assert!(
+            !contacts.is_empty(),
+            "fully overlapping meshes should produce contacts"
+        );
+
+        // All contacts should have valid normals (unit length)
+        for contact in &contacts {
+            let normal_len = contact.normal.norm();
+            assert!(
+                (normal_len - 1.0).abs() < 0.01,
+                "contact normal should be unit length: {}",
+                normal_len
+            );
+        }
+    }
 }
