@@ -452,6 +452,45 @@ impl NewtonConstraintSolver {
         }
     }
 
+    /// Solve constraints using a slice of body states indexed by `BodyId::raw()`.
+    ///
+    /// This is a convenience method for the common case where body states are stored
+    /// in a contiguous slice indexed by body ID.
+    ///
+    /// # Arguments
+    ///
+    /// * `joints` - The joints to solve
+    /// * `bodies` - Slice of body states where `bodies[id.raw()]` gives the state for body `id`
+    /// * `dt` - Time step
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use sim_constraint::{NewtonConstraintSolver, NewtonSolverConfig, BodyState, RevoluteJoint};
+    /// use sim_types::BodyId;
+    /// use nalgebra::{Point3, Vector3};
+    ///
+    /// let bodies = vec![
+    ///     BodyState::fixed(Point3::origin()),
+    ///     BodyState::dynamic(Point3::new(0.0, 0.0, 1.0), 1.0, Vector3::new(0.1, 0.1, 0.1)),
+    /// ];
+    /// let joints = vec![
+    ///     RevoluteJoint::new(BodyId::new(0), BodyId::new(1), Vector3::z()),
+    /// ];
+    ///
+    /// let mut solver = NewtonConstraintSolver::new(NewtonSolverConfig::default());
+    /// let result = solver.solve_slice(&joints, &bodies, 1.0 / 240.0);
+    /// ```
+    #[allow(clippy::cast_possible_truncation)] // BodyId fits in usize for practical use
+    pub fn solve_slice<J: Joint>(
+        &mut self,
+        joints: &[J],
+        bodies: &[BodyState],
+        dt: f64,
+    ) -> NewtonSolverResult {
+        self.solve(joints, |id| bodies.get(id.raw() as usize).copied(), dt)
+    }
+
     /// Solve using dense matrix operations.
     fn solve_dense<J: Joint>(
         &self,
