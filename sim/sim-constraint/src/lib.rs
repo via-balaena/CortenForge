@@ -108,6 +108,8 @@ mod motor;
 #[cfg(feature = "muscle")]
 mod muscle;
 mod newton;
+#[cfg(feature = "parallel")]
+pub mod parallel;
 mod pgs;
 mod solver;
 mod sparse;

@@ -5442,8 +5442,10 @@ name = "sim-constraint"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
+ "hashbrown 0.15.5",
  "nalgebra",
  "nalgebra-sparse",
+ "rayon",
  "serde",
  "sim-muscle",
  "sim-types",
@@ -5470,6 +5472,7 @@ dependencies = [
  "approx 0.5.1",
  "hashbrown 0.15.5",
  "nalgebra",
+ "rayon",
  "serde",
  "sim-constraint",
  "sim-contact",

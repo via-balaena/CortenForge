@@ -1654,6 +1654,68 @@ impl NewtonConstraintSolver {
         }
     }
 
+    /// Solve constraints using parallel island processing.
+    ///
+    /// This method uses rayon to solve independent constraint islands in parallel,
+    /// providing significant speedups for scenes with multiple robots or scattered
+    /// objects. It requires:
+    ///
+    /// - A pre-built snapshot of body states (for thread-safe access)
+    /// - Joints that implement `Sync`
+    /// - At least `min_islands` active islands (falls back to sequential otherwise)
+    ///
+    /// # Arguments
+    ///
+    /// * `joints` - The joints to solve
+    /// * `islands` - Pre-computed constraint islands
+    /// * `body_states` - Pre-built snapshot of body states
+    /// * `dt` - Timestep for Baumgarte stabilization
+    /// * `min_islands` - Minimum active islands to trigger parallel solving
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use std::collections::HashMap;
+    ///
+    /// // Pre-build body state snapshot
+    /// let body_states: HashMap<BodyId, BodyState> = world.bodies()
+    ///     .map(|b| (b.id(), b.to_solver_state()))
+    ///     .collect();
+    ///
+    /// // Build islands
+    /// let islands = ConstraintIslands::build(&joints);
+    ///
+    /// // Solve in parallel
+    /// let result = solver.solve_islands_parallel(
+    ///     &joints,
+    ///     &islands,
+    ///     &body_states,
+    ///     dt,
+    ///     2, // min_islands threshold
+    /// );
+    /// ```
+    #[cfg(feature = "parallel")]
+    pub fn solve_islands_parallel<J>(
+        &self,
+        joints: &[J],
+        islands: &ConstraintIslands,
+        body_states: &hashbrown::HashMap<BodyId, BodyState>,
+        dt: f64,
+        min_islands: usize,
+    ) -> NewtonSolverResult
+    where
+        J: Joint + Sync,
+    {
+        crate::parallel::solve_islands_parallel(
+            &self.config,
+            joints,
+            islands,
+            body_states,
+            dt,
+            min_islands,
+        )
+    }
+
     /// Solve a single island's constraints.
     fn solve_island_internal<J, F>(
         &self,
