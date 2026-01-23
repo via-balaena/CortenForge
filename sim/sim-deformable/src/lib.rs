@@ -1,4 +1,4 @@
-//! Deformable body simulation for soft bodies, cloth, and ropes.
+//! Deformable body simulation for soft bodies, cloth, ropes, and skinned meshes.
 //!
 //! This crate provides comprehensive deformable simulation using Extended Position-Based
 //! Dynamics (XPBD), offering:
@@ -6,6 +6,7 @@
 //! - **1D deformables**: Ropes, cables, capsule chains for cable simulation
 //! - **2D deformables**: Cloth, membranes, triangle shells
 //! - **3D deformables**: Soft bodies, volumetric meshes (tetrahedral)
+//! - **Skinned meshes**: Visual mesh deformation driven by skeleton/bone hierarchies
 //!
 //! # Physics Model
 //!
@@ -142,6 +143,7 @@ pub mod constraints;
 pub mod error;
 pub mod material;
 pub mod mesh;
+pub mod skinning;
 pub mod soft_body;
 pub mod solver;
 pub mod types;
@@ -156,6 +158,10 @@ pub use constraints::{
 pub use error::DeformableError;
 pub use material::{Material, MaterialPreset};
 pub use mesh::{DeformableMesh, Edge, Tetrahedron, Triangle};
+pub use skinning::{
+    Bone, BoneWeight, Skeleton, SkinnedMesh, SkinnedMeshBuilder, SkinningMethod, SkinningResult,
+    VertexWeights,
+};
 pub use soft_body::{SoftBody, SoftBodyConfig};
 pub use solver::{SolverConfig, XpbdSolver};
 pub use types::{DeformableId, Vertex, VertexFlags};

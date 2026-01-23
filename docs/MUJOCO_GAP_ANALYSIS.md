@@ -21,15 +21,14 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Tendons & Deformables (Cloth, Soft bodies, XPBD solver)
 - Model loading (URDF, MJCF)
 
-### ❌ Missing Features (5 items - not yet started)
+### ❌ Missing Features (4 items - not yet started)
 
 | Priority | Feature | Impact | Effort | Section |
 |----------|---------|--------|--------|---------|
 | **1** | Non-convex mesh collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
 | **2** | SDF collision | Medium | High | [§5](#5-geom-types-collision-shapes) |
-| **3** | Skinned meshes | Low | High | [§11](#11-deformables-flex) |
-| **4** | Multi-threading | Medium | Medium | [§12](#12-performance-optimizations) |
-| **5** | MJB binary format | Low | Low | [§13](#13-model-format) |
+| **3** | Multi-threading | Medium | Medium | [§12](#12-performance-optimizations) |
+| **4** | MJB binary format | Low | Low | [§13](#13-model-format) |
 
 ### ⚠️ Partial Implementations (3 items - needs completion)
 
@@ -847,21 +846,28 @@ let model = load_mjcf_str(mjcf).expect("should parse");
 | 1D (capsule chains) | Yes | `CapsuleChain` | **Implemented** | - | - |
 | 2D (triangle shells) | Yes | `Cloth` | **Implemented** | - | - |
 | 3D (tetrahedra) | Yes | `SoftBody` | **Implemented** | - | - |
-| **Skinned meshes** | Yes | Missing | ❌ **TODO** | Priority 4 | High |
+| Skinned meshes | Yes | `SkinnedMesh` | **✅ COMPLETED** | - | - |
 
-### Implementation Notes: Skinned Meshes ❌ TODO (Priority 4)
+### Implementation Notes: Skinned Meshes ✅ COMPLETED
 
 Skinned meshes provide visual deformation for rendering soft bodies:
 - Vertex skinning with bone weights
 - Linear blend skinning (LBS) or dual quaternion skinning (DQS)
 - Maps physics particles to visual mesh vertices
 
-**Note:** This is primarily a **rendering feature**, not physics. The physics simulation works without it. Only implement if you need smooth visual representation of deformable bodies.
+**Implemented in `sim-deformable/src/skinning.rs`:**
+- `Skeleton` - Hierarchical bone structure with world-space pose computation
+- `Bone` - Individual bone with bind pose and local/world transforms
+- `SkinnedMesh` - Mesh with per-vertex bone weights
+- `BoneWeight` / `VertexWeights` - Per-vertex bone influence weights
+- `SkinningMethod` - LBS (linear blend) and DQS (dual quaternion) algorithms
+- `SkinnedMeshBuilder` - Convenient builder with distance-based weight assignment
 
-**Implementation approach:**
-1. Add `SkinnedMesh` struct with bone weights per vertex
-2. Implement LBS: `v' = Σᵢ wᵢ Mᵢ v`
-3. Connect to `SoftBody`/`Cloth` particles as bones
+**MJCF support in `sim-mjcf/src/parser.rs`:**
+- `MjcfSkin` - Skin element from `<deformable>` section
+- `MjcfSkinBone` - Bone references with bind poses
+- `MjcfSkinVertex` - Per-vertex bone weights
+- Parser support for `<skin>`, `<bone>`, and `<vertex>` elements
 4. Export skinned vertex positions for rendering
 
 **Files to create:** `sim-deformable/src/skinning.rs`
@@ -1241,9 +1247,8 @@ The following features are **not yet implemented**. They are ranked by importanc
 |----------|---------|---------|------------|--------|-------|
 | **1** | Non-convex mesh collision | §5 Geoms | High | Medium | Triangle mesh without convexification |
 | **2** | SDF collision | §4, §5 | High | Medium | Signed distance fields for complex geometry |
-| **3** | Skinned meshes | §11 Deformables | High | Low | Visual deformation for rendering |
-| **4** | Multi-threading | §12 Performance | Medium | Medium | Requires model-data separation |
-| **5** | MJB binary format | §13 Model Format | Low | Low | Faster loading, MuJoCo-specific |
+| **3** | Multi-threading | §12 Performance | Medium | Medium | Requires model-data separation |
+| **4** | MJB binary format | §13 Model Format | Low | Low | Faster loading, MuJoCo-specific |
 
 **Recommended implementation order:**
 
@@ -1251,11 +1256,9 @@ The following features are **not yet implemented**. They are ranked by importanc
 
 2. **SDF collision** - Signed distance fields are useful for soft contacts with complex geometry and gradient-based optimization.
 
-3. **Skinned meshes** - Only needed for visual rendering of deformables, not physics.
+3. **Multi-threading** - Performance optimization, requires architectural changes.
 
-4. **Multi-threading** - Performance optimization, requires architectural changes.
-
-5. **MJB binary format** - MuJoCo-specific, low priority unless loading speed is critical.
+4. **MJB binary format** - MuJoCo-specific, low priority unless loading speed is critical.
 
 ### ✅ Recently Completed: Free/Planar/Cylindrical Joint Solvers
 
@@ -1697,10 +1700,10 @@ Focus: Large standalone features, each potentially its own PR.
 | ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED | Alternative to Newton/PGS |
 | ~~Tendon coupling constraints~~ | §10 Equality | Low | ✅ COMPLETED | Tendon-based equality constraints |
 | ~~Flex edge constraints~~ | §10 Equality | Low | ✅ COMPLETED | Deformable edge length constraints |
-| **SDF collision** | §4 Collision, §5 Geoms | High | ❌ **TODO** | Signed distance fields - Priority 3 |
-| **Skinned meshes** | §11 Deformables | High | ❌ **TODO** | Visual deformation for rendering - Priority 4 |
-| **Multi-threading** | §12 Performance | Medium | ❌ **TODO** | Model-data separation needed first - Priority 5 |
-| **MJB binary format** | §13 Model Format | Low | ❌ **TODO** | Faster loading, MuJoCo-specific - Priority 6 |
+| **SDF collision** | §4 Collision, §5 Geoms | High | ❌ **TODO** | Signed distance fields - Priority 2 |
+| ~~Skinned meshes~~ | §11 Deformables | High | ✅ **COMPLETED** | Visual deformation for rendering |
+| **Multi-threading** | §12 Performance | Medium | ❌ **TODO** | Model-data separation needed first - Priority 3 |
+| **MJB binary format** | §13 Model Format | Low | ❌ **TODO** | Faster loading, MuJoCo-specific - Priority 4 |
 
 **Implemented:**
 

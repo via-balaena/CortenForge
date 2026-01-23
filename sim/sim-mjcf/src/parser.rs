@@ -13,7 +13,7 @@ use crate::types::{
     MjcfDefault, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial,
     MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh,
     MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
-    MjcfSolverType, MjcfTendonDefaults,
+    MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendonDefaults,
 };
 
 /// Parse an MJCF string into a model.
@@ -78,6 +78,11 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                     }
                     b"equality" => {
                         model.equality = parse_equality(reader)?;
+                    }
+                    b"deformable" => {
+                        // Deformable section contains skin elements
+                        let skins = parse_deformable(reader)?;
+                        model.skins = skins;
                     }
                     // Skip other elements (contact, tendon, etc.)
                     _ => skip_element(reader, &elem_name)?,
@@ -1149,6 +1154,174 @@ fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
     }
 
     Ok(connect)
+}
+
+// ============================================================================
+// Deformable / Skin parsing
+// ============================================================================
+
+/// Parse deformable section (contains skin elements).
+fn parse_deformable<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfSkin>> {
+    let mut skins = Vec::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                if elem_name.as_slice() == b"skin" {
+                    let skin = parse_skin(reader, e)?;
+                    skins.push(skin);
+                } else {
+                    // Skip other deformable elements (flex, etc.)
+                    skip_element(reader, &elem_name)?;
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                // Handle self-closing skin elements (unlikely but possible)
+                if e.name().as_ref() == b"skin" {
+                    let skin = parse_skin_attrs(e);
+                    skins.push(skin);
+                }
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"deformable" => break,
+            Ok(Event::Eof) => {
+                return Err(MjcfError::XmlParse("unexpected EOF in deformable".into()));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(skins)
+}
+
+/// Parse a skin element and its children.
+fn parse_skin<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<MjcfSkin> {
+    let mut skin = parse_skin_attrs(start);
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                match elem_name.as_slice() {
+                    b"bone" => {
+                        let bone = parse_skin_bone_attrs(e)?;
+                        skin.bones.push(bone);
+                        // Skip to closing tag if not self-closing
+                        skip_element(reader, &elem_name)?;
+                    }
+                    b"vertex" => {
+                        let vertex = parse_skin_vertex_attrs(e)?;
+                        skin.vertices.push(vertex);
+                        // Skip to closing tag if not self-closing
+                        skip_element(reader, &elem_name)?;
+                    }
+                    _ => skip_element(reader, &elem_name)?,
+                }
+            }
+            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                b"bone" => {
+                    let bone = parse_skin_bone_attrs(e)?;
+                    skin.bones.push(bone);
+                }
+                b"vertex" => {
+                    let vertex = parse_skin_vertex_attrs(e)?;
+                    skin.vertices.push(vertex);
+                }
+                _ => {}
+            },
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"skin" => break,
+            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in skin".into())),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(skin)
+}
+
+/// Parse skin element attributes.
+fn parse_skin_attrs(e: &BytesStart) -> MjcfSkin {
+    let mut skin = MjcfSkin::default();
+
+    skin.name = get_attribute_opt(e, "name").unwrap_or_default();
+    skin.mesh = get_attribute_opt(e, "mesh");
+    skin.material = get_attribute_opt(e, "material");
+
+    if let Some(rgba) = get_attribute_opt(e, "rgba") {
+        if let Ok(v) = parse_vector4(&rgba) {
+            skin.rgba = v;
+        }
+    }
+
+    if let Some(inflate) = parse_float_attr(e, "inflate") {
+        skin.inflate = inflate;
+    }
+
+    // Parse embedded vertex positions if present
+    if let Some(vertex) = get_attribute_opt(e, "vertex") {
+        if let Ok(verts) = parse_float_array(&vertex) {
+            skin.vertex_positions = Some(verts);
+        }
+    }
+
+    // Parse embedded face data if present
+    if let Some(face) = get_attribute_opt(e, "face") {
+        if let Ok(faces) = parse_int_array(&face) {
+            skin.faces = Some(faces);
+        }
+    }
+
+    skin
+}
+
+/// Parse skin bone element attributes.
+fn parse_skin_bone_attrs(e: &BytesStart) -> Result<MjcfSkinBone> {
+    let mut bone = MjcfSkinBone::default();
+
+    // body is required
+    bone.body =
+        get_attribute_opt(e, "body").ok_or_else(|| MjcfError::missing_attribute("body", "bone"))?;
+
+    if let Some(bindpos) = get_attribute_opt(e, "bindpos") {
+        bone.bindpos = parse_vector3(&bindpos)?;
+    }
+
+    if let Some(bindquat) = get_attribute_opt(e, "bindquat") {
+        bone.bindquat = parse_vector4(&bindquat)?;
+    }
+
+    Ok(bone)
+}
+
+/// Parse skin vertex element attributes.
+fn parse_skin_vertex_attrs(e: &BytesStart) -> Result<MjcfSkinVertex> {
+    // id is required (vertex index in mesh)
+    let id = parse_int_attr(e, "id").ok_or_else(|| MjcfError::missing_attribute("id", "vertex"))?
+        as usize;
+
+    // bone is required (bone index in skin)
+    let bone = parse_int_attr(e, "bone")
+        .ok_or_else(|| MjcfError::missing_attribute("bone", "vertex"))? as usize;
+
+    // weight defaults to 1.0 if not specified
+    let weight = parse_float_attr(e, "weight").unwrap_or(1.0);
+
+    Ok(MjcfSkinVertex::new(id, bone, weight))
+}
+
+/// Parse a space-separated array of unsigned integers.
+fn parse_int_array(s: &str) -> Result<Vec<u32>> {
+    s.split_whitespace()
+        .map(|p| {
+            p.parse::<u32>()
+                .map_err(|_| MjcfError::XmlParse(format!("invalid integer: {p}")))
+        })
+        .collect()
 }
 
 // ============================================================================
