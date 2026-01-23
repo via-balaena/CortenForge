@@ -1893,6 +1893,29 @@ impl World {
                 )
                 .map(|c| c.flip()),
 
+            // Sdf-ConvexMesh
+            (CollisionShape::Sdf { data }, CollisionShape::ConvexMesh { vertices }) => self
+                .detect_sdf_convex_mesh_contact(
+                    data,
+                    &body_a.state.pose,
+                    &body_b.state.pose,
+                    vertices,
+                    body_a.id,
+                    body_b.id,
+                ),
+
+            // ConvexMesh-Sdf (flip)
+            (CollisionShape::ConvexMesh { vertices }, CollisionShape::Sdf { data }) => self
+                .detect_sdf_convex_mesh_contact(
+                    data,
+                    &body_b.state.pose,
+                    &body_a.state.pose,
+                    vertices,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
             // =====================================================================
             // Triangle mesh collisions
             // =====================================================================
@@ -2261,6 +2284,28 @@ impl World {
             contact.penetration,
             sdf_body_id,
             ellipsoid_body_id,
+        ))
+    }
+
+    /// Detect contact between an SDF and a convex mesh.
+    #[allow(clippy::unused_self)]
+    fn detect_sdf_convex_mesh_contact(
+        &self,
+        sdf: &crate::sdf::SdfCollisionData,
+        sdf_pose: &Pose,
+        mesh_pose: &Pose,
+        vertices: &[Point3<f64>],
+        sdf_body_id: BodyId,
+        mesh_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact = crate::sdf::sdf_convex_mesh_contact(sdf, sdf_pose, mesh_pose, vertices)?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            sdf_body_id,
+            mesh_body_id,
         ))
     }
 

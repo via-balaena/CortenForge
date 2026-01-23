@@ -11,7 +11,7 @@ Complete implementation of all SDF (Signed Distance Field) collision combination
 | Sdf ↔ Box | ✅ Done | - | - |
 | Sdf ↔ Cylinder | ✅ Done | High | Low |
 | Sdf ↔ Ellipsoid | ✅ Done | High | Low |
-| Sdf ↔ ConvexMesh | ❌ Missing | High | Medium |
+| Sdf ↔ ConvexMesh | ✅ Done | High | Medium |
 | Sdf ↔ Plane | ❌ Missing | Low | Low |
 | Sdf ↔ TriangleMesh | ❌ Missing | Medium | Medium |
 | Sdf ↔ HeightField | ❌ Missing | Medium | Medium |
@@ -372,10 +372,10 @@ Recommended order based on priority and dependencies:
 - [x] Unit tests for ellipsoid contact
 
 ### Milestone 2: ConvexMesh
-- [ ] Implement `sdf_convex_mesh_contact()` in `sdf.rs`
-- [ ] Add Sdf-ConvexMesh dispatch in `world.rs`
-- [ ] Add ConvexMesh-Sdf dispatch (flipped) in `world.rs`
-- [ ] Unit tests for convex mesh contact
+- [x] Implement `sdf_convex_mesh_contact()` in `sdf.rs`
+- [x] Add Sdf-ConvexMesh dispatch in `world.rs`
+- [x] Add ConvexMesh-Sdf dispatch (flipped) in `world.rs`
+- [x] Unit tests for convex mesh contact
 
 ### Milestone 3: Plane
 - [ ] Implement `sdf_plane_contact()` in `sdf.rs`

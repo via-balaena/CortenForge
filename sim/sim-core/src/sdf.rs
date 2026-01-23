@@ -920,6 +920,57 @@ pub fn sdf_ellipsoid_contact(
     deepest_contact
 }
 
+/// Query an SDF for contact with a convex mesh.
+///
+/// Tests all mesh vertices against the SDF, returning the deepest penetration.
+/// This is similar to box contact but with an arbitrary number of vertices.
+///
+/// # Arguments
+///
+/// * `sdf` - The SDF collision data
+/// * `sdf_pose` - The pose of the SDF in world space
+/// * `mesh_pose` - The pose of the convex mesh in world space
+/// * `vertices` - Vertices of the convex mesh in local coordinates
+#[must_use]
+pub fn sdf_convex_mesh_contact(
+    sdf: &SdfCollisionData,
+    sdf_pose: &Pose,
+    mesh_pose: &Pose,
+    vertices: &[Point3<f64>],
+) -> Option<SdfContact> {
+    let mut deepest_contact: Option<SdfContact> = None;
+    let mut max_penetration = 0.0;
+
+    for local_vertex in vertices {
+        // Transform: mesh local -> world -> SDF local
+        let world_vertex = mesh_pose.transform_point(local_vertex);
+        let sdf_local = sdf_pose.inverse_transform_point(&world_vertex);
+
+        if let Some(distance) = sdf.distance(sdf_local) {
+            let penetration = -distance; // Positive when inside
+
+            if penetration > max_penetration {
+                max_penetration = penetration;
+
+                if let Some(local_normal) = sdf.gradient(sdf_local) {
+                    let local_contact = sdf_local + local_normal * distance;
+
+                    let world_contact = sdf_pose.transform_point(&local_contact);
+                    let world_normal = sdf_pose.rotation * local_normal;
+
+                    deepest_contact = Some(SdfContact {
+                        point: world_contact,
+                        normal: world_normal,
+                        penetration,
+                    });
+                }
+            }
+        }
+    }
+
+    deepest_contact
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1329,6 +1380,137 @@ mod tests {
 
         let c = contact.unwrap();
         // Ellipsoid at SDF center should have penetration
+        assert!(c.penetration > 0.0);
+    }
+
+    // =========================================================================
+    // Convex mesh contact tests
+    // =========================================================================
+
+    /// Create a simple tetrahedron for testing
+    fn tetrahedron_vertices(size: f64) -> Vec<Point3<f64>> {
+        // Regular tetrahedron centered at origin
+        let a = size / 2.0_f64.sqrt();
+        vec![
+            Point3::new(a, a, a),
+            Point3::new(a, -a, -a),
+            Point3::new(-a, a, -a),
+            Point3::new(-a, -a, a),
+        ]
+    }
+
+    /// Create a simple cube for testing
+    fn cube_vertices(half_extent: f64) -> Vec<Point3<f64>> {
+        let h = half_extent;
+        vec![
+            Point3::new(-h, -h, -h),
+            Point3::new(h, -h, -h),
+            Point3::new(-h, h, -h),
+            Point3::new(h, h, -h),
+            Point3::new(-h, -h, h),
+            Point3::new(h, -h, h),
+            Point3::new(-h, h, h),
+            Point3::new(h, h, h),
+        ]
+    }
+
+    #[test]
+    fn test_sdf_convex_mesh_contact_no_collision() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Tetrahedron far outside sphere - no contact
+        let mesh_pose = Pose::from_position(Point3::new(3.0, 0.0, 0.0));
+        let vertices = tetrahedron_vertices(0.3);
+        let contact = sdf_convex_mesh_contact(&sdf, &sdf_pose, &mesh_pose, &vertices);
+        assert!(contact.is_none());
+    }
+
+    #[test]
+    fn test_sdf_convex_mesh_contact_collision() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Tetrahedron intersecting sphere
+        let mesh_pose = Pose::from_position(Point3::new(0.8, 0.0, 0.0));
+        let vertices = tetrahedron_vertices(0.4);
+        let contact = sdf_convex_mesh_contact(&sdf, &sdf_pose, &mesh_pose, &vertices);
+        assert!(contact.is_some());
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0, "should have positive penetration");
+        // Normal should point roughly outward from SDF center (+X direction)
+        assert!(c.normal.x > 0.5, "normal should point outward");
+    }
+
+    #[test]
+    fn test_sdf_convex_mesh_contact_deep_penetration() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Small tetrahedron at center of sphere (maximum penetration)
+        let mesh_pose = Pose::identity();
+        let vertices = tetrahedron_vertices(0.2);
+        let contact = sdf_convex_mesh_contact(&sdf, &sdf_pose, &mesh_pose, &vertices);
+        assert!(contact.is_some());
+
+        let c = contact.unwrap();
+        // Should have significant penetration (mesh inside sphere)
+        assert!(c.penetration > 0.5, "should have deep penetration");
+    }
+
+    #[test]
+    fn test_sdf_convex_mesh_contact_with_rotation() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Cube rotated 45 degrees around Z-axis
+        use nalgebra::UnitQuaternion;
+        let rotation = UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_4);
+        let mesh_pose = Pose::from_position_rotation(Point3::new(0.8, 0.0, 0.0), rotation);
+        let vertices = cube_vertices(0.3);
+
+        let contact = sdf_convex_mesh_contact(&sdf, &sdf_pose, &mesh_pose, &vertices);
+        assert!(contact.is_some());
+
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0);
+    }
+
+    #[test]
+    fn test_sdf_convex_mesh_contact_cube() {
+        let sdf = sphere_sdf(32);
+        let sdf_pose = Pose::identity();
+
+        // Cube outside sphere - no contact
+        let mesh_pose = Pose::from_position(Point3::new(2.0, 0.0, 0.0));
+        let vertices = cube_vertices(0.3);
+        let contact = sdf_convex_mesh_contact(&sdf, &sdf_pose, &mesh_pose, &vertices);
+        assert!(contact.is_none());
+
+        // Cube intersecting sphere
+        let mesh_pose = Pose::from_position(Point3::new(0.9, 0.0, 0.0));
+        let contact = sdf_convex_mesh_contact(&sdf, &sdf_pose, &mesh_pose, &vertices);
+        assert!(contact.is_some());
+        let c = contact.unwrap();
+        assert!(c.penetration > 0.0);
+    }
+
+    #[test]
+    fn test_sdf_convex_mesh_with_translated_sdf() {
+        let sdf = sphere_sdf(32);
+        // Translate the SDF by (5, 0, 0)
+        let sdf_pose = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
+
+        // Tetrahedron at (5, 0, 0) should be at origin of SDF local space
+        let mesh_pose = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
+        let vertices = tetrahedron_vertices(0.3);
+
+        let contact = sdf_convex_mesh_contact(&sdf, &sdf_pose, &mesh_pose, &vertices);
+        assert!(contact.is_some());
+
+        let c = contact.unwrap();
+        // Mesh at SDF center should have penetration
         assert!(c.penetration > 0.0);
     }
 }
