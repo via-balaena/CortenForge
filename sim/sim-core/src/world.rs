@@ -1834,6 +1834,65 @@ impl World {
                 )
                 .map(|c| c.flip()),
 
+            // Sdf-Cylinder
+            (
+                CollisionShape::Sdf { data },
+                CollisionShape::Cylinder {
+                    half_length,
+                    radius,
+                },
+            ) => self.detect_sdf_cylinder_contact(
+                data,
+                &body_a.state.pose,
+                &body_b.state.pose,
+                *half_length,
+                *radius,
+                body_a.id,
+                body_b.id,
+            ),
+
+            // Cylinder-Sdf (flip)
+            (
+                CollisionShape::Cylinder {
+                    half_length,
+                    radius,
+                },
+                CollisionShape::Sdf { data },
+            ) => self
+                .detect_sdf_cylinder_contact(
+                    data,
+                    &body_b.state.pose,
+                    &body_a.state.pose,
+                    *half_length,
+                    *radius,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
+            // Sdf-Ellipsoid
+            (CollisionShape::Sdf { data }, CollisionShape::Ellipsoid { radii }) => self
+                .detect_sdf_ellipsoid_contact(
+                    data,
+                    &body_a.state.pose,
+                    &body_b.state.pose,
+                    radii,
+                    body_a.id,
+                    body_b.id,
+                ),
+
+            // Ellipsoid-Sdf (flip)
+            (CollisionShape::Ellipsoid { radii }, CollisionShape::Sdf { data }) => self
+                .detect_sdf_ellipsoid_contact(
+                    data,
+                    &body_b.state.pose,
+                    &body_a.state.pose,
+                    radii,
+                    body_b.id,
+                    body_a.id,
+                )
+                .map(|c| c.flip()),
+
             // =====================================================================
             // Triangle mesh collisions
             // =====================================================================
@@ -2156,6 +2215,52 @@ impl World {
             contact.penetration,
             sdf_body_id,
             box_body_id,
+        ))
+    }
+
+    /// Detect contact between an SDF and a cylinder.
+    #[allow(clippy::unused_self, clippy::too_many_arguments)]
+    fn detect_sdf_cylinder_contact(
+        &self,
+        sdf: &crate::sdf::SdfCollisionData,
+        sdf_pose: &Pose,
+        cylinder_pose: &Pose,
+        half_height: f64,
+        radius: f64,
+        sdf_body_id: BodyId,
+        cylinder_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact =
+            crate::sdf::sdf_cylinder_contact(sdf, sdf_pose, cylinder_pose, half_height, radius)?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            sdf_body_id,
+            cylinder_body_id,
+        ))
+    }
+
+    /// Detect contact between an SDF and an ellipsoid.
+    #[allow(clippy::unused_self)]
+    fn detect_sdf_ellipsoid_contact(
+        &self,
+        sdf: &crate::sdf::SdfCollisionData,
+        sdf_pose: &Pose,
+        ellipsoid_pose: &Pose,
+        radii: &Vector3<f64>,
+        sdf_body_id: BodyId,
+        ellipsoid_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact = crate::sdf::sdf_ellipsoid_contact(sdf, sdf_pose, ellipsoid_pose, radii)?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            sdf_body_id,
+            ellipsoid_body_id,
         ))
     }
 

@@ -9,8 +9,8 @@ Complete implementation of all SDF (Signed Distance Field) collision combination
 | Sdf ↔ Sphere | ✅ Done | - | - |
 | Sdf ↔ Capsule | ✅ Done | - | - |
 | Sdf ↔ Box | ✅ Done | - | - |
-| Sdf ↔ Cylinder | ❌ Missing | High | Low |
-| Sdf ↔ Ellipsoid | ❌ Missing | High | Low |
+| Sdf ↔ Cylinder | ✅ Done | High | Low |
+| Sdf ↔ Ellipsoid | ✅ Done | High | Low |
 | Sdf ↔ ConvexMesh | ❌ Missing | High | Medium |
 | Sdf ↔ Plane | ❌ Missing | Low | Low |
 | Sdf ↔ TriangleMesh | ❌ Missing | Medium | Medium |
@@ -362,14 +362,14 @@ Recommended order based on priority and dependencies:
 ## Checklist
 
 ### Milestone 1: Cylinder & Ellipsoid
-- [ ] Implement `sdf_cylinder_contact()` in `sdf.rs`
-- [ ] Add Sdf-Cylinder dispatch in `world.rs`
-- [ ] Add Cylinder-Sdf dispatch (flipped) in `world.rs`
-- [ ] Unit tests for cylinder contact
-- [ ] Implement `sdf_ellipsoid_contact()` in `sdf.rs`
-- [ ] Add Sdf-Ellipsoid dispatch in `world.rs`
-- [ ] Add Ellipsoid-Sdf dispatch (flipped) in `world.rs`
-- [ ] Unit tests for ellipsoid contact
+- [x] Implement `sdf_cylinder_contact()` in `sdf.rs`
+- [x] Add Sdf-Cylinder dispatch in `world.rs`
+- [x] Add Cylinder-Sdf dispatch (flipped) in `world.rs`
+- [x] Unit tests for cylinder contact
+- [x] Implement `sdf_ellipsoid_contact()` in `sdf.rs`
+- [x] Add Sdf-Ellipsoid dispatch in `world.rs`
+- [x] Add Ellipsoid-Sdf dispatch (flipped) in `world.rs`
+- [x] Unit tests for ellipsoid contact
 
 ### Milestone 2: ConvexMesh
 - [ ] Implement `sdf_convex_mesh_contact()` in `sdf.rs`
