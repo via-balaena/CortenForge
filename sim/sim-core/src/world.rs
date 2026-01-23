@@ -1985,6 +1985,17 @@ impl World {
                 )
                 .map(|c| c.flip()),
 
+            // Sdf-Sdf
+            (CollisionShape::Sdf { data: data_a }, CollisionShape::Sdf { data: data_b }) => self
+                .detect_sdf_sdf_contact(
+                    data_a,
+                    &body_a.state.pose,
+                    data_b,
+                    &body_b.state.pose,
+                    body_a.id,
+                    body_b.id,
+                ),
+
             // =====================================================================
             // Triangle mesh collisions
             // =====================================================================
@@ -2442,6 +2453,28 @@ impl World {
             contact.penetration,
             sdf_body_id,
             heightfield_body_id,
+        ))
+    }
+
+    /// Detect contact between two SDFs.
+    #[allow(clippy::unused_self, clippy::similar_names)]
+    fn detect_sdf_sdf_contact(
+        &self,
+        sdf_a: &crate::sdf::SdfCollisionData,
+        pose_a: &Pose,
+        sdf_b: &crate::sdf::SdfCollisionData,
+        pose_b: &Pose,
+        sdf_a_body_id: BodyId,
+        sdf_b_body_id: BodyId,
+    ) -> Option<ContactPoint> {
+        let contact = crate::sdf::sdf_sdf_contact(sdf_a, pose_a, sdf_b, pose_b)?;
+
+        Some(ContactPoint::new(
+            contact.point,
+            contact.normal,
+            contact.penetration,
+            sdf_a_body_id,
+            sdf_b_body_id,
         ))
     }
 

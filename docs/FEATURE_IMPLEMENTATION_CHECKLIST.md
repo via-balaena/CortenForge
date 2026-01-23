@@ -31,14 +31,14 @@ Tracking progress on remaining MuJoCo feature gaps and infrastructure improvemen
     - Sdf ↔ Box (8-corner sampling)
   - **Location:** `sim-core/src/sdf.rs`, `sim-core/src/world.rs:1750-1835`
 
-- [ ] **Complete SDF collision support** (1 missing combination)
+- [x] **Complete SDF collision support** (all combinations implemented!)
   - See: [SDF_COLLISION_PLAN.md](./SDF_COLLISION_PLAN.md) for detailed implementation plan
   - [x] Milestone 1: Sdf ↔ Cylinder, Ellipsoid (point sampling) ✅
   - [x] Milestone 2: Sdf ↔ ConvexMesh (vertex sampling) ✅
   - [x] Milestone 3: Sdf ↔ Plane (grid sampling) ✅
   - [x] Milestone 4: Sdf ↔ TriangleMesh (vertex + edge sampling) ✅
   - [x] Milestone 5: Sdf ↔ HeightField (grid point sampling) ✅
-  - [ ] Milestone 6: Sdf ↔ Sdf (dual implicit surface)
+  - [x] Milestone 6: Sdf ↔ Sdf (dual implicit surface sampling) ✅
 
 ### MJCF Parser
 
@@ -89,6 +89,6 @@ Tracking progress on remaining MuJoCo feature gaps and infrastructure improvemen
 | 2026-01-23 | SDF Milestone 3: Plane | ✅ Complete |
 | 2026-01-23 | SDF Milestone 4: TriangleMesh | ✅ Complete |
 | 2026-01-23 | SDF Milestone 5: HeightField | ✅ Complete |
-| - | Complete SDF collision (1 remaining combination) | ⏳ Pending |
+| 2026-01-23 | SDF Milestone 6: Sdf ↔ Sdf | ✅ Complete |
 | - | MJCF `<default>` element | ⏳ Pending |
 | - | Sync gap analysis | ⏳ Pending |

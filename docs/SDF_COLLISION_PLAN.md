@@ -15,7 +15,7 @@ Complete implementation of all SDF (Signed Distance Field) collision combination
 | Sdf ↔ Plane | ✅ Done | Low | Low |
 | Sdf ↔ TriangleMesh | ✅ Done | Medium | Medium |
 | Sdf ↔ HeightField | ✅ Done | Medium | Medium |
-| Sdf ↔ Sdf | ❌ Missing | Medium | High |
+| Sdf ↔ Sdf | ✅ Done | Medium | High |
 
 ---
 
@@ -397,12 +397,12 @@ Recommended order based on priority and dependencies:
 - [x] Unit tests for height field contact
 
 ### Milestone 6: Sdf-Sdf
-- [ ] Implement `sdf_sdf_contact()` in `sdf.rs`
-- [ ] Add Sdf-Sdf dispatch in `world.rs`
-- [ ] Unit tests for SDF-SDF contact
+- [x] Implement `sdf_sdf_contact()` in `sdf.rs`
+- [x] Add Sdf-Sdf dispatch in `world.rs`
+- [x] Unit tests for SDF-SDF contact
 
 ### Final
 - [ ] Integration tests
 - [ ] Performance benchmarks
-- [ ] Update documentation
-- [ ] Update FEATURE_IMPLEMENTATION_CHECKLIST.md
+- [x] Update documentation
+- [x] Update FEATURE_IMPLEMENTATION_CHECKLIST.md
