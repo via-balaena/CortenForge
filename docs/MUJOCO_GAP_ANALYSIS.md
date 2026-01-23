@@ -31,14 +31,13 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | **4** | Multi-threading | Medium | Medium | [§12](#12-performance-optimizations) |
 | **5** | MJB binary format | Low | Low | [§13](#13-model-format) |
 
-### ⚠️ Partial Implementations (4 items - needs completion)
+### ⚠️ Partial Implementations (3 items - needs completion)
 
 | Feature | Current State | What's Missing | Section |
 |---------|---------------|----------------|---------|
 | SIMD optimization | Via nalgebra only | Explicit vectorization for hot paths | [§12](#12-performance-optimizations) |
 | MJCF `<default>` element | Joint and geom defaults | Actuator, tendon, sensor defaults | [§13](#13-model-format) |
 | MJCF `<geom>` element | Primitives + mesh (convex) | Non-convex mesh collision | [§13](#13-model-format) |
-| MJCF `<actuator>` element | motor, position, velocity | cylinder, muscle, adhesion types | [§13](#13-model-format) |
 
 **For typical robotics use cases**, the current implementation is feature-complete. The missing items are for specialized scenarios (complex geometry, visual rendering, extreme performance). The partial implementations work for common cases but may need extension for advanced MuJoCo models.
 
@@ -1095,7 +1094,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<joint>` | Full | hinge, slide, ball, free types |
 | `<geom>` | Full | sphere, box, capsule, cylinder, ellipsoid, plane, mesh |
 | `<site>` | Parsed | Markers (not used in physics) |
-| `<actuator>` | Partial | motor, position, velocity |
+| `<actuator>` | Full | motor, position, velocity, cylinder, muscle, adhesion, damper, general |
 | `<contact>` | Full | Contact filtering via contype/conaffinity |
 
 **Supported Joint Types:**

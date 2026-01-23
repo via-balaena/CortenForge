@@ -1340,12 +1340,14 @@ pub enum MjcfActuatorType {
     Velocity,
     /// General actuator with custom dynamics.
     General,
-    /// Muscle actuator.
+    /// Muscle actuator (Hill-type muscle model).
     Muscle,
-    /// Cylinder (pneumatic/hydraulic).
+    /// Cylinder (pneumatic/hydraulic actuator).
     Cylinder,
-    /// Damper (passive).
+    /// Damper (passive damping).
     Damper,
+    /// Adhesion actuator (controllable adhesion force).
+    Adhesion,
 }
 
 impl MjcfActuatorType {
@@ -1359,7 +1361,23 @@ impl MjcfActuatorType {
             "muscle" => Some(Self::Muscle),
             "cylinder" => Some(Self::Cylinder),
             "damper" => Some(Self::Damper),
+            "adhesion" => Some(Self::Adhesion),
             _ => None,
+        }
+    }
+
+    /// Get the MJCF string representation.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Motor => "motor",
+            Self::Position => "position",
+            Self::Velocity => "velocity",
+            Self::General => "general",
+            Self::Muscle => "muscle",
+            Self::Cylinder => "cylinder",
+            Self::Damper => "damper",
+            Self::Adhesion => "adhesion",
         }
     }
 }
@@ -1380,6 +1398,8 @@ pub struct MjcfActuator {
     pub site: Option<String>,
     /// Target tendon name.
     pub tendon: Option<String>,
+    /// Target body name (for adhesion actuators).
+    pub body: Option<String>,
     /// Gear ratio (torque/force scaling).
     pub gear: f64,
     /// Control range [lower, upper].
@@ -1394,6 +1414,46 @@ pub struct MjcfActuator {
     pub kp: f64,
     /// Velocity gain (for position/velocity actuators).
     pub kv: f64,
+
+    // ========================================================================
+    // Cylinder-specific attributes
+    // ========================================================================
+    /// Cylinder cross-sectional area (m²). Used as gain for cylinder actuators.
+    pub area: f64,
+    /// Cylinder diameter (m). Alternative to area; takes precedence if set.
+    pub diameter: Option<f64>,
+    /// Activation dynamics time constant (s) for cylinder.
+    pub timeconst: f64,
+    /// Bias parameters [prm0, prm1, prm2] for cylinder.
+    pub bias: [f64; 3],
+
+    // ========================================================================
+    // Muscle-specific attributes
+    // ========================================================================
+    /// Activation/deactivation time constants [act, deact] for muscle.
+    pub muscle_timeconst: (f64, f64),
+    /// Operating length range [lower, upper] in L0 units for muscle.
+    pub range: (f64, f64),
+    /// Peak active force (N). Negative triggers automatic computation.
+    pub force: f64,
+    /// Force scaling factor for muscle.
+    pub scale: f64,
+    /// Lower FLV curve position (L0 units).
+    pub lmin: f64,
+    /// Upper FLV curve position (L0 units).
+    pub lmax: f64,
+    /// Shortening velocity limit (L0/second).
+    pub vmax: f64,
+    /// Passive force at lmax (relative to peak force).
+    pub fpmax: f64,
+    /// Active force at lengthening (relative to peak force).
+    pub fvmax: f64,
+
+    // ========================================================================
+    // Adhesion-specific attributes
+    // ========================================================================
+    /// Gain in force units for adhesion (total force = control × gain).
+    pub gain: f64,
 }
 
 impl Default for MjcfActuator {
@@ -1405,6 +1465,7 @@ impl Default for MjcfActuator {
             joint: None,
             site: None,
             tendon: None,
+            body: None,
             gear: 1.0,
             ctrlrange: None,
             forcerange: None,
@@ -1412,6 +1473,23 @@ impl Default for MjcfActuator {
             forcelimited: false,
             kp: 1.0,
             kv: 0.0,
+            // Cylinder defaults (MuJoCo defaults)
+            area: 1.0,
+            diameter: None,
+            timeconst: 1.0,
+            bias: [0.0, 0.0, 0.0],
+            // Muscle defaults (MuJoCo defaults)
+            muscle_timeconst: (0.01, 0.04),
+            range: (0.75, 1.05),
+            force: -1.0, // Negative triggers automatic computation
+            scale: 200.0,
+            lmin: 0.5,
+            lmax: 1.6,
+            vmax: 1.5,
+            fpmax: 1.3,
+            fvmax: 1.2,
+            // Adhesion defaults
+            gain: 1.0,
         }
     }
 }
@@ -1448,6 +1526,41 @@ impl MjcfActuator {
             actuator_type: MjcfActuatorType::Velocity,
             joint: Some(joint.into()),
             kv,
+            ..Default::default()
+        }
+    }
+
+    /// Create a cylinder (pneumatic/hydraulic) actuator for a joint.
+    #[must_use]
+    pub fn cylinder(name: impl Into<String>, joint: impl Into<String>, area: f64) -> Self {
+        Self {
+            name: name.into(),
+            actuator_type: MjcfActuatorType::Cylinder,
+            joint: Some(joint.into()),
+            area,
+            ..Default::default()
+        }
+    }
+
+    /// Create a muscle actuator for a joint.
+    #[must_use]
+    pub fn muscle(name: impl Into<String>, joint: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            actuator_type: MjcfActuatorType::Muscle,
+            joint: Some(joint.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Create an adhesion actuator for a body.
+    #[must_use]
+    pub fn adhesion(name: impl Into<String>, body: impl Into<String>, gain: f64) -> Self {
+        Self {
+            name: name.into(),
+            actuator_type: MjcfActuatorType::Adhesion,
+            body: Some(body.into()),
+            gain,
             ..Default::default()
         }
     }

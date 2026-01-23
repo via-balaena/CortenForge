@@ -7,7 +7,10 @@ use std::fs;
 use std::path::Path;
 
 use nalgebra::{Point3, Vector3};
-use sim_constraint::{ConnectConstraint, JointLimits};
+use sim_constraint::{
+    AdhesionActuator, BoxedActuator, ConnectConstraint, IntegratedVelocityActuator,
+    IntoBoxedActuator, JointLimits, PneumaticCylinderActuator,
+};
 use sim_core::{Body, CollisionShape, Joint, World};
 use sim_types::{BodyId, JointId, JointType, MassProperties, Pose, RigidBodyState};
 
@@ -16,9 +19,44 @@ use crate::defaults::DefaultResolver;
 use crate::error::{MjcfError, Result};
 use crate::parser::parse_mjcf_str;
 use crate::types::{
-    MjcfBody, MjcfGeom, MjcfGeomType, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption,
+    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfGeom, MjcfGeomType, MjcfJoint, MjcfJointType,
+    MjcfMesh, MjcfModel, MjcfOption,
 };
 use crate::validation::{ValidationResult, validate};
+
+/// A loaded actuator with metadata for simulation integration.
+pub struct LoadedActuator {
+    /// Actuator name.
+    pub name: String,
+    /// The boxed actuator implementation.
+    pub actuator: BoxedActuator,
+    /// Target joint name (if joint-based actuator).
+    pub joint: Option<String>,
+    /// Target body name (if body-based actuator like adhesion).
+    pub body: Option<String>,
+    /// Target tendon name (if tendon-based actuator).
+    pub tendon: Option<String>,
+    /// Control range (if clamped).
+    pub ctrlrange: Option<(f64, f64)>,
+    /// Force range (if clamped).
+    pub forcerange: Option<(f64, f64)>,
+    /// Gear ratio.
+    pub gear: f64,
+}
+
+impl std::fmt::Debug for LoadedActuator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedActuator")
+            .field("name", &self.name)
+            .field("joint", &self.joint)
+            .field("body", &self.body)
+            .field("tendon", &self.tendon)
+            .field("ctrlrange", &self.ctrlrange)
+            .field("forcerange", &self.forcerange)
+            .field("gear", &self.gear)
+            .finish_non_exhaustive()
+    }
+}
 
 /// A loaded model ready to be spawned into a simulation world.
 #[derive(Debug)]
@@ -31,10 +69,14 @@ pub struct LoadedModel {
     pub joints: Vec<Joint>,
     /// Connect (ball) equality constraints.
     pub connect_constraints: Vec<ConnectConstraint>,
+    /// Actuators ready for use.
+    pub actuators: Vec<LoadedActuator>,
     /// Map from body name to body ID.
     pub body_to_id: HashMap<String, BodyId>,
     /// Map from joint name to joint ID.
     pub joint_to_id: HashMap<String, JointId>,
+    /// Map from actuator name to index in actuators vec.
+    pub actuator_to_index: HashMap<String, usize>,
     /// Parsed MJCF options for simulation configuration.
     pub option: MjcfOption,
     /// Extended solver configuration derived from MJCF options.
@@ -137,6 +179,47 @@ impl LoadedModel {
     #[must_use]
     pub fn contacts_enabled(&self) -> bool {
         self.option.contacts_enabled()
+    }
+
+    /// Get an actuator by name.
+    #[must_use]
+    pub fn actuator(&self, name: &str) -> Option<&LoadedActuator> {
+        self.actuator_to_index
+            .get(name)
+            .and_then(|&idx| self.actuators.get(idx))
+    }
+
+    /// Get a mutable actuator by name.
+    #[must_use]
+    pub fn actuator_mut(&mut self, name: &str) -> Option<&mut LoadedActuator> {
+        self.actuator_to_index
+            .get(name)
+            .copied()
+            .and_then(|idx| self.actuators.get_mut(idx))
+    }
+
+    /// Get all actuators targeting a specific joint.
+    #[must_use]
+    pub fn actuators_for_joint(&self, joint_name: &str) -> Vec<&LoadedActuator> {
+        self.actuators
+            .iter()
+            .filter(|a| a.joint.as_deref() == Some(joint_name))
+            .collect()
+    }
+
+    /// Get all actuators targeting a specific body (e.g., adhesion actuators).
+    #[must_use]
+    pub fn actuators_for_body(&self, body_name: &str) -> Vec<&LoadedActuator> {
+        self.actuators
+            .iter()
+            .filter(|a| a.body.as_deref() == Some(body_name))
+            .collect()
+    }
+
+    /// Get the number of actuators.
+    #[must_use]
+    pub fn actuator_count(&self) -> usize {
+        self.actuators.len()
     }
 }
 
@@ -325,6 +408,9 @@ impl MjcfLoader {
         let connect_constraints =
             self.convert_connect_constraints(&model.equality.connects, &body_to_id)?;
 
+        // Convert actuators
+        let (actuators, actuator_to_index) = self.convert_actuators(&model.actuators);
+
         // Convert options to solver config
         let solver_config = ExtendedSolverConfig::from(&model.option);
 
@@ -333,8 +419,10 @@ impl MjcfLoader {
             bodies,
             joints,
             connect_constraints,
+            actuators,
             body_to_id,
             joint_to_id,
+            actuator_to_index,
             option: model.option,
             solver_config,
         })
@@ -662,6 +750,165 @@ impl MjcfLoader {
         }
 
         Ok(constraints)
+    }
+
+    /// Convert MJCF actuators to LoadedActuators.
+    fn convert_actuators(
+        &self,
+        mjcf_actuators: &[MjcfActuator],
+    ) -> (Vec<LoadedActuator>, HashMap<String, usize>) {
+        let mut actuators = Vec::new();
+        let mut actuator_to_index = HashMap::new();
+
+        for mjcf_actuator in mjcf_actuators {
+            let loaded = self.convert_single_actuator(mjcf_actuator);
+
+            if !loaded.name.is_empty() {
+                actuator_to_index.insert(loaded.name.clone(), actuators.len());
+            }
+
+            actuators.push(loaded);
+        }
+
+        (actuators, actuator_to_index)
+    }
+
+    /// Convert a single MJCF actuator to a LoadedActuator.
+    fn convert_single_actuator(&self, mjcf: &MjcfActuator) -> LoadedActuator {
+        let actuator: BoxedActuator = match mjcf.actuator_type {
+            MjcfActuatorType::Motor => {
+                // Direct torque/force motor - use a simple motor interface
+                // We'll create an IntegratedVelocityActuator with high max velocity
+                // and use it in direct torque mode
+                let max_force = mjcf
+                    .forcerange
+                    .map(|(_, upper)| upper.abs())
+                    .unwrap_or(100.0)
+                    * mjcf.gear;
+                IntegratedVelocityActuator::new(1000.0, max_force)
+                    .with_name(&mjcf.name)
+                    .with_gains(0.0, 0.0) // No PD control, direct torque
+                    .boxed()
+            }
+
+            MjcfActuatorType::Position => {
+                // Position servo with PD control
+                let max_force = mjcf
+                    .forcerange
+                    .map(|(_, upper)| upper.abs())
+                    .unwrap_or(100.0)
+                    * mjcf.gear;
+                let kp = mjcf.kp * mjcf.gear;
+                let kd = mjcf.kv * mjcf.gear;
+                IntegratedVelocityActuator::new(10.0, max_force)
+                    .with_name(&mjcf.name)
+                    .with_gains(kp, kd)
+                    .boxed()
+            }
+
+            MjcfActuatorType::Velocity => {
+                // Velocity servo
+                let max_force = mjcf
+                    .forcerange
+                    .map(|(_, upper)| upper.abs())
+                    .unwrap_or(100.0)
+                    * mjcf.gear;
+                let max_vel = mjcf.ctrlrange.map(|(_, upper)| upper.abs()).unwrap_or(10.0);
+                IntegratedVelocityActuator::new(max_vel, max_force)
+                    .with_name(&mjcf.name)
+                    .with_gains(max_force / 0.01, max_force.sqrt() * 2.0) // High gains for velocity tracking
+                    .boxed()
+            }
+
+            MjcfActuatorType::General => {
+                // General actuator - default to integrated velocity
+                let max_force = mjcf
+                    .forcerange
+                    .map(|(_, upper)| upper.abs())
+                    .unwrap_or(100.0)
+                    * mjcf.gear;
+                IntegratedVelocityActuator::new(10.0, max_force)
+                    .with_name(&mjcf.name)
+                    .boxed()
+            }
+
+            MjcfActuatorType::Cylinder => {
+                // Pneumatic/hydraulic cylinder
+                // Compute area from diameter if provided
+                let area = if let Some(diameter) = mjcf.diameter {
+                    std::f64::consts::PI * (diameter / 2.0).powi(2)
+                } else {
+                    mjcf.area
+                };
+
+                // Default supply pressure (about 6 bar)
+                let supply_pressure = 600_000.0;
+
+                PneumaticCylinderActuator::new(area, supply_pressure)
+                    .with_name(&mjcf.name)
+                    .with_rates(
+                        1.0 / mjcf.timeconst.max(0.001), // Convert time constant to rate
+                        1.0 / mjcf.timeconst.max(0.001),
+                        0.05,
+                    )
+                    .boxed()
+            }
+
+            MjcfActuatorType::Muscle => {
+                // Hill-type muscle model
+                // For now, we approximate with a pneumatic cylinder since it has similar
+                // activation dynamics. A full implementation would use sim-muscle crate.
+                let (act_tau, deact_tau) = mjcf.muscle_timeconst;
+                let max_force = if mjcf.force > 0.0 {
+                    mjcf.force * mjcf.gear
+                } else {
+                    mjcf.scale * mjcf.gear // Use scale as fallback
+                };
+
+                // Use pneumatic cylinder as approximation with muscle-like dynamics
+                // Area chosen such that max force is achieved at max pressure
+                let supply_pressure = 600_000.0;
+                let area = max_force / (supply_pressure - 101_325.0);
+
+                PneumaticCylinderActuator::new(area.max(0.0001), supply_pressure)
+                    .with_name(&mjcf.name)
+                    .with_rates(
+                        1.0 / act_tau.max(0.001),   // Activation rate
+                        1.0 / deact_tau.max(0.001), // Deactivation rate
+                        0.01,
+                    )
+                    .with_friction(0.0, 0.0) // Muscles have no mechanical friction
+                    .boxed()
+            }
+
+            MjcfActuatorType::Damper => {
+                // Passive damper - create zero-force actuator
+                // The damping is typically applied via joint damping, not through actuator
+                IntegratedVelocityActuator::new(0.0, 0.0)
+                    .with_name(&mjcf.name)
+                    .with_enabled(false)
+                    .boxed()
+            }
+
+            MjcfActuatorType::Adhesion => {
+                // Adhesion actuator for gripping/climbing
+                let max_adhesion = mjcf.gain * mjcf.gear;
+                AdhesionActuator::new(max_adhesion)
+                    .with_name(&mjcf.name)
+                    .boxed()
+            }
+        };
+
+        LoadedActuator {
+            name: mjcf.name.clone(),
+            actuator,
+            joint: mjcf.joint.clone(),
+            body: mjcf.body.clone(),
+            tendon: mjcf.tendon.clone(),
+            ctrlrange: mjcf.ctrlrange,
+            forcerange: mjcf.forcerange,
+            gear: mjcf.gear,
+        }
     }
 
     /// Create a sim-core Joint from an MJCF joint.
