@@ -130,11 +130,48 @@ pub fn triangle_triangle_intersection(
 ) -> Option<TriTriContact>
 ```
 
-### Milestone 2: Dual-BVH Traversal (1-2 days)
+### Milestone 2: Dual-BVH Traversal ✅ COMPLETED
 
-**Files to modify:**
-- `sim-core/src/mid_phase.rs` - Add dual-tree query
-- `sim-core/src/mesh.rs` - Add mesh-mesh query function
+**Status:** Implemented on `feature-branch`
+
+**Files modified:**
+- `sim/sim-core/src/mid_phase.rs` - Added `query_bvh_pair()` and `transform_aabb()`
+- `sim/sim-core/src/mesh.rs` - Added `mesh_mesh_contact()` and `mesh_mesh_deepest_contact()`
+
+**What was implemented:**
+
+1. **`query_bvh_pair()`** in `mid_phase.rs`:
+   - Dual-tree traversal for two BVHs using world-space transforms
+   - Computes relative transform from mesh B to mesh A's local space
+   - Returns `Vec<(usize, usize)>` of candidate triangle index pairs
+   - Uses existing `query_pairs()` method with AABB transformation
+
+2. **`transform_aabb()`** helper function:
+   - Transforms an AABB by an isometry
+   - Correctly handles rotation by transforming all 8 corners and computing new bounds
+
+3. **`mesh_mesh_contact()`** in `mesh.rs`:
+   - Uses `query_bvh_pair()` to find candidate triangle pairs
+   - Transforms triangles to world space
+   - Calls `triangle_triangle_intersection()` from Milestone 1
+   - Returns all detected `MeshContact` structs
+
+4. **`mesh_mesh_deepest_contact()`** convenience function:
+   - Returns only the contact with maximum penetration depth
+   - Useful for constraint solving
+
+**Tests added (11 new tests):**
+- `test_query_bvh_pair_identity_transform` - BVH pair with identity transforms
+- `test_query_bvh_pair_with_translation` - BVH pair with translations
+- `test_query_bvh_pair_with_rotation` - BVH pair with rotations
+- `test_transform_aabb` - AABB transformation correctness
+- `test_mesh_mesh_contact_overlapping_cubes` - Two overlapping cube meshes
+- `test_mesh_mesh_contact_separate_cubes` - Non-intersecting cubes
+- `test_mesh_mesh_contact_rotated_cubes` - Rotated overlapping cubes
+- `test_mesh_mesh_contact_tetrahedra` - Two overlapping tetrahedra
+- `test_mesh_mesh_deepest_contact` - Deepest contact convenience function
+- `test_mesh_mesh_contact_identical_position` - Fully overlapping meshes
+- `test_mesh_mesh_contact_edge_touching` - Edge-to-edge touching meshes
 
 ```rust
 /// Query two BVHs for potentially colliding triangle pairs
@@ -148,10 +185,18 @@ pub fn query_bvh_pair(
 /// Compute contacts between two triangle meshes
 pub fn mesh_mesh_contact(
     mesh_a: &TriangleMeshData,
-    pose_a: &Isometry3<f64>,
+    pose_a: &Pose,
     mesh_b: &TriangleMeshData,
-    pose_b: &Isometry3<f64>,
+    pose_b: &Pose,
 ) -> Vec<MeshContact>
+
+/// Get the deepest contact from a mesh-mesh collision test
+pub fn mesh_mesh_deepest_contact(
+    mesh_a: &TriangleMeshData,
+    pose_a: &Pose,
+    mesh_b: &TriangleMeshData,
+    pose_b: &Pose,
+) -> Option<MeshContact>
 ```
 
 ### Milestone 3: Integration & Dispatch (1 day)
@@ -256,9 +301,9 @@ Our implementation will **exceed MuJoCo's capabilities** by supporting true non-
 ## Success Criteria
 
 - [x] Triangle-triangle intersection with correct contact generation ✅ (Milestone 1)
-- [ ] Dual-BVH traversal with O(log n) pruning
+- [x] Dual-BVH traversal with O(log n) pruning ✅ (Milestone 2)
 - [ ] Integrated in collision dispatch
-- [x] Unit tests for basic cases ✅ (14 tests added in Milestone 1)
+- [x] Unit tests for basic cases ✅ (14 tests in M1 + 11 tests in M2 = 25 total)
 - [ ] Humanoid self-collision demo working
 - [ ] Performance: <5ms for 10k triangle pair test
 
@@ -269,8 +314,8 @@ Our implementation will **exceed MuJoCo's capabilities** by supporting true non-
 | Milestone | Effort | Dependencies | Status |
 |-----------|--------|--------------|--------|
 | Triangle-triangle intersection | 2-3 days | None | ✅ **DONE** |
-| Dual-BVH traversal | 1-2 days | M1 | 🔜 Next |
-| Integration & dispatch | 1 day | M2 | Pending |
+| Dual-BVH traversal | 1-2 days | M1 | ✅ **DONE** |
+| Integration & dispatch | 1 day | M2 | 🔜 Next |
 | Testing & optimization | 1-2 days | M3 | Pending |
 | **Total** | **5-8 days** | | |
 

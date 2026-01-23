@@ -1187,6 +1187,131 @@ pub fn mesh_box_contact(
     best_contact
 }
 
+/// Compute contacts between two triangle meshes.
+///
+/// Uses dual-BVH traversal to find candidate triangle pairs, then tests each
+/// pair with `triangle_triangle_intersection`. Returns all detected contacts.
+///
+/// # Arguments
+///
+/// * `mesh_a` - First triangle mesh (with BVH)
+/// * `pose_a` - Pose (transform) of mesh A in world space
+/// * `mesh_b` - Second triangle mesh (with BVH)
+/// * `pose_b` - Pose (transform) of mesh B in world space
+///
+/// # Returns
+///
+/// Vector of `MeshContact` structs representing all detected contacts between
+/// the two meshes. Returns an empty vector if meshes don't intersect.
+///
+/// # Example
+///
+/// ```ignore
+/// use sim_core::mesh::{mesh_mesh_contact, TriangleMeshData};
+/// use sim_types::Pose;
+/// use nalgebra::Point3;
+///
+/// let mesh_a = TriangleMeshData::new(/* vertices */, /* indices */);
+/// let mesh_b = TriangleMeshData::new(/* vertices */, /* indices */);
+/// let pose_a = Pose::identity();
+/// let pose_b = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
+///
+/// let contacts = mesh_mesh_contact(&mesh_a, &pose_a, &mesh_b, &pose_b);
+/// for contact in contacts {
+///     println!("Contact at {:?}, depth: {}", contact.point, contact.penetration);
+/// }
+/// ```
+#[must_use]
+pub fn mesh_mesh_contact(
+    mesh_a: &TriangleMeshData,
+    pose_a: &Pose,
+    mesh_b: &TriangleMeshData,
+    pose_b: &Pose,
+) -> Vec<MeshContact> {
+    // Get BVHs (return empty if not available)
+    let Some(bvh_a) = mesh_a.bvh() else {
+        return Vec::new();
+    };
+    let Some(bvh_b) = mesh_b.bvh() else {
+        return Vec::new();
+    };
+
+    // Convert poses to isometries for the BVH query
+    let iso_a = pose_a.to_isometry();
+    let iso_b = pose_b.to_isometry();
+
+    // Query BVH pair for candidate triangle pairs
+    let candidate_pairs = crate::mid_phase::query_bvh_pair(bvh_a, bvh_b, &iso_a, &iso_b);
+
+    if candidate_pairs.is_empty() {
+        return Vec::new();
+    }
+
+    let mut contacts = Vec::new();
+
+    // Test each candidate pair with narrow-phase triangle-triangle intersection
+    for (tri_idx_a, tri_idx_b) in candidate_pairs {
+        // Get triangle A
+        let Some(tri_a) = mesh_a.get_triangle(tri_idx_a) else {
+            continue;
+        };
+        let (a0, a1, a2) = mesh_a.triangle_vertices(tri_a);
+
+        // Get triangle B
+        let Some(tri_b) = mesh_b.get_triangle(tri_idx_b) else {
+            continue;
+        };
+        let (b0, b1, b2) = mesh_b.triangle_vertices(tri_b);
+
+        // Transform triangles to world space
+        let world_a = [
+            pose_a.transform_point(&a0),
+            pose_a.transform_point(&a1),
+            pose_a.transform_point(&a2),
+        ];
+        let world_b = [
+            pose_b.transform_point(&b0),
+            pose_b.transform_point(&b1),
+            pose_b.transform_point(&b2),
+        ];
+
+        // Test for intersection
+        if let Some(mut contact) = triangle_triangle_intersection(&world_a, &world_b) {
+            // Fill in triangle indices
+            contact.tri_a = tri_idx_a;
+            contact.tri_b = tri_idx_b;
+
+            contacts.push(MeshContact {
+                point: contact.point,
+                normal: contact.normal,
+                penetration: contact.depth,
+                triangle_index: tri_idx_a, // Use mesh A's triangle index
+            });
+        }
+    }
+
+    contacts
+}
+
+/// Get the deepest contact from a mesh-mesh collision test.
+///
+/// Convenience function that returns only the contact with maximum penetration depth.
+/// Useful when only one contact is needed for constraint solving.
+#[must_use]
+pub fn mesh_mesh_deepest_contact(
+    mesh_a: &TriangleMeshData,
+    pose_a: &Pose,
+    mesh_b: &TriangleMeshData,
+    pose_b: &Pose,
+) -> Option<MeshContact> {
+    let contacts = mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b);
+    contacts.into_iter().max_by(|a, b| {
+        a.penetration
+            .partial_cmp(&b.penetration)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1720,5 +1845,151 @@ mod tests {
             result.is_some(),
             "Coplanar overlapping triangles should intersect"
         );
+    }
+
+    // =============================================================================
+    // Mesh-Mesh Contact Tests
+    // =============================================================================
+
+    #[test]
+    fn test_mesh_mesh_contact_overlapping_cubes() {
+        // Two cubes that overlap
+        let cube_a = create_cube();
+        let cube_b = create_cube();
+
+        // Position cube B so it overlaps with cube A
+        let pose_a = Pose::identity();
+        let pose_b = Pose::from_position(Point3::new(0.5, 0.0, 0.0)); // Shifted 0.5 units in X
+
+        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        assert!(
+            !contacts.is_empty(),
+            "Overlapping cubes should produce contacts"
+        );
+
+        // All contacts should have positive penetration
+        for contact in &contacts {
+            assert!(
+                contact.penetration >= 0.0,
+                "Penetration should be non-negative"
+            );
+        }
+    }
+
+    #[test]
+    fn test_mesh_mesh_contact_separate_cubes() {
+        // Two cubes that don't touch
+        let cube_a = create_cube();
+        let cube_b = create_cube();
+
+        let pose_a = Pose::identity();
+        let pose_b = Pose::from_position(Point3::new(5.0, 0.0, 0.0)); // Far apart
+
+        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        assert!(
+            contacts.is_empty(),
+            "Separate cubes should not produce contacts"
+        );
+    }
+
+    #[test]
+    fn test_mesh_mesh_contact_rotated_cubes() {
+        // Two cubes where one is rotated
+        let cube_a = create_cube();
+        let cube_b = create_cube();
+
+        let pose_a = Pose::identity();
+        // Rotate cube B 45 degrees around Z and position it so it overlaps
+        let pose_b = Pose::from_position_rotation(
+            Point3::new(0.3, 0.3, 0.0),
+            nalgebra::UnitQuaternion::from_euler_angles(0.0, 0.0, std::f64::consts::FRAC_PI_4),
+        );
+
+        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        assert!(
+            !contacts.is_empty(),
+            "Rotated overlapping cubes should produce contacts"
+        );
+    }
+
+    #[test]
+    fn test_mesh_mesh_contact_tetrahedra() {
+        // Two tetrahedra
+        let tet_a = create_tetrahedron();
+        let tet_b = create_tetrahedron();
+
+        // Position tet_b so it overlaps with tet_a
+        let pose_a = Pose::identity();
+        let pose_b = Pose::from_position(Point3::new(0.3, 0.3, 0.0));
+
+        let contacts = mesh_mesh_contact(&tet_a, &pose_a, &tet_b, &pose_b);
+        assert!(
+            !contacts.is_empty(),
+            "Overlapping tetrahedra should produce contacts"
+        );
+    }
+
+    #[test]
+    fn test_mesh_mesh_deepest_contact() {
+        // Test the convenience function
+        let cube_a = create_cube();
+        let cube_b = create_cube();
+
+        let pose_a = Pose::identity();
+        let pose_b = Pose::from_position(Point3::new(0.5, 0.0, 0.0));
+
+        let deepest = mesh_mesh_deepest_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        assert!(
+            deepest.is_some(),
+            "Overlapping cubes should have a deepest contact"
+        );
+
+        // Get all contacts and verify deepest
+        let all_contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        if let Some(deepest_contact) = deepest {
+            let max_penetration = all_contacts
+                .iter()
+                .map(|c| c.penetration)
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert_relative_eq!(
+                deepest_contact.penetration,
+                max_penetration,
+                epsilon = 1e-10
+            );
+        }
+    }
+
+    #[test]
+    fn test_mesh_mesh_contact_identical_position() {
+        // Two identical cubes at the same position (maximum overlap)
+        let cube_a = create_cube();
+        let cube_b = create_cube();
+
+        let pose_a = Pose::identity();
+        let pose_b = Pose::identity();
+
+        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        assert!(
+            !contacts.is_empty(),
+            "Identical overlapping cubes should produce contacts"
+        );
+    }
+
+    #[test]
+    fn test_mesh_mesh_contact_edge_touching() {
+        // Two cubes positioned so they touch at an edge
+        let cube_a = create_cube();
+        let cube_b = create_cube();
+
+        let pose_a = Pose::identity();
+        // Position cube B so its edge just touches cube A's edge
+        let pose_b = Pose::from_position(Point3::new(1.0, 1.0, 0.0));
+
+        // With edge touching, triangles may or may not intersect depending on precision
+        let contacts = mesh_mesh_contact(&cube_a, &pose_a, &cube_b, &pose_b);
+        // Just verify no panic and contacts are well-formed
+        for contact in &contacts {
+            assert!(contact.penetration >= 0.0 || contact.penetration.abs() < 1e-6);
+        }
     }
 }
