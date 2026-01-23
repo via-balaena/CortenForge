@@ -199,19 +199,41 @@ pub fn mesh_mesh_deepest_contact(
 ) -> Option<MeshContact>
 ```
 
-### Milestone 3: Integration & Dispatch (1 day)
+### Milestone 3: Integration & Dispatch ✅ COMPLETED
 
-**Files to modify:**
-- `sim-core/src/world.rs` - Wire up in collision dispatch
+**Status:** Implemented on `feature-branch`
+
+**Files modified:**
+- `sim/sim-core/src/world.rs` - Added TriangleMesh ↔ TriangleMesh case in collision dispatch
+
+**What was implemented:**
+
+Added the `TriangleMesh ↔ TriangleMesh` match arm in `detect_contact_pair()`:
 
 ```rust
-// In detect_contact_pair(), add case:
-(CollisionShape::TriangleMesh { data: mesh_a }, CollisionShape::TriangleMesh { data: mesh_b }) => {
-    mesh_mesh_contact(mesh_a, &pose_a, mesh_b, &pose_b)
-        .into_iter()
-        .next()  // Return deepest contact
+// TriangleMesh-TriangleMesh
+(
+    CollisionShape::TriangleMesh { data: mesh_a },
+    CollisionShape::TriangleMesh { data: mesh_b },
+) => {
+    let contact = crate::mesh::mesh_mesh_deepest_contact(
+        mesh_a,
+        &body_a.state.pose,
+        mesh_b,
+        &body_b.state.pose,
+    )?;
+
+    Some(ContactPoint::new(
+        contact.point,
+        contact.normal,
+        contact.penetration,
+        body_a.id,
+        body_b.id,
+    ))
 }
 ```
+
+This integrates the dual-BVH traversal and triangle-triangle intersection from Milestones 1 and 2 into the main collision dispatch system.
 
 ### Milestone 4: Testing & Optimization (1-2 days)
 
@@ -302,7 +324,7 @@ Our implementation will **exceed MuJoCo's capabilities** by supporting true non-
 
 - [x] Triangle-triangle intersection with correct contact generation ✅ (Milestone 1)
 - [x] Dual-BVH traversal with O(log n) pruning ✅ (Milestone 2)
-- [ ] Integrated in collision dispatch
+- [x] Integrated in collision dispatch ✅ (Milestone 3)
 - [x] Unit tests for basic cases ✅ (14 tests in M1 + 11 tests in M2 = 25 total)
 - [ ] Humanoid self-collision demo working
 - [ ] Performance: <5ms for 10k triangle pair test
@@ -315,8 +337,8 @@ Our implementation will **exceed MuJoCo's capabilities** by supporting true non-
 |-----------|--------|--------------|--------|
 | Triangle-triangle intersection | 2-3 days | None | ✅ **DONE** |
 | Dual-BVH traversal | 1-2 days | M1 | ✅ **DONE** |
-| Integration & dispatch | 1 day | M2 | 🔜 Next |
-| Testing & optimization | 1-2 days | M3 | Pending |
+| Integration & dispatch | 1 day | M2 | ✅ **DONE** |
+| Testing & optimization | 1-2 days | M3 | 🔜 Next |
 | **Total** | **5-8 days** | | |
 
 ---

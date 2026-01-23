@@ -1925,6 +1925,27 @@ impl World {
                 )
                 .map(|c| c.flip()),
 
+            // TriangleMesh-TriangleMesh
+            (
+                CollisionShape::TriangleMesh { data: mesh_a },
+                CollisionShape::TriangleMesh { data: mesh_b },
+            ) => {
+                let contact = crate::mesh::mesh_mesh_deepest_contact(
+                    mesh_a,
+                    &body_a.state.pose,
+                    mesh_b,
+                    &body_b.state.pose,
+                )?;
+
+                Some(ContactPoint::new(
+                    contact.point,
+                    contact.normal,
+                    contact.penetration,
+                    body_a.id,
+                    body_b.id,
+                ))
+            }
+
             // =====================================================================
             // GJK/EPA fallback for ConvexMesh, Cylinder, Ellipsoid, and Capsule-Box
             // =====================================================================
