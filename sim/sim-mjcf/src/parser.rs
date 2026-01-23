@@ -12,8 +12,9 @@ use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
     MjcfDefault, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial,
     MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh,
-    MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
-    MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendonDefaults,
+    MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfSensor, MjcfSensorDefaults, MjcfSensorType,
+    MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon,
+    MjcfTendonDefaults, MjcfTendonType,
 };
 
 /// Parse an MJCF string into a model.
@@ -84,7 +85,15 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         let skins = parse_deformable(reader)?;
                         model.skins = skins;
                     }
-                    // Skip other elements (contact, tendon, etc.)
+                    b"tendon" => {
+                        let tendons = parse_tendons(reader)?;
+                        model.tendons = tendons;
+                    }
+                    b"sensor" => {
+                        let sensors = parse_sensors(reader)?;
+                        model.sensors = sensors;
+                    }
+                    // Skip other elements (contact, etc.)
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
@@ -1386,6 +1395,220 @@ fn parse_float_array(s: &str) -> Result<Vec<f64>> {
         .collect()
 }
 
+// ============================================================================
+// Tendon parsing
+// ============================================================================
+
+/// Parse the tendon section.
+fn parse_tendons<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfTendon>> {
+    let mut tendons = Vec::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                if let Some(tendon_type) = MjcfTendonType::from_str(&elem_name) {
+                    let tendon = parse_tendon(reader, e, tendon_type)?;
+                    tendons.push(tendon);
+                } else {
+                    // Unknown tendon type, skip it
+                    skip_element(reader, elem_name.as_bytes())?;
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                if let Some(tendon_type) = MjcfTendonType::from_str(&elem_name) {
+                    let tendon = parse_tendon_attrs(e, tendon_type);
+                    tendons.push(tendon);
+                }
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"tendon" => break,
+            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in tendon".into())),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(tendons)
+}
+
+/// Parse a tendon element and its children (sites for spatial, joints for fixed).
+fn parse_tendon<R: BufRead>(
+    reader: &mut Reader<R>,
+    start: &BytesStart,
+    tendon_type: MjcfTendonType,
+) -> Result<MjcfTendon> {
+    let mut tendon = parse_tendon_attrs(start, tendon_type);
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+                let name_bytes = e.name().as_ref().to_vec();
+                match name_bytes.as_slice() {
+                    b"site" => {
+                        // Site reference for spatial tendon
+                        if let Some(site_name) = get_attribute_opt(e, "site") {
+                            tendon.sites.push(site_name);
+                        }
+                    }
+                    b"joint" => {
+                        // Joint reference for fixed tendon
+                        if let Some(joint_name) = get_attribute_opt(e, "joint") {
+                            let coef = parse_float_attr(e, "coef").unwrap_or(1.0);
+                            tendon.joints.push((joint_name, coef));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(ref e)) => {
+                let name_bytes = e.name().as_ref().to_vec();
+                if name_bytes == b"spatial" || name_bytes == b"fixed" {
+                    break;
+                }
+            }
+            Ok(Event::Eof) => {
+                return Err(MjcfError::XmlParse(
+                    "unexpected EOF in tendon element".into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(tendon)
+}
+
+/// Parse tendon attributes.
+fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> MjcfTendon {
+    let mut tendon = MjcfTendon {
+        tendon_type,
+        ..Default::default()
+    };
+
+    tendon.name = get_attribute_opt(e, "name").unwrap_or_default();
+    tendon.class = get_attribute_opt(e, "class");
+
+    if let Some(range) = get_attribute_opt(e, "range") {
+        if let Ok(parts) = parse_float_array(&range) {
+            if parts.len() >= 2 {
+                tendon.range = Some((parts[0], parts[1]));
+            }
+        }
+    }
+
+    if let Some(limited) = get_attribute_opt(e, "limited") {
+        tendon.limited = limited == "true";
+    }
+
+    if let Some(stiffness) = parse_float_attr(e, "stiffness") {
+        tendon.stiffness = stiffness;
+    }
+
+    if let Some(damping) = parse_float_attr(e, "damping") {
+        tendon.damping = damping;
+    }
+
+    if let Some(frictionloss) = parse_float_attr(e, "frictionloss") {
+        tendon.frictionloss = frictionloss;
+    }
+
+    if let Some(width) = parse_float_attr(e, "width") {
+        tendon.width = width;
+    }
+
+    if let Some(rgba) = get_attribute_opt(e, "rgba") {
+        if let Ok(parts) = parse_float_array(&rgba) {
+            if parts.len() >= 4 {
+                tendon.rgba = Vector4::new(parts[0], parts[1], parts[2], parts[3]);
+            }
+        }
+    }
+
+    tendon
+}
+
+// ============================================================================
+// Sensor parsing
+// ============================================================================
+
+/// Parse the sensor section.
+fn parse_sensors<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfSensor>> {
+    let mut sensors = Vec::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                if let Some(sensor_type) = MjcfSensorType::from_str(&elem_name) {
+                    let sensor = parse_sensor_attrs(e, sensor_type);
+                    sensors.push(sensor);
+                    // Skip to closing tag
+                    skip_element(reader, elem_name.as_bytes())?;
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                if let Some(sensor_type) = MjcfSensorType::from_str(&elem_name) {
+                    let sensor = parse_sensor_attrs(e, sensor_type);
+                    sensors.push(sensor);
+                    // Self-closing, no need to skip
+                }
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"sensor" => break,
+            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in sensor".into())),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(sensors)
+}
+
+/// Parse sensor attributes.
+fn parse_sensor_attrs(e: &BytesStart, sensor_type: MjcfSensorType) -> MjcfSensor {
+    let mut sensor = MjcfSensor {
+        sensor_type,
+        ..Default::default()
+    };
+
+    sensor.name = get_attribute_opt(e, "name").unwrap_or_default();
+    sensor.class = get_attribute_opt(e, "class");
+
+    // Different sensor types use different attribute names for their target
+    sensor.objname = get_attribute_opt(e, "joint")
+        .or_else(|| get_attribute_opt(e, "site"))
+        .or_else(|| get_attribute_opt(e, "body"))
+        .or_else(|| get_attribute_opt(e, "tendon"))
+        .or_else(|| get_attribute_opt(e, "actuator"))
+        .or_else(|| get_attribute_opt(e, "objname"));
+
+    sensor.refname = get_attribute_opt(e, "reftype").or_else(|| get_attribute_opt(e, "refname"));
+
+    if let Some(noise) = parse_float_attr(e, "noise") {
+        sensor.noise = noise;
+    }
+
+    if let Some(cutoff) = parse_float_attr(e, "cutoff") {
+        sensor.cutoff = cutoff;
+    }
+
+    if let Some(user) = get_attribute_opt(e, "user") {
+        if let Ok(parts) = parse_float_array(&user) {
+            sensor.user = parts;
+        }
+    }
+
+    sensor
+}
+
 /// Skip an element and all its children.
 fn skip_element<R: BufRead>(reader: &mut Reader<R>, name: &[u8]) -> Result<()> {
     let mut buf = Vec::new();
@@ -2633,5 +2856,307 @@ mod tests {
         assert_eq!(MjcfActuatorType::Cylinder.as_str(), "cylinder");
         assert_eq!(MjcfActuatorType::Damper.as_str(), "damper");
         assert_eq!(MjcfActuatorType::Adhesion.as_str(), "adhesion");
+    }
+
+    // ========================================================================
+    // Tendon parsing tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_spatial_tendon() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link1">
+                        <site name="s1" pos="0 0 0"/>
+                    </body>
+                    <body name="link2">
+                        <site name="s2" pos="0 0 0.5"/>
+                    </body>
+                    <body name="link3">
+                        <site name="s3" pos="0 0 1"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="cable1" stiffness="1000" damping="10" width="0.005">
+                        <site site="s1"/>
+                        <site site="s2"/>
+                        <site site="s3"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.tendons.len(), 1);
+
+        let tendon = &model.tendons[0];
+        assert_eq!(tendon.name, "cable1");
+        assert_eq!(tendon.tendon_type, MjcfTendonType::Spatial);
+        assert_relative_eq!(tendon.stiffness, 1000.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon.damping, 10.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon.width, 0.005, epsilon = 1e-10);
+        assert_eq!(tendon.sites, vec!["s1", "s2", "s3"]);
+    }
+
+    #[test]
+    fn test_parse_fixed_tendon() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link1">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="link2">
+                        <joint name="j2" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <fixed name="coupling" limited="true" range="0 0.5">
+                        <joint joint="j1" coef="1"/>
+                        <joint joint="j2" coef="-1"/>
+                    </fixed>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.tendons.len(), 1);
+
+        let tendon = &model.tendons[0];
+        assert_eq!(tendon.name, "coupling");
+        assert_eq!(tendon.tendon_type, MjcfTendonType::Fixed);
+        assert!(tendon.limited);
+        assert_eq!(tendon.range, Some((0.0, 0.5)));
+        assert_eq!(
+            tendon.joints,
+            vec![("j1".to_string(), 1.0), ("j2".to_string(), -1.0)]
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_tendons() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="j1" type="hinge"/>
+                        <site name="s1" pos="0 0 0"/>
+                        <site name="s2" pos="0 0 0.5"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="t1">
+                        <site site="s1"/>
+                        <site site="s2"/>
+                    </spatial>
+                    <fixed name="t2">
+                        <joint joint="j1" coef="2"/>
+                    </fixed>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.tendons.len(), 2);
+        assert_eq!(model.tendons[0].name, "t1");
+        assert_eq!(model.tendons[0].tendon_type, MjcfTendonType::Spatial);
+        assert_eq!(model.tendons[1].name, "t2");
+        assert_eq!(model.tendons[1].tendon_type, MjcfTendonType::Fixed);
+    }
+
+    #[test]
+    fn test_parse_tendon_with_rgba() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody/>
+                <tendon>
+                    <spatial name="colored" rgba="1 0 0 1"/>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let tendon = &model.tendons[0];
+        assert_relative_eq!(tendon.rgba.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon.rgba.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon.rgba.z, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon.rgba.w, 1.0, epsilon = 1e-10);
+    }
+
+    // ========================================================================
+    // Sensor parsing tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_joint_sensors() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <jointpos name="j1_pos" joint="j1"/>
+                    <jointvel name="j1_vel" joint="j1" noise="0.01"/>
+                </sensor>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.sensors.len(), 2);
+
+        let pos_sensor = &model.sensors[0];
+        assert_eq!(pos_sensor.name, "j1_pos");
+        assert_eq!(pos_sensor.sensor_type, MjcfSensorType::Jointpos);
+        assert_eq!(pos_sensor.objname, Some("j1".to_string()));
+        assert_relative_eq!(pos_sensor.noise, 0.0, epsilon = 1e-10);
+
+        let vel_sensor = &model.sensors[1];
+        assert_eq!(vel_sensor.name, "j1_vel");
+        assert_eq!(vel_sensor.sensor_type, MjcfSensorType::Jointvel);
+        assert_relative_eq!(vel_sensor.noise, 0.01, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_imu_sensors() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <site name="imu_site" pos="0 0 0"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <accelerometer name="accel" site="imu_site"/>
+                    <gyro name="gyro" site="imu_site" noise="0.001"/>
+                </sensor>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.sensors.len(), 2);
+
+        let accel = &model.sensors[0];
+        assert_eq!(accel.name, "accel");
+        assert_eq!(accel.sensor_type, MjcfSensorType::Accelerometer);
+        assert_eq!(accel.objname, Some("imu_site".to_string()));
+
+        let gyro = &model.sensors[1];
+        assert_eq!(gyro.name, "gyro");
+        assert_eq!(gyro.sensor_type, MjcfSensorType::Gyro);
+        assert_relative_eq!(gyro.noise, 0.001, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_force_sensors() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <site name="ft_site" pos="0 0 0"/>
+                        <geom type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <force name="force1" site="ft_site"/>
+                    <torque name="torque1" site="ft_site"/>
+                    <touch name="contact1" site="ft_site"/>
+                </sensor>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.sensors.len(), 3);
+
+        assert_eq!(model.sensors[0].sensor_type, MjcfSensorType::Force);
+        assert_eq!(model.sensors[1].sensor_type, MjcfSensorType::Torque);
+        assert_eq!(model.sensors[2].sensor_type, MjcfSensorType::Touch);
+    }
+
+    #[test]
+    fn test_parse_sensor_with_cutoff() {
+        let xml = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="link">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <jointpos name="filtered" joint="j1" cutoff="50"/>
+                </sensor>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let sensor = &model.sensors[0];
+        assert_relative_eq!(sensor.cutoff, 50.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_sensor_type_enum() {
+        // Position sensors
+        assert_eq!(
+            MjcfSensorType::from_str("jointpos"),
+            Some(MjcfSensorType::Jointpos)
+        );
+        assert_eq!(
+            MjcfSensorType::from_str("tendonpos"),
+            Some(MjcfSensorType::Tendonpos)
+        );
+
+        // Velocity sensors
+        assert_eq!(
+            MjcfSensorType::from_str("jointvel"),
+            Some(MjcfSensorType::Jointvel)
+        );
+
+        // IMU sensors
+        assert_eq!(
+            MjcfSensorType::from_str("accelerometer"),
+            Some(MjcfSensorType::Accelerometer)
+        );
+        assert_eq!(MjcfSensorType::from_str("gyro"), Some(MjcfSensorType::Gyro));
+
+        // Force sensors
+        assert_eq!(
+            MjcfSensorType::from_str("force"),
+            Some(MjcfSensorType::Force)
+        );
+        assert_eq!(
+            MjcfSensorType::from_str("torque"),
+            Some(MjcfSensorType::Torque)
+        );
+        assert_eq!(
+            MjcfSensorType::from_str("touch"),
+            Some(MjcfSensorType::Touch)
+        );
+
+        // Unknown
+        assert_eq!(MjcfSensorType::from_str("invalid"), None);
+    }
+
+    #[test]
+    fn test_sensor_dimensionality() {
+        // Scalar sensors
+        assert_eq!(MjcfSensorType::Jointpos.dim(), 1);
+        assert_eq!(MjcfSensorType::Jointvel.dim(), 1);
+
+        // 3D sensors
+        assert_eq!(MjcfSensorType::Accelerometer.dim(), 3);
+        assert_eq!(MjcfSensorType::Gyro.dim(), 3);
+        assert_eq!(MjcfSensorType::Force.dim(), 3);
+
+        // 4D sensors (quaternion)
+        assert_eq!(MjcfSensorType::Framequat.dim(), 4);
+        assert_eq!(MjcfSensorType::Ballquat.dim(), 4);
     }
 }

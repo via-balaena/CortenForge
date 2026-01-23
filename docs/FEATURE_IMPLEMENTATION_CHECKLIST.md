@@ -42,19 +42,25 @@ Tracking progress on remaining MuJoCo feature gaps and infrastructure improvemen
 
 ### MJCF Parser
 
-- [ ] **Implement MJCF `<default>` element support**
-  - [ ] Actuator defaults
-  - [ ] Tendon defaults
-  - [ ] Sensor defaults
+- [x] **Implement MJCF `<default>` element support**
+  - [x] Actuator defaults - Applied in loader via `DefaultResolver::apply_to_actuator()`
+  - [x] Tendon defaults - Added `MjcfTendon` struct, parser, and `apply_to_tendon()` method
+  - [x] Sensor defaults - Added `MjcfSensor` struct, parser, and `apply_to_sensor()` method
+  - Implementation details:
+    - `sim-mjcf/src/types.rs`: Added `MjcfTendon`, `MjcfSensor`, `MjcfTendonType`, `MjcfSensorType`
+    - `sim-mjcf/src/parser.rs`: Added `parse_tendons()`, `parse_sensors()` functions
+    - `sim-mjcf/src/defaults.rs`: Added `apply_to_tendon()`, `apply_to_sensor()` methods
+    - `sim-mjcf/src/loader.rs`: Updated `convert_actuators()` to apply defaults
 
 ---
 
 ## Documentation & Testing
 
-- [ ] **Sync gap analysis document** - Update `MUJOCO_GAP_ANALYSIS.md` to reflect:
-  - TriangleMesh implementation status (substantially complete)
-  - SDF implementation status (pending verification)
-  - Mesh-mesh collision plan
+- [x] **Sync gap analysis document** - Updated `MUJOCO_GAP_ANALYSIS.md` to reflect:
+  - TriangleMesh implementation: ✅ Complete
+  - SDF implementation: ✅ Complete (all 10 combinations)
+  - MJCF defaults (actuator, tendon, sensor): ✅ Complete
+  - Added LLM guidance note at top of file for section-by-section editing
 
 - [x] **Add performance benchmarks using criterion**
   - Hot paths benchmarked:
@@ -90,5 +96,5 @@ Tracking progress on remaining MuJoCo feature gaps and infrastructure improvemen
 | 2026-01-23 | SDF Milestone 4: TriangleMesh | ✅ Complete |
 | 2026-01-23 | SDF Milestone 5: HeightField | ✅ Complete |
 | 2026-01-23 | SDF Milestone 6: Sdf ↔ Sdf | ✅ Complete |
-| - | MJCF `<default>` element | ⏳ Pending |
-| - | Sync gap analysis | ⏳ Pending |
+| 2026-01-23 | MJCF `<default>` element (Actuator, Tendon, Sensor) | ✅ Complete |
+| 2026-01-23 | Sync gap analysis document | ✅ Complete |

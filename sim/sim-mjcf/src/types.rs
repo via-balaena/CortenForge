@@ -1573,6 +1573,436 @@ impl MjcfActuator {
 }
 
 // ============================================================================
+// Tendon Types
+// ============================================================================
+
+/// Tendon type from MJCF.
+///
+/// MuJoCo supports both spatial (point-to-point) and fixed-path tendons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MjcfTendonType {
+    /// Spatial tendon (point-to-point through sites).
+    #[default]
+    Spatial,
+    /// Fixed tendon (linear combination of joint positions).
+    Fixed,
+}
+
+impl MjcfTendonType {
+    /// Parse tendon type from element name.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "spatial" => Some(Self::Spatial),
+            "fixed" => Some(Self::Fixed),
+            _ => None,
+        }
+    }
+
+    /// Get the MJCF string representation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Spatial => "spatial",
+            Self::Fixed => "fixed",
+        }
+    }
+}
+
+/// A tendon from `<tendon>` element.
+///
+/// MuJoCo tendons can connect multiple joints or sites and apply forces
+/// based on their length. They are commonly used for modeling cables,
+/// tendons in biomechanical systems, or any force transmission mechanism.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfTendon {
+    /// Tendon name.
+    pub name: String,
+    /// Default class.
+    pub class: Option<String>,
+    /// Tendon type.
+    pub tendon_type: MjcfTendonType,
+    /// Range limits [lower, upper] for tendon length.
+    pub range: Option<(f64, f64)>,
+    /// Whether range limits are enabled.
+    pub limited: bool,
+    /// Stiffness coefficient.
+    pub stiffness: f64,
+    /// Damping coefficient.
+    pub damping: f64,
+    /// Friction loss.
+    pub frictionloss: f64,
+    /// Tendon width for visualization.
+    pub width: f64,
+    /// RGBA color for visualization.
+    pub rgba: Vector4<f64>,
+    /// Sites for spatial tendons (ordered list of site names).
+    pub sites: Vec<String>,
+    /// Joint coefficients for fixed tendons: (joint_name, coefficient).
+    pub joints: Vec<(String, f64)>,
+}
+
+impl Default for MjcfTendon {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            class: None,
+            tendon_type: MjcfTendonType::default(),
+            range: None,
+            limited: false,
+            stiffness: 0.0,
+            damping: 0.0,
+            frictionloss: 0.0,
+            width: 0.003, // MuJoCo default
+            rgba: Vector4::new(0.5, 0.5, 0.5, 1.0),
+            sites: Vec::new(),
+            joints: Vec::new(),
+        }
+    }
+}
+
+impl MjcfTendon {
+    /// Create a new spatial tendon.
+    #[must_use]
+    pub fn spatial(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            tendon_type: MjcfTendonType::Spatial,
+            ..Default::default()
+        }
+    }
+
+    /// Create a new fixed tendon.
+    #[must_use]
+    pub fn fixed(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            tendon_type: MjcfTendonType::Fixed,
+            ..Default::default()
+        }
+    }
+
+    /// Add a site to a spatial tendon.
+    #[must_use]
+    pub fn with_site(mut self, site: impl Into<String>) -> Self {
+        self.sites.push(site.into());
+        self
+    }
+
+    /// Add a joint with coefficient to a fixed tendon.
+    #[must_use]
+    pub fn with_joint(mut self, joint: impl Into<String>, coef: f64) -> Self {
+        self.joints.push((joint.into(), coef));
+        self
+    }
+
+    /// Set tendon stiffness.
+    #[must_use]
+    pub fn with_stiffness(mut self, stiffness: f64) -> Self {
+        self.stiffness = stiffness;
+        self
+    }
+
+    /// Set tendon damping.
+    #[must_use]
+    pub fn with_damping(mut self, damping: f64) -> Self {
+        self.damping = damping;
+        self
+    }
+
+    /// Set range limits.
+    #[must_use]
+    pub fn with_limits(mut self, lower: f64, upper: f64) -> Self {
+        self.limited = true;
+        self.range = Some((lower, upper));
+        self
+    }
+}
+
+// ============================================================================
+// Sensor Types
+// ============================================================================
+
+/// Sensor type from MJCF.
+///
+/// MuJoCo supports many sensor types that measure different quantities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum MjcfSensorType {
+    // Position sensors
+    /// Joint position sensor.
+    #[default]
+    Jointpos,
+    /// Tendon length sensor.
+    Tendonpos,
+    /// Actuator position sensor.
+    Actuatorpos,
+    /// Ball joint quaternion sensor.
+    Ballquat,
+    /// Frame position sensor.
+    Framepos,
+    /// Frame orientation quaternion sensor.
+    Framequat,
+    /// Frame x-axis sensor.
+    Framexaxis,
+    /// Frame y-axis sensor.
+    Frameyaxis,
+    /// Frame z-axis sensor.
+    Framezaxis,
+
+    // Velocity sensors
+    /// Joint velocity sensor.
+    Jointvel,
+    /// Tendon velocity sensor.
+    Tendonvel,
+    /// Actuator velocity sensor.
+    Actuatorvel,
+    /// Ball joint angular velocity sensor.
+    Ballangvel,
+    /// Frame linear velocity sensor.
+    Framelinvel,
+    /// Frame angular velocity sensor.
+    Frameangvel,
+
+    // Force sensors
+    /// Actuator force sensor.
+    Actuatorfrc,
+    /// Joint limit force sensor.
+    Jointlimitfrc,
+    /// Tendon limit force sensor.
+    Tendonlimitfrc,
+    /// Contact force sensor.
+    Touch,
+    /// Force sensor (measures force on a site).
+    Force,
+    /// Torque sensor (measures torque on a site).
+    Torque,
+
+    // Acceleration sensors
+    /// Accelerometer.
+    Accelerometer,
+    /// Gyroscope.
+    Gyro,
+
+    // User-defined sensors
+    /// User-defined sensor.
+    User,
+}
+
+impl MjcfSensorType {
+    /// Parse sensor type from element name.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "jointpos" => Some(Self::Jointpos),
+            "tendonpos" => Some(Self::Tendonpos),
+            "actuatorpos" => Some(Self::Actuatorpos),
+            "ballquat" => Some(Self::Ballquat),
+            "framepos" => Some(Self::Framepos),
+            "framequat" => Some(Self::Framequat),
+            "framexaxis" => Some(Self::Framexaxis),
+            "frameyaxis" => Some(Self::Frameyaxis),
+            "framezaxis" => Some(Self::Framezaxis),
+            "jointvel" => Some(Self::Jointvel),
+            "tendonvel" => Some(Self::Tendonvel),
+            "actuatorvel" => Some(Self::Actuatorvel),
+            "ballangvel" => Some(Self::Ballangvel),
+            "framelinvel" => Some(Self::Framelinvel),
+            "frameangvel" => Some(Self::Frameangvel),
+            "actuatorfrc" => Some(Self::Actuatorfrc),
+            "jointlimitfrc" => Some(Self::Jointlimitfrc),
+            "tendonlimitfrc" => Some(Self::Tendonlimitfrc),
+            "touch" => Some(Self::Touch),
+            "force" => Some(Self::Force),
+            "torque" => Some(Self::Torque),
+            "accelerometer" => Some(Self::Accelerometer),
+            "gyro" => Some(Self::Gyro),
+            "user" => Some(Self::User),
+            _ => None,
+        }
+    }
+
+    /// Get the MJCF string representation.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Jointpos => "jointpos",
+            Self::Tendonpos => "tendonpos",
+            Self::Actuatorpos => "actuatorpos",
+            Self::Ballquat => "ballquat",
+            Self::Framepos => "framepos",
+            Self::Framequat => "framequat",
+            Self::Framexaxis => "framexaxis",
+            Self::Frameyaxis => "frameyaxis",
+            Self::Framezaxis => "framezaxis",
+            Self::Jointvel => "jointvel",
+            Self::Tendonvel => "tendonvel",
+            Self::Actuatorvel => "actuatorvel",
+            Self::Ballangvel => "ballangvel",
+            Self::Framelinvel => "framelinvel",
+            Self::Frameangvel => "frameangvel",
+            Self::Actuatorfrc => "actuatorfrc",
+            Self::Jointlimitfrc => "jointlimitfrc",
+            Self::Tendonlimitfrc => "tendonlimitfrc",
+            Self::Touch => "touch",
+            Self::Force => "force",
+            Self::Torque => "torque",
+            Self::Accelerometer => "accelerometer",
+            Self::Gyro => "gyro",
+            Self::User => "user",
+        }
+    }
+
+    /// Get the dimensionality of this sensor's output.
+    #[must_use]
+    #[allow(clippy::match_same_arms)] // Keep arms separate for documentation clarity
+    pub fn dim(self) -> usize {
+        match self {
+            Self::Jointpos
+            | Self::Tendonpos
+            | Self::Actuatorpos
+            | Self::Jointvel
+            | Self::Tendonvel
+            | Self::Actuatorvel
+            | Self::Actuatorfrc
+            | Self::Jointlimitfrc
+            | Self::Tendonlimitfrc
+            | Self::Touch => 1,
+
+            Self::Framepos
+            | Self::Framexaxis
+            | Self::Frameyaxis
+            | Self::Framezaxis
+            | Self::Framelinvel
+            | Self::Frameangvel
+            | Self::Ballangvel
+            | Self::Force
+            | Self::Torque
+            | Self::Accelerometer
+            | Self::Gyro => 3,
+
+            Self::Ballquat | Self::Framequat => 4,
+
+            // User sensors have configurable dimension, default to 1
+            Self::User => 1,
+        }
+    }
+}
+
+/// A sensor from `<sensor>` element.
+///
+/// MuJoCo sensors measure various quantities during simulation and
+/// can add noise to simulate real sensor behavior.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfSensor {
+    /// Sensor name.
+    pub name: String,
+    /// Default class.
+    pub class: Option<String>,
+    /// Sensor type.
+    pub sensor_type: MjcfSensorType,
+    /// Target object name (joint, site, body, etc. depending on type).
+    pub objname: Option<String>,
+    /// Reference object for frame sensors.
+    pub refname: Option<String>,
+    /// Noise standard deviation.
+    pub noise: f64,
+    /// Cutoff frequency for low-pass filter (0 = no filter).
+    pub cutoff: f64,
+    /// User-defined data fields.
+    pub user: Vec<f64>,
+}
+
+impl Default for MjcfSensor {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            class: None,
+            sensor_type: MjcfSensorType::default(),
+            objname: None,
+            refname: None,
+            noise: 0.0,
+            cutoff: 0.0,
+            user: Vec::new(),
+        }
+    }
+}
+
+impl MjcfSensor {
+    /// Create a joint position sensor.
+    #[must_use]
+    pub fn jointpos(name: impl Into<String>, joint: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            sensor_type: MjcfSensorType::Jointpos,
+            objname: Some(joint.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a joint velocity sensor.
+    #[must_use]
+    pub fn jointvel(name: impl Into<String>, joint: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            sensor_type: MjcfSensorType::Jointvel,
+            objname: Some(joint.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Create an accelerometer sensor.
+    #[must_use]
+    pub fn accelerometer(name: impl Into<String>, site: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            sensor_type: MjcfSensorType::Accelerometer,
+            objname: Some(site.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a gyroscope sensor.
+    #[must_use]
+    pub fn gyro(name: impl Into<String>, site: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            sensor_type: MjcfSensorType::Gyro,
+            objname: Some(site.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Set noise standard deviation.
+    #[must_use]
+    pub fn with_noise(mut self, noise: f64) -> Self {
+        self.noise = noise;
+        self
+    }
+
+    /// Set cutoff frequency for filtering.
+    #[must_use]
+    pub fn with_cutoff(mut self, cutoff: f64) -> Self {
+        self.cutoff = cutoff;
+        self
+    }
+
+    /// Set user data.
+    #[must_use]
+    pub fn with_user(mut self, user: Vec<f64>) -> Self {
+        self.user = user;
+        self
+    }
+
+    /// Get the output dimensionality of this sensor.
+    #[must_use]
+    pub fn dim(&self) -> usize {
+        self.sensor_type.dim()
+    }
+}
+
+// ============================================================================
 // Skinned Mesh
 // ============================================================================
 
@@ -1820,6 +2250,10 @@ pub struct MjcfModel {
     pub worldbody: MjcfBody,
     /// Actuators.
     pub actuators: Vec<MjcfActuator>,
+    /// Tendons.
+    pub tendons: Vec<MjcfTendon>,
+    /// Sensors.
+    pub sensors: Vec<MjcfSensor>,
     /// Equality constraints.
     pub equality: MjcfEquality,
     /// Skinned meshes for visual deformation.
@@ -1835,6 +2269,8 @@ impl Default for MjcfModel {
             meshes: Vec::new(),
             worldbody: MjcfBody::new("world"),
             actuators: Vec::new(),
+            tendons: Vec::new(),
+            sensors: Vec::new(),
             equality: MjcfEquality::default(),
             skins: Vec::new(),
         }
@@ -1961,6 +2397,32 @@ impl MjcfModel {
     #[must_use]
     pub fn skin(&self, name: &str) -> Option<&MjcfSkin> {
         self.skins.iter().find(|s| s.name == name)
+    }
+
+    /// Add a tendon to the model.
+    #[must_use]
+    pub fn with_tendon(mut self, tendon: MjcfTendon) -> Self {
+        self.tendons.push(tendon);
+        self
+    }
+
+    /// Get a tendon by name.
+    #[must_use]
+    pub fn tendon(&self, name: &str) -> Option<&MjcfTendon> {
+        self.tendons.iter().find(|t| t.name == name)
+    }
+
+    /// Add a sensor to the model.
+    #[must_use]
+    pub fn with_sensor(mut self, sensor: MjcfSensor) -> Self {
+        self.sensors.push(sensor);
+        self
+    }
+
+    /// Get a sensor by name.
+    #[must_use]
+    pub fn sensor(&self, name: &str) -> Option<&MjcfSensor> {
+        self.sensors.iter().find(|s| s.name == name)
     }
 }
 
