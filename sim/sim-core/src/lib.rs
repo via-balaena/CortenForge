@@ -135,7 +135,9 @@ pub mod broad_phase;
 pub mod gjk_epa;
 pub mod heightfield;
 pub mod integrators;
+pub mod mesh;
 pub mod mid_phase;
+pub mod sdf;
 mod stepper;
 mod world;
 
@@ -144,7 +146,16 @@ pub use broad_phase::{
     SweepAndPrune,
 };
 pub use heightfield::{HeightFieldContact, HeightFieldData};
+pub use mesh::{
+    MeshContact, Triangle, TriangleMeshData, closest_point_on_triangle, mesh_box_contact,
+    mesh_capsule_contact, mesh_sphere_contact, triangle_box_contact, triangle_capsule_contact,
+    triangle_sphere_contact,
+};
 pub use mid_phase::{Bvh, BvhPrimitive, bvh_from_triangle_mesh};
+pub use sdf::{
+    SdfCollisionData, SdfContact, sdf_box_contact, sdf_capsule_contact, sdf_point_contact,
+    sdf_sphere_contact,
+};
 pub use stepper::{SimulationBuilder, StepResult, Stepper, StepperConfig};
 pub use world::{Body, CollisionShape, Joint, World};
 

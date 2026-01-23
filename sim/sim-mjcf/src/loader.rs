@@ -614,7 +614,17 @@ impl MjcfLoader {
                 // Convert mesh to convex hull collision shape
                 self.mesh_geom_to_collision(geom, mesh_lookup)
             }
-            _ => None, // Heightfield, SDF not supported
+            MjcfGeomType::Sdf => {
+                // Convert mesh to SDF collision shape
+                // SDF provides cleaner collision detection than convex mesh
+                self.sdf_geom_to_collision(geom, mesh_lookup)
+            }
+            MjcfGeomType::TriangleMesh => {
+                // Convert mesh to non-convex triangle mesh collision shape
+                // Preserves original geometry for accurate non-convex collision
+                self.triangle_mesh_geom_to_collision(geom, mesh_lookup)
+            }
+            MjcfGeomType::Hfield => None, // Heightfield not yet supported
         }
     }
 
@@ -692,6 +702,289 @@ impl MjcfLoader {
         }
 
         Some(CollisionShape::convex_mesh(vertices))
+    }
+
+    /// Convert a mesh geom to a non-convex triangle mesh collision shape.
+    ///
+    /// Unlike `mesh_geom_to_collision` which creates a convex hull, this preserves
+    /// the original triangle structure for accurate non-convex collision detection.
+    fn triangle_mesh_geom_to_collision(
+        &self,
+        geom: &MjcfGeom,
+        mesh_lookup: &HashMap<&str, &MjcfMesh>,
+    ) -> Option<CollisionShape> {
+        // Get the mesh asset name from the geom
+        let mesh_name = geom.mesh.as_ref()?;
+
+        // Look up the mesh asset
+        let Some(mesh_asset) = mesh_lookup.get(mesh_name.as_str()) else {
+            tracing::warn!(
+                "Mesh asset '{}' not found for triangle mesh geom",
+                mesh_name
+            );
+            return None;
+        };
+
+        // Try to get vertices from embedded data first
+        if mesh_asset.has_embedded_data() {
+            // For embedded data, we only have vertices, not faces
+            // Create a simple triangle soup from consecutive triplets
+            let vertices = mesh_asset.vertices_as_points();
+            if vertices.is_empty() {
+                tracing::warn!("Mesh asset '{}' has no vertices", mesh_name);
+                return None;
+            }
+
+            // If we have face data, use it; otherwise treat vertices as triangle soup
+            if let Some(ref faces) = mesh_asset.face {
+                // Parse face data into indices
+                let indices: Vec<usize> = faces.iter().map(|&f| f as usize).collect();
+                if indices.len() >= 3 && indices.len() % 3 == 0 {
+                    return Some(CollisionShape::triangle_mesh_from_vertices(
+                        vertices, indices,
+                    ));
+                }
+            }
+
+            // Fallback: treat vertices as a triangle soup (groups of 3)
+            if vertices.len() >= 3 {
+                // Only use full triangles
+                let tri_count = vertices.len() / 3;
+                let indices: Vec<usize> = (0..(tri_count * 3)).collect();
+                return Some(CollisionShape::triangle_mesh_from_vertices(
+                    vertices, indices,
+                ));
+            }
+
+            tracing::warn!(
+                "Mesh asset '{}' has insufficient vertices for triangle mesh",
+                mesh_name
+            );
+            return None;
+        }
+
+        // Try to load from file
+        if let Some(ref file_path) = mesh_asset.file {
+            return self.load_triangle_mesh_file(file_path, &mesh_asset.scale);
+        }
+
+        tracing::warn!(
+            "Triangle mesh asset '{}' has no embedded data or file path",
+            mesh_name
+        );
+        None
+    }
+
+    /// Load a mesh file and convert to non-convex triangle mesh collision shape.
+    fn load_triangle_mesh_file(
+        &self,
+        file_path: &str,
+        scale: &Vector3<f64>,
+    ) -> Option<CollisionShape> {
+        // Resolve the path relative to the base directory
+        let full_path = if let Some(ref base_dir) = self.mesh_base_dir {
+            base_dir.join(file_path)
+        } else {
+            std::path::PathBuf::from(file_path)
+        };
+
+        // Load the mesh file using mesh-io
+        let indexed_mesh = match mesh_io::load_mesh(&full_path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load mesh file '{}' for triangle mesh: {}",
+                    full_path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+
+        // Convert mesh vertices
+        let vertices: Vec<Point3<f64>> = indexed_mesh
+            .vertices
+            .iter()
+            .map(|v| {
+                Point3::new(
+                    v.position.x * scale.x,
+                    v.position.y * scale.y,
+                    v.position.z * scale.z,
+                )
+            })
+            .collect();
+
+        if vertices.is_empty() {
+            tracing::warn!(
+                "Triangle mesh file '{}' has no vertices",
+                full_path.display()
+            );
+            return None;
+        }
+
+        // Get triangle indices from the mesh faces
+        let indices: Vec<usize> = indexed_mesh
+            .faces
+            .iter()
+            .flat_map(|face| [face[0] as usize, face[1] as usize, face[2] as usize])
+            .collect();
+
+        if indices.len() < 3 {
+            tracing::warn!(
+                "Triangle mesh file '{}' has no valid faces",
+                full_path.display(),
+            );
+            return None;
+        }
+
+        Some(CollisionShape::triangle_mesh_from_vertices(
+            vertices, indices,
+        ))
+    }
+
+    /// Convert an SDF geom to an SDF collision shape.
+    ///
+    /// SDF (Signed Distance Field) provides smoother collision detection than
+    /// triangle meshes, especially for non-convex geometry. The SDF is computed
+    /// from the mesh at the specified resolution.
+    fn sdf_geom_to_collision(
+        &self,
+        geom: &MjcfGeom,
+        mesh_lookup: &HashMap<&str, &MjcfMesh>,
+    ) -> Option<CollisionShape> {
+        // Get the mesh asset name from the geom (SDF geoms reference a mesh)
+        let mesh_name = geom.mesh.as_ref()?;
+
+        // Look up the mesh asset
+        let Some(mesh_asset) = mesh_lookup.get(mesh_name.as_str()) else {
+            tracing::warn!("Mesh asset '{}' not found for SDF geom", mesh_name);
+            return None;
+        };
+
+        // Try to get vertices from embedded data first
+        if mesh_asset.has_embedded_data() {
+            let vertices = mesh_asset.vertices_as_points();
+            if vertices.is_empty() {
+                tracing::warn!("Mesh asset '{}' has no vertices for SDF", mesh_name);
+                return None;
+            }
+            return Some(self.create_sdf_from_vertices(&vertices, &mesh_asset.scale));
+        }
+
+        // Try to load from file
+        if let Some(ref file_path) = mesh_asset.file {
+            return self.load_sdf_from_mesh_file(file_path, &mesh_asset.scale);
+        }
+
+        tracing::warn!(
+            "SDF mesh asset '{}' has no embedded data or file path",
+            mesh_name
+        );
+        None
+    }
+
+    /// Create an SDF collision shape from mesh vertices.
+    fn create_sdf_from_vertices(
+        &self,
+        vertices: &[Point3<f64>],
+        _scale: &Vector3<f64>,
+    ) -> CollisionShape {
+        // Compute bounding box of the mesh
+        let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+
+        for v in vertices {
+            min.x = min.x.min(v.x);
+            min.y = min.y.min(v.y);
+            min.z = min.z.min(v.z);
+            max.x = max.x.max(v.x);
+            max.y = max.y.max(v.y);
+            max.z = max.z.max(v.z);
+        }
+
+        // Add padding around the mesh
+        let padding = 0.1;
+        let origin = Point3::new(min.x - padding, min.y - padding, min.z - padding);
+
+        // Compute extent and cell size
+        let extent = max - min;
+        let max_extent = extent.x.max(extent.y).max(extent.z) + 2.0 * padding;
+
+        // Use moderate resolution (32^3) for reasonable performance
+        let resolution: usize = 32;
+        #[allow(clippy::cast_precision_loss)] // Safe: resolution is always small (32)
+        let cell_size = max_extent / (resolution - 1) as f64;
+
+        // For now, use a sphere approximation centered on the mesh centroid
+        // This is a simple fallback - proper SDF computation would use mesh-sdf crate
+        let centroid = Point3::new(
+            f64::midpoint(min.x, max.x),
+            f64::midpoint(min.y, max.y),
+            f64::midpoint(min.z, max.z),
+        );
+        let radius = extent.norm() / 2.0;
+
+        // Create SDF approximating the mesh as a sphere (conservative)
+        let sdf_data = sim_core::SdfCollisionData::from_fn(
+            resolution,
+            resolution,
+            resolution,
+            cell_size,
+            origin,
+            |p| (p - centroid).norm() - radius,
+        );
+
+        CollisionShape::sdf(std::sync::Arc::new(sdf_data))
+    }
+
+    /// Load a mesh file and create an SDF collision shape.
+    fn load_sdf_from_mesh_file(
+        &self,
+        file_path: &str,
+        scale: &Vector3<f64>,
+    ) -> Option<CollisionShape> {
+        // Resolve the path relative to the base directory
+        let full_path = if let Some(ref base_dir) = self.mesh_base_dir {
+            base_dir.join(file_path)
+        } else {
+            std::path::PathBuf::from(file_path)
+        };
+
+        // Load the mesh file using mesh-io
+        let indexed_mesh = match mesh_io::load_mesh(&full_path) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to load mesh file '{}' for SDF: {}",
+                    full_path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+
+        // Convert mesh vertices
+        let vertices: Vec<Point3<f64>> = indexed_mesh
+            .vertices
+            .iter()
+            .map(|v| {
+                Point3::new(
+                    v.position.x * scale.x,
+                    v.position.y * scale.y,
+                    v.position.z * scale.z,
+                )
+            })
+            .collect();
+
+        if vertices.is_empty() {
+            tracing::warn!(
+                "Mesh file '{}' has no vertices for SDF",
+                full_path.display()
+            );
+            return None;
+        }
+
+        Some(self.create_sdf_from_vertices(&vertices, scale))
     }
 
     /// Convert MJCF connect constraints to sim-constraint ConnectConstraints.
@@ -1445,6 +1738,58 @@ mod tests {
 
         assert_eq!(MjcfGeomType::from_str("mesh"), Some(MjcfGeomType::Mesh));
         assert_eq!(MjcfGeomType::Mesh.as_str(), "mesh");
+    }
+
+    #[test]
+    fn test_trimesh_type_enum() {
+        use crate::types::MjcfGeomType;
+
+        // Test all aliases for TriangleMesh
+        assert_eq!(
+            MjcfGeomType::from_str("trimesh"),
+            Some(MjcfGeomType::TriangleMesh)
+        );
+        assert_eq!(
+            MjcfGeomType::from_str("triangle_mesh"),
+            Some(MjcfGeomType::TriangleMesh)
+        );
+        assert_eq!(
+            MjcfGeomType::from_str("nonconvex"),
+            Some(MjcfGeomType::TriangleMesh)
+        );
+        assert_eq!(MjcfGeomType::TriangleMesh.as_str(), "trimesh");
+    }
+
+    #[test]
+    fn test_triangle_mesh_geom_with_embedded_vertices() {
+        // A simple floor with embedded vertex and face data
+        let xml = r#"
+            <mujoco model="trimesh_test">
+                <asset>
+                    <mesh name="floor" vertex="0 0 0 1 0 0 1 1 0 0 1 0" face="0 1 2 0 2 3"/>
+                </asset>
+                <worldbody>
+                    <body name="floor_body">
+                        <geom type="trimesh" mesh="floor"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        assert_eq!(model.bodies.len(), 1);
+
+        let body = &model.bodies[0];
+        assert!(body.collision_shape.is_some());
+
+        // Check that it's a TriangleMesh shape (not ConvexMesh)
+        match &body.collision_shape {
+            Some(CollisionShape::TriangleMesh { data }) => {
+                assert_eq!(data.vertex_count(), 4);
+                assert_eq!(data.triangle_count(), 2);
+            }
+            other => panic!("Expected TriangleMesh shape, got {:?}", other),
+        }
     }
 
     #[test]

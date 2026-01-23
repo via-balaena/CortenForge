@@ -257,6 +257,60 @@ pub fn support(shape: &CollisionShape, pose: &Pose, direction: &Vector3<f64>) ->
 
             pose.transform_point(&local_support)
         }
+        CollisionShape::Sdf { data } => {
+            // SDFs are not convex, so GJK/EPA is not ideal.
+            // Return an extreme point from the AABB as a fallback.
+            // Dedicated SDF collision is handled separately in world.rs.
+            let (local_min, local_max) = data.aabb();
+            let local_dir = pose.rotation.inverse() * direction;
+
+            let local_support = Point3::new(
+                if local_dir.x >= 0.0 {
+                    local_max.x
+                } else {
+                    local_min.x
+                },
+                if local_dir.y >= 0.0 {
+                    local_max.y
+                } else {
+                    local_min.y
+                },
+                if local_dir.z >= 0.0 {
+                    local_max.z
+                } else {
+                    local_min.z
+                },
+            );
+
+            pose.transform_point(&local_support)
+        }
+        CollisionShape::TriangleMesh { data } => {
+            // Triangle meshes are not convex, so GJK/EPA is not ideal.
+            // Return an extreme point from the AABB as a fallback.
+            // Dedicated triangle mesh collision is handled separately in world.rs.
+            let (local_min, local_max) = data.aabb();
+            let local_dir = pose.rotation.inverse() * direction;
+
+            let local_support = Point3::new(
+                if local_dir.x >= 0.0 {
+                    local_max.x
+                } else {
+                    local_min.x
+                },
+                if local_dir.y >= 0.0 {
+                    local_max.y
+                } else {
+                    local_min.y
+                },
+                if local_dir.z >= 0.0 {
+                    local_max.z
+                } else {
+                    local_min.z
+                },
+            );
+
+            pose.transform_point(&local_support)
+        }
     }
 }
 

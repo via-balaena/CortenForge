@@ -725,6 +725,10 @@ pub enum MjcfGeomType {
     Hfield,
     /// Signed distance field.
     Sdf,
+    /// Non-convex triangle mesh.
+    /// Unlike `Mesh` which is treated as a convex hull, this preserves
+    /// the original triangle structure for accurate non-convex collision.
+    TriangleMesh,
 }
 
 impl MjcfGeomType {
@@ -740,6 +744,7 @@ impl MjcfGeomType {
             "mesh" => Some(Self::Mesh),
             "hfield" => Some(Self::Hfield),
             "sdf" => Some(Self::Sdf),
+            "trimesh" | "triangle_mesh" | "nonconvex" => Some(Self::TriangleMesh),
             _ => None,
         }
     }
@@ -757,6 +762,7 @@ impl MjcfGeomType {
             Self::Mesh => "mesh",
             Self::Hfield => "hfield",
             Self::Sdf => "sdf",
+            Self::TriangleMesh => "trimesh",
         }
     }
 }
