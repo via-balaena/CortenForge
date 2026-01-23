@@ -24,6 +24,41 @@ Successfully implemented default inheritance for actuators, tendons, and sensors
 
 ---
 
+### Performance Benchmarks & API Improvements
+
+Added comprehensive benchmarks and improved the constraint solver API:
+
+**Files Modified:**
+- `sim/sim-core/benches/collision_benchmarks.rs` - Added 12 new benchmark functions
+- `sim/sim-constraint/src/solver.rs` - Added `BodyState` constructors and `solve_slice()` method
+- `sim/sim-constraint/src/pgs.rs` - Added `solve_slice()` convenience method
+- `sim/sim-constraint/src/newton.rs` - Added `solve_slice()` convenience method
+
+**New Benchmarks:**
+- **Triangle-primitive collision:** `triangle_sphere`, `triangle_capsule`, `triangle_box`, `closest_point_triangle`
+- **BVH operations:** `bvh_construction`, `bvh_query`, `bvh_from_mesh`
+- **Constraint solvers:** `constraint_solver_simple`, `pgs_solver`, `newton_solver`, `solver_comparison`
+
+**API Improvements:**
+- `BodyState::dynamic(position, mass, inertia)` - Clean constructor for dynamic bodies
+- `BodyState::dynamic_with_velocity(...)` - For bodies with initial motion
+- `BodyState::with_rotation()` - Builder method for setting rotation
+- `solve_slice(&joints, &bodies, dt)` - Convenience method for all solvers (no closure needed)
+
+**Before/After Comparison:**
+```rust
+// Before (verbose, required closure)
+let get_body = |id: BodyId| bodies.get(id.raw() as usize).copied();
+solver.solve(&joints, &get_body, dt)
+
+// After (clean API)
+solver.solve_slice(&joints, &bodies, dt)
+```
+
+**Commit:** `2798ba5` - feat: add comprehensive benchmarks and improve constraint solver API
+
+---
+
 ## Open Question: Gap Analysis Accuracy
 
 How do we know the gap analysis is actually accurate and complete?
@@ -36,13 +71,13 @@ How do we know the gap analysis is actually accurate and complete?
 
 ---
 
-## Remaining Items from FEATURE_IMPLEMENTATION_CHECKLIST.md
+## Completed Items from FEATURE_IMPLEMENTATION_CHECKLIST.md
 
 ### Performance Benchmarks (criterion)
 - [x] Mesh-mesh collision benchmarks
-- [ ] Constraint solving benchmarks
-- [ ] BVH query benchmarks
-- [ ] Triangle-primitive collision benchmarks
+- [x] Constraint solving benchmarks
+- [x] BVH query benchmarks
+- [x] Triangle-primitive collision benchmarks
 
 ---
 
@@ -54,17 +89,14 @@ Continue working on /Users/jonhillesheim/forge/cortenforge from FEATURE_IMPLEMEN
 Recently completed:
 - MJCF <default> element support (actuator, tendon, sensor defaults)
 - MUJOCO_GAP_ANALYSIS.md sync
+- All performance benchmarks (constraint solvers, BVH, triangle-primitive)
+- Constraint solver API improvements (BodyState constructors, solve_slice methods)
 
 Open question: How to verify gap analysis accuracy? Options discussed:
 1. Run MuJoCo conformance tests
 2. Systematic comparison against MuJoCo XML reference
 3. Load real-world MJCF models (model zoo, DeepMind Control Suite)
 4. Numerical trajectory comparison
-
-Remaining benchmarks in checklist:
-- Constraint solving benchmarks
-- BVH query benchmarks
-- Triangle-primitive collision benchmarks
 
 Start by reading docs/FEATURE_IMPLEMENTATION_CHECKLIST.md to understand current status.
 ```
@@ -82,3 +114,18 @@ Start by reading docs/FEATURE_IMPLEMENTATION_CHECKLIST.md to understand current 
 | `sim-mjcf/src/defaults.rs` | Default resolution logic |
 | `sim-mjcf/src/loader.rs` | MJCF to simulation conversion |
 | `sim-core/benches/collision_benchmarks.rs` | Criterion benchmarks |
+| `sim-constraint/src/solver.rs` | Constraint solver with `solve_slice()` API |
+| `sim-constraint/src/pgs.rs` | PGS solver with `solve_slice()` API |
+| `sim-constraint/src/newton.rs` | Newton solver with `solve_slice()` API |
+
+---
+
+## Benchmark Results (20-body chain)
+
+| Solver | Time |
+|--------|------|
+| Simple | ~194 ns |
+| Newton | ~130 µs |
+| PGS | ~690 µs |
+
+Run benchmarks with: `cargo bench -p sim-core`
