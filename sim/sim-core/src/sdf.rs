@@ -1524,7 +1524,8 @@ pub fn sdf_sdf_contact(
     clippy::expect_used,
     clippy::float_cmp,
     clippy::similar_names,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::items_after_statements
 )]
 mod tests {
     use super::*;

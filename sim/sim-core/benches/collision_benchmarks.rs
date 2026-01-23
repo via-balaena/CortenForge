@@ -2,10 +2,18 @@
 //!
 //! Run with: cargo bench -p sim-core
 //!
-//! Performance targets (from MESH_MESH_COLLISION_PLAN.md):
+//! Performance targets (from `MESH_MESH_COLLISION_PLAN.md`):
 //! - <5ms for 10k triangle pair test
 
-#![allow(missing_docs, clippy::wildcard_imports)]
+#![allow(
+    missing_docs,
+    clippy::wildcard_imports,
+    clippy::similar_names,
+    clippy::cast_precision_loss,
+    clippy::cast_lossless,
+    clippy::ignored_unit_patterns,
+    clippy::unnecessary_cast
+)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use nalgebra::{Point3, UnitQuaternion, Vector3};
@@ -109,7 +117,7 @@ fn bench_mesh_mesh_collision(c: &mut Criterion) {
         ));
 
         group.bench_with_input(
-            BenchmarkId::new("overlapping", format!("{}x{}_tri", tri_count, tri_count)),
+            BenchmarkId::new("overlapping", format!("{tri_count}x{tri_count}_tri")),
             &(&mesh_a, &mesh_b, &pose_a, &pose_b),
             |b, (mesh_a, mesh_b, pose_a, pose_b)| {
                 b.iter(|| black_box(mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b)));
@@ -118,7 +126,7 @@ fn bench_mesh_mesh_collision(c: &mut Criterion) {
 
         // Also test deepest contact (what's used in dispatch)
         group.bench_with_input(
-            BenchmarkId::new("deepest", format!("{}x{}_tri", tri_count, tri_count)),
+            BenchmarkId::new("deepest", format!("{tri_count}x{tri_count}_tri")),
             &(&mesh_a, &mesh_b, &pose_a, &pose_b),
             |b, (mesh_a, mesh_b, pose_a, pose_b)| {
                 b.iter(|| black_box(mesh_mesh_deepest_contact(mesh_a, pose_a, mesh_b, pose_b)));
@@ -148,7 +156,7 @@ fn bench_mesh_mesh_rotated(c: &mut Criterion) {
         let pose_b = Pose::from_position_rotation(Point3::new(0.3, 0.0, 0.0), rotation);
 
         group.bench_with_input(
-            BenchmarkId::new("rotation", format!("{}_deg", angle_deg)),
+            BenchmarkId::new("rotation", format!("{angle_deg}_deg")),
             &(&mesh_a, &mesh_b, &pose_a, &pose_b),
             |b, (mesh_a, mesh_b, pose_a, pose_b)| {
                 b.iter(|| black_box(mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b)));
@@ -173,7 +181,7 @@ fn bench_mesh_mesh_separate(c: &mut Criterion) {
         let pose_b = Pose::from_position(Point3::new(5.0, 0.0, 0.0));
 
         group.bench_with_input(
-            BenchmarkId::new("no_overlap", format!("{}x{}_tri", tri_count, tri_count)),
+            BenchmarkId::new("no_overlap", format!("{tri_count}x{tri_count}_tri")),
             &(&mesh_a, &mesh_b, &pose_a, &pose_b),
             |b, (mesh_a, mesh_b, pose_a, pose_b)| {
                 b.iter(|| black_box(mesh_mesh_contact(mesh_a, pose_a, mesh_b, pose_b)));
@@ -206,7 +214,7 @@ fn bench_10k_triangle_pairs(c: &mut Criterion) {
     group.throughput(Throughput::Elements(pairs as u64));
 
     group.bench_with_input(
-        BenchmarkId::new("mesh_pair", format!("{}_pairs", pairs)),
+        BenchmarkId::new("mesh_pair", format!("{pairs}_pairs")),
         &(&mesh_a, &mesh_b, &pose_a, &pose_b),
         |b, (mesh_a, mesh_b, pose_a, pose_b)| {
             b.iter(|| black_box(mesh_mesh_deepest_contact(mesh_a, pose_a, mesh_b, pose_b)));
@@ -221,7 +229,7 @@ fn bench_10k_triangle_pairs(c: &mut Criterion) {
     group.throughput(Throughput::Elements(pairs_large as u64));
 
     group.bench_with_input(
-        BenchmarkId::new("mesh_pair", format!("{}_pairs", pairs_large)),
+        BenchmarkId::new("mesh_pair", format!("{pairs_large}_pairs")),
         &(&mesh_a_large, &mesh_b_large, &pose_a, &pose_b),
         |b, (mesh_a, mesh_b, pose_a, pose_b)| {
             b.iter(|| black_box(mesh_mesh_deepest_contact(mesh_a, pose_a, mesh_b, pose_b)));
@@ -487,7 +495,7 @@ fn bench_bvh_construction(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(count as u64));
         group.bench_with_input(
-            BenchmarkId::new("build", format!("{}_primitives", count)),
+            BenchmarkId::new("build", format!("{count}_primitives")),
             &primitives,
             |b, primitives| {
                 b.iter(|| black_box(Bvh::build(primitives.clone())));
@@ -560,7 +568,7 @@ fn bench_bvh_from_mesh(c: &mut Criterion) {
 
         group.throughput(Throughput::Elements(tri_count as u64));
         group.bench_with_input(
-            BenchmarkId::new("mesh", format!("{}_triangles", tri_count)),
+            BenchmarkId::new("mesh", format!("{tri_count}_triangles")),
             &subdivisions,
             |b, &subdivisions| {
                 b.iter(|| {
@@ -622,7 +630,7 @@ fn bench_constraint_solver(c: &mut Criterion) {
         let config = ConstraintSolverConfig::default();
 
         group.bench_with_input(
-            BenchmarkId::new("chain", format!("{}_bodies", num_bodies)),
+            BenchmarkId::new("chain", format!("{num_bodies}_bodies")),
             &(&bodies, &joints),
             |b, (bodies, joints)| {
                 let mut solver = ConstraintSolver::new(config);
@@ -647,7 +655,7 @@ fn bench_pgs_solver(c: &mut Criterion) {
         let config = PGSSolverConfig::default();
 
         group.bench_with_input(
-            BenchmarkId::new("chain", format!("{}_bodies", num_bodies)),
+            BenchmarkId::new("chain", format!("{num_bodies}_bodies")),
             &(&bodies, &joints),
             |b, (bodies, joints)| {
                 let mut solver = PGSSolver::new(config);
@@ -667,7 +675,7 @@ fn bench_pgs_solver(c: &mut Criterion) {
         };
 
         group.bench_with_input(
-            BenchmarkId::new("iterations", format!("{}_iter", iterations)),
+            BenchmarkId::new("iterations", format!("{iterations}_iter")),
             &(&bodies, &joints),
             |b, (bodies, joints)| {
                 let mut solver = PGSSolver::new(config);
@@ -691,7 +699,7 @@ fn bench_newton_solver(c: &mut Criterion) {
         let config = NewtonSolverConfig::default();
 
         group.bench_with_input(
-            BenchmarkId::new("chain", format!("{}_bodies", num_bodies)),
+            BenchmarkId::new("chain", format!("{num_bodies}_bodies")),
             &(&bodies, &joints),
             |b, (bodies, joints)| {
                 let mut solver = NewtonConstraintSolver::new(config);
