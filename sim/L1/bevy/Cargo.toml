@@ -25,13 +25,13 @@ glam = { workspace = true }
 thiserror = { workspace = true }
 
 # Bevy 0.15 (will upgrade to 0.18 when available/stable)
+# Note: Window backend features (x11, wayland) are optional - enable via features.
+# This allows CI to build without system library dependencies.
 bevy = { workspace = true, default-features = false, features = [
     "bevy_pbr",
     "bevy_gizmos",
     "bevy_winit",
     "bevy_state",
-    "x11",
-    "wayland",
 ] }
 
 [dev-dependencies]
@@ -39,6 +39,9 @@ bevy = { workspace = true, features = ["dynamic_linking"] }
 
 [features]
 default = []
+# Linux window backends - enable for desktop usage
+x11 = ["bevy/x11"]
+wayland = ["bevy/wayland"]
 # Ray-traced rendering (requires RTX GPU, Bevy 0.18+)
 # solari = ["bevy/bevy_solari"]
 # GPU profiling
