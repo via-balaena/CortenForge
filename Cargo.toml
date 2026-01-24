@@ -77,6 +77,7 @@ members = [
     "sim/L0/mjcf",
     "sim/L0/urdf",
     "sim/L0/physics",
+    "sim/L0/tests",
 
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",

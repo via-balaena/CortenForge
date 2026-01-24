@@ -7452,6 +7452,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-conformance-tests"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+ "sim-mjcf",
+ "sim-types",
+ "sim-urdf",
+]
+
+[[package]]
 name = "sim-constraint"
 version = "0.7.0"
 dependencies = [
