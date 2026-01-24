@@ -77,7 +77,7 @@
 //! - [`from_curves`] - Generate meshes from curves (tubes, sweeps)
 //!
 //! ## GPU Acceleration (feature-gated)
-//! - [`gpu`] - GPU-accelerated SDF computation (requires `gpu` feature)
+//! - `gpu` - GPU-accelerated SDF computation (requires `gpu` feature)
 //!
 //! # Feature Flags
 //!

@@ -1,0 +1,57 @@
+[package]
+name = "sim-bevy"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Bevy visualization for CortenForge physics simulation"
+repository = "https://github.com/cortenforge/cortenforge"
+keywords = ["physics", "simulation", "visualization", "bevy", "robotics"]
+categories = ["simulation", "visualization", "game-development"]
+
+[dependencies]
+# Layer 0 simulation crates
+sim-types = { path = "../../L0/types" }
+sim-core = { path = "../../L0/core" }
+sim-contact = { path = "../../L0/contact" }
+sim-constraint = { path = "../../L0/constraint" }
+sim-mjcf = { path = "../../L0/mjcf" }
+sim-urdf = { path = "../../L0/urdf" }
+
+# Math
+nalgebra = { workspace = true }
+glam = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Bevy 0.15 (will upgrade to 0.18 when available/stable)
+# Note: Window backend features (x11, wayland) are optional - enable via features.
+# This allows CI to build without system library dependencies.
+bevy = { workspace = true, default-features = false, features = [
+    "bevy_pbr",
+    "bevy_gizmos",
+    "bevy_winit",
+    "bevy_state",
+] }
+
+# Note: For faster local iteration, run with:
+#   cargo run --features bevy/dynamic_linking
+# Do NOT add dynamic_linking to dev-dependencies - it causes Windows linker failures in CI
+
+[features]
+default = []
+# Linux window backends - enable for desktop usage
+x11 = ["bevy/x11"]
+wayland = ["bevy/wayland"]
+# Ray-traced rendering (requires RTX GPU, Bevy 0.18+)
+# solari = ["bevy/bevy_solari"]
+# GPU profiling
+trace = ["bevy/trace"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

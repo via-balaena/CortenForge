@@ -64,22 +64,22 @@ members = [
     "ml/ml-dataset",
     "ml/ml-training",
 
-    # Simulation domain (active development)
-    "sim/sim-types",
-    "sim/sim-core",
-    "sim/sim-contact",
-    "sim/sim-constraint",
-    "sim/sim-sensor",
-    "sim/sim-urdf",
-    "sim/sim-deformable",
-    "sim/sim-muscle",
-    "sim/sim-tendon",
-    "sim/sim-mjcf",
-    "sim/sim-physics",
-    "sim/sim-simd",
+    # Simulation domain - Layer 0 (Bevy-free)
+    "sim/L0/types",
+    "sim/L0/simd",
+    "sim/L0/core",
+    "sim/L0/contact",
+    "sim/L0/constraint",
+    "sim/L0/sensor",
+    "sim/L0/deformable",
+    "sim/L0/muscle",
+    "sim/L0/tendon",
+    "sim/L0/mjcf",
+    "sim/L0/urdf",
+    "sim/L0/physics",
 
-    # Bevy SDK (Layer 1 - pending)
-    # "cortenforge",
+    # Simulation domain - Layer 1 (Bevy integration)
+    "sim/L1/bevy",
 ]
 
 # Exclude directories that aren't workspace members
@@ -199,7 +199,7 @@ tracing-subscriber = "0.3"
 # ---------------------------------------------------------------------------
 # Bevy Ecosystem (Layer 1 only - not used by Layer 0 crates)
 # ---------------------------------------------------------------------------
-bevy = "0.15"
+bevy = { version = "0.15", default-features = false }
 avian3d = "0.2"
 bevy_egui = "0.31"
 
@@ -288,19 +288,22 @@ ml-models = { path = "ml/ml-models" }
 ml-dataset = { path = "ml/ml-dataset" }
 ml-training = { path = "ml/ml-training" }
 
-# Sim domain
-sim-types = { path = "sim/sim-types" }
-sim-core = { path = "sim/sim-core" }
-sim-contact = { path = "sim/sim-contact" }
-sim-constraint = { path = "sim/sim-constraint" }
-sim-sensor = { path = "sim/sim-sensor" }
-sim-physics = { path = "sim/sim-physics" }
-sim-urdf = { path = "sim/sim-urdf" }
-sim-deformable = { path = "sim/sim-deformable" }
-sim-muscle = { path = "sim/sim-muscle" }
-sim-tendon = { path = "sim/sim-tendon" }
-sim-mjcf = { path = "sim/sim-mjcf" }
-sim-simd = { path = "sim/sim-simd" }
+# Sim domain - Layer 0 (Bevy-free)
+sim-types = { path = "sim/L0/types" }
+sim-simd = { path = "sim/L0/simd" }
+sim-core = { path = "sim/L0/core" }
+sim-contact = { path = "sim/L0/contact" }
+sim-constraint = { path = "sim/L0/constraint" }
+sim-sensor = { path = "sim/L0/sensor" }
+sim-deformable = { path = "sim/L0/deformable" }
+sim-muscle = { path = "sim/L0/muscle" }
+sim-tendon = { path = "sim/L0/tendon" }
+sim-mjcf = { path = "sim/L0/mjcf" }
+sim-urdf = { path = "sim/L0/urdf" }
+sim-physics = { path = "sim/L0/physics" }
+
+# Sim domain - Layer 1 (Bevy integration)
+sim-bevy = { path = "sim/L1/bevy" }
 
 # SDK
 cortenforge = { path = "cortenforge" }

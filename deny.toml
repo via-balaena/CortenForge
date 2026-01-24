@@ -46,6 +46,7 @@ version = 2
 # unless explicitly allowed
 allow = [
     "MIT",
+    "MIT-0",  # MIT No Attribution, more permissive than MIT (used by Bevy dependencies)
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
