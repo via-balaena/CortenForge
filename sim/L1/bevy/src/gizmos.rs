@@ -3,6 +3,7 @@
 //! This module provides real-time debug visualization for:
 //! - Contact points and normals
 //! - Applied forces
+//! - Velocity vectors (linear and angular)
 //! - Joint axes and limits
 //!
 //! All visualization is optional and controlled via [`ViewerConfig`].
@@ -162,6 +163,42 @@ pub fn draw_joint_axes(
             let axis_end = midpoint + world_axis * (axis_length * 0.5);
 
             gizmos.arrow(axis_start, axis_end, config.colors.joint_axis);
+        }
+    }
+}
+
+/// Draw velocity vectors (linear and angular).
+pub fn draw_velocity_vectors(
+    mut gizmos: Gizmos,
+    sim_handle: Res<SimulationHandle>,
+    config: Res<ViewerConfig>,
+) {
+    if !config.show_velocities {
+        return;
+    }
+
+    let Some(world) = sim_handle.world() else {
+        return;
+    };
+
+    for body in world.bodies() {
+        let pos = vec3_from_point(&body.state.pose.position);
+        let linear_vel = vec3_from_vector(&body.state.twist.linear);
+        let angular_vel = vec3_from_vector(&body.state.twist.angular);
+
+        // Draw linear velocity if significant
+        let linear_speed = linear_vel.length();
+        if linear_speed > 0.01 {
+            let scaled_vel = linear_vel * config.velocity_scale;
+            gizmos.arrow(pos, pos + scaled_vel, config.colors.linear_velocity);
+        }
+
+        // Draw angular velocity if significant
+        let angular_speed = angular_vel.length();
+        if angular_speed > 0.01 {
+            let scaled_angular = angular_vel * config.velocity_scale;
+            // Draw angular velocity as a curved arrow indicator
+            gizmos.arrow(pos, pos + scaled_angular, config.colors.angular_velocity);
         }
     }
 }

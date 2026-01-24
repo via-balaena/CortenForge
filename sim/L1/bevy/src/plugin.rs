@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use crate::camera::{spawn_orbit_camera, OrbitCameraPlugin};
 use crate::gizmos::{
     draw_contact_normals, draw_contact_points, draw_force_vectors, draw_joint_axes,
-    draw_joint_limits, DebugGizmosSet,
+    draw_joint_limits, draw_velocity_vectors, DebugGizmosSet,
 };
 use crate::resources::{BodyEntityMap, SimulationHandle, ViewerConfig};
 use crate::systems::{
@@ -141,6 +141,7 @@ impl Plugin for SimViewerPlugin {
                     draw_contact_points,
                     draw_contact_normals,
                     draw_force_vectors,
+                    draw_velocity_vectors,
                     draw_joint_axes,
                     draw_joint_limits,
                 )

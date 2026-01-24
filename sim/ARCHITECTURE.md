@@ -284,6 +284,64 @@ use sim_physics::prelude::*;
 
 Bridges sim-urdf, sim-constraint, sim-contact, sim-core, and sim-types into a single coherent interface.
 
+### sim-bevy (v0.1.0) - Layer 1
+
+Bevy visualization layer for physics debugging and demonstration:
+
+| Component | Description |
+|-----------|-------------|
+| `SimViewerPlugin` | Main plugin with orbit camera and lighting |
+| `SimulationHandle` | Resource holding sim-core `World` |
+| `BodyEntityMap` | Maps physics body IDs to Bevy entities |
+| `MjcfModel` / `UrdfModel` | Model loading from robot descriptions |
+
+**Coordinate System Conversion:**
+
+sim-core uses Z-up (robotics convention), Bevy uses Y-up (graphics convention).
+All conversions are centralized in `convert.rs`:
+
+| Physics (Z-up) | Bevy (Y-up) |
+|----------------|-------------|
+| X (forward) | X (right) |
+| Y (left) | Z (forward) |
+| Z (up) | Y (up) |
+
+```rust
+// Position: swap Y and Z
+(x, y, z)_physics -> (x, z, y)_bevy
+
+// Quaternion: conjugate by coordinate rotation
+q_bevy = R * q_physics * R^-1
+```
+
+**Features:**
+- Automatic mesh generation for all collision shapes
+- Transform synchronization (physics → Bevy)
+- Debug gizmos (contact points, forces, axes)
+- Orbit camera with pan/zoom controls
+- MJCF and URDF model loading
+
+**Example:**
+
+```rust
+use bevy::prelude::*;
+use sim_bevy::prelude::*;
+
+fn main() {
+    App::new()
+        .add_plugins(DefaultPlugins)
+        .add_plugins(SimViewerPlugin::default())
+        .add_systems(Startup, setup)
+        .run();
+}
+
+fn setup(mut commands: Commands) {
+    // Load and spawn MJCF model
+    let model = MjcfModel::from_file("humanoid.xml").unwrap();
+    commands.spawn(model);
+}
+```
+
 ## Design Principles
 
 ### 1. Compliant vs Impulse-Based Contacts
@@ -391,10 +449,10 @@ islands.par_iter().for_each(|island| {
 - [x] URDF parser
 - [x] Height field terrain
 - [x] Signed distance field collision
+- [x] Bevy visualization layer (sim-bevy)
 
 ### Future Considerations
 
-- [ ] **Bevy integration** (sim-bevy for visualization)
 - [ ] **Kinematic loops** (currently tree-only articulations)
 - [ ] **Non-convex mesh decomposition** (automatic convex hull splitting)
 - [ ] **Fluid coupling** (buoyancy, drag)
