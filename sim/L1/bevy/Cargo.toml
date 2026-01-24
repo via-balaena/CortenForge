@@ -34,8 +34,9 @@ bevy = { workspace = true, default-features = false, features = [
     "bevy_state",
 ] }
 
-[dev-dependencies]
-bevy = { workspace = true, features = ["dynamic_linking"] }
+# Note: For faster local iteration, run with:
+#   cargo run --features bevy/dynamic_linking
+# Do NOT add dynamic_linking to dev-dependencies - it causes Windows linker failures in CI
 
 [features]
 default = []

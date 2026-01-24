@@ -88,7 +88,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests
-        run: cargo test --all-features
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # Exclude sim-bevy on Windows - Bevy causes linker issues and slow builds
+            cargo test --all-features --workspace --exclude sim-bevy
+          else
+            cargo test --all-features
+          fi
+        shell: bash
 
   # ============================================================================
   # TESTS - ARM64 (Apple Silicon and Linux ARM)
