@@ -150,11 +150,19 @@ pub fn sync_body_transforms(
 }
 
 /// Updates collision shape visibility based on configuration.
+///
+/// This system only runs when [`ViewerConfig`] has changed, avoiding
+/// unnecessary iterations over all collision shape entities every frame.
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters are passed by value
 pub fn update_shape_visibility(
     config: Res<ViewerConfig>,
     mut shapes: Query<&mut Visibility, With<CollisionShapeVisual>>,
 ) {
+    // Early exit if config hasn't changed
+    if !config.is_changed() {
+        return;
+    }
+
     let visibility = if config.show_collision_shapes {
         Visibility::Inherited
     } else {
