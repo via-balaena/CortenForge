@@ -200,6 +200,13 @@ pub fn update_cached_contacts(
 }
 
 /// System set for physics visualization.
+///
+/// These sets control the ordering of visualization systems:
+/// 1. `EntitySync` - Spawns/despawns Bevy entities for physics bodies
+/// 2. `TransformSync` - Updates transforms from physics state
+/// 3. `ContactCache` - Detects and caches contacts for gizmo rendering
+///
+/// Debug gizmos run in [`DebugGizmosSet`](crate::gizmos::DebugGizmosSet) after `ContactCache`.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SimViewerSet {
     /// Entity lifecycle management (spawn/despawn).
@@ -208,8 +215,6 @@ pub enum SimViewerSet {
     TransformSync,
     /// Contact cache update (after physics, before gizmos).
     ContactCache,
-    /// Debug visualization.
-    DebugRender,
 }
 
 #[cfg(test)]

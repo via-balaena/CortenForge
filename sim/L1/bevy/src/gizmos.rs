@@ -7,6 +7,17 @@
 //! - Joint axes and limits
 //!
 //! All visualization is optional and controlled via [`ViewerConfig`].
+//!
+//! # Performance
+//!
+//! Contact-related gizmos (points and normals) read from the [`CachedContacts`]
+//! resource rather than re-detecting contacts. This avoids:
+//! - Cloning the entire physics world every frame
+//! - Redundant O(n²) contact detection
+//!
+//! The cache is updated by [`update_cached_contacts`](crate::systems::update_cached_contacts)
+//! which runs in [`SimViewerSet::ContactCache`](crate::systems::SimViewerSet::ContactCache)
+//! after transform sync but before gizmo drawing.
 
 #![allow(clippy::needless_pass_by_value)] // Bevy system parameters
 #![allow(clippy::cast_possible_truncation)] // f64 -> f32 is intentional for Bevy
