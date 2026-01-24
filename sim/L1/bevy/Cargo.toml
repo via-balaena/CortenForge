@@ -30,6 +30,7 @@ thiserror = { workspace = true }
 bevy = { workspace = true, default-features = false, features = [
     "bevy_pbr",
     "bevy_gizmos",
+    "bevy_gizmos_render",
     "bevy_winit",
     "bevy_state",
 ] }

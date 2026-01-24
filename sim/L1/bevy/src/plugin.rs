@@ -1,11 +1,12 @@
 //! Plugin composition for physics visualization.
 
+use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::prelude::*;
 
 use crate::camera::{spawn_orbit_camera, OrbitCameraPlugin};
 use crate::gizmos::{
     draw_contact_normals, draw_contact_points, draw_force_vectors, draw_joint_axes,
-    draw_joint_limits, DebugGizmosSet,
+    draw_joint_limits, draw_velocity_vectors, DebugGizmosSet,
 };
 use crate::resources::{BodyEntityMap, SimulationHandle, ViewerConfig};
 use crate::systems::{
@@ -130,6 +131,9 @@ impl Plugin for SimViewerPlugin {
 
         // Debug visualization gizmos (only if enabled - requires bevy_gizmos)
         if self.enable_debug_gizmos {
+            // Configure gizmos to render on top of meshes (disable depth testing)
+            app.add_systems(Startup, configure_gizmos);
+
             app.configure_sets(
                 PostUpdate,
                 DebugGizmosSet.after(SimViewerSet::TransformSync),
@@ -141,6 +145,7 @@ impl Plugin for SimViewerPlugin {
                     draw_contact_points,
                     draw_contact_normals,
                     draw_force_vectors,
+                    draw_velocity_vectors,
                     draw_joint_axes,
                     draw_joint_limits,
                 )
@@ -162,6 +167,13 @@ impl Plugin for SimViewerPlugin {
             app.add_systems(Startup, spawn_default_lighting);
         }
     }
+}
+
+/// Configure gizmos to render on top of meshes.
+fn configure_gizmos(mut config_store: ResMut<GizmoConfigStore>) {
+    let (config, _) = config_store.config_mut::<DefaultGizmoConfigGroup>();
+    // Negative depth bias to render gizmos in front of meshes
+    config.depth_bias = -0.01;
 }
 
 /// Spawn default lighting for the scene.

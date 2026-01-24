@@ -181,10 +181,30 @@ pub struct ViewerConfig {
     pub show_joint_axes: bool,
     /// Whether to show joint limits.
     pub show_joint_limits: bool,
+    /// Whether to show velocity vectors.
+    pub show_velocities: bool,
     /// Scale factor for force vectors (units per Newton).
     pub force_scale: f32,
+    /// Scale factor for velocity vectors (units per m/s).
+    pub velocity_scale: f32,
     /// Radius of contact point markers.
     pub contact_marker_radius: f32,
+    /// Length of contact normal arrows.
+    pub contact_normal_length: f32,
+    /// Length of joint axis arrows.
+    pub joint_axis_length: f32,
+    /// Radius of joint limit arcs.
+    pub joint_limit_arc_radius: f32,
+    /// Number of segments for joint limit arcs.
+    pub joint_limit_arc_segments: u32,
+    /// Radius of joint marker spheres.
+    pub joint_marker_radius: f32,
+    /// Minimum force magnitude to display (filters noise).
+    pub force_display_threshold: f32,
+    /// Minimum velocity magnitude to display (filters noise).
+    pub velocity_display_threshold: f32,
+    /// Minimum distance between joint bodies to draw connecting line.
+    pub joint_line_distance_threshold: f32,
     /// Color scheme for debug visualization.
     pub colors: DebugColors,
 }
@@ -198,8 +218,18 @@ impl Default for ViewerConfig {
             show_forces: false,
             show_joint_axes: true,
             show_joint_limits: false,
+            show_velocities: false,
             force_scale: 0.01,
+            velocity_scale: 0.1,
             contact_marker_radius: 0.02,
+            contact_normal_length: 0.15,
+            joint_axis_length: 0.2,
+            joint_limit_arc_radius: 0.1,
+            joint_limit_arc_segments: 16,
+            joint_marker_radius: 0.02,
+            force_display_threshold: 0.01,
+            velocity_display_threshold: 0.01,
+            joint_line_distance_threshold: 0.001,
             colors: DebugColors::default(),
         }
     }
@@ -218,6 +248,10 @@ pub struct DebugColors {
     pub joint_axis: Color,
     /// Color for joint limits.
     pub joint_limit: Color,
+    /// Color for linear velocity vectors.
+    pub linear_velocity: Color,
+    /// Color for angular velocity vectors.
+    pub angular_velocity: Color,
     /// Color for static bodies.
     pub static_body: Color,
     /// Color for dynamic bodies.
@@ -232,6 +266,8 @@ impl Default for DebugColors {
             force_vector: Color::srgb(1.0, 1.0, 0.2),
             joint_axis: Color::srgb(0.2, 0.6, 1.0),
             joint_limit: Color::srgb(1.0, 0.5, 0.0),
+            linear_velocity: Color::srgb(0.2, 0.8, 1.0),
+            angular_velocity: Color::srgb(1.0, 0.2, 0.8),
             static_body: Color::srgb(0.5, 0.5, 0.5),
             dynamic_body: Color::srgb(0.8, 0.6, 0.4),
         }

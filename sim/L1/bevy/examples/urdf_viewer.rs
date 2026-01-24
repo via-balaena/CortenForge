@@ -244,6 +244,7 @@ fn setup_scene(mut commands: Commands) {
     println!("  C: Toggle collision shapes");
     println!("  J: Toggle joint axes");
     println!("  L: Toggle joint limits");
+    println!("  V: Toggle velocity vectors");
 }
 
 /// Resource to store spawned robot information.
@@ -330,6 +331,14 @@ fn toggle_debug_viz(keyboard: Res<ButtonInput<KeyCode>>, mut config: ResMut<View
             } else {
                 "OFF"
             }
+        );
+    }
+
+    if keyboard.just_pressed(KeyCode::KeyV) {
+        config.show_velocities = !config.show_velocities;
+        println!(
+            "Velocity vectors: {}",
+            if config.show_velocities { "ON" } else { "OFF" }
         );
     }
 }

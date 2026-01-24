@@ -3,6 +3,7 @@
 //! This module provides real-time debug visualization for:
 //! - Contact points and normals
 //! - Applied forces
+//! - Velocity vectors (linear and angular)
 //! - Joint axes and limits
 //!
 //! All visualization is optional and controlled via [`ViewerConfig`].
@@ -66,12 +67,11 @@ pub fn draw_contact_normals(
     };
 
     let contacts = collect_contacts_for_display(world);
-    let normal_length = 0.15; // Fixed length for visibility
 
     for contact in &contacts {
         let start = vec3_from_point(&contact.position);
         let normal = vec3_from_vector(&contact.normal);
-        let end = start + normal * normal_length;
+        let end = start + normal * config.contact_normal_length;
 
         // Draw arrow from contact point along normal direction
         gizmos.arrow(start, end, config.colors.contact_normal);
@@ -99,7 +99,7 @@ pub fn draw_force_vectors(
 
         // Only draw if force is significant
         let force_magnitude = force.length();
-        if force_magnitude < 0.01 {
+        if force_magnitude < config.force_display_threshold {
             continue;
         }
 
@@ -124,44 +124,76 @@ pub fn draw_joint_axes(
         return;
     };
 
-    let axis_length = 0.2;
-
     for joint in world.joints() {
-        // Get parent and child body positions
-        let parent_pos = world
-            .body(joint.parent)
-            .map(|b| vec3_from_point(&b.state.pose.position));
-        let child_pos = world
-            .body(joint.child)
-            .map(|b| vec3_from_point(&b.state.pose.position));
-
-        let (Some(parent_pos), Some(child_pos)) = (parent_pos, child_pos) else {
+        // Get parent and child bodies
+        let (Some(parent), Some(child)) = (world.body(joint.parent), world.body(joint.child))
+        else {
             continue;
         };
 
-        // Draw line connecting joint bodies
-        gizmos.line(
-            parent_pos,
-            child_pos,
-            config.colors.joint_axis.with_alpha(0.5),
+        let parent_pos = vec3_from_point(&parent.state.pose.position);
+        let child_pos = vec3_from_point(&child.state.pose.position);
+
+        // Draw a small sphere at the joint location (child body position)
+        gizmos.sphere(
+            Isometry3d::from_translation(child_pos),
+            config.joint_marker_radius,
+            config.colors.joint_axis,
         );
 
-        // Draw joint axis at the connection midpoint
-        let midpoint = (parent_pos + child_pos) * 0.5;
+        // Draw line connecting parent and child bodies
+        let distance = parent_pos.distance(child_pos);
+        if distance > config.joint_line_distance_threshold {
+            gizmos.line(
+                parent_pos,
+                child_pos,
+                config.colors.joint_axis.with_alpha(0.5),
+            );
+        }
 
         // Transform joint axis from parent local frame to world frame
-        let parent_rotation = world
-            .body(joint.parent)
-            .map(|b| quat_from_unit_quaternion(&b.state.pose.rotation));
+        let parent_rot = quat_from_unit_quaternion(&parent.state.pose.rotation);
+        let local_axis = vec3_from_vector(&joint.axis);
+        let world_axis = parent_rot * local_axis;
 
-        if let Some(parent_rot) = parent_rotation {
-            let local_axis = vec3_from_vector(&joint.axis);
-            let world_axis = parent_rot * local_axis;
+        // Draw axis arrow from child position
+        let axis_end = child_pos + world_axis * config.joint_axis_length;
+        gizmos.arrow(child_pos, axis_end, config.colors.joint_axis);
+    }
+}
 
-            let axis_start = midpoint - world_axis * (axis_length * 0.5);
-            let axis_end = midpoint + world_axis * (axis_length * 0.5);
+/// Draw velocity vectors (linear and angular).
+pub fn draw_velocity_vectors(
+    mut gizmos: Gizmos,
+    sim_handle: Res<SimulationHandle>,
+    config: Res<ViewerConfig>,
+) {
+    if !config.show_velocities {
+        return;
+    }
 
-            gizmos.arrow(axis_start, axis_end, config.colors.joint_axis);
+    let Some(world) = sim_handle.world() else {
+        return;
+    };
+
+    for body in world.bodies() {
+        let pos = vec3_from_point(&body.state.pose.position);
+        let linear_vel = vec3_from_vector(&body.state.twist.linear);
+        let angular_vel = vec3_from_vector(&body.state.twist.angular);
+
+        // Draw linear velocity if significant
+        let linear_speed = linear_vel.length();
+        if linear_speed > config.velocity_display_threshold {
+            let scaled_vel = linear_vel * config.velocity_scale;
+            gizmos.arrow(pos, pos + scaled_vel, config.colors.linear_velocity);
+        }
+
+        // Draw angular velocity if significant
+        let angular_speed = angular_vel.length();
+        if angular_speed > config.velocity_display_threshold {
+            let scaled_angular = angular_vel * config.velocity_scale;
+            // Draw angular velocity as a curved arrow indicator
+            gizmos.arrow(pos, pos + scaled_angular, config.colors.angular_velocity);
         }
     }
 }
@@ -196,17 +228,16 @@ pub fn draw_joint_limits(
         let parent_rotation = quat_from_unit_quaternion(&parent.state.pose.rotation);
 
         let world_axis = parent_rotation * vec3_from_vector(&joint.axis);
-        let arc_radius = 0.1;
+        let arc_radius = config.joint_limit_arc_radius;
 
-        // Draw limit markers at min and max angles
-        // For revolute joints, draw small lines at the limit angles
+        // Find a perpendicular vector to draw the arc
         let perpendicular = if world_axis.x.abs() < 0.9 {
             world_axis.cross(Vec3::X).normalize()
         } else {
             world_axis.cross(Vec3::Y).normalize()
         };
 
-        // Draw limit lines
+        // Draw limit lines at min and max angles
         let min_angle = limits.lower() as f32;
         let max_angle = limits.upper() as f32;
 
@@ -217,7 +248,7 @@ pub fn draw_joint_limits(
         gizmos.line(pos, pos + max_dir * arc_radius, config.colors.joint_limit);
 
         // Draw arc between limits
-        let arc_segments = 16;
+        let arc_segments = config.joint_limit_arc_segments;
         let angle_range = max_angle - min_angle;
         for i in 0..arc_segments {
             let t0 = i as f32 / arc_segments as f32;

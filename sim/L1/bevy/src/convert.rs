@@ -210,4 +210,93 @@ mod tests {
         assert!((bevy_normal[1] - 1.0).abs() < 1e-6);
         assert!(bevy_normal[2].abs() < 1e-6);
     }
+
+    #[test]
+    fn identity_quaternion_stays_identity() {
+        let identity = UnitQuaternion::identity();
+        let bevy = quat_from_unit_quaternion(&identity);
+
+        // Identity should remain identity (no rotation in either system)
+        assert!((bevy.x).abs() < 1e-5);
+        assert!((bevy.y).abs() < 1e-5);
+        assert!((bevy.z).abs() < 1e-5);
+        assert!((bevy.w - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn rotation_around_physics_z_becomes_rotation_around_bevy_y() {
+        // 90 degrees around Z (physics up) should become 90 degrees around Y (Bevy up)
+        let physics_rot = UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(Vector3::z()),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let bevy_rot = quat_from_unit_quaternion(&physics_rot);
+
+        // Expected: rotation around Y axis by 90 degrees
+        let expected = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+
+        // Compare quaternions (allowing for sign flip)
+        let dot = bevy_rot.dot(expected).abs();
+        assert!(
+            dot > 0.999,
+            "Physics Z rotation should map to Bevy Y rotation: got {bevy_rot:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn rotation_around_physics_x_stays_around_x() {
+        // Rotation around X should stay around X (X axis is the same in both systems)
+        let physics_rot = UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(Vector3::x()),
+            std::f64::consts::FRAC_PI_2,
+        );
+        let bevy_rot = quat_from_unit_quaternion(&physics_rot);
+
+        // Expected: rotation around X axis by 90 degrees
+        let expected = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2);
+
+        let dot = bevy_rot.dot(expected).abs();
+        assert!(
+            dot > 0.999,
+            "Physics X rotation should stay as Bevy X rotation: got {bevy_rot:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn rotation_180_degrees_roundtrips() {
+        // 180 degree rotation is a common edge case
+        let original = UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(Vector3::new(1.0, 1.0, 1.0)),
+            std::f64::consts::PI,
+        );
+        let bevy = quat_from_unit_quaternion(&original);
+        let back = unit_quaternion_from_quat(bevy);
+
+        let diff = original.rotation_to(&back).angle();
+        assert!(diff < 1e-4, "180 degree rotation roundtrip error: {diff}");
+    }
+
+    #[test]
+    fn axis_vectors_convert_correctly() {
+        // Physics +X should stay +X in Bevy
+        let x_axis = Vector3::new(1.0, 0.0, 0.0);
+        let bevy_x = vec3_from_vector(&x_axis);
+        assert!((bevy_x.x - 1.0).abs() < 1e-6);
+        assert!(bevy_x.y.abs() < 1e-6);
+        assert!(bevy_x.z.abs() < 1e-6);
+
+        // Physics +Y (left) should become Bevy +Z (forward)
+        let y_axis = Vector3::new(0.0, 1.0, 0.0);
+        let bevy_y = vec3_from_vector(&y_axis);
+        assert!(bevy_y.x.abs() < 1e-6);
+        assert!(bevy_y.y.abs() < 1e-6);
+        assert!((bevy_y.z - 1.0).abs() < 1e-6);
+
+        // Physics +Z (up) should become Bevy +Y (up)
+        let z_axis = Vector3::new(0.0, 0.0, 1.0);
+        let bevy_z = vec3_from_vector(&z_axis);
+        assert!(bevy_z.x.abs() < 1e-6);
+        assert!((bevy_z.y - 1.0).abs() < 1e-6);
+        assert!(bevy_z.z.abs() < 1e-6);
+    }
 }
