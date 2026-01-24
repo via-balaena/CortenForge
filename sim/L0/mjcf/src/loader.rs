@@ -495,10 +495,15 @@ impl MjcfLoader {
 
         // Add collision shape from first resolved geom
         if self.use_collision_shapes {
-            if let Some(collision_shape) =
-                self.collision_shape_from_geoms(&resolved_geoms, mesh_lookup)
-            {
-                body = body.with_collision_shape(collision_shape);
+            if let Some(first_geom) = resolved_geoms.first() {
+                if let Some(collision_shape) = self.geom_to_collision(first_geom, mesh_lookup) {
+                    body = body.with_collision_shape(collision_shape);
+
+                    // Compute and store the geom's local pose (for visualization)
+                    if let Some(shape_pose) = Self::compute_geom_local_pose(first_geom) {
+                        body = body.with_collision_shape_pose(shape_pose);
+                    }
+                }
             }
         }
 
@@ -554,6 +559,73 @@ impl MjcfLoader {
         geoms
             .first()
             .and_then(|geom| self.geom_to_collision(geom, mesh_lookup))
+    }
+
+    /// Compute the local pose of a geom relative to the body frame.
+    ///
+    /// This handles:
+    /// - `fromto`: Capsule/cylinder endpoints define position (midpoint) and rotation
+    /// - `pos`: Explicit position offset
+    /// - `quat`: Explicit quaternion rotation
+    fn compute_geom_local_pose(geom: &MjcfGeom) -> Option<Pose> {
+        // Check if geom has any local transformation
+        let has_fromto = geom.fromto.is_some();
+        let has_pos = geom.pos.norm() > 1e-10;
+        // Check if quaternion is not identity (w=1, x=y=z=0)
+        let is_identity_quat = (geom.quat[0] - 1.0).abs() < 1e-10
+            && geom.quat[1].abs() < 1e-10
+            && geom.quat[2].abs() < 1e-10
+            && geom.quat[3].abs() < 1e-10;
+        let has_rotation = !is_identity_quat;
+
+        if !has_fromto && !has_pos && !has_rotation {
+            return None; // No local pose needed
+        }
+
+        if let Some(fromto) = geom.fromto {
+            // fromto defines both position and rotation for capsules/cylinders
+            let start = Vector3::new(fromto[0], fromto[1], fromto[2]);
+            let end = Vector3::new(fromto[3], fromto[4], fromto[5]);
+
+            // Position is the midpoint
+            let center = (start + end) / 2.0;
+            let position = Point3::new(center.x, center.y, center.z);
+
+            // Direction vector (capsule extends along local Z axis)
+            let direction = end - start;
+            let length = direction.norm();
+
+            if length < 1e-10 {
+                // Zero-length capsule, just use position
+                return Some(Pose::from_position(position));
+            }
+
+            // Normalize direction
+            let z_axis = direction / length;
+
+            // Compute rotation from Z axis to direction
+            // Find a rotation that aligns (0, 0, 1) with z_axis
+            let rotation = rotation_from_z_axis(&z_axis);
+
+            Some(Pose::from_position_rotation(position, rotation))
+        } else {
+            // Use explicit pos and rotation
+            let position = Point3::new(geom.pos.x, geom.pos.y, geom.pos.z);
+
+            // MuJoCo uses (w, x, y, z) ordering in geom.quat
+            let rotation = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                geom.quat[0],
+                geom.quat[1],
+                geom.quat[2],
+                geom.quat[3],
+            ));
+
+            if position == Point3::origin() && rotation == nalgebra::UnitQuaternion::identity() {
+                None
+            } else {
+                Some(Pose::from_position_rotation(position, rotation))
+            }
+        }
     }
 
     /// Convert MJCF geom to collision shape.
@@ -1273,6 +1345,29 @@ fn build_body_lookup(worldbody: &MjcfBody) -> HashMap<&str, &MjcfBody> {
     }
 
     lookup
+}
+
+/// Compute a rotation that aligns the local Z axis with the given direction.
+fn rotation_from_z_axis(z_axis: &Vector3<f64>) -> nalgebra::UnitQuaternion<f64> {
+    let z_unit = Vector3::z();
+
+    // Check if already aligned
+    let dot = z_unit.dot(z_axis);
+    if dot > 0.9999 {
+        return nalgebra::UnitQuaternion::identity();
+    }
+    if dot < -0.9999 {
+        // Opposite direction, rotate 180 degrees around X
+        return nalgebra::UnitQuaternion::from_axis_angle(
+            &nalgebra::Unit::new_normalize(Vector3::x()),
+            std::f64::consts::PI,
+        );
+    }
+
+    // General case: rotate from z_unit to z_axis
+    let axis = z_unit.cross(z_axis);
+    let angle = dot.acos();
+    nalgebra::UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle)
 }
 
 /// Compute world pose for a body by traversing parent chain.

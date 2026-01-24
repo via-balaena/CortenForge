@@ -1,6 +1,12 @@
 //! Mesh generation for collision shape visualization.
 //!
 //! Converts sim-core collision shapes to Bevy meshes.
+//!
+//! ## Coordinate System
+//!
+//! All coordinate conversion between physics (Z-up) and Bevy (Y-up) is handled
+//! through the functions in [`crate::convert`]. This module uses those functions
+//! to ensure consistent coordinate transformation across all mesh types.
 
 #![allow(clippy::cast_possible_truncation)] // f64 -> f32 is intentional for Bevy meshes
 
@@ -8,6 +14,10 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use sim_core::CollisionShape;
+
+use crate::convert::{
+    dimensions_to_bevy, normal_to_bevy, vec3_from_point, vertex_positions_from_points,
+};
 
 /// Generate a Bevy mesh from a sim-core collision shape.
 ///
@@ -47,18 +57,18 @@ pub fn sphere_mesh(radius: f64) -> Mesh {
 }
 
 /// Create a box mesh from half extents.
+///
+/// Converts from physics Z-up coordinates to Bevy Y-up using [`dimensions_to_bevy`].
 #[must_use]
 pub fn box_mesh(half_extents: &nalgebra::Vector3<f64>) -> Mesh {
-    Cuboid::new(
-        half_extents.x as f32 * 2.0,
-        half_extents.y as f32 * 2.0,
-        half_extents.z as f32 * 2.0,
-    )
-    .mesh()
-    .build()
+    let (x, y, z) = dimensions_to_bevy(half_extents);
+    Cuboid::new(x * 2.0, y * 2.0, z * 2.0).mesh().build()
 }
 
 /// Create a capsule mesh.
+///
+/// Bevy's `Capsule3d` is oriented along the Y-axis, which corresponds to
+/// the physics Z-axis after coordinate conversion (Z-up -> Y-up).
 #[must_use]
 pub fn capsule_mesh(half_length: f64, radius: f64) -> Mesh {
     Capsule3d::new(radius as f32, half_length as f32 * 2.0)
@@ -67,6 +77,9 @@ pub fn capsule_mesh(half_length: f64, radius: f64) -> Mesh {
 }
 
 /// Create a cylinder mesh.
+///
+/// Bevy's `Cylinder` is oriented along the Y-axis, which corresponds to
+/// the physics Z-axis after coordinate conversion (Z-up -> Y-up).
 #[must_use]
 pub fn cylinder_mesh(half_length: f64, radius: f64) -> Mesh {
     Cylinder::new(radius as f32, half_length as f32 * 2.0)
@@ -75,11 +88,13 @@ pub fn cylinder_mesh(half_length: f64, radius: f64) -> Mesh {
 }
 
 /// Create an ellipsoid mesh by scaling a sphere.
+///
+/// Converts from physics Z-up coordinates to Bevy Y-up using [`dimensions_to_bevy`].
 #[must_use]
 pub fn ellipsoid_mesh(radii: &nalgebra::Vector3<f64>) -> Mesh {
-    // Use a unit sphere and scale it
-    // The actual scaling is applied via Transform, not mesh
-    // For now, we create a sphere with radius 1 and expect the caller to scale
+    // Convert radii from physics to Bevy coordinate system
+    let (rx, ry, rz) = dimensions_to_bevy(radii);
+
     let mut mesh = Sphere::new(1.0).mesh().build();
 
     // Scale the vertices directly for accurate collision visualization
@@ -87,9 +102,9 @@ pub fn ellipsoid_mesh(radii: &nalgebra::Vector3<f64>) -> Mesh {
         mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
     {
         for pos in positions.iter_mut() {
-            pos[0] *= radii.x as f32;
-            pos[1] *= radii.y as f32;
-            pos[2] *= radii.z as f32;
+            pos[0] *= rx;
+            pos[1] *= ry;
+            pos[2] *= rz;
         }
     }
 
@@ -99,16 +114,13 @@ pub fn ellipsoid_mesh(radii: &nalgebra::Vector3<f64>) -> Mesh {
     if let Some(VertexAttributeValues::Float32x3(normals)) =
         mesh.attribute_mut(Mesh::ATTRIBUTE_NORMAL)
     {
-        let inv_radii = nalgebra::Vector3::new(
-            1.0 / radii.x as f32,
-            1.0 / radii.y as f32,
-            1.0 / radii.z as f32,
-        );
+        // Inverse radii for normal transformation (inverse transpose of scale matrix)
+        let inv_radii = (1.0 / rx, 1.0 / ry, 1.0 / rz);
         for normal in normals.iter_mut() {
             // Transform normal by inverse transpose of scale matrix
-            normal[0] *= inv_radii.x;
-            normal[1] *= inv_radii.y;
-            normal[2] *= inv_radii.z;
+            normal[0] *= inv_radii.0;
+            normal[1] *= inv_radii.1;
+            normal[2] *= inv_radii.2;
             // Renormalize
             let len =
                 (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
@@ -132,8 +144,10 @@ pub fn plane_mesh() -> Mesh {
 
 /// Create a mesh from convex hull vertices.
 ///
-/// This creates a simple point cloud visualization. For proper convex hull
-/// rendering, we'd need to compute the hull faces.
+/// This creates a bounding box visualization of the convex hull.
+/// For proper convex hull rendering, we'd need to compute the hull faces.
+///
+/// Coordinates are converted from physics Z-up to Bevy Y-up using [`vec3_from_point`].
 #[must_use]
 pub fn convex_mesh_from_vertices(vertices: &[nalgebra::Point3<f64>]) -> Mesh {
     if vertices.is_empty() {
@@ -144,8 +158,7 @@ pub fn convex_mesh_from_vertices(vertices: &[nalgebra::Point3<f64>]) -> Mesh {
         );
     }
 
-    // For now, compute a simple bounding box visualization
-    // A proper implementation would compute the convex hull faces
+    // Compute bounding box in physics coordinates
     let mut min = vertices[0];
     let mut max = vertices[0];
     for v in vertices.iter().skip(1) {
@@ -158,23 +171,29 @@ pub fn convex_mesh_from_vertices(vertices: &[nalgebra::Point3<f64>]) -> Mesh {
     }
 
     let half_extents = (max - min) * 0.5;
-    let center = min + half_extents;
+    let center = nalgebra::Point3::new(
+        min.x + half_extents.x,
+        min.y + half_extents.y,
+        min.z + half_extents.z,
+    );
 
     // Create a box at the centroid with the bounding dimensions
+    // box_mesh handles the coordinate conversion for dimensions
     let mut mesh = box_mesh(&nalgebra::Vector3::new(
         half_extents.x,
         half_extents.y,
         half_extents.z,
     ));
 
-    // Offset to center
+    // Offset to center using proper coordinate conversion
+    let bevy_center = vec3_from_point(&center);
     if let Some(VertexAttributeValues::Float32x3(positions)) =
         mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
     {
         for pos in positions.iter_mut() {
-            pos[0] += center.x as f32;
-            pos[1] += center.y as f32;
-            pos[2] += center.z as f32;
+            pos[0] += bevy_center.x;
+            pos[1] += bevy_center.y;
+            pos[2] += bevy_center.z;
         }
     }
 
@@ -185,6 +204,9 @@ pub fn convex_mesh_from_vertices(vertices: &[nalgebra::Point3<f64>]) -> Mesh {
 ///
 /// Converts the sim-core `TriangleMeshData` to a Bevy mesh with proper
 /// vertices, indices, and normals.
+///
+/// Coordinates are converted from physics Z-up to Bevy Y-up using
+/// [`vertex_positions_from_points`] and [`normal_to_bevy`].
 #[must_use]
 pub fn triangle_mesh(mesh_data: &std::sync::Arc<sim_core::mesh::TriangleMeshData>) -> Mesh {
     let vertices = mesh_data.vertices();
@@ -197,11 +219,8 @@ pub fn triangle_mesh(mesh_data: &std::sync::Arc<sim_core::mesh::TriangleMeshData
         );
     }
 
-    // Convert vertices to f32
-    let positions: Vec<[f32; 3]> = vertices
-        .iter()
-        .map(|v| [v.x as f32, v.y as f32, v.z as f32])
-        .collect();
+    // Convert vertices from physics (Z-up) to Bevy (Y-up) coordinates
+    let positions = vertex_positions_from_points(vertices);
 
     // Convert triangle indices
     let indices: Vec<u32> = triangles
@@ -209,8 +228,9 @@ pub fn triangle_mesh(mesh_data: &std::sync::Arc<sim_core::mesh::TriangleMeshData
         .flat_map(|tri| [tri.v0 as u32, tri.v1 as u32, tri.v2 as u32])
         .collect();
 
-    // Compute normals per vertex (average of adjacent face normals)
-    let mut normals = vec![[0.0f32; 3]; vertices.len()];
+    // Compute normals per vertex (average of adjacent face normals) in physics space,
+    // then convert to Bevy space
+    let mut physics_normals = vec![nalgebra::Vector3::zeros(); vertices.len()];
     for tri in triangles {
         let v0 = vertices[tri.v0];
         let v1 = vertices[tri.v1];
@@ -220,26 +240,26 @@ pub fn triangle_mesh(mesh_data: &std::sync::Arc<sim_core::mesh::TriangleMeshData
         let e2 = v2 - v0;
         let face_normal = e1.cross(&e2);
 
-        // Add face normal to each vertex's accumulated normal
+        // Add face normal to each vertex's accumulated normal (in physics space)
         for &idx in &[tri.v0, tri.v1, tri.v2] {
-            normals[idx][0] += face_normal.x as f32;
-            normals[idx][1] += face_normal.y as f32;
-            normals[idx][2] += face_normal.z as f32;
+            physics_normals[idx] += face_normal;
         }
     }
 
-    // Normalize the accumulated normals
-    for normal in &mut normals {
-        let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
-        if len > 1e-6 {
-            normal[0] /= len;
-            normal[1] /= len;
-            normal[2] /= len;
-        } else {
-            // Default to up for degenerate cases
-            *normal = [0.0, 1.0, 0.0];
-        }
-    }
+    // Normalize and convert to Bevy coordinates
+    let normals: Vec<[f32; 3]> = physics_normals
+        .iter()
+        .map(|n| {
+            let len = n.norm();
+            if len > 1e-6 {
+                let normalized = n / len;
+                normal_to_bevy(&normalized)
+            } else {
+                // Default to up (Y-up in Bevy)
+                [0.0, 1.0, 0.0]
+            }
+        })
+        .collect();
 
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
