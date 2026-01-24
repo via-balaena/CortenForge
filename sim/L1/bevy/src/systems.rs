@@ -68,31 +68,53 @@ pub fn sync_physics_entities(
             scale: Vec3::ONE,
         };
 
-        // Spawn entity
-        let mut entity_commands = commands.spawn((
-            PhysicsBody::new(*body_id),
-            transform,
-            Visibility::default(),
-            InheritedVisibility::default(),
-            ViewVisibility::default(),
-            GlobalTransform::default(),
-        ));
+        // Spawn body entity (transform synced with physics)
+        let body_entity = commands
+            .spawn((
+                PhysicsBody::new(*body_id),
+                transform,
+                Visibility::default(),
+                InheritedVisibility::default(),
+                ViewVisibility::default(),
+                GlobalTransform::default(),
+            ))
+            .id();
 
-        // Add mesh and material if we have a collision shape
+        // Add mesh as child entity with local shape pose offset
         if let Some(mesh) = mesh_handle {
-            entity_commands.insert((
-                Mesh3d(mesh),
-                MeshMaterial3d(material),
-                CollisionShapeVisual::new(
-                    body.collision_shape
-                        .as_ref()
-                        .map_or(ShapeType::Box, ShapeType::from_collision_shape),
-                ),
-            ));
+            // Compute the shape's local transform (offset from body frame)
+            let shape_transform = if let Some(ref shape_pose) = body.collision_shape_pose {
+                Transform {
+                    translation: vec3_from_point(&shape_pose.position),
+                    rotation: quat_from_unit_quaternion(&shape_pose.rotation),
+                    scale: Vec3::ONE,
+                }
+            } else {
+                Transform::IDENTITY
+            };
+
+            // Spawn mesh as child with local offset
+            let mesh_entity = commands
+                .spawn((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(material),
+                    shape_transform,
+                    Visibility::default(),
+                    InheritedVisibility::default(),
+                    ViewVisibility::default(),
+                    GlobalTransform::default(),
+                    CollisionShapeVisual::new(
+                        body.collision_shape
+                            .as_ref()
+                            .map_or(ShapeType::Box, ShapeType::from_collision_shape),
+                    ),
+                ))
+                .id();
+
+            commands.entity(body_entity).add_child(mesh_entity);
         }
 
-        let entity = entity_commands.id();
-        body_map.insert(*body_id, entity);
+        body_map.insert(*body_id, body_entity);
     }
 
     // Despawn removed bodies

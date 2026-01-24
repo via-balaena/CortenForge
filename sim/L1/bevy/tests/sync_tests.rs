@@ -1,6 +1,9 @@
 //! Integration tests for transform synchronization.
 //!
 //! Tests that sim-core body poses are correctly synced to Bevy transforms.
+//!
+//! Note: sim-core uses Z-up coordinates, while Bevy uses Y-up.
+//! The conversion swaps Y and Z: `(x, y, z)_physics -> (x, z, y)_bevy`
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Standard in tests
 
@@ -49,10 +52,11 @@ fn transform_matches_initial_pose() {
         .get::<Transform>(entity)
         .expect("entity should have Transform");
 
-    let expected = Vec3::new(1.0, 2.0, 3.0);
+    // Physics (Z-up): (1, 2, 3) -> Bevy (Y-up): (1, 3, 2)
+    let expected = Vec3::new(1.0, 3.0, 2.0);
     assert!(
         (transform.translation - expected).length() < 0.001,
-        "Transform translation {:?} should match pose position {:?}",
+        "Transform translation {:?} should match converted pose position {:?}",
         transform.translation,
         expected
     );
@@ -100,10 +104,11 @@ fn transform_updates_after_pose_change() {
         .get::<Transform>(entity)
         .expect("entity should have Transform");
 
-    let expected = Vec3::new(10.0, 20.0, 30.0);
+    // Physics (Z-up): (10, 20, 30) -> Bevy (Y-up): (10, 30, 20)
+    let expected = Vec3::new(10.0, 30.0, 20.0);
     assert!(
         (transform.translation - expected).length() < 0.001,
-        "Transform should update to new position {:?}, got {:?}",
+        "Transform should update to converted position {:?}, got {:?}",
         expected,
         transform.translation
     );
@@ -116,9 +121,10 @@ fn rotation_syncs_correctly() {
     // Create world with rotated body
     let mut world = World::default();
     let position = nalgebra::Point3::new(0.0, 0.0, 0.0);
-    // 90 degree rotation around Y axis
+    // 90 degree rotation around Z axis (physics up)
+    // This should become rotation around Y axis in Bevy (graphics up)
     let rotation = nalgebra::UnitQuaternion::from_axis_angle(
-        &nalgebra::Vector3::y_axis(),
+        &nalgebra::Vector3::z_axis(),
         std::f64::consts::FRAC_PI_2,
     );
     let pose = Pose::from_position_rotation(position, rotation);
@@ -142,7 +148,7 @@ fn rotation_syncs_correctly() {
         .get::<Transform>(entity)
         .expect("entity should have Transform");
 
-    // Expected: 90 degrees around Y (in Bevy's coordinate system)
+    // Physics rotation around Z (up) -> Bevy rotation around Y (up)
     let expected = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
 
     // Compare quaternions (allowing for sign flip since -q and q represent same rotation)

@@ -47,18 +47,24 @@ pub fn sphere_mesh(radius: f64) -> Mesh {
 }
 
 /// Create a box mesh from half extents.
+///
+/// Converts from physics Z-up coordinates to Bevy Y-up by swapping Y and Z.
 #[must_use]
 pub fn box_mesh(half_extents: &nalgebra::Vector3<f64>) -> Mesh {
+    // Physics (Z-up): x, y, z -> Bevy (Y-up): x, z, y
     Cuboid::new(
         half_extents.x as f32 * 2.0,
-        half_extents.y as f32 * 2.0,
-        half_extents.z as f32 * 2.0,
+        half_extents.z as f32 * 2.0, // Z becomes Y (vertical)
+        half_extents.y as f32 * 2.0, // Y becomes Z (depth)
     )
     .mesh()
     .build()
 }
 
 /// Create a capsule mesh.
+///
+/// Bevy's `Capsule3d` is oriented along the Y-axis, which corresponds to
+/// the physics Z-axis after coordinate conversion (Z-up -> Y-up).
 #[must_use]
 pub fn capsule_mesh(half_length: f64, radius: f64) -> Mesh {
     Capsule3d::new(radius as f32, half_length as f32 * 2.0)
@@ -67,6 +73,9 @@ pub fn capsule_mesh(half_length: f64, radius: f64) -> Mesh {
 }
 
 /// Create a cylinder mesh.
+///
+/// Bevy's `Cylinder` is oriented along the Y-axis, which corresponds to
+/// the physics Z-axis after coordinate conversion (Z-up -> Y-up).
 #[must_use]
 pub fn cylinder_mesh(half_length: f64, radius: f64) -> Mesh {
     Cylinder::new(radius as f32, half_length as f32 * 2.0)
@@ -75,11 +84,14 @@ pub fn cylinder_mesh(half_length: f64, radius: f64) -> Mesh {
 }
 
 /// Create an ellipsoid mesh by scaling a sphere.
+///
+/// Converts from physics Z-up coordinates to Bevy Y-up by swapping Y and Z.
 #[must_use]
 pub fn ellipsoid_mesh(radii: &nalgebra::Vector3<f64>) -> Mesh {
     // Use a unit sphere and scale it
-    // The actual scaling is applied via Transform, not mesh
-    // For now, we create a sphere with radius 1 and expect the caller to scale
+    // Physics (Z-up): x, y, z -> Bevy (Y-up): x, z, y
+    let bevy_radii = nalgebra::Vector3::new(radii.x, radii.z, radii.y);
+
     let mut mesh = Sphere::new(1.0).mesh().build();
 
     // Scale the vertices directly for accurate collision visualization
@@ -87,9 +99,9 @@ pub fn ellipsoid_mesh(radii: &nalgebra::Vector3<f64>) -> Mesh {
         mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
     {
         for pos in positions.iter_mut() {
-            pos[0] *= radii.x as f32;
-            pos[1] *= radii.y as f32;
-            pos[2] *= radii.z as f32;
+            pos[0] *= bevy_radii.x as f32;
+            pos[1] *= bevy_radii.y as f32;
+            pos[2] *= bevy_radii.z as f32;
         }
     }
 
@@ -100,9 +112,9 @@ pub fn ellipsoid_mesh(radii: &nalgebra::Vector3<f64>) -> Mesh {
         mesh.attribute_mut(Mesh::ATTRIBUTE_NORMAL)
     {
         let inv_radii = nalgebra::Vector3::new(
-            1.0 / radii.x as f32,
-            1.0 / radii.y as f32,
-            1.0 / radii.z as f32,
+            1.0 / bevy_radii.x as f32,
+            1.0 / bevy_radii.y as f32,
+            1.0 / bevy_radii.z as f32,
         );
         for normal in normals.iter_mut() {
             // Transform normal by inverse transpose of scale matrix

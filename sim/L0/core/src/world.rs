@@ -481,6 +481,11 @@ pub struct Body {
     pub mass_props: MassProperties,
     /// Collision shape for contact detection.
     pub collision_shape: Option<CollisionShape>,
+    /// Local pose of the collision shape relative to the body frame.
+    ///
+    /// This allows geoms to be offset from the body origin (e.g., MJCF `fromto` or `pos`).
+    /// If `None`, the shape is centered at the body origin with identity rotation.
+    pub collision_shape_pose: Option<Pose>,
     /// Whether this body is static (immovable).
     pub is_static: bool,
     /// Whether this body is currently sleeping (inactive).
@@ -519,6 +524,7 @@ impl Body {
             state,
             mass_props,
             collision_shape: None,
+            collision_shape_pose: None,
             is_static: false,
             is_sleeping: false,
             sleep_time: 0.0,
@@ -538,6 +544,7 @@ impl Body {
             state: RigidBodyState::at_rest(pose),
             mass_props: MassProperties::point_mass(f64::INFINITY),
             collision_shape: None,
+            collision_shape_pose: None,
             is_static: true,
             is_sleeping: false,
             sleep_time: 0.0,
@@ -559,6 +566,15 @@ impl Body {
     #[must_use]
     pub fn with_collision_shape(mut self, shape: CollisionShape) -> Self {
         self.collision_shape = Some(shape);
+        self
+    }
+
+    /// Set the local pose of the collision shape relative to the body frame.
+    ///
+    /// Use this when the geom is offset from the body origin (e.g., MJCF `fromto` or `pos`).
+    #[must_use]
+    pub fn with_collision_shape_pose(mut self, pose: Pose) -> Self {
+        self.collision_shape_pose = Some(pose);
         self
     }
 
