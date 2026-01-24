@@ -1,0 +1,17 @@
+[package]
+name = "sim-conformance-tests"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "MuJoCo conformance tests for CortenForge simulation crates"
+
+[dependencies]
+sim-mjcf = { path = "../mjcf" }
+sim-urdf = { path = "../urdf" }
+sim-core = { path = "../core" }
+sim-types = { path = "../types" }
+
+[[test]]
+name = "mujoco_conformance"
+path = "mujoco_conformance/mod.rs"

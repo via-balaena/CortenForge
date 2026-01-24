@@ -77,6 +77,7 @@ members = [
     "sim/L0/mjcf",
     "sim/L0/urdf",
     "sim/L0/physics",
+    "sim/L0/tests",
 
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
@@ -199,9 +200,9 @@ tracing-subscriber = "0.3"
 # ---------------------------------------------------------------------------
 # Bevy Ecosystem (Layer 1 only - not used by Layer 0 crates)
 # ---------------------------------------------------------------------------
-bevy = { version = "0.15", default-features = false }
-avian3d = "0.2"
-bevy_egui = "0.31"
+bevy = { version = "0.18", default-features = false }
+# avian3d = "0.2"  # TODO: Check compatibility with Bevy 0.18
+# bevy_egui = "0.31"  # TODO: Check compatibility with Bevy 0.18
 
 # ---------------------------------------------------------------------------
 # Compression

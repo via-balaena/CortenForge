@@ -51,8 +51,26 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![warn(clippy::all, clippy::pedantic)]
+#![allow(clippy::module_name_repetitions)]
+
+pub mod camera;
+pub mod components;
+pub mod convert;
+pub mod gizmos;
+pub mod mesh;
+pub mod models;
+pub mod plugin;
+pub mod resources;
+pub mod systems;
 
 /// Prelude module for convenient imports.
 pub mod prelude {
-    // Re-exports will be added as the crate develops
+    pub use crate::camera::OrbitCamera;
+    pub use crate::components::{CollisionShapeVisual, PhysicsBody, PhysicsWorldRoot, ShapeType};
+    pub use crate::gizmos::DebugGizmosSet;
+    pub use crate::models::{
+        MjcfModel, ModelError, ModelSource, ModelType, SpawnedMjcf, SpawnedUrdf, UrdfModel,
+    };
+    pub use crate::plugin::SimViewerPlugin;
+    pub use crate::resources::{BodyEntityMap, DebugColors, SimulationHandle, ViewerConfig};
 }

@@ -24,7 +24,7 @@ glam = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
-# Bevy 0.15 (will upgrade to 0.18 when available/stable)
+# Bevy 0.18 - use feature collections for clean compilation
 # Note: Window backend features (x11, wayland) are optional - enable via features.
 # This allows CI to build without system library dependencies.
 bevy = { workspace = true, default-features = false, features = [

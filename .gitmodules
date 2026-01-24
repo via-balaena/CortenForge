@@ -1,0 +1,6 @@
+[submodule "sim/L0/tests/assets/mujoco_menagerie"]
+	path = sim/L0/tests/assets/mujoco_menagerie
+	url = https://github.com/google-deepmind/mujoco_menagerie.git
+[submodule "sim/L0/tests/assets/dm_control"]
+	path = sim/L0/tests/assets/dm_control
+	url = https://github.com/google-deepmind/dm_control.git

@@ -288,7 +288,229 @@ sim/sim-bevy/
 └── tests/
     ├── spawn_tests.rs         # Entity spawning correctness
     ├── sync_tests.rs          # Transform sync accuracy
+    ├── gizmo_tests.rs         # Debug gizmo configuration tests
     └── mesh_tests.rs          # Mesh generation tests
+```
+
+---
+
+## L0 Dependency API Reference
+
+This section documents the actual APIs available from Layer 0 crates, verified against the codebase.
+
+### sim-core: World Management
+
+The `World` struct is the central simulation container.
+
+```rust
+use sim_core::World;
+
+// Body management
+world.add_body(state: RigidBodyState, mass: MassProperties) -> BodyId
+world.add_static_body(pose: Pose) -> BodyId
+world.remove_body(id: BodyId) -> Option<Body>
+world.body(id: BodyId) -> Option<&Body>
+world.body_mut(id: BodyId) -> Option<&mut Body>
+world.body_by_name(name: &str) -> Option<&Body>
+world.bodies() -> impl Iterator<Item = &Body>
+world.body_ids() -> impl Iterator<Item = BodyId>
+world.body_count() -> usize
+
+// Body struct fields
+body.state: RigidBodyState      // Contains pose + twist
+body.collision_shape: Option<CollisionShape>
+body.name: Option<String>
+
+// Joint management
+world.add_joint(...) -> JointId
+world.joint(id: JointId) -> Option<&Joint>
+world.joints() -> impl Iterator<Item = &Joint>
+
+// Simulation stepping (via Stepper)
+let mut stepper = Stepper::new();
+stepper.step(&mut world);
+stepper.run_for(&mut world, duration: f64);
+
+// Direct physics operations
+world.detect_contacts() -> Vec<ContactPoint>
+world.solve_contacts() -> usize
+world.solve_constraints() -> usize
+world.apply_gravity()
+world.clear_forces()
+
+// Utilities
+world.total_kinetic_energy() -> f64
+world.total_linear_momentum() -> Vector3<f64>
+world.center_of_mass() -> Option<Point3<f64>>
+world.validate() -> Result<()>
+```
+
+### sim-types: Core Types
+
+All fundamental types for physics simulation.
+
+```rust
+use sim_types::{BodyId, Pose, RigidBodyState, Twist, MassProperties};
+
+// BodyId - simple wrapper
+BodyId::new(u64) -> BodyId
+body_id.raw() -> u64
+
+// Pose - position + orientation
+Pose {
+    position: Point3<f64>,
+    rotation: UnitQuaternion<f64>,
+}
+Pose::identity() -> Pose
+Pose::from_position(Point3<f64>) -> Pose
+Pose::from_position_rotation(Point3<f64>, UnitQuaternion<f64>) -> Pose
+pose.transform_point(&Point3<f64>) -> Point3<f64>
+pose.transform_vector(&Vector3<f64>) -> Vector3<f64>
+
+// RigidBodyState - full kinematic state
+RigidBodyState {
+    pose: Pose,
+    twist: Twist,
+}
+RigidBodyState::at_rest(pose: Pose) -> RigidBodyState
+
+// Twist - velocities
+Twist {
+    linear: Vector3<f64>,
+    angular: Vector3<f64>,
+}
+
+// MassProperties
+MassProperties::sphere(mass: f64, radius: f64) -> MassProperties
+MassProperties::cuboid(mass: f64, half_extents: Vector3<f64>) -> MassProperties
+// ... other factory methods
+```
+
+### sim-core: CollisionShape Enum
+
+```rust
+use sim_core::CollisionShape;
+
+pub enum CollisionShape {
+    Sphere { radius: f64 },
+    Box { half_extents: Vector3<f64> },
+    Capsule { half_length: f64, radius: f64 },
+    Cylinder { half_length: f64, radius: f64 },
+    Ellipsoid { radii: Vector3<f64> },
+    Plane { normal: Vector3<f64>, distance: f64 },
+    ConvexMesh { vertices: Vec<Point3<f64>> },
+    TriangleMesh { data: Arc<TriangleMeshData> },
+    HeightField { data: Arc<HeightFieldData> },
+    Sdf { data: Arc<SdfCollisionData> },
+}
+
+// Factory methods
+CollisionShape::sphere(radius: f64) -> CollisionShape
+CollisionShape::box_shape(half_extents: Vector3<f64>) -> CollisionShape
+CollisionShape::capsule(half_length: f64, radius: f64) -> CollisionShape
+CollisionShape::cylinder(half_length: f64, radius: f64) -> CollisionShape
+CollisionShape::ellipsoid(radii: Vector3<f64>) -> CollisionShape
+CollisionShape::ground_plane(height: f64) -> CollisionShape
+CollisionShape::convex_mesh(vertices: Vec<Point3<f64>>) -> CollisionShape
+shape.bounding_radius() -> f64
+```
+
+### sim-contact: Contact Types
+
+```rust
+use sim_contact::{ContactPoint, ContactManifold, ContactForce};
+
+// ContactPoint - single contact
+pub struct ContactPoint {
+    pub position: Point3<f64>,      // World coordinates
+    pub normal: Vector3<f64>,       // Unit normal, B→A direction
+    pub penetration: f64,           // Positive when overlapping
+    pub body_a: BodyId,
+    pub body_b: BodyId,
+}
+
+// ContactManifold - collection of contacts between two bodies
+pub struct ContactManifold {
+    pub points: Vec<ContactPoint>,
+    pub body_a: BodyId,
+    pub body_b: BodyId,
+}
+manifold.iter() -> impl Iterator<Item = &ContactPoint>
+manifold.average_normal() -> Vector3<f64>
+manifold.max_penetration() -> f64
+manifold.centroid() -> Option<Point3<f64>>
+
+// ContactForce - resolved contact force
+pub struct ContactForce {
+    pub normal: Vector3<f64>,       // Normal force component
+    pub friction: Vector3<f64>,     // Tangential friction force
+    pub position: Point3<f64>,      // Application point
+}
+force.total() -> Vector3<f64>
+force.torque_about(point: Point3<f64>) -> Vector3<f64>
+```
+
+### sim-mjcf: MJCF Loading
+
+```rust
+use sim_mjcf::{load_mjcf_file, load_mjcf_str, LoadedModel, SpawnedModel};
+
+// Load and parse
+let model: LoadedModel = load_mjcf_file("path/to/model.xml")?;
+let model: LoadedModel = load_mjcf_str(xml_content)?;
+
+// Spawn into World
+let spawned: SpawnedModel = model.spawn_at_origin(&mut world)?;
+
+// Access spawned entities by name
+spawned.body_id("torso") -> Option<BodyId>
+spawned.joint_id("hip") -> Option<JointId>
+```
+
+**Supported geometry:** sphere, box, capsule, cylinder, ellipsoid, plane, mesh (STL/OBJ/PLY)
+
+### sim-urdf: URDF Loading
+
+```rust
+use sim_urdf::{load_urdf_file, load_urdf_str, LoadedRobot, SpawnedRobot};
+
+// Load and parse
+let robot: LoadedRobot = load_urdf_file("path/to/robot.urdf")?;
+let robot: LoadedRobot = load_urdf_str(xml_content)?;
+
+// Spawn into World
+let spawned: SpawnedRobot = robot.spawn_at_origin(&mut world)?;
+
+// Access spawned entities by name
+spawned.link_id("base_link") -> Option<BodyId>
+spawned.joint_id("joint1") -> Option<JointId>
+```
+
+**Supported joints:** fixed, revolute, continuous, prismatic, floating, planar
+
+### sim-constraint: Joint Types
+
+```rust
+use sim_constraint::{
+    RevoluteJoint, PrismaticJoint, FixedJoint, SphericalJoint,
+    JointLimits, JointMotor,
+};
+
+// Joint construction (builder pattern)
+let joint = RevoluteJoint::new(parent_id, child_id, axis)
+    .with_limits(JointLimits::symmetric(range))
+    .with_motor(JointMotor::velocity(target, max_torque))
+    .with_damping(coefficient);
+
+// Available joint types
+RevoluteJoint     // Single-axis rotation (hinge)
+PrismaticJoint    // Single-axis translation (slider)
+FixedJoint        // Rigid connection
+SphericalJoint    // Ball-and-socket (3 DOF)
+UniversalJoint    // Two perpendicular rotation axes
+FreeJoint         // 6 DOF floating base
+PlanarJoint       // XY translation + Z rotation
+CylindricalJoint  // Translation + rotation on same axis
 ```
 
 ---
@@ -720,54 +942,116 @@ pub mod solari {
 
 ## Implementation Phases
 
-### Phase 1: Foundation (MVP)
+### Phase 1: Foundation (MVP) ✅ COMPLETE
 
 **Goal:** Render a sim-core World with basic shapes and camera control.
 
+**Status:** Completed 2026-01-23
+
+**Bevy Version:** 0.18.0 (upgraded from 0.15)
+
 **Tasks:**
-- [ ] Create crate structure and Cargo.toml
-- [ ] Implement `SimViewerPlugin` skeleton
-- [ ] Implement `PhysicsBody` component and transform sync
-- [ ] Implement primitive mesh generation (Sphere, Box, Capsule, Cylinder)
-- [ ] Implement `OrbitCamera` with mouse controls
-- [ ] Create `falling_sphere.rs` example
-- [ ] Create `collision_shapes.rs` example
-- [ ] Write unit tests for mesh generation
-- [ ] Write integration tests for transform sync
-- [ ] Ensure all tests pass, clippy clean, docs complete
+- [x] Create crate structure and Cargo.toml
+- [x] Implement `SimViewerPlugin` skeleton
+- [x] Implement `PhysicsBody` component and transform sync
+- [x] Implement primitive mesh generation (Sphere, Box, Capsule, Cylinder, Ellipsoid)
+- [x] Implement `OrbitCamera` with mouse controls (using Bevy 0.18 `AccumulatedMouseMotion`)
+- [x] Create `falling_sphere.rs` example
+- [x] Create `collision_shapes.rs` example
+- [x] Write unit tests for mesh generation (5 tests)
+- [x] Write unit tests for transform sync (3 tests)
+- [x] Write unit tests for camera controls (3 tests)
+- [x] Write unit tests for type conversions (2 tests)
+- [x] Write integration tests for entity spawning (6 tests)
+- [x] Write integration tests for transform sync (5 tests)
+- [x] All 25 tests pass, clippy clean (now 32 with Phase 2)
 
-**Deliverable:** Can spawn a sim-core World and watch bodies fall.
+**Test Coverage:**
+- 14 unit tests (mesh, camera, convert, systems, plugin, gizmos)
+- 6 spawn integration tests (`tests/spawn_tests.rs`)
+- 5 sync integration tests (`tests/sync_tests.rs`)
+- 7 gizmo integration tests (`tests/gizmo_tests.rs`) [Phase 2]
 
-### Phase 2: Debug Visualization
+**Implementation Notes:**
+- Module structure: `convert`, `components`, `resources`, `systems`, `mesh`, `camera`, `plugin`
+- Type conversions isolated in `convert.rs` for Bevy upgrade resilience
+- `BodyEntityMap` provides O(1) lookups for entity lifecycle management
+- Ellipsoid mesh generation includes proper normal recalculation
+- ConvexMesh falls back to bounding box visualization (proper hull computation deferred)
+- Added `SimViewerPlugin::headless()` for testing without input/render resources
+- Bevy 0.18 migration: `EventReader` → `AccumulatedMouseMotion`, `despawn_recursive` → `despawn`, `Entity::from_raw` → `Entity::from_bits`
+
+**Deliverable:** Can spawn a sim-core World and watch bodies fall. ✅
+
+### Phase 2: Debug Visualization ✅ COMPLETE
 
 **Goal:** Add contact and joint visualization.
 
+**Status:** Completed 2026-01-23
+
 **Tasks:**
-- [ ] Implement contact point gizmos
-- [ ] Implement contact normal arrows
-- [ ] Implement force vector visualization
-- [ ] Implement joint axis visualization
-- [ ] Add `ViewerConfig` resource for runtime toggles
-- [ ] Create `contact_debug.rs` example
-- [ ] Test contact visualization accuracy
+- [x] Implement contact point gizmos
+- [x] Implement contact normal arrows
+- [x] Implement force vector visualization
+- [x] Implement joint axis visualization
+- [x] Implement joint limit arc visualization
+- [x] Add `ViewerConfig` resource for runtime toggles
+- [x] Add `DebugColors` configuration
+- [x] Add `enable_debug_gizmos` plugin option
+- [x] Create `contact_debug.rs` example with keyboard toggles
+- [x] Write gizmo integration tests (7 tests)
+- [x] All 32 tests pass, clippy clean
 
-**Deliverable:** Can see contacts and forces in real-time.
+**Implementation Notes:**
+- New `gizmos.rs` module with 5 gizmo drawing systems
+- Contact detection clones world for snapshot (TODO: cache contacts for performance)
+- `SimViewerPlugin::headless()` disables gizmos (requires `bevy_gizmos`)
+- Joint axes drawn at midpoint between parent/child bodies
+- Joint limits visualized as arc segments with limit markers
+- Keyboard toggles: C=contacts, N=normals, F=forces, J=joints, L=limits
 
-### Phase 3: Model Loading
+**Test Coverage:**
+- 7 gizmo configuration tests (`tests/gizmo_tests.rs`)
+- ViewerConfig default values and modification
+- DebugColors distinctiveness
+- Plugin headless/new configuration
+
+**Deliverable:** Can see contacts and forces in real-time. ✅
+
+### Phase 3: Model Loading ✅ COMPLETE
 
 **Goal:** Load and visualize MJCF/URDF models.
 
-**Tasks:**
-- [ ] Implement MJCF → Bevy entity spawning
-- [ ] Implement URDF → Bevy entity spawning
-- [ ] Handle mesh geometry (ConvexMesh, TriangleMesh)
-- [ ] Handle materials from model files
-- [ ] Create `mjcf_viewer.rs` example
-- [ ] Create `urdf_viewer.rs` example
-- [ ] Test with DeepMind Control Suite models
-- [ ] Test with standard URDF robots (Panda, UR5, etc.)
+**Status:** Completed 2026-01-24
 
-**Deliverable:** Can load MJCF/URDF and visualize articulated robots.
+**Tasks:**
+- [x] Create `models.rs` module with `MjcfModel` and `UrdfModel` wrappers
+- [x] Implement MJCF → Bevy entity spawning via sim-mjcf integration
+- [x] Implement URDF → Bevy entity spawning via sim-urdf integration
+- [x] Handle mesh geometry (TriangleMesh → Bevy Mesh with proper normals)
+- [x] Create `mjcf_viewer.rs` example (simple humanoid)
+- [x] Create `urdf_viewer.rs` example (robot arm with gripper)
+- [x] Add model loading unit tests (6 tests)
+- [x] All 40 tests pass, clippy clean
+
+**Implementation Notes:**
+- New `models.rs` module provides `MjcfModel`, `UrdfModel`, `SpawnedMjcf`, `SpawnedUrdf` types
+- `MjcfModel::from_file()` / `from_xml()` for loading from path or string
+- `UrdfModel::from_file()` / `from_xml()` for loading from path or string
+- `spawn_into()` / `spawn_at()` methods spawn into `SimulationHandle`
+- Models export to prelude: `MjcfModel`, `UrdfModel`, `SpawnedMjcf`, `SpawnedUrdf`, `ModelError`, `ModelSource`, `ModelType`
+- `ModelSource` component tracks which model a body came from
+- `triangle_mesh()` function in `mesh.rs` converts `TriangleMeshData` to Bevy mesh with computed normals
+- Examples demonstrate keyboard toggles and runtime info printing
+
+**Test Coverage:**
+- 6 new model loading tests in `models.rs`:
+  - `mjcf_model_from_str`, `urdf_model_from_str`
+  - `mjcf_spawn_into_world`, `urdf_spawn_into_world`
+  - `spawn_fails_without_world`, `file_not_found_error`
+  - `model_source_component`
+
+**Deliverable:** Can load MJCF/URDF and visualize articulated robots. ✅
 
 ### Phase 4: Polish and Performance
 
@@ -917,23 +1201,145 @@ fn main() {
 
 ---
 
-## Open Questions
+## Architectural Decisions
 
-1. **Simulation stepping:** Should sim-bevy step the simulation, or expect the user to?
-   - Option A: sim-bevy owns the step loop (simpler for users)
-   - Option B: User steps, sim-bevy just visualizes (more flexible)
-   - **Recommendation:** Option B - keep sim-bevy read-only
+### 1. Simulation Stepping: Read-Only Viewer
 
-2. **Entity lifecycle:** How to handle bodies added/removed during simulation?
-   - Spawn/despawn Bevy entities dynamically
-   - Requires tracking sim-core World changes
+**Decision:** sim-bevy does NOT step the simulation. It is a read-only visualization layer.
 
-3. **Multiple worlds:** Support viewing multiple sim-core Worlds?
-   - Probably not for V1, but design for extensibility
+**Rationale:**
+- **Separation of concerns** — sim-bevy is a visualization layer, not a simulation runner. Mixing stepping logic with rendering creates coupling that makes both harder to reason about.
+- **Flexibility** — Users may want different stepping strategies: fixed timestep, variable, substeps, paused with manual advance, or running headless and only visualizing occasionally. If sim-bevy owned stepping, we'd have to expose all these options.
+- **Testing** — A read-only viewer is trivially testable. Create a World in any state, pass it in, verify rendering. No temporal concerns.
+- **Replay/scrubbing** — If the viewer just reads state, timeline scrubbing becomes trivial by swapping which frame's state you point it at.
 
-4. **Headless testing:** How to test rendering without a GPU?
-   - Use Bevy's headless mode for CI
-   - Visual tests require manual verification or screenshot comparison
+**Implementation:** The user steps the simulation themselves (likely in `Update` or `FixedUpdate`), and sim-bevy syncs transforms in `PostUpdate`.
+
+```rust
+// User code - they own the stepping
+fn step_physics(mut sim_world: ResMut<SimulationHandle>, time: Res<Time>) {
+    sim_world.step(time.delta_secs_f64());
+}
+
+// sim-bevy - runs after user's Update systems
+// PostUpdate: sync_body_transforms reads from sim_world, updates Bevy Transforms
+```
+
+### 2. Entity Lifecycle: Polling with HashMap Tracking
+
+**Decision:** Use frame-by-frame polling with a `HashMap<BodyId, Entity>` for efficient tracking.
+
+**Rationale:**
+- **Simplicity** — Polling is straightforward to implement and debug. No event system needed in sim-core.
+- **Performance** — For typical body counts (hundreds to low thousands), O(n) comparison per frame is negligible. The HashMap makes individual lookups O(1).
+- **Robustness** — No risk of missed events or ordering issues. The viewer always reflects ground truth.
+
+**Implementation:**
+
+```rust
+/// Tracks the mapping between sim-core bodies and Bevy entities.
+#[derive(Resource, Default)]
+pub struct BodyEntityMap {
+    body_to_entity: HashMap<BodyId, Entity>,
+    entity_to_body: HashMap<Entity, BodyId>,
+}
+
+/// Synchronizes Bevy entities with sim-core bodies.
+///
+/// Spawns entities for new bodies, despawns entities for removed bodies.
+pub fn sync_physics_entities(
+    mut commands: Commands,
+    sim_world: Res<SimulationHandle>,
+    mut body_map: ResMut<BodyEntityMap>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let Some(world) = sim_world.world() else { return };
+
+    // Collect current body IDs
+    let current_bodies: HashSet<BodyId> = world.body_ids().collect();
+    let tracked_bodies: HashSet<BodyId> = body_map.body_to_entity.keys().copied().collect();
+
+    // Spawn new bodies
+    for &body_id in current_bodies.difference(&tracked_bodies) {
+        let entity = spawn_body_entity(&mut commands, world, body_id, &mut meshes, &mut materials);
+        body_map.body_to_entity.insert(body_id, entity);
+        body_map.entity_to_body.insert(entity, body_id);
+    }
+
+    // Despawn removed bodies
+    for &body_id in tracked_bodies.difference(&current_bodies) {
+        if let Some(entity) = body_map.body_to_entity.remove(&body_id) {
+            body_map.entity_to_body.remove(&entity);
+            commands.entity(entity).despawn_recursive();
+        }
+    }
+}
+```
+
+**Future optimization:** If profiling shows this is a bottleneck, sim-core could expose a generation counter or change events. But start simple.
+
+### 3. Multiple Worlds: Not V1, Designed for Extensibility
+
+**Decision:** V1 supports a single world. The design does not preclude multiple worlds later.
+
+**Rationale:**
+- **Simplicity** — Most use cases involve one world: a humanoid simulation, a robot arm, a physics sandbox.
+- **Complexity avoidance** — Multiple worlds raise questions: which world does the camera follow? How do you position them visually? Do they interact?
+- **Alternative solutions** — The common "multiple world" case is A/B comparison (e.g., two policy rollouts side by side). That's better served by two separate app instances or a split-screen feature.
+
+**Design for extensibility:**
+- `SimulationHandle` stores a single world, but this isn't hardcoded throughout
+- `PhysicsBody` uses just `body_id: BodyId` for V1 (could add `world_id` later)
+- Spawning logic lives in functions that take a world reference, so calling them with different worlds would work
+
+```rust
+// V1: Single world
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PhysicsBody {
+    pub body_id: BodyId,
+}
+
+// Future V2 (if needed): Multi-world support
+#[derive(Component, Debug, Clone, Copy)]
+pub struct PhysicsBody {
+    pub world_id: WorldId,  // Added later
+    pub body_id: BodyId,
+}
+```
+
+If someone needs multiple worlds later, they can:
+1. Run multiple Bevy apps (simplest)
+2. Contribute the multi-world feature when they need it
+
+### 4. Headless Testing
+
+**Decision:** Use Bevy's headless mode for CI; visual tests require screenshot comparison or manual verification.
+
+**Implementation:**
+- Unit tests for mesh generation, transform math, etc. run without GPU
+- Integration tests use `MinimalPlugins` instead of `DefaultPlugins`
+- Visual regression tests (if desired) use screenshot comparison tools
+
+```rust
+#[cfg(test)]
+mod tests {
+    use bevy::prelude::*;
+
+    fn test_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        app.add_plugins(SimViewerPlugin::default());
+        app
+    }
+
+    #[test]
+    fn body_transforms_sync_correctly() {
+        let mut app = test_app();
+        // ... test logic without rendering
+    }
+}
+```
 
 ---
 

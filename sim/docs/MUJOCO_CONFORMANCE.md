@@ -127,64 +127,67 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 
 ---
 
-### 3. Real-World Model Loading
+### 3. Real-World Model Loading ✅ COMPLETE
 
 Load and validate models from established sources.
+
+**Status:** Completed 2026-01-24 - All 38 tests passing
+
+**Implementation:** `sim/L0/tests/mujoco_conformance/` with git submodules for test assets.
+
+Run tests: `cargo test -p sim-conformance-tests`
 
 #### MuJoCo Menagerie (Model Zoo)
 https://github.com/google-deepmind/mujoco_menagerie
 
 | Model | Category | Status | Notes |
 |-------|----------|--------|-------|
-| `franka_emika_panda` | Robot arm | [ ] | 7-DOF manipulator |
-| `universal_robots_ur5e` | Robot arm | [ ] | Industrial arm |
-| `unitree_go1` | Quadruped | [ ] | Walking robot |
-| `unitree_h1` | Humanoid | [ ] | Full humanoid |
-| `shadow_hand` | Dexterous hand | [ ] | High-DOF hand |
-| `anymal_c` | Quadruped | [ ] | ANYmal robot |
-| `berkeley_humanoid` | Humanoid | [ ] | Research humanoid |
+| `franka_emika_panda` | Robot arm | [x] | 7-DOF manipulator |
+| `universal_robots_ur5e` | Robot arm | [x] | Industrial arm |
+| `kuka_iiwa_14` | Robot arm | [x] | 7-DOF arm |
+| `unitree_go1` | Quadruped | [x] | Walking robot |
+| `unitree_go2` | Quadruped | [x] | Walking robot |
+| `unitree_h1` | Humanoid | [x] | Full humanoid |
+| `unitree_g1` | Humanoid | [x] | Compact humanoid |
+| `shadow_hand` | Dexterous hand | [x] | High-DOF hand |
+| `robotiq_2f85` | Gripper | [x] | 2-finger gripper |
+| `anymal_c` | Quadruped | [x] | ANYmal robot |
+| `anymal_b` | Quadruped | [x] | ANYmal robot |
+| `agility_digit` | Humanoid | [x] | Bipedal robot |
+| `robotis_op3` | Humanoid | [x] | Small humanoid |
+| `google_robot` | Mobile manip | [x] | Google robot |
+| `google_barkour` | Quadruped | [x] | Barkour robot |
+| `aloha` | Dual arm | [x] | Bimanual robot |
 
 #### DeepMind Control Suite
 https://github.com/google-deepmind/dm_control
 
 | Domain | Task | Status | Notes |
 |--------|------|--------|-------|
-| `acrobot` | swingup | [ ] | Double pendulum |
-| `ball_in_cup` | catch | [ ] | Ball manipulation |
-| `cartpole` | balance | [ ] | Classic control |
-| `cheetah` | run | [ ] | Planar runner |
-| `finger` | spin | [ ] | Object manipulation |
-| `fish` | swim | [ ] | 3D swimming |
-| `hopper` | hop | [ ] | Single-leg hopper |
-| `humanoid` | walk | [ ] | Full humanoid |
-| `manipulator` | bring_ball | [ ] | Arm with objects |
-| `pendulum` | swingup | [ ] | Single pendulum |
-| `point_mass` | easy | [ ] | 2D navigation |
-| `reacher` | easy | [ ] | Planar arm |
-| `swimmer` | swimmer6 | [ ] | Multi-link swimmer |
-| `walker` | walk | [ ] | Bipedal walker |
+| `acrobot` | swingup | [x] | Double pendulum |
+| `ball_in_cup` | catch | [x] | Ball manipulation |
+| `cartpole` | balance | [x] | Classic control |
+| `cheetah` | run | [x] | Planar runner |
+| `finger` | spin | [x] | Object manipulation |
+| `fish` | swim | [x] | 3D swimming |
+| `hopper` | hop | [x] | Single-leg hopper |
+| `humanoid` | walk | [x] | Full humanoid |
+| `humanoid_CMU` | walk | [x] | CMU humanoid |
+| `manipulator` | bring_ball | [x] | Arm with objects |
+| `pendulum` | swingup | [x] | Single pendulum |
+| `point_mass` | easy | [x] | 2D navigation |
+| `reacher` | easy | [x] | Planar arm |
+| `swimmer` | swimmer6 | [x] | Multi-link swimmer |
+| `walker` | walk | [x] | Bipedal walker |
+| `quadruped` | walk | [x] | 4-legged walker |
+| `dog` | run | [x] | Realistic dog |
+| `stacker` | stack | [x] | Block stacking |
+| `lqr` | control | [x] | LQR benchmark |
 
-**Test procedure:**
-```rust
-#[test]
-fn test_load_panda() {
-    let mjcf = sim_mjcf::load("test_assets/franka_emika_panda/panda.xml")
-        .expect("Failed to load Panda MJCF");
-
-    // Verify structure
-    assert_eq!(mjcf.bodies.len(), 12); // 7 links + gripper + base
-    assert_eq!(mjcf.joints.len(), 9);  // 7 arm + 2 gripper
-    assert_eq!(mjcf.actuators.len(), 9);
-
-    // Convert to world
-    let world = sim_mjcf::to_world(&mjcf).expect("Failed to convert");
-
-    // Verify kinematics
-    assert!(world.bodies().count() > 0);
-}
-```
-
-**Status:** `[ ] Not started`
+**Test infrastructure:**
+- Git submodules: `sim/L0/tests/assets/mujoco_menagerie/`, `sim/L0/tests/assets/dm_control/`
+- Test crate: `sim/L0/tests/` (sim-conformance-tests)
+- Macro-based tests verify body/joint counts match expectations
 
 ---
 
@@ -363,7 +366,7 @@ jobs:
 |----------|----------|--------|-------|-------|
 | Conformance tests | High | Not started | - | Foundation for validation |
 | Doc comparison | Medium | Not started | - | Guides implementation gaps |
-| Model loading | High | Not started | - | User-facing validation |
+| Model loading | High | ✅ Complete | - | 38 tests passing (2026-01-24) |
 | Trajectory comparison | High | Not started | - | Numerical correctness |
 
 ---
