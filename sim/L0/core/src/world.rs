@@ -179,12 +179,6 @@ impl CollisionShape {
         }
     }
 
-    /// Create a convex mesh collision shape from vertices.
-    ///
-    /// The vertices should form a convex hull in local coordinates.
-    /// For best results, ensure the vertices are actually convex (e.g., compute
-    /// a convex hull first if the input might be non-convex).
-    ///
     /// Recommended maximum vertices for convex-convex collision performance.
     ///
     /// From `MuJoCo` documentation: "For convex-convex collisions, the convex mesh
@@ -196,7 +190,11 @@ impl CollisionShape {
     /// Beyond this, GJK/EPA collision detection becomes expensive.
     pub const CONVEX_MESH_WARN_VERTICES: usize = 64;
 
-    /// Create a convex mesh from vertices.
+    /// Create a convex mesh collision shape from vertices.
+    ///
+    /// The vertices should form a convex hull in local coordinates.
+    /// For best results, ensure the vertices are actually convex (e.g., compute
+    /// a convex hull first if the input might be non-convex).
     ///
     /// # Performance Notes
     ///
