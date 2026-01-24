@@ -185,6 +185,28 @@ impl CollisionShape {
     /// For best results, ensure the vertices are actually convex (e.g., compute
     /// a convex hull first if the input might be non-convex).
     ///
+    /// Recommended maximum vertices for convex-convex collision performance.
+    ///
+    /// From `MuJoCo` documentation: "For convex-convex collisions, the convex mesh
+    /// should have roughly fewer than 32 vertices" for good performance.
+    pub const CONVEX_MESH_RECOMMENDED_MAX_VERTICES: usize = 32;
+
+    /// Maximum vertices before issuing a performance warning.
+    ///
+    /// Beyond this, GJK/EPA collision detection becomes expensive.
+    pub const CONVEX_MESH_WARN_VERTICES: usize = 64;
+
+    /// Create a convex mesh from vertices.
+    ///
+    /// # Performance Notes
+    ///
+    /// For optimal collision detection performance:
+    /// - Keep vertex count under 32 for convex-convex collisions
+    /// - Use [`Self::CONVEX_MESH_RECOMMENDED_MAX_VERTICES`] as a guide
+    ///
+    /// The GJK/EPA algorithm complexity increases with vertex count.
+    /// Consider using simpler primitives (Box, Sphere, Capsule) when possible.
+    ///
     /// # Panics
     ///
     /// Panics if vertices is empty.
@@ -195,6 +217,47 @@ impl CollisionShape {
             "ConvexMesh requires at least one vertex"
         );
         Self::ConvexMesh { vertices }
+    }
+
+    /// Create a convex mesh with vertex count validation.
+    ///
+    /// Returns `Ok(shape)` if vertex count is acceptable, or `Err((shape, warning))`
+    /// if the mesh has many vertices that may impact performance.
+    ///
+    /// The shape is returned in both cases - this is for logging purposes only.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err((shape, message))` if vertex count exceeds recommended limits:
+    /// - Warning if > 32 vertices (convex-convex performance impact)
+    /// - Strong warning if > 64 vertices (significant performance impact)
+    pub fn convex_mesh_checked(vertices: Vec<Point3<f64>>) -> Result<Self, (Self, String)> {
+        let count = vertices.len();
+        let shape = Self::convex_mesh(vertices);
+
+        if count > Self::CONVEX_MESH_WARN_VERTICES {
+            Err((
+                shape,
+                format!(
+                    "ConvexMesh has {} vertices (recommended: <{}). \
+                     Consider simplifying for better collision performance.",
+                    count,
+                    Self::CONVEX_MESH_RECOMMENDED_MAX_VERTICES
+                ),
+            ))
+        } else if count > Self::CONVEX_MESH_RECOMMENDED_MAX_VERTICES {
+            Err((
+                shape,
+                format!(
+                    "ConvexMesh has {} vertices (recommended: <{}). \
+                     May impact convex-convex collision performance.",
+                    count,
+                    Self::CONVEX_MESH_RECOMMENDED_MAX_VERTICES
+                ),
+            ))
+        } else {
+            Ok(shape)
+        }
     }
 
     /// Create a convex mesh from a slice of vertices.
@@ -982,7 +1045,36 @@ impl World {
     pub fn set_contact_params(&mut self, params: ContactParams) {
         self.contact_params = params;
         let contact_model = ContactModel::new(params);
-        self.contact_solver = ContactSolver::new(contact_model, ContactSolverConfig::default());
+        // Preserve the existing solver config
+        let solver_config = *self.contact_solver.config();
+        self.contact_solver = ContactSolver::new(contact_model, solver_config);
+    }
+
+    /// Get the current contact solver configuration.
+    #[must_use]
+    pub fn contact_solver_config(&self) -> ContactSolverConfig {
+        *self.contact_solver.config()
+    }
+
+    /// Set the contact solver configuration.
+    ///
+    /// Use this to tune solver performance for different use cases:
+    /// - `ContactSolverConfig::realtime()` for fast, stable simulation (games)
+    /// - `ContactSolverConfig::robotics()` for high accuracy (control, RL)
+    /// - `ContactSolverConfig::high_fidelity()` for maximum precision
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use sim_core::World;
+    /// use sim_contact::ContactSolverConfig;
+    ///
+    /// let mut world = World::default();
+    /// world.set_contact_solver_config(ContactSolverConfig::realtime());
+    /// ```
+    pub fn set_contact_solver_config(&mut self, config: ContactSolverConfig) {
+        let contact_model = ContactModel::new(self.contact_params);
+        self.contact_solver = ContactSolver::new(contact_model, config);
     }
 
     /// Get the simulation configuration.
