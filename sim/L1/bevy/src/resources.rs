@@ -1,6 +1,7 @@
 //! Bevy resources for physics visualization.
 
 use bevy::prelude::*;
+use sim_contact::ContactPoint;
 use sim_core::World;
 use sim_types::BodyId;
 use std::collections::HashMap;
@@ -75,6 +76,70 @@ impl SimulationHandle {
 impl Default for SimulationHandle {
     fn default() -> Self {
         Self::empty()
+    }
+}
+
+/// Cached contacts from the physics simulation.
+///
+/// This resource stores contact points detected during the last physics step,
+/// avoiding the need to re-detect contacts (or clone the world) for visualization.
+///
+/// # Usage
+///
+/// After stepping the simulation, call [`CachedContacts::update`] with the detected
+/// contacts. The gizmo systems will read from this cache automatically.
+///
+/// ```ignore
+/// fn step_physics(
+///     mut sim_handle: ResMut<SimulationHandle>,
+///     mut cached_contacts: ResMut<CachedContacts>,
+/// ) {
+///     if let Some(world) = sim_handle.world_mut() {
+///         // Step physics and cache contacts
+///         let contacts = world.detect_contacts();
+///         cached_contacts.update(contacts);
+///         world.solve_contacts();
+///     }
+/// }
+/// ```
+#[derive(Resource, Default)]
+pub struct CachedContacts {
+    contacts: Vec<ContactPoint>,
+}
+
+impl CachedContacts {
+    /// Create a new empty contact cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Update the cache with new contacts.
+    pub fn update(&mut self, contacts: Vec<ContactPoint>) {
+        self.contacts = contacts;
+    }
+
+    /// Get the cached contacts.
+    #[must_use]
+    pub fn contacts(&self) -> &[ContactPoint] {
+        &self.contacts
+    }
+
+    /// Clear the cache.
+    pub fn clear(&mut self) {
+        self.contacts.clear();
+    }
+
+    /// Check if the cache is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.contacts.is_empty()
+    }
+
+    /// Get the number of cached contacts.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.contacts.len()
     }
 }
 

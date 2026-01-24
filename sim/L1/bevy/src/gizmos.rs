@@ -13,34 +13,29 @@
 #![allow(clippy::cast_precision_loss)] // Small int -> f32 is fine for arc segments
 
 use bevy::prelude::*;
-use sim_contact::ContactPoint;
 
 use crate::convert::{quat_from_unit_quaternion, vec3_from_point, vec3_from_vector};
-use crate::resources::{SimulationHandle, ViewerConfig};
+use crate::resources::{CachedContacts, SimulationHandle, ViewerConfig};
 
 /// System set for debug visualization.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DebugGizmosSet;
 
 /// Draw contact point markers as small spheres.
+///
+/// Reads from [`CachedContacts`] resource, which should be updated after each
+/// physics step. This avoids the performance cost of re-detecting contacts
+/// or cloning the physics world.
 pub fn draw_contact_points(
     mut gizmos: Gizmos,
-    sim_handle: Res<SimulationHandle>,
+    cached_contacts: Res<CachedContacts>,
     config: Res<ViewerConfig>,
 ) {
     if !config.show_contacts {
         return;
     }
 
-    let Some(world) = sim_handle.world() else {
-        return;
-    };
-
-    // Detect contacts for visualization
-    // Note: This is a read-only snapshot; actual contact detection happens in sim-core
-    let contacts = collect_contacts_for_display(world);
-
-    for contact in &contacts {
+    for contact in cached_contacts.contacts() {
         let pos = vec3_from_point(&contact.position);
 
         // Draw contact point as a small sphere
@@ -53,22 +48,19 @@ pub fn draw_contact_points(
 }
 
 /// Draw contact normal arrows.
+///
+/// Reads from [`CachedContacts`] resource, which should be updated after each
+/// physics step.
 pub fn draw_contact_normals(
     mut gizmos: Gizmos,
-    sim_handle: Res<SimulationHandle>,
+    cached_contacts: Res<CachedContacts>,
     config: Res<ViewerConfig>,
 ) {
     if !config.show_contact_normals {
         return;
     }
 
-    let Some(world) = sim_handle.world() else {
-        return;
-    };
-
-    let contacts = collect_contacts_for_display(world);
-
-    for contact in &contacts {
+    for contact in cached_contacts.contacts() {
         let start = vec3_from_point(&contact.position);
         let normal = vec3_from_vector(&contact.normal);
         let end = start + normal * config.contact_normal_length;
@@ -266,18 +258,6 @@ pub fn draw_joint_limits(
             );
         }
     }
-}
-
-/// Collect contacts from the world for visualization.
-///
-/// This performs contact detection to get a snapshot of current contacts.
-/// For performance, this should ideally use cached contacts from the last
-/// physics step, but we use fresh detection for accuracy.
-fn collect_contacts_for_display(world: &sim_core::World) -> Vec<ContactPoint> {
-    // Clone world to avoid borrow issues with detect_contacts (which needs &mut)
-    // In a production system, we'd cache contacts after each physics step
-    let mut world_clone = world.clone();
-    world_clone.detect_contacts()
 }
 
 #[cfg(test)]

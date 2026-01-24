@@ -72,5 +72,8 @@ pub mod prelude {
         MjcfModel, ModelError, ModelSource, ModelType, SpawnedMjcf, SpawnedUrdf, UrdfModel,
     };
     pub use crate::plugin::SimViewerPlugin;
-    pub use crate::resources::{BodyEntityMap, DebugColors, SimulationHandle, ViewerConfig};
+    pub use crate::resources::{
+        BodyEntityMap, CachedContacts, DebugColors, SimulationHandle, ViewerConfig,
+    };
+    pub use crate::systems::update_cached_contacts;
 }
