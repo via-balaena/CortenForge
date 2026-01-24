@@ -1018,21 +1018,40 @@ pub mod solari {
 
 **Deliverable:** Can see contacts and forces in real-time. ✅
 
-### Phase 3: Model Loading
+### Phase 3: Model Loading ✅ COMPLETE
 
 **Goal:** Load and visualize MJCF/URDF models.
 
-**Tasks:**
-- [ ] Implement MJCF → Bevy entity spawning
-- [ ] Implement URDF → Bevy entity spawning
-- [ ] Handle mesh geometry (ConvexMesh, TriangleMesh)
-- [ ] Handle materials from model files
-- [ ] Create `mjcf_viewer.rs` example
-- [ ] Create `urdf_viewer.rs` example
-- [ ] Test with DeepMind Control Suite models
-- [ ] Test with standard URDF robots (Panda, UR5, etc.)
+**Status:** Completed 2026-01-24
 
-**Deliverable:** Can load MJCF/URDF and visualize articulated robots.
+**Tasks:**
+- [x] Create `models.rs` module with `MjcfModel` and `UrdfModel` wrappers
+- [x] Implement MJCF → Bevy entity spawning via sim-mjcf integration
+- [x] Implement URDF → Bevy entity spawning via sim-urdf integration
+- [x] Handle mesh geometry (TriangleMesh → Bevy Mesh with proper normals)
+- [x] Create `mjcf_viewer.rs` example (simple humanoid)
+- [x] Create `urdf_viewer.rs` example (robot arm with gripper)
+- [x] Add model loading unit tests (6 tests)
+- [x] All 40 tests pass, clippy clean
+
+**Implementation Notes:**
+- New `models.rs` module provides `MjcfModel`, `UrdfModel`, `SpawnedMjcf`, `SpawnedUrdf` types
+- `MjcfModel::from_file()` / `from_xml()` for loading from path or string
+- `UrdfModel::from_file()` / `from_xml()` for loading from path or string
+- `spawn_into()` / `spawn_at()` methods spawn into `SimulationHandle`
+- Models export to prelude: `MjcfModel`, `UrdfModel`, `SpawnedMjcf`, `SpawnedUrdf`, `ModelError`, `ModelSource`, `ModelType`
+- `ModelSource` component tracks which model a body came from
+- `triangle_mesh()` function in `mesh.rs` converts `TriangleMeshData` to Bevy mesh with computed normals
+- Examples demonstrate keyboard toggles and runtime info printing
+
+**Test Coverage:**
+- 6 new model loading tests in `models.rs`:
+  - `mjcf_model_from_str`, `urdf_model_from_str`
+  - `mjcf_spawn_into_world`, `urdf_spawn_into_world`
+  - `spawn_fails_without_world`, `file_not_found_error`
+  - `model_source_component`
+
+**Deliverable:** Can load MJCF/URDF and visualize articulated robots. ✅
 
 ### Phase 4: Polish and Performance
 

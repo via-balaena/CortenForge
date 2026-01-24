@@ -28,10 +28,7 @@ pub fn mesh_from_collision_shape(shape: &CollisionShape) -> Option<Mesh> {
         CollisionShape::Ellipsoid { radii } => Some(ellipsoid_mesh(radii)),
         CollisionShape::Plane { .. } => Some(plane_mesh()),
         CollisionShape::ConvexMesh { vertices } => Some(convex_mesh_from_vertices(vertices)),
-        CollisionShape::TriangleMesh { .. } => {
-            // TODO: Implement triangle mesh visualization
-            None
-        }
+        CollisionShape::TriangleMesh { data } => Some(triangle_mesh(data)),
         CollisionShape::HeightField { .. } => {
             // TODO: Implement height field visualization
             None
@@ -180,6 +177,77 @@ pub fn convex_mesh_from_vertices(vertices: &[nalgebra::Point3<f64>]) -> Mesh {
             pos[2] += center.z as f32;
         }
     }
+
+    mesh
+}
+
+/// Create a mesh from triangle mesh data.
+///
+/// Converts the sim-core `TriangleMeshData` to a Bevy mesh with proper
+/// vertices, indices, and normals.
+#[must_use]
+pub fn triangle_mesh(mesh_data: &std::sync::Arc<sim_core::mesh::TriangleMeshData>) -> Mesh {
+    let vertices = mesh_data.vertices();
+    let triangles = mesh_data.triangles();
+
+    if vertices.is_empty() || triangles.is_empty() {
+        return Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+    }
+
+    // Convert vertices to f32
+    let positions: Vec<[f32; 3]> = vertices
+        .iter()
+        .map(|v| [v.x as f32, v.y as f32, v.z as f32])
+        .collect();
+
+    // Convert triangle indices
+    let indices: Vec<u32> = triangles
+        .iter()
+        .flat_map(|tri| [tri.v0 as u32, tri.v1 as u32, tri.v2 as u32])
+        .collect();
+
+    // Compute normals per vertex (average of adjacent face normals)
+    let mut normals = vec![[0.0f32; 3]; vertices.len()];
+    for tri in triangles {
+        let v0 = vertices[tri.v0];
+        let v1 = vertices[tri.v1];
+        let v2 = vertices[tri.v2];
+
+        let e1 = v1 - v0;
+        let e2 = v2 - v0;
+        let face_normal = e1.cross(&e2);
+
+        // Add face normal to each vertex's accumulated normal
+        for &idx in &[tri.v0, tri.v1, tri.v2] {
+            normals[idx][0] += face_normal.x as f32;
+            normals[idx][1] += face_normal.y as f32;
+            normals[idx][2] += face_normal.z as f32;
+        }
+    }
+
+    // Normalize the accumulated normals
+    for normal in &mut normals {
+        let len = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+        if len > 1e-6 {
+            normal[0] /= len;
+            normal[1] /= len;
+            normal[2] /= len;
+        } else {
+            // Default to up for degenerate cases
+            *normal = [0.0, 1.0, 0.0];
+        }
+    }
+
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_indices(bevy::mesh::Indices::U32(indices));
 
     mesh
 }
