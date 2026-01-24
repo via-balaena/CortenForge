@@ -189,6 +189,22 @@ pub struct ViewerConfig {
     pub velocity_scale: f32,
     /// Radius of contact point markers.
     pub contact_marker_radius: f32,
+    /// Length of contact normal arrows.
+    pub contact_normal_length: f32,
+    /// Length of joint axis arrows.
+    pub joint_axis_length: f32,
+    /// Radius of joint limit arcs.
+    pub joint_limit_arc_radius: f32,
+    /// Number of segments for joint limit arcs.
+    pub joint_limit_arc_segments: u32,
+    /// Radius of joint marker spheres.
+    pub joint_marker_radius: f32,
+    /// Minimum force magnitude to display (filters noise).
+    pub force_display_threshold: f32,
+    /// Minimum velocity magnitude to display (filters noise).
+    pub velocity_display_threshold: f32,
+    /// Minimum distance between joint bodies to draw connecting line.
+    pub joint_line_distance_threshold: f32,
     /// Color scheme for debug visualization.
     pub colors: DebugColors,
 }
@@ -206,6 +222,14 @@ impl Default for ViewerConfig {
             force_scale: 0.01,
             velocity_scale: 0.1,
             contact_marker_radius: 0.02,
+            contact_normal_length: 0.15,
+            joint_axis_length: 0.2,
+            joint_limit_arc_radius: 0.1,
+            joint_limit_arc_segments: 16,
+            joint_marker_radius: 0.02,
+            force_display_threshold: 0.01,
+            velocity_display_threshold: 0.01,
+            joint_line_distance_threshold: 0.001,
             colors: DebugColors::default(),
         }
     }
