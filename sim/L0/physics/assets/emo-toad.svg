@@ -8,10 +8,8 @@
   <!-- Toad head -->
   <ellipse cx="100" cy="95" rx="50" ry="40" fill="#3d5a4e"/>
   
-  <!-- Broken heart on belly - smaller and lower -->
-  <path d="M92 140 L100 152 L108 140 Q108 134 100 137 Q92 134 92 140" fill="none" stroke="#0a0a0a" stroke-width="1.5"/>
-  <!-- Centered diagonal crack -->
-  <line x1="95" y1="136" x2="105" y2="150" stroke="#0a0a0a" stroke-width="1.5"/>
+  <!-- Solid black heart on belly -->
+  <path d="M92 140 L100 152 L108 140 Q108 134 100 137 Q92 134 92 140" fill="#0a0a0a"/>
   
   <!-- Studded collar -->
   <path d="M55 105 Q100 115 145 105" stroke="#1a1a1a" stroke-width="6" fill="none"/>
