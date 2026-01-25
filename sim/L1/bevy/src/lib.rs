@@ -111,7 +111,9 @@ pub mod prelude {
     };
     pub use crate::plugin::SimViewerPlugin;
     pub use crate::resources::{
-        BodyEntityMap, CachedContacts, DebugColors, SimulationHandle, ViewerConfig,
+        BodyEntityMap, CachedContacts, DebugColors, MuscleVisualData, MuscleVisualization,
+        SensorVisualData, SensorVisualType, SensorVisualization, SimulationHandle,
+        TendonVisualData, TendonVisualization, ViewerConfig,
     };
     pub use crate::systems::update_cached_contacts;
 

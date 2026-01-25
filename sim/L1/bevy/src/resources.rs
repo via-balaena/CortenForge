@@ -248,6 +248,12 @@ pub struct ViewerConfig {
     pub show_joint_limits: bool,
     /// Whether to show velocity vectors.
     pub show_velocities: bool,
+    /// Whether to show muscle visualization.
+    pub show_muscles: bool,
+    /// Whether to show tendon paths.
+    pub show_tendons: bool,
+    /// Whether to show sensor visualization.
+    pub show_sensors: bool,
     /// Scale factor for force vectors (units per Newton).
     pub force_scale: f32,
     /// Scale factor for velocity vectors (units per m/s).
@@ -270,6 +276,14 @@ pub struct ViewerConfig {
     pub velocity_display_threshold: f32,
     /// Minimum distance between joint bodies to draw connecting line.
     pub joint_line_distance_threshold: f32,
+    /// Muscle visualization line width (as radius).
+    pub muscle_line_radius: f32,
+    /// Tendon visualization line width (as radius).
+    pub tendon_line_radius: f32,
+    /// Scale factor for sensor force arrows.
+    pub sensor_force_scale: f32,
+    /// Length of sensor coordinate frame axes.
+    pub sensor_axis_length: f32,
     /// Color scheme for debug visualization.
     pub colors: DebugColors,
 }
@@ -284,6 +298,9 @@ impl Default for ViewerConfig {
             show_joint_axes: true,
             show_joint_limits: false,
             show_velocities: false,
+            show_muscles: false,
+            show_tendons: false,
+            show_sensors: false,
             force_scale: 0.01,
             velocity_scale: 0.1,
             contact_marker_radius: 0.02,
@@ -295,6 +312,10 @@ impl Default for ViewerConfig {
             force_display_threshold: 0.01,
             velocity_display_threshold: 0.01,
             joint_line_distance_threshold: 0.001,
+            muscle_line_radius: 0.01,
+            tendon_line_radius: 0.005,
+            sensor_force_scale: 0.01,
+            sensor_axis_length: 0.1,
             colors: DebugColors::default(),
         }
     }
@@ -321,6 +342,18 @@ pub struct DebugColors {
     pub static_body: Color,
     /// Color for dynamic bodies.
     pub dynamic_body: Color,
+    /// Color for relaxed muscle (activation = 0).
+    pub muscle_relaxed: Color,
+    /// Color for fully activated muscle (activation = 1).
+    pub muscle_activated: Color,
+    /// Color for tendons.
+    pub tendon: Color,
+    /// Color for IMU sensor frames.
+    pub sensor_imu: Color,
+    /// Color for force/torque sensors.
+    pub sensor_force_torque: Color,
+    /// Color for touch sensors when active.
+    pub sensor_touch_active: Color,
 }
 
 impl Default for DebugColors {
@@ -335,6 +368,397 @@ impl Default for DebugColors {
             angular_velocity: Color::srgb(1.0, 0.2, 0.8),
             static_body: Color::srgb(0.5, 0.5, 0.5),
             dynamic_body: Color::srgb(0.8, 0.6, 0.4),
+            // Muscles: blue (relaxed) to red (activated)
+            muscle_relaxed: Color::srgb(0.2, 0.4, 0.8),
+            muscle_activated: Color::srgb(1.0, 0.2, 0.2),
+            // Tendons: cyan/teal
+            tendon: Color::srgb(0.2, 0.8, 0.8),
+            // Sensors
+            sensor_imu: Color::srgb(0.8, 0.8, 0.2),
+            sensor_force_torque: Color::srgb(0.8, 0.4, 0.8),
+            sensor_touch_active: Color::srgb(1.0, 0.6, 0.2),
         }
+    }
+}
+
+// ============================================================================
+// Musculoskeletal Visualization Resources
+// ============================================================================
+
+/// A muscle instance for visualization.
+///
+/// Since muscles are not stored in the physics World (they're standalone
+/// actuators), users must provide visualization data via this resource.
+#[derive(Debug, Clone)]
+pub struct MuscleVisualData {
+    /// Name of the muscle (for display).
+    pub name: String,
+    /// Origin attachment point in world coordinates.
+    pub origin: nalgebra::Point3<f64>,
+    /// Insertion attachment point in world coordinates.
+    pub insertion: nalgebra::Point3<f64>,
+    /// Current activation level (0.0 = relaxed, 1.0 = fully activated).
+    pub activation: f64,
+    /// Optional via points for curved muscle paths.
+    pub via_points: Vec<nalgebra::Point3<f64>>,
+    /// Optional: current muscle force (for force vector display).
+    pub force: Option<f64>,
+}
+
+impl MuscleVisualData {
+    /// Create a new muscle visualization with straight path.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        origin: nalgebra::Point3<f64>,
+        insertion: nalgebra::Point3<f64>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            origin,
+            insertion,
+            activation: 0.0,
+            via_points: Vec::new(),
+            force: None,
+        }
+    }
+
+    /// Set the activation level.
+    #[must_use]
+    pub fn with_activation(mut self, activation: f64) -> Self {
+        self.activation = activation.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Add via points for curved muscle paths.
+    #[must_use]
+    pub fn with_via_points(mut self, points: Vec<nalgebra::Point3<f64>>) -> Self {
+        self.via_points = points;
+        self
+    }
+
+    /// Set the current muscle force.
+    #[must_use]
+    pub fn with_force(mut self, force: f64) -> Self {
+        self.force = Some(force);
+        self
+    }
+}
+
+/// Resource containing muscle visualization data.
+///
+/// Users update this resource each frame with current muscle state.
+///
+/// # Example
+///
+/// ```ignore
+/// fn update_muscle_visuals(
+///     mut muscles_vis: ResMut<MuscleVisualization>,
+///     my_muscles: Res<MyMuscleState>,
+/// ) {
+///     muscles_vis.clear();
+///     for muscle in &my_muscles.muscles {
+///         muscles_vis.add(MuscleVisualData::new(
+///             &muscle.name,
+///             muscle.origin_world_pos(),
+///             muscle.insertion_world_pos(),
+///         ).with_activation(muscle.activation()));
+///     }
+/// }
+/// ```
+#[derive(Resource, Default)]
+pub struct MuscleVisualization {
+    muscles: Vec<MuscleVisualData>,
+}
+
+impl MuscleVisualization {
+    /// Create a new empty muscle visualization.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a muscle to visualize.
+    pub fn add(&mut self, muscle: MuscleVisualData) {
+        self.muscles.push(muscle);
+    }
+
+    /// Get all muscles for visualization.
+    #[must_use]
+    pub fn muscles(&self) -> &[MuscleVisualData] {
+        &self.muscles
+    }
+
+    /// Clear all muscles (call before updating each frame).
+    pub fn clear(&mut self) {
+        self.muscles.clear();
+    }
+
+    /// Check if empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.muscles.is_empty()
+    }
+
+    /// Get the number of muscles.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.muscles.len()
+    }
+}
+
+/// A tendon instance for visualization.
+#[derive(Debug, Clone)]
+pub struct TendonVisualData {
+    /// Name of the tendon.
+    pub name: String,
+    /// Path points in world coordinates (in order from origin to insertion).
+    pub path: Vec<nalgebra::Point3<f64>>,
+    /// Current tension (for color/thickness scaling).
+    pub tension: f64,
+    /// Current length.
+    pub length: f64,
+    /// Rest length (for stretch visualization).
+    pub rest_length: f64,
+}
+
+impl TendonVisualData {
+    /// Create a new tendon visualization.
+    #[must_use]
+    pub fn new(name: impl Into<String>, path: Vec<nalgebra::Point3<f64>>) -> Self {
+        Self {
+            name: name.into(),
+            path,
+            tension: 0.0,
+            length: 0.0,
+            rest_length: 0.0,
+        }
+    }
+
+    /// Set the tension.
+    #[must_use]
+    pub fn with_tension(mut self, tension: f64) -> Self {
+        self.tension = tension;
+        self
+    }
+
+    /// Set length properties.
+    #[must_use]
+    pub fn with_length(mut self, current: f64, rest: f64) -> Self {
+        self.length = current;
+        self.rest_length = rest;
+        self
+    }
+}
+
+/// Resource containing tendon visualization data.
+#[derive(Resource, Default)]
+pub struct TendonVisualization {
+    tendons: Vec<TendonVisualData>,
+}
+
+impl TendonVisualization {
+    /// Create a new empty tendon visualization.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a tendon to visualize.
+    pub fn add(&mut self, tendon: TendonVisualData) {
+        self.tendons.push(tendon);
+    }
+
+    /// Get all tendons for visualization.
+    #[must_use]
+    pub fn tendons(&self) -> &[TendonVisualData] {
+        &self.tendons
+    }
+
+    /// Clear all tendons.
+    pub fn clear(&mut self) {
+        self.tendons.clear();
+    }
+
+    /// Check if empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tendons.is_empty()
+    }
+
+    /// Get the number of tendons.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.tendons.len()
+    }
+}
+
+/// Type of sensor for visualization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SensorVisualType {
+    /// IMU sensor (shows coordinate frame).
+    Imu,
+    /// Force/torque sensor (shows force/torque arrows).
+    ForceTorque,
+    /// Touch sensor (shows contact highlight).
+    Touch,
+    /// Rangefinder (shows ray).
+    Rangefinder,
+    /// Magnetometer (shows field direction).
+    Magnetometer,
+}
+
+/// A sensor instance for visualization.
+#[derive(Debug, Clone)]
+pub struct SensorVisualData {
+    /// Sensor type.
+    pub sensor_type: SensorVisualType,
+    /// Position in world coordinates.
+    pub position: nalgebra::Point3<f64>,
+    /// Orientation in world coordinates.
+    pub orientation: nalgebra::UnitQuaternion<f64>,
+    /// Measured force (for force/torque sensors).
+    pub force: Option<nalgebra::Vector3<f64>>,
+    /// Measured torque (for force/torque sensors).
+    pub torque: Option<nalgebra::Vector3<f64>>,
+    /// Whether sensor is active/triggered (for touch sensors).
+    pub is_active: bool,
+    /// Ray direction and distance (for rangefinders).
+    pub ray: Option<(nalgebra::Vector3<f64>, f64)>,
+    /// Magnetic field direction (for magnetometers).
+    pub magnetic_field: Option<nalgebra::Vector3<f64>>,
+}
+
+impl SensorVisualData {
+    /// Create an IMU sensor visualization.
+    #[must_use]
+    pub fn imu(
+        position: nalgebra::Point3<f64>,
+        orientation: nalgebra::UnitQuaternion<f64>,
+    ) -> Self {
+        Self {
+            sensor_type: SensorVisualType::Imu,
+            position,
+            orientation,
+            force: None,
+            torque: None,
+            is_active: false,
+            ray: None,
+            magnetic_field: None,
+        }
+    }
+
+    /// Create a force/torque sensor visualization.
+    #[must_use]
+    pub fn force_torque(
+        position: nalgebra::Point3<f64>,
+        orientation: nalgebra::UnitQuaternion<f64>,
+        force: nalgebra::Vector3<f64>,
+        torque: nalgebra::Vector3<f64>,
+    ) -> Self {
+        Self {
+            sensor_type: SensorVisualType::ForceTorque,
+            position,
+            orientation,
+            force: Some(force),
+            torque: Some(torque),
+            is_active: false,
+            ray: None,
+            magnetic_field: None,
+        }
+    }
+
+    /// Create a touch sensor visualization.
+    #[must_use]
+    pub fn touch(position: nalgebra::Point3<f64>, is_active: bool) -> Self {
+        Self {
+            sensor_type: SensorVisualType::Touch,
+            position,
+            orientation: nalgebra::UnitQuaternion::identity(),
+            force: None,
+            torque: None,
+            is_active,
+            ray: None,
+            magnetic_field: None,
+        }
+    }
+
+    /// Create a rangefinder visualization.
+    #[must_use]
+    pub fn rangefinder(
+        position: nalgebra::Point3<f64>,
+        direction: nalgebra::Vector3<f64>,
+        distance: f64,
+    ) -> Self {
+        Self {
+            sensor_type: SensorVisualType::Rangefinder,
+            position,
+            orientation: nalgebra::UnitQuaternion::identity(),
+            force: None,
+            torque: None,
+            is_active: false,
+            ray: Some((direction, distance)),
+            magnetic_field: None,
+        }
+    }
+
+    /// Create a magnetometer visualization.
+    #[must_use]
+    pub fn magnetometer(
+        position: nalgebra::Point3<f64>,
+        magnetic_field: nalgebra::Vector3<f64>,
+    ) -> Self {
+        Self {
+            sensor_type: SensorVisualType::Magnetometer,
+            position,
+            orientation: nalgebra::UnitQuaternion::identity(),
+            force: None,
+            torque: None,
+            is_active: false,
+            ray: None,
+            magnetic_field: Some(magnetic_field),
+        }
+    }
+}
+
+/// Resource containing sensor visualization data.
+#[derive(Resource, Default)]
+pub struct SensorVisualization {
+    sensors: Vec<SensorVisualData>,
+}
+
+impl SensorVisualization {
+    /// Create a new empty sensor visualization.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a sensor to visualize.
+    pub fn add(&mut self, sensor: SensorVisualData) {
+        self.sensors.push(sensor);
+    }
+
+    /// Get all sensors for visualization.
+    #[must_use]
+    pub fn sensors(&self) -> &[SensorVisualData] {
+        &self.sensors
+    }
+
+    /// Clear all sensors.
+    pub fn clear(&mut self) {
+        self.sensors.clear();
+    }
+
+    /// Check if empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sensors.is_empty()
+    }
+
+    /// Get the number of sensors.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.sensors.len()
     }
 }
