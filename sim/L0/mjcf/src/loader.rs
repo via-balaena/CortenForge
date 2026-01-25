@@ -9,9 +9,15 @@ use std::path::Path;
 use nalgebra::{Point3, Vector3};
 use sim_constraint::{
     AdhesionActuator, BoxedActuator, ConnectConstraint, IntegratedVelocityActuator,
-    IntoBoxedActuator, JointLimits, PneumaticCylinderActuator,
+    IntoBoxedActuator, JointLimits, PneumaticCylinderActuator, TendonConstraint,
 };
 use sim_core::{Body, CollisionShape, Joint, World};
+use sim_tendon::{
+    CableProperties, SpatialTendon,
+    path::{AttachmentPoint, TendonPath},
+    spatial::WrappingGeometryRef,
+    wrapping::{CylinderWrap, SphereWrap, WrappingGeometry},
+};
 use sim_types::{BodyId, JointId, JointType, MassProperties, Pose, RigidBodyState};
 
 use crate::config::ExtendedSolverConfig;
@@ -20,7 +26,7 @@ use crate::error::{MjcfError, Result};
 use crate::parser::parse_mjcf_str;
 use crate::types::{
     MjcfActuator, MjcfActuatorType, MjcfBody, MjcfGeom, MjcfGeomType, MjcfJoint, MjcfJointType,
-    MjcfMesh, MjcfModel, MjcfOption,
+    MjcfMesh, MjcfModel, MjcfOption, MjcfTendon, MjcfTendonType,
 };
 use crate::validation::{ValidationResult, validate};
 
@@ -58,6 +64,184 @@ impl std::fmt::Debug for LoadedActuator {
     }
 }
 
+/// Information about a site attachment point.
+///
+/// Sites are attachment points on bodies used for spatial tendons,
+/// sensors, and other features that need to track positions on bodies.
+#[derive(Debug, Clone)]
+pub struct SiteInfo {
+    /// The body this site is attached to.
+    pub body_id: BodyId,
+    /// Position in the body's local frame.
+    pub local_position: Point3<f64>,
+}
+
+/// Information about a geometry that can be used for tendon wrapping.
+///
+/// Geoms can serve as wrapping surfaces for spatial tendons, allowing
+/// tendons to route around obstacles like bones, pulleys, or joints.
+#[derive(Debug, Clone)]
+pub struct GeomInfo {
+    /// The body this geom is attached to.
+    pub body_id: BodyId,
+    /// Position in the body's local frame.
+    pub local_position: Point3<f64>,
+    /// Orientation in the body's local frame (quaternion: w, x, y, z).
+    pub local_orientation: nalgebra::UnitQuaternion<f64>,
+    /// The wrapping geometry (sphere or cylinder).
+    pub wrapping_geometry: Option<WrappingGeometry>,
+}
+
+/// A loaded fixed tendon from MJCF.
+///
+/// Fixed tendons define length as a linear combination of joint positions:
+/// `L = L_rest + Σᵢ coef_i * q_i`
+#[derive(Debug, Clone)]
+pub struct LoadedFixedTendon {
+    /// Tendon name.
+    pub name: String,
+    /// The underlying tendon constraint.
+    pub constraint: TendonConstraint,
+    /// Whether the tendon has length limits.
+    pub limited: bool,
+    /// Length range limits (if limited).
+    pub range: Option<(f64, f64)>,
+    /// Tendon width for visualization.
+    pub width: f64,
+    /// RGBA color for visualization.
+    pub rgba: [f64; 4],
+}
+
+/// A loaded spatial tendon from MJCF.
+///
+/// Spatial tendons route through 3D attachment points (sites) on bodies.
+/// Length is computed from the actual 3D path through space.
+#[derive(Debug, Clone)]
+pub struct LoadedSpatialTendon {
+    /// Tendon name.
+    pub name: String,
+    /// The underlying spatial tendon from sim-tendon.
+    pub tendon: SpatialTendon,
+    /// Whether the tendon has length limits.
+    pub limited: bool,
+    /// Length range limits (if limited).
+    pub range: Option<(f64, f64)>,
+    /// Tendon width for visualization.
+    pub width: f64,
+    /// RGBA color for visualization.
+    pub rgba: [f64; 4],
+}
+
+/// A loaded tendon from MJCF.
+///
+/// Tendons can be either fixed (joint-based coupling) or spatial (3D path through sites).
+// Allow large enum variant: Spatial tendons contain more data than fixed tendons by design.
+// Boxing would add indirection and lifetime complexity without significant memory benefit
+// since tendons are typically few in number and long-lived.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub enum LoadedTendon {
+    /// Fixed tendon: linear combination of joint positions.
+    Fixed(LoadedFixedTendon),
+    /// Spatial tendon: 3D path through attachment sites.
+    Spatial(LoadedSpatialTendon),
+}
+
+impl LoadedTendon {
+    /// Get the tendon name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Fixed(t) => &t.name,
+            Self::Spatial(t) => &t.name,
+        }
+    }
+
+    /// Check if this is a fixed tendon.
+    #[must_use]
+    pub fn is_fixed(&self) -> bool {
+        matches!(self, Self::Fixed(_))
+    }
+
+    /// Check if this is a spatial tendon.
+    #[must_use]
+    pub fn is_spatial(&self) -> bool {
+        matches!(self, Self::Spatial(_))
+    }
+
+    /// Get as a fixed tendon, if it is one.
+    #[must_use]
+    pub fn as_fixed(&self) -> Option<&LoadedFixedTendon> {
+        match self {
+            Self::Fixed(t) => Some(t),
+            Self::Spatial(_) => None,
+        }
+    }
+
+    /// Get as a mutable fixed tendon, if it is one.
+    #[must_use]
+    pub fn as_fixed_mut(&mut self) -> Option<&mut LoadedFixedTendon> {
+        match self {
+            Self::Fixed(t) => Some(t),
+            Self::Spatial(_) => None,
+        }
+    }
+
+    /// Get as a spatial tendon, if it is one.
+    #[must_use]
+    pub fn as_spatial(&self) -> Option<&LoadedSpatialTendon> {
+        match self {
+            Self::Fixed(_) => None,
+            Self::Spatial(t) => Some(t),
+        }
+    }
+
+    /// Get as a mutable spatial tendon, if it is one.
+    #[must_use]
+    pub fn as_spatial_mut(&mut self) -> Option<&mut LoadedSpatialTendon> {
+        match self {
+            Self::Fixed(_) => None,
+            Self::Spatial(t) => Some(t),
+        }
+    }
+
+    /// Whether the tendon has length limits.
+    #[must_use]
+    pub fn limited(&self) -> bool {
+        match self {
+            Self::Fixed(t) => t.limited,
+            Self::Spatial(t) => t.limited,
+        }
+    }
+
+    /// Length range limits (if limited).
+    #[must_use]
+    pub fn range(&self) -> Option<(f64, f64)> {
+        match self {
+            Self::Fixed(t) => t.range,
+            Self::Spatial(t) => t.range,
+        }
+    }
+
+    /// Tendon width for visualization.
+    #[must_use]
+    pub fn width(&self) -> f64 {
+        match self {
+            Self::Fixed(t) => t.width,
+            Self::Spatial(t) => t.width,
+        }
+    }
+
+    /// RGBA color for visualization.
+    #[must_use]
+    pub fn rgba(&self) -> [f64; 4] {
+        match self {
+            Self::Fixed(t) => t.rgba,
+            Self::Spatial(t) => t.rgba,
+        }
+    }
+}
+
 /// A loaded model ready to be spawned into a simulation world.
 #[derive(Debug)]
 pub struct LoadedModel {
@@ -69,12 +253,16 @@ pub struct LoadedModel {
     pub joints: Vec<Joint>,
     /// Connect (ball) equality constraints.
     pub connect_constraints: Vec<ConnectConstraint>,
+    /// Tendon constraints.
+    pub tendons: Vec<LoadedTendon>,
     /// Actuators ready for use.
     pub actuators: Vec<LoadedActuator>,
     /// Map from body name to body ID.
     pub body_to_id: HashMap<String, BodyId>,
     /// Map from joint name to joint ID.
     pub joint_to_id: HashMap<String, JointId>,
+    /// Map from tendon name to index in tendons vec.
+    pub tendon_to_index: HashMap<String, usize>,
     /// Map from actuator name to index in actuators vec.
     pub actuator_to_index: HashMap<String, usize>,
     /// Parsed MJCF options for simulation configuration.
@@ -90,6 +278,10 @@ pub struct SpawnedModel {
     pub body_ids: HashMap<String, BodyId>,
     /// Map from joint name to joint ID in the world.
     pub joint_ids: HashMap<String, JointId>,
+    /// Loaded tendons (constraints that can be applied to joints).
+    pub tendons: Vec<LoadedTendon>,
+    /// Map from tendon name to index in tendons vec.
+    pub tendon_to_index: HashMap<String, usize>,
 }
 
 impl SpawnedModel {
@@ -101,6 +293,29 @@ impl SpawnedModel {
     /// Get the joint ID by name.
     pub fn joint_id(&self, name: &str) -> Option<JointId> {
         self.joint_ids.get(name).copied()
+    }
+
+    /// Get a tendon by name.
+    #[must_use]
+    pub fn tendon(&self, name: &str) -> Option<&LoadedTendon> {
+        self.tendon_to_index
+            .get(name)
+            .and_then(|&idx| self.tendons.get(idx))
+    }
+
+    /// Get a mutable tendon by name.
+    #[must_use]
+    pub fn tendon_mut(&mut self, name: &str) -> Option<&mut LoadedTendon> {
+        self.tendon_to_index
+            .get(name)
+            .copied()
+            .and_then(|idx| self.tendons.get_mut(idx))
+    }
+
+    /// Get the number of tendons.
+    #[must_use]
+    pub fn tendon_count(&self) -> usize {
+        self.tendons.len()
     }
 }
 
@@ -146,6 +361,8 @@ impl LoadedModel {
         Ok(SpawnedModel {
             body_ids,
             joint_ids,
+            tendons: self.tendons,
+            tendon_to_index: self.tendon_to_index,
         })
     }
 
@@ -220,6 +437,38 @@ impl LoadedModel {
     #[must_use]
     pub fn actuator_count(&self) -> usize {
         self.actuators.len()
+    }
+
+    /// Get a tendon by name.
+    #[must_use]
+    pub fn tendon(&self, name: &str) -> Option<&LoadedTendon> {
+        self.tendon_to_index
+            .get(name)
+            .and_then(|&idx| self.tendons.get(idx))
+    }
+
+    /// Get a mutable tendon by name.
+    #[must_use]
+    pub fn tendon_mut(&mut self, name: &str) -> Option<&mut LoadedTendon> {
+        self.tendon_to_index
+            .get(name)
+            .copied()
+            .and_then(|idx| self.tendons.get_mut(idx))
+    }
+
+    /// Get the number of tendons.
+    #[must_use]
+    pub fn tendon_count(&self) -> usize {
+        self.tendons.len()
+    }
+
+    /// Get all actuators targeting a specific tendon.
+    #[must_use]
+    pub fn actuators_for_tendon(&self, tendon_name: &str) -> Vec<&LoadedActuator> {
+        self.actuators
+            .iter()
+            .filter(|a| a.tendon.as_deref() == Some(tendon_name))
+            .collect()
     }
 }
 
@@ -342,6 +591,12 @@ impl MjcfLoader {
         // Build body lookup
         let body_lookup = build_body_lookup(&model.worldbody);
 
+        // Build site lookup (body names, not IDs yet)
+        let site_lookup_by_name = build_site_lookup(&model.worldbody);
+
+        // Build geom lookup for wrapping geometries (body names, not IDs yet)
+        let geom_lookup_by_name = build_geom_lookup(&model.worldbody);
+
         // Create bodies in topological order
         for body_name in &validation.sorted_bodies {
             let mjcf_body = body_lookup
@@ -408,6 +663,21 @@ impl MjcfLoader {
         let connect_constraints =
             self.convert_connect_constraints(&model.equality.connects, &body_to_id)?;
 
+        // Resolve site lookup now that we have body IDs
+        let site_to_info = resolve_site_lookup(&site_lookup_by_name, &body_to_id);
+
+        // Resolve geom lookup now that we have body IDs
+        let geom_to_info = resolve_geom_lookup(&geom_lookup_by_name, &body_to_id);
+
+        // Convert tendons
+        let (tendons, tendon_to_index) = self.convert_tendons(
+            &model.tendons,
+            &joint_to_id,
+            &site_to_info,
+            &geom_to_info,
+            &resolver,
+        )?;
+
         // Convert actuators (with defaults applied)
         let (actuators, actuator_to_index) = self.convert_actuators(&model.actuators, &resolver);
 
@@ -419,9 +689,11 @@ impl MjcfLoader {
             bodies,
             joints,
             connect_constraints,
+            tendons,
             actuators,
             body_to_id,
             joint_to_id,
+            tendon_to_index,
             actuator_to_index,
             option: model.option,
             solver_config,
@@ -1117,6 +1389,202 @@ impl MjcfLoader {
         Ok(constraints)
     }
 
+    /// Convert MJCF tendons to LoadedTendons.
+    ///
+    /// Supports both fixed tendons (linear combinations of joint positions) and
+    /// spatial tendons (point-to-point paths through sites with optional wrapping).
+    fn convert_tendons(
+        &self,
+        mjcf_tendons: &[MjcfTendon],
+        joint_to_id: &HashMap<String, JointId>,
+        site_to_info: &HashMap<String, SiteInfo>,
+        geom_to_info: &HashMap<String, GeomInfo>,
+        resolver: &DefaultResolver,
+    ) -> Result<(Vec<LoadedTendon>, HashMap<String, usize>)> {
+        let mut tendons = Vec::new();
+        let mut tendon_to_index = HashMap::new();
+
+        for mjcf_tendon in mjcf_tendons {
+            // Apply defaults to the tendon
+            let resolved_tendon = resolver.apply_to_tendon(mjcf_tendon);
+
+            match resolved_tendon.tendon_type {
+                MjcfTendonType::Fixed => {
+                    // Fixed tendons: L = L₀ + Σᵢ cᵢ qᵢ
+                    let loaded = self.convert_fixed_tendon(&resolved_tendon, joint_to_id)?;
+
+                    if !loaded.name().is_empty() {
+                        tendon_to_index.insert(loaded.name().to_string(), tendons.len());
+                    }
+
+                    tendons.push(loaded);
+                }
+                MjcfTendonType::Spatial => {
+                    // Spatial tendons route through sites in 3D space with optional wrapping
+                    let loaded =
+                        self.convert_spatial_tendon(&resolved_tendon, site_to_info, geom_to_info)?;
+
+                    if !loaded.name().is_empty() {
+                        tendon_to_index.insert(loaded.name().to_string(), tendons.len());
+                    }
+
+                    tendons.push(loaded);
+                }
+            }
+        }
+
+        Ok((tendons, tendon_to_index))
+    }
+
+    /// Convert a fixed tendon to a LoadedTendon.
+    ///
+    /// Fixed tendons define length as a linear combination of joint positions:
+    /// `L = L_rest + Σᵢ coef_i * q_i`
+    fn convert_fixed_tendon(
+        &self,
+        mjcf_tendon: &MjcfTendon,
+        joint_to_id: &HashMap<String, JointId>,
+    ) -> Result<LoadedTendon> {
+        let mut constraint = TendonConstraint::new(&mjcf_tendon.name);
+
+        // Add each joint with its coefficient as the moment arm
+        for (joint_name, coefficient) in &mjcf_tendon.joints {
+            let joint_id = joint_to_id.get(joint_name).copied().ok_or_else(|| {
+                MjcfError::undefined_joint(joint_name, format!("tendon '{}'", mjcf_tendon.name))
+            })?;
+
+            constraint = constraint.with_joint(joint_id, *coefficient);
+        }
+
+        // Set tendon properties
+        if mjcf_tendon.stiffness > 0.0 {
+            constraint = constraint.with_stiffness(mjcf_tendon.stiffness);
+        }
+
+        if mjcf_tendon.damping > 0.0 {
+            constraint = constraint.with_damping(mjcf_tendon.damping);
+        }
+
+        // Tendons typically can go slack (pull-only) unless they have significant stiffness
+        // With stiffness, they act as spring-dampers in both directions
+        let can_slack = mjcf_tendon.stiffness == 0.0;
+        constraint = constraint.with_can_slack(can_slack);
+
+        // Extract RGBA for visualization
+        let rgba = [
+            mjcf_tendon.rgba.x,
+            mjcf_tendon.rgba.y,
+            mjcf_tendon.rgba.z,
+            mjcf_tendon.rgba.w,
+        ];
+
+        Ok(LoadedTendon::Fixed(LoadedFixedTendon {
+            name: mjcf_tendon.name.clone(),
+            constraint,
+            limited: mjcf_tendon.limited,
+            range: mjcf_tendon.range,
+            width: mjcf_tendon.width,
+            rgba,
+        }))
+    }
+
+    /// Convert a spatial tendon to a LoadedTendon.
+    ///
+    /// Spatial tendons route through 3D attachment points (sites) on bodies.
+    /// The tendon length is computed from the actual path through space.
+    /// Wrapping geometries allow the tendon to route around obstacles.
+    fn convert_spatial_tendon(
+        &self,
+        mjcf_tendon: &MjcfTendon,
+        site_to_info: &HashMap<String, SiteInfo>,
+        geom_to_info: &HashMap<String, GeomInfo>,
+    ) -> Result<LoadedTendon> {
+        // Need at least 2 sites for a valid tendon path
+        if mjcf_tendon.sites.len() < 2 {
+            return Err(MjcfError::invalid_attribute(
+                "sites",
+                format!("spatial tendon '{}'", mjcf_tendon.name),
+                "spatial tendon requires at least 2 sites",
+            ));
+        }
+
+        // Look up each site and build attachment points
+        let mut attachment_points = Vec::with_capacity(mjcf_tendon.sites.len());
+
+        for site_name in &mjcf_tendon.sites {
+            let site_info = site_to_info.get(site_name).ok_or_else(|| {
+                MjcfError::undefined_site(
+                    site_name,
+                    format!("spatial tendon '{}'", mjcf_tendon.name),
+                )
+            })?;
+
+            attachment_points.push(AttachmentPoint::new(
+                site_info.body_id,
+                site_info.local_position,
+            ));
+        }
+
+        // Build the tendon path from attachment points
+        let first = attachment_points[0];
+        let last = attachment_points[attachment_points.len() - 1];
+        let mut path = TendonPath::new(first, last);
+
+        // Add via points (all points between first and last)
+        for point in attachment_points
+            .iter()
+            .skip(1)
+            .take(attachment_points.len() - 2)
+        {
+            path = path.with_via_point(*point);
+        }
+
+        // Create cable properties from MJCF tendon properties
+        let cable = if mjcf_tendon.stiffness > 0.0 {
+            CableProperties::new(mjcf_tendon.stiffness, 0.0) // rest_length will be computed
+                .with_damping(mjcf_tendon.damping)
+        } else {
+            // Inextensible tendon (very high stiffness)
+            CableProperties::new(1e6, 0.0).with_damping(mjcf_tendon.damping)
+        };
+
+        // Create the spatial tendon
+        let mut tendon = SpatialTendon::new(&mjcf_tendon.name, path).with_cable(cable);
+
+        // Add wrapping geometries if specified
+        for geom_name in &mjcf_tendon.wrapping_geoms {
+            let geom_info = geom_to_info.get(geom_name).ok_or_else(|| {
+                MjcfError::undefined_geom(
+                    geom_name,
+                    format!("spatial tendon '{}'", mjcf_tendon.name),
+                )
+            })?;
+
+            // Only add wrapping if we have a valid wrapping geometry
+            if let Some(wrapping_geometry) = geom_info.wrapping_geometry {
+                let wrap_ref = WrappingGeometryRef::new(geom_info.body_id, wrapping_geometry);
+                tendon = tendon.with_wrapping_ref(wrap_ref);
+            }
+        }
+
+        // Extract RGBA for visualization
+        let rgba = [
+            mjcf_tendon.rgba.x,
+            mjcf_tendon.rgba.y,
+            mjcf_tendon.rgba.z,
+            mjcf_tendon.rgba.w,
+        ];
+
+        Ok(LoadedTendon::Spatial(LoadedSpatialTendon {
+            name: mjcf_tendon.name.clone(),
+            tendon,
+            limited: mjcf_tendon.limited,
+            range: mjcf_tendon.range,
+            width: mjcf_tendon.width,
+            rgba,
+        }))
+    }
+
     /// Convert MJCF actuators to LoadedActuators.
     fn convert_actuators(
         &self,
@@ -1345,6 +1813,223 @@ fn build_body_lookup(worldbody: &MjcfBody) -> HashMap<&str, &MjcfBody> {
     }
 
     lookup
+}
+
+/// Build a lookup table from site name to (body_name, local_position).
+///
+/// This collects all sites from the body tree, recording which body each
+/// site belongs to. The body names can later be resolved to BodyIds.
+fn build_site_lookup(worldbody: &MjcfBody) -> HashMap<String, (String, Point3<f64>)> {
+    let mut lookup = HashMap::new();
+
+    fn traverse(body: &MjcfBody, lookup: &mut HashMap<String, (String, Point3<f64>)>) {
+        // Collect sites from this body
+        for site in &body.sites {
+            if !site.name.is_empty() {
+                let local_pos = Point3::new(site.pos.x, site.pos.y, site.pos.z);
+                lookup.insert(site.name.clone(), (body.name.clone(), local_pos));
+            }
+        }
+
+        // Recurse into children
+        for child in &body.children {
+            traverse(child, lookup);
+        }
+    }
+
+    // Also check worldbody sites (sites attached to world/ground)
+    for site in &worldbody.sites {
+        if !site.name.is_empty() {
+            let local_pos = Point3::new(site.pos.x, site.pos.y, site.pos.z);
+            // Use empty string to indicate world attachment
+            lookup.insert(site.name.clone(), (String::new(), local_pos));
+        }
+    }
+
+    for child in &worldbody.children {
+        traverse(child, &mut lookup);
+    }
+
+    lookup
+}
+
+/// Resolve site lookup (with body names) into SiteInfo (with BodyIds).
+///
+/// World-attached sites (empty body name) use BodyId(0) to represent the world.
+fn resolve_site_lookup(
+    site_lookup: &HashMap<String, (String, Point3<f64>)>,
+    body_to_id: &HashMap<String, BodyId>,
+) -> HashMap<String, SiteInfo> {
+    let mut resolved = HashMap::new();
+
+    for (site_name, (body_name, local_pos)) in site_lookup {
+        let body_id = if body_name.is_empty() {
+            // World-attached site
+            BodyId::new(0)
+        } else if let Some(&id) = body_to_id.get(body_name) {
+            id
+        } else {
+            // Body not found - skip this site (shouldn't happen with valid MJCF)
+            continue;
+        };
+
+        resolved.insert(
+            site_name.clone(),
+            SiteInfo {
+                body_id,
+                local_position: *local_pos,
+            },
+        );
+    }
+
+    resolved
+}
+
+/// Intermediate geom info before BodyId resolution.
+///
+/// Stores the body name (string) and geom data so we can resolve to BodyId later.
+#[derive(Debug, Clone)]
+struct GeomLookupEntry {
+    body_name: String,
+    local_position: Point3<f64>,
+    local_orientation: nalgebra::UnitQuaternion<f64>,
+    geom_type: MjcfGeomType,
+    size: Vec<f64>,
+}
+
+/// Build a lookup table from geom name to geom information.
+///
+/// This collects all named geoms from the body tree, recording which body each
+/// geom belongs to and its local pose. Only geoms that can be used for wrapping
+/// (sphere, cylinder) are included.
+fn build_geom_lookup(worldbody: &MjcfBody) -> HashMap<String, GeomLookupEntry> {
+    let mut lookup = HashMap::new();
+
+    fn traverse(body: &MjcfBody, lookup: &mut HashMap<String, GeomLookupEntry>) {
+        // Collect named geoms from this body that can serve as wrapping surfaces
+        for geom in &body.geoms {
+            if let Some(ref name) = geom.name {
+                if !name.is_empty() {
+                    // Only sphere and cylinder can be used for wrapping
+                    if matches!(
+                        geom.geom_type,
+                        MjcfGeomType::Sphere | MjcfGeomType::Cylinder
+                    ) {
+                        let local_pos = Point3::new(geom.pos.x, geom.pos.y, geom.pos.z);
+                        let local_rot = geom.rotation();
+                        lookup.insert(
+                            name.clone(),
+                            GeomLookupEntry {
+                                body_name: body.name.clone(),
+                                local_position: local_pos,
+                                local_orientation: local_rot,
+                                geom_type: geom.geom_type,
+                                size: geom.size.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        // Recurse into children
+        for child in &body.children {
+            traverse(child, lookup);
+        }
+    }
+
+    // Check worldbody geoms (geoms attached to world/ground)
+    for geom in &worldbody.geoms {
+        if let Some(ref name) = geom.name {
+            if !name.is_empty()
+                && matches!(
+                    geom.geom_type,
+                    MjcfGeomType::Sphere | MjcfGeomType::Cylinder
+                )
+            {
+                let local_pos = Point3::new(geom.pos.x, geom.pos.y, geom.pos.z);
+                let local_rot = geom.rotation();
+                // Use empty string to indicate world attachment
+                lookup.insert(
+                    name.clone(),
+                    GeomLookupEntry {
+                        body_name: String::new(),
+                        local_position: local_pos,
+                        local_orientation: local_rot,
+                        geom_type: geom.geom_type,
+                        size: geom.size.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    for child in &worldbody.children {
+        traverse(child, &mut lookup);
+    }
+
+    lookup
+}
+
+/// Resolve geom lookup (with body names) into GeomInfo (with BodyIds).
+///
+/// Also converts the geom shape data into sim-tendon WrappingGeometry types.
+/// World-attached geoms (empty body name) use BodyId(0) to represent the world.
+fn resolve_geom_lookup(
+    geom_lookup: &HashMap<String, GeomLookupEntry>,
+    body_to_id: &HashMap<String, BodyId>,
+) -> HashMap<String, GeomInfo> {
+    let mut resolved = HashMap::new();
+
+    for (geom_name, entry) in geom_lookup {
+        let body_id = if entry.body_name.is_empty() {
+            // World-attached geom
+            BodyId::new(0)
+        } else if let Some(&id) = body_to_id.get(&entry.body_name) {
+            id
+        } else {
+            // Body not found - skip this geom (shouldn't happen with valid MJCF)
+            continue;
+        };
+
+        // Convert to WrappingGeometry based on geom type
+        let wrapping_geometry = match entry.geom_type {
+            MjcfGeomType::Sphere => {
+                // Sphere: size[0] is radius
+                let radius = entry.size.first().copied().unwrap_or(0.1);
+                Some(WrappingGeometry::Sphere(SphereWrap::new(
+                    entry.local_position,
+                    radius,
+                )))
+            }
+            MjcfGeomType::Cylinder => {
+                // Cylinder: size[0] is radius, size[1] is half-length
+                let radius = entry.size.first().copied().unwrap_or(0.1);
+                let half_height = entry.size.get(1).copied().unwrap_or(0.1);
+                // Compute axis from orientation (cylinder is Z-aligned in local frame)
+                let axis = entry.local_orientation * Vector3::z();
+                Some(WrappingGeometry::Cylinder(CylinderWrap::new(
+                    entry.local_position,
+                    axis,
+                    radius,
+                    half_height,
+                )))
+            }
+            _ => None, // Other geom types can't be used for wrapping
+        };
+
+        resolved.insert(
+            geom_name.clone(),
+            GeomInfo {
+                body_id,
+                local_position: entry.local_position,
+                local_orientation: entry.local_orientation,
+                wrapping_geometry,
+            },
+        );
+    }
+
+    resolved
 }
 
 /// Compute a rotation that aligns the local Z axis with the given direction.
@@ -2143,5 +2828,749 @@ mod tests {
 
         // Third constraint should be to world
         assert!(model.connect_constraints[2].is_world_constraint());
+    }
+
+    // ========================================================================
+    // Tendon tests
+    // ========================================================================
+
+    #[test]
+    fn test_fixed_tendon_basic() {
+        let xml = r#"
+            <mujoco model="tendon_test">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="shoulder" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.5"/>
+                        <body name="forearm" pos="0 0 0.5">
+                            <joint name="elbow" type="hinge"/>
+                            <geom type="capsule" size="0.04" fromto="0 0 0 0 0 0.4"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <fixed name="biceps">
+                        <joint joint="shoulder" coef="0.02"/>
+                        <joint joint="elbow" coef="0.015"/>
+                    </fixed>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.tendons.len(), 1);
+        assert_eq!(model.tendon_to_index.len(), 1);
+
+        let tendon = &model.tendons[0];
+        assert_eq!(tendon.name(), "biceps");
+        assert!(tendon.is_fixed());
+
+        // Check the underlying constraint
+        let fixed = tendon.as_fixed().expect("should be fixed tendon");
+        let constraint = &fixed.constraint;
+        assert_eq!(constraint.joints().len(), 2);
+
+        // First joint should be shoulder
+        let shoulder_id = model.joint_to_id["shoulder"];
+        let elbow_id = model.joint_to_id["elbow"];
+
+        // Find the joint entries (order may vary)
+        let shoulder_entry = constraint
+            .joints()
+            .iter()
+            .find(|(id, _)| *id == shoulder_id);
+        let elbow_entry = constraint.joints().iter().find(|(id, _)| *id == elbow_id);
+
+        assert!(shoulder_entry.is_some());
+        assert!(elbow_entry.is_some());
+
+        assert_relative_eq!(shoulder_entry.unwrap().1, 0.02, epsilon = 1e-10);
+        assert_relative_eq!(elbow_entry.unwrap().1, 0.015, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_fixed_tendon_with_properties() {
+        let xml = r#"
+            <mujoco model="tendon_props">
+                <worldbody>
+                    <body name="link">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <fixed name="spring_tendon" stiffness="1000" damping="50" limited="true" range="-0.1 0.2">
+                        <joint joint="j1" coef="0.01"/>
+                    </fixed>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        let tendon = &model.tendons[0];
+        assert_eq!(tendon.name(), "spring_tendon");
+        assert!(tendon.limited());
+        assert_eq!(tendon.range(), Some((-0.1, 0.2)));
+
+        // Check constraint properties
+        let fixed = tendon.as_fixed().expect("should be fixed tendon");
+        assert_relative_eq!(fixed.constraint.stiffness(), 1000.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_tendon_lookup_by_name() {
+        let xml = r#"
+            <mujoco model="tendon_lookup">
+                <worldbody>
+                    <body name="link">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <fixed name="tendon_a">
+                        <joint joint="j1" coef="0.01"/>
+                    </fixed>
+                    <fixed name="tendon_b">
+                        <joint joint="j1" coef="0.02"/>
+                    </fixed>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        // Test lookup by name
+        assert!(model.tendon("tendon_a").is_some());
+        assert!(model.tendon("tendon_b").is_some());
+        assert!(model.tendon("nonexistent").is_none());
+
+        // Check values
+        let tendon_a = model.tendon("tendon_a").unwrap();
+        assert_eq!(tendon_a.name(), "tendon_a");
+
+        let tendon_b = model.tendon("tendon_b").unwrap();
+        assert_eq!(tendon_b.name(), "tendon_b");
+
+        assert_eq!(model.tendon_count(), 2);
+    }
+
+    #[test]
+    fn test_fixed_tendon_undefined_joint() {
+        let xml = r#"
+            <mujoco model="bad_tendon">
+                <worldbody>
+                    <body name="link">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <fixed name="bad">
+                        <joint joint="nonexistent" coef="0.01"/>
+                    </fixed>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let result = load_mjcf_str(xml);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(matches!(err, MjcfError::UndefinedJoint { .. }));
+    }
+
+    #[test]
+    fn test_spawned_model_tendon_access() {
+        let xml = r#"
+            <mujoco model="spawn_tendon">
+                <worldbody>
+                    <body name="link">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <fixed name="my_tendon">
+                        <joint joint="j1" coef="0.01"/>
+                    </fixed>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        let mut world = World::default();
+        let spawned = model.spawn_at_origin(&mut world).expect("should spawn");
+
+        // Tendon should be accessible from spawned model
+        assert_eq!(spawned.tendon_count(), 1);
+        assert!(spawned.tendon("my_tendon").is_some());
+
+        let tendon = spawned.tendon("my_tendon").unwrap();
+        assert_eq!(tendon.name(), "my_tendon");
+    }
+
+    #[test]
+    fn test_multiple_fixed_tendons() {
+        let xml = r#"
+            <mujoco model="multi_tendon">
+                <worldbody>
+                    <body name="upper">
+                        <joint name="shoulder" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/>
+                        <body name="lower" pos="0 0 0.3">
+                            <joint name="elbow" type="hinge"/>
+                            <geom type="capsule" size="0.04" fromto="0 0 0 0 0 0.25"/>
+                            <body name="hand" pos="0 0 0.25">
+                                <joint name="wrist" type="hinge"/>
+                                <geom type="sphere" size="0.03"/>
+                            </body>
+                        </body>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <fixed name="flexor">
+                        <joint joint="shoulder" coef="0.02"/>
+                        <joint joint="elbow" coef="0.015"/>
+                        <joint joint="wrist" coef="0.01"/>
+                    </fixed>
+                    <fixed name="extensor">
+                        <joint joint="shoulder" coef="-0.02"/>
+                        <joint joint="elbow" coef="-0.015"/>
+                        <joint joint="wrist" coef="-0.01"/>
+                    </fixed>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.tendons.len(), 2);
+
+        let flexor = model.tendon("flexor").unwrap();
+        let extensor = model.tendon("extensor").unwrap();
+
+        // Flexor should have positive coefficients
+        let flexor_fixed = flexor.as_fixed().expect("should be fixed");
+        assert_eq!(flexor_fixed.constraint.joints().len(), 3);
+
+        // Extensor should have negative coefficients
+        let extensor_fixed = extensor.as_fixed().expect("should be fixed");
+        let ext_shoulder = extensor_fixed
+            .constraint
+            .joints()
+            .iter()
+            .find(|(id, _)| *id == model.joint_to_id["shoulder"])
+            .unwrap();
+        assert_relative_eq!(ext_shoulder.1, -0.02, epsilon = 1e-10);
+    }
+
+    // ========================================================================
+    // Spatial tendon tests
+    // ========================================================================
+
+    #[test]
+    fn test_spatial_tendon_basic() {
+        let xml = r#"
+            <mujoco model="spatial_tendon_test">
+                <worldbody>
+                    <body name="upper_arm" pos="0 0 0">
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/>
+                        <site name="bicep_origin" pos="0 0.05 0.1"/>
+                        <body name="forearm" pos="0 0 0.3">
+                            <joint name="elbow" type="hinge"/>
+                            <geom type="capsule" size="0.04" fromto="0 0 0 0 0 0.25"/>
+                            <site name="bicep_insertion" pos="0 0.03 0.05"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="bicep">
+                        <site site="bicep_origin"/>
+                        <site site="bicep_insertion"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.tendons.len(), 1);
+
+        let tendon = &model.tendons[0];
+        assert_eq!(tendon.name(), "bicep");
+        assert!(tendon.is_spatial());
+
+        // Verify it's a spatial tendon
+        let spatial = tendon.as_spatial().expect("should be spatial tendon");
+        assert_eq!(spatial.name, "bicep");
+
+        // The underlying SpatialTendon should have a path with 2 points
+        assert_eq!(spatial.tendon.path().num_points(), 2);
+    }
+
+    #[test]
+    fn test_spatial_tendon_with_via_points() {
+        let xml = r#"
+            <mujoco model="spatial_via_points">
+                <worldbody>
+                    <body name="body_a" pos="0 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="site_a" pos="0.1 0 0"/>
+                    </body>
+                    <body name="body_b" pos="0.5 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="site_b" pos="0 0 0"/>
+                    </body>
+                    <body name="body_c" pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="site_c" pos="-0.1 0 0"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="cable">
+                        <site site="site_a"/>
+                        <site site="site_b"/>
+                        <site site="site_c"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        let tendon = model.tendon("cable").expect("should find tendon");
+        assert!(tendon.is_spatial());
+
+        let spatial = tendon.as_spatial().unwrap();
+        // Path should have 3 points (origin, via, insertion)
+        assert_eq!(spatial.tendon.path().num_points(), 3);
+    }
+
+    #[test]
+    fn test_spatial_tendon_with_properties() {
+        let xml = r#"
+            <mujoco model="spatial_props">
+                <worldbody>
+                    <body name="a">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="s1" pos="0 0 0"/>
+                    </body>
+                    <body name="b" pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="s2" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="elastic_cable" stiffness="5000" damping="100"
+                             limited="true" range="0.8 1.2" width="0.005" rgba="0.2 0.8 0.2 1">
+                        <site site="s1"/>
+                        <site site="s2"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        let tendon = model.tendon("elastic_cable").unwrap();
+        assert!(tendon.limited());
+        assert_eq!(tendon.range(), Some((0.8, 1.2)));
+        assert_relative_eq!(tendon.width(), 0.005, epsilon = 1e-10);
+
+        let rgba = tendon.rgba();
+        assert_relative_eq!(rgba[0], 0.2, epsilon = 1e-10);
+        assert_relative_eq!(rgba[1], 0.8, epsilon = 1e-10);
+        assert_relative_eq!(rgba[2], 0.2, epsilon = 1e-10);
+        assert_relative_eq!(rgba[3], 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_spatial_tendon_undefined_site() {
+        let xml = r#"
+            <mujoco model="bad_spatial">
+                <worldbody>
+                    <body name="a">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="real_site" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="bad_tendon">
+                        <site site="real_site"/>
+                        <site site="missing_site"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let result = load_mjcf_str(xml);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(matches!(err, MjcfError::UndefinedSite { .. }));
+    }
+
+    #[test]
+    fn test_spatial_tendon_insufficient_sites() {
+        let xml = r#"
+            <mujoco model="single_site">
+                <worldbody>
+                    <body name="a">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="only_site" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="invalid">
+                        <site site="only_site"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let result = load_mjcf_str(xml);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(matches!(err, MjcfError::InvalidAttribute { .. }));
+    }
+
+    #[test]
+    fn test_mixed_fixed_and_spatial_tendons() {
+        let xml = r#"
+            <mujoco model="mixed_tendons">
+                <worldbody>
+                    <body name="upper">
+                        <joint name="shoulder" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/>
+                        <site name="muscle_origin" pos="0 0.05 0.1"/>
+                        <body name="lower" pos="0 0 0.3">
+                            <joint name="elbow" type="hinge"/>
+                            <geom type="capsule" size="0.04" fromto="0 0 0 0 0 0.25"/>
+                            <site name="muscle_insertion" pos="0 0.03 0.05"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <fixed name="coupling_tendon">
+                        <joint joint="shoulder" coef="1"/>
+                        <joint joint="elbow" coef="-0.5"/>
+                    </fixed>
+                    <spatial name="spatial_muscle">
+                        <site site="muscle_origin"/>
+                        <site site="muscle_insertion"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.tendons.len(), 2);
+        assert_eq!(model.tendon_count(), 2);
+
+        // Check that we can look up both types by name
+        let coupling = model.tendon("coupling_tendon").expect("should find fixed");
+        let muscle = model.tendon("spatial_muscle").expect("should find spatial");
+
+        assert!(coupling.is_fixed());
+        assert!(muscle.is_spatial());
+
+        // Verify the fixed tendon structure
+        let fixed = coupling.as_fixed().unwrap();
+        assert_eq!(fixed.constraint.joints().len(), 2);
+
+        // Verify the spatial tendon structure
+        let spatial = muscle.as_spatial().unwrap();
+        assert_eq!(spatial.tendon.path().num_points(), 2);
+    }
+
+    #[test]
+    fn test_spatial_tendon_body_ids_correct() {
+        let xml = r#"
+            <mujoco model="body_check">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="site1" pos="0.1 0 0"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="site2" pos="-0.1 0 0"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="tendon">
+                        <site site="site1"/>
+                        <site site="site2"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        let tendon = model.tendon("tendon").unwrap();
+        let spatial = tendon.as_spatial().unwrap();
+
+        // Get the body IDs
+        let body1_id = model.body_to_id["body1"];
+        let body2_id = model.body_to_id["body2"];
+
+        // The spatial tendon should reference these bodies
+        let connected = spatial.tendon.connected_bodies();
+        assert!(connected.contains(&body1_id));
+        assert!(connected.contains(&body2_id));
+    }
+
+    #[test]
+    fn test_spatial_tendon_with_sphere_wrapping() {
+        let xml = r#"
+            <mujoco model="wrap_sphere">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="origin" pos="0 0 0"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="insertion" pos="0 0 0"/>
+                    </body>
+                    <body name="pulley" pos="0.5 0.2 0">
+                        <geom name="wrap_sphere" type="sphere" size="0.05" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="cable" stiffness="1000">
+                        <site site="origin"/>
+                        <geom geom="wrap_sphere"/>
+                        <site site="insertion"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        let tendon = model.tendon("cable").unwrap();
+        assert!(tendon.is_spatial());
+
+        let spatial = tendon.as_spatial().unwrap();
+        assert_eq!(spatial.name, "cable");
+
+        // Should have 1 wrapping geometry
+        assert_eq!(spatial.tendon.wrapping().len(), 1);
+    }
+
+    #[test]
+    fn test_spatial_tendon_with_cylinder_wrapping() {
+        let xml = r#"
+            <mujoco model="wrap_cylinder">
+                <worldbody>
+                    <body name="arm" pos="0 0 0">
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/>
+                        <site name="muscle_origin" pos="0.06 0 0.05"/>
+                        <site name="muscle_insertion" pos="0.06 0 0.25"/>
+                        <!-- Cylinder wrap around the elbow joint -->
+                        <geom name="elbow_wrap" type="cylinder" size="0.02 0.03" pos="0 0 0.15"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="bicep" stiffness="2000" damping="50">
+                        <site site="muscle_origin"/>
+                        <geom geom="elbow_wrap"/>
+                        <site site="muscle_insertion"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        let tendon = model.tendon("bicep").unwrap();
+        assert!(tendon.is_spatial());
+
+        let spatial = tendon.as_spatial().unwrap();
+        assert_eq!(spatial.name, "bicep");
+
+        // Should have 1 wrapping geometry (cylinder)
+        assert_eq!(spatial.tendon.wrapping().len(), 1);
+    }
+
+    #[test]
+    fn test_spatial_tendon_with_multiple_wrapping() {
+        let xml = r#"
+            <mujoco model="multi_wrap">
+                <worldbody>
+                    <body name="segment1" pos="0 0 0">
+                        <geom type="sphere" size="0.05"/>
+                        <site name="start" pos="0 0 0"/>
+                    </body>
+                    <body name="pulley1" pos="0.2 0.1 0">
+                        <geom name="pulley_a" type="sphere" size="0.02"/>
+                    </body>
+                    <body name="pulley2" pos="0.4 -0.1 0">
+                        <geom name="pulley_b" type="cylinder" size="0.02 0.02"/>
+                    </body>
+                    <body name="segment2" pos="0.6 0 0">
+                        <geom type="sphere" size="0.05"/>
+                        <site name="end" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="cable">
+                        <site site="start"/>
+                        <geom geom="pulley_a"/>
+                        <geom geom="pulley_b"/>
+                        <site site="end"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        let tendon = model.tendon("cable").unwrap();
+        let spatial = tendon.as_spatial().unwrap();
+
+        // Should have 2 wrapping geometries
+        assert_eq!(spatial.tendon.wrapping().len(), 2);
+    }
+
+    #[test]
+    fn test_spatial_tendon_undefined_wrapping_geom() {
+        let xml = r#"
+            <mujoco model="undefined_wrap">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="site1" pos="0 0 0"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="site2" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="tendon">
+                        <site site="site1"/>
+                        <geom geom="nonexistent_geom"/>
+                        <site site="site2"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let result = load_mjcf_str(xml);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("nonexistent_geom"));
+    }
+
+    #[test]
+    fn test_spatial_tendon_wrapping_ignores_unsupported_geom_types() {
+        // Only sphere and cylinder can be used for wrapping
+        // Box, capsule, etc. should be ignored (no error, just not added)
+        let xml = r#"
+            <mujoco model="unsupported_wrap">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="site1" pos="0 0 0"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="site2" pos="0 0 0"/>
+                        <!-- Box geom - not suitable for wrapping -->
+                        <geom name="box_geom" type="box" size="0.1 0.1 0.1"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="tendon">
+                        <site site="site1"/>
+                        <site site="site2"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        // This should succeed but the box geom won't be available for wrapping
+        let model = load_mjcf_str(xml).expect("should load");
+        let tendon = model.tendon("tendon").unwrap();
+        let spatial = tendon.as_spatial().unwrap();
+
+        // No wrapping geometries added
+        assert_eq!(spatial.tendon.wrapping().len(), 0);
+    }
+
+    #[test]
+    fn test_geom_info_sphere_wrapping_geometry() {
+        let xml = r#"
+            <mujoco model="geom_info_check">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <geom name="wrap_sphere" type="sphere" size="0.05" pos="0.1 0.2 0.3"/>
+                        <site name="s1" pos="0 0 0"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <site name="s2" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="t">
+                        <site site="s1"/>
+                        <geom geom="wrap_sphere"/>
+                        <site site="s2"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        let tendon = model.tendon("t").unwrap();
+        let spatial = tendon.as_spatial().unwrap();
+
+        assert_eq!(spatial.tendon.wrapping().len(), 1);
+    }
+
+    #[test]
+    fn test_worldbody_wrapping_geom() {
+        // Wrapping geoms can be attached to the world (worldbody)
+        let xml = r#"
+            <mujoco model="world_wrap">
+                <worldbody>
+                    <!-- Pulley fixed in world -->
+                    <geom name="fixed_pulley" type="sphere" size="0.05" pos="0.5 0 0"/>
+                    <body name="body1" pos="0 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="start" pos="0 0 0"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <site name="end" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <spatial name="cable">
+                        <site site="start"/>
+                        <geom geom="fixed_pulley"/>
+                        <site site="end"/>
+                    </spatial>
+                </tendon>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        let tendon = model.tendon("cable").unwrap();
+        let spatial = tendon.as_spatial().unwrap();
+
+        // Should have the worldbody wrapping geometry
+        assert_eq!(spatial.tendon.wrapping().len(), 1);
     }
 }

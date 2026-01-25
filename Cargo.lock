@@ -7534,6 +7534,7 @@ dependencies = [
  "serde",
  "sim-constraint",
  "sim-core",
+ "sim-tendon",
  "sim-types",
  "tempfile",
  "thiserror 2.0.18",

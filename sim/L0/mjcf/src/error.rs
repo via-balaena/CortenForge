@@ -68,6 +68,24 @@ pub enum MjcfError {
         context: String,
     },
 
+    /// Reference to undefined site.
+    #[error("reference to undefined site: {site_name} in {context}")]
+    UndefinedSite {
+        /// The site name that was referenced.
+        site_name: String,
+        /// The context where it was referenced.
+        context: String,
+    },
+
+    /// Reference to undefined geom (for wrapping geometry).
+    #[error("reference to undefined geom: {geom_name} in {context}")]
+    UndefinedGeom {
+        /// The geom name that was referenced.
+        geom_name: String,
+        /// The context where it was referenced.
+        context: String,
+    },
+
     /// Duplicate body name.
     #[error("duplicate body name: {0}")]
     DuplicateBody(String),
@@ -217,6 +235,22 @@ impl MjcfError {
         }
     }
 
+    /// Create an undefined site error.
+    pub fn undefined_site(site_name: impl Into<String>, context: impl Into<String>) -> Self {
+        Self::UndefinedSite {
+            site_name: site_name.into(),
+            context: context.into(),
+        }
+    }
+
+    /// Create an undefined geom error.
+    pub fn undefined_geom(geom_name: impl Into<String>, context: impl Into<String>) -> Self {
+        Self::UndefinedGeom {
+            geom_name: geom_name.into(),
+            context: context.into(),
+        }
+    }
+
     /// Create an invalid inertia error.
     pub fn invalid_inertia(body_name: impl Into<String>, message: impl Into<String>) -> Self {
         Self::InvalidInertia {
@@ -307,6 +341,20 @@ mod tests {
         let err = MjcfError::undefined_joint("missing_joint", "actuator motor1");
         assert!(err.to_string().contains("missing_joint"));
         assert!(err.to_string().contains("motor1"));
+    }
+
+    #[test]
+    fn test_undefined_site() {
+        let err = MjcfError::undefined_site("missing_site", "spatial tendon cable1");
+        assert!(err.to_string().contains("missing_site"));
+        assert!(err.to_string().contains("cable1"));
+    }
+
+    #[test]
+    fn test_undefined_geom() {
+        let err = MjcfError::undefined_geom("missing_geom", "spatial tendon cable1");
+        assert!(err.to_string().contains("missing_geom"));
+        assert!(err.to_string().contains("cable1"));
     }
 
     #[test]

@@ -12,6 +12,7 @@ rust-version.workspace = true
 sim-types = { workspace = true }
 sim-core = { workspace = true }
 sim-constraint = { workspace = true }
+sim-tendon = { workspace = true }
 mesh-io = { workspace = true }
 mesh-types = { workspace = true }
 nalgebra = { workspace = true }

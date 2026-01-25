@@ -1641,6 +1641,8 @@ pub struct MjcfTendon {
     pub sites: Vec<String>,
     /// Joint coefficients for fixed tendons: (joint_name, coefficient).
     pub joints: Vec<(String, f64)>,
+    /// Wrapping geom references for spatial tendons (geom names).
+    pub wrapping_geoms: Vec<String>,
 }
 
 impl Default for MjcfTendon {
@@ -1658,6 +1660,7 @@ impl Default for MjcfTendon {
             rgba: Vector4::new(0.5, 0.5, 0.5, 1.0),
             sites: Vec::new(),
             joints: Vec::new(),
+            wrapping_geoms: Vec::new(),
         }
     }
 }
@@ -1716,6 +1719,13 @@ impl MjcfTendon {
     pub fn with_limits(mut self, lower: f64, upper: f64) -> Self {
         self.limited = true;
         self.range = Some((lower, upper));
+        self
+    }
+
+    /// Add a wrapping geom reference to a spatial tendon.
+    #[must_use]
+    pub fn with_wrapping_geom(mut self, geom: impl Into<String>) -> Self {
+        self.wrapping_geoms.push(geom.into());
         self
     }
 }

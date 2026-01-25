@@ -15,7 +15,7 @@
 | sim-tendon | ❌ | Complete | Tendon/cable simulation (standalone math, integrates via sim-constraint) |
 | sim-sensor | ❌ | **Incomplete** | Sensor simulation — rangefinder ray-casting not wired |
 | sim-deformable | ❌ | Unknown | Deformable bodies (soft bodies, cloth, ropes) |
-| sim-mjcf | ❌ | **Incomplete** | MJCF loader — missing tendon integration, equality constraints, proper SDF |
+| sim-mjcf | ❌ | **Incomplete** | MJCF loader — tendon integration done ✅, missing equality constraints, proper SDF |
 | sim-simd | ❌ | Complete | SIMD-optimized math (internal use only, don't re-export) |
 | sim-tests | N/A | — | Integration test harness (not a library) |
 
@@ -37,7 +37,7 @@ Before wiring crates into sim-physics, complete the incomplete implementations.
 
 | Feature | Status | Work Required |
 |---------|--------|---------------|
-| Tendons | Parsed but not integrated | Wire parsed tendons to sim-constraint TendonConstraint |
+| Tendons | ✅ Complete | Fixed + spatial tendons with wrapping geometry support |
 | Equality constraints | Only `connect` implemented | Add `weld`, `joint`, `distance` constraint types |
 | SDF collision | Sphere approximation | Implement proper mesh-to-SDF conversion |
 | Muscle actuators | Approximated as cylinders | Wire to sim-muscle HillMuscle |
@@ -45,11 +45,14 @@ Before wiring crates into sim-physics, complete the incomplete implementations.
 
 **Tasks:**
 
-#### 0.1.1 Tendon Integration
-- [ ] In `sim-mjcf/src/loader.rs`: Convert parsed `MjcfTendon` to `sim_constraint::TendonConstraint`
-- [ ] Add tendons to `LoadedModel` spawn process
-- [ ] Add tendon lookup to `SpawnedModel` (name → constraint ID)
-- [ ] Test: MJCF with spatial tendon → verify constraint created
+#### 0.1.1 Tendon Integration ✅
+- [x] In `sim-mjcf/src/loader.rs`: Convert parsed `MjcfTendon` to `sim_constraint::TendonConstraint` (fixed tendons)
+- [x] In `sim-mjcf/src/loader.rs`: Convert spatial tendons to `sim_tendon::SpatialTendon`
+- [x] Add wrapping geometry support for spatial tendons (sphere/cylinder)
+- [x] Add tendons to `LoadedModel` spawn process
+- [x] Add tendon lookup to `SpawnedModel` (name → tendon)
+- [x] Test: MJCF with fixed tendon → verify TendonConstraint created
+- [x] Test: MJCF with spatial tendon → verify SpatialTendon with path and wrapping
 
 #### 0.1.2 Equality Constraints
 - [ ] In `sim-constraint`: Add `WeldConstraint` (6 DOF lock between bodies)
@@ -70,6 +73,9 @@ Before wiring crates into sim-physics, complete the incomplete implementations.
 - [ ] Test: MJCF with SDF geom → verify collision works
 
 **Acceptance criteria:** MJCF files with tendons, muscles, and equality constraints load and simulate correctly.
+
+**Progress:**
+- ✅ 0.1.1 Tendon Integration — Fixed tendons convert to `TendonConstraint`, spatial tendons convert to `SpatialTendon` with wrapping geometry support (sphere/cylinder). 162 tests passing.
 
 ---
 
@@ -286,23 +292,34 @@ Phase 4 documents what's tested and working.
 
 ## Estimated Scope
 
-| Phase | Effort | PRs |
-|-------|--------|-----|
-| 0.1 | sim-mjcf completion | 3-4 PRs (tendon, equality, muscle, optional SDF) |
-| 0.2 | sim-sensor completion | 1 PR (rangefinder ray-casting) |
-| 1.1-1.5 | Wire into sim-physics | 5 PRs (one per crate) |
-| 2.1-2.4 | Integration tests | 1-2 PRs |
-| 3.x | L1 expansion | Varies |
-| 4.x | Documentation | 1-2 PRs |
+| Phase | Effort | PRs | Status |
+|-------|--------|-----|--------|
+| 0.1.1 | Tendon integration | 1 PR | ✅ Complete |
+| 0.1.2 | Equality constraints | 1 PR | Pending |
+| 0.1.3 | Muscle actuators | 1 PR | Pending |
+| 0.1.4 | SDF collision | 1 PR | Optional/Defer |
+| 0.2 | sim-sensor completion | 1 PR (rangefinder ray-casting) | Pending |
+| 1.1-1.5 | Wire into sim-physics | 5 PRs (one per crate) | Pending |
+| 2.1-2.4 | Integration tests | 1-2 PRs | Pending |
+| 3.x | L1 expansion | Varies | Pending |
+| 4.x | Documentation | 1-2 PRs | Pending |
 
 ---
 
 ## Resolved Questions
 
-1. **sim-mjcf completeness**: Needs work. Tendons, equality constraints, and muscle actuators must be wired before integration. → Phase 0.1
+1. **sim-mjcf completeness**: In progress. ✅ Tendons complete (fixed + spatial with wrapping). Equality constraints, muscle actuators still needed. → Phase 0.1
 
 2. **Muscle/tendon integration with World**: Complete. Both are standalone math libraries by design. Integration layer exists in sim-constraint. → Ready for Phase 1.
 
 3. **Sensor integration with World**: Mostly complete. Decoupled design is intentional. Only rangefinder ray-casting needs work. → Phase 0.2
 
 4. **Feature flags**: Yes. sim-deformable should be optional (heavier deps). Other crates are lightweight. → Phase 1.5
+
+---
+
+## Changelog
+
+| Date | Phase | Description |
+|------|-------|-------------|
+| 2026-01-25 | 0.1.1 | ✅ Tendon integration complete. Fixed tendons → `TendonConstraint`, spatial tendons → `SpatialTendon` with wrapping geometry (sphere/cylinder). Added `SiteInfo`, `GeomInfo`, `LoadedTendon` enum. 162 tests passing. |

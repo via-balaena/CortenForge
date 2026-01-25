@@ -186,7 +186,8 @@ pub use config::ExtendedSolverConfig;
 pub use defaults::DefaultResolver;
 pub use error::{MjcfError, Result};
 pub use loader::{
-    LoadedActuator, LoadedModel, MjcfLoader, SpawnedModel, load_mjcf_file, load_mjcf_str,
+    GeomInfo, LoadedActuator, LoadedFixedTendon, LoadedModel, LoadedSpatialTendon, LoadedTendon,
+    MjcfLoader, SiteInfo, SpawnedModel, load_mjcf_file, load_mjcf_str,
 };
 pub use parser::parse_mjcf_str;
 pub use types::{

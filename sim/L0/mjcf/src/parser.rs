@@ -1461,6 +1461,12 @@ fn parse_tendon<R: BufRead>(
                             tendon.joints.push((joint_name, coef));
                         }
                     }
+                    b"geom" => {
+                        // Wrapping geom reference for spatial tendon
+                        if let Some(geom_name) = get_attribute_opt(e, "geom") {
+                            tendon.wrapping_geoms.push(geom_name);
+                        }
+                    }
                     _ => {}
                 }
             }
