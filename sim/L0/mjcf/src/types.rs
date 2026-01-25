@@ -1285,7 +1285,7 @@ impl MjcfWeld {
 /// A joint equality constraint from `<joint>` element within `<equality>`.
 ///
 /// Constrains a joint to maintain a specific position, or couples two joints
-/// with a linear relationship: q2 = polycoef[0] + polycoef[1]*q1 + ...
+/// with a linear relationship: `q2 = polycoef\[0\] + polycoef\[1\]*q1 + ...`
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfJointEquality {
@@ -1297,8 +1297,8 @@ pub struct MjcfJointEquality {
     pub joint1: String,
     /// Name of the second joint (optional, for coupling).
     pub joint2: Option<String>,
-    /// Polynomial coefficients for coupling: q2 = sum(polycoef[i] * q1^i).
-    /// Default is [0, 1] meaning q2 = q1 (mimic).
+    /// Polynomial coefficients for coupling: `q2 = sum(polycoef\[i\] * q1^i)`.
+    /// Default is `[0, 1]` meaning `q2 = q1` (mimic).
     pub polycoef: Vec<f64>,
     /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
     pub solimp: Option<[f64; 5]>,
