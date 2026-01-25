@@ -125,8 +125,6 @@
 //!
 //! - Non-convex meshes are converted to convex hulls (may not match original geometry)
 //! - Height fields (hfield) and signed distance fields (sdf) are not supported
-//! - Tendons are not supported
-//! - Only connect equality constraints are supported (weld, joint, distance coming soon)
 //! - Composite bodies are not supported
 //! - Include files are not supported
 //!
