@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <!-- Background -->
+  <rect width="200" height="200" fill="#1a1a2e"/>
+  
+  <!-- Toad body -->
+  <ellipse cx="100" cy="130" rx="60" ry="45" fill="#2d4a3e"/>
+  
+  <!-- Toad head -->
+  <ellipse cx="100" cy="95" rx="50" ry="40" fill="#3d5a4e"/>
+  
+  <!-- Darker belly - looks like a band tee -->
+  <ellipse cx="100" cy="138" rx="42" ry="32" fill="#0a0a0a"/>
+  
+  <!-- Band tee design - broken heart -->
+  <path d="M85 125 L100 145 L115 125 Q115 115 100 120 Q85 115 85 125" fill="none" stroke="#8b0000" stroke-width="2"/>
+  <line x1="90" y1="120" x2="110" y2="142" stroke="#8b0000" stroke-width="2"/>
+  
+  <!-- Studded collar -->
+  <path d="M55 105 Q100 115 145 105" stroke="#1a1a1a" stroke-width="6" fill="none"/>
+  <circle cx="65" cy="106" r="3" fill="#c0c0c0"/>
+  <circle cx="80" cy="109" r="3" fill="#c0c0c0"/>
+  <circle cx="100" cy="110" r="3" fill="#c0c0c0"/>
+  <circle cx="120" cy="109" r="3" fill="#c0c0c0"/>
+  <circle cx="135" cy="106" r="3" fill="#c0c0c0"/>
+  
+  <!-- Eye bumps -->
+  <ellipse cx="70" cy="70" rx="20" ry="18" fill="#3d5a4e"/>
+  <ellipse cx="130" cy="70" rx="20" ry="18" fill="#3d5a4e"/>
+  
+  <!-- Heavy eyeshadow - dark smudgy area around eyes -->
+  <ellipse cx="70" cy="68" rx="16" ry="12" fill="#1a0a1a"/>
+  <ellipse cx="130" cy="68" rx="16" ry="12" fill="#1a0a1a"/>
+  
+  <!-- Eyes (white) -->
+  <ellipse cx="70" cy="70" rx="11" ry="13" fill="#e8e8e8"/>
+  <ellipse cx="130" cy="70" rx="11" ry="13" fill="#e8e8e8"/>
+  
+  <!-- Pupils (looking down, sad) -->
+  <ellipse cx="72" cy="75" rx="6" ry="8" fill="#1a1a1a"/>
+  <ellipse cx="132" cy="75" rx="6" ry="8" fill="#1a1a1a"/>
+  
+  <!-- THICK eyeliner on top of eyes -->
+  <path d="M58 62 Q70 54 82 62" stroke="#0a0a0a" stroke-width="6" fill="none" stroke-linecap="round"/>
+  <path d="M118 62 Q130 54 142 62" stroke="#0a0a0a" stroke-width="6" fill="none" stroke-linecap="round"/>
+  
+  <!-- Bold winged eyeliner flicks -->
+  <path d="M82 62 L94 48" stroke="#0a0a0a" stroke-width="5" stroke-linecap="round"/>
+  <path d="M118 62 L106 48" stroke="#0a0a0a" stroke-width="5" stroke-linecap="round"/>
+  
+  <!-- Under-eye liner - thicker -->
+  <path d="M59 80 Q70 85 81 80" stroke="#0a0a0a" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <path d="M119 80 Q130 85 141 80" stroke="#0a0a0a" stroke-width="3" fill="none" stroke-linecap="round"/>
+  
+  <!-- Sad mouth -->
+  <path d="M80 95 Q100 88 120 95" stroke="#1a2a1e" stroke-width="3" fill="none" stroke-linecap="round"/>
+  
+  <!-- Lip piercing - snake bites -->
+  <circle cx="85" cy="96" r="2.5" fill="#2a2a2a" stroke="#c0c0c0" stroke-width="1"/>
+  <circle cx="115" cy="96" r="2.5" fill="#2a2a2a" stroke="#c0c0c0" stroke-width="1"/>
+  
+  <!-- Front legs - plain -->
+  <ellipse cx="55" cy="165" rx="18" ry="12" fill="#2d4a3e"/>
+  <ellipse cx="145" cy="165" rx="18" ry="12" fill="#2d4a3e"/>
+  
+  <!-- Warts/spots -->
+  <circle cx="145" cy="85" r="2.5" fill="#2a3a2e"/>
+</svg>
