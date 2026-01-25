@@ -246,17 +246,30 @@ Test cases:
 
 ---
 
-## Phase 3: L1 Expansion
+## Phase 3: L1 Expansion ✅
 
-### 3.1 sim-bevy Enhancements
+### 3.1 sim-bevy Enhancements ✅
 
-Current state: Visualization works for rigid bodies, contacts, velocities, joints.
+Current state: Visualization works for rigid bodies, contacts, velocities, joints, muscles, tendons, and sensors.
 
-Missing:
-- [ ] Muscle visualization (activation heat map, force vectors)
-- [ ] Tendon visualization (cable paths)
-- [ ] Sensor visualization (IMU axes, force arrows, touch highlights)
-- [ ] Deformable body rendering (mesh deformation)
+Implemented:
+- [x] Muscle visualization (activation heat map blue→red, force vectors, via points)
+- [x] Tendon visualization (cable paths with tension-based opacity)
+- [x] Sensor visualization (IMU coordinate frames, force/torque arrows, touch highlights, rangefinder rays, magnetometer field)
+- [ ] Deformable body rendering (mesh deformation) — deferred to sim-deformable integration
+
+**New resources for user-provided visualization data:**
+- `MuscleVisualization` + `MuscleVisualData`
+- `TendonVisualization` + `TendonVisualData`
+- `SensorVisualization` + `SensorVisualData` (with `SensorVisualType` enum)
+
+**New ViewerConfig flags:**
+- `show_muscles`, `show_tendons`, `show_sensors`
+- `muscle_line_radius`, `tendon_line_radius`, `sensor_force_scale`, `sensor_axis_length`
+
+**New DebugColors:**
+- `muscle_relaxed`, `muscle_activated`, `tendon`
+- `sensor_imu`, `sensor_force_torque`, `sensor_touch_active`
 
 ### 3.2 sim-egui (Future)
 
@@ -333,7 +346,8 @@ Phase 4 documents what's tested and working.
 | 0.2 | sim-sensor completion | 1 PR (rangefinder ray-casting) | ✅ Complete |
 | 1.1-1.5 | Wire into sim-physics | 1 PR (all crates) | ✅ Complete |
 | 2.1-2.4 | Integration tests | 1 PR | ✅ Complete (37 tests) |
-| 3.x | L1 expansion | Varies | Pending |
+| 3.1 | sim-bevy musculoskeletal viz | 1 PR | ✅ Complete |
+| 3.2 | sim-egui debug panel | 1 PR | Future/Deferred |
 | 4.x | Documentation | 1-2 PRs | Pending |
 
 ---
@@ -374,3 +388,4 @@ Phase 4 documents what's tested and working.
 | 2026-01-25 | Bugfix | ✅ Fixed serde feature: Added `hashbrown/serde` to sim-core, `sim-muscle?/serde` to sim-constraint. |
 | 2026-01-25 | Bugfix | ✅ Fixed sim-mjcf inertia computation: `compute_mass_from_geoms()` now computes proper inertia tensors for sphere, box, cylinder, capsule, ellipsoid using correct formulas and parallel axis theorem. |
 | 2026-01-25 | 2.1-2.4 | ✅ Phase 2 complete. Created integration test suite in `sim/L0/tests/integration/` with 4 test modules: urdf_pipeline (6 tests), mjcf_pipeline (10 tests), musculoskeletal (11 tests), sensors (10 tests). Total: 37 integration tests passing. |
+| 2026-01-25 | 3.1 | ✅ sim-bevy musculoskeletal visualization complete. Added `MuscleVisualization`, `TendonVisualization`, `SensorVisualization` resources with user-provided data. Draw functions for muscles (activation heat map), tendons (cable paths), sensors (IMU frames, force arrows, touch, rangefinder, magnetometer). New ViewerConfig flags and colors. |
