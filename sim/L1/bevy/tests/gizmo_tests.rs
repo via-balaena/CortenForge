@@ -136,3 +136,47 @@ fn config_contact_marker_radius_affects_display() {
     config.contact_marker_radius = 0.05;
     assert!((config.contact_marker_radius - 0.05).abs() < f32::EPSILON);
 }
+
+#[test]
+fn cached_contacts_resource_is_initialized() {
+    let mut app = test_app_with_gizmos();
+    app.update();
+
+    // CachedContacts resource should exist and be empty initially
+    let cached = app.world().resource::<CachedContacts>();
+    assert!(cached.is_empty());
+    assert_eq!(cached.len(), 0);
+}
+
+#[test]
+fn cached_contacts_can_be_updated() {
+    use sim_contact::ContactPoint;
+
+    let mut cached = CachedContacts::default();
+
+    // Initially empty
+    assert!(cached.is_empty());
+
+    // Create a mock contact point
+    let contact = ContactPoint {
+        position: nalgebra::Point3::origin(),
+        normal: nalgebra::Vector3::z(),
+        penetration: 0.01,
+        body_a: sim_types::BodyId::new(0),
+        body_b: sim_types::BodyId::new(1),
+    };
+
+    // Update with contacts
+    cached.update(vec![contact]);
+    assert!(!cached.is_empty());
+    assert_eq!(cached.len(), 1);
+
+    // Contacts are accessible
+    let contacts = cached.contacts();
+    assert_eq!(contacts.len(), 1);
+    assert!(contacts[0].penetration > 0.0);
+
+    // Clear works
+    cached.clear();
+    assert!(cached.is_empty());
+}

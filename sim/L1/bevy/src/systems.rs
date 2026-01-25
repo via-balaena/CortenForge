@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use crate::components::{CollisionShapeVisual, PhysicsBody, ShapeType};
 use crate::convert::{quat_from_unit_quaternion, vec3_from_point};
 use crate::mesh::mesh_from_collision_shape;
-use crate::resources::{BodyEntityMap, SimulationHandle, ViewerConfig};
+use crate::resources::{BodyEntityMap, CachedContacts, SimulationHandle, ViewerConfig};
 
 /// Synchronizes Bevy entities with sim-core bodies.
 ///
@@ -150,11 +150,19 @@ pub fn sync_body_transforms(
 }
 
 /// Updates collision shape visibility based on configuration.
+///
+/// This system only runs when [`ViewerConfig`] has changed, avoiding
+/// unnecessary iterations over all collision shape entities every frame.
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters are passed by value
 pub fn update_shape_visibility(
     config: Res<ViewerConfig>,
     mut shapes: Query<&mut Visibility, With<CollisionShapeVisual>>,
 ) {
+    // Early exit if config hasn't changed
+    if !config.is_changed() {
+        return;
+    }
+
     let visibility = if config.show_collision_shapes {
         Visibility::Inherited
     } else {
@@ -166,15 +174,47 @@ pub fn update_shape_visibility(
     }
 }
 
+/// Updates the contact cache from the physics simulation.
+///
+/// This system detects contacts from the current simulation state and caches
+/// them for use by gizmo rendering systems. Run this after stepping physics
+/// but before gizmo drawing.
+///
+/// # Performance
+///
+/// This system performs contact detection, which has O(n²) worst-case complexity
+/// where n is the number of collision shapes. The results are cached so that
+/// multiple gizmo systems can read the same contacts without re-detection.
+#[allow(clippy::needless_pass_by_value)] // Bevy system parameters are passed by value
+pub fn update_cached_contacts(
+    mut sim_handle: ResMut<SimulationHandle>,
+    mut cached_contacts: ResMut<CachedContacts>,
+) {
+    let Some(world) = sim_handle.world_mut() else {
+        cached_contacts.clear();
+        return;
+    };
+
+    let contacts = world.detect_contacts();
+    cached_contacts.update(contacts);
+}
+
 /// System set for physics visualization.
+///
+/// These sets control the ordering of visualization systems:
+/// 1. `EntitySync` - Spawns/despawns Bevy entities for physics bodies
+/// 2. `TransformSync` - Updates transforms from physics state
+/// 3. `ContactCache` - Detects and caches contacts for gizmo rendering
+///
+/// Debug gizmos run in [`DebugGizmosSet`](crate::gizmos::DebugGizmosSet) after `ContactCache`.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SimViewerSet {
     /// Entity lifecycle management (spawn/despawn).
     EntitySync,
     /// Transform synchronization.
     TransformSync,
-    /// Debug visualization.
-    DebugRender,
+    /// Contact cache update (after physics, before gizmos).
+    ContactCache,
 }
 
 #[cfg(test)]

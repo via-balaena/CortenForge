@@ -47,6 +47,44 @@
 //!         .run();
 //! }
 //! ```
+//!
+//! # Performance Tuning
+//!
+//! ## Contact Solver Configuration
+//!
+//! The contact solver can be configured for different use cases:
+//!
+//! ```ignore
+//! use sim_bevy::prelude::*;
+//!
+//! fn configure_physics(mut sim_handle: ResMut<SimulationHandle>) {
+//!     if let Some(world) = sim_handle.world_mut() {
+//!         // Fast/stable for games
+//!         world.set_contact_solver_config(ContactSolverConfig::realtime());
+//!
+//!         // High accuracy for robotics/RL
+//!         // world.set_contact_solver_config(ContactSolverConfig::robotics());
+//!     }
+//! }
+//! ```
+//!
+//! ## Collision Filtering
+//!
+//! Use MuJoCo-compatible collision filtering to reduce contact pairs:
+//!
+//! ```ignore
+//! use sim_core::Body;
+//!
+//! // Group 1 collides only with group 2
+//! body.with_collision_filter(0b01, 0b10);
+//! ```
+//!
+//! ## Mesh Performance
+//!
+//! For convex mesh collision, keep vertex counts low:
+//! - Under 32 vertices: optimal for convex-convex collision
+//! - Under 64 vertices: acceptable performance
+//! - Use `CollisionShape::convex_mesh_checked()` for validation
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -72,5 +110,11 @@ pub mod prelude {
         MjcfModel, ModelError, ModelSource, ModelType, SpawnedMjcf, SpawnedUrdf, UrdfModel,
     };
     pub use crate::plugin::SimViewerPlugin;
-    pub use crate::resources::{BodyEntityMap, DebugColors, SimulationHandle, ViewerConfig};
+    pub use crate::resources::{
+        BodyEntityMap, CachedContacts, DebugColors, SimulationHandle, ViewerConfig,
+    };
+    pub use crate::systems::update_cached_contacts;
+
+    // Re-export performance tuning types from sim-core
+    pub use sim_core::ContactSolverConfig;
 }

@@ -8,9 +8,10 @@ use crate::gizmos::{
     draw_contact_normals, draw_contact_points, draw_force_vectors, draw_joint_axes,
     draw_joint_limits, draw_velocity_vectors, DebugGizmosSet,
 };
-use crate::resources::{BodyEntityMap, SimulationHandle, ViewerConfig};
+use crate::resources::{BodyEntityMap, CachedContacts, SimulationHandle, ViewerConfig};
 use crate::systems::{
-    sync_body_transforms, sync_physics_entities, update_shape_visibility, SimViewerSet,
+    sync_body_transforms, sync_physics_entities, update_cached_contacts, update_shape_visibility,
+    SimViewerSet,
 };
 
 /// Physics visualization plugin for Bevy.
@@ -108,7 +109,8 @@ impl Plugin for SimViewerPlugin {
         // Resources
         app.insert_resource(self.config.clone())
             .init_resource::<SimulationHandle>()
-            .init_resource::<BodyEntityMap>();
+            .init_resource::<BodyEntityMap>()
+            .init_resource::<CachedContacts>();
 
         // Configure system sets
         app.configure_sets(
@@ -134,9 +136,19 @@ impl Plugin for SimViewerPlugin {
             // Configure gizmos to render on top of meshes (disable depth testing)
             app.add_systems(Startup, configure_gizmos);
 
+            // Configure system ordering: TransformSync -> ContactCache -> DebugGizmosSet
             app.configure_sets(
                 PostUpdate,
-                DebugGizmosSet.after(SimViewerSet::TransformSync),
+                (
+                    SimViewerSet::ContactCache.after(SimViewerSet::TransformSync),
+                    DebugGizmosSet.after(SimViewerSet::ContactCache),
+                ),
+            );
+
+            // Update contact cache before gizmo drawing
+            app.add_systems(
+                PostUpdate,
+                update_cached_contacts.in_set(SimViewerSet::ContactCache),
             );
 
             app.add_systems(
