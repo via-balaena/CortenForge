@@ -14,6 +14,11 @@ sim-core = { workspace = true }
 sim-constraint = { workspace = true }
 sim-contact = { workspace = true }
 sim-urdf = { workspace = true }
+sim-mjcf = { workspace = true }
+sim-muscle = { workspace = true }
+sim-tendon = { workspace = true }
+sim-sensor = { workspace = true }
+sim-deformable = { workspace = true, optional = true }
 nalgebra = { workspace = true }
 
 [dev-dependencies]
@@ -21,12 +26,18 @@ approx = { workspace = true }
 
 [features]
 default = []
+deformable = ["dep:sim-deformable"]
 serde = [
     "sim-types/serde",
     "sim-core/serde",
     "sim-constraint/serde",
     "sim-contact/serde",
     "sim-urdf/serde",
+    "sim-mjcf/serde",
+    "sim-muscle/serde",
+    "sim-tendon/serde",
+    "sim-sensor/serde",
+    "sim-deformable?/serde",
 ]
 
 [lints]

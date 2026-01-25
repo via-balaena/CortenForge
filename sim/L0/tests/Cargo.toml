@@ -4,14 +4,25 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = false
-description = "MuJoCo conformance tests for CortenForge simulation crates"
+description = "MuJoCo conformance tests and integration tests for CortenForge simulation crates"
 
 [dependencies]
 sim-mjcf = { path = "../mjcf" }
 sim-urdf = { path = "../urdf" }
-sim-core = { path = "../core" }
+sim-core = { path = "../core", features = ["sensor"] }
 sim-types = { path = "../types" }
+sim-constraint = { path = "../constraint", features = ["muscle"] }
+sim-contact = { path = "../contact" }
+sim-muscle = { path = "../muscle" }
+sim-tendon = { path = "../tendon" }
+sim-sensor = { path = "../sensor" }
+nalgebra = { workspace = true }
+approx = { workspace = true }
 
 [[test]]
 name = "mujoco_conformance"
 path = "mujoco_conformance/mod.rs"
+
+[[test]]
+name = "integration"
+path = "integration/mod.rs"

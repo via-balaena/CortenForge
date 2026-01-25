@@ -7455,8 +7455,15 @@ dependencies = [
 name = "sim-conformance-tests"
 version = "0.1.0"
 dependencies = [
+ "approx 0.5.1",
+ "nalgebra",
+ "sim-constraint",
+ "sim-contact",
  "sim-core",
  "sim-mjcf",
+ "sim-muscle",
+ "sim-sensor",
+ "sim-tendon",
  "sim-types",
  "sim-urdf",
 ]
@@ -7563,6 +7570,11 @@ dependencies = [
  "sim-constraint",
  "sim-contact",
  "sim-core",
+ "sim-deformable",
+ "sim-mjcf",
+ "sim-muscle",
+ "sim-sensor",
+ "sim-tendon",
  "sim-types",
  "sim-urdf",
 ]

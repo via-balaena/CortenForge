@@ -7,6 +7,11 @@
 //! - [`sim_constraint`] - Joint constraints (revolute, prismatic, fixed, etc.)
 //! - [`sim_contact`] - Contact dynamics (collision response, friction)
 //! - [`sim_urdf`] - URDF robot description parser
+//! - [`sim_mjcf`] - MJCF (`MuJoCo` XML Format) model loader
+//! - [`sim_muscle`] - Hill-type muscle actuators for biomechanical simulation
+//! - [`sim_tendon`] - Tendon and cable simulation for cable-driven robots
+//! - [`sim_sensor`] - Sensor simulation (IMU, force/torque, touch, etc.)
+//! - [`sim_deformable`] - Soft body and deformable simulation (behind `deformable` feature)
 //!
 //! # Layer 0
 //!
@@ -68,6 +73,32 @@
 //! println!("Loaded robot with {} bodies", world.body_count());
 //! ```
 //!
+//! # Loading MJCF Models
+//!
+//! ```
+//! use sim_physics::prelude::*;
+//!
+//! let mjcf = r#"
+//!     <mujoco model="pendulum">
+//!         <worldbody>
+//!             <body name="base" pos="0 0 1">
+//!                 <geom type="sphere" size="0.05" mass="1.0"/>
+//!                 <body name="arm" pos="0 0 -0.5">
+//!                     <joint name="hinge" type="hinge" axis="0 1 0"/>
+//!                     <geom type="capsule" size="0.02" fromto="0 0 0 0 0 -0.4" mass="0.1"/>
+//!                 </body>
+//!             </body>
+//!         </worldbody>
+//!     </mujoco>
+//! "#;
+//!
+//! let model = load_mjcf_str(mjcf).unwrap();
+//! let mut world = World::default();
+//! let spawned = model.spawn_at_origin(&mut world).unwrap();
+//!
+//! println!("Loaded MJCF model with {} bodies", world.body_count());
+//! ```
+//!
 //! # Architecture
 //!
 //! ```text
@@ -76,15 +107,15 @@
 //! │                     Unified API / re-exports                    │
 //! └─────────────────────────────────────────────────────────────────┘
 //!                                  │
-//!          ┌───────────────────────┼───────────────────────┐
-//!          │                       │                       │
-//!          ▼                       ▼                       ▼
-//! ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
-//! │    sim-urdf     │   │  sim-constraint │   │   sim-contact   │
-//! │  URDF parsing   │   │ Joint dynamics  │   │ Contact forces  │
-//! └────────┬────────┘   └────────┬────────┘   └────────┬────────┘
-//!          │                     │                     │
-//!          └──────────────┬──────┴─────────────────────┘
+//!     ┌────────────────────────────┼────────────────────────────┐
+//!     │           │                │                │           │
+//!     ▼           ▼                ▼                ▼           ▼
+//! ┌────────┐ ┌────────┐    ┌─────────────┐   ┌─────────┐ ┌─────────┐
+//! │sim-urdf│ │sim-mjcf│    │sim-constraint│   │sim-contact│ │  ...  │
+//! │  URDF  │ │  MJCF  │    │Joint dynamics│   │ Contact │ │        │
+//! └───┬────┘ └───┬────┘    └──────┬──────┘   └────┬────┘ └────────┘
+//!     │          │                │               │
+//!     └──────────┴────────┬───────┴───────────────┘
 //!                         ▼
 //!               ┌─────────────────┐
 //!               │    sim-core     │
@@ -106,6 +137,12 @@
 pub use sim_constraint;
 pub use sim_contact;
 pub use sim_core;
+#[cfg(feature = "deformable")]
+pub use sim_deformable;
+pub use sim_mjcf;
+pub use sim_muscle;
+pub use sim_sensor;
+pub use sim_tendon;
 pub use sim_types;
 pub use sim_urdf;
 
@@ -214,14 +251,203 @@ pub mod prelude {
         UrdfOrigin,
         // IR types (for inspection/modification)
         UrdfRobot,
-        ValidationResult,
+        ValidationResult as UrdfValidationResult,
         // Loader
         load_urdf_file,
         load_urdf_str,
         // Parser (for advanced use)
         parse_urdf_str,
         // Validation
-        validate,
+        validate as validate_urdf,
+    };
+
+    // ========================================================================
+    // MJCF loading from sim-mjcf
+    // ========================================================================
+
+    pub use sim_mjcf::{
+        // Configuration
+        ExtendedSolverConfig,
+        // Loaded model types
+        GeomInfo,
+        LoadedActuator,
+        LoadedFixedTendon,
+        LoadedModel,
+        LoadedMuscle,
+        LoadedSpatialTendon,
+        LoadedTendon,
+        // IR types (for inspection/modification)
+        MjcfActuator,
+        MjcfActuatorType,
+        MjcfBody,
+        // Errors
+        MjcfError,
+        MjcfGeom,
+        MjcfGeomType,
+        MjcfJoint,
+        MjcfJointType as MjcfJointKind,
+        MjcfLoader,
+        MjcfModel,
+        MjcfOption,
+        SiteInfo,
+        SpawnedModel,
+        // Validation
+        ValidationResult as MjcfValidationResult,
+        // Loader - main entry points
+        load_mjcf_file,
+        load_mjcf_str,
+        // Parser (for advanced use)
+        parse_mjcf_str,
+        validate as validate_mjcf,
+    };
+
+    // ========================================================================
+    // Muscle simulation from sim-muscle
+    // ========================================================================
+
+    pub use sim_muscle::{
+        // Activation dynamics
+        ActivationDynamics,
+        ActivationState,
+        // Force curves
+        ActiveForceLengthCurve,
+        BiarticularlMuscleConfig,
+        ConstantMomentArm,
+        // State and diagnostics
+        FiberState,
+        ForceVelocityCurve,
+        // Main muscle types
+        HillMuscle,
+        HillMuscleConfig,
+        MomentArmModel,
+        MuscleActuator,
+        MuscleDiagnostics,
+        MuscleForceCurves,
+        MuscleForceResult,
+        MuscleGroup,
+        // Kinematics
+        MusclePath,
+        PassiveForceLengthCurve,
+        PolynomialMomentArm,
+        SplineMomentArm,
+        ViaPoint,
+    };
+
+    // ========================================================================
+    // Tendon simulation from sim-tendon
+    // ========================================================================
+
+    pub use sim_tendon::{
+        // Path and attachments
+        AttachmentPoint,
+        // Cable properties
+        CableProperties,
+        CableState,
+        // Wrapping geometry
+        CylinderWrap,
+        // Main tendon types
+        FixedTendon,
+        // Pulley systems
+        Pulley,
+        PulleyConfig,
+        PulleySystem,
+        SpatialTendon,
+        SpatialTendonConfig,
+        SphereWrap,
+        TendonActuator,
+        TendonCoefficient,
+        // Errors
+        TendonError,
+        TendonPath,
+        TendonSegment,
+        TensionResult,
+        WrapResult,
+        WrappingGeometry,
+    };
+
+    // ========================================================================
+    // Sensor simulation from sim-sensor
+    // ========================================================================
+
+    pub use sim_sensor::{
+        ForceTorqueReading,
+        ForceTorqueSensor,
+        ForceTorqueSensorConfig,
+        // Sensor types
+        Imu,
+        ImuConfig,
+        ImuReading,
+        Magnetometer,
+        MagnetometerConfig,
+        MagnetometerReading,
+        Rangefinder,
+        RangefinderConfig,
+        RangefinderReading,
+        RayCaster,
+        RayHit,
+        // Common types
+        SensorData,
+        // Errors
+        SensorError,
+        SensorId,
+        SensorReading,
+        SensorType,
+        TouchReading,
+        TouchSensor,
+        TouchSensorConfig,
+    };
+
+    // ========================================================================
+    // Deformable simulation from sim-deformable (optional feature)
+    // ========================================================================
+
+    #[cfg(feature = "deformable")]
+    pub use sim_deformable::{
+        BendingConstraint,
+        // Skinning
+        Bone,
+        BoneWeight,
+        // 1D: Ropes/cables
+        CapsuleChain,
+        CapsuleChainConfig,
+        // 2D: Cloth
+        Cloth,
+        ClothConfig,
+        // Constraints
+        Constraint as DeformableConstraint,
+        ConstraintType as DeformableConstraintType,
+        // Deformable body trait
+        DeformableBody,
+        // Errors
+        DeformableError,
+        // Types
+        DeformableId,
+        // Mesh types
+        DeformableMesh,
+        DistanceConstraint as DeformableDistanceConstraint,
+        Edge as DeformableEdge,
+        FlexEdgeConstraint,
+        FlexEdgeType,
+        // Materials
+        Material,
+        MaterialPreset,
+        Skeleton,
+        SkinnedMesh,
+        SkinnedMeshBuilder,
+        SkinningMethod,
+        SkinningResult,
+        // 3D: Soft bodies
+        SoftBody,
+        SoftBodyConfig,
+        // Solver
+        SolverConfig as DeformableSolverConfig,
+        Tetrahedron,
+        Triangle as DeformableTriangle,
+        Vertex,
+        VertexFlags,
+        VertexWeights,
+        VolumeConstraint,
+        XpbdSolver,
     };
 
     // ========================================================================
@@ -298,5 +524,98 @@ mod tests {
         // Verify contact types are accessible
         let _params = ContactParams::default();
         let _model = ContactModel::new(ContactParams::default());
+    }
+
+    #[test]
+    fn test_mjcf_loading() {
+        let mjcf = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="base" pos="0 0 1">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(mjcf).expect("should parse");
+        assert_eq!(model.name, "test");
+
+        let mut world = World::default();
+        let spawned = model.spawn_at_origin(&mut world).expect("should spawn");
+
+        assert_eq!(world.body_count(), 1);
+        assert!(spawned.body_id("base").is_some());
+    }
+
+    #[test]
+    fn test_mjcf_with_joints() {
+        let mjcf = r#"
+            <mujoco model="pendulum">
+                <worldbody>
+                    <body name="base" pos="0 0 1">
+                        <geom type="sphere" size="0.05" mass="1.0"/>
+                        <body name="arm" pos="0 0 -0.3">
+                            <joint name="hinge" type="hinge" axis="0 1 0" limited="true" range="-3.14 3.14"/>
+                            <geom type="capsule" size="0.02" fromto="0 0 0 0 0 -0.2" mass="0.1"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(mjcf).expect("should parse");
+        assert_eq!(model.name, "pendulum");
+        assert_eq!(model.bodies.len(), 2);
+        assert_eq!(model.joints.len(), 1);
+
+        let mut world = World::default();
+        let spawned = model.spawn_at_origin(&mut world).expect("should spawn");
+
+        assert_eq!(world.body_count(), 2);
+        assert_eq!(world.joint_count(), 1);
+        assert!(spawned.joint_id("hinge").is_some());
+    }
+
+    #[test]
+    fn test_mjcf_world_simulation_pipeline() {
+        // Integration test: MJCF → World → simulate
+        // Note: In MJCF, bodies without joints are considered "welded" to their parent.
+        // A body needs a "free" joint to move independently under gravity.
+        // Mass and inertia are computed from the geom (sphere with mass=1.0, radius=0.1).
+        let mjcf = r#"
+            <mujoco model="falling_ball">
+                <option gravity="0 0 -9.81"/>
+                <worldbody>
+                    <body name="ball" pos="0 0 5">
+                        <joint type="free"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(mjcf).expect("should parse");
+        assert_eq!(model.bodies.len(), 1, "should have 1 body");
+        assert_eq!(model.joints.len(), 1, "should have 1 joint (free)");
+
+        let mut world = World::default();
+        let spawned = model.spawn_at_origin(&mut world).expect("should spawn");
+
+        let ball_id = spawned.body_id("ball").expect("ball should exist");
+        let initial_z = world.body(ball_id).expect("body").state.pose.position.z;
+
+        // Simulate for a short time
+        let mut stepper = Stepper::new();
+        stepper.run_for(&mut world, 0.1).expect("should simulate");
+
+        let final_z = world.body(ball_id).expect("body").state.pose.position.z;
+
+        // Ball should have fallen by at least some amount under gravity
+        // After 0.1s under -9.81 m/s² gravity: Δz ≈ 0.5 * 9.81 * 0.1² = 0.049m
+        assert!(
+            final_z < initial_z - 0.01,
+            "Ball should fall: initial_z={initial_z}, final_z={final_z}"
+        );
     }
 }
