@@ -33,7 +33,7 @@ harness = false
 default = []
 parallel = ["dep:rayon", "sim-constraint/parallel"]
 sensor = ["dep:sim-sensor"]
-serde = ["dep:serde", "serde/rc", "sim-types/serde", "sim-contact/serde", "sim-constraint/serde", "nalgebra/serde-serialize"]
+serde = ["dep:serde", "serde/rc", "sim-types/serde", "sim-contact/serde", "sim-constraint/serde", "nalgebra/serde-serialize", "hashbrown/serde"]
 
 [lints]
 workspace = true

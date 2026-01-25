@@ -909,12 +909,15 @@ impl MjcfLoader {
     }
 
     /// Compute mass properties from geoms.
+    ///
+    /// Computes proper inertia tensors for each geom based on its shape type,
+    /// then combines them using the parallel axis theorem for offset geoms.
     fn compute_mass_from_geoms(&self, geoms: &[MjcfGeom]) -> MassProperties {
         if geoms.is_empty() {
             return MassProperties::point_mass(self.min_mass);
         }
 
-        // Sum up mass from all geoms
+        // First pass: compute total mass and center of mass
         let mut total_mass = 0.0;
         let mut weighted_com = Vector3::zeros();
 
@@ -924,19 +927,148 @@ impl MjcfLoader {
             weighted_com += geom.pos * mass;
         }
 
+        total_mass = total_mass.max(self.min_mass);
         let com = if total_mass > 0.0 {
             weighted_com / total_mass
         } else {
             Vector3::zeros()
         };
 
-        // For simplicity, use point mass approximation with offset COM
-        // A more accurate implementation would compute proper inertia tensor
-        MassProperties::new(
-            total_mass.max(self.min_mass),
-            com,
-            nalgebra::Matrix3::zeros(),
-        )
+        // Second pass: compute combined inertia tensor about the combined COM
+        let mut total_inertia = nalgebra::Matrix3::zeros();
+
+        for geom in geoms {
+            let mass = geom.computed_mass().max(self.min_mass);
+            if mass <= 0.0 {
+                continue;
+            }
+
+            // Get inertia tensor for this geom about its own center
+            let local_inertia = Self::compute_geom_inertia(geom, mass);
+
+            // Offset from combined COM to this geom's center
+            let r = geom.pos - com;
+
+            // Apply parallel axis theorem: I_total = I_local + m * (r·r * I - r⊗r)
+            // where r⊗r is the outer product
+            let r_dot_r = r.dot(&r);
+            let parallel_axis_term = mass
+                * (nalgebra::Matrix3::identity() * r_dot_r
+                    - nalgebra::Matrix3::new(
+                        r.x * r.x,
+                        r.x * r.y,
+                        r.x * r.z,
+                        r.y * r.x,
+                        r.y * r.y,
+                        r.y * r.z,
+                        r.z * r.x,
+                        r.z * r.y,
+                        r.z * r.z,
+                    ));
+
+            total_inertia += local_inertia + parallel_axis_term;
+        }
+
+        // Ensure inertia is at least a small positive value for numerical stability
+        let min_inertia = 1e-6 * total_mass;
+        for i in 0..3 {
+            if total_inertia[(i, i)] < min_inertia {
+                total_inertia[(i, i)] = min_inertia;
+            }
+        }
+
+        MassProperties::new(total_mass, com, total_inertia)
+    }
+
+    /// Compute the inertia tensor for a single geom about its center.
+    fn compute_geom_inertia(geom: &MjcfGeom, mass: f64) -> nalgebra::Matrix3<f64> {
+        match geom.geom_type {
+            MjcfGeomType::Sphere => {
+                let r = geom.size.first().copied().unwrap_or(0.1);
+                let i = 0.4 * mass * r * r; // (2/5) * m * r²
+                nalgebra::Matrix3::from_diagonal(&nalgebra::Vector3::new(i, i, i))
+            }
+            MjcfGeomType::Box => {
+                let x = geom.size.first().copied().unwrap_or(0.1);
+                let y = geom.size.get(1).copied().unwrap_or(x);
+                let z = geom.size.get(2).copied().unwrap_or(y);
+                // Full dimensions = 2 * half-extents
+                let x2 = 4.0 * x * x;
+                let y2 = 4.0 * y * y;
+                let z2 = 4.0 * z * z;
+                let ixx = mass * (y2 + z2) / 12.0;
+                let iyy = mass * (x2 + z2) / 12.0;
+                let izz = mass * (x2 + y2) / 12.0;
+                nalgebra::Matrix3::from_diagonal(&nalgebra::Vector3::new(ixx, iyy, izz))
+            }
+            MjcfGeomType::Cylinder => {
+                let r = geom.size.first().copied().unwrap_or(0.1);
+                let h = geom.size.get(1).copied().unwrap_or(0.1);
+                // Cylinder with Z-axis along length
+                let r2 = r * r;
+                let h2 = 4.0 * h * h; // Full height squared
+                let ixx = mass * (3.0 * r2 + h2) / 12.0;
+                let izz = 0.5 * mass * r2;
+                nalgebra::Matrix3::from_diagonal(&nalgebra::Vector3::new(ixx, ixx, izz))
+            }
+            MjcfGeomType::Capsule => {
+                let r = geom.size.first().copied().unwrap_or(0.1);
+                let h = geom.size.get(1).copied().unwrap_or(0.1);
+                // Capsule = cylinder + 2 hemispheres
+                // Full length = 2*h (cylinder part) + 2*r (caps)
+                let cylinder_h = 2.0 * h;
+                let r2 = r * r;
+
+                // Volume of cylinder part vs hemisphere parts
+                let v_cyl = std::f64::consts::PI * r2 * cylinder_h;
+                let v_caps = (4.0 / 3.0) * std::f64::consts::PI * r2 * r;
+                let v_total = v_cyl + v_caps;
+
+                if v_total < 1e-10 {
+                    return nalgebra::Matrix3::identity() * (mass * 1e-6);
+                }
+
+                let m_cyl = mass * v_cyl / v_total;
+                let m_caps = mass * v_caps / v_total;
+
+                // Cylinder inertia (aligned with Z)
+                let i_cyl_xx = m_cyl * (3.0 * r2 + cylinder_h * cylinder_h) / 12.0;
+                let i_cyl_zz = 0.5 * m_cyl * r2;
+
+                // Hemisphere inertia about its center + parallel axis to capsule center
+                // Hemisphere: Ixx = Iyy = Izz = (2/5) * m * r² (same as sphere)
+                let i_hemi_local = 0.4 * m_caps * r2;
+                // Distance from capsule center to hemisphere center = h + r/2 (approx)
+                let d_hemi = h + 0.375 * r; // More accurate offset
+                let i_hemi_xx = i_hemi_local + m_caps * d_hemi * d_hemi;
+                let i_hemi_zz = i_hemi_local;
+
+                let ixx = i_cyl_xx + i_hemi_xx;
+                let izz = i_cyl_zz + i_hemi_zz;
+                nalgebra::Matrix3::from_diagonal(&nalgebra::Vector3::new(ixx, ixx, izz))
+            }
+            MjcfGeomType::Ellipsoid => {
+                // Ellipsoid with semi-axes a, b, c
+                let a = geom.size.first().copied().unwrap_or(0.1);
+                let b = geom.size.get(1).copied().unwrap_or(a);
+                let c = geom.size.get(2).copied().unwrap_or(b);
+                let ixx = mass * (b * b + c * c) / 5.0;
+                let iyy = mass * (a * a + c * c) / 5.0;
+                let izz = mass * (a * a + b * b) / 5.0;
+                nalgebra::Matrix3::from_diagonal(&nalgebra::Vector3::new(ixx, iyy, izz))
+            }
+            MjcfGeomType::Plane => {
+                // Planes have no inertia (infinite/static)
+                nalgebra::Matrix3::zeros()
+            }
+            _ => {
+                // For unsupported types (Mesh, Hfield, Sdf, TriMesh), use sphere approximation
+                // with radius based on the first size parameter
+                let r = geom.size.first().copied().unwrap_or(0.1);
+                let i = 0.4 * mass * r * r;
+                nalgebra::Matrix3::from_diagonal(&nalgebra::Vector3::new(i, i, i))
+            }
+        }
     }
 
     /// Create collision shape from geoms.

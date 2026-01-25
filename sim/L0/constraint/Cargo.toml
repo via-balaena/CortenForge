@@ -25,7 +25,8 @@ approx = { workspace = true }
 default = []
 muscle = ["dep:sim-muscle"]
 parallel = ["dep:rayon", "dep:hashbrown"]
-serde = ["dep:serde", "sim-types/serde", "nalgebra/serde-serialize"]
+# Note: sim-muscle?/serde ensures that if muscle feature is enabled, serde is forwarded
+serde = ["dep:serde", "sim-types/serde", "nalgebra/serde-serialize", "sim-muscle?/serde"]
 
 [lints]
 workspace = true
