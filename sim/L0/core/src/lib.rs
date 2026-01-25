@@ -137,6 +137,7 @@ pub mod heightfield;
 pub mod integrators;
 pub mod mesh;
 pub mod mid_phase;
+pub mod raycast;
 pub mod sdf;
 mod stepper;
 mod world;
@@ -152,6 +153,7 @@ pub use mesh::{
     triangle_sphere_contact,
 };
 pub use mid_phase::{Bvh, BvhPrimitive, bvh_from_triangle_mesh};
+pub use raycast::{RaycastHit, raycast_shape};
 pub use sdf::{
     SdfCollisionData, SdfContact, sdf_box_contact, sdf_capsule_contact, sdf_point_contact,
     sdf_sphere_contact,

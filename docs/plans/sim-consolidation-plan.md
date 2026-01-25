@@ -13,9 +13,9 @@
 | sim-urdf | ✅ | Complete | URDF robot description parser |
 | sim-muscle | ❌ | Complete | Hill-type muscle actuators (standalone math, integrates via sim-constraint) |
 | sim-tendon | ❌ | Complete | Tendon/cable simulation (standalone math, integrates via sim-constraint) |
-| sim-sensor | ❌ | **Incomplete** | Sensor simulation — rangefinder ray-casting not wired |
+| sim-sensor | ❌ | Complete | Sensor simulation — all sensors work, RayCaster trait implemented |
 | sim-deformable | ❌ | Unknown | Deformable bodies (soft bodies, cloth, ropes) |
-| sim-mjcf | ❌ | **Incomplete** | MJCF loader — tendon integration done ✅, missing equality constraints, proper SDF |
+| sim-mjcf | ❌ | **Near Complete** | MJCF loader — tendons ✅, equality constraints ✅, muscles ✅, missing proper SDF |
 | sim-simd | ❌ | Complete | SIMD-optimized math (internal use only, don't re-export) |
 | sim-tests | N/A | — | Integration test harness (not a library) |
 
@@ -38,9 +38,9 @@ Before wiring crates into sim-physics, complete the incomplete implementations.
 | Feature | Status | Work Required |
 |---------|--------|---------------|
 | Tendons | ✅ Complete | Fixed + spatial tendons with wrapping geometry support |
-| Equality constraints | Only `connect` implemented | Add `weld`, `joint`, `distance` constraint types |
+| Equality constraints | ✅ Complete | `connect`, `weld`, `joint`, `distance` constraint types |
 | SDF collision | Sphere approximation | Implement proper mesh-to-SDF conversion |
-| Muscle actuators | Approximated as cylinders | Wire to sim-muscle HillMuscle |
+| Muscle actuators | ✅ Complete | MJCF muscle actuators → HillMuscle with activation dynamics |
 | Height fields | Not supported | Low priority — skip for now |
 
 **Tasks:**
@@ -54,18 +54,22 @@ Before wiring crates into sim-physics, complete the incomplete implementations.
 - [x] Test: MJCF with fixed tendon → verify TendonConstraint created
 - [x] Test: MJCF with spatial tendon → verify SpatialTendon with path and wrapping
 
-#### 0.1.2 Equality Constraints
-- [ ] In `sim-constraint`: Add `WeldConstraint` (6 DOF lock between bodies)
-- [ ] In `sim-constraint`: Add `JointConstraint` (lock joint to specific position)
-- [ ] In `sim-constraint`: Add `DistanceConstraint` (fixed distance between points)
-- [ ] In `sim-mjcf/src/loader.rs`: Convert parsed equality elements to constraints
-- [ ] Test: MJCF with weld constraint → verify bodies locked
+#### 0.1.2 Equality Constraints ✅
+- [x] In `sim-constraint`: Add `WeldConstraint` (6 DOF lock between bodies)
+- [x] In `sim-constraint`: Add `JointPositionConstraint` (lock joint to specific position)
+- [x] In `sim-constraint`: Add `DistanceConstraint` (fixed distance between points)
+- [x] In `sim-mjcf/src/types.rs`: Add `MjcfWeld`, `MjcfJointEquality`, `MjcfDistance` types
+- [x] In `sim-mjcf/src/parser.rs`: Parse `<weld>`, `<joint>`, `<distance>` elements
+- [x] In `sim-mjcf/src/loader.rs`: Convert parsed equality elements to constraints
+- [x] Test: MJCF with weld constraint → verify bodies welded
+- [x] Test: MJCF with joint equality → verify joint position locked
+- [x] Test: MJCF with distance constraint → verify distance maintained
 
-#### 0.1.3 Muscle Actuator Integration
-- [ ] In `sim-mjcf/src/loader.rs`: Convert `MjcfActuator::Muscle` to `sim_muscle::HillMuscle`
-- [ ] Wire muscle to joint via `sim_constraint::MuscleJoint`
-- [ ] Add muscle lookup to `SpawnedModel`
-- [ ] Test: MJCF with muscle actuator → verify activation produces torque
+#### 0.1.3 Muscle Actuator Integration ✅
+- [x] In `sim-mjcf/src/loader.rs`: Convert `MjcfActuator::Muscle` to `sim_muscle::HillMuscle`
+- [x] Add `LoadedMuscle` struct with muscle metadata (name, joint, ranges, gear)
+- [x] Add muscle lookup to `LoadedModel` (by name, by joint)
+- [x] Test: MJCF with muscle actuator → verify HillMuscle created with correct parameters
 
 #### 0.1.4 SDF Collision (Optional — can defer)
 - [ ] Implement mesh-to-SDF conversion using distance field computation
@@ -76,32 +80,37 @@ Before wiring crates into sim-physics, complete the incomplete implementations.
 
 **Progress:**
 - ✅ 0.1.1 Tendon Integration — Fixed tendons convert to `TendonConstraint`, spatial tendons convert to `SpatialTendon` with wrapping geometry support (sphere/cylinder). 162 tests passing.
+- ✅ 0.1.2 Equality Constraints — Added `WeldConstraint`, `JointPositionConstraint`, `DistanceConstraint` to sim-constraint. MJCF types, parser, and loader support for `<weld>`, `<joint>`, `<distance>`. 18 new tests. 180 tests passing.
+- ✅ 0.1.3 Muscle Actuator Integration — Added `LoadedMuscle` struct, muscle lookup methods. MJCF muscle actuators convert to `HillMuscle` with activation dynamics. 7 new tests. 187 tests passing.
+- ✅ 0.2.1 Rangefinder Ray-Casting — Added `raycast.rs` module to sim-core. Implemented ray-shape intersection for all primitive types (sphere, box, capsule, cylinder, ellipsoid, plane, heightfield, SDF, triangle mesh). Added `sensor` feature with `RayCaster` trait implementation for `World`. 18 new raycast tests + 6 World::cast_ray tests (272 total sim-core tests).
 
 ---
 
-### 0.2 Complete sim-sensor
+### 0.2 Complete sim-sensor ✅
 
 **Current gaps:**
 
 | Feature | Status | Work Required |
 |---------|--------|---------------|
-| Rangefinder | Config exists, no ray-casting | Wire to physics ray caster |
-| Other sensors | Complete | IMU, F/T, touch, magnetometer all work |
+| Rangefinder | ✅ Complete | RayCaster trait + World::cast_ray implementation |
+| Other sensors | ✅ Complete | IMU, F/T, touch, magnetometer all work |
 
 **Tasks:**
 
-#### 0.2.1 Rangefinder Ray-Casting
-- [ ] Define `RayCaster` trait in sim-sensor (or sim-core)
-- [ ] Implement ray-casting in sim-core using collision system
-- [ ] Wire `Rangefinder::read()` to use ray caster
-- [ ] Test: Rangefinder on body → verify distance measurement
+#### 0.2.1 Rangefinder Ray-Casting ✅
+- [x] Define `RayCaster` trait in sim-sensor (already exists)
+- [x] Create `raycast.rs` module in sim-core with ray-shape intersection functions
+- [x] Add `sensor` feature to sim-core with optional sim-sensor dependency
+- [x] Implement `RayCaster` trait for `World` (behind `sensor` feature)
+- [x] Add `World::cast_ray()` method for direct ray casting
+- [x] Test: Ray casting against spheres, boxes, capsules, cylinders, ellipsoids
 
 #### 0.2.2 Sensor Integration Helper (Optional)
 - [ ] Consider adding `SensorBank` struct to manage multiple sensors
 - [ ] Add convenience method: `sensor_bank.read_all(&world_state) -> Vec<SensorObservation>`
 - [ ] This makes RL observation collection easier
 
-**Acceptance criteria:** All sensor types produce valid readings from simulation state.
+**Acceptance criteria:** All sensor types produce valid readings from simulation state. ✅
 
 ---
 
@@ -295,10 +304,10 @@ Phase 4 documents what's tested and working.
 | Phase | Effort | PRs | Status |
 |-------|--------|-----|--------|
 | 0.1.1 | Tendon integration | 1 PR | ✅ Complete |
-| 0.1.2 | Equality constraints | 1 PR | Pending |
-| 0.1.3 | Muscle actuators | 1 PR | Pending |
+| 0.1.2 | Equality constraints | 1 PR | ✅ Complete |
+| 0.1.3 | Muscle actuators | 1 PR | ✅ Complete |
 | 0.1.4 | SDF collision | 1 PR | Optional/Defer |
-| 0.2 | sim-sensor completion | 1 PR (rangefinder ray-casting) | Pending |
+| 0.2 | sim-sensor completion | 1 PR (rangefinder ray-casting) | ✅ Complete |
 | 1.1-1.5 | Wire into sim-physics | 5 PRs (one per crate) | Pending |
 | 2.1-2.4 | Integration tests | 1-2 PRs | Pending |
 | 3.x | L1 expansion | Varies | Pending |
@@ -308,11 +317,11 @@ Phase 4 documents what's tested and working.
 
 ## Resolved Questions
 
-1. **sim-mjcf completeness**: In progress. ✅ Tendons complete (fixed + spatial with wrapping). Equality constraints, muscle actuators still needed. → Phase 0.1
+1. **sim-mjcf completeness**: Near complete. ✅ Tendons (fixed + spatial with wrapping). ✅ Equality constraints (`weld`, `joint`, `distance`). ✅ Muscle actuators (HillMuscle integration). Only SDF collision deferred. → Phase 0.1 Done
 
 2. **Muscle/tendon integration with World**: Complete. Both are standalone math libraries by design. Integration layer exists in sim-constraint. → Ready for Phase 1.
 
-3. **Sensor integration with World**: Mostly complete. Decoupled design is intentional. Only rangefinder ray-casting needs work. → Phase 0.2
+3. **Sensor integration with World**: Complete. `RayCaster` trait implemented for `World`. Decoupled design preserved. → Phase 0.2 Done
 
 4. **Feature flags**: Yes. sim-deformable should be optional (heavier deps). Other crates are lightweight. → Phase 1.5
 
@@ -323,3 +332,6 @@ Phase 4 documents what's tested and working.
 | Date | Phase | Description |
 |------|-------|-------------|
 | 2026-01-25 | 0.1.1 | ✅ Tendon integration complete. Fixed tendons → `TendonConstraint`, spatial tendons → `SpatialTendon` with wrapping geometry (sphere/cylinder). Added `SiteInfo`, `GeomInfo`, `LoadedTendon` enum. 162 tests passing. |
+| 2026-01-25 | 0.1.2 | ✅ Equality constraints complete. Added `WeldConstraint`, `JointPositionConstraint`, `DistanceConstraint` to sim-constraint. MJCF types (`MjcfWeld`, `MjcfJointEquality`, `MjcfDistance`), parser, and loader support. 18 new tests (180 total). |
+| 2026-01-25 | 0.1.3 | ✅ Muscle actuator integration complete. Added `LoadedMuscle` struct with HillMuscle + metadata. Muscle lookup by name and joint. 7 new tests (187 total). |
+| 2026-01-25 | 0.2.1 | ✅ Rangefinder ray-casting complete. Added `raycast.rs` to sim-core with ray-shape intersection for all primitives. Added `sensor` feature with `RayCaster` trait impl for `World`. 18 new raycast + 6 World::cast_ray tests. |

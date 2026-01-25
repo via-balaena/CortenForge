@@ -12,6 +12,7 @@ rust-version.workspace = true
 sim-types = { workspace = true }
 sim-contact = { workspace = true }
 sim-constraint = { workspace = true }
+sim-sensor = { workspace = true, optional = true }
 sim-simd = { workspace = true }
 nalgebra = { workspace = true }
 hashbrown = { workspace = true }
@@ -31,6 +32,7 @@ harness = false
 [features]
 default = []
 parallel = ["dep:rayon", "sim-constraint/parallel"]
+sensor = ["dep:sim-sensor"]
 serde = ["dep:serde", "serde/rc", "sim-types/serde", "sim-contact/serde", "sim-constraint/serde", "nalgebra/serde-serialize"]
 
 [lints]

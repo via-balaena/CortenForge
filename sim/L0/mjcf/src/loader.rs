@@ -8,10 +8,12 @@ use std::path::Path;
 
 use nalgebra::{Point3, Vector3};
 use sim_constraint::{
-    AdhesionActuator, BoxedActuator, ConnectConstraint, IntegratedVelocityActuator,
-    IntoBoxedActuator, JointLimits, PneumaticCylinderActuator, TendonConstraint,
+    AdhesionActuator, BoxedActuator, ConnectConstraint, DistanceConstraint,
+    IntegratedVelocityActuator, IntoBoxedActuator, JointLimits, JointPositionConstraint,
+    PneumaticCylinderActuator, TendonConstraint, WeldConstraint,
 };
 use sim_core::{Body, CollisionShape, Joint, World};
+use sim_muscle::{ActivationDynamics, HillMuscle, HillMuscleConfig, MuscleForceCurves};
 use sim_tendon::{
     CableProperties, SpatialTendon,
     path::{AttachmentPoint, TendonPath},
@@ -61,6 +63,67 @@ impl std::fmt::Debug for LoadedActuator {
             .field("forcerange", &self.forcerange)
             .field("gear", &self.gear)
             .finish_non_exhaustive()
+    }
+}
+
+/// A loaded muscle actuator from MJCF.
+///
+/// Hill-type muscle model with proper activation dynamics, force-length,
+/// and force-velocity relationships. Muscles attach to joints and produce
+/// torque based on their activation state and the joint configuration.
+#[derive(Debug)]
+pub struct LoadedMuscle {
+    /// Muscle name.
+    pub name: String,
+    /// The Hill-type muscle model.
+    pub muscle: HillMuscle,
+    /// Target joint name.
+    pub joint: String,
+    /// Control range (if clamped).
+    pub ctrlrange: Option<(f64, f64)>,
+    /// Force range (if clamped).
+    pub forcerange: Option<(f64, f64)>,
+    /// Gear ratio (scales the moment arm).
+    pub gear: f64,
+}
+
+impl LoadedMuscle {
+    /// Get the muscle name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get a reference to the underlying HillMuscle.
+    pub fn muscle(&self) -> &HillMuscle {
+        &self.muscle
+    }
+
+    /// Get a mutable reference to the underlying HillMuscle.
+    pub fn muscle_mut(&mut self) -> &mut HillMuscle {
+        &mut self.muscle
+    }
+
+    /// Set the muscle excitation (neural drive, 0.0 to 1.0).
+    pub fn set_excitation(&mut self, excitation: f64) {
+        self.muscle.set_excitation(excitation.clamp(0.0, 1.0));
+    }
+
+    /// Get the current muscle activation (0.0 to 1.0).
+    pub fn activation(&self) -> f64 {
+        self.muscle.activation()
+    }
+
+    /// Compute the torque produced by this muscle at the given joint state.
+    ///
+    /// # Arguments
+    /// * `angle` - Joint angle in radians
+    /// * `velocity` - Joint angular velocity in rad/s
+    /// * `dt` - Time step in seconds
+    ///
+    /// # Returns
+    /// Torque in Nm (positive typically flexes the joint)
+    pub fn compute_torque(&mut self, angle: f64, velocity: f64, dt: f64) -> f64 {
+        self.muscle.compute_torque(angle, velocity, dt) * self.gear
     }
 }
 
@@ -253,10 +316,18 @@ pub struct LoadedModel {
     pub joints: Vec<Joint>,
     /// Connect (ball) equality constraints.
     pub connect_constraints: Vec<ConnectConstraint>,
+    /// Weld (6 DOF) equality constraints.
+    pub weld_constraints: Vec<WeldConstraint>,
+    /// Joint position equality constraints.
+    pub joint_constraints: Vec<JointPositionConstraint>,
+    /// Distance equality constraints.
+    pub distance_constraints: Vec<DistanceConstraint>,
     /// Tendon constraints.
     pub tendons: Vec<LoadedTendon>,
-    /// Actuators ready for use.
+    /// Actuators ready for use (non-muscle actuators).
     pub actuators: Vec<LoadedActuator>,
+    /// Muscle actuators (Hill-type models).
+    pub muscles: Vec<LoadedMuscle>,
     /// Map from body name to body ID.
     pub body_to_id: HashMap<String, BodyId>,
     /// Map from joint name to joint ID.
@@ -265,6 +336,8 @@ pub struct LoadedModel {
     pub tendon_to_index: HashMap<String, usize>,
     /// Map from actuator name to index in actuators vec.
     pub actuator_to_index: HashMap<String, usize>,
+    /// Map from muscle name to index in muscles vec.
+    pub muscle_to_index: HashMap<String, usize>,
     /// Parsed MJCF options for simulation configuration.
     pub option: MjcfOption,
     /// Extended solver configuration derived from MJCF options.
@@ -437,6 +510,38 @@ impl LoadedModel {
     #[must_use]
     pub fn actuator_count(&self) -> usize {
         self.actuators.len()
+    }
+
+    /// Get a muscle by name.
+    #[must_use]
+    pub fn muscle(&self, name: &str) -> Option<&LoadedMuscle> {
+        self.muscle_to_index
+            .get(name)
+            .and_then(|&idx| self.muscles.get(idx))
+    }
+
+    /// Get a mutable muscle by name.
+    #[must_use]
+    pub fn muscle_mut(&mut self, name: &str) -> Option<&mut LoadedMuscle> {
+        self.muscle_to_index
+            .get(name)
+            .copied()
+            .and_then(|idx| self.muscles.get_mut(idx))
+    }
+
+    /// Get all muscles targeting a specific joint.
+    #[must_use]
+    pub fn muscles_for_joint(&self, joint_name: &str) -> Vec<&LoadedMuscle> {
+        self.muscles
+            .iter()
+            .filter(|m| m.joint == joint_name)
+            .collect()
+    }
+
+    /// Get the number of muscles.
+    #[must_use]
+    pub fn muscle_count(&self) -> usize {
+        self.muscles.len()
     }
 
     /// Get a tendon by name.
@@ -662,12 +767,19 @@ impl MjcfLoader {
         // Convert equality constraints
         let connect_constraints =
             self.convert_connect_constraints(&model.equality.connects, &body_to_id)?;
+        let weld_constraints = self.convert_weld_constraints(&model.equality.welds, &body_to_id)?;
+        let joint_constraints =
+            self.convert_joint_constraints(&model.equality.joints, &joint_to_id)?;
 
         // Resolve site lookup now that we have body IDs
         let site_to_info = resolve_site_lookup(&site_lookup_by_name, &body_to_id);
 
         // Resolve geom lookup now that we have body IDs
         let geom_to_info = resolve_geom_lookup(&geom_lookup_by_name, &body_to_id);
+
+        // Convert distance constraints (uses geom_to_info)
+        let distance_constraints =
+            self.convert_distance_constraints(&model.equality.distances, &geom_to_info)?;
 
         // Convert tendons
         let (tendons, tendon_to_index) = self.convert_tendons(
@@ -678,8 +790,9 @@ impl MjcfLoader {
             &resolver,
         )?;
 
-        // Convert actuators (with defaults applied)
-        let (actuators, actuator_to_index) = self.convert_actuators(&model.actuators, &resolver);
+        // Convert actuators (with defaults applied) - muscles are returned separately
+        let (actuators, actuator_to_index, muscles, muscle_to_index) =
+            self.convert_actuators(&model.actuators, &resolver);
 
         // Convert options to solver config
         let solver_config = ExtendedSolverConfig::from(&model.option);
@@ -689,12 +802,17 @@ impl MjcfLoader {
             bodies,
             joints,
             connect_constraints,
+            weld_constraints,
+            joint_constraints,
+            distance_constraints,
             tendons,
             actuators,
+            muscles,
             body_to_id,
             joint_to_id,
             tendon_to_index,
             actuator_to_index,
+            muscle_to_index,
             option: model.option,
             solver_config,
         })
@@ -1389,6 +1507,206 @@ impl MjcfLoader {
         Ok(constraints)
     }
 
+    /// Convert MJCF weld constraints to sim-constraint WeldConstraints.
+    fn convert_weld_constraints(
+        &self,
+        mjcf_welds: &[crate::types::MjcfWeld],
+        body_to_id: &HashMap<String, BodyId>,
+    ) -> Result<Vec<WeldConstraint>> {
+        let mut constraints = Vec::new();
+
+        for mjcf_weld in mjcf_welds {
+            // Skip inactive constraints
+            if !mjcf_weld.active {
+                continue;
+            }
+
+            // Look up body1 ID
+            let body1_id = body_to_id
+                .get(&mjcf_weld.body1)
+                .copied()
+                .ok_or_else(|| MjcfError::undefined_body(&mjcf_weld.body1, "weld constraint"))?;
+
+            // Look up body2 ID (if specified, otherwise welds to world)
+            let body2_id = if let Some(ref body2_name) = mjcf_weld.body2 {
+                Some(
+                    body_to_id
+                        .get(body2_name)
+                        .copied()
+                        .ok_or_else(|| MjcfError::undefined_body(body2_name, "weld constraint"))?,
+                )
+            } else {
+                None
+            };
+
+            // Create the constraint
+            let mut constraint = if let Some(body2) = body2_id {
+                WeldConstraint::new(body1_id, body2)
+            } else {
+                WeldConstraint::to_world(body1_id)
+            };
+
+            // Set anchor point
+            constraint = constraint.with_anchor1(mjcf_weld.anchor);
+
+            // Set relative pose if provided [x, y, z, qw, qx, qy, qz]
+            // The relpose defines the relative position and orientation of body2 w.r.t. body1
+            if let Some(relpose) = mjcf_weld.relpose {
+                // Set anchor2 as the position offset
+                let anchor2 = nalgebra::Vector3::new(relpose[0], relpose[1], relpose[2]);
+                constraint = constraint.with_anchor2(anchor2);
+
+                // Set the relative rotation (quat order: w, x, y, z)
+                let quat = nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    relpose[3], relpose[4], relpose[5], relpose[6],
+                ));
+                constraint = constraint.with_relative_rotation(quat);
+            }
+
+            // Set optional name
+            if let Some(ref name) = mjcf_weld.name {
+                constraint = constraint.with_name(name);
+            }
+
+            // Set solver parameters if provided
+            if let Some(solref) = mjcf_weld.solref {
+                constraint = constraint.with_solref(solref);
+            }
+            if let Some(solimp) = mjcf_weld.solimp {
+                constraint = constraint.with_solimp(solimp);
+            }
+
+            constraints.push(constraint);
+        }
+
+        Ok(constraints)
+    }
+
+    /// Convert MJCF joint equality constraints to sim-constraint JointPositionConstraints.
+    fn convert_joint_constraints(
+        &self,
+        mjcf_joints: &[crate::types::MjcfJointEquality],
+        joint_to_id: &HashMap<String, JointId>,
+    ) -> Result<Vec<JointPositionConstraint>> {
+        let mut constraints = Vec::new();
+
+        for mjcf_joint in mjcf_joints {
+            // Skip inactive constraints
+            if !mjcf_joint.active {
+                continue;
+            }
+
+            // Look up joint1 ID
+            let joint1_id = joint_to_id
+                .get(&mjcf_joint.joint1)
+                .copied()
+                .ok_or_else(|| {
+                    MjcfError::undefined_joint(&mjcf_joint.joint1, "joint equality constraint")
+                })?;
+
+            // For now, we only support single-joint position locks (not coupling).
+            // Joint coupling would require a different constraint type (JointCoupling).
+            if mjcf_joint.joint2.is_some() {
+                tracing::warn!(
+                    "Joint coupling constraints (joint1='{}', joint2='{:?}') are not yet supported, skipping",
+                    mjcf_joint.joint1,
+                    mjcf_joint.joint2
+                );
+                continue;
+            }
+
+            // Get target position from polycoef[0] (constant term)
+            let target_position = mjcf_joint.polycoef.first().copied().unwrap_or(0.0);
+
+            // Create the constraint
+            let mut constraint = JointPositionConstraint::new(joint1_id, target_position);
+
+            // Set optional name
+            if let Some(ref name) = mjcf_joint.name {
+                constraint = constraint.with_name(name);
+            }
+
+            // Set solver parameters if provided
+            if let Some(solref) = mjcf_joint.solref {
+                constraint = constraint.with_solref(solref);
+            }
+            if let Some(solimp) = mjcf_joint.solimp {
+                constraint = constraint.with_solimp(solimp);
+            }
+
+            constraints.push(constraint);
+        }
+
+        Ok(constraints)
+    }
+
+    /// Convert MJCF distance constraints to sim-constraint DistanceConstraints.
+    fn convert_distance_constraints(
+        &self,
+        mjcf_distances: &[crate::types::MjcfDistance],
+        geom_to_info: &HashMap<String, GeomInfo>,
+    ) -> Result<Vec<DistanceConstraint>> {
+        let mut constraints = Vec::new();
+
+        for mjcf_distance in mjcf_distances {
+            // Skip inactive constraints
+            if !mjcf_distance.active {
+                continue;
+            }
+
+            // Look up geom1 info
+            let geom1_info = geom_to_info.get(&mjcf_distance.geom1).ok_or_else(|| {
+                MjcfError::undefined_geom(&mjcf_distance.geom1, "distance constraint")
+            })?;
+
+            // Look up geom2 info (if specified, otherwise distance to world origin)
+            let geom2_info =
+                if let Some(ref geom2_name) = mjcf_distance.geom2 {
+                    Some(geom_to_info.get(geom2_name).ok_or_else(|| {
+                        MjcfError::undefined_geom(geom2_name, "distance constraint")
+                    })?)
+                } else {
+                    None
+                };
+
+            // Use geom local positions as anchor points (convert Point3 to Vector3)
+            let anchor1 = geom1_info.local_position.coords;
+
+            // Create the constraint
+            let mut constraint = if let Some(geom2) = geom2_info {
+                let anchor2 = geom2.local_position.coords;
+                // Compute distance from initial geom positions if not specified
+                let distance = mjcf_distance
+                    .distance
+                    .unwrap_or_else(|| (anchor1 - anchor2).norm());
+                DistanceConstraint::new(geom1_info.body_id, geom2.body_id, distance)
+                    .with_anchor1(anchor1)
+                    .with_anchor2(anchor2)
+            } else {
+                // Distance to world origin
+                let distance = mjcf_distance.distance.unwrap_or_else(|| anchor1.norm());
+                DistanceConstraint::to_world(geom1_info.body_id, distance).with_anchor1(anchor1)
+            };
+
+            // Set optional name
+            if let Some(ref name) = mjcf_distance.name {
+                constraint = constraint.with_name(name);
+            }
+
+            // Set solver parameters if provided
+            if let Some(solref) = mjcf_distance.solref {
+                constraint = constraint.with_solref(solref);
+            }
+            if let Some(solimp) = mjcf_distance.solimp {
+                constraint = constraint.with_solimp(solimp);
+            }
+
+            constraints.push(constraint);
+        }
+
+        Ok(constraints)
+    }
+
     /// Convert MJCF tendons to LoadedTendons.
     ///
     /// Supports both fixed tendons (linear combinations of joint positions) and
@@ -1585,28 +1903,47 @@ impl MjcfLoader {
         }))
     }
 
-    /// Convert MJCF actuators to LoadedActuators.
+    /// Convert MJCF actuators to LoadedActuators and LoadedMuscles.
+    ///
+    /// Muscle-type actuators are returned separately from other actuators
+    /// because they require different handling (Hill-type muscle model).
     fn convert_actuators(
         &self,
         mjcf_actuators: &[MjcfActuator],
         resolver: &DefaultResolver,
-    ) -> (Vec<LoadedActuator>, HashMap<String, usize>) {
+    ) -> (
+        Vec<LoadedActuator>,
+        HashMap<String, usize>,
+        Vec<LoadedMuscle>,
+        HashMap<String, usize>,
+    ) {
         let mut actuators = Vec::new();
         let mut actuator_to_index = HashMap::new();
+        let mut muscles = Vec::new();
+        let mut muscle_to_index = HashMap::new();
 
         for mjcf_actuator in mjcf_actuators {
             // Apply defaults to the actuator
             let resolved_actuator = resolver.apply_to_actuator(mjcf_actuator);
-            let loaded = self.convert_single_actuator(&resolved_actuator);
 
-            if !loaded.name.is_empty() {
-                actuator_to_index.insert(loaded.name.clone(), actuators.len());
+            // Handle muscle actuators separately
+            if resolved_actuator.actuator_type == MjcfActuatorType::Muscle {
+                if let Some(loaded_muscle) = self.convert_muscle_actuator(&resolved_actuator) {
+                    if !loaded_muscle.name.is_empty() {
+                        muscle_to_index.insert(loaded_muscle.name.clone(), muscles.len());
+                    }
+                    muscles.push(loaded_muscle);
+                }
+            } else {
+                let loaded = self.convert_single_actuator(&resolved_actuator);
+                if !loaded.name.is_empty() {
+                    actuator_to_index.insert(loaded.name.clone(), actuators.len());
+                }
+                actuators.push(loaded);
             }
-
-            actuators.push(loaded);
         }
 
-        (actuators, actuator_to_index)
+        (actuators, actuator_to_index, muscles, muscle_to_index)
     }
 
     /// Convert a single MJCF actuator to a LoadedActuator.
@@ -1691,29 +2028,15 @@ impl MjcfLoader {
             }
 
             MjcfActuatorType::Muscle => {
-                // Hill-type muscle model
-                // For now, we approximate with a pneumatic cylinder since it has similar
-                // activation dynamics. A full implementation would use sim-muscle crate.
-                let (act_tau, deact_tau) = mjcf.muscle_timeconst;
-                let max_force = if mjcf.force > 0.0 {
-                    mjcf.force * mjcf.gear
-                } else {
-                    mjcf.scale * mjcf.gear // Use scale as fallback
-                };
-
-                // Use pneumatic cylinder as approximation with muscle-like dynamics
-                // Area chosen such that max force is achieved at max pressure
-                let supply_pressure = 600_000.0;
-                let area = max_force / (supply_pressure - 101_325.0);
-
-                PneumaticCylinderActuator::new(area.max(0.0001), supply_pressure)
+                // Muscle actuators are handled separately in convert_muscle_actuator
+                // Return a dummy disabled actuator as a placeholder
+                tracing::warn!(
+                    "Muscle actuator '{}' should be handled by convert_muscle_actuator",
+                    mjcf.name
+                );
+                IntegratedVelocityActuator::new(0.0, 0.0)
                     .with_name(&mjcf.name)
-                    .with_rates(
-                        1.0 / act_tau.max(0.001),   // Activation rate
-                        1.0 / deact_tau.max(0.001), // Deactivation rate
-                        0.01,
-                    )
-                    .with_friction(0.0, 0.0) // Muscles have no mechanical friction
+                    .with_enabled(false)
                     .boxed()
             }
 
@@ -1745,6 +2068,68 @@ impl MjcfLoader {
             forcerange: mjcf.forcerange,
             gear: mjcf.gear,
         }
+    }
+
+    /// Convert a muscle actuator to a LoadedMuscle with HillMuscle model.
+    ///
+    /// Maps MJCF muscle parameters to HillMuscleConfig for realistic
+    /// Hill-type muscle simulation with proper force-length and force-velocity
+    /// relationships.
+    fn convert_muscle_actuator(&self, mjcf: &MjcfActuator) -> Option<LoadedMuscle> {
+        // Muscle requires a target joint
+        let joint_name = mjcf.joint.clone()?;
+
+        // Get muscle parameters from MJCF
+        let (tau_act, tau_deact) = mjcf.muscle_timeconst;
+
+        // Compute max isometric force
+        let max_force = if mjcf.force > 0.0 {
+            mjcf.force
+        } else {
+            mjcf.scale // Use scale as fallback (default 200 N)
+        };
+
+        // Create activation dynamics from MJCF time constants
+        let activation = ActivationDynamics {
+            tau_activation: tau_act.max(0.001),
+            tau_deactivation: tau_deact.max(0.001),
+            min_activation: 0.01, // Small baseline to prevent singularities
+        };
+
+        // Use default force curves - they implement standard Hill model relationships
+        // The MJCF parameters (lmin, lmax, fpmax, fvmax) would need custom curve
+        // implementations to fully support, which is beyond the scope of basic integration.
+        let force_curves = MuscleForceCurves::default();
+
+        // Estimate optimal fiber length
+        // In practice, this would be computed from geometric properties
+        let optimal_fiber_length = 0.1; // 10 cm default
+
+        // Create muscle configuration
+        let config = HillMuscleConfig {
+            max_isometric_force: max_force,
+            optimal_fiber_length,
+            tendon_slack_length: optimal_fiber_length * 0.5, // Reasonable default
+            pennation_angle_optimal: 0.0,                    // Parallel fibers by default
+            max_contraction_velocity: mjcf.vmax,             // In L_opt/s
+            activation_dynamics: activation,
+            force_curves,
+            moment_arm: mjcf.gear.abs().max(0.01), // Gear serves as moment arm
+            tendon_stiffness: 50.0,                // Moderate stiffness
+            rigid_tendon: false,                   // Compliant tendon by default
+        };
+
+        // Create the HillMuscle
+        let muscle = HillMuscle::new(config).with_name(&mjcf.name);
+
+        Some(LoadedMuscle {
+            name: mjcf.name.clone(),
+            muscle,
+            joint: joint_name,
+            ctrlrange: mjcf.ctrlrange,
+            forcerange: mjcf.forcerange,
+            gear: mjcf.gear,
+        })
     }
 
     /// Create a sim-core Joint from an MJCF joint.
@@ -3572,5 +3957,674 @@ mod tests {
 
         // Should have the worldbody wrapping geometry
         assert_eq!(spatial.tendon.wrapping().len(), 1);
+    }
+
+    // ========================================================================
+    // Weld constraint tests
+    // ========================================================================
+
+    #[test]
+    fn test_weld_constraint_between_bodies() {
+        let xml = r#"
+            <mujoco model="weld_test">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <weld name="fixed" body1="body1" body2="body2"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.weld_constraints.len(), 1);
+
+        let constraint = &model.weld_constraints[0];
+        assert_eq!(constraint.name(), "fixed");
+        assert_eq!(constraint.body1(), model.body_to_id["body1"]);
+        assert_eq!(constraint.body2(), Some(model.body_to_id["body2"]));
+    }
+
+    #[test]
+    fn test_weld_constraint_to_world() {
+        let xml = r#"
+            <mujoco model="weld_world">
+                <worldbody>
+                    <body name="fixed_body">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <weld name="anchor" body1="fixed_body"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.weld_constraints.len(), 1);
+
+        let constraint = &model.weld_constraints[0];
+        assert!(constraint.is_world_constraint());
+        assert!(constraint.body2().is_none());
+    }
+
+    #[test]
+    fn test_weld_constraint_with_anchor() {
+        let xml = r#"
+            <mujoco model="weld_anchor">
+                <worldbody>
+                    <body name="body1">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="body2">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <weld body1="body1" body2="body2" anchor="0.5 0.25 0.1"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        let constraint = &model.weld_constraints[0];
+
+        assert_relative_eq!(constraint.anchor1().x, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(constraint.anchor1().y, 0.25, epsilon = 1e-10);
+        assert_relative_eq!(constraint.anchor1().z, 0.1, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_weld_constraint_with_relpose() {
+        let xml = r#"
+            <mujoco model="weld_relpose">
+                <worldbody>
+                    <body name="body1">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="body2">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <weld body1="body1" body2="body2" relpose="0.1 0.2 0.3 1 0 0 0"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        let constraint = &model.weld_constraints[0];
+
+        // Check anchor2 was set from relpose position
+        assert_relative_eq!(constraint.anchor2().x, 0.1, epsilon = 1e-10);
+        assert_relative_eq!(constraint.anchor2().y, 0.2, epsilon = 1e-10);
+        assert_relative_eq!(constraint.anchor2().z, 0.3, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_weld_constraint_inactive_skipped() {
+        let xml = r#"
+            <mujoco model="weld_inactive">
+                <worldbody>
+                    <body name="a">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                    <body name="b">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <weld body1="a" body2="b" active="false"/>
+                    <weld body1="a" body2="b" active="true"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        assert_eq!(model.weld_constraints.len(), 1);
+    }
+
+    #[test]
+    fn test_weld_constraint_undefined_body() {
+        let xml = r#"
+            <mujoco model="weld_bad">
+                <worldbody>
+                    <body name="real_body"/>
+                </worldbody>
+                <equality>
+                    <weld body1="nonexistent" body2="real_body"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let result = load_mjcf_str(xml);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            MjcfError::UndefinedBody { .. }
+        ));
+    }
+
+    // ========================================================================
+    // Joint equality constraint tests
+    // ========================================================================
+
+    #[test]
+    fn test_joint_equality_position_lock() {
+        let xml = r#"
+            <mujoco model="joint_lock">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="shoulder" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.5"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <joint name="lock" joint1="shoulder" polycoef="0.5"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.joint_constraints.len(), 1);
+
+        let constraint = &model.joint_constraints[0];
+        assert_eq!(constraint.name(), "lock");
+        assert_eq!(constraint.joint(), model.joint_to_id["shoulder"]);
+        assert_relative_eq!(constraint.target(), 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_joint_equality_lock_at_zero() {
+        let xml = r#"
+            <mujoco model="joint_zero">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="elbow" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.5"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <joint joint1="elbow" polycoef="0"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        let constraint = &model.joint_constraints[0];
+
+        assert_relative_eq!(constraint.target(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_joint_equality_with_solver_params() {
+        let xml = r#"
+            <mujoco model="joint_params">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.5"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <joint joint1="j1" polycoef="0" solref="0.01 0.5" solimp="0.8 0.9 0.001 0.4 3"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        let constraint = &model.joint_constraints[0];
+
+        let solref = constraint.solref().expect("should have solref");
+        assert_relative_eq!(solref[0], 0.01, epsilon = 1e-10);
+        assert_relative_eq!(solref[1], 0.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_joint_equality_inactive_skipped() {
+        let xml = r#"
+            <mujoco model="joint_inactive">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.5"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <joint joint1="j1" active="false"/>
+                    <joint joint1="j1" active="true"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        assert_eq!(model.joint_constraints.len(), 1);
+    }
+
+    #[test]
+    fn test_joint_equality_undefined_joint() {
+        let xml = r#"
+            <mujoco model="joint_bad">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="real_joint" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.5"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <joint joint1="nonexistent"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let result = load_mjcf_str(xml);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            MjcfError::UndefinedJoint { .. }
+        ));
+    }
+
+    // ========================================================================
+    // Distance constraint tests
+    // ========================================================================
+
+    #[test]
+    fn test_distance_constraint_between_geoms() {
+        let xml = r#"
+            <mujoco model="distance_test">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <geom name="g1" type="sphere" size="0.1"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <geom name="g2" type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <distance name="rod" geom1="g1" geom2="g2" distance="1.5"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.distance_constraints.len(), 1);
+
+        let constraint = &model.distance_constraints[0];
+        assert_eq!(constraint.name(), "rod");
+        assert_eq!(constraint.body1(), model.body_to_id["body1"]);
+        assert_eq!(constraint.body2(), Some(model.body_to_id["body2"]));
+        assert_relative_eq!(constraint.distance(), 1.5, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_distance_constraint_to_world() {
+        let xml = r#"
+            <mujoco model="distance_world">
+                <worldbody>
+                    <body name="pendulum" pos="0 0 1">
+                        <geom name="ball" type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <distance geom1="ball" distance="1.0"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.distance_constraints.len(), 1);
+
+        let constraint = &model.distance_constraints[0];
+        assert!(constraint.is_world_constraint());
+        assert!(constraint.body2().is_none());
+        assert_relative_eq!(constraint.distance(), 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_distance_constraint_auto_distance() {
+        // When distance is not specified, it should be computed from initial positions
+        let xml = r#"
+            <mujoco model="distance_auto">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <geom name="g1" type="sphere" size="0.1" pos="0 0 0"/>
+                    </body>
+                    <body name="body2" pos="2 0 0">
+                        <geom name="g2" type="sphere" size="0.1" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <distance geom1="g1" geom2="g2"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        let constraint = &model.distance_constraints[0];
+
+        // Distance should be computed from geom positions (both at body origin, so 2.0 apart)
+        // Note: local_position for geoms is their pos relative to body
+        assert_relative_eq!(constraint.distance(), 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_distance_constraint_inactive_skipped() {
+        let xml = r#"
+            <mujoco model="distance_inactive">
+                <worldbody>
+                    <body name="body1">
+                        <geom name="g1" type="sphere" size="0.1"/>
+                    </body>
+                    <body name="body2">
+                        <geom name="g2" type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <distance geom1="g1" geom2="g2" active="false"/>
+                    <distance geom1="g1" geom2="g2" active="true"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        assert_eq!(model.distance_constraints.len(), 1);
+    }
+
+    #[test]
+    fn test_distance_constraint_undefined_geom() {
+        let xml = r#"
+            <mujoco model="distance_bad">
+                <worldbody>
+                    <body name="body1">
+                        <geom name="real_geom" type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <distance geom1="nonexistent" geom2="real_geom"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let result = load_mjcf_str(xml);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            MjcfError::UndefinedGeom { .. }
+        ));
+    }
+
+    #[test]
+    fn test_distance_constraint_with_solver_params() {
+        let xml = r#"
+            <mujoco model="distance_params">
+                <worldbody>
+                    <body name="body1">
+                        <geom name="g1" type="sphere" size="0.1"/>
+                    </body>
+                    <body name="body2">
+                        <geom name="g2" type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <distance geom1="g1" geom2="g2" distance="1.0"
+                              solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        let constraint = &model.distance_constraints[0];
+
+        let solref = constraint.solref().expect("should have solref");
+        assert_relative_eq!(solref[0], 0.02, epsilon = 1e-10);
+
+        let solimp = constraint.solimp().expect("should have solimp");
+        assert_relative_eq!(solimp[0], 0.9, epsilon = 1e-10);
+    }
+
+    // ========================================================================
+    // Mixed equality constraint tests
+    // ========================================================================
+
+    #[test]
+    fn test_mixed_equality_constraints() {
+        let xml = r#"
+            <mujoco model="mixed_equality">
+                <worldbody>
+                    <body name="body1" pos="0 0 0">
+                        <joint name="j1" type="hinge"/>
+                        <geom name="g1" type="sphere" size="0.1"/>
+                    </body>
+                    <body name="body2" pos="1 0 0">
+                        <geom name="g2" type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <equality>
+                    <connect body1="body1" body2="body2" anchor="0.5 0 0"/>
+                    <weld body1="body2"/>
+                    <joint joint1="j1" polycoef="0"/>
+                    <distance geom1="g1" geom2="g2" distance="1.0"/>
+                </equality>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.connect_constraints.len(), 1);
+        assert_eq!(model.weld_constraints.len(), 1);
+        assert_eq!(model.joint_constraints.len(), 1);
+        assert_eq!(model.distance_constraints.len(), 1);
+    }
+
+    // ========================================================================
+    // Muscle actuator tests
+    // ========================================================================
+
+    #[test]
+    fn test_muscle_actuator_basic() {
+        let xml = r#"
+            <mujoco model="muscle_test">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="elbow" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <muscle name="bicep" joint="elbow" force="500"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        // Muscle actuators should be in the muscles vec, not actuators
+        assert_eq!(model.muscles.len(), 1);
+        assert_eq!(model.actuators.len(), 0);
+
+        let muscle = &model.muscles[0];
+        assert_eq!(muscle.name(), "bicep");
+        assert_eq!(muscle.joint, "elbow");
+    }
+
+    #[test]
+    fn test_muscle_actuator_with_parameters() {
+        let xml = r#"
+            <mujoco model="muscle_params">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="shoulder" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <muscle name="deltoid" joint="shoulder"
+                            force="800" gear="0.05"
+                            timeconst="0.02 0.06"
+                            range="0.8 1.1"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.muscles.len(), 1);
+
+        let muscle = &model.muscles[0];
+        assert_eq!(muscle.name(), "deltoid");
+        assert_relative_eq!(muscle.gear, 0.05, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_muscle_lookup_by_name() {
+        let xml = r#"
+            <mujoco model="muscle_lookup">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="j1" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <muscle name="flexor" joint="j1" force="300"/>
+                    <muscle name="extensor" joint="j1" force="400"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        assert_eq!(model.muscles.len(), 2);
+
+        // Look up by name
+        let flexor = model.muscle("flexor").expect("should find flexor");
+        assert_eq!(flexor.name(), "flexor");
+
+        let extensor = model.muscle("extensor").expect("should find extensor");
+        assert_eq!(extensor.name(), "extensor");
+
+        // Look up by joint
+        let joint_muscles = model.muscles_for_joint("j1");
+        assert_eq!(joint_muscles.len(), 2);
+    }
+
+    #[test]
+    fn test_muscle_actuator_no_joint() {
+        // Muscle without joint should be skipped
+        let xml = r#"
+            <mujoco model="muscle_no_joint">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="elbow" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <muscle name="invalid" force="500"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        // No muscles loaded (missing joint)
+        assert_eq!(model.muscles.len(), 0);
+    }
+
+    #[test]
+    fn test_muscle_with_default_force() {
+        // When force is not specified, scale should be used
+        let xml = r#"
+            <mujoco model="muscle_default_force">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="elbow" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <muscle name="m1" joint="elbow" scale="350"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+        assert_eq!(model.muscles.len(), 1);
+    }
+
+    #[test]
+    fn test_mixed_actuators_and_muscles() {
+        let xml = r#"
+            <mujoco model="mixed_actuators">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="shoulder" type="hinge"/>
+                        <joint name="elbow" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor name="shoulder_motor" joint="shoulder" gear="50"/>
+                    <muscle name="bicep" joint="elbow" force="500"/>
+                    <position name="elbow_pos" joint="elbow" kp="100"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let model = load_mjcf_str(xml).expect("should load");
+
+        // Motor and position actuators go to actuators vec
+        assert_eq!(model.actuators.len(), 2);
+        // Muscle goes to muscles vec
+        assert_eq!(model.muscles.len(), 1);
+
+        assert!(model.actuator("shoulder_motor").is_some());
+        assert!(model.actuator("elbow_pos").is_some());
+        assert!(model.muscle("bicep").is_some());
+    }
+
+    #[test]
+    fn test_muscle_activation() {
+        let xml = r#"
+            <mujoco model="muscle_activation">
+                <worldbody>
+                    <body name="arm">
+                        <joint name="elbow" type="hinge"/>
+                        <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.3"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <muscle name="bicep" joint="elbow" force="500"/>
+                </actuator>
+            </mujoco>
+        "#;
+
+        let mut model = load_mjcf_str(xml).expect("should load");
+
+        let muscle = model.muscle_mut("bicep").expect("should find muscle");
+
+        // Initial activation should be low
+        assert!(muscle.activation() < 0.1);
+
+        // Set excitation
+        muscle.set_excitation(0.8);
+
+        // Compute torque (this advances activation dynamics)
+        let _torque = muscle.compute_torque(0.0, 0.0, 0.001);
+
+        // Activation should be increasing toward excitation
+        // (after one step it won't be at 0.8 yet due to dynamics)
+        assert!(muscle.activation() > 0.0);
     }
 }

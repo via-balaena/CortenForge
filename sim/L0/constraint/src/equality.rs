@@ -48,7 +48,7 @@
 //! );
 //! ```
 
-use nalgebra::Vector3;
+use nalgebra::{UnitQuaternion, Vector3};
 use sim_types::{BodyId, JointId};
 
 #[cfg(feature = "serde")]
@@ -1709,6 +1709,874 @@ impl Default for ConnectConstraint {
             body1: BodyId::new(0),
             body2: None,
             anchor: Vector3::zeros(),
+            baumgarte_factor: 0.2,
+            compliance: 0.0,
+            damping: 0.0,
+            enabled: true,
+            solref: None,
+            solimp: None,
+        }
+    }
+}
+
+// ============================================================================
+// Weld Constraint
+// ============================================================================
+
+/// Weld equality constraint that locks the relative pose between two bodies.
+///
+/// Unlike [`ConnectConstraint`] which only constrains position (3 DOF),
+/// a weld constraint also locks orientation, enforcing a full 6 DOF rigid
+/// connection between bodies.
+///
+/// This is commonly used in MJCF files to:
+/// - Lock bodies together during assembly
+/// - Create breakable joints (by toggling `enabled`)
+/// - Define relative poses between reference frames
+///
+/// # Constraint Formulation
+///
+/// Position constraint: `p1 + R1 * anchor1 = p2 + R2 * anchor2`
+/// Orientation constraint: `R1 * relative_rotation = R2`
+///
+/// # Example
+///
+/// ```
+/// use sim_constraint::equality::WeldConstraint;
+/// use sim_types::BodyId;
+///
+/// // Lock body 1 to body 2 with matching frames
+/// let weld = WeldConstraint::new(BodyId::new(1), BodyId::new(2));
+///
+/// // Lock body 1 to world at a specific offset
+/// let weld_to_world = WeldConstraint::to_world(BodyId::new(1))
+///     .with_anchor(nalgebra::Vector3::new(0.0, 0.0, 1.0));
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct WeldConstraint {
+    /// Constraint name (for debugging).
+    name: String,
+
+    /// First body.
+    body1: BodyId,
+
+    /// Second body (None = world/ground).
+    body2: Option<BodyId>,
+
+    /// Anchor point in body1's local frame.
+    anchor1: Vector3<f64>,
+
+    /// Anchor point in body2's local frame (or world frame if body2 is None).
+    anchor2: Vector3<f64>,
+
+    /// Relative orientation from body1 to body2 (R2 = R1 * `relative_rotation`).
+    relative_rotation: UnitQuaternion<f64>,
+
+    /// Baumgarte stabilization factor for position correction.
+    baumgarte_factor: f64,
+
+    /// Compliance (inverse stiffness). 0 = rigid constraint.
+    compliance: f64,
+
+    /// Damping coefficient for velocity-level constraint.
+    damping: f64,
+
+    /// Whether this constraint is enabled.
+    enabled: bool,
+
+    /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    solref: Option<[f64; 2]>,
+
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    solimp: Option<[f64; 5]>,
+}
+
+impl WeldConstraint {
+    /// Create a new weld constraint between two bodies.
+    ///
+    /// The constraint enforces that body1 and body2 maintain their current
+    /// relative pose (both position and orientation).
+    #[must_use]
+    pub fn new(body1: BodyId, body2: BodyId) -> Self {
+        Self {
+            name: String::new(),
+            body1,
+            body2: Some(body2),
+            anchor1: Vector3::zeros(),
+            anchor2: Vector3::zeros(),
+            relative_rotation: UnitQuaternion::identity(),
+            baumgarte_factor: 0.2,
+            compliance: 0.0,
+            damping: 0.0,
+            enabled: true,
+            solref: None,
+            solimp: None,
+        }
+    }
+
+    /// Create a weld constraint to the world frame.
+    ///
+    /// This locks body1 to a fixed pose in world coordinates.
+    #[must_use]
+    pub fn to_world(body1: BodyId) -> Self {
+        Self {
+            name: String::new(),
+            body1,
+            body2: None,
+            anchor1: Vector3::zeros(),
+            anchor2: Vector3::zeros(),
+            relative_rotation: UnitQuaternion::identity(),
+            baumgarte_factor: 0.2,
+            compliance: 0.0,
+            damping: 0.0,
+            enabled: true,
+            solref: None,
+            solimp: None,
+        }
+    }
+
+    /// Set the constraint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// Set the anchor point in body1's local frame.
+    #[must_use]
+    pub fn with_anchor1(mut self, anchor: Vector3<f64>) -> Self {
+        self.anchor1 = anchor;
+        self
+    }
+
+    /// Set the anchor point in body2's local frame (or world frame).
+    #[must_use]
+    pub fn with_anchor2(mut self, anchor: Vector3<f64>) -> Self {
+        self.anchor2 = anchor;
+        self
+    }
+
+    /// Set both anchors to the same point (for coincident attachment).
+    #[must_use]
+    pub fn with_anchor(mut self, anchor: Vector3<f64>) -> Self {
+        self.anchor1 = anchor;
+        self.anchor2 = anchor;
+        self
+    }
+
+    /// Set the relative rotation between the bodies.
+    #[must_use]
+    pub fn with_relative_rotation(mut self, rotation: UnitQuaternion<f64>) -> Self {
+        self.relative_rotation = rotation;
+        self
+    }
+
+    /// Set the Baumgarte stabilization factor.
+    #[must_use]
+    pub fn with_baumgarte(mut self, factor: f64) -> Self {
+        self.baumgarte_factor = factor.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set the compliance (inverse stiffness).
+    #[must_use]
+    pub fn with_compliance(mut self, compliance: f64) -> Self {
+        self.compliance = compliance.max(0.0);
+        self
+    }
+
+    /// Set the damping coefficient.
+    #[must_use]
+    pub fn with_damping(mut self, damping: f64) -> Self {
+        self.damping = damping.max(0.0);
+        self
+    }
+
+    /// Enable or disable the constraint.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Set the solver reference parameters.
+    #[must_use]
+    pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
+        self.solref = Some(solref);
+        self
+    }
+
+    /// Set the solver impedance parameters.
+    #[must_use]
+    pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
+        self.solimp = Some(solimp);
+        self
+    }
+
+    /// Get the constraint name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the first body.
+    #[must_use]
+    pub fn body1(&self) -> BodyId {
+        self.body1
+    }
+
+    /// Get the second body (None if welded to world).
+    #[must_use]
+    pub fn body2(&self) -> Option<BodyId> {
+        self.body2
+    }
+
+    /// Get the anchor point in body1's frame.
+    #[must_use]
+    pub fn anchor1(&self) -> Vector3<f64> {
+        self.anchor1
+    }
+
+    /// Get the anchor point in body2's frame.
+    #[must_use]
+    pub fn anchor2(&self) -> Vector3<f64> {
+        self.anchor2
+    }
+
+    /// Get the relative rotation.
+    #[must_use]
+    pub fn relative_rotation(&self) -> UnitQuaternion<f64> {
+        self.relative_rotation
+    }
+
+    /// Check if the constraint is enabled.
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Check if this constraint is to the world frame.
+    #[must_use]
+    pub fn is_world_constraint(&self) -> bool {
+        self.body2.is_none()
+    }
+
+    /// Get the solver reference parameters.
+    #[must_use]
+    pub fn solref(&self) -> Option<[f64; 2]> {
+        self.solref
+    }
+
+    /// Get the solver impedance parameters.
+    #[must_use]
+    pub fn solimp(&self) -> Option<[f64; 5]> {
+        self.solimp
+    }
+
+    /// Get the number of constraint DOFs (always 6 for weld).
+    #[must_use]
+    pub fn dof(&self) -> usize {
+        6
+    }
+
+    /// Compute the position error (3D translation).
+    pub fn compute_position_error<F>(&self, get_pose: F) -> Vector3<f64>
+    where
+        F: Fn(BodyId) -> (Vector3<f64>, nalgebra::Matrix3<f64>),
+    {
+        if !self.enabled {
+            return Vector3::zeros();
+        }
+
+        let (p1, r1) = get_pose(self.body1);
+        let anchor1_world = p1 + r1 * self.anchor1;
+
+        self.body2.map_or_else(
+            // World constraint: anchor1 should be at anchor2 in world frame
+            || anchor1_world - self.anchor2,
+            |body2| {
+                let (p2, r2) = get_pose(body2);
+                let anchor2_world = p2 + r2 * self.anchor2;
+                anchor1_world - anchor2_world
+            },
+        )
+    }
+
+    /// Compute the orientation error (3D rotation vector).
+    ///
+    /// Returns the rotation axis scaled by angle that would align the frames.
+    pub fn compute_orientation_error<F>(&self, get_rotation: F) -> Vector3<f64>
+    where
+        F: Fn(BodyId) -> UnitQuaternion<f64>,
+    {
+        if !self.enabled {
+            return Vector3::zeros();
+        }
+
+        let r1 = get_rotation(self.body1);
+
+        let r2 = self
+            .body2
+            .map_or_else(UnitQuaternion::identity, &get_rotation);
+
+        // Expected: R1 * relative_rotation = R2
+        // Error: R2.inverse() * R1 * relative_rotation
+        let expected = r1 * self.relative_rotation;
+        let error_quat = r2.inverse() * expected;
+
+        // Convert to rotation vector (axis-angle)
+        error_quat.scaled_axis()
+    }
+}
+
+impl Default for WeldConstraint {
+    fn default() -> Self {
+        Self {
+            name: "weld".to_string(),
+            body1: BodyId::new(0),
+            body2: None,
+            anchor1: Vector3::zeros(),
+            anchor2: Vector3::zeros(),
+            relative_rotation: UnitQuaternion::identity(),
+            baumgarte_factor: 0.2,
+            compliance: 0.0,
+            damping: 0.0,
+            enabled: true,
+            solref: None,
+            solimp: None,
+        }
+    }
+}
+
+// ============================================================================
+// Joint Position Constraint
+// ============================================================================
+
+/// Equality constraint that locks a joint to a specific position.
+///
+/// This constraint enforces that a joint stays at a target position,
+/// useful for:
+/// - Locking joints during specific motion phases
+/// - Creating keyframe poses
+/// - Implementing joint position equality (e.g., symmetric robot legs)
+///
+/// # Constraint Formulation
+///
+/// `q - target = 0`
+///
+/// For multi-joint equality, use [`JointCoupling`] instead.
+///
+/// # Example
+///
+/// ```
+/// use sim_constraint::equality::JointPositionConstraint;
+/// use sim_types::JointId;
+///
+/// // Lock joint 0 at position 0.5 radians
+/// let lock = JointPositionConstraint::new(JointId::new(0), 0.5);
+///
+/// // Lock joint to zero (home position)
+/// let home = JointPositionConstraint::at_zero(JointId::new(1));
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct JointPositionConstraint {
+    /// Constraint name (for debugging).
+    name: String,
+
+    /// The joint to constrain.
+    joint: JointId,
+
+    /// Target position.
+    target: f64,
+
+    /// Baumgarte stabilization factor.
+    baumgarte_factor: f64,
+
+    /// Compliance (inverse stiffness). 0 = rigid.
+    compliance: f64,
+
+    /// Damping coefficient.
+    damping: f64,
+
+    /// Whether this constraint is enabled.
+    enabled: bool,
+
+    /// Solver reference parameters.
+    solref: Option<[f64; 2]>,
+
+    /// Solver impedance parameters.
+    solimp: Option<[f64; 5]>,
+}
+
+impl JointPositionConstraint {
+    /// Create a new joint position constraint.
+    #[must_use]
+    pub fn new(joint: JointId, target: f64) -> Self {
+        Self {
+            name: String::new(),
+            joint,
+            target,
+            baumgarte_factor: 0.2,
+            compliance: 0.0,
+            damping: 0.0,
+            enabled: true,
+            solref: None,
+            solimp: None,
+        }
+    }
+
+    /// Create a constraint that locks the joint at zero.
+    #[must_use]
+    pub fn at_zero(joint: JointId) -> Self {
+        Self::new(joint, 0.0)
+    }
+
+    /// Set the constraint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// Set the target position.
+    #[must_use]
+    pub fn with_target(mut self, target: f64) -> Self {
+        self.target = target;
+        self
+    }
+
+    /// Set the Baumgarte stabilization factor.
+    #[must_use]
+    pub fn with_baumgarte(mut self, factor: f64) -> Self {
+        self.baumgarte_factor = factor.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set the compliance.
+    #[must_use]
+    pub fn with_compliance(mut self, compliance: f64) -> Self {
+        self.compliance = compliance.max(0.0);
+        self
+    }
+
+    /// Set the damping.
+    #[must_use]
+    pub fn with_damping(mut self, damping: f64) -> Self {
+        self.damping = damping.max(0.0);
+        self
+    }
+
+    /// Enable or disable the constraint.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Set the solver reference parameters.
+    #[must_use]
+    pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
+        self.solref = Some(solref);
+        self
+    }
+
+    /// Set the solver impedance parameters.
+    #[must_use]
+    pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
+        self.solimp = Some(solimp);
+        self
+    }
+
+    /// Get the constraint name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the constrained joint.
+    #[must_use]
+    pub fn joint(&self) -> JointId {
+        self.joint
+    }
+
+    /// Get the target position.
+    #[must_use]
+    pub fn target(&self) -> f64 {
+        self.target
+    }
+
+    /// Check if the constraint is enabled.
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Get the solver reference parameters.
+    #[must_use]
+    pub fn solref(&self) -> Option<[f64; 2]> {
+        self.solref
+    }
+
+    /// Get the solver impedance parameters.
+    #[must_use]
+    pub fn solimp(&self) -> Option<[f64; 5]> {
+        self.solimp
+    }
+
+    /// Get the number of constraint DOFs (always 1).
+    #[must_use]
+    pub fn dof(&self) -> usize {
+        1
+    }
+
+    /// Compute the constraint error.
+    pub fn compute_error<F>(&self, get_position: F) -> f64
+    where
+        F: Fn(JointId) -> f64,
+    {
+        if !self.enabled {
+            return 0.0;
+        }
+        get_position(self.joint) - self.target
+    }
+
+    /// Compute the correction force.
+    pub fn compute_correction<P, V>(&self, get_position: P, get_velocity: V, dt: f64) -> f64
+    where
+        P: Fn(JointId) -> f64,
+        V: Fn(JointId) -> f64,
+    {
+        if !self.enabled {
+            return 0.0;
+        }
+
+        let position_error = self.compute_error(&get_position);
+        let velocity = get_velocity(self.joint);
+
+        // Baumgarte stabilization
+        let bias = self.baumgarte_factor * position_error / dt;
+
+        -self.damping.mul_add(velocity, velocity + bias)
+    }
+}
+
+impl Default for JointPositionConstraint {
+    fn default() -> Self {
+        Self {
+            name: "joint_position".to_string(),
+            joint: JointId::new(0),
+            target: 0.0,
+            baumgarte_factor: 0.2,
+            compliance: 0.0,
+            damping: 0.0,
+            enabled: true,
+            solref: None,
+            solimp: None,
+        }
+    }
+}
+
+// ============================================================================
+// Distance Constraint
+// ============================================================================
+
+/// Equality constraint that maintains a fixed distance between two points.
+///
+/// Unlike [`ConnectConstraint`] which constrains points to coincide (distance = 0),
+/// this constraint enforces a specific non-zero distance, useful for:
+/// - Rod/bar constraints
+/// - Pendulum lengths
+/// - Cable attachments with fixed length
+///
+/// # Constraint Formulation
+///
+/// `|| p1 + R1 * anchor1 - p2 - R2 * anchor2 || = distance`
+///
+/// # Example
+///
+/// ```
+/// use sim_constraint::equality::DistanceConstraint;
+/// use sim_types::BodyId;
+///
+/// // Rod of length 1.0 between two bodies
+/// let rod = DistanceConstraint::new(BodyId::new(1), BodyId::new(2), 1.0);
+///
+/// // Pendulum hanging from world
+/// let pendulum = DistanceConstraint::to_world(BodyId::new(1), 0.5);
+/// ```
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct DistanceConstraint {
+    /// Constraint name (for debugging).
+    name: String,
+
+    /// First body.
+    body1: BodyId,
+
+    /// Second body (None = world/ground).
+    body2: Option<BodyId>,
+
+    /// Anchor point in body1's local frame.
+    anchor1: Vector3<f64>,
+
+    /// Anchor point in body2's local frame (or world frame if body2 is None).
+    anchor2: Vector3<f64>,
+
+    /// Target distance between the anchor points.
+    distance: f64,
+
+    /// Baumgarte stabilization factor.
+    baumgarte_factor: f64,
+
+    /// Compliance (inverse stiffness). 0 = rigid.
+    compliance: f64,
+
+    /// Damping coefficient.
+    damping: f64,
+
+    /// Whether this constraint is enabled.
+    enabled: bool,
+
+    /// Solver reference parameters.
+    solref: Option<[f64; 2]>,
+
+    /// Solver impedance parameters.
+    solimp: Option<[f64; 5]>,
+}
+
+impl DistanceConstraint {
+    /// Create a new distance constraint between two bodies.
+    #[must_use]
+    pub fn new(body1: BodyId, body2: BodyId, distance: f64) -> Self {
+        Self {
+            name: String::new(),
+            body1,
+            body2: Some(body2),
+            anchor1: Vector3::zeros(),
+            anchor2: Vector3::zeros(),
+            distance: distance.abs(),
+            baumgarte_factor: 0.2,
+            compliance: 0.0,
+            damping: 0.0,
+            enabled: true,
+            solref: None,
+            solimp: None,
+        }
+    }
+
+    /// Create a distance constraint to the world frame.
+    #[must_use]
+    pub fn to_world(body1: BodyId, distance: f64) -> Self {
+        Self {
+            name: String::new(),
+            body1,
+            body2: None,
+            anchor1: Vector3::zeros(),
+            anchor2: Vector3::zeros(),
+            distance: distance.abs(),
+            baumgarte_factor: 0.2,
+            compliance: 0.0,
+            damping: 0.0,
+            enabled: true,
+            solref: None,
+            solimp: None,
+        }
+    }
+
+    /// Set the constraint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// Set the anchor point in body1's local frame.
+    #[must_use]
+    pub fn with_anchor1(mut self, anchor: Vector3<f64>) -> Self {
+        self.anchor1 = anchor;
+        self
+    }
+
+    /// Set the anchor point in body2's local frame (or world frame).
+    #[must_use]
+    pub fn with_anchor2(mut self, anchor: Vector3<f64>) -> Self {
+        self.anchor2 = anchor;
+        self
+    }
+
+    /// Set the target distance.
+    #[must_use]
+    pub fn with_distance(mut self, distance: f64) -> Self {
+        self.distance = distance.abs();
+        self
+    }
+
+    /// Set the Baumgarte stabilization factor.
+    #[must_use]
+    pub fn with_baumgarte(mut self, factor: f64) -> Self {
+        self.baumgarte_factor = factor.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set the compliance.
+    #[must_use]
+    pub fn with_compliance(mut self, compliance: f64) -> Self {
+        self.compliance = compliance.max(0.0);
+        self
+    }
+
+    /// Set the damping.
+    #[must_use]
+    pub fn with_damping(mut self, damping: f64) -> Self {
+        self.damping = damping.max(0.0);
+        self
+    }
+
+    /// Enable or disable the constraint.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Set the solver reference parameters.
+    #[must_use]
+    pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
+        self.solref = Some(solref);
+        self
+    }
+
+    /// Set the solver impedance parameters.
+    #[must_use]
+    pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
+        self.solimp = Some(solimp);
+        self
+    }
+
+    /// Get the constraint name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get the first body.
+    #[must_use]
+    pub fn body1(&self) -> BodyId {
+        self.body1
+    }
+
+    /// Get the second body (None if constrained to world).
+    #[must_use]
+    pub fn body2(&self) -> Option<BodyId> {
+        self.body2
+    }
+
+    /// Get the anchor point in body1's frame.
+    #[must_use]
+    pub fn anchor1(&self) -> Vector3<f64> {
+        self.anchor1
+    }
+
+    /// Get the anchor point in body2's frame.
+    #[must_use]
+    pub fn anchor2(&self) -> Vector3<f64> {
+        self.anchor2
+    }
+
+    /// Get the target distance.
+    #[must_use]
+    pub fn distance(&self) -> f64 {
+        self.distance
+    }
+
+    /// Check if the constraint is enabled.
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Check if this constraint is to the world frame.
+    #[must_use]
+    pub fn is_world_constraint(&self) -> bool {
+        self.body2.is_none()
+    }
+
+    /// Get the solver reference parameters.
+    #[must_use]
+    pub fn solref(&self) -> Option<[f64; 2]> {
+        self.solref
+    }
+
+    /// Get the solver impedance parameters.
+    #[must_use]
+    pub fn solimp(&self) -> Option<[f64; 5]> {
+        self.solimp
+    }
+
+    /// Get the number of constraint DOFs (always 1 for distance).
+    #[must_use]
+    pub fn dof(&self) -> usize {
+        1
+    }
+
+    /// Compute the constraint error (actual distance - target distance).
+    pub fn compute_error<F>(&self, get_pose: F) -> f64
+    where
+        F: Fn(BodyId) -> (Vector3<f64>, nalgebra::Matrix3<f64>),
+    {
+        if !self.enabled {
+            return 0.0;
+        }
+
+        let (p1, r1) = get_pose(self.body1);
+        let anchor1_world = p1 + r1 * self.anchor1;
+
+        let anchor2_world = self.body2.map_or(self.anchor2, |body2| {
+            let (p2, r2) = get_pose(body2);
+            p2 + r2 * self.anchor2
+        });
+
+        let diff = anchor1_world - anchor2_world;
+        let actual_distance = diff.norm();
+
+        actual_distance - self.distance
+    }
+
+    /// Compute the constraint direction (unit vector from anchor2 to anchor1).
+    pub fn compute_direction<F>(&self, get_pose: F) -> Vector3<f64>
+    where
+        F: Fn(BodyId) -> (Vector3<f64>, nalgebra::Matrix3<f64>),
+    {
+        let (p1, r1) = get_pose(self.body1);
+        let anchor1_world = p1 + r1 * self.anchor1;
+
+        let anchor2_world = self.body2.map_or(self.anchor2, |body2| {
+            let (p2, r2) = get_pose(body2);
+            p2 + r2 * self.anchor2
+        });
+
+        let diff = anchor1_world - anchor2_world;
+        let norm = diff.norm();
+
+        if norm > 1e-10 {
+            diff / norm
+        } else {
+            Vector3::z() // Arbitrary direction when points coincide
+        }
+    }
+}
+
+impl Default for DistanceConstraint {
+    fn default() -> Self {
+        Self {
+            name: "distance".to_string(),
+            body1: BodyId::new(0),
+            body2: None,
+            anchor1: Vector3::zeros(),
+            anchor2: Vector3::zeros(),
+            distance: 0.0,
             baumgarte_factor: 0.2,
             compliance: 0.0,
             damping: 0.0,

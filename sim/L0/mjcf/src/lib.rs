@@ -192,10 +192,10 @@ pub use loader::{
 pub use parser::parse_mjcf_str;
 pub use types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
-    MjcfDefault, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial,
-    MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh,
-    MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults,
-    MjcfSolverType, MjcfTendonDefaults,
+    MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
+    MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
+    MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
+    MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendonDefaults, MjcfWeld,
 };
 pub use validation::{ValidationResult, validate};
 
