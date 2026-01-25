@@ -1182,12 +1182,322 @@ impl MjcfConnect {
     }
 }
 
+/// A weld constraint from `<weld>` element.
+///
+/// Welds two bodies together with a fixed relative pose (position and orientation).
+/// This creates a 6 DOF constraint locking both translation and rotation.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfWeld {
+    /// Optional constraint name.
+    pub name: Option<String>,
+    /// Default class for inheriting parameters.
+    pub class: Option<String>,
+    /// Name of the first body.
+    pub body1: String,
+    /// Name of the second body (optional, defaults to world).
+    pub body2: Option<String>,
+    /// Anchor point in body1's local frame.
+    pub anchor: Vector3<f64>,
+    /// Relative position offset between the two anchor frames.
+    pub relpose: Option<[f64; 7]>,
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
+    /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    pub solref: Option<[f64; 2]>,
+    /// Whether this constraint is active.
+    pub active: bool,
+}
+
+impl Default for MjcfWeld {
+    fn default() -> Self {
+        Self {
+            name: None,
+            class: None,
+            body1: String::new(),
+            body2: None,
+            anchor: Vector3::zeros(),
+            relpose: None,
+            solimp: None,
+            solref: None,
+            active: true,
+        }
+    }
+}
+
+impl MjcfWeld {
+    /// Create a new weld constraint between two bodies.
+    #[must_use]
+    pub fn new(body1: impl Into<String>, body2: impl Into<String>) -> Self {
+        Self {
+            body1: body1.into(),
+            body2: Some(body2.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a weld constraint to the world frame.
+    #[must_use]
+    pub fn to_world(body1: impl Into<String>) -> Self {
+        Self {
+            body1: body1.into(),
+            body2: None,
+            ..Default::default()
+        }
+    }
+
+    /// Set the anchor point in body1's frame.
+    #[must_use]
+    pub fn with_anchor(mut self, anchor: Vector3<f64>) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// Set the relative pose [x, y, z, qw, qx, qy, qz].
+    #[must_use]
+    pub fn with_relpose(mut self, relpose: [f64; 7]) -> Self {
+        self.relpose = Some(relpose);
+        self
+    }
+
+    /// Set the constraint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set solver reference parameters.
+    #[must_use]
+    pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
+        self.solref = Some(solref);
+        self
+    }
+
+    /// Set solver impedance parameters.
+    #[must_use]
+    pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
+        self.solimp = Some(solimp);
+        self
+    }
+}
+
+/// A joint equality constraint from `<joint>` element within `<equality>`.
+///
+/// Constrains a joint to maintain a specific position, or couples two joints
+/// with a linear relationship: `q2 = polycoef\[0\] + polycoef\[1\]*q1 + ...`
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfJointEquality {
+    /// Optional constraint name.
+    pub name: Option<String>,
+    /// Default class for inheriting parameters.
+    pub class: Option<String>,
+    /// Name of the first (primary) joint.
+    pub joint1: String,
+    /// Name of the second joint (optional, for coupling).
+    pub joint2: Option<String>,
+    /// Polynomial coefficients for coupling: `q2 = sum(polycoef\[i\] * q1^i)`.
+    /// Default is `[0, 1]` meaning `q2 = q1` (mimic).
+    pub polycoef: Vec<f64>,
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
+    /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    pub solref: Option<[f64; 2]>,
+    /// Whether this constraint is active.
+    pub active: bool,
+}
+
+impl Default for MjcfJointEquality {
+    fn default() -> Self {
+        Self {
+            name: None,
+            class: None,
+            joint1: String::new(),
+            joint2: None,
+            polycoef: vec![0.0, 1.0], // Default: q2 = q1
+            solimp: None,
+            solref: None,
+            active: true,
+        }
+    }
+}
+
+impl MjcfJointEquality {
+    /// Create a joint position lock constraint.
+    #[must_use]
+    pub fn lock(joint: impl Into<String>) -> Self {
+        Self {
+            joint1: joint.into(),
+            joint2: None,
+            polycoef: vec![0.0], // Lock at position 0
+            ..Default::default()
+        }
+    }
+
+    /// Create a joint position lock at a specific position.
+    #[must_use]
+    pub fn lock_at(joint: impl Into<String>, position: f64) -> Self {
+        Self {
+            joint1: joint.into(),
+            joint2: None,
+            polycoef: vec![position],
+            ..Default::default()
+        }
+    }
+
+    /// Create a mimic constraint (joint2 = joint1).
+    #[must_use]
+    pub fn mimic(joint1: impl Into<String>, joint2: impl Into<String>) -> Self {
+        Self {
+            joint1: joint1.into(),
+            joint2: Some(joint2.into()),
+            polycoef: vec![0.0, 1.0],
+            ..Default::default()
+        }
+    }
+
+    /// Create a gear constraint (joint2 = ratio * joint1).
+    #[must_use]
+    pub fn gear(joint1: impl Into<String>, joint2: impl Into<String>, ratio: f64) -> Self {
+        Self {
+            joint1: joint1.into(),
+            joint2: Some(joint2.into()),
+            polycoef: vec![0.0, ratio],
+            ..Default::default()
+        }
+    }
+
+    /// Set the constraint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set polynomial coefficients.
+    #[must_use]
+    pub fn with_polycoef(mut self, polycoef: Vec<f64>) -> Self {
+        self.polycoef = polycoef;
+        self
+    }
+
+    /// Set solver reference parameters.
+    #[must_use]
+    pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
+        self.solref = Some(solref);
+        self
+    }
+
+    /// Set solver impedance parameters.
+    #[must_use]
+    pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
+        self.solimp = Some(solimp);
+        self
+    }
+}
+
+/// A distance constraint from `<distance>` element.
+///
+/// Maintains a fixed distance between two anchor points on different bodies.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfDistance {
+    /// Optional constraint name.
+    pub name: Option<String>,
+    /// Default class for inheriting parameters.
+    pub class: Option<String>,
+    /// Name of the first geom (anchor derived from geom position).
+    pub geom1: String,
+    /// Name of the second geom (optional, defaults to world origin).
+    pub geom2: Option<String>,
+    /// Target distance between geom centers.
+    pub distance: Option<f64>,
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
+    /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    pub solref: Option<[f64; 2]>,
+    /// Whether this constraint is active.
+    pub active: bool,
+}
+
+impl Default for MjcfDistance {
+    fn default() -> Self {
+        Self {
+            name: None,
+            class: None,
+            geom1: String::new(),
+            geom2: None,
+            distance: None, // Computed from initial configuration
+            solimp: None,
+            solref: None,
+            active: true,
+        }
+    }
+}
+
+impl MjcfDistance {
+    /// Create a distance constraint between two geoms.
+    #[must_use]
+    pub fn new(geom1: impl Into<String>, geom2: impl Into<String>) -> Self {
+        Self {
+            geom1: geom1.into(),
+            geom2: Some(geom2.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Create a distance constraint from a geom to the world origin.
+    #[must_use]
+    pub fn to_world(geom1: impl Into<String>) -> Self {
+        Self {
+            geom1: geom1.into(),
+            geom2: None,
+            ..Default::default()
+        }
+    }
+
+    /// Set the target distance.
+    #[must_use]
+    pub fn with_distance(mut self, distance: f64) -> Self {
+        self.distance = Some(distance);
+        self
+    }
+
+    /// Set the constraint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set solver reference parameters.
+    #[must_use]
+    pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
+        self.solref = Some(solref);
+        self
+    }
+
+    /// Set solver impedance parameters.
+    #[must_use]
+    pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
+        self.solimp = Some(solimp);
+        self
+    }
+}
+
 /// Container for equality constraints from `<equality>` element.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfEquality {
-    /// Connect (ball) constraints.
+    /// Connect (ball-and-socket) constraints.
     pub connects: Vec<MjcfConnect>,
+    /// Weld (6 DOF lock) constraints.
+    pub welds: Vec<MjcfWeld>,
+    /// Joint equality constraints (position lock or coupling).
+    pub joints: Vec<MjcfJointEquality>,
+    /// Distance constraints between geoms.
+    pub distances: Vec<MjcfDistance>,
 }
 
 impl MjcfEquality {
@@ -1204,16 +1514,40 @@ impl MjcfEquality {
         self
     }
 
+    /// Add a weld constraint.
+    #[must_use]
+    pub fn with_weld(mut self, weld: MjcfWeld) -> Self {
+        self.welds.push(weld);
+        self
+    }
+
+    /// Add a joint equality constraint.
+    #[must_use]
+    pub fn with_joint(mut self, joint: MjcfJointEquality) -> Self {
+        self.joints.push(joint);
+        self
+    }
+
+    /// Add a distance constraint.
+    #[must_use]
+    pub fn with_distance(mut self, distance: MjcfDistance) -> Self {
+        self.distances.push(distance);
+        self
+    }
+
     /// Check if there are any equality constraints.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.connects.is_empty()
+            && self.welds.is_empty()
+            && self.joints.is_empty()
+            && self.distances.is_empty()
     }
 
     /// Get the total number of equality constraints.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.connects.len()
+        self.connects.len() + self.welds.len() + self.joints.len() + self.distances.len()
     }
 }
 
@@ -1641,6 +1975,8 @@ pub struct MjcfTendon {
     pub sites: Vec<String>,
     /// Joint coefficients for fixed tendons: (joint_name, coefficient).
     pub joints: Vec<(String, f64)>,
+    /// Wrapping geom references for spatial tendons (geom names).
+    pub wrapping_geoms: Vec<String>,
 }
 
 impl Default for MjcfTendon {
@@ -1658,6 +1994,7 @@ impl Default for MjcfTendon {
             rgba: Vector4::new(0.5, 0.5, 0.5, 1.0),
             sites: Vec::new(),
             joints: Vec::new(),
+            wrapping_geoms: Vec::new(),
         }
     }
 }
@@ -1716,6 +2053,13 @@ impl MjcfTendon {
     pub fn with_limits(mut self, lower: f64, upper: f64) -> Self {
         self.limited = true;
         self.range = Some((lower, upper));
+        self
+    }
+
+    /// Add a wrapping geom reference to a spatial tendon.
+    #[must_use]
+    pub fn with_wrapping_geom(mut self, geom: impl Into<String>) -> Self {
+        self.wrapping_geoms.push(geom.into());
         self
     }
 }

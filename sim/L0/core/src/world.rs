@@ -2986,6 +2986,79 @@ impl World {
             None
         }
     }
+
+    /// Cast a ray against all bodies with collision shapes.
+    ///
+    /// Returns the closest hit, or `None` if nothing was hit.
+    ///
+    /// # Arguments
+    ///
+    /// * `origin` - Ray origin in world coordinates
+    /// * `direction` - Ray direction (unit vector) in world coordinates
+    /// * `max_distance` - Maximum distance to check
+    /// * `exclude_body` - Optional body to exclude from ray casting
+    #[must_use]
+    pub fn cast_ray(
+        &self,
+        origin: Point3<f64>,
+        direction: nalgebra::UnitVector3<f64>,
+        max_distance: f64,
+        exclude_body: Option<BodyId>,
+    ) -> Option<(BodyId, crate::raycast::RaycastHit)> {
+        let mut closest: Option<(BodyId, crate::raycast::RaycastHit)> = None;
+
+        for body in self.bodies.values() {
+            // Skip excluded body
+            if exclude_body == Some(body.id) {
+                continue;
+            }
+
+            // Skip bodies without collision shapes
+            let Some(ref shape) = body.collision_shape else {
+                continue;
+            };
+
+            // Compute the world pose of the collision shape
+            let shape_pose = body
+                .collision_shape_pose
+                .as_ref()
+                .map_or(body.state.pose, |local| body.state.pose.compose(local));
+
+            // Cast ray against this shape
+            if let Some(hit) =
+                crate::raycast::raycast_shape(shape, &shape_pose, origin, direction, max_distance)
+            {
+                // Keep the closest hit
+                if closest.is_none()
+                    || hit.distance < closest.as_ref().map_or(f64::MAX, |(_, h)| h.distance)
+                {
+                    closest = Some((body.id, hit));
+                }
+            }
+        }
+
+        closest
+    }
+}
+
+// Implement RayCaster trait when sim-sensor feature is enabled
+#[cfg(feature = "sensor")]
+impl sim_sensor::RayCaster for World {
+    fn cast_ray(
+        &self,
+        origin: Point3<f64>,
+        direction: nalgebra::UnitVector3<f64>,
+        max_distance: f64,
+        exclude_body: Option<BodyId>,
+    ) -> Option<sim_sensor::RayHit> {
+        self.cast_ray(origin, direction, max_distance, exclude_body)
+            .map(|(body_id, hit)| sim_sensor::RayHit {
+                distance: hit.distance,
+                point: hit.point,
+                normal: hit.normal,
+                body_id: Some(body_id),
+            })
+    }
 }
 
 #[cfg(test)]
@@ -4145,5 +4218,152 @@ mod tests {
                 normal_len
             );
         }
+    }
+
+    #[test]
+    fn test_cast_ray_hits_sphere() {
+        let mut world = World::default();
+
+        // Add a sphere at z=5
+        let sphere_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 5.0))),
+            MassProperties::sphere(1.0, 1.0),
+        );
+        world.body_mut(sphere_id).unwrap().collision_shape = Some(CollisionShape::sphere(1.0));
+
+        // Cast ray from origin toward sphere
+        let origin = Point3::origin();
+        let direction = nalgebra::UnitVector3::new_normalize(Vector3::z());
+
+        let result = world.cast_ray(origin, direction, 10.0, None);
+
+        assert!(result.is_some(), "ray should hit the sphere");
+        let (hit_body_id, hit) = result.unwrap();
+        assert_eq!(hit_body_id, sphere_id);
+        assert_relative_eq!(hit.distance, 4.0, epsilon = 1e-6);
+        assert_relative_eq!(hit.normal.z, -1.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_cast_ray_misses() {
+        let mut world = World::default();
+
+        // Add a sphere at x=5 (off to the side)
+        let sphere_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(5.0, 0.0, 5.0))),
+            MassProperties::sphere(1.0, 1.0),
+        );
+        world.body_mut(sphere_id).unwrap().collision_shape = Some(CollisionShape::sphere(1.0));
+
+        // Cast ray from origin straight up (should miss sphere)
+        let origin = Point3::origin();
+        let direction = nalgebra::UnitVector3::new_normalize(Vector3::z());
+
+        let result = world.cast_ray(origin, direction, 10.0, None);
+
+        assert!(result.is_none(), "ray should miss the sphere");
+    }
+
+    #[test]
+    fn test_cast_ray_excludes_body() {
+        let mut world = World::default();
+
+        // Add two spheres along z axis
+        let sphere1_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 3.0))),
+            MassProperties::sphere(1.0, 1.0),
+        );
+        world.body_mut(sphere1_id).unwrap().collision_shape = Some(CollisionShape::sphere(1.0));
+
+        let sphere2_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 7.0))),
+            MassProperties::sphere(1.0, 1.0),
+        );
+        world.body_mut(sphere2_id).unwrap().collision_shape = Some(CollisionShape::sphere(1.0));
+
+        // Cast ray from origin, excluding sphere1
+        let origin = Point3::origin();
+        let direction = nalgebra::UnitVector3::new_normalize(Vector3::z());
+
+        let result = world.cast_ray(origin, direction, 10.0, Some(sphere1_id));
+
+        assert!(result.is_some(), "ray should hit sphere2");
+        let (hit_body_id, hit) = result.unwrap();
+        assert_eq!(hit_body_id, sphere2_id);
+        assert_relative_eq!(hit.distance, 6.0, epsilon = 1e-6); // 7 - 1 = 6
+    }
+
+    #[test]
+    fn test_cast_ray_returns_closest_hit() {
+        let mut world = World::default();
+
+        // Add two spheres along z axis
+        let near_sphere = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 3.0))),
+            MassProperties::sphere(1.0, 1.0),
+        );
+        world.body_mut(near_sphere).unwrap().collision_shape = Some(CollisionShape::sphere(1.0));
+
+        let far_sphere = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 8.0))),
+            MassProperties::sphere(1.0, 1.0),
+        );
+        world.body_mut(far_sphere).unwrap().collision_shape = Some(CollisionShape::sphere(1.0));
+
+        // Cast ray from origin
+        let origin = Point3::origin();
+        let direction = nalgebra::UnitVector3::new_normalize(Vector3::z());
+
+        let result = world.cast_ray(origin, direction, 20.0, None);
+
+        assert!(result.is_some(), "ray should hit");
+        let (hit_body_id, hit) = result.unwrap();
+        assert_eq!(hit_body_id, near_sphere, "should hit the closer sphere");
+        assert_relative_eq!(hit.distance, 2.0, epsilon = 1e-6); // 3 - 1 = 2
+    }
+
+    #[test]
+    fn test_cast_ray_respects_max_distance() {
+        let mut world = World::default();
+
+        // Add a sphere at z=10
+        let sphere_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 10.0))),
+            MassProperties::sphere(1.0, 1.0),
+        );
+        world.body_mut(sphere_id).unwrap().collision_shape = Some(CollisionShape::sphere(1.0));
+
+        // Cast ray with max_distance=5 (sphere is at distance 9)
+        let origin = Point3::origin();
+        let direction = nalgebra::UnitVector3::new_normalize(Vector3::z());
+
+        let result = world.cast_ray(origin, direction, 5.0, None);
+
+        assert!(result.is_none(), "ray should not hit beyond max_distance");
+    }
+
+    #[test]
+    fn test_cast_ray_hits_box() {
+        let mut world = World::default();
+
+        // Add a box at z=5
+        let box_id = world.add_body(
+            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 5.0))),
+            MassProperties::box_shape(1.0, Vector3::new(1.0, 1.0, 1.0)),
+        );
+        world.body_mut(box_id).unwrap().collision_shape =
+            Some(CollisionShape::box_shape(Vector3::new(1.0, 1.0, 1.0)));
+
+        // Cast ray from origin toward box
+        let origin = Point3::origin();
+        let direction = nalgebra::UnitVector3::new_normalize(Vector3::z());
+
+        let result = world.cast_ray(origin, direction, 10.0, None);
+
+        assert!(result.is_some(), "ray should hit the box");
+        let (hit_body_id, hit) = result.unwrap();
+        assert_eq!(hit_body_id, box_id);
+        assert_relative_eq!(hit.distance, 4.0, epsilon = 1e-6); // 5 - 1 = 4
+        assert_relative_eq!(hit.normal.z, -1.0, epsilon = 1e-6);
     }
 }

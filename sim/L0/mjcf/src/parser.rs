@@ -10,11 +10,12 @@ use std::io::BufRead;
 use crate::error::{MjcfError, Result};
 use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
-    MjcfDefault, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial,
-    MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointType, MjcfMesh,
-    MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfSensor, MjcfSensorDefaults, MjcfSensorType,
-    MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon,
-    MjcfTendonDefaults, MjcfTendonType,
+    MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
+    MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
+    MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
+    MjcfSensor, MjcfSensorDefaults, MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin,
+    MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType,
+    MjcfWeld,
 };
 
 /// Parse an MJCF string into a model.
@@ -1102,16 +1103,45 @@ fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfEquality> {
                         // Skip to closing tag
                         skip_element(reader, &elem_name)?;
                     }
-                    // Skip other equality constraint types for now (weld, joint, tendon, etc.)
+                    b"weld" => {
+                        let weld = parse_weld_attrs(e)?;
+                        equality.welds.push(weld);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    b"joint" => {
+                        let joint_eq = parse_joint_equality_attrs(e)?;
+                        equality.joints.push(joint_eq);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    b"distance" => {
+                        let distance = parse_distance_attrs(e)?;
+                        equality.distances.push(distance);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    // Skip other equality constraint types (tendon, flex)
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
             Ok(Event::Empty(ref e)) => {
-                if e.name().as_ref() == b"connect" {
-                    let connect = parse_connect_attrs(e)?;
-                    equality.connects.push(connect);
+                match e.name().as_ref() {
+                    b"connect" => {
+                        let connect = parse_connect_attrs(e)?;
+                        equality.connects.push(connect);
+                    }
+                    b"weld" => {
+                        let weld = parse_weld_attrs(e)?;
+                        equality.welds.push(weld);
+                    }
+                    b"joint" => {
+                        let joint_eq = parse_joint_equality_attrs(e)?;
+                        equality.joints.push(joint_eq);
+                    }
+                    b"distance" => {
+                        let distance = parse_distance_attrs(e)?;
+                        equality.distances.push(distance);
+                    }
+                    _ => {} // Ignore other self-closing equality constraint types
                 }
-                // Skip other self-closing equality constraint types
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"equality" => break,
             Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in equality".into())),
@@ -1163,6 +1193,139 @@ fn parse_connect_attrs(e: &BytesStart) -> Result<MjcfConnect> {
     }
 
     Ok(connect)
+}
+
+/// Parse weld constraint attributes.
+fn parse_weld_attrs(e: &BytesStart) -> Result<MjcfWeld> {
+    let mut weld = MjcfWeld::default();
+
+    weld.name = get_attribute_opt(e, "name");
+    weld.class = get_attribute_opt(e, "class");
+
+    // body1 is required
+    weld.body1 = get_attribute_opt(e, "body1")
+        .ok_or_else(|| MjcfError::missing_attribute("body1", "weld"))?;
+
+    // body2 is optional (defaults to world)
+    weld.body2 = get_attribute_opt(e, "body2");
+
+    // Parse anchor point
+    if let Some(anchor) = get_attribute_opt(e, "anchor") {
+        weld.anchor = parse_vector3(&anchor)?;
+    }
+
+    // Parse relpose [x y z qw qx qy qz]
+    if let Some(relpose) = get_attribute_opt(e, "relpose") {
+        let parts = parse_float_array(&relpose)?;
+        if parts.len() >= 7 {
+            weld.relpose = Some([
+                parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6],
+            ]);
+        }
+    }
+
+    // Parse solver parameters
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            weld.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            weld.solref = Some([parts[0], parts[1]]);
+        }
+    }
+
+    // Parse active flag
+    if let Some(active) = get_attribute_opt(e, "active") {
+        weld.active = active != "false";
+    }
+
+    Ok(weld)
+}
+
+/// Parse joint equality constraint attributes.
+fn parse_joint_equality_attrs(e: &BytesStart) -> Result<MjcfJointEquality> {
+    let mut joint_eq = MjcfJointEquality::default();
+
+    joint_eq.name = get_attribute_opt(e, "name");
+    joint_eq.class = get_attribute_opt(e, "class");
+
+    // joint1 is required
+    joint_eq.joint1 = get_attribute_opt(e, "joint1")
+        .ok_or_else(|| MjcfError::missing_attribute("joint1", "joint equality"))?;
+
+    // joint2 is optional (for coupling constraints)
+    joint_eq.joint2 = get_attribute_opt(e, "joint2");
+
+    // Parse polycoef (polynomial coefficients for coupling)
+    if let Some(polycoef) = get_attribute_opt(e, "polycoef") {
+        joint_eq.polycoef = parse_float_array(&polycoef)?;
+    }
+
+    // Parse solver parameters
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            joint_eq.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            joint_eq.solref = Some([parts[0], parts[1]]);
+        }
+    }
+
+    // Parse active flag
+    if let Some(active) = get_attribute_opt(e, "active") {
+        joint_eq.active = active != "false";
+    }
+
+    Ok(joint_eq)
+}
+
+/// Parse distance constraint attributes.
+fn parse_distance_attrs(e: &BytesStart) -> Result<MjcfDistance> {
+    let mut distance = MjcfDistance::default();
+
+    distance.name = get_attribute_opt(e, "name");
+    distance.class = get_attribute_opt(e, "class");
+
+    // geom1 is required
+    distance.geom1 = get_attribute_opt(e, "geom1")
+        .ok_or_else(|| MjcfError::missing_attribute("geom1", "distance"))?;
+
+    // geom2 is optional (defaults to world origin)
+    distance.geom2 = get_attribute_opt(e, "geom2");
+
+    // Parse target distance
+    if let Some(dist_str) = get_attribute_opt(e, "distance") {
+        distance.distance = dist_str.parse().ok();
+    }
+
+    // Parse solver parameters
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            distance.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            distance.solref = Some([parts[0], parts[1]]);
+        }
+    }
+
+    // Parse active flag
+    if let Some(active) = get_attribute_opt(e, "active") {
+        distance.active = active != "false";
+    }
+
+    Ok(distance)
 }
 
 // ============================================================================
@@ -1459,6 +1622,12 @@ fn parse_tendon<R: BufRead>(
                         if let Some(joint_name) = get_attribute_opt(e, "joint") {
                             let coef = parse_float_attr(e, "coef").unwrap_or(1.0);
                             tendon.joints.push((joint_name, coef));
+                        }
+                    }
+                    b"geom" => {
+                        // Wrapping geom reference for spatial tendon
+                        if let Some(geom_name) = get_attribute_opt(e, "geom") {
+                            tendon.wrapping_geoms.push(geom_name);
                         }
                     }
                     _ => {}
