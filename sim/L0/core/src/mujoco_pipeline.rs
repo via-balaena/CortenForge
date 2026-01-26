@@ -701,13 +701,13 @@ use nalgebra::{DMatrix, DVector};
 #[derive(Debug, Clone)]
 #[allow(clippy::doc_markdown)] // Math notation in docs uses subscripts
 pub struct NLinkPendulum {
-    /// Joint angles θ[i] in radians (angle of link i relative to link i-1)
+    /// Joint angles θ\[i\] in radians (angle of link i relative to link i-1)
     pub qpos: DVector<f64>,
-    /// Joint velocities θ̇[i] in rad/s
+    /// Joint velocities θ̇\[i\] in rad/s
     pub qvel: DVector<f64>,
-    /// Link lengths L[i] in meters
+    /// Link lengths L\[i\] in meters
     pub lengths: Vec<f64>,
-    /// Link masses m[i] in kg (point mass at end of link)
+    /// Link masses m\[i\] in kg (point mass at end of link)
     pub masses: Vec<f64>,
     /// Gravitational acceleration in m/s²
     pub gravity: f64,
@@ -782,7 +782,7 @@ impl NLinkPendulum {
 
     /// Compute the absolute angle of link i from vertical.
     ///
-    /// θ_abs[i] = θ[0] + θ[1] + ... + θ[i]
+    /// θ_abs\[i\] = θ\[0\] + θ\[1\] + ... + θ\[i\]
     #[must_use]
     pub fn absolute_angle(&self, link: usize) -> f64 {
         self.qpos.iter().take(link + 1).sum()
@@ -791,8 +791,8 @@ impl NLinkPendulum {
     /// Compute the Cartesian position of the end of link i.
     ///
     /// Position is computed by summing all link contributions:
-    /// x = Σ L[j] * sin(θ_abs[j])
-    /// y = -Σ L[j] * cos(θ_abs[j])
+    /// x = Σ L\[j\] * sin(θ_abs\[j\])
+    /// y = -Σ L\[j\] * cos(θ_abs\[j\])
     #[must_use]
     pub fn position(&self, link: usize) -> Vector2<f64> {
         let mut x = 0.0;
@@ -820,12 +820,12 @@ impl NLinkPendulum {
     /// where θ̇_abs_j = θ̇_0 + θ̇_1 + ... + θ̇_j
     ///
     /// Working out the kinetic energy and extracting M:
-    /// M[i,j] = ∂²T/(∂θ̇_i ∂θ̇_j)
+    /// M\[i,j\] = ∂²T/(∂θ̇_i ∂θ̇_j)
     ///
     /// For joint i affecting mass k (where k ≥ i), the velocity contribution is:
     /// ∂v_k/∂θ̇_i = Σ_{j=i}^{k} L_j * (perpendicular to link j)
     ///
-    /// M[i,j] = Σ_{k≥max(i,j)} m_k * (∂v_k/∂θ̇_i · ∂v_k/∂θ̇_j)
+    /// M\[i,j\] = Σ_{k≥max(i,j)} m_k * (∂v_k/∂θ̇_i · ∂v_k/∂θ̇_j)
     ///        = Σ_{k≥max(i,j)} m_k * Σ_{a=i}^{k} Σ_{b=j}^{k} L_a * L_b * cos(θ_abs_a - θ_abs_b)
     #[must_use]
     #[allow(clippy::needless_range_loop)] // Indices needed for array access patterns
@@ -871,14 +871,14 @@ impl NLinkPendulum {
     /// Compute the bias forces (Coriolis + gravity) via RNE.
     ///
     /// The bias force for joint i is computed using the Christoffel symbols:
-    /// C[i] = Σ_{j,k} c_{ijk} * θ̇_j * θ̇_k + g[i]
+    /// C\[i\] = Σ_{j,k} c_{ijk} * θ̇_j * θ̇_k + g\[i\]
     ///
     /// where c_{ijk} = (1/2)(∂M_{ij}/∂θ_k + ∂M_{ik}/∂θ_j - ∂M_{jk}/∂θ_i)
     ///
-    /// For gravity: g[i] = ∂V/∂θ_i where V = Σ_k m_k * g * h_k
+    /// For gravity: g\[i\] = ∂V/∂θ_i where V = Σ_k m_k * g * h_k
     /// h_k = -Σ_{j=0}^{k} L_j * cos(θ_abs_j)
     /// ∂h_k/∂θ_i = Σ_{j=i}^{k} L_j * sin(θ_abs_j)  (for i ≤ k, else 0)
-    /// g[i] = Σ_{k≥i} m_k * g * Σ_{j=i}^{k} L_j * sin(θ_abs_j)
+    /// g\[i\] = Σ_{k≥i} m_k * g * Σ_{j=i}^{k} L_j * sin(θ_abs_j)
     #[must_use]
     #[allow(clippy::similar_names)] // theta_abs variables are intentional
     #[allow(clippy::needless_range_loop)] // Indices needed for array access patterns
@@ -3241,10 +3241,10 @@ impl ArticulatedBody {
     ///
     /// The spatial inertia is:
     /// ```text
-    /// I_spatial = | I + m*[c]×[c]×ᵀ   m*[c]× |
-    ///             |     m*[c]×ᵀ          m*1  |
+    /// I_spatial = | I + m*\[c\]×\[c\]×ᵀ   m*\[c\]× |
+    ///             |     m*\[c\]×ᵀ          m*1  |
     /// ```
-    /// where [c]× is the skew-symmetric matrix of the COM offset.
+    /// where \[c\]× is the skew-symmetric matrix of the COM offset.
     #[must_use]
     pub fn spatial_inertia(&self) -> SpatialMatrix {
         let c = self.com;

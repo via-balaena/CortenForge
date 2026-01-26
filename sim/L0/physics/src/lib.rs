@@ -11,7 +11,7 @@
 //! - [`sim_muscle`] - Hill-type muscle actuators for biomechanical simulation
 //! - [`sim_tendon`] - Tendon and cable simulation for cable-driven robots
 //! - [`sim_sensor`] - Sensor simulation (IMU, force/torque, touch, etc.)
-//! - [`sim_deformable`] - Soft body and deformable simulation (behind `deformable` feature)
+//! - `sim_deformable` - Soft body and deformable simulation (behind `deformable` feature, planned)
 //!
 //! # Layer 0
 //!
