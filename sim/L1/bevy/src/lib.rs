@@ -96,6 +96,7 @@ pub mod components;
 pub mod convert;
 pub mod gizmos;
 pub mod mesh;
+pub mod model_data;
 pub mod models;
 pub mod plugin;
 pub mod resources;
@@ -106,6 +107,11 @@ pub mod prelude {
     pub use crate::camera::OrbitCamera;
     pub use crate::components::{CollisionShapeVisual, PhysicsBody, PhysicsWorldRoot, ShapeType};
     pub use crate::gizmos::DebugGizmosSet;
+    // Model/Data architecture (MuJoCo-style)
+    pub use crate::model_data::{
+        ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet, ModelGeomIndex,
+        ModelSiteIndex, PhysicsData, PhysicsModel,
+    };
     pub use crate::models::{
         MjcfModel, ModelError, ModelSource, ModelType, SpawnedMjcf, SpawnedUrdf, UrdfModel,
     };
@@ -119,4 +125,6 @@ pub mod prelude {
 
     // Re-export performance tuning types from sim-core
     pub use sim_core::ContactSolverConfig;
+    // Re-export Model/Data types from sim-core for convenience
+    pub use sim_core::{Data, Model};
 }
