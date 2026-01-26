@@ -3143,6 +3143,12 @@ pub struct ArticulatedBody {
     pub inertia: Matrix3<f64>,
     /// Transform from parent joint frame to body COM frame.
     pub body_to_joint: Isometry3<f64>,
+    /// Optional name for identification.
+    pub name: Option<String>,
+    /// Whether this body is static (immovable).
+    pub is_static: bool,
+    /// Collision shape for contact detection (optional).
+    pub collision_shape: Option<CollisionShape>,
 }
 
 impl ArticulatedBody {
@@ -3157,13 +3163,18 @@ impl ArticulatedBody {
             com,
             inertia,
             body_to_joint: Isometry3::identity(),
+            name: None,
+            is_static: false,
+            collision_shape: None,
         }
     }
 
     /// Create a fixed/static body (zero mass, used as root).
     #[must_use]
     pub fn fixed() -> Self {
-        Self::new(0.0, Vector3::zeros(), Matrix3::zeros())
+        let mut body = Self::new(0.0, Vector3::zeros(), Matrix3::zeros());
+        body.is_static = true;
+        body
     }
 
     /// Create a point mass (all mass concentrated at a single point).
@@ -3202,6 +3213,27 @@ impl ArticulatedBody {
     #[must_use]
     pub fn with_joint_transform(mut self, transform: Isometry3<f64>) -> Self {
         self.body_to_joint = transform;
+        self
+    }
+
+    /// Set the body name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set the collision shape for contact detection.
+    #[must_use]
+    pub fn with_collision_shape(mut self, shape: CollisionShape) -> Self {
+        self.collision_shape = Some(shape);
+        self
+    }
+
+    /// Mark this body as static (immovable).
+    #[must_use]
+    pub fn as_static(mut self) -> Self {
+        self.is_static = true;
         self
     }
 
@@ -3264,6 +3296,8 @@ pub struct ArticulatedJoint {
     pub qpos_start: usize,
     /// Number of position coordinates (may differ from DOF for quaternions).
     pub qpos_dim: usize,
+    /// Optional name for identification.
+    pub name: Option<String>,
 }
 
 impl ArticulatedJoint {
@@ -3280,6 +3314,7 @@ impl ArticulatedJoint {
             rest_position: vec![0.0],
             qpos_start: 0,
             qpos_dim: 1,
+            name: None,
         }
     }
 
@@ -3296,6 +3331,7 @@ impl ArticulatedJoint {
             rest_position: vec![0.0],
             qpos_start: 0,
             qpos_dim: 1,
+            name: None,
         }
     }
 
@@ -3312,6 +3348,7 @@ impl ArticulatedJoint {
             rest_position: vec![0.0, 0.0, 0.0],
             qpos_start: 0,
             qpos_dim: 4, // Quaternion representation
+            name: None,
         }
     }
 
@@ -3328,6 +3365,7 @@ impl ArticulatedJoint {
             rest_position: vec![],
             qpos_start: 0,
             qpos_dim: 0,
+            name: None,
         }
     }
 
@@ -3344,7 +3382,15 @@ impl ArticulatedJoint {
             rest_position: vec![0.0; 6],
             qpos_start: 0,
             qpos_dim: 7, // position (3) + quaternion (4)
+            name: None,
         }
+    }
+
+    /// Set the joint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
     }
 
     /// Get the number of degrees of freedom.
@@ -5068,6 +5114,256 @@ fn compute_tangent_basis(normal: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) 
     let tan2 = normal.cross(&tan1);
 
     (tan1, tan2)
+}
+
+// ============================================================================
+// World Integration
+// ============================================================================
+//
+// Provides methods to spawn an ArticulatedSystem into a World, creating
+// the corresponding Body and Joint entities for visualization and
+// compatibility with the existing simulation infrastructure.
+
+use crate::world::{CollisionShape, World};
+use nalgebra::Point3;
+use sim_types::{BodyId, JointId, JointType, MassProperties, Pose, RigidBodyState};
+
+/// Result of spawning an [`ArticulatedSystem`] into a [`World`].
+///
+/// Maps the local indices of the [`ArticulatedSystem`] to [`World`] entity IDs.
+#[derive(Debug, Clone)]
+pub struct SpawnedArticulation {
+    /// Mapping from [`ArticulatedSystem`] body indices to [`World`] [`BodyId`]s.
+    pub body_ids: Vec<BodyId>,
+    /// Mapping from [`ArticulatedSystem`] joint indices to [`World`] [`JointId`]s.
+    pub joint_ids: Vec<JointId>,
+    /// Names assigned to bodies (if any).
+    pub body_names: HashMap<String, BodyIndex>,
+    /// Names assigned to joints (if any).
+    pub joint_names: HashMap<String, JointIndex>,
+}
+
+impl SpawnedArticulation {
+    /// Get the [`World`] [`BodyId`] for an [`ArticulatedSystem`] body index.
+    #[must_use]
+    pub fn body_id(&self, index: BodyIndex) -> Option<BodyId> {
+        self.body_ids.get(index).copied()
+    }
+
+    /// Get the [`World`] [`JointId`] for an [`ArticulatedSystem`] joint index.
+    #[must_use]
+    pub fn joint_id(&self, index: JointIndex) -> Option<JointId> {
+        self.joint_ids.get(index).copied()
+    }
+
+    /// Get body index by name.
+    #[must_use]
+    pub fn body_index(&self, name: &str) -> Option<BodyIndex> {
+        self.body_names.get(name).copied()
+    }
+
+    /// Get joint index by name.
+    #[must_use]
+    pub fn joint_index(&self, name: &str) -> Option<JointIndex> {
+        self.joint_names.get(name).copied()
+    }
+}
+
+impl ArticulatedSystem {
+    /// Spawn this articulated system into a [`World`].
+    ///
+    /// Creates [`Body`](crate::Body) and [`Joint`](crate::Joint) entities in
+    /// the [`World`] that correspond to this system's bodies and joints.
+    /// This allows the articulated system to be visualized and to interact
+    /// with the [`World`]'s collision detection.
+    ///
+    /// # Returns
+    ///
+    /// A [`SpawnedArticulation`] containing the mappings from local indices to [`World`] IDs.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use sim_core::{ArticulatedSystem, ArticulatedBody, ArticulatedJoint, World};
+    ///
+    /// let mut sys = ArticulatedSystem::new();
+    /// // ... build the articulated system ...
+    ///
+    /// let mut world = World::default();
+    /// let spawned = sys.spawn_into(&mut world);
+    ///
+    /// // Now bodies can be accessed via World APIs
+    /// if let Some(body_id) = spawned.body_id(0) {
+    ///     let body = world.body(body_id);
+    /// }
+    /// ```
+    pub fn spawn_into(&self, world: &mut World) -> SpawnedArticulation {
+        let transforms = self.forward_kinematics();
+        let mut body_ids = Vec::with_capacity(self.bodies.len());
+        let mut joint_ids = Vec::with_capacity(self.joints.len());
+        let mut body_names = HashMap::new();
+        let mut joint_names = HashMap::new();
+
+        // Create bodies
+        for (idx, body) in self.bodies.iter().enumerate() {
+            let transform = &transforms[idx];
+
+            // Convert Isometry3 to Pose
+            let position = Point3::from(transform.translation.vector);
+            let rotation = transform.rotation;
+            let pose = Pose::from_position_rotation(position, rotation);
+
+            // Create RigidBodyState - initially at rest
+            let state = RigidBodyState::at_rest(pose);
+
+            // Create MassProperties
+            let mass_props = if body.is_static {
+                MassProperties::point_mass(f64::INFINITY)
+            } else {
+                MassProperties::new(body.mass, body.com, body.inertia)
+            };
+
+            // Add body to world
+            let body_id = if body.is_static {
+                world.add_static_body(pose)
+            } else {
+                world.add_body(state, mass_props)
+            };
+
+            // Set collision shape if body has a shape radius
+            // (Simple sphere for now - can be extended)
+            if let Some(shape) = &body.collision_shape {
+                if let Some(world_body) = world.body_mut(body_id) {
+                    world_body.collision_shape = Some(shape.clone());
+                }
+            }
+
+            // Set name if provided
+            if let Some(ref name) = body.name {
+                if let Some(world_body) = world.body_mut(body_id) {
+                    world_body.name = Some(name.clone());
+                }
+                body_names.insert(name.clone(), idx);
+            }
+
+            body_ids.push(body_id);
+        }
+
+        // Create joints
+        for (joint_idx, joint) in self.joints.iter().enumerate() {
+            // Find the body that has this joint
+            let child_body_idx = self.bodies.iter().position(|b| b.joint == Some(joint_idx));
+
+            if let Some(child_idx) = child_body_idx {
+                let child_id = body_ids[child_idx];
+
+                // Find parent body
+                let parent_idx = self.bodies[child_idx].parent.unwrap_or(0);
+                let parent_id = body_ids[parent_idx];
+
+                // Convert ArticulatedJointType to JointType
+                let joint_type = match joint.joint_type {
+                    ArticulatedJointType::Fixed => JointType::Fixed,
+                    ArticulatedJointType::Revolute => JointType::Revolute,
+                    ArticulatedJointType::Prismatic => JointType::Prismatic,
+                    ArticulatedJointType::Spherical => JointType::Spherical,
+                    ArticulatedJointType::Free => JointType::Free,
+                };
+
+                // Add joint to world
+                if let Ok(joint_id) = world.add_joint(joint_type, parent_id, child_id) {
+                    // Configure joint properties
+                    if let Some(world_joint) = world.joint_mut(joint_id) {
+                        world_joint.axis = joint.axis;
+
+                        // Set limits if present
+                        if !joint.lower_limit.is_empty() && !joint.upper_limit.is_empty() {
+                            let limits = sim_constraint::JointLimits::new(
+                                joint.lower_limit[0],
+                                joint.upper_limit[0],
+                            );
+                            world_joint.limits = Some(limits);
+                        }
+
+                        // Set damping (use first element if available)
+                        if let Some(&d) = joint.damping.first() {
+                            world_joint.damping = d;
+                        }
+
+                        // Set name if provided
+                        if let Some(ref name) = joint.name {
+                            world_joint.name = Some(name.clone());
+                            joint_names.insert(name.clone(), joint_idx);
+                        }
+                    }
+
+                    joint_ids.push(joint_id);
+                }
+            }
+        }
+
+        SpawnedArticulation {
+            body_ids,
+            joint_ids,
+            body_names,
+            joint_names,
+        }
+    }
+
+    /// Synchronize body poses from this system's state to a [`World`].
+    ///
+    /// Call this after stepping the articulated system to update the
+    /// corresponding [`World`] bodies' positions for visualization.
+    pub fn sync_to_world(&self, world: &mut World, spawned: &SpawnedArticulation) {
+        let transforms = self.forward_kinematics();
+
+        for (idx, &body_id) in spawned.body_ids.iter().enumerate() {
+            if let Some(world_body) = world.body_mut(body_id) {
+                if !world_body.is_static {
+                    let transform = &transforms[idx];
+                    let position = Point3::from(transform.translation.vector);
+                    let rotation = transform.rotation;
+                    world_body.state.pose = Pose::from_position_rotation(position, rotation);
+                }
+            }
+        }
+    }
+
+    /// Synchronize body poses from a [`World`] to this system's state.
+    ///
+    /// This is useful if the [`World`] has been modified (e.g., by collision response)
+    /// and you want to update this system to match.
+    ///
+    /// **Note**: This only works for free joints where the body position
+    /// directly corresponds to joint coordinates.
+    pub fn sync_from_world(&mut self, world: &World, spawned: &SpawnedArticulation) {
+        for (body_idx, &body_id) in spawned.body_ids.iter().enumerate() {
+            if let Some(world_body) = world.body(body_id) {
+                // Find the joint for this body
+                if let Some(joint_idx) = self.bodies[body_idx].joint {
+                    let joint = &self.joints[joint_idx];
+
+                    // For free joints, copy position and orientation
+                    if joint.joint_type == ArticulatedJointType::Free {
+                        let qpos_start = joint.qpos_start;
+                        let pos = world_body.state.pose.position;
+                        let rot = world_body.state.pose.rotation;
+
+                        // Position: x, y, z
+                        self.qpos[qpos_start] = pos.x;
+                        self.qpos[qpos_start + 1] = pos.y;
+                        self.qpos[qpos_start + 2] = pos.z;
+
+                        // Quaternion: w, x, y, z
+                        self.qpos[qpos_start + 3] = rot.w;
+                        self.qpos[qpos_start + 4] = rot.i;
+                        self.qpos[qpos_start + 5] = rot.j;
+                        self.qpos[qpos_start + 6] = rot.k;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ============================================================================

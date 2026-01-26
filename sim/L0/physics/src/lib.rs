@@ -194,6 +194,39 @@ pub mod prelude {
     };
 
     // ========================================================================
+    // MuJoCo-style articulated body system from sim-core
+    // ========================================================================
+
+    pub use sim_core::{
+        // Core articulated body system
+        ArticulatedBody,
+        ArticulatedJoint,
+        ArticulatedJointType,
+        ArticulatedSystem,
+        // Index types
+        BodyIndex,
+        // Demo systems
+        BouncingBall,
+        // PGS constraint solver
+        Constraint as PGSConstraint,
+        ConstraintType as PGSConstraintType,
+        DoublePendulum,
+        JointIndex,
+        NLinkPendulum,
+        PGSConfig,
+        PGSResult,
+        PGSSolver,
+        SimplePendulum,
+        // Spatial algebra types
+        SpatialMatrix,
+        SpatialVector,
+        // World integration
+        SpawnedArticulation,
+        SpherePile,
+        SphericalPendulum,
+    };
+
+    // ========================================================================
     // Joint constraints from sim-constraint
     // ========================================================================
 
