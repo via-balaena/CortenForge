@@ -5367,6 +5367,568 @@ impl ArticulatedSystem {
 }
 
 // ============================================================================
+// MuJoCo-Aligned Model/Data Architecture (Phase 1)
+// ============================================================================
+//
+// These structs follow MuJoCo's separation of static model data (Model) from
+// dynamic simulation state (Data). The key insight is that body poses are
+// COMPUTED from joint positions via forward kinematics, not stored as
+// independent state.
+//
+// Reference: https://mujoco.readthedocs.io/en/stable/computation/index.html
+
+/// Joint type following `MuJoCo` conventions.
+///
+/// Named `MjJointType` to distinguish from `sim_types::JointType`.
+/// `MuJoCo` uses different names (Hinge vs Revolute, Slide vs Prismatic).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MjJointType {
+    /// Hinge joint (1 DOF): rotation about a single axis.
+    /// qpos: 1 scalar (angle in radians)
+    /// qvel: 1 scalar (angular velocity)
+    Hinge,
+    /// Slide joint (1 DOF): translation along a single axis.
+    /// qpos: 1 scalar (displacement)
+    /// qvel: 1 scalar (linear velocity)
+    Slide,
+    /// Ball joint (3 DOF): free rotation (spherical).
+    /// qpos: 4 scalars (unit quaternion [w, x, y, z])
+    /// qvel: 3 scalars (angular velocity)
+    Ball,
+    /// Free joint (6 DOF): floating body with no constraints.
+    /// qpos: 7 scalars (position [x,y,z] + quaternion [w,x,y,z])
+    /// qvel: 6 scalars (linear velocity + angular velocity)
+    Free,
+}
+
+impl MjJointType {
+    /// Number of position coordinates (nq contribution).
+    #[must_use]
+    pub const fn nq(self) -> usize {
+        match self {
+            Self::Hinge | Self::Slide => 1,
+            Self::Ball => 4, // quaternion
+            Self::Free => 7, // pos + quat
+        }
+    }
+
+    /// Number of velocity coordinates / DOFs (nv contribution).
+    #[must_use]
+    pub const fn nv(self) -> usize {
+        match self {
+            Self::Hinge | Self::Slide => 1,
+            Self::Ball => 3, // angular velocity
+            Self::Free => 6, // linear + angular velocity
+        }
+    }
+}
+
+/// Geometry type for collision detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GeomType {
+    /// Plane (infinite, typically used for ground).
+    Plane,
+    /// Sphere defined by radius.
+    Sphere,
+    /// Capsule (cylinder with hemispherical caps).
+    Capsule,
+    /// Cylinder.
+    Cylinder,
+    /// Box (rectangular cuboid).
+    Box,
+    /// Ellipsoid.
+    Ellipsoid,
+    /// Convex mesh (requires mesh data).
+    Mesh,
+}
+
+/// Actuator transmission type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActuatorTransmission {
+    /// Direct joint actuation.
+    Joint,
+    /// Tendon actuation.
+    Tendon,
+    /// Site-based actuation.
+    Site,
+}
+
+/// Actuator dynamics type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActuatorDynamics {
+    /// No dynamics (direct force).
+    None,
+    /// First-order filter.
+    Filter,
+    /// Integrator.
+    Integrator,
+    /// Muscle model.
+    Muscle,
+}
+
+/// Integration method.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Integrator {
+    /// Semi-implicit Euler (`MuJoCo` default).
+    #[default]
+    Euler,
+    /// 4th order Runge-Kutta.
+    RungeKutta4,
+    /// Implicit midpoint.
+    Implicit,
+}
+
+/// Spatial vector (6D: angular followed by linear).
+///
+/// Convention: [ωx, ωy, ωz, vx, vy, vz]
+pub type SpatialVec = nalgebra::SVector<f64, 6>;
+
+/// Static model definition (like mjModel).
+///
+/// Immutable after construction - all memory allocated upfront.
+/// This contains the kinematic tree structure, body properties,
+/// joint properties, and simulation options.
+///
+/// # Memory Layout
+///
+/// Arrays are indexed by their respective IDs:
+/// - `body_*` arrays indexed by `body_id` (0 = world)
+/// - `jnt_*` arrays indexed by `joint_id`
+/// - `dof_*` arrays indexed by `dof_id` (velocity dimension index)
+/// - `geom_*` arrays indexed by `geom_id`
+/// - `actuator_*` arrays indexed by `actuator_id`
+#[derive(Debug, Clone)]
+pub struct Model {
+    // ==================== Dimensions ====================
+    /// Number of generalized position coordinates (includes quaternions).
+    pub nq: usize,
+    /// Number of generalized velocity coordinates (DOFs, always <= nq).
+    pub nv: usize,
+    /// Number of bodies (including world body 0).
+    pub nbody: usize,
+    /// Number of joints.
+    pub njnt: usize,
+    /// Number of collision geometries.
+    pub ngeom: usize,
+    /// Number of sites (attachment points).
+    pub nsite: usize,
+    /// Number of actuators.
+    pub nu: usize,
+    /// Number of activation states (for muscle/filter actuators).
+    pub na: usize,
+
+    // ==================== Body Tree (indexed by body_id, 0 = world) ====================
+    /// Parent body index (0 for root bodies attached to world).
+    pub body_parent: Vec<usize>,
+    /// Root body of kinematic tree (for multi-tree systems).
+    pub body_rootid: Vec<usize>,
+    /// First joint index for this body in jnt_* arrays.
+    pub body_jnt_adr: Vec<usize>,
+    /// Number of joints attached to this body.
+    pub body_jnt_num: Vec<usize>,
+    /// First DOF index for this body in dof_* and qvel arrays.
+    pub body_dof_adr: Vec<usize>,
+    /// Number of DOFs for this body.
+    pub body_dof_num: Vec<usize>,
+    /// First geom index for this body.
+    pub body_geom_adr: Vec<usize>,
+    /// Number of geoms attached to this body.
+    pub body_geom_num: Vec<usize>,
+
+    // Body properties (in body-local frame)
+    /// Position offset from parent joint frame to body frame.
+    pub body_pos: Vec<Vector3<f64>>,
+    /// Orientation offset from parent joint frame to body frame.
+    pub body_quat: Vec<UnitQuaternion<f64>>,
+    /// Center of mass position in body frame.
+    pub body_ipos: Vec<Vector3<f64>>,
+    /// Inertial frame orientation in body frame.
+    pub body_iquat: Vec<UnitQuaternion<f64>>,
+    /// Body mass in kg.
+    pub body_mass: Vec<f64>,
+    /// Diagonal inertia in principal axes (`body_iquat` frame).
+    pub body_inertia: Vec<Vector3<f64>>,
+    /// Optional body names for lookup.
+    pub body_name: Vec<Option<String>>,
+
+    // ==================== Joints (indexed by jnt_id) ====================
+    /// Joint type (Hinge, Slide, Ball, Free).
+    pub jnt_type: Vec<MjJointType>,
+    /// Body this joint belongs to (the child body).
+    pub jnt_body: Vec<usize>,
+    /// Start index in qpos array.
+    pub jnt_qpos_adr: Vec<usize>,
+    /// Start index in qvel/qacc arrays.
+    pub jnt_dof_adr: Vec<usize>,
+    /// Joint anchor position in body frame.
+    pub jnt_pos: Vec<Vector3<f64>>,
+    /// Joint axis for hinge/slide (in body frame).
+    pub jnt_axis: Vec<Vector3<f64>>,
+    /// Whether joint has limits.
+    pub jnt_limited: Vec<bool>,
+    /// Joint limits [min, max].
+    pub jnt_range: Vec<(f64, f64)>,
+    /// Spring stiffness (reference is qpos0).
+    pub jnt_stiffness: Vec<f64>,
+    /// Damping coefficient.
+    pub jnt_damping: Vec<f64>,
+    /// Armature inertia (motor rotor inertia).
+    pub jnt_armature: Vec<f64>,
+    /// Optional joint names.
+    pub jnt_name: Vec<Option<String>>,
+
+    // ==================== DOFs (indexed by dof_id) ====================
+    /// Body for this DOF.
+    pub dof_body: Vec<usize>,
+    /// Joint for this DOF.
+    pub dof_jnt: Vec<usize>,
+    /// Parent DOF in kinematic tree (None for root DOF).
+    pub dof_parent: Vec<Option<usize>>,
+    /// Armature inertia for this DOF.
+    pub dof_armature: Vec<f64>,
+    /// Damping coefficient for this DOF.
+    pub dof_damping: Vec<f64>,
+
+    // ==================== Geoms (indexed by geom_id) ====================
+    /// Geometry type.
+    pub geom_type: Vec<GeomType>,
+    /// Parent body.
+    pub geom_body: Vec<usize>,
+    /// Position in body frame.
+    pub geom_pos: Vec<Vector3<f64>>,
+    /// Orientation in body frame.
+    pub geom_quat: Vec<UnitQuaternion<f64>>,
+    /// Type-specific size parameters [size0, size1, size2].
+    pub geom_size: Vec<Vector3<f64>>,
+    /// Friction coefficients [sliding, torsional, rolling].
+    pub geom_friction: Vec<Vector3<f64>>,
+    /// Contact type bitmask.
+    pub geom_contype: Vec<u32>,
+    /// Contact affinity bitmask.
+    pub geom_conaffinity: Vec<u32>,
+    /// Optional geom names.
+    pub geom_name: Vec<Option<String>>,
+
+    // ==================== Actuators (indexed by actuator_id) ====================
+    /// Transmission type (Joint, Tendon, Site).
+    pub actuator_trntype: Vec<ActuatorTransmission>,
+    /// Dynamics type (None, Filter, Integrator, Muscle).
+    pub actuator_dyntype: Vec<ActuatorDynamics>,
+    /// Transmission target ID (joint/tendon/site).
+    pub actuator_trnid: Vec<usize>,
+    /// Transmission gear ratio.
+    pub actuator_gear: Vec<f64>,
+    /// Control input limits [min, max].
+    pub actuator_ctrlrange: Vec<(f64, f64)>,
+    /// Force output limits [min, max].
+    pub actuator_forcerange: Vec<(f64, f64)>,
+    /// Optional actuator names.
+    pub actuator_name: Vec<Option<String>>,
+
+    // ==================== Options ====================
+    /// Simulation timestep in seconds.
+    pub timestep: f64,
+    /// Gravity vector in world frame.
+    pub gravity: Vector3<f64>,
+    /// Default/reference joint positions.
+    pub qpos0: DVector<f64>,
+
+    // Solver options
+    /// Maximum constraint solver iterations.
+    pub solver_iterations: usize,
+    /// Early termination tolerance for solver.
+    pub solver_tolerance: f64,
+    /// Integration method.
+    pub integrator: Integrator,
+}
+
+/// Contact point for constraint generation.
+#[derive(Debug, Clone)]
+pub struct Contact {
+    /// Contact position in world frame.
+    pub pos: Vector3<f64>,
+    /// Contact normal (from geom2 to geom1).
+    pub normal: Vector3<f64>,
+    /// Penetration depth (positive = penetrating).
+    pub depth: f64,
+    /// First geometry ID.
+    pub geom1: usize,
+    /// Second geometry ID.
+    pub geom2: usize,
+    /// Friction coefficient.
+    pub friction: f64,
+}
+
+/// Dynamic simulation state (like mjData).
+///
+/// All arrays pre-allocated - no heap allocation during simulation.
+/// This contains the current state (qpos, qvel) and computed quantities
+/// (body poses, forces, contacts).
+///
+/// # Key Invariant
+///
+/// `qpos` and `qvel` are the ONLY state variables. Everything else
+/// (xpos, xquat, qfrc_*, etc.) is COMPUTED from them via forward dynamics.
+#[derive(Debug, Clone)]
+#[allow(non_snake_case)] // qM matches MuJoCo naming convention
+pub struct Data {
+    // ==================== Generalized Coordinates (THE source of truth) ====================
+    /// Joint positions [nq] - includes quaternion components for ball/free joints.
+    pub qpos: DVector<f64>,
+    /// Joint velocities [nv].
+    pub qvel: DVector<f64>,
+    /// Joint accelerations [nv] - computed by forward dynamics.
+    pub qacc: DVector<f64>,
+    /// Warm-start for constraint solver [nv].
+    pub qacc_warmstart: DVector<f64>,
+
+    // ==================== Control / Actuation ====================
+    /// Actuator control inputs [nu].
+    pub ctrl: DVector<f64>,
+    /// Actuator activation states [na] (for muscles/filters).
+    pub act: DVector<f64>,
+    /// Actuator forces in joint space [nv].
+    pub qfrc_actuator: DVector<f64>,
+
+    // ==================== Computed Body States (from FK - outputs, not inputs) ====================
+    /// Body positions in world frame [nbody].
+    pub xpos: Vec<Vector3<f64>>,
+    /// Body orientations in world frame [nbody].
+    pub xquat: Vec<UnitQuaternion<f64>>,
+    /// Body rotation matrices (cached) [nbody].
+    pub xmat: Vec<Matrix3<f64>>,
+    /// Body inertial frame positions [nbody].
+    pub xipos: Vec<Vector3<f64>>,
+    /// Body inertial frame rotations [nbody].
+    pub ximat: Vec<Matrix3<f64>>,
+
+    // Geom poses (for collision detection)
+    /// Geom positions in world frame [ngeom].
+    pub geom_xpos: Vec<Vector3<f64>>,
+    /// Geom rotation matrices [ngeom].
+    pub geom_xmat: Vec<Matrix3<f64>>,
+
+    // ==================== Velocities (computed from qvel) ====================
+    /// Body spatial velocities [nbody]: [angular, linear].
+    pub cvel: Vec<SpatialVec>,
+    /// DOF velocities in Cartesian space [nv].
+    pub cdof: Vec<SpatialVec>,
+
+    // ==================== Forces in Generalized Coordinates ====================
+    /// User-applied generalized forces [nv].
+    pub qfrc_applied: DVector<f64>,
+    /// Coriolis + centrifugal + gravity bias forces [nv].
+    pub qfrc_bias: DVector<f64>,
+    /// Passive forces (springs + dampers) [nv].
+    pub qfrc_passive: DVector<f64>,
+    /// Constraint forces (contacts + joint limits) [nv].
+    pub qfrc_constraint: DVector<f64>,
+
+    // Cartesian forces (alternative input method)
+    /// Applied spatial forces in world frame [nbody].
+    pub xfrc_applied: Vec<SpatialVec>,
+
+    // ==================== Mass Matrix ====================
+    /// Joint-space inertia matrix [nv x nv] (dense for now).
+    /// Future: sparse L^T D L factorization for efficiency.
+    pub qM: DMatrix<f64>,
+
+    // ==================== Contacts ====================
+    /// Active contacts (pre-allocated with capacity).
+    pub contacts: Vec<Contact>,
+    /// Number of active contacts (`contacts.len()` but tracked explicitly).
+    pub ncon: usize,
+
+    // ==================== Solver State ====================
+    /// Iterations used in last constraint solve.
+    pub solver_niter: usize,
+    /// Non-zeros in constraint Jacobian.
+    pub solver_nnz: usize,
+
+    // ==================== Energy (for debugging/validation) ====================
+    /// Potential energy (gravity + springs).
+    pub energy_potential: f64,
+    /// Kinetic energy.
+    pub energy_kinetic: f64,
+
+    // ==================== Time ====================
+    /// Simulation time in seconds.
+    pub time: f64,
+}
+
+impl Model {
+    /// Create an empty model with no bodies/joints.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            // Dimensions
+            nq: 0,
+            nv: 0,
+            nbody: 1, // World body 0 always exists
+            njnt: 0,
+            ngeom: 0,
+            nsite: 0,
+            nu: 0,
+            na: 0,
+
+            // Body tree (initialize world body)
+            body_parent: vec![0], // World is its own parent
+            body_rootid: vec![0],
+            body_jnt_adr: vec![0],
+            body_jnt_num: vec![0],
+            body_dof_adr: vec![0],
+            body_dof_num: vec![0],
+            body_geom_adr: vec![0],
+            body_geom_num: vec![0],
+
+            // Body properties
+            body_pos: vec![Vector3::zeros()],
+            body_quat: vec![UnitQuaternion::identity()],
+            body_ipos: vec![Vector3::zeros()],
+            body_iquat: vec![UnitQuaternion::identity()],
+            body_mass: vec![0.0], // World has no mass
+            body_inertia: vec![Vector3::zeros()],
+            body_name: vec![Some("world".to_string())],
+
+            // Joints (empty)
+            jnt_type: vec![],
+            jnt_body: vec![],
+            jnt_qpos_adr: vec![],
+            jnt_dof_adr: vec![],
+            jnt_pos: vec![],
+            jnt_axis: vec![],
+            jnt_limited: vec![],
+            jnt_range: vec![],
+            jnt_stiffness: vec![],
+            jnt_damping: vec![],
+            jnt_armature: vec![],
+            jnt_name: vec![],
+
+            // DOFs (empty)
+            dof_body: vec![],
+            dof_jnt: vec![],
+            dof_parent: vec![],
+            dof_armature: vec![],
+            dof_damping: vec![],
+
+            // Geoms (empty)
+            geom_type: vec![],
+            geom_body: vec![],
+            geom_pos: vec![],
+            geom_quat: vec![],
+            geom_size: vec![],
+            geom_friction: vec![],
+            geom_contype: vec![],
+            geom_conaffinity: vec![],
+            geom_name: vec![],
+
+            // Actuators (empty)
+            actuator_trntype: vec![],
+            actuator_dyntype: vec![],
+            actuator_trnid: vec![],
+            actuator_gear: vec![],
+            actuator_ctrlrange: vec![],
+            actuator_forcerange: vec![],
+            actuator_name: vec![],
+
+            // Options (MuJoCo defaults)
+            timestep: 0.002,                        // 500 Hz
+            gravity: Vector3::new(0.0, 0.0, -9.81), // Z-up
+            qpos0: DVector::zeros(0),
+            solver_iterations: 100,
+            solver_tolerance: 1e-8,
+            integrator: Integrator::Euler,
+        }
+    }
+
+    /// Create initial Data struct for this model with all arrays pre-allocated.
+    #[must_use]
+    pub fn make_data(&self) -> Data {
+        Data {
+            // Generalized coordinates
+            qpos: self.qpos0.clone(),
+            qvel: DVector::zeros(self.nv),
+            qacc: DVector::zeros(self.nv),
+            qacc_warmstart: DVector::zeros(self.nv),
+
+            // Actuation
+            ctrl: DVector::zeros(self.nu),
+            act: DVector::zeros(self.na),
+            qfrc_actuator: DVector::zeros(self.nv),
+
+            // Body states
+            xpos: vec![Vector3::zeros(); self.nbody],
+            xquat: vec![UnitQuaternion::identity(); self.nbody],
+            xmat: vec![Matrix3::identity(); self.nbody],
+            xipos: vec![Vector3::zeros(); self.nbody],
+            ximat: vec![Matrix3::identity(); self.nbody],
+
+            // Geom poses
+            geom_xpos: vec![Vector3::zeros(); self.ngeom],
+            geom_xmat: vec![Matrix3::identity(); self.ngeom],
+
+            // Velocities
+            cvel: vec![SpatialVec::zeros(); self.nbody],
+            cdof: vec![SpatialVec::zeros(); self.nv],
+
+            // Forces
+            qfrc_applied: DVector::zeros(self.nv),
+            qfrc_bias: DVector::zeros(self.nv),
+            qfrc_passive: DVector::zeros(self.nv),
+            qfrc_constraint: DVector::zeros(self.nv),
+            xfrc_applied: vec![SpatialVec::zeros(); self.nbody],
+
+            // Mass matrix
+            qM: DMatrix::zeros(self.nv, self.nv),
+
+            // Contacts
+            contacts: Vec::with_capacity(256), // Pre-allocate typical capacity
+            ncon: 0,
+
+            // Solver state
+            solver_niter: 0,
+            solver_nnz: 0,
+
+            // Energy
+            energy_potential: 0.0,
+            energy_kinetic: 0.0,
+
+            // Time
+            time: 0.0,
+        }
+    }
+
+    /// Get reference position for specified joint (from qpos0).
+    #[must_use]
+    pub fn joint_qpos0(&self, jnt_id: usize) -> &[f64] {
+        let start = self.jnt_qpos_adr[jnt_id];
+        let len = self.jnt_type[jnt_id].nq();
+        &self.qpos0.as_slice()[start..start + len]
+    }
+}
+
+impl Data {
+    /// Reset state to model defaults.
+    pub fn reset(&mut self, model: &Model) {
+        self.qpos = model.qpos0.clone();
+        self.qvel.fill(0.0);
+        self.qacc.fill(0.0);
+        self.qacc_warmstart.fill(0.0);
+        self.ctrl.fill(0.0);
+        self.act.fill(0.0);
+        self.time = 0.0;
+        self.ncon = 0;
+        self.contacts.clear();
+    }
+
+    /// Get total mechanical energy (kinetic + potential).
+    #[must_use]
+    pub fn total_energy(&self) -> f64 {
+        self.energy_kinetic + self.energy_potential
+    }
+}
+
+// ============================================================================
 // Tests for Articulated System
 // ============================================================================
 
