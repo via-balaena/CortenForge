@@ -922,6 +922,10 @@ impl ConstraintJoint for JointAdapter<'_> {
     fn child_anchor(&self) -> Point3<f64> {
         self.0.child_anchor
     }
+
+    fn axis(&self) -> Vector3<f64> {
+        self.0.axis
+    }
 }
 
 /// The simulation world containing all entities.

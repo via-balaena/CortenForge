@@ -744,6 +744,14 @@ impl MjcfLoader {
                 .ok_or_else(|| MjcfError::XmlParse(format!("body '{body_name}' not in map")))?;
 
             // Create joints for this body (with defaults applied)
+            // The parent anchor is the child body's position relative to its parent
+            // (i.e., where the child attaches to the parent, in parent's frame)
+            let parent_anchor_pos = Point3::new(
+                mjcf_body.pos.x as f64,
+                mjcf_body.pos.y as f64,
+                mjcf_body.pos.z as f64,
+            );
+
             for mjcf_joint in &mjcf_body.joints {
                 let joint_id = JointId::new(next_joint_id);
                 next_joint_id += 1;
@@ -759,7 +767,13 @@ impl MjcfLoader {
                 // If no parent, create a "world anchor" (fixed to world origin)
                 let actual_parent = parent_id.unwrap_or(BodyId::new(0)); // BodyId(0) represents world
 
-                let joint = self.create_joint(joint_id, &resolved_joint, actual_parent, child_id);
+                let joint = self.create_joint(
+                    joint_id,
+                    &resolved_joint,
+                    actual_parent,
+                    child_id,
+                    parent_anchor_pos,
+                );
                 joints.push(joint);
             }
         }
@@ -2271,6 +2285,7 @@ impl MjcfLoader {
         mjcf_joint: &MjcfJoint,
         parent: BodyId,
         child: BodyId,
+        parent_anchor: Point3<f64>,
     ) -> Joint {
         let joint_type = match mjcf_joint.joint_type {
             MjcfJointType::Hinge => JointType::Revolute,
@@ -2286,9 +2301,10 @@ impl MjcfLoader {
             .with_axis(mjcf_joint.axis);
 
         // Set anchors
-        // In MJCF, the joint pos is relative to the body frame
+        // parent_anchor: where the child attaches to parent, in parent's local frame
+        // child_anchor: the joint position in child's local frame (usually origin or joint.pos)
         let child_anchor = Point3::from(mjcf_joint.pos);
-        joint = joint.with_anchors(Point3::origin(), child_anchor);
+        joint = joint.with_anchors(parent_anchor, child_anchor);
 
         // Add limits if enabled
         if mjcf_joint.limited {
@@ -2303,12 +2319,9 @@ impl MjcfLoader {
             joint = joint.with_damping(mjcf_joint.damping);
         }
 
-        // Add spring stiffness (as motor position control)
-        // Note: Full spring implementation would need motor support
-        if mjcf_joint.stiffness > 0.0 {
-            // For now, just store in damping as an approximation
-            // A proper implementation would add spring force in the solver
-        }
+        // Note: Joint stiffness (springref) is parsed but not yet applied.
+        // Stiffness requires implicit integration for stability with penalty-based constraints.
+        // For now, only damping is supported. See sim/ARCHITECTURE.md for details.
 
         joint
     }
