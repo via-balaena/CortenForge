@@ -424,7 +424,7 @@ impl ConstraintSolver {
         total_torque -= joint.damping() * relative_omega;
 
         // Note: Motor/stiffness support requires implicit integration for stability.
-        // For now, only damping is applied. See issue for future stiffness support.
+        // For now, only damping is applied. See sim/ARCHITECTURE.md "Known Limitations".
 
         ConstraintForce::new(
             -constraint_force,
@@ -508,7 +508,7 @@ impl ConstraintSolver {
         let constraint_torque = -joint.damping() * relative_omega;
 
         // Note: Motor/stiffness support requires implicit integration for stability.
-        // For now, only damping is applied.
+        // For now, only damping is applied. See sim/ARCHITECTURE.md "Known Limitations".
 
         ConstraintForce::new(
             -constraint_force,

@@ -2321,8 +2321,7 @@ impl MjcfLoader {
 
         // Note: Joint stiffness (springref) is parsed but not yet applied.
         // Stiffness requires implicit integration for stability with penalty-based constraints.
-        // For now, only damping is supported. Stiffness is a future enhancement.
-        // See: https://github.com/anthropics/cortenforge/issues/XXX
+        // For now, only damping is supported. See sim/ARCHITECTURE.md for details.
 
         joint
     }

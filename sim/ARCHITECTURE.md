@@ -451,8 +451,33 @@ islands.par_iter().for_each(|island| {
 - [x] Signed distance field collision
 - [x] Bevy visualization layer (sim-bevy)
 
+### Known Limitations
+
+#### Joint Stiffness Requires Implicit Integration
+
+The constraint solver currently uses **penalty-based (spring-damper) constraints** with **explicit integration**. This combination is stable for:
+- Joint damping
+- Contact forces
+- Position constraints
+
+However, **joint stiffness** (spring forces to hold joints at reference positions, like MJCF's `stiffness` and `springref` attributes) causes instability:
+
+| Method | Stiffness Support | Why |
+|--------|-------------------|-----|
+| Explicit + Penalty | ❌ Unstable | High spring forces cause oscillation/divergence |
+| Implicit + Penalty | ✅ Stable | Implicit method handles stiff springs |
+| Explicit + Impulse | ✅ Stable | Position corrections, not spring forces |
+
+**Current behavior:** MJCF `stiffness` is parsed but not applied. Joints only use damping.
+
+**Fix requires:** Switching to implicit-in-velocity integration (like MuJoCo's semi-implicit Euler) or an impulse-based constraint solver. This is a significant architectural change affecting:
+- `sim-core/src/integrators.rs` - New implicit integrator
+- `sim-constraint/src/solver.rs` - Modified force computation
+- Integration with contact solver (which may also need implicit treatment)
+
 ### Future Considerations
 
+- [ ] **Implicit integration for joint stiffness** (see limitation above)
 - [ ] **Kinematic loops** (currently tree-only articulations)
 - [ ] **Non-convex mesh decomposition** (automatic convex hull splitting)
 - [ ] **Fluid coupling** (buoyancy, drag)
