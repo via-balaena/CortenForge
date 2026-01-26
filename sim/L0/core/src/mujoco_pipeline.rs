@@ -3073,7 +3073,9 @@ mod tests {
 // 6. PGS solver handles constraint forces (limits, contacts)
 // 7. Semi-implicit Euler integration with new velocity for position
 
-use nalgebra::{Isometry3, Matrix3, Matrix6, Translation3, UnitQuaternion, Vector6};
+use nalgebra::{
+    Isometry3, Matrix3, Matrix6, Quaternion, Translation3, Unit, UnitQuaternion, Vector6,
+};
 use std::collections::HashMap;
 
 /// Index type for bodies in the articulated system.
@@ -3156,6 +3158,12 @@ impl ArticulatedBody {
             inertia,
             body_to_joint: Isometry3::identity(),
         }
+    }
+
+    /// Create a fixed/static body (zero mass, used as root).
+    #[must_use]
+    pub fn fixed() -> Self {
+        Self::new(0.0, Vector3::zeros(), Matrix3::zeros())
     }
 
     /// Create a point mass (all mass concentrated at a single point).
@@ -4312,6 +4320,757 @@ fn spatial_cross_force(v: SpatialVector, f: SpatialVector) -> SpatialVector {
 }
 
 // ============================================================================
+// Phase 8: PGS Constraint Solver
+// ============================================================================
+//
+// Implements the Projected Gauss-Seidel solver for constraint forces.
+// This is MuJoCo's approach to constraint solving:
+//
+// 1. Compute unconstrained acceleration: qacc_smooth = M^(-1) * qfrc_smooth
+// 2. Build constraint Jacobians J and reference accelerations aref
+// 3. Solve: minimize (1/2)λᵀ(A+R)λ + λᵀb subject to λ ∈ Ω
+//    where A = J @ M^(-1) @ Jᵀ, b = J @ qacc_smooth - aref
+// 4. Final acceleration: qacc = qacc_smooth + M^(-1) @ Jᵀ @ λ
+
+/// Type of constraint for the PGS solver.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ConstraintType {
+    /// Equality constraint (λ ∈ ℝ)
+    Equality,
+    /// Inequality constraint (λ ≥ 0), e.g., joint limit, contact normal
+    Inequality,
+    /// Friction constraint (|λ| ≤ μ * `λ_normal`)
+    Friction {
+        /// Index of the normal force constraint
+        normal_idx: usize,
+        /// Friction coefficient
+        mu: f64,
+    },
+    /// Friction loss (|λ| ≤ η)
+    FrictionLoss {
+        /// Maximum friction force
+        max_force: f64,
+    },
+}
+
+/// A single constraint row for the PGS solver.
+#[derive(Debug, Clone)]
+pub struct Constraint {
+    /// Constraint type determines projection
+    pub constraint_type: ConstraintType,
+    /// Jacobian row (sparse, length = nv)
+    pub jacobian: DVector<f64>,
+    /// Reference acceleration (for Baumgarte stabilization)
+    pub aref: f64,
+    /// Regularization (softness)
+    pub regularization: f64,
+    /// Warm-start value from previous timestep
+    pub warmstart: f64,
+}
+
+impl Constraint {
+    /// Create a new equality constraint.
+    #[must_use]
+    pub fn equality(jacobian: DVector<f64>, aref: f64) -> Self {
+        Self {
+            constraint_type: ConstraintType::Equality,
+            jacobian,
+            aref,
+            regularization: 1e-8,
+            warmstart: 0.0,
+        }
+    }
+
+    /// Create a new inequality constraint (λ ≥ 0).
+    #[must_use]
+    pub fn inequality(jacobian: DVector<f64>, aref: f64) -> Self {
+        Self {
+            constraint_type: ConstraintType::Inequality,
+            jacobian,
+            aref,
+            regularization: 1e-8,
+            warmstart: 0.0,
+        }
+    }
+
+    /// Create a friction constraint.
+    #[must_use]
+    pub fn friction(jacobian: DVector<f64>, aref: f64, normal_idx: usize, mu: f64) -> Self {
+        Self {
+            constraint_type: ConstraintType::Friction { normal_idx, mu },
+            jacobian,
+            aref,
+            regularization: 1e-8,
+            warmstart: 0.0,
+        }
+    }
+
+    /// Set regularization (softness).
+    #[must_use]
+    pub fn with_regularization(mut self, reg: f64) -> Self {
+        self.regularization = reg;
+        self
+    }
+
+    /// Set warm-start value.
+    #[must_use]
+    pub fn with_warmstart(mut self, ws: f64) -> Self {
+        self.warmstart = ws;
+        self
+    }
+}
+
+/// Configuration for the PGS solver.
+#[derive(Debug, Clone)]
+pub struct PGSConfig {
+    /// Maximum iterations
+    pub max_iterations: usize,
+    /// Convergence tolerance
+    pub tolerance: f64,
+    /// Enable warm-starting
+    pub warmstart: bool,
+    /// Over-relaxation factor (1.0 = standard GS, >1 = SOR)
+    pub relaxation: f64,
+}
+
+impl Default for PGSConfig {
+    fn default() -> Self {
+        Self {
+            max_iterations: 50,
+            tolerance: 1e-6,
+            warmstart: true,
+            relaxation: 1.0,
+        }
+    }
+}
+
+/// Result of the PGS solver.
+#[derive(Debug, Clone)]
+pub struct PGSResult {
+    /// Constraint forces (Lagrange multipliers)
+    pub forces: DVector<f64>,
+    /// Number of iterations used
+    pub iterations: usize,
+    /// Final residual
+    pub residual: f64,
+    /// Whether solver converged
+    pub converged: bool,
+}
+
+/// Projected Gauss-Seidel constraint solver.
+///
+/// Solves the LCP/QP:
+///   minimize: (1/2) λᵀ H λ + λᵀ b
+///   subject to: λ ∈ Ω (constraint-dependent bounds)
+///
+/// Where H = J @ M^(-1) @ Jᵀ + R (regularized constraint-space inertia).
+#[derive(Debug, Clone)]
+pub struct PGSSolver {
+    config: PGSConfig,
+}
+
+impl Default for PGSSolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PGSSolver {
+    /// Create a new PGS solver with default configuration.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            config: PGSConfig::default(),
+        }
+    }
+
+    /// Create with custom configuration.
+    #[must_use]
+    pub fn with_config(config: PGSConfig) -> Self {
+        Self { config }
+    }
+
+    /// Solve the constraint problem.
+    ///
+    /// # Arguments
+    /// * `m_inv` - Inverse mass matrix (nv × nv)
+    /// * `qacc_smooth` - Unconstrained acceleration (length nv)
+    /// * `constraints` - List of constraints
+    ///
+    /// # Returns
+    /// * `PGSResult` containing constraint forces and solver info
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn solve(
+        &self,
+        m_inv: &DMatrix<f64>,
+        qacc_smooth: &DVector<f64>,
+        constraints: &[Constraint],
+    ) -> PGSResult {
+        let nc = constraints.len();
+
+        if nc == 0 {
+            return PGSResult {
+                forces: DVector::zeros(0),
+                iterations: 0,
+                residual: 0.0,
+                converged: true,
+            };
+        }
+
+        let nv = qacc_smooth.len();
+
+        // Build the constraint Jacobian matrix J (nc × nv)
+        let mut j_matrix = DMatrix::zeros(nc, nv);
+        for (i, c) in constraints.iter().enumerate() {
+            j_matrix.row_mut(i).copy_from(&c.jacobian.transpose());
+        }
+
+        // Compute H = J @ M^(-1) @ Jᵀ + R
+        // This is the constraint-space inverse inertia
+        let j_minv = &j_matrix * m_inv;
+        let mut h_matrix = &j_minv * j_matrix.transpose();
+
+        // Add regularization to diagonal
+        for (i, c) in constraints.iter().enumerate() {
+            h_matrix[(i, i)] += c.regularization;
+        }
+
+        // Compute b = J @ qacc_smooth - aref
+        let j_qacc = &j_matrix * qacc_smooth;
+        let mut b = DVector::zeros(nc);
+        for (i, c) in constraints.iter().enumerate() {
+            b[i] = j_qacc[i] - c.aref;
+        }
+
+        // Extract diagonal for Gauss-Seidel
+        let h_diag: Vec<f64> = (0..nc).map(|i| h_matrix[(i, i)]).collect();
+        let h_diag_inv: Vec<f64> = h_diag.iter().map(|d| 1.0 / d.max(1e-12)).collect();
+
+        // Initialize forces (warm-start or zero)
+        let mut forces = if self.config.warmstart {
+            DVector::from_iterator(nc, constraints.iter().map(|c| c.warmstart))
+        } else {
+            DVector::zeros(nc)
+        };
+
+        let mut residual = 0.0;
+        let mut converged = false;
+
+        for iter in 0..self.config.max_iterations {
+            let mut max_change = 0.0_f64;
+
+            for i in 0..nc {
+                // Compute residual for constraint i: r_i = H[i,:] @ λ + b[i]
+                let mut r_i = b[i];
+                for j in 0..nc {
+                    r_i += h_matrix[(i, j)] * forces[j];
+                }
+
+                // Gauss-Seidel update
+                let old_force = forces[i];
+                let delta = -r_i * h_diag_inv[i] * self.config.relaxation;
+                forces[i] += delta;
+
+                // Project onto constraint bounds
+                forces[i] = Self::project(i, forces[i], &forces, constraints);
+
+                max_change = max_change.max((forces[i] - old_force).abs());
+            }
+
+            residual = max_change;
+
+            if max_change < self.config.tolerance {
+                converged = true;
+                return PGSResult {
+                    forces,
+                    iterations: iter + 1,
+                    residual,
+                    converged,
+                };
+            }
+        }
+
+        PGSResult {
+            forces,
+            iterations: self.config.max_iterations,
+            residual,
+            converged,
+        }
+    }
+
+    /// Project constraint force onto its feasible set.
+    fn project(
+        idx: usize,
+        force: f64,
+        all_forces: &DVector<f64>,
+        constraints: &[Constraint],
+    ) -> f64 {
+        match constraints[idx].constraint_type {
+            ConstraintType::Equality => {
+                // No projection needed
+                force
+            }
+            ConstraintType::Inequality => {
+                // λ ≥ 0
+                force.max(0.0)
+            }
+            ConstraintType::Friction { normal_idx, mu } => {
+                // |λ| ≤ μ * λ_normal
+                let normal_force = all_forces[normal_idx].max(0.0);
+                let limit = mu * normal_force;
+                force.clamp(-limit, limit)
+            }
+            ConstraintType::FrictionLoss { max_force } => {
+                // |λ| ≤ η
+                force.clamp(-max_force, max_force)
+            }
+        }
+    }
+
+    /// Apply constraint forces to get final acceleration.
+    ///
+    /// qacc = `qacc_smooth` + M^(-1) @ Jᵀ @ λ
+    #[must_use]
+    pub fn apply_forces(
+        m_inv: &DMatrix<f64>,
+        qacc_smooth: &DVector<f64>,
+        constraints: &[Constraint],
+        forces: &DVector<f64>,
+    ) -> DVector<f64> {
+        if constraints.is_empty() {
+            return qacc_smooth.clone();
+        }
+
+        let nv = qacc_smooth.len();
+        let _nc = constraints.len();
+
+        // Build Jᵀ @ λ
+        let mut jt_lambda = DVector::zeros(nv);
+        for (i, c) in constraints.iter().enumerate() {
+            jt_lambda += &c.jacobian * forces[i];
+        }
+
+        // qacc = qacc_smooth + M^(-1) @ Jᵀ @ λ
+        qacc_smooth + m_inv * jt_lambda
+    }
+}
+
+// ============================================================================
+// Constraint Generation Helpers
+// ============================================================================
+
+impl ArticulatedSystem {
+    /// Generate joint limit constraints.
+    ///
+    /// For each joint DOF that violates its limit, creates an inequality constraint.
+    #[must_use]
+    pub fn joint_limit_constraints(&self, baumgarte_k: f64, baumgarte_b: f64) -> Vec<Constraint> {
+        let mut constraints = Vec::new();
+
+        let mut vel_idx = 0;
+        for joint in &self.joints {
+            let dof = joint.dof();
+            let qpos = self.joint_qpos_by_joint(joint);
+
+            for d in 0..dof {
+                let q = qpos[d];
+                let lower = joint.lower_limit[d];
+                let upper = joint.upper_limit[d];
+
+                // Check lower limit violation
+                if q < lower {
+                    let mut jacobian = DVector::zeros(self.nv);
+                    jacobian[vel_idx + d] = -1.0; // Pushing up (positive force)
+
+                    // Baumgarte stabilization: aref = -K * error - B * vel
+                    let error = q - lower; // negative when violated
+                    let vel = self.qvel[vel_idx + d];
+                    let aref = -baumgarte_k * error - baumgarte_b * vel;
+
+                    constraints.push(Constraint::inequality(jacobian, aref));
+                }
+
+                // Check upper limit violation
+                if q > upper {
+                    let mut jacobian = DVector::zeros(self.nv);
+                    jacobian[vel_idx + d] = -1.0; // Negative Jacobian: positive λ gives negative qacc
+
+                    let error = q - upper; // positive when violated
+                    let vel = self.qvel[vel_idx + d];
+                    // aref > 0 means we want qacc to be more negative (push back)
+                    let aref = baumgarte_k * error + baumgarte_b * vel.max(0.0);
+
+                    constraints.push(Constraint::inequality(jacobian, aref));
+                }
+            }
+
+            vel_idx += dof;
+        }
+
+        constraints
+    }
+
+    /// Get joint qpos by joint reference.
+    fn joint_qpos_by_joint(&self, joint: &ArticulatedJoint) -> &[f64] {
+        &self.qpos.as_slice()[joint.qpos_start..joint.qpos_start + joint.qpos_dim]
+    }
+
+    /// Step with constraint solving.
+    ///
+    /// This is the full MuJoCo-style pipeline:
+    /// 1. Compute unconstrained acceleration
+    /// 2. Generate constraints (limits, contacts)
+    /// 3. Solve for constraint forces
+    /// 4. Apply constraint forces
+    /// 5. Integrate
+    pub fn step_constrained(&mut self, dt: f64, solver: &PGSSolver) {
+        if self.nv == 0 {
+            return;
+        }
+
+        // 1. Compute mass matrix and its inverse
+        let m_matrix = self.inertia_matrix();
+        let m_inv = m_matrix
+            .try_inverse()
+            .unwrap_or_else(|| DMatrix::identity(self.nv, self.nv));
+
+        // 2. Compute bias forces (gravity + Coriolis)
+        let qfrc_bias = self.bias_forces();
+
+        // 3. Compute passive forces (springs, dampers)
+        let qfrc_passive = self.passive_forces();
+
+        // 4. Compute unconstrained acceleration
+        // qacc_smooth = M^(-1) * (qfrc_passive - qfrc_bias)
+        let qfrc_smooth = &qfrc_passive - &qfrc_bias;
+        let qacc_smooth_mat = &m_inv * &qfrc_smooth;
+        let qacc_smooth = DVector::from_column_slice(qacc_smooth_mat.as_slice());
+
+        // 5. Generate constraints
+        let mut constraints = self.joint_limit_constraints(100.0, 10.0);
+
+        // 6. Solve constraints
+        let result = solver.solve(&m_inv, &qacc_smooth, &constraints);
+
+        // 7. Apply constraint forces to get final acceleration
+        let qacc = PGSSolver::apply_forces(&m_inv, &qacc_smooth, &constraints, &result.forces);
+
+        // 8. Update warm-start for next timestep
+        for (i, c) in constraints.iter_mut().enumerate() {
+            c.warmstart = result.forces[i];
+        }
+
+        // 9. Semi-implicit Euler integration
+        // Update velocity first
+        let qvel_new = &self.qvel + &qacc * dt;
+
+        // Update positions using new velocity
+        let mut pos_offset = 0;
+        let mut vel_offset = 0;
+
+        for joint in &self.joints {
+            match joint.joint_type {
+                ArticulatedJointType::Fixed => {}
+                ArticulatedJointType::Revolute | ArticulatedJointType::Prismatic => {
+                    self.qpos[pos_offset] += qvel_new[vel_offset] * dt;
+                    pos_offset += 1;
+                    vel_offset += 1;
+                }
+                ArticulatedJointType::Spherical => {
+                    // Quaternion integration
+                    let w = Vector3::new(
+                        qvel_new[vel_offset],
+                        qvel_new[vel_offset + 1],
+                        qvel_new[vel_offset + 2],
+                    );
+                    let q_current = UnitQuaternion::from_quaternion(Quaternion::new(
+                        self.qpos[pos_offset],
+                        self.qpos[pos_offset + 1],
+                        self.qpos[pos_offset + 2],
+                        self.qpos[pos_offset + 3],
+                    ));
+                    let angle = w.norm() * dt;
+                    let q_delta = if angle > 1e-10 {
+                        UnitQuaternion::from_axis_angle(&Unit::new_normalize(w), angle)
+                    } else {
+                        UnitQuaternion::identity()
+                    };
+                    let q_new = q_current * q_delta;
+
+                    self.qpos[pos_offset] = q_new.w;
+                    self.qpos[pos_offset + 1] = q_new.i;
+                    self.qpos[pos_offset + 2] = q_new.j;
+                    self.qpos[pos_offset + 3] = q_new.k;
+
+                    pos_offset += 4;
+                    vel_offset += 3;
+                }
+                ArticulatedJointType::Free => {
+                    // Angular integration (quaternion)
+                    let w = Vector3::new(
+                        qvel_new[vel_offset],
+                        qvel_new[vel_offset + 1],
+                        qvel_new[vel_offset + 2],
+                    );
+                    let q_current = UnitQuaternion::from_quaternion(Quaternion::new(
+                        self.qpos[pos_offset + 3],
+                        self.qpos[pos_offset + 4],
+                        self.qpos[pos_offset + 5],
+                        self.qpos[pos_offset + 6],
+                    ));
+                    let angle = w.norm() * dt;
+                    let q_delta = if angle > 1e-10 {
+                        UnitQuaternion::from_axis_angle(&Unit::new_normalize(w), angle)
+                    } else {
+                        UnitQuaternion::identity()
+                    };
+                    let q_new = q_current * q_delta;
+
+                    self.qpos[pos_offset + 3] = q_new.w;
+                    self.qpos[pos_offset + 4] = q_new.i;
+                    self.qpos[pos_offset + 5] = q_new.j;
+                    self.qpos[pos_offset + 6] = q_new.k;
+
+                    // Linear integration
+                    self.qpos[pos_offset] += qvel_new[vel_offset + 3] * dt;
+                    self.qpos[pos_offset + 1] += qvel_new[vel_offset + 4] * dt;
+                    self.qpos[pos_offset + 2] += qvel_new[vel_offset + 5] * dt;
+
+                    pos_offset += 7;
+                    vel_offset += 6;
+                }
+            }
+        }
+
+        self.qvel = qvel_new;
+    }
+}
+
+// ============================================================================
+// Contact Constraint Generation
+// ============================================================================
+
+/// A contact point for constraint generation.
+#[derive(Debug, Clone)]
+pub struct ContactPoint {
+    /// Position in world frame
+    pub position: Vector3<f64>,
+    /// Contact normal (pointing from body B to body A)
+    pub normal: Vector3<f64>,
+    /// Penetration depth (positive = penetrating)
+    pub depth: f64,
+    /// Body index A (or None for world/ground)
+    pub body_a: Option<BodyIndex>,
+    /// Body index B (or None for world/ground)
+    pub body_b: Option<BodyIndex>,
+    /// Friction coefficient
+    pub friction: f64,
+    /// Restitution coefficient
+    pub restitution: f64,
+}
+
+impl ArticulatedSystem {
+    /// Generate contact constraints from contact points.
+    ///
+    /// For each contact, generates:
+    /// - 1 normal constraint (inequality, λ ≥ 0)
+    /// - 2 friction constraints (friction cone approximation)
+    #[must_use]
+    pub fn contact_constraints(
+        &self,
+        contacts: &[ContactPoint],
+        baumgarte_k: f64,
+        _baumgarte_b: f64,
+    ) -> Vec<Constraint> {
+        let mut constraints = Vec::new();
+
+        for contact in contacts {
+            // Compute contact Jacobian
+            // J_contact = J_a(point) - J_b(point) for velocity at contact point
+            let (j_normal, j_tan1, j_tan2) = self.contact_jacobians(contact);
+
+            // Normal constraint (inequality)
+            // aref for Baumgarte: stabilize penetration
+            let aref_normal = baumgarte_k * contact.depth;
+
+            let normal_constraint =
+                Constraint::inequality(j_normal.clone(), aref_normal).with_regularization(1e-6);
+            let normal_idx = constraints.len();
+            constraints.push(normal_constraint);
+
+            // Friction constraints (pyramid approximation)
+            if contact.friction > 0.0 {
+                let friction1 = Constraint::friction(j_tan1, 0.0, normal_idx, contact.friction)
+                    .with_regularization(1e-6);
+                let friction2 = Constraint::friction(j_tan2, 0.0, normal_idx, contact.friction)
+                    .with_regularization(1e-6);
+                constraints.push(friction1);
+                constraints.push(friction2);
+            }
+        }
+
+        constraints
+    }
+
+    /// Compute contact Jacobians for normal and tangent directions.
+    fn contact_jacobians(
+        &self,
+        contact: &ContactPoint,
+    ) -> (DVector<f64>, DVector<f64>, DVector<f64>) {
+        let nv = self.nv;
+
+        // Compute tangent directions
+        let (tan1, tan2) = compute_tangent_basis(&contact.normal);
+
+        // Initialize Jacobians
+        let mut j_normal = DVector::zeros(nv);
+        let mut j_tan1 = DVector::zeros(nv);
+        let mut j_tan2 = DVector::zeros(nv);
+
+        // For each body, compute contribution to contact velocity
+        // v_contact = J @ qvel
+
+        // Body A contribution (if not world)
+        if let Some(body_a) = contact.body_a {
+            let j_a = self.body_point_jacobian(body_a, &contact.position);
+            // Add contribution: positive (body A moves away from contact)
+            for i in 0..nv {
+                j_normal[i] +=
+                    contact
+                        .normal
+                        .dot(&Vector3::new(j_a[(0, i)], j_a[(1, i)], j_a[(2, i)]));
+                j_tan1[i] += tan1.dot(&Vector3::new(j_a[(0, i)], j_a[(1, i)], j_a[(2, i)]));
+                j_tan2[i] += tan2.dot(&Vector3::new(j_a[(0, i)], j_a[(1, i)], j_a[(2, i)]));
+            }
+        }
+
+        // Body B contribution (if not world)
+        if let Some(body_b) = contact.body_b {
+            let j_b = self.body_point_jacobian(body_b, &contact.position);
+            // Subtract contribution: negative (body B moving away reduces relative velocity)
+            for i in 0..nv {
+                j_normal[i] -=
+                    contact
+                        .normal
+                        .dot(&Vector3::new(j_b[(0, i)], j_b[(1, i)], j_b[(2, i)]));
+                j_tan1[i] -= tan1.dot(&Vector3::new(j_b[(0, i)], j_b[(1, i)], j_b[(2, i)]));
+                j_tan2[i] -= tan2.dot(&Vector3::new(j_b[(0, i)], j_b[(1, i)], j_b[(2, i)]));
+            }
+        }
+
+        (j_normal, j_tan1, j_tan2)
+    }
+
+    /// Compute the Jacobian for a point on a body.
+    ///
+    /// Returns a 3 × nv matrix where J @ qvel gives the linear velocity of the point.
+    #[must_use]
+    fn body_point_jacobian(&self, body_idx: BodyIndex, point: &Vector3<f64>) -> DMatrix<f64> {
+        let nv = self.nv;
+        let mut jacobian = DMatrix::zeros(3, nv);
+
+        // Get body transforms
+        let transforms = self.forward_kinematics();
+
+        // Find all ancestor joints
+        let mut current = Some(body_idx);
+        while let Some(idx) = current {
+            if let Some(jidx) = self.bodies[idx].joint {
+                let joint = &self.joints[jidx];
+                let vel_start = self.joint_vel_start(jidx);
+
+                // Get joint position in world
+                let parent_idx = self.bodies[idx].parent.unwrap_or(idx);
+                let joint_pos = transforms[parent_idx].translation.vector;
+
+                match joint.joint_type {
+                    ArticulatedJointType::Revolute => {
+                        // ∂p/∂θ = axis × (p - joint_pos)
+                        let axis = transforms[parent_idx].rotation * joint.axis;
+                        let r = point - joint_pos;
+                        let dp_dq = axis.cross(&r);
+
+                        jacobian[(0, vel_start)] = dp_dq.x;
+                        jacobian[(1, vel_start)] = dp_dq.y;
+                        jacobian[(2, vel_start)] = dp_dq.z;
+                    }
+                    ArticulatedJointType::Prismatic => {
+                        // ∂p/∂d = axis
+                        let axis = transforms[parent_idx].rotation * joint.axis;
+
+                        jacobian[(0, vel_start)] = axis.x;
+                        jacobian[(1, vel_start)] = axis.y;
+                        jacobian[(2, vel_start)] = axis.z;
+                    }
+                    ArticulatedJointType::Spherical => {
+                        // ∂p/∂ω = -[r]× where r = p - joint_pos
+                        let r = point - joint_pos;
+                        // Column for wx: ∂p/∂ωx = [0, rz, -ry]
+                        jacobian[(0, vel_start)] = 0.0;
+                        jacobian[(1, vel_start)] = r.z;
+                        jacobian[(2, vel_start)] = -r.y;
+                        // Column for wy: ∂p/∂ωy = [-rz, 0, rx]
+                        jacobian[(0, vel_start + 1)] = -r.z;
+                        jacobian[(1, vel_start + 1)] = 0.0;
+                        jacobian[(2, vel_start + 1)] = r.x;
+                        // Column for wz: ∂p/∂ωz = [ry, -rx, 0]
+                        jacobian[(0, vel_start + 2)] = r.y;
+                        jacobian[(1, vel_start + 2)] = -r.x;
+                        jacobian[(2, vel_start + 2)] = 0.0;
+                    }
+                    ArticulatedJointType::Free => {
+                        // Angular part (first 3 DOF)
+                        let r = point - joint_pos;
+                        jacobian[(0, vel_start)] = 0.0;
+                        jacobian[(1, vel_start)] = r.z;
+                        jacobian[(2, vel_start)] = -r.y;
+                        jacobian[(0, vel_start + 1)] = -r.z;
+                        jacobian[(1, vel_start + 1)] = 0.0;
+                        jacobian[(2, vel_start + 1)] = r.x;
+                        jacobian[(0, vel_start + 2)] = r.y;
+                        jacobian[(1, vel_start + 2)] = -r.x;
+                        jacobian[(2, vel_start + 2)] = 0.0;
+
+                        // Linear part (last 3 DOF): identity
+                        jacobian[(0, vel_start + 3)] = 1.0;
+                        jacobian[(1, vel_start + 4)] = 1.0;
+                        jacobian[(2, vel_start + 5)] = 1.0;
+                    }
+                    ArticulatedJointType::Fixed => {}
+                }
+            }
+            current = self.bodies[idx].parent;
+        }
+
+        jacobian
+    }
+
+    /// Get the velocity index where a joint's DOFs start.
+    fn joint_vel_start(&self, joint_idx: JointIndex) -> usize {
+        self.joints[..joint_idx]
+            .iter()
+            .map(ArticulatedJoint::dof)
+            .sum()
+    }
+}
+
+/// Compute orthonormal tangent basis from a normal vector.
+fn compute_tangent_basis(normal: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    // Pick a vector not parallel to normal
+    let reference = if normal.x.abs() < 0.9 {
+        Vector3::x()
+    } else {
+        Vector3::y()
+    };
+
+    let tan1 = normal.cross(&reference).normalize();
+    let tan2 = normal.cross(&tan1);
+
+    (tan1, tan2)
+}
+
+// ============================================================================
 // Tests for Articulated System
 // ============================================================================
 
@@ -4579,5 +5338,227 @@ mod articulated_tests {
             "Spring should return to rest: pos={}",
             sys.qpos[0]
         );
+    }
+}
+
+// ============================================================================
+// Tests for PGS Constraint Solver
+// ============================================================================
+
+#[cfg(test)]
+mod pgs_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_pgs_empty_constraints() {
+        let solver = PGSSolver::new();
+        let m_inv = DMatrix::identity(3, 3);
+        let qacc = DVector::from_vec(vec![1.0, 2.0, 3.0]);
+
+        let result = solver.solve(&m_inv, &qacc, &[]);
+
+        assert!(result.converged);
+        assert_eq!(result.forces.len(), 0);
+    }
+
+    #[test]
+    fn test_pgs_single_equality_constraint() {
+        let solver = PGSSolver::new();
+
+        // 1D system: m=1, want to enforce qacc = 0
+        let m_inv = DMatrix::from_element(1, 1, 1.0);
+        let qacc_smooth = DVector::from_vec(vec![10.0]); // Unconstrained accel
+
+        // Constraint: J @ qacc = 0, so J = [1], aref = 0
+        let constraint = Constraint::equality(DVector::from_vec(vec![1.0]), 0.0);
+
+        let result = solver.solve(&m_inv, &qacc_smooth, &[constraint]);
+
+        assert!(result.converged);
+        // Force should cancel the acceleration: λ = -10
+        assert_relative_eq!(result.forces[0], -10.0, epsilon = 0.01);
+    }
+
+    #[test]
+    fn test_pgs_inequality_constraint() {
+        let solver = PGSSolver::new();
+
+        // 1D system with inequality: qacc ≥ 0
+        let m_inv = DMatrix::from_element(1, 1, 1.0);
+
+        // Case 1: Unconstrained is positive - constraint inactive
+        let qacc1 = DVector::from_vec(vec![5.0]);
+        let constraint1 = Constraint::inequality(DVector::from_vec(vec![1.0]), 0.0);
+        let result1 = solver.solve(&m_inv, &qacc1, &[constraint1]);
+        assert!(result1.converged);
+        assert_relative_eq!(result1.forces[0], 0.0, epsilon = 0.01);
+
+        // Case 2: Unconstrained is negative - constraint active
+        let qacc2 = DVector::from_vec(vec![-5.0]);
+        let constraint2 = Constraint::inequality(DVector::from_vec(vec![1.0]), 0.0);
+        let result2 = solver.solve(&m_inv, &qacc2, &[constraint2]);
+        assert!(result2.converged);
+        assert!(
+            result2.forces[0] > 0.0,
+            "Inequality force should be positive"
+        );
+        // Force should bring acceleration to 0: λ = 5
+        assert_relative_eq!(result2.forces[0], 5.0, epsilon = 0.01);
+    }
+
+    #[test]
+    fn test_pgs_friction_constraint() {
+        let solver = PGSSolver::new();
+
+        // 2D system: normal + friction
+        let m_inv = DMatrix::identity(2, 2);
+
+        // Normal force pressing down (constraint 0)
+        // Friction force (constraint 1) limited by μ * normal
+        let mu = 0.5;
+        let _normal_force_ref = 10.0; // Pre-set normal force for testing
+
+        let constraint_normal =
+            Constraint::inequality(DVector::from_vec(vec![1.0, 0.0]), 0.0).with_warmstart(10.0);
+        let constraint_friction =
+            Constraint::friction(DVector::from_vec(vec![0.0, 1.0]), 0.0, 0, mu);
+
+        // Large tangential acceleration that would need clamping
+        let qacc = DVector::from_vec(vec![-10.0, 100.0]);
+
+        let result = solver.solve(&m_inv, &qacc, &[constraint_normal, constraint_friction]);
+
+        assert!(result.converged);
+        // Friction should be limited to μ * normal
+        let max_friction = mu * result.forces[0].max(0.0);
+        assert!(
+            result.forces[1].abs() <= max_friction + 0.1,
+            "Friction {} exceeds limit {}",
+            result.forces[1].abs(),
+            max_friction
+        );
+    }
+
+    #[test]
+    fn test_joint_limit_constraint_generation() {
+        let mut sys = ArticulatedSystem::new();
+
+        // Create a simple pendulum with limits
+        let root = sys.add_body(ArticulatedBody::fixed(), None);
+        let bob = sys.add_body(
+            ArticulatedBody::point_mass(1.0)
+                .with_joint_transform(Isometry3::translation(0.0, -1.0, 0.0)),
+            Some(root),
+        );
+        sys.add_joint(
+            bob,
+            ArticulatedJoint::revolute(Vector3::z()).with_limits(vec![-0.5], vec![0.5]),
+        );
+
+        // Position within limits - no constraints
+        sys.set_joint_position(0, 0.0);
+        let constraints = sys.joint_limit_constraints(100.0, 10.0);
+        assert_eq!(constraints.len(), 0);
+
+        // Position at lower limit violation
+        sys.set_joint_position(0, -0.6);
+        let constraints = sys.joint_limit_constraints(100.0, 10.0);
+        assert_eq!(constraints.len(), 1);
+
+        // Position at upper limit violation
+        sys.set_joint_position(0, 0.6);
+        let constraints = sys.joint_limit_constraints(100.0, 10.0);
+        assert_eq!(constraints.len(), 1);
+    }
+
+    #[test]
+    fn test_contact_constraint_generation() {
+        let mut sys = ArticulatedSystem::new();
+
+        // Create a free-floating body
+        let body = sys.add_body(ArticulatedBody::sphere(1.0, 0.1), None);
+        sys.add_joint(body, ArticulatedJoint::free());
+
+        // Create a ground contact
+        let contact = ContactPoint {
+            position: Vector3::new(0.0, 0.0, 0.0),
+            normal: Vector3::y(), // Ground normal pointing up
+            depth: 0.01,
+            body_a: Some(body),
+            body_b: None, // Ground
+            friction: 0.5,
+            restitution: 0.0,
+        };
+
+        let constraints = sys.contact_constraints(&[contact], 100.0, 10.0);
+
+        // Should have 1 normal + 2 friction = 3 constraints
+        assert_eq!(constraints.len(), 3);
+
+        // First should be inequality (normal)
+        assert!(matches!(
+            constraints[0].constraint_type,
+            ConstraintType::Inequality
+        ));
+
+        // Next two should be friction
+        assert!(matches!(
+            constraints[1].constraint_type,
+            ConstraintType::Friction { .. }
+        ));
+        assert!(matches!(
+            constraints[2].constraint_type,
+            ConstraintType::Friction { .. }
+        ));
+    }
+
+    #[test]
+    fn test_step_constrained_with_limits() {
+        let mut sys = ArticulatedSystem::new();
+
+        // Create a pendulum with limits
+        let root = sys.add_body(ArticulatedBody::fixed(), None);
+        let bob = sys.add_body(
+            ArticulatedBody::point_mass(1.0)
+                .with_joint_transform(Isometry3::translation(0.0, -1.0, 0.0)),
+            Some(root),
+        );
+        sys.add_joint(
+            bob,
+            ArticulatedJoint::revolute(Vector3::z()).with_limits(vec![-0.5], vec![0.5]),
+        );
+
+        // Start past the limit (in violation)
+        sys.set_joint_position(0, 0.55);
+        sys.set_joint_velocity(0, 0.5); // Still trying to go further
+
+        let solver = PGSSolver::new();
+
+        // Step multiple times - constraint should push back
+        for _ in 0..200 {
+            sys.step_constrained(1.0 / 480.0, &solver);
+        }
+
+        // Position should be pushed back toward limit (not stay at 0.55 or go further)
+        // With Baumgarte stabilization, it should return toward the limit
+        assert!(
+            sys.qpos[0] < 0.55,
+            "Position {} should have been pushed back from initial violation",
+            sys.qpos[0]
+        );
+    }
+
+    #[test]
+    fn test_tangent_basis() {
+        let normal = Vector3::y();
+        let (tan1, tan2) = compute_tangent_basis(&normal);
+
+        // Should be orthonormal
+        assert_relative_eq!(tan1.norm(), 1.0, epsilon = 1e-10);
+        assert_relative_eq!(tan2.norm(), 1.0, epsilon = 1e-10);
+        assert_relative_eq!(tan1.dot(&tan2), 0.0, epsilon = 1e-10);
+        assert_relative_eq!(tan1.dot(&normal), 0.0, epsilon = 1e-10);
+        assert_relative_eq!(tan2.dot(&normal), 0.0, epsilon = 1e-10);
     }
 }
