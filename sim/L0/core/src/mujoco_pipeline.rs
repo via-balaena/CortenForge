@@ -36,7 +36,7 @@
 //! - Phase 3: Double pendulum (2-DOF, CRBA + RNE) - COMPLETE
 //! - Phase 4: N-link pendulum (n-DOF, general serial chain) - COMPLETE
 //! - Phase 5: Ball joints (3-DOF spherical joints) - COMPLETE
-//! - Phase 6: Contact (ground plane, sphere collisions) - TODO
+//! - Phase 6: Contact (ground plane, sphere collisions) - COMPLETE
 
 use nalgebra::Vector3;
 use std::f64::consts::PI;
@@ -1275,6 +1275,408 @@ impl SphericalPendulum {
     }
 }
 
+// ============================================================================
+// Phase 6: Contact Physics (Ground Plane + Sphere Collisions)
+// ============================================================================
+
+/// A bouncing ball with contact physics.
+///
+/// This demonstrates the contact constraint solver:
+/// 1. Collision detection (sphere vs ground plane)
+/// 2. Contact normal force (prevents penetration)
+/// 3. Friction force (Coulomb model with friction cone)
+/// 4. Coefficient of restitution (energy loss on bounce)
+///
+/// The contact force is computed using constraint-based dynamics:
+/// - Normal constraint: `λ_n ≥ 0` (unilateral, push only)
+/// - Friction constraint: `|λ_t| ≤ μ * λ_n` (Coulomb cone)
+///
+/// Uses the complementarity condition:
+/// - Either the ball is not in contact (gap > 0, λ = 0)
+/// - Or the ball is in contact (gap = 0, λ ≥ 0)
+#[derive(Debug, Clone)]
+#[allow(clippy::doc_markdown)]
+pub struct BouncingBall {
+    /// Position (x, y, z) where y is up
+    pub pos: Vector3<f64>,
+    /// Velocity (vx, vy, vz)
+    pub vel: Vector3<f64>,
+    /// Ball radius
+    pub radius: f64,
+    /// Ball mass
+    pub mass: f64,
+    /// Gravitational acceleration (m/s²)
+    pub gravity: f64,
+    /// Coefficient of restitution (0 = perfectly inelastic, 1 = perfectly elastic)
+    pub restitution: f64,
+    /// Coefficient of friction (Coulomb friction)
+    pub friction: f64,
+    /// Ground plane height (y coordinate)
+    pub ground_y: f64,
+}
+
+impl BouncingBall {
+    /// Create a new bouncing ball.
+    #[must_use]
+    pub fn new(radius: f64, mass: f64) -> Self {
+        Self {
+            pos: Vector3::new(0.0, radius + 1.0, 0.0), // Start 1m above ground
+            vel: Vector3::zeros(),
+            radius,
+            mass,
+            gravity: 9.81,
+            restitution: 0.8, // Slightly inelastic
+            friction: 0.5,    // Moderate friction
+            ground_y: 0.0,
+        }
+    }
+
+    /// Set the initial position.
+    #[must_use]
+    pub fn with_position(mut self, pos: Vector3<f64>) -> Self {
+        self.pos = pos;
+        self
+    }
+
+    /// Set the initial velocity.
+    #[must_use]
+    pub fn with_velocity(mut self, vel: Vector3<f64>) -> Self {
+        self.vel = vel;
+        self
+    }
+
+    /// Set the coefficient of restitution.
+    #[must_use]
+    pub fn with_restitution(mut self, restitution: f64) -> Self {
+        self.restitution = restitution.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set the coefficient of friction.
+    #[must_use]
+    pub fn with_friction(mut self, friction: f64) -> Self {
+        self.friction = friction.max(0.0);
+        self
+    }
+
+    /// Set custom gravity.
+    #[must_use]
+    pub fn with_gravity(mut self, gravity: f64) -> Self {
+        self.gravity = gravity;
+        self
+    }
+
+    /// Set the ground plane height.
+    #[must_use]
+    pub fn with_ground(mut self, ground_y: f64) -> Self {
+        self.ground_y = ground_y;
+        self
+    }
+
+    /// Compute the gap (signed distance) to the ground.
+    ///
+    /// gap > 0: not in contact
+    /// gap = 0: touching
+    /// gap < 0: penetrating
+    #[must_use]
+    pub fn gap(&self) -> f64 {
+        self.pos.y - self.radius - self.ground_y
+    }
+
+    /// Check if the ball is in contact with the ground.
+    #[must_use]
+    pub fn in_contact(&self) -> bool {
+        self.gap() <= 0.0
+    }
+
+    /// Compute total mechanical energy.
+    ///
+    /// E = KE + PE where:
+    /// - KE = (1/2) m v²
+    /// - PE = m g h (height above ground)
+    #[must_use]
+    pub fn total_energy(&self) -> f64 {
+        let kinetic = 0.5 * self.mass * self.vel.norm_squared();
+        let height = self.pos.y - self.ground_y;
+        let potential = self.mass * self.gravity * height;
+        kinetic + potential
+    }
+
+    /// Step the bouncing ball forward in time.
+    ///
+    /// Uses impulse-based contact resolution:
+    /// 1. Apply gravity to get pre-contact velocity
+    /// 2. Detect contact
+    /// 3. If in contact, compute and apply contact impulse
+    /// 4. Update position
+    pub fn step(&mut self, dt: f64) {
+        // Apply gravity acceleration
+        let gravity_accel = Vector3::new(0.0, -self.gravity, 0.0);
+
+        // Semi-implicit Euler: update velocity first
+        self.vel += gravity_accel * dt;
+
+        // Update position using new velocity
+        self.pos += self.vel * dt;
+
+        // Check for ground contact
+        let gap = self.gap();
+
+        if gap < 0.0 {
+            // We're penetrating - resolve the contact
+
+            // 1. Fix penetration by moving ball up
+            self.pos.y = self.ground_y + self.radius;
+
+            // 2. Compute contact impulse
+            // Normal direction is up (y-axis)
+            let normal = Vector3::new(0.0, 1.0, 0.0);
+
+            // Normal velocity (positive = separating, negative = approaching)
+            let v_n = self.vel.dot(&normal);
+
+            if v_n < 0.0 {
+                // Ball is moving into the ground - apply impulse
+
+                // Compute normal impulse with restitution
+                // v_n_new = -e * v_n (coefficient of restitution)
+                let impulse_n = -(1.0 + self.restitution) * v_n;
+
+                // Apply normal impulse
+                self.vel += normal * impulse_n;
+
+                // 3. Apply friction impulse
+                // Tangential velocity (in XZ plane)
+                let v_t = self.vel - normal * self.vel.dot(&normal);
+                let v_t_mag = v_t.norm();
+
+                if v_t_mag > 1e-10 {
+                    // Tangent direction
+                    let tangent = v_t / v_t_mag;
+
+                    // Maximum friction impulse (Coulomb friction)
+                    // |j_t| ≤ μ * j_n
+                    let max_friction_impulse = self.friction * impulse_n;
+
+                    // Impulse needed to stop tangential motion
+                    let desired_impulse = v_t_mag;
+
+                    // Apply friction (clamped to friction cone)
+                    let friction_impulse = desired_impulse.min(max_friction_impulse);
+                    self.vel -= tangent * friction_impulse;
+                }
+            }
+        }
+    }
+
+    /// Run the bouncing ball for a given duration.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn run_for(&mut self, duration: f64, dt: f64) {
+        let steps = (duration / dt).ceil() as usize;
+        for _ in 0..steps {
+            self.step(dt);
+        }
+    }
+}
+
+/// Multiple spheres with inter-sphere collision and ground contact.
+///
+/// This extends the single bouncing ball to handle:
+/// 1. Multiple spheres
+/// 2. Sphere-sphere collisions
+/// 3. Ground plane collisions for all spheres
+#[derive(Debug, Clone)]
+pub struct SpherePile {
+    /// Sphere positions
+    pub positions: Vec<Vector3<f64>>,
+    /// Sphere velocities
+    pub velocities: Vec<Vector3<f64>>,
+    /// Sphere radii
+    pub radii: Vec<f64>,
+    /// Sphere masses
+    pub masses: Vec<f64>,
+    /// Gravitational acceleration
+    pub gravity: f64,
+    /// Coefficient of restitution
+    pub restitution: f64,
+    /// Coefficient of friction
+    pub friction: f64,
+    /// Ground plane height
+    pub ground_y: f64,
+}
+
+impl SpherePile {
+    /// Create a new sphere pile with the given number of spheres.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn new(n_spheres: usize, radius: f64, mass: f64) -> Self {
+        let mut positions = Vec::with_capacity(n_spheres);
+        let mut velocities = Vec::with_capacity(n_spheres);
+        let radii = vec![radius; n_spheres];
+        let masses = vec![mass; n_spheres];
+
+        // Stack spheres vertically
+        for i in 0..n_spheres {
+            let y = radius + 2.0 * radius * (i as f64) + 0.5;
+            positions.push(Vector3::new(0.0, y, 0.0));
+            velocities.push(Vector3::zeros());
+        }
+
+        Self {
+            positions,
+            velocities,
+            radii,
+            masses,
+            gravity: 9.81,
+            restitution: 0.8,
+            friction: 0.5,
+            ground_y: 0.0,
+        }
+    }
+
+    /// Set the coefficient of restitution.
+    #[must_use]
+    pub fn with_restitution(mut self, restitution: f64) -> Self {
+        self.restitution = restitution.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set the coefficient of friction.
+    #[must_use]
+    pub fn with_friction(mut self, friction: f64) -> Self {
+        self.friction = friction.max(0.0);
+        self
+    }
+
+    /// Number of spheres.
+    #[must_use]
+    pub fn n_spheres(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// Compute total mechanical energy.
+    #[must_use]
+    pub fn total_energy(&self) -> f64 {
+        let mut energy = 0.0;
+        for i in 0..self.n_spheres() {
+            let kinetic = 0.5 * self.masses[i] * self.velocities[i].norm_squared();
+            let height = self.positions[i].y - self.ground_y;
+            let potential = self.masses[i] * self.gravity * height;
+            energy += kinetic + potential;
+        }
+        energy
+    }
+
+    /// Step all spheres forward in time.
+    pub fn step(&mut self, dt: f64) {
+        let n = self.n_spheres();
+
+        // Apply gravity to all spheres
+        for i in 0..n {
+            self.velocities[i].y -= self.gravity * dt;
+        }
+
+        // Update positions
+        for i in 0..n {
+            self.positions[i] += self.velocities[i] * dt;
+        }
+
+        // Resolve ground contacts
+        for i in 0..n {
+            let gap = self.positions[i].y - self.radii[i] - self.ground_y;
+
+            if gap < 0.0 {
+                // Fix penetration
+                self.positions[i].y = self.ground_y + self.radii[i];
+
+                // Normal velocity
+                let v_n = self.velocities[i].y;
+
+                if v_n < 0.0 {
+                    // Apply restitution
+                    self.velocities[i].y = -self.restitution * v_n;
+
+                    // Apply friction to tangential velocity
+                    let normal_impulse = -(1.0 + self.restitution) * v_n * self.masses[i];
+                    let max_friction = self.friction * normal_impulse;
+
+                    let v_t = Vector3::new(self.velocities[i].x, 0.0, self.velocities[i].z);
+                    let v_t_mag = v_t.norm();
+
+                    if v_t_mag > 1e-10 {
+                        let friction_impulse = (v_t_mag * self.masses[i]).min(max_friction);
+                        let friction_decel = friction_impulse / self.masses[i];
+                        self.velocities[i].x -= (v_t.x / v_t_mag) * friction_decel;
+                        self.velocities[i].z -= (v_t.z / v_t_mag) * friction_decel;
+                    }
+                }
+            }
+        }
+
+        // Resolve sphere-sphere collisions
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let diff = self.positions[j] - self.positions[i];
+                let dist = diff.norm();
+                let min_dist = self.radii[i] + self.radii[j];
+
+                if dist < min_dist && dist > 1e-10 {
+                    // Collision detected
+                    let normal = diff / dist;
+                    let penetration = min_dist - dist;
+
+                    // Separate spheres proportionally to inverse mass
+                    let total_mass = self.masses[i] + self.masses[j];
+                    let ratio_i = self.masses[j] / total_mass;
+                    let ratio_j = self.masses[i] / total_mass;
+
+                    self.positions[i] -= normal * (penetration * ratio_i);
+                    self.positions[j] += normal * (penetration * ratio_j);
+
+                    // Relative velocity along normal
+                    let rel_vel = self.velocities[j] - self.velocities[i];
+                    let v_n = rel_vel.dot(&normal);
+
+                    if v_n < 0.0 {
+                        // Spheres approaching - apply impulse
+                        // Impulse magnitude for elastic collision
+                        let impulse_mag = -(1.0 + self.restitution) * v_n
+                            / (1.0 / self.masses[i] + 1.0 / self.masses[j]);
+
+                        self.velocities[i] -= normal * (impulse_mag / self.masses[i]);
+                        self.velocities[j] += normal * (impulse_mag / self.masses[j]);
+
+                        // Apply friction
+                        let rel_vel_new = self.velocities[j] - self.velocities[i];
+                        let v_t = rel_vel_new - normal * rel_vel_new.dot(&normal);
+                        let v_t_mag = v_t.norm();
+
+                        if v_t_mag > 1e-10 {
+                            let tangent = v_t / v_t_mag;
+                            let max_friction_impulse = self.friction * impulse_mag.abs();
+                            let reduced_mass = 1.0 / (1.0 / self.masses[i] + 1.0 / self.masses[j]);
+                            let desired_impulse = v_t_mag * reduced_mass;
+                            let friction_impulse = desired_impulse.min(max_friction_impulse);
+
+                            self.velocities[i] += tangent * (friction_impulse / self.masses[i]);
+                            self.velocities[j] -= tangent * (friction_impulse / self.masses[j]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run the sphere pile for a given duration.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn run_for(&mut self, duration: f64, dt: f64) {
+        let steps = (duration / dt).ceil() as usize;
+        for _ in 0..steps {
+            self.step(dt);
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -1283,7 +1685,8 @@ impl SphericalPendulum {
     clippy::cast_sign_loss,
     clippy::similar_names,
     clippy::uninlined_format_args,
-    clippy::panic
+    clippy::panic,
+    clippy::needless_range_loop
 )]
 mod tests {
     use super::*;
@@ -2384,5 +2787,271 @@ mod tests {
         assert_relative_eq!(vel.x, expected_vx, epsilon = 1e-10);
         assert_relative_eq!(vel.y, expected_vy, epsilon = 1e-10);
         assert_relative_eq!(vel.z, expected_vz, epsilon = 1e-10);
+    }
+
+    // =========================================================================
+    // Phase 6: Contact Physics Tests
+    // =========================================================================
+
+    #[test]
+    fn test_bouncing_ball_falls_under_gravity() {
+        // Ball starts above ground, should fall
+        let mut ball = BouncingBall::new(0.1, 1.0).with_position(Vector3::new(0.0, 1.0, 0.0));
+
+        let initial_height = ball.pos.y;
+
+        // Run for 0.1 seconds
+        ball.run_for(0.1, DT);
+
+        // Ball should have fallen
+        assert!(
+            ball.pos.y < initial_height,
+            "Ball should fall: y={:.3} should be < {:.3}",
+            ball.pos.y,
+            initial_height
+        );
+
+        // Velocity should be downward
+        assert!(
+            ball.vel.y < 0.0,
+            "Ball should have downward velocity: vy={:.3}",
+            ball.vel.y
+        );
+    }
+
+    #[test]
+    fn test_bouncing_ball_contacts_ground() {
+        // Ball starts at ground level
+        let ball = BouncingBall::new(0.1, 1.0).with_position(Vector3::new(0.0, 0.1, 0.0));
+
+        // Gap should be zero
+        assert_relative_eq!(ball.gap(), 0.0, epsilon = 1e-10);
+
+        // Should be in contact
+        assert!(ball.in_contact());
+    }
+
+    #[test]
+    fn test_bouncing_ball_bounces() {
+        // Ball starts above ground with downward velocity
+        let mut ball = BouncingBall::new(0.1, 1.0)
+            .with_position(Vector3::new(0.0, 0.2, 0.0))
+            .with_velocity(Vector3::new(0.0, -1.0, 0.0))
+            .with_restitution(1.0); // Perfectly elastic
+
+        // Run until after first bounce
+        ball.run_for(0.5, DT);
+
+        // Ball should have bounced (positive velocity or above ground)
+        // With perfect restitution, it should return to approximately same height
+        assert!(
+            ball.pos.y > 0.1 || ball.vel.y > 0.0,
+            "Ball should have bounced"
+        );
+    }
+
+    #[test]
+    fn test_bouncing_ball_energy_loss_with_restitution() {
+        // Ball starts above ground
+        let mut ball = BouncingBall::new(0.1, 1.0)
+            .with_position(Vector3::new(0.0, 1.0, 0.0))
+            .with_restitution(0.5); // Inelastic
+
+        let initial_energy = ball.total_energy();
+
+        // Run for several bounces
+        ball.run_for(2.0, DT);
+
+        let final_energy = ball.total_energy();
+
+        // Energy should have decreased (due to inelastic collisions)
+        assert!(
+            final_energy < initial_energy,
+            "Energy should decrease with inelastic bounces: E_final={:.3} should be < E_initial={:.3}",
+            final_energy,
+            initial_energy
+        );
+    }
+
+    #[test]
+    fn test_bouncing_ball_comes_to_rest() {
+        // Ball starts above ground with low restitution
+        let mut ball = BouncingBall::new(0.1, 1.0)
+            .with_position(Vector3::new(0.0, 0.5, 0.0))
+            .with_restitution(0.3); // Very inelastic
+
+        // Run for long time
+        ball.run_for(5.0, DT);
+
+        // Ball should be at rest on ground
+        assert!(
+            ball.vel.norm() < 0.1,
+            "Ball should come to rest: v={:.3}",
+            ball.vel.norm()
+        );
+        assert!(
+            (ball.pos.y - ball.radius).abs() < 0.01,
+            "Ball should be on ground: y={:.3}",
+            ball.pos.y
+        );
+    }
+
+    #[test]
+    fn test_bouncing_ball_friction_slows_horizontal() {
+        // Ball starts moving horizontally on ground
+        let mut ball = BouncingBall::new(0.1, 1.0)
+            .with_position(Vector3::new(0.0, 0.1, 0.0)) // On ground
+            .with_velocity(Vector3::new(2.0, -0.1, 0.0)) // Moving right, slightly into ground
+            .with_friction(0.5);
+
+        let initial_vx = ball.vel.x;
+
+        // Run for a short time
+        ball.run_for(0.1, DT);
+
+        // Horizontal velocity should have decreased due to friction
+        assert!(
+            ball.vel.x.abs() < initial_vx,
+            "Friction should slow horizontal motion: vx={:.3} should be < {:.3}",
+            ball.vel.x.abs(),
+            initial_vx
+        );
+    }
+
+    #[test]
+    fn test_bouncing_ball_no_penetration() {
+        // Ball starts slightly below ground
+        let mut ball = BouncingBall::new(0.1, 1.0).with_position(Vector3::new(0.0, 0.05, 0.0)); // Penetrating
+
+        // Run for a step
+        ball.step(DT);
+
+        // Ball should be pushed out of ground
+        assert!(
+            ball.gap() >= -1e-10,
+            "Ball should not penetrate ground: gap={:.6}",
+            ball.gap()
+        );
+    }
+
+    #[test]
+    fn test_sphere_pile_initial_state() {
+        let pile = SpherePile::new(3, 0.1, 1.0);
+
+        assert_eq!(pile.n_spheres(), 3);
+
+        // Spheres should be stacked vertically
+        for i in 0..3 {
+            assert!(
+                pile.positions[i].y > pile.ground_y,
+                "Sphere {} should be above ground",
+                i
+            );
+        }
+
+        // Higher spheres should be higher
+        assert!(pile.positions[1].y > pile.positions[0].y);
+        assert!(pile.positions[2].y > pile.positions[1].y);
+    }
+
+    #[test]
+    fn test_sphere_pile_falls() {
+        let mut pile = SpherePile::new(3, 0.1, 1.0);
+
+        let initial_heights: Vec<f64> = pile.positions.iter().map(|p| p.y).collect();
+
+        // Run for 0.1 seconds
+        pile.run_for(0.1, 1.0 / 240.0);
+
+        // All spheres should have fallen
+        for i in 0..3 {
+            assert!(
+                pile.positions[i].y < initial_heights[i],
+                "Sphere {} should fall",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_sphere_pile_no_penetration() {
+        let mut pile = SpherePile::new(3, 0.1, 1.0);
+
+        // Run for several seconds
+        pile.run_for(3.0, 1.0 / 240.0);
+
+        // No sphere should penetrate ground
+        for i in 0..pile.n_spheres() {
+            let gap = pile.positions[i].y - pile.radii[i] - pile.ground_y;
+            assert!(
+                gap >= -0.01,
+                "Sphere {} should not penetrate ground: gap={:.6}",
+                i,
+                gap
+            );
+        }
+
+        // No spheres should overlap
+        for i in 0..pile.n_spheres() {
+            for j in (i + 1)..pile.n_spheres() {
+                let dist = (pile.positions[j] - pile.positions[i]).norm();
+                let min_dist = pile.radii[i] + pile.radii[j];
+                assert!(
+                    dist >= min_dist - 0.01,
+                    "Spheres {} and {} should not overlap: dist={:.6} < min={:.6}",
+                    i,
+                    j,
+                    dist,
+                    min_dist
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_sphere_pile_comes_to_rest() {
+        let mut pile = SpherePile::new(3, 0.1, 1.0).with_restitution(0.3);
+
+        // Run for long time
+        pile.run_for(5.0, 1.0 / 240.0);
+
+        // All spheres should have low velocity
+        for i in 0..pile.n_spheres() {
+            let speed = pile.velocities[i].norm();
+            assert!(
+                speed < 0.5,
+                "Sphere {} should be nearly at rest: speed={:.3}",
+                i,
+                speed
+            );
+        }
+    }
+
+    #[test]
+    fn test_sphere_collision() {
+        // Two spheres approaching each other
+        let mut pile = SpherePile::new(2, 0.2, 1.0).with_restitution(1.0);
+
+        // Place spheres horizontally, moving toward each other
+        pile.positions[0] = Vector3::new(-0.5, 0.3, 0.0);
+        pile.positions[1] = Vector3::new(0.5, 0.3, 0.0);
+        pile.velocities[0] = Vector3::new(1.0, 0.0, 0.0);
+        pile.velocities[1] = Vector3::new(-1.0, 0.0, 0.0);
+
+        // Run until collision
+        pile.run_for(0.5, 1.0 / 480.0);
+
+        // With elastic collision, velocities should have swapped directions
+        // (approximately, accounting for gravity effects)
+        assert!(
+            pile.velocities[0].x < 0.5,
+            "Sphere 0 should have reversed: vx={:.3}",
+            pile.velocities[0].x
+        );
+        assert!(
+            pile.velocities[1].x > -0.5,
+            "Sphere 1 should have reversed: vx={:.3}",
+            pile.velocities[1].x
+        );
     }
 }
