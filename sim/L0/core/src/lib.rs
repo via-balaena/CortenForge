@@ -137,6 +137,7 @@ pub mod heightfield;
 pub mod integrators;
 pub mod mesh;
 pub mod mid_phase;
+pub mod mujoco_pipeline;
 pub mod raycast;
 pub mod sdf;
 mod stepper;
@@ -160,6 +161,40 @@ pub use sdf::{
 };
 pub use stepper::{SimulationBuilder, StepResult, Stepper, StepperConfig};
 pub use world::{Body, CollisionShape, Joint, World};
+
+// MuJoCo-style physics pipeline types
+pub use mujoco_pipeline::{
+    // Core articulated body system
+    ArticulatedBody,
+    ArticulatedJoint,
+    ArticulatedJointType,
+    ArticulatedSystem,
+    // Index types for articulated systems
+    BodyIndex,
+    // Demo/testing systems
+    BouncingBall,
+    // Constrained pendulum (PGS demo)
+    ConstrainedPendulum,
+    // PGS constraint solver
+    Constraint,
+    ConstraintType,
+    // Contact point for constraint solving
+    ContactPoint as PGSContactPoint,
+    DoublePendulum,
+    JointIndex,
+    NLinkPendulum,
+    PGSConfig,
+    PGSResult,
+    PGSSolver,
+    SimplePendulum,
+    // Spatial algebra types
+    SpatialMatrix,
+    SpatialVector,
+    // World integration
+    SpawnedArticulation,
+    SpherePile,
+    SphericalPendulum,
+};
 
 // Re-export contact solver config for performance tuning
 pub use sim_contact::ContactSolverConfig;

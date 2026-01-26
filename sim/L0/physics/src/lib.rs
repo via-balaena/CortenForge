@@ -11,7 +11,7 @@
 //! - [`sim_muscle`] - Hill-type muscle actuators for biomechanical simulation
 //! - [`sim_tendon`] - Tendon and cable simulation for cable-driven robots
 //! - [`sim_sensor`] - Sensor simulation (IMU, force/torque, touch, etc.)
-//! - [`sim_deformable`] - Soft body and deformable simulation (behind `deformable` feature)
+//! - `sim_deformable` - Soft body and deformable simulation (behind `deformable` feature, planned)
 //!
 //! # Layer 0
 //!
@@ -191,6 +191,39 @@ pub mod prelude {
     pub use sim_core::integrators::{
         ExplicitEuler, Integrator, RungeKutta4, SemiImplicitEuler, VelocityVerlet,
         integrate_with_method,
+    };
+
+    // ========================================================================
+    // MuJoCo-style articulated body system from sim-core
+    // ========================================================================
+
+    pub use sim_core::{
+        // Core articulated body system
+        ArticulatedBody,
+        ArticulatedJoint,
+        ArticulatedJointType,
+        ArticulatedSystem,
+        // Index types
+        BodyIndex,
+        // Demo systems
+        BouncingBall,
+        // PGS constraint solver
+        Constraint as PGSConstraint,
+        ConstraintType as PGSConstraintType,
+        DoublePendulum,
+        JointIndex,
+        NLinkPendulum,
+        PGSConfig,
+        PGSResult,
+        PGSSolver,
+        SimplePendulum,
+        // Spatial algebra types
+        SpatialMatrix,
+        SpatialVector,
+        // World integration
+        SpawnedArticulation,
+        SpherePile,
+        SphericalPendulum,
     };
 
     // ========================================================================
