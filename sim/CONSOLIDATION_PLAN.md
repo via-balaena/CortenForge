@@ -379,7 +379,7 @@ fn mj_integrate_pos(model: &Model, data: &mut Data, h: f64) {
             }
             JointType::Ball => {
                 // Quaternion: integrate angular velocity on SO(3)
-                // quat_new = quat_old * exp(0.5 * h * omega)
+                // quat_new = quat_old * exp(omega * h) where exp is axis-angle→quaternion
                 let omega = Vector3::new(
                     data.qvel[dof_adr],
                     data.qvel[dof_adr + 1],
@@ -469,14 +469,45 @@ fn mj_normalize_quat(model: &Model, data: &mut Data) {
             _ => {}
         }
     }
+}
+```
 
-    /// Reset to initial state
-    pub fn reset(&mut self, model: &Model) {
-        self.qpos = model.qpos0();
-        self.qvel = DVector::zeros(model.nv);
-        self.time = 0.0;
-        self.forward(model);
+### Phase 2.5: Validation Functions
+
+```rust
+/// Check for NaN/Inf in qpos, reset if found
+fn mj_check_pos(model: &Model, data: &mut Data) -> bool {
+    for i in 0..model.nq {
+        if !data.qpos[i].is_finite() || data.qpos[i].abs() > 1e10 {
+            eprintln!("Warning: Invalid qpos[{}] = {}, resetting", i, data.qpos[i]);
+            data.qpos = model.qpos0.clone();
+            return false;
+        }
     }
+    true
+}
+
+/// Check for NaN/Inf in qvel, reset if found
+fn mj_check_vel(model: &Model, data: &mut Data) -> bool {
+    for i in 0..model.nv {
+        if !data.qvel[i].is_finite() || data.qvel[i].abs() > 1e10 {
+            eprintln!("Warning: Invalid qvel[{}] = {}, zeroing", i, data.qvel[i]);
+            data.qvel = DVector::zeros(model.nv);
+            return false;
+        }
+    }
+    true
+}
+
+/// Check for NaN/Inf in qacc
+fn mj_check_acc(_model: &Model, data: &Data) -> bool {
+    for i in 0..data.qacc.len() {
+        if !data.qacc[i].is_finite() {
+            eprintln!("Warning: Invalid qacc[{}] = {}", i, data.qacc[i]);
+            return false;
+        }
+    }
+    true
 }
 ```
 
@@ -878,8 +909,6 @@ From MuJoCo defaults:
 | Integration | Semi-implicit Euler | Multiple integrators | **Default to semi-implicit** |
 | Contact model | Compliant (spring-damper) | Compliant | **Keep** ✅ |
 | Collision detection | Built-in | GJK/EPA, BVH | **Keep** ✅ |
-
----
 
 ---
 
