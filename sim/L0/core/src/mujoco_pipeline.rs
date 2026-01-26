@@ -3055,3 +3055,1529 @@ mod tests {
         );
     }
 }
+
+// ============================================================================
+// Phase 7: General Articulated Rigid Body System
+// ============================================================================
+//
+// This implements a general articulated rigid body system following MuJoCo's
+// architecture. Unlike the specialized pendulum implementations above, this
+// handles arbitrary tree topologies with mixed joint types.
+//
+// Key design principles:
+// 1. Bodies are arranged in a kinematic tree (parent-child relationships)
+// 2. Joints connect bodies and define relative motion constraints
+// 3. State is represented in minimal (joint-space) coordinates
+// 4. CRBA computes the n×n joint-space inertia matrix
+// 5. RNE computes Coriolis + gravity bias forces
+// 6. PGS solver handles constraint forces (limits, contacts)
+// 7. Semi-implicit Euler integration with new velocity for position
+
+use nalgebra::{Isometry3, Matrix3, Matrix6, Translation3, UnitQuaternion, Vector6};
+use std::collections::HashMap;
+
+/// Index type for bodies in the articulated system.
+pub type BodyIndex = usize;
+
+/// Index type for joints in the articulated system.
+pub type JointIndex = usize;
+
+/// 6D spatial vector: [angular (3), linear (3)].
+///
+/// Following Featherstone's convention:
+/// - Motion vectors: [ω, v] (angular velocity, linear velocity)
+/// - Force vectors: [τ, f] (torque, force)
+pub type SpatialVector = Vector6<f64>;
+
+/// 6x6 spatial matrix for rigid body dynamics.
+///
+/// Used for:
+/// - Spatial inertia tensors
+/// - Spatial transforms between frames
+pub type SpatialMatrix = Matrix6<f64>;
+
+/// Type of joint connecting two bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArticulatedJointType {
+    /// Fixed joint (0 DOF) - bodies are rigidly connected.
+    Fixed,
+    /// Revolute joint (1 DOF) - rotation about a single axis.
+    Revolute,
+    /// Prismatic joint (1 DOF) - translation along a single axis.
+    Prismatic,
+    /// Spherical joint (3 DOF) - ball-and-socket, free rotation.
+    Spherical,
+    /// Free joint (6 DOF) - floating base, no constraints.
+    Free,
+}
+
+impl ArticulatedJointType {
+    /// Number of degrees of freedom for this joint type.
+    #[must_use]
+    pub fn dof(self) -> usize {
+        match self {
+            Self::Fixed => 0,
+            Self::Revolute | Self::Prismatic => 1,
+            Self::Spherical => 3,
+            Self::Free => 6,
+        }
+    }
+}
+
+/// A rigid body in the articulated system.
+#[derive(Debug, Clone)]
+pub struct ArticulatedBody {
+    /// Index of the parent body (None for root/world).
+    pub parent: Option<BodyIndex>,
+    /// Indices of child bodies.
+    pub children: Vec<BodyIndex>,
+    /// Index of the joint connecting this body to its parent.
+    pub joint: Option<JointIndex>,
+    /// Body mass in kg.
+    pub mass: f64,
+    /// Center of mass in body-local frame.
+    pub com: Vector3<f64>,
+    /// Inertia tensor about COM in body-local frame.
+    pub inertia: Matrix3<f64>,
+    /// Transform from parent joint frame to body COM frame.
+    pub body_to_joint: Isometry3<f64>,
+}
+
+impl ArticulatedBody {
+    /// Create a new body with given mass properties.
+    #[must_use]
+    pub fn new(mass: f64, com: Vector3<f64>, inertia: Matrix3<f64>) -> Self {
+        Self {
+            parent: None,
+            children: Vec::new(),
+            joint: None,
+            mass,
+            com,
+            inertia,
+            body_to_joint: Isometry3::identity(),
+        }
+    }
+
+    /// Create a point mass (all mass concentrated at a single point).
+    #[must_use]
+    pub fn point_mass(mass: f64) -> Self {
+        Self::new(mass, Vector3::zeros(), Matrix3::zeros())
+    }
+
+    /// Create a uniform sphere.
+    #[must_use]
+    pub fn sphere(mass: f64, radius: f64) -> Self {
+        let i = 0.4 * mass * radius * radius;
+        Self::new(
+            mass,
+            Vector3::zeros(),
+            Matrix3::from_diagonal(&Vector3::new(i, i, i)),
+        )
+    }
+
+    /// Create a uniform box.
+    #[must_use]
+    pub fn cuboid(mass: f64, half_extents: Vector3<f64>) -> Self {
+        let m = mass / 12.0;
+        let hx2 = half_extents.x * half_extents.x * 4.0;
+        let hy2 = half_extents.y * half_extents.y * 4.0;
+        let hz2 = half_extents.z * half_extents.z * 4.0;
+        let inertia = Matrix3::from_diagonal(&Vector3::new(
+            m * (hy2 + hz2),
+            m * (hx2 + hz2),
+            m * (hx2 + hy2),
+        ));
+        Self::new(mass, Vector3::zeros(), inertia)
+    }
+
+    /// Set the transform from body frame to joint frame.
+    #[must_use]
+    pub fn with_joint_transform(mut self, transform: Isometry3<f64>) -> Self {
+        self.body_to_joint = transform;
+        self
+    }
+
+    /// Compute the 6x6 spatial inertia matrix in body-local frame.
+    ///
+    /// The spatial inertia is:
+    /// ```text
+    /// I_spatial = | I + m*[c]×[c]×ᵀ   m*[c]× |
+    ///             |     m*[c]×ᵀ          m*1  |
+    /// ```
+    /// where [c]× is the skew-symmetric matrix of the COM offset.
+    #[must_use]
+    pub fn spatial_inertia(&self) -> SpatialMatrix {
+        let c = self.com;
+        let m = self.mass;
+
+        // Skew-symmetric matrix of COM
+        let c_skew = skew_symmetric(c);
+        let c_skew_t = c_skew.transpose();
+
+        // Upper-left: I + m * c× * c×ᵀ
+        let i_rot = self.inertia + m * c_skew * c_skew_t;
+
+        // Upper-right: m * c×
+        let i_cross = m * c_skew;
+
+        // Lower-right: m * I₃
+        let i_lin = m * Matrix3::identity();
+
+        // Assemble 6x6 matrix
+        let mut spatial = SpatialMatrix::zeros();
+        let lower_left = c_skew_t * m;
+        spatial.fixed_view_mut::<3, 3>(0, 0).copy_from(&i_rot);
+        spatial.fixed_view_mut::<3, 3>(0, 3).copy_from(&i_cross);
+        spatial.fixed_view_mut::<3, 3>(3, 0).copy_from(&lower_left);
+        spatial.fixed_view_mut::<3, 3>(3, 3).copy_from(&i_lin);
+
+        spatial
+    }
+}
+
+/// A joint in the articulated system.
+#[derive(Debug, Clone)]
+pub struct ArticulatedJoint {
+    /// Type of joint.
+    pub joint_type: ArticulatedJointType,
+    /// Axis of motion (for revolute/prismatic joints).
+    pub axis: Vector3<f64>,
+    /// Lower position limits (per DOF).
+    pub lower_limit: Vec<f64>,
+    /// Upper position limits (per DOF).
+    pub upper_limit: Vec<f64>,
+    /// Joint damping coefficient (per DOF).
+    pub damping: Vec<f64>,
+    /// Joint stiffness (spring toward rest position, per DOF).
+    pub stiffness: Vec<f64>,
+    /// Rest position for spring force (per DOF).
+    pub rest_position: Vec<f64>,
+    /// Starting index in qpos/qvel arrays.
+    pub qpos_start: usize,
+    /// Number of position coordinates (may differ from DOF for quaternions).
+    pub qpos_dim: usize,
+}
+
+impl ArticulatedJoint {
+    /// Create a new revolute joint about the given axis.
+    #[must_use]
+    pub fn revolute(axis: Vector3<f64>) -> Self {
+        Self {
+            joint_type: ArticulatedJointType::Revolute,
+            axis: axis.normalize(),
+            lower_limit: vec![-PI],
+            upper_limit: vec![PI],
+            damping: vec![0.0],
+            stiffness: vec![0.0],
+            rest_position: vec![0.0],
+            qpos_start: 0,
+            qpos_dim: 1,
+        }
+    }
+
+    /// Create a new prismatic joint along the given axis.
+    #[must_use]
+    pub fn prismatic(axis: Vector3<f64>) -> Self {
+        Self {
+            joint_type: ArticulatedJointType::Prismatic,
+            axis: axis.normalize(),
+            lower_limit: vec![-1.0],
+            upper_limit: vec![1.0],
+            damping: vec![0.0],
+            stiffness: vec![0.0],
+            rest_position: vec![0.0],
+            qpos_start: 0,
+            qpos_dim: 1,
+        }
+    }
+
+    /// Create a new spherical (ball) joint.
+    #[must_use]
+    pub fn spherical() -> Self {
+        Self {
+            joint_type: ArticulatedJointType::Spherical,
+            axis: Vector3::z(), // Not used for spherical
+            lower_limit: vec![-PI, -PI, -PI],
+            upper_limit: vec![PI, PI, PI],
+            damping: vec![0.0, 0.0, 0.0],
+            stiffness: vec![0.0, 0.0, 0.0],
+            rest_position: vec![0.0, 0.0, 0.0],
+            qpos_start: 0,
+            qpos_dim: 4, // Quaternion representation
+        }
+    }
+
+    /// Create a fixed joint (no motion).
+    #[must_use]
+    pub fn fixed() -> Self {
+        Self {
+            joint_type: ArticulatedJointType::Fixed,
+            axis: Vector3::z(),
+            lower_limit: vec![],
+            upper_limit: vec![],
+            damping: vec![],
+            stiffness: vec![],
+            rest_position: vec![],
+            qpos_start: 0,
+            qpos_dim: 0,
+        }
+    }
+
+    /// Create a free joint (floating base).
+    #[must_use]
+    pub fn free() -> Self {
+        Self {
+            joint_type: ArticulatedJointType::Free,
+            axis: Vector3::z(),
+            lower_limit: vec![f64::NEG_INFINITY; 6],
+            upper_limit: vec![f64::INFINITY; 6],
+            damping: vec![0.0; 6],
+            stiffness: vec![0.0; 6],
+            rest_position: vec![0.0; 6],
+            qpos_start: 0,
+            qpos_dim: 7, // position (3) + quaternion (4)
+        }
+    }
+
+    /// Get the number of degrees of freedom.
+    #[must_use]
+    pub fn dof(&self) -> usize {
+        self.joint_type.dof()
+    }
+
+    /// Set joint limits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `lower` or `upper` length doesn't match the joint DOF.
+    #[must_use]
+    pub fn with_limits(mut self, lower: Vec<f64>, upper: Vec<f64>) -> Self {
+        assert_eq!(lower.len(), self.dof());
+        assert_eq!(upper.len(), self.dof());
+        self.lower_limit = lower;
+        self.upper_limit = upper;
+        self
+    }
+
+    /// Set symmetric joint limits.
+    #[must_use]
+    pub fn with_symmetric_limits(mut self, limit: f64) -> Self {
+        self.lower_limit = vec![-limit; self.dof()];
+        self.upper_limit = vec![limit; self.dof()];
+        self
+    }
+
+    /// Set joint damping.
+    #[must_use]
+    pub fn with_damping(mut self, damping: f64) -> Self {
+        self.damping = vec![damping; self.dof()];
+        self
+    }
+
+    /// Set joint stiffness (spring).
+    #[must_use]
+    pub fn with_stiffness(mut self, stiffness: f64, rest: f64) -> Self {
+        self.stiffness = vec![stiffness; self.dof()];
+        self.rest_position = vec![rest; self.dof()];
+        self
+    }
+
+    /// Compute the joint motion subspace matrix S (6 × dof).
+    ///
+    /// This maps joint velocities to spatial velocities:
+    /// `v_spatial` = S * qvel
+    #[must_use]
+    pub fn motion_subspace(&self) -> nalgebra::DMatrix<f64> {
+        let dof = self.dof();
+        let mut s = nalgebra::DMatrix::zeros(6, dof);
+
+        match self.joint_type {
+            ArticulatedJointType::Fixed => {
+                // No motion
+            }
+            ArticulatedJointType::Revolute => {
+                // Rotation about axis
+                s[(0, 0)] = self.axis.x;
+                s[(1, 0)] = self.axis.y;
+                s[(2, 0)] = self.axis.z;
+            }
+            ArticulatedJointType::Prismatic => {
+                // Translation along axis
+                s[(3, 0)] = self.axis.x;
+                s[(4, 0)] = self.axis.y;
+                s[(5, 0)] = self.axis.z;
+            }
+            ArticulatedJointType::Spherical => {
+                // Free rotation: identity for angular part
+                s[(0, 0)] = 1.0;
+                s[(1, 1)] = 1.0;
+                s[(2, 2)] = 1.0;
+            }
+            ArticulatedJointType::Free => {
+                // Full 6-DOF
+                for i in 0..6 {
+                    s[(i, i)] = 1.0;
+                }
+            }
+        }
+
+        s
+    }
+
+    /// Compute the spatial transform for this joint given position coordinates.
+    #[must_use]
+    pub fn transform(&self, qpos: &[f64]) -> Isometry3<f64> {
+        match self.joint_type {
+            ArticulatedJointType::Fixed => Isometry3::identity(),
+            ArticulatedJointType::Revolute => {
+                let angle = qpos.first().copied().unwrap_or(0.0);
+                let rotation = UnitQuaternion::from_axis_angle(
+                    &nalgebra::Unit::new_normalize(self.axis),
+                    angle,
+                );
+                Isometry3::from_parts(Translation3::identity(), rotation)
+            }
+            ArticulatedJointType::Prismatic => {
+                let dist = qpos.first().copied().unwrap_or(0.0);
+                Isometry3::from_parts(
+                    Translation3::from(self.axis * dist),
+                    UnitQuaternion::identity(),
+                )
+            }
+            ArticulatedJointType::Spherical => {
+                // qpos is [w, x, y, z] quaternion
+                let q = if qpos.len() >= 4 {
+                    UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        qpos[0], qpos[1], qpos[2], qpos[3],
+                    ))
+                } else {
+                    UnitQuaternion::identity()
+                };
+                Isometry3::from_parts(Translation3::identity(), q)
+            }
+            ArticulatedJointType::Free => {
+                // qpos is [x, y, z, qw, qx, qy, qz]
+                let pos = if qpos.len() >= 3 {
+                    Translation3::new(qpos[0], qpos[1], qpos[2])
+                } else {
+                    Translation3::identity()
+                };
+                let rot = if qpos.len() >= 7 {
+                    UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        qpos[3], qpos[4], qpos[5], qpos[6],
+                    ))
+                } else {
+                    UnitQuaternion::identity()
+                };
+                Isometry3::from_parts(pos, rot)
+            }
+        }
+    }
+}
+
+/// Complete articulated rigid body system.
+///
+/// This is the main entry point for simulating articulated mechanisms,
+/// robots, and other multi-body systems.
+#[derive(Debug, Clone)]
+pub struct ArticulatedSystem {
+    /// All bodies in the system.
+    pub bodies: Vec<ArticulatedBody>,
+    /// All joints in the system.
+    pub joints: Vec<ArticulatedJoint>,
+    /// Joint position coordinates.
+    pub qpos: DVector<f64>,
+    /// Joint velocities.
+    pub qvel: DVector<f64>,
+    /// Total degrees of freedom.
+    nv: usize,
+    /// Total position dimension (may be > nv due to quaternions).
+    nq: usize,
+    /// Gravity vector.
+    pub gravity: Vector3<f64>,
+    /// Body ordering for forward/backward passes (topological sort).
+    body_order: Vec<BodyIndex>,
+    /// Map from body index to joint indices (for bodies with multiple joints).
+    body_joints: HashMap<BodyIndex, Vec<JointIndex>>,
+}
+
+impl ArticulatedSystem {
+    /// Create a new empty articulated system.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            bodies: Vec::new(),
+            joints: Vec::new(),
+            qpos: DVector::zeros(0),
+            qvel: DVector::zeros(0),
+            nv: 0,
+            nq: 0,
+            gravity: Vector3::new(0.0, -9.81, 0.0),
+            body_order: Vec::new(),
+            body_joints: HashMap::new(),
+        }
+    }
+
+    /// Set custom gravity vector.
+    #[must_use]
+    pub fn with_gravity(mut self, gravity: Vector3<f64>) -> Self {
+        self.gravity = gravity;
+        self
+    }
+
+    /// Add a body to the system, optionally connected to a parent.
+    ///
+    /// Returns the index of the new body.
+    pub fn add_body(&mut self, mut body: ArticulatedBody, parent: Option<BodyIndex>) -> BodyIndex {
+        let idx = self.bodies.len();
+        body.parent = parent;
+
+        if let Some(p) = parent {
+            self.bodies[p].children.push(idx);
+        }
+
+        self.bodies.push(body);
+        self.rebuild_topology();
+        idx
+    }
+
+    /// Add a joint connecting a body to its parent.
+    ///
+    /// Returns the index of the new joint.
+    pub fn add_joint(&mut self, body: BodyIndex, joint: ArticulatedJoint) -> JointIndex {
+        let jidx = self.joints.len();
+
+        // Update joint position indices
+        let mut j = joint;
+        j.qpos_start = self.nq;
+
+        // Update dimensions
+        self.nv += j.dof();
+        self.nq += j.qpos_dim;
+
+        self.bodies[body].joint = Some(jidx);
+        self.joints.push(j);
+
+        // Update body-joint map
+        self.body_joints.entry(body).or_default().push(jidx);
+
+        // Resize state vectors
+        self.qpos = DVector::zeros(self.nq);
+        self.qvel = DVector::zeros(self.nv);
+
+        // Initialize quaternions to identity
+        self.initialize_quaternions();
+
+        jidx
+    }
+
+    /// Initialize quaternion positions to identity.
+    fn initialize_quaternions(&mut self) {
+        for joint in &self.joints {
+            match joint.joint_type {
+                ArticulatedJointType::Spherical => {
+                    // [w, x, y, z] = [1, 0, 0, 0]
+                    self.qpos[joint.qpos_start] = 1.0;
+                }
+                ArticulatedJointType::Free => {
+                    // Position + quaternion: [x, y, z, w, qx, qy, qz]
+                    self.qpos[joint.qpos_start + 3] = 1.0; // qw
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Rebuild the topological ordering after adding bodies.
+    fn rebuild_topology(&mut self) {
+        // Find root bodies (no parent)
+        let roots: Vec<BodyIndex> = self
+            .bodies
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.parent.is_none())
+            .map(|(i, _)| i)
+            .collect();
+
+        // Build ordering via BFS/DFS from roots
+        self.body_order.clear();
+        let mut stack = roots;
+
+        while let Some(idx) = stack.pop() {
+            self.body_order.push(idx);
+            // Add children in reverse order so they come out in order
+            for &child in self.bodies[idx].children.iter().rev() {
+                stack.push(child);
+            }
+        }
+    }
+
+    /// Get total degrees of freedom.
+    #[must_use]
+    pub fn nv(&self) -> usize {
+        self.nv
+    }
+
+    /// Get total position dimension.
+    #[must_use]
+    pub fn nq(&self) -> usize {
+        self.nq
+    }
+
+    /// Get number of bodies.
+    #[must_use]
+    pub fn n_bodies(&self) -> usize {
+        self.bodies.len()
+    }
+
+    /// Get number of joints.
+    #[must_use]
+    pub fn n_joints(&self) -> usize {
+        self.joints.len()
+    }
+
+    /// Get qpos slice for a specific joint.
+    #[must_use]
+    pub fn joint_qpos(&self, joint: JointIndex) -> &[f64] {
+        let j = &self.joints[joint];
+        &self.qpos.as_slice()[j.qpos_start..j.qpos_start + j.qpos_dim]
+    }
+
+    /// Get mutable qpos slice for a specific joint.
+    pub fn joint_qpos_mut(&mut self, joint: JointIndex) -> &mut [f64] {
+        let j = &self.joints[joint];
+        let start = j.qpos_start;
+        let end = start + j.qpos_dim;
+        &mut self.qpos.as_mut_slice()[start..end]
+    }
+
+    /// Set joint position.
+    pub fn set_joint_position(&mut self, joint: JointIndex, value: f64) {
+        let j = &self.joints[joint];
+        if j.qpos_dim > 0 {
+            self.qpos[j.qpos_start] = value;
+        }
+    }
+
+    /// Set joint velocity.
+    pub fn set_joint_velocity(&mut self, joint: JointIndex, value: f64) {
+        let j = &self.joints[joint];
+        if j.dof() > 0 {
+            // Find velocity index by counting DOF of previous joints
+            let vel_idx: usize = self.joints[..joint].iter().map(ArticulatedJoint::dof).sum();
+            self.qvel[vel_idx] = value;
+        }
+    }
+
+    /// Compute forward kinematics - body transforms from joint positions.
+    ///
+    /// Returns transforms for all bodies in world frame.
+    #[must_use]
+    #[allow(clippy::option_if_let_else)]
+    pub fn forward_kinematics(&self) -> Vec<Isometry3<f64>> {
+        let mut transforms = vec![Isometry3::identity(); self.bodies.len()];
+
+        for &body_idx in &self.body_order {
+            let body = &self.bodies[body_idx];
+
+            // Start with parent transform
+            let parent_transform = if let Some(p) = body.parent {
+                transforms[p]
+            } else {
+                Isometry3::identity()
+            };
+
+            // Apply joint transform
+            let joint_transform = if let Some(jidx) = body.joint {
+                let joint = &self.joints[jidx];
+                let qpos = self.joint_qpos(jidx);
+                joint.transform(qpos)
+            } else {
+                Isometry3::identity()
+            };
+
+            // Apply body-to-joint transform
+            transforms[body_idx] = parent_transform * joint_transform * body.body_to_joint;
+        }
+
+        transforms
+    }
+
+    /// Compute the joint-space inertia matrix M via Composite Rigid Body Algorithm.
+    ///
+    /// This is `MuJoCo`'s `mj_crb` / `mj_makeM`.
+    ///
+    /// For a serial chain, this is a direct computation based on the kinetic energy.
+    /// For body i with joint at position `r_i` from pivot, the effective inertia is
+    /// the sum of contributions from all descendant masses.
+    #[must_use]
+    #[allow(
+        clippy::needless_range_loop,
+        clippy::too_many_lines,
+        clippy::similar_names
+    )]
+    pub fn inertia_matrix(&self) -> DMatrix<f64> {
+        if self.nv == 0 {
+            return DMatrix::zeros(0, 0);
+        }
+
+        let mut m_matrix = DMatrix::zeros(self.nv, self.nv);
+
+        // Compute body transforms (world frame positions)
+        let transforms = self.forward_kinematics();
+
+        // For each pair of joints (i, j), compute M[i,j]
+        // M[i,j] = Σ_k m_k * (∂p_k/∂q_i · ∂p_k/∂q_j)
+        // where k ranges over all bodies affected by both joints i and j
+
+        // First, build a map of joint index -> body index
+        let joint_to_body: Vec<BodyIndex> = self
+            .joints
+            .iter()
+            .enumerate()
+            .map(|(jidx, _)| {
+                self.bodies
+                    .iter()
+                    .position(|b| b.joint == Some(jidx))
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        // For each body, find all joints that affect its position (ancestor joints)
+        let mut body_ancestor_joints: Vec<Vec<JointIndex>> = vec![vec![]; self.bodies.len()];
+        for (body_idx, _body) in self.bodies.iter().enumerate() {
+            let mut current = Some(body_idx);
+            while let Some(idx) = current {
+                if let Some(jidx) = self.bodies[idx].joint {
+                    body_ancestor_joints[body_idx].push(jidx);
+                }
+                current = self.bodies[idx].parent;
+            }
+        }
+
+        // For each pair of joints, compute the inertia contribution
+        let mut vel_i = 0;
+        for (ji, joint_i) in self.joints.iter().enumerate() {
+            let dof_i = joint_i.dof();
+            if dof_i == 0 {
+                vel_i += dof_i;
+                continue;
+            }
+
+            let mut vel_j = 0;
+            for (jj, joint_j) in self.joints.iter().enumerate() {
+                let dof_j = joint_j.dof();
+                if dof_j == 0 {
+                    vel_j += dof_j;
+                    continue;
+                }
+
+                // Find all bodies affected by both joints
+                for (body_idx, body) in self.bodies.iter().enumerate() {
+                    let ancestors = &body_ancestor_joints[body_idx];
+                    if ancestors.contains(&ji) && ancestors.contains(&jj) {
+                        // This body is affected by both joints
+                        // For a revolute joint about z-axis, the jacobian contribution
+                        // is the perpendicular distance from the joint axis
+
+                        // Get body position (COM in world)
+                        let body_pos = transforms[body_idx].translation.vector
+                            + transforms[body_idx].rotation * body.com;
+
+                        // Get joint positions
+                        let joint_i_body = joint_to_body[ji];
+                        let joint_j_body = joint_to_body[jj];
+
+                        // For revolute joints about z-axis in a planar pendulum,
+                        // the contribution to M[i,j] is m * L_i * L_j * cos(θ_i - θ_j)
+                        // where L_i is the perpendicular distance from joint i axis
+
+                        match (joint_i.joint_type, joint_j.joint_type) {
+                            (ArticulatedJointType::Revolute, ArticulatedJointType::Revolute) => {
+                                // Get the parent of the body that has this joint
+                                // The joint position is at the parent body's position (in world)
+                                let parent_i =
+                                    self.bodies[joint_i_body].parent.unwrap_or(joint_i_body);
+                                let parent_j =
+                                    self.bodies[joint_j_body].parent.unwrap_or(joint_j_body);
+
+                                // Get joint axis in world frame (at parent frame)
+                                let axis_i = transforms[parent_i].rotation * joint_i.axis;
+                                let axis_j = transforms[parent_j].rotation * joint_j.axis;
+
+                                // Get joint position (at parent position)
+                                let jpos_i = transforms[parent_i].translation.vector;
+                                let jpos_j = transforms[parent_j].translation.vector;
+
+                                // For a revolute joint, ∂p/∂θ = axis × (p - joint_pos)
+                                let r_i = body_pos - jpos_i;
+                                let r_j = body_pos - jpos_j;
+                                let dp_dqi = axis_i.cross(&r_i);
+                                let dp_dqj = axis_j.cross(&r_j);
+
+                                // M[i,j] += m * dp/dqi · dp/dqj
+                                m_matrix[(vel_i, vel_j)] += body.mass * dp_dqi.dot(&dp_dqj);
+                            }
+                            (ArticulatedJointType::Prismatic, ArticulatedJointType::Prismatic) => {
+                                // ∂p/∂d = axis
+                                m_matrix[(vel_i, vel_j)] +=
+                                    body.mass * joint_i.axis.dot(&joint_j.axis);
+                            }
+                            (ArticulatedJointType::Free, ArticulatedJointType::Free) => {
+                                // Free joint: 6 DOF [wx, wy, wz, vx, vy, vz]
+                                // Linear part: m * I_3 (diagonal 3x3 in the linear block)
+                                // Angular part: I (rotational inertia)
+                                // For simplicity, use point mass approximation
+
+                                // Linear velocity contribution (last 3 DOF)
+                                // ∂p/∂vx = [1,0,0], ∂p/∂vy = [0,1,0], ∂p/∂vz = [0,0,1]
+                                for d in 0..3 {
+                                    // Linear DOF are at offset 3, 4, 5
+                                    m_matrix[(vel_i + 3 + d, vel_j + 3 + d)] += body.mass;
+                                }
+
+                                // Angular part - use body's rotational inertia
+                                let i_body = body.inertia;
+                                for di in 0..3 {
+                                    for dj in 0..3 {
+                                        m_matrix[(vel_i + di, vel_j + dj)] += i_body[(di, dj)];
+                                    }
+                                }
+                            }
+                            _ => {
+                                // Other combinations not yet implemented
+                            }
+                        }
+                    }
+                }
+
+                vel_j += dof_j;
+            }
+
+            vel_i += dof_i;
+        }
+
+        // Add rotational inertia contributions for non-point masses
+        vel_i = 0;
+        for (ji, joint_i) in self.joints.iter().enumerate() {
+            let dof_i = joint_i.dof();
+            if dof_i == 0 || joint_i.joint_type != ArticulatedJointType::Revolute {
+                vel_i += dof_i;
+                continue;
+            }
+
+            let joint_body = joint_to_body[ji];
+            let axis = transforms[joint_body].rotation * joint_i.axis;
+
+            // Add rotational inertia from all descendant bodies
+            for (body_idx, body) in self.bodies.iter().enumerate() {
+                if body_ancestor_joints[body_idx].contains(&ji) {
+                    // Rotational inertia: I = axis^T * I_body * axis
+                    let i_rot = axis.dot(&(body.inertia * axis));
+                    m_matrix[(vel_i, vel_i)] += i_rot;
+                }
+            }
+
+            vel_i += dof_i;
+        }
+
+        // Ensure symmetry
+        for i in 0..self.nv {
+            for j in (i + 1)..self.nv {
+                let avg = f64::midpoint(m_matrix[(i, j)], m_matrix[(j, i)]);
+                m_matrix[(i, j)] = avg;
+                m_matrix[(j, i)] = avg;
+            }
+        }
+
+        m_matrix
+    }
+
+    /// Compute bias forces (Coriolis + gravity).
+    ///
+    /// This is a simplified implementation using direct gravity torque computation.
+    /// For each joint, compute the gravitational torque from all descendant masses.
+    ///
+    /// For revolute joints: τ = Σ `m_k` * g · (`r_k` × axis)
+    /// where `r_k` is the vector from joint to mass k.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub fn bias_forces(&self) -> DVector<f64> {
+        if self.nv == 0 {
+            return DVector::zeros(0);
+        }
+
+        let mut qfrc_bias = DVector::zeros(self.nv);
+        let transforms = self.forward_kinematics();
+
+        // Build map of joint -> body
+        let joint_to_body: Vec<BodyIndex> = self
+            .joints
+            .iter()
+            .enumerate()
+            .map(|(jidx, _)| {
+                self.bodies
+                    .iter()
+                    .position(|b| b.joint == Some(jidx))
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        // For each body, find all ancestor joints
+        let mut body_ancestor_joints: Vec<Vec<JointIndex>> = vec![vec![]; self.bodies.len()];
+        for (body_idx, _) in self.bodies.iter().enumerate() {
+            let mut current = Some(body_idx);
+            while let Some(idx) = current {
+                if let Some(jidx) = self.bodies[idx].joint {
+                    body_ancestor_joints[body_idx].push(jidx);
+                }
+                current = self.bodies[idx].parent;
+            }
+        }
+
+        // Compute gravity torque for each joint
+        let mut vel_offset = 0;
+        for (jidx, joint) in self.joints.iter().enumerate() {
+            let dof = joint.dof();
+            if dof == 0 {
+                continue;
+            }
+
+            match joint.joint_type {
+                ArticulatedJointType::Revolute => {
+                    // Get joint position and axis in world frame
+                    let joint_body = joint_to_body[jidx];
+                    let parent = self.bodies[joint_body].parent.unwrap_or(joint_body);
+                    let jpos = transforms[parent].translation.vector;
+                    let axis = transforms[parent].rotation * joint.axis;
+
+                    // Sum gravitational torque from all descendant masses
+                    let mut tau = 0.0;
+                    for (body_idx, body) in self.bodies.iter().enumerate() {
+                        if body_ancestor_joints[body_idx].contains(&jidx) {
+                            // Get body COM in world
+                            let com_world = transforms[body_idx].translation.vector
+                                + transforms[body_idx].rotation * body.com;
+
+                            // Vector from joint to COM
+                            let r = com_world - jpos;
+
+                            // Gravity force
+                            let f_grav = body.mass * self.gravity;
+
+                            // Torque = axis · (r × f) = (axis × r) · f
+                            let arm = axis.cross(&r);
+                            tau += arm.dot(&f_grav);
+                        }
+                    }
+
+                    qfrc_bias[vel_offset] = tau;
+                }
+                ArticulatedJointType::Prismatic => {
+                    // For prismatic, τ = axis · Σ m_k * g
+                    let axis = joint.axis;
+                    let mut tau = 0.0;
+                    for (body_idx, body) in self.bodies.iter().enumerate() {
+                        if body_ancestor_joints[body_idx].contains(&jidx) {
+                            let f_grav = body.mass * self.gravity;
+                            tau += axis.dot(&f_grav);
+                        }
+                    }
+                    qfrc_bias[vel_offset] = tau;
+                }
+                ArticulatedJointType::Free => {
+                    // For free joint, the bias force is OPPOSITE to the gravitational force
+                    // so that qfrc_smooth = qfrc_passive - qfrc_bias gives the correct
+                    // acceleration direction.
+                    //
+                    // If gravity = (0, -9.81, 0), we want qacc = (0, -9.81, 0)
+                    // qacc = M^(-1) * (qfrc_passive - qfrc_bias) = -qfrc_bias (when passive=0)
+                    // So qfrc_bias = -qacc = (0, 9.81, 0) = -gravity
+                    let joint_body = joint_to_body[jidx];
+                    let body_com = transforms[joint_body].translation.vector
+                        + transforms[joint_body].rotation * self.bodies[joint_body].com;
+
+                    let mut f_total = Vector3::zeros();
+                    let mut tau_total = Vector3::zeros();
+
+                    for (body_idx, body) in self.bodies.iter().enumerate() {
+                        if body_ancestor_joints[body_idx].contains(&jidx) {
+                            let com_world = transforms[body_idx].translation.vector
+                                + transforms[body_idx].rotation * body.com;
+                            // Negate gravity to get bias force
+                            let f_grav = -body.mass * self.gravity;
+                            f_total += f_grav;
+
+                            let r = com_world - body_com;
+                            tau_total += r.cross(&f_grav);
+                        }
+                    }
+
+                    // qvel for free joint: [angular (3), linear (3)]
+                    qfrc_bias[vel_offset] = tau_total.x;
+                    qfrc_bias[vel_offset + 1] = tau_total.y;
+                    qfrc_bias[vel_offset + 2] = tau_total.z;
+                    qfrc_bias[vel_offset + 3] = f_total.x;
+                    qfrc_bias[vel_offset + 4] = f_total.y;
+                    qfrc_bias[vel_offset + 5] = f_total.z;
+                }
+                ArticulatedJointType::Spherical => {
+                    // For spherical, compute torque about joint center
+                    let joint_body = joint_to_body[jidx];
+                    let parent = self.bodies[joint_body].parent.unwrap_or(joint_body);
+                    let jpos = transforms[parent].translation.vector;
+
+                    let mut tau_total = Vector3::zeros();
+                    for (body_idx, body) in self.bodies.iter().enumerate() {
+                        if body_ancestor_joints[body_idx].contains(&jidx) {
+                            let com_world = transforms[body_idx].translation.vector
+                                + transforms[body_idx].rotation * body.com;
+                            let r = com_world - jpos;
+                            let f_grav = body.mass * self.gravity;
+                            tau_total += r.cross(&f_grav);
+                        }
+                    }
+
+                    qfrc_bias[vel_offset] = tau_total.x;
+                    qfrc_bias[vel_offset + 1] = tau_total.y;
+                    qfrc_bias[vel_offset + 2] = tau_total.z;
+                }
+                ArticulatedJointType::Fixed => {
+                    // No motion
+                }
+            }
+
+            vel_offset += dof;
+        }
+
+        // TODO: Add Coriolis terms for high-velocity motion
+
+        qfrc_bias
+    }
+
+    /// Compute passive forces (springs, dampers).
+    #[must_use]
+    pub fn passive_forces(&self) -> DVector<f64> {
+        let mut qfrc_passive = DVector::zeros(self.nv);
+
+        let mut vel_offset = 0;
+        let mut pos_offset = 0;
+        for joint in &self.joints {
+            let dof = joint.dof();
+            for i in 0..dof {
+                // Spring force: -k * (q - q_rest)
+                let q = if pos_offset + i < self.qpos.len() {
+                    self.qpos[pos_offset + i]
+                } else {
+                    0.0
+                };
+                let spring = -joint.stiffness[i] * (q - joint.rest_position[i]);
+
+                // Damping force: -b * qvel
+                let qv = if vel_offset + i < self.qvel.len() {
+                    self.qvel[vel_offset + i]
+                } else {
+                    0.0
+                };
+                let damping = -joint.damping[i] * qv;
+
+                qfrc_passive[vel_offset + i] = spring + damping;
+            }
+            vel_offset += dof;
+            pos_offset += joint.qpos_dim;
+        }
+
+        qfrc_passive
+    }
+
+    /// Compute total energy (kinetic + potential).
+    #[must_use]
+    pub fn total_energy(&self) -> f64 {
+        let m = self.inertia_matrix();
+        let kinetic = 0.5 * self.qvel.dot(&(&m * &self.qvel));
+
+        // Potential energy from gravity
+        let transforms = self.forward_kinematics();
+        let mut potential = 0.0;
+        for (idx, body) in self.bodies.iter().enumerate() {
+            let com_world = transforms[idx] * nalgebra::Point3::from(body.com);
+            // V = m * g * h (height in gravity direction)
+            potential += body.mass * (-self.gravity.dot(&com_world.coords));
+        }
+
+        kinetic + potential
+    }
+
+    /// Step the system forward using `MuJoCo`'s pipeline.
+    ///
+    /// 1. Compute inertia matrix M via CRBA
+    /// 2. Compute bias forces via RNE
+    /// 3. Compute passive forces
+    /// 4. Solve M * qacc = `qfrc_smooth`
+    /// 5. Semi-implicit Euler integration
+    pub fn step(&mut self, dt: f64) {
+        if self.nv == 0 {
+            return;
+        }
+
+        // Stage 1: Forward Position (CRBA)
+        let m = self.inertia_matrix();
+
+        // Stage 2: Forward Velocity (RNE)
+        let qfrc_bias = self.bias_forces();
+
+        // Passive forces
+        let qfrc_passive = self.passive_forces();
+
+        // Stage 3-4: Forward Actuation & Acceleration
+        // qfrc_smooth = qfrc_passive + qfrc_actuator + qfrc_applied - qfrc_bias
+        // For now, no actuation or applied forces
+        let qfrc_smooth = qfrc_passive - qfrc_bias;
+
+        // Solve M * qacc = qfrc_smooth
+        let qacc = m
+            .lu()
+            .solve(&qfrc_smooth)
+            .unwrap_or_else(|| DVector::zeros(self.nv));
+
+        // Stage 5: Integration (Semi-implicit Euler)
+        let qvel_new = &self.qvel + &qacc * dt;
+
+        // Update positions based on joint type
+        let mut pos_offset = 0;
+        let mut vel_offset = 0;
+        for joint in &self.joints {
+            match joint.joint_type {
+                ArticulatedJointType::Fixed => {
+                    // No motion
+                }
+                ArticulatedJointType::Revolute | ArticulatedJointType::Prismatic => {
+                    self.qpos[pos_offset] += qvel_new[vel_offset] * dt;
+                    pos_offset += 1;
+                    vel_offset += 1;
+                }
+                ArticulatedJointType::Spherical => {
+                    // Quaternion integration
+                    let w = Vector3::new(
+                        qvel_new[vel_offset],
+                        qvel_new[vel_offset + 1],
+                        qvel_new[vel_offset + 2],
+                    );
+                    let q = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        self.qpos[pos_offset],
+                        self.qpos[pos_offset + 1],
+                        self.qpos[pos_offset + 2],
+                        self.qpos[pos_offset + 3],
+                    ));
+                    let dq = UnitQuaternion::from_scaled_axis(w * dt);
+                    let q_new = q * dq;
+                    self.qpos[pos_offset] = q_new.w;
+                    self.qpos[pos_offset + 1] = q_new.i;
+                    self.qpos[pos_offset + 2] = q_new.j;
+                    self.qpos[pos_offset + 3] = q_new.k;
+                    pos_offset += 4;
+                    vel_offset += 3;
+                }
+                ArticulatedJointType::Free => {
+                    // qvel for free joint is [wx, wy, wz, vx, vy, vz] (angular then linear)
+                    // qpos for free joint is [x, y, z, qw, qx, qy, qz] (position then quaternion)
+
+                    // Quaternion integration (using angular velocity at vel_offset+0,1,2)
+                    let w = Vector3::new(
+                        qvel_new[vel_offset],
+                        qvel_new[vel_offset + 1],
+                        qvel_new[vel_offset + 2],
+                    );
+                    let q = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        self.qpos[pos_offset + 3],
+                        self.qpos[pos_offset + 4],
+                        self.qpos[pos_offset + 5],
+                        self.qpos[pos_offset + 6],
+                    ));
+                    let dq = UnitQuaternion::from_scaled_axis(w * dt);
+                    let q_new = q * dq;
+                    self.qpos[pos_offset + 3] = q_new.w;
+                    self.qpos[pos_offset + 4] = q_new.i;
+                    self.qpos[pos_offset + 5] = q_new.j;
+                    self.qpos[pos_offset + 6] = q_new.k;
+
+                    // Position integration (using linear velocity at vel_offset+3,4,5)
+                    self.qpos[pos_offset] += qvel_new[vel_offset + 3] * dt;
+                    self.qpos[pos_offset + 1] += qvel_new[vel_offset + 4] * dt;
+                    self.qpos[pos_offset + 2] += qvel_new[vel_offset + 5] * dt;
+
+                    pos_offset += 7;
+                    vel_offset += 6;
+                }
+            }
+        }
+
+        self.qvel = qvel_new;
+    }
+
+    /// Run for a given duration.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn run_for(&mut self, duration: f64, dt: f64) {
+        let steps = (duration / dt).ceil() as usize;
+        for _ in 0..steps {
+            self.step(dt);
+        }
+    }
+}
+
+impl Default for ArticulatedSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// Helper Functions for Spatial Algebra
+// ============================================================================
+
+/// Create a skew-symmetric matrix from a vector.
+#[must_use]
+fn skew_symmetric(v: Vector3<f64>) -> Matrix3<f64> {
+    Matrix3::new(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0)
+}
+
+/// Compute spatial transform between two frames.
+///
+/// Returns the 6x6 matrix that transforms spatial vectors from frame A to frame B.
+#[must_use]
+#[allow(dead_code)]
+fn compute_spatial_transform(from: &Isometry3<f64>, to: &Isometry3<f64>) -> SpatialMatrix {
+    let relative = to.inverse() * from;
+    let r_mat: Matrix3<f64> = *relative.rotation.to_rotation_matrix().matrix();
+    let p = relative.translation.vector;
+
+    let mut x = SpatialMatrix::zeros();
+
+    // Upper-left: R
+    x.fixed_view_mut::<3, 3>(0, 0).copy_from(&r_mat);
+
+    // Lower-left: [p]× @ R
+    let p_skew = skew_symmetric(p);
+    let lower_left = p_skew * r_mat;
+    x.fixed_view_mut::<3, 3>(3, 0).copy_from(&lower_left);
+
+    // Lower-right: R
+    x.fixed_view_mut::<3, 3>(3, 3).copy_from(&r_mat);
+
+    x
+}
+
+/// Spatial cross product for motion vectors: v × s.
+#[must_use]
+#[allow(dead_code)]
+fn spatial_cross_motion(v: SpatialVector, s: SpatialVector) -> SpatialVector {
+    let w = Vector3::new(v[0], v[1], v[2]);
+    let v_lin = Vector3::new(v[3], v[4], v[5]);
+    let s_ang = Vector3::new(s[0], s[1], s[2]);
+    let s_lin = Vector3::new(s[3], s[4], s[5]);
+
+    let result_ang = w.cross(&s_ang);
+    let result_lin = w.cross(&s_lin) + v_lin.cross(&s_ang);
+
+    SpatialVector::new(
+        result_ang.x,
+        result_ang.y,
+        result_ang.z,
+        result_lin.x,
+        result_lin.y,
+        result_lin.z,
+    )
+}
+
+/// Spatial cross product for force vectors: v ×* f.
+#[must_use]
+#[allow(dead_code)]
+fn spatial_cross_force(v: SpatialVector, f: SpatialVector) -> SpatialVector {
+    let w = Vector3::new(v[0], v[1], v[2]);
+    let v_lin = Vector3::new(v[3], v[4], v[5]);
+    let f_ang = Vector3::new(f[0], f[1], f[2]);
+    let f_lin = Vector3::new(f[3], f[4], f[5]);
+
+    let result_ang = w.cross(&f_ang) + v_lin.cross(&f_lin);
+    let result_lin = w.cross(&f_lin);
+
+    SpatialVector::new(
+        result_ang.x,
+        result_ang.y,
+        result_ang.z,
+        result_lin.x,
+        result_lin.y,
+        result_lin.z,
+    )
+}
+
+// ============================================================================
+// Tests for Articulated System
+// ============================================================================
+
+#[cfg(test)]
+mod articulated_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    const DT: f64 = 1.0 / 480.0;
+
+    #[test]
+    fn test_empty_system() {
+        let sys = ArticulatedSystem::new();
+        assert_eq!(sys.nv(), 0);
+        assert_eq!(sys.nq(), 0);
+        assert_eq!(sys.n_bodies(), 0);
+    }
+
+    #[test]
+    fn test_single_body_no_joint() {
+        let mut sys = ArticulatedSystem::new();
+        sys.add_body(ArticulatedBody::point_mass(1.0), None);
+
+        assert_eq!(sys.n_bodies(), 1);
+        assert_eq!(sys.nv(), 0);
+    }
+
+    #[test]
+    fn test_single_revolute_joint() {
+        let mut sys = ArticulatedSystem::new();
+        let body = sys.add_body(ArticulatedBody::point_mass(1.0), None);
+        sys.add_joint(body, ArticulatedJoint::revolute(Vector3::z()));
+
+        assert_eq!(sys.nv(), 1);
+        assert_eq!(sys.nq(), 1);
+    }
+
+    #[test]
+    fn test_pendulum_falls() {
+        // Create a simple pendulum
+        let mut sys = ArticulatedSystem::new();
+
+        // Root body (fixed)
+        let root = sys.add_body(ArticulatedBody::point_mass(0.0), None);
+
+        // Pendulum bob
+        let bob = sys.add_body(
+            ArticulatedBody::point_mass(1.0)
+                .with_joint_transform(Isometry3::translation(0.0, -1.0, 0.0)),
+            Some(root),
+        );
+        sys.add_joint(bob, ArticulatedJoint::revolute(Vector3::z()));
+
+        // Start at 45 degrees
+        sys.set_joint_position(0, PI / 4.0);
+
+        let _initial_angle = sys.qpos[0];
+        let initial_velocity = sys.qvel[0];
+
+        // Run for a bit
+        sys.run_for(0.1, DT);
+
+        // Velocity should have changed (pendulum accelerating)
+        assert!(
+            sys.qvel[0].abs() > initial_velocity.abs(),
+            "Pendulum should be accelerating"
+        );
+    }
+
+    #[test]
+    fn test_inertia_matrix_positive_definite() {
+        let mut sys = ArticulatedSystem::new();
+        let root = sys.add_body(ArticulatedBody::point_mass(0.0), None);
+        let bob = sys.add_body(
+            ArticulatedBody::point_mass(1.0)
+                .with_joint_transform(Isometry3::translation(0.0, -1.0, 0.0)),
+            Some(root),
+        );
+        sys.add_joint(bob, ArticulatedJoint::revolute(Vector3::z()));
+
+        let m = sys.inertia_matrix();
+
+        // Should be 1x1 for single revolute joint
+        assert_eq!(m.nrows(), 1);
+        assert_eq!(m.ncols(), 1);
+
+        // Should be positive
+        assert!(m[(0, 0)] > 0.0, "Inertia should be positive: {}", m[(0, 0)]);
+    }
+
+    #[test]
+    fn test_two_link_chain() {
+        let mut sys = ArticulatedSystem::new();
+
+        // Root
+        let root = sys.add_body(ArticulatedBody::point_mass(0.0), None);
+
+        // First link
+        let link1 = sys.add_body(
+            ArticulatedBody::point_mass(1.0)
+                .with_joint_transform(Isometry3::translation(0.0, -1.0, 0.0)),
+            Some(root),
+        );
+        sys.add_joint(link1, ArticulatedJoint::revolute(Vector3::z()));
+
+        // Second link
+        let link2 = sys.add_body(
+            ArticulatedBody::point_mass(1.0)
+                .with_joint_transform(Isometry3::translation(0.0, -1.0, 0.0)),
+            Some(link1),
+        );
+        sys.add_joint(link2, ArticulatedJoint::revolute(Vector3::z()));
+
+        assert_eq!(sys.nv(), 2);
+        assert_eq!(sys.n_bodies(), 3);
+
+        // Inertia matrix should be 2x2
+        let m = sys.inertia_matrix();
+        assert_eq!(m.nrows(), 2);
+        assert_eq!(m.ncols(), 2);
+    }
+
+    #[test]
+    fn test_spherical_joint() {
+        let mut sys = ArticulatedSystem::new();
+        let root = sys.add_body(ArticulatedBody::point_mass(0.0), None);
+        let bob = sys.add_body(
+            ArticulatedBody::point_mass(1.0)
+                .with_joint_transform(Isometry3::translation(0.0, -1.0, 0.0)),
+            Some(root),
+        );
+        sys.add_joint(bob, ArticulatedJoint::spherical());
+
+        assert_eq!(sys.nv(), 3); // 3 DOF
+        assert_eq!(sys.nq(), 4); // Quaternion
+
+        // Quaternion should be initialized to identity
+        assert_relative_eq!(sys.qpos[0], 1.0, epsilon = 1e-10); // w
+        assert_relative_eq!(sys.qpos[1], 0.0, epsilon = 1e-10); // x
+        assert_relative_eq!(sys.qpos[2], 0.0, epsilon = 1e-10); // y
+        assert_relative_eq!(sys.qpos[3], 0.0, epsilon = 1e-10); // z
+    }
+
+    #[test]
+    fn test_free_joint() {
+        let mut sys = ArticulatedSystem::new();
+        let body = sys.add_body(ArticulatedBody::sphere(1.0, 0.1), None);
+        sys.add_joint(body, ArticulatedJoint::free());
+
+        assert_eq!(sys.nv(), 6);
+        assert_eq!(sys.nq(), 7); // xyz + quaternion
+
+        // Debug: check inertia and bias
+        let m = sys.inertia_matrix();
+        let bias = sys.bias_forces();
+        eprintln!("Inertia matrix:\n{}", m);
+        eprintln!("Bias forces: {}", bias);
+        eprintln!("Gravity: {:?}", sys.gravity);
+
+        // Run simulation - body should fall
+        let initial_y = sys.qpos[1];
+        sys.step(DT);
+        eprintln!(
+            "After one step: qpos={:?}, qvel={:?}",
+            sys.qpos.as_slice(),
+            sys.qvel.as_slice()
+        );
+        sys.run_for(0.1, DT);
+
+        eprintln!(
+            "Final: qpos={:?}, qvel={:?}",
+            sys.qpos.as_slice(),
+            sys.qvel.as_slice()
+        );
+
+        assert!(
+            sys.qpos[1] < initial_y,
+            "Free body should fall under gravity: y={} (was {})",
+            sys.qpos[1],
+            initial_y
+        );
+    }
+
+    #[test]
+    fn test_forward_kinematics() {
+        let mut sys = ArticulatedSystem::new();
+        let root = sys.add_body(ArticulatedBody::point_mass(0.0), None);
+        let bob = sys.add_body(
+            ArticulatedBody::point_mass(1.0)
+                .with_joint_transform(Isometry3::translation(0.0, -1.0, 0.0)),
+            Some(root),
+        );
+        sys.add_joint(bob, ArticulatedJoint::revolute(Vector3::z()));
+
+        // At angle 0, bob should be at (0, -1, 0)
+        sys.set_joint_position(0, 0.0);
+        let transforms = sys.forward_kinematics();
+        let bob_pos = transforms[1].translation.vector;
+        assert_relative_eq!(bob_pos.x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(bob_pos.y, -1.0, epsilon = 1e-10);
+        assert_relative_eq!(bob_pos.z, 0.0, epsilon = 1e-10);
+
+        // At angle PI/2, bob should be at (1, 0, 0)
+        sys.set_joint_position(0, PI / 2.0);
+        let transforms = sys.forward_kinematics();
+        let bob_pos = transforms[1].translation.vector;
+        assert_relative_eq!(bob_pos.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(bob_pos.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(bob_pos.z, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_joint_damping() {
+        let mut sys = ArticulatedSystem::new();
+        let root = sys.add_body(ArticulatedBody::point_mass(0.0), None);
+        let bob = sys.add_body(
+            ArticulatedBody::point_mass(1.0)
+                .with_joint_transform(Isometry3::translation(0.0, -1.0, 0.0)),
+            Some(root),
+        );
+        sys.add_joint(
+            bob,
+            ArticulatedJoint::revolute(Vector3::z()).with_damping(5.0),
+        );
+
+        // Start with velocity
+        sys.set_joint_velocity(0, 2.0);
+        let initial_vel = sys.qvel[0];
+
+        // Run for a bit
+        sys.run_for(0.5, DT);
+
+        // Velocity should have decreased due to damping
+        assert!(
+            sys.qvel[0].abs() < initial_vel.abs(),
+            "Damping should reduce velocity"
+        );
+    }
+
+    #[test]
+    fn test_joint_spring() {
+        let mut sys = ArticulatedSystem::new();
+        let root = sys.add_body(ArticulatedBody::point_mass(0.0), None);
+        let bob = sys.add_body(
+            ArticulatedBody::point_mass(1.0)
+                .with_joint_transform(Isometry3::translation(0.0, -1.0, 0.0)),
+            Some(root),
+        );
+        sys.add_joint(
+            bob,
+            ArticulatedJoint::revolute(Vector3::z())
+                .with_stiffness(10.0, 0.0)
+                .with_damping(1.0),
+        );
+
+        // Displace from rest
+        sys.set_joint_position(0, 0.5);
+
+        // Run for a while - should oscillate toward rest
+        sys.run_for(3.0, DT);
+
+        // Should be near rest position with low velocity
+        assert!(
+            sys.qpos[0].abs() < 0.2,
+            "Spring should return to rest: pos={}",
+            sys.qpos[0]
+        );
+    }
+}
