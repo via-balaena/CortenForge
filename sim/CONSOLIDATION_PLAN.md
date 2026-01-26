@@ -694,34 +694,40 @@ fn main() {
 }
 ```
 
-### Phase 7: Validation (NEXT)
+### Phase 7: Validation & Todorov Quality (NEXT)
 
-Run the success criteria tests to verify the Model/Data implementation is correct before cleanup.
+> **IMPORTANT**: See [PHASE_7_8_IMPLEMENTATION.md](./PHASE_7_8_IMPLEMENTATION.md) for the detailed
+> iterative implementation plan. This section summarizes the goals; the linked document contains
+> the full specification and implementation details.
 
-**Correctness Tests:**
-- [ ] **FK correctness**: Set qpos manually, verify xpos/xquat match analytical solution
-- [ ] **CRBA correctness**: Compare mass matrix against known analytical solutions (2-link, 3-link)
-- [ ] **RNE correctness**: Verify Coriolis/gravity terms match analytical solutions
-- [ ] **Energy conservation**: Simple pendulum < 0.1% drift over 10s at 240Hz
-- [ ] **Chaotic system**: Double pendulum qualitatively matches reference (not exact due to chaos)
-- [ ] **Contact stability**: Ball stack remains stable for 10s without penetration > 1mm
-- [ ] **Joint limits**: Limits enforced with < 1% overshoot
+The Model/Data architecture is structurally complete, but several implementations use shortcuts
+that pass tests without matching MuJoCo's approach. Phase 7 brings these to "Todorov quality":
 
-**API Tests:**
-- [ ] `sim_mjcf::load_model()` parses humanoid.xml without error
-- [ ] `model.make_data()` produces valid initial state
-- [ ] `data.step(&model)` completes without NaN/Inf
-- [ ] `data.reset(&model)` restores to qpos0
+**Iteration 1: Collision Detection**
+- [ ] Broad-phase spatial hashing (not O(n²) all-pairs)
+- [ ] Analytical primitives (sphere-*, capsule-*, box-*)
+- [ ] Uniform contype/conaffinity filtering
+
+**Iteration 2: Contact Forces**
+- [ ] Contact Jacobian computation
+- [ ] J^T * λ force application (works for articulated bodies)
+- [ ] PGS with Coulomb friction cone
+
+**Iteration 3: Performance**
+- [ ] Featherstone O(n) CRBA
+- [ ] Recursive O(n) RNE
+- [ ] Humanoid >10k steps/sec, pendulum >100k steps/sec
+
+**Iteration 4: Cleanup**
+- [ ] Restore debug threshold to 1000 steps/sec
+- [ ] Remove old World API from sim-urdf
+- [ ] All tests pass without band-aids
 
 **Integration Tests:**
 - [ ] **MJCF parsing**: Load DeepMind Control Suite models (cartpole, acrobot, humanoid)
 - [ ] **URDF parsing**: Load standard URDF robots (Panda, UR5)
 - [ ] **Actuators**: ctrl input produces expected joint torques
 - [ ] **Sensors**: Sensor readings match analytical expectations
-
-**Performance Tests:**
-- [ ] Humanoid (20+ DOF): > 10,000 steps/second single-threaded
-- [ ] Simple pendulum: > 100,000 steps/second
 
 ### Phase 8: Delete Old Code & Cleanup
 
@@ -814,10 +820,14 @@ sim/L0/
 | 4 | MJCF → Model parser | ✅ | 1 |
 | 5 | Bevy integration | ✅ | 1 |
 | 6 | Examples | ✅ | 1 |
-| 7 | Validation tests | **NEXT** | 1-2 |
+| 7 | Validation & Todorov Quality | **NEXT** | 3-4 |
 | 8 | Delete old code & cleanup | Pending | 1 |
 
-**Total: ~10-12 focused sessions** (Phases 1-6 complete)
+**Total: ~12-14 focused sessions** (Phases 1-6 complete)
+
+> **Note**: Phase 7 was expanded to include Todorov-quality implementations of collision
+> detection, contact forces, and CRBA/RNE. See [PHASE_7_8_IMPLEMENTATION.md](./PHASE_7_8_IMPLEMENTATION.md)
+> for the detailed 4-iteration plan.
 
 ---
 
