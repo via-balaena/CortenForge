@@ -5478,10 +5478,8 @@ pub enum Integrator {
     Implicit,
 }
 
-/// Spatial vector (6D: angular followed by linear).
-///
-/// Convention: [ωx, ωy, ωz, vx, vy, vz]
-pub type SpatialVec = nalgebra::SVector<f64, 6>;
+// Note: SpatialVector is defined earlier in this file as Vector6<f64>.
+// We use the same type for consistency with the existing ArticulatedSystem code.
 
 /// Static model definition (like mjModel).
 ///
@@ -5710,9 +5708,9 @@ pub struct Data {
 
     // ==================== Velocities (computed from qvel) ====================
     /// Body spatial velocities [nbody]: [angular, linear].
-    pub cvel: Vec<SpatialVec>,
+    pub cvel: Vec<SpatialVector>,
     /// DOF velocities in Cartesian space [nv].
-    pub cdof: Vec<SpatialVec>,
+    pub cdof: Vec<SpatialVector>,
 
     // ==================== Forces in Generalized Coordinates ====================
     /// User-applied generalized forces [nv].
@@ -5726,7 +5724,7 @@ pub struct Data {
 
     // Cartesian forces (alternative input method)
     /// Applied spatial forces in world frame [nbody].
-    pub xfrc_applied: Vec<SpatialVec>,
+    pub xfrc_applied: Vec<SpatialVector>,
 
     // ==================== Mass Matrix ====================
     /// Joint-space inertia matrix [nv x nv] (dense for now).
@@ -5868,15 +5866,15 @@ impl Model {
             geom_xmat: vec![Matrix3::identity(); self.ngeom],
 
             // Velocities
-            cvel: vec![SpatialVec::zeros(); self.nbody],
-            cdof: vec![SpatialVec::zeros(); self.nv],
+            cvel: vec![SpatialVector::zeros(); self.nbody],
+            cdof: vec![SpatialVector::zeros(); self.nv],
 
             // Forces
             qfrc_applied: DVector::zeros(self.nv),
             qfrc_bias: DVector::zeros(self.nv),
             qfrc_passive: DVector::zeros(self.nv),
             qfrc_constraint: DVector::zeros(self.nv),
-            xfrc_applied: vec![SpatialVec::zeros(); self.nbody],
+            xfrc_applied: vec![SpatialVector::zeros(); self.nbody],
 
             // Mass matrix
             qM: DMatrix::zeros(self.nv, self.nv),
@@ -6144,7 +6142,7 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
 /// Velocity kinematics: compute body velocities from qvel.
 fn mj_fwd_velocity(model: &Model, data: &mut Data) {
     // World body has zero velocity
-    data.cvel[0] = SpatialVec::zeros();
+    data.cvel[0] = SpatialVector::zeros();
 
     // Compute body velocities by propagating through tree
     for body_id in 1..model.nbody {

@@ -198,7 +198,6 @@ pub use mujoco_pipeline::{
     SimplePendulum,
     // Spatial algebra types
     SpatialMatrix,
-    SpatialVec,
     SpatialVector,
     // World integration
     SpawnedArticulation,
