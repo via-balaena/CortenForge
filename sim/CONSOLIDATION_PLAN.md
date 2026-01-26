@@ -699,17 +699,21 @@ Rewrite all examples to use `Model`/`Data`:
 
 ```rust
 // humanoid.rs
+use sim_bevy::model_data::{PhysicsModel, PhysicsData, step_model_data, sync_model_data_to_bevy};
+use sim_mjcf::load_model;
+
 fn main() {
-    let model = Model::from_mjcf(include_str!("assets/humanoid.xml"))
-        .expect("Failed to load humanoid");
+    // Note: load_model() is in sim_mjcf, not Model::from_mjcf()
+    // This avoids circular dependency (sim-mjcf depends on sim-core)
+    let model = load_model(HUMANOID_MJCF).expect("Failed to load humanoid");
     let mut data = model.make_data();
 
     App::new()
         .add_plugins(DefaultPlugins)
         .insert_resource(PhysicsModel(model))
         .insert_resource(PhysicsData(data))
-        .add_systems(Update, step_physics)
-        .add_systems(PostUpdate, sync_physics_to_bevy)
+        .add_systems(Update, step_model_data)
+        .add_systems(PostUpdate, sync_model_data_to_bevy)
         .run();
 }
 ```
@@ -780,7 +784,7 @@ sim/L0/
 
 ### API Tests
 
-- [ ] `Model::from_mjcf()` parses humanoid.xml without error
+- [ ] `sim_mjcf::load_model()` parses humanoid.xml without error
 - [ ] `model.make_data()` produces valid initial state
 - [ ] `data.step(&model)` completes without NaN/Inf
 - [ ] `data.reset(&model)` restores to qpos0

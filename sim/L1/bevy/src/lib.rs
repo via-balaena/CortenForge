@@ -109,8 +109,8 @@ pub mod prelude {
     pub use crate::gizmos::DebugGizmosSet;
     // Model/Data architecture (MuJoCo-style)
     pub use crate::model_data::{
-        ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet, ModelGeomIndex,
-        ModelSiteIndex, PhysicsData, PhysicsModel,
+        step_model_data, sync_model_data_to_bevy, ModelBodyIndex, ModelDataPlugin, ModelDataRoot,
+        ModelDataSet, ModelGeomIndex, ModelSiteIndex, PhysicsData, PhysicsModel,
     };
     pub use crate::models::{
         MjcfModel, ModelError, ModelSource, ModelType, SpawnedMjcf, SpawnedUrdf, UrdfModel,
@@ -127,4 +127,6 @@ pub mod prelude {
     pub use sim_core::ContactSolverConfig;
     // Re-export Model/Data types from sim-core for convenience
     pub use sim_core::{Data, Model};
+    // Re-export MJCF loader for convenient Model creation
+    pub use sim_mjcf::load_model;
 }
