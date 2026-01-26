@@ -32,8 +32,11 @@
 //! # Current Status
 //!
 //! - Phase 1: Single pendulum (1-DOF revolute) - COMPLETE
-//! - Phase 2: Constraints (PGS solver) - TODO
-//! - Phase 3: Multi-body (CRBA, RNE) - TODO
+//! - Phase 2: Constrained pendulum (PGS-style constraint solver) - COMPLETE
+//! - Phase 3: Double pendulum (2-DOF, CRBA + RNE) - COMPLETE
+//! - Phase 4: Multi-body (n-DOF, general articulated bodies) - TODO
+//! - Phase 5: Ball joints (3-DOF spherical joints) - TODO
+//! - Phase 6: Contact (ground plane, sphere collisions) - TODO
 
 use std::f64::consts::PI;
 
@@ -414,6 +417,259 @@ impl ConstrainedPendulum {
     }
 }
 
+// ============================================================================
+// Phase 3: Double Pendulum (Two-Link Chain)
+// ============================================================================
+//
+// This implements a double pendulum following MuJoCo's approach:
+// - Joint-space representation: (θ₁, θ₂, θ̇₁, θ̇₂)
+// - 2×2 inertia matrix M(θ) computed via CRBA
+// - Bias forces (Coriolis + gravity) computed via RNE
+// - Semi-implicit Euler integration
+//
+// The double pendulum is a classic chaotic system - small differences in
+// initial conditions lead to vastly different trajectories. However, it
+// should conserve energy and the links should stay connected.
+
+use nalgebra::Matrix2;
+
+/// A double pendulum (two-link chain) in joint space.
+///
+/// This is the first multi-DOF system, requiring:
+/// - Full 2×2 inertia matrix M(θ) via Composite Rigid Body Algorithm
+/// - Coriolis and gravitational bias forces via Recursive Newton-Euler
+/// - Matrix solve for accelerations: M @ qacc = `qfrc_smooth`
+///
+/// The double pendulum exhibits chaotic behavior - it's very sensitive
+/// to initial conditions, but should conserve energy.
+#[derive(Debug, Clone)]
+pub struct DoublePendulum {
+    /// Joint angles [θ₁, θ₂] in radians
+    /// θ₁: angle of first link from vertical
+    /// θ₂: angle of second link relative to first link
+    pub qpos: Vector2<f64>,
+    /// Joint angular velocities [θ̇₁, θ̇₂] in rad/s
+    pub qvel: Vector2<f64>,
+    /// Length of first link (m)
+    pub length1: f64,
+    /// Length of second link (m)
+    pub length2: f64,
+    /// Mass of first link (kg) - treated as point mass at end of link
+    pub mass1: f64,
+    /// Mass of second link (kg) - treated as point mass at end of link
+    pub mass2: f64,
+    /// Gravitational acceleration (m/s²)
+    pub gravity: f64,
+}
+
+impl DoublePendulum {
+    /// Create a new double pendulum with equal link lengths and masses.
+    #[must_use]
+    pub fn new(length: f64, mass: f64) -> Self {
+        Self {
+            qpos: Vector2::zeros(),
+            qvel: Vector2::zeros(),
+            length1: length,
+            length2: length,
+            mass1: mass,
+            mass2: mass,
+            gravity: 9.81,
+        }
+    }
+
+    /// Create a double pendulum with different parameters for each link.
+    #[must_use]
+    pub fn with_parameters(length1: f64, length2: f64, mass1: f64, mass2: f64) -> Self {
+        Self {
+            qpos: Vector2::zeros(),
+            qvel: Vector2::zeros(),
+            length1,
+            length2,
+            mass1,
+            mass2,
+            gravity: 9.81,
+        }
+    }
+
+    /// Set initial joint angles.
+    #[must_use]
+    pub fn with_angles(mut self, theta1: f64, theta2: f64) -> Self {
+        self.qpos = Vector2::new(theta1, theta2);
+        self
+    }
+
+    /// Set initial joint velocities.
+    #[must_use]
+    pub fn with_velocities(mut self, omega1: f64, omega2: f64) -> Self {
+        self.qvel = Vector2::new(omega1, omega2);
+        self
+    }
+
+    /// Compute the position of the first mass in Cartesian coordinates.
+    ///
+    /// Convention: θ=0 is hanging straight down (along -y axis)
+    #[must_use]
+    pub fn position1(&self) -> Vector2<f64> {
+        let theta1 = self.qpos[0];
+        Vector2::new(self.length1 * theta1.sin(), -self.length1 * theta1.cos())
+    }
+
+    /// Compute the position of the second mass in Cartesian coordinates.
+    #[must_use]
+    #[allow(clippy::similar_names)] // theta12 = theta1 + theta2 is intentional
+    pub fn position2(&self) -> Vector2<f64> {
+        let theta1 = self.qpos[0];
+        let theta2 = self.qpos[1];
+        let theta12 = theta1 + theta2;
+
+        let pos1 = self.position1();
+        Vector2::new(
+            pos1.x + self.length2 * theta12.sin(),
+            pos1.y - self.length2 * theta12.cos(),
+        )
+    }
+
+    /// Compute the 2×2 inertia matrix M(θ) via CRBA.
+    ///
+    /// For a double pendulum with point masses at the ends of massless rods:
+    ///
+    /// M₁₁ = (m₁ + m₂)L₁² + m₂L₂² + 2m₂L₁L₂cos(θ₂)
+    /// M₁₂ = M₂₁ = m₂L₂² + m₂L₁L₂cos(θ₂)
+    /// M₂₂ = m₂L₂²
+    ///
+    /// This comes from the CRBA: we accumulate the inertia of the subtree
+    /// (second link) onto the first link, accounting for the relative angle.
+    #[must_use]
+    pub fn inertia_matrix(&self) -> Matrix2<f64> {
+        let m1 = self.mass1;
+        let m2 = self.mass2;
+        let l1 = self.length1;
+        let l2 = self.length2;
+        let cos_theta2 = self.qpos[1].cos();
+
+        let m11 = (m1 + m2) * l1 * l1 + m2 * l2 * l2 + 2.0 * m2 * l1 * l2 * cos_theta2;
+        let m12 = m2 * l2 * l2 + m2 * l1 * l2 * cos_theta2;
+        let m22 = m2 * l2 * l2;
+
+        Matrix2::new(m11, m12, m12, m22)
+    }
+
+    /// Compute the bias forces (Coriolis + gravity) via RNE.
+    ///
+    /// The bias forces include:
+    /// - Coriolis/centrifugal terms from the velocities
+    /// - Gravitational torques
+    ///
+    /// C₁ = -m₂L₁L₂sin(θ₂)(2θ̇₁θ̇₂ + θ̇₂²) + (m₁+m₂)gL₁sin(θ₁) + m₂gL₂sin(θ₁+θ₂)
+    /// C₂ = m₂L₁L₂sin(θ₂)θ̇₁² + m₂gL₂sin(θ₁+θ₂)
+    #[must_use]
+    #[allow(clippy::similar_names)] // sin_theta12 = sin(theta1 + theta2) is intentional
+    pub fn bias_forces(&self) -> Vector2<f64> {
+        let m1 = self.mass1;
+        let m2 = self.mass2;
+        let l1 = self.length1;
+        let l2 = self.length2;
+        let g = self.gravity;
+
+        let theta1 = self.qpos[0];
+        let theta2 = self.qpos[1];
+        let omega1 = self.qvel[0];
+        let omega2 = self.qvel[1];
+
+        let sin_theta1 = theta1.sin();
+        let sin_theta2 = theta2.sin();
+        let sin_theta12 = (theta1 + theta2).sin();
+
+        // Coriolis/centrifugal terms
+        let coriolis1 = -m2 * l1 * l2 * sin_theta2 * (2.0 * omega1 * omega2 + omega2 * omega2);
+        let coriolis2 = m2 * l1 * l2 * sin_theta2 * omega1 * omega1;
+
+        // Gravitational terms
+        let gravity1 = (m1 + m2) * g * l1 * sin_theta1 + m2 * g * l2 * sin_theta12;
+        let gravity2 = m2 * g * l2 * sin_theta12;
+
+        // Total bias force = Coriolis + Gravity
+        // Note: In MuJoCo convention, we SUBTRACT this from applied forces
+        Vector2::new(coriolis1 + gravity1, coriolis2 + gravity2)
+    }
+
+    /// Compute the total mechanical energy.
+    ///
+    /// E = T + V where:
+    /// - T = ½ q̇ᵀ M q̇ (kinetic energy)
+    /// - V = potential energy from height of both masses
+    #[must_use]
+    pub fn total_energy(&self) -> f64 {
+        // Kinetic energy: T = ½ q̇ᵀ M q̇
+        let inertia = self.inertia_matrix();
+        let kinetic = 0.5 * self.qvel.dot(&(inertia * self.qvel));
+
+        // Potential energy: V = m₁gh₁ + m₂gh₂
+        // Reference: V = 0 when both masses are at lowest point (θ₁=θ₂=0)
+        let pos1 = self.position1();
+        let pos2 = self.position2();
+
+        // Heights relative to lowest possible position
+        // For mass 1: lowest is y = -L₁, so h₁ = y₁ + L₁
+        // For mass 2: lowest is y = -L₁ - L₂, so h₂ = y₂ + L₁ + L₂
+        let h1 = pos1.y + self.length1;
+        let h2 = pos2.y + self.length1 + self.length2;
+
+        let potential = self.mass1 * self.gravity * h1 + self.mass2 * self.gravity * h2;
+
+        kinetic + potential
+    }
+
+    /// Step the double pendulum forward using `MuJoCo`'s approach.
+    ///
+    /// 1. Compute inertia matrix M(θ) via CRBA
+    /// 2. Compute bias forces via RNE
+    /// 3. Solve M @ qacc = -bias for accelerations
+    /// 4. Semi-implicit Euler integration
+    pub fn step(&mut self, dt: f64) {
+        // =====================================================================
+        // Stage 1: Forward Position (compute M via CRBA)
+        // =====================================================================
+        let inertia = self.inertia_matrix();
+
+        // =====================================================================
+        // Stage 2: Forward Velocity (compute bias via RNE)
+        // =====================================================================
+        let qfrc_bias = self.bias_forces();
+
+        // =====================================================================
+        // Stage 3-4: Forward Actuation & Acceleration
+        // =====================================================================
+        // qfrc_smooth = qfrc_passive + qfrc_actuator + qfrc_applied - qfrc_bias
+        // For free pendulum: qfrc_smooth = -qfrc_bias
+        let qfrc_smooth = -qfrc_bias;
+
+        // Solve M @ qacc = qfrc_smooth for qacc
+        // For a 2x2 system, we can use direct inversion
+        let qacc = inertia
+            .try_inverse()
+            .map_or_else(Vector2::zeros, |m_inv| m_inv * qfrc_smooth);
+
+        // =====================================================================
+        // Stage 5: Integration (Semi-implicit Euler)
+        // =====================================================================
+        let qvel_new = self.qvel + qacc * dt;
+        let qpos_new = self.qpos + qvel_new * dt;
+
+        self.qvel = qvel_new;
+        self.qpos = qpos_new;
+    }
+
+    /// Run the double pendulum for a given duration.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn run_for(&mut self, duration: f64, dt: f64) {
+        let steps = (duration / dt).ceil() as usize;
+        for _ in 0..steps {
+            self.step(dt);
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -758,6 +1014,220 @@ mod tests {
             "Expected θ ≈ {:.3}, got θ = {:.3}",
             initial_angle,
             final_angle
+        );
+    }
+
+    // =========================================================================
+    // Phase 3: Double Pendulum Tests
+    // =========================================================================
+
+    #[test]
+    fn test_double_pendulum_inertia_matrix_symmetric() {
+        // The inertia matrix must always be symmetric
+        let pendulum = DoublePendulum::new(1.0, 1.0).with_angles(PI / 4.0, PI / 6.0);
+        let inertia = pendulum.inertia_matrix();
+
+        assert_relative_eq!(inertia[(0, 1)], inertia[(1, 0)], epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_double_pendulum_inertia_matrix_positive_definite() {
+        // The inertia matrix must be positive definite (all eigenvalues > 0)
+        let pendulum = DoublePendulum::new(1.0, 1.0).with_angles(PI / 3.0, PI / 5.0);
+        let inertia = pendulum.inertia_matrix();
+
+        // For a 2x2 symmetric matrix, positive definite iff:
+        // - M₁₁ > 0
+        // - det(M) > 0
+        assert!(inertia[(0, 0)] > 0.0, "M₁₁ should be positive");
+        let det = inertia[(0, 0)] * inertia[(1, 1)] - inertia[(0, 1)] * inertia[(1, 0)];
+        assert!(det > 0.0, "Determinant should be positive, got {det}");
+    }
+
+    #[test]
+    fn test_double_pendulum_energy_conservation() {
+        // Energy should be conserved in a free double pendulum
+        // Use smaller initial angles to reduce chaotic behavior
+        let mut pendulum = DoublePendulum::new(1.0, 1.0).with_angles(PI / 6.0, PI / 8.0);
+
+        let initial_energy = pendulum.total_energy();
+
+        // Run for 10 seconds at higher resolution
+        let high_res_dt = 1.0 / 480.0; // 480 Hz for better accuracy
+        pendulum.run_for(10.0, high_res_dt);
+
+        let final_energy = pendulum.total_energy();
+
+        // Double pendulum is more numerically challenging; allow 1% energy drift
+        let relative_error = (final_energy - initial_energy).abs() / initial_energy;
+        assert!(
+            relative_error < 0.01,
+            "Energy error {:.2}% exceeds 1%",
+            relative_error * 100.0
+        );
+    }
+
+    #[test]
+    fn test_double_pendulum_equilibrium() {
+        // At θ₁=θ₂=0 with zero velocity, the double pendulum should stay at rest
+        let mut pendulum = DoublePendulum::new(1.0, 1.0);
+
+        let initial_pos = pendulum.qpos;
+        let initial_vel = pendulum.qvel;
+
+        pendulum.run_for(5.0, DT);
+
+        assert_relative_eq!(pendulum.qpos[0], initial_pos[0], epsilon = 1e-10);
+        assert_relative_eq!(pendulum.qpos[1], initial_pos[1], epsilon = 1e-10);
+        assert_relative_eq!(pendulum.qvel[0], initial_vel[0], epsilon = 1e-10);
+        assert_relative_eq!(pendulum.qvel[1], initial_vel[1], epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_double_pendulum_links_connected() {
+        // The position2 should be reachable from position1 by the second link
+        let mut pendulum = DoublePendulum::new(1.0, 1.0).with_angles(PI / 3.0, PI / 4.0);
+
+        // Run simulation and verify links stay connected
+        let duration = 10.0;
+        let steps = (duration / DT).ceil() as usize;
+
+        for _ in 0..steps {
+            pendulum.step(DT);
+
+            let pos1 = pendulum.position1();
+            let pos2 = pendulum.position2();
+
+            // Distance from pos1 to pos2 should equal length2
+            let link2_length = (pos2 - pos1).norm();
+            assert!(
+                (link2_length - pendulum.length2).abs() < 1e-10,
+                "Second link length mismatch: expected {}, got {}",
+                pendulum.length2,
+                link2_length
+            );
+
+            // Distance from origin to pos1 should equal length1
+            let link1_length = pos1.norm();
+            assert!(
+                (link1_length - pendulum.length1).abs() < 1e-10,
+                "First link length mismatch: expected {}, got {}",
+                pendulum.length1,
+                link1_length
+            );
+        }
+    }
+
+    #[test]
+    fn test_double_pendulum_falls_from_horizontal() {
+        // Starting with first link horizontal, it should fall
+        let mut pendulum = DoublePendulum::new(1.0, 1.0).with_angles(PI / 2.0, 0.0);
+
+        let initial_velocity = pendulum.qvel[0].abs();
+
+        // Run for 0.5 seconds
+        pendulum.run_for(0.5, DT);
+
+        // First joint should have gained significant velocity
+        assert!(
+            pendulum.qvel[0].abs() > initial_velocity + 1.0,
+            "First joint should have fallen and gained velocity"
+        );
+    }
+
+    #[test]
+    fn test_double_pendulum_small_angle_first_link_only() {
+        // With θ₂=0 and small θ₁, behavior should be close to simple pendulum
+        let initial_angle = 0.1; // Small angle
+        let mut double = DoublePendulum::new(1.0, 1.0).with_angles(initial_angle, 0.0);
+
+        // The effective length is L1 + L2 = 2.0 for oscillation of the compound system
+        // But behavior is more complex - just verify it oscillates
+        let mut found_sign_change = false;
+        let steps = (5.0 / DT).ceil() as usize;
+
+        for _ in 0..steps {
+            let old_pos = double.qpos[0];
+            double.step(DT);
+            if old_pos * double.qpos[0] < 0.0 {
+                found_sign_change = true;
+                break;
+            }
+        }
+
+        assert!(found_sign_change, "Double pendulum should oscillate");
+    }
+
+    #[test]
+    fn test_double_pendulum_position_formulas() {
+        // Verify position1 and position2 are computed correctly
+        let theta1 = PI / 4.0;
+        let theta2 = PI / 6.0;
+        let l1 = 1.0;
+        let l2 = 0.8;
+
+        let pendulum =
+            DoublePendulum::with_parameters(l1, l2, 1.0, 1.0).with_angles(theta1, theta2);
+
+        let pos1 = pendulum.position1();
+        let pos2 = pendulum.position2();
+
+        // Position 1: (L₁sin(θ₁), -L₁cos(θ₁))
+        let expected_x1 = l1 * theta1.sin();
+        let expected_y1 = -l1 * theta1.cos();
+        assert_relative_eq!(pos1.x, expected_x1, epsilon = 1e-10);
+        assert_relative_eq!(pos1.y, expected_y1, epsilon = 1e-10);
+
+        // Position 2: pos1 + (L₂sin(θ₁+θ₂), -L₂cos(θ₁+θ₂))
+        let theta12 = theta1 + theta2;
+        let expected_x2 = expected_x1 + l2 * theta12.sin();
+        let expected_y2 = expected_y1 - l2 * theta12.cos();
+        assert_relative_eq!(pos2.x, expected_x2, epsilon = 1e-10);
+        assert_relative_eq!(pos2.y, expected_y2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_double_pendulum_long_term_stability() {
+        // Run for 30 seconds and verify energy is still reasonable
+        // Use smaller angles to reduce chaos and higher resolution
+        let mut pendulum = DoublePendulum::new(1.0, 1.0).with_angles(PI / 6.0, PI / 8.0);
+
+        let initial_energy = pendulum.total_energy();
+
+        // Run for 30 seconds at high resolution
+        let high_res_dt = 1.0 / 480.0;
+        pendulum.run_for(30.0, high_res_dt);
+
+        let final_energy = pendulum.total_energy();
+
+        // Allow 2% energy drift over long term with high-res integration
+        let relative_error = (final_energy - initial_energy).abs() / initial_energy;
+        assert!(
+            relative_error < 0.02,
+            "Long-term energy error {:.2}% exceeds 2%",
+            relative_error * 100.0
+        );
+    }
+
+    #[test]
+    fn test_double_pendulum_different_parameters() {
+        // Test with different link lengths and masses
+        let mut pendulum =
+            DoublePendulum::with_parameters(1.5, 0.8, 2.0, 0.5).with_angles(PI / 4.0, PI / 3.0);
+
+        let initial_energy = pendulum.total_energy();
+
+        // Run for 10 seconds
+        pendulum.run_for(10.0, DT);
+
+        let final_energy = pendulum.total_energy();
+
+        // Energy should be conserved
+        let relative_error = (final_energy - initial_energy).abs() / initial_energy;
+        assert!(
+            relative_error < 0.02,
+            "Energy error {:.2}% exceeds 2%",
+            relative_error * 100.0
         );
     }
 }
