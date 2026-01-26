@@ -137,6 +137,7 @@ pub mod heightfield;
 pub mod integrators;
 pub mod mesh;
 pub mod mid_phase;
+pub mod mujoco_pipeline;
 pub mod raycast;
 pub mod sdf;
 mod stepper;

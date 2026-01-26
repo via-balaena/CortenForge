@@ -6,190 +6,340 @@
 
 MuJoCo's physics pipeline is carefully designed with each stage depending on previous stages. We must implement it **exactly** as specified, not approximate it.
 
+---
+
 ## Computation Pipeline (Exact Order)
 
 ```
 mj_step:
-  1. mj_fwdPosition    - Forward kinematics
-  2. mj_fwdVelocity    - Velocity-dependent quantities
-  3. mj_fwdActuation   - Actuator forces
-  4. mj_fwdAcceleration - Constraint solving
-  5. mj_Euler/implicit  - Integration
+  1. mj_fwdPosition    - Forward kinematics, collision detection, mass matrix
+  2. mj_fwdVelocity    - Velocity-dependent quantities, passive forces, bias forces
+  3. mj_fwdActuation   - Actuator forces from controls
+  4. mj_fwdAcceleration - Constraint solving, compute qacc
+  5. mj_Euler          - Semi-implicit integration
 ```
 
-### Stage 1: Forward Kinematics (`mj_fwdPosition`)
+---
 
-Computes:
-- Global position and orientation of all bodies
-- Joint axes in world coordinates
-- Collision detection (broad → mid → narrow phase)
+## Stage 1: Forward Position (`mj_fwdPosition`)
 
-**Output**: Body poses, contact list
+### 1.1 Forward Kinematics (`mj_kinematics`)
+Computes global position and orientation of all bodies from joint positions.
 
-### Stage 2: Forward Velocity (`mj_fwdVelocity`)
-
-Computes:
-- Bias forces using Recursive Newton-Euler (RNE) with zero acceleration
-- `qfrc_bias = c(q, v)` (Coriolis + centrifugal + gravity)
-- Passive forces: `qfrc_passive` (joint springs, dampers)
-
-**Passive force formula**:
+For each body in tree order:
 ```
-τ_passive = -stiffness * (q - springref) - damping * qdot
+X_world[i] = X_world[parent[i]] * X_joint[i]
 ```
 
-### Stage 3: Forward Actuation (`mj_fwdActuation`)
+Where `X_joint[i]` is the spatial transform from joint position `qpos[i]`.
 
-Computes:
-- Actuator forces from control inputs
-- `qfrc_actuator`
+### 1.2 Composite Rigid Body Algorithm (`mj_makeM`)
+Computes joint-space inertia matrix M.
 
-### Stage 4: Forward Acceleration (`mj_fwdAcceleration`)
+**Algorithm (from Featherstone):**
+```python
+# Initialize composite inertias
+for i in range(n_bodies):
+    Ic[i] = I_body[i]  # 6x6 spatial inertia
 
-This is the constraint solver. **Most critical stage.**
+# Backward pass: accumulate composite inertias
+for i in range(n_bodies-1, 0, -1):
+    Ic[parent[i]] += X_lambda[i].T @ Ic[i] @ X_lambda[i]
 
-#### 4.1 Compute Applied Forces
+# Build inertia matrix
+for i in range(n_joints):
+    # Diagonal
+    H[i,i] = S[i].T @ Ic[i] @ S[i]
+
+    # Off-diagonal: traverse ancestor chain
+    j = i
+    while parent[j] != 0:
+        fh = X_lambda[j].T @ fh
+        j = parent[j]
+        H[i,j] = S[j].T @ fh
+        H[j,i] = H[i,j]
 ```
-τ = qfrc_passive + qfrc_actuator + qfrc_applied - qfrc_bias
+
+Where:
+- `Ic[i]` = composite spatial inertia of subtree rooted at body i
+- `X_lambda[i]` = spatial transform from body i to parent
+- `S[i]` = joint motion subspace (6×dof matrix)
+- `fh` = force propagated up the tree
+
+### 1.3 Factor Mass Matrix (`mj_factorM`)
+Computes L^T D L factorization of M for efficient solving.
+
+### 1.4 Collision Detection (`mj_collision`)
+- Broad phase: sweep-and-prune
+- Mid phase: AABB BVH traversal
+- Near phase: detailed geometry tests
+
+**Output**: Contact list with points, normals, penetration depths.
+
+### 1.5 Build Constraints (`mj_makeConstraint`)
+Instantiates constraint Jacobians for all active constraints.
+
+---
+
+## Stage 2: Forward Velocity (`mj_fwdVelocity`)
+
+### 2.1 Recursive Newton-Euler for Bias Forces (`mj_rne`)
+
+**Forward pass** (velocities):
+```python
+for i in range(1, n_bodies):
+    # Velocity of body i
+    v[i] = X_lambda[i] @ v[parent[i]] + S[i] @ qdot[i]
+
+    # Acceleration bias (Coriolis term)
+    a_bias[i] = X_lambda[i] @ a_bias[parent[i]] + crossM(v[i]) @ S[i] @ qdot[i]
 ```
 
-#### 4.2 Compute Unconstrained Acceleration
-```
-a_unconstrained = M^(-1) * τ
-```
-
-Where M is the joint-space inertia matrix (computed via Composite Rigid Body algorithm).
-
-#### 4.3 Build Constraint Jacobian
-
-For each constraint, compute the Jacobian row J_i that maps joint velocities to constraint space:
-```
-c_i = J_i * qdot
+**Forward pass** (forces):
+```python
+for i in range(1, n_bodies):
+    # Force = I*a + v×(I*v) - external forces
+    f[i] = Ic[i] @ a_bias[i] + crossF(v[i]) @ Ic[i] @ v[i] - f_ext[i]
 ```
 
-Constraint types (in order):
-1. **Equality constraints** (weld, joint, distance, connect)
-2. **Friction loss** (joint friction)
-3. **Limit constraints** (joint limits)
-4. **Contact constraints** (collision response)
-
-#### 4.4 Solve Constraint Optimization
-
-**The Dual Problem**:
+**Backward pass** (joint forces):
+```python
+for i in range(n_bodies-1, 0, -1):
+    qfrc_bias[i] = S[i].T @ f[i]
+    f[parent[i]] += X_lambda[i].T @ f[i]
 ```
-f = argmin_λ { (1/2) λ^T (A + R) λ + λ^T (a_unconstrained - a_ref) }
+
+### 2.2 Passive Forces (`mj_passive`)
+```
+qfrc_passive[i] = -stiffness[i] * (qpos[i] - springref[i]) - damping[i] * qvel[i]
+```
+
+---
+
+## Stage 3: Forward Actuation (`mj_fwdActuation`)
+
+For each actuator:
+```python
+# Activation dynamics (for muscles, filters)
+if dyntype == INTEGRATOR:
+    act_dot = ctrl
+elif dyntype == FILTER:
+    act_dot = (ctrl - act) / tau
+elif dyntype == MUSCLE:
+    # Muscle activation dynamics
+
+# Force generation
+force = gain * act + bias
+
+# Map to joint space via transmission
+qfrc_actuator += moment.T @ force
+```
+
+---
+
+## Stage 4: Forward Acceleration (`mj_fwdAcceleration`)
+
+### 4.1 Compute Total Applied Force
+```
+qfrc_smooth = qfrc_passive + qfrc_actuator + qfrc_applied - qfrc_bias
+```
+
+### 4.2 Unconstrained Acceleration
+```
+qacc_smooth = M^(-1) @ qfrc_smooth
+```
+
+Solved via back-substitution using L^T D L factorization.
+
+### 4.3 Constraint Jacobian Structure
+
+**For revolute joint limit:**
+```python
+# Jacobian is sparse: 1 at the joint DOF, 0 elsewhere
+J[constraint_row, joint_dof] = -sign  # sign depends on which limit
+```
+
+**For connect constraint (ball joint):**
+```python
+# 3 rows for position constraint
+# Jacobian is difference of position Jacobians at attachment points
+J = jac_body1(point1) - jac_body2(point2)
+```
+
+**For weld constraint:**
+```python
+# 6 rows: 3 position + 3 orientation
+J_pos = jac_body1(point1) - jac_body2(point2)
+J_rot = rotation_jacobian_difference(body1, body2)
+```
+
+### 4.4 Constraint Solver (PGS)
+
+**The Optimization Problem:**
+```
+minimize: (1/2) λ^T (A + R) λ + λ^T b
 subject to: λ ∈ Ω
 ```
 
 Where:
-- `A = J M^(-1) J^T` (inverse inertia in constraint space)
-- `R` = diagonal regularization (softness)
-- `a_ref = -b * (J * v) - k * r` (reference acceleration with Baumgarte)
-- `Ω` = constraint bounds (depends on type)
+- `A = J @ M^(-1) @ J.T` (constraint-space inverse inertia)
+- `R = diag(regularization)` (softness)
+- `b = J @ qacc_smooth - aref` (velocity error)
+- `aref = -B * (J @ qvel) - K * constraint_violation` (Baumgarte stabilization)
 
-**Constraint bounds Ω**:
-| Type | Bounds |
-|------|--------|
-| Equality | λ ∈ ℝ (unconstrained) |
-| Friction loss | \|λ\| ≤ η |
-| Limit | λ ≥ 0 |
-| Contact normal | λ_n ≥ 0 |
-| Contact friction | \|λ_t\| ≤ μ * λ_n |
+**PGS Algorithm (from MuJoCo source):**
+```python
+def pgs_solve(A, R, b, bounds, max_iter, tolerance):
+    H = A + R
+    H_diag_inv = 1.0 / diag(H)
+    force = warmstart  # from previous timestep
 
-#### 4.5 Compute Constrained Acceleration
+    for iteration in range(max_iter):
+        improvement = 0
+
+        for i in range(n_constraints):
+            # Compute residual for constraint i
+            residual = H[i,:] @ force + b[i]
+
+            # Save old force
+            old_force = force[i]
+
+            # Gauss-Seidel update
+            force[i] -= residual * H_diag_inv[i]
+
+            # Project onto constraint bounds
+            force[i] = project(force[i], bounds[i])
+
+            # Track improvement
+            improvement += abs(force[i] - old_force)
+
+        if improvement < tolerance:
+            break
+
+    return force
 ```
-qacc = M^(-1) * (τ + J^T * f)
+
+**Projection rules:**
+| Constraint Type | Projection |
+|----------------|------------|
+| Equality | none (λ ∈ ℝ) |
+| Friction loss | clamp to [-η, η] |
+| Joint limit | max(0, λ) |
+| Contact normal | max(0, λ) |
+| Contact friction | clamp to [-μλ_n, μλ_n] |
+
+### 4.5 Final Acceleration
+```
+qacc = qacc_smooth + M^(-1) @ J.T @ efc_force
 ```
 
-### Stage 5: Integration
+---
 
-**Semi-implicit Euler** (default):
-```
+## Stage 5: Integration (`mj_Euler`)
+
+**Semi-implicit Euler (default):**
+```python
+# Update velocity FIRST (using current acceleration)
 qvel_new = qvel + dt * qacc
-qpos_new = qpos + dt * qvel_new  // Note: uses NEW velocity
+
+# Update position using NEW velocity (semi-implicit)
+qpos_new = integrate_pos(qpos, qvel_new, dt)
+
+# For quaternions, use proper SO(3) integration
+# qpos_new = qpos * exp(qvel_new * dt / 2)
 ```
 
-**Implicit** (for stiff systems):
-Solves implicit equation including velocity-dependent forces.
+**Critical**: Position update uses the NEW velocity, not the old one. This is what makes it semi-implicit and stable.
+
+**With damping (implicit in velocity):**
+```python
+# Modified mass matrix
+H = M + dt * diag(damping)
+
+# Solve for acceleration with implicit damping
+qacc = H^(-1) @ (qfrc_smooth + qfrc_constraint)
+
+# Then integrate as above
+```
+
+---
 
 ## Key Data Structures
 
-### Joint-Space Quantities (dimension: nv)
-- `qpos` - generalized positions
-- `qvel` - generalized velocities
-- `qacc` - generalized accelerations
-- `qfrc_bias` - bias forces (Coriolis + gravity)
-- `qfrc_passive` - passive forces (springs, dampers)
-- `qfrc_actuator` - actuator forces
-- `qfrc_applied` - user-applied forces
+### Joint-Space (dimension: nv)
+| Name | Description |
+|------|-------------|
+| `qpos` | Generalized positions |
+| `qvel` | Generalized velocities |
+| `qacc` | Generalized accelerations |
+| `qfrc_bias` | Bias forces (Coriolis + gravity) |
+| `qfrc_passive` | Passive forces (springs, dampers) |
+| `qfrc_actuator` | Actuator forces |
+| `qfrc_applied` | User-applied forces |
+| `qfrc_smooth` | Sum of above minus bias |
+| `qM` | Inertia matrix (nv × nv) |
 
-### Constraint-Space Quantities (dimension: nc)
-- `efc_J` - constraint Jacobian (nc × nv)
-- `efc_force` - constraint forces
-- `efc_aref` - reference acceleration
+### Constraint-Space (dimension: nefc)
+| Name | Description |
+|------|-------------|
+| `efc_J` | Constraint Jacobian (nefc × nv) |
+| `efc_force` | Constraint forces (Lagrange multipliers) |
+| `efc_aref` | Reference acceleration (for Baumgarte) |
+| `efc_AR` | A + R matrix diagonal |
 
-### Inertia Matrix
-- `qM` - joint-space inertia (nv × nv), stored as L^T D L factorization
+---
 
-## PGS Solver Algorithm
+## What We Got Wrong Previously
 
-```python
-def pgs_solve(A, R, b, bounds, max_iter):
-    """
-    Solve: min (1/2) λ^T (A+R) λ + λ^T b
-    subject to: λ ∈ bounds
-    """
-    λ = zeros(nc)
-    H = A + R  # Hessian
+1. **Penalty-based constraints**: MuJoCo uses Lagrange multipliers (impulse-based)
+2. **Missing proper Jacobian**: Didn't compute J correctly - need body Jacobians
+3. **Wrong integration order**: Semi-implicit uses NEW velocity for position
+4. **No inertia matrix**: Missing Composite Rigid Body algorithm
+5. **Missing bias forces**: No Recursive Newton-Euler for Coriolis terms
+6. **No warmstart**: PGS should reuse forces from previous timestep
+7. **Wrong force combination**: Applied - bias, not applied + bias
 
-    for iteration in range(max_iter):
-        for i in range(nc):
-            # Compute gradient for constraint i
-            grad_i = H[i,:] @ λ + b[i]
-
-            # Gauss-Seidel update
-            λ_new = λ[i] - grad_i / H[i,i]
-
-            # Project onto constraint bounds
-            λ[i] = project(λ_new, bounds[i])
-
-    return λ
-```
-
-## What We Got Wrong
-
-1. **Penalty-based constraints**: MuJoCo uses impulse-based (Lagrange multipliers), not penalty forces
-2. **Missing proper Jacobian**: We didn't compute J correctly for all constraint types
-3. **Wrong integration order**: Semi-implicit uses NEW velocity for position update
-4. **No proper inertia matrix**: We didn't implement Composite Rigid Body algorithm
-5. **Missing bias forces**: Coriolis and centrifugal forces weren't computed via RNE
-6. **Passive forces timing**: Springs/dampers go in `qfrc_passive`, computed in Stage 2
+---
 
 ## Implementation Plan
 
-### Phase 1: Single Pendulum (Visual Validation)
-- One revolute joint, two bodies
-- Implement: kinematics, M, bias forces, semi-implicit integration
-- NO constraints yet (just gravity)
-- **Must see pendulum swing correctly**
+### Phase 1: Single Pendulum (NO CONSTRAINTS)
+- One revolute joint connecting fixed world to swinging body
+- Implement: forward kinematics, M (scalar for 1-DOF), RNE bias, gravity
+- Integration: semi-implicit Euler
+- **Visual test**: Pendulum must swing correctly under gravity
 
-### Phase 2: Add Joint Constraints
-- Implement constraint Jacobian for revolute joint
-- Implement PGS solver
-- **Must see pendulum stay connected under gravity**
+### Phase 2: Add Position Constraint
+- Add constraint to keep joint attached (prevents drift)
+- Implement: Jacobian for revolute joint, PGS solver
+- **Visual test**: Pendulum stays attached, doesn't drift
 
-### Phase 3: Multi-Body Chain
-- Extend to 3+ body chain
-- Validate constraint solver handles multiple joints
-- **Must see chain swing without exploding**
+### Phase 3: Two-Link Chain
+- Add second revolute joint
+- Full 2×2 inertia matrix via CRBA
+- **Visual test**: Double pendulum swings chaotically but stays connected
 
-### Phase 4: Full Humanoid
-- Add all joint types
+### Phase 4: Three+ Bodies
+- Validate CRBA and solver scale correctly
+- **Visual test**: Chain of bodies stays intact
+
+### Phase 5: Ball Joints
+- Add spherical joint support (3-DOF)
+- Quaternion integration
+- **Visual test**: Humanoid limbs move correctly
+
+### Phase 6: Contact
 - Add contact constraints
-- **Must see humanoid stand/fall realistically**
+- Friction cone projection
+- **Visual test**: Objects rest on ground, don't fall through
+
+---
 
 ## References
 
 - [MuJoCo Computation](https://mujoco.readthedocs.io/en/stable/computation/index.html)
-- [MuJoCo Modeling](https://mujoco.readthedocs.io/en/stable/modeling.html)
+- [MuJoCo Source - engine_forward.c](https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_forward.c)
+- [MuJoCo Source - engine_solver.c](https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_solver.c)
+- [RBDL Library](https://github.com/rbdl/rbdl) - Reference implementation of Featherstone algorithms
+- Featherstone, R. (2008). Rigid Body Dynamics Algorithms. Springer.
 - Todorov, E. (2014). Convex and analytically-invertible dynamics with contacts and constraints.
