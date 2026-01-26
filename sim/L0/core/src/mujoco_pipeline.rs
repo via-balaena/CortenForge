@@ -174,6 +174,246 @@ impl SimplePendulum {
     }
 }
 
+// ============================================================================
+// Phase 2: Cartesian Pendulum with Constraint Solving
+// ============================================================================
+//
+// This models a pendulum as a point mass in 2D Cartesian space (x, y) with
+// a distance constraint. The constraint solver (PGS) keeps the mass at
+// distance L from the pivot.
+//
+// State representation:
+// - Position: (x, y) in meters
+// - Velocity: (vx, vy) in m/s
+//
+// Constraint: x² + y² = L² (distance from origin)
+//
+// This is a stepping stone to multi-body articulated systems where:
+// - Each body has Cartesian state (position + orientation)
+// - Joints impose constraints between bodies
+// - PGS solver computes constraint forces
+
+use nalgebra::Vector2;
+
+/// A point mass pendulum in 2D Cartesian space with constraint solving.
+///
+/// Unlike `SimplePendulum` which works in joint-space (θ, θ̇), this works
+/// in Cartesian space (x, y, vx, vy) and uses a constraint solver to
+/// maintain the distance constraint.
+///
+/// This demonstrates the constraint-based approach that `MuJoCo` uses for
+/// articulated rigid body simulation.
+#[derive(Debug, Clone)]
+pub struct ConstrainedPendulum {
+    /// Position of the mass (x, y) in meters
+    pub pos: Vector2<f64>,
+    /// Velocity of the mass (vx, vy) in m/s
+    pub vel: Vector2<f64>,
+    /// Desired distance from pivot (constraint target)
+    pub length: f64,
+    /// Mass in kg
+    pub mass: f64,
+    /// Gravitational acceleration in m/s²
+    pub gravity: f64,
+    /// Baumgarte stabilization coefficient (position error correction)
+    pub baumgarte_k: f64,
+    /// Baumgarte stabilization coefficient (velocity error correction)
+    pub baumgarte_b: f64,
+    /// Constraint regularization (softness)
+    pub regularization: f64,
+}
+
+impl ConstrainedPendulum {
+    /// Create a new constrained pendulum with default parameters.
+    ///
+    /// Initializes at angle θ from vertical (0 = hanging down).
+    #[must_use]
+    pub fn new(length: f64, mass: f64, initial_angle: f64) -> Self {
+        // Convert angle to Cartesian position
+        // θ = 0 means hanging straight down: (0, -L)
+        // θ > 0 rotates counter-clockwise: (L*sin(θ), -L*cos(θ))
+        let x = length * initial_angle.sin();
+        let y = -length * initial_angle.cos();
+
+        Self {
+            pos: Vector2::new(x, y),
+            vel: Vector2::zeros(),
+            length,
+            mass,
+            gravity: 9.81,
+            // Baumgarte parameters - tune for stability
+            // Higher values = faster correction but can cause instability
+            baumgarte_k: 100.0,   // Position error gain
+            baumgarte_b: 20.0,    // Velocity error gain
+            regularization: 1e-6, // Small regularization for numerical stability
+        }
+    }
+
+    /// Get the current angle θ from the Cartesian position.
+    #[must_use]
+    pub fn angle(&self) -> f64 {
+        // atan2(x, -y) gives angle from vertical (hanging down)
+        self.pos.x.atan2(-self.pos.y)
+    }
+
+    /// Get the current angular velocity.
+    #[must_use]
+    pub fn angular_velocity(&self) -> f64 {
+        // ω = (x * vy - y * vx) / r²
+        // This is the tangential velocity divided by radius
+        let r_sq = self.pos.x * self.pos.x + self.pos.y * self.pos.y;
+        if r_sq > 1e-10 {
+            (self.pos.x * self.vel.y - self.pos.y * self.vel.x) / r_sq
+        } else {
+            0.0
+        }
+    }
+
+    /// Compute the constraint violation (how far from the constraint surface).
+    ///
+    /// For the distance constraint: C = (x² + y²) - L² = 0
+    /// We return C, which should be zero when the constraint is satisfied.
+    #[must_use]
+    pub fn constraint_violation(&self) -> f64 {
+        let r_sq = self.pos.x * self.pos.x + self.pos.y * self.pos.y;
+        r_sq - self.length * self.length
+    }
+
+    /// Compute the constraint velocity (rate of change of constraint).
+    ///
+    /// Cdot = d/dt(x² + y² - L²) = 2*(x*vx + y*vy)
+    #[must_use]
+    pub fn constraint_velocity(&self) -> f64 {
+        2.0 * (self.pos.x * self.vel.x + self.pos.y * self.vel.y)
+    }
+
+    /// Compute the constraint Jacobian J.
+    ///
+    /// J = ∂C/∂q = [2x, 2y]
+    ///
+    /// This maps Cartesian velocities to constraint velocities: Cdot = J * qdot
+    #[must_use]
+    pub fn constraint_jacobian(&self) -> Vector2<f64> {
+        Vector2::new(2.0 * self.pos.x, 2.0 * self.pos.y)
+    }
+
+    /// Compute the total mechanical energy.
+    ///
+    /// E = T + V where:
+    /// - T = ½ * m * (vx² + vy²) (kinetic energy)
+    /// - V = m * g * (y + L) (potential energy, with y=-L as reference)
+    #[must_use]
+    pub fn total_energy(&self) -> f64 {
+        let kinetic = 0.5 * self.mass * self.vel.norm_squared();
+        // Reference: V = 0 when y = -L (hanging straight down)
+        let potential = self.mass * self.gravity * (self.pos.y + self.length);
+        kinetic + potential
+    }
+
+    /// Step the pendulum forward using constraint-based dynamics.
+    ///
+    /// This follows `MuJoCo`'s approach:
+    /// 1. Compute unconstrained acceleration (gravity only)
+    /// 2. Compute constraint force via PGS (single iteration for 1 constraint)
+    /// 3. Apply constraint force to get final acceleration
+    /// 4. Semi-implicit Euler integration
+    ///
+    /// The constraint equation is: C̈ = J·a + J̇·v = 0 (plus Baumgarte stabilization)
+    /// where J̇·v is the "constraint bias" from the changing Jacobian.
+    pub fn step(&mut self, dt: f64) {
+        // =====================================================================
+        // Stage 1-3: Forward Position/Velocity/Actuation
+        // =====================================================================
+
+        // Unconstrained acceleration (gravity only)
+        // F = m * g in -y direction
+        let f_gravity = Vector2::new(0.0, -self.mass * self.gravity);
+        let acc_smooth = f_gravity / self.mass; // = (0, -g)
+
+        // =====================================================================
+        // Stage 4: Forward Acceleration (Constraint Solving)
+        // =====================================================================
+
+        // Constraint: C = x² + y² - L² = 0
+        // First derivative: Ċ = 2x·ẋ + 2y·ẏ = J·v  where J = [2x, 2y]
+        // Second derivative: C̈ = J·a + J̇·v  where J̇ = [2ẋ, 2ẏ]
+        //
+        // The constraint equation is: J·a + J̇·v = -K·C - B·Ċ (Baumgarte stabilization)
+        // Solving for λ in: a = a_smooth + M⁻¹·J^T·λ
+        // We get: J·(a_smooth + M⁻¹·J^T·λ) + J̇·v = -K·C - B·Ċ
+        //         J·a_smooth + J·M⁻¹·J^T·λ + J̇·v = -K·C - B·Ċ
+        //         A·λ = -K·C - B·Ċ - J·a_smooth - J̇·v
+        //         A·λ = -b
+        // where A = J·M⁻¹·J^T and b = K·C + B·Ċ + J·a_smooth + J̇·v
+
+        // Constraint Jacobian: J = [2x, 2y]
+        let jacobian = self.constraint_jacobian();
+
+        // Jacobian time derivative: J̇ = [2ẋ, 2ẏ]
+        let jacobian_dot = Vector2::new(2.0 * self.vel.x, 2.0 * self.vel.y);
+
+        // J̇·v = 2(ẋ² + ẏ²)
+        let jdot_times_vel = jacobian_dot.x * self.vel.x + jacobian_dot.y * self.vel.y;
+
+        // Mass matrix is diagonal: M = diag(m, m)
+        // M^(-1) = diag(1/m, 1/m)
+        let mass_inv = 1.0 / self.mass;
+
+        // Constraint-space inverse inertia: A = J @ M^(-1) @ J^T
+        // For 1D constraint: A = (4x² + 4y²) / m = 4r²/m
+        let constraint_inertia = (jacobian.x * jacobian.x + jacobian.y * jacobian.y) * mass_inv;
+
+        // Add regularization for numerical stability
+        let effective_inertia = constraint_inertia + self.regularization;
+
+        // Baumgarte stabilization terms
+        let constraint_err = self.constraint_violation();
+        let constraint_vel_err = self.constraint_velocity();
+
+        // Constraint acceleration without correction: J @ acc_smooth
+        let jacobian_times_acc = jacobian.x * acc_smooth.x + jacobian.y * acc_smooth.y;
+
+        // RHS of constraint equation:
+        // b = K·C + B·Ċ + J·a_smooth + J̇·v
+        let rhs = self.baumgarte_k * constraint_err
+            + self.baumgarte_b * constraint_vel_err
+            + jacobian_times_acc
+            + jdot_times_vel;
+
+        // Solve for constraint force (Lagrange multiplier λ)
+        // H @ λ = -b  =>  λ = -b / H
+        let lambda = -rhs / effective_inertia;
+
+        // Compute constraint force in Cartesian space: f_constraint = J^T @ λ
+        let f_constraint = jacobian * lambda;
+
+        // Final acceleration: acc = acc_smooth + M^(-1) @ f_constraint
+        let acc = acc_smooth + f_constraint * mass_inv;
+
+        // =====================================================================
+        // Stage 5: Integration (Semi-implicit Euler)
+        // =====================================================================
+
+        // Update velocity first
+        let vel_new = self.vel + acc * dt;
+
+        // Update position using NEW velocity
+        let pos_new = self.pos + vel_new * dt;
+
+        self.vel = vel_new;
+        self.pos = pos_new;
+    }
+
+    /// Run the pendulum for a given duration.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn run_for(&mut self, duration: f64, dt: f64) {
+        let steps = (duration / dt).ceil() as usize;
+        for _ in 0..steps {
+            self.step(dt);
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -382,6 +622,142 @@ mod tests {
             relative_error < 0.01,
             "Energy error {:.2}% exceeds 1%",
             relative_error * 100.0
+        );
+    }
+
+    // =========================================================================
+    // Phase 2: Constrained Pendulum Tests
+    // =========================================================================
+
+    #[test]
+    fn test_constrained_pendulum_constraint_maintained() {
+        // The constraint x² + y² = L² should be maintained throughout simulation
+        let mut pendulum = ConstrainedPendulum::new(1.0, 1.0, PI / 3.0);
+
+        // Run for 10 seconds
+        let duration = 10.0;
+        let steps = (duration / DT).ceil() as usize;
+
+        let mut max_violation = 0.0_f64;
+        for _ in 0..steps {
+            pendulum.step(DT);
+            let violation = pendulum.constraint_violation().abs();
+            max_violation = max_violation.max(violation);
+        }
+
+        // The constraint violation should stay small (< 1% of L²)
+        let tolerance = 0.01 * pendulum.length * pendulum.length;
+        assert!(
+            max_violation < tolerance,
+            "Constraint violation {:.6} exceeds tolerance {:.6}",
+            max_violation,
+            tolerance
+        );
+    }
+
+    #[test]
+    fn test_constrained_pendulum_matches_simple() {
+        // Both pendulums should produce similar behavior
+        let initial_angle = PI / 4.0;
+        let mut simple = SimplePendulum::new(1.0, 1.0).with_initial_angle(initial_angle);
+        let mut constrained = ConstrainedPendulum::new(1.0, 1.0, initial_angle);
+
+        // Run for 5 seconds and compare angles
+        let duration = 5.0;
+        let steps = (duration / DT).ceil() as usize;
+
+        let mut max_angle_diff = 0.0_f64;
+        for _ in 0..steps {
+            simple.step(DT);
+            constrained.step(DT);
+
+            let angle_diff = (simple.qpos - constrained.angle()).abs();
+            max_angle_diff = max_angle_diff.max(angle_diff);
+        }
+
+        // The angles should match reasonably well (within 5 degrees)
+        let tolerance = 5.0_f64.to_radians();
+        assert!(
+            max_angle_diff < tolerance,
+            "Angle difference {:.2}° exceeds tolerance {:.2}°",
+            max_angle_diff.to_degrees(),
+            tolerance.to_degrees()
+        );
+    }
+
+    #[test]
+    fn test_constrained_pendulum_energy_conservation() {
+        let mut pendulum = ConstrainedPendulum::new(1.0, 1.0, PI / 3.0);
+
+        let initial_energy = pendulum.total_energy();
+
+        // Run for 10 seconds
+        pendulum.run_for(10.0, DT);
+
+        let final_energy = pendulum.total_energy();
+
+        // Energy conservation is harder with Baumgarte stabilization since it
+        // adds/removes energy to correct constraint drift. Allow 10% error.
+        // In practice, this is still very good for a constraint-based method.
+        let relative_error = (final_energy - initial_energy).abs() / initial_energy;
+        assert!(
+            relative_error < 0.10,
+            "Energy error {:.2}% exceeds 10%",
+            relative_error * 100.0
+        );
+    }
+
+    #[test]
+    fn test_constrained_pendulum_initial_state() {
+        // Verify initial state is correct
+        let angle = PI / 4.0;
+        let pendulum = ConstrainedPendulum::new(1.0, 1.0, angle);
+
+        // Check position
+        let expected_x = angle.sin();
+        let expected_y = -angle.cos();
+        assert_relative_eq!(pendulum.pos.x, expected_x, epsilon = 1e-10);
+        assert_relative_eq!(pendulum.pos.y, expected_y, epsilon = 1e-10);
+
+        // Check initial velocity is zero
+        assert_relative_eq!(pendulum.vel.x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(pendulum.vel.y, 0.0, epsilon = 1e-10);
+
+        // Check constraint is satisfied
+        let r_sq = pendulum.pos.x * pendulum.pos.x + pendulum.pos.y * pendulum.pos.y;
+        assert_relative_eq!(r_sq, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_constrained_pendulum_jacobian() {
+        // Verify Jacobian is correct
+        let pendulum = ConstrainedPendulum::new(1.0, 1.0, PI / 4.0);
+        let j = pendulum.constraint_jacobian();
+
+        // J should be [2x, 2y]
+        assert_relative_eq!(j.x, 2.0 * pendulum.pos.x, epsilon = 1e-10);
+        assert_relative_eq!(j.y, 2.0 * pendulum.pos.y, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_constrained_pendulum_oscillation() {
+        // Verify the pendulum oscillates with approximately the right period
+        let initial_angle = 0.1; // Small angle for linear approximation
+        let mut pendulum = ConstrainedPendulum::new(1.0, 1.0, initial_angle);
+
+        // Expected period from simple pendulum formula
+        let expected_period = 2.0 * PI * (1.0 / 9.81_f64).sqrt();
+
+        // Run for one period
+        pendulum.run_for(expected_period, DT);
+
+        // Should be back near initial angle
+        let final_angle = pendulum.angle();
+        assert!(
+            (final_angle - initial_angle).abs() < 0.05,
+            "Expected θ ≈ {:.3}, got θ = {:.3}",
+            initial_angle,
+            final_angle
         );
     }
 }
