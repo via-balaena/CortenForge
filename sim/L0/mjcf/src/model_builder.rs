@@ -152,6 +152,11 @@ struct ModelBuilder {
     site_size: Vec<Vector3<f64>>,
     site_name: Vec<Option<String>>,
 
+    // World frame tracking (for free joint qpos0 initialization)
+    // Stores accumulated world positions during tree traversal
+    body_world_pos: Vec<Vector3<f64>>,
+    body_world_quat: Vec<UnitQuaternion<f64>>,
+
     // Actuator arrays
     actuator_trntype: Vec<ActuatorTransmission>,
     actuator_dyntype: Vec<ActuatorDynamics>,
@@ -241,6 +246,10 @@ impl ModelBuilder {
             site_size: vec![],
             site_name: vec![],
 
+            // World frame tracking (world body at origin)
+            body_world_pos: vec![],
+            body_world_quat: vec![],
+
             actuator_trntype: vec![],
             actuator_dyntype: vec![],
             actuator_trnid: vec![],
@@ -282,6 +291,8 @@ impl ModelBuilder {
 
     /// Process a body and its descendants.
     ///
+    /// This is the public-facing entry point that initializes world frame tracking.
+    ///
     /// # Arguments
     /// * `body` - The MJCF body to process
     /// * `parent_id` - Index of the parent body in the Model
@@ -295,6 +306,36 @@ impl ModelBuilder {
         body: &MjcfBody,
         parent_id: usize,
         parent_last_dof: Option<usize>,
+    ) -> std::result::Result<usize, ModelConversionError> {
+        // Start with parent's world frame (world body is at origin)
+        let (parent_world_pos, parent_world_quat) = if parent_id == 0 {
+            (Vector3::zeros(), UnitQuaternion::identity())
+        } else {
+            // For non-world parents, we need to look up their world positions
+            // Since we process in topological order, parent is already processed
+            // We stored parent's world position when we added them
+            (
+                self.body_world_pos[parent_id - 1],
+                self.body_world_quat[parent_id - 1],
+            )
+        };
+        self.process_body_with_world_frame(
+            body,
+            parent_id,
+            parent_last_dof,
+            parent_world_pos,
+            parent_world_quat,
+        )
+    }
+
+    /// Internal body processing with world frame tracking.
+    fn process_body_with_world_frame(
+        &mut self,
+        body: &MjcfBody,
+        parent_id: usize,
+        parent_last_dof: Option<usize>,
+        parent_world_pos: Vector3<f64>,
+        parent_world_quat: UnitQuaternion<f64>,
     ) -> std::result::Result<usize, ModelConversionError> {
         let body_id = self.body_parent.len();
 
@@ -313,6 +354,14 @@ impl ModelBuilder {
         // Body position/orientation relative to parent
         let body_pos = body.pos;
         let body_quat = quat_from_wxyz(body.quat);
+
+        // Compute world frame position for this body (used for free joint qpos0)
+        let world_pos = parent_world_pos + parent_world_quat * body_pos;
+        let world_quat = parent_world_quat * body_quat;
+
+        // Store world positions for child body processing
+        self.body_world_pos.push(world_pos);
+        self.body_world_quat.push(world_quat);
 
         // Process inertial properties with full MuJoCo semantics
         let (mass, inertia, ipos, iquat) = if let Some(ref inertial) = body.inertial {
@@ -352,7 +401,8 @@ impl ModelBuilder {
         let mut current_last_dof = parent_last_dof;
 
         for joint in &body.joints {
-            let jnt_id = self.process_joint(joint, body_id, current_last_dof)?;
+            let jnt_id =
+                self.process_joint(joint, body_id, current_last_dof, world_pos, world_quat)?;
             let jnt_nv = self.jnt_type[jnt_id].nv();
             body_nv += jnt_nv;
 
@@ -377,9 +427,15 @@ impl ModelBuilder {
             self.process_site(site, body_id)?;
         }
 
-        // Recursively process children, passing this body's last DOF
+        // Recursively process children, passing this body's last DOF and world frame
         for child in &body.children {
-            self.process_body(child, body_id, current_last_dof)?;
+            self.process_body_with_world_frame(
+                child,
+                body_id,
+                current_last_dof,
+                world_pos,
+                world_quat,
+            )?;
         }
 
         Ok(body_id)
@@ -392,6 +448,8 @@ impl ModelBuilder {
     /// * `body_id` - Index of the body this joint belongs to
     /// * `parent_last_dof` - Index of the last DOF in the parent kinematic chain
     ///   (from parent body or previous joint on same body)
+    /// * `world_pos` - Body's world-frame position (for free joint qpos0)
+    /// * `world_quat` - Body's world-frame orientation (for free joint qpos0)
     ///
     /// # MuJoCo Semantics
     ///
@@ -405,6 +463,8 @@ impl ModelBuilder {
         joint: &MjcfJoint,
         body_id: usize,
         parent_last_dof: Option<usize>,
+        world_pos: Vector3<f64>,
+        world_quat: UnitQuaternion<f64>,
     ) -> std::result::Result<usize, ModelConversionError> {
         let jnt_id = self.jnt_type.len();
 
@@ -495,9 +555,18 @@ impl ModelBuilder {
                 self.qpos0_values.extend_from_slice(&[1.0, 0.0, 0.0, 0.0]);
             }
             MjJointType::Free => {
-                // Position [x, y, z] = [0, 0, 0], quaternion [w, x, y, z] = [1, 0, 0, 0]
-                self.qpos0_values
-                    .extend_from_slice(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+                // Free joint qpos0 is the body's world position and orientation
+                // Position [x, y, z] from world frame, quaternion [w, x, y, z] from world frame
+                let q = world_quat.into_inner();
+                self.qpos0_values.extend_from_slice(&[
+                    world_pos.x,
+                    world_pos.y,
+                    world_pos.z,
+                    q.w,
+                    q.i,
+                    q.j,
+                    q.k,
+                ]);
             }
         }
 
@@ -774,6 +843,21 @@ impl ModelBuilder {
             site_quat: self.site_quat,
             site_size: self.site_size,
             site_name: self.site_name,
+
+            // Sensors (empty for now - will be populated from MJCF sensor definitions)
+            nsensor: 0,
+            nsensordata: 0,
+            sensor_type: vec![],
+            sensor_datatype: vec![],
+            sensor_objtype: vec![],
+            sensor_objid: vec![],
+            sensor_reftype: vec![],
+            sensor_refid: vec![],
+            sensor_adr: vec![],
+            sensor_dim: vec![],
+            sensor_noise: vec![],
+            sensor_cutoff: vec![],
+            sensor_name: vec![],
 
             actuator_trntype: self.actuator_trntype,
             actuator_dyntype: self.actuator_dyntype,

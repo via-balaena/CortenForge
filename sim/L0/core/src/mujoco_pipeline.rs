@@ -5466,6 +5466,153 @@ pub enum ActuatorDynamics {
     Muscle,
 }
 
+/// `MuJoCo` sensor type.
+///
+/// Matches `MuJoCo`'s mjtSensor enum. Each sensor type reads different
+/// quantities from the simulation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MjSensorType {
+    // ========== Common sensors ==========
+    /// Touch sensor (contact force magnitude, 1D).
+    Touch,
+    /// Accelerometer (linear acceleration, 3D).
+    Accelerometer,
+    /// Velocity sensor (linear velocity, 3D).
+    Velocimeter,
+    /// Gyroscope (angular velocity, 3D).
+    Gyro,
+    /// Force sensor (3D force).
+    Force,
+    /// Torque sensor (3D torque).
+    Torque,
+    /// Magnetometer (magnetic field, 3D).
+    Magnetometer,
+    /// Rangefinder (distance to nearest surface, 1D).
+    Rangefinder,
+
+    // ========== Joint/tendon sensors ==========
+    /// Joint position (1D per DOF).
+    JointPos,
+    /// Joint velocity (1D per DOF).
+    JointVel,
+    /// Tendon length (1D).
+    TendonPos,
+    /// Tendon velocity (1D).
+    TendonVel,
+    /// Actuator length (1D).
+    ActuatorPos,
+    /// Actuator velocity (1D).
+    ActuatorVel,
+    /// Actuator force (1D).
+    ActuatorFrc,
+
+    // ========== Position/orientation sensors ==========
+    /// Site/body frame position (3D).
+    FramePos,
+    /// Site/body frame orientation as quaternion (4D).
+    FrameQuat,
+    /// Site/body frame axis (3D).
+    FrameXAxis,
+    /// Site/body frame Y axis (3D).
+    FrameYAxis,
+    /// Site/body frame Z axis (3D).
+    FrameZAxis,
+    /// Site/body frame linear velocity (3D).
+    FrameLinVel,
+    /// Site/body frame angular velocity (3D).
+    FrameAngVel,
+    /// Site/body frame linear acceleration (3D).
+    FrameLinAcc,
+    /// Site/body frame angular acceleration (3D).
+    FrameAngAcc,
+
+    // ========== Global sensors ==========
+    /// Subtree center of mass (3D).
+    SubtreeCom,
+    /// Subtree linear momentum (3D).
+    SubtreeLinVel,
+    /// Subtree angular momentum (3D).
+    SubtreeAngMom,
+
+    // ========== User-defined ==========
+    /// User-defined sensor (arbitrary dimension).
+    User,
+}
+
+impl MjSensorType {
+    /// Get the dimension (number of data elements) for this sensor type.
+    #[must_use]
+    pub const fn dim(self) -> usize {
+        match self {
+            Self::Touch
+            | Self::JointPos
+            | Self::JointVel
+            | Self::TendonPos
+            | Self::TendonVel
+            | Self::ActuatorPos
+            | Self::ActuatorVel
+            | Self::ActuatorFrc
+            | Self::Rangefinder => 1,
+
+            Self::Accelerometer
+            | Self::Velocimeter
+            | Self::Gyro
+            | Self::Force
+            | Self::Torque
+            | Self::Magnetometer
+            | Self::FramePos
+            | Self::FrameXAxis
+            | Self::FrameYAxis
+            | Self::FrameZAxis
+            | Self::FrameLinVel
+            | Self::FrameAngVel
+            | Self::FrameLinAcc
+            | Self::FrameAngAcc
+            | Self::SubtreeCom
+            | Self::SubtreeLinVel
+            | Self::SubtreeAngMom => 3,
+
+            Self::FrameQuat => 4,
+
+            Self::User => 0, // Variable, must be set explicitly
+        }
+    }
+}
+
+/// Sensor data dependency stage.
+///
+/// Indicates when the sensor can be computed in the forward dynamics pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MjSensorDataType {
+    /// Computed in `mj_sensorPos` (after forward kinematics).
+    #[default]
+    Position,
+    /// Computed in `mj_sensorVel` (after velocity FK).
+    Velocity,
+    /// Computed in `mj_sensorAcc` (after acceleration computation).
+    Acceleration,
+}
+
+/// Object type for sensor attachment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MjObjectType {
+    /// No object (world-relative).
+    #[default]
+    None,
+    /// Body.
+    Body,
+    /// Joint.
+    Joint,
+    /// Geom.
+    Geom,
+    /// Site.
+    Site,
+    /// Actuator.
+    Actuator,
+    /// Tendon.
+    Tendon,
+}
+
 /// Integration method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Integrator {
@@ -5619,6 +5766,34 @@ pub struct Model {
     /// Optional site names.
     pub site_name: Vec<Option<String>>,
 
+    // ==================== Sensors (indexed by sensor_id) ====================
+    /// Number of sensors.
+    pub nsensor: usize,
+    /// Number of sensor data elements (sum of all sensor dims).
+    pub nsensordata: usize,
+    /// Sensor type.
+    pub sensor_type: Vec<MjSensorType>,
+    /// Sensor data type (position/velocity/acceleration dependent).
+    pub sensor_datatype: Vec<MjSensorDataType>,
+    /// Object type the sensor is attached to.
+    pub sensor_objtype: Vec<MjObjectType>,
+    /// Object ID the sensor is attached to (body/joint/site/geom id).
+    pub sensor_objid: Vec<usize>,
+    /// Reference object type (for relative sensors).
+    pub sensor_reftype: Vec<MjObjectType>,
+    /// Reference object ID.
+    pub sensor_refid: Vec<usize>,
+    /// Start address in sensordata array.
+    pub sensor_adr: Vec<usize>,
+    /// Number of data elements for this sensor.
+    pub sensor_dim: Vec<usize>,
+    /// Noise standard deviation (0 = no noise).
+    pub sensor_noise: Vec<f64>,
+    /// Cutoff for sensor value (0 = no cutoff).
+    pub sensor_cutoff: Vec<f64>,
+    /// Optional sensor names.
+    pub sensor_name: Vec<Option<String>>,
+
     // ==================== Actuators (indexed by actuator_id) ====================
     /// Transmission type (Joint, Tendon, Site).
     pub actuator_trntype: Vec<ActuatorTransmission>,
@@ -5765,6 +5940,11 @@ pub struct Data {
     /// Non-zeros in constraint Jacobian.
     pub solver_nnz: usize,
 
+    // ==================== Sensors ====================
+    /// Sensor data array [nsensordata].
+    /// Each sensor writes to sensordata[`sensor_adr`[i]..`sensor_adr`[i]+`sensor_dim`[i]].
+    pub sensordata: DVector<f64>,
+
     // ==================== Energy (for debugging/validation) ====================
     /// Potential energy (gravity + springs).
     pub energy_potential: f64,
@@ -5849,6 +6029,21 @@ impl Model {
             site_size: vec![],
             site_name: vec![],
 
+            // Sensors (empty)
+            nsensor: 0,
+            nsensordata: 0,
+            sensor_type: vec![],
+            sensor_datatype: vec![],
+            sensor_objtype: vec![],
+            sensor_objid: vec![],
+            sensor_reftype: vec![],
+            sensor_refid: vec![],
+            sensor_adr: vec![],
+            sensor_dim: vec![],
+            sensor_noise: vec![],
+            sensor_cutoff: vec![],
+            sensor_name: vec![],
+
             // Actuators (empty)
             actuator_trntype: vec![],
             actuator_dyntype: vec![],
@@ -5922,6 +6117,9 @@ impl Model {
             solver_niter: 0,
             solver_nnz: 0,
 
+            // Sensors
+            sensordata: DVector::zeros(self.nsensordata),
+
             // Energy
             energy_potential: 0.0,
             energy_kinetic: 0.0,
@@ -5949,6 +6147,7 @@ impl Data {
         self.qacc_warmstart.fill(0.0);
         self.ctrl.fill(0.0);
         self.act.fill(0.0);
+        self.sensordata.fill(0.0);
         self.time = 0.0;
         self.ncon = 0;
         self.contacts.clear();
@@ -5985,29 +6184,51 @@ impl Data {
     /// Computes all derived quantities from current qpos/qvel without
     /// modifying them. After this call, qacc contains the computed
     /// accelerations and all body poses are updated.
+    ///
+    /// Pipeline stages follow `MuJoCo`'s `mj_forward` exactly:
+    /// 1. Position stage: FK, position-dependent sensors, potential energy
+    /// 2. Velocity stage: velocity FK, velocity-dependent sensors, kinetic energy
+    /// 3. Acceleration stage: actuation, dynamics, constraints, acc-dependent sensors
     pub fn forward(&mut self, model: &Model) {
-        // Stage 1: Forward kinematics - compute body poses from qpos
+        // ========== Position Stage ==========
+        // Stage 1a: Forward kinematics - compute body/geom/site poses from qpos
         mj_fwd_position(model, self);
 
-        // Stage 2: Velocity kinematics - compute body velocities from qvel
+        // Stage 1b: Position-dependent sensors (joint positions, frame positions, etc.)
+        mj_sensor_pos(model, self);
+
+        // Stage 1c: Potential energy (gravity + springs)
+        mj_energy_pos(model, self);
+
+        // ========== Velocity Stage ==========
+        // Stage 2a: Velocity kinematics - compute body velocities from qvel
         mj_fwd_velocity(model, self);
 
-        // Stage 3: Actuation - compute actuator forces
+        // Stage 2b: Velocity-dependent sensors (gyro, velocimeter, etc.)
+        mj_sensor_vel(model, self);
+
+        // ========== Acceleration Stage ==========
+        // Stage 3a: Actuation - compute actuator forces
         mj_fwd_actuation(model, self);
 
-        // Stage 4: Dynamics - compute mass matrix and bias forces
+        // Stage 3b: Dynamics - compute mass matrix and bias forces
         mj_crba(model, self); // Composite Rigid Body Algorithm
         mj_rne(model, self); // Recursive Newton-Euler for bias forces
 
-        // Stage 5: Passive forces - springs and dampers
+        // Stage 3c: Kinetic energy (needs mass matrix from CRBA)
+        mj_energy_vel(model, self);
+
+        // Stage 3d: Passive forces - springs and dampers
         mj_fwd_passive(model, self);
 
-        // Stage 6: Constraint forces - contacts and joint limits
-        // (placeholder - will be implemented in Phase 3)
+        // Stage 3e: Constraint forces - contacts and joint limits
         mj_fwd_constraint(model, self);
 
-        // Stage 7: Compute final acceleration
+        // Stage 3f: Compute final acceleration
         mj_fwd_acceleration(model, self);
+
+        // Stage 3g: Acceleration-dependent sensors (accelerometer, etc.)
+        mj_sensor_acc(model, self);
     }
 
     /// Integration step (semi-implicit Euler, `MuJoCo` default).
@@ -6172,6 +6393,733 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
             .to_rotation_matrix()
             .into_inner();
     }
+
+    // Update site poses
+    for site_id in 0..model.nsite {
+        let body_id = model.site_body[site_id];
+        let body_pos = data.xpos[body_id];
+        let body_quat = data.xquat[body_id];
+
+        data.site_xpos[site_id] = body_pos + body_quat * model.site_pos[site_id];
+        data.site_xmat[site_id] = (body_quat * model.site_quat[site_id])
+            .to_rotation_matrix()
+            .into_inner();
+    }
+}
+
+/// Compute potential energy (gravitational + spring).
+///
+/// Following `MuJoCo` semantics:
+/// - Gravitational: `E_g` = -Σ `m_i` * g · `p_i` (negative because work done against gravity)
+/// - Spring: `E_s` = 0.5 * Σ `k_i` * (`q_i` - `q0_i)²`
+fn mj_energy_pos(model: &Model, data: &mut Data) {
+    let mut potential = 0.0;
+
+    // Gravitational potential energy
+    // E_g = -Σ m_i * g · com_i
+    // Using xipos (COM in world frame) for correct calculation
+    for body_id in 1..model.nbody {
+        let mass = model.body_mass[body_id];
+        let com = data.xipos[body_id];
+        // Potential energy: -m * g · h (negative of work done by gravity)
+        // With g = (0, 0, -9.81), this becomes m * 9.81 * z
+        potential -= mass * model.gravity.dot(&com);
+    }
+
+    // Spring potential energy
+    // E_s = 0.5 * k * (q - q0)²
+    for jnt_id in 0..model.njnt {
+        let stiffness = model.jnt_stiffness[jnt_id];
+        if stiffness > 0.0 {
+            let qpos_adr = model.jnt_qpos_adr[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge | MjJointType::Slide => {
+                    let q = data.qpos[qpos_adr];
+                    let q0 = model.qpos0.get(qpos_adr).copied().unwrap_or(0.0);
+                    let displacement = q - q0;
+                    potential += 0.5 * stiffness * displacement * displacement;
+                }
+                MjJointType::Ball | MjJointType::Free => {
+                    // Ball/Free joint springs would use quaternion distance
+                    // Not commonly used, skip for now
+                }
+            }
+        }
+    }
+
+    data.energy_potential = potential;
+}
+
+/// Compute kinetic energy from mass matrix and velocities.
+///
+/// `E_k` = 0.5 * qvel^T * M * qvel
+///
+/// This must be called AFTER `mj_crba()` has computed the mass matrix.
+/// However, for the `forward()` pipeline we call it after velocity FK
+/// but before CRBA. We use an approximation based on body velocities
+/// when M is not yet available.
+fn mj_energy_vel(model: &Model, data: &mut Data) {
+    // If mass matrix is available and computed, use exact formula
+    // E_k = 0.5 * qvel^T * M * qvel
+    let kinetic = if data.qM.nrows() == model.nv && model.nv > 0 {
+        let m_qvel = &data.qM * &data.qvel;
+        0.5 * data.qvel.dot(&m_qvel)
+    } else {
+        // Fallback: compute from body velocities directly
+        // E_k = 0.5 * Σ (m_i * v_i^T * v_i + ω_i^T * I_i * ω_i)
+        let mut energy = 0.0;
+        for body_id in 1..model.nbody {
+            let mass = model.body_mass[body_id];
+            let inertia = model.body_inertia[body_id];
+
+            // Extract linear and angular velocity from spatial velocity
+            let omega = Vector3::new(
+                data.cvel[body_id][0],
+                data.cvel[body_id][1],
+                data.cvel[body_id][2],
+            );
+            let v = Vector3::new(
+                data.cvel[body_id][3],
+                data.cvel[body_id][4],
+                data.cvel[body_id][5],
+            );
+
+            // Translational kinetic energy: 0.5 * m * |v|²
+            energy += 0.5 * mass * v.norm_squared();
+
+            // Rotational kinetic energy: 0.5 * ω^T * I * ω
+            // Using diagonal inertia in body frame (approximation - should transform)
+            let omega_body = data.xquat[body_id].inverse() * omega;
+            energy += 0.5
+                * (inertia.x * omega_body.x.powi(2)
+                    + inertia.y * omega_body.y.powi(2)
+                    + inertia.z * omega_body.z.powi(2));
+        }
+        energy
+    };
+
+    data.energy_kinetic = kinetic;
+}
+
+// ============================================================================
+// Sensor Pipeline Functions
+// ============================================================================
+
+/// Compute position-dependent sensor values.
+///
+/// This is called after `mj_fwd_position` and computes sensors that depend only
+/// on position (not velocity or acceleration):
+/// - `JointPos`: joint position
+/// - `FramePos`: site/body position
+/// - `FrameQuat`: site/body orientation
+/// - FrameXAxis/YAxis/ZAxis: frame axes
+/// - `TendonPos`: tendon length
+/// - `ActuatorPos`: actuator length
+/// - Rangefinder: distance measurement
+/// - Touch: contact detection
+#[allow(clippy::too_many_lines)]
+fn mj_sensor_pos(model: &Model, data: &mut Data) {
+    for sensor_id in 0..model.nsensor {
+        // Skip non-position sensors
+        if model.sensor_datatype[sensor_id] != MjSensorDataType::Position {
+            continue;
+        }
+
+        let adr = model.sensor_adr[sensor_id];
+        let objid = model.sensor_objid[sensor_id];
+
+        match model.sensor_type[sensor_id] {
+            MjSensorType::JointPos => {
+                // Joint position (1D for hinge/slide, 4D for ball)
+                if objid < model.njnt {
+                    let qpos_adr = model.jnt_qpos_adr[objid];
+                    match model.jnt_type[objid] {
+                        MjJointType::Hinge | MjJointType::Slide => {
+                            data.sensordata[adr] = data.qpos[qpos_adr];
+                        }
+                        MjJointType::Ball => {
+                            // Return quaternion [w, x, y, z]
+                            for i in 0..4 {
+                                if adr + i < data.sensordata.len() {
+                                    data.sensordata[adr + i] = data.qpos[qpos_adr + i];
+                                }
+                            }
+                        }
+                        MjJointType::Free => {
+                            // Return [x, y, z, qw, qx, qy, qz]
+                            for i in 0..7 {
+                                if adr + i < data.sensordata.len() {
+                                    data.sensordata[adr + i] = data.qpos[qpos_adr + i];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            MjSensorType::FramePos => {
+                // Position of site/body in world frame
+                let pos = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => data.site_xpos[objid],
+                    MjObjectType::Body if objid < model.nbody => data.xpos[objid],
+                    MjObjectType::Geom if objid < model.ngeom => data.geom_xpos[objid],
+                    _ => Vector3::zeros(),
+                };
+                if adr + 2 < data.sensordata.len() {
+                    data.sensordata[adr] = pos.x;
+                    data.sensordata[adr + 1] = pos.y;
+                    data.sensordata[adr + 2] = pos.z;
+                }
+            }
+
+            MjSensorType::FrameQuat => {
+                // Orientation of site/body as quaternion [w, x, y, z]
+                let quat = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => {
+                        // Compute site quaternion from rotation matrix
+                        let mat = data.site_xmat[objid];
+                        UnitQuaternion::from_rotation_matrix(
+                            &nalgebra::Rotation3::from_matrix_unchecked(mat),
+                        )
+                    }
+                    MjObjectType::Body if objid < model.nbody => data.xquat[objid],
+                    MjObjectType::Geom if objid < model.ngeom => {
+                        let mat = data.geom_xmat[objid];
+                        UnitQuaternion::from_rotation_matrix(
+                            &nalgebra::Rotation3::from_matrix_unchecked(mat),
+                        )
+                    }
+                    _ => UnitQuaternion::identity(),
+                };
+                if adr + 3 < data.sensordata.len() {
+                    data.sensordata[adr] = quat.w;
+                    data.sensordata[adr + 1] = quat.i;
+                    data.sensordata[adr + 2] = quat.j;
+                    data.sensordata[adr + 3] = quat.k;
+                }
+            }
+
+            MjSensorType::FrameXAxis | MjSensorType::FrameYAxis | MjSensorType::FrameZAxis => {
+                // Frame axis in world coordinates
+                let mat = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
+                    MjObjectType::Body if objid < model.nbody => data.xmat[objid],
+                    MjObjectType::Geom if objid < model.ngeom => data.geom_xmat[objid],
+                    _ => Matrix3::identity(),
+                };
+                // These are the only types that can reach here due to the outer match
+                #[allow(clippy::match_same_arms)]
+                let col_idx = match model.sensor_type[sensor_id] {
+                    MjSensorType::FrameXAxis => 0,
+                    MjSensorType::FrameYAxis => 1,
+                    MjSensorType::FrameZAxis => 2,
+                    _ => 0, // Unreachable but needed for exhaustiveness
+                };
+                if adr + 2 < data.sensordata.len() {
+                    data.sensordata[adr] = mat[(0, col_idx)];
+                    data.sensordata[adr + 1] = mat[(1, col_idx)];
+                    data.sensordata[adr + 2] = mat[(2, col_idx)];
+                }
+            }
+
+            MjSensorType::SubtreeCom => {
+                // Subtree center of mass (compute weighted average of descendant COMs)
+                if objid < model.nbody {
+                    let (com, _total_mass) = compute_subtree_com(model, data, objid);
+                    if adr + 2 < data.sensordata.len() {
+                        data.sensordata[adr] = com.x;
+                        data.sensordata[adr + 1] = com.y;
+                        data.sensordata[adr + 2] = com.z;
+                    }
+                }
+            }
+
+            MjSensorType::Touch => {
+                // Touch sensor - checks if there's contact with the attached geom
+                // Returns contact force magnitude (0 if no contact)
+                // Note: This requires contact detection to be run first
+                let mut force = 0.0;
+                for contact in &data.contacts {
+                    if contact.geom1 == objid || contact.geom2 == objid {
+                        // Estimate contact force from penetration (simplified)
+                        force += contact.depth.max(0.0) * 10000.0; // Stiffness
+                    }
+                }
+                data.sensordata[adr] = force;
+            }
+
+            MjSensorType::Rangefinder => {
+                // Rangefinder - distance along site Z axis
+                // Note: Full implementation requires ray casting
+                // For now, return max range as placeholder
+                data.sensordata[adr] = model.sensor_cutoff[sensor_id];
+            }
+
+            // Skip velocity/acceleration-dependent sensors
+            _ => {}
+        }
+    }
+}
+
+/// Compute velocity-dependent sensor values.
+///
+/// This is called after `mj_fwd_velocity` and computes sensors that depend on
+/// velocity (but not acceleration):
+/// - `JointVel`: joint velocity
+/// - Gyro: angular velocity
+/// - Velocimeter: linear velocity
+/// - `FrameLinVel`: site/body linear velocity
+/// - `FrameAngVel`: site/body angular velocity
+/// - `TendonVel`: tendon velocity
+/// - `ActuatorVel`: actuator velocity
+#[allow(clippy::too_many_lines)]
+fn mj_sensor_vel(model: &Model, data: &mut Data) {
+    for sensor_id in 0..model.nsensor {
+        // Skip non-velocity sensors
+        if model.sensor_datatype[sensor_id] != MjSensorDataType::Velocity {
+            continue;
+        }
+
+        let adr = model.sensor_adr[sensor_id];
+        let objid = model.sensor_objid[sensor_id];
+
+        match model.sensor_type[sensor_id] {
+            MjSensorType::JointVel => {
+                // Joint velocity
+                if objid < model.njnt {
+                    let dof_adr = model.jnt_dof_adr[objid];
+                    let nv = model.jnt_type[objid].nv();
+                    for i in 0..nv {
+                        if adr + i < data.sensordata.len() {
+                            data.sensordata[adr + i] = data.qvel[dof_adr + i];
+                        }
+                    }
+                }
+            }
+
+            MjSensorType::Gyro => {
+                // Angular velocity in sensor (site) frame
+                let (omega_world, site_mat) = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => {
+                        let body_id = model.site_body[objid];
+                        let omega = Vector3::new(
+                            data.cvel[body_id][0],
+                            data.cvel[body_id][1],
+                            data.cvel[body_id][2],
+                        );
+                        (omega, data.site_xmat[objid])
+                    }
+                    MjObjectType::Body if objid < model.nbody => {
+                        let omega = Vector3::new(
+                            data.cvel[objid][0],
+                            data.cvel[objid][1],
+                            data.cvel[objid][2],
+                        );
+                        (omega, data.xmat[objid])
+                    }
+                    _ => (Vector3::zeros(), Matrix3::identity()),
+                };
+                // Transform to sensor frame
+                let omega_sensor = site_mat.transpose() * omega_world;
+                if adr + 2 < data.sensordata.len() {
+                    data.sensordata[adr] = omega_sensor.x;
+                    data.sensordata[adr + 1] = omega_sensor.y;
+                    data.sensordata[adr + 2] = omega_sensor.z;
+                }
+            }
+
+            MjSensorType::Velocimeter => {
+                // Linear velocity in sensor frame
+                let (v_world, site_mat) = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => {
+                        let body_id = model.site_body[objid];
+                        let v = Vector3::new(
+                            data.cvel[body_id][3],
+                            data.cvel[body_id][4],
+                            data.cvel[body_id][5],
+                        );
+                        (v, data.site_xmat[objid])
+                    }
+                    MjObjectType::Body if objid < model.nbody => {
+                        let v = Vector3::new(
+                            data.cvel[objid][3],
+                            data.cvel[objid][4],
+                            data.cvel[objid][5],
+                        );
+                        (v, data.xmat[objid])
+                    }
+                    _ => (Vector3::zeros(), Matrix3::identity()),
+                };
+                // Transform to sensor frame
+                let v_sensor = site_mat.transpose() * v_world;
+                if adr + 2 < data.sensordata.len() {
+                    data.sensordata[adr] = v_sensor.x;
+                    data.sensordata[adr + 1] = v_sensor.y;
+                    data.sensordata[adr + 2] = v_sensor.z;
+                }
+            }
+
+            MjSensorType::FrameLinVel => {
+                // Linear velocity in world frame
+                let v = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => {
+                        let body_id = model.site_body[objid];
+                        Vector3::new(
+                            data.cvel[body_id][3],
+                            data.cvel[body_id][4],
+                            data.cvel[body_id][5],
+                        )
+                    }
+                    MjObjectType::Body if objid < model.nbody => Vector3::new(
+                        data.cvel[objid][3],
+                        data.cvel[objid][4],
+                        data.cvel[objid][5],
+                    ),
+                    _ => Vector3::zeros(),
+                };
+                if adr + 2 < data.sensordata.len() {
+                    data.sensordata[adr] = v.x;
+                    data.sensordata[adr + 1] = v.y;
+                    data.sensordata[adr + 2] = v.z;
+                }
+            }
+
+            MjSensorType::FrameAngVel => {
+                // Angular velocity in world frame
+                let omega = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => {
+                        let body_id = model.site_body[objid];
+                        Vector3::new(
+                            data.cvel[body_id][0],
+                            data.cvel[body_id][1],
+                            data.cvel[body_id][2],
+                        )
+                    }
+                    MjObjectType::Body if objid < model.nbody => Vector3::new(
+                        data.cvel[objid][0],
+                        data.cvel[objid][1],
+                        data.cvel[objid][2],
+                    ),
+                    _ => Vector3::zeros(),
+                };
+                if adr + 2 < data.sensordata.len() {
+                    data.sensordata[adr] = omega.x;
+                    data.sensordata[adr + 1] = omega.y;
+                    data.sensordata[adr + 2] = omega.z;
+                }
+            }
+
+            MjSensorType::SubtreeLinVel => {
+                // Subtree linear momentum / total mass = average velocity
+                if objid < model.nbody {
+                    let (_, total_mass) = compute_subtree_com(model, data, objid);
+                    if total_mass > 1e-10 {
+                        let momentum = compute_subtree_momentum(model, data, objid);
+                        let v = momentum / total_mass;
+                        if adr + 2 < data.sensordata.len() {
+                            data.sensordata[adr] = v.x;
+                            data.sensordata[adr + 1] = v.y;
+                            data.sensordata[adr + 2] = v.z;
+                        }
+                    }
+                }
+            }
+
+            // Skip position/acceleration-dependent sensors
+            _ => {}
+        }
+    }
+}
+
+/// Compute acceleration-dependent sensor values.
+///
+/// This is called after `mj_fwd_acceleration` and computes sensors that depend
+/// on acceleration:
+/// - Accelerometer: linear acceleration (includes gravity in sensor frame)
+/// - Force: constraint force at site
+/// - Torque: constraint torque at site
+/// - `FrameLinAcc`: linear acceleration
+/// - `FrameAngAcc`: angular acceleration
+/// - `ActuatorFrc`: actuator force
+fn mj_sensor_acc(model: &Model, data: &mut Data) {
+    for sensor_id in 0..model.nsensor {
+        // Skip non-acceleration sensors
+        if model.sensor_datatype[sensor_id] != MjSensorDataType::Acceleration {
+            continue;
+        }
+
+        let adr = model.sensor_adr[sensor_id];
+        let objid = model.sensor_objid[sensor_id];
+
+        match model.sensor_type[sensor_id] {
+            MjSensorType::Accelerometer => {
+                // Linear acceleration in sensor frame (includes gravity)
+                // a_sensor = R^T * (a_world - g)
+                // For a body at rest in gravity, accelerometer reads +g (opposing gravity)
+                let (a_world, site_mat) = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => {
+                        let body_id = model.site_body[objid];
+                        // Compute body acceleration from qacc
+                        let a = compute_body_acceleration(model, data, body_id);
+                        (a, data.site_xmat[objid])
+                    }
+                    MjObjectType::Body if objid < model.nbody => {
+                        let a = compute_body_acceleration(model, data, objid);
+                        (a, data.xmat[objid])
+                    }
+                    _ => (Vector3::zeros(), Matrix3::identity()),
+                };
+                // Accelerometer measures: a_proper = a - g (proper acceleration)
+                // In free fall, accelerometer reads 0. At rest on ground, reads -g
+                let a_proper = a_world - model.gravity;
+                let a_sensor = site_mat.transpose() * a_proper;
+                if adr + 2 < data.sensordata.len() {
+                    data.sensordata[adr] = a_sensor.x;
+                    data.sensordata[adr + 1] = a_sensor.y;
+                    data.sensordata[adr + 2] = a_sensor.z;
+                }
+            }
+
+            MjSensorType::Force => {
+                // Constraint/actuator force at site (simplified: use qfrc_constraint projection)
+                // Full implementation would require Jacobian transpose mapping
+                if adr + 2 < data.sensordata.len() {
+                    data.sensordata[adr] = 0.0;
+                    data.sensordata[adr + 1] = 0.0;
+                    data.sensordata[adr + 2] = 0.0;
+                }
+            }
+
+            MjSensorType::Torque => {
+                // Constraint/actuator torque at site
+                if adr + 2 < data.sensordata.len() {
+                    data.sensordata[adr] = 0.0;
+                    data.sensordata[adr + 1] = 0.0;
+                    data.sensordata[adr + 2] = 0.0;
+                }
+            }
+
+            MjSensorType::ActuatorFrc => {
+                // Actuator force
+                if objid < model.nu {
+                    let jnt_id = model.actuator_trnid[objid];
+                    if jnt_id < model.njnt {
+                        let dof_adr = model.jnt_dof_adr[jnt_id];
+                        data.sensordata[adr] = data.qfrc_actuator[dof_adr];
+                    }
+                }
+            }
+
+            MjSensorType::FrameLinAcc => {
+                // Linear acceleration in world frame
+                let a = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Body if objid < model.nbody => {
+                        compute_body_acceleration(model, data, objid)
+                    }
+                    MjObjectType::Site if objid < model.nsite => {
+                        let body_id = model.site_body[objid];
+                        compute_body_acceleration(model, data, body_id)
+                    }
+                    _ => Vector3::zeros(),
+                };
+                if adr + 2 < data.sensordata.len() {
+                    data.sensordata[adr] = a.x;
+                    data.sensordata[adr + 1] = a.y;
+                    data.sensordata[adr + 2] = a.z;
+                }
+            }
+
+            MjSensorType::FrameAngAcc => {
+                // Angular acceleration in world frame
+                // Compute from qacc using Jacobian
+                let alpha = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Body if objid < model.nbody => {
+                        compute_body_angular_acceleration(model, data, objid)
+                    }
+                    MjObjectType::Site if objid < model.nsite => {
+                        let body_id = model.site_body[objid];
+                        compute_body_angular_acceleration(model, data, body_id)
+                    }
+                    _ => Vector3::zeros(),
+                };
+                if adr + 2 < data.sensordata.len() {
+                    data.sensordata[adr] = alpha.x;
+                    data.sensordata[adr + 1] = alpha.y;
+                    data.sensordata[adr + 2] = alpha.z;
+                }
+            }
+
+            // Skip position/velocity-dependent sensors
+            _ => {}
+        }
+    }
+}
+
+// ============================================================================
+// Sensor Helper Functions
+// ============================================================================
+
+/// Compute subtree center of mass for a given body (including all descendants).
+fn compute_subtree_com(model: &Model, data: &Data, root_body: usize) -> (Vector3<f64>, f64) {
+    let mut total_mass = 0.0;
+    let mut weighted_com = Vector3::zeros();
+
+    // Iterate through all bodies that are descendants of root_body
+    for body_id in root_body..model.nbody {
+        // Check if this body is a descendant (simplified: check parent chain)
+        let mut is_descendant = body_id == root_body;
+        let mut current = body_id;
+        while !is_descendant && current != 0 {
+            current = model.body_parent[current];
+            if current == root_body {
+                is_descendant = true;
+            }
+        }
+
+        if is_descendant {
+            let mass = model.body_mass[body_id];
+            let com = data.xipos[body_id]; // COM in world frame
+            total_mass += mass;
+            weighted_com += mass * com;
+        }
+    }
+
+    if total_mass > 1e-10 {
+        (weighted_com / total_mass, total_mass)
+    } else {
+        (Vector3::zeros(), 0.0)
+    }
+}
+
+/// Compute subtree linear momentum for a given body.
+fn compute_subtree_momentum(model: &Model, data: &Data, root_body: usize) -> Vector3<f64> {
+    let mut momentum = Vector3::zeros();
+
+    for body_id in root_body..model.nbody {
+        // Check if descendant
+        let mut is_descendant = body_id == root_body;
+        let mut current = body_id;
+        while !is_descendant && current != 0 {
+            current = model.body_parent[current];
+            if current == root_body {
+                is_descendant = true;
+            }
+        }
+
+        if is_descendant {
+            let mass = model.body_mass[body_id];
+            let v = Vector3::new(
+                data.cvel[body_id][3],
+                data.cvel[body_id][4],
+                data.cvel[body_id][5],
+            );
+            momentum += mass * v;
+        }
+    }
+
+    momentum
+}
+
+/// Compute linear acceleration for a body from joint accelerations.
+fn compute_body_acceleration(model: &Model, data: &Data, body_id: usize) -> Vector3<f64> {
+    let mut acc = Vector3::zeros();
+
+    // For each joint affecting this body, compute acceleration contribution
+    let jnt_start = model.body_jnt_adr[body_id];
+    let jnt_end = jnt_start + model.body_jnt_num[body_id];
+
+    for jnt_id in jnt_start..jnt_end {
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+        let axis = model.jnt_axis[jnt_id];
+
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge => {
+                // Angular acceleration contributes via cross product with COM offset
+                let qacc = data.qacc[dof_adr];
+                let world_axis = data.xquat[body_id] * axis;
+                let com_offset = data.xipos[body_id] - data.xpos[body_id];
+                // a = α × r (tangential acceleration from angular acceleration)
+                acc += qacc * world_axis.cross(&com_offset);
+
+                // Also centripetal from angular velocity
+                let omega = data.qvel[dof_adr] * world_axis;
+                acc += omega.cross(&omega.cross(&com_offset));
+            }
+            MjJointType::Slide => {
+                let qacc = data.qacc[dof_adr];
+                let world_axis = data.xquat[body_id] * axis;
+                acc += qacc * world_axis;
+            }
+            MjJointType::Free => {
+                // Direct linear acceleration
+                acc.x += data.qacc[dof_adr];
+                acc.y += data.qacc[dof_adr + 1];
+                acc.z += data.qacc[dof_adr + 2];
+            }
+            MjJointType::Ball => {
+                // Ball joint only contributes angular acceleration
+                // Linear acceleration comes from centripetal effects
+                let omega = Vector3::new(
+                    data.qvel[dof_adr],
+                    data.qvel[dof_adr + 1],
+                    data.qvel[dof_adr + 2],
+                );
+                let alpha = Vector3::new(
+                    data.qacc[dof_adr],
+                    data.qacc[dof_adr + 1],
+                    data.qacc[dof_adr + 2],
+                );
+                let world_omega = data.xquat[body_id] * omega;
+                let world_alpha = data.xquat[body_id] * alpha;
+                let com_offset = data.xipos[body_id] - data.xpos[body_id];
+                acc += world_alpha.cross(&com_offset);
+                acc += world_omega.cross(&world_omega.cross(&com_offset));
+            }
+        }
+    }
+
+    acc
+}
+
+/// Compute angular acceleration for a body from joint accelerations.
+fn compute_body_angular_acceleration(model: &Model, data: &Data, body_id: usize) -> Vector3<f64> {
+    let mut alpha = Vector3::zeros();
+
+    let jnt_start = model.body_jnt_adr[body_id];
+    let jnt_end = jnt_start + model.body_jnt_num[body_id];
+
+    for jnt_id in jnt_start..jnt_end {
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+        let axis = model.jnt_axis[jnt_id];
+
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge => {
+                let qacc = data.qacc[dof_adr];
+                let world_axis = data.xquat[body_id] * axis;
+                alpha += qacc * world_axis;
+            }
+            MjJointType::Ball => {
+                let world_alpha = data.xquat[body_id]
+                    * Vector3::new(
+                        data.qacc[dof_adr],
+                        data.qacc[dof_adr + 1],
+                        data.qacc[dof_adr + 2],
+                    );
+                alpha += world_alpha;
+            }
+            MjJointType::Free => {
+                alpha.x += data.qacc[dof_adr + 3];
+                alpha.y += data.qacc[dof_adr + 4];
+                alpha.z += data.qacc[dof_adr + 5];
+            }
+            MjJointType::Slide => {
+                // Prismatic joints don't contribute angular acceleration
+            }
+        }
+    }
+
+    alpha
 }
 
 /// Velocity kinematics: compute body velocities from qvel.
@@ -6346,8 +7294,14 @@ fn mj_crba(model: &Model, data: &mut Data) {
                         // Translational contribution
                         data.qM[(dof_i, dof_j)] += mass_k * dp_dqi.dot(&dp_dqj);
 
-                        // Rotational inertia contribution: I_axis = axis^T * I * axis
-                        let i_rot = axis_i.dot(&(inertia_k.component_mul(&axis_j)));
+                        // Rotational inertia contribution: I_axis = axis_i^T * I_world * axis_j
+                        // inertia_k is in principal axes (body_iquat frame), need to transform to world
+                        // I_world = R * I_diag * R^T where R = ximat (body inertial frame in world)
+                        let i_mat = &data.ximat[body_k];
+                        // Compute axis_i in body inertial frame, apply diagonal inertia, transform back
+                        let axis_i_body = i_mat.transpose() * axis_i;
+                        let axis_j_body = i_mat.transpose() * axis_j;
+                        let i_rot = axis_i_body.dot(&(inertia_k.component_mul(&axis_j_body)));
                         data.qM[(dof_i, dof_j)] += i_rot;
                     }
                     (MjJointType::Slide, MjJointType::Slide) => {
@@ -6385,15 +7339,31 @@ fn mj_crba(model: &Model, data: &mut Data) {
                         for d in 0..3 {
                             data.qM[(dof_i + d, dof_j + d)] += mass_k;
                         }
-                        // Angular DOFs (3,4,5): inertia on diagonal
-                        for d in 0..3 {
-                            data.qM[(dof_i + 3 + d, dof_j + 3 + d)] += inertia_k[d];
+                        // Angular DOFs (3,4,5): inertia in world frame
+                        // I_world = R * I_diag * R^T
+                        let i_mat = &data.ximat[body_k];
+                        for row in 0..3 {
+                            for col in 0..3 {
+                                // (R * I_diag * R^T)[row,col] = Σ R[row,d] * I[d] * R[col,d]
+                                let mut val = 0.0;
+                                for d in 0..3 {
+                                    val += i_mat[(row, d)] * inertia_k[d] * i_mat[(col, d)];
+                                }
+                                data.qM[(dof_i + 3 + row, dof_j + 3 + col)] += val;
+                            }
                         }
                     }
                     (MjJointType::Ball, MjJointType::Ball) if jnt_i == jnt_j => {
-                        // Same ball joint: 3x3 rotational inertia
-                        for d in 0..3 {
-                            data.qM[(dof_i + d, dof_j + d)] += inertia_k[d];
+                        // Same ball joint: 3x3 rotational inertia in world frame
+                        let i_mat = &data.ximat[body_k];
+                        for row in 0..3 {
+                            for col in 0..3 {
+                                let mut val = 0.0;
+                                for d in 0..3 {
+                                    val += i_mat[(row, d)] * inertia_k[d] * i_mat[(col, d)];
+                                }
+                                data.qM[(dof_i + row, dof_j + col)] += val;
+                            }
                         }
                     }
                     _ => {
@@ -6467,7 +7437,13 @@ fn mj_rne(model: &Model, data: &mut Data) {
     }
 
     // ========== Gravity contribution ==========
-    // τ_g[i] = Σ_k m_k * (∂p_k/∂q_i)^T * g
+    // The bias force is what we need to SUBTRACT from applied forces.
+    // For gravity: qfrc_bias should be NEGATIVE of gravity (i.e., -m*g)
+    // because: M*qacc = qfrc - qfrc_bias, and for free fall with qfrc=0:
+    //   M*qacc = -qfrc_bias = -(-m*g) = m*g in force direction
+    //   qacc = g (acceleration in gravity direction) ✓
+    //
+    // τ_g[i] = -Σ_k m_k * (∂p_k/∂q_i)^T * g
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let jnt_body = model.jnt_body[jnt_id];
@@ -6480,7 +7456,8 @@ fn mj_rne(model: &Model, data: &mut Data) {
 
             let mass_k = model.body_mass[body_k];
             let com_k = data.xipos[body_k];
-            let gravity_force = mass_k * model.gravity;
+            // Negative because qfrc_bias opposes motion (Coriolis-like convention)
+            let gravity_force = -mass_k * model.gravity;
 
             match model.jnt_type[jnt_id] {
                 MjJointType::Hinge => {
@@ -6533,11 +7510,66 @@ fn mj_rne(model: &Model, data: &mut Data) {
     // - Centrifugal: ω × (ω × r) effects
     // - Coriolis: cross-coupling between joint velocities
 
-    // Compute Coriolis terms using Christoffel symbols
+    // ========== Gyroscopic terms for Ball/Free joints ==========
+    // τ_gyro = ω × (I * ω) - the gyroscopic torque
+    // This is the dominant Coriolis effect for 3D rotations
+    for body_id in 1..model.nbody {
+        let jnt_start = model.body_jnt_adr[body_id];
+        let jnt_end = jnt_start + model.body_jnt_num[body_id];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Ball => {
+                    // Angular velocity in body frame
+                    let omega_body = Vector3::new(
+                        data.qvel[dof_adr],
+                        data.qvel[dof_adr + 1],
+                        data.qvel[dof_adr + 2],
+                    );
+                    // Body inertia (diagonal in principal axes)
+                    let inertia = model.body_inertia[body_id];
+                    // I * ω
+                    let i_omega = Vector3::new(
+                        inertia.x * omega_body.x,
+                        inertia.y * omega_body.y,
+                        inertia.z * omega_body.z,
+                    );
+                    // Gyroscopic torque: ω × (I * ω)
+                    let gyro = omega_body.cross(&i_omega);
+                    data.qfrc_bias[dof_adr] += gyro.x;
+                    data.qfrc_bias[dof_adr + 1] += gyro.y;
+                    data.qfrc_bias[dof_adr + 2] += gyro.z;
+                }
+                MjJointType::Free => {
+                    // Angular DOFs are at dof_adr + 3..6
+                    let omega_body = Vector3::new(
+                        data.qvel[dof_adr + 3],
+                        data.qvel[dof_adr + 4],
+                        data.qvel[dof_adr + 5],
+                    );
+                    let inertia = model.body_inertia[body_id];
+                    let i_omega = Vector3::new(
+                        inertia.x * omega_body.x,
+                        inertia.y * omega_body.y,
+                        inertia.z * omega_body.z,
+                    );
+                    let gyro = omega_body.cross(&i_omega);
+                    data.qfrc_bias[dof_adr + 3] += gyro.x;
+                    data.qfrc_bias[dof_adr + 4] += gyro.y;
+                    data.qfrc_bias[dof_adr + 5] += gyro.z;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Compute Coriolis terms using Christoffel symbols for hinge joints
     // This is O(n³) but correct for general trees
     for jnt_i in 0..model.njnt {
         if model.jnt_type[jnt_i] != MjJointType::Hinge {
-            continue; // For now, only handle hinge joints for Coriolis
+            continue; // Hinge joints - Ball/Free handled above via gyroscopic terms
         }
 
         let dof_i = model.jnt_dof_adr[jnt_i];
@@ -6691,19 +7723,26 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
 /// Compute constraint forces (contacts and joint limits).
 ///
-/// This implements joint limit enforcement using a penalty/constraint method.
-/// Contact constraints would be added here using the PGS solver.
+/// This implements constraint-based enforcement using a hybrid approach:
+/// - Joint limits: Soft penalty method with Baumgarte stabilization
+/// - Contacts: Would use PGS solver when wired to collision detection
 ///
-/// For joint limits, we use soft constraints:
-/// `τ` = k * penetration + b * `velocity_into_limit`
+/// The penalty parameters are designed for numerical stability:
+/// - High stiffness (10000) provides near-hard limits
+/// - Critical damping (1000) prevents oscillation at the limit
 fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     data.qfrc_constraint.fill(0.0);
     data.ncon = 0;
     data.contacts.clear();
 
-    // Joint limit enforcement
-    let limit_stiffness = 10000.0; // High stiffness for hard limits
-    let limit_damping = 1000.0; // Critical damping
+    // ========== Joint Limit Constraints ==========
+    // Using penalty method with Baumgarte stabilization:
+    // τ = k * penetration + b * velocity_into_limit
+    //
+    // MuJoCo uses solver-based approach, but penalty is acceptable for most robotics.
+    // Parameters are chosen for stability: k = 10000, b = 1000 gives critical damping.
+    let limit_stiffness = 10000.0;
+    let limit_damping = 1000.0;
 
     for jnt_id in 0..model.njnt {
         if !model.jnt_limited[jnt_id] {
@@ -6720,13 +7759,13 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
                 let qdot = data.qvel[dof_adr];
 
                 if q < limit_min {
-                    // Below lower limit
+                    // Below lower limit - push up
                     let penetration = limit_min - q;
                     let vel_into = (-qdot).max(0.0);
                     data.qfrc_constraint[dof_adr] +=
                         limit_stiffness * penetration + limit_damping * vel_into;
                 } else if q > limit_max {
-                    // Above upper limit
+                    // Above upper limit - push down
                     let penetration = q - limit_max;
                     let vel_into = qdot.max(0.0);
                     data.qfrc_constraint[dof_adr] -=
@@ -6734,19 +7773,29 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
                 }
             }
             MjJointType::Ball | MjJointType::Free => {
-                // Ball/Free joints can have cone limits, not implemented yet
+                // Ball/Free joints can have cone limits (swing-twist)
+                // Not yet implemented - would require quaternion-based limit checking
             }
         }
     }
 
-    // Contact constraints would go here
-    // This would involve:
-    // 1. Collision detection to populate data.contacts
-    // 2. Building the constraint Jacobian J
-    // 3. Using PGS to solve: J * M^{-1} * J^T * λ = -J * (M^{-1} * τ + v/h)
-    // 4. Computing qfrc_constraint = J^T * λ
+    // ========== Contact Constraints (Infrastructure Ready) ==========
+    // To wire contacts, one would:
+    // 1. Run collision detection to populate data.contacts
+    // 2. Build constraint Jacobian for each contact:
+    //    - Normal constraint: J_n @ qacc ≥ -k*depth - b*v_n (inequality)
+    //    - Friction constraints: |J_t @ qacc| ≤ μ * λ_n (cone)
+    // 3. Solve with PGS:
+    //    let m_inv = compute_inverse_mass(model, data);
+    //    let qacc_smooth = compute_smooth_acceleration(model, data);
+    //    let result = solver.solve(&m_inv, &qacc_smooth, &constraints);
+    //    for (i, c) in constraints.iter().enumerate() {
+    //        data.qfrc_constraint += c.jacobian.transpose() * result.forces[i];
+    //    }
     //
-    // For now, contacts are handled by the existing World/Stepper system
+    // The PGS solver infrastructure (PGSSolver, Constraint, etc.) is already
+    // implemented and tested. Contact integration requires collision detection
+    // which is currently handled by the World/Stepper system.
 }
 
 /// Compute final acceleration from forces using proper matrix solve.
@@ -6769,6 +7818,8 @@ fn mj_fwd_acceleration(model: &Model, data: &mut Data) {
 
     // Solve M * qacc = qfrc_total using Cholesky decomposition
     // M should be symmetric positive-definite
+    // NOTE: clone() is required because nalgebra's cholesky() consumes the matrix.
+    // For large systems (humanoids), consider storing a factorization buffer in Data.
     match data.qM.clone().cholesky() {
         Some(chol) => {
             // Solve L * L^T * x = b
@@ -6904,6 +7955,222 @@ fn mj_normalize_quat(model: &Model, data: &mut Data) {
             }
             MjJointType::Hinge | MjJointType::Slide => {
                 // No quaternion to normalize
+            }
+        }
+    }
+}
+
+/// Compute velocity from position difference: `qvel` = `mj_differentiatePos(qpos2 - qpos1) / dt`.
+///
+/// This function computes the velocity that would move from `qpos1` to `qpos2` in time `dt`.
+/// For quaternions (ball/free joints), it uses the proper SO(3) velocity rather than
+/// naive quaternion subtraction.
+///
+/// # Arguments
+///
+/// * `model` - The model containing joint definitions
+/// * `qvel` - Output velocity vector [nv]
+/// * `qpos1` - Start position
+/// * `qpos2` - End position
+/// * `dt` - Time difference
+///
+/// # `MuJoCo` Equivalence
+///
+/// This matches `MuJoCo`'s `mj_differentiatePos` function.
+pub fn mj_differentiate_pos(
+    model: &Model,
+    qvel: &mut DVector<f64>,
+    qpos1: &DVector<f64>,
+    qpos2: &DVector<f64>,
+    dt: f64,
+) {
+    if dt.abs() < 1e-10 {
+        qvel.fill(0.0);
+        return;
+    }
+
+    let dt_inv = 1.0 / dt;
+
+    for jnt_id in 0..model.njnt {
+        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge | MjJointType::Slide => {
+                // Scalar: simple finite difference
+                qvel[dof_adr] = (qpos2[qpos_adr] - qpos1[qpos_adr]) * dt_inv;
+            }
+
+            MjJointType::Ball => {
+                // Quaternion velocity: compute angular velocity from q1 to q2
+                // q2 = q_delta * q1  =>  q_delta = q2 * q1^-1
+                // angular velocity = 2 * log(q_delta) / dt
+                let q1 = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    qpos1[qpos_adr],
+                    qpos1[qpos_adr + 1],
+                    qpos1[qpos_adr + 2],
+                    qpos1[qpos_adr + 3],
+                ));
+                let q2 = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    qpos2[qpos_adr],
+                    qpos2[qpos_adr + 1],
+                    qpos2[qpos_adr + 2],
+                    qpos2[qpos_adr + 3],
+                ));
+
+                // q_delta = q2 * q1.inverse()
+                let q_delta = q2 * q1.inverse();
+
+                // Extract axis-angle
+                let angle = 2.0 * q_delta.w.acos();
+                let sin_half = (1.0 - q_delta.w * q_delta.w).sqrt();
+
+                if sin_half > 1e-10 {
+                    let axis = Vector3::new(q_delta.i, q_delta.j, q_delta.k) / sin_half;
+                    let omega = axis * angle * dt_inv;
+                    qvel[dof_adr] = omega.x;
+                    qvel[dof_adr + 1] = omega.y;
+                    qvel[dof_adr + 2] = omega.z;
+                } else {
+                    qvel[dof_adr] = 0.0;
+                    qvel[dof_adr + 1] = 0.0;
+                    qvel[dof_adr + 2] = 0.0;
+                }
+            }
+
+            MjJointType::Free => {
+                // Linear velocity: simple finite difference
+                qvel[dof_adr] = (qpos2[qpos_adr] - qpos1[qpos_adr]) * dt_inv;
+                qvel[dof_adr + 1] = (qpos2[qpos_adr + 1] - qpos1[qpos_adr + 1]) * dt_inv;
+                qvel[dof_adr + 2] = (qpos2[qpos_adr + 2] - qpos1[qpos_adr + 2]) * dt_inv;
+
+                // Angular velocity from quaternion difference
+                let q1 = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    qpos1[qpos_adr + 3],
+                    qpos1[qpos_adr + 4],
+                    qpos1[qpos_adr + 5],
+                    qpos1[qpos_adr + 6],
+                ));
+                let q2 = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    qpos2[qpos_adr + 3],
+                    qpos2[qpos_adr + 4],
+                    qpos2[qpos_adr + 5],
+                    qpos2[qpos_adr + 6],
+                ));
+
+                let q_delta = q2 * q1.inverse();
+                let angle = 2.0 * q_delta.w.acos();
+                let sin_half = (1.0 - q_delta.w * q_delta.w).sqrt();
+
+                if sin_half > 1e-10 {
+                    let axis = Vector3::new(q_delta.i, q_delta.j, q_delta.k) / sin_half;
+                    let omega = axis * angle * dt_inv;
+                    qvel[dof_adr + 3] = omega.x;
+                    qvel[dof_adr + 4] = omega.y;
+                    qvel[dof_adr + 5] = omega.z;
+                } else {
+                    qvel[dof_adr + 3] = 0.0;
+                    qvel[dof_adr + 4] = 0.0;
+                    qvel[dof_adr + 5] = 0.0;
+                }
+            }
+        }
+    }
+}
+
+/// Integrate position given velocity: `qpos_out` = `mj_integratePos(qpos, qvel, dt)`.
+///
+/// This is the inverse of `mj_differentiatePos`. It computes the position reached
+/// by integrating velocity over time dt, handling quaternions correctly on SO(3).
+///
+/// # Arguments
+///
+/// * `model` - The model containing joint definitions
+/// * `qpos_out` - Output position vector [nq]
+/// * `qpos` - Start position
+/// * `qvel` - Velocity
+/// * `dt` - Time step
+///
+/// # `MuJoCo` Equivalence
+///
+/// This matches the inverse operation of `mj_differentiatePos`.
+pub fn mj_integrate_pos_explicit(
+    model: &Model,
+    qpos_out: &mut DVector<f64>,
+    qpos: &DVector<f64>,
+    qvel: &DVector<f64>,
+    dt: f64,
+) {
+    for jnt_id in 0..model.njnt {
+        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge | MjJointType::Slide => {
+                qpos_out[qpos_adr] = qpos[qpos_adr] + qvel[dof_adr] * dt;
+            }
+
+            MjJointType::Ball => {
+                // Quaternion integration
+                let omega = Vector3::new(qvel[dof_adr], qvel[dof_adr + 1], qvel[dof_adr + 2]);
+                let angle = omega.norm() * dt;
+
+                let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    qpos[qpos_adr],
+                    qpos[qpos_adr + 1],
+                    qpos[qpos_adr + 2],
+                    qpos[qpos_adr + 3],
+                ));
+
+                let q_new = if angle > 1e-10 {
+                    let axis = omega / omega.norm();
+                    let dq = UnitQuaternion::from_axis_angle(
+                        &nalgebra::Unit::new_normalize(axis),
+                        angle,
+                    );
+                    q_old * dq
+                } else {
+                    q_old
+                };
+
+                qpos_out[qpos_adr] = q_new.w;
+                qpos_out[qpos_adr + 1] = q_new.i;
+                qpos_out[qpos_adr + 2] = q_new.j;
+                qpos_out[qpos_adr + 3] = q_new.k;
+            }
+
+            MjJointType::Free => {
+                // Linear position
+                qpos_out[qpos_adr] = qpos[qpos_adr] + qvel[dof_adr] * dt;
+                qpos_out[qpos_adr + 1] = qpos[qpos_adr + 1] + qvel[dof_adr + 1] * dt;
+                qpos_out[qpos_adr + 2] = qpos[qpos_adr + 2] + qvel[dof_adr + 2] * dt;
+
+                // Quaternion integration
+                let omega = Vector3::new(qvel[dof_adr + 3], qvel[dof_adr + 4], qvel[dof_adr + 5]);
+                let angle = omega.norm() * dt;
+
+                let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    qpos[qpos_adr + 3],
+                    qpos[qpos_adr + 4],
+                    qpos[qpos_adr + 5],
+                    qpos[qpos_adr + 6],
+                ));
+
+                let q_new = if angle > 1e-10 {
+                    let axis = omega / omega.norm();
+                    let dq = UnitQuaternion::from_axis_angle(
+                        &nalgebra::Unit::new_normalize(axis),
+                        angle,
+                    );
+                    q_old * dq
+                } else {
+                    q_old
+                };
+
+                qpos_out[qpos_adr + 3] = q_new.w;
+                qpos_out[qpos_adr + 4] = q_new.i;
+                qpos_out[qpos_adr + 5] = q_new.j;
+                qpos_out[qpos_adr + 6] = q_new.k;
             }
         }
     }

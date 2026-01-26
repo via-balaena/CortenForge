@@ -189,6 +189,10 @@ pub use mujoco_pipeline::{
     Integrator,
     JointIndex,
     MjJointType,
+    // Sensor types (Phase 5)
+    MjObjectType,
+    MjSensorDataType,
+    MjSensorType,
     // MuJoCo-aligned Model/Data architecture (Phase 1)
     Model,
     NLinkPendulum,
@@ -203,6 +207,9 @@ pub use mujoco_pipeline::{
     SpawnedArticulation,
     SpherePile,
     SphericalPendulum,
+    // Utility functions for position/velocity differentiation
+    mj_differentiate_pos,
+    mj_integrate_pos_explicit,
 };
 
 // Re-export contact solver config for performance tuning
