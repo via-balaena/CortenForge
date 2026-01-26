@@ -34,7 +34,7 @@
 //! - Phase 1: Single pendulum (1-DOF revolute) - COMPLETE
 //! - Phase 2: Constrained pendulum (PGS-style constraint solver) - COMPLETE
 //! - Phase 3: Double pendulum (2-DOF, CRBA + RNE) - COMPLETE
-//! - Phase 4: Multi-body (n-DOF, general articulated bodies) - TODO
+//! - Phase 4: N-link pendulum (n-DOF, general serial chain) - COMPLETE
 //! - Phase 5: Ball joints (3-DOF spherical joints) - TODO
 //! - Phase 6: Contact (ground plane, sphere collisions) - TODO
 
@@ -670,12 +670,373 @@ impl DoublePendulum {
     }
 }
 
+// ============================================================================
+// Phase 4: N-Link Pendulum (General Articulated Chain)
+// ============================================================================
+//
+// This generalizes the double pendulum to an arbitrary number of links using
+// MuJoCo's exact algorithms:
+// - Recursive CRBA for n×n inertia matrix M(θ)
+// - Recursive RNE for bias forces (Coriolis + gravity)
+// - Dense matrix solve for accelerations
+// - Semi-implicit Euler integration
+//
+// This is a serial chain (no branches), but demonstrates the recursive
+// algorithms that scale to general kinematic trees.
+
+use nalgebra::{DMatrix, DVector};
+
+/// An n-link pendulum (serial chain of revolute joints).
+///
+/// This is the general case of the double pendulum, supporting any number
+/// of links. Each link is a point mass at the end of a massless rod.
+///
+/// The algorithms follow MuJoCo/Featherstone exactly:
+/// - CRBA: Composite Rigid Body Algorithm for inertia matrix
+/// - RNE: Recursive Newton-Euler for bias forces
+///
+/// For a serial chain, we simplify the spatial algebra since all joints
+/// rotate about the same axis (z-axis in the local frame).
+#[derive(Debug, Clone)]
+#[allow(clippy::doc_markdown)] // Math notation in docs uses subscripts
+pub struct NLinkPendulum {
+    /// Joint angles θ[i] in radians (angle of link i relative to link i-1)
+    pub qpos: DVector<f64>,
+    /// Joint velocities θ̇[i] in rad/s
+    pub qvel: DVector<f64>,
+    /// Link lengths L[i] in meters
+    pub lengths: Vec<f64>,
+    /// Link masses m[i] in kg (point mass at end of link)
+    pub masses: Vec<f64>,
+    /// Gravitational acceleration in m/s²
+    pub gravity: f64,
+}
+
+#[allow(clippy::doc_markdown)] // Math notation in docs uses subscripts like θ_abs, m_i, etc.
+#[allow(clippy::missing_panics_doc)] // Panics are from asserts in builder methods
+impl NLinkPendulum {
+    /// Create an n-link pendulum with uniform link lengths and masses.
+    #[must_use]
+    pub fn new(n_links: usize, length: f64, mass: f64) -> Self {
+        Self {
+            qpos: DVector::zeros(n_links),
+            qvel: DVector::zeros(n_links),
+            lengths: vec![length; n_links],
+            masses: vec![mass; n_links],
+            gravity: 9.81,
+        }
+    }
+
+    /// Create an n-link pendulum with custom lengths and masses.
+    #[must_use]
+    pub fn with_parameters(lengths: Vec<f64>, masses: Vec<f64>) -> Self {
+        assert_eq!(
+            lengths.len(),
+            masses.len(),
+            "lengths and masses must have same length"
+        );
+        let n = lengths.len();
+        Self {
+            qpos: DVector::zeros(n),
+            qvel: DVector::zeros(n),
+            lengths,
+            masses,
+            gravity: 9.81,
+        }
+    }
+
+    /// Set initial joint angles.
+    #[must_use]
+    pub fn with_angles(mut self, angles: &[f64]) -> Self {
+        assert_eq!(
+            angles.len(),
+            self.n_links(),
+            "angles must match number of links"
+        );
+        for (i, &angle) in angles.iter().enumerate() {
+            self.qpos[i] = angle;
+        }
+        self
+    }
+
+    /// Set initial joint velocities.
+    #[must_use]
+    pub fn with_velocities(mut self, velocities: &[f64]) -> Self {
+        assert_eq!(
+            velocities.len(),
+            self.n_links(),
+            "velocities must match number of links"
+        );
+        for (i, &vel) in velocities.iter().enumerate() {
+            self.qvel[i] = vel;
+        }
+        self
+    }
+
+    /// Get the number of links (degrees of freedom).
+    #[must_use]
+    pub fn n_links(&self) -> usize {
+        self.lengths.len()
+    }
+
+    /// Compute the absolute angle of link i from vertical.
+    ///
+    /// θ_abs[i] = θ[0] + θ[1] + ... + θ[i]
+    #[must_use]
+    pub fn absolute_angle(&self, link: usize) -> f64 {
+        self.qpos.iter().take(link + 1).sum()
+    }
+
+    /// Compute the Cartesian position of the end of link i.
+    ///
+    /// Position is computed by summing all link contributions:
+    /// x = Σ L[j] * sin(θ_abs[j])
+    /// y = -Σ L[j] * cos(θ_abs[j])
+    #[must_use]
+    pub fn position(&self, link: usize) -> Vector2<f64> {
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut theta_abs = 0.0;
+
+        for j in 0..=link {
+            theta_abs += self.qpos[j];
+            x += self.lengths[j] * theta_abs.sin();
+            y -= self.lengths[j] * theta_abs.cos();
+        }
+
+        Vector2::new(x, y)
+    }
+
+    /// Compute the n×n inertia matrix M(θ) via CRBA.
+    ///
+    /// For a planar serial chain with point masses at link ends:
+    ///
+    /// The kinetic energy is T = (1/2) Σ_k m_k |v_k|²
+    ///
+    /// The velocity of mass k depends on all joints 0..k:
+    /// v_k = Σ_{j=0}^{k} L_j * θ̇_abs_j * (unit perpendicular to link j)
+    ///
+    /// where θ̇_abs_j = θ̇_0 + θ̇_1 + ... + θ̇_j
+    ///
+    /// Working out the kinetic energy and extracting M:
+    /// M[i,j] = ∂²T/(∂θ̇_i ∂θ̇_j)
+    ///
+    /// For joint i affecting mass k (where k ≥ i), the velocity contribution is:
+    /// ∂v_k/∂θ̇_i = Σ_{j=i}^{k} L_j * (perpendicular to link j)
+    ///
+    /// M[i,j] = Σ_{k≥max(i,j)} m_k * (∂v_k/∂θ̇_i · ∂v_k/∂θ̇_j)
+    ///        = Σ_{k≥max(i,j)} m_k * Σ_{a=i}^{k} Σ_{b=j}^{k} L_a * L_b * cos(θ_abs_a - θ_abs_b)
+    #[must_use]
+    #[allow(clippy::needless_range_loop)] // Indices needed for array access patterns
+    pub fn inertia_matrix(&self) -> DMatrix<f64> {
+        let n = self.n_links();
+        let mut m_matrix = DMatrix::zeros(n, n);
+
+        // Precompute absolute angles
+        let mut theta_abs = vec![0.0; n];
+        let mut sum = 0.0;
+        for i in 0..n {
+            sum += self.qpos[i];
+            theta_abs[i] = sum;
+        }
+
+        // M[i,j] = Σ_{k≥max(i,j)} m_k * Σ_{a=i}^{k} Σ_{b=j}^{k} L_a * L_b * cos(θ_abs_a - θ_abs_b)
+        for i in 0..n {
+            for j in 0..n {
+                let mut m_ij = 0.0;
+                let max_ij = i.max(j);
+
+                // Sum over all masses from max(i,j) to n-1
+                for k in max_ij..n {
+                    // For this mass, sum over all link pairs that affect it
+                    for a in i..=k {
+                        for b in j..=k {
+                            let angle_diff = theta_abs[a] - theta_abs[b];
+                            m_ij += self.masses[k]
+                                * self.lengths[a]
+                                * self.lengths[b]
+                                * angle_diff.cos();
+                        }
+                    }
+                }
+
+                m_matrix[(i, j)] = m_ij;
+            }
+        }
+
+        m_matrix
+    }
+
+    /// Compute the bias forces (Coriolis + gravity) via RNE.
+    ///
+    /// The bias force for joint i is computed using the Christoffel symbols:
+    /// C[i] = Σ_{j,k} c_{ijk} * θ̇_j * θ̇_k + g[i]
+    ///
+    /// where c_{ijk} = (1/2)(∂M_{ij}/∂θ_k + ∂M_{ik}/∂θ_j - ∂M_{jk}/∂θ_i)
+    ///
+    /// For gravity: g[i] = ∂V/∂θ_i where V = Σ_k m_k * g * h_k
+    /// h_k = -Σ_{j=0}^{k} L_j * cos(θ_abs_j)
+    /// ∂h_k/∂θ_i = Σ_{j=i}^{k} L_j * sin(θ_abs_j)  (for i ≤ k, else 0)
+    /// g[i] = Σ_{k≥i} m_k * g * Σ_{j=i}^{k} L_j * sin(θ_abs_j)
+    #[must_use]
+    #[allow(clippy::similar_names)] // theta_abs variables are intentional
+    #[allow(clippy::needless_range_loop)] // Indices needed for array access patterns
+    pub fn bias_forces(&self) -> DVector<f64> {
+        let n = self.n_links();
+        let mut bias = DVector::zeros(n);
+
+        // Precompute absolute angles
+        let mut theta_abs = vec![0.0; n];
+        let mut sum = 0.0;
+        for i in 0..n {
+            sum += self.qpos[i];
+            theta_abs[i] = sum;
+        }
+
+        for i in 0..n {
+            let mut coriolis_i = 0.0;
+            let mut gravity_i = 0.0;
+
+            // Gravity contribution:
+            // g[i] = Σ_{k≥i} m_k * g * Σ_{j=i}^{k} L_j * sin(θ_abs_j)
+            for k in i..n {
+                for j in i..=k {
+                    gravity_i +=
+                        self.masses[k] * self.gravity * self.lengths[j] * theta_abs[j].sin();
+                }
+            }
+
+            // Coriolis contribution using Christoffel symbols
+            // c_{ijk} = (1/2)(∂M_{ij}/∂θ_k + ∂M_{ik}/∂θ_j - ∂M_{jk}/∂θ_i)
+            for j in 0..n {
+                for k in 0..n {
+                    let dm_ij_dk = self.partial_m(&theta_abs, i, j, k);
+                    let dm_ik_dj = self.partial_m(&theta_abs, i, k, j);
+                    let dm_jk_di = self.partial_m(&theta_abs, j, k, i);
+
+                    let c_ijk = 0.5 * (dm_ij_dk + dm_ik_dj - dm_jk_di);
+                    coriolis_i += c_ijk * self.qvel[j] * self.qvel[k];
+                }
+            }
+
+            bias[i] = coriolis_i + gravity_i;
+        }
+
+        bias
+    }
+
+    /// Compute ∂M[i,j]/∂θ_c
+    ///
+    /// M[i,j] = Σ_{k≥max(i,j)} m_k * Σ_{a=i}^{k} Σ_{b=j}^{k} L_a * L_b * cos(θ_abs_a - θ_abs_b)
+    ///
+    /// ∂M[i,j]/∂θ_c = Σ_{k≥max(i,j)} m_k * Σ_{a=i}^{k} Σ_{b=j}^{k} L_a * L_b * (-sin(θ_abs_a - θ_abs_b)) * sign
+    ///
+    /// where sign = ∂(θ_abs_a - θ_abs_b)/∂θ_c = (1 if c≤a else 0) - (1 if c≤b else 0)
+    fn partial_m(&self, theta_abs: &[f64], i: usize, j: usize, c: usize) -> f64 {
+        let n = self.n_links();
+        let max_ij = i.max(j);
+        let mut result = 0.0;
+
+        for k in max_ij..n {
+            for a in i..=k {
+                for b in j..=k {
+                    // Determine the sign of ∂(θ_abs_a - θ_abs_b)/∂θ_c
+                    let d_theta_a: f64 = if c <= a { 1.0 } else { 0.0 };
+                    let d_theta_b: f64 = if c <= b { 1.0 } else { 0.0 };
+                    let sign = d_theta_a - d_theta_b;
+
+                    if sign.abs() > 0.5 {
+                        let angle_diff = theta_abs[a] - theta_abs[b];
+                        result += self.masses[k]
+                            * self.lengths[a]
+                            * self.lengths[b]
+                            * (-angle_diff.sin())
+                            * sign;
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Compute the total mechanical energy.
+    ///
+    /// E = T + V where:
+    /// - T = ½ q̇ᵀ M q̇ (kinetic energy)
+    /// - V = Σ m_i * g * h_i (potential energy)
+    #[must_use]
+    pub fn total_energy(&self) -> f64 {
+        let n = self.n_links();
+
+        // Kinetic energy: T = ½ q̇ᵀ M q̇
+        let inertia = self.inertia_matrix();
+        let kinetic = 0.5 * self.qvel.dot(&(&inertia * &self.qvel));
+
+        // Potential energy: V = Σ m_i * g * (y_i + total_length)
+        // Reference: V = 0 when all masses at lowest point
+        let mut potential = 0.0;
+        let total_length: f64 = self.lengths.iter().sum();
+
+        for i in 0..n {
+            let pos = self.position(i);
+            // Height relative to lowest possible position
+            let h = pos.y + total_length;
+            potential += self.masses[i] * self.gravity * h;
+        }
+
+        kinetic + potential
+    }
+
+    /// Step the n-link pendulum forward using `MuJoCo`'s approach.
+    ///
+    /// 1. Compute inertia matrix M(θ) via CRBA
+    /// 2. Compute bias forces via RNE
+    /// 3. Solve M @ qacc = -bias for accelerations
+    /// 4. Semi-implicit Euler integration
+    pub fn step(&mut self, dt: f64) {
+        // Stage 1: Forward Position (compute M via CRBA)
+        let inertia = self.inertia_matrix();
+
+        // Stage 2: Forward Velocity (compute bias via RNE)
+        let qfrc_bias = self.bias_forces();
+
+        // Stage 3-4: Forward Actuation & Acceleration
+        // qfrc_smooth = -qfrc_bias (no actuation or applied forces)
+        let qfrc_smooth = -&qfrc_bias;
+
+        // Solve M @ qacc = qfrc_smooth for qacc using LU decomposition
+        let qacc = inertia
+            .lu()
+            .solve(&qfrc_smooth)
+            .unwrap_or_else(|| DVector::zeros(self.n_links()));
+
+        // Stage 5: Integration (Semi-implicit Euler)
+        let qvel_new = &self.qvel + &qacc * dt;
+        let qpos_new = &self.qpos + &qvel_new * dt;
+
+        self.qvel = qvel_new;
+        self.qpos = qpos_new;
+    }
+
+    /// Run the n-link pendulum for a given duration.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn run_for(&mut self, duration: f64, dt: f64) {
+        let steps = (duration / dt).ceil() as usize;
+        for _ in 0..steps {
+            self.step(dt);
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
     clippy::float_cmp,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::similar_names,
+    clippy::uninlined_format_args
 )]
 mod tests {
     use super::*;
@@ -1227,6 +1588,261 @@ mod tests {
         assert!(
             relative_error < 0.02,
             "Energy error {:.2}% exceeds 2%",
+            relative_error * 100.0
+        );
+    }
+
+    // =========================================================================
+    // Phase 4: N-Link Pendulum Tests
+    // =========================================================================
+
+    #[test]
+    fn test_nlink_matches_double_pendulum() {
+        // A 2-link NLinkPendulum should behave identically to DoublePendulum
+        let angles = [PI / 4.0, PI / 6.0];
+        let mut nlink = NLinkPendulum::new(2, 1.0, 1.0).with_angles(&angles);
+        let mut double = DoublePendulum::new(1.0, 1.0).with_angles(PI / 4.0, PI / 6.0);
+
+        let high_res_dt = 1.0 / 480.0;
+
+        // Run both for 5 seconds
+        for _ in 0..2400 {
+            nlink.step(high_res_dt);
+            double.step(high_res_dt);
+
+            // Angles should match
+            assert!(
+                (nlink.qpos[0] - double.qpos[0]).abs() < 0.01,
+                "θ₁ mismatch: nlink={:.4}, double={:.4}",
+                nlink.qpos[0],
+                double.qpos[0]
+            );
+            assert!(
+                (nlink.qpos[1] - double.qpos[1]).abs() < 0.01,
+                "θ₂ mismatch: nlink={:.4}, double={:.4}",
+                nlink.qpos[1],
+                double.qpos[1]
+            );
+        }
+    }
+
+    #[test]
+    fn test_nlink_inertia_matrix_symmetric() {
+        // The inertia matrix must always be symmetric
+        let angles = [PI / 4.0, PI / 6.0, PI / 8.0, PI / 10.0];
+        let pendulum = NLinkPendulum::new(4, 1.0, 1.0).with_angles(&angles);
+        let inertia = pendulum.inertia_matrix();
+
+        for i in 0..4 {
+            for j in 0..4 {
+                assert_relative_eq!(inertia[(i, j)], inertia[(j, i)], epsilon = 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn test_nlink_inertia_matrix_positive_definite() {
+        // The inertia matrix must be positive definite
+        let angles = [PI / 4.0, PI / 6.0, PI / 8.0];
+        let pendulum = NLinkPendulum::new(3, 1.0, 1.0).with_angles(&angles);
+        let inertia = pendulum.inertia_matrix();
+
+        // Check all leading principal minors are positive (Sylvester's criterion)
+        // For 3x3: M₁₁ > 0, det(M[0:2,0:2]) > 0, det(M) > 0
+        assert!(inertia[(0, 0)] > 0.0, "M₁₁ should be positive");
+
+        let det2 = inertia[(0, 0)] * inertia[(1, 1)] - inertia[(0, 1)] * inertia[(1, 0)];
+        assert!(det2 > 0.0, "2x2 minor should be positive");
+
+        let det3 = inertia.determinant();
+        assert!(det3 > 0.0, "Determinant should be positive, got {det3}");
+    }
+
+    #[test]
+    fn test_nlink_3link_energy_conservation() {
+        // Energy should be conserved in a 3-link pendulum
+        let angles = [PI / 6.0, PI / 8.0, PI / 10.0];
+        let mut pendulum = NLinkPendulum::new(3, 1.0, 1.0).with_angles(&angles);
+
+        let initial_energy = pendulum.total_energy();
+
+        // Run for 10 seconds at high resolution
+        let high_res_dt = 1.0 / 480.0;
+        pendulum.run_for(10.0, high_res_dt);
+
+        let final_energy = pendulum.total_energy();
+
+        // Allow 2% energy drift (more links = more numerical error)
+        let relative_error = (final_energy - initial_energy).abs() / initial_energy;
+        assert!(
+            relative_error < 0.02,
+            "Energy error {:.2}% exceeds 2%",
+            relative_error * 100.0
+        );
+    }
+
+    #[test]
+    fn test_nlink_4link_energy_conservation() {
+        // Energy should be conserved in a 4-link pendulum
+        let angles = [PI / 8.0, PI / 10.0, PI / 12.0, PI / 14.0];
+        let mut pendulum = NLinkPendulum::new(4, 1.0, 1.0).with_angles(&angles);
+
+        let initial_energy = pendulum.total_energy();
+
+        // Run for 10 seconds at high resolution
+        let high_res_dt = 1.0 / 480.0;
+        pendulum.run_for(10.0, high_res_dt);
+
+        let final_energy = pendulum.total_energy();
+
+        // Allow 3% energy drift for 4 links
+        let relative_error = (final_energy - initial_energy).abs() / initial_energy;
+        assert!(
+            relative_error < 0.03,
+            "Energy error {:.2}% exceeds 3%",
+            relative_error * 100.0
+        );
+    }
+
+    #[test]
+    fn test_nlink_equilibrium() {
+        // At θ=0 for all joints with zero velocity, should stay at rest
+        let mut pendulum = NLinkPendulum::new(5, 1.0, 1.0);
+
+        pendulum.run_for(5.0, DT);
+
+        for i in 0..5 {
+            assert_relative_eq!(pendulum.qpos[i], 0.0, epsilon = 1e-10);
+            assert_relative_eq!(pendulum.qvel[i], 0.0, epsilon = 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_nlink_links_connected() {
+        // All link positions should be consistent with the kinematics
+        let angles = [PI / 3.0, PI / 4.0, PI / 5.0];
+        let mut pendulum = NLinkPendulum::new(3, 1.0, 1.0).with_angles(&angles);
+
+        // Run and verify link connectivity
+        let high_res_dt = 1.0 / 480.0;
+        for _ in 0..4800 {
+            pendulum.step(high_res_dt);
+
+            // Verify each link length
+            let mut prev_pos = Vector2::zeros();
+            for i in 0..3 {
+                let pos = pendulum.position(i);
+                let link_length = (pos - prev_pos).norm();
+                assert!(
+                    (link_length - pendulum.lengths[i]).abs() < 1e-10,
+                    "Link {} length mismatch: expected {}, got {}",
+                    i,
+                    pendulum.lengths[i],
+                    link_length
+                );
+                prev_pos = pos;
+            }
+        }
+    }
+
+    #[test]
+    fn test_nlink_falls_from_horizontal() {
+        // Starting with first link horizontal, it should fall
+        let angles = [PI / 2.0, 0.0, 0.0];
+        let mut pendulum = NLinkPendulum::new(3, 1.0, 1.0).with_angles(&angles);
+
+        let initial_velocity = pendulum.qvel[0].abs();
+
+        // Run for 0.5 seconds
+        pendulum.run_for(0.5, DT);
+
+        // First joint should have gained significant velocity
+        assert!(
+            pendulum.qvel[0].abs() > initial_velocity + 1.0,
+            "First joint should have fallen and gained velocity"
+        );
+    }
+
+    #[test]
+    fn test_nlink_position_formulas() {
+        // Verify position calculation for a 3-link chain
+        let l1 = 1.0;
+        let l2 = 0.8;
+        let l3 = 0.6;
+        let theta1 = PI / 4.0;
+        let theta2 = PI / 6.0;
+        let theta3 = PI / 8.0;
+
+        let pendulum = NLinkPendulum::with_parameters(vec![l1, l2, l3], vec![1.0, 1.0, 1.0])
+            .with_angles(&[theta1, theta2, theta3]);
+
+        // Position of link 0 end
+        let pos0 = pendulum.position(0);
+        assert_relative_eq!(pos0.x, l1 * theta1.sin(), epsilon = 1e-10);
+        assert_relative_eq!(pos0.y, -l1 * theta1.cos(), epsilon = 1e-10);
+
+        // Position of link 1 end
+        let pos1 = pendulum.position(1);
+        let theta_abs1 = theta1 + theta2;
+        let expected_x1 = l1 * theta1.sin() + l2 * theta_abs1.sin();
+        let expected_y1 = -l1 * theta1.cos() - l2 * theta_abs1.cos();
+        assert_relative_eq!(pos1.x, expected_x1, epsilon = 1e-10);
+        assert_relative_eq!(pos1.y, expected_y1, epsilon = 1e-10);
+
+        // Position of link 2 end
+        let pos2 = pendulum.position(2);
+        let theta_abs2 = theta1 + theta2 + theta3;
+        let expected_x2 = expected_x1 + l3 * theta_abs2.sin();
+        let expected_y2 = expected_y1 - l3 * theta_abs2.cos();
+        assert_relative_eq!(pos2.x, expected_x2, epsilon = 1e-10);
+        assert_relative_eq!(pos2.y, expected_y2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_nlink_different_parameters() {
+        // Test with different link lengths and masses
+        let lengths = vec![1.5, 0.8, 1.2];
+        let masses = vec![2.0, 0.5, 1.0];
+        let angles = [PI / 6.0, PI / 8.0, PI / 10.0];
+
+        let mut pendulum = NLinkPendulum::with_parameters(lengths, masses).with_angles(&angles);
+
+        let initial_energy = pendulum.total_energy();
+
+        // Run for 10 seconds at high resolution
+        let high_res_dt = 1.0 / 480.0;
+        pendulum.run_for(10.0, high_res_dt);
+
+        let final_energy = pendulum.total_energy();
+
+        // Energy should be conserved
+        let relative_error = (final_energy - initial_energy).abs() / initial_energy;
+        assert!(
+            relative_error < 0.02,
+            "Energy error {:.2}% exceeds 2%",
+            relative_error * 100.0
+        );
+    }
+
+    #[test]
+    fn test_nlink_5link_chain() {
+        // Test a longer chain (5 links)
+        let angles = [PI / 8.0, PI / 10.0, PI / 12.0, PI / 14.0, PI / 16.0];
+        let mut pendulum = NLinkPendulum::new(5, 0.5, 1.0).with_angles(&angles);
+
+        let initial_energy = pendulum.total_energy();
+
+        // Run for 5 seconds at high resolution
+        let high_res_dt = 1.0 / 480.0;
+        pendulum.run_for(5.0, high_res_dt);
+
+        let final_energy = pendulum.total_energy();
+
+        // Allow 5% energy drift for 5 links (more challenging)
+        let relative_error = (final_energy - initial_energy).abs() / initial_energy;
+        assert!(
+            relative_error < 0.05,
+            "Energy error {:.2}% exceeds 5%",
             relative_error * 100.0
         );
     }
