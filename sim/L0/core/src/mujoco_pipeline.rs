@@ -5926,6 +5926,598 @@ impl Data {
     pub fn total_energy(&self) -> f64 {
         self.energy_kinetic + self.energy_potential
     }
+
+    /// Full simulation step (like `mj_step`).
+    ///
+    /// This is the main entry point for advancing the simulation by one timestep.
+    /// It performs forward dynamics to compute accelerations, then integrates
+    /// to update positions and velocities.
+    pub fn step(&mut self, model: &Model) {
+        // Validate state before stepping
+        mj_check_pos(model, self);
+        mj_check_vel(model, self);
+
+        // Forward dynamics: compute qacc from current state
+        self.forward(model);
+
+        // Validate computed acceleration
+        mj_check_acc(model, self);
+
+        // Integration: update qvel and qpos
+        self.integrate(model);
+    }
+
+    /// Forward dynamics only (like `mj_forward`).
+    ///
+    /// Computes all derived quantities from current qpos/qvel without
+    /// modifying them. After this call, qacc contains the computed
+    /// accelerations and all body poses are updated.
+    pub fn forward(&mut self, model: &Model) {
+        // Stage 1: Forward kinematics - compute body poses from qpos
+        mj_fwd_position(model, self);
+
+        // Stage 2: Velocity kinematics - compute body velocities from qvel
+        mj_fwd_velocity(model, self);
+
+        // Stage 3: Actuation - compute actuator forces
+        mj_fwd_actuation(model, self);
+
+        // Stage 4: Dynamics - compute mass matrix and bias forces
+        mj_crba(model, self); // Composite Rigid Body Algorithm
+        mj_rne(model, self); // Recursive Newton-Euler for bias forces
+
+        // Stage 5: Passive forces - springs and dampers
+        mj_fwd_passive(model, self);
+
+        // Stage 6: Constraint forces - contacts and joint limits
+        // (placeholder - will be implemented in Phase 3)
+        mj_fwd_constraint(model, self);
+
+        // Stage 7: Compute final acceleration
+        mj_fwd_acceleration(model, self);
+    }
+
+    /// Integration step (semi-implicit Euler, `MuJoCo` default).
+    fn integrate(&mut self, model: &Model) {
+        let h = model.timestep;
+
+        // Semi-implicit Euler: update velocity first, then position
+        // This is more stable than explicit Euler
+        for i in 0..model.nv {
+            self.qvel[i] += self.qacc[i] * h;
+        }
+
+        // Update positions - quaternions need special handling!
+        mj_integrate_pos(model, self, h);
+
+        // Normalize quaternions to prevent drift
+        mj_normalize_quat(model, self);
+
+        // Advance time
+        self.time += h;
+    }
+}
+
+// ============================================================================
+// MuJoCo Pipeline Functions (Phase 2)
+// ============================================================================
+
+/// Validate position coordinates, reset if NaN/Inf detected.
+fn mj_check_pos(model: &Model, data: &mut Data) -> bool {
+    for i in 0..model.nq {
+        if !data.qpos[i].is_finite() || data.qpos[i].abs() > 1e10 {
+            // Reset to default position
+            data.qpos = model.qpos0.clone();
+            return false;
+        }
+    }
+    true
+}
+
+/// Validate velocity coordinates, zero if NaN/Inf detected.
+fn mj_check_vel(model: &Model, data: &mut Data) -> bool {
+    for i in 0..model.nv {
+        if !data.qvel[i].is_finite() || data.qvel[i].abs() > 1e10 {
+            data.qvel.fill(0.0);
+            return false;
+        }
+    }
+    true
+}
+
+/// Validate acceleration, return false if invalid.
+fn mj_check_acc(model: &Model, data: &Data) -> bool {
+    for i in 0..model.nv {
+        if !data.qacc[i].is_finite() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Forward kinematics: compute body poses from qpos.
+///
+/// This traverses the kinematic tree from root to leaves, computing
+/// the world-frame position and orientation of each body.
+fn mj_fwd_position(model: &Model, data: &mut Data) {
+    // Body 0 (world) is always at origin
+    data.xpos[0] = Vector3::zeros();
+    data.xquat[0] = UnitQuaternion::identity();
+    data.xmat[0] = Matrix3::identity();
+
+    // Process bodies in order (assumes topological sort: parent before child)
+    for body_id in 1..model.nbody {
+        let parent_id = model.body_parent[body_id];
+
+        // Start with parent's frame
+        let mut pos = data.xpos[parent_id];
+        let mut quat = data.xquat[parent_id];
+
+        // Apply body offset in parent frame
+        pos += quat * model.body_pos[body_id];
+        quat *= model.body_quat[body_id];
+
+        // Apply each joint for this body
+        let jnt_start = model.body_jnt_adr[body_id];
+        let jnt_end = jnt_start + model.body_jnt_num[body_id];
+
+        for jnt_id in jnt_start..jnt_end {
+            let qpos_adr = model.jnt_qpos_adr[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let angle = data.qpos[qpos_adr];
+                    let axis = model.jnt_axis[jnt_id];
+                    let anchor = model.jnt_pos[jnt_id];
+
+                    // Transform anchor to current frame
+                    let world_anchor = pos + quat * anchor;
+
+                    // Rotate around axis
+                    let world_axis = quat * axis;
+                    let rot = UnitQuaternion::from_axis_angle(
+                        &nalgebra::Unit::new_normalize(world_axis),
+                        angle,
+                    );
+                    quat = rot * quat;
+
+                    // Adjust position for rotation around anchor
+                    pos = world_anchor + rot * (pos - world_anchor);
+                }
+                MjJointType::Slide => {
+                    let displacement = data.qpos[qpos_adr];
+                    let axis = model.jnt_axis[jnt_id];
+                    pos += quat * (axis * displacement);
+                }
+                MjJointType::Ball => {
+                    // qpos stores quaternion [w, x, y, z]
+                    let q = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        data.qpos[qpos_adr],
+                        data.qpos[qpos_adr + 1],
+                        data.qpos[qpos_adr + 2],
+                        data.qpos[qpos_adr + 3],
+                    ));
+                    quat *= q;
+                }
+                MjJointType::Free => {
+                    // qpos stores [x, y, z, qw, qx, qy, qz]
+                    pos = Vector3::new(
+                        data.qpos[qpos_adr],
+                        data.qpos[qpos_adr + 1],
+                        data.qpos[qpos_adr + 2],
+                    );
+                    quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        data.qpos[qpos_adr + 3],
+                        data.qpos[qpos_adr + 4],
+                        data.qpos[qpos_adr + 5],
+                        data.qpos[qpos_adr + 6],
+                    ));
+                }
+            }
+        }
+
+        // Store computed pose
+        data.xpos[body_id] = pos;
+        data.xquat[body_id] = quat;
+        data.xmat[body_id] = quat.to_rotation_matrix().into_inner();
+
+        // Compute inertial frame position
+        data.xipos[body_id] = pos + quat * model.body_ipos[body_id];
+        data.ximat[body_id] = (quat * model.body_iquat[body_id])
+            .to_rotation_matrix()
+            .into_inner();
+    }
+
+    // Update geom poses
+    for geom_id in 0..model.ngeom {
+        let body_id = model.geom_body[geom_id];
+        let body_pos = data.xpos[body_id];
+        let body_quat = data.xquat[body_id];
+
+        data.geom_xpos[geom_id] = body_pos + body_quat * model.geom_pos[geom_id];
+        data.geom_xmat[geom_id] = (body_quat * model.geom_quat[geom_id])
+            .to_rotation_matrix()
+            .into_inner();
+    }
+}
+
+/// Velocity kinematics: compute body velocities from qvel.
+fn mj_fwd_velocity(model: &Model, data: &mut Data) {
+    // World body has zero velocity
+    data.cvel[0] = SpatialVec::zeros();
+
+    // Compute body velocities by propagating through tree
+    for body_id in 1..model.nbody {
+        let parent_id = model.body_parent[body_id];
+
+        // Start with parent velocity (transformed to this body's frame)
+        let mut vel = data.cvel[parent_id];
+
+        // Add contribution from joints
+        let jnt_start = model.body_jnt_adr[body_id];
+        let jnt_end = jnt_start + model.body_jnt_num[body_id];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let axis = model.jnt_axis[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    // Angular velocity contribution
+                    let omega = data.xquat[body_id] * axis * data.qvel[dof_adr];
+                    vel[0] += omega.x;
+                    vel[1] += omega.y;
+                    vel[2] += omega.z;
+                }
+                MjJointType::Slide => {
+                    // Linear velocity contribution
+                    let v = data.xquat[body_id] * axis * data.qvel[dof_adr];
+                    vel[3] += v.x;
+                    vel[4] += v.y;
+                    vel[5] += v.z;
+                }
+                MjJointType::Ball => {
+                    // 3-DOF angular velocity
+                    let omega = Vector3::new(
+                        data.qvel[dof_adr],
+                        data.qvel[dof_adr + 1],
+                        data.qvel[dof_adr + 2],
+                    );
+                    let world_omega = data.xquat[body_id] * omega;
+                    vel[0] += world_omega.x;
+                    vel[1] += world_omega.y;
+                    vel[2] += world_omega.z;
+                }
+                MjJointType::Free => {
+                    // 6-DOF: linear + angular velocity
+                    vel[3] += data.qvel[dof_adr];
+                    vel[4] += data.qvel[dof_adr + 1];
+                    vel[5] += data.qvel[dof_adr + 2];
+                    vel[0] += data.qvel[dof_adr + 3];
+                    vel[1] += data.qvel[dof_adr + 4];
+                    vel[2] += data.qvel[dof_adr + 5];
+                }
+            }
+        }
+
+        data.cvel[body_id] = vel;
+    }
+}
+
+/// Compute actuator forces from control inputs.
+fn mj_fwd_actuation(model: &Model, data: &mut Data) {
+    data.qfrc_actuator.fill(0.0);
+
+    for act_id in 0..model.nu {
+        let ctrl = data.ctrl[act_id];
+        let gear = model.actuator_gear[act_id];
+        let trnid = model.actuator_trnid[act_id];
+
+        match model.actuator_trntype[act_id] {
+            ActuatorTransmission::Joint => {
+                // Direct joint actuation
+                if trnid < model.njnt {
+                    let dof_adr = model.jnt_dof_adr[trnid];
+                    let nv = model.jnt_type[trnid].nv();
+                    // Apply force to first DOF of joint (simplification)
+                    if nv > 0 {
+                        data.qfrc_actuator[dof_adr] += ctrl * gear;
+                    }
+                }
+            }
+            ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
+                // Placeholder for tendon/site actuation
+                // Will be implemented when tendons are integrated
+            }
+        }
+    }
+}
+
+/// Composite Rigid Body Algorithm: compute mass matrix.
+///
+/// This computes the joint-space inertia matrix M such that
+/// the kinetic energy is T = 0.5 * qvel^T * M * qvel.
+#[allow(clippy::many_single_char_names)]
+fn mj_crba(model: &Model, data: &mut Data) {
+    // For now, use a simplified diagonal approximation
+    // Full CRBA will be implemented when integrating with ArticulatedSystem
+    data.qM.fill(0.0);
+
+    for jnt_id in 0..model.njnt {
+        let body_id = model.jnt_body[jnt_id];
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+        let nv = model.jnt_type[jnt_id].nv();
+
+        let mass = model.body_mass[body_id];
+        let inertia = model.body_inertia[body_id];
+
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge => {
+                // Rotational inertia around axis
+                let axis = model.jnt_axis[jnt_id];
+                let i_val = axis.x * axis.x * inertia.x
+                    + axis.y * axis.y * inertia.y
+                    + axis.z * axis.z * inertia.z;
+                data.qM[(dof_adr, dof_adr)] = i_val + model.jnt_armature[jnt_id];
+            }
+            MjJointType::Slide => {
+                // Translational mass
+                data.qM[(dof_adr, dof_adr)] = mass + model.jnt_armature[jnt_id];
+            }
+            MjJointType::Ball => {
+                // 3x3 rotational inertia (diagonal approximation)
+                for i in 0..3 {
+                    data.qM[(dof_adr + i, dof_adr + i)] = inertia[i];
+                }
+            }
+            MjJointType::Free => {
+                // 6x6: translation (mass) + rotation (inertia)
+                for i in 0..3 {
+                    data.qM[(dof_adr + i, dof_adr + i)] = mass;
+                }
+                for i in 0..3 {
+                    data.qM[(dof_adr + 3 + i, dof_adr + 3 + i)] = inertia[i];
+                }
+            }
+        }
+
+        // Add armature inertia
+        for i in 0..nv {
+            data.qM[(dof_adr + i, dof_adr + i)] +=
+                model.dof_armature.get(dof_adr + i).copied().unwrap_or(0.0);
+        }
+    }
+}
+
+/// Recursive Newton-Euler: compute bias forces (Coriolis + gravity).
+fn mj_rne(model: &Model, data: &mut Data) {
+    data.qfrc_bias.fill(0.0);
+
+    // Compute gravity contribution for each DOF
+    for jnt_id in 0..model.njnt {
+        let body_id = model.jnt_body[jnt_id];
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+        let mass = model.body_mass[body_id];
+
+        // Gravity force in world frame
+        let gravity_force = mass * model.gravity;
+
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge => {
+                // Gravity torque = r × F where r is COM offset from joint
+                let axis = data.xquat[body_id] * model.jnt_axis[jnt_id];
+                let r = data.xipos[body_id] - data.xpos[body_id];
+                let torque = r.cross(&gravity_force);
+                data.qfrc_bias[dof_adr] = torque.dot(&axis);
+            }
+            MjJointType::Slide => {
+                // Gravity force projected onto slide axis
+                let axis = data.xquat[body_id] * model.jnt_axis[jnt_id];
+                data.qfrc_bias[dof_adr] = gravity_force.dot(&axis);
+            }
+            MjJointType::Ball => {
+                // Gravity torque in body frame
+                let r = data.xipos[body_id] - data.xpos[body_id];
+                let torque = r.cross(&gravity_force);
+                let body_torque = data.xquat[body_id].inverse() * torque;
+                data.qfrc_bias[dof_adr] = body_torque.x;
+                data.qfrc_bias[dof_adr + 1] = body_torque.y;
+                data.qfrc_bias[dof_adr + 2] = body_torque.z;
+            }
+            MjJointType::Free => {
+                // Linear: gravity force
+                data.qfrc_bias[dof_adr] = gravity_force.x;
+                data.qfrc_bias[dof_adr + 1] = gravity_force.y;
+                data.qfrc_bias[dof_adr + 2] = gravity_force.z;
+                // Angular: gravity torque about COM (zero if COM at origin)
+                // For free joint, COM offset is already accounted for
+            }
+        }
+    }
+}
+
+/// Compute passive forces (springs and dampers).
+fn mj_fwd_passive(model: &Model, data: &mut Data) {
+    data.qfrc_passive.fill(0.0);
+
+    for jnt_id in 0..model.njnt {
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+        let nv = model.jnt_type[jnt_id].nv();
+
+        let stiffness = model.jnt_stiffness[jnt_id];
+        let damping = model.jnt_damping[jnt_id];
+
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge | MjJointType::Slide => {
+                // Spring: F = -k * (q - q0)
+                let q0 = model.qpos0.get(qpos_adr).copied().unwrap_or(0.0);
+                let q = data.qpos[qpos_adr];
+                data.qfrc_passive[dof_adr] -= stiffness * (q - q0);
+
+                // Damper: F = -b * qdot
+                data.qfrc_passive[dof_adr] -= damping * data.qvel[dof_adr];
+            }
+            MjJointType::Ball | MjJointType::Free => {
+                // Apply damping to all DOFs
+                for i in 0..nv {
+                    let dof_damping = model
+                        .dof_damping
+                        .get(dof_adr + i)
+                        .copied()
+                        .unwrap_or(damping);
+                    data.qfrc_passive[dof_adr + i] -= dof_damping * data.qvel[dof_adr + i];
+                }
+            }
+        }
+    }
+}
+
+/// Compute constraint forces (contacts and joint limits).
+///
+/// Placeholder - full constraint solving will be implemented in Phase 3.
+fn mj_fwd_constraint(_model: &Model, data: &mut Data) {
+    // Clear constraint forces
+    data.qfrc_constraint.fill(0.0);
+    data.ncon = 0;
+
+    // TODO: Integrate with PGS solver for contacts and joint limits
+}
+
+/// Compute final acceleration from forces.
+///
+/// Solves: M * qacc = `qfrc_applied` + `qfrc_actuator` + `qfrc_passive` + `qfrc_constraint` - `qfrc_bias`
+fn mj_fwd_acceleration(model: &Model, data: &mut Data) {
+    // Sum all forces
+    let mut qfrc_total = data.qfrc_applied.clone();
+    qfrc_total += &data.qfrc_actuator;
+    qfrc_total += &data.qfrc_passive;
+    qfrc_total += &data.qfrc_constraint;
+    qfrc_total -= &data.qfrc_bias;
+
+    // Solve M * qacc = qfrc_total
+    // For diagonal M (our simplified case), this is just division
+    for i in 0..model.nv {
+        let m_ii = data.qM[(i, i)];
+        if m_ii.abs() > 1e-10 {
+            data.qacc[i] = qfrc_total[i] / m_ii;
+        } else {
+            data.qacc[i] = 0.0;
+        }
+    }
+}
+
+/// Proper position integration that handles quaternions on SO(3) manifold.
+fn mj_integrate_pos(model: &Model, data: &mut Data, h: f64) {
+    for jnt_id in 0..model.njnt {
+        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge | MjJointType::Slide => {
+                // Simple scalar: qpos += qvel * h
+                data.qpos[qpos_adr] += data.qvel[dof_adr] * h;
+            }
+            MjJointType::Ball => {
+                // Quaternion: integrate angular velocity on SO(3)
+                let omega = Vector3::new(
+                    data.qvel[dof_adr],
+                    data.qvel[dof_adr + 1],
+                    data.qvel[dof_adr + 2],
+                );
+                let angle = omega.norm() * h;
+                if angle > 1e-10 {
+                    let axis = omega / omega.norm();
+                    let dq = UnitQuaternion::from_axis_angle(
+                        &nalgebra::Unit::new_normalize(axis),
+                        angle,
+                    );
+                    let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        data.qpos[qpos_adr],
+                        data.qpos[qpos_adr + 1],
+                        data.qpos[qpos_adr + 2],
+                        data.qpos[qpos_adr + 3],
+                    ));
+                    let q_new = q_old * dq;
+                    data.qpos[qpos_adr] = q_new.w;
+                    data.qpos[qpos_adr + 1] = q_new.i;
+                    data.qpos[qpos_adr + 2] = q_new.j;
+                    data.qpos[qpos_adr + 3] = q_new.k;
+                }
+            }
+            MjJointType::Free => {
+                // Position: linear integration
+                data.qpos[qpos_adr] += data.qvel[dof_adr] * h;
+                data.qpos[qpos_adr + 1] += data.qvel[dof_adr + 1] * h;
+                data.qpos[qpos_adr + 2] += data.qvel[dof_adr + 2] * h;
+
+                // Orientation: quaternion integration
+                let omega = Vector3::new(
+                    data.qvel[dof_adr + 3],
+                    data.qvel[dof_adr + 4],
+                    data.qvel[dof_adr + 5],
+                );
+                let angle = omega.norm() * h;
+                if angle > 1e-10 {
+                    let axis = omega / omega.norm();
+                    let dq = UnitQuaternion::from_axis_angle(
+                        &nalgebra::Unit::new_normalize(axis),
+                        angle,
+                    );
+                    let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        data.qpos[qpos_adr + 3],
+                        data.qpos[qpos_adr + 4],
+                        data.qpos[qpos_adr + 5],
+                        data.qpos[qpos_adr + 6],
+                    ));
+                    let q_new = q_old * dq;
+                    data.qpos[qpos_adr + 3] = q_new.w;
+                    data.qpos[qpos_adr + 4] = q_new.i;
+                    data.qpos[qpos_adr + 5] = q_new.j;
+                    data.qpos[qpos_adr + 6] = q_new.k;
+                }
+            }
+        }
+    }
+}
+
+/// Normalize all quaternions in qpos to prevent numerical drift.
+fn mj_normalize_quat(model: &Model, data: &mut Data) {
+    for jnt_id in 0..model.njnt {
+        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+
+        match model.jnt_type[jnt_id] {
+            MjJointType::Ball => {
+                let norm = (data.qpos[qpos_adr].powi(2)
+                    + data.qpos[qpos_adr + 1].powi(2)
+                    + data.qpos[qpos_adr + 2].powi(2)
+                    + data.qpos[qpos_adr + 3].powi(2))
+                .sqrt();
+                if norm > 1e-10 {
+                    data.qpos[qpos_adr] /= norm;
+                    data.qpos[qpos_adr + 1] /= norm;
+                    data.qpos[qpos_adr + 2] /= norm;
+                    data.qpos[qpos_adr + 3] /= norm;
+                }
+            }
+            MjJointType::Free => {
+                let norm = (data.qpos[qpos_adr + 3].powi(2)
+                    + data.qpos[qpos_adr + 4].powi(2)
+                    + data.qpos[qpos_adr + 5].powi(2)
+                    + data.qpos[qpos_adr + 6].powi(2))
+                .sqrt();
+                if norm > 1e-10 {
+                    data.qpos[qpos_adr + 3] /= norm;
+                    data.qpos[qpos_adr + 4] /= norm;
+                    data.qpos[qpos_adr + 5] /= norm;
+                    data.qpos[qpos_adr + 6] /= norm;
+                }
+            }
+            MjJointType::Hinge | MjJointType::Slide => {
+                // No quaternion to normalize
+            }
+        }
+    }
 }
 
 // ============================================================================
