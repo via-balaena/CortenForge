@@ -5607,6 +5607,18 @@ pub struct Model {
     /// Optional geom names.
     pub geom_name: Vec<Option<String>>,
 
+    // ==================== Sites (indexed by site_id) ====================
+    /// Parent body for each site.
+    pub site_body: Vec<usize>,
+    /// Site position in body frame.
+    pub site_pos: Vec<Vector3<f64>>,
+    /// Site orientation in body frame.
+    pub site_quat: Vec<UnitQuaternion<f64>>,
+    /// Site size (for visualization).
+    pub site_size: Vec<Vector3<f64>>,
+    /// Optional site names.
+    pub site_name: Vec<Option<String>>,
+
     // ==================== Actuators (indexed by actuator_id) ====================
     /// Transmission type (Joint, Tendon, Site).
     pub actuator_trntype: Vec<ActuatorTransmission>,
@@ -5622,6 +5634,10 @@ pub struct Model {
     pub actuator_forcerange: Vec<(f64, f64)>,
     /// Optional actuator names.
     pub actuator_name: Vec<Option<String>>,
+    /// Start index in act array for each actuator's activation states.
+    pub actuator_act_adr: Vec<usize>,
+    /// Number of activation states per actuator (0 for None dynamics, 1 for Filter/Integrator, 2 for Muscle).
+    pub actuator_act_num: Vec<usize>,
 
     // ==================== Options ====================
     /// Simulation timestep in seconds.
@@ -5705,6 +5721,12 @@ pub struct Data {
     pub geom_xpos: Vec<Vector3<f64>>,
     /// Geom rotation matrices [ngeom].
     pub geom_xmat: Vec<Matrix3<f64>>,
+
+    // Site poses (for attachment points, sensors)
+    /// Site positions in world frame [nsite].
+    pub site_xpos: Vec<Vector3<f64>>,
+    /// Site rotation matrices [nsite].
+    pub site_xmat: Vec<Matrix3<f64>>,
 
     // ==================== Velocities (computed from qvel) ====================
     /// Body spatial velocities [nbody]: [angular, linear].
@@ -5820,6 +5842,13 @@ impl Model {
             geom_conaffinity: vec![],
             geom_name: vec![],
 
+            // Sites (empty)
+            site_body: vec![],
+            site_pos: vec![],
+            site_quat: vec![],
+            site_size: vec![],
+            site_name: vec![],
+
             // Actuators (empty)
             actuator_trntype: vec![],
             actuator_dyntype: vec![],
@@ -5828,6 +5857,8 @@ impl Model {
             actuator_ctrlrange: vec![],
             actuator_forcerange: vec![],
             actuator_name: vec![],
+            actuator_act_adr: vec![],
+            actuator_act_num: vec![],
 
             // Options (MuJoCo defaults)
             timestep: 0.002,                        // 500 Hz
@@ -5864,6 +5895,10 @@ impl Model {
             // Geom poses
             geom_xpos: vec![Vector3::zeros(); self.ngeom],
             geom_xmat: vec![Matrix3::identity(); self.ngeom],
+
+            // Site poses
+            site_xpos: vec![Vector3::zeros(); self.nsite],
+            site_xmat: vec![Matrix3::identity(); self.nsite],
 
             // Velocities
             cvel: vec![SpatialVector::zeros(); self.nbody],
