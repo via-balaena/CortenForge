@@ -35,9 +35,10 @@
 //! - Phase 2: Constrained pendulum (PGS-style constraint solver) - COMPLETE
 //! - Phase 3: Double pendulum (2-DOF, CRBA + RNE) - COMPLETE
 //! - Phase 4: N-link pendulum (n-DOF, general serial chain) - COMPLETE
-//! - Phase 5: Ball joints (3-DOF spherical joints) - TODO
+//! - Phase 5: Ball joints (3-DOF spherical joints) - COMPLETE
 //! - Phase 6: Contact (ground plane, sphere collisions) - TODO
 
+use nalgebra::Vector3;
 use std::f64::consts::PI;
 
 /// Simple pendulum state for Phase 1 testing.
@@ -1029,6 +1030,251 @@ impl NLinkPendulum {
     }
 }
 
+// ============================================================================
+// Phase 5: Spherical Pendulum (Ball Joint - 2-DOF in spherical coordinates)
+// ============================================================================
+
+/// A spherical pendulum using spherical coordinates.
+///
+/// This is a point mass constrained to move on a sphere, attached to a fixed
+/// pivot. Unlike a simple 2D pendulum (1-DOF), this system has 2-DOF.
+///
+/// The state is represented using spherical coordinates:
+/// - `theta`: polar angle from vertical (0 = hanging down, π = pointing up)
+/// - `phi`: azimuthal angle in the horizontal plane
+/// - `theta_dot`: rate of change of theta
+/// - `phi_dot`: rate of change of phi
+///
+/// The Lagrangian for a spherical pendulum is:
+/// ```text
+/// L = T - V
+/// T = (1/2) m L² (θ̇² + sin²(θ) φ̇²)
+/// V = -m g L cos(θ)
+/// ```
+///
+/// This leads to the equations of motion:
+/// ```text
+/// θ̈ = sin(θ) cos(θ) φ̇² - (g/L) sin(θ)
+/// φ̈ = -2 cot(θ) θ̇ φ̇
+/// ```
+///
+/// The system conserves:
+/// - Total energy E = T + V
+/// - Angular momentum about vertical axis (Lz = m L² sin²(θ) φ̇)
+#[derive(Debug, Clone)]
+#[allow(clippy::doc_markdown)]
+pub struct SphericalPendulum {
+    /// Polar angle from vertical (radians), 0 = hanging down
+    pub theta: f64,
+    /// Azimuthal angle (radians)
+    pub phi: f64,
+    /// Angular velocity of theta (rad/s)
+    pub theta_dot: f64,
+    /// Angular velocity of phi (rad/s)
+    pub phi_dot: f64,
+    /// Length from pivot to center of mass (m)
+    pub length: f64,
+    /// Pendulum mass (kg)
+    pub mass: f64,
+    /// Gravitational acceleration (m/s²)
+    pub gravity: f64,
+}
+
+impl SphericalPendulum {
+    /// Create a new spherical pendulum with default parameters.
+    ///
+    /// Starts hanging straight down (theta = 0).
+    #[must_use]
+    pub fn new(length: f64, mass: f64) -> Self {
+        Self {
+            theta: 0.0,
+            phi: 0.0,
+            theta_dot: 0.0,
+            phi_dot: 0.0,
+            length,
+            mass,
+            gravity: 9.81,
+        }
+    }
+
+    /// Set the initial polar angle (tilt from vertical).
+    #[must_use]
+    pub fn with_theta(mut self, theta: f64) -> Self {
+        self.theta = theta;
+        self
+    }
+
+    /// Set the initial azimuthal angle.
+    #[must_use]
+    pub fn with_phi(mut self, phi: f64) -> Self {
+        self.phi = phi;
+        self
+    }
+
+    /// Set the initial angular velocities.
+    #[must_use]
+    pub fn with_velocities(mut self, theta_dot: f64, phi_dot: f64) -> Self {
+        self.theta_dot = theta_dot;
+        self.phi_dot = phi_dot;
+        self
+    }
+
+    /// Convenience method to set a tilt from vertical along an axis.
+    ///
+    /// Arguments:
+    /// - `tilt_angle`: angle from vertical (radians)
+    /// - `tilt_axis`: direction in XZ plane (normalized, Y component ignored)
+    #[must_use]
+    pub fn with_tilt(mut self, tilt_angle: f64, tilt_axis: Vector3<f64>) -> Self {
+        self.theta = tilt_angle;
+        // phi is the angle in the XZ plane, measured from X axis toward Z
+        // atan2(z, x) gives the angle
+        self.phi = tilt_axis.z.atan2(tilt_axis.x);
+        self
+    }
+
+    /// Set custom gravity.
+    #[must_use]
+    pub fn with_gravity(mut self, gravity: f64) -> Self {
+        self.gravity = gravity;
+        self
+    }
+
+    /// Get the position of the bob in world frame (Y-up convention).
+    ///
+    /// Using spherical coordinates where theta is from -Y axis:
+    /// - x = L sin(θ) cos(φ)
+    /// - y = -L cos(θ)  (negative because 0 = hanging down)
+    /// - z = L sin(θ) sin(φ)
+    #[must_use]
+    pub fn position(&self) -> Vector3<f64> {
+        let sin_theta = self.theta.sin();
+        let cos_theta = self.theta.cos();
+        let sin_phi = self.phi.sin();
+        let cos_phi = self.phi.cos();
+
+        Vector3::new(
+            self.length * sin_theta * cos_phi,
+            -self.length * cos_theta,
+            self.length * sin_theta * sin_phi,
+        )
+    }
+
+    /// Get the velocity of the bob in world frame.
+    #[must_use]
+    pub fn velocity(&self) -> Vector3<f64> {
+        let sin_theta = self.theta.sin();
+        let cos_theta = self.theta.cos();
+        let sin_phi = self.phi.sin();
+        let cos_phi = self.phi.cos();
+
+        let l = self.length;
+        let td = self.theta_dot;
+        let pd = self.phi_dot;
+
+        // Derivatives of position with respect to time
+        Vector3::new(
+            l * (cos_theta * cos_phi * td - sin_theta * sin_phi * pd),
+            l * sin_theta * td,
+            l * (cos_theta * sin_phi * td + sin_theta * cos_phi * pd),
+        )
+    }
+
+    /// Compute the 2x2 inertia matrix in (theta, phi) coordinates.
+    ///
+    /// From the kinetic energy T = (1/2) m L² (θ̇² + sin²(θ) φ̇²)
+    /// The inertia matrix is:
+    /// ```text
+    /// M = m L² | 1        0          |
+    ///          | 0        sin²(θ)    |
+    /// ```
+    #[must_use]
+    pub fn inertia_matrix(&self) -> nalgebra::Matrix2<f64> {
+        let ml2 = self.mass * self.length * self.length;
+        let sin2_theta = self.theta.sin().powi(2);
+
+        nalgebra::Matrix2::new(ml2, 0.0, 0.0, ml2 * sin2_theta)
+    }
+
+    /// Total mechanical energy.
+    ///
+    /// E = T + V where:
+    /// - T = (1/2) m L² (θ̇² + sin²(θ) φ̇²)
+    /// - V = -m g L cos(θ) + m g L  (shifted so V=0 at θ=0)
+    #[must_use]
+    pub fn total_energy(&self) -> f64 {
+        let ml2 = self.mass * self.length * self.length;
+        let sin_theta = self.theta.sin();
+
+        // Kinetic energy
+        let kinetic =
+            0.5 * ml2 * (self.theta_dot.powi(2) + sin_theta.powi(2) * self.phi_dot.powi(2));
+
+        // Potential energy (reference: V=0 at lowest point, θ=0)
+        let cos_theta = self.theta.cos();
+        let potential = self.mass * self.gravity * self.length * (1.0 - cos_theta);
+
+        kinetic + potential
+    }
+
+    /// Angular momentum about the vertical axis (conserved quantity).
+    ///
+    /// Lz = m L² sin²(θ) φ̇
+    #[must_use]
+    #[allow(clippy::doc_markdown)]
+    pub fn angular_momentum_z(&self) -> f64 {
+        let ml2 = self.mass * self.length * self.length;
+        let sin_theta = self.theta.sin();
+        ml2 * sin_theta.powi(2) * self.phi_dot
+    }
+
+    /// Step the spherical pendulum forward in time.
+    ///
+    /// Uses the equations of motion from Lagrangian mechanics:
+    /// - θ̈ = sin(θ) cos(θ) φ̇² - (g/L) sin(θ)
+    /// - φ̈ = -2 cot(θ) θ̇ φ̇  (when sin(θ) ≠ 0)
+    ///
+    /// Uses semi-implicit Euler integration.
+    pub fn step(&mut self, dt: f64) {
+        let sin_theta = self.theta.sin();
+        let cos_theta = self.theta.cos();
+
+        // Compute accelerations from equations of motion
+        // θ̈ = sin(θ) cos(θ) φ̇² - (g/L) sin(θ)
+        let theta_ddot =
+            sin_theta * cos_theta * self.phi_dot.powi(2) - (self.gravity / self.length) * sin_theta;
+
+        // φ̈ = -2 cot(θ) θ̇ φ̇ = -2 (cos(θ)/sin(θ)) θ̇ φ̇
+        // Handle singularity at θ = 0 or θ = π
+        let phi_ddot = if sin_theta.abs() > 1e-10 {
+            -2.0 * (cos_theta / sin_theta) * self.theta_dot * self.phi_dot
+        } else {
+            0.0
+        };
+
+        // Semi-implicit Euler: update velocities first
+        self.theta_dot += theta_ddot * dt;
+        self.phi_dot += phi_ddot * dt;
+
+        // Then update positions using new velocities
+        self.theta += self.theta_dot * dt;
+        self.phi += self.phi_dot * dt;
+
+        // Normalize phi to [0, 2π) for cleaner values
+        // Use rem_euclid for proper modulo that handles negatives
+        self.phi = self.phi.rem_euclid(2.0 * PI);
+    }
+
+    /// Run the spherical pendulum for a given duration.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn run_for(&mut self, duration: f64, dt: f64) {
+        let steps = (duration / dt).ceil() as usize;
+        for _ in 0..steps {
+            self.step(dt);
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -1036,7 +1282,8 @@ impl NLinkPendulum {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::similar_names,
-    clippy::uninlined_format_args
+    clippy::uninlined_format_args,
+    clippy::panic
 )]
 mod tests {
     use super::*;
@@ -1845,5 +2092,297 @@ mod tests {
             "Energy error {:.2}% exceeds 5%",
             relative_error * 100.0
         );
+    }
+
+    // =========================================================================
+    // Phase 5: Spherical Pendulum Tests
+    // =========================================================================
+
+    #[test]
+    fn test_spherical_pendulum_equilibrium() {
+        // Hanging straight down should have zero acceleration
+        let pendulum = SphericalPendulum::new(1.0, 1.0);
+
+        // At equilibrium (theta=0), position is straight down
+        let pos = pendulum.position();
+        assert_relative_eq!(pos.x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(pos.y, -1.0, epsilon = 1e-10);
+        assert_relative_eq!(pos.z, 0.0, epsilon = 1e-10);
+
+        // Energy should be zero at equilibrium (our reference point)
+        let energy = pendulum.total_energy();
+        assert_relative_eq!(energy, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_spherical_pendulum_tilted_position() {
+        // Tilt the pendulum 45 degrees (theta = π/4)
+        // phi = 0 means tilt is in the X direction
+        let pendulum = SphericalPendulum::new(1.0, 1.0)
+            .with_theta(PI / 4.0)
+            .with_phi(0.0);
+
+        let pos = pendulum.position();
+
+        // x = L sin(θ) cos(φ) = 1 * sin(45°) * 1 = sin(45°)
+        // y = -L cos(θ) = -cos(45°)
+        // z = L sin(θ) sin(φ) = 0
+        let cos45 = (PI / 4.0).cos();
+        let sin45 = (PI / 4.0).sin();
+
+        assert_relative_eq!(pos.x, sin45, epsilon = 1e-10);
+        assert_relative_eq!(pos.y, -cos45, epsilon = 1e-10);
+        assert_relative_eq!(pos.z, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_spherical_pendulum_horizontal_position() {
+        // Horizontal (theta = π/2) in the X direction
+        let pendulum = SphericalPendulum::new(1.0, 1.0)
+            .with_theta(PI / 2.0)
+            .with_phi(0.0);
+
+        let pos = pendulum.position();
+
+        // x = L sin(90°) cos(0°) = 1
+        // y = -L cos(90°) = 0
+        // z = L sin(90°) sin(0°) = 0
+        assert_relative_eq!(pos.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(pos.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(pos.z, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_spherical_pendulum_energy_conservation() {
+        // Start tilted and verify energy is conserved
+        let mut pendulum = SphericalPendulum::new(1.0, 1.0).with_theta(PI / 4.0);
+
+        let initial_energy = pendulum.total_energy();
+        assert!(initial_energy > 0.0, "Initial energy should be positive");
+
+        // Run for 10 seconds at high resolution
+        let high_res_dt = 1.0 / 480.0;
+        pendulum.run_for(10.0, high_res_dt);
+
+        let final_energy = pendulum.total_energy();
+
+        // Allow 2% energy drift
+        let relative_error = (final_energy - initial_energy).abs() / initial_energy;
+        assert!(
+            relative_error < 0.02,
+            "Energy error {:.2}% exceeds 2%",
+            relative_error * 100.0
+        );
+    }
+
+    #[test]
+    fn test_spherical_pendulum_falls_from_horizontal() {
+        // Start horizontal (theta = π/2), should fall and swing
+        let mut pendulum = SphericalPendulum::new(1.0, 1.0).with_theta(PI / 2.0);
+
+        let initial_pos = pendulum.position();
+        assert_relative_eq!(initial_pos.y, 0.0, epsilon = 1e-10);
+
+        // Take some steps
+        for _ in 0..100 {
+            pendulum.step(1.0 / 240.0);
+        }
+
+        // Should have fallen (y should be more negative)
+        let pos = pendulum.position();
+        assert!(
+            pos.y < initial_pos.y,
+            "Pendulum should fall: y={:.3} should be < {:.3}",
+            pos.y,
+            initial_pos.y
+        );
+    }
+
+    #[test]
+    fn test_spherical_pendulum_small_angle_oscillation() {
+        // Small angle oscillation should have period T ≈ 2π√(L/g)
+        // Start with small tilt (in the X direction, phi=0)
+        let mut pendulum = SphericalPendulum::new(1.0, 1.0)
+            .with_theta(0.1)
+            .with_phi(0.0);
+
+        let expected_period = 2.0 * PI * (1.0 / 9.81_f64).sqrt();
+
+        // Track theta to find period (simpler than tracking position)
+        let dt = 1.0 / 480.0;
+        let max_steps = (3.0 * expected_period / dt) as usize;
+        let mut prev_theta_dot = pendulum.theta_dot;
+        let mut time = 0.0;
+        let mut first_peak = None;
+        let mut second_peak = None;
+
+        for _ in 0..max_steps {
+            pendulum.step(dt);
+            time += dt;
+
+            // Look for peaks (velocity changes sign from positive to negative)
+            if prev_theta_dot > 0.0 && pendulum.theta_dot <= 0.0 {
+                if first_peak.is_none() {
+                    first_peak = Some(time);
+                } else if second_peak.is_none() {
+                    second_peak = Some(time);
+                    break;
+                }
+            }
+            prev_theta_dot = pendulum.theta_dot;
+        }
+
+        if let (Some(t1), Some(t2)) = (first_peak, second_peak) {
+            let measured_period = t2 - t1; // Full period between peaks
+
+            // Allow 5% error for small angle approximation
+            let period_error = (measured_period - expected_period).abs() / expected_period;
+            assert!(
+                period_error < 0.05,
+                "Period error {:.1}% exceeds 5%: measured {:.3}s vs expected {:.3}s",
+                period_error * 100.0,
+                measured_period,
+                expected_period
+            );
+        } else {
+            panic!("Should complete at least one oscillation");
+        }
+    }
+
+    #[test]
+    fn test_spherical_pendulum_3d_motion() {
+        // Give the pendulum both tilt and azimuthal velocity for 3D precession
+        let mut pendulum = SphericalPendulum::new(1.0, 1.0)
+            .with_theta(PI / 4.0)
+            .with_velocities(0.0, 2.0); // phi_dot = 2 rad/s
+
+        let initial_energy = pendulum.total_energy();
+        let initial_lz = pendulum.angular_momentum_z();
+
+        // Run for 5 seconds at high resolution (3D motion needs finer timestep)
+        let dt = 1.0 / 960.0;
+        pendulum.run_for(5.0, dt);
+
+        let final_energy = pendulum.total_energy();
+        let final_lz = pendulum.angular_momentum_z();
+
+        // Energy should be conserved (allow 5% for this challenging case)
+        let energy_error = (final_energy - initial_energy).abs() / initial_energy;
+        assert!(
+            energy_error < 0.05,
+            "Energy error {:.2}% exceeds 5%",
+            energy_error * 100.0
+        );
+
+        // Angular momentum about vertical axis should be conserved
+        let lz_error = (final_lz - initial_lz).abs() / initial_lz.abs();
+        assert!(
+            lz_error < 0.05,
+            "Angular momentum error {:.2}% exceeds 5%",
+            lz_error * 100.0
+        );
+
+        // Verify length is preserved
+        let pos = pendulum.position();
+        let length = pos.norm();
+        assert_relative_eq!(length, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_spherical_pendulum_inertia_matrix() {
+        // Test the 2x2 inertia matrix in (theta, phi) coordinates
+        let pendulum = SphericalPendulum::new(2.0, 3.0) // L=2, m=3
+            .with_theta(PI / 3.0); // 60 degrees
+
+        let m = pendulum.inertia_matrix();
+
+        // M = m*L² * | 1        0          |
+        //            | 0        sin²(θ)    |
+        let ml2 = 3.0 * 4.0; // = 12
+        let sin2_theta = (PI / 3.0).sin().powi(2); // = 0.75
+
+        assert_relative_eq!(m[(0, 0)], ml2, epsilon = 1e-10);
+        assert_relative_eq!(m[(1, 1)], ml2 * sin2_theta, epsilon = 1e-10);
+        assert_relative_eq!(m[(0, 1)], 0.0, epsilon = 1e-10);
+        assert_relative_eq!(m[(1, 0)], 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_spherical_pendulum_length_preserved() {
+        // The pendulum length should be preserved (spherical constraint)
+        let mut pendulum = SphericalPendulum::new(1.5, 1.0)
+            .with_theta(PI / 3.0)
+            .with_velocities(1.0, 1.5);
+
+        let expected_length = 1.5;
+
+        for _ in 0..1000 {
+            pendulum.step(1.0 / 240.0);
+
+            let pos = pendulum.position();
+            let actual_length = pos.norm();
+
+            assert_relative_eq!(actual_length, expected_length, epsilon = 1e-10,);
+        }
+    }
+
+    #[test]
+    fn test_spherical_pendulum_conical_motion() {
+        // A spherical pendulum with constant theta and phi_dot traces a cone
+        // This is called "conical pendulum" motion
+        // For stable conical motion at angle theta with phi_dot = omega:
+        // omega² = g / (L * cos(theta))
+
+        let theta = PI / 6.0; // 30 degrees
+        let l = 1.0;
+        let g = 9.81;
+
+        // Calculate the required angular velocity for conical motion
+        let omega = (g / (l * theta.cos())).sqrt();
+
+        let mut pendulum = SphericalPendulum::new(l, 1.0)
+            .with_theta(theta)
+            .with_velocities(0.0, omega); // No theta_dot, only phi_dot
+
+        let initial_theta = pendulum.theta;
+
+        // Run for 5 seconds
+        let dt = 1.0 / 960.0; // High resolution for this test
+        pendulum.run_for(5.0, dt);
+
+        // Theta should remain approximately constant (conical motion)
+        let theta_error = (pendulum.theta - initial_theta).abs();
+        assert!(
+            theta_error < 0.05,
+            "Theta drifted by {:.3} rad, expected nearly constant",
+            theta_error
+        );
+    }
+
+    #[test]
+    fn test_spherical_pendulum_velocity() {
+        // Test that velocity computation is correct
+        let pendulum = SphericalPendulum::new(1.0, 1.0)
+            .with_theta(PI / 4.0)
+            .with_velocities(1.0, 2.0);
+
+        let vel = pendulum.velocity();
+
+        // Compute expected velocity analytically
+        let sin_t = (PI / 4.0).sin();
+        let cos_t = (PI / 4.0).cos();
+        let sin_p = 0.0_f64.sin(); // phi = 0
+        let cos_p = 0.0_f64.cos(); // phi = 0
+
+        // dx/dt = L * (cos(θ) * cos(φ) * θ̇ - sin(θ) * sin(φ) * φ̇)
+        let expected_vx = cos_t * cos_p * 1.0 - sin_t * sin_p * 2.0;
+        // dy/dt = L * sin(θ) * θ̇
+        let expected_vy = sin_t * 1.0;
+        // dz/dt = L * (cos(θ) * sin(φ) * θ̇ + sin(θ) * cos(φ) * φ̇)
+        let expected_vz = cos_t * sin_p * 1.0 + sin_t * cos_p * 2.0;
+
+        assert_relative_eq!(vel.x, expected_vx, epsilon = 1e-10);
+        assert_relative_eq!(vel.y, expected_vy, epsilon = 1e-10);
+        assert_relative_eq!(vel.z, expected_vz, epsilon = 1e-10);
     }
 }
