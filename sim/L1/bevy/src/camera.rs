@@ -180,9 +180,9 @@ fn update_orbit_camera(mut cameras: Query<(&OrbitCamera, &mut Transform)>) {
 /// This is a convenience function for setting up a basic camera.
 pub fn spawn_orbit_camera(mut commands: Commands) {
     let camera = OrbitCamera::default()
-        .with_target(Vec3::ZERO)
-        .with_distance(10.0)
-        .with_angles(0.5, 0.5);
+        .with_target(Vec3::new(0.0, 1.0, 0.0)) // Look at a point 1m above ground
+        .with_distance(8.0)
+        .with_angles(0.8, 0.6); // Higher elevation angle for better overview
 
     let mut transform = Transform::default();
     camera.apply_to_transform(&mut transform);

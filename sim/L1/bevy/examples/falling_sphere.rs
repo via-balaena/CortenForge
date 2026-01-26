@@ -28,8 +28,8 @@ fn main() {
 fn setup_physics(mut commands: Commands) {
     let mut world = World::default();
 
-    // Add a falling sphere
-    let sphere_pose = Pose::from_position(nalgebra::Point3::new(0.0, 5.0, 0.0));
+    // Add a falling sphere (Z=5 means 5 units up in Z-up physics coordinates)
+    let sphere_pose = Pose::from_position(nalgebra::Point3::new(0.0, 0.0, 5.0));
     let sphere_state = RigidBodyState::at_rest(sphere_pose);
     let sphere_mass = MassProperties::sphere(1.0, 0.5);
     let sphere_id = world.add_body(sphere_state, sphere_mass);

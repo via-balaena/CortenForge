@@ -36,6 +36,12 @@ pub trait Joint {
 
     /// Get the child anchor point in child body frame.
     fn child_anchor(&self) -> Point3<f64>;
+
+    /// Get the joint axis (for revolute, prismatic, cylindrical joints).
+    /// Returns Z-axis by default for joints that don't have a specific axis.
+    fn axis(&self) -> Vector3<f64> {
+        Vector3::z()
+    }
 }
 
 /// Type of joint constraint.

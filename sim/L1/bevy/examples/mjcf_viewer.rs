@@ -20,7 +20,7 @@ const SIMPLE_HUMANOID_MJCF: &str = r#"
 
     <default>
         <geom rgba="0.8 0.6 0.4 1"/>
-        <joint damping="1.0"/>
+        <joint damping="5.0"/>
     </default>
 
     <worldbody>
@@ -34,48 +34,48 @@ const SIMPLE_HUMANOID_MJCF: &str = r#"
 
             <!-- Head -->
             <body name="head" pos="0 0 0.5">
-                <joint name="neck" type="ball" damping="2.0"/>
+                <joint name="neck" type="ball" damping="10.0"/>
                 <geom type="sphere" size="0.12" rgba="0.9 0.7 0.6 1"/>
             </body>
 
             <!-- Left Arm -->
             <body name="left_upper_arm" pos="0.2 0 0.35">
-                <joint name="left_shoulder" type="ball" damping="0.5"/>
+                <joint name="left_shoulder" type="ball" damping="5.0"/>
                 <geom type="capsule" fromto="0 0 0 0.25 0 0" size="0.04"/>
 
                 <body name="left_lower_arm" pos="0.28 0 0">
-                    <joint name="left_elbow" type="hinge" axis="0 1 0" range="-2.5 0"/>
+                    <joint name="left_elbow" type="hinge" axis="0 1 0" range="-2.5 0" limited="true" damping="5.0"/>
                     <geom type="capsule" fromto="0 0 0 0.22 0 0" size="0.035"/>
                 </body>
             </body>
 
             <!-- Right Arm -->
             <body name="right_upper_arm" pos="-0.2 0 0.35">
-                <joint name="right_shoulder" type="ball" damping="0.5"/>
+                <joint name="right_shoulder" type="ball" damping="5.0"/>
                 <geom type="capsule" fromto="0 0 0 -0.25 0 0" size="0.04"/>
 
                 <body name="right_lower_arm" pos="-0.28 0 0">
-                    <joint name="right_elbow" type="hinge" axis="0 1 0" range="0 2.5"/>
+                    <joint name="right_elbow" type="hinge" axis="0 1 0" range="0 2.5" limited="true" damping="5.0"/>
                     <geom type="capsule" fromto="0 0 0 -0.22 0 0" size="0.035"/>
                 </body>
             </body>
 
             <!-- Pelvis -->
             <body name="pelvis" pos="0 0 -0.15">
-                <joint name="spine" type="ball" damping="2.0"/>
+                <joint name="spine" type="ball" damping="20.0"/>
                 <geom type="capsule" fromto="-0.1 0 0 0.1 0 0" size="0.08"/>
 
                 <!-- Left Leg -->
                 <body name="left_upper_leg" pos="0.1 0 -0.05">
-                    <joint name="left_hip" type="ball" damping="1.0"/>
+                    <joint name="left_hip" type="ball" damping="10.0"/>
                     <geom type="capsule" fromto="0 0 0 0 0 -0.35" size="0.055"/>
 
                     <body name="left_lower_leg" pos="0 0 -0.38">
-                        <joint name="left_knee" type="hinge" axis="1 0 0" range="-2.5 0"/>
+                        <joint name="left_knee" type="hinge" axis="1 0 0" range="-2.5 0" limited="true" damping="10.0"/>
                         <geom type="capsule" fromto="0 0 0 0 0 -0.32" size="0.045"/>
 
                         <body name="left_foot" pos="0 0 -0.35">
-                            <joint name="left_ankle" type="ball"/>
+                            <joint name="left_ankle" type="ball" damping="5.0"/>
                             <geom type="box" size="0.05 0.09 0.02" pos="0 0.03 0"/>
                         </body>
                     </body>
@@ -83,15 +83,15 @@ const SIMPLE_HUMANOID_MJCF: &str = r#"
 
                 <!-- Right Leg -->
                 <body name="right_upper_leg" pos="-0.1 0 -0.05">
-                    <joint name="right_hip" type="ball" damping="1.0"/>
+                    <joint name="right_hip" type="ball" damping="10.0"/>
                     <geom type="capsule" fromto="0 0 0 0 0 -0.35" size="0.055"/>
 
                     <body name="right_lower_leg" pos="0 0 -0.38">
-                        <joint name="right_knee" type="hinge" axis="1 0 0" range="-2.5 0"/>
+                        <joint name="right_knee" type="hinge" axis="1 0 0" range="-2.5 0" limited="true" damping="10.0"/>
                         <geom type="capsule" fromto="0 0 0 0 0 -0.32" size="0.045"/>
 
                         <body name="right_foot" pos="0 0 -0.35">
-                            <joint name="right_ankle" type="ball"/>
+                            <joint name="right_ankle" type="ball" damping="5.0"/>
                             <geom type="box" size="0.05 0.09 0.02" pos="0 0.03 0"/>
                         </body>
                     </body>
