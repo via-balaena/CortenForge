@@ -419,20 +419,12 @@ impl ConstraintSolver {
         // For now, just apply light damping
         let constraint_torque = -angular_damping * relative_omega * 0.1;
 
-        // Add motor and limit forces
+        // Add joint damping
         let mut total_torque = constraint_torque;
+        total_torque -= joint.damping() * relative_omega;
 
-        if let Some(motor) = joint.motor() {
-            // Compute joint velocity (simplified)
-            let joint_velocity = relative_omega.norm();
-            let motor_force = motor.compute_force(0.0, joint_velocity);
-            // Apply motor torque along constraint axis (simplified)
-            total_torque += Vector3::z() * motor_force * 0.01; // Scale factor
-        }
-
-        // Joint damping
-        let joint_damping_torque = -joint.damping() * relative_omega;
-        total_torque += joint_damping_torque;
+        // Note: Motor/stiffness support requires implicit integration for stability.
+        // For now, only damping is applied. See issue for future stiffness support.
 
         ConstraintForce::new(
             -constraint_force,
@@ -511,10 +503,12 @@ impl ConstraintSolver {
 
         let constraint_force = -stiffness * position_error - damping * velocity_error;
 
-        // No rotation constraint for spherical, but apply damping
-        let angular_damping = joint.damping();
+        // Apply joint damping to angular velocity
         let relative_omega = child.angular_velocity - parent.angular_velocity;
-        let constraint_torque = -angular_damping * relative_omega;
+        let constraint_torque = -joint.damping() * relative_omega;
+
+        // Note: Motor/stiffness support requires implicit integration for stability.
+        // For now, only damping is applied.
 
         ConstraintForce::new(
             -constraint_force,

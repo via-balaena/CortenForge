@@ -187,6 +187,26 @@ fn handle_input(
     mut paused: ResMut<SimulationPaused>,
 ) {
     // Toggle visualization modes
+    if keyboard.just_pressed(KeyCode::KeyC) {
+        config.show_collision_shapes = !config.show_collision_shapes;
+        println!(
+            "Collision shapes: {}",
+            if config.show_collision_shapes {
+                "ON"
+            } else {
+                "OFF"
+            }
+        );
+    }
+
+    if keyboard.just_pressed(KeyCode::KeyJ) {
+        config.show_joint_axes = !config.show_joint_axes;
+        println!(
+            "Joint axes: {}",
+            if config.show_joint_axes { "ON" } else { "OFF" }
+        );
+    }
+
     if keyboard.just_pressed(KeyCode::KeyM) {
         config.show_muscles = !config.show_muscles;
         println!(
@@ -485,15 +505,13 @@ fn print_help() {
     println!("║  Controls:                                                      ║");
     println!("║    Mouse drag  - Rotate camera                                  ║");
     println!("║    Scroll      - Zoom                                           ║");
+    println!("║    C           - Toggle collision shapes                        ║");
+    println!("║    J           - Toggle joint axes                              ║");
     println!("║    M           - Toggle muscle visualization                    ║");
     println!("║    T           - Toggle tendon visualization                    ║");
     println!("║    S           - Toggle sensor visualization                    ║");
     println!("║    Space       - Pause/resume simulation                        ║");
-    println!("║    1           - Activate Biceps (hold)                         ║");
-    println!("║    2           - Activate Triceps (hold)                        ║");
-    println!("║    3           - Activate Brachialis (hold)                     ║");
-    println!("║    4           - Activate Wrist Flexor (hold)                   ║");
-    println!("║    5           - Activate Wrist Extensor (hold)                 ║");
+    println!("║    1-5         - Activate muscles (hold)                        ║");
     println!("║    R           - Reset all muscle activations                   ║");
     println!("╚═══════════════════════════════════════════════════════════════╝");
     println!();
