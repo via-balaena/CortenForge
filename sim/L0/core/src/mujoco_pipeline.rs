@@ -5834,8 +5834,8 @@ pub struct Model {
     // These are computed once at model construction to avoid O(n) lookups
     // in the inner loops of CRBA and RNE, achieving O(n) vs O(n³) complexity.
     /// For each body: list of ancestor joint indices (from body to root).
-    /// body_ancestor_joints[body_id] contains all joints in the kinematic chain
-    /// from this body to the world. Empty for body 0 (world).
+    /// `body_ancestor_joints[i]` contains all joints in the kinematic chain
+    /// from body `i` to the world. Empty for body 0 (world).
     pub body_ancestor_joints: Vec<Vec<usize>>,
 
     /// For each body: set of ancestor joint indices for O(1) membership testing.
@@ -6815,6 +6815,7 @@ fn mj_collision(model: &Model, data: &mut Data) {
 /// Narrow-phase collision between two geometries.
 ///
 /// Returns Contact if penetrating, None otherwise.
+#[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
 fn collide_geoms(
     model: &Model,
     geom1: usize,
@@ -7264,7 +7265,11 @@ fn closest_point_segment(a: Vector3<f64>, b: Vector3<f64>, p: Vector3<f64>) -> V
 
 /// Find closest points between two line segments.
 ///
-/// Returns (point_on_seg1, point_on_seg2).
+/// Returns (`point_on_seg1`, `point_on_seg2`).
+///
+/// Uses standard segment-segment distance algorithm with single-letter variables
+/// matching the mathematical notation from computational geometry literature.
+#[allow(clippy::many_single_char_names)]
 fn closest_points_segments(
     p1: Vector3<f64>,
     q1: Vector3<f64>,
@@ -7294,19 +7299,19 @@ fn closest_points_segments(
 
     let b = d1.dot(&d2);
     let c = d1.dot(&r);
+    // Determinant of the 2x2 system: denom = a*e - b² (intentionally b*b, not a*b)
+    #[allow(clippy::suspicious_operation_groupings)]
     let denom = a * e - b * b;
 
-    let mut s: f64;
-    let mut t: f64;
-
-    if denom.abs() < 1e-10 {
+    // Compute initial s and t parameters for the closest points
+    let (mut s, mut t) = if denom.abs() < 1e-10 {
         // Parallel segments
-        s = 0.0;
-        t = f / e;
+        (0.0, f / e)
     } else {
-        s = (b * f - c * e) / denom;
-        t = (b * s + f) / e;
-    }
+        let s_val = (b * f - c * e) / denom;
+        let t_val = (b * s_val + f) / e;
+        (s_val, t_val)
+    };
 
     // Clamp to [0,1] and recompute
     if s < 0.0 {
