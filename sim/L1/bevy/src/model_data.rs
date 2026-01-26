@@ -534,6 +534,6 @@ mod tests {
 
         // Should be able to mutate Data through deref
         physics_data.time = 1.0;
-        assert_eq!(physics_data.time, 1.0);
+        assert!((physics_data.time - 1.0).abs() < f64::EPSILON);
     }
 }

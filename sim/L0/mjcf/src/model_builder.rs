@@ -1169,6 +1169,7 @@ fn geom_size_to_vec3(size: &[f64], geom_type: GeomType) -> Vector3<f64> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

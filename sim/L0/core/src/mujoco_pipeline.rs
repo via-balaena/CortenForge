@@ -5392,11 +5392,11 @@ pub enum MjJointType {
     /// qvel: 1 scalar (linear velocity)
     Slide,
     /// Ball joint (3 DOF): free rotation (spherical).
-    /// qpos: 4 scalars (unit quaternion [w, x, y, z])
+    /// qpos: 4 scalars (unit quaternion w, x, y, z)
     /// qvel: 3 scalars (angular velocity)
     Ball,
     /// Free joint (6 DOF): floating body with no constraints.
-    /// qpos: 7 scalars (position [x,y,z] + quaternion [w,x,y,z])
+    /// qpos: 7 scalars (position x,y,z + quaternion w,x,y,z)
     /// qvel: 6 scalars (linear velocity + angular velocity)
     Free,
 }
@@ -5862,69 +5862,69 @@ pub struct Contact {
 #[allow(non_snake_case)] // qM matches MuJoCo naming convention
 pub struct Data {
     // ==================== Generalized Coordinates (THE source of truth) ====================
-    /// Joint positions [nq] - includes quaternion components for ball/free joints.
+    /// Joint positions (length `nq`) - includes quaternion components for ball/free joints.
     pub qpos: DVector<f64>,
-    /// Joint velocities [nv].
+    /// Joint velocities (length `nv`).
     pub qvel: DVector<f64>,
-    /// Joint accelerations [nv] - computed by forward dynamics.
+    /// Joint accelerations (length `nv`) - computed by forward dynamics.
     pub qacc: DVector<f64>,
-    /// Warm-start for constraint solver [nv].
+    /// Warm-start for constraint solver (length `nv`).
     pub qacc_warmstart: DVector<f64>,
 
     // ==================== Control / Actuation ====================
-    /// Actuator control inputs [nu].
+    /// Actuator control inputs (length `nu`).
     pub ctrl: DVector<f64>,
-    /// Actuator activation states [na] (for muscles/filters).
+    /// Actuator activation states (length `na`) (for muscles/filters).
     pub act: DVector<f64>,
-    /// Actuator forces in joint space [nv].
+    /// Actuator forces in joint space (length `nv`).
     pub qfrc_actuator: DVector<f64>,
 
     // ==================== Computed Body States (from FK - outputs, not inputs) ====================
-    /// Body positions in world frame [nbody].
+    /// Body positions in world frame (length `nbody`).
     pub xpos: Vec<Vector3<f64>>,
-    /// Body orientations in world frame [nbody].
+    /// Body orientations in world frame (length `nbody`).
     pub xquat: Vec<UnitQuaternion<f64>>,
-    /// Body rotation matrices (cached) [nbody].
+    /// Body rotation matrices (cached) (length `nbody`).
     pub xmat: Vec<Matrix3<f64>>,
-    /// Body inertial frame positions [nbody].
+    /// Body inertial frame positions (length `nbody`).
     pub xipos: Vec<Vector3<f64>>,
-    /// Body inertial frame rotations [nbody].
+    /// Body inertial frame rotations (length `nbody`).
     pub ximat: Vec<Matrix3<f64>>,
 
     // Geom poses (for collision detection)
-    /// Geom positions in world frame [ngeom].
+    /// Geom positions in world frame (length `ngeom`).
     pub geom_xpos: Vec<Vector3<f64>>,
-    /// Geom rotation matrices [ngeom].
+    /// Geom rotation matrices (length `ngeom`).
     pub geom_xmat: Vec<Matrix3<f64>>,
 
     // Site poses (for attachment points, sensors)
-    /// Site positions in world frame [nsite].
+    /// Site positions in world frame (length `nsite`).
     pub site_xpos: Vec<Vector3<f64>>,
-    /// Site rotation matrices [nsite].
+    /// Site rotation matrices (length `nsite`).
     pub site_xmat: Vec<Matrix3<f64>>,
 
     // ==================== Velocities (computed from qvel) ====================
-    /// Body spatial velocities [nbody]: [angular, linear].
+    /// Body spatial velocities (length `nbody`): (angular, linear).
     pub cvel: Vec<SpatialVector>,
-    /// DOF velocities in Cartesian space [nv].
+    /// DOF velocities in Cartesian space (length `nv`).
     pub cdof: Vec<SpatialVector>,
 
     // ==================== Forces in Generalized Coordinates ====================
-    /// User-applied generalized forces [nv].
+    /// User-applied generalized forces (length `nv`).
     pub qfrc_applied: DVector<f64>,
-    /// Coriolis + centrifugal + gravity bias forces [nv].
+    /// Coriolis + centrifugal + gravity bias forces (length `nv`).
     pub qfrc_bias: DVector<f64>,
-    /// Passive forces (springs + dampers) [nv].
+    /// Passive forces (springs + dampers) (length `nv`).
     pub qfrc_passive: DVector<f64>,
-    /// Constraint forces (contacts + joint limits) [nv].
+    /// Constraint forces (contacts + joint limits) (length `nv`).
     pub qfrc_constraint: DVector<f64>,
 
     // Cartesian forces (alternative input method)
-    /// Applied spatial forces in world frame [nbody].
+    /// Applied spatial forces in world frame (length `nbody`).
     pub xfrc_applied: Vec<SpatialVector>,
 
     // ==================== Mass Matrix ====================
-    /// Joint-space inertia matrix [nv x nv] (dense for now).
+    /// Joint-space inertia matrix (`nv` x `nv`) (dense for now).
     /// Future: sparse L^T D L factorization for efficiency.
     pub qM: DMatrix<f64>,
 
@@ -5941,8 +5941,8 @@ pub struct Data {
     pub solver_nnz: usize,
 
     // ==================== Sensors ====================
-    /// Sensor data array [nsensordata].
-    /// Each sensor writes to sensordata[`sensor_adr`[i]..`sensor_adr`[i]+`sensor_dim`[i]].
+    /// Sensor data array (length `nsensordata`).
+    /// Each sensor writes to `sensordata[sensor_adr[i]..sensor_adr[i]+sensor_dim[i]]`.
     pub sensordata: DVector<f64>,
 
     // ==================== Energy (for debugging/validation) ====================
@@ -6259,7 +6259,7 @@ impl Model {
     ///
     /// # Note
     /// The ball joint uses quaternion representation (nq=4, nv=3).
-    /// Initial state is qpos=[1,0,0,0] (identity quaternion = hanging down).
+    /// Initial state is qpos=`[1,0,0,0]` (identity quaternion = hanging down).
     #[must_use]
     pub fn spherical_pendulum(length: f64, mass: f64) -> Self {
         let mut model = Self::empty();
@@ -8231,7 +8231,7 @@ fn mj_normalize_quat(model: &Model, data: &mut Data) {
 /// # Arguments
 ///
 /// * `model` - The model containing joint definitions
-/// * `qvel` - Output velocity vector [nv]
+/// * `qvel` - Output velocity vector (length `nv`)
 /// * `qpos1` - Start position
 /// * `qpos2` - End position
 /// * `dt` - Time difference
@@ -8348,7 +8348,7 @@ pub fn mj_differentiate_pos(
 /// # Arguments
 ///
 /// * `model` - The model containing joint definitions
-/// * `qpos_out` - Output position vector [nq]
+/// * `qpos_out` - Output position vector (length `nq`)
 /// * `qpos` - Start position
 /// * `qvel` - Velocity
 /// * `dt` - Time step
