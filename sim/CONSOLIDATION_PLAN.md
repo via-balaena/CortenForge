@@ -166,7 +166,10 @@ mj_forward(model, data):
 
 ## The Plan
 
-### Phase 1: Define MuJoCo-Aligned Data Structures
+> **Execution Order**: Phases 1-4 build the new Model/Data system, Phases 5-7 integrate with Bevy
+> and create examples, Phase 8 validates and cleans up old code.
+
+### Phase 1: Define MuJoCo-Aligned Data Structures ✅
 
 Create `Model` and `Data` in `sim-core/src/mujoco_pipeline.rs`:
 
@@ -314,7 +317,7 @@ pub struct Data {
 }
 ```
 
-### Phase 2: Implement Core Pipeline Functions
+### Phase 2: Implement Core Pipeline Functions ✅
 
 ```rust
 impl Model {
@@ -472,7 +475,7 @@ fn mj_normalize_quat(model: &Model, data: &mut Data) {
 }
 ```
 
-### Phase 2.5: Validation Functions
+### Phase 2.5: Validation Functions ✅
 
 ```rust
 /// Check for NaN/Inf in qpos, reset if found
@@ -511,7 +514,7 @@ fn mj_check_acc(_model: &Model, data: &Data) -> bool {
 }
 ```
 
-### Phase 3: Implement Pipeline Stages
+### Phase 3: Implement Pipeline Stages ✅
 
 Each stage in detail:
 
@@ -611,7 +614,7 @@ Already implemented in `ArticulatedSystem::bias_forces()`. Generalize for tree s
 
 Use existing `PGSSolver` with warm-starting. Add contact constraint generation.
 
-### Phase 4: MJCF Parser → Model
+### Phase 4: MJCF Parser → Model ✅
 
 Rewrite `sim-mjcf` to output `Model` directly:
 
@@ -631,34 +634,7 @@ impl Model {
 
 The parser already extracts bodies, joints, geoms. Just need to build `Model` arrays instead of spawning into `World`.
 
-### Phase 5: Delete Old Code
-
-**DELETE entirely:**
-- `sim-core/src/world.rs`
-- `sim-core/src/stepper.rs`
-- `sim-constraint/src/solver.rs` (basic Gauss-Seidel)
-- `sim-constraint/src/newton.rs` (Newton-Raphson)
-- `sim-constraint/src/cg.rs` (Conjugate Gradient)
-- `sim-constraint/src/pgs.rs` (duplicate PGS)
-- `sim-constraint/src/islands.rs` (constraint islands for old World)
-- `sim-constraint/src/parallel.rs` (parallel for old World)
-
-**KEEP but refactor:**
-- `sim-constraint/src/joint.rs` - Joint type definitions (extract to Model)
-- `sim-constraint/src/limits.rs` - Limit enforcement
-- `sim-constraint/src/motor.rs` - Motor control
-- `sim-contact/*` - Contact model (integrate into constraint solver)
-- `sim-core/src/collision/*` - Collision detection (compute contacts for Data)
-
-**KEEP as-is:**
-- `sim-types/*`
-- `sim-simd/*`
-- `sim-sensor/*`
-- `sim-muscle/*` (optional feature)
-- `sim-tendon/*` (optional feature)
-- `sim-deformable/*` (optional feature)
-
-### Phase 6: Bevy Integration
+### Phase 5: Bevy Integration ✅
 
 ```rust
 // New Bevy resources
@@ -693,26 +669,94 @@ fn step_physics(
 }
 ```
 
-### Phase 7: Examples
+### Phase 6: Examples ✅
 
 Rewrite all examples to use `Model`/`Data`:
 
 ```rust
 // humanoid.rs
+use sim_bevy::model_data::{PhysicsModel, PhysicsData, step_model_data, sync_model_data_to_bevy};
+use sim_mjcf::load_model;
+
 fn main() {
-    let model = Model::from_mjcf(include_str!("assets/humanoid.xml"))
-        .expect("Failed to load humanoid");
+    // Note: load_model() is in sim_mjcf, not Model::from_mjcf()
+    // This avoids circular dependency (sim-mjcf depends on sim-core)
+    let model = load_model(HUMANOID_MJCF).expect("Failed to load humanoid");
     let mut data = model.make_data();
 
     App::new()
         .add_plugins(DefaultPlugins)
         .insert_resource(PhysicsModel(model))
         .insert_resource(PhysicsData(data))
-        .add_systems(Update, step_physics)
-        .add_systems(PostUpdate, sync_physics_to_bevy)
+        .add_systems(Update, step_model_data)
+        .add_systems(PostUpdate, sync_model_data_to_bevy)
         .run();
 }
 ```
+
+### Phase 7: Validation (NEXT)
+
+Run the success criteria tests to verify the Model/Data implementation is correct before cleanup.
+
+**Correctness Tests:**
+- [ ] **FK correctness**: Set qpos manually, verify xpos/xquat match analytical solution
+- [ ] **CRBA correctness**: Compare mass matrix against known analytical solutions (2-link, 3-link)
+- [ ] **RNE correctness**: Verify Coriolis/gravity terms match analytical solutions
+- [ ] **Energy conservation**: Simple pendulum < 0.1% drift over 10s at 240Hz
+- [ ] **Chaotic system**: Double pendulum qualitatively matches reference (not exact due to chaos)
+- [ ] **Contact stability**: Ball stack remains stable for 10s without penetration > 1mm
+- [ ] **Joint limits**: Limits enforced with < 1% overshoot
+
+**API Tests:**
+- [ ] `sim_mjcf::load_model()` parses humanoid.xml without error
+- [ ] `model.make_data()` produces valid initial state
+- [ ] `data.step(&model)` completes without NaN/Inf
+- [ ] `data.reset(&model)` restores to qpos0
+
+**Integration Tests:**
+- [ ] **MJCF parsing**: Load DeepMind Control Suite models (cartpole, acrobot, humanoid)
+- [ ] **URDF parsing**: Load standard URDF robots (Panda, UR5)
+- [ ] **Actuators**: ctrl input produces expected joint torques
+- [ ] **Sensors**: Sensor readings match analytical expectations
+
+**Performance Tests:**
+- [ ] Humanoid (20+ DOF): > 10,000 steps/second single-threaded
+- [ ] Simple pendulum: > 100,000 steps/second
+
+### Phase 8: Delete Old Code & Cleanup
+
+Once validation passes, remove the old World/Stepper architecture and consolidate crates.
+
+**DELETE entirely:**
+- `sim-core/src/world.rs`
+- `sim-core/src/stepper.rs`
+- `sim-constraint/src/solver.rs` (basic Gauss-Seidel)
+- `sim-constraint/src/newton.rs` (Newton-Raphson)
+- `sim-constraint/src/cg.rs` (Conjugate Gradient)
+- `sim-constraint/src/pgs.rs` (duplicate PGS)
+- `sim-constraint/src/islands.rs` (constraint islands for old World)
+- `sim-constraint/src/parallel.rs` (parallel for old World)
+
+**KEEP but refactor:**
+- `sim-constraint/src/joint.rs` - Joint type definitions (extract to Model)
+- `sim-constraint/src/limits.rs` - Limit enforcement
+- `sim-constraint/src/motor.rs` - Motor control
+- `sim-contact/*` - Contact model (integrate into constraint solver)
+- `sim-core/src/collision/*` - Collision detection (compute contacts for Data)
+
+**KEEP as-is:**
+- `sim-types/*`
+- `sim-simd/*`
+- `sim-sensor/*`
+- `sim-muscle/*` (optional feature)
+- `sim-tendon/*` (optional feature)
+- `sim-deformable/*` (optional feature)
+
+**Cleanup Checklist:**
+- [ ] All old `World`/`Stepper` code deleted
+- [ ] `sim-constraint` reduced to joint definitions only
+- [ ] `sim-contact` merged into core
+- [ ] CI passes with cleaner crate structure
 
 ---
 
@@ -750,70 +794,30 @@ sim/L0/
 
 ## Migration Strategy
 
-1. **Build new alongside old** - Model/Data coexists with World initially
-2. **Create parallel MJCF loader** - `Model::from_mjcf()` next to old loader
-3. **Write new examples** using Model/Data
-4. **Validate against old examples** - same physics results
-5. **Deprecate old API** with warnings
-6. **Delete old code** after validation
-
----
-
-## Success Criteria
-
-### Correctness Tests
-
-- [ ] **FK correctness**: Set qpos manually, verify xpos/xquat match analytical solution
-- [ ] **CRBA correctness**: Compare mass matrix against known analytical solutions (2-link, 3-link)
-- [ ] **RNE correctness**: Verify Coriolis/gravity terms match analytical solutions
-- [ ] **Energy conservation**: Simple pendulum < 0.1% drift over 10s at 240Hz
-- [ ] **Chaotic system**: Double pendulum qualitatively matches reference (not exact due to chaos)
-- [ ] **Contact stability**: Ball stack remains stable for 10s without penetration > 1mm
-- [ ] **Joint limits**: Limits enforced with < 1% overshoot
-
-### Integration Tests
-
-- [ ] **MJCF parsing**: Load DeepMind Control Suite models (cartpole, acrobot, humanoid)
-- [ ] **URDF parsing**: Load standard URDF robots (Panda, UR5)
-- [ ] **Actuators**: ctrl input produces expected joint torques
-- [ ] **Sensors**: Sensor readings match analytical expectations
-
-### API Tests
-
-- [ ] `Model::from_mjcf()` parses humanoid.xml without error
-- [ ] `model.make_data()` produces valid initial state
-- [ ] `data.step(&model)` completes without NaN/Inf
-- [ ] `data.reset(&model)` restores to qpos0
-
-### Performance Tests
-
-- [ ] Humanoid (20+ DOF): > 10,000 steps/second single-threaded
-- [ ] Simple pendulum: > 100,000 steps/second
-
-### Cleanup
-
-- [ ] All old `World`/`Stepper` code deleted
-- [ ] `sim-constraint` reduced to joint definitions only
-- [ ] `sim-contact` merged into core
-- [ ] CI passes with cleaner crate structure
+1. ✅ **Build new alongside old** - Model/Data coexists with World initially
+2. ✅ **Create parallel MJCF loader** - `sim_mjcf::load_model()` next to old loader
+3. ✅ **Write new examples** using Model/Data
+4. **Validate against old examples** - same physics results (Phase 7)
+5. **Deprecate old API** with warnings (Phase 8)
+6. **Delete old code** after validation (Phase 8)
 
 ---
 
 ## Timeline Estimate
 
-| Phase | Description | Sessions |
-|-------|-------------|----------|
-| 1 | Define Model/Data structs | 1 |
-| 2 | Core pipeline functions | 1-2 |
-| 3.1 | Forward kinematics | 1 |
-| 3.2-3.3 | CRBA/RNE (generalize existing) | 1 |
-| 3.4 | Constraint solver integration | 1-2 |
-| 4 | MJCF → Model parser | 1 |
-| 5 | Delete old code | 1 |
-| 6 | Bevy integration | 1 |
-| 7 | Examples + validation | 1-2 |
+| Phase | Description | Status | Sessions |
+|-------|-------------|--------|----------|
+| 1 | Define Model/Data structs | ✅ | 1 |
+| 2 | Core pipeline functions | ✅ | 1-2 |
+| 2.5 | Validation functions | ✅ | 1 |
+| 3 | Pipeline stages (FK, CRBA, RNE, constraints) | ✅ | 2-3 |
+| 4 | MJCF → Model parser | ✅ | 1 |
+| 5 | Bevy integration | ✅ | 1 |
+| 6 | Examples | ✅ | 1 |
+| 7 | Validation tests | **NEXT** | 1-2 |
+| 8 | Delete old code & cleanup | Pending | 1 |
 
-**Total: ~10-12 focused sessions**
+**Total: ~10-12 focused sessions** (Phases 1-6 complete)
 
 ---
 

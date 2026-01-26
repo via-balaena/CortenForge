@@ -1,63 +1,65 @@
-//! Phase 3: Double Pendulum with Multi-DOF Physics
+//! Double Pendulum using Model/Data Architecture
 //!
-//! This demonstrates the full multi-DOF physics pipeline:
-//! 1. Composite Rigid Body Algorithm (CRBA) for 2×2 inertia matrix
-//! 2. Recursive Newton-Euler (RNE) for Coriolis + gravity bias forces
-//! 3. Matrix solve for accelerations: M @ qacc = qfrc_smooth
-//! 4. Semi-implicit Euler integration
+//! This example demonstrates the unified Model/Data physics pipeline for a
+//! double pendulum system. It showcases:
+//!
+//! 1. `Model::double_pendulum()` factory method for creating the physics model
+//! 2. `PhysicsModel` and `PhysicsData` Bevy resources
+//! 3. `ModelBodyIndex` component linking entities to bodies
+//! 4. Canonical `step_model_data` and `sync_model_data_to_bevy` systems
+//! 5. Forward kinematics computing xpos/xquat from qpos
+//!
+//! ## Key Architectural Points
+//!
+//! - **Model** is static: kinematic tree, joint definitions, mass properties
+//! - **Data** is dynamic: qpos/qvel are the ONLY state variables
+//! - Body poses (xpos/xquat) are COMPUTED via forward kinematics, never stored
+//! - Uses canonical systems from `sim_bevy::model_data` module
 //!
 //! The double pendulum is a classic chaotic system. Small differences in
 //! initial conditions lead to vastly different trajectories. However:
-//! - Energy should be approximately conserved
-//! - The links should stay connected
+//! - Energy should be approximately conserved (semi-implicit Euler)
+//! - The links should stay connected (forward kinematics ensures this)
 //! - Motion should look physically plausible
-//!
-//! Visual validation:
-//! - The pendulum should swing chaotically but smoothly
-//! - Both links should stay connected (no stretching/breaking)
-//! - The system shouldn't "explode" or gain energy spontaneously
 //!
 //! Run with: `cargo run -p sim-bevy --example double_pendulum --features x11`
 
 #![allow(clippy::needless_pass_by_value)]
 
 use bevy::prelude::*;
+use sim_bevy::convert::vec3_from_vector;
+use sim_bevy::model_data::{
+    step_model_data, sync_model_data_to_bevy, ModelBodyIndex, PhysicsData, PhysicsModel,
+};
+use sim_core::Model;
 use std::f64::consts::PI;
-
-// Import the double pendulum from sim-core
-use sim_core::mujoco_pipeline::DoublePendulum;
 
 // ============================================================================
 // Physics Constants
 // ============================================================================
 
-const DT: f64 = 1.0 / 480.0; // 480 Hz for better energy conservation
-const PENDULUM_LENGTH: f64 = 1.0;
+/// Link length in meters.
+const LINK_LENGTH: f64 = 1.0;
+/// Link mass in kg.
+const LINK_MASS: f64 = 1.0;
+/// Initial angle for first link (radians from vertical).
+const INITIAL_THETA1: f64 = PI / 2.0; // 90° - horizontal
+/// Initial angle for second link (radians relative to first).
+const INITIAL_THETA2: f64 = PI / 4.0; // 45°
+/// Bob visual radius.
 const BOB_RADIUS: f32 = 0.08;
 
 // ============================================================================
-// Bevy Resources
+// Components for Visual Elements
 // ============================================================================
 
-#[derive(Resource)]
-struct PendulumState {
-    pendulum: DoublePendulum,
-    time: f64,
-    initial_energy: f64,
-}
+/// Marker for the first rod visual.
+#[derive(Component)]
+struct Rod1;
 
-impl Default for PendulumState {
-    fn default() -> Self {
-        // Start with both links displaced for interesting chaotic motion
-        let pendulum = DoublePendulum::new(PENDULUM_LENGTH, 1.0).with_angles(PI / 2.0, PI / 4.0); // First link horizontal, second 45°
-        let initial_energy = pendulum.total_energy();
-        Self {
-            pendulum,
-            time: 0.0,
-            initial_energy,
-        }
-    }
-}
+/// Marker for the second rod visual.
+#[derive(Component)]
+struct Rod2;
 
 // ============================================================================
 // Bevy Integration
@@ -66,32 +68,73 @@ impl Default for PendulumState {
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .init_resource::<PendulumState>()
-        .add_systems(Startup, setup_scene)
+        .init_resource::<DebugPrintState>()
+        .add_systems(Startup, setup_physics_and_scene)
+        // Use canonical step_model_data system from module
+        .add_systems(Update, step_model_data)
+        // Use canonical sync_model_data_to_bevy for body transforms,
+        // plus custom systems for visual elements (rods) and debug output
         .add_systems(
-            Update,
-            (step_physics, sync_pendulum_visual, print_debug_info),
+            PostUpdate,
+            (sync_model_data_to_bevy, sync_rods_and_debug).chain(),
         )
         .run();
 }
 
-#[derive(Component)]
-struct Bob1;
-
-#[derive(Component)]
-struct Bob2;
-
-#[derive(Component)]
-struct Rod1;
-
-#[derive(Component)]
-struct Rod2;
-
-fn setup_scene(
+/// Setup physics model, data, and visual scene.
+fn setup_physics_and_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    // Create the physics model using factory method
+    let model = Model::double_pendulum(LINK_LENGTH, LINK_MASS);
+    let mut data = model.make_data();
+
+    // Set initial angles
+    data.qpos[0] = INITIAL_THETA1;
+    data.qpos[1] = INITIAL_THETA2;
+
+    // Compute initial body poses via forward kinematics
+    data.forward(&model);
+
+    // Store initial energy for validation
+    let initial_energy = data.energy_kinetic + data.energy_potential;
+
+    // Print system info
+    println!("=============================================");
+    println!("Double Pendulum (Model/Data Architecture)");
+    println!("=============================================");
+    println!("Model (static):");
+    println!("  nbody:  {} (world + 2 links)", model.nbody);
+    println!("  njnt:   {} (2 hinge joints)", model.njnt);
+    println!("  nq:     {} (joint angles)", model.nq);
+    println!("  nv:     {} (angular velocities)", model.nv);
+    println!("---------------------------------------------");
+    println!("Initial state:");
+    println!(
+        "  θ₁ = {:.1}° (first link from vertical)",
+        INITIAL_THETA1.to_degrees()
+    );
+    println!(
+        "  θ₂ = {:.1}° (second link relative)",
+        INITIAL_THETA2.to_degrees()
+    );
+    println!("  E₀ = {:.4} J (initial energy)", initial_energy);
+    println!("  dt = {:.5} s (timestep)", model.timestep);
+    println!("=============================================");
+    println!("Key invariants to observe:");
+    println!("  - qpos/qvel are the ONLY state variables");
+    println!("  - xpos/xquat computed via forward kinematics");
+    println!("  - Energy drift should be minimal (ΔE < 1%)");
+    println!("  - Links stay connected (FK guarantees this)");
+    println!("=============================================");
+    println!();
+
+    // Get initial body positions for entity spawning
+    let bob1_pos = vec3_from_vector(&data.xpos[1]);
+    let bob2_pos = vec3_from_vector(&data.xpos[2]);
+
     // Camera - positioned to see both links clearly
     commands.spawn((
         Camera3d::default(),
@@ -118,8 +161,9 @@ fn setup_scene(
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
-    // First bob (red)
+    // First bob (red) - linked to body 1
     commands.spawn((
+        ModelBodyIndex(1),
         Mesh3d(meshes.add(Sphere::new(BOB_RADIUS))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.9, 0.2, 0.2),
@@ -127,12 +171,12 @@ fn setup_scene(
             perceptual_roughness: 0.3,
             ..default()
         })),
-        Transform::from_xyz(0.0, 0.0, 0.0),
-        Bob1,
+        Transform::from_translation(bob1_pos),
     ));
 
-    // Second bob (blue)
+    // Second bob (blue) - linked to body 2
     commands.spawn((
+        ModelBodyIndex(2),
         Mesh3d(meshes.add(Sphere::new(BOB_RADIUS))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.2, 0.4, 0.9),
@@ -140,12 +184,12 @@ fn setup_scene(
             perceptual_roughness: 0.3,
             ..default()
         })),
-        Transform::from_xyz(0.0, 0.0, 0.0),
-        Bob2,
+        Transform::from_translation(bob2_pos),
     ));
 
-    // First rod (dark gray)
+    // First rod (dark gray) - connects pivot to bob1
     commands.spawn((
+        Rod1,
         Mesh3d(meshes.add(Cylinder::new(0.02, 1.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.5, 0.5, 0.5),
@@ -154,11 +198,11 @@ fn setup_scene(
             ..default()
         })),
         Transform::from_xyz(0.0, 0.0, 0.0),
-        Rod1,
     ));
 
-    // Second rod (lighter gray)
+    // Second rod (lighter gray) - connects bob1 to bob2
     commands.spawn((
+        Rod2,
         Mesh3d(meshes.add(Cylinder::new(0.02, 1.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.7, 0.7, 0.7),
@@ -167,7 +211,6 @@ fn setup_scene(
             ..default()
         })),
         Transform::from_xyz(0.0, 0.0, 0.0),
-        Rod2,
     ));
 
     // Ground reference plane
@@ -178,129 +221,71 @@ fn setup_scene(
             alpha_mode: AlphaMode::Blend,
             ..default()
         })),
-        Transform::from_xyz(0.0, -(2.0 * PENDULUM_LENGTH as f32), 0.0),
+        Transform::from_xyz(0.0, -(2.0 * LINK_LENGTH as f32), 0.0),
     ));
 
-    println!("=============================================");
-    println!("Phase 3: Double Pendulum (CRBA + RNE)");
-    println!("=============================================");
-    println!("Link Length: {:.2} m (each)", PENDULUM_LENGTH);
-    println!("Initial θ₁:  {:.1}° (first link)", (PI / 2.0).to_degrees());
-    println!(
-        "Initial θ₂:  {:.1}° (second link, relative)",
-        (PI / 4.0).to_degrees()
-    );
-    println!("Timestep:    {:.5} s (480 Hz)", DT);
-    println!("=============================================");
-    println!("Watch for:");
-    println!("  - Chaotic but smooth motion");
-    println!("  - Links stay connected (no stretching)");
-    println!("  - Energy conservation (check ΔE%)");
-    println!("  - Red bob = first mass, Blue bob = second mass");
-    println!("Press Ctrl+C to exit");
-    println!();
+    // Insert physics resources
+    commands.insert_resource(PhysicsModel(model));
+    commands.insert_resource(PhysicsData(data));
+    commands.insert_resource(InitialEnergy(initial_energy));
 }
 
-fn step_physics(mut state: ResMut<PendulumState>, time: Res<Time>) {
-    let frame_time = time.delta_secs_f64();
-    let mut accumulated = 0.0;
+/// Resource to store initial energy for drift calculation.
+#[derive(Resource)]
+struct InitialEnergy(f64);
 
-    while accumulated < frame_time {
-        state.pendulum.step(DT);
-        state.time += DT;
-        accumulated += DT;
-    }
+/// Resource to track debug print timing.
+#[derive(Resource, Default)]
+struct DebugPrintState {
+    last_print_time: f64,
 }
 
-fn sync_pendulum_visual(
-    state: Res<PendulumState>,
-    mut bob1_query: Query<
-        &mut Transform,
-        (With<Bob1>, Without<Bob2>, Without<Rod1>, Without<Rod2>),
-    >,
-    mut bob2_query: Query<
-        &mut Transform,
-        (With<Bob2>, Without<Bob1>, Without<Rod1>, Without<Rod2>),
-    >,
-    mut rod1_query: Query<
-        &mut Transform,
-        (With<Rod1>, Without<Bob1>, Without<Bob2>, Without<Rod2>),
-    >,
-    mut rod2_query: Query<
-        &mut Transform,
-        (With<Rod2>, Without<Bob1>, Without<Bob2>, Without<Rod1>),
-    >,
+/// Synchronize rod visuals and print debug info.
+///
+/// Rods are visual elements that connect body positions - they're not physics
+/// bodies, so they need custom sync logic. This runs AFTER sync_model_data_to_bevy
+/// so body positions are already updated.
+fn sync_rods_and_debug(
+    data: Res<PhysicsData>,
+    mut rod1_query: Query<&mut Transform, (With<Rod1>, Without<Rod2>)>,
+    mut rod2_query: Query<&mut Transform, (With<Rod2>, Without<Rod1>)>,
+    mut state: ResMut<DebugPrintState>,
+    initial_energy: Res<InitialEnergy>,
 ) {
-    // Get positions from physics state
-    let pos1 = state.pendulum.position1();
-    let pos2 = state.pendulum.position2();
-
-    let bob1_pos = Vec3::new(pos1.x as f32, pos1.y as f32, 0.0);
-    let bob2_pos = Vec3::new(pos2.x as f32, pos2.y as f32, 0.0);
     let pivot = Vec3::ZERO;
-
-    // Update first bob
-    for mut transform in bob1_query.iter_mut() {
-        transform.translation = bob1_pos;
-    }
-
-    // Update second bob
-    for mut transform in bob2_query.iter_mut() {
-        transform.translation = bob2_pos;
-    }
+    let bob1_pos = vec3_from_vector(&data.xpos[1]);
+    let bob2_pos = vec3_from_vector(&data.xpos[2]);
 
     // Update first rod (pivot to bob1)
     for mut transform in rod1_query.iter_mut() {
-        let midpoint = (pivot + bob1_pos) / 2.0;
-        let direction = (bob1_pos - pivot).normalize_or_zero();
-        let length = (bob1_pos - pivot).length();
-
-        transform.translation = midpoint;
-        transform.scale = Vec3::new(1.0, length, 1.0);
-
-        if direction.length_squared() > 0.0001 {
-            transform.rotation = Quat::from_rotation_arc(Vec3::Y, direction);
-        }
+        update_rod_transform(&mut transform, pivot, bob1_pos);
     }
 
     // Update second rod (bob1 to bob2)
     for mut transform in rod2_query.iter_mut() {
-        let midpoint = (bob1_pos + bob2_pos) / 2.0;
-        let direction = (bob2_pos - bob1_pos).normalize_or_zero();
-        let length = (bob2_pos - bob1_pos).length();
-
-        transform.translation = midpoint;
-        transform.scale = Vec3::new(1.0, length, 1.0);
-
-        if direction.length_squared() > 0.0001 {
-            transform.rotation = Quat::from_rotation_arc(Vec3::Y, direction);
-        }
+        update_rod_transform(&mut transform, bob1_pos, bob2_pos);
     }
-}
 
-fn print_debug_info(state: Res<PendulumState>, time: Res<Time>) {
+    // Debug output every 2 seconds of simulation time
     let interval = 2.0;
-    let prev_bucket = ((state.time - time.delta_secs_f64()) / interval) as i32;
-    let curr_bucket = (state.time / interval) as i32;
+    if data.time - state.last_print_time > interval {
+        state.last_print_time = data.time;
 
-    if curr_bucket > prev_bucket {
-        let energy = state.pendulum.total_energy();
-        let energy_error = (energy - state.initial_energy).abs() / state.initial_energy * 100.0;
+        let energy = data.energy_kinetic + data.energy_potential;
+        let energy_error = (energy - initial_energy.0).abs() / initial_energy.0 * 100.0;
 
-        let theta1 = state.pendulum.qpos[0];
-        let theta2 = state.pendulum.qpos[1];
-        let omega1 = state.pendulum.qvel[0];
-        let omega2 = state.pendulum.qvel[1];
+        let theta1 = data.qpos[0];
+        let theta2 = data.qpos[1];
+        let omega1 = data.qvel[0];
+        let omega2 = data.qvel[1];
 
-        // Check link lengths for debugging
-        let pos1 = state.pendulum.position1();
-        let pos2 = state.pendulum.position2();
-        let link1_len = pos1.norm();
-        let link2_len = (pos2 - pos1).norm();
+        // Verify link lengths (should be constant due to FK)
+        let link1_len = bob1_pos.length();
+        let link2_len = (bob2_pos - bob1_pos).length();
 
         println!(
             "t={:.1}s  θ₁={:+.1}° θ₂={:+.1}°  ω₁={:+.1} ω₂={:+.1}  E={:.3}J  ΔE={:.2}%  L₁={:.3} L₂={:.3}",
-            state.time,
+            data.time,
             theta1.to_degrees(),
             theta2.to_degrees(),
             omega1,
@@ -310,5 +295,19 @@ fn print_debug_info(state: Res<PendulumState>, time: Res<Time>) {
             link1_len,
             link2_len
         );
+    }
+}
+
+/// Update a rod transform to connect two points.
+fn update_rod_transform(transform: &mut Transform, start: Vec3, end: Vec3) {
+    let midpoint = (start + end) / 2.0;
+    let direction = (end - start).normalize_or_zero();
+    let length = (end - start).length();
+
+    transform.translation = midpoint;
+    transform.scale = Vec3::new(1.0, length, 1.0);
+
+    if direction.length_squared() > 0.0001 {
+        transform.rotation = Quat::from_rotation_arc(Vec3::Y, direction);
     }
 }

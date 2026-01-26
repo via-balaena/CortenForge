@@ -164,6 +164,8 @@ pub use world::{Body, CollisionShape, Joint, World};
 
 // MuJoCo-style physics pipeline types
 pub use mujoco_pipeline::{
+    ActuatorDynamics,
+    ActuatorTransmission,
     // Core articulated body system
     ArticulatedBody,
     ArticulatedJoint,
@@ -178,10 +180,21 @@ pub use mujoco_pipeline::{
     // PGS constraint solver
     Constraint,
     ConstraintType,
+    Contact,
     // Contact point for constraint solving
     ContactPoint as PGSContactPoint,
+    Data,
     DoublePendulum,
+    GeomType,
+    Integrator,
     JointIndex,
+    MjJointType,
+    // Sensor types (Phase 5)
+    MjObjectType,
+    MjSensorDataType,
+    MjSensorType,
+    // MuJoCo-aligned Model/Data architecture (Phase 1)
+    Model,
     NLinkPendulum,
     PGSConfig,
     PGSResult,
@@ -194,6 +207,9 @@ pub use mujoco_pipeline::{
     SpawnedArticulation,
     SpherePile,
     SphericalPendulum,
+    // Utility functions for position/velocity differentiation
+    mj_differentiate_pos,
+    mj_integrate_pos_explicit,
 };
 
 // Re-export contact solver config for performance tuning

@@ -175,6 +175,7 @@ mod error;
 mod loader;
 #[cfg(feature = "mjb")]
 mod mjb;
+mod model_builder;
 mod parser;
 mod types;
 mod validation;
@@ -196,6 +197,9 @@ pub use types::{
     MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendonDefaults, MjcfWeld,
 };
 pub use validation::{ValidationResult, validate};
+
+// MuJoCo-aligned Model conversion (Phase 4 of consolidation)
+pub use model_builder::{ModelConversionError, load_model, model_from_mjcf};
 
 // MJB binary format support (requires "mjb" feature)
 #[cfg(feature = "mjb")]
