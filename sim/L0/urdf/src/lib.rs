@@ -113,6 +113,7 @@
     clippy::redundant_pattern_matching
 )]
 
+mod converter;
 mod error;
 mod loader;
 mod parser;
@@ -120,6 +121,7 @@ mod types;
 mod validation;
 
 // Re-export main types
+pub use converter::{robot_to_mjcf, urdf_to_mjcf};
 pub use error::{Result, UrdfError};
 pub use loader::{LoadedRobot, SpawnedRobot, UrdfLoader, load_urdf_file, load_urdf_str};
 pub use parser::parse_urdf_str;
@@ -128,6 +130,29 @@ pub use types::{
     UrdfJointLimit, UrdfJointType, UrdfLink, UrdfOrigin, UrdfRobot, UrdfVisual,
 };
 pub use validation::{ValidationResult, validate};
+
+/// Load a URDF file and convert it directly to a MuJoCo-aligned Model.
+///
+/// This is the recommended way to load URDF robots for simulation. It:
+/// 1. Parses the URDF XML
+/// 2. Converts to MJCF XML (single compilation path)
+/// 3. Loads via `sim_mjcf::load_model()`
+///
+/// # Example
+///
+/// ```ignore
+/// use sim_urdf::load_urdf_model;
+///
+/// let urdf = r#"<robot name="arm">...</robot>"#;
+/// let model = load_urdf_model(urdf)?;
+/// let mut data = model.make_data();
+/// data.step(&model);
+/// ```
+pub fn load_urdf_model(urdf_xml: &str) -> Result<sim_core::Model> {
+    let mjcf = urdf_to_mjcf(urdf_xml)?;
+    sim_mjcf::load_model(&mjcf)
+        .map_err(|e| UrdfError::Unsupported(format!("MJCF conversion error: {e}")))
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

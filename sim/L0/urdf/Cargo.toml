@@ -12,6 +12,7 @@ rust-version.workspace = true
 sim-types = { workspace = true }
 sim-core = { workspace = true }
 sim-constraint = { workspace = true }
+sim-mjcf = { workspace = true }
 nalgebra = { workspace = true }
 quick-xml = { workspace = true }
 thiserror = { workspace = true }
