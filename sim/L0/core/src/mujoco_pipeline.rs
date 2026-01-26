@@ -5423,7 +5423,6 @@ mod articulated_tests {
         // Start at 45 degrees
         sys.set_joint_position(0, PI / 4.0);
 
-        let _initial_angle = sys.qpos[0];
         let initial_velocity = sys.qvel[0];
 
         // Run for a bit
@@ -5522,8 +5521,8 @@ mod articulated_tests {
         // Debug: check inertia and bias
         let m = sys.inertia_matrix();
         let bias = sys.bias_forces();
-        eprintln!("Inertia matrix:\n{}", m);
-        eprintln!("Bias forces: {}", bias);
+        eprintln!("Inertia matrix:\n{m}");
+        eprintln!("Bias forces: {bias}");
         eprintln!("Gravity: {:?}", sys.gravity);
 
         // Run simulation - body should fall
@@ -5713,7 +5712,6 @@ mod pgs_tests {
         // Normal force pressing down (constraint 0)
         // Friction force (constraint 1) limited by μ * normal
         let mu = 0.5;
-        let _normal_force_ref = 10.0; // Pre-set normal force for testing
 
         let constraint_normal =
             Constraint::inequality(DVector::from_vec(vec![1.0, 0.0]), 0.0).with_warmstart(10.0);

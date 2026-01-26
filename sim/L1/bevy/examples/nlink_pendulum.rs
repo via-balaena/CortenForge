@@ -125,12 +125,12 @@ fn setup_scene(
         .collect();
 
     // Create bobs and rods
-    for i in 0..N_LINKS {
+    for (i, &color) in colors.iter().enumerate() {
         // Bob
         commands.spawn((
             Mesh3d(meshes.add(Sphere::new(BOB_RADIUS))),
             MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: colors[i],
+                base_color: color,
                 metallic: 0.5,
                 perceptual_roughness: 0.3,
                 ..default()
