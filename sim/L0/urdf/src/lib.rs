@@ -123,6 +123,8 @@ mod validation;
 // Re-export main types
 pub use converter::{robot_to_mjcf, urdf_to_mjcf};
 pub use error::{Result, UrdfError};
+// Deprecated World API exports (kept for backwards compatibility)
+#[allow(deprecated)]
 pub use loader::{LoadedRobot, SpawnedRobot, UrdfLoader, load_urdf_file, load_urdf_str};
 pub use parser::parse_urdf_str;
 pub use types::{
@@ -156,8 +158,10 @@ pub fn load_urdf_model(urdf_xml: &str) -> Result<sim_core::Model> {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(deprecated)] // Testing deprecated World API for backwards compatibility
 mod tests {
     use super::*;
+    #[allow(deprecated)]
     use sim_core::World;
 
     /// Integration test with a more complex robot.

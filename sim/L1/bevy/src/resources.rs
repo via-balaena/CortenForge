@@ -1,12 +1,19 @@
 //! Bevy resources for physics visualization.
 
+#![allow(deprecated)] // Allow deprecated types within this module
+
 use bevy::prelude::*;
 use sim_contact::ContactPoint;
+#[allow(deprecated)]
 use sim_core::World;
 use sim_types::BodyId;
 use std::collections::HashMap;
 
 /// Handle to the physics simulation world.
+///
+/// **Deprecated**: Use [`PhysicsModel`](crate::model_data::PhysicsModel) and
+/// [`PhysicsData`](crate::model_data::PhysicsData) instead, which follow `MuJoCo`'s
+/// Model/Data architecture.
 ///
 /// This resource wraps the sim-core [`World`] and provides access for
 /// visualization systems. The user is responsible for stepping the simulation;
@@ -27,6 +34,10 @@ use std::collections::HashMap;
 ///     }
 /// }
 /// ```
+#[deprecated(
+    since = "0.8.0",
+    note = "Use PhysicsModel/PhysicsData from model_data module instead. This type wraps the deprecated World API."
+)]
 #[derive(Resource)]
 pub struct SimulationHandle {
     world: Option<World>,

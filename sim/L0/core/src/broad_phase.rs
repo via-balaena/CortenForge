@@ -1,5 +1,9 @@
 //! Broad-phase collision detection using Sweep-and-Prune (SAP).
 //!
+//! **Deprecated**: This module is part of the deprecated World API. For new code,
+//! use the Model/Data API from [`crate::mujoco_pipeline`] which has built-in
+//! broad-phase collision detection using spatial hashing.
+//!
 //! This module provides efficient O(n log n) broad-phase collision detection
 //! to reduce the number of narrow-phase collision tests from O(n²) to O(n + k)
 //! where k is the number of overlapping AABB pairs.
@@ -45,6 +49,11 @@
 //! assert_eq!(pairs.len(), 1);
 //! ```
 
+// Allow deprecated types within this module since it's all being deprecated together
+#![allow(deprecated)]
+// Allow dead code since this entire module is deprecated and will be removed
+#![allow(dead_code)]
+
 use nalgebra::{Point3, Vector3};
 use sim_types::BodyId;
 
@@ -52,6 +61,14 @@ use crate::collision_shape::CollisionShape;
 use crate::world::Body;
 
 /// An axis-aligned bounding box (AABB) for broad-phase collision detection.
+///
+/// **Deprecated**: Use [`crate::collision_shape::Aabb`] instead, which provides
+/// the same functionality plus additional validation methods (`is_valid()`,
+/// `from_points_normalized()`).
+#[deprecated(
+    since = "0.8.0",
+    note = "Use collision_shape::Aabb instead. This type is part of the deprecated World API."
+)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Aabb {
     /// Minimum corner of the bounding box.
@@ -142,6 +159,12 @@ impl Default for Aabb {
 }
 
 /// Coordinate axis for sweep direction.
+///
+/// **Deprecated**: Use [`crate::collision_shape::Axis`] instead.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use collision_shape::Axis instead. This type is part of the deprecated World API."
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Axis {
     /// X-axis (left-right).

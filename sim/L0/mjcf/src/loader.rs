@@ -1,6 +1,11 @@
 //! MJCF to sim-core type conversion.
 //!
+//! **Deprecated**: This module provides the old World API loader. For new code, use
+//! [`crate::load_model`] which returns a `Model` for the Model/Data architecture.
+//!
 //! Converts parsed MJCF intermediate representation into simulation-ready types.
+
+#![allow(deprecated)] // This module uses deprecated World API
 
 use std::collections::HashMap;
 use std::fs;
@@ -12,6 +17,7 @@ use sim_constraint::{
     IntegratedVelocityActuator, IntoBoxedActuator, JointLimits, JointPositionConstraint,
     PneumaticCylinderActuator, TendonConstraint, WeldConstraint,
 };
+#[allow(deprecated)]
 use sim_core::world::{Body, CollisionShape, Joint, World};
 use sim_muscle::{ActivationDynamics, HillMuscle, HillMuscleConfig, MuscleForceCurves};
 use sim_tendon::{
@@ -306,6 +312,13 @@ impl LoadedTendon {
 }
 
 /// A loaded model ready to be spawned into a simulation world.
+///
+/// **Deprecated**: Use [`crate::load_model`] instead, which returns a `Model`
+/// for the MuJoCo-style Model/Data architecture.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use load_model() which returns Model for Model/Data API instead"
+)]
 #[derive(Debug)]
 pub struct LoadedModel {
     /// Model name.
@@ -345,6 +358,12 @@ pub struct LoadedModel {
 }
 
 /// Result of spawning a model into a world.
+///
+/// **Deprecated**: Use the Model/Data API from [`sim_core::mujoco_pipeline`] instead.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use Model/Data API from sim_core::mujoco_pipeline instead"
+)]
 #[derive(Debug)]
 pub struct SpawnedModel {
     /// Map from body name to body ID in the world.
@@ -578,6 +597,13 @@ impl LoadedModel {
 }
 
 /// MJCF loader with configuration options.
+///
+/// **Deprecated**: Use [`crate::load_model`] instead, which returns a `Model`
+/// for the MuJoCo-style Model/Data architecture.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use load_model() which returns Model for Model/Data API instead"
+)]
 #[derive(Debug, Clone)]
 pub struct MjcfLoader {
     /// Whether to use collision shapes from MJCF (default: true).
@@ -2619,19 +2645,35 @@ fn compute_world_pose(
 
 /// Convenience function to load an MJCF file with default settings.
 ///
+/// **Deprecated**: Use [`crate::load_model`] instead, which returns a `Model`
+/// for the MuJoCo-style Model/Data architecture.
+///
 /// # Errors
 ///
 /// Returns an error if the file cannot be read or parsed.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use load_model() which returns Model for Model/Data API instead"
+)]
 pub fn load_mjcf_file(path: impl AsRef<Path>) -> Result<LoadedModel> {
+    #[allow(deprecated)]
     MjcfLoader::default().load_file(path)
 }
 
 /// Convenience function to load an MJCF string with default settings.
 ///
+/// **Deprecated**: Use [`crate::load_model`] instead, which returns a `Model`
+/// for the MuJoCo-style Model/Data architecture.
+///
 /// # Errors
 ///
 /// Returns an error if parsing fails.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use load_model() which returns Model for Model/Data API instead"
+)]
 pub fn load_mjcf_str(xml: &str) -> Result<LoadedModel> {
+    #[allow(deprecated)]
     MjcfLoader::default().load_str(xml)
 }
 

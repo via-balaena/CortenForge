@@ -132,6 +132,7 @@
 #![doc(html_root_url = "https://docs.rs/sim-physics/0.7.0")]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![warn(missing_docs)]
+#![allow(deprecated)] // Re-exports deprecated World API types for backwards compatibility
 
 // Re-export sub-crates
 pub use sim_constraint;

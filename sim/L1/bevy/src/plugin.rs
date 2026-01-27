@@ -1,4 +1,10 @@
 //! Plugin composition for physics visualization.
+//!
+//! **Note**: `SimViewerPlugin` supports both the deprecated World API and the
+//! new Model/Data API. For World API, it initializes `SimulationHandle`. For
+//! Model/Data, see [`ModelDataPlugin`](crate::model_data::ModelDataPlugin).
+
+#![allow(deprecated)] // This module uses deprecated World API types
 
 use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::prelude::*;
@@ -9,6 +15,7 @@ use crate::gizmos::{
     draw_joint_limits, draw_muscles, draw_sensors, draw_tendons, draw_velocity_vectors,
     DebugGizmosSet,
 };
+#[allow(deprecated)]
 use crate::resources::{
     BodyEntityMap, CachedContacts, MuscleVisualization, SensorVisualization, SimulationHandle,
     TendonVisualization, ViewerConfig,

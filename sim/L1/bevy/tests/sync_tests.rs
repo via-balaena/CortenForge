@@ -4,8 +4,12 @@
 //!
 //! Note: sim-core uses Z-up coordinates, while Bevy uses Y-up.
 //! The conversion swaps Y and Z: `(x, y, z)_physics -> (x, z, y)_bevy`
+//!
+//! Note: These tests use the deprecated World API to ensure backwards compatibility.
+//! For new code, use the Model/Data API from `sim_bevy::model_data`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Standard in tests
+#![allow(deprecated)] // Testing deprecated World API for backwards compatibility
 
 use bevy::prelude::*;
 use sim_bevy::prelude::*;

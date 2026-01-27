@@ -184,6 +184,8 @@ mod validation;
 pub use config::ExtendedSolverConfig;
 pub use defaults::DefaultResolver;
 pub use error::{MjcfError, Result};
+// Deprecated World API exports (kept for backwards compatibility)
+#[allow(deprecated)]
 pub use loader::{
     GeomInfo, LoadedActuator, LoadedFixedTendon, LoadedModel, LoadedMuscle, LoadedSpatialTendon,
     LoadedTendon, MjcfLoader, SiteInfo, SpawnedModel, load_mjcf_file, load_mjcf_str,
@@ -210,8 +212,10 @@ pub use mjb::{
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(deprecated)] // Testing deprecated World API for backwards compatibility
 mod tests {
     use super::*;
+    #[allow(deprecated)]
     use sim_core::World;
 
     /// Integration test with a more complex model.

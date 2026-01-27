@@ -2,19 +2,29 @@
 //!
 //! These components link Bevy entities to sim-core physics objects.
 
+#![allow(deprecated)] // Allow deprecated types within this module
+
 use bevy::prelude::*;
 use sim_types::BodyId;
 
 /// Links a Bevy entity to a body in the physics simulation.
 ///
+/// **Deprecated**: Use [`ModelBodyIndex`](crate::model_data::ModelBodyIndex) instead,
+/// which works with the Model/Data architecture.
+///
 /// The transform of this entity will be synchronized with the body's pose
 /// each frame by the [`sync_body_transforms`](crate::systems::sync_body_transforms) system.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use ModelBodyIndex from model_data module instead. This component works with the deprecated World API."
+)]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct PhysicsBody {
     /// The body ID in the sim-core World.
     pub body_id: BodyId,
 }
 
+#[allow(deprecated)]
 impl PhysicsBody {
     /// Create a new physics body link.
     #[must_use]
@@ -25,7 +35,13 @@ impl PhysicsBody {
 
 /// Marker for the root entity of a spawned physics world.
 ///
+/// **Deprecated**: Use [`ModelDataRoot`](crate::model_data::ModelDataRoot) instead.
+///
 /// Used to identify the parent entity under which all physics bodies are spawned.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use ModelDataRoot from model_data module instead. This component works with the deprecated World API."
+)]
 #[derive(Component, Debug, Default, Clone, Copy)]
 pub struct PhysicsWorldRoot;
 

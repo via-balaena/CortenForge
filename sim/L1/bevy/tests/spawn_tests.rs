@@ -2,8 +2,12 @@
 //!
 //! Tests that sim-core bodies are correctly spawned as Bevy entities
 //! with proper components.
+//!
+//! Note: These tests use the deprecated World API to ensure backwards compatibility.
+//! For new code, use the Model/Data API from `sim_bevy::model_data`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Standard in tests
+#![allow(deprecated)] // Testing deprecated World API for backwards compatibility
 
 use bevy::prelude::*;
 use sim_bevy::prelude::*;

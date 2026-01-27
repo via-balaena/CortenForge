@@ -18,14 +18,19 @@
 //! The cache is updated by [`update_cached_contacts`](crate::systems::update_cached_contacts)
 //! which runs in [`SimViewerSet::ContactCache`](crate::systems::SimViewerSet::ContactCache)
 //! after transform sync but before gizmo drawing.
+//!
+//! **Note**: Some systems in this module use the deprecated `SimulationHandle` resource.
+//! For new code using Model/Data, the contact gizmos still work via `CachedContacts`.
 
 #![allow(clippy::needless_pass_by_value)] // Bevy system parameters
 #![allow(clippy::cast_possible_truncation)] // f64 -> f32 is intentional for Bevy
 #![allow(clippy::cast_precision_loss)] // Small int -> f32 is fine for arc segments
+#![allow(deprecated)] // This module uses deprecated World API types
 
 use bevy::prelude::*;
 
 use crate::convert::{quat_from_unit_quaternion, vec3_from_point, vec3_from_vector};
+#[allow(deprecated)]
 use crate::resources::{
     CachedContacts, MuscleVisualization, SensorVisualType, SensorVisualization, SimulationHandle,
     TendonVisualization, ViewerConfig,

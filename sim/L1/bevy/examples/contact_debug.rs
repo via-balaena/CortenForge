@@ -10,65 +10,67 @@
 
 use bevy::prelude::*;
 use sim_bevy::prelude::*;
-use sim_core::world::{CollisionShape, World};
-use sim_core::Stepper;
-use sim_types::{MassProperties, Pose, RigidBodyState};
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(SimViewerPlugin::new())
+        .add_plugins(ModelDataPlugin::new().with_auto_step())
         .add_systems(Startup, setup_scene)
-        .init_resource::<PhysicsStepper>()
-        .add_systems(Update, step_physics)
         .add_systems(Update, toggle_debug_viz)
         .run();
 }
 
 /// Set up a scene with multiple falling bodies.
 fn setup_scene(mut commands: Commands) {
-    let mut world = World::default();
+    // Define the scene using MJCF
+    let mjcf = r#"
+        <mujoco model="contact_debug">
+            <option gravity="0 0 -9.81" timestep="0.002"/>
+            <worldbody>
+                <!-- Ground plane -->
+                <geom name="ground" type="plane" size="10 10 0.1" rgba="0.8 0.8 0.8 1"/>
 
-    // Add multiple spheres at different positions
-    let sphere_radius = 0.4;
-    let positions = [
-        (0.0, 3.0, 0.0),
-        (0.5, 4.0, 0.3),
-        (-0.3, 5.0, -0.2),
-        (0.2, 6.0, 0.5),
-    ];
+                <!-- Multiple falling spheres at different heights -->
+                <body name="sphere1" pos="0 0 3">
+                    <freejoint name="sphere1_joint"/>
+                    <geom name="sphere1_geom" type="sphere" size="0.4" mass="1.0" rgba="0.2 0.6 1.0 1"/>
+                </body>
 
-    for (x, y, z) in positions {
-        let pose = Pose::from_position(nalgebra::Point3::new(x, y, z));
-        let state = RigidBodyState::at_rest(pose);
-        let mass = MassProperties::sphere(1.0, sphere_radius);
-        let body_id = world.add_body(state, mass);
+                <body name="sphere2" pos="0.5 0.3 4">
+                    <freejoint name="sphere2_joint"/>
+                    <geom name="sphere2_geom" type="sphere" size="0.4" mass="1.0" rgba="0.2 0.8 0.4 1"/>
+                </body>
 
-        if let Some(body) = world.body_mut(body_id) {
-            body.collision_shape = Some(CollisionShape::sphere(sphere_radius));
-        }
-    }
+                <body name="sphere3" pos="-0.3 -0.2 5">
+                    <freejoint name="sphere3_joint"/>
+                    <geom name="sphere3_geom" type="sphere" size="0.4" mass="1.0" rgba="0.8 0.4 0.2 1"/>
+                </body>
 
-    // Add a box to demonstrate box-sphere contacts
-    let box_pose = Pose::from_position(nalgebra::Point3::new(-1.5, 2.0, 0.0));
-    let box_state = RigidBodyState::at_rest(box_pose);
-    let box_half_extents = nalgebra::Vector3::new(0.4, 0.4, 0.4);
-    let box_mass = MassProperties::box_shape(2.0, box_half_extents);
-    let box_id = world.add_body(box_state, box_mass);
+                <body name="sphere4" pos="0.2 0.5 6">
+                    <freejoint name="sphere4_joint"/>
+                    <geom name="sphere4_geom" type="sphere" size="0.4" mass="1.0" rgba="0.6 0.2 0.8 1"/>
+                </body>
 
-    if let Some(body) = world.body_mut(box_id) {
-        body.collision_shape = Some(CollisionShape::box_shape(box_half_extents));
-    }
+                <!-- A box to demonstrate box-sphere contacts -->
+                <body name="box1" pos="-1.5 0 2">
+                    <freejoint name="box1_joint"/>
+                    <geom name="box1_geom" type="box" size="0.4 0.4 0.4" mass="2.0" rgba="1.0 0.8 0.2 1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
 
-    // Add ground plane
-    let ground_pose = Pose::from_position(nalgebra::Point3::new(0.0, 0.0, 0.0));
-    let ground_id = world.add_static_body(ground_pose);
-    if let Some(body) = world.body_mut(ground_id) {
-        body.collision_shape = Some(CollisionShape::ground_plane(0.0));
-    }
+    // Load the model
+    let model = load_model(mjcf).expect("Failed to load MJCF model");
 
-    // Insert the world as a resource
-    commands.insert_resource(SimulationHandle::new(world));
+    // Create data and run initial forward pass
+    let mut data = model.make_data();
+    data.forward(&model);
+
+    // Insert as Bevy resources
+    commands.insert_resource(PhysicsModel::new(model));
+    commands.insert_resource(PhysicsData::new(data));
 
     println!("Contact Debug Example");
     println!("=====================");
@@ -81,22 +83,6 @@ fn setup_scene(mut commands: Commands) {
     println!("Use mouse to orbit camera:");
     println!("  Left button + drag: rotate");
     println!("  Scroll: zoom");
-}
-
-/// Resource to hold the physics stepper.
-#[derive(Resource, Default)]
-struct PhysicsStepper {
-    stepper: Stepper,
-}
-
-/// Step the physics simulation each frame.
-fn step_physics(
-    mut sim_handle: ResMut<SimulationHandle>,
-    mut physics_stepper: ResMut<PhysicsStepper>,
-) {
-    if let Some(world) = sim_handle.world_mut() {
-        let _ = physics_stepper.stepper.step(world);
-    }
 }
 
 /// Toggle debug visualization options with keyboard.

@@ -3,6 +3,13 @@
 //! This module provides the [`Stepper`] which orchestrates the simulation loop:
 //! applying forces, integrating dynamics, and advancing time.
 //!
+//! # Deprecated
+//!
+//! This module is part of the deprecated World API. Use the Model/Data API from
+//! `mujoco_pipeline` module instead.
+
+#![allow(deprecated)] // This module uses deprecated World types
+//!
 //! # Example
 //!
 //! ```

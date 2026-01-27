@@ -1,5 +1,10 @@
 //! Model loading utilities for MJCF and URDF files.
 //!
+//! **Deprecated**: This module spawns models into the deprecated `SimulationHandle`
+//! (World API). For new code, use `sim_mjcf::load_model()` to get a `Model` directly,
+//! then use [`PhysicsModel`](crate::model_data::PhysicsModel) and
+//! [`PhysicsData`](crate::model_data::PhysicsData).
+//!
 //! This module provides integration between sim-bevy and the Layer 0
 //! model loaders (sim-mjcf and sim-urdf). It handles loading model files
 //! and spawning them into the physics world for visualization.
@@ -32,6 +37,8 @@
 //! }
 //! ```
 
+#![allow(deprecated)] // This module uses deprecated World API types
+
 use std::path::Path;
 
 use bevy::prelude::*;
@@ -40,6 +47,7 @@ use sim_types::{BodyId, JointId, Pose};
 use sim_urdf::{LoadedRobot as UrdfLoadedRobot, SpawnedRobot as UrdfSpawnedRobot};
 use thiserror::Error;
 
+#[allow(deprecated)]
 use crate::resources::SimulationHandle;
 
 /// Errors that can occur during model loading.

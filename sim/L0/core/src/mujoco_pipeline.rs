@@ -38,7 +38,7 @@
 //! - Phase 5: Ball joints (3-DOF spherical joints) - COMPLETE
 //! - Phase 6: Contact (ground plane, sphere collisions) - COMPLETE
 
-use crate::collision_shape::CollisionShape;
+use crate::collision_shape::{Aabb, CollisionShape};
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 use std::f64::consts::PI;
@@ -6950,135 +6950,124 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
 // Broad-Phase Collision Detection (Spatial Hashing)
 // ============================================================================
 
-/// Axis-aligned bounding box for broad-phase collision detection.
-#[derive(Debug, Clone, Copy)]
-struct AABB {
-    min: Vector3<f64>,
-    max: Vector3<f64>,
-}
-
-impl AABB {
-    /// Compute AABB for a geometry given its world-space pose and type/size.
-    fn from_geom(
-        geom_type: GeomType,
-        size: Vector3<f64>,
-        pos: Vector3<f64>,
-        mat: Matrix3<f64>,
-    ) -> Self {
-        match geom_type {
-            GeomType::Sphere => {
-                let r = size.x;
-                Self {
-                    min: Vector3::new(pos.x - r, pos.y - r, pos.z - r),
-                    max: Vector3::new(pos.x + r, pos.y + r, pos.z + r),
-                }
+/// Compute AABB for a geometry given its world-space pose and type/size.
+///
+/// This function creates an axis-aligned bounding box for MuJoCo-style geometry
+/// specifications, using the canonical `Aabb` type from `collision_shape`.
+///
+/// # Arguments
+/// * `geom_type` - The geometry type (sphere, box, capsule, etc.)
+/// * `size` - MuJoCo-style size parameters (interpretation depends on geom_type)
+/// * `pos` - World-space position of the geometry
+/// * `mat` - World-space rotation matrix (3x3)
+fn aabb_from_geom(
+    geom_type: GeomType,
+    size: Vector3<f64>,
+    pos: Vector3<f64>,
+    mat: Matrix3<f64>,
+) -> Aabb {
+    match geom_type {
+        GeomType::Sphere => {
+            let r = size.x;
+            Aabb::new(
+                Point3::new(pos.x - r, pos.y - r, pos.z - r),
+                Point3::new(pos.x + r, pos.y + r, pos.z + r),
+            )
+        }
+        GeomType::Box => {
+            // For a rotated box, compute the world-space extents
+            let half = size;
+            let mut min = pos;
+            let mut max = pos;
+            for i in 0..3 {
+                let axis = mat.column(i).into_owned();
+                let extent = half[i] * axis.abs();
+                min -= extent;
+                max += extent;
             }
-            GeomType::Box => {
-                // For a rotated box, compute the world-space extents
-                let half = size;
-                let mut min = pos;
-                let mut max = pos;
-                for i in 0..3 {
-                    let axis = mat.column(i).into_owned();
-                    let extent = half[i] * axis.abs();
-                    min -= extent;
-                    max += extent;
-                }
-                Self { min, max }
-            }
-            GeomType::Capsule => {
-                // Capsule: radius + half_length along Z axis
-                let r = size.x;
-                let half_len = size.y;
-                let axis = mat.column(2).into_owned();
-                let end1 = pos + axis * half_len;
-                let end2 = pos - axis * half_len;
-                Self {
-                    min: Vector3::new(
-                        end1.x.min(end2.x) - r,
-                        end1.y.min(end2.y) - r,
-                        end1.z.min(end2.z) - r,
-                    ),
-                    max: Vector3::new(
-                        end1.x.max(end2.x) + r,
-                        end1.y.max(end2.y) + r,
-                        end1.z.max(end2.z) + r,
-                    ),
-                }
-            }
-            GeomType::Cylinder => {
-                // Similar to capsule but without spherical caps
-                let r = size.x;
-                let half_len = size.y;
-                let axis = mat.column(2).into_owned();
-                let end1 = pos + axis * half_len;
-                let end2 = pos - axis * half_len;
-                Self {
-                    min: Vector3::new(
-                        end1.x.min(end2.x) - r,
-                        end1.y.min(end2.y) - r,
-                        end1.z.min(end2.z) - r,
-                    ),
-                    max: Vector3::new(
-                        end1.x.max(end2.x) + r,
-                        end1.y.max(end2.y) + r,
-                        end1.z.max(end2.z) + r,
-                    ),
-                }
-            }
-            GeomType::Ellipsoid => {
-                // Conservative: use largest radius
-                let max_r = size.x.max(size.y).max(size.z);
-                Self {
-                    min: Vector3::new(pos.x - max_r, pos.y - max_r, pos.z - max_r),
-                    max: Vector3::new(pos.x + max_r, pos.y + max_r, pos.z + max_r),
-                }
-            }
-            GeomType::Plane => {
-                // Planes are infinite - use large bounds
-                let large = 1e6;
-                // Plane normal is Z axis of the rotation matrix
-                let normal = mat.column(2).into_owned();
-                // Make bounds large in directions perpendicular to normal
-                if normal.z.abs() > 0.9 {
-                    // Horizontal plane - infinite in X and Y
-                    Self {
-                        min: Vector3::new(-large, -large, pos.z - 0.001),
-                        max: Vector3::new(large, large, pos.z + 0.001),
-                    }
-                } else if normal.y.abs() > 0.9 {
-                    Self {
-                        min: Vector3::new(-large, pos.y - 0.001, -large),
-                        max: Vector3::new(large, pos.y + 0.001, large),
-                    }
-                } else {
-                    Self {
-                        min: Vector3::new(pos.x - 0.001, -large, -large),
-                        max: Vector3::new(pos.x + 0.001, large, large),
-                    }
-                }
-            }
-            GeomType::Mesh => {
-                // For mesh, use a conservative large bounding box
-                // In a full implementation, mesh AABBs would be pre-computed
-                let extent = 10.0; // Conservative default
-                Self {
-                    min: Vector3::new(pos.x - extent, pos.y - extent, pos.z - extent),
-                    max: Vector3::new(pos.x + extent, pos.y + extent, pos.z + extent),
-                }
+            Aabb::new(Point3::from(min), Point3::from(max))
+        }
+        GeomType::Capsule => {
+            // Capsule: radius + half_length along Z axis
+            let r = size.x;
+            let half_len = size.y;
+            let axis = mat.column(2).into_owned();
+            let end1 = pos + axis * half_len;
+            let end2 = pos - axis * half_len;
+            Aabb::new(
+                Point3::new(
+                    end1.x.min(end2.x) - r,
+                    end1.y.min(end2.y) - r,
+                    end1.z.min(end2.z) - r,
+                ),
+                Point3::new(
+                    end1.x.max(end2.x) + r,
+                    end1.y.max(end2.y) + r,
+                    end1.z.max(end2.z) + r,
+                ),
+            )
+        }
+        GeomType::Cylinder => {
+            // Similar to capsule but without spherical caps
+            let r = size.x;
+            let half_len = size.y;
+            let axis = mat.column(2).into_owned();
+            let end1 = pos + axis * half_len;
+            let end2 = pos - axis * half_len;
+            Aabb::new(
+                Point3::new(
+                    end1.x.min(end2.x) - r,
+                    end1.y.min(end2.y) - r,
+                    end1.z.min(end2.z) - r,
+                ),
+                Point3::new(
+                    end1.x.max(end2.x) + r,
+                    end1.y.max(end2.y) + r,
+                    end1.z.max(end2.z) + r,
+                ),
+            )
+        }
+        GeomType::Ellipsoid => {
+            // Conservative: use largest radius
+            let max_r = size.x.max(size.y).max(size.z);
+            Aabb::new(
+                Point3::new(pos.x - max_r, pos.y - max_r, pos.z - max_r),
+                Point3::new(pos.x + max_r, pos.y + max_r, pos.z + max_r),
+            )
+        }
+        GeomType::Plane => {
+            // Planes are infinite - use large bounds
+            let large = 1e6;
+            // Plane normal is Z axis of the rotation matrix
+            let normal = mat.column(2).into_owned();
+            // Make bounds large in directions perpendicular to normal
+            if normal.z.abs() > 0.9 {
+                // Horizontal plane - infinite in X and Y
+                Aabb::new(
+                    Point3::new(-large, -large, pos.z - 0.001),
+                    Point3::new(large, large, pos.z + 0.001),
+                )
+            } else if normal.y.abs() > 0.9 {
+                Aabb::new(
+                    Point3::new(-large, pos.y - 0.001, -large),
+                    Point3::new(large, pos.y + 0.001, large),
+                )
+            } else {
+                Aabb::new(
+                    Point3::new(pos.x - 0.001, -large, -large),
+                    Point3::new(pos.x + 0.001, large, large),
+                )
             }
         }
-    }
-
-    /// Check if two AABBs overlap.
-    #[inline]
-    fn overlaps(&self, other: &Self) -> bool {
-        self.min.x <= other.max.x
-            && self.max.x >= other.min.x
-            && self.min.y <= other.max.y
-            && self.max.y >= other.min.y
-            && self.min.z <= other.max.z
-            && self.max.z >= other.min.z
+        GeomType::Mesh => {
+            // For mesh, use a conservative large bounding box
+            // In a full implementation, mesh AABBs would be pre-computed
+            let extent = 10.0; // Conservative default
+            Aabb::new(
+                Point3::new(pos.x - extent, pos.y - extent, pos.z - extent),
+                Point3::new(pos.x + extent, pos.y + extent, pos.z + extent),
+            )
+        }
     }
 }
 
@@ -7103,7 +7092,7 @@ impl SpatialHash {
 
     /// Compute cell coordinates for a point.
     #[inline]
-    fn cell_coords(&self, p: Vector3<f64>) -> (i64, i64, i64) {
+    fn cell_coords(&self, p: Point3<f64>) -> (i64, i64, i64) {
         (
             (p.x / self.cell_size).floor() as i64,
             (p.y / self.cell_size).floor() as i64,
@@ -7112,7 +7101,7 @@ impl SpatialHash {
     }
 
     /// Insert a geometry with its AABB into the spatial hash.
-    fn insert(&mut self, geom_id: usize, aabb: &AABB) {
+    fn insert(&mut self, geom_id: usize, aabb: &Aabb) {
         let min_cell = self.cell_coords(aabb.min);
         let max_cell = self.cell_coords(aabb.max);
 
@@ -7250,9 +7239,9 @@ fn mj_collision(model: &Model, data: &mut Data) {
         let mut max_extent = 0.0_f64;
 
         // Compute AABBs and scene bounds
-        let aabbs: Vec<AABB> = (0..model.ngeom)
+        let aabbs: Vec<Aabb> = (0..model.ngeom)
             .map(|geom_id| {
-                let aabb = AABB::from_geom(
+                let aabb = aabb_from_geom(
                     model.geom_type[geom_id],
                     model.geom_size[geom_id],
                     data.geom_xpos[geom_id],

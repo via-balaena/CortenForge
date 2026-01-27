@@ -1,6 +1,11 @@
 //! URDF to sim-core type conversion.
 //!
+//! **Deprecated**: This module provides the old World API loader. For new code, use
+//! the URDF-to-MJCF converter and then [`sim_mjcf::load_model`] for the Model/Data API.
+//!
 //! Converts parsed URDF intermediate representation into simulation-ready types.
+
+#![allow(deprecated)] // This module uses deprecated World API
 
 use std::collections::HashMap;
 use std::fs;
@@ -8,6 +13,7 @@ use std::path::Path;
 
 use nalgebra::{Point3, Vector3};
 use sim_constraint::JointLimits;
+#[allow(deprecated)]
 use sim_core::world::{Body, CollisionShape, Joint, World};
 use sim_types::{BodyId, JointId, JointType, MassProperties, Pose, RigidBodyState};
 
@@ -17,6 +23,13 @@ use crate::types::{UrdfGeometry, UrdfJoint, UrdfJointType, UrdfLink, UrdfOrigin,
 use crate::validation::{ValidationResult, validate};
 
 /// A loaded robot ready to be spawned into a simulation world.
+///
+/// **Deprecated**: Use the URDF-to-MJCF converter and [`sim_mjcf::load_model`] instead
+/// for the MuJoCo-style Model/Data architecture.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use URDF-to-MJCF converter + sim_mjcf::load_model() for Model/Data API"
+)]
 #[derive(Debug)]
 pub struct LoadedRobot {
     /// Robot name.
@@ -34,6 +47,12 @@ pub struct LoadedRobot {
 }
 
 /// Result of spawning a robot into a world.
+///
+/// **Deprecated**: Use the Model/Data API from [`sim_core::mujoco_pipeline`] instead.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use Model/Data API from sim_core::mujoco_pipeline instead"
+)]
 #[derive(Debug)]
 pub struct SpawnedRobot {
     /// Map from link name to body ID in the world.
@@ -113,6 +132,13 @@ impl LoadedRobot {
 }
 
 /// URDF loader with configuration options.
+///
+/// **Deprecated**: Use the URDF-to-MJCF converter and [`sim_mjcf::load_model`] instead
+/// for the MuJoCo-style Model/Data architecture.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use URDF-to-MJCF converter + sim_mjcf::load_model() for Model/Data API"
+)]
 #[derive(Debug, Clone)]
 pub struct UrdfLoader {
     /// Whether to use collision shapes from URDF (default: true).
@@ -391,19 +417,35 @@ fn origin_to_pose(origin: &UrdfOrigin) -> Pose {
 
 /// Convenience function to load a URDF file with default settings.
 ///
+/// **Deprecated**: Use the URDF-to-MJCF converter and [`sim_mjcf::load_model`] instead
+/// for the MuJoCo-style Model/Data architecture.
+///
 /// # Errors
 ///
 /// Returns an error if the file cannot be read or parsed.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use URDF-to-MJCF converter + sim_mjcf::load_model() for Model/Data API"
+)]
 pub fn load_urdf_file(path: impl AsRef<Path>) -> Result<LoadedRobot> {
+    #[allow(deprecated)]
     UrdfLoader::default().load_file(path)
 }
 
 /// Convenience function to load a URDF string with default settings.
 ///
+/// **Deprecated**: Use the URDF-to-MJCF converter and [`sim_mjcf::load_model`] instead
+/// for the MuJoCo-style Model/Data architecture.
+///
 /// # Errors
 ///
 /// Returns an error if parsing fails.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use URDF-to-MJCF converter + sim_mjcf::load_model() for Model/Data API"
+)]
 pub fn load_urdf_str(xml: &str) -> Result<LoadedRobot> {
+    #[allow(deprecated)]
     UrdfLoader::default().load_str(xml)
 }
 

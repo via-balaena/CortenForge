@@ -1,13 +1,20 @@
 //! ECS systems for physics visualization.
 //!
 //! These systems synchronize sim-core physics state with Bevy entities.
+//!
+//! **Note**: The systems in this module work with the deprecated World API.
+//! For new code, use the systems in [`crate::model_data`] instead.
+
+#![allow(deprecated)] // This module uses deprecated World API types
 
 use bevy::prelude::*;
 use std::collections::HashSet;
 
+#[allow(deprecated)]
 use crate::components::{CollisionShapeVisual, PhysicsBody, ShapeType};
 use crate::convert::{quat_from_unit_quaternion, vec3_from_point};
 use crate::mesh::mesh_from_collision_shape;
+#[allow(deprecated)]
 use crate::resources::{BodyEntityMap, CachedContacts, SimulationHandle, ViewerConfig};
 
 /// Synchronizes Bevy entities with sim-core bodies.

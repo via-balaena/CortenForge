@@ -90,16 +90,19 @@ pub mod world;
 pub use collision_shape::{Aabb, Axis, CollisionShape};
 
 // Legacy World API exports (deprecated - use Model/Data instead)
+#[allow(deprecated)]
 #[deprecated(
     since = "0.8.0",
     note = "Use Model/Data API instead. See mujoco_pipeline module."
 )]
 pub use stepper::SimulationBuilder;
+#[allow(deprecated)]
 #[deprecated(
     since = "0.8.0",
     note = "Use Model/Data API instead. See mujoco_pipeline module."
 )]
 pub use stepper::{StepResult, Stepper, StepperConfig};
+#[allow(deprecated)]
 #[deprecated(
     since = "0.8.0",
     note = "Use Model/Data API instead. See mujoco_pipeline module."

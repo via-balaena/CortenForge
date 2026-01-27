@@ -103,19 +103,23 @@ pub mod resources;
 pub mod systems;
 
 /// Prelude module for convenient imports.
+#[allow(deprecated)] // Re-export deprecated types for backwards compatibility
 pub mod prelude {
     pub use crate::camera::OrbitCamera;
+    #[allow(deprecated)]
     pub use crate::components::{CollisionShapeVisual, PhysicsBody, PhysicsWorldRoot, ShapeType};
     pub use crate::gizmos::DebugGizmosSet;
-    // Model/Data architecture (MuJoCo-style)
+    // Model/Data architecture (MuJoCo-style) - PREFERRED API
     pub use crate::model_data::{
         step_model_data, sync_model_data_to_bevy, ModelBodyIndex, ModelDataPlugin, ModelDataRoot,
         ModelDataSet, ModelGeomIndex, ModelSiteIndex, PhysicsData, PhysicsModel,
     };
+    #[allow(deprecated)]
     pub use crate::models::{
         MjcfModel, ModelError, ModelSource, ModelType, SpawnedMjcf, SpawnedUrdf, UrdfModel,
     };
     pub use crate::plugin::SimViewerPlugin;
+    #[allow(deprecated)]
     pub use crate::resources::{
         BodyEntityMap, CachedContacts, DebugColors, MuscleVisualData, MuscleVisualization,
         SensorVisualData, SensorVisualType, SensorVisualization, SimulationHandle,

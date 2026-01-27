@@ -400,9 +400,9 @@ impl CollisionShape {
     #[must_use]
     pub fn radius(&self) -> Option<f64> {
         match self {
-            Self::Sphere { radius } => Some(*radius),
-            Self::Capsule { radius, .. } => Some(*radius),
-            Self::Cylinder { radius, .. } => Some(*radius),
+            Self::Sphere { radius }
+            | Self::Capsule { radius, .. }
+            | Self::Cylinder { radius, .. } => Some(*radius),
             _ => None,
         }
     }
@@ -411,8 +411,9 @@ impl CollisionShape {
     #[must_use]
     pub fn half_length(&self) -> Option<f64> {
         match self {
-            Self::Capsule { half_length, .. } => Some(*half_length),
-            Self::Cylinder { half_length, .. } => Some(*half_length),
+            Self::Capsule { half_length, .. } | Self::Cylinder { half_length, .. } => {
+                Some(*half_length)
+            }
             _ => None,
         }
     }
@@ -430,7 +431,7 @@ impl CollisionShape {
     ///
     /// Returns `None` if this shape is not a capsule.
     /// The capsule is defined along the local Z-axis, so the endpoints
-    /// are at (0, 0, -half_length) and (0, 0, +half_length) in local space.
+    /// are at (0, 0, `-half_length`) and (0, 0, `+half_length`) in local space.
     #[must_use]
     pub fn capsule_endpoints(&self, pose: &Pose) -> Option<(Point3<f64>, Point3<f64>)> {
         match self {
@@ -451,6 +452,7 @@ impl CollisionShape {
     /// This is the maximum distance from the shape's center to any point
     /// on its surface in local coordinates. Useful for broad-phase culling.
     #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Grid dimensions won't exceed mantissa precision
     pub fn bounding_radius(&self) -> f64 {
         match self {
             Self::Sphere { radius } => *radius,
@@ -463,7 +465,7 @@ impl CollisionShape {
             Self::Cylinder {
                 half_length,
                 radius,
-            } => (half_length.powi(2) + radius.powi(2)).sqrt(),
+            } => half_length.hypot(*radius),
             Self::Ellipsoid { radii } => radii.x.max(radii.y).max(radii.z),
             Self::ConvexMesh { vertices } => {
                 vertices.iter().map(|v| v.coords.norm()).fold(0.0, f64::max)
