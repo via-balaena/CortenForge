@@ -8,6 +8,7 @@
 //! Run with: `cargo run -p sim-bevy --example falling_sphere --features x11`
 //! (or `--features wayland` on Wayland systems)
 
+#![allow(clippy::expect_used)] // Examples use expect for clarity
 #![allow(clippy::needless_pass_by_value)] // Bevy system parameters
 
 use bevy::prelude::*;

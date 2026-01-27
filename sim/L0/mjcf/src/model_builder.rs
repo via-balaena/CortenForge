@@ -65,7 +65,7 @@ pub fn model_from_mjcf(mjcf: &MjcfModel) -> std::result::Result<Model, ModelConv
     let mut builder = ModelBuilder::new();
 
     // Set model name
-    builder.name = mjcf.name.clone();
+    builder.name.clone_from(&mjcf.name);
 
     // Set global options
     builder.set_options(&mjcf.option);
@@ -708,14 +708,13 @@ impl ModelBuilder {
 
         self.site_body.push(body_id);
 
-        // Convert site type string to GeomType
+        // Convert site type string to GeomType (sphere is the MuJoCo default)
         let geom_type = match site.site_type.as_str() {
-            "sphere" => GeomType::Sphere,
             "capsule" => GeomType::Capsule,
             "cylinder" => GeomType::Cylinder,
             "box" => GeomType::Box,
             "ellipsoid" => GeomType::Ellipsoid,
-            _ => GeomType::Sphere, // Default fallback
+            _ => GeomType::Sphere, // Default for "sphere" and unknown types
         };
         self.site_type.push(geom_type);
 

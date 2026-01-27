@@ -1,3 +1,27 @@
+// Allow patterns common in physics simulation code:
+// - tuple_array_conversions: [t1, t2] from (t1, t2) is intentional for frame storage
+// - manual_div_ceil: explicit ceiling division is clearer in some physics contexts
+// - cast_possible_truncation: f64 to i64 for grid indices is intentional with bounds checks
+// - or_fun_call: or_insert_with vs or_default is a style choice
+// - collapsible_if: nested conditions can be clearer for physics logic
+// - cast_precision_loss: usize to f64 is acceptable for index-based calculations
+// - op_ref: reference vs value is a style choice for Vector3 operations
+// - manual_let_else: if-let can be clearer than let-else for physics code
+// - needless_range_loop: explicit indexing is sometimes clearer
+// - imprecise_flops: physics code may prefer explicit formulas over hypot
+#![allow(
+    clippy::tuple_array_conversions,
+    clippy::manual_div_ceil,
+    clippy::cast_possible_truncation,
+    clippy::or_fun_call,
+    clippy::collapsible_if,
+    clippy::cast_precision_loss,
+    clippy::op_ref,
+    clippy::manual_let_else,
+    clippy::needless_range_loop,
+    clippy::imprecise_flops
+)]
+
 //! MuJoCo-style physics pipeline for articulated rigid body simulation.
 //!
 //! This module implements the physics pipeline following `MuJoCo`'s exact
@@ -7116,10 +7140,7 @@ impl SpatialHash {
         for cx in min_cell.0..=max_cell.0 {
             for cy in min_cell.1..=max_cell.1 {
                 for cz in min_cell.2..=max_cell.2 {
-                    self.cells
-                        .entry((cx, cy, cz))
-                        .or_insert_with(Vec::new)
-                        .push(geom_id);
+                    self.cells.entry((cx, cy, cz)).or_default().push(geom_id);
                 }
             }
         }

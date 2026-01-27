@@ -744,6 +744,7 @@ impl Axis {
     ///
     /// Panics if `index > 2`.
     #[must_use]
+    #[allow(clippy::panic)] // Panic is intentional for invalid index
     pub const fn from_index(index: usize) -> Self {
         match index {
             0 => Self::X,
@@ -769,6 +770,7 @@ impl Axis {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

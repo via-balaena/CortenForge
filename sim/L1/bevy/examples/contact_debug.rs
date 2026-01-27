@@ -7,6 +7,7 @@
 //! (or `--features wayland` on Wayland systems)
 
 #![allow(clippy::needless_pass_by_value)] // Bevy system parameters
+#![allow(clippy::expect_used)] // Examples use expect for clarity
 
 use bevy::prelude::*;
 use sim_bevy::prelude::*;

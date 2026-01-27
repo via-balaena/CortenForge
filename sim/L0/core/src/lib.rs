@@ -59,8 +59,12 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![warn(missing_docs)]
 #![allow(
-    clippy::missing_const_for_fn,     // Many methods can't be const due to nalgebra
-    clippy::suboptimal_flops,          // mul_add style changes aren't always clearer
+    clippy::missing_const_for_fn,       // Many methods can't be const due to nalgebra
+    clippy::suboptimal_flops,           // mul_add style changes aren't always clearer
+    clippy::neg_cmp_op_on_partial_ord,  // !(x >= 0.0) is intentional for NaN rejection
+    clippy::option_if_let_else,         // if-let is often more readable than map_or_else
+    clippy::too_many_lines,             // Physics functions naturally have many steps
+    clippy::doc_markdown,               // Not all technical terms need backticks
 )]
 
 // Collision shape primitives (canonical source)

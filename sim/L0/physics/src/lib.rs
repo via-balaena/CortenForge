@@ -84,7 +84,7 @@
 //!
 //! # Architecture
 //!
-//! The physics engine follows MuJoCo's Model/Data architecture:
+//! The physics engine follows `MuJoCo`'s Model/Data architecture:
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
