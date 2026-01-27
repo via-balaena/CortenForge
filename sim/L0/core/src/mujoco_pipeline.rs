@@ -4333,7 +4333,6 @@ fn compute_spatial_transform(from: &Isometry3<f64>, to: &Isometry3<f64>) -> Spat
 
 /// Spatial cross product for motion vectors: v × s.
 #[must_use]
-#[allow(dead_code)]
 fn spatial_cross_motion(v: SpatialVector, s: SpatialVector) -> SpatialVector {
     let w = Vector3::new(v[0], v[1], v[2]);
     let v_lin = Vector3::new(v[3], v[4], v[5]);
@@ -4477,7 +4476,7 @@ impl Constraint {
 }
 
 /// Configuration for the PGS solver.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PGSConfig {
     /// Maximum iterations
     pub max_iterations: usize,
@@ -4908,7 +4907,7 @@ impl ArticulatedSystem {
 // ============================================================================
 
 /// A contact point for constraint generation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct ContactPoint {
     /// Position in world frame
     pub position: Vector3<f64>,
@@ -5150,11 +5149,12 @@ fn compute_tangent_basis(normal: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) 
 ///
 /// Named `MjJointType` to distinguish from `sim_types::JointType`.
 /// `MuJoCo` uses different names (Hinge vs Revolute, Slide vs Prismatic).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MjJointType {
     /// Hinge joint (1 DOF): rotation about a single axis.
     /// qpos: 1 scalar (angle in radians)
     /// qvel: 1 scalar (angular velocity)
+    #[default]
     Hinge,
     /// Slide joint (1 DOF): translation along a single axis.
     /// qpos: 1 scalar (displacement)
@@ -5193,11 +5193,12 @@ impl MjJointType {
 }
 
 /// Geometry type for collision detection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GeomType {
     /// Plane (infinite, typically used for ground).
     Plane,
     /// Sphere defined by radius.
+    #[default]
     Sphere,
     /// Capsule (cylinder with hemispherical caps).
     Capsule,
@@ -5212,9 +5213,10 @@ pub enum GeomType {
 }
 
 /// Actuator transmission type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ActuatorTransmission {
     /// Direct joint actuation.
+    #[default]
     Joint,
     /// Tendon actuation.
     Tendon,
@@ -5223,9 +5225,10 @@ pub enum ActuatorTransmission {
 }
 
 /// Actuator dynamics type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ActuatorDynamics {
     /// No dynamics (direct force).
+    #[default]
     None,
     /// First-order filter.
     Filter,
@@ -5235,14 +5238,50 @@ pub enum ActuatorDynamics {
     Muscle,
 }
 
+/// Tendon wrap object type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum WrapType {
+    /// Site point (tendon passes through).
+    #[default]
+    Site,
+    /// Geom wrapping (tendon wraps around sphere/cylinder).
+    Geom,
+    /// Joint coupling (tendon length changes with joint angle).
+    Joint,
+    /// Pulley (changes tendon direction, may have divisor).
+    Pulley,
+}
+
+/// Equality constraint type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum EqualityType {
+    /// Connect: constrains two body points to coincide.
+    /// Removes 3 DOF (translation only).
+    #[default]
+    Connect,
+    /// Weld: constrains two body frames to be identical.
+    /// Removes 6 DOF (translation + rotation).
+    Weld,
+    /// Joint: polynomial constraint between two joints.
+    /// q2 = poly(q1) where poly = c0 + c1*q1 + c2*q1^2 + ...
+    Joint,
+    /// Tendon: polynomial constraint between two tendons.
+    /// len2 = poly(len1).
+    Tendon,
+    /// Distance: constrains distance between two bodies.
+    /// |p1 - p2| = d (removes 1 DOF).
+    Distance,
+}
+
 /// `MuJoCo` sensor type.
 ///
 /// Matches `MuJoCo`'s mjtSensor enum. Each sensor type reads different
 /// quantities from the simulation state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MjSensorType {
     // ========== Common sensors ==========
     /// Touch sensor (contact force magnitude, 1D).
+    #[default]
     Touch,
     /// Accelerometer (linear acceleration, 3D).
     Accelerometer,
@@ -5464,6 +5503,9 @@ pub struct Model {
     pub body_inertia: Vec<Vector3<f64>>,
     /// Optional body names for lookup.
     pub body_name: Vec<Option<String>>,
+    /// Total mass of subtree rooted at this body (precomputed).
+    /// `body_subtreemass[0]` is total mass of entire system.
+    pub body_subtreemass: Vec<f64>,
 
     // ==================== Joints (indexed by jnt_id) ====================
     /// Joint type (Hinge, Slide, Ball, Free).
@@ -5502,6 +5544,9 @@ pub struct Model {
     pub dof_armature: Vec<f64>,
     /// Damping coefficient for this DOF.
     pub dof_damping: Vec<f64>,
+    /// Friction loss (dry friction) for this DOF.
+    /// Applied as: τ_friction = -frictionloss * sign(qvel)
+    pub dof_frictionloss: Vec<f64>,
 
     // ==================== Geoms (indexed by geom_id) ====================
     /// Geometry type.
@@ -5520,12 +5565,24 @@ pub struct Model {
     pub geom_contype: Vec<u32>,
     /// Contact affinity bitmask.
     pub geom_conaffinity: Vec<u32>,
+    /// Contact margin (distance at which contact becomes active).
+    pub geom_margin: Vec<f64>,
+    /// Contact gap (minimum allowed separation).
+    pub geom_gap: Vec<f64>,
+    /// Solver impedance parameters [d0, dwidth, width, midpoint, power].
+    /// Controls constraint softness and behavior.
+    pub geom_solimp: Vec<[f64; 5]>,
+    /// Solver reference parameters [timeconst, dampratio] or [d, dmin].
+    /// Controls constraint dynamics.
+    pub geom_solref: Vec<[f64; 2]>,
     /// Optional geom names.
     pub geom_name: Vec<Option<String>>,
 
     // ==================== Sites (indexed by site_id) ====================
     /// Parent body for each site.
     pub site_body: Vec<usize>,
+    /// Site geometry type (for visualization, uses GeomType).
+    pub site_type: Vec<GeomType>,
     /// Site position in body frame.
     pub site_pos: Vec<Vector3<f64>>,
     /// Site orientation in body frame.
@@ -5583,6 +5640,63 @@ pub struct Model {
     /// Number of activation states per actuator (0 for None dynamics, 1 for Filter/Integrator, 2 for Muscle).
     pub actuator_act_num: Vec<usize>,
 
+    // ==================== Tendons (indexed by tendon_id) ====================
+    /// Number of tendons.
+    pub ntendon: usize,
+    /// Number of wrap objects across all tendons.
+    pub nwrap: usize,
+    /// Tendon path length limits [min, max]. Limited if min < max.
+    pub tendon_range: Vec<(f64, f64)>,
+    /// Whether tendon has length limits.
+    pub tendon_limited: Vec<bool>,
+    /// Tendon stiffness (force per unit length).
+    pub tendon_stiffness: Vec<f64>,
+    /// Tendon damping coefficient.
+    pub tendon_damping: Vec<f64>,
+    /// Tendon rest length (reference for spring force).
+    pub tendon_lengthspring: Vec<f64>,
+    /// Tendon length at qpos0 (precomputed reference).
+    pub tendon_length0: Vec<f64>,
+    /// Number of wrapping objects for this tendon.
+    pub tendon_num: Vec<usize>,
+    /// Start address in wrap_* arrays for this tendon's path.
+    pub tendon_adr: Vec<usize>,
+    /// Optional tendon names.
+    pub tendon_name: Vec<Option<String>>,
+
+    // Tendon wrapping path elements (indexed by wrap_id, grouped by tendon; total length = nwrap)
+    /// Wrap object type (Site, Geom, Joint, Pulley).
+    pub wrap_type: Vec<WrapType>,
+    /// Object ID for the wrap point (site/geom/joint id).
+    pub wrap_objid: Vec<usize>,
+    /// Wrap divisor (1.0 for normal, 0.5 for pulley, etc.).
+    pub wrap_prm: Vec<f64>,
+
+    // ==================== Equality Constraints (indexed by eq_id) ====================
+    /// Number of equality constraints.
+    pub neq: usize,
+    /// Equality constraint type (Connect, Weld, Joint, Tendon, Distance).
+    pub eq_type: Vec<EqualityType>,
+    /// First object ID (body/joint/tendon).
+    pub eq_obj1id: Vec<usize>,
+    /// Second object ID (body/joint/tendon, or unused).
+    pub eq_obj2id: Vec<usize>,
+    /// Constraint parameters (meaning depends on type).
+    /// - Connect: anchor point in body1 frame [x, y, z]
+    /// - Weld: relative pose [x, y, z, qw, qx, qy, qz] + torque scale
+    /// - Joint: polycoef[0..5] for polynomial coupling
+    /// - Tendon: polycoef[0..5] for polynomial coupling
+    /// - Distance: target distance
+    pub eq_data: Vec<[f64; 11]>,
+    /// Whether this equality constraint is active.
+    pub eq_active: Vec<bool>,
+    /// Solver impedance parameters for this constraint.
+    pub eq_solimp: Vec<[f64; 5]>,
+    /// Solver reference parameters for this constraint.
+    pub eq_solref: Vec<[f64; 2]>,
+    /// Optional equality constraint names.
+    pub eq_name: Vec<Option<String>>,
+
     // ==================== Options ====================
     /// Simulation timestep in seconds.
     pub timestep: f64,
@@ -5590,12 +5704,28 @@ pub struct Model {
     pub gravity: Vector3<f64>,
     /// Default/reference joint positions.
     pub qpos0: DVector<f64>,
+    /// Wind velocity in world frame (for aerodynamic forces).
+    pub wind: Vector3<f64>,
+    /// Magnetic field in world frame (for magnetic actuators).
+    pub magnetic: Vector3<f64>,
+    /// Medium density (for fluid drag, kg/m³).
+    pub density: f64,
+    /// Medium viscosity (for fluid drag, Pa·s).
+    pub viscosity: f64,
 
     // Solver options
     /// Maximum constraint solver iterations.
     pub solver_iterations: usize,
     /// Early termination tolerance for solver.
     pub solver_tolerance: f64,
+    /// Constraint impedance ratio (for soft constraints).
+    pub impratio: f64,
+    /// Friction cone type: 0=pyramidal, 1=elliptic.
+    pub cone: u8,
+    /// Disable flags (bitmask for disabling default behaviors).
+    pub disableflags: u32,
+    /// Enable flags (bitmask for enabling optional behaviors).
+    pub enableflags: u32,
     /// Integration method.
     pub integrator: Integrator,
 
@@ -5608,17 +5738,21 @@ pub struct Model {
     pub body_ancestor_joints: Vec<Vec<usize>>,
 
     /// For each body: set of ancestor joint indices for O(1) membership testing.
-    /// This is a bitmask where bit j is set if joint j is an ancestor of this body.
-    /// For small models (njnt <= 64), this allows O(1) ancestor checks.
-    pub body_ancestor_mask: Vec<u64>,
+    /// Multi-word bitmask: `body_ancestor_mask[body_id][word]` where word = jnt_id / 64.
+    /// Bit (jnt_id % 64) is set if joint jnt_id is an ancestor of this body.
+    /// Supports unlimited joints with O(1) lookup per word.
+    pub body_ancestor_mask: Vec<Vec<u64>>,
 }
 
 /// Contact point for constraint generation.
+///
+/// Matches MuJoCo's mjContact structure with all relevant fields
+/// for constraint-based contact resolution.
 #[derive(Debug, Clone)]
 pub struct Contact {
     /// Contact position in world frame.
     pub pos: Vector3<f64>,
-    /// Contact normal (from geom2 to geom1).
+    /// Contact normal (from geom2 to geom1, unit vector).
     pub normal: Vector3<f64>,
     /// Penetration depth (positive = penetrating).
     pub depth: f64,
@@ -5626,8 +5760,108 @@ pub struct Contact {
     pub geom1: usize,
     /// Second geometry ID.
     pub geom2: usize,
-    /// Friction coefficient.
+    /// Friction coefficient (combined from both geoms).
     pub friction: f64,
+    /// Contact dimension: 1 (frictionless), 3 (friction), 4 (elliptic), 6 (torsional).
+    pub dim: usize,
+    /// Whether margin was included in distance computation.
+    pub includemargin: bool,
+    /// Friction parameters [mu, mu2] for anisotropic friction.
+    /// mu[0] = sliding, mu[1] = torsional/rolling.
+    pub mu: [f64; 2],
+    /// Solver reference parameters (from geom pair).
+    pub solref: [f64; 2],
+    /// Solver impedance parameters (from geom pair).
+    pub solimp: [f64; 5],
+    /// Contact frame tangent vectors (orthogonal to normal).
+    /// frame[0..3] = t1, frame[3..6] = t2 (for friction cone).
+    pub frame: [Vector3<f64>; 2],
+}
+
+impl Contact {
+    /// Create a new contact with basic parameters.
+    ///
+    /// The contact frame (tangent vectors) is computed automatically from the normal.
+    /// Advanced solver parameters use MuJoCo defaults.
+    ///
+    /// # Numerical Safety
+    /// - Negative or NaN friction is clamped to 0.0
+    /// - NaN depth is set to 0.0
+    /// - NaN position/normal components are handled gracefully
+    #[must_use]
+    pub fn new(
+        pos: Vector3<f64>,
+        normal: Vector3<f64>,
+        depth: f64,
+        geom1: usize,
+        geom2: usize,
+        friction: f64,
+    ) -> Self {
+        // Safety: clamp friction to non-negative finite value
+        let friction = if friction.is_finite() && friction > 0.0 {
+            friction
+        } else {
+            0.0
+        };
+
+        // Safety: ensure depth is finite
+        let depth = if depth.is_finite() { depth } else { 0.0 };
+
+        // Compute tangent frame from normal (handles NaN/zero normals internally)
+        let (t1, t2) = compute_tangent_frame(&normal);
+
+        Self {
+            pos,
+            normal,
+            depth,
+            geom1,
+            geom2,
+            friction,
+            dim: if friction > 0.0 { 3 } else { 1 }, // 3D friction cone or frictionless
+            includemargin: false,
+            mu: [friction, friction * 0.005], // sliding, torsional
+            solref: [0.02, 1.0],              // MuJoCo defaults
+            solimp: [0.9, 0.95, 0.001, 0.5, 2.0], // MuJoCo defaults
+            frame: [t1, t2],
+        }
+    }
+}
+
+/// Compute orthonormal tangent frame from contact normal.
+///
+/// Returns (t1, t2) where t1, t2, normal form a right-handed orthonormal basis.
+/// Handles degenerate cases (zero/NaN normal) by returning a default frame.
+fn compute_tangent_frame(normal: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    // Safety check: handle zero/NaN normals
+    let normal_len = normal.norm();
+    if !normal_len.is_finite() || normal_len < 1e-10 {
+        // Degenerate case: return default frame
+        return (Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
+    }
+
+    // Normalize the normal (in case it wasn't already)
+    let n = normal / normal_len;
+
+    // Choose a reference vector not parallel to normal
+    let reference = if n.x.abs() < 0.9 {
+        Vector3::new(1.0, 0.0, 0.0)
+    } else {
+        Vector3::new(0.0, 1.0, 0.0)
+    };
+
+    // Gram-Schmidt orthogonalization
+    let t1 = reference - n * n.dot(&reference);
+    let t1_norm = t1.norm();
+    let t1 = if t1_norm > 1e-10 {
+        t1 / t1_norm
+    } else {
+        // This shouldn't happen if reference was chosen correctly, but be safe
+        Vector3::new(1.0, 0.0, 0.0)
+    };
+
+    let t2 = n.cross(&t1);
+    // t2 should already be unit length since n and t1 are orthonormal
+    (t1, t2)
 }
 
 /// Dynamic simulation state (like mjData).
@@ -5714,8 +5948,9 @@ pub struct Data {
     pub xfrc_applied: Vec<SpatialVector>,
 
     // ==================== Mass Matrix ====================
-    /// Joint-space inertia matrix (`nv` x `nv`) (dense for now).
-    /// Future: sparse L^T D L factorization for efficiency.
+    /// Joint-space inertia matrix (`nv` x `nv`).
+    /// For small systems (nv <= 32), dense storage is used.
+    /// For large systems, only lower triangle is filled (sparse via qLD).
     pub qM: DMatrix<f64>,
     /// Cached Cholesky factorization of mass matrix (L where M = L L^T).
     /// Computed once in `mj_crba()` after building qM, reused in:
@@ -5726,6 +5961,26 @@ pub struct Data {
     /// The clone in `mj_crba()` is unavoidable (nalgebra consumes the matrix),
     /// but subsequent solves are O(n²) forward/back substitution.
     pub qM_cholesky: Option<Cholesky<f64, Dyn>>,
+
+    // ==================== Sparse L^T D L Factorization (for large systems) ====================
+    /// Sparse L^T D L factorization exploiting tree structure.
+    /// M = L^T D L where L is unit lower triangular and D is diagonal.
+    /// For tree-structured robots, this achieves O(n) factorization and solve.
+    ///
+    /// Layout: qLD stores both L and D compactly:
+    /// - qLD_diag[i] = D[i,i] (diagonal of D)
+    /// - qLD[i] contains non-zero entries of L[i, :] below diagonal
+    ///
+    /// The sparsity pattern is determined by the kinematic tree:
+    /// L[i,j] is non-zero only if DOF j is an ancestor of DOF i.
+    pub qLD_diag: DVector<f64>,
+    /// Sparse lower triangular factor L (non-zero entries only).
+    /// qLD_L[i] = [(col_idx, value), ...] for row i, sorted by col_idx.
+    /// For tree robots, each row has at most depth(i) non-zeros.
+    pub qLD_L: Vec<Vec<(usize, f64)>>,
+    /// Whether sparse factorization is valid and should be used.
+    /// Set to true after `mj_factor_sparse()` is called.
+    pub qLD_valid: bool,
 
     // ==================== Composite Inertia (for Featherstone CRBA) ====================
     /// Composite rigid body inertia in world frame.
@@ -5742,6 +5997,26 @@ pub struct Data {
     /// Center of mass of subtree in world frame (length `nbody`).
     /// Computed during forward kinematics via backward pass.
     pub subtree_com: Vec<Vector3<f64>>,
+
+    // ==================== Tendon State ====================
+    /// Current tendon lengths (length `ntendon`).
+    /// Computed from wrap path through kinematics.
+    pub ten_length: Vec<f64>,
+    /// Tendon velocities (length `ntendon`).
+    /// Computed as J_tendon @ qvel.
+    pub ten_velocity: Vec<f64>,
+    /// Tendon forces from springs/limits (length `ntendon`).
+    pub ten_force: Vec<f64>,
+    /// Tendon Jacobian: d(length)/d(qpos) (sparse, length varies).
+    /// Maps tendon length changes to joint velocities.
+    pub ten_J: Vec<DVector<f64>>,
+
+    // ==================== Equality Constraint State ====================
+    /// Equality constraint violation (length `neq` * max_dim).
+    /// For Connect: 3D position error. For Weld: 6D pose error.
+    pub eq_violation: Vec<f64>,
+    /// Equality constraint forces (Lagrange multipliers).
+    pub eq_force: Vec<f64>,
 
     // ==================== Contacts ====================
     /// Active contacts (pre-allocated with capacity).
@@ -5808,6 +6083,7 @@ impl Model {
             body_mass: vec![0.0], // World has no mass
             body_inertia: vec![Vector3::zeros()],
             body_name: vec![Some("world".to_string())],
+            body_subtreemass: vec![0.0], // World subtree mass (will be total system mass)
 
             // Joints (empty)
             jnt_type: vec![],
@@ -5829,6 +6105,7 @@ impl Model {
             dof_parent: vec![],
             dof_armature: vec![],
             dof_damping: vec![],
+            dof_frictionloss: vec![],
 
             // Geoms (empty)
             geom_type: vec![],
@@ -5839,10 +6116,15 @@ impl Model {
             geom_friction: vec![],
             geom_contype: vec![],
             geom_conaffinity: vec![],
+            geom_margin: vec![],
+            geom_gap: vec![],
+            geom_solimp: vec![],
+            geom_solref: vec![],
             geom_name: vec![],
 
             // Sites (empty)
             site_body: vec![],
+            site_type: vec![],
             site_pos: vec![],
             site_quat: vec![],
             site_size: vec![],
@@ -5874,17 +6156,52 @@ impl Model {
             actuator_act_adr: vec![],
             actuator_act_num: vec![],
 
+            // Tendons (empty)
+            ntendon: 0,
+            nwrap: 0,
+            tendon_range: vec![],
+            tendon_limited: vec![],
+            tendon_stiffness: vec![],
+            tendon_damping: vec![],
+            tendon_lengthspring: vec![],
+            tendon_length0: vec![],
+            tendon_num: vec![],
+            tendon_adr: vec![],
+            tendon_name: vec![],
+            wrap_type: vec![],
+            wrap_objid: vec![],
+            wrap_prm: vec![],
+
+            // Equality constraints (empty)
+            neq: 0,
+            eq_type: vec![],
+            eq_obj1id: vec![],
+            eq_obj2id: vec![],
+            eq_data: vec![],
+            eq_active: vec![],
+            eq_solimp: vec![],
+            eq_solref: vec![],
+            eq_name: vec![],
+
             // Options (MuJoCo defaults)
             timestep: 0.002,                        // 500 Hz
             gravity: Vector3::new(0.0, 0.0, -9.81), // Z-up
             qpos0: DVector::zeros(0),
+            wind: Vector3::zeros(),
+            magnetic: Vector3::zeros(),
+            density: 0.0,   // No fluid by default
+            viscosity: 0.0, // No fluid by default
             solver_iterations: 100,
             solver_tolerance: 1e-8,
+            impratio: 1.0,   // MuJoCo default
+            cone: 0,         // Pyramidal friction cone
+            disableflags: 0, // Nothing disabled
+            enableflags: 0,  // Nothing extra enabled
             integrator: Integrator::Euler,
 
             // Pre-computed kinematic data (world body has no ancestors)
             body_ancestor_joints: vec![vec![]],
-            body_ancestor_mask: vec![0],
+            body_ancestor_mask: vec![vec![]], // Empty vec for world body (no joints yet)
         }
     }
 
@@ -5933,9 +6250,14 @@ impl Model {
             qfrc_constraint: DVector::zeros(self.nv),
             xfrc_applied: vec![SpatialVector::zeros(); self.nbody],
 
-            // Mass matrix
+            // Mass matrix (dense)
             qM: DMatrix::zeros(self.nv, self.nv),
             qM_cholesky: None, // Computed in mj_crba
+
+            // Mass matrix (sparse L^T D L for large systems)
+            qLD_diag: DVector::zeros(self.nv),
+            qLD_L: vec![Vec::new(); self.nv],
+            qLD_valid: false,
 
             // Composite rigid body inertias (for Featherstone CRBA)
             crb_inertia: vec![Matrix6::zeros(); self.nbody],
@@ -5943,6 +6265,16 @@ impl Model {
             // Subtree mass/COM (for O(n) RNE gravity)
             subtree_mass: vec![0.0; self.nbody],
             subtree_com: vec![Vector3::zeros(); self.nbody],
+
+            // Tendon state
+            ten_length: vec![0.0; self.ntendon],
+            ten_velocity: vec![0.0; self.ntendon],
+            ten_force: vec![0.0; self.ntendon],
+            ten_J: vec![DVector::zeros(self.nv); self.ntendon],
+
+            // Equality constraint state
+            eq_violation: vec![0.0; self.neq * 6], // max 6 DOF per constraint (weld)
+            eq_force: vec![0.0; self.neq * 6],
 
             // Contacts
             contacts: Vec::with_capacity(256), // Pre-allocate typical capacity
@@ -5966,27 +6298,35 @@ impl Model {
     }
 
     /// Get reference position for specified joint (from qpos0).
+    ///
+    /// Returns `None` if `jnt_id` is out of bounds.
     #[must_use]
-    pub fn joint_qpos0(&self, jnt_id: usize) -> &[f64] {
+    pub fn joint_qpos0(&self, jnt_id: usize) -> Option<&[f64]> {
+        if jnt_id >= self.njnt {
+            return None;
+        }
         let start = self.jnt_qpos_adr[jnt_id];
         let len = self.jnt_type[jnt_id].nq();
-        &self.qpos0.as_slice()[start..start + len]
+        Some(&self.qpos0.as_slice()[start..start + len])
     }
 
     /// Compute pre-computed kinematic data (ancestor lists and masks).
     ///
     /// This must be called after the model topology is finalized. It builds:
     /// - `body_ancestor_joints`: For each body, the list of all ancestor joints
-    /// - `body_ancestor_mask`: Bitmask for O(1) ancestor testing (njnt <= 64)
+    /// - `body_ancestor_mask`: Multi-word bitmask for O(1) ancestor testing
     ///
     /// These enable O(n) CRBA/RNE algorithms instead of O(n³).
     ///
     /// Following `MuJoCo`'s principle: heavy computation at model load time,
     /// minimal computation at simulation time.
     pub fn compute_ancestors(&mut self) {
+        // Number of u64 words needed for the bitmask
+        let num_words = (self.njnt + 63) / 64; // ceil(njnt / 64)
+
         // Clear and resize
         self.body_ancestor_joints = vec![vec![]; self.nbody];
-        self.body_ancestor_mask = vec![0u64; self.nbody];
+        self.body_ancestor_mask = vec![vec![0u64; num_words]; self.nbody];
 
         // For each body, walk up to root collecting ancestor joints
         for body_id in 1..self.nbody {
@@ -5997,10 +6337,10 @@ impl Model {
                 let jnt_end = jnt_start + self.body_jnt_num[current];
                 for jnt_id in jnt_start..jnt_end {
                     self.body_ancestor_joints[body_id].push(jnt_id);
-                    // Set bit in mask if njnt <= 64
-                    if jnt_id < 64 {
-                        self.body_ancestor_mask[body_id] |= 1u64 << jnt_id;
-                    }
+                    // Set bit in multi-word mask (supports unlimited joints)
+                    let word = jnt_id / 64;
+                    let bit = jnt_id % 64;
+                    self.body_ancestor_mask[body_id][word] |= 1u64 << bit;
                 }
                 current = self.body_parent[current];
             }
@@ -6009,17 +6349,21 @@ impl Model {
 
     /// Check if joint is an ancestor of body using pre-computed data.
     ///
-    /// For small models (njnt <= 64), uses O(1) bitmask lookup.
-    /// For larger models, falls back to list search.
+    /// Uses O(1) multi-word bitmask lookup for all model sizes.
+    /// Returns `false` for invalid body_id or jnt_id (no panic).
     #[inline]
     #[must_use]
     pub fn is_ancestor(&self, body_id: usize, jnt_id: usize) -> bool {
-        if jnt_id < 64 {
-            // O(1) bitmask lookup
-            (self.body_ancestor_mask[body_id] & (1u64 << jnt_id)) != 0
+        // Bounds check for body_id
+        if body_id >= self.body_ancestor_mask.len() {
+            return false;
+        }
+        let word = jnt_id / 64;
+        let bit = jnt_id % 64;
+        if word < self.body_ancestor_mask[body_id].len() {
+            (self.body_ancestor_mask[body_id][word] & (1u64 << bit)) != 0
         } else {
-            // Fall back to list contains for large models
-            self.body_ancestor_joints[body_id].contains(&jnt_id)
+            false // Joint ID out of range
         }
     }
 
@@ -6088,6 +6432,7 @@ impl Model {
             // Point mass approximation (small moment of inertia)
             model.body_inertia.push(Vector3::new(0.001, 0.001, 0.001));
             model.body_name.push(Some(format!("link_{i}")));
+            model.body_subtreemass.push(0.0); // Will be computed after model is built
 
             // Joint definition (hinge at parent's frame, rotating around Y)
             model.jnt_type.push(MjJointType::Hinge);
@@ -6111,6 +6456,7 @@ impl Model {
                 .push(if i == 0 { None } else { Some(i - 1) });
             model.dof_armature.push(0.0);
             model.dof_damping.push(0.0);
+            model.dof_frictionloss.push(0.0);
         }
 
         // Default qpos (hanging down)
@@ -6177,6 +6523,7 @@ impl Model {
         model.body_mass.push(mass);
         model.body_inertia.push(Vector3::new(0.001, 0.001, 0.001));
         model.body_name.push(Some("bob".to_string()));
+        model.body_subtreemass.push(0.0); // Will be computed after model is built
 
         // Ball joint at world origin
         model.jnt_type.push(MjJointType::Ball);
@@ -6201,6 +6548,7 @@ impl Model {
                 .push(if i == 0 { None } else { Some(i - 1) });
             model.dof_armature.push(0.0);
             model.dof_damping.push(0.0);
+            model.dof_frictionloss.push(0.0);
         }
 
         // Default qpos: identity quaternion [w, x, y, z] = [1, 0, 0, 0]
@@ -6253,6 +6601,7 @@ impl Model {
         model.body_mass.push(mass);
         model.body_inertia.push(inertia);
         model.body_name.push(Some("free_body".to_string()));
+        model.body_subtreemass.push(0.0); // Will be computed after model is built
 
         // Free joint
         model.jnt_type.push(MjJointType::Free);
@@ -6277,6 +6626,7 @@ impl Model {
                 .push(if i == 0 { None } else { Some(i - 1) });
             model.dof_armature.push(0.0);
             model.dof_damping.push(0.0);
+            model.dof_frictionloss.push(0.0);
         }
 
         // Default qpos: at origin with identity orientation
@@ -6489,10 +6839,13 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
 
                     // Rotate around axis
                     let world_axis = quat * axis;
-                    let rot = UnitQuaternion::from_axis_angle(
-                        &nalgebra::Unit::new_normalize(world_axis),
-                        angle,
-                    );
+                    // Safety: use try_new_normalize to handle degenerate cases
+                    let rot = if let Some(unit_axis) = nalgebra::Unit::try_new(world_axis, 1e-10) {
+                        UnitQuaternion::from_axis_angle(&unit_axis, angle)
+                    } else {
+                        // Degenerate axis - no rotation (should not happen with valid model)
+                        UnitQuaternion::identity()
+                    };
                     quat = rot * quat;
 
                     // Adjust position for rotation around anchor
@@ -7050,14 +7403,14 @@ fn collide_geoms(
             let friction2 = model.geom_friction[geom2].x;
             let friction = (friction1 * friction2).sqrt(); // Geometric mean
 
-            return Some(Contact {
-                pos: Vector3::new(result.point.x, result.point.y, result.point.z),
-                normal: result.normal,
-                depth: result.penetration,
+            return Some(Contact::new(
+                Vector3::new(result.point.x, result.point.y, result.point.z),
+                result.normal,
+                result.penetration,
                 geom1,
                 geom2,
                 friction,
-            });
+            ));
         }
     }
 
@@ -7138,14 +7491,14 @@ fn collide_with_plane(
                 // But for force calculation, we want the force to push the ball OUT of the plane,
                 // so we use +plane_normal for the contact force direction.
                 // Store the "push direction" as the normal to simplify force calculation.
-                Some(Contact {
-                    pos: contact_pos,
-                    normal: plane_normal, // Points UP, away from plane (push direction)
-                    depth: penetration,
-                    geom1: plane_geom,
-                    geom2: other_geom,
+                Some(Contact::new(
+                    contact_pos,
+                    plane_normal, // Points UP, away from plane (push direction)
+                    penetration,
+                    plane_geom,
+                    other_geom,
                     friction,
-                })
+                ))
             } else {
                 None
             }
@@ -7179,14 +7532,14 @@ fn collide_with_plane(
             }
 
             if max_depth > 0.0 {
-                Some(Contact {
-                    pos: contact_pos,
-                    normal: plane_normal,
-                    depth: max_depth,
-                    geom1: plane_geom,
-                    geom2: other_geom,
+                Some(Contact::new(
+                    contact_pos,
+                    plane_normal,
+                    max_depth,
+                    plane_geom,
+                    other_geom,
                     friction,
-                })
+                ))
             } else {
                 None
             }
@@ -7213,14 +7566,14 @@ fn collide_with_plane(
 
             if penetration > 0.0 {
                 let contact_pos = closest_end - plane_normal * min_dist;
-                Some(Contact {
-                    pos: contact_pos,
-                    normal: plane_normal,
-                    depth: penetration,
-                    geom1: plane_geom,
-                    geom2: other_geom,
+                Some(Contact::new(
+                    contact_pos,
+                    plane_normal,
+                    penetration,
+                    plane_geom,
+                    other_geom,
                     friction,
-                })
+                ))
             } else {
                 None
             }
@@ -7269,14 +7622,14 @@ fn collide_sphere_sphere(
         let friction2 = model.geom_friction[geom2].x;
         let friction = (friction1 * friction2).sqrt();
 
-        Some(Contact {
-            pos: contact_pos,
+        Some(Contact::new(
+            contact_pos,
             normal,
-            depth: penetration,
+            penetration,
             geom1,
             geom2,
             friction,
-        })
+        ))
     } else {
         None
     }
@@ -7332,14 +7685,14 @@ fn collide_capsule_capsule(
         let friction2 = model.geom_friction[geom2].x;
         let friction = (friction1 * friction2).sqrt();
 
-        Some(Contact {
-            pos: contact_pos,
+        Some(Contact::new(
+            contact_pos,
             normal,
-            depth: penetration,
+            penetration,
             geom1,
             geom2,
             friction,
-        })
+        ))
     } else {
         None
     }
@@ -7407,18 +7760,18 @@ fn collide_sphere_capsule(
             (capsule_geom, sphere_geom)
         };
 
-        Some(Contact {
-            pos: contact_pos,
-            normal: if sphere_geom < capsule_geom {
+        Some(Contact::new(
+            contact_pos,
+            if sphere_geom < capsule_geom {
                 normal
             } else {
                 -normal
             },
-            depth: penetration,
-            geom1: g1,
-            geom2: g2,
+            penetration,
+            g1,
+            g2,
             friction,
-        })
+        ))
     } else {
         None
     }
@@ -7503,18 +7856,18 @@ fn collide_sphere_box(
             (box_geom, sphere_geom)
         };
 
-        Some(Contact {
-            pos: contact_pos,
-            normal: if sphere_geom < box_geom {
+        Some(Contact::new(
+            contact_pos,
+            if sphere_geom < box_geom {
                 normal
             } else {
                 -normal
             },
-            depth: penetration,
-            geom1: g1,
-            geom2: g2,
+            penetration,
+            g1,
+            g2,
             friction,
-        })
+        ))
     } else {
         None
     }
@@ -7650,18 +8003,18 @@ fn collide_capsule_box(
             (box_geom, capsule_geom)
         };
 
-        Some(Contact {
-            pos: contact_pos,
-            normal: if capsule_geom < box_geom {
+        Some(Contact::new(
+            contact_pos,
+            if capsule_geom < box_geom {
                 normal
             } else {
                 -normal
             },
-            depth: penetration,
-            geom1: g1,
-            geom2: g2,
+            penetration,
+            g1,
+            g2,
             friction,
-        })
+        ))
     } else {
         None
     }
@@ -7795,14 +8148,14 @@ fn collide_box_box(
     let friction2 = model.geom_friction[geom2].x;
     let friction = (friction1 * friction2).sqrt();
 
-    Some(Contact {
-        pos: contact_pos,
-        normal: best_axis,
-        depth: min_pen,
+    Some(Contact::new(
+        contact_pos,
+        best_axis,
+        min_pen,
         geom1,
         geom2,
         friction,
-    })
+    ))
 }
 
 /// Test a single SAT axis and return penetration depth (negative = separated).
@@ -10273,6 +10626,12 @@ fn mj_normalize_quat(model: &Model, data: &mut Data) {
                     data.qpos[qpos_adr + 1] /= norm;
                     data.qpos[qpos_adr + 2] /= norm;
                     data.qpos[qpos_adr + 3] /= norm;
+                } else {
+                    // Degenerate quaternion - reset to identity [w=1, x=0, y=0, z=0]
+                    data.qpos[qpos_adr] = 1.0;
+                    data.qpos[qpos_adr + 1] = 0.0;
+                    data.qpos[qpos_adr + 2] = 0.0;
+                    data.qpos[qpos_adr + 3] = 0.0;
                 }
             }
             MjJointType::Free => {
@@ -10286,6 +10645,12 @@ fn mj_normalize_quat(model: &Model, data: &mut Data) {
                     data.qpos[qpos_adr + 4] /= norm;
                     data.qpos[qpos_adr + 5] /= norm;
                     data.qpos[qpos_adr + 6] /= norm;
+                } else {
+                    // Degenerate quaternion - reset to identity [w=1, x=0, y=0, z=0]
+                    data.qpos[qpos_adr + 3] = 1.0;
+                    data.qpos[qpos_adr + 4] = 0.0;
+                    data.qpos[qpos_adr + 5] = 0.0;
+                    data.qpos[qpos_adr + 6] = 0.0;
                 }
             }
             MjJointType::Hinge | MjJointType::Slide => {
@@ -10664,28 +11029,14 @@ mod articulated_tests {
         assert_eq!(sys.nv(), 6);
         assert_eq!(sys.nq(), 7); // xyz + quaternion
 
-        // Debug: check inertia and bias
-        let m = sys.inertia_matrix();
-        let bias = sys.bias_forces();
-        eprintln!("Inertia matrix:\n{m}");
-        eprintln!("Bias forces: {bias}");
-        eprintln!("Gravity: {:?}", sys.gravity);
+        // Verify inertia and bias are computed
+        let _m = sys.inertia_matrix();
+        let _bias = sys.bias_forces();
 
         // Run simulation - body should fall
         let initial_y = sys.qpos[1];
         sys.step(DT);
-        eprintln!(
-            "After one step: qpos={:?}, qvel={:?}",
-            sys.qpos.as_slice(),
-            sys.qvel.as_slice()
-        );
         sys.run_for(0.1, DT);
-
-        eprintln!(
-            "Final: qpos={:?}, qvel={:?}",
-            sys.qpos.as_slice(),
-            sys.qvel.as_slice()
-        );
 
         assert!(
             sys.qpos[1] < initial_y,

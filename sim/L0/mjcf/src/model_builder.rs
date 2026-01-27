@@ -151,6 +151,7 @@ struct ModelBuilder {
 
     // Site arrays
     site_body: Vec<usize>,
+    site_type: Vec<GeomType>,
     site_pos: Vec<Vector3<f64>>,
     site_quat: Vec<UnitQuaternion<f64>>,
     site_size: Vec<Vector3<f64>>,
@@ -178,8 +179,16 @@ struct ModelBuilder {
     // Options
     timestep: f64,
     gravity: Vector3<f64>,
+    wind: Vector3<f64>,
+    magnetic: Vector3<f64>,
+    density: f64,
+    viscosity: f64,
     solver_iterations: usize,
     solver_tolerance: f64,
+    impratio: f64,
+    cone: u8,
+    disableflags: u32,
+    enableflags: u32,
     integrator: Integrator,
 
     // qpos0 values (built as we process joints)
@@ -245,6 +254,7 @@ impl ModelBuilder {
             geom_name: vec![],
 
             site_body: vec![],
+            site_type: vec![],
             site_pos: vec![],
             site_quat: vec![],
             site_size: vec![],
@@ -269,8 +279,16 @@ impl ModelBuilder {
             // MuJoCo defaults
             timestep: 0.002,
             gravity: Vector3::new(0.0, 0.0, -9.81),
+            wind: Vector3::zeros(),
+            magnetic: Vector3::zeros(),
+            density: 0.0,
+            viscosity: 0.0,
             solver_iterations: 100,
             solver_tolerance: 1e-8,
+            impratio: 1.0,
+            cone: 0,
+            disableflags: 0,
+            enableflags: 0,
             integrator: Integrator::Euler,
 
             qpos0_values: vec![],
@@ -682,6 +700,18 @@ impl ModelBuilder {
         }
 
         self.site_body.push(body_id);
+
+        // Convert site type string to GeomType
+        let geom_type = match site.site_type.as_str() {
+            "sphere" => GeomType::Sphere,
+            "capsule" => GeomType::Capsule,
+            "cylinder" => GeomType::Cylinder,
+            "box" => GeomType::Box,
+            "ellipsoid" => GeomType::Ellipsoid,
+            _ => GeomType::Sphere, // Default fallback
+        };
+        self.site_type.push(geom_type);
+
         self.site_pos.push(site.pos);
         self.site_quat.push(quat_from_wxyz(site.quat));
 
@@ -841,6 +871,7 @@ impl ModelBuilder {
             body_mass: self.body_mass,
             body_inertia: self.body_inertia,
             body_name: self.body_name,
+            body_subtreemass: vec![0.0; nbody], // Computed after model construction
 
             jnt_type: self.jnt_type,
             jnt_body: self.jnt_body,
@@ -860,6 +891,7 @@ impl ModelBuilder {
             dof_parent: self.dof_parent,
             dof_armature: self.dof_armature,
             dof_damping: self.dof_damping,
+            dof_frictionloss: vec![0.0; self.nv], // Default: no friction loss
 
             geom_type: self.geom_type,
             geom_body: self.geom_body,
@@ -869,9 +901,14 @@ impl ModelBuilder {
             geom_friction: self.geom_friction,
             geom_contype: self.geom_contype,
             geom_conaffinity: self.geom_conaffinity,
+            geom_margin: vec![0.0; ngeom], // Default margin
+            geom_gap: vec![0.0; ngeom],    // Default gap
+            geom_solimp: vec![[0.9, 0.95, 0.001, 0.5, 2.0]; ngeom], // MuJoCo defaults
+            geom_solref: vec![[0.02, 1.0]; ngeom], // MuJoCo defaults
             geom_name: self.geom_name,
 
             site_body: self.site_body,
+            site_type: self.site_type,
             site_pos: self.site_pos,
             site_quat: self.site_quat,
             site_size: self.site_size,
@@ -902,16 +939,51 @@ impl ModelBuilder {
             actuator_act_adr: self.actuator_act_adr,
             actuator_act_num: self.actuator_act_num,
 
+            // Tendons (empty for now - will be populated from MJCF tendon definitions)
+            ntendon: 0,
+            nwrap: 0,
+            tendon_range: vec![],
+            tendon_limited: vec![],
+            tendon_stiffness: vec![],
+            tendon_damping: vec![],
+            tendon_lengthspring: vec![],
+            tendon_length0: vec![],
+            tendon_num: vec![],
+            tendon_adr: vec![],
+            tendon_name: vec![],
+            wrap_type: vec![],
+            wrap_objid: vec![],
+            wrap_prm: vec![],
+
+            // Equality constraints (empty for now - will be populated from MJCF equality definitions)
+            neq: 0,
+            eq_type: vec![],
+            eq_obj1id: vec![],
+            eq_obj2id: vec![],
+            eq_data: vec![],
+            eq_active: vec![],
+            eq_solimp: vec![],
+            eq_solref: vec![],
+            eq_name: vec![],
+
             timestep: self.timestep,
             gravity: self.gravity,
             qpos0: DVector::from_vec(self.qpos0_values),
+            wind: self.wind,
+            magnetic: self.magnetic,
+            density: self.density,
+            viscosity: self.viscosity,
             solver_iterations: self.solver_iterations,
             solver_tolerance: self.solver_tolerance,
+            impratio: self.impratio,
+            cone: self.cone,
+            disableflags: self.disableflags,
+            enableflags: self.enableflags,
             integrator: self.integrator,
 
             // Pre-computed kinematic data (will be populated by compute_ancestors)
             body_ancestor_joints: vec![vec![]; nbody],
-            body_ancestor_mask: vec![0; nbody],
+            body_ancestor_mask: vec![vec![]; nbody], // Multi-word bitmask, computed by compute_ancestors
         };
 
         // Pre-compute ancestor lists for O(n) CRBA/RNE

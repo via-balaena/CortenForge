@@ -3078,10 +3078,11 @@ mod tests {
     #[test]
     fn test_mesh_geom_among_other_geoms() {
         // Body with multiple geoms including a mesh
+        // Note: ConvexMesh requires at least 4 vertices for a valid 3D convex hull
         let xml = r#"
             <mujoco model="multi_geom">
                 <asset>
-                    <mesh name="custom" vertex="0 0 0 1 0 0 0 1 0"/>
+                    <mesh name="custom" vertex="0 0 0  1 0 0  0 1 0  0 0 1"/>
                 </asset>
                 <worldbody>
                     <body name="composite">
@@ -3098,7 +3099,7 @@ mod tests {
         // First geom (mesh) should be used for collision
         match &body.collision_shape {
             Some(CollisionShape::ConvexMesh { vertices }) => {
-                assert_eq!(vertices.len(), 3);
+                assert_eq!(vertices.len(), 4);
             }
             _ => panic!("Expected ConvexMesh shape from first geom"),
         }

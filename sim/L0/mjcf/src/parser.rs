@@ -925,6 +925,9 @@ fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
 
     site.name = get_attribute_opt(e, "name").unwrap_or_default();
 
+    if let Some(site_type) = get_attribute_opt(e, "type") {
+        site.site_type = site_type;
+    }
     if let Some(pos) = get_attribute_opt(e, "pos") {
         site.pos = parse_vector3(&pos)?;
     }

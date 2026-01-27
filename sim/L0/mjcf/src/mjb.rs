@@ -556,11 +556,8 @@ mod tests {
         // overhead, but should be in the same ballpark or smaller)
         // For very small models, MJB overhead may be larger, but for complex
         // models with embedded data, MJB should be more efficient
-        println!(
-            "MJB size: {} bytes, XML size: {} bytes",
-            bytes.len(),
-            xml_bytes.len()
-        );
+        let _mjb_size = bytes.len();
+        let _xml_size = xml_bytes.len();
     }
 
     #[test]

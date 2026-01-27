@@ -436,8 +436,6 @@ mod tests {
         assert!(mjcf.contains(r#"<joint name="joint1" type="hinge""#));
         assert!(mjcf.contains(r#"axis="0 1 0""#));
         assert!(mjcf.contains(r#"limited="true" range="-3.14 3.14""#));
-
-        println!("Generated MJCF:\n{mjcf}");
     }
 
     #[test]
