@@ -13,7 +13,7 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
-use sim_core::world::CollisionShape;
+use sim_core::CollisionShape;
 
 use crate::convert::{
     dimensions_to_bevy, normal_to_bevy, vec3_from_point, vertex_positions_from_points,

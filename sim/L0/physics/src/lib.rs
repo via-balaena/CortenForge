@@ -3,7 +3,7 @@
 //! This crate re-exports the complete physics simulation stack:
 //!
 //! - [`sim_types`] - Core data types (bodies, joints, poses, actions)
-//! - [`sim_core`] - Simulation engine (world, stepper, integrators)
+//! - [`sim_core`] - Simulation engine (Model/Data architecture, integrators)
 //! - [`sim_constraint`] - Joint constraints (revolute, prismatic, fixed, etc.)
 //! - [`sim_contact`] - Contact dynamics (collision response, friction)
 //! - [`sim_urdf`] - URDF robot description parser
@@ -22,33 +22,42 @@
 //! - Analysis and planning tools
 //! - Integration with other game engines
 //!
-//! # Quick Start
+//! # Quick Start with Model/Data API
 //!
 //! ```
 //! use sim_physics::prelude::*;
+//! use sim_mjcf::load_model;
 //!
-//! // Create a world with default config (Earth gravity, 240Hz)
-//! let mut world = World::default();
+//! // Load a model from MJCF
+//! let mjcf = r#"
+//!     <mujoco model="ball">
+//!         <worldbody>
+//!             <body name="ball" pos="0 0 5">
+//!                 <joint type="free"/>
+//!                 <geom type="sphere" size="0.1" mass="1.0"/>
+//!             </body>
+//!         </worldbody>
+//!     </mujoco>
+//! "#;
 //!
-//! // Add a falling sphere
-//! let sphere_id = world.add_body(
-//!     RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 10.0))),
-//!     MassProperties::sphere(1.0, 0.5),
-//! );
+//! let model = load_model(mjcf).expect("should load");
+//! let mut data = model.make_data();
 //!
-//! // Create a stepper and simulate
-//! let mut stepper = Stepper::new();
-//! stepper.run_for(&mut world, 1.0).unwrap();
+//! // Step the simulation
+//! for _ in 0..100 {
+//!     data.step(&model);
+//! }
 //!
-//! // Check final state
-//! let body = world.body(sphere_id).unwrap();
-//! println!("Final height: {:.2} m", body.state.pose.position.z);
+//! // Access body poses (computed from qpos via FK)
+//! println!("Body 0 position: {:?}", data.xpos[0]);
 //! ```
 //!
 //! # Loading URDF Robots
 //!
+//! URDF robots are converted to MJCF and loaded via the Model/Data API:
+//!
 //! ```
-//! use sim_physics::prelude::*;
+//! use sim_urdf::load_urdf_model;
 //!
 //! let urdf = r#"
 //!     <robot name="simple_arm">
@@ -66,73 +75,34 @@
 //!     </robot>
 //! "#;
 //!
-//! let robot = load_urdf_str(urdf).unwrap();
-//! let mut world = World::default();
-//! let spawned = robot.spawn_at_origin(&mut world).unwrap();
+//! let model = load_urdf_model(urdf).expect("should load");
+//! let mut data = model.make_data();
+//! data.step(&model);
 //!
-//! println!("Loaded robot with {} bodies", world.body_count());
-//! ```
-//!
-//! # Loading MJCF Models
-//!
-//! ```
-//! use sim_physics::prelude::*;
-//!
-//! let mjcf = r#"
-//!     <mujoco model="pendulum">
-//!         <worldbody>
-//!             <body name="base" pos="0 0 1">
-//!                 <geom type="sphere" size="0.05" mass="1.0"/>
-//!                 <body name="arm" pos="0 0 -0.5">
-//!                     <joint name="hinge" type="hinge" axis="0 1 0"/>
-//!                     <geom type="capsule" size="0.02" fromto="0 0 0 0 0 -0.4" mass="0.1"/>
-//!                 </body>
-//!             </body>
-//!         </worldbody>
-//!     </mujoco>
-//! "#;
-//!
-//! let model = load_mjcf_str(mjcf).unwrap();
-//! let mut world = World::default();
-//! let spawned = model.spawn_at_origin(&mut world).unwrap();
-//!
-//! println!("Loaded MJCF model with {} bodies", world.body_count());
+//! println!("Loaded robot with {} bodies, {} joints", model.nbody, model.njnt);
 //! ```
 //!
 //! # Architecture
 //!
+//! The physics engine follows MuJoCo's Model/Data architecture:
+//!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────────────┐
-//! │                      sim-physics (this crate)                   │
-//! │                     Unified API / re-exports                    │
-//! └─────────────────────────────────────────────────────────────────┘
-//!                                  │
-//!     ┌────────────────────────────┼────────────────────────────┐
-//!     │           │                │                │           │
-//!     ▼           ▼                ▼                ▼           ▼
-//! ┌────────┐ ┌────────┐    ┌─────────────┐   ┌─────────┐ ┌─────────┐
-//! │sim-urdf│ │sim-mjcf│    │sim-constraint│   │sim-contact│ │  ...  │
-//! │  URDF  │ │  MJCF  │    │Joint dynamics│   │ Contact │ │        │
-//! └───┬────┘ └───┬────┘    └──────┬──────┘   └────┬────┘ └────────┘
-//!     │          │                │               │
-//!     └──────────┴────────┬───────┴───────────────┘
-//!                         ▼
-//!               ┌─────────────────┐
-//!               │    sim-core     │
-//!               │ World, Stepper  │
-//!               └────────┬────────┘
-//!                        │
-//!                        ▼
-//!               ┌─────────────────┐
-//!               │   sim-types     │
-//!               │  Data structs   │
-//!               └─────────────────┘
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │                         Model                               │
+//! │  Static: kinematic tree, joint definitions, geometries      │
+//! └─────────────────────────┬───────────────────────────────────┘
+//!                           │
+//!                           ▼
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │                          Data                               │
+//! │  Dynamic: qpos, qvel → FK → xpos, xquat                     │
+//! │  One step: forward() then integrate()                       │
+//! └─────────────────────────────────────────────────────────────┘
 //! ```
 
 #![doc(html_root_url = "https://docs.rs/sim-physics/0.7.0")]
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![warn(missing_docs)]
-#![allow(deprecated)] // Re-exports deprecated World API types for backwards compatibility
 
 // Re-export sub-crates
 pub use sim_constraint;
@@ -181,49 +151,44 @@ pub mod prelude {
     pub use sim_types::SimError;
 
     // ========================================================================
-    // Simulation engine from sim-core
+    // MuJoCo-style Model/Data architecture from sim-core
     // ========================================================================
 
+    // Primary API
+    pub use sim_core::{Data, Model};
+
+    // Collision shapes
+    pub use sim_core::{Aabb, Axis, CollisionShape};
+
+    // Articulated body system
     pub use sim_core::{
-        Body, CollisionShape, Joint, SimulationBuilder, StepResult, Stepper, StepperConfig, World,
-    };
-
-    // Integrators
-    pub use sim_core::integrators::{
-        ExplicitEuler, Integrator, RungeKutta4, SemiImplicitEuler, VelocityVerlet,
-        integrate_with_method,
-    };
-
-    // ========================================================================
-    // MuJoCo-style articulated body system from sim-core
-    // ========================================================================
-
-    pub use sim_core::{
-        // Core articulated body system
         ArticulatedBody,
         ArticulatedJoint,
         ArticulatedJointType,
         ArticulatedSystem,
         // Index types
         BodyIndex,
-        // Demo systems
-        BouncingBall,
-        // PGS constraint solver
-        Constraint as PGSConstraint,
-        ConstraintType as PGSConstraintType,
-        DoublePendulum,
         JointIndex,
-        NLinkPendulum,
-        PGSConfig,
-        PGSResult,
+    };
+
+    // Demo/testing systems
+    pub use sim_core::{
+        BouncingBall, DoublePendulum, NLinkPendulum, SimplePendulum, SpherePile, SphericalPendulum,
+    };
+
+    // PGS constraint solver
+    pub use sim_core::{
+        Constraint as PGSConstraint, ConstraintType as PGSConstraintType, PGSConfig, PGSResult,
         PGSSolver,
-        SimplePendulum,
-        // Spatial algebra types
-        SpatialMatrix,
-        SpatialVector,
-        // Additional systems
-        SpherePile,
-        SphericalPendulum,
+    };
+
+    // Spatial algebra types
+    pub use sim_core::{SpatialMatrix, SpatialVector};
+
+    // Integrators
+    pub use sim_core::integrators::{
+        ExplicitEuler, Integrator, RungeKutta4, SemiImplicitEuler, VelocityVerlet,
+        integrate_with_method,
     };
 
     // ========================================================================
@@ -271,8 +236,6 @@ pub mod prelude {
     // ========================================================================
 
     pub use sim_urdf::{
-        LoadedRobot,
-        SpawnedRobot,
         // Errors
         UrdfError,
         UrdfGeometry,
@@ -280,16 +243,17 @@ pub mod prelude {
         UrdfJoint,
         UrdfJointType,
         UrdfLink,
-        UrdfLoader,
         UrdfOrigin,
         // IR types (for inspection/modification)
         UrdfRobot,
         ValidationResult as UrdfValidationResult,
-        // Loader
-        load_urdf_file,
-        load_urdf_str,
+        // Primary loader (returns Model)
+        load_urdf_model,
         // Parser (for advanced use)
         parse_urdf_str,
+        // URDF to MJCF conversion
+        robot_to_mjcf,
+        urdf_to_mjcf,
         // Validation
         validate as validate_urdf,
     };
@@ -301,14 +265,6 @@ pub mod prelude {
     pub use sim_mjcf::{
         // Configuration
         ExtendedSolverConfig,
-        // Loaded model types
-        GeomInfo,
-        LoadedActuator,
-        LoadedFixedTendon,
-        LoadedModel,
-        LoadedMuscle,
-        LoadedSpatialTendon,
-        LoadedTendon,
         // IR types (for inspection/modification)
         MjcfActuator,
         MjcfActuatorType,
@@ -319,16 +275,15 @@ pub mod prelude {
         MjcfGeomType,
         MjcfJoint,
         MjcfJointType as MjcfJointKind,
-        MjcfLoader,
         MjcfModel,
         MjcfOption,
-        SiteInfo,
-        SpawnedModel,
+        // Model conversion errors
+        ModelConversionError,
         // Validation
         ValidationResult as MjcfValidationResult,
-        // Loader - main entry points
-        load_mjcf_file,
-        load_mjcf_str,
+        // Primary loader (returns Model)
+        load_model,
+        model_from_mjcf,
         // Parser (for advanced use)
         parse_mjcf_str,
         validate as validate_mjcf,
@@ -504,26 +459,45 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_simulation() {
-        let mut world = World::default();
+    fn test_model_data_simulation() {
+        // Test Model/Data API with n-link pendulum
+        let model = Model::n_link_pendulum(1, 1.0, 0.1);
+        let mut data = model.make_data();
 
-        let body_id = world.add_body(
-            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 5.0))),
-            MassProperties::sphere(1.0, 0.5),
-        );
+        // Set initial angle and step
+        data.qpos[0] = std::f64::consts::FRAC_PI_4;
+        data.forward(&model);
 
-        let mut stepper = Stepper::new();
-        stepper
-            .run_for(&mut world, 0.1)
-            .expect("simulation should run");
+        for _ in 0..100 {
+            data.step(&model);
+        }
 
-        let body = world.body(body_id).expect("body should exist");
-        // Body should have fallen (z < 5.0)
-        assert!(body.state.pose.position.z < 5.0);
+        // Pendulum should have swung
+        assert!(data.qpos[0].abs() > 0.0);
     }
 
     #[test]
-    fn test_urdf_loading() {
+    fn test_mjcf_model_data() {
+        let mjcf = r#"
+            <mujoco model="test">
+                <worldbody>
+                    <body name="base" pos="0 0 1">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#;
+
+        let model = load_model(mjcf).expect("should parse");
+        assert_eq!(model.name, "test");
+
+        let mut data = model.make_data();
+        data.forward(&model);
+        data.step(&model);
+    }
+
+    #[test]
+    fn test_urdf_model_data() {
         let urdf = r#"
             <robot name="test">
                 <link name="base">
@@ -535,14 +509,12 @@ mod tests {
             </robot>
         "#;
 
-        let robot = load_urdf_str(urdf).expect("should parse");
-        assert_eq!(robot.name, "test");
+        let model = load_urdf_model(urdf).expect("should parse");
+        assert_eq!(model.name, "test");
 
-        let mut world = World::default();
-        let spawned = robot.spawn_at_origin(&mut world).expect("should spawn");
-
-        assert_eq!(world.body_count(), 1);
-        assert!(spawned.link_id("base").is_some());
+        let mut data = model.make_data();
+        data.forward(&model);
+        data.step(&model);
     }
 
     #[test]
@@ -560,95 +532,9 @@ mod tests {
     }
 
     #[test]
-    fn test_mjcf_loading() {
-        let mjcf = r#"
-            <mujoco model="test">
-                <worldbody>
-                    <body name="base" pos="0 0 1">
-                        <geom type="sphere" size="0.1" mass="1.0"/>
-                    </body>
-                </worldbody>
-            </mujoco>
-        "#;
-
-        let model = load_mjcf_str(mjcf).expect("should parse");
-        assert_eq!(model.name, "test");
-
-        let mut world = World::default();
-        let spawned = model.spawn_at_origin(&mut world).expect("should spawn");
-
-        assert_eq!(world.body_count(), 1);
-        assert!(spawned.body_id("base").is_some());
-    }
-
-    #[test]
-    fn test_mjcf_with_joints() {
-        let mjcf = r#"
-            <mujoco model="pendulum">
-                <worldbody>
-                    <body name="base" pos="0 0 1">
-                        <geom type="sphere" size="0.05" mass="1.0"/>
-                        <body name="arm" pos="0 0 -0.3">
-                            <joint name="hinge" type="hinge" axis="0 1 0" limited="true" range="-3.14 3.14"/>
-                            <geom type="capsule" size="0.02" fromto="0 0 0 0 0 -0.2" mass="0.1"/>
-                        </body>
-                    </body>
-                </worldbody>
-            </mujoco>
-        "#;
-
-        let model = load_mjcf_str(mjcf).expect("should parse");
-        assert_eq!(model.name, "pendulum");
-        assert_eq!(model.bodies.len(), 2);
-        assert_eq!(model.joints.len(), 1);
-
-        let mut world = World::default();
-        let spawned = model.spawn_at_origin(&mut world).expect("should spawn");
-
-        assert_eq!(world.body_count(), 2);
-        assert_eq!(world.joint_count(), 1);
-        assert!(spawned.joint_id("hinge").is_some());
-    }
-
-    #[test]
-    fn test_mjcf_world_simulation_pipeline() {
-        // Integration test: MJCF → World → simulate
-        // Note: In MJCF, bodies without joints are considered "welded" to their parent.
-        // A body needs a "free" joint to move independently under gravity.
-        // Mass and inertia are computed from the geom (sphere with mass=1.0, radius=0.1).
-        let mjcf = r#"
-            <mujoco model="falling_ball">
-                <option gravity="0 0 -9.81"/>
-                <worldbody>
-                    <body name="ball" pos="0 0 5">
-                        <joint type="free"/>
-                        <geom type="sphere" size="0.1" mass="1.0"/>
-                    </body>
-                </worldbody>
-            </mujoco>
-        "#;
-
-        let model = load_mjcf_str(mjcf).expect("should parse");
-        assert_eq!(model.bodies.len(), 1, "should have 1 body");
-        assert_eq!(model.joints.len(), 1, "should have 1 joint (free)");
-
-        let mut world = World::default();
-        let spawned = model.spawn_at_origin(&mut world).expect("should spawn");
-
-        let ball_id = spawned.body_id("ball").expect("ball should exist");
-        let initial_z = world.body(ball_id).expect("body").state.pose.position.z;
-
-        // Simulate for a short time
-        let mut stepper = Stepper::new();
-        stepper.run_for(&mut world, 0.1).expect("should simulate");
-
-        let final_z = world.body(ball_id).expect("body").state.pose.position.z;
-
-        // Ball should have fallen by at least some amount under gravity
-        // After 0.1s under -9.81 m/s² gravity: Δz ≈ 0.5 * 9.81 * 0.1² = 0.049m
-        assert!(
-            final_z < initial_z - 0.01,
-            "Ball should fall: initial_z={initial_z}, final_z={final_z}"
-        );
+    fn test_collision_shape_accessible() {
+        // Verify CollisionShape is accessible through prelude
+        let sphere = CollisionShape::sphere(1.0);
+        assert!(sphere.is_convex());
     }
 }

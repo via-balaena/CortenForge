@@ -6,8 +6,7 @@
 //! # Features
 //!
 //! - Parse URDF XML from files or strings
-//! - Convert links to rigid bodies with mass properties
-//! - Convert joints to sim-core joint constraints
+//! - Convert to MuJoCo-aligned Model/Data architecture
 //! - Support for primitive collision shapes (box, sphere, cylinder)
 //! - Kinematic tree validation
 //!
@@ -23,9 +22,7 @@
 //! # Example
 //!
 //! ```
-//! use sim_urdf::{load_urdf_str, UrdfLoader};
-//! use sim_core::World;
-//! use sim_types::Pose;
+//! use sim_urdf::load_urdf_model;
 //!
 //! // Load a simple robot from URDF
 //! let urdf = r#"
@@ -39,13 +36,14 @@
 //!     </robot>
 //! "#;
 //!
-//! let robot = load_urdf_str(urdf).expect("should parse");
-//! assert_eq!(robot.name, "simple");
+//! let model = load_urdf_model(urdf).expect("should parse");
+//! assert_eq!(model.name, "simple");
 //!
-//! // Spawn into a world
-//! let mut world = World::default();
-//! let spawned = robot.spawn_at_origin(&mut world).expect("should spawn");
-//! assert_eq!(world.body_count(), 1);
+//! // Create simulation data and step
+//! let mut data = model.make_data();
+//! for _ in 0..100 {
+//!     data.step(&model);
+//! }
 //! ```
 //!
 //! # Supported URDF Elements
@@ -115,7 +113,6 @@
 
 mod converter;
 mod error;
-mod loader;
 mod parser;
 mod types;
 mod validation;
@@ -123,9 +120,6 @@ mod validation;
 // Re-export main types
 pub use converter::{robot_to_mjcf, urdf_to_mjcf};
 pub use error::{Result, UrdfError};
-// Deprecated World API exports (kept for backwards compatibility)
-#[allow(deprecated)]
-pub use loader::{LoadedRobot, SpawnedRobot, UrdfLoader, load_urdf_file, load_urdf_str};
 pub use parser::parse_urdf_str;
 pub use types::{
     UrdfCollision, UrdfGeometry, UrdfInertia, UrdfInertial, UrdfJoint, UrdfJointDynamics,
@@ -142,11 +136,20 @@ pub use validation::{ValidationResult, validate};
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use sim_urdf::load_urdf_model;
 ///
-/// let urdf = r#"<robot name="arm">...</robot>"#;
-/// let model = load_urdf_model(urdf)?;
+/// let urdf = r#"
+///     <robot name="arm">
+///         <link name="base">
+///             <inertial>
+///                 <mass value="1.0"/>
+///                 <inertia ixx="0.1" iyy="0.1" izz="0.1"/>
+///             </inertial>
+///         </link>
+///     </robot>
+/// "#;
+/// let model = load_urdf_model(urdf).expect("should load");
 /// let mut data = model.make_data();
 /// data.step(&model);
 /// ```
@@ -158,15 +161,12 @@ pub fn load_urdf_model(urdf_xml: &str) -> Result<sim_core::Model> {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-#[allow(deprecated)] // Testing deprecated World API for backwards compatibility
 mod tests {
     use super::*;
-    #[allow(deprecated)]
-    use sim_core::World;
 
-    /// Integration test with a more complex robot.
+    /// Test Model/Data API with a two-link arm.
     #[test]
-    fn test_two_link_arm() {
+    fn test_two_link_arm_model_data() {
         let urdf = r#"
             <robot name="two_link_arm">
                 <link name="base_link">
@@ -224,26 +224,17 @@ mod tests {
             </robot>
         "#;
 
-        // Load and validate
-        let robot = load_urdf_str(urdf).expect("should load");
-        assert_eq!(robot.name, "two_link_arm");
-        assert_eq!(robot.bodies.len(), 3);
-        assert_eq!(robot.joints.len(), 2);
+        // Load into Model
+        let model = load_urdf_model(urdf).expect("should load");
+        assert_eq!(model.name, "two_link_arm");
 
-        // Spawn into world
-        let mut world = World::default();
-        let spawned = robot.spawn_at_origin(&mut world).expect("should spawn");
+        // Create Data and step
+        let mut data = model.make_data();
+        data.forward(&model);
 
-        // Verify world state
-        assert_eq!(world.body_count(), 3);
-        assert_eq!(world.joint_count(), 2);
-
-        // Check we can access by name
-        let base_id = spawned.link_id("base_link").expect("base_link");
-        let joint1_id = spawned.joint_id("joint1").expect("joint1");
-
-        assert!(world.body(base_id).is_some());
-        assert!(world.joint(joint1_id).is_some());
+        // Verify structure
+        assert!(model.nbody >= 3, "Should have at least 3 bodies");
+        assert_eq!(model.njnt, 2, "Should have 2 joints");
     }
 
     /// Test error handling for invalid URDF.
@@ -284,5 +275,31 @@ mod tests {
 
         let result = validate(&robot);
         assert!(matches!(result, Err(UrdfError::UndefinedLink { .. })));
+    }
+
+    /// Test simple robot with Model/Data API.
+    #[test]
+    fn test_simple_robot_model_data() {
+        let urdf = r#"
+            <robot name="simple">
+                <link name="base_link">
+                    <inertial>
+                        <mass value="1.0"/>
+                        <inertia ixx="0.1" iyy="0.1" izz="0.1"/>
+                    </inertial>
+                </link>
+            </robot>
+        "#;
+
+        let model = load_urdf_model(urdf).expect("should load");
+        assert_eq!(model.name, "simple");
+
+        let mut data = model.make_data();
+        data.forward(&model);
+
+        // Step a few times
+        for _ in 0..10 {
+            data.step(&model);
+        }
     }
 }

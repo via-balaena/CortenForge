@@ -64,6 +64,9 @@ impl std::error::Error for ModelConversionError {}
 pub fn model_from_mjcf(mjcf: &MjcfModel) -> std::result::Result<Model, ModelConversionError> {
     let mut builder = ModelBuilder::new();
 
+    // Set model name
+    builder.name = mjcf.name.clone();
+
     // Set global options
     builder.set_options(&mjcf.option);
 
@@ -96,6 +99,9 @@ pub fn load_model(xml: &str) -> Result<Model> {
 
 /// Builder for constructing Model from MJCF.
 struct ModelBuilder {
+    // Model name
+    name: String,
+
     // Dimensions (computed during building)
     nq: usize,
     nv: usize,
@@ -204,6 +210,7 @@ impl ModelBuilder {
     fn new() -> Self {
         // Initialize with world body (body 0)
         Self {
+            name: String::new(),
             nq: 0,
             nv: 0,
 
@@ -847,6 +854,7 @@ impl ModelBuilder {
         let nu = self.actuator_trntype.len();
 
         let mut model = Model {
+            name: self.name,
             nq: self.nq,
             nv: self.nv,
             nbody,

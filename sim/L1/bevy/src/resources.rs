@@ -1,94 +1,9 @@
 //! Bevy resources for physics visualization.
 
-#![allow(deprecated)] // Allow deprecated types within this module
-
 use bevy::prelude::*;
 use sim_contact::ContactPoint;
-#[allow(deprecated)]
-use sim_core::World;
 use sim_types::BodyId;
 use std::collections::HashMap;
-
-/// Handle to the physics simulation world.
-///
-/// **Deprecated**: Use [`PhysicsModel`](crate::model_data::PhysicsModel) and
-/// [`PhysicsData`](crate::model_data::PhysicsData) instead, which follow `MuJoCo`'s
-/// Model/Data architecture.
-///
-/// This resource wraps the sim-core [`World`] and provides access for
-/// visualization systems. The user is responsible for stepping the simulation;
-/// sim-bevy only reads from it.
-///
-/// # Example
-///
-/// ```ignore
-/// fn setup(mut commands: Commands) {
-///     let world = World::default();
-///     commands.insert_resource(SimulationHandle::new(world));
-/// }
-///
-/// fn step_physics(mut handle: ResMut<SimulationHandle>, time: Res<Time>) {
-///     if let Some(world) = handle.world_mut() {
-///         // User steps the simulation
-///         world.step(time.delta_secs_f64());
-///     }
-/// }
-/// ```
-#[deprecated(
-    since = "0.8.0",
-    note = "Use PhysicsModel/PhysicsData from model_data module instead. This type wraps the deprecated World API."
-)]
-#[derive(Resource)]
-pub struct SimulationHandle {
-    world: Option<World>,
-}
-
-impl SimulationHandle {
-    /// Create a new simulation handle with the given world.
-    #[must_use]
-    pub fn new(world: World) -> Self {
-        Self { world: Some(world) }
-    }
-
-    /// Create an empty simulation handle.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self { world: None }
-    }
-
-    /// Get a reference to the physics world.
-    #[must_use]
-    pub fn world(&self) -> Option<&World> {
-        self.world.as_ref()
-    }
-
-    /// Get a mutable reference to the physics world.
-    pub fn world_mut(&mut self) -> Option<&mut World> {
-        self.world.as_mut()
-    }
-
-    /// Set the physics world.
-    pub fn set_world(&mut self, world: World) {
-        self.world = Some(world);
-    }
-
-    /// Take the physics world, leaving None in its place.
-    pub fn take_world(&mut self) -> Option<World> {
-        self.world.take()
-    }
-
-    /// Check if a world is present.
-    #[must_use]
-    pub fn has_world(&self) -> bool {
-        self.world.is_some()
-    }
-}
-
-impl Default for SimulationHandle {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
 
 /// Cached contacts from the physics simulation.
 ///

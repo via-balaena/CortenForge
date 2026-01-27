@@ -1,29 +1,21 @@
 //! Plugin composition for physics visualization.
 //!
-//! **Note**: `SimViewerPlugin` supports both the deprecated World API and the
-//! new Model/Data API. For World API, it initializes `SimulationHandle`. For
-//! Model/Data, see [`ModelDataPlugin`](crate::model_data::ModelDataPlugin).
-
-#![allow(deprecated)] // This module uses deprecated World API types
+//! `SimViewerPlugin` provides visualization for the Model/Data API.
+//! For Model/Data systems, see [`ModelDataPlugin`](crate::model_data::ModelDataPlugin).
 
 use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::prelude::*;
 
 use crate::camera::{spawn_orbit_camera, OrbitCameraPlugin};
 use crate::gizmos::{
-    draw_contact_normals, draw_contact_points, draw_force_vectors, draw_joint_axes,
-    draw_joint_limits, draw_muscles, draw_sensors, draw_tendons, draw_velocity_vectors,
+    draw_contact_normals, draw_contact_points, draw_muscles, draw_sensors, draw_tendons,
     DebugGizmosSet,
 };
-#[allow(deprecated)]
 use crate::resources::{
-    BodyEntityMap, CachedContacts, MuscleVisualization, SensorVisualization, SimulationHandle,
-    TendonVisualization, ViewerConfig,
+    BodyEntityMap, CachedContacts, MuscleVisualization, SensorVisualization, TendonVisualization,
+    ViewerConfig,
 };
-use crate::systems::{
-    sync_body_transforms, sync_physics_entities, update_cached_contacts, update_shape_visibility,
-    SimViewerSet,
-};
+use crate::systems::{update_cached_contacts, update_shape_visibility, SimViewerSet};
 
 /// Physics visualization plugin for Bevy.
 ///
@@ -50,9 +42,8 @@ use crate::systems::{
 /// responsible for stepping the simulation; sim-bevy only visualizes.
 ///
 /// Systems run in this order:
-/// 1. `Update`: Entity lifecycle (spawn/despawn bodies)
-/// 2. `PostUpdate`: Transform synchronization
-/// 3. `PostUpdate`: Debug visualization (gizmos)
+/// 1. `Update`: Transform synchronization (via Model/Data systems)
+/// 2. `PostUpdate`: Debug visualization (gizmos)
 #[derive(Default)]
 #[allow(clippy::struct_excessive_bools)] // Plugin config with multiple toggles
 pub struct SimViewerPlugin {
@@ -119,7 +110,6 @@ impl Plugin for SimViewerPlugin {
     fn build(&self, app: &mut App) {
         // Resources
         app.insert_resource(self.config.clone())
-            .init_resource::<SimulationHandle>()
             .init_resource::<BodyEntityMap>()
             .init_resource::<CachedContacts>()
             .init_resource::<MuscleVisualization>()
@@ -127,22 +117,12 @@ impl Plugin for SimViewerPlugin {
             .init_resource::<SensorVisualization>();
 
         // Configure system sets
-        app.configure_sets(
-            Update,
-            (SimViewerSet::EntitySync, SimViewerSet::TransformSync).chain(),
-        );
+        app.configure_sets(Update, SimViewerSet::TransformSync);
 
-        // Core systems
-        app.add_systems(
-            Update,
-            sync_physics_entities.in_set(SimViewerSet::EntitySync),
-        );
-
+        // Core systems - update shape visibility based on config
         app.add_systems(
             PostUpdate,
-            (sync_body_transforms, update_shape_visibility)
-                .chain()
-                .in_set(SimViewerSet::TransformSync),
+            update_shape_visibility.in_set(SimViewerSet::TransformSync),
         );
 
         // Debug visualization gizmos (only if enabled - requires bevy_gizmos)
@@ -170,10 +150,6 @@ impl Plugin for SimViewerPlugin {
                 (
                     draw_contact_points,
                     draw_contact_normals,
-                    draw_force_vectors,
-                    draw_velocity_vectors,
-                    draw_joint_axes,
-                    draw_joint_limits,
                     // Musculoskeletal visualization
                     draw_muscles,
                     draw_tendons,

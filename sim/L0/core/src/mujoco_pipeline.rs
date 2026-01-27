@@ -5452,6 +5452,10 @@ pub enum Integrator {
 /// - `actuator_*` arrays indexed by `actuator_id`
 #[derive(Debug, Clone)]
 pub struct Model {
+    // ==================== Metadata ====================
+    /// Model name (from MJCF model attribute or URDF robot name).
+    pub name: String,
+
     // ==================== Dimensions ====================
     /// Number of generalized position coordinates (includes quaternions).
     pub nq: usize,
@@ -6055,6 +6059,9 @@ impl Model {
     #[must_use]
     pub fn empty() -> Self {
         Self {
+            // Metadata
+            name: String::new(),
+
             // Dimensions
             nq: 0,
             nv: 0,

@@ -76,38 +76,7 @@ pub mod mujoco_pipeline;
 pub mod raycast;
 pub mod sdf;
 
-// Legacy World API (deprecated - use Model/Data instead)
-// TODO: Remove in next major version
-mod broad_phase;
-mod stepper;
-/// Legacy simulation world module. Use Model/Data API instead.
-#[deprecated(
-    since = "0.8.0",
-    note = "Use Model/Data API from mujoco_pipeline module instead"
-)]
-pub mod world;
-
 pub use collision_shape::{Aabb, Axis, CollisionShape};
-
-// Legacy World API exports (deprecated - use Model/Data instead)
-#[allow(deprecated)]
-#[deprecated(
-    since = "0.8.0",
-    note = "Use Model/Data API instead. See mujoco_pipeline module."
-)]
-pub use stepper::SimulationBuilder;
-#[allow(deprecated)]
-#[deprecated(
-    since = "0.8.0",
-    note = "Use Model/Data API instead. See mujoco_pipeline module."
-)]
-pub use stepper::{StepResult, Stepper, StepperConfig};
-#[allow(deprecated)]
-#[deprecated(
-    since = "0.8.0",
-    note = "Use Model/Data API instead. See mujoco_pipeline module."
-)]
-pub use world::{Body, Joint, World};
 
 pub use heightfield::{HeightFieldContact, HeightFieldData};
 pub use mesh::{
