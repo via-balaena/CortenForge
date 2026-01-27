@@ -1,7 +1,13 @@
 //! Simulation world container and entity management.
 //!
+//! **Deprecated**: This module is part of the deprecated World API. Use the
+//! Model/Data API from [`crate::mujoco_pipeline`] instead.
+//!
 //! The [`World`] is the central data structure for simulation state.
 //! It manages rigid bodies, their properties, and provides query interfaces.
+
+// Allow deprecated items within this deprecated module
+#![allow(deprecated)]
 
 use hashbrown::HashMap;
 use nalgebra::{Matrix3, Point3, Vector3};
@@ -18,15 +24,17 @@ use sim_types::{
 use crate::broad_phase::{BroadPhaseConfig, BroadPhaseDetector};
 use crate::gjk_epa::gjk_epa_contact;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
-
 // Re-export CollisionShape from the canonical source
 pub use crate::collision_shape::CollisionShape;
 
 /// A rigid body in the simulation world.
+///
+/// **Deprecated**: Use Model/Data API from [`crate::mujoco_pipeline`] instead.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use Model/Data API from mujoco_pipeline module instead"
+)]
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Body {
     /// Unique identifier.
     pub id: BodyId,
@@ -265,8 +273,13 @@ impl Body {
 }
 
 /// A joint connecting two bodies.
+///
+/// **Deprecated**: Use Model/Data API from [`crate::mujoco_pipeline`] instead.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use Model/Data API from mujoco_pipeline module instead"
+)]
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Joint {
     /// Unique identifier.
     pub id: JointId,
@@ -432,8 +445,13 @@ impl ConstraintJoint for JointAdapter<'_> {
 }
 
 /// The simulation world containing all entities.
+///
+/// **Deprecated**: Use Model/Data API from [`crate::mujoco_pipeline`] instead.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use Model/Data API from mujoco_pipeline module instead"
+)]
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct World {
     /// Simulation configuration.
     config: SimulationConfig,
@@ -454,34 +472,13 @@ pub struct World {
     /// Joint name to ID mapping.
     joint_names: HashMap<String, JointId>,
     /// Contact solver for computing contact forces.
-    #[cfg_attr(feature = "serde", serde(skip, default = "default_contact_solver"))]
     contact_solver: ContactSolver,
     /// Contact parameters (can be changed for domain randomization).
     contact_params: ContactParams,
     /// Joint constraint solver.
-    #[cfg_attr(feature = "serde", serde(skip, default = "default_constraint_solver"))]
     constraint_solver: JointConstraintSolver,
     /// Broad-phase collision detector.
-    #[cfg_attr(feature = "serde", serde(skip, default = "default_broad_phase"))]
     broad_phase: BroadPhaseDetector,
-}
-
-#[cfg(feature = "serde")]
-fn default_contact_solver() -> ContactSolver {
-    ContactSolver::new(
-        ContactModel::new(ContactParams::default()),
-        ContactSolverConfig::default(),
-    )
-}
-
-#[cfg(feature = "serde")]
-fn default_constraint_solver() -> JointConstraintSolver {
-    JointConstraintSolver::new(sim_constraint::ConstraintSolverConfig::default())
-}
-
-#[cfg(feature = "serde")]
-fn default_broad_phase() -> BroadPhaseDetector {
-    BroadPhaseDetector::default()
 }
 
 impl Default for World {
