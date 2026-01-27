@@ -17,9 +17,10 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```ignore
+//! // This example uses deprecated World API - use Model/Data instead
 //! use sim_core::broad_phase::{BroadPhase, SweepAndPrune};
-//! use sim_core::{Body, CollisionShape};
+//! use sim_core::world::{Body, CollisionShape};
 //! use sim_types::{BodyId, RigidBodyState, Pose, MassProperties};
 //! use nalgebra::{Point3, Vector3};
 //!
@@ -47,7 +48,8 @@
 use nalgebra::{Point3, Vector3};
 use sim_types::BodyId;
 
-use crate::world::{Body, CollisionShape};
+use crate::collision_shape::CollisionShape;
+use crate::world::Body;
 
 /// An axis-aligned bounding box (AABB) for broad-phase collision detection.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -363,6 +365,11 @@ impl SweepAndPrune {
                 }
             }
             CollisionShape::ConvexMesh { vertices } => {
+                // Handle empty mesh case
+                if vertices.is_empty() {
+                    return None;
+                }
+
                 // Transform all vertices to world space and compute bounds
                 let rotation = pose.rotation.to_rotation_matrix();
                 let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);

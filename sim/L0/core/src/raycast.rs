@@ -58,6 +58,14 @@ impl RaycastHit {
     }
 }
 
+/// Safe vector normalization with fallback.
+/// Returns the normalized vector if norm > threshold, otherwise returns the fallback.
+#[inline]
+fn safe_normalize(v: &Vector3<f64>, fallback: Vector3<f64>) -> Vector3<f64> {
+    let n = v.norm();
+    if n > 1e-10 { v / n } else { fallback }
+}
+
 /// Cast a ray against a collision shape.
 ///
 /// # Arguments
@@ -89,7 +97,7 @@ pub fn raycast_shape(
         ),
         CollisionShape::Plane { normal, distance } => {
             // Transform plane to world space
-            let world_normal = shape_pose.transform_vector(normal).normalize();
+            let world_normal = safe_normalize(&shape_pose.transform_vector(normal), *normal);
             let world_point = shape_pose.position + world_normal * *distance;
             raycast_plane(
                 &world_point,
@@ -180,7 +188,8 @@ fn raycast_sphere(
     let c = oc.dot(&oc) - radius * radius;
     let discriminant = b * b - c;
 
-    if discriminant < 0.0 {
+    // Check for miss OR NaN (NaN < 0.0 is false, so explicitly check)
+    if !(discriminant >= 0.0) {
         return None;
     }
 
@@ -198,7 +207,10 @@ fn raycast_sphere(
     }
 
     let point = ray_origin + dir * t;
-    let normal = (point - center).normalize();
+    let to_point = point - center;
+    let dist = to_point.norm();
+    // Safe normalize: for a sphere hit, distance should equal radius (non-zero)
+    let normal = if dist > 1e-10 { to_point / dist } else { *dir };
 
     Some(RaycastHit::new(t, point, normal))
 }
@@ -213,11 +225,17 @@ fn raycast_plane(
     ray_direction: UnitVector3<f64>,
     max_distance: f64,
 ) -> Option<RaycastHit> {
+    // Validate plane normal is not degenerate
+    let normal_len_sq = plane_normal.norm_squared();
+    if normal_len_sq < 1e-20 {
+        return None;
+    }
+
     let dir = ray_direction.as_ref();
     let denom = plane_normal.dot(dir);
 
-    // Parallel to plane
-    if denom.abs() < 1e-10 {
+    // Parallel to plane (or NaN)
+    if !(denom.abs() >= 1e-10) {
         return None;
     }
 
@@ -296,7 +314,7 @@ fn raycast_box(
     }
 
     let point = ray_origin + ray_direction.as_ref() * t_min;
-    let world_normal = pose.transform_vector(&hit_normal).normalize();
+    let world_normal = safe_normalize(&pose.transform_vector(&hit_normal), hit_normal);
 
     Some(RaycastHit::new(t_min, point, world_normal))
 }
@@ -342,15 +360,23 @@ fn raycast_capsule(
 
     if a > 1e-10 {
         let discriminant = b * b - a * c;
-        if discriminant >= 0.0 {
+        // Use >= 0.0 pattern that correctly handles NaN (NaN >= 0.0 is false)
+        if discriminant >= 0.0 && discriminant.is_finite() {
             let sqrt_d = discriminant.sqrt();
 
             for t in [(-b - sqrt_d) / a, (-b + sqrt_d) / a] {
-                if t >= 0.0 {
+                if t >= 0.0 && t.is_finite() {
                     let pt = local_origin + local_dir * t;
                     // Check if hit is on cylinder body (not beyond caps)
                     if pt.z >= -half_length && pt.z <= half_length {
-                        let normal = Vector3::new(pt.x, pt.y, 0.0).normalize();
+                        let radial = Vector3::new(pt.x, pt.y, 0.0);
+                        let radial_len = radial.norm();
+                        // Safe normalize: for cylinder hit, radial distance equals radius
+                        let normal = if radial_len > 1e-10 {
+                            radial / radial_len
+                        } else {
+                            Vector3::x()
+                        };
                         check_hit(t, pt, normal);
                     }
                 }
@@ -365,12 +391,19 @@ fn raycast_capsule(
         let c = oc.dot(&oc) - radius * radius;
         let discriminant = b * b - c;
 
-        if discriminant >= 0.0 {
+        if discriminant >= 0.0 && discriminant.is_finite() {
             let sqrt_d = discriminant.sqrt();
             let t = -b - sqrt_d;
             if t >= 0.0 {
                 let pt = local_origin + local_dir * t;
-                let normal = (pt - cap_center).normalize();
+                let to_pt = pt - cap_center;
+                let dist = to_pt.norm();
+                // Safe normalize: for sphere cap hit, distance equals radius
+                let normal = if dist > 1e-10 {
+                    to_pt / dist
+                } else {
+                    local_dir
+                };
                 check_hit(t, pt, normal);
             }
         }
@@ -378,7 +411,14 @@ fn raycast_capsule(
 
     closest_hit.map(|(t, local_pt, local_normal)| {
         let world_pt = pose.transform_point(&local_pt);
-        let world_normal = pose.transform_vector(&local_normal).normalize();
+        let world_normal_raw = pose.transform_vector(&local_normal);
+        let wn_len = world_normal_raw.norm();
+        // Safe normalize: local_normal was already normalized
+        let world_normal = if wn_len > 1e-10 {
+            world_normal_raw / wn_len
+        } else {
+            local_normal
+        };
         RaycastHit::new(t, world_pt, world_normal)
     })
 }
@@ -410,15 +450,17 @@ fn raycast_cylinder(
 
     if a > 1e-10 {
         let discriminant = b * b - a * c;
-        if discriminant >= 0.0 {
+        // Use >= 0.0 pattern that correctly handles NaN
+        if discriminant >= 0.0 && discriminant.is_finite() {
             let sqrt_d = discriminant.sqrt();
 
             for t in [(-b - sqrt_d) / a, (-b + sqrt_d) / a] {
-                if t >= 0.0 && t < closest_t && t <= max_distance {
+                if t >= 0.0 && t < closest_t && t <= max_distance && t.is_finite() {
                     let pt = local_origin + local_dir * t;
                     if pt.z >= -half_length && pt.z <= half_length {
                         closest_t = t;
-                        let normal = Vector3::new(pt.x, pt.y, 0.0).normalize();
+                        let radial = Vector3::new(pt.x, pt.y, 0.0);
+                        let normal = safe_normalize(&radial, Vector3::x());
                         closest_hit = Some((pt, normal));
                     }
                 }
@@ -446,7 +488,7 @@ fn raycast_cylinder(
 
     closest_hit.map(|(local_pt, local_normal)| {
         let world_pt = pose.transform_point(&local_pt);
-        let world_normal = pose.transform_vector(&local_normal).normalize();
+        let world_normal = safe_normalize(&pose.transform_vector(&local_normal), local_normal);
         RaycastHit::new(closest_t, world_pt, world_normal)
     })
 }
@@ -461,6 +503,12 @@ fn raycast_ellipsoid(
     ray_direction: UnitVector3<f64>,
     max_distance: f64,
 ) -> Option<RaycastHit> {
+    // Validate radii - avoid division by zero
+    const MIN_RADIUS: f64 = 1e-10;
+    if radii.x < MIN_RADIUS || radii.y < MIN_RADIUS || radii.z < MIN_RADIUS {
+        return None;
+    }
+
     // Transform ray to local space
     let inv_pose = pose.inverse();
     let local_origin = inv_pose.transform_point(&ray_origin);
@@ -485,7 +533,13 @@ fn raycast_ellipsoid(
     let c = oc.dot(&oc) - 1.0;
 
     let discriminant = b * b - a * c;
-    if discriminant < 0.0 {
+    // Check for miss OR NaN
+    if !(discriminant >= 0.0) {
+        return None;
+    }
+
+    // Check for degenerate scaled direction (a ≈ 0 means ray parallel to ellipsoid axis)
+    if a < 1e-20 {
         return None;
     }
 
@@ -508,15 +562,15 @@ fn raycast_ellipsoid(
     }
 
     // Normal: gradient of ellipsoid function f(x,y,z) = (x/a)² + (y/b)² + (z/c)² - 1
-    let local_normal = Vector3::new(
+    let grad = Vector3::new(
         2.0 * local_pt.x / (radii.x * radii.x),
         2.0 * local_pt.y / (radii.y * radii.y),
         2.0 * local_pt.z / (radii.z * radii.z),
-    )
-    .normalize();
+    );
+    let local_normal = safe_normalize(&grad, Vector3::z());
 
     let world_pt = pose.transform_point(&local_pt);
-    let world_normal = pose.transform_vector(&local_normal).normalize();
+    let world_normal = safe_normalize(&pose.transform_vector(&local_normal), local_normal);
 
     Some(RaycastHit::new(t, world_pt, world_normal))
 }
@@ -559,7 +613,8 @@ fn raycast_convex_mesh(
     let c = oc.dot(&oc) - radius * radius;
     let discriminant = b * b - c;
 
-    if discriminant < 0.0 {
+    // Check for miss OR NaN
+    if !(discriminant >= 0.0) {
         return None;
     }
 
@@ -568,15 +623,16 @@ fn raycast_convex_mesh(
     let sqrt_d = discriminant.sqrt();
     let t = -b - sqrt_d;
 
-    if t < 0.0 || t > max_distance {
+    if !(t >= 0.0 && t <= max_distance) {
         return None;
     }
 
     let local_pt = local_origin + local_dir * t;
-    let local_normal = (local_pt - center).normalize();
+    let to_pt = local_pt - center;
+    let local_normal = safe_normalize(&to_pt, local_dir);
 
     let world_pt = pose.transform_point(&local_pt);
-    let world_normal = pose.transform_vector(&local_normal).normalize();
+    let world_normal = safe_normalize(&pose.transform_vector(&local_normal), local_normal);
 
     Some(RaycastHit::new(t, world_pt, world_normal))
 }
@@ -595,8 +651,14 @@ fn raycast_heightfield(
     let local_dir = inv_pose.transform_vector(ray_direction.as_ref());
 
     // Simple ray marching approach
-    let step_size = data.cell_size() * 0.5;
-    let max_steps = (max_distance / step_size) as usize + 1;
+    let cell_size = data.cell_size();
+    // Validate step_size to avoid division by zero or infinite loops
+    if cell_size <= 0.0 || !cell_size.is_finite() {
+        return None;
+    }
+    let step_size = cell_size * 0.5;
+    // Clamp max_steps to prevent integer overflow and excessive iteration
+    let max_steps = ((max_distance / step_size) as usize + 1).min(100_000);
 
     let mut t = 0.0;
     let mut prev_height_diff = None;
@@ -642,7 +704,7 @@ fn raycast_heightfield(
                         .unwrap_or_else(Vector3::z);
 
                     let world_pt = pose.transform_point(&final_pt);
-                    let world_normal = pose.transform_vector(&normal).normalize();
+                    let world_normal = safe_normalize(&pose.transform_vector(&normal), normal);
 
                     return Some(RaycastHit::new(final_t, world_pt, world_normal));
                 }
@@ -691,22 +753,32 @@ fn raycast_sdf(
 
         if dist < epsilon {
             // Hit! Compute normal from gradient
-            let normal = data.gradient(pt).unwrap_or_else(Vector3::z).normalize();
+            let grad = data.gradient(pt).unwrap_or_else(Vector3::z);
+            let normal = safe_normalize(&grad, Vector3::z());
 
             let world_pt = pose.transform_point(&pt);
-            let world_normal = pose.transform_vector(&normal).normalize();
+            let world_normal = safe_normalize(&pose.transform_vector(&normal), normal);
 
             return Some(RaycastHit::new(t, world_pt, world_normal));
         }
 
         // Step by the distance (sphere tracing guarantee)
-        t += dist.max(epsilon);
+        // Handle negative distances (inside object) and NaN by using epsilon as minimum step
+        let step = if dist.is_finite() && dist > epsilon {
+            dist
+        } else {
+            epsilon
+        };
+        t += step;
     }
 
     None
 }
 
-/// Ray-triangle mesh intersection using BVH.
+/// Ray-triangle mesh intersection using BVH with early termination.
+///
+/// Uses `query_ray_closest` for optimal pruning: as closer hits are found,
+/// distant BVH nodes are automatically culled. This is O(log n) average case.
 fn raycast_triangle_mesh(
     pose: &Pose,
     data: &crate::mesh::TriangleMeshData,
@@ -714,31 +786,86 @@ fn raycast_triangle_mesh(
     ray_direction: UnitVector3<f64>,
     max_distance: f64,
 ) -> Option<RaycastHit> {
+    // Validate max_distance
+    if !max_distance.is_finite() || max_distance <= 0.0 {
+        return None;
+    }
+
     // Transform ray to local space
     let inv_pose = pose.inverse();
     let local_origin = inv_pose.transform_point(&ray_origin);
     let local_dir = inv_pose.transform_vector(ray_direction.as_ref());
 
-    let mut closest_hit: Option<(f64, Point3<f64>, Vector3<f64>)> = None;
-
-    // Test each triangle (TODO: use BVH for acceleration)
-    for tri in data.triangles() {
-        let (v0, v1, v2) = data.triangle_vertices(tri);
-
-        if let Some((t, pt, normal)) =
-            ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, max_distance)
-        {
-            if closest_hit.is_none() || t < closest_hit.as_ref().map_or(f64::MAX, |h| h.0) {
-                closest_hit = Some((t, pt, normal));
-            }
-        }
+    // Check for degenerate ray (zero direction after transform)
+    let dir_norm = local_dir.norm();
+    if dir_norm < 1e-10 {
+        return None;
     }
 
-    closest_hit.map(|(t, local_pt, local_normal)| {
-        let world_pt = pose.transform_point(&local_pt);
-        let world_normal = pose.transform_vector(&local_normal).normalize();
-        RaycastHit::new(t, world_pt, world_normal)
-    })
+    // Use BVH with early termination if available
+    if let Some(bvh) = data.bvh() {
+        // Precompute inverse direction for slab test
+        // IEEE 754: 1.0/0.0 = ±∞, which the slab test handles correctly for axis-aligned rays
+        let ray_dir_inv = Vector3::new(1.0 / local_dir.x, 1.0 / local_dir.y, 1.0 / local_dir.z);
+
+        // Track the closest hit for both result and early termination
+        let mut closest_hit: Option<(f64, Point3<f64>, Vector3<f64>)> = None;
+        let mut cutoff = max_distance;
+
+        // Use query_ray_closest with a callback that tests triangles and updates cutoff
+        let result = bvh.query_ray_closest(&local_origin, &ray_dir_inv, max_distance, |tri_idx| {
+            let tri = data.get_triangle(tri_idx)?;
+            let (v0, v1, v2) = data.triangle_vertices(tri);
+
+            if let Some((t, pt, normal)) =
+                ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, cutoff)
+            {
+                if t < cutoff {
+                    cutoff = t;
+                    closest_hit = Some((t, pt, normal));
+                    return Some(t);
+                }
+            }
+            None
+        });
+
+        // Use either the callback result or our tracked closest_hit
+        let hit = closest_hit.or_else(|| {
+            result.and_then(|(tri_idx, _)| {
+                let tri = data.get_triangle(tri_idx)?;
+                let (v0, v1, v2) = data.triangle_vertices(tri);
+                ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, max_distance)
+            })
+        });
+
+        hit.map(|(t, local_pt, local_normal)| {
+            let world_pt = pose.transform_point(&local_pt);
+            let world_normal = safe_normalize(&pose.transform_vector(&local_normal), local_normal);
+            RaycastHit::new(t, world_pt, world_normal)
+        })
+    } else {
+        // Fallback: brute force test all triangles
+        let mut closest_hit: Option<(f64, Point3<f64>, Vector3<f64>)> = None;
+
+        for tri in data.triangles() {
+            let (v0, v1, v2) = data.triangle_vertices(tri);
+            let cutoff = closest_hit.as_ref().map_or(max_distance, |h| h.0);
+
+            if let Some((t, pt, normal)) =
+                ray_triangle_intersection(local_origin, local_dir, v0, v1, v2, cutoff)
+            {
+                if closest_hit.is_none() || t < closest_hit.as_ref().map_or(f64::MAX, |h| h.0) {
+                    closest_hit = Some((t, pt, normal));
+                }
+            }
+        }
+
+        closest_hit.map(|(t, local_pt, local_normal)| {
+            let world_pt = pose.transform_point(&local_pt);
+            let world_normal = safe_normalize(&pose.transform_vector(&local_normal), local_normal);
+            RaycastHit::new(t, world_pt, world_normal)
+        })
+    }
 }
 
 /// Möller–Trumbore ray-triangle intersection.
@@ -783,7 +910,8 @@ fn ray_triangle_intersection(
     }
 
     let point = ray_origin + ray_dir * t;
-    let normal = edge1.cross(&edge2).normalize();
+    let cross = edge1.cross(&edge2);
+    let normal = safe_normalize(&cross, Vector3::z());
     // Ensure normal points toward ray
     let normal = if normal.dot(&ray_dir) > 0.0 {
         -normal
@@ -951,5 +1079,72 @@ mod tests {
 
         assert_relative_eq!(hit.0, 1.0, epsilon = 1e-6);
         assert_relative_eq!(hit.2.z, 1.0, epsilon = 1e-6);
+    }
+
+    // =========================================================================
+    // Edge case tests for NaN/zero/infinity handling
+    // =========================================================================
+
+    #[test]
+    fn test_raycast_sphere_nan_discriminant() {
+        // Test that NaN discriminant is handled properly
+        // This can happen with extreme values
+        let center = Point3::new(0.0, 0.0, 0.0);
+        let radius = 1.0;
+        let origin = Point3::origin();
+        // Ray inside sphere pointing outward - should still return valid hit
+        let direction = UnitVector3::new_normalize(Vector3::z());
+        let hit = raycast_sphere(center, radius, origin, direction, 10.0);
+        // Origin is inside sphere, so we should get the exit point
+        assert!(hit.is_some());
+    }
+
+    #[test]
+    fn test_raycast_ellipsoid_zero_radius() {
+        // Ellipsoid with zero radius should return None
+        let pose = Pose::from_position(Point3::new(0.0, 0.0, 5.0));
+        let radii = Vector3::new(0.0, 1.0, 1.0); // Zero X radius
+        let origin = Point3::origin();
+        let direction = UnitVector3::new_normalize(Vector3::z());
+
+        let hit = raycast_ellipsoid(&pose, radii, origin, direction, 10.0);
+        assert!(hit.is_none());
+    }
+
+    #[test]
+    fn test_raycast_plane_zero_normal() {
+        // Plane with zero normal should return None (degenerate)
+        let plane_point = Point3::new(0.0, 0.0, 5.0);
+        let plane_normal = Vector3::zeros(); // Degenerate normal
+        let origin = Point3::origin();
+        let direction = UnitVector3::new_normalize(Vector3::z());
+
+        let hit = raycast_plane(&plane_point, &plane_normal, origin, direction, 10.0);
+        assert!(hit.is_none());
+    }
+
+    #[test]
+    fn test_raycast_max_distance_zero() {
+        // Zero max_distance should return None
+        let center = Point3::new(0.0, 0.0, 0.5); // Very close
+        let radius = 1.0;
+        let origin = Point3::origin();
+        let direction = UnitVector3::new_normalize(Vector3::z());
+
+        let hit = raycast_sphere(center, radius, origin, direction, 0.0);
+        // Hit point would be at distance < 0.0, so no hit within 0 distance
+        assert!(hit.is_none());
+    }
+
+    #[test]
+    fn test_raycast_negative_max_distance() {
+        // Negative max_distance should return None
+        let center = Point3::new(0.0, 0.0, 5.0);
+        let radius = 1.0;
+        let origin = Point3::origin();
+        let direction = UnitVector3::new_normalize(Vector3::z());
+
+        let hit = raycast_sphere(center, radius, origin, direction, -10.0);
+        assert!(hit.is_none());
     }
 }

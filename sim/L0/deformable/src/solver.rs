@@ -194,7 +194,7 @@ impl XpbdSolver {
     /// * `gravity` - Gravity vector (m/s²)
     /// * `dt` - Time step in seconds
     pub fn step(&mut self, body: &mut dyn DeformableBody, gravity: Vector3<f64>, dt: f64) {
-        // Guard against zero dt
+        // Guard against zero timestep
         let dt = dt.max(1e-10);
         let substep_dt = dt / f64::from(self.config.num_substeps);
 

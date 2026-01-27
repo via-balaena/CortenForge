@@ -354,6 +354,9 @@ impl JointCoupling {
             return 0.0;
         }
 
+        // Guard against zero timestep
+        let dt = dt.max(1e-10);
+
         // Add compliance and damping
         let effective_mass_inv = effective_mass_inv + self.compliance / (dt * dt);
 
@@ -1143,6 +1146,9 @@ impl TendonConstraint {
                 return 0.0;
             }
 
+            // Guard against zero timestep
+            let dt = dt.max(1e-10);
+
             // Constraint impulse: corrects position and velocity errors
             // Guard against zero dt
             let dt = dt.max(1e-10);
@@ -1695,6 +1701,9 @@ impl ConnectConstraint {
 
         let position_error = self.compute_error(&get_pose);
         let velocity_error = self.compute_velocity(&get_velocity, &get_pose);
+
+        // Guard against zero timestep
+        let dt = dt.max(1e-10);
 
         // Apply Baumgarte stabilization
         let bias = self.baumgarte_factor * position_error / dt;
@@ -2258,6 +2267,9 @@ impl JointPositionConstraint {
 
         let position_error = self.compute_error(&get_position);
         let velocity = get_velocity(self.joint);
+
+        // Guard against zero timestep
+        let dt = dt.max(1e-10);
 
         // Baumgarte stabilization
         let bias = self.baumgarte_factor * position_error / dt;

@@ -199,8 +199,13 @@ impl SdfCollisionData {
     /// Create an SDF representing a sphere.
     ///
     /// Useful for testing and as a simple primitive.
+    ///
+    /// # Panics
+    ///
+    /// Panics if resolution is less than 2.
     #[must_use]
     pub fn sphere(center: Point3<f64>, radius: f64, resolution: usize, padding: f64) -> Self {
+        assert!(resolution >= 2, "SDF resolution must be at least 2");
         let extent = radius + padding;
         let cell_size = (2.0 * extent) / (resolution - 1) as f64;
         let origin = Point3::new(center.x - extent, center.y - extent, center.z - extent);
@@ -211,6 +216,10 @@ impl SdfCollisionData {
     }
 
     /// Create an SDF representing a box.
+    ///
+    /// # Panics
+    ///
+    /// Panics if resolution is less than 2.
     #[must_use]
     pub fn box_shape(
         center: Point3<f64>,
@@ -218,6 +227,7 @@ impl SdfCollisionData {
         resolution: usize,
         padding: f64,
     ) -> Self {
+        assert!(resolution >= 2, "SDF resolution must be at least 2");
         let max_extent = half_extents.x.max(half_extents.y).max(half_extents.z) + padding;
         let cell_size = (2.0 * max_extent) / (resolution - 1) as f64;
         let origin = Point3::new(

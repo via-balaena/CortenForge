@@ -21,6 +21,13 @@ use sim_types::BodyId;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// Safe vector normalization with fallback for zero-length vectors.
+#[inline]
+fn safe_normalize(v: Vector3<f64>) -> Option<Vector3<f64>> {
+    let n = v.norm();
+    if n > 1e-10 { Some(v / n) } else { None }
+}
+
 /// An attachment point on a body.
 ///
 /// Attachment points define where a tendon connects to or passes through
@@ -59,9 +66,11 @@ impl AttachmentPoint {
     }
 
     /// Set the tangent direction.
+    ///
+    /// If the tangent has zero length, it will be ignored.
     #[must_use]
     pub fn with_tangent(mut self, tangent: Vector3<f64>) -> Self {
-        self.tangent = Some(tangent.normalize());
+        self.tangent = safe_normalize(tangent);
         self
     }
 

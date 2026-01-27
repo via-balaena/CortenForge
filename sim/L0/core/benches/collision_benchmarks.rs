@@ -23,8 +23,8 @@ use sim_constraint::{
     BodyState, ConstraintSolver, ConstraintSolverConfig, NewtonConstraintSolver,
     NewtonSolverConfig, PGSSolver, PGSSolverConfig, RevoluteJoint,
 };
+use sim_core::Aabb;
 use sim_core::Pose;
-use sim_core::broad_phase::Aabb;
 use sim_core::mesh::{
     TriangleMeshData, closest_point_on_triangle, mesh_mesh_contact, mesh_mesh_deepest_contact,
     triangle_box_contact, triangle_capsule_contact, triangle_sphere_contact,

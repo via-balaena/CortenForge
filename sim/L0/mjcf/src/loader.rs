@@ -12,7 +12,7 @@ use sim_constraint::{
     IntegratedVelocityActuator, IntoBoxedActuator, JointLimits, JointPositionConstraint,
     PneumaticCylinderActuator, TendonConstraint, WeldConstraint,
 };
-use sim_core::{Body, CollisionShape, Joint, World};
+use sim_core::world::{Body, CollisionShape, Joint, World};
 use sim_muscle::{ActivationDynamics, HillMuscle, HillMuscleConfig, MuscleForceCurves};
 use sim_tendon::{
     CableProperties, SpatialTendon,
@@ -2581,7 +2581,8 @@ fn rotation_from_z_axis(z_axis: &Vector3<f64>) -> nalgebra::UnitQuaternion<f64> 
 
     // General case: rotate from z_unit to z_axis
     let axis = z_unit.cross(z_axis);
-    let angle = dot.acos();
+    // Clamp to avoid NaN from floating-point precision issues
+    let angle = dot.clamp(-1.0, 1.0).acos();
     nalgebra::UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle)
 }
 

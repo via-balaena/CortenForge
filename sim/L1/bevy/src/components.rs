@@ -86,20 +86,20 @@ pub enum ShapeType {
 }
 
 impl ShapeType {
-    /// Convert from a sim-core [`CollisionShape`](sim_core::CollisionShape) to `ShapeType`.
+    /// Convert from a sim-core world [`CollisionShape`](sim_core::world::CollisionShape) to `ShapeType`.
     #[must_use]
-    pub fn from_collision_shape(shape: &sim_core::CollisionShape) -> Self {
+    pub fn from_collision_shape(shape: &sim_core::world::CollisionShape) -> Self {
         match shape {
-            sim_core::CollisionShape::Sphere { .. } => Self::Sphere,
-            sim_core::CollisionShape::Box { .. } => Self::Box,
-            sim_core::CollisionShape::Capsule { .. } => Self::Capsule,
-            sim_core::CollisionShape::Cylinder { .. } => Self::Cylinder,
-            sim_core::CollisionShape::Ellipsoid { .. } => Self::Ellipsoid,
-            sim_core::CollisionShape::Plane { .. } => Self::Plane,
-            sim_core::CollisionShape::ConvexMesh { .. } => Self::ConvexMesh,
-            sim_core::CollisionShape::TriangleMesh { .. } => Self::TriangleMesh,
-            sim_core::CollisionShape::HeightField { .. } => Self::HeightField,
-            sim_core::CollisionShape::Sdf { .. } => Self::Sdf,
+            sim_core::world::CollisionShape::Sphere { .. } => Self::Sphere,
+            sim_core::world::CollisionShape::Box { .. } => Self::Box,
+            sim_core::world::CollisionShape::Capsule { .. } => Self::Capsule,
+            sim_core::world::CollisionShape::Cylinder { .. } => Self::Cylinder,
+            sim_core::world::CollisionShape::Ellipsoid { .. } => Self::Ellipsoid,
+            sim_core::world::CollisionShape::Plane { .. } => Self::Plane,
+            sim_core::world::CollisionShape::ConvexMesh { .. } => Self::ConvexMesh,
+            sim_core::world::CollisionShape::TriangleMesh { .. } => Self::TriangleMesh,
+            sim_core::world::CollisionShape::HeightField { .. } => Self::HeightField,
+            sim_core::world::CollisionShape::Sdf { .. } => Self::Sdf,
         }
     }
 }

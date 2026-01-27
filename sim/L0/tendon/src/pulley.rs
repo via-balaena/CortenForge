@@ -26,6 +26,13 @@
 use nalgebra::{Isometry3, Point3, Vector3};
 use sim_types::BodyId;
 
+/// Safe axis normalization with Z fallback.
+#[inline]
+fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
+    let n = v.norm();
+    if n > 1e-10 { v / n } else { Vector3::z() }
+}
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -152,7 +159,7 @@ impl Pulley {
             config: PulleyConfig::new(radius),
             pulley_type: PulleyType::Fixed,
             position,
-            axis: axis.normalize(),
+            axis: safe_normalize_axis(axis),
         }
     }
 
@@ -163,7 +170,7 @@ impl Pulley {
             config: PulleyConfig::new(radius),
             pulley_type: PulleyType::Moving(body),
             position: local_pos,
-            axis: axis.normalize(),
+            axis: safe_normalize_axis(axis),
         }
     }
 

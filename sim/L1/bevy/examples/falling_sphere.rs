@@ -12,7 +12,8 @@
 
 use bevy::prelude::*;
 use sim_bevy::prelude::*;
-use sim_core::{CollisionShape, Stepper, World};
+use sim_core::world::{CollisionShape, World};
+use sim_core::Stepper;
 use sim_types::{MassProperties, Pose, RigidBodyState};
 
 fn main() {

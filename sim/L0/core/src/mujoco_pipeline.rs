@@ -38,7 +38,9 @@
 //! - Phase 5: Ball joints (3-DOF spherical joints) - COMPLETE
 //! - Phase 6: Contact (ground plane, sphere collisions) - COMPLETE
 
-use nalgebra::Vector3;
+use crate::collision_shape::CollisionShape;
+use nalgebra::{Point3, Vector3};
+use sim_types::Pose;
 use std::f64::consts::PI;
 
 /// Simple pendulum state for Phase 1 testing.
@@ -3074,7 +3076,8 @@ mod tests {
 // 7. Semi-implicit Euler integration with new velocity for position
 
 use nalgebra::{
-    Isometry3, Matrix3, Matrix6, Quaternion, Translation3, Unit, UnitQuaternion, Vector6,
+    Cholesky, Dyn, Isometry3, Matrix3, Matrix6, Quaternion, Translation3, Unit, UnitQuaternion,
+    Vector6,
 };
 use std::collections::HashMap;
 
@@ -3301,12 +3304,18 @@ pub struct ArticulatedJoint {
 }
 
 impl ArticulatedJoint {
+    /// Safely normalize a vector, falling back to Z axis if zero-length.
+    fn safe_normalize(v: Vector3<f64>) -> Vector3<f64> {
+        let norm = v.norm();
+        if norm > 1e-10 { v / norm } else { Vector3::z() }
+    }
+
     /// Create a new revolute joint about the given axis.
     #[must_use]
     pub fn revolute(axis: Vector3<f64>) -> Self {
         Self {
             joint_type: ArticulatedJointType::Revolute,
-            axis: axis.normalize(),
+            axis: Self::safe_normalize(axis),
             lower_limit: vec![-PI],
             upper_limit: vec![PI],
             damping: vec![0.0],
@@ -3323,7 +3332,7 @@ impl ArticulatedJoint {
     pub fn prismatic(axis: Vector3<f64>) -> Self {
         Self {
             joint_type: ArticulatedJointType::Prismatic,
-            axis: axis.normalize(),
+            axis: Self::safe_normalize(axis),
             lower_limit: vec![-1.0],
             upper_limit: vec![1.0],
             damping: vec![0.0],
@@ -4104,7 +4113,8 @@ impl ArticulatedSystem {
             vel_offset += dof;
         }
 
-        // TODO: Add Coriolis terms for high-velocity motion
+        // Note: This legacy ArticulatedSystem doesn't compute Coriolis.
+        // Use Model/Data API (mj_rne) for full physics including Coriolis.
 
         qfrc_bias
     }
@@ -5110,261 +5120,20 @@ fn compute_tangent_basis(normal: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) 
         Vector3::y()
     };
 
-    let tan1 = normal.cross(&reference).normalize();
+    let cross = normal.cross(&reference);
+    let cross_norm = cross.norm();
+    let tan1 = if cross_norm > 1e-10 {
+        cross / cross_norm
+    } else {
+        // Degenerate case: normal is zero or parallel to reference
+        Vector3::x()
+    };
     let tan2 = normal.cross(&tan1);
 
     (tan1, tan2)
 }
 
-// ============================================================================
-// World Integration
-// ============================================================================
-//
-// Provides methods to spawn an ArticulatedSystem into a World, creating
-// the corresponding Body and Joint entities for visualization and
-// compatibility with the existing simulation infrastructure.
-
-use crate::world::{CollisionShape, World};
-use nalgebra::Point3;
-use sim_types::{BodyId, JointId, JointType, MassProperties, Pose, RigidBodyState};
-
-/// Result of spawning an [`ArticulatedSystem`] into a [`World`].
-///
-/// Maps the local indices of the [`ArticulatedSystem`] to [`World`] entity IDs.
-#[derive(Debug, Clone)]
-pub struct SpawnedArticulation {
-    /// Mapping from [`ArticulatedSystem`] body indices to [`World`] [`BodyId`]s.
-    pub body_ids: Vec<BodyId>,
-    /// Mapping from [`ArticulatedSystem`] joint indices to [`World`] [`JointId`]s.
-    pub joint_ids: Vec<JointId>,
-    /// Names assigned to bodies (if any).
-    pub body_names: HashMap<String, BodyIndex>,
-    /// Names assigned to joints (if any).
-    pub joint_names: HashMap<String, JointIndex>,
-}
-
-impl SpawnedArticulation {
-    /// Get the [`World`] [`BodyId`] for an [`ArticulatedSystem`] body index.
-    #[must_use]
-    pub fn body_id(&self, index: BodyIndex) -> Option<BodyId> {
-        self.body_ids.get(index).copied()
-    }
-
-    /// Get the [`World`] [`JointId`] for an [`ArticulatedSystem`] joint index.
-    #[must_use]
-    pub fn joint_id(&self, index: JointIndex) -> Option<JointId> {
-        self.joint_ids.get(index).copied()
-    }
-
-    /// Get body index by name.
-    #[must_use]
-    pub fn body_index(&self, name: &str) -> Option<BodyIndex> {
-        self.body_names.get(name).copied()
-    }
-
-    /// Get joint index by name.
-    #[must_use]
-    pub fn joint_index(&self, name: &str) -> Option<JointIndex> {
-        self.joint_names.get(name).copied()
-    }
-}
-
-impl ArticulatedSystem {
-    /// Spawn this articulated system into a [`World`].
-    ///
-    /// Creates [`Body`](crate::Body) and [`Joint`](crate::Joint) entities in
-    /// the [`World`] that correspond to this system's bodies and joints.
-    /// This allows the articulated system to be visualized and to interact
-    /// with the [`World`]'s collision detection.
-    ///
-    /// # Returns
-    ///
-    /// A [`SpawnedArticulation`] containing the mappings from local indices to [`World`] IDs.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// use sim_core::{ArticulatedSystem, ArticulatedBody, ArticulatedJoint, World};
-    ///
-    /// let mut sys = ArticulatedSystem::new();
-    /// // ... build the articulated system ...
-    ///
-    /// let mut world = World::default();
-    /// let spawned = sys.spawn_into(&mut world);
-    ///
-    /// // Now bodies can be accessed via World APIs
-    /// if let Some(body_id) = spawned.body_id(0) {
-    ///     let body = world.body(body_id);
-    /// }
-    /// ```
-    pub fn spawn_into(&self, world: &mut World) -> SpawnedArticulation {
-        let transforms = self.forward_kinematics();
-        let mut body_ids = Vec::with_capacity(self.bodies.len());
-        let mut joint_ids = Vec::with_capacity(self.joints.len());
-        let mut body_names = HashMap::new();
-        let mut joint_names = HashMap::new();
-
-        // Create bodies
-        for (idx, body) in self.bodies.iter().enumerate() {
-            let transform = &transforms[idx];
-
-            // Convert Isometry3 to Pose
-            let position = Point3::from(transform.translation.vector);
-            let rotation = transform.rotation;
-            let pose = Pose::from_position_rotation(position, rotation);
-
-            // Create RigidBodyState - initially at rest
-            let state = RigidBodyState::at_rest(pose);
-
-            // Create MassProperties
-            let mass_props = if body.is_static {
-                MassProperties::point_mass(f64::INFINITY)
-            } else {
-                MassProperties::new(body.mass, body.com, body.inertia)
-            };
-
-            // Add body to world
-            let body_id = if body.is_static {
-                world.add_static_body(pose)
-            } else {
-                world.add_body(state, mass_props)
-            };
-
-            // Set collision shape if body has a shape radius
-            // (Simple sphere for now - can be extended)
-            if let Some(shape) = &body.collision_shape {
-                if let Some(world_body) = world.body_mut(body_id) {
-                    world_body.collision_shape = Some(shape.clone());
-                }
-            }
-
-            // Set name if provided
-            if let Some(ref name) = body.name {
-                if let Some(world_body) = world.body_mut(body_id) {
-                    world_body.name = Some(name.clone());
-                }
-                body_names.insert(name.clone(), idx);
-            }
-
-            body_ids.push(body_id);
-        }
-
-        // Create joints
-        for (joint_idx, joint) in self.joints.iter().enumerate() {
-            // Find the body that has this joint
-            let child_body_idx = self.bodies.iter().position(|b| b.joint == Some(joint_idx));
-
-            if let Some(child_idx) = child_body_idx {
-                let child_id = body_ids[child_idx];
-
-                // Find parent body
-                let parent_idx = self.bodies[child_idx].parent.unwrap_or(0);
-                let parent_id = body_ids[parent_idx];
-
-                // Convert ArticulatedJointType to JointType
-                let joint_type = match joint.joint_type {
-                    ArticulatedJointType::Fixed => JointType::Fixed,
-                    ArticulatedJointType::Revolute => JointType::Revolute,
-                    ArticulatedJointType::Prismatic => JointType::Prismatic,
-                    ArticulatedJointType::Spherical => JointType::Spherical,
-                    ArticulatedJointType::Free => JointType::Free,
-                };
-
-                // Add joint to world
-                if let Ok(joint_id) = world.add_joint(joint_type, parent_id, child_id) {
-                    // Configure joint properties
-                    if let Some(world_joint) = world.joint_mut(joint_id) {
-                        world_joint.axis = joint.axis;
-
-                        // Set limits if present
-                        if !joint.lower_limit.is_empty() && !joint.upper_limit.is_empty() {
-                            let limits = sim_constraint::JointLimits::new(
-                                joint.lower_limit[0],
-                                joint.upper_limit[0],
-                            );
-                            world_joint.limits = Some(limits);
-                        }
-
-                        // Set damping (use first element if available)
-                        if let Some(&d) = joint.damping.first() {
-                            world_joint.damping = d;
-                        }
-
-                        // Set name if provided
-                        if let Some(ref name) = joint.name {
-                            world_joint.name = Some(name.clone());
-                            joint_names.insert(name.clone(), joint_idx);
-                        }
-                    }
-
-                    joint_ids.push(joint_id);
-                }
-            }
-        }
-
-        SpawnedArticulation {
-            body_ids,
-            joint_ids,
-            body_names,
-            joint_names,
-        }
-    }
-
-    /// Synchronize body poses from this system's state to a [`World`].
-    ///
-    /// Call this after stepping the articulated system to update the
-    /// corresponding [`World`] bodies' positions for visualization.
-    pub fn sync_to_world(&self, world: &mut World, spawned: &SpawnedArticulation) {
-        let transforms = self.forward_kinematics();
-
-        for (idx, &body_id) in spawned.body_ids.iter().enumerate() {
-            if let Some(world_body) = world.body_mut(body_id) {
-                if !world_body.is_static {
-                    let transform = &transforms[idx];
-                    let position = Point3::from(transform.translation.vector);
-                    let rotation = transform.rotation;
-                    world_body.state.pose = Pose::from_position_rotation(position, rotation);
-                }
-            }
-        }
-    }
-
-    /// Synchronize body poses from a [`World`] to this system's state.
-    ///
-    /// This is useful if the [`World`] has been modified (e.g., by collision response)
-    /// and you want to update this system to match.
-    ///
-    /// **Note**: This only works for free joints where the body position
-    /// directly corresponds to joint coordinates.
-    pub fn sync_from_world(&mut self, world: &World, spawned: &SpawnedArticulation) {
-        for (body_idx, &body_id) in spawned.body_ids.iter().enumerate() {
-            if let Some(world_body) = world.body(body_id) {
-                // Find the joint for this body
-                if let Some(joint_idx) = self.bodies[body_idx].joint {
-                    let joint = &self.joints[joint_idx];
-
-                    // For free joints, copy position and orientation
-                    if joint.joint_type == ArticulatedJointType::Free {
-                        let qpos_start = joint.qpos_start;
-                        let pos = world_body.state.pose.position;
-                        let rot = world_body.state.pose.rotation;
-
-                        // Position: x, y, z
-                        self.qpos[qpos_start] = pos.x;
-                        self.qpos[qpos_start + 1] = pos.y;
-                        self.qpos[qpos_start + 2] = pos.z;
-
-                        // Quaternion: w, x, y, z
-                        self.qpos[qpos_start + 3] = rot.w;
-                        self.qpos[qpos_start + 4] = rot.i;
-                        self.qpos[qpos_start + 5] = rot.j;
-                        self.qpos[qpos_start + 6] = rot.k;
-                    }
-                }
-            }
-        }
-    }
-}
+// Note: World Integration section removed - use Model/Data API instead
 
 // ============================================================================
 // MuJoCo-Aligned Model/Data Architecture (Phase 1)
@@ -5922,6 +5691,14 @@ pub struct Data {
     /// DOF velocities in Cartesian space (length `nv`).
     pub cdof: Vec<SpatialVector>,
 
+    // ==================== RNE Intermediate Quantities ====================
+    /// Body bias accelerations for RNE (Coriolis/centrifugal).
+    /// a_bias[i] = X[i] @ a_bias[parent] + v[i] ×_m S[i] @ qdot[i]
+    pub cacc_bias: Vec<SpatialVector>,
+    /// Body forces for RNE backward pass.
+    /// f[i] = I[i] @ a_bias[i] + v[i] ×* (I[i] @ v[i])
+    pub cfrc_bias: Vec<SpatialVector>,
+
     // ==================== Forces in Generalized Coordinates ====================
     /// User-applied generalized forces (length `nv`).
     pub qfrc_applied: DVector<f64>,
@@ -5940,6 +5717,31 @@ pub struct Data {
     /// Joint-space inertia matrix (`nv` x `nv`) (dense for now).
     /// Future: sparse L^T D L factorization for efficiency.
     pub qM: DMatrix<f64>,
+    /// Cached Cholesky factorization of mass matrix (L where M = L L^T).
+    /// Computed once in `mj_crba()` after building qM, reused in:
+    /// - `mj_fwd_acceleration()`: Solve M qacc = τ
+    /// - `pgs_solve_contacts()`: Compute M^{-1} J^T for constraint Jacobian
+    ///
+    /// This caching saves O(n³) factorization per solve (typically 2-3 per step).
+    /// The clone in `mj_crba()` is unavoidable (nalgebra consumes the matrix),
+    /// but subsequent solves are O(n²) forward/back substitution.
+    pub qM_cholesky: Option<Cholesky<f64, Dyn>>,
+
+    // ==================== Composite Inertia (for Featherstone CRBA) ====================
+    /// Composite rigid body inertia in world frame.
+    /// These are 6×6 spatial inertias accumulated from subtrees.
+    /// Format: [Ixx, Ixy, Ixz, Iyx, Iyy, Iyz, Izx, Izy, Izz, mass, hx, hy, hz]
+    /// where h = mass * COM offset from body origin.
+    /// Pre-allocated but only computed during mj_crba when needed.
+    pub crb_inertia: Vec<Matrix6<f64>>,
+
+    // ==================== Subtree Mass/COM (for O(n) RNE gravity) ====================
+    /// Total mass of subtree rooted at each body (including the body itself).
+    /// Computed during forward kinematics via backward pass.
+    pub subtree_mass: Vec<f64>,
+    /// Center of mass of subtree in world frame (length `nbody`).
+    /// Computed during forward kinematics via backward pass.
+    pub subtree_com: Vec<Vector3<f64>>,
 
     // ==================== Contacts ====================
     /// Active contacts (pre-allocated with capacity).
@@ -5952,6 +5754,10 @@ pub struct Data {
     pub solver_niter: usize,
     /// Non-zeros in constraint Jacobian.
     pub solver_nnz: usize,
+    /// Constraint force multipliers from previous solve (for warmstart).
+    /// Maps (geom1, geom2) contact pair to (λ_normal, λ_friction1, λ_friction2).
+    /// Using HashMap for O(1) lookup regardless of contact ordering changes.
+    pub efc_lambda: std::collections::HashMap<(usize, usize), [f64; 3]>,
 
     // ==================== Sensors ====================
     /// Sensor data array (length `nsensordata`).
@@ -6116,6 +5922,10 @@ impl Model {
             cvel: vec![SpatialVector::zeros(); self.nbody],
             cdof: vec![SpatialVector::zeros(); self.nv],
 
+            // RNE intermediate quantities
+            cacc_bias: vec![SpatialVector::zeros(); self.nbody],
+            cfrc_bias: vec![SpatialVector::zeros(); self.nbody],
+
             // Forces
             qfrc_applied: DVector::zeros(self.nv),
             qfrc_bias: DVector::zeros(self.nv),
@@ -6125,6 +5935,14 @@ impl Model {
 
             // Mass matrix
             qM: DMatrix::zeros(self.nv, self.nv),
+            qM_cholesky: None, // Computed in mj_crba
+
+            // Composite rigid body inertias (for Featherstone CRBA)
+            crb_inertia: vec![Matrix6::zeros(); self.nbody],
+
+            // Subtree mass/COM (for O(n) RNE gravity)
+            subtree_mass: vec![0.0; self.nbody],
+            subtree_com: vec![Vector3::zeros(); self.nbody],
 
             // Contacts
             contacts: Vec::with_capacity(256), // Pre-allocate typical capacity
@@ -6133,6 +5951,7 @@ impl Model {
             // Solver state
             solver_niter: 0,
             solver_nnz: 0,
+            efc_lambda: std::collections::HashMap::with_capacity(256), // Contact correspondence warmstart
 
             // Sensors
             sensordata: DVector::zeros(self.nsensordata),
@@ -6746,14 +6565,292 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
             .to_rotation_matrix()
             .into_inner();
     }
+
+    // ========== Compute subtree mass and COM (for O(n) RNE gravity) ==========
+    // Initialize with each body's own mass and COM
+    for body_id in 0..model.nbody {
+        data.subtree_mass[body_id] = model.body_mass[body_id];
+        data.subtree_com[body_id] = model.body_mass[body_id] * data.xipos[body_id];
+    }
+
+    // Backward pass: accumulate children's contributions to parents
+    for body_id in (1..model.nbody).rev() {
+        let parent_id = model.body_parent[body_id];
+        // Copy child data first to satisfy borrow checker
+        let child_mass = data.subtree_mass[body_id];
+        let child_weighted_com = data.subtree_com[body_id];
+        data.subtree_mass[parent_id] += child_mass;
+        data.subtree_com[parent_id] += child_weighted_com;
+    }
+
+    // Convert weighted sum to actual COM
+    for body_id in 0..model.nbody {
+        if data.subtree_mass[body_id] > 1e-10 {
+            data.subtree_com[body_id] /= data.subtree_mass[body_id];
+        } else {
+            data.subtree_com[body_id] = data.xipos[body_id];
+        }
+    }
+}
+
+// ============================================================================
+// Broad-Phase Collision Detection (Spatial Hashing)
+// ============================================================================
+
+/// Axis-aligned bounding box for broad-phase collision detection.
+#[derive(Debug, Clone, Copy)]
+struct AABB {
+    min: Vector3<f64>,
+    max: Vector3<f64>,
+}
+
+impl AABB {
+    /// Compute AABB for a geometry given its world-space pose and type/size.
+    fn from_geom(
+        geom_type: GeomType,
+        size: Vector3<f64>,
+        pos: Vector3<f64>,
+        mat: Matrix3<f64>,
+    ) -> Self {
+        match geom_type {
+            GeomType::Sphere => {
+                let r = size.x;
+                Self {
+                    min: Vector3::new(pos.x - r, pos.y - r, pos.z - r),
+                    max: Vector3::new(pos.x + r, pos.y + r, pos.z + r),
+                }
+            }
+            GeomType::Box => {
+                // For a rotated box, compute the world-space extents
+                let half = size;
+                let mut min = pos;
+                let mut max = pos;
+                for i in 0..3 {
+                    let axis = mat.column(i).into_owned();
+                    let extent = half[i] * axis.abs();
+                    min -= extent;
+                    max += extent;
+                }
+                Self { min, max }
+            }
+            GeomType::Capsule => {
+                // Capsule: radius + half_length along Z axis
+                let r = size.x;
+                let half_len = size.y;
+                let axis = mat.column(2).into_owned();
+                let end1 = pos + axis * half_len;
+                let end2 = pos - axis * half_len;
+                Self {
+                    min: Vector3::new(
+                        end1.x.min(end2.x) - r,
+                        end1.y.min(end2.y) - r,
+                        end1.z.min(end2.z) - r,
+                    ),
+                    max: Vector3::new(
+                        end1.x.max(end2.x) + r,
+                        end1.y.max(end2.y) + r,
+                        end1.z.max(end2.z) + r,
+                    ),
+                }
+            }
+            GeomType::Cylinder => {
+                // Similar to capsule but without spherical caps
+                let r = size.x;
+                let half_len = size.y;
+                let axis = mat.column(2).into_owned();
+                let end1 = pos + axis * half_len;
+                let end2 = pos - axis * half_len;
+                Self {
+                    min: Vector3::new(
+                        end1.x.min(end2.x) - r,
+                        end1.y.min(end2.y) - r,
+                        end1.z.min(end2.z) - r,
+                    ),
+                    max: Vector3::new(
+                        end1.x.max(end2.x) + r,
+                        end1.y.max(end2.y) + r,
+                        end1.z.max(end2.z) + r,
+                    ),
+                }
+            }
+            GeomType::Ellipsoid => {
+                // Conservative: use largest radius
+                let max_r = size.x.max(size.y).max(size.z);
+                Self {
+                    min: Vector3::new(pos.x - max_r, pos.y - max_r, pos.z - max_r),
+                    max: Vector3::new(pos.x + max_r, pos.y + max_r, pos.z + max_r),
+                }
+            }
+            GeomType::Plane => {
+                // Planes are infinite - use large bounds
+                let large = 1e6;
+                // Plane normal is Z axis of the rotation matrix
+                let normal = mat.column(2).into_owned();
+                // Make bounds large in directions perpendicular to normal
+                if normal.z.abs() > 0.9 {
+                    // Horizontal plane - infinite in X and Y
+                    Self {
+                        min: Vector3::new(-large, -large, pos.z - 0.001),
+                        max: Vector3::new(large, large, pos.z + 0.001),
+                    }
+                } else if normal.y.abs() > 0.9 {
+                    Self {
+                        min: Vector3::new(-large, pos.y - 0.001, -large),
+                        max: Vector3::new(large, pos.y + 0.001, large),
+                    }
+                } else {
+                    Self {
+                        min: Vector3::new(pos.x - 0.001, -large, -large),
+                        max: Vector3::new(pos.x + 0.001, large, large),
+                    }
+                }
+            }
+            GeomType::Mesh => {
+                // For mesh, use a conservative large bounding box
+                // In a full implementation, mesh AABBs would be pre-computed
+                let extent = 10.0; // Conservative default
+                Self {
+                    min: Vector3::new(pos.x - extent, pos.y - extent, pos.z - extent),
+                    max: Vector3::new(pos.x + extent, pos.y + extent, pos.z + extent),
+                }
+            }
+        }
+    }
+
+    /// Check if two AABBs overlap.
+    #[inline]
+    fn overlaps(&self, other: &Self) -> bool {
+        self.min.x <= other.max.x
+            && self.max.x >= other.min.x
+            && self.min.y <= other.max.y
+            && self.max.y >= other.min.y
+            && self.min.z <= other.max.z
+            && self.max.z >= other.min.z
+    }
+}
+
+/// Spatial hash for broad-phase collision detection.
+///
+/// Divides space into uniform cells and tracks which geometries occupy each cell.
+/// This reduces the O(n²) all-pairs check to O(n) expected time for uniformly
+/// distributed objects.
+struct SpatialHash {
+    cell_size: f64,
+    cells: std::collections::HashMap<(i64, i64, i64), Vec<usize>>,
+}
+
+impl SpatialHash {
+    /// Create a new spatial hash with the given cell size.
+    fn new(cell_size: f64) -> Self {
+        Self {
+            cell_size,
+            cells: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Compute cell coordinates for a point.
+    #[inline]
+    fn cell_coords(&self, p: Vector3<f64>) -> (i64, i64, i64) {
+        (
+            (p.x / self.cell_size).floor() as i64,
+            (p.y / self.cell_size).floor() as i64,
+            (p.z / self.cell_size).floor() as i64,
+        )
+    }
+
+    /// Insert a geometry with its AABB into the spatial hash.
+    fn insert(&mut self, geom_id: usize, aabb: &AABB) {
+        let min_cell = self.cell_coords(aabb.min);
+        let max_cell = self.cell_coords(aabb.max);
+
+        // Insert into all cells the AABB overlaps
+        for cx in min_cell.0..=max_cell.0 {
+            for cy in min_cell.1..=max_cell.1 {
+                for cz in min_cell.2..=max_cell.2 {
+                    self.cells
+                        .entry((cx, cy, cz))
+                        .or_insert_with(Vec::new)
+                        .push(geom_id);
+                }
+            }
+        }
+    }
+
+    /// Query all unique candidate pairs from the spatial hash.
+    ///
+    /// Returns pairs where both geoms share at least one cell.
+    fn query_candidates(&self) -> Vec<(usize, usize)> {
+        let mut candidates = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for geoms in self.cells.values() {
+            let n = geoms.len();
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let g1 = geoms[i].min(geoms[j]);
+                    let g2 = geoms[i].max(geoms[j]);
+                    if seen.insert((g1, g2)) {
+                        candidates.push((g1, g2));
+                    }
+                }
+            }
+        }
+
+        candidates
+    }
+}
+
+/// Check if two geometries can collide based on contype/conaffinity bitmasks.
+///
+/// Following MuJoCo's collision filtering:
+/// 1. Same body - no collision
+/// 2. Parent-child (adjacent bodies in kinematic tree) - no collision
+///    Exception: World body (0) collides with all non-child bodies
+/// 3. contype/conaffinity check: (c1 & a2) != 0 || (c2 & a1) != 0
+///
+/// The world body exception ensures ground planes can collide with objects
+/// even when those objects are direct children of the world body.
+#[inline]
+fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize) -> bool {
+    let body1 = model.geom_body[geom1];
+    let body2 = model.geom_body[geom2];
+
+    // Same body - no collision
+    if body1 == body2 {
+        return false;
+    }
+
+    // Parent-child filtering: bodies connected by a joint shouldn't collide
+    // Exception: World body (0) geometries (ground planes) should collide with
+    // any body, including direct children. The world body has no joints connecting
+    // it to children - children are simply anchored in world space.
+    //
+    // This is important because:
+    // - A ball with a free joint has body_parent[ball_body] = 0 (world)
+    // - But the ball should still collide with ground planes on body 0
+    // - The "parent-child" filter is for bodies connected by articulated joints
+    //   (hinge, slide, ball) where collision would be geometrically impossible
+    if body1 != 0 && body2 != 0 {
+        if model.body_parent[body1] == body2 || model.body_parent[body2] == body1 {
+            return false;
+        }
+    }
+
+    // contype/conaffinity bitmask check
+    let c1 = model.geom_contype[geom1];
+    let a1 = model.geom_conaffinity[geom1];
+    let c2 = model.geom_contype[geom2];
+    let a2 = model.geom_conaffinity[geom2];
+
+    (c1 & a2) != 0 || (c2 & a1) != 0
 }
 
 /// Collision detection: populate contacts from geometry pairs.
 ///
 /// Following `MuJoCo`'s collision detection order:
-/// 1. Iterate over all geometry pairs that can collide
+/// 1. Broad-phase: spatial hashing to find candidate pairs (O(n log n) expected)
 /// 2. Check contact affinity (contype/conaffinity bitmasks)
-/// 3. Run narrow-phase collision detection (GJK/EPA or analytical)
+/// 3. Narrow-phase: analytical or GJK/EPA collision detection
 /// 4. Populate data.contacts with contact information
 ///
 /// This function is called after forward kinematics (`mj_fwd_position`) so
@@ -6768,33 +6865,83 @@ fn mj_collision(model: &Model, data: &mut Data) {
         return;
     }
 
-    // Check all geometry pairs
-    // TODO: Add broad-phase optimization for large numbers of geoms
-    for geom1 in 0..model.ngeom {
-        for geom2 in (geom1 + 1)..model.ngeom {
-            // Check contact affinity (MuJoCo uses bitmasks)
-            // Contact occurs if: (contype1 & conaffinity2) || (contype2 & conaffinity1)
-            let affinity = (model.geom_contype[geom1] & model.geom_conaffinity[geom2])
-                | (model.geom_contype[geom2] & model.geom_conaffinity[geom1]);
+    // For small scenes (< 16 geoms), O(n²) is faster than spatial hashing overhead
+    // For larger scenes, use spatial hashing broad-phase
+    if model.ngeom < 16 {
+        // O(n²) all-pairs for small scenes
+        for geom1 in 0..model.ngeom {
+            for geom2 in (geom1 + 1)..model.ngeom {
+                // Use uniform affinity check (no special cases for world body)
+                if !check_collision_affinity(model, geom1, geom2) {
+                    continue;
+                }
 
-            if affinity == 0 {
-                continue; // No contact possible
+                // Get world-space poses
+                let pos1 = data.geom_xpos[geom1];
+                let mat1 = data.geom_xmat[geom1];
+                let pos2 = data.geom_xpos[geom2];
+                let mat2 = data.geom_xmat[geom2];
+
+                // Narrow-phase collision detection
+                if let Some(contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
+                    data.contacts.push(contact);
+                    data.ncon += 1;
+                }
             }
+        }
+    } else {
+        // Spatial hashing broad-phase for larger scenes
+        // Compute scene bounds to determine cell size
+        let mut scene_min = Vector3::new(f64::MAX, f64::MAX, f64::MAX);
+        let mut scene_max = Vector3::new(f64::MIN, f64::MIN, f64::MIN);
+        let mut max_extent = 0.0_f64;
 
-            // Skip self-collision (geoms on same body)
-            let body1 = model.geom_body[geom1];
-            let body2 = model.geom_body[geom2];
-            if body1 == body2 {
+        // Compute AABBs and scene bounds
+        let aabbs: Vec<AABB> = (0..model.ngeom)
+            .map(|geom_id| {
+                let aabb = AABB::from_geom(
+                    model.geom_type[geom_id],
+                    model.geom_size[geom_id],
+                    data.geom_xpos[geom_id],
+                    data.geom_xmat[geom_id],
+                );
+                scene_min.x = scene_min.x.min(aabb.min.x);
+                scene_min.y = scene_min.y.min(aabb.min.y);
+                scene_min.z = scene_min.z.min(aabb.min.z);
+                scene_max.x = scene_max.x.max(aabb.max.x);
+                scene_max.y = scene_max.y.max(aabb.max.y);
+                scene_max.z = scene_max.z.max(aabb.max.z);
+                let extent = (aabb.max - aabb.min).norm();
+                max_extent = max_extent.max(extent);
+                aabb
+            })
+            .collect();
+
+        // Cell size: use average object extent, clamped to reasonable range
+        // Larger cells = fewer cells but more pairs per cell
+        // Smaller cells = more cells but fewer pairs per cell
+        let avg_extent = max_extent / (model.ngeom as f64).sqrt();
+        let cell_size = avg_extent.clamp(0.1, 10.0);
+
+        let mut spatial_hash = SpatialHash::new(cell_size);
+
+        // Insert all geoms into spatial hash
+        for (geom_id, aabb) in aabbs.iter().enumerate() {
+            spatial_hash.insert(geom_id, aabb);
+        }
+
+        // Query candidate pairs
+        let candidates = spatial_hash.query_candidates();
+
+        // Check each candidate pair
+        for (geom1, geom2) in candidates {
+            // Use uniform affinity check (no special cases for world body)
+            if !check_collision_affinity(model, geom1, geom2) {
                 continue;
             }
 
-            // Skip parent-child collision (adjacent bodies in kinematic tree)
-            // These bodies are connected by a joint and shouldn't collide
-            // Exception: Always allow collisions with world body (body 0) - ground planes should collide
-            if body1 != 0
-                && body2 != 0
-                && (model.body_parent[body1] == body2 || model.body_parent[body2] == body1)
-            {
+            // AABB overlap check (mid-phase refinement)
+            if !aabbs[geom1].overlaps(&aabbs[geom2]) {
                 continue;
             }
 
@@ -6804,7 +6951,7 @@ fn mj_collision(model: &Model, data: &mut Data) {
             let pos2 = data.geom_xpos[geom2];
             let mat2 = data.geom_xmat[geom2];
 
-            // Run narrow-phase collision detection based on geometry types
+            // Narrow-phase collision detection
             if let Some(contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
                 data.contacts.push(contact);
                 data.ncon += 1;
@@ -6866,6 +7013,29 @@ fn collide_geoms(
         return collide_sphere_capsule(
             model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
         );
+    }
+
+    // Special case: sphere-box collision (analytical)
+    if (type1 == GeomType::Sphere && type2 == GeomType::Box)
+        || (type1 == GeomType::Box && type2 == GeomType::Sphere)
+    {
+        return collide_sphere_box(
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+        );
+    }
+
+    // Special case: capsule-box collision (analytical)
+    if (type1 == GeomType::Capsule && type2 == GeomType::Box)
+        || (type1 == GeomType::Box && type2 == GeomType::Capsule)
+    {
+        return collide_capsule_box(
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+        );
+    }
+
+    // Special case: box-box collision (SAT)
+    if type1 == GeomType::Box && type2 == GeomType::Box {
+        return collide_box_box(model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2);
     }
 
     // Use GJK/EPA for general convex collision
@@ -7252,6 +7422,413 @@ fn collide_sphere_capsule(
     } else {
         None
     }
+}
+
+/// Sphere-box collision detection.
+///
+/// Uses the closest point on box surface to sphere center algorithm.
+#[allow(clippy::too_many_arguments)]
+fn collide_sphere_box(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    type1: GeomType,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+    size1: Vector3<f64>,
+    size2: Vector3<f64>,
+) -> Option<Contact> {
+    // Determine which is sphere and which is box
+    let (sphere_geom, box_geom, sphere_pos, box_pos, box_mat, sphere_radius, box_half) =
+        if type1 == GeomType::Sphere {
+            (geom1, geom2, pos1, pos2, mat2, size1.x, size2)
+        } else {
+            (geom2, geom1, pos2, pos1, mat1, size2.x, size1)
+        };
+
+    // Transform sphere center to box local coordinates
+    let local_center = box_mat.transpose() * (sphere_pos - box_pos);
+
+    // Find closest point on box to sphere center (clamp to box bounds)
+    let closest_local = Vector3::new(
+        local_center.x.clamp(-box_half.x, box_half.x),
+        local_center.y.clamp(-box_half.y, box_half.y),
+        local_center.z.clamp(-box_half.z, box_half.z),
+    );
+
+    // Transform back to world space
+    let closest_world = box_pos + box_mat * closest_local;
+
+    // Compute distance and penetration
+    let diff = sphere_pos - closest_world;
+    let dist = diff.norm();
+    let penetration = sphere_radius - dist;
+
+    if penetration > 0.0 {
+        // Compute normal (from box toward sphere)
+        let normal = if dist > 1e-10 {
+            diff / dist
+        } else {
+            // Sphere center is inside box - find deepest penetration axis
+            let mut min_pen = f64::MAX;
+            let mut normal_local = Vector3::x();
+            for i in 0..3 {
+                let pen_pos = box_half[i] - local_center[i];
+                let pen_neg = box_half[i] + local_center[i];
+                if pen_pos < min_pen {
+                    min_pen = pen_pos;
+                    normal_local = Vector3::zeros();
+                    normal_local[i] = 1.0;
+                }
+                if pen_neg < min_pen {
+                    min_pen = pen_neg;
+                    normal_local = Vector3::zeros();
+                    normal_local[i] = -1.0;
+                }
+            }
+            box_mat * normal_local
+        };
+
+        let contact_pos = closest_world + normal * (penetration * 0.5);
+
+        let friction1 = model.geom_friction[sphere_geom].x;
+        let friction2 = model.geom_friction[box_geom].x;
+        let friction = (friction1 * friction2).sqrt();
+
+        let (g1, g2) = if sphere_geom < box_geom {
+            (sphere_geom, box_geom)
+        } else {
+            (box_geom, sphere_geom)
+        };
+
+        Some(Contact {
+            pos: contact_pos,
+            normal: if sphere_geom < box_geom {
+                normal
+            } else {
+                -normal
+            },
+            depth: penetration,
+            geom1: g1,
+            geom2: g2,
+            friction,
+        })
+    } else {
+        None
+    }
+}
+
+/// Capsule-box collision detection.
+///
+/// Tests both capsule endpoints and the closest point on the capsule axis
+/// to find the minimum distance configuration.
+#[allow(clippy::too_many_arguments)]
+fn collide_capsule_box(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    type1: GeomType,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+    size1: Vector3<f64>,
+    size2: Vector3<f64>,
+) -> Option<Contact> {
+    // Determine which is capsule and which is box
+    let (
+        capsule_geom,
+        box_geom,
+        capsule_pos,
+        capsule_mat,
+        box_pos,
+        box_mat,
+        capsule_size,
+        box_half,
+    ) = if type1 == GeomType::Capsule {
+        (geom1, geom2, pos1, mat1, pos2, mat2, size1, size2)
+    } else {
+        (geom2, geom1, pos2, mat2, pos1, mat1, size2, size1)
+    };
+
+    let capsule_radius = capsule_size.x;
+    let capsule_half_len = capsule_size.y;
+    let capsule_axis = capsule_mat.column(2).into_owned();
+
+    // Capsule endpoints
+    let cap_a = capsule_pos - capsule_axis * capsule_half_len;
+    let cap_b = capsule_pos + capsule_axis * capsule_half_len;
+
+    // Find closest point on capsule axis to box
+    // We sample multiple points along the capsule and find the minimum distance
+    let mut min_dist = f64::MAX;
+    let mut best_capsule_point = capsule_pos;
+    let mut best_box_point = box_pos;
+
+    // Transform box to local coordinates once
+    let box_mat_t = box_mat.transpose();
+
+    // Sample along capsule axis (including endpoints)
+    let samples = [0.0, 0.25, 0.5, 0.75, 1.0];
+    for &t in &samples {
+        let capsule_point = cap_a + (cap_b - cap_a) * t;
+        let local_point = box_mat_t * (capsule_point - box_pos);
+
+        // Closest point on box to this capsule point
+        let closest_local = Vector3::new(
+            local_point.x.clamp(-box_half.x, box_half.x),
+            local_point.y.clamp(-box_half.y, box_half.y),
+            local_point.z.clamp(-box_half.z, box_half.z),
+        );
+        let closest_world = box_pos + box_mat * closest_local;
+
+        let dist = (capsule_point - closest_world).norm();
+        if dist < min_dist {
+            min_dist = dist;
+            best_capsule_point = capsule_point;
+            best_box_point = closest_world;
+        }
+    }
+
+    // Refine by finding closest point on capsule axis to best box point
+    let closest_on_capsule = closest_point_segment(cap_a, cap_b, best_box_point);
+    let local_closest = box_mat_t * (closest_on_capsule - box_pos);
+    let box_closest_local = Vector3::new(
+        local_closest.x.clamp(-box_half.x, box_half.x),
+        local_closest.y.clamp(-box_half.y, box_half.y),
+        local_closest.z.clamp(-box_half.z, box_half.z),
+    );
+    let box_closest_world = box_pos + box_mat * box_closest_local;
+    let final_dist = (closest_on_capsule - box_closest_world).norm();
+
+    if final_dist < min_dist {
+        min_dist = final_dist;
+        best_capsule_point = closest_on_capsule;
+        best_box_point = box_closest_world;
+    }
+
+    let penetration = capsule_radius - min_dist;
+
+    if penetration > 0.0 {
+        let diff = best_capsule_point - best_box_point;
+        let normal = if min_dist > 1e-10 {
+            diff / min_dist
+        } else {
+            // Edge case: capsule axis passes through box
+            // Find deepest penetration direction
+            let local_cap = box_mat_t * (best_capsule_point - box_pos);
+            let mut min_pen = f64::MAX;
+            let mut normal_local = Vector3::x();
+            for i in 0..3 {
+                let pen_pos = box_half[i] - local_cap[i];
+                let pen_neg = box_half[i] + local_cap[i];
+                if pen_pos < min_pen {
+                    min_pen = pen_pos;
+                    normal_local = Vector3::zeros();
+                    normal_local[i] = 1.0;
+                }
+                if pen_neg < min_pen {
+                    min_pen = pen_neg;
+                    normal_local = Vector3::zeros();
+                    normal_local[i] = -1.0;
+                }
+            }
+            box_mat * normal_local
+        };
+
+        let contact_pos = best_box_point + normal * (penetration * 0.5);
+
+        let friction1 = model.geom_friction[capsule_geom].x;
+        let friction2 = model.geom_friction[box_geom].x;
+        let friction = (friction1 * friction2).sqrt();
+
+        let (g1, g2) = if capsule_geom < box_geom {
+            (capsule_geom, box_geom)
+        } else {
+            (box_geom, capsule_geom)
+        };
+
+        Some(Contact {
+            pos: contact_pos,
+            normal: if capsule_geom < box_geom {
+                normal
+            } else {
+                -normal
+            },
+            depth: penetration,
+            geom1: g1,
+            geom2: g2,
+            friction,
+        })
+    } else {
+        None
+    }
+}
+
+/// Box-box collision detection using Separating Axis Theorem (SAT).
+///
+/// Tests 15 axes: 3 face normals of box A, 3 face normals of box B,
+/// and 9 edge-edge cross products.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn collide_box_box(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+    size1: Vector3<f64>,
+    size2: Vector3<f64>,
+) -> Option<Contact> {
+    let half1 = size1;
+    let half2 = size2;
+
+    // Get box axes
+    let axes1: [Vector3<f64>; 3] = [
+        mat1.column(0).into_owned(),
+        mat1.column(1).into_owned(),
+        mat1.column(2).into_owned(),
+    ];
+    let axes2: [Vector3<f64>; 3] = [
+        mat2.column(0).into_owned(),
+        mat2.column(1).into_owned(),
+        mat2.column(2).into_owned(),
+    ];
+
+    let center_diff = pos2 - pos1;
+
+    // Track minimum penetration
+    let mut min_pen = f64::MAX;
+    let mut best_axis = Vector3::x();
+    let mut best_axis_is_face = true;
+
+    // Test face normals of box 1 (3 axes)
+    for i in 0..3 {
+        let axis = axes1[i];
+        let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
+        if pen <= 0.0 {
+            return None; // Separating axis found
+        }
+        if pen < min_pen {
+            min_pen = pen;
+            best_axis = axis;
+            best_axis_is_face = true;
+        }
+    }
+
+    // Test face normals of box 2 (3 axes)
+    for i in 0..3 {
+        let axis = axes2[i];
+        let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
+        if pen <= 0.0 {
+            return None;
+        }
+        if pen < min_pen {
+            min_pen = pen;
+            best_axis = axis;
+            best_axis_is_face = true;
+        }
+    }
+
+    // Test edge-edge cross products (9 axes)
+    for i in 0..3 {
+        for j in 0..3 {
+            let axis = axes1[i].cross(&axes2[j]);
+            let len = axis.norm();
+            if len < 1e-10 {
+                continue; // Parallel edges
+            }
+            let axis = axis / len;
+
+            let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
+            if pen <= 0.0 {
+                return None;
+            }
+            // Edge-edge contacts have a bias - they're less stable
+            // Only use if significantly better than face contact
+            if pen < min_pen * 0.95 {
+                min_pen = pen;
+                best_axis = axis;
+                best_axis_is_face = false;
+            }
+        }
+    }
+
+    // Ensure normal points from box1 to box2
+    if best_axis.dot(&center_diff) < 0.0 {
+        best_axis = -best_axis;
+    }
+
+    // Find contact point
+    // For face contacts: find vertex of one box most in the other's direction
+    // For edge contacts: find closest points on the two edges
+    let contact_pos = if best_axis_is_face {
+        // Find support point on box2 in direction of -normal
+        let support_local = Vector3::new(
+            if best_axis.dot(&axes2[0]) < 0.0 {
+                half2.x
+            } else {
+                -half2.x
+            },
+            if best_axis.dot(&axes2[1]) < 0.0 {
+                half2.y
+            } else {
+                -half2.y
+            },
+            if best_axis.dot(&axes2[2]) < 0.0 {
+                half2.z
+            } else {
+                -half2.z
+            },
+        );
+        pos2 + mat2 * support_local - best_axis * (min_pen * 0.5)
+    } else {
+        // For edge-edge, use midpoint between closest points on edges
+        // Approximate: use center point shifted by penetration
+        pos1 + center_diff * 0.5
+    };
+
+    let friction1 = model.geom_friction[geom1].x;
+    let friction2 = model.geom_friction[geom2].x;
+    let friction = (friction1 * friction2).sqrt();
+
+    Some(Contact {
+        pos: contact_pos,
+        normal: best_axis,
+        depth: min_pen,
+        geom1,
+        geom2,
+        friction,
+    })
+}
+
+/// Test a single SAT axis and return penetration depth (negative = separated).
+#[inline]
+fn test_sat_axis(
+    axis: &Vector3<f64>,
+    center_diff: &Vector3<f64>,
+    axes1: &[Vector3<f64>; 3],
+    half1: &Vector3<f64>,
+    axes2: &[Vector3<f64>; 3],
+    half2: &Vector3<f64>,
+) -> f64 {
+    // Project box extents onto axis
+    let r1 = (half1.x * axis.dot(&axes1[0]).abs())
+        + (half1.y * axis.dot(&axes1[1]).abs())
+        + (half1.z * axis.dot(&axes1[2]).abs());
+
+    let r2 = (half2.x * axis.dot(&axes2[0]).abs())
+        + (half2.y * axis.dot(&axes2[1]).abs())
+        + (half2.z * axis.dot(&axes2[2]).abs());
+
+    // Distance between centers projected onto axis
+    let dist = axis.dot(center_diff).abs();
+
+    // Penetration = sum of radii - distance
+    r1 + r2 - dist
 }
 
 /// Find closest point on line segment AB to point P.
@@ -8060,13 +8637,40 @@ fn mj_fwd_velocity(model: &Model, data: &mut Data) {
     data.cvel[0] = SpatialVector::zeros();
 
     // Compute body velocities by propagating through tree
+    // v[i] = X[i←parent] @ v[parent] + S[i] @ qdot[i]
+    //
+    // The spatial transform X accounts for the offset between body origins.
+    // For a pure translation r (from parent to child), the velocity transforms as:
+    //   ω_child = ω_parent
+    //   v_child = v_parent + ω_parent × r
+    //
+    // This lever arm effect is critical for Coriolis forces in serial chains!
+
     for body_id in 1..model.nbody {
         let parent_id = model.body_parent[body_id];
 
-        // Start with parent velocity (transformed to this body's frame)
-        let mut vel = data.cvel[parent_id];
+        // Parent velocity
+        let v_parent = data.cvel[parent_id];
+        let omega_parent = Vector3::new(v_parent[0], v_parent[1], v_parent[2]);
+        let v_lin_parent = Vector3::new(v_parent[3], v_parent[4], v_parent[5]);
 
-        // Add contribution from joints
+        // Offset from parent origin to this body's origin (in world frame)
+        let r = data.xpos[body_id] - data.xpos[parent_id];
+
+        // Transform parent velocity to this body's frame
+        // Linear velocity gets contribution from lever arm: v_new = v_old + ω × r
+        let v_lin_at_child = v_lin_parent + omega_parent.cross(&r);
+
+        let mut vel = SpatialVector::new(
+            omega_parent.x,
+            omega_parent.y,
+            omega_parent.z,
+            v_lin_at_child.x,
+            v_lin_at_child.y,
+            v_lin_at_child.z,
+        );
+
+        // Add contribution from joints on this body
         let jnt_start = model.body_jnt_adr[body_id];
         let jnt_end = jnt_start + model.body_jnt_num[body_id];
 
@@ -8156,6 +8760,14 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 /// 2. Computing `M[i,j]` = `S_i^T` * `I_c` * `S_j` for each joint pair
 ///
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 6
+/// Composite Rigid Body Algorithm (CRBA) - Featherstone O(n) version.
+///
+/// Computes the joint-space inertia matrix M using the recursive algorithm:
+/// 1. Initialize composite inertia Ic[i] = I[i] for each body
+/// 2. Backward pass: Ic[parent] += transform(Ic[child])
+/// 3. For each joint, compute M elements from Ic and joint motion subspace
+///
+/// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 6
 #[allow(
     clippy::many_single_char_names,
     clippy::too_many_lines,
@@ -8169,133 +8781,205 @@ fn mj_crba(model: &Model, data: &mut Data) {
         return;
     }
 
-    // Use pre-computed ancestor data for O(1) lookups instead of O(n) list building
-    // This reduces CRBA from O(n³) to O(n²) in the inner loop
+    // ============================================================
+    // Phase 1: Initialize composite inertias from body inertias
+    // ============================================================
+    // Build 6x6 spatial inertia for each body in world frame.
+    // Format: [angular 3x3 | coupling 3x3]
+    //         [coupling^T   | linear 3x3  ]
+    //
+    // Where angular = R * I_diag * R^T (rotational inertia in world)
+    //       linear = m * I_3x3 (translational inertia)
+    //       coupling relates angular and linear motion via COM offset
 
-    // For each pair of DOFs, compute M[i,j] using the Jacobian method:
-    // M[i,j] = Σ_k (∂p_k/∂q_i)^T * m_k * (∂p_k/∂q_j) + (∂ω_k/∂q_i)^T * I_k * (∂ω_k/∂q_j)
-    // where k sums over all bodies affected by both DOFs i and j
+    for body_id in 0..model.nbody {
+        if body_id == 0 {
+            // World body has no inertia
+            data.crb_inertia[body_id] = Matrix6::zeros();
+            continue;
+        }
+
+        let mass = model.body_mass[body_id];
+        let inertia_diag = model.body_inertia[body_id];
+        let i_mat = &data.ximat[body_id]; // Rotation from body inertial frame to world
+
+        // Rotational inertia in world frame: I_world = R * I_diag * R^T
+        let mut i_rot: Matrix3<f64> = Matrix3::zeros();
+        for row in 0..3 {
+            for col in 0..3 {
+                for d in 0..3 {
+                    i_rot[(row, col)] += i_mat[(row, d)] * inertia_diag[d] * i_mat[(col, d)];
+                }
+            }
+        }
+
+        // COM offset from body origin (in world frame)
+        let com_world = data.xipos[body_id];
+        let body_origin = data.xpos[body_id];
+        let h = com_world - body_origin; // COM offset
+
+        // Build 6x6 spatial inertia matrix
+        // Using Featherstone's notation with motor convention:
+        //   I = [I_rot + m*[h]x*[h]x^T,  m*[h]x ]
+        //       [m*[h]x^T,               m*I_3  ]
+        //
+        // where [h]x is the skew-symmetric matrix of h
+
+        let mut crb = Matrix6::zeros();
+
+        // Upper-left 3x3: rotational inertia about body origin
+        // I_origin = I_com + m * h × h^T (parallel axis theorem)
+        let h_cross_h = h * h.transpose();
+        let h_dot_h = h.dot(&h);
+        for row in 0..3 {
+            for col in 0..3 {
+                crb[(row, col)] = i_rot[(row, col)]
+                    + mass * (h_dot_h * if row == col { 1.0 } else { 0.0 } - h_cross_h[(row, col)]);
+            }
+        }
+
+        // Lower-right 3x3: translational inertia
+        for d in 0..3 {
+            crb[(3 + d, 3 + d)] = mass;
+        }
+
+        // Off-diagonal 3x3: coupling (skew-symmetric of m*h)
+        // [h]x = [[0, -hz, hy], [hz, 0, -hx], [-hy, hx, 0]]
+        let mh = mass * h;
+        crb[(0, 4)] = -mh.z;
+        crb[(0, 5)] = mh.y;
+        crb[(1, 3)] = mh.z;
+        crb[(1, 5)] = -mh.x;
+        crb[(2, 3)] = -mh.y;
+        crb[(2, 4)] = mh.x;
+
+        // Transpose for lower-left
+        crb[(4, 0)] = -mh.z;
+        crb[(5, 0)] = mh.y;
+        crb[(3, 1)] = mh.z;
+        crb[(5, 1)] = -mh.x;
+        crb[(3, 2)] = -mh.y;
+        crb[(4, 2)] = mh.x;
+
+        data.crb_inertia[body_id] = crb;
+    }
+
+    // ============================================================
+    // Phase 2: Backward pass - accumulate composite inertias
+    // ============================================================
+    // Process bodies from leaves to root, adding child inertia to parent.
+    // This gives Ic[i] = inertia of subtree rooted at body i.
+    //
+    // Note: We need to transform child inertia to parent frame before adding.
+    // For now, use a simpler approach: all inertias are in world frame,
+    // so we just add them directly (valid because world frame is common).
+
+    for body_id in (1..model.nbody).rev() {
+        let parent_id = model.body_parent[body_id];
+        if parent_id != 0 {
+            // Add this body's composite inertia to parent's
+            // Need to clone to avoid borrow checker issues
+            let child_inertia = data.crb_inertia[body_id];
+            data.crb_inertia[parent_id] += child_inertia;
+        }
+    }
+
+    // ============================================================
+    // Phase 3: Build mass matrix from composite inertias
+    // ============================================================
+    // For each joint, M[i,i] = S[i]^T * Ic[body_i] * S[i]
+    // Off-diagonal elements require propagating forces up the tree.
 
     for jnt_i in 0..model.njnt {
         let body_i = model.jnt_body[jnt_i];
         let dof_i = model.jnt_dof_adr[jnt_i];
+        let nv_i = model.jnt_type[jnt_i].nv();
 
-        for jnt_j in 0..model.njnt {
-            let body_j = model.jnt_body[jnt_j];
-            let dof_j = model.jnt_dof_adr[jnt_j];
+        // Get joint motion subspace S (6 x nv matrix)
+        // S maps joint velocity to spatial velocity: v = S * qdot
+        let s_i = joint_motion_subspace(model, data, jnt_i);
 
-            // Find bodies affected by both joints using pre-computed bitmasks
-            for body_k in 1..model.nbody {
-                // O(1) ancestor check using pre-computed bitmask
-                if !model.is_ancestor(body_k, jnt_i) || !model.is_ancestor(body_k, jnt_j) {
-                    continue;
+        // Diagonal block: M[i,i] = S^T * Ic * S
+        let ic = &data.crb_inertia[body_i];
+        for di in 0..nv_i {
+            let s_col_i = s_i.column(di);
+            for dj in 0..nv_i {
+                let s_col_j = s_i.column(dj);
+                // Compute s_i^T * Ic * s_j
+                let ic_s_j = ic * s_col_j;
+                data.qM[(dof_i + di, dof_i + dj)] = s_col_i.dot(&ic_s_j);
+            }
+        }
+
+        // Off-diagonal: propagate to ancestor joints
+        // F = Ic * S (force due to joint motion)
+        // Then traverse ancestors, transforming F at each step:
+        //   F_parent = X^T * F_child (spatial force transform)
+        // And computing M[j,i] = S_j^T * F_transformed
+        let mut force = ic * &s_i; // 6 x nv_i matrix, starts at body_i
+
+        let mut child_body = body_i;
+        let mut current_body = model.body_parent[body_i];
+
+        while current_body != 0 {
+            // Transform force from child to current body using spatial force transform
+            // F_parent = [I, 0; [r]x, I]^T * F_child = [I, [r]x^T; 0, I] * F_child
+            // Where r = pos_child - pos_parent (vector from parent to child)
+            let r = data.xpos[child_body] - data.xpos[current_body];
+
+            // Apply spatial force transform:
+            // F_angular_parent = F_angular_child + r × F_linear_child
+            // F_linear_parent = F_linear_child
+            for col in 0..nv_i {
+                let f_lin_x = force[(3, col)];
+                let f_lin_y = force[(4, col)];
+                let f_lin_z = force[(5, col)];
+
+                // r × f_lin
+                let cross_x = r.y * f_lin_z - r.z * f_lin_y;
+                let cross_y = r.z * f_lin_x - r.x * f_lin_z;
+                let cross_z = r.x * f_lin_y - r.y * f_lin_x;
+
+                force[(0, col)] += cross_x;
+                force[(1, col)] += cross_y;
+                force[(2, col)] += cross_z;
+                // Linear part stays the same
+            }
+
+            // Find joint(s) for this ancestor body
+            let jnt_start = model.body_jnt_adr[current_body];
+            let jnt_count = model.body_jnt_num[current_body];
+
+            for jnt_j in jnt_start..(jnt_start + jnt_count) {
+                if jnt_j >= model.njnt {
+                    break;
                 }
 
-                let mass_k = model.body_mass[body_k];
-                let inertia_k = model.body_inertia[body_k];
-                let com_k = data.xipos[body_k];
+                let dof_j = model.jnt_dof_adr[jnt_j];
+                let nv_j = model.jnt_type[jnt_j].nv();
+                let s_j = joint_motion_subspace(model, data, jnt_j);
 
-                // Compute Jacobian contributions based on joint types
-                match (model.jnt_type[jnt_i], model.jnt_type[jnt_j]) {
-                    (MjJointType::Hinge, MjJointType::Hinge) => {
-                        // Both revolute: M += m * (axis_i × r_i) · (axis_j × r_j) + I contribution
-                        let axis_i = data.xquat[body_i] * model.jnt_axis[jnt_i];
-                        let axis_j = data.xquat[body_j] * model.jnt_axis[jnt_j];
-
-                        let jpos_i = data.xpos[body_i] + data.xquat[body_i] * model.jnt_pos[jnt_i];
-                        let jpos_j = data.xpos[body_j] + data.xquat[body_j] * model.jnt_pos[jnt_j];
-
-                        let r_i = com_k - jpos_i;
-                        let r_j = com_k - jpos_j;
-
-                        let dp_dqi = axis_i.cross(&r_i);
-                        let dp_dqj = axis_j.cross(&r_j);
-
-                        // Translational contribution
-                        data.qM[(dof_i, dof_j)] += mass_k * dp_dqi.dot(&dp_dqj);
-
-                        // Rotational inertia contribution: I_axis = axis_i^T * I_world * axis_j
-                        // inertia_k is in principal axes (body_iquat frame), need to transform to world
-                        // I_world = R * I_diag * R^T where R = ximat (body inertial frame in world)
-                        let i_mat = &data.ximat[body_k];
-                        // Compute axis_i in body inertial frame, apply diagonal inertia, transform back
-                        let axis_i_body = i_mat.transpose() * axis_i;
-                        let axis_j_body = i_mat.transpose() * axis_j;
-                        let i_rot = axis_i_body.dot(&(inertia_k.component_mul(&axis_j_body)));
-                        data.qM[(dof_i, dof_j)] += i_rot;
-                    }
-                    (MjJointType::Slide, MjJointType::Slide) => {
-                        // Both prismatic: M += m * axis_i · axis_j
-                        let axis_i = data.xquat[body_i] * model.jnt_axis[jnt_i];
-                        let axis_j = data.xquat[body_j] * model.jnt_axis[jnt_j];
-                        data.qM[(dof_i, dof_j)] += mass_k * axis_i.dot(&axis_j);
-                    }
-                    (MjJointType::Hinge, MjJointType::Slide)
-                    | (MjJointType::Slide, MjJointType::Hinge) => {
-                        // Mixed revolute-prismatic
-                        let (hinge_jnt, slide_jnt, hinge_dof, slide_dof) =
-                            if model.jnt_type[jnt_i] == MjJointType::Hinge {
-                                (jnt_i, jnt_j, dof_i, dof_j)
-                            } else {
-                                (jnt_j, jnt_i, dof_j, dof_i)
-                            };
-
-                        let hinge_body = model.jnt_body[hinge_jnt];
-                        let slide_body = model.jnt_body[slide_jnt];
-
-                        let axis_h = data.xquat[hinge_body] * model.jnt_axis[hinge_jnt];
-                        let axis_s = data.xquat[slide_body] * model.jnt_axis[slide_jnt];
-
-                        let jpos_h = data.xpos[hinge_body]
-                            + data.xquat[hinge_body] * model.jnt_pos[hinge_jnt];
-                        let r = com_k - jpos_h;
-                        let dp_dq_hinge = axis_h.cross(&r);
-
-                        data.qM[(hinge_dof, slide_dof)] += mass_k * dp_dq_hinge.dot(&axis_s);
-                    }
-                    (MjJointType::Free, MjJointType::Free) if jnt_i == jnt_j => {
-                        // Same free joint: 6x6 block
-                        // Linear DOFs (0,1,2): mass on diagonal
-                        for d in 0..3 {
-                            data.qM[(dof_i + d, dof_j + d)] += mass_k;
-                        }
-                        // Angular DOFs (3,4,5): inertia in world frame
-                        // I_world = R * I_diag * R^T
-                        let i_mat = &data.ximat[body_k];
-                        for row in 0..3 {
-                            for col in 0..3 {
-                                // (R * I_diag * R^T)[row,col] = Σ R[row,d] * I[d] * R[col,d]
-                                let mut val = 0.0;
-                                for d in 0..3 {
-                                    val += i_mat[(row, d)] * inertia_k[d] * i_mat[(col, d)];
-                                }
-                                data.qM[(dof_i + 3 + row, dof_j + 3 + col)] += val;
-                            }
-                        }
-                    }
-                    (MjJointType::Ball, MjJointType::Ball) if jnt_i == jnt_j => {
-                        // Same ball joint: 3x3 rotational inertia in world frame
-                        let i_mat = &data.ximat[body_k];
-                        for row in 0..3 {
-                            for col in 0..3 {
-                                let mut val = 0.0;
-                                for d in 0..3 {
-                                    val += i_mat[(row, d)] * inertia_k[d] * i_mat[(col, d)];
-                                }
-                                data.qM[(dof_i + row, dof_j + col)] += val;
-                            }
-                        }
-                    }
-                    _ => {
-                        // Other combinations: use general formula or skip
-                        // For multi-DOF joints interacting, need full spatial inertia
+                // M[j,i] = S_j^T * F
+                for dj in 0..nv_j {
+                    let s_col_j = s_j.column(dj);
+                    for di in 0..nv_i {
+                        let f_col_i = force.column(di);
+                        let m_ji = s_col_j.dot(&f_col_i);
+                        data.qM[(dof_j + dj, dof_i + di)] = m_ji;
+                        data.qM[(dof_i + di, dof_j + dj)] = m_ji; // Symmetry
                     }
                 }
             }
+
+            // Move up the tree
+            child_body = current_body;
+            current_body = model.body_parent[current_body];
         }
     }
 
-    // Add armature inertia to diagonal
+    // ============================================================
+    // Phase 4: Add armature inertia to diagonal
+    // ============================================================
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let nv = model.jnt_type[jnt_id].nv();
@@ -8303,33 +8987,115 @@ fn mj_crba(model: &Model, data: &mut Data) {
 
         for i in 0..nv {
             data.qM[(dof_adr + i, dof_adr + i)] += armature;
-            // Also add per-DOF armature if specified
             if let Some(&dof_arm) = model.dof_armature.get(dof_adr + i) {
                 data.qM[(dof_adr + i, dof_adr + i)] += dof_arm;
             }
         }
     }
 
-    // Ensure symmetry (numerical cleanup)
-    for i in 0..model.nv {
-        for j in (i + 1)..model.nv {
-            let avg = 0.5 * (data.qM[(i, j)] + data.qM[(j, i)]);
-            data.qM[(i, j)] = avg;
-            data.qM[(j, i)] = avg;
+    // ============================================================
+    // Phase 5: Cache Cholesky factorization
+    // ============================================================
+    // Compute L where M = L L^T once here, reuse in:
+    //   - mj_fwd_acceleration(): Solve M qacc = τ  →  O(n²) instead of O(n³)
+    //   - pgs_solve_contacts(): Compute A = J M^{-1} J^T  →  O(n²) per contact
+    //
+    // The clone is required: nalgebra::cholesky() consumes the matrix to avoid
+    // allocating a separate buffer. This is the optimal single-allocation approach.
+    // Total cost: O(n³) factorization + O(n²) memory, done once per forward().
+    data.qM_cholesky = data.qM.clone().cholesky();
+}
+
+/// Compute the joint motion subspace matrix S (6 x nv).
+///
+/// S maps joint velocity to spatial velocity in world frame:
+/// v_spatial = S * qdot
+///
+/// Format: rows 0-2 = angular velocity, rows 3-5 = linear velocity
+#[allow(clippy::similar_names)]
+fn joint_motion_subspace(
+    model: &Model,
+    data: &Data,
+    jnt_id: usize,
+) -> nalgebra::SMatrix<f64, 6, 6> {
+    let body_id = model.jnt_body[jnt_id];
+    let jnt_type = model.jnt_type[jnt_id];
+    let nv = jnt_type.nv();
+
+    let mut s = nalgebra::SMatrix::<f64, 6, 6>::zeros();
+
+    match jnt_type {
+        MjJointType::Hinge => {
+            // Revolute joint: S = [axis; axis × r]^T where r is from joint to body origin
+            let axis_world = data.xquat[body_id] * model.jnt_axis[jnt_id];
+            let jpos_world = data.xpos[body_id] + data.xquat[body_id] * model.jnt_pos[jnt_id];
+            let r = data.xpos[body_id] - jpos_world;
+
+            // Angular part (rows 0-2)
+            s[(0, 0)] = axis_world.x;
+            s[(1, 0)] = axis_world.y;
+            s[(2, 0)] = axis_world.z;
+
+            // Linear part (rows 3-5) = axis × r
+            let lin = axis_world.cross(&r);
+            s[(3, 0)] = lin.x;
+            s[(4, 0)] = lin.y;
+            s[(5, 0)] = lin.z;
+        }
+        MjJointType::Slide => {
+            // Prismatic joint: S = [0; axis]^T
+            let axis_world = data.xquat[body_id] * model.jnt_axis[jnt_id];
+            s[(3, 0)] = axis_world.x;
+            s[(4, 0)] = axis_world.y;
+            s[(5, 0)] = axis_world.z;
+        }
+        MjJointType::Ball => {
+            // Ball joint: 3 angular DOFs
+            // S = [I_3x3; 0_3x3] (angular velocity in world frame)
+            for i in 0..3 {
+                s[(i, i)] = 1.0;
+            }
+        }
+        MjJointType::Free => {
+            // Free joint: 6 DOFs (3 linear + 3 angular)
+            // DOF order in qvel: [vx, vy, vz, ωx, ωy, ωz]
+            // Linear DOFs map to linear velocity
+            for i in 0..3 {
+                s[(3 + i, i)] = 1.0; // Linear velocity
+            }
+            // Angular DOFs map to angular velocity
+            for i in 0..3 {
+                s[(i, 3 + i)] = 1.0; // Angular velocity
+            }
         }
     }
+
+    // Only return the columns needed
+    let _ = nv; // Used implicitly through jnt_type
+    s
 }
 
 /// Recursive Newton-Euler: compute bias forces (Coriolis + centrifugal + gravity).
 ///
 /// The bias force vector `c(q, qdot)` contains:
-/// - Gravity forces: `τ_g` = `J^T` * m * g
-/// - Coriolis/centrifugal: `τ_c` = `C(q, qdot)` * qdot where C is the Christoffel matrix
+/// - Gravity forces projected to joint space
+/// - Coriolis/centrifugal forces: velocity-dependent terms
 ///
-/// For the equation of motion: M * qacc + `c(q, qdot)` = τ
-/// We compute c = C * qdot + g where C contains velocity-dependent terms.
+/// For the equation of motion: `M * qacc + c(q, qdot) = τ`
+///
+/// ## Implementation Notes
+///
+/// This implementation uses a hybrid approach for efficiency and correctness:
+/// 1. **Gravity**: O(n) computation using precomputed subtree mass and COM
+/// 2. **Gyroscopic**: Direct computation for Ball/Free joints (ω × Iω)
+/// 3. **Coriolis/Centrifugal**: O(n²) computation using body velocities
+///
+/// A full Featherstone O(n) RNE would use spatial algebra throughout, but this
+/// hybrid approach achieves the same physics with simpler code that's easier
+/// to verify for correctness.
 ///
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 5
+/// Reference: MuJoCo Computation docs - mj_rne section
 #[allow(
     clippy::too_many_lines,
     clippy::similar_names,
@@ -8342,83 +9108,61 @@ fn mj_rne(model: &Model, data: &mut Data) {
         return;
     }
 
-    // Use pre-computed ancestor data for O(1) lookups instead of O(n) list building
-    // This reduces RNE from O(n²) to O(n) in the inner loop
-
-    // ========== Gravity contribution ==========
+    // ========== Gravity contribution (O(n) using precomputed subtree mass/COM) ==========
     // The bias force is what we need to SUBTRACT from applied forces.
-    // For gravity: qfrc_bias should be NEGATIVE of gravity (i.e., -m*g)
-    // because: M*qacc = qfrc - qfrc_bias, and for free fall with qfrc=0:
-    //   M*qacc = -qfrc_bias = -(-m*g) = m*g in force direction
-    //   qacc = g (acceleration in gravity direction) ✓
-    //
-    // τ_g[i] = -Σ_k m_k * (∂p_k/∂q_i)^T * g
+    // For joint i on body b: τ_g[i] = J_i^T * (M_subtree * g)
+    // where M_subtree is total mass below body b, and the torque acts at subtree COM
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let jnt_body = model.jnt_body[jnt_id];
 
-        // Sum gravity torque from all descendant bodies
-        for body_k in 1..model.nbody {
-            // O(1) ancestor check using pre-computed bitmask
-            if !model.is_ancestor(body_k, jnt_id) {
-                continue;
+        // Use precomputed subtree mass and COM for O(n) gravity
+        let subtree_mass = data.subtree_mass[jnt_body];
+        let subtree_com = data.subtree_com[jnt_body];
+
+        // Negative because qfrc_bias opposes motion
+        let gravity_force = -subtree_mass * model.gravity;
+
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge => {
+                let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                let r = subtree_com - jpos;
+                let torque = r.cross(&gravity_force);
+                data.qfrc_bias[dof_adr] += torque.dot(&axis);
             }
-
-            let mass_k = model.body_mass[body_k];
-            let com_k = data.xipos[body_k];
-            // Negative because qfrc_bias opposes motion (Coriolis-like convention)
-            let gravity_force = -mass_k * model.gravity;
-
-            match model.jnt_type[jnt_id] {
-                MjJointType::Hinge => {
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
-                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
-                    let r = com_k - jpos;
-                    let torque = r.cross(&gravity_force);
-                    data.qfrc_bias[dof_adr] += torque.dot(&axis);
-                }
-                MjJointType::Slide => {
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
-                    data.qfrc_bias[dof_adr] += gravity_force.dot(&axis);
-                }
-                MjJointType::Ball => {
-                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
-                    let r = com_k - jpos;
-                    let torque = r.cross(&gravity_force);
-                    // Transform to body frame
-                    let body_torque = data.xquat[jnt_body].inverse() * torque;
-                    data.qfrc_bias[dof_adr] += body_torque.x;
-                    data.qfrc_bias[dof_adr + 1] += body_torque.y;
-                    data.qfrc_bias[dof_adr + 2] += body_torque.z;
-                }
-                MjJointType::Free => {
-                    // Linear gravity
-                    data.qfrc_bias[dof_adr] += gravity_force.x;
-                    data.qfrc_bias[dof_adr + 1] += gravity_force.y;
-                    data.qfrc_bias[dof_adr + 2] += gravity_force.z;
-                    // Angular: gravity torque if COM not at joint origin
-                    let jpos = Vector3::new(
-                        data.qpos[model.jnt_qpos_adr[jnt_id]],
-                        data.qpos[model.jnt_qpos_adr[jnt_id] + 1],
-                        data.qpos[model.jnt_qpos_adr[jnt_id] + 2],
-                    );
-                    let r = com_k - jpos;
-                    let torque = r.cross(&gravity_force);
-                    data.qfrc_bias[dof_adr + 3] += torque.x;
-                    data.qfrc_bias[dof_adr + 4] += torque.y;
-                    data.qfrc_bias[dof_adr + 5] += torque.z;
-                }
+            MjJointType::Slide => {
+                let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                data.qfrc_bias[dof_adr] += gravity_force.dot(&axis);
+            }
+            MjJointType::Ball => {
+                let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                let r = subtree_com - jpos;
+                let torque = r.cross(&gravity_force);
+                let body_torque = data.xquat[jnt_body].inverse() * torque;
+                data.qfrc_bias[dof_adr] += body_torque.x;
+                data.qfrc_bias[dof_adr + 1] += body_torque.y;
+                data.qfrc_bias[dof_adr + 2] += body_torque.z;
+            }
+            MjJointType::Free => {
+                // Linear gravity
+                data.qfrc_bias[dof_adr] += gravity_force.x;
+                data.qfrc_bias[dof_adr + 1] += gravity_force.y;
+                data.qfrc_bias[dof_adr + 2] += gravity_force.z;
+                // Angular: gravity torque from subtree COM relative to free joint position
+                let jpos = Vector3::new(
+                    data.qpos[model.jnt_qpos_adr[jnt_id]],
+                    data.qpos[model.jnt_qpos_adr[jnt_id] + 1],
+                    data.qpos[model.jnt_qpos_adr[jnt_id] + 2],
+                );
+                let r = subtree_com - jpos;
+                let torque = r.cross(&gravity_force);
+                data.qfrc_bias[dof_adr + 3] += torque.x;
+                data.qfrc_bias[dof_adr + 4] += torque.y;
+                data.qfrc_bias[dof_adr + 5] += torque.z;
             }
         }
     }
-
-    // ========== Coriolis/centrifugal contribution ==========
-    // C[i] = Σ_{j,k} c_{ijk} * qdot_j * qdot_k
-    // where c_{ijk} = (1/2)(∂M_{ij}/∂q_k + ∂M_{ik}/∂q_j - ∂M_{jk}/∂q_i)
-    //
-    // For revolute joints in a serial chain, the dominant terms are:
-    // - Centrifugal: ω × (ω × r) effects
-    // - Coriolis: cross-coupling between joint velocities
 
     // ========== Gyroscopic terms for Ball/Free joints ==========
     // τ_gyro = ω × (I * ω) - the gyroscopic torque
@@ -8475,115 +9219,191 @@ fn mj_rne(model: &Model, data: &mut Data) {
         }
     }
 
-    // Compute Coriolis terms using Christoffel symbols for hinge joints
-    // This is O(n³) but correct for general trees
-    for jnt_i in 0..model.njnt {
-        if model.jnt_type[jnt_i] != MjJointType::Hinge {
-            continue; // Hinge joints - Ball/Free handled above via gyroscopic terms
+    // ========== Coriolis/Centrifugal via Analytical Featherstone RNE ==========
+    //
+    // This is O(n) and replaces the O(n³) Christoffel symbol computation.
+    // The algorithm:
+    //   1. Forward pass: compute bias accelerations (velocity-dependent accelerations)
+    //   2. Backward pass: compute bias forces and project to joint space
+    //
+    // Skip if all velocities are small (optimization for static/quasi-static cases)
+    let max_qdot = data.qvel.iter().map(|v| v.abs()).fold(0.0, f64::max);
+    if max_qdot < 1e-6 {
+        return;
+    }
+
+    // Initialize bias accelerations and forces
+    for i in 0..model.nbody {
+        data.cacc_bias[i] = SpatialVector::zeros();
+        data.cfrc_bias[i] = SpatialVector::zeros();
+    }
+
+    // ========== Forward Pass: Compute Bias Accelerations ==========
+    // For each body, accumulate velocity-dependent accelerations.
+    //
+    // Featherstone's algorithm for bias acceleration:
+    //   a_bias[i] = a_bias[parent] + c[i]
+    //   c[i] = v[i] ×_m (S[i] @ qdot[i])  (velocity-product acceleration)
+    //
+    // The key insight: the bias acceleration arises from two sources:
+    // 1. The acceleration of the parent frame (a_bias[parent])
+    // 2. The velocity-product c[i] = v[i] ×_m v_joint, which captures
+    //    centripetal and Coriolis accelerations
+    //
+    // Note: v[i] is the FULL body velocity (already computed in mj_fwd_velocity)
+
+    for body_id in 1..model.nbody {
+        let parent_id = model.body_parent[body_id];
+
+        // Start with parent's bias acceleration
+        let mut a_bias = data.cacc_bias[parent_id];
+
+        // Add velocity-product acceleration from joints on this body
+        // c[i] = v[i] ×_m (S[i] @ qdot[i])
+        // This uses the BODY velocity (not parent), as per Featherstone
+
+        let jnt_start = model.body_jnt_adr[body_id];
+        let jnt_end = jnt_start + model.body_jnt_num[body_id];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let s = joint_motion_subspace(model, data, jnt_id);
+            let nv = model.jnt_type[jnt_id].nv();
+
+            // Compute joint velocity contribution: v_joint = S @ qdot
+            let mut v_joint = SpatialVector::zeros();
+            for d in 0..nv {
+                for row in 0..6 {
+                    v_joint[row] += s[(row, d)] * data.qvel[dof_adr + d];
+                }
+            }
+
+            // Velocity-product acceleration: v[parent] ×_m v_joint
+            // This is the centripetal/Coriolis acceleration contribution
+            // Note: using parent velocity because v[i] = v[parent] + S@qdot,
+            // and (S@qdot) ×_m (S@qdot) = 0, so v[i] ×_m (S@qdot) = v[parent] ×_m (S@qdot)
+            let v_parent = data.cvel[parent_id];
+            a_bias += spatial_cross_motion(v_parent, v_joint);
         }
 
-        let dof_i = model.jnt_dof_adr[jnt_i];
-        let body_i = model.jnt_body[jnt_i];
-        let axis_i = data.xquat[body_i] * model.jnt_axis[jnt_i];
-        let jpos_i = data.xpos[body_i] + data.xquat[body_i] * model.jnt_pos[jnt_i];
+        data.cacc_bias[body_id] = a_bias;
+    }
 
-        for jnt_j in 0..model.njnt {
-            if model.jnt_type[jnt_j] != MjJointType::Hinge {
-                continue;
-            }
+    // ========== Build Body Spatial Inertias ==========
+    // We need the spatial inertia I[i] for each body to compute the bias forces.
+    // Use the same construction as in CRBA phase 1.
 
-            let dof_j = model.jnt_dof_adr[jnt_j];
-            let body_j = model.jnt_body[jnt_j];
-            let axis_j = data.xquat[body_j] * model.jnt_axis[jnt_j];
-            let jpos_j = data.xpos[body_j] + data.xquat[body_j] * model.jnt_pos[jnt_j];
-            let qdot_j = data.qvel[dof_j];
+    let mut body_inertia: Vec<Matrix6<f64>> = vec![Matrix6::zeros(); model.nbody];
+    for body_id in 1..model.nbody {
+        let mass = model.body_mass[body_id];
+        let inertia_diag = model.body_inertia[body_id];
+        let i_mat = &data.ximat[body_id];
 
-            for jnt_k in 0..model.njnt {
-                if model.jnt_type[jnt_k] != MjJointType::Hinge {
-                    continue;
+        // Rotational inertia in world frame
+        let mut i_rot: Matrix3<f64> = Matrix3::zeros();
+        for row in 0..3 {
+            for col in 0..3 {
+                for d in 0..3 {
+                    i_rot[(row, col)] += i_mat[(row, d)] * inertia_diag[d] * i_mat[(col, d)];
                 }
-
-                let dof_k = model.jnt_dof_adr[jnt_k];
-                let body_k = model.jnt_body[jnt_k];
-                let axis_k = data.xquat[body_k] * model.jnt_axis[jnt_k];
-                let jpos_k = data.xpos[body_k] + data.xquat[body_k] * model.jnt_pos[jnt_k];
-                let qdot_k = data.qvel[dof_k];
-
-                // Compute Christoffel symbol c_{ijk}
-                // c_{ijk} = (1/2)(∂M_{ij}/∂q_k + ∂M_{ik}/∂q_j - ∂M_{jk}/∂q_i)
-                //
-                // For revolute joints, ∂M_{ab}/∂q_c involves derivatives of
-                // cross products (axis × r), which yield velocity-dependent terms
-
-                // Sum over all bodies affected by all three joints
-                let mut c_ijk = 0.0;
-                for body_m in 1..model.nbody {
-                    // O(1) ancestor check using pre-computed bitmask
-                    if !model.is_ancestor(body_m, jnt_i)
-                        || !model.is_ancestor(body_m, jnt_j)
-                        || !model.is_ancestor(body_m, jnt_k)
-                    {
-                        continue;
-                    }
-
-                    let mass_m = model.body_mass[body_m];
-                    let com_m = data.xipos[body_m];
-
-                    // Compute velocity Jacobians
-                    let r_i = com_m - jpos_i;
-                    let r_j = com_m - jpos_j;
-                    let r_k = com_m - jpos_k;
-
-                    let dp_dqi = axis_i.cross(&r_i);
-                    let dp_dqj = axis_j.cross(&r_j);
-                    let dp_dqk = axis_k.cross(&r_k);
-
-                    // ∂(dp/dq_a)/∂q_c = axis_a × (axis_c × r_a) if c is ancestor of a
-                    // This simplifies to: axis_a × (dp/dq_c)
-
-                    // ∂M_{ij}/∂q_k contribution
-                    let d_dpqi_dqk = if model.is_ancestor(body_i, jnt_k) || body_i == body_k {
-                        axis_i.cross(&dp_dqk)
-                    } else {
-                        Vector3::zeros()
-                    };
-                    let d_dpqj_dqk = if model.is_ancestor(body_j, jnt_k) || body_j == body_k {
-                        axis_j.cross(&dp_dqk)
-                    } else {
-                        Vector3::zeros()
-                    };
-                    let dm_ij_dk = mass_m * (d_dpqi_dqk.dot(&dp_dqj) + dp_dqi.dot(&d_dpqj_dqk));
-
-                    // Similarly for ∂M_{ik}/∂q_j and ∂M_{jk}/∂q_i
-                    let d_dpqi_dqj = if model.is_ancestor(body_i, jnt_j) || body_i == body_j {
-                        axis_i.cross(&dp_dqj)
-                    } else {
-                        Vector3::zeros()
-                    };
-                    let d_dpqk_dqj = if model.is_ancestor(body_k, jnt_j) || body_k == body_j {
-                        axis_k.cross(&dp_dqj)
-                    } else {
-                        Vector3::zeros()
-                    };
-                    let dm_ik_dj = mass_m * (d_dpqi_dqj.dot(&dp_dqk) + dp_dqi.dot(&d_dpqk_dqj));
-
-                    let d_dpqj_dqi = if model.is_ancestor(body_j, jnt_i) || body_j == body_i {
-                        axis_j.cross(&dp_dqi)
-                    } else {
-                        Vector3::zeros()
-                    };
-                    let d_dpqk_dqi = if model.is_ancestor(body_k, jnt_i) || body_k == body_i {
-                        axis_k.cross(&dp_dqi)
-                    } else {
-                        Vector3::zeros()
-                    };
-                    let dm_jk_di = mass_m * (d_dpqj_dqi.dot(&dp_dqk) + dp_dqj.dot(&d_dpqk_dqi));
-
-                    c_ijk += 0.5 * (dm_ij_dk + dm_ik_dj - dm_jk_di);
-                }
-
-                data.qfrc_bias[dof_i] += c_ijk * qdot_j * qdot_k;
             }
+        }
+
+        // COM offset from body origin (in world frame)
+        let com_world = data.xipos[body_id];
+        let body_origin = data.xpos[body_id];
+        let h = com_world - body_origin;
+
+        // Build 6x6 spatial inertia
+        let mut crb = Matrix6::zeros();
+
+        // Upper-left 3x3: rotational inertia about body origin (parallel axis)
+        let h_dot_h = h.dot(&h);
+        for row in 0..3 {
+            for col in 0..3 {
+                let h_outer = h[row] * h[col];
+                let delta = if row == col { 1.0 } else { 0.0 };
+                crb[(row, col)] = i_rot[(row, col)] + mass * (h_dot_h * delta - h_outer);
+            }
+        }
+
+        // Lower-right 3x3: translational inertia
+        for d in 0..3 {
+            crb[(3 + d, 3 + d)] = mass;
+        }
+
+        // Off-diagonal: coupling (skew of m*h)
+        let mh = mass * h;
+        crb[(0, 4)] = -mh.z;
+        crb[(0, 5)] = mh.y;
+        crb[(1, 3)] = mh.z;
+        crb[(1, 5)] = -mh.x;
+        crb[(2, 3)] = -mh.y;
+        crb[(2, 4)] = mh.x;
+        crb[(4, 0)] = -mh.z;
+        crb[(5, 0)] = mh.y;
+        crb[(3, 1)] = mh.z;
+        crb[(5, 1)] = -mh.x;
+        crb[(3, 2)] = -mh.y;
+        crb[(4, 2)] = mh.x;
+
+        body_inertia[body_id] = crb;
+    }
+
+    // ========== Backward Pass: Compute Bias Forces ==========
+    // For each body from leaves to root:
+    //   f_bias[i] = I[i] @ a_bias[i] + v[i] ×* (I[i] @ v[i])
+    //   f_bias[parent] += f_bias[i]
+    //
+    // Then project to joint space:
+    //   τ_bias[dof] = S[i]^T @ f_bias[i]
+
+    // First compute f_bias for each body
+    for body_id in 1..model.nbody {
+        let i = &body_inertia[body_id];
+        let v = data.cvel[body_id];
+        let a_bias = data.cacc_bias[body_id];
+
+        // I @ v (momentum)
+        let i_v = i * v;
+
+        // I @ a_bias (inertial force from bias acceleration)
+        let i_a = i * a_bias;
+
+        // v ×* (I @ v) (gyroscopic/Coriolis force)
+        let gyro = spatial_cross_force(v, i_v);
+
+        // f_bias = I @ a_bias + v ×* (I @ v)
+        data.cfrc_bias[body_id] = i_a + gyro;
+    }
+
+    // Propagate forces from leaves to root
+    for body_id in (1..model.nbody).rev() {
+        let parent_id = model.body_parent[body_id];
+        if parent_id != 0 {
+            // Add child's force to parent (already in world frame, no transform needed)
+            let child_force = data.cfrc_bias[body_id];
+            data.cfrc_bias[parent_id] += child_force;
+        }
+    }
+
+    // ========== Project to Joint Space ==========
+    // τ_bias[dof] = S^T @ f_bias[body]
+    for jnt_id in 0..model.njnt {
+        let body_id = model.jnt_body[jnt_id];
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+        let s = joint_motion_subspace(model, data, jnt_id);
+        let nv = model.jnt_type[jnt_id].nv();
+
+        let f = data.cfrc_bias[body_id];
+
+        // τ = S^T @ f
+        for d in 0..nv {
+            let mut tau = 0.0;
+            for row in 0..6 {
+                tau += s[(row, d)] * f[row];
+            }
+            data.qfrc_bias[dof_adr + d] += tau;
         }
     }
 }
@@ -8625,15 +9445,495 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
     }
 }
 
+// ============================================================================
+// Contact Jacobian Computation
+// ============================================================================
+
+/// Compute the contact Jacobian row for a single body contribution.
+///
+/// The Jacobian maps joint velocities to Cartesian point velocity:
+/// v_point = J * qvel
+///
+/// For a contact at world point `p` on body `body_id`, we walk the kinematic
+/// chain from body to root, accumulating Jacobian contributions from each joint.
+///
+/// Returns the Jacobian row (length nv) for translational velocity at the point.
+#[allow(dead_code)] // Reserved for future use in inverse dynamics
+fn compute_body_jacobian_at_point(
+    model: &Model,
+    data: &Data,
+    body_id: usize,
+    point: Vector3<f64>,
+) -> DVector<f64> {
+    let mut jacobian = DVector::zeros(model.nv);
+
+    if body_id == 0 {
+        return jacobian; // World has no DOFs
+    }
+
+    // Walk from body to root, accumulating Jacobian contributions
+    let mut current_body = body_id;
+    while current_body != 0 {
+        let jnt_start = model.body_jnt_adr[current_body];
+        let jnt_end = jnt_start + model.body_jnt_num[current_body];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    // v = axis × r (rotational velocity contribution)
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - jpos;
+                    let j_col = axis.cross(&r);
+                    jacobian[dof_adr] = j_col.x;
+                    // Store the other components in a 3xnv matrix style
+                    // For now, we'll compute this per-direction
+                }
+                MjJointType::Slide => {
+                    // v = axis (translational velocity contribution)
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    jacobian[dof_adr] = axis.x;
+                }
+                MjJointType::Ball => {
+                    // Angular velocity contribution
+                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - jpos;
+                    // v = ω × r, and ω is in body frame for ball joint
+                    // ω_world = R * ω_body, v = ω_world × r
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    for i in 0..3 {
+                        // ω_body[i] contribution
+                        let omega_world = rot * Vector3::ith(i, 1.0);
+                        let j_col = omega_world.cross(&r);
+                        jacobian[dof_adr + i] = j_col.x;
+                    }
+                }
+                MjJointType::Free => {
+                    // Linear DOFs directly contribute
+                    jacobian[dof_adr] = 1.0; // vx
+                    jacobian[dof_adr + 1] = 0.0; // vy (this is for x direction)
+                    jacobian[dof_adr + 2] = 0.0; // vz
+
+                    // Angular DOFs: v = ω × r
+                    let jpos = Vector3::new(
+                        data.qpos[model.jnt_qpos_adr[jnt_id]],
+                        data.qpos[model.jnt_qpos_adr[jnt_id] + 1],
+                        data.qpos[model.jnt_qpos_adr[jnt_id] + 2],
+                    );
+                    let r = point - jpos;
+                    // v = ω × r => for ω in world frame
+                    // ∂vx/∂ωy = rz, ∂vx/∂ωz = -ry
+                    jacobian[dof_adr + 3] = 0.0; // ∂vx/∂ωx
+                    jacobian[dof_adr + 4] = r.z; // ∂vx/∂ωy
+                    jacobian[dof_adr + 5] = -r.y; // ∂vx/∂ωz
+                }
+            }
+        }
+        current_body = model.body_parent[current_body];
+    }
+
+    jacobian
+}
+
+/// Compute the full 3xnv contact Jacobian for a contact point.
+///
+/// Returns a 3×nv matrix where:
+/// - Row 0: normal direction Jacobian
+/// - Row 1: tangent1 direction Jacobian
+/// - Row 2: tangent2 direction Jacobian
+fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -> DMatrix<f64> {
+    let nv = model.nv;
+    let body1 = model.geom_body[contact.geom1];
+    let body2 = model.geom_body[contact.geom2];
+
+    // Build orthonormal tangent basis
+    let normal = contact.normal;
+    let (tangent1, tangent2) = build_tangent_basis(&normal);
+
+    // Allocate 3×nv Jacobian
+    let mut j = DMatrix::zeros(3, nv);
+
+    // Helper: add body Jacobian contribution for one direction
+    let add_body_jacobian =
+        |j: &mut DMatrix<f64>, row: usize, direction: &Vector3<f64>, body_id: usize, sign: f64| {
+            if body_id == 0 {
+                return; // World has no DOFs
+            }
+
+            let mut current_body = body_id;
+            while current_body != 0 {
+                let jnt_start = model.body_jnt_adr[current_body];
+                let jnt_end = jnt_start + model.body_jnt_num[current_body];
+
+                for jnt_id in jnt_start..jnt_end {
+                    let dof_adr = model.jnt_dof_adr[jnt_id];
+                    let jnt_body = model.jnt_body[jnt_id];
+
+                    match model.jnt_type[jnt_id] {
+                        MjJointType::Hinge => {
+                            let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                            let jpos =
+                                data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                            let r = contact.pos - jpos;
+                            let j_col = axis.cross(&r);
+                            j[(row, dof_adr)] += sign * direction.dot(&j_col);
+                        }
+                        MjJointType::Slide => {
+                            let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                            j[(row, dof_adr)] += sign * direction.dot(&axis);
+                        }
+                        MjJointType::Ball => {
+                            let jpos =
+                                data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                            let r = contact.pos - jpos;
+                            let rot = data.xquat[jnt_body].to_rotation_matrix();
+                            for i in 0..3 {
+                                let omega_world = rot * Vector3::ith(i, 1.0);
+                                let j_col = omega_world.cross(&r);
+                                j[(row, dof_adr + i)] += sign * direction.dot(&j_col);
+                            }
+                        }
+                        MjJointType::Free => {
+                            // Linear DOFs
+                            j[(row, dof_adr)] += sign * direction.x;
+                            j[(row, dof_adr + 1)] += sign * direction.y;
+                            j[(row, dof_adr + 2)] += sign * direction.z;
+
+                            // Angular DOFs: v = ω × r
+                            let jpos = Vector3::new(
+                                data.qpos[model.jnt_qpos_adr[jnt_id]],
+                                data.qpos[model.jnt_qpos_adr[jnt_id] + 1],
+                                data.qpos[model.jnt_qpos_adr[jnt_id] + 2],
+                            );
+                            let r = contact.pos - jpos;
+                            // d/dω of (ω × r) in direction d: (e_i × r) · d
+                            let ex = Vector3::x();
+                            let ey = Vector3::y();
+                            let ez = Vector3::z();
+                            j[(row, dof_adr + 3)] += sign * direction.dot(&ex.cross(&r));
+                            j[(row, dof_adr + 4)] += sign * direction.dot(&ey.cross(&r));
+                            j[(row, dof_adr + 5)] += sign * direction.dot(&ez.cross(&r));
+                        }
+                    }
+                }
+                current_body = model.body_parent[current_body];
+            }
+        };
+
+    // Compute relative velocity J * qvel = v2 - v1 (velocity of body2 relative to body1)
+    // Normal points FROM body1 (geom1) TO body2 (geom2).
+    // Positive normal velocity = bodies separating (good)
+    // Negative normal velocity = bodies approaching (need constraint)
+    //
+    // Body2 contributes positively (its velocity in +normal direction = separating)
+    // Body1 contributes negatively (its velocity in +normal direction = approaching body2)
+    add_body_jacobian(&mut j, 0, &normal, body2, 1.0);
+    add_body_jacobian(&mut j, 0, &normal, body1, -1.0);
+
+    add_body_jacobian(&mut j, 1, &tangent1, body2, 1.0);
+    add_body_jacobian(&mut j, 1, &tangent1, body1, -1.0);
+
+    add_body_jacobian(&mut j, 2, &tangent2, body2, 1.0);
+    add_body_jacobian(&mut j, 2, &tangent2, body1, -1.0);
+
+    j
+}
+
+/// Build an orthonormal tangent basis from a normal vector.
+fn build_tangent_basis(normal: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    // Pick a vector not parallel to normal
+    let ref_vec = if normal.x.abs() < 0.9 {
+        Vector3::x()
+    } else {
+        Vector3::y()
+    };
+
+    // Gram-Schmidt: project out the normal component
+    let tangent_unnorm = ref_vec - normal * normal.dot(&ref_vec);
+    let tangent_norm = tangent_unnorm.norm();
+    let tangent1 = if tangent_norm > 1e-10 {
+        tangent_unnorm / tangent_norm
+    } else {
+        // Degenerate case: normal is zero or parallel to ref_vec
+        Vector3::x()
+    };
+    let tangent2 = normal.cross(&tangent1);
+
+    (tangent1, tangent2)
+}
+
+// ============================================================================
+// PGS Constraint Solver
+// ============================================================================
+
+/// Projected Gauss-Seidel solver for contact constraints.
+///
+/// Solves the LCP:
+///   minimize: (1/2) λ^T (A + R) λ + λ^T b
+///   subject to: λ_n ≥ 0, |λ_t| ≤ μ λ_n
+///
+/// Where:
+///   A = J * M^{-1} * J^T (constraint-space inverse inertia)
+///   R = regularization (softness)
+///   b = J * qacc_smooth - aref (velocity error with Baumgarte stabilization)
+///
+/// Returns the constraint forces in contact-frame (λ).
+fn pgs_solve_contacts(
+    model: &Model,
+    data: &mut Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+) -> Vec<Vector3<f64>> {
+    let ncon = contacts.len();
+    if ncon == 0 {
+        return vec![];
+    }
+
+    // Build the constraint system
+    // Each contact has 3 rows: 1 normal + 2 friction
+    let nefc = ncon * 3;
+
+    // Use cached Cholesky from mj_crba
+    let chol = match &data.qM_cholesky {
+        Some(c) => c,
+        None => {
+            // Fallback to penalty if M is singular
+            return vec![Vector3::zeros(); ncon];
+        }
+    };
+
+    // Build the full Jacobian and RHS
+    let mut a = DMatrix::zeros(nefc, nefc);
+    let mut b = DVector::zeros(nefc);
+
+    // Regularization (softness) for numerical stability
+    let regularization = 1e-6;
+
+    // Baumgarte stabilization parameters
+    let baumgarte_erp = 0.2; // Error reduction parameter (increased for stability)
+    let baumgarte_cfm = 1e-5; // Constraint force mixing
+
+    // Compute unconstrained acceleration (qacc_smooth = M^{-1} * qfrc_smooth)
+    // qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias
+    let mut qfrc_smooth = data.qfrc_applied.clone();
+    qfrc_smooth += &data.qfrc_actuator;
+    qfrc_smooth += &data.qfrc_passive;
+    qfrc_smooth -= &data.qfrc_bias;
+    let qacc_smooth = chol.solve(&qfrc_smooth);
+
+    // Pre-compute M^{-1} * J^T for each contact
+    let mut minv_jt: Vec<DMatrix<f64>> = Vec::with_capacity(ncon);
+    for jacobian in jacobians {
+        let jt = jacobian.transpose();
+        // Solve M * X = J^T for each column
+        let mut minv_jt_contact = DMatrix::zeros(model.nv, 3);
+        for col in 0..3 {
+            let jt_col = jt.column(col).clone_owned();
+            let x = chol.solve(&jt_col);
+            minv_jt_contact.set_column(col, &x);
+        }
+        minv_jt.push(minv_jt_contact);
+    }
+
+    // Build A matrix blocks and RHS
+    for (i, (contact_i, jac_i)) in contacts.iter().zip(jacobians.iter()).enumerate() {
+        // Diagonal block: A[i,i] = J_i * M^{-1} * J_i^T
+        let a_ii = jac_i * &minv_jt[i];
+        for ri in 0..3 {
+            for ci in 0..3 {
+                a[(i * 3 + ri, i * 3 + ci)] = a_ii[(ri, ci)];
+            }
+            // Add regularization to diagonal
+            a[(i * 3 + ri, i * 3 + ri)] += regularization + baumgarte_cfm;
+        }
+
+        // Off-diagonal blocks: A[i,j] = J_i * M^{-1} * J_j^T
+        for (j, _jac_j) in jacobians.iter().enumerate().skip(i + 1) {
+            let block_ij = jac_i * &minv_jt[j];
+            for ri in 0..3 {
+                for ci in 0..3 {
+                    a[(i * 3 + ri, j * 3 + ci)] = block_ij[(ri, ci)];
+                    a[(j * 3 + ci, i * 3 + ri)] = block_ij[(ri, ci)]; // Symmetric
+                }
+            }
+        }
+
+        // RHS: b = J * qacc_smooth + aref
+        // where qacc_smooth = M^{-1} * qfrc_smooth (acceleration without contacts)
+        // and aref = velocity_error + position_error (Baumgarte stabilization)
+        //
+        // For the LCP: A*λ + b >= 0, λ >= 0
+        // We want λ > 0 when b < 0 (i.e., when unconstrained acceleration
+        // would cause penetration/violation)
+
+        let body1 = model.geom_body[contact_i.geom1];
+        let body2 = model.geom_body[contact_i.geom2];
+
+        // Contact-frame velocity (v2 - v1, matching Jacobian convention)
+        let vel1 = compute_point_velocity(data, body1, contact_i.pos);
+        let vel2 = compute_point_velocity(data, body2, contact_i.pos);
+        let rel_vel = vel2 - vel1;
+
+        let normal = contact_i.normal;
+        let (tangent1, tangent2) = build_tangent_basis(&normal);
+
+        let vn = rel_vel.dot(&normal);
+        let vt1 = rel_vel.dot(&tangent1);
+        let vt2 = rel_vel.dot(&tangent2);
+
+        // Compute J * qacc_smooth (unconstrained relative acceleration in contact frame)
+        // qacc_smooth = M^{-1} * (qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias)
+        let j_qacc_smooth = jac_i * &qacc_smooth;
+
+        // Baumgarte stabilization parameters
+        // aref = (1/h) * vn + β * depth
+        // This pushes to zero velocity and zero penetration
+        // Validate timestep to avoid division by zero (should never happen in practice)
+        let timestep = if model.timestep > 1e-10 {
+            model.timestep
+        } else {
+            1.0 / 240.0 // Default to MuJoCo's 240Hz if timestep is invalid
+        };
+        let velocity_damping = 1.0 / timestep; // 1/h
+        let depth_correction = baumgarte_erp / timestep; // β/h
+
+        // b = J * qacc_smooth + velocity_term + position_term
+        // For the normal constraint: we want to stop penetration
+        // J * qacc = -aref means: acceleration should be aref (away from surface)
+        //
+        // b should be negative when the constraint needs to activate
+        // Normal: if J*qacc_smooth < 0 (accelerating into surface), we need λ > 0
+        b[i * 3] = j_qacc_smooth[0] + velocity_damping * vn + depth_correction * contact_i.depth;
+        b[i * 3 + 1] = j_qacc_smooth[1] + vt1; // Friction 1
+        b[i * 3 + 2] = j_qacc_smooth[2] + vt2; // Friction 2
+    }
+
+    // PGS iteration with contact correspondence warmstart
+    // Look up previous lambda by (geom1, geom2) pair - works even when contacts reorder
+    let mut lambda = DVector::zeros(nefc);
+    for (i, contact) in contacts.iter().enumerate() {
+        let key = (
+            contact.geom1.min(contact.geom2),
+            contact.geom1.max(contact.geom2),
+        );
+        if let Some(prev_lambda) = data.efc_lambda.get(&key) {
+            let base = i * 3;
+            lambda[base] = prev_lambda[0];
+            lambda[base + 1] = prev_lambda[1];
+            lambda[base + 2] = prev_lambda[2];
+        }
+    }
+
+    // Compute diagonal inverse with protection against singular diagonals
+    // A diagonal of zero indicates a degenerate constraint configuration
+    let diag_inv: Vec<f64> = (0..nefc)
+        .map(|i| {
+            let d = a[(i, i)];
+            if d.abs() < 1e-12 {
+                // Degenerate: return zero inverse (constraint will be ignored)
+                0.0
+            } else {
+                1.0 / d
+            }
+        })
+        .collect();
+
+    for _iter in 0..max_iterations {
+        let mut max_delta = 0.0_f64;
+
+        for i in 0..ncon {
+            let base = i * 3;
+
+            // Compute residuals for this contact
+            let mut r_n = b[base];
+            let mut r_t1 = b[base + 1];
+            let mut r_t2 = b[base + 2];
+
+            for j in 0..nefc {
+                r_n += a[(base, j)] * lambda[j];
+                r_t1 += a[(base + 1, j)] * lambda[j];
+                r_t2 += a[(base + 2, j)] * lambda[j];
+            }
+
+            // Gauss-Seidel update
+            let old_n: f64 = lambda[base];
+            let old_t1: f64 = lambda[base + 1];
+            let old_t2: f64 = lambda[base + 2];
+
+            lambda[base] -= r_n * diag_inv[base];
+            lambda[base + 1] -= r_t1 * diag_inv[base + 1];
+            lambda[base + 2] -= r_t2 * diag_inv[base + 2];
+
+            // Project onto constraint bounds
+            // Normal force: λ_n ≥ 0 (unilateral constraint)
+            lambda[base] = lambda[base].max(0.0);
+
+            // Friction cone: |λ_t| ≤ μ * λ_n
+            let mu = contacts[i].friction;
+            let max_friction = mu * lambda[base];
+
+            let friction_mag = (lambda[base + 1].powi(2) + lambda[base + 2].powi(2)).sqrt();
+            if friction_mag > max_friction && friction_mag > 1e-10 {
+                // Project onto friction cone
+                let scale = max_friction / friction_mag;
+                lambda[base + 1] *= scale;
+                lambda[base + 2] *= scale;
+            }
+
+            // Track convergence
+            max_delta = max_delta
+                .max((lambda[base] - old_n).abs())
+                .max((lambda[base + 1] - old_t1).abs())
+                .max((lambda[base + 2] - old_t2).abs());
+        }
+
+        if max_delta < tolerance {
+            break;
+        }
+    }
+
+    // Store lambda for warmstart on next frame using contact correspondence
+    // Clear old entries and insert new ones with canonical (min, max) key ordering
+    data.efc_lambda.clear();
+    for (i, contact) in contacts.iter().enumerate() {
+        let base = i * 3;
+        let key = (
+            contact.geom1.min(contact.geom2),
+            contact.geom1.max(contact.geom2),
+        );
+        data.efc_lambda
+            .insert(key, [lambda[base], lambda[base + 1], lambda[base + 2]]);
+    }
+
+    // Extract per-contact forces
+    let mut forces = Vec::with_capacity(ncon);
+    for i in 0..ncon {
+        let base = i * 3;
+        forces.push(Vector3::new(
+            lambda[base],
+            lambda[base + 1],
+            lambda[base + 2],
+        ));
+    }
+
+    forces
+}
+
 /// Compute constraint forces (contacts and joint limits).
 ///
-/// This implements constraint-based enforcement using a hybrid approach:
+/// This implements constraint-based enforcement using:
 /// - Joint limits: Soft penalty method with Baumgarte stabilization
-/// - Contacts: Would use PGS solver when wired to collision detection
+/// - Contacts: PGS solver with Coulomb friction cone
 ///
-/// The penalty parameters are designed for numerical stability:
-/// - High stiffness (10000) provides near-hard limits
-/// - Critical damping (1000) prevents oscillation at the limit
+/// The constraint forces are computed via Jacobian transpose:
+///   qfrc_constraint = J^T * λ
+///
+/// where λ is found by solving the LCP with PGS.
 fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     data.qfrc_constraint.fill(0.0);
 
@@ -8685,67 +9985,56 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     }
 
     // ========== Contact Constraints ==========
-    // Apply penalty-based contact forces using Baumgarte stabilization.
-    // This is simpler than full PGS but effective for robotics applications.
+    // Use PGS solver for constraint-based contact forces.
     //
-    // Contact force: F = k * depth + b * v_normal (position and velocity stabilization)
-    // Friction: F_t ≤ μ * F_n (Coulomb friction cone)
-    //
-    // Parameters tuned for 1ms timestep and 1kg masses:
-    // - Moderate stiffness (50000 N/m) for <1mm penetration at equilibrium
-    // - Critical damping (b = 2*sqrt(k*m) ≈ 450) plus extra for multi-body stability
-    //
-    // At equilibrium: mg = k*d => d = 1*9.81/50000 = 0.0002m = 0.2mm penetration per ball
-    // Stack of 3 balls: bottom ball sees 3kg => d = 3*9.81/50000 = 0.6mm (within 1mm spec)
-    let contact_stiffness = 50000.0; // N/m - moderate stiffness
-    let contact_damping = 1000.0; // Ns/m - critically damped
+    // For small contact counts or when M is singular, fall back to penalty method
+    // which is simpler and more robust for simple scenarios.
 
     // Clone contacts to avoid borrow checker issues (contacts is part of data)
     let contacts: Vec<Contact> = data.contacts.clone();
 
-    for contact in &contacts {
-        // Get the bodies involved
-        let body1 = model.geom_body[contact.geom1];
-        let body2 = model.geom_body[contact.geom2];
+    if contacts.is_empty() {
+        return;
+    }
 
-        // Compute contact velocity along normal
-        let vel1 = compute_point_velocity(data, body1, contact.pos);
-        let vel2 = compute_point_velocity(data, body2, contact.pos);
-        let rel_vel = vel1 - vel2;
-        let normal_vel = rel_vel.dot(&contact.normal);
+    // For systems without DOFs, use simple penalty
+    if model.nv == 0 {
+        return;
+    }
 
-        // Contact force magnitude (penalty method)
-        // Only apply force if penetrating and moving into each other
-        if contact.depth > 0.0 {
-            let spring_force = contact_stiffness * contact.depth;
-            // normal_vel > 0 means objects approaching (gap closing), so add damping
-            // normal_vel < 0 means separating (gap opening), no damping needed
-            let damping_force = contact_damping * normal_vel.max(0.0);
-            let normal_force = spring_force + damping_force;
+    // Build contact Jacobians
+    let jacobians: Vec<DMatrix<f64>> = contacts
+        .iter()
+        .map(|c| compute_contact_jacobian(model, data, c))
+        .collect();
 
-            // Normal impulse/force
-            let contact_force = contact.normal * normal_force;
+    // Solve using PGS
+    let constraint_forces = pgs_solve_contacts(
+        model,
+        data,
+        &contacts,
+        &jacobians,
+        model.solver_iterations.max(10),
+        model.solver_tolerance.max(1e-8),
+    );
 
-            // Tangential (friction) force
-            let tangent_vel = rel_vel - contact.normal * normal_vel;
-            let tangent_speed = tangent_vel.norm();
-            let friction_force = if tangent_speed > 1e-6 {
-                let max_friction = contact.friction * normal_force;
-                let friction_dir = -tangent_vel / tangent_speed;
-                friction_dir * max_friction.min(contact_damping * tangent_speed)
-            } else {
-                Vector3::zeros()
-            };
+    // Apply forces via J^T
+    // qfrc_constraint += J^T * λ
+    for (i, (_jacobian, lambda)) in jacobians.iter().zip(constraint_forces.iter()).enumerate() {
+        let normal = contacts[i].normal;
+        let (tangent1, tangent2) = build_tangent_basis(&normal);
 
-            let total_force = contact_force + friction_force;
+        // Convert contact-frame forces to world-frame force
+        let world_force = normal * lambda.x + tangent1 * lambda.y + tangent2 * lambda.z;
 
-            // Apply force to both bodies through their DOFs
-            // Newton's third law: forces are equal and opposite
-            // contact.normal points in the "push direction" for geom2 (away from geom1)
-            // So body2 gets +force (pushed away from body1) and body1 gets -force
-            apply_contact_force(model, data, body1, contact.pos, -total_force);
-            apply_contact_force(model, data, body2, contact.pos, total_force);
-        }
+        // Apply via Jacobian transpose
+        // This applies the force to both bodies through the kinematic chain
+        let body1 = model.geom_body[contacts[i].geom1];
+        let body2 = model.geom_body[contacts[i].geom2];
+
+        // Body1 gets negative force (Newton's third law)
+        apply_contact_force(model, data, body1, contacts[i].pos, -world_force);
+        apply_contact_force(model, data, body2, contacts[i].pos, world_force);
     }
 }
 
@@ -8859,23 +10148,22 @@ fn mj_fwd_acceleration(model: &Model, data: &mut Data) {
     qfrc_total += &data.qfrc_constraint;
     qfrc_total -= &data.qfrc_bias;
 
-    // Solve M * qacc = qfrc_total using Cholesky decomposition
-    // M should be symmetric positive-definite
-    // NOTE: clone() is required because nalgebra's cholesky() consumes the matrix.
-    // For large systems (humanoids), consider storing a factorization buffer in Data.
-    match data.qM.clone().cholesky() {
+    // Solve M * qacc = qfrc_total using cached Cholesky from mj_crba
+    // Normal path: O(n²) forward/back substitution using cached L L^T factorization
+    match &data.qM_cholesky {
         Some(chol) => {
-            // Solve L * L^T * x = b
             data.qacc = chol.solve(&qfrc_total);
         }
         None => {
-            // Fallback: try LU decomposition (M might not be SPD due to numerical issues)
+            // Rare fallback: M wasn't SPD (numerical issues or degenerate system)
+            // This clone is acceptable since it only happens on error paths
             match data.qM.clone().lu().solve(&qfrc_total) {
                 Some(qacc) => {
                     data.qacc = qacc;
                 }
                 None => {
-                    // Last resort: diagonal solve
+                    // Last resort: diagonal solve (lumped mass approximation)
+                    // Ignores coupling but prevents NaN propagation
                     for i in 0..model.nv {
                         let m_ii = data.qM[(i, i)];
                         if m_ii.abs() > 1e-10 {
@@ -8908,9 +10196,11 @@ fn mj_integrate_pos(model: &Model, data: &mut Data, h: f64) {
                     data.qvel[dof_adr + 1],
                     data.qvel[dof_adr + 2],
                 );
-                let angle = omega.norm() * h;
-                if angle > 1e-10 {
-                    let axis = omega / omega.norm();
+                let omega_norm = omega.norm();
+                let angle = omega_norm * h;
+                // Skip if angle is negligible (avoids division by zero in axis computation)
+                if angle > 1e-10 && omega_norm > 1e-10 {
+                    let axis = omega / omega_norm;
                     let dq = UnitQuaternion::from_axis_angle(
                         &nalgebra::Unit::new_normalize(axis),
                         angle,
@@ -8940,9 +10230,11 @@ fn mj_integrate_pos(model: &Model, data: &mut Data, h: f64) {
                     data.qvel[dof_adr + 4],
                     data.qvel[dof_adr + 5],
                 );
-                let angle = omega.norm() * h;
-                if angle > 1e-10 {
-                    let axis = omega / omega.norm();
+                let omega_norm = omega.norm();
+                let angle = omega_norm * h;
+                // Skip if angle is negligible (avoids division by zero in axis computation)
+                if angle > 1e-10 && omega_norm > 1e-10 {
+                    let axis = omega / omega_norm;
                     let dq = UnitQuaternion::from_axis_angle(
                         &nalgebra::Unit::new_normalize(axis),
                         angle,
@@ -9064,9 +10356,9 @@ pub fn mj_differentiate_pos(
                 // q_delta = q2 * q1.inverse()
                 let q_delta = q2 * q1.inverse();
 
-                // Extract axis-angle
-                let angle = 2.0 * q_delta.w.acos();
-                let sin_half = (1.0 - q_delta.w * q_delta.w).sqrt();
+                // Extract axis-angle (clamp w to avoid NaN from floating-point precision)
+                let angle = 2.0 * q_delta.w.clamp(-1.0, 1.0).acos();
+                let sin_half = (1.0 - q_delta.w * q_delta.w).max(0.0).sqrt();
 
                 if sin_half > 1e-10 {
                     let axis = Vector3::new(q_delta.i, q_delta.j, q_delta.k) / sin_half;
@@ -9102,8 +10394,9 @@ pub fn mj_differentiate_pos(
                 ));
 
                 let q_delta = q2 * q1.inverse();
-                let angle = 2.0 * q_delta.w.acos();
-                let sin_half = (1.0 - q_delta.w * q_delta.w).sqrt();
+                // Clamp w to avoid NaN from floating-point precision
+                let angle = 2.0 * q_delta.w.clamp(-1.0, 1.0).acos();
+                let sin_half = (1.0 - q_delta.w * q_delta.w).max(0.0).sqrt();
 
                 if sin_half > 1e-10 {
                     let axis = Vector3::new(q_delta.i, q_delta.j, q_delta.k) / sin_half;

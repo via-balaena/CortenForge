@@ -466,6 +466,11 @@ fn support_cylinder(
 /// An ellipsoid is a scaled sphere. The support function scales the direction
 /// by the inverse radii, normalizes, then scales back by the radii.
 fn support_ellipsoid(pose: &Pose, radii: &Vector3<f64>, direction: &Vector3<f64>) -> Point3<f64> {
+    // Validate radii to avoid issues with zero/near-zero radii
+    if radii.x < EPSILON || radii.y < EPSILON || radii.z < EPSILON {
+        return pose.position;
+    }
+
     // Transform direction to local space
     let local_dir = pose.rotation.inverse() * direction;
 
@@ -538,12 +543,16 @@ pub fn gjk_query(
     // Initial direction: from center of A to center of B
     let center_a = pose_a.position;
     let center_b = pose_b.position;
-    let mut direction = (center_b - center_a).normalize();
+    let dir_vec = center_b - center_a;
+    let dir_norm = dir_vec.norm();
 
-    // Handle degenerate case where centers coincide
-    if direction.norm() < EPSILON {
-        direction = Vector3::x();
-    }
+    // Handle degenerate case where centers coincide (or nearly coincide)
+    // Must check BEFORE normalize() to avoid NaN
+    let mut direction = if dir_norm > EPSILON {
+        dir_vec / dir_norm
+    } else {
+        Vector3::x()
+    };
 
     let mut simplex = Simplex::new();
 
@@ -937,6 +946,11 @@ fn create_face(vertices: &[MinkowskiPoint], indices: [usize; 3]) -> Option<EpaFa
 
 /// Fix face orientations so all normals point outward (away from origin).
 fn fix_face_orientations(vertices: &[MinkowskiPoint], faces: &mut [EpaFace]) {
+    // Validate vertices before computing centroid
+    if vertices.is_empty() {
+        return;
+    }
+
     // Compute centroid
     #[allow(clippy::cast_precision_loss)]
     let centroid: Vector3<f64> = vertices
@@ -960,10 +974,17 @@ fn fix_face_orientations(vertices: &[MinkowskiPoint], faces: &mut [EpaFace]) {
 
 /// Find the face closest to the origin.
 fn find_closest_face(faces: &[EpaFace]) -> Option<usize> {
+    if faces.is_empty() {
+        return None;
+    }
+
+    // Filter out faces with NaN distances, then find minimum
     faces
         .iter()
         .enumerate()
+        .filter(|(_, f)| f.distance.is_finite())
         .min_by(|(_, a), (_, b)| {
+            // Safe: we filtered NaN above, so partial_cmp will never return None
             a.distance
                 .abs()
                 .partial_cmp(&b.distance.abs())

@@ -8,6 +8,13 @@ use quick_xml::events::{BytesStart, Event};
 use std::io::BufRead;
 
 use crate::error::{MjcfError, Result};
+
+/// Safe axis normalization with Z fallback for zero-length vectors.
+#[inline]
+fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
+    let n = v.norm();
+    if n > 1e-10 { v / n } else { Vector3::z() }
+}
 use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
     MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
@@ -758,7 +765,7 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
         joint.pos = parse_vector3(&pos)?;
     }
     if let Some(axis) = get_attribute_opt(e, "axis") {
-        joint.axis = parse_vector3(&axis)?.normalize();
+        joint.axis = safe_normalize_axis(parse_vector3(&axis)?);
     }
     if let Some(limited) = get_attribute_opt(e, "limited") {
         joint.limited = limited == "true";

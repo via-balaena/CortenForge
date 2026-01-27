@@ -19,6 +19,17 @@ use sim_types::{BodyId, Pose, SensorObservation};
 
 use crate::{SensorData, SensorId, SensorReading, SensorType};
 
+/// Safe direction normalization with +X fallback for zero-length vectors.
+#[inline]
+fn safe_normalize_direction(v: Vector3<f64>) -> Vector3<f64> {
+    let n = v.norm();
+    if n > 1e-10 {
+        v / n
+    } else {
+        Vector3::x() // Default ray direction
+    }
+}
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -399,9 +410,7 @@ impl Rangefinder {
     /// Get the ray direction in world coordinates for a given body pose.
     #[must_use]
     pub fn ray_direction(&self, body_pose: &Pose) -> Vector3<f64> {
-        body_pose
-            .transform_vector(&self.config.local_direction)
-            .normalize()
+        safe_normalize_direction(body_pose.transform_vector(&self.config.local_direction))
     }
 
     /// Read the sensor with a known distance (e.g., from external ray casting).

@@ -220,8 +220,7 @@ pub mod prelude {
         // Spatial algebra types
         SpatialMatrix,
         SpatialVector,
-        // World integration
-        SpawnedArticulation,
+        // Additional systems
         SpherePile,
         SphericalPendulum,
     };

@@ -1177,7 +1177,8 @@ fn compute_fromto_pose(
             )
         } else {
             let rot_axis = z_axis.cross(&axis_normalized);
-            let angle = z_axis.dot(&axis_normalized).acos();
+            // Clamp to avoid NaN from floating-point precision issues
+            let angle = z_axis.dot(&axis_normalized).clamp(-1.0, 1.0).acos();
             UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(rot_axis), angle)
         }
     } else {

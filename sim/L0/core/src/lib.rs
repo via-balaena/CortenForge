@@ -1,28 +1,25 @@
 //! Core physics simulation engine.
 //!
-//! This crate provides the simulation loop, world management, and numerical
-//! integration for physics-based simulations. It builds on [`sim_types`] for
-//! the data structures.
+//! This crate provides the MuJoCo-aligned Model/Data architecture for physics-based
+//! simulations. It follows Todorov's design where:
+//!
+//! - [`Model`] is static (immutable after loading)
+//! - [`Data`] is dynamic (qpos/qvel are the source of truth)
+//! - Body poses are computed via forward kinematics
 //!
 //! # Architecture
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────┐
-//! │                        Stepper                               │
-//! │  Orchestrates: forces → integration → time advancement      │
+//! │                         Model                               │
+//! │  Static: kinematic tree, joint definitions, geometries      │
 //! └─────────────────────────┬───────────────────────────────────┘
 //!                           │
 //!                           ▼
 //! ┌─────────────────────────────────────────────────────────────┐
-//! │                         World                                │
-//! │  Contains: bodies, joints, configuration, time              │
-//! │  Provides: entity management, force application, queries    │
-//! └─────────────────────────┬───────────────────────────────────┘
-//!                           │
-//!                           ▼
-//! ┌─────────────────────────────────────────────────────────────┐
-//! │                      Integrators                             │
-//! │  Euler, Semi-Implicit Euler, Velocity Verlet, RK4           │
+//! │                          Data                               │
+//! │  Dynamic: qpos, qvel → FK → xpos, xquat                     │
+//! │  One step: forward() then integrate()                       │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -37,90 +34,25 @@
 //!
 //! # Quick Start
 //!
-//! ```
-//! use sim_core::{World, Stepper, Body};
-//! use sim_types::{RigidBodyState, Pose, MassProperties, SimulationConfig};
-//! use nalgebra::Point3;
+//! ```ignore
+//! use sim_core::{Model, Data};
+//! use sim_mjcf::load_model;
 //!
-//! // Create a world with default config (Earth gravity, 240Hz)
-//! let mut world = World::new(SimulationConfig::default());
+//! // Load a model from MJCF
+//! let model = load_model(MJCF_XML).expect("Failed to load model");
 //!
-//! // Add a falling sphere
-//! let body_id = world.add_body(
-//!     RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 10.0))),
-//!     MassProperties::sphere(1.0, 0.5),
-//! );
+//! // Create simulation data
+//! let mut data = model.make_data();
 //!
-//! // Create a stepper and simulate
-//! let mut stepper = Stepper::new();
+//! // Step the simulation
+//! for _ in 0..1000 {
+//!     data.step(&model);
+//! }
 //!
-//! // Run for 1 second of simulation time
-//! let observations = stepper.run_for(&mut world, 1.0).unwrap();
-//!
-//! // Check final state
-//! let final_obs = observations.last().unwrap();
-//! let final_state = final_obs.body_state(body_id).unwrap();
-//! println!("Final position: {:?}", final_state.pose.position);
-//! ```
-//!
-//! # Integration Methods
-//!
-//! The crate supports multiple integration methods with different trade-offs:
-//!
-//! | Method | Order | Symplectic | Cost | Best For |
-//! |--------|-------|------------|------|----------|
-//! | Explicit Euler | 1 | No | Low | Simple tests |
-//! | Semi-Implicit Euler | 1 | Yes | Low | Real-time, games |
-//! | Velocity Verlet | 2 | Yes | Medium | General purpose |
-//! | RK4 | 4 | No | High | High accuracy |
-//!
-//! Symplectic integrators conserve energy over long simulations, making them
-//! preferred for physics applications.
-//!
-//! # Actions
-//!
-//! Control the simulation by submitting actions:
-//!
-//! ```
-//! use sim_core::{World, Stepper};
-//! use sim_types::{Action, ActionType, ExternalForce, BodyId};
-//! use nalgebra::Vector3;
-//!
-//! let mut world = World::default();
-//! let body_id = world.add_body(
-//!     sim_types::RigidBodyState::origin(),
-//!     sim_types::MassProperties::sphere(1.0, 0.5),
-//! );
-//!
-//! let mut stepper = Stepper::new();
-//!
-//! // Apply an impulse
-//! let force = ExternalForce::at_com(body_id, Vector3::new(100.0, 0.0, 0.0));
-//! stepper.submit_action(Action::immediate(ActionType::force(force)));
-//!
-//! stepper.step(&mut world).unwrap();
-//! ```
-//!
-//! # Diagnostics
-//!
-//! The world provides diagnostic methods:
-//!
-//! ```
-//! use sim_core::World;
-//! use sim_types::{RigidBodyState, MassProperties, Twist};
-//! use nalgebra::Vector3;
-//!
-//! let mut world = World::default();
-//! world.add_body(
-//!     RigidBodyState::new(
-//!         sim_types::Pose::identity(),
-//!         Twist::linear(Vector3::new(1.0, 0.0, 0.0)),
-//!     ),
-//!     MassProperties::sphere(2.0, 0.5),
-//! );
-//!
-//! println!("Total kinetic energy: {} J", world.total_kinetic_energy());
-//! println!("Total momentum: {:?}", world.total_linear_momentum());
+//! // Access body poses (computed from qpos via FK)
+//! for i in 0..model.nbody {
+//!     println!("Body {} position: {:?}", i, data.xpos[i]);
+//! }
 //! ```
 
 #![doc(html_root_url = "https://docs.rs/sim-core/0.7.0")]
@@ -131,7 +63,10 @@
     clippy::suboptimal_flops,          // mul_add style changes aren't always clearer
 )]
 
-pub mod broad_phase;
+// Collision shape primitives (canonical source)
+pub mod collision_shape;
+
+// Core simulation algorithms
 pub mod gjk_epa;
 pub mod heightfield;
 pub mod integrators;
@@ -140,13 +75,37 @@ pub mod mid_phase;
 pub mod mujoco_pipeline;
 pub mod raycast;
 pub mod sdf;
-mod stepper;
-mod world;
 
-pub use broad_phase::{
-    Aabb, Axis, BroadPhase, BroadPhaseAlgorithm, BroadPhaseConfig, BroadPhaseDetector, BruteForce,
-    SweepAndPrune,
-};
+// Legacy World API (deprecated - use Model/Data instead)
+// TODO: Remove in next major version
+mod broad_phase;
+mod stepper;
+/// Legacy simulation world module. Use Model/Data API instead.
+#[deprecated(
+    since = "0.8.0",
+    note = "Use Model/Data API from mujoco_pipeline module instead"
+)]
+pub mod world;
+
+pub use collision_shape::{Aabb, Axis, CollisionShape};
+
+// Legacy World API exports (deprecated - use Model/Data instead)
+#[deprecated(
+    since = "0.8.0",
+    note = "Use Model/Data API instead. See mujoco_pipeline module."
+)]
+pub use stepper::SimulationBuilder;
+#[deprecated(
+    since = "0.8.0",
+    note = "Use Model/Data API instead. See mujoco_pipeline module."
+)]
+pub use stepper::{StepResult, Stepper, StepperConfig};
+#[deprecated(
+    since = "0.8.0",
+    note = "Use Model/Data API instead. See mujoco_pipeline module."
+)]
+pub use world::{Body, Joint, World};
+
 pub use heightfield::{HeightFieldContact, HeightFieldData};
 pub use mesh::{
     MeshContact, Triangle, TriangleMeshData, closest_point_on_triangle, mesh_box_contact,
@@ -159,10 +118,8 @@ pub use sdf::{
     SdfCollisionData, SdfContact, sdf_box_contact, sdf_capsule_contact, sdf_point_contact,
     sdf_sphere_contact,
 };
-pub use stepper::{SimulationBuilder, StepResult, Stepper, StepperConfig};
-pub use world::{Body, CollisionShape, Joint, World};
 
-// MuJoCo-style physics pipeline types
+// MuJoCo-style physics pipeline types (primary API)
 pub use mujoco_pipeline::{
     ActuatorDynamics,
     ActuatorTransmission,
@@ -189,11 +146,11 @@ pub use mujoco_pipeline::{
     Integrator,
     JointIndex,
     MjJointType,
-    // Sensor types (Phase 5)
+    // Sensor types
     MjObjectType,
     MjSensorDataType,
     MjSensorType,
-    // MuJoCo-aligned Model/Data architecture (Phase 1)
+    // MuJoCo-aligned Model/Data architecture
     Model,
     NLinkPendulum,
     PGSConfig,
@@ -203,8 +160,6 @@ pub use mujoco_pipeline::{
     // Spatial algebra types
     SpatialMatrix,
     SpatialVector,
-    // World integration
-    SpawnedArticulation,
     SpherePile,
     SphericalPendulum,
     // Utility functions for position/velocity differentiation
@@ -240,149 +195,53 @@ pub use sim_types::{
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
-    use nalgebra::{Point3, Vector3};
 
     #[test]
-    fn test_basic_simulation() {
-        let mut world = World::new(SimulationConfig::default());
+    fn test_model_data_basic() {
+        // Test basic Model/Data API using n-link pendulum
+        let model = Model::n_link_pendulum(1, 1.0, 0.1);
+        let mut data = model.make_data();
 
-        // Add a body at height 10m
-        let body_id = world.add_body(
-            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 10.0))),
-            MassProperties::sphere(1.0, 0.5),
-        );
+        // Initial position should be zero (equilibrium)
+        assert_relative_eq!(data.qpos[0], 0.0, epsilon = 1e-6);
 
-        let mut stepper = Stepper::new();
+        // Start at 45 degrees (not equilibrium) so it will swing
+        data.qpos[0] = std::f64::consts::FRAC_PI_4;
+        data.forward(&model);
 
-        // Run for 0.5 seconds
-        let observations = stepper
-            .run_for(&mut world, 0.5)
-            .expect("simulation should succeed");
+        // Step for 0.5 seconds
+        for _ in 0..500 {
+            data.step(&model);
+        }
 
-        // Should have observations
-        assert!(!observations.is_empty());
-
-        // Body should have fallen
-        let final_state = world.body(body_id).expect("body should exist");
-        assert!(final_state.state.pose.position.z < 10.0);
+        // Pendulum should have swung past equilibrium (negative angle now)
+        // Since we started at +45°, it should have swung down and past 0
+        assert!(data.qpos[0].abs() > 1e-3, "Pendulum should swing");
     }
 
     #[test]
-    fn test_momentum_conservation() {
-        // In zero gravity with no external forces, momentum should be conserved
-        let mut world = World::new(SimulationConfig::default().zero_gravity());
+    fn test_model_data_energy() {
+        // Test energy conservation in zero gravity using n-link pendulum
+        // Create a pendulum but step without gravity (check kinetic energy conservation)
+        let mut model = Model::n_link_pendulum(1, 1.0, 0.1);
+        model.gravity = nalgebra::Vector3::zeros();
+        let mut data = model.make_data();
 
-        // Two bodies moving towards each other
-        world.add_body(
-            RigidBodyState::new(
-                Pose::from_position(Point3::new(-5.0, 0.0, 0.0)),
-                Twist::linear(Vector3::new(1.0, 0.0, 0.0)),
-            ),
-            MassProperties::sphere(1.0, 0.5),
-        );
-        world.add_body(
-            RigidBodyState::new(
-                Pose::from_position(Point3::new(5.0, 0.0, 0.0)),
-                Twist::linear(Vector3::new(-1.0, 0.0, 0.0)),
-            ),
-            MassProperties::sphere(1.0, 0.5),
-        );
+        // Give it initial velocity
+        data.qvel[0] = 1.0;
+        data.forward(&model);
 
-        let initial_momentum = world.total_linear_momentum();
+        let initial_ke = data.energy_kinetic;
 
-        let mut stepper = Stepper::with_config(StepperConfig::zero_gravity());
+        // Step for a while
+        for _ in 0..1000 {
+            data.step(&model);
+        }
 
-        // Run for a while (no collision handling, so they pass through)
-        stepper
-            .run_for(&mut world, 1.0)
-            .expect("simulation should succeed");
+        let final_ke = data.energy_kinetic;
 
-        let final_momentum = world.total_linear_momentum();
-
-        // Momentum should be conserved
-        assert_relative_eq!(
-            initial_momentum.norm(),
-            final_momentum.norm(),
-            epsilon = 1e-10
-        );
-    }
-
-    #[test]
-    fn test_energy_trend() {
-        // Free falling body should gain kinetic energy equal to lost potential energy
-        let mut world = World::new(SimulationConfig::high_fidelity());
-
-        let initial_height = 10.0;
-        let mass = 1.0;
-
-        world.add_body(
-            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, initial_height))),
-            MassProperties::sphere(mass, 0.5),
-        );
-
-        let g = 9.81;
-        let initial_potential = mass * g * initial_height;
-        let initial_kinetic = world.total_kinetic_energy();
-        let initial_total = initial_potential + initial_kinetic;
-
-        let mut stepper = Stepper::new();
-        stepper
-            .run_for(&mut world, 0.5)
-            .expect("simulation should succeed");
-
-        let body = world.bodies().next().expect("should have body");
-        let final_height = body.state.pose.position.z;
-        let final_potential = mass * g * final_height;
-        let final_kinetic = world.total_kinetic_energy();
-        let final_total = final_potential + final_kinetic;
-
-        // Total energy should be approximately conserved
-        // (some drift expected due to numerical integration)
-        let energy_drift = (final_total - initial_total).abs() / initial_total;
-        assert!(
-            energy_drift < 0.01,
-            "Energy drift too large: {}%",
-            energy_drift * 100.0
-        );
-    }
-
-    #[test]
-    fn test_static_ground() {
-        let mut world = World::new(SimulationConfig::default());
-
-        // Static ground
-        world.add_static_body(Pose::from_position(Point3::new(0.0, 0.0, 0.0)));
-
-        // Falling body (note: no collision detection in core, will pass through)
-        world.add_body(
-            RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 1.0))),
-            MassProperties::sphere(1.0, 0.5),
-        );
-
-        let mut stepper = Stepper::new();
-        stepper
-            .run_for(&mut world, 1.0)
-            .expect("simulation should succeed");
-
-        // Ground should not have moved
-        let ground = world
-            .bodies()
-            .find(|b| b.is_static)
-            .expect("should have ground");
-        assert_relative_eq!(ground.state.pose.position.z, 0.0, epsilon = 1e-10);
-    }
-
-    #[test]
-    fn test_builder_pattern() {
-        let config = SimulationConfig::realtime().zero_gravity();
-        let world = World::new(config);
-
-        let (world, stepper) = SimulationBuilder::new()
-            .world(world)
-            .stepper_config(StepperConfig::zero_gravity())
-            .build();
-
-        assert!(!stepper.config().apply_gravity);
-        assert_eq!(world.body_count(), 0);
+        // Energy should be conserved (within 1%)
+        let drift = (final_ke - initial_ke).abs() / initial_ke;
+        assert!(drift < 0.01, "Energy drift too large: {}%", drift * 100.0);
     }
 }

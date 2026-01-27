@@ -212,7 +212,8 @@ impl HeightFieldData {
     /// Returns `None` if the point is outside the height field bounds.
     #[must_use]
     pub fn sample(&self, x: f64, y: f64) -> Option<f64> {
-        if x < 0.0 || y < 0.0 {
+        // Guard against NaN inputs - use negated comparison to catch NaN
+        if !(x >= 0.0) || !(y >= 0.0) {
             return None;
         }
 
@@ -278,7 +279,14 @@ impl HeightFieldData {
         let dy = (hy - hc) / eps;
 
         // Normal is perpendicular to gradient: (-dz/dx, -dz/dy, 1) normalized
-        let normal = Vector3::new(-dx, -dy, 1.0).normalize();
+        // Z component is 1.0 so norm >= 1.0, but guard against NaN from gradient
+        let raw = Vector3::new(-dx, -dy, 1.0);
+        let norm = raw.norm();
+        let normal = if norm.is_finite() && norm > 1e-10 {
+            raw / norm
+        } else {
+            Vector3::z()
+        };
         Some(normal)
     }
 
@@ -303,7 +311,8 @@ impl HeightFieldData {
     /// Returns `None` if the point is outside the height field bounds.
     #[must_use]
     pub fn cell_at(&self, x: f64, y: f64) -> Option<(usize, usize)> {
-        if x < 0.0 || y < 0.0 {
+        // Guard against NaN inputs - use negated comparison to catch NaN
+        if !(x >= 0.0) || !(y >= 0.0) {
             return None;
         }
 
@@ -325,11 +334,31 @@ impl HeightFieldData {
         min: Point3<f64>,
         max: Point3<f64>,
     ) -> impl Iterator<Item = (usize, usize)> + '_ {
-        // Clamp to height field bounds
-        let x_start = (min.x / self.cell_size).floor().max(0.0) as usize;
-        let y_start = (min.y / self.cell_size).floor().max(0.0) as usize;
-        let x_end = ((max.x / self.cell_size).ceil() as usize).min(self.width - 1);
-        let y_end = ((max.y / self.cell_size).ceil() as usize).min(self.depth - 1);
+        // Guard against NaN - if any coord is NaN, return empty iterator
+        let has_nan =
+            !min.x.is_finite() || !min.y.is_finite() || !max.x.is_finite() || !max.y.is_finite();
+
+        // Clamp to height field bounds (safe defaults if NaN)
+        let x_start = if has_nan {
+            0
+        } else {
+            (min.x / self.cell_size).floor().max(0.0) as usize
+        };
+        let y_start = if has_nan {
+            0
+        } else {
+            (min.y / self.cell_size).floor().max(0.0) as usize
+        };
+        let x_end = if has_nan {
+            0
+        } else {
+            ((max.x / self.cell_size).ceil() as usize).min(self.width - 1)
+        };
+        let y_end = if has_nan {
+            0
+        } else {
+            ((max.y / self.cell_size).ceil() as usize).min(self.depth - 1)
+        };
 
         (y_start..y_end).flat_map(move |y| (x_start..x_end).map(move |x| (x, y)))
     }
@@ -464,8 +493,8 @@ pub fn heightfield_point_contact(
     let x = local_point.x;
     let y = local_point.y;
 
-    // Check bounds
-    if x < 0.0 || y < 0.0 {
+    // Check bounds (use negated comparison to catch NaN)
+    if !(x >= 0.0) || !(y >= 0.0) {
         return None;
     }
     if x > heightfield.extent_x() || y > heightfield.extent_y() {

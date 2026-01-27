@@ -8,7 +8,7 @@ use std::path::Path;
 
 use nalgebra::{Point3, Vector3};
 use sim_constraint::JointLimits;
-use sim_core::{Body, CollisionShape, Joint, World};
+use sim_core::world::{Body, CollisionShape, Joint, World};
 use sim_types::{BodyId, JointId, JointType, MassProperties, Pose, RigidBodyState};
 
 use crate::error::{Result, UrdfError};

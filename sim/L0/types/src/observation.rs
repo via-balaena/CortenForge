@@ -660,4 +660,25 @@ mod tests {
         let total = stats.total_force();
         assert!((total - 50.0).abs() < 1e-10);
     }
+
+    #[test]
+    fn test_contact_stats_opposing_normals() {
+        // Test case where contact normals cancel out (e.g., contacts on opposite sides)
+        let body = BodyId::new(1);
+        let contacts = vec![
+            ContactInfo::with_ground(body, Point3::new(1.0, 0.0, 0.0), Vector3::z(), 0.01)
+                .with_impulses(0.1, Vector3::zeros()),
+            ContactInfo::with_ground(body, Point3::new(-1.0, 0.0, 0.0), -Vector3::z(), 0.01)
+                .with_impulses(0.1, Vector3::zeros()),
+        ];
+
+        let stats = ContactStats::for_body(&contacts, body, 0.01);
+        assert_eq!(stats.count, 2);
+
+        // Average normal should fall back to Z-up when normals cancel
+        let avg_normal = stats.average_normal.expect("should have average normal");
+        // The normal should be valid (not NaN) and unit length
+        assert!(avg_normal.norm().is_finite());
+        assert!((avg_normal.norm() - 1.0).abs() < 1e-10);
+    }
 }
