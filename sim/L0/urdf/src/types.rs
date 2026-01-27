@@ -8,6 +8,13 @@ use nalgebra::{Matrix3, Point3, UnitQuaternion, Vector3};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// Safe axis normalization with Z fallback for zero-length vectors.
+#[inline]
+fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
+    let n = v.norm();
+    if n > 1e-10 { v / n } else { Vector3::z() }
+}
+
 // ============================================================================
 // Origin (Pose)
 // ============================================================================
@@ -456,7 +463,7 @@ impl UrdfJoint {
     /// Set the joint axis.
     #[must_use]
     pub fn with_axis(mut self, axis: Vector3<f64>) -> Self {
-        self.axis = axis.normalize();
+        self.axis = safe_normalize_axis(axis);
         self
     }
 

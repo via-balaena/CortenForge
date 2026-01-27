@@ -902,7 +902,14 @@ impl PGSSolver {
     /// Get two perpendicular axes to a given axis.
     #[allow(clippy::unused_self)]
     fn get_perpendicular_axes(&self, axis: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
-        let axis = axis.normalize();
+        // Safe normalization of input axis
+        let axis_norm = axis.norm();
+        let axis = if axis_norm > 1e-10 {
+            axis / axis_norm
+        } else {
+            // Default to Z axis if input is degenerate
+            return (Vector3::x(), Vector3::y());
+        };
 
         // Find a vector not parallel to axis
         let ref_vec = if axis.x.abs() < 0.9 {
@@ -911,8 +918,23 @@ impl PGSSolver {
             Vector3::y()
         };
 
-        let perp1 = axis.cross(&ref_vec).normalize();
-        let perp2 = axis.cross(&perp1).normalize();
+        // Safe normalize first perpendicular
+        let cross1 = axis.cross(&ref_vec);
+        let cross1_norm = cross1.norm();
+        let perp1 = if cross1_norm > 1e-10 {
+            cross1 / cross1_norm
+        } else {
+            Vector3::x()
+        };
+
+        // Safe normalize second perpendicular
+        let cross2 = axis.cross(&perp1);
+        let cross2_norm = cross2.norm();
+        let perp2 = if cross2_norm > 1e-10 {
+            cross2 / cross2_norm
+        } else {
+            Vector3::y()
+        };
 
         (perp1, perp2)
     }
@@ -974,8 +996,8 @@ impl PGSSolver {
         // Compute -J*v
         let mut rhs = -(jacobian * &v);
 
-        // Add Baumgarte stabilization: -β/h * C
-        let baumgarte = self.config.baumgarte_factor / dt;
+        // Add Baumgarte stabilization: -β/h * C (guard against zero dt)
+        let baumgarte = self.config.baumgarte_factor / dt.max(1e-10);
         for constraint in constraints {
             let c = self.compute_position_error(constraint, bodies);
             for i in 0..constraint.num_rows {

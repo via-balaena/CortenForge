@@ -223,7 +223,8 @@ impl BatchContactProcessor {
                 } else {
                     max_friction
                 };
-                -v_t.normalize() * friction_mag
+                // Safe normalization: we already checked speed > 1e-10, so divide directly
+                -v_t * (friction_mag / speed)
             } else {
                 Vector3::zeros()
             }

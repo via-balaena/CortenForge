@@ -423,10 +423,24 @@ impl EllipticFrictionCone {
         };
 
         // First tangent: perpendicular to normal
-        let t1 = normal.cross(&up).normalize();
+        let cross1 = normal.cross(&up);
+        let cross1_norm = cross1.norm();
+        let t1 = if cross1_norm > 1e-10 {
+            cross1 / cross1_norm
+        } else {
+            // Fallback: normal is along X or Y axis
+            Vector3::z()
+        };
 
         // Second tangent: perpendicular to both
-        let t2 = normal.cross(&t1).normalize();
+        let cross2 = normal.cross(&t1);
+        let cross2_norm = cross2.norm();
+        let t2 = if cross2_norm > 1e-10 {
+            cross2 / cross2_norm
+        } else {
+            // Fallback for degenerate case
+            t1.cross(&Vector3::z())
+        };
 
         (t1, t2)
     }
@@ -578,8 +592,9 @@ impl FrictionModel {
             } => {
                 // Stribeck curve: smooth transition from static to kinetic
                 // f(v) = mu_kinetic + (mu_static - mu_kinetic) * exp(-|v|/v_s)
-                let stribeck =
-                    mu_kinetic + (mu_static - mu_kinetic) * (-speed / stribeck_velocity).exp();
+                // Guard against zero stribeck_velocity
+                let v_s = stribeck_velocity.max(1e-10);
+                let stribeck = mu_kinetic + (mu_static - mu_kinetic) * (-speed / v_s).exp();
                 stribeck * normal_force + viscosity * speed
             }
         };
@@ -610,7 +625,11 @@ impl FrictionModel {
                 mu_kinetic,
                 stribeck_velocity,
                 ..
-            } => mu_kinetic + (mu_static - mu_kinetic) * (-speed / stribeck_velocity).exp(),
+            } => {
+                // Guard against zero stribeck_velocity
+                let v_s = stribeck_velocity.max(1e-10);
+                mu_kinetic + (mu_static - mu_kinetic) * (-speed / v_s).exp()
+            }
         }
     }
 

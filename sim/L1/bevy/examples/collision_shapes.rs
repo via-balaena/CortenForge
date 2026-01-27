@@ -6,73 +6,84 @@
 //! (or `--features wayland` on Wayland systems)
 
 #![allow(clippy::needless_pass_by_value)] // Bevy system parameters
+#![allow(clippy::expect_used)] // Examples use expect for clarity
 
 use bevy::prelude::*;
 use sim_bevy::prelude::*;
-use sim_core::{CollisionShape, World};
-use sim_types::{MassProperties, Pose, RigidBodyState};
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(SimViewerPlugin::new())
+        .add_plugins(ModelDataPlugin::new().with_auto_step())
         .add_systems(Startup, setup_shapes)
         .run();
 }
 
 /// Set up the physics world with all primitive collision shapes.
 fn setup_shapes(mut commands: Commands) {
-    let mut world = World::default();
+    // Define a grid of various collision shapes using MJCF
+    // Grid layout: 2 rows, 4 columns with spacing=3.0
+    let mjcf = r#"
+        <mujoco model="collision_shapes">
+            <option gravity="0 0 -9.81" timestep="0.002"/>
+            <worldbody>
+                <!-- Ground plane -->
+                <geom name="ground" type="plane" size="20 20 0.1" rgba="0.8 0.8 0.8 1"/>
 
-    // Grid layout: 2 rows, 4 columns
-    let spacing = 3.0;
-    let shapes: Vec<(&str, CollisionShape)> = vec![
-        // Row 1
-        ("Sphere", CollisionShape::sphere(0.8)),
-        (
-            "Box",
-            CollisionShape::box_shape(nalgebra::Vector3::new(0.6, 0.8, 0.5)),
-        ),
-        ("Capsule", CollisionShape::capsule(0.5, 0.3)),
-        ("Cylinder", CollisionShape::cylinder(0.6, 0.4)),
-        // Row 2
-        (
-            "Ellipsoid",
-            CollisionShape::ellipsoid(nalgebra::Vector3::new(0.8, 0.5, 0.4)),
-        ),
-        (
-            "Tall Box",
-            CollisionShape::box_shape(nalgebra::Vector3::new(0.3, 1.0, 0.3)),
-        ),
-        ("Small Sphere", CollisionShape::sphere(0.4)),
-        ("Wide Cylinder", CollisionShape::cylinder(0.3, 0.8)),
-    ];
+                <!-- Row 1 (z=1.5): Sphere, Box, Capsule, Cylinder -->
+                <body name="sphere" pos="-4.5 1.5 1.5">
+                    <freejoint name="sphere_joint"/>
+                    <geom name="sphere_geom" type="sphere" size="0.8" mass="1.0" rgba="0.9 0.3 0.3 1"/>
+                </body>
 
-    for (i, (_name, shape)) in shapes.into_iter().enumerate() {
-        let col = i % 4;
-        let row = i / 4;
+                <body name="box" pos="-1.5 1.5 1.5">
+                    <freejoint name="box_joint"/>
+                    <geom name="box_geom" type="box" size="0.6 0.8 0.5" mass="1.0" rgba="0.3 0.9 0.3 1"/>
+                </body>
 
-        let x = (col as f64 - 1.5) * spacing;
-        let z = (row as f64 - 0.5) * spacing;
-        let y = 1.5;
+                <body name="capsule" pos="1.5 1.5 1.5">
+                    <freejoint name="capsule_joint"/>
+                    <geom name="capsule_geom" type="capsule" size="0.3 0.5" mass="1.0" rgba="0.3 0.3 0.9 1"/>
+                </body>
 
-        let pose = Pose::from_position(nalgebra::Point3::new(x, y, z));
-        let state = RigidBodyState::at_rest(pose);
-        let mass = MassProperties::sphere(1.0, 0.5); // Approximate mass
-        let body_id = world.add_body(state, mass);
+                <body name="cylinder" pos="4.5 1.5 1.5">
+                    <freejoint name="cylinder_joint"/>
+                    <geom name="cylinder_geom" type="cylinder" size="0.4 0.6" mass="1.0" rgba="0.9 0.9 0.3 1"/>
+                </body>
 
-        if let Some(body) = world.body_mut(body_id) {
-            body.collision_shape = Some(shape);
-        }
-    }
+                <!-- Row 2 (z=-1.5): Ellipsoid, Tall Box, Small Sphere, Wide Cylinder -->
+                <body name="ellipsoid" pos="-4.5 1.5 -1.5">
+                    <freejoint name="ellipsoid_joint"/>
+                    <geom name="ellipsoid_geom" type="ellipsoid" size="0.8 0.5 0.4" mass="1.0" rgba="0.9 0.3 0.9 1"/>
+                </body>
 
-    // Add ground plane
-    let ground_pose = Pose::from_position(nalgebra::Point3::new(0.0, 0.0, 0.0));
-    let ground_id = world.add_static_body(ground_pose);
-    if let Some(body) = world.body_mut(ground_id) {
-        body.collision_shape = Some(CollisionShape::ground_plane(0.0));
-    }
+                <body name="tall_box" pos="-1.5 1.5 -1.5">
+                    <freejoint name="tall_box_joint"/>
+                    <geom name="tall_box_geom" type="box" size="0.3 1.0 0.3" mass="1.0" rgba="0.3 0.9 0.9 1"/>
+                </body>
 
-    // Insert the world as a resource
-    commands.insert_resource(SimulationHandle::new(world));
+                <body name="small_sphere" pos="1.5 1.5 -1.5">
+                    <freejoint name="small_sphere_joint"/>
+                    <geom name="small_sphere_geom" type="sphere" size="0.4" mass="1.0" rgba="0.9 0.6 0.3 1"/>
+                </body>
+
+                <body name="wide_cylinder" pos="4.5 1.5 -1.5">
+                    <freejoint name="wide_cylinder_joint"/>
+                    <geom name="wide_cylinder_geom" type="cylinder" size="0.8 0.3" mass="1.0" rgba="0.6 0.3 0.9 1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    // Load the model
+    let model = load_model(mjcf).expect("Failed to load MJCF model");
+
+    // Create data and run initial forward pass
+    let mut data = model.make_data();
+    data.forward(&model);
+
+    // Insert as Bevy resources
+    commands.insert_resource(PhysicsModel::new(model));
+    commands.insert_resource(PhysicsData::new(data));
 }

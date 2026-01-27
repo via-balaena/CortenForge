@@ -752,7 +752,13 @@ pub fn closest_point_on_triangle(
     // Check if P is in edge region of AB
     let vc = d1 * d4 - d3 * d2;
     if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
-        let v = d1 / (d1 - d3);
+        let denom = d1 - d3;
+        // Guard against degenerate edge (d1 ≈ d3)
+        let v = if denom.abs() > EPSILON {
+            d1 / denom
+        } else {
+            0.5
+        };
         return Point3::from(v0.coords + ab * v); // On edge AB
     }
 
@@ -767,19 +773,37 @@ pub fn closest_point_on_triangle(
     // Check if P is in edge region of AC
     let vb = d5 * d2 - d1 * d6;
     if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
-        let w = d2 / (d2 - d6);
+        let denom = d2 - d6;
+        // Guard against degenerate edge (d2 ≈ d6)
+        let w = if denom.abs() > EPSILON {
+            d2 / denom
+        } else {
+            0.5
+        };
         return Point3::from(v0.coords + ac * w); // On edge AC
     }
 
     // Check if P is in edge region of BC
     let va = d3 * d6 - d5 * d4;
     if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
-        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        let num = d4 - d3;
+        let denom = num + (d5 - d6);
+        // Guard against degenerate edge
+        let w = if denom.abs() > EPSILON {
+            num / denom
+        } else {
+            0.5
+        };
         return Point3::from(v1.coords + (v2 - v1) * w); // On edge BC
     }
 
     // P is inside the triangle
-    let denom = 1.0 / (va + vb + vc);
+    let total = va + vb + vc;
+    // Guard against degenerate triangles (total ≈ 0 means triangle has no area)
+    if total.abs() < EPSILON {
+        return v0; // Fallback to first vertex for degenerate triangle
+    }
+    let denom = 1.0 / total;
     let v = vb * denom;
     let w = vc * denom;
     Point3::from(v0.coords + ab * v + ac * w)
@@ -1029,7 +1053,7 @@ pub fn mesh_sphere_contact(
     let local_center = mesh_pose.inverse_transform_point(&sphere_center);
 
     // Query BVH for candidate triangles
-    let query_aabb = crate::broad_phase::Aabb::from_center(
+    let query_aabb = crate::collision_shape::Aabb::from_center(
         local_center,
         Vector3::new(sphere_radius, sphere_radius, sphere_radius),
     );
@@ -1087,7 +1111,7 @@ pub fn mesh_capsule_contact(
     let max_y = local_start.y.max(local_end.y) + capsule_radius;
     let max_z = local_start.z.max(local_end.z) + capsule_radius;
 
-    let query_aabb = crate::broad_phase::Aabb::new(
+    let query_aabb = crate::collision_shape::Aabb::new(
         Point3::new(min_x, min_y, min_z),
         Point3::new(max_x, max_y, max_z),
     );
@@ -1148,7 +1172,7 @@ pub fn mesh_box_contact(
         + (rot_mat[(2, 1)] * half_extents.y).abs()
         + (rot_mat[(2, 2)] * half_extents.z).abs();
 
-    let query_aabb = crate::broad_phase::Aabb::from_center(
+    let query_aabb = crate::collision_shape::Aabb::from_center(
         local_box_center,
         Vector3::new(extent_x, extent_y, extent_z),
     );
@@ -1503,7 +1527,7 @@ mod tests {
         let bvh = mesh.bvh().unwrap();
 
         // Query that overlaps the top face of the cube (at z=0.5)
-        let query = crate::broad_phase::Aabb::from_center(
+        let query = crate::collision_shape::Aabb::from_center(
             Point3::new(0.0, 0.0, 0.5),
             Vector3::new(0.2, 0.2, 0.1),
         );

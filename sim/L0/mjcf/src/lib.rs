@@ -7,8 +7,7 @@
 //! # Features
 //!
 //! - Parse MJCF XML from files or strings
-//! - Convert bodies to rigid bodies with mass properties
-//! - Convert joints to sim-core joint constraints
+//! - Convert to MuJoCo-aligned Model/Data architecture
 //! - Support for primitive collision shapes (sphere, box, capsule, plane, cylinder, ellipsoid)
 //! - Support for mesh collision shapes (convex hull from embedded data or external files)
 //! - Support for actuators (motors, position/velocity servos)
@@ -27,9 +26,7 @@
 //! # Example
 //!
 //! ```
-//! use sim_mjcf::{load_mjcf_str, MjcfLoader};
-//! use sim_core::World;
-//! use sim_types::Pose;
+//! use sim_mjcf::load_model;
 //!
 //! // Load a simple model from MJCF
 //! let mjcf = r#"
@@ -42,13 +39,16 @@
 //!     </mujoco>
 //! "#;
 //!
-//! let model = load_mjcf_str(mjcf).expect("should parse");
+//! let model = load_model(mjcf).expect("should parse");
 //! assert_eq!(model.name, "simple");
 //!
-//! // Spawn into a world
-//! let mut world = World::default();
-//! let spawned = model.spawn_at_origin(&mut world).expect("should spawn");
-//! assert_eq!(world.body_count(), 1);
+//! // Create simulation data
+//! let mut data = model.make_data();
+//!
+//! // Step the simulation
+//! for _ in 0..100 {
+//!     data.step(&model);
+//! }
 //! ```
 //!
 //! # Supported MJCF Elements
@@ -111,11 +111,11 @@
 //! format (MJB) for faster model loading:
 //!
 //! ```ignore
-//! use sim_mjcf::{load_mjcf_str, load_mjb_file, save_mjb_file};
+//! use sim_mjcf::{load_model, load_mjb_file, save_mjb_file};
 //!
 //! // Parse MJCF and save as binary
-//! let model = load_mjcf_str("<mujoco><worldbody/></mujoco>").unwrap();
-//! save_mjb_file(&model.model, "model.mjb").unwrap();
+//! let model = load_model("<mujoco><worldbody/></mujoco>").unwrap();
+//! save_mjb_file(&model, "model.mjb").unwrap();
 //!
 //! // Later, load the binary format (much faster)
 //! let loaded = load_mjb_file("model.mjb").unwrap();
@@ -172,7 +172,6 @@
 mod config;
 mod defaults;
 mod error;
-mod loader;
 #[cfg(feature = "mjb")]
 mod mjb;
 mod model_builder;
@@ -184,10 +183,6 @@ mod validation;
 pub use config::ExtendedSolverConfig;
 pub use defaults::DefaultResolver;
 pub use error::{MjcfError, Result};
-pub use loader::{
-    GeomInfo, LoadedActuator, LoadedFixedTendon, LoadedModel, LoadedMuscle, LoadedSpatialTendon,
-    LoadedTendon, MjcfLoader, SiteInfo, SpawnedModel, load_mjcf_file, load_mjcf_str,
-};
 pub use parser::parse_mjcf_str;
 pub use types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
@@ -198,7 +193,7 @@ pub use types::{
 };
 pub use validation::{ValidationResult, validate};
 
-// MuJoCo-aligned Model conversion (Phase 4 of consolidation)
+// MuJoCo-aligned Model conversion (primary API)
 pub use model_builder::{ModelConversionError, load_model, model_from_mjcf};
 
 // MJB binary format support (requires "mjb" feature)
@@ -212,11 +207,10 @@ pub use mjb::{
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use sim_core::World;
 
-    /// Integration test with a more complex model.
+    /// Test Model/Data API with a two-link arm.
     #[test]
-    fn test_two_link_arm() {
+    fn test_two_link_arm_model_data() {
         let mjcf = r#"
             <mujoco model="two_link_arm">
                 <option gravity="0 0 -9.81"/>
@@ -239,26 +233,17 @@ mod tests {
             </mujoco>
         "#;
 
-        // Load and validate
-        let model = load_mjcf_str(mjcf).expect("should load");
+        // Load into Model
+        let model = load_model(mjcf).expect("should load");
         assert_eq!(model.name, "two_link_arm");
-        assert_eq!(model.bodies.len(), 3);
-        assert_eq!(model.joints.len(), 2);
 
-        // Spawn into world
-        let mut world = World::default();
-        let spawned = model.spawn_at_origin(&mut world).expect("should spawn");
+        // Create Data and step
+        let mut data = model.make_data();
+        data.forward(&model);
 
-        // Verify world state
-        assert_eq!(world.body_count(), 3);
-        assert_eq!(world.joint_count(), 2);
-
-        // Check we can access by name
-        let base_id = spawned.body_id("base_link").expect("base_link");
-        let joint1_id = spawned.joint_id("joint1").expect("joint1");
-
-        assert!(world.body(base_id).is_some());
-        assert!(world.joint(joint1_id).is_some());
+        // Verify structure
+        assert!(model.nbody >= 3, "Should have at least 3 bodies");
+        assert_eq!(model.njnt, 2, "Should have 2 joints");
     }
 
     /// Test error handling for invalid MJCF.
@@ -292,9 +277,9 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    /// Test simple sphere body.
+    /// Test simple sphere body with Model/Data API.
     #[test]
-    fn test_simple_sphere() {
+    fn test_simple_sphere_model_data() {
         let mjcf = r#"
             <mujoco model="sphere">
                 <worldbody>
@@ -305,11 +290,15 @@ mod tests {
             </mujoco>
         "#;
 
-        let model = load_mjcf_str(mjcf).expect("should load");
-        assert_eq!(model.bodies.len(), 1);
+        let model = load_model(mjcf).expect("should load");
+        assert_eq!(model.name, "sphere");
 
-        let mut world = World::default();
-        let _spawned = model.spawn_at_origin(&mut world).expect("should spawn");
-        assert_eq!(world.body_count(), 1);
+        let mut data = model.make_data();
+        data.forward(&model);
+
+        // Step a few times
+        for _ in 0..10 {
+            data.step(&model);
+        }
     }
 }

@@ -25,6 +25,13 @@ use nalgebra::{Isometry3, Point3, Vector3};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// Safe axis normalization with Z fallback for zero-length vectors.
+#[inline]
+fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
+    let n = v.norm();
+    if n > 1e-10 { v / n } else { Vector3::z() }
+}
+
 /// Result of computing a wrap path.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -195,9 +202,27 @@ impl SphereWrap {
         let arc_length = self.radius * arc_angle;
 
         // Compute wrap normal (average of normals at tangent points)
-        let n1 = (t1 - self.center).normalize();
-        let n2 = (t2 - self.center).normalize();
-        let wrap_normal = (n1 + n2).normalize();
+        let v1 = t1 - self.center;
+        let v2 = t2 - self.center;
+        let n1_norm = v1.norm();
+        let n2_norm = v2.norm();
+        let n1 = if n1_norm > 1e-10 {
+            v1 / n1_norm
+        } else {
+            Vector3::z()
+        };
+        let n2 = if n2_norm > 1e-10 {
+            v2 / n2_norm
+        } else {
+            Vector3::z()
+        };
+        let avg = n1 + n2;
+        let avg_norm = avg.norm();
+        let wrap_normal = if avg_norm > 1e-10 {
+            avg / avg_norm
+        } else {
+            Vector3::z()
+        };
 
         WrapResult::Wrapped {
             tangent_point_1: t1,
@@ -214,7 +239,9 @@ impl SphereWrap {
 
         if d <= self.radius {
             // Point inside sphere, return closest surface point
-            return self.center + v.normalize() * self.radius;
+            // Safe normalize: if d is very small, return point on +Z surface
+            let dir = if d > 1e-10 { v / d } else { Vector3::z() };
+            return self.center + dir * self.radius;
         }
 
         // Distance from external point to tangent point along the line to center
@@ -224,13 +251,14 @@ impl SphereWrap {
 
         // Simpler: tangent point is at angle θ from line to center where cos(θ) = r/d
         let cos_theta = self.radius / d;
-        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+        // Guard against floating-point precision issues where cos_theta could be slightly > 1
+        let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
 
         // Distance from center to tangent point along v direction
         let along_v = self.radius * cos_theta;
 
-        // Find a perpendicular direction
-        let v_norm = v.normalize();
+        // Find a perpendicular direction (d > radius already checked above)
+        let v_norm = v / d;
         let perp = find_perpendicular(&v_norm);
 
         // Tangent point
@@ -239,8 +267,18 @@ impl SphereWrap {
 
     /// Compute angle between two tangent points on the sphere.
     fn angle_between_tangents(&self, t1: &Point3<f64>, t2: &Point3<f64>) -> f64 {
-        let v1 = (t1 - self.center).normalize();
-        let v2 = (t2 - self.center).normalize();
+        let d1 = t1 - self.center;
+        let d2 = t2 - self.center;
+        let n1 = d1.norm();
+        let n2 = d2.norm();
+
+        // Safe normalize with fallback to zero angle
+        if n1 < 1e-10 || n2 < 1e-10 {
+            return 0.0;
+        }
+
+        let v1 = d1 / n1;
+        let v2 = d2 / n2;
 
         let cos_angle = v1.dot(&v2).clamp(-1.0, 1.0);
         cos_angle.acos()
@@ -275,7 +313,7 @@ impl CylinderWrap {
     pub fn new(center: Point3<f64>, axis: Vector3<f64>, radius: f64, half_height: f64) -> Self {
         Self {
             center,
-            axis: axis.normalize(),
+            axis: safe_normalize_axis(axis),
             radius: radius.abs(),
             half_height: half_height.abs(),
             side: WrapSide::Both,
@@ -393,13 +431,17 @@ impl CylinderWrap {
         let d = radial.norm();
 
         if d <= self.radius {
-            return radial.normalize() * self.radius;
+            // Safe normalize: if d is very small, return +X direction
+            let dir = if d > 1e-10 { radial / d } else { Vector3::x() };
+            return dir * self.radius;
         }
 
         let cos_theta = self.radius / d;
-        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+        // Guard against floating-point precision issues
+        let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
 
-        let radial_norm = radial.normalize();
+        // d > radius already checked, so this is safe
+        let radial_norm = radial / d;
         let perp = Vector3::new(-radial_norm.y, radial_norm.x, 0.0);
 
         radial_norm * (self.radius * cos_theta) + perp * (self.radius * sin_theta)
@@ -487,6 +529,12 @@ impl WrappingGeometry {
 
 /// Find a vector perpendicular to the given vector.
 fn find_perpendicular(v: &Vector3<f64>) -> Vector3<f64> {
+    // Handle zero vector
+    let v_norm = v.norm();
+    if v_norm < 1e-10 {
+        return Vector3::x();
+    }
+
     // Find the component with smallest magnitude and use that axis
     let abs_x = v.x.abs();
     let abs_y = v.y.abs();
@@ -500,7 +548,14 @@ fn find_perpendicular(v: &Vector3<f64>) -> Vector3<f64> {
         Vector3::z()
     };
 
-    v.cross(&helper).normalize()
+    let cross = v.cross(&helper);
+    let cross_norm = cross.norm();
+    if cross_norm > 1e-10 {
+        cross / cross_norm
+    } else {
+        // Fallback if cross product is degenerate
+        Vector3::x()
+    }
 }
 
 /// Compute the signed angle span between two angles.

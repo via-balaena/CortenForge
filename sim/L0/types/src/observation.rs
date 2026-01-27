@@ -491,12 +491,19 @@ impl ContactStats {
         }
 
         let n = count as f64;
+        let avg_normal = sum_normal / n;
+        let avg_normal_norm = avg_normal.norm();
         Self {
             count,
             total_normal_force: total_normal,
             total_tangent_force: total_tangent,
             average_position: Some(Point3::from(sum_position / n)),
-            average_normal: Some((sum_normal / n).normalize()),
+            // Safe normalize: if normals cancel out, use Z-up as fallback
+            average_normal: Some(if avg_normal_norm > 1e-10 {
+                avg_normal / avg_normal_norm
+            } else {
+                Vector3::z()
+            }),
         }
     }
 
@@ -652,5 +659,26 @@ mod tests {
         // Total: sqrt(30^2 + 40^2) = sqrt(900 + 1600) = sqrt(2500) = 50
         let total = stats.total_force();
         assert!((total - 50.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_contact_stats_opposing_normals() {
+        // Test case where contact normals cancel out (e.g., contacts on opposite sides)
+        let body = BodyId::new(1);
+        let contacts = vec![
+            ContactInfo::with_ground(body, Point3::new(1.0, 0.0, 0.0), Vector3::z(), 0.01)
+                .with_impulses(0.1, Vector3::zeros()),
+            ContactInfo::with_ground(body, Point3::new(-1.0, 0.0, 0.0), -Vector3::z(), 0.01)
+                .with_impulses(0.1, Vector3::zeros()),
+        ];
+
+        let stats = ContactStats::for_body(&contacts, body, 0.01);
+        assert_eq!(stats.count, 2);
+
+        // Average normal should fall back to Z-up when normals cancel
+        let avg_normal = stats.average_normal.expect("should have average normal");
+        // The normal should be valid (not NaN) and unit length
+        assert!(avg_normal.norm().is_finite());
+        assert!((avg_normal.norm() - 1.0).abs() < 1e-10);
     }
 }

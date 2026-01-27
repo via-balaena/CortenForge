@@ -1,38 +1,14 @@
 //! ECS components for physics visualization.
 //!
 //! These components link Bevy entities to sim-core physics objects.
+//! For Model/Data components, see [`crate::model_data`].
 
 use bevy::prelude::*;
-use sim_types::BodyId;
-
-/// Links a Bevy entity to a body in the physics simulation.
-///
-/// The transform of this entity will be synchronized with the body's pose
-/// each frame by the [`sync_body_transforms`](crate::systems::sync_body_transforms) system.
-#[derive(Component, Debug, Clone, Copy)]
-pub struct PhysicsBody {
-    /// The body ID in the sim-core World.
-    pub body_id: BodyId,
-}
-
-impl PhysicsBody {
-    /// Create a new physics body link.
-    #[must_use]
-    pub const fn new(body_id: BodyId) -> Self {
-        Self { body_id }
-    }
-}
-
-/// Marker for the root entity of a spawned physics world.
-///
-/// Used to identify the parent entity under which all physics bodies are spawned.
-#[derive(Component, Debug, Default, Clone, Copy)]
-pub struct PhysicsWorldRoot;
 
 /// Visual representation of a collision shape.
 ///
-/// This component is added to child entities of [`PhysicsBody`] entities
-/// to render their collision geometry.
+/// This component is added to child entities to render collision geometry.
+/// Used by both the legacy World API and the new Model/Data API.
 #[derive(Component, Debug, Clone)]
 pub struct CollisionShapeVisual {
     /// The shape type being visualized.

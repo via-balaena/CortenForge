@@ -291,6 +291,13 @@ impl DefaultResolver {
         // Sites don't have a class field in the current implementation,
         // so we apply root defaults
         if let Some(defaults) = self.site_defaults(None) {
+            // Type: apply default if at default sphere
+            if result.site_type == "sphere" {
+                if let Some(site_type) = &defaults.site_type {
+                    result.site_type.clone_from(site_type);
+                }
+            }
+
             // Size: apply default if at default
             if result.size == vec![0.01] {
                 if let Some(size) = &defaults.size {

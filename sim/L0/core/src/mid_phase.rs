@@ -33,7 +33,7 @@
 //! }
 //! ```
 
-use crate::broad_phase::{Aabb, Axis};
+use crate::collision_shape::{Aabb, Axis};
 use nalgebra::{Isometry3, Point3};
 
 /// A primitive that can be stored in the BVH.
@@ -526,6 +526,216 @@ impl Bvh {
     #[must_use]
     pub fn primitives(&self) -> &[BvhPrimitive] {
         &self.primitives
+    }
+
+    /// Query the BVH for primitives that a ray might intersect.
+    ///
+    /// Uses ray-AABB intersection to cull branches that can't contain hits.
+    /// Returns indices of potentially intersecting primitives (caller must do precise test).
+    ///
+    /// # Arguments
+    ///
+    /// * `ray_origin` - Origin of the ray
+    /// * `ray_dir_inv` - **Inverse** of ray direction (1/dir for each component).
+    ///   For axis-aligned rays where a component is 0, pass `±∞` (the slab test
+    ///   handles IEEE 754 infinity arithmetic correctly).
+    /// * `max_distance` - Maximum ray distance (updated during traversal for early termination)
+    ///
+    /// # Performance
+    ///
+    /// - O(log n) average case for localized queries
+    /// - Visits children in front-to-back order for better culling
+    /// - Caller should update max_distance after each hit for optimal pruning
+    #[must_use]
+    pub fn query_ray(
+        &self,
+        ray_origin: &Point3<f64>,
+        ray_dir_inv: &nalgebra::Vector3<f64>,
+        max_distance: f64,
+    ) -> Vec<usize> {
+        let mut results = Vec::new();
+        if !self.nodes.is_empty() {
+            self.query_ray_recursive(0, ray_origin, ray_dir_inv, max_distance, &mut results);
+        }
+        results
+    }
+
+    /// Query with early termination using a mutable max_distance.
+    ///
+    /// The callback receives (primitive_index, tmin) where tmin is the minimum
+    /// distance to the primitive's AABB. Return the actual hit distance to update
+    /// the cutoff, or `None` if no hit. This enables progressive pruning.
+    pub fn query_ray_closest<F>(
+        &self,
+        ray_origin: &Point3<f64>,
+        ray_dir_inv: &nalgebra::Vector3<f64>,
+        max_distance: f64,
+        mut test_primitive: F,
+    ) -> Option<(usize, f64)>
+    where
+        F: FnMut(usize) -> Option<f64>,
+    {
+        if self.nodes.is_empty() {
+            return None;
+        }
+
+        let mut closest: Option<(usize, f64)> = None;
+        let mut cutoff = max_distance;
+
+        // Use explicit stack to avoid recursion overhead
+        let mut stack = Vec::with_capacity(64);
+        stack.push(0usize);
+
+        while let Some(node_idx) = stack.pop() {
+            let node = &self.nodes[node_idx];
+
+            // Test ray-AABB intersection with current cutoff
+            let Some(tmin) = ray_aabb_intersect_dist(ray_origin, ray_dir_inv, node.aabb(), cutoff)
+            else {
+                continue;
+            };
+
+            // Skip if this node's nearest point is beyond our best hit
+            if tmin > cutoff {
+                continue;
+            }
+
+            match node {
+                BvhNode::Internal { left, right, .. } => {
+                    // Get distances to children for front-to-back ordering
+                    let left_t = ray_aabb_intersect_dist(
+                        ray_origin,
+                        ray_dir_inv,
+                        self.nodes[*left].aabb(),
+                        cutoff,
+                    );
+                    let right_t = ray_aabb_intersect_dist(
+                        ray_origin,
+                        ray_dir_inv,
+                        self.nodes[*right].aabb(),
+                        cutoff,
+                    );
+
+                    // Push farther child first (so closer is processed first)
+                    match (left_t, right_t) {
+                        (Some(lt), Some(rt)) => {
+                            if lt < rt {
+                                stack.push(*right);
+                                stack.push(*left);
+                            } else {
+                                stack.push(*left);
+                                stack.push(*right);
+                            }
+                        }
+                        (Some(_), None) => stack.push(*left),
+                        (None, Some(_)) => stack.push(*right),
+                        (None, None) => {}
+                    }
+                }
+                BvhNode::Leaf {
+                    first_primitive,
+                    primitive_count,
+                    ..
+                } => {
+                    for i in *first_primitive..(*first_primitive + *primitive_count) {
+                        let prim_idx = self.primitives[i].index;
+                        if let Some(hit_t) = test_primitive(prim_idx) {
+                            if hit_t < cutoff {
+                                cutoff = hit_t;
+                                closest = Some((prim_idx, hit_t));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        closest
+    }
+
+    /// Recursively query for ray intersections (simple version without early termination).
+    fn query_ray_recursive(
+        &self,
+        node_idx: usize,
+        ray_origin: &Point3<f64>,
+        ray_dir_inv: &nalgebra::Vector3<f64>,
+        max_distance: f64,
+        results: &mut Vec<usize>,
+    ) {
+        let node = &self.nodes[node_idx];
+
+        // Early out if ray doesn't hit this node's AABB
+        if ray_aabb_intersect_dist(ray_origin, ray_dir_inv, node.aabb(), max_distance).is_none() {
+            return;
+        }
+
+        match node {
+            BvhNode::Internal { left, right, .. } => {
+                self.query_ray_recursive(*left, ray_origin, ray_dir_inv, max_distance, results);
+                self.query_ray_recursive(*right, ray_origin, ray_dir_inv, max_distance, results);
+            }
+            BvhNode::Leaf {
+                first_primitive,
+                primitive_count,
+                ..
+            } => {
+                for i in *first_primitive..(*first_primitive + *primitive_count) {
+                    results.push(self.primitives[i].index);
+                }
+            }
+        }
+    }
+}
+
+/// Ray-AABB intersection test (slab method) returning entry distance.
+///
+/// Uses the optimized slab test with precomputed 1/direction.
+/// Returns `Some(tmin)` if ray intersects, where tmin is the entry distance.
+/// Returns `None` if ray misses or intersection is beyond max_distance.
+///
+/// # IEEE 754 Correctness
+///
+/// When `ray_dir_inv` contains `±∞` (from 1/0 for axis-aligned rays):
+/// - `(aabb.min.x - ray_origin.x) * ∞` = `±∞` depending on sign
+/// - `∞.min(-∞)` = `-∞`, `∞.max(-∞)` = `∞`
+/// - The slab logic correctly handles rays parallel to slab faces
+fn ray_aabb_intersect_dist(
+    ray_origin: &Point3<f64>,
+    ray_dir_inv: &nalgebra::Vector3<f64>,
+    aabb: &Aabb,
+    max_distance: f64,
+) -> Option<f64> {
+    // Compute intersection distances for each slab
+    let t1x = (aabb.min.x - ray_origin.x) * ray_dir_inv.x;
+    let t2x = (aabb.max.x - ray_origin.x) * ray_dir_inv.x;
+    let t1y = (aabb.min.y - ray_origin.y) * ray_dir_inv.y;
+    let t2y = (aabb.max.y - ray_origin.y) * ray_dir_inv.y;
+    let t1z = (aabb.min.z - ray_origin.z) * ray_dir_inv.z;
+    let t2z = (aabb.max.z - ray_origin.z) * ray_dir_inv.z;
+
+    // Find the min/max for each axis (handles negative directions)
+    let tmin_x = t1x.min(t2x);
+    let tmax_x = t1x.max(t2x);
+    let tmin_y = t1y.min(t2y);
+    let tmax_y = t1y.max(t2y);
+    let tmin_z = t1z.min(t2z);
+    let tmax_z = t1z.max(t2z);
+
+    // Find the largest tmin and smallest tmax
+    let tmin = tmin_x.max(tmin_y).max(tmin_z);
+    let tmax = tmax_x.min(tmax_y).min(tmax_z);
+
+    // Handle NaN: if any t-value is NaN (from 0*∞ when ray origin is on slab boundary
+    // and direction is zero in that axis), reject the intersection
+    if tmin.is_nan() || tmax.is_nan() {
+        return None;
+    }
+
+    // Ray intersects if tmax >= tmin and tmin < max_distance and tmax >= 0
+    if tmax >= tmin && tmin < max_distance && tmax >= 0.0 {
+        Some(tmin.max(0.0)) // Clamp to 0 if origin is inside AABB
+    } else {
+        None
     }
 }
 

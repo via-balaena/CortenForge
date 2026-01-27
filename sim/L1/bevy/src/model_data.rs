@@ -153,8 +153,7 @@ impl std::ops::DerefMut for PhysicsData {
 
 /// Component linking a Bevy entity to a body in the Model/Data system.
 ///
-/// Unlike [`PhysicsBody`](crate::components::PhysicsBody) which uses `BodyId`,
-/// this component uses a direct index into the Model's body arrays.
+/// This component uses a direct index into the Model's body arrays.
 ///
 /// # Example
 ///

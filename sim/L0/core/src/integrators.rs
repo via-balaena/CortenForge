@@ -325,8 +325,9 @@ impl ImplicitVelocity {
         // v_{t+h} - v_t = h * (a - d * v_{t+h})
         // which implicitly includes damping
 
-        let linear_divisor = 1.0 + dt * linear_damping;
-        let angular_divisor = 1.0 + dt * angular_damping;
+        // Guard against degenerate divisors (negative damping could cause issues)
+        let linear_divisor = (1.0 + dt * linear_damping).max(1e-10);
+        let angular_divisor = (1.0 + dt * angular_damping).max(1e-10);
 
         // Update velocity implicitly
         state.twist.linear = (state.twist.linear + linear_accel * dt) / linear_divisor;
@@ -406,8 +407,9 @@ impl ImplicitFast {
     ) {
         // Implicit fast uses the same integration formula but with
         // accelerations that were computed without Coriolis terms
-        let linear_divisor = 1.0 + dt * linear_damping;
-        let angular_divisor = 1.0 + dt * angular_damping;
+        // Guard against degenerate divisors (negative damping could cause issues)
+        let linear_divisor = (1.0 + dt * linear_damping).max(1e-10);
+        let angular_divisor = (1.0 + dt * angular_damping).max(1e-10);
 
         state.twist.linear = (state.twist.linear + linear_accel * dt) / linear_divisor;
         state.twist.angular = (state.twist.angular + angular_accel * dt) / angular_divisor;
@@ -486,14 +488,16 @@ pub fn apply_damping(twist: &Twist, linear_damping: f64, angular_damping: f64, d
 /// Clamp velocities to maximum values.
 #[must_use]
 pub fn clamp_velocities(twist: &Twist, max_linear: f64, max_angular: f64) -> Twist {
-    let linear = if twist.linear.norm() > max_linear {
-        twist.linear.normalize() * max_linear
+    let linear_norm = twist.linear.norm();
+    let linear = if linear_norm > max_linear && linear_norm > 1e-10 {
+        twist.linear * (max_linear / linear_norm)
     } else {
         twist.linear
     };
 
-    let angular = if twist.angular.norm() > max_angular {
-        twist.angular.normalize() * max_angular
+    let angular_norm = twist.angular.norm();
+    let angular = if angular_norm > max_angular && angular_norm > 1e-10 {
+        twist.angular * (max_angular / angular_norm)
     } else {
         twist.angular
     };

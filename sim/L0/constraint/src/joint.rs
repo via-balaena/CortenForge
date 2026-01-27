@@ -5,6 +5,13 @@ use sim_types::BodyId;
 
 use crate::{JointLimits, JointMotor, JointState};
 
+/// Safe vector normalization with Z-axis fallback.
+#[inline]
+fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
+    let n = v.norm();
+    if n > 1e-10 { v / n } else { Vector3::z() }
+}
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -181,7 +188,7 @@ impl RevoluteJoint {
         Self {
             parent,
             child,
-            axis: axis.normalize(),
+            axis: safe_normalize_axis(axis),
             parent_anchor: Point3::origin(),
             child_anchor: Point3::origin(),
             limits: None,
@@ -376,7 +383,7 @@ impl PrismaticJoint {
         Self {
             parent,
             child,
-            axis: axis.normalize(),
+            axis: safe_normalize_axis(axis),
             parent_anchor: Point3::origin(),
             child_anchor: Point3::origin(),
             limits: None,
@@ -773,8 +780,8 @@ impl UniversalJoint {
     /// Set the rotation axes.
     #[must_use]
     pub fn with_axes(mut self, axis1: Vector3<f64>, axis2: Vector3<f64>) -> Self {
-        self.axis1 = axis1.normalize();
-        self.axis2 = axis2.normalize();
+        self.axis1 = safe_normalize_axis(axis1);
+        self.axis2 = safe_normalize_axis(axis2);
         self
     }
 
@@ -1109,7 +1116,7 @@ impl PlanarJoint {
         Self {
             parent,
             child,
-            normal: normal.normalize(),
+            normal: safe_normalize_axis(normal),
             parent_anchor: Point3::origin(),
             child_anchor: Point3::origin(),
             translation_damping: 0.0,
@@ -1205,7 +1212,8 @@ impl PlanarJoint {
         } else {
             Vector3::y()
         };
-        let x_axis = self.normal.cross(&arbitrary).normalize();
+        let cross = self.normal.cross(&arbitrary);
+        let x_axis = safe_normalize_axis(cross);
         let y_axis = self.normal.cross(&x_axis);
         (x_axis, y_axis)
     }
@@ -1325,7 +1333,7 @@ impl CylindricalJoint {
         Self {
             parent,
             child,
-            axis: axis.normalize(),
+            axis: safe_normalize_axis(axis),
             parent_anchor: Point3::origin(),
             child_anchor: Point3::origin(),
             rotation_limits: None,

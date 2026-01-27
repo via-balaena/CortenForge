@@ -1063,6 +1063,8 @@ impl MjcfJoint {
 pub struct MjcfSite {
     /// Site name.
     pub name: String,
+    /// Site type (sphere, capsule, ellipsoid, cylinder, box).
+    pub site_type: String,
     /// Position relative to body frame.
     pub pos: Vector3<f64>,
     /// Orientation (quaternion: w x y z).
@@ -1077,6 +1079,7 @@ impl Default for MjcfSite {
     fn default() -> Self {
         Self {
             name: String::new(),
+            site_type: "sphere".to_string(), // MuJoCo default
             pos: Vector3::zeros(),
             quat: Vector4::new(1.0, 0.0, 0.0, 0.0),
             size: vec![0.01],
