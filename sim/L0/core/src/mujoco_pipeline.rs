@@ -5794,15 +5794,15 @@ pub struct Contact {
     pub dim: usize,
     /// Whether margin was included in distance computation.
     pub includemargin: bool,
-    /// Friction parameters [mu, mu2] for anisotropic friction.
-    /// mu[0] = sliding, mu[1] = torsional/rolling.
+    /// Friction parameters `[mu, mu2]` for anisotropic friction.
+    /// `mu[0]` = sliding, `mu[1]` = torsional/rolling.
     pub mu: [f64; 2],
     /// Solver reference parameters (from geom pair).
     pub solref: [f64; 2],
     /// Solver impedance parameters (from geom pair).
     pub solimp: [f64; 5],
     /// Contact frame tangent vectors (orthogonal to normal).
-    /// frame[0..3] = t1, frame[3..6] = t2 (for friction cone).
+    /// `frame[0..3]` = t1, `frame[3..6]` = t2 (for friction cone).
     pub frame: [Vector3<f64>; 2],
 }
 
@@ -5955,10 +5955,10 @@ pub struct Data {
 
     // ==================== RNE Intermediate Quantities ====================
     /// Body bias accelerations for RNE (Coriolis/centrifugal).
-    /// a_bias[i] = X[i] @ a_bias[parent] + v[i] ×_m S[i] @ qdot[i]
+    /// `a_bias[i] = X[i] @ a_bias[parent] + v[i] ×_m S[i] @ qdot[i]`
     pub cacc_bias: Vec<SpatialVector>,
     /// Body forces for RNE backward pass.
-    /// f[i] = I[i] @ a_bias[i] + v[i] ×* (I[i] @ v[i])
+    /// `f[i] = I[i] @ a_bias[i] + v[i] ×* (I[i] @ v[i])`
     pub cfrc_bias: Vec<SpatialVector>,
 
     // ==================== Forces in Generalized Coordinates ====================
@@ -5996,14 +5996,14 @@ pub struct Data {
     /// For tree-structured robots, this achieves O(n) factorization and solve.
     ///
     /// Layout: qLD stores both L and D compactly:
-    /// - qLD_diag[i] = D[i,i] (diagonal of D)
-    /// - qLD[i] contains non-zero entries of L[i, :] below diagonal
+    /// - `qLD_diag[i] = D[i,i]` (diagonal of D)
+    /// - `qLD[i]` contains non-zero entries of `L[i, :]` below diagonal
     ///
     /// The sparsity pattern is determined by the kinematic tree:
-    /// L[i,j] is non-zero only if DOF j is an ancestor of DOF i.
+    /// `L[i,j]` is non-zero only if DOF j is an ancestor of DOF i.
     pub qLD_diag: DVector<f64>,
     /// Sparse lower triangular factor L (non-zero entries only).
-    /// qLD_L[i] = [(col_idx, value), ...] for row i, sorted by col_idx.
+    /// `qLD_L[i] = [(col_idx, value), ...]` for row i, sorted by col_idx.
     /// For tree robots, each row has at most depth(i) non-zeros.
     pub qLD_L: Vec<Vec<(usize, f64)>>,
     /// Whether sparse factorization is valid and should be used.
