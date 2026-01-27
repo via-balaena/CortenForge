@@ -358,6 +358,8 @@ impl JointCoupling {
         let effective_mass_inv = effective_mass_inv + self.compliance / (dt * dt);
 
         // Stabilized constraint: -velocity_error - (baumgarte / dt) * position_error
+        // Guard against zero dt
+        let dt = dt.max(1e-10);
         let bias = self.baumgarte_factor * position_error / dt;
         let target_velocity = self
             .damping
@@ -1142,6 +1144,8 @@ impl TendonConstraint {
             }
 
             // Constraint impulse: corrects position and velocity errors
+            // Guard against zero dt
+            let dt = dt.max(1e-10);
             let bias = self.baumgarte_factor * (-length_error) / dt;
             let target_velocity = self.damping.mul_add(-length_rate, -length_rate - bias);
 

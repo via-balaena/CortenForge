@@ -402,9 +402,10 @@ impl SweepAndPrune {
 
                 // Extent on each axis = |h*z_i| + r*sqrt(1 - z_i^2)
                 // where z_i is the i-th component of the unit cylinder axis
-                let extent_x = axis.x.abs() + radius * (1.0 - world_z.x.powi(2)).sqrt();
-                let extent_y = axis.y.abs() + radius * (1.0 - world_z.y.powi(2)).sqrt();
-                let extent_z = axis.z.abs() + radius * (1.0 - world_z.z.powi(2)).sqrt();
+                // Guard against floating-point precision issues where 1 - x² could be slightly negative
+                let extent_x = axis.x.abs() + radius * (1.0 - world_z.x.powi(2)).max(0.0).sqrt();
+                let extent_y = axis.y.abs() + radius * (1.0 - world_z.y.powi(2)).max(0.0).sqrt();
+                let extent_z = axis.z.abs() + radius * (1.0 - world_z.z.powi(2)).max(0.0).sqrt();
 
                 Aabb::from_center(center, Vector3::new(extent_x, extent_y, extent_z))
             }

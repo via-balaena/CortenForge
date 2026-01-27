@@ -578,8 +578,9 @@ impl FrictionModel {
             } => {
                 // Stribeck curve: smooth transition from static to kinetic
                 // f(v) = mu_kinetic + (mu_static - mu_kinetic) * exp(-|v|/v_s)
-                let stribeck =
-                    mu_kinetic + (mu_static - mu_kinetic) * (-speed / stribeck_velocity).exp();
+                // Guard against zero stribeck_velocity
+                let v_s = stribeck_velocity.max(1e-10);
+                let stribeck = mu_kinetic + (mu_static - mu_kinetic) * (-speed / v_s).exp();
                 stribeck * normal_force + viscosity * speed
             }
         };
@@ -610,7 +611,11 @@ impl FrictionModel {
                 mu_kinetic,
                 stribeck_velocity,
                 ..
-            } => mu_kinetic + (mu_static - mu_kinetic) * (-speed / stribeck_velocity).exp(),
+            } => {
+                // Guard against zero stribeck_velocity
+                let v_s = stribeck_velocity.max(1e-10);
+                mu_kinetic + (mu_static - mu_kinetic) * (-speed / v_s).exp()
+            }
         }
     }
 

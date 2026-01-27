@@ -491,12 +491,19 @@ impl ContactStats {
         }
 
         let n = count as f64;
+        let avg_normal = sum_normal / n;
+        let avg_normal_norm = avg_normal.norm();
         Self {
             count,
             total_normal_force: total_normal,
             total_tangent_force: total_tangent,
             average_position: Some(Point3::from(sum_position / n)),
-            average_normal: Some((sum_normal / n).normalize()),
+            // Safe normalize: if normals cancel out, use Z-up as fallback
+            average_normal: Some(if avg_normal_norm > 1e-10 {
+                avg_normal / avg_normal_norm
+            } else {
+                Vector3::z()
+            }),
         }
     }
 

@@ -975,7 +975,8 @@ impl PGSSolver {
         let mut rhs = -(jacobian * &v);
 
         // Add Baumgarte stabilization: -β/h * C
-        let baumgarte = self.config.baumgarte_factor / dt;
+        // Guard against zero dt
+        let baumgarte = self.config.baumgarte_factor / dt.max(1e-10);
         for constraint in constraints {
             let c = self.compute_position_error(constraint, bodies);
             for i in 0..constraint.num_rows {

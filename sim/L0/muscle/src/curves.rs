@@ -93,6 +93,8 @@ impl ActiveForceLengthCurve {
         };
 
         // Gaussian bell curve centered at 1.0 (optimal length)
+        // Guard against zero width
+        let width = width.max(1e-10);
         let exponent = -((l - 1.0) / width).powi(2);
         exponent.exp()
     }
@@ -187,9 +189,11 @@ impl PassiveForceLengthCurve {
         }
 
         // Exponential rise above slack length
-        let strain = (l - self.slack_length) / (1.5 - self.slack_length);
+        // Guard against slack_length >= 1.5 (would cause division by zero or negative)
+        let denom = (1.5 - self.slack_length).max(1e-10);
+        let strain = (l - self.slack_length) / denom;
         let fp = self.scale * (strain.exp().powi(self.shape_factor as i32) - 1.0)
-            / (core::f64::consts::E.powi(self.shape_factor as i32) - 1.0);
+            / (core::f64::consts::E.powi(self.shape_factor as i32) - 1.0).max(1e-10);
 
         fp.max(0.0)
     }
@@ -203,10 +207,11 @@ impl PassiveForceLengthCurve {
             return 0.0;
         }
 
-        let strain = (l - self.slack_length) / (1.5 - self.slack_length);
+        // Guard against slack_length >= 1.5 (would cause division by zero or negative)
+        let denom = (1.5 - self.slack_length).max(1e-10);
+        let strain = (l - self.slack_length) / denom;
         let n = self.shape_factor as i32;
-        let denom = 1.5 - self.slack_length;
-        let exp_n = core::f64::consts::E.powi(n) - 1.0;
+        let exp_n = (core::f64::consts::E.powi(n) - 1.0).max(1e-10);
 
         self.scale * n as f64 * strain.exp().powi(n - 1) * strain.exp() / (denom * exp_n)
     }
