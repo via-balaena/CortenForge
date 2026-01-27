@@ -6162,7 +6162,7 @@ impl Model {
     ///
     /// These enable O(n) CRBA/RNE algorithms instead of O(n³).
     ///
-    /// Following MuJoCo's principle: heavy computation at model load time,
+    /// Following `MuJoCo`'s principle: heavy computation at model load time,
     /// minimal computation at simulation time.
     pub fn compute_ancestors(&mut self) {
         // Clear and resize
@@ -6750,14 +6750,14 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
 
 /// Collision detection: populate contacts from geometry pairs.
 ///
-/// Following MuJoCo's collision detection order:
+/// Following `MuJoCo`'s collision detection order:
 /// 1. Iterate over all geometry pairs that can collide
 /// 2. Check contact affinity (contype/conaffinity bitmasks)
 /// 3. Run narrow-phase collision detection (GJK/EPA or analytical)
 /// 4. Populate data.contacts with contact information
 ///
-/// This function is called after forward kinematics (mj_fwd_position) so
-/// geom_xpos and geom_xmat are up-to-date.
+/// This function is called after forward kinematics (`mj_fwd_position`) so
+/// `geom_xpos` and `geom_xmat` are up-to-date.
 fn mj_collision(model: &Model, data: &mut Data) {
     // Clear existing contacts
     data.contacts.clear();
@@ -6791,10 +6791,11 @@ fn mj_collision(model: &Model, data: &mut Data) {
             // Skip parent-child collision (adjacent bodies in kinematic tree)
             // These bodies are connected by a joint and shouldn't collide
             // Exception: Always allow collisions with world body (body 0) - ground planes should collide
-            if body1 != 0 && body2 != 0 {
-                if model.body_parent[body1] == body2 || model.body_parent[body2] == body1 {
-                    continue;
-                }
+            if body1 != 0
+                && body2 != 0
+                && (model.body_parent[body1] == body2 || model.body_parent[body2] == body1)
+            {
+                continue;
             }
 
             // Get world-space poses
@@ -6816,6 +6817,7 @@ fn mj_collision(model: &Model, data: &mut Data) {
 ///
 /// Returns Contact if penetrating, None otherwise.
 #[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
+#[allow(clippy::items_after_statements)] // use statement placed after special cases for readability
 fn collide_geoms(
     model: &Model,
     geom1: usize,
@@ -6892,7 +6894,8 @@ fn collide_geoms(
     None
 }
 
-/// Convert MuJoCo GeomType to CollisionShape.
+/// Convert `MuJoCo` `GeomType` to `CollisionShape`.
+#[allow(clippy::match_same_arms)] // Plane and Mesh have different TODOs but both return None
 fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<CollisionShape> {
     match geom_type {
         GeomType::Sphere => Some(CollisionShape::Sphere { radius: size.x }),
@@ -6912,6 +6915,7 @@ fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Co
 }
 
 /// Collision between a plane and another geometry.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn collide_with_plane(
     model: &Model,
     geom1: usize,
@@ -7113,6 +7117,7 @@ fn collide_sphere_sphere(
 /// Capsules are represented as line segments with radius. The collision
 /// is computed by finding the closest points between the two line segments,
 /// then checking if the distance is less than the sum of radii.
+#[allow(clippy::too_many_arguments)]
 fn collide_capsule_capsule(
     model: &Model,
     geom1: usize,
@@ -7171,6 +7176,7 @@ fn collide_capsule_capsule(
 }
 
 /// Sphere-capsule collision detection.
+#[allow(clippy::too_many_arguments)]
 fn collide_sphere_capsule(
     model: &Model,
     geom1: usize,
