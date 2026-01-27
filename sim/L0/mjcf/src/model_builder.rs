@@ -67,6 +67,10 @@ pub fn model_from_mjcf(mjcf: &MjcfModel) -> std::result::Result<Model, ModelConv
     // Set global options
     builder.set_options(&mjcf.option);
 
+    // Process worldbody's own geoms and sites (attached to body 0)
+    // These must be processed BEFORE child bodies so geom indices are correct
+    builder.process_worldbody_geoms_and_sites(&mjcf.worldbody)?;
+
     // Recursively process body tree starting from worldbody children
     // World body (body 0) has no DOFs, so parent_last_dof is None
     for child in &mjcf.worldbody.children {
@@ -287,6 +291,35 @@ impl ModelBuilder {
             MjcfIntegrator::RK4 => Integrator::RungeKutta4,
             MjcfIntegrator::Implicit | MjcfIntegrator::ImplicitFast => Integrator::Implicit,
         };
+    }
+
+    /// Process geoms and sites directly attached to worldbody (body 0).
+    ///
+    /// In MJCF, the worldbody can have geoms (like ground planes) and sites
+    /// directly attached to it. These are static geometries at world coordinates.
+    fn process_worldbody_geoms_and_sites(
+        &mut self,
+        worldbody: &MjcfBody,
+    ) -> std::result::Result<(), ModelConversionError> {
+        // Track geom start address for body 0
+        let geom_adr = self.geom_type.len();
+
+        // Process worldbody geoms
+        for geom in &worldbody.geoms {
+            self.process_geom(geom, 0)?;
+        }
+
+        // Process worldbody sites
+        for site in &worldbody.sites {
+            self.process_site(site, 0)?;
+        }
+
+        // Update body 0's geom range
+        let num_geoms = self.geom_type.len() - geom_adr;
+        self.body_geom_adr[0] = geom_adr;
+        self.body_geom_num[0] = num_geoms;
+
+        Ok(())
     }
 
     /// Process a body and its descendants.
@@ -783,7 +816,7 @@ impl ModelBuilder {
         let nsite = self.site_body.len();
         let nu = self.actuator_trntype.len();
 
-        Model {
+        let mut model = Model {
             nq: self.nq,
             nv: self.nv,
             nbody,
@@ -875,7 +908,15 @@ impl ModelBuilder {
             solver_iterations: self.solver_iterations,
             solver_tolerance: self.solver_tolerance,
             integrator: self.integrator,
-        }
+
+            // Pre-computed kinematic data (will be populated by compute_ancestors)
+            body_ancestor_joints: vec![vec![]; nbody],
+            body_ancestor_mask: vec![0; nbody],
+        };
+
+        // Pre-compute ancestor lists for O(n) CRBA/RNE
+        model.compute_ancestors();
+        model
     }
 }
 
