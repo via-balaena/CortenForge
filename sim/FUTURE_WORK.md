@@ -36,3 +36,28 @@ Not urgent because:
 - Current structure works correctly
 - No runtime cost
 - Compile times are acceptable
+
+---
+
+## Physics Features
+
+### Deformable Bodies
+
+- [ ] Implement soft body simulation (FEM or position-based dynamics)
+- [ ] Implement cloth simulation
+- Current state: `sim-deformable` crate exists as stub only
+- Use cases: Soft tissue simulation, cloth/fabric, pneumatic actuators
+
+### Implicit Integrators
+
+- [ ] Add RK4 (Runge-Kutta 4th order) integrator
+- [ ] Add implicit Euler for stiff systems
+- Current state: Semi-implicit Euler only
+- Rationale: Higher-order integrators improve accuracy for stiff systems (high damping, high stiffness springs)
+
+### GPU Acceleration
+
+- [ ] CUDA/Metal/WebGPU backend for parallel simulation
+- [ ] Batch simulation for RL training (thousands of envs)
+- Current state: CPU-only
+- Use cases: Large-scale RL training, real-time multi-agent simulation
