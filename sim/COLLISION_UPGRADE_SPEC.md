@@ -65,7 +65,7 @@ This spec upgrades Level 4 (Collision Detection) from "Mostly Solid" to "A+ Grea
 
 ## Implementation Plan
 
-### Phase 1: Fix Plane Collision Gaps (Critical Bug Fix)
+### Phase 1: Fix Plane Collision Gaps (Critical Bug Fix) ✅ IMPLEMENTED
 
 **Problem**: `collide_with_plane()` returns `None` for Cylinder, Ellipsoid, and Mesh.
 This means objects fall through the ground.
@@ -287,7 +287,7 @@ fn collide_with_plane(
 
 ---
 
-### Phase 2: Model/Data Infrastructure for Meshes
+### Phase 2: Model/Data Infrastructure for Meshes ✅ IMPLEMENTED
 
 **File**: `mujoco_pipeline.rs`
 
@@ -334,7 +334,7 @@ if model.geom_mesh.len() < model.ngeom {
 
 ---
 
-### Phase 3: MJCF Mesh Loading
+### Phase 3: MJCF Mesh Loading ✅ IMPLEMENTED
 
 **File**: `model_builder.rs`
 
@@ -485,7 +485,7 @@ fn process_geom(
 
 ---
 
-### Phase 4: Mesh Collision Detection
+### Phase 4: Mesh Collision Detection ✅ IMPLEMENTED
 
 **File**: `mujoco_pipeline.rs`
 
@@ -744,7 +744,7 @@ fn collide_geoms(
 
 ---
 
-### Phase 5: Analytical Cylinder Collisions (Performance Polish)
+### Phase 5: Analytical Cylinder Collisions (Performance Polish) ✅ IMPLEMENTED
 
 **File**: `mujoco_pipeline.rs`
 
@@ -1109,11 +1109,11 @@ has been removed now that implementation is complete.
 
 ## Implementation Order
 
-1. **Phase 1** (Critical Bug Fix): Plane-Cylinder, Plane-Ellipsoid — objects currently fall through ground
-2. **Phase 2-3** (Model Infrastructure): Add mesh fields, MJCF loading
-3. **Phase 4** (Mesh Integration): Wire `collide_with_mesh()` into dispatcher
-4. **Phase 5** (Polish): Analytical Cylinder-Sphere, Cylinder-Capsule
-5. **Phase 6** ✅ COMPLETE (2026-01-28): The Obsessive Validation Protocol
+1. ✅ **Phase 1** COMPLETE: Plane-Cylinder, Plane-Ellipsoid analytical collision
+2. ✅ **Phase 2-3** COMPLETE: Mesh fields in Model, MJCF mesh loading
+3. ✅ **Phase 4** COMPLETE: `collide_with_mesh()` wired into dispatcher
+4. ✅ **Phase 5** COMPLETE: Analytical Cylinder-Sphere, Cylinder-Capsule
+5. ✅ **Phase 6** COMPLETE (2026-01-28): The Obsessive Validation Protocol
    - ✅ 6.0: Test infrastructure with justified tolerances
    - ✅ 6.1: Plane collision exhaustive coverage (28 tests)
    - ✅ 6.2: Primitive-primitive analytical validation (32 tests)

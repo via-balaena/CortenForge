@@ -1,9 +1,16 @@
 # Mesh Collision Support Specification
 
+> **Status**: ✅ **MOSTLY IMPLEMENTED** — Core infrastructure complete (PR #39).
+> - ✅ Model fields (`mesh_data`, `geom_mesh`, `nmesh`)
+> - ✅ Embedded vertex/face mesh loading from MJCF
+> - ✅ Mesh-primitive collision dispatch (`collide_with_mesh()`)
+> - ✅ 47 mesh collision tests passing
+> - ❌ **NOT IMPLEMENTED**: File-based mesh loading (STL, OBJ)
+>
 > **Todorov Standard**: Single source of truth. No duplication. O(n) where possible.
 > Compute once, use everywhere. Profile before optimizing.
 >
-> **Last Updated**: 2026-01-27
+> **Last Updated**: 2026-01-28
 
 ---
 
@@ -36,14 +43,15 @@ about *wiring* existing components together through the Model/Data architecture.
 
 ### What's Missing (IMPLEMENT THIS)
 
-| Component | Location | Work Required |
-|-----------|----------|---------------|
-| `Model.nmesh` | `mujoco_pipeline.rs` | Add field |
-| `Model.mesh_data` | `mujoco_pipeline.rs` | Add `Vec<Arc<TriangleMeshData>>` |
-| `Model.geom_mesh` | `mujoco_pipeline.rs` | Add `Vec<Option<usize>>` (mesh index per geom) |
-| `geom_to_collision_shape()` | `mujoco_pipeline.rs:7612` | Return `TriangleMesh` for mesh geoms |
-| Mesh-primitive collision dispatch | `mj_collision()` | Add cases for mesh geom type |
-| Model builder mesh loading | `model_builder.rs` | Convert `MjcfMesh` to `TriangleMeshData` |
+| Component | Location | Work Required | Status |
+|-----------|----------|---------------|--------|
+| `Model.nmesh` | `mujoco_pipeline.rs:5734` | Add field | ✅ Done |
+| `Model.mesh_data` | `mujoco_pipeline.rs:5739` | Add `Vec<Arc<TriangleMeshData>>` | ✅ Done |
+| `Model.geom_mesh` | `mujoco_pipeline.rs:5730` | Add `Vec<Option<usize>>` | ✅ Done |
+| `geom_to_collision_shape()` | `mujoco_pipeline.rs:7250` | Return `TriangleMesh` for mesh geoms | ✅ Done |
+| Mesh-primitive collision dispatch | `mujoco_pipeline.rs:7534` | Add cases for mesh geom type | ✅ Done |
+| Model builder mesh loading | `model_builder.rs:1129` | Convert `MjcfMesh` to `TriangleMeshData` | ✅ Done |
+| File-based mesh loading | `model_builder.rs:1157` | Load STL/OBJ files | ❌ TODO |
 
 ---
 
