@@ -226,6 +226,11 @@ impl TriangleMeshData {
     }
 
     /// Ensure the BVH is built (for deserialized meshes).
+    ///
+    /// The BVH is always built in constructors, but may be `None` after
+    /// deserialization (since it's marked `#[serde(skip)]`). Call this
+    /// to rebuild if needed.
+    #[allow(dead_code)] // Kept for future deserialization support
     fn ensure_bvh(&mut self) {
         if self.bvh.is_none() {
             self.bvh = Some(Self::build_bvh(&self.vertices, &self.triangles));
@@ -1039,16 +1044,15 @@ fn test_axis_triangle_box(
 /// Query a triangle mesh for contact with a sphere.
 ///
 /// Uses BVH acceleration to find candidate triangles, then tests each one.
+///
+/// Returns `None` if the BVH is not built (e.g., deserialized mesh without rebuild).
 #[must_use]
 pub fn mesh_sphere_contact(
-    mesh: &mut TriangleMeshData,
+    mesh: &TriangleMeshData,
     mesh_pose: &Pose,
     sphere_center: Point3<f64>,
     sphere_radius: f64,
 ) -> Option<MeshContact> {
-    // Ensure BVH is built
-    mesh.ensure_bvh();
-
     // Transform sphere center to mesh local space
     let local_center = mesh_pose.inverse_transform_point(&sphere_center);
 
@@ -1088,17 +1092,16 @@ pub fn mesh_sphere_contact(
 }
 
 /// Query a triangle mesh for contact with a capsule.
+///
+/// Returns `None` if the BVH is not built (e.g., deserialized mesh without rebuild).
 #[must_use]
 pub fn mesh_capsule_contact(
-    mesh: &mut TriangleMeshData,
+    mesh: &TriangleMeshData,
     mesh_pose: &Pose,
     capsule_start: Point3<f64>,
     capsule_end: Point3<f64>,
     capsule_radius: f64,
 ) -> Option<MeshContact> {
-    // Ensure BVH is built
-    mesh.ensure_bvh();
-
     // Transform capsule to mesh local space
     let local_start = mesh_pose.inverse_transform_point(&capsule_start);
     let local_end = mesh_pose.inverse_transform_point(&capsule_end);
@@ -1146,16 +1149,15 @@ pub fn mesh_capsule_contact(
 }
 
 /// Query a triangle mesh for contact with a box.
+///
+/// Returns `None` if the BVH is not built (e.g., deserialized mesh without rebuild).
 #[must_use]
 pub fn mesh_box_contact(
-    mesh: &mut TriangleMeshData,
+    mesh: &TriangleMeshData,
     mesh_pose: &Pose,
     box_pose: &Pose,
     half_extents: &Vector3<f64>,
 ) -> Option<MeshContact> {
-    // Ensure BVH is built
-    mesh.ensure_bvh();
-
     // Transform box to mesh local space
     let local_box_center = mesh_pose.inverse_transform_point(&box_pose.position);
     let local_box_rotation = mesh_pose.rotation.inverse() * box_pose.rotation;
@@ -1474,14 +1476,14 @@ mod tests {
 
     #[test]
     fn test_mesh_sphere_contact() {
-        let mut mesh = create_cube();
+        let mesh = create_cube();
         let mesh_pose = Pose::identity();
 
         // Sphere penetrating the top of the cube
         let center = Point3::new(0.0, 0.0, 0.7);
         let radius = 0.3;
 
-        let contact = mesh_sphere_contact(&mut mesh, &mesh_pose, center, radius);
+        let contact = mesh_sphere_contact(&mesh, &mesh_pose, center, radius);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1491,14 +1493,14 @@ mod tests {
 
     #[test]
     fn test_mesh_sphere_contact_miss() {
-        let mut mesh = create_cube();
+        let mesh = create_cube();
         let mesh_pose = Pose::identity();
 
         // Sphere far from the cube
         let center = Point3::new(0.0, 0.0, 2.0);
         let radius = 0.3;
 
-        let contact = mesh_sphere_contact(&mut mesh, &mesh_pose, center, radius);
+        let contact = mesh_sphere_contact(&mesh, &mesh_pose, center, radius);
         assert!(contact.is_none());
     }
 

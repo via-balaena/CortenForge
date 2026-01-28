@@ -11,14 +11,17 @@
 //! - **Inertia computation**: Parallel axis theorem for composite bodies
 //! - **Capsule inertia**: Exact formula including hemispherical end caps
 
-use nalgebra::{DVector, Matrix3, UnitQuaternion, Vector3};
+use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3};
+use sim_core::mesh::TriangleMeshData;
 use sim_core::{ActuatorDynamics, ActuatorTransmission, GeomType, Integrator, MjJointType, Model};
+use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::warn;
 
 use crate::error::Result;
 use crate::types::{
     MjcfActuator, MjcfActuatorType, MjcfBody, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfIntegrator,
-    MjcfJoint, MjcfJointType, MjcfModel, MjcfOption, MjcfSite,
+    MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption, MjcfSite,
 };
 
 /// Error type for MJCF to Model conversion.
@@ -69,6 +72,11 @@ pub fn model_from_mjcf(mjcf: &MjcfModel) -> std::result::Result<Model, ModelConv
 
     // Set global options
     builder.set_options(&mjcf.option);
+
+    // Process mesh assets FIRST (before geoms can reference them)
+    for mesh in &mjcf.meshes {
+        builder.process_mesh(mesh)?;
+    }
 
     // Process worldbody's own geoms and sites (attached to body 0)
     // These must be processed BEFORE child bodies so geom indices are correct
@@ -154,6 +162,16 @@ struct ModelBuilder {
     geom_contype: Vec<u32>,
     geom_conaffinity: Vec<u32>,
     geom_name: Vec<Option<String>>,
+    /// Mesh index for each geom (`None` for non-mesh geoms).
+    geom_mesh: Vec<Option<usize>>,
+
+    // Mesh arrays (built from MJCF <asset><mesh> elements)
+    /// Name-to-index lookup for mesh assets.
+    mesh_name_to_id: HashMap<String, usize>,
+    /// Mesh names (for Model).
+    mesh_name: Vec<String>,
+    /// Triangle mesh data with prebuilt BVH (Arc for cheap cloning).
+    mesh_data: Vec<Arc<TriangleMeshData>>,
 
     // Site arrays
     site_body: Vec<usize>,
@@ -201,9 +219,9 @@ struct ModelBuilder {
     qpos0_values: Vec<f64>,
 
     // Name to index lookups (for actuator wiring)
-    joint_name_to_id: std::collections::HashMap<String, usize>,
-    body_name_to_id: std::collections::HashMap<String, usize>,
-    site_name_to_id: std::collections::HashMap<String, usize>,
+    joint_name_to_id: HashMap<String, usize>,
+    body_name_to_id: HashMap<String, usize>,
+    site_name_to_id: HashMap<String, usize>,
 }
 
 impl ModelBuilder {
@@ -259,6 +277,11 @@ impl ModelBuilder {
             geom_contype: vec![],
             geom_conaffinity: vec![],
             geom_name: vec![],
+            geom_mesh: vec![],
+
+            mesh_name_to_id: HashMap::new(),
+            mesh_name: vec![],
+            mesh_data: vec![],
 
             site_body: vec![],
             site_type: vec![],
@@ -300,9 +323,9 @@ impl ModelBuilder {
 
             qpos0_values: vec![],
 
-            joint_name_to_id: std::collections::HashMap::new(),
-            body_name_to_id: std::collections::HashMap::from([("world".to_string(), 0)]),
-            site_name_to_id: std::collections::HashMap::new(),
+            joint_name_to_id: HashMap::new(),
+            body_name_to_id: HashMap::from([("world".to_string(), 0)]),
+            site_name_to_id: HashMap::new(),
         }
     }
 
@@ -316,6 +339,39 @@ impl ModelBuilder {
             MjcfIntegrator::RK4 => Integrator::RungeKutta4,
             MjcfIntegrator::Implicit | MjcfIntegrator::ImplicitFast => Integrator::Implicit,
         };
+    }
+
+    /// Process a single mesh asset from MJCF.
+    ///
+    /// Converts `MjcfMesh` to `TriangleMeshData` with BVH and registers it
+    /// in the mesh lookup table. The mesh can then be referenced by geoms.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ModelConversionError` if:
+    /// - Mesh name is a duplicate of an already-processed mesh
+    /// - Mesh conversion fails (see [`convert_mjcf_mesh`] for details)
+    fn process_mesh(
+        &mut self,
+        mjcf_mesh: &MjcfMesh,
+    ) -> std::result::Result<(), ModelConversionError> {
+        // Check for duplicate mesh names
+        if self.mesh_name_to_id.contains_key(&mjcf_mesh.name) {
+            return Err(ModelConversionError {
+                message: format!("mesh '{}': duplicate mesh name", mjcf_mesh.name),
+            });
+        }
+
+        // Convert MJCF mesh to TriangleMeshData
+        let mesh_data = convert_mjcf_mesh(mjcf_mesh)?;
+
+        // Register in lookup table
+        let mesh_id = self.mesh_data.len();
+        self.mesh_name_to_id.insert(mjcf_mesh.name.clone(), mesh_id);
+        self.mesh_name.push(mjcf_mesh.name.clone());
+        self.mesh_data.push(Arc::new(mesh_data));
+
+        Ok(())
     }
 
     /// Process geoms and sites directly attached to worldbody (body 0).
@@ -667,6 +723,34 @@ impl ModelBuilder {
             }
         };
 
+        // Handle mesh geom linking
+        let geom_mesh_ref = if geom_type == GeomType::Mesh {
+            match &geom.mesh {
+                Some(mesh_name) => {
+                    let mesh_id = self.mesh_name_to_id.get(mesh_name).ok_or_else(|| {
+                        ModelConversionError {
+                            message: format!(
+                                "geom '{}': references undefined mesh '{}'",
+                                geom.name.as_deref().unwrap_or("<unnamed>"),
+                                mesh_name
+                            ),
+                        }
+                    })?;
+                    Some(*mesh_id)
+                }
+                None => {
+                    return Err(ModelConversionError {
+                        message: format!(
+                            "geom '{}': type is mesh but no mesh attribute specified",
+                            geom.name.as_deref().unwrap_or("<unnamed>")
+                        ),
+                    });
+                }
+            }
+        } else {
+            None
+        };
+
         // Handle fromto for capsules/cylinders
         let (pos, quat, size) = if let Some(fromto) = geom.fromto {
             compute_fromto_pose(fromto, &geom.size)
@@ -690,6 +774,7 @@ impl ModelBuilder {
             self.geom_conaffinity.push(geom.conaffinity as u32);
         }
         self.geom_name.push(geom.name.clone());
+        self.geom_mesh.push(geom_mesh_ref);
 
         Ok(geom_id)
     }
@@ -915,6 +1000,13 @@ impl ModelBuilder {
             geom_name: self.geom_name,
             // Pre-computed bounding radii (computed below after we have geom_type and geom_size)
             geom_rbound: vec![0.0; ngeom],
+            // Mesh index for each geom (populated by process_geom)
+            geom_mesh: self.geom_mesh,
+
+            // Mesh assets (from MJCF <asset><mesh> elements)
+            nmesh: self.mesh_data.len(),
+            mesh_name: self.mesh_name,
+            mesh_data: self.mesh_data,
 
             site_body: self.site_body,
             site_type: self.site_type,
@@ -999,10 +1091,17 @@ impl ModelBuilder {
         model.compute_ancestors();
 
         // Pre-compute bounding sphere radii for all geoms (used in collision broad-phase)
-        // Uses GeomType::bounding_radius() - the single source of truth
         for geom_id in 0..ngeom {
-            model.geom_rbound[geom_id] =
-                model.geom_type[geom_id].bounding_radius(model.geom_size[geom_id]);
+            model.geom_rbound[geom_id] = if let Some(mesh_id) = model.geom_mesh[geom_id] {
+                // Mesh geom: bounding sphere radius = distance from AABB center to corner
+                // This is the half-diagonal of the AABB, guaranteeing all vertices are inside.
+                let (aabb_min, aabb_max) = model.mesh_data[mesh_id].aabb();
+                let half_diagonal = (aabb_max - aabb_min) / 2.0;
+                half_diagonal.norm()
+            } else {
+                // Primitive geom: use GeomType::bounding_radius() - the single source of truth
+                model.geom_type[geom_id].bounding_radius(model.geom_size[geom_id])
+            };
         }
 
         model
@@ -1012,6 +1111,110 @@ impl ModelBuilder {
 /// Convert MJCF quaternion (w, x, y, z) to `UnitQuaternion`.
 fn quat_from_wxyz(q: nalgebra::Vector4<f64>) -> UnitQuaternion<f64> {
     UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
+}
+
+/// Convert MJCF mesh asset to `TriangleMeshData`.
+///
+/// Applies scale to vertices and builds the BVH for efficient collision queries.
+///
+/// # Errors
+///
+/// Returns `ModelConversionError` if:
+/// - `vertex` is `None` (file loading not yet implemented)
+/// - `face` is `None`
+/// - Vertex count not divisible by 3
+/// - Face index count not divisible by 3
+/// - Mesh is empty (zero vertices or faces)
+/// - Any face index is out of bounds
+fn convert_mjcf_mesh(
+    mjcf_mesh: &MjcfMesh,
+) -> std::result::Result<TriangleMeshData, ModelConversionError> {
+    // Extract and validate vertices
+    let vertices: Vec<Point3<f64>> = match &mjcf_mesh.vertex {
+        Some(verts) => {
+            if verts.len() % 3 != 0 {
+                return Err(ModelConversionError {
+                    message: format!(
+                        "mesh '{}': vertex count ({}) not divisible by 3",
+                        mjcf_mesh.name,
+                        verts.len()
+                    ),
+                });
+            }
+            // Apply scale while converting to Point3
+            verts
+                .chunks_exact(3)
+                .map(|chunk| {
+                    Point3::new(
+                        chunk[0] * mjcf_mesh.scale.x,
+                        chunk[1] * mjcf_mesh.scale.y,
+                        chunk[2] * mjcf_mesh.scale.z,
+                    )
+                })
+                .collect()
+        }
+        None => {
+            // TODO: Load from file if mjcf_mesh.file is Some
+            return Err(ModelConversionError {
+                message: format!(
+                    "mesh '{}': no vertex data (file loading not yet implemented)",
+                    mjcf_mesh.name
+                ),
+            });
+        }
+    };
+
+    // Extract and validate faces (convert u32 -> usize)
+    let indices: Vec<usize> = match &mjcf_mesh.face {
+        Some(face_data) => {
+            if face_data.len() % 3 != 0 {
+                return Err(ModelConversionError {
+                    message: format!(
+                        "mesh '{}': face index count ({}) not divisible by 3",
+                        mjcf_mesh.name,
+                        face_data.len()
+                    ),
+                });
+            }
+            face_data.iter().map(|&idx| idx as usize).collect()
+        }
+        None => {
+            return Err(ModelConversionError {
+                message: format!("mesh '{}': no face data", mjcf_mesh.name),
+            });
+        }
+    };
+
+    // Validate non-empty
+    if vertices.is_empty() {
+        return Err(ModelConversionError {
+            message: format!("mesh '{}': empty vertex array", mjcf_mesh.name),
+        });
+    }
+    if indices.is_empty() {
+        return Err(ModelConversionError {
+            message: format!("mesh '{}': empty face array", mjcf_mesh.name),
+        });
+    }
+
+    // Validate index bounds
+    let max_idx = vertices.len();
+    for (i, &idx) in indices.iter().enumerate() {
+        if idx >= max_idx {
+            return Err(ModelConversionError {
+                message: format!(
+                    "mesh '{}': face index {} at position {} out of bounds (max: {})",
+                    mjcf_mesh.name,
+                    idx,
+                    i,
+                    max_idx - 1
+                ),
+            });
+        }
+    }
+
+    // TriangleMeshData::new() builds the BVH automatically
+    Ok(TriangleMeshData::new(vertices, indices))
 }
 
 /// Extract inertial properties from MjcfInertial with full MuJoCo semantics.

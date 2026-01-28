@@ -63,9 +63,14 @@
 //! - Phase 6: Contact (ground plane, sphere collisions) - COMPLETE
 
 use crate::collision_shape::{Aabb, CollisionShape};
-use nalgebra::{Point3, Vector3};
+use crate::mesh::{
+    MeshContact, TriangleMeshData, mesh_box_contact, mesh_capsule_contact,
+    mesh_mesh_deepest_contact, mesh_sphere_contact,
+};
+use nalgebra::{Matrix3, Point3, Vector3};
 use sim_types::Pose;
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 /// Simple pendulum state for Phase 1 testing.
 ///
@@ -3100,8 +3105,7 @@ mod tests {
 // 7. Semi-implicit Euler integration with new velocity for position
 
 use nalgebra::{
-    Cholesky, Dyn, Isometry3, Matrix3, Matrix6, Quaternion, Translation3, Unit, UnitQuaternion,
-    Vector6,
+    Cholesky, Dyn, Isometry3, Matrix6, Quaternion, Translation3, Unit, UnitQuaternion, Vector6,
 };
 use std::collections::HashMap;
 
@@ -5721,6 +5725,18 @@ pub struct Model {
     /// Used for fast distance culling in collision broad-phase.
     /// For primitives, computed from geom_size. For meshes, computed from mesh AABB.
     pub geom_rbound: Vec<f64>,
+    /// Mesh index for each geom (`None` if not a mesh geom).
+    /// Length: ngeom. Only geoms with `geom_type == GeomType::Mesh` have `Some(mesh_id)`.
+    pub geom_mesh: Vec<Option<usize>>,
+
+    // ==================== Meshes (indexed by mesh_id) ====================
+    /// Number of mesh assets.
+    pub nmesh: usize,
+    /// Mesh names (for lookup by name).
+    pub mesh_name: Vec<String>,
+    /// Triangle mesh data with prebuilt BVH.
+    /// `Arc` for cheap cloning (multiple geoms can reference the same mesh asset).
+    pub mesh_data: Vec<Arc<TriangleMeshData>>,
 
     // ==================== Sites (indexed by site_id) ====================
     /// Parent body for each site.
@@ -6272,6 +6288,12 @@ impl Model {
             geom_solref: vec![],
             geom_name: vec![],
             geom_rbound: vec![],
+            geom_mesh: vec![],
+
+            // Meshes (empty)
+            nmesh: 0,
+            mesh_name: vec![],
+            mesh_data: vec![],
 
             // Sites (empty)
             site_body: vec![],
@@ -7508,6 +7530,11 @@ fn collide_geoms(
     // Fast path: handle all analytical collision cases first
     // These avoid the expensive quaternion conversion and GJK/EPA
 
+    // Special case: mesh collision (has its own BVH-accelerated path)
+    if type1 == GeomType::Mesh || type2 == GeomType::Mesh {
+        return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2);
+    }
+
     // Special case: plane collision
     if type1 == GeomType::Plane || type2 == GeomType::Plane {
         return collide_with_plane(
@@ -7557,7 +7584,29 @@ fn collide_geoms(
         return collide_box_box(model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2);
     }
 
-    // Slow path: Build shapes and poses for GJK/EPA (only for cylinder, ellipsoid, mesh)
+    // Special case: cylinder-sphere collision (analytical)
+    if (type1 == GeomType::Cylinder && type2 == GeomType::Sphere)
+        || (type1 == GeomType::Sphere && type2 == GeomType::Cylinder)
+    {
+        return collide_cylinder_sphere(
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+        );
+    }
+
+    // Special case: cylinder-capsule collision (analytical with GJK/EPA fallback)
+    // Analytical solution handles common cases; degenerate cases fall through to GJK/EPA
+    if (type1 == GeomType::Cylinder && type2 == GeomType::Capsule)
+        || (type1 == GeomType::Capsule && type2 == GeomType::Cylinder)
+    {
+        if let Some(contact) = collide_cylinder_capsule(
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+        ) {
+            return Some(contact);
+        }
+        // Fall through to GJK/EPA for degenerate cases (intersecting/parallel axes, cap collisions)
+    }
+
+    // Slow path: Build shapes and poses for GJK/EPA (cylinder-cylinder, cylinder-box, ellipsoid-*, and fallback cases)
     let shape1 = geom_to_collision_shape(type1, size1);
     let shape2 = geom_to_collision_shape(type2, size2);
 
@@ -7594,7 +7643,7 @@ fn collide_geoms(
 }
 
 /// Convert `MuJoCo` `GeomType` to `CollisionShape`.
-#[allow(clippy::match_same_arms)] // Plane and Mesh have different TODOs but both return None
+#[allow(clippy::match_same_arms)] // Plane and Mesh both return None but for different reasons
 fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<CollisionShape> {
     match geom_type {
         GeomType::Sphere => Some(CollisionShape::Sphere { radius: size.x }),
@@ -7608,12 +7657,241 @@ fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Co
             radius: size.x,
         }),
         GeomType::Ellipsoid => Some(CollisionShape::Ellipsoid { radii: size }),
-        GeomType::Plane => None, // Handled specially
-        GeomType::Mesh => None,  // TODO: Need mesh data from model
+        GeomType::Plane => None, // Handled via collide_with_plane()
+        GeomType::Mesh => None,  // Handled via collide_with_mesh()
     }
 }
 
+// ============================================================================
+// Primitive Collision Detection
+// ============================================================================
+//
+// # API Design Pattern
+//
+// This module uses two types of collision functions:
+//
+// 1. **Dispatcher functions** (e.g., `collide_with_plane`, `collide_geoms`):
+//    - Take `&Model` and geometry indices
+//    - Handle type dispatch and parameter extraction
+//    - Compute derived values like friction (geometric mean)
+//    - Called from the main collision pipeline
+//
+// 2. **Implementation helpers** (e.g., `collide_cylinder_plane_impl`):
+//    - Suffix `_impl` indicates internal helper
+//    - Take pre-extracted geometric parameters (no Model reference)
+//    - Focus purely on geometric computation
+//    - Marked `#[inline]` for performance
+//    - Not called directly from pipeline
+//
+// This separation follows the Todorov principle: compute derived values once
+// in the dispatcher, then pass them to the implementation.
+// ============================================================================
+
+/// Minimum norm threshold for geometric operations.
+///
+/// Used to prevent division by zero and detect degenerate cases in collision
+/// detection. This value is chosen to be:
+/// - Small enough to not reject valid geometric configurations
+/// - Large enough to avoid numerical instability near machine epsilon
+///
+/// For reference: f64::EPSILON ≈ 2.2e-16, so 1e-10 provides ~6 orders of
+/// magnitude of safety margin while still detecting near-degenerate cases.
+const GEOM_EPSILON: f64 = 1e-10;
+
+/// Threshold for cylinder axis being nearly vertical (perpendicular to plane).
+/// When |cos(θ)| > 0.999 (θ < 2.6°), treat cylinder as vertical.
+const AXIS_VERTICAL_THRESHOLD: f64 = 0.999;
+
+/// Threshold for cylinder axis being nearly horizontal (parallel to plane).
+/// When |cos(θ)| < 0.001 (θ > 89.9°), treat cylinder as horizontal.
+const AXIS_HORIZONTAL_THRESHOLD: f64 = 0.001;
+
+/// Threshold for detecting cylinder cap collision in cylinder-capsule.
+/// When normal is within ~45° of cylinder axis (cos > 0.7), treat as cap collision.
+const CAP_COLLISION_THRESHOLD: f64 = 0.7;
+
+// =============================================================================
+// Mesh Collision Detection
+// =============================================================================
+
+/// Collision detection involving at least one mesh geometry.
+///
+/// Dispatches to specialized mesh-primitive or mesh-mesh implementations.
+/// For mesh-primitive collisions, approximations are used for some geometry types:
+/// - Cylinder: approximated as capsule (conservative, may report false positives)
+/// - Ellipsoid: approximated as sphere with max radius (conservative)
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
+fn collide_with_mesh(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+) -> Option<Contact> {
+    let type1 = model.geom_type[geom1];
+    let type2 = model.geom_type[geom2];
+    let size1 = model.geom_size[geom1];
+    let size2 = model.geom_size[geom2];
+
+    // Build poses (expensive quaternion conversion, but needed for mesh collision)
+    let quat1 = UnitQuaternion::from_matrix(&mat1);
+    let quat2 = UnitQuaternion::from_matrix(&mat2);
+    let pose1 = Pose::from_position_rotation(Point3::from(pos1), quat1);
+    let pose2 = Pose::from_position_rotation(Point3::from(pos2), quat2);
+
+    let mesh_contact: Option<MeshContact> = match (type1, type2) {
+        // Mesh-Mesh
+        (GeomType::Mesh, GeomType::Mesh) => {
+            let mesh1_id = model.geom_mesh[geom1]?;
+            let mesh2_id = model.geom_mesh[geom2]?;
+            let mesh1 = &model.mesh_data[mesh1_id];
+            let mesh2 = &model.mesh_data[mesh2_id];
+
+            mesh_mesh_deepest_contact(mesh1, &pose1, mesh2, &pose2)
+        }
+
+        // Mesh (geom1) vs Primitive (geom2)
+        (GeomType::Mesh, prim_type) => {
+            let mesh_id = model.geom_mesh[geom1]?;
+            let mesh = &model.mesh_data[mesh_id];
+
+            match prim_type {
+                GeomType::Sphere => mesh_sphere_contact(mesh, &pose1, pose2.position, size2.x),
+                // Capsule and Cylinder both use capsule collision (cylinder approximated as capsule)
+                GeomType::Capsule | GeomType::Cylinder => {
+                    let half_len = size2.y;
+                    let axis = pose2.rotation * Vector3::z();
+                    let start = pose2.position - axis * half_len;
+                    let end = pose2.position + axis * half_len;
+                    mesh_capsule_contact(mesh, &pose1, start, end, size2.x)
+                }
+                GeomType::Box => mesh_box_contact(mesh, &pose1, &pose2, &size2),
+                GeomType::Ellipsoid => {
+                    // Approximate as sphere with max radius (conservative)
+                    let max_r = size2.x.max(size2.y).max(size2.z);
+                    mesh_sphere_contact(mesh, &pose1, pose2.position, max_r)
+                }
+                GeomType::Plane => {
+                    // Plane normal is local Z-axis
+                    let plane_normal = mat2.column(2).into_owned();
+                    let plane_d = plane_normal.dot(&pos2);
+                    collide_mesh_plane(mesh, &pose1, plane_normal, plane_d)
+                }
+                GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
+            }
+        }
+
+        // Primitive (geom1) vs Mesh (geom2) - swap and negate normal
+        (prim_type, GeomType::Mesh) => {
+            let mesh_id = model.geom_mesh[geom2]?;
+            let mesh = &model.mesh_data[mesh_id];
+
+            let contact = match prim_type {
+                GeomType::Sphere => mesh_sphere_contact(mesh, &pose2, pose1.position, size1.x),
+                // Capsule and Cylinder both use capsule collision (cylinder approximated as capsule)
+                GeomType::Capsule | GeomType::Cylinder => {
+                    let half_len = size1.y;
+                    let axis = pose1.rotation * Vector3::z();
+                    let start = pose1.position - axis * half_len;
+                    let end = pose1.position + axis * half_len;
+                    mesh_capsule_contact(mesh, &pose2, start, end, size1.x)
+                }
+                GeomType::Box => mesh_box_contact(mesh, &pose2, &pose1, &size1),
+                GeomType::Ellipsoid => {
+                    let max_r = size1.x.max(size1.y).max(size1.z);
+                    mesh_sphere_contact(mesh, &pose2, pose1.position, max_r)
+                }
+                GeomType::Plane => {
+                    let plane_normal = mat1.column(2).into_owned();
+                    let plane_d = plane_normal.dot(&pos1);
+                    collide_mesh_plane(mesh, &pose2, plane_normal, plane_d)
+                }
+                GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
+            };
+
+            // Negate normal since we swapped the order (mesh was geom2, but contact
+            // normal points from mesh outward - we need it pointing from geom1 to geom2)
+            contact.map(|mut c| {
+                c.normal = -c.normal;
+                c
+            })
+        }
+
+        _ => unreachable!("collide_with_mesh called but neither geom is a mesh"),
+    };
+
+    // Convert MeshContact to Contact
+    mesh_contact.map(|mc| {
+        let friction1 = model.geom_friction[geom1].x;
+        let friction2 = model.geom_friction[geom2].x;
+        let friction = (friction1 * friction2).sqrt();
+
+        Contact::new(
+            mc.point.coords,
+            mc.normal,
+            mc.penetration,
+            geom1,
+            geom2,
+            friction,
+        )
+    })
+}
+
+/// Mesh vs infinite plane collision.
+///
+/// Tests all mesh vertices against the plane and returns the deepest penetrating vertex.
+/// This is a simple but effective approach for mesh-plane collision:
+/// - O(n) in number of vertices
+/// - Handles any mesh topology
+/// - Returns single deepest contact point
+fn collide_mesh_plane(
+    mesh: &TriangleMeshData,
+    mesh_pose: &Pose,
+    plane_normal: Vector3<f64>,
+    plane_d: f64,
+) -> Option<MeshContact> {
+    let mut deepest: Option<MeshContact> = None;
+
+    for (i, vertex) in mesh.vertices().iter().enumerate() {
+        // Transform vertex to world space
+        let world_v = mesh_pose.transform_point(vertex);
+
+        // Signed distance from plane (positive = above plane, negative = below)
+        let signed_dist = plane_normal.dot(&world_v.coords) - plane_d;
+        let depth = -signed_dist;
+
+        if depth > 0.0 {
+            match &mut deepest {
+                Some(d) if depth > d.penetration => {
+                    d.point = world_v;
+                    d.normal = plane_normal;
+                    d.penetration = depth;
+                    d.triangle_index = i; // Store vertex index (not triangle, but useful for debug)
+                }
+                None => {
+                    deepest = Some(MeshContact {
+                        point: world_v,
+                        normal: plane_normal,
+                        penetration: depth,
+                        triangle_index: i,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    deepest
+}
+
 /// Collision between a plane and another geometry.
+///
+/// Dispatches to specialized implementations based on the other geometry's type.
+/// The plane is always treated as an infinite half-space with normal along its
+/// local Z-axis.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn collide_with_plane(
     model: &Model,
@@ -7754,12 +8032,246 @@ fn collide_with_plane(
                 None
             }
         }
-        _ => {
-            // For other shapes, use GJK/EPA with a half-space approximation
-            // For now, return None for unsupported shapes
+        GeomType::Cylinder => {
+            // Cylinder-plane collision: find deepest point on cylinder
+            collide_cylinder_plane_impl(
+                plane_geom,
+                other_geom,
+                plane_normal,
+                plane_distance,
+                other_pos,
+                other_mat,
+                other_size,
+                friction,
+            )
+        }
+        GeomType::Ellipsoid => {
+            // Ellipsoid-plane collision: find support point in plane normal direction
+            collide_ellipsoid_plane_impl(
+                plane_geom,
+                other_geom,
+                plane_normal,
+                plane_distance,
+                other_pos,
+                other_mat,
+                other_size,
+                friction,
+            )
+        }
+        GeomType::Mesh => {
+            // Mesh-plane collision requires mesh data from model
+            // Will be implemented in Phase 4 (mesh integration)
+            None
+        }
+        GeomType::Plane => {
+            // Plane-plane collision not physically meaningful
             None
         }
     }
+}
+
+/// Cylinder-plane collision detection (internal helper).
+///
+/// Finds the deepest penetrating point on the cylinder. For tilted/upright
+/// cylinders, this is on the rim edge. For horizontal cylinders (axis parallel
+/// to plane), the curved surface is checked.
+///
+/// # Algorithm
+/// 1. Compute cylinder axis in world frame
+/// 2. Determine if cylinder is "horizontal" (axis nearly parallel to plane)
+/// 3. For non-horizontal: check rim points on both caps in the deepest direction
+/// 4. For horizontal: check the curved surface point closest to plane
+/// 5. Return the deepest penetrating point as contact
+///
+/// # Parameters
+/// - `plane_normal`: Unit normal of the plane (points away from solid half-space)
+/// - `plane_d`: Signed distance from origin to plane along normal
+/// - `cyl_size`: [radius, half_height, unused]
+///
+/// # Returns
+/// `Some(Contact)` if cylinder penetrates plane, `None` otherwise.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn collide_cylinder_plane_impl(
+    plane_geom: usize,
+    cyl_geom: usize,
+    plane_normal: Vector3<f64>,
+    plane_d: f64,
+    cyl_pos: Vector3<f64>,
+    cyl_mat: Matrix3<f64>,
+    cyl_size: Vector3<f64>,
+    friction: f64,
+) -> Option<Contact> {
+    let radius = cyl_size.x;
+    let half_height = cyl_size.y;
+
+    // Cylinder axis is local Z transformed to world
+    let cyl_axis = cyl_mat.column(2).into_owned();
+
+    // How aligned is cylinder axis with plane normal?
+    // axis_dot_signed: positive = axis points away from plane, negative = toward plane
+    // axis_dot (abs): 1 = vertical, 0 = horizontal
+    let axis_dot_signed = plane_normal.dot(&cyl_axis);
+    let axis_dot = axis_dot_signed.abs();
+
+    // Pre-compute radial direction (projection of plane normal onto radial plane)
+    // Used in Case 1 (horizontal) and Case 3 (tilted)
+    let radial = plane_normal - cyl_axis * axis_dot_signed;
+    let radial_len = radial.norm();
+
+    // Compute the deepest point on the cylinder
+    let deepest_point = if axis_dot < AXIS_HORIZONTAL_THRESHOLD {
+        // Case 1: Cylinder is horizontal (axis parallel to plane)
+        // The deepest point is on the curved surface, directly below the axis
+        if radial_len > GEOM_EPSILON {
+            // Point on curved surface in the direction opposite to plane normal
+            cyl_pos - (radial / radial_len) * radius
+        } else {
+            // Degenerate: plane normal exactly along axis (contradicts horizontal check)
+            cyl_pos - plane_normal * radius
+        }
+    } else if axis_dot > AXIS_VERTICAL_THRESHOLD {
+        // Case 2: Cylinder is vertical (axis perpendicular to plane)
+        // The deepest point is the entire bottom rim (pick center for stability)
+        // Determine which cap faces the plane
+        let cap_dir = if axis_dot_signed > 0.0 {
+            -cyl_axis // Bottom cap faces plane
+        } else {
+            cyl_axis // Top cap faces plane
+        };
+        cyl_pos + cap_dir * half_height
+    } else {
+        // Case 3: Cylinder is tilted
+        // The deepest point is on one of the rim edges
+        // Find the rim direction that points most into the plane
+        // Note: radial_len = sqrt(1 - axis_dot²) > 0 since axis_dot < AXIS_VERTICAL_THRESHOLD
+        let rim_dir = -radial / radial_len;
+
+        // Determine which cap is lower (faces the plane more)
+        let top_center = cyl_pos + cyl_axis * half_height;
+        let bottom_center = cyl_pos - cyl_axis * half_height;
+
+        let top_rim_point = top_center + rim_dir * radius;
+        let bottom_rim_point = bottom_center + rim_dir * radius;
+
+        let top_depth = -(plane_normal.dot(&top_rim_point) - plane_d);
+        let bottom_depth = -(plane_normal.dot(&bottom_rim_point) - plane_d);
+
+        if bottom_depth > top_depth {
+            bottom_rim_point
+        } else {
+            top_rim_point
+        }
+    };
+
+    // Compute penetration depth
+    let signed_dist = plane_normal.dot(&deepest_point) - plane_d;
+    let depth = -signed_dist;
+
+    if depth <= 0.0 {
+        return None;
+    }
+
+    // Contact point is on the plane surface
+    let contact_pos = deepest_point + plane_normal * depth;
+
+    Some(Contact::new(
+        contact_pos,
+        plane_normal,
+        depth,
+        plane_geom,
+        cyl_geom,
+        friction,
+    ))
+}
+
+/// Ellipsoid-plane collision detection (internal helper).
+///
+/// Finds the support point on the ellipsoid surface in the direction toward the plane.
+/// Ellipsoid is defined by radii (a, b, c) = (rx, ry, rz) along local axes.
+///
+/// # Algorithm
+///
+/// For an ellipsoid `x²/a² + y²/b² + z²/c² = 1`, the support point in direction `-n`
+/// (i.e., the point on the surface with outward normal parallel to `-n`) is:
+///
+/// ```text
+/// p = -(r ⊙ r ⊙ n) / ||r ⊙ n||
+///   = -(a²·nₓ, b²·nᵧ, c²·nᵤ) / ||(a·nₓ, b·nᵧ, c·nᵤ)||
+/// ```
+///
+/// where `⊙` denotes element-wise (Hadamard) product.
+///
+/// **Derivation**: The outward normal at point `(x,y,z)` on the ellipsoid is
+/// `∇f = (2x/a², 2y/b², 2z/c²)`. Setting this parallel to `n` and solving with
+/// the ellipsoid constraint yields the support point formula.
+///
+/// # Parameters
+/// - `plane_normal`: Unit normal of the plane
+/// - `plane_d`: Signed distance from origin to plane
+/// - `ell_radii`: Ellipsoid radii [rx, ry, rz]
+///
+/// # Returns
+/// `Some(Contact)` if ellipsoid penetrates plane, `None` otherwise.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn collide_ellipsoid_plane_impl(
+    plane_geom: usize,
+    ell_geom: usize,
+    plane_normal: Vector3<f64>,
+    plane_d: f64,
+    ell_pos: Vector3<f64>,
+    ell_mat: Matrix3<f64>,
+    ell_radii: Vector3<f64>,
+    friction: f64,
+) -> Option<Contact> {
+    // Transform plane normal to ellipsoid local frame
+    let local_normal = ell_mat.transpose() * plane_normal;
+
+    // Compute support point in local frame
+    // For ellipsoid, support in direction -n is: -(r² ⊙ n) / ||r ⊙ n||
+    // where ⊙ is element-wise multiply and r = radii
+    let scaled = Vector3::new(
+        ell_radii.x * local_normal.x,
+        ell_radii.y * local_normal.y,
+        ell_radii.z * local_normal.z,
+    );
+    let scale_norm = scaled.norm();
+
+    if scale_norm < GEOM_EPSILON {
+        // Degenerate case: normal perpendicular to all radii (shouldn't happen)
+        return None;
+    }
+
+    // Support point on ellipsoid surface in direction toward plane (negative normal)
+    let local_support = -Vector3::new(
+        ell_radii.x * scaled.x / scale_norm,
+        ell_radii.y * scaled.y / scale_norm,
+        ell_radii.z * scaled.z / scale_norm,
+    );
+
+    // Transform to world frame
+    let world_support = ell_pos + ell_mat * local_support;
+
+    // Check penetration depth
+    let signed_dist = plane_normal.dot(&world_support) - plane_d;
+    let depth = -signed_dist; // Positive = penetrating
+
+    if depth <= 0.0 {
+        return None;
+    }
+
+    // Contact point is on plane surface
+    let contact_pos = world_support + plane_normal * depth;
+
+    Some(Contact::new(
+        contact_pos,
+        plane_normal,
+        depth,
+        plane_geom,
+        ell_geom,
+        friction,
+    ))
 }
 
 /// Sphere-sphere collision detection.
@@ -7785,7 +8297,7 @@ fn collide_sphere_sphere(
     let sum_radii = radius1 + radius2;
     let penetration = sum_radii - dist;
 
-    if penetration > 0.0 && dist > 1e-10 {
+    if penetration > 0.0 && dist > GEOM_EPSILON {
         // Normal points from sphere1 to sphere2
         let normal = diff / dist;
 
@@ -7853,7 +8365,7 @@ fn collide_capsule_capsule(
     let sum_radii = radius1 + radius2;
     let penetration = sum_radii - dist;
 
-    if penetration > 0.0 && dist > 1e-10 {
+    if penetration > 0.0 && dist > GEOM_EPSILON {
         let normal = diff / dist;
         let contact_pos = closest1 + normal * (radius1 - penetration * 0.5);
 
@@ -7920,7 +8432,7 @@ fn collide_sphere_capsule(
     let sum_radii = sphere_radius + capsule_radius;
     let penetration = sum_radii - dist;
 
-    if penetration > 0.0 && dist > 1e-10 {
+    if penetration > 0.0 && dist > GEOM_EPSILON {
         // Normal points from capsule toward sphere
         let normal = diff / dist;
         let contact_pos = closest_on_capsule + normal * (capsule_radius - penetration * 0.5);
@@ -7997,7 +8509,7 @@ fn collide_sphere_box(
 
     if penetration > 0.0 {
         // Compute normal (from box toward sphere)
-        let normal = if dist > 1e-10 {
+        let normal = if dist > GEOM_EPSILON {
             diff / dist
         } else {
             // Sphere center is inside box - find deepest penetration axis
@@ -8047,6 +8559,241 @@ fn collide_sphere_box(
     } else {
         None
     }
+}
+
+/// Cylinder-sphere collision detection.
+///
+/// Handles three collision cases:
+/// - Side collision: sphere beside cylinder body
+/// - Cap collision: sphere above/below cylinder, within radius
+/// - Edge collision: sphere near rim of cylinder cap
+///
+/// Cylinder axis is local Z.
+#[allow(clippy::too_many_arguments)]
+fn collide_cylinder_sphere(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    type1: GeomType,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+    size1: Vector3<f64>,
+    size2: Vector3<f64>,
+) -> Option<Contact> {
+    // Determine which is cylinder and which is sphere
+    // Note: sphere doesn't use its rotation matrix, but we need mat2 for the cylinder case
+    let (cyl_geom, cyl_pos, cyl_mat, cyl_size, sph_geom, sph_pos, sph_radius) =
+        if type1 == GeomType::Cylinder {
+            (geom1, pos1, mat1, size1, geom2, pos2, size2.x)
+        } else {
+            (geom2, pos2, mat2, size2, geom1, pos1, size1.x)
+        };
+
+    let cyl_radius = cyl_size.x;
+    let cyl_half_height = cyl_size.y;
+    let cyl_axis = cyl_mat.column(2).into_owned();
+
+    // Vector from cylinder center to sphere center
+    let d = sph_pos - cyl_pos;
+
+    // Project onto cylinder axis
+    let axis_dist = d.dot(&cyl_axis);
+
+    // Clamp to cylinder height
+    let clamped_axis = axis_dist.clamp(-cyl_half_height, cyl_half_height);
+
+    // Closest point on cylinder axis to sphere center
+    let axis_point = cyl_pos + cyl_axis * clamped_axis;
+
+    // Radial vector from axis to sphere
+    let radial = sph_pos - axis_point;
+    let radial_dist = radial.norm();
+
+    // Determine closest point on cylinder surface and contact normal
+    let (closest_on_cyl, normal) = if axis_dist.abs() <= cyl_half_height {
+        // Sphere is beside the cylinder (side collision)
+        if radial_dist < GEOM_EPSILON {
+            // Sphere center on axis - degenerate case, pick arbitrary radial direction
+            let arb = if cyl_axis.x.abs() < 0.9 {
+                Vector3::x()
+            } else {
+                Vector3::y()
+            };
+            let n = cyl_axis.cross(&arb).normalize();
+            (axis_point + n * cyl_radius, n)
+        } else {
+            let n = radial / radial_dist;
+            (axis_point + n * cyl_radius, n)
+        }
+    } else {
+        // Sphere is above/below cylinder (cap or edge collision)
+        let cap_center = cyl_pos + cyl_axis * clamped_axis;
+
+        if radial_dist <= cyl_radius {
+            // Cap collision - sphere projects onto cap face
+            let n = if axis_dist > 0.0 { cyl_axis } else { -cyl_axis };
+            (cap_center, n)
+        } else {
+            // Edge collision - sphere near rim of cap
+            let radial_n = radial / radial_dist;
+            let edge_point = cap_center + radial_n * cyl_radius;
+            let to_sphere = sph_pos - edge_point;
+            let to_sphere_dist = to_sphere.norm();
+            let n = if to_sphere_dist > GEOM_EPSILON {
+                to_sphere / to_sphere_dist
+            } else {
+                // Degenerate: sphere center exactly on edge
+                radial_n
+            };
+            (edge_point, n)
+        }
+    };
+
+    // Compute penetration depth
+    let dist = (sph_pos - closest_on_cyl).norm();
+    let penetration = sph_radius - dist;
+
+    if penetration <= 0.0 {
+        return None;
+    }
+
+    // Contact position is on the surface between the two shapes
+    let contact_pos = closest_on_cyl + normal * (penetration * 0.5);
+
+    // Compute friction
+    let friction1 = model.geom_friction[cyl_geom].x;
+    let friction2 = model.geom_friction[sph_geom].x;
+    let friction = (friction1 * friction2).sqrt();
+
+    // Order geoms consistently (lower index first)
+    let (g1, g2, final_normal) = if cyl_geom < sph_geom {
+        (cyl_geom, sph_geom, normal)
+    } else {
+        (sph_geom, cyl_geom, -normal)
+    };
+
+    Some(Contact::new(
+        contact_pos,
+        final_normal,
+        penetration,
+        g1,
+        g2,
+        friction,
+    ))
+}
+
+/// Cylinder-capsule collision detection.
+///
+/// Computes collision between a cylinder and a capsule by finding the closest
+/// points between the cylinder axis segment and the capsule axis segment,
+/// then checking if the cylinder surface intersects the capsule's swept sphere.
+///
+/// # Limitations
+///
+/// This algorithm treats the cylinder's curved surface correctly but does not
+/// handle collisions with the flat caps. For cap collisions (capsule directly
+/// above/below cylinder), returns `None` to fall through to GJK/EPA.
+///
+/// Both shapes have their axis along local Z.
+#[allow(clippy::too_many_arguments)]
+fn collide_cylinder_capsule(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    type1: GeomType,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+    size1: Vector3<f64>,
+    size2: Vector3<f64>,
+) -> Option<Contact> {
+    // Identify cylinder and capsule
+    let (cyl_geom, cyl_pos, cyl_mat, cyl_size, cap_geom, cap_pos, cap_mat, cap_size) =
+        if type1 == GeomType::Cylinder {
+            (geom1, pos1, mat1, size1, geom2, pos2, mat2, size2)
+        } else {
+            (geom2, pos2, mat2, size2, geom1, pos1, mat1, size1)
+        };
+
+    let cyl_radius = cyl_size.x;
+    let cyl_half_height = cyl_size.y;
+    let cap_radius = cap_size.x;
+    let cap_half_len = cap_size.y;
+
+    let cyl_axis = cyl_mat.column(2).into_owned();
+    let cap_axis = cap_mat.column(2).into_owned();
+
+    // Cylinder axis segment endpoints
+    let cyl_a = cyl_pos - cyl_axis * cyl_half_height;
+    let cyl_b = cyl_pos + cyl_axis * cyl_half_height;
+
+    // Capsule axis segment endpoints
+    let cap_a = cap_pos - cap_axis * cap_half_len;
+    let cap_b = cap_pos + cap_axis * cap_half_len;
+
+    // Find closest points between the two axis segments
+    let (cyl_closest, cap_closest) = closest_points_segments(cyl_a, cyl_b, cap_a, cap_b);
+
+    // Vector from cylinder axis point to capsule axis point
+    let diff = cap_closest - cyl_closest;
+    let dist = diff.norm();
+
+    if dist < GEOM_EPSILON {
+        // Axes intersect or nearly intersect - degenerate case where analytical
+        // solution is unreliable. Return None to fall through to GJK/EPA.
+        return None;
+    }
+
+    let normal = diff / dist;
+
+    // Check if this is a cap collision scenario:
+    // If cyl_closest is at an endpoint AND normal points mostly along the axis,
+    // we're hitting the flat cap, not the curved surface. Fall back to GJK/EPA.
+    let cyl_closest_on_cap =
+        (cyl_closest - cyl_a).norm() < GEOM_EPSILON || (cyl_closest - cyl_b).norm() < GEOM_EPSILON;
+    let normal_along_axis = normal.dot(&cyl_axis).abs();
+    if cyl_closest_on_cap && normal_along_axis > CAP_COLLISION_THRESHOLD {
+        // Cap collision - this algorithm doesn't handle flat caps correctly
+        return None;
+    }
+
+    // Closest point on cylinder surface (in direction of capsule)
+    let cyl_surface = cyl_closest + normal * cyl_radius;
+
+    // Distance from cylinder surface to capsule axis
+    let surface_to_cap_dist = (cap_closest - cyl_surface).dot(&normal);
+    let penetration = cap_radius - surface_to_cap_dist;
+
+    if penetration <= 0.0 {
+        return None;
+    }
+
+    // Contact position is between the two surfaces
+    let contact_pos = cyl_surface + normal * (penetration * 0.5);
+
+    // Compute friction
+    let friction1 = model.geom_friction[cyl_geom].x;
+    let friction2 = model.geom_friction[cap_geom].x;
+    let friction = (friction1 * friction2).sqrt();
+
+    // Order geoms consistently (lower index first)
+    let (g1, g2, final_normal) = if cyl_geom < cap_geom {
+        (cyl_geom, cap_geom, normal)
+    } else {
+        (cap_geom, cyl_geom, -normal)
+    };
+
+    Some(Contact::new(
+        contact_pos,
+        final_normal,
+        penetration,
+        g1,
+        g2,
+        friction,
+    ))
 }
 
 /// Capsule-box collision detection.
@@ -8142,7 +8889,7 @@ fn collide_capsule_box(
 
     if penetration > 0.0 {
         let diff = best_capsule_point - best_box_point;
-        let normal = if min_dist > 1e-10 {
+        let normal = if min_dist > GEOM_EPSILON {
             diff / min_dist
         } else {
             // Edge case: capsule axis passes through box
@@ -8267,7 +9014,7 @@ fn collide_box_box(
         for j in 0..3 {
             let axis = axes1[i].cross(&axes2[j]);
             let len = axis.norm();
-            if len < 1e-10 {
+            if len < GEOM_EPSILON {
                 continue; // Parallel edges
             }
             let axis = axis / len;
@@ -8367,7 +9114,7 @@ fn closest_point_segment(a: Vector3<f64>, b: Vector3<f64>, p: Vector3<f64>) -> V
     let ap = p - a;
     let ab_len_sq = ab.dot(&ab);
 
-    if ab_len_sq < 1e-10 {
+    if ab_len_sq < GEOM_EPSILON {
         return a; // Degenerate segment
     }
 
@@ -8397,14 +9144,14 @@ fn closest_points_segments(
     let f = d2.dot(&r);
 
     // Check for degenerate segments
-    if a < 1e-10 && e < 1e-10 {
+    if a < GEOM_EPSILON && e < GEOM_EPSILON {
         return (p1, p2);
     }
-    if a < 1e-10 {
+    if a < GEOM_EPSILON {
         let t = (f / e).clamp(0.0, 1.0);
         return (p1, p2 + d2 * t);
     }
-    if e < 1e-10 {
+    if e < GEOM_EPSILON {
         let s = (-d1.dot(&r) / a).clamp(0.0, 1.0);
         return (p1 + d1 * s, p2);
     }
@@ -8416,7 +9163,7 @@ fn closest_points_segments(
     let denom = a * e - b * b;
 
     // Compute initial s and t parameters for the closest points
-    let (mut s, mut t) = if denom.abs() < 1e-10 {
+    let (mut s, mut t) = if denom.abs() < GEOM_EPSILON {
         // Parallel segments
         (0.0, f / e)
     } else {
@@ -11408,5 +12155,538 @@ mod pgs_tests {
         assert_relative_eq!(tan1.dot(&tan2), 0.0, epsilon = 1e-10);
         assert_relative_eq!(tan1.dot(&normal), 0.0, epsilon = 1e-10);
         assert_relative_eq!(tan2.dot(&normal), 0.0, epsilon = 1e-10);
+    }
+}
+
+// ============================================================================
+// Tests for Primitive Collision Detection
+// ============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod primitive_collision_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Helper to create a minimal Model for collision testing.
+    fn make_collision_test_model(ngeom: usize) -> Model {
+        let mut model = Model::empty();
+        model.ngeom = ngeom;
+        model.geom_type = vec![GeomType::Sphere; ngeom];
+        model.geom_body = vec![0; ngeom];
+        model.geom_pos = vec![Vector3::zeros(); ngeom];
+        model.geom_quat = vec![UnitQuaternion::identity(); ngeom];
+        model.geom_size = vec![Vector3::new(1.0, 1.0, 1.0); ngeom];
+        model.geom_friction = vec![Vector3::new(1.0, 0.005, 0.0001); ngeom];
+        model.geom_contype = vec![1; ngeom];
+        model.geom_conaffinity = vec![1; ngeom];
+        model.geom_margin = vec![0.0; ngeom];
+        model.geom_gap = vec![0.0; ngeom];
+        model.geom_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; ngeom];
+        model.geom_solref = vec![[0.02, 1.0]; ngeom];
+        model.geom_name = vec![None; ngeom];
+        model.geom_rbound = vec![1.0; ngeom];
+        model.geom_mesh = vec![None; ngeom]; // No mesh geoms in test helper
+        model
+    }
+
+    // ========================================================================
+    // Cylinder-Plane Collision Tests
+    // ========================================================================
+
+    #[test]
+    fn test_cylinder_plane_upright_penetrating() {
+        // Cylinder standing upright on plane, bottom rim penetrating
+        let mut model = make_collision_test_model(2);
+
+        // Geom 0: Plane at z=0
+        model.geom_type[0] = GeomType::Plane;
+        model.geom_size[0] = Vector3::new(10.0, 10.0, 0.1);
+
+        // Geom 1: Cylinder (radius=0.3, half_height=0.5)
+        // Center at z=0.4, so bottom cap center is at z = 0.4 - 0.5 = -0.1
+        // This means the bottom penetrates 0.1 below the plane (at z=0)
+        model.geom_type[1] = GeomType::Cylinder;
+        model.geom_size[1] = Vector3::new(0.3, 0.5, 0.0); // [radius, half_height, unused]
+
+        let plane_pos = Vector3::zeros(); // Plane at z=0
+        let plane_mat = Matrix3::identity(); // Normal along +Z
+        let cyl_pos = Vector3::new(0.0, 0.0, 0.4); // Center at z=0.4
+        let cyl_mat = Matrix3::identity(); // Axis along +Z (upright)
+
+        let contact = collide_with_plane(
+            &model,
+            0,
+            1,
+            GeomType::Plane,
+            GeomType::Cylinder,
+            plane_pos,
+            plane_mat,
+            cyl_pos,
+            cyl_mat,
+            model.geom_size[0],
+            model.geom_size[1],
+        );
+
+        assert!(contact.is_some(), "Cylinder should contact plane");
+        let c = contact.unwrap();
+        assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
+        assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_cylinder_plane_upright_no_contact() {
+        // Cylinder above plane, no contact
+        let mut model = make_collision_test_model(2);
+
+        model.geom_type[0] = GeomType::Plane;
+        model.geom_type[1] = GeomType::Cylinder;
+        model.geom_size[1] = Vector3::new(0.3, 0.5, 0.0);
+
+        let plane_pos = Vector3::zeros();
+        let plane_mat = Matrix3::identity();
+        let cyl_pos = Vector3::new(0.0, 0.0, 1.0); // Center at z=1.0, bottom at z=0.5
+        let cyl_mat = Matrix3::identity();
+
+        let contact = collide_with_plane(
+            &model,
+            0,
+            1,
+            GeomType::Plane,
+            GeomType::Cylinder,
+            plane_pos,
+            plane_mat,
+            cyl_pos,
+            cyl_mat,
+            model.geom_size[0],
+            model.geom_size[1],
+        );
+
+        assert!(
+            contact.is_none(),
+            "Cylinder should not contact plane when above"
+        );
+    }
+
+    #[test]
+    fn test_cylinder_plane_tilted() {
+        // Cylinder tilted 45° around X axis, verifying rim point depth calculation
+        let mut model = make_collision_test_model(2);
+
+        // Geom 0: Plane at z=0
+        model.geom_type[0] = GeomType::Plane;
+
+        // Geom 1: Cylinder with radius=0.3, half_height=0.5, tilted 45° around X
+        // After rotation, the cylinder axis points diagonally (into Y-Z plane)
+        model.geom_type[1] = GeomType::Cylinder;
+        let radius = 0.3;
+        let half_height = 0.5;
+        model.geom_size[1] = Vector3::new(radius, half_height, 0.0);
+
+        let plane_pos = Vector3::zeros(); // Plane at z=0
+        let plane_mat = Matrix3::identity(); // Normal along +Z
+
+        // Tilt cylinder 45 degrees around X axis
+        let angle = std::f64::consts::FRAC_PI_4;
+        let cos_a = angle.cos(); // √2/2 ≈ 0.7071
+        let sin_a = angle.sin(); // √2/2 ≈ 0.7071
+        let rot = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), angle);
+        let cyl_mat = rot.to_rotation_matrix().into_inner();
+        let cyl_pos = Vector3::new(0.0, 0.0, 0.5); // Center at z=0.5
+
+        // Expected deepest point calculation (Case 3: tilted cylinder):
+        // Cylinder axis in world frame: (0, sin(45°), cos(45°)) = (0, 0.707, 0.707)
+        // Plane normal: (0, 0, 1)
+        // axis_dot_signed = plane_normal · cyl_axis = cos(45°) ≈ 0.707
+        // radial = plane_normal - cyl_axis * axis_dot_signed
+        //        = (0, 0, 1) - (0, 0.707, 0.707) * 0.707
+        //        = (0, -0.5, 0.5)
+        // rim_dir = -radial / ||radial|| = (0, 0.707, -0.707)
+        //
+        // Bottom cap center: cyl_pos - cyl_axis * half_height
+        //                  = (0, 0, 0.5) - (0, 0.354, 0.354) = (0, -0.354, 0.146)
+        // Bottom rim point: bottom_center + rim_dir * radius
+        //                 = (0, -0.354, 0.146) + (0, 0.212, -0.212) = (0, -0.142, -0.066)
+        //
+        // Top cap center: cyl_pos + cyl_axis * half_height
+        //               = (0, 0, 0.5) + (0, 0.354, 0.354) = (0, 0.354, 0.854)
+        // Top rim point: top_center + rim_dir * radius
+        //              = (0, 0.354, 0.854) + (0, 0.212, -0.212) = (0, 0.566, 0.642)
+        //
+        // Bottom rim z = -0.066 (below plane) → depth = 0.066
+        // Top rim z = 0.642 (above plane) → no penetration
+        // Deepest point is bottom rim with depth ≈ 0.066
+        let cyl_axis_y = sin_a;
+        let cyl_axis_z = cos_a;
+        let bottom_center_z = cyl_pos.z - cyl_axis_z * half_height;
+        // radial = (0, -axis_dot_signed * cyl_axis_y, 1 - axis_dot_signed * cyl_axis_z)
+        let axis_dot_signed = cos_a;
+        let radial_y = -axis_dot_signed * cyl_axis_y;
+        let radial_z = 1.0 - axis_dot_signed * cyl_axis_z;
+        let radial_len = (radial_y * radial_y + radial_z * radial_z).sqrt();
+        let rim_dir_z = -radial_z / radial_len;
+        let bottom_rim_z = bottom_center_z + rim_dir_z * radius;
+        let expected_depth = -bottom_rim_z;
+
+        let contact = collide_with_plane(
+            &model,
+            0,
+            1,
+            GeomType::Plane,
+            GeomType::Cylinder,
+            plane_pos,
+            plane_mat,
+            cyl_pos,
+            cyl_mat,
+            model.geom_size[0],
+            model.geom_size[1],
+        );
+
+        assert!(contact.is_some(), "Tilted cylinder should contact plane");
+        let c = contact.unwrap();
+        assert_relative_eq!(c.depth, expected_depth, epsilon = 1e-10);
+        assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_cylinder_plane_horizontal() {
+        // Cylinder lying flat (axis parallel to plane)
+        let mut model = make_collision_test_model(2);
+
+        model.geom_type[0] = GeomType::Plane;
+        model.geom_type[1] = GeomType::Cylinder;
+        model.geom_size[1] = Vector3::new(0.3, 0.5, 0.0); // radius=0.3, half_height=0.5
+
+        let plane_pos = Vector3::zeros();
+        let plane_mat = Matrix3::identity();
+
+        // Rotate 90 degrees around X axis (cylinder now horizontal, axis along Y)
+        let rot = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), std::f64::consts::FRAC_PI_2);
+        let cyl_mat = rot.to_rotation_matrix().into_inner();
+
+        // Position center at z = radius - epsilon for penetration
+        let cyl_pos = Vector3::new(0.0, 0.0, 0.2); // Below radius, should penetrate
+
+        let contact = collide_with_plane(
+            &model,
+            0,
+            1,
+            GeomType::Plane,
+            GeomType::Cylinder,
+            plane_pos,
+            plane_mat,
+            cyl_pos,
+            cyl_mat,
+            model.geom_size[0],
+            model.geom_size[1],
+        );
+
+        assert!(
+            contact.is_some(),
+            "Horizontal cylinder should contact plane"
+        );
+        let c = contact.unwrap();
+        // Penetration should be radius - z_center = 0.3 - 0.2 = 0.1
+        assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
+    }
+
+    // ========================================================================
+    // Ellipsoid-Plane Collision Tests
+    // ========================================================================
+
+    #[test]
+    fn test_ellipsoid_plane_sphere_case() {
+        // Ellipsoid with equal radii (sphere) for validation against known sphere formula
+        let mut model = make_collision_test_model(2);
+
+        // Geom 0: Plane at z=0
+        model.geom_type[0] = GeomType::Plane;
+
+        // Geom 1: Ellipsoid with rx=ry=rz=0.5 (degenerates to sphere with radius 0.5)
+        // Center at z=0.4, so bottom (support point) is at z = 0.4 - 0.5 = -0.1
+        // This means the bottom penetrates 0.1 below the plane (at z=0)
+        model.geom_type[1] = GeomType::Ellipsoid;
+        model.geom_size[1] = Vector3::new(0.5, 0.5, 0.5);
+
+        let plane_pos = Vector3::zeros(); // Plane at z=0
+        let plane_mat = Matrix3::identity(); // Normal along +Z
+        let ell_pos = Vector3::new(0.0, 0.0, 0.4); // Center at z=0.4
+        let ell_mat = Matrix3::identity();
+
+        let contact = collide_with_plane(
+            &model,
+            0,
+            1,
+            GeomType::Plane,
+            GeomType::Ellipsoid,
+            plane_pos,
+            plane_mat,
+            ell_pos,
+            ell_mat,
+            model.geom_size[0],
+            model.geom_size[1],
+        );
+
+        assert!(contact.is_some(), "Ellipsoid (sphere) should contact plane");
+        let c = contact.unwrap();
+        // Penetration = radius - z = 0.5 - 0.4 = 0.1
+        assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
+        assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ellipsoid_plane_stretched_z() {
+        // Ellipsoid stretched along Z axis (tall and thin)
+        let mut model = make_collision_test_model(2);
+
+        model.geom_type[0] = GeomType::Plane;
+        model.geom_type[1] = GeomType::Ellipsoid;
+        model.geom_size[1] = Vector3::new(0.2, 0.2, 0.8); // Tall ellipsoid
+
+        let plane_pos = Vector3::zeros();
+        let plane_mat = Matrix3::identity();
+        let ell_pos = Vector3::new(0.0, 0.0, 0.7); // Bottom at z = -0.1
+        let ell_mat = Matrix3::identity();
+
+        let contact = collide_with_plane(
+            &model,
+            0,
+            1,
+            GeomType::Plane,
+            GeomType::Ellipsoid,
+            plane_pos,
+            plane_mat,
+            ell_pos,
+            ell_mat,
+            model.geom_size[0],
+            model.geom_size[1],
+        );
+
+        assert!(contact.is_some(), "Tall ellipsoid should contact plane");
+        let c = contact.unwrap();
+        // Penetration = z_radius - z = 0.8 - 0.7 = 0.1
+        assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_ellipsoid_plane_stretched_x() {
+        // Ellipsoid stretched along X axis (wide and flat)
+        let mut model = make_collision_test_model(2);
+
+        model.geom_type[0] = GeomType::Plane;
+        model.geom_type[1] = GeomType::Ellipsoid;
+        model.geom_size[1] = Vector3::new(0.8, 0.3, 0.2); // Wide ellipsoid (short in Z)
+
+        let plane_pos = Vector3::zeros();
+        let plane_mat = Matrix3::identity();
+        let ell_pos = Vector3::new(0.0, 0.0, 0.15); // Bottom at z = -0.05 (penetrating)
+        let ell_mat = Matrix3::identity();
+
+        let contact = collide_with_plane(
+            &model,
+            0,
+            1,
+            GeomType::Plane,
+            GeomType::Ellipsoid,
+            plane_pos,
+            plane_mat,
+            ell_pos,
+            ell_mat,
+            model.geom_size[0],
+            model.geom_size[1],
+        );
+
+        assert!(contact.is_some(), "Wide ellipsoid should contact plane");
+        let c = contact.unwrap();
+        // Penetration = z_radius - z = 0.2 - 0.15 = 0.05
+        assert_relative_eq!(c.depth, 0.05, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_ellipsoid_plane_rotated() {
+        // Ellipsoid rotated 45° around X axis, verifying support point formula
+        let mut model = make_collision_test_model(2);
+
+        // Geom 0: Plane at z=0
+        model.geom_type[0] = GeomType::Plane;
+
+        // Geom 1: Tall ellipsoid with radii (0.2, 0.2, 0.8), rotated 45° around X
+        // After rotation, the long axis points diagonally (into Y-Z plane)
+        model.geom_type[1] = GeomType::Ellipsoid;
+        model.geom_size[1] = Vector3::new(0.2, 0.2, 0.8);
+
+        let plane_pos = Vector3::zeros(); // Plane at z=0
+        let plane_mat = Matrix3::identity(); // Normal along +Z
+
+        // Rotate 45 degrees around X axis
+        let angle = std::f64::consts::FRAC_PI_4;
+        let cos_a = angle.cos(); // √2/2 ≈ 0.7071
+        let sin_a = angle.sin(); // √2/2 ≈ 0.7071
+        let rot = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), angle);
+        let ell_mat = rot.to_rotation_matrix().into_inner();
+        let ell_pos = Vector3::new(0.0, 0.0, 0.5); // Center at z=0.5
+
+        // Expected support point calculation:
+        // Local plane normal: n_local = R^T * (0,0,1) = (0, sin(45°), cos(45°))
+        //   (R rotates around X, so R^T maps world Z to local (0, sin, cos))
+        // scaled = r ⊙ n_local = (0, 0.2*sin, 0.8*cos) = (0, 0.1414, 0.5657)
+        // ||scaled|| = sqrt(0.2² * sin² + 0.8² * cos²) ≈ 0.583
+        // local_support = -(r² ⊙ n) / ||scaled||
+        //               = -(0, 0.04*sin, 0.64*cos) / 0.583
+        //               = (0, -0.0485, -0.776)
+        // world_support = center + R * local_support
+        // The z-component: 0.5 + (local_y * sin + local_z * cos)
+        //                = 0.5 + (-0.0485 * 0.707 + (-0.776) * 0.707)
+        //                = 0.5 - 0.583 = -0.083
+        // Expected depth = -(-0.083) = 0.083 (positive, penetrating)
+        let ry = 0.2;
+        let rz = 0.8;
+        let scaled_y = ry * sin_a;
+        let scaled_z = rz * cos_a;
+        let scale_norm = (scaled_y * scaled_y + scaled_z * scaled_z).sqrt();
+        let local_support_y = -(ry * ry * sin_a) / scale_norm;
+        let local_support_z = -(rz * rz * cos_a) / scale_norm;
+        let world_support_z = ell_pos.z + local_support_y * sin_a + local_support_z * cos_a;
+        let expected_depth = -world_support_z;
+
+        let contact = collide_with_plane(
+            &model,
+            0,
+            1,
+            GeomType::Plane,
+            GeomType::Ellipsoid,
+            plane_pos,
+            plane_mat,
+            ell_pos,
+            ell_mat,
+            model.geom_size[0],
+            model.geom_size[1],
+        );
+
+        assert!(contact.is_some(), "Rotated ellipsoid should contact plane");
+        let c = contact.unwrap();
+        assert_relative_eq!(c.depth, expected_depth, epsilon = 1e-10);
+        assert_relative_eq!(c.normal, Vector3::z(), epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ellipsoid_plane_no_contact() {
+        // Ellipsoid above plane, no contact
+        let mut model = make_collision_test_model(2);
+
+        model.geom_type[0] = GeomType::Plane;
+        model.geom_type[1] = GeomType::Ellipsoid;
+        model.geom_size[1] = Vector3::new(0.3, 0.3, 0.3);
+
+        let plane_pos = Vector3::zeros();
+        let plane_mat = Matrix3::identity();
+        let ell_pos = Vector3::new(0.0, 0.0, 1.0); // Far above plane
+        let ell_mat = Matrix3::identity();
+
+        let contact = collide_with_plane(
+            &model,
+            0,
+            1,
+            GeomType::Plane,
+            GeomType::Ellipsoid,
+            plane_pos,
+            plane_mat,
+            ell_pos,
+            ell_mat,
+            model.geom_size[0],
+            model.geom_size[1],
+        );
+
+        assert!(
+            contact.is_none(),
+            "Ellipsoid should not contact plane when above"
+        );
+    }
+
+    // ========================================================================
+    // Edge Cases and Numerical Stability
+    // ========================================================================
+
+    #[test]
+    fn test_cylinder_plane_axis_parallel_to_normal() {
+        // Cylinder axis exactly parallel to plane normal (degenerate case)
+        let mut model = make_collision_test_model(2);
+
+        model.geom_type[0] = GeomType::Plane;
+        model.geom_type[1] = GeomType::Cylinder;
+        model.geom_size[1] = Vector3::new(0.3, 0.5, 0.0);
+
+        let plane_pos = Vector3::zeros();
+        let plane_mat = Matrix3::identity();
+        let cyl_pos = Vector3::new(0.0, 0.0, 0.4); // Bottom at z = -0.1
+        let cyl_mat = Matrix3::identity(); // Axis along Z (parallel to plane normal)
+
+        let contact = collide_with_plane(
+            &model,
+            0,
+            1,
+            GeomType::Plane,
+            GeomType::Cylinder,
+            plane_pos,
+            plane_mat,
+            cyl_pos,
+            cyl_mat,
+            model.geom_size[0],
+            model.geom_size[1],
+        );
+
+        // Should still detect contact at the bottom rim
+        assert!(
+            contact.is_some(),
+            "Should detect contact even when axis parallel to normal"
+        );
+        let c = contact.unwrap();
+        assert_relative_eq!(c.depth, 0.1, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_contact_frame_is_valid() {
+        // Verify contact frame is orthonormal
+        let mut model = make_collision_test_model(2);
+
+        model.geom_type[0] = GeomType::Plane;
+        model.geom_type[1] = GeomType::Cylinder;
+        model.geom_size[1] = Vector3::new(0.3, 0.5, 0.0);
+
+        let plane_pos = Vector3::zeros();
+        let plane_mat = Matrix3::identity();
+        let cyl_pos = Vector3::new(0.0, 0.0, 0.4);
+        let cyl_mat = Matrix3::identity();
+
+        let contact = collide_with_plane(
+            &model,
+            0,
+            1,
+            GeomType::Plane,
+            GeomType::Cylinder,
+            plane_pos,
+            plane_mat,
+            cyl_pos,
+            cyl_mat,
+            model.geom_size[0],
+            model.geom_size[1],
+        )
+        .expect("should have contact");
+
+        // Normal should be unit length
+        assert_relative_eq!(contact.normal.norm(), 1.0, epsilon = 1e-10);
+
+        // Tangent vectors should be unit length
+        assert_relative_eq!(contact.frame[0].norm(), 1.0, epsilon = 1e-10);
+        assert_relative_eq!(contact.frame[1].norm(), 1.0, epsilon = 1e-10);
+
+        // All three should be mutually orthogonal
+        assert_relative_eq!(contact.normal.dot(&contact.frame[0]), 0.0, epsilon = 1e-10);
+        assert_relative_eq!(contact.normal.dot(&contact.frame[1]), 0.0, epsilon = 1e-10);
+        assert_relative_eq!(
+            contact.frame[0].dot(&contact.frame[1]),
+            0.0,
+            epsilon = 1e-10
+        );
     }
 }
