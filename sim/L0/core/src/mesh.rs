@@ -1476,14 +1476,14 @@ mod tests {
 
     #[test]
     fn test_mesh_sphere_contact() {
-        let mut mesh = create_cube();
+        let mesh = create_cube();
         let mesh_pose = Pose::identity();
 
         // Sphere penetrating the top of the cube
         let center = Point3::new(0.0, 0.0, 0.7);
         let radius = 0.3;
 
-        let contact = mesh_sphere_contact(&mut mesh, &mesh_pose, center, radius);
+        let contact = mesh_sphere_contact(&mesh, &mesh_pose, center, radius);
         assert!(contact.is_some());
 
         let c = contact.unwrap();
@@ -1493,14 +1493,14 @@ mod tests {
 
     #[test]
     fn test_mesh_sphere_contact_miss() {
-        let mut mesh = create_cube();
+        let mesh = create_cube();
         let mesh_pose = Pose::identity();
 
         // Sphere far from the cube
         let center = Point3::new(0.0, 0.0, 2.0);
         let radius = 0.3;
 
-        let contact = mesh_sphere_contact(&mut mesh, &mesh_pose, center, radius);
+        let contact = mesh_sphere_contact(&mesh, &mesh_pose, center, radius);
         assert!(contact.is_none());
     }
 
