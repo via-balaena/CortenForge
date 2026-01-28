@@ -913,6 +913,8 @@ impl ModelBuilder {
             geom_solimp: vec![[0.9, 0.95, 0.001, 0.5, 2.0]; ngeom], // MuJoCo defaults
             geom_solref: vec![[0.02, 1.0]; ngeom], // MuJoCo defaults
             geom_name: self.geom_name,
+            // Pre-computed bounding radii (computed below after we have geom_type and geom_size)
+            geom_rbound: vec![0.0; ngeom],
 
             site_body: self.site_body,
             site_type: self.site_type,
@@ -995,6 +997,14 @@ impl ModelBuilder {
 
         // Pre-compute ancestor lists for O(n) CRBA/RNE
         model.compute_ancestors();
+
+        // Pre-compute bounding sphere radii for all geoms (used in collision broad-phase)
+        // Uses GeomType::bounding_radius() - the single source of truth
+        for geom_id in 0..ngeom {
+            model.geom_rbound[geom_id] =
+                model.geom_type[geom_id].bounding_radius(model.geom_size[geom_id]);
+        }
+
         model
     }
 }

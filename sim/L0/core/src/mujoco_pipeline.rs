@@ -4356,6 +4356,8 @@ fn compute_spatial_transform(from: &Isometry3<f64>, to: &Isometry3<f64>) -> Spat
 }
 
 /// Spatial cross product for motion vectors: v × s.
+#[allow(clippy::inline_always)] // Profiling shows inlining improves debug performance
+#[inline(always)]
 #[must_use]
 fn spatial_cross_motion(v: SpatialVector, s: SpatialVector) -> SpatialVector {
     let w = Vector3::new(v[0], v[1], v[2]);
@@ -4377,6 +4379,8 @@ fn spatial_cross_motion(v: SpatialVector, s: SpatialVector) -> SpatialVector {
 }
 
 /// Spatial cross product for force vectors: v ×* f.
+#[allow(clippy::inline_always)] // Profiling shows inlining improves debug performance
+#[inline(always)]
 #[must_use]
 #[allow(dead_code)]
 fn spatial_cross_force(v: SpatialVector, f: SpatialVector) -> SpatialVector {
@@ -4396,6 +4400,79 @@ fn spatial_cross_force(v: SpatialVector, f: SpatialVector) -> SpatialVector {
         result_lin.y,
         result_lin.z,
     )
+}
+
+/// Compute body spatial inertia in world frame.
+///
+/// This builds the 6×6 spatial inertia matrix from:
+/// - `mass`: body mass
+/// - `inertia_diag`: diagonal inertia in body's principal frame
+/// - `i_mat`: rotation matrix from inertial frame to world (3×3)
+/// - `h`: COM offset from body origin in world frame
+///
+/// The spatial inertia has the form:
+/// ```text
+/// I = [I_rot + m*(h·h*I - h⊗h),  m*[h]×  ]
+///     [m*[h]×ᵀ,                  m*I_3×3 ]
+/// ```
+///
+/// This is the canonical implementation - computed once per body in FK,
+/// then used by both CRBA (as starting point for composite) and RNE (directly).
+#[allow(clippy::inline_always)] // Called once per body in FK - inlining avoids function call overhead
+#[inline(always)]
+fn compute_body_spatial_inertia(
+    mass: f64,
+    inertia_diag: Vector3<f64>,
+    i_mat: &Matrix3<f64>,
+    h: Vector3<f64>,
+) -> Matrix6<f64> {
+    // Rotational inertia in world frame: I_world = R * I_diag * R^T
+    // Element-wise is faster than matrix ops in debug mode
+    let mut i_rot: Matrix3<f64> = Matrix3::zeros();
+    for row in 0..3 {
+        for col in 0..3 {
+            i_rot[(row, col)] = i_mat[(row, 0)] * inertia_diag[0] * i_mat[(col, 0)]
+                + i_mat[(row, 1)] * inertia_diag[1] * i_mat[(col, 1)]
+                + i_mat[(row, 2)] * inertia_diag[2] * i_mat[(col, 2)];
+        }
+    }
+
+    let mut crb = Matrix6::zeros();
+
+    // Upper-left 3x3: rotational inertia about body origin (parallel axis theorem)
+    let h_dot_h = h.x * h.x + h.y * h.y + h.z * h.z;
+    for row in 0..3 {
+        for col in 0..3 {
+            let h_outer = h[row] * h[col];
+            let delta = if row == col { 1.0 } else { 0.0 };
+            crb[(row, col)] = i_rot[(row, col)] + mass * (h_dot_h * delta - h_outer);
+        }
+    }
+
+    // Lower-right 3x3: translational inertia (diagonal mass matrix)
+    crb[(3, 3)] = mass;
+    crb[(4, 4)] = mass;
+    crb[(5, 5)] = mass;
+
+    // Off-diagonal: coupling (skew-symmetric of m*h)
+    let mh_x = mass * h.x;
+    let mh_y = mass * h.y;
+    let mh_z = mass * h.z;
+    crb[(0, 4)] = -mh_z;
+    crb[(0, 5)] = mh_y;
+    crb[(1, 3)] = mh_z;
+    crb[(1, 5)] = -mh_x;
+    crb[(2, 3)] = -mh_y;
+    crb[(2, 4)] = mh_x;
+    // Transpose for lower-left
+    crb[(4, 0)] = -mh_z;
+    crb[(5, 0)] = mh_y;
+    crb[(3, 1)] = mh_z;
+    crb[(5, 1)] = -mh_x;
+    crb[(3, 2)] = -mh_y;
+    crb[(4, 2)] = mh_x;
+
+    crb
 }
 
 // ============================================================================
@@ -5236,6 +5313,41 @@ pub enum GeomType {
     Mesh,
 }
 
+impl GeomType {
+    /// Compute the bounding sphere radius for a geometry from its type and size.
+    ///
+    /// This is the canonical implementation used by both:
+    /// - Model compilation (pre-computing `geom_rbound`)
+    /// - `CollisionShape::bounding_radius()` for runtime shapes
+    ///
+    /// # Arguments
+    /// * `size` - Type-specific size parameters from `geom_size`:
+    ///   - Sphere: `[radius, _, _]`
+    ///   - Box: `[half_x, half_y, half_z]`
+    ///   - Capsule: `[radius, half_length, _]`
+    ///   - Cylinder: `[radius, half_length, _]`
+    ///   - Ellipsoid: `[radius_x, radius_y, radius_z]`
+    ///   - Plane: ignored (returns infinity)
+    ///   - Mesh: `[scale_x, scale_y, scale_z]` (conservative estimate)
+    #[must_use]
+    pub fn bounding_radius(self, size: Vector3<f64>) -> f64 {
+        match self {
+            Self::Sphere => size.x,
+            Self::Box => size.norm(), // Distance from center to corner
+            Self::Capsule => size.x + size.y, // radius + half_length
+            Self::Cylinder => size.x.hypot(size.y), // sqrt(r² + h²)
+            Self::Ellipsoid => size.x.max(size.y).max(size.z), // Max semi-axis
+            Self::Plane => f64::INFINITY, // Planes are infinite
+            Self::Mesh => {
+                // Conservative estimate from scale factors.
+                // Full implementation would use mesh AABB at load time.
+                let scale = size.x.max(size.y).max(size.z);
+                if scale > 0.0 { scale * 10.0 } else { 10.0 }
+            }
+        }
+    }
+}
+
 /// Actuator transmission type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ActuatorTransmission {
@@ -5605,6 +5717,10 @@ pub struct Model {
     pub geom_solref: Vec<[f64; 2]>,
     /// Optional geom names.
     pub geom_name: Vec<Option<String>>,
+    /// Pre-computed bounding sphere radius for each geom (in local frame).
+    /// Used for fast distance culling in collision broad-phase.
+    /// For primitives, computed from geom_size. For meshes, computed from mesh AABB.
+    pub geom_rbound: Vec<f64>,
 
     // ==================== Sites (indexed by site_id) ====================
     /// Parent body for each site.
@@ -6010,12 +6126,15 @@ pub struct Data {
     /// Set to true after `mj_factor_sparse()` is called.
     pub qLD_valid: bool,
 
-    // ==================== Composite Inertia (for Featherstone CRBA) ====================
+    // ==================== Body and Composite Inertia (for Featherstone CRBA/RNE) ====================
+    /// Body spatial inertia in world frame (before composite accumulation).
+    /// These are 6×6 spatial inertias for individual bodies, computed once in FK.
+    /// Used by both CRBA (as starting point) and RNE (for bias forces).
+    /// This is equivalent to MuJoCo's `mjData.cinert`.
+    pub cinert: Vec<Matrix6<f64>>,
     /// Composite rigid body inertia in world frame.
-    /// These are 6×6 spatial inertias accumulated from subtrees.
-    /// Format: [Ixx, Ixy, Ixz, Iyx, Iyy, Iyz, Izx, Izy, Izz, mass, hx, hy, hz]
-    /// where h = mass * COM offset from body origin.
-    /// Pre-allocated but only computed during mj_crba when needed.
+    /// These are 6×6 spatial inertias accumulated from subtrees during CRBA.
+    /// Starts as a copy of `cinert`, then accumulates child inertias.
     pub crb_inertia: Vec<Matrix6<f64>>,
 
     // ==================== Subtree Mass/COM (for O(n) RNE gravity) ====================
@@ -6152,6 +6271,7 @@ impl Model {
             geom_solimp: vec![],
             geom_solref: vec![],
             geom_name: vec![],
+            geom_rbound: vec![],
 
             // Sites (empty)
             site_body: vec![],
@@ -6290,6 +6410,8 @@ impl Model {
             qLD_L: vec![Vec::new(); self.nv],
             qLD_valid: false,
 
+            // Body spatial inertias (computed once in FK, used by CRBA and RNE)
+            cinert: vec![Matrix6::zeros(); self.nbody],
             // Composite rigid body inertias (for Featherstone CRBA)
             crb_inertia: vec![Matrix6::zeros(); self.nbody],
 
@@ -6924,7 +7046,20 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
         data.ximat[body_id] = (quat * model.body_iquat[body_id])
             .to_rotation_matrix()
             .into_inner();
+
+        // Compute body spatial inertia in world frame (cinert)
+        // This is computed once and used by both CRBA and RNE
+        let h = data.xipos[body_id] - pos; // COM offset from body origin in world frame
+        data.cinert[body_id] = compute_body_spatial_inertia(
+            model.body_mass[body_id],
+            model.body_inertia[body_id],
+            &data.ximat[body_id],
+            h,
+        );
     }
+
+    // World body has zero inertia
+    data.cinert[0] = Matrix6::zeros();
 
     // Update geom poses
     for geom_id in 0..model.ngeom {
@@ -7180,7 +7315,8 @@ impl SpatialHash {
 ///
 /// The world body exception ensures ground planes can collide with objects
 /// even when those objects are direct children of the world body.
-#[inline]
+#[allow(clippy::inline_always)] // Hot path - profiling shows inlining improves debug performance
+#[inline(always)]
 fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize) -> bool {
     let body1 = model.geom_body[geom1];
     let body2 = model.geom_body[geom2];
@@ -7225,6 +7361,11 @@ fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize) -> bool {
 ///
 /// This function is called after forward kinematics (`mj_fwd_position`) so
 /// `geom_xpos` and `geom_xmat` are up-to-date.
+///
+/// # Bounding Sphere Culling
+///
+/// Uses pre-computed `model.geom_rbound` for fast distance checks. The bounding
+/// radius is computed at model load time from geometry type and size.
 fn mj_collision(model: &Model, data: &mut Data) {
     // Clear existing contacts
     data.contacts.clear();
@@ -7238,18 +7379,33 @@ fn mj_collision(model: &Model, data: &mut Data) {
     // For small scenes (< 16 geoms), O(n²) is faster than spatial hashing overhead
     // For larger scenes, use spatial hashing broad-phase
     if model.ngeom < 16 {
-        // O(n²) all-pairs for small scenes
+        // O(n²) all-pairs for small scenes with bounding sphere culling
         for geom1 in 0..model.ngeom {
+            let pos1 = data.geom_xpos[geom1];
+            // Use pre-computed bounding radius (avoids function call overhead in debug)
+            let r1 = model.geom_rbound[geom1];
+
             for geom2 in (geom1 + 1)..model.ngeom {
                 // Use uniform affinity check (no special cases for world body)
                 if !check_collision_affinity(model, geom1, geom2) {
                     continue;
                 }
 
-                // Get world-space poses
-                let pos1 = data.geom_xpos[geom1];
-                let mat1 = data.geom_xmat[geom1];
                 let pos2 = data.geom_xpos[geom2];
+                let r2 = model.geom_rbound[geom2];
+
+                // Fast bounding sphere check - skip if centers are too far apart
+                let dx = pos2.x - pos1.x;
+                let dy = pos2.y - pos1.y;
+                let dz = pos2.z - pos1.z;
+                let dist_sq = dx * dx + dy * dy + dz * dz;
+                let sum_r = r1 + r2;
+                if dist_sq > sum_r * sum_r {
+                    continue;
+                }
+
+                // Get world-space poses
+                let mat1 = data.geom_xmat[geom1];
                 let mat2 = data.geom_xmat[geom2];
 
                 // Narrow-phase collision detection
@@ -7349,15 +7505,8 @@ fn collide_geoms(
     let size1 = model.geom_size[geom1];
     let size2 = model.geom_size[geom2];
 
-    // Build collision shapes from model data
-    let shape1 = geom_to_collision_shape(type1, size1);
-    let shape2 = geom_to_collision_shape(type2, size2);
-
-    // Build poses for GJK/EPA
-    let quat1 = UnitQuaternion::from_matrix(&mat1);
-    let quat2 = UnitQuaternion::from_matrix(&mat2);
-    let pose1 = Pose::from_position_rotation(Point3::from(pos1), quat1);
-    let pose2 = Pose::from_position_rotation(Point3::from(pos2), quat2);
+    // Fast path: handle all analytical collision cases first
+    // These avoid the expensive quaternion conversion and GJK/EPA
 
     // Special case: plane collision
     if type1 == GeomType::Plane || type2 == GeomType::Plane {
@@ -7407,6 +7556,16 @@ fn collide_geoms(
     if type1 == GeomType::Box && type2 == GeomType::Box {
         return collide_box_box(model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2);
     }
+
+    // Slow path: Build shapes and poses for GJK/EPA (only for cylinder, ellipsoid, mesh)
+    let shape1 = geom_to_collision_shape(type1, size1);
+    let shape2 = geom_to_collision_shape(type2, size2);
+
+    // Build poses for GJK/EPA - expensive quaternion conversion
+    let quat1 = UnitQuaternion::from_matrix(&mat1);
+    let quat2 = UnitQuaternion::from_matrix(&mat2);
+    let pose1 = Pose::from_position_rotation(Point3::from(pos1), quat1);
+    let pose2 = Pose::from_position_rotation(Point3::from(pos2), quat2);
 
     // Use GJK/EPA for general convex collision
     use crate::gjk_epa::gjk_epa_contact;
@@ -9154,84 +9313,10 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // ============================================================
     // Phase 1: Initialize composite inertias from body inertias
     // ============================================================
-    // Build 6x6 spatial inertia for each body in world frame.
-    // Format: [angular 3x3 | coupling 3x3]
-    //         [coupling^T   | linear 3x3  ]
-    //
-    // Where angular = R * I_diag * R^T (rotational inertia in world)
-    //       linear = m * I_3x3 (translational inertia)
-    //       coupling relates angular and linear motion via COM offset
-
+    // Copy cinert (computed once in FK) to crb_inertia as starting point.
+    // cinert contains 6x6 spatial inertias for individual bodies in world frame.
     for body_id in 0..model.nbody {
-        if body_id == 0 {
-            // World body has no inertia
-            data.crb_inertia[body_id] = Matrix6::zeros();
-            continue;
-        }
-
-        let mass = model.body_mass[body_id];
-        let inertia_diag = model.body_inertia[body_id];
-        let i_mat = &data.ximat[body_id]; // Rotation from body inertial frame to world
-
-        // Rotational inertia in world frame: I_world = R * I_diag * R^T
-        let mut i_rot: Matrix3<f64> = Matrix3::zeros();
-        for row in 0..3 {
-            for col in 0..3 {
-                for d in 0..3 {
-                    i_rot[(row, col)] += i_mat[(row, d)] * inertia_diag[d] * i_mat[(col, d)];
-                }
-            }
-        }
-
-        // COM offset from body origin (in world frame)
-        let com_world = data.xipos[body_id];
-        let body_origin = data.xpos[body_id];
-        let h = com_world - body_origin; // COM offset
-
-        // Build 6x6 spatial inertia matrix
-        // Using Featherstone's notation with motor convention:
-        //   I = [I_rot + m*[h]x*[h]x^T,  m*[h]x ]
-        //       [m*[h]x^T,               m*I_3  ]
-        //
-        // where [h]x is the skew-symmetric matrix of h
-
-        let mut crb = Matrix6::zeros();
-
-        // Upper-left 3x3: rotational inertia about body origin
-        // I_origin = I_com + m * h × h^T (parallel axis theorem)
-        let h_cross_h = h * h.transpose();
-        let h_dot_h = h.dot(&h);
-        for row in 0..3 {
-            for col in 0..3 {
-                crb[(row, col)] = i_rot[(row, col)]
-                    + mass * (h_dot_h * if row == col { 1.0 } else { 0.0 } - h_cross_h[(row, col)]);
-            }
-        }
-
-        // Lower-right 3x3: translational inertia
-        for d in 0..3 {
-            crb[(3 + d, 3 + d)] = mass;
-        }
-
-        // Off-diagonal 3x3: coupling (skew-symmetric of m*h)
-        // [h]x = [[0, -hz, hy], [hz, 0, -hx], [-hy, hx, 0]]
-        let mh = mass * h;
-        crb[(0, 4)] = -mh.z;
-        crb[(0, 5)] = mh.y;
-        crb[(1, 3)] = mh.z;
-        crb[(1, 5)] = -mh.x;
-        crb[(2, 3)] = -mh.y;
-        crb[(2, 4)] = mh.x;
-
-        // Transpose for lower-left
-        crb[(4, 0)] = -mh.z;
-        crb[(5, 0)] = mh.y;
-        crb[(3, 1)] = mh.z;
-        crb[(5, 1)] = -mh.x;
-        crb[(3, 2)] = -mh.y;
-        crb[(4, 2)] = mh.x;
-
-        data.crb_inertia[body_id] = crb;
+        data.crb_inertia[body_id] = data.cinert[body_id];
     }
 
     // ============================================================
@@ -9260,14 +9345,20 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // For each joint, M[i,i] = S[i]^T * Ic[body_i] * S[i]
     // Off-diagonal elements require propagating forces up the tree.
 
+    // Pre-compute all joint motion subspaces once (O(n) instead of O(n²))
+    // This is a significant optimization for debug builds where function call
+    // overhead and matrix allocation dominate.
+    let joint_subspaces: Vec<_> = (0..model.njnt)
+        .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
+        .collect();
+
     for jnt_i in 0..model.njnt {
         let body_i = model.jnt_body[jnt_i];
         let dof_i = model.jnt_dof_adr[jnt_i];
         let nv_i = model.jnt_type[jnt_i].nv();
 
-        // Get joint motion subspace S (6 x nv matrix)
-        // S maps joint velocity to spatial velocity: v = S * qdot
-        let s_i = joint_motion_subspace(model, data, jnt_i);
+        // Use cached joint motion subspace
+        let s_i = &joint_subspaces[jnt_i];
 
         // Diagonal block: M[i,i] = S^T * Ic * S
         let ic = &data.crb_inertia[body_i];
@@ -9286,7 +9377,7 @@ fn mj_crba(model: &Model, data: &mut Data) {
         // Then traverse ancestors, transforming F at each step:
         //   F_parent = X^T * F_child (spatial force transform)
         // And computing M[j,i] = S_j^T * F_transformed
-        let mut force = ic * &s_i; // 6 x nv_i matrix, starts at body_i
+        let mut force = ic * s_i; // 6 x nv_i matrix, starts at body_i
 
         let mut child_body = body_i;
         let mut current_body = model.body_parent[body_i];
@@ -9327,7 +9418,8 @@ fn mj_crba(model: &Model, data: &mut Data) {
 
                 let dof_j = model.jnt_dof_adr[jnt_j];
                 let nv_j = model.jnt_type[jnt_j].nv();
-                let s_j = joint_motion_subspace(model, data, jnt_j);
+                // Use cached joint motion subspace instead of recomputing
+                let s_j = &joint_subspaces[jnt_j];
 
                 // M[j,i] = S_j^T * F
                 for dj in 0..nv_j {
@@ -9383,6 +9475,8 @@ fn mj_crba(model: &Model, data: &mut Data) {
 ///
 /// Format: rows 0-2 = angular velocity, rows 3-5 = linear velocity
 #[allow(clippy::similar_names)]
+#[allow(clippy::inline_always)] // Hot path in CRBA/RNE - profiling shows inlining improves debug performance
+#[inline(always)]
 fn joint_motion_subspace(
     model: &Model,
     data: &Data,
@@ -9622,6 +9716,11 @@ fn mj_rne(model: &Model, data: &mut Data) {
     //
     // Note: v[i] is the FULL body velocity (already computed in mj_fwd_velocity)
 
+    // Pre-compute all joint motion subspaces once for RNE (same optimization as CRBA)
+    let joint_subspaces: Vec<_> = (0..model.njnt)
+        .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
+        .collect();
+
     for body_id in 1..model.nbody {
         let parent_id = model.body_parent[body_id];
 
@@ -9637,7 +9736,7 @@ fn mj_rne(model: &Model, data: &mut Data) {
 
         for jnt_id in jnt_start..jnt_end {
             let dof_adr = model.jnt_dof_adr[jnt_id];
-            let s = joint_motion_subspace(model, data, jnt_id);
+            let s = &joint_subspaces[jnt_id];
             let nv = model.jnt_type[jnt_id].nv();
 
             // Compute joint velocity contribution: v_joint = S @ qdot
@@ -9659,67 +9758,6 @@ fn mj_rne(model: &Model, data: &mut Data) {
         data.cacc_bias[body_id] = a_bias;
     }
 
-    // ========== Build Body Spatial Inertias ==========
-    // We need the spatial inertia I[i] for each body to compute the bias forces.
-    // Use the same construction as in CRBA phase 1.
-
-    let mut body_inertia: Vec<Matrix6<f64>> = vec![Matrix6::zeros(); model.nbody];
-    for body_id in 1..model.nbody {
-        let mass = model.body_mass[body_id];
-        let inertia_diag = model.body_inertia[body_id];
-        let i_mat = &data.ximat[body_id];
-
-        // Rotational inertia in world frame
-        let mut i_rot: Matrix3<f64> = Matrix3::zeros();
-        for row in 0..3 {
-            for col in 0..3 {
-                for d in 0..3 {
-                    i_rot[(row, col)] += i_mat[(row, d)] * inertia_diag[d] * i_mat[(col, d)];
-                }
-            }
-        }
-
-        // COM offset from body origin (in world frame)
-        let com_world = data.xipos[body_id];
-        let body_origin = data.xpos[body_id];
-        let h = com_world - body_origin;
-
-        // Build 6x6 spatial inertia
-        let mut crb = Matrix6::zeros();
-
-        // Upper-left 3x3: rotational inertia about body origin (parallel axis)
-        let h_dot_h = h.dot(&h);
-        for row in 0..3 {
-            for col in 0..3 {
-                let h_outer = h[row] * h[col];
-                let delta = if row == col { 1.0 } else { 0.0 };
-                crb[(row, col)] = i_rot[(row, col)] + mass * (h_dot_h * delta - h_outer);
-            }
-        }
-
-        // Lower-right 3x3: translational inertia
-        for d in 0..3 {
-            crb[(3 + d, 3 + d)] = mass;
-        }
-
-        // Off-diagonal: coupling (skew of m*h)
-        let mh = mass * h;
-        crb[(0, 4)] = -mh.z;
-        crb[(0, 5)] = mh.y;
-        crb[(1, 3)] = mh.z;
-        crb[(1, 5)] = -mh.x;
-        crb[(2, 3)] = -mh.y;
-        crb[(2, 4)] = mh.x;
-        crb[(4, 0)] = -mh.z;
-        crb[(5, 0)] = mh.y;
-        crb[(3, 1)] = mh.z;
-        crb[(5, 1)] = -mh.x;
-        crb[(3, 2)] = -mh.y;
-        crb[(4, 2)] = mh.x;
-
-        body_inertia[body_id] = crb;
-    }
-
     // ========== Backward Pass: Compute Bias Forces ==========
     // For each body from leaves to root:
     //   f_bias[i] = I[i] @ a_bias[i] + v[i] ×* (I[i] @ v[i])
@@ -9728,9 +9766,9 @@ fn mj_rne(model: &Model, data: &mut Data) {
     // Then project to joint space:
     //   τ_bias[dof] = S[i]^T @ f_bias[i]
 
-    // First compute f_bias for each body
+    // First compute f_bias for each body using cinert (computed once in FK)
     for body_id in 1..model.nbody {
-        let i = &body_inertia[body_id];
+        let i = &data.cinert[body_id];
         let v = data.cvel[body_id];
         let a_bias = data.cacc_bias[body_id];
 
@@ -9762,7 +9800,7 @@ fn mj_rne(model: &Model, data: &mut Data) {
     for jnt_id in 0..model.njnt {
         let body_id = model.jnt_body[jnt_id];
         let dof_adr = model.jnt_dof_adr[jnt_id];
-        let s = joint_motion_subspace(model, data, jnt_id);
+        let s = &joint_subspaces[jnt_id]; // Use cached subspace
         let nv = model.jnt_type[jnt_id].nv();
 
         let f = data.cfrc_bias[body_id];
@@ -10360,12 +10398,14 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     // For small contact counts or when M is singular, fall back to penalty method
     // which is simpler and more robust for simple scenarios.
 
-    // Clone contacts to avoid borrow checker issues (contacts is part of data)
-    let contacts: Vec<Contact> = data.contacts.clone();
-
-    if contacts.is_empty() {
+    // Early exit if no contacts (avoid clone)
+    if data.contacts.is_empty() {
         return;
     }
+
+    // Clone contacts to avoid borrow checker issues (contacts is part of data)
+    // TODO: Consider using indices instead of cloning for better performance
+    let contacts: Vec<Contact> = data.contacts.clone();
 
     // For systems without DOFs, use simple penalty
     if model.nv == 0 {

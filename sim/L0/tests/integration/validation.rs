@@ -1428,15 +1428,14 @@ fn test_performance_humanoid() {
 
     // SPEC: Humanoid (20+ DOF) > 10,000 steps/second single-threaded
     //
-    // Debug builds are significantly slower due to:
+    // Debug builds are slower due to:
     // - No optimizations
     // - Bounds checking on all array accesses
-    // - Contact physics collision detection overhead
     //
     // Release mode achieves ~8,000+ steps/sec
-    // Debug mode achieves ~100-150 steps/sec
+    // Debug mode achieves ~1,000+ steps/sec (after optimization work in Phase 7/8)
     #[cfg(debug_assertions)]
-    let min_threshold = 50.0; // Debug: very slow due to collision detection
+    let min_threshold = 1_000.0; // Debug: now achieves >1000 steps/sec
     #[cfg(not(debug_assertions))]
     let min_threshold = 1_000.0; // Release: should be fast
 
