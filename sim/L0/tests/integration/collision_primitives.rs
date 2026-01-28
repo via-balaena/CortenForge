@@ -394,14 +394,22 @@ fn capsule_capsule_perpendicular() {
     let mut data = model.make_data();
     data.forward(&model);
 
-    // Capsule 1: axis along Z, center at origin
+    // Capsule 1: axis along Z, center at origin, radius 0.2, half-length 0.5
     // Capsule 2: axis along X (rotated 90° about Y), center at (0.35, 0, 0)
-    // The axes cross at closest approach
-    // Distance = 0.35, penetration = 0.4 - 0.35 = 0.05
-    assert_eq!(data.ncon, 1, "Expected 1 contact");
+    //
+    // With euler properly applied, the capsule axes actually INTERSECT at the
+    // origin (one spans Z from -0.5 to +0.5, the other spans X from -0.15 to 0.85,
+    // and they cross at (0,0,0)). The distance between segments is 0.
+    //
+    // For this degenerate case, the collision code picks +Z as the arbitrary
+    // normal. Penetration = sum_radii = 0.4.
+    assert_eq!(
+        data.ncon, 1,
+        "Intersecting capsule axes should have 1 contact"
+    );
 
     let contact = &data.contacts[0];
-    let expected_depth = 0.05;
+    let expected_depth = 0.4; // sum_radii when segments intersect
     assert!(
         (contact.depth - expected_depth).abs() < DEPTH_TOL,
         "Perpendicular capsule depth: expected {}, got {}",
@@ -894,13 +902,19 @@ fn cylinder_capsule_perpendicular() {
     let mut data = model.make_data();
     data.forward(&model);
 
-    // Cylinder axis along Z, capsule axis along X (rotated 90° about Y)
-    // Distance from cylinder axis to capsule axis = 0.45 (at z=0)
-    // Penetration = 0.3 + 0.2 - 0.45 = 0.05
+    // Cylinder at origin, axis Z, radius 0.3, half-length 0.5
+    // Capsule at (0.45, 0, 0), axis X (after 90° Y rotation), radius 0.2, half-length 0.4
+    //
+    // Capsule spine: (0.05, 0, 0) to (0.85, 0, 0)
+    // Cylinder axis: Z line at (0, 0, z)
+    //
+    // The closest approach is from (0, 0, 0) on cylinder axis to (0.05, 0, 0) on capsule.
+    // Distance = 0.05
+    // Penetration = 0.3 + 0.2 - 0.05 = 0.45
     assert_eq!(data.ncon, 1, "Expected 1 contact");
 
     let contact = &data.contacts[0];
-    let expected_depth = 0.05;
+    let expected_depth = 0.45;
     assert!(
         (contact.depth - expected_depth).abs() < DEPTH_TOL,
         "Cylinder-capsule perpendicular depth: expected {}, got {}",

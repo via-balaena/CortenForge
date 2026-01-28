@@ -465,9 +465,18 @@ impl ModelBuilder {
             self.body_rootid[parent_id]
         };
 
-        // Body position/orientation relative to parent
+        // Body position/orientation relative to parent.
+        // Euler angles override quat if specified (MuJoCo convention).
+        // MJCF euler is in degrees with XYZ intrinsic rotation order (lowercase = body-fixed axes).
+        // Intrinsic XYZ: rotate about X, then about new Y, then about new Z.
+        // Quaternion composition: q = Rx * Ry * Rz
         let body_pos = body.pos;
-        let body_quat = quat_from_wxyz(body.quat);
+        let body_quat = if let Some(euler_deg) = body.euler {
+            let euler_rad = euler_deg * (std::f64::consts::PI / 180.0);
+            euler_xyz_to_quat(euler_rad)
+        } else {
+            quat_from_wxyz(body.quat)
+        };
 
         // Compute world frame position for this body (used for free joint qpos0)
         let world_pos = parent_world_pos + parent_world_quat * body_pos;
@@ -755,9 +764,17 @@ impl ModelBuilder {
         let (pos, quat, size) = if let Some(fromto) = geom.fromto {
             compute_fromto_pose(fromto, &geom.size)
         } else {
+            // Euler angles override quat if specified (MuJoCo convention).
+            // MJCF euler is in degrees with XYZ intrinsic rotation order.
+            let orientation = if let Some(euler_deg) = geom.euler {
+                let euler_rad = euler_deg * (std::f64::consts::PI / 180.0);
+                euler_xyz_to_quat(euler_rad)
+            } else {
+                quat_from_wxyz(geom.quat)
+            };
             (
                 geom.pos,
-                quat_from_wxyz(geom.quat),
+                orientation,
                 geom_size_to_vec3(&geom.size, geom_type),
             )
         };
@@ -1111,6 +1128,24 @@ impl ModelBuilder {
 /// Convert MJCF quaternion (w, x, y, z) to `UnitQuaternion`.
 fn quat_from_wxyz(q: nalgebra::Vector4<f64>) -> UnitQuaternion<f64> {
     UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
+}
+
+/// Convert euler angles (radians) to quaternion using MuJoCo's intrinsic XYZ order.
+///
+/// MuJoCo's default `eulerseq='xyz'` (lowercase) means intrinsic rotations:
+/// - First rotate about the body-fixed X axis
+/// - Then rotate about the new (rotated) Y axis
+/// - Finally rotate about the new (rotated) Z axis
+///
+/// In quaternion composition, intrinsic XYZ is: q = Rx * Ry * Rz
+///
+/// Note: nalgebra's `from_euler_angles(roll, pitch, yaw)` uses extrinsic XYZ order
+/// (equivalent to intrinsic ZYX), so we cannot use it directly.
+fn euler_xyz_to_quat(euler_rad: Vector3<f64>) -> UnitQuaternion<f64> {
+    let rx = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), euler_rad.x);
+    let ry = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), euler_rad.y);
+    let rz = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), euler_rad.z);
+    rx * ry * rz
 }
 
 /// Convert MJCF mesh asset to `TriangleMeshData`.
@@ -1477,7 +1512,9 @@ fn compute_fromto_pose(
         UnitQuaternion::identity()
     };
 
-    (center, quat, Vector3::new(radius, radius, half_length))
+    // Convention: size.x = radius, size.y = half_length, size.z = 0.0
+    // This matches geom_size_to_vec3 for Capsule/Cylinder.
+    (center, quat, Vector3::new(radius, half_length, 0.0))
 }
 
 /// Convert geom size array to `Vector3`.
@@ -1494,9 +1531,18 @@ fn geom_size_to_vec3(size: &[f64], geom_type: GeomType) -> Vector3<f64> {
             Vector3::new(x, y, z)
         }
         GeomType::Capsule | GeomType::Cylinder => {
+            // Convention: size.x = radius, size.y = half_length, size.z unused
+            // This matches the collision code expectations.
             let r = size.first().copied().unwrap_or(0.1);
             let h = size.get(1).copied().unwrap_or(0.1);
-            Vector3::new(r, r, h)
+            Vector3::new(r, h, 0.0)
+        }
+        GeomType::Ellipsoid => {
+            // Ellipsoid radii (rx, ry, rz)
+            let rx = size.first().copied().unwrap_or(0.1);
+            let ry = size.get(1).copied().unwrap_or(rx);
+            let rz = size.get(2).copied().unwrap_or(ry);
+            Vector3::new(rx, ry, rz)
         }
         _ => Vector3::new(0.1, 0.1, 0.1),
     }
@@ -1878,6 +1924,7 @@ mod tests {
             geom_type: MjcfGeomType::Capsule,
             pos: Vector3::zeros(),
             quat: nalgebra::Vector4::new(1.0, 0.0, 0.0, 0.0),
+            euler: None,
             size: vec![0.1, 0.5], // radius=0.1, half-height=0.5
             fromto: None,
             density: 1000.0,

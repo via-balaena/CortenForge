@@ -781,6 +781,8 @@ pub struct MjcfGeom {
     pub pos: Vector3<f64>,
     /// Orientation (quaternion: w x y z).
     pub quat: Vector4<f64>,
+    /// Alternative orientation as euler angles (degrees, XYZ order).
+    pub euler: Option<Vector3<f64>>,
     /// Size parameters (interpretation depends on type).
     /// - Sphere: `[radius]`
     /// - Capsule: `[radius, half-length]`
@@ -816,6 +818,7 @@ impl Default for MjcfGeom {
             geom_type: MjcfGeomType::Sphere,
             pos: Vector3::zeros(),
             quat: Vector4::new(1.0, 0.0, 0.0, 0.0),
+            euler: None,
             size: vec![0.1], // Default sphere radius
             fromto: None,
             friction: Vector3::new(1.0, 0.005, 0.0001), // MuJoCo defaults
