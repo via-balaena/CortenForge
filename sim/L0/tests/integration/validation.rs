@@ -1433,20 +1433,22 @@ fn test_performance_humanoid() {
     // - Debug mode (local): ~1,000+ steps/sec (fast development machines)
     // - Debug mode (CI): ~400-500 steps/sec (shared VM runners are slow)
     //
-    // We use different thresholds to catch regressions without false failures:
-    // - CI environments (detected via CI env var): 300 steps/sec minimum
-    // - Local debug builds: 1,000 steps/sec minimum
-    // - Release builds: 1,000 steps/sec minimum
-    let is_ci = std::env::var("CI").is_ok();
-
+    // Threshold strategy:
+    // - Debug + CI: 300 steps/sec (shared VMs are slow, avoid false failures)
+    // - Debug + local: 1,000 steps/sec (catch regressions on dev machines)
+    // - Release: 1,000 steps/sec (CI doesn't affect release - always expect fast)
+    //
+    // Note: CI detection is only relevant for debug builds. In release mode,
+    // we don't check the CI env var because the threshold is always 1,000
+    // regardless of environment.
     #[cfg(debug_assertions)]
-    let min_threshold = if is_ci {
-        300.0 // CI runners are slow (~400-500 steps/sec)
-    } else {
-        1_000.0 // Local dev machines should hit 1000+ steps/sec
+    let (min_threshold, is_ci) = {
+        let ci = std::env::var("CI").is_ok();
+        let threshold = if ci { 300.0 } else { 1_000.0 };
+        (threshold, ci)
     };
     #[cfg(not(debug_assertions))]
-    let min_threshold = 1_000.0; // Release builds should always be fast
+    let (min_threshold, is_ci) = (1_000.0, false);
 
     assert!(
         steps_per_second > min_threshold,
