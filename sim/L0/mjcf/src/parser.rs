@@ -822,6 +822,9 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     if let Some(quat) = get_attribute_opt(e, "quat") {
         geom.quat = parse_vector4(&quat)?;
     }
+    if let Some(euler) = get_attribute_opt(e, "euler") {
+        geom.euler = Some(parse_vector3(&euler)?);
+    }
     if let Some(size) = get_attribute_opt(e, "size") {
         geom.size = parse_float_array(&size)?;
     }
