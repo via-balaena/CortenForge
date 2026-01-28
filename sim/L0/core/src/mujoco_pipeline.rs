@@ -7584,7 +7584,29 @@ fn collide_geoms(
         return collide_box_box(model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2);
     }
 
-    // Slow path: Build shapes and poses for GJK/EPA (only for cylinder, ellipsoid, mesh)
+    // Special case: cylinder-sphere collision (analytical)
+    if (type1 == GeomType::Cylinder && type2 == GeomType::Sphere)
+        || (type1 == GeomType::Sphere && type2 == GeomType::Cylinder)
+    {
+        return collide_cylinder_sphere(
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+        );
+    }
+
+    // Special case: cylinder-capsule collision (analytical with GJK/EPA fallback)
+    // Analytical solution handles common cases; degenerate cases fall through to GJK/EPA
+    if (type1 == GeomType::Cylinder && type2 == GeomType::Capsule)
+        || (type1 == GeomType::Capsule && type2 == GeomType::Cylinder)
+    {
+        if let Some(contact) = collide_cylinder_capsule(
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+        ) {
+            return Some(contact);
+        }
+        // Fall through to GJK/EPA for degenerate cases (intersecting/parallel axes, cap collisions)
+    }
+
+    // Slow path: Build shapes and poses for GJK/EPA (cylinder-cylinder, cylinder-box, ellipsoid-*, and fallback cases)
     let shape1 = geom_to_collision_shape(type1, size1);
     let shape2 = geom_to_collision_shape(type2, size2);
 
@@ -7683,6 +7705,10 @@ const AXIS_VERTICAL_THRESHOLD: f64 = 0.999;
 /// Threshold for cylinder axis being nearly horizontal (parallel to plane).
 /// When |cos(θ)| < 0.001 (θ > 89.9°), treat cylinder as horizontal.
 const AXIS_HORIZONTAL_THRESHOLD: f64 = 0.001;
+
+/// Threshold for detecting cylinder cap collision in cylinder-capsule.
+/// When normal is within ~45° of cylinder axis (cos > 0.7), treat as cap collision.
+const CAP_COLLISION_THRESHOLD: f64 = 0.7;
 
 // =============================================================================
 // Mesh Collision Detection
@@ -8533,6 +8559,241 @@ fn collide_sphere_box(
     } else {
         None
     }
+}
+
+/// Cylinder-sphere collision detection.
+///
+/// Handles three collision cases:
+/// - Side collision: sphere beside cylinder body
+/// - Cap collision: sphere above/below cylinder, within radius
+/// - Edge collision: sphere near rim of cylinder cap
+///
+/// Cylinder axis is local Z.
+#[allow(clippy::too_many_arguments)]
+fn collide_cylinder_sphere(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    type1: GeomType,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+    size1: Vector3<f64>,
+    size2: Vector3<f64>,
+) -> Option<Contact> {
+    // Determine which is cylinder and which is sphere
+    // Note: sphere doesn't use its rotation matrix, but we need mat2 for the cylinder case
+    let (cyl_geom, cyl_pos, cyl_mat, cyl_size, sph_geom, sph_pos, sph_radius) =
+        if type1 == GeomType::Cylinder {
+            (geom1, pos1, mat1, size1, geom2, pos2, size2.x)
+        } else {
+            (geom2, pos2, mat2, size2, geom1, pos1, size1.x)
+        };
+
+    let cyl_radius = cyl_size.x;
+    let cyl_half_height = cyl_size.y;
+    let cyl_axis = cyl_mat.column(2).into_owned();
+
+    // Vector from cylinder center to sphere center
+    let d = sph_pos - cyl_pos;
+
+    // Project onto cylinder axis
+    let axis_dist = d.dot(&cyl_axis);
+
+    // Clamp to cylinder height
+    let clamped_axis = axis_dist.clamp(-cyl_half_height, cyl_half_height);
+
+    // Closest point on cylinder axis to sphere center
+    let axis_point = cyl_pos + cyl_axis * clamped_axis;
+
+    // Radial vector from axis to sphere
+    let radial = sph_pos - axis_point;
+    let radial_dist = radial.norm();
+
+    // Determine closest point on cylinder surface and contact normal
+    let (closest_on_cyl, normal) = if axis_dist.abs() <= cyl_half_height {
+        // Sphere is beside the cylinder (side collision)
+        if radial_dist < GEOM_EPSILON {
+            // Sphere center on axis - degenerate case, pick arbitrary radial direction
+            let arb = if cyl_axis.x.abs() < 0.9 {
+                Vector3::x()
+            } else {
+                Vector3::y()
+            };
+            let n = cyl_axis.cross(&arb).normalize();
+            (axis_point + n * cyl_radius, n)
+        } else {
+            let n = radial / radial_dist;
+            (axis_point + n * cyl_radius, n)
+        }
+    } else {
+        // Sphere is above/below cylinder (cap or edge collision)
+        let cap_center = cyl_pos + cyl_axis * clamped_axis;
+
+        if radial_dist <= cyl_radius {
+            // Cap collision - sphere projects onto cap face
+            let n = if axis_dist > 0.0 { cyl_axis } else { -cyl_axis };
+            (cap_center, n)
+        } else {
+            // Edge collision - sphere near rim of cap
+            let radial_n = radial / radial_dist;
+            let edge_point = cap_center + radial_n * cyl_radius;
+            let to_sphere = sph_pos - edge_point;
+            let to_sphere_dist = to_sphere.norm();
+            let n = if to_sphere_dist > GEOM_EPSILON {
+                to_sphere / to_sphere_dist
+            } else {
+                // Degenerate: sphere center exactly on edge
+                radial_n
+            };
+            (edge_point, n)
+        }
+    };
+
+    // Compute penetration depth
+    let dist = (sph_pos - closest_on_cyl).norm();
+    let penetration = sph_radius - dist;
+
+    if penetration <= 0.0 {
+        return None;
+    }
+
+    // Contact position is on the surface between the two shapes
+    let contact_pos = closest_on_cyl + normal * (penetration * 0.5);
+
+    // Compute friction
+    let friction1 = model.geom_friction[cyl_geom].x;
+    let friction2 = model.geom_friction[sph_geom].x;
+    let friction = (friction1 * friction2).sqrt();
+
+    // Order geoms consistently (lower index first)
+    let (g1, g2, final_normal) = if cyl_geom < sph_geom {
+        (cyl_geom, sph_geom, normal)
+    } else {
+        (sph_geom, cyl_geom, -normal)
+    };
+
+    Some(Contact::new(
+        contact_pos,
+        final_normal,
+        penetration,
+        g1,
+        g2,
+        friction,
+    ))
+}
+
+/// Cylinder-capsule collision detection.
+///
+/// Computes collision between a cylinder and a capsule by finding the closest
+/// points between the cylinder axis segment and the capsule axis segment,
+/// then checking if the cylinder surface intersects the capsule's swept sphere.
+///
+/// # Limitations
+///
+/// This algorithm treats the cylinder's curved surface correctly but does not
+/// handle collisions with the flat caps. For cap collisions (capsule directly
+/// above/below cylinder), returns `None` to fall through to GJK/EPA.
+///
+/// Both shapes have their axis along local Z.
+#[allow(clippy::too_many_arguments)]
+fn collide_cylinder_capsule(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    type1: GeomType,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+    size1: Vector3<f64>,
+    size2: Vector3<f64>,
+) -> Option<Contact> {
+    // Identify cylinder and capsule
+    let (cyl_geom, cyl_pos, cyl_mat, cyl_size, cap_geom, cap_pos, cap_mat, cap_size) =
+        if type1 == GeomType::Cylinder {
+            (geom1, pos1, mat1, size1, geom2, pos2, mat2, size2)
+        } else {
+            (geom2, pos2, mat2, size2, geom1, pos1, mat1, size1)
+        };
+
+    let cyl_radius = cyl_size.x;
+    let cyl_half_height = cyl_size.y;
+    let cap_radius = cap_size.x;
+    let cap_half_len = cap_size.y;
+
+    let cyl_axis = cyl_mat.column(2).into_owned();
+    let cap_axis = cap_mat.column(2).into_owned();
+
+    // Cylinder axis segment endpoints
+    let cyl_a = cyl_pos - cyl_axis * cyl_half_height;
+    let cyl_b = cyl_pos + cyl_axis * cyl_half_height;
+
+    // Capsule axis segment endpoints
+    let cap_a = cap_pos - cap_axis * cap_half_len;
+    let cap_b = cap_pos + cap_axis * cap_half_len;
+
+    // Find closest points between the two axis segments
+    let (cyl_closest, cap_closest) = closest_points_segments(cyl_a, cyl_b, cap_a, cap_b);
+
+    // Vector from cylinder axis point to capsule axis point
+    let diff = cap_closest - cyl_closest;
+    let dist = diff.norm();
+
+    if dist < GEOM_EPSILON {
+        // Axes intersect or nearly intersect - degenerate case where analytical
+        // solution is unreliable. Return None to fall through to GJK/EPA.
+        return None;
+    }
+
+    let normal = diff / dist;
+
+    // Check if this is a cap collision scenario:
+    // If cyl_closest is at an endpoint AND normal points mostly along the axis,
+    // we're hitting the flat cap, not the curved surface. Fall back to GJK/EPA.
+    let cyl_closest_on_cap =
+        (cyl_closest - cyl_a).norm() < GEOM_EPSILON || (cyl_closest - cyl_b).norm() < GEOM_EPSILON;
+    let normal_along_axis = normal.dot(&cyl_axis).abs();
+    if cyl_closest_on_cap && normal_along_axis > CAP_COLLISION_THRESHOLD {
+        // Cap collision - this algorithm doesn't handle flat caps correctly
+        return None;
+    }
+
+    // Closest point on cylinder surface (in direction of capsule)
+    let cyl_surface = cyl_closest + normal * cyl_radius;
+
+    // Distance from cylinder surface to capsule axis
+    let surface_to_cap_dist = (cap_closest - cyl_surface).dot(&normal);
+    let penetration = cap_radius - surface_to_cap_dist;
+
+    if penetration <= 0.0 {
+        return None;
+    }
+
+    // Contact position is between the two surfaces
+    let contact_pos = cyl_surface + normal * (penetration * 0.5);
+
+    // Compute friction
+    let friction1 = model.geom_friction[cyl_geom].x;
+    let friction2 = model.geom_friction[cap_geom].x;
+    let friction = (friction1 * friction2).sqrt();
+
+    // Order geoms consistently (lower index first)
+    let (g1, g2, final_normal) = if cyl_geom < cap_geom {
+        (cyl_geom, cap_geom, normal)
+    } else {
+        (cap_geom, cyl_geom, -normal)
+    };
+
+    Some(Contact::new(
+        contact_pos,
+        final_normal,
+        penetration,
+        g1,
+        g2,
+        friction,
+    ))
 }
 
 /// Capsule-box collision detection.
