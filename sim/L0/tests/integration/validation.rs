@@ -1428,17 +1428,27 @@ fn test_performance_humanoid() {
 
     // SPEC: Humanoid (20+ DOF) > 10,000 steps/second single-threaded
     //
-    // Debug builds are significantly slower due to:
-    // - No optimizations
-    // - Bounds checking on all array accesses
-    // - Contact physics collision detection overhead
+    // Performance varies by environment:
+    // - Release mode: ~8,000+ steps/sec (meets spec on fast hardware)
+    // - Debug mode (local): ~1,000+ steps/sec (fast development machines)
+    // - Debug mode (CI): ~400-500 steps/sec (shared VM runners are slow)
     //
-    // Release mode achieves ~8,000+ steps/sec
-    // Debug mode achieves ~100-150 steps/sec
+    // Threshold strategy:
+    // - Debug + CI: 300 steps/sec (shared VMs are slow, avoid false failures)
+    // - Debug + local: 1,000 steps/sec (catch regressions on dev machines)
+    // - Release: 1,000 steps/sec (CI doesn't affect release - always expect fast)
+    //
+    // Note: CI detection is only relevant for debug builds. In release mode,
+    // we don't check the CI env var because the threshold is always 1,000
+    // regardless of environment.
     #[cfg(debug_assertions)]
-    let min_threshold = 50.0; // Debug: very slow due to collision detection
+    let (min_threshold, is_ci) = {
+        let ci = std::env::var("CI").is_ok();
+        let threshold = if ci { 300.0 } else { 1_000.0 };
+        (threshold, ci)
+    };
     #[cfg(not(debug_assertions))]
-    let min_threshold = 1_000.0; // Release: should be fast
+    let (min_threshold, is_ci) = (1_000.0, false);
 
     assert!(
         steps_per_second > min_threshold,
@@ -1447,11 +1457,19 @@ fn test_performance_humanoid() {
         steps_per_second
     );
 
-    // Performance note: On fast hardware, expect 10,000+ steps/sec
+    // Informational output about spec compliance
     if steps_per_second > 10_000.0 {
         println!("✓ MEETS SPEC: Humanoid achieves target of >10,000 steps/sec");
+    } else if is_ci {
+        println!(
+            "ℹ CI environment: {:.0} steps/sec (threshold: {}, spec: 10,000)",
+            steps_per_second, min_threshold
+        );
     } else {
-        println!("⚠ BELOW SPEC: Target is 10,000 steps/sec (CI machines may be slower)");
+        println!(
+            "⚠ BELOW SPEC: Target is 10,000 steps/sec, got {:.0}",
+            steps_per_second
+        );
     }
 }
 
