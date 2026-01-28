@@ -11050,13 +11050,21 @@ fn pgs_solve_contacts(
         // Note: We still need to compute RHS below, so don't `continue` here.
         if has_dynamic_i {
             for (j, contact_j) in contacts.iter().enumerate().skip(i + 1) {
-                let body_j1 = model.geom_body[contact_j.geom1];
-                let body_j2 = model.geom_body[contact_j.geom2];
+                let geom1_body = model.geom_body[contact_j.geom1];
+                let geom2_body = model.geom_body[contact_j.geom2];
 
                 // Extract dynamic bodies for contact j
                 let dynamic_j: [Option<usize>; 2] = [
-                    if body_j1 != 0 { Some(body_j1) } else { None },
-                    if body_j2 != 0 { Some(body_j2) } else { None },
+                    if geom1_body != 0 {
+                        Some(geom1_body)
+                    } else {
+                        None
+                    },
+                    if geom2_body != 0 {
+                        Some(geom2_body)
+                    } else {
+                        None
+                    },
                 ];
 
                 // If contact j has no dynamic bodies, skip (can't couple)
