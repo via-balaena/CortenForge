@@ -393,14 +393,6 @@ cargo test -- collision_performance
 - [ ] 4B: Verify BVH broad-phase is active
 - [ ] 4B: Fix O(n²) scaling if needed
 
-### Phase 5 (Additional TODOs)
-- [ ] 5A: Plane-Mesh collision in `collide_with_plane()` still returns `None` (mujoco_pipeline.rs:8061)
-- [ ] 5B: File-based mesh loading (STL, OBJ) in model_builder.rs:1157
-
-### Future Work (Out of Scope)
-- [ ] `sim-constraint` reduced to joint definitions only (crate consolidation)
-- [ ] `sim-contact` merged into sim-core (crate consolidation)
-
 ---
 
 ## Success Criteria

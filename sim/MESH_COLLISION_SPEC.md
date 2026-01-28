@@ -51,6 +51,7 @@ about *wiring* existing components together through the Model/Data architecture.
 | `geom_to_collision_shape()` | `mujoco_pipeline.rs:7250` | Return `TriangleMesh` for mesh geoms | ✅ Done |
 | Mesh-primitive collision dispatch | `mujoco_pipeline.rs:7534` | Add cases for mesh geom type | ✅ Done |
 | Model builder mesh loading | `model_builder.rs:1129` | Convert `MjcfMesh` to `TriangleMeshData` | ✅ Done |
+| Plane-Mesh collision | `mujoco_pipeline.rs:8061` | `collide_with_plane()` returns `None` for mesh | ❌ TODO |
 | File-based mesh loading | `model_builder.rs:1157` | Load STL/OBJ files | ❌ TODO |
 
 ---
