@@ -674,8 +674,9 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn tolerances_are_ordered() {
-        // Verify tolerance hierarchy
+        // Verify tolerance hierarchy (compile-time constants, intentionally checked)
         assert!(MACHINE_EPS < GEOM_TOL);
         assert!(GEOM_TOL < DEPTH_TOL);
         // NORMAL_TOL is for angular comparison, not directly comparable
