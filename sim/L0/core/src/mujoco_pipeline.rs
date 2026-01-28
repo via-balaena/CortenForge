@@ -63,8 +63,11 @@
 //! - Phase 6: Contact (ground plane, sphere collisions) - COMPLETE
 
 use crate::collision_shape::{Aabb, CollisionShape};
-use crate::mesh::TriangleMeshData;
-use nalgebra::{Point3, Vector3};
+use crate::mesh::{
+    MeshContact, TriangleMeshData, mesh_box_contact, mesh_capsule_contact,
+    mesh_mesh_deepest_contact, mesh_sphere_contact,
+};
+use nalgebra::{Matrix3, Point3, Vector3};
 use sim_types::Pose;
 use std::f64::consts::PI;
 use std::sync::Arc;
@@ -3102,8 +3105,7 @@ mod tests {
 // 7. Semi-implicit Euler integration with new velocity for position
 
 use nalgebra::{
-    Cholesky, Dyn, Isometry3, Matrix3, Matrix6, Quaternion, Translation3, Unit, UnitQuaternion,
-    Vector6,
+    Cholesky, Dyn, Isometry3, Matrix6, Quaternion, Translation3, Unit, UnitQuaternion, Vector6,
 };
 use std::collections::HashMap;
 
@@ -7528,6 +7530,11 @@ fn collide_geoms(
     // Fast path: handle all analytical collision cases first
     // These avoid the expensive quaternion conversion and GJK/EPA
 
+    // Special case: mesh collision (has its own BVH-accelerated path)
+    if type1 == GeomType::Mesh || type2 == GeomType::Mesh {
+        return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2);
+    }
+
     // Special case: plane collision
     if type1 == GeomType::Plane || type2 == GeomType::Plane {
         return collide_with_plane(
@@ -7614,7 +7621,7 @@ fn collide_geoms(
 }
 
 /// Convert `MuJoCo` `GeomType` to `CollisionShape`.
-#[allow(clippy::match_same_arms)] // Plane and Mesh have different TODOs but both return None
+#[allow(clippy::match_same_arms)] // Plane and Mesh both return None but for different reasons
 fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<CollisionShape> {
     match geom_type {
         GeomType::Sphere => Some(CollisionShape::Sphere { radius: size.x }),
@@ -7628,8 +7635,8 @@ fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Co
             radius: size.x,
         }),
         GeomType::Ellipsoid => Some(CollisionShape::Ellipsoid { radii: size }),
-        GeomType::Plane => None, // Handled specially
-        GeomType::Mesh => None,  // TODO: Need mesh data from model
+        GeomType::Plane => None, // Handled via collide_with_plane()
+        GeomType::Mesh => None,  // Handled via collide_with_mesh()
     }
 }
 
@@ -7676,6 +7683,183 @@ const AXIS_VERTICAL_THRESHOLD: f64 = 0.999;
 /// Threshold for cylinder axis being nearly horizontal (parallel to plane).
 /// When |cos(θ)| < 0.001 (θ > 89.9°), treat cylinder as horizontal.
 const AXIS_HORIZONTAL_THRESHOLD: f64 = 0.001;
+
+// =============================================================================
+// Mesh Collision Detection
+// =============================================================================
+
+/// Collision detection involving at least one mesh geometry.
+///
+/// Dispatches to specialized mesh-primitive or mesh-mesh implementations.
+/// For mesh-primitive collisions, approximations are used for some geometry types:
+/// - Cylinder: approximated as capsule (conservative, may report false positives)
+/// - Ellipsoid: approximated as sphere with max radius (conservative)
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
+fn collide_with_mesh(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+) -> Option<Contact> {
+    let type1 = model.geom_type[geom1];
+    let type2 = model.geom_type[geom2];
+    let size1 = model.geom_size[geom1];
+    let size2 = model.geom_size[geom2];
+
+    // Build poses (expensive quaternion conversion, but needed for mesh collision)
+    let quat1 = UnitQuaternion::from_matrix(&mat1);
+    let quat2 = UnitQuaternion::from_matrix(&mat2);
+    let pose1 = Pose::from_position_rotation(Point3::from(pos1), quat1);
+    let pose2 = Pose::from_position_rotation(Point3::from(pos2), quat2);
+
+    let mesh_contact: Option<MeshContact> = match (type1, type2) {
+        // Mesh-Mesh
+        (GeomType::Mesh, GeomType::Mesh) => {
+            let mesh1_id = model.geom_mesh[geom1]?;
+            let mesh2_id = model.geom_mesh[geom2]?;
+            let mesh1 = &model.mesh_data[mesh1_id];
+            let mesh2 = &model.mesh_data[mesh2_id];
+
+            mesh_mesh_deepest_contact(mesh1, &pose1, mesh2, &pose2)
+        }
+
+        // Mesh (geom1) vs Primitive (geom2)
+        (GeomType::Mesh, prim_type) => {
+            let mesh_id = model.geom_mesh[geom1]?;
+            let mesh = &model.mesh_data[mesh_id];
+
+            match prim_type {
+                GeomType::Sphere => mesh_sphere_contact(mesh, &pose1, pose2.position, size2.x),
+                // Capsule and Cylinder both use capsule collision (cylinder approximated as capsule)
+                GeomType::Capsule | GeomType::Cylinder => {
+                    let half_len = size2.y;
+                    let axis = pose2.rotation * Vector3::z();
+                    let start = pose2.position - axis * half_len;
+                    let end = pose2.position + axis * half_len;
+                    mesh_capsule_contact(mesh, &pose1, start, end, size2.x)
+                }
+                GeomType::Box => mesh_box_contact(mesh, &pose1, &pose2, &size2),
+                GeomType::Ellipsoid => {
+                    // Approximate as sphere with max radius (conservative)
+                    let max_r = size2.x.max(size2.y).max(size2.z);
+                    mesh_sphere_contact(mesh, &pose1, pose2.position, max_r)
+                }
+                GeomType::Plane => {
+                    // Plane normal is local Z-axis
+                    let plane_normal = mat2.column(2).into_owned();
+                    let plane_d = plane_normal.dot(&pos2);
+                    collide_mesh_plane(mesh, &pose1, plane_normal, plane_d)
+                }
+                GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
+            }
+        }
+
+        // Primitive (geom1) vs Mesh (geom2) - swap and negate normal
+        (prim_type, GeomType::Mesh) => {
+            let mesh_id = model.geom_mesh[geom2]?;
+            let mesh = &model.mesh_data[mesh_id];
+
+            let contact = match prim_type {
+                GeomType::Sphere => mesh_sphere_contact(mesh, &pose2, pose1.position, size1.x),
+                // Capsule and Cylinder both use capsule collision (cylinder approximated as capsule)
+                GeomType::Capsule | GeomType::Cylinder => {
+                    let half_len = size1.y;
+                    let axis = pose1.rotation * Vector3::z();
+                    let start = pose1.position - axis * half_len;
+                    let end = pose1.position + axis * half_len;
+                    mesh_capsule_contact(mesh, &pose2, start, end, size1.x)
+                }
+                GeomType::Box => mesh_box_contact(mesh, &pose2, &pose1, &size1),
+                GeomType::Ellipsoid => {
+                    let max_r = size1.x.max(size1.y).max(size1.z);
+                    mesh_sphere_contact(mesh, &pose2, pose1.position, max_r)
+                }
+                GeomType::Plane => {
+                    let plane_normal = mat1.column(2).into_owned();
+                    let plane_d = plane_normal.dot(&pos1);
+                    collide_mesh_plane(mesh, &pose2, plane_normal, plane_d)
+                }
+                GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
+            };
+
+            // Negate normal since we swapped the order (mesh was geom2, but contact
+            // normal points from mesh outward - we need it pointing from geom1 to geom2)
+            contact.map(|mut c| {
+                c.normal = -c.normal;
+                c
+            })
+        }
+
+        _ => unreachable!("collide_with_mesh called but neither geom is a mesh"),
+    };
+
+    // Convert MeshContact to Contact
+    mesh_contact.map(|mc| {
+        let friction1 = model.geom_friction[geom1].x;
+        let friction2 = model.geom_friction[geom2].x;
+        let friction = (friction1 * friction2).sqrt();
+
+        Contact::new(
+            mc.point.coords,
+            mc.normal,
+            mc.penetration,
+            geom1,
+            geom2,
+            friction,
+        )
+    })
+}
+
+/// Mesh vs infinite plane collision.
+///
+/// Tests all mesh vertices against the plane and returns the deepest penetrating vertex.
+/// This is a simple but effective approach for mesh-plane collision:
+/// - O(n) in number of vertices
+/// - Handles any mesh topology
+/// - Returns single deepest contact point
+fn collide_mesh_plane(
+    mesh: &TriangleMeshData,
+    mesh_pose: &Pose,
+    plane_normal: Vector3<f64>,
+    plane_d: f64,
+) -> Option<MeshContact> {
+    let mut deepest: Option<MeshContact> = None;
+
+    for (i, vertex) in mesh.vertices().iter().enumerate() {
+        // Transform vertex to world space
+        let world_v = mesh_pose.transform_point(vertex);
+
+        // Signed distance from plane (positive = above plane, negative = below)
+        let signed_dist = plane_normal.dot(&world_v.coords) - plane_d;
+        let depth = -signed_dist;
+
+        if depth > 0.0 {
+            match &mut deepest {
+                Some(d) if depth > d.penetration => {
+                    d.point = world_v;
+                    d.normal = plane_normal;
+                    d.penetration = depth;
+                    d.triangle_index = i; // Store vertex index (not triangle, but useful for debug)
+                }
+                None => {
+                    deepest = Some(MeshContact {
+                        point: world_v,
+                        normal: plane_normal,
+                        penetration: depth,
+                        triangle_index: i,
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    deepest
+}
 
 /// Collision between a plane and another geometry.
 ///
@@ -7881,6 +8065,7 @@ fn collide_with_plane(
 /// # Returns
 /// `Some(Contact)` if cylinder penetrates plane, `None` otherwise.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn collide_cylinder_plane_impl(
     plane_geom: usize,
     cyl_geom: usize,
@@ -8003,6 +8188,7 @@ fn collide_cylinder_plane_impl(
 /// # Returns
 /// `Some(Contact)` if ellipsoid penetrates plane, `None` otherwise.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn collide_ellipsoid_plane_impl(
     plane_geom: usize,
     ell_geom: usize,

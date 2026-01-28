@@ -85,8 +85,8 @@ pub use collision_shape::{Aabb, Axis, CollisionShape};
 pub use heightfield::{HeightFieldContact, HeightFieldData};
 pub use mesh::{
     MeshContact, Triangle, TriangleMeshData, closest_point_on_triangle, mesh_box_contact,
-    mesh_capsule_contact, mesh_sphere_contact, triangle_box_contact, triangle_capsule_contact,
-    triangle_sphere_contact,
+    mesh_capsule_contact, mesh_mesh_contact, mesh_mesh_deepest_contact, mesh_sphere_contact,
+    triangle_box_contact, triangle_capsule_contact, triangle_sphere_contact,
 };
 pub use mid_phase::{Bvh, BvhPrimitive, bvh_from_triangle_mesh};
 pub use raycast::{RaycastHit, raycast_shape};
