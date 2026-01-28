@@ -915,6 +915,15 @@ impl ModelBuilder {
             geom_name: self.geom_name,
             // Pre-computed bounding radii (computed below after we have geom_type and geom_size)
             geom_rbound: vec![0.0; ngeom],
+            // Mesh index for each geom (None for non-mesh geoms).
+            // TODO(Phase 3): Populate when processing mesh geoms from MJCF.
+            geom_mesh: vec![None; ngeom],
+
+            // Meshes (empty until MJCF mesh loading is implemented).
+            // TODO(Phase 3): Load mesh assets from MJCF <asset><mesh> elements.
+            nmesh: 0,
+            mesh_name: vec![],
+            mesh_data: vec![],
 
             site_body: self.site_body,
             site_type: self.site_type,

@@ -63,9 +63,11 @@
 //! - Phase 6: Contact (ground plane, sphere collisions) - COMPLETE
 
 use crate::collision_shape::{Aabb, CollisionShape};
+use crate::mesh::TriangleMeshData;
 use nalgebra::{Point3, Vector3};
 use sim_types::Pose;
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 /// Simple pendulum state for Phase 1 testing.
 ///
@@ -5721,6 +5723,18 @@ pub struct Model {
     /// Used for fast distance culling in collision broad-phase.
     /// For primitives, computed from geom_size. For meshes, computed from mesh AABB.
     pub geom_rbound: Vec<f64>,
+    /// Mesh index for each geom (`None` if not a mesh geom).
+    /// Length: ngeom. Only geoms with `geom_type == GeomType::Mesh` have `Some(mesh_id)`.
+    pub geom_mesh: Vec<Option<usize>>,
+
+    // ==================== Meshes (indexed by mesh_id) ====================
+    /// Number of mesh assets.
+    pub nmesh: usize,
+    /// Mesh names (for lookup by name).
+    pub mesh_name: Vec<String>,
+    /// Triangle mesh data with prebuilt BVH.
+    /// `Arc` for cheap cloning (multiple geoms can reference the same mesh asset).
+    pub mesh_data: Vec<Arc<TriangleMeshData>>,
 
     // ==================== Sites (indexed by site_id) ====================
     /// Parent body for each site.
@@ -6272,6 +6286,12 @@ impl Model {
             geom_solref: vec![],
             geom_name: vec![],
             geom_rbound: vec![],
+            geom_mesh: vec![],
+
+            // Meshes (empty)
+            nmesh: 0,
+            mesh_name: vec![],
+            mesh_data: vec![],
 
             // Sites (empty)
             site_body: vec![],
@@ -11718,6 +11738,7 @@ mod primitive_collision_tests {
         model.geom_solref = vec![[0.02, 1.0]; ngeom];
         model.geom_name = vec![None; ngeom];
         model.geom_rbound = vec![1.0; ngeom];
+        model.geom_mesh = vec![None; ngeom]; // No mesh geoms in test helper
         model
     }
 
