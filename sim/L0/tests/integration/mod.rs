@@ -36,6 +36,13 @@ pub mod collision_performance;
 pub mod equality_constraints;
 
 // ============================================================================
+// Phase 1.2: Implicit Integration Tests (MUJOCO_PARITY_SPEC.md)
+// ============================================================================
+
+/// Implicit spring-damper integration tests: stability, accuracy, convergence.
+pub mod implicit_integration;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 
