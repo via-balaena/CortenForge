@@ -1,8 +1,34 @@
 //! Collision shape primitives for low-level collision detection.
 //!
-//! This module defines the `CollisionShape` enum used by GJK/EPA algorithms
+//! This module defines the [`CollisionShape`] enum used by GJK/EPA algorithms
 //! and raycasting. For the Model/Data architecture, geometry is stored in
 //! separate arrays (`geom_type`, `geom_size`, `geom_pos`, etc.).
+//!
+//! # Example
+//!
+//! ```
+//! use sim_core::{CollisionShape, Aabb};
+//! use nalgebra::{Point3, Vector3};
+//!
+//! // Create primitive shapes
+//! let sphere = CollisionShape::sphere(1.0);
+//! let box_shape = CollisionShape::box_shape(Vector3::new(0.5, 0.5, 0.5));
+//! let capsule = CollisionShape::capsule(1.0, 0.25); // half_length, radius
+//!
+//! // Query shape properties
+//! assert!(sphere.is_convex());
+//! assert!(sphere.is_primitive());
+//! assert_eq!(sphere.radius(), Some(1.0));
+//!
+//! // Compute bounding volumes
+//! let radius = sphere.bounding_radius();
+//! let aabb = box_shape.local_aabb();
+//!
+//! // Check if two AABBs overlap (broad-phase)
+//! let aabb_a = Aabb::from_center(Point3::origin(), Vector3::new(1.0, 1.0, 1.0));
+//! let aabb_b = Aabb::from_center(Point3::new(1.5, 0.0, 0.0), Vector3::new(1.0, 1.0, 1.0));
+//! assert!(aabb_a.overlaps(&aabb_b));
+//! ```
 //!
 //! # Shape Types
 //!
@@ -384,6 +410,10 @@ impl CollisionShape {
     }
 
     /// Returns `true` if this is a mesh-based shape (convex, triangle, or SDF).
+    ///
+    /// Note: HeightField is grid-based (regular 2D grid with height values) and
+    /// is NOT considered mesh-based. SDF is included because it represents
+    /// arbitrary geometry via a discrete grid of distance values.
     #[must_use]
     pub fn is_mesh_based(&self) -> bool {
         matches!(
@@ -491,6 +521,88 @@ impl CollisionShape {
                 .iter()
                 .map(|v| v.coords.norm())
                 .fold(0.0, f64::max),
+        }
+    }
+
+    /// Compute the local-space axis-aligned bounding box for this shape.
+    ///
+    /// The AABB is computed in the shape's local coordinate frame (centered at origin).
+    /// For shapes with infinite extent (planes), returns an AABB with infinite bounds.
+    ///
+    /// # Returns
+    ///
+    /// An [`Aabb`] representing the tightest axis-aligned bounding box containing
+    /// the shape in local coordinates.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Grid dimensions won't exceed mantissa precision
+    pub fn local_aabb(&self) -> Aabb {
+        match self {
+            Self::Sphere { radius } => {
+                let r = *radius;
+                Aabb::new(Point3::new(-r, -r, -r), Point3::new(r, r, r))
+            }
+            Self::Plane { .. } => {
+                // Planes are infinite - return infinite AABB
+                Aabb::new(
+                    Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+                    Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+                )
+            }
+            Self::Box { half_extents } => {
+                Aabb::new(Point3::from(-*half_extents), Point3::from(*half_extents))
+            }
+            Self::Capsule {
+                half_length,
+                radius,
+            } => {
+                // Capsule is along Z axis
+                let r = *radius;
+                let h = *half_length;
+                Aabb::new(Point3::new(-r, -r, -(h + r)), Point3::new(r, r, h + r))
+            }
+            Self::Cylinder {
+                half_length,
+                radius,
+            } => {
+                // Cylinder is along Z axis
+                let r = *radius;
+                let h = *half_length;
+                Aabb::new(Point3::new(-r, -r, -h), Point3::new(r, r, h))
+            }
+            Self::Ellipsoid { radii } => Aabb::new(Point3::from(-*radii), Point3::from(*radii)),
+            Self::ConvexMesh { vertices } => {
+                if vertices.is_empty() {
+                    return Aabb::default();
+                }
+                let mut min = Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+                let mut max = Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+                for v in vertices {
+                    min.x = min.x.min(v.x);
+                    min.y = min.y.min(v.y);
+                    min.z = min.z.min(v.z);
+                    max.x = max.x.max(v.x);
+                    max.y = max.y.max(v.y);
+                    max.z = max.z.max(v.z);
+                }
+                Aabb::new(min, max)
+            }
+            Self::TriangleMesh { data } => {
+                let (min, max) = data.aabb();
+                Aabb::new(min, max)
+            }
+            Self::HeightField { data } => {
+                let (min, max) = data.aabb();
+                Aabb::new(min, max)
+            }
+            Self::Sdf { data } => {
+                let origin = data.origin();
+                let max = Point3::new(
+                    origin.x + (data.width() as f64) * data.cell_size(),
+                    origin.y + (data.height() as f64) * data.cell_size(),
+                    origin.z + (data.depth() as f64) * data.cell_size(),
+                );
+                Aabb::new(origin, max)
+            }
         }
     }
 }
@@ -1062,5 +1174,561 @@ mod tests {
     #[test]
     fn test_axis_all() {
         assert_eq!(Axis::all(), [Axis::X, Axis::Y, Axis::Z]);
+    }
+
+    // ------------------------------------------------------------------------
+    // TriangleMesh, HeightField, Sdf creation tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_triangle_mesh_creation() {
+        use crate::mesh::TriangleMeshData;
+        use std::sync::Arc;
+
+        // Create a simple tetrahedron
+        let vertices = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 1.0, 0.0),
+            Point3::new(0.5, 0.5, 1.0),
+        ];
+        let indices = vec![0, 1, 2, 0, 1, 3, 1, 2, 3, 0, 2, 3];
+
+        let data = Arc::new(TriangleMeshData::new(vertices, indices));
+        let shape = CollisionShape::triangle_mesh(data);
+
+        assert!(!shape.is_convex());
+        assert!(!shape.is_primitive());
+        assert!(shape.is_mesh_based());
+        assert!(!shape.is_infinite());
+
+        // Bounding radius should be the max distance from origin
+        // Vertex (0.5, 0.5, 1.0) has distance sqrt(0.25 + 0.25 + 1.0) = sqrt(1.5)
+        // Vertex (0.5, 1.0, 0.0) has distance sqrt(0.25 + 1.0) = sqrt(1.25)
+        // Vertex (1.0, 0.0, 0.0) has distance 1.0
+        // Max is sqrt(1.5) ≈ 1.2247
+        assert_relative_eq!(shape.bounding_radius(), 1.5_f64.sqrt(), epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_triangle_mesh_from_vertices_convenience() {
+        let vertices = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.5, 1.0, 0.0),
+            Point3::new(0.5, 0.5, 1.0),
+        ];
+        let indices = vec![0, 1, 2, 0, 1, 3, 1, 2, 3, 0, 2, 3];
+
+        let shape = CollisionShape::triangle_mesh_from_vertices(vertices, indices);
+        assert!(shape.is_mesh_based());
+        assert!(!shape.is_convex());
+    }
+
+    #[test]
+    fn test_height_field_creation() {
+        use crate::heightfield::HeightFieldData;
+        use std::sync::Arc;
+
+        // Create a simple 3x3 height field
+        let heights = vec![
+            0.0, 1.0, 0.0, // row 0
+            1.0, 2.0, 1.0, // row 1
+            0.0, 1.0, 0.0, // row 2
+        ];
+        let data = Arc::new(HeightFieldData::new(heights, 3, 3, 1.0));
+        let shape = CollisionShape::height_field(data);
+
+        assert!(!shape.is_convex());
+        assert!(!shape.is_primitive());
+        assert!(!shape.is_mesh_based()); // HeightField is not mesh-based
+        assert!(!shape.is_infinite());
+
+        // Bounding radius computation for height field
+        let radius = shape.bounding_radius();
+        assert!(radius > 0.0);
+        assert!(radius.is_finite());
+    }
+
+    #[test]
+    fn test_sdf_creation() {
+        use crate::sdf::SdfCollisionData;
+        use std::sync::Arc;
+
+        // Create a simple 2x2x2 SDF representing a sphere-ish shape
+        let sphere_radius = 1.0;
+        let data = Arc::new(SdfCollisionData::from_fn(
+            4,
+            4,
+            4,
+            0.5,
+            Point3::new(-1.0, -1.0, -1.0),
+            |p| p.coords.norm() - sphere_radius,
+        ));
+        let shape = CollisionShape::sdf(data);
+
+        assert!(!shape.is_convex());
+        assert!(!shape.is_primitive());
+        assert!(shape.is_mesh_based()); // SDF is considered mesh-based
+        assert!(!shape.is_infinite());
+
+        // Bounding radius should be finite and positive
+        let radius = shape.bounding_radius();
+        assert!(radius > 0.0);
+        assert!(radius.is_finite());
+    }
+
+    // ------------------------------------------------------------------------
+    // Comprehensive bounding_radius test
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_bounding_radius_all_types() {
+        use crate::heightfield::HeightFieldData;
+        use crate::mesh::TriangleMeshData;
+        use crate::sdf::SdfCollisionData;
+        use std::sync::Arc;
+
+        // Sphere: radius = r
+        let sphere = CollisionShape::sphere(2.0);
+        assert_relative_eq!(sphere.bounding_radius(), 2.0);
+
+        // Plane: infinite
+        let plane = CollisionShape::plane(Vector3::z(), 0.0);
+        assert_eq!(plane.bounding_radius(), f64::INFINITY);
+
+        // Box: diagonal = sqrt(x² + y² + z²)
+        let box_shape = CollisionShape::box_shape(Vector3::new(1.0, 2.0, 3.0));
+        assert_relative_eq!(
+            box_shape.bounding_radius(),
+            14.0_f64.sqrt(),
+            epsilon = 1e-10
+        );
+
+        // Capsule: half_length + radius
+        let capsule = CollisionShape::capsule(2.0, 0.5);
+        assert_relative_eq!(capsule.bounding_radius(), 2.5);
+
+        // Cylinder: hypot(half_length, radius)
+        let cylinder = CollisionShape::cylinder(3.0, 4.0);
+        assert_relative_eq!(cylinder.bounding_radius(), 5.0, epsilon = 1e-10); // 3-4-5 triangle
+
+        // Ellipsoid: max of radii
+        let ellipsoid = CollisionShape::ellipsoid_xyz(1.0, 2.0, 5.0);
+        assert_relative_eq!(ellipsoid.bounding_radius(), 5.0);
+
+        // ConvexMesh: max vertex distance from origin
+        let vertices = vec![
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 2.0, 0.0),
+            Point3::new(0.0, 0.0, 3.0),
+            Point3::new(0.0, 0.0, 0.0),
+        ];
+        let convex = CollisionShape::convex_mesh(vertices);
+        assert_relative_eq!(convex.bounding_radius(), 3.0, epsilon = 1e-10);
+
+        // TriangleMesh: max vertex distance from origin
+        let tri_verts = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(4.0, 0.0, 0.0),
+            Point3::new(0.0, 3.0, 0.0),
+            Point3::new(0.0, 0.0, 0.0),
+        ];
+        let tri_data = Arc::new(TriangleMeshData::new(tri_verts, vec![0, 1, 2, 0, 2, 3]));
+        let tri_mesh = CollisionShape::triangle_mesh(tri_data);
+        assert_relative_eq!(tri_mesh.bounding_radius(), 4.0, epsilon = 1e-10);
+
+        // HeightField: computed from grid extent and height range
+        let hf_data = Arc::new(HeightFieldData::flat(5, 5, 1.0, 0.0));
+        let hf = CollisionShape::height_field(hf_data);
+        assert!(hf.bounding_radius().is_finite());
+        assert!(hf.bounding_radius() > 0.0);
+
+        // SDF: computed from grid corners
+        let sdf_data = Arc::new(SdfCollisionData::from_fn(
+            2,
+            2,
+            2,
+            1.0,
+            Point3::origin(),
+            |_| 0.0,
+        ));
+        let sdf = CollisionShape::sdf(sdf_data);
+        assert!(sdf.bounding_radius().is_finite());
+        assert!(sdf.bounding_radius() > 0.0);
+    }
+
+    // ------------------------------------------------------------------------
+    // Capsule endpoints test
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_capsule_endpoints() {
+        let capsule = CollisionShape::capsule(2.0, 0.5);
+
+        // Identity pose
+        let pose = Pose::identity();
+        let endpoints = capsule.capsule_endpoints(&pose);
+        assert!(endpoints.is_some());
+        let (start, end) = endpoints.unwrap();
+        assert_relative_eq!(start.x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(start.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(start.z, -2.0, epsilon = 1e-10);
+        assert_relative_eq!(end.x, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(end.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(end.z, 2.0, epsilon = 1e-10);
+
+        // Translated pose
+        let translated_pose = Pose::from_position(Point3::new(1.0, 2.0, 3.0));
+        let endpoints = capsule.capsule_endpoints(&translated_pose);
+        assert!(endpoints.is_some());
+        let (start, end) = endpoints.unwrap();
+        assert_relative_eq!(start.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(start.y, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(start.z, 1.0, epsilon = 1e-10); // 3 - 2
+        assert_relative_eq!(end.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(end.y, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(end.z, 5.0, epsilon = 1e-10); // 3 + 2
+
+        // 90-degree rotation around Y axis (Z axis becomes X axis)
+        let rotated_pose = Pose::from_position_rotation(
+            Point3::origin(),
+            nalgebra::UnitQuaternion::from_euler_angles(0.0, std::f64::consts::FRAC_PI_2, 0.0),
+        );
+        let endpoints = capsule.capsule_endpoints(&rotated_pose);
+        assert!(endpoints.is_some());
+        let (start, end) = endpoints.unwrap();
+        // After 90° Y rotation: local Z maps to world X
+        assert_relative_eq!(start.x, -2.0, epsilon = 1e-10);
+        assert_relative_eq!(start.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(start.z, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(end.x, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(end.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(end.z, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_capsule_endpoints_non_capsule_returns_none() {
+        let sphere = CollisionShape::sphere(1.0);
+        let pose = Pose::identity();
+        assert!(sphere.capsule_endpoints(&pose).is_none());
+
+        let box_shape = CollisionShape::box_shape(Vector3::new(1.0, 1.0, 1.0));
+        assert!(box_shape.capsule_endpoints(&pose).is_none());
+
+        let cylinder = CollisionShape::cylinder(1.0, 0.5);
+        assert!(cylinder.capsule_endpoints(&pose).is_none());
+    }
+
+    // ------------------------------------------------------------------------
+    // Accessor negative tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_accessors_return_none_for_wrong_types() {
+        // Test radius accessor
+        let box_shape = CollisionShape::box_shape(Vector3::new(1.0, 1.0, 1.0));
+        assert!(box_shape.radius().is_none());
+
+        let plane = CollisionShape::plane(Vector3::z(), 0.0);
+        assert!(plane.radius().is_none());
+
+        let ellipsoid = CollisionShape::ellipsoid_xyz(1.0, 2.0, 3.0);
+        assert!(ellipsoid.radius().is_none());
+
+        // Test half_length accessor
+        let sphere = CollisionShape::sphere(1.0);
+        assert!(sphere.half_length().is_none());
+
+        assert!(box_shape.half_length().is_none());
+        assert!(plane.half_length().is_none());
+
+        // Test half_extents accessor
+        assert!(sphere.half_extents().is_none());
+
+        let capsule = CollisionShape::capsule(1.0, 0.5);
+        assert!(capsule.half_extents().is_none());
+
+        let cylinder = CollisionShape::cylinder(1.0, 0.5);
+        assert!(cylinder.half_extents().is_none());
+    }
+
+    // ------------------------------------------------------------------------
+    // AABB expanded test
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_aabb_expanded() {
+        let aabb = Aabb::new(Point3::new(0.0, 0.0, 0.0), Point3::new(2.0, 2.0, 2.0));
+
+        let expanded = aabb.expanded(0.5);
+        assert!(expanded.is_valid());
+        assert_relative_eq!(expanded.min.x, -0.5, epsilon = 1e-10);
+        assert_relative_eq!(expanded.min.y, -0.5, epsilon = 1e-10);
+        assert_relative_eq!(expanded.min.z, -0.5, epsilon = 1e-10);
+        assert_relative_eq!(expanded.max.x, 2.5, epsilon = 1e-10);
+        assert_relative_eq!(expanded.max.y, 2.5, epsilon = 1e-10);
+        assert_relative_eq!(expanded.max.z, 2.5, epsilon = 1e-10);
+
+        // Negative margin (shrink)
+        let shrunk = aabb.expanded(-0.5);
+        assert!(shrunk.is_valid());
+        assert_relative_eq!(shrunk.min.x, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(shrunk.max.x, 1.5, epsilon = 1e-10);
+
+        // Zero margin (no change)
+        let unchanged = aabb.expanded(0.0);
+        assert_eq!(unchanged.min, aabb.min);
+        assert_eq!(unchanged.max, aabb.max);
+    }
+
+    // ------------------------------------------------------------------------
+    // Zero half-length capsule edge case
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_zero_half_length_capsule() {
+        // A capsule with zero half_length is effectively a sphere
+        let capsule = CollisionShape::capsule(0.0, 1.0);
+
+        assert!(capsule.is_capsule());
+        assert!(capsule.is_convex());
+        assert_eq!(capsule.radius(), Some(1.0));
+        assert_eq!(capsule.half_length(), Some(0.0));
+
+        // Bounding radius should equal the radius when half_length is 0
+        assert_relative_eq!(capsule.bounding_radius(), 1.0);
+
+        // Endpoints should be coincident
+        let pose = Pose::identity();
+        let (start, end) = capsule.capsule_endpoints(&pose).unwrap();
+        assert_relative_eq!(start.x, end.x, epsilon = 1e-10);
+        assert_relative_eq!(start.y, end.y, epsilon = 1e-10);
+        assert_relative_eq!(start.z, end.z, epsilon = 1e-10);
+    }
+
+    // ------------------------------------------------------------------------
+    // Predicate tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_is_mesh_based() {
+        use crate::mesh::TriangleMeshData;
+        use crate::sdf::SdfCollisionData;
+        use std::sync::Arc;
+
+        // Mesh-based shapes
+        let convex = CollisionShape::convex_mesh(vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 1.0, 0.0),
+            Point3::new(0.0, 0.0, 1.0),
+        ]);
+        assert!(convex.is_mesh_based());
+
+        let tri_data = Arc::new(TriangleMeshData::new(
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 0.0),
+                Point3::new(0.0, 1.0, 0.0),
+                Point3::new(0.0, 0.0, 1.0),
+            ],
+            vec![0, 1, 2, 0, 1, 3],
+        ));
+        let tri_mesh = CollisionShape::triangle_mesh(tri_data);
+        assert!(tri_mesh.is_mesh_based());
+
+        let sdf_data = Arc::new(SdfCollisionData::from_fn(
+            2,
+            2,
+            2,
+            1.0,
+            Point3::origin(),
+            |_| 0.0,
+        ));
+        let sdf = CollisionShape::sdf(sdf_data);
+        assert!(sdf.is_mesh_based());
+
+        // Non-mesh-based shapes
+        assert!(!CollisionShape::sphere(1.0).is_mesh_based());
+        assert!(!CollisionShape::box_shape(Vector3::new(1.0, 1.0, 1.0)).is_mesh_based());
+        assert!(!CollisionShape::capsule(1.0, 0.5).is_mesh_based());
+        assert!(!CollisionShape::cylinder(1.0, 0.5).is_mesh_based());
+        assert!(!CollisionShape::ellipsoid_xyz(1.0, 1.0, 1.0).is_mesh_based());
+        assert!(!CollisionShape::plane(Vector3::z(), 0.0).is_mesh_based());
+    }
+
+    #[test]
+    fn test_is_infinite() {
+        // Only planes are infinite
+        assert!(CollisionShape::plane(Vector3::z(), 0.0).is_infinite());
+        assert!(CollisionShape::ground_plane(0.0).is_infinite());
+
+        // All other shapes are finite
+        assert!(!CollisionShape::sphere(1.0).is_infinite());
+        assert!(!CollisionShape::box_shape(Vector3::new(1.0, 1.0, 1.0)).is_infinite());
+        assert!(!CollisionShape::capsule(1.0, 0.5).is_infinite());
+        assert!(!CollisionShape::cylinder(1.0, 0.5).is_infinite());
+        assert!(!CollisionShape::ellipsoid_xyz(1.0, 1.0, 1.0).is_infinite());
+        assert!(!CollisionShape::tetrahedron(1.0).is_infinite());
+    }
+
+    // ------------------------------------------------------------------------
+    // local_aabb tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_local_aabb_primitives() {
+        // Sphere
+        let sphere = CollisionShape::sphere(2.0);
+        let aabb = sphere.local_aabb();
+        assert!(aabb.is_valid());
+        assert_relative_eq!(aabb.min.x, -2.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.x, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.y, -2.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.y, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.z, -2.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.z, 2.0, epsilon = 1e-10);
+
+        // Box
+        let box_shape = CollisionShape::box_shape(Vector3::new(1.0, 2.0, 3.0));
+        let aabb = box_shape.local_aabb();
+        assert!(aabb.is_valid());
+        assert_relative_eq!(aabb.min.x, -1.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.y, -2.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.y, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.z, -3.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.z, 3.0, epsilon = 1e-10);
+
+        // Capsule (half_length=2, radius=0.5, aligned along Z)
+        let capsule = CollisionShape::capsule(2.0, 0.5);
+        let aabb = capsule.local_aabb();
+        assert!(aabb.is_valid());
+        assert_relative_eq!(aabb.min.x, -0.5, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.x, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.z, -2.5, epsilon = 1e-10); // -(half_length + radius)
+        assert_relative_eq!(aabb.max.z, 2.5, epsilon = 1e-10);
+
+        // Cylinder (half_length=2, radius=0.5, aligned along Z)
+        let cylinder = CollisionShape::cylinder(2.0, 0.5);
+        let aabb = cylinder.local_aabb();
+        assert!(aabb.is_valid());
+        assert_relative_eq!(aabb.min.x, -0.5, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.x, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.z, -2.0, epsilon = 1e-10); // just half_length
+        assert_relative_eq!(aabb.max.z, 2.0, epsilon = 1e-10);
+
+        // Ellipsoid
+        let ellipsoid = CollisionShape::ellipsoid_xyz(1.0, 2.0, 3.0);
+        let aabb = ellipsoid.local_aabb();
+        assert!(aabb.is_valid());
+        assert_relative_eq!(aabb.min.x, -1.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.y, -2.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.y, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.z, -3.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.z, 3.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_local_aabb_plane_infinite() {
+        let plane = CollisionShape::plane(Vector3::z(), 0.0);
+        let aabb = plane.local_aabb();
+        // Plane AABB should be infinite (not "valid" in the usual sense)
+        assert_eq!(aabb.min.x, f64::NEG_INFINITY);
+        assert_eq!(aabb.max.x, f64::INFINITY);
+    }
+
+    #[test]
+    fn test_local_aabb_convex_mesh() {
+        let vertices = vec![
+            Point3::new(-1.0, -2.0, -3.0),
+            Point3::new(4.0, 0.0, 0.0),
+            Point3::new(0.0, 5.0, 0.0),
+            Point3::new(0.0, 0.0, 6.0),
+        ];
+        let mesh = CollisionShape::convex_mesh(vertices);
+        let aabb = mesh.local_aabb();
+        assert!(aabb.is_valid());
+        assert_relative_eq!(aabb.min.x, -1.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.x, 4.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.y, -2.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.y, 5.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.z, -3.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.z, 6.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_local_aabb_triangle_mesh() {
+        use crate::mesh::TriangleMeshData;
+        use std::sync::Arc;
+
+        let vertices = vec![
+            Point3::new(-1.0, -1.0, 0.0),
+            Point3::new(2.0, -1.0, 0.0),
+            Point3::new(0.0, 3.0, 0.0),
+            Point3::new(0.0, 0.0, 4.0),
+        ];
+        let data = Arc::new(TriangleMeshData::new(vertices, vec![0, 1, 2, 0, 1, 3]));
+        let shape = CollisionShape::triangle_mesh(data);
+        let aabb = shape.local_aabb();
+
+        assert!(aabb.is_valid());
+        assert_relative_eq!(aabb.min.x, -1.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.x, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.y, -1.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.y, 3.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.z, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.z, 4.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_local_aabb_height_field() {
+        use crate::heightfield::HeightFieldData;
+        use std::sync::Arc;
+
+        // 3x3 height field with cell_size=1.0
+        // Grid spans from (0,0) to (2,2) in XY, heights from -1 to 2
+        let heights = vec![
+            0.0, 1.0, 0.0, // row 0
+            -1.0, 2.0, 1.0, // row 1
+            0.0, 0.0, 0.0, // row 2
+        ];
+        let data = Arc::new(HeightFieldData::new(heights, 3, 3, 1.0));
+        let shape = CollisionShape::height_field(data);
+        let aabb = shape.local_aabb();
+
+        assert!(aabb.is_valid());
+        // HeightFieldData::aabb() returns the actual bounds
+        assert!(aabb.min.z <= -1.0); // min height
+        assert!(aabb.max.z >= 2.0); // max height
+    }
+
+    #[test]
+    fn test_local_aabb_sdf() {
+        use crate::sdf::SdfCollisionData;
+        use std::sync::Arc;
+
+        // 3x3x3 SDF grid with cell_size=0.5, origin at (-1, -1, -1)
+        // Grid extends from (-1,-1,-1) to (-1 + 3*0.5, -1 + 3*0.5, -1 + 3*0.5) = (0.5, 0.5, 0.5)
+        let data = Arc::new(SdfCollisionData::from_fn(
+            3,
+            3,
+            3,
+            0.5,
+            Point3::new(-1.0, -1.0, -1.0),
+            |p| p.coords.norm() - 0.5, // sphere SDF
+        ));
+        let shape = CollisionShape::sdf(data);
+        let aabb = shape.local_aabb();
+
+        assert!(aabb.is_valid());
+        assert_relative_eq!(aabb.min.x, -1.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.y, -1.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.min.z, -1.0, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.x, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.y, 0.5, epsilon = 1e-10);
+        assert_relative_eq!(aabb.max.z, 0.5, epsilon = 1e-10);
     }
 }
