@@ -6046,13 +6046,13 @@ pub struct Model {
     // These are pre-computed from joint properties for implicit spring-damper integration.
     // Avoids O(nv) allocation per step by caching model-invariant diagonal matrices.
     /// Diagonal stiffness matrix K for implicit integration (length nv).
-    /// K[i] = jnt_stiffness for Hinge/Slide DOFs, 0 for Ball/Free DOFs.
+    /// `K\[i\]` = jnt_stiffness for Hinge/Slide DOFs, 0 for Ball/Free DOFs.
     pub implicit_stiffness: DVector<f64>,
     /// Diagonal damping matrix D for implicit integration (length nv).
-    /// D[i] = jnt_damping for Hinge/Slide, dof_damping for Ball/Free DOFs.
+    /// `D\[i\]` = jnt_damping for Hinge/Slide, dof_damping for Ball/Free DOFs.
     pub implicit_damping: DVector<f64>,
     /// Spring equilibrium positions for implicit integration (length nv).
-    /// q_eq[i] = jnt_springref for Hinge/Slide, 0 for Ball/Free DOFs.
+    /// `q_eq\[i\]` = jnt_springref for Hinge/Slide, 0 for Ball/Free DOFs.
     pub implicit_springref: DVector<f64>,
 
     // ==================== Pre-computed Kinematic Data ====================
@@ -6296,8 +6296,8 @@ pub struct Data {
     /// For tree-structured robots, this achieves O(n) factorization and solve.
     ///
     /// Layout: qLD stores both L and D compactly:
-    /// - `qLD_diag[i] = D[i,i]` (diagonal of D)
-    /// - `qLD[i]` contains non-zero entries of `L[i, :]` below diagonal
+    /// - `qLD_diag\[i\] = D\[i,i\]` (diagonal of D)
+    /// - `qLD\[i\]` contains non-zero entries of `L\[i, :\]` below diagonal
     ///
     /// The sparsity pattern is determined by the kinematic tree:
     /// `L[i,j]` is non-zero only if DOF j is an ancestor of DOF i.
@@ -6793,8 +6793,8 @@ impl Model {
     /// This expands per-joint K/D/springref into per-DOF vectors used by
     /// implicit integration. Must be called after all joints are added.
     ///
-    /// For Hinge/Slide joints: K[dof] = jnt_stiffness, D[dof] = jnt_damping
-    /// For Ball/Free joints: K[dof] = 0, D[dof] = dof_damping (per-DOF)
+    /// For Hinge/Slide joints: `K\[dof\]` = jnt_stiffness, `D\[dof\]` = jnt_damping
+    /// For Ball/Free joints: `K\[dof\]` = 0, `D\[dof\]` = dof_damping (per-DOF)
     pub fn compute_implicit_params(&mut self) {
         // Resize to nv DOFs
         self.implicit_stiffness = DVector::zeros(self.nv);
@@ -13072,7 +13072,7 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
 }
 
 /// Visitor for computing spring displacement contribution to implicit RHS.
-/// Computes: rhs[dof] -= h * K[dof] * (q - q_eq) for joints with springs.
+/// Computes: `rhs\[dof\] -= h * K\[dof\] * (q - q_eq)` for joints with springs.
 struct ImplicitSpringVisitor<'a> {
     k: &'a DVector<f64>,
     q_eq: &'a DVector<f64>,

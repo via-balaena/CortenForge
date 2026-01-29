@@ -47,7 +47,7 @@ fn setup_physics(mut commands: Commands) {
 
     // Create data (dynamic state) and run initial forward pass
     let mut data = model.make_data();
-    data.forward(&model);
+    let _ = data.forward(&model);
 
     // Insert as Bevy resources
     commands.insert_resource(PhysicsModel::new(model));

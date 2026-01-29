@@ -123,7 +123,7 @@ fn setup_physics_and_scene(
     data.qpos[0] = INITIAL_ANGLE;
 
     // Run forward kinematics to compute initial body poses
-    data.forward(&model);
+    let _ = data.forward(&model);
 
     println!("========================================");
     println!("Model/Data Architecture Demo");
