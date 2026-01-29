@@ -5706,13 +5706,13 @@ pub enum StepError {
 impl std::fmt::Display for StepError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StepError::InvalidPosition => write!(f, "position contains NaN or Inf"),
-            StepError::InvalidVelocity => write!(f, "velocity contains NaN or Inf"),
-            StepError::InvalidAcceleration => write!(f, "acceleration contains NaN"),
-            StepError::CholeskyFailed => {
+            Self::InvalidPosition => write!(f, "position contains NaN or Inf"),
+            Self::InvalidVelocity => write!(f, "velocity contains NaN or Inf"),
+            Self::InvalidAcceleration => write!(f, "acceleration contains NaN"),
+            Self::CholeskyFailed => {
                 write!(f, "Cholesky decomposition failed in implicit integration")
             }
-            StepError::InvalidTimestep => write!(f, "timestep is zero or negative"),
+            Self::InvalidTimestep => write!(f, "timestep is zero or negative"),
         }
     }
 }
@@ -10671,13 +10671,7 @@ fn mj_crba(model: &Model, data: &mut Data) {
 ///
 /// Must be called after `mj_crba()` has computed the mass matrix.
 fn cache_body_effective_mass(model: &Model, data: &mut Data) {
-    // Reset to defaults (world body stays at infinity)
-    for i in 1..model.nbody {
-        data.body_min_mass[i] = f64::INFINITY;
-        data.body_min_inertia[i] = f64::INFINITY;
-    }
-
-    // Use JointVisitor to iterate over joints consistently
+    // Visitor struct for JointVisitor pattern (defined before statements per clippy)
     struct MassCacheVisitor<'a> {
         model: &'a Model,
         data: &'a mut Data,
@@ -10747,6 +10741,12 @@ fn cache_body_effective_mass(model: &Model, data: &mut Data) {
                 }
             }
         }
+    }
+
+    // Reset to defaults (world body stays at infinity)
+    for i in 1..model.nbody {
+        data.body_min_mass[i] = f64::INFINITY;
+        data.body_min_inertia[i] = f64::INFINITY;
     }
 
     let mut visitor = MassCacheVisitor { model, data };
@@ -12067,17 +12067,17 @@ fn clamp_vector_magnitude(v: Vector3<f64>, max_magnitude: f64) -> Vector3<f64> {
 /// which has ~10% error at 90° and ~36% error at 180°.
 ///
 /// # Arguments
-/// * `q` - A unit quaternion representing the rotation error
+/// * `quat` - A unit quaternion representing the rotation error
 ///
 /// # Returns
 /// Axis-angle representation as `angle * axis` (Vector3)
 #[inline]
-fn quaternion_to_axis_angle(q: &UnitQuaternion<f64>) -> Vector3<f64> {
-    let quat = q.quaternion();
-    let (w, x, y, z) = (quat.w, quat.i, quat.j, quat.k);
+fn quaternion_to_axis_angle(quat: &UnitQuaternion<f64>) -> Vector3<f64> {
+    let q = quat.quaternion();
+    let (qw, qx, qy, qz) = (q.w, q.i, q.j, q.k);
 
     // Handle identity quaternion (no rotation)
-    let sin_half_angle_sq = x * x + y * y + z * z;
+    let sin_half_angle_sq = qx * qx + qy * qy + qz * qz;
     if sin_half_angle_sq < MIN_INERTIA_THRESHOLD {
         return Vector3::zeros();
     }
@@ -12086,11 +12086,11 @@ fn quaternion_to_axis_angle(q: &UnitQuaternion<f64>) -> Vector3<f64> {
 
     // Compute full angle: θ = 2 * atan2(||xyz||, w)
     // This handles all cases including w < 0 (angle > π)
-    let angle = 2.0 * sin_half_angle.atan2(w);
+    let angle = 2.0 * sin_half_angle.atan2(qw);
 
     // Axis is normalized [x, y, z] / ||xyz||
     // Result is angle * axis
-    Vector3::new(x, y, z) * (angle / sin_half_angle)
+    Vector3::new(qx, qy, qz) * (angle / sin_half_angle)
 }
 
 /// Apply a Connect (ball-and-socket) equality constraint.
@@ -12224,22 +12224,24 @@ fn get_min_diagonal_mass(model: &Model, data: &Data, body_id: usize, kind: DofKi
         let dof_adr = model.jnt_dof_adr[jnt_id];
 
         // Determine which DOF indices to query based on joint type and DOF kind
+        // Arms combined where they return identical values per clippy::match_same_arms
         let dof_range: Option<std::ops::Range<usize>> = match (model.jnt_type[jnt_id], kind) {
-            // Free joint: linear DOFs at 0-2, angular DOFs at 3-5
-            (MjJointType::Free, DofKind::Linear) => Some(0..3),
+            // Free linear (0-2) and Ball angular (0-2) both use first 3 DOFs
+            (MjJointType::Free, DofKind::Linear) | (MjJointType::Ball, DofKind::Angular) => {
+                Some(0..3)
+            }
+
+            // Free angular uses DOFs 3-5
             (MjJointType::Free, DofKind::Angular) => Some(3..6),
 
-            // Ball joint: only has angular DOFs (0-2)
-            (MjJointType::Ball, DofKind::Angular) => Some(0..3),
-            (MjJointType::Ball, DofKind::Linear) => None,
+            // Hinge/Slide: single DOF of matching kind
+            (MjJointType::Hinge, DofKind::Angular) | (MjJointType::Slide, DofKind::Linear) => {
+                Some(0..1)
+            }
 
-            // Hinge joint: single angular DOF
-            (MjJointType::Hinge, DofKind::Angular) => Some(0..1),
-            (MjJointType::Hinge, DofKind::Linear) => None,
-
-            // Slide joint: single linear DOF
-            (MjJointType::Slide, DofKind::Linear) => Some(0..1),
-            (MjJointType::Slide, DofKind::Angular) => None,
+            // No DOFs for mismatched kind
+            (MjJointType::Ball | MjJointType::Hinge, DofKind::Linear)
+            | (MjJointType::Slide, DofKind::Angular) => None,
         };
 
         if let Some(range) = dof_range {
