@@ -5316,6 +5316,95 @@ impl MjJointType {
             Self::Free => 6, // linear + angular velocity
         }
     }
+
+    /// Whether this joint type uses quaternion representation.
+    #[must_use]
+    pub const fn uses_quaternion(self) -> bool {
+        matches!(self, Self::Ball | Self::Free)
+    }
+
+    /// Whether this joint type supports springs (linear displacement from equilibrium).
+    /// Ball/Free joints use quaternions and don't have a simple spring formulation.
+    #[must_use]
+    pub const fn supports_spring(self) -> bool {
+        matches!(self, Self::Hinge | Self::Slide)
+    }
+}
+
+// ============================================================================
+// Joint Visitor Pattern
+// ============================================================================
+
+/// Context passed to joint visitors with pre-computed addresses and metadata.
+///
+/// This provides all the commonly-needed information about a joint in one place,
+/// avoiding repeated lookups of `jnt_dof_adr`, `jnt_qpos_adr`, etc.
+#[derive(Debug, Clone, Copy)]
+pub struct JointContext {
+    /// Joint index in model arrays.
+    pub jnt_id: usize,
+    /// Joint type (Hinge, Slide, Ball, Free).
+    pub jnt_type: MjJointType,
+    /// Starting index in qvel/qacc/qfrc arrays (DOF address).
+    pub dof_adr: usize,
+    /// Starting index in qpos array (position address).
+    pub qpos_adr: usize,
+    /// Number of velocity DOFs for this joint.
+    pub nv: usize,
+    /// Number of position coordinates for this joint.
+    pub nq: usize,
+}
+
+/// Visitor trait for operations that iterate over joints.
+///
+/// This is the **single source of truth** for joint iteration. All code that
+/// processes joints should use `Model::visit_joints()` with this trait to ensure:
+///
+/// 1. **Consistency**: When a new joint type is added, the compiler forces updates
+/// 2. **Correctness**: Address computations are centralized, not copy-pasted
+/// 3. **Performance**: Addresses are computed once per joint, not per operation
+///
+/// # Example
+///
+/// ```ignore
+/// struct MyVisitor<'a> {
+///     model: &'a Model,
+///     data: &'a mut Data,
+/// }
+///
+/// impl JointVisitor for MyVisitor<'_> {
+///     fn visit_hinge(&mut self, ctx: JointContext) {
+///         // Process hinge joint at ctx.dof_adr, ctx.qpos_adr
+///     }
+///     // ... other methods have default no-op implementations
+/// }
+///
+/// model.visit_joints(&mut MyVisitor { model, data });
+/// ```
+pub trait JointVisitor {
+    /// Called for each Hinge joint (1 DOF revolute).
+    ///
+    /// Default: no-op. Override if your visitor needs to process hinge joints.
+    #[inline]
+    fn visit_hinge(&mut self, _ctx: JointContext) {}
+
+    /// Called for each Slide joint (1 DOF prismatic).
+    ///
+    /// Default: no-op. Override if your visitor needs to process slide joints.
+    #[inline]
+    fn visit_slide(&mut self, _ctx: JointContext) {}
+
+    /// Called for each Ball joint (3 DOF spherical, quaternion orientation).
+    ///
+    /// Default: no-op. Override if your visitor needs to process ball joints.
+    #[inline]
+    fn visit_ball(&mut self, _ctx: JointContext) {}
+
+    /// Called for each Free joint (6 DOF floating base).
+    ///
+    /// Default: no-op. Override if your visitor needs to process free joints.
+    #[inline]
+    fn visit_free(&mut self, _ctx: JointContext) {}
 }
 
 /// Geometry type for collision detection.
@@ -6433,6 +6522,50 @@ impl Model {
             // Pre-computed kinematic data (world body has no ancestors)
             body_ancestor_joints: vec![vec![]],
             body_ancestor_mask: vec![vec![]], // Empty vec for world body (no joints yet)
+        }
+    }
+
+    /// Iterate over all joints with the visitor pattern.
+    ///
+    /// This is the **single source of truth** for joint iteration. Use this method
+    /// instead of manually iterating with `for jnt_id in 0..self.njnt` to ensure:
+    ///
+    /// - Consistent address computation across the codebase
+    /// - Automatic handling of new joint types (compiler enforces trait updates)
+    /// - Centralized joint metadata in `JointContext`
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// struct MyVisitor { /* ... */ }
+    ///
+    /// impl JointVisitor for MyVisitor {
+    ///     fn visit_hinge(&mut self, ctx: JointContext) {
+    ///         println!("Hinge joint {} at DOF {}", ctx.jnt_id, ctx.dof_adr);
+    ///     }
+    /// }
+    ///
+    /// model.visit_joints(&mut MyVisitor { /* ... */ });
+    /// ```
+    #[inline]
+    pub fn visit_joints<V: JointVisitor>(&self, visitor: &mut V) {
+        for jnt_id in 0..self.njnt {
+            let jnt_type = self.jnt_type[jnt_id];
+            let ctx = JointContext {
+                jnt_id,
+                jnt_type,
+                dof_adr: self.jnt_dof_adr[jnt_id],
+                qpos_adr: self.jnt_qpos_adr[jnt_id],
+                nv: jnt_type.nv(),
+                nq: jnt_type.nq(),
+            };
+
+            match jnt_type {
+                MjJointType::Hinge => visitor.visit_hinge(ctx),
+                MjJointType::Slide => visitor.visit_slide(ctx),
+                MjJointType::Ball => visitor.visit_ball(ctx),
+                MjJointType::Free => visitor.visit_free(ctx),
+            }
         }
     }
 
@@ -10753,63 +10886,98 @@ const FRICTION_VELOCITY_THRESHOLD: f64 = 1e-12;
 fn mj_fwd_passive(model: &Model, data: &mut Data) {
     data.qfrc_passive.fill(0.0);
 
-    // For implicit integrator, spring/damper forces are handled in the solve
-    // Only friction loss is computed explicitly
     let implicit_mode = model.integrator == Integrator::Implicit;
+    let mut visitor = PassiveForceVisitor {
+        model,
+        data,
+        implicit_mode,
+    };
+    model.visit_joints(&mut visitor);
+}
 
-    for jnt_id in 0..model.njnt {
-        let dof_adr = model.jnt_dof_adr[jnt_id];
-        let qpos_adr = model.jnt_qpos_adr[jnt_id];
-        let nv = model.jnt_type[jnt_id].nv();
+/// Visitor for computing passive forces (springs, dampers, friction loss).
+struct PassiveForceVisitor<'a> {
+    model: &'a Model,
+    data: &'a mut Data,
+    implicit_mode: bool,
+}
 
-        let stiffness = model.jnt_stiffness[jnt_id];
-        let damping = model.jnt_damping[jnt_id];
-
-        match model.jnt_type[jnt_id] {
-            MjJointType::Hinge | MjJointType::Slide => {
-                if !implicit_mode {
-                    // Spring: τ = -k * (q - springref)
-                    // Uses springref (spring equilibrium), NOT qpos0 (initial position)
-                    let springref = model.jnt_springref[jnt_id];
-                    let q = data.qpos[qpos_adr];
-                    data.qfrc_passive[dof_adr] -= stiffness * (q - springref);
-
-                    // Damper: τ = -b * qvel
-                    let qvel = data.qvel[dof_adr];
-                    data.qfrc_passive[dof_adr] -= damping * qvel;
-                }
-
-                // Friction loss: always explicit (velocity-sign-dependent)
-                let qvel = data.qvel[dof_adr];
-                let frictionloss = model.dof_frictionloss[dof_adr];
-                if frictionloss > 0.0 && qvel.abs() > FRICTION_VELOCITY_THRESHOLD {
-                    let smooth_sign = (qvel * FRICTION_SMOOTHING).tanh();
-                    data.qfrc_passive[dof_adr] -= frictionloss * smooth_sign;
-                }
-            }
-            MjJointType::Ball | MjJointType::Free => {
-                // Ball/Free joints: apply damping and friction loss to all DOFs.
-                // Note: Springs on Ball/Free joints would require quaternion spring
-                // formulation (not yet implemented, follows MuJoCo behavior).
-                for i in 0..nv {
-                    let dof_idx = dof_adr + i;
-                    let qvel = data.qvel[dof_idx];
-
-                    if !implicit_mode {
-                        // Damping: per-DOF value (Model invariant: dof arrays have length nv)
-                        let dof_damping = model.dof_damping[dof_idx];
-                        data.qfrc_passive[dof_idx] -= dof_damping * qvel;
-                    }
-
-                    // Friction loss: always explicit (velocity-sign-dependent)
-                    let frictionloss = model.dof_frictionloss[dof_idx];
-                    if frictionloss > 0.0 && qvel.abs() > FRICTION_VELOCITY_THRESHOLD {
-                        let smooth_sign = (qvel * FRICTION_SMOOTHING).tanh();
-                        data.qfrc_passive[dof_idx] -= frictionloss * smooth_sign;
-                    }
-                }
-            }
+impl PassiveForceVisitor<'_> {
+    /// Apply friction loss force at a single DOF.
+    /// Friction loss is always explicit (velocity-sign-dependent, cannot linearize).
+    #[inline]
+    fn apply_friction_loss(&mut self, dof_idx: usize) {
+        let qvel = self.data.qvel[dof_idx];
+        let frictionloss = self.model.dof_frictionloss[dof_idx];
+        if frictionloss > 0.0 && qvel.abs() > FRICTION_VELOCITY_THRESHOLD {
+            let smooth_sign = (qvel * FRICTION_SMOOTHING).tanh();
+            self.data.qfrc_passive[dof_idx] -= frictionloss * smooth_sign;
         }
+    }
+
+    /// Process a 1-DOF joint (Hinge or Slide) with spring, damper, and friction.
+    #[inline]
+    fn visit_1dof_joint(&mut self, ctx: JointContext) {
+        let dof_adr = ctx.dof_adr;
+        let qpos_adr = ctx.qpos_adr;
+        let jnt_id = ctx.jnt_id;
+
+        if !self.implicit_mode {
+            // Spring: τ = -k * (q - springref)
+            let stiffness = self.model.jnt_stiffness[jnt_id];
+            let springref = self.model.jnt_springref[jnt_id];
+            let q = self.data.qpos[qpos_adr];
+            self.data.qfrc_passive[dof_adr] -= stiffness * (q - springref);
+
+            // Damper: τ = -b * qvel
+            let damping = self.model.jnt_damping[jnt_id];
+            let qvel = self.data.qvel[dof_adr];
+            self.data.qfrc_passive[dof_adr] -= damping * qvel;
+        }
+
+        // Friction loss: always explicit
+        self.apply_friction_loss(dof_adr);
+    }
+
+    /// Process a multi-DOF joint (Ball or Free) with per-DOF damping and friction.
+    /// No springs (would require quaternion spring formulation).
+    #[inline]
+    fn visit_multi_dof_joint(&mut self, ctx: JointContext) {
+        for i in 0..ctx.nv {
+            let dof_idx = ctx.dof_adr + i;
+
+            if !self.implicit_mode {
+                // Per-DOF damping
+                let dof_damping = self.model.dof_damping[dof_idx];
+                let qvel = self.data.qvel[dof_idx];
+                self.data.qfrc_passive[dof_idx] -= dof_damping * qvel;
+            }
+
+            // Friction loss: always explicit
+            self.apply_friction_loss(dof_idx);
+        }
+    }
+}
+
+impl JointVisitor for PassiveForceVisitor<'_> {
+    #[inline]
+    fn visit_hinge(&mut self, ctx: JointContext) {
+        self.visit_1dof_joint(ctx);
+    }
+
+    #[inline]
+    fn visit_slide(&mut self, ctx: JointContext) {
+        self.visit_1dof_joint(ctx);
+    }
+
+    #[inline]
+    fn visit_ball(&mut self, ctx: JointContext) {
+        self.visit_multi_dof_joint(ctx);
+    }
+
+    #[inline]
+    fn visit_free(&mut self, ctx: JointContext) {
+        self.visit_multi_dof_joint(ctx);
     }
 }
 
@@ -12231,21 +12399,15 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) {
         data.scratch_rhs[i] += h * data.scratch_force[i];
     }
 
-    // Subtract h*K*(q - q_eq) for spring displacement
-    for jnt_id in 0..model.njnt {
-        let dof_adr = model.jnt_dof_adr[jnt_id];
-        let qpos_adr = model.jnt_qpos_adr[jnt_id];
-
-        match model.jnt_type[jnt_id] {
-            MjJointType::Hinge | MjJointType::Slide => {
-                let q = data.qpos[qpos_adr];
-                data.scratch_rhs[dof_adr] -= h * k[dof_adr] * (q - q_eq[dof_adr]);
-            }
-            MjJointType::Ball | MjJointType::Free => {
-                // No springs for quaternion DOFs (k = 0)
-            }
-        }
-    }
+    // Subtract h*K*(q - q_eq) for spring displacement using visitor
+    let mut spring_visitor = ImplicitSpringVisitor {
+        k,
+        q_eq,
+        h,
+        qpos: &data.qpos,
+        rhs: &mut data.scratch_rhs,
+    };
+    model.visit_joints(&mut spring_visitor);
 
     // Solve (M + h*D + h²*K) * v_new = rhs
     // M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0), so use Cholesky.
@@ -12282,132 +12444,168 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) {
     }
 }
 
+/// Visitor for computing spring displacement contribution to implicit RHS.
+/// Computes: rhs[dof] -= h * K[dof] * (q - q_eq) for joints with springs.
+struct ImplicitSpringVisitor<'a> {
+    k: &'a DVector<f64>,
+    q_eq: &'a DVector<f64>,
+    h: f64,
+    qpos: &'a DVector<f64>,
+    rhs: &'a mut DVector<f64>,
+}
+
+impl JointVisitor for ImplicitSpringVisitor<'_> {
+    #[inline]
+    fn visit_hinge(&mut self, ctx: JointContext) {
+        let q = self.qpos[ctx.qpos_adr];
+        self.rhs[ctx.dof_adr] -= self.h * self.k[ctx.dof_adr] * (q - self.q_eq[ctx.dof_adr]);
+    }
+
+    #[inline]
+    fn visit_slide(&mut self, ctx: JointContext) {
+        let q = self.qpos[ctx.qpos_adr];
+        self.rhs[ctx.dof_adr] -= self.h * self.k[ctx.dof_adr] * (q - self.q_eq[ctx.dof_adr]);
+    }
+
+    // Ball and Free joints have no springs (k = 0), so default no-ops are correct.
+}
+
 /// Proper position integration that handles quaternions on SO(3) manifold.
 fn mj_integrate_pos(model: &Model, data: &mut Data, h: f64) {
-    for jnt_id in 0..model.njnt {
-        let qpos_adr = model.jnt_qpos_adr[jnt_id];
-        let dof_adr = model.jnt_dof_adr[jnt_id];
+    let mut visitor = PositionIntegrateVisitor {
+        qpos: &mut data.qpos,
+        qvel: &data.qvel,
+        h,
+    };
+    model.visit_joints(&mut visitor);
+}
 
-        match model.jnt_type[jnt_id] {
-            MjJointType::Hinge | MjJointType::Slide => {
-                // Simple scalar: qpos += qvel * h
-                data.qpos[qpos_adr] += data.qvel[dof_adr] * h;
-            }
-            MjJointType::Ball => {
-                // Quaternion: integrate angular velocity on SO(3)
-                let omega = Vector3::new(
-                    data.qvel[dof_adr],
-                    data.qvel[dof_adr + 1],
-                    data.qvel[dof_adr + 2],
-                );
-                let omega_norm = omega.norm();
-                let angle = omega_norm * h;
-                // Skip if angle is negligible (avoids division by zero in axis computation)
-                if angle > 1e-10 && omega_norm > 1e-10 {
-                    let axis = omega / omega_norm;
-                    let dq = UnitQuaternion::from_axis_angle(
-                        &nalgebra::Unit::new_normalize(axis),
-                        angle,
-                    );
-                    let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                        data.qpos[qpos_adr],
-                        data.qpos[qpos_adr + 1],
-                        data.qpos[qpos_adr + 2],
-                        data.qpos[qpos_adr + 3],
-                    ));
-                    let q_new = q_old * dq;
-                    data.qpos[qpos_adr] = q_new.w;
-                    data.qpos[qpos_adr + 1] = q_new.i;
-                    data.qpos[qpos_adr + 2] = q_new.j;
-                    data.qpos[qpos_adr + 3] = q_new.k;
-                }
-            }
-            MjJointType::Free => {
-                // Position: linear integration
-                data.qpos[qpos_adr] += data.qvel[dof_adr] * h;
-                data.qpos[qpos_adr + 1] += data.qvel[dof_adr + 1] * h;
-                data.qpos[qpos_adr + 2] += data.qvel[dof_adr + 2] * h;
+/// Visitor for position integration that handles different joint types.
+struct PositionIntegrateVisitor<'a> {
+    qpos: &'a mut DVector<f64>,
+    qvel: &'a DVector<f64>,
+    h: f64,
+}
 
-                // Orientation: quaternion integration
-                let omega = Vector3::new(
-                    data.qvel[dof_adr + 3],
-                    data.qvel[dof_adr + 4],
-                    data.qvel[dof_adr + 5],
-                );
-                let omega_norm = omega.norm();
-                let angle = omega_norm * h;
-                // Skip if angle is negligible (avoids division by zero in axis computation)
-                if angle > 1e-10 && omega_norm > 1e-10 {
-                    let axis = omega / omega_norm;
-                    let dq = UnitQuaternion::from_axis_angle(
-                        &nalgebra::Unit::new_normalize(axis),
-                        angle,
-                    );
-                    let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                        data.qpos[qpos_adr + 3],
-                        data.qpos[qpos_adr + 4],
-                        data.qpos[qpos_adr + 5],
-                        data.qpos[qpos_adr + 6],
-                    ));
-                    let q_new = q_old * dq;
-                    data.qpos[qpos_adr + 3] = q_new.w;
-                    data.qpos[qpos_adr + 4] = q_new.i;
-                    data.qpos[qpos_adr + 5] = q_new.j;
-                    data.qpos[qpos_adr + 6] = q_new.k;
-                }
-            }
+impl PositionIntegrateVisitor<'_> {
+    /// Integrate a quaternion with angular velocity on SO(3) manifold.
+    /// `qpos_offset` is the offset into qpos where the quaternion starts [w,x,y,z].
+    /// `omega` is the angular velocity vector.
+    #[inline]
+    fn integrate_quaternion(&mut self, qpos_offset: usize, omega: Vector3<f64>) {
+        let omega_norm = omega.norm();
+        let angle = omega_norm * self.h;
+
+        // Skip if angle is negligible (avoids division by zero)
+        if angle > 1e-10 && omega_norm > 1e-10 {
+            let axis = omega / omega_norm;
+            let dq = UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle);
+            let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                self.qpos[qpos_offset],
+                self.qpos[qpos_offset + 1],
+                self.qpos[qpos_offset + 2],
+                self.qpos[qpos_offset + 3],
+            ));
+            let q_new = q_old * dq;
+            self.qpos[qpos_offset] = q_new.w;
+            self.qpos[qpos_offset + 1] = q_new.i;
+            self.qpos[qpos_offset + 2] = q_new.j;
+            self.qpos[qpos_offset + 3] = q_new.k;
         }
+    }
+}
+
+impl JointVisitor for PositionIntegrateVisitor<'_> {
+    #[inline]
+    fn visit_hinge(&mut self, ctx: JointContext) {
+        // Simple scalar: qpos += qvel * h
+        self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
+    }
+
+    #[inline]
+    fn visit_slide(&mut self, ctx: JointContext) {
+        // Simple scalar: qpos += qvel * h
+        self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
+    }
+
+    #[inline]
+    fn visit_ball(&mut self, ctx: JointContext) {
+        // Quaternion: integrate angular velocity on SO(3)
+        let omega = Vector3::new(
+            self.qvel[ctx.dof_adr],
+            self.qvel[ctx.dof_adr + 1],
+            self.qvel[ctx.dof_adr + 2],
+        );
+        self.integrate_quaternion(ctx.qpos_adr, omega);
+    }
+
+    #[inline]
+    fn visit_free(&mut self, ctx: JointContext) {
+        // Position: linear integration (first 3 components)
+        self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
+        self.qpos[ctx.qpos_adr + 1] += self.qvel[ctx.dof_adr + 1] * self.h;
+        self.qpos[ctx.qpos_adr + 2] += self.qvel[ctx.dof_adr + 2] * self.h;
+
+        // Orientation: quaternion integration (last 4 components, DOFs 3-5)
+        let omega = Vector3::new(
+            self.qvel[ctx.dof_adr + 3],
+            self.qvel[ctx.dof_adr + 4],
+            self.qvel[ctx.dof_adr + 5],
+        );
+        self.integrate_quaternion(ctx.qpos_adr + 3, omega);
     }
 }
 
 /// Normalize all quaternions in qpos to prevent numerical drift.
 fn mj_normalize_quat(model: &Model, data: &mut Data) {
-    for jnt_id in 0..model.njnt {
-        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+    let mut visitor = QuaternionNormalizeVisitor {
+        qpos: &mut data.qpos,
+    };
+    model.visit_joints(&mut visitor);
+}
 
-        match model.jnt_type[jnt_id] {
-            MjJointType::Ball => {
-                let norm = (data.qpos[qpos_adr].powi(2)
-                    + data.qpos[qpos_adr + 1].powi(2)
-                    + data.qpos[qpos_adr + 2].powi(2)
-                    + data.qpos[qpos_adr + 3].powi(2))
-                .sqrt();
-                if norm > 1e-10 {
-                    data.qpos[qpos_adr] /= norm;
-                    data.qpos[qpos_adr + 1] /= norm;
-                    data.qpos[qpos_adr + 2] /= norm;
-                    data.qpos[qpos_adr + 3] /= norm;
-                } else {
-                    // Degenerate quaternion - reset to identity [w=1, x=0, y=0, z=0]
-                    data.qpos[qpos_adr] = 1.0;
-                    data.qpos[qpos_adr + 1] = 0.0;
-                    data.qpos[qpos_adr + 2] = 0.0;
-                    data.qpos[qpos_adr + 3] = 0.0;
-                }
-            }
-            MjJointType::Free => {
-                let norm = (data.qpos[qpos_adr + 3].powi(2)
-                    + data.qpos[qpos_adr + 4].powi(2)
-                    + data.qpos[qpos_adr + 5].powi(2)
-                    + data.qpos[qpos_adr + 6].powi(2))
-                .sqrt();
-                if norm > 1e-10 {
-                    data.qpos[qpos_adr + 3] /= norm;
-                    data.qpos[qpos_adr + 4] /= norm;
-                    data.qpos[qpos_adr + 5] /= norm;
-                    data.qpos[qpos_adr + 6] /= norm;
-                } else {
-                    // Degenerate quaternion - reset to identity [w=1, x=0, y=0, z=0]
-                    data.qpos[qpos_adr + 3] = 1.0;
-                    data.qpos[qpos_adr + 4] = 0.0;
-                    data.qpos[qpos_adr + 5] = 0.0;
-                    data.qpos[qpos_adr + 6] = 0.0;
-                }
-            }
-            MjJointType::Hinge | MjJointType::Slide => {
-                // No quaternion to normalize
-            }
+/// Visitor for normalizing quaternions in joints that use them.
+struct QuaternionNormalizeVisitor<'a> {
+    qpos: &'a mut DVector<f64>,
+}
+
+impl QuaternionNormalizeVisitor<'_> {
+    /// Normalize a quaternion at the given offset in qpos.
+    #[inline]
+    fn normalize_quaternion(&mut self, offset: usize) {
+        let norm = (self.qpos[offset].powi(2)
+            + self.qpos[offset + 1].powi(2)
+            + self.qpos[offset + 2].powi(2)
+            + self.qpos[offset + 3].powi(2))
+        .sqrt();
+        if norm > 1e-10 {
+            self.qpos[offset] /= norm;
+            self.qpos[offset + 1] /= norm;
+            self.qpos[offset + 2] /= norm;
+            self.qpos[offset + 3] /= norm;
+        } else {
+            // Degenerate quaternion - reset to identity [w=1, x=0, y=0, z=0]
+            self.qpos[offset] = 1.0;
+            self.qpos[offset + 1] = 0.0;
+            self.qpos[offset + 2] = 0.0;
+            self.qpos[offset + 3] = 0.0;
         }
+    }
+}
+
+impl JointVisitor for QuaternionNormalizeVisitor<'_> {
+    // Hinge and Slide have no quaternions - use default no-ops
+
+    #[inline]
+    fn visit_ball(&mut self, ctx: JointContext) {
+        // Ball joint: quaternion at qpos_adr
+        self.normalize_quaternion(ctx.qpos_adr);
+    }
+
+    #[inline]
+    fn visit_free(&mut self, ctx: JointContext) {
+        // Free joint: quaternion at qpos_adr + 3 (after position xyz)
+        self.normalize_quaternion(ctx.qpos_adr + 3);
     }
 }
 
