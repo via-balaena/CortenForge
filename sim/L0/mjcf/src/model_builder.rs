@@ -15,6 +15,7 @@ use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{ActuatorDynamics, ActuatorTransmission, GeomType, Integrator, MjJointType, Model};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::warn;
 
@@ -44,6 +45,13 @@ impl std::error::Error for ModelConversionError {}
 /// This is the primary entry point for the new Model-based MJCF loading.
 /// It builds all Model arrays in a single tree traversal.
 ///
+/// # Arguments
+///
+/// * `mjcf` - The parsed MJCF model
+/// * `base_path` - Base directory for resolving relative mesh file paths.
+///   If `None`, meshes with relative file paths will fail to load.
+///   For embedded vertex data, this parameter is ignored.
+///
 /// # Example
 ///
 /// ```ignore
@@ -60,11 +68,14 @@ impl std::error::Error for ModelConversionError {}
 ///     </mujoco>
 /// "#)?;
 ///
-/// let model = model_from_mjcf(&mjcf)?;
+/// let model = model_from_mjcf(&mjcf, None)?;
 /// let mut data = model.make_data();
 /// data.step(&model);
 /// ```
-pub fn model_from_mjcf(mjcf: &MjcfModel) -> std::result::Result<Model, ModelConversionError> {
+pub fn model_from_mjcf(
+    mjcf: &MjcfModel,
+    base_path: Option<&Path>,
+) -> std::result::Result<Model, ModelConversionError> {
     let mut builder = ModelBuilder::new();
 
     // Set model name
@@ -75,7 +86,7 @@ pub fn model_from_mjcf(mjcf: &MjcfModel) -> std::result::Result<Model, ModelConv
 
     // Process mesh assets FIRST (before geoms can reference them)
     for mesh in &mjcf.meshes {
-        builder.process_mesh(mesh)?;
+        builder.process_mesh(mesh, base_path)?;
     }
 
     // Process worldbody's own geoms and sites (attached to body 0)
@@ -100,9 +111,43 @@ pub fn model_from_mjcf(mjcf: &MjcfModel) -> std::result::Result<Model, ModelConv
 /// Parse MJCF XML and convert directly to Model.
 ///
 /// Convenience function that combines parsing and conversion.
+/// Uses no base path, so meshes must use embedded data or absolute paths.
 pub fn load_model(xml: &str) -> Result<Model> {
     let mjcf = crate::parse_mjcf_str(xml)?;
-    model_from_mjcf(&mjcf).map_err(|e| crate::error::MjcfError::Unsupported(e.message))
+    model_from_mjcf(&mjcf, None).map_err(|e| crate::error::MjcfError::Unsupported(e.message))
+}
+
+/// Load Model from an MJCF file path.
+///
+/// Automatically resolves mesh file paths relative to the model file's directory.
+///
+/// # Arguments
+///
+/// * `path` - Path to the MJCF XML file
+///
+/// # Example
+///
+/// ```ignore
+/// use sim_mjcf::load_model_from_file;
+///
+/// let model = load_model_from_file("models/humanoid.xml")?;
+/// let mut data = model.make_data();
+/// data.step(&model);
+/// ```
+pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
+    let path = path.as_ref();
+    let xml = std::fs::read_to_string(path).map_err(|e| {
+        crate::error::MjcfError::Unsupported(format!(
+            "failed to read file '{}': {}",
+            path.display(),
+            e
+        ))
+    })?;
+
+    let mjcf = crate::parse_mjcf_str(&xml)?;
+    let base_path = path.parent();
+
+    model_from_mjcf(&mjcf, base_path).map_err(|e| crate::error::MjcfError::Unsupported(e.message))
 }
 
 /// Builder for constructing Model from MJCF.
@@ -346,6 +391,11 @@ impl ModelBuilder {
     /// Converts `MjcfMesh` to `TriangleMeshData` with BVH and registers it
     /// in the mesh lookup table. The mesh can then be referenced by geoms.
     ///
+    /// # Arguments
+    ///
+    /// * `mjcf_mesh` - The MJCF mesh definition
+    /// * `base_path` - Base directory for resolving relative mesh file paths
+    ///
     /// # Errors
     ///
     /// Returns `ModelConversionError` if:
@@ -354,6 +404,7 @@ impl ModelBuilder {
     fn process_mesh(
         &mut self,
         mjcf_mesh: &MjcfMesh,
+        base_path: Option<&Path>,
     ) -> std::result::Result<(), ModelConversionError> {
         // Check for duplicate mesh names
         if self.mesh_name_to_id.contains_key(&mjcf_mesh.name) {
@@ -363,7 +414,7 @@ impl ModelBuilder {
         }
 
         // Convert MJCF mesh to TriangleMeshData
-        let mesh_data = convert_mjcf_mesh(mjcf_mesh)?;
+        let mesh_data = convert_mjcf_mesh(mjcf_mesh, base_path)?;
 
         // Register in lookup table
         let mesh_id = self.mesh_data.len();
@@ -1148,56 +1199,200 @@ fn euler_xyz_to_quat(euler_rad: Vector3<f64>) -> UnitQuaternion<f64> {
     rx * ry * rz
 }
 
-/// Convert MJCF mesh asset to `TriangleMeshData`.
+// =============================================================================
+// Mesh File Loading
+// =============================================================================
+
+/// Resolve a mesh file path to an absolute path.
 ///
-/// Applies scale to vertices and builds the BVH for efficient collision queries.
+/// # Path Resolution Rules
+///
+/// 1. **Absolute paths** are used as-is (detected via [`Path::is_absolute`])
+/// 2. **Relative paths** are resolved against `base_path`
 ///
 /// # Errors
 ///
 /// Returns `ModelConversionError` if:
-/// - `vertex` is `None` (file loading not yet implemented)
-/// - `face` is `None`
-/// - Vertex count not divisible by 3
-/// - Face index count not divisible by 3
-/// - Mesh is empty (zero vertices or faces)
-/// - Any face index is out of bounds
-fn convert_mjcf_mesh(
-    mjcf_mesh: &MjcfMesh,
-) -> std::result::Result<TriangleMeshData, ModelConversionError> {
-    // Extract and validate vertices
-    let vertices: Vec<Point3<f64>> = match &mjcf_mesh.vertex {
-        Some(verts) => {
-            if verts.len() % 3 != 0 {
-                return Err(ModelConversionError {
-                    message: format!(
-                        "mesh '{}': vertex count ({}) not divisible by 3",
-                        mjcf_mesh.name,
-                        verts.len()
-                    ),
-                });
-            }
-            // Apply scale while converting to Point3
-            verts
-                .chunks_exact(3)
-                .map(|chunk| {
-                    Point3::new(
-                        chunk[0] * mjcf_mesh.scale.x,
-                        chunk[1] * mjcf_mesh.scale.y,
-                        chunk[2] * mjcf_mesh.scale.z,
-                    )
-                })
-                .collect()
-        }
-        None => {
-            // TODO: Load from file if mjcf_mesh.file is Some
+/// - Path is relative but `base_path` is `None`
+/// - Resolved path does not exist
+fn resolve_mesh_path(
+    file_path: &str,
+    base_path: Option<&Path>,
+) -> std::result::Result<PathBuf, ModelConversionError> {
+    let path = Path::new(file_path);
+
+    // Absolute paths are used directly
+    if path.is_absolute() {
+        if !path.exists() {
             return Err(ModelConversionError {
-                message: format!(
-                    "mesh '{}': no vertex data (file loading not yet implemented)",
-                    mjcf_mesh.name
-                ),
+                message: format!("mesh file not found: '{}'", path.display()),
             });
         }
-    };
+        return Ok(path.to_path_buf());
+    }
+
+    // Relative paths require a base path
+    let base = base_path.ok_or_else(|| ModelConversionError {
+        message: format!(
+            "mesh file '{file_path}' is relative but no base path provided (use load_model_from_file or pass base_path to model_from_mjcf)"
+        ),
+    })?;
+
+    let resolved = base.join(path);
+
+    if !resolved.exists() {
+        return Err(ModelConversionError {
+            message: format!(
+                "mesh file not found: '{}' (resolved to '{}')",
+                file_path,
+                resolved.display()
+            ),
+        });
+    }
+
+    Ok(resolved)
+}
+
+/// Load mesh data from a file and convert to `TriangleMeshData`.
+///
+/// Supports STL, OBJ, PLY, and 3MF formats (auto-detected from extension).
+/// Scale is applied to all vertices during conversion.
+///
+/// # Arguments
+///
+/// * `file_path` - Path string from MJCF `<mesh file="..."/>` attribute
+/// * `base_path` - Base directory for resolving relative paths
+/// * `scale` - Scale factors [x, y, z] to apply to vertices
+/// * `mesh_name` - Mesh name for error messages
+///
+/// # Errors
+///
+/// Returns `ModelConversionError` if:
+/// - Path resolution fails (see [`resolve_mesh_path`])
+/// - File format is unsupported or corrupt
+/// - Mesh contains no vertices or faces
+fn load_mesh_file(
+    file_path: &str,
+    base_path: Option<&Path>,
+    scale: Vector3<f64>,
+    mesh_name: &str,
+) -> std::result::Result<TriangleMeshData, ModelConversionError> {
+    // 1. Resolve path
+    let resolved_path = resolve_mesh_path(file_path, base_path)?;
+
+    // 2. Load mesh via mesh-io
+    let indexed_mesh = mesh_io::load_mesh(&resolved_path).map_err(|e| ModelConversionError {
+        message: format!("mesh '{mesh_name}': failed to load '{file_path}': {e}"),
+    })?;
+
+    // 3. Validate non-empty
+    if indexed_mesh.vertices.is_empty() {
+        return Err(ModelConversionError {
+            message: format!("mesh '{mesh_name}': file '{file_path}' contains no vertices"),
+        });
+    }
+    if indexed_mesh.faces.is_empty() {
+        return Err(ModelConversionError {
+            message: format!("mesh '{mesh_name}': file '{file_path}' contains no faces"),
+        });
+    }
+
+    // 4. Convert vertices with scale applied
+    let vertices: Vec<Point3<f64>> = indexed_mesh
+        .vertices
+        .iter()
+        .map(|v| {
+            Point3::new(
+                v.position.x * scale.x,
+                v.position.y * scale.y,
+                v.position.z * scale.z,
+            )
+        })
+        .collect();
+
+    // 5. Convert faces to flat indices
+    //    mesh_io uses [u32; 3] per face, we need Vec<usize>
+    let indices: Vec<usize> = indexed_mesh
+        .faces
+        .iter()
+        .flat_map(|f| [f[0] as usize, f[1] as usize, f[2] as usize])
+        .collect();
+
+    // 6. Build TriangleMeshData (BVH constructed automatically)
+    Ok(TriangleMeshData::new(vertices, indices))
+}
+
+/// Convert MJCF mesh asset to `TriangleMeshData`.
+///
+/// Handles two sources of mesh data:
+/// 1. **Embedded data**: `vertex` and `face` attributes in MJCF
+/// 2. **File-based**: `file` attribute pointing to STL/OBJ/PLY/3MF
+///
+/// Scale is applied to all vertices. BVH is built automatically.
+///
+/// # Arguments
+///
+/// * `mjcf_mesh` - The MJCF mesh definition
+/// * `base_path` - Base directory for resolving relative mesh file paths
+///
+/// # Errors
+///
+/// Returns `ModelConversionError` if:
+/// - Neither `vertex` nor `file` is specified
+/// - Embedded data is malformed (count not divisible by 3, out-of-bounds indices)
+/// - File loading fails (see [`load_mesh_file`])
+fn convert_mjcf_mesh(
+    mjcf_mesh: &MjcfMesh,
+    base_path: Option<&Path>,
+) -> std::result::Result<TriangleMeshData, ModelConversionError> {
+    // Dispatch based on data source
+    match (&mjcf_mesh.vertex, &mjcf_mesh.file) {
+        // Embedded vertex data takes precedence (MuJoCo semantics)
+        (Some(verts), _) => convert_embedded_mesh(mjcf_mesh, verts),
+        // File-based loading
+        (None, Some(file_path)) => {
+            load_mesh_file(file_path, base_path, mjcf_mesh.scale, &mjcf_mesh.name)
+        }
+        // Neither specified
+        (None, None) => Err(ModelConversionError {
+            message: format!(
+                "mesh '{}': no vertex data and no file specified",
+                mjcf_mesh.name
+            ),
+        }),
+    }
+}
+
+/// Convert embedded mesh data from MJCF to `TriangleMeshData`.
+///
+/// This handles the case where vertex and face data are embedded directly
+/// in the MJCF XML via `vertex="..."` and `face="..."` attributes.
+fn convert_embedded_mesh(
+    mjcf_mesh: &MjcfMesh,
+    verts: &[f64],
+) -> std::result::Result<TriangleMeshData, ModelConversionError> {
+    // Validate vertex data
+    if verts.len() % 3 != 0 {
+        return Err(ModelConversionError {
+            message: format!(
+                "mesh '{}': vertex count ({}) not divisible by 3",
+                mjcf_mesh.name,
+                verts.len()
+            ),
+        });
+    }
+
+    // Apply scale while converting to Point3
+    let vertices: Vec<Point3<f64>> = verts
+        .chunks_exact(3)
+        .map(|chunk| {
+            Point3::new(
+                chunk[0] * mjcf_mesh.scale.x,
+                chunk[1] * mjcf_mesh.scale.y,
+                chunk[2] * mjcf_mesh.scale.z,
+            )
+        })
+        .collect();
 
     // Extract and validate faces (convert u32 -> usize)
     let indices: Vec<usize> = match &mjcf_mesh.face {
@@ -1215,7 +1410,10 @@ fn convert_mjcf_mesh(
         }
         None => {
             return Err(ModelConversionError {
-                message: format!("mesh '{}': no face data", mjcf_mesh.name),
+                message: format!(
+                    "mesh '{}': embedded vertex data requires face data",
+                    mjcf_mesh.name
+                ),
             });
         }
     };
@@ -2054,5 +2252,400 @@ mod tests {
 
         // Total activation states
         assert_eq!(model.na, 2); // 0 + 1 + 1 = 2
+    }
+
+    // =========================================================================
+    // Mesh file loading tests
+    // =========================================================================
+
+    /// Test resolve_mesh_path with absolute path.
+    #[test]
+    fn test_resolve_mesh_path_absolute() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("test.stl");
+        std::fs::write(&mesh_path, b"dummy").expect("Failed to write test file");
+
+        let abs_path = mesh_path.to_string_lossy().to_string();
+        let result = resolve_mesh_path(&abs_path, None);
+        assert!(
+            result.is_ok(),
+            "Absolute path should resolve without base_path"
+        );
+        assert_eq!(result.unwrap(), mesh_path);
+    }
+
+    /// Test resolve_mesh_path fails for non-existent absolute path.
+    #[test]
+    fn test_resolve_mesh_path_absolute_not_found() {
+        let result = resolve_mesh_path("/nonexistent/path/mesh.stl", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    /// Test resolve_mesh_path with relative path and base_path.
+    #[test]
+    fn test_resolve_mesh_path_relative() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("meshes").join("test.stl");
+        std::fs::create_dir_all(mesh_path.parent().unwrap()).unwrap();
+        std::fs::write(&mesh_path, b"dummy").expect("Failed to write test file");
+
+        let result = resolve_mesh_path("meshes/test.stl", Some(temp_dir.path()));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), mesh_path);
+    }
+
+    /// Test resolve_mesh_path fails for relative path without base_path.
+    #[test]
+    fn test_resolve_mesh_path_relative_no_base() {
+        let result = resolve_mesh_path("meshes/test.stl", None);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("relative"));
+        assert!(err.contains("no base path"));
+    }
+
+    /// Test resolve_mesh_path fails for relative path when file doesn't exist.
+    #[test]
+    fn test_resolve_mesh_path_relative_not_found() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let result = resolve_mesh_path("nonexistent.stl", Some(temp_dir.path()));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    /// Helper to create a simple STL file for testing.
+    fn create_test_stl(path: &std::path::Path) {
+        use mesh_types::{IndexedMesh, Vertex};
+
+        let mut mesh = IndexedMesh::new();
+        // Simple tetrahedron (4 vertices, 4 faces)
+        mesh.vertices.push(Vertex::from_coords(0.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(1.0, 0.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(0.5, 1.0, 0.0));
+        mesh.vertices.push(Vertex::from_coords(0.5, 0.5, 1.0));
+        mesh.faces.push([0, 1, 2]); // base
+        mesh.faces.push([0, 1, 3]); // front
+        mesh.faces.push([1, 2, 3]); // right
+        mesh.faces.push([2, 0, 3]); // left
+
+        mesh_io::save_mesh(&mesh, path).expect("Failed to save test STL");
+    }
+
+    /// Test load_mesh_file with STL format.
+    #[test]
+    fn test_load_mesh_file_stl() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("test.stl");
+        create_test_stl(&mesh_path);
+
+        let result = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            Vector3::new(1.0, 1.0, 1.0),
+            "test_mesh",
+        );
+
+        assert!(result.is_ok(), "Should load STL file");
+        let mesh_data = result.unwrap();
+        assert!(
+            mesh_data.vertices().len() >= 4,
+            "Should have at least 4 vertices"
+        );
+        assert!(
+            mesh_data.triangles().len() >= 4,
+            "Should have at least 4 triangles"
+        );
+    }
+
+    /// Test load_mesh_file applies scale correctly.
+    #[test]
+    fn test_load_mesh_file_with_scale() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("scaled.stl");
+        create_test_stl(&mesh_path);
+
+        // Load without scale
+        let unscaled = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            Vector3::new(1.0, 1.0, 1.0),
+            "unscaled",
+        )
+        .unwrap();
+
+        // Load with 2x scale
+        let scaled = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            Vector3::new(2.0, 2.0, 2.0),
+            "scaled",
+        )
+        .unwrap();
+
+        // Verify scale was applied: scaled vertices should be 2x unscaled
+        // Find corresponding vertices and compare
+        assert_eq!(scaled.vertices().len(), unscaled.vertices().len());
+        for (s, u) in scaled.vertices().iter().zip(unscaled.vertices().iter()) {
+            assert!(
+                (s.x - u.x * 2.0).abs() < 1e-10,
+                "X should be scaled: {} vs {}",
+                s.x,
+                u.x * 2.0
+            );
+            assert!(
+                (s.y - u.y * 2.0).abs() < 1e-10,
+                "Y should be scaled: {} vs {}",
+                s.y,
+                u.y * 2.0
+            );
+            assert!(
+                (s.z - u.z * 2.0).abs() < 1e-10,
+                "Z should be scaled: {} vs {}",
+                s.z,
+                u.z * 2.0
+            );
+        }
+    }
+
+    /// Test load_mesh_file with non-uniform scale.
+    #[test]
+    fn test_load_mesh_file_nonuniform_scale() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("nonuniform.stl");
+        create_test_stl(&mesh_path);
+
+        // Load with non-uniform scale: 1x, 2x, 3x
+        let scaled = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            Vector3::new(1.0, 2.0, 3.0),
+            "nonuniform",
+        )
+        .unwrap();
+
+        // Load unscaled for comparison
+        let unscaled = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            Vector3::new(1.0, 1.0, 1.0),
+            "unscaled",
+        )
+        .unwrap();
+
+        // Verify non-uniform scale: x unchanged, y doubled, z tripled
+        for (s, u) in scaled.vertices().iter().zip(unscaled.vertices().iter()) {
+            assert!((s.x - u.x).abs() < 1e-10, "X should be unchanged");
+            assert!((s.y - u.y * 2.0).abs() < 1e-10, "Y should be 2x");
+            assert!((s.z - u.z * 3.0).abs() < 1e-10, "Z should be 3x");
+        }
+    }
+
+    /// Test load_mesh_file fails for unsupported format.
+    #[test]
+    fn test_load_mesh_file_unsupported_format() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("test.xyz");
+        std::fs::write(&mesh_path, b"invalid mesh data").unwrap();
+
+        let result = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            Vector3::new(1.0, 1.0, 1.0),
+            "unsupported",
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("failed to load"));
+    }
+
+    /// Test load_mesh_file fails gracefully for corrupt STL data.
+    ///
+    /// A file with `.stl` extension but invalid content should produce
+    /// a clear error, not panic.
+    #[test]
+    fn test_load_mesh_file_corrupt_stl() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("corrupt.stl");
+
+        // Write invalid STL data (valid STL needs specific binary/ASCII structure)
+        std::fs::write(&mesh_path, b"this is not a valid stl file content").unwrap();
+
+        let result = load_mesh_file(
+            &mesh_path.to_string_lossy(),
+            None,
+            Vector3::new(1.0, 1.0, 1.0),
+            "corrupt_mesh",
+        );
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("corrupt_mesh") && err_msg.contains("failed to load"),
+            "error should identify mesh and indicate load failure: {err_msg}"
+        );
+    }
+
+    /// Test convert_mjcf_mesh with file attribute.
+    #[test]
+    fn test_convert_mjcf_mesh_from_file() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("mesh.stl");
+        create_test_stl(&mesh_path);
+
+        let mjcf_mesh = MjcfMesh {
+            name: "test_mesh".to_string(),
+            file: Some(mesh_path.to_string_lossy().to_string()),
+            vertex: None,
+            face: None,
+            scale: Vector3::new(1.0, 1.0, 1.0),
+        };
+
+        let result = convert_mjcf_mesh(&mjcf_mesh, None);
+        assert!(result.is_ok());
+        let mesh_data = result.unwrap();
+        assert!(!mesh_data.vertices().is_empty());
+        assert!(!mesh_data.triangles().is_empty());
+    }
+
+    /// Test convert_mjcf_mesh with file attribute and relative path.
+    #[test]
+    fn test_convert_mjcf_mesh_relative_path() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let meshes_dir = temp_dir.path().join("assets");
+        std::fs::create_dir_all(&meshes_dir).unwrap();
+        let mesh_path = meshes_dir.join("model.stl");
+        create_test_stl(&mesh_path);
+
+        let mjcf_mesh = MjcfMesh {
+            name: "relative_mesh".to_string(),
+            file: Some("assets/model.stl".to_string()),
+            vertex: None,
+            face: None,
+            scale: Vector3::new(1.0, 1.0, 1.0),
+        };
+
+        let result = convert_mjcf_mesh(&mjcf_mesh, Some(temp_dir.path()));
+        assert!(result.is_ok());
+    }
+
+    /// Test convert_mjcf_mesh with embedded vertex data (no file).
+    #[test]
+    fn test_convert_mjcf_mesh_embedded() {
+        let mjcf_mesh = MjcfMesh {
+            name: "embedded".to_string(),
+            file: None,
+            vertex: Some(vec![
+                0.0, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.5, 1.0, 0.0, // v2
+                0.5, 0.5, 1.0, // v3
+            ]),
+            face: Some(vec![
+                0, 1, 2, // f0
+                0, 1, 3, // f1
+                1, 2, 3, // f2
+                2, 0, 3, // f3
+            ]),
+            scale: Vector3::new(1.0, 1.0, 1.0),
+        };
+
+        let result = convert_mjcf_mesh(&mjcf_mesh, None);
+        assert!(result.is_ok());
+        let mesh_data = result.unwrap();
+        assert_eq!(mesh_data.vertices().len(), 4);
+        assert_eq!(mesh_data.triangles().len(), 4); // 4 triangles
+    }
+
+    /// Test convert_mjcf_mesh fails when neither file nor vertex is present.
+    #[test]
+    fn test_convert_mjcf_mesh_no_data() {
+        let mjcf_mesh = MjcfMesh {
+            name: "empty".to_string(),
+            file: None,
+            vertex: None,
+            face: None,
+            scale: Vector3::new(1.0, 1.0, 1.0),
+        };
+
+        let result = convert_mjcf_mesh(&mjcf_mesh, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no vertex data"));
+    }
+
+    /// Test load_model_from_file with mesh geometry.
+    #[test]
+    fn test_load_model_from_file_with_mesh() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        // Create mesh file
+        let mesh_path = temp_dir.path().join("cube.stl");
+        create_test_stl(&mesh_path);
+
+        // Create MJCF file referencing the mesh
+        let mjcf_content = format!(
+            r#"
+            <mujoco model="mesh_test">
+                <asset>
+                    <mesh name="cube_mesh" file="cube.stl"/>
+                </asset>
+                <worldbody>
+                    <body name="cube" pos="0 0 1">
+                        <geom type="mesh" mesh="cube_mesh" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#
+        );
+        let mjcf_path = temp_dir.path().join("model.xml");
+        std::fs::write(&mjcf_path, mjcf_content).unwrap();
+
+        let result = load_model_from_file(&mjcf_path);
+        assert!(
+            result.is_ok(),
+            "Should load model with mesh: {:?}",
+            result.err()
+        );
+        let model = result.unwrap();
+        assert_eq!(model.name, "mesh_test");
+        assert_eq!(model.nmesh, 1);
+        assert!(!model.mesh_data.is_empty());
+    }
+
+    /// Test model_from_mjcf with explicit base_path.
+    #[test]
+    fn test_model_from_mjcf_with_base_path() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        // Create mesh in subdirectory
+        let assets_dir = temp_dir.path().join("assets");
+        std::fs::create_dir_all(&assets_dir).unwrap();
+        let mesh_path = assets_dir.join("shape.stl");
+        create_test_stl(&mesh_path);
+
+        // Parse MJCF referencing relative mesh path
+        let mjcf = crate::parse_mjcf_str(
+            r#"
+            <mujoco model="base_path_test">
+                <asset>
+                    <mesh name="shape" file="assets/shape.stl"/>
+                </asset>
+                <worldbody>
+                    <body name="obj" pos="0 0 1">
+                        <geom type="mesh" mesh="shape" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("Should parse MJCF");
+
+        // Convert with base_path
+        let result = model_from_mjcf(&mjcf, Some(temp_dir.path()));
+        assert!(
+            result.is_ok(),
+            "Should convert with base_path: {:?}",
+            result.err()
+        );
     }
 }
