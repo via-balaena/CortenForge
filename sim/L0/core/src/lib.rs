@@ -97,48 +97,30 @@ pub use sdf::{
 
 // MuJoCo-style physics pipeline types (primary API)
 pub use mujoco_pipeline::{
+    // Actuator types
     ActuatorDynamics,
     ActuatorTransmission,
-    // Core articulated body system
-    ArticulatedBody,
-    ArticulatedJoint,
-    ArticulatedJointType,
-    ArticulatedSystem,
-    // Index types for articulated systems
-    BodyIndex,
-    // Demo/testing systems
-    BouncingBall,
-    // Constrained pendulum (PGS demo)
-    ConstrainedPendulum,
-    // PGS constraint solver
-    Constraint,
-    ConstraintType,
+    // Contact representation
     Contact,
-    // Contact point for constraint solving
-    ContactPoint as PGSContactPoint,
+    // MuJoCo-aligned Model/Data architecture (core API)
     Data,
-    DoublePendulum,
+    // Equality constraint types
     EqualityType,
+    // Geometry types
     GeomType,
+    // Integration method selection
     Integrator,
-    JointIndex,
+    // Joint types
     MjJointType,
     // Sensor types
     MjObjectType,
     MjSensorDataType,
     MjSensorType,
-    // MuJoCo-aligned Model/Data architecture
     Model,
-    NLinkPendulum,
-    PGSConfig,
-    PGSResult,
-    PGSSolver,
-    SimplePendulum,
     // Spatial algebra types
-    SpatialMatrix,
     SpatialVector,
-    SpherePile,
-    SphericalPendulum,
+    // Error handling
+    StepError,
     // Utility functions for position/velocity differentiation
     mj_differentiate_pos,
     mj_integrate_pos_explicit,

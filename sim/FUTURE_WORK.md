@@ -39,6 +39,34 @@ Not urgent because:
 
 ---
 
+## Code Quality Issues
+
+Identified during solref/solimp review. Items marked ✅ have been addressed.
+
+### P0 — Correctness
+
+| # | Issue | Status | Notes |
+|---|-------|--------|-------|
+| 1 | Hardcoded Baumgarte parameters — joint limits, equality constraints ignore solref/solimp | ✅ Fixed | `eq_solref` and `jnt_solref` now read via `solref_to_penalty()`. Hardcoded `10000/1000` retained as fallback when solref ≤ 0. **Remaining gap:** `eq_solimp` is stored on `Model` but never consumed. |
+| 2 | Distance equality constraints missing | ❌ Open | `EqualityType::Distance` match arm prints a `warn_once` but is otherwise a no-op. Requires geom position computation to implement. See `mujoco_pipeline.rs:6921`. |
+
+### P1 — Performance / Quality
+
+| # | Issue | Status | Notes |
+|---|-------|--------|-------|
+| 3 | Contact clone in hot path | ❌ Open | `data.contacts.clone()` at `mujoco_pipeline.rs:7778`. O(n_contacts) allocation per step. Could use index-based iteration instead. |
+| 4 | Cholesky clone for implicit integrator | ❌ Open | `scratch_m_impl.clone().cholesky()` at `mujoco_pipeline.rs:8085`. O(nv²) allocation per step. Could use in-place factorization or sparse methods for serial chains. |
+| 5 | Duplicate contact structures | ✅ Improved | Old `ContactPoint` in mujoco_pipeline.rs removed. Two distinct types remain: `Contact` (mujoco pipeline constraint struct) and `ContactPoint` (sim-contact geometric contact). These serve different purposes. |
+
+### P2 — Minor
+
+| # | Issue | Status | Notes |
+|---|-------|--------|-------|
+| 6 | Block Jacobi preconditioner placeholder in `cg.rs:590` | ❌ Open | Falls back to simple Jacobi; proper block variant not implemented. |
+| 7 | Various hardcoded numerical thresholds | ❌ Open | Regularization `1e-6`, penetration slop `0.001`, etc. Reasonable defaults but not per-geometry configurable. |
+
+---
+
 ## Physics Features
 
 ### Deformable Bodies

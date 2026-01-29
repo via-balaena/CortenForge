@@ -27,6 +27,15 @@ use crate::types::{
     MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption, MjcfSite,
 };
 
+/// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
+///
+/// - timeconst = 0.02s: 50 Hz natural frequency
+/// - dampratio = 1.0: critical damping
+const DEFAULT_SOLREF: [f64; 2] = [0.02, 1.0];
+
+/// Default solimp parameters [d0, d_width, width, midpoint, power] (MuJoCo defaults).
+const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
+
 /// Error type for MJCF to Model conversion.
 #[derive(Debug, Clone)]
 pub struct ModelConversionError {
@@ -194,6 +203,8 @@ struct ModelBuilder {
     jnt_springref: Vec<f64>,
     jnt_damping: Vec<f64>,
     jnt_armature: Vec<f64>,
+    jnt_solref: Vec<[f64; 2]>,
+    jnt_solimp: Vec<[f64; 5]>,
     jnt_name: Vec<Option<String>>,
 
     // DOF arrays
@@ -216,6 +227,10 @@ struct ModelBuilder {
     geom_name: Vec<Option<String>>,
     /// Mesh index for each geom (`None` for non-mesh geoms).
     geom_mesh: Vec<Option<usize>>,
+    /// Solver reference parameters for each geom [timeconst, dampratio].
+    geom_solref: Vec<[f64; 2]>,
+    /// Solver impedance parameters for each geom [d0, d_width, width, midpoint, power].
+    geom_solimp: Vec<[f64; 5]>,
 
     // Mesh arrays (built from MJCF <asset><mesh> elements)
     /// Name-to-index lookup for mesh assets.
@@ -323,6 +338,8 @@ impl ModelBuilder {
             jnt_springref: vec![],
             jnt_damping: vec![],
             jnt_armature: vec![],
+            jnt_solref: vec![],
+            jnt_solimp: vec![],
             jnt_name: vec![],
 
             dof_body: vec![],
@@ -342,6 +359,8 @@ impl ModelBuilder {
             geom_conaffinity: vec![],
             geom_name: vec![],
             geom_mesh: vec![],
+            geom_solref: vec![],
+            geom_solimp: vec![],
 
             mesh_name_to_id: HashMap::new(),
             mesh_name: vec![],
@@ -725,6 +744,10 @@ impl ModelBuilder {
         self.jnt_springref.push(joint.spring_ref);
         self.jnt_damping.push(joint.damping);
         self.jnt_armature.push(joint.armature);
+        self.jnt_solref
+            .push(joint.solref_limit.unwrap_or(DEFAULT_SOLREF));
+        self.jnt_solimp
+            .push(joint.solimp_limit.unwrap_or(DEFAULT_SOLIMP));
         self.jnt_name.push(if joint.name.is_empty() {
             None
         } else {
@@ -874,6 +897,12 @@ impl ModelBuilder {
         }
         self.geom_name.push(geom.name.clone());
         self.geom_mesh.push(geom_mesh_ref);
+
+        // Solver parameters (default if not specified in MJCF)
+        const DEFAULT_SOLREF: [f64; 2] = [0.02, 1.0];
+        const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
+        self.geom_solref.push(geom.solref.unwrap_or(DEFAULT_SOLREF));
+        self.geom_solimp.push(geom.solimp.unwrap_or(DEFAULT_SOLIMP));
 
         Ok(geom_id)
     }
@@ -1051,10 +1080,6 @@ impl ModelBuilder {
         &mut self,
         equality: &MjcfEquality,
     ) -> std::result::Result<(), ModelConversionError> {
-        // MuJoCo default solver parameters
-        const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
-        const DEFAULT_SOLREF: [f64; 2] = [0.02, 1.0];
-
         // Process Connect constraints (3 DOF position constraint)
         for connect in &equality.connects {
             let body1_id =
@@ -1267,6 +1292,8 @@ impl ModelBuilder {
             jnt_springref: self.jnt_springref,
             jnt_damping: self.jnt_damping,
             jnt_armature: self.jnt_armature,
+            jnt_solref: self.jnt_solref,
+            jnt_solimp: self.jnt_solimp,
             jnt_name: self.jnt_name,
 
             dof_body: self.dof_body,
@@ -1286,8 +1313,8 @@ impl ModelBuilder {
             geom_conaffinity: self.geom_conaffinity,
             geom_margin: vec![0.0; ngeom], // Default margin
             geom_gap: vec![0.0; ngeom],    // Default gap
-            geom_solimp: vec![[0.9, 0.95, 0.001, 0.5, 2.0]; ngeom], // MuJoCo defaults
-            geom_solref: vec![[0.02, 1.0]; ngeom], // MuJoCo defaults
+            geom_solimp: self.geom_solimp, // From parsed MJCF
+            geom_solref: self.geom_solref, // From parsed MJCF
             geom_name: self.geom_name,
             // Pre-computed bounding radii (computed below after we have geom_type and geom_size)
             geom_rbound: vec![0.0; ngeom],
@@ -2364,6 +2391,8 @@ mod tests {
             conaffinity: 1,
             condim: 3,
             mesh: None,
+            solref: None,
+            solimp: None,
         };
 
         let inertia = compute_geom_inertia(&geom);

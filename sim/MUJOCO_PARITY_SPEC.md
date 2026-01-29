@@ -29,16 +29,16 @@ Before diving into gaps, note what's **already implemented**:
 
 | Feature | Status | Location |
 |---------|--------|----------|
-| Joint stiffness storage | ✅ `Model.jnt_stiffness` | `mujoco_pipeline.rs:5672` |
-| Joint stiffness in passive forces | ✅ `mj_passive()` | `mujoco_pipeline.rs:10654` |
-| Joint damping | ✅ Full | `mujoco_pipeline.rs:10657` |
-| Joint armature | ✅ Storage + CRBA | `mujoco_pipeline.rs:10266` |
-| Equality constraint parsing | ✅ MJCF parser | `parser.rs:1103` |
+| Joint stiffness storage | ✅ `Model.jnt_stiffness` | `mujoco_pipeline.rs:762` |
+| Joint stiffness in passive forces | ✅ `mj_passive()` | `mujoco_pipeline.rs:6145` |
+| Joint damping | ✅ Full | `mujoco_pipeline.rs:769` |
+| Joint armature | ✅ Storage + CRBA | `mujoco_pipeline.rs:771`, `5487` |
+| Equality constraint parsing | ✅ MJCF parser | `parser.rs:1138` |
 | ConnectConstraint type | ✅ Full API | `equality.rs:1411` |
-| Implicit integrators | ✅ With damping | `integrators.rs:296-453` |
+| Implicit integrators | ✅ With damping | `mujoco_pipeline.rs:2286` |
 | Warm-starting (PGS/CG/Newton) | ✅ Full | `pgs.rs:463`, `cg.rs:424` |
-| `dof_frictionloss` field | ✅ Applied in `mj_passive()` | `mujoco_pipeline.rs:5693` |
-| `jnt_springref` field | ✅ Applied in `mj_passive()` | `mujoco_pipeline.rs:5674` |
+| `dof_frictionloss` field | ✅ Applied in `mj_passive()` | `mujoco_pipeline.rs:796` |
+| `jnt_springref` field | ✅ Applied in `mj_passive()` | `mujoco_pipeline.rs:766` |
 
 ### Priority Classification
 
@@ -64,19 +64,22 @@ Before diving into gaps, note what's **already implemented**:
 **Problem**: MuJoCo uses `spring_ref` as the spring equilibrium position, but our
 implementation uses `qpos0` (the initial joint position) instead.
 
-**Current State**:
+**Current State** (RESOLVED):
 
 ```rust
-// sim/L0/mjcf/src/types.rs:984
+// sim/L0/mjcf/src/types.rs
 pub struct MjcfJoint {
     pub spring_ref: f64,  // ✅ Parsed from MJCF
     // ...
 }
 
-// sim/L0/core/src/mujoco_pipeline.rs:10652
-// ❌ Uses qpos0 instead of spring_ref
-let q0 = model.qpos0.get(qpos_adr).copied().unwrap_or(0.0);
-data.qfrc_passive[dof_adr] -= stiffness * (q - q0);  // Should be (q - spring_ref)
+// sim/L0/core/src/mujoco_pipeline.rs:766
+pub jnt_springref: Vec<f64>,  // ✅ Now stored in Model
+
+// sim/L0/core/src/mujoco_pipeline.rs (mj_fwd_passive via JointVisitor)
+// ✅ Uses springref correctly
+let springref = model.jnt_springref[jnt_id];
+data.qfrc_passive[dof_adr] -= stiffness * (q - springref);
 ```
 
 **MuJoCo Semantics**:
@@ -109,10 +112,11 @@ data.qfrc_passive[dof_adr] -= stiffness * (q - q0);  // Should be (q - spring_re
    self.jnt_springref.push(joint.spring_ref);
    ```
 
-3. **Use in mj_passive()**:
+3. **Use in mj_passive()** (via `JointVisitor` pattern):
 
    ```rust
-   // mujoco_pipeline.rs:10652
+   // mujoco_pipeline.rs:6145 (mj_fwd_passive)
+   // Uses PassiveForceVisitor implementing JointVisitor trait
    let springref = model.jnt_springref[jnt_id];
    let q = data.qpos[qpos_adr];
    data.qfrc_passive[dof_adr] -= stiffness * (q - springref);
@@ -343,6 +347,90 @@ limiting stability with stiff springs.
 
 ---
 
+### 1.2.1 Code Quality Improvements (Recent)
+
+The implicit integration work introduced several code quality improvements:
+
+**JointVisitor Trait** (`mujoco_pipeline.rs:330`):
+- Consistent pattern for iterating over joints and their DOFs
+- Eliminates duplicate joint-iteration logic across functions
+- Used by: `mj_fwd_passive`, `cache_body_effective_mass`, `mj_integrate_pos`, `mj_normalize_quat`
+
+**StepError Enum** (`mujoco_pipeline.rs:637`):
+- Result-based error handling for `step()` and `forward()`
+- Variants: `InvalidTimestep`, `InvalidPosition`, `InvalidVelocity`, `InvalidAcceleration`, `CholeskyFailed`
+- Implements `std::error::Error` for composability
+
+**cache_body_effective_mass()** (`mujoco_pipeline.rs:5669`):
+- Pre-computes per-body effective mass/inertia for constraint force limiting
+- Called by `mj_crba()` to populate `data.body_effective_mass` and `data.body_effective_inertia`
+- Enables stable force clamping in equality constraints
+
+**scratch_v_new Buffer** (`mujoco_pipeline.rs:1405`):
+- Pre-allocated workspace for implicit solver
+- Eliminates per-step allocation in `mj_fwd_acceleration_implicit()`
+- Sized to `nv` (number of velocity DOFs)
+
+**compute_implicit_params()** (`mujoco_pipeline.rs:1812`):
+- Consolidates implicit stiffness/damping/springref extraction
+- Called once during model finalization
+- Populates `implicit_stiffness`, `implicit_damping`, `implicit_springref` vectors
+
+---
+
+### 1.2.2 Per-Constraint Solver Parameters (solref/solimp)
+
+**Status**: ✅ COMPLETE
+
+**Problem** (Now Solved): Constraint solver parameters were hardcoded instead of
+using the user-specified solref/solimp values from MJCF.
+
+**Implementation Completed**:
+
+1. **Joint Limit Solver Parameters** (`mujoco_pipeline.rs`, `types.rs`, `parser.rs`):
+   - Added `jnt_solref: Vec<[f64; 2]>` and `jnt_solimp: Vec<[f64; 5]>` to Model
+   - Added `solref_limit` and `solimp_limit` to `MjcfJoint` type
+   - Parser reads `solreflimit` and `solimplimit` MJCF attributes
+   - Joint limit enforcement uses per-joint solref via `solref_to_penalty()`
+
+2. **Contact Solver Parameters** (`mujoco_pipeline.rs`):
+   - `pgs_solve_contacts()` now uses per-contact `contact.solref` and `contact.solimp`
+   - Derives CFM (constraint force mixing) from `solimp[0]`
+   - Derives ERP (error reduction parameter) from `solref[timeconst, dampratio]`
+   - Replaces hardcoded `baumgarte_erp = 0.2` and `baumgarte_cfm = 1e-5`
+
+3. **Geom Solver Parameters** (`types.rs`, `parser.rs`):
+   - Added `solref` and `solimp` to `MjcfGeom` type
+   - Parser reads geom-level `solref` and `solimp` attributes
+   - Contacts inherit solver parameters from colliding geoms
+
+**MuJoCo Semantics**:
+
+- `solref = [timeconst, dampratio]`: Controls constraint response
+  - `timeconst`: Natural response time (smaller = stiffer)
+  - `dampratio`: Damping ratio (1.0 = critical damping)
+- `solimp = [d0, d_width, width, midpoint, power]`: Impedance profile
+  - `d0`: Initial impedance (0.0-1.0, higher = stiffer)
+
+**Conversion Formula** (`solref_to_penalty()`):
+```
+k = 1 / timeconst²
+b = 2 * dampratio / timeconst
+erp = dt / (dt + timeconst) * min(dampratio, 1.0)
+cfm = base_regularization + (1 - d0) * 1e-4
+```
+
+**Tests**:
+- [x] `test_joint_limit_solref` — Soft vs stiff limits show different overshoot
+
+**Files Changed**:
+- `sim/L0/mjcf/src/types.rs` — Added solref/solimp to MjcfJoint and MjcfGeom
+- `sim/L0/mjcf/src/parser.rs` — Parse solreflimit, solimplimit, solref, solimp
+- `sim/L0/mjcf/src/model_builder.rs` — Populate jnt_solref/jnt_solimp
+- `sim/L0/core/src/mujoco_pipeline.rs` — Wire into constraint enforcement
+
+---
+
 ### 1.3 Warm-Starting for Constraint Solver
 
 **Status**: ✅ IMPLEMENTED
@@ -372,7 +460,7 @@ let mut lambda = if warm_started {
 - `cg.rs` — Conjugate gradient solver
 - `newton.rs` — Newton solver
 - `contact/solver.rs` — Contact solver with cached forces
-- `mujoco_pipeline.rs:4711` — Contact correspondence warm-start
+- `mujoco_pipeline.rs:1378` — Contact correspondence warm-start (`efc_lambda`)
 
 **No further work needed** — warm-starting is fully functional.
 
@@ -543,6 +631,7 @@ fn connect_constraint_closes_loop() {
 - [x] **1.1** Test connect, weld, and joint equality constraints (15 tests) ✅
 - [x] **1.2** Add implicit spring-damper integrator ✅
 - [x] **1.2** Test implicit integration (6 tests) ✅
+- [x] **1.2.2** Wire per-constraint solref/solimp into joint limits and contacts ✅
 - [x] **1.3** ~~Implement warm-starting in PGS solver~~ (Already implemented)
 
 ### Phase 2: Robustness ✅ COMPLETE (already implemented)
@@ -557,21 +646,36 @@ fn connect_constraint_closes_loop() {
 - [x] **3.2** Equality constraint tests (15 tests in `equality_constraints.rs`) ✅
 - [x] **3.3** Implicit integrator accuracy tests (6 tests in `implicit_integration.rs`) ✅
 
+**Note**: The `perf_falling_boxes` test in `collision_performance.rs:237` is marked `#[ignore]`
+due to flaky timing-dependent behavior. Run manually with `--ignored` flag when benchmarking.
+
 ---
 
 ## File Reference Map
 
 | Component | Primary File | Key Lines |
 |-----------|-------------|-----------|
-| Joint stiffness (storage) | `mujoco_pipeline.rs` | 5672 |
-| Joint stiffness (applied) | `mujoco_pipeline.rs` | 10654 |
-| Joint damping | `mujoco_pipeline.rs` | 10657 |
-| Joint armature | `mujoco_pipeline.rs` | 10266 |
-| Equality parsing | `parser.rs` | 1103 |
-| Equality types | `types.rs` | 1495 |
+| Model struct | `mujoco_pipeline.rs` | 683 |
+| Joint stiffness (storage) | `mujoco_pipeline.rs` | 762 |
+| Joint springref (storage) | `mujoco_pipeline.rs` | 766 |
+| Joint damping (storage) | `mujoco_pipeline.rs` | 769 |
+| Joint armature (storage) | `mujoco_pipeline.rs` | 771 |
+| DOF frictionloss (storage) | `mujoco_pipeline.rs` | 796 |
+| Passive forces (applied) | `mujoco_pipeline.rs` | 6145 |
+| CRBA (armature applied) | `mujoco_pipeline.rs` | 5487 |
+| Equality parsing | `parser.rs` | 1138 |
+| Equality types | `types.rs` | 1498 |
 | ConnectConstraint | `equality.rs` | 1411 |
-| Model eq_* fields | `mujoco_pipeline.rs` | 5836-5858 |
-| Implicit integrator | `integrators.rs` | 296-453 |
+| Model eq_* fields | `mujoco_pipeline.rs` | 942+ |
+| Implicit integrator | `mujoco_pipeline.rs` | 2286 |
+| JointVisitor trait | `mujoco_pipeline.rs` | 330 |
+| StepError enum | `mujoco_pipeline.rs` | 637 |
+| cache_body_effective_mass | `mujoco_pipeline.rs` | 5669 |
+| compute_implicit_params | `mujoco_pipeline.rs` | 1812 |
+| scratch_v_new buffer | `mujoco_pipeline.rs` | 1405 |
+| Joint solref/solimp (storage) | `mujoco_pipeline.rs` | 775-778 |
+| solref_to_penalty | `mujoco_pipeline.rs` | 6971 |
+| pgs_solve_contacts | `mujoco_pipeline.rs` | 6522 |
 | Constraint solver | `solver.rs` | 340-713 |
 | SDF collision | `sdf.rs` | * |
 | Heightfield | `heightfield.rs` | * |
@@ -586,6 +690,7 @@ fn connect_constraint_closes_loop() {
 - [x] `frictionloss` produces velocity-independent resistance ✅
 - [x] Equality constraints (`<connect>`, `<weld>`, `<joint>`) enforce relationships ✅
 - [x] Warm-starting reduces PGS iterations by ≥30% (already implemented)
+- [x] Per-constraint solref/solimp parameters respected by solver ✅
 
 ### Robustness ✅
 
