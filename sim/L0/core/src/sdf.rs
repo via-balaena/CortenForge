@@ -33,6 +33,23 @@
 //! - O(1) gradient/normal computation
 //! - Memory usage: O(n³) for n×n×n grid
 //!
+//! # Robustness (Out-of-Bounds Handling)
+//!
+//! All public query methods handle out-of-bounds points gracefully without panicking:
+//!
+//! | Method | Out-of-Bounds Behavior |
+//! |--------|------------------------|
+//! | [`SdfCollisionData::distance`] | Returns `None` |
+//! | [`SdfCollisionData::distance_clamped`] | Clamps to grid bounds, returns `max_value` as fallback |
+//! | [`SdfCollisionData::gradient`] | Returns `None` |
+//! | [`SdfCollisionData::gradient_clamped`] | Clamps to grid bounds, returns `+Z` as fallback |
+//!
+//! These safe fallbacks ensure the collision system never panics on edge cases:
+//! - Points far outside the grid are treated as "very far away" (`max_value`)
+//! - Degenerate gradients default to the up vector (`Vector3::z()`)
+//!
+//! This design follows the principle: **degenerate inputs produce sensible defaults, not panics**.
+//!
 //! # Example
 //!
 //! ```
@@ -408,6 +425,14 @@ impl SdfCollisionData {
     }
 
     /// Get the signed distance, clamping to bounds if outside.
+    ///
+    /// # Robustness
+    ///
+    /// For points outside the grid bounds:
+    /// 1. The point is clamped to the nearest grid boundary
+    /// 2. If the clamped query still fails, returns `max_value` (treating the point as "far away")
+    ///
+    /// This ensures collision queries never panic, even for degenerate inputs.
     #[must_use]
     pub fn distance_clamped(&self, point: Point3<f64>) -> f64 {
         let clamped = Point3::new(
@@ -421,6 +446,7 @@ impl SdfCollisionData {
                 .z
                 .clamp(self.origin.z, self.origin.z + self.extent_z()),
         );
+        // Safe fallback: treat out-of-bounds as "very far away"
         self.distance(clamped).unwrap_or(self.max_value)
     }
 
@@ -458,6 +484,14 @@ impl SdfCollisionData {
     }
 
     /// Get the gradient, clamping to bounds if outside.
+    ///
+    /// # Robustness
+    ///
+    /// For points outside the grid bounds:
+    /// 1. The point is clamped to the nearest grid boundary
+    /// 2. If the gradient is degenerate (zero norm), returns `+Z` (up vector)
+    ///
+    /// This ensures normal queries never panic, even for degenerate inputs.
     #[must_use]
     pub fn gradient_clamped(&self, point: Point3<f64>) -> Vector3<f64> {
         let clamped = Point3::new(
@@ -471,6 +505,7 @@ impl SdfCollisionData {
                 .z
                 .clamp(self.origin.z, self.origin.z + self.extent_z()),
         );
+        // Safe fallback: default to up vector for degenerate gradients
         self.gradient(clamped).unwrap_or_else(Vector3::z)
     }
 

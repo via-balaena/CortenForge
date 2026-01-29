@@ -10,6 +10,8 @@
 > **Phase 0**: ✅ COMPLETE (springref + frictionloss)
 >
 > **Phase 1.1**: ✅ COMPLETE (equality constraints: connect, weld, joint)
+>
+> **Phase 2**: ✅ COMPLETE (robustness — already implemented correctly)
 
 ---
 
@@ -114,11 +116,11 @@ data.qfrc_passive[dof_adr] -= stiffness * (q - q0);  // Should be (q - spring_re
    data.qfrc_passive[dof_adr] -= stiffness * (q - springref);
    ```
 
-**Tests Required**:
+**Tests** (in `passive_forces.rs`):
 
-- [ ] `spring_ref != 0` shifts equilibrium correctly
-- [ ] `spring_ref == qpos0` produces same behavior as current code
-- [ ] Spring oscillates around `spring_ref`, not `qpos0`
+- [x] `test_springref_shifts_equilibrium` — Spring settles at springref, not qpos0
+- [x] `test_springref_zero_force_at_equilibrium` — Zero force when q == springref
+- [x] `test_springref_force_direction` — Force points toward springref
 
 **Files Changed**:
 
@@ -437,38 +439,70 @@ let mut lambda = if warm_started {
 
 > **Principle**: Eliminate defensive `unwrap()` calls that can panic in edge cases.
 
+**Status**: ✅ COMPLETE (already implemented correctly)
+
+### Review Findings (2026-01-29)
+
+The original spec incorrectly counted `unwrap()` calls. A detailed audit revealed:
+
+| File | Spec Claimed | Actual in Hot Path | In Test Code |
+|------|-------------|-------------------|--------------|
+| `sdf.rs` | 52 unwraps | **0** | 52 (correct for tests) |
+| `heightfield.rs` | 21 unwraps | **0** | 21 (correct for tests) |
+| `contact.rs` | 2 unwraps | **0** | 2 (correct for tests) |
+
+**All 75 `unwrap()` calls are in `#[cfg(test)]` modules**, where panicking is the correct
+behavior for test assertions.
+
+### Existing Safe Patterns
+
+The non-test code already uses safe fallback patterns:
+
+```rust
+// sdf.rs — safe distance query
+self.distance(clamped).unwrap_or(self.max_value)
+
+// sdf.rs — safe gradient query
+self.gradient(clamped).unwrap_or_else(Vector3::z)
+
+// heightfield.rs — safe cell lookup
+heightfield.cell_at(x, y).unwrap_or((0, 0))
+
+// heightfield.rs — safe height sample
+self.sample(x, y).unwrap_or(self.min_height)
+```
+
+These patterns provide sensible defaults for degenerate cases:
+- Out-of-bounds queries return max distance (treated as "far away")
+- Invalid gradients default to up vector
+- Invalid cells clamp to grid bounds
+
+**Conclusion**: Phase 2 was already complete before the spec was written. The implementers
+of `sdf.rs` and `heightfield.rs` followed Rust best practices from the start.
+
 ---
 
 ### 2.1 SDF Collision Robustness
 
-**Location**: `sim/L0/core/src/sdf.rs`
-**Count**: 52 `unwrap()` calls
+**Status**: ✅ COMPLETE (no changes needed)
 
-**Strategy**: Convert to safe defaults for degenerate cases.
-
-**Effort**: 12-16 hours
+**Audit**: Zero bare `unwrap()` in non-test code. Uses `unwrap_or`/`unwrap_or_else` throughout.
 
 ---
 
 ### 2.2 Heightfield Robustness
 
-**Location**: `sim/L0/core/src/heightfield.rs`
-**Count**: 21 `unwrap()` calls
+**Status**: ✅ COMPLETE (no changes needed)
 
-**Strategy**: Use `get()` with fallbacks for out-of-bounds queries.
-
-**Effort**: 8-10 hours
+**Audit**: Zero bare `unwrap()` in non-test code. Uses `unwrap_or`/`unwrap_or_else` throughout.
 
 ---
 
 ### 2.3 Contact Robustness
 
-**Location**: `sim/L0/contact/src/contact.rs`
-**Count**: 2 `unwrap()` calls (not 14 as originally estimated)
+**Status**: ✅ COMPLETE (no changes needed)
 
-**Strategy**: Minimal changes needed — review for safety.
-
-**Effort**: 1-2 hours
+**Audit**: Zero bare `unwrap()` in non-test code.
 
 ---
 
@@ -567,11 +601,11 @@ fn connect_constraint_closes_loop() {
 - [ ] **1.2** Add implicit spring-damper integrator
 - [x] **1.3** ~~Implement warm-starting in PGS solver~~ (Already implemented)
 
-### Phase 2: Robustness
+### Phase 2: Robustness ✅ COMPLETE (already implemented)
 
-- [ ] **2.1** Eliminate unwraps in `sdf.rs` (52 occurrences)
-- [ ] **2.2** Eliminate unwraps in `heightfield.rs` (21 occurrences)
-- [ ] **2.3** Review unwraps in `contact.rs` (2 occurrences)
+- [x] **2.1** ~~Eliminate unwraps in `sdf.rs`~~ (all 52 in test code, non-test uses `unwrap_or`)
+- [x] **2.2** ~~Eliminate unwraps in `heightfield.rs`~~ (all 21 in test code, non-test uses `unwrap_or`)
+- [x] **2.3** ~~Review unwraps in `contact.rs`~~ (all 2 in test code)
 
 ### Phase 3: Test Coverage
 
@@ -609,10 +643,10 @@ fn connect_constraint_closes_loop() {
 - [x] Equality constraints (`<connect>`, `<weld>`, `<joint>`) enforce relationships ✅
 - [x] Warm-starting reduces PGS iterations by ≥30% (already implemented)
 
-### Robustness
+### Robustness ✅
 
-- [ ] No `unwrap()` in hot paths (`sdf.rs`, `heightfield.rs`)
-- [ ] Degenerate inputs produce sensible defaults (no panic)
+- [x] No `unwrap()` in hot paths (`sdf.rs`, `heightfield.rs`) — verified 2026-01-29
+- [x] Degenerate inputs produce sensible defaults (no panic) — uses `unwrap_or` throughout
 
 ### Quality
 
