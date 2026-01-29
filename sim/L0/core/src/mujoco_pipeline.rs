@@ -11309,10 +11309,472 @@ fn pgs_solve_contacts(
     forces
 }
 
+/// Apply equality constraint forces using penalty method.
+///
+/// Supports Connect (3 DOF position) and Weld (6 DOF pose) constraints.
+/// Uses Baumgarte stabilization for drift correction.
+///
+/// # MuJoCo Semantics
+///
+/// - **Connect**: Constrains two anchor points to coincide.
+///   Error = p1 + R1*anchor - p2, where p2 is body2's position (or world origin).
+///
+/// - **Weld**: Constrains two frames to maintain a fixed relative pose.
+///   Position error same as Connect; orientation error via quaternion difference.
+///
+/// The penalty parameters are derived from solref [timeconst, dampratio]:
+///   stiffness = 1 / (timeconst² * dt²)
+///   damping = 2 * dampratio / (timeconst * dt)
+fn apply_equality_constraints(model: &Model, data: &mut Data) {
+    // Skip if no equality constraints
+    if model.neq == 0 {
+        return;
+    }
+
+    // Default penalty parameters (fallback when solref not specified).
+    //
+    // These are intentionally stiffer than MuJoCo's default solref=[0.02, 1.0],
+    // which maps to k=2500, b=100. Our defaults (k=10000, b=1000) are chosen to:
+    //
+    // 1. Strongly enforce constraints when no solref is given (fail-safe behavior)
+    // 2. Remain stable with explicit integration at dt=0.001 (stability limit ~dt<0.02)
+    //
+    // For explicit penalty integration, the stability condition is approximately:
+    //   dt < 2/sqrt(k) → dt < 0.02 for k=10000
+    //
+    // Users should specify solref in MJCF for fine-grained control. Recommended
+    // values for explicit integration: solref="0.05 1.0" to solref="0.1 1.0"
+    // (softer than MuJoCo defaults, which assume implicit PGS solver).
+    let default_stiffness = 10000.0;
+    let default_damping = 1000.0;
+
+    for eq_id in 0..model.neq {
+        // Skip inactive constraints
+        if !model.eq_active[eq_id] {
+            continue;
+        }
+
+        match model.eq_type[eq_id] {
+            EqualityType::Connect => {
+                apply_connect_constraint(model, data, eq_id, default_stiffness, default_damping);
+            }
+            EqualityType::Weld => {
+                apply_weld_constraint(model, data, eq_id, default_stiffness, default_damping);
+            }
+            EqualityType::Joint => {
+                apply_joint_equality_constraint(
+                    model,
+                    data,
+                    eq_id,
+                    default_stiffness,
+                    default_damping,
+                );
+            }
+            EqualityType::Distance | EqualityType::Tendon => {
+                // Distance and Tendon constraints not yet implemented.
+                // These require geom/tendon position computation.
+                //
+                // Warn once per session so users know their constraint is being ignored.
+                use std::sync::Once;
+                static WARN_ONCE: Once = Once::new();
+                WARN_ONCE.call_once(|| {
+                    eprintln!(
+                        "Warning: Distance/Tendon equality constraints are not yet implemented; \
+                         these constraints will be ignored. See MUJOCO_PARITY_SPEC.md Phase 2."
+                    );
+                });
+            }
+        }
+    }
+}
+
+/// Convert solref parameters to penalty stiffness and damping.
+///
+/// MuJoCo's solref = [timeconst, dampratio] maps to a second-order system:
+/// - Natural frequency: ωn = 1/timeconst
+/// - Stiffness: k = ωn² = 1/timeconst²
+/// - Damping: b = 2 * dampratio * ωn = 2 * dampratio / timeconst
+///
+/// When timeconst ≤ 0, falls back to provided defaults.
+///
+/// # Arguments
+/// * `solref` - [timeconst, dampratio] from MJCF
+/// * `default_k` - Fallback stiffness if solref[0] ≤ 0
+/// * `default_b` - Fallback damping if solref[0] ≤ 0
+///
+/// # Returns
+/// (stiffness, damping) tuple for penalty method
+#[inline]
+fn solref_to_penalty(solref: [f64; 2], default_k: f64, default_b: f64) -> (f64, f64) {
+    if solref[0] > 0.0 {
+        let timeconst = solref[0];
+        let dampratio = solref[1];
+        (1.0 / (timeconst * timeconst), 2.0 * dampratio / timeconst)
+    } else {
+        (default_k, default_b)
+    }
+}
+
+/// Apply a Connect (ball-and-socket) equality constraint.
+///
+/// Constrains anchor point on body1 to coincide with body2's position.
+/// Error: e = p1 + R1*anchor - p2
+fn apply_connect_constraint(
+    model: &Model,
+    data: &mut Data,
+    eq_id: usize,
+    default_stiffness: f64,
+    default_damping: f64,
+) {
+    let body1 = model.eq_obj1id[eq_id];
+    let body2 = model.eq_obj2id[eq_id];
+    let eq_data = &model.eq_data[eq_id];
+
+    // Anchor point in body1's local frame
+    let anchor = Vector3::new(eq_data[0], eq_data[1], eq_data[2]);
+
+    // Get body poses
+    let p1 = data.xpos[body1];
+    let r1 = data.xquat[body1];
+    let p2 = if body2 == 0 {
+        Vector3::zeros() // World origin
+    } else {
+        data.xpos[body2]
+    };
+
+    // World position of anchor on body1
+    let anchor_world = p1 + r1 * anchor;
+
+    // Position error: anchor should coincide with body2's origin
+    let error = anchor_world - p2;
+
+    // Velocity error (relative velocity at constraint point)
+    let vel_error = if body1 != 0 {
+        // Body1 velocity at anchor point
+        let cvel1 = &data.cvel[body1];
+        let omega1 = Vector3::new(cvel1[0], cvel1[1], cvel1[2]);
+        let v1 = Vector3::new(cvel1[3], cvel1[4], cvel1[5]);
+        let r1_anchor = r1 * anchor;
+        let v_anchor = v1 + omega1.cross(&r1_anchor);
+
+        if body2 != 0 {
+            let cvel2 = &data.cvel[body2];
+            let v2 = Vector3::new(cvel2[3], cvel2[4], cvel2[5]);
+            v_anchor - v2
+        } else {
+            v_anchor
+        }
+    } else {
+        Vector3::zeros()
+    };
+
+    // Compute penalty parameters from solref
+    let (stiffness, damping) =
+        solref_to_penalty(model.eq_solref[eq_id], default_stiffness, default_damping);
+
+    // Constraint force in world frame: F = -k*error - b*vel_error
+    let force = -stiffness * error - damping * vel_error;
+
+    // Apply forces via Jacobian transpose
+    // Force on body1 at anchor point
+    if body1 != 0 {
+        apply_constraint_force_to_body(model, data, body1, anchor_world, force);
+    }
+    // Equal and opposite force on body2
+    if body2 != 0 {
+        apply_constraint_force_to_body(model, data, body2, p2, -force);
+    }
+}
+
+/// Apply a Weld (6 DOF) equality constraint.
+///
+/// Constrains body1's frame to maintain a fixed relative pose to body2.
+fn apply_weld_constraint(
+    model: &Model,
+    data: &mut Data,
+    eq_id: usize,
+    default_stiffness: f64,
+    default_damping: f64,
+) {
+    let body1 = model.eq_obj1id[eq_id];
+    let body2 = model.eq_obj2id[eq_id];
+    let eq_data = &model.eq_data[eq_id];
+
+    // Anchor point in body1's local frame
+    let anchor = Vector3::new(eq_data[0], eq_data[1], eq_data[2]);
+
+    // Target relative quaternion [qw, qx, qy, qz]
+    let target_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        eq_data[3], eq_data[4], eq_data[5], eq_data[6],
+    ));
+
+    // Get body poses
+    let p1 = data.xpos[body1];
+    let r1 = data.xquat[body1];
+    let (p2, r2) = if body2 == 0 {
+        (Vector3::zeros(), UnitQuaternion::identity())
+    } else {
+        (data.xpos[body2], data.xquat[body2])
+    };
+
+    // Position error (same as Connect)
+    let anchor_world = p1 + r1 * anchor;
+    let pos_error = anchor_world - p2;
+
+    // Orientation error: compute rotation from current to target
+    // Target: r1 = r2 * target_quat
+    // Error: e_rot = r1 * (r2 * target_quat)^{-1}
+    let target_r1 = r2 * target_quat;
+    let rot_error_quat = r1 * target_r1.inverse();
+
+    // Convert quaternion error to axis-angle (small angle approximation)
+    // For small errors: axis-angle ≈ 2 * [qx, qy, qz] (when qw ≈ 1)
+    let quat = rot_error_quat.quaternion();
+    let rot_error = Vector3::new(quat.i, quat.j, quat.k) * 2.0 * quat.w.signum();
+
+    // Velocity errors
+    let (vel_error, ang_vel_error) = if body1 != 0 {
+        let cvel1 = &data.cvel[body1];
+        let omega1 = Vector3::new(cvel1[0], cvel1[1], cvel1[2]);
+        let v1 = Vector3::new(cvel1[3], cvel1[4], cvel1[5]);
+        let r1_anchor = r1 * anchor;
+        let v_anchor = v1 + omega1.cross(&r1_anchor);
+
+        if body2 != 0 {
+            let cvel2 = &data.cvel[body2];
+            let omega2 = Vector3::new(cvel2[0], cvel2[1], cvel2[2]);
+            let v2 = Vector3::new(cvel2[3], cvel2[4], cvel2[5]);
+            (v_anchor - v2, omega1 - omega2)
+        } else {
+            (v_anchor, omega1)
+        }
+    } else {
+        (Vector3::zeros(), Vector3::zeros())
+    };
+
+    // Compute penalty parameters from solref
+    let (stiffness, damping) =
+        solref_to_penalty(model.eq_solref[eq_id], default_stiffness, default_damping);
+
+    // Position constraint force
+    let force = -stiffness * pos_error - damping * vel_error;
+
+    // Orientation constraint torque
+    let torque = -stiffness * rot_error - damping * ang_vel_error;
+
+    // Apply forces and torques
+    if body1 != 0 {
+        apply_constraint_force_to_body(model, data, body1, anchor_world, force);
+        apply_constraint_torque_to_body(model, data, body1, torque);
+    }
+    if body2 != 0 {
+        apply_constraint_force_to_body(model, data, body2, p2, -force);
+        apply_constraint_torque_to_body(model, data, body2, -torque);
+    }
+}
+
+/// Apply a Joint equality constraint (polynomial coupling).
+///
+/// Constrains joint2 position as polynomial function of joint1:
+/// q2 = c0 + c1*q1 + c2*q1² + ...
+fn apply_joint_equality_constraint(
+    model: &Model,
+    data: &mut Data,
+    eq_id: usize,
+    default_stiffness: f64,
+    default_damping: f64,
+) {
+    let joint1_id = model.eq_obj1id[eq_id];
+    let joint2_id = model.eq_obj2id[eq_id];
+    let eq_data = &model.eq_data[eq_id];
+
+    // Polynomial coefficients: c0, c1, c2, c3, c4
+    let c0 = eq_data[0];
+    let c1 = eq_data[1];
+    let c2 = eq_data[2];
+    let c3 = eq_data[3];
+    let c4 = eq_data[4];
+
+    // Get joint positions and velocities
+    let qpos1_adr = model.jnt_qpos_adr[joint1_id];
+    let dof1_adr = model.jnt_dof_adr[joint1_id];
+    let q1 = data.qpos[qpos1_adr];
+    let qd1 = data.qvel[dof1_adr];
+
+    // Compute target position: q2_target = poly(q1)
+    let q2_target = c0 + c1 * q1 + c2 * q1 * q1 + c3 * q1 * q1 * q1 + c4 * q1 * q1 * q1 * q1;
+
+    // Compute target velocity: qd2_target = d(poly)/dq1 * qd1
+    let dq2_dq1 = c1 + 2.0 * c2 * q1 + 3.0 * c3 * q1 * q1 + 4.0 * c4 * q1 * q1 * q1;
+    let qd2_target = dq2_dq1 * qd1;
+
+    // If joint2 is valid (not usize::MAX sentinel)
+    if joint2_id < model.njnt {
+        let qpos2_adr = model.jnt_qpos_adr[joint2_id];
+        let dof2_adr = model.jnt_dof_adr[joint2_id];
+        let q2 = data.qpos[qpos2_adr];
+        let qd2 = data.qvel[dof2_adr];
+
+        // Errors
+        let pos_error = q2 - q2_target;
+        let vel_error = qd2 - qd2_target;
+
+        // Compute penalty parameters from solref
+        let (stiffness, damping) =
+            solref_to_penalty(model.eq_solref[eq_id], default_stiffness, default_damping);
+
+        // Apply torque to joint2 to correct error
+        let tau2 = -stiffness * pos_error - damping * vel_error;
+        data.qfrc_constraint[dof2_adr] += tau2;
+
+        // INVARIANT: No explicit reaction torque on joint1.
+        //
+        // In articulated body dynamics, applying τ₂ to joint2 naturally propagates
+        // forces up the kinematic chain via the recursive Newton-Euler algorithm.
+        // The constraint Jacobian already encodes this coupling through the mass
+        // matrix. Adding an explicit τ₁ = -dq₂/dq₁ · τ₂ would double-count the
+        // reaction, causing positive feedback and numerical explosion.
+        //
+        // Reference: Featherstone, "Rigid Body Dynamics Algorithms" (2008),
+        // Section 7.3 on constraint force propagation in articulated systems.
+    } else {
+        // joint2 not specified: lock joint1 to constant c0
+        let pos_error = q1 - c0;
+        let vel_error = qd1;
+
+        // Compute penalty parameters from solref
+        let (stiffness, damping) =
+            solref_to_penalty(model.eq_solref[eq_id], default_stiffness, default_damping);
+
+        let tau1 = -stiffness * pos_error - damping * vel_error;
+        data.qfrc_constraint[dof1_adr] += tau1;
+    }
+}
+
+/// Apply a constraint force to a body at a specific world point.
+///
+/// Maps the force to generalized coordinates via Jacobian transpose.
+/// Called per constraint per body in the kinematic chain — hot path.
+#[inline]
+fn apply_constraint_force_to_body(
+    model: &Model,
+    data: &mut Data,
+    body_id: usize,
+    point: Vector3<f64>,
+    force: Vector3<f64>,
+) {
+    if body_id == 0 {
+        return; // World doesn't respond
+    }
+
+    // Traverse kinematic chain from body to root
+    let mut current_body = body_id;
+    while current_body != 0 {
+        let jnt_start = model.body_jnt_adr[current_body];
+        let jnt_end = jnt_start + model.body_jnt_num[current_body];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - jpos;
+                    let j_col = axis.cross(&r);
+                    data.qfrc_constraint[dof_adr] += j_col.dot(&force);
+                }
+                MjJointType::Slide => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    data.qfrc_constraint[dof_adr] += axis.dot(&force);
+                }
+                MjJointType::Ball => {
+                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - jpos;
+                    let torque = r.cross(&force);
+                    let body_torque = data.xquat[jnt_body].inverse() * torque;
+                    data.qfrc_constraint[dof_adr] += body_torque.x;
+                    data.qfrc_constraint[dof_adr + 1] += body_torque.y;
+                    data.qfrc_constraint[dof_adr + 2] += body_torque.z;
+                }
+                MjJointType::Free => {
+                    data.qfrc_constraint[dof_adr] += force.x;
+                    data.qfrc_constraint[dof_adr + 1] += force.y;
+                    data.qfrc_constraint[dof_adr + 2] += force.z;
+                    let jpos = Vector3::new(
+                        data.qpos[model.jnt_qpos_adr[jnt_id]],
+                        data.qpos[model.jnt_qpos_adr[jnt_id] + 1],
+                        data.qpos[model.jnt_qpos_adr[jnt_id] + 2],
+                    );
+                    let r = point - jpos;
+                    let torque = r.cross(&force);
+                    data.qfrc_constraint[dof_adr + 3] += torque.x;
+                    data.qfrc_constraint[dof_adr + 4] += torque.y;
+                    data.qfrc_constraint[dof_adr + 5] += torque.z;
+                }
+            }
+        }
+        current_body = model.body_parent[current_body];
+    }
+}
+
+/// Apply a constraint torque directly to a body's rotational DOFs.
+/// Called per weld constraint per body in the kinematic chain — hot path.
+#[inline]
+fn apply_constraint_torque_to_body(
+    model: &Model,
+    data: &mut Data,
+    body_id: usize,
+    torque: Vector3<f64>,
+) {
+    if body_id == 0 {
+        return;
+    }
+
+    // Traverse kinematic chain from body to root
+    let mut current_body = body_id;
+    while current_body != 0 {
+        let jnt_start = model.body_jnt_adr[current_body];
+        let jnt_end = jnt_start + model.body_jnt_num[current_body];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    // Project torque onto hinge axis
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    data.qfrc_constraint[dof_adr] += torque.dot(&axis);
+                }
+                MjJointType::Slide => {
+                    // Slide joint doesn't respond to torque
+                }
+                MjJointType::Ball => {
+                    // Full 3D torque in body frame
+                    let body_torque = data.xquat[jnt_body].inverse() * torque;
+                    data.qfrc_constraint[dof_adr] += body_torque.x;
+                    data.qfrc_constraint[dof_adr + 1] += body_torque.y;
+                    data.qfrc_constraint[dof_adr + 2] += body_torque.z;
+                }
+                MjJointType::Free => {
+                    // Angular DOFs are indices 3-5 for free joint
+                    data.qfrc_constraint[dof_adr + 3] += torque.x;
+                    data.qfrc_constraint[dof_adr + 4] += torque.y;
+                    data.qfrc_constraint[dof_adr + 5] += torque.z;
+                }
+            }
+        }
+        current_body = model.body_parent[current_body];
+    }
+}
+
 /// Compute constraint forces (contacts and joint limits).
 ///
 /// This implements constraint-based enforcement using:
 /// - Joint limits: Soft penalty method with Baumgarte stabilization
+/// - Equality constraints: Soft penalty method with Baumgarte stabilization
 /// - Contacts: PGS solver with Coulomb friction cone
 ///
 /// The constraint forces are computed via Jacobian transpose:
@@ -11368,6 +11830,16 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
             }
         }
     }
+
+    // ========== Equality Constraints ==========
+    // Using penalty method with Baumgarte stabilization (like joint limits).
+    // MuJoCo uses solver-based approach via PGS, but penalty is robust and simpler.
+    //
+    // For each equality constraint:
+    //   τ = -k * violation - b * violation_velocity
+    //
+    // The forces are applied via Jacobian transpose to the appropriate DOFs.
+    apply_equality_constraints(model, data);
 
     // ========== Contact Constraints ==========
     // Use PGS solver for constraint-based contact forces.

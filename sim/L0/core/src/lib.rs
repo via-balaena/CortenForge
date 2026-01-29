@@ -118,6 +118,7 @@ pub use mujoco_pipeline::{
     ContactPoint as PGSContactPoint,
     Data,
     DoublePendulum,
+    EqualityType,
     GeomType,
     Integrator,
     JointIndex,

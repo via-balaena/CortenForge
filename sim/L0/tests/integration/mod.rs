@@ -29,6 +29,13 @@ pub mod collision_edge_cases;
 pub mod collision_performance;
 
 // ============================================================================
+// Phase 1.1: Equality Constraint Tests (MUJOCO_PARITY_SPEC.md)
+// ============================================================================
+
+/// Equality constraint tests: connect, weld, joint coupling.
+pub mod equality_constraints;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 
