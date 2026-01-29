@@ -47,7 +47,7 @@ fn test_simple_pendulum_model_data() {
     // Step the simulation
     let initial_qpos = data.qpos[0];
     for _ in 0..100 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Pendulum should have swung down (qpos decreased towards 0)
@@ -93,7 +93,7 @@ fn test_double_pendulum_model_data() {
 
     // Simulate
     for _ in 0..500 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Both joints should have moved
@@ -133,7 +133,7 @@ fn test_free_joint_gravity() {
 
     // Simulate for 0.1 seconds
     for _ in 0..100 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Ball should have fallen: Δz ≈ 0.5 * 9.81 * 0.1² = 0.049m
@@ -173,7 +173,7 @@ fn test_ball_joint_model_data() {
 
     // Simulate
     for _ in 0..100 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Quaternion should still be normalized
@@ -208,7 +208,7 @@ fn test_forward_kinematics_model_data() {
     // Zero configuration
     data.qpos[0] = 0.0;
     data.qpos[1] = 0.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Link1 should be at (0, 0, 1)
     assert_relative_eq!(data.xpos[1].x, 0.0, epsilon = 1e-6);
@@ -222,7 +222,7 @@ fn test_forward_kinematics_model_data() {
 
     // Rotate first joint 90 degrees around Y axis
     data.qpos[0] = std::f64::consts::FRAC_PI_2;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Link1 body position stays at (0, 0, 1) - the joint rotates the body orientation
     // but the body frame origin (where joint anchor is) doesn't move
@@ -263,7 +263,7 @@ fn test_energy_conservation_model_data() {
     // Initial velocity gives non-zero kinetic energy
     data.qpos[0] = std::f64::consts::FRAC_PI_4; // 45 degrees
     data.qvel[0] = 1.0; // Initial angular velocity
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     let initial_energy = data.total_energy();
 
@@ -276,7 +276,7 @@ fn test_energy_conservation_model_data() {
 
     // Simulate for 1 second (10000 steps at 0.0001s)
     for _ in 0..10000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     let final_energy = data.total_energy();
@@ -322,7 +322,7 @@ fn test_joint_limits_model_data() {
 
     // Simulate - limits should prevent penetration past 0.5
     for _ in 0..500 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Joint should be within or near limits (with small overshoot allowed)
@@ -361,7 +361,7 @@ fn test_joint_damping_model_data() {
 
     // Simulate
     for _ in 0..1000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Velocity should decrease due to damping
@@ -397,7 +397,7 @@ fn test_joint_spring_model_data() {
 
     // Simulate
     for _ in 0..5000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Spring + damping should bring it back near equilibrium
@@ -436,7 +436,7 @@ fn test_actuator_model_data() {
 
     // Simulate
     for _ in 0..100 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Joint should have accelerated
@@ -469,7 +469,7 @@ fn test_data_reset() {
 
     // Simulate
     for _ in 0..1000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // State should have changed

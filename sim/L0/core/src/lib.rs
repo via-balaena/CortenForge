@@ -46,7 +46,7 @@
 //!
 //! // Step the simulation
 //! for _ in 0..1000 {
-//!     data.step(&model);
+//!     data.step(&model)?;
 //! }
 //!
 //! // Access body poses (computed from qpos via FK)
@@ -118,6 +118,7 @@ pub use mujoco_pipeline::{
     ContactPoint as PGSContactPoint,
     Data,
     DoublePendulum,
+    EqualityType,
     GeomType,
     Integrator,
     JointIndex,
@@ -183,11 +184,11 @@ mod tests {
 
         // Start at 45 degrees (not equilibrium) so it will swing
         data.qpos[0] = std::f64::consts::FRAC_PI_4;
-        data.forward(&model);
+        data.forward(&model).expect("forward failed");
 
         // Step for 0.5 seconds
         for _ in 0..500 {
-            data.step(&model);
+            data.step(&model).expect("step failed");
         }
 
         // Pendulum should have swung past equilibrium (negative angle now)
@@ -205,13 +206,13 @@ mod tests {
 
         // Give it initial velocity
         data.qvel[0] = 1.0;
-        data.forward(&model);
+        data.forward(&model).expect("forward failed");
 
         let initial_ke = data.energy_kinetic;
 
         // Step for a while
         for _ in 0..1000 {
-            data.step(&model);
+            data.step(&model).expect("step failed");
         }
 
         let final_ke = data.energy_kinetic;

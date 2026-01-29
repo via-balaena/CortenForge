@@ -29,10 +29,25 @@ pub mod collision_edge_cases;
 pub mod collision_performance;
 
 // ============================================================================
+// Phase 1.1: Equality Constraint Tests (MUJOCO_PARITY_SPEC.md)
+// ============================================================================
+
+/// Equality constraint tests: connect, weld, joint coupling.
+pub mod equality_constraints;
+
+// ============================================================================
+// Phase 1.2: Implicit Integration Tests (MUJOCO_PARITY_SPEC.md)
+// ============================================================================
+
+/// Implicit spring-damper integration tests: stability, accuracy, convergence.
+pub mod implicit_integration;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 
 pub mod model_data_pipeline;
 pub mod musculoskeletal;
+pub mod passive_forces;
 pub mod sensors;
 pub mod validation;

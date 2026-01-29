@@ -13,7 +13,9 @@
 
 use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_core::mesh::TriangleMeshData;
-use sim_core::{ActuatorDynamics, ActuatorTransmission, GeomType, Integrator, MjJointType, Model};
+use sim_core::{
+    ActuatorDynamics, ActuatorTransmission, EqualityType, GeomType, Integrator, MjJointType, Model,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,8 +23,8 @@ use tracing::warn;
 
 use crate::error::Result;
 use crate::types::{
-    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfGeom, MjcfGeomType, MjcfInertial, MjcfIntegrator,
-    MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption, MjcfSite,
+    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfEquality, MjcfGeom, MjcfGeomType, MjcfInertial,
+    MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption, MjcfSite,
 };
 
 /// Error type for MJCF to Model conversion.
@@ -70,7 +72,7 @@ impl std::error::Error for ModelConversionError {}
 ///
 /// let model = model_from_mjcf(&mjcf, None)?;
 /// let mut data = model.make_data();
-/// data.step(&model);
+/// data.step(&model).expect("step failed");
 /// ```
 pub fn model_from_mjcf(
     mjcf: &MjcfModel,
@@ -104,6 +106,9 @@ pub fn model_from_mjcf(
         builder.process_actuator(actuator)?;
     }
 
+    // Process equality constraints (must be after bodies and joints)
+    builder.process_equality_constraints(&mjcf.equality)?;
+
     // Build final model
     Ok(builder.build())
 }
@@ -132,7 +137,7 @@ pub fn load_model(xml: &str) -> Result<Model> {
 ///
 /// let model = load_model_from_file("models/humanoid.xml")?;
 /// let mut data = model.make_data();
-/// data.step(&model);
+/// data.step(&model).expect("step failed");
 /// ```
 pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
     let path = path.as_ref();
@@ -186,6 +191,7 @@ struct ModelBuilder {
     jnt_limited: Vec<bool>,
     jnt_range: Vec<(f64, f64)>,
     jnt_stiffness: Vec<f64>,
+    jnt_springref: Vec<f64>,
     jnt_damping: Vec<f64>,
     jnt_armature: Vec<f64>,
     jnt_name: Vec<Option<String>>,
@@ -196,6 +202,7 @@ struct ModelBuilder {
     dof_parent: Vec<Option<usize>>,
     dof_armature: Vec<f64>,
     dof_damping: Vec<f64>,
+    dof_frictionloss: Vec<f64>,
 
     // Geom arrays
     geom_type: Vec<GeomType>,
@@ -267,6 +274,16 @@ struct ModelBuilder {
     joint_name_to_id: HashMap<String, usize>,
     body_name_to_id: HashMap<String, usize>,
     site_name_to_id: HashMap<String, usize>,
+
+    // Equality constraint arrays
+    eq_type: Vec<EqualityType>,
+    eq_obj1id: Vec<usize>,
+    eq_obj2id: Vec<usize>,
+    eq_data: Vec<[f64; 11]>,
+    eq_active: Vec<bool>,
+    eq_solimp: Vec<[f64; 5]>,
+    eq_solref: Vec<[f64; 2]>,
+    eq_name: Vec<Option<String>>,
 }
 
 impl ModelBuilder {
@@ -303,6 +320,7 @@ impl ModelBuilder {
             jnt_limited: vec![],
             jnt_range: vec![],
             jnt_stiffness: vec![],
+            jnt_springref: vec![],
             jnt_damping: vec![],
             jnt_armature: vec![],
             jnt_name: vec![],
@@ -312,6 +330,7 @@ impl ModelBuilder {
             dof_parent: vec![],
             dof_armature: vec![],
             dof_damping: vec![],
+            dof_frictionloss: vec![],
 
             geom_type: vec![],
             geom_body: vec![],
@@ -371,6 +390,16 @@ impl ModelBuilder {
             joint_name_to_id: HashMap::new(),
             body_name_to_id: HashMap::from([("world".to_string(), 0)]),
             site_name_to_id: HashMap::new(),
+
+            // Equality constraints (populated by process_equality_constraints)
+            eq_type: vec![],
+            eq_obj1id: vec![],
+            eq_obj2id: vec![],
+            eq_data: vec![],
+            eq_active: vec![],
+            eq_solimp: vec![],
+            eq_solref: vec![],
+            eq_name: vec![],
         }
     }
 
@@ -693,6 +722,7 @@ impl ModelBuilder {
                 .unwrap_or((-std::f64::consts::PI, std::f64::consts::PI)),
         );
         self.jnt_stiffness.push(joint.stiffness);
+        self.jnt_springref.push(joint.spring_ref);
         self.jnt_damping.push(joint.damping);
         self.jnt_armature.push(joint.armature);
         self.jnt_name.push(if joint.name.is_empty() {
@@ -717,6 +747,7 @@ impl ModelBuilder {
 
             self.dof_armature.push(joint.armature);
             self.dof_damping.push(joint.damping);
+            self.dof_frictionloss.push(joint.frictionloss);
         }
 
         // Add qpos0 values (default positions)
@@ -998,6 +1029,197 @@ impl ModelBuilder {
         Ok(act_id)
     }
 
+    /// Process equality constraints from MJCF.
+    ///
+    /// Converts `MjcfEquality` (connects, welds, joints, distances) into Model arrays.
+    /// Must be called AFTER all bodies and joints are processed (requires name lookups).
+    ///
+    /// # MuJoCo Semantics
+    ///
+    /// - **Connect**: Ball-and-socket constraint. Removes 3 translational DOFs.
+    ///   `eq_data[0..3]` = anchor point in body1's local frame.
+    ///
+    /// - **Weld**: Fixed frame constraint. Removes 6 DOFs (translation + rotation).
+    ///   `eq_data[0..3]` = anchor point, `eq_data[3..7]` = relative quaternion [w,x,y,z].
+    ///
+    /// - **Joint**: Polynomial coupling between joints.
+    ///   `eq_data[0..5]` = polynomial coefficients (q2 = c0 + c1*q1 + c2*q1² + ...).
+    ///
+    /// - **Distance**: Maintains fixed distance between geom centers.
+    ///   `eq_data[0]` = target distance.
+    fn process_equality_constraints(
+        &mut self,
+        equality: &MjcfEquality,
+    ) -> std::result::Result<(), ModelConversionError> {
+        // MuJoCo default solver parameters
+        const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
+        const DEFAULT_SOLREF: [f64; 2] = [0.02, 1.0];
+
+        // Process Connect constraints (3 DOF position constraint)
+        for connect in &equality.connects {
+            let body1_id =
+                self.body_name_to_id
+                    .get(&connect.body1)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Connect constraint references unknown body1: '{}'",
+                            connect.body1
+                        ),
+                    })?;
+
+            // body2 defaults to world (body 0) if not specified
+            let body2_id = if let Some(ref body2_name) = connect.body2 {
+                *self
+                    .body_name_to_id
+                    .get(body2_name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Connect constraint references unknown body2: '{body2_name}'"
+                        ),
+                    })?
+            } else {
+                0 // World body
+            };
+
+            // Pack data: anchor point in body1 frame, rest zeroed
+            let mut data = [0.0; 11];
+            data[0] = connect.anchor.x;
+            data[1] = connect.anchor.y;
+            data[2] = connect.anchor.z;
+
+            self.eq_type.push(EqualityType::Connect);
+            self.eq_obj1id.push(*body1_id);
+            self.eq_obj2id.push(body2_id);
+            self.eq_data.push(data);
+            self.eq_active.push(connect.active);
+            self.eq_solimp
+                .push(connect.solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.eq_solref
+                .push(connect.solref.unwrap_or(DEFAULT_SOLREF));
+            self.eq_name.push(connect.name.clone());
+        }
+
+        // Process Weld constraints (6 DOF pose constraint)
+        for weld in &equality.welds {
+            let body1_id =
+                self.body_name_to_id
+                    .get(&weld.body1)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Weld constraint references unknown body1: '{}'",
+                            weld.body1
+                        ),
+                    })?;
+
+            let body2_id = if let Some(ref body2_name) = weld.body2 {
+                *self
+                    .body_name_to_id
+                    .get(body2_name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Weld constraint references unknown body2: '{body2_name}'"
+                        ),
+                    })?
+            } else {
+                0 // World body
+            };
+
+            // Pack data: anchor point + relative pose quaternion
+            // relpose format: [x, y, z, qw, qx, qy, qz]
+            let mut data = [0.0; 11];
+            data[0] = weld.anchor.x;
+            data[1] = weld.anchor.y;
+            data[2] = weld.anchor.z;
+            if let Some(relpose) = weld.relpose {
+                // relpose = [x, y, z, qw, qx, qy, qz]
+                // We store anchor separately, so relpose goes to data[3..10]
+                data[3] = relpose[3]; // qw
+                data[4] = relpose[4]; // qx
+                data[5] = relpose[5]; // qy
+                data[6] = relpose[6]; // qz
+                // Note: relpose position offset is in addition to anchor
+                data[7] = relpose[0]; // dx
+                data[8] = relpose[1]; // dy
+                data[9] = relpose[2]; // dz
+            } else {
+                // Default: identity quaternion, no offset
+                data[3] = 1.0; // qw = 1 (identity)
+            }
+
+            self.eq_type.push(EqualityType::Weld);
+            self.eq_obj1id.push(*body1_id);
+            self.eq_obj2id.push(body2_id);
+            self.eq_data.push(data);
+            self.eq_active.push(weld.active);
+            self.eq_solimp.push(weld.solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.eq_solref.push(weld.solref.unwrap_or(DEFAULT_SOLREF));
+            self.eq_name.push(weld.name.clone());
+        }
+
+        // Process Joint coupling constraints
+        for joint_eq in &equality.joints {
+            let joint1_id = self.joint_name_to_id.get(&joint_eq.joint1).ok_or_else(|| {
+                ModelConversionError {
+                    message: format!(
+                        "Joint equality references unknown joint1: '{}'",
+                        joint_eq.joint1
+                    ),
+                }
+            })?;
+
+            // joint2 is optional - if not specified, constraint locks joint1 to polycoef[0]
+            let joint2_id = if let Some(ref joint2_name) = joint_eq.joint2 {
+                *self
+                    .joint_name_to_id
+                    .get(joint2_name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Joint equality references unknown joint2: '{joint2_name}'"
+                        ),
+                    })?
+            } else {
+                // MuJoCo convention: joint2 = -1 means constraint locks joint1 to constant
+                // We use usize::MAX as sentinel (will never be a valid joint ID)
+                usize::MAX
+            };
+
+            // Pack polynomial coefficients (up to 5 terms)
+            // MuJoCo: q2 = c0 + c1*q1 + c2*q1² + c3*q1³ + c4*q1⁴
+            let mut data = [0.0; 11];
+            for (i, &coef) in joint_eq.polycoef.iter().take(5).enumerate() {
+                data[i] = coef;
+            }
+
+            self.eq_type.push(EqualityType::Joint);
+            self.eq_obj1id.push(*joint1_id);
+            self.eq_obj2id.push(joint2_id);
+            self.eq_data.push(data);
+            self.eq_active.push(joint_eq.active);
+            self.eq_solimp
+                .push(joint_eq.solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.eq_solref
+                .push(joint_eq.solref.unwrap_or(DEFAULT_SOLREF));
+            self.eq_name.push(joint_eq.name.clone());
+        }
+
+        // Process Distance constraints
+        // TODO(phase-2): Implement distance equality constraints.
+        // Requirements:
+        //   - geom_name_to_id mapping (geom1/geom2 reference geoms, not bodies)
+        //   - Jacobian: J = (p1 - p2)^T / ||p1 - p2|| (1-dimensional constraint)
+        //   - Handle singularity when points coincide (d → 0)
+        // See MUJOCO_PARITY_SPEC.md Phase 2 for details.
+        if !equality.distances.is_empty() {
+            warn!(
+                "Distance equality constraints ({} found) are not yet implemented; \
+                 these will be ignored. See MUJOCO_PARITY_SPEC.md Phase 2.",
+                equality.distances.len()
+            );
+        }
+
+        Ok(())
+    }
+
     fn build(self) -> Model {
         let njnt = self.jnt_type.len();
         let nbody = self.body_parent.len();
@@ -1042,6 +1264,7 @@ impl ModelBuilder {
             jnt_limited: self.jnt_limited,
             jnt_range: self.jnt_range,
             jnt_stiffness: self.jnt_stiffness,
+            jnt_springref: self.jnt_springref,
             jnt_damping: self.jnt_damping,
             jnt_armature: self.jnt_armature,
             jnt_name: self.jnt_name,
@@ -1051,7 +1274,7 @@ impl ModelBuilder {
             dof_parent: self.dof_parent,
             dof_armature: self.dof_armature,
             dof_damping: self.dof_damping,
-            dof_frictionloss: vec![0.0; self.nv], // Default: no friction loss
+            dof_frictionloss: self.dof_frictionloss,
 
             geom_type: self.geom_type,
             geom_body: self.geom_body,
@@ -1124,16 +1347,16 @@ impl ModelBuilder {
             wrap_objid: vec![],
             wrap_prm: vec![],
 
-            // Equality constraints (empty for now - will be populated from MJCF equality definitions)
-            neq: 0,
-            eq_type: vec![],
-            eq_obj1id: vec![],
-            eq_obj2id: vec![],
-            eq_data: vec![],
-            eq_active: vec![],
-            eq_solimp: vec![],
-            eq_solref: vec![],
-            eq_name: vec![],
+            // Equality constraints (populated by process_equality_constraints)
+            neq: self.eq_type.len(),
+            eq_type: self.eq_type,
+            eq_obj1id: self.eq_obj1id,
+            eq_obj2id: self.eq_obj2id,
+            eq_data: self.eq_data,
+            eq_active: self.eq_active,
+            eq_solimp: self.eq_solimp,
+            eq_solref: self.eq_solref,
+            eq_name: self.eq_name,
 
             timestep: self.timestep,
             gravity: self.gravity,
@@ -1150,6 +1373,11 @@ impl ModelBuilder {
             enableflags: self.enableflags,
             integrator: self.integrator,
 
+            // Cached implicit integration parameters (computed below)
+            implicit_stiffness: DVector::zeros(self.nv),
+            implicit_damping: DVector::zeros(self.nv),
+            implicit_springref: DVector::zeros(self.nv),
+
             // Pre-computed kinematic data (will be populated by compute_ancestors)
             body_ancestor_joints: vec![vec![]; nbody],
             body_ancestor_mask: vec![vec![]; nbody], // Multi-word bitmask, computed by compute_ancestors
@@ -1157,6 +1385,9 @@ impl ModelBuilder {
 
         // Pre-compute ancestor lists for O(n) CRBA/RNE
         model.compute_ancestors();
+
+        // Pre-compute implicit integration parameters (K, D, q_eq diagonals)
+        model.compute_implicit_params();
 
         // Pre-compute bounding sphere radii for all geoms (used in collision broad-phase)
         for geom_id in 0..ngeom {

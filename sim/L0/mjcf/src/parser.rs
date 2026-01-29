@@ -672,12 +672,34 @@ fn parse_body<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
                         let site = parse_site(reader, e)?;
                         body.sites.push(site);
                     }
+                    b"freejoint" => {
+                        // <freejoint>...</freejoint> form (rare but valid)
+                        let mut joint = parse_freejoint_attrs(e)?;
+                        if joint.name.is_empty() {
+                            joint.name = format!("{}_joint{}", body.name, joint_counter);
+                            joint_counter += 1;
+                        }
+                        joint.body = Some(body.name.clone());
+                        body.joints.push(joint);
+                        // Skip to end tag (freejoint has no children)
+                        skip_element(reader, &elem_name)?;
+                    }
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
             Ok(Event::Empty(ref e)) => match e.name().as_ref() {
                 b"joint" => {
                     let mut joint = parse_joint_attrs(e)?;
+                    if joint.name.is_empty() {
+                        joint.name = format!("{}_joint{}", body.name, joint_counter);
+                        joint_counter += 1;
+                    }
+                    joint.body = Some(body.name.clone());
+                    body.joints.push(joint);
+                }
+                b"freejoint" => {
+                    // <freejoint/> is MuJoCo shorthand for <joint type="free"/>
+                    let mut joint = parse_freejoint_attrs(e)?;
                     if joint.name.is_empty() {
                         joint.name = format!("{}_joint{}", body.name, joint_counter);
                         joint_counter += 1;
@@ -783,6 +805,18 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     joint.armature = parse_float_attr(e, "armature").unwrap_or(0.0);
     joint.frictionloss = parse_float_attr(e, "frictionloss").unwrap_or(0.0);
 
+    Ok(joint)
+}
+
+/// Parse freejoint attributes (MuJoCo shorthand for `<joint type="free"/>`).
+///
+/// The `<freejoint/>` element is a convenience shorthand in MuJoCo that creates
+/// a 6-DOF free joint. It only supports `name` and `group` attributes.
+fn parse_freejoint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
+    let mut joint = MjcfJoint::default();
+    joint.joint_type = MjcfJointType::Free;
+    joint.name = get_attribute_opt(e, "name").unwrap_or_default();
+    // Note: MuJoCo's freejoint also supports 'group' attribute, but we don't use it
     Ok(joint)
 }
 

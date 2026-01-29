@@ -111,8 +111,17 @@ for i in range(n_bodies-1, 0, -1):
 
 ### 2.2 Passive Forces (`mj_passive`)
 ```
-qfrc_passive[i] = -stiffness[i] * (qpos[i] - springref[i]) - damping[i] * qvel[i]
+qfrc_passive[i] = -stiffness[i] * (qpos[i] - springref[i])
+                  - damping[i] * qvel[i]
+                  - frictionloss[i] * sign(qvel[i])
 ```
+
+Where:
+- `springref[i]`: Spring equilibrium position (distinct from `qpos0`)
+- `frictionloss[i]`: Coulomb friction magnitude (velocity-independent)
+
+**Implementation note**: We use `tanh(qvel * 1000)` as a smooth approximation
+to `sign(qvel)` to avoid discontinuity at zero velocity.
 
 ---
 

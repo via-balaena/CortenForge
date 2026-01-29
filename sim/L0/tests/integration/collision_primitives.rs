@@ -57,7 +57,7 @@ fn sphere_sphere_overlap_x_axis() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert_eq!(data.ncon, 1, "Expected exactly 1 contact");
 
@@ -97,7 +97,7 @@ fn sphere_sphere_overlap_diagonal() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Distance = sqrt(0.16 + 0.16 + 0.16) = sqrt(0.48) ≈ 0.693
     // Sum of radii = 0.8
@@ -133,7 +133,7 @@ fn sphere_sphere_touching() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Distance = sum of radii = 0.8, so exactly touching
     // May or may not report contact depending on implementation
@@ -166,7 +166,7 @@ fn sphere_sphere_separated() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert_eq!(data.ncon, 0, "Separated spheres should have no contact");
 }
@@ -190,7 +190,7 @@ fn sphere_sphere_coincident() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Coincident spheres: penetration = sum of radii = 1.0
     // Normal direction is undefined (any direction valid)
@@ -237,7 +237,7 @@ fn sphere_capsule_side_contact() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Capsule: radius=0.2, half_length=0.5, axis along Z
     // Sphere: radius=0.3, center at (0.45, 0, 0)
@@ -281,7 +281,7 @@ fn sphere_capsule_endpoint_contact() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Capsule endpoint at z=0.5, endpoint sphere surface at z=0.7
     // Sphere center at z=0.95, sphere surface at z=0.65
@@ -325,7 +325,7 @@ fn sphere_capsule_separated() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert_eq!(
         data.ncon, 0,
@@ -356,7 +356,7 @@ fn capsule_capsule_parallel_side() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Both capsules have radius 0.2, parallel axes along Z
     // Distance between axes = 0.35
@@ -392,7 +392,7 @@ fn capsule_capsule_perpendicular() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Capsule 1: axis along Z, center at origin, radius 0.2, half-length 0.5
     // Capsule 2: axis along X (rotated 90° about Y), center at (0.35, 0, 0)
@@ -437,7 +437,7 @@ fn capsule_capsule_endpoint_endpoint() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Capsule 1: top endpoint at z=0.5
     // Capsule 2: bottom endpoint at z=1.35-0.5=0.85
@@ -485,7 +485,7 @@ fn sphere_box_face_contact() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Box face at x=0.5
     // Sphere center at x=0.75, radius=0.3, surface at x=0.45
@@ -528,7 +528,7 @@ fn sphere_box_edge_contact() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Box corner at (0.5, 0.5, z), sphere center at (0.6, 0.6, 0)
     // Distance to edge (at y=0.5, x=0.5) = sqrt((0.1)² + (0.1)²) = sqrt(0.02) ≈ 0.141
@@ -564,7 +564,7 @@ fn sphere_box_corner_contact() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Box corner at (0.5, 0.5, 0.5), sphere center at (0.6, 0.6, 0.6)
     // Distance to corner = sqrt(3 × 0.1²) = sqrt(0.03) ≈ 0.173
@@ -604,7 +604,7 @@ fn box_box_face_face() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Box 1 right face at x=0.5
     // Box 2 left face at x=0.9-0.5=0.4
@@ -644,7 +644,7 @@ fn box_box_edge_edge() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Box 2 rotated 45° about Z, its corner extends further toward box 1
     // This creates an edge-edge or vertex-edge contact
@@ -678,7 +678,7 @@ fn box_box_separated() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert_eq!(data.ncon, 0, "Separated boxes should have no contact");
 }
@@ -706,7 +706,7 @@ fn cylinder_sphere_side_contact() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Cylinder radius=0.3, axis along Z
     // Sphere center at (0.55, 0, 0), radius=0.3
@@ -750,7 +750,7 @@ fn cylinder_sphere_cap_contact() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Cylinder cap at z=0.5
     // Sphere center at z=0.75, radius=0.3, surface at z=0.45
@@ -793,7 +793,7 @@ fn cylinder_sphere_rim_contact() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Rim point at (0.3, 0, 0.5)
     // Sphere center at (0.4, 0, 0.6)
@@ -834,7 +834,7 @@ fn cylinder_capsule_parallel_side() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Both axes along Z
     // Distance between axes = 0.55
@@ -865,7 +865,7 @@ fn cylinder_capsule_parallel_overlap() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Distance = 0.45, sum of radii = 0.5
     // Penetration = 0.5 - 0.45 = 0.05
@@ -900,7 +900,7 @@ fn cylinder_capsule_perpendicular() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Cylinder at origin, axis Z, radius 0.3, half-length 0.5
     // Capsule at (0.45, 0, 0), axis X (after 90° Y rotation), radius 0.2, half-length 0.4
@@ -946,7 +946,7 @@ fn capsule_box_face_contact() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Box face at x=0.5
     // Capsule center at x=0.75, radius=0.2, surface at x=0.55
@@ -976,7 +976,7 @@ fn capsule_box_face_overlap() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Capsule surface at x = 0.65 - 0.2 = 0.45
     // Box face at x = 0.5
@@ -1020,7 +1020,7 @@ fn sphere_stack_contacts() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Ball 1 touches floor: penetration = 0
     // Ball 2 touches ball 1: penetration = 0

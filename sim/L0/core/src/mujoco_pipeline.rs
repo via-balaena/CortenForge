@@ -4202,11 +4202,32 @@ impl ArticulatedSystem {
 
     /// Step the system forward using `MuJoCo`'s pipeline.
     ///
-    /// 1. Compute inertia matrix M via CRBA
-    /// 2. Compute bias forces via RNE
-    /// 3. Compute passive forces
-    /// 4. Solve M * qacc = `qfrc_smooth`
-    /// 5. Semi-implicit Euler integration
+    /// # Integration Pipeline (ANCHOR: step_integration)
+    ///
+    /// 1. Compute inertia matrix M via CRBA — O(n) Featherstone algorithm
+    /// 2. Compute bias forces via RNE — Coriolis/centrifugal/gravity
+    /// 3. Compute passive forces — springs computed EXPLICITLY as `-k*(q-q_eq) - d*qvel`
+    /// 4. Solve `M * qacc = qfrc_smooth` — LU decomposition, O(n³)
+    /// 5. Semi-implicit Euler: `qvel += qacc*dt`, then `qpos += qvel*dt`
+    ///
+    /// # Implicit Spring Integration (Future Enhancement)
+    ///
+    /// Currently spring forces are computed explicitly in step 3, which can be
+    /// unstable for high stiffness (k > 1000) with large timesteps (dt > 0.01).
+    ///
+    /// For implicit treatment, step 4 would become:
+    /// ```text
+    /// (M + h*D + h²*K) * v_new = M*v_old + h*f - h*K*(q - q_eq)
+    /// ```
+    ///
+    /// This requires refactoring `passive_forces()` to return (K, D, q_eq) separately
+    /// instead of the combined force vector. The change surface is minimal:
+    /// - Step 3: Extract K, D, q_eq instead of computing force
+    /// - Step 4: Build modified mass matrix `M + h*D + h²*K`
+    /// - Step 4: Build modified RHS `M*v + h*f - h*K*(q-q_eq)`
+    /// - Step 5: Already have v_new directly (skip qacc intermediate)
+    ///
+    /// Complexity remains O(n³) — we're just solving a different linear system.
     pub fn step(&mut self, dt: f64) {
         if self.nv == 0 {
             return;
@@ -5295,6 +5316,95 @@ impl MjJointType {
             Self::Free => 6, // linear + angular velocity
         }
     }
+
+    /// Whether this joint type uses quaternion representation.
+    #[must_use]
+    pub const fn uses_quaternion(self) -> bool {
+        matches!(self, Self::Ball | Self::Free)
+    }
+
+    /// Whether this joint type supports springs (linear displacement from equilibrium).
+    /// Ball/Free joints use quaternions and don't have a simple spring formulation.
+    #[must_use]
+    pub const fn supports_spring(self) -> bool {
+        matches!(self, Self::Hinge | Self::Slide)
+    }
+}
+
+// ============================================================================
+// Joint Visitor Pattern
+// ============================================================================
+
+/// Context passed to joint visitors with pre-computed addresses and metadata.
+///
+/// This provides all the commonly-needed information about a joint in one place,
+/// avoiding repeated lookups of `jnt_dof_adr`, `jnt_qpos_adr`, etc.
+#[derive(Debug, Clone, Copy)]
+pub struct JointContext {
+    /// Joint index in model arrays.
+    pub jnt_id: usize,
+    /// Joint type (Hinge, Slide, Ball, Free).
+    pub jnt_type: MjJointType,
+    /// Starting index in qvel/qacc/qfrc arrays (DOF address).
+    pub dof_adr: usize,
+    /// Starting index in qpos array (position address).
+    pub qpos_adr: usize,
+    /// Number of velocity DOFs for this joint.
+    pub nv: usize,
+    /// Number of position coordinates for this joint.
+    pub nq: usize,
+}
+
+/// Visitor trait for operations that iterate over joints.
+///
+/// This is the **single source of truth** for joint iteration. All code that
+/// processes joints should use `Model::visit_joints()` with this trait to ensure:
+///
+/// 1. **Consistency**: When a new joint type is added, the compiler forces updates
+/// 2. **Correctness**: Address computations are centralized, not copy-pasted
+/// 3. **Performance**: Addresses are computed once per joint, not per operation
+///
+/// # Example
+///
+/// ```ignore
+/// struct MyVisitor<'a> {
+///     model: &'a Model,
+///     data: &'a mut Data,
+/// }
+///
+/// impl JointVisitor for MyVisitor<'_> {
+///     fn visit_hinge(&mut self, ctx: JointContext) {
+///         // Process hinge joint at ctx.dof_adr, ctx.qpos_adr
+///     }
+///     // ... other methods have default no-op implementations
+/// }
+///
+/// model.visit_joints(&mut MyVisitor { model, data });
+/// ```
+pub trait JointVisitor {
+    /// Called for each Hinge joint (1 DOF revolute).
+    ///
+    /// Default: no-op. Override if your visitor needs to process hinge joints.
+    #[inline]
+    fn visit_hinge(&mut self, _ctx: JointContext) {}
+
+    /// Called for each Slide joint (1 DOF prismatic).
+    ///
+    /// Default: no-op. Override if your visitor needs to process slide joints.
+    #[inline]
+    fn visit_slide(&mut self, _ctx: JointContext) {}
+
+    /// Called for each Ball joint (3 DOF spherical, quaternion orientation).
+    ///
+    /// Default: no-op. Override if your visitor needs to process ball joints.
+    #[inline]
+    fn visit_ball(&mut self, _ctx: JointContext) {}
+
+    /// Called for each Free joint (6 DOF floating base).
+    ///
+    /// Default: no-op. Override if your visitor needs to process free joints.
+    #[inline]
+    fn visit_free(&mut self, _ctx: JointContext) {}
 }
 
 /// Geometry type for collision detection.
@@ -5573,6 +5683,42 @@ pub enum Integrator {
     Implicit,
 }
 
+/// Errors that can occur during a simulation step.
+///
+/// Following Rust idioms, step() returns Result<(), StepError> instead of
+/// silently correcting issues. Users must handle failures explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepError {
+    /// Position coordinates contain NaN or Inf.
+    InvalidPosition,
+    /// Velocity coordinates contain NaN or Inf.
+    InvalidVelocity,
+    /// Computed acceleration contains NaN (indicates singular mass matrix or numerical issues).
+    InvalidAcceleration,
+    /// Cholesky decomposition failed in implicit integration.
+    /// This indicates the modified mass matrix (M + h*D + h²*K) is not positive definite,
+    /// likely due to negative stiffness/damping or numerical instability.
+    CholeskyFailed,
+    /// Timestep is zero or negative.
+    InvalidTimestep,
+}
+
+impl std::fmt::Display for StepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidPosition => write!(f, "position contains NaN or Inf"),
+            Self::InvalidVelocity => write!(f, "velocity contains NaN or Inf"),
+            Self::InvalidAcceleration => write!(f, "acceleration contains NaN"),
+            Self::CholeskyFailed => {
+                write!(f, "Cholesky decomposition failed in implicit integration")
+            }
+            Self::InvalidTimestep => write!(f, "timestep is zero or negative"),
+        }
+    }
+}
+
+impl std::error::Error for StepError {}
+
 // Note: SpatialVector is defined earlier in this file as Vector6<f64>.
 // We use the same type for consistency with the existing ArticulatedSystem code.
 
@@ -5668,9 +5814,15 @@ pub struct Model {
     pub jnt_limited: Vec<bool>,
     /// Joint limits [min, max].
     pub jnt_range: Vec<(f64, f64)>,
-    /// Spring stiffness (reference is qpos0).
+    /// Spring stiffness coefficient (N/rad for hinge, N/m for slide).
+    /// Applied as: τ = -stiffness * (q - springref)
     pub jnt_stiffness: Vec<f64>,
-    /// Damping coefficient.
+    /// Spring equilibrium position (rad for hinge, m for slide).
+    /// This is the position where spring force is zero.
+    /// Distinct from `qpos0` which is the initial position at model load.
+    pub jnt_springref: Vec<f64>,
+    /// Damping coefficient (Ns/rad for hinge, Ns/m for slide).
+    /// Applied as: τ = -damping * qvel
     pub jnt_damping: Vec<f64>,
     /// Armature inertia (motor rotor inertia).
     pub jnt_armature: Vec<f64>,
@@ -5689,7 +5841,8 @@ pub struct Model {
     /// Damping coefficient for this DOF.
     pub dof_damping: Vec<f64>,
     /// Friction loss (dry friction) for this DOF.
-    /// Applied as: τ_friction = -frictionloss * sign(qvel)
+    /// Applied as: τ_friction = -frictionloss * tanh(qvel * FRICTION_SMOOTHING)
+    /// where the tanh provides a smooth approximation to sign(qvel) for numerical stability.
     pub dof_frictionloss: Vec<f64>,
 
     // ==================== Geoms (indexed by geom_id) ====================
@@ -5888,6 +6041,19 @@ pub struct Model {
     pub enableflags: u32,
     /// Integration method.
     pub integrator: Integrator,
+
+    // ==================== Cached Implicit Integration Parameters ====================
+    // These are pre-computed from joint properties for implicit spring-damper integration.
+    // Avoids O(nv) allocation per step by caching model-invariant diagonal matrices.
+    /// Diagonal stiffness matrix K for implicit integration (length nv).
+    /// `K\[i\]` = jnt_stiffness for Hinge/Slide DOFs, 0 for Ball/Free DOFs.
+    pub implicit_stiffness: DVector<f64>,
+    /// Diagonal damping matrix D for implicit integration (length nv).
+    /// `D\[i\]` = jnt_damping for Hinge/Slide, dof_damping for Ball/Free DOFs.
+    pub implicit_damping: DVector<f64>,
+    /// Spring equilibrium positions for implicit integration (length nv).
+    /// `q_eq\[i\]` = jnt_springref for Hinge/Slide, 0 for Ball/Free DOFs.
+    pub implicit_springref: DVector<f64>,
 
     // ==================== Pre-computed Kinematic Data ====================
     // These are computed once at model construction to avoid O(n) lookups
@@ -6130,8 +6296,8 @@ pub struct Data {
     /// For tree-structured robots, this achieves O(n) factorization and solve.
     ///
     /// Layout: qLD stores both L and D compactly:
-    /// - `qLD_diag[i] = D[i,i]` (diagonal of D)
-    /// - `qLD[i]` contains non-zero entries of `L[i, :]` below diagonal
+    /// - `qLD_diag\[i\] = D\[i,i\]` (diagonal of D)
+    /// - `qLD\[i\]` contains non-zero entries of `L\[i, :\]` below diagonal
     ///
     /// The sparsity pattern is determined by the kinematic tree:
     /// `L[i,j]` is non-zero only if DOF j is an ancestor of DOF i.
@@ -6213,6 +6379,31 @@ pub struct Data {
     // ==================== Time ====================
     /// Simulation time in seconds.
     pub time: f64,
+
+    // ==================== Scratch Buffers (for allocation-free stepping) ====================
+    /// Scratch matrix for implicit integration: M + h*D + h²*K.
+    /// Pre-allocated to avoid O(n²) allocation per step.
+    pub scratch_m_impl: DMatrix<f64>,
+    /// Scratch vector for force accumulation (length `nv`).
+    pub scratch_force: DVector<f64>,
+    /// Scratch vector for RHS of linear solves (length `nv`).
+    pub scratch_rhs: DVector<f64>,
+    /// Scratch vector for new velocity in implicit solve (length `nv`).
+    /// Used to hold v_new while computing qacc = (v_new - v_old) / h.
+    pub scratch_v_new: DVector<f64>,
+
+    // ==================== Cached Body Effective Mass/Inertia ====================
+    // These are extracted from the mass matrix diagonal during forward() and cached
+    // for use by constraint force limiting. This avoids O(joints) traversal per constraint.
+    /// Minimum translational mass for each body (length `nbody`).
+    /// Extracted from qM diagonal for linear DOFs (free joint indices 0-2, slide joints).
+    /// World body (index 0) has value `f64::INFINITY`.
+    pub body_min_mass: Vec<f64>,
+
+    /// Minimum rotational inertia for each body (length `nbody`).
+    /// Extracted from qM diagonal for angular DOFs (free joint 3-5, ball 0-2, hinge).
+    /// World body (index 0) has value `f64::INFINITY`.
+    pub body_min_inertia: Vec<f64>,
 }
 
 impl Model {
@@ -6263,6 +6454,7 @@ impl Model {
             jnt_limited: vec![],
             jnt_range: vec![],
             jnt_stiffness: vec![],
+            jnt_springref: vec![],
             jnt_damping: vec![],
             jnt_armature: vec![],
             jnt_name: vec![],
@@ -6374,9 +6566,58 @@ impl Model {
             enableflags: 0,  // Nothing extra enabled
             integrator: Integrator::Euler,
 
+            // Cached implicit integration parameters (empty for empty model)
+            implicit_stiffness: DVector::zeros(0),
+            implicit_damping: DVector::zeros(0),
+            implicit_springref: DVector::zeros(0),
+
             // Pre-computed kinematic data (world body has no ancestors)
             body_ancestor_joints: vec![vec![]],
             body_ancestor_mask: vec![vec![]], // Empty vec for world body (no joints yet)
+        }
+    }
+
+    /// Iterate over all joints with the visitor pattern.
+    ///
+    /// This is the **single source of truth** for joint iteration. Use this method
+    /// instead of manually iterating with `for jnt_id in 0..self.njnt` to ensure:
+    ///
+    /// - Consistent address computation across the codebase
+    /// - Automatic handling of new joint types (compiler enforces trait updates)
+    /// - Centralized joint metadata in `JointContext`
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// struct MyVisitor { /* ... */ }
+    ///
+    /// impl JointVisitor for MyVisitor {
+    ///     fn visit_hinge(&mut self, ctx: JointContext) {
+    ///         println!("Hinge joint {} at DOF {}", ctx.jnt_id, ctx.dof_adr);
+    ///     }
+    /// }
+    ///
+    /// model.visit_joints(&mut MyVisitor { /* ... */ });
+    /// ```
+    #[inline]
+    pub fn visit_joints<V: JointVisitor>(&self, visitor: &mut V) {
+        for jnt_id in 0..self.njnt {
+            let jnt_type = self.jnt_type[jnt_id];
+            let ctx = JointContext {
+                jnt_id,
+                jnt_type,
+                dof_adr: self.jnt_dof_adr[jnt_id],
+                qpos_adr: self.jnt_qpos_adr[jnt_id],
+                nv: jnt_type.nv(),
+                nq: jnt_type.nq(),
+            };
+
+            match jnt_type {
+                MjJointType::Hinge => visitor.visit_hinge(ctx),
+                MjJointType::Slide => visitor.visit_slide(ctx),
+                MjJointType::Ball => visitor.visit_ball(ctx),
+                MjJointType::Free => visitor.visit_free(ctx),
+            }
         }
     }
 
@@ -6471,6 +6712,29 @@ impl Model {
 
             // Time
             time: 0.0,
+
+            // Scratch buffers (pre-allocated for allocation-free stepping)
+            scratch_m_impl: DMatrix::zeros(self.nv, self.nv),
+            scratch_force: DVector::zeros(self.nv),
+            scratch_rhs: DVector::zeros(self.nv),
+            scratch_v_new: DVector::zeros(self.nv),
+
+            // Cached body mass/inertia (computed in forward() after CRBA)
+            // Initialize world body (index 0) to infinity, others to default
+            body_min_mass: {
+                let mut v = vec![DEFAULT_MASS_FALLBACK; self.nbody];
+                if self.nbody > 0 {
+                    v[0] = f64::INFINITY; // World body
+                }
+                v
+            },
+            body_min_inertia: {
+                let mut v = vec![DEFAULT_MASS_FALLBACK; self.nbody];
+                if self.nbody > 0 {
+                    v[0] = f64::INFINITY; // World body
+                }
+                v
+            },
         }
     }
 
@@ -6520,6 +6784,43 @@ impl Model {
                     self.body_ancestor_mask[body_id][word] |= 1u64 << bit;
                 }
                 current = self.body_parent[current];
+            }
+        }
+    }
+
+    /// Compute cached implicit integration parameters from joint parameters.
+    ///
+    /// This expands per-joint K/D/springref into per-DOF vectors used by
+    /// implicit integration. Must be called after all joints are added.
+    ///
+    /// For Hinge/Slide joints: `K\[dof\]` = jnt_stiffness, `D\[dof\]` = jnt_damping
+    /// For Ball/Free joints: `K\[dof\]` = 0, `D\[dof\]` = dof_damping (per-DOF)
+    pub fn compute_implicit_params(&mut self) {
+        // Resize to nv DOFs
+        self.implicit_stiffness = DVector::zeros(self.nv);
+        self.implicit_damping = DVector::zeros(self.nv);
+        self.implicit_springref = DVector::zeros(self.nv);
+
+        for jnt_id in 0..self.njnt {
+            let dof_adr = self.jnt_dof_adr[jnt_id];
+            let jnt_type = self.jnt_type[jnt_id];
+            let nv_jnt = jnt_type.nv();
+
+            match jnt_type {
+                MjJointType::Hinge | MjJointType::Slide => {
+                    self.implicit_stiffness[dof_adr] = self.jnt_stiffness[jnt_id];
+                    self.implicit_damping[dof_adr] = self.jnt_damping[jnt_id];
+                    self.implicit_springref[dof_adr] = self.jnt_springref[jnt_id];
+                }
+                MjJointType::Ball | MjJointType::Free => {
+                    // Ball/Free: per-DOF damping only (no spring for quaternion DOFs)
+                    for i in 0..nv_jnt {
+                        let dof_idx = dof_adr + i;
+                        self.implicit_stiffness[dof_idx] = 0.0;
+                        self.implicit_damping[dof_idx] = self.dof_damping[dof_idx];
+                        self.implicit_springref[dof_idx] = 0.0;
+                    }
+                }
             }
         }
     }
@@ -6621,6 +6922,7 @@ impl Model {
             model.jnt_limited.push(false);
             model.jnt_range.push((-PI, PI));
             model.jnt_stiffness.push(0.0);
+            model.jnt_springref.push(0.0);
             model.jnt_damping.push(0.0);
             model.jnt_armature.push(0.0);
             model.jnt_name.push(Some(format!("hinge_{i}")));
@@ -6647,6 +6949,9 @@ impl Model {
 
         // Pre-compute kinematic data for O(n) CRBA/RNE
         model.compute_ancestors();
+
+        // Pre-compute implicit integration parameters
+        model.compute_implicit_params();
 
         model
     }
@@ -6712,6 +7017,7 @@ impl Model {
         model.jnt_limited.push(false);
         model.jnt_range.push((-PI, PI));
         model.jnt_stiffness.push(0.0);
+        model.jnt_springref.push(0.0);
         model.jnt_damping.push(0.0);
         model.jnt_armature.push(0.0);
         model.jnt_name.push(Some("ball".to_string()));
@@ -6739,6 +7045,9 @@ impl Model {
 
         // Pre-compute kinematic data for O(n) CRBA/RNE
         model.compute_ancestors();
+
+        // Pre-compute implicit integration parameters
+        model.compute_implicit_params();
 
         model
     }
@@ -6790,6 +7099,7 @@ impl Model {
         model.jnt_limited.push(false);
         model.jnt_range.push((-1e10, 1e10));
         model.jnt_stiffness.push(0.0);
+        model.jnt_springref.push(0.0);
         model.jnt_damping.push(0.0);
         model.jnt_armature.push(0.0);
         model.jnt_name.push(Some("free".to_string()));
@@ -6817,6 +7127,9 @@ impl Model {
 
         // Pre-compute kinematic data for O(n) CRBA/RNE
         model.compute_ancestors();
+
+        // Pre-compute implicit integration parameters
+        model.compute_implicit_params();
 
         model
     }
@@ -6848,19 +7161,37 @@ impl Data {
     /// This is the main entry point for advancing the simulation by one timestep.
     /// It performs forward dynamics to compute accelerations, then integrates
     /// to update positions and velocities.
-    pub fn step(&mut self, model: &Model) {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(StepError)` if:
+    /// - Position/velocity contains NaN or Inf
+    /// - Acceleration computation produces NaN
+    /// - Cholesky decomposition fails (implicit integrator only)
+    /// - Timestep is invalid
+    ///
+    /// Unlike MuJoCo which silently resets state on errors, this follows
+    /// Rust idioms by requiring explicit error handling.
+    pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
+        // Validate timestep
+        if model.timestep <= 0.0 || !model.timestep.is_finite() {
+            return Err(StepError::InvalidTimestep);
+        }
+
         // Validate state before stepping
-        mj_check_pos(model, self);
-        mj_check_vel(model, self);
+        mj_check_pos(model, self)?;
+        mj_check_vel(model, self)?;
 
         // Forward dynamics: compute qacc from current state
-        self.forward(model);
+        self.forward(model)?;
 
         // Validate computed acceleration
-        mj_check_acc(model, self);
+        mj_check_acc(model, self)?;
 
         // Integration: update qvel and qpos
         self.integrate(model);
+
+        Ok(())
     }
 
     /// Forward dynamics only (like `mj_forward`).
@@ -6873,7 +7204,12 @@ impl Data {
     /// 1. Position stage: FK, position-dependent sensors, potential energy
     /// 2. Velocity stage: velocity FK, velocity-dependent sensors, kinetic energy
     /// 3. Acceleration stage: actuation, dynamics, constraints, acc-dependent sensors
-    pub fn forward(&mut self, model: &Model) {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(StepError::CholeskyFailed)` if using implicit integrator
+    /// and the modified mass matrix decomposition fails.
+    pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
         // ========== Position Stage ==========
         // Stage 1a: Forward kinematics - compute body/geom/site poses from qpos
         mj_fwd_position(model, self);
@@ -6912,20 +7248,39 @@ impl Data {
         mj_fwd_constraint(model, self);
 
         // Stage 3f: Compute final acceleration
-        mj_fwd_acceleration(model, self);
+        mj_fwd_acceleration(model, self)?;
 
         // Stage 3g: Acceleration-dependent sensors (accelerometer, etc.)
         mj_sensor_acc(model, self);
+
+        Ok(())
     }
 
-    /// Integration step (semi-implicit Euler, `MuJoCo` default).
+    /// Integration step.
+    ///
+    /// # Integration Methods
+    ///
+    /// - **Euler/RK4**: Semi-implicit Euler. Updates velocity first (`qvel += qacc * h`),
+    ///   then integrates position using the new velocity.
+    ///
+    /// - **Implicit**: Velocity was already updated in `mj_fwd_acceleration_implicit()`.
+    ///   We only integrate positions here.
     fn integrate(&mut self, model: &Model) {
         let h = model.timestep;
 
-        // Semi-implicit Euler: update velocity first, then position
-        // This is more stable than explicit Euler
-        for i in 0..model.nv {
-            self.qvel[i] += self.qacc[i] * h;
+        // For explicit integrators, update velocity using computed acceleration
+        // For implicit integrator, velocity was already updated in mj_fwd_acceleration_implicit
+        match model.integrator {
+            Integrator::Euler | Integrator::RungeKutta4 => {
+                // Semi-implicit Euler: update velocity first, then position
+                for i in 0..model.nv {
+                    self.qvel[i] += self.qacc[i] * h;
+                }
+            }
+            Integrator::Implicit => {
+                // Velocity already updated by mj_fwd_acceleration_implicit
+                // qacc was back-computed as (v_new - v_old) / h for consistency
+            }
         }
 
         // Update positions - quaternions need special handling!
@@ -6943,37 +7298,49 @@ impl Data {
 // MuJoCo Pipeline Functions (Phase 2)
 // ============================================================================
 
-/// Validate position coordinates, reset if NaN/Inf detected.
-fn mj_check_pos(model: &Model, data: &mut Data) -> bool {
+/// Validate position coordinates.
+///
+/// Returns `Err(StepError::InvalidPosition)` if any qpos element is NaN, Inf,
+/// or exceeds 1e10 in magnitude (indicating numerical blow-up).
+///
+/// Unlike MuJoCo which silently resets to qpos0, this returns an error so
+/// users can decide how to handle the situation.
+fn mj_check_pos(model: &Model, data: &Data) -> Result<(), StepError> {
     for i in 0..model.nq {
         if !data.qpos[i].is_finite() || data.qpos[i].abs() > 1e10 {
-            // Reset to default position
-            data.qpos = model.qpos0.clone();
-            return false;
+            return Err(StepError::InvalidPosition);
         }
     }
-    true
+    Ok(())
 }
 
-/// Validate velocity coordinates, zero if NaN/Inf detected.
-fn mj_check_vel(model: &Model, data: &mut Data) -> bool {
+/// Validate velocity coordinates.
+///
+/// Returns `Err(StepError::InvalidVelocity)` if any qvel element is NaN, Inf,
+/// or exceeds 1e10 in magnitude (indicating numerical blow-up).
+///
+/// Unlike MuJoCo which silently zeros velocity, this returns an error so
+/// users can decide how to handle the situation.
+fn mj_check_vel(model: &Model, data: &Data) -> Result<(), StepError> {
     for i in 0..model.nv {
         if !data.qvel[i].is_finite() || data.qvel[i].abs() > 1e10 {
-            data.qvel.fill(0.0);
-            return false;
+            return Err(StepError::InvalidVelocity);
         }
     }
-    true
+    Ok(())
 }
 
-/// Validate acceleration, return false if invalid.
-fn mj_check_acc(model: &Model, data: &Data) -> bool {
+/// Validate acceleration.
+///
+/// Returns `Err(StepError::InvalidAcceleration)` if any qacc element is NaN.
+/// This typically indicates a singular mass matrix or other numerical issues.
+fn mj_check_acc(model: &Model, data: &Data) -> Result<(), StepError> {
     for i in 0..model.nv {
         if !data.qacc[i].is_finite() {
-            return false;
+            return Err(StepError::InvalidAcceleration);
         }
     }
-    true
+    Ok(())
 }
 
 /// Forward kinematics: compute body poses from qpos.
@@ -10284,6 +10651,116 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // allocating a separate buffer. This is the optimal single-allocation approach.
     // Total cost: O(n³) factorization + O(n²) memory, done once per forward().
     data.qM_cholesky = data.qM.clone().cholesky();
+
+    // ============================================================
+    // Phase 6: Cache body effective mass/inertia from qM diagonal
+    // ============================================================
+    // Extract per-body min mass/inertia for constraint force limiting.
+    // This avoids O(joints) traversal per constraint.
+    cache_body_effective_mass(model, data);
+}
+
+/// Cache per-body minimum mass and inertia from the mass matrix diagonal.
+///
+/// This extracts the minimum diagonal elements for each body's DOFs and stores
+/// them in `data.body_min_mass` and `data.body_min_inertia`. These cached values
+/// are used by constraint force limiting to avoid repeated mass matrix queries.
+///
+/// Uses the `JointVisitor` pattern to ensure consistency with joint iteration
+/// elsewhere in the codebase.
+///
+/// Must be called after `mj_crba()` has computed the mass matrix.
+fn cache_body_effective_mass(model: &Model, data: &mut Data) {
+    // Visitor struct for JointVisitor pattern (defined before statements per clippy)
+    struct MassCacheVisitor<'a> {
+        model: &'a Model,
+        data: &'a mut Data,
+    }
+
+    impl JointVisitor for MassCacheVisitor<'_> {
+        fn visit_free(&mut self, ctx: JointContext) {
+            let body_id = self.model.jnt_body[ctx.jnt_id];
+            // Linear DOFs at 0-2
+            for i in 0..3 {
+                let dof = ctx.dof_adr + i;
+                if dof < self.model.nv {
+                    let mass = self.data.qM[(dof, dof)];
+                    if mass > MIN_INERTIA_THRESHOLD {
+                        self.data.body_min_mass[body_id] =
+                            self.data.body_min_mass[body_id].min(mass);
+                    }
+                }
+            }
+            // Angular DOFs at 3-5
+            for i in 3..6 {
+                let dof = ctx.dof_adr + i;
+                if dof < self.model.nv {
+                    let inertia = self.data.qM[(dof, dof)];
+                    if inertia > MIN_INERTIA_THRESHOLD {
+                        self.data.body_min_inertia[body_id] =
+                            self.data.body_min_inertia[body_id].min(inertia);
+                    }
+                }
+            }
+        }
+
+        fn visit_ball(&mut self, ctx: JointContext) {
+            let body_id = self.model.jnt_body[ctx.jnt_id];
+            // All 3 DOFs are angular
+            for i in 0..3 {
+                let dof = ctx.dof_adr + i;
+                if dof < self.model.nv {
+                    let inertia = self.data.qM[(dof, dof)];
+                    if inertia > MIN_INERTIA_THRESHOLD {
+                        self.data.body_min_inertia[body_id] =
+                            self.data.body_min_inertia[body_id].min(inertia);
+                    }
+                }
+            }
+        }
+
+        fn visit_hinge(&mut self, ctx: JointContext) {
+            let body_id = self.model.jnt_body[ctx.jnt_id];
+            // Single angular DOF
+            if ctx.dof_adr < self.model.nv {
+                let inertia = self.data.qM[(ctx.dof_adr, ctx.dof_adr)];
+                if inertia > MIN_INERTIA_THRESHOLD {
+                    self.data.body_min_inertia[body_id] =
+                        self.data.body_min_inertia[body_id].min(inertia);
+                }
+            }
+        }
+
+        fn visit_slide(&mut self, ctx: JointContext) {
+            let body_id = self.model.jnt_body[ctx.jnt_id];
+            // Single linear DOF
+            if ctx.dof_adr < self.model.nv {
+                let mass = self.data.qM[(ctx.dof_adr, ctx.dof_adr)];
+                if mass > MIN_INERTIA_THRESHOLD {
+                    self.data.body_min_mass[body_id] = self.data.body_min_mass[body_id].min(mass);
+                }
+            }
+        }
+    }
+
+    // Reset to defaults (world body stays at infinity)
+    for i in 1..model.nbody {
+        data.body_min_mass[i] = f64::INFINITY;
+        data.body_min_inertia[i] = f64::INFINITY;
+    }
+
+    let mut visitor = MassCacheVisitor { model, data };
+    model.visit_joints(&mut visitor);
+
+    // Replace infinity with default for bodies that had no DOFs of that type
+    for i in 1..model.nbody {
+        if data.body_min_mass[i] == f64::INFINITY {
+            data.body_min_mass[i] = DEFAULT_MASS_FALLBACK;
+        }
+        if data.body_min_inertia[i] == f64::INFINITY {
+            data.body_min_inertia[i] = DEFAULT_MASS_FALLBACK;
+        }
+    }
 }
 
 /// Compute the joint motion subspace matrix S (6 x nv).
@@ -10634,40 +11111,136 @@ fn mj_rne(model: &Model, data: &mut Data) {
     }
 }
 
-/// Compute passive forces (springs and dampers).
+/// Smoothing factor for friction loss approximation.
+/// Controls sharpness of tanh transition from 0 to full friction.
+/// At vel=0.001, tanh(1000 * 0.001) ≈ 0.76, providing smooth onset.
+/// At vel=0.01, tanh(1000 * 0.01) ≈ 1.0, full friction magnitude.
+const FRICTION_SMOOTHING: f64 = 1000.0;
+
+/// Velocity threshold below which friction is not applied.
+/// Prevents numerical noise from creating spurious friction forces.
+const FRICTION_VELOCITY_THRESHOLD: f64 = 1e-12;
+
+/// Compute passive forces (springs, dampers, and friction loss).
+///
+/// Implements MuJoCo's passive force model:
+/// - **Spring**: τ = -stiffness * (q - springref)
+/// - **Damper**: τ = -damping * qvel
+/// - **Friction loss**: τ = -frictionloss * tanh(qvel * FRICTION_SMOOTHING)
+///
+/// The friction loss uses a smooth `tanh` approximation to Coulomb friction
+/// (`sign(qvel)`) to avoid discontinuity at zero velocity, which would cause
+/// numerical issues with explicit integrators.
+///
+/// # MuJoCo Semantics
+///
+/// The spring equilibrium is `jnt_springref`, NOT `qpos0`. These are distinct:
+/// - `qpos0`: Initial joint position at model load (for `mj_resetData()`)
+/// - `springref`: Spring equilibrium position (where spring force is zero)
+///
+/// A joint can start at q=0 but have a spring pulling toward springref=0.5.
+///
+/// # Implicit Integration Mode
+///
+/// When `model.integrator == Implicit`, spring and damper forces are handled
+/// implicitly in `mj_fwd_acceleration_implicit()`. This function then only
+/// computes friction loss (which is velocity-sign-dependent and cannot be
+/// linearized into the implicit solve).
 fn mj_fwd_passive(model: &Model, data: &mut Data) {
     data.qfrc_passive.fill(0.0);
 
-    for jnt_id in 0..model.njnt {
-        let dof_adr = model.jnt_dof_adr[jnt_id];
-        let qpos_adr = model.jnt_qpos_adr[jnt_id];
-        let nv = model.jnt_type[jnt_id].nv();
+    let implicit_mode = model.integrator == Integrator::Implicit;
+    let mut visitor = PassiveForceVisitor {
+        model,
+        data,
+        implicit_mode,
+    };
+    model.visit_joints(&mut visitor);
+}
 
-        let stiffness = model.jnt_stiffness[jnt_id];
-        let damping = model.jnt_damping[jnt_id];
+/// Visitor for computing passive forces (springs, dampers, friction loss).
+struct PassiveForceVisitor<'a> {
+    model: &'a Model,
+    data: &'a mut Data,
+    implicit_mode: bool,
+}
 
-        match model.jnt_type[jnt_id] {
-            MjJointType::Hinge | MjJointType::Slide => {
-                // Spring: F = -k * (q - q0)
-                let q0 = model.qpos0.get(qpos_adr).copied().unwrap_or(0.0);
-                let q = data.qpos[qpos_adr];
-                data.qfrc_passive[dof_adr] -= stiffness * (q - q0);
-
-                // Damper: F = -b * qdot
-                data.qfrc_passive[dof_adr] -= damping * data.qvel[dof_adr];
-            }
-            MjJointType::Ball | MjJointType::Free => {
-                // Apply damping to all DOFs
-                for i in 0..nv {
-                    let dof_damping = model
-                        .dof_damping
-                        .get(dof_adr + i)
-                        .copied()
-                        .unwrap_or(damping);
-                    data.qfrc_passive[dof_adr + i] -= dof_damping * data.qvel[dof_adr + i];
-                }
-            }
+impl PassiveForceVisitor<'_> {
+    /// Apply friction loss force at a single DOF.
+    /// Friction loss is always explicit (velocity-sign-dependent, cannot linearize).
+    #[inline]
+    fn apply_friction_loss(&mut self, dof_idx: usize) {
+        let qvel = self.data.qvel[dof_idx];
+        let frictionloss = self.model.dof_frictionloss[dof_idx];
+        if frictionloss > 0.0 && qvel.abs() > FRICTION_VELOCITY_THRESHOLD {
+            let smooth_sign = (qvel * FRICTION_SMOOTHING).tanh();
+            self.data.qfrc_passive[dof_idx] -= frictionloss * smooth_sign;
         }
+    }
+
+    /// Process a 1-DOF joint (Hinge or Slide) with spring, damper, and friction.
+    #[inline]
+    fn visit_1dof_joint(&mut self, ctx: JointContext) {
+        let dof_adr = ctx.dof_adr;
+        let qpos_adr = ctx.qpos_adr;
+        let jnt_id = ctx.jnt_id;
+
+        if !self.implicit_mode {
+            // Spring: τ = -k * (q - springref)
+            let stiffness = self.model.jnt_stiffness[jnt_id];
+            let springref = self.model.jnt_springref[jnt_id];
+            let q = self.data.qpos[qpos_adr];
+            self.data.qfrc_passive[dof_adr] -= stiffness * (q - springref);
+
+            // Damper: τ = -b * qvel
+            let damping = self.model.jnt_damping[jnt_id];
+            let qvel = self.data.qvel[dof_adr];
+            self.data.qfrc_passive[dof_adr] -= damping * qvel;
+        }
+
+        // Friction loss: always explicit
+        self.apply_friction_loss(dof_adr);
+    }
+
+    /// Process a multi-DOF joint (Ball or Free) with per-DOF damping and friction.
+    /// No springs (would require quaternion spring formulation).
+    #[inline]
+    fn visit_multi_dof_joint(&mut self, ctx: JointContext) {
+        for i in 0..ctx.nv {
+            let dof_idx = ctx.dof_adr + i;
+
+            if !self.implicit_mode {
+                // Per-DOF damping
+                let dof_damping = self.model.dof_damping[dof_idx];
+                let qvel = self.data.qvel[dof_idx];
+                self.data.qfrc_passive[dof_idx] -= dof_damping * qvel;
+            }
+
+            // Friction loss: always explicit
+            self.apply_friction_loss(dof_idx);
+        }
+    }
+}
+
+impl JointVisitor for PassiveForceVisitor<'_> {
+    #[inline]
+    fn visit_hinge(&mut self, ctx: JointContext) {
+        self.visit_1dof_joint(ctx);
+    }
+
+    #[inline]
+    fn visit_slide(&mut self, ctx: JointContext) {
+        self.visit_1dof_joint(ctx);
+    }
+
+    #[inline]
+    fn visit_ball(&mut self, ctx: JointContext) {
+        self.visit_multi_dof_joint(ctx);
+    }
+
+    #[inline]
+    fn visit_free(&mut self, ctx: JointContext) {
+        self.visit_multi_dof_joint(ctx);
     }
 }
 
@@ -11253,10 +11826,847 @@ fn pgs_solve_contacts(
     forces
 }
 
+/// Apply equality constraint forces using penalty method.
+///
+/// Supports Connect, Weld, and Joint constraints.
+/// Uses Baumgarte stabilization for drift correction.
+///
+/// # MuJoCo Semantics
+///
+/// - **Connect**: Ball-and-socket (3 DOF position lock).
+///   Error = p1 + R1*anchor - p2, where p2 is body2's position (or world origin).
+///
+/// - **Weld**: Fixed frame (6 DOF pose lock).
+///   Position error same as Connect; orientation error via quaternion difference.
+///
+/// - **Joint**: Polynomial coupling θ₂ = c₀ + c₁θ₁ + c₂θ₁² + c₃θ₁³ + c₄θ₁⁴.
+///   Error = θ₂ - poly(θ₁). Only joint2 receives correction torque (see below).
+///
+/// # Key Design Decision: No Reaction Torque for Joint Coupling
+///
+/// In articulated body dynamics, applying τ₂ to joint2 naturally propagates forces
+/// through the kinematic chain via the mass matrix M. Adding an explicit reaction
+/// torque τ₁ = -∂θ₂/∂θ₁ · τ₂ would double-count the coupling, causing positive
+/// feedback and numerical explosion. This is NOT a bug — it's how articulated
+/// body dynamics work. See Featherstone, "Rigid Body Dynamics Algorithms" (2008),
+/// Section 7.3 on constraint force propagation.
+///
+/// # Penalty Parameters
+///
+/// Derived from solref [timeconst, dampratio]:
+/// ```text
+/// k = 1 / timeconst²           (stiffness, N/m or Nm/rad)
+/// b = 2 * dampratio / timeconst  (damping, Ns/m or Nms/rad)
+/// ```
+fn apply_equality_constraints(model: &Model, data: &mut Data) {
+    // Skip if no equality constraints
+    if model.neq == 0 {
+        return;
+    }
+
+    // Default penalty parameters (fallback when solref not specified).
+    //
+    // These are intentionally stiffer than MuJoCo's default solref=[0.02, 1.0],
+    // which maps to k=2500, b=100. Our defaults (k=10000, b=1000) are chosen to:
+    //
+    // 1. Strongly enforce constraints when no solref is given (fail-safe behavior)
+    // 2. Remain stable with explicit integration at dt=0.001 (stability limit ~dt<0.02)
+    //
+    // For explicit penalty integration, the stability condition is approximately:
+    //   dt < 2/sqrt(k) → dt < 0.02 for k=10000
+    //
+    // Users should specify solref in MJCF for fine-grained control. Recommended
+    // values for explicit integration: solref="0.05 1.0" to solref="0.1 1.0"
+    // (softer than MuJoCo defaults, which assume implicit PGS solver).
+    let default_stiffness = 10000.0;
+    let default_damping = 1000.0;
+
+    let dt = model.timestep;
+
+    for eq_id in 0..model.neq {
+        // Skip inactive constraints
+        if !model.eq_active[eq_id] {
+            continue;
+        }
+
+        match model.eq_type[eq_id] {
+            EqualityType::Connect => {
+                apply_connect_constraint(
+                    model,
+                    data,
+                    eq_id,
+                    default_stiffness,
+                    default_damping,
+                    dt,
+                );
+            }
+            EqualityType::Weld => {
+                apply_weld_constraint(model, data, eq_id, default_stiffness, default_damping, dt);
+            }
+            EqualityType::Joint => {
+                apply_joint_equality_constraint(
+                    model,
+                    data,
+                    eq_id,
+                    default_stiffness,
+                    default_damping,
+                    dt,
+                );
+            }
+            EqualityType::Distance | EqualityType::Tendon => {
+                // Distance and Tendon constraints not yet implemented.
+                // These require geom/tendon position computation.
+                //
+                // Warn once per session so users know their constraint is being ignored.
+                use std::sync::Once;
+                static WARN_ONCE: Once = Once::new();
+                WARN_ONCE.call_once(|| {
+                    eprintln!(
+                        "Warning: Distance/Tendon equality constraints are not yet implemented; \
+                         these constraints will be ignored. See MUJOCO_PARITY_SPEC.md Phase 2."
+                    );
+                });
+            }
+        }
+    }
+}
+
+/// Convert solref parameters to penalty stiffness and damping.
+///
+/// MuJoCo's solref = [timeconst, dampratio] maps to a second-order system:
+/// - Natural frequency: ωn = 1/timeconst
+/// - Stiffness: k = ωn² = 1/timeconst²
+/// - Damping: b = 2 * dampratio * ωn = 2 * dampratio / timeconst
+///
+/// When timeconst ≤ 0, falls back to provided defaults.
+///
+/// # Arguments
+/// * `solref` - [timeconst, dampratio] from MJCF
+/// * `default_k` - Fallback stiffness if solref[0] ≤ 0
+/// * `default_b` - Fallback damping if solref[0] ≤ 0
+///
+/// # Returns
+/// (stiffness, damping) tuple for penalty method
+///
+/// Converts MuJoCo's solref parameters [timeconst, dampratio] to penalty gains (k, b):
+///   k = 1 / timeconst²
+///   b = 2 * dampratio / timeconst
+///
+/// The timeconst parameter sets the natural response time of the constraint.
+/// For explicit integration stability, timeconst should be > 2 * dt.
+///
+/// The timestep parameter is used to clamp k for stability when the user-specified
+/// timeconst would cause instability with the current timestep.
+#[inline]
+fn solref_to_penalty(solref: [f64; 2], default_k: f64, default_b: f64, dt: f64) -> (f64, f64) {
+    let (k, b) = if solref[0] > 0.0 {
+        let timeconst = solref[0];
+        let dampratio = solref[1];
+        (1.0 / (timeconst * timeconst), 2.0 * dampratio / timeconst)
+    } else {
+        (default_k, default_b)
+    };
+
+    // Stability limit for explicit integration: dt < 2/sqrt(k/m_eff)
+    // Since we don't know m_eff, we use a conservative limit based on dt alone.
+    // For unit mass: k_max = 4/dt² gives marginal stability.
+    // We use 1/dt² for a safety factor of 2.
+    let k_max = 1.0 / (dt * dt);
+    let k_clamped = k.min(k_max);
+
+    // If we clamped k significantly, scale damping proportionally for critical damping
+    // Critical damping: b = 2*sqrt(k*m). For unit m: b = 2*sqrt(k).
+    // If k was reduced, reduce b to maintain damping ratio.
+    let b_scaled = if k_clamped < k * 0.99 {
+        // Maintain the original damping ratio (b/2sqrt(k)) with new k
+        let original_zeta = b / (2.0 * k.sqrt());
+        2.0 * original_zeta * k_clamped.sqrt()
+    } else {
+        b
+    };
+
+    (k_clamped, b_scaled)
+}
+
+// =============================================================================
+// Constraint Stability Constants
+// =============================================================================
+
+/// Maximum velocity change per timestep for translational DOFs (m/s).
+///
+/// This limits the acceleration to `MAX_DELTA_V / dt` to ensure stability
+/// with explicit Euler integration. A value of 1.0 means velocity can change
+/// by at most 1 m/s each timestep, preventing oscillation from overshooting.
+const MAX_DELTA_V_LINEAR: f64 = 1.0;
+
+/// Maximum angular velocity change per timestep for rotational DOFs (rad/s).
+///
+/// Similar to `MAX_DELTA_V_LINEAR` but for angular velocities. A value of 1.0
+/// means angular velocity can change by at most 1 rad/s each timestep.
+const MAX_DELTA_V_ANGULAR: f64 = 1.0;
+
+/// Maximum effective rotation error for constraint stiffness term (radians).
+///
+/// For large orientation errors, the small-angle approximation in the
+/// quaternion-to-axis-angle conversion becomes inaccurate. We clamp the
+/// effective error to this value (~29 degrees) for the stiffness term.
+/// The damping term uses actual velocities and is not affected.
+const MAX_ROTATION_ERROR_FOR_STIFFNESS: f64 = 0.5;
+
+/// Minimum inertia/mass threshold for numerical stability.
+///
+/// Values below this threshold are treated as numerical noise and ignored
+/// when computing effective mass for constraint force limiting.
+const MIN_INERTIA_THRESHOLD: f64 = 1e-10;
+
+/// Default mass/inertia when no valid DOFs are found for a body.
+///
+/// This is used when a body has no translational/rotational DOFs that we
+/// can extract mass from (e.g., kinematic bodies). Using 1.0 provides
+/// reasonable default behavior.
+const DEFAULT_MASS_FALLBACK: f64 = 1.0;
+
+// =============================================================================
+// Constraint Force Utilities
+// =============================================================================
+
+/// Clamp a vector to a maximum magnitude while preserving direction.
+///
+/// Returns the original vector if its magnitude is at or below `max_magnitude`,
+/// otherwise returns a vector in the same direction with the clamped magnitude.
+///
+/// # Safety
+///
+/// Clamp vector magnitude, avoiding division by near-zero.
+///
+/// If `mag <= max_magnitude`, returns `v` unchanged.
+/// If `mag > max_magnitude` and `mag > MIN_INERTIA_THRESHOLD`, returns scaled vector.
+/// If `mag <= MIN_INERTIA_THRESHOLD`, returns `v` unchanged (near-zero input).
+#[inline]
+fn clamp_vector_magnitude(v: Vector3<f64>, max_magnitude: f64) -> Vector3<f64> {
+    let mag = v.norm();
+    // Only clamp if magnitude exceeds limit AND is large enough to safely divide
+    if mag > max_magnitude {
+        if mag > MIN_INERTIA_THRESHOLD {
+            v * (max_magnitude / mag)
+        } else {
+            // Near-zero vector, return as-is to avoid division issues
+            v
+        }
+    } else {
+        v
+    }
+}
+
+/// Convert a quaternion error to axis-angle representation.
+///
+/// For a unit quaternion `q = (w, x, y, z) = (cos(θ/2), sin(θ/2) * axis)`,
+/// returns `θ * axis` as a Vector3.
+///
+/// This is more accurate than the small-angle approximation `2 * [x, y, z]`
+/// which has ~10% error at 90° and ~36% error at 180°.
+///
+/// # Arguments
+/// * `quat` - A unit quaternion representing the rotation error
+///
+/// # Returns
+/// Axis-angle representation as `angle * axis` (Vector3)
+#[inline]
+fn quaternion_to_axis_angle(quat: &UnitQuaternion<f64>) -> Vector3<f64> {
+    let q = quat.quaternion();
+    let (qw, qx, qy, qz) = (q.w, q.i, q.j, q.k);
+
+    // Handle identity quaternion (no rotation)
+    let sin_half_angle_sq = qx * qx + qy * qy + qz * qz;
+    if sin_half_angle_sq < MIN_INERTIA_THRESHOLD {
+        return Vector3::zeros();
+    }
+
+    let sin_half_angle = sin_half_angle_sq.sqrt();
+
+    // Compute full angle: θ = 2 * atan2(||xyz||, w)
+    // This handles all cases including w < 0 (angle > π)
+    let angle = 2.0 * sin_half_angle.atan2(qw);
+
+    // Axis is normalized [x, y, z] / ||xyz||
+    // Result is angle * axis
+    Vector3::new(qx, qy, qz) * (angle / sin_half_angle)
+}
+
+/// Apply a Connect (ball-and-socket) equality constraint.
+///
+/// Constrains anchor point on body1 to coincide with body2's position.
+/// Uses Baumgarte stabilization: F = -k * pos_error - b * vel_error
+///
+/// # Force Limiting
+///
+/// Forces are clamped based on the effective mass to ensure acceleration
+/// stays bounded, preventing instability with explicit integration.
+fn apply_connect_constraint(
+    model: &Model,
+    data: &mut Data,
+    eq_id: usize,
+    default_stiffness: f64,
+    default_damping: f64,
+    dt: f64,
+) {
+    let body1 = model.eq_obj1id[eq_id];
+    let body2 = model.eq_obj2id[eq_id];
+    let eq_data = &model.eq_data[eq_id];
+
+    // Cache body validity checks (body_id == 0 means world frame)
+    let body1_is_dynamic = body1 != 0;
+    let body2_is_dynamic = body2 != 0;
+
+    // Anchor point in body1's local frame
+    let anchor = Vector3::new(eq_data[0], eq_data[1], eq_data[2]);
+
+    // Get body poses
+    let p1 = data.xpos[body1];
+    let r1 = data.xquat[body1];
+    let p2 = if body2_is_dynamic {
+        data.xpos[body2]
+    } else {
+        Vector3::zeros()
+    };
+
+    // World position of anchor on body1
+    let anchor_world = p1 + r1 * anchor;
+
+    // Position error: anchor should coincide with body2's origin
+    let pos_error = anchor_world - p2;
+
+    // Velocity error (relative velocity at constraint point)
+    let vel_error = if body1_is_dynamic {
+        let cvel1 = &data.cvel[body1];
+        let omega1 = Vector3::new(cvel1[0], cvel1[1], cvel1[2]);
+        let v1 = Vector3::new(cvel1[3], cvel1[4], cvel1[5]);
+        let r1_anchor = r1 * anchor;
+        let v_anchor = v1 + omega1.cross(&r1_anchor);
+
+        if body2_is_dynamic {
+            let cvel2 = &data.cvel[body2];
+            let v2 = Vector3::new(cvel2[3], cvel2[4], cvel2[5]);
+            v_anchor - v2
+        } else {
+            v_anchor
+        }
+    } else {
+        Vector3::zeros()
+    };
+
+    // Compute penalty parameters from solref
+    let (stiffness, damping) = solref_to_penalty(
+        model.eq_solref[eq_id],
+        default_stiffness,
+        default_damping,
+        dt,
+    );
+
+    // Baumgarte stabilization: F = -k*error - b*vel_error
+    let raw_force = -stiffness * pos_error - damping * vel_error;
+
+    // Compute effective mass for force limiting using cached values
+    // body_min_mass[0] = infinity for world body
+    let mass1 = data.body_min_mass[body1];
+    let mass2 = data.body_min_mass[body2];
+    let eff_mass = effective_mass_for_stability(mass1, mass2);
+
+    // Limit force to bound acceleration: a_max = MAX_DELTA_V_LINEAR / dt
+    let max_accel = MAX_DELTA_V_LINEAR / dt;
+    let max_force = eff_mass * max_accel;
+    let force = clamp_vector_magnitude(raw_force, max_force);
+
+    // Apply forces via Jacobian transpose
+    if body1_is_dynamic {
+        apply_constraint_force_to_body(model, data, body1, anchor_world, force);
+    }
+    if body2_is_dynamic {
+        apply_constraint_force_to_body(model, data, body2, p2, -force);
+    }
+}
+
+/// DOF type for mass matrix extraction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DofKind {
+    /// Linear (translational) DOFs
+    Linear,
+    /// Angular (rotational) DOFs
+    Angular,
+}
+
+/// Extract minimum diagonal mass/inertia from the mass matrix for specified DOF types.
+///
+/// This is the core implementation used by both `get_min_translational_mass` and
+/// `get_min_rotational_inertia`. It traverses the body's joints and extracts the
+/// minimum diagonal element from the mass matrix for the specified DOF type.
+///
+/// # Arguments
+/// * `model` - The physics model
+/// * `data` - The simulation data containing the mass matrix
+/// * `body_id` - The body to query (0 = world, returns infinity)
+/// * `kind` - Whether to extract linear (mass) or angular (inertia) DOFs
+///
+/// # Returns
+/// The minimum diagonal mass/inertia, or `DEFAULT_MASS_FALLBACK` if no valid DOFs found.
+#[inline]
+fn get_min_diagonal_mass(model: &Model, data: &Data, body_id: usize, kind: DofKind) -> f64 {
+    if body_id == 0 {
+        return f64::INFINITY;
+    }
+
+    let mut min_val = f64::INFINITY;
+
+    let jnt_start = model.body_jnt_adr[body_id];
+    let jnt_end = jnt_start + model.body_jnt_num[body_id];
+
+    for jnt_id in jnt_start..jnt_end {
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+
+        // Determine which DOF indices to query based on joint type and DOF kind
+        // Arms combined where they return identical values per clippy::match_same_arms
+        let dof_range: Option<std::ops::Range<usize>> = match (model.jnt_type[jnt_id], kind) {
+            // Free linear (0-2) and Ball angular (0-2) both use first 3 DOFs
+            (MjJointType::Free, DofKind::Linear) | (MjJointType::Ball, DofKind::Angular) => {
+                Some(0..3)
+            }
+
+            // Free angular uses DOFs 3-5
+            (MjJointType::Free, DofKind::Angular) => Some(3..6),
+
+            // Hinge/Slide: single DOF of matching kind
+            (MjJointType::Hinge, DofKind::Angular) | (MjJointType::Slide, DofKind::Linear) => {
+                Some(0..1)
+            }
+
+            // No DOFs for mismatched kind
+            (MjJointType::Ball | MjJointType::Hinge, DofKind::Linear)
+            | (MjJointType::Slide, DofKind::Angular) => None,
+        };
+
+        if let Some(range) = dof_range {
+            for i in range {
+                let dof = dof_adr + i;
+                if dof < model.nv {
+                    let val = data.qM[(dof, dof)];
+                    if val > MIN_INERTIA_THRESHOLD {
+                        min_val = min_val.min(val);
+                    }
+                }
+            }
+        }
+    }
+
+    if min_val == f64::INFINITY {
+        DEFAULT_MASS_FALLBACK
+    } else {
+        min_val
+    }
+}
+
+/// Get the minimum translational mass from the mass matrix diagonal for a body's linear DOFs.
+///
+/// **Note**: In the hot path, use `data.body_min_mass[body_id]` instead, which is cached
+/// during `forward()` after CRBA. This function is kept for debugging and testing.
+///
+/// For bodies with free joints, this returns the minimum of the x, y, z mass entries.
+/// For bodies with slide joints, this returns the slide DOF's effective mass.
+///
+/// # Returns
+/// - `f64::INFINITY` if body_id is 0 (world body)
+/// - Minimum diagonal mass if found
+/// - `DEFAULT_MASS_FALLBACK` (1.0 kg) if no linear DOFs exist
+#[inline]
+#[allow(dead_code)] // Kept for debugging/testing; hot path uses cached data.body_min_mass
+fn get_min_translational_mass(model: &Model, data: &Data, body_id: usize) -> f64 {
+    get_min_diagonal_mass(model, data, body_id, DofKind::Linear)
+}
+
+/// Get the minimum rotational inertia from the mass matrix diagonal for a body's angular DOFs.
+///
+/// **Note**: In the hot path, use `data.body_min_inertia[body_id]` instead, which is cached
+/// during `forward()` after CRBA. This function is kept for debugging and testing.
+///
+/// For bodies with free/ball joints, this returns the minimum of the angular inertia entries.
+/// For bodies with hinge joints, this returns the hinge DOF's effective inertia.
+///
+/// # Returns
+/// - `f64::INFINITY` if body_id is 0 (world body)
+/// - Minimum diagonal inertia if found
+/// - `DEFAULT_MASS_FALLBACK` (1.0 kg·m²) if no angular DOFs exist
+#[inline]
+#[allow(dead_code)] // Kept for debugging/testing; hot path uses cached data.body_min_inertia
+fn get_min_rotational_inertia(model: &Model, data: &Data, body_id: usize) -> f64 {
+    get_min_diagonal_mass(model, data, body_id, DofKind::Angular)
+}
+
+/// Compute effective mass/inertia for a binary constraint between two bodies.
+///
+/// For stability, we use the *minimum* of the two masses rather than the harmonic mean.
+/// This ensures the force limit is conservative enough for the lighter body.
+///
+/// # Physics Rationale
+///
+/// When force F is applied between two bodies with masses m1 and m2:
+/// - Body 1 accelerates at F/m1
+/// - Body 2 accelerates at -F/m2
+/// - The *relative* acceleration is F * (1/m1 + 1/m2) = F * (m1+m2)/(m1*m2)
+///
+/// For stability, we need to limit the acceleration of *each* body individually.
+/// Using min(m1, m2) ensures F/min(m1,m2) ≤ max_accel for both bodies.
+#[inline]
+fn effective_mass_for_stability(m1: f64, m2: f64) -> f64 {
+    // For world body (m = infinity), just use the other body's mass
+    if m1 == f64::INFINITY {
+        return m2;
+    }
+    if m2 == f64::INFINITY {
+        return m1;
+    }
+    // Use minimum for conservative stability bound
+    m1.min(m2)
+}
+
+/// Apply a Weld (6 DOF) equality constraint.
+///
+/// Constrains body1's frame to maintain a fixed relative pose to body2.
+/// Uses Baumgarte stabilization for both position and orientation:
+///   F = -k * pos_error - b * vel_error
+///   τ = -k * rot_error - b * ang_vel_error
+///
+/// # Stability Considerations
+///
+/// Weld constraints between free joints can be unstable with explicit integration
+/// when there's a large initial error. The constraint force/torque is limited based
+/// on the effective mass/inertia to ensure the resulting acceleration stays bounded.
+///
+/// # Orientation Error Computation
+///
+/// The rotation error is computed as the axis-angle representation of
+/// `r1 * (r2 * target_quat)⁻¹`. This uses the accurate `quaternion_to_axis_angle`
+/// conversion which handles large angles correctly.
+fn apply_weld_constraint(
+    model: &Model,
+    data: &mut Data,
+    eq_id: usize,
+    default_stiffness: f64,
+    default_damping: f64,
+    dt: f64,
+) {
+    let body1 = model.eq_obj1id[eq_id];
+    let body2 = model.eq_obj2id[eq_id];
+    let eq_data = &model.eq_data[eq_id];
+
+    // Cache body validity checks (body_id == 0 means world frame)
+    let body1_is_dynamic = body1 != 0;
+    let body2_is_dynamic = body2 != 0;
+
+    // Anchor point in body1's local frame
+    let anchor = Vector3::new(eq_data[0], eq_data[1], eq_data[2]);
+
+    // Target relative quaternion [qw, qx, qy, qz]
+    let target_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        eq_data[3], eq_data[4], eq_data[5], eq_data[6],
+    ));
+
+    // Get body poses
+    let p1 = data.xpos[body1];
+    let r1 = data.xquat[body1];
+    let (p2, r2) = if body2_is_dynamic {
+        (data.xpos[body2], data.xquat[body2])
+    } else {
+        (Vector3::zeros(), UnitQuaternion::identity())
+    };
+
+    // === Position Error ===
+    let anchor_world = p1 + r1 * anchor;
+    let pos_error = anchor_world - p2;
+
+    // === Orientation Error ===
+    // Target: r1 = r2 * target_quat
+    // Error quaternion: e = r1 * (r2 * target_quat)⁻¹
+    let target_r1 = r2 * target_quat;
+    let rot_error_quat = r1 * target_r1.inverse();
+
+    // Convert to axis-angle (accurate for all angles, not just small)
+    let rot_error = quaternion_to_axis_angle(&rot_error_quat);
+
+    // === Velocity Errors ===
+    let (vel_error, ang_vel_error) = if body1_is_dynamic {
+        let cvel1 = &data.cvel[body1];
+        let omega1 = Vector3::new(cvel1[0], cvel1[1], cvel1[2]);
+        let v1 = Vector3::new(cvel1[3], cvel1[4], cvel1[5]);
+        let r1_anchor = r1 * anchor;
+        let v_anchor = v1 + omega1.cross(&r1_anchor);
+
+        if body2_is_dynamic {
+            let cvel2 = &data.cvel[body2];
+            let omega2 = Vector3::new(cvel2[0], cvel2[1], cvel2[2]);
+            let v2 = Vector3::new(cvel2[3], cvel2[4], cvel2[5]);
+            (v_anchor - v2, omega1 - omega2)
+        } else {
+            (v_anchor, omega1)
+        }
+    } else {
+        (Vector3::zeros(), Vector3::zeros())
+    };
+
+    // Compute penalty parameters from solref
+    let (stiffness, damping) = solref_to_penalty(
+        model.eq_solref[eq_id],
+        default_stiffness,
+        default_damping,
+        dt,
+    );
+
+    // === Position Constraint Force ===
+    let raw_force = -stiffness * pos_error - damping * vel_error;
+
+    // Compute effective mass using cached values (body_min_mass[0] = infinity for world)
+    let mass1 = data.body_min_mass[body1];
+    let mass2 = data.body_min_mass[body2];
+    let eff_mass = effective_mass_for_stability(mass1, mass2);
+
+    let max_linear_accel = MAX_DELTA_V_LINEAR / dt;
+    let max_force = eff_mass * max_linear_accel;
+    let force = clamp_vector_magnitude(raw_force, max_force);
+
+    // === Orientation Constraint Torque ===
+    // Clamp effective rotation error for stiffness term (damping uses actual velocity)
+    let clamped_rot_error = clamp_vector_magnitude(rot_error, MAX_ROTATION_ERROR_FOR_STIFFNESS);
+    let raw_torque = -stiffness * clamped_rot_error - damping * ang_vel_error;
+
+    // Compute effective inertia using cached values (body_min_inertia[0] = infinity for world)
+    let inertia1 = data.body_min_inertia[body1];
+    let inertia2 = data.body_min_inertia[body2];
+    let eff_inertia = effective_mass_for_stability(inertia1, inertia2);
+
+    let max_angular_accel = MAX_DELTA_V_ANGULAR / dt;
+    let max_torque = eff_inertia * max_angular_accel;
+    let torque = clamp_vector_magnitude(raw_torque, max_torque);
+
+    // === Apply Forces and Torques ===
+    if body1_is_dynamic {
+        apply_constraint_force_to_body(model, data, body1, anchor_world, force);
+        apply_constraint_torque_to_body(model, data, body1, torque);
+    }
+    if body2_is_dynamic {
+        apply_constraint_force_to_body(model, data, body2, p2, -force);
+        apply_constraint_torque_to_body(model, data, body2, -torque);
+    }
+}
+
+/// Apply a Joint equality constraint (polynomial coupling).
+///
+/// Constrains joint2 position as polynomial function of joint1:
+/// q2 = c0 + c1*q1 + c2*q1² + ...
+fn apply_joint_equality_constraint(
+    model: &Model,
+    data: &mut Data,
+    eq_id: usize,
+    default_stiffness: f64,
+    default_damping: f64,
+    dt: f64,
+) {
+    let joint1_id = model.eq_obj1id[eq_id];
+    let joint2_id = model.eq_obj2id[eq_id];
+    let eq_data = &model.eq_data[eq_id];
+
+    // Polynomial coefficients: c0, c1, c2, c3, c4
+    let c0 = eq_data[0];
+    let c1 = eq_data[1];
+    let c2 = eq_data[2];
+    let c3 = eq_data[3];
+    let c4 = eq_data[4];
+
+    // Get joint positions and velocities
+    let qpos1_adr = model.jnt_qpos_adr[joint1_id];
+    let dof1_adr = model.jnt_dof_adr[joint1_id];
+    let q1 = data.qpos[qpos1_adr];
+    let qd1 = data.qvel[dof1_adr];
+
+    // Compute target position: q2_target = poly(q1)
+    let q2_target = c0 + c1 * q1 + c2 * q1 * q1 + c3 * q1 * q1 * q1 + c4 * q1 * q1 * q1 * q1;
+
+    // Compute target velocity: qd2_target = d(poly)/dq1 * qd1
+    let dq2_dq1 = c1 + 2.0 * c2 * q1 + 3.0 * c3 * q1 * q1 + 4.0 * c4 * q1 * q1 * q1;
+    let qd2_target = dq2_dq1 * qd1;
+
+    // If joint2 is valid (not usize::MAX sentinel)
+    if joint2_id < model.njnt {
+        let qpos2_adr = model.jnt_qpos_adr[joint2_id];
+        let dof2_adr = model.jnt_dof_adr[joint2_id];
+        let q2 = data.qpos[qpos2_adr];
+        let qd2 = data.qvel[dof2_adr];
+
+        // Errors
+        let pos_error = q2 - q2_target;
+        let vel_error = qd2 - qd2_target;
+
+        // Compute penalty parameters from solref
+        let (stiffness, damping) = solref_to_penalty(
+            model.eq_solref[eq_id],
+            default_stiffness,
+            default_damping,
+            dt,
+        );
+
+        // Apply torque to joint2 to correct error
+        let tau2 = -stiffness * pos_error - damping * vel_error;
+        data.qfrc_constraint[dof2_adr] += tau2;
+
+        // INVARIANT: No explicit reaction torque on joint1.
+        //
+        // In articulated body dynamics, applying τ₂ to joint2 naturally propagates
+        // forces up the kinematic chain via the recursive Newton-Euler algorithm.
+        // The constraint Jacobian already encodes this coupling through the mass
+        // matrix. Adding an explicit τ₁ = -dq₂/dq₁ · τ₂ would double-count the
+        // reaction, causing positive feedback and numerical explosion.
+        //
+        // Reference: Featherstone, "Rigid Body Dynamics Algorithms" (2008),
+        // Section 7.3 on constraint force propagation in articulated systems.
+    } else {
+        // joint2 not specified: lock joint1 to constant c0
+        let pos_error = q1 - c0;
+        let vel_error = qd1;
+
+        // Compute penalty parameters from solref
+        let (stiffness, damping) = solref_to_penalty(
+            model.eq_solref[eq_id],
+            default_stiffness,
+            default_damping,
+            dt,
+        );
+
+        let tau1 = -stiffness * pos_error - damping * vel_error;
+        data.qfrc_constraint[dof1_adr] += tau1;
+    }
+}
+
+/// Apply a constraint force to a body at a specific world point.
+///
+/// Maps the force to generalized coordinates via Jacobian transpose.
+/// Called per constraint per body in the kinematic chain — hot path.
+#[inline]
+fn apply_constraint_force_to_body(
+    model: &Model,
+    data: &mut Data,
+    body_id: usize,
+    point: Vector3<f64>,
+    force: Vector3<f64>,
+) {
+    if body_id == 0 {
+        return; // World doesn't respond
+    }
+
+    // Traverse kinematic chain from body to root
+    let mut current_body = body_id;
+    while current_body != 0 {
+        let jnt_start = model.body_jnt_adr[current_body];
+        let jnt_end = jnt_start + model.body_jnt_num[current_body];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - jpos;
+                    let j_col = axis.cross(&r);
+                    data.qfrc_constraint[dof_adr] += j_col.dot(&force);
+                }
+                MjJointType::Slide => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    data.qfrc_constraint[dof_adr] += axis.dot(&force);
+                }
+                MjJointType::Ball => {
+                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - jpos;
+                    let torque = r.cross(&force);
+                    let body_torque = data.xquat[jnt_body].inverse() * torque;
+                    data.qfrc_constraint[dof_adr] += body_torque.x;
+                    data.qfrc_constraint[dof_adr + 1] += body_torque.y;
+                    data.qfrc_constraint[dof_adr + 2] += body_torque.z;
+                }
+                MjJointType::Free => {
+                    data.qfrc_constraint[dof_adr] += force.x;
+                    data.qfrc_constraint[dof_adr + 1] += force.y;
+                    data.qfrc_constraint[dof_adr + 2] += force.z;
+                    let jpos = Vector3::new(
+                        data.qpos[model.jnt_qpos_adr[jnt_id]],
+                        data.qpos[model.jnt_qpos_adr[jnt_id] + 1],
+                        data.qpos[model.jnt_qpos_adr[jnt_id] + 2],
+                    );
+                    let r = point - jpos;
+                    let torque = r.cross(&force);
+                    data.qfrc_constraint[dof_adr + 3] += torque.x;
+                    data.qfrc_constraint[dof_adr + 4] += torque.y;
+                    data.qfrc_constraint[dof_adr + 5] += torque.z;
+                }
+            }
+        }
+        current_body = model.body_parent[current_body];
+    }
+}
+
+/// Apply a constraint torque directly to a body's rotational DOFs.
+/// Called per weld constraint per body in the kinematic chain — hot path.
+#[inline]
+fn apply_constraint_torque_to_body(
+    model: &Model,
+    data: &mut Data,
+    body_id: usize,
+    torque: Vector3<f64>,
+) {
+    if body_id == 0 {
+        return;
+    }
+
+    // Traverse kinematic chain from body to root
+    let mut current_body = body_id;
+    while current_body != 0 {
+        let jnt_start = model.body_jnt_adr[current_body];
+        let jnt_end = jnt_start + model.body_jnt_num[current_body];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    // Project torque onto hinge axis
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    data.qfrc_constraint[dof_adr] += torque.dot(&axis);
+                }
+                MjJointType::Slide => {
+                    // Slide joint doesn't respond to torque
+                }
+                MjJointType::Ball => {
+                    // Full 3D torque in body frame
+                    let body_torque = data.xquat[jnt_body].inverse() * torque;
+                    data.qfrc_constraint[dof_adr] += body_torque.x;
+                    data.qfrc_constraint[dof_adr + 1] += body_torque.y;
+                    data.qfrc_constraint[dof_adr + 2] += body_torque.z;
+                }
+                MjJointType::Free => {
+                    // Angular DOFs are indices 3-5 for free joint
+                    data.qfrc_constraint[dof_adr + 3] += torque.x;
+                    data.qfrc_constraint[dof_adr + 4] += torque.y;
+                    data.qfrc_constraint[dof_adr + 5] += torque.z;
+                }
+            }
+        }
+        current_body = model.body_parent[current_body];
+    }
+}
+
 /// Compute constraint forces (contacts and joint limits).
 ///
 /// This implements constraint-based enforcement using:
 /// - Joint limits: Soft penalty method with Baumgarte stabilization
+/// - Equality constraints: Soft penalty method with Baumgarte stabilization
 /// - Contacts: PGS solver with Coulomb friction cone
 ///
 /// The constraint forces are computed via Jacobian transpose:
@@ -11312,6 +12722,16 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
             }
         }
     }
+
+    // ========== Equality Constraints ==========
+    // Using penalty method with Baumgarte stabilization (like joint limits).
+    // MuJoCo uses solver-based approach via PGS, but penalty is robust and simpler.
+    //
+    // For each equality constraint:
+    //   τ = -k * violation - b * violation_velocity
+    //
+    // The forces are applied via Jacobian transpose to the appropriate DOFs.
+    apply_equality_constraints(model, data);
 
     // ========== Contact Constraints ==========
     // Use PGS solver for constraint-based contact forces.
@@ -11463,15 +12883,58 @@ fn apply_contact_force(
 
 /// Compute final acceleration from forces using proper matrix solve.
 ///
+/// # Explicit Integration (Euler, RK4)
+///
 /// Solves: M * qacc = `τ_total` where
 /// `τ_total` = `qfrc_applied` + `qfrc_actuator` + `qfrc_passive` + `qfrc_constraint` - `qfrc_bias`
 ///
 /// Uses Cholesky decomposition for symmetric positive-definite M.
-fn mj_fwd_acceleration(model: &Model, data: &mut Data) {
+///
+/// # Implicit Integration
+///
+/// For implicit springs, we solve a modified system that incorporates
+/// stiffness and damping into the velocity update:
+///
+/// ```text
+/// (M + h*D + h²*K) * v_new = M*v_old + h*f_ext - h*K*(q - q_eq)
+/// ```
+///
+/// Where:
+/// - M = mass matrix (from CRBA)
+/// - D = diagonal damping matrix
+/// - K = diagonal stiffness matrix
+/// - h = timestep
+/// - f_ext = external forces (applied + actuator + constraint - bias)
+/// - q_eq = spring equilibrium positions (springref)
+///
+/// This provides unconditional stability for arbitrarily stiff springs,
+/// allowing larger timesteps without energy blow-up.
+///
+/// After solving, we compute qacc = (v_new - v_old) / h for consistency
+/// with sensors and other code that expects qacc.
+///
+/// # Errors
+///
+/// Returns `Err(StepError::CholeskyFailed)` if using implicit integration
+/// and the modified mass matrix (M + h*D + h²*K) is not positive definite.
+fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepError> {
     if model.nv == 0 {
-        return;
+        return Ok(());
     }
 
+    match model.integrator {
+        Integrator::Implicit => mj_fwd_acceleration_implicit(model, data),
+        Integrator::Euler | Integrator::RungeKutta4 => {
+            mj_fwd_acceleration_explicit(model, data);
+            Ok(())
+        }
+    }
+}
+
+/// Explicit forward acceleration (semi-implicit Euler or RK4).
+///
+/// Computes: qacc = M⁻¹ * (f_applied + f_actuator + f_passive + f_constraint - f_bias)
+fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
     // Sum all forces: τ = applied + actuator + passive + constraint - bias
     let mut qfrc_total = data.qfrc_applied.clone();
     qfrc_total += &data.qfrc_actuator;
@@ -11509,132 +12972,267 @@ fn mj_fwd_acceleration(model: &Model, data: &mut Data) {
     }
 }
 
+/// Implicit forward acceleration for springs and dampers.
+///
+/// Solves:
+/// ```text
+/// (M + h*D + h²*K) * v_new = M*v_old + h*f_ext - h*K*(q - q_eq)
+/// ```
+///
+/// This provides unconditional stability for stiff springs by treating
+/// spring and damper forces implicitly in the velocity update.
+///
+/// # Implementation Notes
+///
+/// - Spring/damper parameters are diagonal (no coupling between DOFs)
+/// - Friction loss remains explicit (velocity-sign-dependent, cannot linearize)
+/// - The modified matrix M + h*D + h²*K is still SPD if M is SPD and D, K ≥ 0
+///
+/// # Errors
+///
+/// Returns `Err(StepError::CholeskyFailed)` if the modified mass matrix
+/// is not positive definite. This can happen with:
+/// - Negative stiffness or damping values
+/// - Corrupted mass matrix
+/// - Extreme numerical conditions
+fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), StepError> {
+    // Guard against zero timestep (would cause division by zero)
+    debug_assert!(
+        model.timestep > 0.0,
+        "Timestep must be positive for implicit integration"
+    );
+    let h = model.timestep;
+    let h2 = h * h;
+
+    // Use cached spring-damper parameters from Model (avoids allocation)
+    let k = &model.implicit_stiffness;
+    let d = &model.implicit_damping;
+    let q_eq = &model.implicit_springref;
+
+    // Build external forces into scratch buffer (avoids allocation)
+    // f_ext = applied + actuator + passive(friction) + constraint - bias
+    data.scratch_force.copy_from(&data.qfrc_applied);
+    data.scratch_force += &data.qfrc_actuator;
+    data.scratch_force += &data.qfrc_passive; // Friction loss (explicit even in implicit mode)
+    data.scratch_force += &data.qfrc_constraint;
+    data.scratch_force -= &data.qfrc_bias;
+
+    // Build modified mass matrix: M_impl = M + h*D + h²*K
+    // Copy M into scratch, then modify diagonal only
+    data.scratch_m_impl.copy_from(&data.qM);
+    for i in 0..model.nv {
+        data.scratch_m_impl[(i, i)] += h * d[i] + h2 * k[i];
+    }
+
+    // Build RHS into scratch buffer: M*v_old + h*f_ext - h*K*(q - q_eq)
+    // Start with M*v_old
+    data.qM.mul_to(&data.qvel, &mut data.scratch_rhs);
+
+    // Add h*f_ext for each DOF
+    for i in 0..model.nv {
+        data.scratch_rhs[i] += h * data.scratch_force[i];
+    }
+
+    // Subtract h*K*(q - q_eq) for spring displacement using visitor
+    let mut spring_visitor = ImplicitSpringVisitor {
+        k,
+        q_eq,
+        h,
+        qpos: &data.qpos,
+        rhs: &mut data.scratch_rhs,
+    };
+    model.visit_joints(&mut spring_visitor);
+
+    // Solve (M + h*D + h²*K) * v_new = rhs
+    // M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0), so use Cholesky.
+    //
+    // TODO(perf): This clone() allocates O(nv²) per step because nalgebra's cholesky()
+    // consumes the matrix. For serial chains, M is banded with bandwidth O(1), so we
+    // could use sparse L^T D L factorization for O(nv) instead of O(nv³). Options:
+    //   1. Implement in-place Cholesky that doesn't consume the matrix
+    //   2. Use sparse factorization exploiting articulated body structure
+    //   3. Use Featherstone's articulated body algorithm (ABA) which is O(nv)
+    let chol = data
+        .scratch_m_impl
+        .clone()
+        .cholesky()
+        .ok_or(StepError::CholeskyFailed)?;
+
+    // Copy RHS to scratch_v_new and solve in place to avoid allocation
+    data.scratch_v_new.copy_from(&data.scratch_rhs);
+    chol.solve_mut(&mut data.scratch_v_new);
+
+    // Compute qacc = (v_new - v_old) / h and update qvel
+    for i in 0..model.nv {
+        data.qacc[i] = (data.scratch_v_new[i] - data.qvel[i]) / h;
+        data.qvel[i] = data.scratch_v_new[i];
+    }
+
+    Ok(())
+}
+
+/// Visitor for computing spring displacement contribution to implicit RHS.
+/// Computes: `rhs\[dof\] -= h * K\[dof\] * (q - q_eq)` for joints with springs.
+struct ImplicitSpringVisitor<'a> {
+    k: &'a DVector<f64>,
+    q_eq: &'a DVector<f64>,
+    h: f64,
+    qpos: &'a DVector<f64>,
+    rhs: &'a mut DVector<f64>,
+}
+
+impl JointVisitor for ImplicitSpringVisitor<'_> {
+    #[inline]
+    fn visit_hinge(&mut self, ctx: JointContext) {
+        let q = self.qpos[ctx.qpos_adr];
+        self.rhs[ctx.dof_adr] -= self.h * self.k[ctx.dof_adr] * (q - self.q_eq[ctx.dof_adr]);
+    }
+
+    #[inline]
+    fn visit_slide(&mut self, ctx: JointContext) {
+        let q = self.qpos[ctx.qpos_adr];
+        self.rhs[ctx.dof_adr] -= self.h * self.k[ctx.dof_adr] * (q - self.q_eq[ctx.dof_adr]);
+    }
+
+    // Ball and Free joints have no springs (k = 0), so default no-ops are correct.
+}
+
 /// Proper position integration that handles quaternions on SO(3) manifold.
 fn mj_integrate_pos(model: &Model, data: &mut Data, h: f64) {
-    for jnt_id in 0..model.njnt {
-        let qpos_adr = model.jnt_qpos_adr[jnt_id];
-        let dof_adr = model.jnt_dof_adr[jnt_id];
+    let mut visitor = PositionIntegrateVisitor {
+        qpos: &mut data.qpos,
+        qvel: &data.qvel,
+        h,
+    };
+    model.visit_joints(&mut visitor);
+}
 
-        match model.jnt_type[jnt_id] {
-            MjJointType::Hinge | MjJointType::Slide => {
-                // Simple scalar: qpos += qvel * h
-                data.qpos[qpos_adr] += data.qvel[dof_adr] * h;
-            }
-            MjJointType::Ball => {
-                // Quaternion: integrate angular velocity on SO(3)
-                let omega = Vector3::new(
-                    data.qvel[dof_adr],
-                    data.qvel[dof_adr + 1],
-                    data.qvel[dof_adr + 2],
-                );
-                let omega_norm = omega.norm();
-                let angle = omega_norm * h;
-                // Skip if angle is negligible (avoids division by zero in axis computation)
-                if angle > 1e-10 && omega_norm > 1e-10 {
-                    let axis = omega / omega_norm;
-                    let dq = UnitQuaternion::from_axis_angle(
-                        &nalgebra::Unit::new_normalize(axis),
-                        angle,
-                    );
-                    let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                        data.qpos[qpos_adr],
-                        data.qpos[qpos_adr + 1],
-                        data.qpos[qpos_adr + 2],
-                        data.qpos[qpos_adr + 3],
-                    ));
-                    let q_new = q_old * dq;
-                    data.qpos[qpos_adr] = q_new.w;
-                    data.qpos[qpos_adr + 1] = q_new.i;
-                    data.qpos[qpos_adr + 2] = q_new.j;
-                    data.qpos[qpos_adr + 3] = q_new.k;
-                }
-            }
-            MjJointType::Free => {
-                // Position: linear integration
-                data.qpos[qpos_adr] += data.qvel[dof_adr] * h;
-                data.qpos[qpos_adr + 1] += data.qvel[dof_adr + 1] * h;
-                data.qpos[qpos_adr + 2] += data.qvel[dof_adr + 2] * h;
+/// Visitor for position integration that handles different joint types.
+struct PositionIntegrateVisitor<'a> {
+    qpos: &'a mut DVector<f64>,
+    qvel: &'a DVector<f64>,
+    h: f64,
+}
 
-                // Orientation: quaternion integration
-                let omega = Vector3::new(
-                    data.qvel[dof_adr + 3],
-                    data.qvel[dof_adr + 4],
-                    data.qvel[dof_adr + 5],
-                );
-                let omega_norm = omega.norm();
-                let angle = omega_norm * h;
-                // Skip if angle is negligible (avoids division by zero in axis computation)
-                if angle > 1e-10 && omega_norm > 1e-10 {
-                    let axis = omega / omega_norm;
-                    let dq = UnitQuaternion::from_axis_angle(
-                        &nalgebra::Unit::new_normalize(axis),
-                        angle,
-                    );
-                    let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                        data.qpos[qpos_adr + 3],
-                        data.qpos[qpos_adr + 4],
-                        data.qpos[qpos_adr + 5],
-                        data.qpos[qpos_adr + 6],
-                    ));
-                    let q_new = q_old * dq;
-                    data.qpos[qpos_adr + 3] = q_new.w;
-                    data.qpos[qpos_adr + 4] = q_new.i;
-                    data.qpos[qpos_adr + 5] = q_new.j;
-                    data.qpos[qpos_adr + 6] = q_new.k;
-                }
-            }
+impl PositionIntegrateVisitor<'_> {
+    /// Integrate a quaternion with angular velocity on SO(3) manifold.
+    /// `qpos_offset` is the offset into qpos where the quaternion starts [w,x,y,z].
+    /// `omega` is the angular velocity vector.
+    #[inline]
+    fn integrate_quaternion(&mut self, qpos_offset: usize, omega: Vector3<f64>) {
+        let omega_norm = omega.norm();
+        let angle = omega_norm * self.h;
+
+        // Skip if angle is negligible (avoids division by zero)
+        if angle > 1e-10 && omega_norm > 1e-10 {
+            let axis = omega / omega_norm;
+            let dq = UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle);
+            let q_old = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                self.qpos[qpos_offset],
+                self.qpos[qpos_offset + 1],
+                self.qpos[qpos_offset + 2],
+                self.qpos[qpos_offset + 3],
+            ));
+            let q_new = q_old * dq;
+            self.qpos[qpos_offset] = q_new.w;
+            self.qpos[qpos_offset + 1] = q_new.i;
+            self.qpos[qpos_offset + 2] = q_new.j;
+            self.qpos[qpos_offset + 3] = q_new.k;
         }
+    }
+}
+
+impl JointVisitor for PositionIntegrateVisitor<'_> {
+    #[inline]
+    fn visit_hinge(&mut self, ctx: JointContext) {
+        // Simple scalar: qpos += qvel * h
+        self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
+    }
+
+    #[inline]
+    fn visit_slide(&mut self, ctx: JointContext) {
+        // Simple scalar: qpos += qvel * h
+        self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
+    }
+
+    #[inline]
+    fn visit_ball(&mut self, ctx: JointContext) {
+        // Quaternion: integrate angular velocity on SO(3)
+        let omega = Vector3::new(
+            self.qvel[ctx.dof_adr],
+            self.qvel[ctx.dof_adr + 1],
+            self.qvel[ctx.dof_adr + 2],
+        );
+        self.integrate_quaternion(ctx.qpos_adr, omega);
+    }
+
+    #[inline]
+    fn visit_free(&mut self, ctx: JointContext) {
+        // Position: linear integration (first 3 components)
+        self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
+        self.qpos[ctx.qpos_adr + 1] += self.qvel[ctx.dof_adr + 1] * self.h;
+        self.qpos[ctx.qpos_adr + 2] += self.qvel[ctx.dof_adr + 2] * self.h;
+
+        // Orientation: quaternion integration (last 4 components, DOFs 3-5)
+        let omega = Vector3::new(
+            self.qvel[ctx.dof_adr + 3],
+            self.qvel[ctx.dof_adr + 4],
+            self.qvel[ctx.dof_adr + 5],
+        );
+        self.integrate_quaternion(ctx.qpos_adr + 3, omega);
     }
 }
 
 /// Normalize all quaternions in qpos to prevent numerical drift.
 fn mj_normalize_quat(model: &Model, data: &mut Data) {
-    for jnt_id in 0..model.njnt {
-        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+    let mut visitor = QuaternionNormalizeVisitor {
+        qpos: &mut data.qpos,
+    };
+    model.visit_joints(&mut visitor);
+}
 
-        match model.jnt_type[jnt_id] {
-            MjJointType::Ball => {
-                let norm = (data.qpos[qpos_adr].powi(2)
-                    + data.qpos[qpos_adr + 1].powi(2)
-                    + data.qpos[qpos_adr + 2].powi(2)
-                    + data.qpos[qpos_adr + 3].powi(2))
-                .sqrt();
-                if norm > 1e-10 {
-                    data.qpos[qpos_adr] /= norm;
-                    data.qpos[qpos_adr + 1] /= norm;
-                    data.qpos[qpos_adr + 2] /= norm;
-                    data.qpos[qpos_adr + 3] /= norm;
-                } else {
-                    // Degenerate quaternion - reset to identity [w=1, x=0, y=0, z=0]
-                    data.qpos[qpos_adr] = 1.0;
-                    data.qpos[qpos_adr + 1] = 0.0;
-                    data.qpos[qpos_adr + 2] = 0.0;
-                    data.qpos[qpos_adr + 3] = 0.0;
-                }
-            }
-            MjJointType::Free => {
-                let norm = (data.qpos[qpos_adr + 3].powi(2)
-                    + data.qpos[qpos_adr + 4].powi(2)
-                    + data.qpos[qpos_adr + 5].powi(2)
-                    + data.qpos[qpos_adr + 6].powi(2))
-                .sqrt();
-                if norm > 1e-10 {
-                    data.qpos[qpos_adr + 3] /= norm;
-                    data.qpos[qpos_adr + 4] /= norm;
-                    data.qpos[qpos_adr + 5] /= norm;
-                    data.qpos[qpos_adr + 6] /= norm;
-                } else {
-                    // Degenerate quaternion - reset to identity [w=1, x=0, y=0, z=0]
-                    data.qpos[qpos_adr + 3] = 1.0;
-                    data.qpos[qpos_adr + 4] = 0.0;
-                    data.qpos[qpos_adr + 5] = 0.0;
-                    data.qpos[qpos_adr + 6] = 0.0;
-                }
-            }
-            MjJointType::Hinge | MjJointType::Slide => {
-                // No quaternion to normalize
-            }
+/// Visitor for normalizing quaternions in joints that use them.
+struct QuaternionNormalizeVisitor<'a> {
+    qpos: &'a mut DVector<f64>,
+}
+
+impl QuaternionNormalizeVisitor<'_> {
+    /// Normalize a quaternion at the given offset in qpos.
+    #[inline]
+    fn normalize_quaternion(&mut self, offset: usize) {
+        let norm = (self.qpos[offset].powi(2)
+            + self.qpos[offset + 1].powi(2)
+            + self.qpos[offset + 2].powi(2)
+            + self.qpos[offset + 3].powi(2))
+        .sqrt();
+        if norm > 1e-10 {
+            self.qpos[offset] /= norm;
+            self.qpos[offset + 1] /= norm;
+            self.qpos[offset + 2] /= norm;
+            self.qpos[offset + 3] /= norm;
+        } else {
+            // Degenerate quaternion - reset to identity [w=1, x=0, y=0, z=0]
+            self.qpos[offset] = 1.0;
+            self.qpos[offset + 1] = 0.0;
+            self.qpos[offset + 2] = 0.0;
+            self.qpos[offset + 3] = 0.0;
         }
+    }
+}
+
+impl JointVisitor for QuaternionNormalizeVisitor<'_> {
+    // Hinge and Slide have no quaternions - use default no-ops
+
+    #[inline]
+    fn visit_ball(&mut self, ctx: JointContext) {
+        // Ball joint: quaternion at qpos_adr
+        self.normalize_quaternion(ctx.qpos_adr);
+    }
+
+    #[inline]
+    fn visit_free(&mut self, ctx: JointContext) {
+        // Free joint: quaternion at qpos_adr + 3 (after position xyz)
+        self.normalize_quaternion(ctx.qpos_adr + 3);
     }
 }
 

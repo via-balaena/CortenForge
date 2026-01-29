@@ -108,7 +108,7 @@ impl std::ops::Deref for PhysicsModel {
 /// }
 ///
 /// fn step(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
-///     data.step(&model);
+///     data.step(&model).expect("step failed");
 /// }
 /// ```
 #[derive(Resource)]
@@ -248,7 +248,10 @@ pub struct ModelDataRoot;
 /// ```
 #[allow(clippy::needless_pass_by_value)] // Bevy system parameters
 pub fn step_model_data(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
-    data.0.step(&model.0);
+    if let Err(e) = data.0.step(&model.0) {
+        // Log the error but continue - physics errors are typically recoverable
+        eprintln!("Physics step failed: {e}");
+    }
 }
 
 /// Synchronize body transforms from physics Data to Bevy entities.

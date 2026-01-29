@@ -160,7 +160,7 @@ fn setup_physics_and_scene(
     data.qvel[2] = phi_dot;
 
     // Compute initial body poses via forward kinematics
-    data.forward(&model);
+    let _ = data.forward(&model);
 
     // Store initial conserved quantities
     let initial_energy = data.energy_kinetic + data.energy_potential;

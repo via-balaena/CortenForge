@@ -37,6 +37,29 @@
 //! - O(1) cell lookup for point queries
 //! - O(k) for shape queries where k is the number of cells intersected
 //! - Efficient for large terrains due to implicit spatial structure
+//!
+//! # Robustness (Out-of-Bounds Handling)
+//!
+//! All public query methods handle out-of-bounds and edge-case inputs gracefully:
+//!
+//! | Method | Out-of-Bounds / Edge Case Behavior |
+//! |--------|-------------------------------------|
+//! | [`HeightFieldData::get`] | Returns `None` |
+//! | [`HeightFieldData::get_clamped`] | Clamps indices to valid range |
+//! | [`HeightFieldData::sample`] | Returns `None` (also guards against NaN) |
+//! | [`HeightFieldData::sample_clamped`] | Clamps coords, falls back to `min_height` |
+//! | [`HeightFieldData::normal`] | Returns `None`; degenerate gradients → `+Z` |
+//! | [`HeightFieldData::normal_clamped`] | Clamps coords, falls back to `+Z` |
+//! | [`HeightFieldData::cell_at`] | Returns `None` (also guards against NaN) |
+//! | [`HeightFieldData::cells_in_aabb`] | Guards against NaN, returns empty iterator |
+//!
+//! Contact query functions also use safe fallbacks for cell indices:
+//! - [`heightfield_sphere_contact`], [`heightfield_point_contact`],
+//!   [`heightfield_capsule_contact`], [`heightfield_box_contact`]
+//!   all use `cell_at(...).unwrap_or((0, 0))` to provide a valid cell index
+//!   even when the sampled point is at the exact boundary.
+//!
+//! This design follows the principle: **degenerate inputs produce sensible defaults, not panics**.
 
 // Allow casting for grid indices - these are small values and bounds are checked
 #![allow(
@@ -253,11 +276,18 @@ impl HeightFieldData {
     }
 
     /// Get the interpolated height, clamping to bounds if outside.
+    ///
+    /// # Robustness
+    ///
+    /// - Clamps coordinates to `[0, extent]` before sampling
+    /// - Falls back to `min_height` if sampling still fails (e.g., NaN propagation)
+    ///
+    /// This ensures the method **never panics** regardless of input.
     #[must_use]
     pub fn sample_clamped(&self, x: f64, y: f64) -> f64 {
         let x = x.clamp(0.0, self.extent_x());
         let y = y.clamp(0.0, self.extent_y());
-        // Safe to unwrap because we clamped to valid bounds
+        // Safe fallback: treat failures as "at ground level"
         self.sample(x, y).unwrap_or(self.min_height)
     }
 
@@ -291,10 +321,18 @@ impl HeightFieldData {
     }
 
     /// Get the surface normal, clamping to bounds if outside.
+    ///
+    /// # Robustness
+    ///
+    /// - Clamps coordinates to `[0, extent]` before computing normal
+    /// - Falls back to `+Z` (up vector) if normal computation fails
+    ///
+    /// This ensures the method **never panics** and always returns a valid unit vector.
     #[must_use]
     pub fn normal_clamped(&self, x: f64, y: f64) -> Vector3<f64> {
         let x = x.clamp(0.0, self.extent_x());
         let y = y.clamp(0.0, self.extent_y());
+        // Safe fallback: degenerate normals default to "up"
         self.normal(x, y).unwrap_or_else(Vector3::z)
     }
 

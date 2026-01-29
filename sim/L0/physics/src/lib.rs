@@ -45,7 +45,7 @@
 //!
 //! // Step the simulation
 //! for _ in 0..100 {
-//!     data.step(&model);
+//!     data.step(&model).expect("step failed");
 //! }
 //!
 //! // Access body poses (computed from qpos via FK)
@@ -77,7 +77,7 @@
 //!
 //! let model = load_urdf_model(urdf).expect("should load");
 //! let mut data = model.make_data();
-//! data.step(&model);
+//! data.step(&model).expect("step failed");
 //!
 //! println!("Loaded robot with {} bodies, {} joints", model.nbody, model.njnt);
 //! ```
@@ -466,10 +466,10 @@ mod tests {
 
         // Set initial angle and step
         data.qpos[0] = std::f64::consts::FRAC_PI_4;
-        data.forward(&model);
+        data.forward(&model).expect("forward failed");
 
         for _ in 0..100 {
-            data.step(&model);
+            data.step(&model).expect("step failed");
         }
 
         // Pendulum should have swung
@@ -492,8 +492,8 @@ mod tests {
         assert_eq!(model.name, "test");
 
         let mut data = model.make_data();
-        data.forward(&model);
-        data.step(&model);
+        data.forward(&model).expect("forward failed");
+        data.step(&model).expect("step failed");
     }
 
     #[test]
@@ -513,8 +513,8 @@ mod tests {
         assert_eq!(model.name, "test");
 
         let mut data = model.make_data();
-        data.forward(&model);
-        data.step(&model);
+        data.forward(&model).expect("forward failed");
+        data.step(&model).expect("step failed");
     }
 
     #[test]

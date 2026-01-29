@@ -96,7 +96,7 @@ fn setup_physics_and_scene(
     data.qpos[1] = INITIAL_THETA2;
 
     // Compute initial body poses via forward kinematics
-    data.forward(&model);
+    let _ = data.forward(&model);
 
     // Store initial energy for validation
     let initial_energy = data.energy_kinetic + data.energy_potential;
