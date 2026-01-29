@@ -42,7 +42,7 @@
 //! // Create simulation data and step
 //! let mut data = model.make_data();
 //! for _ in 0..100 {
-//!     data.step(&model);
+//!     data.step(&model).expect("step failed");
 //! }
 //! ```
 //!
@@ -151,7 +151,7 @@ pub use validation::{ValidationResult, validate};
 /// "#;
 /// let model = load_urdf_model(urdf).expect("should load");
 /// let mut data = model.make_data();
-/// data.step(&model);
+/// data.step(&model).expect("step failed");
 /// ```
 pub fn load_urdf_model(urdf_xml: &str) -> Result<sim_core::Model> {
     let mjcf = urdf_to_mjcf(urdf_xml)?;
@@ -230,7 +230,7 @@ mod tests {
 
         // Create Data and step
         let mut data = model.make_data();
-        data.forward(&model);
+        data.forward(&model).expect("forward failed");
 
         // Verify structure
         assert!(model.nbody >= 3, "Should have at least 3 bodies");
@@ -295,11 +295,11 @@ mod tests {
         assert_eq!(model.name, "simple");
 
         let mut data = model.make_data();
-        data.forward(&model);
+        data.forward(&model).expect("forward failed");
 
         // Step a few times
         for _ in 0..10 {
-            data.step(&model);
+            data.step(&model).expect("step failed");
         }
     }
 }

@@ -55,7 +55,7 @@ fn test_fk_single_hinge_analytical() {
     // Joint at origin, body frame also at origin (pos="0 0 0" means body origin = parent origin)
     // The geom is at pos="0 0 -L" in body frame
     data.qpos[0] = 0.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
     // Body frame is at origin when joint angle is 0
     assert_relative_eq!(data.xpos[1].x, 0.0, epsilon = 1e-10);
     assert_relative_eq!(data.xpos[1].y, 0.0, epsilon = 1e-10);
@@ -63,7 +63,7 @@ fn test_fk_single_hinge_analytical() {
 
     // Test case 2: qpos = π/2
     data.qpos[0] = PI / 2.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
     // Body frame still at origin - only orientation changes
     assert_relative_eq!(data.xpos[1].x, 0.0, epsilon = 1e-10);
     assert_relative_eq!(data.xpos[1].y, 0.0, epsilon = 1e-10);
@@ -100,7 +100,7 @@ fn test_fk_hinge_with_body_offset() {
 
     // qpos = 0: body at (0, 0, 1) - its position offset from parent (world)
     data.qpos[0] = 0.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
     assert_relative_eq!(data.xpos[1].x, 0.0, epsilon = 1e-6);
     assert_relative_eq!(data.xpos[1].y, 0.0, epsilon = 1e-6);
     assert_relative_eq!(data.xpos[1].z, 1.0, epsilon = 1e-6);
@@ -109,7 +109,7 @@ fn test_fk_hinge_with_body_offset() {
     // Body position stays at (0, 0, 1) because that's where the body frame is
     // The joint rotates the body IN PLACE (at its frame origin)
     data.qpos[0] = PI / 2.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
     // Position stays the same - only orientation rotates
     assert_relative_eq!(data.xpos[1].x, 0.0, epsilon = 1e-6);
     assert_relative_eq!(data.xpos[1].y, 0.0, epsilon = 1e-6);
@@ -158,7 +158,7 @@ fn test_fk_double_pendulum_analytical() {
     // Test case 1: Both joints at 0
     data.qpos[0] = 0.0;
     data.qpos[1] = 0.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Link 1 at (0, 0, L) - just the body offset
     assert_relative_eq!(data.xpos[1].x, 0.0, epsilon = 1e-6);
@@ -177,7 +177,7 @@ fn test_fk_double_pendulum_analytical() {
     // This means the body stays at (0,0,1) - the position is fixed, only orientation changes
     data.qpos[0] = PI / 2.0;
     data.qpos[1] = 0.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Link 1 stays at (0, 0, L) - body_pos is applied before joint rotation
     // The joint rotates the body IN PLACE
@@ -225,7 +225,7 @@ fn test_fk_ball_joint_analytical() {
     data.qpos[1] = 0.0; // x
     data.qpos[2] = 0.0; // y
     data.qpos[3] = 0.0; // z
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Body should be at (0, 0, L) - ball joint rotates orientation but body offset is fixed
     assert_relative_eq!(data.xpos[1].x, 0.0, epsilon = 1e-6);
@@ -240,7 +240,7 @@ fn test_fk_ball_joint_analytical() {
     data.qpos[1] = quat.i;
     data.qpos[2] = quat.j;
     data.qpos[3] = quat.k;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Position stays at (0, 0, L) - ball joint only rotates orientation
     assert_relative_eq!(data.xpos[1].x, 0.0, epsilon = 1e-6);
@@ -284,7 +284,7 @@ fn test_fk_free_joint_analytical() {
     data.qpos[4] = 0.0; // qx
     data.qpos[5] = 0.0; // qy
     data.qpos[6] = 0.0; // qz
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert_relative_eq!(data.xpos[1].x, 0.0, epsilon = 1e-6);
     assert_relative_eq!(data.xpos[1].y, 0.0, epsilon = 1e-6);
@@ -299,7 +299,7 @@ fn test_fk_free_joint_analytical() {
     data.qpos[4] = quat.i;
     data.qpos[5] = quat.j;
     data.qpos[6] = quat.k;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert_relative_eq!(data.xpos[1].x, 3.0, epsilon = 1e-6);
     assert_relative_eq!(data.xpos[1].y, -2.0, epsilon = 1e-6);
@@ -331,7 +331,7 @@ fn test_crba_single_pendulum_analytical() {
     let model = load_model(mjcf).expect("should load");
     let mut data = model.make_data();
 
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // The mass matrix should be 1x1 for single hinge joint
     assert_eq!(data.qM.nrows(), 1);
@@ -376,7 +376,7 @@ fn test_crba_double_pendulum_analytical() {
     // Test at θ = 0 (extended configuration)
     data.qpos[0] = 0.0;
     data.qpos[1] = 0.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert_eq!(data.qM.nrows(), 2);
     assert_eq!(data.qM.ncols(), 2);
@@ -427,7 +427,7 @@ fn test_crba_free_body_analytical() {
     assert_eq!(model.nq, 7, "Free joint should have nq=7");
     assert_eq!(model.nv, 6, "Free joint should have nv=6");
 
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert_eq!(data.qM.nrows(), 6);
     assert_eq!(data.qM.ncols(), 6);
@@ -492,12 +492,12 @@ fn test_rne_single_pendulum_gravity() {
 
     // Test at θ = 0 (hanging down) - stable equilibrium, should have minimal torque
     data.qpos[0] = 0.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
     let bias_at_zero = data.qfrc_bias[0].abs();
 
     // Test at θ = π/2 (horizontal) - maximum gravitational torque
     data.qpos[0] = PI / 2.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
     let bias_at_horizontal = data.qfrc_bias[0].abs();
 
     // Horizontal configuration should have larger bias force than hanging
@@ -510,7 +510,7 @@ fn test_rne_single_pendulum_gravity() {
 
     // Test at θ = π (pointing up) - unstable equilibrium, should have minimal torque
     data.qpos[0] = PI;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
     let bias_at_pi = data.qfrc_bias[0].abs();
 
     // Both equilibrium positions should have smaller bias than horizontal
@@ -540,7 +540,7 @@ fn test_rne_free_body_gravity() {
     let model = load_model(mjcf).expect("should load");
     let mut data = model.make_data();
 
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // The bias force structure depends on the DOF ordering in the free joint
     // Just verify that the bias force vector is non-trivial (gravity affects it)
@@ -593,17 +593,17 @@ fn test_rne_double_pendulum_coriolis() {
     // Check if mass matrix varies with configuration
     data.qpos[0] = 0.0;
     data.qpos[1] = 0.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
     let m_at_0 = data.qM.clone();
     println!("qM at theta2=0: {:?}", m_at_0);
 
     data.qpos[1] = PI / 4.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
     let m_at_pi4 = data.qM.clone();
     println!("qM at theta2=pi/4: {:?}", m_at_pi4);
 
     data.qpos[1] = PI / 2.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
     let m_at_pi2 = data.qM.clone();
     println!("qM at theta2=pi/2: {:?}", m_at_pi2);
 
@@ -633,7 +633,7 @@ fn test_rne_double_pendulum_coriolis() {
     data.qpos[1] = PI / 4.0;
     data.qvel[0] = 2.0;
     data.qvel[1] = 1.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     let c1 = data.qfrc_bias[0];
     let c2 = data.qfrc_bias[1];
@@ -675,7 +675,7 @@ fn test_rne_coriolis_zero_at_rest() {
     data.qpos[1] = PI / 4.0;
     data.qvel[0] = 0.0;
     data.qvel[1] = 0.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // With no gravity and no velocity, bias forces should be zero
     assert!(
@@ -718,7 +718,7 @@ fn test_energy_conservation_simple_pendulum() {
     // Start at 45 degrees with some velocity for non-trivial energy
     data.qpos[0] = PI / 4.0;
     data.qvel[0] = 1.0;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     let initial_energy = data.total_energy();
 
@@ -731,7 +731,7 @@ fn test_energy_conservation_simple_pendulum() {
     let mut min_energy = initial_energy;
 
     for _ in 0..steps {
-        data.step(&model);
+        data.step(&model).expect("step failed");
         let e = data.total_energy();
         max_energy = max_energy.max(e);
         min_energy = min_energy.min(e);
@@ -789,7 +789,7 @@ fn test_energy_conservation_double_pendulum() {
     data.qpos[1] = PI / 6.0;
     data.qvel[0] = 0.5;
     data.qvel[1] = -0.3;
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     let initial_energy = data.total_energy();
 
@@ -799,7 +799,7 @@ fn test_energy_conservation_double_pendulum() {
     let steps = (duration / dt).ceil() as usize;
 
     for _ in 0..steps {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     let final_energy = data.total_energy();
@@ -862,8 +862,8 @@ fn test_double_pendulum_chaos() {
     let steps = (duration / dt).ceil() as usize;
 
     for _ in 0..steps {
-        data1.step(&model);
-        data2.step(&model);
+        data1.step(&model).expect("step failed");
+        data2.step(&model).expect("step failed");
     }
 
     // Trajectories should have diverged
@@ -923,7 +923,7 @@ fn test_double_pendulum_constraint_satisfaction() {
     let steps = (duration / dt).ceil() as usize;
 
     for i in 0..steps {
-        data.step(&model);
+        data.step(&model).expect("step failed");
 
         // Check link 1 is at distance L from origin
         let link1_dist = data.xpos[1].norm();
@@ -997,7 +997,7 @@ fn test_contact_ball_stack_stability() {
     let max_penetration_mm = 1.0; // 1mm max penetration per spec
 
     for i in 0..steps {
-        data.step(&model);
+        data.step(&model).expect("step failed");
 
         // Check ball1 doesn't penetrate ground (z >= radius - tolerance)
         let ball1_z = data.xpos[1].z;
@@ -1245,7 +1245,7 @@ fn test_api_step_no_nan() {
 
     // Run many steps
     for _ in 0..10000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
 
         // Check no NaN/Inf in state
         for i in 0..model.nq {
@@ -1314,7 +1314,7 @@ fn test_api_reset_restores_state() {
 
     // Step a few times to populate computed quantities
     for _ in 0..100 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Reset
@@ -1405,14 +1405,14 @@ fn test_performance_humanoid() {
 
     // Warm up
     for _ in 0..100 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Benchmark
     let num_steps = 5000;
     let start = Instant::now();
     for _ in 0..num_steps {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
     let elapsed = start.elapsed();
 
@@ -1497,14 +1497,14 @@ fn test_performance_simple_pendulum() {
 
     // Warm up
     for _ in 0..1000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Benchmark
     let num_steps = 50_000;
     let start = Instant::now();
     for _ in 0..num_steps {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
     let elapsed = start.elapsed();
 
@@ -1581,14 +1581,14 @@ fn test_performance_scaling() {
 
         // Warm up
         for _ in 0..100 {
-            data.step(&model);
+            data.step(&model).expect("step failed");
         }
 
         // Benchmark
         let num_steps = 2000;
         let start = Instant::now();
         for _ in 0..num_steps {
-            data.step(&model);
+            data.step(&model).expect("step failed");
         }
         let elapsed = start.elapsed();
 
@@ -1645,7 +1645,7 @@ fn test_mjcf_with_actuators() {
     data.ctrl[0] = 1.0;
 
     for _ in 0..100 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     assert!(
@@ -1686,7 +1686,7 @@ fn test_mjcf_joint_limits() {
 
     // Simulate - joint should not exceed limit by much
     for _ in 0..500 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // SPEC: Limits enforced with < 1% overshoot
@@ -1726,7 +1726,7 @@ fn test_mjcf_spring_damping() {
 
     // Simulate - damping should reduce velocity
     for _ in 0..500 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Velocity should have decreased due to damping
@@ -1807,7 +1807,7 @@ fn test_urdf_model_data_pipeline() {
 
     // Step simulation and verify no NaN/Inf
     for _ in 0..100 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
         assert!(
             data.qpos.iter().all(|q| q.is_finite()),
             "qpos should be finite"
@@ -1819,7 +1819,7 @@ fn test_urdf_model_data_pipeline() {
     }
 
     // Verify FK computed positions
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
     // Body indices: world=0, base_link=1, link1=2, link2=3
     // link1 should be at z=0.5 (from joint origin)
     assert!(

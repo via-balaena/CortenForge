@@ -72,7 +72,7 @@ impl std::error::Error for ModelConversionError {}
 ///
 /// let model = model_from_mjcf(&mjcf, None)?;
 /// let mut data = model.make_data();
-/// data.step(&model);
+/// data.step(&model).expect("step failed");
 /// ```
 pub fn model_from_mjcf(
     mjcf: &MjcfModel,
@@ -137,7 +137,7 @@ pub fn load_model(xml: &str) -> Result<Model> {
 ///
 /// let model = load_model_from_file("models/humanoid.xml")?;
 /// let mut data = model.make_data();
-/// data.step(&model);
+/// data.step(&model).expect("step failed");
 /// ```
 pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
     let path = path.as_ref();

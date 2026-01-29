@@ -108,7 +108,7 @@ impl std::ops::Deref for PhysicsModel {
 /// }
 ///
 /// fn step(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
-///     data.step(&model);
+///     data.step(&model).expect("step failed");
 /// }
 /// ```
 #[derive(Resource)]

@@ -199,7 +199,10 @@ fn setup_physics_and_scene(
 
     // Create data and run forward kinematics
     let mut data = model.make_data();
-    data.forward(&model);
+    if let Err(e) = data.forward(&model) {
+        eprintln!("Forward kinematics failed: {e}");
+        return;
+    }
 
     // Store initial energy
     let initial_energy = data.energy_kinetic + data.energy_potential;
@@ -314,7 +317,10 @@ fn setup_physics_and_scene(
 /// `step_model_data` from the module which does a single step per frame.
 fn step_physics_with_substeps(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
     for _ in 0..SUBSTEPS {
-        data.step(&model);
+        if let Err(e) = data.step(&model) {
+            eprintln!("Physics step failed: {e}");
+            return;
+        }
     }
 }
 

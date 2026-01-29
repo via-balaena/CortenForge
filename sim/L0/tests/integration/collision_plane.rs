@@ -51,7 +51,7 @@ fn sphere_plane_penetrating() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert_eq!(data.ncon, 1, "Expected exactly 1 contact");
 
@@ -105,7 +105,7 @@ fn sphere_plane_touching() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Touching case: depth should be essentially zero or very small positive
     // Some implementations report no contact for exactly touching, others report ~0 depth
@@ -142,7 +142,7 @@ fn sphere_plane_separated() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert_eq!(data.ncon, 0, "Separated sphere should have no contacts");
 }
@@ -169,7 +169,7 @@ fn sphere_plane_deep_penetration() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert_eq!(data.ncon, 1, "Expected exactly 1 contact");
 
@@ -210,7 +210,7 @@ fn box_plane_corner_penetrating() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert!(data.ncon >= 1, "Expected at least 1 contact");
 
@@ -251,7 +251,7 @@ fn box_plane_face_touching() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Touching case: depth ≈ 0
     for c in &data.contacts[..data.ncon] {
@@ -285,7 +285,7 @@ fn box_plane_edge_tilted() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // For tilted box, we should still detect contact if penetrating
     // At 45°, the diagonal is sqrt(2) * 0.3 ≈ 0.424
@@ -311,7 +311,7 @@ fn box_plane_corner_tilted_penetrating() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // At 45°, diagonal ≈ 0.424. Center at 0.35 → lowest at ~0.35 - 0.424 = -0.074
     // Should penetrate by about 0.074
@@ -360,7 +360,7 @@ fn capsule_plane_upright_penetrating() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Capsule: radius=0.2, half_length=0.5
     // Bottom endpoint at z = 0.6 - 0.5 = 0.1
@@ -401,7 +401,7 @@ fn capsule_plane_horizontal_penetrating() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Horizontal capsule: lowest point is on hemisphere, at z = 0.15 - 0.2 = -0.05
     // Penetration = 0.05
@@ -438,7 +438,7 @@ fn capsule_plane_tilted_45() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // At 45°, the lower endpoint is at z = 0.5 - 0.5*cos(45°) = 0.5 - 0.354 = 0.146
     // The sphere surface extends further down by radius 0.2: 0.146 - 0.2 = -0.054
@@ -481,7 +481,7 @@ fn cylinder_plane_upright_penetrating() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Cylinder: radius=0.3, half_height=0.5
     // Center at z=0.4 → bottom cap at z = 0.4 - 0.5 = -0.1
@@ -524,7 +524,7 @@ fn cylinder_plane_horizontal_penetrating() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Horizontal cylinder: radius=0.3, axis along X
     // Lowest point is on curved surface at z = 0.25 - 0.3 = -0.05
@@ -565,7 +565,7 @@ fn cylinder_plane_tilted_45_penetrating() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Tilted cylinder at 45°:
     // The deepest point is on the lower rim edge
@@ -615,7 +615,7 @@ fn cylinder_plane_separated() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Center at z=1.0, half_height=0.5 → bottom at z=0.5 (above plane)
     assert_eq!(data.ncon, 0, "Separated cylinder should have no contacts");
@@ -642,7 +642,7 @@ fn ellipsoid_plane_spherical_penetrating() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Spherical ellipsoid: radius=0.5, center at z=0.4
     // Penetration = 0.5 - 0.4 = 0.1
@@ -681,7 +681,7 @@ fn ellipsoid_plane_tall_vertical() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Tall ellipsoid: radii=(0.2, 0.2, 0.5), center at z=0.4
     // Lowest point at z = 0.4 - 0.5 = -0.1
@@ -721,7 +721,7 @@ fn ellipsoid_plane_flat_vertical() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Flat ellipsoid: radii=(0.5, 0.5, 0.2), center at z=0.15
     // Lowest point at z = 0.15 - 0.2 = -0.05
@@ -761,7 +761,7 @@ fn ellipsoid_plane_rotated_long_horizontal() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Ellipsoid: radii=(0.5, 0.2, 0.2), long axis along X
     // No rotation, so effective vertical radius is 0.2 (Z radius)
@@ -796,7 +796,7 @@ fn ellipsoid_plane_rotated_long_vertical() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Ellipsoid: radii=(0.5, 0.2, 0.2)
     // Rotated 90° about Y: local X becomes world Z
@@ -835,7 +835,7 @@ fn ellipsoid_plane_separated() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Center at z=1.0, max radius=0.5 → bottom at z=0.5 (above plane)
     assert_eq!(data.ncon, 0, "Separated ellipsoid should have no contacts");
@@ -864,7 +864,7 @@ fn sphere_tilted_plane_penetrating() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // The tilted plane's normal is not +Z anymore
     // 30° rotation about X: normal = (0, -sin(30°), cos(30°)) = (0, -0.5, 0.866)
@@ -915,7 +915,7 @@ fn sphere_plane_tiny_penetration() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Penetration = 0.5 - 0.4999 = 0.0001
     assert!(data.ncon >= 1, "Tiny penetration should still be detected");
@@ -951,7 +951,7 @@ fn sphere_plane_far_from_origin() {
 
     let model = load_model(&mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Even at large offsets, collision should work correctly
     assert!(

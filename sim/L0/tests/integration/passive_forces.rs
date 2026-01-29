@@ -63,7 +63,7 @@ fn test_springref_shifts_equilibrium() {
     // Step simulation until it settles (with damping, it should reach equilibrium)
     // Small timestep means more steps needed
     for _ in 0..20000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Should settle near springref=0.5, not qpos0=0
@@ -97,15 +97,15 @@ fn test_springref_zero_force_at_equilibrium() {
     data.qvel[0] = 0.0; // Zero velocity (no damping force)
 
     // Compute passive forces
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // At equilibrium with zero velocity, passive force should be zero
     // (Need to call step to populate qfrc_passive, or use internal API)
     // For now, verify by stepping and checking that position doesn't change
     let initial_pos = data.qpos[0];
-    data.step(&model);
-    data.step(&model);
-    data.step(&model);
+    data.step(&model).expect("step failed");
+    data.step(&model).expect("step failed");
+    data.step(&model).expect("step failed");
 
     // Position should remain unchanged (no net force)
     assert_relative_eq!(data.qpos[0], initial_pos, epsilon = 1e-8);
@@ -139,7 +139,7 @@ fn test_springref_force_direction() {
         data.qvel[0] = 0.0;
 
         // One step should produce positive acceleration
-        data.step(&model);
+        data.step(&model).expect("step failed");
         assert!(
             data.qvel[0] > 0.0,
             "Spring should accelerate toward springref when q < springref"
@@ -153,7 +153,7 @@ fn test_springref_force_direction() {
         data.qvel[0] = 0.0;
 
         // One step should produce negative acceleration
-        data.step(&model);
+        data.step(&model).expect("step failed");
         assert!(
             data.qvel[0] < 0.0,
             "Spring should accelerate toward springref when q > springref"
@@ -191,7 +191,7 @@ fn test_spring_stiffness_scaling() {
     let mut data_low = model_low.make_data();
     data_low.qpos[0] = 0.1; // Displacement from equilibrium
     data_low.qvel[0] = 0.0;
-    data_low.step(&model_low);
+    data_low.step(&model_low).expect("step failed");
     let accel_low = data_low.qvel[0] / 0.001; // v = a*t for first step
 
     // High stiffness (2x)
@@ -199,7 +199,7 @@ fn test_spring_stiffness_scaling() {
     let mut data_high = model_high.make_data();
     data_high.qpos[0] = 0.1; // Same displacement
     data_high.qvel[0] = 0.0;
-    data_high.step(&model_high);
+    data_high.step(&model_high).expect("step failed");
     let accel_high = data_high.qvel[0] / 0.001;
 
     // Acceleration should scale with stiffness (2x stiffness => 2x acceleration)
@@ -257,7 +257,7 @@ fn test_springref_slide_joint() {
     // Start at origin, should settle at springref
     data.qpos[0] = 0.0;
     for _ in 0..5000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Should settle near springref=0.2
@@ -297,7 +297,7 @@ fn test_frictionloss_opposes_motion() {
 
         // Step and check that velocity decreases
         let v0 = data.qvel[0];
-        data.step(&model);
+        data.step(&model).expect("step failed");
         assert!(
             data.qvel[0] < v0,
             "Friction should slow down positive velocity"
@@ -310,7 +310,7 @@ fn test_frictionloss_opposes_motion() {
         data.qvel[0] = -1.0; // Moving in negative direction
 
         let v0 = data.qvel[0];
-        data.step(&model);
+        data.step(&model).expect("step failed");
         assert!(
             data.qvel[0] > v0,
             "Friction should slow down negative velocity (toward zero)"
@@ -348,7 +348,7 @@ fn test_frictionloss_reduces_velocity() {
 
     // Run simulation
     for _ in 0..10000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Velocity should be significantly reduced (at least 50% reduction)
@@ -386,14 +386,14 @@ fn test_frictionloss_scaling() {
     let model_low = load_model(&make_model(5.0)).expect("should load");
     let mut data_low = model_low.make_data();
     data_low.qvel[0] = 1.0;
-    data_low.step(&model_low);
+    data_low.step(&model_low).expect("step failed");
     let decel_low = 1.0 - data_low.qvel[0];
 
     // High friction (2x)
     let model_high = load_model(&make_model(10.0)).expect("should load");
     let mut data_high = model_high.make_data();
     data_high.qvel[0] = 1.0;
-    data_high.step(&model_high);
+    data_high.step(&model_high).expect("step failed");
     let decel_high = 1.0 - data_high.qvel[0];
 
     // Higher friction should produce greater deceleration
@@ -432,7 +432,7 @@ fn test_frictionloss_zero_at_rest() {
     data.qvel[0] = 0.0;
 
     // Step should not change velocity (no force)
-    data.step(&model);
+    data.step(&model).expect("step failed");
 
     // Velocity should remain effectively zero
     assert!(
@@ -465,7 +465,7 @@ fn test_frictionloss_slide_joint() {
     data.qvel[0] = 0.5;
     let v0 = data.qvel[0];
 
-    data.step(&model);
+    data.step(&model).expect("step failed");
 
     // Friction should reduce velocity
     assert!(data.qvel[0] < v0, "Slide joint friction should slow motion");
@@ -506,7 +506,7 @@ fn test_combined_passive_forces() {
 
     // Run simulation (more steps due to smaller timestep)
     for _ in 0..40000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Should settle near springref
@@ -544,13 +544,13 @@ fn test_damping_scales_with_velocity() {
     let mut data_low = model.make_data();
     data_low.qvel[0] = 1.0;
     let v0_low = data_low.qvel[0];
-    data_low.step(&model);
+    data_low.step(&model).expect("step failed");
     let decel_low = v0_low - data_low.qvel[0];
 
     let mut data_high = model.make_data();
     data_high.qvel[0] = 2.0;
     let v0_high = data_high.qvel[0];
-    data_high.step(&model);
+    data_high.step(&model).expect("step failed");
     let decel_high = v0_high - data_high.qvel[0];
 
     // Deceleration should scale linearly with velocity (2x velocity => 2x deceleration)
@@ -588,7 +588,7 @@ fn test_moderate_stiffness_stability() {
 
     // Run simulation - should not explode
     for i in 0..50000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
 
         // Check for numerical explosion
         assert!(
@@ -639,7 +639,7 @@ fn test_multiple_joints_different_springref() {
 
     // Run simulation
     for _ in 0..10000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Each joint should settle near its own springref
@@ -688,7 +688,7 @@ fn test_springref_with_gravity() {
 
     // Run simulation
     for _ in 0..40000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Should settle near springref=0 (straight down), not at 0.5

@@ -72,7 +72,7 @@ fn test_implicit_spring_energy_bounded() {
     // Step for 1 second (500 steps at dt=0.002)
     let mut max_energy: f64 = initial_energy;
     for _ in 0..500 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
 
         // Compute current energy
         let q = data.qpos[0];
@@ -141,7 +141,7 @@ fn test_implicit_matches_analytic_oscillator() {
 
     // Run for 2 seconds to capture multiple periods
     for _ in 0..2000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
         step += 1;
 
         let q = data.qpos[0];
@@ -216,7 +216,7 @@ fn test_implicit_stability_at_high_stiffness() {
 
     // Run for 1000 steps (10 seconds)
     for step in 0..1000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
 
         // Check for NaN (numerical instability)
         assert!(
@@ -280,7 +280,7 @@ fn test_implicit_damped_convergence() {
 
     // Run for 2 seconds
     for _ in 0..1000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
 
         let q = data.qpos[0];
 
@@ -331,7 +331,7 @@ fn test_implicit_overdamped_convergence() {
 
     // Run for 2 seconds
     for step in 0..1000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
 
         let q = data.qpos[0];
 
@@ -407,8 +407,12 @@ fn test_explicit_implicit_agreement_low_stiffness() {
 
     // Run for 100 steps
     for _ in 0..100 {
-        data_explicit.step(&model_explicit);
-        data_implicit.step(&model_implicit);
+        data_explicit
+            .step(&model_explicit)
+            .expect("explicit step failed");
+        data_implicit
+            .step(&model_implicit)
+            .expect("implicit step failed");
     }
 
     // Results should be similar (within 5% for this damped system)
@@ -462,7 +466,7 @@ fn test_implicit_friction_loss_applied() {
 
     // Run for 500 steps (0.5 seconds)
     for _ in 0..500 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Friction loss should have dissipated energy
@@ -516,7 +520,7 @@ fn test_implicit_multi_dof_chain() {
 
     // Run for 2 seconds (2000 steps)
     for step in 0..2000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
 
         // Check for NaN/Inf (numerical stability)
         assert!(
@@ -581,7 +585,7 @@ fn test_implicit_free_joint_damping() {
 
     // Run for 1 second
     for _ in 0..500 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Damping should have reduced angular velocity
@@ -626,7 +630,7 @@ fn test_implicit_external_forces() {
 
     // Run until equilibrium (force balances spring)
     for _ in 0..2000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // At equilibrium: F = k * x => x = F/k = 50/100 = 0.5m
@@ -680,7 +684,7 @@ fn test_implicit_with_equality_constraints() {
 
     // Run simulation
     for step in 0..1000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
 
         // Check stability
         assert!(

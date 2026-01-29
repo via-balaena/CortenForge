@@ -52,7 +52,7 @@ fn cylinder_plane_near_parallel_axis() {
 
     let model = load_model(&mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Should detect contact without panicking
     assert!(
@@ -106,7 +106,7 @@ fn capsule_capsule_near_parallel() {
 
     let model = load_model(&mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Should detect contact
     assert!(data.ncon >= 1, "Near-parallel capsules should contact");
@@ -142,7 +142,7 @@ fn cylinder_sphere_axis_perpendicular_to_contact() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Cylinder axis along X (rotated 90° about Y), sphere approaching along Y
     // This is exactly perpendicular approach to curved surface
@@ -188,7 +188,7 @@ fn sphere_sphere_nearly_coincident() {
 
     let model = load_model(&mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Should detect deep penetration
     assert_eq!(data.ncon, 1, "Coincident spheres should have 1 contact");
@@ -235,7 +235,7 @@ fn sphere_box_center_on_face() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Sphere center exactly on box face at x=0.5
     // Penetration = sphere radius = 0.3
@@ -268,7 +268,7 @@ fn capsule_plane_endpoint_on_surface() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Capsule: center at z=0.7, half_length=0.5, radius=0.2
     // Bottom endpoint at z = 0.7 - 0.5 = 0.2
@@ -312,7 +312,7 @@ fn sphere_plane_far_from_origin_1km() {
 
     let model = load_model(&mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     assert!(data.ncon >= 1, "Far collision should be detected");
 
@@ -350,7 +350,7 @@ fn sphere_plane_far_from_origin_1000km() {
 
     let model = load_model(&mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // At this scale, we may lose some precision, but collision should still work
     assert!(data.ncon >= 1, "Very far collision should be detected");
@@ -394,7 +394,7 @@ fn sphere_sphere_microscale() {
 
     let model = load_model(&mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Sum of radii = 2e-6, distance = 1.5e-6
     // Penetration = 2e-6 - 1.5e-6 = 0.5e-6 = 5e-7
@@ -431,7 +431,7 @@ fn cylinder_plane_tiny_radius() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Cylinder: radius=0.001, half_height=0.5
     // Bottom at z = 0.4 - 0.5 = -0.1
@@ -465,7 +465,7 @@ fn ellipsoid_plane_disk_like() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Ellipsoid: radii=(0.5, 0.5, 0.001), center at z=0.0005
     // Bottom at z = 0.0005 - 0.001 = -0.0005
@@ -499,7 +499,7 @@ fn box_plane_slab_like() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Box: half-extents=(0.5, 0.5, 0.001), center at z=0.0005
     // Bottom at z = 0.0005 - 0.001 = -0.0005
@@ -537,7 +537,7 @@ fn capsule_plane_rod_like() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Capsule: radius=0.001, half_length=0.5
     // Bottom endpoint at z = 0.4 - 0.5 = -0.1
@@ -580,7 +580,7 @@ fn sphere_plane_zero_radius() {
     let mut data = model.make_data();
 
     // Should not panic
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // May or may not detect contact for essentially-zero-radius sphere
     // Just verify no crash
@@ -608,7 +608,7 @@ fn box_box_cubes() {
 
     let model = load_model(mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Perfect cubes overlapping
     assert!(data.ncon >= 1, "Overlapping cubes should contact");
@@ -666,11 +666,11 @@ fn sphere_sphere_symmetry() {
 
     let model_ab = load_model(mjcf_ab).expect("Failed to load model AB");
     let mut data_ab = model_ab.make_data();
-    data_ab.forward(&model_ab);
+    data_ab.forward(&model_ab).expect("forward failed");
 
     let model_ba = load_model(mjcf_ba).expect("Failed to load model BA");
     let mut data_ba = model_ba.make_data();
-    data_ba.forward(&model_ba);
+    data_ba.forward(&model_ba).expect("forward failed");
 
     assert_eq!(
         data_ab.ncon, data_ba.ncon,
@@ -722,11 +722,11 @@ fn box_box_symmetry() {
 
     let model_ab = load_model(mjcf_ab).expect("Failed to load model AB");
     let mut data_ab = model_ab.make_data();
-    data_ab.forward(&model_ab);
+    data_ab.forward(&model_ab).expect("forward failed");
 
     let model_ba = load_model(mjcf_ba).expect("Failed to load model BA");
     let mut data_ba = model_ba.make_data();
-    data_ba.forward(&model_ba);
+    data_ba.forward(&model_ba).expect("forward failed");
 
     // Contact count should be same
     assert_eq!(
@@ -790,7 +790,7 @@ fn many_spheres_pile() {
 
     let model = load_model(&mjcf).expect("Failed to load model");
     let mut data = model.make_data();
-    data.forward(&model);
+    data.forward(&model).expect("forward failed");
 
     // Should have many contacts (floor + sphere-sphere)
     // Each sphere touches floor = 10 contacts

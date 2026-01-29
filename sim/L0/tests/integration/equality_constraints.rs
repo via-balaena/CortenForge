@@ -82,7 +82,7 @@ fn test_connect_constraint_maintains_attachment() {
 
     // Step simulation
     for _ in 0..1000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Check that the anchor point on body1 stays close to body2
@@ -122,7 +122,7 @@ fn test_connect_constraint_to_world() {
 
     // Step simulation - body should swing like a pendulum
     for _ in 0..2000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // The body origin should stay near world origin (0,0,0)
@@ -163,7 +163,7 @@ fn test_connect_constraint_offset_anchor() {
     // Constraint will pull anchor toward (0, 0, 0)
 
     for _ in 0..5000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // After settling, anchor point should be near world origin
@@ -214,7 +214,7 @@ fn test_weld_constraint_locks_pose() {
 
     // Step simulation
     for _ in 0..1000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Check relative orientation stayed similar
@@ -260,7 +260,7 @@ fn test_weld_constraint_to_world_fixed() {
 
     // Step simulation - body should stay put despite gravity
     for _ in 0..2000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     let final_pos = data.xpos[1];
@@ -314,7 +314,7 @@ fn test_joint_equality_mimic() {
 
     // Step simulation
     for _ in 0..2000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Joints should be approximately equal
@@ -361,7 +361,7 @@ fn test_joint_equality_gear_ratio() {
 
     // Step simulation
     for _ in 0..3000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // joint2 should be approximately 2 * joint1
@@ -404,7 +404,7 @@ fn test_joint_equality_lock() {
 
     // Step simulation
     for _ in 0..5000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Joint should settle near 0.5 rad
@@ -454,7 +454,7 @@ fn test_multiple_connect_constraints() {
 
     // Step simulation
     for _ in 0..1000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // b1 should be near world origin
@@ -498,7 +498,7 @@ fn test_inactive_constraint_ignored() {
 
     // Step simulation - ball should fall freely
     for _ in 0..1000 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 
     // Ball should have fallen significantly (not constrained)
@@ -535,7 +535,7 @@ fn test_no_equality_constraints() {
 
     // Should not crash
     for _ in 0..100 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 }
 
@@ -566,7 +566,7 @@ fn test_constraint_with_solref() {
 
     // Should not crash
     for _ in 0..100 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
 }
 
@@ -658,9 +658,39 @@ fn test_weld_constraint_with_relpose() {
     assert_relative_eq!(model.eq_data[0][3], 0.707, epsilon = 0.01);
     assert_relative_eq!(model.eq_data[0][5], 0.707, epsilon = 0.01);
 
-    // Step simulation
-    for _ in 0..2000 {
-        data.step(&model);
+    // Debug: print initial state and constraint forces
+    eprintln!("=== Initial state ===");
+    eprintln!("nv={}, nq={}", model.nv, model.nq);
+    eprintln!("qpos = {:?}", data.qpos.as_slice());
+    eprintln!("qvel = {:?}", data.qvel.as_slice());
+
+    // Step simulation with diagnostics
+    for step in 0..10 {
+        // Run forward to compute constraint forces
+        data.forward(&model).expect("forward failed");
+
+        eprintln!("\n=== Step {} ===", step);
+        eprintln!("qfrc_constraint = {:?}", data.qfrc_constraint.as_slice());
+        eprintln!("qvel = {:?}", data.qvel.as_slice());
+        eprintln!("qacc = {:?}", data.qacc.as_slice());
+
+        // Check for numerical issues
+        let max_force = data
+            .qfrc_constraint
+            .iter()
+            .map(|x| x.abs())
+            .fold(0.0_f64, f64::max);
+        let max_vel = data.qvel.iter().map(|x| x.abs()).fold(0.0_f64, f64::max);
+        let max_acc = data.qacc.iter().map(|x| x.abs()).fold(0.0_f64, f64::max);
+
+        eprintln!(
+            "max_force={:.2e}, max_vel={:.2e}, max_acc={:.2e}",
+            max_force, max_vel, max_acc
+        );
+
+        if let Err(e) = data.step(&model) {
+            panic!("Step {} failed: {}", step, e);
+        }
     }
 
     // Bodies should maintain relative orientation (approximately 90° about Y)

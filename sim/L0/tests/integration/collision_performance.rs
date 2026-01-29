@@ -78,13 +78,13 @@ fn benchmark_model(model: &sim_core::Model, warmup_steps: usize, bench_steps: us
 
     // Warmup phase
     for _ in 0..warmup_steps {
-        data.step(model);
+        data.step(model).expect("step failed");
     }
 
     // Benchmark phase
     let start = Instant::now();
     for _ in 0..bench_steps {
-        data.step(model);
+        data.step(model).expect("step failed");
     }
     let elapsed = start.elapsed().as_secs_f64();
 
@@ -561,14 +561,14 @@ fn determinism_check() {
     // Run 1
     let mut data1 = model.make_data();
     for _ in 0..100 {
-        data1.step(&model);
+        data1.step(&model).expect("step failed");
     }
     let pos1 = data1.xpos[1];
 
     // Run 2
     let mut data2 = model.make_data();
     for _ in 0..100 {
-        data2.step(&model);
+        data2.step(&model).expect("step failed");
     }
     let pos2 = data2.xpos[1];
 
@@ -601,7 +601,7 @@ fn step_equivalence() {
     let mut data = model.make_data();
     data.qpos[0] = 0.5; // Initial angle
     for _ in 0..100 {
-        data.step(&model);
+        data.step(&model).expect("step failed");
     }
     let pos_100 = data.qpos[0];
 
@@ -609,10 +609,10 @@ fn step_equivalence() {
     let mut data2 = model.make_data();
     data2.qpos[0] = 0.5;
     for _ in 0..50 {
-        data2.step(&model);
+        data2.step(&model).expect("step failed");
     }
     for _ in 0..50 {
-        data2.step(&model);
+        data2.step(&model).expect("step failed");
     }
     let pos_50_50 = data2.qpos[0];
 
