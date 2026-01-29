@@ -1383,32 +1383,11 @@ impl ModelBuilder {
             body_ancestor_mask: vec![vec![]; nbody], // Multi-word bitmask, computed by compute_ancestors
         };
 
-        // Pre-compute implicit integration parameters (K, D, q_eq diagonals)
-        // These are model-invariant and cached to avoid allocation per step.
-        for jnt_id in 0..njnt {
-            let dof_adr = model.jnt_dof_adr[jnt_id];
-            let nv_jnt = model.jnt_type[jnt_id].nv();
-
-            match model.jnt_type[jnt_id] {
-                sim_core::MjJointType::Hinge | sim_core::MjJointType::Slide => {
-                    model.implicit_stiffness[dof_adr] = model.jnt_stiffness[jnt_id];
-                    model.implicit_damping[dof_adr] = model.jnt_damping[jnt_id];
-                    model.implicit_springref[dof_adr] = model.jnt_springref[jnt_id];
-                }
-                sim_core::MjJointType::Ball | sim_core::MjJointType::Free => {
-                    // Ball/Free: per-DOF damping only (no spring for quaternion DOFs)
-                    for i in 0..nv_jnt {
-                        let dof_idx = dof_adr + i;
-                        model.implicit_stiffness[dof_idx] = 0.0;
-                        model.implicit_damping[dof_idx] = model.dof_damping[dof_idx];
-                        model.implicit_springref[dof_idx] = 0.0;
-                    }
-                }
-            }
-        }
-
         // Pre-compute ancestor lists for O(n) CRBA/RNE
         model.compute_ancestors();
+
+        // Pre-compute implicit integration parameters (K, D, q_eq diagonals)
+        model.compute_implicit_params();
 
         // Pre-compute bounding sphere radii for all geoms (used in collision broad-phase)
         for geom_id in 0..ngeom {
