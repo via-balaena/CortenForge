@@ -12997,8 +12997,13 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
 
     // Solve (M + h*D + h²*K) * v_new = rhs
     // M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0), so use Cholesky.
-    // Note: clone() is required because nalgebra's cholesky() consumes the matrix.
-    // This is O(n²) per step; a proper fix would use rank-k Cholesky updates.
+    //
+    // TODO(perf): This clone() allocates O(nv²) per step because nalgebra's cholesky()
+    // consumes the matrix. For serial chains, M is banded with bandwidth O(1), so we
+    // could use sparse L^T D L factorization for O(nv) instead of O(nv³). Options:
+    //   1. Implement in-place Cholesky that doesn't consume the matrix
+    //   2. Use sparse factorization exploiting articulated body structure
+    //   3. Use Featherstone's articulated body algorithm (ABA) which is O(nv)
     let chol = data
         .scratch_m_impl
         .clone()
