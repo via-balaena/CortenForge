@@ -8096,15 +8096,15 @@ fn collide_with_plane(
                 friction,
             )
         }
-        GeomType::Mesh => {
-            // Mesh-plane collision requires mesh data from model
-            // Will be implemented in Phase 4 (mesh integration)
-            None
-        }
-        GeomType::Plane => {
-            // Plane-plane collision not physically meaningful
-            None
-        }
+        // INVARIANT: collide_geoms() dispatches mesh collision before plane collision.
+        // If either geom is a mesh, collide_with_mesh() handles it—including mesh-plane.
+        // This branch exists only for match exhaustiveness; reaching it indicates a bug.
+        GeomType::Mesh => unreachable!(
+            "mesh collision must be dispatched before plane collision in collide_geoms"
+        ),
+        // Plane-plane: two infinite half-spaces. Intersection is either empty, a plane,
+        // or a half-space—none of which produce a meaningful contact point.
+        GeomType::Plane => None,
     }
 }
 

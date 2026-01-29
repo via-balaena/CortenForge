@@ -194,7 +194,7 @@ pub use types::{
 pub use validation::{ValidationResult, validate};
 
 // MuJoCo-aligned Model conversion (primary API)
-pub use model_builder::{ModelConversionError, load_model, model_from_mjcf};
+pub use model_builder::{ModelConversionError, load_model, load_model_from_file, model_from_mjcf};
 
 // MJB binary format support (requires "mjb" feature)
 #[cfg(feature = "mjb")]
