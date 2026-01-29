@@ -2277,9 +2277,18 @@ mod tests {
     /// Test resolve_mesh_path fails for non-existent absolute path.
     #[test]
     fn test_resolve_mesh_path_absolute_not_found() {
-        let result = resolve_mesh_path("/nonexistent/path/mesh.stl", None);
+        // Use platform-appropriate absolute path that definitely doesn't exist
+        #[cfg(windows)]
+        let nonexistent_path = "C:\\nonexistent_dir_12345\\mesh.stl";
+        #[cfg(not(windows))]
+        let nonexistent_path = "/nonexistent_dir_12345/mesh.stl";
+
+        let result = resolve_mesh_path(nonexistent_path, None);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not found"));
+        assert!(
+            result.unwrap_err().to_string().contains("not found"),
+            "Error should mention 'not found' for non-existent absolute path"
+        );
     }
 
     /// Test resolve_mesh_path with relative path and base_path.
