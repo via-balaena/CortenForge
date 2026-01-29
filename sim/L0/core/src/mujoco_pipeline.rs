@@ -6387,7 +6387,6 @@ pub struct Data {
     /// Scratch vector for force accumulation (length `nv`).
     pub scratch_force: DVector<f64>,
     /// Scratch vector for RHS of linear solves (length `nv`).
-    /// Also used as in-place buffer for Cholesky solve result.
     pub scratch_rhs: DVector<f64>,
     /// Scratch vector for new velocity in implicit solve (length `nv`).
     /// Used to hold v_new while computing qacc = (v_new - v_old) / h.
