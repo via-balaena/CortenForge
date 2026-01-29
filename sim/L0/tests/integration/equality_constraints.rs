@@ -1,19 +1,42 @@
-//! Phase 1.1: Equality Constraint Tests for MuJoCo Parity.
+//! Equality Constraint Integration Tests.
 //!
-//! These tests verify the correctness of equality constraint implementation:
-//! - **Connect**: Ball-and-socket constraint (3 DOF position)
-//! - **Weld**: Fixed frame constraint (6 DOF pose)
-//! - **Joint**: Polynomial joint coupling
+//! These tests verify the correctness of equality constraint enforcement:
+//! - **Connect**: Ball-and-socket constraint (3 DOF position lock)
+//! - **Weld**: Fixed frame constraint (6 DOF pose lock)
+//! - **Joint**: Polynomial joint coupling (θ₂ = poly(θ₁))
 //!
-//! Reference: MUJOCO_PARITY_SPEC.md Phase 1.1
+//! # Implementation Notes
+//!
+//! Equality constraints use **penalty method with Baumgarte stabilization**:
+//! ```text
+//! τ = -k * position_error - b * velocity_error
+//! ```
+//!
+//! Where k (stiffness) and b (damping) are derived from solref parameters:
+//! ```text
+//! k = 1 / timeconst²
+//! b = 2 * dampratio / timeconst
+//! ```
+//!
+//! # Key Design Decisions
+//!
+//! 1. **No explicit reaction torque for joint coupling**: In articulated body
+//!    dynamics, applying τ₂ to joint2 naturally propagates forces through the
+//!    mass matrix. Adding τ₁ = -dq₂/dq₁ · τ₂ would double-count, causing explosion.
+//!    (See Featherstone, "Rigid Body Dynamics Algorithms", Section 7.3)
+//!
+//! 2. **Softer defaults than MuJoCo**: MuJoCo's default solref=[0.02, 1.0] is tuned
+//!    for their implicit PGS solver. For explicit penalty integration, we recommend
+//!    solref="0.05 1.0" to "0.1 1.0" for stability with articulated chains.
 //!
 //! # Test Strategy
 //!
 //! Equality constraints enforce holonomic relationships between bodies or joints.
 //! We verify that:
-//! 1. Constraint violation stays bounded (penalty method)
-//! 2. Constrained systems behave physically correctly
-//! 3. Multiple constraints interact properly
+//! 1. Constraint violation stays bounded (penalty method effectiveness)
+//! 2. Constrained systems behave physically correctly (energy, stability)
+//! 3. Multiple constraints interact properly (no interference)
+//! 4. Error handling works for invalid body/joint names
 
 use approx::assert_relative_eq;
 use sim_mjcf::load_model;

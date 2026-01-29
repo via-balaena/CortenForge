@@ -4202,11 +4202,32 @@ impl ArticulatedSystem {
 
     /// Step the system forward using `MuJoCo`'s pipeline.
     ///
-    /// 1. Compute inertia matrix M via CRBA
-    /// 2. Compute bias forces via RNE
-    /// 3. Compute passive forces
-    /// 4. Solve M * qacc = `qfrc_smooth`
-    /// 5. Semi-implicit Euler integration
+    /// # Integration Pipeline (ANCHOR: step_integration)
+    ///
+    /// 1. Compute inertia matrix M via CRBA — O(n) Featherstone algorithm
+    /// 2. Compute bias forces via RNE — Coriolis/centrifugal/gravity
+    /// 3. Compute passive forces — springs computed EXPLICITLY as `-k*(q-q_eq) - d*qvel`
+    /// 4. Solve `M * qacc = qfrc_smooth` — LU decomposition, O(n³)
+    /// 5. Semi-implicit Euler: `qvel += qacc*dt`, then `qpos += qvel*dt`
+    ///
+    /// # Implicit Spring Integration (Future Enhancement)
+    ///
+    /// Currently spring forces are computed explicitly in step 3, which can be
+    /// unstable for high stiffness (k > 1000) with large timesteps (dt > 0.01).
+    ///
+    /// For implicit treatment, step 4 would become:
+    /// ```text
+    /// (M + h*D + h²*K) * v_new = M*v_old + h*f - h*K*(q - q_eq)
+    /// ```
+    ///
+    /// This requires refactoring `passive_forces()` to return (K, D, q_eq) separately
+    /// instead of the combined force vector. The change surface is minimal:
+    /// - Step 3: Extract K, D, q_eq instead of computing force
+    /// - Step 4: Build modified mass matrix `M + h*D + h²*K`
+    /// - Step 4: Build modified RHS `M*v + h*f - h*K*(q-q_eq)`
+    /// - Step 5: Already have v_new directly (skip qacc intermediate)
+    ///
+    /// Complexity remains O(n³) — we're just solving a different linear system.
     pub fn step(&mut self, dt: f64) {
         if self.nv == 0 {
             return;
@@ -11311,20 +11332,36 @@ fn pgs_solve_contacts(
 
 /// Apply equality constraint forces using penalty method.
 ///
-/// Supports Connect (3 DOF position) and Weld (6 DOF pose) constraints.
+/// Supports Connect, Weld, and Joint constraints.
 /// Uses Baumgarte stabilization for drift correction.
 ///
 /// # MuJoCo Semantics
 ///
-/// - **Connect**: Constrains two anchor points to coincide.
+/// - **Connect**: Ball-and-socket (3 DOF position lock).
 ///   Error = p1 + R1*anchor - p2, where p2 is body2's position (or world origin).
 ///
-/// - **Weld**: Constrains two frames to maintain a fixed relative pose.
+/// - **Weld**: Fixed frame (6 DOF pose lock).
 ///   Position error same as Connect; orientation error via quaternion difference.
 ///
-/// The penalty parameters are derived from solref [timeconst, dampratio]:
-///   stiffness = 1 / (timeconst² * dt²)
-///   damping = 2 * dampratio / (timeconst * dt)
+/// - **Joint**: Polynomial coupling θ₂ = c₀ + c₁θ₁ + c₂θ₁² + c₃θ₁³ + c₄θ₁⁴.
+///   Error = θ₂ - poly(θ₁). Only joint2 receives correction torque (see below).
+///
+/// # Key Design Decision: No Reaction Torque for Joint Coupling
+///
+/// In articulated body dynamics, applying τ₂ to joint2 naturally propagates forces
+/// through the kinematic chain via the mass matrix M. Adding an explicit reaction
+/// torque τ₁ = -∂θ₂/∂θ₁ · τ₂ would double-count the coupling, causing positive
+/// feedback and numerical explosion. This is NOT a bug — it's how articulated
+/// body dynamics work. See Featherstone, "Rigid Body Dynamics Algorithms" (2008),
+/// Section 7.3 on constraint force propagation.
+///
+/// # Penalty Parameters
+///
+/// Derived from solref [timeconst, dampratio]:
+/// ```text
+/// k = 1 / timeconst²           (stiffness, N/m or Nm/rad)
+/// b = 2 * dampratio / timeconst  (damping, Ns/m or Nms/rad)
+/// ```
 fn apply_equality_constraints(model: &Model, data: &mut Data) {
     // Skip if no equality constraints
     if model.neq == 0 {

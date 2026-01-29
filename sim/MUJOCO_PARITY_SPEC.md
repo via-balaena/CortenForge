@@ -300,46 +300,101 @@ simulation.
 
 **MuJoCo's implicit integrator** solves:
 ```
-M * (v_new - v_old) = h * (f - d*v_new - k*(x_new - x_eq))
+M * (v_new - v_old) = h * (f - D*v_new - K*(x_new - x_eq))
+```
+
+Rearranging:
+```
+(M + h*D + h²*K) * v_new = M*v_old + h*f - h*K*(x - x_eq)
 ```
 
 This requires treating spring forces implicitly for stability with high stiffness.
 
-**Implementation**:
+#### Design Decision: Skip Single-Body Implicit (Half-Measure)
 
-```rust
-/// Integrate with implicit spring-damper treatment.
-///
-/// Solves: (M + h*D + h²*K) * v_new = M*v + h*f - h*K*(x - x_eq)
-pub fn integrate_implicit_spring_damper(
-    state: &mut RigidBodyState,
-    external_accel: Vector3<f64>,
-    equilibrium: Point3<f64>,
-    stiffness: f64,
-    damping: f64,
-    mass: f64,
-    dt: f64,
-) {
-    // Effective mass includes spring and damper contributions
-    let effective_mass = mass + dt * damping + dt * dt * stiffness;
+**Rejected approach**: Single-body implicit springs (treating each body independently)
+- This would work for isolated bodies but fails for articulated chains
+- Joint-space stiffness couples DOFs across the kinematic tree
+- Implementing single-body implicit would add code that doesn't solve the real problem
 
-    // Spring force toward equilibrium
-    let displacement = state.pose.position - equilibrium;
-    let spring_force = -stiffness * displacement;
+**Chosen approach**: Full joint-space implicit when needed
+- Modify the existing LU solve to use `(M + h*D + h²*K)` instead of `M`
+- Minimal change surface (see architecture map below)
+- Deferred to Phase 2 Robustness — most use cases work with explicit springs
 
-    // Implicit solve
-    let impulse = mass * state.twist.linear + dt * (external_accel * mass + spring_force);
-    state.twist.linear = impulse / effective_mass;
+#### Architecture Map: Current Integration Path
 
-    // Position update
-    state.pose.position += state.twist.linear * dt;
-}
+```
+ArticulatedSystem::step(dt)  [mujoco_pipeline.rs — search: ANCHOR: step_integration]
+┌─────────────────────────────────────────────────────────────────────┐
+│ 1. M = inertia_matrix()        ← CRBA: O(n) composite rigid body   │
+│ 2. qfrc_bias = bias_forces()   ← RNE: Coriolis/centrifugal         │
+│ 3. qfrc_passive = passive_forces()  ← Spring-damper in joint space │
+│                                                                     │
+│ 4. qfrc_smooth = qfrc_passive - qfrc_bias                          │
+│    ⚠️ Spring forces computed EXPLICITLY                             │
+│                                                                     │
+│ 5. qacc = M.lu().solve(qfrc_smooth)   ← LU decomposition            │
+│    ⚠️ Only solving M * qacc = f (not implicit stiffness)            │
+│                                                                     │
+│ 6. qvel_new = qvel + qacc * dt        ← Semi-implicit Euler         │
+│ 7. qpos_new = qpos + qvel_new * dt    ← Position integration        │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-**Note**: This is for single-body implicit treatment. Full joint-space implicit
-integration is more complex and may not be needed for most use cases.
+#### Minimal Change Surface for Implicit Springs
 
-**Effort**: 8-12 hours
+| Step | Current | With Implicit Springs |
+|------|---------|----------------------|
+| 1-2 | Same | Same |
+| 3 | `passive_forces()` | Extract `K`, `D`, `x_eq` separately |
+| 4 | `qfrc_smooth = passive - bias` | `qfrc_smooth = external - bias` |
+| **5** | `M.lu().solve(f)` | **`(M + h*D + h²*K).lu().solve(M*v + h*f - h*K*(x-x_eq))`** |
+| 6-7 | Already have `v_new` | Same |
+
+**Key insight**: No complexity increase — LU is already O(n³), we're just solving a modified system.
+
+#### Refactor Scope: `passive_forces()` Decomposition
+
+The current `passive_forces()` method computes the combined spring-damper force:
+```rust
+// Current: returns qfrc_passive = -k*(q - q_eq) - d*qvel
+fn passive_forces(&self) -> DVector<f64>
+```
+
+For implicit springs, we need to extract the parameters separately:
+```rust
+// Required: return (K, D, q_eq) matrices/vectors for implicit solve
+fn spring_damper_params(&self) -> (DMatrix<f64>, DMatrix<f64>, DVector<f64>)
+```
+
+**Hidden complexity**: Joint-space K and D are diagonal for independent joints, but
+equality constraints can couple DOFs. The refactor must handle:
+- Diagonal K/D for simple springs (fast path)
+- Sparse K/D when equality constraints couple joints (general path)
+
+**Revised effort**: 6-10 hours (accounting for `passive_forces()` refactor)
+
+#### Test Specification
+
+Before implementing, these tests must be written:
+
+| Test | Description | Validation |
+|------|-------------|------------|
+| `test_implicit_spring_energy_bounded` | High-stiffness spring with explicit vs implicit | Implicit energy < 2× initial |
+| `test_implicit_matches_analytic_oscillator` | Single DOF spring-mass | ω = √(k/m), period within 1% |
+| `test_implicit_stability_at_high_stiffness` | k=10000, dt=0.01 | No NaN, no explosion after 1000 steps |
+| `test_implicit_damped_convergence` | Critically damped system | Converges to equilibrium monotonically |
+| `test_implicit_coupled_joints` | 2-DOF with equality constraint | Both joints stable |
+
+**Reference**: MuJoCo's `testspeed.cc` uses similar stability benchmarks.
+
+#### Phase Assignment Clarification
+
+Phase 1.2 remains **in Phase 1** (Core Capabilities). The note "Deferred to Phase 2"
+was misleading — it meant "deferred until after Phase 1.1", not "moved to Phase 2".
+
+**Current status**: Phase 1.2 is the next implementation target after Phase 1.1 is complete.
 
 ---
 
