@@ -5668,9 +5668,15 @@ pub struct Model {
     pub jnt_limited: Vec<bool>,
     /// Joint limits [min, max].
     pub jnt_range: Vec<(f64, f64)>,
-    /// Spring stiffness (reference is qpos0).
+    /// Spring stiffness coefficient (N/rad for hinge, N/m for slide).
+    /// Applied as: τ = -stiffness * (q - springref)
     pub jnt_stiffness: Vec<f64>,
-    /// Damping coefficient.
+    /// Spring equilibrium position (rad for hinge, m for slide).
+    /// This is the position where spring force is zero.
+    /// Distinct from `qpos0` which is the initial position at model load.
+    pub jnt_springref: Vec<f64>,
+    /// Damping coefficient (Ns/rad for hinge, Ns/m for slide).
+    /// Applied as: τ = -damping * qvel
     pub jnt_damping: Vec<f64>,
     /// Armature inertia (motor rotor inertia).
     pub jnt_armature: Vec<f64>,
@@ -5689,7 +5695,8 @@ pub struct Model {
     /// Damping coefficient for this DOF.
     pub dof_damping: Vec<f64>,
     /// Friction loss (dry friction) for this DOF.
-    /// Applied as: τ_friction = -frictionloss * sign(qvel)
+    /// Applied as: τ_friction = -frictionloss * tanh(qvel * FRICTION_SMOOTHING)
+    /// where the tanh provides a smooth approximation to sign(qvel) for numerical stability.
     pub dof_frictionloss: Vec<f64>,
 
     // ==================== Geoms (indexed by geom_id) ====================
@@ -6263,6 +6270,7 @@ impl Model {
             jnt_limited: vec![],
             jnt_range: vec![],
             jnt_stiffness: vec![],
+            jnt_springref: vec![],
             jnt_damping: vec![],
             jnt_armature: vec![],
             jnt_name: vec![],
@@ -6621,6 +6629,7 @@ impl Model {
             model.jnt_limited.push(false);
             model.jnt_range.push((-PI, PI));
             model.jnt_stiffness.push(0.0);
+            model.jnt_springref.push(0.0);
             model.jnt_damping.push(0.0);
             model.jnt_armature.push(0.0);
             model.jnt_name.push(Some(format!("hinge_{i}")));
@@ -6712,6 +6721,7 @@ impl Model {
         model.jnt_limited.push(false);
         model.jnt_range.push((-PI, PI));
         model.jnt_stiffness.push(0.0);
+        model.jnt_springref.push(0.0);
         model.jnt_damping.push(0.0);
         model.jnt_armature.push(0.0);
         model.jnt_name.push(Some("ball".to_string()));
@@ -6790,6 +6800,7 @@ impl Model {
         model.jnt_limited.push(false);
         model.jnt_range.push((-1e10, 1e10));
         model.jnt_stiffness.push(0.0);
+        model.jnt_springref.push(0.0);
         model.jnt_damping.push(0.0);
         model.jnt_armature.push(0.0);
         model.jnt_name.push(Some("free".to_string()));
@@ -10634,7 +10645,34 @@ fn mj_rne(model: &Model, data: &mut Data) {
     }
 }
 
-/// Compute passive forces (springs and dampers).
+/// Smoothing factor for friction loss approximation.
+/// Controls sharpness of tanh transition from 0 to full friction.
+/// At vel=0.001, tanh(1000 * 0.001) ≈ 0.76, providing smooth onset.
+/// At vel=0.01, tanh(1000 * 0.01) ≈ 1.0, full friction magnitude.
+const FRICTION_SMOOTHING: f64 = 1000.0;
+
+/// Velocity threshold below which friction is not applied.
+/// Prevents numerical noise from creating spurious friction forces.
+const FRICTION_VELOCITY_THRESHOLD: f64 = 1e-12;
+
+/// Compute passive forces (springs, dampers, and friction loss).
+///
+/// Implements MuJoCo's passive force model:
+/// - **Spring**: τ = -stiffness * (q - springref)
+/// - **Damper**: τ = -damping * qvel
+/// - **Friction loss**: τ = -frictionloss * tanh(qvel * FRICTION_SMOOTHING)
+///
+/// The friction loss uses a smooth `tanh` approximation to Coulomb friction
+/// (`sign(qvel)`) to avoid discontinuity at zero velocity, which would cause
+/// numerical issues with explicit integrators.
+///
+/// # MuJoCo Semantics
+///
+/// The spring equilibrium is `jnt_springref`, NOT `qpos0`. These are distinct:
+/// - `qpos0`: Initial joint position at model load (for `mj_resetData()`)
+/// - `springref`: Spring equilibrium position (where spring force is zero)
+///
+/// A joint can start at q=0 but have a spring pulling toward springref=0.5.
 fn mj_fwd_passive(model: &Model, data: &mut Data) {
     data.qfrc_passive.fill(0.0);
 
@@ -10648,23 +10686,41 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
         match model.jnt_type[jnt_id] {
             MjJointType::Hinge | MjJointType::Slide => {
-                // Spring: F = -k * (q - q0)
-                let q0 = model.qpos0.get(qpos_adr).copied().unwrap_or(0.0);
+                // Spring: τ = -k * (q - springref)
+                // Uses springref (spring equilibrium), NOT qpos0 (initial position)
+                let springref = model.jnt_springref[jnt_id];
                 let q = data.qpos[qpos_adr];
-                data.qfrc_passive[dof_adr] -= stiffness * (q - q0);
+                data.qfrc_passive[dof_adr] -= stiffness * (q - springref);
 
-                // Damper: F = -b * qdot
-                data.qfrc_passive[dof_adr] -= damping * data.qvel[dof_adr];
+                // Damper: τ = -b * qvel
+                let qvel = data.qvel[dof_adr];
+                data.qfrc_passive[dof_adr] -= damping * qvel;
+
+                // Friction loss: τ = -frictionloss * tanh(qvel * FRICTION_SMOOTHING)
+                let frictionloss = model.dof_frictionloss[dof_adr];
+                if frictionloss > 0.0 && qvel.abs() > FRICTION_VELOCITY_THRESHOLD {
+                    let smooth_sign = (qvel * FRICTION_SMOOTHING).tanh();
+                    data.qfrc_passive[dof_adr] -= frictionloss * smooth_sign;
+                }
             }
             MjJointType::Ball | MjJointType::Free => {
-                // Apply damping to all DOFs
+                // Ball/Free joints: apply damping and friction loss to all DOFs.
+                // Note: Springs on Ball/Free joints would require quaternion spring
+                // formulation (not yet implemented, follows MuJoCo behavior).
                 for i in 0..nv {
-                    let dof_damping = model
-                        .dof_damping
-                        .get(dof_adr + i)
-                        .copied()
-                        .unwrap_or(damping);
-                    data.qfrc_passive[dof_adr + i] -= dof_damping * data.qvel[dof_adr + i];
+                    let dof_idx = dof_adr + i;
+                    let qvel = data.qvel[dof_idx];
+
+                    // Damping: per-DOF value (Model invariant: dof arrays have length nv)
+                    let dof_damping = model.dof_damping[dof_idx];
+                    data.qfrc_passive[dof_idx] -= dof_damping * qvel;
+
+                    // Friction loss: per-DOF value
+                    let frictionloss = model.dof_frictionloss[dof_idx];
+                    if frictionloss > 0.0 && qvel.abs() > FRICTION_VELOCITY_THRESHOLD {
+                        let smooth_sign = (qvel * FRICTION_SMOOTHING).tanh();
+                        data.qfrc_passive[dof_idx] -= frictionloss * smooth_sign;
+                    }
                 }
             }
         }

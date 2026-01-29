@@ -34,5 +34,6 @@ pub mod collision_performance;
 
 pub mod model_data_pipeline;
 pub mod musculoskeletal;
+pub mod passive_forces;
 pub mod sensors;
 pub mod validation;

@@ -186,6 +186,7 @@ struct ModelBuilder {
     jnt_limited: Vec<bool>,
     jnt_range: Vec<(f64, f64)>,
     jnt_stiffness: Vec<f64>,
+    jnt_springref: Vec<f64>,
     jnt_damping: Vec<f64>,
     jnt_armature: Vec<f64>,
     jnt_name: Vec<Option<String>>,
@@ -196,6 +197,7 @@ struct ModelBuilder {
     dof_parent: Vec<Option<usize>>,
     dof_armature: Vec<f64>,
     dof_damping: Vec<f64>,
+    dof_frictionloss: Vec<f64>,
 
     // Geom arrays
     geom_type: Vec<GeomType>,
@@ -303,6 +305,7 @@ impl ModelBuilder {
             jnt_limited: vec![],
             jnt_range: vec![],
             jnt_stiffness: vec![],
+            jnt_springref: vec![],
             jnt_damping: vec![],
             jnt_armature: vec![],
             jnt_name: vec![],
@@ -312,6 +315,7 @@ impl ModelBuilder {
             dof_parent: vec![],
             dof_armature: vec![],
             dof_damping: vec![],
+            dof_frictionloss: vec![],
 
             geom_type: vec![],
             geom_body: vec![],
@@ -693,6 +697,7 @@ impl ModelBuilder {
                 .unwrap_or((-std::f64::consts::PI, std::f64::consts::PI)),
         );
         self.jnt_stiffness.push(joint.stiffness);
+        self.jnt_springref.push(joint.spring_ref);
         self.jnt_damping.push(joint.damping);
         self.jnt_armature.push(joint.armature);
         self.jnt_name.push(if joint.name.is_empty() {
@@ -717,6 +722,7 @@ impl ModelBuilder {
 
             self.dof_armature.push(joint.armature);
             self.dof_damping.push(joint.damping);
+            self.dof_frictionloss.push(joint.frictionloss);
         }
 
         // Add qpos0 values (default positions)
@@ -1042,6 +1048,7 @@ impl ModelBuilder {
             jnt_limited: self.jnt_limited,
             jnt_range: self.jnt_range,
             jnt_stiffness: self.jnt_stiffness,
+            jnt_springref: self.jnt_springref,
             jnt_damping: self.jnt_damping,
             jnt_armature: self.jnt_armature,
             jnt_name: self.jnt_name,
@@ -1051,7 +1058,7 @@ impl ModelBuilder {
             dof_parent: self.dof_parent,
             dof_armature: self.dof_armature,
             dof_damping: self.dof_damping,
-            dof_frictionloss: vec![0.0; self.nv], // Default: no friction loss
+            dof_frictionloss: self.dof_frictionloss,
 
             geom_type: self.geom_type,
             geom_body: self.geom_body,
