@@ -6788,6 +6788,43 @@ impl Model {
         }
     }
 
+    /// Compute cached implicit integration parameters from joint parameters.
+    ///
+    /// This expands per-joint K/D/springref into per-DOF vectors used by
+    /// implicit integration. Must be called after all joints are added.
+    ///
+    /// For Hinge/Slide joints: K[dof] = jnt_stiffness, D[dof] = jnt_damping
+    /// For Ball/Free joints: K[dof] = 0, D[dof] = dof_damping (per-DOF)
+    pub fn compute_implicit_params(&mut self) {
+        // Resize to nv DOFs
+        self.implicit_stiffness = DVector::zeros(self.nv);
+        self.implicit_damping = DVector::zeros(self.nv);
+        self.implicit_springref = DVector::zeros(self.nv);
+
+        for jnt_id in 0..self.njnt {
+            let dof_adr = self.jnt_dof_adr[jnt_id];
+            let jnt_type = self.jnt_type[jnt_id];
+            let nv_jnt = jnt_type.nv();
+
+            match jnt_type {
+                MjJointType::Hinge | MjJointType::Slide => {
+                    self.implicit_stiffness[dof_adr] = self.jnt_stiffness[jnt_id];
+                    self.implicit_damping[dof_adr] = self.jnt_damping[jnt_id];
+                    self.implicit_springref[dof_adr] = self.jnt_springref[jnt_id];
+                }
+                MjJointType::Ball | MjJointType::Free => {
+                    // Ball/Free: per-DOF damping only (no spring for quaternion DOFs)
+                    for i in 0..nv_jnt {
+                        let dof_idx = dof_adr + i;
+                        self.implicit_stiffness[dof_idx] = 0.0;
+                        self.implicit_damping[dof_idx] = self.dof_damping[dof_idx];
+                        self.implicit_springref[dof_idx] = 0.0;
+                    }
+                }
+            }
+        }
+    }
+
     /// Check if joint is an ancestor of body using pre-computed data.
     ///
     /// Uses O(1) multi-word bitmask lookup for all model sizes.
@@ -6913,6 +6950,9 @@ impl Model {
         // Pre-compute kinematic data for O(n) CRBA/RNE
         model.compute_ancestors();
 
+        // Pre-compute implicit integration parameters
+        model.compute_implicit_params();
+
         model
     }
 
@@ -7006,6 +7046,9 @@ impl Model {
         // Pre-compute kinematic data for O(n) CRBA/RNE
         model.compute_ancestors();
 
+        // Pre-compute implicit integration parameters
+        model.compute_implicit_params();
+
         model
     }
 
@@ -7084,6 +7127,9 @@ impl Model {
 
         // Pre-compute kinematic data for O(n) CRBA/RNE
         model.compute_ancestors();
+
+        // Pre-compute implicit integration parameters
+        model.compute_implicit_params();
 
         model
     }
