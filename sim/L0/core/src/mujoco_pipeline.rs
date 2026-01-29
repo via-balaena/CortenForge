@@ -6387,7 +6387,11 @@ pub struct Data {
     /// Scratch vector for force accumulation (length `nv`).
     pub scratch_force: DVector<f64>,
     /// Scratch vector for RHS of linear solves (length `nv`).
+    /// Also used as in-place buffer for Cholesky solve result.
     pub scratch_rhs: DVector<f64>,
+    /// Scratch vector for new velocity in implicit solve (length `nv`).
+    /// Used to hold v_new while computing qacc = (v_new - v_old) / h.
+    pub scratch_v_new: DVector<f64>,
 
     // ==================== Cached Body Effective Mass/Inertia ====================
     // These are extracted from the mass matrix diagonal during forward() and cached
@@ -6714,6 +6718,7 @@ impl Model {
             scratch_m_impl: DMatrix::zeros(self.nv, self.nv),
             scratch_force: DVector::zeros(self.nv),
             scratch_rhs: DVector::zeros(self.nv),
+            scratch_v_new: DVector::zeros(self.nv),
 
             // Cached body mass/inertia (computed in forward() after CRBA)
             // Initialize world body (index 0) to infinity, others to default
@@ -13001,12 +13006,14 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
         .cholesky()
         .ok_or(StepError::CholeskyFailed)?;
 
-    let v_new = chol.solve(&data.scratch_rhs);
+    // Copy RHS to scratch_v_new and solve in place to avoid allocation
+    data.scratch_v_new.copy_from(&data.scratch_rhs);
+    chol.solve_mut(&mut data.scratch_v_new);
 
     // Compute qacc = (v_new - v_old) / h and update qvel
     for i in 0..model.nv {
-        data.qacc[i] = (v_new[i] - data.qvel[i]) / h;
-        data.qvel[i] = v_new[i];
+        data.qacc[i] = (data.scratch_v_new[i] - data.qvel[i]) / h;
+        data.qvel[i] = data.scratch_v_new[i];
     }
 
     Ok(())
