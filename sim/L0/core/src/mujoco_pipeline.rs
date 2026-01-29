@@ -5917,6 +5917,19 @@ pub struct Model {
     /// Integration method.
     pub integrator: Integrator,
 
+    // ==================== Cached Implicit Integration Parameters ====================
+    // These are pre-computed from joint properties for implicit spring-damper integration.
+    // Avoids O(nv) allocation per step by caching model-invariant diagonal matrices.
+    /// Diagonal stiffness matrix K for implicit integration (length nv).
+    /// K[i] = jnt_stiffness for Hinge/Slide DOFs, 0 for Ball/Free DOFs.
+    pub implicit_stiffness: DVector<f64>,
+    /// Diagonal damping matrix D for implicit integration (length nv).
+    /// D[i] = jnt_damping for Hinge/Slide, dof_damping for Ball/Free DOFs.
+    pub implicit_damping: DVector<f64>,
+    /// Spring equilibrium positions for implicit integration (length nv).
+    /// q_eq[i] = jnt_springref for Hinge/Slide, 0 for Ball/Free DOFs.
+    pub implicit_springref: DVector<f64>,
+
     // ==================== Pre-computed Kinematic Data ====================
     // These are computed once at model construction to avoid O(n) lookups
     // in the inner loops of CRBA and RNE, achieving O(n) vs O(n³) complexity.
@@ -6241,6 +6254,15 @@ pub struct Data {
     // ==================== Time ====================
     /// Simulation time in seconds.
     pub time: f64,
+
+    // ==================== Scratch Buffers (for allocation-free stepping) ====================
+    /// Scratch matrix for implicit integration: M + h*D + h²*K.
+    /// Pre-allocated to avoid O(n²) allocation per step.
+    pub scratch_m_impl: DMatrix<f64>,
+    /// Scratch vector for force accumulation (length `nv`).
+    pub scratch_force: DVector<f64>,
+    /// Scratch vector for RHS of linear solves (length `nv`).
+    pub scratch_rhs: DVector<f64>,
 }
 
 impl Model {
@@ -6403,6 +6425,11 @@ impl Model {
             enableflags: 0,  // Nothing extra enabled
             integrator: Integrator::Euler,
 
+            // Cached implicit integration parameters (empty for empty model)
+            implicit_stiffness: DVector::zeros(0),
+            implicit_damping: DVector::zeros(0),
+            implicit_springref: DVector::zeros(0),
+
             // Pre-computed kinematic data (world body has no ancestors)
             body_ancestor_joints: vec![vec![]],
             body_ancestor_mask: vec![vec![]], // Empty vec for world body (no joints yet)
@@ -6500,6 +6527,11 @@ impl Model {
 
             // Time
             time: 0.0,
+
+            // Scratch buffers (pre-allocated for allocation-free stepping)
+            scratch_m_impl: DMatrix::zeros(self.nv, self.nv),
+            scratch_force: DVector::zeros(self.nv),
+            scratch_rhs: DVector::zeros(self.nv),
         }
     }
 
@@ -10781,81 +10813,6 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
     }
 }
 
-/// Spring-damper parameters extracted for implicit integration.
-///
-/// For implicit springs, we need the parameters separately rather than
-/// the combined force. This struct contains:
-/// - `k`: Diagonal stiffness matrix (N/rad for hinge, N/m for slide)
-/// - `d`: Diagonal damping matrix (Ns/rad for hinge, Ns/m for slide)
-/// - `q_eq`: Spring equilibrium positions (springref)
-///
-/// These are used to build the modified mass matrix:
-/// ```text
-/// (M + h*D + h²*K) * v_new = M*v_old + h*f - h*K*(q - q_eq)
-/// ```
-#[derive(Debug, Clone)]
-pub struct SpringDamperParams {
-    /// Diagonal stiffness coefficients, length = nv.
-    pub k: DVector<f64>,
-    /// Diagonal damping coefficients, length = nv.
-    pub d: DVector<f64>,
-    /// Spring equilibrium positions, length = nv.
-    /// For DOFs without springs, this is 0.0 (which produces zero spring force when k=0).
-    pub q_eq: DVector<f64>,
-}
-
-/// Extract spring-damper parameters for implicit integration.
-///
-/// This is the counterpart to `mj_fwd_passive` for implicit integrators.
-/// Instead of computing the force directly, we extract K, D, and q_eq
-/// so they can be incorporated into the mass matrix solve.
-///
-/// # Joint Types
-///
-/// - **Hinge/Slide**: Spring stiffness and damping from joint properties
-/// - **Ball/Free**: Only per-DOF damping (no spring for quaternion DOFs)
-///
-/// # Note on Friction Loss
-///
-/// Friction loss (`dof_frictionloss`) is NOT included in these parameters
-/// because it's velocity-sign-dependent and cannot be linearized into the
-/// implicit solve. It remains an explicit force in `qfrc_passive`.
-fn spring_damper_params(model: &Model) -> SpringDamperParams {
-    let mut k = DVector::zeros(model.nv);
-    let mut d = DVector::zeros(model.nv);
-    let mut q_eq = DVector::zeros(model.nv);
-
-    for jnt_id in 0..model.njnt {
-        let dof_adr = model.jnt_dof_adr[jnt_id];
-        let nv = model.jnt_type[jnt_id].nv();
-
-        match model.jnt_type[jnt_id] {
-            MjJointType::Hinge | MjJointType::Slide => {
-                // Joint-level stiffness and damping
-                k[dof_adr] = model.jnt_stiffness[jnt_id];
-                d[dof_adr] = model.jnt_damping[jnt_id];
-                q_eq[dof_adr] = model.jnt_springref[jnt_id];
-            }
-            MjJointType::Ball | MjJointType::Free => {
-                // Ball/Free: per-DOF damping only (no spring for quaternion DOFs)
-                // Springs on Ball/Free joints would require quaternion spring
-                // formulation (not implemented, follows MuJoCo behavior).
-                for i in 0..nv {
-                    let dof_idx = dof_adr + i;
-                    k[dof_idx] = 0.0; // No spring for quaternion DOFs
-                    d[dof_idx] = model.dof_damping[dof_idx];
-                    q_eq[dof_idx] = 0.0;
-                }
-            }
-        }
-    }
-
-    // Add friction loss to qfrc_passive separately (not part of implicit solve)
-    // This is handled by mj_fwd_passive_friction() called after implicit solve.
-
-    SpringDamperParams { k, d, q_eq }
-}
-
 // ============================================================================
 // Contact Jacobian Computation
 // ============================================================================
@@ -12237,39 +12194,52 @@ fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
 /// - Friction loss remains explicit (velocity-sign-dependent, cannot linearize)
 /// - The modified matrix M + h*D + h²*K is still SPD if M is SPD and D, K ≥ 0
 fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) {
+    // Guard against zero timestep (would cause division by zero)
+    debug_assert!(
+        model.timestep > 0.0,
+        "Timestep must be positive for implicit integration"
+    );
     let h = model.timestep;
     let h2 = h * h;
 
-    // Extract spring-damper parameters
-    let params = spring_damper_params(model);
+    // Use cached spring-damper parameters from Model (avoids allocation)
+    let k = &model.implicit_stiffness;
+    let d = &model.implicit_damping;
+    let q_eq = &model.implicit_springref;
 
-    // Build external forces (everything except spring/damper, which are implicit)
-    // Note: qfrc_passive contains friction loss only for implicit mode
-    let mut f_ext = data.qfrc_applied.clone();
-    f_ext += &data.qfrc_actuator;
-    f_ext += &data.qfrc_constraint;
-    f_ext -= &data.qfrc_bias;
+    // Build external forces into scratch buffer (avoids allocation)
+    // f_ext = applied + actuator + passive(friction) + constraint - bias
+    data.scratch_force.copy_from(&data.qfrc_applied);
+    data.scratch_force += &data.qfrc_actuator;
+    data.scratch_force += &data.qfrc_passive; // Friction loss (explicit even in implicit mode)
+    data.scratch_force += &data.qfrc_constraint;
+    data.scratch_force -= &data.qfrc_bias;
 
     // Build modified mass matrix: M_impl = M + h*D + h²*K
-    // Since K and D are diagonal, we only modify the diagonal of M
-    let mut m_impl = data.qM.clone();
+    // Copy M into scratch, then modify diagonal only
+    data.scratch_m_impl.copy_from(&data.qM);
     for i in 0..model.nv {
-        m_impl[(i, i)] += h * params.d[i] + h2 * params.k[i];
+        data.scratch_m_impl[(i, i)] += h * d[i] + h2 * k[i];
     }
 
-    // Build RHS: M*v_old + h*f_ext - h*K*(q - q_eq)
-    // First, compute spring displacement for each DOF
-    let mut spring_force = DVector::zeros(model.nv);
+    // Build RHS into scratch buffer: M*v_old + h*f_ext - h*K*(q - q_eq)
+    // Start with M*v_old
+    data.qM.mul_to(&data.qvel, &mut data.scratch_rhs);
+
+    // Add h*f_ext for each DOF
+    for i in 0..model.nv {
+        data.scratch_rhs[i] += h * data.scratch_force[i];
+    }
+
+    // Subtract h*K*(q - q_eq) for spring displacement
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let qpos_adr = model.jnt_qpos_adr[jnt_id];
 
         match model.jnt_type[jnt_id] {
             MjJointType::Hinge | MjJointType::Slide => {
-                // q - q_eq for this DOF
                 let q = data.qpos[qpos_adr];
-                let q_eq = params.q_eq[dof_adr];
-                spring_force[dof_adr] = params.k[dof_adr] * (q - q_eq);
+                data.scratch_rhs[dof_adr] -= h * k[dof_adr] * (q - q_eq[dof_adr]);
             }
             MjJointType::Ball | MjJointType::Free => {
                 // No springs for quaternion DOFs (k = 0)
@@ -12277,44 +12247,39 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) {
         }
     }
 
-    // RHS = M*v_old + h*f_ext - h*spring_force
-    let mut rhs = &data.qM * &data.qvel;
-    rhs += &f_ext * h;
-    rhs -= &spring_force * h;
-
     // Solve (M + h*D + h²*K) * v_new = rhs
-    // Use LU since m_impl may not have cached Cholesky
-    let v_new = match m_impl.clone().lu().solve(&rhs) {
-        Some(v) => v,
+    // M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0), so use Cholesky.
+    // Note: clone() is required because nalgebra's cholesky() consumes the matrix.
+    // This is O(n²) per step; a proper fix would use rank-k Cholesky updates.
+    match data.scratch_m_impl.clone().cholesky() {
+        Some(chol) => {
+            let v_new = chol.solve(&data.scratch_rhs);
+            // Compute qacc = (v_new - v_old) / h and update qvel
+            for i in 0..model.nv {
+                data.qacc[i] = (v_new[i] - data.qvel[i]) / h;
+                data.qvel[i] = v_new[i];
+            }
+        }
         None => {
             // Fallback: diagonal solve (rare, indicates numerical issues)
-            let mut v = DVector::zeros(model.nv);
+            // This can happen with negative stiffness/damping or corrupted mass matrix.
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "Warning: Cholesky decomposition failed in implicit integration. \
+                 Using diagonal fallback. Check for negative stiffness/damping."
+            );
             for i in 0..model.nv {
-                let m_ii = m_impl[(i, i)];
+                let m_ii = data.scratch_m_impl[(i, i)];
                 if m_ii.abs() > 1e-10 {
-                    v[i] = rhs[i] / m_ii;
+                    let v_new_i = data.scratch_rhs[i] / m_ii;
+                    data.qacc[i] = (v_new_i - data.qvel[i]) / h;
+                    data.qvel[i] = v_new_i;
+                } else {
+                    data.qacc[i] = 0.0;
                 }
             }
-            v
         }
-    };
-
-    // Store results:
-    // - qacc = (v_new - v_old) / h (for sensors and consistency)
-    // - qvel_implicit = v_new (used by integrate() to skip velocity update)
-    for i in 0..model.nv {
-        data.qacc[i] = (v_new[i] - data.qvel[i]) / h;
     }
-
-    // Store v_new for integrate() to use directly
-    // We'll use a convention: for implicit mode, integrate() reads qacc differently
-    // Actually, let's just update qvel here and have integrate() skip velocity update
-    // This requires a flag or using the integrator type check in integrate()
-
-    // For now, store v_new in a way that integrate can use it:
-    // We'll update qvel directly here, and integrate() will detect implicit mode
-    // and skip the velocity update step.
-    data.qvel = v_new;
 }
 
 /// Proper position integration that handles quaternions on SO(3) manifold.

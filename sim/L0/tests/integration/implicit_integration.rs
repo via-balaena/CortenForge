@@ -425,3 +425,278 @@ fn test_explicit_implicit_agreement_low_stiffness() {
         error
     );
 }
+
+// ============================================================================
+// Friction Loss Tests
+// ============================================================================
+
+/// Test: Friction loss is applied in implicit mode.
+///
+/// Friction loss (velocity-dependent dissipation) should slow down motion
+/// even when using implicit integration. This verifies that qfrc_passive
+/// is correctly included in the implicit RHS.
+#[test]
+fn test_implicit_friction_loss_applied() {
+    // Spring with friction loss (no damping, so dissipation is purely from friction)
+    let mjcf = r#"
+        <mujoco model="friction_loss_test">
+            <option timestep="0.001" integrator="implicit" gravity="0 0 0"/>
+            <worldbody>
+                <body name="mass" pos="0 0 0">
+                    <joint name="slide" type="slide" axis="1 0 0"
+                           stiffness="100" damping="0" frictionloss="5"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+
+    // Initial velocity (no displacement, so no spring force initially)
+    data.qpos[0] = 0.0;
+    data.qvel[0] = 1.0; // Moving at 1 m/s
+
+    let initial_ke = 0.5 * 1.0 * data.qvel[0] * data.qvel[0];
+
+    // Run for 500 steps (0.5 seconds)
+    for _ in 0..500 {
+        data.step(&model);
+    }
+
+    // Friction loss should have dissipated energy
+    let final_ke = 0.5 * 1.0 * data.qvel[0] * data.qvel[0];
+
+    assert!(
+        final_ke < initial_ke * 0.5,
+        "Friction loss should dissipate energy: initial_ke={}, final_ke={}",
+        initial_ke,
+        final_ke
+    );
+}
+
+// ============================================================================
+// Multi-DOF Tests
+// ============================================================================
+
+/// Test: Implicit integration with multi-joint articulated chain.
+///
+/// Verifies that implicit integration handles coupled dynamics correctly
+/// when multiple joints are present.
+#[test]
+fn test_implicit_multi_dof_chain() {
+    // Double pendulum with springs on both joints
+    let mjcf = r#"
+        <mujoco model="double_pendulum">
+            <option timestep="0.001" integrator="implicit" gravity="0 0 -10"/>
+            <worldbody>
+                <body name="link1" pos="0 0 0">
+                    <joint name="j1" type="hinge" axis="0 1 0"
+                           stiffness="100" damping="10"/>
+                    <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+                    <body name="link2" pos="0 0 -1">
+                        <joint name="j2" type="hinge" axis="0 1 0"
+                               stiffness="50" damping="5"/>
+                        <geom type="capsule" fromto="0 0 0 0 0 -1" size="0.05" mass="1"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+
+    assert_eq!(model.nv, 2, "Should have 2 DOFs");
+
+    // Initial displacement
+    data.qpos[0] = 0.2; // 0.2 rad on first joint
+    data.qpos[1] = 0.1; // 0.1 rad on second joint
+
+    // Run for 2 seconds (2000 steps)
+    for step in 0..2000 {
+        data.step(&model);
+
+        // Check for NaN/Inf (numerical stability)
+        assert!(
+            data.qpos[0].is_finite() && data.qpos[1].is_finite(),
+            "State became non-finite at step {}: qpos=[{}, {}]",
+            step,
+            data.qpos[0],
+            data.qpos[1]
+        );
+        assert!(
+            data.qvel[0].is_finite() && data.qvel[1].is_finite(),
+            "Velocity became non-finite at step {}: qvel=[{}, {}]",
+            step,
+            data.qvel[0],
+            data.qvel[1]
+        );
+    }
+
+    // With damping, system should settle near equilibrium
+    assert!(
+        data.qpos[0].abs() < 0.5 && data.qpos[1].abs() < 0.5,
+        "Damped chain should settle: qpos=[{}, {}]",
+        data.qpos[0],
+        data.qpos[1]
+    );
+}
+
+// ============================================================================
+// Ball/Free Joint Tests
+// ============================================================================
+
+/// Test: Implicit integration with free joint damping.
+///
+/// Free joints have 6 DOFs (3 translation + 3 rotation). Damping should
+/// be applied to angular DOFs even though they don't have springs.
+#[test]
+fn test_implicit_free_joint_damping() {
+    // Floating body with only damping (no springs on free joint)
+    // Use <joint type="free"> instead of <freejoint> to specify damping
+    // (freejoint shorthand doesn't parse damping attribute)
+    let mjcf = r#"
+        <mujoco model="free_body">
+            <option timestep="0.002" integrator="implicit" gravity="0 0 0"/>
+            <worldbody>
+                <body name="floater" pos="0 0 1">
+                    <joint name="free" type="free" damping="5"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+
+    assert_eq!(model.nv, 6, "Free joint should have 6 DOFs");
+
+    // Initial angular velocity about Z axis
+    data.qvel[5] = 5.0; // 5 rad/s rotation
+
+    let initial_omega = data.qvel[5];
+
+    // Run for 1 second
+    for _ in 0..500 {
+        data.step(&model);
+    }
+
+    // Damping should have reduced angular velocity
+    let final_omega = data.qvel[5];
+
+    assert!(
+        final_omega.abs() < initial_omega.abs() * 0.3,
+        "Free joint damping should reduce angular velocity: initial={}, final={}",
+        initial_omega,
+        final_omega
+    );
+}
+
+// ============================================================================
+// External Force Tests
+// ============================================================================
+
+/// Test: Implicit integration with applied external forces.
+///
+/// Verifies that qfrc_applied is correctly included in the implicit solve.
+#[test]
+fn test_implicit_external_forces() {
+    let mjcf = r#"
+        <mujoco model="forced_oscillator">
+            <option timestep="0.001" integrator="implicit" gravity="0 0 0"/>
+            <worldbody>
+                <body name="mass" pos="0 0 0">
+                    <joint name="slide" type="slide" axis="1 0 0"
+                           stiffness="100" damping="10"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+
+    // Apply constant force
+    let applied_force = 50.0; // N
+    data.qfrc_applied[0] = applied_force;
+
+    // Run until equilibrium (force balances spring)
+    for _ in 0..2000 {
+        data.step(&model);
+    }
+
+    // At equilibrium: F = k * x => x = F/k = 50/100 = 0.5m
+    let expected_displacement = applied_force / 100.0;
+
+    assert!(
+        (data.qpos[0] - expected_displacement).abs() < 0.05,
+        "External force should create displacement: expected={}, got={}",
+        expected_displacement,
+        data.qpos[0]
+    );
+}
+
+// ============================================================================
+// Constraint Interaction Tests
+// ============================================================================
+
+/// Test: Implicit integration with equality constraints.
+///
+/// Verifies that constraint forces work correctly with implicit spring-damper.
+#[test]
+fn test_implicit_with_equality_constraints() {
+    // Two bodies connected by a weld, both with springs
+    let mjcf = r#"
+        <mujoco model="constrained_springs">
+            <option timestep="0.002" integrator="implicit" gravity="0 0 -10"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="slide" axis="0 0 1"
+                           stiffness="500" damping="20"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+                <body name="b2" pos="0.5 0 1">
+                    <joint name="j2" type="slide" axis="0 0 1"
+                           stiffness="500" damping="20"/>
+                    <geom type="sphere" size="0.1" mass="1"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect body1="b1" body2="b2" anchor="0.25 0 0"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+
+    // Initial displacement
+    data.qpos[0] = 0.1;
+    data.qpos[1] = 0.1;
+
+    // Run simulation
+    for step in 0..1000 {
+        data.step(&model);
+
+        // Check stability
+        assert!(
+            data.qpos[0].is_finite() && data.qpos[1].is_finite(),
+            "Constrained system became unstable at step {}",
+            step
+        );
+    }
+
+    // Both should settle to similar positions due to connect constraint
+    let diff = (data.qpos[0] - data.qpos[1]).abs();
+    assert!(
+        diff < 0.1,
+        "Connected bodies should move together: q1={}, q2={}, diff={}",
+        data.qpos[0],
+        data.qpos[1],
+        diff
+    );
+}

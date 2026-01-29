@@ -1373,10 +1373,39 @@ impl ModelBuilder {
             enableflags: self.enableflags,
             integrator: self.integrator,
 
+            // Cached implicit integration parameters (computed below)
+            implicit_stiffness: DVector::zeros(self.nv),
+            implicit_damping: DVector::zeros(self.nv),
+            implicit_springref: DVector::zeros(self.nv),
+
             // Pre-computed kinematic data (will be populated by compute_ancestors)
             body_ancestor_joints: vec![vec![]; nbody],
             body_ancestor_mask: vec![vec![]; nbody], // Multi-word bitmask, computed by compute_ancestors
         };
+
+        // Pre-compute implicit integration parameters (K, D, q_eq diagonals)
+        // These are model-invariant and cached to avoid allocation per step.
+        for jnt_id in 0..njnt {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let nv_jnt = model.jnt_type[jnt_id].nv();
+
+            match model.jnt_type[jnt_id] {
+                sim_core::MjJointType::Hinge | sim_core::MjJointType::Slide => {
+                    model.implicit_stiffness[dof_adr] = model.jnt_stiffness[jnt_id];
+                    model.implicit_damping[dof_adr] = model.jnt_damping[jnt_id];
+                    model.implicit_springref[dof_adr] = model.jnt_springref[jnt_id];
+                }
+                sim_core::MjJointType::Ball | sim_core::MjJointType::Free => {
+                    // Ball/Free: per-DOF damping only (no spring for quaternion DOFs)
+                    for i in 0..nv_jnt {
+                        let dof_idx = dof_adr + i;
+                        model.implicit_stiffness[dof_idx] = 0.0;
+                        model.implicit_damping[dof_idx] = model.dof_damping[dof_idx];
+                        model.implicit_springref[dof_idx] = 0.0;
+                    }
+                }
+            }
+        }
 
         // Pre-compute ancestor lists for O(n) CRBA/RNE
         model.compute_ancestors();
