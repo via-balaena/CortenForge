@@ -5,7 +5,7 @@
 //! - **Friction Loss**: Coulomb friction opposing joint velocity
 //! - **Damping**: Viscous damping proportional to velocity
 //!
-//! Reference: MUJOCO_PARITY_SPEC.md Phase 0
+//! Reference: MuJoCo passive force semantics (springref, damping, frictionloss)
 //!
 //! # Numerical Stability Notes
 //!

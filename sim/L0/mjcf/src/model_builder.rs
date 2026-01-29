@@ -33,7 +33,12 @@ use crate::types::{
 /// - dampratio = 1.0: critical damping
 const DEFAULT_SOLREF: [f64; 2] = [0.02, 1.0];
 
-/// Default solimp parameters [d0, d_width, width, midpoint, power] (MuJoCo defaults).
+/// Default solimp parameters `[d0, d_width, width, midpoint, power]` (MuJoCo defaults).
+///
+/// - d0 = 0.9: initial impedance (close to rigid)
+/// - d_width = 0.95: impedance at full penetration
+/// - width = 0.001: penetration depth at which impedance transitions
+/// - midpoint = 0.5, power = 2.0: sigmoid transition shape
 const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
 
 /// Error type for MJCF to Model conversion.
@@ -898,9 +903,7 @@ impl ModelBuilder {
         self.geom_name.push(geom.name.clone());
         self.geom_mesh.push(geom_mesh_ref);
 
-        // Solver parameters (default if not specified in MJCF)
-        const DEFAULT_SOLREF: [f64; 2] = [0.02, 1.0];
-        const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
+        // Solver parameters (fall back to MuJoCo defaults if not specified in MJCF)
         self.geom_solref.push(geom.solref.unwrap_or(DEFAULT_SOLREF));
         self.geom_solimp.push(geom.solimp.unwrap_or(DEFAULT_SOLIMP));
 
@@ -1233,11 +1236,11 @@ impl ModelBuilder {
         //   - geom_name_to_id mapping (geom1/geom2 reference geoms, not bodies)
         //   - Jacobian: J = (p1 - p2)^T / ||p1 - p2|| (1-dimensional constraint)
         //   - Handle singularity when points coincide (d → 0)
-        // See MUJOCO_PARITY_SPEC.md Phase 2 for details.
+        // See FUTURE_WORK.md for details.
         if !equality.distances.is_empty() {
             warn!(
                 "Distance equality constraints ({} found) are not yet implemented; \
-                 these will be ignored. See MUJOCO_PARITY_SPEC.md Phase 2.",
+                 these will be ignored. See FUTURE_WORK.md.",
                 equality.distances.len()
             );
         }
