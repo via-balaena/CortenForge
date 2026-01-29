@@ -2583,8 +2583,7 @@ mod tests {
         create_test_stl(&mesh_path);
 
         // Create MJCF file referencing the mesh
-        let mjcf_content = format!(
-            r#"
+        let mjcf_content = r#"
             <mujoco model="mesh_test">
                 <asset>
                     <mesh name="cube_mesh" file="cube.stl"/>
@@ -2595,8 +2594,7 @@ mod tests {
                     </body>
                 </worldbody>
             </mujoco>
-            "#
-        );
+            "#;
         let mjcf_path = temp_dir.path().join("model.xml");
         std::fs::write(&mjcf_path, mjcf_content).unwrap();
 
