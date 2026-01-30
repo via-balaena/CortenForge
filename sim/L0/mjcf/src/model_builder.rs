@@ -294,6 +294,7 @@ struct ModelBuilder {
     joint_name_to_id: HashMap<String, usize>,
     body_name_to_id: HashMap<String, usize>,
     site_name_to_id: HashMap<String, usize>,
+    geom_name_to_id: HashMap<String, usize>,
 
     // Equality constraint arrays
     eq_type: Vec<EqualityType>,
@@ -414,6 +415,7 @@ impl ModelBuilder {
             joint_name_to_id: HashMap::new(),
             body_name_to_id: HashMap::from([("world".to_string(), 0)]),
             site_name_to_id: HashMap::new(),
+            geom_name_to_id: HashMap::new(),
 
             // Equality constraints (populated by process_equality_constraints)
             eq_type: vec![],
@@ -901,6 +903,11 @@ impl ModelBuilder {
             self.geom_conaffinity.push(geom.conaffinity as u32);
         }
         self.geom_name.push(geom.name.clone());
+        if let Some(ref name) = geom.name {
+            if !name.is_empty() {
+                self.geom_name_to_id.insert(name.clone(), geom_id);
+            }
+        }
         self.geom_mesh.push(geom_mesh_ref);
 
         // Solver parameters (fall back to MuJoCo defaults if not specified in MJCF)
@@ -1230,22 +1237,79 @@ impl ModelBuilder {
             self.eq_name.push(joint_eq.name.clone());
         }
 
-        // Process Distance constraints
-        // TODO(phase-2): Implement distance equality constraints.
-        // Requirements:
-        //   - geom_name_to_id mapping (geom1/geom2 reference geoms, not bodies)
-        //   - Jacobian: J = (p1 - p2)^T / ||p1 - p2|| (1-dimensional constraint)
-        //   - Handle singularity when points coincide (d → 0)
-        // See FUTURE_WORK.md for details.
-        if !equality.distances.is_empty() {
-            warn!(
-                "Distance equality constraints ({} found) are not yet implemented; \
-                 these will be ignored. See FUTURE_WORK.md.",
-                equality.distances.len()
-            );
+        // Process Distance constraints (1 DOF scalar distance between geom centers)
+        for dist in &equality.distances {
+            let geom1_id =
+                *self
+                    .geom_name_to_id
+                    .get(&dist.geom1)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Distance constraint references unknown geom1: '{}'",
+                            dist.geom1
+                        ),
+                    })?;
+
+            // geom2 defaults to usize::MAX sentinel (world origin) if not specified
+            let geom2_id = if let Some(ref geom2_name) = dist.geom2 {
+                *self
+                    .geom_name_to_id
+                    .get(geom2_name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Distance constraint references unknown geom2: '{geom2_name}'"
+                        ),
+                    })?
+            } else {
+                usize::MAX
+            };
+
+            let target_distance = if let Some(d) = dist.distance {
+                d.max(0.0) // Distance is non-negative by definition
+            } else {
+                self.compute_initial_geom_distance(geom1_id, geom2_id)
+            };
+
+            let mut data = [0.0; 11];
+            data[0] = target_distance;
+
+            self.eq_type.push(EqualityType::Distance);
+            self.eq_obj1id.push(geom1_id);
+            self.eq_obj2id.push(geom2_id);
+            self.eq_data.push(data);
+            self.eq_active.push(dist.active);
+            self.eq_solimp.push(dist.solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.eq_solref.push(dist.solref.unwrap_or(DEFAULT_SOLREF));
+            self.eq_name.push(dist.name.clone());
         }
 
         Ok(())
+    }
+
+    /// Compute world-space distance between two geom centers at build time.
+    ///
+    /// Used when `distance: None` to derive target from initial configuration.
+    /// `geom2_id == usize::MAX` means world origin.
+    fn compute_initial_geom_distance(&self, geom1_id: usize, geom2_id: usize) -> f64 {
+        let p1 = self.geom_world_position(geom1_id);
+        let p2 = if geom2_id == usize::MAX {
+            Vector3::zeros()
+        } else {
+            self.geom_world_position(geom2_id)
+        };
+        (p1 - p2).norm()
+    }
+
+    /// Compute the world-space position of a geom at build time.
+    fn geom_world_position(&self, geom_id: usize) -> Vector3<f64> {
+        let body_id = self.geom_body[geom_id];
+        if body_id == 0 {
+            self.geom_pos[geom_id]
+        } else {
+            let body_world_pos = self.body_world_pos[body_id - 1];
+            let body_world_quat = self.body_world_quat[body_id - 1];
+            body_world_pos + body_world_quat * self.geom_pos[geom_id]
+        }
     }
 
     fn build(self) -> Model {

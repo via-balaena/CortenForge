@@ -464,8 +464,9 @@ pub enum EqualityType {
     /// Tendon: polynomial constraint between two tendons.
     /// len2 = poly(len1).
     Tendon,
-    /// Distance: constrains distance between two bodies.
+    /// Distance: constrains distance between two geom centers.
     /// |p1 - p2| = d (removes 1 DOF).
+    /// `eq_obj1id`/`eq_obj2id` store geom IDs (not body IDs).
     Distance,
 }
 
@@ -940,16 +941,16 @@ pub struct Model {
     pub neq: usize,
     /// Equality constraint type (Connect, Weld, Joint, Tendon, Distance).
     pub eq_type: Vec<EqualityType>,
-    /// First object ID (body/joint/tendon).
+    /// First object ID (body for Connect/Weld, joint for Joint, geom for Distance).
     pub eq_obj1id: Vec<usize>,
-    /// Second object ID (body/joint/tendon, or unused).
+    /// Second object ID (body/joint/geom, or `usize::MAX` for world origin in Distance).
     pub eq_obj2id: Vec<usize>,
     /// Constraint parameters (meaning depends on type).
     /// - Connect: anchor point in body1 frame [x, y, z]
     /// - Weld: relative pose [x, y, z, qw, qx, qy, qz] + torque scale
     /// - Joint: polycoef[0..5] for polynomial coupling
     /// - Tendon: polycoef[0..5] for polynomial coupling
-    /// - Distance: target distance
+    /// - Distance: target distance in `[0]`; `[1..10]` unused
     pub eq_data: Vec<[f64; 11]>,
     /// Whether this equality constraint is active.
     pub eq_active: Vec<bool>,
@@ -6592,14 +6593,17 @@ fn pgs_solve_contacts(
     for (i, (contact_i, jac_i)) in contacts.iter().zip(jacobians.iter()).enumerate() {
         // Derive Baumgarte parameters from per-contact solref/solimp
         // solref[0] = timeconst, solref[1] = dampratio
-        // solimp[0] = d0 (used for CFM scaling)
         let timeconst = contact_i.solref[0].max(0.001); // Clamp to avoid division by zero
         let dampratio = contact_i.solref[1].max(0.0);
-        let d0 = contact_i.solimp[0].clamp(0.0, 1.0);
 
-        // CFM (constraint force mixing) derived from solimp[0]:
-        // Higher d0 (closer to 1) = stiffer constraint = lower CFM
-        let cfm = base_regularization + (1.0 - d0) * 1e-4;
+        // Position-dependent impedance from full solimp parameters.
+        // Uses penetration depth as the violation magnitude, matching
+        // MuJoCo's per-row impedance computation for contact constraints.
+        let d = compute_impedance(contact_i.solimp, contact_i.depth.abs());
+
+        // CFM (constraint force mixing) derived from impedance:
+        // Higher d (closer to 1) = stiffer constraint = lower CFM
+        let cfm = base_regularization + (1.0 - d) * 1e-4;
 
         // Diagonal block: A[i,i] = J_i * M^{-1} * J_i^T
         let a_ii = jac_i * &minv_jt[i];
@@ -6932,16 +6936,22 @@ fn apply_equality_constraints(model: &Model, data: &mut Data) {
                     dt,
                 );
             }
-            EqualityType::Distance | EqualityType::Tendon => {
-                // Distance and Tendon constraints not yet implemented.
-                // These require geom/tendon position computation.
-                //
-                // Warn once per session so users know their constraint is being ignored.
+            EqualityType::Distance => {
+                apply_distance_constraint(
+                    model,
+                    data,
+                    eq_id,
+                    default_stiffness,
+                    default_damping,
+                    dt,
+                );
+            }
+            EqualityType::Tendon => {
                 use std::sync::Once;
                 static WARN_ONCE: Once = Once::new();
                 WARN_ONCE.call_once(|| {
                     eprintln!(
-                        "Warning: Distance/Tendon equality constraints are not yet implemented; \
+                        "Warning: Tendon equality constraints are not yet implemented; \
                          these constraints will be ignored. See FUTURE_WORK.md."
                     );
                 });
@@ -7012,6 +7022,107 @@ fn solref_to_penalty(solref: [f64; 2], default_k: f64, default_b: f64, dt: f64) 
     (k_clamped, b_scaled)
 }
 
+/// Compute position-dependent impedance from solimp parameters.
+///
+/// The sigmoid shape is derived from MuJoCo's `getimpedance()` in
+/// `engine_core_constraint.c`, but the **consumption** differs:
+///
+/// - **MuJoCo** uses impedance to compute regularization in a QP constraint solver:
+///   `R = (1-d)/d * diag_approx(A)`, where `A = J M⁻¹ Jᵀ`.
+/// - **Our penalty method** uses impedance as a direct scaling factor on
+///   stiffness and damping: `F = -d(r) * k * error - d(r) * b * vel_error`.
+///
+/// These are not equivalent formulations. The penalty adaptation preserves the
+/// qualitative behavior (higher impedance → stronger constraint, position-dependent
+/// softening) but does not reproduce MuJoCo's exact constraint force magnitudes.
+///
+/// The impedance `d ∈ (0, 1)` controls constraint effectiveness:
+/// - `d` close to 1 → strong constraint (high stiffness)
+/// - `d` close to 0 → weak constraint (low stiffness)
+///
+/// The impedance interpolates from `solimp[0]` (d0) to `solimp[1]` (d_width)
+/// over a transition zone of `solimp[2]` (width) meters/radians, using a
+/// split power-sigmoid controlled by `solimp[3]` (midpoint) and `solimp[4]` (power).
+///
+/// ## Deviations from MuJoCo
+///
+/// - **No margin offset**: MuJoCo computes `x = (pos - margin) / width`. We pass raw
+///   violation (no margin subtraction). This is correct for equality constraints (margin
+///   is always 0 in MuJoCo). For contact constraints, `geom_margin` defaults to 0 so
+///   `depth - margin = depth`, but if non-zero margins are supported in the future,
+///   callers should subtract margin before passing the violation.
+/// - **No derivative output**: MuJoCo returns both `d(r)` and `d'(r)`. The derivative
+///   is used for impedance-modified reference acceleration in the QP solver. Our penalty
+///   method does not use `aref`, so the derivative is not needed.
+///
+/// # Arguments
+/// * `solimp` - [d0, d_width, width, midpoint, power]
+/// * `violation` - Constraint violation magnitude (distance or angle, non-negative)
+///
+/// # Returns
+/// Impedance value in (0, 1), clamped to [MIN_IMPEDANCE, MAX_IMPEDANCE].
+#[inline]
+fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
+    // MuJoCo clamps impedance to [mjMINIMP, mjMAXIMP] = [0.0001, 0.9999]
+    const MJ_MIN_IMP: f64 = 0.0001;
+    const MJ_MAX_IMP: f64 = 0.9999;
+    // Threshold for treating floating-point values as equal
+    const EPS: f64 = 1e-12;
+    // Minimum width to avoid division by zero (MuJoCo uses mjMINVAL ≈ 1e-15,
+    // we use a wider margin since f64 precision is ~1e-16)
+    const MIN_WIDTH: f64 = 1e-10;
+
+    debug_assert!(
+        violation >= 0.0,
+        "compute_impedance expects non-negative violation, got {violation}"
+    );
+
+    // Clamp inputs to valid ranges, matching MuJoCo's getsolparam():
+    //   d0, d_width, midpoint ∈ [mjMINIMP, mjMAXIMP]
+    //   width ≥ 0
+    //   power ≥ 1
+    let d0 = solimp[0].clamp(MJ_MIN_IMP, MJ_MAX_IMP);
+    let d_width = solimp[1].clamp(MJ_MIN_IMP, MJ_MAX_IMP);
+    let width = solimp[2].max(0.0);
+    let midpoint = solimp[3].clamp(MJ_MIN_IMP, MJ_MAX_IMP);
+    let power = solimp[4].max(1.0);
+
+    // Flat function: d0 ≈ d_width or width is negligible
+    if (d0 - d_width).abs() < EPS || width <= MIN_WIDTH {
+        return 0.5 * (d0 + d_width);
+    }
+
+    // Normalized position: x = violation / width, clamped to [0, 1]
+    let x = (violation / width).min(1.0);
+
+    // Saturated at full width — return d_width
+    if x >= 1.0 {
+        return d_width;
+    }
+
+    // At zero violation — return d0
+    if x == 0.0 {
+        return d0;
+    }
+
+    // Compute sigmoid y(x) ∈ [0, 1]
+    let y = if (power - 1.0).abs() < EPS {
+        // Linear case (power ≈ 1): y = x regardless of midpoint
+        x
+    } else if x <= midpoint {
+        // Lower half: y = a * x^p where a = 1 / midpoint^(p-1)
+        let a = 1.0 / midpoint.powf(power - 1.0);
+        a * x.powf(power)
+    } else {
+        // Upper half: y = 1 - b * (1-x)^p where b = 1 / (1-midpoint)^(p-1)
+        let b = 1.0 / (1.0 - midpoint).powf(power - 1.0);
+        1.0 - b * (1.0 - x).powf(power)
+    };
+
+    // Interpolate: d = d0 + y * (d_width - d0)
+    d0 + y * (d_width - d0)
+}
+
 // =============================================================================
 // Constraint Stability Constants
 // =============================================================================
@@ -7059,11 +7170,11 @@ const DEFAULT_SOLREF: [f64; 2] = [0.02, 1.0];
 /// Default solimp parameters [d0, d_width, width, midpoint, power] (MuJoCo defaults).
 ///
 /// These control the constraint impedance profile:
-/// - d0 = 0.9: Initial impedance
-/// - d_width = 0.95: Width of impedance transition
-/// - width = 0.001: Width of the active zone (m or rad)
-/// - midpoint = 0.5: Midpoint of transition
-/// - power = 2.0: Power of transition curve
+/// - d0 = 0.9: Impedance at zero violation
+/// - d_width = 0.95: Impedance at full violation width (endpoint)
+/// - width = 0.001: Transition zone size (meters or radians)
+/// - midpoint = 0.5: Midpoint of the sigmoid transition curve
+/// - power = 2.0: Power of the sigmoid transition curve
 const DEFAULT_SOLIMP: [f64; 5] = [0.9, 0.95, 0.001, 0.5, 2.0];
 
 // =============================================================================
@@ -7203,8 +7314,14 @@ fn apply_connect_constraint(
         dt,
     );
 
-    // Baumgarte stabilization: F = -k*error - b*vel_error
-    let raw_force = -stiffness * pos_error - damping * vel_error;
+    // Compute position-dependent impedance from solimp.
+    // Impedance d(r) ∈ (0,1) scales effective stiffness/damping:
+    // stronger constraint at larger violations (if d_width > d0).
+    let violation = pos_error.norm();
+    let impedance = compute_impedance(model.eq_solimp[eq_id], violation);
+
+    // Baumgarte stabilization: F = -d(r)*k*error - d(r)*b*vel_error
+    let raw_force = -impedance * stiffness * pos_error - impedance * damping * vel_error;
 
     // Compute effective mass for force limiting using cached values
     // body_min_mass[0] = infinity for world body
@@ -7220,6 +7337,120 @@ fn apply_connect_constraint(
     // Apply forces via Jacobian transpose
     if body1_is_dynamic {
         apply_constraint_force_to_body(model, data, body1, anchor_world, force);
+    }
+    if body2_is_dynamic {
+        apply_constraint_force_to_body(model, data, body2, p2, -force);
+    }
+}
+
+/// Apply a distance equality constraint between two geom centers.
+///
+/// Enforces `|p1 - p2| = target_distance` where p1 and p2 are the world-space
+/// centers of geom1 and geom2. This is a 1-dimensional scalar constraint
+/// (removes 1 DOF), with force applied along the direction connecting the geoms.
+///
+/// Object IDs (`eq_obj1id`/`eq_obj2id`) are **geom IDs**, not body IDs.
+/// Body IDs are derived via `model.geom_body[geom_id]`.
+///
+/// # Singularity Handling
+///
+/// When the two geom centers coincide (distance -> 0), the constraint direction
+/// is undefined. We use a fallback direction of `+Z` and apply force proportional
+/// to the target distance. This provides a deterministic push-apart force.
+fn apply_distance_constraint(
+    model: &Model,
+    data: &mut Data,
+    eq_id: usize,
+    default_stiffness: f64,
+    default_damping: f64,
+    dt: f64,
+) {
+    const SINGULARITY_EPS: f64 = 1e-10;
+
+    let geom1_id = model.eq_obj1id[eq_id];
+    let geom2_id = model.eq_obj2id[eq_id]; // usize::MAX = world origin
+    let target_dist = model.eq_data[eq_id][0];
+
+    // Get geom world positions
+    let p1 = data.geom_xpos[geom1_id];
+    let p2 = if geom2_id == usize::MAX {
+        Vector3::zeros()
+    } else {
+        data.geom_xpos[geom2_id]
+    };
+
+    // Get body IDs for force application
+    let body1 = model.geom_body[geom1_id];
+    let body2 = if geom2_id == usize::MAX {
+        0 // World body
+    } else {
+        model.geom_body[geom2_id]
+    };
+
+    let body1_is_dynamic = body1 != 0;
+    let body2_is_dynamic = body2 != 0;
+
+    // Compute direction and current distance
+    let diff = p1 - p2;
+    let current_dist = diff.norm();
+
+    // Singularity guard: when geoms coincide, direction is undefined
+    let (direction, scalar_error) = if current_dist > SINGULARITY_EPS {
+        let dir = diff / current_dist;
+        let err = current_dist - target_dist;
+        (dir, err)
+    } else if target_dist > SINGULARITY_EPS {
+        // Geoms coincide but target > 0: push apart along +Z fallback
+        (Vector3::z(), -target_dist)
+    } else {
+        // Both near zero: constraint satisfied
+        return;
+    };
+
+    // Velocity error projected onto constraint direction
+    let v1 = if body1_is_dynamic {
+        compute_point_velocity(data, body1, p1)
+    } else {
+        Vector3::zeros()
+    };
+    let v2 = if body2_is_dynamic {
+        compute_point_velocity(data, body2, p2)
+    } else {
+        Vector3::zeros()
+    };
+    let vel_error = (v1 - v2).dot(&direction);
+
+    // Compute penalty parameters from solref
+    let (stiffness, damping) = solref_to_penalty(
+        model.eq_solref[eq_id],
+        default_stiffness,
+        default_damping,
+        dt,
+    );
+
+    // Compute position-dependent impedance from solimp
+    let violation = scalar_error.abs();
+    let impedance = compute_impedance(model.eq_solimp[eq_id], violation);
+
+    // Baumgarte stabilization: scalar_force = -d(r)*k*error - d(r)*b*vel_error
+    let scalar_force = -impedance * stiffness * scalar_error - impedance * damping * vel_error;
+
+    // Convert scalar force to 3D force vector along direction
+    let raw_force = scalar_force * direction;
+
+    // Compute effective mass for force limiting
+    let mass1 = data.body_min_mass[body1];
+    let mass2 = data.body_min_mass[body2];
+    let eff_mass = effective_mass_for_stability(mass1, mass2);
+
+    // Limit force to bound acceleration
+    let max_accel = MAX_DELTA_V_LINEAR / dt;
+    let max_force = eff_mass * max_accel;
+    let force = clamp_vector_magnitude(raw_force, max_force);
+
+    // Apply forces via Jacobian transpose
+    if body1_is_dynamic {
+        apply_constraint_force_to_body(model, data, body1, p1, force);
     }
     if body2_is_dynamic {
         apply_constraint_force_to_body(model, data, body2, p2, -force);
@@ -7459,8 +7690,23 @@ fn apply_weld_constraint(
         dt,
     );
 
+    // Compute position-dependent impedance from solimp, separately for
+    // translational and rotational components. MuJoCo computes impedance
+    // per constraint row using each row's individual violation. A weld has
+    // 6 rows (3 translational + 3 rotational), so we compute two impedances.
+    //
+    // Note: solimp `width` is specified in meters for translational constraints
+    // and radians for rotational constraints. Using a single solimp for both
+    // is a simplification — MuJoCo allows per-row solimp in principle, but
+    // equality constraints share one solimp vector. The `width` parameter
+    // will be interpreted in the units of each error (meters vs radians).
+    let solimp = model.eq_solimp[eq_id];
+    let trans_impedance = compute_impedance(solimp, pos_error.norm());
+    let rot_impedance = compute_impedance(solimp, rot_error.norm());
+
     // === Position Constraint Force ===
-    let raw_force = -stiffness * pos_error - damping * vel_error;
+    let raw_force =
+        -trans_impedance * stiffness * pos_error - trans_impedance * damping * vel_error;
 
     // Compute effective mass using cached values (body_min_mass[0] = infinity for world)
     let mass1 = data.body_min_mass[body1];
@@ -7474,7 +7720,8 @@ fn apply_weld_constraint(
     // === Orientation Constraint Torque ===
     // Clamp effective rotation error for stiffness term (damping uses actual velocity)
     let clamped_rot_error = clamp_vector_magnitude(rot_error, MAX_ROTATION_ERROR_FOR_STIFFNESS);
-    let raw_torque = -stiffness * clamped_rot_error - damping * ang_vel_error;
+    let raw_torque =
+        -rot_impedance * stiffness * clamped_rot_error - rot_impedance * damping * ang_vel_error;
 
     // Compute effective inertia using cached values (body_min_inertia[0] = infinity for world)
     let inertia1 = data.body_min_inertia[body1];
@@ -7551,8 +7798,11 @@ fn apply_joint_equality_constraint(
             dt,
         );
 
+        // Compute position-dependent impedance from solimp
+        let impedance = compute_impedance(model.eq_solimp[eq_id], pos_error.abs());
+
         // Apply torque to joint2 to correct error
-        let tau2 = -stiffness * pos_error - damping * vel_error;
+        let tau2 = -impedance * stiffness * pos_error - impedance * damping * vel_error;
         data.qfrc_constraint[dof2_adr] += tau2;
 
         // INVARIANT: No explicit reaction torque on joint1.
@@ -7578,7 +7828,10 @@ fn apply_joint_equality_constraint(
             dt,
         );
 
-        let tau1 = -stiffness * pos_error - damping * vel_error;
+        // Compute position-dependent impedance from solimp
+        let impedance = compute_impedance(model.eq_solimp[eq_id], pos_error.abs());
+
+        let tau1 = -impedance * stiffness * pos_error - impedance * damping * vel_error;
         data.qfrc_constraint[dof1_adr] += tau1;
     }
 }
@@ -9026,5 +9279,150 @@ mod primitive_collision_tests {
             0.0,
             epsilon = 1e-10
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod impedance_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Default solimp: [d0=0.9, d_width=0.95, width=0.001, midpoint=0.5, power=2.0]
+    const DEFAULT: [f64; 5] = DEFAULT_SOLIMP;
+
+    // ========================================================================
+    // compute_impedance unit tests
+    // ========================================================================
+
+    #[test]
+    fn test_impedance_at_zero_violation() {
+        // At zero violation, impedance should be d0
+        let d = compute_impedance(DEFAULT, 0.0);
+        assert_relative_eq!(d, 0.9, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_impedance_at_full_width() {
+        // At violation >= width, impedance should be d_width
+        let d = compute_impedance(DEFAULT, 0.001);
+        assert_relative_eq!(d, 0.95, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_impedance_beyond_width() {
+        // Beyond width, impedance should saturate at d_width
+        let d = compute_impedance(DEFAULT, 0.01);
+        assert_relative_eq!(d, 0.95, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_impedance_at_midpoint() {
+        // At midpoint of transition, impedance should be between d0 and d_width.
+        // For power=2 and midpoint=0.5:
+        //   x = 0.5*width / width = 0.5
+        //   y(0.5) = a * 0.5^2 where a = 1/0.5^(2-1) = 2
+        //   y = 2 * 0.25 = 0.5
+        //   d = 0.9 + 0.5 * (0.95 - 0.9) = 0.925
+        let d = compute_impedance(DEFAULT, 0.0005);
+        assert_relative_eq!(d, 0.925, epsilon = 1e-3);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "non-negative violation")]
+    fn test_impedance_rejects_negative_violation() {
+        // Negative violation is a caller bug — debug_assert catches it
+        compute_impedance(DEFAULT, -0.0005);
+    }
+
+    #[test]
+    fn test_impedance_flat_when_d0_equals_dwidth() {
+        // When d0 == d_width, impedance is constant
+        let solimp = [0.9, 0.9, 0.001, 0.5, 2.0];
+        let d_zero = compute_impedance(solimp, 0.0);
+        let d_mid = compute_impedance(solimp, 0.0005);
+        let d_full = compute_impedance(solimp, 0.001);
+        assert_relative_eq!(d_zero, 0.9, epsilon = 1e-4);
+        assert_relative_eq!(d_mid, 0.9, epsilon = 1e-4);
+        assert_relative_eq!(d_full, 0.9, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_impedance_linear_power() {
+        // With power=1, transition should be linear
+        let solimp = [0.5, 1.0, 0.01, 0.5, 1.0];
+        let d_quarter = compute_impedance(solimp, 0.0025);
+        // x = 0.25, y = 0.25 (linear), d = 0.5 + 0.25*0.5 = 0.625
+        assert_relative_eq!(d_quarter, 0.625, epsilon = 1e-3);
+
+        let d_half = compute_impedance(solimp, 0.005);
+        // x = 0.5, y = 0.5 (linear), d = 0.5 + 0.5*0.5 = 0.75
+        assert_relative_eq!(d_half, 0.75, epsilon = 1e-3);
+    }
+
+    #[test]
+    fn test_impedance_clamped_to_valid_range() {
+        // Impedance should be clamped to (0, 1) even with extreme solimp values
+        let solimp_low = [0.0, 0.0, 0.001, 0.5, 2.0];
+        let d = compute_impedance(solimp_low, 0.0);
+        assert!(d >= 0.0001, "Impedance should be at least MIN_IMPEDANCE");
+
+        let solimp_high = [1.0, 1.0, 0.001, 0.5, 2.0];
+        let d = compute_impedance(solimp_high, 0.0);
+        assert!(d <= 0.9999, "Impedance should be at most MAX_IMPEDANCE");
+    }
+
+    #[test]
+    fn test_impedance_monotonic_increasing() {
+        // With d_width > d0, impedance should increase with violation
+        let solimp = [0.5, 0.95, 0.01, 0.5, 2.0];
+        let mut prev = compute_impedance(solimp, 0.0);
+        for i in 1..=10 {
+            let pos = f64::from(i) * 0.001;
+            let d = compute_impedance(solimp, pos);
+            assert!(
+                d >= prev - 1e-10,
+                "Impedance should be monotonically increasing: d({})={} < d({})={}",
+                pos - 0.001,
+                prev,
+                pos,
+                d
+            );
+            prev = d;
+        }
+    }
+
+    #[test]
+    fn test_impedance_zero_width() {
+        // Zero width should return average of d0 and d_width
+        let solimp = [0.5, 0.9, 0.0, 0.5, 2.0];
+        let d = compute_impedance(solimp, 0.1);
+        assert_relative_eq!(d, 0.7, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_impedance_extreme_midpoint_no_nan() {
+        // midpoint=0 would cause division by zero without input clamping.
+        // Clamped to 0.0001, so this must produce a finite result.
+        let solimp = [0.5, 0.9, 0.01, 0.0, 3.0];
+        let d = compute_impedance(solimp, 0.005);
+        assert!(d.is_finite(), "midpoint=0 should not produce NaN, got {d}");
+        assert!(d > 0.0 && d < 1.0);
+
+        // midpoint=1 same issue on the upper branch
+        let solimp = [0.5, 0.9, 0.01, 1.0, 3.0];
+        let d = compute_impedance(solimp, 0.005);
+        assert!(d.is_finite(), "midpoint=1 should not produce NaN, got {d}");
+        assert!(d > 0.0 && d < 1.0);
+    }
+
+    #[test]
+    fn test_impedance_power_below_one_clamped() {
+        // power < 1 is invalid in MuJoCo (clamped to 1). Should behave as linear.
+        let solimp = [0.5, 1.0, 0.01, 0.5, 0.5]; // power=0.5, clamped to 1.0
+        let d = compute_impedance(solimp, 0.005);
+        // With power clamped to 1 (linear): x=0.5, y=0.5, d = 0.5 + 0.5*0.5 = 0.75
+        assert_relative_eq!(d, 0.75, epsilon = 1e-3);
     }
 }

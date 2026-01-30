@@ -47,8 +47,8 @@ Identified during solref/solimp review. Items marked ✅ have been addressed.
 
 | # | Issue | Status | Notes |
 |---|-------|--------|-------|
-| 1 | Hardcoded Baumgarte parameters — joint limits, equality constraints ignore solref/solimp | ✅ Fixed | `eq_solref` and `jnt_solref` now read via `solref_to_penalty()`. Hardcoded `10000/1000` retained as fallback when solref ≤ 0. **Remaining gap:** `eq_solimp` is stored on `Model` but never consumed. |
-| 2 | Distance equality constraints missing | ❌ Open | `EqualityType::Distance` match arm prints a `warn_once` but is otherwise a no-op. Requires geom position computation to implement. See `mujoco_pipeline.rs:6921`. |
+| 1 | Hardcoded Baumgarte parameters — joint limits, equality constraints ignore solref/solimp | ✅ Fixed | `eq_solref` and `jnt_solref` now read via `solref_to_penalty()`. Hardcoded `10000/1000` retained as fallback when solref ≤ 0. `eq_solimp` consumed via `compute_impedance()` — position-dependent impedance scales penalty stiffness/damping in connect, weld, and joint equality constraints. Contact solver CFM also uses `compute_impedance()` with full solimp (previously only read `solimp[0]`). |
+| 2 | Distance equality constraints missing | ✅ Fixed | `apply_distance_constraint` enforces `\|p1 - p2\| = target_distance` between geom centers using penalty+impedance (Baumgarte stabilization). Added `geom_name_to_id` mapping in model builder. Handles singularity when geoms coincide (+Z fallback direction). `eq_obj1id`/`eq_obj2id` store geom IDs; body IDs derived via `model.geom_body[]`. Auto-computes initial distance when `distance` attribute omitted. 7 integration tests cover normal operation, worldbody geom, geom2-omitted (world origin sentinel), auto-distance, zero target, error handling, and inactive constraint. |
 
 ### P1 — Performance / Quality
 
