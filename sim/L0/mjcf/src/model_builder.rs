@@ -282,6 +282,12 @@ struct ModelBuilder {
     solver_iterations: usize,
     solver_tolerance: f64,
     impratio: f64,
+    regularization: f64,
+    default_eq_stiffness: f64,
+    default_eq_damping: f64,
+    max_constraint_vel: f64,
+    max_constraint_angvel: f64,
+    friction_smoothing: f64,
     cone: u8,
     disableflags: u32,
     enableflags: u32,
@@ -405,6 +411,12 @@ impl ModelBuilder {
             solver_iterations: 100,
             solver_tolerance: 1e-8,
             impratio: 1.0,
+            regularization: 1e-6,
+            default_eq_stiffness: 10000.0,
+            default_eq_damping: 1000.0,
+            max_constraint_vel: 1.0,
+            max_constraint_angvel: 1.0,
+            friction_smoothing: 1000.0,
             cone: 0,
             disableflags: 0,
             enableflags: 0,
@@ -434,6 +446,13 @@ impl ModelBuilder {
         self.gravity = option.gravity;
         self.solver_iterations = option.iterations;
         self.solver_tolerance = option.tolerance;
+        self.impratio = option.impratio;
+        self.regularization = option.regularization;
+        self.default_eq_stiffness = option.default_eq_stiffness;
+        self.default_eq_damping = option.default_eq_damping;
+        self.max_constraint_vel = option.max_constraint_vel;
+        self.max_constraint_angvel = option.max_constraint_angvel;
+        self.friction_smoothing = option.friction_smoothing;
         self.integrator = match option.integrator {
             MjcfIntegrator::Euler => Integrator::Euler,
             MjcfIntegrator::RK4 => Integrator::RungeKutta4,
@@ -1462,6 +1481,12 @@ impl ModelBuilder {
             solver_iterations: self.solver_iterations,
             solver_tolerance: self.solver_tolerance,
             impratio: self.impratio,
+            regularization: self.regularization,
+            default_eq_stiffness: self.default_eq_stiffness,
+            default_eq_damping: self.default_eq_damping,
+            max_constraint_vel: self.max_constraint_vel,
+            max_constraint_angvel: self.max_constraint_angvel,
+            friction_smoothing: self.friction_smoothing,
             cone: self.cone,
             disableflags: self.disableflags,
             enableflags: self.enableflags,

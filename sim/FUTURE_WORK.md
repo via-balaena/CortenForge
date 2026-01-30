@@ -130,8 +130,81 @@ Physics Features.
 
 | # | Issue | Status | Notes |
 |---|-------|--------|-------|
-| 6 | Block Jacobi preconditioner placeholder in `cg.rs:590` | ❌ Open | Falls back to simple Jacobi; proper block variant not implemented. |
-| 7 | Various hardcoded numerical thresholds | ❌ Open | Regularization `1e-6`, penetration slop `0.001`, etc. Reasonable defaults but not per-geometry configurable. |
+| 6 | Block Jacobi preconditioner placeholder in `cg.rs` | ✅ Fixed | See details below. |
+| 7 | Various hardcoded numerical thresholds | ✅ Fixed | See details below. |
+
+#### Issue 6 — Block Jacobi preconditioner placeholder
+
+**Location:** `build_preconditioner()` at `sim/L0/constraint/src/cg.rs`
+
+**Impact:** Users selecting `Preconditioner::BlockJacobi` (used by the `high_accuracy()`
+and `large_system()` config presets) silently got scalar Jacobi instead. No warning was
+emitted.
+
+**Key finding: CGSolver is currently dead code.** It is exported from `sim-constraint`
+(`lib.rs:122`) but has zero callers outside the crate. The active simulation pipeline uses
+`pgs_solve_contacts` in `mujoco_pipeline.rs`, not the CGSolver.
+
+**Fix (applied):** Implemented proper block Jacobi preconditioner:
+
+1. Added `PreconditionerData` enum with `Diagonal` and `Block` variants — diagonal stores
+   a `DVector<f64>` for element-wise multiply (None/Jacobi); Block stores inverted dense
+   sub-blocks with offsets and sizes for block-wise matrix-vector solve.
+2. `build_preconditioner()` now accepts `constraint_blocks: &[(usize, usize)]` describing
+   `(row_offset, num_rows)` pairs. For BlockJacobi, it extracts each diagonal block
+   `A[off..off+sz, off..off+sz]` and inverts via Cholesky (with scalar Jacobi fallback
+   if Cholesky fails for a block). Falls back to scalar Jacobi when no block info provided.
+3. `apply_preconditioner()` dispatches on the enum: Diagonal does `r.component_mul(diag)`,
+   Block iterates over blocks computing `z[rows] = block_inv * r[rows]`.
+4. `solve()` extracts block boundaries from `SolverConstraint::row_offset` and `num_rows`,
+   passes them through `cg_solve()` to `build_preconditioner()`.
+5. Two tests added: `test_block_jacobi_preconditioner` (correctness on 6×6 block-diagonal
+   SPD system) and `test_block_jacobi_fewer_iterations_than_scalar` (verifies Block Jacobi
+   converges in ≤ iterations vs scalar Jacobi on systems with strong intra-block coupling).
+
+#### Issue 7 — Hardcoded numerical thresholds
+
+Approximately 25+ hardcoded numerical thresholds existed in `mujoco_pipeline.rs`. They fall
+into three categories:
+
+**Category A — Numerical safety guards (NOT configurable, documented in-code):**
+
+~12 values like `1e-10`, `1e-12`, `1e-15` used to prevent division by zero and detect
+degenerate geometry. These are correct and remain fixed constants. Examples:
+- `GEOM_EPSILON = 1e-10` — collision detection zero-guard
+- `1e-10` in `build_tangent_basis()` — normalization check
+- `1e-12` in PGS diagonal inversion — matrix conditioning
+- `0.001` minimum solref timeconst clamp — prevents division by zero in Baumgarte
+  stabilization; now documented with safety rationale
+- `FRICTION_VELOCITY_THRESHOLD = 1e-12` — effectively zero; now documented as safety guard
+- `.max(10)` PGS iteration floor — documented as safety clamp preventing under-resolution
+- `.max(1e-8)` solver tolerance floor — documented as safety clamp preventing infinite loops
+
+**Category B — Global solver parameters (already configurable):**
+
+Already exposed in the `Model` struct:
+- `solver_tolerance` (default `1e-8`) — PGS convergence criterion
+- `solver_iterations` (default `100`) — max PGS iterations
+- `impratio` (default `1.0`) — constraint impedance ratio
+- `geom_solref`, `geom_solimp`, `geom_margin`, `geom_gap` — per-geometry contact params
+
+**Category C — Fix (applied):**
+
+6 new configurable fields added to `Model`, `ModelBuilder`, `MjcfOption`, and the MJCF
+parser. Inline literals replaced with model field reads. All defaults match previous
+hardcoded values, preserving backward compatibility.
+
+| Field | Default | What it controls |
+|-------|---------|------------------|
+| `Model::regularization` | `1e-6` | PGS constraint softness. CFM now scales as `regularization + (1-d) * regularization * 100` (previously independent `1e-4` literal). |
+| `Model::default_eq_stiffness` | `10000.0` | Fallback stiffness for equality constraints and joint limits without solref. |
+| `Model::default_eq_damping` | `1000.0` | Fallback damping for equality constraints and joint limits without solref. |
+| `Model::max_constraint_vel` | `1.0` | Maximum linear velocity change per timestep from constraint forces (m/s). |
+| `Model::max_constraint_angvel` | `1.0` | Maximum angular velocity change per timestep from constraint forces (rad/s). |
+| `Model::friction_smoothing` | `1000.0` | Sharpness of tanh friction transition. Replaced `FRICTION_SMOOTHING` const. |
+
+Parseable from MJCF `<option>` via attributes: `regularization`, `default_eq_stiffness`,
+`default_eq_damping`, `max_constraint_vel`, `max_constraint_angvel`, `friction_smoothing`.
 
 ---
 

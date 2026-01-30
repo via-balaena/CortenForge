@@ -792,7 +792,7 @@ pub struct Model {
     /// Damping coefficient for this DOF.
     pub dof_damping: Vec<f64>,
     /// Friction loss (dry friction) for this DOF.
-    /// Applied as: τ_friction = -frictionloss * tanh(qvel * FRICTION_SMOOTHING)
+    /// Applied as: τ_friction = -frictionloss * tanh(qvel * friction_smoothing)
     /// where the tanh provides a smooth approximation to sign(qvel) for numerical stability.
     pub dof_frictionloss: Vec<f64>,
 
@@ -984,6 +984,19 @@ pub struct Model {
     pub solver_tolerance: f64,
     /// Constraint impedance ratio (for soft constraints).
     pub impratio: f64,
+    /// Base regularization (softness) for PGS constraint matrix diagonal (default: 1e-6).
+    /// CFM scales as `regularization + (1 - impedance) * regularization * 100`.
+    pub regularization: f64,
+    /// Fallback stiffness for equality constraints when solref is not specified (default: 10000.0).
+    pub default_eq_stiffness: f64,
+    /// Fallback damping for equality constraints when solref is not specified (default: 1000.0).
+    pub default_eq_damping: f64,
+    /// Maximum linear velocity change per timestep from constraint forces (m/s, default: 1.0).
+    pub max_constraint_vel: f64,
+    /// Maximum angular velocity change per timestep from constraint forces (rad/s, default: 1.0).
+    pub max_constraint_angvel: f64,
+    /// Friction smoothing factor — sharpness of tanh transition (default: 1000.0).
+    pub friction_smoothing: f64,
     /// Friction cone type: 0=pyramidal, 1=elliptic.
     pub cone: u8,
     /// Disable flags (bitmask for disabling default behaviors).
@@ -1582,10 +1595,16 @@ impl Model {
             viscosity: 0.0, // No fluid by default
             solver_iterations: 100,
             solver_tolerance: 1e-8,
-            impratio: 1.0,   // MuJoCo default
-            cone: 0,         // Pyramidal friction cone
-            disableflags: 0, // Nothing disabled
-            enableflags: 0,  // Nothing extra enabled
+            impratio: 1.0,                 // MuJoCo default
+            regularization: 1e-6,          // PGS constraint softness
+            default_eq_stiffness: 10000.0, // Equality constraint fallback stiffness
+            default_eq_damping: 1000.0,    // Equality constraint fallback damping
+            max_constraint_vel: 1.0,       // Max linear delta-v per step (m/s)
+            max_constraint_angvel: 1.0,    // Max angular delta-v per step (rad/s)
+            friction_smoothing: 1000.0,    // tanh transition sharpness
+            cone: 0,                       // Pyramidal friction cone
+            disableflags: 0,               // Nothing disabled
+            enableflags: 0,                // Nothing extra enabled
             integrator: Integrator::Euler,
 
             // Cached implicit integration parameters (empty for empty model)
@@ -6122,14 +6141,15 @@ fn mj_rne(model: &Model, data: &mut Data) {
     }
 }
 
-/// Smoothing factor for friction loss approximation.
-/// Controls sharpness of tanh transition from 0 to full friction.
-/// At vel=0.001, tanh(1000 * 0.001) ≈ 0.76, providing smooth onset.
-/// At vel=0.01, tanh(1000 * 0.01) ≈ 1.0, full friction magnitude.
-const FRICTION_SMOOTHING: f64 = 1000.0;
+// Friction smoothing factor is now configurable via model.friction_smoothing.
+// Default: 1000.0. At vel=0.001, tanh(1000 * 0.001) ≈ 0.76 (smooth onset).
+// At vel=0.01, tanh(1000 * 0.01) ≈ 1.0 (full friction magnitude).
 
 /// Velocity threshold below which friction is not applied.
 /// Prevents numerical noise from creating spurious friction forces.
+/// Not configurable — this is a numerical safety guard. The value 1e-12
+/// is effectively zero for any physical velocity and prevents division-by-zero
+/// or denormalized-float issues in the tanh friction approximation.
 const FRICTION_VELOCITY_THRESHOLD: f64 = 1e-12;
 
 /// Compute passive forces (springs, dampers, and friction loss).
@@ -6137,7 +6157,7 @@ const FRICTION_VELOCITY_THRESHOLD: f64 = 1e-12;
 /// Implements MuJoCo's passive force model:
 /// - **Spring**: τ = -stiffness * (q - springref)
 /// - **Damper**: τ = -damping * qvel
-/// - **Friction loss**: τ = -frictionloss * tanh(qvel * FRICTION_SMOOTHING)
+/// - **Friction loss**: τ = -frictionloss * tanh(qvel * friction_smoothing)
 ///
 /// The friction loss uses a smooth `tanh` approximation to Coulomb friction
 /// (`sign(qvel)`) to avoid discontinuity at zero velocity, which would cause
@@ -6184,7 +6204,7 @@ impl PassiveForceVisitor<'_> {
         let qvel = self.data.qvel[dof_idx];
         let frictionloss = self.model.dof_frictionloss[dof_idx];
         if frictionloss > 0.0 && qvel.abs() > FRICTION_VELOCITY_THRESHOLD {
-            let smooth_sign = (qvel * FRICTION_SMOOTHING).tanh();
+            let smooth_sign = (qvel * self.model.friction_smoothing).tanh();
             self.data.qfrc_passive[dof_idx] -= frictionloss * smooth_sign;
         }
     }
@@ -6566,7 +6586,7 @@ fn pgs_solve_contacts(
     let mut b = DVector::zeros(nefc);
 
     // Base regularization (softness) for numerical stability
-    let base_regularization = 1e-6;
+    let base_regularization = model.regularization;
 
     // Compute unconstrained acceleration (qacc_smooth = M^{-1} * qfrc_smooth)
     // qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias
@@ -6594,7 +6614,10 @@ fn pgs_solve_contacts(
     for (i, (contact_i, jac_i)) in contacts.iter().zip(jacobians.iter()).enumerate() {
         // Derive Baumgarte parameters from per-contact solref/solimp
         // solref[0] = timeconst, solref[1] = dampratio
-        let timeconst = contact_i.solref[0].max(0.001); // Clamp to avoid division by zero
+        // Safety clamp: minimum 0.001s timeconst prevents division by zero in
+        // Baumgarte stabilization (stiffness = 1/tc², damping = 2*dr/tc).
+        // Not configurable — values below 0.001 cause NaN propagation.
+        let timeconst = contact_i.solref[0].max(0.001);
         let dampratio = contact_i.solref[1].max(0.0);
 
         // Position-dependent impedance from full solimp parameters.
@@ -6604,7 +6627,7 @@ fn pgs_solve_contacts(
 
         // CFM (constraint force mixing) derived from impedance:
         // Higher d (closer to 1) = stiffer constraint = lower CFM
-        let cfm = base_regularization + (1.0 - d) * 1e-4;
+        let cfm = base_regularization + (1.0 - d) * model.regularization * 100.0;
 
         // Diagonal block: A[i,i] = J_i * M^{-1} * J_i^T
         let a_ii = jac_i * &minv_jt[i];
@@ -6901,8 +6924,8 @@ fn apply_equality_constraints(model: &Model, data: &mut Data) {
     // Users should specify solref in MJCF for fine-grained control. Recommended
     // values for explicit integration: solref="0.05 1.0" to solref="0.1 1.0"
     // (softer than MuJoCo defaults, which assume implicit PGS solver).
-    let default_stiffness = 10000.0;
-    let default_damping = 1000.0;
+    let default_stiffness = model.default_eq_stiffness;
+    let default_damping = model.default_eq_damping;
 
     let dt = model.timestep;
 
@@ -7127,18 +7150,11 @@ fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
 // Constraint Stability Constants
 // =============================================================================
 
-/// Maximum velocity change per timestep for translational DOFs (m/s).
-///
-/// This limits the acceleration to `MAX_DELTA_V / dt` to ensure stability
-/// with explicit Euler integration. A value of 1.0 means velocity can change
-/// by at most 1 m/s each timestep, preventing oscillation from overshooting.
-const MAX_DELTA_V_LINEAR: f64 = 1.0;
-
-/// Maximum angular velocity change per timestep for rotational DOFs (rad/s).
-///
-/// Similar to `MAX_DELTA_V_LINEAR` but for angular velocities. A value of 1.0
-/// means angular velocity can change by at most 1 rad/s each timestep.
-const MAX_DELTA_V_ANGULAR: f64 = 1.0;
+// Maximum velocity change per timestep is now configurable via model fields:
+// - model.max_constraint_vel (linear, default: 1.0 m/s)
+// - model.max_constraint_angvel (angular, default: 1.0 rad/s)
+// These limit acceleration to max_delta_v / dt to ensure stability with
+// explicit Euler integration, preventing oscillation from overshooting.
 
 /// Maximum effective rotation error for constraint stiffness term (radians).
 ///
@@ -7329,8 +7345,8 @@ fn apply_connect_constraint(
     let mass2 = data.body_min_mass[body2];
     let eff_mass = effective_mass_for_stability(mass1, mass2);
 
-    // Limit force to bound acceleration: a_max = MAX_DELTA_V_LINEAR / dt
-    let max_accel = MAX_DELTA_V_LINEAR / dt;
+    // Limit force to bound acceleration: a_max = max_constraint_vel / dt
+    let max_accel = model.max_constraint_vel / dt;
     let max_force = eff_mass * max_accel;
     let force = clamp_vector_magnitude(raw_force, max_force);
 
@@ -7444,7 +7460,7 @@ fn apply_distance_constraint(
     let eff_mass = effective_mass_for_stability(mass1, mass2);
 
     // Limit force to bound acceleration
-    let max_accel = MAX_DELTA_V_LINEAR / dt;
+    let max_accel = model.max_constraint_vel / dt;
     let max_force = eff_mass * max_accel;
     let force = clamp_vector_magnitude(raw_force, max_force);
 
@@ -7713,7 +7729,7 @@ fn apply_weld_constraint(
     let mass2 = data.body_min_mass[body2];
     let eff_mass = effective_mass_for_stability(mass1, mass2);
 
-    let max_linear_accel = MAX_DELTA_V_LINEAR / dt;
+    let max_linear_accel = model.max_constraint_vel / dt;
     let max_force = eff_mass * max_linear_accel;
     let force = clamp_vector_magnitude(raw_force, max_force);
 
@@ -7728,7 +7744,7 @@ fn apply_weld_constraint(
     let inertia2 = data.body_min_inertia[body2];
     let eff_inertia = effective_mass_for_stability(inertia1, inertia2);
 
-    let max_angular_accel = MAX_DELTA_V_ANGULAR / dt;
+    let max_angular_accel = model.max_constraint_angvel / dt;
     let max_torque = eff_inertia * max_angular_accel;
     let torque = clamp_vector_magnitude(raw_torque, max_torque);
 
@@ -7988,10 +8004,13 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         let qpos_adr = model.jnt_qpos_adr[jnt_id];
         let dof_adr = model.jnt_dof_adr[jnt_id];
 
-        // Convert solref to penalty parameters
-        // Default fallback: k=10000, b=1000 (critically damped at ~16 Hz)
-        let (limit_stiffness, limit_damping) =
-            solref_to_penalty(model.jnt_solref[jnt_id], 10000.0, 1000.0, model.timestep);
+        // Convert solref to penalty parameters, using model defaults as fallback
+        let (limit_stiffness, limit_damping) = solref_to_penalty(
+            model.jnt_solref[jnt_id],
+            model.default_eq_stiffness,
+            model.default_eq_damping,
+            model.timestep,
+        );
 
         match model.jnt_type[jnt_id] {
             MjJointType::Hinge | MjJointType::Slide => {
@@ -8062,7 +8081,13 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         data,
         &data.contacts,
         &jacobians,
+        // Safety clamp: minimum 10 iterations prevents premature termination
+        // on well-conditioned systems where 1-2 iterations would under-resolve contacts.
+        // Not configurable — values below 10 risk visible penetration artifacts.
         model.solver_iterations.max(10),
+        // Safety clamp: minimum tolerance 1e-8 prevents infinite iteration on
+        // systems that cannot converge to machine epsilon due to regularization.
+        // Not configurable — tighter tolerances produce no meaningful improvement.
         model.solver_tolerance.max(1e-8),
         &mut efc_lambda,
     );

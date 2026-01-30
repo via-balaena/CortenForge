@@ -274,6 +274,26 @@ pub struct MjcfOption {
     /// Higher values make friction constraints stiffer relative to normal forces.
     pub impratio: f64,
 
+    // ========== Constraint Solver Tuning ==========
+    /// Base regularization for PGS constraint matrix diagonal (default: 1e-6).
+    /// CFM scales as `regularization + (1 - impedance) * regularization * 100`.
+    pub regularization: f64,
+
+    /// Fallback stiffness for equality constraints without solref (default: 10000.0).
+    pub default_eq_stiffness: f64,
+
+    /// Fallback damping for equality constraints without solref (default: 1000.0).
+    pub default_eq_damping: f64,
+
+    /// Maximum linear velocity change per timestep from constraints (m/s, default: 1.0).
+    pub max_constraint_vel: f64,
+
+    /// Maximum angular velocity change per timestep from constraints (rad/s, default: 1.0).
+    pub max_constraint_angvel: f64,
+
+    /// Friction smoothing factor — sharpness of tanh transition (default: 1000.0).
+    pub friction_smoothing: f64,
+
     // ========== Physics Environment ==========
     /// Gravity vector (default: 0 0 -9.81).
     pub gravity: Vector3<f64>,
@@ -334,6 +354,14 @@ impl Default for MjcfOption {
             cone: MjcfConeType::default(),
             jacobian: MjcfJacobianType::default(),
             impratio: 1.0,
+
+            // Constraint solver tuning
+            regularization: 1e-6,
+            default_eq_stiffness: 10000.0,
+            default_eq_damping: 1000.0,
+            max_constraint_vel: 1.0,
+            max_constraint_angvel: 1.0,
+            friction_smoothing: 1000.0,
 
             // Physics environment
             gravity: Vector3::new(0.0, 0.0, -9.81), // Z-up convention
