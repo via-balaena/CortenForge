@@ -6536,11 +6536,12 @@ fn bodies_share_chain(model: &Model, body_a: usize, body_b: usize) -> bool {
 /// Returns the constraint forces in contact-frame (λ).
 fn pgs_solve_contacts(
     model: &Model,
-    data: &mut Data,
+    data: &Data,
     contacts: &[Contact],
     jacobians: &[DMatrix<f64>],
     max_iterations: usize,
     tolerance: f64,
+    efc_lambda: &mut std::collections::HashMap<(usize, usize), [f64; 3]>,
 ) -> Vec<Vector3<f64>> {
     let ncon = contacts.len();
     if ncon == 0 {
@@ -6746,7 +6747,7 @@ fn pgs_solve_contacts(
             contact.geom1.min(contact.geom2),
             contact.geom1.max(contact.geom2),
         );
-        if let Some(prev_lambda) = data.efc_lambda.get(&key) {
+        if let Some(prev_lambda) = efc_lambda.get(&key) {
             let base = i * 3;
             lambda[base] = prev_lambda[0];
             lambda[base + 1] = prev_lambda[1];
@@ -6824,15 +6825,14 @@ fn pgs_solve_contacts(
 
     // Store lambda for warmstart on next frame using contact correspondence
     // Clear old entries and insert new ones with canonical (min, max) key ordering
-    data.efc_lambda.clear();
+    efc_lambda.clear();
     for (i, contact) in contacts.iter().enumerate() {
         let base = i * 3;
         let key = (
             contact.geom1.min(contact.geom2),
             contact.geom1.max(contact.geom2),
         );
-        data.efc_lambda
-            .insert(key, [lambda[base], lambda[base + 1], lambda[base + 2]]);
+        efc_lambda.insert(key, [lambda[base], lambda[base + 1], lambda[base + 2]]);
     }
 
     // Extract per-contact forces
@@ -8035,40 +8035,45 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     // For small contact counts or when M is singular, fall back to penalty method
     // which is simpler and more robust for simple scenarios.
 
-    // Early exit if no contacts (avoid clone)
+    // Early exit if no contacts
     if data.contacts.is_empty() {
         return;
     }
-
-    // Clone contacts to avoid borrow checker issues (contacts is part of data)
-    // TODO: Consider using indices instead of cloning for better performance
-    let contacts: Vec<Contact> = data.contacts.clone();
 
     // For systems without DOFs, use simple penalty
     if model.nv == 0 {
         return;
     }
 
-    // Build contact Jacobians
-    let jacobians: Vec<DMatrix<f64>> = contacts
+    // Temporarily take efc_lambda out of data so we can borrow data.contacts
+    // immutably while passing efc_lambda mutably to pgs_solve_contacts.
+    let mut efc_lambda = std::mem::take(&mut data.efc_lambda);
+
+    // Build contact Jacobians (compute_contact_jacobian takes &Data)
+    let jacobians: Vec<DMatrix<f64>> = data
+        .contacts
         .iter()
         .map(|c| compute_contact_jacobian(model, data, c))
         .collect();
 
-    // Solve using PGS
+    // Solve using PGS (takes &Data + separate &mut HashMap for warmstart)
     let constraint_forces = pgs_solve_contacts(
         model,
         data,
-        &contacts,
+        &data.contacts,
         &jacobians,
         model.solver_iterations.max(10),
         model.solver_tolerance.max(1e-8),
+        &mut efc_lambda,
     );
+
+    // Restore warmstart cache
+    data.efc_lambda = efc_lambda;
 
     // Apply forces via J^T
     // qfrc_constraint += J^T * λ
     for (i, (_jacobian, lambda)) in jacobians.iter().zip(constraint_forces.iter()).enumerate() {
-        let normal = contacts[i].normal;
+        let normal = data.contacts[i].normal;
         let (tangent1, tangent2) = build_tangent_basis(&normal);
 
         // Convert contact-frame forces to world-frame force
@@ -8076,12 +8081,13 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
 
         // Apply via Jacobian transpose
         // This applies the force to both bodies through the kinematic chain
-        let body1 = model.geom_body[contacts[i].geom1];
-        let body2 = model.geom_body[contacts[i].geom2];
+        let body1 = model.geom_body[data.contacts[i].geom1];
+        let body2 = model.geom_body[data.contacts[i].geom2];
+        let pos = data.contacts[i].pos;
 
         // Body1 gets negative force (Newton's third law)
-        apply_contact_force(model, data, body1, contacts[i].pos, -world_force);
-        apply_contact_force(model, data, body2, contacts[i].pos, world_force);
+        apply_contact_force(model, data, body1, pos, -world_force);
+        apply_contact_force(model, data, body2, pos, world_force);
     }
 }
 
@@ -8342,15 +8348,12 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     // Solve (M + h*D + h²*K) * v_new = rhs
     // M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0), so use Cholesky.
     //
-    // TODO(perf): This clone() allocates O(nv²) per step because nalgebra's cholesky()
-    // consumes the matrix. For serial chains, M is banded with bandwidth O(1), so we
-    // could use sparse L^T D L factorization for O(nv) instead of O(nv³). Options:
-    //   1. Implement in-place Cholesky that doesn't consume the matrix
-    //   2. Use sparse factorization exploiting articulated body structure
-    //   3. Use Featherstone's articulated body algorithm (ABA) which is O(nv)
-    let chol = data
-        .scratch_m_impl
-        .clone()
+    // Move the populated matrix out via std::mem::replace, leaving a correctly-sized
+    // zero matrix for the next step's copy_from(&data.qM). This avoids cloning O(nv²)
+    // elements — nalgebra's cholesky() consumes the matrix, so we give it ownership
+    // directly. scratch_m_impl is never read after this point in the step pipeline.
+    let nv = model.nv;
+    let chol = std::mem::replace(&mut data.scratch_m_impl, DMatrix::zeros(nv, nv))
         .cholesky()
         .ok_or(StepError::CholeskyFailed)?;
 
