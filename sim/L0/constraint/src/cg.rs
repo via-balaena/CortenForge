@@ -669,6 +669,25 @@ impl CGSolver {
                     block_inverses.push(inv);
                 }
 
+                // Verify blocks are contiguous and cover the full system.
+                // Gaps would leave z=0 for uncovered rows, silently freezing
+                // those DOFs in CG iteration.
+                debug_assert_eq!(
+                    sizes.iter().sum::<usize>(),
+                    n,
+                    "Block Jacobi preconditioner blocks cover {} of {n} rows — \
+                     gaps will produce incorrect preconditioned residuals",
+                    sizes.iter().sum::<usize>(),
+                );
+                debug_assert!(
+                    offsets
+                        .iter()
+                        .zip(sizes.iter())
+                        .zip(offsets.iter().skip(1))
+                        .all(|((&off, &sz), &next_off)| off + sz == next_off),
+                    "Block Jacobi preconditioner blocks are not contiguous",
+                );
+
                 PreconditionerData::Block {
                     block_inverses,
                     offsets,
