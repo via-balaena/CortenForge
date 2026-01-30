@@ -9379,7 +9379,7 @@ mod impedance_tests {
         let solimp = [0.5, 0.95, 0.01, 0.5, 2.0];
         let mut prev = compute_impedance(solimp, 0.0);
         for i in 1..=10 {
-            let pos = i as f64 * 0.001;
+            let pos = f64::from(i) * 0.001;
             let d = compute_impedance(solimp, pos);
             assert!(
                 d >= prev - 1e-10,
