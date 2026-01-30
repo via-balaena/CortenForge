@@ -571,6 +571,140 @@ fn test_constraint_with_solref() {
 }
 
 // ============================================================================
+// Solimp (Impedance) Tests
+// ============================================================================
+
+/// Test: solimp parameters are loaded and affect constraint behavior.
+///
+/// Lower impedance (d0 close to 0) should produce a weaker constraint,
+/// allowing more violation than higher impedance (d0 close to 1).
+///
+/// Physics: In steady state, `d * k * violation ≈ m * g`, so
+/// `violation ∝ 1/d`. With d_strong ≈ 0.95 and d_weak ≈ 0.1, the weak
+/// constraint should allow roughly `0.95/0.1 ≈ 9.5×` more violation.
+/// We test for at least 3× to account for dynamic effects (damped
+/// oscillation rather than true static equilibrium).
+#[test]
+fn test_solimp_affects_constraint_strength() {
+    // Strong impedance: d0=0.95, d_width=0.99
+    let mjcf_strong = r#"
+        <mujoco model="solimp_strong">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="ball" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect body1="ball" anchor="0 0 0"
+                         solimp="0.95 0.99 0.001 0.5 2"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    // Weak impedance: d0=0.1, d_width=0.2
+    let mjcf_weak = r#"
+        <mujoco model="solimp_weak">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="ball" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect body1="ball" anchor="0 0 0"
+                         solimp="0.1 0.2 0.001 0.5 2"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model_strong = load_model(mjcf_strong).expect("should load strong");
+    let model_weak = load_model(mjcf_weak).expect("should load weak");
+
+    // Verify solimp was loaded correctly
+    assert_relative_eq!(model_strong.eq_solimp[0][0], 0.95, epsilon = 1e-10);
+    assert_relative_eq!(model_weak.eq_solimp[0][0], 0.1, epsilon = 1e-10);
+
+    let mut data_strong = model_strong.make_data();
+    let mut data_weak = model_weak.make_data();
+
+    // Step both simulations
+    for _ in 0..500 {
+        data_strong.step(&model_strong).expect("step failed");
+        data_weak.step(&model_weak).expect("step failed");
+    }
+
+    // Measure constraint violation (distance from world origin)
+    let violation_strong = data_strong.xpos[1].norm();
+    let violation_weak = data_weak.xpos[1].norm();
+
+    // 1. Ordering: weak impedance must allow strictly more violation
+    assert!(
+        violation_weak > violation_strong,
+        "Weak solimp (d0=0.1) should allow more violation ({violation_weak}) \
+         than strong solimp (d0=0.95, violation={violation_strong})"
+    );
+
+    // 2. Magnitude: the ratio should reflect the impedance difference.
+    //    Steady-state: violation ∝ 1/d, so ratio ≈ d_strong/d_weak = 9.5.
+    //    We allow a wide margin (3×) because the system is dynamic, force
+    //    clamping may engage, and impedance is violation-dependent.
+    let ratio = violation_weak / violation_strong.max(1e-15);
+    assert!(
+        ratio > 3.0,
+        "Violation ratio should reflect impedance difference: \
+         got {ratio:.1}× (violation_weak={violation_weak:.6}, \
+         violation_strong={violation_strong:.6}), expected > 3×"
+    );
+}
+
+/// Test: solimp with default values works identically to pre-existing behavior.
+///
+/// The default solimp [0.9, 0.95, 0.001, 0.5, 2.0] should produce impedance
+/// close to 0.9 for small violations, which is near-unity scaling.
+#[test]
+fn test_solimp_default_values_loaded() {
+    let mjcf = r#"
+        <mujoco model="solimp_default">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="ball" pos="0 0 1">
+                    <freejoint/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <connect body1="ball" anchor="0 0 0"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+
+    // Default solimp should be MuJoCo defaults
+    assert_relative_eq!(model.eq_solimp[0][0], 0.9, epsilon = 1e-10);
+    assert_relative_eq!(model.eq_solimp[0][1], 0.95, epsilon = 1e-10);
+    assert_relative_eq!(model.eq_solimp[0][2], 0.001, epsilon = 1e-10);
+    assert_relative_eq!(model.eq_solimp[0][3], 0.5, epsilon = 1e-10);
+    assert_relative_eq!(model.eq_solimp[0][4], 2.0, epsilon = 1e-10);
+
+    let mut data = model.make_data();
+
+    // Should still work (not crash, constraint still enforced)
+    for _ in 0..1000 {
+        data.step(&model).expect("step failed");
+    }
+
+    let violation = data.xpos[1].norm();
+    assert!(
+        violation < 0.1,
+        "Default solimp should still enforce constraint, violation={violation}"
+    );
+}
+
+// ============================================================================
 // Error Handling Tests
 // ============================================================================
 

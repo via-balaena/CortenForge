@@ -47,7 +47,7 @@ Identified during solref/solimp review. Items marked ✅ have been addressed.
 
 | # | Issue | Status | Notes |
 |---|-------|--------|-------|
-| 1 | Hardcoded Baumgarte parameters — joint limits, equality constraints ignore solref/solimp | ✅ Fixed | `eq_solref` and `jnt_solref` now read via `solref_to_penalty()`. Hardcoded `10000/1000` retained as fallback when solref ≤ 0. **Remaining gap:** `eq_solimp` is stored on `Model` but never consumed. |
+| 1 | Hardcoded Baumgarte parameters — joint limits, equality constraints ignore solref/solimp | ✅ Fixed | `eq_solref` and `jnt_solref` now read via `solref_to_penalty()`. Hardcoded `10000/1000` retained as fallback when solref ≤ 0. `eq_solimp` consumed via `compute_impedance()` — position-dependent impedance scales penalty stiffness/damping in connect, weld, and joint equality constraints. Contact solver CFM also uses `compute_impedance()` with full solimp (previously only read `solimp[0]`). |
 | 2 | Distance equality constraints missing | ❌ Open | `EqualityType::Distance` match arm prints a `warn_once` but is otherwise a no-op. Requires geom position computation to implement. See `mujoco_pipeline.rs:6921`. |
 
 ### P1 — Performance / Quality
