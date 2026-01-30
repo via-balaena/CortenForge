@@ -196,6 +196,24 @@ fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     if let Some(impratio) = parse_float_attr(e, "impratio") {
         option.impratio = impratio;
     }
+    if let Some(regularization) = parse_float_attr(e, "regularization") {
+        option.regularization = regularization;
+    }
+    if let Some(eq_stiffness) = parse_float_attr(e, "default_eq_stiffness") {
+        option.default_eq_stiffness = eq_stiffness;
+    }
+    if let Some(eq_damping) = parse_float_attr(e, "default_eq_damping") {
+        option.default_eq_damping = eq_damping;
+    }
+    if let Some(max_vel) = parse_float_attr(e, "max_constraint_vel") {
+        option.max_constraint_vel = max_vel;
+    }
+    if let Some(max_angvel) = parse_float_attr(e, "max_constraint_angvel") {
+        option.max_constraint_angvel = max_angvel;
+    }
+    if let Some(fsmooth) = parse_float_attr(e, "friction_smoothing") {
+        option.friction_smoothing = fsmooth;
+    }
 
     // Physics environment
     if let Some(grav) = get_attribute_opt(e, "gravity") {

@@ -78,6 +78,59 @@ pub fn validate_option(option: &MjcfOption) -> Result<()> {
         ));
     }
 
+    // Constraint solver tuning validation
+    if !option.regularization.is_finite() || option.regularization <= 0.0 {
+        return Err(MjcfError::invalid_option(
+            "regularization",
+            format!("must be positive and finite, got {}", option.regularization),
+        ));
+    }
+    if !option.default_eq_stiffness.is_finite() || option.default_eq_stiffness <= 0.0 {
+        return Err(MjcfError::invalid_option(
+            "default_eq_stiffness",
+            format!(
+                "must be positive and finite, got {}",
+                option.default_eq_stiffness
+            ),
+        ));
+    }
+    if !option.default_eq_damping.is_finite() || option.default_eq_damping <= 0.0 {
+        return Err(MjcfError::invalid_option(
+            "default_eq_damping",
+            format!(
+                "must be positive and finite, got {}",
+                option.default_eq_damping
+            ),
+        ));
+    }
+    if !option.max_constraint_vel.is_finite() || option.max_constraint_vel <= 0.0 {
+        return Err(MjcfError::invalid_option(
+            "max_constraint_vel",
+            format!(
+                "must be positive and finite, got {}",
+                option.max_constraint_vel
+            ),
+        ));
+    }
+    if !option.max_constraint_angvel.is_finite() || option.max_constraint_angvel <= 0.0 {
+        return Err(MjcfError::invalid_option(
+            "max_constraint_angvel",
+            format!(
+                "must be positive and finite, got {}",
+                option.max_constraint_angvel
+            ),
+        ));
+    }
+    if !option.friction_smoothing.is_finite() || option.friction_smoothing <= 0.0 {
+        return Err(MjcfError::invalid_option(
+            "friction_smoothing",
+            format!(
+                "must be positive and finite, got {}",
+                option.friction_smoothing
+            ),
+        ));
+    }
+
     // Gravity vector validation
     if !option.gravity.iter().all(|v| v.is_finite()) {
         return Err(MjcfError::invalid_option(
@@ -522,6 +575,73 @@ mod tests {
         assert!(matches!(
             validate_option(&option),
             Err(MjcfError::InvalidOption { option, .. }) if option == "viscosity"
+        ));
+    }
+
+    #[test]
+    fn test_option_validation_invalid_solver_tuning() {
+        let mut option = MjcfOption::default();
+
+        // regularization
+        option.regularization = -1.0;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "regularization"
+        ));
+        option.regularization = 0.0;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "regularization"
+        ));
+        option.regularization = 1e-6; // restore
+
+        // default_eq_stiffness
+        option.default_eq_stiffness = 0.0;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "default_eq_stiffness"
+        ));
+        option.default_eq_stiffness = f64::NAN;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "default_eq_stiffness"
+        ));
+        option.default_eq_stiffness = 10000.0; // restore
+
+        // default_eq_damping
+        option.default_eq_damping = -100.0;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "default_eq_damping"
+        ));
+        option.default_eq_damping = 1000.0; // restore
+
+        // max_constraint_vel
+        option.max_constraint_vel = 0.0;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "max_constraint_vel"
+        ));
+        option.max_constraint_vel = f64::INFINITY;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "max_constraint_vel"
+        ));
+        option.max_constraint_vel = 1.0; // restore
+
+        // max_constraint_angvel
+        option.max_constraint_angvel = -0.5;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "max_constraint_angvel"
+        ));
+        option.max_constraint_angvel = 1.0; // restore
+
+        // friction_smoothing
+        option.friction_smoothing = 0.0;
+        assert!(matches!(
+            validate_option(&option),
+            Err(MjcfError::InvalidOption { option, .. }) if option == "friction_smoothing"
         ));
     }
 }
