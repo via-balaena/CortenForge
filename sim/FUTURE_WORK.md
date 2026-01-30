@@ -224,6 +224,14 @@ Parseable from MJCF `<option>` via attributes: `regularization`, `default_eq_sti
 - Current state: Semi-implicit Euler only
 - Rationale: Higher-order integrators improve accuracy for stiff systems (high damping, high stiffness springs)
 
+### CGSolver Integration for Large-Scale Systems
+
+- [ ] Integrate CGSolver as alternative constraint solver in the MuJoCo pipeline
+- Current state: CGSolver is fully implemented in `sim-constraint` (with Block Jacobi preconditioner) but has zero callers in the active pipeline. PGS is the only solver used in `mujoco_pipeline.rs`.
+- Trigger: When the system needs to handle large constraint counts (100+ contacts) where PGS convergence becomes slow
+- Rationale: CG with Block Jacobi preconditioning scales better than PGS for large systems — PGS convergence degrades with constraint count while preconditioned CG maintains stable iteration counts
+- Prerequisites: Adapter layer mapping `mujoco_pipeline.rs` contact structures to CGSolver's `Joint` trait interface
+
 ### GPU Acceleration
 
 - [ ] CUDA/Metal/WebGPU backend for parallel simulation
