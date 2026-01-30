@@ -805,6 +805,21 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     joint.armature = parse_float_attr(e, "armature").unwrap_or(0.0);
     joint.frictionloss = parse_float_attr(e, "frictionloss").unwrap_or(0.0);
 
+    // Joint limit solver parameters: solreflimit=[timeconst, dampratio],
+    // solimplimit=[d0, d_width, width, midpoint, power]
+    if let Some(solref) = get_attribute_opt(e, "solreflimit") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            joint.solref_limit = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimplimit") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            joint.solimp_limit = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+
     Ok(joint)
 }
 
@@ -889,6 +904,22 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
         geom.condim = condim;
     }
     geom.mesh = get_attribute_opt(e, "mesh");
+
+    // Contact solver parameters: solref=[timeconst, dampratio],
+    // solimp=[d0, d_width, width, midpoint, power].
+    // When two geoms collide, their params are combined (min for solref, max for solimp).
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            geom.solref = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            geom.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
 
     Ok(geom)
 }

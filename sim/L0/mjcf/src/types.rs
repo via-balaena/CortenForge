@@ -808,6 +808,11 @@ pub struct MjcfGeom {
     pub condim: i32,
     /// Mesh asset name (for type="mesh").
     pub mesh: Option<String>,
+    /// Solver reference parameters for contacts [timeconst, dampratio].
+    /// Controls contact softness/stiffness.
+    pub solref: Option<[f64; 2]>,
+    /// Solver impedance parameters for contacts [d0, d_width, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
 }
 
 impl Default for MjcfGeom {
@@ -829,6 +834,8 @@ impl Default for MjcfGeom {
             conaffinity: 1,
             condim: 3,
             mesh: None,
+            solref: None,
+            solimp: None,
         }
     }
 }
@@ -990,6 +997,11 @@ pub struct MjcfJoint {
     pub armature: f64,
     /// Friction loss.
     pub frictionloss: f64,
+    /// Solver reference parameters for joint limits [timeconst, dampratio].
+    /// Controls how stiffly/softly limits are enforced.
+    pub solref_limit: Option<[f64; 2]>,
+    /// Solver impedance parameters for joint limits [d0, d_width, width, midpoint, power].
+    pub solimp_limit: Option<[f64; 5]>,
     /// Body this joint belongs to (set during parsing).
     pub body: Option<String>,
 }
@@ -1010,6 +1022,8 @@ impl Default for MjcfJoint {
             stiffness: 0.0,
             armature: 0.0,
             frictionloss: 0.0,
+            solref_limit: None,
+            solimp_limit: None,
             body: None,
         }
     }

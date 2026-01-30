@@ -160,30 +160,8 @@ pub mod prelude {
     // Collision shapes
     pub use sim_core::{Aabb, Axis, CollisionShape};
 
-    // Articulated body system
-    pub use sim_core::{
-        ArticulatedBody,
-        ArticulatedJoint,
-        ArticulatedJointType,
-        ArticulatedSystem,
-        // Index types
-        BodyIndex,
-        JointIndex,
-    };
-
-    // Demo/testing systems
-    pub use sim_core::{
-        BouncingBall, DoublePendulum, NLinkPendulum, SimplePendulum, SpherePile, SphericalPendulum,
-    };
-
-    // PGS constraint solver
-    pub use sim_core::{
-        Constraint as PGSConstraint, ConstraintType as PGSConstraintType, PGSConfig, PGSResult,
-        PGSSolver,
-    };
-
-    // Spatial algebra types
-    pub use sim_core::{SpatialMatrix, SpatialVector};
+    // Additional core types
+    pub use sim_core::{Contact, GeomType, Integrator as MjIntegrator, MjJointType, StepError};
 
     // Integrators
     pub use sim_core::integrators::{
