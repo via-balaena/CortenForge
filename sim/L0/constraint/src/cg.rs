@@ -73,7 +73,31 @@ pub enum Preconditioner {
     Jacobi,
     /// Block Jacobi preconditioning.
     /// Uses the block structure of constraint systems for better conditioning.
+    /// Each joint's constraint rows form a dense block; inverting these blocks
+    /// captures within-joint coupling that scalar Jacobi ignores.
     BlockJacobi,
+}
+
+/// Internal storage for precomputed preconditioner data.
+///
+/// Diagonal preconditioners (None, Jacobi) store a vector of scaling factors
+/// applied via element-wise multiply. Block Jacobi stores inverted dense blocks
+/// for each constraint group, applied via block-wise matrix-vector multiply.
+#[derive(Debug, Clone)]
+enum PreconditionerData {
+    /// Element-wise scaling: `z_i = diag_i * r_i`
+    Diagonal(DVector<f64>),
+    /// Block-diagonal inverse: `z[rows] = block_inv * r[rows]` for each block.
+    Block {
+        /// Inverted blocks, one per constraint group.
+        block_inverses: Vec<DMatrix<f64>>,
+        /// Row offset for each block.
+        offsets: Vec<usize>,
+        /// Number of rows for each block.
+        sizes: Vec<usize>,
+        /// Total system size.
+        n: usize,
+    },
 }
 
 /// Configuration for the Conjugate Gradient solver.
@@ -424,8 +448,14 @@ impl CGSolver {
             .get_warm_start_lambda(total_constraint_rows)
             .unwrap_or_else(|| DVector::zeros(total_constraint_rows));
 
+        // Extract constraint block boundaries for block Jacobi preconditioner
+        let constraint_blocks: Vec<(usize, usize)> = constraints
+            .iter()
+            .map(|c| (c.row_offset, c.num_rows))
+            .collect();
+
         // Build preconditioner
-        let preconditioner = self.build_preconditioner(&effective_mass);
+        let preconditioner = self.build_preconditioner(&effective_mass, &constraint_blocks);
 
         // Solve using CG
         let (lambda, iterations, residual_norm, initial_residual, converged, history) = self
@@ -488,7 +518,7 @@ impl CGSolver {
         a: &DMatrix<f64>,
         b: &DVector<f64>,
         x0: &DVector<f64>,
-        preconditioner: &DVector<f64>,
+        preconditioner: &PreconditionerData,
     ) -> (DVector<f64>, usize, f64, f64, bool, Vec<f64>) {
         let mut x = x0.clone();
         let mut history = Vec::new();
@@ -574,27 +604,77 @@ impl CGSolver {
         )
     }
 
-    /// Build the preconditioner vector.
-    fn build_preconditioner(&self, a: &DMatrix<f64>) -> DVector<f64> {
+    /// Build the preconditioner from the effective mass matrix.
+    ///
+    /// For Block Jacobi, `constraint_blocks` provides `(row_offset, num_rows)` pairs
+    /// describing the block structure. Each block corresponds to one joint's constraint rows.
+    fn build_preconditioner(
+        &self,
+        a: &DMatrix<f64>,
+        constraint_blocks: &[(usize, usize)],
+    ) -> PreconditionerData {
         let n = a.nrows();
 
         match self.config.preconditioner {
-            Preconditioner::None => DVector::from_element(n, 1.0),
+            Preconditioner::None => PreconditionerData::Diagonal(DVector::from_element(n, 1.0)),
             Preconditioner::Jacobi => {
                 // Diagonal preconditioner: M_ii = 1 / A_ii
-                DVector::from_fn(n, |i, _| {
+                PreconditionerData::Diagonal(DVector::from_fn(n, |i, _| {
                     let diag = a[(i, i)];
                     if diag.abs() > 1e-15 { 1.0 / diag } else { 1.0 }
-                })
+                }))
             }
             Preconditioner::BlockJacobi => {
-                // For constraint systems, constraints come in groups
-                // For now, use simple Jacobi as a placeholder
-                // TODO: Implement proper block Jacobi for constraint groups
-                DVector::from_fn(n, |i, _| {
-                    let diag = a[(i, i)];
-                    if diag.abs() > 1e-15 { 1.0 / diag } else { 1.0 }
-                })
+                if constraint_blocks.is_empty() {
+                    // No block info — fall back to scalar Jacobi
+                    return PreconditionerData::Diagonal(DVector::from_fn(n, |i, _| {
+                        let diag = a[(i, i)];
+                        if diag.abs() > 1e-15 { 1.0 / diag } else { 1.0 }
+                    }));
+                }
+
+                let mut block_inverses = Vec::with_capacity(constraint_blocks.len());
+                let mut offsets = Vec::with_capacity(constraint_blocks.len());
+                let mut sizes = Vec::with_capacity(constraint_blocks.len());
+
+                for &(offset, size) in constraint_blocks {
+                    offsets.push(offset);
+                    sizes.push(size);
+
+                    if size == 0 {
+                        block_inverses.push(DMatrix::zeros(0, 0));
+                        continue;
+                    }
+
+                    // Extract the diagonal block A[offset..offset+size, offset..offset+size]
+                    let block = a.view((offset, offset), (size, size)).clone_owned();
+
+                    // Invert via Cholesky (blocks are SPD from A = J M^-1 J^T + reg*I).
+                    // Fall back to scalar Jacobi for this block if Cholesky fails.
+                    let inv = block.clone().cholesky().map_or_else(
+                        || {
+                            // Fallback: diagonal inverse for this block
+                            DMatrix::from_fn(size, size, |i, j| {
+                                if i == j {
+                                    let diag = block[(i, i)];
+                                    if diag.abs() > 1e-15 { 1.0 / diag } else { 1.0 }
+                                } else {
+                                    0.0
+                                }
+                            })
+                        },
+                        |chol| chol.inverse(),
+                    );
+
+                    block_inverses.push(inv);
+                }
+
+                PreconditionerData::Block {
+                    block_inverses,
+                    offsets,
+                    sizes,
+                    n,
+                }
             }
         }
     }
@@ -603,9 +683,30 @@ impl CGSolver {
     fn apply_preconditioner(
         &self,
         r: &DVector<f64>,
-        preconditioner: &DVector<f64>,
+        preconditioner: &PreconditionerData,
     ) -> DVector<f64> {
-        r.component_mul(preconditioner)
+        match preconditioner {
+            PreconditionerData::Diagonal(diag) => r.component_mul(diag),
+            PreconditionerData::Block {
+                block_inverses,
+                offsets,
+                sizes,
+                n,
+            } => {
+                let mut z = DVector::zeros(*n);
+                for (idx, inv) in block_inverses.iter().enumerate() {
+                    let offset = offsets[idx];
+                    let size = sizes[idx];
+                    if size == 0 {
+                        continue;
+                    }
+                    let r_block = r.rows(offset, size);
+                    let z_block = inv * r_block;
+                    z.rows_mut(offset, size).copy_from(&z_block);
+                }
+                z
+            }
+        }
     }
 
     /// Build the system structure from joints.
@@ -1399,7 +1500,7 @@ mod tests {
         let b = DVector::from_vec(vec![1.0, 2.0]);
         let x0 = DVector::zeros(2);
 
-        let preconditioner = DVector::from_element(2, 1.0);
+        let preconditioner = PreconditionerData::Diagonal(DVector::from_element(2, 1.0));
 
         let (x, _iterations, residual, _initial, converged, _history) =
             solver.cg_solve(&a, &b, &x0, &preconditioner);
@@ -1444,5 +1545,101 @@ mod tests {
         // Warm starting was used (cache populated from first solve)
         assert!(!solver.cached_lambda.is_empty());
         assert!(!result2.forces.is_empty());
+    }
+
+    #[test]
+    fn test_block_jacobi_preconditioner() {
+        // Test Block Jacobi on a 6×6 SPD system with two 3×3 blocks.
+        // This simulates two joints, each contributing 3 constraint rows.
+        let solver = CGSolver::new(CGSolverConfig {
+            min_iterations: 0,
+            max_iterations: 100,
+            tolerance: 1e-10,
+            preconditioner: Preconditioner::BlockJacobi,
+            ..Default::default()
+        });
+
+        // Build a block-diagonal SPD matrix with off-diagonal coupling within blocks.
+        // Block 1 (rows 0-2): 3×3 SPD matrix
+        // Block 2 (rows 3-5): 3×3 SPD matrix
+        // Cross-block coupling (weak): rows 0-2 vs rows 3-5
+        #[rustfmt::skip]
+        let a = DMatrix::from_row_slice(6, 6, &[
+            // Block 1
+            10.0, 2.0, 1.0,   0.1, 0.0, 0.0,
+             2.0, 8.0, 1.5,   0.0, 0.1, 0.0,
+             1.0, 1.5, 6.0,   0.0, 0.0, 0.1,
+            // Block 2
+             0.1, 0.0, 0.0,  12.0, 3.0, 2.0,
+             0.0, 0.1, 0.0,   3.0, 9.0, 1.0,
+             0.0, 0.0, 0.1,   2.0, 1.0, 7.0,
+        ]);
+        let b = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let x0 = DVector::zeros(6);
+
+        // Constraint blocks: two joints, each with 3 rows
+        let blocks = vec![(0, 3), (3, 3)];
+
+        let preconditioner = solver.build_preconditioner(&a, &blocks);
+        assert!(matches!(preconditioner, PreconditionerData::Block { .. }));
+
+        let (x, _iters, residual, _initial, converged, _history) =
+            solver.cg_solve(&a, &b, &x0, &preconditioner);
+
+        assert!(converged || residual < 1e-8);
+
+        // Verify solution: A * x ≈ b
+        let ax = &a * &x;
+        for i in 0..6 {
+            assert_relative_eq!(ax[i], b[i], epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_block_jacobi_fewer_iterations_than_scalar() {
+        // Block Jacobi should converge in fewer iterations than scalar Jacobi
+        // on a system with strong intra-block coupling.
+        #[rustfmt::skip]
+        let a = DMatrix::from_row_slice(6, 6, &[
+            10.0, 4.0, 3.0,   0.1, 0.0, 0.0,
+             4.0, 8.0, 3.5,   0.0, 0.1, 0.0,
+             3.0, 3.5, 6.0,   0.0, 0.0, 0.1,
+             0.1, 0.0, 0.0,  12.0, 5.0, 4.0,
+             0.0, 0.1, 0.0,   5.0, 9.0, 3.0,
+             0.0, 0.0, 0.1,   4.0, 3.0, 7.0,
+        ]);
+        let b = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let x0 = DVector::zeros(6);
+        let blocks = vec![(0, 3), (3, 3)];
+
+        // Solve with scalar Jacobi
+        let solver_jacobi = CGSolver::new(CGSolverConfig {
+            min_iterations: 0,
+            max_iterations: 100,
+            tolerance: 1e-10,
+            preconditioner: Preconditioner::Jacobi,
+            ..Default::default()
+        });
+        let diag_precond = solver_jacobi.build_preconditioner(&a, &[]);
+        let (_x_j, iters_jacobi, _res_j, _init_j, _conv_j, _hist_j) =
+            solver_jacobi.cg_solve(&a, &b, &x0, &diag_precond);
+
+        // Solve with Block Jacobi
+        let solver_block = CGSolver::new(CGSolverConfig {
+            min_iterations: 0,
+            max_iterations: 100,
+            tolerance: 1e-10,
+            preconditioner: Preconditioner::BlockJacobi,
+            ..Default::default()
+        });
+        let block_precond = solver_block.build_preconditioner(&a, &blocks);
+        let (_x_b, iters_block, _res_b, _init_b, _conv_b, _hist_b) =
+            solver_block.cg_solve(&a, &b, &x0, &block_precond);
+
+        // Block Jacobi should converge in fewer or equal iterations
+        assert!(
+            iters_block <= iters_jacobi,
+            "Block Jacobi ({iters_block} iters) should not be worse than scalar Jacobi ({iters_jacobi} iters)"
+        );
     }
 }
