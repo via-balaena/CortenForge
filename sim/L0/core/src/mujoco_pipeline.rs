@@ -464,8 +464,9 @@ pub enum EqualityType {
     /// Tendon: polynomial constraint between two tendons.
     /// len2 = poly(len1).
     Tendon,
-    /// Distance: constrains distance between two bodies.
+    /// Distance: constrains distance between two geom centers.
     /// |p1 - p2| = d (removes 1 DOF).
+    /// `eq_obj1id`/`eq_obj2id` store geom IDs (not body IDs).
     Distance,
 }
 
@@ -940,16 +941,16 @@ pub struct Model {
     pub neq: usize,
     /// Equality constraint type (Connect, Weld, Joint, Tendon, Distance).
     pub eq_type: Vec<EqualityType>,
-    /// First object ID (body/joint/tendon).
+    /// First object ID (body for Connect/Weld, joint for Joint, geom for Distance).
     pub eq_obj1id: Vec<usize>,
-    /// Second object ID (body/joint/tendon, or unused).
+    /// Second object ID (body/joint/geom, or `usize::MAX` for world origin in Distance).
     pub eq_obj2id: Vec<usize>,
     /// Constraint parameters (meaning depends on type).
     /// - Connect: anchor point in body1 frame [x, y, z]
     /// - Weld: relative pose [x, y, z, qw, qx, qy, qz] + torque scale
     /// - Joint: polycoef[0..5] for polynomial coupling
     /// - Tendon: polycoef[0..5] for polynomial coupling
-    /// - Distance: target distance
+    /// - Distance: target distance in `[0]`; `[1..10]` unused
     pub eq_data: Vec<[f64; 11]>,
     /// Whether this equality constraint is active.
     pub eq_active: Vec<bool>,
@@ -6935,16 +6936,22 @@ fn apply_equality_constraints(model: &Model, data: &mut Data) {
                     dt,
                 );
             }
-            EqualityType::Distance | EqualityType::Tendon => {
-                // Distance and Tendon constraints not yet implemented.
-                // These require geom/tendon position computation.
-                //
-                // Warn once per session so users know their constraint is being ignored.
+            EqualityType::Distance => {
+                apply_distance_constraint(
+                    model,
+                    data,
+                    eq_id,
+                    default_stiffness,
+                    default_damping,
+                    dt,
+                );
+            }
+            EqualityType::Tendon => {
                 use std::sync::Once;
                 static WARN_ONCE: Once = Once::new();
                 WARN_ONCE.call_once(|| {
                     eprintln!(
-                        "Warning: Distance/Tendon equality constraints are not yet implemented; \
+                        "Warning: Tendon equality constraints are not yet implemented; \
                          these constraints will be ignored. See FUTURE_WORK.md."
                     );
                 });
@@ -7330,6 +7337,120 @@ fn apply_connect_constraint(
     // Apply forces via Jacobian transpose
     if body1_is_dynamic {
         apply_constraint_force_to_body(model, data, body1, anchor_world, force);
+    }
+    if body2_is_dynamic {
+        apply_constraint_force_to_body(model, data, body2, p2, -force);
+    }
+}
+
+/// Apply a distance equality constraint between two geom centers.
+///
+/// Enforces `|p1 - p2| = target_distance` where p1 and p2 are the world-space
+/// centers of geom1 and geom2. This is a 1-dimensional scalar constraint
+/// (removes 1 DOF), with force applied along the direction connecting the geoms.
+///
+/// Object IDs (`eq_obj1id`/`eq_obj2id`) are **geom IDs**, not body IDs.
+/// Body IDs are derived via `model.geom_body[geom_id]`.
+///
+/// # Singularity Handling
+///
+/// When the two geom centers coincide (distance -> 0), the constraint direction
+/// is undefined. We use a fallback direction of `+Z` and apply force proportional
+/// to the target distance. This provides a deterministic push-apart force.
+fn apply_distance_constraint(
+    model: &Model,
+    data: &mut Data,
+    eq_id: usize,
+    default_stiffness: f64,
+    default_damping: f64,
+    dt: f64,
+) {
+    const SINGULARITY_EPS: f64 = 1e-10;
+
+    let geom1_id = model.eq_obj1id[eq_id];
+    let geom2_id = model.eq_obj2id[eq_id]; // usize::MAX = world origin
+    let target_dist = model.eq_data[eq_id][0];
+
+    // Get geom world positions
+    let p1 = data.geom_xpos[geom1_id];
+    let p2 = if geom2_id == usize::MAX {
+        Vector3::zeros()
+    } else {
+        data.geom_xpos[geom2_id]
+    };
+
+    // Get body IDs for force application
+    let body1 = model.geom_body[geom1_id];
+    let body2 = if geom2_id == usize::MAX {
+        0 // World body
+    } else {
+        model.geom_body[geom2_id]
+    };
+
+    let body1_is_dynamic = body1 != 0;
+    let body2_is_dynamic = body2 != 0;
+
+    // Compute direction and current distance
+    let diff = p1 - p2;
+    let current_dist = diff.norm();
+
+    // Singularity guard: when geoms coincide, direction is undefined
+    let (direction, scalar_error) = if current_dist > SINGULARITY_EPS {
+        let dir = diff / current_dist;
+        let err = current_dist - target_dist;
+        (dir, err)
+    } else if target_dist > SINGULARITY_EPS {
+        // Geoms coincide but target > 0: push apart along +Z fallback
+        (Vector3::z(), -target_dist)
+    } else {
+        // Both near zero: constraint satisfied
+        return;
+    };
+
+    // Velocity error projected onto constraint direction
+    let v1 = if body1_is_dynamic {
+        compute_point_velocity(data, body1, p1)
+    } else {
+        Vector3::zeros()
+    };
+    let v2 = if body2_is_dynamic {
+        compute_point_velocity(data, body2, p2)
+    } else {
+        Vector3::zeros()
+    };
+    let vel_error = (v1 - v2).dot(&direction);
+
+    // Compute penalty parameters from solref
+    let (stiffness, damping) = solref_to_penalty(
+        model.eq_solref[eq_id],
+        default_stiffness,
+        default_damping,
+        dt,
+    );
+
+    // Compute position-dependent impedance from solimp
+    let violation = scalar_error.abs();
+    let impedance = compute_impedance(model.eq_solimp[eq_id], violation);
+
+    // Baumgarte stabilization: scalar_force = -d(r)*k*error - d(r)*b*vel_error
+    let scalar_force = -impedance * stiffness * scalar_error - impedance * damping * vel_error;
+
+    // Convert scalar force to 3D force vector along direction
+    let raw_force = scalar_force * direction;
+
+    // Compute effective mass for force limiting
+    let mass1 = data.body_min_mass[body1];
+    let mass2 = data.body_min_mass[body2];
+    let eff_mass = effective_mass_for_stability(mass1, mass2);
+
+    // Limit force to bound acceleration
+    let max_accel = MAX_DELTA_V_LINEAR / dt;
+    let max_force = eff_mass * max_accel;
+    let force = clamp_vector_magnitude(raw_force, max_force);
+
+    // Apply forces via Jacobian transpose
+    if body1_is_dynamic {
+        apply_constraint_force_to_body(model, data, body1, p1, force);
     }
     if body2_is_dynamic {
         apply_constraint_force_to_body(model, data, body2, p2, -force);

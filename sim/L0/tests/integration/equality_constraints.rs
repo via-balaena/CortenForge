@@ -4,6 +4,7 @@
 //! - **Connect**: Ball-and-socket constraint (3 DOF position lock)
 //! - **Weld**: Fixed frame constraint (6 DOF pose lock)
 //! - **Joint**: Polynomial joint coupling (θ₂ = poly(θ₁))
+//! - **Distance**: Scalar distance constraint between geom centers (1 DOF)
 //!
 //! # Implementation Notes
 //!
@@ -844,5 +845,271 @@ fn test_weld_constraint_with_relpose() {
     assert!(
         angle_error < 0.3,
         "Weld relpose should be maintained, got angle error {angle_error} rad"
+    );
+}
+
+// ============================================================================
+// Distance Constraint Tests
+// ============================================================================
+
+/// Test: Distance constraint maintains separation between two free bodies.
+///
+/// Two free bodies start 1.0 apart along Z. A distance constraint with
+/// `distance="1.0"` should keep them approximately 1.0 apart under gravity.
+#[test]
+fn test_distance_constraint_maintains_separation() {
+    let mjcf = r#"
+        <mujoco model="distance_test">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="body1" pos="0 0 1.5">
+                    <freejoint name="j1"/>
+                    <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <body name="body2" pos="0 0 0.5">
+                    <freejoint name="j2"/>
+                    <geom name="g2" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <distance geom1="g1" geom2="g2" distance="1.0"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    assert_eq!(model.neq, 1);
+    assert_relative_eq!(model.eq_data[0][0], 1.0, epsilon = 1e-10);
+
+    for _ in 0..1000 {
+        data.step(&model).expect("step failed");
+    }
+
+    let dist = (data.geom_xpos[0] - data.geom_xpos[1]).norm();
+    let error = (dist - 1.0).abs();
+    assert!(
+        error < 0.1,
+        "Distance error too large: {error}, actual dist: {dist}"
+    );
+}
+
+/// Test: Distance constraint from a worldbody geom.
+///
+/// A single free body at (2,0,0) with `distance="2.0"` from a geom on the
+/// worldbody (at origin) should maintain distance ~2.0 (no gravity).
+#[test]
+fn test_distance_constraint_to_world() {
+    let mjcf = r#"
+        <mujoco model="distance_world">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <geom name="world_geom" type="sphere" size="0.1"/>
+                <body name="body1" pos="2 0 0">
+                    <freejoint/>
+                    <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <distance geom1="g1" geom2="world_geom" distance="2.0"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    for _ in 0..1000 {
+        data.step(&model).expect("step failed");
+    }
+
+    // Distance from g1 to world_geom (at origin)
+    let dist = (data.geom_xpos[1] - data.geom_xpos[0]).norm();
+    let error = (dist - 2.0).abs();
+    assert!(
+        error < 0.1,
+        "Distance from world geom error: {error}, actual: {dist}"
+    );
+}
+
+/// Test: Distance constraint with auto-computed distance (distance omitted).
+///
+/// Two bodies start 1.0 apart; no explicit `distance` attribute means the
+/// model builder computes the initial distance as the target.
+#[test]
+fn test_distance_constraint_auto_distance() {
+    let mjcf = r#"
+        <mujoco model="distance_auto">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1.5">
+                    <freejoint/>
+                    <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <body name="b2" pos="0 0 0.5">
+                    <freejoint/>
+                    <geom name="g2" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <distance geom1="g1" geom2="g2"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    // Target should be ~1.0 (computed from initial configuration)
+    assert_relative_eq!(model.eq_data[0][0], 1.0, epsilon = 0.01);
+
+    let mut data = model.make_data();
+    for _ in 0..1000 {
+        data.step(&model).expect("step failed");
+    }
+
+    let dist = (data.geom_xpos[0] - data.geom_xpos[1]).norm();
+    let error = (dist - 1.0).abs();
+    assert!(error < 0.1, "Auto-distance error: {error}, actual: {dist}");
+}
+
+/// Test: Distance constraint with zero target acts like a connect constraint.
+///
+/// Two bodies start 1.0 apart with `distance="0.0"`. The constraint should
+/// pull them together over time.
+#[test]
+fn test_distance_constraint_zero_target() {
+    let mjcf = r#"
+        <mujoco model="distance_zero">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0.5">
+                    <freejoint/>
+                    <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <body name="b2" pos="0 0 -0.5">
+                    <freejoint/>
+                    <geom name="g2" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <distance geom1="g1" geom2="g2" distance="0.0"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    for _ in 0..2000 {
+        data.step(&model).expect("step failed");
+    }
+
+    let dist = (data.geom_xpos[0] - data.geom_xpos[1]).norm();
+    assert!(
+        dist < 0.15,
+        "Zero-distance constraint should bring geoms together, got {dist}"
+    );
+}
+
+/// Test: Distance constraint with geom2 omitted (world origin sentinel).
+///
+/// When geom2 is not specified, the distance is measured from the world origin.
+/// This exercises the `usize::MAX` sentinel path in both model_builder and pipeline.
+#[test]
+fn test_distance_constraint_geom2_omitted() {
+    let mjcf = r#"
+        <mujoco model="distance_no_geom2">
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="1.5 0 0">
+                    <freejoint/>
+                    <geom name="g1" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <distance geom1="g1" distance="1.5"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    assert_eq!(model.neq, 1);
+    assert_eq!(model.eq_obj2id[0], usize::MAX);
+    assert_relative_eq!(model.eq_data[0][0], 1.5, epsilon = 1e-10);
+
+    let mut data = model.make_data();
+    for _ in 0..1000 {
+        data.step(&model).expect("step failed");
+    }
+
+    // Geom should stay at distance 1.5 from world origin
+    let dist = data.geom_xpos[0].norm();
+    let error = (dist - 1.5).abs();
+    assert!(
+        error < 0.1,
+        "Distance from world origin error: {error}, actual: {dist}"
+    );
+}
+
+/// Test: Invalid geom name in distance constraint returns error.
+#[test]
+fn test_distance_invalid_geom_name_returns_error() {
+    let mjcf = r#"
+        <mujoco model="invalid_geom">
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <freejoint/>
+                    <geom name="g1" type="sphere" size="0.1"/>
+                </body>
+            </worldbody>
+            <equality>
+                <distance geom1="nonexistent_geom"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let result = load_model(mjcf);
+    assert!(result.is_err(), "Should fail with unknown geom name");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("nonexistent_geom") || err_msg.contains("unknown"),
+        "Error should mention the invalid geom name, got: {err_msg}"
+    );
+}
+
+/// Test: Inactive distance constraint has no effect.
+///
+/// A body under gravity with an inactive distance constraint should fall freely.
+#[test]
+fn test_distance_inactive_ignored() {
+    let mjcf = r#"
+        <mujoco model="distance_inactive">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="10 10 0.1" contype="0" conaffinity="0"/>
+                <body name="b1" pos="0 0 1">
+                    <freejoint/>
+                    <geom name="g1" type="sphere" size="0.1" mass="1.0" contype="0" conaffinity="0"/>
+                </body>
+            </worldbody>
+            <equality>
+                <distance geom1="g1" geom2="floor" distance="1.0" active="false"/>
+            </equality>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    assert!(!model.eq_active[0]);
+
+    let mut data = model.make_data();
+    for _ in 0..1000 {
+        data.step(&model).expect("step failed");
+    }
+
+    // Ball should fall freely (constraint inactive). After 1s at g=9.81, z = 1 - 0.5*9.81*1 ≈ -3.9
+    let z = data.geom_xpos[1].z;
+    assert!(
+        z < 0.5,
+        "Inactive distance constraint should allow free fall, z = {z}"
     );
 }
