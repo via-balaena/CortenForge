@@ -206,7 +206,29 @@ MUJOCO_GAP_ANALYSIS.md. Validated with `cargo check/build/test --workspace`,
 `cargo test -p sim-constraint` (187 tests pass), `cargo bench -p sim-core --no-run`.
 Changes verified with `cargo check --workspace` and `cargo test --workspace`.
 
-### Phase 4 (optional) — Merge sim-constraint into sim-types
+### Phase 4 (optional, deferred) — Merge sim-constraint into sim-types
+
+**Recommendation: Skip.** After Phase 3, sim-constraint is already lean — joint types,
+motors, limits, equality constraints, actuators, and CGSolver. The consolidation effort
+has achieved its goal: clean dependency graph, no dead code, no phantom deps. Merging
+into sim-types would provide marginal benefit (one fewer crate) at real cost:
+
+- **Behavioral types resist merging.** `JointLimits` and `JointMotor` have
+  `compute_force()` methods. The `Joint` trait defines geometric behavior
+  (`parent_anchor()`, `child_anchor()`, `axis()`). These are not pure data.
+- **nalgebra footprint.** sim-types currently has minimal dependencies. Merging
+  would pull `Matrix3`, `Point3`, `Vector3` usage into sim-types, bloating its
+  compile footprint for all downstream consumers.
+- **Three name collisions** (`JointLimits`, `JointType`, `JointState`) exist between
+  sim-types and sim-constraint with different definitions. Resolving these requires
+  renaming or unifying types — churn with no functional gain.
+- **CGSolver stays.** Even if types merged, `cg.rs` (1,664 lines) would need to remain
+  somewhere. Moving it to sim-core or a new crate adds complexity rather than removing it.
+
+If revisited, the task list is preserved below for reference.
+
+<details>
+<summary>Phase 4 task list (for reference)</summary>
 
 - [ ] Evaluate whether remaining sim-constraint types are pure data (move to sim-types)
   or carry significant behavior (keep separate). Key types to assess:
@@ -221,21 +243,15 @@ Changes verified with `cargo check --workspace` and `cargo test --workspace`.
 - [ ] If behavioral: keep sim-constraint as a thin crate
 - [ ] If fully merged: remove sim-constraint from workspace `Cargo.toml`
   (`[workspace.members]` and `[workspace.dependencies]`), delete crate directory,
-  update `README.md` (line 144) and `VISION.md`, update CI crate lists in
+  update `README.md` and `VISION.md`, update CI crate lists in
   `local-quality-check.sh` and `quality-gate.yml`
 - [ ] Update sim-physics:
-  - Remove `pub use sim_constraint;` (line 108), update prelude to source types from
-    sim-types
-  - Remove `sim-constraint` from `[dependencies]` (`Cargo.toml:14`)
-  - Remove `"sim-constraint/serde"` from serde feature list (`Cargo.toml:33`)
-  - Update package description (`Cargo.toml:3`) which lists sim-constraint
-- Current state: After Phase 3, sim-constraint would contain only type definitions
-  and trait implementations (no solvers).
-- Target state: One fewer crate if types are pure data; no change if they carry logic
-  that depends on nalgebra matrix operations.
-- Risk: **Low.** Purely organizational. However, sim-types currently has minimal
-  dependencies — adding nalgebra-heavy types would increase its compile footprint.
-- Validation: `cargo build --workspace`, `cargo test --workspace`
+  - Remove `pub use sim_constraint;`, update prelude to source types from sim-types
+  - Remove `sim-constraint` from `[dependencies]`
+  - Remove `"sim-constraint/serde"` from serde feature list
+  - Update package description which lists sim-constraint
+
+</details>
 
 ### Dependency graph
 
