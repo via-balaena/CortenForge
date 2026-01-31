@@ -47,56 +47,28 @@ and (d) four other crates declare phantom Cargo.toml dependencies with zero sour
 imports. This creates confusion about which types are canonical and inflates the
 dependency graph.
 
-### Phase 1 — Remove phantom and dead dependencies
+### Phase 1 — Remove phantom and dead dependencies ✅
 
-**sim-core (dead dependencies — declared, only used by benchmarks):**
+All items completed. Changes verified with `cargo check --workspace`,
+`cargo build -p sim-core`, `cargo test -p sim-core`, `cargo bench -p sim-core --no-run`,
+and `cargo test --workspace`.
 
-⚠️ **Ordering constraint:** Feature forwards (`sim-constraint/parallel`,
-`sim-contact/serde`, `sim-constraint/serde`) only work on `[dependencies]`, not
-`[dev-dependencies]`. Steps 1–2 below **must** run before step 3, or `cargo check`
-will fail with "feature `parallel` … is not a dependency".
+**sim-core (dead dependencies):**
 
-1. [ ] Remove `pub use sim_contact::ContactSolverConfig;` from `sim-core/src/lib.rs:130`
-2. [ ] Remove feature forwards from sim-core `[features]`:
-   - Remove `"sim-constraint/parallel"` from `parallel` feature (Cargo.toml:34)
-   - Remove `"sim-contact/serde"` and `"sim-constraint/serde"` from `serde` feature
-     (Cargo.toml:36)
-3. [ ] Move sim-constraint from `[dependencies]` to `[dev-dependencies]` (needed by
-   `collision_benchmarks.rs` which imports `BodyState`, `ConstraintSolver`, `PGSSolver`,
-   `NewtonConstraintSolver`, `RevoluteJoint`)
-4. [ ] Remove `sim-contact` from `sim-core/Cargo.toml` `[dependencies]` entirely
-5. [ ] Remove `pub use sim_core::ContactSolverConfig;` from sim-bevy prelude
-   (`sim/L1/bevy/src/lib.rs:123`) — this re-exports the type removed above.
-   Also delete the "Contact Solver Configuration" doc-comment section
-   (`lib.rs:53–70`) — lines 53–54 are the section header, 55–69 are the
-   body and code block referencing `ContactSolverConfig::realtime()` and
-   the non-existent `set_contact_solver_config()` method, and line 70 is
-   the trailing blank line. Using the narrower range 55–68 would orphan the
-   `## Contact Solver Configuration` header and closing code fence.
+1. [x] Remove `pub use sim_contact::ContactSolverConfig;` from `sim-core/src/lib.rs`
+2. [x] Remove feature forwards from sim-core `[features]`:
+   - Removed `"sim-constraint/parallel"` from `parallel` feature
+   - Removed `"sim-contact/serde"` and `"sim-constraint/serde"` from `serde` feature
+3. [x] Move sim-constraint from `[dependencies]` to `[dev-dependencies]`
+4. [x] Remove `sim-contact` from `sim-core/Cargo.toml` `[dependencies]` entirely
+5. [x] Remove `pub use sim_core::ContactSolverConfig;` from sim-bevy prelude and
+   delete the stale "Contact Solver Configuration" doc-comment section
 
-**Phantom dependencies (declared in Cargo.toml, zero source-level imports):**
-- [ ] Remove `sim-constraint` from `sim-mjcf/Cargo.toml` (declares
-  `sim-constraint = { workspace = true, features = ["muscle"] }` but has zero
-  source-level imports of `sim_constraint` — muscle parsing uses sim-mjcf's own
-  internal `MjcfActuatorType::Muscle` type, not sim-constraint's muscle module)
-- [ ] Remove `sim-constraint` from `sim-urdf/Cargo.toml`
-- [ ] Remove `sim-constraint` from `sim-bevy/Cargo.toml`
-- [ ] Audit `sim-conformance-tests/Cargo.toml` — currently declares `sim-constraint`
-  (with muscle feature) and `sim-contact` but no test source files import them; remove
-  if no tests are planned
-
-- Current state: sim-core declares both as regular deps but only benchmarks use
-  sim-constraint. Four other crates declare sim-constraint with zero imports.
-- Target state: sim-core has sim-constraint as dev-dependency only. sim-contact removed
-  entirely from sim-core. Phantom deps removed from mjcf, urdf, bevy, tests.
-- Risk: **Low.** No runtime behavior changes. `ContactSolverConfig` re-export removal
-  from sim-core and sim-bevy is a public API deletion, but the type has zero callers
-  (the `set_contact_solver_config()` method in doc-comments does not exist). Benchmarks
-  continue to compile via dev-dependency. Phantom removal may surface hidden transitive
-  feature requirements — verify with `cargo check --workspace`.
-- Validation: `cargo check --workspace` (catches sim-bevy re-export breakage),
-  `cargo build -p sim-core`, `cargo test -p sim-core`,
-  `cargo bench -p sim-core --no-run`
+**Phantom dependencies:**
+- [x] Remove `sim-constraint` from `sim-mjcf/Cargo.toml`
+- [x] Remove `sim-constraint` from `sim-urdf/Cargo.toml`
+- [x] Remove `sim-constraint` from `sim-bevy/Cargo.toml`
+- [x] Remove `sim-constraint` and `sim-contact` from `sim-conformance-tests/Cargo.toml`
 
 ### Phase 2 — Consolidate sim-contact into sim-core
 
@@ -310,7 +282,7 @@ will fail with "feature `parallel` … is not a dependency".
 
 ### Dependency graph
 
-Before (arrows = Cargo.toml `[dependencies]`, **bold** = has source-level imports):
+Before Phase 1 (arrows = Cargo.toml `[dependencies]`, **bold** = has source-level imports):
 ```
 sim-core    → sim-constraint          (benchmarks only, no lib imports)
             → sim-contact             (re-exports ContactSolverConfig, never read)
@@ -325,7 +297,7 @@ sim-urdf    → sim-constraint          (phantom — zero imports)
 sim-tests   → sim-constraint, sim-contact  (phantom — zero imports in .rs files)
 ```
 
-After Phase 1 (phantom + dead dep removal):
+Current (after Phase 1 ✅):
 ```
 sim-core    → (dev-dep only: sim-constraint for benchmarks)
 sim-physics → **sim-constraint**      (re-exports types)
@@ -344,8 +316,7 @@ sim-bevy    → sim-core                (ContactPoint moved here)
 
 ### When to address
 
-Phase 1 can be done immediately — it removes phantom/dead dependency declarations,
-converts one benchmark dependency to dev-dep, and carries near-zero risk.
+Phase 1 is complete. ✅
 
 Phases 2–3 should be done when:
 1. Batched simulation work begins (clean dependency graph simplifies the new crate)

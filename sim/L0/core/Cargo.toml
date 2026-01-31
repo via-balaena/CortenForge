@@ -10,8 +10,6 @@ rust-version.workspace = true
 
 [dependencies]
 sim-types = { workspace = true }
-sim-contact = { workspace = true }
-sim-constraint = { workspace = true }
 sim-sensor = { workspace = true, optional = true }
 sim-simd = { workspace = true }
 nalgebra = { workspace = true }
@@ -24,6 +22,7 @@ rayon = { workspace = true, optional = true }
 approx = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
+sim-constraint = { workspace = true }
 
 [[bench]]
 name = "collision_benchmarks"
@@ -31,9 +30,9 @@ harness = false
 
 [features]
 default = []
-parallel = ["dep:rayon", "sim-constraint/parallel"]
+parallel = ["dep:rayon"]
 sensor = ["dep:sim-sensor"]
-serde = ["dep:serde", "serde/rc", "sim-types/serde", "sim-contact/serde", "sim-constraint/serde", "nalgebra/serde-serialize", "hashbrown/serde"]
+serde = ["dep:serde", "serde/rc", "sim-types/serde", "nalgebra/serde-serialize", "hashbrown/serde"]
 
 [lints]
 workspace = true

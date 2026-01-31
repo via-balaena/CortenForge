@@ -50,24 +50,6 @@
 //!
 //! # Performance Tuning
 //!
-//! ## Contact Solver Configuration
-//!
-//! The contact solver can be configured for different use cases:
-//!
-//! ```ignore
-//! use sim_bevy::prelude::*;
-//!
-//! fn configure_physics(mut sim_handle: ResMut<SimulationHandle>) {
-//!     if let Some(world) = sim_handle.world_mut() {
-//!         // Fast/stable for games
-//!         world.set_contact_solver_config(ContactSolverConfig::realtime());
-//!
-//!         // High accuracy for robotics/RL
-//!         // world.set_contact_solver_config(ContactSolverConfig::robotics());
-//!     }
-//! }
-//! ```
-//!
 //! ## Collision Filtering
 //!
 //! Use MuJoCo-compatible collision filtering to reduce contact pairs:
@@ -119,8 +101,6 @@ pub mod prelude {
     };
     pub use crate::systems::update_cached_contacts;
 
-    // Re-export performance tuning types from sim-core
-    pub use sim_core::ContactSolverConfig;
     // Re-export Model/Data types from sim-core for convenience
     pub use sim_core::{Data, Model};
     // Re-export MJCF loader for convenient Model creation

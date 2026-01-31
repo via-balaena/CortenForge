@@ -126,9 +126,6 @@ pub use mujoco_pipeline::{
     mj_integrate_pos_explicit,
 };
 
-// Re-export contact solver config for performance tuning
-pub use sim_contact::ContactSolverConfig;
-
 // Re-export key types from sim-types for convenience
 pub use sim_types::{
     Action, ActionType, BodyId, ExternalForce, Gravity, IntegrationMethod, JointCommand,

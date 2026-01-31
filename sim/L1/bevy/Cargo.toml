@@ -13,7 +13,6 @@ categories = ["simulation", "visualization", "game-development"]
 sim-types = { path = "../../L0/types" }
 sim-core = { path = "../../L0/core" }
 sim-contact = { path = "../../L0/contact" }
-sim-constraint = { path = "../../L0/constraint" }
 sim-mjcf = { path = "../../L0/mjcf" }
 sim-urdf = { path = "../../L0/urdf" }
 
