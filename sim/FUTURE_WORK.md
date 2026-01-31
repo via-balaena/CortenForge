@@ -7,35 +7,355 @@
 
 ## Crate Consolidation
 
-The current crate structure has some redundancy that could be cleaned up:
+### Background
 
-### sim-constraint
+`sim-core` (`mujoco_pipeline.rs`) implements its own MuJoCo-aligned physics pipeline
+end-to-end: forward kinematics, CRBA, RNE, collision detection, penalty-based joint
+limits/equality constraints, and a custom `pgs_solve_contacts()` solver. It does **not**
+call any solver or joint type from `sim-constraint` or `sim-contact`.
 
-- [ ] Reduce `sim-constraint` to joint definitions only
-- Current state: Contains joint types + solver code
-- Target state: Joint type definitions only (solver logic consolidated in sim-core)
-- Rationale: PGS solver is now in `mujoco_pipeline.rs`, duplicates old solver code
+Current cross-crate usage (verified by grep):
 
-### sim-contact
+| Type / API | Defined in | Actually called by | Notes |
+|---|---|---|---|
+| `PGSSolver`, `CGSolver`, `NewtonConstraintSolver`, `ConstraintSolver` | sim-constraint | **nobody** (only sim-core benchmarks) | Dead code in production. sim-core has its own PGS. |
+| `Joint` trait, `RevoluteJoint`, `PrismaticJoint`, … | sim-constraint | **nobody** (only benchmarks + sim-physics re-export) | sim-core uses `MjJointType` enum instead. |
+| `JointMotor`, `MotorMode`, `JointLimits`, `LimitState` | sim-constraint | sim-physics re-export + test | Instantiated in `test_joint_types_accessible` only. Never by pipeline. |
+| `ConstraintIslands`, `SparseJacobian`, `JacobianBuilder` | sim-constraint | **nobody** | Unused infrastructure. |
+| `ContactSolverConfig` | sim-contact | sim-core (re-export only) | Re-exported by sim-core (`lib.rs:130`) → sim-bevy prelude (`lib.rs:123`). Referenced in sim-bevy doc-comments (`lib.rs:63,66`). No actual callers — `set_contact_solver_config()` does not exist. |
+| `ContactPoint` | sim-contact | **sim-bevy** (`CachedContacts` for debug viz) | Only real external consumer. |
+| `ContactModel`, `ContactParams`, `SurfaceMaterial` | sim-contact | sim-physics re-export + test | Instantiated in `test_contact_types_accessible` only. Never by pipeline. |
+| `ContactSolver`, `BatchContactProcessor`, `ContactManifold` | sim-contact | **nobody** | Unused compliant solver + batch infrastructure. |
+| `FrictionModel` trait, `FrictionCone`, etc. | sim-contact | **nobody** | sim-core computes friction inline. |
 
-- [ ] Merge `sim-contact` into `sim-core`
-- Current state: Separate crate for contact model
-- Target state: Contact types and functions in `sim-core/src/contact.rs`
-- Rationale: Contact is tightly coupled to collision; separate crate adds overhead
+Phantom Cargo.toml dependencies (declared but zero source-level imports):
 
----
+| Crate | Declares dependency on | Why it exists | Can remove? |
+|---|---|---|---|
+| sim-mjcf | `sim-constraint` (with `muscle` feature) | Enables muscle feature on sim-constraint transitively; no types imported | Yes — sim-mjcf parses muscles with its own internal `MjcfActuatorType::Muscle`, not sim-constraint types |
+| sim-urdf | `sim-constraint` | No types imported | Yes |
+| sim-bevy | `sim-constraint` | No types imported | Yes |
+| sim-conformance-tests | `sim-constraint`, `sim-contact` | No types imported in test source files | Yes (unless tests are added later) |
 
-## When to Address
+### Problem
 
-These tasks should be addressed when:
-1. Major refactoring is already planned
-2. Build times become a concern
-3. Crate boundaries cause API friction
+Two crates (`sim-constraint`, `sim-contact`) carry substantial API surface that is
+**entirely duplicated** by `sim-core`'s MuJoCo pipeline. They remain as dependencies
+because (a) sim-physics re-exports their types as public API, (b) sim-bevy uses
+`ContactPoint` for visualization, (c) benchmarks instantiate the standalone solvers,
+and (d) four other crates declare phantom Cargo.toml dependencies with zero source-level
+imports. This creates confusion about which types are canonical and inflates the
+dependency graph.
+
+### Phase 1 — Remove phantom and dead dependencies
+
+**sim-core (dead dependencies — declared, only used by benchmarks):**
+
+⚠️ **Ordering constraint:** Feature forwards (`sim-constraint/parallel`,
+`sim-contact/serde`, `sim-constraint/serde`) only work on `[dependencies]`, not
+`[dev-dependencies]`. Steps 1–2 below **must** run before step 3, or `cargo check`
+will fail with "feature `parallel` … is not a dependency".
+
+1. [ ] Remove `pub use sim_contact::ContactSolverConfig;` from `sim-core/src/lib.rs:130`
+2. [ ] Remove feature forwards from sim-core `[features]`:
+   - Remove `"sim-constraint/parallel"` from `parallel` feature (Cargo.toml:34)
+   - Remove `"sim-contact/serde"` and `"sim-constraint/serde"` from `serde` feature
+     (Cargo.toml:36)
+3. [ ] Move sim-constraint from `[dependencies]` to `[dev-dependencies]` (needed by
+   `collision_benchmarks.rs` which imports `BodyState`, `ConstraintSolver`, `PGSSolver`,
+   `NewtonConstraintSolver`, `RevoluteJoint`)
+4. [ ] Remove `sim-contact` from `sim-core/Cargo.toml` `[dependencies]` entirely
+5. [ ] Remove `pub use sim_core::ContactSolverConfig;` from sim-bevy prelude
+   (`sim/L1/bevy/src/lib.rs:123`) — this re-exports the type removed above.
+   Also delete the "Contact Solver Configuration" doc-comment section
+   (`lib.rs:53–70`) — lines 53–54 are the section header, 55–69 are the
+   body and code block referencing `ContactSolverConfig::realtime()` and
+   the non-existent `set_contact_solver_config()` method, and line 70 is
+   the trailing blank line. Using the narrower range 55–68 would orphan the
+   `## Contact Solver Configuration` header and closing code fence.
+
+**Phantom dependencies (declared in Cargo.toml, zero source-level imports):**
+- [ ] Remove `sim-constraint` from `sim-mjcf/Cargo.toml` (declares
+  `sim-constraint = { workspace = true, features = ["muscle"] }` but has zero
+  source-level imports of `sim_constraint` — muscle parsing uses sim-mjcf's own
+  internal `MjcfActuatorType::Muscle` type, not sim-constraint's muscle module)
+- [ ] Remove `sim-constraint` from `sim-urdf/Cargo.toml`
+- [ ] Remove `sim-constraint` from `sim-bevy/Cargo.toml`
+- [ ] Audit `sim-conformance-tests/Cargo.toml` — currently declares `sim-constraint`
+  (with muscle feature) and `sim-contact` but no test source files import them; remove
+  if no tests are planned
+
+- Current state: sim-core declares both as regular deps but only benchmarks use
+  sim-constraint. Four other crates declare sim-constraint with zero imports.
+- Target state: sim-core has sim-constraint as dev-dependency only. sim-contact removed
+  entirely from sim-core. Phantom deps removed from mjcf, urdf, bevy, tests.
+- Risk: **Low.** No runtime behavior changes. `ContactSolverConfig` re-export removal
+  from sim-core and sim-bevy is a public API deletion, but the type has zero callers
+  (the `set_contact_solver_config()` method in doc-comments does not exist). Benchmarks
+  continue to compile via dev-dependency. Phantom removal may surface hidden transitive
+  feature requirements — verify with `cargo check --workspace`.
+- Validation: `cargo check --workspace` (catches sim-bevy re-export breakage),
+  `cargo build -p sim-core`, `cargo test -p sim-core`,
+  `cargo bench -p sim-core --no-run`
+
+### Phase 2 — Consolidate sim-contact into sim-core
+
+- [ ] Move `ContactPoint`, `ContactForce`, and `ContactManifold` into
+  `sim-core/src/contact.rs` and wire into the module tree: add `mod contact;`
+  and `pub use contact::{ContactPoint, ContactForce, ContactManifold};` to
+  `sim-core/src/lib.rs`. These types are self-contained — they depend only on
+  `nalgebra` (Point3, Vector3) and `sim-types` (BodyId), both already in sim-core.
+  No sim-simd or sim-contact-internal dependencies. Serde derives are conditional
+  on a `serde` feature already present in sim-core. Note: this is the entire
+  `contact.rs` file (~1500 lines) including two private helper functions
+  (`safe_normalize`, `closest_points_segments`), extensive `ContactPoint` collision
+  methods (sphere-plane, sphere-sphere, box-sphere, box-plane, box-box, capsule-*),
+  and ~450 lines of unit tests. Not just data structs.
+  **nalgebra note:** sim-contact hardcodes `nalgebra = { version = "0.33",
+  default-features = false, features = ["std"] }` instead of using `workspace = true`.
+  After moving to sim-core (which uses `workspace = true` with default features),
+  nalgebra gains additional features. This is additive and safe — no breakage expected,
+  but worth a smoke-test of the collision methods after migration.
+- [ ] Update sim-bevy to import `ContactPoint` from sim-core instead of sim-contact
+  (`sim/L1/bevy/src/resources.rs:4`)
+- [ ] Decide disposition of remaining sim-contact types (not already moved above):
+  - `ContactModel`, `ContactParams`, `SurfaceMaterial`, `DomainRandomization`,
+    `MaterialPair` — move to sim-core if user-facing API is desired, otherwise delete
+  - `FrictionModelType` — delete (model.rs enum selecting friction model, unused by
+    pipeline)
+  - `ContactSolver`, `ContactSolverConfig` — delete (unused, duplicated by pipeline)
+  - `BatchContactProcessor`, `BatchForceResult` — delete (uses sim-simd, unused)
+  - `FrictionModel` trait, `FrictionCone`, `EllipticFrictionCone`,
+    `PyramidalFrictionCone`, `RegularizedFriction`, `RollingFriction`,
+    `TorsionalFriction`, `CompleteFrictionModel`, `CompleteFrictionResult` — delete
+    (sim-core computes friction inline)
+- [ ] Update sim-physics:
+  - Remove `pub use sim_contact;` top-level re-export (`lib.rs:109`)
+  - Update prelude to source contact types from sim-core
+  - Update `test_contact_types_accessible` test (`lib.rs:506`) — uses
+    `ContactParams::default()` and `ContactModel::new()` which come from sim-contact.
+    If these types are deleted rather than moved, delete the test.
+- [ ] Remove `sim-contact` dependency from sim-physics, sim-bevy, and
+  sim-conformance-tests Cargo.tomls
+- [ ] Remove `"sim-contact/serde"` from sim-physics `[features]` serde list
+  (`Cargo.toml:34`)
+- [ ] Update sim-physics package description (`Cargo.toml:3`) which lists sim-contact
+- [ ] Remove `sim-contact` from workspace `Cargo.toml`:
+  - Remove from `[workspace.members]` (line 71)
+  - Remove from `[workspace.dependencies]` (line 296)
+- [ ] Update CI scripts that list `sim-contact` by name:
+  - `scripts/local-quality-check.sh` (lines 187, 240 — WASM and Bevy-free crate lists)
+  - `.github/workflows/quality-gate.yml` (lines 156, 399 — same checks)
+- [ ] Update documentation referencing sim-contact:
+  - `README.md` (lines 47, 144–145) — crate table and diagram
+  - `VISION.md` (lines 113, 167) — architecture diagrams
+  - `sim/ARCHITECTURE.md` — crate directory listing (line 24), "sim-contact"
+    section (line 195), "Compliant vs Impulse-Based Contacts" table (line 324)
+  - `sim/L0/physics/README.md` (line 7) — lists sim-contact as re-exported crate
+  - `sim/docs/MUJOCO_CONFORMANCE.md` (line 28) — maps contact tests to sim-contact
+  - `sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md` (lines 418, 534) — sim-contact
+    section and Cargo.toml example
+  - `docs/MUJOCO_GAP_ANALYSIS.md` — extensive references to sim-contact files
+    throughout (~15 occurrences referencing friction.rs, model.rs, solver.rs,
+    batch.rs, lib.rs)
+- [ ] Delete the `sim-contact` crate directory
+- Current state: sim-contact defines contact geometry types and a compliant contact
+  solver. The only external consumer of a concrete type is sim-bevy (`ContactPoint` in
+  `resources.rs:4`). sim-physics re-exports the full `sim_contact` module (line 109)
+  and specific types via its prelude (lines 198–210). sim-physics has a test that
+  instantiates `ContactParams` and `ContactModel`.
+- Target state: `ContactPoint` lives in `sim-core/src/contact.rs`. `ContactModel`,
+  `ContactParams`, `SurfaceMaterial`, and friction models are either moved to sim-core
+  (if they have future use) or deleted (if they duplicate pipeline logic).
+- Risk: **Low-medium.** sim-bevy import paths change. sim-physics re-exports and tests
+  change. CI scripts need updating. The compliant contact solver is unused but deleting
+  it is a one-way door — audit whether any downstream user code (outside this repo)
+  references it.
+- Validation: `cargo build --workspace`, `cargo test --workspace`, sim-bevy debug viz
+  still renders contact points, CI quality gate passes.
+
+### Phase 3 — Reduce sim-constraint to public API types only
+
+- [ ] Delete standalone solvers and their supporting infrastructure:
+  - `solver.rs` — `ConstraintSolver`, `ConstraintSolverConfig`, `SolverResult`,
+    `JointForce`, `BodyState` (solver-internal types, not used by kept modules)
+  - `pgs.rs` — `PGSSolver`, `PGSSolverConfig`, `PGSSolverResult`, `PGSSolverStats`
+  - `newton.rs` — `NewtonConstraintSolver`, `NewtonSolverConfig`,
+    `NewtonSolverResult`, `SolverStats`
+  - `cg.rs` — `CGSolver`, `CGSolverConfig`, `CGSolverResult`, `CGSolverStats`,
+    `Preconditioner`
+  - `sparse.rs` — `SparseJacobian`, `JacobianBuilder`, `SparseEffectiveMass`,
+    `InvMassBlock`
+  - `islands.rs` — `ConstraintIslands`, `Island`, `IslandStatistics`
+  - `parallel.rs` — parallel island solving (only called from `newton.rs`)
+- [ ] Remove `nalgebra-sparse` from sim-constraint `Cargo.toml` (only used by
+  `sparse.rs`); remove `hashbrown` optional dep (only used by `parallel` feature);
+  remove `thiserror` (declared at Cargo.toml:16 but zero source-level imports —
+  phantom dep even before this phase)
+- [ ] Remove `parallel` feature from sim-constraint (no parallel solvers remain);
+  also remove `rayon` optional dep (Cargo.toml:18) which is only activated by
+  this feature
+- [ ] Remove solver benchmarks from `collision_benchmarks.rs`:
+  - Delete solver benchmark section header and functions (lines 585–742)
+  - Remove solver entries from `criterion_group!` macro (lines 761–765:
+    `bench_constraint_solver`, `bench_pgs_solver`, `bench_newton_solver`,
+    `bench_solver_comparison`) — keep collision/BVH entries and the macro itself
+  - Remove `use sim_constraint::{...}` import block (lines 22–25)
+  - Remove `sim-constraint` from `sim-core/Cargo.toml` `[dev-dependencies]`
+    (added in Phase 1)
+- [ ] Rewrite sim-constraint crate-level documentation (`lib.rs` lines 25–68):
+  - Delete "Constraint Solvers" section (lines 25–35, lists 4 deleted solvers)
+  - Delete "Constraint Islands" section and doc-test example (lines 37–56,
+    uses `ConstraintIslands`, `NewtonConstraintSolver`)
+  - Update "Constraint Formulation" section (lines 58–68) — the math
+    (C(q)=0, J*v=0) is still valid context for joints, but line 67 says
+    "The solver computes constraint forces..." which references deleted
+    solvers. Reword to describe constraint formulation without solver.
+  - Update crate description to reflect type-library role
+- [ ] Update sim-constraint `Cargo.toml` description (line 3): currently
+  `"Joint constraints and motors for articulated body simulation"` — update
+  to reflect type-library role (e.g., "Joint types, motors, and limits for
+  articulated body simulation")
+- [ ] Remove `pub use` re-exports in `lib.rs` for all deleted types (lines 122, 128,
+  137–140)
+- [ ] Remove `mod` declarations in `lib.rs` for deleted modules (lines 102, 104,
+  110–115)
+- [ ] Keep (all in self-contained modules with zero references to deleted code):
+  - `joint.rs` — `Joint` trait, `RevoluteJoint`, `PrismaticJoint`, `FixedJoint`,
+    `SphericalJoint`, `UniversalJoint`, `CylindricalJoint`, `PlanarJoint`,
+    `FreeJoint`, `JointType` enum, `JointDof`
+  - `limits.rs` — `JointLimits`, `LimitState`, `LimitStiffness`
+  - `motor.rs` — `JointMotor`, `MotorMode`
+  - `types.rs` — `JointState`, `JointVelocity`, `ConstraintForce`
+  - `equality.rs` — all equality constraint types
+  - `actuator.rs` — all actuator types
+  - `muscle.rs` (optional) — `MuscleJoint`, `MuscleCommands`, `MuscleJointBuilder`
+- [ ] Evaluate whether kept types should move to sim-types (pure data) vs stay in
+  sim-constraint (if they carry behavior)
+- [ ] Update sim-physics:
+  - Remove `ConstraintSolver` and `ConstraintSolverConfig` from prelude re-exports
+    (deleted types). Keep joint type and motor re-exports.
+  - Update `test_joint_types_accessible` test (`lib.rs:499`) — uses
+    `sim_constraint::JointLimits::new()` directly. Path still works if JointLimits
+    stays in sim-constraint, but verify after module deletions.
+- [ ] Update CI scripts if sim-constraint is renamed or has changed features:
+  - `scripts/local-quality-check.sh` (lines 188, 241)
+  - `.github/workflows/quality-gate.yml` (lines 157, 400)
+- [ ] Update documentation referencing deleted sim-constraint solvers:
+  - `sim/ARCHITECTURE.md` — "sim-constraint" section (line 212) lists deleted
+    solvers; feature flags table (line 351) references `parallel` feature.
+    Rewrite section to reflect type-library role.
+  - `sim/docs/MUJOCO_CONFORMANCE.md` (line 29) — maps constraint tests to
+    sim-constraint
+  - `sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md` (lines 491, 535) — sim-constraint
+    section and Cargo.toml example
+  - `docs/MUJOCO_GAP_ANALYSIS.md` — extensive references to deleted files
+    (newton.rs, pgs.rs, islands.rs, sparse.rs, parallel.rs, cg.rs — ~20
+    occurrences). References to kept files (actuator.rs, equality.rs, joint.rs)
+    remain valid.
+- [ ] Resolve name collisions between sim-types and sim-constraint — three types share
+  names but have different definitions:
+  - `JointLimits` — sim-types (`types/src/joint.rs:111`) vs sim-constraint
+    (`constraint/src/limits.rs:12`)
+  - `JointType` — sim-types (`types/src/joint.rs:45`) vs sim-constraint
+    (`constraint/src/joint.rs:57`)
+  - `JointState` — sim-types (`types/src/joint.rs:238`) vs sim-constraint
+    (`constraint/src/types.rs:14`)
+  - sim-physics prelude imports the sim-types versions. If merging (Phase 4),
+    reconcile or rename the sim-constraint variants.
+- Current state: sim-constraint contains 4 solvers, sparse matrix infrastructure,
+  island detection, joint types, motor/limit types, equality constraints, and actuators.
+  Only the type definitions are consumed (via sim-physics re-export). No solver is
+  called in production.
+- Target state: sim-constraint is a **type library** for joint definitions, motors,
+  limits, and equality constraints. No solver implementations. Sparse/island code
+  deleted.
+- Risk: **Medium.** Deleting solver code is irreversible (though recoverable from git).
+  The CGSolver with Block Jacobi preconditioner is listed in Physics Features as a
+  future integration candidate — if that work is planned soon, keep CGSolver and delete
+  only the others.
+- Validation: `cargo build --workspace`, `cargo test --workspace`, `cargo bench -p sim-core --no-run` (benchmarks must be updated first), verify sim-physics prelude
+  still exports all intended public types.
+
+### Phase 4 (optional) — Merge sim-constraint into sim-types
+
+- [ ] Evaluate whether remaining sim-constraint types are pure data (move to sim-types)
+  or carry significant behavior (keep separate). Key types to assess:
+  - `JointLimits` (has `compute_force()` method — behavioral)
+  - `JointMotor` (has `compute_force()` — behavioral)
+  - `Joint` trait (defines `parent_anchor()`, `child_anchor()`, `axis()` etc. — trait
+    with default impls, implementations in each joint struct carry geometric behavior)
+  - `JointDof`, `JointState`, `JointVelocity`, `ConstraintForce` — likely pure data
+- [ ] Resolve three name collisions (`JointLimits`, `JointType`, `JointState`)
+  between sim-types and sim-constraint before merge (see Phase 3 for details)
+- [ ] If pure data: merge into `sim-types/src/joint.rs`, `sim-types/src/motor.rs`, etc.
+- [ ] If behavioral: keep sim-constraint as a thin crate
+- [ ] If fully merged: remove sim-constraint from workspace `Cargo.toml`
+  (`[workspace.members]` and `[workspace.dependencies]`), delete crate directory,
+  update `README.md` (line 144) and `VISION.md`, update CI crate lists in
+  `local-quality-check.sh` and `quality-gate.yml`
+- [ ] Update sim-physics:
+  - Remove `pub use sim_constraint;` (line 108), update prelude to source types from
+    sim-types
+  - Remove `sim-constraint` from `[dependencies]` (`Cargo.toml:14`)
+  - Remove `"sim-constraint/serde"` from serde feature list (`Cargo.toml:33`)
+  - Update package description (`Cargo.toml:3`) which lists sim-constraint
+- Current state: After Phase 3, sim-constraint would contain only type definitions
+  and trait implementations (no solvers).
+- Target state: One fewer crate if types are pure data; no change if they carry logic
+  that depends on nalgebra matrix operations.
+- Risk: **Low.** Purely organizational. However, sim-types currently has minimal
+  dependencies — adding nalgebra-heavy types would increase its compile footprint.
+- Validation: `cargo build --workspace`, `cargo test --workspace`
+
+### Dependency graph
+
+Before (arrows = Cargo.toml `[dependencies]`, **bold** = has source-level imports):
+```
+sim-core    → sim-constraint          (benchmarks only, no lib imports)
+            → sim-contact             (re-exports ContactSolverConfig, never read)
+sim-physics → **sim-constraint**      (re-exports types via prelude)
+            → **sim-contact**         (re-exports types via prelude)
+            → sim-core
+sim-bevy    → **sim-contact**         (imports ContactPoint for debug viz)
+            → sim-constraint          (phantom — zero imports)
+            → sim-core
+sim-mjcf    → sim-constraint[muscle]  (phantom — zero imports)
+sim-urdf    → sim-constraint          (phantom — zero imports)
+sim-tests   → sim-constraint, sim-contact  (phantom — zero imports in .rs files)
+```
+
+After Phase 1 (phantom + dead dep removal):
+```
+sim-core    → (dev-dep only: sim-constraint for benchmarks)
+sim-physics → **sim-constraint**      (re-exports types)
+            → **sim-contact**         (re-exports types)
+            → sim-core
+sim-bevy    → **sim-contact**         (ContactPoint)
+            → sim-core
+```
+
+After Phases 2–3 (sim-contact deleted, sim-constraint stripped):
+```
+sim-physics → sim-core                (ContactPoint re-exported from here)
+            → sim-constraint          (types only, no solvers)
+sim-bevy    → sim-core                (ContactPoint moved here)
+```
+
+### When to address
+
+Phase 1 can be done immediately — it removes phantom/dead dependency declarations,
+converts one benchmark dependency to dev-dep, and carries near-zero risk.
+
+Phases 2–3 should be done when:
+1. Batched simulation work begins (clean dependency graph simplifies the new crate)
+2. Public API surface is being reviewed for 1.0
+3. Build times or dependency confusion becomes friction
 
 Not urgent because:
-- Current structure works correctly
-- No runtime cost
-- Compile times are acceptable
+- Current structure compiles and works correctly
+- No runtime cost from unused dependencies
+- Compile times are acceptable (unused crate code is compiled but not linked)
 
 ---
 
@@ -231,6 +551,18 @@ Parseable from MJCF `<option>` via attributes: `regularization`, `default_eq_sti
 - Trigger: When the system needs to handle large constraint counts (100+ contacts) where PGS convergence becomes slow
 - Rationale: CG with Block Jacobi preconditioning scales better than PGS for large systems — PGS convergence degrades with constraint count while preconditioned CG maintains stable iteration counts
 - Prerequisites: Adapter layer mapping `mujoco_pipeline.rs` contact structures to CGSolver's `Joint` trait interface
+- **Dependency on Crate Consolidation Phase 3:** If Phase 3 is executed before this
+  work begins, CGSolver and `cg.rs` must be excluded from deletion. The consolidation
+  spec flags this explicitly.
+
+### Batched Simulation
+
+- [ ] CPU-parallel multi-environment architecture for RL training
+- [ ] Thread-per-env and/or SIMD-across-envs execution strategies
+- [ ] Shared-nothing memory layout to avoid synchronization overhead
+- [ ] Batched API surface (step N environments, return N observation tensors)
+- Current state: Single-environment execution only
+- Rationale: Prerequisite to GPU acceleration — validates the batching API, memory layout, and training loop integration on CPU before porting hot paths to GPU. Thousands of parallel humanoid envs are needed for policy learning; the batching architecture is independent of the compute backend.
 
 ### GPU Acceleration
 

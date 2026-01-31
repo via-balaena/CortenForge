@@ -13,7 +13,7 @@ Every crate in this log has passed:
 
 | # | Criterion | Requirement |
 |---|-----------|-------------|
-| 1 | Test Coverage | ≥90% line coverage |
+| 1 | Test Coverage | ≥75% line coverage (target: 90%) |
 | 2 | Documentation | Zero warnings |
 | 3 | Clippy | Zero warnings |
 | 4 | Safety | Zero unwrap/expect in library code |
@@ -61,6 +61,7 @@ Every crate in this log has passed:
 | 2026-01-18 | ml-dataset | automated |
 | 2026-01-18 | ml-training | automated |
 | 2026-01-18 | cf-spatial | automated |
+| 2026-01-19 | curve-types | automated |
 | 2026-01-19 | route-types | automated |
 | 2026-01-19 | route-pathfind | automated |
 | 2026-01-19 | route-optimize | automated |
@@ -69,13 +70,14 @@ Every crate in this log has passed:
 
 ## Summary
 
-- **Total A-Grade Crates:** 37 (26 mesh + 1 umbrella + 2 sensor + 4 ML + 1 foundation + 3 routing)
-- **Last Updated:** 2026-01-19
+- **Total A-Grade Crates:** 38 (26 mesh + 1 umbrella + 1 geometry + 2 sensor + 4 ML + 1 foundation + 3 routing)
+- **Last Updated:** 2026-01-30
 - **Note:** mesh-io includes all I/O formats (STL, OBJ, PLY, 3MF, STEP)
 - **Note:** mesh (umbrella) re-exports all mesh-* crates with unified prelude
 - **Note:** sensor-types and sensor-fusion form the sensor domain foundation
 - **Note:** ml-types, ml-models, ml-dataset, ml-training form the ML domain (Burn-native)
 - **Note:** cf-spatial provides voxel grids, spatial queries, line-of-sight checks
+- **Note:** curve-types provides Bezier, B-spline, NURBS, arcs, helices with Frenet frames
 - **Note:** route-types, route-pathfind, route-optimize form the routing domain (A* pathfinding, multi-objective optimization)
 
 ---

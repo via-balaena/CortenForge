@@ -74,13 +74,13 @@ This is non-negotiable. Layer 0 is the **permanent foundation**. Bevy could be r
 
 ```
 Layer 0 (Pure Rust)
-├── mesh/*           26 crates - Industrial mesh processing
+├── mesh/*           27 crates - Industrial mesh processing
 ├── geometry/*       Curves, surfaces, solids
 ├── sensor/*         Hardware-agnostic sensor types
 ├── ml/*             Burn-native ML pipeline
 ├── routing/*        Path planning and optimization
 ├── spatial/*        Voxel grids, occupancy maps
-└── sim/*            Physics, dynamics, control (NO BEVY)
+└── sim/*            13 L0 crates - MuJoCo-aligned physics (NO BEVY)
 ```
 
 ### Layer 1: Bevy Integration
@@ -107,18 +107,24 @@ When Bevy breaks (and it will), Layer 1 adapts. Layer 0 is untouched.
 
 ```
 sim/ (Layer 0 - Pure Rust)
-├── sim-types        State, Action, Observation, Reward
-├── sim-core         World stepping, entity management
-├── sim-rigid        Rigid body dynamics
-├── sim-contact      Contact detection and resolution
-├── sim-actuator     Motors, servos, force application
-└── sim-soft         Deformable bodies, cloth, soft tissue
+├── sim-types        RigidBodyState, Pose, Twist, MassProperties
+├── sim-simd         SIMD batch operations (Vec3x4/Vec3x8)
+├── sim-core         MuJoCo-aligned pipeline: Model/Data, FK, CRBA, RNE, PGS
+├── sim-contact      Compliant contact model, friction, domain randomization
+├── sim-constraint   Joint types, motors, limits, equality constraints
+├── sim-sensor       IMU, F/T, touch, rangefinder, magnetometer
+├── sim-deformable   XPBD soft bodies (ropes, cloth, volumes)
+├── sim-muscle       Hill-type muscle model
+├── sim-tendon       Cable/tendon routing and actuation
+├── sim-mjcf         MuJoCo XML/MJB format parser
+├── sim-urdf         URDF parser, kinematic tree validation
+├── sim-physics      Unified L0 API re-exporting all sim crates
+└── sim-conformance-tests  MuJoCo conformance tests
 
 cortenforge/ (Layer 1 - Bevy)
-├── CfSimPlugin      Bevy <-> sim-core bridge
-├── PhysicsBundle    Component bundles for simulated bodies
-├── ActuatorCommands ECS resource for motor control
-└── SimulationState  Pause, step, reset controls
+├── sim-bevy         Model/Data sync, debug gizmos, coordinate conversion
+├── CfSimPlugin      Bevy <-> sim-core bridge (planned)
+└── SimulationState  Pause, step, reset controls (planned)
 ```
 
 Why both? Because simulation math is pure. `F = ma` doesn't need a game engine. But *visualizing* simulation, *interacting* with it, *recording* it - that's where Bevy excels.
@@ -133,40 +139,36 @@ A headless training run uses `sim-core` directly. A visualization demo uses `CfS
 
 | Domain | Strategy | Rationale |
 |--------|----------|-----------|
-| **Mesh Processing** | Build | Core competency. 26 crates, A-grade. |
+| **Mesh Processing** | Build | Core competency. 27 crates, A-grade. |
 | **Geometry** | Build + Truck | Curves/surfaces ourselves, BREP via truck |
 | **Sensors** | Build | Must own for sim/real parity |
 | **ML Pipeline** | Build + Burn | Types ourselves, Burn for tensors |
 | **Routing** | Build + pathfinding | Core algorithms ourselves, graph utils from crate |
 | **Spatial** | Build + kiddo | Voxels ourselves, KD-trees from crate |
-| **Collision** | Use parry3d | Proven, fast, maintained |
-| **Rigid Physics** | Use Avian | Bevy-native, ECS-first |
-| **Soft Physics** | Build | No good Rust options, research area |
+| **Collision** | Build | MuJoCo-aligned: analytical + GJK/EPA + BVH mesh |
+| **Rigid Physics** | Build | MuJoCo-aligned: Model/Data, CRBA, RNE, PGS solver |
+| **Soft Physics** | Build | XPBD (sim-deformable), Hill-type muscles (sim-muscle) |
 | **Rendering** | Use Bevy | Not our domain |
 | **UI** | Use bevy_egui | Not our domain |
 
 ### Domain Roadmap
 
 ```
-COMPLETE (37 crates):
-├── Mesh Domain (26)
+COMPLETE (52 crates):
+├── Mesh Domain (27)
 ├── Sensor Domain (2)
 ├── ML Domain (4)
 ├── Spatial Domain (1)
 ├── Routing Domain (3)
-└── Geometry Domain (1)
+├── Geometry Domain (1)
+└── Simulation Domain (13 L0 + 1 L1)
 
 NEXT PHASE:
-├── sim-types          Foundation types for simulation
-├── sim-core           World, stepping, state management
-├── sim-rigid          Rigid body dynamics (Avian wrapper initially)
 ├── surface-types      NURBS surfaces, patches
-└── PyO3 bindings      Python access to Layer 0
+├── PyO3 bindings      Python access to Layer 0
+└── cortenforge        Bevy SDK umbrella (CfSimPlugin, etc.)
 
 FUTURE:
-├── sim-contact        Custom contact solver
-├── sim-actuator       Motor models, force control
-├── sim-soft           Deformables (research)
 ├── solid-types        BREP solids via truck
 ├── constraint-solver  Assembly constraints
 └── Hardware bridges   ROS2, custom drivers
@@ -181,7 +183,7 @@ FUTURE:
 This is not marketing. This is policy enforced by CI:
 
 1. **Zero `unwrap()`/`expect()` in library code** - Errors are values
-2. **≥90% test coverage** - Measured and enforced
+2. **≥75% test coverage (target: 90%)** - Measured and enforced
 3. **Zero Clippy warnings** - pedantic + nursery enabled
 4. **Doc examples for all public APIs** - Tested in CI
 5. **Conventional commits** - Machine-readable history
@@ -218,13 +220,11 @@ We're not trying to replace Siemens. We're building the foundation that could *i
 ### MuJoCo
 What they have: 15 years of physics research, soft contacts, implicit integration, GPU acceleration, massive adoption in RL research.
 
-What we have: Nothing yet in physics. Avian exists but is game-focused.
+What we have: A MuJoCo-aligned pipeline (14 crates) implementing Model/Data, FK, CRBA, RNE, PGS contact solver, implicit integration, MJCF/URDF loading, compliant contacts, Hill-type muscles, XPBD deformables.
 
-What we need: `sim-core` and friends. Start with Avian, progressively own what we need.
+What we need: GPU acceleration, broader actuator coverage, tendon/site transmissions, full MuJoCo XML parity.
 
-The honest assessment: We can match TFX patterns in months. We can get useful CAD interop in a year. Matching MuJoCo's physics fidelity is a multi-year research project.
-
-But we don't need to match MuJoCo. We need simulation good enough to train policies that transfer to real hardware. That's a lower bar.
+The honest assessment: We can match TFX patterns in months. We can get useful CAD interop in a year. Full MuJoCo parity (GPU, all actuators, all constraint types) is ongoing work. See `sim/ARCHITECTURE.md` and `sim/MUJOCO_REFERENCE.md`.
 
 ---
 
@@ -318,11 +318,11 @@ There is no "done." Cathedrals are never finished; they're maintained and extend
 
 But there are milestones:
 
-### Milestone 1: Simulation Foundation (Current Target)
-- `sim-types`, `sim-core` implemented
-- Avian integration working
-- A robot can be spawned, controlled, sensed in Bevy
-- Training loop runs headless
+### Milestone 1: Simulation Foundation (Largely Complete)
+- 14 sim crates implemented (MuJoCo-aligned pipeline)
+- Model/Data architecture with forward kinematics, dynamics, contact solver
+- sim-bevy provides Bevy visualization with debug gizmos
+- Headless training loop works via sim-core directly
 
 ### Milestone 2: Hardware Bridge
 - Real sensor data flows through `sensor-types`
@@ -381,4 +381,4 @@ We're building something that will run on robots, in vehicles, in medical device
 
 *This document is the north star. When in doubt, check here.*
 
-*Last updated: 2026-01-19*
+*Last updated: 2026-01-30*
