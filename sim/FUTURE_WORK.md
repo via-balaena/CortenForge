@@ -149,10 +149,8 @@ will fail with "feature `parallel` … is not a dependency".
 - [ ] Update documentation referencing sim-contact:
   - `README.md` (lines 47, 144–145) — crate table and diagram
   - `VISION.md` (lines 113, 167) — architecture diagrams
-  - `sim/ARCHITECTURE.md` — crate directory listing (line 20), full section
-    "sim-contact (v0.1.0)" (line 114), dependency description (line 285),
-    `ContactSolverConfig` code example (line 363), import examples (lines
-    492–493)
+  - `sim/ARCHITECTURE.md` — crate directory listing (line 24), "sim-contact"
+    section (line 195), "Compliant vs Impulse-Based Contacts" table (line 324)
   - `sim/L0/physics/README.md` (line 7) — lists sim-contact as re-exported crate
   - `sim/docs/MUJOCO_CONFORMANCE.md` (line 28) — maps contact tests to sim-contact
   - `sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md` (lines 418, 534) — sim-contact
@@ -244,9 +242,8 @@ will fail with "feature `parallel` … is not a dependency".
   - `scripts/local-quality-check.sh` (lines 188, 241)
   - `.github/workflows/quality-gate.yml` (lines 157, 400)
 - [ ] Update documentation referencing deleted sim-constraint solvers:
-  - `sim/ARCHITECTURE.md` — section "sim-constraint (v0.7.0)" (line 140) lists
-    deleted solvers; feature flags table (lines 422, 425) references `parallel`
-    feature; solver file reference (line 475); `PGSSolver` import (line 493).
+  - `sim/ARCHITECTURE.md` — "sim-constraint" section (line 212) lists deleted
+    solvers; feature flags table (line 351) references `parallel` feature.
     Rewrite section to reflect type-library role.
   - `sim/docs/MUJOCO_CONFORMANCE.md` (line 29) — maps constraint tests to
     sim-constraint

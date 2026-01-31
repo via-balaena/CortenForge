@@ -2,418 +2,349 @@
 
 ## Overview
 
-The `sim-*` crates provide a MuJoCo-inspired physics simulation stack designed for:
+The `sim-*` crates provide a MuJoCo-aligned physics simulation stack for:
 
 - **Robotics training** (reinforcement learning with sim-to-real transfer)
-- **Headless simulation** (no Bevy dependency - Layer 0)
+- **Headless simulation** (no Bevy dependency — Layer 0)
 - **Deterministic execution** (fixed iteration counts, reproducible results)
 - **Domain randomization** (tunable contact parameters for robust policies)
+
+The primary API is a `Model`/`Data` architecture modeled after MuJoCo:
+`Model` is static (immutable after loading), `Data` is dynamic (`qpos`/`qvel`
+are the source of truth), and body poses are computed via forward kinematics.
 
 ## Directory Structure
 
 ```
 sim/
 ├── L0/                    # Layer 0: Bevy-free simulation
-│   ├── types/             # sim-types - Pure data types
-│   ├── simd/              # sim-simd - SIMD batch operations
-│   ├── core/              # sim-core - Integrators, world, collision
-│   ├── contact/           # sim-contact - Compliant contact model
-│   ├── constraint/        # sim-constraint - Joint constraints, solvers
-│   ├── sensor/            # sim-sensor - IMU, F/T, touch, rangefinder
-│   ├── deformable/        # sim-deformable - XPBD soft bodies
-│   ├── muscle/            # sim-muscle - Hill-type muscles
-│   ├── tendon/            # sim-tendon - Cable/tendon routing
-│   ├── mjcf/              # sim-mjcf - MuJoCo format parser
-│   ├── urdf/              # sim-urdf - URDF parser
-│   └── physics/           # sim-physics - Unified L0 API
+│   ├── types/             # sim-types — Pure data types
+│   ├── simd/              # sim-simd — SIMD batch operations
+│   ├── core/              # sim-core — Pipeline, collision, integration
+│   ├── contact/           # sim-contact — Compliant contact model
+│   ├── constraint/        # sim-constraint — Joint constraints, solvers
+│   ├── sensor/            # sim-sensor — IMU, F/T, touch, rangefinder
+│   ├── deformable/        # sim-deformable — XPBD soft bodies
+│   ├── muscle/            # sim-muscle — Hill-type muscles
+│   ├── tendon/            # sim-tendon — Cable/tendon routing
+│   ├── mjcf/              # sim-mjcf — MuJoCo format parser
+│   ├── urdf/              # sim-urdf — URDF parser
+│   └── physics/           # sim-physics — Unified L0 API
 ├── L1/                    # Layer 1: Bevy integration
-│   └── bevy/              # sim-bevy - Visualization
+│   └── bevy/              # sim-bevy — Visualization
 ├── docs/                  # Simulation documentation
-└── ARCHITECTURE.md
+├── ARCHITECTURE.md        # This file
+└── MUJOCO_REFERENCE.md    # Pipeline algorithms and pseudocode
 ```
 
-## Crate Hierarchy
+## Core Architecture: Model/Data
 
-```
-sim/L0/
-├── types      (L0)  ─────►  Pure data types, zero dependencies
-├── simd       (L0)  ─────►  SIMD-optimized batch operations
-├── contact    (L0)  ─────►  Compliant contact model, friction, solver
-├── constraint (L0)  ─────►  Joint constraints, PGS/Newton/CG solvers
-├── core       (L0)  ─────►  Integrators, world, stepper, collision detection
-├── sensor     (L0)  ─────►  IMU, force/torque, touch, rangefinder, magnetometer
-├── deformable (L0)  ─────►  XPBD soft bodies, cloth, ropes
-├── muscle     (L0)  ─────►  Hill-type muscle models
-├── tendon     (L0)  ─────►  Cable/tendon routing and actuation
-├── mjcf       (L0)  ─────►  MuJoCo XML/binary format parser
-├── urdf       (L0)  ─────►  URDF robot description parser
-└── physics    (L0)  ─────►  Unified API combining all L0 crates
+The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~8500 lines).
+It implements MuJoCo's computation pipeline end-to-end.
 
-sim/L1/
-└── bevy       (L1)  ─────►  Bevy integration layer (visualization)
-```
+### Model (static)
 
-## Current Implementation
+Immutable after loading. Contains the kinematic tree, joint definitions,
+geometry specifications, actuator configuration, and solver parameters.
 
-### sim-types (v0.7.0)
+Key fields:
+- `nq`/`nv` — position coordinates vs velocity DOFs (differ for quaternion joints)
+- `body_parent[i]` — kinematic tree topology
+- `body_pos[i]`/`body_quat[i]` — local frame offsets
+- `body_mass[i]`/`body_inertia[i]` — mass properties
+- `jnt_type[i]` — `MjJointType` (Hinge, Slide, Ball, Free)
+- `jnt_stiffness[i]`/`jnt_damping[i]`/`jnt_springref[i]` — passive dynamics
+- `jnt_solref[i]`/`jnt_solimp[i]` — constraint solver parameters
+- `timestep`, `gravity`, `integrator`, `solver_iterations`, `solver_tolerance`
 
-Pure data structures with no physics logic:
+Constructed from MJCF via `sim-mjcf` or URDF via `sim-urdf`.
 
-| Type | Purpose |
-|------|---------|
-| `RigidBodyState` | Position, orientation, velocity (6-DOF) |
-| `Pose` | Position + quaternion rotation |
-| `Twist` | Linear + angular velocity |
-| `MassProperties` | Mass, COM, inertia tensor |
-| `Action` / `ExternalForce` | Control inputs |
-| `JointState` / `JointCommand` | Articulated body support |
-| `SimulationConfig` | Timestep, gravity, solver settings |
+### Data (mutable)
 
-### sim-simd (v0.7.0)
+Pre-allocated state and computed quantities. No heap allocation during stepping.
 
-SIMD-optimized batch operations for performance-critical paths:
+| Category | Fields | Description |
+|----------|--------|-------------|
+| State | `qpos`, `qvel`, `time` | Source of truth |
+| Body poses | `xpos`, `xquat`, `xmat` | Computed by forward kinematics |
+| Mass matrix | `qM`, `qM_cholesky` | Computed by CRBA, Cholesky cached |
+| Forces | `qfrc_bias`, `qfrc_passive`, `qfrc_actuator`, `qfrc_applied`, `qfrc_constraint` | Generalized force components |
+| Acceleration | `qacc` | Computed as `M^-1 * f_total` |
+| Contacts | `contacts`, `efc_lambda` | Active contacts and warmstart cache |
 
-| Component | Description |
-|-----------|-------------|
-| `Vec3x4` / `Vec3x8` | Batched 3D vectors (SSE/AVX) |
-| `batch_dot_product` | Parallel dot products |
-| `batch_cross_product` | Parallel cross products |
+### Stepping
 
-Performance gains: 2-4x on x86-64, 2-3x on Apple Silicon. Used in contact force computation, GJK support search, AABB tests, and solver operations.
+```rust
+use sim_core::{Model, Data};
+use sim_mjcf::load_model;
 
-### sim-core (v0.7.0)
+let model = load_model(mjcf_string)?;  // Static (from MJCF XML string)
+let mut data = model.make_data();      // Pre-allocated
 
-Numerical integration, world management, and collision detection:
-
-| Component | Description |
-|-----------|-------------|
-| **Integrators** | Euler, Semi-Implicit Euler, Velocity Verlet, RK4 |
-| **World** | Body/joint storage, entity management |
-| **Stepper** | Simulation loop orchestration |
-| **Collision** | Multi-phase detection pipeline |
-
-**Collision Detection Pipeline:**
-
-| Phase | Implementation |
-|-------|----------------|
-| **Broad Phase** | BruteForce, Sweep-and-Prune |
-| **Mid Phase** | BVH tree for triangle meshes |
-| **Narrow Phase** | GJK/EPA for convex shapes, specialized mesh algorithms |
-
-**Supported Collision Shapes:**
-
-| Shape | Type |
-|-------|------|
-| Sphere, Box, Capsule, Cylinder, Ellipsoid | Primitives |
-| Plane | Half-space |
-| ConvexMesh | GJK/EPA-based |
-| TriangleMesh | BVH-accelerated, non-convex |
-| HeightField | Terrain (2D height grid) |
-| SignedDistanceField | Implicit surface queries |
-
-### sim-contact (v0.1.0)
-
-MuJoCo-inspired compliant contact model:
-
-```
-F_normal = k * d^p + c * ḋ
-F_friction = project_to_cone(F_tangent, μ * F_normal)
+// Simulation loop
+loop {
+    data.step(&model)?;
+    // data.qpos, data.xpos, etc. now updated
+}
 ```
 
-| Module | Contents |
-|--------|----------|
-| `contact.rs` | `ContactPoint`, `ContactManifold`, `ContactForce` |
-| `friction.rs` | `FrictionCone`, `FrictionModel`, `RegularizedFriction` |
-| `model.rs` | `ContactModel` (spring-damper computation) |
-| `params.rs` | `ContactParams`, `DomainRandomization`, material presets |
-| `solver.rs` | `ContactSolver` with deterministic fixed iterations |
-| `batch.rs` | `BatchContactProcessor` for parallel handling |
+`Data::step()` calls `forward()` then `integrate()`. See `MUJOCO_REFERENCE.md`
+for the complete pipeline algorithm.
 
-Key features:
-- Nonlinear stiffness (d^p) for stability at varying penetrations
-- Regularized friction for implicit integration compatibility
-- Elliptic and pyramidal friction cone approximations
-- Rolling and torsional friction support
-- Domain randomization ranges for sim-to-real transfer
-- Material presets: rubber, metal, plastic, wood, etc.
+## Physics Pipeline
 
-### sim-constraint (v0.7.0)
+Each timestep executes these stages in order:
+
+```
+forward():
+  Position     mj_fwd_position       FK from qpos → body poses
+               mj_collision           Broad + narrow phase contacts
+  Velocity     mj_fwd_velocity        Body spatial velocities from qvel
+  Actuation    mj_fwd_actuation       Control → joint forces
+  Dynamics     mj_crba                Mass matrix (Composite Rigid Body)
+               mj_rne                 Bias forces (Recursive Newton-Euler)
+               mj_fwd_passive         Springs, dampers, friction loss
+  Constraints  mj_fwd_constraint      Joint limits + equality + contact PGS
+  Solve        mj_fwd_acceleration    qacc = M^-1 * f  (or implicit solve)
+integrate():
+  Semi-implicit Euler (velocity first, then position with new velocity)
+  Quaternion integration on SO(3) for ball/free joints
+```
+
+**Integration methods** (`Integrator` enum):
+- `Euler` (default) — semi-implicit Euler, velocity-first
+- `RungeKutta4` — fourth-order accuracy
+- `Implicit` — unconditionally stable for stiff springs/dampers; solves
+  `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)`
+
+**Constraint enforcement:**
+- Joint limits and equality constraints use penalty + Baumgarte stabilization
+  with configurable stiffness via `solref`/`solimp` parameters
+- Contacts use PGS (Projected Gauss-Seidel) with friction cones and warmstart
+
+## Collision Detection
+
+### Pipeline
+
+| Phase | Method | Output |
+|-------|--------|--------|
+| Broad | Sweep-and-prune on AABBs | Candidate pairs |
+| Filter | contype/conaffinity bitmasks, parent-child exclusion | Filtered pairs |
+| Narrow | Per-pair geometry tests | Contact points |
+
+### Narrow Phase Dispatch
+
+Analytical algorithms for common pairs (sphere-sphere, sphere-capsule,
+capsule-capsule, box-box via SAT, sphere-box, capsule-box, etc.).
+GJK/EPA fallback for remaining convex pairs. BVH-accelerated tests for
+triangle meshes.
+
+### Supported Geometry Types
+
+| Type | `GeomType` | Notes |
+|------|------------|-------|
+| Sphere | `Sphere` | Analytical collisions |
+| Box | `Box` | SAT for box-box |
+| Capsule | `Capsule` | Analytical line-line distance |
+| Cylinder | `Cylinder` | GJK/EPA fallback for some pairs |
+| Ellipsoid | `Ellipsoid` | GJK/EPA |
+| Plane | `Plane` | Infinite half-space (ground) |
+| Mesh | `Mesh` | BVH-accelerated triangle tests |
+
+sim-core also provides collision primitives usable outside the pipeline:
+
+| Shape | Description |
+|-------|-------------|
+| `CollisionShape::HeightField` | Terrain (2D height grid) |
+| `CollisionShape::Sdf` | Signed distance field queries |
+| `CollisionShape::TriangleMesh` | Non-convex triangle soup |
+| `CollisionShape::ConvexMesh` | GJK/EPA-based convex hull |
+
+Supporting modules: `mid_phase.rs` (BVH construction and traversal),
+`gjk_epa.rs` (convex collision), `mesh.rs` (triangle tests), `heightfield.rs`,
+`sdf.rs`, `raycast.rs`.
+
+## Crate Reference
+
+### sim-types
+
+Pure data structures with no physics logic. Zero dependencies beyond nalgebra.
+
+`RigidBodyState`, `Pose`, `Twist`, `MassProperties`, `Action`, `ExternalForce`,
+`JointState`, `JointCommand`, `SimulationConfig`, `BodyId`, `JointId`.
+
+### sim-simd
+
+SIMD-optimized batch operations for performance-critical paths.
+`Vec3x4`/`Vec3x8` batched vectors, `batch_dot_product`, `batch_aabb_overlap`,
+`batch_normal_force`, `batch_integrate_position/velocity`.
+2-4x speedup on x86-64, 2-3x on Apple Silicon.
+
+### sim-core
+
+The physics engine. Contains:
+
+- `mujoco_pipeline.rs` — `Model`, `Data`, full MuJoCo-aligned pipeline
+- `integrators.rs` — 6 integrators: ExplicitEuler, SemiImplicitEuler,
+  VelocityVerlet, RungeKutta4, ImplicitVelocity, ImplicitFast
+- `collision_shape.rs` — `CollisionShape` enum, `Aabb`
+- `mid_phase.rs` — BVH tree (SAH construction, traversal, ray queries)
+- `gjk_epa.rs` — GJK/EPA for convex shapes
+- `mesh.rs` — Triangle mesh collision functions
+- `heightfield.rs`, `sdf.rs` — Terrain and implicit surface collision
+- `raycast.rs` — Ray-shape intersection
+
+### sim-contact
+
+Compliant contact model (spring-damper based):
+
+```
+F_normal  = k * d^p + c * d_dot
+F_friction = project_to_cone(F_tangent, mu * F_normal)
+```
+
+Provides `ContactPoint`, `ContactManifold`, `ContactForce`, `ContactModel`,
+`ContactParams`, `ContactSolver`, `BatchContactProcessor`, friction models
+(elliptic, pyramidal, rolling, torsional), domain randomization ranges, and
+material presets.
+
+Note: the MuJoCo pipeline in sim-core uses its own PGS contact solver, not
+`ContactSolver` from this crate. See `FUTURE_WORK.md` for consolidation plans.
+
+### sim-constraint
 
 Joint constraints and articulated body dynamics:
 
-**Solvers:**
+**Joint types** (all implement `Joint` trait):
 
-| Solver | Description |
-|--------|-------------|
-| `ConstraintSolver` | Basic Gauss-Seidel (8-16 iterations) |
-| `PGSSolver` | Projected Gauss-Seidel with SOR, warm-starting |
-| `NewtonConstraintSolver` | Newton-Raphson with analytical Jacobians (2-3 iterations) |
-| `CGSolver` | Conjugate Gradient for sparse systems |
+| Joint | DOF | qpos | qvel |
+|-------|-----|------|------|
+| Fixed | 0 | — | — |
+| Revolute (Hinge) | 1 | angle | angular vel |
+| Prismatic (Slide) | 1 | displacement | linear vel |
+| Universal | 2 | 2 angles | 2 angular vel |
+| Cylindrical | 2 | angle + disp | angular + linear |
+| Planar | 3 | x, y, angle | vx, vy, omega |
+| Spherical (Ball) | 3 | quaternion (4) | angular vel (3) |
+| Free | 6 | pos + quat (7) | lin + ang vel (6) |
 
-**Joint Types:**
+Also provides: `JointLimits`, `JointMotor`, `MotorMode`, equality constraints
+(connect, gear coupling, differential, tendon networks), actuator types,
+and standalone solvers (PGS, Newton, CG, Gauss-Seidel).
 
-| Joint | DOF |
-|-------|-----|
-| Fixed | 0 |
-| Revolute (Hinge) | 1 |
-| Prismatic (Slide) | 1 |
-| Universal | 2 |
-| Cylindrical | 2 |
-| Planar | 3 |
-| Spherical (Ball) | 3 |
-| Free | 6 |
+Note: the MuJoCo pipeline implements its own constraint handling. The solvers
+in this crate are used only by benchmarks. See `FUTURE_WORK.md`.
 
-**Features:**
-- Joint limits (position, velocity)
-- Motors (position control, velocity control)
-- Spring-damper dynamics
-- Constraint islands for independent group optimization
-- Parallel solving (rayon, optional)
-- Muscle actuator integration (optional)
-- Equality constraints: connect, gear coupling, differential coupling, tendon networks
+### sim-sensor
 
-### sim-sensor (v0.7.0)
+Simulated sensor suite: `Imu` (6-axis accel + gyro), `ForceTorqueSensor`
+(6-axis), `TouchSensor` (binary/pressure), `Rangefinder` (ray-cast),
+`Magnetometer` (heading).
 
-Simulated sensor suite for robot perception:
+### sim-deformable
 
-| Sensor | Measurements |
-|--------|--------------|
-| `Imu` | Accelerometer + gyroscope (6-axis) |
-| `ForceTorqueSensor` | 6-axis force/torque |
-| `TouchSensor` | Binary/pressure contact detection |
-| `Rangefinder` | Ray-cast distance (LIDAR/ultrasonic) |
-| `Magnetometer` | Magnetic heading |
+Soft body simulation using XPBD (Extended Position-Based Dynamics):
 
-### sim-deformable (v0.1.0)
+| Type | Dimension | Use Cases |
+|------|-----------|-----------|
+| `CapsuleChain` | 1D | Ropes, cables, hair |
+| `Cloth` | 2D | Membranes, shells, fabric |
+| `SoftBody` | 3D | Tetrahedral volumetric meshes |
+| `SkinnedMesh` | — | Bone-driven mesh deformation |
 
-Soft body simulation using Extended Position-Based Dynamics (XPBD):
+Material model: Young's modulus, Poisson's ratio, density, damping.
+Presets: rubber, tendon, gelatin, foam.
 
-| Type | Description |
-|------|-------------|
-| `CapsuleChain` | 1D deformables (ropes, cables) |
-| `Cloth` | 2D deformables (membranes, shells) |
-| `SoftBody` | 3D deformables (tetrahedral meshes) |
-| `SkinnedMesh` | Bone-driven mesh deformation |
+### sim-muscle
 
-**Material Model:**
-- Young's modulus, Poisson's ratio
-- Density, damping coefficients
-- Presets: Rubber, Tendon, Gelatin, Foam
-
-**Features:**
-- Pinned vertices (fixed constraints)
-- External force application
-- Bounding box queries
-
-### sim-muscle (v0.1.0)
-
-Hill-type muscle model for biomechanical simulation:
+Hill-type muscle model:
 
 ```
-F_muscle = a(t) * F_max * f_l(l) * f_v(v) + F_passive(l)
+F = activation * F_max * f_length(l) * f_velocity(v) + F_passive(l)
 ```
 
-| Component | Description |
-|-----------|-------------|
-| Contractile Element (CE) | Active force generation |
-| Parallel Elastic (PE) | Passive tissue stiffness |
-| Series Elastic (SE) | Tendon compliance |
+Three-element model: contractile (CE), parallel elastic (PE), series elastic (SE).
+Activation dynamics with asymmetric time constants, pennation angle support.
+Predefined configs: biceps, quadriceps, gastrocnemius, soleus.
+`MuscleGroup` for antagonist pairs.
 
-**Features:**
-- Activation dynamics with asymmetric time constants
-- Force-length relationship (Gaussian curve)
-- Force-velocity relationship (Hill curve)
-- Pennation angle support
-- Predefined configs: Biceps, Quadriceps, Gastrocnemius, Soleus
-- MuscleGroup for antagonist pairs
-
-### sim-tendon (v0.1.0)
+### sim-tendon
 
 Cable-driven actuation and routing:
 
-| Type | Description |
-|------|-------------|
-| Fixed Tendon | MuJoCo-style linear joint couplings |
-| Spatial Tendon | 3D routing through attachment points |
+- **Fixed tendons** — MuJoCo-style linear joint couplings
+- **Spatial tendons** — 3D routing through attachment points with wrapping
+  geometry (sphere, cylinder) and pulley systems
 
-**Features:**
-- Wrapping geometry (sphere, cylinder)
-- Pulley systems with mechanical advantage
-- Cable properties: stiffness, damping, tension limits
-- `TendonActuator` trait: `compute_force`, `compute_length`, `jacobian`
+`TendonActuator` trait: `compute_force`, `compute_length`, `jacobian`.
 
-### sim-mjcf (v0.7.0)
+### sim-mjcf
 
-MuJoCo XML format parser:
+MuJoCo XML format parser. Supports: bodies, joints (hinge, slide, ball, free),
+geoms (sphere, box, capsule, cylinder, ellipsoid, plane, mesh), actuators
+(motor, position, velocity, general), contact filtering, default class
+inheritance, and MJB binary format.
 
-**Supported Elements:**
-- Bodies with hierarchical definition
-- Joints: hinge, slide, ball, free
-- Geoms: sphere, box, capsule, cylinder, ellipsoid, plane, mesh
-- Actuators: motor, position, velocity, general
-- Contact filtering
-- Default class inheritance system
+### sim-urdf
 
-**Features:**
-- Binary MJB format support (fast loading)
-- Defaults system with class inheritance
-- Kinematic tree validation
+URDF robot description parser. Supports: links with mass, joints (fixed,
+revolute, continuous, prismatic, floating, planar), geometry (box, sphere,
+cylinder), dynamics (damping, friction), limits.
 
-### sim-urdf (v0.7.0)
+### sim-physics
 
-URDF robot description parser:
-
-**Supported Elements:**
-- Links with mass properties
-- Joints: fixed, revolute, continuous, prismatic, floating, planar
-- Geometry: box, sphere, cylinder
-- Dynamics: damping, friction
-- Limits: position, velocity, effort
-
-**Features:**
-- `SpawnedRobot` for world integration
-- Kinematic validation
-
-### sim-physics (v0.7.0)
-
-Unified API re-exporting all simulation components:
+Unified L0 API re-exporting all simulation crates:
 
 ```rust
 use sim_physics::prelude::*;
+// Gives access to: Model, Data, CollisionShape, MjJointType,
+// all joint types, contact types, muscle/tendon/sensor types, etc.
 ```
 
-Bridges sim-urdf, sim-constraint, sim-contact, sim-core, and sim-types into a single coherent interface.
+### sim-bevy (Layer 1)
 
-### sim-bevy (v0.1.0) - Layer 1
-
-Bevy visualization layer for physics debugging and demonstration:
+Bevy visualization layer for physics debugging:
 
 | Component | Description |
 |-----------|-------------|
-| `SimViewerPlugin` | Main plugin with orbit camera and lighting |
-| `SimulationHandle` | Resource holding sim-core `World` |
-| `BodyEntityMap` | Maps physics body IDs to Bevy entities |
-| `MjcfModel` / `UrdfModel` | Model loading from robot descriptions |
+| `SimViewerPlugin` | Main plugin — orbit camera, lighting, mesh generation |
+| `ModelDataPlugin` | Syncs `Model`/`Data` into Bevy ECS |
+| `BodyEntityMap` | Bidirectional physics-body ↔ Bevy-entity mapping |
+| `CachedContacts` | Last frame's contacts for debug rendering |
+| `ViewerConfig` | Toggle visibility of contacts, forces, axes, etc. |
 
-**Coordinate System Conversion:**
+**Coordinate system:** sim-core uses Z-up (robotics), Bevy uses Y-up (graphics).
+Conversions centralized in `convert.rs`: `(x, y, z)_physics → (x, z, y)_bevy`.
 
-sim-core uses Z-up (robotics convention), Bevy uses Y-up (graphics convention).
-All conversions are centralized in `convert.rs`:
-
-| Physics (Z-up) | Bevy (Y-up) |
-|----------------|-------------|
-| X (forward) | X (right) |
-| Y (left) | Z (forward) |
-| Z (up) | Y (up) |
-
-```rust
-// Position: swap Y and Z
-(x, y, z)_physics -> (x, z, y)_bevy
-
-// Quaternion: conjugate by coordinate rotation
-q_bevy = R * q_physics * R^-1
-```
-
-**Features:**
-- Automatic mesh generation for all collision shapes
-- Transform synchronization (physics → Bevy)
-- Debug gizmos (contact points, forces, axes)
-- Orbit camera with pan/zoom controls
-- MJCF and URDF model loading
-
-**Example:**
-
-```rust
-use bevy::prelude::*;
-use sim_bevy::prelude::*;
-
-fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins)
-        .add_plugins(SimViewerPlugin::default())
-        .add_systems(Startup, setup)
-        .run();
-}
-
-fn setup(mut commands: Commands) {
-    // Load and spawn MJCF model
-    let model = MjcfModel::from_file("humanoid.xml").unwrap();
-    commands.spawn(model);
-}
-```
+Debug gizmos: contact points, force vectors, joint axes, muscle/tendon paths,
+sensor readings. All toggleable via `ViewerConfig`.
 
 ## Design Principles
 
-### 1. Compliant vs Impulse-Based Contacts
+### Compliant vs Impulse-Based Contacts
 
-We use **compliant (spring-damper) contacts** rather than impulse-based:
+sim-contact uses **compliant (spring-damper) contacts**. The MuJoCo pipeline
+uses **Lagrange multiplier contacts** (PGS solver). Both coexist; the pipeline
+is the production path.
 
-| Aspect | Compliant | Impulse-Based |
-|--------|-----------|---------------|
-| Force response | Smooth, continuous | Discontinuous at contact |
-| Parameters | Physical (stiffness, damping) | Abstract (iterations, ERP) |
-| Stability | Better for stiff contacts | Sensitive to timestep |
-| Sim-to-real | Tunable to match real materials | Harder to transfer |
+| Aspect | Compliant (sim-contact) | PGS (pipeline) |
+|--------|------------------------|-----------------|
+| Force response | Smooth, continuous | Complementarity-based |
+| Parameters | Physical (stiffness, damping) | solref/solimp |
+| Integration | Explicit or implicit | Semi-implicit + projected |
+| Warmstart | No | Yes (contact correspondence) |
 
-### 2. Determinism
+### Determinism
 
-All solvers use **fixed iteration counts** (not convergence-based):
+The PGS solver uses a fixed iteration cap (`solver_iterations`, default 100)
+with an early-exit tolerance. Same inputs produce same outputs. Fixed
+computational cost is essential for RL training.
 
-```rust
-ContactSolverConfig {
-    velocity_iterations: 4,  // Always 4, regardless of convergence
-    position_iterations: 2,
-}
-```
+### Layer 0 (No Bevy)
 
-This ensures:
-- Same inputs → same outputs (essential for RL)
-- Predictable performance (fixed computational cost)
-- Reproducible debugging
-
-### 3. Domain Randomization
-
-Contact parameters can be randomized for robust policy learning:
-
-```rust
-let randomizer = DomainRandomization::default();
-// stiffness_range: (0.5, 1.5)  -- ±50% variation
-// friction_range: (0.2, 1.0)   -- wide friction range
-// etc.
-
-let params = randomizer.sample(&base_params, rng_samples);
-```
-
-### 4. Layer 0 (No Bevy)
-
-All `sim-*` crates are Layer 0:
-- Zero Bevy dependencies
-- Can run in headless training loops
-- Can deploy to hardware
-- Can integrate with other engines
-
-### 5. SIMD Optimization
-
-Performance-critical operations use batched SIMD:
-
-```rust
-use sim_simd::{Vec3x4, batch_dot_product};
-
-let a = Vec3x4::splat(vec_a);
-let b = Vec3x4::load(&vectors);
-let dots = batch_dot_product(&a, &b);  // 4 dot products in parallel
-```
-
-### 6. Parallel Solving
-
-Constraint islands enable independent parallel solving:
-
-```rust
-let islands = find_constraint_islands(&world);
-islands.par_iter().for_each(|island| {
-    solver.solve_island(island);
-});
-```
+All `sim-*` crates in `L0/` have zero Bevy dependencies. They run in headless
+training loops, deploy to hardware, and integrate with other engines. `sim-bevy`
+is Layer 1 only.
 
 ## Feature Flags
 
@@ -421,120 +352,16 @@ islands.par_iter().for_each(|island| {
 |------|--------|-------------|
 | `parallel` | sim-core, sim-constraint | Rayon-based parallelization |
 | `serde` | Most crates | Serialization support |
+| `sensor` | sim-core | Enable sensor pipeline integration |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 | `muscle` | sim-constraint | Hill-type muscle integration |
-
-## Implementation Status
-
-### Completed ✓
-
-- [x] Compliant contact force model
-- [x] Nonlinear stiffness (d^p)
-- [x] Spring-damper normal forces
-- [x] Friction cone with projection
-- [x] Regularized friction for smooth gradients
-- [x] Rolling and torsional friction
-- [x] Domain randomization infrastructure
-- [x] Deterministic solvers (Gauss-Seidel, PGS, Newton, CG)
-- [x] Collision detection (primitives, convex meshes, triangle meshes, SDF)
-- [x] Broad-phase culling (sweep-and-prune, BVH)
-- [x] Articulated bodies (joint limits, motors, constraints)
-- [x] SIMD optimization
-- [x] Parallel constraint solving
-- [x] Sensor simulation (IMU, F/T, touch, rangefinder, magnetometer)
-- [x] Soft body dynamics (XPBD)
-- [x] Hill-type muscle models
-- [x] Tendon/cable simulation
-- [x] MJCF parser with defaults system
-- [x] URDF parser
-- [x] Height field terrain
-- [x] Signed distance field collision
-- [x] Bevy visualization layer (sim-bevy)
-
-### Known Limitations
-
-#### Joint Stiffness Requires Implicit Integration
-
-The constraint solver currently uses **penalty-based (spring-damper) constraints** with **explicit integration**. This combination is stable for:
-- Joint damping
-- Contact forces
-- Position constraints
-
-However, **joint stiffness** (spring forces to hold joints at reference positions, like MJCF's `stiffness` and `springref` attributes) causes instability:
-
-| Method | Stiffness Support | Why |
-|--------|-------------------|-----|
-| Explicit + Penalty | ❌ Unstable | High spring forces cause oscillation/divergence |
-| Implicit + Penalty | ✅ Stable | Implicit method handles stiff springs |
-| Explicit + Impulse | ✅ Stable | Position corrections, not spring forces |
-
-**Current behavior:** MJCF `stiffness` is parsed but not applied. Joints only use damping.
-
-**Fix requires:** Switching to implicit-in-velocity integration (like MuJoCo's semi-implicit Euler) or an impulse-based constraint solver. This is a significant architectural change affecting:
-- `sim-core/src/integrators.rs` - New implicit integrator
-- `sim-constraint/src/solver.rs` - Modified force computation
-- Integration with contact solver (which may also need implicit treatment)
-
-### Future Considerations
-
-- [ ] **Implicit integration for joint stiffness** (see limitation above)
-- [ ] **Kinematic loops** (currently tree-only articulations)
-- [ ] **Non-convex mesh decomposition** (automatic convex hull splitting)
-- [ ] **Fluid coupling** (buoyancy, drag)
-- [ ] **Include file support** in MJCF/URDF parsers
-- [ ] **GPU acceleration** (CUDA/Metal compute)
-
-## Usage Example
-
-```rust
-use sim_physics::prelude::*;
-use sim_core::{World, Stepper, collision::{CollisionShape, detect_contacts}};
-use sim_contact::{ContactModel, ContactParams, ContactSolver};
-use sim_constraint::PGSSolver;
-
-// Create world
-let mut world = World::default();
-let sphere = world.add_body(
-    RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 1.0))),
-    MassProperties::sphere(1.0, 0.1),
-);
-
-// Add collision shape
-world.set_collision_shape(sphere, CollisionShape::Sphere { radius: 0.1 });
-
-// Create solvers
-let contact_model = ContactModel::new(ContactParams::rubber_on_concrete());
-let mut contact_solver = ContactSolver::with_model(contact_model);
-let mut constraint_solver = PGSSolver::new(100); // 100 iterations
-
-// Simulation loop
-loop {
-    // 1. Detect contacts (broad + narrow phase)
-    let contacts = detect_contacts(&world);
-
-    // 2. Solve contact forces
-    let contact_result = contact_solver.solve(&contacts, |body_id| {
-        world.body(body_id).map(|b| b.state.twist.linear).unwrap_or_default()
-    });
-
-    // 3. Apply contact forces
-    for force_result in &contact_result.forces {
-        world.apply_force(force_result.body_a, force_result.force.total());
-        world.apply_force(force_result.body_b, -force_result.force.total());
-    }
-
-    // 4. Solve joint constraints
-    constraint_solver.solve(&mut world);
-
-    // 5. Integrate
-    stepper.step(&mut world)?;
-}
-```
+| `deformable` | sim-physics | XPBD soft body support |
 
 ## References
 
 - [MuJoCo Documentation](https://mujoco.readthedocs.io/en/stable/modeling.html#contact)
 - [MuJoCo Technical Notes](https://mujoco.readthedocs.io/en/stable/computation.html)
 - Todorov, E. (2014). "Convex and analytically-invertible dynamics with contacts and constraints"
+- Featherstone, R. (2008). *Rigid Body Dynamics Algorithms*. Springer.
 - Macklin, M. et al. (2016). "XPBD: Position-Based Simulation of Compliant Constrained Dynamics"
 - Hill, A.V. (1938). "The heat of shortening and the dynamic constants of muscle"
