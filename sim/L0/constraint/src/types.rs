@@ -262,7 +262,8 @@ impl ConstraintForce {
 }
 
 /// Body state needed for constraint solving.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BodyState {
     /// Body position in world frame.
     pub position: Point3<f64>,
@@ -380,7 +381,8 @@ impl BodyState {
 }
 
 /// Force result for a single joint.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct JointForce {
     /// Parent body ID.
     pub parent: BodyId,
