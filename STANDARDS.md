@@ -323,7 +323,7 @@ cargo tree -p <crate> --edges normal
 
 ```toml
 [dependencies]
-# Core math library - matches parry3d and avian for compatibility
+# Core math library - matches parry3d for collision geometry compatibility
 nalgebra = { workspace = true }
 
 # Error handling - standard for library error types
@@ -385,11 +385,12 @@ Bevy is an implementation detail of the cortenforge SDK, not the foundation.
 
 **Layer 0 Crates:**
 - `mesh-*`
-- `curve-types`, `lumen-geometry`
+- `curve-types`
 - `cf-spatial`
 - `route-*`
+- `sensor-*`
 - `ml-*`
-- `vision-core`, `sim-core`
+- `sim-*` crates (Layer 0)
 
 **Layer 1 (Bevy allowed):**
 - `cortenforge` only
@@ -526,7 +527,7 @@ $ cargo xtask grade mesh-types
 ╠══════════════════════════════════════════════════════════════╣
 ║ Criterion        │ Result           │ Grade │ Threshold      ║
 ╠══════════════════════════════════════════════════════════════╣
-║ 1. Test Coverage │ 94.2%            │   A   │ ≥90%           ║
+║ 1. Test Coverage │ 94.2%            │   A   │ ≥75%           ║
 ║ 2. Documentation │ 0 warnings       │   A   │ 0              ║
 ║ 3. Clippy        │ 0 warnings       │   A   │ 0              ║
 ║ 4. Safety        │ 0 unwrap/expect  │   A   │ 0              ║

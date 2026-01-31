@@ -84,9 +84,9 @@ Here's what has been migrated vs what remains:
 
 ## Quick Status
 
-### Completed Crates (37)
+### Completed Crates (38)
 
-#### Mesh Domain (26 crates)
+#### Mesh Domain (27 crates including umbrella)
 | Crate | Tests | Status |
 |-------|-------|--------|
 | mesh-types | 35 unit, 33 doc | A-GRADE |
@@ -115,6 +115,7 @@ Here's what has been migrated vs what remains:
 | mesh-lattice | 84 unit, 28 doc | A-GRADE |
 | mesh-template | 102 unit, 46 doc | A-GRADE |
 | mesh-gpu | 35 unit, 9 integration | A-GRADE |
+| mesh (umbrella) | re-exports all mesh-* | A-GRADE |
 
 #### Sensor Domain (2 crates)
 | Crate | Tests | Status |
@@ -219,7 +220,7 @@ REMAINING (as needed):
 
 - [x] **.github/workflows/quality-gate.yml** - GitHub Actions quality gate
   - Format, Clippy, Tests (3 platforms + ARM64)
-  - Coverage (≥90% threshold)
+  - Coverage (≥75% threshold, target: 90%)
   - Safety scan (unwrap/expect detection)
   - Security scan (cargo-audit)
   - Dependency policy (cargo-deny)
@@ -275,7 +276,7 @@ Before marking a crate complete:
 - [ ] `cargo clippy -p <crate> -- -D warnings` - Zero warnings
 - [ ] `RUSTDOCFLAGS="-D warnings" cargo doc -p <crate> --no-deps` - Zero doc warnings
 - [ ] No `unwrap()` or `expect()` in library code
-- [ ] ≥90% test coverage
+- [ ] ≥75% test coverage (target: 90%)
 - [ ] Doc examples for all public functions
 - [ ] Error types use `thiserror`
 
@@ -286,13 +287,13 @@ Before marking a crate complete:
 ### Decisions Locked In
 
 - [x] Mono-repo with path dependencies
-- [x] Avian for physics (Bevy-native, ECS-first)
+- [x] ~~Avian for physics~~ → Custom MuJoCo-aligned pipeline (14 sim crates)
 - [x] Layer 0 crates = pure Rust, zero Bevy deps
 - [x] Layer 1 = CortenForge Bevy plugins
 - [x] No CLI in SDK (apps own their CLI)
 - [x] skate-mesh = separate repo
 - [x] CortenForge Studio = future (post-1.0)
-- [x] Use community crates where appropriate (`pathfinding`, `parry3d`, `kiddo`)
+- [x] Use community crates where appropriate (`pathfinding`, `kiddo`)
 - [x] Build domain-specific crates ourselves (curves, routing, voxel grids)
 - [x] anatomy/, electronics/, vehicle/ = documented for future, not built now
 
@@ -993,7 +994,7 @@ These are independent of the mesh work and can be done in parallel when needed.
 ├─────────────────────────┬───────────────────────────┬───────────────────────┤
 │       sensor/*          │          ml/*             │       mesh/*          │
 ├─────────────────────────┼───────────────────────────┼───────────────────────┤
-│ sensor-types            │ ml-types                  │ (26 crates complete)  │
+│ sensor-types            │ ml-types                  │ (27 crates complete)  │
 │ sensor-fusion           │ ml-models                 │                       │
 │                         │ ml-dataset                │                       │
 │                         │ ml-training               │                       │
@@ -1680,8 +1681,8 @@ burn-ndarray = "0.15"
 7. **Burn-native**: Deep Burn integration, not generic ML traits
 8. **CI/CD ready**: Dataset and training crates support TFX-style pipelines
 9. **No vision-types crate**: `Frame`, `DetectionResult`, etc. are ML inference types → live in `ml-types`
-10. **10 non-mesh crates total**: sensor-types, sensor-fusion, ml-types, ml-models, ml-dataset, ml-training, cf-spatial, route-types, route-pathfind, route-optimize
+10. **11 non-mesh crates total**: curve-types, sensor-types, sensor-fusion, ml-types, ml-models, ml-dataset, ml-training, cf-spatial, route-types, route-pathfind, route-optimize
 
 ---
 
-*Last updated: 2026-01-19 (mesh domain complete, sensor/ml domains complete, spatial/routing domains complete, geometry/curve-types complete - 37 A-grade crates total)*
+*Last updated: 2026-01-30 (mesh domain complete, sensor/ml domains complete, spatial/routing domains complete, geometry/curve-types complete - 38 A-grade crates total)*

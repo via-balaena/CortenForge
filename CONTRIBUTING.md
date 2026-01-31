@@ -1,6 +1,6 @@
 # Contributing to CortenForge
 
-> **The Proejct Face Tattoo:** A-grade or it doesn't ship. No exceptions.
+> **The Project Face Tattoo:** A-grade or it doesn't ship. No exceptions.
 
 ---
 
@@ -187,7 +187,7 @@ forge/
 ├── geometry/            ← Curves and surfaces
 ├── routing/             ← 3D pathfinding
 ├── ml/                  ← Machine learning
-├── vision/              ← Computer vision
+├── sensor/              ← Sensor types and fusion
 ├── sim/                 ← Simulation
 └── cortenforge/         ← Bevy SDK umbrella
 ```
@@ -215,11 +215,12 @@ mesh-types/
 These crates have **zero** game engine dependencies:
 
 - `mesh-*` crates
-- `curve-types`, `lumen-geometry`
+- `curve-types`
 - `cf-spatial`
 - `route-*` crates
+- `sensor-*` crates
 - `ml-*` crates
-- `vision-core`, `sim-core`
+- `sim-*` crates (Layer 0)
 
 **Enforcement:** `cargo tree -p <crate> | grep bevy` must return nothing.
 
@@ -317,7 +318,7 @@ docs(mesh-types): add examples to all public functions
 - **Questions:** Open a Discussion
 - **Bugs:** Open an Issue with reproduction steps
 - **Features:** Open an Issue for discussion first
-- **Security:** Email security@cortenforge.org (do not open public issue)
+- **Security:** Email security@cortenforge.dev (do not open public issue)
 
 ---
 

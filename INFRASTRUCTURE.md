@@ -463,7 +463,7 @@ Track these metrics for health visibility:
 | Doc Warnings | 0 | 0 | → |
 | Security Advisories | 0 | ? | - |
 | Mutation Survival | <30% | ? | - |
-| A-Grade Crates | 33 | 33 | → |
+| A-Grade Crates | 38+ | 38 | → |
 | Build Time (clean) | <10min | ? | - |
 | Build Time (cached) | <2min | ? | - |
 
@@ -502,5 +502,5 @@ Track these metrics for health visibility:
 
 ---
 
-*Last updated: 2026-01-18*
-*Version: 1.1.0 - Updated to reflect implemented CI infrastructure*
+*Last updated: 2026-01-30*
+*Version: 1.2.0 - Updated metrics to reflect sim domain and current crate count*

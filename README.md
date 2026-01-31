@@ -15,9 +15,9 @@ CortenForge is a Rust-native SDK for building physical things in software. It pr
 - **Mesh Processing** - 27 crates: load, repair, transform, boolean ops, lattices, scanning
 - **Parametric Geometry** - Bezier, B-spline, NURBS curves, arcs, helices
 - **3D Routing** - A* pathfinding on voxel grids, multi-objective optimization
-- **Physics Simulation** - Rigid body dynamics, constraints, contact models, URDF loading
-- **Machine Learning** - Model training and inference (Burn)
-- **Computer Vision** - Object detection, tracking, sensor fusion
+- **Physics Simulation** - MuJoCo-aligned rigid body dynamics, constraints, contact models, MJCF/URDF loading
+- **Machine Learning** - Model training, inference, and dataset management (Burn)
+- **Sensor Fusion** - Hardware-agnostic sensor types, stream synchronization
 
 The same code runs in simulation and on hardware. Our code must be as reliable as the things built with it.
 
@@ -30,7 +30,7 @@ The same code runs in simulation and on hardware. Our code must be as reliable a
 │                              LAYER 1: Bevy SDK                               │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
 │  │                           cortenforge                                    ││
-│  │  CfMeshPlugin · CfRoutingPlugin · CfVisionPlugin · CfSimPlugin · CfUi  ││
+│  │  CfMeshPlugin · CfRoutingPlugin · CfSensorPlugin · CfSimPlugin · CfUi  ││
 │  └─────────────────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
@@ -39,16 +39,16 @@ The same code runs in simulation and on hardware. Our code must be as reliable a
 │                         LAYER 0: Pure Rust Foundation                        │
 │                           (Zero Bevy Dependencies)                           │
 ├──────────────┬──────────────┬──────────────┬──────────────┬─────────────────┤
-│   mesh/*     │  geometry/*  │   routing/*  │     sim/*    │   ml/* + more   │
+│   mesh/*     │  geometry/*  │   routing/*  │     sim/*    │ ml/* sensor/* + │
 │   27 crates  │              │              │              │                 │
 ├──────────────┼──────────────┼──────────────┼──────────────┼─────────────────┤
-│ mesh-types   │ curve-types  │ route-types  │ sim-types    │ ml-models       │
-│ mesh-io      │   bezier     │ route-path   │ sim-core     │ ml-inference    │
-│ mesh-repair  │   bspline    │ route-opt    │ sim-contact  │ ml-dataset      │
-│ mesh-boolean │   nurbs      │              │ sim-const    │ ml-training     │
-│ mesh-lattice │   arc/helix  │              │ sim-urdf     │ sensor-fusion   │
-│ mesh-scan    │              │              │ sim-physics  │ vision-core     │
-│ ...          │              │              │              │ cf-spatial      │
+│ mesh-types   │ curve-types  │ route-types  │ sim-types    │ ml-types        │
+│ mesh-io      │              │ route-       │ sim-core     │ ml-models       │
+│ mesh-repair  │              │  pathfind    │ sim-contact  │ ml-dataset      │
+│ mesh-boolean │              │ route-       │ sim-constraint│ ml-training     │
+│ mesh-lattice │              │  optimize    │ sim-mjcf     │ sensor-types    │
+│ mesh-scan    │              │              │ sim-physics  │ sensor-fusion   │
+│ ...          │              │              │ ...          │                 │
 ├──────────────┴──────────────┴──────────────┴──────────────┴─────────────────┤
 │                              crates/cf-spatial                               │
 │                  Voxel grids, occupancy maps, raycasting                     │
@@ -78,11 +78,11 @@ The `cortenforge` crate provides Bevy plugins that wrap Layer 0 functionality. T
 ```rust
 use mesh_types::IndexedMesh;
 use mesh_io::load_stl;
-use mesh_repair::{repair, RepairConfig};
+use mesh_repair::{repair_mesh, RepairParams};
 
 // Load and repair a mesh
 let mesh = load_stl("model.stl")?;
-let repaired = repair(&mesh, &RepairConfig::default())?;
+let repaired = repair_mesh(&mesh, &RepairParams::default())?;
 ```
 
 ### Bevy SDK (Layer 1)
@@ -104,14 +104,14 @@ fn main() {
 
 ## Crate Overview
 
-**45+ crates** across 6 domains, all Layer 0 (zero Bevy dependencies).
+**52 crates** across 7 domains, all Layer 0 (zero Bevy dependencies) except sim-bevy.
 
 ### Mesh Domain (`mesh/`) — 27 crates
 
 | Crate | Description |
 |-------|-------------|
 | `mesh-types` | Core types: `Vertex`, `IndexedMesh`, `Triangle`, `AABB` |
-| `mesh-io` | File I/O: STL, OBJ, PLY, glTF |
+| `mesh-io` | File I/O: STL, OBJ, PLY, 3MF, STEP |
 | `mesh-repair` | Weld vertices, remove degenerates, fill holes |
 | `mesh-transform` | RANSAC, PCA, alignment, orientation |
 | `mesh-geodesic` | Geodesic distance computation |
@@ -135,32 +135,42 @@ fn main() {
 | `route-pathfind` | A* on voxel grids (6/26 connectivity), path smoothing |
 | `route-optimize` | Clearance, curvature, shortening, Pareto optimization |
 
-### Simulation Domain (`sim/`)
+### Simulation Domain (`sim/`) — 14 crates
 
 | Crate | Description |
 |-------|-------------|
 | `sim-types` | RigidBodyState, Pose, Twist, JointState, MassProperties |
-| `sim-core` | World container, integrators (Euler, Verlet, RK4), stepper |
-| `sim-constraint` | Joint types (revolute, prismatic, spherical), motors, limits |
-| `sim-contact` | MuJoCo-inspired contact model, friction (Coulomb, Stribeck) |
-| `sim-urdf` | URDF parser, kinematic tree validation, mass property validation |
-| `sim-physics` | Umbrella crate re-exporting all sim crates |
+| `sim-simd` | SIMD batch operations (Vec3x4/Vec3x8) |
+| `sim-core` | MuJoCo-aligned pipeline: Model/Data, FK, CRBA, RNE, PGS solver |
+| `sim-contact` | Compliant contact model, friction, domain randomization |
+| `sim-constraint` | Joint types, motors, limits, equality constraints, solvers |
+| `sim-sensor` | IMU, F/T, touch, rangefinder, magnetometer |
+| `sim-deformable` | XPBD soft bodies (ropes, cloth, volumes) |
+| `sim-muscle` | Hill-type muscle model |
+| `sim-tendon` | Cable/tendon routing and actuation |
+| `sim-mjcf` | MuJoCo XML/MJB format parser |
+| `sim-urdf` | URDF parser, kinematic tree validation |
+| `sim-physics` | Unified L0 API re-exporting all sim crates |
+| `sim-conformance-tests` | MuJoCo conformance and integration tests |
+| `sim-bevy` | Layer 1: Bevy visualization and debug gizmos |
+
+See [sim/ARCHITECTURE.md](./sim/ARCHITECTURE.md) for pipeline details.
 
 ### ML Domain (`ml/`)
 
 | Crate | Description |
 |-------|-------------|
-| `ml-models` | Neural network architectures (Burn) |
-| `ml-inference` | Inference runtime |
-| `ml-dataset` | Dataset management |
-| `ml-training` | Training loops |
+| `ml-types` | Inference types, dataset schemas, labels, metadata |
+| `ml-models` | Neural network architectures + checkpoint persistence (Burn) |
+| `ml-dataset` | Dataset loading, splitting, augmentation, warehousing |
+| `ml-training` | Training loops, loss functions, box matching |
 
-### Vision Domain (`vision/`)
+### Sensor Domain (`sensor/`)
 
 | Crate | Description |
 |-------|-------------|
-| `vision-core` | Detection traits, frame types |
-| `vision-capture` | Camera capture, recording |
+| `sensor-types` | Hardware-agnostic sensor data: IMU, camera, LiDAR, F/T, GPS |
+| `sensor-fusion` | Stream synchronization, temporal alignment, spatial transforms |
 
 ### Foundation (`crates/`)
 
