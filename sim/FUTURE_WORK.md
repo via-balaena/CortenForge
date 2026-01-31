@@ -40,7 +40,7 @@ uses `pgs_solve_contacts()` in `mujoco_pipeline.rs`.
 
 **Approach:**
 1. Build an adapter mapping `mujoco_pipeline.rs` contact structures (`Contact`,
-   `efc_J`, `efc_D`) to CGSolver's `Joint` trait interface.
+   per-contact Jacobian matrices) to CGSolver's `Joint` trait interface.
 2. Add `SolverType` enum (`PGS`, `CG`) to `Model`. Wire selection into
    `mj_fwd_constraint()`.
 3. Benchmark against PGS on humanoid models (30–100 DOFs, 50–500 contacts).
@@ -49,19 +49,22 @@ uses `pgs_solve_contacts()` in `mujoco_pipeline.rs`.
 degradation. CG with Block Jacobi preconditioning maintains stable iteration counts
 where PGS degrades linearly with constraint count.
 
-**Files:** `sim/L0/core/src/mujoco_pipeline.rs`, `sim/L0/constraint/src/cg.rs`,
-`sim/L0/core/src/lib.rs` (new `SolverType`)
+**Files:** `sim/L0/core/src/mujoco_pipeline.rs` (new `SolverType` enum alongside
+`Integrator`, adapter in `mj_fwd_constraint()`), `sim/L0/constraint/src/cg.rs`
 
 ---
 
 ## 3. Higher-Order Integrators
 
-**Current state:** Semi-implicit Euler is the only production integrator. RK4 and
-Velocity Verlet exist in `sim-core/src/integrators.rs` but are standalone functions
-not wired into the MuJoCo pipeline.
+**Current state:** The pipeline `Integrator` enum has three variants (`Euler`,
+`RungeKutta4`, `Implicit`), but `Euler` and `RungeKutta4` both run the same
+semi-implicit Euler code path. `Implicit` handles spring/damper stiffness.
+Standalone `VelocityVerlet` and `RungeKutta4` structs exist in
+`sim-core/src/integrators.rs` but are not used by the pipeline.
 
-**Objective:** Add RK4 (4th-order Runge-Kutta) and implicit Euler as pipeline-integrated
-integrators selectable via `Model::integrator`.
+**Objective:** Implement actual RK4 multi-stage integration behind the existing
+`Integrator::RungeKutta4` variant, and add implicit Euler as a new variant for
+unconditionally stable integration of arbitrarily stiff systems.
 
 **Why it matters:** Higher-order methods improve accuracy for stiff systems — high
 damping, high stiffness springs, and small timestep requirements. Implicit Euler is
