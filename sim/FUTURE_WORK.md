@@ -25,15 +25,15 @@ L^T D L factorization (using the existing `qLD_diag` / `qLD_L` fields in `Data`)
 would reduce factorization from O(nv³) to O(nv). Featherstone's ABA algorithm is
 an equivalent O(nv) alternative.
 
-**Files:** `sim/L0/core/src/mujoco_pipeline.rs` (~line 8351)
+**Files:** `sim/L0/core/src/mujoco_pipeline.rs` (`mj_fwd_acceleration_implicit()`)
 
 ---
 
 ## 2. CGSolver Pipeline Integration
 
-**Current state:** `CGSolver` (1,664 lines, Block Jacobi preconditioner, 13 tests) is
-fully implemented in `sim-constraint/src/cg.rs` but has zero callers. The active
-pipeline uses `pgs_solve_contacts()` in `mujoco_pipeline.rs`.
+**Current state:** `CGSolver` (1,664 lines, Block Jacobi preconditioner) is fully
+implemented in `sim-constraint/src/cg.rs` but has zero callers. The active pipeline
+uses `pgs_solve_contacts()` in `mujoco_pipeline.rs`.
 
 **Objective:** Add CGSolver as an alternative constraint solver selectable via
 `Model::solver_type` or MJCF `<option solver="CG"/>`. PGS remains the default.
@@ -67,8 +67,8 @@ integrators selectable via `Model::integrator`.
 damping, high stiffness springs, and small timestep requirements. Implicit Euler is
 unconditionally stable for arbitrarily stiff problems.
 
-**Prerequisites:** In-place Cholesky (#1) benefits implicit Euler, which requires a
-linear solve per step.
+**Note:** In-place Cholesky (#1) would make implicit Euler's per-step linear solve
+allocation-free, but is not required.
 
 **Files:** `sim/L0/core/src/mujoco_pipeline.rs`, `sim/L0/core/src/integrators.rs`
 
@@ -123,15 +123,14 @@ of the compute backend.
 on a single GPU for RL training at scale.
 
 **Approach:** Port the inner loop of `Data::step()` (FK, collision, PGS, integration)
-to compute shaders. The `sim-gpu` crate (`mesh/mesh-gpu`) provides the wgpu
-infrastructure.
+to compute shaders via wgpu. The `mesh-gpu` crate provides wgpu context and buffer
+management; simulation-specific shaders will need to be built.
 
 **Prerequisites:** Batched Simulation (#5) — the CPU batching API defines the memory
 layout that the GPU backend fills.
 
 **Use cases:** Large-scale RL training, real-time multi-agent simulation.
 
----
 ---
 
 ## Completed Work (Reference)
@@ -141,8 +140,9 @@ document focused on future objectives.
 
 ### Crate Consolidation
 
-Three-phase effort to clean the sim dependency graph. Eliminated two crates
-(sim-contact, sim-contact's solver infrastructure) and ~10,000 lines of dead code.
+Three-phase effort to clean the sim dependency graph. Eliminated sim-contact
+(merged into sim-core) and stripped sim-constraint to types + CGSolver, removing
+~8,000 lines of dead code.
 
 | Phase | Commit | Summary |
 |-------|--------|---------|
