@@ -1,572 +1,246 @@
-# Future Work
+# Simulation — Future Work
 
-> Low-priority tasks that are out of scope for current development phases.
-> These items are tracked here so they don't get lost, but are not blocking any features.
-
----
-
-## Crate Consolidation
-
-### Background
-
-`sim-core` (`mujoco_pipeline.rs`) implements its own MuJoCo-aligned physics pipeline
-end-to-end: forward kinematics, CRBA, RNE, collision detection, penalty-based joint
-limits/equality constraints, and a custom `pgs_solve_contacts()` solver. It does **not**
-call any solver or joint type from `sim-constraint` or `sim-contact`.
-
-Current cross-crate usage (verified by grep):
-
-| Type / API | Defined in | Actually called by | Notes |
-|---|---|---|---|
-| `PGSSolver`, `CGSolver`, `NewtonConstraintSolver`, `ConstraintSolver` | sim-constraint | **nobody** (only sim-core benchmarks) | Dead code in production. sim-core has its own PGS. |
-| `Joint` trait, `RevoluteJoint`, `PrismaticJoint`, … | sim-constraint | **nobody** (only benchmarks + sim-physics re-export) | sim-core uses `MjJointType` enum instead. |
-| `JointMotor`, `MotorMode`, `JointLimits`, `LimitState` | sim-constraint | sim-physics re-export + test | Instantiated in `test_joint_types_accessible` only. Never by pipeline. |
-| `ConstraintIslands`, `SparseJacobian`, `JacobianBuilder` | sim-constraint | **nobody** | Unused infrastructure. |
-| `ContactSolverConfig` | sim-contact | sim-core (re-export only) | Re-exported by sim-core (`lib.rs:130`) → sim-bevy prelude (`lib.rs:123`). Referenced in sim-bevy doc-comments (`lib.rs:63,66`). No actual callers — `set_contact_solver_config()` does not exist. |
-| `ContactPoint` | sim-contact | **sim-bevy** (`CachedContacts` for debug viz) | Only real external consumer. |
-| `ContactModel`, `ContactParams`, `SurfaceMaterial` | sim-contact | sim-physics re-export + test | Instantiated in `test_contact_types_accessible` only. Never by pipeline. |
-| `ContactSolver`, `BatchContactProcessor`, `ContactManifold` | sim-contact | **nobody** | Unused compliant solver + batch infrastructure. |
-| `FrictionModel` trait, `FrictionCone`, etc. | sim-contact | **nobody** | sim-core computes friction inline. |
-
-Phantom Cargo.toml dependencies (declared but zero source-level imports):
-
-| Crate | Declares dependency on | Why it exists | Can remove? |
-|---|---|---|---|
-| sim-mjcf | `sim-constraint` (with `muscle` feature) | Enables muscle feature on sim-constraint transitively; no types imported | Yes — sim-mjcf parses muscles with its own internal `MjcfActuatorType::Muscle`, not sim-constraint types |
-| sim-urdf | `sim-constraint` | No types imported | Yes |
-| sim-bevy | `sim-constraint` | No types imported | Yes |
-| sim-conformance-tests | `sim-constraint`, `sim-contact` | No types imported in test source files | Yes (unless tests are added later) |
-
-### Problem
-
-Two crates (`sim-constraint`, `sim-contact`) carry substantial API surface that is
-**entirely duplicated** by `sim-core`'s MuJoCo pipeline. They remain as dependencies
-because (a) sim-physics re-exports their types as public API, (b) sim-bevy uses
-`ContactPoint` for visualization, (c) benchmarks instantiate the standalone solvers,
-and (d) four other crates declare phantom Cargo.toml dependencies with zero source-level
-imports. This creates confusion about which types are canonical and inflates the
-dependency graph.
-
-### Phase 1 — Remove phantom and dead dependencies
-
-**sim-core (dead dependencies — declared, only used by benchmarks):**
-
-⚠️ **Ordering constraint:** Feature forwards (`sim-constraint/parallel`,
-`sim-contact/serde`, `sim-constraint/serde`) only work on `[dependencies]`, not
-`[dev-dependencies]`. Steps 1–2 below **must** run before step 3, or `cargo check`
-will fail with "feature `parallel` … is not a dependency".
-
-1. [ ] Remove `pub use sim_contact::ContactSolverConfig;` from `sim-core/src/lib.rs:130`
-2. [ ] Remove feature forwards from sim-core `[features]`:
-   - Remove `"sim-constraint/parallel"` from `parallel` feature (Cargo.toml:34)
-   - Remove `"sim-contact/serde"` and `"sim-constraint/serde"` from `serde` feature
-     (Cargo.toml:36)
-3. [ ] Move sim-constraint from `[dependencies]` to `[dev-dependencies]` (needed by
-   `collision_benchmarks.rs` which imports `BodyState`, `ConstraintSolver`, `PGSSolver`,
-   `NewtonConstraintSolver`, `RevoluteJoint`)
-4. [ ] Remove `sim-contact` from `sim-core/Cargo.toml` `[dependencies]` entirely
-5. [ ] Remove `pub use sim_core::ContactSolverConfig;` from sim-bevy prelude
-   (`sim/L1/bevy/src/lib.rs:123`) — this re-exports the type removed above.
-   Also delete the "Contact Solver Configuration" doc-comment section
-   (`lib.rs:53–70`) — lines 53–54 are the section header, 55–69 are the
-   body and code block referencing `ContactSolverConfig::realtime()` and
-   the non-existent `set_contact_solver_config()` method, and line 70 is
-   the trailing blank line. Using the narrower range 55–68 would orphan the
-   `## Contact Solver Configuration` header and closing code fence.
-
-**Phantom dependencies (declared in Cargo.toml, zero source-level imports):**
-- [ ] Remove `sim-constraint` from `sim-mjcf/Cargo.toml` (declares
-  `sim-constraint = { workspace = true, features = ["muscle"] }` but has zero
-  source-level imports of `sim_constraint` — muscle parsing uses sim-mjcf's own
-  internal `MjcfActuatorType::Muscle` type, not sim-constraint's muscle module)
-- [ ] Remove `sim-constraint` from `sim-urdf/Cargo.toml`
-- [ ] Remove `sim-constraint` from `sim-bevy/Cargo.toml`
-- [ ] Audit `sim-conformance-tests/Cargo.toml` — currently declares `sim-constraint`
-  (with muscle feature) and `sim-contact` but no test source files import them; remove
-  if no tests are planned
-
-- Current state: sim-core declares both as regular deps but only benchmarks use
-  sim-constraint. Four other crates declare sim-constraint with zero imports.
-- Target state: sim-core has sim-constraint as dev-dependency only. sim-contact removed
-  entirely from sim-core. Phantom deps removed from mjcf, urdf, bevy, tests.
-- Risk: **Low.** No runtime behavior changes. `ContactSolverConfig` re-export removal
-  from sim-core and sim-bevy is a public API deletion, but the type has zero callers
-  (the `set_contact_solver_config()` method in doc-comments does not exist). Benchmarks
-  continue to compile via dev-dependency. Phantom removal may surface hidden transitive
-  feature requirements — verify with `cargo check --workspace`.
-- Validation: `cargo check --workspace` (catches sim-bevy re-export breakage),
-  `cargo build -p sim-core`, `cargo test -p sim-core`,
-  `cargo bench -p sim-core --no-run`
-
-### Phase 2 — Consolidate sim-contact into sim-core
-
-- [ ] Move `ContactPoint`, `ContactForce`, and `ContactManifold` into
-  `sim-core/src/contact.rs` and wire into the module tree: add `mod contact;`
-  and `pub use contact::{ContactPoint, ContactForce, ContactManifold};` to
-  `sim-core/src/lib.rs`. These types are self-contained — they depend only on
-  `nalgebra` (Point3, Vector3) and `sim-types` (BodyId), both already in sim-core.
-  No sim-simd or sim-contact-internal dependencies. Serde derives are conditional
-  on a `serde` feature already present in sim-core. Note: this is the entire
-  `contact.rs` file (~1500 lines) including two private helper functions
-  (`safe_normalize`, `closest_points_segments`), extensive `ContactPoint` collision
-  methods (sphere-plane, sphere-sphere, box-sphere, box-plane, box-box, capsule-*),
-  and ~450 lines of unit tests. Not just data structs.
-  **nalgebra note:** sim-contact hardcodes `nalgebra = { version = "0.33",
-  default-features = false, features = ["std"] }` instead of using `workspace = true`.
-  After moving to sim-core (which uses `workspace = true` with default features),
-  nalgebra gains additional features. This is additive and safe — no breakage expected,
-  but worth a smoke-test of the collision methods after migration.
-- [ ] Update sim-bevy to import `ContactPoint` from sim-core instead of sim-contact
-  (`sim/L1/bevy/src/resources.rs:4`)
-- [ ] Decide disposition of remaining sim-contact types (not already moved above):
-  - `ContactModel`, `ContactParams`, `SurfaceMaterial`, `DomainRandomization`,
-    `MaterialPair` — move to sim-core if user-facing API is desired, otherwise delete
-  - `FrictionModelType` — delete (model.rs enum selecting friction model, unused by
-    pipeline)
-  - `ContactSolver`, `ContactSolverConfig` — delete (unused, duplicated by pipeline)
-  - `BatchContactProcessor`, `BatchForceResult` — delete (uses sim-simd, unused)
-  - `FrictionModel` trait, `FrictionCone`, `EllipticFrictionCone`,
-    `PyramidalFrictionCone`, `RegularizedFriction`, `RollingFriction`,
-    `TorsionalFriction`, `CompleteFrictionModel`, `CompleteFrictionResult` — delete
-    (sim-core computes friction inline)
-- [ ] Update sim-physics:
-  - Remove `pub use sim_contact;` top-level re-export (`lib.rs:109`)
-  - Update prelude to source contact types from sim-core
-  - Update `test_contact_types_accessible` test (`lib.rs:506`) — uses
-    `ContactParams::default()` and `ContactModel::new()` which come from sim-contact.
-    If these types are deleted rather than moved, delete the test.
-- [ ] Remove `sim-contact` dependency from sim-physics, sim-bevy, and
-  sim-conformance-tests Cargo.tomls
-- [ ] Remove `"sim-contact/serde"` from sim-physics `[features]` serde list
-  (`Cargo.toml:34`)
-- [ ] Update sim-physics package description (`Cargo.toml:3`) which lists sim-contact
-- [ ] Remove `sim-contact` from workspace `Cargo.toml`:
-  - Remove from `[workspace.members]` (line 71)
-  - Remove from `[workspace.dependencies]` (line 296)
-- [ ] Update CI scripts that list `sim-contact` by name:
-  - `scripts/local-quality-check.sh` (lines 187, 240 — WASM and Bevy-free crate lists)
-  - `.github/workflows/quality-gate.yml` (lines 156, 399 — same checks)
-- [ ] Update documentation referencing sim-contact:
-  - `README.md` (lines 47, 144–145) — crate table and diagram
-  - `VISION.md` (lines 113, 167) — architecture diagrams
-  - `sim/ARCHITECTURE.md` — crate directory listing (line 24), "sim-contact"
-    section (line 195), "Compliant vs Impulse-Based Contacts" table (line 324)
-  - `sim/L0/physics/README.md` (line 7) — lists sim-contact as re-exported crate
-  - `sim/docs/MUJOCO_CONFORMANCE.md` (line 28) — maps contact tests to sim-contact
-  - `sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md` (lines 418, 534) — sim-contact
-    section and Cargo.toml example
-  - `docs/MUJOCO_GAP_ANALYSIS.md` — extensive references to sim-contact files
-    throughout (~15 occurrences referencing friction.rs, model.rs, solver.rs,
-    batch.rs, lib.rs)
-- [ ] Delete the `sim-contact` crate directory
-- Current state: sim-contact defines contact geometry types and a compliant contact
-  solver. The only external consumer of a concrete type is sim-bevy (`ContactPoint` in
-  `resources.rs:4`). sim-physics re-exports the full `sim_contact` module (line 109)
-  and specific types via its prelude (lines 198–210). sim-physics has a test that
-  instantiates `ContactParams` and `ContactModel`.
-- Target state: `ContactPoint` lives in `sim-core/src/contact.rs`. `ContactModel`,
-  `ContactParams`, `SurfaceMaterial`, and friction models are either moved to sim-core
-  (if they have future use) or deleted (if they duplicate pipeline logic).
-- Risk: **Low-medium.** sim-bevy import paths change. sim-physics re-exports and tests
-  change. CI scripts need updating. The compliant contact solver is unused but deleting
-  it is a one-way door — audit whether any downstream user code (outside this repo)
-  references it.
-- Validation: `cargo build --workspace`, `cargo test --workspace`, sim-bevy debug viz
-  still renders contact points, CI quality gate passes.
-
-### Phase 3 — Reduce sim-constraint to public API types only
-
-- [ ] Delete standalone solvers and their supporting infrastructure:
-  - `solver.rs` — `ConstraintSolver`, `ConstraintSolverConfig`, `SolverResult`,
-    `JointForce`, `BodyState` (solver-internal types, not used by kept modules)
-  - `pgs.rs` — `PGSSolver`, `PGSSolverConfig`, `PGSSolverResult`, `PGSSolverStats`
-  - `newton.rs` — `NewtonConstraintSolver`, `NewtonSolverConfig`,
-    `NewtonSolverResult`, `SolverStats`
-  - `cg.rs` — `CGSolver`, `CGSolverConfig`, `CGSolverResult`, `CGSolverStats`,
-    `Preconditioner`
-  - `sparse.rs` — `SparseJacobian`, `JacobianBuilder`, `SparseEffectiveMass`,
-    `InvMassBlock`
-  - `islands.rs` — `ConstraintIslands`, `Island`, `IslandStatistics`
-  - `parallel.rs` — parallel island solving (only called from `newton.rs`)
-- [ ] Remove `nalgebra-sparse` from sim-constraint `Cargo.toml` (only used by
-  `sparse.rs`); remove `hashbrown` optional dep (only used by `parallel` feature);
-  remove `thiserror` (declared at Cargo.toml:16 but zero source-level imports —
-  phantom dep even before this phase)
-- [ ] Remove `parallel` feature from sim-constraint (no parallel solvers remain);
-  also remove `rayon` optional dep (Cargo.toml:18) which is only activated by
-  this feature
-- [ ] Remove solver benchmarks from `collision_benchmarks.rs`:
-  - Delete solver benchmark section header and functions (lines 585–742)
-  - Remove solver entries from `criterion_group!` macro (lines 761–765:
-    `bench_constraint_solver`, `bench_pgs_solver`, `bench_newton_solver`,
-    `bench_solver_comparison`) — keep collision/BVH entries and the macro itself
-  - Remove `use sim_constraint::{...}` import block (lines 22–25)
-  - Remove `sim-constraint` from `sim-core/Cargo.toml` `[dev-dependencies]`
-    (added in Phase 1)
-- [ ] Rewrite sim-constraint crate-level documentation (`lib.rs` lines 25–68):
-  - Delete "Constraint Solvers" section (lines 25–35, lists 4 deleted solvers)
-  - Delete "Constraint Islands" section and doc-test example (lines 37–56,
-    uses `ConstraintIslands`, `NewtonConstraintSolver`)
-  - Update "Constraint Formulation" section (lines 58–68) — the math
-    (C(q)=0, J*v=0) is still valid context for joints, but line 67 says
-    "The solver computes constraint forces..." which references deleted
-    solvers. Reword to describe constraint formulation without solver.
-  - Update crate description to reflect type-library role
-- [ ] Update sim-constraint `Cargo.toml` description (line 3): currently
-  `"Joint constraints and motors for articulated body simulation"` — update
-  to reflect type-library role (e.g., "Joint types, motors, and limits for
-  articulated body simulation")
-- [ ] Remove `pub use` re-exports in `lib.rs` for all deleted types (lines 122, 128,
-  137–140)
-- [ ] Remove `mod` declarations in `lib.rs` for deleted modules (lines 102, 104,
-  110–115)
-- [ ] Keep (all in self-contained modules with zero references to deleted code):
-  - `joint.rs` — `Joint` trait, `RevoluteJoint`, `PrismaticJoint`, `FixedJoint`,
-    `SphericalJoint`, `UniversalJoint`, `CylindricalJoint`, `PlanarJoint`,
-    `FreeJoint`, `JointType` enum, `JointDof`
-  - `limits.rs` — `JointLimits`, `LimitState`, `LimitStiffness`
-  - `motor.rs` — `JointMotor`, `MotorMode`
-  - `types.rs` — `JointState`, `JointVelocity`, `ConstraintForce`
-  - `equality.rs` — all equality constraint types
-  - `actuator.rs` — all actuator types
-  - `muscle.rs` (optional) — `MuscleJoint`, `MuscleCommands`, `MuscleJointBuilder`
-- [ ] Evaluate whether kept types should move to sim-types (pure data) vs stay in
-  sim-constraint (if they carry behavior)
-- [ ] Update sim-physics:
-  - Remove `ConstraintSolver` and `ConstraintSolverConfig` from prelude re-exports
-    (deleted types). Keep joint type and motor re-exports.
-  - Update `test_joint_types_accessible` test (`lib.rs:499`) — uses
-    `sim_constraint::JointLimits::new()` directly. Path still works if JointLimits
-    stays in sim-constraint, but verify after module deletions.
-- [ ] Update CI scripts if sim-constraint is renamed or has changed features:
-  - `scripts/local-quality-check.sh` (lines 188, 241)
-  - `.github/workflows/quality-gate.yml` (lines 157, 400)
-- [ ] Update documentation referencing deleted sim-constraint solvers:
-  - `sim/ARCHITECTURE.md` — "sim-constraint" section (line 212) lists deleted
-    solvers; feature flags table (line 351) references `parallel` feature.
-    Rewrite section to reflect type-library role.
-  - `sim/docs/MUJOCO_CONFORMANCE.md` (line 29) — maps constraint tests to
-    sim-constraint
-  - `sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md` (lines 491, 535) — sim-constraint
-    section and Cargo.toml example
-  - `docs/MUJOCO_GAP_ANALYSIS.md` — extensive references to deleted files
-    (newton.rs, pgs.rs, islands.rs, sparse.rs, parallel.rs, cg.rs — ~20
-    occurrences). References to kept files (actuator.rs, equality.rs, joint.rs)
-    remain valid.
-- [ ] Resolve name collisions between sim-types and sim-constraint — three types share
-  names but have different definitions:
-  - `JointLimits` — sim-types (`types/src/joint.rs:111`) vs sim-constraint
-    (`constraint/src/limits.rs:12`)
-  - `JointType` — sim-types (`types/src/joint.rs:45`) vs sim-constraint
-    (`constraint/src/joint.rs:57`)
-  - `JointState` — sim-types (`types/src/joint.rs:238`) vs sim-constraint
-    (`constraint/src/types.rs:14`)
-  - sim-physics prelude imports the sim-types versions. If merging (Phase 4),
-    reconcile or rename the sim-constraint variants.
-- Current state: sim-constraint contains 4 solvers, sparse matrix infrastructure,
-  island detection, joint types, motor/limit types, equality constraints, and actuators.
-  Only the type definitions are consumed (via sim-physics re-export). No solver is
-  called in production.
-- Target state: sim-constraint is a **type library** for joint definitions, motors,
-  limits, and equality constraints. No solver implementations. Sparse/island code
-  deleted.
-- Risk: **Medium.** Deleting solver code is irreversible (though recoverable from git).
-  The CGSolver with Block Jacobi preconditioner is listed in Physics Features as a
-  future integration candidate — if that work is planned soon, keep CGSolver and delete
-  only the others.
-- Validation: `cargo build --workspace`, `cargo test --workspace`, `cargo bench -p sim-core --no-run` (benchmarks must be updated first), verify sim-physics prelude
-  still exports all intended public types.
-
-### Phase 4 (optional) — Merge sim-constraint into sim-types
-
-- [ ] Evaluate whether remaining sim-constraint types are pure data (move to sim-types)
-  or carry significant behavior (keep separate). Key types to assess:
-  - `JointLimits` (has `compute_force()` method — behavioral)
-  - `JointMotor` (has `compute_force()` — behavioral)
-  - `Joint` trait (defines `parent_anchor()`, `child_anchor()`, `axis()` etc. — trait
-    with default impls, implementations in each joint struct carry geometric behavior)
-  - `JointDof`, `JointState`, `JointVelocity`, `ConstraintForce` — likely pure data
-- [ ] Resolve three name collisions (`JointLimits`, `JointType`, `JointState`)
-  between sim-types and sim-constraint before merge (see Phase 3 for details)
-- [ ] If pure data: merge into `sim-types/src/joint.rs`, `sim-types/src/motor.rs`, etc.
-- [ ] If behavioral: keep sim-constraint as a thin crate
-- [ ] If fully merged: remove sim-constraint from workspace `Cargo.toml`
-  (`[workspace.members]` and `[workspace.dependencies]`), delete crate directory,
-  update `README.md` (line 144) and `VISION.md`, update CI crate lists in
-  `local-quality-check.sh` and `quality-gate.yml`
-- [ ] Update sim-physics:
-  - Remove `pub use sim_constraint;` (line 108), update prelude to source types from
-    sim-types
-  - Remove `sim-constraint` from `[dependencies]` (`Cargo.toml:14`)
-  - Remove `"sim-constraint/serde"` from serde feature list (`Cargo.toml:33`)
-  - Update package description (`Cargo.toml:3`) which lists sim-constraint
-- Current state: After Phase 3, sim-constraint would contain only type definitions
-  and trait implementations (no solvers).
-- Target state: One fewer crate if types are pure data; no change if they carry logic
-  that depends on nalgebra matrix operations.
-- Risk: **Low.** Purely organizational. However, sim-types currently has minimal
-  dependencies — adding nalgebra-heavy types would increase its compile footprint.
-- Validation: `cargo build --workspace`, `cargo test --workspace`
-
-### Dependency graph
-
-Before (arrows = Cargo.toml `[dependencies]`, **bold** = has source-level imports):
-```
-sim-core    → sim-constraint          (benchmarks only, no lib imports)
-            → sim-contact             (re-exports ContactSolverConfig, never read)
-sim-physics → **sim-constraint**      (re-exports types via prelude)
-            → **sim-contact**         (re-exports types via prelude)
-            → sim-core
-sim-bevy    → **sim-contact**         (imports ContactPoint for debug viz)
-            → sim-constraint          (phantom — zero imports)
-            → sim-core
-sim-mjcf    → sim-constraint[muscle]  (phantom — zero imports)
-sim-urdf    → sim-constraint          (phantom — zero imports)
-sim-tests   → sim-constraint, sim-contact  (phantom — zero imports in .rs files)
-```
-
-After Phase 1 (phantom + dead dep removal):
-```
-sim-core    → (dev-dep only: sim-constraint for benchmarks)
-sim-physics → **sim-constraint**      (re-exports types)
-            → **sim-contact**         (re-exports types)
-            → sim-core
-sim-bevy    → **sim-contact**         (ContactPoint)
-            → sim-core
-```
-
-After Phases 2–3 (sim-contact deleted, sim-constraint stripped):
-```
-sim-physics → sim-core                (ContactPoint re-exported from here)
-            → sim-constraint          (types only, no solvers)
-sim-bevy    → sim-core                (ContactPoint moved here)
-```
-
-### When to address
-
-Phase 1 can be done immediately — it removes phantom/dead dependency declarations,
-converts one benchmark dependency to dev-dep, and carries near-zero risk.
-
-Phases 2–3 should be done when:
-1. Batched simulation work begins (clean dependency graph simplifies the new crate)
-2. Public API surface is being reviewed for 1.0
-3. Build times or dependency confusion becomes friction
-
-Not urgent because:
-- Current structure compiles and works correctly
-- No runtime cost from unused dependencies
-- Compile times are acceptable (unused crate code is compiled but not linked)
+Objectives ordered by expected value. Dependencies noted where they exist;
+#1–#5 can largely proceed in parallel, #6 requires #5.
 
 ---
 
-## Code Quality Issues
+## 1. In-Place Cholesky Factorization
 
-Identified during solref/solimp review. Items marked ✅ have been addressed.
+**Current state:** `mj_fwd_acceleration_implicit()` in `mujoco_pipeline.rs` uses
+`std::mem::replace` to swap the scratch matrix out for Cholesky consumption. This
+allocates O(nv²) per step for the replacement zero matrix (nv = degrees of freedom) —
+acceptable for small models but wasteful at scale.
 
-### P0 — Correctness
+**Objective:** Implement an in-place Cholesky factorization that operates on
+`&mut DMatrix<f64>` directly. Wrap LAPACK's `dpotrf` (which factorizes in place) or
+implement a manual lower-triangular decomposition. The factored result overwrites
+`scratch_m_impl` in place; a thin wrapper provides the `solve` interface.
 
-| # | Issue | Status | Notes |
-|---|-------|--------|-------|
-| 1 | Hardcoded Baumgarte parameters — joint limits, equality constraints ignore solref/solimp | ✅ Fixed | `eq_solref` and `jnt_solref` now read via `solref_to_penalty()`. Hardcoded `10000/1000` retained as fallback when solref ≤ 0. `eq_solimp` consumed via `compute_impedance()` — position-dependent impedance scales penalty stiffness/damping in connect, weld, and joint equality constraints. Contact solver CFM also uses `compute_impedance()` with full solimp (previously only read `solimp[0]`). |
-| 2 | Distance equality constraints missing | ✅ Fixed | `apply_distance_constraint` enforces `\|p1 - p2\| = target_distance` between geom centers using penalty+impedance (Baumgarte stabilization). Added `geom_name_to_id` mapping in model builder. Handles singularity when geoms coincide (+Z fallback direction). `eq_obj1id`/`eq_obj2id` store geom IDs; body IDs derived via `model.geom_body[]`. Auto-computes initial distance when `distance` attribute omitted. 7 integration tests cover normal operation, worldbody geom, geom2-omitted (world origin sentinel), auto-distance, zero target, error handling, and inactive constraint. |
+**Impact:** Eliminates the last per-step allocation in the implicit integrator path.
+For nv=100 DOFs this saves ~80 KB/step.
 
-### P1 — Performance / Quality
+**Stretch goal:** For serial kinematic chains the mass matrix is banded. A sparse
+L^T D L factorization (using the existing `qLD_diag` / `qLD_L` fields in `Data`)
+would reduce factorization from O(nv³) to O(nv). Featherstone's ABA algorithm is
+an equivalent O(nv) alternative.
 
-| # | Issue | Status | Notes |
-|---|-------|--------|-------|
-| 3 | Contact clone in hot path | ✅ Fixed | Borrow split via `std::mem::take` on `efc_lambda`; `pgs_solve_contacts` now takes `&Data` + `&mut HashMap`. See details below. |
-| 4 | Cholesky clone for implicit integrator | ✅ Fixed | `std::mem::replace` swaps populated matrix out for Cholesky consumption; zero matrix left for next step. See details below. |
-| 5 | Duplicate contact structures | ✅ Improved | Old `ContactPoint` in mujoco_pipeline.rs removed. Two distinct types remain: `Contact` (mujoco pipeline constraint struct) and `ContactPoint` (sim-contact geometric contact). These serve different purposes. |
-
-#### Issue 3 — Contact clone in hot path
-
-**Location:** `mj_fwd_constraint()` at `mujoco_pipeline.rs:8045`
-
-```rust
-let contacts: Vec<Contact> = data.contacts.clone();
-```
-
-**Cost:** O(n_contacts) allocation per step. `Contact` is ~216 bytes; with pre-allocated
-capacity of 256 contacts this clones up to ~55 KB per simulation step.
-
-**Root cause:** Borrow checker conflict — `data.contacts` cannot be borrowed while `&mut Data`
-is passed to `pgs_solve_contacts()` (line 6539). The `&mut` prevents holding any shared
-reference into `data` across the call.
-
-**Key insight:** `pgs_solve_contacts` mostly reads from `data` (`qM_cholesky`,
-`qfrc_applied`, `qfrc_actuator`, `qfrc_passive`, `qfrc_bias`) but **does** write to
-`data.efc_lambda` (warmstart cache: clear + insert). The `&mut Data` cannot simply become
-`&Data` without addressing `efc_lambda`.
-
-**Fix (applied):** Split the borrow by extracting `efc_lambda` from `data` via
-`std::mem::take` before the contact block. Pass it as a separate `&mut HashMap` parameter
-to `pgs_solve_contacts` (signature changed to `data: &Data` + `efc_lambda: &mut HashMap`).
-Restore `data.efc_lambda` after the call. This eliminates the borrow conflict —
-`data.contacts` is borrowed as `&[Contact]` during the PGS call without cloning.
-
-#### Issue 4 — Cholesky clone for implicit integrator
-
-**Location:** `mj_fwd_acceleration_implicit()` at `mujoco_pipeline.rs:8351–8355`
-
-```rust
-let chol = data
-    .scratch_m_impl
-    .clone()
-    .cholesky()
-    .ok_or(StepError::CholeskyFailed)?;
-```
-
-**Cost:** O(nv²) allocation per step. For nv=30 DOFs this copies 900 f64s (~7.2 KB).
-Larger models (nv=100+) copy ~80 KB per step.
-
-**Root cause:** nalgebra's `.cholesky()` consumes the matrix (takes ownership). Since
-`scratch_m_impl` lives inside `Data`, it cannot be moved out directly, so the code clones
-it to produce an owned value for the API.
-
-**Key insight:** `scratch_m_impl` is **never read after** the Cholesky call within this
-function. It is a scratch buffer that gets completely overwritten via `copy_from(&data.qM)`
-at the start of every step. The clone preserves data that is immediately discarded.
-
-**Fix (applied):** Use `std::mem::replace` to swap the populated matrix out with a
-same-sized zero matrix, then factorize the owned value. This still allocates O(nv²) for
-the replacement zero matrix, but avoids copying the populated values — a cheaper zero-fill
-instead of element-by-element clone. The zero matrix left behind is correctly sized for the
-next step's `copy_from(&data.qM)` call (nalgebra's `copy_from` requires matching
-dimensions).
-
-**True zero-allocation alternative (not yet implemented):** Implement an in-place Cholesky
-factorization that operates on `&mut DMatrix<f64>` without consuming it. This could wrap
-LAPACK's `dpotrf` (which factorizes in place) or use a manual implementation. The factored
-lower triangle would overwrite `scratch_m_impl` directly, and a thin wrapper would provide
-the `solve` interface. This is more invasive but achieves O(0) allocation.
-
-**Future optimization (out of scope):** For serial kinematic chains the mass matrix is
-banded with O(1) bandwidth. A sparse L^T D L factorization (using the existing `qLD_diag` /
-`qLD_L` fields already defined in `Data`) would reduce factorization from O(nv³) to O(nv).
-Featherstone's ABA algorithm is another O(nv) alternative. These are tracked under
-Physics Features.
-
-### P2 — Minor
-
-| # | Issue | Status | Notes |
-|---|-------|--------|-------|
-| 6 | Block Jacobi preconditioner placeholder in `cg.rs` | ✅ Fixed | See details below. |
-| 7 | Various hardcoded numerical thresholds | ✅ Fixed | See details below. |
-
-#### Issue 6 — Block Jacobi preconditioner placeholder
-
-**Location:** `build_preconditioner()` at `sim/L0/constraint/src/cg.rs`
-
-**Impact:** Users selecting `Preconditioner::BlockJacobi` (used by the `high_accuracy()`
-and `large_system()` config presets) silently got scalar Jacobi instead. No warning was
-emitted.
-
-**Key finding: CGSolver is currently dead code.** It is exported from `sim-constraint`
-(`lib.rs:122`) but has zero callers outside the crate. The active simulation pipeline uses
-`pgs_solve_contacts` in `mujoco_pipeline.rs`, not the CGSolver.
-
-**Fix (applied):** Implemented proper block Jacobi preconditioner:
-
-1. Added `PreconditionerData` enum with `Diagonal` and `Block` variants — diagonal stores
-   a `DVector<f64>` for element-wise multiply (None/Jacobi); Block stores inverted dense
-   sub-blocks with offsets and sizes for block-wise matrix-vector solve.
-2. `build_preconditioner()` now accepts `constraint_blocks: &[(usize, usize)]` describing
-   `(row_offset, num_rows)` pairs. For BlockJacobi, it extracts each diagonal block
-   `A[off..off+sz, off..off+sz]` and inverts via Cholesky (with scalar Jacobi fallback
-   if Cholesky fails for a block). Falls back to scalar Jacobi when no block info provided.
-3. `apply_preconditioner()` dispatches on the enum: Diagonal does `r.component_mul(diag)`,
-   Block iterates over blocks computing `z[rows] = block_inv * r[rows]`.
-4. `solve()` extracts block boundaries from `SolverConstraint::row_offset` and `num_rows`,
-   passes them through `cg_solve()` to `build_preconditioner()`.
-5. Two tests added: `test_block_jacobi_preconditioner` (correctness on 6×6 block-diagonal
-   SPD system) and `test_block_jacobi_fewer_iterations_than_scalar` (verifies Block Jacobi
-   converges in ≤ iterations vs scalar Jacobi on systems with strong intra-block coupling).
-
-#### Issue 7 — Hardcoded numerical thresholds
-
-Approximately 25+ hardcoded numerical thresholds existed in `mujoco_pipeline.rs`. They fall
-into three categories:
-
-**Category A — Numerical safety guards (NOT configurable, documented in-code):**
-
-~12 values like `1e-10`, `1e-12`, `1e-15` used to prevent division by zero and detect
-degenerate geometry. These are correct and remain fixed constants. Examples:
-- `GEOM_EPSILON = 1e-10` — collision detection zero-guard
-- `1e-10` in `build_tangent_basis()` — normalization check
-- `1e-12` in PGS diagonal inversion — matrix conditioning
-- `0.001` minimum solref timeconst clamp — prevents division by zero in Baumgarte
-  stabilization; now documented with safety rationale
-- `FRICTION_VELOCITY_THRESHOLD = 1e-12` — effectively zero; now documented as safety guard
-- `.max(10)` PGS iteration floor — documented as safety clamp preventing under-resolution
-- `.max(1e-8)` solver tolerance floor — documented as safety clamp preventing infinite loops
-
-**Category B — Global solver parameters (already configurable):**
-
-Already exposed in the `Model` struct:
-- `solver_tolerance` (default `1e-8`) — PGS convergence criterion
-- `solver_iterations` (default `100`) — max PGS iterations
-- `impratio` (default `1.0`) — constraint impedance ratio
-- `geom_solref`, `geom_solimp`, `geom_margin`, `geom_gap` — per-geometry contact params
-
-**Category C — Fix (applied):**
-
-6 new configurable fields added to `Model`, `ModelBuilder`, `MjcfOption`, and the MJCF
-parser. Inline literals replaced with model field reads. All defaults match previous
-hardcoded values, preserving backward compatibility.
-
-| Field | Default | What it controls |
-|-------|---------|------------------|
-| `Model::regularization` | `1e-6` | PGS constraint softness. CFM now scales as `regularization + (1-d) * regularization * 100` (previously independent `1e-4` literal). |
-| `Model::default_eq_stiffness` | `10000.0` | Fallback stiffness for equality constraints and joint limits without solref. |
-| `Model::default_eq_damping` | `1000.0` | Fallback damping for equality constraints and joint limits without solref. |
-| `Model::max_constraint_vel` | `1.0` | Maximum linear velocity change per timestep from constraint forces (m/s). |
-| `Model::max_constraint_angvel` | `1.0` | Maximum angular velocity change per timestep from constraint forces (rad/s). |
-| `Model::friction_smoothing` | `1000.0` | Sharpness of tanh friction transition. Replaced `FRICTION_SMOOTHING` const. |
-
-Parseable from MJCF `<option>` via attributes: `regularization`, `default_eq_stiffness`,
-`default_eq_damping`, `max_constraint_vel`, `max_constraint_angvel`, `friction_smoothing`.
+**Files:** `sim/L0/core/src/mujoco_pipeline.rs` (`mj_fwd_acceleration_implicit()`)
 
 ---
 
-## Physics Features
+## 2. CGSolver Pipeline Integration
 
-### Deformable Bodies
+**Current state:** `CGSolver` (1,664 lines, Block Jacobi preconditioner) is fully
+implemented in `sim-constraint/src/cg.rs` but has zero callers in the pipeline. The
+active pipeline uses PGS (Projected Gauss-Seidel) via `pgs_solve_contacts()` in
+`mujoco_pipeline.rs`.
 
-- [ ] Implement soft body simulation (FEM or position-based dynamics)
-- [ ] Implement cloth simulation
-- Current state: `sim-deformable` crate exists as stub only
-- Use cases: Soft tissue simulation, cloth/fabric, pneumatic actuators
+**Objective:** Add CGSolver as an alternative constraint solver selectable via
+`Model::solver_type` or MJCF `<option solver="CG"/>`. PGS remains the default.
 
-### Implicit Integrators
+**Approach:**
+1. Build an adapter mapping `mujoco_pipeline.rs` contact structures (`Contact`,
+   per-contact Jacobian matrices) to CGSolver's `Joint` trait interface.
+2. Add `SolverType` enum (`PGS`, `CG`) to `Model`. Wire selection into
+   `mj_fwd_constraint()`.
+3. Benchmark against PGS on humanoid models (30–100 DOFs, 50–500 contacts).
 
-- [ ] Add RK4 (Runge-Kutta 4th order) integrator
-- [ ] Add implicit Euler for stiff systems
-- Current state: Semi-implicit Euler only
-- Rationale: Higher-order integrators improve accuracy for stiff systems (high damping, high stiffness springs)
+**Motivation:** PGS iteration count grows linearly with constraint count. CG with
+Block Jacobi preconditioning maintains stable iteration counts. The crossover point
+is around 100+ simultaneous contacts on humanoid-scale models.
 
-### CGSolver Integration for Large-Scale Systems
+**Files:** `sim/L0/core/src/mujoco_pipeline.rs` (new `SolverType` enum alongside
+`Integrator`, adapter in `mj_fwd_constraint()`), `sim/L0/constraint/src/cg.rs`
 
-- [ ] Integrate CGSolver as alternative constraint solver in the MuJoCo pipeline
-- Current state: CGSolver is fully implemented in `sim-constraint` (with Block Jacobi preconditioner) but has zero callers in the active pipeline. PGS is the only solver used in `mujoco_pipeline.rs`.
-- Trigger: When the system needs to handle large constraint counts (100+ contacts) where PGS convergence becomes slow
-- Rationale: CG with Block Jacobi preconditioning scales better than PGS for large systems — PGS convergence degrades with constraint count while preconditioned CG maintains stable iteration counts
-- Prerequisites: Adapter layer mapping `mujoco_pipeline.rs` contact structures to CGSolver's `Joint` trait interface
-- **Dependency on Crate Consolidation Phase 3:** If Phase 3 is executed before this
-  work begins, CGSolver and `cg.rs` must be excluded from deletion. The consolidation
-  spec flags this explicitly.
+---
 
-### Batched Simulation
+## 3. Higher-Order Integrators
 
-- [ ] CPU-parallel multi-environment architecture for RL training
-- [ ] Thread-per-env and/or SIMD-across-envs execution strategies
-- [ ] Shared-nothing memory layout to avoid synchronization overhead
-- [ ] Batched API surface (step N environments, return N observation tensors)
-- Current state: Single-environment execution only
-- Rationale: Prerequisite to GPU acceleration — validates the batching API, memory layout, and training loop integration on CPU before porting hot paths to GPU. Thousands of parallel humanoid envs are needed for policy learning; the batching architecture is independent of the compute backend.
+**Current state:** Two parallel integrator systems exist:
+- Pipeline `Integrator` enum in `mujoco_pipeline.rs` — three variants (`Euler`,
+  `RungeKutta4`, `Implicit`), but `Euler` and `RungeKutta4` both run the same
+  semi-implicit Euler code path. `Implicit` runs an implicit midpoint method that
+  accounts for spring/damper stiffness via the `scratch_m_impl` mass matrix.
+- Separate `Integrator` trait (not the pipeline enum) in `integrators.rs` — six implementations
+  (`ExplicitEuler`, `SemiImplicitEuler`, `VelocityVerlet`, `RungeKutta4`,
+  `ImplicitVelocity`, `ImplicitFast`) with a matching `IntegrationMethod` enum
+  in sim-types. Not used by the pipeline.
 
-### GPU Acceleration
+**Objective:** Implement actual RK4 multi-stage integration behind the existing
+`Integrator::RungeKutta4` pipeline variant, and add a new `ImplicitEuler` pipeline
+variant for unconditionally stable integration of arbitrarily stiff systems.
 
-- [ ] CUDA/Metal/WebGPU backend for parallel simulation
-- [ ] Batch simulation for RL training (thousands of envs)
-- Current state: CPU-only
-- Use cases: Large-scale RL training, real-time multi-agent simulation
+**Why it matters:** Higher-order methods improve accuracy for stiff systems — high
+damping, high stiffness springs, and small timestep requirements. Implicit Euler is
+unconditionally stable for arbitrarily stiff problems.
+
+**Note:** In-place Cholesky (#1) would make implicit Euler's per-step linear solve
+allocation-free, but is not required.
+
+**Files:** `sim/L0/core/src/mujoco_pipeline.rs`, `sim/L0/core/src/integrators.rs`
+
+---
+
+## 4. Deformable Bodies
+
+**Current state:** `sim-deformable` is a standalone 7,700-line crate (86 tests) with:
+- `XpbdSolver` — XPBD constraint solver with configurable substeps, damping, sleeping
+- `Cloth` — triangle meshes with distance + dihedral bending constraints
+- `SoftBody` — tetrahedral meshes with distance + volume constraints
+- `CapsuleChain` — 1D particle chains with distance + bending constraints (ropes, cables)
+- `Material` — continuum mechanics model (Young's modulus, Poisson's ratio, density)
+  with 14 presets (rubber, cloth, soft tissue, muscle, etc.)
+- Skeletal skinning — `Skeleton`, `Bone`, `SkinnedMesh` with Linear Blend Skinning
+  and Dual Quaternion Skinning (1,410 lines)
+- `FlexEdge` constraints — stretch, shear, twist variants
+
+The crate is fully implemented but has zero coupling to the MuJoCo pipeline. `sim-physics`
+already re-exports it behind an optional `deformable` feature flag with full prelude
+coverage — the API surface is wired, the pipeline integration is not.
+
+**Objective:** Couple deformable bodies into the rigid body pipeline so they interact
+through the same contact solver and step in the same simulation loop.
+
+**Approach:**
+1. **Collision detection:** Broadphase (deformable vertex AABBs vs rigid geom AABBs)
+   and narrowphase (vertex-vs-geom closest point) to produce `Contact` structs between
+   deformable vertices and rigid bodies.
+2. **Contact solver coupling:** Feed deformable-rigid `Contact`s into PGS (or CG)
+   alongside rigid-rigid contacts. Deformable vertices act as 3-DOF point masses with
+   per-particle inverse mass from the XPBD solver.
+3. **Force feedback:** Apply PGS contact impulses back to deformable vertex velocities
+   and rigid body `qfrc_constraint`. XPBD constraint projection runs after contact
+   resolution within the same timestep.
+4. **Pipeline wiring:** Add a deformable substep to `Data::step()` that calls
+   `XpbdSolver::step()` for each registered deformable body, interleaved with rigid
+   body integration.
+
+**Material model extensibility:** The XPBD solver derives compliance from Young's
+modulus, Poisson's ratio, and density — fast, stable, and sufficient for RL training.
+A `MaterialModel` trait would allow plugging in alternative constitutive models (e.g.,
+Neo-Hookean FEM for quantitative stress accuracy) behind the same `DeformableBody`
+interface. XPBD remains the default; FEM is opt-in for use cases that require it
+(surgical simulation, material validation).
+
+**Use cases:** Soft tissue simulation, cloth/fabric, ropes/cables, pneumatic actuators.
+
+**Files:** `sim/L0/deformable/`, `sim/L0/core/src/mujoco_pipeline.rs`
+
+---
+
+## 5. Batched Simulation
+
+**Current state:** Single-environment execution only. Each `Model`/`Data` pair runs
+one simulation.
+
+**Objective:** CPU-parallel multi-environment architecture for RL training. Step N
+environments in parallel, return N observation tensors.
+
+**Approach:**
+- Task-per-env parallelism via rayon's work-stealing thread pool (shared-nothing `Data`)
+- SIMD-across-envs for batched math via `sim-simd` (batch dot products, AABB tests,
+  contact force computation already implemented)
+- Batched API: `BatchData::step_all(&model)` → `Vec<Observation>`
+- Validate memory layout and training loop integration on CPU before GPU port
+
+**Why it matters:** Prerequisite to GPU acceleration. Thousands of parallel humanoid
+environments are needed for policy learning; the batching architecture is independent
+of the compute backend.
+
+**Prerequisites:** None — can proceed in parallel with #1–#4.
+
+---
+
+## 6. GPU Acceleration
+
+**Current state:** CPU-only.
+
+**Objective:** wgpu backend for batch simulation. Thousands of parallel environments
+on a single GPU for RL training at scale.
+
+**Approach:** Port the inner loop of `Data::step()` (FK, collision, PGS, integration)
+to compute shaders via wgpu. The `mesh-gpu` crate provides wgpu context and buffer
+management; simulation-specific shaders will need to be built.
+
+**Prerequisites:** Batched Simulation (#5) — the CPU batching API defines the memory
+layout that the GPU backend fills.
+
+**Use cases:** Large-scale RL training, real-time multi-agent simulation.
+
+---
+
+## Completed Work (Reference)
+
+Historical context for decisions referenced above. Details collapsed to keep this
+document focused on future objectives.
+
+### Crate Consolidation
+
+Three-phase effort to clean the sim dependency graph. Eliminated sim-contact
+(merged into sim-core) and stripped sim-constraint to types + CGSolver, removing
+~11,000 lines of dead code.
+
+| Phase | Commit | Summary |
+|-------|--------|---------|
+| 1 — Remove phantom deps | `ba1d729` | Removed 4 phantom Cargo.toml deps (sim-mjcf, sim-urdf, sim-bevy, sim-tests → sim-constraint). Removed dead re-exports (`ContactSolverConfig`). Moved sim-constraint from sim-core deps to dev-deps. |
+| 2 — Consolidate sim-contact | `9ed88ea` | Moved `ContactPoint`, `ContactForce`, `ContactManifold` into `sim-core/src/contact.rs`. Deleted all other sim-contact types. Deleted `sim/L0/contact/` crate. Updated sim-bevy, sim-physics, CI, docs. |
+| 3 — Reduce sim-constraint | `a5cef72` | Deleted PGS, Newton, sparse Jacobian, island discovery, parallel solver modules (6 files, ~6,000 lines). Extracted `BodyState`/`JointForce` to types.rs. Preserved CGSolver (1,664 lines). Removed `nalgebra-sparse` from workspace. |
+
+**Current dependency graph:**
+```
+sim-physics → sim-core        (Model/Data, contact types, collision, integration)
+            → sim-constraint  (joint types, motors, limits, CGSolver)
+sim-bevy    → sim-core        (ContactPoint for debug visualization)
+```
+
+sim-core has zero dependency on sim-constraint.
+
+**Phase 4 (deferred):** Merging sim-constraint into sim-types was evaluated and
+deferred. sim-constraint contains behavioral types (`JointLimits.compute_force()`,
+`Joint` trait with geometric methods) that don't belong in a pure-data crate. Three
+name collisions (`JointLimits`, `JointType`, `JointState`) between sim-types and
+sim-constraint would require renames with no functional gain. CGSolver (1,664 lines)
+would still need a home. The consolidation effort achieved its goal: clean dependency
+graph, no dead code, no phantom deps.
+
+### Code Quality Fixes
+
+Seven issues identified during solref/solimp review, all resolved.
+
+| # | Issue | Fix |
+|---|-------|-----|
+| 1 | Hardcoded Baumgarte parameters | `solref_to_penalty()` + `compute_impedance()` read solref/solimp. Hardcoded values retained as fallback. |
+| 2 | Distance equality constraints missing | `apply_distance_constraint` with Baumgarte stabilization. 7 integration tests. |
+| 3 | Contact clone in hot path | Borrow split via `std::mem::take` on `efc_lambda`. PGS signature: `&Data` + `&mut HashMap`. |
+| 4 | Cholesky clone for implicit integrator | `std::mem::replace` swaps matrix out for Cholesky. Zero-fill replacement. Further optimization → Future Work #1. |
+| 5 | Duplicate contact structures | Old `ContactPoint` removed from pipeline. `Contact` (pipeline constraint) and `ContactPoint` (geometric contact) are distinct types. |
+| 6 | Block Jacobi placeholder in CGSolver | Full Block Jacobi preconditioner: Cholesky-inverted diagonal blocks, enum dispatch. 2 tests. |
+| 7 | Hardcoded numerical thresholds | 6 new `Model` fields (`regularization`, `default_eq_stiffness`, `default_eq_damping`, `max_constraint_vel`, `max_constraint_angvel`, `friction_smoothing`). Parseable from MJCF `<option>`. |
+
+<details>
+<summary>Issue 3 — Borrow split pattern (architectural reference)</summary>
+
+**Problem:** `data.contacts` cannot be borrowed while `&mut Data` is passed to
+`pgs_solve_contacts()` — the `&mut` prevents any shared reference.
+
+**Solution:** `std::mem::take` extracts `efc_lambda` from `data` before the contact
+block. PGS signature changed to `data: &Data` + `efc_lambda: &mut HashMap`.
+`data.contacts` is then borrowed as `&[Contact]` without cloning.
+
+**Location:** `mj_fwd_constraint()` at `mujoco_pipeline.rs`
+</details>
+
+<details>
+<summary>Issue 4 — Cholesky allocation pattern (architectural reference)</summary>
+
+**Problem:** nalgebra's `.cholesky()` consumes the matrix (takes ownership). Since
+`scratch_m_impl` lives inside `Data`, it must be cloned to produce an owned value.
+
+**Current fix:** `std::mem::replace` swaps the populated matrix with a same-sized
+zero matrix. Cheaper than clone (zero-fill vs element-copy) but still O(nv²).
+
+**True fix:** In-place Cholesky — see Future Work #1.
+
+**Location:** `mj_fwd_acceleration_implicit()` at `mujoco_pipeline.rs`
+</details>

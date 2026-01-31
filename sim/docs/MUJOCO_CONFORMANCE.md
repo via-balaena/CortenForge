@@ -25,8 +25,8 @@ Run MuJoCo's own test suite against CortenForge implementations.
 | Category | MuJoCo Source | CortenForge Target |
 |----------|---------------|-------------------|
 | Forward dynamics | `test/engine_forward_test.cc` | sim-core |
-| Contact physics | `test/engine_collision_test.cc` | sim-contact |
-| Constraint solver | `test/engine_core_smooth_test.cc` | sim-constraint |
+| Contact physics | `test/engine_collision_test.cc` | sim-core |
+| Constraint solver | `test/engine_core_smooth_test.cc` | sim-core + sim-constraint (CGSolver, joints) |
 | MJCF parsing | `test/xml_test.cc` | sim-mjcf |
 | Sensor readings | `test/sensor_test.cc` | sim-sensor |
 
@@ -305,7 +305,7 @@ Some differences from MuJoCo are by design:
 | Memory model | Pre-allocated pools | Dynamic allocation | Rust idioms, safety |
 | Threading | OpenMP | Rayon | Rust ecosystem |
 | GPU | Custom CUDA | Future: wgpu | Cross-platform |
-| Contact solver | Custom sparse | nalgebra-sparse | Maintainability |
+| Contact solver | Custom sparse | CG solver (sim-constraint) | Maintainability |
 | Visualization | Built-in | Separate L1 crate | Headless training |
 
 ---
@@ -319,7 +319,7 @@ sim/L0/tests/
 │   ├── mod.rs
 │   ├── forward_dynamics.rs
 │   ├── contact_physics.rs
-│   ├── constraint_solver.rs
+│   ├── joint_constraints.rs
 │   └── reference_data/
 │       ├── pendulum_trajectory.json
 │       ├── cartpole_trajectory.json

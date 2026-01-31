@@ -80,8 +80,12 @@ pub mod mujoco_pipeline;
 pub mod raycast;
 pub mod sdf;
 
+// Contact geometry types (moved from sim-contact)
+pub mod contact;
+
 pub use collision_shape::{Aabb, Axis, CollisionShape};
 
+pub use contact::{ContactForce, ContactManifold, ContactPoint};
 pub use heightfield::{HeightFieldContact, HeightFieldData};
 pub use mesh::{
     MeshContact, Triangle, TriangleMeshData, closest_point_on_triangle, mesh_box_contact,
@@ -125,9 +129,6 @@ pub use mujoco_pipeline::{
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
 };
-
-// Re-export contact solver config for performance tuning
-pub use sim_contact::ContactSolverConfig;
 
 // Re-export key types from sim-types for convenience
 pub use sim_types::{

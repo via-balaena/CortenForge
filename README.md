@@ -44,7 +44,7 @@ The same code runs in simulation and on hardware. Our code must be as reliable a
 ├──────────────┼──────────────┼──────────────┼──────────────┼─────────────────┤
 │ mesh-types   │ curve-types  │ route-types  │ sim-types    │ ml-types        │
 │ mesh-io      │              │ route-       │ sim-core     │ ml-models       │
-│ mesh-repair  │              │  pathfind    │ sim-contact  │ ml-dataset      │
+│ mesh-repair  │              │  pathfind    │ sim-sensor   │ ml-dataset      │
 │ mesh-boolean │              │ route-       │ sim-constraint│ ml-training     │
 │ mesh-lattice │              │  optimize    │ sim-mjcf     │ sensor-types    │
 │ mesh-scan    │              │              │ sim-physics  │ sensor-fusion   │
@@ -104,7 +104,7 @@ fn main() {
 
 ## Crate Overview
 
-**52 crates** across 7 domains, all Layer 0 (zero Bevy dependencies) except sim-bevy.
+**51 crates** across 7 domains, all Layer 0 (zero Bevy dependencies) except sim-bevy.
 
 ### Mesh Domain (`mesh/`) — 27 crates
 
@@ -135,14 +135,13 @@ fn main() {
 | `route-pathfind` | A* on voxel grids (6/26 connectivity), path smoothing |
 | `route-optimize` | Clearance, curvature, shortening, Pareto optimization |
 
-### Simulation Domain (`sim/`) — 14 crates
+### Simulation Domain (`sim/`) — 13 crates
 
 | Crate | Description |
 |-------|-------------|
 | `sim-types` | RigidBodyState, Pose, Twist, JointState, MassProperties |
 | `sim-simd` | SIMD batch operations (Vec3x4/Vec3x8) |
 | `sim-core` | MuJoCo-aligned pipeline: Model/Data, FK, CRBA, RNE, PGS solver |
-| `sim-contact` | Compliant contact model, friction, domain randomization |
 | `sim-constraint` | Joint types, motors, limits, equality constraints, solvers |
 | `sim-sensor` | IMU, F/T, touch, rangefinder, magnetometer |
 | `sim-deformable` | XPBD soft bodies (ropes, cloth, volumes) |

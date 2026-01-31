@@ -5,7 +5,6 @@
 //! - [`sim_types`] - Core data types (bodies, joints, poses, actions)
 //! - [`sim_core`] - Simulation engine (Model/Data architecture, integrators)
 //! - [`sim_constraint`] - Joint constraints (revolute, prismatic, fixed, etc.)
-//! - [`sim_contact`] - Contact dynamics (collision response, friction)
 //! - [`sim_urdf`] - URDF robot description parser
 //! - [`sim_mjcf`] - MJCF (`MuJoCo` XML Format) model loader
 //! - [`sim_muscle`] - Hill-type muscle actuators for biomechanical simulation
@@ -106,7 +105,6 @@
 
 // Re-export sub-crates
 pub use sim_constraint;
-pub use sim_contact;
 pub use sim_core;
 #[cfg(feature = "deformable")]
 pub use sim_deformable;
@@ -174,10 +172,10 @@ pub mod prelude {
     // ========================================================================
 
     pub use sim_constraint::{
-        // Solver
-        ConstraintSolver,
-        ConstraintSolverConfig,
+        // Body/joint force types (for constraint solving)
+        BodyState,
         FixedJoint,
+        JointForce,
         // Motor
         JointMotor,
         // Limits
@@ -192,22 +190,10 @@ pub mod prelude {
     };
 
     // ========================================================================
-    // Contact dynamics from sim-contact
+    // Contact types from sim-core
     // ========================================================================
 
-    pub use sim_contact::{
-        ContactForce,
-        // Contact model
-        ContactModel,
-        ContactParams,
-        ContactPoint,
-        // Domain randomization
-        DomainRandomization,
-        // Friction
-        FrictionModel,
-        // Materials
-        SurfaceMaterial,
-    };
+    pub use sim_core::{ContactForce, ContactManifold, ContactPoint};
 
     // ========================================================================
     // URDF loading from sim-urdf
@@ -500,13 +486,6 @@ mod tests {
         // Verify constraint types are accessible
         let _limits = sim_constraint::JointLimits::new(-1.0, 1.0);
         let _motor = JointMotor::velocity(1.0, 10.0);
-    }
-
-    #[test]
-    fn test_contact_types_accessible() {
-        // Verify contact types are accessible
-        let _params = ContactParams::default();
-        let _model = ContactModel::new(ContactParams::default());
     }
 
     #[test]

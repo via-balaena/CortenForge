@@ -5419,16 +5419,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nalgebra-sparse"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1107e2587bc373090389bd5b54e05ac3184fd02d7c102decf5d76b8feb84b2d0"
-dependencies = [
- "nalgebra",
- "num-traits",
-]
-
-[[package]]
 name = "ndarray"
 version = "0.15.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7442,8 +7432,6 @@ dependencies = [
  "bevy",
  "glam",
  "nalgebra",
- "sim-constraint",
- "sim-contact",
  "sim-core",
  "sim-mjcf",
  "sim-types",
@@ -7457,8 +7445,6 @@ version = "0.1.0"
 dependencies = [
  "approx 0.5.1",
  "nalgebra",
- "sim-constraint",
- "sim-contact",
  "sim-core",
  "sim-mjcf",
  "sim-muscle",
@@ -7473,27 +7459,10 @@ name = "sim-constraint"
 version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
- "hashbrown 0.15.5",
  "nalgebra",
- "nalgebra-sparse",
- "rayon",
  "serde",
  "sim-muscle",
  "sim-types",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sim-contact"
-version = "0.1.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "proptest",
- "serde",
- "sim-simd",
- "sim-types",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -7507,8 +7476,6 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "serde",
- "sim-constraint",
- "sim-contact",
  "sim-sensor",
  "sim-simd",
  "sim-types",
@@ -7540,7 +7507,6 @@ dependencies = [
  "nalgebra",
  "quick-xml 0.37.5",
  "serde",
- "sim-constraint",
  "sim-core",
  "sim-muscle",
  "sim-tendon",
@@ -7568,7 +7534,6 @@ dependencies = [
  "approx 0.5.1",
  "nalgebra",
  "sim-constraint",
- "sim-contact",
  "sim-core",
  "sim-deformable",
  "sim-mjcf",
@@ -7631,7 +7596,6 @@ dependencies = [
  "nalgebra",
  "quick-xml 0.37.5",
  "serde",
- "sim-constraint",
  "sim-core",
  "sim-mjcf",
  "sim-types",

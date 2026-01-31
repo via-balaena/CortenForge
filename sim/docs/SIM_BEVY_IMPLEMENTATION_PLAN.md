@@ -415,10 +415,10 @@ CollisionShape::convex_mesh(vertices: Vec<Point3<f64>>) -> CollisionShape
 shape.bounding_radius() -> f64
 ```
 
-### sim-contact: Contact Types
+### sim-core: Contact Types
 
 ```rust
-use sim_contact::{ContactPoint, ContactManifold, ContactForce};
+use sim_core::{ContactPoint, ContactManifold, ContactForce};
 
 // ContactPoint - single contact
 pub struct ContactPoint {
@@ -531,7 +531,6 @@ categories = ["simulation", "visualization", "game-development"]
 # Layer 0 simulation crates
 sim-core = { path = "../sim-core" }
 sim-types = { path = "../sim-types" }
-sim-contact = { path = "../sim-contact" }
 sim-constraint = { path = "../sim-constraint" }
 sim-mjcf = { path = "../sim-mjcf" }
 sim-urdf = { path = "../sim-urdf" }

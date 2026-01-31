@@ -1,6 +1,7 @@
 //! Common types for constraint computation.
 
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Point3, Vector3};
+use sim_types::BodyId;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -258,6 +259,137 @@ impl ConstraintForce {
             child_torque: self.child_torque + other.child_torque,
         }
     }
+}
+
+/// Body state needed for constraint solving.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct BodyState {
+    /// Body position in world frame.
+    pub position: Point3<f64>,
+    /// Body orientation (as rotation matrix for efficiency).
+    pub rotation: Matrix3<f64>,
+    /// Linear velocity.
+    pub linear_velocity: Vector3<f64>,
+    /// Angular velocity.
+    pub angular_velocity: Vector3<f64>,
+    /// Inverse mass (0 for static bodies).
+    pub inv_mass: f64,
+    /// Inverse inertia tensor in world frame.
+    pub inv_inertia: Matrix3<f64>,
+    /// Whether this body is static.
+    pub is_static: bool,
+}
+
+impl BodyState {
+    /// Create a static/fixed body state (infinite mass, cannot move).
+    #[must_use]
+    pub fn fixed(position: Point3<f64>) -> Self {
+        Self {
+            position,
+            rotation: Matrix3::identity(),
+            linear_velocity: Vector3::zeros(),
+            angular_velocity: Vector3::zeros(),
+            inv_mass: 0.0,
+            inv_inertia: Matrix3::zeros(),
+            is_static: true,
+        }
+    }
+
+    /// Create a dynamic body at rest with the given mass properties.
+    ///
+    /// # Arguments
+    ///
+    /// * `position` - World position of the body
+    /// * `mass` - Mass of the body (must be positive)
+    /// * `inertia` - Inertia tensor (diagonal elements, e.g., `[Ixx, Iyy, Izz]`)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use sim_constraint::BodyState;
+    /// use nalgebra::{Point3, Vector3};
+    ///
+    /// // Create a 1kg body with uniform inertia of 0.1
+    /// let body = BodyState::dynamic(
+    ///     Point3::new(0.0, 0.0, 1.0),
+    ///     1.0,
+    ///     Vector3::new(0.1, 0.1, 0.1),
+    /// );
+    /// ```
+    #[must_use]
+    pub fn dynamic(position: Point3<f64>, mass: f64, inertia: Vector3<f64>) -> Self {
+        let inv_mass = if mass > 0.0 { 1.0 / mass } else { 0.0 };
+        let inv_inertia = Matrix3::from_diagonal(&Vector3::new(
+            if inertia.x > 0.0 {
+                1.0 / inertia.x
+            } else {
+                0.0
+            },
+            if inertia.y > 0.0 {
+                1.0 / inertia.y
+            } else {
+                0.0
+            },
+            if inertia.z > 0.0 {
+                1.0 / inertia.z
+            } else {
+                0.0
+            },
+        ));
+
+        Self {
+            position,
+            rotation: Matrix3::identity(),
+            linear_velocity: Vector3::zeros(),
+            angular_velocity: Vector3::zeros(),
+            inv_mass,
+            inv_inertia,
+            is_static: false,
+        }
+    }
+
+    /// Create a dynamic body with initial velocity.
+    ///
+    /// # Arguments
+    ///
+    /// * `position` - World position of the body
+    /// * `mass` - Mass of the body (must be positive)
+    /// * `inertia` - Inertia tensor (diagonal elements)
+    /// * `linear_velocity` - Initial linear velocity
+    /// * `angular_velocity` - Initial angular velocity
+    #[must_use]
+    pub fn dynamic_with_velocity(
+        position: Point3<f64>,
+        mass: f64,
+        inertia: Vector3<f64>,
+        linear_velocity: Vector3<f64>,
+        angular_velocity: Vector3<f64>,
+    ) -> Self {
+        let mut state = Self::dynamic(position, mass, inertia);
+        state.linear_velocity = linear_velocity;
+        state.angular_velocity = angular_velocity;
+        state
+    }
+
+    /// Set the rotation matrix.
+    #[must_use]
+    pub fn with_rotation(mut self, rotation: Matrix3<f64>) -> Self {
+        self.rotation = rotation;
+        self
+    }
+}
+
+/// Force result for a single joint.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct JointForce {
+    /// Parent body ID.
+    pub parent: BodyId,
+    /// Child body ID.
+    pub child: BodyId,
+    /// The constraint force.
+    pub force: ConstraintForce,
 }
 
 #[cfg(test)]

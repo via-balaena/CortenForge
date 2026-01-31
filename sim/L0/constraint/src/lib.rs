@@ -1,4 +1,4 @@
-//! Joint constraints and motors for articulated body simulation.
+//! Joint constraints, motors, and `CGSolver` for articulated body simulation.
 //!
 //! This crate provides constraint-based joints for connecting rigid bodies
 //! into articulated structures like robot arms, legged robots, and mechanisms.
@@ -22,38 +22,12 @@
 //! - **Damping**: Viscous friction at the joint
 //! - **Spring**: Passive stiffness toward a rest position
 //!
-//! # Constraint Solvers
+//! # `CGSolver` (Experimental)
 //!
-//! Four solvers are available:
-//!
-//! - [`ConstraintSolver`]: Simple per-joint Gauss-Seidel solver (8-16 iterations typical)
-//! - [`PGSSolver`]: Full Projected Gauss-Seidel solver with SOR (100 iterations typical,
-//!   MuJoCo-compatible, supports warm-starting and convergence tracking)
-//! - [`NewtonConstraintSolver`]: Newton-Raphson solver with analytical Jacobians
-//!   (2-3 iterations typical, faster convergence for stiff systems)
-//! - [`CGSolver`]: Conjugate Gradient solver for large sparse systems
-//!   (optimal for 100+ constraints, supports preconditioning)
-//!
-//! # Constraint Islands
-//!
-//! For performance optimization, use [`ConstraintIslands`] to automatically detect
-//! independent groups of bodies that can be solved separately:
-//!
-//! ```
-//! use sim_constraint::{ConstraintIslands, NewtonConstraintSolver, RevoluteJoint};
-//! use sim_types::BodyId;
-//! use nalgebra::Vector3;
-//!
-//! let joints = vec![
-//!     RevoluteJoint::new(BodyId::new(0), BodyId::new(1), Vector3::z()),
-//!     // Disconnected pair forms separate island
-//!     RevoluteJoint::new(BodyId::new(2), BodyId::new(3), Vector3::z()),
-//! ];
-//!
-//! // Automatic island detection and solving
-//! let mut solver = NewtonConstraintSolver::default();
-//! // solver.solve_with_islands(&joints, get_body_state, dt);
-//! ```
+//! [`CGSolver`] is a Conjugate Gradient solver with Block Jacobi preconditioner,
+//! designed for large sparse constraint systems (100+ constraints). It is retained
+//! for future integration into the MuJoCo-aligned physics pipeline as an alternative
+//! solver for large-scale systems.
 //!
 //! # Constraint Formulation
 //!
@@ -64,8 +38,8 @@
 //! J * v = 0       (velocity constraint, J = dC/dq)
 //! ```
 //!
-//! The solver computes constraint forces (Lagrange multipliers) to satisfy
-//! these constraints while respecting joint limits and motor commands.
+//! Constraint forces (Lagrange multipliers) satisfy these constraints while
+//! respecting joint limits and motor commands.
 //!
 //! # Example
 //!
@@ -101,18 +75,11 @@
 pub mod actuator;
 mod cg;
 pub mod equality;
-mod islands;
 mod joint;
 mod limits;
 mod motor;
 #[cfg(feature = "muscle")]
 mod muscle;
-mod newton;
-#[cfg(feature = "parallel")]
-pub mod parallel;
-mod pgs;
-mod solver;
-mod sparse;
 mod types;
 
 pub use actuator::{
@@ -125,7 +92,6 @@ pub use equality::{
     DistanceConstraint, GearCoupling, JointCoupling, JointPositionConstraint, TendonConstraint,
     TendonNetwork, WeldConstraint,
 };
-pub use islands::{ConstraintIslands, Island, IslandStatistics};
 pub use joint::{
     CylindricalJoint, FixedJoint, FreeJoint, Joint, JointDof, JointType, PlanarJoint,
     PrismaticJoint, RevoluteJoint, SphericalJoint, UniversalJoint,
@@ -134,11 +100,7 @@ pub use limits::{JointLimits, LimitState, LimitStiffness};
 pub use motor::{JointMotor, MotorMode};
 #[cfg(feature = "muscle")]
 pub use muscle::{MuscleCommands, MuscleJoint, MuscleJointBuilder};
-pub use newton::{NewtonConstraintSolver, NewtonSolverConfig, NewtonSolverResult, SolverStats};
-pub use pgs::{PGSSolver, PGSSolverConfig, PGSSolverResult, PGSSolverStats};
-pub use solver::{BodyState, ConstraintSolver, ConstraintSolverConfig, JointForce, SolverResult};
-pub use sparse::{InvMassBlock, JacobianBuilder, SparseEffectiveMass, SparseJacobian};
-pub use types::{ConstraintForce, JointState, JointVelocity};
+pub use types::{BodyState, ConstraintForce, JointForce, JointState, JointVelocity};
 
 // Re-export types needed for constraint computation
 pub use sim_types::{BodyId, Pose, Vector3};

@@ -68,7 +68,6 @@ members = [
     "sim/L0/types",
     "sim/L0/simd",
     "sim/L0/core",
-    "sim/L0/contact",
     "sim/L0/constraint",
     "sim/L0/sensor",
     "sim/L0/deformable",
@@ -127,8 +126,6 @@ let_underscore_must_use = "deny"
 # ---------------------------------------------------------------------------
 # nalgebra: Linear algebra, matches parry3d and avian for compatibility
 nalgebra = "0.33"
-# nalgebra-sparse: Sparse matrix support for constraint solvers
-nalgebra-sparse = "0.10"
 # glam: Fast, simple math for games/graphics
 glam = "0.30"
 
@@ -293,7 +290,6 @@ ml-training = { path = "ml/ml-training" }
 sim-types = { path = "sim/L0/types" }
 sim-simd = { path = "sim/L0/simd" }
 sim-core = { path = "sim/L0/core" }
-sim-contact = { path = "sim/L0/contact" }
 sim-constraint = { path = "sim/L0/constraint" }
 sim-sensor = { path = "sim/L0/sensor" }
 sim-deformable = { path = "sim/L0/deformable" }

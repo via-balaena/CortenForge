@@ -162,7 +162,7 @@ if result.converged {
 }
 ```
 
-**Files:** `sim-constraint/src/newton.rs`
+**Files:** `sim-constraint/src/newton.rs` (removed in Phase 3 consolidation; solver types extracted to `sim-constraint/src/types.rs`)
 
 ### Implementation Notes: PGS (Gauss-Seidel) Solver ✅ COMPLETED
 
@@ -228,7 +228,7 @@ println!("Used warm start: {}, SOR factor: {}",
     stats.used_warm_start, stats.sor_factor);
 ```
 
-**Files:** `sim-constraint/src/pgs.rs`
+**Files:** `sim-constraint/src/pgs.rs` (removed in Phase 3 consolidation)
 
 ### Implementation Notes: Constraint Islands ✅ COMPLETED
 
@@ -273,7 +273,7 @@ let islands = ConstraintIslands::build(&joints);
 let result = solver.solve_islands(&joints, &islands, &get_body_state, dt);
 ```
 
-**Files:** `sim-constraint/src/islands.rs`, `sim-constraint/src/newton.rs`
+**Files:** `sim-constraint/src/islands.rs` (removed in Phase 3 consolidation), `sim-constraint/src/newton.rs` (removed in Phase 3 consolidation)
 
 ---
 
@@ -308,7 +308,7 @@ f_n ≥ 0, (f_t1/μ_1)² + (f_t2/μ_2)² ≤ f_n²
 - Presets: `ContactParams::treaded()`, `ContactParams::brushed_metal()`
 - Conversions between circular and elliptic cones
 
-**Files modified:** `sim-contact/src/friction.rs`, `sim-contact/src/model.rs`, `sim-contact/src/params.rs`
+**Files modified:** `sim-core/src/contact.rs`, `sim-core/src/mujoco_pipeline.rs` (formerly in `sim-contact`, now consolidated into `sim-core`)
 
 ### Implementation Notes: Advanced Friction Models ✅ COMPLETED
 
@@ -516,9 +516,9 @@ All three joint types are now fully implemented with constraint solver support:
 - Methods: `set_angle()`, `set_displacement()`, `compute_joint_forces()`
 
 **Constraint solver support added to:**
-- `ConstraintSolver` (Gauss-Seidel): `solve_free_constraint()`, `solve_planar_constraint()`, `solve_cylindrical_constraint()`
-- `NewtonConstraintSolver`: Jacobian and error computation for all three types
-- `CGSolver`: Jacobian and error computation for all three types
+- `ConstraintSolver` (Gauss-Seidel): `solve_free_constraint()`, `solve_planar_constraint()`, `solve_cylindrical_constraint()` (removed in Phase 3 consolidation — `ConstraintSolver` was in `solver.rs`; `BodyState`/`JointForce` extracted to `types.rs`)
+- `NewtonConstraintSolver`: Jacobian and error computation for all three types (removed in Phase 3 consolidation — was in `newton.rs`)
+- `CGSolver`: Jacobian and error computation for all three types (kept — `cg.rs`)
 - MJCF loader: Updated to parse `cylindrical` and `planar` joint types
 
 ---
@@ -995,9 +995,9 @@ for _ in 0..100 {
 
 | Feature | MuJoCo | CortenForge | Status | Priority |
 |---------|--------|-------------|--------|----------|
-| Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` | **Implemented** | - |
+| Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` (removed in Phase 3 consolidation — was in `sparse.rs`) | **Implemented** | - |
 | Sleeping bodies | Native | `Body::is_sleeping`, `put_to_sleep()`, `wake_up()` | **Implemented** | - |
-| Constraint islands | Auto | `ConstraintIslands` | **Implemented** | - |
+| Constraint islands | Auto | `ConstraintIslands` (removed in Phase 3 consolidation — was in `islands.rs`) | **Implemented** | - |
 | **Multi-threading** | Model-data separation | `parallel` feature with rayon | ✅ **Implemented** | - |
 | SIMD | Likely | `sim-simd` crate with explicit vectorization | **Implemented** | - |
 
@@ -1018,11 +1018,9 @@ optimized for modern CPU SIMD instructions (AVX/AVX2, AVX-512, NEON).
    - Uses `find_max_dot()` to process vertices in groups of 4-8
    - 2-4x speedup for meshes with >16 vertices
 
-2. **Contact Force Computation** (`sim-contact/src/batch.rs`):
-   - `BatchContactProcessor` processes 4 contacts simultaneously
-   - Batch normal force: `batch_normal_force_4()`
-   - Batch friction force: `batch_friction_force_4()`
-   - 2-3x speedup for scenes with many contacts
+2. **Contact Force Computation** (removed — formerly `sim-contact/src/batch.rs`):
+   - `BatchContactProcessor` has been removed (was in `sim-contact`)
+   - Contact types (`ContactPoint`, `ContactManifold`, `ContactForce`) now live in `sim-core`
 
 3. **AABB Overlap Testing** (`sim-simd/src/batch_ops.rs`):
    - `batch_aabb_overlap_4()` tests 4 AABB pairs at once
@@ -1048,10 +1046,8 @@ let dots = batch_dot_product_4(&vectors, &direction);
 let vertices = vec![/* many vertices */];
 let (idx, max_dot) = find_max_dot(&vertices, &direction);
 
-// Batch contact processing
-use sim_contact::{BatchContactProcessor, ContactParams};
-let processor = BatchContactProcessor::new(ContactParams::default());
-let forces = processor.compute_forces_batch(&contacts, &velocities);
+// Contact types now in sim-core
+use sim_core::{ContactPoint, ContactManifold, ContactForce};
 ```
 
 **Performance Notes:**
@@ -1059,7 +1055,7 @@ let forces = processor.compute_forces_batch(&contacts, &velocities);
 - On Apple Silicon (NEON): expect 2-3x speedup
 - Scalar fallback available when remainder doesn't fill a batch
 
-**Files:** `sim-simd/src/`, `sim-core/src/gjk_epa.rs`, `sim-contact/src/batch.rs`
+**Files:** `sim-simd/src/`, `sim-core/src/gjk_epa.rs` (batch contact processor removed; contact types now in `sim-core`)
 
 ### Implementation Notes: Multi-threading ✅ COMPLETED
 
@@ -1072,11 +1068,12 @@ we use a snapshot-based approach with island-parallel constraint solving.
 1. **Disabled by default**: Parallel constraint solving is disabled by default
    (`ParallelConfig::default().parallel_constraints == false`) because it uses
    the Newton solver internally, which may produce slightly different results
-   than the default `ConstraintSolver`. Enable explicitly for performance.
+   than the default `ConstraintSolver` (removed in Phase 3 consolidation — was in `solver.rs`). Enable explicitly for performance.
 
-2. **Uses Newton solver**: The parallel implementation uses `NewtonConstraintSolver`
-   rather than `ConstraintSolver` because Newton already has island-based solving
-   infrastructure and provides fast convergence (2-3 iterations vs 8-16 for Gauss-Seidel).
+2. **Uses Newton solver**: The parallel implementation used `NewtonConstraintSolver`
+   (removed in Phase 3 consolidation — was in `newton.rs`)
+   rather than `ConstraintSolver` because Newton already had island-based solving
+   infrastructure and provided fast convergence (2-3 iterations vs 8-16 for Gauss-Seidel).
 
 3. **Body integration remains sequential**: `World::integrate_bodies_parallel()` is
    actually sequential because hashbrown's `HashMap` does not support `par_iter_mut()`.
@@ -1090,8 +1087,8 @@ we use a snapshot-based approach with island-parallel constraint solving.
 **Key types and methods:**
 
 - `ParallelConfig` in `sim-types/src/config.rs` - Configuration for parallel thresholds
-- `sim_constraint::parallel::solve_islands_parallel()` - Core parallel solving function
-- `NewtonConstraintSolver::solve_islands_parallel()` - Solver method using rayon
+- `sim_constraint::parallel::solve_islands_parallel()` (removed in Phase 3 consolidation — was in `parallel.rs`)
+- `NewtonConstraintSolver::solve_islands_parallel()` (removed in Phase 3 consolidation — was in `newton.rs`)
 - `World::solve_constraints_parallel()` - Parallel constraint solving entry point
 
 **Usage:**
@@ -1116,7 +1113,7 @@ stepper.step(&mut world)?;
 - Falls back to sequential for small scenes to avoid parallel overhead
 - Use `ParallelConfig::sequential()` for deterministic results matching default solver
 
-**Files:** `sim-constraint/src/parallel.rs`, `sim-constraint/src/newton.rs`,
+**Files:** `sim-constraint/src/parallel.rs` (removed in Phase 3 consolidation), `sim-constraint/src/newton.rs` (removed in Phase 3 consolidation),
 `sim-core/src/world.rs`, `sim-core/src/stepper.rs`, `sim-types/src/config.rs`
 
 ### Implementation Notes: Sleeping Bodies ✅ COMPLETED
@@ -1390,7 +1387,7 @@ The `parallel` feature enables multi-threaded constraint solving and body integr
 - Parallel body integration via `integrate_bodies_parallel()`
 - Configurable thresholds via `ParallelConfig`
 
-**Files:** `sim-constraint/src/parallel.rs`, `sim-core/src/world.rs`, `sim-core/src/stepper.rs`
+**Files:** `sim-constraint/src/parallel.rs` (removed in Phase 3 consolidation), `sim-core/src/world.rs`, `sim-core/src/stepper.rs`
 
 ### ✅ Recently Completed: MJB Binary Format
 
@@ -1441,14 +1438,14 @@ Focus: Internal solver improvements for better performance.
 
 **Implemented:**
 
-**Sparse Matrix Operations (`sim-constraint/src/sparse.rs`):**
+**Sparse Matrix Operations (`sim-constraint/src/sparse.rs` — removed in Phase 3 consolidation):**
 - `SparseJacobian` - CSR format for efficient J*v and J^T*v operations
 - `SparseEffectiveMass` - CSC format for Cholesky factorization
 - `JacobianBuilder` - Triplet accumulation for building sparse matrices
 - `InvMassBlock` - Efficient 6x6 inverse mass/inertia storage
 - Automatic dense/sparse switching based on system size (threshold: 16 bodies)
 
-**Warm Starting (`sim-constraint/src/newton.rs`):**
+**Warm Starting (`sim-constraint/src/newton.rs` — removed in Phase 3 consolidation):**
 - `NewtonSolverConfig::warm_starting` - Enable/disable warm starting
 - `NewtonSolverConfig::warm_start_factor` - Scaling factor (0.8-0.95 typical)
 - `SolverStats` - Track warm start usage and convergence metrics
@@ -1497,8 +1494,8 @@ integrate_with_method(
 ```
 
 **Files:**
-- `sim-constraint/src/sparse.rs` - Sparse matrix types and operations
-- `sim-constraint/src/newton.rs` - Warm starting and sparse solver integration
+- `sim-constraint/src/sparse.rs` (removed in Phase 3 consolidation) - Sparse matrix types and operations
+- `sim-constraint/src/newton.rs` (removed in Phase 3 consolidation) - Warm starting and sparse solver integration
 - `sim-core/src/integrators.rs` - `ImplicitFast` integrator
 - `sim-types/src/config.rs` - `IntegrationMethod::ImplicitFast` enum variant
 
@@ -1557,7 +1554,7 @@ Focus: All collision detection improvements, primarily in sim-core.
 
 ### Phase 6: Contact Physics ✅ COMPLETED
 
-Focus: Advanced friction models in sim-contact.
+Focus: Advanced friction models (formerly in sim-contact, now consolidated into sim-core).
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|
@@ -1567,21 +1564,21 @@ Focus: Advanced friction models in sim-contact.
 
 **Implemented:**
 
-**Torsional Friction (`sim-contact/src/friction.rs`):**
+**Torsional Friction (removed — formerly `sim-contact/src/friction.rs`):**
 - `TorsionalFriction` - Resistance to spinning (rotation about contact normal)
 - Configurable friction coefficient and contact radius
 - Regularization for smooth force response near zero velocity
 - `compute_torque()` - Compute torque opposing spinning motion
 - `max_torque()`, `project_torque()` - Friction limit helpers
 
-**Rolling Friction (`sim-contact/src/friction.rs`):**
+**Rolling Friction (removed — formerly `sim-contact/src/friction.rs`):**
 - `RollingFriction` - Resistance to rolling (rotation perpendicular to normal)
 - Configurable friction coefficient and rolling radius
 - `compute_torque()` - Compute torque opposing rolling motion
 - `compute_resistance_force()` - Equivalent linear resistance force
 - Regularization for smooth force response
 
-**Pyramidal Friction Cones (`sim-contact/src/friction.rs`, `model.rs`):**
+**Pyramidal Friction Cones (removed — formerly `sim-contact/src/friction.rs`, `model.rs`):**
 - `PyramidalFrictionCone` - Linearized approximation to circular/elliptic cones
 - Configurable number of faces (3-64, typical: 4, 8, or 16)
 - Presets: `box_approximation()`, `octagonal()`, `high_accuracy()`
@@ -1589,7 +1586,7 @@ Focus: Advanced friction models in sim-contact.
 - `constraint_matrix()` - Generate linear constraints for LCP/QP solvers
 - `FrictionModelType::Pyramidal { num_faces }` - ContactModel integration
 
-**Complete Friction Model (`sim-contact/src/friction.rs`):**
+**Complete Friction Model (removed — formerly `sim-contact/src/friction.rs`):**
 - `CompleteFrictionModel` - Unified tangential + torsional + rolling friction
 - MuJoCo-style `condim()` method returning contact dimensionality (1, 3, 4, or 6)
 - Factory methods: `tangential_only()`, `with_torsional()`, `complete()`
@@ -1598,10 +1595,9 @@ Focus: Advanced friction models in sim-contact.
 
 **Usage:**
 ```rust
-use sim_contact::{
-    TorsionalFriction, RollingFriction, PyramidalFrictionCone,
-    CompleteFrictionModel, ContactModel, FrictionModelType,
-};
+// NOTE: These types were in sim-contact and have been removed.
+// ContactPoint, ContactManifold, ContactForce now live in sim-core.
+use sim_core::{ContactPoint, ContactManifold, ContactForce};
 use nalgebra::Vector3;
 
 // Torsional friction (spinning resistance)
@@ -1644,9 +1640,8 @@ let contact_model = ContactModel::default()
 ```
 
 **Files:**
-- `sim-contact/src/friction.rs` - All friction model implementations
-- `sim-contact/src/model.rs` - `FrictionModelType::Pyramidal`, `with_pyramidal_friction()`
-- `sim-contact/src/lib.rs` - Public exports
+- Formerly `sim-contact/src/friction.rs`, `sim-contact/src/model.rs`, `sim-contact/src/lib.rs` — all removed
+- Contact types (`ContactPoint`, `ContactManifold`, `ContactForce`) now in `sim-core/src/contact.rs`
 
 ### Phase 7: Actuators & Control ✅ COMPLETED
 
@@ -1965,9 +1960,8 @@ world.body_mut(ground_id).unwrap().collision_shape = Some(terrain);
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `sim-types` | Data structures | `dynamics.rs`, `joint.rs`, `observation.rs` |
-| `sim-core` | Integration, World | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `mid_phase.rs`, `gjk_epa.rs`, `heightfield.rs` |
-| `sim-contact` | Contact physics | `model.rs`, `friction.rs`, `solver.rs` |
-| `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `actuator.rs`, `equality.rs`, `cg.rs` |
+| `sim-core` | Integration, World, Contact physics | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `mid_phase.rs`, `gjk_epa.rs`, `heightfield.rs`, `contact.rs`, `mujoco_pipeline.rs` |
+| `sim-constraint` | Joint constraints | `joint.rs`, `types.rs`, `actuator.rs`, `equality.rs`, `cg.rs`, `limits.rs`, `motor.rs`, `muscle.rs` (removed in Phase 3 consolidation: `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `pgs.rs`, `parallel.rs`; `BodyState`/`JointForce` from `solver.rs` extracted to `types.rs`) |
 | `sim-sensor` | Sensor simulation | `imu.rs`, `force_torque.rs`, `touch.rs`, `rangefinder.rs`, `magnetometer.rs` |
 | `sim-urdf` | URDF loading | `loader.rs`, `parser.rs` |
 | `sim-mjcf` | MJCF loading | `loader.rs`, `parser.rs`, `types.rs`, `validation.rs` |
