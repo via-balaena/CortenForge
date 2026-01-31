@@ -1,4 +1,4 @@
-//! Benchmarks for collision detection and constraint solving operations.
+//! Benchmarks for collision detection operations.
 //!
 //! Run with: cargo bench -p sim-core
 //!
@@ -19,10 +19,6 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use nalgebra::{Point3, UnitQuaternion, Vector3};
 use rand::Rng;
 
-use sim_constraint::{
-    BodyState, ConstraintSolver, ConstraintSolverConfig, NewtonConstraintSolver,
-    NewtonSolverConfig, PGSSolver, PGSSolverConfig, RevoluteJoint,
-};
 use sim_core::Aabb;
 use sim_core::Pose;
 use sim_core::mesh::{
@@ -30,7 +26,6 @@ use sim_core::mesh::{
     triangle_box_contact, triangle_capsule_contact, triangle_sphere_contact,
 };
 use sim_core::mid_phase::{Bvh, BvhPrimitive};
-use sim_types::BodyId;
 
 /// Generate a cube mesh with specified subdivision level.
 /// Level 0 = 12 triangles (basic cube)
@@ -582,165 +577,6 @@ fn bench_bvh_from_mesh(c: &mut Criterion) {
     group.finish();
 }
 
-// =============================================================================
-// Constraint Solver Benchmarks
-// =============================================================================
-
-/// Create a chain of bodies connected by revolute joints.
-///
-/// Uses the new clean `BodyState::fixed()` and `BodyState::dynamic()` constructors.
-fn create_joint_chain(num_bodies: usize) -> (Vec<BodyState>, Vec<RevoluteJoint>) {
-    let inertia = Vector3::new(0.1, 0.1, 0.1);
-
-    // Create body states using the clean API
-    let bodies: Vec<_> = (0..num_bodies)
-        .map(|i| {
-            let position = Point3::new(0.0, 0.0, i as f64 * 0.5);
-            if i == 0 {
-                // First body is static (ground)
-                BodyState::fixed(position)
-            } else {
-                // Dynamic body with mass=1kg and inertia=0.1
-                BodyState::dynamic(position, 1.0, inertia)
-            }
-        })
-        .collect();
-
-    // Create joints connecting consecutive bodies
-    let joints: Vec<_> = (0..(num_bodies - 1))
-        .map(|i| {
-            RevoluteJoint::new(
-                BodyId::new(i as u64),
-                BodyId::new((i + 1) as u64),
-                Vector3::z(),
-            )
-        })
-        .collect();
-
-    (bodies, joints)
-}
-
-/// Benchmark the simple constraint solver.
-fn bench_constraint_solver(c: &mut Criterion) {
-    let mut group = c.benchmark_group("constraint_solver_simple");
-    group.sample_size(50);
-
-    for num_bodies in [5, 10, 20, 50] {
-        let (bodies, joints) = create_joint_chain(num_bodies);
-        let config = ConstraintSolverConfig::default();
-
-        group.bench_with_input(
-            BenchmarkId::new("chain", format!("{num_bodies}_bodies")),
-            &(&bodies, &joints),
-            |b, (bodies, joints)| {
-                let mut solver = ConstraintSolver::new(config);
-                // Use the new solve_slice API - no closure needed!
-                b.iter(|| black_box(solver.solve_slice(joints, bodies)));
-            },
-        );
-    }
-
-    group.finish();
-}
-
-/// Benchmark the PGS (Projected Gauss-Seidel) solver.
-fn bench_pgs_solver(c: &mut Criterion) {
-    let mut group = c.benchmark_group("pgs_solver");
-    group.sample_size(50);
-
-    let dt = 1.0 / 240.0;
-
-    for num_bodies in [5, 10, 20, 50] {
-        let (bodies, joints) = create_joint_chain(num_bodies);
-        let config = PGSSolverConfig::default();
-
-        group.bench_with_input(
-            BenchmarkId::new("chain", format!("{num_bodies}_bodies")),
-            &(&bodies, &joints),
-            |b, (bodies, joints)| {
-                let mut solver = PGSSolver::new(config);
-                // Use the new solve_slice API
-                b.iter(|| black_box(solver.solve_slice(joints, bodies, dt)));
-            },
-        );
-    }
-
-    // Test with different iteration counts
-    let (bodies, joints) = create_joint_chain(20);
-
-    for iterations in [10, 50, 100, 200] {
-        let config = PGSSolverConfig {
-            max_iterations: iterations,
-            ..Default::default()
-        };
-
-        group.bench_with_input(
-            BenchmarkId::new("iterations", format!("{iterations}_iter")),
-            &(&bodies, &joints),
-            |b, (bodies, joints)| {
-                let mut solver = PGSSolver::new(config);
-                b.iter(|| black_box(solver.solve_slice(joints, bodies, dt)));
-            },
-        );
-    }
-
-    group.finish();
-}
-
-/// Benchmark the Newton solver.
-fn bench_newton_solver(c: &mut Criterion) {
-    let mut group = c.benchmark_group("newton_solver");
-    group.sample_size(50);
-
-    let dt = 1.0 / 240.0;
-
-    for num_bodies in [5, 10, 20, 50] {
-        let (bodies, joints) = create_joint_chain(num_bodies);
-        let config = NewtonSolverConfig::default();
-
-        group.bench_with_input(
-            BenchmarkId::new("chain", format!("{num_bodies}_bodies")),
-            &(&bodies, &joints),
-            |b, (bodies, joints)| {
-                let mut solver = NewtonConstraintSolver::new(config);
-                // Use the new solve_slice API
-                b.iter(|| black_box(solver.solve_slice(joints, bodies, dt)));
-            },
-        );
-    }
-
-    group.finish();
-}
-
-/// Compare all solvers on the same problem.
-fn bench_solver_comparison(c: &mut Criterion) {
-    let mut group = c.benchmark_group("solver_comparison");
-    group.sample_size(50);
-
-    let (bodies, joints) = create_joint_chain(20);
-    let dt = 1.0 / 240.0;
-
-    // Simple solver - clean API, no closure
-    group.bench_function("simple_solver", |b| {
-        let mut solver = ConstraintSolver::new(ConstraintSolverConfig::default());
-        b.iter(|| black_box(solver.solve_slice(&joints, &bodies)));
-    });
-
-    // PGS solver - clean API
-    group.bench_function("pgs_solver", |b| {
-        let mut solver = PGSSolver::new(PGSSolverConfig::default());
-        b.iter(|| black_box(solver.solve_slice(&joints, &bodies, dt)));
-    });
-
-    // Newton solver - clean API
-    group.bench_function("newton_solver", |b| {
-        let mut solver = NewtonConstraintSolver::new(NewtonSolverConfig::default());
-        b.iter(|| black_box(solver.solve_slice(&joints, &bodies, dt)));
-    });
-
-    group.finish();
-}
-
 criterion_group!(
     benches,
     // Mesh-mesh collision
@@ -758,10 +594,5 @@ criterion_group!(
     bench_bvh_construction,
     bench_bvh_query,
     bench_bvh_from_mesh,
-    // Constraint solver benchmarks
-    bench_constraint_solver,
-    bench_pgs_solver,
-    bench_newton_solver,
-    bench_solver_comparison,
 );
 criterion_main!(benches);

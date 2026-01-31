@@ -172,10 +172,10 @@ pub mod prelude {
     // ========================================================================
 
     pub use sim_constraint::{
-        // Solver
-        ConstraintSolver,
-        ConstraintSolverConfig,
+        // Body/joint force types (for constraint solving)
+        BodyState,
         FixedJoint,
+        JointForce,
         // Motor
         JointMotor,
         // Limits

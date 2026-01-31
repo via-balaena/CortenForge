@@ -21,7 +21,7 @@ sim/
 │   ├── types/             # sim-types — Pure data types
 │   ├── simd/              # sim-simd — SIMD batch operations
 │   ├── core/              # sim-core — Pipeline, collision, integration
-│   ├── constraint/        # sim-constraint — Joint constraints, solvers
+│   ├── constraint/        # sim-constraint — Joint types, motors, limits, CGSolver
 │   ├── sensor/            # sim-sensor — IMU, F/T, touch, rangefinder
 │   ├── deformable/        # sim-deformable — XPBD soft bodies
 │   ├── muscle/            # sim-muscle — Hill-type muscles
@@ -202,7 +202,7 @@ The MuJoCo pipeline uses its own PGS contact solver in `mujoco_pipeline.rs`.
 
 ### sim-constraint
 
-Joint constraints and articulated body dynamics:
+Joint types, motors, limits, and CGSolver for articulated body simulation:
 
 **Joint types** (all implement `Joint` trait):
 
@@ -219,10 +219,8 @@ Joint constraints and articulated body dynamics:
 
 Also provides: `JointLimits`, `JointMotor`, `MotorMode`, equality constraints
 (connect, gear coupling, differential, tendon networks), actuator types,
-and standalone solvers (PGS, Newton, CG, Gauss-Seidel).
-
-Note: the MuJoCo pipeline implements its own constraint handling. The solvers
-in this crate are used only by benchmarks. See `FUTURE_WORK.md`.
+and `CGSolver` (Conjugate Gradient solver with Block Jacobi preconditioner,
+retained for future pipeline integration — see `FUTURE_WORK.md`).
 
 ### sim-sensor
 
@@ -333,7 +331,7 @@ is Layer 1 only.
 
 | Flag | Crates | Description |
 |------|--------|-------------|
-| `parallel` | sim-core, sim-constraint | Rayon-based parallelization |
+| `parallel` | sim-core | Rayon-based parallelization |
 | `serde` | Most crates | Serialization support |
 | `sensor` | sim-core | Enable sensor pipeline integration |
 | `mjb` | sim-mjcf | Binary MuJoCo format |

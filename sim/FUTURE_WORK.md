@@ -99,7 +99,7 @@ moved into `sim-core/src/contact.rs`. Changes verified with `cargo check --works
   sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md, docs/MUJOCO_GAP_ANALYSIS.md
 - [x] Delete the `sim-contact` crate directory
 
-### Phase 3 — Reduce sim-constraint to types + CGSolver
+### Phase 3 ✅ — Reduce sim-constraint to types + CGSolver
 
 **Decision:** Keep CGSolver (`cg.rs`) — it is planned for future integration into the
 MuJoCo pipeline as an alternative solver for large-scale systems (see "CGSolver
@@ -108,14 +108,14 @@ standalone — zero dependencies on any deleted module.
 
 **Delete** (solvers, infrastructure, and supporting modules):
 
-- [ ] Delete `pgs.rs` — `PGSSolver`, `PGSSolverConfig`, `PGSSolverResult`, `PGSSolverStats`
-- [ ] Delete `newton.rs` — `NewtonConstraintSolver`, `NewtonSolverConfig`,
+- [x] Delete `pgs.rs` — `PGSSolver`, `PGSSolverConfig`, `PGSSolverResult`, `PGSSolverStats`
+- [x] Delete `newton.rs` — `NewtonConstraintSolver`, `NewtonSolverConfig`,
   `NewtonSolverResult`, `SolverStats`
-- [ ] Delete `sparse.rs` — `SparseJacobian`, `JacobianBuilder`, `SparseEffectiveMass`,
+- [x] Delete `sparse.rs` — `SparseJacobian`, `JacobianBuilder`, `SparseEffectiveMass`,
   `InvMassBlock`
-- [ ] Delete `islands.rs` — `ConstraintIslands`, `Island`, `IslandStatistics`
-- [ ] Delete `parallel.rs` — parallel island solving (only called from `newton.rs`)
-- [ ] Refactor `solver.rs`:
+- [x] Delete `islands.rs` — `ConstraintIslands`, `Island`, `IslandStatistics`
+- [x] Delete `parallel.rs` — parallel island solving (only called from `newton.rs`)
+- [x] Refactor `solver.rs`:
   - Extract `BodyState` (~120 lines, struct + 4 methods) and `JointForce` (~10 lines,
     struct) into `types.rs` — CGSolver imports these via `use crate::{BodyState, JointForce}`
   - Delete the rest of `solver.rs`: `ConstraintSolver` struct (~500 lines),
@@ -124,7 +124,7 @@ standalone — zero dependencies on any deleted module.
 
 **Keep** (types + CGSolver):
 
-- [ ] `cg.rs` — `CGSolver`, `CGSolverConfig`, `CGSolverResult`, `CGSolverStats`,
+- [x] `cg.rs` — `CGSolver`, `CGSolverConfig`, `CGSolverResult`, `CGSolverStats`,
   `Preconditioner`, `PreconditionerData` (1,664 lines including Block Jacobi
   preconditioner and 11 tests). Imports from crate: `BodyState`, `ConstraintForce`,
   `Joint`, `JointForce`, `JointType` — all in kept modules.
@@ -133,82 +133,58 @@ standalone — zero dependencies on any deleted module.
   `FreeJoint`, `JointType` enum, `JointDof`
 - `limits.rs` — `JointLimits`, `LimitState`, `LimitStiffness`
 - `motor.rs` — `JointMotor`, `MotorMode`
-- `types.rs` — `JointState`, `JointVelocity`, `ConstraintForce` (+ `BodyState`,
-  `JointForce` after extraction from solver.rs)
+- `types.rs` — `JointState`, `JointVelocity`, `ConstraintForce`, `BodyState`, `JointForce`
 - `equality.rs` — all equality constraint types
 - `actuator.rs` — all actuator types
 - `muscle.rs` (optional) — `MuscleJoint`, `MuscleCommands`, `MuscleJointBuilder`
 
 **Cargo.toml cleanup:**
 
-- [ ] Remove `nalgebra-sparse` (only used by `sparse.rs`)
-- [ ] Remove `hashbrown` optional dep (only used by `parallel` feature)
-- [ ] Remove `thiserror` (declared at Cargo.toml:16 but zero source-level imports —
+- [x] Remove `nalgebra-sparse` (only used by `sparse.rs`; also removed from workspace deps)
+- [x] Remove `hashbrown` optional dep (only used by `parallel` feature)
+- [x] Remove `thiserror` (declared at Cargo.toml:16 but zero source-level imports —
   phantom dep even before this phase)
-- [ ] Remove `parallel` feature and `rayon` optional dep (Cargo.toml:18) — no
+- [x] Remove `parallel` feature and `rayon` optional dep (Cargo.toml:18) — no
   parallel solvers remain (`parallel.rs` deleted)
-- [ ] Update description (line 3): currently `"Joint constraints and motors for
-  articulated body simulation"` — update to reflect current role (e.g., "Joint types,
-  motors, limits, and CGSolver for articulated body simulation")
+- [x] Update description (line 3): "Joint types, motors, limits, and CGSolver for
+  articulated body simulation"
 
 **sim-core benchmark cleanup:**
 
-- [ ] Remove solver benchmarks from `collision_benchmarks.rs`:
-  - Delete solver benchmark section header and functions (lines 585–742)
-  - Remove solver entries from `criterion_group!` macro (lines 761–765:
-    `bench_constraint_solver`, `bench_pgs_solver`, `bench_newton_solver`,
-    `bench_solver_comparison`) — keep collision/BVH entries and the macro itself
-  - Remove `use sim_constraint::{...}` import block (lines 22–25)
-  - Remove `sim-constraint` from `sim-core/Cargo.toml` `[dev-dependencies]`
-    (added in Phase 1)
+- [x] Remove solver benchmarks from `collision_benchmarks.rs`:
+  - Deleted solver benchmark section header and functions (lines 585–742)
+  - Removed solver entries from `criterion_group!` macro
+  - Removed `use sim_constraint::{...}` import block (lines 22–25)
+  - Removed `sim-constraint` from `sim-core/Cargo.toml` `[dev-dependencies]`
 
 **lib.rs module structure update:**
 
-- [ ] Remove `mod` declarations for deleted modules: `solver`, `pgs`, `newton`,
+- [x] Remove `mod` declarations for deleted modules: `solver`, `pgs`, `newton`,
   `sparse`, `islands`
-- [ ] Remove `#[cfg(feature = "parallel")] pub mod parallel;`
-- [ ] Remove `pub use` re-exports for deleted types:
-  - `solver::{ConstraintSolver, ConstraintSolverConfig, SolverResult}` (deleted)
-  - `solver::{BodyState, JointForce}` → update to `types::{BodyState, JointForce}`
-  - `pgs::*`, `newton::*`, `sparse::*`, `islands::*` re-exports
-- [ ] Keep `pub use cg::{CGSolver, CGSolverConfig, CGSolverResult, CGSolverStats,
+- [x] Remove `#[cfg(feature = "parallel")] pub mod parallel;`
+- [x] Remove `pub use` re-exports for deleted types; update `BodyState`/`JointForce`
+  to re-export from `types` module
+- [x] Keep `pub use cg::{CGSolver, CGSolverConfig, CGSolverResult, CGSolverStats,
   Preconditioner};`
-- [ ] Rewrite crate-level documentation (`lib.rs` lines 25–68):
-  - Delete "Constraint Solvers" section (lines 25–35, lists 4 solvers — rewrite
-    to mention only CGSolver as experimental/future-integration solver)
-  - Delete "Constraint Islands" section and doc-test example (lines 37–56,
-    uses `ConstraintIslands`, `NewtonConstraintSolver`)
-  - Update "Constraint Formulation" section (lines 58–68) — keep the math
-    (C(q)=0, J*v=0) but reword line 67 ("The solver computes constraint
-    forces...") to describe formulation without referencing deleted solvers
+- [x] Rewrite crate-level documentation to mention only CGSolver as
+  experimental/future-integration solver
 
 **sim-physics updates:**
 
-- [ ] Remove `ConstraintSolver` and `ConstraintSolverConfig` from prelude re-exports
-  (deleted types). Keep joint type, motor, CGSolver, and `BodyState`/`JointForce`
-  re-exports.
-- [ ] Verify `test_joint_types_accessible` test (`lib.rs:499`) — uses
-  `sim_constraint::JointLimits::new()` directly. Path still works since `limits.rs`
-  is kept, but verify after module deletions.
+- [x] Remove `ConstraintSolver` and `ConstraintSolverConfig` from prelude re-exports.
+  Added `BodyState` and `JointForce` re-exports.
+- [x] Verified `test_joint_types_accessible` test still passes (187 tests pass)
 
 **CI scripts:**
 
-- [ ] Remove `parallel` feature references from CI if any exist:
-  - `scripts/local-quality-check.sh`
-  - `.github/workflows/quality-gate.yml`
+- [x] No `parallel` feature references found in CI scripts — no changes needed
 
 **Documentation updates:**
 
-- [ ] `sim/ARCHITECTURE.md` — "sim-constraint" section (line 212) lists deleted
-  solvers; feature flags table (line 351) references `parallel` feature. Rewrite
-  section to list kept types + CGSolver. Remove `parallel` from feature flags table.
-- [ ] `sim/docs/MUJOCO_CONFORMANCE.md` (line 29) — maps constraint tests to
-  sim-constraint; verify still accurate after deletions
-- [ ] `sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md` (lines 491, 535) — sim-constraint
-  section and Cargo.toml example; update to reflect reduced API
-- [ ] `docs/MUJOCO_GAP_ANALYSIS.md` — references to deleted files (newton.rs, pgs.rs,
-  islands.rs, sparse.rs, parallel.rs — ~20 occurrences). Mark as deleted/removed.
-  References to kept files (actuator.rs, equality.rs, joint.rs, cg.rs) remain valid.
+- [x] `sim/ARCHITECTURE.md` — updated sim-constraint section and feature flags table
+- [x] `sim/docs/MUJOCO_CONFORMANCE.md` — updated test mapping, divergence table, test dir
+- [x] `sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md` — no stale references found, no changes needed
+- [x] `docs/MUJOCO_GAP_ANALYSIS.md` — annotated ~13 references to deleted files
 
 **Name collisions (deferred to Phase 4):**
 
@@ -222,22 +198,13 @@ Three types share names between sim-types and sim-constraint with different defi
 - sim-physics prelude imports the sim-types versions. If merging (Phase 4),
   reconcile or rename the sim-constraint variants.
 
-**Summary:**
-
-- Current state: sim-constraint contains 4 solvers (PGS, Newton, CG, ConstraintSolver),
-  sparse matrix infrastructure, island detection, joint types, motor/limit types,
-  equality constraints, and actuators. Only type definitions and CGSolver are worth
-  keeping. No solver is called in production.
-- Target state: sim-constraint is a **type library** for joint definitions, motors,
-  limits, equality constraints, and actuators — plus `CGSolver` (retained for future
-  pipeline integration). PGS, Newton, sparse, and island code deleted.
-- Risk: **Low.** CGSolver is preserved (the only one-way-door concern from the original
-  spec). All other deleted solvers are fully duplicated by sim-core's pipeline PGS or
-  have zero callers. `BodyState`/`JointForce` extraction from solver.rs is mechanical.
-- Validation: `cargo build --workspace`, `cargo test --workspace`,
-  `cargo test -p sim-constraint` (CGSolver tests still pass),
-  `cargo bench -p sim-core --no-run` (benchmarks updated), verify sim-physics prelude
-  still exports all intended public types.
+**Completed.** Deleted 6 files (pgs.rs, newton.rs, sparse.rs, islands.rs, parallel.rs,
+solver.rs). Extracted `BodyState`/`JointForce` to types.rs. Removed `nalgebra-sparse`,
+`thiserror`, `hashbrown`, `rayon` from sim-constraint deps. Removed solver benchmarks
+from sim-core. Updated sim-physics prelude, ARCHITECTURE.md, MUJOCO_CONFORMANCE.md,
+MUJOCO_GAP_ANALYSIS.md. Validated with `cargo check/build/test --workspace`,
+`cargo test -p sim-constraint` (187 tests pass), `cargo bench -p sim-core --no-run`.
+Changes verified with `cargo check --workspace` and `cargo test --workspace`.
 
 ### Phase 4 (optional) — Merge sim-constraint into sim-types
 

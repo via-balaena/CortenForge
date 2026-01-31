@@ -1,6 +1,6 @@
 [package]
 name = "sim-constraint"
-description = "Joint constraints and motors for articulated body simulation"
+description = "Joint types, motors, limits, and CGSolver for articulated body simulation"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,11 +12,7 @@ rust-version.workspace = true
 sim-types = { workspace = true }
 sim-muscle = { workspace = true, optional = true }
 nalgebra = { workspace = true }
-nalgebra-sparse = { workspace = true }
-thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
-rayon = { workspace = true, optional = true }
-hashbrown = { workspace = true, optional = true }
 
 [dev-dependencies]
 approx = { workspace = true }
@@ -24,7 +20,6 @@ approx = { workspace = true }
 [features]
 default = []
 muscle = ["dep:sim-muscle"]
-parallel = ["dep:rayon", "dep:hashbrown"]
 # Note: sim-muscle?/serde ensures that if muscle feature is enabled, serde is forwarded
 serde = ["dep:serde", "sim-types/serde", "nalgebra/serde-serialize", "sim-muscle?/serde"]
 

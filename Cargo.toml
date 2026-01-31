@@ -126,8 +126,6 @@ let_underscore_must_use = "deny"
 # ---------------------------------------------------------------------------
 # nalgebra: Linear algebra, matches parry3d and avian for compatibility
 nalgebra = "0.33"
-# nalgebra-sparse: Sparse matrix support for constraint solvers
-nalgebra-sparse = "0.10"
 # glam: Fast, simple math for games/graphics
 glam = "0.30"
 

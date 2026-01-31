@@ -22,7 +22,7 @@ rayon = { workspace = true, optional = true }
 approx = { workspace = true }
 criterion = { workspace = true }
 rand = { workspace = true }
-sim-constraint = { workspace = true }
+
 
 [[bench]]
 name = "collision_benchmarks"
