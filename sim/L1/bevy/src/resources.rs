@@ -1,7 +1,7 @@
 //! Bevy resources for physics visualization.
 
 use bevy::prelude::*;
-use sim_contact::ContactPoint;
+use sim_core::ContactPoint;
 use sim_types::BodyId;
 use std::collections::HashMap;
 

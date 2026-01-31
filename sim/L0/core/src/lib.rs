@@ -80,8 +80,12 @@ pub mod mujoco_pipeline;
 pub mod raycast;
 pub mod sdf;
 
+// Contact geometry types (moved from sim-contact)
+pub mod contact;
+
 pub use collision_shape::{Aabb, Axis, CollisionShape};
 
+pub use contact::{ContactForce, ContactManifold, ContactPoint};
 pub use heightfield::{HeightFieldContact, HeightFieldData};
 pub use mesh::{
     MeshContact, Triangle, TriangleMeshData, closest_point_on_triangle, mesh_box_contact,

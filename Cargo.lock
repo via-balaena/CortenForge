@@ -7442,7 +7442,6 @@ dependencies = [
  "bevy",
  "glam",
  "nalgebra",
- "sim-contact",
  "sim-core",
  "sim-mjcf",
  "sim-types",
@@ -7476,19 +7475,6 @@ dependencies = [
  "rayon",
  "serde",
  "sim-muscle",
- "sim-types",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sim-contact"
-version = "0.1.0"
-dependencies = [
- "approx 0.5.1",
- "nalgebra",
- "proptest",
- "serde",
- "sim-simd",
  "sim-types",
  "thiserror 2.0.18",
 ]
@@ -7563,7 +7549,6 @@ dependencies = [
  "approx 0.5.1",
  "nalgebra",
  "sim-constraint",
- "sim-contact",
  "sim-core",
  "sim-deformable",
  "sim-mjcf",

@@ -80,7 +80,7 @@ Layer 0 (Pure Rust)
 ├── ml/*             Burn-native ML pipeline
 ├── routing/*        Path planning and optimization
 ├── spatial/*        Voxel grids, occupancy maps
-└── sim/*            13 L0 crates - MuJoCo-aligned physics (NO BEVY)
+└── sim/*            12 L0 crates - MuJoCo-aligned physics (NO BEVY)
 ```
 
 ### Layer 1: Bevy Integration
@@ -110,7 +110,6 @@ sim/ (Layer 0 - Pure Rust)
 ├── sim-types        RigidBodyState, Pose, Twist, MassProperties
 ├── sim-simd         SIMD batch operations (Vec3x4/Vec3x8)
 ├── sim-core         MuJoCo-aligned pipeline: Model/Data, FK, CRBA, RNE, PGS
-├── sim-contact      Compliant contact model, friction, domain randomization
 ├── sim-constraint   Joint types, motors, limits, equality constraints
 ├── sim-sensor       IMU, F/T, touch, rangefinder, magnetometer
 ├── sim-deformable   XPBD soft bodies (ropes, cloth, volumes)
@@ -154,14 +153,14 @@ A headless training run uses `sim-core` directly. A visualization demo uses `CfS
 ### Domain Roadmap
 
 ```
-COMPLETE (52 crates):
+COMPLETE (51 crates):
 ├── Mesh Domain (27)
 ├── Sensor Domain (2)
 ├── ML Domain (4)
 ├── Spatial Domain (1)
 ├── Routing Domain (3)
 ├── Geometry Domain (1)
-└── Simulation Domain (13 L0 + 1 L1)
+└── Simulation Domain (12 L0 + 1 L1)
 
 NEXT PHASE:
 ├── surface-types      NURBS surfaces, patches
@@ -220,7 +219,7 @@ We're not trying to replace Siemens. We're building the foundation that could *i
 ### MuJoCo
 What they have: 15 years of physics research, soft contacts, implicit integration, GPU acceleration, massive adoption in RL research.
 
-What we have: A MuJoCo-aligned pipeline (14 crates) implementing Model/Data, FK, CRBA, RNE, PGS contact solver, implicit integration, MJCF/URDF loading, compliant contacts, Hill-type muscles, XPBD deformables.
+What we have: A MuJoCo-aligned pipeline (13 crates) implementing Model/Data, FK, CRBA, RNE, PGS contact solver, implicit integration, MJCF/URDF loading, Hill-type muscles, XPBD deformables.
 
 What we need: GPU acceleration, broader actuator coverage, tendon/site transmissions, full MuJoCo XML parity.
 

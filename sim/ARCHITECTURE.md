@@ -21,7 +21,6 @@ sim/
 │   ├── types/             # sim-types — Pure data types
 │   ├── simd/              # sim-simd — SIMD batch operations
 │   ├── core/              # sim-core — Pipeline, collision, integration
-│   ├── contact/           # sim-contact — Compliant contact model
 │   ├── constraint/        # sim-constraint — Joint constraints, solvers
 │   ├── sensor/            # sim-sensor — IMU, F/T, touch, rangefinder
 │   ├── deformable/        # sim-deformable — XPBD soft bodies
@@ -194,22 +193,12 @@ The physics engine. Contains:
 - `heightfield.rs`, `sdf.rs` — Terrain and implicit surface collision
 - `raycast.rs` — Ray-shape intersection
 
-### sim-contact
+### Contact Types (in sim-core)
 
-Compliant contact model (spring-damper based):
-
-```
-F_normal  = k * d^p + c * d_dot
-F_friction = project_to_cone(F_tangent, mu * F_normal)
-```
-
-Provides `ContactPoint`, `ContactManifold`, `ContactForce`, `ContactModel`,
-`ContactParams`, `ContactSolver`, `BatchContactProcessor`, friction models
-(elliptic, pyramidal, rolling, torsional), domain randomization ranges, and
-material presets.
-
-Note: the MuJoCo pipeline in sim-core uses its own PGS contact solver, not
-`ContactSolver` from this crate. See `FUTURE_WORK.md` for consolidation plans.
+`ContactPoint`, `ContactManifold`, and `ContactForce` live in
+`sim-core/src/contact.rs`. These represent collision geometry output
+(position, normal, penetration, body pair) and resulting forces.
+The MuJoCo pipeline uses its own PGS contact solver in `mujoco_pipeline.rs`.
 
 ### sim-constraint
 
@@ -321,18 +310,12 @@ sensor readings. All toggleable via `ViewerConfig`.
 
 ## Design Principles
 
-### Compliant vs Impulse-Based Contacts
+### Contact Solver
 
-sim-contact uses **compliant (spring-damper) contacts**. The MuJoCo pipeline
-uses **Lagrange multiplier contacts** (PGS solver). Both coexist; the pipeline
-is the production path.
-
-| Aspect | Compliant (sim-contact) | PGS (pipeline) |
-|--------|------------------------|-----------------|
-| Force response | Smooth, continuous | Complementarity-based |
-| Parameters | Physical (stiffness, damping) | solref/solimp |
-| Integration | Explicit or implicit | Semi-implicit + projected |
-| Warmstart | No | Yes (contact correspondence) |
+The production contact solver is the PGS (Projected Gauss-Seidel) solver
+in `mujoco_pipeline.rs`. It uses Lagrange multiplier contacts with
+solref/solimp parameters and warmstarting. Contact geometry types
+(`ContactPoint`, etc.) are in `sim-core/src/contact.rs`.
 
 ### Determinism
 

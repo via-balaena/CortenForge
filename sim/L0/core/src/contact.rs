@@ -14,11 +14,7 @@ use serde::{Deserialize, Serialize};
 /// This prevents NaN from dividing by near-zero values.
 fn safe_normalize(v: Vector3<f64>, default: Vector3<f64>) -> Vector3<f64> {
     let norm = v.norm();
-    if norm > 1e-10 {
-        v / norm
-    } else {
-        default
-    }
+    if norm > 1e-10 { v / norm } else { default }
 }
 
 /// A single contact point between two bodies.
@@ -819,13 +815,15 @@ impl ContactManifold {
         }
 
         let sum: Vector3<f64> = self.points.iter().map(|p| p.position.coords).sum();
-        Some(Point3::from(sum / self.points.len() as f64))
+        #[allow(clippy::cast_precision_loss)] // manifold point count is always small
+        let count = self.points.len() as f64;
+        Some(Point3::from(sum / count))
     }
 
     /// Check if the manifold has any active contacts.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.points.iter().any(|p| p.is_active())
+        self.points.iter().any(ContactPoint::is_active)
     }
 
     /// Get the number of contact points.
@@ -976,6 +974,10 @@ impl ContactForce {
 /// Find the closest points between two line segments.
 ///
 /// Returns the closest point on segment A and the closest point on segment B.
+#[allow(
+    clippy::many_single_char_names,          // a,b,e,f,s,t are standard math notation
+    clippy::suspicious_operation_groupings   // a*e - b*b is the correct determinant
+)]
 fn closest_points_segments(
     start_a: Point3<f64>,
     end_a: Point3<f64>,

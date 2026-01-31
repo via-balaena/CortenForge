@@ -4,7 +4,7 @@
 
 # sim-physics
 
-Unified physics simulation API — re-exports `sim-types`, `sim-core`, `sim-constraint`, `sim-contact`, and `sim-urdf`.
+Unified physics simulation API — re-exports `sim-types`, `sim-core`, `sim-constraint`, and `sim-urdf`.
 
 ## Usage
 

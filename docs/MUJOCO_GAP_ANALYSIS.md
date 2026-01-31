@@ -308,7 +308,7 @@ f_n ≥ 0, (f_t1/μ_1)² + (f_t2/μ_2)² ≤ f_n²
 - Presets: `ContactParams::treaded()`, `ContactParams::brushed_metal()`
 - Conversions between circular and elliptic cones
 
-**Files modified:** `sim-contact/src/friction.rs`, `sim-contact/src/model.rs`, `sim-contact/src/params.rs`
+**Files modified:** `sim-core/src/contact.rs`, `sim-core/src/mujoco_pipeline.rs` (formerly in `sim-contact`, now consolidated into `sim-core`)
 
 ### Implementation Notes: Advanced Friction Models ✅ COMPLETED
 
@@ -1018,11 +1018,9 @@ optimized for modern CPU SIMD instructions (AVX/AVX2, AVX-512, NEON).
    - Uses `find_max_dot()` to process vertices in groups of 4-8
    - 2-4x speedup for meshes with >16 vertices
 
-2. **Contact Force Computation** (`sim-contact/src/batch.rs`):
-   - `BatchContactProcessor` processes 4 contacts simultaneously
-   - Batch normal force: `batch_normal_force_4()`
-   - Batch friction force: `batch_friction_force_4()`
-   - 2-3x speedup for scenes with many contacts
+2. **Contact Force Computation** (removed — formerly `sim-contact/src/batch.rs`):
+   - `BatchContactProcessor` has been removed (was in `sim-contact`)
+   - Contact types (`ContactPoint`, `ContactManifold`, `ContactForce`) now live in `sim-core`
 
 3. **AABB Overlap Testing** (`sim-simd/src/batch_ops.rs`):
    - `batch_aabb_overlap_4()` tests 4 AABB pairs at once
@@ -1048,10 +1046,8 @@ let dots = batch_dot_product_4(&vectors, &direction);
 let vertices = vec![/* many vertices */];
 let (idx, max_dot) = find_max_dot(&vertices, &direction);
 
-// Batch contact processing
-use sim_contact::{BatchContactProcessor, ContactParams};
-let processor = BatchContactProcessor::new(ContactParams::default());
-let forces = processor.compute_forces_batch(&contacts, &velocities);
+// Contact types now in sim-core
+use sim_core::{ContactPoint, ContactManifold, ContactForce};
 ```
 
 **Performance Notes:**
@@ -1059,7 +1055,7 @@ let forces = processor.compute_forces_batch(&contacts, &velocities);
 - On Apple Silicon (NEON): expect 2-3x speedup
 - Scalar fallback available when remainder doesn't fill a batch
 
-**Files:** `sim-simd/src/`, `sim-core/src/gjk_epa.rs`, `sim-contact/src/batch.rs`
+**Files:** `sim-simd/src/`, `sim-core/src/gjk_epa.rs` (batch contact processor removed; contact types now in `sim-core`)
 
 ### Implementation Notes: Multi-threading ✅ COMPLETED
 
@@ -1557,7 +1553,7 @@ Focus: All collision detection improvements, primarily in sim-core.
 
 ### Phase 6: Contact Physics ✅ COMPLETED
 
-Focus: Advanced friction models in sim-contact.
+Focus: Advanced friction models (formerly in sim-contact, now consolidated into sim-core).
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|
@@ -1567,21 +1563,21 @@ Focus: Advanced friction models in sim-contact.
 
 **Implemented:**
 
-**Torsional Friction (`sim-contact/src/friction.rs`):**
+**Torsional Friction (removed — formerly `sim-contact/src/friction.rs`):**
 - `TorsionalFriction` - Resistance to spinning (rotation about contact normal)
 - Configurable friction coefficient and contact radius
 - Regularization for smooth force response near zero velocity
 - `compute_torque()` - Compute torque opposing spinning motion
 - `max_torque()`, `project_torque()` - Friction limit helpers
 
-**Rolling Friction (`sim-contact/src/friction.rs`):**
+**Rolling Friction (removed — formerly `sim-contact/src/friction.rs`):**
 - `RollingFriction` - Resistance to rolling (rotation perpendicular to normal)
 - Configurable friction coefficient and rolling radius
 - `compute_torque()` - Compute torque opposing rolling motion
 - `compute_resistance_force()` - Equivalent linear resistance force
 - Regularization for smooth force response
 
-**Pyramidal Friction Cones (`sim-contact/src/friction.rs`, `model.rs`):**
+**Pyramidal Friction Cones (removed — formerly `sim-contact/src/friction.rs`, `model.rs`):**
 - `PyramidalFrictionCone` - Linearized approximation to circular/elliptic cones
 - Configurable number of faces (3-64, typical: 4, 8, or 16)
 - Presets: `box_approximation()`, `octagonal()`, `high_accuracy()`
@@ -1589,7 +1585,7 @@ Focus: Advanced friction models in sim-contact.
 - `constraint_matrix()` - Generate linear constraints for LCP/QP solvers
 - `FrictionModelType::Pyramidal { num_faces }` - ContactModel integration
 
-**Complete Friction Model (`sim-contact/src/friction.rs`):**
+**Complete Friction Model (removed — formerly `sim-contact/src/friction.rs`):**
 - `CompleteFrictionModel` - Unified tangential + torsional + rolling friction
 - MuJoCo-style `condim()` method returning contact dimensionality (1, 3, 4, or 6)
 - Factory methods: `tangential_only()`, `with_torsional()`, `complete()`
@@ -1598,10 +1594,9 @@ Focus: Advanced friction models in sim-contact.
 
 **Usage:**
 ```rust
-use sim_contact::{
-    TorsionalFriction, RollingFriction, PyramidalFrictionCone,
-    CompleteFrictionModel, ContactModel, FrictionModelType,
-};
+// NOTE: These types were in sim-contact and have been removed.
+// ContactPoint, ContactManifold, ContactForce now live in sim-core.
+use sim_core::{ContactPoint, ContactManifold, ContactForce};
 use nalgebra::Vector3;
 
 // Torsional friction (spinning resistance)
@@ -1644,9 +1639,8 @@ let contact_model = ContactModel::default()
 ```
 
 **Files:**
-- `sim-contact/src/friction.rs` - All friction model implementations
-- `sim-contact/src/model.rs` - `FrictionModelType::Pyramidal`, `with_pyramidal_friction()`
-- `sim-contact/src/lib.rs` - Public exports
+- Formerly `sim-contact/src/friction.rs`, `sim-contact/src/model.rs`, `sim-contact/src/lib.rs` — all removed
+- Contact types (`ContactPoint`, `ContactManifold`, `ContactForce`) now in `sim-core/src/contact.rs`
 
 ### Phase 7: Actuators & Control ✅ COMPLETED
 
@@ -1965,8 +1959,7 @@ world.body_mut(ground_id).unwrap().collision_shape = Some(terrain);
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `sim-types` | Data structures | `dynamics.rs`, `joint.rs`, `observation.rs` |
-| `sim-core` | Integration, World | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `mid_phase.rs`, `gjk_epa.rs`, `heightfield.rs` |
-| `sim-contact` | Contact physics | `model.rs`, `friction.rs`, `solver.rs` |
+| `sim-core` | Integration, World, Contact physics | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `mid_phase.rs`, `gjk_epa.rs`, `heightfield.rs`, `contact.rs`, `mujoco_pipeline.rs` |
 | `sim-constraint` | Joint constraints | `joint.rs`, `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `actuator.rs`, `equality.rs`, `cg.rs` |
 | `sim-sensor` | Sensor simulation | `imu.rs`, `force_torque.rs`, `touch.rs`, `rangefinder.rs`, `magnetometer.rs` |
 | `sim-urdf` | URDF loading | `loader.rs`, `parser.rs` |

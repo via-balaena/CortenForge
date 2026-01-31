@@ -25,7 +25,7 @@ Run MuJoCo's own test suite against CortenForge implementations.
 | Category | MuJoCo Source | CortenForge Target |
 |----------|---------------|-------------------|
 | Forward dynamics | `test/engine_forward_test.cc` | sim-core |
-| Contact physics | `test/engine_collision_test.cc` | sim-contact |
+| Contact physics | `test/engine_collision_test.cc` | sim-core |
 | Constraint solver | `test/engine_core_smooth_test.cc` | sim-constraint |
 | MJCF parsing | `test/xml_test.cc` | sim-mjcf |
 | Sensor readings | `test/sensor_test.cc` | sim-sensor |

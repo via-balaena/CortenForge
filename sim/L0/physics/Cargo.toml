@@ -1,6 +1,6 @@
 [package]
 name = "sim-physics"
-description = "Unified physics simulation API - re-exports sim-types, sim-core, sim-constraint, sim-contact, and sim-urdf"
+description = "Unified physics simulation API - re-exports sim-types, sim-core, sim-constraint, and sim-urdf"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,7 +12,6 @@ rust-version.workspace = true
 sim-types = { workspace = true }
 sim-core = { workspace = true }
 sim-constraint = { workspace = true }
-sim-contact = { workspace = true }
 sim-urdf = { workspace = true }
 sim-mjcf = { workspace = true }
 sim-muscle = { workspace = true }
@@ -31,7 +30,6 @@ serde = [
     "sim-types/serde",
     "sim-core/serde",
     "sim-constraint/serde",
-    "sim-contact/serde",
     "sim-urdf/serde",
     "sim-mjcf/serde",
     "sim-muscle/serde",

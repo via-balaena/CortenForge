@@ -11,8 +11,10 @@
 
 `sim-core` (`mujoco_pipeline.rs`) implements its own MuJoCo-aligned physics pipeline
 end-to-end: forward kinematics, CRBA, RNE, collision detection, penalty-based joint
-limits/equality constraints, and a custom `pgs_solve_contacts()` solver. It does **not**
-call any solver or joint type from `sim-constraint` or `sim-contact`.
+limits/equality constraints, and a custom `pgs_solve_contacts()` solver. Contact geometry
+types (`ContactPoint`, `ContactForce`, `ContactManifold`) now live in `sim-core/src/contact.rs`
+(consolidated from the deleted sim-contact crate in Phase 2). sim-core does **not** call
+any solver or joint type from `sim-constraint`.
 
 Current cross-crate usage (verified by grep):
 
@@ -22,11 +24,11 @@ Current cross-crate usage (verified by grep):
 | `Joint` trait, `RevoluteJoint`, `PrismaticJoint`, … | sim-constraint | **nobody** (only benchmarks + sim-physics re-export) | sim-core uses `MjJointType` enum instead. |
 | `JointMotor`, `MotorMode`, `JointLimits`, `LimitState` | sim-constraint | sim-physics re-export + test | Instantiated in `test_joint_types_accessible` only. Never by pipeline. |
 | `ConstraintIslands`, `SparseJacobian`, `JacobianBuilder` | sim-constraint | **nobody** | Unused infrastructure. |
-| `ContactSolverConfig` | sim-contact | sim-core (re-export only) | Re-exported by sim-core (`lib.rs:130`) → sim-bevy prelude (`lib.rs:123`). Referenced in sim-bevy doc-comments (`lib.rs:63,66`). No actual callers — `set_contact_solver_config()` does not exist. |
-| `ContactPoint` | sim-contact | **sim-bevy** (`CachedContacts` for debug viz) | Only real external consumer. |
-| `ContactModel`, `ContactParams`, `SurfaceMaterial` | sim-contact | sim-physics re-export + test | Instantiated in `test_contact_types_accessible` only. Never by pipeline. |
-| `ContactSolver`, `BatchContactProcessor`, `ContactManifold` | sim-contact | **nobody** | Unused compliant solver + batch infrastructure. |
-| `FrictionModel` trait, `FrictionCone`, etc. | sim-contact | **nobody** | sim-core computes friction inline. |
+| `ContactSolverConfig` | ~~sim-contact~~ | ~~sim-core (re-export only)~~ | **Deleted in Phase 1.** Was re-exported by sim-core → sim-bevy prelude. No actual callers. |
+| `ContactPoint`, `ContactForce`, `ContactManifold` | ~~sim-contact~~ → **sim-core** | **sim-bevy** (`CachedContacts` for debug viz) | **Moved to sim-core in Phase 2.** Only real external consumer is sim-bevy. |
+| `ContactModel`, `ContactParams`, `SurfaceMaterial` | ~~sim-contact~~ | ~~sim-physics re-export + test~~ | **Deleted in Phase 2.** Were instantiated in `test_contact_types_accessible` only. |
+| `ContactSolver`, `BatchContactProcessor` | ~~sim-contact~~ | ~~nobody~~ | **Deleted in Phase 2.** Unused compliant solver + batch infrastructure. |
+| `FrictionModel` trait, `FrictionCone`, etc. | ~~sim-contact~~ | ~~nobody~~ | **Deleted in Phase 2.** sim-core computes friction inline. |
 
 Phantom Cargo.toml dependencies (declared but zero source-level imports):
 
@@ -35,7 +37,7 @@ Phantom Cargo.toml dependencies (declared but zero source-level imports):
 | sim-mjcf | `sim-constraint` (with `muscle` feature) | Enables muscle feature on sim-constraint transitively; no types imported | Yes — sim-mjcf parses muscles with its own internal `MjcfActuatorType::Muscle`, not sim-constraint types |
 | sim-urdf | `sim-constraint` | No types imported | Yes |
 | sim-bevy | `sim-constraint` | No types imported | Yes |
-| sim-conformance-tests | `sim-constraint`, `sim-contact` | No types imported in test source files | Yes (unless tests are added later) |
+| sim-conformance-tests | `sim-constraint`, ~~`sim-contact`~~ | No types imported in test source files | Yes (unless tests are added later). sim-contact removed in Phase 1. |
 
 ### Problem
 
@@ -70,81 +72,32 @@ and `cargo test --workspace`.
 - [x] Remove `sim-constraint` from `sim-bevy/Cargo.toml`
 - [x] Remove `sim-constraint` and `sim-contact` from `sim-conformance-tests/Cargo.toml`
 
-### Phase 2 — Consolidate sim-contact into sim-core
+### Phase 2 — Consolidate sim-contact into sim-core ✅
 
-- [ ] Move `ContactPoint`, `ContactForce`, and `ContactManifold` into
-  `sim-core/src/contact.rs` and wire into the module tree: add `mod contact;`
-  and `pub use contact::{ContactPoint, ContactForce, ContactManifold};` to
-  `sim-core/src/lib.rs`. These types are self-contained — they depend only on
-  `nalgebra` (Point3, Vector3) and `sim-types` (BodyId), both already in sim-core.
-  No sim-simd or sim-contact-internal dependencies. Serde derives are conditional
-  on a `serde` feature already present in sim-core. Note: this is the entire
-  `contact.rs` file (~1500 lines) including two private helper functions
-  (`safe_normalize`, `closest_points_segments`), extensive `ContactPoint` collision
-  methods (sphere-plane, sphere-sphere, box-sphere, box-plane, box-box, capsule-*),
-  and ~450 lines of unit tests. Not just data structs.
-  **nalgebra note:** sim-contact hardcodes `nalgebra = { version = "0.33",
-  default-features = false, features = ["std"] }` instead of using `workspace = true`.
-  After moving to sim-core (which uses `workspace = true` with default features),
-  nalgebra gains additional features. This is additive and safe — no breakage expected,
-  but worth a smoke-test of the collision methods after migration.
-- [ ] Update sim-bevy to import `ContactPoint` from sim-core instead of sim-contact
-  (`sim/L1/bevy/src/resources.rs:4`)
-- [ ] Decide disposition of remaining sim-contact types (not already moved above):
-  - `ContactModel`, `ContactParams`, `SurfaceMaterial`, `DomainRandomization`,
-    `MaterialPair` — move to sim-core if user-facing API is desired, otherwise delete
-  - `FrictionModelType` — delete (model.rs enum selecting friction model, unused by
-    pipeline)
-  - `ContactSolver`, `ContactSolverConfig` — delete (unused, duplicated by pipeline)
-  - `BatchContactProcessor`, `BatchForceResult` — delete (uses sim-simd, unused)
-  - `FrictionModel` trait, `FrictionCone`, `EllipticFrictionCone`,
-    `PyramidalFrictionCone`, `RegularizedFriction`, `RollingFriction`,
-    `TorsionalFriction`, `CompleteFrictionModel`, `CompleteFrictionResult` — delete
-    (sim-core computes friction inline)
-- [ ] Update sim-physics:
-  - Remove `pub use sim_contact;` top-level re-export (`lib.rs:109`)
-  - Update prelude to source contact types from sim-core
-  - Update `test_contact_types_accessible` test (`lib.rs:506`) — uses
-    `ContactParams::default()` and `ContactModel::new()` which come from sim-contact.
-    If these types are deleted rather than moved, delete the test.
-- [ ] Remove `sim-contact` dependency from sim-physics, sim-bevy, and
-  sim-conformance-tests Cargo.tomls
-- [ ] Remove `"sim-contact/serde"` from sim-physics `[features]` serde list
-  (`Cargo.toml:34`)
-- [ ] Update sim-physics package description (`Cargo.toml:3`) which lists sim-contact
-- [ ] Remove `sim-contact` from workspace `Cargo.toml`:
-  - Remove from `[workspace.members]` (line 71)
-  - Remove from `[workspace.dependencies]` (line 296)
-- [ ] Update CI scripts that list `sim-contact` by name:
-  - `scripts/local-quality-check.sh` (lines 187, 240 — WASM and Bevy-free crate lists)
-  - `.github/workflows/quality-gate.yml` (lines 156, 399 — same checks)
-- [ ] Update documentation referencing sim-contact:
-  - `README.md` (lines 47, 144–145) — crate table and diagram
-  - `VISION.md` (lines 113, 167) — architecture diagrams
-  - `sim/ARCHITECTURE.md` — crate directory listing (line 24), "sim-contact"
-    section (line 195), "Compliant vs Impulse-Based Contacts" table (line 324)
-  - `sim/L0/physics/README.md` (line 7) — lists sim-contact as re-exported crate
-  - `sim/docs/MUJOCO_CONFORMANCE.md` (line 28) — maps contact tests to sim-contact
-  - `sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md` (lines 418, 534) — sim-contact
-    section and Cargo.toml example
-  - `docs/MUJOCO_GAP_ANALYSIS.md` — extensive references to sim-contact files
-    throughout (~15 occurrences referencing friction.rs, model.rs, solver.rs,
-    batch.rs, lib.rs)
-- [ ] Delete the `sim-contact` crate directory
-- Current state: sim-contact defines contact geometry types and a compliant contact
-  solver. The only external consumer of a concrete type is sim-bevy (`ContactPoint` in
-  `resources.rs:4`). sim-physics re-exports the full `sim_contact` module (line 109)
-  and specific types via its prelude (lines 198–210). sim-physics has a test that
-  instantiates `ContactParams` and `ContactModel`.
-- Target state: `ContactPoint` lives in `sim-core/src/contact.rs`. `ContactModel`,
-  `ContactParams`, `SurfaceMaterial`, and friction models are either moved to sim-core
-  (if they have future use) or deleted (if they duplicate pipeline logic).
-- Risk: **Low-medium.** sim-bevy import paths change. sim-physics re-exports and tests
-  change. CI scripts need updating. The compliant contact solver is unused but deleting
-  it is a one-way door — audit whether any downstream user code (outside this repo)
-  references it.
-- Validation: `cargo build --workspace`, `cargo test --workspace`, sim-bevy debug viz
-  still renders contact points, CI quality gate passes.
+All items completed. All unused sim-contact types (ContactModel, ContactParams,
+SurfaceMaterial, DomainRandomization, friction models, solver, batch processor) were
+deleted. Only `ContactPoint`, `ContactForce`, and `ContactManifold` were preserved,
+moved into `sim-core/src/contact.rs`. Changes verified with `cargo check --workspace`,
+`cargo build --workspace`, and `cargo test --workspace`.
+
+- [x] Move `ContactPoint`, `ContactForce`, and `ContactManifold` into
+  `sim-core/src/contact.rs` — copied entire `contact.rs` (~1500 lines) including
+  private helpers, collision methods, and ~450 lines of unit tests
+- [x] Update sim-bevy to import `ContactPoint` from sim-core instead of sim-contact
+- [x] Disposition of remaining sim-contact types: **all deleted** (unused by pipeline,
+  duplicated by sim-core's MuJoCo-aligned solver)
+- [x] Update sim-physics: removed `pub use sim_contact;`, updated prelude to source
+  contact types from sim-core, deleted `test_contact_types_accessible` test
+- [x] Remove `sim-contact` dependency from sim-physics and sim-bevy Cargo.tomls
+- [x] Remove `"sim-contact/serde"` from sim-physics serde feature list
+- [x] Update sim-physics package description
+- [x] Remove `sim-contact` from workspace `Cargo.toml` (members and dependencies)
+- [x] Update CI scripts: removed from WASM_CRATES and LAYER0_CRATES in both
+  `local-quality-check.sh` and `quality-gate.yml`
+- [x] Update documentation: README.md, VISION.md, sim/ARCHITECTURE.md,
+  sim/L0/physics/README.md, sim/docs/MUJOCO_CONFORMANCE.md,
+  sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md, docs/MUJOCO_GAP_ANALYSIS.md
+- [x] Delete the `sim-contact` crate directory
 
 ### Phase 3 — Reduce sim-constraint to public API types only
 
@@ -297,7 +250,7 @@ sim-urdf    → sim-constraint          (phantom — zero imports)
 sim-tests   → sim-constraint, sim-contact  (phantom — zero imports in .rs files)
 ```
 
-Current (after Phase 1 ✅):
+After Phase 1 ✅:
 ```
 sim-core    → (dev-dep only: sim-constraint for benchmarks)
 sim-physics → **sim-constraint**      (re-exports types)
@@ -307,18 +260,27 @@ sim-bevy    → **sim-contact**         (ContactPoint)
             → sim-core
 ```
 
-After Phases 2–3 (sim-contact deleted, sim-constraint stripped):
+Current (after Phase 2 ✅, sim-contact deleted):
 ```
-sim-physics → sim-core                (ContactPoint re-exported from here)
+sim-core    → (dev-dep only: sim-constraint for benchmarks)
+sim-physics → **sim-constraint**      (re-exports types)
+            → **sim-core**            (ContactPoint, ContactForce, ContactManifold)
+sim-bevy    → **sim-core**            (ContactPoint moved here)
+```
+
+After Phase 3 (sim-constraint stripped to types only):
+```
+sim-physics → sim-core                (contact types re-exported from here)
             → sim-constraint          (types only, no solvers)
-sim-bevy    → sim-core                (ContactPoint moved here)
+sim-bevy    → sim-core                (ContactPoint)
 ```
 
 ### When to address
 
 Phase 1 is complete. ✅
+Phase 2 is complete. ✅
 
-Phases 2–3 should be done when:
+Phase 3 should be done when:
 1. Batched simulation work begins (clean dependency graph simplifies the new crate)
 2. Public API surface is being reviewed for 1.0
 3. Build times or dependency confusion becomes friction
@@ -347,7 +309,7 @@ Identified during solref/solimp review. Items marked ✅ have been addressed.
 |---|-------|--------|-------|
 | 3 | Contact clone in hot path | ✅ Fixed | Borrow split via `std::mem::take` on `efc_lambda`; `pgs_solve_contacts` now takes `&Data` + `&mut HashMap`. See details below. |
 | 4 | Cholesky clone for implicit integrator | ✅ Fixed | `std::mem::replace` swaps populated matrix out for Cholesky consumption; zero matrix left for next step. See details below. |
-| 5 | Duplicate contact structures | ✅ Improved | Old `ContactPoint` in mujoco_pipeline.rs removed. Two distinct types remain: `Contact` (mujoco pipeline constraint struct) and `ContactPoint` (sim-contact geometric contact). These serve different purposes. |
+| 5 | Duplicate contact structures | ✅ Improved | Old `ContactPoint` in mujoco_pipeline.rs removed. Two distinct types remain: `Contact` (mujoco pipeline constraint struct) and `ContactPoint` (sim-core geometric contact, moved from sim-contact in Phase 2). These serve different purposes. |
 
 #### Issue 3 — Contact clone in hot path
 
