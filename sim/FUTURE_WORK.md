@@ -272,27 +272,21 @@ sim-physics → **sim-constraint**      (re-exports types)
 sim-bevy    → **sim-core**            (ContactPoint moved here)
 ```
 
-After Phase 3 (sim-constraint stripped to types + CGSolver):
+After Phase 3 ✅ (sim-constraint stripped to types + CGSolver):
 ```
 sim-physics → sim-core                (contact types re-exported from here)
             → sim-constraint          (types + CGSolver, no PGS/Newton/sparse/islands)
 sim-bevy    → sim-core                (ContactPoint)
 ```
 
-### When to address
+Note: sim-core no longer depends on sim-constraint (dev-dep removed in Phase 3).
 
-Phase 1 is complete. ✅
-Phase 2 is complete. ✅
+### Status
 
-Phase 3 should be done when:
-1. Batched simulation work begins (clean dependency graph simplifies the new crate)
-2. Public API surface is being reviewed for 1.0
-3. Build times or dependency confusion becomes friction
-
-Not urgent because:
-- Current structure compiles and works correctly
-- No runtime cost from unused dependencies
-- Compile times are acceptable (unused crate code is compiled but not linked)
+Phase 1 ✅ — Remove phantom and dead dependencies (commit ba1d729)
+Phase 2 ✅ — Consolidate sim-contact into sim-core (commit 9ed88ea)
+Phase 3 ✅ — Reduce sim-constraint to types + CGSolver (commit a5cef72)
+Phase 4 — Optional, merge sim-constraint into sim-types (not started)
 
 ---
 
@@ -488,9 +482,8 @@ Parseable from MJCF `<option>` via attributes: `regularization`, `default_eq_sti
 - Trigger: When the system needs to handle large constraint counts (100+ contacts) where PGS convergence becomes slow
 - Rationale: CG with Block Jacobi preconditioning scales better than PGS for large systems — PGS convergence degrades with constraint count while preconditioned CG maintains stable iteration counts
 - Prerequisites: Adapter layer mapping `mujoco_pipeline.rs` contact structures to CGSolver's `Joint` trait interface
-- **Dependency on Crate Consolidation Phase 3:** If Phase 3 is executed before this
-  work begins, CGSolver and `cg.rs` must be excluded from deletion. The consolidation
-  spec flags this explicitly.
+- **Crate Consolidation Phase 3 complete:** CGSolver was preserved during Phase 3
+  (commit a5cef72). It remains in `sim-constraint/src/cg.rs` ready for integration.
 
 ### Batched Simulation
 
