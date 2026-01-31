@@ -99,27 +99,60 @@ moved into `sim-core/src/contact.rs`. Changes verified with `cargo check --works
   sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md, docs/MUJOCO_GAP_ANALYSIS.md
 - [x] Delete the `sim-contact` crate directory
 
-### Phase 3 — Reduce sim-constraint to public API types only
+### Phase 3 — Reduce sim-constraint to types + CGSolver
 
-- [ ] Delete standalone solvers and their supporting infrastructure:
-  - `solver.rs` — `ConstraintSolver`, `ConstraintSolverConfig`, `SolverResult`,
-    `JointForce`, `BodyState` (solver-internal types, not used by kept modules)
-  - `pgs.rs` — `PGSSolver`, `PGSSolverConfig`, `PGSSolverResult`, `PGSSolverStats`
-  - `newton.rs` — `NewtonConstraintSolver`, `NewtonSolverConfig`,
-    `NewtonSolverResult`, `SolverStats`
-  - `cg.rs` — `CGSolver`, `CGSolverConfig`, `CGSolverResult`, `CGSolverStats`,
-    `Preconditioner`
-  - `sparse.rs` — `SparseJacobian`, `JacobianBuilder`, `SparseEffectiveMass`,
-    `InvMassBlock`
-  - `islands.rs` — `ConstraintIslands`, `Island`, `IslandStatistics`
-  - `parallel.rs` — parallel island solving (only called from `newton.rs`)
-- [ ] Remove `nalgebra-sparse` from sim-constraint `Cargo.toml` (only used by
-  `sparse.rs`); remove `hashbrown` optional dep (only used by `parallel` feature);
-  remove `thiserror` (declared at Cargo.toml:16 but zero source-level imports —
+**Decision:** Keep CGSolver (`cg.rs`) — it is planned for future integration into the
+MuJoCo pipeline as an alternative solver for large-scale systems (see "CGSolver
+Integration for Large-Scale Systems" in Physics Features below). CGSolver is fully
+standalone — zero dependencies on any deleted module.
+
+**Delete** (solvers, infrastructure, and supporting modules):
+
+- [ ] Delete `pgs.rs` — `PGSSolver`, `PGSSolverConfig`, `PGSSolverResult`, `PGSSolverStats`
+- [ ] Delete `newton.rs` — `NewtonConstraintSolver`, `NewtonSolverConfig`,
+  `NewtonSolverResult`, `SolverStats`
+- [ ] Delete `sparse.rs` — `SparseJacobian`, `JacobianBuilder`, `SparseEffectiveMass`,
+  `InvMassBlock`
+- [ ] Delete `islands.rs` — `ConstraintIslands`, `Island`, `IslandStatistics`
+- [ ] Delete `parallel.rs` — parallel island solving (only called from `newton.rs`)
+- [ ] Refactor `solver.rs`:
+  - Extract `BodyState` (~120 lines, struct + 4 methods) and `JointForce` (~10 lines,
+    struct) into `types.rs` — CGSolver imports these via `use crate::{BodyState, JointForce}`
+  - Delete the rest of `solver.rs`: `ConstraintSolver` struct (~500 lines),
+    `ConstraintSolverConfig` (~60 lines), `SolverResult` (~25 lines)
+  - Delete the `solver.rs` file after extraction
+
+**Keep** (types + CGSolver):
+
+- [ ] `cg.rs` — `CGSolver`, `CGSolverConfig`, `CGSolverResult`, `CGSolverStats`,
+  `Preconditioner`, `PreconditionerData` (1,664 lines including Block Jacobi
+  preconditioner and 11 tests). Imports from crate: `BodyState`, `ConstraintForce`,
+  `Joint`, `JointForce`, `JointType` — all in kept modules.
+- `joint.rs` — `Joint` trait, `RevoluteJoint`, `PrismaticJoint`, `FixedJoint`,
+  `SphericalJoint`, `UniversalJoint`, `CylindricalJoint`, `PlanarJoint`,
+  `FreeJoint`, `JointType` enum, `JointDof`
+- `limits.rs` — `JointLimits`, `LimitState`, `LimitStiffness`
+- `motor.rs` — `JointMotor`, `MotorMode`
+- `types.rs` — `JointState`, `JointVelocity`, `ConstraintForce` (+ `BodyState`,
+  `JointForce` after extraction from solver.rs)
+- `equality.rs` — all equality constraint types
+- `actuator.rs` — all actuator types
+- `muscle.rs` (optional) — `MuscleJoint`, `MuscleCommands`, `MuscleJointBuilder`
+
+**Cargo.toml cleanup:**
+
+- [ ] Remove `nalgebra-sparse` (only used by `sparse.rs`)
+- [ ] Remove `hashbrown` optional dep (only used by `parallel` feature)
+- [ ] Remove `thiserror` (declared at Cargo.toml:16 but zero source-level imports —
   phantom dep even before this phase)
-- [ ] Remove `parallel` feature from sim-constraint (no parallel solvers remain);
-  also remove `rayon` optional dep (Cargo.toml:18) which is only activated by
-  this feature
+- [ ] Remove `parallel` feature and `rayon` optional dep (Cargo.toml:18) — no
+  parallel solvers remain (`parallel.rs` deleted)
+- [ ] Update description (line 3): currently `"Joint constraints and motors for
+  articulated body simulation"` — update to reflect current role (e.g., "Joint types,
+  motors, limits, and CGSolver for articulated body simulation")
+
+**sim-core benchmark cleanup:**
+
 - [ ] Remove solver benchmarks from `collision_benchmarks.rs`:
   - Delete solver benchmark section header and functions (lines 585–742)
   - Remove solver entries from `criterion_group!` macro (lines 761–765:
@@ -128,78 +161,82 @@ moved into `sim-core/src/contact.rs`. Changes verified with `cargo check --works
   - Remove `use sim_constraint::{...}` import block (lines 22–25)
   - Remove `sim-constraint` from `sim-core/Cargo.toml` `[dev-dependencies]`
     (added in Phase 1)
-- [ ] Rewrite sim-constraint crate-level documentation (`lib.rs` lines 25–68):
-  - Delete "Constraint Solvers" section (lines 25–35, lists 4 deleted solvers)
+
+**lib.rs module structure update:**
+
+- [ ] Remove `mod` declarations for deleted modules: `solver`, `pgs`, `newton`,
+  `sparse`, `islands`
+- [ ] Remove `#[cfg(feature = "parallel")] pub mod parallel;`
+- [ ] Remove `pub use` re-exports for deleted types:
+  - `solver::{ConstraintSolver, ConstraintSolverConfig, SolverResult}` (deleted)
+  - `solver::{BodyState, JointForce}` → update to `types::{BodyState, JointForce}`
+  - `pgs::*`, `newton::*`, `sparse::*`, `islands::*` re-exports
+- [ ] Keep `pub use cg::{CGSolver, CGSolverConfig, CGSolverResult, CGSolverStats,
+  Preconditioner};`
+- [ ] Rewrite crate-level documentation (`lib.rs` lines 25–68):
+  - Delete "Constraint Solvers" section (lines 25–35, lists 4 solvers — rewrite
+    to mention only CGSolver as experimental/future-integration solver)
   - Delete "Constraint Islands" section and doc-test example (lines 37–56,
     uses `ConstraintIslands`, `NewtonConstraintSolver`)
-  - Update "Constraint Formulation" section (lines 58–68) — the math
-    (C(q)=0, J*v=0) is still valid context for joints, but line 67 says
-    "The solver computes constraint forces..." which references deleted
-    solvers. Reword to describe constraint formulation without solver.
-  - Update crate description to reflect type-library role
-- [ ] Update sim-constraint `Cargo.toml` description (line 3): currently
-  `"Joint constraints and motors for articulated body simulation"` — update
-  to reflect type-library role (e.g., "Joint types, motors, and limits for
-  articulated body simulation")
-- [ ] Remove `pub use` re-exports in `lib.rs` for all deleted types (lines 122, 128,
-  137–140)
-- [ ] Remove `mod` declarations in `lib.rs` for deleted modules (lines 102, 104,
-  110–115)
-- [ ] Keep (all in self-contained modules with zero references to deleted code):
-  - `joint.rs` — `Joint` trait, `RevoluteJoint`, `PrismaticJoint`, `FixedJoint`,
-    `SphericalJoint`, `UniversalJoint`, `CylindricalJoint`, `PlanarJoint`,
-    `FreeJoint`, `JointType` enum, `JointDof`
-  - `limits.rs` — `JointLimits`, `LimitState`, `LimitStiffness`
-  - `motor.rs` — `JointMotor`, `MotorMode`
-  - `types.rs` — `JointState`, `JointVelocity`, `ConstraintForce`
-  - `equality.rs` — all equality constraint types
-  - `actuator.rs` — all actuator types
-  - `muscle.rs` (optional) — `MuscleJoint`, `MuscleCommands`, `MuscleJointBuilder`
-- [ ] Evaluate whether kept types should move to sim-types (pure data) vs stay in
-  sim-constraint (if they carry behavior)
-- [ ] Update sim-physics:
-  - Remove `ConstraintSolver` and `ConstraintSolverConfig` from prelude re-exports
-    (deleted types). Keep joint type and motor re-exports.
-  - Update `test_joint_types_accessible` test (`lib.rs:499`) — uses
-    `sim_constraint::JointLimits::new()` directly. Path still works if JointLimits
-    stays in sim-constraint, but verify after module deletions.
-- [ ] Update CI scripts if sim-constraint is renamed or has changed features:
-  - `scripts/local-quality-check.sh` (lines 188, 241)
-  - `.github/workflows/quality-gate.yml` (lines 157, 400)
-- [ ] Update documentation referencing deleted sim-constraint solvers:
-  - `sim/ARCHITECTURE.md` — "sim-constraint" section (line 212) lists deleted
-    solvers; feature flags table (line 351) references `parallel` feature.
-    Rewrite section to reflect type-library role.
-  - `sim/docs/MUJOCO_CONFORMANCE.md` (line 29) — maps constraint tests to
-    sim-constraint
-  - `sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md` (lines 491, 535) — sim-constraint
-    section and Cargo.toml example
-  - `docs/MUJOCO_GAP_ANALYSIS.md` — extensive references to deleted files
-    (newton.rs, pgs.rs, islands.rs, sparse.rs, parallel.rs, cg.rs — ~20
-    occurrences). References to kept files (actuator.rs, equality.rs, joint.rs)
-    remain valid.
-- [ ] Resolve name collisions between sim-types and sim-constraint — three types share
-  names but have different definitions:
-  - `JointLimits` — sim-types (`types/src/joint.rs:111`) vs sim-constraint
-    (`constraint/src/limits.rs:12`)
-  - `JointType` — sim-types (`types/src/joint.rs:45`) vs sim-constraint
-    (`constraint/src/joint.rs:57`)
-  - `JointState` — sim-types (`types/src/joint.rs:238`) vs sim-constraint
-    (`constraint/src/types.rs:14`)
-  - sim-physics prelude imports the sim-types versions. If merging (Phase 4),
-    reconcile or rename the sim-constraint variants.
-- Current state: sim-constraint contains 4 solvers, sparse matrix infrastructure,
-  island detection, joint types, motor/limit types, equality constraints, and actuators.
-  Only the type definitions are consumed (via sim-physics re-export). No solver is
-  called in production.
+  - Update "Constraint Formulation" section (lines 58–68) — keep the math
+    (C(q)=0, J*v=0) but reword line 67 ("The solver computes constraint
+    forces...") to describe formulation without referencing deleted solvers
+
+**sim-physics updates:**
+
+- [ ] Remove `ConstraintSolver` and `ConstraintSolverConfig` from prelude re-exports
+  (deleted types). Keep joint type, motor, CGSolver, and `BodyState`/`JointForce`
+  re-exports.
+- [ ] Verify `test_joint_types_accessible` test (`lib.rs:499`) — uses
+  `sim_constraint::JointLimits::new()` directly. Path still works since `limits.rs`
+  is kept, but verify after module deletions.
+
+**CI scripts:**
+
+- [ ] Remove `parallel` feature references from CI if any exist:
+  - `scripts/local-quality-check.sh`
+  - `.github/workflows/quality-gate.yml`
+
+**Documentation updates:**
+
+- [ ] `sim/ARCHITECTURE.md` — "sim-constraint" section (line 212) lists deleted
+  solvers; feature flags table (line 351) references `parallel` feature. Rewrite
+  section to list kept types + CGSolver. Remove `parallel` from feature flags table.
+- [ ] `sim/docs/MUJOCO_CONFORMANCE.md` (line 29) — maps constraint tests to
+  sim-constraint; verify still accurate after deletions
+- [ ] `sim/docs/SIM_BEVY_IMPLEMENTATION_PLAN.md` (lines 491, 535) — sim-constraint
+  section and Cargo.toml example; update to reflect reduced API
+- [ ] `docs/MUJOCO_GAP_ANALYSIS.md` — references to deleted files (newton.rs, pgs.rs,
+  islands.rs, sparse.rs, parallel.rs — ~20 occurrences). Mark as deleted/removed.
+  References to kept files (actuator.rs, equality.rs, joint.rs, cg.rs) remain valid.
+
+**Name collisions (deferred to Phase 4):**
+
+Three types share names between sim-types and sim-constraint with different definitions:
+- `JointLimits` — sim-types (`types/src/joint.rs:111`) vs sim-constraint
+  (`constraint/src/limits.rs:12`)
+- `JointType` — sim-types (`types/src/joint.rs:45`) vs sim-constraint
+  (`constraint/src/joint.rs:57`)
+- `JointState` — sim-types (`types/src/joint.rs:238`) vs sim-constraint
+  (`constraint/src/types.rs:14`)
+- sim-physics prelude imports the sim-types versions. If merging (Phase 4),
+  reconcile or rename the sim-constraint variants.
+
+**Summary:**
+
+- Current state: sim-constraint contains 4 solvers (PGS, Newton, CG, ConstraintSolver),
+  sparse matrix infrastructure, island detection, joint types, motor/limit types,
+  equality constraints, and actuators. Only type definitions and CGSolver are worth
+  keeping. No solver is called in production.
 - Target state: sim-constraint is a **type library** for joint definitions, motors,
-  limits, and equality constraints. No solver implementations. Sparse/island code
-  deleted.
-- Risk: **Medium.** Deleting solver code is irreversible (though recoverable from git).
-  The CGSolver with Block Jacobi preconditioner is listed in Physics Features as a
-  future integration candidate — if that work is planned soon, keep CGSolver and delete
-  only the others.
-- Validation: `cargo build --workspace`, `cargo test --workspace`, `cargo bench -p sim-core --no-run` (benchmarks must be updated first), verify sim-physics prelude
+  limits, equality constraints, and actuators — plus `CGSolver` (retained for future
+  pipeline integration). PGS, Newton, sparse, and island code deleted.
+- Risk: **Low.** CGSolver is preserved (the only one-way-door concern from the original
+  spec). All other deleted solvers are fully duplicated by sim-core's pipeline PGS or
+  have zero callers. `BodyState`/`JointForce` extraction from solver.rs is mechanical.
+- Validation: `cargo build --workspace`, `cargo test --workspace`,
+  `cargo test -p sim-constraint` (CGSolver tests still pass),
+  `cargo bench -p sim-core --no-run` (benchmarks updated), verify sim-physics prelude
   still exports all intended public types.
 
 ### Phase 4 (optional) — Merge sim-constraint into sim-types
@@ -268,10 +305,10 @@ sim-physics → **sim-constraint**      (re-exports types)
 sim-bevy    → **sim-core**            (ContactPoint moved here)
 ```
 
-After Phase 3 (sim-constraint stripped to types only):
+After Phase 3 (sim-constraint stripped to types + CGSolver):
 ```
 sim-physics → sim-core                (contact types re-exported from here)
-            → sim-constraint          (types only, no solvers)
+            → sim-constraint          (types + CGSolver, no PGS/Newton/sparse/islands)
 sim-bevy    → sim-core                (ContactPoint)
 ```
 
