@@ -6,16 +6,16 @@
 use bevy::gizmos::config::{DefaultGizmoConfigGroup, GizmoConfigStore};
 use bevy::prelude::*;
 
-use crate::camera::{spawn_orbit_camera, OrbitCameraPlugin};
+use crate::camera::{OrbitCameraPlugin, spawn_orbit_camera};
 use crate::gizmos::{
-    draw_contact_normals, draw_contact_points, draw_muscles, draw_sensors, draw_tendons,
-    DebugGizmosSet,
+    DebugGizmosSet, draw_contact_normals, draw_contact_points, draw_muscles, draw_sensors,
+    draw_tendons,
 };
 use crate::resources::{
     BodyEntityMap, CachedContacts, MuscleVisualization, SensorVisualization, TendonVisualization,
     ViewerConfig,
 };
-use crate::systems::{update_cached_contacts, update_shape_visibility, SimViewerSet};
+use crate::systems::{SimViewerSet, update_cached_contacts, update_shape_visibility};
 
 /// Physics visualization plugin for Bevy.
 ///

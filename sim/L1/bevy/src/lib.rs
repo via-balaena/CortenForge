@@ -84,8 +84,8 @@ pub mod prelude {
     pub use crate::gizmos::DebugGizmosSet;
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
     pub use crate::model_data::{
-        step_model_data, sync_model_data_to_bevy, ModelBodyIndex, ModelDataPlugin, ModelDataRoot,
-        ModelDataSet, ModelGeomIndex, ModelSiteIndex, PhysicsData, PhysicsModel,
+        ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet, ModelGeomIndex,
+        ModelSiteIndex, PhysicsData, PhysicsModel, step_model_data, sync_model_data_to_bevy,
     };
     pub use crate::plugin::SimViewerPlugin;
     pub use crate::resources::{
