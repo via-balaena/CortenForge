@@ -7,26 +7,51 @@ LLM/Agent Note: This document is ~2000 lines. To update it efficiently:
 3. The document is well-structured - grep for "^## " to find all section headers
 -->
 
-This document provides a comprehensive comparison between MuJoCo's physics capabilities and CortenForge's current `sim-*` crate implementation. Use this as a roadmap for bridging the gap.
+This document provides a comprehensive comparison between MuJoCo's physics capabilities and CortenForge's current `sim-*` crate implementation.
 
 > **Note:** All `sim-*` crates are in initial development (pre-1.0). Breaking changes to APIs are expected and acceptable. Prefer clean, correct implementations over backwards compatibility.
+
+> **Current Roadmap:** For the authoritative list of verified gaps with file:line references, acceptance criteria, and dependency graph, see [`sim/FUTURE_WORK.md`](../sim/FUTURE_WORK.md).
 
 ---
 
 ## 📊 Executive Summary
 
-**Overall completion: ~100%** of MuJoCo's core physics features are implemented.
+**Overall completion: ~65-70%** of MuJoCo's core pipeline features are functional end-to-end. Many standalone crates exist but are not yet wired into the MuJoCo pipeline (`mujoco_pipeline.rs`). See `sim/FUTURE_WORK.md` for the 11 remaining items.
 
-### ✅ Fully Implemented (Phases 1-9 Complete)
-- Integration methods (Euler, RK4, Verlet, Implicit)
-- Constraint solvers (Newton, CG, **PGS with SOR**, Islands, Warm Starting)
+### Fully Implemented (in pipeline)
+- Integration methods: Euler, Implicit (diagonal spring/damper only — see [FUTURE_WORK #7](../sim/FUTURE_WORK.md))
+- Constraint solver: PGS (plain Gauss-Seidel, no SOR), Warm Starting
 - Contact model (Compliant, Elliptic/Pyramidal friction, Torsional/Rolling)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free, Planar, Cylindrical**)
-- Actuators (Motors, Servos, Muscles, Pneumatic, Adhesion)
-- Sensors (IMU, Force/Torque, Touch, Rangefinder, Magnetometer)
-- Tendons & Deformables (Cloth, Soft bodies, XPBD solver)
+- Actuators: Motors, Servos (joint-level actuation only)
+- Sensors: JointPos, JointVel, BodyPos, BodyVel, Accelerometer, Gyro, IMU
 - Model loading (URDF, MJCF with full `<default>` support, **MJB binary format**)
+
+### Placeholder / Stub (in pipeline)
+- RK4 integrator — dispatches to Euler code path ([FUTURE_WORK #8](../sim/FUTURE_WORK.md))
+- Force/Torque sensors — return `[0, 0, 0]` ([FUTURE_WORK #6](../sim/FUTURE_WORK.md))
+- Touch sensor — uses hardcoded `depth * 10000` stiffness ([FUTURE_WORK #6](../sim/FUTURE_WORK.md))
+- Rangefinder — returns `sensor_cutoff` constant ([FUTURE_WORK #6](../sim/FUTURE_WORK.md))
+- Magnetometer — no-op, falls to `_ => {}` ([FUTURE_WORK #6](../sim/FUTURE_WORK.md))
+- Tendon/Site actuation — placeholder comment in `mj_fwd_actuation()` ([FUTURE_WORK #4](../sim/FUTURE_WORK.md))
+
+### Standalone Crates (not wired into pipeline)
+- sim-tendon (3,919 lines) — zero pipeline coupling ([FUTURE_WORK #4](../sim/FUTURE_WORK.md))
+- sim-muscle (2,550 lines) — zero pipeline coupling ([FUTURE_WORK #5](../sim/FUTURE_WORK.md))
+- sim-deformable (7,733 lines) — XPBD solver not called from `Data::step()` ([FUTURE_WORK #9](../sim/FUTURE_WORK.md))
+- sim-sensor (rangefinder, magnetometer, force/torque) — standalone, pipeline stubs separate
+- CGSolver in sim-constraint (1,664 lines) — 0 pipeline callers ([FUTURE_WORK #3](../sim/FUTURE_WORK.md))
+- `integrators.rs` trait system (1,005 lines) — disconnected from pipeline ([FUTURE_WORK C1](../sim/FUTURE_WORK.md))
+- Pneumatic, Adhesion, Muscle actuators in sim-constraint — not in `mj_fwd_actuation()`
+
+### Removed (Phase 3 Consolidation)
+- Newton solver (`newton.rs` — deleted)
+- Constraint island discovery (`islands.rs` — deleted)
+- Sparse Jacobian operations (`sparse.rs` — deleted)
+- PGS with SOR (`pgs.rs` — deleted; pipeline PGS in `mujoco_pipeline.rs` has no SOR)
+- Island-parallel constraint solving (`parallel.rs` — deleted)
 
 ### ✅ Recently Completed (January 2026)
 
@@ -37,10 +62,10 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | MJCF `<default>` element | Full support for joint, geom, actuator, tendon, sensor defaults with inheritance | [§13](#13-model-format) |
 | MJCF `<tendon>` parsing | Spatial and fixed tendons with site/joint references | [§13](#13-model-format) |
 | MJCF `<sensor>` parsing | 24 sensor types (position, velocity, force, IMU, etc.) | [§13](#13-model-format) |
-| Multi-threading | `parallel` feature with rayon, island-parallel solving, parallel body integration | [§12](#12-performance-optimizations) |
+| Multi-threading | `parallel` feature with rayon (island-parallel solving removed in Phase 3) | [§12](#12-performance-optimizations) |
 | SIMD optimization | `sim-simd` crate with `Vec3x4`, `Vec3x8`, batch operations | [§12](#12-performance-optimizations) |
 
-**For typical robotics use cases**, the current implementation is feature-complete. All core MuJoCo features are now implemented.
+**For typical robotics use cases**, collision detection, joint types, and basic actuation are functional. Sensors, tendons, muscles, and deformable bodies require pipeline integration before they produce correct results. See `sim/FUTURE_WORK.md` for the full gap list.
 
 ---
 
@@ -48,9 +73,12 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 | Status | Meaning |
 |--------|---------|
-| **Implemented** | Feature exists and is functional |
+| **Implemented** | Feature exists and is functional in the MuJoCo pipeline |
+| **Standalone** | Crate/module exists but is not wired into the pipeline |
+| **Placeholder** | Code path exists but produces incorrect/trivial results |
+| **Stub** | Infrastructure exists, needs real implementation |
+| **Removed** | Was implemented, then deleted (Phase 3 consolidation) |
 | **Partial** | Core concept exists but incomplete |
-| **Stub** | Infrastructure exists, needs implementation |
 | **Missing** | Not yet started |
 
 ---
@@ -60,13 +88,15 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
 | Semi-implicit Euler | Default | `SemiImplicitEuler` | **Implemented** | - | - |
-| RK4 | Supported | `RungeKutta4` | **Implemented** | - | - |
-| Explicit Euler | Supported | `ExplicitEuler` | **Implemented** | - | - |
-| Velocity Verlet | - | `VelocityVerlet` | **Implemented** | - | - |
-| Implicit-in-velocity | Core feature | `ImplicitVelocity` | **Implemented** | - | - |
-| Implicit-fast (no Coriolis) | Optimization | `ImplicitFast` | **Implemented** | - | - |
+| RK4 | Supported | `RungeKutta4` | **Placeholder** (dispatches to Euler code path; see [FUTURE_WORK #8](../sim/FUTURE_WORK.md)) | - | - |
+| Explicit Euler | Supported | `ExplicitEuler` | **Standalone** (in `integrators.rs` trait, not in pipeline) | - | - |
+| Velocity Verlet | - | `VelocityVerlet` | **Standalone** (in `integrators.rs` trait, not in pipeline) | - | - |
+| Implicit-in-velocity | Core feature | `ImplicitVelocity` | **Standalone** (in `integrators.rs` trait, not in pipeline) | - | - |
+| Implicit-fast (no Coriolis) | Optimization | `ImplicitFast` | **Standalone** (in `integrators.rs` trait, not in pipeline) | - | - |
 
-### Implementation Notes: Implicit Integration ✅ COMPLETED
+> **Two integration systems exist.** The MuJoCo pipeline uses its own `Integrator` enum (`mujoco_pipeline.rs:623`) with three variants: `Euler`, `RungeKutta4` (placeholder — identical to Euler), and `Implicit` (diagonal spring/damper only, mislabeled as "Implicit midpoint"). The `integrators.rs` trait system (1,005 lines) has 6 independent implementations (`ExplicitEuler`, `SemiImplicitEuler`, `VelocityVerlet`, `RungeKutta4`, `ImplicitVelocity`, `ImplicitFast`) that operate on `RigidBodyState` objects and are **not called by the pipeline**. See [FUTURE_WORK C1](../sim/FUTURE_WORK.md) for disambiguation plan.
+
+### Implementation Notes: Implicit Integration ✅ COMPLETED (standalone only)
 
 MuJoCo's implicit integrators solve:
 ```
@@ -120,13 +150,15 @@ integrate_with_method_and_damping(
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| PGS (Gauss-Seidel) | Supported | `PGSSolver` with SOR | **Implemented** | - | - |
-| Newton solver | Default, 2-3 iterations | `NewtonConstraintSolver` | **Implemented** | - | - |
-| Conjugate Gradient | Supported | `CGSolver` | **Implemented** | - | - |
-| Constraint islands | Auto-detected | `ConstraintIslands` | **Implemented** | - | - |
-| Warm starting | Supported | `warm_starting` config | **Implemented** | - | - |
+| PGS (Gauss-Seidel) | Supported | `pgs_solve_contacts()` in pipeline (plain GS, no SOR) | **Implemented** (no SOR) | - | - |
+| Newton solver | Default, 2-3 iterations | `NewtonConstraintSolver` | **Removed** (Phase 3 consolidation) | - | - |
+| Conjugate Gradient | Supported | `CGSolver` | **Standalone** (0 pipeline callers; see [FUTURE_WORK #3](../sim/FUTURE_WORK.md)) | - | - |
+| Constraint islands | Auto-detected | `ConstraintIslands` | **Removed** (Phase 3 consolidation) | - | - |
+| Warm starting | Supported | `warm_starting` in pipeline PGS | **Implemented** | - | - |
 
-### Implementation Notes: Newton Solver ✅ COMPLETED
+> **Note:** The pipeline's PGS solver lives in `mujoco_pipeline.rs:6563` (`pgs_solve_contacts()`), not in `sim-constraint/src/pgs.rs` (which was deleted in Phase 3). The pipeline PGS uses standard Gauss-Seidel (ω=1.0) with no SOR relaxation factor. CGSolver exists in `sim-constraint/src/cg.rs` (1,664 lines) but has zero callers in the pipeline — see [FUTURE_WORK #3](../sim/FUTURE_WORK.md) for the plan to wire it in.
+
+### Implementation Notes: Newton Solver ⚠️ REMOVED (Phase 3 consolidation)
 
 MuJoCo's Newton solver uses:
 - Analytical second-order derivatives
@@ -164,10 +196,12 @@ if result.converged {
 
 **Files:** `sim-constraint/src/newton.rs` (removed in Phase 3 consolidation; solver types extracted to `sim-constraint/src/types.rs`)
 
-### Implementation Notes: PGS (Gauss-Seidel) Solver ✅ COMPLETED
+### Implementation Notes: PGS (Gauss-Seidel) Solver ⚠️ REMOVED from sim-constraint; reimplemented in pipeline
 
-The PGS solver implements a full iterative Projected Gauss-Seidel method with
-Successive Over-Relaxation (SOR), matching MuJoCo's PGS solver capabilities.
+> The `PGSSolver` described below was in `sim-constraint/src/pgs.rs` and was **deleted in Phase 3 consolidation**. The pipeline now has its own PGS in `mujoco_pipeline.rs:6563` (`pgs_solve_contacts()`) which uses plain Gauss-Seidel (ω=1.0) **without SOR**.
+
+The original PGS solver implemented a full iterative Projected Gauss-Seidel method with
+Successive Over-Relaxation (SOR).
 
 **Algorithm:**
 For each constraint i, we iteratively solve:
@@ -230,7 +264,7 @@ println!("Used warm start: {}, SOR factor: {}",
 
 **Files:** `sim-constraint/src/pgs.rs` (removed in Phase 3 consolidation)
 
-### Implementation Notes: Constraint Islands ✅ COMPLETED
+### Implementation Notes: Constraint Islands ⚠️ REMOVED (Phase 3 consolidation)
 
 Constraint islands are groups of bodies connected by constraints that can be
 solved independently. This enables significant performance optimizations:
@@ -356,7 +390,7 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Ellipsoid | Native | `CollisionShape::Ellipsoid` | **Implemented** | - | - |
 | Convex mesh | GJK/EPA | `CollisionShape::ConvexMesh` | **Implemented** | - | - |
 | Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
-| SDF (signed distance) | Native | Missing | **Missing** | Low | High |
+| SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** ✅ | - | - |
 | Broad-phase (sweep-prune) | Native | `SweepAndPrune` | **Implemented** | - | - |
 | Mid-phase (BVH per body) | Static AABB | `Bvh` | **Implemented** | - | - |
 | Narrow-phase (GJK/EPA) | Default | `gjk_epa` module | **Implemented** | - | - |
@@ -531,14 +565,16 @@ All three joint types are now fully implemented with constraint solver support:
 | Position servo | Yes | `JointMotor::position` | **Implemented** | - | - |
 | Velocity servo | Yes | `JointMotor::velocity` | **Implemented** | - | - |
 | PD control | Yes | `compute_force` with Kp/Kd | **Implemented** | - | - |
-| Integrated velocity | Yes | `IntegratedVelocityActuator` | **Implemented** | - | - |
+| Integrated velocity | Yes | `IntegratedVelocityActuator` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
 | Damper | Yes | Joint damping | **Implemented** | - | - |
-| Cylinder (pneumatic) | Yes | `PneumaticCylinderActuator` | **Implemented** | - | - |
-| Muscle (Hill-type) | Yes | `HillMuscle` (via sim-muscle) | **Implemented** | - | - |
-| Adhesion | Yes | `AdhesionActuator` | **Implemented** | - | - |
-| General (custom) | Yes | `CustomActuator<F>` | **Implemented** | - | - |
+| Cylinder (pneumatic) | Yes | `PneumaticCylinderActuator` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
+| Muscle (Hill-type) | Yes | `HillMuscle` (via sim-muscle) | **Standalone** (not wired into `mj_fwd_actuation()`; see [FUTURE_WORK #5](../sim/FUTURE_WORK.md)) | - | - |
+| Adhesion | Yes | `AdhesionActuator` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
+| General (custom) | Yes | `CustomActuator<F>` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
 
-### Implementation Notes: Muscle Model ✅ COMPLETED
+> **Pipeline vs standalone actuators.** The MuJoCo pipeline's `mj_fwd_actuation()` (`mujoco_pipeline.rs:5475`) handles `ActuatorTransmission::Joint` (direct motor/servo force). `ActuatorTransmission::Tendon` and `::Site` are placeholders ([FUTURE_WORK #4](../sim/FUTURE_WORK.md)). `ActuatorDynamics::Muscle` is declared (`mujoco_pipeline.rs:434`) but has no code path — `data.act` is never updated. The sim-muscle crate (2,550 lines) and sim-constraint actuators (`IntegratedVelocityActuator`, `PneumaticCylinderActuator`, `AdhesionActuator`, `CustomActuator`) exist as standalone implementations not called by the pipeline.
+
+### Implementation Notes: Muscle Model ✅ COMPLETED (standalone only — not in pipeline)
 
 MuJoCo's muscle model includes:
 - Activation dynamics (3rd-order system)
@@ -627,20 +663,26 @@ let torque = elbow.compute_joint_force(velocity, dt);
 
 | Sensor | MuJoCo | CortenForge | Status | Priority |
 |--------|--------|-------------|--------|----------|
-| Joint position | Yes | `JointState` | **Implemented** | - |
-| Joint velocity | Yes | `JointState` | **Implemented** | - |
-| Body position/rotation | Yes | `Observation::BodyStates` | **Implemented** | - |
-| Body velocity | Yes | `Observation::BodyStates` | **Implemented** | - |
-| Accelerometer | Yes | `Imu` (via sim-sensor) | **Implemented** | - |
-| Gyro | Yes | `Imu` (via sim-sensor) | **Implemented** | - |
-| Force/torque | Yes | `ForceTorqueSensor` | **Implemented** | - |
-| Touch | Yes | `TouchSensor` | **Implemented** | - |
-| IMU (combined) | Yes | `Imu` | **Implemented** | - |
-| Rangefinder | Yes | `Rangefinder` (via sim-sensor) | **Implemented** | - |
-| Magnetometer | Yes | `Magnetometer` (via sim-sensor) | **Implemented** | - |
+| Joint position | Yes | `MjSensorType::JointPos` | **Implemented** | - |
+| Joint velocity | Yes | `MjSensorType::JointVel` | **Implemented** | - |
+| Body position/rotation | Yes | `MjSensorType::FramePos` | **Implemented** | - |
+| Body velocity | Yes | `MjSensorType::FrameLinVel` | **Implemented** | - |
+| Accelerometer | Yes | `MjSensorType::Accelerometer` | **Implemented** | - |
+| Gyro | Yes | `MjSensorType::Gyro` | **Implemented** | - |
+| IMU (combined) | Yes | Accelerometer + Gyro | **Implemented** | - |
+| Force | Yes | `MjSensorType::Force` | **Stub** (returns `[0, 0, 0]`; see [FUTURE_WORK #6](../sim/FUTURE_WORK.md)) | - |
+| Torque | Yes | `MjSensorType::Torque` | **Stub** (returns `[0, 0, 0]`; see [FUTURE_WORK #6](../sim/FUTURE_WORK.md)) | - |
+| Touch | Yes | `MjSensorType::Touch` | **Stub** (uses hardcoded `depth * 10000` stiffness; see [FUTURE_WORK #6](../sim/FUTURE_WORK.md)) | - |
+| Rangefinder | Yes | `MjSensorType::Rangefinder` | **Stub** (returns `sensor_cutoff` constant; see [FUTURE_WORK #6](../sim/FUTURE_WORK.md)) | - |
+| Magnetometer | Yes | `MjSensorType::Magnetometer` | **Missing** (no-op, falls to `_ => {}`; see [FUTURE_WORK #6](../sim/FUTURE_WORK.md)) | - |
+| TendonPos / TendonVel | Yes | `MjSensorType::TendonPos/Vel` | **Missing** (no-op; requires [FUTURE_WORK #4](../sim/FUTURE_WORK.md)) | - |
+| ActuatorPos / ActuatorVel | Yes | `MjSensorType::ActuatorPos/Vel` | **Missing** (no-op) | - |
+| SubtreeAngMom | Yes | `MjSensorType::SubtreeAngMom` | **Missing** (no-op) | - |
 | Camera (rendered) | Yes | Out of scope | N/A | - |
 
-### Implementation Notes: Sensors ✅ COMPLETED
+> **Two sensor systems exist.** The sim-sensor crate has standalone `Imu`, `ForceTorqueSensor`, `TouchSensor`, `Rangefinder`, and `Magnetometer` implementations that operate on `RigidBodyState` objects. The MuJoCo pipeline has its own sensor readout in `mj_sensor_pos()`/`mj_sensor_vel()`/`mj_sensor_acc()` within `mujoco_pipeline.rs`. The pipeline implementations for Force, Torque, Touch, Rangefinder, and Magnetometer are stubs returning incorrect values. See [FUTURE_WORK #6](../sim/FUTURE_WORK.md) for the full list of 10 stubbed/missing sensors.
+
+### Implementation Notes: Sensors ✅ COMPLETED (standalone sim-sensor crate only — pipeline stubs remain)
 
 Created `sim-sensor` crate with:
 - `Imu` - Accelerometer + gyroscope combined sensor with configurable noise, bias, and gravity
@@ -673,12 +715,14 @@ let obs = touch.read_as_observation(&contacts, 0.001);
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| Fixed tendons | Yes | `FixedTendon` | **Implemented** | - | - |
-| Spatial tendons | Yes | `SpatialTendon` | **Implemented** | - | - |
-| Wrapping (sphere/cylinder) | Yes | `SphereWrap`, `CylinderWrap` | **Implemented** | - | - |
-| Pulley systems | Yes | `PulleySystem` | **Implemented** | - | - |
+| Fixed tendons | Yes | `FixedTendon` | **Standalone** (sim-tendon crate, not in pipeline) | - | - |
+| Spatial tendons | Yes | `SpatialTendon` | **Standalone** (sim-tendon crate, not in pipeline) | - | - |
+| Wrapping (sphere/cylinder) | Yes | `SphereWrap`, `CylinderWrap` | **Standalone** (sim-tendon crate, not in pipeline) | - | - |
+| Pulley systems | Yes | `PulleySystem` | **Standalone** (sim-tendon crate, not in pipeline) | - | - |
 
-### Implementation Notes: Tendons ✅ COMPLETED
+> **Standalone crate with zero pipeline coupling.** sim-tendon is a 3,919-line crate with path routing, wrapping geometry, and a `TendonActuator` trait. The MuJoCo pipeline declares Model fields (`tendon_stiffness`, `tendon_damping`, etc. at `mujoco_pipeline.rs:907-929`) and Data scaffolds (`ten_length`, `ten_velocity`, `ten_force`, `ten_J` at `mujoco_pipeline.rs:1366-1376`) but these are initialized to defaults and **never populated**. The `ActuatorTransmission::Tendon` placeholder at `mujoco_pipeline.rs:5495-5498` is a no-op. See [FUTURE_WORK #4](../sim/FUTURE_WORK.md) for the tendon pipeline integration spec.
+
+### Implementation Notes: Tendons ✅ COMPLETED (standalone sim-tendon crate only — not in pipeline)
 
 Created `sim-tendon` crate with comprehensive tendon/cable modeling for cable-driven robots and biomechanics:
 
@@ -774,8 +818,8 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 | Connect (ball) | Yes | `ConnectConstraint` | **Implemented** | - |
 | Weld | Yes | Via FixedJoint | **Implemented** | - |
 | Joint coupling | Yes | `JointCoupling`, `GearCoupling`, `DifferentialCoupling` | **Implemented** | - |
-| Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Implemented** | - |
-| Flex (edge length) | Yes | `FlexEdgeConstraint` | **Implemented** | - |
+| Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Standalone** (in sim-constraint, not wired into pipeline tendon system; see [FUTURE_WORK #4](../sim/FUTURE_WORK.md)) | - |
+| Flex (edge length) | Yes | `FlexEdgeConstraint` | **Standalone** (in sim-deformable, XPBD not called from pipeline; see [FUTURE_WORK #9](../sim/FUTURE_WORK.md)) | - |
 
 ### Implementation Notes: Connect (Ball) Constraint ✅ COMPLETED
 
@@ -849,12 +893,15 @@ let model = load_mjcf_str(mjcf).expect("should parse");
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| 1D (capsule chains) | Yes | `CapsuleChain` | **Implemented** | - | - |
-| 2D (triangle shells) | Yes | `Cloth` | **Implemented** | - | - |
-| 3D (tetrahedra) | Yes | `SoftBody` | **Implemented** | - | - |
-| Skinned meshes | Yes | `SkinnedMesh` | **✅ COMPLETED** | - | - |
+| 1D (capsule chains) | Yes | `CapsuleChain` | **Standalone** (sim-deformable crate, not in pipeline) | - | - |
+| 2D (triangle shells) | Yes | `Cloth` | **Standalone** (sim-deformable crate, not in pipeline) | - | - |
+| 3D (tetrahedra) | Yes | `SoftBody` | **Standalone** (sim-deformable crate, not in pipeline) | - | - |
+| Skinned meshes | Yes | `SkinnedMesh` | **Standalone** (sim-deformable crate, not in pipeline) | - | - |
+| Deformable-rigid collision | Yes | `ConstraintType::Collision` | **Missing** (enum variant defined but unimplemented) | - | - |
 
-### Implementation Notes: Skinned Meshes ✅ COMPLETED
+> **Standalone crate with zero pipeline coupling.** sim-deformable is a 7,733-line crate (86 tests) with `XpbdSolver`, `Cloth`, `SoftBody`, `CapsuleChain`, and `DeformableBody` trait. The XPBD solver works standalone but is **not called from `Data::step()`**. No deformable-rigid collision detection exists — `ConstraintType::Collision` is an enum variant defined at `constraints.rs:42-43` but unimplemented. `Material.friction` and per-body `radius`/`thickness` fields are declared but unused by any collision system. See [FUTURE_WORK #9](../sim/FUTURE_WORK.md) for the pipeline integration spec.
+
+### Implementation Notes: Skinned Meshes ✅ COMPLETED (standalone only)
 
 Skinned meshes provide visual deformation for rendering soft bodies:
 - Vertex skinning with bone weights
@@ -878,7 +925,7 @@ Skinned meshes provide visual deformation for rendering soft bodies:
 
 **Files to create:** `sim-deformable/src/skinning.rs`
 
-### Implementation Notes: Deformables ✅ COMPLETED
+### Implementation Notes: Deformables ✅ COMPLETED (standalone sim-deformable crate only — not in pipeline)
 
 Created `sim-deformable` crate using XPBD (Extended Position-Based Dynamics) for stable, physically-accurate soft body simulation:
 
@@ -995,10 +1042,10 @@ for _ in 0..100 {
 
 | Feature | MuJoCo | CortenForge | Status | Priority |
 |---------|--------|-------------|--------|----------|
-| Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` (removed in Phase 3 consolidation — was in `sparse.rs`) | **Implemented** | - |
+| Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` (was in `sparse.rs`) | **Removed** (Phase 3 consolidation) | - |
 | Sleeping bodies | Native | `Body::is_sleeping`, `put_to_sleep()`, `wake_up()` | **Implemented** | - |
-| Constraint islands | Auto | `ConstraintIslands` (removed in Phase 3 consolidation — was in `islands.rs`) | **Implemented** | - |
-| **Multi-threading** | Model-data separation | `parallel` feature with rayon | ✅ **Implemented** | - |
+| Constraint islands | Auto | `ConstraintIslands` (was in `islands.rs`) | **Removed** (Phase 3 consolidation) | - |
+| **Multi-threading** | Model-data separation | `parallel` feature with rayon (island-parallel solving removed) | **Partial** (rayon available; constraint parallelism removed) | - |
 | SIMD | Likely | `sim-simd` crate with explicit vectorization | **Implemented** | - |
 
 ### Implementation Notes: SIMD Optimization ✅ COMPLETED
@@ -1057,11 +1104,13 @@ use sim_core::{ContactPoint, ContactManifold, ContactForce};
 
 **Files:** `sim-simd/src/`, `sim-core/src/gjk_epa.rs` (batch contact processor removed; contact types now in `sim-core`)
 
-### Implementation Notes: Multi-threading ✅ COMPLETED
+### Implementation Notes: Multi-threading ⚠️ PARTIALLY REMOVED
 
-The `parallel` feature enables multi-threaded constraint solving using rayon.
+> The island-parallel constraint solving described below was **deleted in Phase 3 consolidation** along with the Newton solver and `islands.rs`. The `parallel` feature and rayon dependency remain available in sim-core (`core/Cargo.toml:19,33`) but have no active constraint-parallelism callers. See [FUTURE_WORK #10](../sim/FUTURE_WORK.md) for the batched simulation plan which will use rayon for cross-environment parallelism.
+
+The original `parallel` feature enabled multi-threaded constraint solving using rayon.
 Instead of splitting `World` into separate model/data structures (MuJoCo pattern),
-we use a snapshot-based approach with island-parallel constraint solving.
+it used a snapshot-based approach with island-parallel constraint solving.
 
 **Key Design Decisions:**
 
@@ -1366,9 +1415,11 @@ assert!(ext_config.flags.contact);
 
 ## Priority Roadmap
 
-### ✅ ALL MAJOR FEATURES COMPLETED (January 2026)
+### ⚠️ Status: Partially Complete (January 2026)
 
-All core MuJoCo features are now implemented. The following were completed in January 2026:
+> **The authoritative roadmap is [`sim/FUTURE_WORK.md`](../sim/FUTURE_WORK.md)**, which lists 11 remaining items with verified code references and acceptance criteria. The phases below reflect historical development milestones. Features marked with ⚠️ were later removed or remain standalone (not wired into the pipeline).
+
+The following were completed in January 2026:
 
 | Feature | Section | Notes |
 |---------|---------|-------|
@@ -1380,12 +1431,10 @@ All core MuJoCo features are now implemented. The following were completed in Ja
 
 See [FEATURE_IMPLEMENTATION_CHECKLIST.md](./FEATURE_IMPLEMENTATION_CHECKLIST.md) for implementation details.
 
-### ✅ Recently Completed: Multi-threading
+### ⚠️ Recently Completed then Partially Removed: Multi-threading
 
-The `parallel` feature enables multi-threaded constraint solving and body integration:
-- Island-parallel constraint solving via `solve_islands_parallel()`
-- Parallel body integration via `integrate_bodies_parallel()`
-- Configurable thresholds via `ParallelConfig`
+The `parallel` feature originally enabled multi-threaded constraint solving and body integration.
+Island-parallel constraint solving (`solve_islands_parallel()`) and its dependencies (Newton solver, `islands.rs`) were **removed in Phase 3 consolidation**. The rayon dependency and `parallel` feature flag remain available for future batched simulation ([FUTURE_WORK #10](../sim/FUTURE_WORK.md)).
 
 **Files:** `sim-constraint/src/parallel.rs` (removed in Phase 3 consolidation), `sim-core/src/world.rs`, `sim-core/src/stepper.rs`
 
@@ -1414,27 +1463,27 @@ These joint types now have full constraint solver support:
 4. ~~**Sensors**: IMU, force/torque, touch sensors~~ ✅
 5. ~~**Implicit integration**: Implicit-in-velocity method~~ ✅
 
-### ✅ Phase 2: Solver Improvements (COMPLETED)
+### ⚠️ Phase 2: Solver Improvements (built then partially removed)
 
-1. ~~**Newton solver**: For faster convergence~~ ✅
-2. ~~**Constraint islands**: For performance~~ ✅
+1. ~~**Newton solver**: For faster convergence~~ ✅ → ⚠️ **Removed** (Phase 3 consolidation — dead code, never called by pipeline)
+2. ~~**Constraint islands**: For performance~~ ✅ → ⚠️ **Removed** (Phase 3 consolidation — depended on Newton solver)
 3. ~~**Sleeping**: Deactivate stationary bodies~~ ✅
 4. ~~**GJK/EPA**: For convex mesh collision~~ ✅
 
-### ✅ Phase 3: Extended Features (COMPLETED)
+### ⚠️ Phase 3: Extended Features (standalone crates built, not in pipeline)
 
 1. ~~**MJCF loading**: For MuJoCo model compatibility~~ ✅
-2. ~~**Muscle actuators**: For biomechanics~~ ✅
-3. ~~**Tendons**: For cable robots~~ ✅
-4. ~~**Deformables**: For soft body simulation~~ ✅
+2. ~~**Muscle actuators**: For biomechanics~~ ✅ → ⚠️ **Standalone** (sim-muscle crate exists, not wired into pipeline; see [FUTURE_WORK #5](../sim/FUTURE_WORK.md))
+3. ~~**Tendons**: For cable robots~~ ✅ → ⚠️ **Standalone** (sim-tendon crate exists, zero pipeline coupling; see [FUTURE_WORK #4](../sim/FUTURE_WORK.md))
+4. ~~**Deformables**: For soft body simulation~~ ✅ → ⚠️ **Standalone** (sim-deformable crate exists, not called from `Data::step()`; see [FUTURE_WORK #9](../sim/FUTURE_WORK.md))
 
-### Phase 4: Solver & Performance ✅ COMPLETED
+### ⚠️ Phase 4: Solver & Performance (built then partially removed)
 
 Focus: Internal solver improvements for better performance.
 
-1. ~~**Sparse matrix operations**: CSR/CSC matrices for constraint Jacobians~~ ✅ COMPLETED
-2. ~~**Warm starting**: Initialize from previous frame's solution~~ ✅ COMPLETED
-3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ ✅ COMPLETED
+1. ~~**Sparse matrix operations**: CSR/CSC matrices for constraint Jacobians~~ ✅ → ⚠️ **Removed** (Phase 3 consolidation — `sparse.rs` deleted, never used by pipeline)
+2. ~~**Warm starting**: Initialize from previous frame's solution~~ ✅ (pipeline PGS has its own warm starting)
+3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ ✅ → ⚠️ **Standalone** (in `integrators.rs` trait, not in pipeline; see [FUTURE_WORK C1](../sim/FUTURE_WORK.md))
 
 **Implemented:**
 
@@ -1832,17 +1881,19 @@ Focus: Large standalone features, each potentially its own PR.
 | Feature | Section | Complexity | Status | Notes |
 |---------|---------|------------|--------|-------|
 | ~~Height field collision~~ | §4 Collision, §5 Geoms | High | ✅ COMPLETED | Terrain simulation |
-| ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED | Alternative to Newton/PGS |
-| ~~Tendon coupling constraints~~ | §10 Equality | Low | ✅ COMPLETED | Tendon-based equality constraints |
-| ~~Flex edge constraints~~ | §10 Equality | Low | ✅ COMPLETED | Deformable edge length constraints |
-| **SDF collision** | §4 Collision, §5 Geoms | High | ❌ **TODO** | Signed distance fields - Priority 2 |
+| ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED → ⚠️ **Standalone** | Built in sim-constraint, 0 pipeline callers (see FUTURE_WORK #3) |
+| ~~Tendon coupling constraints~~ | §10 Equality | Low | ✅ COMPLETED → ⚠️ **Standalone** | In sim-constraint, not wired into pipeline tendon system |
+| ~~Flex edge constraints~~ | §10 Equality | Low | ✅ COMPLETED → ⚠️ **Standalone** | In sim-deformable, XPBD not called from pipeline |
+| ~~SDF collision~~ | §4 Collision, §5 Geoms | High | ✅ **COMPLETED** | All 10 shape combinations implemented (see §5 notes) |
 | ~~Skinned meshes~~ | §11 Deformables | High | ✅ **COMPLETED** | Visual deformation for rendering |
-| ~~Multi-threading~~ | §12 Performance | Medium | ✅ **COMPLETED** | Parallel constraint solving and body integration via rayon |
+| ~~Multi-threading~~ | §12 Performance | Medium | ✅ **COMPLETED** → ⚠️ **Partial** | Island-parallel solving removed in Phase 3; body integration and broad-phase rayon parallelism remain |
 | ~~MJB binary format~~ | §13 Model Format | Low | ✅ **COMPLETED** | Faster loading via bincode serialization |
 
-**Implemented:**
+**Implemented (some now standalone or removed — see table above for current status):**
 
-**Conjugate Gradient Solver (`sim-constraint/src/cg.rs`):**
+> **⚠️ Note:** The CG solver below is standalone (`sim-constraint`), not called by the pipeline. Tendon constraints are in `sim-constraint`, not wired into the pipeline tendon system. Island-parallel solving was removed in Phase 3 consolidation.
+
+**Conjugate Gradient Solver (`sim-constraint/src/cg.rs`) — ⚠️ Standalone:**
 - `CGSolver` - Conjugate gradient method for constraint solving
 - `CGSolverConfig` - Configurable tolerance, max iterations, Baumgarte stabilization
 - `Preconditioner` - None, Jacobi, or BlockJacobi preconditioning
@@ -1862,7 +1913,7 @@ let result = solver.solve(&joints, get_body_state, dt);
 println!("Converged in {} iterations", result.iterations_used);
 ```
 
-**Tendon Coupling Constraints (`sim-constraint/src/equality.rs`):**
+**Tendon Coupling Constraints (`sim-constraint/src/equality.rs`) — ⚠️ Standalone:**
 - `TendonConstraint` - Joint-to-joint coupling via tendon mechanics
 - Moment arm modeling for each connected joint
 - Rest length and target length with slack/taut states
@@ -1887,7 +1938,7 @@ network.add_tendon(tendon);
 let forces = network.compute_all_forces(&get_position, &get_velocity, dt);
 ```
 
-**Flex Edge Constraints (`sim-deformable/src/constraints.rs`):**
+**Flex Edge Constraints (`sim-deformable/src/constraints.rs`) — ⚠️ Standalone:**
 - `FlexEdgeType` - Stretch, Shear, StretchShear, or Twist constraint types
 - `FlexEdgeConstraint` - XPBD constraint for deformable edge behavior
 - Stretch constraint for distance maintenance (2 vertices)
@@ -1953,22 +2004,24 @@ world.body_mut(ground_id).unwrap().collision_shape = Some(terrain);
 - `sim-core/src/broad_phase.rs` - HeightField AABB computation
 - `sim-core/src/gjk_epa.rs` - HeightField support function
 
+> **📌 Note:** For the current authoritative roadmap with verified code references, see [`sim/FUTURE_WORK.md`](../sim/FUTURE_WORK.md). The priority roadmap above is historical and partially outdated.
+
 ---
 
 ## File Reference
 
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
-| `sim-types` | Data structures | `dynamics.rs`, `joint.rs`, `observation.rs` |
-| `sim-core` | Integration, World, Contact physics | `integrators.rs`, `world.rs`, `stepper.rs`, `broad_phase.rs`, `mid_phase.rs`, `gjk_epa.rs`, `heightfield.rs`, `contact.rs`, `mujoco_pipeline.rs` |
-| `sim-constraint` | Joint constraints | `joint.rs`, `types.rs`, `actuator.rs`, `equality.rs`, `cg.rs`, `limits.rs`, `motor.rs`, `muscle.rs` (removed in Phase 3 consolidation: `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `pgs.rs`, `parallel.rs`; `BodyState`/`JointForce` from `solver.rs` extracted to `types.rs`) |
-| `sim-sensor` | Sensor simulation | `imu.rs`, `force_torque.rs`, `touch.rs`, `rangefinder.rs`, `magnetometer.rs` |
-| `sim-urdf` | URDF loading | `loader.rs`, `parser.rs` |
-| `sim-mjcf` | MJCF loading | `loader.rs`, `parser.rs`, `types.rs`, `validation.rs` |
-| `sim-muscle` | Muscle actuators | `activation.rs`, `curves.rs`, `hill.rs`, `kinematics.rs` |
-| `sim-tendon` | Tendon/cable systems | `fixed.rs`, `spatial.rs`, `path.rs`, `wrapping.rs`, `pulley.rs` |
-| `sim-deformable` | Soft body simulation | `capsule_chain.rs`, `cloth.rs`, `soft_body.rs`, `solver.rs`, `constraints.rs` |
-| `sim-physics` | Umbrella | `lib.rs` |
+| `sim-types` | Data structures | `dynamics.rs`, `joint.rs`, `observation.rs`, `body.rs`, `config.rs` |
+| `sim-core` | Integration, MuJoCo pipeline, Collision | `mujoco_pipeline.rs`, `integrators.rs`, `collision_shape.rs`, `contact.rs`, `gjk_epa.rs`, `mid_phase.rs`, `heightfield.rs`, `sdf.rs`, `mesh.rs`, `raycast.rs` (removed: `world.rs`, `stepper.rs`, `broad_phase.rs`) |
+| `sim-constraint` | Joint constraints (⚠️ standalone) | `joint.rs`, `types.rs`, `actuator.rs`, `equality.rs`, `cg.rs`, `limits.rs`, `motor.rs`, `muscle.rs` (removed in Phase 3: `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `pgs.rs`, `parallel.rs`) |
+| `sim-sensor` | Sensor simulation (⚠️ standalone) | `imu.rs`, `force_torque.rs`, `touch.rs`, `rangefinder.rs`, `magnetometer.rs` |
+| `sim-urdf` | URDF loading | `parser.rs`, `converter.rs`, `types.rs`, `validation.rs` |
+| `sim-mjcf` | MJCF loading | `parser.rs`, `types.rs`, `validation.rs`, `model_builder.rs`, `defaults.rs`, `config.rs`, `mjb.rs` |
+| `sim-muscle` | Muscle actuators (⚠️ standalone) | `activation.rs`, `curves.rs`, `hill.rs`, `kinematics.rs` |
+| `sim-tendon` | Tendon/cable systems (⚠️ standalone) | `fixed.rs`, `spatial.rs`, `path.rs`, `wrapping.rs`, `pulley.rs`, `cable.rs` |
+| `sim-deformable` | Soft body simulation (⚠️ standalone) | `capsule_chain.rs`, `cloth.rs`, `soft_body.rs`, `solver.rs`, `constraints.rs`, `skinning.rs`, `material.rs`, `mesh.rs` |
+| `sim-physics` | Umbrella re-export | `lib.rs` |
 
 ---
 
