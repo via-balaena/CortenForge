@@ -6,10 +6,10 @@
 //! - Musculoskeletal dynamics (muscles, tendons)
 //! - Sensor readings from simulation state
 //! - Phase 7 validation tests for MuJoCo consolidation
-//! - Phase 6 collision detection validation (COLLISION_UPGRADE_SPEC.md)
+//! - Phase 6 collision detection validation
 
 // ============================================================================
-// Phase 6: Collision Detection Tests (COLLISION_UPGRADE_SPEC.md)
+// Phase 6: Collision Detection Tests
 // ============================================================================
 
 /// Shared test utilities: tolerances, rotations, assertion helpers.

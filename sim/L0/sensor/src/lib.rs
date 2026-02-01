@@ -31,8 +31,8 @@
 //! // Create an IMU attached to body 1
 //! let imu = Imu::new(BodyId::new(1), ImuConfig::default());
 //!
-//! // Read sensor data (would normally come from a World)
-//! // let reading = imu.read(&world_state);
+//! // Read sensor data (would normally come from Model/Data)
+//! // let reading = imu.read(&data);
 //! ```
 
 #![doc(html_root_url = "https://docs.rs/sim-sensor/0.7.0")]

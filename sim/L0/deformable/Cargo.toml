@@ -1,6 +1,6 @@
 [package]
 name = "sim-deformable"
-description = "Deformable body simulation for soft bodies, cloth, and ropes"
+description = "Deformable body simulation: soft bodies, cloth, ropes, and skinned meshes"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -6,9 +6,12 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized around batched vector types:
+//! The crate is organized around batched vector types and standalone batch functions:
 //! - [`Vec3x4`] - Process 4 `Vector3<f64>` values simultaneously
 //! - [`Vec3x8`] - Process 8 `Vector3<f64>` values simultaneously (AVX-512)
+//! - `batch_ops` module - `batch_dot_product_4`, `batch_cross_product_4`,
+//!   `find_max_dot_4`, `batch_normalize_4`, `batch_transform_4` (scalar fallback;
+//!   only `find_max_dot_4` has production callers in `gjk_epa.rs`)
 //!
 //! # Hot Paths Optimized
 //!

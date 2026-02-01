@@ -223,7 +223,7 @@ What we have: A MuJoCo-aligned pipeline (13 crates) implementing Model/Data, FK,
 
 What we need: GPU acceleration, broader actuator coverage, tendon/site transmissions, full MuJoCo XML parity.
 
-The honest assessment: We can match TFX patterns in months. We can get useful CAD interop in a year. Full MuJoCo parity (GPU, all actuators, all constraint types) is ongoing work. See `sim/ARCHITECTURE.md` and `sim/MUJOCO_REFERENCE.md`.
+The honest assessment: We can match TFX patterns in months. We can get useful CAD interop in a year. Full MuJoCo parity (GPU, all actuators, all constraint types) is ongoing work. See `sim/docs/ARCHITECTURE.md` and `sim/docs/MUJOCO_REFERENCE.md`.
 
 ---
 
@@ -318,7 +318,7 @@ There is no "done." Cathedrals are never finished; they're maintained and extend
 But there are milestones:
 
 ### Milestone 1: Simulation Foundation (Largely Complete)
-- 14 sim crates implemented (MuJoCo-aligned pipeline)
+- 13 sim crates implemented (MuJoCo-aligned pipeline)
 - Model/Data architecture with forward kinematics, dynamics, contact solver
 - sim-bevy provides Bevy visualization with debug gizmos
 - Headless training loop works via sim-core directly

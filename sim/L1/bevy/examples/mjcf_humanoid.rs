@@ -27,7 +27,7 @@
 
 use bevy::prelude::*;
 use sim_bevy::convert::vec3_from_vector;
-use sim_bevy::model_data::{sync_model_data_to_bevy, ModelBodyIndex, PhysicsData, PhysicsModel};
+use sim_bevy::model_data::{ModelBodyIndex, PhysicsData, PhysicsModel, sync_model_data_to_bevy};
 use sim_mjcf::load_model;
 
 // ============================================================================

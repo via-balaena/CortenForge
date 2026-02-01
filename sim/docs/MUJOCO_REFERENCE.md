@@ -1,9 +1,9 @@
 # MuJoCo Reference Architecture
 
 This document defines the physics pipeline architecture implemented in
-`sim-core/src/mujoco_pipeline.rs`. The pipeline follows MuJoCo's computation
-model exactly: five stages run in fixed order each timestep, operating on a
-static `Model` and mutable `Data`.
+`sim/L0/core/src/mujoco_pipeline.rs`. The pipeline follows MuJoCo's computation
+model: `forward()` (8 sub-stages) then `integrate()` run each timestep,
+operating on a static `Model` and mutable `Data`.
 
 ---
 
@@ -12,7 +12,8 @@ static `Model` and mutable `Data`.
 ```
 Data::step():
   1. forward()
-     a. mj_fwd_position    — Forward kinematics, collision detection
+     a. mj_fwd_position    — Forward kinematics
+        mj_collision        — Broad/narrow phase collision detection
      b. mj_fwd_velocity    — Body velocities from joint velocities
      c. mj_fwd_actuation   — Actuator forces from controls
      d. mj_crba            — Mass matrix (Composite Rigid Body Algorithm)
@@ -236,17 +237,16 @@ When joint position violates a limit (`q < qmin` or `q > qmax`):
 violation = qmin - q   # or q - qmax
 
 # Stiffness/damping from solref [timeconst, dampratio]
-k, b = solref_to_penalty(solref, effective_mass)
+# Note: solref_to_penalty takes (solref, default_k, default_b, dt), not effective_mass
+k, b = solref_to_penalty(solref, default_k, default_b, dt)
 
-# Impedance from solimp [d0, d_width, width, midpoint, power]
-d = compute_impedance(violation, solimp)
-
-# Constraint force
-qfrc_constraint[dof] += d * (k * violation + b * violation_velocity)
+# Constraint force (no impedance scaling — unlike contacts and equality constraints)
+qfrc_constraint[dof] += k * violation + b * violation_velocity
 ```
 
-The impedance function provides a smooth transition from soft (d0) to hard
-(d_width) enforcement using a power sigmoid over the violation width.
+> **Implementation note:** Joint limits do NOT use `compute_impedance()`. The
+> impedance sigmoid is applied for contacts and equality constraints, but joint
+> limits use a direct penalty without impedance modulation.
 
 ### 4.6 Equality Constraints
 
@@ -303,16 +303,23 @@ lambda = warmstart   # from previous timestep via contact correspondence
 for iteration in range(max_iter):
     max_delta = 0
 
-    for i in range(n_constraints):
-        # Gauss-Seidel update
-        residual = H[i,:] @ lambda + b[i]
-        old = lambda[i]
-        lambda[i] -= residual * H_diag_inv[i]
+    for c in range(n_contacts):        # iterate per-contact (3 rows each)
+        base = c * 3
+        # Gauss-Seidel update for all 3 rows (normal + 2 friction)
+        for j in [0, 1, 2]:
+            residual = H[base+j,:] @ lambda + b[base+j]
+            lambda[base+j] -= residual * H_diag_inv[base+j]
 
-        # Project onto constraint bounds
-        lambda[i] = project(lambda[i], bounds[i])
+        # Project: normal >= 0, then rescale 2D friction vector
+        lambda[base] = max(0, lambda[base])
+        friction_mag = sqrt(lambda[base+1]^2 + lambda[base+2]^2)
+        max_friction = mu * lambda[base]
+        if friction_mag > max_friction:
+            scale = max_friction / friction_mag
+            lambda[base+1] *= scale
+            lambda[base+2] *= scale
 
-        max_delta = max(max_delta, abs(lambda[i] - old))
+        max_delta = max(max_delta, ...)
 
     if max_delta < tolerance:
         break
@@ -323,7 +330,7 @@ for iteration in range(max_iter):
 | Constraint | Projection |
 |------------|------------|
 | Contact normal | `max(0, lambda)` |
-| Contact friction | `clamp(lambda_t, -mu * lambda_n, mu * lambda_n)` per-axis, then rescale if `\|lambda_t\| > mu * lambda_n` |
+| Contact friction | Rescale 2D friction vector: if `\|lambda_t\| > mu * lambda_n`, scale to `mu * lambda_n` (circular cone, no per-axis clamp) |
 
 **Warmstart:** Contact forces are cached by canonical geom pair
 `(min(g1,g2), max(g1,g2))`. When the same pair reappears next frame,
@@ -331,7 +338,7 @@ previous lambda values seed the iteration.
 
 ### 4.8 Forward Acceleration
 
-**Explicit path** (Euler, RK4):
+**Explicit path** (Euler, RK4 — note: RK4 is currently a placeholder that dispatches to Euler):
 ```
 qfrc_total = qfrc_applied + qfrc_actuator + qfrc_passive + qfrc_constraint - qfrc_bias
 qacc = M^-1 @ qfrc_total
@@ -408,7 +415,7 @@ only updates positions using the new velocity, identical to step 2 above.
 | `jnt_solimp[i]` | `[f64; 5]` | [d0, d_width, width, midpoint, power] |
 | `timestep` | `f64` | Simulation step size |
 | `gravity` | `Vector3` | Gravity vector |
-| `integrator` | `Integrator` | Euler, RungeKutta4, or Implicit |
+| `integrator` | `Integrator` | Euler, RungeKutta4 (placeholder), or Implicit |
 | `solver_iterations` | `usize` | Max PGS iterations (default 100) |
 | `solver_tolerance` | `f64` | PGS convergence threshold (default 1e-8) |
 

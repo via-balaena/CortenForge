@@ -28,7 +28,7 @@ use bevy::prelude::*;
 use nalgebra::{UnitQuaternion, Vector3};
 use sim_bevy::convert::vec3_from_vector;
 use sim_bevy::model_data::{
-    step_model_data, sync_model_data_to_bevy, ModelBodyIndex, PhysicsData, PhysicsModel,
+    ModelBodyIndex, PhysicsData, PhysicsModel, step_model_data, sync_model_data_to_bevy,
 };
 use sim_core::Model;
 use std::f64::consts::PI;

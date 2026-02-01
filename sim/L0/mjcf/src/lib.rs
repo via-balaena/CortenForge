@@ -123,8 +123,7 @@
 //!
 //! # Limitations
 //!
-//! - Non-convex meshes are converted to convex hulls (may not match original geometry)
-//! - Height fields (hfield) and signed distance fields (sdf) are not supported
+//! - Height fields (hfield) and signed distance fields (sdf) are parsed but fall back to Box geometry
 //! - Composite bodies are not supported
 //! - Include files are not supported
 //!

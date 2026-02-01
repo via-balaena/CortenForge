@@ -69,12 +69,12 @@
 //!
 //! - `<box size="x y z"/>` - Box collision shape
 //! - `<sphere radius="r"/>` - Sphere collision shape
-//! - `<cylinder radius="r" length="l"/>` - Approximated as box (sim-core limitation)
-//! - `<mesh filename="..."/>` - Parsed but not loaded (no mesh collision support)
+//! - `<cylinder radius="r" length="l"/>` - Native cylinder collision shape
+//! - `<mesh filename="..."/>` - Parsed but mesh file loading not yet implemented in URDF converter
 //!
 //! # Limitations
 //!
-//! - Mesh collision shapes are not supported (logged as warning)
+//! - Mesh file loading is not yet implemented (meshes are parsed but geometry is not loaded)
 //! - `<mimic>` joints are not supported
 //! - `<gazebo>` extensions are ignored
 //! - Kinematic loops are not supported (tree structures only)

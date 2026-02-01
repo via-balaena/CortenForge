@@ -124,7 +124,7 @@
 //! - Thelen, D.G. (2003). Adjustment of muscle mechanics model parameters.
 //! - Millard, M. et al. (2013). Flexing computational muscle.
 
-#![doc(html_root_url = "https://docs.rs/sim-muscle/0.1.0")]
+#![doc(html_root_url = "https://docs.rs/sim-muscle/0.7.0")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![warn(missing_docs)]
 #![allow(
@@ -159,7 +159,7 @@ pub use curves::{
 };
 pub use hill::{FiberState, HillMuscle, HillMuscleConfig, MuscleDiagnostics, MuscleForceResult};
 pub use kinematics::{
-    BiarticularlMuscleConfig, ConstantMomentArm, MomentArmModel, MusclePath, PolynomialMomentArm,
+    BiarticularMuscleConfig, ConstantMomentArm, MomentArmModel, MusclePath, PolynomialMomentArm,
     SplineMomentArm, ViaPoint,
 };
 

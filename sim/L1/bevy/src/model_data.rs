@@ -29,10 +29,10 @@
 //!
 //! ```ignore
 //! use bevy::prelude::*;
-//! use sim_bevy::model_data::*;
+//! use sim_bevy::prelude::*;
 //!
 //! fn main() {
-//!     let model = Model::from_mjcf(include_str!("robot.xml")).unwrap();
+//!     let model = load_model(include_str!("robot.xml")).unwrap();
 //!     let data = model.make_data();
 //!
 //!     App::new()
@@ -62,8 +62,10 @@ use crate::convert::{quat_from_unit_quaternion, vec3_from_vector};
 /// # Example
 ///
 /// ```ignore
+/// use sim_bevy::prelude::*;
+///
 /// fn setup(mut commands: Commands) {
-///     let model = Model::from_mjcf(include_str!("robot.xml")).unwrap();
+///     let model = load_model(include_str!("robot.xml")).unwrap();
 ///     commands.insert_resource(PhysicsModel(model));
 /// }
 /// ```
@@ -366,8 +368,7 @@ pub enum ModelDataSet {
 ///
 /// ```ignore
 /// use bevy::prelude::*;
-/// use sim_bevy::model_data::{ModelDataPlugin, PhysicsModel, PhysicsData};
-/// use sim_core::Model;
+/// use sim_bevy::prelude::*;
 ///
 /// fn main() {
 ///     App::new()
@@ -378,7 +379,7 @@ pub enum ModelDataSet {
 /// }
 ///
 /// fn setup_physics(mut commands: Commands) {
-///     let model = Model::from_mjcf(include_str!("robot.xml")).unwrap();
+///     let model = load_model(include_str!("robot.xml")).unwrap();
 ///     let data = model.make_data();
 ///     commands.insert_resource(PhysicsModel(model));
 ///     commands.insert_resource(PhysicsData(data));

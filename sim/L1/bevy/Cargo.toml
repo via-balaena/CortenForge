@@ -1,10 +1,12 @@
 [package]
 name = "sim-bevy"
-version = "0.1.0"
-edition = "2021"
-license = "MIT OR Apache-2.0"
 description = "Bevy visualization for CortenForge physics simulation"
-repository = "https://github.com/cortenforge/cortenforge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
 keywords = ["physics", "simulation", "visualization", "bevy", "robotics"]
 categories = ["simulation", "visualization", "game-development"]
 
@@ -17,10 +19,6 @@ sim-urdf = { path = "../../L0/urdf" }
 
 # Math
 nalgebra = { workspace = true }
-glam = { workspace = true }
-
-# Error handling
-thiserror = { workspace = true }
 
 # Bevy 0.18 - use feature collections for clean compilation
 # Note: Window backend features (x11, wayland) are optional - enable via features.

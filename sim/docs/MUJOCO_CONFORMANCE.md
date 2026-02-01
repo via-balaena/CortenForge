@@ -37,21 +37,18 @@ Run MuJoCo's own test suite against CortenForge implementations.
 #[test]
 fn test_free_fall_matches_mujoco() {
     // MuJoCo reference: sphere drops 1m in ~0.45s under Earth gravity
-    let mut world = World::default();
-    let sphere = world.add_body(
-        RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 0.0, 1.0))),
-        MassProperties::sphere(1.0, 0.1),
-    );
+    let model = sim_mjcf::load_model(SPHERE_DROP_MJCF).unwrap();
+    let mut data = model.make_data();
 
     let dt = 0.002; // MuJoCo default timestep
     let mut t = 0.0;
 
     while t < 0.5 {
-        stepper.step(&mut world, dt);
+        data.step(&model).unwrap();
         t += dt;
     }
 
-    let pos = world.body(sphere).state.pose.position;
+    let pos = &data.xpos[1]; // Body 1 (body 0 is world)
     // MuJoCo reference value (from mj_forward with same setup)
     let mujoco_z = 0.0123; // captured from MuJoCo run
 
@@ -76,7 +73,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 |---------|--------|----------|-------|
 | `<mujoco>` | ✓ | ✓ | Root element |
 | `<compiler>` | ✓ | ✓ | Partial: angle, coordinate |
-| `<option>` | ✓ | ✓ | Partial: timestep, gravity, integrator |
+| `<option>` | ✓ | ✓ | Full: timestep, gravity, integrator, solver, cone, jacobian, wind, flags, etc. |
 | `<size>` | ✓ | ⚠️ | Memory hints, may not apply |
 | `<visual>` | ✓ | ❌ | L1 concern (sim-bevy) |
 | `<statistic>` | ✓ | ❌ | Auto-computed |
@@ -120,7 +117,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 
 **Action items:**
 - [ ] Create tracking issue for each ⚠️ item
-- [ ] Document intentional ❌ omissions in ARCHITECTURE.md
+- [ ] Document intentional ❌ omissions in `sim/docs/ARCHITECTURE.md`
 - [ ] Add parsing tests for each ✓ attribute
 
 **Status:** `[ ] Not started`
@@ -131,11 +128,14 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 
 Load and validate models from established sources.
 
-**Status:** Completed 2026-01-24 - All 38 tests passing
+**Status:** Completed 2026-01-24 — model loading tests passing
 
-**Implementation:** `sim/L0/tests/mujoco_conformance/` with git submodules for test assets.
+**Implementation:** `sim/L0/tests/` (sim-conformance-tests) with git submodules for test assets.
 
 Run tests: `cargo test -p sim-conformance-tests`
+
+> **Note:** Conformance tests are being migrated to the Model/Data API.
+> See `sim/L0/tests/integration/model_data_pipeline.rs` for the new test patterns.
 
 #### MuJoCo Menagerie (Model Zoo)
 https://github.com/google-deepmind/mujoco_menagerie
@@ -252,27 +252,24 @@ fn test_pendulum_trajectory_matches_mujoco() {
         serde_json::from_str(include_str!("pendulum_reference.json"))
             .expect("Failed to load reference");
 
-    let mjcf = sim_mjcf::load("pendulum.xml").unwrap();
-    let mut world = sim_mjcf::to_world(&mjcf).unwrap();
+    let model = sim_mjcf::load_model_from_file("pendulum.xml").unwrap();
+    let mut data = model.make_data();
 
-    let dt = 0.002;
     let mut max_position_error = 0.0;
     let mut max_velocity_error = 0.0;
 
-    for (i, ref_point) in reference.iter().enumerate() {
+    for ref_point in &reference {
         // Step simulation
-        stepper.step(&mut world, dt);
+        data.step(&model).unwrap();
 
-        // Compare positions
-        let qpos = world.joint_positions();
-        for (j, (ours, theirs)) in qpos.iter().zip(ref_point.qpos.iter()).enumerate() {
+        // Compare positions (qpos is the joint-space state)
+        for (ours, theirs) in data.qpos.iter().zip(ref_point.qpos.iter()) {
             let error = (ours - theirs).abs();
             max_position_error = max_position_error.max(error);
         }
 
         // Compare velocities
-        let qvel = world.joint_velocities();
-        for (j, (ours, theirs)) in qvel.iter().zip(ref_point.qvel.iter()).enumerate() {
+        for (ours, theirs) in data.qvel.iter().zip(ref_point.qvel.iter()) {
             let error = (ours - theirs).abs();
             max_velocity_error = max_velocity_error.max(error);
         }
@@ -305,7 +302,7 @@ Some differences from MuJoCo are by design:
 | Memory model | Pre-allocated pools | Dynamic allocation | Rust idioms, safety |
 | Threading | OpenMP | Rayon | Rust ecosystem |
 | GPU | Custom CUDA | Future: wgpu | Cross-platform |
-| Contact solver | Custom sparse | CG solver (sim-constraint) | Maintainability |
+| Contact solver | Custom sparse | PGS solver (mujoco_pipeline) | Maintainability |
 | Visualization | Built-in | Separate L1 crate | Headless training |
 
 ---
@@ -315,27 +312,41 @@ Some differences from MuJoCo are by design:
 ### Directory structure
 ```
 sim/L0/tests/
+├── Cargo.toml
 ├── mujoco_conformance/
+│   └── mod.rs              (migration stub — tests moving to integration/)
+├── integration/
 │   ├── mod.rs
-│   ├── forward_dynamics.rs
-│   ├── contact_physics.rs
-│   ├── joint_constraints.rs
-│   └── reference_data/
-│       ├── pendulum_trajectory.json
-│       ├── cartpole_trajectory.json
-│       └── ...
-├── model_loading/
-│   ├── mod.rs
-│   ├── menagerie.rs
-│   └── dm_control.rs
+│   ├── model_data_pipeline.rs   (Model/Data pipeline tests)
+│   ├── collision_primitives.rs
+│   ├── collision_plane.rs
+│   ├── collision_edge_cases.rs
+│   ├── collision_performance.rs
+│   ├── collision_test_utils.rs
+│   ├── equality_constraints.rs
+│   ├── implicit_integration.rs
+│   ├── musculoskeletal.rs
+│   ├── passive_forces.rs
+│   ├── sensors.rs
+│   └── validation.rs
 └── assets/
     ├── mujoco_menagerie/  (git submodule)
     └── dm_control/        (git submodule)
 ```
 
-### CI integration
+> **Note:** The `mujoco_conformance/` directory is a stub — conformance tests are being
+> migrated to `integration/` using the Model/Data API. Forward dynamics, contact physics,
+> and trajectory comparison tests are planned but not yet implemented.
+
+### CI integration (planned — not yet created)
+
+> **Note:** This workflow does not exist yet. The file `.github/workflows/mujoco_conformance.yml`
+> and script `scripts/generate_mujoco_references.py` have not been created. The correct package
+> for conformance tests is `sim-conformance-tests`, not `sim-core`. Current conformance tests
+> run via `cargo test -p sim-conformance-tests` in the existing `quality-gate.yml` workflow.
+
 ```yaml
-# .github/workflows/mujoco_conformance.yml
+# .github/workflows/mujoco_conformance.yml (PLANNED)
 name: MuJoCo Conformance
 
 on: [push, pull_request]
@@ -355,7 +366,7 @@ jobs:
         run: python scripts/generate_mujoco_references.py
 
       - name: Run conformance tests
-        run: cargo test --package sim-core --features mujoco-conformance
+        run: cargo test -p sim-conformance-tests
 ```
 
 ---
@@ -366,7 +377,7 @@ jobs:
 |----------|----------|--------|-------|-------|
 | Conformance tests | High | Not started | - | Foundation for validation |
 | Doc comparison | Medium | Not started | - | Guides implementation gaps |
-| Model loading | High | ✅ Complete | - | 38 tests passing (2026-01-24) |
+| Model loading | High | ✅ Complete | - | Menagerie + DM Control models load (2026-01-24) |
 | Trajectory comparison | High | Not started | - | Numerical correctness |
 
 ---

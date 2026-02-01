@@ -48,25 +48,26 @@ Keep Bevy types at the boundary. Internal logic uses sim-core types.
 ```rust
 // ❌ Bad: Bevy types throughout
 pub fn sync_transforms(
-    query: Query<(&PhysicsBody, &mut Transform)>,
-    world: Res<SimWorld>,
+    query: Query<(&ModelBodyIndex, &mut Transform)>,
+    data: Res<PhysicsData>,
 ) {
-    for (body, mut transform) in &query {
-        // Bevy's Transform used directly
-        transform.translation = world.get_position(body.id);
+    for (body_idx, mut transform) in &query {
+        // Bevy's Transform used directly with physics data
+        transform.translation = data.xpos[body_idx.0].into();
     }
 }
 
-// ✅ Good: Bevy at boundary, logic uses sim-core types
+// ✅ Good: Bevy at boundary, conversion functions isolate types
 pub fn sync_transforms(
-    query: Query<(&PhysicsBody, &mut Transform)>,
-    world: Res<SimWorld>,
+    query: Query<(&ModelBodyIndex, &mut Transform)>,
+    data: Res<PhysicsData>,
 ) {
-    for (body, mut transform) in &query {
-        // Convert at boundary only
-        let pose = world.get_pose(body.id);  // sim-core Pose
-        transform.translation = pose.position.into();  // Convert once
-        transform.rotation = pose.orientation.into();
+    for (body_idx, mut transform) in &query {
+        // Convert at boundary only via convert.rs helpers
+        let pos = &data.0.xpos[body_idx.0];
+        let quat = &data.0.xquat[body_idx.0];
+        transform.translation = vec3_from_vector(pos);  // Convert once
+        transform.rotation = quat_from_unit_quaternion(quat);
     }
 }
 ```
@@ -223,7 +224,7 @@ Plan for Bevy upgrades in the development cycle:
 └─────────┼───────────────────────────────────────────────────────┘
           │ reads
 ┌─────────▼───────────────────────────────────────────────────────┐
-│                    sim-core World (L0)                          │
+│                  sim-core Model/Data (L0)                        │
 │  Bodies, Joints, Contacts, Collision Shapes                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -233,63 +234,35 @@ Plan for Bevy upgrades in the development cycle:
 ## Crate Structure
 
 ```
-sim/sim-bevy/
+sim/L1/bevy/
 ├── Cargo.toml
 ├── src/
-│   ├── lib.rs                 # Public API, plugin re-exports
-│   ├── plugin.rs              # SimViewerPlugin composition
-│   │
-│   ├── components/
-│   │   ├── mod.rs
-│   │   ├── body.rs            # PhysicsBody, BodyLink
-│   │   ├── shape.rs           # CollisionShape marker, ShapeMesh
-│   │   ├── joint.rs           # JointVisual, JointAxis
-│   │   └── debug.rs           # ContactMarker, ForceVector
-│   │
-│   ├── resources/
-│   │   ├── mod.rs
-│   │   ├── config.rs          # ViewerConfig
-│   │   ├── state.rs           # SimulationHandle, PlaybackState
-│   │   └── materials.rs       # DebugMaterials (cached handles)
-│   │
-│   ├── systems/
-│   │   ├── mod.rs
-│   │   ├── sync.rs            # World → Transform synchronization
-│   │   ├── spawn.rs           # Spawn entities from sim-core World
-│   │   ├── shapes.rs          # CollisionShape → Mesh generation
-│   │   ├── contacts.rs        # Contact point visualization
-│   │   ├── forces.rs          # Force/torque vector rendering
-│   │   └── joints.rs          # Joint axis/limit visualization
-│   │
-│   ├── camera/
-│   │   ├── mod.rs
-│   │   ├── orbit.rs           # OrbitCamera component + systems
-│   │   └── follow.rs          # FollowCamera for tracking bodies
-│   │
-│   ├── mesh/
-│   │   ├── mod.rs
-│   │   ├── primitives.rs      # Sphere, Box, Capsule, Cylinder meshes
-│   │   ├── convex.rs          # ConvexMesh → Bevy Mesh
-│   │   └── trimesh.rs         # TriangleMesh → Bevy Mesh
-│   │
-│   └── solari/                # Optional: Ray-traced rendering
-│       ├── mod.rs
-│       ├── plugin.rs          # SolariViewerPlugin
-│       └── materials.rs       # RT-compatible materials
+│   ├── lib.rs                 # Public API, plugin re-exports, prelude
+│   ├── plugin.rs              # SimViewerPlugin, OrbitCameraPlugin
+│   ├── components.rs          # CollisionShapeVisual, ShapeType
+│   ├── resources.rs           # ViewerConfig, DebugColors, BodyEntityMap, CachedContacts,
+│   │                          #   MuscleVisualization, TendonVisualization, SensorVisualization
+│   ├── model_data.rs          # Model/Data integration: PhysicsModel, PhysicsData,
+│   │                          #   ModelDataPlugin, ModelBodyIndex, ModelGeomIndex,
+│   │                          #   step_model_data, sync_model_data_to_bevy
+│   ├── systems.rs             # Core ECS systems
+│   ├── convert.rs             # Z-up ↔ Y-up coordinate conversion helpers
+│   ├── gizmos.rs              # Contact, force, joint debug visualization
+│   ├── camera.rs              # OrbitCamera component + input systems
+│   └── mesh.rs                # CollisionShape → Bevy Mesh generation
 │
 ├── examples/
 │   ├── falling_sphere.rs      # Minimal: one sphere, gravity
 │   ├── collision_shapes.rs    # All primitive shapes
-│   ├── mjcf_viewer.rs         # Load and display MJCF model
-│   ├── urdf_viewer.rs         # Load and display URDF robot
 │   ├── contact_debug.rs       # Contact point visualization
-│   └── solari_demo.rs         # Ray-traced rendering (feature-gated)
+│   ├── simple_pendulum.rs     # MuJoCo-exact single pendulum
+│   ├── double_pendulum.rs     # Two-link pendulum
+│   ├── spherical_pendulum.rs  # 3D pendulum motion
+│   ├── nlink_pendulum.rs      # Multi-link pendulum chain
+│   ├── model_data_demo.rs     # Model/Data architecture demo
+│   └── mjcf_humanoid.rs       # MJCF model loading (humanoid)
 │
-└── tests/
-    ├── spawn_tests.rs         # Entity spawning correctness
-    ├── sync_tests.rs          # Transform sync accuracy
-    ├── gizmo_tests.rs         # Debug gizmo configuration tests
-    └── mesh_tests.rs          # Mesh generation tests
+└── (tests inline in modules)
 ```
 
 ---
@@ -298,51 +271,49 @@ sim/sim-bevy/
 
 This section documents the actual APIs available from Layer 0 crates, verified against the codebase.
 
-### sim-core: World Management
+### sim-core: Model/Data Architecture
 
-The `World` struct is the central simulation container.
+The physics engine uses MuJoCo's Model/Data split: a static `Model` (kinematic tree, parameters) and a mutable `Data` (state, computed quantities).
 
 ```rust
-use sim_core::World;
+use sim_core::{Model, Data};
 
-// Body management
-world.add_body(state: RigidBodyState, mass: MassProperties) -> BodyId
-world.add_static_body(pose: Pose) -> BodyId
-world.remove_body(id: BodyId) -> Option<Body>
-world.body(id: BodyId) -> Option<&Body>
-world.body_mut(id: BodyId) -> Option<&mut Body>
-world.body_by_name(name: &str) -> Option<&Body>
-world.bodies() -> impl Iterator<Item = &Body>
-world.body_ids() -> impl Iterator<Item = BodyId>
-world.body_count() -> usize
+// Model - static, immutable after loading
+model.nbody                    // Number of bodies
+model.njnt                     // Number of joints
+model.ngeom                    // Number of geoms
+model.nq                       // Position coordinates count
+model.nv                       // Velocity DOFs count
+model.gravity                  // Gravity vector (Vector3<f64>)
+model.timestep                 // Simulation step size
+model.body_name[i]             // Body names
+model.jnt_type[i]              // Joint types (MjJointType)
+model.geom_type[i]             // Geom types
+model.geom_size[i]             // Geom sizes
 
-// Body struct fields
-body.state: RigidBodyState      // Contains pose + twist
-body.collision_shape: Option<CollisionShape>
-body.name: Option<String>
+// Data - dynamic, mutable state
+let mut data = model.make_data();
 
-// Joint management
-world.add_joint(...) -> JointId
-world.joint(id: JointId) -> Option<&Joint>
-world.joints() -> impl Iterator<Item = &Joint>
+// Simulation stepping
+data.forward(&model)?;         // Forward kinematics only
+data.step(&model)?;            // Full simulation step
 
-// Simulation stepping (via Stepper)
-let mut stepper = Stepper::new();
-stepper.step(&mut world);
-stepper.run_for(&mut world, duration: f64);
+// Source-of-truth state
+data.qpos                      // Joint positions (DVector<f64>)
+data.qvel                      // Joint velocities (DVector<f64>)
+data.time                      // Simulation time
 
-// Direct physics operations
-world.detect_contacts() -> Vec<ContactPoint>
-world.solve_contacts() -> usize
-world.solve_constraints() -> usize
-world.apply_gravity()
-world.clear_forces()
-
-// Utilities
-world.total_kinetic_energy() -> f64
-world.total_linear_momentum() -> Vector3<f64>
-world.center_of_mass() -> Option<Point3<f64>>
-world.validate() -> Result<()>
+// Computed quantities (populated by forward/step)
+data.xpos[i]                   // World-frame body positions (Vector3<f64>)
+data.xquat[i]                  // World-frame body quaternions (UnitQuaternion<f64>)
+data.geom_xpos[i]              // Geom positions
+data.geom_xmat[i]              // Geom orientation matrices
+data.site_xpos[i]              // Site positions
+data.site_xmat[i]              // Site orientation matrices
+data.qacc                      // Joint accelerations
+data.energy_kinetic             // Kinetic energy
+data.energy_potential           // Potential energy
+data.contacts                  // Active contact points
 ```
 
 ### sim-types: Core Types
@@ -453,37 +424,42 @@ force.torque_about(point: Point3<f64>) -> Vector3<f64>
 ### sim-mjcf: MJCF Loading
 
 ```rust
-use sim_mjcf::{load_mjcf_file, load_mjcf_str, LoadedModel, SpawnedModel};
+use sim_mjcf::load_model;
 
-// Load and parse
-let model: LoadedModel = load_mjcf_file("path/to/model.xml")?;
-let model: LoadedModel = load_mjcf_str(xml_content)?;
+// Load from string — returns sim_core::Model directly
+let model: Model = load_model(mjcf_xml_str)?;
 
-// Spawn into World
-let spawned: SpawnedModel = model.spawn_at_origin(&mut world)?;
+// Load from file
+let model: Model = sim_mjcf::load_model_from_file("path/to/model.xml")?;
 
-// Access spawned entities by name
-spawned.body_id("torso") -> Option<BodyId>
-spawned.joint_id("hip") -> Option<JointId>
+// Lower-level: parse then convert separately
+let mjcf: MjcfModel = sim_mjcf::parse_mjcf_str(xml)?;
+let model: Model = sim_mjcf::model_from_mjcf(&mjcf)?;
+
+// MJB binary format (requires "mjb" feature)
+let model = sim_mjcf::load_mjb_file("model.mjb")?;
+sim_mjcf::save_mjb_file(&model, "model.mjb")?;
+
+// Create mutable data from model
+let mut data = model.make_data();
 ```
 
-**Supported geometry:** sphere, box, capsule, cylinder, ellipsoid, plane, mesh (STL/OBJ/PLY)
+**Supported geometry:** sphere, box, capsule, cylinder, ellipsoid, plane, mesh (convex + non-convex), sdf
 
 ### sim-urdf: URDF Loading
 
 ```rust
-use sim_urdf::{load_urdf_file, load_urdf_str, LoadedRobot, SpawnedRobot};
+use sim_urdf::load_urdf_model;
 
-// Load and parse
-let robot: LoadedRobot = load_urdf_file("path/to/robot.urdf")?;
-let robot: LoadedRobot = load_urdf_str(xml_content)?;
+// Load from string — returns sim_core::Model directly
+let model: Model = load_urdf_model(urdf_xml_str)?;
 
-// Spawn into World
-let spawned: SpawnedRobot = robot.spawn_at_origin(&mut world)?;
+// Lower-level: parse then convert via MJCF intermediate
+let robot: UrdfRobot = sim_urdf::parse_urdf_str(xml)?;
+let mjcf_xml: String = sim_urdf::robot_to_mjcf(&robot)?;
 
-// Access spawned entities by name
-spawned.link_id("base_link") -> Option<BodyId>
-spawned.joint_id("joint1") -> Option<JointId>
+// Create mutable data from model
+let mut data = model.make_data();
 ```
 
 **Supported joints:** fixed, revolute, continuous, prismatic, floating, planar
@@ -529,22 +505,20 @@ categories = ["simulation", "visualization", "game-development"]
 
 [dependencies]
 # Layer 0 simulation crates
-sim-core = { path = "../sim-core" }
-sim-types = { path = "../sim-types" }
-sim-constraint = { path = "../sim-constraint" }
-sim-mjcf = { path = "../sim-mjcf" }
-sim-urdf = { path = "../sim-urdf" }
+sim-types = { path = "../../L0/types" }
+sim-core = { path = "../../L0/core" }
+sim-mjcf = { path = "../../L0/mjcf" }
+sim-urdf = { path = "../../L0/urdf" }
 
 # Bevy 0.18 - use feature collections for clean compilation
-bevy = { version = "0.18", default-features = false, features = [
-    "3d",                    # 3D rendering, cameras, lights
+bevy = { workspace = true, default-features = false, features = [
     "bevy_pbr",              # PBR materials
     "bevy_gizmos",           # Debug line/shape drawing
+    "bevy_gizmos_render",    # Gizmo rendering backend
     "bevy_winit",            # Window management
     "bevy_state",            # State management
-    "x11",                   # Linux display (or wayland)
-    "wayland",
 ] }
+# x11/wayland are optional features, not default deps
 
 # Math compatibility
 nalgebra = { workspace = true }
@@ -568,24 +542,34 @@ trace = ["bevy/trace"]
 
 ## Core Components
 
-### PhysicsBody
+### Model/Data Components
 
-Links a Bevy entity to a sim-core body.
+Link Bevy entities to bodies, geoms, and sites in the physics Model/Data system.
 
 ```rust
-/// Links this entity to a body in the physics simulation.
+/// Component linking a Bevy entity to a body in the Model/Data system.
 ///
-/// The transform of this entity will be synchronized with the body's pose
-/// each frame.
-#[derive(Component, Debug, Clone, Copy)]
-pub struct PhysicsBody {
-    /// The body ID in the sim-core World.
-    pub body_id: BodyId,
-}
+/// Uses a direct index into the Model's body arrays. Body transforms
+/// are synchronized from `data.xpos[index]` and `data.xquat[index]`.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModelBodyIndex(pub usize);
 
-/// Marker for the root entity of a spawned physics world.
-#[derive(Component, Debug, Default)]
-pub struct PhysicsWorldRoot;
+/// Component linking a Bevy entity to a geom in the Model/Data system.
+///
+/// Used for entities representing collision geometries. Transforms are
+/// synchronized from `data.geom_xpos[index]` and `data.geom_xmat[index]`.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModelGeomIndex(pub usize);
+
+/// Component linking a Bevy entity to a site in the Model/Data system.
+///
+/// Sites are attachment points for sensors, actuators, etc.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModelSiteIndex(pub usize);
+
+/// Marker component for the root entity of a Model/Data physics scene.
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct ModelDataRoot;
 ```
 
 ### CollisionShapeVisual
@@ -595,8 +579,7 @@ Marks an entity as a collision shape visualization.
 ```rust
 /// Visual representation of a collision shape.
 ///
-/// This component is added to child entities of [`PhysicsBody`] entities
-/// to render their collision geometry.
+/// This component is added to child entities to render collision geometry.
 #[derive(Component, Debug, Clone)]
 pub struct CollisionShapeVisual {
     /// The shape type being visualized.
@@ -605,7 +588,7 @@ pub struct CollisionShapeVisual {
     pub wireframe: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ShapeType {
     Sphere,
@@ -613,57 +596,77 @@ pub enum ShapeType {
     Capsule,
     Cylinder,
     Ellipsoid,
+    Plane,
     ConvexMesh,
     TriangleMesh,
     HeightField,
     Sdf,
 }
+
+impl ShapeType {
+    /// Convert from a sim-core CollisionShape to ShapeType.
+    pub fn from_collision_shape(shape: &sim_core::CollisionShape) -> Self {
+        match shape {
+            sim_core::CollisionShape::Sphere { .. } => Self::Sphere,
+            sim_core::CollisionShape::Box { .. } => Self::Box,
+            // ... etc for each variant
+        }
+    }
+}
 ```
 
 ### ViewerConfig
 
-Runtime configuration for the viewer.
+Runtime configuration for the viewer. Controls what debug information is displayed and how it is rendered.
 
 ```rust
 /// Configuration for the physics viewer.
 #[derive(Resource, Debug, Clone)]
 pub struct ViewerConfig {
-    /// Whether to show collision shapes.
+    // Visibility toggles
     pub show_collision_shapes: bool,
-    /// Whether to show contact points.
     pub show_contacts: bool,
-    /// Whether to show contact normals.
     pub show_contact_normals: bool,
-    /// Whether to show applied forces.
     pub show_forces: bool,
-    /// Whether to show joint axes.
     pub show_joint_axes: bool,
-    /// Whether to show joint limits.
     pub show_joint_limits: bool,
-    /// Scale factor for force vectors.
-    pub force_scale: f32,
-    /// Radius of contact point markers.
-    pub contact_marker_radius: f32,
-    /// Color scheme for debug visualization.
-    pub color_scheme: ColorScheme,
-}
+    pub show_velocities: bool,
+    pub show_muscles: bool,
+    pub show_tendons: bool,
+    pub show_sensors: bool,
 
-impl Default for ViewerConfig {
-    fn default() -> Self {
-        Self {
-            show_collision_shapes: true,
-            show_contacts: true,
-            show_contact_normals: true,
-            show_forces: false,
-            show_joint_axes: true,
-            show_joint_limits: false,
-            force_scale: 0.01,
-            contact_marker_radius: 0.02,
-            color_scheme: ColorScheme::default(),
-        }
-    }
+    // Scale factors
+    pub force_scale: f32,
+    pub velocity_scale: f32,
+    pub contact_marker_radius: f32,
+    pub contact_normal_length: f32,
+    pub joint_axis_length: f32,
+    pub joint_limit_arc_radius: f32,
+    pub joint_limit_arc_segments: u32,
+    pub joint_marker_radius: f32,
+
+    // Thresholds
+    pub force_display_threshold: f32,
+    pub velocity_display_threshold: f32,
+    pub joint_line_distance_threshold: f32,
+
+    // Musculoskeletal
+    pub muscle_line_radius: f32,
+    pub tendon_line_radius: f32,
+    pub sensor_force_scale: f32,
+    pub sensor_axis_length: f32,
+
+    /// Color scheme for debug visualization.
+    pub colors: DebugColors,
 }
 ```
+
+Additional visualization resources:
+- `CachedContacts` — stores contact points from the last physics step
+- `BodyEntityMap` — bidirectional `HashMap<BodyId, Entity>` for O(1) lookups
+- `MuscleVisualization` — user-provided muscle state for rendering
+- `TendonVisualization` — user-provided tendon paths for rendering
+- `SensorVisualization` — user-provided sensor state for rendering
 
 ---
 
@@ -672,27 +675,39 @@ impl Default for ViewerConfig {
 ### Transform Synchronization
 
 ```rust
-/// Synchronizes Bevy transforms with sim-core body poses.
+/// Synchronize body transforms from physics Data to Bevy entities.
 ///
-/// This system runs in `PostUpdate` to ensure physics has stepped
-/// before transforms are updated for rendering.
-pub fn sync_body_transforms(
-    sim_world: Res<SimulationHandle>,
-    mut bodies: Query<(&PhysicsBody, &mut Transform)>,
+/// Reads xpos and xquat from the physics data (computed by forward
+/// kinematics) and updates Bevy Transform components.
+/// Coordinate system conversion (Z-up → Y-up) is handled automatically.
+///
+/// Runs in PostUpdate after physics stepping.
+pub fn sync_model_data_to_bevy(
+    data: Res<PhysicsData>,
+    mut bodies: Query<(&ModelBodyIndex, &mut Transform)>,
 ) {
-    let world = match sim_world.world() {
-        Some(w) => w,
-        None => return,
-    };
-
-    for (physics_body, mut transform) in &mut bodies {
-        if let Some(body) = world.body(physics_body.body_id) {
-            let pose = &body.state.pose;
-            transform.translation = vec3_from_nalgebra(pose.position);
-            transform.rotation = quat_from_nalgebra(pose.orientation);
+    for (body_idx, mut transform) in &mut bodies {
+        let idx = body_idx.0;
+        if idx < data.0.xpos.len() {
+            let pos = &data.0.xpos[idx];
+            let quat = &data.0.xquat[idx];
+            transform.translation = vec3_from_vector(pos);
+            transform.rotation = quat_from_unit_quaternion(quat);
         }
     }
 }
+
+/// Synchronize geom transforms from physics Data to Bevy entities.
+pub fn sync_geom_transforms(
+    data: Res<PhysicsData>,
+    mut geoms: Query<(&ModelGeomIndex, &mut Transform)>,
+) { /* reads data.geom_xpos[idx] and data.geom_xmat[idx] */ }
+
+/// Synchronize site transforms from physics Data to Bevy entities.
+pub fn sync_site_transforms(
+    data: Res<PhysicsData>,
+    mut sites: Query<(&ModelSiteIndex, &mut Transform)>,
+) { /* reads data.site_xpos[idx] and data.site_xmat[idx] */ }
 ```
 
 ### Shape Mesh Generation
@@ -711,21 +726,21 @@ pub fn generate_shape_mesh(shape: &CollisionShape) -> Mesh {
                 half_extents.z as f32 * 2.0,
             ).mesh().build()
         }
-        CollisionShape::Capsule { half_height, radius } => {
-            Capsule3d::new(*radius as f32, *half_height as f32 * 2.0)
+        CollisionShape::Capsule { half_length, radius } => {
+            Capsule3d::new(*radius as f32, *half_length as f32 * 2.0)
                 .mesh()
                 .build()
         }
-        CollisionShape::Cylinder { half_height, radius } => {
-            Cylinder::new(*radius as f32, *half_height as f32 * 2.0)
+        CollisionShape::Cylinder { half_length, radius } => {
+            Cylinder::new(*radius as f32, *half_length as f32 * 2.0)
                 .mesh()
                 .build()
         }
-        CollisionShape::ConvexMesh { vertices, indices } => {
-            mesh_from_convex(vertices, indices)
+        CollisionShape::ConvexMesh { vertices } => {
+            mesh_from_convex(vertices)
         }
-        CollisionShape::TriangleMesh { mesh } => {
-            mesh_from_trimesh(mesh)
+        CollisionShape::TriangleMesh { data } => {
+            triangle_mesh(data)
         }
         // ... other shapes
     }
@@ -734,41 +749,41 @@ pub fn generate_shape_mesh(shape: &CollisionShape) -> Mesh {
 
 ### Contact Visualization
 
+Contact gizmos read from the `CachedContacts` resource (updated each frame from
+the physics step) rather than re-detecting contacts or cloning the world.
+
 ```rust
-/// Spawns gizmos for active contact points.
+/// Draw contact point markers as small spheres.
 pub fn draw_contact_points(
-    sim_world: Res<SimulationHandle>,
-    config: Res<ViewerConfig>,
     mut gizmos: Gizmos,
+    cached_contacts: Res<CachedContacts>,
+    config: Res<ViewerConfig>,
 ) {
-    if !config.show_contacts {
-        return;
-    }
+    if !config.show_contacts { return; }
 
-    let contacts = match sim_world.contacts() {
-        Some(c) => c,
-        None => return,
-    };
-
-    for contact in contacts {
-        let pos = vec3_from_nalgebra(contact.point);
-
-        // Draw contact point sphere
+    for contact in cached_contacts.contacts() {
+        let pos = vec3_from_point(&contact.position);
         gizmos.sphere(
-            pos,
+            Isometry3d::from_translation(pos),
             config.contact_marker_radius,
-            config.color_scheme.contact_point,
+            config.colors.contact_point,
         );
+    }
+}
 
-        // Draw contact normal
-        if config.show_contact_normals {
-            let normal = vec3_from_nalgebra(contact.normal);
-            gizmos.arrow(
-                pos,
-                pos + normal * 0.1,
-                config.color_scheme.contact_normal,
-            );
-        }
+/// Draw contact normal arrows.
+pub fn draw_contact_normals(
+    mut gizmos: Gizmos,
+    cached_contacts: Res<CachedContacts>,
+    config: Res<ViewerConfig>,
+) {
+    if !config.show_contact_normals { return; }
+
+    for contact in cached_contacts.contacts() {
+        let start = vec3_from_point(&contact.position);
+        let normal = vec3_from_vector(&contact.normal);
+        let end = start + normal * config.contact_normal_length;
+        gizmos.arrow(start, end, config.colors.contact_normal);
     }
 }
 ```
@@ -779,63 +794,89 @@ pub fn draw_contact_points(
 
 ### SimViewerPlugin
 
-The main entry point.
+The main entry point for visualization. Read-only with respect to physics state.
 
 ```rust
-/// Physics visualization plugin for Bevy.
-///
-/// This plugin provides real-time visualization of sim-core physics
-/// simulations, including collision shapes, contacts, forces, and joints.
-///
-/// # Example
-///
-/// ```no_run
-/// use bevy::prelude::*;
-/// use sim_bevy::SimViewerPlugin;
-///
-/// fn main() {
-///     App::new()
-///         .add_plugins(DefaultPlugins)
-///         .add_plugins(SimViewerPlugin::default())
-///         .run();
-/// }
-/// ```
 pub struct SimViewerPlugin {
-    /// Initial viewer configuration.
     pub config: ViewerConfig,
+    pub spawn_camera: bool,
+    pub spawn_lighting: bool,
+    pub enable_camera_input: bool,
+    pub enable_debug_gizmos: bool,
 }
 
-impl Default for SimViewerPlugin {
-    fn default() -> Self {
-        Self {
-            config: ViewerConfig::default(),
-        }
-    }
+impl SimViewerPlugin {
+    /// Full-featured viewer with camera, lighting, and gizmos.
+    pub fn new() -> Self { /* all enabled */ }
+
+    /// Headless mode: no camera, lighting, input, or gizmos.
+    pub fn headless() -> Self { /* all disabled */ }
+
+    pub fn with_config(mut self, config: ViewerConfig) -> Self { .. }
+    pub fn without_camera(mut self) -> Self { .. }
+    pub fn without_lighting(mut self) -> Self { .. }
 }
 
 impl Plugin for SimViewerPlugin {
     fn build(&self, app: &mut App) {
-        app
-            // Resources
-            .insert_resource(self.config.clone())
-            .init_resource::<DebugMaterials>()
+        // Resources
+        app.insert_resource(self.config.clone())
+            .init_resource::<BodyEntityMap>()
+            .init_resource::<CachedContacts>()
+            .init_resource::<MuscleVisualization>()
+            .init_resource::<TendonVisualization>()
+            .init_resource::<SensorVisualization>();
 
-            // Core systems
-            .add_systems(Update, (
-                spawn_physics_entities,
-                sync_body_transforms,
-                update_shape_visibility,
-            ).chain())
+        // Core systems
+        app.add_systems(PostUpdate, update_shape_visibility);
 
-            // Debug visualization (uses gizmos)
-            .add_systems(PostUpdate, (
+        // Debug gizmos (if enabled)
+        if self.enable_debug_gizmos {
+            app.add_systems(PostUpdate, (
                 draw_contact_points,
-                draw_force_vectors,
-                draw_joint_axes,
-            ))
+                draw_contact_normals,
+                draw_muscles,
+                draw_tendons,
+                draw_sensors,
+            ).in_set(DebugGizmosSet));
+        }
 
-            // Camera
-            .add_plugins(OrbitCameraPlugin);
+        // Camera
+        if self.enable_camera_input { app.add_plugins(OrbitCameraPlugin); }
+        if self.spawn_camera { app.add_systems(Startup, spawn_orbit_camera); }
+        if self.spawn_lighting { app.add_systems(Startup, spawn_default_lighting); }
+    }
+}
+```
+
+### ModelDataPlugin
+
+Handles physics stepping and transform sync for the Model/Data pipeline.
+
+```rust
+pub struct ModelDataPlugin {
+    /// Whether to automatically step physics in Update.
+    pub auto_step: bool,
+}
+
+impl Plugin for ModelDataPlugin {
+    fn build(&self, app: &mut App) {
+        app.configure_sets(Update, (ModelDataSet::Step, ModelDataSet::Sync).chain());
+
+        if self.auto_step {
+            app.add_systems(Update,
+                step_model_data
+                    .in_set(ModelDataSet::Step)
+                    .run_if(resource_exists::<PhysicsModel>)
+                    .run_if(resource_exists::<PhysicsData>),
+            );
+        }
+
+        app.add_systems(PostUpdate, (
+            sync_model_data_to_bevy,
+            sync_geom_transforms,
+            sync_site_transforms,
+        ).run_if(resource_exists::<PhysicsData>));
     }
 }
 ```
@@ -943,7 +984,7 @@ pub mod solari {
 
 ### Phase 1: Foundation (MVP) ✅ COMPLETE
 
-**Goal:** Render a sim-core World with basic shapes and camera control.
+**Goal:** Render a sim-core Model/Data simulation with basic shapes and camera control.
 
 **Status:** Completed 2026-01-23
 
@@ -952,7 +993,7 @@ pub mod solari {
 **Tasks:**
 - [x] Create crate structure and Cargo.toml
 - [x] Implement `SimViewerPlugin` skeleton
-- [x] Implement `PhysicsBody` component and transform sync
+- [x] Implement `ModelBodyIndex` component and transform sync
 - [x] Implement primitive mesh generation (Sphere, Box, Capsule, Cylinder, Ellipsoid)
 - [x] Implement `OrbitCamera` with mouse controls (using Bevy 0.18 `AccumulatedMouseMotion`)
 - [x] Create `falling_sphere.rs` example
@@ -963,13 +1004,16 @@ pub mod solari {
 - [x] Write unit tests for type conversions (2 tests)
 - [x] Write integration tests for entity spawning (6 tests)
 - [x] Write integration tests for transform sync (5 tests)
-- [x] All 25 tests pass, clippy clean (now 32 with Phase 2)
+- [x] Tests pass, clippy clean
 
-**Test Coverage:**
-- 14 unit tests (mesh, camera, convert, systems, plugin, gizmos)
-- 6 spawn integration tests (`tests/spawn_tests.rs`)
-- 5 sync integration tests (`tests/sync_tests.rs`)
-- 7 gizmo integration tests (`tests/gizmo_tests.rs`) [Phase 2]
+**Test Coverage (27 tests across 7 modules):**
+- 10 conversion tests (`src/convert.rs`)
+- 5 mesh generation tests (`src/mesh.rs`)
+- 5 model/data tests (`src/model_data.rs`)
+- 3 camera tests (`src/camera.rs`)
+- 2 system tests (`src/systems.rs`)
+- 1 gizmo test (`src/gizmos.rs`)
+- 1 plugin test (`src/plugin.rs`)
 
 **Implementation Notes:**
 - Module structure: `convert`, `components`, `resources`, `systems`, `mesh`, `camera`, `plugin`
@@ -980,7 +1024,7 @@ pub mod solari {
 - Added `SimViewerPlugin::headless()` for testing without input/render resources
 - Bevy 0.18 migration: `EventReader` → `AccumulatedMouseMotion`, `despawn_recursive` → `despawn`, `Entity::from_raw` → `Entity::from_bits`
 
-**Deliverable:** Can spawn a sim-core World and watch bodies fall. ✅
+**Deliverable:** Can spawn a sim-core Model and watch bodies fall. ✅
 
 ### Phase 2: Debug Visualization ✅ COMPLETE
 
@@ -991,26 +1035,25 @@ pub mod solari {
 **Tasks:**
 - [x] Implement contact point gizmos
 - [x] Implement contact normal arrows
-- [x] Implement force vector visualization
-- [x] Implement joint axis visualization
-- [x] Implement joint limit arc visualization
+- [ ] Implement force vector visualization (ViewerConfig fields exist but no drawing system)
+- [ ] Implement joint axis visualization (ViewerConfig fields exist but no drawing system)
+- [ ] Implement joint limit arc visualization (ViewerConfig fields exist but no drawing system)
 - [x] Add `ViewerConfig` resource for runtime toggles
 - [x] Add `DebugColors` configuration
 - [x] Add `enable_debug_gizmos` plugin option
 - [x] Create `contact_debug.rs` example with keyboard toggles
-- [x] Write gizmo integration tests (7 tests)
-- [x] All 32 tests pass, clippy clean
+- [ ] Write gizmo integration tests (only 1 of 7 exists — `debug_gizmos_set_derives`)
+- [x] Tests pass, clippy clean
 
 **Implementation Notes:**
 - New `gizmos.rs` module with 5 gizmo drawing systems
-- Contact detection clones world for snapshot (TODO: cache contacts for performance)
+- `update_cached_contacts` system registered but is a no-op stub (CachedContacts always empty)
 - `SimViewerPlugin::headless()` disables gizmos (requires `bevy_gizmos`)
-- Joint axes drawn at midpoint between parent/child bodies
-- Joint limits visualized as arc segments with limit markers
-- Keyboard toggles: C=contacts, N=normals, F=forces, J=joints, L=limits
+- Force vector, joint axis, and joint limit gizmos are **not yet implemented** (ViewerConfig/DebugColors fields exist but no drawing systems)
+- Keyboard toggles: C=contacts, N=normals (F=forces, J=joints, L=limits defined but non-functional)
 
 **Test Coverage:**
-- 7 gizmo configuration tests (`tests/gizmo_tests.rs`)
+- Gizmo configuration test in `src/gizmos.rs`
 - ViewerConfig default values and modification
 - DebugColors distinctiveness
 - Plugin headless/new configuration
@@ -1024,31 +1067,29 @@ pub mod solari {
 **Status:** Completed 2026-01-24
 
 **Tasks:**
-- [x] Create `models.rs` module with `MjcfModel` and `UrdfModel` wrappers
+- [x] Create `model_data.rs` module with `PhysicsModel`, `PhysicsData`, and `ModelDataPlugin`
 - [x] Implement MJCF → Bevy entity spawning via sim-mjcf integration
 - [x] Implement URDF → Bevy entity spawning via sim-urdf integration
 - [x] Handle mesh geometry (TriangleMesh → Bevy Mesh with proper normals)
-- [x] Create `mjcf_viewer.rs` example (simple humanoid)
-- [x] Create `urdf_viewer.rs` example (robot arm with gripper)
-- [x] Add model loading unit tests (6 tests)
-- [x] All 40 tests pass, clippy clean
+- [x] Create `mjcf_humanoid.rs` example (simple humanoid) — note: file is `mjcf_humanoid.rs`, not `mjcf_viewer.rs`
+- [ ] Create `urdf_viewer.rs` example (robot arm with gripper) — **not created**
+- [x] Add model loading unit tests (5 of 6 — `file_not_found_error` missing)
+- [x] All 27 tests pass, clippy clean
 
 **Implementation Notes:**
-- New `models.rs` module provides `MjcfModel`, `UrdfModel`, `SpawnedMjcf`, `SpawnedUrdf` types
-- `MjcfModel::from_file()` / `from_xml()` for loading from path or string
-- `UrdfModel::from_file()` / `from_xml()` for loading from path or string
-- `spawn_into()` / `spawn_at()` methods spawn into `SimulationHandle`
-- Models export to prelude: `MjcfModel`, `UrdfModel`, `SpawnedMjcf`, `SpawnedUrdf`, `ModelError`, `ModelSource`, `ModelType`
-- `ModelSource` component tracks which model a body came from
+- `model_data.rs` module provides `PhysicsModel`, `PhysicsData`, `ModelBodyIndex`, `ModelGeomIndex`, `ModelSiteIndex`, `ModelDataRoot` types
+- `sim_mjcf::load_model()` returns `Model` directly; `sim_urdf::load_urdf_model()` returns `Model` directly
+- `spawn_model_bodies()` utility creates Bevy entities for all bodies with proper transforms
+- `ModelDataPlugin` provides auto-step and transform sync systems
 - `triangle_mesh()` function in `mesh.rs` converts `TriangleMeshData` to Bevy mesh with computed normals
 - Examples demonstrate keyboard toggles and runtime info printing
 
 **Test Coverage:**
-- 6 new model loading tests in `models.rs`:
-  - `mjcf_model_from_str`, `urdf_model_from_str`
-  - `mjcf_spawn_into_world`, `urdf_spawn_into_world`
-  - `spawn_fails_without_world`, `file_not_found_error`
-  - `model_source_component`
+- 5 model loading tests in `model_data.rs`:
+  - `model_body_index_accessors`, `model_geom_index_accessors`
+  - `model_site_index_accessors`, `physics_model_deref`
+  - `physics_data_deref_mut`
+  - (`file_not_found_error` not yet implemented)
 
 **Deliverable:** Can load MJCF/URDF and visualize articulated robots. ✅
 
@@ -1107,38 +1148,35 @@ Before shipping, all criteria must pass:
 
 ## API Examples
 
-### Basic Usage
+### Basic Usage (Model/Data)
 
 ```rust
 use bevy::prelude::*;
 use sim_bevy::prelude::*;
-use sim_core::World;
+use sim_core::Model;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(SimViewerPlugin::default())
+        .add_plugins(SimViewerPlugin::new())
+        .add_plugins(ModelDataPlugin::new().with_auto_step())
         .add_systems(Startup, setup_physics)
         .run();
 }
 
 fn setup_physics(mut commands: Commands) {
-    // Create a sim-core world
-    let mut world = World::default();
+    // Load model from MJCF
+    let model = sim_mjcf::load_model("assets/humanoid.xml")
+        .expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward kinematics failed");
 
-    // Add a sphere
-    let sphere = world.add_body(
-        RigidBodyState::at_rest(Pose::from_position(Point3::new(0.0, 5.0, 0.0))),
-        MassProperties::sphere(1.0, 0.5),
-    );
-    world.set_collision_shape(sphere, CollisionShape::Sphere { radius: 0.5 });
+    // Spawn Bevy entities for each body
+    spawn_model_bodies(&mut commands, &model, &data);
 
-    // Add ground plane
-    let ground = world.add_static_body(Pose::identity());
-    world.set_collision_shape(ground, CollisionShape::Plane { normal: Vector3::y() });
-
-    // Spawn the world for visualization
-    commands.spawn_physics_world(world);
+    // Insert resources
+    commands.insert_resource(PhysicsModel(model));
+    commands.insert_resource(PhysicsData(data));
 }
 ```
 
@@ -1147,26 +1185,27 @@ fn setup_physics(mut commands: Commands) {
 ```rust
 use bevy::prelude::*;
 use sim_bevy::prelude::*;
+use sim_core::Model;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(SimViewerPlugin::default())
+        .add_plugins(SimViewerPlugin::new())
+        .add_plugins(ModelDataPlugin::new().with_auto_step())
         .add_systems(Startup, load_humanoid)
         .run();
 }
 
 fn load_humanoid(mut commands: Commands) {
-    // Load MJCF model
-    let mjcf = sim_mjcf::load("assets/humanoid.xml")
+    // load_model() returns a Model directly
+    let model = sim_mjcf::load_model("assets/humanoid.xml")
         .expect("Failed to load MJCF");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward kinematics failed");
 
-    // Convert to sim-core world
-    let world = sim_mjcf::to_world(&mjcf)
-        .expect("Failed to convert MJCF");
-
-    // Spawn for visualization
-    commands.spawn_physics_world(world);
+    spawn_model_bodies(&mut commands, &model, &data);
+    commands.insert_resource(PhysicsModel(model));
+    commands.insert_resource(PhysicsData(data));
 }
 ```
 
@@ -1179,21 +1218,21 @@ use sim_bevy::prelude::*;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(SimViewerPlugin {
-            config: ViewerConfig {
-                show_contacts: true,
-                show_contact_normals: true,
-                show_forces: true,
-                force_scale: 0.1,
-                color_scheme: ColorScheme {
-                    contact_point: Color::srgb(1.0, 0.0, 0.0),
-                    contact_normal: Color::srgb(0.0, 1.0, 0.0),
-                    force_vector: Color::srgb(1.0, 1.0, 0.0),
-                    ..default()
-                },
+        .add_plugins(SimViewerPlugin::new().with_config(ViewerConfig {
+            show_contacts: true,
+            show_contact_normals: true,
+            show_forces: true,
+            show_muscles: true,
+            force_scale: 0.1,
+            colors: DebugColors {
+                contact_point: Color::srgb(1.0, 0.0, 0.0),
+                contact_normal: Color::srgb(0.0, 1.0, 0.0),
+                force_vector: Color::srgb(1.0, 1.0, 0.0),
                 ..default()
             },
-        })
+            ..default()
+        }))
+        .add_plugins(ModelDataPlugin::new().with_auto_step())
         .run();
 }
 ```
@@ -1209,19 +1248,19 @@ fn main() {
 **Rationale:**
 - **Separation of concerns** — sim-bevy is a visualization layer, not a simulation runner. Mixing stepping logic with rendering creates coupling that makes both harder to reason about.
 - **Flexibility** — Users may want different stepping strategies: fixed timestep, variable, substeps, paused with manual advance, or running headless and only visualizing occasionally. If sim-bevy owned stepping, we'd have to expose all these options.
-- **Testing** — A read-only viewer is trivially testable. Create a World in any state, pass it in, verify rendering. No temporal concerns.
+- **Testing** — A read-only viewer is trivially testable. Create a Model/Data in any state, pass it in, verify rendering. No temporal concerns.
 - **Replay/scrubbing** — If the viewer just reads state, timeline scrubbing becomes trivial by swapping which frame's state you point it at.
 
-**Implementation:** The user steps the simulation themselves (likely in `Update` or `FixedUpdate`), and sim-bevy syncs transforms in `PostUpdate`.
+**Implementation:** The user steps via `data.step(&model)` (or uses `ModelDataPlugin::with_auto_step()`), and sim-bevy syncs transforms in `PostUpdate`.
 
 ```rust
 // User code - they own the stepping
-fn step_physics(mut sim_world: ResMut<SimulationHandle>, time: Res<Time>) {
-    sim_world.step(time.delta_secs_f64());
+fn step_physics(model: Res<PhysicsModel>, mut data: ResMut<PhysicsData>) {
+    data.step(&model).expect("step failed");
 }
 
 // sim-bevy - runs after user's Update systems
-// PostUpdate: sync_body_transforms reads from sim_world, updates Bevy Transforms
+// PostUpdate: sync_model_data_to_bevy reads data.xpos/xquat, updates Bevy Transforms
 ```
 
 ### 2. Entity Lifecycle: Polling with HashMap Tracking
@@ -1242,39 +1281,11 @@ pub struct BodyEntityMap {
     body_to_entity: HashMap<BodyId, Entity>,
     entity_to_body: HashMap<Entity, BodyId>,
 }
-
-/// Synchronizes Bevy entities with sim-core bodies.
-///
-/// Spawns entities for new bodies, despawns entities for removed bodies.
-pub fn sync_physics_entities(
-    mut commands: Commands,
-    sim_world: Res<SimulationHandle>,
-    mut body_map: ResMut<BodyEntityMap>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    let Some(world) = sim_world.world() else { return };
-
-    // Collect current body IDs
-    let current_bodies: HashSet<BodyId> = world.body_ids().collect();
-    let tracked_bodies: HashSet<BodyId> = body_map.body_to_entity.keys().copied().collect();
-
-    // Spawn new bodies
-    for &body_id in current_bodies.difference(&tracked_bodies) {
-        let entity = spawn_body_entity(&mut commands, world, body_id, &mut meshes, &mut materials);
-        body_map.body_to_entity.insert(body_id, entity);
-        body_map.entity_to_body.insert(entity, body_id);
-    }
-
-    // Despawn removed bodies
-    for &body_id in tracked_bodies.difference(&current_bodies) {
-        if let Some(entity) = body_map.body_to_entity.remove(&body_id) {
-            body_map.entity_to_body.remove(&entity);
-            commands.entity(entity).despawn_recursive();
-        }
-    }
-}
 ```
+
+In the Model/Data architecture, the body set is static (defined by the Model), so entities
+are spawned once at setup via `spawn_model_bodies()` rather than polled each frame. The
+`BodyEntityMap` is still useful for O(1) lookups when correlating physics events with entities.
 
 **Future optimization:** If profiling shows this is a bottleneck, sim-core could expose a generation counter or change events. But start simple.
 
@@ -1288,28 +1299,26 @@ pub fn sync_physics_entities(
 - **Alternative solutions** — The common "multiple world" case is A/B comparison (e.g., two policy rollouts side by side). That's better served by two separate app instances or a split-screen feature.
 
 **Design for extensibility:**
-- `SimulationHandle` stores a single world, but this isn't hardcoded throughout
-- `PhysicsBody` uses just `body_id: BodyId` for V1 (could add `world_id` later)
-- Spawning logic lives in functions that take a world reference, so calling them with different worlds would work
+- `PhysicsModel`/`PhysicsData` are single-instance resources, but this isn't hardcoded throughout
+- `ModelBodyIndex` uses just an index for V1 (could add a model/world discriminator later)
+- `spawn_model_bodies()` takes `&Model` and `&Data` references, so calling with different models would work
 
 ```rust
-// V1: Single world
-#[derive(Component, Debug, Clone, Copy)]
-pub struct PhysicsBody {
-    pub body_id: BodyId,
-}
+// V1: Single model
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModelBodyIndex(pub usize);
 
-// Future V2 (if needed): Multi-world support
+// Future V2 (if needed): Multi-model support
 #[derive(Component, Debug, Clone, Copy)]
-pub struct PhysicsBody {
-    pub world_id: WorldId,  // Added later
-    pub body_id: BodyId,
+pub struct ModelBodyIndex {
+    pub model_id: ModelId,  // Added later
+    pub body_index: usize,
 }
 ```
 
-If someone needs multiple worlds later, they can:
+If someone needs multiple models later, they can:
 1. Run multiple Bevy apps (simplest)
-2. Contribute the multi-world feature when they need it
+2. Contribute the multi-model feature when they need it
 
 ### 4. Headless Testing
 
@@ -1328,7 +1337,8 @@ mod tests {
     fn test_app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
-        app.add_plugins(SimViewerPlugin::default());
+        app.add_plugins(SimViewerPlugin::headless());
+        app.add_plugins(ModelDataPlugin::new());
         app
     }
 
@@ -1348,4 +1358,4 @@ mod tests {
 - [Bevy Plugin Guide](https://bevy-cheatbook.github.io/programming/plugins.html)
 - [Bevy ECS Guide](https://bevy.org/learn/quick-start/getting-started/ecs/)
 - [Solari Ray Tracing](https://jms55.github.io/posts/2025-12-27-solari-bevy-0-18/)
-- [CortenForge STANDARDS.md](./STANDARDS.md)
+- [CortenForge STANDARDS.md](../../STANDARDS.md)

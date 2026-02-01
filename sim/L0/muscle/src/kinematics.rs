@@ -359,7 +359,7 @@ impl MusclePath {
 /// between joints (e.g., rectus femoris crosses hip and knee).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct BiarticularlMuscleConfig {
+pub struct BiarticularMuscleConfig {
     /// Moment arm at the proximal joint.
     pub proximal_moment_arm: f64,
 
@@ -370,7 +370,7 @@ pub struct BiarticularlMuscleConfig {
     pub reference_length: f64,
 }
 
-impl BiarticularlMuscleConfig {
+impl BiarticularMuscleConfig {
     /// Compute muscle-tendon length from two joint angles.
     ///
     /// # Arguments
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_biarticular_muscle() {
-        let config = BiarticularlMuscleConfig {
+        let config = BiarticularMuscleConfig {
             proximal_moment_arm: 0.04,
             distal_moment_arm: 0.03,
             reference_length: 0.35,

@@ -644,9 +644,7 @@ where
 pub fn format_contact(c: &sim_core::Contact) -> String {
     format!(
         "Contact {{ pos: [{:.4}, {:.4}, {:.4}], normal: [{:.4}, {:.4}, {:.4}], depth: {:.6}, geom1: {}, geom2: {} }}",
-        c.pos.x, c.pos.y, c.pos.z,
-        c.normal.x, c.normal.y, c.normal.z,
-        c.depth, c.geom1, c.geom2
+        c.pos.x, c.pos.y, c.pos.z, c.normal.x, c.normal.y, c.normal.z, c.depth, c.geom1, c.geom2
     )
 }
 

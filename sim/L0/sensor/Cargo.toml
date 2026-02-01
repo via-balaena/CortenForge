@@ -1,6 +1,6 @@
 [package]
 name = "sim-sensor"
-description = "Sensor simulation for physics: IMU, force/torque, touch sensors"
+description = "Sensor simulation for physics: IMU, force/torque, touch, rangefinder, magnetometer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

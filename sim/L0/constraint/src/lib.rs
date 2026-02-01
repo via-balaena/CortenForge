@@ -1,6 +1,8 @@
-//! Joint constraints, motors, and `CGSolver` for articulated body simulation.
+//! Joint constraints, actuators, equality constraints, motors, and `CGSolver` for articulated body simulation.
 //!
-//! This crate provides constraint-based joints for connecting rigid bodies
+//! This crate provides constraint-based joints, standalone actuator types
+//! (velocity, pneumatic, adhesion, custom), equality constraints (joint coupling,
+//! gear ratios, differential drives), and motors for connecting rigid bodies
 //! into articulated structures like robot arms, legged robots, and mechanisms.
 //!
 //! # Joint Types
@@ -67,7 +69,7 @@
 //! - Analysis tools
 //! - Other physics engines
 
-#![doc(html_root_url = "https://docs.rs/sim-constraint/0.1.0")]
+#![doc(html_root_url = "https://docs.rs/sim-constraint/0.7.0")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![warn(missing_docs)]
 #![allow(clippy::missing_const_for_fn)]

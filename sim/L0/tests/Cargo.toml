@@ -1,15 +1,15 @@
 [package]
 name = "sim-conformance-tests"
-version = "0.1.0"
-edition = "2021"
-license = "MIT OR Apache-2.0"
-publish = false
 description = "MuJoCo conformance tests and integration tests for CortenForge simulation crates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
 
 [dependencies]
 sim-mjcf = { path = "../mjcf" }
 sim-urdf = { path = "../urdf" }
-sim-core = { path = "../core", features = ["sensor"] }
+sim-core = { path = "../core" }
 sim-types = { path = "../types" }
 sim-muscle = { path = "../muscle" }
 sim-tendon = { path = "../tendon" }

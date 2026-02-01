@@ -10,7 +10,7 @@
 //! - [`sim_muscle`] - Hill-type muscle actuators for biomechanical simulation
 //! - [`sim_tendon`] - Tendon and cable simulation for cable-driven robots
 //! - [`sim_sensor`] - Sensor simulation (IMU, force/torque, touch, etc.)
-//! - `sim_deformable` - Soft body and deformable simulation (behind `deformable` feature, planned)
+//! - `sim_deformable` - Soft body, cloth, rope, and skinned mesh simulation (behind `deformable` feature)
 //!
 //! # Layer 0
 //!
@@ -174,7 +174,9 @@ pub mod prelude {
     pub use sim_constraint::{
         // Body/joint force types (for constraint solving)
         BodyState,
+        CylindricalJoint,
         FixedJoint,
+        FreeJoint,
         JointForce,
         // Motor
         JointMotor,
@@ -182,6 +184,7 @@ pub mod prelude {
         LimitState,
         LimitStiffness,
         MotorMode,
+        PlanarJoint,
         PrismaticJoint,
         // Joint types
         RevoluteJoint,
@@ -263,7 +266,7 @@ pub mod prelude {
         ActivationState,
         // Force curves
         ActiveForceLengthCurve,
-        BiarticularlMuscleConfig,
+        BiarticularMuscleConfig,
         ConstantMomentArm,
         // State and diagnostics
         FiberState,

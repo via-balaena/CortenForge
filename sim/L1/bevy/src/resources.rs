@@ -313,7 +313,7 @@ impl Default for DebugColors {
 
 /// A muscle instance for visualization.
 ///
-/// Since muscles are not stored in the physics World (they're standalone
+/// Since muscles are not stored in the physics Model/Data (they're standalone
 /// actuators), users must provide visualization data via this resource.
 #[derive(Debug, Clone)]
 pub struct MuscleVisualData {

@@ -28,17 +28,22 @@ sim/
 │   ├── tendon/            # sim-tendon — Cable/tendon routing
 │   ├── mjcf/              # sim-mjcf — MuJoCo format parser
 │   ├── urdf/              # sim-urdf — URDF parser
-│   └── physics/           # sim-physics — Unified L0 API
+│   ├── physics/           # sim-physics — Unified L0 API
+│   └── tests/             # sim-conformance-tests — Model loading tests
 ├── L1/                    # Layer 1: Bevy integration
 │   └── bevy/              # sim-bevy — Visualization
-├── docs/                  # Simulation documentation
-├── ARCHITECTURE.md        # This file
-└── MUJOCO_REFERENCE.md    # Pipeline algorithms and pseudocode
+└── docs/                              # Simulation documentation
+    ├── ARCHITECTURE.md                # This file
+    ├── FUTURE_WORK.md                 # Roadmap and remaining work
+    ├── MUJOCO_CONFORMANCE.md          # MuJoCo conformance testing plan
+    ├── MUJOCO_GAP_ANALYSIS.md         # Feature-by-feature gap analysis
+    ├── MUJOCO_REFERENCE.md            # Pipeline algorithms and pseudocode
+    └── SIM_BEVY_IMPLEMENTATION_PLAN.md # Bevy visualization layer plan
 ```
 
 ## Core Architecture: Model/Data
 
-The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~8500 lines).
+The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~9500 lines).
 It implements MuJoCo's computation pipeline end-to-end.
 
 ### Model (static)
@@ -112,7 +117,7 @@ integrate():
 
 **Integration methods** (`Integrator` enum):
 - `Euler` (default) — semi-implicit Euler, velocity-first
-- `RungeKutta4` — fourth-order accuracy
+- `RungeKutta4` — placeholder (dispatches to Euler; see [FUTURE_WORK #8](./FUTURE_WORK.md))
 - `Implicit` — unconditionally stable for stiff springs/dampers; solves
   `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)`
 
@@ -167,7 +172,7 @@ Supporting modules: `mid_phase.rs` (BVH construction and traversal),
 
 ### sim-types
 
-Pure data structures with no physics logic. Zero dependencies beyond nalgebra.
+Pure data structures with no physics logic. Minimal dependencies: nalgebra, glam, thiserror.
 
 `RigidBodyState`, `Pose`, `Twist`, `MassProperties`, `Action`, `ExternalForce`,
 `JointState`, `JointCommand`, `SimulationConfig`, `BodyId`, `JointId`.
@@ -175,19 +180,23 @@ Pure data structures with no physics logic. Zero dependencies beyond nalgebra.
 ### sim-simd
 
 SIMD-optimized batch operations for performance-critical paths.
-`Vec3x4`/`Vec3x8` batched vectors, `batch_dot_product`, `batch_aabb_overlap`,
-`batch_normal_force`, `batch_integrate_position/velocity`.
+`Vec3x4`/`Vec3x8` batched vectors, `find_max_dot`, `batch_dot_product_4`,
+`batch_aabb_overlap_4`, `batch_normal_force_4`, `batch_integrate_position_4`/
+`batch_integrate_velocity_4`. **Note:** only `find_max_dot` is currently called
+by sim-core (GJK); all other batch ops are benchmarked but have no callers.
 2-4x speedup on x86-64, 2-3x on Apple Silicon.
 
 ### sim-core
 
-The physics engine. Contains:
+The physics engine. Depends on sim-types and sim-simd. Contains:
 
 - `mujoco_pipeline.rs` — `Model`, `Data`, full MuJoCo-aligned pipeline
-- `integrators.rs` — 6 integrators: ExplicitEuler, SemiImplicitEuler,
-  VelocityVerlet, RungeKutta4, ImplicitVelocity, ImplicitFast
+- `integrators.rs` — standalone trait system with 6 integrators (ExplicitEuler,
+  SemiImplicitEuler, VelocityVerlet, RungeKutta4, ImplicitVelocity, ImplicitFast).
+  **Not used by the MuJoCo pipeline** — the pipeline has its own `Integrator` enum
+  in `mujoco_pipeline.rs`. See [FUTURE_WORK C1](./FUTURE_WORK.md) for disambiguation plan.
 - `collision_shape.rs` — `CollisionShape` enum, `Aabb`
-- `mid_phase.rs` — BVH tree (SAH construction, traversal, ray queries)
+- `mid_phase.rs` — BVH tree (median-split construction, traversal, ray queries)
 - `gjk_epa.rs` — GJK/EPA for convex shapes
 - `mesh.rs` — Triangle mesh collision functions
 - `heightfield.rs`, `sdf.rs` — Terrain and implicit surface collision
@@ -240,7 +249,8 @@ Soft body simulation using XPBD (Extended Position-Based Dynamics):
 | `SkinnedMesh` | — | Bone-driven mesh deformation |
 
 Material model: Young's modulus, Poisson's ratio, density, damping.
-Presets: rubber, tendon, gelatin, foam.
+Presets: rubber, tendon, gelatin, foam, cloth, soft-tissue, muscle, cartilage,
+leather, rope, steel-cable, paper, flexible-plastic, soft-wood (14 total).
 
 ### sim-muscle
 
@@ -263,20 +273,25 @@ Cable-driven actuation and routing:
 - **Spatial tendons** — 3D routing through attachment points with wrapping
   geometry (sphere, cylinder) and pulley systems
 
-`TendonActuator` trait: `compute_force`, `compute_length`, `jacobian`.
+`TendonActuator` trait: `rest_length`, `compute_length`, `compute_velocity`,
+`compute_force`, `jacobian`, `num_joints` (6 methods).
 
 ### sim-mjcf
 
 MuJoCo XML format parser. Supports: bodies, joints (hinge, slide, ball, free),
 geoms (sphere, box, capsule, cylinder, ellipsoid, plane, mesh), actuators
-(motor, position, velocity, general), contact filtering, default class
-inheritance, and MJB binary format.
+(motor, position, velocity, general, muscle, cylinder, damper, adhesion),
+contype/conaffinity contact bitmasks, default class inheritance, and MJB binary
+format. **Note:** `<contact>` `<pair>`/`<exclude>` elements are not parsed;
+`<sensor>` and `<tendon>` elements are parsed but dropped by the model builder.
 
 ### sim-urdf
 
-URDF robot description parser. Supports: links with mass, joints (fixed,
-revolute, continuous, prismatic, floating, planar), geometry (box, sphere,
-cylinder), dynamics (damping, friction), limits.
+URDF robot description parser. Converts URDF → MJCF via sim-mjcf. Supports:
+links with mass, joints (fixed, revolute, continuous, prismatic, floating),
+geometry (box, sphere, cylinder; mesh parsed but not converted), dynamics
+(damping; friction parsed but not converted), limits. **Planar joints are
+lossy** — approximated as a single hinge (loses 2 of 3 DOF).
 
 ### sim-physics
 
@@ -303,8 +318,9 @@ Bevy visualization layer for physics debugging:
 **Coordinate system:** sim-core uses Z-up (robotics), Bevy uses Y-up (graphics).
 Conversions centralized in `convert.rs`: `(x, y, z)_physics → (x, z, y)_bevy`.
 
-Debug gizmos: contact points, force vectors, joint axes, muscle/tendon paths,
-sensor readings. All toggleable via `ViewerConfig`.
+Debug gizmos: contact points, contact normals, muscle/tendon paths, sensor
+readings. All toggleable via `ViewerConfig`. Force vectors and joint axes are
+declared in `ViewerConfig` but not yet implemented (no drawing systems).
 
 ## Design Principles
 
@@ -331,9 +347,8 @@ is Layer 1 only.
 
 | Flag | Crates | Description |
 |------|--------|-------------|
-| `parallel` | sim-core | Rayon-based parallelization |
+| `parallel` | sim-core | Rayon-based parallelization. **Reserved** — declared but no `#[cfg]` guards yet; see [FUTURE_WORK #10](./FUTURE_WORK.md) |
 | `serde` | Most crates | Serialization support |
-| `sensor` | sim-core | Enable sensor pipeline integration |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 | `muscle` | sim-constraint | Hill-type muscle integration |
 | `deformable` | sim-physics | XPBD soft body support |

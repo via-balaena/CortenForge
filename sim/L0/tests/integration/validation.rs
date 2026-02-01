@@ -8,7 +8,7 @@
 //! - **API Tests**: load_model, make_data, step, reset functionality
 //! - **Performance Tests**: Benchmark steps per second
 //!
-//! Reference: CONSOLIDATION_PLAN.md Phase 7
+//! Reference: Phase 7 of the MuJoCo consolidation
 
 use approx::assert_relative_eq;
 use nalgebra::{UnitQuaternion, Vector3};

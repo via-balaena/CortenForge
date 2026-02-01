@@ -6,24 +6,25 @@
 //! # Architecture
 //!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────────────┐
-//! │                         sim-bevy (L1)                           │
-//! │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
-//! │  │ SimPlugin   │  │ DebugPlugin │  │ SolariPlugin (optional) │  │
-//! │  └──────┬──────┘  └──────┬──────┘  └────────────┬────────────┘  │
-//! │         │                │                      │               │
-//! │  ┌──────▼──────┐  ┌──────▼──────┐  ┌───────────▼───────────┐   │
-//! │  │   Systems   │  │  Overlays   │  │   Ray-traced render   │   │
-//! │  │  - sync     │  │  - contacts │  │   (RTX required)      │   │
-//! │  │  - render   │  │  - forces   │  └───────────────────────┘   │
-//! │  │  - camera   │  │  - joints   │                               │
-//! │  └──────┬──────┘  └─────────────┘                               │
-//! └─────────┼───────────────────────────────────────────────────────┘
-//!           │ reads
-//! ┌─────────▼───────────────────────────────────────────────────────┐
-//! │                    sim-core World (L0)                          │
-//! │  Bodies, Joints, Contacts, Collision Shapes                     │
-//! └─────────────────────────────────────────────────────────────────┘
+//! ┌──────────────────────────────────────────────────────────┐
+//! │                      sim-bevy (L1)                        │
+//! │  ┌─────────────────┐  ┌────────────────┐                 │
+//! │  │ SimViewerPlugin │  │ ModelDataPlugin │                 │
+//! │  └───────┬─────────┘  └───────┬────────┘                 │
+//! │          │                    │                           │
+//! │  ┌───────▼────────┐  ┌───────▼────────┐  ┌───────────┐  │
+//! │  │    Systems      │  │    Gizmos      │  │  Camera   │  │
+//! │  │ - sync bodies   │  │ - contacts     │  │ - orbit   │  │
+//! │  │ - sync geoms    │  │ - muscles      │  └───────────┘  │
+//! │  │ - sync sites    │  │ - tendons      │                  │
+//! │  │ - step physics  │  │ - sensors      │                  │
+//! │  └───────┬─────────┘  └────────────────┘                  │
+//! └──────────┼────────────────────────────────────────────────┘
+//!            │ reads
+//! ┌──────────▼────────────────────────────────────────────────┐
+//! │                  sim-core Model/Data (L0)                  │
+//! │  Bodies, Joints, Contacts, Collision Shapes                │
+//! └───────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! # Design Philosophy
@@ -52,21 +53,14 @@
 //!
 //! ## Collision Filtering
 //!
-//! Use MuJoCo-compatible collision filtering to reduce contact pairs:
-//!
-//! ```ignore
-//! use sim_core::Body;
-//!
-//! // Group 1 collides only with group 2
-//! body.with_collision_filter(0b01, 0b10);
-//! ```
+//! Use MuJoCo-compatible collision filtering via `contype`/`conaffinity`
+//! bitmasks on geoms in the Model (set via MJCF attributes).
 //!
 //! ## Mesh Performance
 //!
 //! For convex mesh collision, keep vertex counts low:
 //! - Under 32 vertices: optimal for convex-convex collision
 //! - Under 64 vertices: acceptable performance
-//! - Use `CollisionShape::convex_mesh_checked()` for validation
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -90,8 +84,8 @@ pub mod prelude {
     pub use crate::gizmos::DebugGizmosSet;
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
     pub use crate::model_data::{
-        step_model_data, sync_model_data_to_bevy, ModelBodyIndex, ModelDataPlugin, ModelDataRoot,
-        ModelDataSet, ModelGeomIndex, ModelSiteIndex, PhysicsData, PhysicsModel,
+        ModelBodyIndex, ModelDataPlugin, ModelDataRoot, ModelDataSet, ModelGeomIndex,
+        ModelSiteIndex, PhysicsData, PhysicsModel, step_model_data, sync_model_data_to_bevy,
     };
     pub use crate::plugin::SimViewerPlugin;
     pub use crate::resources::{
