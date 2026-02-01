@@ -1318,9 +1318,9 @@ pub struct Data {
     pub qM_cholesky: Option<Cholesky<f64, Dyn>>,
 
     // ==================== Sparse L^T D L Factorization (for large systems) ====================
-    // TODO(FUTURE_WORK#7): Implement `mj_factor_sparse()` to populate these fields.
+    // TODO(FUTURE_WORK#2): Implement `mj_factor_sparse()` to populate these fields.
     // These fields are data scaffolds only — initialized to defaults, never written.
-    // See sim/FUTURE_WORK.md #7 for the full spec. The sparse factorization achieves
+    // See sim/FUTURE_WORK.md #2 for the full spec. The sparse factorization achieves
     // O(nv) for tree-structured robots vs O(nv³) for dense Cholesky, which compounds
     // in batched RL (4,096 envs × nv=30 saves ~36M multiply-adds per batch step).
     //

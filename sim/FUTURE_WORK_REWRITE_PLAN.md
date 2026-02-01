@@ -44,9 +44,9 @@ Each step writes one section to `sim/FUTURE_WORK.md`. Verify code references bef
 - [x] Verify completed work section is still accurate (commit hashes confirmed).
 
 ### Step 8: Final Review
-- [ ] Read the full rewritten `sim/FUTURE_WORK.md` end-to-end.
-- [ ] Verify all file:line references one more time.
-- [ ] Check for internal consistency (numbering, cross-references, dependency graph matches items).
+- [x] Read the full rewritten `sim/FUTURE_WORK.md` end-to-end.
+- [x] Verify all file:line references one more time (41/41 match).
+- [x] Check for internal consistency (numbering, cross-references, dependency graph matches items).
 
 ## Per-Item Template (standardized)
 
