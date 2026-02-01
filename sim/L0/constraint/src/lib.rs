@@ -67,7 +67,7 @@
 //! - Analysis tools
 //! - Other physics engines
 
-#![doc(html_root_url = "https://docs.rs/sim-constraint/0.1.0")]
+#![doc(html_root_url = "https://docs.rs/sim-constraint/0.7.0")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![warn(missing_docs)]
 #![allow(clippy::missing_const_for_fn)]

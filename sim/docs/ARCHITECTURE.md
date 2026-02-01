@@ -117,7 +117,7 @@ integrate():
 
 **Integration methods** (`Integrator` enum):
 - `Euler` (default) — semi-implicit Euler, velocity-first
-- `RungeKutta4` — fourth-order accuracy
+- `RungeKutta4` — placeholder (dispatches to Euler; see [FUTURE_WORK #8](./FUTURE_WORK.md))
 - `Implicit` — unconditionally stable for stiff springs/dampers; solves
   `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)`
 

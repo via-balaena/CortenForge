@@ -21,7 +21,7 @@
 //! └─────────┼───────────────────────────────────────────────────────┘
 //!           │ reads
 //! ┌─────────▼───────────────────────────────────────────────────────┐
-//! │                    sim-core World (L0)                          │
+//! │                  sim-core Model/Data (L0)                        │
 //! │  Bodies, Joints, Contacts, Collision Shapes                     │
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
@@ -52,21 +52,14 @@
 //!
 //! ## Collision Filtering
 //!
-//! Use MuJoCo-compatible collision filtering to reduce contact pairs:
-//!
-//! ```ignore
-//! use sim_core::Body;
-//!
-//! // Group 1 collides only with group 2
-//! body.with_collision_filter(0b01, 0b10);
-//! ```
+//! Use MuJoCo-compatible collision filtering via `contype`/`conaffinity`
+//! bitmasks on geoms in the Model (set via MJCF attributes).
 //!
 //! ## Mesh Performance
 //!
 //! For convex mesh collision, keep vertex counts low:
 //! - Under 32 vertices: optimal for convex-convex collision
 //! - Under 64 vertices: acceptable performance
-//! - Use `CollisionShape::convex_mesh_checked()` for validation
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

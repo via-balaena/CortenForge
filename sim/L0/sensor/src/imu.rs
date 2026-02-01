@@ -223,7 +223,7 @@ impl ImuReading {
 /// // Create an IMU attached to body 1
 /// let imu = Imu::new(BodyId::new(1), ImuConfig::default());
 ///
-/// // Read from a body state (in practice, you'd get this from a World)
+/// // Read from a body state (in practice, you'd get this from Model/Data)
 /// let state = RigidBodyState::at_rest(Pose::identity());
 /// let reading = imu.read_from_state(&state, 0.0);
 ///

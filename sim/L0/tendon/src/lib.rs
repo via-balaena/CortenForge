@@ -97,7 +97,7 @@
 //! - Analysis and optimization tools
 //! - Integration with other physics engines
 
-#![doc(html_root_url = "https://docs.rs/sim-tendon/0.1.0")]
+#![doc(html_root_url = "https://docs.rs/sim-tendon/0.7.0")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![warn(missing_docs)]
 #![allow(

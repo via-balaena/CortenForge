@@ -73,7 +73,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 |---------|--------|----------|-------|
 | `<mujoco>` | ✓ | ✓ | Root element |
 | `<compiler>` | ✓ | ✓ | Partial: angle, coordinate |
-| `<option>` | ✓ | ✓ | Partial: timestep, gravity, integrator |
+| `<option>` | ✓ | ✓ | Full: timestep, gravity, integrator, solver, cone, jacobian, wind, flags, etc. |
 | `<size>` | ✓ | ⚠️ | Memory hints, may not apply |
 | `<visual>` | ✓ | ❌ | L1 concern (sim-bevy) |
 | `<statistic>` | ✓ | ❌ | Auto-computed |

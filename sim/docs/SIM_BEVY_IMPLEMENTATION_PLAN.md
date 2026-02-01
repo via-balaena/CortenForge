@@ -511,15 +511,14 @@ sim-mjcf = { path = "../../L0/mjcf" }
 sim-urdf = { path = "../../L0/urdf" }
 
 # Bevy 0.18 - use feature collections for clean compilation
-bevy = { version = "0.18", default-features = false, features = [
-    "3d",                    # 3D rendering, cameras, lights
+bevy = { workspace = true, default-features = false, features = [
     "bevy_pbr",              # PBR materials
     "bevy_gizmos",           # Debug line/shape drawing
+    "bevy_gizmos_render",    # Gizmo rendering backend
     "bevy_winit",            # Window management
     "bevy_state",            # State management
-    "x11",                   # Linux display (or wayland)
-    "wayland",
 ] }
+# x11/wayland are optional features, not default deps
 
 # Math compatibility
 nalgebra = { workspace = true }
@@ -737,11 +736,11 @@ pub fn generate_shape_mesh(shape: &CollisionShape) -> Mesh {
                 .mesh()
                 .build()
         }
-        CollisionShape::ConvexMesh { vertices, indices } => {
-            mesh_from_convex(vertices, indices)
+        CollisionShape::ConvexMesh { vertices } => {
+            mesh_from_convex(vertices)
         }
-        CollisionShape::TriangleMesh { mesh } => {
-            mesh_from_trimesh(mesh)
+        CollisionShape::TriangleMesh { data } => {
+            triangle_mesh(data)
         }
         // ... other shapes
     }

@@ -26,7 +26,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free, Planar, Cylindrical**)
 - Actuators: Motors, Servos (joint-level actuation only)
-- Sensors: JointPos, JointVel, BodyPos, BodyVel, Accelerometer, Gyro, IMU
+- Sensors: JointPos, JointVel, FramePos, FrameLinVel, Accelerometer, Gyro, Touch, Rangefinder
 - Model loading (URDF, MJCF with full `<default>` support, **MJB binary format**)
 
 ### Placeholder / Stub (in pipeline)
@@ -315,15 +315,15 @@ let result = solver.solve_islands(&joints, &islands, &get_body_state, dt);
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| Compliant contacts | Core | `ContactModel` | **Implemented** | - | - |
+| Compliant contacts | Core | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
 | Spring-damper (F = k*d^p + c*v) | Core | `compute_normal_force_magnitude` | **Implemented** | - | - |
 | Nonlinear stiffness (d^p) | Core | `stiffness_power` param | **Implemented** | - | - |
 | Contact margin | Supported | `contact_margin` param | **Implemented** | - | - |
-| Elliptic friction cones | Default | `EllipticFrictionCone` | **Implemented** | - | - |
-| Pyramidal friction cones | Alternative | `PyramidalFrictionCone` | **Implemented** | - | - |
-| Torsional friction | condim 4-6 | `TorsionalFriction` | **Implemented** | - | - |
-| Rolling friction | condim 6-10 | `RollingFriction` | **Implemented** | - | - |
-| Complete friction model | condim 6 | `CompleteFrictionModel` | **Implemented** | - | - |
+| Elliptic friction cones | Default | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
+| Pyramidal friction cones | Alternative | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
+| Torsional friction | condim 4-6 | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
+| Rolling friction | condim 6-10 | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
+| Complete friction model | condim 6 | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
 | Contact pairs filtering | Supported | `contype`/`conaffinity` bitmasks | **Implemented** | - | - |
 | solref/solimp params | MuJoCo-specific | `jnt_solref`, `geom_solimp`, `eq_solref`, etc. in `Model` | **Implemented** (in MuJoCo pipeline) | - | - |
 
@@ -389,8 +389,8 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Cylinder | Native | `CollisionShape::Cylinder` | **Implemented** | - | - |
 | Ellipsoid | Native | `CollisionShape::Ellipsoid` | **Implemented** | - | - |
 | Convex mesh | GJK/EPA | `CollisionShape::ConvexMesh` | **Implemented** | - | - |
-| Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
-| SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** ✅ | - | - |
+| Height field | Native | `CollisionShape::HeightField` | **Implemented** (sim-core only; MJCF falls back to Box) | - | - |
+| SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** (sim-core only; MJCF falls back to Box) | - | - |
 | Broad-phase (sweep-prune) | Native | `SweepAndPrune` | **Implemented** | - | - |
 | Mid-phase (BVH per body) | Static AABB | `Bvh` | **Implemented** | - | - |
 | Narrow-phase (GJK/EPA) | Default | `gjk_epa` module | **Implemented** | - | - |
@@ -472,9 +472,9 @@ let tetra = CollisionShape::tetrahedron(0.5); // circumradius 0.5
 | Convex Mesh | Yes (convexified) | `CollisionShape::ConvexMesh` | **Implemented** |
 | Cylinder | Yes | `CollisionShape::Cylinder` | **Implemented** |
 | Ellipsoid | Yes | `CollisionShape::Ellipsoid` | **Implemented** |
-| Height field | Yes | `CollisionShape::HeightField` | **Implemented** |
+| Height field | Yes | `CollisionShape::HeightField` | **Implemented** (sim-core; MJCF→Box fallback) |
 | **Mesh (non-convex)** | Yes | `CollisionShape::TriangleMesh` | **Implemented** ✅ |
-| **SDF** | Yes | `CollisionShape::Sdf` | **Implemented** ✅ |
+| **SDF** | Yes | `CollisionShape::Sdf` | **Implemented** (sim-core; MJCF→Box fallback) |
 
 ### Implementation Notes: Non-Convex Mesh ✅ COMPLETED (January 2026)
 
@@ -489,9 +489,12 @@ Full triangle mesh collision support is now implemented:
 - `sim-core/src/mesh.rs` - Triangle mesh collision and mesh-mesh BVH traversal
 - `sim-core/src/mid_phase.rs` - BVH for collision culling
 
-### Implementation Notes: SDF Collision ✅ COMPLETED (January 2026)
+### Implementation Notes: SDF Collision ✅ COMPLETED (sim-core only — not wired through MJCF model builder)
 
-Full SDF (Signed Distance Field) collision support is now implemented:
+Full SDF (Signed Distance Field) collision support is implemented in sim-core.
+The MJCF model builder (`model_builder.rs`) currently falls back to Box for
+`hfield` and `sdf` geom types. Wiring these through to the sim-core collision
+shapes is a remaining integration task.
 - `CollisionShape::Sdf` variant with 3D grid storage
 - Trilinear interpolation for distance queries
 - Gradient-based normal computation
@@ -1227,7 +1230,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<body>` | Full | Hierarchical bodies with pos, quat, euler |
 | `<inertial>` | Full | mass, diaginertia, fullinertia |
 | `<joint>` | Full | hinge, slide, ball, free types |
-| `<geom>` | Full | sphere, box, capsule, cylinder, ellipsoid, plane, mesh (convex + non-convex), sdf |
+| `<geom>` | Partial | sphere, box, capsule, cylinder, ellipsoid, plane, mesh (convex + non-convex); hfield/sdf parsed but fall back to Box |
 | `<site>` | Parsed | Markers (not used in physics) |
 | `<actuator>` | Full | motor, position, velocity, cylinder, muscle, adhesion, damper, general |
 | `<tendon>` | Full | spatial and fixed tendons with site/joint references |
@@ -1248,7 +1251,8 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 - `ellipsoid` → `CollisionShape::Ellipsoid`
 - `plane` → `CollisionShape::Plane`
 - `mesh` → `CollisionShape::ConvexMesh` (convex hull) or `CollisionShape::TriangleMesh` (non-convex)
-- `sdf` → `CollisionShape::Sdf` (signed distance field)
+- `hfield` → parsed, falls back to `CollisionShape::Box` (sim-core `HeightField` exists but not wired)
+- `sdf` → parsed, falls back to `CollisionShape::Box` (sim-core `Sdf` exists but not wired)
 
 **Usage:**
 ```rust

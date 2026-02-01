@@ -174,7 +174,9 @@ pub mod prelude {
     pub use sim_constraint::{
         // Body/joint force types (for constraint solving)
         BodyState,
+        CylindricalJoint,
         FixedJoint,
+        FreeJoint,
         JointForce,
         // Motor
         JointMotor,
@@ -182,6 +184,7 @@ pub mod prelude {
         LimitState,
         LimitStiffness,
         MotorMode,
+        PlanarJoint,
         PrismaticJoint,
         // Joint types
         RevoluteJoint,

@@ -327,7 +327,7 @@ Apply `ctrl * gear` as a force along the tendon, mapped to joints via:
 #### Current State
 sim-muscle is a standalone 2,550-line crate with:
 - `ActivationDynamics` (`activation.rs`): first-order `da/dt = (u - a) / τ(u, a)` with asymmetric time constants (τ_act ≈ 10-20 ms, τ_deact ≈ 40-80 ms).
-- `HillMuscle` (`hill.rs`): contractile element (force-length, force-velocity), parallel elastic element, series elastic tendon. Presets: biceps, triceps, etc.
+- `HillMuscle` (`hill.rs`): contractile element (force-length, force-velocity), parallel elastic element, series elastic tendon. Presets: biceps, quadriceps, gastrocnemius, soleus.
 - Force-length/velocity curves (`curves.rs`).
 - `MuscleKinematics` (`kinematics.rs`): pennation angle, fiber length from MTU length.
 

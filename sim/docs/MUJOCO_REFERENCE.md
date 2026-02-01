@@ -331,7 +331,7 @@ previous lambda values seed the iteration.
 
 ### 4.8 Forward Acceleration
 
-**Explicit path** (Euler, RK4):
+**Explicit path** (Euler, RK4 — note: RK4 is currently a placeholder that dispatches to Euler):
 ```
 qfrc_total = qfrc_applied + qfrc_actuator + qfrc_passive + qfrc_constraint - qfrc_bias
 qacc = M^-1 @ qfrc_total
@@ -408,7 +408,7 @@ only updates positions using the new velocity, identical to step 2 above.
 | `jnt_solimp[i]` | `[f64; 5]` | [d0, d_width, width, midpoint, power] |
 | `timestep` | `f64` | Simulation step size |
 | `gravity` | `Vector3` | Gravity vector |
-| `integrator` | `Integrator` | Euler, RungeKutta4, or Implicit |
+| `integrator` | `Integrator` | Euler, RungeKutta4 (placeholder), or Implicit |
 | `solver_iterations` | `usize` | Max PGS iterations (default 100) |
 | `solver_tolerance` | `f64` | PGS convergence threshold (default 1e-8) |
 

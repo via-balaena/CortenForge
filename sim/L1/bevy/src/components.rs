@@ -8,7 +8,7 @@ use bevy::prelude::*;
 /// Visual representation of a collision shape.
 ///
 /// This component is added to child entities to render collision geometry.
-/// Used by both the legacy World API and the new Model/Data API.
+/// Used by the Model/Data API.
 #[derive(Component, Debug, Clone)]
 pub struct CollisionShapeVisual {
     /// The shape type being visualized.

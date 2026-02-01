@@ -626,7 +626,7 @@ pub enum Integrator {
     Euler,
     /// 4th order Runge-Kutta.
     RungeKutta4,
-    /// Implicit midpoint.
+    /// Implicit Euler for diagonal per-DOF spring/damper forces.
     Implicit,
 }
 

@@ -119,7 +119,7 @@
 //! - Analysis and optimization tools
 //! - Integration with other physics engines
 
-#![doc(html_root_url = "https://docs.rs/sim-deformable/0.1.0")]
+#![doc(html_root_url = "https://docs.rs/sim-deformable/0.7.0")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![warn(missing_docs)]
 // Allow precision loss when converting indices to f64 - these are small values
