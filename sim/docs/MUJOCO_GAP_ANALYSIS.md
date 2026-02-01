@@ -24,7 +24,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Constraint solver: PGS (plain Gauss-Seidel, no SOR), Warm Starting
 - Contact model (Compliant, Elliptic/Pyramidal friction, Torsional/Rolling)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
-- Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free, Planar, Cylindrical**)
+- Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free**)
 - Actuators: Motors, Servos (joint-level actuation only)
 - Sensors: JointPos, JointVel, FramePos, FrameLinVel, Accelerometer, Gyro
 - Model loading (URDF, MJCF with full `<default>` support, **MJB binary format**)
@@ -45,6 +45,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - CGSolver in sim-constraint (1,664 lines) — 0 pipeline callers ([FUTURE_WORK #3](./FUTURE_WORK.md))
 - `integrators.rs` trait system (1,005 lines) — disconnected from pipeline ([FUTURE_WORK C1](./FUTURE_WORK.md))
 - Pneumatic, Adhesion, Muscle actuators in sim-constraint — not in `mj_fwd_actuation()`
+- Planar, Cylindrical joints in sim-constraint — not in pipeline `MjJointType` (MJCF model builder errors)
 
 ### Removed (Phase 3 Consolidation)
 - Newton solver (`newton.rs` — deleted)
@@ -522,8 +523,8 @@ shapes is a remaining integration task.
 | Ball (spherical) | Yes | `SphericalJoint` | **Implemented** | |
 | Universal | Yes | `UniversalJoint` | **Implemented** | |
 | Free (6 DOF) | Yes | `FreeJoint` | **Implemented** | Full constraint solver support |
-| Planar | Yes | `PlanarJoint` | **Implemented** | Full constraint solver support |
-| Cylindrical | Yes | `CylindricalJoint` | **Implemented** | Full constraint solver support |
+| Planar | Yes | `PlanarJoint` | **Standalone** | In sim-constraint; MJCF model builder errors (not in pipeline `MjJointType`) |
+| Cylindrical | Yes | `CylindricalJoint` | **Standalone** | In sim-constraint; MJCF model builder errors (not in pipeline `MjJointType`) |
 
 ### Implementation Notes: Free/Planar/Cylindrical Joints ✅ COMPLETED
 
