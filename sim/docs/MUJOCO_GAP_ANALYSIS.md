@@ -25,8 +25,8 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Contact model (Compliant, Elliptic/Pyramidal friction, Torsional/Rolling)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free**)
-- Actuators: Motors, Servos (joint-level actuation only)
-- Sensors: JointPos, JointVel, FramePos, FrameLinVel, Accelerometer, Gyro
+- Actuators: Motor (`ctrl * gear` only — no gain/bias for position/velocity/damper servos)
+- Sensors (15 in pipeline): JointPos, JointVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, ActuatorFrc
 - Model loading (URDF, MJCF with full `<default>` support, **MJB binary format**)
 
 ### Placeholder / Stub (in pipeline)
@@ -560,18 +560,18 @@ All three joint types are now fully implemented with constraint solver support:
 
 | Actuator | MuJoCo | CortenForge | Status | Priority | Complexity |
 |----------|--------|-------------|--------|----------|------------|
-| Motor (direct torque) | Yes | `JointMotor` | **Implemented** | - | - |
-| Position servo | Yes | `JointMotor::position` | **Implemented** | - | - |
-| Velocity servo | Yes | `JointMotor::velocity` | **Implemented** | - | - |
-| PD control | Yes | `compute_force` with Kp/Kd | **Implemented** | - | - |
+| Motor (direct torque) | Yes | `mj_fwd_actuation()` (`ctrl * gear`) | **Implemented** | - | - |
+| Position servo | Yes | `JointMotor::position` | **Standalone** (in sim-constraint; pipeline has no gain/bias logic — treats as raw motor) | - | - |
+| Velocity servo | Yes | `JointMotor::velocity` | **Standalone** (in sim-constraint; pipeline has no gain/bias logic — treats as raw motor) | - | - |
+| PD control | Yes | `JointMotor::compute_force` with Kp/Kd | **Standalone** (in sim-constraint, not called by pipeline) | - | - |
 | Integrated velocity | Yes | `IntegratedVelocityActuator` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
-| Damper | Yes | Joint damping | **Implemented** | - | - |
+| Damper | Yes | Passive joint damping in `mj_fwd_passive()` | **Partial** (passive damping works; MuJoCo `<damper>` actuator type not implemented — pipeline applies `ctrl * gear` instead of `-kv * qvel`) | - | - |
 | Cylinder (pneumatic) | Yes | `PneumaticCylinderActuator` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
 | Muscle (Hill-type) | Yes | `HillMuscle` (via sim-muscle) | **Standalone** (not wired into `mj_fwd_actuation()`; see [FUTURE_WORK #5](./FUTURE_WORK.md)) | - | - |
 | Adhesion | Yes | `AdhesionActuator` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
 | General (custom) | Yes | `CustomActuator<F>` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
 
-> **Pipeline vs standalone actuators.** The MuJoCo pipeline's `mj_fwd_actuation()` (`mujoco_pipeline.rs:5475`) handles `ActuatorTransmission::Joint` (direct motor/servo force). `ActuatorTransmission::Tendon` and `::Site` are placeholders ([FUTURE_WORK #4](./FUTURE_WORK.md)). `ActuatorDynamics::Muscle` is declared (`mujoco_pipeline.rs:434`) but has no code path — `data.act` is never updated. The sim-muscle crate (2,550 lines) and sim-constraint actuators (`IntegratedVelocityActuator`, `PneumaticCylinderActuator`, `AdhesionActuator`, `CustomActuator`) exist as standalone implementations not called by the pipeline.
+> **Pipeline vs standalone actuators.** The MuJoCo pipeline's `mj_fwd_actuation()` (`mujoco_pipeline.rs:5475`) only computes `ctrl * gear` for `ActuatorTransmission::Joint` — no gain/bias processing, so Position/Velocity/Damper actuators are functionally identical to Motor. `ActuatorTransmission::Tendon` and `::Site` are placeholders ([FUTURE_WORK #4](./FUTURE_WORK.md)). All `ActuatorDynamics` variants (`Filter`, `Integrator`, `Muscle`) are dead code — the enum and `actuator_dyntype` field are populated by the model builder but never read by any pipeline function; `data.act` is never updated. The sim-muscle crate (2,550 lines) and sim-constraint actuators (`JointMotor`, `IntegratedVelocityActuator`, `PneumaticCylinderActuator`, `AdhesionActuator`, `CustomActuator`) exist as standalone implementations not called by the pipeline.
 
 ### Implementation Notes: Muscle Model ✅ COMPLETED (standalone only — not in pipeline)
 
@@ -669,6 +669,15 @@ let torque = elbow.compute_joint_force(velocity, dt);
 | Accelerometer | Yes | `MjSensorType::Accelerometer` | **Implemented** | - |
 | Gyro | Yes | `MjSensorType::Gyro` | **Implemented** | - |
 | IMU (combined) | Yes | Accelerometer + Gyro | **Implemented** | - |
+| Velocimeter | Yes | `MjSensorType::Velocimeter` | **Implemented** | - |
+| FrameQuat | Yes | `MjSensorType::FrameQuat` | **Implemented** | - |
+| FrameXAxis / YAxis / ZAxis | Yes | `MjSensorType::FrameXAxis` etc. | **Implemented** | - |
+| FrameAngVel | Yes | `MjSensorType::FrameAngVel` | **Implemented** | - |
+| FrameLinAcc | Yes | `MjSensorType::FrameLinAcc` | **Implemented** | - |
+| FrameAngAcc | Yes | `MjSensorType::FrameAngAcc` | **Implemented** | - |
+| SubtreeCom | Yes | `MjSensorType::SubtreeCom` | **Implemented** | - |
+| SubtreeLinVel | Yes | `MjSensorType::SubtreeLinVel` | **Implemented** | - |
+| ActuatorFrc | Yes | `MjSensorType::ActuatorFrc` | **Implemented** | - |
 | Force | Yes | `MjSensorType::Force` | **Stub** (returns `[0, 0, 0]`; see [FUTURE_WORK #6](./FUTURE_WORK.md)) | - |
 | Torque | Yes | `MjSensorType::Torque` | **Stub** (returns `[0, 0, 0]`; see [FUTURE_WORK #6](./FUTURE_WORK.md)) | - |
 | Touch | Yes | `MjSensorType::Touch` | **Stub** (uses hardcoded `depth * 10000` stiffness; see [FUTURE_WORK #6](./FUTURE_WORK.md)) | - |
@@ -922,8 +931,6 @@ Skinned meshes provide visual deformation for rendering soft bodies:
 - `MjcfSkinVertex` - Per-vertex bone weights
 - Parser support for `<skin>`, `<bone>`, and `<vertex>` elements
 4. Export skinned vertex positions for rendering
-
-**Files to create:** `sim-deformable/src/skinning.rs`
 
 ### Implementation Notes: Deformables ✅ COMPLETED (standalone sim-deformable crate only — not in pipeline)
 
@@ -1963,7 +1970,7 @@ let terrain = CollisionShape::heightfield(Arc::new(data));
 | `sim-core` | Integration, MuJoCo pipeline, Collision | `mujoco_pipeline.rs`, `integrators.rs`, `collision_shape.rs`, `contact.rs`, `gjk_epa.rs`, `mid_phase.rs`, `heightfield.rs`, `sdf.rs`, `mesh.rs`, `raycast.rs` (removed: `world.rs`, `stepper.rs`, `broad_phase.rs`) |
 | `sim-constraint` | Joint constraints (⚠️ standalone) | `joint.rs`, `types.rs`, `actuator.rs`, `equality.rs`, `cg.rs`, `limits.rs`, `motor.rs`, `muscle.rs` (removed in Phase 3: `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `pgs.rs`, `parallel.rs`) |
 | `sim-sensor` | Sensor simulation (⚠️ standalone) | `imu.rs`, `force_torque.rs`, `touch.rs`, `rangefinder.rs`, `magnetometer.rs` |
-| `sim-urdf` | URDF loading | `parser.rs`, `converter.rs`, `types.rs`, `validation.rs` |
+| `sim-urdf` | URDF loading | `lib.rs`, `parser.rs`, `converter.rs`, `types.rs`, `validation.rs`, `error.rs` |
 | `sim-mjcf` | MJCF loading | `parser.rs`, `types.rs`, `validation.rs`, `model_builder.rs`, `defaults.rs`, `config.rs`, `mjb.rs` |
 | `sim-muscle` | Muscle actuators (⚠️ standalone) | `activation.rs`, `curves.rs`, `hill.rs`, `kinematics.rs` |
 | `sim-tendon` | Tendon/cable systems (⚠️ standalone) | `fixed.rs`, `spatial.rs`, `path.rs`, `wrapping.rs`, `pulley.rs`, `cable.rs` |

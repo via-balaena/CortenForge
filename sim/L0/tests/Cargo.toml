@@ -9,7 +9,7 @@ description = "MuJoCo conformance tests and integration tests for CortenForge si
 [dependencies]
 sim-mjcf = { path = "../mjcf" }
 sim-urdf = { path = "../urdf" }
-sim-core = { path = "../core", features = ["sensor"] }
+sim-core = { path = "../core" }
 sim-types = { path = "../types" }
 sim-muscle = { path = "../muscle" }
 sim-tendon = { path = "../tendon" }

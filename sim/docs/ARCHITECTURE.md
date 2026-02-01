@@ -172,7 +172,7 @@ Supporting modules: `mid_phase.rs` (BVH construction and traversal),
 
 ### sim-types
 
-Pure data structures with no physics logic. Zero dependencies beyond nalgebra.
+Pure data structures with no physics logic. Minimal dependencies: nalgebra, glam, thiserror.
 
 `RigidBodyState`, `Pose`, `Twist`, `MassProperties`, `Action`, `ExternalForce`,
 `JointState`, `JointCommand`, `SimulationConfig`, `BodyId`, `JointId`.
@@ -186,7 +186,7 @@ SIMD-optimized batch operations for performance-critical paths.
 
 ### sim-core
 
-The physics engine. Contains:
+The physics engine. Depends on sim-types and sim-simd. Contains:
 
 - `mujoco_pipeline.rs` — `Model`, `Data`, full MuJoCo-aligned pipeline
 - `integrators.rs` — standalone trait system with 6 integrators (ExplicitEuler,
@@ -247,7 +247,8 @@ Soft body simulation using XPBD (Extended Position-Based Dynamics):
 | `SkinnedMesh` | — | Bone-driven mesh deformation |
 
 Material model: Young's modulus, Poisson's ratio, density, damping.
-Presets: rubber, tendon, gelatin, foam.
+Presets: rubber, tendon, gelatin, foam, cloth, soft-tissue, muscle, cartilage,
+leather, rope, steel-cable, paper, flexible-plastic, soft-wood (14 total).
 
 ### sim-muscle
 
@@ -270,7 +271,8 @@ Cable-driven actuation and routing:
 - **Spatial tendons** — 3D routing through attachment points with wrapping
   geometry (sphere, cylinder) and pulley systems
 
-`TendonActuator` trait: `compute_force`, `compute_length`, `jacobian`.
+`TendonActuator` trait: `rest_length`, `compute_length`, `compute_velocity`,
+`compute_force`, `jacobian`, `num_joints` (6 methods).
 
 ### sim-mjcf
 
@@ -281,9 +283,11 @@ inheritance, and MJB binary format.
 
 ### sim-urdf
 
-URDF robot description parser. Supports: links with mass, joints (fixed,
-revolute, continuous, prismatic, floating, planar), geometry (box, sphere,
-cylinder), dynamics (damping, friction), limits.
+URDF robot description parser. Converts URDF → MJCF via sim-mjcf. Supports:
+links with mass, joints (fixed, revolute, continuous, prismatic, floating),
+geometry (box, sphere, cylinder; mesh parsed but not converted), dynamics
+(damping; friction parsed but not converted), limits. **Planar joints are
+lossy** — approximated as a single hinge (loses 2 of 3 DOF).
 
 ### sim-physics
 
@@ -338,9 +342,9 @@ is Layer 1 only.
 
 | Flag | Crates | Description |
 |------|--------|-------------|
-| `parallel` | sim-core | Rayon-based parallelization |
+| `parallel` | sim-core | Rayon-based parallelization. **Reserved** — declared but no `#[cfg]` guards yet; see [FUTURE_WORK #10](./FUTURE_WORK.md) |
 | `serde` | Most crates | Serialization support |
-| `sensor` | sim-core | Enable sensor pipeline integration |
+| `sensor` | sim-core | Enable sensor pipeline integration. **Reserved** — declared but no `#[cfg]` guards yet |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 | `muscle` | sim-constraint | Hill-type muscle integration |
 | `deformable` | sim-physics | XPBD soft body support |
