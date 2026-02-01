@@ -20,7 +20,7 @@ can be tackled in any order unless a prerequisite is noted.
 | 3 | CG Contact Solver | Medium | Low | L | None (#1, #2 help perf) |
 | 4 | Tendon Pipeline | Low | High | L | None |
 | 5 | Muscle Pipeline | Low | High | L | #4 |
-| 6 | Sensor Completion | High | High | M | None |
+| 6 | Sensor Completion | High | High | S (remaining) | #4 for tendon sensors |
 | 7 | Integrator Rename | Low | Medium | S | None |
 | 8 | True RK4 Integration | Low | Medium | M | None |
 | 9 | Deformable Body Integration | Medium | Low | XL | None |
@@ -381,69 +381,58 @@ For each actuator where `actuator_dyntype[i] == Muscle`:
 ---
 
 ### 6. Sensor Completion
-**Status:** Not started | **Effort:** M | **Prerequisites:** None (some sensors benefit from #4 for tendon data)
+**Status:** Mostly complete | **Effort:** S (remaining work) | **Prerequisites:** #4 for tendon sensors
 
 #### Current State
-The pipeline defines `MjSensorType` with 25+ variants (`mujoco_pipeline.rs:478`).
-Many are fully implemented (JointPos, JointVel, Gyro, Accelerometer, FramePos, etc.).
-The following are stubs or missing:
+A correctness sub-spec (`sim/docs/SENSOR_FIXES_SPEC.md`) was implemented, addressing
+rangefinder ray direction (+Z parity with MuJoCo), BallQuat/BallAngVel sensor types,
+JointPos/JointVel restriction to hinge/slide, accelerometer comment/test hardening,
+and bounds-checked `sensor_write` helpers across all evaluation functions.
 
-| Sensor | Location | Current Behavior | Correct Behavior |
-|--------|----------|-----------------|-----------------|
-| Force | `mujoco_pipeline.rs:5143-5150` | Returns `[0, 0, 0]` | Jacobian transpose mapping of `qfrc_constraint` to site frame |
-| Torque | `mujoco_pipeline.rs:5153-5160` | Returns `[0, 0, 0]` | Jacobian transpose mapping of constraint torques to site frame |
-| Touch | `mujoco_pipeline.rs:4897-4909` | `depth * 10000.0` hardcoded stiffness | Actual contact normal force from `efc_lambda` for contacts involving the sensor geom |
-| Rangefinder | `mujoco_pipeline.rs:4911-4916` | Returns `sensor_cutoff` (max range) | Ray cast along site Z axis, return distance to nearest geom |
-| Magnetometer | `mujoco_pipeline.rs:494` (enum only) | Falls to `_ => {}` (no output) | Magnetic field vector at site (requires field model or constant) |
-| TendonPos | `mujoco_pipeline.rs:504` (enum only) | Falls to `_ => {}` | `ten_length[tendon_id]` (requires #4) |
-| TendonVel | `mujoco_pipeline.rs:506` (enum only) | Falls to `_ => {}` | `ten_velocity[tendon_id]` (requires #4) |
-| ActuatorPos | `mujoco_pipeline.rs:508` (enum only) | Falls to `_ => {}` | Actuator length (transmission-dependent) |
-| ActuatorVel | `mujoco_pipeline.rs:510` (enum only) | Falls to `_ => {}` | Actuator velocity (transmission-dependent) |
-| SubtreeAngMom | `mujoco_pipeline.rs:540` (enum only) | Falls to `_ => {}` | Angular momentum of subtree rooted at body |
+Separately, Force, Torque, Touch, Rangefinder, Magnetometer, and SubtreeAngMom were
+brought from stubs to full implementations. The remaining gaps are tendon-dependent
+sensors blocked on #4:
 
-For RL training where observations come from sensors, stubs returning zeros or
-hardcoded values produce incorrect training signals.
+| Sensor | Status | Detail |
+|--------|--------|--------|
+| Force | Done | Inverse dynamics via `compute_site_force_torque()` |
+| Torque | Done | Inverse dynamics via `compute_site_force_torque()` |
+| Touch | Done | Sums normal force from `efc_lambda` for matching contacts |
+| Rangefinder | Done | Ray-cast along +Z with mesh support, -1.0 no-hit sentinel |
+| Magnetometer | Done | `model.magnetic` transformed to sensor frame |
+| SubtreeAngMom | Done | `compute_subtree_angmom()` about subtree COM |
+| BallQuat | Done | Normalized quaternion from qpos, identity fallback |
+| BallAngVel | Done | 3-DOF angular velocity from qvel |
+| JointPos | Done | Hinge/slide only (Ball/Free no longer written) |
+| JointVel | Done | Hinge/slide only (Ball/Free no longer written) |
+| TendonPos | Stub (0.0) | Blocked on #4 — will read `ten_length[objid]` |
+| TendonVel | Stub (0.0) | Blocked on #4 — will read `ten_velocity[objid]` |
+| ActuatorPos | Partial | Joint transmission done; Tendon/Site stub (blocked on #4) |
+| ActuatorVel | Partial | Joint transmission done; Tendon/Site stub (blocked on #4) |
 
-#### Objective
-Replace all sensor stubs with correct implementations so that `data.sensordata`
-reflects true physical quantities.
+All sensor writes use bounds-checked helpers (`sensor_write`, `sensor_write3`,
+`sensor_write4`). Postprocessing handles positive-type sensors (Touch, Rangefinder)
+with `.min(cutoff)` to preserve the -1.0 no-hit sentinel.
 
-#### Specification
+#### Remaining Work
+The 4 remaining items are trivial once tendon pipeline (#4) lands:
 
-**Force / Torque sensors** (highest RL impact):
-1. Identify the site's parent body.
-2. Compute the site Jacobian (translation + rotation) mapping joint velocities to site-frame motion.
-3. Project `qfrc_constraint` through Jacobian transpose to get 3D force/torque at the site.
-
-**Touch sensor:**
-1. For each contact involving the sensor's geom, look up the solved contact force from `efc_lambda`.
-2. Sum the normal force components: `force = Σ |λ_n|` for matching contacts.
-
-**Rangefinder:**
-1. Cast a ray from the site position along the site Z axis.
-2. Test against all geoms (use existing collision infrastructure for ray-geom tests).
-3. Return the minimum hit distance, or `sensor_cutoff` if no hit within range.
-
-**Magnetometer:**
-1. MuJoCo uses a constant global magnetic field `model.opt.magnetic` (3D vector).
-2. Transform to site frame: `B_site = R_site^T * B_global`.
-
-**TendonPos / TendonVel:** Read `ten_length[id]` / `ten_velocity[id]` (trivial once #4 lands; can stub with 0.0 until then).
-
-**ActuatorPos / ActuatorVel:** Compute from transmission type — for joint actuators: joint position/velocity; for tendon actuators: tendon length/velocity.
-
-**SubtreeAngMom:** Accumulate `I_i * ω_i` for all bodies in the subtree rooted at the sensor's body.
+1. **TendonPos:** Replace `0.0` stub with `ten_length[objid]`.
+2. **TendonVel:** Replace `0.0` stub with `ten_velocity[objid]`.
+3. **ActuatorPos (Tendon/Site):** Read tendon length × gear for tendon transmissions.
+4. **ActuatorVel (Tendon/Site):** Read tendon velocity × gear for tendon transmissions.
 
 #### Acceptance Criteria
-1. Force and Torque sensors return non-zero values when constraint forces are active.
-2. Touch sensor returns actual contact force magnitude (not `depth * 10000`).
-3. Rangefinder returns correct distance for a known geom placement (within 1e-6).
-4. Magnetometer returns the global magnetic field rotated into the site frame.
+1. ~~Force and Torque sensors return non-zero values when constraint forces are active.~~ Done.
+2. ~~Touch sensor returns actual contact force magnitude (not `depth * 10000`).~~ Done.
+3. ~~Rangefinder returns correct distance for a known geom placement (within 1e-6).~~ Done.
+4. ~~Magnetometer returns the global magnetic field rotated into the site frame.~~ Done.
 5. TendonPos/TendonVel return `ten_length`/`ten_velocity` when tendon pipeline (#4) is active.
-6. No sensor match arm falls through to `_ => {}` — all defined `MjSensorType` variants have explicit implementations (even if some return 0 with a documented reason).
+6. ActuatorPos/ActuatorVel return correct values for all transmission types.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (sensor readout functions at `mj_sensor_pos()`, `mj_sensor_vel()`, `mj_sensor_acc()`)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify (4 stub sites in `mj_sensor_pos()` and `mj_sensor_vel()`)
+- `sim/docs/SENSOR_FIXES_SPEC.md` — reference for completed correctness fixes
 
 ---
 ## Group C — Integrator & Dynamics
