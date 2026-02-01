@@ -393,7 +393,8 @@ Bevy is an implementation detail of the cortenforge SDK, not the foundation.
 - `sim-*` crates (Layer 0)
 
 **Layer 1 (Bevy allowed):**
-- `cortenforge` only
+- `cortenforge`
+- `sim-bevy`
 
 ---
 

@@ -173,7 +173,7 @@ MuJoCo's Newton solver uses:
 - Baumgarte stabilization for position correction
 - Configuration presets: `default()`, `robotics()`, `realtime()`
 
-**Usage:**
+**Usage (historical — this code no longer compiles):**
 ```rust
 use sim_constraint::{NewtonConstraintSolver, NewtonSolverConfig, RevoluteJoint};
 use sim_types::BodyId;
@@ -227,7 +227,7 @@ Where ω is the relaxation factor:
 - Convergence tracking with optional residual history
 - Configuration presets: `default()`, `realtime()`, `mujoco()`, `fast()`, `high_accuracy()`
 
-**Usage:**
+**Usage (historical — this code no longer compiles):**
 ```rust
 use sim_constraint::{PGSSolver, PGSSolverConfig, RevoluteJoint};
 use sim_types::BodyId;
@@ -284,7 +284,7 @@ solved independently. This enables significant performance optimizations:
 - `NewtonConstraintSolver::solve_with_islands()` - Island-aware solving
 - `NewtonConstraintSolver::solve_islands()` - Solve with pre-computed islands
 
-**Usage:**
+**Usage (historical — this code no longer compiles):**
 ```rust
 use sim_constraint::{ConstraintIslands, NewtonConstraintSolver, RevoluteJoint};
 use sim_types::BodyId;
@@ -505,7 +505,6 @@ Full SDF (Signed Distance Field) collision support is now implemented:
   - Sdf ↔ Sdf (dual implicit surface sampling)
 
 **Implementation files:**
-- `sim-core/src/sdf.rs` - Core SDF types and queries
 - `sim-core/src/sdf.rs` - SDF types, queries, and all SDF collision functions
 
 ---
@@ -573,7 +572,7 @@ All three joint types are now fully implemented with constraint solver support:
 ### Implementation Notes: Muscle Model ✅ COMPLETED (standalone only — not in pipeline)
 
 MuJoCo's muscle model includes:
-- Activation dynamics (3rd-order system)
+- Activation dynamics (1st-order system)
 - Force-length-velocity relationships
 - Pennation angle
 
@@ -1162,7 +1161,7 @@ config.solver.parallel = ParallelConfig::many_islands();
 > **Note:** Sleeping (deactivation) was implemented in the old World/Stepper architecture
 > (`Body::is_sleeping`, `put_to_sleep()`, `wake_up()`). It was **removed** along with
 > the `World` and `Stepper` types during the Model/Data refactor. Re-implementing sleeping
-> in the MuJoCo pipeline is tracked in [FUTURE_WORK.md](./FUTURE_WORK.md).
+> in the MuJoCo pipeline has not yet been prioritized.
 
 ---
 
@@ -1275,8 +1274,6 @@ data.step(&model).expect("should step");
 ```
 
 **Limitations:**
-- Non-convex meshes are converted to convex hulls
-- Only connect equality constraints supported (weld, joint, distance coming soon)
 - Composite bodies not supported
 - Include files not supported
 - Textures and materials parsed but not loaded (meshes are loaded)

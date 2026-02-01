@@ -224,7 +224,7 @@ Plan for Bevy upgrades in the development cycle:
 └─────────┼───────────────────────────────────────────────────────┘
           │ reads
 ┌─────────▼───────────────────────────────────────────────────────┐
-│                    sim-core World (L0)                          │
+│                  sim-core Model/Data (L0)                        │
 │  Bodies, Joints, Contacts, Collision Shapes                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -985,7 +985,7 @@ pub mod solari {
 
 ### Phase 1: Foundation (MVP) ✅ COMPLETE
 
-**Goal:** Render a sim-core World with basic shapes and camera control.
+**Goal:** Render a sim-core Model/Data simulation with basic shapes and camera control.
 
 **Status:** Completed 2026-01-23
 
@@ -1025,7 +1025,7 @@ pub mod solari {
 - Added `SimViewerPlugin::headless()` for testing without input/render resources
 - Bevy 0.18 migration: `EventReader` → `AccumulatedMouseMotion`, `despawn_recursive` → `despawn`, `Entity::from_raw` → `Entity::from_bits`
 
-**Deliverable:** Can spawn a sim-core World and watch bodies fall. ✅
+**Deliverable:** Can spawn a sim-core Model and watch bodies fall. ✅
 
 ### Phase 2: Debug Visualization ✅ COMPLETE
 
@@ -1249,7 +1249,7 @@ fn main() {
 **Rationale:**
 - **Separation of concerns** — sim-bevy is a visualization layer, not a simulation runner. Mixing stepping logic with rendering creates coupling that makes both harder to reason about.
 - **Flexibility** — Users may want different stepping strategies: fixed timestep, variable, substeps, paused with manual advance, or running headless and only visualizing occasionally. If sim-bevy owned stepping, we'd have to expose all these options.
-- **Testing** — A read-only viewer is trivially testable. Create a World in any state, pass it in, verify rendering. No temporal concerns.
+- **Testing** — A read-only viewer is trivially testable. Create a Model/Data in any state, pass it in, verify rendering. No temporal concerns.
 - **Replay/scrubbing** — If the viewer just reads state, timeline scrubbing becomes trivial by swapping which frame's state you point it at.
 
 **Implementation:** The user steps via `data.step(&model)` (or uses `ModelDataPlugin::with_auto_step()`), and sim-bevy syncs transforms in `PostUpdate`.

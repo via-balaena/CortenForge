@@ -302,7 +302,7 @@ Some differences from MuJoCo are by design:
 | Memory model | Pre-allocated pools | Dynamic allocation | Rust idioms, safety |
 | Threading | OpenMP | Rayon | Rust ecosystem |
 | GPU | Custom CUDA | Future: wgpu | Cross-platform |
-| Contact solver | Custom sparse | CG solver (sim-constraint) | Maintainability |
+| Contact solver | Custom sparse | PGS solver (mujoco_pipeline) | Maintainability |
 | Visualization | Built-in | Separate L1 crate | Headless training |
 
 ---

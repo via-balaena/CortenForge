@@ -318,7 +318,7 @@ There is no "done." Cathedrals are never finished; they're maintained and extend
 But there are milestones:
 
 ### Milestone 1: Simulation Foundation (Largely Complete)
-- 14 sim crates implemented (MuJoCo-aligned pipeline)
+- 13 sim crates implemented (MuJoCo-aligned pipeline)
 - Model/Data architecture with forward kinematics, dynamics, contact solver
 - sim-bevy provides Bevy visualization with debug gizmos
 - Headless training loop works via sim-core directly

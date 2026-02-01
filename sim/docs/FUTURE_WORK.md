@@ -126,7 +126,7 @@ DOF i couples only with its ancestor DOFs in the kinematic tree.
 
 Data scaffolds exist in `Data` (`mujoco_pipeline.rs:1337-1344`): `qLD_diag` (diagonal
 of D), `qLD_L` (sparse lower triangular entries per row), `qLD_valid` (validity flag).
-These are initialized to defaults and never populated. The `TODO(FUTURE_WORK#7)` comment
+These are initialized to defaults and never populated. The `TODO(FUTURE_WORK#2)` comment
 at `mujoco_pipeline.rs:1321` cross-references this spec.
 
 #### Objective
