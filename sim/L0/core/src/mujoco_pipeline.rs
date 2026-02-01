@@ -1320,7 +1320,7 @@ pub struct Data {
     // ==================== Sparse L^T D L Factorization (for large systems) ====================
     // TODO(FUTURE_WORK#2): Implement `mj_factor_sparse()` to populate these fields.
     // These fields are data scaffolds only — initialized to defaults, never written.
-    // See sim/FUTURE_WORK.md #2 for the full spec. The sparse factorization achieves
+    // See sim/docs/FUTURE_WORK.md #2 for the full spec. The sparse factorization achieves
     // O(nv) for tree-structured robots vs O(nv³) for dense Cholesky, which compounds
     // in batched RL (4,096 envs × nv=30 saves ~36M multiply-adds per batch step).
     //
@@ -6981,7 +6981,7 @@ fn apply_equality_constraints(model: &Model, data: &mut Data) {
                 WARN_ONCE.call_once(|| {
                     eprintln!(
                         "Warning: Tendon equality constraints are not yet implemented; \
-                         these constraints will be ignored. See FUTURE_WORK.md."
+                         these constraints will be ignored. See sim/docs/FUTURE_WORK.md."
                     );
                 });
             }

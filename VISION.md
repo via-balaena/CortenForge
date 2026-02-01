@@ -223,7 +223,7 @@ What we have: A MuJoCo-aligned pipeline (13 crates) implementing Model/Data, FK,
 
 What we need: GPU acceleration, broader actuator coverage, tendon/site transmissions, full MuJoCo XML parity.
 
-The honest assessment: We can match TFX patterns in months. We can get useful CAD interop in a year. Full MuJoCo parity (GPU, all actuators, all constraint types) is ongoing work. See `sim/ARCHITECTURE.md` and `sim/MUJOCO_REFERENCE.md`.
+The honest assessment: We can match TFX patterns in months. We can get useful CAD interop in a year. Full MuJoCo parity (GPU, all actuators, all constraint types) is ongoing work. See `sim/docs/ARCHITECTURE.md` and `sim/docs/MUJOCO_REFERENCE.md`.
 
 ---
 

@@ -120,7 +120,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 
 **Action items:**
 - [ ] Create tracking issue for each ⚠️ item
-- [ ] Document intentional ❌ omissions in ARCHITECTURE.md
+- [ ] Document intentional ❌ omissions in `sim/docs/ARCHITECTURE.md`
 - [ ] Add parsing tests for each ✓ attribute
 
 **Status:** `[ ] Not started`

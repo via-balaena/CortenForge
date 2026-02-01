@@ -814,7 +814,7 @@ sensors and tendons as implemented, but they are stubs (see #4, #6).
 
 The document is now actively misleading. It should either:
 - **(a)** Be updated to reflect post-consolidation reality (preferred), or
-- **(b)** Be marked as superseded by `sim/FUTURE_WORK.md` with a notice at the top.
+- **(b)** Be marked as superseded by `sim/docs/FUTURE_WORK.md` with a notice at the top.
 
 ---
 

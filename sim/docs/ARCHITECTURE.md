@@ -31,9 +31,10 @@ sim/
 │   └── physics/           # sim-physics — Unified L0 API
 ├── L1/                    # Layer 1: Bevy integration
 │   └── bevy/              # sim-bevy — Visualization
-├── docs/                  # Simulation documentation
-├── ARCHITECTURE.md        # This file
-└── MUJOCO_REFERENCE.md    # Pipeline algorithms and pseudocode
+└── docs/                  # Simulation documentation
+    ├── ARCHITECTURE.md    # This file
+    ├── FUTURE_WORK.md     # Roadmap and remaining work
+    └── MUJOCO_REFERENCE.md # Pipeline algorithms and pseudocode
 ```
 
 ## Core Architecture: Model/Data

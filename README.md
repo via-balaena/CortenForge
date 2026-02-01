@@ -153,7 +153,7 @@ fn main() {
 | `sim-conformance-tests` | MuJoCo conformance and integration tests |
 | `sim-bevy` | Layer 1: Bevy visualization and debug gizmos |
 
-See [sim/ARCHITECTURE.md](./sim/ARCHITECTURE.md) for pipeline details.
+See [sim/docs/ARCHITECTURE.md](./sim/docs/ARCHITECTURE.md) for pipeline details.
 
 ### ML Domain (`ml/`)
 
