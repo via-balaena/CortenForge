@@ -1,6 +1,6 @@
 # Sensor Correctness Fixes Specification
 
-**Status:** Draft
+**Status:** Reviewed (9 passes)
 **Scope:** `sim/L0/core/src/mujoco_pipeline.rs` sensor evaluation functions
 **Baseline commit:** `035d08f` (feat: complete sensor implementation)
 
@@ -447,23 +447,35 @@ and `Ballangvel` (dim=3) as `MjcfSensorType` variants, but the core pipeline
 ### Problem
 
 3D sensor writes consistently guard with `if adr + 2 < data.sensordata.len()`.
-4D sensor writes guard with `if adr + 3 < data.sensordata.len()`. But 1D sensor
-writes omit the check entirely:
+4D sensor writes guard with `if adr + 3 < data.sensordata.len()`. But nearly all
+1D sensor writes omit the check (one exception noted with \*):
 
 | Location | Sensor | Write | Guard |
 |----------|--------|-------|-------|
-| Line 5379 | Touch | `sensordata[adr] = total_force` | None |
-| Line 5017 | ActuatorPos | `sensordata[adr] = gear * qpos` | None |
-| Line 5022 | ActuatorPos (tendon) | `sensordata[adr] = 0.0` | None |
-| Line 5032 | TendonPos | `sensordata[adr] = 0.0` | None |
-| Line 5407 | ActuatorFrc | `sensordata[adr] = qfrc_actuator` | None |
+| Line 4803 | JointPos (hinge) | `sensordata[adr] = qpos` | None |
+| Line 4906 | Touch (default) | `sensordata[adr] = 0.0` | None |
 | Line 4926 | Rangefinder | `sensordata[adr] = -1.0` | None |
 | Line 5000 | Rangefinder | `sensordata[adr] = closest_dist` | None |
 | Line 5003 | Rangefinder | `sensordata[adr] = -1.0` | None |
-| Line 4803 | JointPos (hinge) | `sensordata[adr] = qpos` | None |
-| Line 5071 | JointVel | `sensordata[adr] = qvel` | None |
+| Line 5017 | ActuatorPos | `sensordata[adr] = gear * qpos` | None |
+| Line 5022 | ActuatorPos (tendon) | `sensordata[adr] = 0.0` | None |
+| Line 5032 | TendonPos | `sensordata[adr] = 0.0` | None |
+| Line 5071 | JointVel | `sensordata[adr] = qvel` | Loop guard* |
 | Line 5228 | ActuatorVel | `sensordata[adr] = gear * qvel` | None |
+| Line 5233 | ActuatorVel (tendon) | `sensordata[adr] = 0.0` | None |
 | Line 5243 | TendonVel | `sensordata[adr] = 0.0` | None |
+| Line 5379 | Touch | `sensordata[adr] = total_force` | None |
+| Line 5407 | ActuatorFrc | `sensordata[adr] = qfrc_actuator` | None |
+
+**\*** JointVel currently uses an `nv`-based loop with `if adr + i < len` guard
+(line 5070). After Fix 3 replaces the loop with a direct scalar write, this
+guard disappears and the entry becomes unguarded like the rest of the table.
+
+> **Line-number note:** All line numbers above are from the pre-fix baseline
+> (commit `035d08f`). Fix 3 removes ~20 lines from JointPos (Ball/Free branches),
+> shifting all subsequent line numbers upward by that amount. When applying Fix 4
+> after Fix 3, use the sensor type names (column 2) to locate write sites rather
+> than relying on line numbers.
 
 In normal operation, `sensordata` is allocated to exactly `nsensordata` slots in
 `make_data()`, and `adr` is computed from the same allocation, so these never
