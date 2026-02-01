@@ -498,10 +498,14 @@ pub enum MjSensorType {
     Rangefinder,
 
     // ========== Joint/tendon sensors ==========
-    /// Joint position (1D per DOF).
+    /// Joint position scalar (hinge/slide only, 1D).
     JointPos,
-    /// Joint velocity (1D per DOF).
+    /// Joint velocity scalar (hinge/slide only, 1D).
     JointVel,
+    /// Ball joint orientation quaternion (4D). MuJoCo: mjSENS_BALLQUAT.
+    BallQuat,
+    /// Ball joint angular velocity (3D). MuJoCo: mjSENS_BALLANGVEL.
+    BallAngVel,
     /// Tendon length (1D).
     TendonPos,
     /// Tendon velocity (1D).
@@ -567,6 +571,7 @@ impl MjSensorType {
             | Self::Force
             | Self::Torque
             | Self::Magnetometer
+            | Self::BallAngVel
             | Self::FramePos
             | Self::FrameXAxis
             | Self::FrameYAxis
@@ -579,7 +584,7 @@ impl MjSensorType {
             | Self::SubtreeLinVel
             | Self::SubtreeAngMom => 3,
 
-            Self::FrameQuat => 4,
+            Self::BallQuat | Self::FrameQuat => 4,
 
             Self::User => 0, // Variable, must be set explicitly
         }
@@ -4795,29 +4800,45 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
 
         match model.sensor_type[sensor_id] {
             MjSensorType::JointPos => {
-                // Joint position (1D for hinge/slide, 4D for ball)
+                // Scalar joint position (hinge/slide only).
+                // Ball joints use BallQuat, free joints use FramePos + FrameQuat.
                 if objid < model.njnt {
                     let qpos_adr = model.jnt_qpos_adr[objid];
                     match model.jnt_type[objid] {
                         MjJointType::Hinge | MjJointType::Slide => {
-                            data.sensordata[adr] = data.qpos[qpos_adr];
+                            sensor_write(&mut data.sensordata, adr, 0, data.qpos[qpos_adr]);
                         }
-                        MjJointType::Ball => {
-                            // Return quaternion [w, x, y, z]
-                            for i in 0..4 {
-                                if adr + i < data.sensordata.len() {
-                                    data.sensordata[adr + i] = data.qpos[qpos_adr + i];
-                                }
-                            }
-                        }
-                        MjJointType::Free => {
-                            // Return [x, y, z, qw, qx, qy, qz]
-                            for i in 0..7 {
-                                if adr + i < data.sensordata.len() {
-                                    data.sensordata[adr + i] = data.qpos[qpos_adr + i];
-                                }
-                            }
-                        }
+                        _ => {} // Ball/Free not supported by JointPos; use BallQuat/FramePos
+                    }
+                }
+            }
+
+            MjSensorType::BallQuat => {
+                // Ball joint quaternion [w, x, y, z]
+                if objid < model.njnt && model.jnt_type[objid] == MjJointType::Ball {
+                    let qpos_adr = model.jnt_qpos_adr[objid];
+                    // Read quaternion from qpos and normalize in locals
+                    // (MuJoCo does mju_normalize4). Use 1e-10 threshold and
+                    // identity reset to match our normalize_quaternion() convention.
+                    let (w, x, y, z) = (
+                        data.qpos[qpos_adr],
+                        data.qpos[qpos_adr + 1],
+                        data.qpos[qpos_adr + 2],
+                        data.qpos[qpos_adr + 3],
+                    );
+                    let norm = (w * w + x * x + y * y + z * z).sqrt();
+                    if norm > 1e-10 {
+                        sensor_write4(
+                            &mut data.sensordata,
+                            adr,
+                            w / norm,
+                            x / norm,
+                            y / norm,
+                            z / norm,
+                        );
+                    } else {
+                        // Degenerate — reset to identity [w=1, x=0, y=0, z=0]
+                        sensor_write4(&mut data.sensordata, adr, 1.0, 0.0, 0.0, 0.0);
                     }
                 }
             }
@@ -4830,11 +4851,7 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     MjObjectType::Geom if objid < model.ngeom => data.geom_xpos[objid],
                     _ => Vector3::zeros(),
                 };
-                if adr + 2 < data.sensordata.len() {
-                    data.sensordata[adr] = pos.x;
-                    data.sensordata[adr + 1] = pos.y;
-                    data.sensordata[adr + 2] = pos.z;
-                }
+                sensor_write3(&mut data.sensordata, adr, &pos);
             }
 
             MjSensorType::FrameQuat => {
@@ -4856,12 +4873,7 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     }
                     _ => UnitQuaternion::identity(),
                 };
-                if adr + 3 < data.sensordata.len() {
-                    data.sensordata[adr] = quat.w;
-                    data.sensordata[adr + 1] = quat.i;
-                    data.sensordata[adr + 2] = quat.j;
-                    data.sensordata[adr + 3] = quat.k;
-                }
+                sensor_write4(&mut data.sensordata, adr, quat.w, quat.i, quat.j, quat.k);
             }
 
             MjSensorType::FrameXAxis | MjSensorType::FrameYAxis | MjSensorType::FrameZAxis => {
@@ -4880,22 +4892,15 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                     MjSensorType::FrameZAxis => 2,
                     _ => 0, // Unreachable but needed for exhaustiveness
                 };
-                if adr + 2 < data.sensordata.len() {
-                    data.sensordata[adr] = mat[(0, col_idx)];
-                    data.sensordata[adr + 1] = mat[(1, col_idx)];
-                    data.sensordata[adr + 2] = mat[(2, col_idx)];
-                }
+                let col = Vector3::new(mat[(0, col_idx)], mat[(1, col_idx)], mat[(2, col_idx)]);
+                sensor_write3(&mut data.sensordata, adr, &col);
             }
 
             MjSensorType::SubtreeCom => {
                 // Subtree center of mass (compute weighted average of descendant COMs)
                 if objid < model.nbody {
                     let (com, _total_mass) = compute_subtree_com(model, data, objid);
-                    if adr + 2 < data.sensordata.len() {
-                        data.sensordata[adr] = com.x;
-                        data.sensordata[adr + 1] = com.y;
-                        data.sensordata[adr + 2] = com.z;
-                    }
+                    sensor_write3(&mut data.sensordata, adr, &com);
                 }
             }
 
@@ -4903,27 +4908,27 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                 // Touch sensor needs solved contact forces (efc_lambda) which aren't
                 // available until after the constraint solver runs. Write 0 here as
                 // default; the real value is computed in mj_sensor_acc.
-                data.sensordata[adr] = 0.0;
+                sensor_write(&mut data.sensordata, adr, 0, 0.0);
             }
 
             MjSensorType::Rangefinder => {
-                // Rangefinder: ray-cast along site's negative Z axis to find
+                // Rangefinder: ray-cast along site's positive Z axis to find
                 // distance to nearest geom surface. Skips the geom attached to
                 // the sensor's parent body to avoid self-intersection.
                 if model.sensor_objtype[sensor_id] == MjObjectType::Site && objid < model.nsite {
                     let ray_origin = Point3::from(data.site_xpos[objid]);
-                    // MuJoCo convention: rangefinder shoots along -Z of site frame
+                    // MuJoCo convention: rangefinder shoots along +Z of site frame
                     let site_z = Vector3::new(
                         data.site_xmat[objid][(0, 2)],
                         data.site_xmat[objid][(1, 2)],
                         data.site_xmat[objid][(2, 2)],
                     );
-                    let ray_dir = -site_z;
+                    let ray_dir = site_z;
 
                     // Normalize ray direction (should already be unit, but be safe)
                     let ray_norm = ray_dir.norm();
                     if ray_norm < 1e-10 {
-                        data.sensordata[adr] = -1.0; // Invalid direction
+                        sensor_write(&mut data.sensordata, adr, 0, -1.0); // Invalid direction
                     } else {
                         let ray_direction = UnitVector3::new_normalize(ray_dir);
 
@@ -4997,10 +5002,10 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                             }
                         }
 
-                        data.sensordata[adr] = closest_dist;
+                        sensor_write(&mut data.sensordata, adr, 0, closest_dist);
                     }
                 } else {
-                    data.sensordata[adr] = -1.0;
+                    sensor_write(&mut data.sensordata, adr, 0, -1.0);
                 }
             }
 
@@ -5014,12 +5019,17 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                             if jnt_id < model.njnt {
                                 let qpos_adr = model.jnt_qpos_adr[jnt_id];
                                 let gear = model.actuator_gear[objid];
-                                data.sensordata[adr] = gear * data.qpos[qpos_adr];
+                                sensor_write(
+                                    &mut data.sensordata,
+                                    adr,
+                                    0,
+                                    gear * data.qpos[qpos_adr],
+                                );
                             }
                         }
                         ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
                             // Tendon/site transmission length not yet available
-                            data.sensordata[adr] = 0.0;
+                            sensor_write(&mut data.sensordata, adr, 0, 0.0);
                         }
                     }
                 }
@@ -5029,7 +5039,7 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                 // Tendon length: requires tendon pipeline integration.
                 // When tendon pipeline is wired, this will read from ten_length[objid].
                 // For now, output 0 to avoid returning garbage.
-                data.sensordata[adr] = 0.0;
+                sensor_write(&mut data.sensordata, adr, 0, 0.0);
             }
 
             // Skip velocity/acceleration-dependent sensors
@@ -5062,15 +5072,29 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
 
         match model.sensor_type[sensor_id] {
             MjSensorType::JointVel => {
-                // Joint velocity
+                // Scalar joint velocity (hinge/slide only).
+                // Ball joints use BallAngVel, free joints use FrameLinVel + FrameAngVel.
                 if objid < model.njnt {
                     let dof_adr = model.jnt_dof_adr[objid];
-                    let nv = model.jnt_type[objid].nv();
-                    for i in 0..nv {
-                        if adr + i < data.sensordata.len() {
-                            data.sensordata[adr + i] = data.qvel[dof_adr + i];
+                    match model.jnt_type[objid] {
+                        MjJointType::Hinge | MjJointType::Slide => {
+                            sensor_write(&mut data.sensordata, adr, 0, data.qvel[dof_adr]);
                         }
+                        _ => {} // Ball/Free not supported by JointVel; use BallAngVel/FrameLinVel
                     }
+                }
+            }
+
+            MjSensorType::BallAngVel => {
+                // Ball joint angular velocity [wx, wy, wz] in local (child body) frame
+                if objid < model.njnt && model.jnt_type[objid] == MjJointType::Ball {
+                    let dof_adr = model.jnt_dof_adr[objid];
+                    let omega = Vector3::new(
+                        data.qvel[dof_adr],
+                        data.qvel[dof_adr + 1],
+                        data.qvel[dof_adr + 2],
+                    );
+                    sensor_write3(&mut data.sensordata, adr, &omega);
                 }
             }
 
@@ -5098,11 +5122,7 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
                 };
                 // Transform to sensor frame
                 let omega_sensor = site_mat.transpose() * omega_world;
-                if adr + 2 < data.sensordata.len() {
-                    data.sensordata[adr] = omega_sensor.x;
-                    data.sensordata[adr + 1] = omega_sensor.y;
-                    data.sensordata[adr + 2] = omega_sensor.z;
-                }
+                sensor_write3(&mut data.sensordata, adr, &omega_sensor);
             }
 
             MjSensorType::Velocimeter => {
@@ -5129,11 +5149,7 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
                 };
                 // Transform to sensor frame
                 let v_sensor = site_mat.transpose() * v_world;
-                if adr + 2 < data.sensordata.len() {
-                    data.sensordata[adr] = v_sensor.x;
-                    data.sensordata[adr + 1] = v_sensor.y;
-                    data.sensordata[adr + 2] = v_sensor.z;
-                }
+                sensor_write3(&mut data.sensordata, adr, &v_sensor);
             }
 
             MjSensorType::FrameLinVel => {
@@ -5154,11 +5170,7 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
                     ),
                     _ => Vector3::zeros(),
                 };
-                if adr + 2 < data.sensordata.len() {
-                    data.sensordata[adr] = v.x;
-                    data.sensordata[adr + 1] = v.y;
-                    data.sensordata[adr + 2] = v.z;
-                }
+                sensor_write3(&mut data.sensordata, adr, &v);
             }
 
             MjSensorType::FrameAngVel => {
@@ -5179,11 +5191,7 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
                     ),
                     _ => Vector3::zeros(),
                 };
-                if adr + 2 < data.sensordata.len() {
-                    data.sensordata[adr] = omega.x;
-                    data.sensordata[adr + 1] = omega.y;
-                    data.sensordata[adr + 2] = omega.z;
-                }
+                sensor_write3(&mut data.sensordata, adr, &omega);
             }
 
             MjSensorType::SubtreeLinVel => {
@@ -5193,11 +5201,7 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
                     if total_mass > 1e-10 {
                         let momentum = compute_subtree_momentum(model, data, objid);
                         let v = momentum / total_mass;
-                        if adr + 2 < data.sensordata.len() {
-                            data.sensordata[adr] = v.x;
-                            data.sensordata[adr + 1] = v.y;
-                            data.sensordata[adr + 2] = v.z;
-                        }
+                        sensor_write3(&mut data.sensordata, adr, &v);
                     }
                 }
             }
@@ -5207,11 +5211,7 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
                 // L = sum_i [I_i * omega_i + m_i * (r_i - r_com) x v_i]
                 if objid < model.nbody {
                     let angmom = compute_subtree_angmom(model, data, objid);
-                    if adr + 2 < data.sensordata.len() {
-                        data.sensordata[adr] = angmom.x;
-                        data.sensordata[adr + 1] = angmom.y;
-                        data.sensordata[adr + 2] = angmom.z;
-                    }
+                    sensor_write3(&mut data.sensordata, adr, &angmom);
                 }
             }
 
@@ -5225,12 +5225,17 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
                             if jnt_id < model.njnt {
                                 let dof_adr = model.jnt_dof_adr[jnt_id];
                                 let gear = model.actuator_gear[objid];
-                                data.sensordata[adr] = gear * data.qvel[dof_adr];
+                                sensor_write(
+                                    &mut data.sensordata,
+                                    adr,
+                                    0,
+                                    gear * data.qvel[dof_adr],
+                                );
                             }
                         }
                         ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
                             // Tendon/site transmission velocity not yet available
-                            data.sensordata[adr] = 0.0;
+                            sensor_write(&mut data.sensordata, adr, 0, 0.0);
                         }
                     }
                 }
@@ -5240,7 +5245,7 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
                 // Tendon velocity: requires tendon pipeline integration.
                 // When tendon pipeline is wired, this will read from ten_velocity[objid].
                 // For now, output 0 to avoid returning garbage.
-                data.sensordata[adr] = 0.0;
+                sensor_write(&mut data.sensordata, adr, 0, 0.0);
             }
 
             // Skip position/acceleration-dependent sensors
@@ -5287,15 +5292,12 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                     }
                     _ => (Vector3::zeros(), Matrix3::identity()),
                 };
-                // Accelerometer measures: a_proper = a - g (proper acceleration)
-                // In free fall, accelerometer reads 0. At rest on ground, reads -g
+                // Proper acceleration = a_body - g_field
+                // At rest: a_body=0, g_field=(0,0,-9.81), so a_proper=(0,0,+9.81) (upward)
+                // In free fall: a_body~g_field, so a_proper~0. Matches real IMU behavior.
                 let a_proper = a_world - model.gravity;
                 let a_sensor = site_mat.transpose() * a_proper;
-                if adr + 2 < data.sensordata.len() {
-                    data.sensordata[adr] = a_sensor.x;
-                    data.sensordata[adr + 1] = a_sensor.y;
-                    data.sensordata[adr + 2] = a_sensor.z;
-                }
+                sensor_write3(&mut data.sensordata, adr, &a_sensor);
             }
 
             MjSensorType::Force => {
@@ -5311,19 +5313,15 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 // We compute this as: the total constraint + applied force transmitted
                 // through the kinematic chain at the sensor's body, projected into
                 // the site frame.
-                if adr + 2 < data.sensordata.len() {
-                    let (force_world, _) = compute_site_force_torque(model, data, sensor_id);
-                    // Transform to site frame
-                    let site_mat = match model.sensor_objtype[sensor_id] {
-                        MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
-                        MjObjectType::Body if objid < model.nbody => data.xmat[objid],
-                        _ => Matrix3::identity(),
-                    };
-                    let force_site = site_mat.transpose() * force_world;
-                    data.sensordata[adr] = force_site.x;
-                    data.sensordata[adr + 1] = force_site.y;
-                    data.sensordata[adr + 2] = force_site.z;
-                }
+                let (force_world, _) = compute_site_force_torque(model, data, sensor_id);
+                // Transform to site frame
+                let site_mat = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
+                    MjObjectType::Body if objid < model.nbody => data.xmat[objid],
+                    _ => Matrix3::identity(),
+                };
+                let force_site = site_mat.transpose() * force_world;
+                sensor_write3(&mut data.sensordata, adr, &force_site);
             }
 
             MjSensorType::Torque => {
@@ -5332,19 +5330,15 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 // Similar to Force but returns the torque component. The torque is
                 // the net torque that the rest of the system exerts on the subtree
                 // through the sensor body, expressed in the site's local frame.
-                if adr + 2 < data.sensordata.len() {
-                    let (_, torque_world) = compute_site_force_torque(model, data, sensor_id);
-                    // Transform to site frame
-                    let site_mat = match model.sensor_objtype[sensor_id] {
-                        MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
-                        MjObjectType::Body if objid < model.nbody => data.xmat[objid],
-                        _ => Matrix3::identity(),
-                    };
-                    let torque_site = site_mat.transpose() * torque_world;
-                    data.sensordata[adr] = torque_site.x;
-                    data.sensordata[adr + 1] = torque_site.y;
-                    data.sensordata[adr + 2] = torque_site.z;
-                }
+                let (_, torque_world) = compute_site_force_torque(model, data, sensor_id);
+                // Transform to site frame
+                let site_mat = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
+                    MjObjectType::Body if objid < model.nbody => data.xmat[objid],
+                    _ => Matrix3::identity(),
+                };
+                let torque_site = site_mat.transpose() * torque_world;
+                sensor_write3(&mut data.sensordata, adr, &torque_site);
             }
 
             MjSensorType::Touch => {
@@ -5376,7 +5370,7 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                         }
                     }
                 }
-                data.sensordata[adr] = total_force;
+                sensor_write(&mut data.sensordata, adr, 0, total_force);
             }
 
             MjSensorType::Magnetometer => {
@@ -5385,17 +5379,13 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 // options (model.magnetic).
                 //
                 // B_sensor = R_site^T * B_world
-                if adr + 2 < data.sensordata.len() {
-                    let site_mat = match model.sensor_objtype[sensor_id] {
-                        MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
-                        MjObjectType::Body if objid < model.nbody => data.xmat[objid],
-                        _ => Matrix3::identity(),
-                    };
-                    let b_sensor = site_mat.transpose() * model.magnetic;
-                    data.sensordata[adr] = b_sensor.x;
-                    data.sensordata[adr + 1] = b_sensor.y;
-                    data.sensordata[adr + 2] = b_sensor.z;
-                }
+                let site_mat = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
+                    MjObjectType::Body if objid < model.nbody => data.xmat[objid],
+                    _ => Matrix3::identity(),
+                };
+                let b_sensor = site_mat.transpose() * model.magnetic;
+                sensor_write3(&mut data.sensordata, adr, &b_sensor);
             }
 
             MjSensorType::ActuatorFrc => {
@@ -5404,7 +5394,7 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                     let jnt_id = model.actuator_trnid[objid];
                     if jnt_id < model.njnt {
                         let dof_adr = model.jnt_dof_adr[jnt_id];
-                        data.sensordata[adr] = data.qfrc_actuator[dof_adr];
+                        sensor_write(&mut data.sensordata, adr, 0, data.qfrc_actuator[dof_adr]);
                     }
                 }
             }
@@ -5421,11 +5411,7 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                     }
                     _ => Vector3::zeros(),
                 };
-                if adr + 2 < data.sensordata.len() {
-                    data.sensordata[adr] = a.x;
-                    data.sensordata[adr + 1] = a.y;
-                    data.sensordata[adr + 2] = a.z;
-                }
+                sensor_write3(&mut data.sensordata, adr, &a);
             }
 
             MjSensorType::FrameAngAcc => {
@@ -5441,11 +5427,7 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                     }
                     _ => Vector3::zeros(),
                 };
-                if adr + 2 < data.sensordata.len() {
-                    data.sensordata[adr] = alpha.x;
-                    data.sensordata[adr + 1] = alpha.y;
-                    data.sensordata[adr + 2] = alpha.z;
-                }
+                sensor_write3(&mut data.sensordata, adr, &alpha);
             }
 
             // Skip position/velocity-dependent sensors
@@ -5458,26 +5440,61 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
 // Sensor Helper Functions
 // ============================================================================
 
-/// Compute subtree center of mass for a given body (including all descendants).
+/// Write a single sensor value with bounds checking.
+#[inline]
+fn sensor_write(sensordata: &mut DVector<f64>, adr: usize, offset: usize, value: f64) {
+    let idx = adr + offset;
+    if idx < sensordata.len() {
+        sensordata[idx] = value;
+    }
+}
+
+/// Write a 3D vector to sensor data with bounds checking.
+#[inline]
+fn sensor_write3(sensordata: &mut DVector<f64>, adr: usize, v: &Vector3<f64>) {
+    sensor_write(sensordata, adr, 0, v.x);
+    sensor_write(sensordata, adr, 1, v.y);
+    sensor_write(sensordata, adr, 2, v.z);
+}
+
+/// Write a quaternion (w, x, y, z) to sensor data with bounds checking.
+#[inline]
+fn sensor_write4(sensordata: &mut DVector<f64>, adr: usize, w: f64, x: f64, y: f64, z: f64) {
+    sensor_write(sensordata, adr, 0, w);
+    sensor_write(sensordata, adr, 1, x);
+    sensor_write(sensordata, adr, 2, y);
+    sensor_write(sensordata, adr, 3, z);
+}
+
 /// Apply sensor post-processing: noise addition and cutoff clamping.
 ///
 /// MuJoCo applies noise and cutoff after all sensor values are computed:
 /// - Noise: Gaussian noise with std dev = sensor_noise (0 = no noise).
 ///   Applied independently to each sensor data element.
-/// - Cutoff: Clamps sensor values to [-cutoff, cutoff] (0 = no cutoff).
-///   For rangefinder, negative values (-1) indicate no hit and are preserved.
+/// - Cutoff: For most sensors, clamps to [-cutoff, cutoff] (0 = no cutoff).
+///   For positive-type sensors (Touch, Rangefinder), clamps positive side only:
+///   min(value, cutoff). This preserves rangefinder's -1.0 no-hit sentinel.
 fn mj_sensor_postprocess(model: &Model, data: &mut Data) {
     for sensor_id in 0..model.nsensor {
         let adr = model.sensor_adr[sensor_id];
         let dim = model.sensor_dim[sensor_id];
 
-        // Apply cutoff: clamp sensor values to [-cutoff, cutoff]
+        // Apply cutoff
         let cutoff = model.sensor_cutoff[sensor_id];
         if cutoff > 0.0 {
+            let sensor_type = model.sensor_type[sensor_id];
             for i in 0..dim {
                 let idx = adr + i;
                 if idx < data.sensordata.len() {
-                    data.sensordata[idx] = data.sensordata[idx].clamp(-cutoff, cutoff);
+                    let clamped = match sensor_type {
+                        // Positive-type sensors: only clamp on positive side
+                        MjSensorType::Touch | MjSensorType::Rangefinder => {
+                            data.sensordata[idx].min(cutoff)
+                        }
+                        // Real-type sensors: clamp both sides
+                        _ => data.sensordata[idx].clamp(-cutoff, cutoff),
+                    };
+                    sensor_write(&mut data.sensordata, adr, i, clamped);
                 }
             }
         }
@@ -10323,7 +10340,7 @@ mod sensor_tests {
     fn test_rangefinder_hits_sphere() {
         let mut model = make_sensor_test_model();
 
-        // Add a second body with a sphere geom below the sensor
+        // Add a second body with a sphere geom above the sensor (along +Z)
         model.nbody += 1;
         model.body_parent.push(0); // parent = world
         model.body_rootid.push(2);
@@ -10333,7 +10350,7 @@ mod sensor_tests {
         model.body_dof_num.push(0);
         model.body_geom_adr.push(model.ngeom);
         model.body_geom_num.push(1);
-        model.body_pos.push(Vector3::new(0.0, 0.0, -2.0)); // Below
+        model.body_pos.push(Vector3::new(0.0, 0.0, 1.0)); // Above (along +Z)
         model.body_quat.push(UnitQuaternion::identity());
         model.body_ipos.push(Vector3::zeros());
         model.body_iquat.push(UnitQuaternion::identity());
@@ -10372,13 +10389,94 @@ mod sensor_tests {
         let mut data = model.make_data();
         data.forward(&model).unwrap();
 
-        // The site is at (0,0,-0.5). The rangefinder shoots along -Z of site frame.
-        // Target sphere is at (0,0,-2.0) with radius 0.5.
-        // The ray should hit the top of the sphere at z = -2.0 + 0.5 = -1.5
-        // Distance from site (z=-0.5) to hit (z=-1.5) = 1.0
+        // The site is at (0,0,-0.5). The rangefinder shoots along +Z of site frame.
+        // Target sphere center at (0,0,1.0) with radius 0.5, bottom surface at z=0.5.
+        // Distance from site (z=-0.5) to hit (z=0.5) = 1.0
         let dist = data.sensordata[0];
         assert!(dist > 0.0, "Should have a hit, got {dist}");
         assert_relative_eq!(dist, 1.0, epsilon = 0.1); // approximate due to FK
+    }
+
+    #[test]
+    fn test_rangefinder_ignores_objects_behind_sensor() {
+        let mut model = make_sensor_test_model();
+
+        // Add a second body with a sphere geom behind the sensor (along -Z)
+        model.nbody += 1;
+        model.body_parent.push(0);
+        model.body_rootid.push(2);
+        model.body_jnt_adr.push(model.njnt);
+        model.body_jnt_num.push(0);
+        model.body_dof_adr.push(model.nv);
+        model.body_dof_num.push(0);
+        model.body_geom_adr.push(model.ngeom);
+        model.body_geom_num.push(1);
+        model.body_pos.push(Vector3::new(0.0, 0.0, -3.0)); // Behind (along -Z)
+        model.body_quat.push(UnitQuaternion::identity());
+        model.body_ipos.push(Vector3::zeros());
+        model.body_iquat.push(UnitQuaternion::identity());
+        model.body_mass.push(1.0);
+        model.body_inertia.push(Vector3::new(0.01, 0.01, 0.01));
+        model.body_name.push(Some("behind_target".to_string()));
+        model.body_subtreemass.push(1.0);
+
+        model.ngeom += 1;
+        model.geom_type.push(GeomType::Sphere);
+        model.geom_body.push(2);
+        model.geom_pos.push(Vector3::zeros());
+        model.geom_quat.push(UnitQuaternion::identity());
+        model.geom_size.push(Vector3::new(0.5, 0.5, 0.5));
+        model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        model.geom_contype.push(1);
+        model.geom_conaffinity.push(1);
+        model.geom_margin.push(0.0);
+        model.geom_gap.push(0.0);
+        model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+        model.geom_solref.push([0.02, 1.0]);
+        model.geom_name.push(None);
+        model.geom_rbound.push(0.5);
+        model.geom_mesh.push(None);
+
+        add_sensor(
+            &mut model,
+            MjSensorType::Rangefinder,
+            MjSensorDataType::Position,
+            MjObjectType::Site,
+            0,
+        );
+
+        let mut data = model.make_data();
+        data.forward(&model).unwrap();
+
+        // Sphere is at -Z, sensor looks along +Z → no hit
+        assert_eq!(
+            data.sensordata[0], -1.0,
+            "Rangefinder should not detect objects behind sensor"
+        );
+    }
+
+    #[test]
+    fn test_rangefinder_cutoff_preserves_no_hit_sentinel() {
+        let mut model = make_sensor_test_model();
+        add_sensor(
+            &mut model,
+            MjSensorType::Rangefinder,
+            MjSensorDataType::Position,
+            MjObjectType::Site,
+            0,
+        );
+        // Set cutoff to 0.5 — should NOT turn -1.0 into -0.5
+        model.sensor_cutoff[0] = 0.5;
+
+        let mut data = model.make_data();
+        data.forward(&model).unwrap();
+
+        // Only one geom on sensor's own body → no hit → -1.0
+        // With positive-type clamping, min(-1.0, 0.5) = -1.0 (preserved)
+        assert_eq!(
+            data.sensordata[0], -1.0,
+            "Rangefinder no-hit sentinel should be preserved with cutoff"
+        );
     }
 
     // ========================================================================
@@ -10674,19 +10772,107 @@ mod sensor_tests {
         let mut data = model.make_data();
         data.forward(&model).unwrap();
 
-        // At rest, accelerometer should read the "proper acceleration" which
-        // is a - g. Since we're not in free fall, this should be non-zero
-        // and related to gravity magnitude
+        // With default gravity (0, 0, -9.81) and axis-aligned site,
+        // proper acceleration = a_body - g = 0 - (0,0,-9.81) = (0,0,+9.81)
+        // The Z component should be positive.
         let ax = data.sensordata[0];
         let ay = data.sensordata[1];
         let az = data.sensordata[2];
         let accel_mag = (ax * ax + ay * ay + az * az).sqrt();
 
-        // The magnitude should be close to g = 9.81 (body at rest)
-        // This is approximate since the pendulum has dynamics
         assert!(
-            accel_mag > 1.0,
-            "Accelerometer should read substantial value at rest, got {accel_mag}"
+            az > 0.0,
+            "Accelerometer Z should be positive at rest, got {az}"
+        );
+        assert_relative_eq!(accel_mag, 9.81, epsilon = 2.0);
+    }
+
+    #[test]
+    fn test_accelerometer_in_free_fall_reads_zero() {
+        // Build a model with a single body on a Free joint (no contacts)
+        let mut model = Model::empty();
+
+        model.nbody = 2;
+        model.body_parent.push(0);
+        model.body_rootid.push(1);
+        model.body_jnt_adr.push(0);
+        model.body_jnt_num.push(1);
+        model.body_dof_adr.push(0);
+        model.body_dof_num.push(6);
+        model.body_geom_adr.push(0);
+        model.body_geom_num.push(0); // no geoms → no contacts
+        model.body_pos.push(Vector3::zeros());
+        model.body_quat.push(UnitQuaternion::identity());
+        model.body_ipos.push(Vector3::zeros());
+        model.body_iquat.push(UnitQuaternion::identity());
+        model.body_mass.push(1.0);
+        model.body_inertia.push(Vector3::new(0.01, 0.01, 0.01));
+        model.body_name.push(Some("free_body".to_string()));
+        model.body_subtreemass.push(1.0);
+
+        // Free joint: nq=7 (pos + quat), nv=6 (lin + ang velocity)
+        model.njnt = 1;
+        model.nq = 7;
+        model.nv = 6;
+        model.jnt_type.push(MjJointType::Free);
+        model.jnt_body.push(1);
+        model.jnt_qpos_adr.push(0);
+        model.jnt_dof_adr.push(0);
+        model.jnt_pos.push(Vector3::zeros());
+        model.jnt_axis.push(Vector3::z());
+        model.jnt_limited.push(false);
+        model.jnt_range.push((0.0, 0.0));
+        model.jnt_stiffness.push(0.0);
+        model.jnt_springref.push(0.0);
+        model.jnt_damping.push(0.0);
+        model.jnt_armature.push(0.0);
+        model.jnt_solref.push([0.02, 1.0]);
+        model.jnt_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+        model.jnt_name.push(Some("free".to_string()));
+
+        // DOFs (6 for free joint)
+        for i in 0..6 {
+            model.dof_body.push(1);
+            model.dof_jnt.push(0);
+            model
+                .dof_parent
+                .push(if i == 0 { None } else { Some(i - 1) });
+            model.dof_armature.push(0.0);
+            model.dof_damping.push(0.0);
+            model.dof_frictionloss.push(0.0);
+        }
+
+        // Add a site for the accelerometer
+        model.nsite = 1;
+        model.site_body.push(1);
+        model.site_type.push(GeomType::Sphere);
+        model.site_pos.push(Vector3::zeros());
+        model.site_quat.push(UnitQuaternion::identity());
+        model.site_size.push(Vector3::new(0.01, 0.01, 0.01));
+        model.site_name.push(Some("accel_site".to_string()));
+
+        // qpos0 = [0, 0, 0, 1, 0, 0, 0] (origin, identity quat)
+        model.qpos0 = DVector::zeros(model.nq);
+        model.qpos0[3] = 1.0; // w component of quaternion
+
+        add_sensor(
+            &mut model,
+            MjSensorType::Accelerometer,
+            MjSensorDataType::Acceleration,
+            MjObjectType::Site,
+            0,
+        );
+
+        let mut data = model.make_data();
+        data.forward(&model).unwrap();
+
+        // In free fall, a_body ~ g, so a_proper = a_body - g ~ 0
+        let accel_mag =
+            (data.sensordata[0].powi(2) + data.sensordata[1].powi(2) + data.sensordata[2].powi(2))
+                .sqrt();
+        assert!(
+            accel_mag < 1e-6,
+            "Free-fall accelerometer should read ~0, got {accel_mag}"
         );
     }
 
@@ -10708,5 +10894,292 @@ mod sensor_tests {
         // (which is body_pos + body_ipos in world frame)
         let com_z = data.sensordata[2];
         assert!(com_z < 0.0, "COM should be below origin: {com_z}");
+    }
+
+    // ========================================================================
+    // BallQuat / BallAngVel Sensor Tests (Fix 3)
+    // ========================================================================
+
+    /// Helper: create a model with a single body on a Ball joint.
+    /// Ball joint: nq=4 (quaternion), nv=3 (angular velocity).
+    fn make_ball_joint_model() -> Model {
+        let mut model = Model::empty();
+
+        // Add body 1 (ball-joint body)
+        model.nbody = 2; // world + body
+        model.body_parent.push(0);
+        model.body_rootid.push(1);
+        model.body_jnt_adr.push(0);
+        model.body_jnt_num.push(1);
+        model.body_dof_adr.push(0);
+        model.body_dof_num.push(3); // Ball has 3 DOFs
+        model.body_geom_adr.push(0);
+        model.body_geom_num.push(1);
+        model.body_pos.push(Vector3::zeros());
+        model.body_quat.push(UnitQuaternion::identity());
+        model.body_ipos.push(Vector3::new(0.0, 0.0, -0.5));
+        model.body_iquat.push(UnitQuaternion::identity());
+        model.body_mass.push(1.0);
+        model.body_inertia.push(Vector3::new(0.01, 0.01, 0.01));
+        model.body_name.push(Some("ball_body".to_string()));
+        model.body_subtreemass.push(1.0);
+
+        // Add ball joint
+        model.njnt = 1;
+        model.nq = 4; // quaternion [w, x, y, z]
+        model.nv = 3; // angular velocity [wx, wy, wz]
+        model.jnt_type.push(MjJointType::Ball);
+        model.jnt_body.push(1);
+        model.jnt_qpos_adr.push(0);
+        model.jnt_dof_adr.push(0);
+        model.jnt_pos.push(Vector3::zeros());
+        model.jnt_axis.push(Vector3::z());
+        model.jnt_limited.push(false);
+        model.jnt_range.push((0.0, 0.0));
+        model.jnt_stiffness.push(0.0);
+        model.jnt_springref.push(0.0);
+        model.jnt_damping.push(0.0);
+        model.jnt_armature.push(0.0);
+        model.jnt_solref.push([0.02, 1.0]);
+        model.jnt_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+        model.jnt_name.push(Some("ball".to_string()));
+
+        // DOFs (3 for ball joint)
+        for i in 0..3 {
+            model.dof_body.push(1);
+            model.dof_jnt.push(0);
+            model
+                .dof_parent
+                .push(if i == 0 { None } else { Some(i - 1) });
+            model.dof_armature.push(0.0);
+            model.dof_damping.push(0.0);
+            model.dof_frictionloss.push(0.0);
+        }
+
+        // Add geom
+        model.ngeom = 1;
+        model.geom_type.push(GeomType::Sphere);
+        model.geom_body.push(1);
+        model.geom_pos.push(Vector3::new(0.0, 0.0, -0.5));
+        model.geom_quat.push(UnitQuaternion::identity());
+        model.geom_size.push(Vector3::new(0.1, 0.1, 0.1));
+        model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        model.geom_contype.push(1);
+        model.geom_conaffinity.push(1);
+        model.geom_margin.push(0.0);
+        model.geom_gap.push(0.0);
+        model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
+        model.geom_solref.push([0.02, 1.0]);
+        model.geom_name.push(None);
+        model.geom_rbound.push(0.1);
+        model.geom_mesh.push(None);
+
+        // Add site
+        model.nsite = 1;
+        model.site_body.push(1);
+        model.site_type.push(GeomType::Sphere);
+        model.site_pos.push(Vector3::new(0.0, 0.0, -0.5));
+        model.site_quat.push(UnitQuaternion::identity());
+        model.site_size.push(Vector3::new(0.01, 0.01, 0.01));
+        model.site_name.push(Some("ball_site".to_string()));
+
+        // Initialize qpos0 to identity quaternion [w=1, x=0, y=0, z=0]
+        model.qpos0 = DVector::zeros(model.nq);
+        model.qpos0[0] = 1.0; // w component
+
+        model
+    }
+
+    #[test]
+    fn test_ball_quat_sensor_reads_quaternion() {
+        let mut model = make_ball_joint_model();
+        add_sensor(
+            &mut model,
+            MjSensorType::BallQuat,
+            MjSensorDataType::Position,
+            MjObjectType::Joint,
+            0,
+        );
+
+        let mut data = model.make_data();
+        // Set qpos to a known quaternion (45° rotation about Z)
+        // q = [cos(π/8), 0, 0, sin(π/8)]
+        let angle = std::f64::consts::FRAC_PI_4;
+        let half = angle / 2.0;
+        data.qpos[0] = half.cos();
+        data.qpos[1] = 0.0;
+        data.qpos[2] = 0.0;
+        data.qpos[3] = half.sin();
+        data.forward(&model).unwrap();
+
+        assert_relative_eq!(data.sensordata[0], half.cos(), epsilon = 1e-10);
+        assert_relative_eq!(data.sensordata[1], 0.0, epsilon = 1e-10);
+        assert_relative_eq!(data.sensordata[2], 0.0, epsilon = 1e-10);
+        assert_relative_eq!(data.sensordata[3], half.sin(), epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_quat_sensor_normalizes() {
+        let mut model = make_ball_joint_model();
+        add_sensor(
+            &mut model,
+            MjSensorType::BallQuat,
+            MjSensorDataType::Position,
+            MjObjectType::Joint,
+            0,
+        );
+
+        let mut data = model.make_data();
+        // Set a non-unit quaternion (scale of 2)
+        data.qpos[0] = 2.0;
+        data.qpos[1] = 0.0;
+        data.qpos[2] = 0.0;
+        data.qpos[3] = 0.0;
+        data.forward(&model).unwrap();
+
+        // Output should be normalized to unit quaternion
+        let norm = (data.sensordata[0].powi(2)
+            + data.sensordata[1].powi(2)
+            + data.sensordata[2].powi(2)
+            + data.sensordata[3].powi(2))
+        .sqrt();
+        assert_relative_eq!(norm, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(data.sensordata[0], 1.0, epsilon = 1e-10); // [1,0,0,0]
+
+        // Test degenerate case: near-zero quaternion → identity
+        data.qpos[0] = 1e-15;
+        data.qpos[1] = 0.0;
+        data.qpos[2] = 0.0;
+        data.qpos[3] = 0.0;
+        data.forward(&model).unwrap();
+
+        assert_relative_eq!(data.sensordata[0], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(data.sensordata[1], 0.0, epsilon = 1e-10);
+        assert_relative_eq!(data.sensordata[2], 0.0, epsilon = 1e-10);
+        assert_relative_eq!(data.sensordata[3], 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_angvel_sensor() {
+        let mut model = make_ball_joint_model();
+        add_sensor(
+            &mut model,
+            MjSensorType::BallAngVel,
+            MjSensorDataType::Velocity,
+            MjObjectType::Joint,
+            0,
+        );
+
+        let mut data = model.make_data();
+        // Set angular velocity
+        data.qvel[0] = 1.0;
+        data.qvel[1] = -2.0;
+        data.qvel[2] = 3.0;
+        data.forward(&model).unwrap();
+
+        assert_relative_eq!(data.sensordata[0], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(data.sensordata[1], -2.0, epsilon = 1e-10);
+        assert_relative_eq!(data.sensordata[2], 3.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_jointpos_ignores_ball_joint() {
+        let mut model = make_ball_joint_model();
+        // Add a JointPos sensor on the ball joint — should write nothing
+        // Also add a dummy sensor after it to detect corruption
+        add_sensor(
+            &mut model,
+            MjSensorType::JointPos,
+            MjSensorDataType::Position,
+            MjObjectType::Joint,
+            0,
+        );
+        // Sentinel: add a second sensor right after; its slot should remain 0
+        add_sensor(
+            &mut model,
+            MjSensorType::JointPos,
+            MjSensorDataType::Position,
+            MjObjectType::Joint,
+            0,
+        );
+
+        let mut data = model.make_data();
+        // Set qpos to a non-trivial quaternion
+        data.qpos[0] = 0.5;
+        data.qpos[1] = 0.5;
+        data.qpos[2] = 0.5;
+        data.qpos[3] = 0.5;
+        data.forward(&model).unwrap();
+
+        // JointPos on ball joint should produce 0 (no write)
+        assert_eq!(
+            data.sensordata[0], 0.0,
+            "JointPos should not write for Ball joints"
+        );
+        // Adjacent sensor slot should also be 0 (no corruption)
+        assert_eq!(
+            data.sensordata[1], 0.0,
+            "JointPos should not corrupt adjacent sensor data"
+        );
+    }
+
+    #[test]
+    fn test_jointvel_ignores_ball_joint() {
+        let mut model = make_ball_joint_model();
+        // Add JointVel sensor on ball joint — should write nothing
+        add_sensor(
+            &mut model,
+            MjSensorType::JointVel,
+            MjSensorDataType::Velocity,
+            MjObjectType::Joint,
+            0,
+        );
+        // Sentinel sensor
+        add_sensor(
+            &mut model,
+            MjSensorType::JointVel,
+            MjSensorDataType::Velocity,
+            MjObjectType::Joint,
+            0,
+        );
+
+        let mut data = model.make_data();
+        data.qvel[0] = 5.0;
+        data.qvel[1] = 6.0;
+        data.qvel[2] = 7.0;
+        data.forward(&model).unwrap();
+
+        // JointVel on ball joint should produce 0 (no write)
+        assert_eq!(
+            data.sensordata[0], 0.0,
+            "JointVel should not write for Ball joints"
+        );
+        // Adjacent sensor slot should be 0 (no corruption from old nv=3 write)
+        assert_eq!(
+            data.sensordata[1], 0.0,
+            "JointVel should not corrupt adjacent sensor data"
+        );
+    }
+
+    // ========================================================================
+    // Bounds-Check Robustness Test (Fix 4)
+    // ========================================================================
+
+    #[test]
+    fn test_sensor_write_with_undersized_buffer_does_not_panic() {
+        let mut model = make_sensor_test_model();
+        add_sensor(
+            &mut model,
+            MjSensorType::Touch,
+            MjSensorDataType::Acceleration,
+            MjObjectType::Geom,
+            0,
+        );
+
+        let mut data = model.make_data();
+        // Manually shrink sensordata to empty buffer
+        data.sensordata = DVector::zeros(0);
+        // Should not panic — sensor_write guards all writes
+        data.forward(&model).unwrap();
     }
 }
