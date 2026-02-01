@@ -28,13 +28,17 @@ sim/
 │   ├── tendon/            # sim-tendon — Cable/tendon routing
 │   ├── mjcf/              # sim-mjcf — MuJoCo format parser
 │   ├── urdf/              # sim-urdf — URDF parser
-│   └── physics/           # sim-physics — Unified L0 API
+│   ├── physics/           # sim-physics — Unified L0 API
+│   └── tests/             # sim-conformance-tests — Model loading tests
 ├── L1/                    # Layer 1: Bevy integration
 │   └── bevy/              # sim-bevy — Visualization
-└── docs/                  # Simulation documentation
-    ├── ARCHITECTURE.md    # This file
-    ├── FUTURE_WORK.md     # Roadmap and remaining work
-    └── MUJOCO_REFERENCE.md # Pipeline algorithms and pseudocode
+└── docs/                              # Simulation documentation
+    ├── ARCHITECTURE.md                # This file
+    ├── FUTURE_WORK.md                 # Roadmap and remaining work
+    ├── MUJOCO_CONFORMANCE.md          # MuJoCo conformance testing plan
+    ├── MUJOCO_GAP_ANALYSIS.md         # Feature-by-feature gap analysis
+    ├── MUJOCO_REFERENCE.md            # Pipeline algorithms and pseudocode
+    └── SIM_BEVY_IMPLEMENTATION_PLAN.md # Bevy visualization layer plan
 ```
 
 ## Core Architecture: Model/Data

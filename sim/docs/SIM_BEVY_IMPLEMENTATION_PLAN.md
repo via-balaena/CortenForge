@@ -1357,4 +1357,4 @@ mod tests {
 - [Bevy Plugin Guide](https://bevy-cheatbook.github.io/programming/plugins.html)
 - [Bevy ECS Guide](https://bevy.org/learn/quick-start/getting-started/ecs/)
 - [Solari Ray Tracing](https://jms55.github.io/posts/2025-12-27-solari-bevy-0-18/)
-- [CortenForge STANDARDS.md](./STANDARDS.md)
+- [CortenForge STANDARDS.md](../../STANDARDS.md)

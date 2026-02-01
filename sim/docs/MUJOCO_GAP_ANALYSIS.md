@@ -488,8 +488,7 @@ Full triangle mesh collision support is now implemented:
 **Implementation files:**
 - `sim-core/src/collision/triangle_mesh.rs` - Core triangle mesh collision
 - `sim-core/src/collision/mesh_mesh.rs` - Mesh-mesh collision with BVH
-- `sim-core/src/world.rs` - Integration with collision dispatcher
-- See: [MESH_MESH_COLLISION_PLAN.md](./MESH_MESH_COLLISION_PLAN.md) for implementation details
+- `sim-core/src/collision/` - Integration with collision dispatcher
 
 ### Implementation Notes: SDF Collision ✅ COMPLETED (January 2026)
 
@@ -509,8 +508,7 @@ Full SDF (Signed Distance Field) collision support is now implemented:
 **Implementation files:**
 - `sim-core/src/sdf.rs` - Core SDF types and queries
 - `sim-core/src/collision/sdf_collision.rs` - All SDF collision functions
-- `sim-core/src/world.rs:1750-1835` - SDF collision dispatch
-- See: [SDF_COLLISION_PLAN.md](./SDF_COLLISION_PLAN.md) for implementation details
+- `sim-core/src/collision/sdf_collision.rs` - SDF collision dispatch
 
 ---
 
@@ -1429,7 +1427,7 @@ The following were completed in January 2026:
 | MJCF `<tendon>` parsing | §13 Model Format | Spatial and fixed tendons |
 | MJCF `<sensor>` parsing | §13 Model Format | 24 sensor types |
 
-See [FEATURE_IMPLEMENTATION_CHECKLIST.md](./FEATURE_IMPLEMENTATION_CHECKLIST.md) for implementation details.
+See [FUTURE_WORK.md](./FUTURE_WORK.md) for remaining items.
 
 ### ⚠️ Recently Completed then Partially Removed: Multi-threading
 
