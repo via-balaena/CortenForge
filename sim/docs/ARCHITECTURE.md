@@ -189,8 +189,10 @@ SIMD-optimized batch operations for performance-critical paths.
 The physics engine. Contains:
 
 - `mujoco_pipeline.rs` — `Model`, `Data`, full MuJoCo-aligned pipeline
-- `integrators.rs` — 6 integrators: ExplicitEuler, SemiImplicitEuler,
-  VelocityVerlet, RungeKutta4, ImplicitVelocity, ImplicitFast
+- `integrators.rs` — standalone trait system with 6 integrators (ExplicitEuler,
+  SemiImplicitEuler, VelocityVerlet, RungeKutta4, ImplicitVelocity, ImplicitFast).
+  **Not used by the MuJoCo pipeline** — the pipeline has its own `Integrator` enum
+  in `mujoco_pipeline.rs`. See [FUTURE_WORK C1](./FUTURE_WORK.md) for disambiguation plan.
 - `collision_shape.rs` — `CollisionShape` enum, `Aabb`
 - `mid_phase.rs` — BVH tree (SAH construction, traversal, ray queries)
 - `gjk_epa.rs` — GJK/EPA for convex shapes

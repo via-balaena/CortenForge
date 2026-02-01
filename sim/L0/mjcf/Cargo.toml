@@ -11,8 +11,6 @@ rust-version.workspace = true
 [dependencies]
 sim-types = { workspace = true }
 sim-core = { workspace = true }
-sim-tendon = { workspace = true }
-sim-muscle = { workspace = true }
 mesh-io = { workspace = true }
 mesh-types = { workspace = true }
 nalgebra = { workspace = true }

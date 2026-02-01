@@ -26,7 +26,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free, Planar, Cylindrical**)
 - Actuators: Motors, Servos (joint-level actuation only)
-- Sensors: JointPos, JointVel, FramePos, FrameLinVel, Accelerometer, Gyro, Touch, Rangefinder
+- Sensors: JointPos, JointVel, FramePos, FrameLinVel, Accelerometer, Gyro
 - Model loading (URDF, MJCF with full `<default>` support, **MJB binary format**)
 
 ### Placeholder / Stub (in pipeline)

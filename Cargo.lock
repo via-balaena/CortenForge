@@ -7508,8 +7508,6 @@ dependencies = [
  "quick-xml 0.37.5",
  "serde",
  "sim-core",
- "sim-muscle",
- "sim-tendon",
  "sim-types",
  "tempfile",
  "thiserror 2.0.18",
@@ -7523,7 +7521,6 @@ dependencies = [
  "approx 0.5.1",
  "nalgebra",
  "serde",
- "sim-types",
  "thiserror 2.0.18",
 ]
 
