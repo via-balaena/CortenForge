@@ -505,11 +505,10 @@ categories = ["simulation", "visualization", "game-development"]
 
 [dependencies]
 # Layer 0 simulation crates
-sim-core = { path = "../sim-core" }
-sim-types = { path = "../sim-types" }
-sim-constraint = { path = "../sim-constraint" }
-sim-mjcf = { path = "../sim-mjcf" }
-sim-urdf = { path = "../sim-urdf" }
+sim-types = { path = "../../L0/types" }
+sim-core = { path = "../../L0/core" }
+sim-mjcf = { path = "../../L0/mjcf" }
+sim-urdf = { path = "../../L0/urdf" }
 
 # Bevy 0.18 - use feature collections for clean compilation
 bevy = { version = "0.18", default-features = false, features = [
@@ -728,13 +727,13 @@ pub fn generate_shape_mesh(shape: &CollisionShape) -> Mesh {
                 half_extents.z as f32 * 2.0,
             ).mesh().build()
         }
-        CollisionShape::Capsule { half_height, radius } => {
-            Capsule3d::new(*radius as f32, *half_height as f32 * 2.0)
+        CollisionShape::Capsule { half_length, radius } => {
+            Capsule3d::new(*radius as f32, *half_length as f32 * 2.0)
                 .mesh()
                 .build()
         }
-        CollisionShape::Cylinder { half_height, radius } => {
-            Cylinder::new(*radius as f32, *half_height as f32 * 2.0)
+        CollisionShape::Cylinder { half_length, radius } => {
+            Cylinder::new(*radius as f32, *half_length as f32 * 2.0)
                 .mesh()
                 .build()
         }
@@ -1006,13 +1005,16 @@ pub mod solari {
 - [x] Write unit tests for type conversions (2 tests)
 - [x] Write integration tests for entity spawning (6 tests)
 - [x] Write integration tests for transform sync (5 tests)
-- [x] All 25 tests pass, clippy clean (now 32 with Phase 2)
+- [x] Tests pass, clippy clean
 
-**Test Coverage:**
-- 14 unit tests (mesh, camera, convert, systems, plugin, gizmos)
-- 6 spawn integration tests (`tests/spawn_tests.rs`)
-- 5 sync integration tests (`tests/sync_tests.rs`)
-- 7 gizmo integration tests (`tests/gizmo_tests.rs`) [Phase 2]
+**Test Coverage (27 tests across 7 modules):**
+- 10 conversion tests (`src/convert.rs`)
+- 5 mesh generation tests (`src/mesh.rs`)
+- 5 model/data tests (`src/model_data.rs`)
+- 3 camera tests (`src/camera.rs`)
+- 2 system tests (`src/systems.rs`)
+- 1 gizmo test (`src/gizmos.rs`)
+- 1 plugin test (`src/plugin.rs`)
 
 **Implementation Notes:**
 - Module structure: `convert`, `components`, `resources`, `systems`, `mesh`, `camera`, `plugin`
@@ -1042,7 +1044,7 @@ pub mod solari {
 - [x] Add `enable_debug_gizmos` plugin option
 - [x] Create `contact_debug.rs` example with keyboard toggles
 - [x] Write gizmo integration tests (7 tests)
-- [x] All 32 tests pass, clippy clean
+- [x] Tests pass, clippy clean
 
 **Implementation Notes:**
 - New `gizmos.rs` module with 5 gizmo drawing systems
@@ -1053,7 +1055,7 @@ pub mod solari {
 - Keyboard toggles: C=contacts, N=normals, F=forces, J=joints, L=limits
 
 **Test Coverage:**
-- 7 gizmo configuration tests (`tests/gizmo_tests.rs`)
+- Gizmo configuration test in `src/gizmos.rs`
 - ViewerConfig default values and modification
 - DebugColors distinctiveness
 - Plugin headless/new configuration
@@ -1074,7 +1076,7 @@ pub mod solari {
 - [x] Create `mjcf_viewer.rs` example (simple humanoid)
 - [x] Create `urdf_viewer.rs` example (robot arm with gripper)
 - [x] Add model loading unit tests (6 tests)
-- [x] All 40 tests pass, clippy clean
+- [x] All 27 tests pass, clippy clean
 
 **Implementation Notes:**
 - `model_data.rs` module provides `PhysicsModel`, `PhysicsData`, `ModelBodyIndex`, `ModelGeomIndex`, `ModelSiteIndex`, `ModelDataRoot` types

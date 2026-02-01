@@ -43,7 +43,7 @@ sim/
 
 ## Core Architecture: Model/Data
 
-The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~8500 lines).
+The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~9500 lines).
 It implements MuJoCo's computation pipeline end-to-end.
 
 ### Model (static)

@@ -803,18 +803,14 @@ The two systems share no code. `integrate_with_method()` is re-exported by sim-p
 Option (a) is simpler and removes 1,005 lines of unused code. Option (b) is only
 warranted if users of sim-physics need standalone integration outside the pipeline.
 
-### C2. Correct stale MUJOCO_GAP_ANALYSIS.md
-**Effort:** S
+### C2. ~~Correct stale MUJOCO_GAP_ANALYSIS.md~~ ✅ DONE
 
-`docs/MUJOCO_GAP_ANALYSIS.md` claims at line 18: "Overall completion: ~100% of
-MuJoCo's core physics features are implemented." Line 22 lists Newton solver, PGS
-with SOR, island discovery, and parallel solving as "Fully Implemented." These were
-all deleted in the Phase 3 consolidation (commit `a5cef72`). Lines 27-28 list
-sensors and tendons as implemented, but they are stubs (see #4, #6).
-
-The document is now actively misleading. It should either:
-- **(a)** Be updated to reflect post-consolidation reality (preferred), or
-- **(b)** Be marked as superseded by `sim/docs/FUTURE_WORK.md` with a notice at the top.
+GAP_ANALYSIS.md was corrected: overall completion revised to ~65-70%, false claims
+about Newton solver / PGS-SOR / island discovery / parallel solving removed, sensor
+and tendon statuses marked as stubs. World/Stepper code samples replaced with
+Model/Data API. Stale file references (world.rs, stepper.rs, broad_phase.rs, loader.rs)
+annotated or updated. Sleeping bodies status corrected from "Implemented" to
+"Not implemented". solref/solimp marked as implemented.
 
 ---
 

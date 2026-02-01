@@ -325,7 +325,7 @@ let result = solver.solve_islands(&joints, &islands, &get_body_state, dt);
 | Rolling friction | condim 6-10 | `RollingFriction` | **Implemented** | - | - |
 | Complete friction model | condim 6 | `CompleteFrictionModel` | **Implemented** | - | - |
 | Contact pairs filtering | Supported | `contype`/`conaffinity` bitmasks | **Implemented** | - | - |
-| solref/solimp params | MuJoCo-specific | Different params | N/A | - | - |
+| solref/solimp params | MuJoCo-specific | `jnt_solref`, `geom_solimp`, `eq_solref`, etc. in `Model` | **Implemented** (in MuJoCo pipeline) | - | - |
 
 ### Implementation Notes: Elliptic Friction Cones ✅ COMPLETED
 
@@ -408,7 +408,7 @@ The collision detection pipeline now uses:
    - `bvh_from_triangle_mesh()` - Helper for building BVH from mesh
 3. ✅ **Narrow-phase**: GJK for intersection testing, EPA for penetration depth
 
-**Files:** `sim-core/src/broad_phase.rs`, `sim-core/src/mid_phase.rs`, `sim-core/src/world.rs`, `sim-core/src/gjk_epa.rs`
+**Files:** `sim-core/src/mid_phase.rs`, `sim-core/src/gjk_epa.rs`, `sim-core/src/collision_shape.rs`
 
 ### Implementation Notes: GJK/EPA ✅ COMPLETED
 
@@ -457,7 +457,7 @@ let shape = CollisionShape::convex_mesh(vertices);
 let tetra = CollisionShape::tetrahedron(0.5); // circumradius 0.5
 ```
 
-**Files:** `sim-core/src/gjk_epa.rs`, `sim-core/src/world.rs`
+**Files:** `sim-core/src/gjk_epa.rs`, `sim-core/src/collision_shape.rs`
 
 ---
 
@@ -486,9 +486,8 @@ Full triangle mesh collision support is now implemented:
 - Performance: 172 µs for 36k triangle pairs (well under 5ms target)
 
 **Implementation files:**
-- `sim-core/src/collision/triangle_mesh.rs` - Core triangle mesh collision
-- `sim-core/src/collision/mesh_mesh.rs` - Mesh-mesh collision with BVH
-- `sim-core/src/collision/` - Integration with collision dispatcher
+- `sim-core/src/mesh.rs` - Triangle mesh collision and mesh-mesh BVH traversal
+- `sim-core/src/mid_phase.rs` - BVH for collision culling
 
 ### Implementation Notes: SDF Collision ✅ COMPLETED (January 2026)
 
@@ -507,8 +506,7 @@ Full SDF (Signed Distance Field) collision support is now implemented:
 
 **Implementation files:**
 - `sim-core/src/sdf.rs` - Core SDF types and queries
-- `sim-core/src/collision/sdf_collision.rs` - All SDF collision functions
-- `sim-core/src/collision/sdf_collision.rs` - SDF collision dispatch
+- `sim-core/src/sdf.rs` - SDF types, queries, and all SDF collision functions
 
 ---
 
@@ -875,15 +873,15 @@ let mjcf = r#"
         </equality>
     </mujoco>
 "#;
-let model = load_mjcf_str(mjcf).expect("should parse");
-// model.connect_constraints contains the parsed constraints
+let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
+// model.equality.connects contains the parsed constraints
 ```
 
 **Files:**
 - `sim-constraint/src/equality.rs` - `ConnectConstraint` implementation
 - `sim-mjcf/src/types.rs` - `MjcfConnect`, `MjcfEquality` types
 - `sim-mjcf/src/parser.rs` - `<equality>` and `<connect>` element parsing
-- `sim-mjcf/src/loader.rs` - Conversion to `ConnectConstraint`
+- `sim-mjcf/src/model_builder.rs` - Conversion to `ConnectConstraint`
 
 ---
 
@@ -1041,7 +1039,7 @@ for _ in 0..100 {
 | Feature | MuJoCo | CortenForge | Status | Priority |
 |---------|--------|-------------|--------|----------|
 | Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` (was in `sparse.rs`) | **Removed** (Phase 3 consolidation) | - |
-| Sleeping bodies | Native | `Body::is_sleeping`, `put_to_sleep()`, `wake_up()` | **Implemented** | - |
+| Sleeping bodies | Native | — | **Not implemented** (removed with World/Stepper) | - |
 | Constraint islands | Auto | `ConstraintIslands` (was in `islands.rs`) | **Removed** (Phase 3 consolidation) | - |
 | **Multi-threading** | Model-data separation | `parallel` feature with rayon (island-parallel solving removed) | **Partial** (rayon available; constraint parallelism removed) | - |
 | SIMD | Likely | `sim-simd` crate with explicit vectorization | **Implemented** | - |
@@ -1107,8 +1105,8 @@ use sim_core::{ContactPoint, ContactManifold, ContactForce};
 > The island-parallel constraint solving described below was **deleted in Phase 3 consolidation** along with the Newton solver and `islands.rs`. The `parallel` feature and rayon dependency remain available in sim-core (`core/Cargo.toml:19,33`) but have no active constraint-parallelism callers. See [FUTURE_WORK #10](./FUTURE_WORK.md) for the batched simulation plan which will use rayon for cross-environment parallelism.
 
 The original `parallel` feature enabled multi-threaded constraint solving using rayon.
-Instead of splitting `World` into separate model/data structures (MuJoCo pattern),
-it used a snapshot-based approach with island-parallel constraint solving.
+Before the Model/Data refactor, the original design used a snapshot-based approach
+with island-parallel constraint solving.
 
 **Key Design Decisions:**
 
@@ -1122,10 +1120,9 @@ it used a snapshot-based approach with island-parallel constraint solving.
    rather than `ConstraintSolver` because Newton already had island-based solving
    infrastructure and provided fast convergence (2-3 iterations vs 8-16 for Gauss-Seidel).
 
-3. **Body integration remains sequential**: `World::integrate_bodies_parallel()` is
+3. **Body integration was sequential**: `integrate_bodies_parallel()` was
    actually sequential because hashbrown's `HashMap` does not support `par_iter_mut()`.
-   True parallel integration would require restructuring to `Vec<Body>` with an index map.
-   The main performance benefit comes from island-parallel constraint solving.
+   The Model/Data refactor now uses `Vec`-based storage, making parallel integration feasible.
 
 4. **Minimum thresholds**: Parallel solving only activates when there are at least
    `min_islands_for_parallel` independent islands (default: 2), avoiding rayon overhead
@@ -1134,9 +1131,8 @@ it used a snapshot-based approach with island-parallel constraint solving.
 **Key types and methods:**
 
 - `ParallelConfig` in `sim-types/src/config.rs` - Configuration for parallel thresholds
-- `sim_constraint::parallel::solve_islands_parallel()` (removed in Phase 3 consolidation — was in `parallel.rs`)
-- `NewtonConstraintSolver::solve_islands_parallel()` (removed in Phase 3 consolidation — was in `newton.rs`)
-- `World::solve_constraints_parallel()` - Parallel constraint solving entry point
+- `sim_constraint::parallel::solve_islands_parallel()` — removed in Phase 3 consolidation
+- `NewtonConstraintSolver::solve_islands_parallel()` — removed in Phase 3 consolidation
 
 **Usage:**
 
@@ -1149,9 +1145,8 @@ config.solver.parallel.min_islands_for_parallel = 2;
 // Or use the preset for multi-island scenes
 config.solver.parallel = ParallelConfig::many_islands();
 
-// The Stepper automatically uses parallel methods when enabled
-let mut stepper = Stepper::new();
-stepper.step(&mut world)?;
+// Note: Island-parallel constraint solving was removed in Phase 3.
+// The parallel feature and rayon dependency remain for future use.
 ```
 
 **Performance notes:**
@@ -1160,52 +1155,14 @@ stepper.step(&mut world)?;
 - Falls back to sequential for small scenes to avoid parallel overhead
 - Use `ParallelConfig::sequential()` for deterministic results matching default solver
 
-**Files:** `sim-constraint/src/parallel.rs` (removed in Phase 3 consolidation), `sim-constraint/src/newton.rs` (removed in Phase 3 consolidation),
-`sim-core/src/world.rs`, `sim-core/src/stepper.rs`, `sim-types/src/config.rs`
+**Files:** `sim-types/src/config.rs` (ParallelConfig remains), removed: `sim-constraint/src/parallel.rs`, `sim-constraint/src/newton.rs`
 
-### Implementation Notes: Sleeping Bodies ✅ COMPLETED
+### Implementation Notes: Sleeping Bodies — REMOVED
 
-Sleeping (deactivation) is a performance optimization that skips simulation for
-stationary bodies. This significantly reduces computational cost for scenes with
-many resting objects.
-
-**How it works:**
-1. Bodies track `sleep_time` - how long they've been below the velocity threshold
-2. When `sleep_time >= sleep_time_threshold`, the body is put to sleep
-3. Sleeping bodies are skipped during integration, gravity, and damping
-4. Bodies wake up automatically when:
-   - Force or torque is applied (`apply_force`, `apply_torque`, `apply_force_at_point`)
-   - Contact forces are applied
-   - Joint constraint forces are applied
-
-**Configuration (in `SolverConfig`):**
-- `allow_sleeping: bool` - Enable/disable sleeping globally (default: `true`)
-- `sleep_threshold: f64` - Velocity threshold in m/s and rad/s (default: `0.01`)
-- `sleep_time_threshold: f64` - Time in seconds before sleeping (default: `0.5`)
-
-**Usage:**
-```rust
-use sim_core::{World, Stepper};
-use sim_types::SimulationConfig;
-
-// Default config has sleeping enabled
-let mut config = SimulationConfig::default();
-
-// Customize sleeping behavior
-config.solver.sleep_threshold = 0.05;      // More aggressive sleeping
-config.solver.sleep_time_threshold = 0.2;  // Sleep faster
-
-// Or disable sleeping for high-accuracy simulations
-config.solver.allow_sleeping = false;
-
-// Manual control
-if let Some(body) = world.body_mut(body_id) {
-    body.put_to_sleep();  // Force body to sleep
-    body.wake_up();       // Force body to wake
-}
-```
-
-**Files:** `sim-core/src/world.rs`, `sim-core/src/stepper.rs`, `sim-types/src/config.rs`
+> **Note:** Sleeping (deactivation) was implemented in the old World/Stepper architecture
+> (`Body::is_sleeping`, `put_to_sleep()`, `wake_up()`). It was **removed** along with
+> the `World` and `Stepper` types during the Model/Data refactor. Re-implementing sleeping
+> in the MuJoCo pipeline is tracked in [FUTURE_WORK.md](./FUTURE_WORK.md).
 
 ---
 
@@ -1296,10 +1253,10 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 
 **Usage:**
 ```rust
-use sim_mjcf::{load_mjcf_str, load_mjcf_file, MjcfLoader};
-use sim_core::World;
+use sim_mjcf::{parse_mjcf_str, load_model};
+use sim_core::Model;
 
-// Load from string
+// Parse MJCF to get a MjcfModel (intermediate representation)
 let mjcf = r#"
     <mujoco model="robot">
         <worldbody>
@@ -1309,14 +1266,12 @@ let mjcf = r#"
         </worldbody>
     </mujoco>
 "#;
-let model = load_mjcf_str(mjcf).expect("should parse");
+let mjcf_model = parse_mjcf_str(mjcf).expect("should parse");
 
-// Spawn into world
-let mut world = World::default();
-let spawned = model.spawn_at_origin(&mut world).expect("should spawn");
-
-// Access by name
-let body_id = spawned.body_id("base").expect("base exists");
+// Or load directly into a sim-core Model (for simulation)
+let model: Model = load_model(mjcf).expect("should load");
+let mut data = model.make_data();
+data.step(&model).expect("should step");
 ```
 
 **Limitations:**
@@ -1326,7 +1281,7 @@ let body_id = spawned.body_id("base").expect("base exists");
 - Include files not supported
 - Textures and materials parsed but not loaded (meshes are loaded)
 
-**Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `loader.rs`, `validation.rs`, `config.rs`
+**Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `model_builder.rs`, `validation.rs`, `config.rs`
 
 ### Implementation Notes: MJCF `<option>` Element ✅ COMPLETED
 
@@ -1380,7 +1335,7 @@ All 20 MuJoCo flags supported:
 
 **Usage:**
 ```rust
-use sim_mjcf::{load_mjcf_str, ExtendedSolverConfig};
+use sim_mjcf::{parse_mjcf_str, ExtendedSolverConfig};
 
 let mjcf = r#"
     <mujoco model="test">
@@ -1395,7 +1350,7 @@ let mjcf = r#"
     </mujoco>
 "#;
 
-let model = load_mjcf_str(mjcf).expect("should parse");
+let model = parse_mjcf_str(mjcf).expect("should parse");
 
 // Access simulation config
 let sim_config = model.simulation_config();
@@ -1407,7 +1362,7 @@ assert!(ext_config.warmstart_enabled());
 assert!(ext_config.flags.contact);
 ```
 
-**Files:** `sim-mjcf/src/types.rs`, `parser.rs`, `config.rs`, `loader.rs`, `validation.rs`
+**Files:** `sim-mjcf/src/types.rs`, `parser.rs`, `config.rs`, `model_builder.rs`, `validation.rs`
 
 ---
 
@@ -1434,7 +1389,7 @@ See [FUTURE_WORK.md](./FUTURE_WORK.md) for remaining items.
 The `parallel` feature originally enabled multi-threaded constraint solving and body integration.
 Island-parallel constraint solving (`solve_islands_parallel()`) and its dependencies (Newton solver, `islands.rs`) were **removed in Phase 3 consolidation**. The rayon dependency and `parallel` feature flag remain available for future batched simulation ([FUTURE_WORK #10](./FUTURE_WORK.md)).
 
-**Files:** `sim-constraint/src/parallel.rs` (removed in Phase 3 consolidation), `sim-core/src/world.rs`, `sim-core/src/stepper.rs`
+**Files:** `sim-types/src/config.rs` (ParallelConfig). Removed: `sim-constraint/src/parallel.rs`, `sim-core/src/world.rs`, `sim-core/src/stepper.rs`
 
 ### ✅ Recently Completed: MJB Binary Format
 
@@ -1559,14 +1514,14 @@ Focus: All collision detection improvements, primarily in sim-core.
 
 **Implemented:**
 
-**Cylinder Collision Shape (`sim-core/src/world.rs`, `gjk_epa.rs`):**
+**Cylinder Collision Shape (`sim-core/src/collision_shape.rs`, `gjk_epa.rs`):**
 - `CollisionShape::Cylinder { half_length, radius }` - Flat-capped cylinder
 - `CollisionShape::cylinder(half_length, radius)` - Constructor
 - `support_cylinder()` - GJK support function with proper local direction handling
 - Tight AABB computation accounting for rotation
 - All collision pairs routed through GJK/EPA
 
-**Ellipsoid Collision Shape (`sim-core/src/world.rs`, `gjk_epa.rs`):**
+**Ellipsoid Collision Shape (`sim-core/src/collision_shape.rs`, `gjk_epa.rs`):**
 - `CollisionShape::Ellipsoid { radii }` - Axis-aligned ellipsoid
 - `CollisionShape::ellipsoid(radii)`, `ellipsoid_xyz(rx, ry, rz)` - Constructors
 - `support_ellipsoid()` - GJK support function using normalized gradient
@@ -1583,21 +1538,18 @@ Focus: All collision detection improvements, primarily in sim-core.
 - `bvh_from_triangle_mesh()` - Helper for building from triangle soup
 - Configurable `max_primitives_per_leaf` (default: 4)
 
-**Contact Pairs Filtering (`sim-core/src/world.rs`):**
-- `Body::contype: u32` - Body's collision type bitmask
-- `Body::conaffinity: u32` - Body's affinity bitmask
-- `Body::with_collision_filter(contype, conaffinity)` - Builder method
-- `Body::can_collide_with(&other)` - MuJoCo-compatible filter check
+**Contact Pairs Filtering (MuJoCo pipeline):**
+- `geom_contype: Vec<u32>` - Geom collision type bitmask (in `Model`)
+- `geom_conaffinity: Vec<u32>` - Geom affinity bitmask (in `Model`)
 - Check: `(a.contype & b.conaffinity) != 0 && (b.contype & a.conaffinity) != 0`
 - Defaults: `contype = 1`, `conaffinity = 1` (everything collides)
-- Integrated into `detect_pair_contact()` before shape tests
 
-**MJCF Loader Updates (`sim-mjcf/src/loader.rs`):**
-- Transfer `contype`/`conaffinity` from MJCF geoms to Body
+**MJCF Model Builder Updates (`sim-mjcf/src/model_builder.rs`):**
+- Transfer `contype`/`conaffinity` from MJCF geoms to Model arrays
 - Native `CollisionShape::Cylinder` for MJCF cylinders (no longer approximated)
 - Native `CollisionShape::Ellipsoid` for MJCF ellipsoids
 
-**Files:** `sim-core/src/world.rs`, `sim-core/src/gjk_epa.rs`, `sim-core/src/broad_phase.rs`, `sim-core/src/mid_phase.rs`, `sim-mjcf/src/loader.rs`
+**Files:** `sim-core/src/mujoco_pipeline.rs`, `sim-core/src/gjk_epa.rs`, `sim-core/src/mid_phase.rs`, `sim-mjcf/src/model_builder.rs`
 
 ### Phase 6: Contact Physics ✅ COMPLETED
 
@@ -1974,8 +1926,7 @@ let combined = FlexEdgeConstraint::stretch_shear(
 
 **Usage:**
 ```rust
-use sim_core::{CollisionShape, HeightFieldData, World};
-use nalgebra::Point3;
+use sim_core::{CollisionShape, HeightFieldData};
 use std::sync::Arc;
 
 // Create height field from function
@@ -1987,19 +1938,14 @@ let terrain = CollisionShape::terrain_from_fn(100, 100, 1.0, |x, y| {
 let heights: Vec<f64> = load_terrain_data();
 let data = HeightFieldData::new(heights, 256, 256, 0.5);
 let terrain = CollisionShape::heightfield(Arc::new(data));
-
-// Add to world as static body
-let ground_id = world.add_static_body(Pose::identity());
-world.body_mut(ground_id).unwrap().collision_shape = Some(terrain);
 ```
 
 **Files:**
 - `sim-constraint/src/cg.rs` - Conjugate Gradient solver
 - `sim-constraint/src/equality.rs` - Tendon coupling constraints (additions)
 - `sim-deformable/src/constraints.rs` - Flex edge constraints (additions)
-- `sim-core/src/heightfield.rs` - Height field collision (new)
-- `sim-core/src/world.rs` - CollisionShape::HeightField variant
-- `sim-core/src/broad_phase.rs` - HeightField AABB computation
+- `sim-core/src/heightfield.rs` - Height field collision
+- `sim-core/src/collision_shape.rs` - CollisionShape::HeightField variant
 - `sim-core/src/gjk_epa.rs` - HeightField support function
 
 > **📌 Note:** For the current authoritative roadmap with verified code references, see [`sim/docs/FUTURE_WORK.md`](./FUTURE_WORK.md). The priority roadmap above is historical and partially outdated.
