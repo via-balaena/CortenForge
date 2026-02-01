@@ -159,7 +159,7 @@ pub use curves::{
 };
 pub use hill::{FiberState, HillMuscle, HillMuscleConfig, MuscleDiagnostics, MuscleForceResult};
 pub use kinematics::{
-    BiarticularlMuscleConfig, ConstantMomentArm, MomentArmModel, MusclePath, PolynomialMomentArm,
+    BiarticularMuscleConfig, ConstantMomentArm, MomentArmModel, MusclePath, PolynomialMomentArm,
     SplineMomentArm, ViaPoint,
 };
 

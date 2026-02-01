@@ -266,7 +266,7 @@ pub mod prelude {
         ActivationState,
         // Force curves
         ActiveForceLengthCurve,
-        BiarticularlMuscleConfig,
+        BiarticularMuscleConfig,
         ConstantMomentArm,
         // State and diagnostics
         FiberState,

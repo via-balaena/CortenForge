@@ -606,7 +606,7 @@ Created a comprehensive Hill-type muscle-tendon unit (MTU) model for biomechanic
 - `ConstantMomentArm` - Fixed lever arm
 - `PolynomialMomentArm` - r(θ) as polynomial function
 - `SplineMomentArm` - Interpolation from measured data
-- `BiarticularlMuscleConfig` - Two-joint muscles (e.g., rectus femoris)
+- `BiarticularMuscleConfig` - Two-joint muscles (e.g., rectus femoris)
 - `MusclePath` - Via points and wrapping support (geometry only)
 
 **Integration with sim-constraint (optional `muscle` feature):**
@@ -691,7 +691,7 @@ Created `sim-sensor` crate with:
 **Example usage:**
 ```rust
 use sim_sensor::{Imu, ImuConfig, TouchSensor, TouchSensorConfig};
-use sim_types::{BodyId, RigidBodyState, Pose};
+use sim_types::{BodyId, ContactInfo, RigidBodyState, Pose};
 
 // Create an IMU on body 1
 let imu = Imu::new(BodyId::new(1), ImuConfig::default());
@@ -700,10 +700,11 @@ let reading = imu.read_from_state(&state, 0.001);
 
 // Create a touch sensor
 let touch = TouchSensor::new(BodyId::new(1), TouchSensorConfig::default());
+let contacts: Vec<ContactInfo> = vec![];
 let obs = touch.read_as_observation(&contacts, 0.001);
 ```
 
-**Files:** `sim-sensor/src/imu.rs`, `sim-sensor/src/force_torque.rs`, `sim-sensor/src/touch.rs`
+**Files:** `sim-sensor/src/imu.rs`, `sim-sensor/src/force_torque.rs`, `sim-sensor/src/touch.rs`, `sim-sensor/src/rangefinder.rs`, `sim-sensor/src/magnetometer.rs`
 
 **New crate:** `sim-sensor/`
 
