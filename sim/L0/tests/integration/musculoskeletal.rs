@@ -1,7 +1,8 @@
-//! Musculoskeletal integration tests.
+//! Musculoskeletal integration tests (standalone sim-muscle/sim-tendon crates only).
 //!
-//! Tests muscle and tendon dynamics in isolation and combined with the
-//! physics simulation.
+//! Tests muscle and tendon dynamics from the **standalone** sim-muscle and
+//! sim-tendon crates. These tests do **not** exercise pipeline integration —
+//! sim-muscle and sim-tendon have zero coupling to `mujoco_pipeline.rs`.
 
 use approx::assert_relative_eq;
 use sim_muscle::{HillMuscle, HillMuscleConfig, MuscleGroup};

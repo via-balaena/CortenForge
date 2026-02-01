@@ -338,9 +338,15 @@ sim/L0/tests/
 > migrated to `integration/` using the Model/Data API. Forward dynamics, contact physics,
 > and trajectory comparison tests are planned but not yet implemented.
 
-### CI integration
+### CI integration (planned — not yet created)
+
+> **Note:** This workflow does not exist yet. The file `.github/workflows/mujoco_conformance.yml`
+> and script `scripts/generate_mujoco_references.py` have not been created. The correct package
+> for conformance tests is `sim-conformance-tests`, not `sim-core`. Current conformance tests
+> run via `cargo test -p sim-conformance-tests` in the existing `quality-gate.yml` workflow.
+
 ```yaml
-# .github/workflows/mujoco_conformance.yml
+# .github/workflows/mujoco_conformance.yml (PLANNED)
 name: MuJoCo Conformance
 
 on: [push, pull_request]
@@ -360,7 +366,7 @@ jobs:
         run: python scripts/generate_mujoco_references.py
 
       - name: Run conformance tests
-        run: cargo test --package sim-core --features mujoco-conformance
+        run: cargo test -p sim-conformance-tests
 ```
 
 ---

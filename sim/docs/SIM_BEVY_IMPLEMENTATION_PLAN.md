@@ -1035,23 +1035,22 @@ pub mod solari {
 **Tasks:**
 - [x] Implement contact point gizmos
 - [x] Implement contact normal arrows
-- [x] Implement force vector visualization
-- [x] Implement joint axis visualization
-- [x] Implement joint limit arc visualization
+- [ ] Implement force vector visualization (ViewerConfig fields exist but no drawing system)
+- [ ] Implement joint axis visualization (ViewerConfig fields exist but no drawing system)
+- [ ] Implement joint limit arc visualization (ViewerConfig fields exist but no drawing system)
 - [x] Add `ViewerConfig` resource for runtime toggles
 - [x] Add `DebugColors` configuration
 - [x] Add `enable_debug_gizmos` plugin option
 - [x] Create `contact_debug.rs` example with keyboard toggles
-- [x] Write gizmo integration tests (7 tests)
+- [ ] Write gizmo integration tests (only 1 of 7 exists — `debug_gizmos_set_derives`)
 - [x] Tests pass, clippy clean
 
 **Implementation Notes:**
 - New `gizmos.rs` module with 5 gizmo drawing systems
-- Contact detection clones world for snapshot (TODO: cache contacts for performance)
+- `update_cached_contacts` system registered but is a no-op stub (CachedContacts always empty)
 - `SimViewerPlugin::headless()` disables gizmos (requires `bevy_gizmos`)
-- Joint axes drawn at midpoint between parent/child bodies
-- Joint limits visualized as arc segments with limit markers
-- Keyboard toggles: C=contacts, N=normals, F=forces, J=joints, L=limits
+- Force vector, joint axis, and joint limit gizmos are **not yet implemented** (ViewerConfig/DebugColors fields exist but no drawing systems)
+- Keyboard toggles: C=contacts, N=normals (F=forces, J=joints, L=limits defined but non-functional)
 
 **Test Coverage:**
 - Gizmo configuration test in `src/gizmos.rs`
@@ -1072,9 +1071,9 @@ pub mod solari {
 - [x] Implement MJCF → Bevy entity spawning via sim-mjcf integration
 - [x] Implement URDF → Bevy entity spawning via sim-urdf integration
 - [x] Handle mesh geometry (TriangleMesh → Bevy Mesh with proper normals)
-- [x] Create `mjcf_viewer.rs` example (simple humanoid)
-- [x] Create `urdf_viewer.rs` example (robot arm with gripper)
-- [x] Add model loading unit tests (6 tests)
+- [x] Create `mjcf_humanoid.rs` example (simple humanoid) — note: file is `mjcf_humanoid.rs`, not `mjcf_viewer.rs`
+- [ ] Create `urdf_viewer.rs` example (robot arm with gripper) — **not created**
+- [x] Add model loading unit tests (5 of 6 — `file_not_found_error` missing)
 - [x] All 27 tests pass, clippy clean
 
 **Implementation Notes:**
@@ -1086,10 +1085,11 @@ pub mod solari {
 - Examples demonstrate keyboard toggles and runtime info printing
 
 **Test Coverage:**
-- 6 new model loading tests in `model_data.rs`:
+- 5 model loading tests in `model_data.rs`:
   - `model_body_index_accessors`, `model_geom_index_accessors`
   - `model_site_index_accessors`, `physics_model_deref`
-  - `physics_data_deref_mut`, `file_not_found_error`
+  - `physics_data_deref_mut`
+  - (`file_not_found_error` not yet implemented)
 
 **Deliverable:** Can load MJCF/URDF and visualize articulated robots. ✅
 

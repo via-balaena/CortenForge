@@ -453,8 +453,9 @@ reflects true physical quantities.
 
 #### Current State
 The pipeline `Integrator` enum (`mujoco_pipeline.rs:623-631`) has three variants:
-`Euler`, `RungeKutta4`, `Implicit`. The `Implicit` variant's doc comment says
-"Implicit midpoint" (`mujoco_pipeline.rs:629`), but the actual implementation in
+`Euler`, `RungeKutta4`, `Implicit`. The `Implicit` variant's doc comment has been
+corrected to "Implicit Euler for diagonal per-DOF spring/damper forces"
+(`mujoco_pipeline.rs:629`). The actual implementation in
 `mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8331`) solves:
 
 ```

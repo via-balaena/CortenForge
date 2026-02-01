@@ -7427,21 +7427,19 @@ dependencies = [
 
 [[package]]
 name = "sim-bevy"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "bevy",
- "glam",
  "nalgebra",
  "sim-core",
  "sim-mjcf",
  "sim-types",
  "sim-urdf",
- "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "sim-conformance-tests"
-version = "0.1.0"
+version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
  "nalgebra",
@@ -7471,12 +7469,10 @@ version = "0.7.0"
 dependencies = [
  "approx 0.5.1",
  "criterion",
- "hashbrown 0.15.5",
  "nalgebra",
  "rand 0.8.5",
  "rayon",
  "serde",
- "sim-sensor",
  "sim-simd",
  "sim-types",
  "thiserror 2.0.18",

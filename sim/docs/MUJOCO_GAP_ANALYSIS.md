@@ -3,7 +3,7 @@
 <!--
 LLM/Agent Note: This document is ~2000 lines. To update it efficiently:
 1. Use offset/limit reads to target specific sections (see ## headers below)
-2. Key sections: Executive Summary (line ~9), §5 Geom Types (line ~432), §13 Model Format (line ~1166)
+2. Key sections: Executive Summary (line ~18), §5 Geom Types (line ~465), §13 Model Format (line ~1180)
 3. The document is well-structured - grep for "^## " to find all section headers
 -->
 
@@ -22,15 +22,17 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, Implicit (diagonal spring/damper only — see [FUTURE_WORK #7](./FUTURE_WORK.md))
 - Constraint solver: PGS (plain Gauss-Seidel, no SOR), Warm Starting
-- Contact model (Compliant, Elliptic/Pyramidal friction, Torsional/Rolling)
+- Contact model (Compliant with solref/solimp, circular friction cone condim 3, contype/conaffinity filtering)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free**)
 - Actuators: Motor (`ctrl * gear` only — no gain/bias for position/velocity/damper servos)
 - Sensors (15 in pipeline): JointPos, JointVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, ActuatorFrc
-- Model loading (URDF, MJCF with full `<default>` support, **MJB binary format**)
+- Model loading (URDF, MJCF with `<default>` parsing, **MJB binary format**) — note: `DefaultResolver` is implemented but **not called** by `model_builder.rs`; defaults are parsed then dropped
 
 ### Placeholder / Stub (in pipeline)
 - RK4 integrator — dispatches to Euler code path ([FUTURE_WORK #8](./FUTURE_WORK.md))
+- Elliptic/Pyramidal friction cones — `cone` field stored but solver hardcodes circular cone
+- Torsional/Rolling friction — `Contact.dim` and `geom_friction.y/.z` stored but solver is condim 3 only
 - Force/Torque sensors — return `[0, 0, 0]` ([FUTURE_WORK #6](./FUTURE_WORK.md))
 - Touch sensor — uses hardcoded `depth * 10000` stiffness ([FUTURE_WORK #6](./FUTURE_WORK.md))
 - Rangefinder — returns `sensor_cutoff` constant ([FUTURE_WORK #6](./FUTURE_WORK.md))
@@ -60,7 +62,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 |---------|----------------|---------|
 | Non-convex mesh collision | TriangleMesh ↔ all primitives + mesh-mesh with BVH acceleration | [§5](#5-geom-types-collision-shapes) |
 | SDF collision | All 10 shape combinations (Sphere, Capsule, Box, Cylinder, Ellipsoid, ConvexMesh, Plane, TriangleMesh, HeightField, Sdf↔Sdf) | [§5](#5-geom-types-collision-shapes) |
-| MJCF `<default>` element | Full support for joint, geom, actuator, tendon, sensor defaults with inheritance | [§13](#13-model-format) |
+| MJCF `<default>` element | ⚠️ Parsed only — `DefaultResolver` implemented but **not called** by `model_builder.rs`; defaults are silently dropped | [§13](#13-model-format) |
 | MJCF `<tendon>` parsing | Spatial and fixed tendons with site/joint references | [§13](#13-model-format) |
 | MJCF `<sensor>` parsing | 24 sensor types (position, velocity, force, IMU, etc.) | [§13](#13-model-format) |
 | Multi-threading | `parallel` feature with rayon (island-parallel solving removed in Phase 3) | [§12](#12-performance-optimizations) |
@@ -317,18 +319,18 @@ let result = solver.solve_islands(&joints, &islands, &get_body_state, dt);
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
 | Compliant contacts | Core | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
-| Spring-damper (F = k*d^p + c*v) | Core | `compute_normal_force_magnitude` | **Implemented** | - | - |
-| Nonlinear stiffness (d^p) | Core | `stiffness_power` param | **Implemented** | - | - |
-| Contact margin | Supported | `contact_margin` param | **Implemented** | - | - |
-| Elliptic friction cones | Default | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
-| Pyramidal friction cones | Alternative | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
-| Torsional friction | condim 4-6 | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
-| Rolling friction | condim 6-10 | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
-| Complete friction model | condim 6 | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
+| Spring-damper (F = k*d^p + c*v) | Core | `compute_normal_force_magnitude` | **Standalone** (in sim-simd `batch_ops.rs` only; pipeline uses constraint-based PGS, not penalty spring-damper) | - | - |
+| Nonlinear stiffness (d^p) | Core | `stiffness_power` param | **Standalone** (same as above — sim-simd only) | - | - |
+| Contact margin | Supported | `contact_margin` param | **Implemented** (field stored; effect on collision thresholds TBD) | - | - |
+| Elliptic friction cones | Default | `Model.cone` field | **Stub** (`cone` field parsed and stored but PGS solver ignores it — hardcodes circular cone) | - | - |
+| Pyramidal friction cones | Alternative | `Model.cone` field | **Stub** (`cone` field stored but solver ignores it) | - | - |
+| Torsional friction | condim 4-6 | `Contact.dim`, `Contact.mu[1]` | **Stub** (data fields exist but solver is hardcoded to 3 rows per contact — condim 3 only) | - | - |
+| Rolling friction | condim 6-10 | `geom_friction.y`/`.z` | **Stub** (data stored but only `.x` sliding friction is extracted for contacts) | - | - |
+| Complete friction model | condim 6 | — | **Stub** (consequence of above — only condim 3 circular cone is functional) | - | - |
 | Contact pairs filtering | Supported | `contype`/`conaffinity` bitmasks | **Implemented** | - | - |
 | solref/solimp params | MuJoCo-specific | `jnt_solref`, `geom_solimp`, `eq_solref`, etc. in `Model` | **Implemented** (in MuJoCo pipeline) | - | - |
 
-### Implementation Notes: Elliptic Friction Cones ✅ COMPLETED
+### Implementation Notes: Elliptic Friction Cones ⚠️ STUB (types exist but solver ignores cone field)
 
 MuJoCo uses elliptic cones by default:
 ```
@@ -345,7 +347,7 @@ f_n ≥ 0, (f_t1/μ_1)² + (f_t2/μ_2)² ≤ f_n²
 
 **Files modified:** `sim-core/src/contact.rs`, `sim-core/src/mujoco_pipeline.rs` (formerly in `sim-contact`, now consolidated into `sim-core`)
 
-### Implementation Notes: Advanced Friction Models ✅ COMPLETED
+### Implementation Notes: Advanced Friction Models ⚠️ STUB (data fields exist; solver hardcodes condim 3; former sim-contact code removed)
 
 MuJoCo uses contact dimensionality (`condim`) to specify which friction components are active:
 - **condim 1**: Normal force only (frictionless)
@@ -526,9 +528,9 @@ shapes is a remaining integration task.
 | Planar | Yes | `PlanarJoint` | **Standalone** | In sim-constraint; MJCF model builder errors (not in pipeline `MjJointType`) |
 | Cylindrical | Yes | `CylindricalJoint` | **Standalone** | In sim-constraint; MJCF model builder errors (not in pipeline `MjJointType`) |
 
-### Implementation Notes: Free/Planar/Cylindrical Joints ✅ COMPLETED
+### Implementation Notes: Free/Planar/Cylindrical Joints ✅ COMPLETED (Free only; Planar/Cylindrical are Standalone)
 
-All three joint types are now fully implemented with constraint solver support:
+FreeJoint is fully implemented in the pipeline. PlanarJoint and CylindricalJoint exist in sim-constraint but are not in the pipeline's `MjJointType` enum (MJCF model builder errors on them):
 
 **FreeJoint (6 DOF floating bodies):**
 - Used for floating-base robots (quadrupeds, humanoids, drones)
@@ -610,11 +612,13 @@ Created a comprehensive Hill-type muscle-tendon unit (MTU) model for biomechanic
 - `BiarticularMuscleConfig` - Two-joint muscles (e.g., rectus femoris)
 - `MusclePath` - Via points and wrapping support (geometry only)
 
+**`MuscleActuator` trait** (in sim-muscle `lib.rs`, not sim-constraint):
+- Common interface for muscle models
+
 **Integration with sim-constraint (optional `muscle` feature):**
 - `MuscleJoint` - RevoluteJoint with muscle group actuation
 - `MuscleJointBuilder` - Builder pattern for agonist/antagonist pairs
 - `MuscleCommands` - Command storage for RL interfaces
-- `MuscleActuator` trait - Common interface for muscle models
 
 **Usage:**
 ```rust
@@ -824,9 +828,10 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 
 | Constraint | MuJoCo | CortenForge | Status | Priority |
 |------------|--------|-------------|--------|----------|
-| Connect (ball) | Yes | `ConnectConstraint` | **Implemented** | - |
-| Weld | Yes | Via FixedJoint | **Implemented** | - |
-| Joint coupling | Yes | `JointCoupling`, `GearCoupling`, `DifferentialCoupling` | **Implemented** | - |
+| Connect (ball) | Yes | Pipeline `EqualityType::Connect` + `apply_connect_constraint()` | **Implemented** (in pipeline via penalty forces; standalone `ConnectConstraint` in sim-constraint is unused) | - |
+| Weld | Yes | Pipeline `EqualityType::Weld` + `apply_weld_constraint()` | **Implemented** (in pipeline; standalone `WeldConstraint` in sim-constraint is unused) | - |
+| Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (in pipeline; standalone `DistanceConstraint` in sim-constraint is unused) | - |
+| Joint coupling | Yes | Pipeline `EqualityType::Joint` + `apply_joint_equality_constraint()` | **Implemented** (in pipeline; standalone `JointCoupling`/`GearCoupling`/`DifferentialCoupling` in sim-constraint are unused) | - |
 | Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Standalone** (in sim-constraint, not wired into pipeline tendon system; see [FUTURE_WORK #4](./FUTURE_WORK.md)) | - |
 | Flex (edge length) | Yes | `FlexEdgeConstraint` | **Standalone** (in sim-deformable, XPBD not called from pipeline; see [FUTURE_WORK #9](./FUTURE_WORK.md)) | - |
 
@@ -1052,10 +1057,10 @@ for _ in 0..100 {
 | Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` (was in `sparse.rs`) | **Removed** (Phase 3 consolidation) | - |
 | Sleeping bodies | Native | — | **Not implemented** (removed with World/Stepper) | - |
 | Constraint islands | Auto | `ConstraintIslands` (was in `islands.rs`) | **Removed** (Phase 3 consolidation) | - |
-| **Multi-threading** | Model-data separation | `parallel` feature with rayon (island-parallel solving removed) | **Partial** (rayon available; constraint parallelism removed) | - |
-| SIMD | Likely | `sim-simd` crate with explicit vectorization | **Implemented** | - |
+| **Multi-threading** | Model-data separation | `parallel` feature with rayon | **Reserved** (Cargo.toml wiring exists but zero `#[cfg(feature = "parallel")]` or rayon usage in code; see [FUTURE_WORK #10](./FUTURE_WORK.md)) | - |
+| SIMD | Likely | `sim-simd` crate | **Partial** (only `find_max_dot()` is used by sim-core GJK; all other batch ops have zero callers outside benchmarks) | - |
 
-### Implementation Notes: SIMD Optimization ✅ COMPLETED
+### Implementation Notes: SIMD Optimization ⚠️ PARTIAL (crate complete; only `find_max_dot` has production callers)
 
 The `sim-simd` crate provides explicit SIMD vectorization for hot paths in the physics
 simulation stack. It processes multiple vectors simultaneously using batch operations
@@ -1234,7 +1239,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 |---------|---------|-------|
 | `<mujoco>` | Full | Root element, model name |
 | `<option>` | Full | All attributes, flags, solver params, collision options |
-| `<default>` | Full | Joint, geom, actuator, tendon, sensor defaults with inheritance |
+| `<default>` | ⚠️ Parsed only | `DefaultResolver` implemented in `defaults.rs` but **never called** by `model_builder.rs` — defaults are silently dropped during Model conversion |
 | `<worldbody>` | Full | Body tree root |
 | `<body>` | Full | Hierarchical bodies with pos, quat, euler |
 | `<inertial>` | Full | mass, diaginertia, fullinertia |
@@ -1242,9 +1247,9 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<geom>` | Partial | sphere, box, capsule, cylinder, ellipsoid, plane, mesh (convex + non-convex); hfield/sdf parsed but fall back to Box |
 | `<site>` | Parsed | Markers (not used in physics) |
 | `<actuator>` | Full | motor, position, velocity, cylinder, muscle, adhesion, damper, general |
-| `<tendon>` | Full | spatial and fixed tendons with site/joint references |
-| `<sensor>` | Full | 24 sensor types (jointpos, jointvel, accelerometer, gyro, force, torque, etc.) |
-| `<contact>` | Full | Contact filtering via contype/conaffinity |
+| `<tendon>` | Parsed | Spatial and fixed tendons parsed but **dropped by model builder** (not carried to sim-core Model) |
+| `<sensor>` | Parsed | 24 sensor types parsed but **dropped by model builder** (pipeline sensors populated from model builder defaults only) |
+| `<contact>` | Partial | contype/conaffinity bitmasks on geoms work; `<pair>` and `<exclude>` sub-elements are **not parsed** |
 
 **Supported Joint Types:**
 - `hinge` → `RevoluteJoint` (1 DOF rotation)
@@ -1332,7 +1337,7 @@ All 20 MuJoCo flags supported:
 - `constraint`, `equality`, `frictionloss`, `limit`, `contact`
 - `passive`, `gravity`, `clampctrl`, `warmstart`, `filterparent`
 - `actuation`, `refsafe`, `sensor`, `midphase`, `eulerdamp`
-- `override`, `energy`, `fwdinv`, `island`, `nativeccd`
+- `override`, `energy`, `multiccd`, `island`, `nativeccd`
 
 **Configuration Types:**
 - `MjcfOption` - Complete option parsing with defaults
@@ -1388,7 +1393,7 @@ The following were completed in January 2026:
 |---------|---------|-------|
 | Non-convex mesh collision | §5 Geoms | `CollisionShape::TriangleMesh` with BVH acceleration |
 | SDF collision | §5 Geoms | All 10 shape combinations implemented |
-| MJCF `<default>` element | §13 Model Format | Joint, geom, actuator, tendon, sensor defaults |
+| MJCF `<default>` element | §13 Model Format | ⚠️ `DefaultResolver` implemented but not called by `model_builder.rs` — defaults are parsed then dropped |
 | MJCF `<tendon>` parsing | §13 Model Format | Spatial and fixed tendons |
 | MJCF `<sensor>` parsing | §13 Model Format | 24 sensor types |
 
@@ -1422,8 +1427,8 @@ These joint types now have full constraint solver support:
 
 1. ~~**Collision shapes**: Box-box, box-sphere, capsule detection~~ ✅
 2. ~~**Broad-phase**: Sweep-and-prune or BVH integration~~ ✅
-3. ~~**Elliptic friction cones**: Replace circular with elliptic~~ ✅
-4. ~~**Sensors**: IMU, force/torque, touch sensors~~ ✅
+3. ~~**Elliptic friction cones**: Replace circular with elliptic~~ ✅ → ⚠️ **Stub** (`cone` field stored but solver hardcodes circular cone condim 3; see §3)
+4. ~~**Sensors**: IMU, force/torque, touch sensors~~ ✅ → ⚠️ **Standalone** (sim-sensor crate; pipeline stubs return dummy values; see [FUTURE_WORK #6](./FUTURE_WORK.md))
 5. ~~**Implicit integration**: Implicit-in-velocity method~~ ✅
 
 ### ⚠️ Phase 2: Solver Improvements (built then partially removed)
@@ -1561,15 +1566,15 @@ Focus: All collision detection improvements, primarily in sim-core.
 
 **Files:** `sim-core/src/mujoco_pipeline.rs`, `sim-core/src/gjk_epa.rs`, `sim-core/src/mid_phase.rs`, `sim-mjcf/src/model_builder.rs`
 
-### Phase 6: Contact Physics ✅ COMPLETED
+### Phase 6: Contact Physics ⚠️ REMOVED (Phase 3 consolidation)
 
-Focus: Advanced friction models (formerly in sim-contact, now consolidated into sim-core).
+Focus: Advanced friction models — **all items were implemented in sim-contact then removed** in Phase 3 consolidation. Pipeline PGS solver hardcodes circular cone condim 3.
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|
-| ~~Torsional friction~~ | §3 Contact | Medium | ✅ MuJoCo condim 4-6 for spinning resistance |
-| ~~Rolling friction~~ | §3 Contact | High | ✅ MuJoCo condim 6-10 |
-| ~~Pyramidal friction cones~~ | §3 Contact | Low | ✅ Alternative to elliptic |
+| ~~Torsional friction~~ | §3 Contact | Medium | ✅ → ⚠️ **Removed** (was in `sim-contact/src/friction.rs`; pipeline is condim 3 only) |
+| ~~Rolling friction~~ | §3 Contact | High | ✅ → ⚠️ **Removed** (was in `sim-contact/src/friction.rs`; pipeline is condim 3 only) |
+| ~~Pyramidal friction cones~~ | §3 Contact | Low | ✅ → ⚠️ **Removed** (was in `sim-contact/src/friction.rs`; pipeline uses circular cone) |
 
 **Implemented:**
 
@@ -1652,17 +1657,17 @@ let contact_model = ContactModel::default()
 - Formerly `sim-contact/src/friction.rs`, `sim-contact/src/model.rs`, `sim-contact/src/lib.rs` — all removed
 - Contact types (`ContactPoint`, `ContactManifold`, `ContactForce`) now in `sim-core/src/contact.rs`
 
-### Phase 7: Actuators & Control ✅ COMPLETED
+### Phase 7: Actuators & Control ⚠️ STANDALONE (sim-constraint only — not in pipeline)
 
-Focus: New actuator types and joint coupling in sim-constraint.
+Focus: New actuator types and joint coupling in sim-constraint. **All items are standalone** — pipeline `mj_fwd_actuation()` only computes `ctrl * gear`.
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|
-| ~~Integrated velocity actuator~~ | §7 Actuators | Low | ✅ Velocity integration for smooth control |
-| ~~General custom actuator~~ | §7 Actuators | Medium | ✅ User-defined actuator interface |
-| ~~Pneumatic cylinder actuator~~ | §7 Actuators | Medium | ✅ Soft robotics |
-| ~~Adhesion actuator~~ | §7 Actuators | Medium | ✅ Gripping, climbing robots |
-| ~~Joint coupling constraints~~ | §10 Equality | Medium | ✅ Gear ratios, differential drives |
+| ~~Integrated velocity actuator~~ | §7 Actuators | Low | ✅ → ⚠️ **Standalone** (sim-constraint; pipeline uses `ctrl * gear` only) |
+| ~~General custom actuator~~ | §7 Actuators | Medium | ✅ → ⚠️ **Standalone** (sim-constraint; not called by pipeline) |
+| ~~Pneumatic cylinder actuator~~ | §7 Actuators | Medium | ✅ → ⚠️ **Standalone** (sim-constraint; not called by pipeline) |
+| ~~Adhesion actuator~~ | §7 Actuators | Medium | ✅ → ⚠️ **Standalone** (sim-constraint; not called by pipeline) |
+| ~~Joint coupling constraints~~ | §10 Equality | Medium | ✅ → ⚠️ **Standalone** (sim-constraint; pipeline has its own equality constraint solver) |
 
 **Implemented:**
 
@@ -1774,14 +1779,14 @@ let forces = group.compute_all_forces(get_position, get_velocity, dt);
 - `sim-constraint/src/equality.rs` - Joint coupling constraints
 - `sim-constraint/src/lib.rs` - Public exports
 
-### Phase 8: Sensors ✅ COMPLETED
+### Phase 8: Sensors ⚠️ STANDALONE (sim-sensor crate — pipeline stubs are separate)
 
-Focus: Additional sensor types in sim-sensor.
+Focus: Additional sensor types in sim-sensor. **Both are standalone** — pipeline stubs return dummy values (rangefinder returns `sensor_cutoff`, magnetometer is no-op).
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|
-| ~~Rangefinder sensor~~ | §8 Sensors | Medium | ✅ Ray-based distance measurement |
-| ~~Magnetometer sensor~~ | §8 Sensors | Low | ✅ Compass-like sensing |
+| ~~Rangefinder sensor~~ | §8 Sensors | Medium | ✅ → ⚠️ **Standalone** (sim-sensor crate; pipeline stub returns `sensor_cutoff` constant) |
+| ~~Magnetometer sensor~~ | §8 Sensors | Low | ✅ → ⚠️ **Standalone** (sim-sensor crate; pipeline stub is no-op `_ => {}`) |
 
 **Implemented:**
 
@@ -1846,7 +1851,7 @@ Focus: Large standalone features, each potentially its own PR.
 | ~~Flex edge constraints~~ | §10 Equality | Low | ✅ COMPLETED → ⚠️ **Standalone** | In sim-deformable, XPBD not called from pipeline |
 | ~~SDF collision~~ | §4 Collision, §5 Geoms | High | ✅ **COMPLETED** | All 10 shape combinations implemented (see §5 notes) |
 | ~~Skinned meshes~~ | §11 Deformables | High | ✅ **COMPLETED** | Visual deformation for rendering |
-| ~~Multi-threading~~ | §12 Performance | Medium | ✅ **COMPLETED** → ⚠️ **Partial** | Island-parallel solving removed in Phase 3; body integration and broad-phase rayon parallelism remain |
+| ~~Multi-threading~~ | §12 Performance | Medium | ⚠️ **Reserved** | Island-parallel solving removed in Phase 3; rayon is an optional dep with no callers in code; see [FUTURE_WORK #10](./FUTURE_WORK.md) |
 | ~~MJB binary format~~ | §13 Model Format | Low | ✅ **COMPLETED** | Faster loading via bincode serialization |
 
 **Implemented (some now standalone or removed — see table above for current status):**
@@ -1971,7 +1976,7 @@ let terrain = CollisionShape::heightfield(Arc::new(data));
 | `sim-constraint` | Joint constraints (⚠️ standalone) | `joint.rs`, `types.rs`, `actuator.rs`, `equality.rs`, `cg.rs`, `limits.rs`, `motor.rs`, `muscle.rs` (removed in Phase 3: `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `pgs.rs`, `parallel.rs`) |
 | `sim-sensor` | Sensor simulation (⚠️ standalone) | `imu.rs`, `force_torque.rs`, `touch.rs`, `rangefinder.rs`, `magnetometer.rs` |
 | `sim-urdf` | URDF loading | `lib.rs`, `parser.rs`, `converter.rs`, `types.rs`, `validation.rs`, `error.rs` |
-| `sim-mjcf` | MJCF loading | `parser.rs`, `types.rs`, `validation.rs`, `model_builder.rs`, `defaults.rs`, `config.rs`, `mjb.rs` |
+| `sim-mjcf` | MJCF loading | `lib.rs`, `parser.rs`, `types.rs`, `validation.rs`, `model_builder.rs`, `defaults.rs`, `config.rs`, `error.rs`, `mjb.rs` |
 | `sim-muscle` | Muscle actuators (⚠️ standalone) | `activation.rs`, `curves.rs`, `hill.rs`, `kinematics.rs` |
 | `sim-tendon` | Tendon/cable systems (⚠️ standalone) | `fixed.rs`, `spatial.rs`, `path.rs`, `wrapping.rs`, `pulley.rs`, `cable.rs` |
 | `sim-deformable` | Soft body simulation (⚠️ standalone) | `capsule_chain.rs`, `cloth.rs`, `soft_body.rs`, `solver.rs`, `constraints.rs`, `skinning.rs`, `material.rs`, `mesh.rs` |

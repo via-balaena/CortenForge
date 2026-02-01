@@ -180,8 +180,10 @@ Pure data structures with no physics logic. Minimal dependencies: nalgebra, glam
 ### sim-simd
 
 SIMD-optimized batch operations for performance-critical paths.
-`Vec3x4`/`Vec3x8` batched vectors, `batch_dot_product`, `batch_aabb_overlap`,
-`batch_normal_force`, `batch_integrate_position/velocity`.
+`Vec3x4`/`Vec3x8` batched vectors, `find_max_dot`, `batch_dot_product_4`,
+`batch_aabb_overlap_4`, `batch_normal_force_4`, `batch_integrate_position_4`/
+`batch_integrate_velocity_4`. **Note:** only `find_max_dot` is currently called
+by sim-core (GJK); all other batch ops are benchmarked but have no callers.
 2-4x speedup on x86-64, 2-3x on Apple Silicon.
 
 ### sim-core
@@ -194,7 +196,7 @@ The physics engine. Depends on sim-types and sim-simd. Contains:
   **Not used by the MuJoCo pipeline** — the pipeline has its own `Integrator` enum
   in `mujoco_pipeline.rs`. See [FUTURE_WORK C1](./FUTURE_WORK.md) for disambiguation plan.
 - `collision_shape.rs` — `CollisionShape` enum, `Aabb`
-- `mid_phase.rs` — BVH tree (SAH construction, traversal, ray queries)
+- `mid_phase.rs` — BVH tree (median-split construction, traversal, ray queries)
 - `gjk_epa.rs` — GJK/EPA for convex shapes
 - `mesh.rs` — Triangle mesh collision functions
 - `heightfield.rs`, `sdf.rs` — Terrain and implicit surface collision
@@ -278,8 +280,10 @@ Cable-driven actuation and routing:
 
 MuJoCo XML format parser. Supports: bodies, joints (hinge, slide, ball, free),
 geoms (sphere, box, capsule, cylinder, ellipsoid, plane, mesh), actuators
-(motor, position, velocity, general), contact filtering, default class
-inheritance, and MJB binary format.
+(motor, position, velocity, general, muscle, cylinder, damper, adhesion),
+contype/conaffinity contact bitmasks, default class inheritance, and MJB binary
+format. **Note:** `<contact>` `<pair>`/`<exclude>` elements are not parsed;
+`<sensor>` and `<tendon>` elements are parsed but dropped by the model builder.
 
 ### sim-urdf
 
@@ -314,8 +318,9 @@ Bevy visualization layer for physics debugging:
 **Coordinate system:** sim-core uses Z-up (robotics), Bevy uses Y-up (graphics).
 Conversions centralized in `convert.rs`: `(x, y, z)_physics → (x, z, y)_bevy`.
 
-Debug gizmos: contact points, force vectors, joint axes, muscle/tendon paths,
-sensor readings. All toggleable via `ViewerConfig`.
+Debug gizmos: contact points, contact normals, muscle/tendon paths, sensor
+readings. All toggleable via `ViewerConfig`. Force vectors and joint axes are
+declared in `ViewerConfig` but not yet implemented (no drawing systems).
 
 ## Design Principles
 
@@ -344,7 +349,6 @@ is Layer 1 only.
 |------|--------|-------------|
 | `parallel` | sim-core | Rayon-based parallelization. **Reserved** — declared but no `#[cfg]` guards yet; see [FUTURE_WORK #10](./FUTURE_WORK.md) |
 | `serde` | Most crates | Serialization support |
-| `sensor` | sim-core | Enable sensor pipeline integration. **Reserved** — declared but no `#[cfg]` guards yet |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 | `muscle` | sim-constraint | Hill-type muscle integration |
 | `deformable` | sim-physics | XPBD soft body support |
