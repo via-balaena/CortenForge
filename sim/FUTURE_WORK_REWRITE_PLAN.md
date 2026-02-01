@@ -24,24 +24,24 @@ Each step writes one section to `sim/FUTURE_WORK.md`. Verify code references bef
 - [x] Verify all file:line references against current source before writing.
 
 ### Step 4: Group C — Integrator & Dynamics (Items 7–8)
-- [ ] **Item 7: Integrator Rename** — split from existing #3 part 1. Rename `Implicit` → `ImplicitEuler`, clarify this is semantic only, foundation for future non-diagonal coupling.
-- [ ] **Item 8: True RK4 Integration** — split from existing #3 part 2. Multi-stage RK4 with actual `k1..k4` evaluations. Add acceptance criteria.
-- [ ] Verify all file:line references against current source before writing.
+- [x] **Item 7: Integrator Rename** — split from existing #3 part 1. Rename `Implicit` → `ImplicitSpringDamper`, clarify this is semantic only, foundation for future non-diagonal coupling.
+- [x] **Item 8: True RK4 Integration** — split from existing #3 part 2. Multi-stage RK4 with actual `k1..k4` evaluations. Add acceptance criteria.
+- [x] Verify all file:line references against current source before writing.
 
 ### Step 5: Group D — Deformable Body (Item 9)
-- [ ] **Item 9: Deformable Body Integration** — existing #4, add substep iteration spec to address XPBD/contact ordering problem, add acceptance criteria.
-- [ ] Verify all file:line references against current source before writing.
+- [x] **Item 9: Deformable Body Integration** — existing #4, add substep iteration spec to address XPBD/contact ordering problem, add acceptance criteria.
+- [x] Verify all file:line references against current source before writing.
 
 ### Step 6: Group E — Scaling & Performance (Items 10–11)
-- [ ] **Item 10: Batched Simulation** — existing #5, add explicit single-model design constraint note, add acceptance criteria.
-- [ ] **Item 11: GPU Acceleration** — existing #6, kept sparse (blocked on #10).
-- [ ] Verify all file:line references against current source before writing.
+- [x] **Item 10: Batched Simulation** — existing #5, add explicit single-model design constraint note, add acceptance criteria.
+- [x] **Item 11: GPU Acceleration** — existing #6, kept sparse (blocked on #10).
+- [x] Verify all file:line references against current source before writing.
 
 ### Step 7: Cleanup Tasks + Completed Work
-- [ ] **C1: Disambiguate integrators.rs** — decide: consolidate trait system with pipeline or remove dead code.
-- [ ] **C2: Correct stale MUJOCO_GAP_ANALYSIS.md** — update or mark superseded.
-- [ ] **Completed Work (Reference)** — preserve existing section verbatim from current FUTURE_WORK.md.
-- [ ] Verify completed work section is still accurate.
+- [x] **C1: Disambiguate integrators.rs** — decide: consolidate trait system with pipeline or remove dead code.
+- [x] **C2: Correct stale MUJOCO_GAP_ANALYSIS.md** — update or mark superseded.
+- [x] **Completed Work (Reference)** — preserved verbatim from previous FUTURE_WORK.md.
+- [x] Verify completed work section is still accurate (commit hashes confirmed).
 
 ### Step 8: Final Review
 - [ ] Read the full rewritten `sim/FUTURE_WORK.md` end-to-end.
