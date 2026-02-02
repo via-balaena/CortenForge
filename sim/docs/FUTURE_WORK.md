@@ -767,66 +767,290 @@ a clear slot for a future true `ImplicitEuler` variant that handles coupled
 **Status:** Not started | **Effort:** M | **Prerequisites:** None
 
 #### Current State
-`Integrator::RungeKutta4` in the pipeline dispatches to the same code path as
-`Integrator::Euler` in both locations:
+`Integrator::RungeKutta4` (`mujoco_pipeline.rs:629`) dispatches to the same code
+path as `Integrator::Euler` in both locations:
 
-- `mj_fwd_acceleration()` (`mujoco_pipeline.rs:8258-8264`): both call
+- `mj_fwd_acceleration()` (`mujoco_pipeline.rs:8693`): both call
   `mj_fwd_acceleration_explicit()`.
-- `Data::integrate()` (`mujoco_pipeline.rs:2321-2337`): both use the same
+- `Data::integrate()` (`mujoco_pipeline.rs:2324`): both use the same
   semi-implicit Euler velocity/position update.
 
 It is a pure placeholder — selecting RK4 produces identical results to Euler.
 
-A separate `Integrator` trait in `integrators.rs` (1,005 lines, `integrators.rs:36`)
-has a `RungeKutta4` struct (`integrators.rs:239`) that uses a constant-acceleration
+A separate `Integrator` trait in `integrators.rs` (`integrators.rs:36`) has a
+`RungeKutta4` struct (`integrators.rs:239`) that uses a constant-acceleration
 reduction (equivalent to Velocity Verlet). This is not true multi-stage RK4; the
-comment at `integrators.rs:248` acknowledges this: "For constant acceleration, RK4
-reduces to..."
+comment at `integrators.rs:248` acknowledges this. That trait system is **not used
+by the MuJoCo pipeline** (see FUTURE_WORK C1).
 
 #### Objective
 Replace the `RungeKutta4` placeholder with a true 4-stage Runge-Kutta integrator
-that re-evaluates forces at intermediate states.
+that calls the full forward dynamics pipeline (including collision detection) at each
+intermediate stage, matching MuJoCo's `mj_RungeKutta` in `engine_forward.c`.
+
+#### Reference: MuJoCo's Algorithm
+
+MuJoCo's RK4 (`mj_RungeKutta` in `engine_forward.c`) uses the standard Butcher
+tableau. At each stage, it calls `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)` — the full
+pipeline including collision detection, but skipping sensor evaluation. Positions are
+integrated via `mj_integratePos` (quaternion exponential map on SO(3)), not linear
+addition. The state at each stage always starts from `X[0]` (initial state), not
+from the previous stage's state.
 
 #### Specification
 
-Implement `mj_fwd_acceleration_rk4(model: &Model, data: &mut Data) -> Result<(), StepError>`:
-
-True 4-stage RK4 with force re-evaluation:
+##### Butcher Tableau Constants
 
 ```
-k1 = f(t,       q,            v)
-k2 = f(t + h/2, q + h/2·v,   v + h/2·k1)
-k3 = f(t + h/2, q + h/2·v,   v + h/2·k2)
-k4 = f(t + h,   q + h·v,     v + h·k3)
+RK4_A: [f64; 9] = [0.5, 0.0, 0.0,   // Stage 1→2: dX = 0.5 * F[0]
+                    0.0, 0.5, 0.0,   // Stage 2→3: dX = 0.5 * F[1]
+                    0.0, 0.0, 1.0]   // Stage 3→4: dX = 1.0 * F[2]
 
-v_new = v + (h/6)·(k1 + 2·k2 + 2·k3 + k4)
-q_new = q + (h/6)·(v + 2·(v+h/2·k1) + 2·(v+h/2·k2) + (v+h·k3))
+RK4_B: [f64; 4] = [1.0/6.0, 1.0/3.0, 1.0/3.0, 1.0/6.0]  // Final combination
+
+Indexing: A[(i-1)*3 + j] for stage i ∈ {1,2,3}, coefficient j ∈ {0,1,2}.
 ```
 
-Each `f()` call evaluates forward kinematics, collision detection, and force
-computation at the trial state (q, v). This is 4× the cost of semi-implicit Euler
-per step but achieves O(h⁴) local truncation error vs O(h) for Euler.
+##### Data Struct Additions
 
-**Implementation details:**
-- Add scratch fields to `Data` for intermediate k-values and trial states
-  (`scratch_qpos_rk`, `scratch_qvel_rk`, `scratch_qacc_k1..k4`).
-- No heap allocation beyond what `Data` already provides — scratch fields are
-  pre-allocated in `Model::make_data()`.
-- `mj_fwd_acceleration()` dispatches `RungeKutta4` to the new function instead of
-  falling through to `mj_fwd_acceleration_explicit()`.
-- `Data::integrate()` skips the velocity update for RK4 (already done in
-  `mj_fwd_acceleration_rk4()`), similar to how `Implicit` is handled.
+Add after `scratch_v_new` (`mujoco_pipeline.rs:1427`), before `body_min_mass`:
+
+```rust
+// ==================== RK4 Scratch Buffers ====================
+// State and rate buffers for 4-stage Runge-Kutta integration.
+// Pre-allocated in make_data() — no heap allocation during stepping.
+
+/// RK4 stage positions: X[i].qpos (4 buffers, each length nq).
+pub rk4_qpos: [DVector<f64>; 4],
+
+/// RK4 stage velocities: X[i].qvel (4 buffers, each length nv).
+pub rk4_qvel: [DVector<f64>; 4],
+
+/// RK4 stage accelerations: F[i].qacc (4 buffers, each length nv).
+pub rk4_qacc: [DVector<f64>; 4],
+
+/// Weighted velocity sum for manifold position integration (length nv).
+pub rk4_dX_vel: DVector<f64>,
+
+/// Weighted acceleration sum for velocity update (length nv).
+pub rk4_dX_acc: DVector<f64>,
+```
+
+In `Model::make_data()` (after line 1761), add:
+
+```rust
+rk4_qpos: std::array::from_fn(|_| DVector::zeros(self.nq)),
+rk4_qvel: std::array::from_fn(|_| DVector::zeros(self.nv)),
+rk4_qacc: std::array::from_fn(|_| DVector::zeros(self.nv)),
+rk4_dX_vel: DVector::zeros(self.nv),
+rk4_dX_acc: DVector::zeros(self.nv),
+```
+
+Memory overhead: `4*(nq + 2*nv) + 2*nv` floats. For a 30-DOF humanoid (nq≈37,
+nv=30): 448 f64 = 3.5 KiB. Negligible.
+
+##### New Method: `Data::forward_skip_sensors()`
+
+Identical to `forward()` (`mujoco_pipeline.rs:2259`) but skips all 4 sensor
+stages (`mj_sensor_pos`, `mj_sensor_vel`, `mj_sensor_acc`, `mj_sensor_postprocess`).
+Matches MuJoCo's `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)` where `1` = skip sensors.
+
+```rust
+fn forward_skip_sensors(&mut self, model: &Model) -> Result<(), StepError> {
+    mj_fwd_position(model, self);
+    mj_collision(model, self);
+    // skip: mj_sensor_pos
+    mj_energy_pos(model, self);
+    mj_fwd_velocity(model, self);
+    // skip: mj_sensor_vel
+    mj_fwd_actuation(model, self);
+    mj_crba(model, self);
+    mj_rne(model, self);
+    mj_energy_vel(model, self);
+    mj_fwd_passive(model, self);
+    mj_fwd_constraint(model, self);
+    mj_fwd_acceleration(model, self)?;
+    // skip: mj_sensor_acc, mj_sensor_postprocess
+    Ok(())
+}
+```
+
+##### New Function: `mj_runge_kutta()`
+
+Core RK4 implementation (~90 lines). Free function matching existing patterns.
+
+**Algorithm** (matching MuJoCo's `mj_RungeKutta`):
+
+```
+fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError>
+
+Precondition: data.forward() has already been called (qacc is valid).
+
+1. SAVE initial state:
+   X[0].qpos = data.qpos
+   X[0].qvel = data.qvel
+   F[0].qacc = data.qacc
+   t0 = data.time
+   efc_lambda_saved = data.efc_lambda.clone()
+
+2. FOR i = 1, 2, 3:
+   a. Weighted velocity:  dX_vel[v] = Σ_j A[(i-1)*3+j] * X[j].qvel[v]
+   b. Weighted accel:     dX_acc[v] = Σ_j A[(i-1)*3+j] * F[j].qacc[v]
+   c. Position (manifold): X[i].qpos = mj_integrate_pos_explicit(X[0].qpos, dX_vel, h)
+   d. Velocity (linear):   X[i].qvel = X[0].qvel + h * dX_acc
+   e. Set Data state:      data.qpos = X[i].qpos, data.qvel = X[i].qvel
+   f. Set Data time:       data.time = t0 + h * {0.5, 0.5, 1.0}[i-1]
+   g. Evaluate:            data.forward_skip_sensors(model)?
+   h. Store rate:          F[i].qacc = data.qacc
+
+3. FINAL combination using B weights:
+   dX_vel[v] = Σ_j B[j] * X[j].qvel[v]
+   dX_acc[v] = Σ_j B[j] * F[j].qacc[v]
+
+4. ADVANCE from initial state:
+   data.qpos = X[0].qpos    (restore)
+   data.qvel = X[0].qvel    (restore)
+   data.qvel += h * dX_acc   (velocity update)
+   data.qpos = mj_integrate_pos_explicit(X[0].qpos, dX_vel, h)  (position on manifold)
+   mj_normalize_quat(model, data)
+   data.qacc_warmstart = dX_acc   (save for next step's constraint solver)
+   data.efc_lambda = efc_lambda_saved  (restore warmstart from initial solve)
+   data.time = t0 + h
+```
+
+**Key design points:**
+- Position integration uses `mj_integrate_pos_explicit()` (`mujoco_pipeline.rs:9256`)
+  at every stage, which handles quaternion exponential map for ball/free joints.
+  The A coefficients are already baked into `dX_vel`, so `h` (not `h*A[i]`) is passed
+  as the timestep parameter.
+- Each stage starts from `X[0]` (initial state), not from the previous stage. This
+  matches MuJoCo and ensures Butcher tableau correctness.
+- `efc_lambda` (warmstart HashMap, `mujoco_pipeline.rs:1400`) is saved before the
+  loop and restored after the final advance. Intermediate stages may modify it
+  freely (the PGS solver benefits from warmstarting), but the persistent warmstart
+  across timesteps comes from the initial solve.
+- The one heap allocation is `efc_lambda.clone()`. For typical contact counts (<100
+  pairs): ~2.4 KiB, ~100ns. If profiling shows this matters, add a pre-allocated
+  `efc_lambda_saved` field to `Data`.
+
+##### Changes to `Data::step()`
+
+Replace the current implementation (`mujoco_pipeline.rs:2222`):
+
+```rust
+pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
+    if model.timestep <= 0.0 || !model.timestep.is_finite() {
+        return Err(StepError::InvalidTimestep);
+    }
+    mj_check_pos(model, self)?;
+    mj_check_vel(model, self)?;
+
+    match model.integrator {
+        Integrator::RungeKutta4 => {
+            // RK4: forward() evaluates initial state (with sensors).
+            // mj_runge_kutta() then calls forward_skip_sensors() 3 more times.
+            self.forward(model)?;
+            mj_check_acc(model, self)?;
+            mj_runge_kutta(model, self)?;
+        }
+        Integrator::Euler | Integrator::ImplicitSpringDamper => {
+            self.forward(model)?;
+            mj_check_acc(model, self)?;
+            self.integrate(model);
+        }
+    }
+    Ok(())
+}
+```
+
+##### Changes to `Data::integrate()`
+
+Remove `RungeKutta4` from the `Euler` arm (`mujoco_pipeline.rs:2324`):
+
+```rust
+match model.integrator {
+    Integrator::Euler => {
+        for i in 0..model.nv {
+            self.qvel[i] += self.qacc[i] * h;
+        }
+    }
+    Integrator::ImplicitSpringDamper => {
+        // Velocity already updated by mj_fwd_acceleration_implicit
+    }
+    Integrator::RungeKutta4 => {
+        unreachable!("RK4 integration handled by mj_runge_kutta()")
+    }
+}
+```
+
+##### No Changes to `mj_fwd_acceleration()`
+
+`mj_fwd_acceleration()` (`mujoco_pipeline.rs:8686`) continues to dispatch
+`Euler | RungeKutta4` to `mj_fwd_acceleration_explicit()`. Each forward evaluation
+within the RK4 loop computes `qacc = M^{-1} * f` in the standard way; the difference
+is that RK4 calls it 4 times at different states.
+
+##### Activation State (Deferred)
+
+MuJoCo's `mj_RungeKutta` includes actuator activation state (`act`, `act_dot`) in
+its state and rate vectors. Our `Data.act` exists (`mujoco_pipeline.rs:1255`) but
+`act_dot` does not — `mj_fwd_actuation()` (`mujoco_pipeline.rs:5921`) is a stateless
+`ctrl * gear` function with no activation dynamics. Activation integration is deferred
+until FUTURE_WORK #5 (Muscle Pipeline) introduces `act_dot`. A `TODO(FUTURE_WORK#5)`
+comment should mark the extension points in `mj_runge_kutta()`.
+
+##### Sensor Evaluation
+
+Sensors are evaluated once per `step()` call:
+1. `step()` calls `forward()` (with sensors) before `mj_runge_kutta()`.
+2. The 3 intermediate evaluations use `forward_skip_sensors()`.
+3. After `mj_runge_kutta()` returns, `data.sensordata` contains values from the
+   pre-step state. This matches MuJoCo's behavior.
 
 #### Acceptance Criteria
 1. `Integrator::RungeKutta4` no longer produces identical results to `Integrator::Euler`.
-2. For smooth force fields (no contacts), RK4 with timestep 4h achieves comparable or better accuracy to Euler with timestep h (measured as position error vs analytic solution).
-3. RK4 matches Euler forces at h→0 (consistency check).
-4. Energy conservation for a frictionless pendulum is measurably better with RK4 than Euler at the same timestep.
-5. No heap allocations in the RK4 path beyond pre-allocated `Data` scratch fields.
-6. RK4 cost is ~4× Euler per step (verified by benchmark).
+2. **Order verification (smooth systems):** For a frictionless pendulum with analytic
+   solution, run RK4 at timestep `h` and Euler at timestep `h`. Compute position
+   error at `t = 1s`. Halving `h` should reduce RK4 error by ~16× (O(h⁴)) vs ~2×
+   for Euler (O(h)). Test at `h = 0.01` and `h = 0.005`.
+3. **Consistency:** For any model, `lim(h→0)` the RK4 and Euler trajectories
+   converge. Verify at `h = 1e-5` for 10 steps: max position difference < 1e-8.
+4. **Energy conservation:** For a frictionless pendulum (no contacts), RK4 at
+   timestep `4h` achieves comparable or better energy drift than Euler at timestep
+   `h` over 1000 steps.
+5. **Contact handling:** Bouncing-ball test produces physically plausible results
+   (ball bounces, does not explode or tunnel). Energy remains bounded.
+6. **Quaternion correctness:** A free-body rotation with known angular velocity
+   produces the correct final orientation (error < 1e-6 vs analytic) after 100 RK4
+   steps. Quaternion norm stays within 1e-10 of 1.0 at every step.
+7. **No heap allocations** in the RK4 path beyond the one `efc_lambda.clone()` and
+   the pre-allocated `Data` scratch fields.
+8. **Cost:** RK4 wall-clock time is 3.5×–4.5× Euler per step (verified by benchmark
+   on a 10-body chain).
+9. **Sensors:** After `step()` with RK4, `data.sensordata` contains values from the
+   pre-step state. Intermediate stages do not corrupt sensor data.
+10. **Warmstart preservation:** `efc_lambda` after `step()` reflects the initial
+    state's contact solve, not stage 3's. Verify via two consecutive steps producing
+    identical `efc_lambda` for a static resting-contact scenario.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`mj_fwd_acceleration_rk4()`, dispatch in `mj_fwd_acceleration()`, scratch fields in `Data`, skip velocity update in `Data::integrate()`)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - `Data` struct: add 5 RK4 scratch fields (`rk4_qpos`, `rk4_qvel`, `rk4_qacc`,
+    `rk4_dX_vel`, `rk4_dX_acc`) after `scratch_v_new` (line 1427)
+  - `Model::make_data()`: allocate RK4 scratch buffers (after line 1761)
+  - `Data::step()`: add `RungeKutta4` match arm (line 2222)
+  - `Data::integrate()`: remove `RungeKutta4` from `Euler` arm (line 2324)
+  - New `Data::forward_skip_sensors()`: forward pipeline minus sensor stages
+  - New `mj_runge_kutta()`: core RK4 implementation (~90 lines)
+- `sim/L0/tests/integration/rk4_integration.rs` — new test module:
+  - Pendulum order-of-convergence test (AC #2)
+  - Euler/RK4 consistency test (AC #3)
+  - Energy conservation test (AC #4)
+  - Quaternion free-body rotation test (AC #6)
+  - Contact bouncing-ball test (AC #5)
+  - Sensor non-corruption test (AC #9)
+  - Warmstart preservation test (AC #10)
+- `sim/L0/tests/integration/mod.rs` — register `rk4_integration` module
 
 ---
 ## Group D — Deformable Body
