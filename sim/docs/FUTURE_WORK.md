@@ -519,73 +519,959 @@ catch regressions. Consider a `SolverType::CGStrict` variant that returns
 ### 4. Tendon Pipeline
 **Status:** Not started | **Effort:** L | **Prerequisites:** None
 
+#### Scope Decision: Fixed Tendons Only
+
+This PR implements **fixed (linear-coupling) tendons only**. Spatial tendons (3D path
+routing through sites with wrapping geometry) are deferred to a follow-up.
+
+**Rationale:**
+- Fixed tendons are the dominant tendon type in RL models (MuJoCo Menagerie humanoids,
+  DM Control suite). They cover differential drives, antagonistic pairs, and linear
+  coupling — the core use cases for tendon-driven actuators.
+- Fixed tendons have **constant Jacobians** (the coupling coefficients), eliminating
+  the need for body positional Jacobians. `compute_body_jacobian_at_point()`
+  (`mujoco_pipeline.rs:6816`) is incomplete (only x-component per DOF, marked
+  `#[allow(dead_code)]`) and would need a full rewrite for spatial tendons.
+- Spatial tendons require wrapping geometry (sphere/cylinder geodesics) and
+  configuration-dependent Jacobians via the chain rule through `mj_jac()`. This is
+  a separate body of work that can land independently.
+- The Model scaffolds (`wrap_type`, `wrap_objid`, `wrap_prm`) and sim-tendon's
+  `SpatialTendon`/`SphereWrap`/`CylinderWrap` remain available for the spatial
+  follow-up. Nothing in this PR precludes it.
+
+The pipeline functions (`mj_fwd_tendon`, etc.) are written to dispatch on
+`TendonType::Fixed` vs `::Spatial`, with the `Spatial` arm silently zeroing
+the tendon length and Jacobian (no per-frame warning — that would spam logs).
+A one-time warning is logged at model load time (in the model builder) when a
+spatial tendon is encountered, informing the user that spatial tendons are not
+yet supported and will produce zero forces. This ensures spatial tendons in MJCF
+files are safely ignored rather than silently producing incorrect forces.
+
 #### Current State
-sim-tendon is a standalone 3,919-line crate with path routing (`cable.rs`, `spatial.rs`,
-`wrapping.rs`, `pulley.rs`, `fixed.rs`), a `TendonActuator` trait (`tendon/src/lib.rs:146`),
-and zero coupling to the MuJoCo pipeline.
 
-Model fields are fully declared (`mujoco_pipeline.rs:907-929`): `ntendon`,
-`tendon_stiffness`, `tendon_damping`, `tendon_lengthspring`, `tendon_length0`,
-`tendon_range`, `tendon_limited`, `tendon_num`, `tendon_adr`, `tendon_name`.
+**sim-tendon crate** (`sim/L0/tendon/src/`, 3,919 lines, 52 tests):
+- `FixedTendon` (`fixed.rs:65`): linear coupling `L = L₀ + Σᵢ cᵢ qᵢ`, implements
+  `TendonActuator` trait. `compute_length()` (`fixed.rs:311`), `compute_velocity()`
+  (`fixed.rs:315`), `jacobian()` (`fixed.rs:344`), `compute_joint_forces(tension)`
+  (`fixed.rs:248`).
+- `CableProperties` (`cable.rs:26`): one-way spring model.
+  `compute_force(length, velocity)` (`cable.rs:195`): `F = k(L - L₀) + c·v` if
+  `L > L₀`, else `0`.
+- `SpatialTendon`, `TendonPath`, `SphereWrap`, `CylinderWrap`, `PulleySystem` —
+  all standalone, no pipeline coupling. Deferred to spatial follow-up.
 
-Data scaffolds exist (`mujoco_pipeline.rs:1362-1371`): `ten_length`, `ten_velocity`,
-`ten_force`, `ten_J` — all initialized to defaults at `mujoco_pipeline.rs:1756-1759`
-and never populated.
+**Pipeline scaffolds** (all in `mujoco_pipeline.rs`):
 
-`mj_fwd_actuation()` (`mujoco_pipeline.rs:5997`) has an explicit placeholder at
-`mujoco_pipeline.rs:6017-6020`:
-```rust
-ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
-    // Placeholder for tendon/site actuation
-}
-```
+| Component | Location | Status |
+|-----------|----------|--------|
+| `ntendon`, `nwrap` | Model, line 915-917 | Declared, always 0 |
+| `tendon_stiffness`, `tendon_damping`, etc. | Model, lines 919-935 | Declared, empty vecs |
+| `wrap_type`, `wrap_objid`, `wrap_prm` | Model, lines 939-943 | Declared, empty vecs |
+| `ten_length`, `ten_velocity`, `ten_force`, `ten_J` | Data, lines 1363-1371 | Declared, zero-initialized, never populated |
+| `ActuatorTransmission::Tendon` | Enum, line 419 | Defined |
+| `ActuatorTransmission::Tendon` in `mj_fwd_actuation()` | Line 6017-6020 | No-op placeholder |
+| `MjSensorType::TendonPos` | `mj_sensor_pos()`, line 5101 | Stub, writes 0.0 |
+| `MjSensorType::TendonVel` | `mj_sensor_vel()`, line 5307 | Stub, writes 0.0 |
+| `EqualityType::Tendon` | Line 467 | Defined, not implemented (out of scope) |
+| `WrapType` enum | Line 438-450 | Defined (Site, Geom, Joint, Pulley) |
+
+**MJCF parsing** (complete for fixed + spatial):
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| `MjcfTendon` struct | `types.rs:1999-2048` | Complete: name, type, stiffness, damping, joints, sites, wrapping_geoms |
+| `MjcfTendonType` enum | `types.rs:1961-1982` | Complete: Fixed, Spatial |
+| `parse_tendons()` | `parser.rs:1662-1694` | Complete: parses `<tendon>` section |
+| `parse_tendon()` | `parser.rs:1697-1750` | Complete: child `<joint>`, `<site>`, `<geom>` elements |
+| `MjcfTendonDefaults` | `types.rs:501-521` | Complete: range, limited, stiffness, damping, frictionloss |
+| `apply_to_tendon()` | `defaults.rs:323-375` | Complete: merges defaults |
+| Model builder | `model_builder.rs:1009-1018` | **Rejects** tendon transmission with error |
+| Model builder | `model_builder.rs:1449-1463` | Initializes all tendon fields to empty |
+
+**Missing pieces** (to be added by this PR):
+
+1. Model builder: populate `Model` tendon fields from parsed `MjcfTendon` data.
+2. Model builder: accept `ActuatorTransmission::Tendon` instead of rejecting it.
+3. New Model fields: `tendon_solref`, `tendon_solimp` (for limit constraints).
+4. New Model field: `tendon_frictionloss` (velocity-dependent friction).
+5. New Model field: `tendon_type` (Fixed vs Spatial, for dispatch).
+6. Pipeline function: `mj_fwd_tendon()` — compute lengths and Jacobians.
+7. Velocity: `ten_velocity[t] = ten_J[t] · qvel` in `mj_fwd_velocity()`.
+8. Passive forces: tendon spring/damper in `mj_fwd_passive()`.
+9. Limit forces: tendon limits in `mj_fwd_constraint()`.
+10. Actuation: tendon transmission in `mj_fwd_actuation()`.
+11. Sensors: TendonPos/TendonVel stubs → real reads.
+12. MJCF validation: check referenced joints exist, coefficients are finite.
+13. `tendon_length0` computation from `qpos0` at model load time.
 
 #### Objective
-Wire tendon kinematics, passive forces, and actuation into the MuJoCo pipeline so
-that tendon-driven actuators produce joint forces.
+
+Wire fixed-tendon kinematics, passive forces, limit constraints, and actuation into
+the MuJoCo pipeline so that tendon-driven actuators produce joint forces. Establish
+the pipeline structure for spatial tendons to land in a follow-up without refactoring.
 
 #### Specification
 
-**`mj_fwd_tendon(model: &Model, data: &mut Data)`** — position-dependent:
+##### Step 1: Add New Model Fields
 
-1. For each tendon t = 0..ntendon:
-   - Walk the tendon path (wrap objects from `tendon_adr[t]` to `tendon_adr[t] + tendon_num[t]`).
-   - Compute `ten_length[t]` as the sum of segment lengths along the path.
-   - Compute `ten_J[t]` (Jacobian mapping joint velocities to tendon length change)
-     via finite differencing or analytic path derivatives.
-2. Call site: after forward kinematics, before force computation.
+Add a `TendonType` enum to `mujoco_pipeline.rs` (after the `WrapType` enum at line 450),
+matching the pipeline's convention of defining its own enums rather than importing
+from `sim-mjcf`. `sim-core` does NOT depend on `sim-mjcf`, so `MjcfTendonType` is
+not available in the pipeline. The model builder converts `MjcfTendonType` → `TendonType`.
 
-**`mj_fwd_tendon_vel(model: &Model, data: &mut Data)`** — velocity-dependent:
+```rust
+/// Tendon type (pipeline-local enum, converted from MjcfTendonType in model builder).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TendonType {
+    /// Fixed (linear coupling): L = Σ coef_i * q_i, constant Jacobian.
+    #[default]
+    Fixed,
+    /// Spatial (3D path routing through sites): not yet implemented.
+    Spatial,
+}
+```
 
-1. For each tendon t: `ten_velocity[t] = ten_J[t].dot(&data.qvel)`.
-2. Call site: after `mj_fwd_tendon()` and velocity computation.
+Add to `Model` struct after `tendon_name` (line 935):
 
-**Tendon passive forces:**
+```rust
+/// Tendon type: Fixed (linear coupling) or Spatial (3D path routing).
+pub tendon_type: Vec<TendonType>,
 
-1. Spring force: `f_spring = -tendon_stiffness[t] * (ten_length[t] - tendon_lengthspring[t])`.
-2. Damping force: `f_damp = -tendon_damping[t] * ten_velocity[t]`.
-3. Limit force: if `tendon_limited[t]` and length outside `tendon_range[t]`,
-   apply Baumgarte-style restoring force using solref/solimp.
-4. `ten_force[t] = f_spring + f_damp + f_limit`.
-5. Map to joint forces: `qfrc_passive += ten_J[t]^T * ten_force[t]`.
+/// Solver parameters for tendon limit constraints (2 elements per tendon).
+/// [0] = timeconst (>0) or -stiffness (≤0), [1] = dampratio or -damping.
+/// Default: [0.0, 0.0] → uses model.default_eq_stiffness/default_eq_damping.
+pub tendon_solref: Vec<[f64; 2]>,
 
-**Tendon actuation** (fills the placeholder at `mujoco_pipeline.rs:6017`):
+/// Impedance parameters for tendon limit constraints (5 elements per tendon).
+/// [d_min, d_max, width, midpoint, power]. Default: [0.9, 0.95, 0.001, 0.5, 2.0].
+pub tendon_solimp: Vec<[f64; 5]>,
 
-For `ActuatorTransmission::Tendon`: look up the target tendon via `actuator_trnid`.
-Apply `ctrl * gear` as a force along the tendon, mapped to joints via:
-`qfrc_actuator += ten_J[tendon_id]^T * (ctrl * gear)`.
+/// Velocity-dependent friction loss per tendon (N).
+/// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
+/// Mapped to joints via J^T. Default: 0.0 (no friction).
+pub tendon_frictionloss: Vec<f64>,
+```
+
+Initialize in `Model::empty()` (after line 1603) and in `model_builder.rs`
+(inside the Model struct literal at line 1449, alongside the existing tendon fields):
+```rust
+tendon_type: vec![],
+tendon_solref: vec![],
+tendon_solimp: vec![],
+tendon_frictionloss: vec![],
+```
+
+##### Step 2: Model Builder — Populate Tendon Fields from MJCF
+
+In `model_builder.rs`, add a `process_tendons()` method (or inline in the main
+conversion function) that populates builder fields from `mjcf_model.tendons`. This
+must run **before** `process_actuator()` calls, since actuators may reference tendons
+via `self.tendon_name_to_id`.
+
+Add these builder fields to `ModelBuilder`:
+```rust
+tendon_name_to_id: HashMap<String, usize>,
+tendon_type: Vec<TendonType>,
+tendon_range: Vec<(f64, f64)>,
+tendon_limited: Vec<bool>,
+tendon_stiffness: Vec<f64>,
+tendon_damping: Vec<f64>,
+tendon_frictionloss: Vec<f64>,
+tendon_lengthspring: Vec<f64>,
+tendon_length0: Vec<f64>,
+tendon_name: Vec<Option<String>>,
+tendon_solref: Vec<[f64; 2]>,
+tendon_solimp: Vec<[f64; 5]>,
+tendon_num: Vec<usize>,
+tendon_adr: Vec<usize>,
+wrap_type: Vec<WrapType>,
+wrap_objid: Vec<usize>,
+wrap_prm: Vec<f64>,
+```
+
+Then replace the empty tendon initialization in the Model struct literal
+(lines 1449-1463) with `self.tendon_type`, `self.tendon_range`, etc.
+
+Tendon processing logic:
+
+```rust
+fn process_tendons(
+    &mut self,
+    tendons: &[MjcfTendon],
+) -> std::result::Result<(), ModelConversionError> {
+    for (t_idx, tendon) in tendons.iter().enumerate() {
+        self.tendon_name_to_id.insert(tendon.name.clone(), t_idx);
+        self.tendon_type.push(match tendon.tendon_type {
+            MjcfTendonType::Fixed => TendonType::Fixed,
+            MjcfTendonType::Spatial => TendonType::Spatial,
+        });
+        self.tendon_range.push(tendon.range.unwrap_or((-f64::MAX, f64::MAX)));
+        self.tendon_limited.push(tendon.limited);
+        self.tendon_stiffness.push(tendon.stiffness);
+        self.tendon_damping.push(tendon.damping);
+        self.tendon_frictionloss.push(tendon.frictionloss);
+        self.tendon_name.push(Some(tendon.name.clone()));
+        self.tendon_solref.push([0.0, 0.0]); // Default: use model defaults
+        self.tendon_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]); // MuJoCo defaults
+        self.tendon_lengthspring.push(0.0); // Set to length0 if stiffness > 0
+        self.tendon_length0.push(0.0);      // Computed after construction from qpos0
+
+        let wrap_start = self.wrap_type.len();
+        self.tendon_adr.push(wrap_start);
+
+        match tendon.tendon_type {
+            MjcfTendonType::Fixed => {
+                for (joint_name, coef) in &tendon.joints {
+                    // Resolve joint name → index → DOF address
+                    let jnt_idx = *self.joint_name_to_id.get(joint_name.as_str())
+                        .ok_or_else(|| ModelConversionError {
+                            message: format!(
+                                "Tendon '{}' references unknown joint '{}'",
+                                tendon.name, joint_name
+                            ),
+                        })?;
+                    let dof_adr = self.jnt_dof_adr[jnt_idx];
+                    self.wrap_type.push(WrapType::Joint);
+                    self.wrap_objid.push(dof_adr);
+                    self.wrap_prm.push(*coef);
+                }
+            }
+            MjcfTendonType::Spatial => {
+                // Spatial tendon wrap objects: sites, wrapping geoms.
+                // Populate wrap arrays for future spatial tendon support.
+                // Log a one-time warning (matches Scope Decision: warn at load time).
+                // model_builder.rs already has `use tracing::warn;` at line 22.
+                warn!(
+                    "Tendon '{}' is spatial — spatial tendons are not yet implemented \
+                     and will produce zero forces. Fixed tendons are fully supported.",
+                    tendon.name
+                );
+                for site_name in &tendon.sites {
+                    let site_idx = *self.site_name_to_id.get(site_name.as_str())
+                        .ok_or_else(|| ModelConversionError {
+                            message: format!(
+                                "Tendon '{}' references unknown site '{}'",
+                                tendon.name, site_name
+                            ),
+                        })?;
+                    self.wrap_type.push(WrapType::Site);
+                    self.wrap_objid.push(site_idx);
+                    self.wrap_prm.push(1.0); // Default divisor
+                }
+                // Note: wrapping geom entries would also go here.
+            }
+        }
+        self.tendon_num.push(self.wrap_type.len() - wrap_start);
+    }
+    Ok(())
+}
+```
+
+In the Model struct literal (`build()`, lines 1449-1463), replace the empty
+initialization with:
+
+```rust
+ntendon: self.tendon_type.len(),
+nwrap: self.wrap_type.len(),
+tendon_type: self.tendon_type,
+tendon_range: self.tendon_range,
+tendon_limited: self.tendon_limited,
+tendon_stiffness: self.tendon_stiffness,
+tendon_damping: self.tendon_damping,
+tendon_frictionloss: self.tendon_frictionloss,
+tendon_lengthspring: self.tendon_lengthspring,
+tendon_length0: self.tendon_length0,
+tendon_num: self.tendon_num,
+tendon_adr: self.tendon_adr,
+tendon_name: self.tendon_name,
+tendon_solref: self.tendon_solref,
+tendon_solimp: self.tendon_solimp,
+wrap_type: self.wrap_type,
+wrap_objid: self.wrap_objid,
+wrap_prm: self.wrap_prm,
+```
+
+**Resolve `tendon_lengthspring`:** After model construction, for each tendon with
+`stiffness > 0.0` and no explicit `lengthspring` from MJCF: set
+`tendon_lengthspring[t] = compute_tendon_length_at_qpos0(model, t)`. This matches
+MuJoCo's behavior where the spring rest length defaults to the length at the
+reference configuration.
+
+**Resolve `tendon_length0`:** Computed identically — the tendon length at `qpos0`.
+For fixed tendons: `tendon_length0[t] = Σ wrap_prm[w] * qpos0[wrap_objid[w]]` for
+`w` in the tendon's wrap range.
+
+##### Step 3: Model Builder — Accept Tendon Transmission
+
+Replace the tendon rejection block (`model_builder.rs:1009-1018`). The existing
+code uses a `let (trntype, trnid) = if ... else if ...` chain (line 1001) that
+returns a tuple, with pushes at lines 1060-1062. Replace the `return Err(...)`
+arm with a tuple return matching the Joint/Site pattern:
+
+```rust
+} else if let Some(ref tendon_name) = actuator.tendon {
+    // Tendon transmission: resolve tendon name → index
+    let tendon_idx = *self.tendon_name_to_id.get(tendon_name.as_str())
+        .ok_or_else(|| ModelConversionError {
+            message: format!(
+                "Actuator '{}' references unknown tendon '{}'",
+                actuator.name, tendon_name
+            ),
+        })?;
+    (ActuatorTransmission::Tendon, tendon_idx)
+}
+```
+
+The existing `self.actuator_trntype.push(trntype)` and
+`self.actuator_trnid.push(trnid)` at lines 1060-1062 handle the rest.
+
+Add `tendon_name_to_id: HashMap<String, usize>` as a builder field, populated
+alongside the tendon construction loop in Step 2 (matching the existing
+`joint_name_to_id` pattern).
+
+##### Step 4: MJCF Validation
+
+Add to `sim/L0/mjcf/src/validation.rs`:
+
+```rust
+/// Validate tendon definitions against model structure.
+/// Returns Err on fatal issues (unknown references), matching the existing
+/// validation pattern in validation.rs which uses Result<T> with MjcfError.
+pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
+    // Collect joint and site names from the body tree (joints/sites are nested
+    // inside MjcfBody, not top-level on MjcfModel). Matches the pattern used
+    // by validate() which traverses the tree via traverse_body().
+    let mut joint_names = HashSet::new();
+    let mut site_names = HashSet::new();
+    fn collect_names(body: &MjcfBody, joints: &mut HashSet<String>, sites: &mut HashSet<String>) {
+        for joint in &body.joints {
+            joints.insert(joint.name.clone());
+        }
+        for site in &body.sites {
+            sites.insert(site.name.clone());
+        }
+        for child in &body.children {
+            collect_names(child, joints, sites);
+        }
+    }
+    for body in &model.worldbody.children {
+        collect_names(body, &mut joint_names, &mut site_names);
+    }
+
+    for tendon in &model.tendons {
+        // Fixed tendons must reference existing joints with valid coefficients
+        if tendon.tendon_type == MjcfTendonType::Fixed {
+            if tendon.joints.is_empty() {
+                return Err(MjcfError::invalid_option(
+                    "tendon",
+                    format!("Fixed tendon '{}' has no joint entries", tendon.name),
+                ));
+            }
+            for (joint_name, coef) in &tendon.joints {
+                if !joint_names.contains(joint_name.as_str()) {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' references unknown joint '{}'",
+                            tendon.name, joint_name
+                        ),
+                    ));
+                }
+                if !coef.is_finite() {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' has non-finite coefficient {} for joint '{}'",
+                            tendon.name, coef, joint_name
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // Spatial tendons must reference existing sites
+        if tendon.tendon_type == MjcfTendonType::Spatial {
+            if tendon.sites.len() < 2 {
+                return Err(MjcfError::invalid_option(
+                    "tendon",
+                    format!(
+                        "Spatial tendon '{}' needs at least 2 sites, has {}",
+                        tendon.name, tendon.sites.len()
+                    ),
+                ));
+            }
+            for site_name in &tendon.sites {
+                if !site_names.contains(site_name.as_str()) {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' references unknown site '{}'",
+                            tendon.name, site_name
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // Parameter validation
+        if tendon.stiffness < 0.0 {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!("Tendon '{}' has negative stiffness {}", tendon.name, tendon.stiffness),
+            ));
+        }
+        if tendon.damping < 0.0 {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!("Tendon '{}' has negative damping {}", tendon.name, tendon.damping),
+            ));
+        }
+        if tendon.limited {
+            if let Some((min, max)) = tendon.range {
+                if min >= max {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!("Tendon '{}' has invalid range [{}, {}]", tendon.name, min, max),
+                    ));
+                }
+            } else {
+                return Err(MjcfError::invalid_option(
+                    "tendon",
+                    format!("Tendon '{}' is limited but has no range", tendon.name),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+The existing `validation.rs` uses `MjcfError::invalid_option(option, message)` (the
+helper method on `MjcfError`) for validation failures and returns `Result<()>`. This
+function follows the same pattern. The `MjcfError` and `Result` types are from
+`crate::error`. Joint and site names are collected by recursively traversing the body
+tree (matching the `traverse_body()` pattern in `validate()`), since `MjcfModel` stores
+joints and sites nested inside `MjcfBody`, not as top-level collections. The function
+also needs `use crate::types::{MjcfBody, MjcfTendonType};` added to the imports
+(or add to the existing `use crate::types::` block if already present).
+
+Call `validate_tendons()` from the existing `validate()` function after body/joint
+validation, or call it from the model builder before tendon construction.
+
+##### Step 5: `mj_fwd_tendon()` — Tendon Kinematics (Position-Dependent)
+
+New function in `mujoco_pipeline.rs`, called from `mj_fwd_position()` after site
+pose computation (line 2603) and before subtree mass/COM computation (line 2607).
+
+This placement matches MuJoCo's pipeline: `mj_tendon` runs inside `mj_fwdPosition`,
+after `mj_kinematics` (which computes body/geom/site poses) and before `mj_makeM`.
+
+```rust
+/// Compute tendon lengths and Jacobians from current joint state.
+///
+/// For fixed tendons: L = Σ coef_i * qpos[dof_adr_i], J[dof_adr_i] = coef_i.
+/// For spatial tendons: silently skipped (deferred to spatial tendon PR).
+///
+/// Called from mj_fwd_position() after site transforms, before subtree COM.
+fn mj_fwd_tendon(model: &Model, data: &mut Data) {
+    if model.ntendon == 0 {
+        return;
+    }
+
+    for t in 0..model.ntendon {
+        match model.tendon_type[t] {
+            TendonType::Fixed => {
+                mj_fwd_tendon_fixed(model, data, t);
+            }
+            TendonType::Spatial => {
+                // Spatial tendons not yet implemented.
+                // Set length to 0, Jacobian to zero vector.
+                // This is safe: zero-length tendon produces zero spring force
+                // and zero actuation force. Sensors will read 0.
+                data.ten_length[t] = 0.0;
+                data.ten_J[t].fill(0.0);
+            }
+        }
+    }
+}
+
+/// Fixed tendon kinematics for a single tendon.
+///
+/// Fixed tendon length is a linear combination of joint positions:
+///   L_t = Σ_w coef_w * qpos[dof_adr_w]
+///
+/// The Jacobian is constant (configuration-independent):
+///   J_t[dof_adr_w] = coef_w
+///
+/// Wrap entries for fixed tendons use:
+///   wrap_type[w] = WrapType::Joint
+///   wrap_objid[w] = DOF address (index into qpos/qvel)
+///   wrap_prm[w] = coupling coefficient
+#[inline]
+fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
+    let adr = model.tendon_adr[t];
+    let num = model.tendon_num[t];
+
+    // Zero the Jacobian row. For fixed tendons, only a few entries are non-zero.
+    data.ten_J[t].fill(0.0);
+
+    let mut length = 0.0;
+    for w in adr..(adr + num) {
+        debug_assert_eq!(model.wrap_type[w], WrapType::Joint);
+        let dof_adr = model.wrap_objid[w];
+        let coef = model.wrap_prm[w];
+
+        // Length contribution: coef * q
+        // For hinge joints, dof_adr indexes into qpos (1-DOF, qposadr == dofadr).
+        // For slide joints, same (1-DOF).
+        // Ball/Free joints in fixed tendons are unusual but supported: the
+        // coefficient applies to the DOF at dof_adr (one component of the
+        // multi-DOF joint).
+        if dof_adr < data.qpos.len() {
+            length += coef * data.qpos[dof_adr];
+        }
+
+        // Jacobian: dL/dq[dof_adr] = coef
+        if dof_adr < model.nv {
+            data.ten_J[t][dof_adr] = coef;
+        }
+    }
+
+    data.ten_length[t] = length;
+}
+```
+
+**Borrow-checker note:** `data.ten_J[t]` is a `DVector<f64>` in a `Vec`. We index
+by `t` (the tendon index) and then by `dof_adr` within the vector. No aliasing
+issues — `ten_J`, `ten_length`, and `qpos` are separate fields of `Data`.
+
+**qpos vs qvel indexing for fixed tendons:** MuJoCo fixed tendons use generalized
+coordinate indices. For 1-DOF joints (hinge, slide), `qposadr == dofadr` so the
+wrap_objid (DOF address) indexes correctly into both `qpos` and `qvel`. For
+multi-DOF joints (ball: 4 qpos but 3 qvel; free: 7 qpos but 6 qvel), MuJoCo's
+fixed tendons couple to individual DOFs, not to quaternion components. The model
+builder must store the DOF address (into qvel space), not the qpos address. For
+hinge/slide this distinction is irrelevant (they're equal). Ball/Free joints in
+fixed tendons are rare and should be validated — if encountered, the builder should
+map to the appropriate qvel DOF index and use `qvel[dof_adr]` for velocity. The
+length computation for multi-DOF joints requires using `qvel` (generalized velocity)
+rather than `qpos` (which includes quaternions). This is a known subtlety — for the
+initial implementation, we validate that fixed tendon joints are hinge or slide only,
+and emit a warning for ball/free.
+
+##### Step 6: Tendon Velocity Computation
+
+Add tendon velocity computation to `mj_fwd_velocity()`. This is a single matrix-vector
+dot product per tendon. Add after the existing velocity kinematics in `mj_fwd_velocity()`
+(after body velocity computation, before the function returns):
+
+```rust
+// Tendon velocities: v_t = J_t · qvel
+for t in 0..model.ntendon {
+    data.ten_velocity[t] = data.ten_J[t].dot(&data.qvel);
+}
+```
+
+This matches MuJoCo's `ten_velocity = ten_J * qvel` computation.
+
+##### Step 7: Tendon Passive Forces in `mj_fwd_passive()`
+
+Add tendon spring/damper/friction forces after the existing joint passive force
+computation in `mj_fwd_passive()` (after `model.visit_joints(&mut visitor)`,
+before the function returns):
+
+```rust
+// Tendon passive forces: spring + damper + friction loss.
+// Pattern matches joint passive forces: spring/damper skipped in implicit mode
+// (handled by mj_fwd_acceleration_implicit), friction always explicit.
+for t in 0..model.ntendon {
+    let length = data.ten_length[t];
+    let velocity = data.ten_velocity[t];
+    let mut force = 0.0;
+
+    if !implicit_mode {
+        // Spring: F = -k * (L - L_ref)
+        let k = model.tendon_stiffness[t];
+        if k > 0.0 {
+            let l_ref = model.tendon_lengthspring[t];
+            force -= k * (length - l_ref);
+        }
+
+        // Damper: F = -b * v
+        let b = model.tendon_damping[t];
+        if b > 0.0 {
+            force -= b * velocity;
+        }
+    }
+    // NOTE: In implicit mode, tendon spring/damper forces are skipped here.
+    // Joint springs/dampers ARE handled in implicit mode — via diagonal K and D
+    // modifications in mj_fwd_acceleration_implicit(). Tendon springs/dampers
+    // couple multiple joints (K_q = J^T * k * J, which is generally non-diagonal),
+    // so they CANNOT be absorbed into the existing diagonal implicit modification.
+    // For now, tendon springs/dampers produce zero force in implicit mode — this
+    // is a known limitation, NOT equivalent to joint spring/damper handling.
+    // A future enhancement could add the tendon contribution to scratch_m_impl
+    // as a non-diagonal term, but this would require refactoring the implicit
+    // solver.
+
+    // Friction loss: F = -frictionloss * sign(v)
+    // Always explicit (velocity-sign-dependent, cannot linearize).
+    // Matches joint friction_loss pattern in PassiveForceVisitor.
+    let fl = model.tendon_frictionloss[t];
+    if fl > 0.0 && velocity.abs() > 1e-10 {
+        force -= fl * velocity.signum();
+    }
+
+    data.ten_force[t] = force;
+
+    // Map tendon force to joint forces via sparse J^T multiplication.
+    // For fixed tendons: qfrc_passive[dof_adr] += coef * force.
+    // Uses wrap arrays directly (sparse) rather than iterating over all nv DOFs.
+    if force != 0.0 {
+        let adr = model.tendon_adr[t];
+        let num = model.tendon_num[t];
+        for w in adr..(adr + num) {
+            let dof_adr = model.wrap_objid[w];
+            let coef = model.wrap_prm[w];
+            if dof_adr < model.nv {
+                data.qfrc_passive[dof_adr] += coef * force;
+            }
+        }
+    }
+}
+```
+
+**Note on spatial tendons:** When spatial tendons are added in the follow-up, their
+Jacobians are dense (all `nv` entries may be non-zero). The J^T multiplication for
+spatial tendons should use the dense `ten_J[t]` vector instead of the sparse wrap
+arrays. The dispatch on `tendon_type` in the force-mapping block will select the
+appropriate path.
+
+##### Step 8: Tendon Limit Forces in `mj_fwd_constraint()`
+
+Tendon limits are **constraint forces**, not passive forces. They belong in
+`mj_fwd_constraint()` (`mujoco_pipeline.rs:8500`), alongside joint limit constraints.
+
+Add after the joint limit loop (after line 8554):
+
+```rust
+// Tendon limit constraints
+for t in 0..model.ntendon {
+    if !model.tendon_limited[t] {
+        continue;
+    }
+
+    let (limit_min, limit_max) = model.tendon_range[t];
+    let length = data.ten_length[t];
+
+    let (limit_stiffness, limit_damping) = solref_to_penalty(
+        model.tendon_solref[t],
+        model.default_eq_stiffness,
+        model.default_eq_damping,
+        model.timestep,
+    );
+
+    // Lower limit violation: length < min
+    if length < limit_min {
+        let penetration = limit_min - length;
+        // Tendon velocity into the limit (negative velocity = moving toward shorter)
+        let vel_into = (-data.ten_velocity[t]).max(0.0);
+        let force = limit_stiffness * penetration + limit_damping * vel_into;
+
+        // Map to joint forces via J^T (force pushes tendon toward longer)
+        let adr = model.tendon_adr[t];
+        let num = model.tendon_num[t];
+        for w in adr..(adr + num) {
+            let dof_adr = model.wrap_objid[w];
+            let coef = model.wrap_prm[w];
+            if dof_adr < model.nv {
+                // Positive tendon force → increase length
+                data.qfrc_constraint[dof_adr] += coef * force;
+            }
+        }
+    }
+
+    // Upper limit violation: length > max
+    if length > limit_max {
+        let penetration = length - limit_max;
+        let vel_into = data.ten_velocity[t].max(0.0);
+        let force = limit_stiffness * penetration + limit_damping * vel_into;
+
+        // Map to joint forces via J^T (force pushes tendon toward shorter)
+        let adr = model.tendon_adr[t];
+        let num = model.tendon_num[t];
+        for w in adr..(adr + num) {
+            let dof_adr = model.wrap_objid[w];
+            let coef = model.wrap_prm[w];
+            if dof_adr < model.nv {
+                data.qfrc_constraint[dof_adr] -= coef * force;
+            }
+        }
+    }
+}
+```
+
+This follows exactly the same pattern as joint limits (lines 8513-8554): check
+limited flag, get bounds, `solref_to_penalty()`, compute penetration and
+velocity-into-limit, apply stiffness + damping force.
+
+##### Step 9: Tendon Actuation in `mj_fwd_actuation()`
+
+Replace the placeholder at `mujoco_pipeline.rs:6017-6020`:
+
+```rust
+ActuatorTransmission::Tendon => {
+    // Tendon transmission: apply ctrl * gear as force along tendon,
+    // mapped to joints via tendon Jacobian J^T.
+    let tendon_id = trnid;
+    if tendon_id < model.ntendon {
+        let force = ctrl * gear;
+        // Sparse J^T multiplication using wrap arrays
+        let adr = model.tendon_adr[tendon_id];
+        let num = model.tendon_num[tendon_id];
+        for w in adr..(adr + num) {
+            let dof_adr = model.wrap_objid[w];
+            let coef = model.wrap_prm[w];
+            if dof_adr < model.nv {
+                data.qfrc_actuator[dof_adr] += coef * force;
+            }
+        }
+    }
+}
+ActuatorTransmission::Site => {
+    // Site transmission: not yet implemented (requires spatial tendon support).
+    // No-op placeholder preserved.
+}
+```
+
+##### Step 10: Sensor Stubs → Real Reads
+
+In `mj_sensor_pos()` (line 5101), replace TendonPos stub:
+
+```rust
+MjSensorType::TendonPos => {
+    let tendon_id = model.sensor_objid[sensor_id];
+    let value = if tendon_id < model.ntendon {
+        data.ten_length[tendon_id]
+    } else {
+        0.0
+    };
+    sensor_write(&mut data.sensordata, adr, 0, value);
+}
+```
+
+In `mj_sensor_vel()` (line 5307), replace TendonVel stub:
+
+```rust
+MjSensorType::TendonVel => {
+    let tendon_id = model.sensor_objid[sensor_id];
+    let value = if tendon_id < model.ntendon {
+        data.ten_velocity[tendon_id]
+    } else {
+        0.0
+    };
+    sensor_write(&mut data.sensordata, adr, 0, value);
+}
+```
+
+In `mj_sensor_pos()` (line 5093), replace the combined `Tendon | Site` stub
+with separate arms (the existing code is `ActuatorTransmission::Tendon |
+ActuatorTransmission::Site => { sensor_write(..., 0.0); }`):
+
+```rust
+ActuatorTransmission::Tendon => {
+    let tendon_id = model.actuator_trnid[act_id];
+    let value = if tendon_id < model.ntendon {
+        data.ten_length[tendon_id] * model.actuator_gear[act_id]
+    } else {
+        0.0
+    };
+    sensor_write(&mut data.sensordata, adr, 0, value);
+}
+ActuatorTransmission::Site => {
+    // Site transmission length not yet available (requires spatial tendon support).
+    sensor_write(&mut data.sensordata, adr, 0, 0.0);
+}
+```
+
+In `mj_sensor_vel()` (line 5299), replace the combined `Tendon | Site` stub
+with separate arms:
+
+```rust
+ActuatorTransmission::Tendon => {
+    let tendon_id = model.actuator_trnid[act_id];
+    let value = if tendon_id < model.ntendon {
+        data.ten_velocity[tendon_id] * model.actuator_gear[act_id]
+    } else {
+        0.0
+    };
+    sensor_write(&mut data.sensordata, adr, 0, value);
+}
+ActuatorTransmission::Site => {
+    // Site transmission velocity not yet available (requires spatial tendon support).
+    sensor_write(&mut data.sensordata, adr, 0, 0.0);
+}
+```
+
+##### Step 11: Pipeline Integration Points
+
+Modify `mj_fwd_position()` (line 2603) — add `mj_fwd_tendon` call after site poses:
+
+```rust
+// Site poses (existing, line 2593-2603)
+for site_id in 0..model.nsite { ... }
+
+// Tendon kinematics (NEW)
+mj_fwd_tendon(model, data);
+
+// Subtree mass and COM (existing, line 2607)
+```
+
+Modify `mj_fwd_velocity()` — add tendon velocity after body velocity computation
+(see Step 6).
+
+No changes needed to `forward()` or `forward_skip_sensors()` — both call
+`mj_fwd_position()` and `mj_fwd_velocity()` which now include tendon computation
+internally. The RK4 integrator's `forward_skip_sensors()` path inherits tendon
+support automatically, so tendon forces are correctly evaluated at each RK4 stage.
+
+##### Step 12: `MjcfTendon` Export
+
+Add `MjcfTendon` and `MjcfTendonType` to `sim/L0/mjcf/src/lib.rs` line 191:
+
+```rust
+MjcfTendon, MjcfTendonDefaults, MjcfTendonType,
+```
+
+##### Step 13: Cargo.toml — sim-core Dependency on sim-tendon
+
+No dependency needed. The pipeline does not call sim-tendon code — it reimplements
+the fixed tendon computation inline (a 10-line loop). The sim-tendon crate remains
+a standalone reference implementation with its own richer type system (`CableProperties`,
+`TendonActuator` trait, etc.). Pipeline-side, tendon computation is a thin layer
+over the Model/Data arrays, matching the existing pattern for joints, contacts, and
+constraints.
+
+**Rationale:** Adding a sim-core → sim-tendon dependency would require bridging
+between two type systems (`Model`/`Data` arrays vs. `FixedTendon`/`CableProperties`
+structs). The pipeline computation is simple enough (linear combination for length,
+constant Jacobian, spring/damper force) that reimplementation is cleaner than
+adaptation. The sim-tendon crate remains useful for standalone tendon analysis,
+prototyping, and as documentation of the algorithms.
 
 #### Acceptance Criteria
-1. `ten_length`, `ten_velocity`, `ten_force`, `ten_J` are populated every step for all tendons.
-2. A tendon-driven actuator produces the same joint torque as a direct joint actuator with equivalent moment arm (within 1e-10 tolerance).
-3. Tendon passive spring/damper forces appear in `qfrc_passive` and affect joint dynamics.
-4. Tendon limit forces activate when length exceeds `tendon_range` and use solref/solimp parameters.
-5. Zero-tendon models (`ntendon == 0`) have zero overhead.
-6. The `ActuatorTransmission::Tendon` placeholder is replaced with working code.
+
+1. **Fixed tendon kinematics:** `ten_length[t]` equals `Σ coef_w * qpos[dof_adr_w]`
+   for all fixed tendons, verified by constructing a 2-joint chain with a differential
+   tendon (`coef = [1.0, -1.0]`) and checking length matches `q1 - q2`.
+
+2. **Tendon Jacobian correctness:** `ten_J[t][dof_adr]` equals the coupling
+   coefficient for each wrap entry. Verified by comparing `ten_J[t].dot(&qvel)` to
+   finite-difference `(L(q + ε·e_i) - L(q)) / ε` for each DOF `i`, with tolerance
+   `≤ 1e-8` (exact for fixed tendons, but FD test catches indexing bugs).
+
+3. **Tendon velocity:** `ten_velocity[t]` equals `ten_J[t].dot(&data.qvel)` after
+   each step. Verified by the same differential tendon: velocity should equal
+   `qdot1 - qdot2`.
+
+4. **Tendon actuation equivalence:** A tendon-driven actuator with `coef = 1.0` on
+   joint `j` and `gear = 1.0` produces the same `qfrc_actuator[j]` as a direct
+   `ActuatorTransmission::Joint` actuator with the same `ctrl` and `gear`. Verified
+   by running both configurations and comparing `qfrc_actuator` to `≤ 1e-14`.
+
+5. **Differential tendon:** An antagonistic tendon with `coef = [1.0, -1.0]` on
+   joints `j1, j2` with `ctrl = 1.0` and `gear = 1.0` produces
+   `qfrc_actuator[j1] = 1.0` and `qfrc_actuator[j2] = -1.0`.
+
+6. **Passive spring force:** A tendon with `stiffness = 100.0`, `lengthspring = 0.0`,
+   and `coef = [1.0]` on a hinge joint produces `qfrc_passive[j] = -100 * q_j`.
+   Verified by setting `qpos[j] = 0.1` and checking `qfrc_passive[j] ≈ -10.0`.
+
+7. **Passive damper force:** A tendon with `damping = 10.0` and `coef = [1.0]` on a
+   hinge joint produces `qfrc_passive[j] = -10 * qdot_j`. Verified by setting
+   `qvel[j] = 0.5` and checking `qfrc_passive[j] ≈ -5.0`.
+
+8. **Friction loss:** A tendon with `frictionloss = 2.0` and positive velocity
+   produces `ten_force` contribution of `-2.0` (opposing motion). Verified similarly.
+
+9. **Limit constraint (lower):** A tendon with `limited = true`, `range = (0.1, 0.5)`,
+   and length = 0.05 produces a positive constraint force pushing toward longer
+   (via `qfrc_constraint`). Force magnitude follows `solref_to_penalty` with default
+   parameters. Verified by checking `qfrc_constraint` is non-zero and in the correct
+   direction.
+
+10. **Limit constraint (upper):** Same tendon with length = 0.6 produces a negative
+    constraint force pushing toward shorter. Verified symmetrically.
+
+11. **TendonPos sensor:** After `forward()`, `sensordata` for a TendonPos sensor
+    reads `ten_length[tendon_id]`, not 0.0.
+
+12. **TendonVel sensor:** After `forward()`, `sensordata` for a TendonVel sensor
+    reads `ten_velocity[tendon_id]`, not 0.0.
+
+13. **ActuatorPos/ActuatorVel sensors:** For a tendon-transmission actuator, the
+    sensors read `ten_length * gear` and `ten_velocity * gear` respectively.
+
+14. **Zero-tendon overhead:** A model with `ntendon == 0` has identical performance
+    to before this PR. All tendon functions early-return on `ntendon == 0`.
+
+15. **Spatial tendon graceful degradation:** A model with a spatial tendon parses
+    without error. The spatial tendon's `ten_length` is 0.0, `ten_J` is zero,
+    and no forces are produced. A warning is logged at model load time.
+
+16. **MJCF round-trip:** A model with `<tendon><fixed name="t1"><joint joint="j1" coef="1.0"/></fixed></tendon>` parses, builds a Model with `ntendon = 1`, and
+    the tendon correctly couples to joint `j1`.
+
+17. **Model builder rejects bad references:** An MJCF file referencing a nonexistent
+    joint in a fixed tendon produces a `ModelConversionError`.
+
+18. **Existing tests pass:** All existing tests (implicit integration, RK4, collision,
+    sensors, etc.) remain green. No behavioral changes for zero-tendon models.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`mj_fwd_tendon()`, `mj_fwd_tendon_vel()`, tendon forces in `mj_fwd_passive()`, tendon actuation in `mj_fwd_actuation()`)
-- `sim/L0/tendon/src/` — reference for path computation algorithms
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - `Model` struct: add `tendon_type`, `tendon_solref`, `tendon_solimp`,
+    `tendon_frictionloss` fields (after line 935)
+  - `Model::empty()`: initialize new fields (after line 1603)
+  - `mj_fwd_position()`: add `mj_fwd_tendon()` call (after line 2603)
+  - `mj_fwd_velocity()`: add tendon velocity computation
+  - `mj_fwd_passive()`: add tendon spring/damper/friction forces
+  - `mj_fwd_constraint()`: add tendon limit constraint forces (after line 8554)
+  - `mj_fwd_actuation()`: replace Tendon placeholder (line 6017-6020)
+  - `mj_sensor_pos()`: replace TendonPos stub (line 5101) and ActuatorPos tendon
+    stub (line 5093)
+  - `mj_sensor_vel()`: replace TendonVel stub (line 5307) and ActuatorVel tendon
+    stub (line 5299)
+  - New functions: `mj_fwd_tendon()`, `mj_fwd_tendon_fixed()` (~40 lines total)
+- `sim/L0/mjcf/src/model_builder.rs` — modify:
+  - Add builder fields for tendon state (`tendon_name_to_id`, `tendon_type`, etc.)
+  - New `process_tendons()` method (~60 lines)
+  - Replace tendon rejection in `process_actuator()` (line 1009-1018) with tuple return
+  - Replace empty tendon initialization in `build()` (lines 1449-1463) with builder fields
+  - Add `tendon_length0` / `tendon_lengthspring` post-construction computation
+- `sim/L0/mjcf/src/validation.rs` — modify:
+  - Add `validate_tendons()` function (~60 lines)
+- `sim/L0/mjcf/src/lib.rs` — modify:
+  - Export `MjcfTendon`, `MjcfTendonType` (line 191)
+- `sim/L0/core/src/mujoco_pipeline.rs` — new test module `tendon_tests` (~200 lines):
+  - Fixed tendon length computation test (AC #1)
+  - Jacobian correctness test (AC #2)
+  - Tendon velocity test (AC #3)
+  - Actuation equivalence test (AC #4)
+  - Differential tendon test (AC #5)
+  - Passive spring test (AC #6)
+  - Passive damper test (AC #7)
+  - Friction loss test (AC #8)
+  - Lower limit test (AC #9)
+  - Upper limit test (AC #10)
+  - TendonPos sensor test (AC #11)
+  - TendonVel sensor test (AC #12)
+  - Actuator sensor test (AC #13)
+  - Zero-tendon overhead test (AC #14)
+  - Spatial tendon graceful skip test (AC #15)
+  - MJCF round-trip test (AC #16)
+  - Bad reference rejection test (AC #17)
 
 ---
 

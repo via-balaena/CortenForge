@@ -449,6 +449,16 @@ pub enum WrapType {
     Pulley,
 }
 
+/// Tendon type (pipeline-local enum, converted from MjcfTendonType in model builder).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TendonType {
+    /// Fixed (linear coupling): L = Σ coef_i * q_i, constant Jacobian.
+    #[default]
+    Fixed,
+    /// Spatial (3D path routing through sites): not yet implemented.
+    Spatial,
+}
+
 /// Equality constraint type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum EqualityType {
@@ -933,6 +943,18 @@ pub struct Model {
     pub tendon_adr: Vec<usize>,
     /// Optional tendon names.
     pub tendon_name: Vec<Option<String>>,
+    /// Tendon type: Fixed (linear coupling) or Spatial (3D path routing).
+    pub tendon_type: Vec<TendonType>,
+    /// Solver parameters for tendon limit constraints (2 elements per tendon).
+    /// [0] = timeconst (>0) or -stiffness (≤0), [1] = dampratio or -damping.
+    /// Default: [0.0, 0.0] → uses model.default_eq_stiffness/default_eq_damping.
+    pub tendon_solref: Vec<[f64; 2]>,
+    /// Impedance parameters for tendon limit constraints (5 elements per tendon).
+    /// [d_min, d_max, width, midpoint, power]. Default: [0.9, 0.95, 0.001, 0.5, 2.0].
+    pub tendon_solimp: Vec<[f64; 5]>,
+    /// Velocity-dependent friction loss per tendon (N).
+    /// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
+    pub tendon_frictionloss: Vec<f64>,
 
     // Tendon wrapping path elements (indexed by wrap_id, grouped by tendon; total length = nwrap)
     /// Wrap object type (Site, Geom, Joint, Pulley).
@@ -1598,6 +1620,10 @@ impl Model {
             tendon_num: vec![],
             tendon_adr: vec![],
             tendon_name: vec![],
+            tendon_type: vec![],
+            tendon_solref: vec![],
+            tendon_solimp: vec![],
+            tendon_frictionloss: vec![],
             wrap_type: vec![],
             wrap_objid: vec![],
             wrap_prm: vec![],
@@ -2601,6 +2627,9 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
             .to_rotation_matrix()
             .into_inner();
     }
+
+    // Tendon kinematics (after site poses, before subtree COM)
+    mj_fwd_tendon(model, data);
 
     // ========== Compute subtree mass and COM (for O(n) RNE gravity) ==========
     // Initialize with each body's own mass and COM
@@ -5090,8 +5119,17 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                                 );
                             }
                         }
-                        ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
-                            // Tendon/site transmission length not yet available
+                        ActuatorTransmission::Tendon => {
+                            let tendon_id = model.actuator_trnid[objid];
+                            let value = if tendon_id < model.ntendon {
+                                data.ten_length[tendon_id] * model.actuator_gear[objid]
+                            } else {
+                                0.0
+                            };
+                            sensor_write(&mut data.sensordata, adr, 0, value);
+                        }
+                        ActuatorTransmission::Site => {
+                            // Site transmission length not yet available.
                             sensor_write(&mut data.sensordata, adr, 0, 0.0);
                         }
                     }
@@ -5099,10 +5137,13 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::TendonPos => {
-                // Tendon length: requires tendon pipeline integration.
-                // When tendon pipeline is wired, this will read from ten_length[objid].
-                // For now, output 0 to avoid returning garbage.
-                sensor_write(&mut data.sensordata, adr, 0, 0.0);
+                let tendon_id = model.sensor_objid[sensor_id];
+                let value = if tendon_id < model.ntendon {
+                    data.ten_length[tendon_id]
+                } else {
+                    0.0
+                };
+                sensor_write(&mut data.sensordata, adr, 0, value);
             }
 
             // Skip velocity/acceleration-dependent sensors
@@ -5296,8 +5337,17 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
                                 );
                             }
                         }
-                        ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
-                            // Tendon/site transmission velocity not yet available
+                        ActuatorTransmission::Tendon => {
+                            let tendon_id = model.actuator_trnid[objid];
+                            let value = if tendon_id < model.ntendon {
+                                data.ten_velocity[tendon_id] * model.actuator_gear[objid]
+                            } else {
+                                0.0
+                            };
+                            sensor_write(&mut data.sensordata, adr, 0, value);
+                        }
+                        ActuatorTransmission::Site => {
+                            // Site transmission velocity not yet available.
                             sensor_write(&mut data.sensordata, adr, 0, 0.0);
                         }
                     }
@@ -5305,10 +5355,13 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::TendonVel => {
-                // Tendon velocity: requires tendon pipeline integration.
-                // When tendon pipeline is wired, this will read from ten_velocity[objid].
-                // For now, output 0 to avoid returning garbage.
-                sensor_write(&mut data.sensordata, adr, 0, 0.0);
+                let tendon_id = model.sensor_objid[sensor_id];
+                let value = if tendon_id < model.ntendon {
+                    data.ten_velocity[tendon_id]
+                } else {
+                    0.0
+                };
+                sensor_write(&mut data.sensordata, adr, 0, value);
             }
 
             // Skip position/acceleration-dependent sensors
@@ -5991,6 +6044,70 @@ fn mj_fwd_velocity(model: &Model, data: &mut Data) {
 
         data.cvel[body_id] = vel;
     }
+
+    // Tendon velocities: v_t = J_t · qvel
+    for t in 0..model.ntendon {
+        data.ten_velocity[t] = data.ten_J[t].dot(&data.qvel);
+    }
+}
+
+/// Compute tendon lengths and Jacobians from current joint state.
+///
+/// For fixed tendons: L = Σ coef_i * qpos[dof_adr_i], J[dof_adr_i] = coef_i.
+/// For spatial tendons: silently skipped (deferred to spatial tendon PR).
+///
+/// Called from mj_fwd_position() after site transforms, before subtree COM.
+fn mj_fwd_tendon(model: &Model, data: &mut Data) {
+    if model.ntendon == 0 {
+        return;
+    }
+
+    for t in 0..model.ntendon {
+        match model.tendon_type[t] {
+            TendonType::Fixed => {
+                mj_fwd_tendon_fixed(model, data, t);
+            }
+            TendonType::Spatial => {
+                // Spatial tendons not yet implemented.
+                // Set length to 0, Jacobian to zero vector.
+                data.ten_length[t] = 0.0;
+                data.ten_J[t].fill(0.0);
+            }
+        }
+    }
+}
+
+/// Fixed tendon kinematics for a single tendon.
+///
+/// Fixed tendon length is a linear combination of joint positions:
+///   L_t = Σ_w coef_w * qpos[dof_adr_w]
+///
+/// The Jacobian is constant (configuration-independent):
+///   J_t[dof_adr_w] = coef_w
+#[inline]
+fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
+    let adr = model.tendon_adr[t];
+    let num = model.tendon_num[t];
+
+    // Zero the Jacobian row. For fixed tendons, only a few entries are non-zero.
+    data.ten_J[t].fill(0.0);
+
+    let mut length = 0.0;
+    for w in adr..(adr + num) {
+        debug_assert_eq!(model.wrap_type[w], WrapType::Joint);
+        let dof_adr = model.wrap_objid[w];
+        let coef = model.wrap_prm[w];
+
+        if dof_adr < data.qpos.len() {
+            length += coef * data.qpos[dof_adr];
+        }
+
+        if dof_adr < model.nv {
+            data.ten_J[t][dof_adr] += coef;
+        }
+    }
+
+    data.ten_length[t] = length;
 }
 
 /// Compute actuator forces from control inputs.
@@ -6014,9 +6131,25 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     }
                 }
             }
-            ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
-                // Placeholder for tendon/site actuation
-                // Will be implemented when tendons are integrated
+            ActuatorTransmission::Tendon => {
+                // Tendon transmission: apply ctrl * gear as force along tendon,
+                // mapped to joints via tendon Jacobian J^T.
+                let tendon_id = trnid;
+                if tendon_id < model.ntendon {
+                    let force = ctrl * gear;
+                    let adr = model.tendon_adr[tendon_id];
+                    let num = model.tendon_num[tendon_id];
+                    for w in adr..(adr + num) {
+                        let dof_adr = model.wrap_objid[w];
+                        let coef = model.wrap_prm[w];
+                        if dof_adr < model.nv {
+                            data.qfrc_actuator[dof_adr] += coef * force;
+                        }
+                    }
+                }
+            }
+            ActuatorTransmission::Site => {
+                // Site transmission: not yet implemented.
             }
         }
     }
@@ -6711,6 +6844,56 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
         implicit_mode,
     };
     model.visit_joints(&mut visitor);
+
+    // Tendon passive forces: spring + damper + friction loss.
+    for t in 0..model.ntendon {
+        let length = data.ten_length[t];
+        let velocity = data.ten_velocity[t];
+        let mut force = 0.0;
+
+        if !implicit_mode {
+            // Spring: F = -k * (L - L_ref)
+            let k = model.tendon_stiffness[t];
+            if k > 0.0 {
+                let l_ref = model.tendon_lengthspring[t];
+                force -= k * (length - l_ref);
+            }
+
+            // Damper: F = -b * v
+            let b = model.tendon_damping[t];
+            if b > 0.0 {
+                force -= b * velocity;
+            }
+        }
+        // NOTE: In implicit mode, tendon spring/damper forces are skipped.
+        // Tendon springs/dampers couple multiple joints (non-diagonal K/D),
+        // so they cannot be absorbed into the existing diagonal implicit
+        // modification. This is a known limitation.
+
+        // Friction loss: F = -frictionloss * smooth_sign(v)
+        // Always explicit (velocity-sign-dependent, cannot linearize).
+        // Uses tanh approximation matching the joint friction pattern.
+        let fl = model.tendon_frictionloss[t];
+        if fl > 0.0 && velocity.abs() > FRICTION_VELOCITY_THRESHOLD {
+            let smooth_sign = (velocity * model.friction_smoothing).tanh();
+            force -= fl * smooth_sign;
+        }
+
+        data.ten_force[t] = force;
+
+        // Map tendon force to joint forces via sparse J^T multiplication.
+        if force != 0.0 {
+            let adr = model.tendon_adr[t];
+            let num = model.tendon_num[t];
+            for w in adr..(adr + num) {
+                let dof_adr = model.wrap_objid[w];
+                let coef = model.wrap_prm[w];
+                if dof_adr < model.nv {
+                    data.qfrc_passive[dof_adr] += coef * force;
+                }
+            }
+        }
+    }
 }
 
 /// Visitor for computing passive forces (springs, dampers, friction loss).
@@ -8549,6 +8732,59 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
             MjJointType::Ball | MjJointType::Free => {
                 // Ball/Free joints can have cone limits (swing-twist)
                 // Not yet implemented - would require quaternion-based limit checking
+            }
+        }
+    }
+
+    // ========== Tendon Limit Constraints ==========
+    for t in 0..model.ntendon {
+        if !model.tendon_limited[t] {
+            continue;
+        }
+
+        let (limit_min, limit_max) = model.tendon_range[t];
+        let length = data.ten_length[t];
+
+        let (limit_stiffness, limit_damping) = solref_to_penalty(
+            model.tendon_solref[t],
+            model.default_eq_stiffness,
+            model.default_eq_damping,
+            model.timestep,
+        );
+
+        // Lower limit violation: length < min
+        if length < limit_min {
+            let penetration = limit_min - length;
+            let vel_into = (-data.ten_velocity[t]).max(0.0);
+            let force = limit_stiffness * penetration + limit_damping * vel_into;
+
+            // Map to joint forces via J^T (force pushes tendon toward longer)
+            let adr = model.tendon_adr[t];
+            let num = model.tendon_num[t];
+            for w in adr..(adr + num) {
+                let dof_adr = model.wrap_objid[w];
+                let coef = model.wrap_prm[w];
+                if dof_adr < model.nv {
+                    data.qfrc_constraint[dof_adr] += coef * force;
+                }
+            }
+        }
+
+        // Upper limit violation: length > max
+        if length > limit_max {
+            let penetration = length - limit_max;
+            let vel_into = data.ten_velocity[t].max(0.0);
+            let force = limit_stiffness * penetration + limit_damping * vel_into;
+
+            // Map to joint forces via J^T (force pushes tendon toward shorter)
+            let adr = model.tendon_adr[t];
+            let num = model.tendon_num[t];
+            for w in adr..(adr + num) {
+                let dof_adr = model.wrap_objid[w];
+                let coef = model.wrap_prm[w];
+                if dof_adr < model.nv {
+                    data.qfrc_constraint[dof_adr] -= coef * force;
+                }
             }
         }
     }

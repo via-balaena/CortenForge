@@ -126,6 +126,10 @@ pub use mujoco_pipeline::{
     SpatialVector,
     // Error handling
     StepError,
+    // Tendon types
+    TendonType,
+    // Wrap object types
+    WrapType,
     // Utility functions for position/velocity differentiation
     mj_differentiate_pos,
     mj_integrate_pos_explicit,

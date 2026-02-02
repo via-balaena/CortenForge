@@ -188,9 +188,10 @@ pub use types::{
     MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
     MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
     MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
-    MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendonDefaults, MjcfWeld,
+    MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendon, MjcfTendonDefaults,
+    MjcfTendonType, MjcfWeld,
 };
-pub use validation::{ValidationResult, validate};
+pub use validation::{ValidationResult, validate, validate_tendons};
 
 // MuJoCo-aligned Model conversion (primary API)
 pub use model_builder::{ModelConversionError, load_model, load_model_from_file, model_from_mjcf};
