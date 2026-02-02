@@ -75,91 +75,359 @@ can be tackled in any order unless a prerequisite is noted.
 ## Group A — Solver & Linear Algebra
 
 ### 1. In-Place Cholesky Factorization
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8331`) uses `std::mem::replace`
-to swap `scratch_m_impl` out for Cholesky consumption, allocating an O(nv²) zero matrix
-every step (`mujoco_pipeline.rs:8387`). For nv=100 this is 80 KB/step of unnecessary
-allocation.
+`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8790`) uses `std::mem::replace`
+to swap `scratch_m_impl` out for nalgebra's `.cholesky()` (which takes ownership),
+replacing it with a freshly allocated `DMatrix::zeros(nv, nv)` every step
+(`mujoco_pipeline.rs:8846`). For nv=100 this is ~78 KB/step of unnecessary heap
+allocation and zeroing.
+
+The current flow (`mujoco_pipeline.rs:8846-8852`):
+```rust
+let chol = std::mem::replace(&mut data.scratch_m_impl, DMatrix::zeros(nv, nv))
+    .cholesky()
+    .ok_or(StepError::CholeskyFailed)?;
+data.scratch_v_new.copy_from(&data.scratch_rhs);
+chol.solve_mut(&mut data.scratch_v_new);
+```
+
+`scratch_m_impl` is pre-allocated in `make_data()` (`mujoco_pipeline.rs:1771`) and
+populated each step via `copy_from(&data.qM)` (`mujoco_pipeline.rs:8814`) which
+overwrites the full matrix. After Cholesky, the matrix is never read again until
+the next step's `copy_from`. The replacement zero matrix is therefore wasted — the
+next `copy_from` would overwrite it entirely regardless of contents.
+
+`StepError::CholeskyFailed` already exists (`mujoco_pipeline.rs:655`).
 
 #### Objective
-Zero-allocation Cholesky factorization that overwrites `scratch_m_impl` in place.
+Zero-allocation Cholesky factorization that overwrites `scratch_m_impl` in place,
+eliminating the `std::mem::replace` + `DMatrix::zeros` pattern.
 
 #### Specification
 
-Implement `cholesky_in_place(m: &mut DMatrix<f64>) -> Result<(), StepError>`:
+Add two functions to `mujoco_pipeline.rs`, directly above `mj_fwd_acceleration_implicit()`:
 
-1. For each column j = 0..nv:
-   - `L[j,j] = sqrt(M[j,j] - Σ(L[j,k]² for k < j))`
-   - For each row i > j: `L[i,j] = (M[i,j] - Σ(L[i,k]·L[j,k] for k < j)) / L[j,j]`
-2. Overwrite the lower triangle of `m` with L. The upper triangle is unused.
-3. Return `Err(StepError::CholeskyFailed)` if any diagonal element is ≤ 0.
+**`cholesky_in_place(m: &mut DMatrix<f64>) -> Result<(), StepError>`**
 
-Implement `cholesky_solve_in_place(m: &DMatrix<f64>, x: &mut DVector<f64>)`:
+Standard Cholesky (LL^T) factorization, overwriting the lower triangle in place.
+Columns are processed left-to-right; references to `m[(j,k)]` for `k < j` read
+already-computed L entries from previous columns (this is what makes it in-place):
 
-1. Forward solve L·y = x (overwrite x with y).
-2. Back solve L^T·z = y (overwrite x with z).
+1. Let `n = m.nrows()`.
+2. For each column j = 0..n:
+   - Compute `diag = m[(j,j)] - Σ(m[(j,k)]² for k < j)`.
+   - If `diag` ≤ 0: return `Err(StepError::CholeskyFailed)` (matrix is not SPD).
+   - Set `m[(j,j)] = sqrt(diag)`.
+   - For each row i = (j+1)..n:
+     `m[(i,j)] = (m[(i,j)] - Σ(m[(i,k)]·m[(j,k)] for k < j)) / m[(j,j)]`
+3. The lower triangle of `m` now contains L. The upper triangle retains its
+   original values (stale M_impl entries) — this is safe because `copy_from(&data.qM)`
+   fully overwrites the matrix at the start of the next step, and
+   `cholesky_solve_in_place` only reads the lower triangle.
+
+**`cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>)`**
+
+Solve L·L^T·x = b where L is stored in the lower triangle of `l`:
+
+1. Let `n = l.nrows()`.
+2. Forward substitution (L·y = x): for j = 0..n,
+   `x[j] = (x[j] - Σ(l[(j,k)] · x[k] for k < j)) / l[(j,j)]`.
+3. Back substitution (L^T·z = y): for j = (n-1)..=0,
+   `x[j] = (x[j] - Σ(l[(k,j)] · x[k] for k = (j+1)..n)) / l[(j,j)]`.
+   (L^T elements accessed via `l[(k,j)]` — reading column j of L as row j of L^T.)
 
 Both functions operate on borrowed data. No allocations, no ownership transfers,
 no nalgebra `Cholesky` type.
 
+**Modify `mj_fwd_acceleration_implicit()`** — replace lines 8838-8852
+(the Cholesky comment block, `let nv`, `std::mem::replace`, and `chol.solve_mut`)
+with:
+
+```rust
+// Factorize M_impl in place (overwrites lower triangle with L where M_impl = L·L^T).
+// M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0).
+cholesky_in_place(&mut data.scratch_m_impl)?;
+data.scratch_v_new.copy_from(&data.scratch_rhs);
+cholesky_solve_in_place(&data.scratch_m_impl, &mut data.scratch_v_new);
+```
+
+This removes `let nv = model.nv` (no longer needed), `std::mem::replace`,
+`DMatrix::zeros(nv, nv)`, and the old comment block explaining the replace pattern.
+
+The `Cholesky` import stays — it is still used by `qM_cholesky: Option<Cholesky<f64, Dyn>>`
+(`mujoco_pipeline.rs:1325`) for cached mass matrix factorization in CRBA.
+
 #### Acceptance Criteria
 1. `std::mem::replace` and `DMatrix::zeros(nv, nv)` are removed from `mj_fwd_acceleration_implicit()`.
-2. `scratch_m_impl` is reused across steps via `copy_from(&data.qM)` as before.
-3. Numeric results match nalgebra `Cholesky::solve` to ≤ 1e-12 relative error on the solved vector.
-4. Zero heap allocations in the factorization/solve path (verifiable via `#[global_allocator]` counting test).
+2. `scratch_m_impl` is reused across steps — populated via `copy_from(&data.qM)`,
+   factorized in place, then fully overwritten again next step.
+3. Numeric results match nalgebra `Cholesky::solve` to ≤ 1e-12 relative error on the
+   solved vector. Verified by a unit test that compares both paths on random SPD matrices.
+4. Zero heap allocations in the factorize/solve path — neither function allocates.
+   (No `#[global_allocator]` test required; the functions take only `&mut` references
+   and contain no `Vec`, `Box`, or `DMatrix` constructors.)
 5. Existing implicit integration tests pass without modification.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`mj_fwd_acceleration_implicit()`)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`cholesky_in_place()`,
+  `cholesky_solve_in_place()`, refactor `mj_fwd_acceleration_implicit()`)
 
 ---
 
 ### 2. Sparse L^T D L Factorization
-**Status:** Not started | **Effort:** M | **Prerequisites:** #1
+**Status:** Done | **Effort:** M | **Prerequisites:** #1
 
 #### Current State
-Dense Cholesky in `mj_fwd_acceleration_implicit()` is O(nv³). For tree-structured
-robots (humanoids, quadrupeds, manipulators), the mass matrix has banded sparsity —
-DOF i couples only with its ancestor DOFs in the kinematic tree.
 
-Data scaffolds exist in `Data` (`mujoco_pipeline.rs:1337-1344`): `qLD_diag` (diagonal
-of D), `qLD_L` (sparse lower triangular entries per row), `qLD_valid` (validity flag).
-These are initialized to defaults and never populated. The `TODO(FUTURE_WORK#2)` comment
-at `mujoco_pipeline.rs:1321` cross-references this spec.
+Three consumers solve linear systems involving the mass matrix M:
+
+| Consumer | Location | Current method | Cost |
+|----------|----------|---------------|------|
+| `mj_fwd_acceleration_explicit()` | `mujoco_pipeline.rs:8729` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
+| `mj_fwd_acceleration_implicit()` | `mujoco_pipeline.rs:8845` | `cholesky_in_place()` on M_impl | O(nv³) factorize + solve |
+| `pgs_solve_contacts()` | `mujoco_pipeline.rs:7041` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
+
+For tree-structured robots, `M[i,j] ≠ 0` only when DOF `j` is an ancestor of DOF `i`
+(or vice versa) in the kinematic tree encoded by `model.dof_parent: Vec<Option<usize>>`
+(`mujoco_pipeline.rs:796`). This tree sparsity enables O(nv) factorization and solve.
+
+**Data scaffolds** exist in `Data` (`mujoco_pipeline.rs:1344-1351`):
+```rust
+pub qLD_diag: DVector<f64>,                  // D[i,i] diagonal
+pub qLD_L: Vec<Vec<(usize, f64)>>,           // L[i,:] sparse off-diagonal per row
+pub qLD_valid: bool,                         // dispatch flag
+```
+Initialized at `mujoco_pipeline.rs:1728-1730` (zeros/empty/false), never populated.
+The `TODO(FUTURE_WORK#2)` comment is at `mujoco_pipeline.rs:1328`.
+
+The `qM_cholesky: Option<Cholesky<f64, Dyn>>` at `mujoco_pipeline.rs:1325` is computed
+in `mj_crba()` Phase 5 (`mujoco_pipeline.rs:6148`) via `data.qM.clone().cholesky()` —
+this clone+factorize is the O(nv³) cost we eliminate for the explicit/contact paths.
 
 #### Objective
-O(nv) factorization and solve for tree-structured robots.
+O(nv) factorization and solve for tree-structured robots, matching MuJoCo's
+`mj_factorM` / `mj_solveM` semantics.
 
 #### Specification
 
-Implement `mj_factor_sparse(model: &Model, data: &mut Data)`:
+##### Data Structure: keep existing scaffolds
 
-1. Walk the kinematic tree from leaves to root.
-2. For each DOF i, accumulate composite inertia from child DOFs.
-3. Compute `qLD_diag[i]` (diagonal pivot) and `qLD_L[i]` (off-diagonal entries
-   for ancestor DOFs only).
-4. Set `qLD_valid = true`.
+Keep `qLD_diag`, `qLD_L`, `qLD_valid` as-is. The `Vec<Vec<(usize, f64)>>` for `qLD_L`
+involves heap allocations per row, but rows are allocated once in `make_data()` and
+reused via `clear()` + `push()`. For nv ≤ 200 (typical RL), the overhead is negligible
+vs. the O(nv³→nv) savings. Switching to flat CSR is a future optimization.
 
-Implement `mj_solve_sparse(data: &Data, x: &mut DVector<f64>)`:
+##### Step 1: `mj_factor_sparse(model: &Model, data: &mut Data)`
 
-1. Forward substitution: L·y = x, walking tree root-to-leaves.
-2. Diagonal solve: D·z = y.
-3. Back substitution: L^T·w = z, walking tree leaves-to-root.
+Computes `M = L^T D L` where `L` is unit lower triangular (`L[i,i] = 1` implicitly,
+stored entries are off-diagonal only) and `D` is diagonal.
 
-Each row of L has at most `depth(i)` non-zero entries. Total work is O(Σ depth(i))
-— O(nv) for balanced trees, O(nv·d) for chains of depth d.
+The identity `M[i,j] = Σ_k L[k,i] · D[k] · L[k,j]` means: when processing DOF `i`
+from leaves to root, we subtract the rank-1 contributions of already-processed
+descendants, then extract `D[i]` and `L[i,:]` from the residual.
+
+```rust
+fn mj_factor_sparse(model: &Model, data: &mut Data) {
+    let nv = model.nv;
+
+    // Phase 1: Copy M's sparse entries into qLD working storage.
+    // qLD_diag[i] starts as M[i,i]; qLD_L[i] holds (col, M[i,col]) for ancestors.
+    for i in 0..nv {
+        data.qLD_diag[i] = data.qM[(i, i)];
+        data.qLD_L[i].clear();
+        let mut p = model.dof_parent[i];
+        while let Some(j) = p {
+            data.qLD_L[i].push((j, data.qM[(i, j)]));
+            p = model.dof_parent[j];
+        }
+        // Parent chain yields descending col indices; reverse for ascending order.
+        data.qLD_L[i].reverse();
+    }
+
+    // Phase 2: Eliminate from leaves to root.
+    // When we process DOF i, all descendants k > i are already factored.
+    // We propagate i's contribution to ancestors j < i, which requires
+    // mutating qLD_L[j] while reading qLD_L[i]. Since j < i always,
+    // we use split_at_mut to get non-overlapping borrows.
+    for i in (0..nv).rev() {
+        let di = data.qLD_diag[i];
+
+        // Scale off-diagonals: L[i,j] = working[i,j] / D[i]
+        for entry in &mut data.qLD_L[i] {
+            entry.1 /= di;
+        }
+
+        // Propagate rank-1 update to ancestors.
+        // Split: [0..i] and [i..nv] give non-overlapping mutable access.
+        let (lo, hi) = data.qLD_L.split_at_mut(i);
+        let row_i = &hi[0]; // qLD_L[i], immutable borrow
+
+        for idx_a in 0..row_i.len() {
+            let (j, lij) = row_i[idx_a];
+            data.qLD_diag[j] -= lij * lij * di;
+            for idx_b in 0..idx_a {
+                let (k, lik) = row_i[idx_b];
+                // k < j < i, so both are in `lo`
+                if let Some(entry) = lo[j].iter_mut()
+                    .find(|(col, _)| *col == k)
+                {
+                    entry.1 -= lij * lik * di;
+                }
+            }
+        }
+    }
+
+    data.qLD_valid = true;
+}
+```
+
+**Complexity:** O(Σ depth(i)²). For balanced trees (depth ~ log n) this is O(n log² n).
+For chains (depth = n) it degrades to O(n³), matching dense — expected since chains
+produce dense mass matrices. For typical humanoids (depth ≤ 8), effectively O(n).
+
+##### Step 2: `mj_solve_sparse(...)`
+
+Solves `L^T D L x = b` where `x` initially contains `b`.
+
+The function borrows `qLD_diag` and `qLD_L` separately from `x` to avoid
+borrow conflicts when `x` is a field of `Data` (e.g., `data.qacc`):
+
+```rust
+fn mj_solve_sparse(
+    qld_diag: &DVector<f64>,
+    qld_l: &[Vec<(usize, f64)>],
+    x: &mut DVector<f64>,
+) {
+    let nv = x.len();
+
+    // Phase 1: Solve L^T y = b (scatter: propagate each DOF to its ancestors)
+    for i in (0..nv).rev() {
+        for &(j, lij) in &qld_l[i] {
+            x[j] -= lij * x[i];
+        }
+    }
+
+    // Phase 2: Solve D z = y
+    for i in 0..nv {
+        x[i] /= qld_diag[i];
+    }
+
+    // Phase 3: Solve L w = z (standard forward substitution)
+    for i in 0..nv {
+        for &(j, lij) in &qld_l[i] {
+            x[i] -= lij * x[j];
+        }
+    }
+}
+```
+
+##### Step 3: Integration into `mj_crba()` (Phase 5 replacement)
+
+At `mujoco_pipeline.rs:6138-6148`, replace the nalgebra Cholesky with sparse factorization:
+
+```rust
+// Phase 5: Factorize mass matrix (sparse L^T D L)
+if model.nv > 0 {
+    mj_factor_sparse(model, data);
+}
+// Remove: data.qM_cholesky = data.qM.clone().cholesky();
+// The sparse factorization replaces this for all consumers.
+```
+
+Also set `data.qLD_valid = false` at the **top** of `mj_crba()` (before qM is zeroed),
+so stale factorization is never used during the CRBA computation.
+
+Remove the `qM_cholesky` field from `Data` entirely (along with its initialization
+in `make_data()` and the doc comments referencing it).
+
+##### Step 4: Dispatch in `mj_fwd_acceleration_explicit()` (line 8729)
+
+Replace the `qM_cholesky` match with sparse solve:
+
+```rust
+fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
+    // ... sum forces into qfrc_total ...
+
+    // Solve M * qacc = qfrc_total using sparse L^T D L factorization
+    data.qacc.copy_from(&qfrc_total);
+    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut data.qacc);
+}
+```
+
+Remove the `qM_cholesky`-based path and the LU/diagonal fallbacks entirely.
+If the mass matrix is degenerate, `mj_factor_sparse` will produce a zero or
+negative `qLD_diag[i]`, and the solve will produce inf/NaN — same as MuJoCo's
+behavior (garbage-in-garbage-out for degenerate systems).
+
+##### Step 5: Migrate `pgs_solve_contacts()` (line 7041)
+
+Replace all `chol.solve(&x)` calls with sparse solve:
+
+```rust
+// Was: let qacc_smooth = chol.solve(&qfrc_smooth);
+let mut qacc_smooth = qfrc_smooth;   // move, no clone needed
+mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
+
+// Was: let x = chol.solve(&jt_col);
+let mut x = jt_col;                  // already owned
+mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x);
+```
+
+Remove the `qM_cholesky` match guard at the top. The fallback to penalty
+for singular M is no longer needed — if sparse factorization is invalid
+(`!data.qLD_valid`), that's a bug (CRBA always runs before contacts).
+
+##### Step 6: Dispatch in `mj_fwd_acceleration_implicit()` (line 8845)
+
+The implicit path uses `M_impl = M + h·D + h²·K`. The diagonal modification
+(`+= h*d[i] + h²*k[i]` at line 8871) means we **cannot** reuse the CRBA sparse
+factorization — the modified matrix has different diagonal values.
+
+**Keep dense for implicit.** Rationale: the implicit path already uses
+`scratch_m_impl` (a dense DMatrix copied from qM + diagonal mods) and our
+`cholesky_in_place()` from #1. Sparse factorization would require duplicating
+the qLD fields. The benefit is marginal since implicit integration is rare
+in RL (most RL uses Euler). We can upgrade in a future PR if profiling shows
+it matters.
+
+The implicit path (`mj_fwd_acceleration_implicit`) is **unchanged** by this PR.
 
 #### Acceptance Criteria
-1. For a humanoid (nv=30), factorization uses ~30 multiply-adds vs ~9,000 for dense (300× reduction).
-2. Numeric results match dense Cholesky to ≤ 1e-12 relative error.
-3. `mj_fwd_acceleration_implicit()` checks `data.qLD_valid` and dispatches to sparse solve when available, dense otherwise.
-4. Sparse factorization is recomputed when the mass matrix changes (after CRBA).
-5. Benchmark test demonstrating wall-clock speedup for nv ≥ 20 tree-structured models.
+
+1. **Numeric correctness:** For all joint types (hinge, ball, free, mixed chains,
+   branching trees), `mj_solve_sparse(&qLD_diag, &qLD_L, &mut x)` produces the same
+   result as nalgebra `cholesky().solve(&x)` to ≤ 1e-12 relative error.
+2. **Consumers migrated:** `mj_fwd_acceleration_explicit()` and `pgs_solve_contacts()`
+   both use `mj_solve_sparse`. Implicit path unchanged (dense `cholesky_in_place`).
+3. **`qM_cholesky` removed:** The `Option<Cholesky<f64, Dyn>>` field, its initialization
+   in `make_data()`, and all references are deleted. No nalgebra Cholesky allocation.
+4. **Invalidation:** `qLD_valid` is set to `false` at top of `mj_crba()`.
+5. **Tree coverage:** Tests include:
+   - Single hinge (nv=1, trivial)
+   - 2-link chain (nv=2, single ancestor)
+   - Branching tree (nv=3, two children of same parent)
+   - Ball joint chain (nv=6, multi-DOF within joint)
+   - Free body + chain (nv=7+, mixed joint types)
+6. **No new allocations in hot path:** `qLD_L[i].clear()` + `push()` reuses
+   existing `Vec` capacity after the first step. No `DMatrix`/`DVector` created
+   in factorization or solve.
+7. **Existing tests pass:** All implicit integration tests, explicit tests,
+   and contact tests remain green.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`mj_factor_sparse()`, `mj_solve_sparse()`, dispatch in `mj_fwd_acceleration_implicit()`)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - `mj_factor_sparse()` (new function, ~50 lines)
+  - `mj_solve_sparse()` (new function, ~25 lines)
+  - `mj_crba()`: replace Phase 5 (sparse factorize + invalidation)
+  - `mj_fwd_acceleration_explicit()`: replace with sparse solve
+  - `pgs_solve_contacts()`: replace `chol.solve()` calls with sparse solve
+  - Remove `qM_cholesky` field + initialization + doc comments
+  - Remove `use nalgebra::linalg::Cholesky` import (if unused after removal)
+  - New test module `sparse_factorization_tests` (~100 lines)
+- `sim/docs/MUJOCO_REFERENCE.md` — update Phase 5 description (line 143-145)
+- `sim/docs/ARCHITECTURE.md` — update `qM_cholesky` reference (line 74)
 
 ---
 

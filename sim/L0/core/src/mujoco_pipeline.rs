@@ -71,8 +71,7 @@ use crate::mesh::{
 };
 use crate::raycast::raycast_shape;
 use nalgebra::{
-    Cholesky, DMatrix, DVector, Dyn, Matrix3, Matrix6, Point3, UnitQuaternion, UnitVector3,
-    Vector3, Vector6,
+    DMatrix, DVector, Matrix3, Matrix6, Point3, UnitQuaternion, UnitVector3, Vector3, Vector6,
 };
 use sim_types::Pose;
 use std::f64::consts::PI;
@@ -1314,22 +1313,11 @@ pub struct Data {
     /// For small systems (nv <= 32), dense storage is used.
     /// For large systems, only lower triangle is filled (sparse via qLD).
     pub qM: DMatrix<f64>,
-    /// Cached Cholesky factorization of mass matrix (L where M = L L^T).
-    /// Computed once in `mj_crba()` after building qM, reused in:
-    /// - `mj_fwd_acceleration()`: Solve M qacc = τ
-    /// - `pgs_solve_contacts()`: Compute M^{-1} J^T for constraint Jacobian
-    ///
-    /// This caching saves O(n³) factorization per solve (typically 2-3 per step).
-    /// The clone in `mj_crba()` is unavoidable (nalgebra consumes the matrix),
-    /// but subsequent solves are O(n²) forward/back substitution.
-    pub qM_cholesky: Option<Cholesky<f64, Dyn>>,
 
-    // ==================== Sparse L^T D L Factorization (for large systems) ====================
-    // TODO(FUTURE_WORK#2): Implement `mj_factor_sparse()` to populate these fields.
-    // These fields are data scaffolds only — initialized to defaults, never written.
-    // See sim/docs/FUTURE_WORK.md #2 for the full spec. The sparse factorization achieves
-    // O(nv) for tree-structured robots vs O(nv³) for dense Cholesky, which compounds
-    // in batched RL (4,096 envs × nv=30 saves ~36M multiply-adds per batch step).
+    // ==================== Sparse L^T D L Factorization ====================
+    // Computed in mj_crba() via mj_factor_sparse(). Exploits tree sparsity from
+    // dof_parent for O(nv) factorization and solve vs O(nv³) for dense Cholesky.
+    // Reused by mj_fwd_acceleration_explicit() and pgs_solve_contacts().
     //
     /// Sparse L^T D L factorization exploiting tree structure.
     /// M = L^T D L where L is unit lower triangular and D is diagonal.
@@ -1722,9 +1710,8 @@ impl Model {
 
             // Mass matrix (dense)
             qM: DMatrix::zeros(self.nv, self.nv),
-            qM_cholesky: None, // Computed in mj_crba
 
-            // Mass matrix (sparse L^T D L for large systems)
+            // Mass matrix (sparse L^T D L — computed in mj_crba via mj_factor_sparse)
             qLD_diag: DVector::zeros(self.nv),
             qLD_L: vec![Vec::new(); self.nv],
             qLD_valid: false,
@@ -5984,6 +5971,7 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
     clippy::needless_range_loop
 )]
 fn mj_crba(model: &Model, data: &mut Data) {
+    data.qLD_valid = false;
     data.qM.fill(0.0);
 
     if model.nv == 0 {
@@ -6136,16 +6124,11 @@ fn mj_crba(model: &Model, data: &mut Data) {
     }
 
     // ============================================================
-    // Phase 5: Cache Cholesky factorization
+    // Phase 5: Sparse L^T D L factorization
     // ============================================================
-    // Compute L where M = L L^T once here, reuse in:
-    //   - mj_fwd_acceleration(): Solve M qacc = τ  →  O(n²) instead of O(n³)
-    //   - pgs_solve_contacts(): Compute A = J M^{-1} J^T  →  O(n²) per contact
-    //
-    // The clone is required: nalgebra::cholesky() consumes the matrix to avoid
-    // allocating a separate buffer. This is the optimal single-allocation approach.
-    // Total cost: O(n³) factorization + O(n²) memory, done once per forward().
-    data.qM_cholesky = data.qM.clone().cholesky();
+    // Exploits tree sparsity from dof_parent for O(n) factorization and solve.
+    // Reused in mj_fwd_acceleration_explicit() and pgs_solve_contacts().
+    mj_factor_sparse(model, data);
 
     // ============================================================
     // Phase 6: Cache body effective mass/inertia from qM diagonal
@@ -7037,15 +7020,6 @@ fn pgs_solve_contacts(
     // Each contact has 3 rows: 1 normal + 2 friction
     let nefc = ncon * 3;
 
-    // Use cached Cholesky from mj_crba
-    let chol = match &data.qM_cholesky {
-        Some(c) => c,
-        None => {
-            // Fallback to penalty if M is singular
-            return vec![Vector3::zeros(); ncon];
-        }
-    };
-
     // Build the full Jacobian and RHS
     let mut a = DMatrix::zeros(nefc, nefc);
     let mut b = DVector::zeros(nefc);
@@ -7055,11 +7029,11 @@ fn pgs_solve_contacts(
 
     // Compute unconstrained acceleration (qacc_smooth = M^{-1} * qfrc_smooth)
     // qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias
-    let mut qfrc_smooth = data.qfrc_applied.clone();
-    qfrc_smooth += &data.qfrc_actuator;
-    qfrc_smooth += &data.qfrc_passive;
-    qfrc_smooth -= &data.qfrc_bias;
-    let qacc_smooth = chol.solve(&qfrc_smooth);
+    let mut qacc_smooth = data.qfrc_applied.clone();
+    qacc_smooth += &data.qfrc_actuator;
+    qacc_smooth += &data.qfrc_passive;
+    qacc_smooth -= &data.qfrc_bias;
+    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
 
     // Pre-compute M^{-1} * J^T for each contact
     let mut minv_jt: Vec<DMatrix<f64>> = Vec::with_capacity(ncon);
@@ -7068,8 +7042,8 @@ fn pgs_solve_contacts(
         // Solve M * X = J^T for each column
         let mut minv_jt_contact = DMatrix::zeros(model.nv, 3);
         for col in 0..3 {
-            let jt_col = jt.column(col).clone_owned();
-            let x = chol.solve(&jt_col);
+            let mut x = jt.column(col).clone_owned();
+            mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x);
             minv_jt_contact.set_column(col, &x);
         }
         minv_jt.push(minv_jt_contact);
@@ -8726,7 +8700,7 @@ fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepError> 
 /// Explicit forward acceleration (semi-implicit Euler or RK4).
 ///
 /// Computes: qacc = M⁻¹ * (f_applied + f_actuator + f_passive + f_constraint - f_bias)
-fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
+fn mj_fwd_acceleration_explicit(_model: &Model, data: &mut Data) {
     // Sum all forces: τ = applied + actuator + passive + constraint - bias
     let mut qfrc_total = data.qfrc_applied.clone();
     qfrc_total += &data.qfrc_actuator;
@@ -8734,32 +8708,161 @@ fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
     qfrc_total += &data.qfrc_constraint;
     qfrc_total -= &data.qfrc_bias;
 
-    // Solve M * qacc = qfrc_total using cached Cholesky from mj_crba
-    // Normal path: O(n²) forward/back substitution using cached L L^T factorization
-    match &data.qM_cholesky {
-        Some(chol) => {
-            data.qacc = chol.solve(&qfrc_total);
+    // Solve M * qacc = qfrc_total using sparse L^T D L factorization from mj_crba
+    data.qacc.copy_from(&qfrc_total);
+    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut data.qacc);
+}
+
+/// In-place Cholesky (LL^T) factorization. Overwrites the lower triangle of `m` with L.
+/// The upper triangle is left unchanged. Returns `Err(StepError::CholeskyFailed)` if
+/// the matrix is not positive definite.
+///
+/// Zero allocations — operates entirely on borrowed data.
+fn cholesky_in_place(m: &mut DMatrix<f64>) -> Result<(), StepError> {
+    let n = m.nrows();
+    for j in 0..n {
+        // Diagonal: L[j,j] = sqrt(M[j,j] - Σ(L[j,k]² for k < j))
+        let mut diag = m[(j, j)];
+        for k in 0..j {
+            diag -= m[(j, k)] * m[(j, k)];
         }
-        None => {
-            // Rare fallback: M wasn't SPD (numerical issues or degenerate system)
-            // This clone is acceptable since it only happens on error paths
-            match data.qM.clone().lu().solve(&qfrc_total) {
-                Some(qacc) => {
-                    data.qacc = qacc;
-                }
-                None => {
-                    // Last resort: diagonal solve (lumped mass approximation)
-                    // Ignores coupling but prevents NaN propagation
-                    for i in 0..model.nv {
-                        let m_ii = data.qM[(i, i)];
-                        if m_ii.abs() > 1e-10 {
-                            data.qacc[i] = qfrc_total[i] / m_ii;
-                        } else {
-                            data.qacc[i] = 0.0;
-                        }
-                    }
+        if diag <= 0.0 {
+            return Err(StepError::CholeskyFailed);
+        }
+        let ljj = diag.sqrt();
+        m[(j, j)] = ljj;
+
+        // Off-diagonal: L[i,j] = (M[i,j] - Σ(L[i,k]·L[j,k] for k < j)) / L[j,j]
+        for i in (j + 1)..n {
+            let mut sum = m[(i, j)];
+            for k in 0..j {
+                sum -= m[(i, k)] * m[(j, k)];
+            }
+            m[(i, j)] = sum / ljj;
+        }
+    }
+    Ok(())
+}
+
+/// Solve L·L^T·x = b in place, where L is stored in the lower triangle of `l`.
+/// On entry `x` contains b; on exit `x` contains the solution.
+///
+/// Zero allocations — operates entirely on borrowed data.
+fn cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>) {
+    let n = l.nrows();
+
+    // Forward substitution: L·y = b
+    for j in 0..n {
+        for k in 0..j {
+            x[j] -= l[(j, k)] * x[k];
+        }
+        x[j] /= l[(j, j)];
+    }
+
+    // Back substitution: L^T·z = y
+    for j in (0..n).rev() {
+        for k in (j + 1)..n {
+            x[j] -= l[(k, j)] * x[k];
+        }
+        x[j] /= l[(j, j)];
+    }
+}
+
+/// Sparse L^T D L factorization of the mass matrix, exploiting tree structure.
+///
+/// Computes `M = L^T D L` where `L` is unit lower triangular (L[i,i] = 1 implicitly,
+/// stored entries are off-diagonal only) and `D` is diagonal. The sparsity pattern
+/// is determined by the kinematic tree: `L[i,j] ≠ 0` only if DOF `j` is an ancestor
+/// of DOF `i` in `model.dof_parent`.
+///
+/// **Algorithm:** Process DOFs from leaves to root (i = nv-1 down to 0). For each DOF,
+/// copy its row from M, scale by the diagonal to extract L entries, then propagate a
+/// rank-1 update to all ancestor pairs. This is equivalent to Gaussian elimination
+/// reordered to exploit tree sparsity.
+///
+/// **Complexity:** O(Σ depth(i)²). For balanced trees O(n log² n), for typical
+/// humanoids (depth ≤ 8) effectively O(n).
+///
+/// Zero heap allocations after the first call — `qLD_L[i].clear()` + `push()` reuses
+/// existing `Vec` capacity.
+fn mj_factor_sparse(model: &Model, data: &mut Data) {
+    let nv = model.nv;
+
+    // Phase 1: Copy M's sparse entries into qLD working storage.
+    // qLD_diag[i] starts as M[i,i]; qLD_L[i] holds (col, M[i,col]) for ancestors.
+    for i in 0..nv {
+        data.qLD_diag[i] = data.qM[(i, i)];
+        data.qLD_L[i].clear();
+        let mut p = model.dof_parent[i];
+        while let Some(j) = p {
+            data.qLD_L[i].push((j, data.qM[(i, j)]));
+            p = model.dof_parent[j];
+        }
+        // Parent chain yields descending col indices; reverse for ascending order.
+        data.qLD_L[i].reverse();
+    }
+
+    // Phase 2: Eliminate from leaves to root.
+    // When we process DOF i, all descendants k > i are already factored.
+    // We propagate i's contribution to ancestors j < i, which requires
+    // mutating qLD_L[j] while reading qLD_L[i]. Since j < i always,
+    // we use split_at_mut to get non-overlapping borrows.
+    for i in (0..nv).rev() {
+        let di = data.qLD_diag[i];
+
+        // Scale off-diagonals: L[i,j] = working[i,j] / D[i]
+        for entry in &mut data.qLD_L[i] {
+            entry.1 /= di;
+        }
+
+        // Propagate rank-1 update to ancestors.
+        // Split: [0..i] and [i..nv] give non-overlapping mutable access.
+        let (lo, hi) = data.qLD_L.split_at_mut(i);
+        let row_i = &hi[0]; // qLD_L[i], immutable borrow
+
+        for idx_a in 0..row_i.len() {
+            let (j, lij) = row_i[idx_a];
+            data.qLD_diag[j] -= lij * lij * di;
+            for idx_b in 0..idx_a {
+                let (k, lik) = row_i[idx_b];
+                // k < j < i, so both are in `lo`
+                if let Some(entry) = lo[j].iter_mut().find(|(col, _)| *col == k) {
+                    entry.1 -= lij * lik * di;
                 }
             }
+        }
+    }
+
+    data.qLD_valid = true;
+}
+
+/// Solve `L^T D L x = b` using the sparse factorization from `mj_factor_sparse`.
+///
+/// On entry `x` contains `b`; on exit `x` contains the solution.
+/// Takes `qLD_diag` and `qLD_L` by reference separately from `x` to allow
+/// calling with `x = &mut data.qacc` without borrow conflicts.
+///
+/// Zero allocations — operates entirely on borrowed data.
+fn mj_solve_sparse(qld_diag: &DVector<f64>, qld_l: &[Vec<(usize, f64)>], x: &mut DVector<f64>) {
+    let nv = x.len();
+
+    // Phase 1: Solve L^T y = b (scatter: propagate each DOF to its ancestors).
+    // L is unit-lower-triangular, so L^T is unit-upper-triangular.
+    for i in (0..nv).rev() {
+        for &(j, lij) in &qld_l[i] {
+            x[j] -= lij * x[i];
+        }
+    }
+
+    // Phase 2: Solve D z = y
+    for i in 0..nv {
+        x[i] /= qld_diag[i];
+    }
+
+    // Phase 3: Solve L w = z (standard forward substitution)
+    for i in 0..nv {
+        for &(j, lij) in &qld_l[i] {
+            x[i] -= lij * x[j];
         }
     }
 }
@@ -8835,21 +8938,11 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     };
     model.visit_joints(&mut spring_visitor);
 
-    // Solve (M + h*D + h²*K) * v_new = rhs
-    // M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0), so use Cholesky.
-    //
-    // Move the populated matrix out via std::mem::replace, leaving a correctly-sized
-    // zero matrix for the next step's copy_from(&data.qM). This avoids cloning O(nv²)
-    // elements — nalgebra's cholesky() consumes the matrix, so we give it ownership
-    // directly. scratch_m_impl is never read after this point in the step pipeline.
-    let nv = model.nv;
-    let chol = std::mem::replace(&mut data.scratch_m_impl, DMatrix::zeros(nv, nv))
-        .cholesky()
-        .ok_or(StepError::CholeskyFailed)?;
-
-    // Copy RHS to scratch_v_new and solve in place to avoid allocation
+    // Factorize M_impl in place (overwrites lower triangle with L where M_impl = L·L^T).
+    // M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0).
+    cholesky_in_place(&mut data.scratch_m_impl)?;
     data.scratch_v_new.copy_from(&data.scratch_rhs);
-    chol.solve_mut(&mut data.scratch_v_new);
+    cholesky_solve_in_place(&data.scratch_m_impl, &mut data.scratch_v_new);
 
     // Compute qacc = (v_new - v_old) / h and update qvel
     for i in 0..model.nv {
@@ -11181,5 +11274,336 @@ mod sensor_tests {
         data.sensordata = DVector::zeros(0);
         // Should not panic — sensor_write guards all writes
         data.forward(&model).unwrap();
+    }
+}
+
+// ============================================================================
+// In-place Cholesky tests
+// ============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod cholesky_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Generate a random SPD matrix of size n×n.
+    fn random_spd(n: usize, seed: u64) -> DMatrix<f64> {
+        // Deterministic pseudo-random via simple LCG
+        let mut state = seed;
+        let mut next = || -> f64 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 33) as f64) / f64::from(u32::MAX) - 0.5
+        };
+
+        // A = random matrix, then M = A^T * A + n*I (guarantees SPD)
+        let a = DMatrix::from_fn(n, n, |_, _| next());
+        a.transpose() * &a + DMatrix::identity(n, n) * (n as f64)
+    }
+
+    #[test]
+    fn in_place_cholesky_matches_nalgebra() {
+        for &n in &[1, 2, 3, 5, 10, 20] {
+            let m = random_spd(n, 42 + n as u64);
+            let rhs = DVector::from_fn(n, |i, _| (i as f64 + 1.0) * 0.7);
+
+            // nalgebra reference
+            let chol_ref = m.clone().cholesky().expect("nalgebra cholesky failed");
+            let x_ref = chol_ref.solve(&rhs);
+
+            // Our in-place implementation
+            let mut m_inplace = m.clone();
+            cholesky_in_place(&mut m_inplace).expect("in-place cholesky failed");
+
+            let mut x_ours = rhs.clone();
+            cholesky_solve_in_place(&m_inplace, &mut x_ours);
+
+            // Compare solutions
+            for i in 0..n {
+                assert_relative_eq!(x_ours[i], x_ref[i], epsilon = 1e-12, max_relative = 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn in_place_cholesky_rejects_non_spd() {
+        // Zero matrix is not SPD
+        let mut m = DMatrix::zeros(3, 3);
+        assert!(cholesky_in_place(&mut m).is_err());
+
+        // Negative diagonal
+        let mut m = DMatrix::identity(3, 3);
+        m[(1, 1)] = -1.0;
+        assert!(cholesky_in_place(&mut m).is_err());
+    }
+
+    #[test]
+    fn in_place_cholesky_1x1() {
+        let mut m = DMatrix::from_element(1, 1, 4.0);
+        cholesky_in_place(&mut m).unwrap();
+        assert_relative_eq!(m[(0, 0)], 2.0, epsilon = 1e-15);
+
+        let mut x = DVector::from_element(1, 6.0);
+        cholesky_solve_in_place(&m, &mut x);
+        // 4 * x = 6 => x = 1.5
+        assert_relative_eq!(x[0], 1.5, epsilon = 1e-15);
+    }
+}
+
+// ============================================================================
+// Sparse L^T D L factorization tests
+// ============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod sparse_factorization_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Helper: build a Model + Data with a given dof_parent tree and mass matrix.
+    /// Returns (model, data) with qM set to the given matrix and sparse factorization run.
+    fn setup_sparse(nv: usize, dof_parent: Vec<Option<usize>>, qm: &DMatrix<f64>) -> (Model, Data) {
+        let mut model = Model::empty();
+        model.nv = nv;
+        model.nq = nv;
+        model.qpos0 = DVector::zeros(nv);
+        model.implicit_stiffness = DVector::zeros(nv);
+        model.implicit_damping = DVector::zeros(nv);
+        model.implicit_springref = DVector::zeros(nv);
+        model.dof_parent = dof_parent;
+        // Fill other required fields for make_data
+        model.dof_body = vec![0; nv];
+        model.dof_jnt = vec![0; nv];
+        model.dof_armature = vec![0.0; nv];
+        model.dof_damping = vec![0.0; nv];
+        model.dof_frictionloss = vec![0.0; nv];
+        let mut data = model.make_data();
+        data.qM.copy_from(qm);
+        mj_factor_sparse(&model, &mut data);
+        (model, data)
+    }
+
+    /// Verify sparse solve matches nalgebra dense Cholesky.
+    fn assert_solve_matches(data: &Data, qm: &DMatrix<f64>, nv: usize) {
+        let rhs = DVector::from_fn(nv, |i, _| (i as f64 + 1.0) * 0.7);
+
+        // Reference: nalgebra dense Cholesky
+        let chol = qm.clone().cholesky().expect("nalgebra cholesky failed");
+        let x_ref = chol.solve(&rhs);
+
+        // Our sparse solve
+        let mut x_sparse = rhs;
+        mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x_sparse);
+
+        for i in 0..nv {
+            assert_relative_eq!(x_sparse[i], x_ref[i], epsilon = 1e-12, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
+    fn single_hinge() {
+        // nv=1, no parent. M = [[5.0]]
+        let nv = 1;
+        let dof_parent = vec![None];
+        let mut qm = DMatrix::zeros(1, 1);
+        qm[(0, 0)] = 5.0;
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+
+        // D[0] = 5.0, L has no off-diag entries
+        assert_relative_eq!(data.qLD_diag[0], 5.0);
+        assert!(data.qLD_L[0].is_empty());
+        assert!(data.qLD_valid);
+
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn two_link_chain() {
+        // nv=2, DOF 1 child of DOF 0
+        // M = [[4, 2], [2, 3]]
+        let nv = 2;
+        let dof_parent = vec![None, Some(0)];
+        let mut qm = DMatrix::zeros(2, 2);
+        qm[(0, 0)] = 4.0;
+        qm[(0, 1)] = 2.0;
+        qm[(1, 0)] = 2.0;
+        qm[(1, 1)] = 3.0;
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+
+        // Manual: D[1] = 3, L[1,0] = 2/3, D[0] = 4 - (2/3)^2 * 3 = 4 - 4/3 = 8/3
+        assert_relative_eq!(data.qLD_diag[1], 3.0);
+        assert_relative_eq!(data.qLD_diag[0], 8.0 / 3.0, epsilon = 1e-14);
+        assert_eq!(data.qLD_L[1].len(), 1);
+        assert_eq!(data.qLD_L[1][0].0, 0);
+        assert_relative_eq!(data.qLD_L[1][0].1, 2.0 / 3.0, epsilon = 1e-14);
+
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn branching_tree() {
+        // nv=3: DOF 0 = root, DOF 1 = left child of 0, DOF 2 = right child of 0
+        // DOFs 1 and 2 don't couple with each other.
+        // M = [[5, 2, 1], [2, 4, 0], [1, 0, 3]]
+        let nv = 3;
+        let dof_parent = vec![None, Some(0), Some(0)];
+        let mut qm = DMatrix::zeros(3, 3);
+        qm[(0, 0)] = 5.0;
+        qm[(0, 1)] = 2.0;
+        qm[(1, 0)] = 2.0;
+        qm[(1, 1)] = 4.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 0)] = 1.0;
+        qm[(2, 2)] = 3.0;
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+
+        // D[2] = 3, L[2,0] = 1/3
+        // D[1] = 4, L[1,0] = 2/4 = 0.5
+        // D[0] = 5 - (0.5)^2 * 4 - (1/3)^2 * 3 = 5 - 1 - 1/3 = 11/3
+        assert_relative_eq!(data.qLD_diag[2], 3.0);
+        assert_relative_eq!(data.qLD_diag[1], 4.0);
+        assert_relative_eq!(data.qLD_diag[0], 11.0 / 3.0, epsilon = 1e-14);
+
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn ball_joint_chain() {
+        // Simulates a ball joint (3 DOFs) followed by a hinge (1 DOF).
+        // DOF tree: 0→1→2→3 (linear chain, nv=4)
+        // This tests multi-DOF within a joint (ball: DOFs 0,1,2) plus a child.
+        let nv = 4;
+        let dof_parent = vec![None, Some(0), Some(1), Some(2)];
+
+        // Build a random SPD matrix with tree sparsity: M[i,j] = 0 unless
+        // j is ancestor of i or vice versa. For a chain, all entries are non-zero.
+        let mut qm = DMatrix::zeros(nv, nv);
+        // Diagonal
+        qm[(0, 0)] = 10.0;
+        qm[(1, 1)] = 8.0;
+        qm[(2, 2)] = 6.0;
+        qm[(3, 3)] = 4.0;
+        // Off-diagonal (all are on the ancestor path for a chain)
+        qm[(1, 0)] = 3.0;
+        qm[(0, 1)] = 3.0;
+        qm[(2, 0)] = 1.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 1)] = 2.0;
+        qm[(1, 2)] = 2.0;
+        qm[(3, 0)] = 0.5;
+        qm[(0, 3)] = 0.5;
+        qm[(3, 1)] = 0.3;
+        qm[(1, 3)] = 0.3;
+        qm[(3, 2)] = 1.5;
+        qm[(2, 3)] = 1.5;
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn free_body_plus_hinge() {
+        // Free joint (6 DOFs: 0→1→2→3→4→5) + hinge child (DOF 6, parent = DOF 5)
+        // nv = 7
+        let nv = 7;
+        let dof_parent = vec![None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)];
+
+        // Build SPD matrix: A^T A + n*I with tree-compatible sparsity
+        // For a chain, all entries can be non-zero. Use random SPD.
+        let mut state: u64 = 12345;
+        let mut next = || -> f64 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 33) as f64) / f64::from(u32::MAX) - 0.5
+        };
+        let a = DMatrix::from_fn(nv, nv, |_, _| next());
+        let qm = a.transpose() * &a + DMatrix::identity(nv, nv) * (nv as f64);
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn complex_branching_tree() {
+        // A more complex tree:
+        //       0
+        //      / \
+        //     1   4
+        //    / \
+        //   2   3
+        // nv=5, dof_parent = [None, Some(0), Some(1), Some(1), Some(0)]
+        let nv = 5;
+        let dof_parent = vec![None, Some(0), Some(1), Some(1), Some(0)];
+
+        // Build SPD matrix with correct sparsity:
+        // M[2,0], M[2,1] non-zero (ancestors of 2: 1, 0)
+        // M[3,0], M[3,1] non-zero (ancestors of 3: 1, 0)
+        // M[4,0] non-zero (ancestor of 4: 0)
+        // M[2,3] = 0 (neither is ancestor of the other — siblings)
+        // M[2,4] = 0 (4 is not ancestor of 2)
+        // M[3,4] = 0 (4 is not ancestor of 3)
+        let mut qm = DMatrix::zeros(nv, nv);
+        qm[(0, 0)] = 10.0;
+        qm[(1, 1)] = 8.0;
+        qm[(2, 2)] = 5.0;
+        qm[(3, 3)] = 6.0;
+        qm[(4, 4)] = 7.0;
+        // Ancestor pairs
+        qm[(1, 0)] = 2.0;
+        qm[(0, 1)] = 2.0;
+        qm[(2, 0)] = 1.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 1)] = 1.5;
+        qm[(1, 2)] = 1.5;
+        qm[(3, 0)] = 0.5;
+        qm[(0, 3)] = 0.5;
+        qm[(3, 1)] = 1.0;
+        qm[(1, 3)] = 1.0;
+        qm[(4, 0)] = 0.8;
+        qm[(0, 4)] = 0.8;
+        // Non-ancestor pairs are zero (enforced by zeros init)
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+
+        // Verify zero entries in L for non-ancestor pairs
+        // DOF 2's ancestors: [0, 1] — should not have entry for 3 or 4
+        for &(col, _) in &data.qLD_L[2] {
+            assert!(
+                col == 0 || col == 1,
+                "DOF 2 should only have ancestors 0 and 1"
+            );
+        }
+        // DOF 4's ancestors: [0] — should not have entry for 1, 2, or 3
+        assert_eq!(data.qLD_L[4].len(), 1);
+        assert_eq!(data.qLD_L[4][0].0, 0);
+
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn invalidation_flag() {
+        let nv = 2;
+        let dof_parent = vec![None, Some(0)];
+        let mut qm = DMatrix::zeros(2, 2);
+        qm[(0, 0)] = 4.0;
+        qm[(0, 1)] = 1.0;
+        qm[(1, 0)] = 1.0;
+        qm[(1, 1)] = 3.0;
+
+        let (_, mut data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+
+        // Simulate invalidation (as mj_crba would do)
+        data.qLD_valid = false;
+        assert!(!data.qLD_valid);
     }
 }

@@ -140,9 +140,28 @@ for i in range(njnt):
 M[dof,dof] += armature[dof]
 ```
 
-**Phase 5 — Cache Cholesky factorization:**
+**Phase 5 — Sparse L^T D L factorization (`mj_factor_sparse`):**
+
+Exploits kinematic tree sparsity via `dof_parent` for O(Σ depth(i)²)
+factorization vs O(nv³) dense Cholesky. Stores result in `qLD_diag` (diagonal D)
+and `qLD_L` (unit lower triangular L as sparse rows). Reused by
+`mj_fwd_acceleration_explicit` and `pgs_solve_contacts` via `mj_solve_sparse`.
+
 ```python
-qM_cholesky = cholesky(M)   # Reused 2-3 times per step
+# Phase 1: Copy M's sparse entries into qLD working storage
+for i in range(nv):
+    qLD_diag[i] = M[i,i]
+    qLD_L[i] = [(j, M[i,j]) for j in ancestors(i)]  # via dof_parent chain
+
+# Phase 2: Eliminate from leaves to root
+for i in range(nv-1, -1, -1):
+    di = qLD_diag[i]
+    for (j, val) in qLD_L[i]:
+        qLD_L[i][j] = val / di          # Normalize L entries
+    for (j, lij) in qLD_L[i]:
+        qLD_diag[j] -= lij * lij * di   # Update ancestor diagonal
+        for (k, lik) in qLD_L[i] where k < j:
+            qLD_L[j][k] -= lij * lik * di  # Update ancestor off-diagonal
 ```
 
 ### 4.2 Recursive Newton-Euler (`mj_rne`)
@@ -344,7 +363,8 @@ qfrc_total = qfrc_applied + qfrc_actuator + qfrc_passive + qfrc_constraint - qfr
 qacc = M^-1 @ qfrc_total
 ```
 
-Solved via back-substitution using cached Cholesky from CRBA.
+Solved via `mj_solve_sparse` using the sparse L^T D L factorization from CRBA.
+The solve applies L^T, D, then L in three passes — each O(nv) for tree-sparse L.
 
 **Implicit path:**
 

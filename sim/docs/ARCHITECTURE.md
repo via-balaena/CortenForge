@@ -71,7 +71,7 @@ Pre-allocated state and computed quantities. No heap allocation during stepping.
 |----------|--------|-------------|
 | State | `qpos`, `qvel`, `time` | Source of truth |
 | Body poses | `xpos`, `xquat`, `xmat` | Computed by forward kinematics |
-| Mass matrix | `qM`, `qM_cholesky` | Computed by CRBA, Cholesky cached |
+| Mass matrix | `qM`, `qLD_diag`, `qLD_L` | Computed by CRBA; sparse L^T D L factorization cached |
 | Forces | `qfrc_bias`, `qfrc_passive`, `qfrc_actuator`, `qfrc_applied`, `qfrc_constraint` | Generalized force components |
 | Acceleration | `qacc` | Computed as `M^-1 * f_total` |
 | Contacts | `contacts`, `efc_lambda` | Active contacts and warmstart cache |
