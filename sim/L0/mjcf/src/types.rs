@@ -21,8 +21,8 @@ pub enum MjcfIntegrator {
     Euler,
     /// 4th-order Runge-Kutta (high accuracy, expensive).
     RK4,
-    /// Implicit-in-velocity integration (stable for stiff systems).
-    Implicit,
+    /// Implicit Euler for diagonal per-DOF spring/damper forces.
+    ImplicitSpringDamper,
     /// Implicit-fast (skips Coriolis terms for performance).
     ImplicitFast,
 }
@@ -33,7 +33,7 @@ impl MjcfIntegrator {
         match s.to_lowercase().as_str() {
             "euler" => Some(Self::Euler),
             "rk4" => Some(Self::RK4),
-            "implicit" => Some(Self::Implicit),
+            "implicit" | "implicitspringdamper" => Some(Self::ImplicitSpringDamper),
             "implicitfast" => Some(Self::ImplicitFast),
             _ => None,
         }
@@ -45,7 +45,7 @@ impl MjcfIntegrator {
         match self {
             Self::Euler => "Euler",
             Self::RK4 => "RK4",
-            Self::Implicit => "implicit",
+            Self::ImplicitSpringDamper => "implicit",
             Self::ImplicitFast => "implicitfast",
         }
     }

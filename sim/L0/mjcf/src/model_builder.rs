@@ -456,7 +456,9 @@ impl ModelBuilder {
         self.integrator = match option.integrator {
             MjcfIntegrator::Euler => Integrator::Euler,
             MjcfIntegrator::RK4 => Integrator::RungeKutta4,
-            MjcfIntegrator::Implicit | MjcfIntegrator::ImplicitFast => Integrator::Implicit,
+            MjcfIntegrator::ImplicitSpringDamper | MjcfIntegrator::ImplicitFast => {
+                Integrator::ImplicitSpringDamper
+            }
         };
     }
 

@@ -14,7 +14,7 @@ impl From<MjcfIntegrator> for IntegrationMethod {
         match integrator {
             MjcfIntegrator::Euler => IntegrationMethod::SemiImplicitEuler,
             MjcfIntegrator::RK4 => IntegrationMethod::RungeKutta4,
-            MjcfIntegrator::Implicit => IntegrationMethod::ImplicitVelocity,
+            MjcfIntegrator::ImplicitSpringDamper => IntegrationMethod::ImplicitVelocity,
             MjcfIntegrator::ImplicitFast => IntegrationMethod::ImplicitFast,
         }
     }
@@ -226,7 +226,7 @@ mod tests {
             IntegrationMethod::RungeKutta4
         );
         assert_eq!(
-            IntegrationMethod::from(MjcfIntegrator::Implicit),
+            IntegrationMethod::from(MjcfIntegrator::ImplicitSpringDamper),
             IntegrationMethod::ImplicitVelocity
         );
         assert_eq!(

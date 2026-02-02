@@ -58,7 +58,7 @@ fn test_implicit_spring_energy_bounded() {
     // Verify integrator is implicit
     assert_eq!(
         model.integrator,
-        sim_core::Integrator::Implicit,
+        sim_core::Integrator::ImplicitSpringDamper,
         "Model should use implicit integrator"
     );
 

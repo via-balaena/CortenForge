@@ -634,7 +634,7 @@ pub enum Integrator {
     /// 4th order Runge-Kutta.
     RungeKutta4,
     /// Implicit Euler for diagonal per-DOF spring/damper forces.
-    Implicit,
+    ImplicitSpringDamper,
 }
 
 /// Errors that can occur during a simulation step.
@@ -2340,7 +2340,7 @@ impl Data {
                     self.qvel[i] += self.qacc[i] * h;
                 }
             }
-            Integrator::Implicit => {
+            Integrator::ImplicitSpringDamper => {
                 // Velocity already updated by mj_fwd_acceleration_implicit
                 // qacc was back-computed as (v_new - v_old) / h for consistency
             }
@@ -6645,7 +6645,7 @@ const FRICTION_VELOCITY_THRESHOLD: f64 = 1e-12;
 fn mj_fwd_passive(model: &Model, data: &mut Data) {
     data.qfrc_passive.fill(0.0);
 
-    let implicit_mode = model.integrator == Integrator::Implicit;
+    let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
     let mut visitor = PassiveForceVisitor {
         model,
         data,
@@ -8715,7 +8715,7 @@ fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepError> 
     }
 
     match model.integrator {
-        Integrator::Implicit => mj_fwd_acceleration_implicit(model, data),
+        Integrator::ImplicitSpringDamper => mj_fwd_acceleration_implicit(model, data),
         Integrator::Euler | Integrator::RungeKutta4 => {
             mj_fwd_acceleration_explicit(model, data);
             Ok(())

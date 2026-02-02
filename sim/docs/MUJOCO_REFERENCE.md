@@ -388,7 +388,7 @@ for each joint:
 Position update uses the NEW velocity (step 1 output). This is what makes it
 semi-implicit and provides energy stability that plain Euler lacks.
 
-**Implicit (`Integrator::Implicit`):**
+**Implicit (`Integrator::ImplicitSpringDamper`):**
 
 Velocity was already updated in `mj_fwd_acceleration_implicit`. Integration
 only updates positions using the new velocity, identical to step 2 above.

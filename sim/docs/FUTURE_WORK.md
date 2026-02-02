@@ -438,14 +438,14 @@ The 4 remaining items are trivial once tendon pipeline (#4) lands:
 ## Group C — Integrator & Dynamics
 
 ### 7. Integrator Rename (Implicit → ImplicitSpringDamper)
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-The pipeline `Integrator` enum (`mujoco_pipeline.rs:623-631`) has three variants:
+The pipeline `Integrator` enum (`mujoco_pipeline.rs:628-638`) has three variants:
 `Euler`, `RungeKutta4`, `Implicit`. The `Implicit` variant's doc comment has been
 corrected to "Implicit Euler for diagonal per-DOF spring/damper forces"
-(`mujoco_pipeline.rs:629`). The actual implementation in
-`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8331`) solves:
+(`mujoco_pipeline.rs:636`). The actual implementation in
+`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8790`) solves:
 
 ```
 (M + h·D + h²·K)·v_new = M·v_old + h·f_ext - h·K·(q - q_eq)
@@ -464,12 +464,19 @@ a clear slot for a future true `ImplicitEuler` variant that handles coupled
 #### Specification
 
 1. Rename `Integrator::Implicit` → `Integrator::ImplicitSpringDamper` in the enum.
-2. Update the doc comment from "Implicit midpoint" to "Implicit Euler for diagonal
-   per-DOF spring/damper forces."
-3. Update all match arms that reference `Integrator::Implicit`.
-4. Update MJCF parser: `<option integrator="implicit"/>` → maps to `ImplicitSpringDamper`.
-5. Preserve backward compatibility in MJCF parsing (accept both `"implicit"` and
-   `"implicitspringdamper"`).
+2. Doc comment is already correct ("Implicit Euler for diagonal per-DOF spring/damper
+   forces") — no change needed.
+3. Update all match arms and equality checks that reference `Integrator::Implicit`:
+   - `mujoco_pipeline.rs:2343` — velocity update skip in `Data::integrate()`
+   - `mujoco_pipeline.rs:6648` — `implicit_mode` flag in `mj_fwd_passive()`
+   - `mujoco_pipeline.rs:8718` — acceleration dispatch in `mj_fwd_acceleration()`
+4. Update MJCF layer:
+   - `types.rs` — rename `MjcfIntegrator::Implicit` variant
+   - `model_builder.rs:459` — update `MjcfIntegrator::Implicit` → Sim conversion
+   - `parser.rs` — accept both `"implicit"` and `"implicitspringdamper"` strings
+5. Update tests:
+   - `parser.rs:2178` — parser test referencing `MjcfIntegrator::Implicit`
+   - `implicit_integration.rs:61` — integration test assertion
 
 #### Acceptance Criteria
 1. `Integrator::Implicit` no longer exists — all references use `ImplicitSpringDamper`.
@@ -478,8 +485,13 @@ a clear slot for a future true `ImplicitEuler` variant that handles coupled
 4. All existing tests pass without modification (behavior is identical).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (enum definition, all match arms)
-- `sim/L0/mjcf/src/parser.rs` — modify (integrator string parsing)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify (enum definition, 3 match arms/equality checks)
+- `sim/L0/mjcf/src/types.rs` — modify (`MjcfIntegrator` enum variant rename, `from_str`, `as_str`)
+- `sim/L0/mjcf/src/config.rs` — modify (`From<MjcfIntegrator>` impl + its test)
+- `sim/L0/mjcf/src/model_builder.rs` — modify (MJCF → Sim integrator conversion)
+- `sim/L0/mjcf/src/parser.rs` — modify (integrator string parsing, parser test)
+- `sim/L0/tests/integration/implicit_integration.rs` — modify (test assertion)
+- `sim/docs/MUJOCO_REFERENCE.md` — modify (doc reference)
 
 ---
 
