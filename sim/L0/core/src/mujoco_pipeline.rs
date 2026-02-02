@@ -946,7 +946,7 @@ pub struct Model {
     /// Tendon type: Fixed (linear coupling) or Spatial (3D path routing).
     pub tendon_type: Vec<TendonType>,
     /// Solver parameters for tendon limit constraints (2 elements per tendon).
-    /// [0] = timeconst (>0) or -stiffness (≤0), [1] = dampratio or -damping.
+    /// \[0\] = timeconst (>0) or -stiffness (≤0), \[1\] = dampratio or -damping.
     /// Default: [0.0, 0.0] → uses model.default_eq_stiffness/default_eq_damping.
     pub tendon_solref: Vec<[f64; 2]>,
     /// Impedance parameters for tendon limit constraints (5 elements per tendon).
