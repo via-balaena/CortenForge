@@ -43,7 +43,7 @@ sim/
 
 ## Core Architecture: Model/Data
 
-The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~9500 lines).
+The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~11,800 lines).
 It implements MuJoCo's computation pipeline end-to-end.
 
 ### Model (static)
@@ -65,7 +65,8 @@ Constructed from MJCF via `sim-mjcf` or URDF via `sim-urdf`.
 
 ### Data (mutable)
 
-Pre-allocated state and computed quantities. No heap allocation during stepping.
+Pre-allocated state and computed quantities. Most buffers are pre-allocated;
+residual heap allocation occurs for contact vector growth and RK4 warmstart save.
 
 | Category | Fields | Description |
 |----------|--------|-------------|
@@ -92,8 +93,10 @@ loop {
 }
 ```
 
-`Data::step()` calls `forward()` then `integrate()`. See `MUJOCO_REFERENCE.md`
-for the complete pipeline algorithm.
+`Data::step()` dispatches by integrator: for Euler and ImplicitSpringDamper it
+calls `forward()` then `integrate()`; for RK4 it calls `forward()` then
+`mj_runge_kutta()` (a true 4-stage Runge-Kutta that re-evaluates dynamics at
+each stage). See `MUJOCO_REFERENCE.md` for the complete pipeline algorithm.
 
 ## Physics Pipeline
 
@@ -110,15 +113,21 @@ forward():
                mj_fwd_passive         Springs, dampers, friction loss
   Constraints  mj_fwd_constraint      Joint limits + equality + contact PGS
   Solve        mj_fwd_acceleration    qacc = M^-1 * f  (or implicit solve)
-integrate():
+integrate() [Euler / ImplicitSpringDamper]:
   Semi-implicit Euler (velocity first, then position with new velocity)
   Quaternion integration on SO(3) for ball/free joints
+mj_runge_kutta() [RungeKutta4]:
+  True 4-stage RK4 with Butcher tableau [1/6, 1/3, 1/3, 1/6]
+  Stage 0 reuses initial forward(); stages 1-3 call forward_skip_sensors()
+  Uses mj_integrate_pos_explicit() for quaternion-safe position updates
 ```
 
 **Integration methods** (`Integrator` enum):
 - `Euler` (default) — semi-implicit Euler, velocity-first
-- `RungeKutta4` — placeholder (dispatches to Euler; see [FUTURE_WORK #8](./FUTURE_WORK.md))
-- `Implicit` — unconditionally stable for stiff springs/dampers; solves
+- `RungeKutta4` — true 4th-order Runge-Kutta (O(h⁴) global error);
+  uses `forward_skip_sensors()` for intermediate stage evaluations and
+  `mj_integrate_pos_explicit()` for quaternion-safe position updates
+- `ImplicitSpringDamper` — unconditionally stable for stiff springs/dampers; solves
   `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)`
 
 **Constraint enforcement:**

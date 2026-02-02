@@ -325,6 +325,7 @@ sim/L0/tests/
 │   ├── collision_test_utils.rs
 │   ├── equality_constraints.rs
 │   ├── implicit_integration.rs
+│   ├── rk4_integration.rs
 │   ├── musculoskeletal.rs
 │   ├── passive_forces.rs
 │   ├── sensors.rs

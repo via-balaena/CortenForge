@@ -1,6 +1,6 @@
 # Sensor Correctness Fixes Specification
 
-**Status:** Reviewed (9 passes)
+**Status:** ✅ All 4 fixes implemented
 **Scope:** `sim/L0/core/src/mujoco_pipeline.rs` sensor evaluation functions
 **Baseline commit:** `035d08f` (feat: complete sensor implementation)
 

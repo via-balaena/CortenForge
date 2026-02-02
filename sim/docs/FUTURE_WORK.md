@@ -78,13 +78,13 @@ can be tackled in any order unless a prerequisite is noted.
 **Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8790`) uses `std::mem::replace`
+`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8969`) uses `std::mem::replace`
 to swap `scratch_m_impl` out for nalgebra's `.cholesky()` (which takes ownership),
 replacing it with a freshly allocated `DMatrix::zeros(nv, nv)` every step
-(`mujoco_pipeline.rs:8846`). For nv=100 this is ~78 KB/step of unnecessary heap
+(`mujoco_pipeline.rs:9019`). For nv=100 this is ~78 KB/step of unnecessary heap
 allocation and zeroing.
 
-The current flow (`mujoco_pipeline.rs:8846-8852`):
+The current flow (`mujoco_pipeline.rs:9019-9025`):
 ```rust
 let chol = std::mem::replace(&mut data.scratch_m_impl, DMatrix::zeros(nv, nv))
     .cholesky()
@@ -93,13 +93,13 @@ data.scratch_v_new.copy_from(&data.scratch_rhs);
 chol.solve_mut(&mut data.scratch_v_new);
 ```
 
-`scratch_m_impl` is pre-allocated in `make_data()` (`mujoco_pipeline.rs:1771`) and
-populated each step via `copy_from(&data.qM)` (`mujoco_pipeline.rs:8814`) which
+`scratch_m_impl` is pre-allocated in `make_data()` (`mujoco_pipeline.rs:1785`) and
+populated each step via `copy_from(&data.qM)` (`mujoco_pipeline.rs:8993`) which
 overwrites the full matrix. After Cholesky, the matrix is never read again until
 the next step's `copy_from`. The replacement zero matrix is therefore wasted — the
 next `copy_from` would overwrite it entirely regardless of contents.
 
-`StepError::CholeskyFailed` already exists (`mujoco_pipeline.rs:655`).
+`StepError::CholeskyFailed` already exists (`mujoco_pipeline.rs:654`).
 
 #### Objective
 Zero-allocation Cholesky factorization that overwrites `scratch_m_impl` in place,
@@ -156,8 +156,8 @@ cholesky_solve_in_place(&data.scratch_m_impl, &mut data.scratch_v_new);
 This removes `let nv = model.nv` (no longer needed), `std::mem::replace`,
 `DMatrix::zeros(nv, nv)`, and the old comment block explaining the replace pattern.
 
-The `Cholesky` import stays — it is still used by `qM_cholesky: Option<Cholesky<f64, Dyn>>`
-(`mujoco_pipeline.rs:1325`) for cached mass matrix factorization in CRBA.
+The `Cholesky` import stayed at the time of #1 — it was later removed by #2 along with the
+`qM_cholesky` field (replaced by sparse `qLD_diag`/`qLD_L` factorization).
 
 #### Acceptance Criteria
 1. `std::mem::replace` and `DMatrix::zeros(nv, nv)` are removed from `mj_fwd_acceleration_implicit()`.
@@ -185,26 +185,26 @@ Three consumers solve linear systems involving the mass matrix M:
 
 | Consumer | Location | Current method | Cost |
 |----------|----------|---------------|------|
-| `mj_fwd_acceleration_explicit()` | `mujoco_pipeline.rs:8729` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
-| `mj_fwd_acceleration_implicit()` | `mujoco_pipeline.rs:8845` | `cholesky_in_place()` on M_impl | O(nv³) factorize + solve |
-| `pgs_solve_contacts()` | `mujoco_pipeline.rs:7041` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
+| `mj_fwd_acceleration_explicit()` | `mujoco_pipeline.rs:8779` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
+| `mj_fwd_acceleration_implicit()` | `mujoco_pipeline.rs:8969` | `cholesky_in_place()` on M_impl | O(nv³) factorize + solve |
+| `pgs_solve_contacts()` | `mujoco_pipeline.rs:7081` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
 
 For tree-structured robots, `M[i,j] ≠ 0` only when DOF `j` is an ancestor of DOF `i`
 (or vice versa) in the kinematic tree encoded by `model.dof_parent: Vec<Option<usize>>`
-(`mujoco_pipeline.rs:796`). This tree sparsity enables O(nv) factorization and solve.
+(`mujoco_pipeline.rs:795`). This tree sparsity enables O(nv) factorization and solve.
 
-**Data scaffolds** exist in `Data` (`mujoco_pipeline.rs:1344-1351`):
+**Data scaffolds** exist in `Data` (`mujoco_pipeline.rs:1332-1339`):
 ```rust
 pub qLD_diag: DVector<f64>,                  // D[i,i] diagonal
 pub qLD_L: Vec<Vec<(usize, f64)>>,           // L[i,:] sparse off-diagonal per row
 pub qLD_valid: bool,                         // dispatch flag
 ```
-Initialized at `mujoco_pipeline.rs:1728-1730` (zeros/empty/false), never populated.
-The `TODO(FUTURE_WORK#2)` comment is at `mujoco_pipeline.rs:1328`.
+Initialized at `mujoco_pipeline.rs:1742-1744` (zeros/empty/false), never populated.
+The `TODO(FUTURE_WORK#2)` comment was at `mujoco_pipeline.rs:1327` (removed when #2 was completed).
 
-The `qM_cholesky: Option<Cholesky<f64, Dyn>>` at `mujoco_pipeline.rs:1325` is computed
-in `mj_crba()` Phase 5 (`mujoco_pipeline.rs:6148`) via `data.qM.clone().cholesky()` —
-this clone+factorize is the O(nv³) cost we eliminate for the explicit/contact paths.
+The `qM_cholesky: Option<Cholesky<f64, Dyn>>` (removed when #2 was completed) was computed
+in `mj_crba()` Phase 5 (`mujoco_pipeline.rs:6049`) via `data.qM.clone().cholesky()` —
+this clone+factorize was the O(nv³) cost eliminated for the explicit/contact paths.
 
 #### Objective
 O(nv) factorization and solve for tree-structured robots, matching MuJoCo's
@@ -325,7 +325,7 @@ fn mj_solve_sparse(
 
 ##### Step 3: Integration into `mj_crba()` (Phase 5 replacement)
 
-At `mujoco_pipeline.rs:6138-6148`, replace the nalgebra Cholesky with sparse factorization:
+At `mujoco_pipeline.rs:6049-6050`, replace the nalgebra Cholesky with sparse factorization:
 
 ```rust
 // Phase 5: Factorize mass matrix (sparse L^T D L)
@@ -342,7 +342,7 @@ so stale factorization is never used during the CRBA computation.
 Remove the `qM_cholesky` field from `Data` entirely (along with its initialization
 in `make_data()` and the doc comments referencing it).
 
-##### Step 4: Dispatch in `mj_fwd_acceleration_explicit()` (line 8729)
+##### Step 4: Dispatch in `mj_fwd_acceleration_explicit()` (line 8779)
 
 Replace the `qM_cholesky` match with sparse solve:
 
@@ -361,7 +361,7 @@ If the mass matrix is degenerate, `mj_factor_sparse` will produce a zero or
 negative `qLD_diag[i]`, and the solve will produce inf/NaN — same as MuJoCo's
 behavior (garbage-in-garbage-out for degenerate systems).
 
-##### Step 5: Migrate `pgs_solve_contacts()` (line 7041)
+##### Step 5: Migrate `pgs_solve_contacts()` (line 7081)
 
 Replace all `chol.solve(&x)` calls with sparse solve:
 
@@ -379,10 +379,10 @@ Remove the `qM_cholesky` match guard at the top. The fallback to penalty
 for singular M is no longer needed — if sparse factorization is invalid
 (`!data.qLD_valid`), that's a bug (CRBA always runs before contacts).
 
-##### Step 6: Dispatch in `mj_fwd_acceleration_implicit()` (line 8845)
+##### Step 6: Dispatch in `mj_fwd_acceleration_implicit()` (line 8969)
 
 The implicit path uses `M_impl = M + h·D + h²·K`. The diagonal modification
-(`+= h*d[i] + h²*k[i]` at line 8871) means we **cannot** reuse the CRBA sparse
+(`+= h*d[i] + h²*k[i]` at line 8995) means we **cannot** reuse the CRBA sparse
 factorization — the modified matrix has different diagonal values.
 
 **Keep dense for implicit.** Rationale: the implicit path already uses
@@ -438,7 +438,7 @@ The implicit path (`mj_fwd_acceleration_implicit`) is **unchanged** by this PR.
 `CGSolver` in `sim-constraint/src/cg.rs` (1,664 lines, `cg.rs:309`) implements
 preconditioned conjugate gradient with Block Jacobi preconditioning. It solves joint
 constraints via the `Joint` trait (`cg.rs:408`): `solve<J: Joint>(&mut self, joints: &[J], ...)`.
-The pipeline uses PGS via `pgs_solve_contacts()` (`mujoco_pipeline.rs:6563`) for contact
+The pipeline uses PGS via `pgs_solve_contacts()` (`mujoco_pipeline.rs:7081`) for contact
 constraints. CGSolver has zero callers in the pipeline.
 
 The `Joint` trait expects rigid-body joint semantics (`parent()`, `child()`,
@@ -467,7 +467,7 @@ pub fn cg_solve_contacts(
 Algorithm:
 
 1. Assemble the Delassus matrix W = J M⁻¹ J^T from pre-computed contact Jacobians
-   (from `compute_contact_jacobian()` at `mujoco_pipeline.rs:6383`).
+   (from `compute_contact_jacobian()` at `mujoco_pipeline.rs:6901`).
 2. Build the constraint RHS from penetration depths, approach velocities, and
    solref/solimp parameters (same physics as PGS).
 3. Solve W·λ = rhs via preconditioned conjugate gradient with friction cone
@@ -491,7 +491,7 @@ pub enum SolverType { PGS, CG }
 ```
 
 Stored as `solver_type: SolverType` in `Model`. Default: `PGS`. Parsed from MJCF
-`<option solver="CG"/>`. `mj_fwd_constraint()` (`mujoco_pipeline.rs:7991`) dispatches
+`<option solver="CG"/>`. `mj_fwd_constraint()` (`mujoco_pipeline.rs:8500`) dispatches
 on `model.solver_type`.
 
 **Fallback policy (testing concern):** If CG does not converge within
@@ -528,12 +528,12 @@ Model fields are fully declared (`mujoco_pipeline.rs:907-929`): `ntendon`,
 `tendon_stiffness`, `tendon_damping`, `tendon_lengthspring`, `tendon_length0`,
 `tendon_range`, `tendon_limited`, `tendon_num`, `tendon_adr`, `tendon_name`.
 
-Data scaffolds exist (`mujoco_pipeline.rs:1366-1376`): `ten_length`, `ten_velocity`,
-`ten_force`, `ten_J` — all initialized to defaults at `mujoco_pipeline.rs:1735-1738`
+Data scaffolds exist (`mujoco_pipeline.rs:1362-1371`): `ten_length`, `ten_velocity`,
+`ten_force`, `ten_J` — all initialized to defaults at `mujoco_pipeline.rs:1756-1759`
 and never populated.
 
-`mj_fwd_actuation()` (`mujoco_pipeline.rs:5475`) has an explicit placeholder at
-`mujoco_pipeline.rs:5495-5498`:
+`mj_fwd_actuation()` (`mujoco_pipeline.rs:5997`) has an explicit placeholder at
+`mujoco_pipeline.rs:6017-6020`:
 ```rust
 ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
     // Placeholder for tendon/site actuation
@@ -569,7 +569,7 @@ that tendon-driven actuators produce joint forces.
 4. `ten_force[t] = f_spring + f_damp + f_limit`.
 5. Map to joint forces: `qfrc_passive += ten_J[t]^T * ten_force[t]`.
 
-**Tendon actuation** (fills the placeholder at `mujoco_pipeline.rs:5495`):
+**Tendon actuation** (fills the placeholder at `mujoco_pipeline.rs:6017`):
 
 For `ActuatorTransmission::Tendon`: look up the target tendon via `actuator_trnid`.
 Apply `ctrl * gear` as a force along the tendon, mapped to joints via:
@@ -599,8 +599,8 @@ sim-muscle is a standalone 2,550-line crate with:
 - Force-length/velocity curves (`curves.rs`).
 - `MuscleKinematics` (`kinematics.rs`): pennation angle, fiber length from MTU length.
 
-The pipeline declares `ActuatorDynamics::Muscle` (`mujoco_pipeline.rs:434`) and
-`data.act` (`mujoco_pipeline.rs:1249`) but `mj_fwd_actuation()` has no muscle-specific
+The pipeline declares `ActuatorDynamics::Muscle` (`mujoco_pipeline.rs:435`) and
+`data.act` (`mujoco_pipeline.rs:1255`) but `mj_fwd_actuation()` has no muscle-specific
 code path — it only handles `ActuatorTransmission::Joint` (direct force) and stubs
 `::Tendon`/`::Site`.
 
@@ -709,11 +709,11 @@ The 4 remaining items are trivial once tendon pipeline (#4) lands:
 **Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-The pipeline `Integrator` enum (`mujoco_pipeline.rs:628-638`) has three variants:
+The pipeline `Integrator` enum (`mujoco_pipeline.rs:629-637`) has three variants:
 `Euler`, `RungeKutta4`, `Implicit`. The `Implicit` variant's doc comment has been
 corrected to "Implicit Euler for diagonal per-DOF spring/damper forces"
 (`mujoco_pipeline.rs:636`). The actual implementation in
-`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8790`) solves:
+`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8969`) solves:
 
 ```
 (M + h·D + h²·K)·v_new = M·v_old + h·f_ext - h·K·(q - q_eq)
@@ -735,9 +735,9 @@ a clear slot for a future true `ImplicitEuler` variant that handles coupled
 2. Doc comment is already correct ("Implicit Euler for diagonal per-DOF spring/damper
    forces") — no change needed.
 3. Update all match arms and equality checks that reference `Integrator::Implicit`:
-   - `mujoco_pipeline.rs:2343` — velocity update skip in `Data::integrate()`
-   - `mujoco_pipeline.rs:6648` — `implicit_mode` flag in `mj_fwd_passive()`
-   - `mujoco_pipeline.rs:8718` — acceleration dispatch in `mj_fwd_acceleration()`
+   - `mujoco_pipeline.rs:2403` — velocity update skip in `Data::integrate()`
+   - `mujoco_pipeline.rs:6707` — `implicit_mode` flag in `mj_fwd_passive()`
+   - `mujoco_pipeline.rs:8768` — acceleration dispatch in `mj_fwd_acceleration()`
 4. Update MJCF layer:
    - `types.rs` — rename `MjcfIntegrator::Implicit` variant
    - `model_builder.rs:459` — update `MjcfIntegrator::Implicit` → Sim conversion
@@ -770,9 +770,9 @@ a clear slot for a future true `ImplicitEuler` variant that handles coupled
 `Integrator::RungeKutta4` (`mujoco_pipeline.rs:629`) dispatches to the same code
 path as `Integrator::Euler` in both locations:
 
-- `mj_fwd_acceleration()` (`mujoco_pipeline.rs:8686`): both call
+- `mj_fwd_acceleration()` (`mujoco_pipeline.rs:8762`): both call
   `mj_fwd_acceleration_explicit()`.
-- `Data::integrate()` (`mujoco_pipeline.rs:2324`): both use the same
+- `Data::integrate()` (`mujoco_pipeline.rs:2391`): both use the same
   semi-implicit Euler velocity/position update.
 
 It is a pure placeholder — selecting RK4 produces identical results to Euler.
@@ -846,7 +846,7 @@ pub rk4_dX_vel: DVector<f64>,
 pub rk4_dX_acc: DVector<f64>,
 ```
 
-In `Model::make_data()` (after line 1761), add:
+In `Model::make_data()` (after line 1788), add:
 
 ```rust
 rk4_qpos_saved: DVector::zeros(self.nq),
@@ -862,7 +862,7 @@ humanoid (nq≈37, nv=30): 374 f64 = 2.9 KiB. Negligible.
 
 ##### New Method: `Data::forward_skip_sensors()`
 
-Identical to `forward()` (`mujoco_pipeline.rs:2259`) but skips all 4 sensor
+Identical to `forward()` (`mujoco_pipeline.rs:2300`) but skips all 4 sensor
 stages (`mj_sensor_pos`, `mj_sensor_vel`, `mj_sensor_acc`, `mj_sensor_postprocess`).
 Matches MuJoCo's `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)` where `1` = skip sensors.
 
@@ -942,7 +942,7 @@ Precondition: data.forward() has already been called (qacc is valid).
 ```
 
 **Key design points:**
-- Position integration uses `mj_integrate_pos_explicit()` (`mujoco_pipeline.rs:9256`)
+- Position integration uses `mj_integrate_pos_explicit()` (`mujoco_pipeline.rs:9332`)
   at every stage, which handles quaternion exponential map for ball/free joints.
   The A coefficients are already baked into `dX_vel`, so `h` (not `h*A[i]`) is passed
   as the timestep parameter.
@@ -970,7 +970,7 @@ Precondition: data.forward() has already been called (qacc is valid).
 
 ##### Changes to `Data::step()`
 
-Replace the current implementation (`mujoco_pipeline.rs:2222`):
+Replace the current implementation (`mujoco_pipeline.rs:2257`):
 
 ```rust
 pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
@@ -1000,7 +1000,7 @@ pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
 
 ##### Changes to `Data::integrate()`
 
-Remove `RungeKutta4` from the `Euler` arm (`mujoco_pipeline.rs:2324`):
+Remove `RungeKutta4` from the `Euler` arm (`mujoco_pipeline.rs:2391`):
 
 ```rust
 match model.integrator {
@@ -1020,7 +1020,7 @@ match model.integrator {
 
 ##### No Changes to `mj_fwd_acceleration()`
 
-`mj_fwd_acceleration()` (`mujoco_pipeline.rs:8686`) continues to dispatch
+`mj_fwd_acceleration()` (`mujoco_pipeline.rs:8762`) continues to dispatch
 `Euler | RungeKutta4` to `mj_fwd_acceleration_explicit()`. Each forward evaluation
 within the RK4 loop computes `qacc = M^{-1} * f` in the standard way; the difference
 is that RK4 calls it 4 times at different states.
@@ -1029,7 +1029,7 @@ is that RK4 calls it 4 times at different states.
 
 MuJoCo's `mj_RungeKutta` includes actuator activation state (`act`, `act_dot`) in
 its state and rate vectors. Our `Data.act` exists (`mujoco_pipeline.rs:1255`) but
-`act_dot` does not — `mj_fwd_actuation()` (`mujoco_pipeline.rs:5921`) is a stateless
+`act_dot` does not — `mj_fwd_actuation()` (`mujoco_pipeline.rs:5997`) is a stateless
 `ctrl * gear` function with no activation dynamics. Activation integration is deferred
 until FUTURE_WORK #5 (Muscle Pipeline) introduces `act_dot`. A `TODO(FUTURE_WORK#5)`
 comment should mark the extension points in `mj_runge_kutta()`.
@@ -1085,9 +1085,9 @@ Sensors are evaluated once per `step()` call:
   - `Data` struct: add 6 RK4 scratch fields (`rk4_qpos_saved`, `rk4_qpos_stage`,
     `rk4_qvel`, `rk4_qacc`, `rk4_dX_vel`, `rk4_dX_acc`) after `scratch_v_new`
     (line 1427)
-  - `Model::make_data()`: allocate RK4 scratch buffers (after line 1761)
-  - `Data::step()`: add `RungeKutta4` match arm (line 2222)
-  - `Data::integrate()`: remove `RungeKutta4` from `Euler` arm (line 2324)
+  - `Model::make_data()`: allocate RK4 scratch buffers (after line 1788)
+  - `Data::step()`: add `RungeKutta4` match arm (line 2257)
+  - `Data::integrate()`: remove `RungeKutta4` from `Euler` arm (line 2391)
   - New `Data::forward_skip_sensors()`: forward pipeline minus sensor stages
   - New `mj_runge_kutta()`: core RK4 implementation (~90 lines)
 - `sim/L0/tests/integration/rk4_integration.rs` — new test module:
@@ -1203,11 +1203,11 @@ The choice should be configurable per-model via an MJCF option.
 **Status:** Not started | **Effort:** L | **Prerequisites:** None
 
 #### Current State
-Single-environment execution. `Data::step(&mut self, &Model)` (`mujoco_pipeline.rs:2228`)
+Single-environment execution. `Data::step(&mut self, &Model)` (`mujoco_pipeline.rs:2257`)
 steps one simulation. `Model` is immutable after construction, uses
-`Arc<TriangleMeshData>` for shared mesh data (`mujoco_pipeline.rs:843`). `Data` is
+`Arc<TriangleMeshData>` for shared mesh data (`mujoco_pipeline.rs:849`). `Data` is
 fully independent — no shared mutable state, no interior mutability, derives `Clone`
-(`mujoco_pipeline.rs:1232`).
+(`mujoco_pipeline.rs:1240`).
 
 #### Objective
 Step N independent environments in parallel on CPU. Foundation for GPU acceleration
@@ -1332,8 +1332,8 @@ The `Integrator` trait in `integrators.rs` (`integrators.rs:36`, 1,005 lines) de
 `RungeKutta4`, `ImplicitVelocity`, `ImplicitFast`) that operate on single
 `RigidBodyState` objects via an `IntegrationMethod` enum from sim-types.
 
-The pipeline uses its own `Integrator` enum (`mujoco_pipeline.rs:623`) with
-completely separate integration logic in `Data::integrate()` (`mujoco_pipeline.rs:2321`).
+The pipeline uses its own `Integrator` enum (`mujoco_pipeline.rs:629`) with
+completely separate integration logic in `Data::integrate()` (`mujoco_pipeline.rs:2391`).
 The two systems share no code. `integrate_with_method()` is re-exported by sim-physics
 (`physics/src/lib.rs:167`) but has zero callers in the pipeline.
 
