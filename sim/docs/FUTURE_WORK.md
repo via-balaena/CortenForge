@@ -791,7 +791,8 @@ intermediate stage, matching MuJoCo's `mj_RungeKutta` in `engine_forward.c`.
 #### Reference: MuJoCo's Algorithm
 
 MuJoCo's RK4 (`mj_RungeKutta` in `engine_forward.c`) uses the standard Butcher
-tableau. At each stage, it calls `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)` — the full
+tableau. Stage 0 reuses the qacc from the preceding `mj_forward()` call. At each
+subsequent stage (1-3), it calls `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)` — the full
 pipeline including collision detection, but skipping sensor evaluation. Positions are
 integrated via `mj_integratePos` (quaternion exponential map on SO(3)), not linear
 addition. The state at each stage always starts from `X[0]` (initial state), not
@@ -908,14 +909,26 @@ Precondition: data.forward() has already been called (qacc is valid).
    dX_acc[v] = Σ_j B[j] * F[j].qacc[v]
 
 4. ADVANCE from initial state:
+   data.qacc_warmstart = data.qacc  (save stage 3 qacc for next step — matches MuJoCo)
    data.qpos = X[0].qpos    (restore)
    data.qvel = X[0].qvel    (restore)
    data.qvel += h * dX_acc   (velocity update)
    data.qpos = mj_integrate_pos_explicit(X[0].qpos, dX_vel, h)  (position on manifold)
    mj_normalize_quat(model, data)
-   data.qacc_warmstart = dX_acc   (save for next step's constraint solver)
    data.efc_lambda = efc_lambda_saved  (restore warmstart from initial solve)
    data.time = t0 + h
+
+   NOTE: After mj_runge_kutta() returns, all derived quantities are stale
+   from stage 3 and do NOT correspond to the final (qpos, qvel) state:
+   - qacc (stage 3 acceleration, not final-state acceleration)
+   - xpos, xquat, xmat (body poses at stage 3 trial state)
+   - geom_xpos, geom_xmat, site_xpos, site_xmat (geometry/site poses)
+   - contacts, ncon (contact set from stage 3 collision detection)
+   - qfrc_actuator, qfrc_bias, qfrc_passive, qfrc_constraint (forces)
+   - energy_potential, energy_kinetic
+   This matches MuJoCo's behavior — mj_step does NOT call mj_forward
+   after mj_RungeKutta. Users needing consistent derived quantities at
+   the advanced state should call data.forward(model) after step().
 ```
 
 **Key design points:**
@@ -925,10 +938,20 @@ Precondition: data.forward() has already been called (qacc is valid).
   as the timestep parameter.
 - Each stage starts from `X[0]` (initial state), not from the previous stage. This
   matches MuJoCo and ensures Butcher tableau correctness.
+- **Borrow-checker note:** Steps 2c and 2d read `rk4_qpos[0]` / `rk4_qvel[0]` while
+  writing `rk4_qpos[i]` / `rk4_qvel[i]`. Rust's borrow checker cannot prove disjointness
+  of runtime-indexed array elements. Use `split_at_mut(1)` on the arrays at the top of
+  each loop iteration to split into `(head, tail)`, giving simultaneous `&head[0]` and
+  `&mut tail[i-1]`. This is zero-cost and idiomatic.
 - `efc_lambda` (warmstart HashMap, `mujoco_pipeline.rs:1400`) is saved before the
   loop and restored after the final advance. Intermediate stages may modify it
   freely (the PGS solver benefits from warmstarting), but the persistent warmstart
   across timesteps comes from the initial solve.
+- `qacc_warmstart` is saved **before** restoring X[0], so it captures stage 3's
+  raw qacc. This matches MuJoCo's `mj_advance` behavior (`mju_copy(d->qacc_warmstart,
+  d->qacc, nv)`). Our codebase does not currently read `qacc_warmstart` (the PGS
+  solver uses `efc_lambda` instead), but saving it preserves forward compatibility
+  with MuJoCo's acceleration-based warmstart pattern.
 - The one heap allocation is `efc_lambda.clone()`. For typical contact counts (<100
   pairs): ~2.4 KiB, ~100ns. If profiling shows this matters, add a pre-allocated
   `efc_lambda_saved` field to `Data`.
@@ -1013,18 +1036,22 @@ Sensors are evaluated once per `step()` call:
    solution, run RK4 at timestep `h` and Euler at timestep `h`. Compute position
    error at `t = 1s`. Halving `h` should reduce RK4 error by ~16× (O(h⁴)) vs ~2×
    for Euler (O(h)). Test at `h = 0.01` and `h = 0.005`.
-3. **Consistency:** For any model, `lim(h→0)` the RK4 and Euler trajectories
-   converge. Verify at `h = 1e-5` for 10 steps: max position difference < 1e-8.
-4. **Energy conservation:** For a frictionless pendulum (no contacts), RK4 at
-   timestep `4h` achieves comparable or better energy drift than Euler at timestep
-   `h` over 1000 steps.
+3. **Consistency:** `lim(h→0)` the RK4 and Euler trajectories converge. Verify
+   using the same pendulum model as AC #2 at `h = 1e-5` for 10 steps: max position
+   difference < 1e-8.
+4. **Energy conservation:** For a frictionless pendulum (no contacts), compare at
+   equal computational cost and equal simulated time: RK4 at timestep `4h` for 250
+   steps vs Euler at timestep `h` for 1000 steps (both simulate 1000h, both cost
+   ~1000 forward evaluations). RK4 should achieve comparable or better energy drift.
 5. **Contact handling:** Bouncing-ball test produces physically plausible results
    (ball bounces, does not explode or tunnel). Energy remains bounded.
 6. **Quaternion correctness:** A free-body rotation with known angular velocity
    produces the correct final orientation (error < 1e-6 vs analytic) after 100 RK4
    steps. Quaternion norm stays within 1e-10 of 1.0 at every step.
-7. **No heap allocations** in the RK4 path beyond the one `efc_lambda.clone()` and
-   the pre-allocated `Data` scratch fields.
+7. **No new heap allocations** introduced by `mj_runge_kutta()` itself beyond the
+   one `efc_lambda.clone()`. (The forward pipeline already allocates per call — e.g.,
+   force accumulation in `mj_fwd_acceleration_explicit`, Jacobians and lambda vectors
+   in `pgs_solve_contacts` — but these are inherited, not new to RK4.)
 8. **Cost:** RK4 wall-clock time is 3.5×–4.5× Euler per step (verified by benchmark
    on a 10-body chain).
 9. **Sensors:** After `step()` with RK4, `data.sensordata` contains values from the
