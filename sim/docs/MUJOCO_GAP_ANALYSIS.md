@@ -41,7 +41,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - sim-deformable (7,733 lines) — XPBD solver not called from `Data::step()` ([FUTURE_WORK #9](./FUTURE_WORK.md))
 - sim-sensor (rangefinder, magnetometer, force/torque) — standalone crate with own API; pipeline has independent implementations
 - CGSolver in sim-constraint (1,664 lines) — 0 pipeline callers ([FUTURE_WORK #3](./FUTURE_WORK.md))
-- `integrators.rs` trait system (1,005 lines) — disconnected from pipeline ([FUTURE_WORK C1](./FUTURE_WORK.md))
+- ~~`integrators.rs` trait system~~ — removed in FUTURE_WORK C1
 - Pneumatic, Adhesion, Muscle actuators in sim-constraint — not in `mj_fwd_actuation()`
 - Planar, Cylindrical joints in sim-constraint — not in pipeline `MjJointType` (MJCF model builder errors)
 
@@ -90,60 +90,53 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 |---------|--------|-------------|--------|----------|------------|
 | Semi-implicit Euler | Default | `SemiImplicitEuler` | **Implemented** | - | - |
 | RK4 | Supported | `RungeKutta4` | **Implemented** (true 4-stage RK4 via `mj_runge_kutta()`; see [FUTURE_WORK #8](./FUTURE_WORK.md) ✅) | - | - |
-| Explicit Euler | Supported | `ExplicitEuler` | **Standalone** (in `integrators.rs` trait, not in pipeline) | - | - |
-| Velocity Verlet | - | `VelocityVerlet` | **Standalone** (in `integrators.rs` trait, not in pipeline) | - | - |
-| Implicit-in-velocity | Core feature | `ImplicitVelocity` | **Standalone** (in `integrators.rs` trait, not in pipeline) | - | - |
-| Implicit-fast (no Coriolis) | Optimization | `ImplicitFast` | **Standalone** (in `integrators.rs` trait, not in pipeline) | - | - |
+| Explicit Euler | Supported | - | Not implemented (removed standalone-only code) | - | - |
+| Velocity Verlet | - | - | Not implemented (removed standalone-only code) | - | - |
+| Implicit-in-velocity | Core feature | - | **Implemented** (pipeline `ImplicitSpringDamper` for diagonal spring/damper) | - | - |
+| Implicit-fast (no Coriolis) | Optimization | - | Not separately implemented; `ImplicitSpringDamper` covers the primary use case | - | - |
 
-> **Two integration systems exist.** The MuJoCo pipeline uses its own `Integrator` enum (`mujoco_pipeline.rs:629`) with three variants: `Euler`, `RungeKutta4` (true 4-stage RK4 via `mj_runge_kutta()`), and `ImplicitSpringDamper` (diagonal spring/damper only). The `integrators.rs` trait system (1,005 lines) has 6 independent implementations (`ExplicitEuler`, `SemiImplicitEuler`, `VelocityVerlet`, `RungeKutta4`, `ImplicitVelocity`, `ImplicitFast`) that operate on `RigidBodyState` objects and are **not called by the pipeline**. See [FUTURE_WORK C1](./FUTURE_WORK.md) for disambiguation plan.
+> The pipeline uses a single `Integrator` enum (`mujoco_pipeline.rs:629`)
+> with three variants: `Euler` (semi-implicit), `RungeKutta4` (true 4-stage),
+> and `ImplicitSpringDamper` (diagonal spring/damper implicit Euler).
+> A standalone trait-based integrator system was removed in FUTURE_WORK C1.
 
-### Implementation Notes: Implicit Integration ✅ COMPLETED (standalone only)
+### Implementation Notes: Implicit Integration ✅ COMPLETED
 
 MuJoCo's implicit integrators solve:
 ```
-(M - h*D) * v_{t+h} = M * v_t + h * f
+(M + h·D + h²·K) · v_new = M · v_old + h · f_ext - h · K · (q - q_eq)
 ```
 
-Where `D` captures velocity-dependent force derivatives (damping). This is critical for:
+Where `D` captures per-DOF damping and `K` captures per-DOF stiffness. This is critical for:
 - Very stiff contacts
 - Highly damped systems
 - Muscle models with activation dynamics
 
-**Implemented:**
-- `ImplicitVelocity` integrator with unconditional stability
-- `integrate_with_damping()` method for built-in damping support
-- `integrate_with_method_and_damping()` dispatch function
-- `IntegrationMethod::ImplicitVelocity` enum variant
-- `IntegrationMethod::is_implicit()` helper method
+**Implemented (pipeline):**
+- `Integrator::ImplicitSpringDamper` in `mujoco_pipeline.rs` — implicit Euler
+  for diagonal per-DOF spring stiffness K and damping D.
+- Solves: `(M + h·D + h²·K)·v_new = M·v_old + h·f_ext - h·K·(q - q_eq)`
 
 **Usage:**
 ```rust
-use sim_core::integrators::{ImplicitVelocity, integrate_with_method_and_damping};
-use sim_types::IntegrationMethod;
+use sim_mjcf::load_model;
 
-// Direct usage with damping
-ImplicitVelocity::integrate_with_damping(
-    &mut state,
-    linear_accel,
-    angular_accel,
-    linear_damping,  // e.g., 10.0 for heavy damping
-    angular_damping,
-    dt,
-);
+let mjcf = r#"<mujoco>
+    <option integrator="implicit"/>
+    <worldbody>
+        <body pos="0 0 1">
+            <joint type="hinge" stiffness="100" damping="10"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
 
-// Via dispatch (for damped systems)
-integrate_with_method_and_damping(
-    IntegrationMethod::ImplicitVelocity,
-    &mut state,
-    linear_accel,
-    angular_accel,
-    linear_damping,
-    angular_damping,
-    dt,
-);
+let model = load_model(mjcf).expect("load");
+let mut data = model.make_data();
+data.step(&model).expect("step");
 ```
 
-**Files modified:** `sim-core/src/integrators.rs`, `sim-types/src/config.rs`
+**Files:** `sim-core/src/mujoco_pipeline.rs` (`Integrator::ImplicitSpringDamper`)
 
 ---
 
@@ -1451,7 +1444,7 @@ Focus: Internal solver improvements for better performance.
 
 1. ~~**Sparse matrix operations**: CSR/CSC matrices for constraint Jacobians~~ ✅ → ⚠️ **Removed** (Phase 3 consolidation — `sparse.rs` deleted, never used by pipeline)
 2. ~~**Warm starting**: Initialize from previous frame's solution~~ ✅ (pipeline PGS has its own warm starting)
-3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ ✅ → ⚠️ **Standalone** (in `integrators.rs` trait, not in pipeline; see [FUTURE_WORK C1](./FUTURE_WORK.md))
+3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ — Removed (standalone `integrators.rs` deleted in FUTURE_WORK C1; pipeline uses `ImplicitSpringDamper`)
 
 **Implemented:**
 
@@ -1468,53 +1461,16 @@ Focus: Internal solver improvements for better performance.
 - `SolverStats` - Track warm start usage and convergence metrics
 - Lambda values cached between frames, scaled by warm start factor
 
-**Implicit-Fast Integration (`sim-core/src/integrators.rs`):**
-- `ImplicitFast` - Same as `ImplicitVelocity` but expects Coriolis-free accelerations
-- `IntegrationMethod::ImplicitFast` - Enum variant for dispatch
-- `IntegrationMethod::skips_coriolis()` - Query method
-- Same unconditional stability as `ImplicitVelocity`
+**Implicit-Fast Integration (removed):**
+- The standalone `ImplicitFast` integrator and its `IntegrationMethod::ImplicitFast`
+  dispatch variant were removed in FUTURE_WORK C1 (dead code — not called by
+  the pipeline). The pipeline's `Integrator::ImplicitSpringDamper` covers the
+  primary use case (diagonal spring/damper implicit Euler).
 
-**Usage:**
-```rust
-use sim_constraint::{NewtonConstraintSolver, NewtonSolverConfig, SolverStats};
-use sim_core::integrators::{ImplicitFast, integrate_with_method};
-use sim_types::IntegrationMethod;
-
-// Enable warm starting (on by default)
-let config = NewtonSolverConfig::default()
-    .with_warm_starting(true)
-    .with_warm_start_factor(0.9)  // More conservative
-    .with_sparse(true);           // Enable sparse operations
-
-let mut solver = NewtonConstraintSolver::new(config);
-
-// Solve constraints
-let result = solver.solve(&joints, get_body_state, dt);
-
-// Check statistics
-let stats = solver.last_stats();
-println!("Used sparse: {}, warm start: {}", stats.used_sparse, stats.used_warm_start);
-
-// Use implicit-fast integration (no Coriolis)
-let mut state = /* ... */;
-let accel_no_coriolis = /* compute without Coriolis terms */;
-ImplicitFast::integrate(&mut state, accel_no_coriolis, angular_accel, dt);
-
-// Or via dispatch
-integrate_with_method(
-    IntegrationMethod::ImplicitFast,
-    &mut state,
-    accel_no_coriolis,
-    angular_accel,
-    dt,
-);
-```
-
-**Files:**
-- `sim-constraint/src/sparse.rs` (removed in Phase 3 consolidation) - Sparse matrix types and operations
-- `sim-constraint/src/newton.rs` (removed in Phase 3 consolidation) - Warm starting and sparse solver integration
-- `sim-core/src/integrators.rs` - `ImplicitFast` integrator
-- `sim-types/src/config.rs` - `IntegrationMethod::ImplicitFast` enum variant
+**Files (removed in consolidation):**
+- `sim-constraint/src/sparse.rs` — removed in Phase 3
+- `sim-constraint/src/newton.rs` — removed in Phase 3
+- `sim-core/src/integrators.rs` — removed in FUTURE_WORK C1
 
 ### Phase 5: Collision Completeness ✅ COMPLETED
 
@@ -1972,7 +1928,7 @@ let terrain = CollisionShape::heightfield(Arc::new(data));
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
 | `sim-types` | Data structures | `dynamics.rs`, `joint.rs`, `observation.rs`, `body.rs`, `config.rs` |
-| `sim-core` | Integration, MuJoCo pipeline, Collision | `mujoco_pipeline.rs`, `integrators.rs`, `collision_shape.rs`, `contact.rs`, `gjk_epa.rs`, `mid_phase.rs`, `heightfield.rs`, `sdf.rs`, `mesh.rs`, `raycast.rs` (removed: `world.rs`, `stepper.rs`, `broad_phase.rs`) |
+| `sim-core` | Integration, MuJoCo pipeline, Collision | `mujoco_pipeline.rs`, `collision_shape.rs`, `contact.rs`, `gjk_epa.rs`, `mid_phase.rs`, `heightfield.rs`, `sdf.rs`, `mesh.rs`, `raycast.rs` (removed: `world.rs`, `stepper.rs`, `broad_phase.rs`, `integrators.rs`) |
 | `sim-constraint` | Joint constraints (⚠️ standalone) | `joint.rs`, `types.rs`, `actuator.rs`, `equality.rs`, `cg.rs`, `limits.rs`, `motor.rs`, `muscle.rs` (removed in Phase 3: `solver.rs`, `newton.rs`, `islands.rs`, `sparse.rs`, `pgs.rs`, `parallel.rs`) |
 | `sim-sensor` | Sensor simulation (⚠️ standalone) | `imu.rs`, `force_torque.rs`, `touch.rs`, `rangefinder.rs`, `magnetometer.rs` |
 | `sim-urdf` | URDF loading | `lib.rs`, `parser.rs`, `converter.rs`, `types.rs`, `validation.rs`, `error.rs` |

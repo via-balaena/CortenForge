@@ -143,7 +143,7 @@ pub mod prelude {
     };
 
     // Configuration
-    pub use sim_types::{Gravity, IntegrationMethod, SimulationConfig, SolverConfig};
+    pub use sim_types::{Gravity, SimulationConfig, SolverConfig};
 
     // Errors
     pub use sim_types::SimError;
@@ -159,13 +159,7 @@ pub mod prelude {
     pub use sim_core::{Aabb, Axis, CollisionShape};
 
     // Additional core types
-    pub use sim_core::{Contact, GeomType, Integrator as MjIntegrator, MjJointType, StepError};
-
-    // Integrators
-    pub use sim_core::integrators::{
-        ExplicitEuler, Integrator, RungeKutta4, SemiImplicitEuler, VelocityVerlet,
-        integrate_with_method,
-    };
+    pub use sim_core::{Contact, GeomType, Integrator, MjJointType, StepError};
 
     // ========================================================================
     // Joint constraints from sim-constraint

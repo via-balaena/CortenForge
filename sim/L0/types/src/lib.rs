@@ -71,7 +71,7 @@ mod joint;
 mod observation;
 
 pub use body::{BodyId, MassProperties, Pose, RigidBodyState, Twist};
-pub use config::{IntegrationMethod, ParallelConfig, SimulationConfig, SolverConfig};
+pub use config::{ParallelConfig, SimulationConfig, SolverConfig};
 pub use dynamics::{Action, ActionType, ExternalForce, Gravity, JointCommand, JointCommandType};
 pub use error::SimError;
 pub use joint::{JointAxis, JointId, JointLimits, JointState, JointStateExtended, JointType};

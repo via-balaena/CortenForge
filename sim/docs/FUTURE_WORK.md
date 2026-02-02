@@ -1324,26 +1324,432 @@ made at implementation time:
 ---
 ## Cleanup Tasks
 
-### C1. Disambiguate integrators.rs
-**Effort:** S
+### C1. ~~Remove Dead Standalone Integrator System~~ ✅ DONE
+**Status:** Complete | **Effort:** S | **RL Impact:** Low | **Correctness:** Medium | **Prerequisites:** None
 
-The `Integrator` trait in `integrators.rs` (`integrators.rs:36`, 1,005 lines) defines
-6 implementations (`ExplicitEuler`, `SemiImplicitEuler`, `VelocityVerlet`,
-`RungeKutta4`, `ImplicitVelocity`, `ImplicitFast`) that operate on single
-`RigidBodyState` objects via an `IntegrationMethod` enum from sim-types.
+#### Current State
 
-The pipeline uses its own `Integrator` enum (`mujoco_pipeline.rs:629`) with
-completely separate integration logic in `Data::integrate()` (`mujoco_pipeline.rs:2391`).
-The two systems share no code. `integrate_with_method()` is re-exported by sim-physics
-(`physics/src/lib.rs:167`) but has zero callers in the pipeline.
+Two completely independent integrator systems coexist in the codebase. They share
+no code, no types, and no callers.
 
-**Decision needed:** Either:
-- **(a) Remove** the trait system entirely (it's dead code with respect to the pipeline), or
-- **(b) Consolidate** by having `Data::integrate()` delegate to the trait system
-  (requires adapting the trait to work with `Data` instead of `RigidBodyState`).
+**System A — Standalone trait system** (`sim/L0/core/src/integrators.rs`, 1,005 lines):
 
-Option (a) is simpler and removes 1,005 lines of unused code. Option (b) is only
-warranted if users of sim-physics need standalone integration outside the pipeline.
+| Type | Location | Description |
+|------|----------|-------------|
+| `Integrator` trait | `integrators.rs:36` | `fn integrate(state: &mut RigidBodyState, ...)` |
+| `ExplicitEuler` | `integrators.rs:137` | First-order explicit |
+| `SemiImplicitEuler` | `integrators.rs:171` | Symplectic Euler |
+| `VelocityVerlet` | `integrators.rs:204` | Second-order symplectic |
+| `RungeKutta4` | `integrators.rs:239` | Constant-acceleration reduction (not true multi-stage) |
+| `ImplicitVelocity` | `integrators.rs:296` | Implicit-in-velocity with damping |
+| `ImplicitFast` | `integrators.rs:384` | Implicit, skips Coriolis terms |
+| `integrate_with_method()` | `integrators.rs:54` | Dispatch by `IntegrationMethod` enum |
+| `integrate_with_method_and_damping()` | `integrators.rs:90` | Dispatch with damping support |
+| `apply_damping()` | `integrators.rs:480` | Post-integration damping |
+| `clamp_velocities()` | `integrators.rs:490` | Velocity clamping |
+| Tests | `integrators.rs:508-1005` | ~500 lines of internal unit tests |
+
+These operate on `RigidBodyState` (a single-body type from sim-types) via
+`IntegrationMethod` enum dispatch. The pipeline never touches `RigidBodyState`.
+
+**System B — Pipeline integrator** (`mujoco_pipeline.rs:629`):
+
+```rust
+pub enum Integrator {
+    Euler,                  // Semi-implicit Euler
+    RungeKutta4,            // True 4-stage RK4 (mj_runge_kutta)
+    ImplicitSpringDamper,   // Diagonal spring/damper implicit Euler
+}
+```
+
+This enum drives `Data::step()` (`mujoco_pipeline.rs:2257`), `Data::integrate()`
+(`mujoco_pipeline.rs:2391`), `mj_fwd_acceleration()` (`mujoco_pipeline.rs:8768`),
+and `mj_fwd_passive()` (`mujoco_pipeline.rs:6707`). It operates on the full
+generalized-coordinate state (`qpos`/`qvel`/`qacc`) with quaternion-aware position
+integration via `mj_integrate_pos_explicit()`.
+
+**Callers of System A: zero.**
+
+Verified by exhaustive grep. No code outside `integrators.rs` itself calls any
+function from the module. Specifically:
+
+| Potential caller | Status |
+|------------------|--------|
+| `mujoco_pipeline.rs` | Zero imports from `crate::integrators`. Uses own `Integrator` enum. |
+| `sim/L0/tests/integration/` | All tests use `Data::step()` / pipeline. None import `integrators::`. |
+| `sim/L0/core/src/lib.rs:78` | Declares `pub mod integrators` — export only, no calls. |
+| `sim/L0/physics/src/lib.rs:165-168` | Re-exports to prelude — export only, no calls. |
+| `sim/L0/core/benches/` | Uses pipeline `Model`/`Data`. No integrator trait calls. |
+
+**Orphaned supporting types:**
+
+The standalone system depends on `IntegrationMethod` from sim-types
+(`types/src/config.rs:387-418`), a 6-variant enum with helper methods (`order()`,
+`is_symplectic()`, `is_implicit()`, `skips_coriolis()`, `relative_cost()`,
+`Display` impl) totaling ~90 lines. This enum is also stored in
+`SolverConfig.integration` (`types/src/config.rs:153`).
+
+`IntegrationMethod` has exactly 3 consumers:
+
+1. `integrators.rs:33` — dispatches on it (dead).
+2. `mjcf/src/config.rs:12-21` — `From<MjcfIntegrator> for IntegrationMethod` conversion,
+   feeding `SolverConfig` via `SimulationConfig::from(&MjcfOption)`. But the pipeline
+   never reads `SimulationConfig` or `SolverConfig` (`mujoco_pipeline.rs` has zero
+   references to either type). The pipeline uses a separate
+   `From<MjcfIntegrator> for Integrator` in `model_builder.rs:457-460`.
+3. `types/src/config.rs` — enum definition and self-tests.
+
+The `From<MjcfIntegrator> for IntegrationMethod` impl and associated test
+(`config.rs:219-236`) will become dead code once `integrators.rs` is removed,
+since nothing reads the `IntegrationMethod` field from `SolverConfig`.
+
+**Name collision:** The standalone `Integrator` *trait* and the pipeline `Integrator`
+*enum* collide. The sim-physics prelude resolves this with
+`Integrator as MjIntegrator` (`physics/src/lib.rs:162`). Removing the trait
+eliminates the collision and the alias.
+
+#### Objective
+
+Remove the dead standalone integrator system and its orphaned dependencies. One
+integrator system (the pipeline's `Integrator` enum) remains as the single source
+of truth.
+
+#### Decision: Option (a) — Remove
+
+Option (b) (consolidating by having `Data::integrate()` delegate to the trait) was
+evaluated and rejected:
+
+- The trait operates on `RigidBodyState` (position + velocity of a single rigid
+  body). The pipeline operates on generalized coordinates (`qpos`/`qvel` vectors
+  spanning all joints) with quaternion-aware manifold integration. The type systems
+  are fundamentally incompatible — adapting the trait would require rewriting it
+  from scratch, at which point it's not consolidation.
+- The pipeline's RK4 is true multi-stage (4 calls to `forward_skip_sensors()`).
+  The standalone `RungeKutta4` is a constant-acceleration reduction. Consolidation
+  would mean deleting the standalone version anyway.
+- The pipeline's implicit integrator modifies the mass matrix
+  (`M + h·D + h²·K`) and solves a coupled system. The standalone
+  `ImplicitVelocity` solves a scalar `(M - h*D) * v = M*v + h*f`. Different
+  algorithms, different inputs.
+- No external users of sim-physics have been identified that consume the
+  standalone integrators independent of the pipeline.
+
+#### Specification
+
+Steps are grouped by file to minimize context-switching during implementation.
+The compiler will catch any missed references — after each step, `cargo check`
+should surface the next breakage.
+
+##### Step 1: Delete `integrators.rs`
+
+Delete `sim/L0/core/src/integrators.rs` (1,005 lines — 497 lines of code,
+508 lines of tests and doc-comments including a module-level doc-test).
+
+##### Step 2: Update `sim/L0/core/src/lib.rs`
+
+Two changes in one file:
+
+1. Remove module declaration (line 78):
+   ```rust
+   pub mod integrators;  // DELETE
+   ```
+
+2. Remove `IntegrationMethod` from the sim-types re-export (line 137):
+   ```rust
+   pub use sim_types::{
+       Action, ActionType, BodyId, ExternalForce, Gravity, JointCommand,
+       JointCommandType, JointId, JointLimits, JointState, JointType,
+       MassProperties, Observation, ObservationType, Pose, RigidBodyState,
+       SimError, SimulationConfig, SolverConfig, Twist,
+       // REMOVE: IntegrationMethod
+   };
+   ```
+
+##### Step 3: Update `sim/L0/types/src/config.rs`
+
+Remove the `IntegrationMethod` enum and all its dependents:
+
+1. Delete the `IntegrationMethod` enum (lines 384-418), `impl IntegrationMethod`
+   block (lines 420-462), and `Display` impl (lines 464-473).
+
+2. Remove `IntegrationMethod` from `SolverConfig`:
+   - Delete `pub integration: IntegrationMethod` field (line 153).
+   - Delete `integration: IntegrationMethod::SemiImplicitEuler` from `Default`
+     impl (line 275).
+   - Delete `integration: IntegrationMethod::RungeKutta4` from `high_accuracy()`
+     (line 294).
+   - Delete `integration: IntegrationMethod::SemiImplicitEuler` from `fast()`
+     (line 311).
+   - Delete builder method `pub fn integration(...)` (lines 325-329).
+
+3. Update tests:
+   - In `test_solver_configs`: remove `hifi.integration` assertion (line 537).
+   - Delete `test_integration_method` (lines 562-569).
+
+4. Update `sim/L0/types/src/lib.rs` line 74: remove `IntegrationMethod` from the
+   `pub use config::` re-export.
+
+##### Step 4: Update `sim/L0/mjcf/src/config.rs`
+
+Four changes in one file:
+
+1. Remove `IntegrationMethod` from the import (line 7). Keep `Gravity`,
+   `ParallelConfig`, `SimulationConfig`, `SolverConfig`.
+
+2. Delete the `From<MjcfIntegrator> for IntegrationMethod` impl (lines 12-21).
+
+3. In `From<&MjcfOption> for SimulationConfig` (line 24): delete the
+   `integration: option.integrator.into()` line from the `SolverConfig`
+   construction (line 35).
+
+4. Delete test `test_integrator_conversion` (lines 219-236).
+
+##### Step 5: Update `sim/L0/physics/src/lib.rs`
+
+Three changes in the prelude:
+
+1. Remove `IntegrationMethod` from the sim-types re-export (line 146):
+   ```rust
+   pub use sim_types::{Gravity, SimulationConfig, SolverConfig};
+   // REMOVE: IntegrationMethod
+   ```
+
+2. Delete the standalone integrator re-export block (lines 164-168):
+   ```rust
+   // DELETE entire block:
+   pub use sim_core::integrators::{
+       ExplicitEuler, Integrator, RungeKutta4, SemiImplicitEuler, VelocityVerlet,
+       integrate_with_method,
+   };
+   ```
+
+3. Remove the `Integrator as MjIntegrator` alias (line 162) and export the
+   pipeline enum directly under its real name:
+   ```rust
+   pub use sim_core::{Contact, GeomType, Integrator, MjJointType, StepError};
+   ```
+
+##### Step 6: Update documentation
+
+Two doc files reference the deleted system: `ARCHITECTURE.md` and
+`MUJOCO_GAP_ANALYSIS.md`.
+
+**6a. `sim/docs/ARCHITECTURE.md` (lines 203-206)**
+
+Remove the `integrators.rs` bullet from the sim-core file listing. Replace:
+
+```markdown
+- `integrators.rs` — standalone trait system with 6 integrators (ExplicitEuler,
+  SemiImplicitEuler, VelocityVerlet, RungeKutta4, ImplicitVelocity, ImplicitFast).
+  **Not used by the MuJoCo pipeline** — the pipeline has its own `Integrator` enum
+  in `mujoco_pipeline.rs`. See [FUTURE_WORK C1](./FUTURE_WORK.md) for disambiguation plan.
+```
+
+with nothing (delete the 4-line bullet entirely). The pipeline's `Integrator`
+enum is already documented under `mujoco_pipeline.rs` in the same listing.
+
+**6b. `sim/docs/MUJOCO_GAP_ANALYSIS.md`**
+
+This file has six locations referencing the deleted system.
+
+**Location 1: "Not in pipeline" summary (line 44)**
+
+Replace:
+```
+- `integrators.rs` trait system (1,005 lines) — disconnected from pipeline ([FUTURE_WORK C1](./FUTURE_WORK.md))
+```
+with:
+```
+- ~~`integrators.rs` trait system~~ — removed in FUTURE_WORK C1
+```
+
+**Location 2: Integration status table (lines 93-98)**
+
+Lines 93-96 list four standalone integrators as "Standalone (in integrators.rs
+trait, not in pipeline)". Replace the four rows with:
+
+```markdown
+| Explicit Euler | - | - | Not implemented (removed standalone-only code) | - | - |
+| Velocity Verlet | - | - | Not implemented (removed standalone-only code) | - | - |
+| Implicit-in-velocity | Core feature | - | **Implemented** (pipeline `ImplicitSpringDamper` for diagonal spring/damper) | - | - |
+| Implicit-fast (no Coriolis) | Optimization | - | Not separately implemented; `ImplicitSpringDamper` covers the primary use case | - | - |
+```
+
+Replace the blockquote (line 98) with:
+
+```markdown
+> The pipeline uses a single `Integrator` enum (`mujoco_pipeline.rs:629`)
+> with three variants: `Euler` (semi-implicit), `RungeKutta4` (true 4-stage),
+> and `ImplicitSpringDamper` (diagonal spring/damper implicit Euler).
+> A standalone trait-based integrator system was removed in FUTURE_WORK C1.
+```
+
+**Location 3: Implicit Integration notes (lines 100-146)**
+
+Replace the "Implemented" list (lines 112-117) with:
+
+```markdown
+**Implemented (pipeline):**
+- `Integrator::ImplicitSpringDamper` in `mujoco_pipeline.rs` — implicit Euler
+  for diagonal per-DOF spring stiffness K and damping D.
+- Solves: `(M + h·D + h²·K)·v_new = M·v_old + h·f_ext - h·K·(q - q_eq)`
+```
+
+Replace the "Usage" code block (lines 119-143) with a pipeline-based example:
+
+    **Usage:**
+    ```rust
+    use sim_mjcf::load_model;
+
+    let mjcf = r#"<mujoco>
+        <option integrator="implicit"/>
+        <worldbody>
+            <body pos="0 0 1">
+                <joint type="hinge" stiffness="100" damping="10"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+        </worldbody>
+    </mujoco>"#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+    data.step(&model).expect("step");
+    ```
+
+Update "Files modified" (line 146): replace
+`sim-core/src/integrators.rs, sim-types/src/config.rs` with
+`sim-core/src/mujoco_pipeline.rs (Integrator::ImplicitSpringDamper)`.
+
+Update section heading (line 100) to:
+`### Implementation Notes: Implicit Integration ✅ COMPLETED`
+(remove the "(standalone only)" qualifier).
+
+**Location 4: Implicit-fast checklist (line 1454)**
+
+Replace:
+```
+3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ ✅ → ⚠️ **Standalone** (in `integrators.rs` trait, not in pipeline; see [FUTURE_WORK C1](./FUTURE_WORK.md))
+```
+with:
+```
+3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ — Removed (standalone `integrators.rs` deleted in FUTURE_WORK C1; pipeline uses `ImplicitSpringDamper`)
+```
+
+**Location 5: Implicit-Fast block (lines 1471-1517)**
+
+The code example (lines 1478-1510) references deleted types
+(`NewtonConstraintSolver`, `ImplicitFast`, `integrate_with_method`,
+`IntegrationMethod::ImplicitFast`). The Newton solver was already removed in
+Phase 3 consolidation; the integrator types are removed by this PR.
+
+Replace lines 1471-1517 with:
+
+```markdown
+**Implicit-Fast Integration (removed):**
+- The standalone `ImplicitFast` integrator and its `IntegrationMethod::ImplicitFast`
+  dispatch variant were removed in FUTURE_WORK C1 (dead code — not called by
+  the pipeline). The pipeline's `Integrator::ImplicitSpringDamper` covers the
+  primary use case (diagonal spring/damper implicit Euler).
+
+**Files (removed in consolidation):**
+- `sim-constraint/src/sparse.rs` — removed in Phase 3
+- `sim-constraint/src/newton.rs` — removed in Phase 3
+- `sim-core/src/integrators.rs` — removed in FUTURE_WORK C1
+```
+
+**Location 6: File listing table (line 1975)**
+
+Remove `integrators.rs` from the sim-core "Key Files" column. Change:
+```
+`mujoco_pipeline.rs`, `integrators.rs`, `collision_shape.rs`, ...
+```
+to:
+```
+`mujoco_pipeline.rs`, `collision_shape.rs`, ...
+```
+
+#### Acceptance Criteria
+
+1. `sim/L0/core/src/integrators.rs` no longer exists.
+2. `IntegrationMethod` enum no longer exists in sim-types.
+3. `SolverConfig` no longer has an `integration` field.
+4. The sim-physics prelude exports `Integrator` (the pipeline enum) directly,
+   without the `as MjIntegrator` alias. No standalone integrator types
+   (`ExplicitEuler`, `SemiImplicitEuler`, `VelocityVerlet`,
+   `integrate_with_method`) appear in the public API.
+5. `cargo build --workspace` succeeds with zero errors and zero warnings
+   related to unused imports or dead code.
+6. `cargo test --workspace` passes — all existing pipeline tests
+   (implicit integration, RK4 integration, collision, sensor, MJCF parsing)
+   remain green. The only tests removed are the internal `integrators.rs` tests
+   and `test_integrator_conversion` / `test_integration_method` in config modules.
+7. `cargo doc --workspace` succeeds with no broken intra-doc links.
+8. `MUJOCO_GAP_ANALYSIS.md` and `ARCHITECTURE.md` contain no `use` statements
+   referencing `sim_core::integrators`, no `IntegrationMethod::` paths, and no
+   `ImplicitVelocity` / `integrate_with_method` references. The `integrators.rs`
+   file listing is removed from both docs.
+   Note: `MjcfIntegrator::ImplicitFast` in `mjcf/src/types.rs`, `parser.rs`,
+   and `model_builder.rs` is **retained** — it is live MJCF parsing code that
+   maps to the pipeline's `Integrator::ImplicitSpringDamper`, not part of the
+   dead standalone system.
+9. No `#[allow(dead_code)]` or `#[allow(unused_imports)]` annotations were added
+   to suppress warnings — dead code is deleted, not silenced.
+10. `RigidBodyState`, `Twist`, `Pose`, and other sim-types used by sim-sensor
+    and elsewhere are **not** removed — only `IntegrationMethod` and its
+    dependents are deleted.
+
+#### Verification Strategy
+
+After applying each step, run `cargo check --workspace` to confirm the next
+set of compile errors matches expectations:
+
+| After Step | Expected errors |
+|------------|----------------|
+| 1 (delete file) | `mod integrators` in `lib.rs` → unresolved module |
+| 2 (update lib.rs) | `integrators::` paths in `physics/src/lib.rs` → unresolved |
+| 3 (update types) | `IntegrationMethod` in `mjcf/src/config.rs` → unresolved |
+| 4 (update mjcf) | `IntegrationMethod` in `physics/src/lib.rs` prelude → unresolved |
+| 5 (update physics) | Zero errors. `cargo test --workspace` should pass. |
+| 6 (update docs) | N/A (markdown, not compiled). Grep-verify: `grep -rn 'integrators\.\|IntegrationMethod\|ImplicitVelocity\|integrate_with_method' sim/docs/` should return only FUTURE_WORK.md (historical reference). |
+
+#### Net Change
+
+| Component | Lines removed | Notes |
+|-----------|--------------|-------|
+| `integrators.rs` (code) | ~497 | 6 structs, 2 dispatch fns, trait, utilities |
+| `integrators.rs` (tests + docs) | ~508 | Module doc-test + ~20 unit tests |
+| `IntegrationMethod` enum + impls + Display | ~90 | `types/src/config.rs` |
+| `SolverConfig.integration` field + builder + defaults | ~15 | `types/src/config.rs` |
+| `From<MjcfIntegrator> for IntegrationMethod` + test | ~28 | `mjcf/src/config.rs` |
+| Re-export lines (core lib.rs, physics lib.rs) | ~10 | Module decl + 2 re-export blocks |
+| Config test lines | ~10 | `test_integration_method`, `test_integrator_conversion` |
+| ARCHITECTURE.md stale bullet | 4 | `integrators.rs` listing deleted |
+| GAP_ANALYSIS.md stale sections | ~90 | 6 locations; replaced with ~35 lines of updated text |
+| **Total removed** | **~1,200** | |
+| **Total added (doc replacements)** | **~35** | |
+| **Net** | **~−1,165** | |
+
+#### Files
+
+- `sim/L0/core/src/integrators.rs` — **delete** (1,005 lines)
+- `sim/L0/core/src/lib.rs` — modify (remove `pub mod integrators` line 78,
+  remove `IntegrationMethod` from re-export line 137)
+- `sim/L0/types/src/config.rs` — modify (remove `IntegrationMethod` enum +
+  impls lines 384-473, remove `SolverConfig.integration` field + builder +
+  defaults + test assertions)
+- `sim/L0/types/src/lib.rs` — modify (remove `IntegrationMethod` from
+  re-export line 74)
+- `sim/L0/mjcf/src/config.rs` — modify (remove `IntegrationMethod` import
+  line 7, remove `From` impl lines 12-21, remove `integration:` field
+  construction line 35, remove test lines 219-236)
+- `sim/L0/physics/src/lib.rs` — modify (remove `IntegrationMethod` from
+  prelude line 146, delete integrator re-export block lines 164-168,
+  replace `Integrator as MjIntegrator` alias line 162 with direct export)
+- `sim/docs/ARCHITECTURE.md` — modify (remove `integrators.rs` bullet
+  lines 203-206)
+- `sim/docs/MUJOCO_GAP_ANALYSIS.md` — modify (6 locations: summary line 44,
+  integration table lines 93-98, implicit notes lines 100-146, checklist
+  line 1454, implicit-fast block lines 1471-1517, file table line 1975)
 
 ### C2. ~~Correct stale MUJOCO_GAP_ANALYSIS.md~~ ✅ DONE
 

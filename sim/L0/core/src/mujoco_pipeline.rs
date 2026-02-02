@@ -1429,7 +1429,7 @@ pub struct Data {
     // ==================== RK4 Scratch Buffers ====================
     // State and rate buffers for 4-stage Runge-Kutta integration.
     // Pre-allocated in make_data() — no heap allocation during stepping.
-    /// Saved initial position for RK4: X[0].qpos (length nq).
+    /// Saved initial position for RK4: `X[0].qpos` (length nq).
     /// Read at every stage (step 2c) and the final advance (step 4).
     pub rk4_qpos_saved: DVector<f64>,
 
@@ -1439,11 +1439,11 @@ pub struct Data {
     /// B-weight combination (which only sums velocities and accelerations).
     pub rk4_qpos_stage: DVector<f64>,
 
-    /// RK4 stage velocities: X[i].qvel (4 buffers, each length nv).
+    /// RK4 stage velocities: `X[i].qvel` (4 buffers, each length nv).
     /// All 4 are needed for the final B-weight combination in step 3.
     pub rk4_qvel: [DVector<f64>; 4],
 
-    /// RK4 stage accelerations: F[i].qacc (4 buffers, each length nv).
+    /// RK4 stage accelerations: `F[i].qacc` (4 buffers, each length nv).
     /// All 4 are needed for the final B-weight combination in step 3.
     pub rk4_qacc: [DVector<f64>; 4],
 
