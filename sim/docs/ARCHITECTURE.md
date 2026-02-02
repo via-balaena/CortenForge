@@ -105,13 +105,14 @@ Each timestep executes these stages in order:
 ```
 forward():
   Position     mj_fwd_position       FK from qpos → body poses
+               mj_fwd_tendon         Tendon lengths + Jacobians (fixed tendons)
                mj_collision           Broad + narrow phase contacts
-  Velocity     mj_fwd_velocity        Body spatial velocities from qvel
-  Actuation    mj_fwd_actuation       Control → joint forces
+  Velocity     mj_fwd_velocity        Body spatial velocities + tendon velocities
+  Actuation    mj_fwd_actuation       Control → joint forces (joint + tendon transmission)
   Dynamics     mj_crba                Mass matrix (Composite Rigid Body)
                mj_rne                 Bias forces (Recursive Newton-Euler)
-               mj_fwd_passive         Springs, dampers, friction loss
-  Constraints  mj_fwd_constraint      Joint limits + equality + contact PGS
+               mj_fwd_passive         Springs, dampers, friction loss (joints + tendons)
+  Constraints  mj_fwd_constraint      Joint/tendon limits + equality + contact PGS
   Solve        mj_fwd_acceleration    qacc = M^-1 * f  (or implicit solve)
 integrate() [Euler / ImplicitSpringDamper]:
   Semi-implicit Euler (velocity first, then position with new velocity)
@@ -131,7 +132,7 @@ mj_runge_kutta() [RungeKutta4]:
   `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)`
 
 **Constraint enforcement:**
-- Joint limits and equality constraints use penalty + Baumgarte stabilization
+- Joint/tendon limits and equality constraints use penalty + Baumgarte stabilization
   with configurable stiffness via `solref`/`solimp` parameters
 - Contacts use PGS (Projected Gauss-Seidel) with friction cones and warmstart
 
@@ -272,7 +273,7 @@ Predefined configs: biceps, quadriceps, gastrocnemius, soleus.
 
 ### sim-tendon
 
-Cable-driven actuation and routing:
+Standalone cable-driven actuation and routing library:
 
 - **Fixed tendons** — MuJoCo-style linear joint couplings
 - **Spatial tendons** — 3D routing through attachment points with wrapping
@@ -281,14 +282,20 @@ Cable-driven actuation and routing:
 `TendonActuator` trait: `rest_length`, `compute_length`, `compute_velocity`,
 `compute_force`, `jacobian`, `num_joints` (6 methods).
 
+**Note:** Fixed tendons are implemented directly in the MuJoCo pipeline
+(`mj_fwd_tendon` in sim-core) and do not use sim-tendon. This crate remains
+a standalone reference library for advanced tendon analysis.
+
 ### sim-mjcf
 
 MuJoCo XML format parser. Supports: bodies, joints (hinge, slide, ball, free),
 geoms (sphere, box, capsule, cylinder, ellipsoid, plane, mesh), actuators
 (motor, position, velocity, general, muscle, cylinder, damper, adhesion),
 contype/conaffinity contact bitmasks, default class inheritance, and MJB binary
-format. **Note:** `<contact>` `<pair>`/`<exclude>` elements are not parsed;
-`<sensor>` and `<tendon>` elements are parsed but dropped by the model builder.
+format. **Note:** `<contact>` `<pair>`/`<exclude>` elements are not parsed.
+`<tendon>` and `<sensor>` elements are parsed and wired into the pipeline
+(fixed tendons fully supported; spatial tendons scaffolded but deferred;
+all 27 sensor types functional).
 
 ### sim-urdf
 

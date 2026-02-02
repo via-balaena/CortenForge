@@ -14,13 +14,14 @@ mutable `Data`.
 Data::step():
   1. forward()
      a. mj_fwd_position    — Forward kinematics
+        mj_fwd_tendon       — Tendon lengths + Jacobians (fixed tendons)
         mj_collision        — Broad/narrow phase collision detection
-     b. mj_fwd_velocity    — Body velocities from joint velocities
-     c. mj_fwd_actuation   — Actuator forces from controls
+     b. mj_fwd_velocity    — Body + tendon velocities from joint velocities
+     c. mj_fwd_actuation   — Actuator forces from controls (joint + tendon transmission)
      d. mj_crba            — Mass matrix (Composite Rigid Body Algorithm)
      e. mj_rne             — Bias forces (Recursive Newton-Euler)
-     f. mj_fwd_passive     — Spring, damper, friction loss forces
-     g. mj_fwd_constraint  — Joint limits, equality constraints, contact PGS
+     f. mj_fwd_passive     — Spring, damper, friction loss forces (joints + tendons)
+     g. mj_fwd_constraint  — Joint/tendon limits, equality constraints, contact PGS
      h. mj_fwd_acceleration — Solve M*qacc = f (explicit) or implicit velocity update
   2a. integrate()          — Semi-implicit Euler or implicit position update
                               (for Euler / ImplicitSpringDamper integrators)
@@ -89,14 +90,17 @@ if transmission == Joint:
     qfrc_actuator[dof] += ctrl * gear
 
 if transmission == Tendon:
-    # Not yet implemented
+    force = ctrl * gear
+    for w in tendon_wrap_range:
+        qfrc_actuator[wrap_objid[w]] += wrap_prm[w] * force  # J^T mapping
 
 if transmission == Site:
-    # Not yet implemented
+    # Not yet implemented (requires spatial tendon support)
 ```
 
 Joint-transmission actuators apply force directly to the joint DOF scaled by
-the gear ratio.
+the gear ratio. Tendon-transmission actuators map the force through the tendon
+Jacobian transpose to all coupled joints.
 
 ---
 
@@ -243,13 +247,25 @@ Where:
 In implicit integration mode, spring and damper terms are handled in the
 implicit solve (section 4.7). Only friction loss is computed here.
 
+**Tendon passive forces** follow the same pattern, mapped through J^T:
+```
+ten_force[t] = -stiffness * (ten_length - lengthspring)
+               - damping * ten_velocity
+               - frictionloss * tanh(ten_velocity * friction_smoothing)
+
+qfrc_passive[dof] += coef * ten_force    # for each wrap entry
+```
+Note: tendon spring/damper forces are skipped in implicit mode (non-diagonal
+coupling cannot be absorbed into the diagonal implicit modification).
+
 ### 4.4 Constraint Forces (`mj_fwd_constraint`)
 
-Three constraint types, applied in order:
+Four constraint types, applied in order:
 
 1. **Joint limits** — penalty-based with Baumgarte stabilization
-2. **Equality constraints** — penalty-based with Baumgarte stabilization
-3. **Contact forces** — PGS solver with friction cones
+2. **Tendon limits** — penalty-based (same as joint limits, mapped through J^T)
+3. **Equality constraints** — penalty-based with Baumgarte stabilization
+4. **Contact forces** — PGS solver with friction cones
 
 ### 4.5 Joint Limits
 

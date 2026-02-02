@@ -20,7 +20,7 @@ can be tackled in any order unless a prerequisite is noted.
 | 3 | CG Contact Solver | Medium | Low | L | None (#1, #2 help perf) |
 | 4 | Tendon Pipeline | Low | High | L | None |
 | 5 | Muscle Pipeline | Low | High | L | #4 |
-| 6 | Sensor Completion | High | High | S (remaining) | #4 for tendon sensors |
+| 6 | Sensor Completion | High | High | S | #4 for tendon sensors |
 | 7 | Integrator Rename | Low | Medium | S | None |
 | 8 | True RK4 Integration | Low | Medium | M | None |
 | 9 | Deformable Body Integration | Medium | Low | XL | None |
@@ -517,7 +517,7 @@ catch regressions. Consider a `SolverType::CGStrict` variant that returns
 ## Group B — Pipeline Integration
 
 ### 4. Tendon Pipeline
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Status:** ✅ Done (fixed tendons) | **Effort:** L | **Prerequisites:** None
 
 #### Scope Decision: Fixed Tendons Only
 
@@ -548,6 +548,9 @@ yet supported and will produce zero forces. This ensures spatial tendons in MJCF
 files are safely ignored rather than silently producing incorrect forces.
 
 #### Current State
+
+> **Note:** This section describes the pre-implementation baseline. All "Missing
+> pieces" below have been implemented — see status ✅ Done above.
 
 **sim-tendon crate** (`sim/L0/tendon/src/`, 3,919 lines, 52 tests):
 - `FixedTendon` (`fixed.rs:65`): linear coupling `L = L₀ + Σᵢ cᵢ qᵢ`, implements
@@ -1476,7 +1479,7 @@ prototyping, and as documentation of the algorithms.
 ---
 
 ### 5. Muscle Pipeline
-**Status:** Not started | **Effort:** L | **Prerequisites:** #4 (tendon pipeline provides `ten_length`, `ten_velocity`, `ten_J`)
+**Status:** Not started | **Effort:** L | **Prerequisites:** #4 ✅ (tendon pipeline provides `ten_length`, `ten_velocity`, `ten_J`)
 
 #### Current State
 sim-muscle is a standalone 2,550-line crate with:
@@ -1535,7 +1538,7 @@ For each actuator where `actuator_dyntype[i] == Muscle`:
 ---
 
 ### 6. Sensor Completion
-**Status:** Mostly complete | **Effort:** S (remaining work) | **Prerequisites:** #4 for tendon sensors
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** #4 ✅ for tendon sensors
 
 #### Current State
 A correctness sub-spec (`sim/docs/SENSOR_FIXES_SPEC.md`) was implemented, addressing
@@ -1544,8 +1547,7 @@ JointPos/JointVel restriction to hinge/slide, accelerometer comment/test hardeni
 and bounds-checked `sensor_write` helpers across all evaluation functions.
 
 Separately, Force, Torque, Touch, Rangefinder, Magnetometer, and SubtreeAngMom were
-brought from stubs to full implementations. The remaining gaps are tendon-dependent
-sensors blocked on #4:
+brought from stubs to full implementations. The tendon-dependent sensors were implemented alongside #4:
 
 | Sensor | Status | Detail |
 |--------|--------|--------|
@@ -1559,33 +1561,33 @@ sensors blocked on #4:
 | BallAngVel | Done | 3-DOF angular velocity from qvel |
 | JointPos | Done | Hinge/slide only (Ball/Free no longer written) |
 | JointVel | Done | Hinge/slide only (Ball/Free no longer written) |
-| TendonPos | Stub (0.0) | Blocked on #4 — will read `ten_length[objid]` |
-| TendonVel | Stub (0.0) | Blocked on #4 — will read `ten_velocity[objid]` |
-| ActuatorPos | Partial | Joint transmission done; Tendon/Site stub (blocked on #4) |
-| ActuatorVel | Partial | Joint transmission done; Tendon/Site stub (blocked on #4) |
+| TendonPos | Done | Reads `ten_length[objid]` (implemented with #4) |
+| TendonVel | Done | Reads `ten_velocity[objid]` (implemented with #4) |
+| ActuatorPos | Done | Joint and Tendon transmissions; Site stub remains |
+| ActuatorVel | Done | Joint and Tendon transmissions; Site stub remains |
 
 All sensor writes use bounds-checked helpers (`sensor_write`, `sensor_write3`,
 `sensor_write4`). Postprocessing handles positive-type sensors (Touch, Rangefinder)
 with `.min(cutoff)` to preserve the -1.0 no-hit sentinel.
 
 #### Remaining Work
-The 4 remaining items are trivial once tendon pipeline (#4) lands:
+~~The 4 remaining items are trivial once tendon pipeline (#4) lands:~~ Done with #4.
 
-1. **TendonPos:** Replace `0.0` stub with `ten_length[objid]`.
-2. **TendonVel:** Replace `0.0` stub with `ten_velocity[objid]`.
-3. **ActuatorPos (Tendon/Site):** Read tendon length × gear for tendon transmissions.
-4. **ActuatorVel (Tendon/Site):** Read tendon velocity × gear for tendon transmissions.
+1. ~~**TendonPos:** Replace `0.0` stub with `ten_length[objid]`.~~ Done.
+2. ~~**TendonVel:** Replace `0.0` stub with `ten_velocity[objid]`.~~ Done.
+3. ~~**ActuatorPos (Tendon/Site):** Read tendon length × gear for tendon transmissions.~~ Done (tendon; Site stub remains).
+4. ~~**ActuatorVel (Tendon/Site):** Read tendon velocity × gear for tendon transmissions.~~ Done (tendon; Site stub remains).
 
 #### Acceptance Criteria
 1. ~~Force and Torque sensors return non-zero values when constraint forces are active.~~ Done.
 2. ~~Touch sensor returns actual contact force magnitude (not `depth * 10000`).~~ Done.
 3. ~~Rangefinder returns correct distance for a known geom placement (within 1e-6).~~ Done.
 4. ~~Magnetometer returns the global magnetic field rotated into the site frame.~~ Done.
-5. TendonPos/TendonVel return `ten_length`/`ten_velocity` when tendon pipeline (#4) is active.
-6. ActuatorPos/ActuatorVel return correct values for all transmission types.
+5. ~~TendonPos/TendonVel return `ten_length`/`ten_velocity` when tendon pipeline (#4) is active.~~ Done.
+6. ~~ActuatorPos/ActuatorVel return correct values for all transmission types.~~ Done (tendon; Site stub remains).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (4 stub sites in `mj_sensor_pos()` and `mj_sensor_vel()`)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modified (4 stub sites in `mj_sensor_pos()` and `mj_sensor_vel()` replaced with live reads)
 - `sim/docs/SENSOR_FIXES_SPEC.md` — reference for completed correctness fixes
 
 ---
