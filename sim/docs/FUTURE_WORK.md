@@ -764,13 +764,13 @@ a clear slot for a future true `ImplicitEuler` variant that handles coupled
 ---
 
 ### 8. True RK4 Integration
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Status:** ✅ Done | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 `Integrator::RungeKutta4` (`mujoco_pipeline.rs:629`) dispatches to the same code
 path as `Integrator::Euler` in both locations:
 
-- `mj_fwd_acceleration()` (`mujoco_pipeline.rs:8693`): both call
+- `mj_fwd_acceleration()` (`mujoco_pipeline.rs:8686`): both call
   `mj_fwd_acceleration_explicit()`.
 - `Data::integrate()` (`mujoco_pipeline.rs:2324`): both use the same
   semi-implicit Euler velocity/position update.
@@ -821,13 +821,22 @@ Add after `scratch_v_new` (`mujoco_pipeline.rs:1427`), before `body_min_mass`:
 // State and rate buffers for 4-stage Runge-Kutta integration.
 // Pre-allocated in make_data() — no heap allocation during stepping.
 
-/// RK4 stage positions: X[i].qpos (4 buffers, each length nq).
-pub rk4_qpos: [DVector<f64>; 4],
+/// Saved initial position for RK4: X[0].qpos (length nq).
+/// Read at every stage (step 2c) and the final advance (step 4).
+pub rk4_qpos_saved: DVector<f64>,
+
+/// Scratch position for the current RK4 stage (length nq).
+/// Written at step 2c, copied to data.qpos at step 2e, then overwritten
+/// next iteration. Intermediate positions are not needed for the final
+/// B-weight combination (which only sums velocities and accelerations).
+pub rk4_qpos_stage: DVector<f64>,
 
 /// RK4 stage velocities: X[i].qvel (4 buffers, each length nv).
+/// All 4 are needed for the final B-weight combination in step 3.
 pub rk4_qvel: [DVector<f64>; 4],
 
 /// RK4 stage accelerations: F[i].qacc (4 buffers, each length nv).
+/// All 4 are needed for the final B-weight combination in step 3.
 pub rk4_qacc: [DVector<f64>; 4],
 
 /// Weighted velocity sum for manifold position integration (length nv).
@@ -840,15 +849,16 @@ pub rk4_dX_acc: DVector<f64>,
 In `Model::make_data()` (after line 1761), add:
 
 ```rust
-rk4_qpos: std::array::from_fn(|_| DVector::zeros(self.nq)),
+rk4_qpos_saved: DVector::zeros(self.nq),
+rk4_qpos_stage: DVector::zeros(self.nq),
 rk4_qvel: std::array::from_fn(|_| DVector::zeros(self.nv)),
 rk4_qacc: std::array::from_fn(|_| DVector::zeros(self.nv)),
 rk4_dX_vel: DVector::zeros(self.nv),
 rk4_dX_acc: DVector::zeros(self.nv),
 ```
 
-Memory overhead: `4*(nq + 2*nv) + 2*nv` floats. For a 30-DOF humanoid (nq≈37,
-nv=30): 448 f64 = 3.5 KiB. Negligible.
+Memory overhead: `2*nq + 4*2*nv + 2*nv` = `2*nq + 10*nv` floats. For a 30-DOF
+humanoid (nq≈37, nv=30): 374 f64 = 2.9 KiB. Negligible.
 
 ##### New Method: `Data::forward_skip_sensors()`
 
@@ -888,18 +898,19 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError>
 Precondition: data.forward() has already been called (qacc is valid).
 
 1. SAVE initial state:
-   X[0].qpos = data.qpos
+   rk4_qpos_saved.copy_from(&data.qpos)
    X[0].qvel = data.qvel
    F[0].qacc = data.qacc
    t0 = data.time
    efc_lambda_saved = data.efc_lambda.clone()
 
 2. FOR i = 1, 2, 3:
-   a. Weighted velocity:  dX_vel[v] = Σ_j A[(i-1)*3+j] * X[j].qvel[v]
-   b. Weighted accel:     dX_acc[v] = Σ_j A[(i-1)*3+j] * F[j].qacc[v]
-   c. Position (manifold): X[i].qpos = mj_integrate_pos_explicit(X[0].qpos, dX_vel, h)
+   a. Weighted velocity:  dX_vel[v] = Σ_{j=0}^{2} A[(i-1)*3+j] * X[j].qvel[v]
+   b. Weighted accel:     dX_acc[v] = Σ_{j=0}^{2} A[(i-1)*3+j] * F[j].qacc[v]
+      (For this tableau, only j = i−1 has a non-zero coefficient.)
+   c. Position (manifold): mj_integrate_pos_explicit(model, &mut rk4_qpos_stage, &rk4_qpos_saved, &dX_vel, h)
    d. Velocity (linear):   X[i].qvel = X[0].qvel + h * dX_acc
-   e. Set Data state:      data.qpos = X[i].qpos, data.qvel = X[i].qvel
+   e. Set Data state:      data.qpos.copy_from(&rk4_qpos_stage), data.qvel.copy_from(&X[i].qvel)
    f. Set Data time:       data.time = t0 + h * {0.5, 0.5, 1.0}[i-1]
    g. Evaluate:            data.forward_skip_sensors(model)?
    h. Store rate:          F[i].qacc = data.qacc
@@ -910,10 +921,9 @@ Precondition: data.forward() has already been called (qacc is valid).
 
 4. ADVANCE from initial state:
    data.qacc_warmstart = data.qacc  (save stage 3 qacc for next step — matches MuJoCo)
-   data.qpos = X[0].qpos    (restore)
-   data.qvel = X[0].qvel    (restore)
-   data.qvel += h * dX_acc   (velocity update)
-   data.qpos = mj_integrate_pos_explicit(X[0].qpos, dX_vel, h)  (position on manifold)
+   data.qvel.copy_from(&X[0].qvel)    (restore)
+   data.qvel += h * dX_acc             (velocity update)
+   mj_integrate_pos_explicit(model, &mut data.qpos, &rk4_qpos_saved, &dX_vel, h)  (position on manifold)
    mj_normalize_quat(model, data)
    data.efc_lambda = efc_lambda_saved  (restore warmstart from initial solve)
    data.time = t0 + h
@@ -938,11 +948,13 @@ Precondition: data.forward() has already been called (qacc is valid).
   as the timestep parameter.
 - Each stage starts from `X[0]` (initial state), not from the previous stage. This
   matches MuJoCo and ensures Butcher tableau correctness.
-- **Borrow-checker note:** Steps 2c and 2d read `rk4_qpos[0]` / `rk4_qvel[0]` while
-  writing `rk4_qpos[i]` / `rk4_qvel[i]`. Rust's borrow checker cannot prove disjointness
-  of runtime-indexed array elements. Use `split_at_mut(1)` on the arrays at the top of
-  each loop iteration to split into `(head, tail)`, giving simultaneous `&head[0]` and
-  `&mut tail[i-1]`. This is zero-cost and idiomatic.
+- **Borrow-checker note:** Step 2d reads `rk4_qvel[0]` while writing `rk4_qvel[i]`.
+  Rust's borrow checker cannot prove disjointness of runtime-indexed array elements.
+  Use `split_at_mut(1)` on the `rk4_qvel` array at the top of each loop iteration
+  to split into `(head, tail)`, giving simultaneous `&head[0]` and `&mut tail[i-1]`.
+  This is zero-cost and idiomatic. Position buffers don't need this treatment —
+  `rk4_qpos_saved` and `rk4_qpos_stage` are separate struct fields with independent
+  borrows.
 - `efc_lambda` (warmstart HashMap, `mujoco_pipeline.rs:1400`) is saved before the
   loop and restored after the final advance. Intermediate stages may modify it
   freely (the PGS solver benefits from warmstarting), but the persistent warmstart
@@ -1034,17 +1046,22 @@ Sensors are evaluated once per `step()` call:
 1. `Integrator::RungeKutta4` no longer produces identical results to `Integrator::Euler`.
 2. **Order verification (smooth systems):** For a frictionless pendulum with analytic
    solution, run RK4 at timestep `h` and Euler at timestep `h`. Compute position
-   error at `t = 1s`. Halving `h` should reduce RK4 error by ~16× (O(h⁴)) vs ~2×
-   for Euler (O(h)). Test at `h = 0.01` and `h = 0.005`.
+   error at `t = 1s`. Halving `h` should reduce RK4 error by ~16× (O(h⁴)) vs ~2–4×
+   for symplectic Euler (O(h)–O(h²) in position depending on observable and system
+   structure; symplectic Euler preserves energy well but position convergence is
+   typically first-order). Test at `h = 0.01` and `h = 0.005`.
 3. **Consistency:** `lim(h→0)` the RK4 and Euler trajectories converge. Verify
    using the same pendulum model as AC #2 at `h = 1e-5` for 10 steps: max position
    difference < 1e-8.
-4. **Energy conservation:** For a frictionless pendulum (no contacts), compare at
-   equal computational cost and equal simulated time: RK4 at timestep `4h` for 250
-   steps vs Euler at timestep `h` for 1000 steps (both simulate 1000h, both cost
-   ~1000 forward evaluations). RK4 should achieve comparable or better energy drift.
+4. **Energy conservation:** For a frictionless pendulum (no contacts) at `h = 0.001`,
+   RK4 energy drift after 1000 steps (1.0 s simulated time) shall be less than
+   `1e-10` relative to initial energy. Additionally, halving `h` should reduce RK4
+   energy drift by ~32×–64× (O(h⁵)–O(h⁶) secular drift on near-harmonic systems),
+   verified at `h = 0.002` and `h = 0.001`.
 5. **Contact handling:** Bouncing-ball test produces physically plausible results
-   (ball bounces, does not explode or tunnel). Energy remains bounded.
+   (ball does not explode or tunnel, contacts are detected). Energy remains bounded.
+   Note: the PGS constraint solver without restitution absorbs kinetic energy on
+   impact, so the ball settles rather than bouncing — this is correct behavior.
 6. **Quaternion correctness:** A free-body rotation with known angular velocity
    produces the correct final orientation (error < 1e-6 vs analytic) after 100 RK4
    steps. Quaternion norm stays within 1e-10 of 1.0 at every step.
@@ -1057,13 +1074,17 @@ Sensors are evaluated once per `step()` call:
 9. **Sensors:** After `step()` with RK4, `data.sensordata` contains values from the
    pre-step state. Intermediate stages do not corrupt sensor data.
 10. **Warmstart preservation:** `efc_lambda` after `step()` reflects the initial
-    state's contact solve, not stage 3's. Verify via two consecutive steps producing
-    identical `efc_lambda` for a static resting-contact scenario.
+    state's contact solve, not stage 3's. Verify by comparing `efc_lambda` before
+    and after one RK4 step: call `forward()` → clone `efc_lambda` → call
+    `mj_runge_kutta()` → assert `efc_lambda` is bitwise identical to the clone.
+    This directly tests the save/restore mechanism without requiring steady-state
+    warmup or cross-step comparison.
 
 #### Files
 - `sim/L0/core/src/mujoco_pipeline.rs` — modify:
-  - `Data` struct: add 5 RK4 scratch fields (`rk4_qpos`, `rk4_qvel`, `rk4_qacc`,
-    `rk4_dX_vel`, `rk4_dX_acc`) after `scratch_v_new` (line 1427)
+  - `Data` struct: add 6 RK4 scratch fields (`rk4_qpos_saved`, `rk4_qpos_stage`,
+    `rk4_qvel`, `rk4_qacc`, `rk4_dX_vel`, `rk4_dX_acc`) after `scratch_v_new`
+    (line 1427)
   - `Model::make_data()`: allocate RK4 scratch buffers (after line 1761)
   - `Data::step()`: add `RungeKutta4` match arm (line 2222)
   - `Data::integrate()`: remove `RungeKutta4` from `Euler` arm (line 2324)

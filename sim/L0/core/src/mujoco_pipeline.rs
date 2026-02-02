@@ -1426,6 +1426,33 @@ pub struct Data {
     /// Used to hold v_new while computing qacc = (v_new - v_old) / h.
     pub scratch_v_new: DVector<f64>,
 
+    // ==================== RK4 Scratch Buffers ====================
+    // State and rate buffers for 4-stage Runge-Kutta integration.
+    // Pre-allocated in make_data() — no heap allocation during stepping.
+    /// Saved initial position for RK4: X[0].qpos (length nq).
+    /// Read at every stage (step 2c) and the final advance (step 4).
+    pub rk4_qpos_saved: DVector<f64>,
+
+    /// Scratch position for the current RK4 stage (length nq).
+    /// Written at step 2c, copied to data.qpos at step 2e, then overwritten
+    /// next iteration. Intermediate positions are not needed for the final
+    /// B-weight combination (which only sums velocities and accelerations).
+    pub rk4_qpos_stage: DVector<f64>,
+
+    /// RK4 stage velocities: X[i].qvel (4 buffers, each length nv).
+    /// All 4 are needed for the final B-weight combination in step 3.
+    pub rk4_qvel: [DVector<f64>; 4],
+
+    /// RK4 stage accelerations: F[i].qacc (4 buffers, each length nv).
+    /// All 4 are needed for the final B-weight combination in step 3.
+    pub rk4_qacc: [DVector<f64>; 4],
+
+    /// Weighted velocity sum for manifold position integration (length nv).
+    pub rk4_dX_vel: DVector<f64>,
+
+    /// Weighted acceleration sum for velocity update (length nv).
+    pub rk4_dX_acc: DVector<f64>,
+
     // ==================== Cached Body Effective Mass/Inertia ====================
     // These are extracted from the mass matrix diagonal during forward() and cached
     // for use by constraint force limiting. This avoids O(joints) traversal per constraint.
@@ -1759,6 +1786,14 @@ impl Model {
             scratch_force: DVector::zeros(self.nv),
             scratch_rhs: DVector::zeros(self.nv),
             scratch_v_new: DVector::zeros(self.nv),
+
+            // RK4 scratch buffers
+            rk4_qpos_saved: DVector::zeros(self.nq),
+            rk4_qpos_stage: DVector::zeros(self.nq),
+            rk4_qvel: std::array::from_fn(|_| DVector::zeros(self.nv)),
+            rk4_qacc: std::array::from_fn(|_| DVector::zeros(self.nv)),
+            rk4_dX_vel: DVector::zeros(self.nv),
+            rk4_dX_acc: DVector::zeros(self.nv),
 
             // Cached body mass/inertia (computed in forward() after CRBA)
             // Initialize world body (index 0) to infinity, others to default
@@ -2229,14 +2264,20 @@ impl Data {
         mj_check_pos(model, self)?;
         mj_check_vel(model, self)?;
 
-        // Forward dynamics: compute qacc from current state
-        self.forward(model)?;
-
-        // Validate computed acceleration
-        mj_check_acc(model, self)?;
-
-        // Integration: update qvel and qpos
-        self.integrate(model);
+        match model.integrator {
+            Integrator::RungeKutta4 => {
+                // RK4: forward() evaluates initial state (with sensors).
+                // mj_runge_kutta() then calls forward_skip_sensors() 3 more times.
+                self.forward(model)?;
+                mj_check_acc(model, self)?;
+                mj_runge_kutta(model, self)?;
+            }
+            Integrator::Euler | Integrator::ImplicitSpringDamper => {
+                self.forward(model)?;
+                mj_check_acc(model, self)?;
+                self.integrate(model);
+            }
+        }
 
         Ok(())
     }
@@ -2306,11 +2347,43 @@ impl Data {
         Ok(())
     }
 
-    /// Integration step.
+    /// Forward dynamics pipeline without sensor evaluation.
+    ///
+    /// Identical to [`forward()`](Self::forward) but skips all 4 sensor stages
+    /// (`mj_sensor_pos`, `mj_sensor_vel`, `mj_sensor_acc`, `mj_sensor_postprocess`).
+    /// Used by RK4 intermediate stages to match MuJoCo's
+    /// `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)` where `1` = skip sensors.
+    fn forward_skip_sensors(&mut self, model: &Model) -> Result<(), StepError> {
+        // ========== Position Stage ==========
+        mj_fwd_position(model, self);
+        mj_collision(model, self);
+        // skip: mj_sensor_pos
+        mj_energy_pos(model, self);
+
+        // ========== Velocity Stage ==========
+        mj_fwd_velocity(model, self);
+        // skip: mj_sensor_vel
+
+        // ========== Acceleration Stage ==========
+        mj_fwd_actuation(model, self);
+        mj_crba(model, self);
+        mj_rne(model, self);
+        mj_energy_vel(model, self);
+        mj_fwd_passive(model, self);
+        mj_fwd_constraint(model, self);
+        mj_fwd_acceleration(model, self)?;
+        // skip: mj_sensor_acc, mj_sensor_postprocess
+
+        Ok(())
+    }
+
+    /// Integration step for Euler and implicit-spring-damper integrators.
+    ///
+    /// RK4 integration is handled by [`mj_runge_kutta()`] and does not call this method.
     ///
     /// # Integration Methods
     ///
-    /// - **Euler/RK4**: Semi-implicit Euler. Updates velocity first (`qvel += qacc * h`),
+    /// - **Euler**: Semi-implicit Euler. Updates velocity first (`qvel += qacc * h`),
     ///   then integrates position using the new velocity.
     ///
     /// - **Implicit**: Velocity was already updated in `mj_fwd_acceleration_implicit()`.
@@ -2318,10 +2391,10 @@ impl Data {
     fn integrate(&mut self, model: &Model) {
         let h = model.timestep;
 
-        // For explicit integrators, update velocity using computed acceleration
+        // For Euler, update velocity using computed acceleration
         // For implicit integrator, velocity was already updated in mj_fwd_acceleration_implicit
         match model.integrator {
-            Integrator::Euler | Integrator::RungeKutta4 => {
+            Integrator::Euler => {
                 // Semi-implicit Euler: update velocity first, then position
                 for i in 0..model.nv {
                     self.qvel[i] += self.qacc[i] * h;
@@ -2330,6 +2403,9 @@ impl Data {
             Integrator::ImplicitSpringDamper => {
                 // Velocity already updated by mj_fwd_acceleration_implicit
                 // qacc was back-computed as (v_new - v_old) / h for consistency
+            }
+            Integrator::RungeKutta4 => {
+                unreachable!("RK4 integration handled by mj_runge_kutta()")
             }
         }
 
@@ -9333,6 +9409,136 @@ pub fn mj_integrate_pos_explicit(
             }
         }
     }
+}
+
+// ============================================================================
+// RK4 Integration
+// ============================================================================
+
+/// Standard 4-stage Runge-Kutta integration matching MuJoCo's `mj_RungeKutta`.
+///
+/// # Preconditions
+/// - `data.forward()` has already been called (qacc is valid for stage 0).
+///
+/// # Algorithm
+/// Uses the classic RK4 Butcher tableau. Stage 0 reuses qacc from the preceding
+/// `forward()` call. Stages 1-3 each call `forward_skip_sensors()` at trial states.
+/// Position integration uses `mj_integrate_pos_explicit()` for quaternion correctness.
+///
+/// After this function returns, derived quantities (xpos, contacts, forces, etc.)
+/// are stale from stage 3 and do NOT correspond to the final (qpos, qvel) state.
+/// This matches MuJoCo's behavior.
+fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
+    // Butcher tableau
+    const RK4_A: [f64; 9] = [
+        0.5, 0.0, 0.0, // Stage 1→2
+        0.0, 0.5, 0.0, // Stage 2→3
+        0.0, 0.0, 1.0, // Stage 3→4
+    ];
+    const RK4_B: [f64; 4] = [1.0 / 6.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 6.0];
+    const RK4_TIME: [f64; 3] = [0.5, 0.5, 1.0];
+
+    let h = model.timestep;
+    let nv = model.nv;
+
+    // 1. SAVE initial state
+    data.rk4_qpos_saved.copy_from(&data.qpos);
+    data.rk4_qvel[0].copy_from(&data.qvel);
+    data.rk4_qacc[0].copy_from(&data.qacc);
+    let t0 = data.time;
+    let efc_lambda_saved = data.efc_lambda.clone();
+
+    // 2. FOR i = 1, 2, 3:
+    for i in 1..4usize {
+        // 2a. Weighted velocity: dX_vel[v] = Σ_{j=0}^{2} A[(i-1)*3+j] * X[j].qvel[v]
+        // (For this tableau, only j = i−1 has a non-zero coefficient.)
+        for v in 0..nv {
+            let mut sum = 0.0;
+            for j in 0..3 {
+                sum += RK4_A[(i - 1) * 3 + j] * data.rk4_qvel[j][v];
+            }
+            data.rk4_dX_vel[v] = sum;
+        }
+
+        // 2b. Weighted acceleration: dX_acc[v] = Σ_{j=0}^{2} A[(i-1)*3+j] * F[j].qacc[v]
+        for v in 0..nv {
+            let mut sum = 0.0;
+            for j in 0..3 {
+                sum += RK4_A[(i - 1) * 3 + j] * data.rk4_qacc[j][v];
+            }
+            data.rk4_dX_acc[v] = sum;
+        }
+
+        // 2c. Position (manifold): integrate from saved initial position
+        mj_integrate_pos_explicit(
+            model,
+            &mut data.rk4_qpos_stage,
+            &data.rk4_qpos_saved,
+            &data.rk4_dX_vel,
+            h,
+        );
+
+        // 2d. Velocity (linear): X[i].qvel = X[0].qvel + h * dX_acc
+        // Use split_at_mut for borrow-checker disjointness on rk4_qvel.
+        let (head, tail) = data.rk4_qvel.split_at_mut(1);
+        for v in 0..nv {
+            tail[i - 1][v] = head[0][v] + h * data.rk4_dX_acc[v];
+        }
+
+        // 2e. Set Data state
+        data.qpos.copy_from(&data.rk4_qpos_stage);
+        data.qvel.copy_from(&tail[i - 1]);
+
+        // 2f. Set Data time
+        data.time = t0 + h * RK4_TIME[i - 1];
+
+        // 2g. Evaluate full forward pipeline (without sensors)
+        data.forward_skip_sensors(model)?;
+
+        // 2h. Store rate
+        data.rk4_qacc[i].copy_from(&data.qacc);
+    }
+
+    // 3. FINAL combination using B weights
+    for v in 0..nv {
+        let mut vel_sum = 0.0;
+        let mut acc_sum = 0.0;
+        for j in 0..4 {
+            vel_sum += RK4_B[j] * data.rk4_qvel[j][v];
+            acc_sum += RK4_B[j] * data.rk4_qacc[j][v];
+        }
+        data.rk4_dX_vel[v] = vel_sum;
+        data.rk4_dX_acc[v] = acc_sum;
+    }
+
+    // 4. ADVANCE from initial state
+    // Save stage 3 qacc for warmstart (matches MuJoCo's mj_advance behavior)
+    data.qacc_warmstart.copy_from(&data.qacc);
+
+    // Restore initial velocity, then advance
+    data.qvel.copy_from(&data.rk4_qvel[0]);
+    for v in 0..nv {
+        data.qvel[v] += h * data.rk4_dX_acc[v];
+    }
+
+    // Position on manifold from saved initial position
+    mj_integrate_pos_explicit(
+        model,
+        &mut data.qpos,
+        &data.rk4_qpos_saved,
+        &data.rk4_dX_vel,
+        h,
+    );
+    mj_normalize_quat(model, data);
+
+    // Restore warmstart from initial solve
+    data.efc_lambda = efc_lambda_saved;
+    data.time = t0 + h;
+
+    // TODO(FUTURE_WORK#5): When activation dynamics are added (act_dot),
+    // save/restore/integrate act alongside qpos/qvel at each stage.
+
+    Ok(())
 }
 
 // ============================================================================
