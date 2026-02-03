@@ -2175,7 +2175,8 @@ mod tests {
         for (name, expected) in [
             ("Euler", MjcfIntegrator::Euler),
             ("RK4", MjcfIntegrator::RK4),
-            ("implicit", MjcfIntegrator::Implicit),
+            ("implicit", MjcfIntegrator::ImplicitSpringDamper),
+            ("implicitspringdamper", MjcfIntegrator::ImplicitSpringDamper),
             ("implicitfast", MjcfIntegrator::ImplicitFast),
         ] {
             let xml = format!(

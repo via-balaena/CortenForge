@@ -1,6 +1,6 @@
 # Sensor Correctness Fixes Specification
 
-**Status:** Reviewed (9 passes)
+**Status:** ✅ All 4 fixes implemented
 **Scope:** `sim/L0/core/src/mujoco_pipeline.rs` sensor evaluation functions
 **Baseline commit:** `035d08f` (feat: complete sensor implementation)
 
@@ -476,6 +476,12 @@ guard disappears and the entry becomes unguarded like the rest of the table.
 > shifting all subsequent line numbers upward by that amount. When applying Fix 4
 > after Fix 3, use the sensor type names (column 2) to locate write sites rather
 > than relying on line numbers.
+>
+> **Post-tendon update:** The four tendon sensor stubs (ActuatorPos/tendon,
+> TendonPos, ActuatorVel/tendon, TendonVel) that wrote `0.0` in the baseline
+> have been replaced with live tendon data reads as part of FUTURE_WORK #4
+> (tendon pipeline). They now read `ten_length`/`ten_velocity` with proper
+> bounds checking via `sensor_write()`.
 
 In normal operation, `sensordata` is allocated to exactly `nsensordata` slots in
 `make_data()`, and `adr` is computed from the same allocation, so these never

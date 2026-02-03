@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::error::{MjcfError, Result};
-use crate::types::{MjcfBody, MjcfModel, MjcfOption};
+use crate::types::{MjcfBody, MjcfModel, MjcfOption, MjcfTendonType};
 
 /// Validation result containing the flattened body tree structure.
 #[derive(Debug)]
@@ -332,6 +332,135 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
         joint_to_body,
         actuator_names: all_actuator_names,
     })
+}
+
+/// Validate tendon definitions against model structure.
+///
+/// Returns Err on fatal issues (unknown references), matching the existing
+/// validation pattern which uses `Result<()>` with `MjcfError`.
+pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
+    // Collect joint and site names from the body tree (joints/sites are nested
+    // inside MjcfBody, not top-level on MjcfModel).
+    let mut joint_names = HashSet::new();
+    let mut site_names = HashSet::new();
+    fn collect_names(body: &MjcfBody, joints: &mut HashSet<String>, sites: &mut HashSet<String>) {
+        for joint in &body.joints {
+            joints.insert(joint.name.clone());
+        }
+        for site in &body.sites {
+            sites.insert(site.name.clone());
+        }
+        for child in &body.children {
+            collect_names(child, joints, sites);
+        }
+    }
+    // Collect from worldbody itself (may have sites) and all children
+    collect_names(&model.worldbody, &mut joint_names, &mut site_names);
+
+    for tendon in &model.tendons {
+        // Fixed tendons must reference existing joints with valid coefficients
+        if tendon.tendon_type == MjcfTendonType::Fixed {
+            if tendon.joints.is_empty() {
+                return Err(MjcfError::invalid_option(
+                    "tendon",
+                    format!("Fixed tendon '{}' has no joint entries", tendon.name),
+                ));
+            }
+            for (joint_name, coef) in &tendon.joints {
+                if !joint_names.contains(joint_name.as_str()) {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' references unknown joint '{}'",
+                            tendon.name, joint_name
+                        ),
+                    ));
+                }
+                if !coef.is_finite() {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' has non-finite coefficient {} for joint '{}'",
+                            tendon.name, coef, joint_name
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // Spatial tendons must reference existing sites
+        if tendon.tendon_type == MjcfTendonType::Spatial {
+            if tendon.sites.len() < 2 {
+                return Err(MjcfError::invalid_option(
+                    "tendon",
+                    format!(
+                        "Spatial tendon '{}' needs at least 2 sites, has {}",
+                        tendon.name,
+                        tendon.sites.len()
+                    ),
+                ));
+            }
+            for site_name in &tendon.sites {
+                if !site_names.contains(site_name.as_str()) {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' references unknown site '{}'",
+                            tendon.name, site_name
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // Parameter validation
+        if tendon.stiffness < 0.0 {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!(
+                    "Tendon '{}' has negative stiffness {}",
+                    tendon.name, tendon.stiffness
+                ),
+            ));
+        }
+        if tendon.damping < 0.0 {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!(
+                    "Tendon '{}' has negative damping {}",
+                    tendon.name, tendon.damping
+                ),
+            ));
+        }
+        if tendon.frictionloss < 0.0 {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!(
+                    "Tendon '{}' has negative frictionloss {}",
+                    tendon.name, tendon.frictionloss
+                ),
+            ));
+        }
+        if tendon.limited {
+            if let Some((min, max)) = tendon.range {
+                if min >= max {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' has invalid range [{}, {}]",
+                            tendon.name, min, max
+                        ),
+                    ));
+                }
+            } else {
+                return Err(MjcfError::invalid_option(
+                    "tendon",
+                    format!("Tendon '{}' is limited but has no range", tendon.name),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

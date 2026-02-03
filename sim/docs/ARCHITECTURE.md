@@ -43,7 +43,7 @@ sim/
 
 ## Core Architecture: Model/Data
 
-The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~9500 lines).
+The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~11,800 lines).
 It implements MuJoCo's computation pipeline end-to-end.
 
 ### Model (static)
@@ -65,13 +65,14 @@ Constructed from MJCF via `sim-mjcf` or URDF via `sim-urdf`.
 
 ### Data (mutable)
 
-Pre-allocated state and computed quantities. No heap allocation during stepping.
+Pre-allocated state and computed quantities. Most buffers are pre-allocated;
+residual heap allocation occurs for contact vector growth and RK4 warmstart save.
 
 | Category | Fields | Description |
 |----------|--------|-------------|
 | State | `qpos`, `qvel`, `time` | Source of truth |
 | Body poses | `xpos`, `xquat`, `xmat` | Computed by forward kinematics |
-| Mass matrix | `qM`, `qM_cholesky` | Computed by CRBA, Cholesky cached |
+| Mass matrix | `qM`, `qLD_diag`, `qLD_L` | Computed by CRBA; sparse L^T D L factorization cached |
 | Forces | `qfrc_bias`, `qfrc_passive`, `qfrc_actuator`, `qfrc_applied`, `qfrc_constraint` | Generalized force components |
 | Acceleration | `qacc` | Computed as `M^-1 * f_total` |
 | Contacts | `contacts`, `efc_lambda` | Active contacts and warmstart cache |
@@ -92,8 +93,10 @@ loop {
 }
 ```
 
-`Data::step()` calls `forward()` then `integrate()`. See `MUJOCO_REFERENCE.md`
-for the complete pipeline algorithm.
+`Data::step()` dispatches by integrator: for Euler and ImplicitSpringDamper it
+calls `forward()` then `integrate()`; for RK4 it calls `forward()` then
+`mj_runge_kutta()` (a true 4-stage Runge-Kutta that re-evaluates dynamics at
+each stage). See `MUJOCO_REFERENCE.md` for the complete pipeline algorithm.
 
 ## Physics Pipeline
 
@@ -102,27 +105,34 @@ Each timestep executes these stages in order:
 ```
 forward():
   Position     mj_fwd_position       FK from qpos → body poses
+               mj_fwd_tendon         Tendon lengths + Jacobians (fixed tendons)
                mj_collision           Broad + narrow phase contacts
-  Velocity     mj_fwd_velocity        Body spatial velocities from qvel
-  Actuation    mj_fwd_actuation       Control → joint forces
+  Velocity     mj_fwd_velocity        Body spatial velocities + tendon velocities
+  Actuation    mj_fwd_actuation       Control → joint forces (joint + tendon transmission)
   Dynamics     mj_crba                Mass matrix (Composite Rigid Body)
                mj_rne                 Bias forces (Recursive Newton-Euler)
-               mj_fwd_passive         Springs, dampers, friction loss
-  Constraints  mj_fwd_constraint      Joint limits + equality + contact PGS
+               mj_fwd_passive         Springs, dampers, friction loss (joints + tendons)
+  Constraints  mj_fwd_constraint      Joint/tendon limits + equality + contact PGS
   Solve        mj_fwd_acceleration    qacc = M^-1 * f  (or implicit solve)
-integrate():
+integrate() [Euler / ImplicitSpringDamper]:
   Semi-implicit Euler (velocity first, then position with new velocity)
   Quaternion integration on SO(3) for ball/free joints
+mj_runge_kutta() [RungeKutta4]:
+  True 4-stage RK4 with Butcher tableau [1/6, 1/3, 1/3, 1/6]
+  Stage 0 reuses initial forward(); stages 1-3 call forward_skip_sensors()
+  Uses mj_integrate_pos_explicit() for quaternion-safe position updates
 ```
 
 **Integration methods** (`Integrator` enum):
 - `Euler` (default) — semi-implicit Euler, velocity-first
-- `RungeKutta4` — placeholder (dispatches to Euler; see [FUTURE_WORK #8](./FUTURE_WORK.md))
-- `Implicit` — unconditionally stable for stiff springs/dampers; solves
+- `RungeKutta4` — true 4th-order Runge-Kutta (O(h⁴) global error);
+  uses `forward_skip_sensors()` for intermediate stage evaluations and
+  `mj_integrate_pos_explicit()` for quaternion-safe position updates
+- `ImplicitSpringDamper` — unconditionally stable for stiff springs/dampers; solves
   `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)`
 
 **Constraint enforcement:**
-- Joint limits and equality constraints use penalty + Baumgarte stabilization
+- Joint/tendon limits and equality constraints use penalty + Baumgarte stabilization
   with configurable stiffness via `solref`/`solimp` parameters
 - Contacts use PGS (Projected Gauss-Seidel) with friction cones and warmstart
 
@@ -191,10 +201,6 @@ by sim-core (GJK); all other batch ops are benchmarked but have no callers.
 The physics engine. Depends on sim-types and sim-simd. Contains:
 
 - `mujoco_pipeline.rs` — `Model`, `Data`, full MuJoCo-aligned pipeline
-- `integrators.rs` — standalone trait system with 6 integrators (ExplicitEuler,
-  SemiImplicitEuler, VelocityVerlet, RungeKutta4, ImplicitVelocity, ImplicitFast).
-  **Not used by the MuJoCo pipeline** — the pipeline has its own `Integrator` enum
-  in `mujoco_pipeline.rs`. See [FUTURE_WORK C1](./FUTURE_WORK.md) for disambiguation plan.
 - `collision_shape.rs` — `CollisionShape` enum, `Aabb`
 - `mid_phase.rs` — BVH tree (median-split construction, traversal, ray queries)
 - `gjk_epa.rs` — GJK/EPA for convex shapes
@@ -267,7 +273,7 @@ Predefined configs: biceps, quadriceps, gastrocnemius, soleus.
 
 ### sim-tendon
 
-Cable-driven actuation and routing:
+Standalone cable-driven actuation and routing library:
 
 - **Fixed tendons** — MuJoCo-style linear joint couplings
 - **Spatial tendons** — 3D routing through attachment points with wrapping
@@ -276,14 +282,20 @@ Cable-driven actuation and routing:
 `TendonActuator` trait: `rest_length`, `compute_length`, `compute_velocity`,
 `compute_force`, `jacobian`, `num_joints` (6 methods).
 
+**Note:** Fixed tendons are implemented directly in the MuJoCo pipeline
+(`mj_fwd_tendon` in sim-core) and do not use sim-tendon. This crate remains
+a standalone reference library for advanced tendon analysis.
+
 ### sim-mjcf
 
 MuJoCo XML format parser. Supports: bodies, joints (hinge, slide, ball, free),
 geoms (sphere, box, capsule, cylinder, ellipsoid, plane, mesh), actuators
 (motor, position, velocity, general, muscle, cylinder, damper, adhesion),
 contype/conaffinity contact bitmasks, default class inheritance, and MJB binary
-format. **Note:** `<contact>` `<pair>`/`<exclude>` elements are not parsed;
-`<sensor>` and `<tendon>` elements are parsed but dropped by the model builder.
+format. **Note:** `<contact>` `<pair>`/`<exclude>` elements are not parsed.
+`<tendon>` and `<sensor>` elements are parsed and wired into the pipeline
+(fixed tendons fully supported; spatial tendons scaffolded but deferred;
+all 27 sensor types functional).
 
 ### sim-urdf
 

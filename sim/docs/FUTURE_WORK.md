@@ -20,7 +20,7 @@ can be tackled in any order unless a prerequisite is noted.
 | 3 | CG Contact Solver | Medium | Low | L | None (#1, #2 help perf) |
 | 4 | Tendon Pipeline | Low | High | L | None |
 | 5 | Muscle Pipeline | Low | High | L | #4 |
-| 6 | Sensor Completion | High | High | S (remaining) | #4 for tendon sensors |
+| 6 | Sensor Completion | High | High | S | #4 for tendon sensors |
 | 7 | Integrator Rename | Low | Medium | S | None |
 | 8 | True RK4 Integration | Low | Medium | M | None |
 | 9 | Deformable Body Integration | Medium | Low | XL | None |
@@ -75,91 +75,359 @@ can be tackled in any order unless a prerequisite is noted.
 ## Group A — Solver & Linear Algebra
 
 ### 1. In-Place Cholesky Factorization
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8331`) uses `std::mem::replace`
-to swap `scratch_m_impl` out for Cholesky consumption, allocating an O(nv²) zero matrix
-every step (`mujoco_pipeline.rs:8387`). For nv=100 this is 80 KB/step of unnecessary
-allocation.
+`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8969`) uses `std::mem::replace`
+to swap `scratch_m_impl` out for nalgebra's `.cholesky()` (which takes ownership),
+replacing it with a freshly allocated `DMatrix::zeros(nv, nv)` every step
+(`mujoco_pipeline.rs:9019`). For nv=100 this is ~78 KB/step of unnecessary heap
+allocation and zeroing.
+
+The current flow (`mujoco_pipeline.rs:9019-9025`):
+```rust
+let chol = std::mem::replace(&mut data.scratch_m_impl, DMatrix::zeros(nv, nv))
+    .cholesky()
+    .ok_or(StepError::CholeskyFailed)?;
+data.scratch_v_new.copy_from(&data.scratch_rhs);
+chol.solve_mut(&mut data.scratch_v_new);
+```
+
+`scratch_m_impl` is pre-allocated in `make_data()` (`mujoco_pipeline.rs:1785`) and
+populated each step via `copy_from(&data.qM)` (`mujoco_pipeline.rs:8993`) which
+overwrites the full matrix. After Cholesky, the matrix is never read again until
+the next step's `copy_from`. The replacement zero matrix is therefore wasted — the
+next `copy_from` would overwrite it entirely regardless of contents.
+
+`StepError::CholeskyFailed` already exists (`mujoco_pipeline.rs:654`).
 
 #### Objective
-Zero-allocation Cholesky factorization that overwrites `scratch_m_impl` in place.
+Zero-allocation Cholesky factorization that overwrites `scratch_m_impl` in place,
+eliminating the `std::mem::replace` + `DMatrix::zeros` pattern.
 
 #### Specification
 
-Implement `cholesky_in_place(m: &mut DMatrix<f64>) -> Result<(), StepError>`:
+Add two functions to `mujoco_pipeline.rs`, directly above `mj_fwd_acceleration_implicit()`:
 
-1. For each column j = 0..nv:
-   - `L[j,j] = sqrt(M[j,j] - Σ(L[j,k]² for k < j))`
-   - For each row i > j: `L[i,j] = (M[i,j] - Σ(L[i,k]·L[j,k] for k < j)) / L[j,j]`
-2. Overwrite the lower triangle of `m` with L. The upper triangle is unused.
-3. Return `Err(StepError::CholeskyFailed)` if any diagonal element is ≤ 0.
+**`cholesky_in_place(m: &mut DMatrix<f64>) -> Result<(), StepError>`**
 
-Implement `cholesky_solve_in_place(m: &DMatrix<f64>, x: &mut DVector<f64>)`:
+Standard Cholesky (LL^T) factorization, overwriting the lower triangle in place.
+Columns are processed left-to-right; references to `m[(j,k)]` for `k < j` read
+already-computed L entries from previous columns (this is what makes it in-place):
 
-1. Forward solve L·y = x (overwrite x with y).
-2. Back solve L^T·z = y (overwrite x with z).
+1. Let `n = m.nrows()`.
+2. For each column j = 0..n:
+   - Compute `diag = m[(j,j)] - Σ(m[(j,k)]² for k < j)`.
+   - If `diag` ≤ 0: return `Err(StepError::CholeskyFailed)` (matrix is not SPD).
+   - Set `m[(j,j)] = sqrt(diag)`.
+   - For each row i = (j+1)..n:
+     `m[(i,j)] = (m[(i,j)] - Σ(m[(i,k)]·m[(j,k)] for k < j)) / m[(j,j)]`
+3. The lower triangle of `m` now contains L. The upper triangle retains its
+   original values (stale M_impl entries) — this is safe because `copy_from(&data.qM)`
+   fully overwrites the matrix at the start of the next step, and
+   `cholesky_solve_in_place` only reads the lower triangle.
+
+**`cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>)`**
+
+Solve L·L^T·x = b where L is stored in the lower triangle of `l`:
+
+1. Let `n = l.nrows()`.
+2. Forward substitution (L·y = x): for j = 0..n,
+   `x[j] = (x[j] - Σ(l[(j,k)] · x[k] for k < j)) / l[(j,j)]`.
+3. Back substitution (L^T·z = y): for j = (n-1)..=0,
+   `x[j] = (x[j] - Σ(l[(k,j)] · x[k] for k = (j+1)..n)) / l[(j,j)]`.
+   (L^T elements accessed via `l[(k,j)]` — reading column j of L as row j of L^T.)
 
 Both functions operate on borrowed data. No allocations, no ownership transfers,
 no nalgebra `Cholesky` type.
 
+**Modify `mj_fwd_acceleration_implicit()`** — replace lines 8838-8852
+(the Cholesky comment block, `let nv`, `std::mem::replace`, and `chol.solve_mut`)
+with:
+
+```rust
+// Factorize M_impl in place (overwrites lower triangle with L where M_impl = L·L^T).
+// M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0).
+cholesky_in_place(&mut data.scratch_m_impl)?;
+data.scratch_v_new.copy_from(&data.scratch_rhs);
+cholesky_solve_in_place(&data.scratch_m_impl, &mut data.scratch_v_new);
+```
+
+This removes `let nv = model.nv` (no longer needed), `std::mem::replace`,
+`DMatrix::zeros(nv, nv)`, and the old comment block explaining the replace pattern.
+
+The `Cholesky` import stayed at the time of #1 — it was later removed by #2 along with the
+`qM_cholesky` field (replaced by sparse `qLD_diag`/`qLD_L` factorization).
+
 #### Acceptance Criteria
 1. `std::mem::replace` and `DMatrix::zeros(nv, nv)` are removed from `mj_fwd_acceleration_implicit()`.
-2. `scratch_m_impl` is reused across steps via `copy_from(&data.qM)` as before.
-3. Numeric results match nalgebra `Cholesky::solve` to ≤ 1e-12 relative error on the solved vector.
-4. Zero heap allocations in the factorization/solve path (verifiable via `#[global_allocator]` counting test).
+2. `scratch_m_impl` is reused across steps — populated via `copy_from(&data.qM)`,
+   factorized in place, then fully overwritten again next step.
+3. Numeric results match nalgebra `Cholesky::solve` to ≤ 1e-12 relative error on the
+   solved vector. Verified by a unit test that compares both paths on random SPD matrices.
+4. Zero heap allocations in the factorize/solve path — neither function allocates.
+   (No `#[global_allocator]` test required; the functions take only `&mut` references
+   and contain no `Vec`, `Box`, or `DMatrix` constructors.)
 5. Existing implicit integration tests pass without modification.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`mj_fwd_acceleration_implicit()`)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`cholesky_in_place()`,
+  `cholesky_solve_in_place()`, refactor `mj_fwd_acceleration_implicit()`)
 
 ---
 
 ### 2. Sparse L^T D L Factorization
-**Status:** Not started | **Effort:** M | **Prerequisites:** #1
+**Status:** Done | **Effort:** M | **Prerequisites:** #1
 
 #### Current State
-Dense Cholesky in `mj_fwd_acceleration_implicit()` is O(nv³). For tree-structured
-robots (humanoids, quadrupeds, manipulators), the mass matrix has banded sparsity —
-DOF i couples only with its ancestor DOFs in the kinematic tree.
 
-Data scaffolds exist in `Data` (`mujoco_pipeline.rs:1337-1344`): `qLD_diag` (diagonal
-of D), `qLD_L` (sparse lower triangular entries per row), `qLD_valid` (validity flag).
-These are initialized to defaults and never populated. The `TODO(FUTURE_WORK#2)` comment
-at `mujoco_pipeline.rs:1321` cross-references this spec.
+Three consumers solve linear systems involving the mass matrix M:
+
+| Consumer | Location | Current method | Cost |
+|----------|----------|---------------|------|
+| `mj_fwd_acceleration_explicit()` | `mujoco_pipeline.rs:8779` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
+| `mj_fwd_acceleration_implicit()` | `mujoco_pipeline.rs:8969` | `cholesky_in_place()` on M_impl | O(nv³) factorize + solve |
+| `pgs_solve_contacts()` | `mujoco_pipeline.rs:7081` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
+
+For tree-structured robots, `M[i,j] ≠ 0` only when DOF `j` is an ancestor of DOF `i`
+(or vice versa) in the kinematic tree encoded by `model.dof_parent: Vec<Option<usize>>`
+(`mujoco_pipeline.rs:795`). This tree sparsity enables O(nv) factorization and solve.
+
+**Data scaffolds** exist in `Data` (`mujoco_pipeline.rs:1332-1339`):
+```rust
+pub qLD_diag: DVector<f64>,                  // D[i,i] diagonal
+pub qLD_L: Vec<Vec<(usize, f64)>>,           // L[i,:] sparse off-diagonal per row
+pub qLD_valid: bool,                         // dispatch flag
+```
+Initialized at `mujoco_pipeline.rs:1742-1744` (zeros/empty/false), never populated.
+The `TODO(FUTURE_WORK#2)` comment was at `mujoco_pipeline.rs:1327` (removed when #2 was completed).
+
+The `qM_cholesky: Option<Cholesky<f64, Dyn>>` (removed when #2 was completed) was computed
+in `mj_crba()` Phase 5 (`mujoco_pipeline.rs:6049`) via `data.qM.clone().cholesky()` —
+this clone+factorize was the O(nv³) cost eliminated for the explicit/contact paths.
 
 #### Objective
-O(nv) factorization and solve for tree-structured robots.
+O(nv) factorization and solve for tree-structured robots, matching MuJoCo's
+`mj_factorM` / `mj_solveM` semantics.
 
 #### Specification
 
-Implement `mj_factor_sparse(model: &Model, data: &mut Data)`:
+##### Data Structure: keep existing scaffolds
 
-1. Walk the kinematic tree from leaves to root.
-2. For each DOF i, accumulate composite inertia from child DOFs.
-3. Compute `qLD_diag[i]` (diagonal pivot) and `qLD_L[i]` (off-diagonal entries
-   for ancestor DOFs only).
-4. Set `qLD_valid = true`.
+Keep `qLD_diag`, `qLD_L`, `qLD_valid` as-is. The `Vec<Vec<(usize, f64)>>` for `qLD_L`
+involves heap allocations per row, but rows are allocated once in `make_data()` and
+reused via `clear()` + `push()`. For nv ≤ 200 (typical RL), the overhead is negligible
+vs. the O(nv³→nv) savings. Switching to flat CSR is a future optimization.
 
-Implement `mj_solve_sparse(data: &Data, x: &mut DVector<f64>)`:
+##### Step 1: `mj_factor_sparse(model: &Model, data: &mut Data)`
 
-1. Forward substitution: L·y = x, walking tree root-to-leaves.
-2. Diagonal solve: D·z = y.
-3. Back substitution: L^T·w = z, walking tree leaves-to-root.
+Computes `M = L^T D L` where `L` is unit lower triangular (`L[i,i] = 1` implicitly,
+stored entries are off-diagonal only) and `D` is diagonal.
 
-Each row of L has at most `depth(i)` non-zero entries. Total work is O(Σ depth(i))
-— O(nv) for balanced trees, O(nv·d) for chains of depth d.
+The identity `M[i,j] = Σ_k L[k,i] · D[k] · L[k,j]` means: when processing DOF `i`
+from leaves to root, we subtract the rank-1 contributions of already-processed
+descendants, then extract `D[i]` and `L[i,:]` from the residual.
+
+```rust
+fn mj_factor_sparse(model: &Model, data: &mut Data) {
+    let nv = model.nv;
+
+    // Phase 1: Copy M's sparse entries into qLD working storage.
+    // qLD_diag[i] starts as M[i,i]; qLD_L[i] holds (col, M[i,col]) for ancestors.
+    for i in 0..nv {
+        data.qLD_diag[i] = data.qM[(i, i)];
+        data.qLD_L[i].clear();
+        let mut p = model.dof_parent[i];
+        while let Some(j) = p {
+            data.qLD_L[i].push((j, data.qM[(i, j)]));
+            p = model.dof_parent[j];
+        }
+        // Parent chain yields descending col indices; reverse for ascending order.
+        data.qLD_L[i].reverse();
+    }
+
+    // Phase 2: Eliminate from leaves to root.
+    // When we process DOF i, all descendants k > i are already factored.
+    // We propagate i's contribution to ancestors j < i, which requires
+    // mutating qLD_L[j] while reading qLD_L[i]. Since j < i always,
+    // we use split_at_mut to get non-overlapping borrows.
+    for i in (0..nv).rev() {
+        let di = data.qLD_diag[i];
+
+        // Scale off-diagonals: L[i,j] = working[i,j] / D[i]
+        for entry in &mut data.qLD_L[i] {
+            entry.1 /= di;
+        }
+
+        // Propagate rank-1 update to ancestors.
+        // Split: [0..i] and [i..nv] give non-overlapping mutable access.
+        let (lo, hi) = data.qLD_L.split_at_mut(i);
+        let row_i = &hi[0]; // qLD_L[i], immutable borrow
+
+        for idx_a in 0..row_i.len() {
+            let (j, lij) = row_i[idx_a];
+            data.qLD_diag[j] -= lij * lij * di;
+            for idx_b in 0..idx_a {
+                let (k, lik) = row_i[idx_b];
+                // k < j < i, so both are in `lo`
+                if let Some(entry) = lo[j].iter_mut()
+                    .find(|(col, _)| *col == k)
+                {
+                    entry.1 -= lij * lik * di;
+                }
+            }
+        }
+    }
+
+    data.qLD_valid = true;
+}
+```
+
+**Complexity:** O(Σ depth(i)²). For balanced trees (depth ~ log n) this is O(n log² n).
+For chains (depth = n) it degrades to O(n³), matching dense — expected since chains
+produce dense mass matrices. For typical humanoids (depth ≤ 8), effectively O(n).
+
+##### Step 2: `mj_solve_sparse(...)`
+
+Solves `L^T D L x = b` where `x` initially contains `b`.
+
+The function borrows `qLD_diag` and `qLD_L` separately from `x` to avoid
+borrow conflicts when `x` is a field of `Data` (e.g., `data.qacc`):
+
+```rust
+fn mj_solve_sparse(
+    qld_diag: &DVector<f64>,
+    qld_l: &[Vec<(usize, f64)>],
+    x: &mut DVector<f64>,
+) {
+    let nv = x.len();
+
+    // Phase 1: Solve L^T y = b (scatter: propagate each DOF to its ancestors)
+    for i in (0..nv).rev() {
+        for &(j, lij) in &qld_l[i] {
+            x[j] -= lij * x[i];
+        }
+    }
+
+    // Phase 2: Solve D z = y
+    for i in 0..nv {
+        x[i] /= qld_diag[i];
+    }
+
+    // Phase 3: Solve L w = z (standard forward substitution)
+    for i in 0..nv {
+        for &(j, lij) in &qld_l[i] {
+            x[i] -= lij * x[j];
+        }
+    }
+}
+```
+
+##### Step 3: Integration into `mj_crba()` (Phase 5 replacement)
+
+At `mujoco_pipeline.rs:6049-6050`, replace the nalgebra Cholesky with sparse factorization:
+
+```rust
+// Phase 5: Factorize mass matrix (sparse L^T D L)
+if model.nv > 0 {
+    mj_factor_sparse(model, data);
+}
+// Remove: data.qM_cholesky = data.qM.clone().cholesky();
+// The sparse factorization replaces this for all consumers.
+```
+
+Also set `data.qLD_valid = false` at the **top** of `mj_crba()` (before qM is zeroed),
+so stale factorization is never used during the CRBA computation.
+
+Remove the `qM_cholesky` field from `Data` entirely (along with its initialization
+in `make_data()` and the doc comments referencing it).
+
+##### Step 4: Dispatch in `mj_fwd_acceleration_explicit()` (line 8779)
+
+Replace the `qM_cholesky` match with sparse solve:
+
+```rust
+fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
+    // ... sum forces into qfrc_total ...
+
+    // Solve M * qacc = qfrc_total using sparse L^T D L factorization
+    data.qacc.copy_from(&qfrc_total);
+    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut data.qacc);
+}
+```
+
+Remove the `qM_cholesky`-based path and the LU/diagonal fallbacks entirely.
+If the mass matrix is degenerate, `mj_factor_sparse` will produce a zero or
+negative `qLD_diag[i]`, and the solve will produce inf/NaN — same as MuJoCo's
+behavior (garbage-in-garbage-out for degenerate systems).
+
+##### Step 5: Migrate `pgs_solve_contacts()` (line 7081)
+
+Replace all `chol.solve(&x)` calls with sparse solve:
+
+```rust
+// Was: let qacc_smooth = chol.solve(&qfrc_smooth);
+let mut qacc_smooth = qfrc_smooth;   // move, no clone needed
+mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
+
+// Was: let x = chol.solve(&jt_col);
+let mut x = jt_col;                  // already owned
+mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x);
+```
+
+Remove the `qM_cholesky` match guard at the top. The fallback to penalty
+for singular M is no longer needed — if sparse factorization is invalid
+(`!data.qLD_valid`), that's a bug (CRBA always runs before contacts).
+
+##### Step 6: Dispatch in `mj_fwd_acceleration_implicit()` (line 8969)
+
+The implicit path uses `M_impl = M + h·D + h²·K`. The diagonal modification
+(`+= h*d[i] + h²*k[i]` at line 8995) means we **cannot** reuse the CRBA sparse
+factorization — the modified matrix has different diagonal values.
+
+**Keep dense for implicit.** Rationale: the implicit path already uses
+`scratch_m_impl` (a dense DMatrix copied from qM + diagonal mods) and our
+`cholesky_in_place()` from #1. Sparse factorization would require duplicating
+the qLD fields. The benefit is marginal since implicit integration is rare
+in RL (most RL uses Euler). We can upgrade in a future PR if profiling shows
+it matters.
+
+The implicit path (`mj_fwd_acceleration_implicit`) is **unchanged** by this PR.
 
 #### Acceptance Criteria
-1. For a humanoid (nv=30), factorization uses ~30 multiply-adds vs ~9,000 for dense (300× reduction).
-2. Numeric results match dense Cholesky to ≤ 1e-12 relative error.
-3. `mj_fwd_acceleration_implicit()` checks `data.qLD_valid` and dispatches to sparse solve when available, dense otherwise.
-4. Sparse factorization is recomputed when the mass matrix changes (after CRBA).
-5. Benchmark test demonstrating wall-clock speedup for nv ≥ 20 tree-structured models.
+
+1. **Numeric correctness:** For all joint types (hinge, ball, free, mixed chains,
+   branching trees), `mj_solve_sparse(&qLD_diag, &qLD_L, &mut x)` produces the same
+   result as nalgebra `cholesky().solve(&x)` to ≤ 1e-12 relative error.
+2. **Consumers migrated:** `mj_fwd_acceleration_explicit()` and `pgs_solve_contacts()`
+   both use `mj_solve_sparse`. Implicit path unchanged (dense `cholesky_in_place`).
+3. **`qM_cholesky` removed:** The `Option<Cholesky<f64, Dyn>>` field, its initialization
+   in `make_data()`, and all references are deleted. No nalgebra Cholesky allocation.
+4. **Invalidation:** `qLD_valid` is set to `false` at top of `mj_crba()`.
+5. **Tree coverage:** Tests include:
+   - Single hinge (nv=1, trivial)
+   - 2-link chain (nv=2, single ancestor)
+   - Branching tree (nv=3, two children of same parent)
+   - Ball joint chain (nv=6, multi-DOF within joint)
+   - Free body + chain (nv=7+, mixed joint types)
+6. **No new allocations in hot path:** `qLD_L[i].clear()` + `push()` reuses
+   existing `Vec` capacity after the first step. No `DMatrix`/`DVector` created
+   in factorization or solve.
+7. **Existing tests pass:** All implicit integration tests, explicit tests,
+   and contact tests remain green.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`mj_factor_sparse()`, `mj_solve_sparse()`, dispatch in `mj_fwd_acceleration_implicit()`)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - `mj_factor_sparse()` (new function, ~50 lines)
+  - `mj_solve_sparse()` (new function, ~25 lines)
+  - `mj_crba()`: replace Phase 5 (sparse factorize + invalidation)
+  - `mj_fwd_acceleration_explicit()`: replace with sparse solve
+  - `pgs_solve_contacts()`: replace `chol.solve()` calls with sparse solve
+  - Remove `qM_cholesky` field + initialization + doc comments
+  - Remove `use nalgebra::linalg::Cholesky` import (if unused after removal)
+  - New test module `sparse_factorization_tests` (~100 lines)
+- `sim/docs/MUJOCO_REFERENCE.md` — update Phase 5 description (line 143-145)
+- `sim/docs/ARCHITECTURE.md` — update `qM_cholesky` reference (line 74)
 
 ---
 
@@ -170,7 +438,7 @@ Each row of L has at most `depth(i)` non-zero entries. Total work is O(Σ depth(
 `CGSolver` in `sim-constraint/src/cg.rs` (1,664 lines, `cg.rs:309`) implements
 preconditioned conjugate gradient with Block Jacobi preconditioning. It solves joint
 constraints via the `Joint` trait (`cg.rs:408`): `solve<J: Joint>(&mut self, joints: &[J], ...)`.
-The pipeline uses PGS via `pgs_solve_contacts()` (`mujoco_pipeline.rs:6563`) for contact
+The pipeline uses PGS via `pgs_solve_contacts()` (`mujoco_pipeline.rs:7081`) for contact
 constraints. CGSolver has zero callers in the pipeline.
 
 The `Joint` trait expects rigid-body joint semantics (`parent()`, `child()`,
@@ -199,7 +467,7 @@ pub fn cg_solve_contacts(
 Algorithm:
 
 1. Assemble the Delassus matrix W = J M⁻¹ J^T from pre-computed contact Jacobians
-   (from `compute_contact_jacobian()` at `mujoco_pipeline.rs:6383`).
+   (from `compute_contact_jacobian()` at `mujoco_pipeline.rs:6901`).
 2. Build the constraint RHS from penetration depths, approach velocities, and
    solref/solimp parameters (same physics as PGS).
 3. Solve W·λ = rhs via preconditioned conjugate gradient with friction cone
@@ -223,7 +491,7 @@ pub enum SolverType { PGS, CG }
 ```
 
 Stored as `solver_type: SolverType` in `Model`. Default: `PGS`. Parsed from MJCF
-`<option solver="CG"/>`. `mj_fwd_constraint()` (`mujoco_pipeline.rs:7991`) dispatches
+`<option solver="CG"/>`. `mj_fwd_constraint()` (`mujoco_pipeline.rs:8500`) dispatches
 on `model.solver_type`.
 
 **Fallback policy (testing concern):** If CG does not converge within
@@ -249,80 +517,969 @@ catch regressions. Consider a `SolverType::CGStrict` variant that returns
 ## Group B — Pipeline Integration
 
 ### 4. Tendon Pipeline
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Status:** ✅ Done (fixed tendons) | **Effort:** L | **Prerequisites:** None
+
+#### Scope Decision: Fixed Tendons Only
+
+This PR implements **fixed (linear-coupling) tendons only**. Spatial tendons (3D path
+routing through sites with wrapping geometry) are deferred to a follow-up.
+
+**Rationale:**
+- Fixed tendons are the dominant tendon type in RL models (MuJoCo Menagerie humanoids,
+  DM Control suite). They cover differential drives, antagonistic pairs, and linear
+  coupling — the core use cases for tendon-driven actuators.
+- Fixed tendons have **constant Jacobians** (the coupling coefficients), eliminating
+  the need for body positional Jacobians. `compute_body_jacobian_at_point()`
+  (`mujoco_pipeline.rs:6816`) is incomplete (only x-component per DOF, marked
+  `#[allow(dead_code)]`) and would need a full rewrite for spatial tendons.
+- Spatial tendons require wrapping geometry (sphere/cylinder geodesics) and
+  configuration-dependent Jacobians via the chain rule through `mj_jac()`. This is
+  a separate body of work that can land independently.
+- The Model scaffolds (`wrap_type`, `wrap_objid`, `wrap_prm`) and sim-tendon's
+  `SpatialTendon`/`SphereWrap`/`CylinderWrap` remain available for the spatial
+  follow-up. Nothing in this PR precludes it.
+
+The pipeline functions (`mj_fwd_tendon`, etc.) are written to dispatch on
+`TendonType::Fixed` vs `::Spatial`, with the `Spatial` arm silently zeroing
+the tendon length and Jacobian (no per-frame warning — that would spam logs).
+A one-time warning is logged at model load time (in the model builder) when a
+spatial tendon is encountered, informing the user that spatial tendons are not
+yet supported and will produce zero forces. This ensures spatial tendons in MJCF
+files are safely ignored rather than silently producing incorrect forces.
 
 #### Current State
-sim-tendon is a standalone 3,919-line crate with path routing (`cable.rs`, `spatial.rs`,
-`wrapping.rs`, `pulley.rs`, `fixed.rs`), a `TendonActuator` trait (`tendon/src/lib.rs:146`),
-and zero coupling to the MuJoCo pipeline.
 
-Model fields are fully declared (`mujoco_pipeline.rs:907-929`): `ntendon`,
-`tendon_stiffness`, `tendon_damping`, `tendon_lengthspring`, `tendon_length0`,
-`tendon_range`, `tendon_limited`, `tendon_num`, `tendon_adr`, `tendon_name`.
+> **Note:** This section describes the pre-implementation baseline. All "Missing
+> pieces" below have been implemented — see status ✅ Done above.
 
-Data scaffolds exist (`mujoco_pipeline.rs:1366-1376`): `ten_length`, `ten_velocity`,
-`ten_force`, `ten_J` — all initialized to defaults at `mujoco_pipeline.rs:1735-1738`
-and never populated.
+**sim-tendon crate** (`sim/L0/tendon/src/`, 3,919 lines, 52 tests):
+- `FixedTendon` (`fixed.rs:65`): linear coupling `L = L₀ + Σᵢ cᵢ qᵢ`, implements
+  `TendonActuator` trait. `compute_length()` (`fixed.rs:311`), `compute_velocity()`
+  (`fixed.rs:315`), `jacobian()` (`fixed.rs:344`), `compute_joint_forces(tension)`
+  (`fixed.rs:248`).
+- `CableProperties` (`cable.rs:26`): one-way spring model.
+  `compute_force(length, velocity)` (`cable.rs:195`): `F = k(L - L₀) + c·v` if
+  `L > L₀`, else `0`.
+- `SpatialTendon`, `TendonPath`, `SphereWrap`, `CylinderWrap`, `PulleySystem` —
+  all standalone, no pipeline coupling. Deferred to spatial follow-up.
 
-`mj_fwd_actuation()` (`mujoco_pipeline.rs:5475`) has an explicit placeholder at
-`mujoco_pipeline.rs:5495-5498`:
-```rust
-ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
-    // Placeholder for tendon/site actuation
-}
-```
+**Pipeline scaffolds** (all in `mujoco_pipeline.rs`):
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| `ntendon`, `nwrap` | Model, line 915-917 | Declared, always 0 |
+| `tendon_stiffness`, `tendon_damping`, etc. | Model, lines 919-935 | Declared, empty vecs |
+| `wrap_type`, `wrap_objid`, `wrap_prm` | Model, lines 939-943 | Declared, empty vecs |
+| `ten_length`, `ten_velocity`, `ten_force`, `ten_J` | Data, lines 1363-1371 | Declared, zero-initialized, never populated |
+| `ActuatorTransmission::Tendon` | Enum, line 419 | Defined |
+| `ActuatorTransmission::Tendon` in `mj_fwd_actuation()` | Line 6017-6020 | No-op placeholder |
+| `MjSensorType::TendonPos` | `mj_sensor_pos()`, line 5101 | Stub, writes 0.0 |
+| `MjSensorType::TendonVel` | `mj_sensor_vel()`, line 5307 | Stub, writes 0.0 |
+| `EqualityType::Tendon` | Line 467 | Defined, not implemented (out of scope) |
+| `WrapType` enum | Line 438-450 | Defined (Site, Geom, Joint, Pulley) |
+
+**MJCF parsing** (complete for fixed + spatial):
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| `MjcfTendon` struct | `types.rs:1999-2048` | Complete: name, type, stiffness, damping, joints, sites, wrapping_geoms |
+| `MjcfTendonType` enum | `types.rs:1961-1982` | Complete: Fixed, Spatial |
+| `parse_tendons()` | `parser.rs:1662-1694` | Complete: parses `<tendon>` section |
+| `parse_tendon()` | `parser.rs:1697-1750` | Complete: child `<joint>`, `<site>`, `<geom>` elements |
+| `MjcfTendonDefaults` | `types.rs:501-521` | Complete: range, limited, stiffness, damping, frictionloss |
+| `apply_to_tendon()` | `defaults.rs:323-375` | Complete: merges defaults |
+| Model builder | `model_builder.rs:1009-1018` | **Rejects** tendon transmission with error |
+| Model builder | `model_builder.rs:1449-1463` | Initializes all tendon fields to empty |
+
+**Missing pieces** (to be added by this PR):
+
+1. Model builder: populate `Model` tendon fields from parsed `MjcfTendon` data.
+2. Model builder: accept `ActuatorTransmission::Tendon` instead of rejecting it.
+3. New Model fields: `tendon_solref`, `tendon_solimp` (for limit constraints).
+4. New Model field: `tendon_frictionloss` (velocity-dependent friction).
+5. New Model field: `tendon_type` (Fixed vs Spatial, for dispatch).
+6. Pipeline function: `mj_fwd_tendon()` — compute lengths and Jacobians.
+7. Velocity: `ten_velocity[t] = ten_J[t] · qvel` in `mj_fwd_velocity()`.
+8. Passive forces: tendon spring/damper in `mj_fwd_passive()`.
+9. Limit forces: tendon limits in `mj_fwd_constraint()`.
+10. Actuation: tendon transmission in `mj_fwd_actuation()`.
+11. Sensors: TendonPos/TendonVel stubs → real reads.
+12. MJCF validation: check referenced joints exist, coefficients are finite.
+13. `tendon_length0` computation from `qpos0` at model load time.
 
 #### Objective
-Wire tendon kinematics, passive forces, and actuation into the MuJoCo pipeline so
-that tendon-driven actuators produce joint forces.
+
+Wire fixed-tendon kinematics, passive forces, limit constraints, and actuation into
+the MuJoCo pipeline so that tendon-driven actuators produce joint forces. Establish
+the pipeline structure for spatial tendons to land in a follow-up without refactoring.
 
 #### Specification
 
-**`mj_fwd_tendon(model: &Model, data: &mut Data)`** — position-dependent:
+##### Step 1: Add New Model Fields
 
-1. For each tendon t = 0..ntendon:
-   - Walk the tendon path (wrap objects from `tendon_adr[t]` to `tendon_adr[t] + tendon_num[t]`).
-   - Compute `ten_length[t]` as the sum of segment lengths along the path.
-   - Compute `ten_J[t]` (Jacobian mapping joint velocities to tendon length change)
-     via finite differencing or analytic path derivatives.
-2. Call site: after forward kinematics, before force computation.
+Add a `TendonType` enum to `mujoco_pipeline.rs` (after the `WrapType` enum at line 450),
+matching the pipeline's convention of defining its own enums rather than importing
+from `sim-mjcf`. `sim-core` does NOT depend on `sim-mjcf`, so `MjcfTendonType` is
+not available in the pipeline. The model builder converts `MjcfTendonType` → `TendonType`.
 
-**`mj_fwd_tendon_vel(model: &Model, data: &mut Data)`** — velocity-dependent:
+```rust
+/// Tendon type (pipeline-local enum, converted from MjcfTendonType in model builder).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TendonType {
+    /// Fixed (linear coupling): L = Σ coef_i * q_i, constant Jacobian.
+    #[default]
+    Fixed,
+    /// Spatial (3D path routing through sites): not yet implemented.
+    Spatial,
+}
+```
 
-1. For each tendon t: `ten_velocity[t] = ten_J[t].dot(&data.qvel)`.
-2. Call site: after `mj_fwd_tendon()` and velocity computation.
+Add to `Model` struct after `tendon_name` (line 935):
 
-**Tendon passive forces:**
+```rust
+/// Tendon type: Fixed (linear coupling) or Spatial (3D path routing).
+pub tendon_type: Vec<TendonType>,
 
-1. Spring force: `f_spring = -tendon_stiffness[t] * (ten_length[t] - tendon_lengthspring[t])`.
-2. Damping force: `f_damp = -tendon_damping[t] * ten_velocity[t]`.
-3. Limit force: if `tendon_limited[t]` and length outside `tendon_range[t]`,
-   apply Baumgarte-style restoring force using solref/solimp.
-4. `ten_force[t] = f_spring + f_damp + f_limit`.
-5. Map to joint forces: `qfrc_passive += ten_J[t]^T * ten_force[t]`.
+/// Solver parameters for tendon limit constraints (2 elements per tendon).
+/// [0] = timeconst (>0) or -stiffness (≤0), [1] = dampratio or -damping.
+/// Default: [0.0, 0.0] → uses model.default_eq_stiffness/default_eq_damping.
+pub tendon_solref: Vec<[f64; 2]>,
 
-**Tendon actuation** (fills the placeholder at `mujoco_pipeline.rs:5495`):
+/// Impedance parameters for tendon limit constraints (5 elements per tendon).
+/// [d_min, d_max, width, midpoint, power]. Default: [0.9, 0.95, 0.001, 0.5, 2.0].
+pub tendon_solimp: Vec<[f64; 5]>,
 
-For `ActuatorTransmission::Tendon`: look up the target tendon via `actuator_trnid`.
-Apply `ctrl * gear` as a force along the tendon, mapped to joints via:
-`qfrc_actuator += ten_J[tendon_id]^T * (ctrl * gear)`.
+/// Velocity-dependent friction loss per tendon (N).
+/// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
+/// Mapped to joints via J^T. Default: 0.0 (no friction).
+pub tendon_frictionloss: Vec<f64>,
+```
+
+Initialize in `Model::empty()` (after line 1603) and in `model_builder.rs`
+(inside the Model struct literal at line 1449, alongside the existing tendon fields):
+```rust
+tendon_type: vec![],
+tendon_solref: vec![],
+tendon_solimp: vec![],
+tendon_frictionloss: vec![],
+```
+
+##### Step 2: Model Builder — Populate Tendon Fields from MJCF
+
+In `model_builder.rs`, add a `process_tendons()` method (or inline in the main
+conversion function) that populates builder fields from `mjcf_model.tendons`. This
+must run **before** `process_actuator()` calls, since actuators may reference tendons
+via `self.tendon_name_to_id`.
+
+Add these builder fields to `ModelBuilder`:
+```rust
+tendon_name_to_id: HashMap<String, usize>,
+tendon_type: Vec<TendonType>,
+tendon_range: Vec<(f64, f64)>,
+tendon_limited: Vec<bool>,
+tendon_stiffness: Vec<f64>,
+tendon_damping: Vec<f64>,
+tendon_frictionloss: Vec<f64>,
+tendon_lengthspring: Vec<f64>,
+tendon_length0: Vec<f64>,
+tendon_name: Vec<Option<String>>,
+tendon_solref: Vec<[f64; 2]>,
+tendon_solimp: Vec<[f64; 5]>,
+tendon_num: Vec<usize>,
+tendon_adr: Vec<usize>,
+wrap_type: Vec<WrapType>,
+wrap_objid: Vec<usize>,
+wrap_prm: Vec<f64>,
+```
+
+Then replace the empty tendon initialization in the Model struct literal
+(lines 1449-1463) with `self.tendon_type`, `self.tendon_range`, etc.
+
+Tendon processing logic:
+
+```rust
+fn process_tendons(
+    &mut self,
+    tendons: &[MjcfTendon],
+) -> std::result::Result<(), ModelConversionError> {
+    for (t_idx, tendon) in tendons.iter().enumerate() {
+        self.tendon_name_to_id.insert(tendon.name.clone(), t_idx);
+        self.tendon_type.push(match tendon.tendon_type {
+            MjcfTendonType::Fixed => TendonType::Fixed,
+            MjcfTendonType::Spatial => TendonType::Spatial,
+        });
+        self.tendon_range.push(tendon.range.unwrap_or((-f64::MAX, f64::MAX)));
+        self.tendon_limited.push(tendon.limited);
+        self.tendon_stiffness.push(tendon.stiffness);
+        self.tendon_damping.push(tendon.damping);
+        self.tendon_frictionloss.push(tendon.frictionloss);
+        self.tendon_name.push(Some(tendon.name.clone()));
+        self.tendon_solref.push([0.0, 0.0]); // Default: use model defaults
+        self.tendon_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]); // MuJoCo defaults
+        self.tendon_lengthspring.push(0.0); // Set to length0 if stiffness > 0
+        self.tendon_length0.push(0.0);      // Computed after construction from qpos0
+
+        let wrap_start = self.wrap_type.len();
+        self.tendon_adr.push(wrap_start);
+
+        match tendon.tendon_type {
+            MjcfTendonType::Fixed => {
+                for (joint_name, coef) in &tendon.joints {
+                    // Resolve joint name → index → DOF address
+                    let jnt_idx = *self.joint_name_to_id.get(joint_name.as_str())
+                        .ok_or_else(|| ModelConversionError {
+                            message: format!(
+                                "Tendon '{}' references unknown joint '{}'",
+                                tendon.name, joint_name
+                            ),
+                        })?;
+                    let dof_adr = self.jnt_dof_adr[jnt_idx];
+                    self.wrap_type.push(WrapType::Joint);
+                    self.wrap_objid.push(dof_adr);
+                    self.wrap_prm.push(*coef);
+                }
+            }
+            MjcfTendonType::Spatial => {
+                // Spatial tendon wrap objects: sites, wrapping geoms.
+                // Populate wrap arrays for future spatial tendon support.
+                // Log a one-time warning (matches Scope Decision: warn at load time).
+                // model_builder.rs already has `use tracing::warn;` at line 22.
+                warn!(
+                    "Tendon '{}' is spatial — spatial tendons are not yet implemented \
+                     and will produce zero forces. Fixed tendons are fully supported.",
+                    tendon.name
+                );
+                for site_name in &tendon.sites {
+                    let site_idx = *self.site_name_to_id.get(site_name.as_str())
+                        .ok_or_else(|| ModelConversionError {
+                            message: format!(
+                                "Tendon '{}' references unknown site '{}'",
+                                tendon.name, site_name
+                            ),
+                        })?;
+                    self.wrap_type.push(WrapType::Site);
+                    self.wrap_objid.push(site_idx);
+                    self.wrap_prm.push(1.0); // Default divisor
+                }
+                // Note: wrapping geom entries would also go here.
+            }
+        }
+        self.tendon_num.push(self.wrap_type.len() - wrap_start);
+    }
+    Ok(())
+}
+```
+
+In the Model struct literal (`build()`, lines 1449-1463), replace the empty
+initialization with:
+
+```rust
+ntendon: self.tendon_type.len(),
+nwrap: self.wrap_type.len(),
+tendon_type: self.tendon_type,
+tendon_range: self.tendon_range,
+tendon_limited: self.tendon_limited,
+tendon_stiffness: self.tendon_stiffness,
+tendon_damping: self.tendon_damping,
+tendon_frictionloss: self.tendon_frictionloss,
+tendon_lengthspring: self.tendon_lengthspring,
+tendon_length0: self.tendon_length0,
+tendon_num: self.tendon_num,
+tendon_adr: self.tendon_adr,
+tendon_name: self.tendon_name,
+tendon_solref: self.tendon_solref,
+tendon_solimp: self.tendon_solimp,
+wrap_type: self.wrap_type,
+wrap_objid: self.wrap_objid,
+wrap_prm: self.wrap_prm,
+```
+
+**Resolve `tendon_lengthspring`:** After model construction, for each tendon with
+`stiffness > 0.0` and no explicit `lengthspring` from MJCF: set
+`tendon_lengthspring[t] = compute_tendon_length_at_qpos0(model, t)`. This matches
+MuJoCo's behavior where the spring rest length defaults to the length at the
+reference configuration.
+
+**Resolve `tendon_length0`:** Computed identically — the tendon length at `qpos0`.
+For fixed tendons: `tendon_length0[t] = Σ wrap_prm[w] * qpos0[wrap_objid[w]]` for
+`w` in the tendon's wrap range.
+
+##### Step 3: Model Builder — Accept Tendon Transmission
+
+Replace the tendon rejection block (`model_builder.rs:1009-1018`). The existing
+code uses a `let (trntype, trnid) = if ... else if ...` chain (line 1001) that
+returns a tuple, with pushes at lines 1060-1062. Replace the `return Err(...)`
+arm with a tuple return matching the Joint/Site pattern:
+
+```rust
+} else if let Some(ref tendon_name) = actuator.tendon {
+    // Tendon transmission: resolve tendon name → index
+    let tendon_idx = *self.tendon_name_to_id.get(tendon_name.as_str())
+        .ok_or_else(|| ModelConversionError {
+            message: format!(
+                "Actuator '{}' references unknown tendon '{}'",
+                actuator.name, tendon_name
+            ),
+        })?;
+    (ActuatorTransmission::Tendon, tendon_idx)
+}
+```
+
+The existing `self.actuator_trntype.push(trntype)` and
+`self.actuator_trnid.push(trnid)` at lines 1060-1062 handle the rest.
+
+Add `tendon_name_to_id: HashMap<String, usize>` as a builder field, populated
+alongside the tendon construction loop in Step 2 (matching the existing
+`joint_name_to_id` pattern).
+
+##### Step 4: MJCF Validation
+
+Add to `sim/L0/mjcf/src/validation.rs`:
+
+```rust
+/// Validate tendon definitions against model structure.
+/// Returns Err on fatal issues (unknown references), matching the existing
+/// validation pattern in validation.rs which uses Result<T> with MjcfError.
+pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
+    // Collect joint and site names from the body tree (joints/sites are nested
+    // inside MjcfBody, not top-level on MjcfModel). Matches the pattern used
+    // by validate() which traverses the tree via traverse_body().
+    let mut joint_names = HashSet::new();
+    let mut site_names = HashSet::new();
+    fn collect_names(body: &MjcfBody, joints: &mut HashSet<String>, sites: &mut HashSet<String>) {
+        for joint in &body.joints {
+            joints.insert(joint.name.clone());
+        }
+        for site in &body.sites {
+            sites.insert(site.name.clone());
+        }
+        for child in &body.children {
+            collect_names(child, joints, sites);
+        }
+    }
+    for body in &model.worldbody.children {
+        collect_names(body, &mut joint_names, &mut site_names);
+    }
+
+    for tendon in &model.tendons {
+        // Fixed tendons must reference existing joints with valid coefficients
+        if tendon.tendon_type == MjcfTendonType::Fixed {
+            if tendon.joints.is_empty() {
+                return Err(MjcfError::invalid_option(
+                    "tendon",
+                    format!("Fixed tendon '{}' has no joint entries", tendon.name),
+                ));
+            }
+            for (joint_name, coef) in &tendon.joints {
+                if !joint_names.contains(joint_name.as_str()) {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' references unknown joint '{}'",
+                            tendon.name, joint_name
+                        ),
+                    ));
+                }
+                if !coef.is_finite() {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' has non-finite coefficient {} for joint '{}'",
+                            tendon.name, coef, joint_name
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // Spatial tendons must reference existing sites
+        if tendon.tendon_type == MjcfTendonType::Spatial {
+            if tendon.sites.len() < 2 {
+                return Err(MjcfError::invalid_option(
+                    "tendon",
+                    format!(
+                        "Spatial tendon '{}' needs at least 2 sites, has {}",
+                        tendon.name, tendon.sites.len()
+                    ),
+                ));
+            }
+            for site_name in &tendon.sites {
+                if !site_names.contains(site_name.as_str()) {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Tendon '{}' references unknown site '{}'",
+                            tendon.name, site_name
+                        ),
+                    ));
+                }
+            }
+        }
+
+        // Parameter validation
+        if tendon.stiffness < 0.0 {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!("Tendon '{}' has negative stiffness {}", tendon.name, tendon.stiffness),
+            ));
+        }
+        if tendon.damping < 0.0 {
+            return Err(MjcfError::invalid_option(
+                "tendon",
+                format!("Tendon '{}' has negative damping {}", tendon.name, tendon.damping),
+            ));
+        }
+        if tendon.limited {
+            if let Some((min, max)) = tendon.range {
+                if min >= max {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!("Tendon '{}' has invalid range [{}, {}]", tendon.name, min, max),
+                    ));
+                }
+            } else {
+                return Err(MjcfError::invalid_option(
+                    "tendon",
+                    format!("Tendon '{}' is limited but has no range", tendon.name),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+The existing `validation.rs` uses `MjcfError::invalid_option(option, message)` (the
+helper method on `MjcfError`) for validation failures and returns `Result<()>`. This
+function follows the same pattern. The `MjcfError` and `Result` types are from
+`crate::error`. Joint and site names are collected by recursively traversing the body
+tree (matching the `traverse_body()` pattern in `validate()`), since `MjcfModel` stores
+joints and sites nested inside `MjcfBody`, not as top-level collections. The function
+also needs `use crate::types::{MjcfBody, MjcfTendonType};` added to the imports
+(or add to the existing `use crate::types::` block if already present).
+
+Call `validate_tendons()` from the existing `validate()` function after body/joint
+validation, or call it from the model builder before tendon construction.
+
+##### Step 5: `mj_fwd_tendon()` — Tendon Kinematics (Position-Dependent)
+
+New function in `mujoco_pipeline.rs`, called from `mj_fwd_position()` after site
+pose computation (line 2603) and before subtree mass/COM computation (line 2607).
+
+This placement matches MuJoCo's pipeline: `mj_tendon` runs inside `mj_fwdPosition`,
+after `mj_kinematics` (which computes body/geom/site poses) and before `mj_makeM`.
+
+```rust
+/// Compute tendon lengths and Jacobians from current joint state.
+///
+/// For fixed tendons: L = Σ coef_i * qpos[dof_adr_i], J[dof_adr_i] = coef_i.
+/// For spatial tendons: silently skipped (deferred to spatial tendon PR).
+///
+/// Called from mj_fwd_position() after site transforms, before subtree COM.
+fn mj_fwd_tendon(model: &Model, data: &mut Data) {
+    if model.ntendon == 0 {
+        return;
+    }
+
+    for t in 0..model.ntendon {
+        match model.tendon_type[t] {
+            TendonType::Fixed => {
+                mj_fwd_tendon_fixed(model, data, t);
+            }
+            TendonType::Spatial => {
+                // Spatial tendons not yet implemented.
+                // Set length to 0, Jacobian to zero vector.
+                // This is safe: zero-length tendon produces zero spring force
+                // and zero actuation force. Sensors will read 0.
+                data.ten_length[t] = 0.0;
+                data.ten_J[t].fill(0.0);
+            }
+        }
+    }
+}
+
+/// Fixed tendon kinematics for a single tendon.
+///
+/// Fixed tendon length is a linear combination of joint positions:
+///   L_t = Σ_w coef_w * qpos[dof_adr_w]
+///
+/// The Jacobian is constant (configuration-independent):
+///   J_t[dof_adr_w] = coef_w
+///
+/// Wrap entries for fixed tendons use:
+///   wrap_type[w] = WrapType::Joint
+///   wrap_objid[w] = DOF address (index into qpos/qvel)
+///   wrap_prm[w] = coupling coefficient
+#[inline]
+fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
+    let adr = model.tendon_adr[t];
+    let num = model.tendon_num[t];
+
+    // Zero the Jacobian row. For fixed tendons, only a few entries are non-zero.
+    data.ten_J[t].fill(0.0);
+
+    let mut length = 0.0;
+    for w in adr..(adr + num) {
+        debug_assert_eq!(model.wrap_type[w], WrapType::Joint);
+        let dof_adr = model.wrap_objid[w];
+        let coef = model.wrap_prm[w];
+
+        // Length contribution: coef * q
+        // For hinge joints, dof_adr indexes into qpos (1-DOF, qposadr == dofadr).
+        // For slide joints, same (1-DOF).
+        // Ball/Free joints in fixed tendons are unusual but supported: the
+        // coefficient applies to the DOF at dof_adr (one component of the
+        // multi-DOF joint).
+        if dof_adr < data.qpos.len() {
+            length += coef * data.qpos[dof_adr];
+        }
+
+        // Jacobian: dL/dq[dof_adr] = coef
+        if dof_adr < model.nv {
+            data.ten_J[t][dof_adr] = coef;
+        }
+    }
+
+    data.ten_length[t] = length;
+}
+```
+
+**Borrow-checker note:** `data.ten_J[t]` is a `DVector<f64>` in a `Vec`. We index
+by `t` (the tendon index) and then by `dof_adr` within the vector. No aliasing
+issues — `ten_J`, `ten_length`, and `qpos` are separate fields of `Data`.
+
+**qpos vs qvel indexing for fixed tendons:** MuJoCo fixed tendons use generalized
+coordinate indices. For 1-DOF joints (hinge, slide), `qposadr == dofadr` so the
+wrap_objid (DOF address) indexes correctly into both `qpos` and `qvel`. For
+multi-DOF joints (ball: 4 qpos but 3 qvel; free: 7 qpos but 6 qvel), MuJoCo's
+fixed tendons couple to individual DOFs, not to quaternion components. The model
+builder must store the DOF address (into qvel space), not the qpos address. For
+hinge/slide this distinction is irrelevant (they're equal). Ball/Free joints in
+fixed tendons are rare and should be validated — if encountered, the builder should
+map to the appropriate qvel DOF index and use `qvel[dof_adr]` for velocity. The
+length computation for multi-DOF joints requires using `qvel` (generalized velocity)
+rather than `qpos` (which includes quaternions). This is a known subtlety — for the
+initial implementation, we validate that fixed tendon joints are hinge or slide only,
+and emit a warning for ball/free.
+
+##### Step 6: Tendon Velocity Computation
+
+Add tendon velocity computation to `mj_fwd_velocity()`. This is a single matrix-vector
+dot product per tendon. Add after the existing velocity kinematics in `mj_fwd_velocity()`
+(after body velocity computation, before the function returns):
+
+```rust
+// Tendon velocities: v_t = J_t · qvel
+for t in 0..model.ntendon {
+    data.ten_velocity[t] = data.ten_J[t].dot(&data.qvel);
+}
+```
+
+This matches MuJoCo's `ten_velocity = ten_J * qvel` computation.
+
+##### Step 7: Tendon Passive Forces in `mj_fwd_passive()`
+
+Add tendon spring/damper/friction forces after the existing joint passive force
+computation in `mj_fwd_passive()` (after `model.visit_joints(&mut visitor)`,
+before the function returns):
+
+```rust
+// Tendon passive forces: spring + damper + friction loss.
+// Pattern matches joint passive forces: spring/damper skipped in implicit mode
+// (handled by mj_fwd_acceleration_implicit), friction always explicit.
+for t in 0..model.ntendon {
+    let length = data.ten_length[t];
+    let velocity = data.ten_velocity[t];
+    let mut force = 0.0;
+
+    if !implicit_mode {
+        // Spring: F = -k * (L - L_ref)
+        let k = model.tendon_stiffness[t];
+        if k > 0.0 {
+            let l_ref = model.tendon_lengthspring[t];
+            force -= k * (length - l_ref);
+        }
+
+        // Damper: F = -b * v
+        let b = model.tendon_damping[t];
+        if b > 0.0 {
+            force -= b * velocity;
+        }
+    }
+    // NOTE: In implicit mode, tendon spring/damper forces are skipped here.
+    // Joint springs/dampers ARE handled in implicit mode — via diagonal K and D
+    // modifications in mj_fwd_acceleration_implicit(). Tendon springs/dampers
+    // couple multiple joints (K_q = J^T * k * J, which is generally non-diagonal),
+    // so they CANNOT be absorbed into the existing diagonal implicit modification.
+    // For now, tendon springs/dampers produce zero force in implicit mode — this
+    // is a known limitation, NOT equivalent to joint spring/damper handling.
+    // A future enhancement could add the tendon contribution to scratch_m_impl
+    // as a non-diagonal term, but this would require refactoring the implicit
+    // solver.
+
+    // Friction loss: F = -frictionloss * sign(v)
+    // Always explicit (velocity-sign-dependent, cannot linearize).
+    // Matches joint friction_loss pattern in PassiveForceVisitor.
+    let fl = model.tendon_frictionloss[t];
+    if fl > 0.0 && velocity.abs() > 1e-10 {
+        force -= fl * velocity.signum();
+    }
+
+    data.ten_force[t] = force;
+
+    // Map tendon force to joint forces via sparse J^T multiplication.
+    // For fixed tendons: qfrc_passive[dof_adr] += coef * force.
+    // Uses wrap arrays directly (sparse) rather than iterating over all nv DOFs.
+    if force != 0.0 {
+        let adr = model.tendon_adr[t];
+        let num = model.tendon_num[t];
+        for w in adr..(adr + num) {
+            let dof_adr = model.wrap_objid[w];
+            let coef = model.wrap_prm[w];
+            if dof_adr < model.nv {
+                data.qfrc_passive[dof_adr] += coef * force;
+            }
+        }
+    }
+}
+```
+
+**Note on spatial tendons:** When spatial tendons are added in the follow-up, their
+Jacobians are dense (all `nv` entries may be non-zero). The J^T multiplication for
+spatial tendons should use the dense `ten_J[t]` vector instead of the sparse wrap
+arrays. The dispatch on `tendon_type` in the force-mapping block will select the
+appropriate path.
+
+##### Step 8: Tendon Limit Forces in `mj_fwd_constraint()`
+
+Tendon limits are **constraint forces**, not passive forces. They belong in
+`mj_fwd_constraint()` (`mujoco_pipeline.rs:8500`), alongside joint limit constraints.
+
+Add after the joint limit loop (after line 8554):
+
+```rust
+// Tendon limit constraints
+for t in 0..model.ntendon {
+    if !model.tendon_limited[t] {
+        continue;
+    }
+
+    let (limit_min, limit_max) = model.tendon_range[t];
+    let length = data.ten_length[t];
+
+    let (limit_stiffness, limit_damping) = solref_to_penalty(
+        model.tendon_solref[t],
+        model.default_eq_stiffness,
+        model.default_eq_damping,
+        model.timestep,
+    );
+
+    // Lower limit violation: length < min
+    if length < limit_min {
+        let penetration = limit_min - length;
+        // Tendon velocity into the limit (negative velocity = moving toward shorter)
+        let vel_into = (-data.ten_velocity[t]).max(0.0);
+        let force = limit_stiffness * penetration + limit_damping * vel_into;
+
+        // Map to joint forces via J^T (force pushes tendon toward longer)
+        let adr = model.tendon_adr[t];
+        let num = model.tendon_num[t];
+        for w in adr..(adr + num) {
+            let dof_adr = model.wrap_objid[w];
+            let coef = model.wrap_prm[w];
+            if dof_adr < model.nv {
+                // Positive tendon force → increase length
+                data.qfrc_constraint[dof_adr] += coef * force;
+            }
+        }
+    }
+
+    // Upper limit violation: length > max
+    if length > limit_max {
+        let penetration = length - limit_max;
+        let vel_into = data.ten_velocity[t].max(0.0);
+        let force = limit_stiffness * penetration + limit_damping * vel_into;
+
+        // Map to joint forces via J^T (force pushes tendon toward shorter)
+        let adr = model.tendon_adr[t];
+        let num = model.tendon_num[t];
+        for w in adr..(adr + num) {
+            let dof_adr = model.wrap_objid[w];
+            let coef = model.wrap_prm[w];
+            if dof_adr < model.nv {
+                data.qfrc_constraint[dof_adr] -= coef * force;
+            }
+        }
+    }
+}
+```
+
+This follows exactly the same pattern as joint limits (lines 8513-8554): check
+limited flag, get bounds, `solref_to_penalty()`, compute penetration and
+velocity-into-limit, apply stiffness + damping force.
+
+##### Step 9: Tendon Actuation in `mj_fwd_actuation()`
+
+Replace the placeholder at `mujoco_pipeline.rs:6017-6020`:
+
+```rust
+ActuatorTransmission::Tendon => {
+    // Tendon transmission: apply ctrl * gear as force along tendon,
+    // mapped to joints via tendon Jacobian J^T.
+    let tendon_id = trnid;
+    if tendon_id < model.ntendon {
+        let force = ctrl * gear;
+        // Sparse J^T multiplication using wrap arrays
+        let adr = model.tendon_adr[tendon_id];
+        let num = model.tendon_num[tendon_id];
+        for w in adr..(adr + num) {
+            let dof_adr = model.wrap_objid[w];
+            let coef = model.wrap_prm[w];
+            if dof_adr < model.nv {
+                data.qfrc_actuator[dof_adr] += coef * force;
+            }
+        }
+    }
+}
+ActuatorTransmission::Site => {
+    // Site transmission: not yet implemented (requires spatial tendon support).
+    // No-op placeholder preserved.
+}
+```
+
+##### Step 10: Sensor Stubs → Real Reads
+
+In `mj_sensor_pos()` (line 5101), replace TendonPos stub:
+
+```rust
+MjSensorType::TendonPos => {
+    let tendon_id = model.sensor_objid[sensor_id];
+    let value = if tendon_id < model.ntendon {
+        data.ten_length[tendon_id]
+    } else {
+        0.0
+    };
+    sensor_write(&mut data.sensordata, adr, 0, value);
+}
+```
+
+In `mj_sensor_vel()` (line 5307), replace TendonVel stub:
+
+```rust
+MjSensorType::TendonVel => {
+    let tendon_id = model.sensor_objid[sensor_id];
+    let value = if tendon_id < model.ntendon {
+        data.ten_velocity[tendon_id]
+    } else {
+        0.0
+    };
+    sensor_write(&mut data.sensordata, adr, 0, value);
+}
+```
+
+In `mj_sensor_pos()` (line 5093), replace the combined `Tendon | Site` stub
+with separate arms (the existing code is `ActuatorTransmission::Tendon |
+ActuatorTransmission::Site => { sensor_write(..., 0.0); }`):
+
+```rust
+ActuatorTransmission::Tendon => {
+    let tendon_id = model.actuator_trnid[act_id];
+    let value = if tendon_id < model.ntendon {
+        data.ten_length[tendon_id] * model.actuator_gear[act_id]
+    } else {
+        0.0
+    };
+    sensor_write(&mut data.sensordata, adr, 0, value);
+}
+ActuatorTransmission::Site => {
+    // Site transmission length not yet available (requires spatial tendon support).
+    sensor_write(&mut data.sensordata, adr, 0, 0.0);
+}
+```
+
+In `mj_sensor_vel()` (line 5299), replace the combined `Tendon | Site` stub
+with separate arms:
+
+```rust
+ActuatorTransmission::Tendon => {
+    let tendon_id = model.actuator_trnid[act_id];
+    let value = if tendon_id < model.ntendon {
+        data.ten_velocity[tendon_id] * model.actuator_gear[act_id]
+    } else {
+        0.0
+    };
+    sensor_write(&mut data.sensordata, adr, 0, value);
+}
+ActuatorTransmission::Site => {
+    // Site transmission velocity not yet available (requires spatial tendon support).
+    sensor_write(&mut data.sensordata, adr, 0, 0.0);
+}
+```
+
+##### Step 11: Pipeline Integration Points
+
+Modify `mj_fwd_position()` (line 2603) — add `mj_fwd_tendon` call after site poses:
+
+```rust
+// Site poses (existing, line 2593-2603)
+for site_id in 0..model.nsite { ... }
+
+// Tendon kinematics (NEW)
+mj_fwd_tendon(model, data);
+
+// Subtree mass and COM (existing, line 2607)
+```
+
+Modify `mj_fwd_velocity()` — add tendon velocity after body velocity computation
+(see Step 6).
+
+No changes needed to `forward()` or `forward_skip_sensors()` — both call
+`mj_fwd_position()` and `mj_fwd_velocity()` which now include tendon computation
+internally. The RK4 integrator's `forward_skip_sensors()` path inherits tendon
+support automatically, so tendon forces are correctly evaluated at each RK4 stage.
+
+##### Step 12: `MjcfTendon` Export
+
+Add `MjcfTendon` and `MjcfTendonType` to `sim/L0/mjcf/src/lib.rs` line 191:
+
+```rust
+MjcfTendon, MjcfTendonDefaults, MjcfTendonType,
+```
+
+##### Step 13: Cargo.toml — sim-core Dependency on sim-tendon
+
+No dependency needed. The pipeline does not call sim-tendon code — it reimplements
+the fixed tendon computation inline (a 10-line loop). The sim-tendon crate remains
+a standalone reference implementation with its own richer type system (`CableProperties`,
+`TendonActuator` trait, etc.). Pipeline-side, tendon computation is a thin layer
+over the Model/Data arrays, matching the existing pattern for joints, contacts, and
+constraints.
+
+**Rationale:** Adding a sim-core → sim-tendon dependency would require bridging
+between two type systems (`Model`/`Data` arrays vs. `FixedTendon`/`CableProperties`
+structs). The pipeline computation is simple enough (linear combination for length,
+constant Jacobian, spring/damper force) that reimplementation is cleaner than
+adaptation. The sim-tendon crate remains useful for standalone tendon analysis,
+prototyping, and as documentation of the algorithms.
 
 #### Acceptance Criteria
-1. `ten_length`, `ten_velocity`, `ten_force`, `ten_J` are populated every step for all tendons.
-2. A tendon-driven actuator produces the same joint torque as a direct joint actuator with equivalent moment arm (within 1e-10 tolerance).
-3. Tendon passive spring/damper forces appear in `qfrc_passive` and affect joint dynamics.
-4. Tendon limit forces activate when length exceeds `tendon_range` and use solref/solimp parameters.
-5. Zero-tendon models (`ntendon == 0`) have zero overhead.
-6. The `ActuatorTransmission::Tendon` placeholder is replaced with working code.
+
+1. **Fixed tendon kinematics:** `ten_length[t]` equals `Σ coef_w * qpos[dof_adr_w]`
+   for all fixed tendons, verified by constructing a 2-joint chain with a differential
+   tendon (`coef = [1.0, -1.0]`) and checking length matches `q1 - q2`.
+
+2. **Tendon Jacobian correctness:** `ten_J[t][dof_adr]` equals the coupling
+   coefficient for each wrap entry. Verified by comparing `ten_J[t].dot(&qvel)` to
+   finite-difference `(L(q + ε·e_i) - L(q)) / ε` for each DOF `i`, with tolerance
+   `≤ 1e-8` (exact for fixed tendons, but FD test catches indexing bugs).
+
+3. **Tendon velocity:** `ten_velocity[t]` equals `ten_J[t].dot(&data.qvel)` after
+   each step. Verified by the same differential tendon: velocity should equal
+   `qdot1 - qdot2`.
+
+4. **Tendon actuation equivalence:** A tendon-driven actuator with `coef = 1.0` on
+   joint `j` and `gear = 1.0` produces the same `qfrc_actuator[j]` as a direct
+   `ActuatorTransmission::Joint` actuator with the same `ctrl` and `gear`. Verified
+   by running both configurations and comparing `qfrc_actuator` to `≤ 1e-14`.
+
+5. **Differential tendon:** An antagonistic tendon with `coef = [1.0, -1.0]` on
+   joints `j1, j2` with `ctrl = 1.0` and `gear = 1.0` produces
+   `qfrc_actuator[j1] = 1.0` and `qfrc_actuator[j2] = -1.0`.
+
+6. **Passive spring force:** A tendon with `stiffness = 100.0`, `lengthspring = 0.0`,
+   and `coef = [1.0]` on a hinge joint produces `qfrc_passive[j] = -100 * q_j`.
+   Verified by setting `qpos[j] = 0.1` and checking `qfrc_passive[j] ≈ -10.0`.
+
+7. **Passive damper force:** A tendon with `damping = 10.0` and `coef = [1.0]` on a
+   hinge joint produces `qfrc_passive[j] = -10 * qdot_j`. Verified by setting
+   `qvel[j] = 0.5` and checking `qfrc_passive[j] ≈ -5.0`.
+
+8. **Friction loss:** A tendon with `frictionloss = 2.0` and positive velocity
+   produces `ten_force` contribution of `-2.0` (opposing motion). Verified similarly.
+
+9. **Limit constraint (lower):** A tendon with `limited = true`, `range = (0.1, 0.5)`,
+   and length = 0.05 produces a positive constraint force pushing toward longer
+   (via `qfrc_constraint`). Force magnitude follows `solref_to_penalty` with default
+   parameters. Verified by checking `qfrc_constraint` is non-zero and in the correct
+   direction.
+
+10. **Limit constraint (upper):** Same tendon with length = 0.6 produces a negative
+    constraint force pushing toward shorter. Verified symmetrically.
+
+11. **TendonPos sensor:** After `forward()`, `sensordata` for a TendonPos sensor
+    reads `ten_length[tendon_id]`, not 0.0.
+
+12. **TendonVel sensor:** After `forward()`, `sensordata` for a TendonVel sensor
+    reads `ten_velocity[tendon_id]`, not 0.0.
+
+13. **ActuatorPos/ActuatorVel sensors:** For a tendon-transmission actuator, the
+    sensors read `ten_length * gear` and `ten_velocity * gear` respectively.
+
+14. **Zero-tendon overhead:** A model with `ntendon == 0` has identical performance
+    to before this PR. All tendon functions early-return on `ntendon == 0`.
+
+15. **Spatial tendon graceful degradation:** A model with a spatial tendon parses
+    without error. The spatial tendon's `ten_length` is 0.0, `ten_J` is zero,
+    and no forces are produced. A warning is logged at model load time.
+
+16. **MJCF round-trip:** A model with `<tendon><fixed name="t1"><joint joint="j1" coef="1.0"/></fixed></tendon>` parses, builds a Model with `ntendon = 1`, and
+    the tendon correctly couples to joint `j1`.
+
+17. **Model builder rejects bad references:** An MJCF file referencing a nonexistent
+    joint in a fixed tendon produces a `ModelConversionError`.
+
+18. **Existing tests pass:** All existing tests (implicit integration, RK4, collision,
+    sensors, etc.) remain green. No behavioral changes for zero-tendon models.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`mj_fwd_tendon()`, `mj_fwd_tendon_vel()`, tendon forces in `mj_fwd_passive()`, tendon actuation in `mj_fwd_actuation()`)
-- `sim/L0/tendon/src/` — reference for path computation algorithms
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - `Model` struct: add `tendon_type`, `tendon_solref`, `tendon_solimp`,
+    `tendon_frictionloss` fields (after line 935)
+  - `Model::empty()`: initialize new fields (after line 1603)
+  - `mj_fwd_position()`: add `mj_fwd_tendon()` call (after line 2603)
+  - `mj_fwd_velocity()`: add tendon velocity computation
+  - `mj_fwd_passive()`: add tendon spring/damper/friction forces
+  - `mj_fwd_constraint()`: add tendon limit constraint forces (after line 8554)
+  - `mj_fwd_actuation()`: replace Tendon placeholder (line 6017-6020)
+  - `mj_sensor_pos()`: replace TendonPos stub (line 5101) and ActuatorPos tendon
+    stub (line 5093)
+  - `mj_sensor_vel()`: replace TendonVel stub (line 5307) and ActuatorVel tendon
+    stub (line 5299)
+  - New functions: `mj_fwd_tendon()`, `mj_fwd_tendon_fixed()` (~40 lines total)
+- `sim/L0/mjcf/src/model_builder.rs` — modify:
+  - Add builder fields for tendon state (`tendon_name_to_id`, `tendon_type`, etc.)
+  - New `process_tendons()` method (~60 lines)
+  - Replace tendon rejection in `process_actuator()` (line 1009-1018) with tuple return
+  - Replace empty tendon initialization in `build()` (lines 1449-1463) with builder fields
+  - Add `tendon_length0` / `tendon_lengthspring` post-construction computation
+- `sim/L0/mjcf/src/validation.rs` — modify:
+  - Add `validate_tendons()` function (~60 lines)
+- `sim/L0/mjcf/src/lib.rs` — modify:
+  - Export `MjcfTendon`, `MjcfTendonType` (line 191)
+- `sim/L0/core/src/mujoco_pipeline.rs` — new test module `tendon_tests` (~200 lines):
+  - Fixed tendon length computation test (AC #1)
+  - Jacobian correctness test (AC #2)
+  - Tendon velocity test (AC #3)
+  - Actuation equivalence test (AC #4)
+  - Differential tendon test (AC #5)
+  - Passive spring test (AC #6)
+  - Passive damper test (AC #7)
+  - Friction loss test (AC #8)
+  - Lower limit test (AC #9)
+  - Upper limit test (AC #10)
+  - TendonPos sensor test (AC #11)
+  - TendonVel sensor test (AC #12)
+  - Actuator sensor test (AC #13)
+  - Zero-tendon overhead test (AC #14)
+  - Spatial tendon graceful skip test (AC #15)
+  - MJCF round-trip test (AC #16)
+  - Bad reference rejection test (AC #17)
 
 ---
 
 ### 5. Muscle Pipeline
-**Status:** Not started | **Effort:** L | **Prerequisites:** #4 (tendon pipeline provides `ten_length`, `ten_velocity`, `ten_J`)
+**Status:** Not started | **Effort:** L | **Prerequisites:** #4 ✅ (tendon pipeline provides `ten_length`, `ten_velocity`, `ten_J`)
 
 #### Current State
 sim-muscle is a standalone 2,550-line crate with:
@@ -331,8 +1488,8 @@ sim-muscle is a standalone 2,550-line crate with:
 - Force-length/velocity curves (`curves.rs`).
 - `MuscleKinematics` (`kinematics.rs`): pennation angle, fiber length from MTU length.
 
-The pipeline declares `ActuatorDynamics::Muscle` (`mujoco_pipeline.rs:434`) and
-`data.act` (`mujoco_pipeline.rs:1249`) but `mj_fwd_actuation()` has no muscle-specific
+The pipeline declares `ActuatorDynamics::Muscle` (`mujoco_pipeline.rs:435`) and
+`data.act` (`mujoco_pipeline.rs:1255`) but `mj_fwd_actuation()` has no muscle-specific
 code path — it only handles `ActuatorTransmission::Joint` (direct force) and stubs
 `::Tendon`/`::Site`.
 
@@ -381,7 +1538,7 @@ For each actuator where `actuator_dyntype[i] == Muscle`:
 ---
 
 ### 6. Sensor Completion
-**Status:** Mostly complete | **Effort:** S (remaining work) | **Prerequisites:** #4 for tendon sensors
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** #4 ✅ for tendon sensors
 
 #### Current State
 A correctness sub-spec (`sim/docs/SENSOR_FIXES_SPEC.md`) was implemented, addressing
@@ -390,8 +1547,7 @@ JointPos/JointVel restriction to hinge/slide, accelerometer comment/test hardeni
 and bounds-checked `sensor_write` helpers across all evaluation functions.
 
 Separately, Force, Torque, Touch, Rangefinder, Magnetometer, and SubtreeAngMom were
-brought from stubs to full implementations. The remaining gaps are tendon-dependent
-sensors blocked on #4:
+brought from stubs to full implementations. The tendon-dependent sensors were implemented alongside #4:
 
 | Sensor | Status | Detail |
 |--------|--------|--------|
@@ -405,47 +1561,47 @@ sensors blocked on #4:
 | BallAngVel | Done | 3-DOF angular velocity from qvel |
 | JointPos | Done | Hinge/slide only (Ball/Free no longer written) |
 | JointVel | Done | Hinge/slide only (Ball/Free no longer written) |
-| TendonPos | Stub (0.0) | Blocked on #4 — will read `ten_length[objid]` |
-| TendonVel | Stub (0.0) | Blocked on #4 — will read `ten_velocity[objid]` |
-| ActuatorPos | Partial | Joint transmission done; Tendon/Site stub (blocked on #4) |
-| ActuatorVel | Partial | Joint transmission done; Tendon/Site stub (blocked on #4) |
+| TendonPos | Done | Reads `ten_length[objid]` (implemented with #4) |
+| TendonVel | Done | Reads `ten_velocity[objid]` (implemented with #4) |
+| ActuatorPos | Done | Joint and Tendon transmissions; Site stub remains |
+| ActuatorVel | Done | Joint and Tendon transmissions; Site stub remains |
 
 All sensor writes use bounds-checked helpers (`sensor_write`, `sensor_write3`,
 `sensor_write4`). Postprocessing handles positive-type sensors (Touch, Rangefinder)
 with `.min(cutoff)` to preserve the -1.0 no-hit sentinel.
 
 #### Remaining Work
-The 4 remaining items are trivial once tendon pipeline (#4) lands:
+~~The 4 remaining items are trivial once tendon pipeline (#4) lands:~~ Done with #4.
 
-1. **TendonPos:** Replace `0.0` stub with `ten_length[objid]`.
-2. **TendonVel:** Replace `0.0` stub with `ten_velocity[objid]`.
-3. **ActuatorPos (Tendon/Site):** Read tendon length × gear for tendon transmissions.
-4. **ActuatorVel (Tendon/Site):** Read tendon velocity × gear for tendon transmissions.
+1. ~~**TendonPos:** Replace `0.0` stub with `ten_length[objid]`.~~ Done.
+2. ~~**TendonVel:** Replace `0.0` stub with `ten_velocity[objid]`.~~ Done.
+3. ~~**ActuatorPos (Tendon/Site):** Read tendon length × gear for tendon transmissions.~~ Done (tendon; Site stub remains).
+4. ~~**ActuatorVel (Tendon/Site):** Read tendon velocity × gear for tendon transmissions.~~ Done (tendon; Site stub remains).
 
 #### Acceptance Criteria
 1. ~~Force and Torque sensors return non-zero values when constraint forces are active.~~ Done.
 2. ~~Touch sensor returns actual contact force magnitude (not `depth * 10000`).~~ Done.
 3. ~~Rangefinder returns correct distance for a known geom placement (within 1e-6).~~ Done.
 4. ~~Magnetometer returns the global magnetic field rotated into the site frame.~~ Done.
-5. TendonPos/TendonVel return `ten_length`/`ten_velocity` when tendon pipeline (#4) is active.
-6. ActuatorPos/ActuatorVel return correct values for all transmission types.
+5. ~~TendonPos/TendonVel return `ten_length`/`ten_velocity` when tendon pipeline (#4) is active.~~ Done.
+6. ~~ActuatorPos/ActuatorVel return correct values for all transmission types.~~ Done (tendon; Site stub remains).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (4 stub sites in `mj_sensor_pos()` and `mj_sensor_vel()`)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modified (4 stub sites in `mj_sensor_pos()` and `mj_sensor_vel()` replaced with live reads)
 - `sim/docs/SENSOR_FIXES_SPEC.md` — reference for completed correctness fixes
 
 ---
 ## Group C — Integrator & Dynamics
 
 ### 7. Integrator Rename (Implicit → ImplicitSpringDamper)
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-The pipeline `Integrator` enum (`mujoco_pipeline.rs:623-631`) has three variants:
+The pipeline `Integrator` enum (`mujoco_pipeline.rs:629-637`) has three variants:
 `Euler`, `RungeKutta4`, `Implicit`. The `Implicit` variant's doc comment has been
 corrected to "Implicit Euler for diagonal per-DOF spring/damper forces"
-(`mujoco_pipeline.rs:629`). The actual implementation in
-`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8331`) solves:
+(`mujoco_pipeline.rs:636`). The actual implementation in
+`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8969`) solves:
 
 ```
 (M + h·D + h²·K)·v_new = M·v_old + h·f_ext - h·K·(q - q_eq)
@@ -464,12 +1620,19 @@ a clear slot for a future true `ImplicitEuler` variant that handles coupled
 #### Specification
 
 1. Rename `Integrator::Implicit` → `Integrator::ImplicitSpringDamper` in the enum.
-2. Update the doc comment from "Implicit midpoint" to "Implicit Euler for diagonal
-   per-DOF spring/damper forces."
-3. Update all match arms that reference `Integrator::Implicit`.
-4. Update MJCF parser: `<option integrator="implicit"/>` → maps to `ImplicitSpringDamper`.
-5. Preserve backward compatibility in MJCF parsing (accept both `"implicit"` and
-   `"implicitspringdamper"`).
+2. Doc comment is already correct ("Implicit Euler for diagonal per-DOF spring/damper
+   forces") — no change needed.
+3. Update all match arms and equality checks that reference `Integrator::Implicit`:
+   - `mujoco_pipeline.rs:2403` — velocity update skip in `Data::integrate()`
+   - `mujoco_pipeline.rs:6707` — `implicit_mode` flag in `mj_fwd_passive()`
+   - `mujoco_pipeline.rs:8768` — acceleration dispatch in `mj_fwd_acceleration()`
+4. Update MJCF layer:
+   - `types.rs` — rename `MjcfIntegrator::Implicit` variant
+   - `model_builder.rs:459` — update `MjcfIntegrator::Implicit` → Sim conversion
+   - `parser.rs` — accept both `"implicit"` and `"implicitspringdamper"` strings
+5. Update tests:
+   - `parser.rs:2178` — parser test referencing `MjcfIntegrator::Implicit`
+   - `implicit_integration.rs:61` — integration test assertion
 
 #### Acceptance Criteria
 1. `Integrator::Implicit` no longer exists — all references use `ImplicitSpringDamper`.
@@ -478,75 +1641,352 @@ a clear slot for a future true `ImplicitEuler` variant that handles coupled
 4. All existing tests pass without modification (behavior is identical).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (enum definition, all match arms)
-- `sim/L0/mjcf/src/parser.rs` — modify (integrator string parsing)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify (enum definition, 3 match arms/equality checks)
+- `sim/L0/mjcf/src/types.rs` — modify (`MjcfIntegrator` enum variant rename, `from_str`, `as_str`)
+- `sim/L0/mjcf/src/config.rs` — modify (`From<MjcfIntegrator>` impl + its test)
+- `sim/L0/mjcf/src/model_builder.rs` — modify (MJCF → Sim integrator conversion)
+- `sim/L0/mjcf/src/parser.rs` — modify (integrator string parsing, parser test)
+- `sim/L0/tests/integration/implicit_integration.rs` — modify (test assertion)
+- `sim/docs/MUJOCO_REFERENCE.md` — modify (doc reference)
 
 ---
 
 ### 8. True RK4 Integration
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Status:** ✅ Done | **Effort:** M | **Prerequisites:** None
 
 #### Current State
-`Integrator::RungeKutta4` in the pipeline dispatches to the same code path as
-`Integrator::Euler` in both locations:
+`Integrator::RungeKutta4` (`mujoco_pipeline.rs:629`) dispatches to the same code
+path as `Integrator::Euler` in both locations:
 
-- `mj_fwd_acceleration()` (`mujoco_pipeline.rs:8258-8264`): both call
+- `mj_fwd_acceleration()` (`mujoco_pipeline.rs:8762`): both call
   `mj_fwd_acceleration_explicit()`.
-- `Data::integrate()` (`mujoco_pipeline.rs:2321-2337`): both use the same
+- `Data::integrate()` (`mujoco_pipeline.rs:2391`): both use the same
   semi-implicit Euler velocity/position update.
 
 It is a pure placeholder — selecting RK4 produces identical results to Euler.
 
-A separate `Integrator` trait in `integrators.rs` (1,005 lines, `integrators.rs:36`)
-has a `RungeKutta4` struct (`integrators.rs:239`) that uses a constant-acceleration
+A separate `Integrator` trait in `integrators.rs` (`integrators.rs:36`) has a
+`RungeKutta4` struct (`integrators.rs:239`) that uses a constant-acceleration
 reduction (equivalent to Velocity Verlet). This is not true multi-stage RK4; the
-comment at `integrators.rs:248` acknowledges this: "For constant acceleration, RK4
-reduces to..."
+comment at `integrators.rs:248` acknowledges this. That trait system is **not used
+by the MuJoCo pipeline** (see FUTURE_WORK C1).
 
 #### Objective
 Replace the `RungeKutta4` placeholder with a true 4-stage Runge-Kutta integrator
-that re-evaluates forces at intermediate states.
+that calls the full forward dynamics pipeline (including collision detection) at each
+intermediate stage, matching MuJoCo's `mj_RungeKutta` in `engine_forward.c`.
+
+#### Reference: MuJoCo's Algorithm
+
+MuJoCo's RK4 (`mj_RungeKutta` in `engine_forward.c`) uses the standard Butcher
+tableau. Stage 0 reuses the qacc from the preceding `mj_forward()` call. At each
+subsequent stage (1-3), it calls `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)` — the full
+pipeline including collision detection, but skipping sensor evaluation. Positions are
+integrated via `mj_integratePos` (quaternion exponential map on SO(3)), not linear
+addition. The state at each stage always starts from `X[0]` (initial state), not
+from the previous stage's state.
 
 #### Specification
 
-Implement `mj_fwd_acceleration_rk4(model: &Model, data: &mut Data) -> Result<(), StepError>`:
-
-True 4-stage RK4 with force re-evaluation:
+##### Butcher Tableau Constants
 
 ```
-k1 = f(t,       q,            v)
-k2 = f(t + h/2, q + h/2·v,   v + h/2·k1)
-k3 = f(t + h/2, q + h/2·v,   v + h/2·k2)
-k4 = f(t + h,   q + h·v,     v + h·k3)
+RK4_A: [f64; 9] = [0.5, 0.0, 0.0,   // Stage 1→2: dX = 0.5 * F[0]
+                    0.0, 0.5, 0.0,   // Stage 2→3: dX = 0.5 * F[1]
+                    0.0, 0.0, 1.0]   // Stage 3→4: dX = 1.0 * F[2]
 
-v_new = v + (h/6)·(k1 + 2·k2 + 2·k3 + k4)
-q_new = q + (h/6)·(v + 2·(v+h/2·k1) + 2·(v+h/2·k2) + (v+h·k3))
+RK4_B: [f64; 4] = [1.0/6.0, 1.0/3.0, 1.0/3.0, 1.0/6.0]  // Final combination
+
+Indexing: A[(i-1)*3 + j] for stage i ∈ {1,2,3}, coefficient j ∈ {0,1,2}.
 ```
 
-Each `f()` call evaluates forward kinematics, collision detection, and force
-computation at the trial state (q, v). This is 4× the cost of semi-implicit Euler
-per step but achieves O(h⁴) local truncation error vs O(h) for Euler.
+##### Data Struct Additions
 
-**Implementation details:**
-- Add scratch fields to `Data` for intermediate k-values and trial states
-  (`scratch_qpos_rk`, `scratch_qvel_rk`, `scratch_qacc_k1..k4`).
-- No heap allocation beyond what `Data` already provides — scratch fields are
-  pre-allocated in `Model::make_data()`.
-- `mj_fwd_acceleration()` dispatches `RungeKutta4` to the new function instead of
-  falling through to `mj_fwd_acceleration_explicit()`.
-- `Data::integrate()` skips the velocity update for RK4 (already done in
-  `mj_fwd_acceleration_rk4()`), similar to how `Implicit` is handled.
+Add after `scratch_v_new` (`mujoco_pipeline.rs:1427`), before `body_min_mass`:
+
+```rust
+// ==================== RK4 Scratch Buffers ====================
+// State and rate buffers for 4-stage Runge-Kutta integration.
+// Pre-allocated in make_data() — no heap allocation during stepping.
+
+/// Saved initial position for RK4: X[0].qpos (length nq).
+/// Read at every stage (step 2c) and the final advance (step 4).
+pub rk4_qpos_saved: DVector<f64>,
+
+/// Scratch position for the current RK4 stage (length nq).
+/// Written at step 2c, copied to data.qpos at step 2e, then overwritten
+/// next iteration. Intermediate positions are not needed for the final
+/// B-weight combination (which only sums velocities and accelerations).
+pub rk4_qpos_stage: DVector<f64>,
+
+/// RK4 stage velocities: X[i].qvel (4 buffers, each length nv).
+/// All 4 are needed for the final B-weight combination in step 3.
+pub rk4_qvel: [DVector<f64>; 4],
+
+/// RK4 stage accelerations: F[i].qacc (4 buffers, each length nv).
+/// All 4 are needed for the final B-weight combination in step 3.
+pub rk4_qacc: [DVector<f64>; 4],
+
+/// Weighted velocity sum for manifold position integration (length nv).
+pub rk4_dX_vel: DVector<f64>,
+
+/// Weighted acceleration sum for velocity update (length nv).
+pub rk4_dX_acc: DVector<f64>,
+```
+
+In `Model::make_data()` (after line 1788), add:
+
+```rust
+rk4_qpos_saved: DVector::zeros(self.nq),
+rk4_qpos_stage: DVector::zeros(self.nq),
+rk4_qvel: std::array::from_fn(|_| DVector::zeros(self.nv)),
+rk4_qacc: std::array::from_fn(|_| DVector::zeros(self.nv)),
+rk4_dX_vel: DVector::zeros(self.nv),
+rk4_dX_acc: DVector::zeros(self.nv),
+```
+
+Memory overhead: `2*nq + 4*2*nv + 2*nv` = `2*nq + 10*nv` floats. For a 30-DOF
+humanoid (nq≈37, nv=30): 374 f64 = 2.9 KiB. Negligible.
+
+##### New Method: `Data::forward_skip_sensors()`
+
+Identical to `forward()` (`mujoco_pipeline.rs:2300`) but skips all 4 sensor
+stages (`mj_sensor_pos`, `mj_sensor_vel`, `mj_sensor_acc`, `mj_sensor_postprocess`).
+Matches MuJoCo's `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)` where `1` = skip sensors.
+
+```rust
+fn forward_skip_sensors(&mut self, model: &Model) -> Result<(), StepError> {
+    mj_fwd_position(model, self);
+    mj_collision(model, self);
+    // skip: mj_sensor_pos
+    mj_energy_pos(model, self);
+    mj_fwd_velocity(model, self);
+    // skip: mj_sensor_vel
+    mj_fwd_actuation(model, self);
+    mj_crba(model, self);
+    mj_rne(model, self);
+    mj_energy_vel(model, self);
+    mj_fwd_passive(model, self);
+    mj_fwd_constraint(model, self);
+    mj_fwd_acceleration(model, self)?;
+    // skip: mj_sensor_acc, mj_sensor_postprocess
+    Ok(())
+}
+```
+
+##### New Function: `mj_runge_kutta()`
+
+Core RK4 implementation (~90 lines). Free function matching existing patterns.
+
+**Algorithm** (matching MuJoCo's `mj_RungeKutta`):
+
+```
+fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError>
+
+Precondition: data.forward() has already been called (qacc is valid).
+
+1. SAVE initial state:
+   rk4_qpos_saved.copy_from(&data.qpos)
+   X[0].qvel = data.qvel
+   F[0].qacc = data.qacc
+   t0 = data.time
+   efc_lambda_saved = data.efc_lambda.clone()
+
+2. FOR i = 1, 2, 3:
+   a. Weighted velocity:  dX_vel[v] = Σ_{j=0}^{2} A[(i-1)*3+j] * X[j].qvel[v]
+   b. Weighted accel:     dX_acc[v] = Σ_{j=0}^{2} A[(i-1)*3+j] * F[j].qacc[v]
+      (For this tableau, only j = i−1 has a non-zero coefficient.)
+   c. Position (manifold): mj_integrate_pos_explicit(model, &mut rk4_qpos_stage, &rk4_qpos_saved, &dX_vel, h)
+   d. Velocity (linear):   X[i].qvel = X[0].qvel + h * dX_acc
+   e. Set Data state:      data.qpos.copy_from(&rk4_qpos_stage), data.qvel.copy_from(&X[i].qvel)
+   f. Set Data time:       data.time = t0 + h * {0.5, 0.5, 1.0}[i-1]
+   g. Evaluate:            data.forward_skip_sensors(model)?
+   h. Store rate:          F[i].qacc = data.qacc
+
+3. FINAL combination using B weights:
+   dX_vel[v] = Σ_j B[j] * X[j].qvel[v]
+   dX_acc[v] = Σ_j B[j] * F[j].qacc[v]
+
+4. ADVANCE from initial state:
+   data.qacc_warmstart = data.qacc  (save stage 3 qacc for next step — matches MuJoCo)
+   data.qvel.copy_from(&X[0].qvel)    (restore)
+   data.qvel += h * dX_acc             (velocity update)
+   mj_integrate_pos_explicit(model, &mut data.qpos, &rk4_qpos_saved, &dX_vel, h)  (position on manifold)
+   mj_normalize_quat(model, data)
+   data.efc_lambda = efc_lambda_saved  (restore warmstart from initial solve)
+   data.time = t0 + h
+
+   NOTE: After mj_runge_kutta() returns, all derived quantities are stale
+   from stage 3 and do NOT correspond to the final (qpos, qvel) state:
+   - qacc (stage 3 acceleration, not final-state acceleration)
+   - xpos, xquat, xmat (body poses at stage 3 trial state)
+   - geom_xpos, geom_xmat, site_xpos, site_xmat (geometry/site poses)
+   - contacts, ncon (contact set from stage 3 collision detection)
+   - qfrc_actuator, qfrc_bias, qfrc_passive, qfrc_constraint (forces)
+   - energy_potential, energy_kinetic
+   This matches MuJoCo's behavior — mj_step does NOT call mj_forward
+   after mj_RungeKutta. Users needing consistent derived quantities at
+   the advanced state should call data.forward(model) after step().
+```
+
+**Key design points:**
+- Position integration uses `mj_integrate_pos_explicit()` (`mujoco_pipeline.rs:9332`)
+  at every stage, which handles quaternion exponential map for ball/free joints.
+  The A coefficients are already baked into `dX_vel`, so `h` (not `h*A[i]`) is passed
+  as the timestep parameter.
+- Each stage starts from `X[0]` (initial state), not from the previous stage. This
+  matches MuJoCo and ensures Butcher tableau correctness.
+- **Borrow-checker note:** Step 2d reads `rk4_qvel[0]` while writing `rk4_qvel[i]`.
+  Rust's borrow checker cannot prove disjointness of runtime-indexed array elements.
+  Use `split_at_mut(1)` on the `rk4_qvel` array at the top of each loop iteration
+  to split into `(head, tail)`, giving simultaneous `&head[0]` and `&mut tail[i-1]`.
+  This is zero-cost and idiomatic. Position buffers don't need this treatment —
+  `rk4_qpos_saved` and `rk4_qpos_stage` are separate struct fields with independent
+  borrows.
+- `efc_lambda` (warmstart HashMap, `mujoco_pipeline.rs:1400`) is saved before the
+  loop and restored after the final advance. Intermediate stages may modify it
+  freely (the PGS solver benefits from warmstarting), but the persistent warmstart
+  across timesteps comes from the initial solve.
+- `qacc_warmstart` is saved **before** restoring X[0], so it captures stage 3's
+  raw qacc. This matches MuJoCo's `mj_advance` behavior (`mju_copy(d->qacc_warmstart,
+  d->qacc, nv)`). Our codebase does not currently read `qacc_warmstart` (the PGS
+  solver uses `efc_lambda` instead), but saving it preserves forward compatibility
+  with MuJoCo's acceleration-based warmstart pattern.
+- The one heap allocation is `efc_lambda.clone()`. For typical contact counts (<100
+  pairs): ~2.4 KiB, ~100ns. If profiling shows this matters, add a pre-allocated
+  `efc_lambda_saved` field to `Data`.
+
+##### Changes to `Data::step()`
+
+Replace the current implementation (`mujoco_pipeline.rs:2257`):
+
+```rust
+pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
+    if model.timestep <= 0.0 || !model.timestep.is_finite() {
+        return Err(StepError::InvalidTimestep);
+    }
+    mj_check_pos(model, self)?;
+    mj_check_vel(model, self)?;
+
+    match model.integrator {
+        Integrator::RungeKutta4 => {
+            // RK4: forward() evaluates initial state (with sensors).
+            // mj_runge_kutta() then calls forward_skip_sensors() 3 more times.
+            self.forward(model)?;
+            mj_check_acc(model, self)?;
+            mj_runge_kutta(model, self)?;
+        }
+        Integrator::Euler | Integrator::ImplicitSpringDamper => {
+            self.forward(model)?;
+            mj_check_acc(model, self)?;
+            self.integrate(model);
+        }
+    }
+    Ok(())
+}
+```
+
+##### Changes to `Data::integrate()`
+
+Remove `RungeKutta4` from the `Euler` arm (`mujoco_pipeline.rs:2391`):
+
+```rust
+match model.integrator {
+    Integrator::Euler => {
+        for i in 0..model.nv {
+            self.qvel[i] += self.qacc[i] * h;
+        }
+    }
+    Integrator::ImplicitSpringDamper => {
+        // Velocity already updated by mj_fwd_acceleration_implicit
+    }
+    Integrator::RungeKutta4 => {
+        unreachable!("RK4 integration handled by mj_runge_kutta()")
+    }
+}
+```
+
+##### No Changes to `mj_fwd_acceleration()`
+
+`mj_fwd_acceleration()` (`mujoco_pipeline.rs:8762`) continues to dispatch
+`Euler | RungeKutta4` to `mj_fwd_acceleration_explicit()`. Each forward evaluation
+within the RK4 loop computes `qacc = M^{-1} * f` in the standard way; the difference
+is that RK4 calls it 4 times at different states.
+
+##### Activation State (Deferred)
+
+MuJoCo's `mj_RungeKutta` includes actuator activation state (`act`, `act_dot`) in
+its state and rate vectors. Our `Data.act` exists (`mujoco_pipeline.rs:1255`) but
+`act_dot` does not — `mj_fwd_actuation()` (`mujoco_pipeline.rs:5997`) is a stateless
+`ctrl * gear` function with no activation dynamics. Activation integration is deferred
+until FUTURE_WORK #5 (Muscle Pipeline) introduces `act_dot`. A `TODO(FUTURE_WORK#5)`
+comment should mark the extension points in `mj_runge_kutta()`.
+
+##### Sensor Evaluation
+
+Sensors are evaluated once per `step()` call:
+1. `step()` calls `forward()` (with sensors) before `mj_runge_kutta()`.
+2. The 3 intermediate evaluations use `forward_skip_sensors()`.
+3. After `mj_runge_kutta()` returns, `data.sensordata` contains values from the
+   pre-step state. This matches MuJoCo's behavior.
 
 #### Acceptance Criteria
 1. `Integrator::RungeKutta4` no longer produces identical results to `Integrator::Euler`.
-2. For smooth force fields (no contacts), RK4 with timestep 4h achieves comparable or better accuracy to Euler with timestep h (measured as position error vs analytic solution).
-3. RK4 matches Euler forces at h→0 (consistency check).
-4. Energy conservation for a frictionless pendulum is measurably better with RK4 than Euler at the same timestep.
-5. No heap allocations in the RK4 path beyond pre-allocated `Data` scratch fields.
-6. RK4 cost is ~4× Euler per step (verified by benchmark).
+2. **Order verification (smooth systems):** For a frictionless pendulum with analytic
+   solution, run RK4 at timestep `h` and Euler at timestep `h`. Compute position
+   error at `t = 1s`. Halving `h` should reduce RK4 error by ~16× (O(h⁴)) vs ~2–4×
+   for symplectic Euler (O(h)–O(h²) in position depending on observable and system
+   structure; symplectic Euler preserves energy well but position convergence is
+   typically first-order). Test at `h = 0.01` and `h = 0.005`.
+3. **Consistency:** `lim(h→0)` the RK4 and Euler trajectories converge. Verify
+   using the same pendulum model as AC #2 at `h = 1e-5` for 10 steps: max position
+   difference < 1e-8.
+4. **Energy conservation:** For a frictionless pendulum (no contacts) at `h = 0.001`,
+   RK4 energy drift after 1000 steps (1.0 s simulated time) shall be less than
+   `1e-10` relative to initial energy. Additionally, halving `h` should reduce RK4
+   energy drift by ~32×–64× (O(h⁵)–O(h⁶) secular drift on near-harmonic systems),
+   verified at `h = 0.002` and `h = 0.001`.
+5. **Contact handling:** Bouncing-ball test produces physically plausible results
+   (ball does not explode or tunnel, contacts are detected). Energy remains bounded.
+   Note: the PGS constraint solver without restitution absorbs kinetic energy on
+   impact, so the ball settles rather than bouncing — this is correct behavior.
+6. **Quaternion correctness:** A free-body rotation with known angular velocity
+   produces the correct final orientation (error < 1e-6 vs analytic) after 100 RK4
+   steps. Quaternion norm stays within 1e-10 of 1.0 at every step.
+7. **No new heap allocations** introduced by `mj_runge_kutta()` itself beyond the
+   one `efc_lambda.clone()`. (The forward pipeline already allocates per call — e.g.,
+   force accumulation in `mj_fwd_acceleration_explicit`, Jacobians and lambda vectors
+   in `pgs_solve_contacts` — but these are inherited, not new to RK4.)
+8. **Cost:** RK4 wall-clock time is 3.5×–4.5× Euler per step (verified by benchmark
+   on a 10-body chain).
+9. **Sensors:** After `step()` with RK4, `data.sensordata` contains values from the
+   pre-step state. Intermediate stages do not corrupt sensor data.
+10. **Warmstart preservation:** `efc_lambda` after `step()` reflects the initial
+    state's contact solve, not stage 3's. Verify by comparing `efc_lambda` before
+    and after one RK4 step: call `forward()` → clone `efc_lambda` → call
+    `mj_runge_kutta()` → assert `efc_lambda` is bitwise identical to the clone.
+    This directly tests the save/restore mechanism without requiring steady-state
+    warmup or cross-step comparison.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`mj_fwd_acceleration_rk4()`, dispatch in `mj_fwd_acceleration()`, scratch fields in `Data`, skip velocity update in `Data::integrate()`)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - `Data` struct: add 6 RK4 scratch fields (`rk4_qpos_saved`, `rk4_qpos_stage`,
+    `rk4_qvel`, `rk4_qacc`, `rk4_dX_vel`, `rk4_dX_acc`) after `scratch_v_new`
+    (line 1427)
+  - `Model::make_data()`: allocate RK4 scratch buffers (after line 1788)
+  - `Data::step()`: add `RungeKutta4` match arm (line 2257)
+  - `Data::integrate()`: remove `RungeKutta4` from `Euler` arm (line 2391)
+  - New `Data::forward_skip_sensors()`: forward pipeline minus sensor stages
+  - New `mj_runge_kutta()`: core RK4 implementation (~90 lines)
+- `sim/L0/tests/integration/rk4_integration.rs` — new test module:
+  - Pendulum order-of-convergence test (AC #2)
+  - Euler/RK4 consistency test (AC #3)
+  - Energy conservation test (AC #4)
+  - Quaternion free-body rotation test (AC #6)
+  - Contact bouncing-ball test (AC #5)
+  - Sensor non-corruption test (AC #9)
+  - Warmstart preservation test (AC #10)
+- `sim/L0/tests/integration/mod.rs` — register `rk4_integration` module
 
 ---
 ## Group D — Deformable Body
@@ -651,11 +2091,11 @@ The choice should be configurable per-model via an MJCF option.
 **Status:** Not started | **Effort:** L | **Prerequisites:** None
 
 #### Current State
-Single-environment execution. `Data::step(&mut self, &Model)` (`mujoco_pipeline.rs:2228`)
+Single-environment execution. `Data::step(&mut self, &Model)` (`mujoco_pipeline.rs:2257`)
 steps one simulation. `Model` is immutable after construction, uses
-`Arc<TriangleMeshData>` for shared mesh data (`mujoco_pipeline.rs:843`). `Data` is
+`Arc<TriangleMeshData>` for shared mesh data (`mujoco_pipeline.rs:849`). `Data` is
 fully independent — no shared mutable state, no interior mutability, derives `Clone`
-(`mujoco_pipeline.rs:1232`).
+(`mujoco_pipeline.rs:1240`).
 
 #### Objective
 Step N independent environments in parallel on CPU. Foundation for GPU acceleration
@@ -772,26 +2212,432 @@ made at implementation time:
 ---
 ## Cleanup Tasks
 
-### C1. Disambiguate integrators.rs
-**Effort:** S
+### C1. ~~Remove Dead Standalone Integrator System~~ ✅ DONE
+**Status:** Complete | **Effort:** S | **RL Impact:** Low | **Correctness:** Medium | **Prerequisites:** None
 
-The `Integrator` trait in `integrators.rs` (`integrators.rs:36`, 1,005 lines) defines
-6 implementations (`ExplicitEuler`, `SemiImplicitEuler`, `VelocityVerlet`,
-`RungeKutta4`, `ImplicitVelocity`, `ImplicitFast`) that operate on single
-`RigidBodyState` objects via an `IntegrationMethod` enum from sim-types.
+#### Current State
 
-The pipeline uses its own `Integrator` enum (`mujoco_pipeline.rs:623`) with
-completely separate integration logic in `Data::integrate()` (`mujoco_pipeline.rs:2321`).
-The two systems share no code. `integrate_with_method()` is re-exported by sim-physics
-(`physics/src/lib.rs:167`) but has zero callers in the pipeline.
+Two completely independent integrator systems coexist in the codebase. They share
+no code, no types, and no callers.
 
-**Decision needed:** Either:
-- **(a) Remove** the trait system entirely (it's dead code with respect to the pipeline), or
-- **(b) Consolidate** by having `Data::integrate()` delegate to the trait system
-  (requires adapting the trait to work with `Data` instead of `RigidBodyState`).
+**System A — Standalone trait system** (`sim/L0/core/src/integrators.rs`, 1,005 lines):
 
-Option (a) is simpler and removes 1,005 lines of unused code. Option (b) is only
-warranted if users of sim-physics need standalone integration outside the pipeline.
+| Type | Location | Description |
+|------|----------|-------------|
+| `Integrator` trait | `integrators.rs:36` | `fn integrate(state: &mut RigidBodyState, ...)` |
+| `ExplicitEuler` | `integrators.rs:137` | First-order explicit |
+| `SemiImplicitEuler` | `integrators.rs:171` | Symplectic Euler |
+| `VelocityVerlet` | `integrators.rs:204` | Second-order symplectic |
+| `RungeKutta4` | `integrators.rs:239` | Constant-acceleration reduction (not true multi-stage) |
+| `ImplicitVelocity` | `integrators.rs:296` | Implicit-in-velocity with damping |
+| `ImplicitFast` | `integrators.rs:384` | Implicit, skips Coriolis terms |
+| `integrate_with_method()` | `integrators.rs:54` | Dispatch by `IntegrationMethod` enum |
+| `integrate_with_method_and_damping()` | `integrators.rs:90` | Dispatch with damping support |
+| `apply_damping()` | `integrators.rs:480` | Post-integration damping |
+| `clamp_velocities()` | `integrators.rs:490` | Velocity clamping |
+| Tests | `integrators.rs:508-1005` | ~500 lines of internal unit tests |
+
+These operate on `RigidBodyState` (a single-body type from sim-types) via
+`IntegrationMethod` enum dispatch. The pipeline never touches `RigidBodyState`.
+
+**System B — Pipeline integrator** (`mujoco_pipeline.rs:629`):
+
+```rust
+pub enum Integrator {
+    Euler,                  // Semi-implicit Euler
+    RungeKutta4,            // True 4-stage RK4 (mj_runge_kutta)
+    ImplicitSpringDamper,   // Diagonal spring/damper implicit Euler
+}
+```
+
+This enum drives `Data::step()` (`mujoco_pipeline.rs:2257`), `Data::integrate()`
+(`mujoco_pipeline.rs:2391`), `mj_fwd_acceleration()` (`mujoco_pipeline.rs:8768`),
+and `mj_fwd_passive()` (`mujoco_pipeline.rs:6707`). It operates on the full
+generalized-coordinate state (`qpos`/`qvel`/`qacc`) with quaternion-aware position
+integration via `mj_integrate_pos_explicit()`.
+
+**Callers of System A: zero.**
+
+Verified by exhaustive grep. No code outside `integrators.rs` itself calls any
+function from the module. Specifically:
+
+| Potential caller | Status |
+|------------------|--------|
+| `mujoco_pipeline.rs` | Zero imports from `crate::integrators`. Uses own `Integrator` enum. |
+| `sim/L0/tests/integration/` | All tests use `Data::step()` / pipeline. None import `integrators::`. |
+| `sim/L0/core/src/lib.rs:78` | Declares `pub mod integrators` — export only, no calls. |
+| `sim/L0/physics/src/lib.rs:165-168` | Re-exports to prelude — export only, no calls. |
+| `sim/L0/core/benches/` | Uses pipeline `Model`/`Data`. No integrator trait calls. |
+
+**Orphaned supporting types:**
+
+The standalone system depends on `IntegrationMethod` from sim-types
+(`types/src/config.rs:387-418`), a 6-variant enum with helper methods (`order()`,
+`is_symplectic()`, `is_implicit()`, `skips_coriolis()`, `relative_cost()`,
+`Display` impl) totaling ~90 lines. This enum is also stored in
+`SolverConfig.integration` (`types/src/config.rs:153`).
+
+`IntegrationMethod` has exactly 3 consumers:
+
+1. `integrators.rs:33` — dispatches on it (dead).
+2. `mjcf/src/config.rs:12-21` — `From<MjcfIntegrator> for IntegrationMethod` conversion,
+   feeding `SolverConfig` via `SimulationConfig::from(&MjcfOption)`. But the pipeline
+   never reads `SimulationConfig` or `SolverConfig` (`mujoco_pipeline.rs` has zero
+   references to either type). The pipeline uses a separate
+   `From<MjcfIntegrator> for Integrator` in `model_builder.rs:457-460`.
+3. `types/src/config.rs` — enum definition and self-tests.
+
+The `From<MjcfIntegrator> for IntegrationMethod` impl and associated test
+(`config.rs:219-236`) will become dead code once `integrators.rs` is removed,
+since nothing reads the `IntegrationMethod` field from `SolverConfig`.
+
+**Name collision:** The standalone `Integrator` *trait* and the pipeline `Integrator`
+*enum* collide. The sim-physics prelude resolves this with
+`Integrator as MjIntegrator` (`physics/src/lib.rs:162`). Removing the trait
+eliminates the collision and the alias.
+
+#### Objective
+
+Remove the dead standalone integrator system and its orphaned dependencies. One
+integrator system (the pipeline's `Integrator` enum) remains as the single source
+of truth.
+
+#### Decision: Option (a) — Remove
+
+Option (b) (consolidating by having `Data::integrate()` delegate to the trait) was
+evaluated and rejected:
+
+- The trait operates on `RigidBodyState` (position + velocity of a single rigid
+  body). The pipeline operates on generalized coordinates (`qpos`/`qvel` vectors
+  spanning all joints) with quaternion-aware manifold integration. The type systems
+  are fundamentally incompatible — adapting the trait would require rewriting it
+  from scratch, at which point it's not consolidation.
+- The pipeline's RK4 is true multi-stage (4 calls to `forward_skip_sensors()`).
+  The standalone `RungeKutta4` is a constant-acceleration reduction. Consolidation
+  would mean deleting the standalone version anyway.
+- The pipeline's implicit integrator modifies the mass matrix
+  (`M + h·D + h²·K`) and solves a coupled system. The standalone
+  `ImplicitVelocity` solves a scalar `(M - h*D) * v = M*v + h*f`. Different
+  algorithms, different inputs.
+- No external users of sim-physics have been identified that consume the
+  standalone integrators independent of the pipeline.
+
+#### Specification
+
+Steps are grouped by file to minimize context-switching during implementation.
+The compiler will catch any missed references — after each step, `cargo check`
+should surface the next breakage.
+
+##### Step 1: Delete `integrators.rs`
+
+Delete `sim/L0/core/src/integrators.rs` (1,005 lines — 497 lines of code,
+508 lines of tests and doc-comments including a module-level doc-test).
+
+##### Step 2: Update `sim/L0/core/src/lib.rs`
+
+Two changes in one file:
+
+1. Remove module declaration (line 78):
+   ```rust
+   pub mod integrators;  // DELETE
+   ```
+
+2. Remove `IntegrationMethod` from the sim-types re-export (line 137):
+   ```rust
+   pub use sim_types::{
+       Action, ActionType, BodyId, ExternalForce, Gravity, JointCommand,
+       JointCommandType, JointId, JointLimits, JointState, JointType,
+       MassProperties, Observation, ObservationType, Pose, RigidBodyState,
+       SimError, SimulationConfig, SolverConfig, Twist,
+       // REMOVE: IntegrationMethod
+   };
+   ```
+
+##### Step 3: Update `sim/L0/types/src/config.rs`
+
+Remove the `IntegrationMethod` enum and all its dependents:
+
+1. Delete the `IntegrationMethod` enum (lines 384-418), `impl IntegrationMethod`
+   block (lines 420-462), and `Display` impl (lines 464-473).
+
+2. Remove `IntegrationMethod` from `SolverConfig`:
+   - Delete `pub integration: IntegrationMethod` field (line 153).
+   - Delete `integration: IntegrationMethod::SemiImplicitEuler` from `Default`
+     impl (line 275).
+   - Delete `integration: IntegrationMethod::RungeKutta4` from `high_accuracy()`
+     (line 294).
+   - Delete `integration: IntegrationMethod::SemiImplicitEuler` from `fast()`
+     (line 311).
+   - Delete builder method `pub fn integration(...)` (lines 325-329).
+
+3. Update tests:
+   - In `test_solver_configs`: remove `hifi.integration` assertion (line 537).
+   - Delete `test_integration_method` (lines 562-569).
+
+4. Update `sim/L0/types/src/lib.rs` line 74: remove `IntegrationMethod` from the
+   `pub use config::` re-export.
+
+##### Step 4: Update `sim/L0/mjcf/src/config.rs`
+
+Four changes in one file:
+
+1. Remove `IntegrationMethod` from the import (line 7). Keep `Gravity`,
+   `ParallelConfig`, `SimulationConfig`, `SolverConfig`.
+
+2. Delete the `From<MjcfIntegrator> for IntegrationMethod` impl (lines 12-21).
+
+3. In `From<&MjcfOption> for SimulationConfig` (line 24): delete the
+   `integration: option.integrator.into()` line from the `SolverConfig`
+   construction (line 35).
+
+4. Delete test `test_integrator_conversion` (lines 219-236).
+
+##### Step 5: Update `sim/L0/physics/src/lib.rs`
+
+Three changes in the prelude:
+
+1. Remove `IntegrationMethod` from the sim-types re-export (line 146):
+   ```rust
+   pub use sim_types::{Gravity, SimulationConfig, SolverConfig};
+   // REMOVE: IntegrationMethod
+   ```
+
+2. Delete the standalone integrator re-export block (lines 164-168):
+   ```rust
+   // DELETE entire block:
+   pub use sim_core::integrators::{
+       ExplicitEuler, Integrator, RungeKutta4, SemiImplicitEuler, VelocityVerlet,
+       integrate_with_method,
+   };
+   ```
+
+3. Remove the `Integrator as MjIntegrator` alias (line 162) and export the
+   pipeline enum directly under its real name:
+   ```rust
+   pub use sim_core::{Contact, GeomType, Integrator, MjJointType, StepError};
+   ```
+
+##### Step 6: Update documentation
+
+Two doc files reference the deleted system: `ARCHITECTURE.md` and
+`MUJOCO_GAP_ANALYSIS.md`.
+
+**6a. `sim/docs/ARCHITECTURE.md` (lines 203-206)**
+
+Remove the `integrators.rs` bullet from the sim-core file listing. Replace:
+
+```markdown
+- `integrators.rs` — standalone trait system with 6 integrators (ExplicitEuler,
+  SemiImplicitEuler, VelocityVerlet, RungeKutta4, ImplicitVelocity, ImplicitFast).
+  **Not used by the MuJoCo pipeline** — the pipeline has its own `Integrator` enum
+  in `mujoco_pipeline.rs`. See [FUTURE_WORK C1](./FUTURE_WORK.md) for disambiguation plan.
+```
+
+with nothing (delete the 4-line bullet entirely). The pipeline's `Integrator`
+enum is already documented under `mujoco_pipeline.rs` in the same listing.
+
+**6b. `sim/docs/MUJOCO_GAP_ANALYSIS.md`**
+
+This file has six locations referencing the deleted system.
+
+**Location 1: "Not in pipeline" summary (line 44)**
+
+Replace:
+```
+- `integrators.rs` trait system (1,005 lines) — disconnected from pipeline ([FUTURE_WORK C1](./FUTURE_WORK.md))
+```
+with:
+```
+- ~~`integrators.rs` trait system~~ — removed in FUTURE_WORK C1
+```
+
+**Location 2: Integration status table (lines 93-98)**
+
+Lines 93-96 list four standalone integrators as "Standalone (in integrators.rs
+trait, not in pipeline)". Replace the four rows with:
+
+```markdown
+| Explicit Euler | - | - | Not implemented (removed standalone-only code) | - | - |
+| Velocity Verlet | - | - | Not implemented (removed standalone-only code) | - | - |
+| Implicit-in-velocity | Core feature | - | **Implemented** (pipeline `ImplicitSpringDamper` for diagonal spring/damper) | - | - |
+| Implicit-fast (no Coriolis) | Optimization | - | Not separately implemented; `ImplicitSpringDamper` covers the primary use case | - | - |
+```
+
+Replace the blockquote (line 98) with:
+
+```markdown
+> The pipeline uses a single `Integrator` enum (`mujoco_pipeline.rs:629`)
+> with three variants: `Euler` (semi-implicit), `RungeKutta4` (true 4-stage),
+> and `ImplicitSpringDamper` (diagonal spring/damper implicit Euler).
+> A standalone trait-based integrator system was removed in FUTURE_WORK C1.
+```
+
+**Location 3: Implicit Integration notes (lines 100-146)**
+
+Replace the "Implemented" list (lines 112-117) with:
+
+```markdown
+**Implemented (pipeline):**
+- `Integrator::ImplicitSpringDamper` in `mujoco_pipeline.rs` — implicit Euler
+  for diagonal per-DOF spring stiffness K and damping D.
+- Solves: `(M + h·D + h²·K)·v_new = M·v_old + h·f_ext - h·K·(q - q_eq)`
+```
+
+Replace the "Usage" code block (lines 119-143) with a pipeline-based example:
+
+    **Usage:**
+    ```rust
+    use sim_mjcf::load_model;
+
+    let mjcf = r#"<mujoco>
+        <option integrator="implicit"/>
+        <worldbody>
+            <body pos="0 0 1">
+                <joint type="hinge" stiffness="100" damping="10"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+        </worldbody>
+    </mujoco>"#;
+
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+    data.step(&model).expect("step");
+    ```
+
+Update "Files modified" (line 146): replace
+`sim-core/src/integrators.rs, sim-types/src/config.rs` with
+`sim-core/src/mujoco_pipeline.rs (Integrator::ImplicitSpringDamper)`.
+
+Update section heading (line 100) to:
+`### Implementation Notes: Implicit Integration ✅ COMPLETED`
+(remove the "(standalone only)" qualifier).
+
+**Location 4: Implicit-fast checklist (line 1454)**
+
+Replace:
+```
+3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ ✅ → ⚠️ **Standalone** (in `integrators.rs` trait, not in pipeline; see [FUTURE_WORK C1](./FUTURE_WORK.md))
+```
+with:
+```
+3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ — Removed (standalone `integrators.rs` deleted in FUTURE_WORK C1; pipeline uses `ImplicitSpringDamper`)
+```
+
+**Location 5: Implicit-Fast block (lines 1471-1517)**
+
+The code example (lines 1478-1510) references deleted types
+(`NewtonConstraintSolver`, `ImplicitFast`, `integrate_with_method`,
+`IntegrationMethod::ImplicitFast`). The Newton solver was already removed in
+Phase 3 consolidation; the integrator types are removed by this PR.
+
+Replace lines 1471-1517 with:
+
+```markdown
+**Implicit-Fast Integration (removed):**
+- The standalone `ImplicitFast` integrator and its `IntegrationMethod::ImplicitFast`
+  dispatch variant were removed in FUTURE_WORK C1 (dead code — not called by
+  the pipeline). The pipeline's `Integrator::ImplicitSpringDamper` covers the
+  primary use case (diagonal spring/damper implicit Euler).
+
+**Files (removed in consolidation):**
+- `sim-constraint/src/sparse.rs` — removed in Phase 3
+- `sim-constraint/src/newton.rs` — removed in Phase 3
+- `sim-core/src/integrators.rs` — removed in FUTURE_WORK C1
+```
+
+**Location 6: File listing table (line 1975)**
+
+Remove `integrators.rs` from the sim-core "Key Files" column. Change:
+```
+`mujoco_pipeline.rs`, `integrators.rs`, `collision_shape.rs`, ...
+```
+to:
+```
+`mujoco_pipeline.rs`, `collision_shape.rs`, ...
+```
+
+#### Acceptance Criteria
+
+1. `sim/L0/core/src/integrators.rs` no longer exists.
+2. `IntegrationMethod` enum no longer exists in sim-types.
+3. `SolverConfig` no longer has an `integration` field.
+4. The sim-physics prelude exports `Integrator` (the pipeline enum) directly,
+   without the `as MjIntegrator` alias. No standalone integrator types
+   (`ExplicitEuler`, `SemiImplicitEuler`, `VelocityVerlet`,
+   `integrate_with_method`) appear in the public API.
+5. `cargo build --workspace` succeeds with zero errors and zero warnings
+   related to unused imports or dead code.
+6. `cargo test --workspace` passes — all existing pipeline tests
+   (implicit integration, RK4 integration, collision, sensor, MJCF parsing)
+   remain green. The only tests removed are the internal `integrators.rs` tests
+   and `test_integrator_conversion` / `test_integration_method` in config modules.
+7. `cargo doc --workspace` succeeds with no broken intra-doc links.
+8. `MUJOCO_GAP_ANALYSIS.md` and `ARCHITECTURE.md` contain no `use` statements
+   referencing `sim_core::integrators`, no `IntegrationMethod::` paths, and no
+   `ImplicitVelocity` / `integrate_with_method` references. The `integrators.rs`
+   file listing is removed from both docs.
+   Note: `MjcfIntegrator::ImplicitFast` in `mjcf/src/types.rs`, `parser.rs`,
+   and `model_builder.rs` is **retained** — it is live MJCF parsing code that
+   maps to the pipeline's `Integrator::ImplicitSpringDamper`, not part of the
+   dead standalone system.
+9. No `#[allow(dead_code)]` or `#[allow(unused_imports)]` annotations were added
+   to suppress warnings — dead code is deleted, not silenced.
+10. `RigidBodyState`, `Twist`, `Pose`, and other sim-types used by sim-sensor
+    and elsewhere are **not** removed — only `IntegrationMethod` and its
+    dependents are deleted.
+
+#### Verification Strategy
+
+After applying each step, run `cargo check --workspace` to confirm the next
+set of compile errors matches expectations:
+
+| After Step | Expected errors |
+|------------|----------------|
+| 1 (delete file) | `mod integrators` in `lib.rs` → unresolved module |
+| 2 (update lib.rs) | `integrators::` paths in `physics/src/lib.rs` → unresolved |
+| 3 (update types) | `IntegrationMethod` in `mjcf/src/config.rs` → unresolved |
+| 4 (update mjcf) | `IntegrationMethod` in `physics/src/lib.rs` prelude → unresolved |
+| 5 (update physics) | Zero errors. `cargo test --workspace` should pass. |
+| 6 (update docs) | N/A (markdown, not compiled). Grep-verify: `grep -rn 'integrators\.\|IntegrationMethod\|ImplicitVelocity\|integrate_with_method' sim/docs/` should return only FUTURE_WORK.md (historical reference). |
+
+#### Net Change
+
+| Component | Lines removed | Notes |
+|-----------|--------------|-------|
+| `integrators.rs` (code) | ~497 | 6 structs, 2 dispatch fns, trait, utilities |
+| `integrators.rs` (tests + docs) | ~508 | Module doc-test + ~20 unit tests |
+| `IntegrationMethod` enum + impls + Display | ~90 | `types/src/config.rs` |
+| `SolverConfig.integration` field + builder + defaults | ~15 | `types/src/config.rs` |
+| `From<MjcfIntegrator> for IntegrationMethod` + test | ~28 | `mjcf/src/config.rs` |
+| Re-export lines (core lib.rs, physics lib.rs) | ~10 | Module decl + 2 re-export blocks |
+| Config test lines | ~10 | `test_integration_method`, `test_integrator_conversion` |
+| ARCHITECTURE.md stale bullet | 4 | `integrators.rs` listing deleted |
+| GAP_ANALYSIS.md stale sections | ~90 | 6 locations; replaced with ~35 lines of updated text |
+| **Total removed** | **~1,200** | |
+| **Total added (doc replacements)** | **~35** | |
+| **Net** | **~−1,165** | |
+
+#### Files
+
+- `sim/L0/core/src/integrators.rs` — **delete** (1,005 lines)
+- `sim/L0/core/src/lib.rs` — modify (remove `pub mod integrators` line 78,
+  remove `IntegrationMethod` from re-export line 137)
+- `sim/L0/types/src/config.rs` — modify (remove `IntegrationMethod` enum +
+  impls lines 384-473, remove `SolverConfig.integration` field + builder +
+  defaults + test assertions)
+- `sim/L0/types/src/lib.rs` — modify (remove `IntegrationMethod` from
+  re-export line 74)
+- `sim/L0/mjcf/src/config.rs` — modify (remove `IntegrationMethod` import
+  line 7, remove `From` impl lines 12-21, remove `integration:` field
+  construction line 35, remove test lines 219-236)
+- `sim/L0/physics/src/lib.rs` — modify (remove `IntegrationMethod` from
+  prelude line 146, delete integrator re-export block lines 164-168,
+  replace `Integrator as MjIntegrator` alias line 162 with direct export)
+- `sim/docs/ARCHITECTURE.md` — modify (remove `integrators.rs` bullet
+  lines 203-206)
+- `sim/docs/MUJOCO_GAP_ANALYSIS.md` — modify (6 locations: summary line 44,
+  integration table lines 93-98, implicit notes lines 100-146, checklist
+  line 1454, implicit-fast block lines 1471-1517, file table line 1975)
 
 ### C2. ~~Correct stale MUJOCO_GAP_ANALYSIS.md~~ ✅ DONE
 

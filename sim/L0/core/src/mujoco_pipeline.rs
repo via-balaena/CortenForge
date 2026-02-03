@@ -71,8 +71,7 @@ use crate::mesh::{
 };
 use crate::raycast::raycast_shape;
 use nalgebra::{
-    Cholesky, DMatrix, DVector, Dyn, Matrix3, Matrix6, Point3, UnitQuaternion, UnitVector3,
-    Vector3, Vector6,
+    DMatrix, DVector, Matrix3, Matrix6, Point3, UnitQuaternion, UnitVector3, Vector3, Vector6,
 };
 use sim_types::Pose;
 use std::f64::consts::PI;
@@ -450,6 +449,16 @@ pub enum WrapType {
     Pulley,
 }
 
+/// Tendon type (pipeline-local enum, converted from MjcfTendonType in model builder).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TendonType {
+    /// Fixed (linear coupling): L = Σ coef_i * q_i, constant Jacobian.
+    #[default]
+    Fixed,
+    /// Spatial (3D path routing through sites): not yet implemented.
+    Spatial,
+}
+
 /// Equality constraint type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum EqualityType {
@@ -634,7 +643,7 @@ pub enum Integrator {
     /// 4th order Runge-Kutta.
     RungeKutta4,
     /// Implicit Euler for diagonal per-DOF spring/damper forces.
-    Implicit,
+    ImplicitSpringDamper,
 }
 
 /// Errors that can occur during a simulation step.
@@ -934,6 +943,18 @@ pub struct Model {
     pub tendon_adr: Vec<usize>,
     /// Optional tendon names.
     pub tendon_name: Vec<Option<String>>,
+    /// Tendon type: Fixed (linear coupling) or Spatial (3D path routing).
+    pub tendon_type: Vec<TendonType>,
+    /// Solver parameters for tendon limit constraints (2 elements per tendon).
+    /// \[0\] = timeconst (>0) or -stiffness (≤0), \[1\] = dampratio or -damping.
+    /// Default: [0.0, 0.0] → uses model.default_eq_stiffness/default_eq_damping.
+    pub tendon_solref: Vec<[f64; 2]>,
+    /// Impedance parameters for tendon limit constraints (5 elements per tendon).
+    /// [d_min, d_max, width, midpoint, power]. Default: [0.9, 0.95, 0.001, 0.5, 2.0].
+    pub tendon_solimp: Vec<[f64; 5]>,
+    /// Velocity-dependent friction loss per tendon (N).
+    /// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
+    pub tendon_frictionloss: Vec<f64>,
 
     // Tendon wrapping path elements (indexed by wrap_id, grouped by tendon; total length = nwrap)
     /// Wrap object type (Site, Geom, Joint, Pulley).
@@ -1314,22 +1335,11 @@ pub struct Data {
     /// For small systems (nv <= 32), dense storage is used.
     /// For large systems, only lower triangle is filled (sparse via qLD).
     pub qM: DMatrix<f64>,
-    /// Cached Cholesky factorization of mass matrix (L where M = L L^T).
-    /// Computed once in `mj_crba()` after building qM, reused in:
-    /// - `mj_fwd_acceleration()`: Solve M qacc = τ
-    /// - `pgs_solve_contacts()`: Compute M^{-1} J^T for constraint Jacobian
-    ///
-    /// This caching saves O(n³) factorization per solve (typically 2-3 per step).
-    /// The clone in `mj_crba()` is unavoidable (nalgebra consumes the matrix),
-    /// but subsequent solves are O(n²) forward/back substitution.
-    pub qM_cholesky: Option<Cholesky<f64, Dyn>>,
 
-    // ==================== Sparse L^T D L Factorization (for large systems) ====================
-    // TODO(FUTURE_WORK#2): Implement `mj_factor_sparse()` to populate these fields.
-    // These fields are data scaffolds only — initialized to defaults, never written.
-    // See sim/docs/FUTURE_WORK.md #2 for the full spec. The sparse factorization achieves
-    // O(nv) for tree-structured robots vs O(nv³) for dense Cholesky, which compounds
-    // in batched RL (4,096 envs × nv=30 saves ~36M multiply-adds per batch step).
+    // ==================== Sparse L^T D L Factorization ====================
+    // Computed in mj_crba() via mj_factor_sparse(). Exploits tree sparsity from
+    // dof_parent for O(nv) factorization and solve vs O(nv³) for dense Cholesky.
+    // Reused by mj_fwd_acceleration_explicit() and pgs_solve_contacts().
     //
     /// Sparse L^T D L factorization exploiting tree structure.
     /// M = L^T D L where L is unit lower triangular and D is diagonal.
@@ -1437,6 +1447,33 @@ pub struct Data {
     /// Scratch vector for new velocity in implicit solve (length `nv`).
     /// Used to hold v_new while computing qacc = (v_new - v_old) / h.
     pub scratch_v_new: DVector<f64>,
+
+    // ==================== RK4 Scratch Buffers ====================
+    // State and rate buffers for 4-stage Runge-Kutta integration.
+    // Pre-allocated in make_data() — no heap allocation during stepping.
+    /// Saved initial position for RK4: `X[0].qpos` (length nq).
+    /// Read at every stage (step 2c) and the final advance (step 4).
+    pub rk4_qpos_saved: DVector<f64>,
+
+    /// Scratch position for the current RK4 stage (length nq).
+    /// Written at step 2c, copied to data.qpos at step 2e, then overwritten
+    /// next iteration. Intermediate positions are not needed for the final
+    /// B-weight combination (which only sums velocities and accelerations).
+    pub rk4_qpos_stage: DVector<f64>,
+
+    /// RK4 stage velocities: `X[i].qvel` (4 buffers, each length nv).
+    /// All 4 are needed for the final B-weight combination in step 3.
+    pub rk4_qvel: [DVector<f64>; 4],
+
+    /// RK4 stage accelerations: `F[i].qacc` (4 buffers, each length nv).
+    /// All 4 are needed for the final B-weight combination in step 3.
+    pub rk4_qacc: [DVector<f64>; 4],
+
+    /// Weighted velocity sum for manifold position integration (length nv).
+    pub rk4_dX_vel: DVector<f64>,
+
+    /// Weighted acceleration sum for velocity update (length nv).
+    pub rk4_dX_acc: DVector<f64>,
 
     // ==================== Cached Body Effective Mass/Inertia ====================
     // These are extracted from the mass matrix diagonal during forward() and cached
@@ -1583,6 +1620,10 @@ impl Model {
             tendon_num: vec![],
             tendon_adr: vec![],
             tendon_name: vec![],
+            tendon_type: vec![],
+            tendon_solref: vec![],
+            tendon_solimp: vec![],
+            tendon_frictionloss: vec![],
             wrap_type: vec![],
             wrap_objid: vec![],
             wrap_prm: vec![],
@@ -1722,9 +1763,8 @@ impl Model {
 
             // Mass matrix (dense)
             qM: DMatrix::zeros(self.nv, self.nv),
-            qM_cholesky: None, // Computed in mj_crba
 
-            // Mass matrix (sparse L^T D L for large systems)
+            // Mass matrix (sparse L^T D L — computed in mj_crba via mj_factor_sparse)
             qLD_diag: DVector::zeros(self.nv),
             qLD_L: vec![Vec::new(); self.nv],
             qLD_valid: false,
@@ -1772,6 +1812,14 @@ impl Model {
             scratch_force: DVector::zeros(self.nv),
             scratch_rhs: DVector::zeros(self.nv),
             scratch_v_new: DVector::zeros(self.nv),
+
+            // RK4 scratch buffers
+            rk4_qpos_saved: DVector::zeros(self.nq),
+            rk4_qpos_stage: DVector::zeros(self.nq),
+            rk4_qvel: std::array::from_fn(|_| DVector::zeros(self.nv)),
+            rk4_qacc: std::array::from_fn(|_| DVector::zeros(self.nv)),
+            rk4_dX_vel: DVector::zeros(self.nv),
+            rk4_dX_acc: DVector::zeros(self.nv),
 
             // Cached body mass/inertia (computed in forward() after CRBA)
             // Initialize world body (index 0) to infinity, others to default
@@ -2242,14 +2290,20 @@ impl Data {
         mj_check_pos(model, self)?;
         mj_check_vel(model, self)?;
 
-        // Forward dynamics: compute qacc from current state
-        self.forward(model)?;
-
-        // Validate computed acceleration
-        mj_check_acc(model, self)?;
-
-        // Integration: update qvel and qpos
-        self.integrate(model);
+        match model.integrator {
+            Integrator::RungeKutta4 => {
+                // RK4: forward() evaluates initial state (with sensors).
+                // mj_runge_kutta() then calls forward_skip_sensors() 3 more times.
+                self.forward(model)?;
+                mj_check_acc(model, self)?;
+                mj_runge_kutta(model, self)?;
+            }
+            Integrator::Euler | Integrator::ImplicitSpringDamper => {
+                self.forward(model)?;
+                mj_check_acc(model, self)?;
+                self.integrate(model);
+            }
+        }
 
         Ok(())
     }
@@ -2319,11 +2373,43 @@ impl Data {
         Ok(())
     }
 
-    /// Integration step.
+    /// Forward dynamics pipeline without sensor evaluation.
+    ///
+    /// Identical to [`forward()`](Self::forward) but skips all 4 sensor stages
+    /// (`mj_sensor_pos`, `mj_sensor_vel`, `mj_sensor_acc`, `mj_sensor_postprocess`).
+    /// Used by RK4 intermediate stages to match MuJoCo's
+    /// `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)` where `1` = skip sensors.
+    fn forward_skip_sensors(&mut self, model: &Model) -> Result<(), StepError> {
+        // ========== Position Stage ==========
+        mj_fwd_position(model, self);
+        mj_collision(model, self);
+        // skip: mj_sensor_pos
+        mj_energy_pos(model, self);
+
+        // ========== Velocity Stage ==========
+        mj_fwd_velocity(model, self);
+        // skip: mj_sensor_vel
+
+        // ========== Acceleration Stage ==========
+        mj_fwd_actuation(model, self);
+        mj_crba(model, self);
+        mj_rne(model, self);
+        mj_energy_vel(model, self);
+        mj_fwd_passive(model, self);
+        mj_fwd_constraint(model, self);
+        mj_fwd_acceleration(model, self)?;
+        // skip: mj_sensor_acc, mj_sensor_postprocess
+
+        Ok(())
+    }
+
+    /// Integration step for Euler and implicit-spring-damper integrators.
+    ///
+    /// RK4 integration is handled by [`mj_runge_kutta()`] and does not call this method.
     ///
     /// # Integration Methods
     ///
-    /// - **Euler/RK4**: Semi-implicit Euler. Updates velocity first (`qvel += qacc * h`),
+    /// - **Euler**: Semi-implicit Euler. Updates velocity first (`qvel += qacc * h`),
     ///   then integrates position using the new velocity.
     ///
     /// - **Implicit**: Velocity was already updated in `mj_fwd_acceleration_implicit()`.
@@ -2331,18 +2417,21 @@ impl Data {
     fn integrate(&mut self, model: &Model) {
         let h = model.timestep;
 
-        // For explicit integrators, update velocity using computed acceleration
+        // For Euler, update velocity using computed acceleration
         // For implicit integrator, velocity was already updated in mj_fwd_acceleration_implicit
         match model.integrator {
-            Integrator::Euler | Integrator::RungeKutta4 => {
+            Integrator::Euler => {
                 // Semi-implicit Euler: update velocity first, then position
                 for i in 0..model.nv {
                     self.qvel[i] += self.qacc[i] * h;
                 }
             }
-            Integrator::Implicit => {
+            Integrator::ImplicitSpringDamper => {
                 // Velocity already updated by mj_fwd_acceleration_implicit
                 // qacc was back-computed as (v_new - v_old) / h for consistency
+            }
+            Integrator::RungeKutta4 => {
+                unreachable!("RK4 integration handled by mj_runge_kutta()")
             }
         }
 
@@ -2538,6 +2627,9 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
             .to_rotation_matrix()
             .into_inner();
     }
+
+    // Tendon kinematics (after site poses, before subtree COM)
+    mj_fwd_tendon(model, data);
 
     // ========== Compute subtree mass and COM (for O(n) RNE gravity) ==========
     // Initialize with each body's own mass and COM
@@ -5027,8 +5119,17 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                                 );
                             }
                         }
-                        ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
-                            // Tendon/site transmission length not yet available
+                        ActuatorTransmission::Tendon => {
+                            let tendon_id = model.actuator_trnid[objid];
+                            let value = if tendon_id < model.ntendon {
+                                data.ten_length[tendon_id] * model.actuator_gear[objid]
+                            } else {
+                                0.0
+                            };
+                            sensor_write(&mut data.sensordata, adr, 0, value);
+                        }
+                        ActuatorTransmission::Site => {
+                            // Site transmission length not yet available.
                             sensor_write(&mut data.sensordata, adr, 0, 0.0);
                         }
                     }
@@ -5036,10 +5137,13 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::TendonPos => {
-                // Tendon length: requires tendon pipeline integration.
-                // When tendon pipeline is wired, this will read from ten_length[objid].
-                // For now, output 0 to avoid returning garbage.
-                sensor_write(&mut data.sensordata, adr, 0, 0.0);
+                let tendon_id = model.sensor_objid[sensor_id];
+                let value = if tendon_id < model.ntendon {
+                    data.ten_length[tendon_id]
+                } else {
+                    0.0
+                };
+                sensor_write(&mut data.sensordata, adr, 0, value);
             }
 
             // Skip velocity/acceleration-dependent sensors
@@ -5233,8 +5337,17 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
                                 );
                             }
                         }
-                        ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
-                            // Tendon/site transmission velocity not yet available
+                        ActuatorTransmission::Tendon => {
+                            let tendon_id = model.actuator_trnid[objid];
+                            let value = if tendon_id < model.ntendon {
+                                data.ten_velocity[tendon_id] * model.actuator_gear[objid]
+                            } else {
+                                0.0
+                            };
+                            sensor_write(&mut data.sensordata, adr, 0, value);
+                        }
+                        ActuatorTransmission::Site => {
+                            // Site transmission velocity not yet available.
                             sensor_write(&mut data.sensordata, adr, 0, 0.0);
                         }
                     }
@@ -5242,10 +5355,13 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::TendonVel => {
-                // Tendon velocity: requires tendon pipeline integration.
-                // When tendon pipeline is wired, this will read from ten_velocity[objid].
-                // For now, output 0 to avoid returning garbage.
-                sensor_write(&mut data.sensordata, adr, 0, 0.0);
+                let tendon_id = model.sensor_objid[sensor_id];
+                let value = if tendon_id < model.ntendon {
+                    data.ten_velocity[tendon_id]
+                } else {
+                    0.0
+                };
+                sensor_write(&mut data.sensordata, adr, 0, value);
             }
 
             // Skip position/acceleration-dependent sensors
@@ -5928,6 +6044,70 @@ fn mj_fwd_velocity(model: &Model, data: &mut Data) {
 
         data.cvel[body_id] = vel;
     }
+
+    // Tendon velocities: v_t = J_t · qvel
+    for t in 0..model.ntendon {
+        data.ten_velocity[t] = data.ten_J[t].dot(&data.qvel);
+    }
+}
+
+/// Compute tendon lengths and Jacobians from current joint state.
+///
+/// For fixed tendons: L = Σ coef_i * qpos[dof_adr_i], J[dof_adr_i] = coef_i.
+/// For spatial tendons: silently skipped (deferred to spatial tendon PR).
+///
+/// Called from mj_fwd_position() after site transforms, before subtree COM.
+fn mj_fwd_tendon(model: &Model, data: &mut Data) {
+    if model.ntendon == 0 {
+        return;
+    }
+
+    for t in 0..model.ntendon {
+        match model.tendon_type[t] {
+            TendonType::Fixed => {
+                mj_fwd_tendon_fixed(model, data, t);
+            }
+            TendonType::Spatial => {
+                // Spatial tendons not yet implemented.
+                // Set length to 0, Jacobian to zero vector.
+                data.ten_length[t] = 0.0;
+                data.ten_J[t].fill(0.0);
+            }
+        }
+    }
+}
+
+/// Fixed tendon kinematics for a single tendon.
+///
+/// Fixed tendon length is a linear combination of joint positions:
+///   L_t = Σ_w coef_w * qpos[dof_adr_w]
+///
+/// The Jacobian is constant (configuration-independent):
+///   J_t[dof_adr_w] = coef_w
+#[inline]
+fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
+    let adr = model.tendon_adr[t];
+    let num = model.tendon_num[t];
+
+    // Zero the Jacobian row. For fixed tendons, only a few entries are non-zero.
+    data.ten_J[t].fill(0.0);
+
+    let mut length = 0.0;
+    for w in adr..(adr + num) {
+        debug_assert_eq!(model.wrap_type[w], WrapType::Joint);
+        let dof_adr = model.wrap_objid[w];
+        let coef = model.wrap_prm[w];
+
+        if dof_adr < data.qpos.len() {
+            length += coef * data.qpos[dof_adr];
+        }
+
+        if dof_adr < model.nv {
+            data.ten_J[t][dof_adr] += coef;
+        }
+    }
+
+    data.ten_length[t] = length;
 }
 
 /// Compute actuator forces from control inputs.
@@ -5951,9 +6131,25 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     }
                 }
             }
-            ActuatorTransmission::Tendon | ActuatorTransmission::Site => {
-                // Placeholder for tendon/site actuation
-                // Will be implemented when tendons are integrated
+            ActuatorTransmission::Tendon => {
+                // Tendon transmission: apply ctrl * gear as force along tendon,
+                // mapped to joints via tendon Jacobian J^T.
+                let tendon_id = trnid;
+                if tendon_id < model.ntendon {
+                    let force = ctrl * gear;
+                    let adr = model.tendon_adr[tendon_id];
+                    let num = model.tendon_num[tendon_id];
+                    for w in adr..(adr + num) {
+                        let dof_adr = model.wrap_objid[w];
+                        let coef = model.wrap_prm[w];
+                        if dof_adr < model.nv {
+                            data.qfrc_actuator[dof_adr] += coef * force;
+                        }
+                    }
+                }
+            }
+            ActuatorTransmission::Site => {
+                // Site transmission: not yet implemented.
             }
         }
     }
@@ -5984,6 +6180,7 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
     clippy::needless_range_loop
 )]
 fn mj_crba(model: &Model, data: &mut Data) {
+    data.qLD_valid = false;
     data.qM.fill(0.0);
 
     if model.nv == 0 {
@@ -6136,16 +6333,11 @@ fn mj_crba(model: &Model, data: &mut Data) {
     }
 
     // ============================================================
-    // Phase 5: Cache Cholesky factorization
+    // Phase 5: Sparse L^T D L factorization
     // ============================================================
-    // Compute L where M = L L^T once here, reuse in:
-    //   - mj_fwd_acceleration(): Solve M qacc = τ  →  O(n²) instead of O(n³)
-    //   - pgs_solve_contacts(): Compute A = J M^{-1} J^T  →  O(n²) per contact
-    //
-    // The clone is required: nalgebra::cholesky() consumes the matrix to avoid
-    // allocating a separate buffer. This is the optimal single-allocation approach.
-    // Total cost: O(n³) factorization + O(n²) memory, done once per forward().
-    data.qM_cholesky = data.qM.clone().cholesky();
+    // Exploits tree sparsity from dof_parent for O(n) factorization and solve.
+    // Reused in mj_fwd_acceleration_explicit() and pgs_solve_contacts().
+    mj_factor_sparse(model, data);
 
     // ============================================================
     // Phase 6: Cache body effective mass/inertia from qM diagonal
@@ -6645,13 +6837,63 @@ const FRICTION_VELOCITY_THRESHOLD: f64 = 1e-12;
 fn mj_fwd_passive(model: &Model, data: &mut Data) {
     data.qfrc_passive.fill(0.0);
 
-    let implicit_mode = model.integrator == Integrator::Implicit;
+    let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
     let mut visitor = PassiveForceVisitor {
         model,
         data,
         implicit_mode,
     };
     model.visit_joints(&mut visitor);
+
+    // Tendon passive forces: spring + damper + friction loss.
+    for t in 0..model.ntendon {
+        let length = data.ten_length[t];
+        let velocity = data.ten_velocity[t];
+        let mut force = 0.0;
+
+        if !implicit_mode {
+            // Spring: F = -k * (L - L_ref)
+            let k = model.tendon_stiffness[t];
+            if k > 0.0 {
+                let l_ref = model.tendon_lengthspring[t];
+                force -= k * (length - l_ref);
+            }
+
+            // Damper: F = -b * v
+            let b = model.tendon_damping[t];
+            if b > 0.0 {
+                force -= b * velocity;
+            }
+        }
+        // NOTE: In implicit mode, tendon spring/damper forces are skipped.
+        // Tendon springs/dampers couple multiple joints (non-diagonal K/D),
+        // so they cannot be absorbed into the existing diagonal implicit
+        // modification. This is a known limitation.
+
+        // Friction loss: F = -frictionloss * smooth_sign(v)
+        // Always explicit (velocity-sign-dependent, cannot linearize).
+        // Uses tanh approximation matching the joint friction pattern.
+        let fl = model.tendon_frictionloss[t];
+        if fl > 0.0 && velocity.abs() > FRICTION_VELOCITY_THRESHOLD {
+            let smooth_sign = (velocity * model.friction_smoothing).tanh();
+            force -= fl * smooth_sign;
+        }
+
+        data.ten_force[t] = force;
+
+        // Map tendon force to joint forces via sparse J^T multiplication.
+        if force != 0.0 {
+            let adr = model.tendon_adr[t];
+            let num = model.tendon_num[t];
+            for w in adr..(adr + num) {
+                let dof_adr = model.wrap_objid[w];
+                let coef = model.wrap_prm[w];
+                if dof_adr < model.nv {
+                    data.qfrc_passive[dof_adr] += coef * force;
+                }
+            }
+        }
+    }
 }
 
 /// Visitor for computing passive forces (springs, dampers, friction loss).
@@ -7037,15 +7279,6 @@ fn pgs_solve_contacts(
     // Each contact has 3 rows: 1 normal + 2 friction
     let nefc = ncon * 3;
 
-    // Use cached Cholesky from mj_crba
-    let chol = match &data.qM_cholesky {
-        Some(c) => c,
-        None => {
-            // Fallback to penalty if M is singular
-            return vec![Vector3::zeros(); ncon];
-        }
-    };
-
     // Build the full Jacobian and RHS
     let mut a = DMatrix::zeros(nefc, nefc);
     let mut b = DVector::zeros(nefc);
@@ -7055,11 +7288,11 @@ fn pgs_solve_contacts(
 
     // Compute unconstrained acceleration (qacc_smooth = M^{-1} * qfrc_smooth)
     // qfrc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias
-    let mut qfrc_smooth = data.qfrc_applied.clone();
-    qfrc_smooth += &data.qfrc_actuator;
-    qfrc_smooth += &data.qfrc_passive;
-    qfrc_smooth -= &data.qfrc_bias;
-    let qacc_smooth = chol.solve(&qfrc_smooth);
+    let mut qacc_smooth = data.qfrc_applied.clone();
+    qacc_smooth += &data.qfrc_actuator;
+    qacc_smooth += &data.qfrc_passive;
+    qacc_smooth -= &data.qfrc_bias;
+    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
 
     // Pre-compute M^{-1} * J^T for each contact
     let mut minv_jt: Vec<DMatrix<f64>> = Vec::with_capacity(ncon);
@@ -7068,8 +7301,8 @@ fn pgs_solve_contacts(
         // Solve M * X = J^T for each column
         let mut minv_jt_contact = DMatrix::zeros(model.nv, 3);
         for col in 0..3 {
-            let jt_col = jt.column(col).clone_owned();
-            let x = chol.solve(&jt_col);
+            let mut x = jt.column(col).clone_owned();
+            mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x);
             minv_jt_contact.set_column(col, &x);
         }
         minv_jt.push(minv_jt_contact);
@@ -8503,6 +8736,59 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         }
     }
 
+    // ========== Tendon Limit Constraints ==========
+    for t in 0..model.ntendon {
+        if !model.tendon_limited[t] {
+            continue;
+        }
+
+        let (limit_min, limit_max) = model.tendon_range[t];
+        let length = data.ten_length[t];
+
+        let (limit_stiffness, limit_damping) = solref_to_penalty(
+            model.tendon_solref[t],
+            model.default_eq_stiffness,
+            model.default_eq_damping,
+            model.timestep,
+        );
+
+        // Lower limit violation: length < min
+        if length < limit_min {
+            let penetration = limit_min - length;
+            let vel_into = (-data.ten_velocity[t]).max(0.0);
+            let force = limit_stiffness * penetration + limit_damping * vel_into;
+
+            // Map to joint forces via J^T (force pushes tendon toward longer)
+            let adr = model.tendon_adr[t];
+            let num = model.tendon_num[t];
+            for w in adr..(adr + num) {
+                let dof_adr = model.wrap_objid[w];
+                let coef = model.wrap_prm[w];
+                if dof_adr < model.nv {
+                    data.qfrc_constraint[dof_adr] += coef * force;
+                }
+            }
+        }
+
+        // Upper limit violation: length > max
+        if length > limit_max {
+            let penetration = length - limit_max;
+            let vel_into = data.ten_velocity[t].max(0.0);
+            let force = limit_stiffness * penetration + limit_damping * vel_into;
+
+            // Map to joint forces via J^T (force pushes tendon toward shorter)
+            let adr = model.tendon_adr[t];
+            let num = model.tendon_num[t];
+            for w in adr..(adr + num) {
+                let dof_adr = model.wrap_objid[w];
+                let coef = model.wrap_prm[w];
+                if dof_adr < model.nv {
+                    data.qfrc_constraint[dof_adr] -= coef * force;
+                }
+            }
+        }
+    }
+
     // ========== Equality Constraints ==========
     // Using penalty method with Baumgarte stabilization (like joint limits).
     // MuJoCo uses solver-based approach via PGS, but penalty is robust and simpler.
@@ -8715,7 +9001,7 @@ fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepError> 
     }
 
     match model.integrator {
-        Integrator::Implicit => mj_fwd_acceleration_implicit(model, data),
+        Integrator::ImplicitSpringDamper => mj_fwd_acceleration_implicit(model, data),
         Integrator::Euler | Integrator::RungeKutta4 => {
             mj_fwd_acceleration_explicit(model, data);
             Ok(())
@@ -8726,7 +9012,7 @@ fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepError> 
 /// Explicit forward acceleration (semi-implicit Euler or RK4).
 ///
 /// Computes: qacc = M⁻¹ * (f_applied + f_actuator + f_passive + f_constraint - f_bias)
-fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
+fn mj_fwd_acceleration_explicit(_model: &Model, data: &mut Data) {
     // Sum all forces: τ = applied + actuator + passive + constraint - bias
     let mut qfrc_total = data.qfrc_applied.clone();
     qfrc_total += &data.qfrc_actuator;
@@ -8734,32 +9020,161 @@ fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
     qfrc_total += &data.qfrc_constraint;
     qfrc_total -= &data.qfrc_bias;
 
-    // Solve M * qacc = qfrc_total using cached Cholesky from mj_crba
-    // Normal path: O(n²) forward/back substitution using cached L L^T factorization
-    match &data.qM_cholesky {
-        Some(chol) => {
-            data.qacc = chol.solve(&qfrc_total);
+    // Solve M * qacc = qfrc_total using sparse L^T D L factorization from mj_crba
+    data.qacc.copy_from(&qfrc_total);
+    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut data.qacc);
+}
+
+/// In-place Cholesky (LL^T) factorization. Overwrites the lower triangle of `m` with L.
+/// The upper triangle is left unchanged. Returns `Err(StepError::CholeskyFailed)` if
+/// the matrix is not positive definite.
+///
+/// Zero allocations — operates entirely on borrowed data.
+fn cholesky_in_place(m: &mut DMatrix<f64>) -> Result<(), StepError> {
+    let n = m.nrows();
+    for j in 0..n {
+        // Diagonal: L[j,j] = sqrt(M[j,j] - Σ(L[j,k]² for k < j))
+        let mut diag = m[(j, j)];
+        for k in 0..j {
+            diag -= m[(j, k)] * m[(j, k)];
         }
-        None => {
-            // Rare fallback: M wasn't SPD (numerical issues or degenerate system)
-            // This clone is acceptable since it only happens on error paths
-            match data.qM.clone().lu().solve(&qfrc_total) {
-                Some(qacc) => {
-                    data.qacc = qacc;
-                }
-                None => {
-                    // Last resort: diagonal solve (lumped mass approximation)
-                    // Ignores coupling but prevents NaN propagation
-                    for i in 0..model.nv {
-                        let m_ii = data.qM[(i, i)];
-                        if m_ii.abs() > 1e-10 {
-                            data.qacc[i] = qfrc_total[i] / m_ii;
-                        } else {
-                            data.qacc[i] = 0.0;
-                        }
-                    }
+        if diag <= 0.0 {
+            return Err(StepError::CholeskyFailed);
+        }
+        let ljj = diag.sqrt();
+        m[(j, j)] = ljj;
+
+        // Off-diagonal: L[i,j] = (M[i,j] - Σ(L[i,k]·L[j,k] for k < j)) / L[j,j]
+        for i in (j + 1)..n {
+            let mut sum = m[(i, j)];
+            for k in 0..j {
+                sum -= m[(i, k)] * m[(j, k)];
+            }
+            m[(i, j)] = sum / ljj;
+        }
+    }
+    Ok(())
+}
+
+/// Solve L·L^T·x = b in place, where L is stored in the lower triangle of `l`.
+/// On entry `x` contains b; on exit `x` contains the solution.
+///
+/// Zero allocations — operates entirely on borrowed data.
+fn cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>) {
+    let n = l.nrows();
+
+    // Forward substitution: L·y = b
+    for j in 0..n {
+        for k in 0..j {
+            x[j] -= l[(j, k)] * x[k];
+        }
+        x[j] /= l[(j, j)];
+    }
+
+    // Back substitution: L^T·z = y
+    for j in (0..n).rev() {
+        for k in (j + 1)..n {
+            x[j] -= l[(k, j)] * x[k];
+        }
+        x[j] /= l[(j, j)];
+    }
+}
+
+/// Sparse L^T D L factorization of the mass matrix, exploiting tree structure.
+///
+/// Computes `M = L^T D L` where `L` is unit lower triangular (L[i,i] = 1 implicitly,
+/// stored entries are off-diagonal only) and `D` is diagonal. The sparsity pattern
+/// is determined by the kinematic tree: `L[i,j] ≠ 0` only if DOF `j` is an ancestor
+/// of DOF `i` in `model.dof_parent`.
+///
+/// **Algorithm:** Process DOFs from leaves to root (i = nv-1 down to 0). For each DOF,
+/// copy its row from M, scale by the diagonal to extract L entries, then propagate a
+/// rank-1 update to all ancestor pairs. This is equivalent to Gaussian elimination
+/// reordered to exploit tree sparsity.
+///
+/// **Complexity:** O(Σ depth(i)²). For balanced trees O(n log² n), for typical
+/// humanoids (depth ≤ 8) effectively O(n).
+///
+/// Zero heap allocations after the first call — `qLD_L[i].clear()` + `push()` reuses
+/// existing `Vec` capacity.
+fn mj_factor_sparse(model: &Model, data: &mut Data) {
+    let nv = model.nv;
+
+    // Phase 1: Copy M's sparse entries into qLD working storage.
+    // qLD_diag[i] starts as M[i,i]; qLD_L[i] holds (col, M[i,col]) for ancestors.
+    for i in 0..nv {
+        data.qLD_diag[i] = data.qM[(i, i)];
+        data.qLD_L[i].clear();
+        let mut p = model.dof_parent[i];
+        while let Some(j) = p {
+            data.qLD_L[i].push((j, data.qM[(i, j)]));
+            p = model.dof_parent[j];
+        }
+        // Parent chain yields descending col indices; reverse for ascending order.
+        data.qLD_L[i].reverse();
+    }
+
+    // Phase 2: Eliminate from leaves to root.
+    // When we process DOF i, all descendants k > i are already factored.
+    // We propagate i's contribution to ancestors j < i, which requires
+    // mutating qLD_L[j] while reading qLD_L[i]. Since j < i always,
+    // we use split_at_mut to get non-overlapping borrows.
+    for i in (0..nv).rev() {
+        let di = data.qLD_diag[i];
+
+        // Scale off-diagonals: L[i,j] = working[i,j] / D[i]
+        for entry in &mut data.qLD_L[i] {
+            entry.1 /= di;
+        }
+
+        // Propagate rank-1 update to ancestors.
+        // Split: [0..i] and [i..nv] give non-overlapping mutable access.
+        let (lo, hi) = data.qLD_L.split_at_mut(i);
+        let row_i = &hi[0]; // qLD_L[i], immutable borrow
+
+        for idx_a in 0..row_i.len() {
+            let (j, lij) = row_i[idx_a];
+            data.qLD_diag[j] -= lij * lij * di;
+            for idx_b in 0..idx_a {
+                let (k, lik) = row_i[idx_b];
+                // k < j < i, so both are in `lo`
+                if let Some(entry) = lo[j].iter_mut().find(|(col, _)| *col == k) {
+                    entry.1 -= lij * lik * di;
                 }
             }
+        }
+    }
+
+    data.qLD_valid = true;
+}
+
+/// Solve `L^T D L x = b` using the sparse factorization from `mj_factor_sparse`.
+///
+/// On entry `x` contains `b`; on exit `x` contains the solution.
+/// Takes `qLD_diag` and `qLD_L` by reference separately from `x` to allow
+/// calling with `x = &mut data.qacc` without borrow conflicts.
+///
+/// Zero allocations — operates entirely on borrowed data.
+fn mj_solve_sparse(qld_diag: &DVector<f64>, qld_l: &[Vec<(usize, f64)>], x: &mut DVector<f64>) {
+    let nv = x.len();
+
+    // Phase 1: Solve L^T y = b (scatter: propagate each DOF to its ancestors).
+    // L is unit-lower-triangular, so L^T is unit-upper-triangular.
+    for i in (0..nv).rev() {
+        for &(j, lij) in &qld_l[i] {
+            x[j] -= lij * x[i];
+        }
+    }
+
+    // Phase 2: Solve D z = y
+    for i in 0..nv {
+        x[i] /= qld_diag[i];
+    }
+
+    // Phase 3: Solve L w = z (standard forward substitution)
+    for i in 0..nv {
+        for &(j, lij) in &qld_l[i] {
+            x[i] -= lij * x[j];
         }
     }
 }
@@ -8835,21 +9250,11 @@ fn mj_fwd_acceleration_implicit(model: &Model, data: &mut Data) -> Result<(), St
     };
     model.visit_joints(&mut spring_visitor);
 
-    // Solve (M + h*D + h²*K) * v_new = rhs
-    // M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0), so use Cholesky.
-    //
-    // Move the populated matrix out via std::mem::replace, leaving a correctly-sized
-    // zero matrix for the next step's copy_from(&data.qM). This avoids cloning O(nv²)
-    // elements — nalgebra's cholesky() consumes the matrix, so we give it ownership
-    // directly. scratch_m_impl is never read after this point in the step pipeline.
-    let nv = model.nv;
-    let chol = std::mem::replace(&mut data.scratch_m_impl, DMatrix::zeros(nv, nv))
-        .cholesky()
-        .ok_or(StepError::CholeskyFailed)?;
-
-    // Copy RHS to scratch_v_new and solve in place to avoid allocation
+    // Factorize M_impl in place (overwrites lower triangle with L where M_impl = L·L^T).
+    // M_impl is SPD (M is SPD from CRBA, D ≥ 0, K ≥ 0).
+    cholesky_in_place(&mut data.scratch_m_impl)?;
     data.scratch_v_new.copy_from(&data.scratch_rhs);
-    chol.solve_mut(&mut data.scratch_v_new);
+    cholesky_solve_in_place(&data.scratch_m_impl, &mut data.scratch_v_new);
 
     // Compute qacc = (v_new - v_old) / h and update qvel
     for i in 0..model.nv {
@@ -9240,6 +9645,136 @@ pub fn mj_integrate_pos_explicit(
             }
         }
     }
+}
+
+// ============================================================================
+// RK4 Integration
+// ============================================================================
+
+/// Standard 4-stage Runge-Kutta integration matching MuJoCo's `mj_RungeKutta`.
+///
+/// # Preconditions
+/// - `data.forward()` has already been called (qacc is valid for stage 0).
+///
+/// # Algorithm
+/// Uses the classic RK4 Butcher tableau. Stage 0 reuses qacc from the preceding
+/// `forward()` call. Stages 1-3 each call `forward_skip_sensors()` at trial states.
+/// Position integration uses `mj_integrate_pos_explicit()` for quaternion correctness.
+///
+/// After this function returns, derived quantities (xpos, contacts, forces, etc.)
+/// are stale from stage 3 and do NOT correspond to the final (qpos, qvel) state.
+/// This matches MuJoCo's behavior.
+fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
+    // Butcher tableau
+    const RK4_A: [f64; 9] = [
+        0.5, 0.0, 0.0, // Stage 1→2
+        0.0, 0.5, 0.0, // Stage 2→3
+        0.0, 0.0, 1.0, // Stage 3→4
+    ];
+    const RK4_B: [f64; 4] = [1.0 / 6.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 6.0];
+    const RK4_TIME: [f64; 3] = [0.5, 0.5, 1.0];
+
+    let h = model.timestep;
+    let nv = model.nv;
+
+    // 1. SAVE initial state
+    data.rk4_qpos_saved.copy_from(&data.qpos);
+    data.rk4_qvel[0].copy_from(&data.qvel);
+    data.rk4_qacc[0].copy_from(&data.qacc);
+    let t0 = data.time;
+    let efc_lambda_saved = data.efc_lambda.clone();
+
+    // 2. FOR i = 1, 2, 3:
+    for i in 1..4usize {
+        // 2a. Weighted velocity: dX_vel[v] = Σ_{j=0}^{2} A[(i-1)*3+j] * X[j].qvel[v]
+        // (For this tableau, only j = i−1 has a non-zero coefficient.)
+        for v in 0..nv {
+            let mut sum = 0.0;
+            for j in 0..3 {
+                sum += RK4_A[(i - 1) * 3 + j] * data.rk4_qvel[j][v];
+            }
+            data.rk4_dX_vel[v] = sum;
+        }
+
+        // 2b. Weighted acceleration: dX_acc[v] = Σ_{j=0}^{2} A[(i-1)*3+j] * F[j].qacc[v]
+        for v in 0..nv {
+            let mut sum = 0.0;
+            for j in 0..3 {
+                sum += RK4_A[(i - 1) * 3 + j] * data.rk4_qacc[j][v];
+            }
+            data.rk4_dX_acc[v] = sum;
+        }
+
+        // 2c. Position (manifold): integrate from saved initial position
+        mj_integrate_pos_explicit(
+            model,
+            &mut data.rk4_qpos_stage,
+            &data.rk4_qpos_saved,
+            &data.rk4_dX_vel,
+            h,
+        );
+
+        // 2d. Velocity (linear): X[i].qvel = X[0].qvel + h * dX_acc
+        // Use split_at_mut for borrow-checker disjointness on rk4_qvel.
+        let (head, tail) = data.rk4_qvel.split_at_mut(1);
+        for v in 0..nv {
+            tail[i - 1][v] = head[0][v] + h * data.rk4_dX_acc[v];
+        }
+
+        // 2e. Set Data state
+        data.qpos.copy_from(&data.rk4_qpos_stage);
+        data.qvel.copy_from(&tail[i - 1]);
+
+        // 2f. Set Data time
+        data.time = t0 + h * RK4_TIME[i - 1];
+
+        // 2g. Evaluate full forward pipeline (without sensors)
+        data.forward_skip_sensors(model)?;
+
+        // 2h. Store rate
+        data.rk4_qacc[i].copy_from(&data.qacc);
+    }
+
+    // 3. FINAL combination using B weights
+    for v in 0..nv {
+        let mut vel_sum = 0.0;
+        let mut acc_sum = 0.0;
+        for j in 0..4 {
+            vel_sum += RK4_B[j] * data.rk4_qvel[j][v];
+            acc_sum += RK4_B[j] * data.rk4_qacc[j][v];
+        }
+        data.rk4_dX_vel[v] = vel_sum;
+        data.rk4_dX_acc[v] = acc_sum;
+    }
+
+    // 4. ADVANCE from initial state
+    // Save stage 3 qacc for warmstart (matches MuJoCo's mj_advance behavior)
+    data.qacc_warmstart.copy_from(&data.qacc);
+
+    // Restore initial velocity, then advance
+    data.qvel.copy_from(&data.rk4_qvel[0]);
+    for v in 0..nv {
+        data.qvel[v] += h * data.rk4_dX_acc[v];
+    }
+
+    // Position on manifold from saved initial position
+    mj_integrate_pos_explicit(
+        model,
+        &mut data.qpos,
+        &data.rk4_qpos_saved,
+        &data.rk4_dX_vel,
+        h,
+    );
+    mj_normalize_quat(model, data);
+
+    // Restore warmstart from initial solve
+    data.efc_lambda = efc_lambda_saved;
+    data.time = t0 + h;
+
+    // TODO(FUTURE_WORK#5): When activation dynamics are added (act_dot),
+    // save/restore/integrate act alongside qpos/qvel at each stage.
+
+    Ok(())
 }
 
 // ============================================================================
@@ -11181,5 +11716,336 @@ mod sensor_tests {
         data.sensordata = DVector::zeros(0);
         // Should not panic — sensor_write guards all writes
         data.forward(&model).unwrap();
+    }
+}
+
+// ============================================================================
+// In-place Cholesky tests
+// ============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod cholesky_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Generate a random SPD matrix of size n×n.
+    fn random_spd(n: usize, seed: u64) -> DMatrix<f64> {
+        // Deterministic pseudo-random via simple LCG
+        let mut state = seed;
+        let mut next = || -> f64 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 33) as f64) / f64::from(u32::MAX) - 0.5
+        };
+
+        // A = random matrix, then M = A^T * A + n*I (guarantees SPD)
+        let a = DMatrix::from_fn(n, n, |_, _| next());
+        a.transpose() * &a + DMatrix::identity(n, n) * (n as f64)
+    }
+
+    #[test]
+    fn in_place_cholesky_matches_nalgebra() {
+        for &n in &[1, 2, 3, 5, 10, 20] {
+            let m = random_spd(n, 42 + n as u64);
+            let rhs = DVector::from_fn(n, |i, _| (i as f64 + 1.0) * 0.7);
+
+            // nalgebra reference
+            let chol_ref = m.clone().cholesky().expect("nalgebra cholesky failed");
+            let x_ref = chol_ref.solve(&rhs);
+
+            // Our in-place implementation
+            let mut m_inplace = m.clone();
+            cholesky_in_place(&mut m_inplace).expect("in-place cholesky failed");
+
+            let mut x_ours = rhs.clone();
+            cholesky_solve_in_place(&m_inplace, &mut x_ours);
+
+            // Compare solutions
+            for i in 0..n {
+                assert_relative_eq!(x_ours[i], x_ref[i], epsilon = 1e-12, max_relative = 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn in_place_cholesky_rejects_non_spd() {
+        // Zero matrix is not SPD
+        let mut m = DMatrix::zeros(3, 3);
+        assert!(cholesky_in_place(&mut m).is_err());
+
+        // Negative diagonal
+        let mut m = DMatrix::identity(3, 3);
+        m[(1, 1)] = -1.0;
+        assert!(cholesky_in_place(&mut m).is_err());
+    }
+
+    #[test]
+    fn in_place_cholesky_1x1() {
+        let mut m = DMatrix::from_element(1, 1, 4.0);
+        cholesky_in_place(&mut m).unwrap();
+        assert_relative_eq!(m[(0, 0)], 2.0, epsilon = 1e-15);
+
+        let mut x = DVector::from_element(1, 6.0);
+        cholesky_solve_in_place(&m, &mut x);
+        // 4 * x = 6 => x = 1.5
+        assert_relative_eq!(x[0], 1.5, epsilon = 1e-15);
+    }
+}
+
+// ============================================================================
+// Sparse L^T D L factorization tests
+// ============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod sparse_factorization_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Helper: build a Model + Data with a given dof_parent tree and mass matrix.
+    /// Returns (model, data) with qM set to the given matrix and sparse factorization run.
+    fn setup_sparse(nv: usize, dof_parent: Vec<Option<usize>>, qm: &DMatrix<f64>) -> (Model, Data) {
+        let mut model = Model::empty();
+        model.nv = nv;
+        model.nq = nv;
+        model.qpos0 = DVector::zeros(nv);
+        model.implicit_stiffness = DVector::zeros(nv);
+        model.implicit_damping = DVector::zeros(nv);
+        model.implicit_springref = DVector::zeros(nv);
+        model.dof_parent = dof_parent;
+        // Fill other required fields for make_data
+        model.dof_body = vec![0; nv];
+        model.dof_jnt = vec![0; nv];
+        model.dof_armature = vec![0.0; nv];
+        model.dof_damping = vec![0.0; nv];
+        model.dof_frictionloss = vec![0.0; nv];
+        let mut data = model.make_data();
+        data.qM.copy_from(qm);
+        mj_factor_sparse(&model, &mut data);
+        (model, data)
+    }
+
+    /// Verify sparse solve matches nalgebra dense Cholesky.
+    fn assert_solve_matches(data: &Data, qm: &DMatrix<f64>, nv: usize) {
+        let rhs = DVector::from_fn(nv, |i, _| (i as f64 + 1.0) * 0.7);
+
+        // Reference: nalgebra dense Cholesky
+        let chol = qm.clone().cholesky().expect("nalgebra cholesky failed");
+        let x_ref = chol.solve(&rhs);
+
+        // Our sparse solve
+        let mut x_sparse = rhs;
+        mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x_sparse);
+
+        for i in 0..nv {
+            assert_relative_eq!(x_sparse[i], x_ref[i], epsilon = 1e-12, max_relative = 1e-12);
+        }
+    }
+
+    #[test]
+    fn single_hinge() {
+        // nv=1, no parent. M = [[5.0]]
+        let nv = 1;
+        let dof_parent = vec![None];
+        let mut qm = DMatrix::zeros(1, 1);
+        qm[(0, 0)] = 5.0;
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+
+        // D[0] = 5.0, L has no off-diag entries
+        assert_relative_eq!(data.qLD_diag[0], 5.0);
+        assert!(data.qLD_L[0].is_empty());
+        assert!(data.qLD_valid);
+
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn two_link_chain() {
+        // nv=2, DOF 1 child of DOF 0
+        // M = [[4, 2], [2, 3]]
+        let nv = 2;
+        let dof_parent = vec![None, Some(0)];
+        let mut qm = DMatrix::zeros(2, 2);
+        qm[(0, 0)] = 4.0;
+        qm[(0, 1)] = 2.0;
+        qm[(1, 0)] = 2.0;
+        qm[(1, 1)] = 3.0;
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+
+        // Manual: D[1] = 3, L[1,0] = 2/3, D[0] = 4 - (2/3)^2 * 3 = 4 - 4/3 = 8/3
+        assert_relative_eq!(data.qLD_diag[1], 3.0);
+        assert_relative_eq!(data.qLD_diag[0], 8.0 / 3.0, epsilon = 1e-14);
+        assert_eq!(data.qLD_L[1].len(), 1);
+        assert_eq!(data.qLD_L[1][0].0, 0);
+        assert_relative_eq!(data.qLD_L[1][0].1, 2.0 / 3.0, epsilon = 1e-14);
+
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn branching_tree() {
+        // nv=3: DOF 0 = root, DOF 1 = left child of 0, DOF 2 = right child of 0
+        // DOFs 1 and 2 don't couple with each other.
+        // M = [[5, 2, 1], [2, 4, 0], [1, 0, 3]]
+        let nv = 3;
+        let dof_parent = vec![None, Some(0), Some(0)];
+        let mut qm = DMatrix::zeros(3, 3);
+        qm[(0, 0)] = 5.0;
+        qm[(0, 1)] = 2.0;
+        qm[(1, 0)] = 2.0;
+        qm[(1, 1)] = 4.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 0)] = 1.0;
+        qm[(2, 2)] = 3.0;
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+
+        // D[2] = 3, L[2,0] = 1/3
+        // D[1] = 4, L[1,0] = 2/4 = 0.5
+        // D[0] = 5 - (0.5)^2 * 4 - (1/3)^2 * 3 = 5 - 1 - 1/3 = 11/3
+        assert_relative_eq!(data.qLD_diag[2], 3.0);
+        assert_relative_eq!(data.qLD_diag[1], 4.0);
+        assert_relative_eq!(data.qLD_diag[0], 11.0 / 3.0, epsilon = 1e-14);
+
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn ball_joint_chain() {
+        // Simulates a ball joint (3 DOFs) followed by a hinge (1 DOF).
+        // DOF tree: 0→1→2→3 (linear chain, nv=4)
+        // This tests multi-DOF within a joint (ball: DOFs 0,1,2) plus a child.
+        let nv = 4;
+        let dof_parent = vec![None, Some(0), Some(1), Some(2)];
+
+        // Build a random SPD matrix with tree sparsity: M[i,j] = 0 unless
+        // j is ancestor of i or vice versa. For a chain, all entries are non-zero.
+        let mut qm = DMatrix::zeros(nv, nv);
+        // Diagonal
+        qm[(0, 0)] = 10.0;
+        qm[(1, 1)] = 8.0;
+        qm[(2, 2)] = 6.0;
+        qm[(3, 3)] = 4.0;
+        // Off-diagonal (all are on the ancestor path for a chain)
+        qm[(1, 0)] = 3.0;
+        qm[(0, 1)] = 3.0;
+        qm[(2, 0)] = 1.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 1)] = 2.0;
+        qm[(1, 2)] = 2.0;
+        qm[(3, 0)] = 0.5;
+        qm[(0, 3)] = 0.5;
+        qm[(3, 1)] = 0.3;
+        qm[(1, 3)] = 0.3;
+        qm[(3, 2)] = 1.5;
+        qm[(2, 3)] = 1.5;
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn free_body_plus_hinge() {
+        // Free joint (6 DOFs: 0→1→2→3→4→5) + hinge child (DOF 6, parent = DOF 5)
+        // nv = 7
+        let nv = 7;
+        let dof_parent = vec![None, Some(0), Some(1), Some(2), Some(3), Some(4), Some(5)];
+
+        // Build SPD matrix: A^T A + n*I with tree-compatible sparsity
+        // For a chain, all entries can be non-zero. Use random SPD.
+        let mut state: u64 = 12345;
+        let mut next = || -> f64 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 33) as f64) / f64::from(u32::MAX) - 0.5
+        };
+        let a = DMatrix::from_fn(nv, nv, |_, _| next());
+        let qm = a.transpose() * &a + DMatrix::identity(nv, nv) * (nv as f64);
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn complex_branching_tree() {
+        // A more complex tree:
+        //       0
+        //      / \
+        //     1   4
+        //    / \
+        //   2   3
+        // nv=5, dof_parent = [None, Some(0), Some(1), Some(1), Some(0)]
+        let nv = 5;
+        let dof_parent = vec![None, Some(0), Some(1), Some(1), Some(0)];
+
+        // Build SPD matrix with correct sparsity:
+        // M[2,0], M[2,1] non-zero (ancestors of 2: 1, 0)
+        // M[3,0], M[3,1] non-zero (ancestors of 3: 1, 0)
+        // M[4,0] non-zero (ancestor of 4: 0)
+        // M[2,3] = 0 (neither is ancestor of the other — siblings)
+        // M[2,4] = 0 (4 is not ancestor of 2)
+        // M[3,4] = 0 (4 is not ancestor of 3)
+        let mut qm = DMatrix::zeros(nv, nv);
+        qm[(0, 0)] = 10.0;
+        qm[(1, 1)] = 8.0;
+        qm[(2, 2)] = 5.0;
+        qm[(3, 3)] = 6.0;
+        qm[(4, 4)] = 7.0;
+        // Ancestor pairs
+        qm[(1, 0)] = 2.0;
+        qm[(0, 1)] = 2.0;
+        qm[(2, 0)] = 1.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 1)] = 1.5;
+        qm[(1, 2)] = 1.5;
+        qm[(3, 0)] = 0.5;
+        qm[(0, 3)] = 0.5;
+        qm[(3, 1)] = 1.0;
+        qm[(1, 3)] = 1.0;
+        qm[(4, 0)] = 0.8;
+        qm[(0, 4)] = 0.8;
+        // Non-ancestor pairs are zero (enforced by zeros init)
+
+        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+
+        // Verify zero entries in L for non-ancestor pairs
+        // DOF 2's ancestors: [0, 1] — should not have entry for 3 or 4
+        for &(col, _) in &data.qLD_L[2] {
+            assert!(
+                col == 0 || col == 1,
+                "DOF 2 should only have ancestors 0 and 1"
+            );
+        }
+        // DOF 4's ancestors: [0] — should not have entry for 1, 2, or 3
+        assert_eq!(data.qLD_L[4].len(), 1);
+        assert_eq!(data.qLD_L[4][0].0, 0);
+
+        assert_solve_matches(&data, &qm, nv);
+    }
+
+    #[test]
+    fn invalidation_flag() {
+        let nv = 2;
+        let dof_parent = vec![None, Some(0)];
+        let mut qm = DMatrix::zeros(2, 2);
+        qm[(0, 0)] = 4.0;
+        qm[(0, 1)] = 1.0;
+        qm[(1, 0)] = 1.0;
+        qm[(1, 1)] = 3.0;
+
+        let (_, mut data) = setup_sparse(nv, dof_parent, &qm);
+        assert!(data.qLD_valid);
+
+        // Simulate invalidation (as mj_crba would do)
+        data.qLD_valid = false;
+        assert!(!data.qLD_valid);
     }
 }

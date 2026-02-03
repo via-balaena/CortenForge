@@ -43,6 +43,14 @@ pub mod equality_constraints;
 pub mod implicit_integration;
 
 // ============================================================================
+// RK4 Integration Tests (True 4-stage Runge-Kutta)
+// ============================================================================
+
+/// RK4 integration tests: order-of-convergence, energy conservation, quaternion
+/// correctness, contact handling, sensor non-corruption, warmstart preservation.
+pub mod rk4_integration;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 

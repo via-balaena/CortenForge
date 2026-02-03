@@ -149,8 +149,6 @@ impl SimulationConfig {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SolverConfig {
-    /// Integration method for dynamics.
-    pub integration: IntegrationMethod,
     /// Number of velocity iterations for constraint solving.
     pub velocity_iterations: usize,
     /// Number of position iterations for constraint solving.
@@ -272,7 +270,6 @@ impl ParallelConfig {
 impl Default for SolverConfig {
     fn default() -> Self {
         Self {
-            integration: IntegrationMethod::SemiImplicitEuler,
             velocity_iterations: 8,
             position_iterations: 4,
             contact_tolerance: 0.001,
@@ -291,7 +288,6 @@ impl SolverConfig {
     #[must_use]
     pub fn high_accuracy() -> Self {
         Self {
-            integration: IntegrationMethod::RungeKutta4,
             velocity_iterations: 16,
             position_iterations: 8,
             contact_tolerance: 0.0001,
@@ -308,7 +304,6 @@ impl SolverConfig {
     #[must_use]
     pub fn fast() -> Self {
         Self {
-            integration: IntegrationMethod::SemiImplicitEuler,
             velocity_iterations: 4,
             position_iterations: 2,
             contact_tolerance: 0.005,
@@ -319,13 +314,6 @@ impl SolverConfig {
             parallel: ParallelConfig::many_islands(),
             ..Default::default()
         }
-    }
-
-    /// Set the integration method.
-    #[must_use]
-    pub fn integration(mut self, method: IntegrationMethod) -> Self {
-        self.integration = method;
-        self
     }
 
     /// Set the number of solver iterations.
@@ -378,99 +366,6 @@ impl SolverConfig {
         }
 
         Ok(())
-    }
-}
-
-/// Integration method for dynamics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum IntegrationMethod {
-    /// Explicit Euler (first-order, unstable for stiff systems).
-    ExplicitEuler,
-    /// Semi-implicit Euler (symplectic, good for games).
-    SemiImplicitEuler,
-    /// Velocity Verlet (second-order, symplectic).
-    VelocityVerlet,
-    /// 4th-order Runge-Kutta (high accuracy, expensive).
-    RungeKutta4,
-    /// Implicit-in-velocity (stable for stiff/damped systems).
-    ///
-    /// Solves the implicit equation:
-    /// `(M - h*D) * v_{t+h} = M * v_t + h * f(v_t)`
-    ///
-    /// Where D captures velocity-dependent damping. This is critical for:
-    /// - Very stiff contacts
-    /// - Highly damped systems
-    /// - Muscle models with activation dynamics
-    ImplicitVelocity,
-    /// Implicit-fast (skips Coriolis/centrifugal terms for performance).
-    ///
-    /// This is `MuJoCo`'s "implicitfast" mode - same as `ImplicitVelocity`
-    /// but with Coriolis and centrifugal terms omitted from the equations
-    /// of motion. This provides:
-    /// - Better performance for large articulated systems
-    /// - Acceptable accuracy at normal robot operating speeds
-    /// - The same unconditional stability as `ImplicitVelocity`
-    ///
-    /// Use when you have many bodies and can tolerate slight inaccuracy
-    /// in rotational dynamics at high angular velocities.
-    ImplicitFast,
-}
-
-impl IntegrationMethod {
-    /// Get the order of accuracy for this method.
-    #[must_use]
-    pub const fn order(self) -> usize {
-        match self {
-            Self::ExplicitEuler
-            | Self::SemiImplicitEuler
-            | Self::ImplicitVelocity
-            | Self::ImplicitFast => 1,
-            Self::VelocityVerlet => 2,
-            Self::RungeKutta4 => 4,
-        }
-    }
-
-    /// Check if this method is symplectic (energy-preserving).
-    #[must_use]
-    pub const fn is_symplectic(self) -> bool {
-        matches!(self, Self::SemiImplicitEuler | Self::VelocityVerlet)
-    }
-
-    /// Check if this method is implicit (unconditionally stable).
-    #[must_use]
-    pub const fn is_implicit(self) -> bool {
-        matches!(self, Self::ImplicitVelocity | Self::ImplicitFast)
-    }
-
-    /// Check if this method skips Coriolis terms.
-    #[must_use]
-    pub const fn skips_coriolis(self) -> bool {
-        matches!(self, Self::ImplicitFast)
-    }
-
-    /// Get approximate relative computational cost (1 = cheapest).
-    #[must_use]
-    pub const fn relative_cost(self) -> usize {
-        match self {
-            // ImplicitFast is cheaper than ImplicitVelocity due to skipped Coriolis
-            Self::ExplicitEuler | Self::SemiImplicitEuler | Self::ImplicitFast => 1,
-            Self::VelocityVerlet | Self::ImplicitVelocity => 2,
-            Self::RungeKutta4 => 4,
-        }
-    }
-}
-
-impl std::fmt::Display for IntegrationMethod {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ExplicitEuler => write!(f, "Explicit Euler"),
-            Self::SemiImplicitEuler => write!(f, "Semi-Implicit Euler"),
-            Self::VelocityVerlet => write!(f, "Velocity Verlet"),
-            Self::RungeKutta4 => write!(f, "RK4"),
-            Self::ImplicitVelocity => write!(f, "Implicit Velocity"),
-            Self::ImplicitFast => write!(f, "Implicit Fast"),
-        }
     }
 }
 
@@ -534,7 +429,6 @@ mod tests {
         assert!(solver.validate().is_ok());
 
         let hifi = SolverConfig::high_accuracy();
-        assert_eq!(hifi.integration, IntegrationMethod::RungeKutta4);
         assert!(!hifi.allow_sleeping);
 
         let fast = SolverConfig::fast();
@@ -556,17 +450,6 @@ mod tests {
         solver.default_restitution = 0.5;
         solver.default_friction = -0.1;
         assert!(solver.validate().is_err());
-    }
-
-    #[test]
-    fn test_integration_method() {
-        assert_eq!(IntegrationMethod::ExplicitEuler.order(), 1);
-        assert_eq!(IntegrationMethod::RungeKutta4.order(), 4);
-
-        assert!(IntegrationMethod::SemiImplicitEuler.is_symplectic());
-        assert!(IntegrationMethod::VelocityVerlet.is_symplectic());
-        assert!(!IntegrationMethod::ExplicitEuler.is_symplectic());
-        assert!(!IntegrationMethod::RungeKutta4.is_symplectic());
     }
 
     #[test]

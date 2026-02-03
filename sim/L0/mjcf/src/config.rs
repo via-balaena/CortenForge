@@ -4,21 +4,9 @@
 //! into `sim-types` configuration structures that can be used by the simulation.
 
 use nalgebra::Vector3;
-use sim_types::{Gravity, IntegrationMethod, ParallelConfig, SimulationConfig, SolverConfig};
+use sim_types::{Gravity, ParallelConfig, SimulationConfig, SolverConfig};
 
-use crate::types::{MjcfFlag, MjcfIntegrator, MjcfOption, MjcfSolverType};
-
-/// Convert MJCF integrator to sim-types integration method.
-impl From<MjcfIntegrator> for IntegrationMethod {
-    fn from(integrator: MjcfIntegrator) -> Self {
-        match integrator {
-            MjcfIntegrator::Euler => IntegrationMethod::SemiImplicitEuler,
-            MjcfIntegrator::RK4 => IntegrationMethod::RungeKutta4,
-            MjcfIntegrator::Implicit => IntegrationMethod::ImplicitVelocity,
-            MjcfIntegrator::ImplicitFast => IntegrationMethod::ImplicitFast,
-        }
-    }
-}
+use crate::types::{MjcfFlag, MjcfOption, MjcfSolverType};
 
 /// Convert MJCF option to simulation configuration.
 impl From<&MjcfOption> for SimulationConfig {
@@ -32,7 +20,6 @@ impl From<&MjcfOption> for SimulationConfig {
 
         // Build solver configuration
         let solver = SolverConfig {
-            integration: option.integrator.into(),
             velocity_iterations: option.iterations,
             position_iterations: option.iterations / 2, // Heuristic: half of velocity iters
             contact_tolerance: option.tolerance,
@@ -213,26 +200,6 @@ mod tests {
 
         let config: SimulationConfig = option.into();
         assert!(!config.enable_contacts);
-    }
-
-    #[test]
-    fn test_integrator_conversion() {
-        assert_eq!(
-            IntegrationMethod::from(MjcfIntegrator::Euler),
-            IntegrationMethod::SemiImplicitEuler
-        );
-        assert_eq!(
-            IntegrationMethod::from(MjcfIntegrator::RK4),
-            IntegrationMethod::RungeKutta4
-        );
-        assert_eq!(
-            IntegrationMethod::from(MjcfIntegrator::Implicit),
-            IntegrationMethod::ImplicitVelocity
-        );
-        assert_eq!(
-            IntegrationMethod::from(MjcfIntegrator::ImplicitFast),
-            IntegrationMethod::ImplicitFast
-        );
     }
 
     #[test]

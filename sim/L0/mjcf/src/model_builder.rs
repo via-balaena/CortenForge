@@ -15,6 +15,7 @@ use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, EqualityType, GeomType, Integrator, MjJointType, Model,
+    TendonType, WrapType,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,7 @@ use crate::error::Result;
 use crate::types::{
     MjcfActuator, MjcfActuatorType, MjcfBody, MjcfEquality, MjcfGeom, MjcfGeomType, MjcfInertial,
     MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption, MjcfSite,
+    MjcfTendon, MjcfTendonType,
 };
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -114,6 +116,14 @@ pub fn model_from_mjcf(
     for child in &mjcf.worldbody.children {
         builder.process_body(child, 0, None)?;
     }
+
+    // Validate tendons before processing (catches bad references early)
+    crate::validation::validate_tendons(mjcf).map_err(|e| ModelConversionError {
+        message: format!("Tendon validation failed: {e}"),
+    })?;
+
+    // Process tendons (must be before actuators, since actuators may reference tendons)
+    builder.process_tendons(&mjcf.tendons)?;
 
     // Process actuators
     for actuator in &mjcf.actuators {
@@ -302,6 +312,25 @@ struct ModelBuilder {
     site_name_to_id: HashMap<String, usize>,
     geom_name_to_id: HashMap<String, usize>,
 
+    // Tendon arrays (populated by process_tendons)
+    tendon_name_to_id: HashMap<String, usize>,
+    tendon_type: Vec<TendonType>,
+    tendon_range: Vec<(f64, f64)>,
+    tendon_limited: Vec<bool>,
+    tendon_stiffness: Vec<f64>,
+    tendon_damping: Vec<f64>,
+    tendon_frictionloss: Vec<f64>,
+    tendon_lengthspring: Vec<f64>,
+    tendon_length0: Vec<f64>,
+    tendon_name: Vec<Option<String>>,
+    tendon_solref: Vec<[f64; 2]>,
+    tendon_solimp: Vec<[f64; 5]>,
+    tendon_num: Vec<usize>,
+    tendon_adr: Vec<usize>,
+    wrap_type: Vec<WrapType>,
+    wrap_objid: Vec<usize>,
+    wrap_prm: Vec<f64>,
+
     // Equality constraint arrays
     eq_type: Vec<EqualityType>,
     eq_obj1id: Vec<usize>,
@@ -429,6 +458,25 @@ impl ModelBuilder {
             site_name_to_id: HashMap::new(),
             geom_name_to_id: HashMap::new(),
 
+            // Tendons (populated by process_tendons)
+            tendon_name_to_id: HashMap::new(),
+            tendon_type: vec![],
+            tendon_range: vec![],
+            tendon_limited: vec![],
+            tendon_stiffness: vec![],
+            tendon_damping: vec![],
+            tendon_frictionloss: vec![],
+            tendon_lengthspring: vec![],
+            tendon_length0: vec![],
+            tendon_name: vec![],
+            tendon_solref: vec![],
+            tendon_solimp: vec![],
+            tendon_num: vec![],
+            tendon_adr: vec![],
+            wrap_type: vec![],
+            wrap_objid: vec![],
+            wrap_prm: vec![],
+
             // Equality constraints (populated by process_equality_constraints)
             eq_type: vec![],
             eq_obj1id: vec![],
@@ -456,7 +504,9 @@ impl ModelBuilder {
         self.integrator = match option.integrator {
             MjcfIntegrator::Euler => Integrator::Euler,
             MjcfIntegrator::RK4 => Integrator::RungeKutta4,
-            MjcfIntegrator::Implicit | MjcfIntegrator::ImplicitFast => Integrator::Implicit,
+            MjcfIntegrator::ImplicitSpringDamper | MjcfIntegrator::ImplicitFast => {
+                Integrator::ImplicitSpringDamper
+            }
         };
     }
 
@@ -987,6 +1037,105 @@ impl ModelBuilder {
         Ok(site_id)
     }
 
+    fn process_tendons(
+        &mut self,
+        tendons: &[MjcfTendon],
+    ) -> std::result::Result<(), ModelConversionError> {
+        for (t_idx, tendon) in tendons.iter().enumerate() {
+            if !tendon.name.is_empty() {
+                self.tendon_name_to_id.insert(tendon.name.clone(), t_idx);
+            }
+            self.tendon_type.push(match tendon.tendon_type {
+                MjcfTendonType::Fixed => TendonType::Fixed,
+                MjcfTendonType::Spatial => TendonType::Spatial,
+            });
+            self.tendon_range
+                .push(tendon.range.unwrap_or((-f64::MAX, f64::MAX)));
+            self.tendon_limited.push(tendon.limited);
+            self.tendon_stiffness.push(tendon.stiffness);
+            self.tendon_damping.push(tendon.damping);
+            self.tendon_frictionloss.push(tendon.frictionloss);
+            self.tendon_name.push(if tendon.name.is_empty() {
+                None
+            } else {
+                Some(tendon.name.clone())
+            });
+            self.tendon_solref.push([0.0, 0.0]); // Default: use model defaults
+            self.tendon_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]); // MuJoCo defaults
+            self.tendon_lengthspring.push(0.0); // Set to length0 if stiffness > 0
+            self.tendon_length0.push(0.0); // Computed after construction from qpos0
+
+            let wrap_start = self.wrap_type.len();
+            self.tendon_adr.push(wrap_start);
+
+            match tendon.tendon_type {
+                MjcfTendonType::Fixed => {
+                    for (joint_name, coef) in &tendon.joints {
+                        // Resolve joint name → index → DOF address
+                        let jnt_idx =
+                            *self
+                                .joint_name_to_id
+                                .get(joint_name.as_str())
+                                .ok_or_else(|| ModelConversionError {
+                                    message: format!(
+                                        "Tendon '{}' references unknown joint '{}'",
+                                        tendon.name, joint_name
+                                    ),
+                                })?;
+                        // Fixed tendons assume qposadr == dofadr (true for hinge/slide).
+                        // Ball/free joints have different qpos and dof dimensions, so
+                        // a linear coupling L = coef * qpos[dof_adr] would be incorrect.
+                        let jnt_type = self.jnt_type[jnt_idx];
+                        if jnt_type != MjJointType::Hinge && jnt_type != MjJointType::Slide {
+                            warn!(
+                                "Tendon '{}' references {} joint '{}' — fixed tendons only \
+                                 support hinge/slide joints. Ball/free joints will produce \
+                                 incorrect results.",
+                                tendon.name,
+                                match jnt_type {
+                                    MjJointType::Ball => "ball",
+                                    MjJointType::Free => "free",
+                                    _ => "unknown",
+                                },
+                                joint_name
+                            );
+                        }
+                        let dof_adr = self.jnt_dof_adr[jnt_idx];
+                        self.wrap_type.push(WrapType::Joint);
+                        self.wrap_objid.push(dof_adr);
+                        self.wrap_prm.push(*coef);
+                    }
+                }
+                MjcfTendonType::Spatial => {
+                    // Spatial tendon wrap objects: sites, wrapping geoms.
+                    // Log a one-time warning at model load time.
+                    warn!(
+                        "Tendon '{}' is spatial — spatial tendons are not yet implemented \
+                         and will produce zero forces. Fixed tendons are fully supported.",
+                        tendon.name
+                    );
+                    for site_name in &tendon.sites {
+                        let site_idx =
+                            *self
+                                .site_name_to_id
+                                .get(site_name.as_str())
+                                .ok_or_else(|| ModelConversionError {
+                                    message: format!(
+                                        "Tendon '{}' references unknown site '{}'",
+                                        tendon.name, site_name
+                                    ),
+                                })?;
+                        self.wrap_type.push(WrapType::Site);
+                        self.wrap_objid.push(site_idx);
+                        self.wrap_prm.push(1.0); // Default divisor
+                    }
+                }
+            }
+            self.tendon_num.push(self.wrap_type.len() - wrap_start);
+        }
+        Ok(())
+    }
+
     fn process_actuator(
         &mut self,
         actuator: &MjcfActuator,
@@ -1005,15 +1154,17 @@ impl ModelBuilder {
                     })?;
             (ActuatorTransmission::Joint, *jnt_id)
         } else if let Some(ref tendon_name) = actuator.tendon {
-            // Tendon transmission not yet implemented in Model
-            // Requires tendon arrays (ntendon, tendon_*, etc.)
-            return Err(ModelConversionError {
-                message: format!(
-                    "Actuator '{}' uses tendon transmission '{}' which is not yet supported. \
-                     Use joint transmission instead.",
-                    actuator.name, tendon_name
-                ),
-            });
+            // Tendon transmission: resolve tendon name → index
+            let tendon_idx = *self
+                .tendon_name_to_id
+                .get(tendon_name.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}' references unknown tendon '{}'",
+                        actuator.name, tendon_name
+                    ),
+                })?;
+            (ActuatorTransmission::Tendon, tendon_idx)
         } else if let Some(ref site_name) = actuator.site {
             let site_id =
                 self.site_name_to_id
@@ -1444,21 +1595,25 @@ impl ModelBuilder {
             actuator_act_adr: self.actuator_act_adr,
             actuator_act_num: self.actuator_act_num,
 
-            // Tendons (empty for now - will be populated from MJCF tendon definitions)
-            ntendon: 0,
-            nwrap: 0,
-            tendon_range: vec![],
-            tendon_limited: vec![],
-            tendon_stiffness: vec![],
-            tendon_damping: vec![],
-            tendon_lengthspring: vec![],
-            tendon_length0: vec![],
-            tendon_num: vec![],
-            tendon_adr: vec![],
-            tendon_name: vec![],
-            wrap_type: vec![],
-            wrap_objid: vec![],
-            wrap_prm: vec![],
+            // Tendons (populated by process_tendons)
+            ntendon: self.tendon_type.len(),
+            nwrap: self.wrap_type.len(),
+            tendon_type: self.tendon_type,
+            tendon_range: self.tendon_range,
+            tendon_limited: self.tendon_limited,
+            tendon_stiffness: self.tendon_stiffness,
+            tendon_damping: self.tendon_damping,
+            tendon_frictionloss: self.tendon_frictionloss,
+            tendon_lengthspring: self.tendon_lengthspring,
+            tendon_length0: self.tendon_length0,
+            tendon_num: self.tendon_num,
+            tendon_adr: self.tendon_adr,
+            tendon_name: self.tendon_name,
+            tendon_solref: self.tendon_solref,
+            tendon_solimp: self.tendon_solimp,
+            wrap_type: self.wrap_type,
+            wrap_objid: self.wrap_objid,
+            wrap_prm: self.wrap_prm,
 
             // Equality constraints (populated by process_equality_constraints)
             neq: self.eq_type.len(),
@@ -1520,6 +1675,28 @@ impl ModelBuilder {
                 // Primitive geom: use GeomType::bounding_radius() - the single source of truth
                 model.geom_type[geom_id].bounding_radius(model.geom_size[geom_id])
             };
+        }
+
+        // Pre-compute tendon length0 and lengthspring from qpos0.
+        // For fixed tendons: length = Σ coef_w * qpos0[dof_adr_w].
+        for t in 0..model.ntendon {
+            if model.tendon_type[t] == TendonType::Fixed {
+                let adr = model.tendon_adr[t];
+                let num = model.tendon_num[t];
+                let mut length = 0.0;
+                for w in adr..(adr + num) {
+                    let dof_adr = model.wrap_objid[w];
+                    let coef = model.wrap_prm[w];
+                    if dof_adr < model.qpos0.len() {
+                        length += coef * model.qpos0[dof_adr];
+                    }
+                }
+                model.tendon_length0[t] = length;
+                // Spring rest length defaults to length at qpos0 when stiffness > 0
+                if model.tendon_stiffness[t] > 0.0 && model.tendon_lengthspring[t] == 0.0 {
+                    model.tendon_lengthspring[t] = length;
+                }
+            }
         }
 
         model
@@ -2440,7 +2617,8 @@ mod tests {
 
     /// Test that tendon actuators return proper error.
     #[test]
-    fn test_tendon_actuator_error() {
+    fn test_tendon_actuator_unknown_tendon_error() {
+        // Actuator referencing a nonexistent tendon should fail with "unknown tendon"
         let result = load_model(
             r#"
             <mujoco model="tendon_test">
@@ -2459,7 +2637,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("tendon transmission"));
+        assert!(err.to_string().contains("unknown tendon"));
     }
 
     /// Test capsule inertia computation is physically reasonable.
