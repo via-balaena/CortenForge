@@ -1996,7 +1996,7 @@ impl Model {
     ///   1. Computes `actuator_lengthrange` from tendon/joint limits (gear-scaled).
     ///   2. Runs a forward pass at `qpos0` to get M, then computes
     ///      `acc0 = ||M^{-1} * moment||` via sparse solve.
-    ///   3. Resolves `F0` (gainprm[2]) when `force < 0`: `F0 = scale / acc0`.
+    ///   3. Resolves `F0` (gainprm\[2\]) when `force < 0`: `F0 = scale / acc0`.
     ///
     /// Must be called after `compute_ancestors()` and `compute_implicit_params()`,
     /// and after all tendon/actuator fields are populated.
