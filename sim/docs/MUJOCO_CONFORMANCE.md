@@ -85,7 +85,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<contact>` | ✓ | ✓ | Contact filtering |
 | `<equality>` | ✓ | ✓ | Equality constraints |
 | `<tendon>` | ✓ | ✓ | Fixed and spatial tendons |
-| `<actuator>` | ✓ | ✓ | Motors, position, velocity |
+| `<actuator>` | ✓ | ✓ | Motors, muscle (FLV + activation dynamics), position, velocity; filter/integrator dynamics |
 | `<sensor>` | ✓ | ✓ | Various sensor types |
 | `<keyframe>` | ✓ | ❌ | State snapshots |
 

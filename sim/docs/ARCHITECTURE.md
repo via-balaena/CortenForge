@@ -43,7 +43,7 @@ sim/
 
 ## Core Architecture: Model/Data
 
-The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~11,800 lines).
+The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~13,100 lines).
 It implements MuJoCo's computation pipeline end-to-end.
 
 ### Model (static)
@@ -53,12 +53,15 @@ geometry specifications, actuator configuration, and solver parameters.
 
 Key fields:
 - `nq`/`nv` — position coordinates vs velocity DOFs (differ for quaternion joints)
+- `nu`/`na` — actuator count, total activation dimension
 - `body_parent[i]` — kinematic tree topology
 - `body_pos[i]`/`body_quat[i]` — local frame offsets
 - `body_mass[i]`/`body_inertia[i]` — mass properties
 - `jnt_type[i]` — `MjJointType` (Hinge, Slide, Ball, Free)
 - `jnt_stiffness[i]`/`jnt_damping[i]`/`jnt_springref[i]` — passive dynamics
 - `jnt_solref[i]`/`jnt_solimp[i]` — constraint solver parameters
+- `actuator_dyntype[i]` — `ActuatorDynamics` (None, Filter, Integrator, Muscle)
+- `actuator_dynprm[i]`/`actuator_gainprm[i]`/`actuator_biasprm[i]` — dynamics and force parameters
 - `timestep`, `gravity`, `integrator`, `solver_iterations`, `solver_tolerance`
 
 Constructed from MJCF via `sim-mjcf` or URDF via `sim-urdf`.
@@ -70,10 +73,11 @@ residual heap allocation occurs for contact vector growth and RK4 warmstart save
 
 | Category | Fields | Description |
 |----------|--------|-------------|
-| State | `qpos`, `qvel`, `time` | Source of truth |
+| State | `qpos`, `qvel`, `act`, `ctrl`, `time` | Source of truth (act = activation states for muscles/filters) |
 | Body poses | `xpos`, `xquat`, `xmat` | Computed by forward kinematics |
 | Mass matrix | `qM`, `qLD_diag`, `qLD_L` | Computed by CRBA; sparse L^T D L factorization cached |
 | Forces | `qfrc_bias`, `qfrc_passive`, `qfrc_actuator`, `qfrc_applied`, `qfrc_constraint` | Generalized force components |
+| Actuation | `actuator_length`, `actuator_velocity`, `actuator_force`, `act_dot` | Actuator-space state and activation derivatives |
 | Acceleration | `qacc` | Computed as `M^-1 * f_total` |
 | Contacts | `contacts`, `efc_lambda` | Active contacts and warmstart cache |
 
@@ -108,17 +112,20 @@ forward():
                mj_fwd_tendon         Tendon lengths + Jacobians (fixed tendons)
                mj_collision           Broad + narrow phase contacts
   Velocity     mj_fwd_velocity        Body spatial velocities + tendon velocities
-  Actuation    mj_fwd_actuation       Control → joint forces (joint + tendon transmission)
+               mj_actuator_length     Actuator length/velocity from transmission
+  Actuation    mj_fwd_actuation       act_dot computation + gain/bias force + clamping
   Dynamics     mj_crba                Mass matrix (Composite Rigid Body)
                mj_rne                 Bias forces (Recursive Newton-Euler)
                mj_fwd_passive         Springs, dampers, friction loss (joints + tendons)
   Constraints  mj_fwd_constraint      Joint/tendon limits + equality + contact PGS
   Solve        mj_fwd_acceleration    qacc = M^-1 * f  (or implicit solve)
 integrate() [Euler / ImplicitSpringDamper]:
+  Activation integration (act += dt * act_dot, muscle clamp to [0,1])
   Semi-implicit Euler (velocity first, then position with new velocity)
   Quaternion integration on SO(3) for ball/free joints
 mj_runge_kutta() [RungeKutta4]:
   True 4-stage RK4 with Butcher tableau [1/6, 1/3, 1/3, 1/6]
+  Integrates activation alongside qpos/qvel with same RK4 weights
   Stage 0 reuses initial forward(); stages 1-3 call forward_skip_sensors()
   Uses mj_integrate_pos_explicit() for quaternion-safe position updates
 ```
@@ -295,7 +302,11 @@ contype/conaffinity contact bitmasks, default class inheritance, and MJB binary
 format. **Note:** `<contact>` `<pair>`/`<exclude>` elements are not parsed.
 `<tendon>` and `<sensor>` elements are parsed and wired into the pipeline
 (fixed tendons fully supported; spatial tendons scaffolded but deferred;
-all 27 sensor types functional).
+all 27 sensor types functional). Muscle parameters (`timeconst`, `range`,
+`force`, `scale`, `lmin`, `lmax`, `vmax`, `fpmax`, `fvmax`) are parsed and
+transferred to Model fields (`actuator_dynprm`, `actuator_gainprm`,
+`actuator_biasprm`); `compute_muscle_params()` resolves `lengthrange`, `acc0`,
+and auto-computes `F0` at model build time.
 
 ### sim-urdf
 

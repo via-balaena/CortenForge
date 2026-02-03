@@ -19,7 +19,7 @@ can be tackled in any order unless a prerequisite is noted.
 | 2 | Sparse L^T D L | Medium | Low | M | #1 |
 | 3 | CG Contact Solver | Medium | Low | L | None (#1, #2 help perf) |
 | 4 | Tendon Pipeline | Low | High | L | None |
-| 5 | Muscle Pipeline | Low | High | L | #4 |
+| 5 | Muscle Pipeline | Low | High | L | #4 ✅ |
 | 6 | Sensor Completion | High | High | S | #4 for tendon sensors |
 | 7 | Integrator Rename | Low | Medium | S | None |
 | 8 | True RK4 Integration | Low | Medium | M | None |
@@ -1479,7 +1479,7 @@ prototyping, and as documentation of the algorithms.
 ---
 
 ### 5. Muscle Pipeline
-**Status:** Not started | **Effort:** L | **Prerequisites:** #4 ✅ (tendon pipeline provides `ten_length`, `ten_velocity`, `ten_J`)
+**Status:** ✅ Done | **Effort:** L | **Prerequisites:** #4 ✅ (tendon pipeline provides `ten_length`, `ten_velocity`, `ten_J`)
 
 #### Architectural Decision: MuJoCo FLV Model (Not sim-muscle)
 
