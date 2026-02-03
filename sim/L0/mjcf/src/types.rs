@@ -1800,8 +1800,8 @@ pub struct MjcfActuator {
     pub forcelimited: bool,
     /// Position gain (for position actuators).
     pub kp: f64,
-    /// Velocity gain (for position/velocity actuators).
-    pub kv: f64,
+    /// Velocity gain. `None` means use actuator-type default.
+    pub kv: Option<f64>,
 
     // ========================================================================
     // Cylinder-specific attributes
@@ -1810,8 +1810,8 @@ pub struct MjcfActuator {
     pub area: f64,
     /// Cylinder diameter (m). Alternative to area; takes precedence if set.
     pub diameter: Option<f64>,
-    /// Activation dynamics time constant (s) for cylinder.
-    pub timeconst: f64,
+    /// Activation dynamics time constant (s). `None` means use actuator-type default.
+    pub timeconst: Option<f64>,
     /// Bias parameters [prm0, prm1, prm2] for cylinder.
     pub bias: [f64; 3],
 
@@ -1860,11 +1860,11 @@ impl Default for MjcfActuator {
             ctrllimited: false,
             forcelimited: false,
             kp: 1.0,
-            kv: 0.0,
+            kv: None,
             // Cylinder defaults (MuJoCo defaults)
             area: 1.0,
             diameter: None,
-            timeconst: 1.0,
+            timeconst: None,
             bias: [0.0, 0.0, 0.0],
             // Muscle defaults (MuJoCo defaults)
             muscle_timeconst: (0.01, 0.04),
@@ -1913,7 +1913,7 @@ impl MjcfActuator {
             name: name.into(),
             actuator_type: MjcfActuatorType::Velocity,
             joint: Some(joint.into()),
-            kv,
+            kv: Some(kv),
             ..Default::default()
         }
     }
@@ -1926,6 +1926,19 @@ impl MjcfActuator {
             actuator_type: MjcfActuatorType::Cylinder,
             joint: Some(joint.into()),
             area,
+            timeconst: Some(1.0),
+            ..Default::default()
+        }
+    }
+
+    /// Create a damper actuator for a joint.
+    #[must_use]
+    pub fn damper(name: impl Into<String>, joint: impl Into<String>, kv: f64) -> Self {
+        Self {
+            name: name.into(),
+            actuator_type: MjcfActuatorType::Damper,
+            joint: Some(joint.into()),
+            kv: Some(kv),
             ..Default::default()
         }
     }

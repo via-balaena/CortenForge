@@ -424,14 +424,46 @@ pub enum ActuatorTransmission {
 /// Actuator dynamics type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ActuatorDynamics {
-    /// No dynamics (direct force).
+    /// No dynamics — input = ctrl (direct passthrough).
     #[default]
     None,
-    /// First-order filter.
+    /// First-order filter (Euler): act_dot = (ctrl - act) / tau.
     Filter,
-    /// Integrator.
+    /// First-order filter (exact): act_dot = (ctrl - act) / tau,
+    /// integrated as act += act_dot * tau * (1 - exp(-h/tau)).
+    /// MuJoCo reference: `mjDYN_FILTEREXACT`.
+    FilterExact,
+    /// Integrator: act_dot = ctrl.
     Integrator,
-    /// Muscle model.
+    /// Muscle activation dynamics.
+    Muscle,
+}
+
+/// Actuator gain type — controls how `gain` is computed in Phase 2.
+///
+/// MuJoCo reference: `mjtGain` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum GainType {
+    /// gain = gainprm[0] (constant).
+    #[default]
+    Fixed,
+    /// gain = gainprm[0] + gainprm[1]*length + gainprm[2]*velocity.
+    Affine,
+    /// Muscle FLV gain (handled separately in the Muscle path).
+    Muscle,
+}
+
+/// Actuator bias type — controls how `bias` is computed in Phase 2.
+///
+/// MuJoCo reference: `mjtBias` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum BiasType {
+    /// bias = 0.
+    #[default]
+    None,
+    /// bias = biasprm[0] + biasprm[1]*length + biasprm[2]*velocity.
+    Affine,
+    /// Muscle passive force (handled separately in the Muscle path).
     Muscle,
 }
 
@@ -919,6 +951,10 @@ pub struct Model {
     pub actuator_act_adr: Vec<usize>,
     /// Number of activation states per actuator (0 for None dynamics, 1 for Filter/Integrator/Muscle).
     pub actuator_act_num: Vec<usize>,
+    /// Gain type per actuator — dispatches force gain computation.
+    pub actuator_gaintype: Vec<GainType>,
+    /// Bias type per actuator — dispatches force bias computation.
+    pub actuator_biastype: Vec<BiasType>,
 
     /// Dynamics parameters per actuator (3 elements each).
     /// For Muscle: [tau_act, tau_deact, tausmooth]. Default: [0.01, 0.04, 0.0].
@@ -1659,6 +1695,8 @@ impl Model {
             actuator_name: vec![],
             actuator_act_adr: vec![],
             actuator_act_num: vec![],
+            actuator_gaintype: vec![],
+            actuator_biastype: vec![],
             actuator_dynprm: vec![],
             actuator_gainprm: vec![],
             actuator_biasprm: vec![],
@@ -2630,13 +2668,24 @@ impl Data {
     fn integrate(&mut self, model: &Model) {
         let h = model.timestep;
 
-        // Integrate activation: act += dt * act_dot, then clamp muscles to [0, 1].
+        // Integrate activation per actuator, then clamp muscles to [0, 1].
         // MuJoCo order: activation → velocity → position.
         for i in 0..model.nu {
             let act_adr = model.actuator_act_adr[i];
             let act_num = model.actuator_act_num[i];
             for k in 0..act_num {
-                self.act[act_adr + k] += h * self.act_dot[act_adr + k];
+                let j = act_adr + k;
+                match model.actuator_dyntype[i] {
+                    ActuatorDynamics::FilterExact => {
+                        // Exact: act += act_dot * tau * (1 - exp(-h/tau))
+                        let tau = model.actuator_dynprm[i][0].max(1e-10);
+                        self.act[j] += self.act_dot[j] * tau * (1.0 - (-h / tau).exp());
+                    }
+                    _ => {
+                        // Euler: act += h * act_dot
+                        self.act[j] += h * self.act_dot[j];
+                    }
+                }
             }
             // Clamp muscle activation to [0, 1]
             if model.actuator_dyntype[i] == ActuatorDynamics::Muscle {
@@ -6505,8 +6554,10 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     muscle_activation_dynamics(ctrl, data.act[act_adr], &model.actuator_dynprm[i]);
                 data.act[act_adr] // use CURRENT activation for force
             }
-            ActuatorDynamics::Filter => {
+            ActuatorDynamics::Filter | ActuatorDynamics::FilterExact => {
                 // First-order filter: d(act)/dt = (ctrl - act) / tau
+                // Filter uses Euler integration, FilterExact uses exact integration.
+                // Both compute the same act_dot here; the difference is in integrate().
                 let act_adr = model.actuator_act_adr[i];
                 let tau = model.actuator_dynprm[i][0].max(1e-10);
                 data.act_dot[act_adr] = (ctrl - data.act[act_adr]) / tau;
@@ -6521,35 +6572,53 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         };
 
         // --- Phase 2: Force generation (gain * input + bias) ---
-        let force = match model.actuator_dyntype[i] {
-            ActuatorDynamics::Muscle => {
+        let length = data.actuator_length[i];
+        let velocity = data.actuator_velocity[i];
+
+        let gain = match model.actuator_gaintype[i] {
+            GainType::Fixed => model.actuator_gainprm[i][0],
+            GainType::Affine => {
+                model.actuator_gainprm[i][0]
+                    + model.actuator_gainprm[i][1] * length
+                    + model.actuator_gainprm[i][2] * velocity
+            }
+            GainType::Muscle => {
+                // Muscle gain = -F0 * FL(L) * FV(V)
                 let prm = &model.actuator_gainprm[i];
-                let len = data.actuator_length[i];
-                let vel = data.actuator_velocity[i];
                 let lengthrange = model.actuator_lengthrange[i];
-                let f0 = prm[2]; // force (resolved, always > 0 after compute_muscle_params)
+                let f0 = prm[2]; // resolved by compute_muscle_params()
 
-                // Normalize length and velocity
                 let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
-                let norm_len = prm[0] + (len - lengthrange.0) / l0.max(1e-10);
-                let norm_vel = vel / (l0 * prm[6]).max(1e-10); // prm[6] = vmax
+                let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
+                let norm_vel = velocity / (l0 * prm[6]).max(1e-10);
 
-                // gain = -F0 * FL(L) * FV(V), bias = -F0 * FP(L)
                 let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
                 let fv = muscle_gain_velocity(norm_vel, prm[8]);
-                let fp = muscle_passive_force(norm_len, prm[5], prm[7]);
-
-                let gain = -f0 * fl * fv;
-                let bias = -f0 * fp;
-                gain * input + bias // = -F0 * (FL*FV*act + FP)
-            }
-            _ => {
-                // Simple actuators: force = input (ctrl or filtered activation).
-                // MuJoCo's full gain/bias system is not implemented for non-muscle
-                // actuators in this spec. Tracked as future work.
-                input
+                -f0 * fl * fv
             }
         };
+
+        let bias = match model.actuator_biastype[i] {
+            BiasType::None => 0.0,
+            BiasType::Affine => {
+                model.actuator_biasprm[i][0]
+                    + model.actuator_biasprm[i][1] * length
+                    + model.actuator_biasprm[i][2] * velocity
+            }
+            BiasType::Muscle => {
+                let prm = &model.actuator_gainprm[i]; // muscle uses gainprm for both
+                let lengthrange = model.actuator_lengthrange[i];
+                let f0 = prm[2];
+
+                let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
+                let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
+
+                let fp = muscle_passive_force(norm_len, prm[5], prm[7]);
+                -f0 * fp
+            }
+        };
+
+        let force = gain * input + bias;
 
         // Clamp to force range
         let force = force.clamp(
@@ -10113,7 +10182,6 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
 
     let h = model.timestep;
     let nv = model.nv;
-    let na = model.na;
 
     // 1. SAVE initial state
     data.rk4_qpos_saved.copy_from(&data.qpos);
@@ -10161,18 +10229,28 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
             tail[i - 1][v] = head[0][v] + h * data.rk4_dX_acc[v];
         }
 
-        // 2e. Activation trial state: act = act_saved + h * Σ A[(i-1)*3+j] * act_dot[j]
-        for a in 0..na {
-            let mut sum = 0.0;
-            for j in 0..3 {
-                sum += RK4_A[(i - 1) * 3 + j] * data.rk4_act_dot[j][a];
-            }
-            data.act[a] = data.rk4_act_saved[a] + h * sum;
-        }
-        // Clamp muscle activations to [0, 1] for trial state
+        // 2e. Activation trial state: act = act_saved + h_eff * Σ A[(i-1)*3+j] * act_dot[j]
+        // where h_eff depends on dynamics type (Euler vs FilterExact).
         for act_i in 0..model.nu {
+            let act_adr = model.actuator_act_adr[act_i];
+            for k in 0..model.actuator_act_num[act_i] {
+                let a = act_adr + k;
+                let mut sum = 0.0;
+                for j in 0..3 {
+                    sum += RK4_A[(i - 1) * 3 + j] * data.rk4_act_dot[j][a];
+                }
+                match model.actuator_dyntype[act_i] {
+                    ActuatorDynamics::FilterExact => {
+                        let tau = model.actuator_dynprm[act_i][0].max(1e-10);
+                        data.act[a] = data.rk4_act_saved[a] + sum * tau * (1.0 - (-h / tau).exp());
+                    }
+                    _ => {
+                        data.act[a] = data.rk4_act_saved[a] + h * sum;
+                    }
+                }
+            }
+            // Clamp muscle activations to [0, 1] for trial state
             if model.actuator_dyntype[act_i] == ActuatorDynamics::Muscle {
-                let act_adr = model.actuator_act_adr[act_i];
                 for k in 0..model.actuator_act_num[act_i] {
                     data.act[act_adr + k] = data.act[act_adr + k].clamp(0.0, 1.0);
                 }
@@ -10227,14 +10305,24 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     mj_normalize_quat(model, data);
 
     // Advance activation from saved initial state
-    for a in 0..na {
-        let dact_combined: f64 = (0..4).map(|j| RK4_B[j] * data.rk4_act_dot[j][a]).sum();
-        data.act[a] = data.rk4_act_saved[a] + h * dact_combined;
-    }
-    // Clamp muscle activations to [0, 1]
     for act_i in 0..model.nu {
+        let act_adr = model.actuator_act_adr[act_i];
+        for k in 0..model.actuator_act_num[act_i] {
+            let a = act_adr + k;
+            let dact_combined: f64 = (0..4).map(|j| RK4_B[j] * data.rk4_act_dot[j][a]).sum();
+            match model.actuator_dyntype[act_i] {
+                ActuatorDynamics::FilterExact => {
+                    let tau = model.actuator_dynprm[act_i][0].max(1e-10);
+                    data.act[a] =
+                        data.rk4_act_saved[a] + dact_combined * tau * (1.0 - (-h / tau).exp());
+                }
+                _ => {
+                    data.act[a] = data.rk4_act_saved[a] + h * dact_combined;
+                }
+            }
+        }
+        // Clamp muscle activations to [0, 1]
         if model.actuator_dyntype[act_i] == ActuatorDynamics::Muscle {
-            let act_adr = model.actuator_act_adr[act_i];
             for k in 0..model.actuator_act_num[act_i] {
                 data.act[act_adr + k] = data.act[act_adr + k].clamp(0.0, 1.0);
             }
@@ -11178,6 +11266,17 @@ mod sensor_tests {
         model.actuator_name.push(None);
         model.actuator_act_adr.push(0);
         model.actuator_act_num.push(0);
+        model.actuator_gaintype.push(GainType::Fixed);
+        model.actuator_biastype.push(BiasType::None);
+        model.actuator_dynprm.push([0.0; 3]);
+        model.actuator_gainprm.push({
+            let mut p = [0.0; 9];
+            p[0] = 1.0;
+            p
+        });
+        model.actuator_biasprm.push([0.0; 9]);
+        model.actuator_lengthrange.push((0.0, 0.0));
+        model.actuator_acc0.push(0.0);
 
         add_sensor(
             &mut model,
@@ -11211,6 +11310,17 @@ mod sensor_tests {
         model.actuator_name.push(None);
         model.actuator_act_adr.push(0);
         model.actuator_act_num.push(0);
+        model.actuator_gaintype.push(GainType::Fixed);
+        model.actuator_biastype.push(BiasType::None);
+        model.actuator_dynprm.push([0.0; 3]);
+        model.actuator_gainprm.push({
+            let mut p = [0.0; 9];
+            p[0] = 1.0;
+            p
+        });
+        model.actuator_biasprm.push([0.0; 9]);
+        model.actuator_lengthrange.push((0.0, 0.0));
+        model.actuator_acc0.push(0.0);
 
         add_sensor(
             &mut model,
@@ -11631,6 +11741,17 @@ mod sensor_tests {
         model.actuator_name.push(None);
         model.actuator_act_adr.push(0);
         model.actuator_act_num.push(0);
+        model.actuator_gaintype.push(GainType::Fixed);
+        model.actuator_biastype.push(BiasType::None);
+        model.actuator_dynprm.push([0.0; 3]);
+        model.actuator_gainprm.push({
+            let mut p = [0.0; 9];
+            p[0] = 1.0;
+            p
+        });
+        model.actuator_biasprm.push([0.0; 9]);
+        model.actuator_lengthrange.push((0.0, 0.0));
+        model.actuator_acc0.push(0.0);
 
         // Add a variety of sensors
         add_sensor(
@@ -12601,6 +12722,8 @@ mod muscle_tests {
         model.actuator_name = vec![Some("muscle".to_string())];
         model.actuator_act_adr = vec![0];
         model.actuator_act_num = vec![1];
+        model.actuator_gaintype = vec![GainType::Muscle];
+        model.actuator_biastype = vec![BiasType::Muscle];
         model.actuator_dynprm = vec![[0.01, 0.04, 0.0]]; // default tau_act, tau_deact
         model.actuator_gainprm = vec![[0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2]];
         model.actuator_biasprm = vec![[0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2]];
@@ -12849,8 +12972,14 @@ mod muscle_tests {
         model.actuator_name = vec![Some("motor".to_string())];
         model.actuator_act_adr = vec![0];
         model.actuator_act_num = vec![0];
+        model.actuator_gaintype = vec![GainType::Fixed];
+        model.actuator_biastype = vec![BiasType::None];
         model.actuator_dynprm = vec![[0.0; 3]];
-        model.actuator_gainprm = vec![[0.0; 9]];
+        model.actuator_gainprm = vec![{
+            let mut p = [0.0; 9];
+            p[0] = 1.0; // Motor: unit gain
+            p
+        }];
         model.actuator_biasprm = vec![[0.0; 9]];
         model.actuator_lengthrange = vec![(0.0, 0.0)];
         model.actuator_acc0 = vec![0.0];

@@ -3197,7 +3197,7 @@ using position or velocity servos produces incorrect torques.
 
 2. **`dynprm` for non-muscle actuators:** Set to `[0.0; 3]` for all non-muscle
    types (`model_builder.rs:1266`). For Cylinder actuators, `dynprm[0]` should
-   be `timeconst` (defaults to `1.0`). For Position/Velocity with explicit
+   be `timeconst` (defaults to `1.0`). For Position with explicit
    `timeconst > 0`, `dynprm[0]` should be that value.
 
 3. **`gainprm`/`biasprm` for non-muscle actuators:** Set to `[gear, 0, ..., 0]`
@@ -3270,9 +3270,13 @@ parsed today, and `acc0` is only computed for muscle actuators (in
 
 When `dampratio` is added, the builder will:
 1. Parse `dampratio` from MJCF (mutually exclusive with `kv`).
-2. Compute `acc0` for all actuators (extending `compute_muscle_params()`).
-3. Resolve `kv = dampratio * 2 * sqrt(kp / acc0)` (where `1/acc0` is effective
-   inertia).
+2. Compute reflected inertia for all actuators (extending
+   `compute_muscle_params()` into a general `compute_actuator_params()`).
+   MuJoCo computes this from `dof_M0` and the actuator transmission, not from
+   `1/acc0` — the two are equivalent for simple transmissions but differ for
+   compound transmissions.
+3. Resolve `kv = dampratio * 2 * sqrt(kp * inertia)` (where `inertia` is the
+   reflected inertia from step 2). Reference: MuJoCo `engine_setconst.c`.
 4. Store `-kv` in `biasprm[2]`.
 
 #### Scope Decision: `general` Actuator MJCF Parsing Deferred
@@ -3555,7 +3559,7 @@ let (gaintype, biastype, gainprm, biasprm, dynprm) = match actuator.actuator_typ
     }
 
     MjcfActuatorType::Damper => {
-        // kv resolved above from Option<f64> (default 1.0 for damper)
+        // kv resolved above from Option<f64> (default 0.0 for damper)
         let mut gp = [0.0; 9];
         gp[2] = -kv; // gain = -kv * velocity
         (
@@ -3647,14 +3651,16 @@ This replaces the existing `is_muscle` branch and the `[0.0; 3]` dynprm
 fallback. The Muscle arm is equivalent to the existing #5 code; the new arms
 populate the correct shortcut-specific parameters.
 
-**Damper `ctrllimited` enforcement:** MuJoCo's damper shortcut unconditionally
-sets `ctrllimited = 1` (`mjs_setToDamper` in `user_api.cc`). Add this before
-the ctrlrange gate (`model_builder.rs:1224`):
+**Damper/Adhesion `ctrllimited` enforcement:** MuJoCo's damper and adhesion
+shortcuts unconditionally set `ctrllimited = 1` (`mjs_setToDamper` and
+`mjs_setToAdhesion` in `user_api.cc`). Add this before the ctrlrange gate
+(`model_builder.rs:1224`):
 
 ```rust
-// Damper actuators force ctrllimited (MuJoCo: mjs_setToDamper sets ctrllimited=1).
+// Damper and Adhesion actuators force ctrllimited
+// (MuJoCo: mjs_setToDamper and mjs_setToAdhesion both set ctrllimited=1).
 let ctrllimited = match actuator.actuator_type {
-    MjcfActuatorType::Damper => true,
+    MjcfActuatorType::Damper | MjcfActuatorType::Adhesion => true,
     _ => actuator.ctrllimited,
 };
 ```
@@ -3663,6 +3669,8 @@ Then use `ctrllimited` (the local variable) instead of `actuator.ctrllimited` at
 line 1226. Without this, a `<damper joint="j1" kv="5"/>` (no explicit
 `ctrllimited="true"`) would get unbounded ctrlrange, allowing negative control
 values that produce force in the direction of motion — the opposite of a damper.
+Similarly, an `<adhesion>` without explicit `ctrllimited` would allow negative
+control values, which is invalid for adhesion force scaling.
 
 ##### Step 5: Replace Phase 2 Force Dispatch in `mj_fwd_actuation()`
 
@@ -3844,13 +3852,15 @@ In `parser.rs` (line 1110): parse into `Some(value)`.
 Builder resolution:
 ```rust
 let kv = actuator.kv.unwrap_or(match actuator.actuator_type {
-    MjcfActuatorType::Velocity | MjcfActuatorType::Damper => 1.0,
-    _ => 0.0,
+    MjcfActuatorType::Velocity => 1.0,
+    _ => 0.0, // Damper defaults to 0.0 (MuJoCo: mjs_setToDamper uses kv=0)
 });
 ```
 
-MuJoCo defaults: `kv = 1.0` for `<velocity>` and `<damper>`, `kv = 0.0` for
-`<position>` and all other types. Without `Option`, a `<velocity joint="j1"/>`
+MuJoCo defaults: `kv = 1.0` for `<velocity>`, `kv = 0.0` for `<damper>`,
+`<position>`, and all other types. A `<damper>` without explicit `kv` is
+effectively a no-op in MuJoCo (zero gain); in practice all real MJCF damper
+actuators specify `kv` explicitly. Without `Option`, a `<velocity joint="j1"/>`
 without explicit `kv` would use `kv = 0.0` (producing zero force), which is
 wrong.
 
@@ -3964,9 +3974,9 @@ With:
 12. **`kv` default for Velocity:** `<velocity joint="j1"/>` without explicit
     `kv` produces `kv = 1.0` (MuJoCo default), not `kv = 0.0`.
 
-13. **Damper `ctrllimited` enforcement:** `<damper joint="j1" kv="5"/>` without
-    explicit `ctrllimited` has `ctrllimited=true` and bounded `ctrlrange`
-    (not `(-inf, inf)`).
+13. **Damper/Adhesion `ctrllimited` enforcement:** `<damper joint="j1" kv="5"/>`
+    and `<adhesion body="b1"/>` without explicit `ctrllimited` both have
+    `ctrllimited=true` and bounded `ctrlrange` (not `(-inf, inf)`).
 
 14. **Existing tests pass or are updated:** All integration tests (implicit, RK4,
     musculoskeletal, collision, sensor) pass. The builder test
@@ -3994,7 +4004,7 @@ With:
   - Push `gaintype`, `biastype` to Model
   - Resolve `timeconst` per actuator type (before dyntype match)
   - Resolve `kv` per actuator type (before dyntype match)
-  - Enforce `ctrllimited = true` for Damper (before line 1226)
+  - Enforce `ctrllimited = true` for Damper and Adhesion (before line 1226)
 - `sim/L0/mjcf/src/types.rs` — modify:
   - Change `MjcfActuator.timeconst` from `f64` to `Option<f64>` (line 1814)
   - Change `MjcfActuator.kv` from `f64` to `Option<f64>` (line 1804)

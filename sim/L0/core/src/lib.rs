@@ -105,12 +105,14 @@ pub use mujoco_pipeline::{
     // Actuator types
     ActuatorDynamics,
     ActuatorTransmission,
+    BiasType,
     // Contact representation
     Contact,
     // MuJoCo-aligned Model/Data architecture (core API)
     Data,
     // Equality constraint types
     EqualityType,
+    GainType,
     // Geometry types
     GeomType,
     // Integration method selection

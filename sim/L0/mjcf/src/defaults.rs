@@ -272,10 +272,10 @@ impl DefaultResolver {
                 }
             }
 
-            // kv: apply default if at default (0.0)
-            if result.kv == 0.0 {
+            // kv: apply default if not explicitly set
+            if result.kv.is_none() {
                 if let Some(kv) = defaults.kv {
-                    result.kv = kv;
+                    result.kv = Some(kv);
                 }
             }
         }

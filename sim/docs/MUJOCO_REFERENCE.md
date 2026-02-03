@@ -179,7 +179,18 @@ Default `dynprm` for muscles: `[tau_act=0.01, tau_deact=0.04, tausmooth=0.0]`.
         bias = -F0 * FP
         force = gain * input + bias   # = -F0 * (FL*FV*act + FP)
     else:
-        force = input                 # ctrl or filtered activation
+        # General gain/bias formula
+        if gaintype[i] == Fixed:
+            gain = gainprm[i][0]
+        elif gaintype[i] == Affine:
+            gain = gainprm[i][0] + gainprm[i][1]*length[i] + gainprm[i][2]*velocity[i]
+
+        if biastype[i] == None:
+            bias = 0.0
+        elif biastype[i] == Affine:
+            bias = biasprm[i][0] + biasprm[i][1]*length[i] + biasprm[i][2]*velocity[i]
+
+        force = gain * input + bias
 ```
 
 **Force-Length curve** (`muscle_gain_length`): Piecewise-quadratic bump.

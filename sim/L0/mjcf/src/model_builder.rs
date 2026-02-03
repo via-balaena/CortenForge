@@ -14,8 +14,8 @@
 use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{
-    ActuatorDynamics, ActuatorTransmission, EqualityType, GeomType, Integrator, MjJointType, Model,
-    TendonType, WrapType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, GainType, GeomType, Integrator,
+    MjJointType, Model, TendonType, WrapType,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -278,6 +278,8 @@ struct ModelBuilder {
     actuator_name: Vec<Option<String>>,
     actuator_act_adr: Vec<usize>,
     actuator_act_num: Vec<usize>,
+    actuator_gaintype: Vec<GainType>,
+    actuator_biastype: Vec<BiasType>,
     actuator_dynprm: Vec<[f64; 3]>,
     actuator_gainprm: Vec<[f64; 9]>,
     actuator_biasprm: Vec<[f64; 9]>,
@@ -432,6 +434,8 @@ impl ModelBuilder {
             actuator_name: vec![],
             actuator_act_adr: vec![],
             actuator_act_num: vec![],
+            actuator_gaintype: vec![],
+            actuator_biastype: vec![],
             actuator_dynprm: vec![],
             actuator_gainprm: vec![],
             actuator_biasprm: vec![],
@@ -1200,20 +1204,45 @@ impl ModelBuilder {
             });
         };
 
-        // Determine dynamics type
-        // MuJoCo semantics:
-        // - Motor/General/Damper/Adhesion: Direct force, no activation state
-        // - Position/Velocity: First-order filter dynamics
-        // - Muscle: Muscle activation dynamics (2 states)
-        // - Cylinder: Integrator dynamics (pneumatic)
+        // Resolve per-type defaults for Option fields.
+        // These must be resolved before dyntype/gain/bias decisions that depend on them.
+        let timeconst = actuator.timeconst.unwrap_or(match actuator.actuator_type {
+            MjcfActuatorType::Cylinder => 1.0,
+            _ => 0.0,
+        });
+        let kv = actuator.kv.unwrap_or(match actuator.actuator_type {
+            MjcfActuatorType::Velocity => 1.0,
+            _ => 0.0, // Damper defaults to 0.0 (MuJoCo: mjs_setToDamper uses kv=0)
+        });
+
+        // Damper and Adhesion actuators force ctrllimited
+        // (MuJoCo: mjs_setToDamper and mjs_setToAdhesion both set ctrllimited=1).
+        let ctrllimited = match actuator.actuator_type {
+            MjcfActuatorType::Damper | MjcfActuatorType::Adhesion => true,
+            _ => actuator.ctrllimited,
+        };
+
+        // Determine dynamics type.
+        // MuJoCo semantics: dyntype is determined by the shortcut type AND timeconst.
+        // Position defaults to None; if timeconst > 0, uses FilterExact (exact discrete filter).
+        // Cylinder always uses Filter (Euler-approximated; timeconst defaults to 1.0).
+        // Motor/General/Damper/Adhesion/Velocity: no dynamics.
+        // Muscle: muscle activation dynamics.
         let dyntype = match actuator.actuator_type {
             MjcfActuatorType::Motor
             | MjcfActuatorType::General
             | MjcfActuatorType::Damper
-            | MjcfActuatorType::Adhesion => ActuatorDynamics::None,
-            MjcfActuatorType::Position | MjcfActuatorType::Velocity => ActuatorDynamics::Filter,
+            | MjcfActuatorType::Adhesion
+            | MjcfActuatorType::Velocity => ActuatorDynamics::None,
+            MjcfActuatorType::Position => {
+                if timeconst > 0.0 {
+                    ActuatorDynamics::FilterExact // MuJoCo: mjDYN_FILTEREXACT
+                } else {
+                    ActuatorDynamics::None
+                }
+            }
             MjcfActuatorType::Muscle => ActuatorDynamics::Muscle,
-            MjcfActuatorType::Cylinder => ActuatorDynamics::Integrator,
+            MjcfActuatorType::Cylinder => ActuatorDynamics::Filter,
         };
 
         self.actuator_trntype.push(trntype);
@@ -1223,7 +1252,7 @@ impl ModelBuilder {
 
         // Gate ctrlrange/forcerange on ctrllimited/forcelimited (MuJoCo semantics).
         // When limited=false, range is effectively unbounded regardless of attribute value.
-        self.actuator_ctrlrange.push(if actuator.ctrllimited {
+        self.actuator_ctrlrange.push(if ctrllimited {
             actuator.ctrlrange.unwrap_or((-1.0, 1.0))
         } else {
             (f64::NEG_INFINITY, f64::INFINITY)
@@ -1243,53 +1272,124 @@ impl ModelBuilder {
         });
 
         // Compute activation state count based on dynamics type
-        // MuJoCo semantics: None=0, Filter/Integrator=1, Muscle=1
-        // (Muscle has 1 activation state — the activation level `act`)
         let act_num = match dyntype {
             ActuatorDynamics::None => 0,
-            ActuatorDynamics::Filter | ActuatorDynamics::Integrator | ActuatorDynamics::Muscle => 1,
+            ActuatorDynamics::Filter
+            | ActuatorDynamics::FilterExact
+            | ActuatorDynamics::Integrator
+            | ActuatorDynamics::Muscle => 1,
         };
 
         self.actuator_act_adr.push(self.na);
         self.actuator_act_num.push(act_num);
         self.na += act_num;
 
-        // Dynamics parameters
-        let is_muscle = actuator.actuator_type == MjcfActuatorType::Muscle;
-        let dynprm = if is_muscle {
-            [
-                actuator.muscle_timeconst.0, // tau_act (default 0.01)
-                actuator.muscle_timeconst.1, // tau_deact (default 0.04)
-                0.0,                         // tausmooth (default 0, hard switch)
-            ]
-        } else {
-            [0.0; 3]
-        };
-        self.actuator_dynprm.push(dynprm);
+        // Gain/Bias/Dynamics parameters — expand shortcut type to general actuator.
+        // Reference: MuJoCo src/user/user_api.cc (mjs_setToMotor, mjs_setToPosition, etc.)
+        let (gaintype, biastype, gainprm, biasprm, dynprm) = match actuator.actuator_type {
+            MjcfActuatorType::Motor => (
+                GainType::Fixed,
+                BiasType::None,
+                {
+                    let mut p = [0.0; 9];
+                    p[0] = 1.0; // unit gain
+                    p
+                },
+                [0.0; 9],
+                [0.0; 3],
+            ),
 
-        // Gain/Bias parameters (shared layout for muscle)
-        let gainprm = if is_muscle {
-            [
-                actuator.range.0, // range[0], default 0.75
-                actuator.range.1, // range[1], default 1.05
-                actuator.force,   // force, default -1.0 (auto)
-                actuator.scale,   // scale, default 200.0
-                actuator.lmin,    // lmin, default 0.5
-                actuator.lmax,    // lmax, default 1.6
-                actuator.vmax,    // vmax, default 1.5
-                actuator.fpmax,   // fpmax, default 1.3
-                actuator.fvmax,   // fvmax, default 1.2
-            ]
-        } else {
-            let mut prm = [0.0; 9];
-            prm[0] = actuator.gear;
-            prm
+            MjcfActuatorType::Position => {
+                let kp = actuator.kp; // default 1.0
+                // kv resolved above from Option<f64> (default 0.0 for position)
+                let tc = timeconst; // resolved above (default 0.0 for position)
+                let mut gp = [0.0; 9];
+                gp[0] = kp;
+                let mut bp = [0.0; 9];
+                bp[1] = -kp;
+                bp[2] = -kv;
+                (GainType::Fixed, BiasType::Affine, gp, bp, [tc, 0.0, 0.0])
+            }
+
+            MjcfActuatorType::Velocity => {
+                // kv resolved above from Option<f64> (default 1.0 for velocity)
+                let mut gp = [0.0; 9];
+                gp[0] = kv;
+                let mut bp = [0.0; 9];
+                bp[2] = -kv;
+                (GainType::Fixed, BiasType::Affine, gp, bp, [0.0; 3])
+            }
+
+            MjcfActuatorType::Damper => {
+                // kv resolved above from Option<f64> (default 0.0 for damper)
+                let mut gp = [0.0; 9];
+                gp[2] = -kv; // gain = -kv * velocity
+                (GainType::Affine, BiasType::None, gp, [0.0; 9], [0.0; 3])
+            }
+
+            MjcfActuatorType::Cylinder => {
+                let area = if let Some(d) = actuator.diameter {
+                    std::f64::consts::PI / 4.0 * d * d
+                } else {
+                    actuator.area
+                };
+                let tc = timeconst; // resolved above (default 1.0 for cylinder)
+                let mut gp = [0.0; 9];
+                gp[0] = area;
+                let mut bp = [0.0; 9];
+                bp[0] = actuator.bias[0];
+                bp[1] = actuator.bias[1];
+                bp[2] = actuator.bias[2];
+                (GainType::Fixed, BiasType::Affine, gp, bp, [tc, 0.0, 0.0])
+            }
+
+            MjcfActuatorType::Adhesion => {
+                let mut gp = [0.0; 9];
+                gp[0] = actuator.gain;
+                (GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 3])
+            }
+
+            MjcfActuatorType::Muscle => {
+                // Muscle: unchanged from #5 implementation.
+                let gp = [
+                    actuator.range.0,
+                    actuator.range.1,
+                    actuator.force,
+                    actuator.scale,
+                    actuator.lmin,
+                    actuator.lmax,
+                    actuator.vmax,
+                    actuator.fpmax,
+                    actuator.fvmax,
+                ];
+                (
+                    GainType::Muscle,
+                    BiasType::Muscle,
+                    gp,
+                    gp, // biasprm = gainprm (shared layout, MuJoCo convention)
+                    [
+                        actuator.muscle_timeconst.0,
+                        actuator.muscle_timeconst.1,
+                        0.0,
+                    ],
+                )
+            }
+
+            MjcfActuatorType::General => {
+                // TODO(general-actuator): <general> without explicit gaintype/biastype
+                // is treated as Motor-like. Full MJCF attribute parsing for gaintype,
+                // biastype, dyntype, gainprm, biasprm, dynprm is deferred.
+                let mut gp = [0.0; 9];
+                gp[0] = 1.0;
+                (GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 3])
+            }
         };
+
+        self.actuator_gaintype.push(gaintype);
+        self.actuator_biastype.push(biastype);
         self.actuator_gainprm.push(gainprm);
-        // Muscle: biasprm = gainprm (shared layout, MuJoCo convention).
-        // The runtime muscle path reads gainprm only; biasprm is stored for
-        // MuJoCo memory layout compatibility.
-        self.actuator_biasprm.push(gainprm);
+        self.actuator_biasprm.push(biasprm);
+        self.actuator_dynprm.push(dynprm);
 
         // Lengthrange and acc0: initialized to zero, computed by compute_muscle_params()
         self.actuator_lengthrange.push((0.0, 0.0));
@@ -1654,6 +1754,8 @@ impl ModelBuilder {
             actuator_name: self.actuator_name,
             actuator_act_adr: self.actuator_act_adr,
             actuator_act_num: self.actuator_act_num,
+            actuator_gaintype: self.actuator_gaintype,
+            actuator_biastype: self.actuator_biastype,
             actuator_dynprm: self.actuator_dynprm,
             actuator_gainprm: self.actuator_gainprm,
             actuator_biasprm: self.actuator_biasprm,
@@ -2838,18 +2940,19 @@ mod tests {
         assert_eq!(model.actuator_act_adr[0], 0);
         assert_eq!(model.actuator_act_num[0], 0);
 
-        // Position servo has filter dynamics -> 1 activation state
-        assert_eq!(model.actuator_dyntype[1], ActuatorDynamics::Filter);
+        // Position servo (no timeconst) has no dynamics -> 0 activation states
+        // MuJoCo: Position defaults to dyntype=None when timeconst=0.
+        assert_eq!(model.actuator_dyntype[1], ActuatorDynamics::None);
         assert_eq!(model.actuator_act_adr[1], 0);
-        assert_eq!(model.actuator_act_num[1], 1);
+        assert_eq!(model.actuator_act_num[1], 0);
 
-        // Velocity servo has filter dynamics -> 1 activation state
-        assert_eq!(model.actuator_dyntype[2], ActuatorDynamics::Filter);
-        assert_eq!(model.actuator_act_adr[2], 1); // Starts after position servo's 1 state
-        assert_eq!(model.actuator_act_num[2], 1);
+        // Velocity servo always has no dynamics -> 0 activation states
+        assert_eq!(model.actuator_dyntype[2], ActuatorDynamics::None);
+        assert_eq!(model.actuator_act_adr[2], 0);
+        assert_eq!(model.actuator_act_num[2], 0);
 
         // Total activation states
-        assert_eq!(model.na, 2); // 0 + 1 + 1 = 2
+        assert_eq!(model.na, 0); // 0 + 0 + 0 = 0
     }
 
     // =========================================================================
