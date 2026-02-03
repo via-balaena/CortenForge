@@ -5274,13 +5274,6 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                 }
             }
 
-            MjSensorType::Touch => {
-                // Touch sensor needs solved contact forces (efc_lambda) which aren't
-                // available until after the constraint solver runs. Write 0 here as
-                // default; the real value is computed in mj_sensor_acc.
-                sensor_write(&mut data.sensordata, adr, 0, 0.0);
-            }
-
             MjSensorType::Rangefinder => {
                 // Rangefinder: ray-cast along site's positive Z axis to find
                 // distance to nearest geom surface. Skips the geom attached to
@@ -5377,6 +5370,20 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                 } else {
                     sensor_write(&mut data.sensordata, adr, 0, -1.0);
                 }
+            }
+
+            MjSensorType::Magnetometer => {
+                // Magnetometer: measures the global magnetic field in the sensor's
+                // local frame. Only depends on site_xmat (available after FK).
+                //
+                // B_sensor = R_site^T * B_world
+                let site_mat = match model.sensor_objtype[sensor_id] {
+                    MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
+                    MjObjectType::Body if objid < model.nbody => data.xmat[objid],
+                    _ => Matrix3::identity(),
+                };
+                let b_sensor = site_mat.transpose() * model.magnetic;
+                sensor_write3(&mut data.sensordata, adr, &b_sensor);
             }
 
             MjSensorType::ActuatorPos => {
@@ -5598,37 +5605,11 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::ActuatorVel => {
-                // Actuator velocity: transmission velocity = gear * joint_velocity.
-                // For joint-type transmissions, this is gear * qdot[dof_adr].
-                if objid < model.nu {
-                    match model.actuator_trntype[objid] {
-                        ActuatorTransmission::Joint => {
-                            let jnt_id = model.actuator_trnid[objid];
-                            if jnt_id < model.njnt {
-                                let dof_adr = model.jnt_dof_adr[jnt_id];
-                                let gear = model.actuator_gear[objid];
-                                sensor_write(
-                                    &mut data.sensordata,
-                                    adr,
-                                    0,
-                                    gear * data.qvel[dof_adr],
-                                );
-                            }
-                        }
-                        ActuatorTransmission::Tendon => {
-                            let tendon_id = model.actuator_trnid[objid];
-                            let value = if tendon_id < model.ntendon {
-                                data.ten_velocity[tendon_id] * model.actuator_gear[objid]
-                            } else {
-                                0.0
-                            };
-                            sensor_write(&mut data.sensordata, adr, 0, value);
-                        }
-                        ActuatorTransmission::Site => {
-                            // Site transmission velocity not yet available.
-                            sensor_write(&mut data.sensordata, adr, 0, 0.0);
-                        }
-                    }
+                // Read from pre-computed actuator_velocity (populated by mj_actuator_length,
+                // which runs before mj_sensor_vel in forward()).
+                let act_id = model.sensor_objid[sensor_id];
+                if act_id < model.nu {
+                    sensor_write(&mut data.sensordata, adr, 0, data.actuator_velocity[act_id]);
                 }
             }
 
@@ -5765,21 +5746,6 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                     }
                 }
                 sensor_write(&mut data.sensordata, adr, 0, total_force);
-            }
-
-            MjSensorType::Magnetometer => {
-                // Magnetometer: measures the global magnetic field in the sensor's
-                // local frame. The magnetic field vector is defined in the Model's
-                // options (model.magnetic).
-                //
-                // B_sensor = R_site^T * B_world
-                let site_mat = match model.sensor_objtype[sensor_id] {
-                    MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
-                    MjObjectType::Body if objid < model.nbody => data.xmat[objid],
-                    _ => Matrix3::identity(),
-                };
-                let b_sensor = site_mat.transpose() * model.magnetic;
-                sensor_write3(&mut data.sensordata, adr, &b_sensor);
             }
 
             MjSensorType::ActuatorFrc => {
@@ -11204,7 +11170,7 @@ mod sensor_tests {
         add_sensor(
             &mut model,
             MjSensorType::Magnetometer,
-            MjSensorDataType::Acceleration,
+            MjSensorDataType::Position,
             MjObjectType::Site,
             0, // site 0
         );
@@ -11234,7 +11200,7 @@ mod sensor_tests {
         add_sensor(
             &mut model,
             MjSensorType::Magnetometer,
-            MjSensorDataType::Acceleration,
+            MjSensorDataType::Position,
             MjObjectType::Site,
             0,
         );

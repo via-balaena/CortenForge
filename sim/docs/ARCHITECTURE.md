@@ -304,7 +304,8 @@ contype/conaffinity contact bitmasks, default class inheritance, and MJB binary
 format. **Note:** `<contact>` `<pair>`/`<exclude>` elements are not parsed.
 `<tendon>` and `<sensor>` elements are parsed and wired into the pipeline
 (fixed tendons fully supported; spatial tendons scaffolded but deferred;
-all 27 sensor types functional). The model builder expands all 8 actuator
+all 30 pipeline sensor types functional and wired from MJCF via
+`process_sensors()` in `model_builder.rs`). The model builder expands all 8 actuator
 shortcut types to their general gain/bias/dynamics representation (matching
 MuJoCo's `user_api.cc`), populating `actuator_gaintype`, `actuator_biastype`,
 `actuator_gainprm`, `actuator_biasprm`, and `actuator_dynprm` per actuator.

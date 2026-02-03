@@ -2189,6 +2189,22 @@ pub enum MjcfSensorType {
     Accelerometer,
     /// Gyroscope.
     Gyro,
+    /// Velocimeter (linear velocity, 3D).
+    Velocimeter,
+    /// Magnetometer (magnetic field, 3D).
+    Magnetometer,
+    /// Rangefinder (distance to nearest surface, 1D).
+    Rangefinder,
+    /// Subtree center of mass (3D).
+    Subtreecom,
+    /// Subtree linear velocity/momentum (3D).
+    Subtreelinvel,
+    /// Subtree angular momentum (3D).
+    Subtreeangmom,
+    /// Frame linear acceleration (3D).
+    Framelinacc,
+    /// Frame angular acceleration (3D).
+    Frameangacc,
 
     // User-defined sensors
     /// User-defined sensor.
@@ -2222,6 +2238,14 @@ impl MjcfSensorType {
             "torque" => Some(Self::Torque),
             "accelerometer" => Some(Self::Accelerometer),
             "gyro" => Some(Self::Gyro),
+            "velocimeter" => Some(Self::Velocimeter),
+            "magnetometer" => Some(Self::Magnetometer),
+            "rangefinder" => Some(Self::Rangefinder),
+            "subtreecom" => Some(Self::Subtreecom),
+            "subtreelinvel" => Some(Self::Subtreelinvel),
+            "subtreeangmom" => Some(Self::Subtreeangmom),
+            "framelinacc" => Some(Self::Framelinacc),
+            "frameangacc" => Some(Self::Frameangacc),
             "user" => Some(Self::User),
             _ => None,
         }
@@ -2254,6 +2278,14 @@ impl MjcfSensorType {
             Self::Torque => "torque",
             Self::Accelerometer => "accelerometer",
             Self::Gyro => "gyro",
+            Self::Velocimeter => "velocimeter",
+            Self::Magnetometer => "magnetometer",
+            Self::Rangefinder => "rangefinder",
+            Self::Subtreecom => "subtreecom",
+            Self::Subtreelinvel => "subtreelinvel",
+            Self::Subtreeangmom => "subtreeangmom",
+            Self::Framelinacc => "framelinacc",
+            Self::Frameangacc => "frameangacc",
             Self::User => "user",
         }
     }
@@ -2272,7 +2304,8 @@ impl MjcfSensorType {
             | Self::Actuatorfrc
             | Self::Jointlimitfrc
             | Self::Tendonlimitfrc
-            | Self::Touch => 1,
+            | Self::Touch
+            | Self::Rangefinder => 1,
 
             Self::Framepos
             | Self::Framexaxis
@@ -2280,11 +2313,18 @@ impl MjcfSensorType {
             | Self::Framezaxis
             | Self::Framelinvel
             | Self::Frameangvel
+            | Self::Framelinacc
+            | Self::Frameangacc
             | Self::Ballangvel
             | Self::Force
             | Self::Torque
             | Self::Accelerometer
-            | Self::Gyro => 3,
+            | Self::Gyro
+            | Self::Velocimeter
+            | Self::Magnetometer
+            | Self::Subtreecom
+            | Self::Subtreelinvel
+            | Self::Subtreeangmom => 3,
 
             Self::Ballquat | Self::Framequat => 4,
 

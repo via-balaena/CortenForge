@@ -20,7 +20,7 @@ can be tackled in any order unless a prerequisite is noted.
 | 3 | CG Contact Solver | Medium | Low | L | None (#1, #2 help perf) |
 | 4 | Tendon Pipeline | Low | High | L | None |
 | 5 | Muscle Pipeline | Low | High | L | #4 ✅ |
-| 6 | Sensor Completion | High | High | S | #4 for tendon sensors |
+| ~~6~~ | ~~Sensor Completion~~ | ~~High~~ | ~~High~~ | ~~S~~ | ~~#4 for tendon sensors~~ ✅ |
 | 7 | Integrator Rename | Low | Medium | S | None |
 | 8 | True RK4 Integration | Low | Medium | M | None |
 | 9 | Deformable Body Integration | Medium | Low | XL | None |
@@ -2472,72 +2472,65 @@ Data fields (Step 3) to avoid per-step heap allocation on the hot path.
 ---
 
 ### 6. Sensor Completion
-**Status:** In progress | **Effort:** M | **Prerequisites:** #4 ✅, #5 ✅
+**Status:** ✅ Done | **Effort:** M | **Prerequisites:** #4 ✅, #5 ✅
 
-#### Current State
+#### Implementation Summary
 
-**Sensor evaluation functions** (all in `mujoco_pipeline.rs`) are fully implemented
+All 8 steps have been implemented. MJCF `<sensor>` elements are now fully wired
+into the pipeline via `model_builder.rs`. The MJCF parser recognizes all 32
+`MjcfSensorType` variants (30 map to pipeline types, 2 unsupported are skipped
+with a warning). `set_options()` propagates `magnetic`, `wind`, `density`, and
+`viscosity` from `MjcfOption`. Magnetometer is evaluated in the correct
+(Position) stage. ActuatorVel reads from the pre-computed
+`data.actuator_velocity` field. Dead code (unreachable Touch arm in
+`mj_sensor_pos()`) has been removed. 8 integration tests in
+`sim/L0/tests/integration/mjcf_sensors.rs` verify the full MJCF→pipeline
+round-trip.
+
+**Remaining scope exclusions** (documented below in the specification):
+- **JointLimitFrc / TendonLimitFrc** — requires constraint force decomposition
+- **Site transmission** — blocked on spatial site infrastructure (6 stubs remain)
+- **Frame sensor `objtype` attribute** — resolved by name priority (site→body→geom)
+- **User sensor `dim` attribute** — parser does not capture; User gets 0 slots
+- **Sensor `<default>` class resolution** — `DefaultResolver` not called (cross-cutting)
+- **Multi-geom Touch bodies** — resolves to first geom only
+- **Sensor `reftype`/`refid`** — fields exist but not wired
+
+#### Pre-Implementation State (historical)
+
+**Sensor evaluation functions** (all in `mujoco_pipeline.rs`) were fully implemented
 for all 30 `MjSensorType` variants across four pipeline stages:
 
 | Stage | Function | Sensors |
 |-------|----------|---------|
-| Position | `mj_sensor_pos()` (line 5161) | JointPos, BallQuat, TendonPos, ActuatorPos, FramePos, FrameQuat, FrameXAxis, FrameYAxis, FrameZAxis, SubtreeCom, Rangefinder |
-| Velocity | `mj_sensor_vel()` (line 5445) | JointVel, BallAngVel, TendonVel, ActuatorVel, Gyro, Velocimeter, FrameLinVel, FrameAngVel, SubtreeLinVel, SubtreeAngMom |
-| Acceleration | `mj_sensor_acc()` (line 5661) | Accelerometer, Force, Torque, Touch, Magnetometer, ActuatorFrc, FrameLinAcc, FrameAngAcc |
-| Postprocess | `mj_sensor_postprocess()` (line 5871) | Cutoff clamping (positive-type for Touch/Rangefinder, symmetric for others) |
+| Position | `mj_sensor_pos()` | JointPos, BallQuat, TendonPos, ActuatorPos, FramePos, FrameQuat, FrameXAxis, FrameYAxis, FrameZAxis, SubtreeCom, Rangefinder, Magnetometer |
+| Velocity | `mj_sensor_vel()` | JointVel, BallAngVel, TendonVel, ActuatorVel, Gyro, Velocimeter, FrameLinVel, FrameAngVel, SubtreeLinVel, SubtreeAngMom |
+| Acceleration | `mj_sensor_acc()` | Accelerometer, Force, Torque, Touch, ActuatorFrc, FrameLinAcc, FrameAngAcc |
+| Postprocess | `mj_sensor_postprocess()` | Cutoff clamping (positive-type for Touch/Rangefinder, symmetric for others) |
 
 Each stage filters by `model.sensor_datatype[sensor_id]` with a `continue` at
-the top of the loop (lines 5164, 5450, 5664). A sensor with the wrong datatype
-is silently skipped and produces zeros.
+the top of the loop. A sensor with the wrong datatype is silently skipped and
+produces zeros.
 
-**Note:** The table above reflects the **current** codebase state. Step 4 moves
-Magnetometer from the Acceleration stage to the Position stage (see Gap F).
+**Gaps that were resolved:**
 
-**Note on Touch:** Touch has a match arm in `mj_sensor_pos()` (line 5277) that
-writes 0.0, but its datatype is `Acceleration` (verified by all test code,
-line 11151). The position-stage filter skips it, making this arm **dead code**.
-The actual Touch evaluation happens in `mj_sensor_acc()` (line 5738). This dead
-code should be removed as part of this work.
-
-**Existing infrastructure:**
-- `MjObjectType` enum (line 651): `None`, `Body`, `Joint`, `Geom`, `Site`,
-  `Actuator`, `Tendon` — used by `model.sensor_objtype: Vec<MjObjectType>` and
-  `model.sensor_reftype: Vec<MjObjectType>`.
-- `MjSensorDataType` enum (line 639): `Position`, `Velocity`, `Acceleration`.
-- `add_sensor()` test helper (line 11117): demonstrates the correct field-push
-  pattern for all 13 sensor arrays.
-- `make_data()` (line 1900): allocates `sensordata: DVector::zeros(self.nsensordata)`.
-
-**Correctness fixes** from `sim/docs/SENSOR_FIXES_SPEC.md` are all applied:
-rangefinder +Z ray direction, BallQuat/BallAngVel types, JointPos/JointVel
-hinge/slide restriction, accelerometer comment hardening, bounds-checked
-`sensor_write`/`sensor_write3`/`sensor_write4` helpers.
-
-**Sensor evaluation is complete** — all 30 sensor types produce correct values
-when a `Model` is constructed programmatically with hand-populated sensor arrays.
-
-**What is NOT done:** MJCF-parsed sensors are not wired into the pipeline. The
-model builder initializes all sensor arrays to empty (`nsensor: 0`, line 1734
-of `model_builder.rs`). Users loading MJCF files with `<sensor>` elements get
-zero sensors in the pipeline.
-
-**Detailed gap analysis:**
-
-| Gap | Severity | Detail |
-|-----|----------|--------|
-| **A. MJCF → pipeline sensor wiring** | HIGH | `model_builder.rs` does not convert parsed `MjcfSensor` to pipeline `Model` sensor arrays. All 13 sensor fields (`sensor_type`, `sensor_datatype`, `sensor_objid`, etc.) are empty. No `actuator_name_to_id` map exists (needed for actuator sensors). |
-| **B. MJCF parser missing 8 sensor types** | MEDIUM | `MjcfSensorType` (24 variants) lacks: `Velocimeter`, `Magnetometer`, `Rangefinder`, `SubtreeCom`, `SubtreeLinVel`, `SubtreeAngMom`, `FrameLinAcc`, `FrameAngAcc`. These are valid MuJoCo sensor element names that the parser silently skips. |
-| **C. Pipeline missing 2 sensor types** | LOW | `MjSensorType` (30 variants) lacks `JointLimitFrc` and `TendonLimitFrc`. The MJCF parser has these. Implementing them requires reading `qfrc_constraint` decomposed by constraint type — deferred until constraint force bookkeeping improves. |
-| **D. ActuatorVel duplicate computation** | LOW | `ActuatorVel` in `mj_sensor_vel()` recomputes `gear * qvel[dof_adr]` inline instead of reading `data.actuator_velocity[act_id]`, which is already populated by `mj_actuator_length()` earlier in the velocity-stage pipeline. Functionally correct but redundant and diverges from MuJoCo's pattern where `mjSENS_ACTUATORVEL` reads `mjData.actuator_velocity`. Note: `ActuatorPos` cannot be similarly simplified because `mj_actuator_length()` runs AFTER `mj_sensor_pos()` in `forward()` — `data.actuator_length` is not yet populated when position-stage sensors execute. |
-| **E. Site transmission stubs (6 locations)** | LOW | `ActuatorTransmission::Site` is stubbed in `mj_actuator_length()` (line 6420), `mj_fwd_actuation()` transmission phase (line 6659), `compute_muscle_params()` (lines 2110, 2152), and both sensor functions (lines 5409, 5627). Site transmission computes distance between two sites and its time derivative — blocked on spatial site infrastructure. |
-| **F. Magnetometer evaluation stage** | LOW | Magnetometer is evaluated in `mj_sensor_acc()` but only depends on `site_xmat` (available after FK). MuJoCo evaluates it in `mj_sensorPos()` (C API; our `mj_sensor_pos()`). Numerically identical but semantically wrong — a caller running only position-stage sensors won't get magnetometer output. |
-| **G. Dead Touch arm in mj_sensor_pos()** | LOW | Line 5277: Touch match arm writes 0.0 but is unreachable because Touch's datatype is Acceleration (filtered out at line 5164). |
+| Gap | Severity | Resolution |
+|-----|----------|------------|
+| **A. MJCF → pipeline sensor wiring** | HIGH | `process_sensors()` and `resolve_sensor_object()` in `model_builder.rs` populate all 13 sensor arrays from parsed `MjcfSensor` objects. `actuator_name_to_id` map added for actuator sensor resolution. |
+| **B. MJCF parser missing 8 sensor types** | MEDIUM | 8 variants added to `MjcfSensorType`: Velocimeter, Magnetometer, Rangefinder, Subtreecom, Subtreelinvel, Subtreeangmom, Framelinacc, Frameangacc. Total: 32 variants. |
+| **C. Pipeline missing 2 sensor types** | LOW | Deferred — JointLimitFrc/TendonLimitFrc skipped with `warn!`. |
+| **D. ActuatorVel duplicate computation** | LOW | Simplified to read `data.actuator_velocity[act_id]`. |
+| **E. Site transmission stubs** | LOW | Out of scope — 6 stubs remain. |
+| **F. Magnetometer evaluation stage** | LOW | Moved from `mj_sensor_acc()` to `mj_sensor_pos()`. Datatype changed to `Position`. |
+| **G. Dead Touch arm in mj_sensor_pos()** | LOW | Removed. |
+| **H. `set_options()` missing physics fields** | MEDIUM | `magnetic`, `wind`, `density`, `viscosity` now copied from `MjcfOption`. |
 
 #### Objective
 
 Wire MJCF-parsed sensors into the pipeline model builder so that `<sensor>`
 elements in MJCF files produce working sensors. Fix the MJCF parser to recognize
-all sensor types that the pipeline supports. Simplify the ActuatorVel sensor to
+all sensor types that the pipeline supports. Fix `set_options()` to propagate
+physics environment fields needed by sensors. Simplify the ActuatorVel sensor to
 read from its pre-computed field. Move magnetometer to the correct evaluation
 stage. Clean up dead code.
 
@@ -2582,7 +2575,32 @@ Update `MjcfSensorType::dim()` (line 2264) to include the new variants:
 Without this update, the match in `dim()` would be non-exhaustive and the
 crate would fail to compile.
 
-##### Step 2: MJCF → Pipeline Sensor Wiring (Gap A)
+##### Step 2: Wire `set_options()` Physics Environment Fields (Gap H)
+
+**Rationale:** This must precede Step 5 (magnetometer move) because without it,
+`model.magnetic` is zero for all MJCF-loaded models, making the magnetometer
+integration test (Step 8) unable to verify nonzero output. It also fixes a
+pre-existing bug where `wind`, `density`, and `viscosity` are silently dropped.
+
+In `set_options()` (`model_builder.rs`, line 506), add after the existing field
+copies (after the integrator conversion, ~line 524):
+
+```rust
+self.magnetic = option.magnetic;
+self.wind = option.wind;
+self.density = option.density;
+self.viscosity = option.viscosity;
+```
+
+These 4 fields already exist on both `ModelBuilder` (lines 450-453) and
+`MjcfOption` (lines 302-311 of `types.rs`). The builder initializes them to
+zero; `MjcfOption` defaults are: `magnetic = (0, -0.5, 0)`, `wind = (0, 0, 0)`,
+`density = 0.0`, `viscosity = 0.0`.
+
+After this change, models loaded from MJCF will inherit MuJoCo's default
+magnetic field `(0, -0.5, 0)` unless overridden by `<option magnetic="..."/>`.
+
+##### Step 3: MJCF → Pipeline Sensor Wiring (Gap A)
 
 This is the critical missing piece. Add `process_sensors()` to the model builder
 (`model_builder.rs`). It converts parsed `MjcfSensor` objects into the 13
@@ -2601,7 +2619,10 @@ line 26):
 - `MjcfSensor`
 - `MjcfSensorType`
 
-**2a. Add `actuator_name_to_id` map to `ModelBuilder`.**
+Note: `tracing::warn` is already imported (line 23). No additional dependency
+changes needed — `tracing` is already in `sim-mjcf`'s `Cargo.toml` (line 18).
+
+**3a. Add `actuator_name_to_id` map to `ModelBuilder`.**
 
 Add alongside the existing name maps (lines 317-323):
 
@@ -2620,7 +2641,7 @@ if !actuator.name.is_empty() {
 }
 ```
 
-**2b. Add builder fields for sensor accumulation.**
+**3b. Add builder fields for sensor accumulation.**
 
 The builder needs temporary storage that mirrors the Model's sensor arrays.
 Add to `ModelBuilder` (matching the existing pattern where builder fields
@@ -2645,7 +2666,7 @@ nsensordata: usize,
 
 Initialize all to empty/zero in `ModelBuilder::new()`.
 
-**2c. Type mapping function** (`MjcfSensorType` → `MjSensorType`):
+**3c. Type mapping function** (`MjcfSensorType` → `MjSensorType`):
 
 ```rust
 fn convert_sensor_type(mjcf: MjcfSensorType) -> Option<MjSensorType> {
@@ -2686,9 +2707,21 @@ fn convert_sensor_type(mjcf: MjcfSensorType) -> Option<MjSensorType> {
 }
 ```
 
-**2d. Datatype assignment** (determines which evaluation stage processes the
+**3d. Datatype assignment** (determines which evaluation stage processes the
 sensor). This is critical — a sensor with the wrong datatype is silently skipped.
-Verified against existing test code (`add_sensor()` calls, lines 11146-12305):
+Verified against existing test code (`add_sensor()` calls, lines 11146-12305).
+
+**Implementation ordering constraint:** This function assigns
+`MjSensorDataType::Position` for Magnetometer, which is only correct after
+Step 5 moves the Magnetometer match arm from `mj_sensor_acc()` to
+`mj_sensor_pos()`. If Step 3 is implemented before Step 5, MJCF-loaded
+magnetometer sensors will be silently skipped (datatype `Position` but
+evaluation code still in `mj_sensor_acc()`). The recommended implementation
+order (Steps 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8) ensures Step 5 runs before
+the integration tests in Step 8 validate magnetometer output. However, if
+steps are implemented out of order, temporarily assigning
+`MjSensorDataType::Acceleration` for Magnetometer and updating it in Step 5
+is an acceptable interim approach.
 
 ```rust
 fn sensor_datatype(t: MjSensorType) -> MjSensorDataType {
@@ -2700,7 +2733,7 @@ fn sensor_datatype(t: MjSensorType) -> MjSensorDataType {
         | MjSensorType::FrameXAxis | MjSensorType::FrameYAxis
         | MjSensorType::FrameZAxis | MjSensorType::SubtreeCom
         | MjSensorType::Rangefinder
-        | MjSensorType::Magnetometer  // moved from acc → pos (Step 4)
+        | MjSensorType::Magnetometer  // moved from acc → pos (Step 5)
         => MjSensorDataType::Position,
 
         // Velocity stage (evaluated in mj_sensor_vel, after velocity FK)
@@ -2730,7 +2763,7 @@ position stage because MuJoCo's sensor pipeline runs once after all dynamics
 stages complete. Our per-stage filter design requires Touch to be tagged
 `Acceleration` so it sees solved contact forces. This is correct.
 
-**2e. Object type and ID resolution.**
+**3e. Object type and ID resolution.**
 
 Each sensor type expects a specific `MjObjectType`. The MJCF `objname` string
 is resolved to a numeric index via the builder's name→id maps:
@@ -2795,18 +2828,28 @@ fn resolve_sensor_object(
         }
 
         // === Touch sensor: MJCF uses site=, but pipeline expects geom ID ===
-        // MuJoCo's <touch> takes a site name. Our evaluation code
-        // (mj_sensor_acc line 5751) matches contact.geom1/geom2 against
-        // objid, treating it as a geom index. To bridge this:
-        // 1. Resolve site name → site_id.
-        // 2. Look up site_body[site_id] → body_id.
-        // 3. Find the first geom on that body.
-        // This matches MuJoCo's behavior where touch sums contact forces
-        // for geoms on the site's parent body.
+        // MuJoCo's <touch> takes a site name. MuJoCo resolves this to the
+        // site's parent body and sums contact forces for all geoms on that
+        // body.
         //
-        // NOTE: If no geom is found on the body, store objtype=Geom with
+        // Our pipeline's Touch evaluation code (mj_sensor_acc, line 5751)
+        // compares contact.geom1/geom2 against objid, treating it as a geom
+        // index. This is a pre-existing simplification that only matches
+        // contacts for a single geom rather than all geoms on a body.
+        //
+        // Resolution: site name → site_id → body_id → first geom on body.
+        // This is correct for the common case (one geom per body). Multi-geom
+        // bodies would need the evaluation code to iterate all geoms on the
+        // body — deferred (see Scope Exclusion 6).
+        //
+        // If no geom is found on the body, store objtype=Geom with
         // id=usize::MAX as a sentinel (sensor will produce 0.0 since no
         // contact will match). This avoids a hard error for bodyless sites.
+        //
+        // Builder needs site_body: Vec<usize> and geom_body: Vec<usize> to
+        // be populated before process_sensors() runs. These are already
+        // populated during process_body() (worldbody geoms/sites and
+        // recursive body processing).
         MjSensorType::Touch => {
             let site_id = *self.site_name_to_id.get(name).ok_or_else(|| {
                 ModelConversionError { message:
@@ -2826,13 +2869,16 @@ fn resolve_sensor_object(
         // In MJCF, frame sensors use different attributes to specify their
         // target: objtype="site" + site="name", or objtype="body" + body="name",
         // etc. The parser stores the resolved objname from whichever attribute
-        // was present (site, body, or objname). We need to determine the
-        // object type from the attribute that was used.
+        // was present (site, body, or objname) — see parse_sensor_attrs()
+        // (parser.rs line 1851) which tries joint, site, body, tendon,
+        // actuator, objname in order.
         //
-        // For now, try resolution in order: site → body → geom.
-        // This handles the common case where <framepos site="s1"/> uses the
-        // site attribute. A more complete solution would parse the objtype
-        // attribute from MJCF (deferred — see Scope Exclusions).
+        // Since the parser does not pass through WHICH attribute was used,
+        // we resolve by trying name maps in order: site → body → geom.
+        // This handles the common case (<framepos site="s1"/>) correctly.
+        //
+        // LIMITATION: If a site and body share the same name, the site wins.
+        // Full objtype attribute parsing is deferred (see Scope Exclusion 4).
         MjSensorType::FramePos | MjSensorType::FrameQuat
         | MjSensorType::FrameXAxis | MjSensorType::FrameYAxis
         | MjSensorType::FrameZAxis | MjSensorType::FrameLinVel
@@ -2866,20 +2912,16 @@ fn resolve_sensor_object(
 }
 ```
 
-**Design notes on Touch resolution:**
-- The MJCF `<touch site="s">` specifies a site. MuJoCo resolves this to the
-  site's parent body and sums contact forces for all geoms on that body.
-- Our pipeline's Touch evaluation code (line 5751) compares `contact.geom1 == objid`,
-  treating `objid` as a geom index. This is a pre-existing simplification that
-  only matches contacts for a single geom rather than all geoms on a body.
-- The wiring above resolves site → body → first geom, which is correct for the
-  common case (one geom per body). Multi-geom bodies would need the evaluation
-  code to iterate all geoms on the body — deferred to a follow-up.
-- Builder needs `site_body: Vec<usize>` and `geom_body: Vec<usize>` to be
-  populated before `process_sensors()` runs. These are already populated during
-  `process_body()` (worldbody geoms/sites and recursive body processing).
+**3f. `process_sensors()` main loop.**
 
-**2f. `process_sensors()` main loop:**
+The `process_sensors()` function uses the pipeline-side `MjSensorType::dim()`
+(not `MjcfSensorType::dim()`) to compute sensor dimensions for address
+allocation. This is important for User sensors: `MjSensorType::User.dim()`
+returns 0 (variable, must be set explicitly via a `dim` attribute that we
+don't yet parse), while `MjcfSensorType::User.dim()` returns 1. Using the
+pipeline-side dim ensures User sensors get 0 slots — consistent with the
+pipeline's expectation that User sensor dimension is explicitly specified.
+See Scope Exclusion 7 for the follow-up to parse the `dim` attribute.
 
 ```rust
 fn process_sensors(
@@ -2929,7 +2971,7 @@ fn process_sensors(
 }
 ```
 
-**2g. Call site in `model_from_mjcf()`.**
+**3g. Call site in `model_from_mjcf()`.**
 
 Insert after equality constraints (line 134) and before `builder.build()` (line 137):
 
@@ -2938,7 +2980,7 @@ Insert after equality constraints (line 134) and before `builder.build()` (line 
 builder.process_sensors(&mjcf.sensors)?;
 ```
 
-**2h. Transfer builder fields to Model in `build()`.**
+**3h. Transfer builder fields to Model in `build()`.**
 
 In the `build()` method, replace the empty sensor initialization (lines 1733-1746)
 with the accumulated builder fields:
@@ -2963,7 +3005,7 @@ sensor_name: self.sensor_name,
 (line 1900), so no change needed there — it will now allocate the correct size
 based on the populated `nsensordata`.
 
-##### Step 3: Simplify ActuatorVel Sensor (Gap D)
+##### Step 4: Simplify ActuatorVel Sensor (Gap D)
 
 **Pipeline ordering constraint:** In `forward()`, the call order is:
 
@@ -2995,7 +3037,11 @@ transmission type. This is functionally correct and necessary due to pipeline
 ordering. The Site transmission stub in the ActuatorPos arm (line 5409) remains
 and will continue to produce 0.0 until Site transmission is implemented.
 
-##### Step 4: Move Magnetometer to Position Stage (Gap F)
+##### Step 5: Move Magnetometer to Position Stage (Gap F)
+
+**Dependency:** Step 2 must be applied first so that `model.magnetic` is nonzero
+for MJCF-loaded models. Without Step 2, the magnetometer code move is correct
+but integration tests cannot verify nonzero output.
 
 Move the `MjSensorType::Magnetometer` match arm from `mj_sensor_acc()` to
 `mj_sensor_pos()`. The magnetometer only depends on `model.magnetic` (constant)
@@ -3026,21 +3072,21 @@ Remove the Magnetometer arm from `mj_sensor_acc()`.
 implementation correctly handles both Site and Body object types and has an
 identity-matrix fallback for unrecognized types.
 
-The datatype mapping in Step 2d already assigns `MjSensorDataType::Position`
+The datatype mapping in Step 3d already assigns `MjSensorDataType::Position`
 for Magnetometer. Two existing tests construct Models programmatically with
 `MjSensorDataType::Acceleration` for Magnetometer and must be updated to use
 `MjSensorDataType::Position`:
 - `test_magnetometer_identity_frame` (line 11200 of `mujoco_pipeline.rs`)
 - `test_magnetometer_zero_field` (line 11230 of `mujoco_pipeline.rs`)
 
-##### Step 5: Remove Dead Touch Arm from mj_sensor_pos() (Gap G)
+##### Step 6: Remove Dead Touch Arm from mj_sensor_pos() (Gap G)
 
 Remove the unreachable `MjSensorType::Touch` match arm at line 5277 of
 `mj_sensor_pos()`. Touch has datatype `Acceleration`, so the `continue` filter
 at line 5164 skips it. The 0.0 write never executes. Removing it eliminates
 confusion about Touch's evaluation stage.
 
-##### Step 6: Verify `forward()` Pipeline Order
+##### Step 7: Verify `forward()` Pipeline Order
 
 No changes needed to `forward()` or `forward_skip_sensors()`. Confirm that the
 existing call order supports the sensor changes:
@@ -3049,10 +3095,10 @@ existing call order supports the sensor changes:
 forward():
   mj_fwd_position()    ← FK: body/geom/site poses, tendon kinematics
   mj_collision()       ← contact detection
-  mj_sensor_pos()      ← position sensors (+ magnetometer after Step 4)
+  mj_sensor_pos()      ← position sensors (+ magnetometer after Step 5)
   mj_energy_pos()
   mj_fwd_velocity()    ← velocity kinematics
-  mj_actuator_length() ← actuator_length/velocity (read by ActuatorVel in Step 3)
+  mj_actuator_length() ← actuator_length/velocity (read by ActuatorVel in Step 4)
   mj_sensor_vel()      ← velocity sensors
   mj_fwd_actuation()   ← actuator forces
   mj_crba()            ← mass matrix
@@ -3068,16 +3114,24 @@ forward():
 Key ordering constraints verified:
 - `mj_actuator_length()` runs AFTER `mj_sensor_pos()` but BEFORE `mj_sensor_vel()`
   → ActuatorPos must compute inline (cannot read `data.actuator_length`).
-  → ActuatorVel can safely read `data.actuator_velocity` (Step 3).
+  → ActuatorVel can safely read `data.actuator_velocity` (Step 4).
 - `mj_fwd_constraint()` runs before `mj_sensor_acc()` → Touch reads solved
   `efc_lambda`.
 - `site_xmat` available before `mj_sensor_pos()` → Magnetometer reads site
   rotation matrix.
 
-##### Step 7: Integration Test (`mjcf_sensors.rs`)
+Note: `forward_skip_sensors()` (line 2632) is a private method used internally
+by the RK4 integrator (line 10268). It skips all 4 sensor stages. No changes
+needed.
+
+##### Step 8: Integration Test (`mjcf_sensors.rs`)
 
 Create `sim/L0/tests/integration/mjcf_sensors.rs` and register it in
 `sim/L0/tests/integration/mod.rs` as `pub mod mjcf_sensors;`.
+
+Note: `sensors.rs` already exists in `sim/L0/tests/integration/` for the
+standalone `sim-sensor` crate tests. This new file tests the MuJoCo pipeline's
+MJCF→sensor wiring specifically.
 
 The test should exercise the full MJCF→pipeline round-trip for at least
 one sensor from each category (position, velocity, acceleration). Minimal
@@ -3117,6 +3171,10 @@ fn test_jointpos_sensor_roundtrip() {
 
 Additional tests to include (each as a separate `#[test]` function):
 - `test_framepos_sensor_site` — `<framepos site="s1"/>`, verify 3D position matches `data.site_xpos[id]`
+- `test_magnetometer_sensor_roundtrip` — verify nonzero output using MuJoCo's
+  default magnetic field `(0, -0.5, 0)` (requires Step 2 for `set_options()`
+  fix). Use an identity-rotation site and verify `sensordata` matches the
+  global field rotated into the site frame.
 - `test_tendonpos_sensor` — requires `<tendon>` + `<spatial>`, verify `sensordata` matches `data.ten_length[id]`
 - `test_actuatorpos_sensor` — requires `<actuator>` + `<general>`, verify inline computation works
 - `test_unsupported_sensor_skipped` — `<jointlimitfrc joint="j1"/>` produces `nsensor == 0` with warning
@@ -3130,7 +3188,7 @@ The following are explicitly **out of scope** for this item:
    requires computing site-to-site distance and its time derivative. This is
    blocked on spatial site infrastructure and is better addressed as part of
    spatial tendon support. The 6 stub locations will continue to produce 0.0.
-   After Step 3, ActuatorVel sensors will correctly report 0.0 for
+   After Step 4, ActuatorVel sensors will correctly report 0.0 for
    Site-transmission actuators (matching `mj_actuator_length()`'s stub output).
    ActuatorPos retains its inline computation with its own Site stub (line 5409).
 
@@ -3144,7 +3202,7 @@ The following are explicitly **out of scope** for this item:
 
 4. **Frame sensor `objtype` attribute parsing** — MuJoCo frame sensors support
    an `objtype=` attribute in MJCF (`"site"`, `"body"`, `"geom"`) to specify
-   the target object type. Our parser does not read this attribute; Step 2e
+   the target object type. Our parser does not read this attribute; Step 3e
    resolves frame sensor objname by trying site → body → geom in order. This
    is correct for the common case (`<framepos site="s1"/>`) but does not handle
    `<framepos body="b1"/>` if a site with the same name also exists. Full
@@ -3155,7 +3213,7 @@ The following are explicitly **out of scope** for this item:
    `sensor_reftype`/`sensor_refid` fields exist but are not wired. This is a
    follow-up enhancement.
 
-6. **Multi-geom Touch bodies** — The Touch sensor wiring (Step 2e) resolves
+6. **Multi-geom Touch bodies** — The Touch sensor wiring (Step 3e) resolves
    to the first geom on the site's parent body. If a body has multiple geoms,
    only the first geom's contacts are summed. Full multi-geom support requires
    changing the evaluation code in `mj_sensor_acc()` to iterate all geoms on
@@ -3163,11 +3221,14 @@ The following are explicitly **out of scope** for this item:
 
 7. **User sensor `dim` attribute** — MuJoCo's `<user>` sensor element accepts
    a `dim=` attribute to specify the output dimension. The MJCF parser does
-   not capture this field (`MjcfSensor` has no `dim` field), and
-   `MjSensorType::User.dim()` returns 0. As a result, User sensors will be
-   wired but produce no sensordata output (dim=0, no slot allocated). Parsing
-   the `dim` attribute and propagating it through `process_sensors()` is a
-   follow-up.
+   not capture this field (`MjcfSensor` has no `dim` field).
+   `MjSensorType::User.dim()` (pipeline-side, `mujoco_pipeline.rs` line 630)
+   returns 0, meaning User sensors get no sensordata slots allocated. Note:
+   `MjcfSensorType::User.dim()` (parser-side, `types.rs` line 2292) returns 1,
+   but `process_sensors()` uses the pipeline-side dim (via
+   `sensor_type.dim()`), so this mismatch does not cause incorrect allocation.
+   Parsing the `dim` attribute and propagating it through `process_sensors()`
+   is a follow-up.
 
 8. **Sensor `<default>` class resolution** — `DefaultResolver.apply_to_sensor()`
    exists and can apply noise/cutoff/user defaults from `<default>` classes,
@@ -3178,55 +3239,48 @@ The following are explicitly **out of scope** for this item:
    pattern for all other element types. Wiring `DefaultResolver` into the
    model building pipeline is a cross-cutting concern, not sensor-specific.
 
-9. **`set_options()` does not wire `magnetic` field** — `set_options()` in
-   `model_builder.rs` (line 506) copies gravity, timestep, solver settings, etc.
-   from `MjcfOption` to the builder, but does NOT copy `option.magnetic`. The
-   builder initializes `magnetic` to `Vector3::zeros()` (line 451), while
-   `MjcfOption.magnetic` defaults to `(0, -0.5, 0)` (MuJoCo's default Earth
-   field). This means **magnetometer sensors will always read zero** for
-   MJCF-loaded models. This is a pre-existing `set_options()` bug (also
-   affects `wind`, `density`, `viscosity`), not sensor-specific. Fixing
-   `set_options()` to wire remaining fields is a separate one-line-per-field
-   change that should be done alongside or before Step 4.
-
 #### Acceptance Criteria
 
-1. **MJCF round-trip:** An MJCF file with `<sensor><jointpos joint="hinge1"/></sensor>`
+1. **Physics environment fields wired:** `set_options()` copies `magnetic`,
+   `wind`, `density`, and `viscosity` from `MjcfOption` to the builder. Models
+   loaded from MJCF inherit MuJoCo's default magnetic field `(0, -0.5, 0)`.
+2. **MJCF round-trip:** An MJCF file with `<sensor><jointpos joint="hinge1"/></sensor>`
    produces a `Model` with `nsensor == 1`, `sensor_type[0] == JointPos`,
    `sensor_objid[0]` pointing to the correct joint index, and `sensordata`
    allocated to the correct size (1 element).
-2. **All 30 sensor types parseable:** Every `MjcfSensorType` variant (32 total,
-   minus 2 unsupported) maps to a pipeline `MjSensorType` and produces correct
-   output after `forward()`.
-3. **Datatype correctness:** Each wired sensor has the correct `MjSensorDataType`
+3. **All 30 sensor types parseable:** Every `MjcfSensorType` variant (32 total
+   after Step 1, minus 2 unsupported) maps to a pipeline `MjSensorType` and
+   produces correct output after `forward()`.
+4. **Datatype correctness:** Each wired sensor has the correct `MjSensorDataType`
    so it is evaluated in the right pipeline stage. Specifically: Touch is
    `Acceleration` (not Position), Magnetometer is `Position` (not Acceleration).
-4. **Object type correctness:** `sensor_objtype` uses `MjObjectType` variants
+5. **Object type correctness:** `sensor_objtype` uses `MjObjectType` variants
    that match what the evaluation code dispatches on. Specifically: Touch is
    `MjObjectType::Geom` (not Site), Frame sensors are Site/Body/Geom based on
    resolution, Subtree sensors are `Body`.
-5. **ActuatorVel reads from pre-computed field:** `ActuatorVel` returns
+6. **ActuatorVel reads from pre-computed field:** `ActuatorVel` returns
    `data.actuator_velocity[act_id]` rather than recomputing per-transmission.
    `ActuatorPos` continues to compute inline (pipeline ordering constraint:
    `mj_actuator_length()` runs after `mj_sensor_pos()`).
-6. **Magnetometer in position stage:** Magnetometer output is available after
+7. **Magnetometer in position stage:** Magnetometer output is available after
    `mj_sensor_pos()` completes. Existing magnetometer tests updated to use
    `MjSensorDataType::Position`.
-7. **Dead code removed:** The unreachable Touch arm in `mj_sensor_pos()` is
+8. **Dead code removed:** The unreachable Touch arm in `mj_sensor_pos()` is
    deleted.
-8. **Existing tests pass:** All current sensor tests (constructed with hand-
+9. **Existing tests pass:** All current sensor tests (constructed with hand-
    populated `Model` sensor arrays) continue to pass. The only required
    change is updating magnetometer tests to use `MjSensorDataType::Position`
-   (Step 4); behavioral results are identical.
-9. **New integration test** (`sim/L0/tests/integration/mjcf_sensors.rs`, Step 7):
-   Uses `sim_mjcf::load_model()` to parse MJCF strings with sensors, calls
-   `data.forward(&model)`, verifies `data.sensordata` contains expected values.
-   Covers at minimum: `jointpos`, `framepos` (site target), `tendonpos`,
-   `actuatorpos`, unsupported type skipping, missing reference error.
-10. **Unsupported types produce warning:** `Jointlimitfrc` and `Tendonlimitfrc`
-    sensors in MJCF are skipped with a `warn!` log (via `use tracing::warn`),
-    not silently ignored.
-11. **Error on missing references:** A sensor referencing a nonexistent joint/
+   (Step 5); behavioral results are identical.
+10. **New integration test** (`sim/L0/tests/integration/mjcf_sensors.rs`, Step 8):
+    Uses `sim_mjcf::load_model()` to parse MJCF strings with sensors, calls
+    `data.forward(&model)`, verifies `data.sensordata` contains expected values.
+    Covers at minimum: `jointpos`, `framepos` (site target), `magnetometer`
+    (nonzero output via default magnetic field), `tendonpos`, `actuatorpos`,
+    unsupported type skipping, missing reference error.
+11. **Unsupported types produce warning:** `Jointlimitfrc` and `Tendonlimitfrc`
+    sensors in MJCF are skipped with a `warn!` log (already imported at
+    `model_builder.rs` line 23), not silently ignored.
+12. **Error on missing references:** A sensor referencing a nonexistent joint/
     site/body/tendon/actuator produces `ModelConversionError`, not a silent
     default.
 
@@ -3234,8 +3288,11 @@ The following are explicitly **out of scope** for this item:
 
 - `sim/L0/mjcf/src/types.rs` — modify: add 8 `MjcfSensorType` variants, update `from_str`/`as_str`/`dim()`
 - `sim/L0/mjcf/src/model_builder.rs` — modify:
+  - Add 4 lines to `set_options()` for `magnetic`, `wind`, `density`, `viscosity`
   - Add `actuator_name_to_id` HashMap to `ModelBuilder`
   - Add sensor accumulation fields to `ModelBuilder`
+  - Add imports: `MjSensorType`, `MjSensorDataType`, `MjObjectType` from `sim_core`;
+    `MjcfSensor`, `MjcfSensorType` from `crate::types`
   - Add `process_sensors()`, `convert_sensor_type()`, `sensor_datatype()`, `resolve_sensor_object()`
   - Update `build()` to transfer sensor fields to Model
   - Update `model_from_mjcf()` call order to include sensor processing
@@ -3245,9 +3302,10 @@ The following are explicitly **out of scope** for this item:
   - Remove dead `Touch` arm from `mj_sensor_pos()`
   - Update magnetometer test(s) to use `MjSensorDataType::Position`
 - `sim/L0/tests/integration/mjcf_sensors.rs` — new: MJCF sensor wiring integration test
-  (Note: `sensors.rs` already exists for the standalone `sim-sensor` crate tests;
-  this file tests the MuJoCo pipeline's MJCF→sensor wiring. Must be registered
-  in `sim/L0/tests/integration/mod.rs` as `pub mod mjcf_sensors;`)
+  (Note: `sensors.rs` already exists in `sim/L0/tests/integration/` for standalone
+  `sim-sensor` crate tests; this file tests the MuJoCo pipeline's MJCF→sensor
+  wiring. Must be registered in `sim/L0/tests/integration/mod.rs` as
+  `pub mod mjcf_sensors;`)
 - `sim/docs/SENSOR_FIXES_SPEC.md` — reference for completed correctness fixes (no changes)
 
 ---
