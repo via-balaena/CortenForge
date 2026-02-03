@@ -17,16 +17,17 @@ Data::step():
         mj_fwd_tendon       — Tendon lengths + Jacobians (fixed tendons)
         mj_collision        — Broad/narrow phase collision detection
      b. mj_fwd_velocity    — Body + tendon velocities from joint velocities
-     c. mj_fwd_actuation   — Actuator forces from controls (joint + tendon transmission)
+        mj_actuator_length  — Actuator length/velocity from transmission state
+     c. mj_fwd_actuation   — Activation dynamics (act_dot) + gain/bias force + clamping
      d. mj_crba            — Mass matrix (Composite Rigid Body Algorithm)
      e. mj_rne             — Bias forces (Recursive Newton-Euler)
      f. mj_fwd_passive     — Spring, damper, friction loss forces (joints + tendons)
      g. mj_fwd_constraint  — Joint/tendon limits, equality constraints, contact PGS
      h. mj_fwd_acceleration — Solve M*qacc = f (explicit) or implicit velocity update
-  2a. integrate()          — Semi-implicit Euler or implicit position update
+  2a. integrate()          — Activation integration + semi-implicit Euler or implicit
                               (for Euler / ImplicitSpringDamper integrators)
-  2b. mj_runge_kutta()     — True 4-stage RK4 with Butcher tableau
-                              (for RungeKutta4 integrator)
+  2b. mj_runge_kutta()     — True 4-stage RK4 with Butcher tableau, including
+                              activation state (for RungeKutta4 integrator)
 ```
 
 ---
@@ -80,27 +81,154 @@ The lever arm cross-product `omega x r` is critical for correct Coriolis forces.
 
 ---
 
-## Stage 3: Forward Actuation (`mj_fwd_actuation`)
+## Stage 2b: Actuator Length/Velocity (`mj_actuator_length`)
 
-Maps control inputs to generalized forces.
+Computes actuator-space length and velocity from transmission state.
+Called after `mj_fwd_velocity()` (which populates `ten_velocity`).
 
-For each actuator:
 ```python
-if transmission == Joint:
-    qfrc_actuator[dof] += ctrl * gear
-
-if transmission == Tendon:
-    force = ctrl * gear
-    for w in tendon_wrap_range:
-        qfrc_actuator[wrap_objid[w]] += wrap_prm[w] * force  # J^T mapping
-
-if transmission == Site:
-    # Not yet implemented (requires spatial tendon support)
+for i in range(nu):
+    gear = actuator_gear[i]
+    if transmission[i] == Joint:
+        jid = actuator_trnid[i]
+        if jnt_type[jid] in (Hinge, Slide):   # scalar DOF only
+            actuator_length[i] = gear * qpos[qpos_adr[jid]]
+            actuator_velocity[i] = gear * qvel[dof_adr[jid]]
+    elif transmission[i] == Tendon:
+        tid = actuator_trnid[i]
+        actuator_length[i] = gear * ten_length[tid]
+        actuator_velocity[i] = gear * ten_velocity[tid]
+    elif transmission[i] == Site:
+        pass  # Not yet implemented
 ```
 
-Joint-transmission actuators apply force directly to the joint DOF scaled by
-the gear ratio. Tendon-transmission actuators map the force through the tendon
-Jacobian transpose to all coupled joints.
+---
+
+## Stage 3: Forward Actuation (`mj_fwd_actuation`)
+
+Three-phase function: computes activation derivatives, actuator forces, and
+generalized forces. Does NOT integrate activation — that is the integrator's
+responsibility (matching MuJoCo's `mjData.act_dot` architecture).
+
+### Phase 1: Activation Dynamics (`act_dot`)
+
+For each actuator, compute the time-derivative of activation state without
+modifying `data.act`:
+
+```python
+for i in range(nu):
+    ctrl_clamped = clamp(ctrl[i], ctrlrange[i])   # enforce ctrllimited
+
+    if dyntype[i] == None:
+        input = ctrl_clamped          # direct passthrough, no activation state
+
+    elif dyntype[i] == Muscle:
+        act_dot[act_adr[i]] = muscle_activation_dynamics(ctrl_clamped, act[act_adr[i]], dynprm[i])
+        input = act[act_adr[i]]       # use CURRENT activation for force
+
+    elif dyntype[i] == Filter:
+        act_dot[act_adr[i]] = (ctrl_clamped - act[act_adr[i]]) / max(tau, 1e-10)
+        input = act[act_adr[i]]
+
+    elif dyntype[i] == Integrator:
+        act_dot[act_adr[i]] = ctrl_clamped
+        input = act[act_adr[i]]
+```
+
+**Muscle activation dynamics** (Millard et al. 2013) with activation-dependent
+time constants:
+
+```python
+def muscle_activation_dynamics(ctrl, act, dynprm):
+    ctrl_c = clamp(ctrl, 0, 1)
+    act_c  = clamp(act, 0, 1)
+
+    tau_act   = dynprm[0] * (0.5 + 1.5 * act_c)    # slower at high activation
+    tau_deact = dynprm[1] / (0.5 + 1.5 * act_c)    # faster at high activation
+    tausmooth = dynprm[2]
+
+    dctrl = ctrl_c - act
+
+    if tausmooth < 1e-10:
+        tau = tau_act if dctrl > 0 else tau_deact    # hard switch
+    else:
+        tau = tau_deact + (tau_act - tau_deact) * sigmoid(dctrl / tausmooth + 0.5)
+
+    return dctrl / max(tau, 1e-10)
+```
+
+Where `sigmoid(x) = x³(6x² - 15x + 10)` is the quintic C2-continuous
+smoothstep matching MuJoCo's `mju_sigmoid`.
+
+Default `dynprm` for muscles: `[tau_act=0.01, tau_deact=0.04, tausmooth=0.0]`.
+
+### Phase 2: Force Generation (Gain/Bias)
+
+```python
+    if dyntype[i] == Muscle:
+        prm = gainprm[i]
+        L0 = (lengthrange[i][1] - lengthrange[i][0]) / max(prm[1] - prm[0], 1e-10)
+        norm_len = prm[0] + (actuator_length[i] - lengthrange[i][0]) / max(L0, 1e-10)
+        norm_vel = actuator_velocity[i] / max(L0 * prm[6], 1e-10)  # prm[6] = vmax
+
+        FL = muscle_gain_length(norm_len, lmin=prm[4], lmax=prm[5])
+        FV = muscle_gain_velocity(norm_vel, fvmax=prm[8])
+        FP = muscle_passive_force(norm_len, lmax=prm[5], fpmax=prm[7])
+
+        gain = -F0 * FL * FV
+        bias = -F0 * FP
+        force = gain * input + bias   # = -F0 * (FL*FV*act + FP)
+    else:
+        force = input                 # ctrl or filtered activation
+```
+
+**Force-Length curve** (`muscle_gain_length`): Piecewise-quadratic bump.
+Peak 1.0 at `L = 1.0`, zero at `lmin` and `lmax`. Four segments with
+midpoints `a = (lmin+1)/2`, `b = (1+lmax)/2`.
+
+**Force-Velocity curve** (`muscle_gain_velocity`): Piecewise-quadratic.
+Zero at `V = -1` (max shortening), 1.0 at `V = 0` (isometric), plateau
+at `fvmax` for `V ≥ fvmax - 1` (eccentric).
+
+**Passive Force** (`muscle_passive_force`): Zero below `L = 1.0`.
+Quadratic onset from 1.0 to midpoint `b = (1+lmax)/2`, then linear
+with `fpmax * 0.5` at midpoint.
+
+These match MuJoCo's `mju_muscleGain` and `mju_muscleBias` in
+`engine_util_misc.c` exactly.
+
+**F0 (peak isometric force):** Auto-computed at model build time when
+`gainprm[2] < 0`: `F0 = scale / acc0`, where `acc0 = ‖M⁻¹J‖₂` is the
+acceleration produced by unit actuator force, computed via the sparse
+L^T D L factorization from CRBA at `qpos0`.
+
+### Phase 3: Transmission (Force → Generalized Forces)
+
+```python
+    force = clamp(force, forcerange[i])   # enforce forcelimited
+    actuator_force[i] = force
+
+    gear = actuator_gear[i]
+    if transmission[i] == Joint:
+        qfrc_actuator[dof_adr] += gear * force
+    elif transmission[i] == Tendon:
+        for w in tendon_wrap_range:
+            qfrc_actuator[wrap_objid[w]] += gear * wrap_prm[w] * force  # J^T
+    elif transmission[i] == Site:
+        pass  # Not yet implemented
+```
+
+### Model Build: `compute_muscle_params()`
+
+Called after `compute_ancestors()` and `compute_implicit_params()`, for each
+muscle actuator:
+
+1. **`actuator_lengthrange`** — computed from tendon limits (if limited) or
+   joint range sums (fixed tendons), gear-scaled with sign awareness.
+2. **`actuator_acc0`** — forward pass at `qpos0` → CRBA → sparse solve:
+   `acc0 = ‖M⁻¹J‖₂` where J is the gear-scaled transmission moment vector.
+3. **F0 resolution** — when `gainprm[2] < 0` (auto-compute):
+   `F0 = gainprm[3] / acc0` (scale / acc0). `biasprm[2]` synced to match.
 
 ---
 
@@ -406,8 +534,19 @@ After solving, `qacc = (v_new - v_old) / h` for consistency.
 
 ## Stage 5: Integration
 
+All integrators integrate activation state before velocity/position.
+Activation uses `act_dot` (computed by `mj_fwd_actuation()` without modifying
+`act`), matching MuJoCo's order: **activation → velocity → position**.
+
 **Semi-implicit Euler (default, `Integrator::Euler`):**
 ```python
+# 0. Integrate activation
+for i in range(nu):
+    for k in range(actuator_act_num[i]):
+        act[act_adr[i] + k] += h * act_dot[act_adr[i] + k]
+    if dyntype[i] == Muscle:
+        act[act_adr[i]:act_adr[i]+act_num[i]] = clamp(act[...], 0, 1)
+
 # 1. Update velocity FIRST using current acceleration
 qvel += qacc * h
 
@@ -428,21 +567,28 @@ for each joint:
 Position update uses the NEW velocity (step 1 output). This is what makes it
 semi-implicit and provides energy stability that plain Euler lacks.
 
+Muscle activations are clamped to `[0, 1]` after integration to enforce the
+physiological range.
+
 **Implicit (`Integrator::ImplicitSpringDamper`):**
 
-Velocity was already updated in `mj_fwd_acceleration_implicit`. Integration
-only updates positions using the new velocity, identical to step 2 above.
+Activation integration is identical to Euler (step 0 above). Velocity was
+already updated in `mj_fwd_acceleration_implicit`. Integration only updates
+positions using the new velocity, identical to step 2 above.
 
 **Runge-Kutta 4 (`Integrator::RungeKutta4`):**
 
 True 4-stage RK4 via `mj_runge_kutta()`. Does not call `integrate()` at all.
-Uses Butcher tableau weights `[1/6, 1/3, 1/3, 1/6]`.
+Uses Butcher tableau weights `[1/6, 1/3, 1/3, 1/6]`. Integrates `act`
+alongside `qpos`/`qvel` using the same RK4 weights.
 
 ```python
 # Stage 0: use results from initial forward() call in step()
 rk4_qvel[0] = qvel                     # initial velocity
 rk4_qacc[0] = qacc                     # initial acceleration
 qpos_saved = qpos.copy()
+act_saved = act.copy()                  # save activation state
+rk4_act_dot[0] = act_dot.copy()        # collect stage-0 derivatives
 efc_lambda_saved = efc_lambda.copy()
 
 # Stages 1, 2, 3: re-evaluate dynamics at intermediate points
@@ -457,12 +603,24 @@ for i in [1, 2, 3]:
     rk4_qvel[i] = rk4_qvel[0] + h * dX_acc   # velocity at this stage
     qvel = rk4_qvel[i]                        # set Data.qvel
 
+    # Advance activation trial state from saved initial activation
+    for a in range(na):
+        act[a] = act_saved[a] + h * sum(A[i-1][j] * rk4_act_dot[j][a] for j in 0..3)
+    clamp_muscle_activations(act, 0, 1)
+
     forward_skip_sensors()               # full pipeline minus sensors
     rk4_qacc[i] = qacc                   # acceleration from dynamics
+    rk4_act_dot[i] = act_dot.copy()      # collect activation derivatives
 
 # Weighted combination: B = [1/6, 1/3, 1/3, 1/6]
 qvel = rk4_qvel[0] + h * sum(B[i] * rk4_qacc[i] for i in 0..4)
 qpos = mj_integrate_pos_explicit(qpos_saved, sum(B[i] * rk4_qvel[i]), h)
+
+# Activation final combination
+for a in range(na):
+    act[a] = act_saved[a] + h * sum(B[j] * rk4_act_dot[j][a] for j in 0..4)
+clamp_muscle_activations(act, 0, 1)
+
 efc_lambda = efc_lambda_saved            # restore warmstart
 ```
 
@@ -473,8 +631,13 @@ Key details:
   evaluation (matching MuJoCo's `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)`)
 - Position integration uses `mj_integrate_pos_explicit()` which handles
   quaternion exponential map for ball/free joints
+- Activation is integrated with the same Butcher tableau as `qpos`/`qvel`,
+  reconstructed from `act_saved` at each trial stage (never accumulated)
+- Muscle activations clamped to `[0, 1]` at each trial stage and final
 - `efc_lambda` (warmstart cache) is saved before RK4 and restored afterward
   so intermediate stage contact solutions don't corrupt the warmstart
+- All RK4 activation buffers (`rk4_act_saved`, `rk4_act_dot`) are pre-allocated
+  Data fields to avoid per-step heap allocation
 
 ---
 
@@ -485,6 +648,7 @@ Key details:
 | Field | Type | Description |
 |-------|------|-------------|
 | `nq, nv` | `usize` | Position coordinates, velocity DOFs |
+| `nu, na` | `usize` | Actuator count, total activation dimension |
 | `nbody, njnt, ngeom` | `usize` | Body, joint, geometry counts |
 | `body_parent[i]` | `usize` | Parent body index |
 | `body_pos[i], body_quat[i]` | `Vector3, UnitQuat` | Local frame offset from parent |
@@ -496,6 +660,16 @@ Key details:
 | `jnt_springref[i]` | `f64` | Spring equilibrium position |
 | `jnt_solref[i]` | `[f64; 2]` | [timeconst, dampratio] for limits |
 | `jnt_solimp[i]` | `[f64; 5]` | [d0, d_width, width, midpoint, power] |
+| `actuator_dyntype[i]` | `ActuatorDynamics` | None, Filter, Integrator, or Muscle |
+| `actuator_trntype[i]` | `ActuatorTransmission` | Joint, Tendon, or Site |
+| `actuator_gear[i]` | `f64` | Transmission gear ratio |
+| `actuator_dynprm[i]` | `[f64; 3]` | Dynamics params (Muscle: [τ_act, τ_deact, τ_smooth]) |
+| `actuator_gainprm[i]` | `[f64; 9]` | Gain params (Muscle: [range0..1, F0, scale, lmin..vmax, fpmax, fvmax]) |
+| `actuator_biasprm[i]` | `[f64; 9]` | Bias params (Muscle: shared with gainprm) |
+| `actuator_lengthrange[i]` | `(f64, f64)` | Transmission length extremes (gear-scaled) |
+| `actuator_acc0[i]` | `f64` | ‖M⁻¹J‖ at qpos0 (for F0 auto-computation) |
+| `actuator_ctrlrange[i]` | `(f64, f64)` | Control input limits (gated by ctrllimited) |
+| `actuator_forcerange[i]` | `(f64, f64)` | Force output limits (gated by forcelimited) |
 | `timestep` | `f64` | Simulation step size |
 | `gravity` | `Vector3` | Gravity vector |
 | `integrator` | `Integrator` | Euler, RungeKutta4, or ImplicitSpringDamper |
@@ -510,6 +684,8 @@ Key details:
 |-------|------|-------------|
 | `qpos[nq]` | `DVector` | Joint positions |
 | `qvel[nv]` | `DVector` | Joint velocities |
+| `act[na]` | `DVector` | Activation states (muscles, filters, integrators) |
+| `ctrl[nu]` | `DVector` | Control inputs |
 | `time` | `f64` | Simulation time |
 
 **Computed quantities:**
@@ -522,9 +698,13 @@ Key details:
 | `qM[nv,nv]` | `DMatrix` | Mass matrix from CRBA |
 | `qfrc_bias[nv]` | `DVector` | Gravity + Coriolis + centrifugal |
 | `qfrc_passive[nv]` | `DVector` | Springs + dampers + friction loss |
-| `qfrc_actuator[nv]` | `DVector` | Actuator forces |
+| `qfrc_actuator[nv]` | `DVector` | Actuator forces in joint space |
 | `qfrc_applied[nv]` | `DVector` | User-applied forces |
 | `qfrc_constraint[nv]` | `DVector` | Contact + limit + equality forces |
+| `actuator_length[nu]` | `Vec<f64>` | Gear × transmission length |
+| `actuator_velocity[nu]` | `Vec<f64>` | Gear × transmission velocity |
+| `actuator_force[nu]` | `Vec<f64>` | Scalar actuator force (after gain/bias/clamp) |
+| `act_dot[na]` | `DVector` | Activation time-derivative (integrated by Euler/RK4) |
 | `contacts[ncon]` | `Vec<Contact>` | Active contact points |
 | `efc_lambda` | `HashMap` | Warmstart cache (keyed by geom pair) |
 
@@ -565,5 +745,7 @@ penetration increases (impedance -> 0.95), over a transition zone of 0.001 m.
 - [MuJoCo Computation](https://mujoco.readthedocs.io/en/stable/computation/index.html)
 - [MuJoCo Source — engine_forward.c](https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_forward.c)
 - [MuJoCo Source — engine_solver.c](https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_solver.c)
+- [MuJoCo Source — engine_util_misc.c](https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_util_misc.c) (muscle FLV curves, activation dynamics)
 - Featherstone, R. (2008). *Rigid Body Dynamics Algorithms*. Springer.
 - Todorov, E. (2014). "Convex and analytically-invertible dynamics with contacts and constraints."
+- Millard, M. et al. (2013). "Flexing Computational Muscle: Modeling and Simulation of Musculotendon Dynamics." *Journal of Biomechanical Engineering*. (Activation dynamics with activation-dependent time constants)

@@ -278,6 +278,11 @@ struct ModelBuilder {
     actuator_name: Vec<Option<String>>,
     actuator_act_adr: Vec<usize>,
     actuator_act_num: Vec<usize>,
+    actuator_dynprm: Vec<[f64; 3]>,
+    actuator_gainprm: Vec<[f64; 9]>,
+    actuator_biasprm: Vec<[f64; 9]>,
+    actuator_lengthrange: Vec<(f64, f64)>,
+    actuator_acc0: Vec<f64>,
 
     // Total activation states (sum of actuator_act_num)
     na: usize,
@@ -427,6 +432,11 @@ impl ModelBuilder {
             actuator_name: vec![],
             actuator_act_adr: vec![],
             actuator_act_num: vec![],
+            actuator_dynprm: vec![],
+            actuator_gainprm: vec![],
+            actuator_biasprm: vec![],
+            actuator_lengthrange: vec![],
+            actuator_acc0: vec![],
 
             na: 0,
 
@@ -1210,13 +1220,22 @@ impl ModelBuilder {
         self.actuator_dyntype.push(dyntype);
         self.actuator_trnid.push(trnid);
         self.actuator_gear.push(actuator.gear);
-        self.actuator_ctrlrange
-            .push(actuator.ctrlrange.unwrap_or((-1.0, 1.0)));
-        self.actuator_forcerange.push(
+
+        // Gate ctrlrange/forcerange on ctrllimited/forcelimited (MuJoCo semantics).
+        // When limited=false, range is effectively unbounded regardless of attribute value.
+        self.actuator_ctrlrange.push(if actuator.ctrllimited {
+            actuator.ctrlrange.unwrap_or((-1.0, 1.0))
+        } else {
+            (f64::NEG_INFINITY, f64::INFINITY)
+        });
+        self.actuator_forcerange.push(if actuator.forcelimited {
             actuator
                 .forcerange
-                .unwrap_or((f64::NEG_INFINITY, f64::INFINITY)),
-        );
+                .unwrap_or((f64::NEG_INFINITY, f64::INFINITY))
+        } else {
+            (f64::NEG_INFINITY, f64::INFINITY)
+        });
+
         self.actuator_name.push(if actuator.name.is_empty() {
             None
         } else {
@@ -1224,16 +1243,57 @@ impl ModelBuilder {
         });
 
         // Compute activation state count based on dynamics type
-        // MuJoCo semantics: None=0, Filter/Integrator=1, Muscle=2
+        // MuJoCo semantics: None=0, Filter/Integrator=1, Muscle=1
+        // (Muscle has 1 activation state — the activation level `act`)
         let act_num = match dyntype {
             ActuatorDynamics::None => 0,
-            ActuatorDynamics::Filter | ActuatorDynamics::Integrator => 1,
-            ActuatorDynamics::Muscle => 2,
+            ActuatorDynamics::Filter | ActuatorDynamics::Integrator | ActuatorDynamics::Muscle => 1,
         };
 
         self.actuator_act_adr.push(self.na);
         self.actuator_act_num.push(act_num);
         self.na += act_num;
+
+        // Dynamics parameters
+        let is_muscle = actuator.actuator_type == MjcfActuatorType::Muscle;
+        let dynprm = if is_muscle {
+            [
+                actuator.muscle_timeconst.0, // tau_act (default 0.01)
+                actuator.muscle_timeconst.1, // tau_deact (default 0.04)
+                0.0,                         // tausmooth (default 0, hard switch)
+            ]
+        } else {
+            [0.0; 3]
+        };
+        self.actuator_dynprm.push(dynprm);
+
+        // Gain/Bias parameters (shared layout for muscle)
+        let gainprm = if is_muscle {
+            [
+                actuator.range.0, // range[0], default 0.75
+                actuator.range.1, // range[1], default 1.05
+                actuator.force,   // force, default -1.0 (auto)
+                actuator.scale,   // scale, default 200.0
+                actuator.lmin,    // lmin, default 0.5
+                actuator.lmax,    // lmax, default 1.6
+                actuator.vmax,    // vmax, default 1.5
+                actuator.fpmax,   // fpmax, default 1.3
+                actuator.fvmax,   // fvmax, default 1.2
+            ]
+        } else {
+            let mut prm = [0.0; 9];
+            prm[0] = actuator.gear;
+            prm
+        };
+        self.actuator_gainprm.push(gainprm);
+        // Muscle: biasprm = gainprm (shared layout, MuJoCo convention).
+        // The runtime muscle path reads gainprm only; biasprm is stored for
+        // MuJoCo memory layout compatibility.
+        self.actuator_biasprm.push(gainprm);
+
+        // Lengthrange and acc0: initialized to zero, computed by compute_muscle_params()
+        self.actuator_lengthrange.push((0.0, 0.0));
+        self.actuator_acc0.push(0.0);
 
         Ok(act_id)
     }
@@ -1594,6 +1654,11 @@ impl ModelBuilder {
             actuator_name: self.actuator_name,
             actuator_act_adr: self.actuator_act_adr,
             actuator_act_num: self.actuator_act_num,
+            actuator_dynprm: self.actuator_dynprm,
+            actuator_gainprm: self.actuator_gainprm,
+            actuator_biasprm: self.actuator_biasprm,
+            actuator_lengthrange: self.actuator_lengthrange,
+            actuator_acc0: self.actuator_acc0,
 
             // Tendons (populated by process_tendons)
             ntendon: self.tendon_type.len(),
@@ -1662,6 +1727,9 @@ impl ModelBuilder {
 
         // Pre-compute implicit integration parameters (K, D, q_eq diagonals)
         model.compute_implicit_params();
+
+        // Pre-compute muscle-derived parameters (lengthrange, acc0, F0)
+        model.compute_muscle_params();
 
         // Pre-compute bounding sphere radii for all geoms (used in collision broad-phase)
         for geom_id in 0..ngeom {

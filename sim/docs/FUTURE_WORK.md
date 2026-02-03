@@ -19,7 +19,7 @@ can be tackled in any order unless a prerequisite is noted.
 | 2 | Sparse L^T D L | Medium | Low | M | #1 |
 | 3 | CG Contact Solver | Medium | Low | L | None (#1, #2 help perf) |
 | 4 | Tendon Pipeline | Low | High | L | None |
-| 5 | Muscle Pipeline | Low | High | L | #4 |
+| 5 | Muscle Pipeline | Low | High | L | #4 ✅ |
 | 6 | Sensor Completion | High | High | S | #4 for tendon sensors |
 | 7 | Integrator Rename | Low | Medium | S | None |
 | 8 | True RK4 Integration | Low | Medium | M | None |
@@ -1479,61 +1479,989 @@ prototyping, and as documentation of the algorithms.
 ---
 
 ### 5. Muscle Pipeline
-**Status:** Not started | **Effort:** L | **Prerequisites:** #4 ✅ (tendon pipeline provides `ten_length`, `ten_velocity`, `ten_J`)
+**Status:** ✅ Done | **Effort:** L | **Prerequisites:** #4 ✅ (tendon pipeline provides `ten_length`, `ten_velocity`, `ten_J`)
+
+#### Architectural Decision: MuJoCo FLV Model (Not sim-muscle)
+
+This PR implements **MuJoCo's simplified FLV muscle model** directly in the pipeline,
+matching MuJoCo's `mju_muscleGain`, `mju_muscleBias`, and `mju_muscleDynamics` semantics.
+It does **not** wire in the `sim-muscle` crate's richer Hill-type model.
+
+**Rationale:**
+- The MJCF parser already parses MuJoCo's muscle parameters (`timeconst`, `range`,
+  `force`, `scale`, `lmin`, `lmax`, `vmax`, `fpmax`, `fvmax`). These map directly to
+  MuJoCo's `dynprm[3]` and `gainprm[9]`/`biasprm[9]` arrays.
+- MuJoCo's FLV curves are ~80 lines of piecewise-quadratic code. No external crate needed.
+- Avoids adding a `sim-core` → `sim-muscle` dependency for the pipeline hot path.
+- Produces results directly comparable to MuJoCo ground truth for any MJCF model.
+- `sim-muscle`'s richer Hill model (compliant tendons, pennation geometry, Newton
+  iteration) can be offered as an alternative `ActuatorDynamics::HillMuscle` variant
+  in a follow-up, for users who need biomechanical fidelity beyond MuJoCo parity.
 
 #### Current State
-sim-muscle is a standalone 2,550-line crate with:
-- `ActivationDynamics` (`activation.rs`): first-order `da/dt = (u - a) / τ(u, a)` with asymmetric time constants (τ_act ≈ 10-20 ms, τ_deact ≈ 40-80 ms).
-- `HillMuscle` (`hill.rs`): contractile element (force-length, force-velocity), parallel elastic element, series elastic tendon. Presets: biceps, quadriceps, gastrocnemius, soleus.
-- Force-length/velocity curves (`curves.rs`).
-- `MuscleKinematics` (`kinematics.rs`): pennation angle, fiber length from MTU length.
 
-The pipeline declares `ActuatorDynamics::Muscle` (`mujoco_pipeline.rs:435`) and
-`data.act` (`mujoco_pipeline.rs:1255`) but `mj_fwd_actuation()` has no muscle-specific
-code path — it only handles `ActuatorTransmission::Joint` (direct force) and stubs
-`::Tendon`/`::Site`.
+**Pipeline scaffolds** (all in `mujoco_pipeline.rs`):
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| `ActuatorDynamics::Muscle` | Enum, line 435 | Defined |
+| `data.act: DVector<f64>` | Data, line 1277 | Declared, zero-initialized, **never updated** |
+| `data.ctrl: DVector<f64>` | Data, line 1275 | Used directly as force (no dynamics applied) |
+| `data.qfrc_actuator: DVector<f64>` | Data, line 1279 | Populated by `mj_fwd_actuation()` |
+| `actuator_dyntype: Vec<ActuatorDynamics>` | Model, line 907 | Stored, **never read** in pipeline |
+| `actuator_act_adr: Vec<usize>` | Model, line 919 | Stored, **never read** in pipeline |
+| `actuator_act_num: Vec<usize>` | Model, line 921 | Stored, **incorrectly assigns 2 for Muscle** |
+| `ten_length: Vec<f64>` | Data, line 1385 | Populated by `mj_fwd_tendon()` ✅ |
+| `ten_velocity: Vec<f64>` | Data, line 1388 | Populated in `mj_fwd_velocity()` ✅ |
+| `ten_J: Vec<DVector<f64>>` | Data, line 1393 | Populated by `mj_fwd_tendon()` ✅ |
+
+**MJCF parsing** (complete — all muscle attributes parsed, then discarded):
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| `MjcfActuator.muscle_timeconst` | `types.rs:1819` | Parsed, **not transferred to Model** |
+| `MjcfActuator.range` | `types.rs:1823` | Parsed, **not transferred to Model** |
+| `MjcfActuator.force` | `types.rs:1826` | Parsed, **not transferred to Model** |
+| `MjcfActuator.scale` | `types.rs:1829` | Parsed, **not transferred to Model** |
+| `MjcfActuator.lmin` | `types.rs:1831` | Parsed, **not transferred to Model** |
+| `MjcfActuator.lmax` | `types.rs:1833` | Parsed, **not transferred to Model** |
+| `MjcfActuator.vmax` | `types.rs:1835` | Parsed, **not transferred to Model** |
+| `MjcfActuator.fpmax` | `types.rs:1837` | Parsed, **not transferred to Model** |
+| `MjcfActuator.fvmax` | `types.rs:1839` | Parsed, **not transferred to Model** |
+| Muscle attribute parsing | `parser.rs:1134-1177` | Complete with tests |
+
+**Bugs to fix:**
+- `actuator_act_num` for Muscle is set to 2 (`model_builder.rs:1231`) but MuJoCo
+  muscles have **1 activation state** (the activation level `act`). The builder
+  comment says "MuJoCo semantics: Muscle=2" — this is wrong. MuJoCo's `mjDYN_MUSCLE`
+  contributes exactly 1 entry to `mjData.act`.
+
+**Missing infrastructure:**
+- No `actuator_dynprm`, `actuator_gainprm`, `actuator_biasprm` fields in Model.
+- No `actuator_length`, `actuator_velocity` fields in Data (needed for muscle L/V).
+- No `actuator_lengthrange` or `actuator_acc0` in Model (needed for F0 auto-computation
+  and length normalization).
+- `mj_fwd_actuation()` ignores `actuator_dyntype` entirely — applies `ctrl * gear`
+  for all actuators regardless of dynamics type.
+- `actuator_ctrlrange` and `actuator_forcerange` are stored but never enforced.
 
 #### Objective
-Wire muscle activation dynamics and Hill-type force generation into the pipeline so
-that muscle actuators produce physiologically realistic joint forces.
+
+Implement MuJoCo-compatible muscle actuation: activation dynamics, FLV force curves,
+and force-to-joint mapping. Also fix the actuation pipeline to respect activation
+states and control/force clamping.
 
 #### Specification
 
-**Activation dynamics** (in `mj_fwd_actuation()` or a new `mj_fwd_activation()`):
+##### Step 1: Fix `actuator_act_num` for Muscle
 
-For each actuator where `actuator_dyntype[i] == Muscle`:
+In `model_builder.rs`, change the Muscle activation state count from 2 to 1:
 
-1. Read excitation `u = ctrl[i]` (clamped to [0, 1]).
-2. Update activation: `act[i] += dt * (u - act[i]) / τ(u, act[i])` where
-   τ = τ_act if u > act[i], τ = τ_deact otherwise.
-3. Clamp `act[i]` to [min_activation, 1.0].
+```rust
+let act_num = match dyntype {
+    ActuatorDynamics::None => 0,
+    ActuatorDynamics::Filter | ActuatorDynamics::Integrator => 1,
+    ActuatorDynamics::Muscle => 1,  // was 2, MuJoCo muscles have 1 activation state
+};
+```
 
-**Force generation** (after tendon kinematics from #4):
+##### Step 2: Add Model Fields for Muscle Parameters
 
-1. Get muscle-tendon unit length from `ten_length[tendon_id]` (the tendon this
-   muscle actuator drives) and velocity from `ten_velocity[tendon_id]`.
-2. Compute fiber length and velocity via pennation angle geometry
-   (from sim-muscle `MuscleKinematics`).
-3. Compute active force: `F_active = act[i] * f_l(l_fiber) * f_v(v_fiber) * F_max`.
-4. Compute passive force: `F_passive = f_pe(l_fiber) * F_max`.
-5. Total muscle force: `F_muscle = (F_active + F_passive) * cos(pennation_angle)`.
-6. Map to joint forces via tendon Jacobian: `qfrc_actuator += ten_J[tendon_id]^T * F_muscle`.
+Add to `Model` struct (after `actuator_act_num`, line 921):
 
-**Model fields needed** (new or repurposed):
-- `actuator_muscle_config: Vec<Option<HillMuscleConfig>>` — per-actuator muscle parameters (F_max, optimal fiber length, tendon slack length, pennation angle, time constants).
-- Parse from MJCF `<muscle>` element attributes.
+```rust
+/// Dynamics parameters per actuator (3 elements each).
+/// For Muscle: [tau_act, tau_deact, tausmooth]. Default: [0.01, 0.04, 0.0].
+/// For Filter: [tau, 0, 0]. For Integrator/None: unused.
+pub actuator_dynprm: Vec<[f64; 3]>,
+
+/// Gain parameters per actuator (9 elements each).
+/// For Muscle: [range0, range1, force, scale, lmin, lmax, vmax, fpmax, fvmax].
+/// Default: [0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2].
+/// For other types: [gain, 0, ...] (gain multiplier, index 0 only).
+pub actuator_gainprm: Vec<[f64; 9]>,
+
+/// Bias parameters per actuator (9 elements each).
+/// For Muscle: same layout as gainprm (shared parameter set in MuJoCo).
+/// For other types: [bias0, bias1, bias2, 0, ...] (constant + length + velocity).
+pub actuator_biasprm: Vec<[f64; 9]>,
+
+/// Actuator length range [min, max] — the transmission length extremes.
+/// For tendon-transmission muscles: computed from tendon length at joint limits.
+/// Used to normalize muscle length: L = range0 + (len - lengthrange0) / L0.
+pub actuator_lengthrange: Vec<(f64, f64)>,
+
+/// Acceleration produced by unit actuator force (scalar, per actuator).
+/// Used for auto-computing F0 when `force < 0`: F0 = scale / acc0.
+/// Computed at model build time from M^{-1} and the transmission Jacobian.
+pub actuator_acc0: Vec<f64>,
+```
+
+Initialize all to empty vecs in `Model::empty()`.
+
+##### Step 3: Add Data Fields for Actuator State
+
+Add to `Data` struct (after `qfrc_actuator`, line 1279):
+
+```rust
+/// Actuator length (gear * transmission_length, length `nu`).
+/// For Joint transmission: `gear * qpos[qpos_adr]` (hinge/slide only).
+/// For Tendon transmission: `gear * ten_length[tendon_id]`.
+pub actuator_length: Vec<f64>,
+
+/// Actuator velocity (gear * transmission_velocity, length `nu`).
+/// For Joint transmission: `gear * qvel[dof_adr]` (hinge/slide only).
+/// For Tendon transmission: `gear * ten_velocity[tendon_id]`.
+pub actuator_velocity: Vec<f64>,
+
+/// Actuator force output (length `nu`).
+/// The scalar force produced by each actuator after gain/bias/activation.
+pub actuator_force: Vec<f64>,
+
+/// Activation time-derivative (length `na`).
+/// Computed by `mj_fwd_actuation()`, integrated by the integrator (Euler/RK4).
+/// Separating derivative from integration matches MuJoCo's `mjData.act_dot`
+/// and is required for correct RK4 integration of activation states.
+pub act_dot: DVector<f64>,
+```
+
+Initialize in `make_data()` struct literal (alongside existing fields):
+`actuator_length`, `actuator_velocity`, `actuator_force` as `vec![0.0; self.nu]`,
+`act_dot` as `DVector::zeros(self.na)`.
+
+Also add RK4 scratch buffers for activation (alongside `rk4_qvel`/`rk4_qacc`):
+
+```rust
+// RK4 activation scratch (pre-allocated to avoid per-step heap allocation)
+rk4_act_saved: DVector::zeros(self.na),
+rk4_act_dot: std::array::from_fn(|_| DVector::zeros(self.na)),
+```
+
+Update `Data::reset()` to clear the new fields:
+
+```rust
+self.act_dot.fill(0.0);
+self.actuator_length.fill(0.0);
+self.actuator_velocity.fill(0.0);
+self.actuator_force.fill(0.0);
+```
+
+##### Step 4: Model Builder — Transfer Muscle Parameters
+
+In `model_builder.rs`, `process_actuator()`:
+
+**Fix ctrlrange/forcerange gating:** The existing builder ignores `ctrllimited`
+and always stores a ctrlrange (defaulting to `(-1, 1)`). Step 9 introduces
+control clamping, which would incorrectly clamp when `ctrllimited = false` but
+`ctrlrange` is explicitly set. Fix both to mirror MuJoCo's gating:
+
+```rust
+// Replace existing ctrlrange push:
+self.actuator_ctrlrange.push(
+    if actuator.ctrllimited {
+        actuator.ctrlrange.unwrap_or((-1.0, 1.0))
+    } else {
+        (f64::NEG_INFINITY, f64::INFINITY)
+    },
+);
+
+// Replace existing forcerange push (add forcelimited gating):
+self.actuator_forcerange.push(
+    if actuator.forcelimited {
+        actuator.forcerange.unwrap_or((f64::NEG_INFINITY, f64::INFINITY))
+    } else {
+        (f64::NEG_INFINITY, f64::INFINITY)
+    },
+);
+```
+
+After pushing `actuator_act_num`, add the new muscle parameter fields:
+
+```rust
+// Dynamics parameters
+let dynprm = match actuator.actuator_type {
+    MjcfActuatorType::Muscle => [
+        actuator.muscle_timeconst.0,  // tau_act (default 0.01)
+        actuator.muscle_timeconst.1,  // tau_deact (default 0.04)
+        0.0,                           // tausmooth (default 0, hard switch)
+    ],
+    MjcfActuatorType::Position | MjcfActuatorType::Velocity => [
+        // Filter time constant: position/velocity servos use timeconst
+        // from general actuator attributes if available, else 0.0
+        0.0, 0.0, 0.0,
+    ],
+    _ => [0.0; 3],
+};
+self.actuator_dynprm.push(dynprm);
+
+// Gain/Bias parameters (shared layout for muscle)
+let gainprm = match actuator.actuator_type {
+    MjcfActuatorType::Muscle => [
+        actuator.range.0,   // range[0], default 0.75
+        actuator.range.1,   // range[1], default 1.05
+        actuator.force,     // force, default -1.0 (auto)
+        actuator.scale,     // scale, default 200.0
+        actuator.lmin,      // lmin, default 0.5
+        actuator.lmax,      // lmax, default 1.6
+        actuator.vmax,      // vmax, default 1.5
+        actuator.fpmax,     // fpmax, default 1.3
+        actuator.fvmax,     // fvmax, default 1.2
+    ],
+    _ => {
+        let mut prm = [0.0; 9];
+        prm[0] = actuator.gear;  // placeholder; not used by Step 9's non-muscle path
+        prm
+    },
+};
+self.actuator_gainprm.push(gainprm);
+// Muscle: biasprm = gainprm (shared layout, MuJoCo convention). The runtime
+// muscle path in Step 9 reads gainprm only; biasprm is stored for MuJoCo
+// memory layout compatibility and for #12 (general gain/bias system).
+// For non-muscle actuators: placeholder, will be populated by #12.
+self.actuator_biasprm.push(gainprm);
+
+// Lengthrange and acc0: initialized to zero, computed in Step 5 post-processing
+self.actuator_lengthrange.push((0.0, 0.0));
+self.actuator_acc0.push(0.0);
+```
+
+##### Step 5: Compute `actuator_lengthrange`, `acc0`, and `F0` at Build Time
+
+Add a single public method `compute_muscle_params(&mut self)` on `Model` in
+`mujoco_pipeline.rs`, following the pattern of `compute_ancestors()` and
+`compute_implicit_params()`. This method handles all muscle-derived parameters:
+`actuator_lengthrange`, `actuator_acc0`, and `F0` resolution.
+
+Putting everything in one Model method (rather than a separate free function in
+`model_builder.rs`) ensures that manually-constructed Models (e.g., in tests) get
+correct muscle parameters by calling a single method.
+
+`acc0 = ||M^{-1} * moment||` — the L2 norm of the joint-space acceleration vector
+produced by unit actuator force through the transmission. `moment` is the
+gear-scaled transmission Jacobian. MuJoCo computes this via `mj_solveM` +
+`mju_norm` in `engine_setconst.c:set0()`.
+
+```rust
+/// Compute muscle-derived parameters: lengthrange, acc0, and F0.
+///
+/// For each muscle actuator:
+///   1. Computes `actuator_lengthrange` from tendon/joint limits (gear-scaled).
+///   2. Runs a forward pass at `qpos0` to get M, then computes
+///      `acc0 = ||M^{-1} * moment||` via sparse solve.
+///   3. Resolves `F0` (gainprm[2]) when `force < 0`: `F0 = scale / acc0`.
+///
+/// Must be called after `compute_ancestors()` and `compute_implicit_params()`,
+/// and after all tendon/actuator fields are populated.
+pub fn compute_muscle_params(&mut self) {
+    if self.nu == 0 {
+        return;
+    }
+
+    let has_muscles = (0..self.nu)
+        .any(|i| self.actuator_dyntype[i] == ActuatorDynamics::Muscle);
+    if !has_muscles {
+        return;
+    }
+
+    // --- Phase 1: Compute actuator_lengthrange from limits ---
+    for i in 0..self.nu {
+        if self.actuator_dyntype[i] != ActuatorDynamics::Muscle {
+            continue;
+        }
+
+        let gear = self.actuator_gear[i];
+
+        // actuator_length = gear * transmission_length (Step 6),
+        // so lengthrange = gear * transmission_lengthrange.
+        // If gear < 0, min/max swap.
+        let scale_range = |lo: f64, hi: f64| -> (f64, f64) {
+            let a = gear * lo;
+            let b = gear * hi;
+            (a.min(b), a.max(b))
+        };
+
+        match self.actuator_trntype[i] {
+            ActuatorTransmission::Tendon => {
+                let tid = self.actuator_trnid[i];
+                if tid < self.ntendon {
+                    if self.tendon_limited[tid] {
+                        let (lo, hi) = self.tendon_range[tid];
+                        self.actuator_lengthrange[i] = scale_range(lo, hi);
+                    } else {
+                        // For unlimited tendons: estimate from joint ranges.
+                        // Fixed tendon length = Σ coef_i * q_i, so extremes come
+                        // from each joint at its range limit (sign-aware).
+                        // Note: jnt_range defaults to (-π, π) for unlimited joints.
+                        let adr = self.tendon_adr[tid];
+                        let num = self.tendon_num[tid];
+                        let (mut lmin, mut lmax) = (0.0, 0.0);
+                        for w in adr..(adr + num) {
+                            let dof = self.wrap_objid[w];
+                            let coef = self.wrap_prm[w];
+                            if let Some(jid) = (0..self.njnt).find(|&j| {
+                                self.jnt_dof_adr[j] == dof
+                            }) {
+                                let (qlo, qhi) = self.jnt_range[jid];
+                                if coef >= 0.0 {
+                                    lmin += coef * qlo;
+                                    lmax += coef * qhi;
+                                } else {
+                                    lmin += coef * qhi;
+                                    lmax += coef * qlo;
+                                }
+                            }
+                        }
+                        self.actuator_lengthrange[i] = scale_range(lmin, lmax);
+                    }
+                }
+            }
+            ActuatorTransmission::Joint => {
+                let jid = self.actuator_trnid[i];
+                if jid < self.njnt {
+                    let (lo, hi) = self.jnt_range[jid];
+                    self.actuator_lengthrange[i] = scale_range(lo, hi);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // **Known limitation:** Unlimited joints default to jnt_range = (-π, π).
+    // For hinge joints this is physically reasonable, but for slide (prismatic)
+    // joints it produces an arbitrary 2π-meter range. MuJoCo uses a bisection
+    // solver (mj_setLengthRange) to compute lengthrange from actual kinematics,
+    // which handles unlimited slide joints correctly. Adding bisection-based
+    // lengthrange is a possible follow-up but is not needed for the common case
+    // of muscles on limited hinge joints.
+
+    // --- Phase 2: Forward pass at qpos0 for acc0 ---
+    // FK populates cinert (body spatial inertias), CRBA builds M and factors
+    // it (L^T D L). Tendon evaluation is not needed because we construct the
+    // moment vector directly from wrap_objid/wrap_prm (constant for fixed tendons).
+    let mut data = self.make_data();  // qpos = qpos0
+    mj_fwd_position(self, &mut data); // FK: cinert from qpos0
+    mj_crba(self, &mut data);         // Mass matrix M + sparse factorization
+
+    for i in 0..self.nu {
+        if self.actuator_dyntype[i] != ActuatorDynamics::Muscle {
+            continue;
+        }
+
+        // Build transmission moment J (maps unit actuator force → generalized forces).
+        // MuJoCo's moment = gear * raw_Jacobian. For joint transmission, raw J is a
+        // unit vector at the joint DOF. For tendon transmission, raw J is the tendon
+        // coupling vector. Gear scales both.
+        let gear = self.actuator_gear[i];
+        let mut j_vec = DVector::zeros(self.nv);
+        match self.actuator_trntype[i] {
+            ActuatorTransmission::Joint => {
+                let jid = self.actuator_trnid[i];
+                if jid < self.njnt {
+                    let dof_adr = self.jnt_dof_adr[jid];
+                    j_vec[dof_adr] = gear;
+                }
+            }
+            ActuatorTransmission::Tendon => {
+                let tid = self.actuator_trnid[i];
+                if tid < self.ntendon {
+                    let adr = self.tendon_adr[tid];
+                    let num = self.tendon_num[tid];
+                    for w in adr..(adr + num) {
+                        let dof_adr = self.wrap_objid[w];
+                        let coef = self.wrap_prm[w];
+                        if dof_adr < self.nv {
+                            j_vec[dof_adr] = gear * coef;
+                        }
+                    }
+                }
+            }
+            ActuatorTransmission::Site => {}
+        }
+
+        // Solve M * x = J using the sparse L^T D L factorization from CRBA.
+        // x = M^{-1} * J is the joint-space acceleration from unit actuator force.
+        let mut x = j_vec.clone();
+        mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x);
+
+        // acc0 = ||M^{-1} J||_2 (L2 norm of acceleration vector).
+        // Matches MuJoCo's mju_norm(tmp, nv) in engine_setconst.c.
+        self.actuator_acc0[i] = x.norm().max(1e-10);
+
+        // --- Phase 3: Resolve F0 ---
+        if self.actuator_gainprm[i][2] < 0.0 {
+            // force < 0 means auto-compute: F0 = scale / acc0
+            self.actuator_gainprm[i][2] =
+                self.actuator_gainprm[i][3] / self.actuator_acc0[i];
+            // Sync biasprm (MuJoCo layout: muscles share gain/bias parameters).
+            // The runtime muscle path reads gainprm only, but keeping biasprm in
+            // sync ensures the Model data matches MuJoCo's memory layout for
+            // introspection and for #12 (general gain/bias).
+            self.actuator_biasprm[i][2] = self.actuator_gainprm[i][2];
+        }
+    }
+}
+```
+
+Called from `model_builder.rs` after `compute_implicit_params()`:
+
+```rust
+model.compute_ancestors();
+model.compute_implicit_params();
+model.compute_muscle_params();  // NEW: lengthrange + acc0 + F0 resolution
+```
+
+Phase 2 uses the sparse `L^T D L` factorization from #2 (computed by `mj_crba()`),
+so the solve is O(nv) per actuator for tree-structured robots.
+
+##### Step 6: Compute `actuator_length` and `actuator_velocity`
+
+Add a new function `mj_actuator_length()`, called from `forward()` (and
+`forward_skip_sensors()`) after `mj_fwd_velocity()`. At this point both tendon
+lengths (from `mj_fwd_tendon()` inside `mj_fwd_position()`) and tendon velocities
+(from `mj_fwd_velocity()`) are available:
+
+```rust
+fn mj_actuator_length(model: &Model, data: &mut Data) {
+    for i in 0..model.nu {
+        let gear = model.actuator_gear[i];
+        match model.actuator_trntype[i] {
+            ActuatorTransmission::Joint => {
+                let jid = model.actuator_trnid[i];
+                if jid < model.njnt {
+                    // Joint transmission only meaningful for Hinge/Slide (scalar qpos).
+                    // Ball/Free joints have multi-DOF qpos (quaternion/pose) — these
+                    // cannot be used as actuator length. MuJoCo enforces the same
+                    // restriction. Skip gracefully for Ball/Free.
+                    let nv = model.jnt_type[jid].nv();
+                    if nv == 1 {
+                        let qadr = model.jnt_qpos_adr[jid];
+                        let dof_adr = model.jnt_dof_adr[jid];
+                        data.actuator_length[i] = gear * data.qpos[qadr];
+                        data.actuator_velocity[i] = gear * data.qvel[dof_adr];
+                    }
+                }
+            }
+            ActuatorTransmission::Tendon => {
+                let tid = model.actuator_trnid[i];
+                if tid < model.ntendon {
+                    data.actuator_length[i] = gear * data.ten_length[tid];
+                    data.actuator_velocity[i] = gear * data.ten_velocity[tid];
+                }
+            }
+            ActuatorTransmission::Site => {
+                // Not yet implemented
+            }
+        }
+    }
+}
+```
+
+MuJoCo's `mj_transmission()` multiplies all actuator lengths and velocities by the
+gear ratio. The gear also scales the transmission moment (Jacobian), so that
+`actuator_velocity = moment · qvel` where `moment = gear * raw_Jacobian`.
+
+##### Step 7: Implement MuJoCo FLV Curves
+
+Add three functions to `mujoco_pipeline.rs`, above `mj_fwd_actuation()`. These
+implement MuJoCo's exact piecewise-quadratic muscle curves from
+`engine_util_misc.c`:
+
+**`muscle_gain_length(length: f64, lmin: f64, lmax: f64) -> f64`** (FL curve)
+
+Active force-length: piecewise quadratic bump, 0 outside `[lmin, lmax]`, peak 1.0
+at `L = 1.0`. Four segments joined at midpoints `a = 0.5*(lmin+1)` and
+`b = 0.5*(1+lmax)`:
+
+```rust
+fn muscle_gain_length(length: f64, lmin: f64, lmax: f64) -> f64 {
+    const EPS: f64 = 1e-10; // matches MuJoCo's mjMINVAL guards
+    if length < lmin || length > lmax {
+        return 0.0;
+    }
+    let a = 0.5 * (lmin + 1.0); // midpoint of [lmin, 1]
+    let b = 0.5 * (1.0 + lmax); // midpoint of [1, lmax]
+
+    if length <= a {
+        let x = (length - lmin) / (a - lmin).max(EPS);
+        0.5 * x * x
+    } else if length <= 1.0 {
+        let x = (1.0 - length) / (1.0 - a).max(EPS);
+        1.0 - 0.5 * x * x
+    } else if length <= b {
+        let x = (length - 1.0) / (b - 1.0).max(EPS);
+        1.0 - 0.5 * x * x
+    } else {
+        let x = (lmax - length) / (lmax - b).max(EPS);
+        0.5 * x * x
+    }
+}
+```
+
+**`muscle_gain_velocity(velocity: f64, fvmax: f64) -> f64`** (FV curve)
+
+Force-velocity: piecewise quadratic. `V` is normalized by `L0 * vmax` so
+`V = -1` is max shortening. Let `y = fvmax - 1`:
+
+```rust
+fn muscle_gain_velocity(velocity: f64, fvmax: f64) -> f64 {
+    const EPS: f64 = 1e-10;
+    let y = fvmax - 1.0;
+    if velocity <= -1.0 {
+        0.0
+    } else if velocity <= 0.0 {
+        (velocity + 1.0) * (velocity + 1.0)
+    } else if velocity <= y {
+        fvmax - (y - velocity) * (y - velocity) / y.max(EPS)
+    } else {
+        fvmax
+    }
+}
+```
+
+**`muscle_passive_force(length: f64, lmax: f64, fpmax: f64) -> f64`** (FP curve)
+
+Passive force: zero below `L = 1.0`, quadratic onset, linear beyond midpoint `b`:
+
+```rust
+fn muscle_passive_force(length: f64, lmax: f64, fpmax: f64) -> f64 {
+    const EPS: f64 = 1e-10;
+    let b = 0.5 * (1.0 + lmax);
+    if length <= 1.0 {
+        0.0
+    } else if length <= b {
+        let x = (length - 1.0) / (b - 1.0).max(EPS);
+        fpmax * 0.5 * x * x
+    } else {
+        let x = (length - b) / (b - 1.0).max(EPS);
+        fpmax * (0.5 + x)
+    }
+}
+```
+
+##### Step 8: Implement Activation Dynamics
+
+Add `muscle_activation_dynamics()` to `mujoco_pipeline.rs`. This matches MuJoCo's
+`mju_muscleDynamics()` from `engine_util_misc.c`:
+
+```rust
+/// Quintic smoothstep (C2-continuous Hermite), matching MuJoCo's mju_sigmoid.
+fn sigmoid(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    if x >= 1.0 { return 1.0; }
+    x * x * x * (6.0 * x * x - 15.0 * x + 10.0)
+}
+
+/// Compute d(act)/dt for muscle activation dynamics.
+///
+/// Follows Millard et al. (2013) with activation-dependent time constants:
+///   tau_act_eff   = tau_act   * (0.5 + 1.5 * act)
+///   tau_deact_eff = tau_deact / (0.5 + 1.5 * act)
+///
+/// When tausmooth > 0, uses quintic sigmoid to blend between tau_act and tau_deact
+/// instead of a hard switch at ctrl == act.
+fn muscle_activation_dynamics(
+    ctrl: f64,
+    act: f64,
+    dynprm: &[f64; 3],
+) -> f64 {
+    let ctrl_clamped = ctrl.clamp(0.0, 1.0);
+    let act_clamped = act.clamp(0.0, 1.0);
+
+    // Activation-dependent effective time constants (Millard et al. 2013)
+    let tau_act = dynprm[0] * (0.5 + 1.5 * act_clamped);
+    let tau_deact = dynprm[1] / (0.5 + 1.5 * act_clamped);
+    let tausmooth = dynprm[2];
+
+    let dctrl = ctrl_clamped - act;
+
+    // Select time constant
+    let tau = if tausmooth < 1e-10 {
+        // Hard switch
+        if dctrl > 0.0 { tau_act } else { tau_deact }
+    } else {
+        // Smooth blending via quintic sigmoid
+        tau_deact + (tau_act - tau_deact) * sigmoid(dctrl / tausmooth + 0.5)
+    };
+
+    dctrl / tau.max(1e-10)
+}
+```
+
+##### Step 9: Refactor `mj_fwd_actuation()`
+
+Replace the current `mj_fwd_actuation()` with a version that:
+1. Computes activation derivatives (`data.act_dot`) without modifying `data.act`.
+2. Computes actuator force using gain/bias and the **current** `data.act`
+   (muscle FLV for muscles, `ctrl` for simple actuators).
+3. Clamps control inputs and output forces to their declared ranges.
+4. Maps actuator force to joint forces via the transmission.
+
+**Critical design:** `mj_fwd_actuation` does NOT integrate `data.act`. It only
+computes `data.act_dot`. Integration is done by the integrator (Euler or RK4).
+This matches MuJoCo's `mjData.act_dot` architecture and is required for correct
+RK4 integration — otherwise force would be computed with the wrong activation
+(post-Euler rather than current), and RK4 would have to reverse-engineer
+derivatives from clamped Euler steps.
+
+```rust
+fn mj_fwd_actuation(model: &Model, data: &mut Data) {
+    data.qfrc_actuator.fill(0.0);
+
+    for i in 0..model.nu {
+        // --- Phase 1: Activation dynamics (compute act_dot, do NOT integrate) ---
+        let ctrl = data.ctrl[i].clamp(
+            model.actuator_ctrlrange[i].0,
+            model.actuator_ctrlrange[i].1,
+        );
+
+        let input = match model.actuator_dyntype[i] {
+            ActuatorDynamics::None => ctrl,
+            ActuatorDynamics::Muscle => {
+                let act_adr = model.actuator_act_adr[i];
+                data.act_dot[act_adr] = muscle_activation_dynamics(
+                    ctrl, data.act[act_adr], &model.actuator_dynprm[i],
+                );
+                data.act[act_adr]  // use CURRENT activation for force
+            }
+            ActuatorDynamics::Filter => {
+                // First-order filter: d(act)/dt = (ctrl - act) / tau
+                let act_adr = model.actuator_act_adr[i];
+                let tau = model.actuator_dynprm[i][0].max(1e-10);
+                data.act_dot[act_adr] = (ctrl - data.act[act_adr]) / tau;
+                data.act[act_adr]  // use CURRENT activation for force
+            }
+            ActuatorDynamics::Integrator => {
+                // Integrator: d(act)/dt = ctrl
+                let act_adr = model.actuator_act_adr[i];
+                data.act_dot[act_adr] = ctrl;
+                data.act[act_adr]  // use CURRENT activation for force
+            }
+        };
+
+        // --- Phase 2: Force generation (gain * input + bias) ---
+        //
+        // MuJoCo's actuator_force is the scalar output of gain/bias BEFORE the
+        // transmission maps it to generalized forces. Gear enters via the transmission
+        // moment (Phase 3), not via actuator_force.
+        let force = match model.actuator_dyntype[i] {
+            ActuatorDynamics::Muscle => {
+                let prm = &model.actuator_gainprm[i];
+                let len = data.actuator_length[i];
+                let vel = data.actuator_velocity[i];
+                let lengthrange = model.actuator_lengthrange[i];
+                let f0 = prm[2]; // force (already resolved, always > 0 after Step 5)
+
+                // Normalize length and velocity
+                let l0 = (lengthrange.1 - lengthrange.0)
+                    / (prm[1] - prm[0]).max(1e-10);
+                let norm_len = prm[0] + (len - lengthrange.0) / l0.max(1e-10);
+                let norm_vel = vel / (l0 * prm[6]).max(1e-10); // prm[6] = vmax
+
+                // gain = -F0 * FL(L) * FV(V), bias = -F0 * FP(L)
+                let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
+                let fv = muscle_gain_velocity(norm_vel, prm[8]);
+                let fp = muscle_passive_force(norm_len, prm[5], prm[7]);
+
+                let gain = -f0 * fl * fv;
+                let bias = -f0 * fp;
+                gain * input + bias  // = -F0 * (FL*FV*act + FP)
+            }
+            _ => {
+                // Simple actuators: force = input (ctrl or filtered activation).
+                // MuJoCo's full gain/bias system (gain_type, bias_type, gainprm,
+                // biasprm) is not implemented for non-muscle actuators in this spec.
+                // Position/Velocity servos will need gain/bias in a future step.
+                input
+            }
+        };
+
+        // Clamp to force range
+        let force = force.clamp(
+            model.actuator_forcerange[i].0,
+            model.actuator_forcerange[i].1,
+        );
+        data.actuator_force[i] = force;
+
+        // --- Phase 3: Transmission (actuator_force → generalized forces) ---
+        //
+        // qfrc_actuator += moment^T * actuator_force
+        // where moment = gear * raw_Jacobian.
+        //
+        // For Joint:  moment[dof] = gear, so qfrc[dof] += gear * force.
+        // For Tendon: moment[dof] = gear * coef, so qfrc[dof] += gear * coef * force.
+        let gear = model.actuator_gear[i];
+        let trnid = model.actuator_trnid[i];
+        match model.actuator_trntype[i] {
+            ActuatorTransmission::Joint => {
+                if trnid < model.njnt {
+                    let dof_adr = model.jnt_dof_adr[trnid];
+                    let nv = model.jnt_type[trnid].nv();
+                    if nv > 0 {
+                        data.qfrc_actuator[dof_adr] += gear * force;
+                    }
+                }
+            }
+            ActuatorTransmission::Tendon => {
+                let tendon_id = trnid;
+                if tendon_id < model.ntendon {
+                    let adr = model.tendon_adr[tendon_id];
+                    let num = model.tendon_num[tendon_id];
+                    for w in adr..(adr + num) {
+                        let dof_adr = model.wrap_objid[w];
+                        let coef = model.wrap_prm[w];
+                        if dof_adr < model.nv {
+                            data.qfrc_actuator[dof_adr] += gear * coef * force;
+                        }
+                    }
+                }
+            }
+            ActuatorTransmission::Site => {}
+        }
+    }
+}
+```
+
+**Key changes from current implementation:**
+- Phase 1 computes `data.act_dot` based on `actuator_dyntype` (was ignored).
+  Does NOT integrate `data.act` — integration is done by the integrator.
+- Phase 2 computes force via gain/bias for muscles using **current** `data.act`
+  (was `ctrl * gear` for all). For non-muscle actuators, `actuator_force = input`
+  (the raw or filtered control).
+- Phase 3 applies gear in the transmission: `qfrc += gear * force` (joint) or
+  `qfrc += gear * coef * force` (tendon). This matches MuJoCo's moment-based
+  architecture where `qfrc = moment^T * actuator_force` and `moment = gear * J_raw`.
+- Control clamping to `actuator_ctrlrange` (was unclamped).
+- Force clamping to `actuator_forcerange` (was unclamped).
+- Stores per-actuator scalar force in `data.actuator_force` (new).
+- Function no longer takes `dt` — derivative-only, no integration.
+
+**Behavioral equivalence for `DynType::None` actuators:** The current code does
+`qfrc[dof] += ctrl * gear` (joint) and `qfrc[dof] += coef * ctrl * gear` (tendon).
+The new code does `actuator_force = ctrl`, then `qfrc[dof] += gear * ctrl` (joint)
+and `qfrc[dof] += gear * coef * ctrl` (tendon). These are numerically identical.
+
+**Behavioral change for Filter/Integrator actuators:** The current code ignores
+`actuator_dyntype` and always applies `ctrl * gear`. The new code uses the
+**current activation** (`data.act`) for force generation, with `act_dot` stored
+for integration by the integrator. This means Filter/Integrator actuators will
+now respond to their filtered/integrated state rather than raw ctrl — a
+correctness fix, but a change from current behavior. On the first step (act=0),
+a Filter actuator with `ctrl=1` will produce zero force until `act` ramps up.
+
+**Known limitation — Position/Velocity servo force generation:** The non-muscle
+force path uses `force = input` (raw ctrl or filtered activation), not MuJoCo's
+general gain/bias formula (`kp * (act - length)` for Position servos, etc.).
+The current code (`ctrl * gear`) is also wrong for these actuators, so this
+spec does not regress them. Tracked as **#12 General Gain/Bias Actuator Force
+Model**.
+
+##### Step 10: Wire Into Pipeline
+
+**10a. Forward pipeline:** Update `forward()` **and** `forward_skip_sensors()` to
+call `mj_actuator_length()`. Both functions have the same pipeline structure and
+must receive the same changes. (`forward_skip_sensors()` is used by RK4's
+intermediate stages via `mj_runge_kutta()`.)
+
+Note: `mj_fwd_actuation` no longer takes `dt` — it only computes derivatives.
+
+```rust
+fn forward(&mut self, model: &Model) {
+    // ... existing stages ...
+    mj_fwd_position(model, self);  // includes mj_fwd_tendon → ten_length, ten_J
+    mj_collision(model, self);
+    self.mj_sensor_pos(model);
+
+    mj_fwd_velocity(model, self); // sets qvel, ten_velocity
+    mj_actuator_length(model, self); // NEW: sets actuator_length, actuator_velocity
+    self.mj_sensor_vel(model);
+
+    mj_fwd_actuation(model, self); // CHANGED: signature (no dt), computes act_dot
+    // ... rest unchanged ...
+}
+
+fn forward_skip_sensors(&mut self, model: &Model) {
+    mj_fwd_position(model, self);
+    mj_collision(model, self);
+
+    mj_fwd_velocity(model, self);
+    mj_actuator_length(model, self); // NEW (same as forward)
+
+    mj_fwd_actuation(model, self); // CHANGED (same as forward)
+    // ... rest unchanged ...
+}
+```
+
+**10b. Euler/ImplicitSpringDamper integrator:** Add activation integration to
+`Data::integrate()` (line 2417), **before** velocity integration (matching
+MuJoCo's `mj_advance()` order: activation → velocity → position). This runs
+for both Euler and ImplicitSpringDamper (both go through `integrate()`):
+
+```rust
+// Integrate activation: act += dt * act_dot, then clamp muscles to [0, 1]
+for i in 0..model.nu {
+    let act_adr = model.actuator_act_adr[i];
+    let act_num = model.actuator_act_num[i];
+    for k in 0..act_num {
+        data.act[act_adr + k] += model.timestep * data.act_dot[act_adr + k];
+    }
+    // Clamp muscle activation to [0, 1]
+    if model.actuator_dyntype[i] == ActuatorDynamics::Muscle {
+        for k in 0..act_num {
+            data.act[act_adr + k] = data.act[act_adr + k].clamp(0.0, 1.0);
+        }
+    }
+}
+```
+
+**10c. RK4 integrator:** Update `mj_runge_kutta()` to integrate `data.act`
+alongside `qpos`/`qvel`. Since `mj_fwd_actuation` now writes `data.act_dot`
+without modifying `data.act`, RK4 can read `act_dot` directly at each stage —
+no recovery-by-differencing needed.
+
+The existing code already has a TODO placeholder at line 9774:
+`// TODO(FUTURE_WORK#5): When activation dynamics are added (act_dot),
+save/restore/integrate act alongside qpos/qvel at each stage.`
+
+```rust
+// In mj_runge_kutta(), alongside the existing qpos/qvel save:
+data.rk4_act_saved.copy_from(&data.act);  // uses pre-allocated Data field
+
+// Stage 0: collect act_dot from the initial forward() pass.
+data.rk4_act_dot[0].copy_from(&data.act_dot);
+
+// In the stage loop (i = 1..4), before each forward_skip_sensors():
+//   - set data.act = rk4_act_saved + h * Σ A[j] * rk4_act_dot[j]  (trial state)
+//   - clamp muscle activations to [0, 1]
+// After forward_skip_sensors():
+//   - collect data.rk4_act_dot[i] from data.act_dot
+
+// Final combination:
+for a in 0..model.na {
+    let dact_combined: f64 = (0..4)
+        .map(|j| RK4_B[j] * data.rk4_act_dot[j][a])
+        .sum();
+    data.act[a] = data.rk4_act_saved[a] + h * dact_combined;
+}
+// Clamp muscle activations to [0, 1]
+for i in 0..model.nu {
+    if model.actuator_dyntype[i] == ActuatorDynamics::Muscle {
+        let act_adr = model.actuator_act_adr[i];
+        for k in 0..model.actuator_act_num[i] {
+            data.act[act_adr + k] = data.act[act_adr + k].clamp(0.0, 1.0);
+        }
+    }
+}
+```
+
+This integrates activation with the same RK4 weights as qpos/qvel, matching
+MuJoCo's treatment of `act` as part of the state vector. The `na` field
+(total activation dimension = `Σ actuator_act_num`) already exists on Model.
+Since each trial stage reconstructs `data.act` from `rk4_act_saved` (the
+initial save), and `mj_fwd_actuation` only writes `act_dot` (never `act`),
+there is no need for additional per-stage save/restore of `data.act` — the
+pattern mirrors how `rk4_qpos_saved` is used for position.
+
+All RK4 activation buffers (`rk4_act_saved`, `rk4_act_dot`) are pre-allocated
+Data fields (Step 3) to avoid per-step heap allocation on the hot path.
 
 #### Acceptance Criteria
-1. `data.act` is updated every step for all muscle actuators using the first-order activation model.
-2. Muscle force follows the Hill model: zero at zero activation, monotonically increasing with activation, exhibiting force-length and force-velocity relationships.
-3. A muscle actuator at full activation with optimal fiber length produces `F_max * cos(pennation_angle)` force along the tendon.
-4. Activation dynamics exhibit correct asymmetry: activation faster than deactivation.
-5. Non-muscle actuators (`ActuatorDynamics::None/Filter/Integrator`) are unaffected.
+
+1. **Activation dynamics correctness:** For a muscle actuator with `ctrl = 1.0`
+   starting from `act = 0.0`, after 100 steps at `dt = 0.001` with default
+   `tau_act = 0.01`, activation reaches ≥ 0.95. With `ctrl = 0.0` starting from
+   `act = 1.0` with default `tau_deact = 0.04`, activation falls to ≤ 0.10 after
+   200 steps.
+
+2. **Activation asymmetry:** Time to reach 90% activation from 0 (with `ctrl = 1`)
+   is less than time to reach 10% activation from 1 (with `ctrl = 0`), matching
+   `tau_act < tau_deact`.
+
+3. **FL curve shape:** `muscle_gain_length(1.0, 0.5, 1.6) == 1.0` (peak at optimal).
+   `muscle_gain_length(0.5, 0.5, 1.6) == 0.0` (zero at lmin).
+   `muscle_gain_length(1.6, 0.5, 1.6) == 0.0` (zero at lmax).
+   `muscle_gain_length(0.3, 0.5, 1.6) == 0.0` (zero outside range).
+
+4. **FV curve shape:** `muscle_gain_velocity(0.0, 1.2) == 1.0` (isometric).
+   `muscle_gain_velocity(-1.0, 1.2) == 0.0` (max shortening, zero force).
+   `muscle_gain_velocity(0.2, 1.2) == 1.2` (eccentric plateau).
+
+5. **FP curve shape:** `muscle_passive_force(0.8, 1.6, 1.3) == 0.0` (no passive
+   below optimal). `muscle_passive_force(1.3, 1.6, 1.3) == 0.5 * 1.3 * 1.0`
+   (at midpoint b = 1.3, FP = fpmax * 0.5).
+
+6. **End-to-end muscle force:** A muscle with `force = 100.0`, `act = 1.0`,
+   at optimal length (`L = 1.0`) and isometric (`V = 0.0`) produces
+   `actuator_force = -100.0` (pulling). The corresponding `qfrc_actuator` DOFs
+   receive force via the tendon Jacobian transpose.
+
+7. **act_num fix:** Muscle actuators contribute exactly 1 entry to `data.act`.
+   `model.actuator_act_num[i] == 1` for all muscle actuators.
+
+8. **Non-muscle `DynType::None` actuators unchanged:** A Motor actuator
+   (`DynType::None`) with `ctrl = 0.5`, `gear = 2.0` still produces
+   `qfrc_actuator = 1.0` at the target DOF. Filter and Integrator actuators
+   now use `data.act` for force (not raw ctrl), and `act_dot` is correctly
+   computed and integrated.
+
+9. **Control clamping:** Setting `ctrl = 5.0` with `ctrlrange = (-1, 1)` and
+   `ctrllimited = true` produces the same result as `ctrl = 1.0`. An actuator
+   with `ctrllimited = false` passes ctrl through unclamped regardless of
+   ctrlrange value.
+
+10. **Force clamping:** A muscle producing `-500 N` with `forcerange = (-100, 0)`
+    and `forcelimited = true` is clamped to `-100 N`. An actuator with
+    `forcelimited = false` passes force through unclamped.
+
+11. **Existing tests pass:** All pipeline tests (tendon, collision, integration,
+    constraint, sensor) remain green.
+
+12. **MJCF round-trip:** A `<muscle>` element with explicit `timeconst`, `range`,
+    `force`, `lmin`, `lmax`, `vmax`, `fpmax`, `fvmax` attributes produces a Model
+    with matching `actuator_dynprm` and `actuator_gainprm` values.
+
+13. **`acc0` computation:** `acc0 = ||M^{-1} J||` where `J` is the gear-scaled
+    transmission moment. For a single-DOF hinge with inertia `I` and joint
+    transmission with `gear = g`: `acc0 = |g| / I`. For a tendon with coupling
+    coefficient `c` and `gear = g` on a hinge with inertia `I`:
+    `acc0 = |g * c| / I`. Verified against analytic values to ≤ 1e-10.
+
+14. **`F0` auto-computation:** A muscle with `force = -1` and `scale = 200` on a
+    joint with `acc0 = 0.5` produces `F0 = 200 / 0.5 = 400`. A muscle with
+    explicit `force = 500` ignores `acc0` and has `F0 = 500`.
+
+15. **RK4 activation integration:** A muscle with `ctrl = 1.0`, `act = 0.0`,
+    integrated for 1 step with RK4 at `dt = 0.001` produces the same `act` value
+    (to ≤ 1e-6) as a manually computed RK4 combination of 4 dact evaluations.
+    Activation is NOT advanced 4× (i.e., the RK4 save/restore logic is correct).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`mj_fwd_actuation()` or new `mj_fwd_activation()`, muscle force computation)
-- `sim/L0/muscle/src/` — reference for Hill model and activation dynamics
-- `sim/L0/mjcf/src/parser.rs` — modify (parse `<muscle>` element)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - New Model fields: `actuator_dynprm`, `actuator_gainprm`, `actuator_biasprm`,
+    `actuator_lengthrange`, `actuator_acc0`
+  - New Data fields: `actuator_length`, `actuator_velocity`, `actuator_force`, `act_dot`,
+    `rk4_act_saved`, `rk4_act_dot` (RK4 scratch buffers)
+  - New functions: `muscle_gain_length()`, `muscle_gain_velocity()`,
+    `muscle_passive_force()`, `muscle_activation_dynamics()`, `sigmoid()`,
+    `mj_actuator_length()`
+  - New method: `Model::compute_muscle_params()` (lengthrange + forward pass for `acc0` + F0)
+  - Refactored: `mj_fwd_actuation()` (computes `act_dot` + gain/bias force + clamping; no integration)
+  - Modified: `forward()` and `forward_skip_sensors()` (call `mj_actuator_length`)
+  - Modified: `Data::integrate()` (Euler: integrate `act += dt * act_dot`, clamp muscles)
+  - Modified: `mj_runge_kutta()` (integrate `data.act` with RK4 weights via `act_dot`)
+  - Modified: `Model::empty()` (initialize new fields)
+  - Modified: `Data::make_data()` (initialize new fields + RK4 scratch buffers)
+  - Modified: `Data::reset()` (clear `act_dot`, `actuator_length/velocity/force`)
+  - New test module: `muscle_tests` (~300 lines, covering AC #1–#15)
+- `sim/L0/mjcf/src/model_builder.rs` — modify:
+  - Fix `act_num` for Muscle: 2 → 1
+  - Add builder fields: `actuator_dynprm`, `actuator_gainprm`, `actuator_biasprm`,
+    `actuator_lengthrange`, `actuator_acc0`
+  - Transfer muscle parameters from `MjcfActuator` to Model arrays
+  - Call `model.compute_muscle_params()` after `compute_implicit_params()`
+- `sim/L0/core/Cargo.toml` — **no change** (no sim-muscle dependency added)
+- `sim/L0/mjcf/src/parser.rs` — **no change** (muscle parsing already complete)
+- `sim/docs/MUJOCO_REFERENCE.md` — update Stage 3 (actuation) to document
+  activation dynamics and muscle force generation
 
 ---
 
@@ -1913,14 +2841,14 @@ match model.integrator {
 within the RK4 loop computes `qacc = M^{-1} * f` in the standard way; the difference
 is that RK4 calls it 4 times at different states.
 
-##### Activation State (Deferred)
+##### Activation State ✅ (Resolved by FUTURE_WORK #5)
 
 MuJoCo's `mj_RungeKutta` includes actuator activation state (`act`, `act_dot`) in
-its state and rate vectors. Our `Data.act` exists (`mujoco_pipeline.rs:1255`) but
-`act_dot` does not — `mj_fwd_actuation()` (`mujoco_pipeline.rs:5997`) is a stateless
-`ctrl * gear` function with no activation dynamics. Activation integration is deferred
-until FUTURE_WORK #5 (Muscle Pipeline) introduces `act_dot`. A `TODO(FUTURE_WORK#5)`
-comment should mark the extension points in `mj_runge_kutta()`.
+its state and rate vectors. ~~Our `Data.act` exists but `act_dot` does not.~~
+**Resolved:** `act_dot` is now computed by `mj_fwd_actuation()` and integrated by
+both `integrate()` (Euler) and `mj_runge_kutta()` (RK4). RK4 carries `rk4_act_dot`
+and `rk4_act_saved` buffers for proper 4-stage activation integration with the same
+Butcher tableau weights as `qpos`/`qvel`.
 
 ##### Sensor Evaluation
 
@@ -2208,6 +3136,64 @@ made at implementation time:
 #### Files
 - `sim/L0/core/src/` — create `gpu.rs` module or new `sim-gpu` crate
 - `mesh-gpu/` — reference for wgpu context management
+
+---
+## Group B (cont.) — Actuation
+
+### 12. General Gain/Bias Actuator Force Model
+**Status:** Not started | **Effort:** M | **Prerequisites:** #5
+
+#### Current State
+
+`mj_fwd_actuation()` (after #5) computes force for non-muscle actuators as
+`force = input` — either raw `ctrl` (`DynType::None`) or filtered activation
+(`DynType::Filter`/`Integrator`). This is correct for Motor actuators but wrong
+for Position and Velocity servos.
+
+MuJoCo's full actuator pipeline uses `gain_type`/`bias_type` with parameter
+arrays `gainprm`/`biasprm` to compute:
+
+```
+actuator_force = gain(gainprm, input, length, velocity)
+               + bias(biasprm, input, length, velocity)
+```
+
+For Position servos: `gain = kp`, `bias = [0, -kp, 0]`, producing
+`force = kp * act - kp * length = kp * (act - length)` — a proportional
+controller. For Velocity servos: `force = kv * (act - velocity)`.
+
+After #5 lands, the `actuator_gainprm`/`actuator_biasprm` arrays already exist
+on Model (used for muscles), and `actuator_length`/`actuator_velocity` are
+computed in `mj_actuator_length()`. This task extends the non-muscle force path
+in Step 9's Phase 2 to use the general gain/bias formula.
+
+#### Objective
+
+Implement MuJoCo-compatible gain/bias force generation for all actuator types
+(Position, Velocity, Cylinder, General), replacing the `force = input` stub.
+
+#### Specification
+
+To be written when this task is picked up. Key design points:
+
+- Add `actuator_gaintype` and `actuator_biastype` fields to Model (enum: Fixed,
+  Affine, Muscle).
+- Populate `gainprm`/`biasprm` correctly for Position (`kp`), Velocity (`kv`),
+  and Cylinder actuators in the builder.
+- Replace the `_ => { input }` branch in `mj_fwd_actuation` Phase 2 with the
+  general formula.
+
+#### Acceptance Criteria
+1. Position servo with `kp = 100`, `ctrl = 1.0` at `length = 0.5` produces
+   `force = 100 * (act - 0.5)`.
+2. Velocity servo with `kv = 10`, `ctrl = 1.0` at `velocity = 0.2` produces
+   `force = 10 * (act - 0.2)`.
+3. Motor actuators (`DynType::None`) remain unchanged.
+4. Muscle force path unchanged.
+
+#### Files
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify `mj_fwd_actuation` Phase 2
+- `sim/L0/mjcf/src/model_builder.rs` — populate gain/bias types and parameters
 
 ---
 ## Cleanup Tasks
