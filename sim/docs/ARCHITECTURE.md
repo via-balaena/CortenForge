@@ -60,7 +60,9 @@ Key fields:
 - `jnt_type[i]` — `MjJointType` (Hinge, Slide, Ball, Free)
 - `jnt_stiffness[i]`/`jnt_damping[i]`/`jnt_springref[i]` — passive dynamics
 - `jnt_solref[i]`/`jnt_solimp[i]` — constraint solver parameters
-- `actuator_dyntype[i]` — `ActuatorDynamics` (None, Filter, Integrator, Muscle)
+- `actuator_dyntype[i]` — `ActuatorDynamics` (None, Filter, FilterExact, Integrator, Muscle)
+- `actuator_gaintype[i]` — `GainType` (Fixed, Affine, Muscle) — dispatches Phase 2 gain computation
+- `actuator_biastype[i]` — `BiasType` (None, Affine, Muscle) — dispatches Phase 2 bias computation
 - `actuator_dynprm[i]`/`actuator_gainprm[i]`/`actuator_biasprm[i]` — dynamics and force parameters
 - `timestep`, `gravity`, `integrator`, `solver_iterations`, `solver_tolerance`
 
@@ -302,11 +304,12 @@ contype/conaffinity contact bitmasks, default class inheritance, and MJB binary
 format. **Note:** `<contact>` `<pair>`/`<exclude>` elements are not parsed.
 `<tendon>` and `<sensor>` elements are parsed and wired into the pipeline
 (fixed tendons fully supported; spatial tendons scaffolded but deferred;
-all 27 sensor types functional). Muscle parameters (`timeconst`, `range`,
-`force`, `scale`, `lmin`, `lmax`, `vmax`, `fpmax`, `fvmax`) are parsed and
-transferred to Model fields (`actuator_dynprm`, `actuator_gainprm`,
-`actuator_biasprm`); `compute_muscle_params()` resolves `lengthrange`, `acc0`,
-and auto-computes `F0` at model build time.
+all 27 sensor types functional). The model builder expands all 8 actuator
+shortcut types to their general gain/bias/dynamics representation (matching
+MuJoCo's `user_api.cc`), populating `actuator_gaintype`, `actuator_biastype`,
+`actuator_gainprm`, `actuator_biasprm`, and `actuator_dynprm` per actuator.
+Muscle parameters are parsed and transferred; `compute_muscle_params()`
+resolves `lengthrange`, `acc0`, and auto-computes `F0` at model build time.
 
 ### sim-urdf
 

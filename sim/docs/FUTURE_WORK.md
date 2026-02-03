@@ -26,6 +26,7 @@ can be tackled in any order unless a prerequisite is noted.
 | 9 | Deformable Body Integration | Medium | Low | XL | None |
 | 10 | Batched Simulation | High | Low | L | None |
 | 11 | GPU Acceleration | High | Low | XL | #10 |
+| ~~12~~ | ~~General Gain/Bias Actuator Force Model~~ | ~~High~~ | ~~High~~ | ~~M~~ | ~~#5~~ ✅ |
 
 ## Dependency Graph
 
@@ -46,7 +47,12 @@ can be tackled in any order unless a prerequisite is noted.
      ▼
    ┌───┐
    │ 5 │ Muscle Pipeline
-   └───┘
+   └─┬─┘
+     │
+     ▼
+   ┌────┐
+   │ 12 │ General Gain/Bias Actuator Force Model
+   └────┘
 
    ┌───┐
    │ 6 │ Sensor Completion              (independent)
@@ -3140,74 +3146,22 @@ made at implementation time:
 ---
 ## Group B (cont.) — Actuation
 
-### 12. General Gain/Bias Actuator Force Model
-**Status:** Not started | **Effort:** M | **Prerequisites:** #5 ✅
+### 12. ~~General Gain/Bias Actuator Force Model~~ ✅ DONE
+**Status:** Complete | **Effort:** M | **Prerequisites:** #5 ✅
 
-#### Current State
+#### Pre-Implementation State (historical)
 
-`mj_fwd_actuation()` (`mujoco_pipeline.rs:6493`) computes force for non-muscle
-actuators as `force = input` (`mujoco_pipeline.rs:6546-6551`):
+> The description below documents the state **before** #12 was implemented.
+> It is preserved for reference to explain the motivation for the changes.
+> See the implementation (steps 1–7 above) for the current state.
 
-```rust
-_ => {
-    // Simple actuators: force = input (ctrl or filtered activation).
-    // MuJoCo's full gain/bias system is not implemented for non-muscle
-    // actuators in this spec. Tracked as future work.
-    input
-}
-```
-
-Phase 2 dispatches on `model.actuator_dyntype[i]` (`mujoco_pipeline.rs:6524`),
-using `ActuatorDynamics::Muscle` as the match arm for the muscle path and `_`
-for everything else. This is incorrect — MuJoCo dispatches Phase 2 on
-`gaintype`/`biastype`, not `dyntype`. The dynamics type controls Phase 1
-(activation), while gain/bias types control Phase 2 (force).
-
-**The `force = input` stub is wrong for Position, Velocity, Cylinder, and
-Damper actuators.** These are the most common actuator types in RL models
-(MuJoCo Menagerie humanoids, DM Control suite). Without gain/bias, any model
-using position or velocity servos produces incorrect torques.
-
-**What already exists (from #5):**
-
-| Component | Location | Status |
-|-----------|----------|--------|
-| `actuator_gainprm: Vec<[f64; 9]>` | Model, line 932 | Exists, populated for Muscle only |
-| `actuator_biasprm: Vec<[f64; 9]>` | Model, line 937 | Exists, populated = gainprm for Muscle, `[gear, 0, ...]` for others |
-| `actuator_dynprm: Vec<[f64; 3]>` | Model, line 926 | Exists, populated for Muscle; `[0.0; 3]` for others |
-| `actuator_length: Vec<f64>` | Data, line 1310 | Exists, populated by `mj_actuator_length()` |
-| `actuator_velocity: Vec<f64>` | Data, line 1315 | Exists, populated by `mj_actuator_length()` |
-| `actuator_force: Vec<f64>` | Data, line 1319 | Exists, written in Phase 3 |
-| `mj_actuator_length()` | `mujoco_pipeline.rs:6347` | Complete for Joint and Tendon transmissions |
-| `ActuatorDynamics` enum | `mujoco_pipeline.rs:426` | `None`, `Filter`, `Integrator`, `Muscle` |
-| `MjcfActuator.kp` / `.kv` | `types.rs:1802-1804` | Parsed from MJCF, **not transferred to Model** |
-| `MjcfActuator.area` / `.bias` / `.timeconst` | `types.rs:1810-1816` | Parsed, **not transferred to Model** |
-
-**No `GainType` or `BiasType` enum exists.** No `actuator_gaintype` or
-`actuator_biastype` field exists on Model.
-
-**Bugs in current builder (`model_builder.rs:1203-1217`):**
-
-1. **Dynamics type for Position/Velocity:** The builder sets
-   `Position | Velocity => ActuatorDynamics::Filter` unconditionally.
-   MuJoCo defaults both to `mjDYN_NONE` (no filter, `input = ctrl`). A
-   first-order filter is only activated when the MJCF `timeconst` attribute is
-   explicitly set to a nonzero value. The current code incorrectly always
-   allocates an activation state for position/velocity actuators.
-
-2. **`dynprm` for non-muscle actuators:** Set to `[0.0; 3]` for all non-muscle
-   types (`model_builder.rs:1266`). For Cylinder actuators, `dynprm[0]` should
-   be `timeconst` (defaults to `1.0`). For Position with explicit
-   `timeconst > 0`, `dynprm[0]` should be that value.
-
-3. **`gainprm`/`biasprm` for non-muscle actuators:** Set to `[gear, 0, ..., 0]`
-   for both (`model_builder.rs:1284-1292`). MuJoCo sets different values per
-   actuator type — `kp` for position, `kv` for velocity, `area` for cylinder,
-   and specific bias vectors for each (see Specification table below).
-
-4. **`kp`/`kv` parsed but discarded:** `MjcfActuator.kp` (default `1.0`) and
-   `.kv` (default `0.0`) are parsed (`parser.rs:1107-1111`) but never read by
-   the model builder.
+`mj_fwd_actuation()` previously computed force for non-muscle actuators as
+`force = input` — no gain/bias processing. Phase 2 dispatched on `dyntype`
+instead of `gaintype`/`biastype`. No `GainType` or `BiasType` enums existed.
+Position/Velocity actuators were unconditionally assigned `Filter` dynamics
+(should be `None` unless `timeconst > 0`). `gainprm`/`biasprm` were set to
+`[gear, 0, ..., 0]` for all non-muscle types (should be type-specific).
+`kp`/`kv` were parsed from MJCF but discarded by the model builder.
 
 #### Objective
 
