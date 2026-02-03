@@ -54,6 +54,7 @@ pub mod rk4_integration;
 // Existing Test Modules
 // ============================================================================
 
+pub mod mjcf_sensors;
 pub mod model_data_pipeline;
 pub mod musculoskeletal;
 pub mod passive_forces;

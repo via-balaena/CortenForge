@@ -1800,8 +1800,8 @@ pub struct MjcfActuator {
     pub forcelimited: bool,
     /// Position gain (for position actuators).
     pub kp: f64,
-    /// Velocity gain (for position/velocity actuators).
-    pub kv: f64,
+    /// Velocity gain. `None` means use actuator-type default.
+    pub kv: Option<f64>,
 
     // ========================================================================
     // Cylinder-specific attributes
@@ -1810,8 +1810,8 @@ pub struct MjcfActuator {
     pub area: f64,
     /// Cylinder diameter (m). Alternative to area; takes precedence if set.
     pub diameter: Option<f64>,
-    /// Activation dynamics time constant (s) for cylinder.
-    pub timeconst: f64,
+    /// Activation dynamics time constant (s). `None` means use actuator-type default.
+    pub timeconst: Option<f64>,
     /// Bias parameters [prm0, prm1, prm2] for cylinder.
     pub bias: [f64; 3],
 
@@ -1860,11 +1860,11 @@ impl Default for MjcfActuator {
             ctrllimited: false,
             forcelimited: false,
             kp: 1.0,
-            kv: 0.0,
+            kv: None,
             // Cylinder defaults (MuJoCo defaults)
             area: 1.0,
             diameter: None,
-            timeconst: 1.0,
+            timeconst: None,
             bias: [0.0, 0.0, 0.0],
             // Muscle defaults (MuJoCo defaults)
             muscle_timeconst: (0.01, 0.04),
@@ -1913,7 +1913,7 @@ impl MjcfActuator {
             name: name.into(),
             actuator_type: MjcfActuatorType::Velocity,
             joint: Some(joint.into()),
-            kv,
+            kv: Some(kv),
             ..Default::default()
         }
     }
@@ -1926,6 +1926,19 @@ impl MjcfActuator {
             actuator_type: MjcfActuatorType::Cylinder,
             joint: Some(joint.into()),
             area,
+            timeconst: Some(1.0),
+            ..Default::default()
+        }
+    }
+
+    /// Create a damper actuator for a joint.
+    #[must_use]
+    pub fn damper(name: impl Into<String>, joint: impl Into<String>, kv: f64) -> Self {
+        Self {
+            name: name.into(),
+            actuator_type: MjcfActuatorType::Damper,
+            joint: Some(joint.into()),
+            kv: Some(kv),
             ..Default::default()
         }
     }
@@ -2176,6 +2189,22 @@ pub enum MjcfSensorType {
     Accelerometer,
     /// Gyroscope.
     Gyro,
+    /// Velocimeter (linear velocity, 3D).
+    Velocimeter,
+    /// Magnetometer (magnetic field, 3D).
+    Magnetometer,
+    /// Rangefinder (distance to nearest surface, 1D).
+    Rangefinder,
+    /// Subtree center of mass (3D).
+    Subtreecom,
+    /// Subtree linear velocity/momentum (3D).
+    Subtreelinvel,
+    /// Subtree angular momentum (3D).
+    Subtreeangmom,
+    /// Frame linear acceleration (3D).
+    Framelinacc,
+    /// Frame angular acceleration (3D).
+    Frameangacc,
 
     // User-defined sensors
     /// User-defined sensor.
@@ -2209,6 +2238,14 @@ impl MjcfSensorType {
             "torque" => Some(Self::Torque),
             "accelerometer" => Some(Self::Accelerometer),
             "gyro" => Some(Self::Gyro),
+            "velocimeter" => Some(Self::Velocimeter),
+            "magnetometer" => Some(Self::Magnetometer),
+            "rangefinder" => Some(Self::Rangefinder),
+            "subtreecom" => Some(Self::Subtreecom),
+            "subtreelinvel" => Some(Self::Subtreelinvel),
+            "subtreeangmom" => Some(Self::Subtreeangmom),
+            "framelinacc" => Some(Self::Framelinacc),
+            "frameangacc" => Some(Self::Frameangacc),
             "user" => Some(Self::User),
             _ => None,
         }
@@ -2241,6 +2278,14 @@ impl MjcfSensorType {
             Self::Torque => "torque",
             Self::Accelerometer => "accelerometer",
             Self::Gyro => "gyro",
+            Self::Velocimeter => "velocimeter",
+            Self::Magnetometer => "magnetometer",
+            Self::Rangefinder => "rangefinder",
+            Self::Subtreecom => "subtreecom",
+            Self::Subtreelinvel => "subtreelinvel",
+            Self::Subtreeangmom => "subtreeangmom",
+            Self::Framelinacc => "framelinacc",
+            Self::Frameangacc => "frameangacc",
             Self::User => "user",
         }
     }
@@ -2259,7 +2304,8 @@ impl MjcfSensorType {
             | Self::Actuatorfrc
             | Self::Jointlimitfrc
             | Self::Tendonlimitfrc
-            | Self::Touch => 1,
+            | Self::Touch
+            | Self::Rangefinder => 1,
 
             Self::Framepos
             | Self::Framexaxis
@@ -2267,11 +2313,18 @@ impl MjcfSensorType {
             | Self::Framezaxis
             | Self::Framelinvel
             | Self::Frameangvel
+            | Self::Framelinacc
+            | Self::Frameangacc
             | Self::Ballangvel
             | Self::Force
             | Self::Torque
             | Self::Accelerometer
-            | Self::Gyro => 3,
+            | Self::Gyro
+            | Self::Velocimeter
+            | Self::Magnetometer
+            | Self::Subtreecom
+            | Self::Subtreelinvel
+            | Self::Subtreeangmom => 3,
 
             Self::Ballquat | Self::Framequat => 4,
 

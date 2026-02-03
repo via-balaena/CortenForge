@@ -20,12 +20,13 @@ can be tackled in any order unless a prerequisite is noted.
 | 3 | CG Contact Solver | Medium | Low | L | None (#1, #2 help perf) |
 | 4 | Tendon Pipeline | Low | High | L | None |
 | 5 | Muscle Pipeline | Low | High | L | #4 ✅ |
-| 6 | Sensor Completion | High | High | S | #4 for tendon sensors |
+| ~~6~~ | ~~Sensor Completion~~ | ~~High~~ | ~~High~~ | ~~S~~ | ~~#4 for tendon sensors~~ ✅ |
 | 7 | Integrator Rename | Low | Medium | S | None |
 | 8 | True RK4 Integration | Low | Medium | M | None |
 | 9 | Deformable Body Integration | Medium | Low | XL | None |
 | 10 | Batched Simulation | High | Low | L | None |
 | 11 | GPU Acceleration | High | Low | XL | #10 |
+| ~~12~~ | ~~General Gain/Bias Actuator Force Model~~ | ~~High~~ | ~~High~~ | ~~M~~ | ~~#5~~ ✅ |
 
 ## Dependency Graph
 
@@ -46,7 +47,12 @@ can be tackled in any order unless a prerequisite is noted.
      ▼
    ┌───┐
    │ 5 │ Muscle Pipeline
-   └───┘
+   └─┬─┘
+     │
+     ▼
+   ┌────┐
+   │ 12 │ General Gain/Bias Actuator Force Model
+   └────┘
 
    ┌───┐
    │ 6 │ Sensor Completion              (independent)
@@ -2466,57 +2472,841 @@ Data fields (Step 3) to avoid per-step heap allocation on the hot path.
 ---
 
 ### 6. Sensor Completion
-**Status:** ✅ Done | **Effort:** S | **Prerequisites:** #4 ✅ for tendon sensors
+**Status:** ✅ Done | **Effort:** M | **Prerequisites:** #4 ✅, #5 ✅
 
-#### Current State
-A correctness sub-spec (`sim/docs/SENSOR_FIXES_SPEC.md`) was implemented, addressing
-rangefinder ray direction (+Z parity with MuJoCo), BallQuat/BallAngVel sensor types,
-JointPos/JointVel restriction to hinge/slide, accelerometer comment/test hardening,
-and bounds-checked `sensor_write` helpers across all evaluation functions.
+#### Implementation Summary
 
-Separately, Force, Torque, Touch, Rangefinder, Magnetometer, and SubtreeAngMom were
-brought from stubs to full implementations. The tendon-dependent sensors were implemented alongside #4:
+All 8 steps have been implemented. MJCF `<sensor>` elements are now fully wired
+into the pipeline via `model_builder.rs`. The MJCF parser recognizes all 32
+`MjcfSensorType` variants (30 map to pipeline types, 2 unsupported are skipped
+with a warning). `set_options()` propagates `magnetic`, `wind`, `density`, and
+`viscosity` from `MjcfOption`. Magnetometer is evaluated in the correct
+(Position) stage. ActuatorVel reads from the pre-computed
+`data.actuator_velocity` field. Dead code (unreachable Touch arm in
+`mj_sensor_pos()`) has been removed. 8 integration tests in
+`sim/L0/tests/integration/mjcf_sensors.rs` verify the full MJCF→pipeline
+round-trip.
 
-| Sensor | Status | Detail |
-|--------|--------|--------|
-| Force | Done | Inverse dynamics via `compute_site_force_torque()` |
-| Torque | Done | Inverse dynamics via `compute_site_force_torque()` |
-| Touch | Done | Sums normal force from `efc_lambda` for matching contacts |
-| Rangefinder | Done | Ray-cast along +Z with mesh support, -1.0 no-hit sentinel |
-| Magnetometer | Done | `model.magnetic` transformed to sensor frame |
-| SubtreeAngMom | Done | `compute_subtree_angmom()` about subtree COM |
-| BallQuat | Done | Normalized quaternion from qpos, identity fallback |
-| BallAngVel | Done | 3-DOF angular velocity from qvel |
-| JointPos | Done | Hinge/slide only (Ball/Free no longer written) |
-| JointVel | Done | Hinge/slide only (Ball/Free no longer written) |
-| TendonPos | Done | Reads `ten_length[objid]` (implemented with #4) |
-| TendonVel | Done | Reads `ten_velocity[objid]` (implemented with #4) |
-| ActuatorPos | Done | Joint and Tendon transmissions; Site stub remains |
-| ActuatorVel | Done | Joint and Tendon transmissions; Site stub remains |
+**Remaining scope exclusions** (documented below in the specification):
+- **JointLimitFrc / TendonLimitFrc** — requires constraint force decomposition
+- **Site transmission** — blocked on spatial site infrastructure (6 stubs remain)
+- **Frame sensor `objtype` attribute** — resolved by name priority (site→body→geom)
+- **User sensor `dim` attribute** — parser does not capture; User gets 0 slots
+- **Sensor `<default>` class resolution** — `DefaultResolver` not called (cross-cutting)
+- **Multi-geom Touch bodies** — resolves to first geom only
+- **Sensor `reftype`/`refid`** — fields exist but not wired
 
-All sensor writes use bounds-checked helpers (`sensor_write`, `sensor_write3`,
-`sensor_write4`). Postprocessing handles positive-type sensors (Touch, Rangefinder)
-with `.min(cutoff)` to preserve the -1.0 no-hit sentinel.
+#### Pre-Implementation State (historical)
 
-#### Remaining Work
-~~The 4 remaining items are trivial once tendon pipeline (#4) lands:~~ Done with #4.
+**Sensor evaluation functions** (all in `mujoco_pipeline.rs`) were fully implemented
+for all 30 `MjSensorType` variants across four pipeline stages:
 
-1. ~~**TendonPos:** Replace `0.0` stub with `ten_length[objid]`.~~ Done.
-2. ~~**TendonVel:** Replace `0.0` stub with `ten_velocity[objid]`.~~ Done.
-3. ~~**ActuatorPos (Tendon/Site):** Read tendon length × gear for tendon transmissions.~~ Done (tendon; Site stub remains).
-4. ~~**ActuatorVel (Tendon/Site):** Read tendon velocity × gear for tendon transmissions.~~ Done (tendon; Site stub remains).
+| Stage | Function | Sensors |
+|-------|----------|---------|
+| Position | `mj_sensor_pos()` | JointPos, BallQuat, TendonPos, ActuatorPos, FramePos, FrameQuat, FrameXAxis, FrameYAxis, FrameZAxis, SubtreeCom, Rangefinder, Magnetometer |
+| Velocity | `mj_sensor_vel()` | JointVel, BallAngVel, TendonVel, ActuatorVel, Gyro, Velocimeter, FrameLinVel, FrameAngVel, SubtreeLinVel, SubtreeAngMom |
+| Acceleration | `mj_sensor_acc()` | Accelerometer, Force, Torque, Touch, ActuatorFrc, FrameLinAcc, FrameAngAcc |
+| Postprocess | `mj_sensor_postprocess()` | Cutoff clamping (positive-type for Touch/Rangefinder, symmetric for others) |
+
+Each stage filters by `model.sensor_datatype[sensor_id]` with a `continue` at
+the top of the loop. A sensor with the wrong datatype is silently skipped and
+produces zeros.
+
+**Gaps that were resolved:**
+
+| Gap | Severity | Resolution |
+|-----|----------|------------|
+| **A. MJCF → pipeline sensor wiring** | HIGH | `process_sensors()` and `resolve_sensor_object()` in `model_builder.rs` populate all 13 sensor arrays from parsed `MjcfSensor` objects. `actuator_name_to_id` map added for actuator sensor resolution. |
+| **B. MJCF parser missing 8 sensor types** | MEDIUM | 8 variants added to `MjcfSensorType`: Velocimeter, Magnetometer, Rangefinder, Subtreecom, Subtreelinvel, Subtreeangmom, Framelinacc, Frameangacc. Total: 32 variants. |
+| **C. Pipeline missing 2 sensor types** | LOW | Deferred — JointLimitFrc/TendonLimitFrc skipped with `warn!`. |
+| **D. ActuatorVel duplicate computation** | LOW | Simplified to read `data.actuator_velocity[act_id]`. |
+| **E. Site transmission stubs** | LOW | Out of scope — 6 stubs remain. |
+| **F. Magnetometer evaluation stage** | LOW | Moved from `mj_sensor_acc()` to `mj_sensor_pos()`. Datatype changed to `Position`. |
+| **G. Dead Touch arm in mj_sensor_pos()** | LOW | Removed. |
+| **H. `set_options()` missing physics fields** | MEDIUM | `magnetic`, `wind`, `density`, `viscosity` now copied from `MjcfOption`. |
+
+#### Objective
+
+Wire MJCF-parsed sensors into the pipeline model builder so that `<sensor>`
+elements in MJCF files produce working sensors. Fix the MJCF parser to recognize
+all sensor types that the pipeline supports. Fix `set_options()` to propagate
+physics environment fields needed by sensors. Simplify the ActuatorVel sensor to
+read from its pre-computed field. Move magnetometer to the correct evaluation
+stage. Clean up dead code.
+
+#### Specification
+
+##### Step 1: Add Missing Sensor Types to MJCF Parser (Gap B)
+
+Add 8 variants to `MjcfSensorType` in `sim/L0/mjcf/src/types.rs` (after `Gyro`,
+line 2191):
+
+```rust
+/// Velocimeter (linear velocity, 3D).
+Velocimeter,
+/// Magnetometer (magnetic field, 3D).
+Magnetometer,
+/// Rangefinder (distance to nearest surface, 1D).
+Rangefinder,
+/// Subtree center of mass (3D).
+Subtreecom,
+/// Subtree linear velocity/momentum (3D).
+Subtreelinvel,
+/// Subtree angular momentum (3D).
+Subtreeangmom,
+/// Frame linear acceleration (3D).
+Framelinacc,
+/// Frame angular acceleration (3D).
+Frameangacc,
+```
+
+Update `MjcfSensorType::from_str()` (line 2200) with 8 new arms:
+`"velocimeter"`, `"magnetometer"`, `"rangefinder"`, `"subtreecom"`,
+`"subtreelinvel"`, `"subtreeangmom"`, `"framelinacc"`, `"frameangacc"`.
+
+Update `MjcfSensorType::as_str()` (line 2232) with the corresponding reverse
+mappings.
+
+Update `MjcfSensorType::dim()` (line 2264) to include the new variants:
+- Dim 1: `Rangefinder` (distance scalar)
+- Dim 3: `Velocimeter`, `Magnetometer`, `Subtreecom`, `Subtreelinvel`,
+  `Subtreeangmom`, `Framelinacc`, `Frameangacc`
+
+Without this update, the match in `dim()` would be non-exhaustive and the
+crate would fail to compile.
+
+##### Step 2: Wire `set_options()` Physics Environment Fields (Gap H)
+
+**Rationale:** This must precede Step 5 (magnetometer move) because without it,
+`model.magnetic` is zero for all MJCF-loaded models, making the magnetometer
+integration test (Step 8) unable to verify nonzero output. It also fixes a
+pre-existing bug where `wind`, `density`, and `viscosity` are silently dropped.
+
+In `set_options()` (`model_builder.rs`, line 506), add after the existing field
+copies (after the integrator conversion, ~line 524):
+
+```rust
+self.magnetic = option.magnetic;
+self.wind = option.wind;
+self.density = option.density;
+self.viscosity = option.viscosity;
+```
+
+These 4 fields already exist on both `ModelBuilder` (lines 450-453) and
+`MjcfOption` (lines 302-311 of `types.rs`). The builder initializes them to
+zero; `MjcfOption` defaults are: `magnetic = (0, -0.5, 0)`, `wind = (0, 0, 0)`,
+`density = 0.0`, `viscosity = 0.0`.
+
+After this change, models loaded from MJCF will inherit MuJoCo's default
+magnetic field `(0, -0.5, 0)` unless overridden by `<option magnetic="..."/>`.
+
+##### Step 3: MJCF → Pipeline Sensor Wiring (Gap A)
+
+This is the critical missing piece. Add `process_sensors()` to the model builder
+(`model_builder.rs`). It converts parsed `MjcfSensor` objects into the 13
+pipeline sensor arrays.
+
+**Prerequisite: Add imports to `model_builder.rs`.** The following types are not
+currently imported and must be added:
+
+From `sim_core` (add to the existing `use sim_core::{...}` block at line 16):
+- `MjSensorType`
+- `MjSensorDataType`
+- `MjObjectType`
+
+From `crate::types` (add to the existing `use crate::types::{...}` block at
+line 26):
+- `MjcfSensor`
+- `MjcfSensorType`
+
+Note: `tracing::warn` is already imported (line 23). No additional dependency
+changes needed — `tracing` is already in `sim-mjcf`'s `Cargo.toml` (line 18).
+
+**3a. Add `actuator_name_to_id` map to `ModelBuilder`.**
+
+Add alongside the existing name maps (lines 317-323):
+
+```rust
+actuator_name_to_id: HashMap<String, usize>,
+```
+
+Initialize to empty in `ModelBuilder::new()`.
+
+Populate it in `process_actuator()` (after line 1157 where `act_id` is computed).
+`MjcfActuator.name` is a non-optional `String` (line 1778 of `types.rs`):
+
+```rust
+if !actuator.name.is_empty() {
+    self.actuator_name_to_id.insert(actuator.name.clone(), act_id);
+}
+```
+
+**3b. Add builder fields for sensor accumulation.**
+
+The builder needs temporary storage that mirrors the Model's sensor arrays.
+Add to `ModelBuilder` (matching the existing pattern where builder fields
+accumulate data before being moved into the final Model struct):
+
+```rust
+// Sensor accumulation fields
+sensor_type: Vec<MjSensorType>,
+sensor_datatype: Vec<MjSensorDataType>,
+sensor_objtype: Vec<MjObjectType>,
+sensor_objid: Vec<usize>,
+sensor_reftype: Vec<MjObjectType>,
+sensor_refid: Vec<usize>,
+sensor_adr: Vec<usize>,
+sensor_dim: Vec<usize>,
+sensor_noise: Vec<f64>,
+sensor_cutoff: Vec<f64>,
+sensor_name: Vec<Option<String>>,
+nsensor: usize,
+nsensordata: usize,
+```
+
+Initialize all to empty/zero in `ModelBuilder::new()`.
+
+**3c. Type mapping function** (`MjcfSensorType` → `MjSensorType`):
+
+```rust
+fn convert_sensor_type(mjcf: MjcfSensorType) -> Option<MjSensorType> {
+    match mjcf {
+        MjcfSensorType::Jointpos => Some(MjSensorType::JointPos),
+        MjcfSensorType::Jointvel => Some(MjSensorType::JointVel),
+        MjcfSensorType::Ballquat => Some(MjSensorType::BallQuat),
+        MjcfSensorType::Ballangvel => Some(MjSensorType::BallAngVel),
+        MjcfSensorType::Tendonpos => Some(MjSensorType::TendonPos),
+        MjcfSensorType::Tendonvel => Some(MjSensorType::TendonVel),
+        MjcfSensorType::Actuatorpos => Some(MjSensorType::ActuatorPos),
+        MjcfSensorType::Actuatorvel => Some(MjSensorType::ActuatorVel),
+        MjcfSensorType::Actuatorfrc => Some(MjSensorType::ActuatorFrc),
+        MjcfSensorType::Framepos => Some(MjSensorType::FramePos),
+        MjcfSensorType::Framequat => Some(MjSensorType::FrameQuat),
+        MjcfSensorType::Framexaxis => Some(MjSensorType::FrameXAxis),
+        MjcfSensorType::Frameyaxis => Some(MjSensorType::FrameYAxis),
+        MjcfSensorType::Framezaxis => Some(MjSensorType::FrameZAxis),
+        MjcfSensorType::Framelinvel => Some(MjSensorType::FrameLinVel),
+        MjcfSensorType::Frameangvel => Some(MjSensorType::FrameAngVel),
+        MjcfSensorType::Framelinacc => Some(MjSensorType::FrameLinAcc),
+        MjcfSensorType::Frameangacc => Some(MjSensorType::FrameAngAcc),
+        MjcfSensorType::Touch => Some(MjSensorType::Touch),
+        MjcfSensorType::Force => Some(MjSensorType::Force),
+        MjcfSensorType::Torque => Some(MjSensorType::Torque),
+        MjcfSensorType::Accelerometer => Some(MjSensorType::Accelerometer),
+        MjcfSensorType::Gyro => Some(MjSensorType::Gyro),
+        MjcfSensorType::Velocimeter => Some(MjSensorType::Velocimeter),
+        MjcfSensorType::Magnetometer => Some(MjSensorType::Magnetometer),
+        MjcfSensorType::Rangefinder => Some(MjSensorType::Rangefinder),
+        MjcfSensorType::Subtreecom => Some(MjSensorType::SubtreeCom),
+        MjcfSensorType::Subtreelinvel => Some(MjSensorType::SubtreeLinVel),
+        MjcfSensorType::Subtreeangmom => Some(MjSensorType::SubtreeAngMom),
+        MjcfSensorType::User => Some(MjSensorType::User),
+        // Not yet implemented in pipeline — skip with warning
+        MjcfSensorType::Jointlimitfrc | MjcfSensorType::Tendonlimitfrc => None,
+    }
+}
+```
+
+**3d. Datatype assignment** (determines which evaluation stage processes the
+sensor). This is critical — a sensor with the wrong datatype is silently skipped.
+Verified against existing test code (`add_sensor()` calls, lines 11146-12305).
+
+**Implementation ordering constraint:** This function assigns
+`MjSensorDataType::Position` for Magnetometer, which is only correct after
+Step 5 moves the Magnetometer match arm from `mj_sensor_acc()` to
+`mj_sensor_pos()`. If Step 3 is implemented before Step 5, MJCF-loaded
+magnetometer sensors will be silently skipped (datatype `Position` but
+evaluation code still in `mj_sensor_acc()`). The recommended implementation
+order (Steps 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8) ensures Step 5 runs before
+the integration tests in Step 8 validate magnetometer output. However, if
+steps are implemented out of order, temporarily assigning
+`MjSensorDataType::Acceleration` for Magnetometer and updating it in Step 5
+is an acceptable interim approach.
+
+```rust
+fn sensor_datatype(t: MjSensorType) -> MjSensorDataType {
+    match t {
+        // Position stage (evaluated in mj_sensor_pos, after FK)
+        MjSensorType::JointPos | MjSensorType::BallQuat
+        | MjSensorType::TendonPos | MjSensorType::ActuatorPos
+        | MjSensorType::FramePos | MjSensorType::FrameQuat
+        | MjSensorType::FrameXAxis | MjSensorType::FrameYAxis
+        | MjSensorType::FrameZAxis | MjSensorType::SubtreeCom
+        | MjSensorType::Rangefinder
+        | MjSensorType::Magnetometer  // moved from acc → pos (Step 5)
+        => MjSensorDataType::Position,
+
+        // Velocity stage (evaluated in mj_sensor_vel, after velocity FK)
+        MjSensorType::JointVel | MjSensorType::BallAngVel
+        | MjSensorType::TendonVel | MjSensorType::ActuatorVel
+        | MjSensorType::Gyro | MjSensorType::Velocimeter
+        | MjSensorType::FrameLinVel | MjSensorType::FrameAngVel
+        | MjSensorType::SubtreeLinVel | MjSensorType::SubtreeAngMom
+        => MjSensorDataType::Velocity,
+
+        // Acceleration stage (evaluated in mj_sensor_acc, after constraint solver)
+        MjSensorType::Accelerometer | MjSensorType::Force
+        | MjSensorType::Torque | MjSensorType::Touch
+        | MjSensorType::ActuatorFrc
+        | MjSensorType::FrameLinAcc | MjSensorType::FrameAngAcc
+        => MjSensorDataType::Acceleration,
+
+        // User sensors default to acceleration (evaluated last)
+        MjSensorType::User => MjSensorDataType::Acceleration,
+    }
+}
+```
+
+**Key difference from MuJoCo:** Touch is `Acceleration` in our pipeline (needs
+`efc_lambda` from constraint solver), whereas MuJoCo evaluates it in the
+position stage because MuJoCo's sensor pipeline runs once after all dynamics
+stages complete. Our per-stage filter design requires Touch to be tagged
+`Acceleration` so it sees solved contact forces. This is correct.
+
+**3e. Object type and ID resolution.**
+
+Each sensor type expects a specific `MjObjectType`. The MJCF `objname` string
+is resolved to a numeric index via the builder's name→id maps:
+
+```rust
+/// Returns (MjObjectType, objid) for a given sensor type and MJCF objname.
+fn resolve_sensor_object(
+    &self,
+    sensor_type: MjSensorType,
+    objname: &Option<String>,
+) -> Result<(MjObjectType, usize), ModelConversionError> {
+    // User sensors have no object reference — handle before unwrapping objname
+    if sensor_type == MjSensorType::User {
+        return Ok((MjObjectType::None, 0));
+    }
+
+    let name = objname.as_ref().ok_or_else(|| {
+        ModelConversionError { message: "sensor missing object name".into() }
+    })?;
+
+    match sensor_type {
+        // === Joint sensors: objname is a joint name ===
+        MjSensorType::JointPos | MjSensorType::JointVel
+        | MjSensorType::BallQuat | MjSensorType::BallAngVel => {
+            let id = *self.joint_name_to_id.get(name).ok_or_else(|| {
+                ModelConversionError { message:
+                    format!("sensor references unknown joint '{name}'") }
+            })?;
+            Ok((MjObjectType::Joint, id))
+        }
+
+        // === Tendon sensors: objname is a tendon name ===
+        MjSensorType::TendonPos | MjSensorType::TendonVel => {
+            let id = *self.tendon_name_to_id.get(name).ok_or_else(|| {
+                ModelConversionError { message:
+                    format!("sensor references unknown tendon '{name}'") }
+            })?;
+            Ok((MjObjectType::Tendon, id))
+        }
+
+        // === Actuator sensors: objname is an actuator name ===
+        MjSensorType::ActuatorPos | MjSensorType::ActuatorVel
+        | MjSensorType::ActuatorFrc => {
+            let id = *self.actuator_name_to_id.get(name).ok_or_else(|| {
+                ModelConversionError { message:
+                    format!("sensor references unknown actuator '{name}'") }
+            })?;
+            Ok((MjObjectType::Actuator, id))
+        }
+
+        // === Site-attached sensors: objname is a site name ===
+        // Accelerometer, Velocimeter, Gyro, Force, Torque, Magnetometer,
+        // Rangefinder all attach to sites.
+        MjSensorType::Accelerometer | MjSensorType::Velocimeter
+        | MjSensorType::Gyro | MjSensorType::Force | MjSensorType::Torque
+        | MjSensorType::Magnetometer | MjSensorType::Rangefinder => {
+            let id = *self.site_name_to_id.get(name).ok_or_else(|| {
+                ModelConversionError { message:
+                    format!("sensor references unknown site '{name}'") }
+            })?;
+            Ok((MjObjectType::Site, id))
+        }
+
+        // === Touch sensor: MJCF uses site=, but pipeline expects geom ID ===
+        // MuJoCo's <touch> takes a site name. MuJoCo resolves this to the
+        // site's parent body and sums contact forces for all geoms on that
+        // body.
+        //
+        // Our pipeline's Touch evaluation code (mj_sensor_acc, line 5751)
+        // compares contact.geom1/geom2 against objid, treating it as a geom
+        // index. This is a pre-existing simplification that only matches
+        // contacts for a single geom rather than all geoms on a body.
+        //
+        // Resolution: site name → site_id → body_id → first geom on body.
+        // This is correct for the common case (one geom per body). Multi-geom
+        // bodies would need the evaluation code to iterate all geoms on the
+        // body — deferred (see Scope Exclusion 6).
+        //
+        // If no geom is found on the body, store objtype=Geom with
+        // id=usize::MAX as a sentinel (sensor will produce 0.0 since no
+        // contact will match). This avoids a hard error for bodyless sites.
+        //
+        // Builder needs site_body: Vec<usize> and geom_body: Vec<usize> to
+        // be populated before process_sensors() runs. These are already
+        // populated during process_body() (worldbody geoms/sites and
+        // recursive body processing).
+        MjSensorType::Touch => {
+            let site_id = *self.site_name_to_id.get(name).ok_or_else(|| {
+                ModelConversionError { message:
+                    format!("touch sensor references unknown site '{name}'") }
+            })?;
+            let body_id = *self.site_body.get(site_id).ok_or_else(|| {
+                ModelConversionError { message:
+                    format!("touch sensor: site_id {site_id} out of range for site_body") }
+            })?;
+            // Find first geom belonging to this body
+            let geom_id = self.geom_body.iter().position(|&b| b == body_id)
+                .unwrap_or(usize::MAX);
+            Ok((MjObjectType::Geom, geom_id))
+        }
+
+        // === Frame sensors: objname resolved by MJCF attribute context ===
+        // In MJCF, frame sensors use different attributes to specify their
+        // target: objtype="site" + site="name", or objtype="body" + body="name",
+        // etc. The parser stores the resolved objname from whichever attribute
+        // was present (site, body, or objname) — see parse_sensor_attrs()
+        // (parser.rs line 1851) which tries joint, site, body, tendon,
+        // actuator, objname in order.
+        //
+        // Since the parser does not pass through WHICH attribute was used,
+        // we resolve by trying name maps in order: site → body → geom.
+        // This handles the common case (<framepos site="s1"/>) correctly.
+        //
+        // LIMITATION: If a site and body share the same name, the site wins.
+        // Full objtype attribute parsing is deferred (see Scope Exclusion 4).
+        MjSensorType::FramePos | MjSensorType::FrameQuat
+        | MjSensorType::FrameXAxis | MjSensorType::FrameYAxis
+        | MjSensorType::FrameZAxis | MjSensorType::FrameLinVel
+        | MjSensorType::FrameAngVel | MjSensorType::FrameLinAcc
+        | MjSensorType::FrameAngAcc => {
+            if let Some(&id) = self.site_name_to_id.get(name) {
+                Ok((MjObjectType::Site, id))
+            } else if let Some(&id) = self.body_name_to_id.get(name) {
+                Ok((MjObjectType::Body, id))
+            } else if let Some(&id) = self.geom_name_to_id.get(name) {
+                Ok((MjObjectType::Geom, id))
+            } else {
+                Err(ModelConversionError { message:
+                    format!("frame sensor references unknown object '{name}'") })
+            }
+        }
+
+        // === Subtree sensors: objname is a body name ===
+        MjSensorType::SubtreeCom | MjSensorType::SubtreeLinVel
+        | MjSensorType::SubtreeAngMom => {
+            let id = *self.body_name_to_id.get(name).ok_or_else(|| {
+                ModelConversionError { message:
+                    format!("sensor references unknown body '{name}'") }
+            })?;
+            Ok((MjObjectType::Body, id))
+        }
+
+        // User is handled above (early return before objname unwrap)
+        MjSensorType::User => unreachable!(),
+    }
+}
+```
+
+**3f. `process_sensors()` main loop.**
+
+The `process_sensors()` function uses the pipeline-side `MjSensorType::dim()`
+(not `MjcfSensorType::dim()`) to compute sensor dimensions for address
+allocation. This is important for User sensors: `MjSensorType::User.dim()`
+returns 0 (variable, must be set explicitly via a `dim` attribute that we
+don't yet parse), while `MjcfSensorType::User.dim()` returns 1. Using the
+pipeline-side dim ensures User sensors get 0 slots — consistent with the
+pipeline's expectation that User sensor dimension is explicitly specified.
+See Scope Exclusion 7 for the follow-up to parse the `dim` attribute.
+
+```rust
+fn process_sensors(
+    &mut self,
+    sensors: &[MjcfSensor],
+) -> Result<(), ModelConversionError> {
+    let mut adr = 0usize;
+
+    for mjcf_sensor in sensors {
+        let Some(sensor_type) = convert_sensor_type(mjcf_sensor.sensor_type) else {
+            // Unsupported type (Jointlimitfrc, Tendonlimitfrc) — skip with log
+            warn!(
+                "Skipping unsupported sensor type '{:?}' (sensor '{}')",
+                mjcf_sensor.sensor_type,
+                mjcf_sensor.name,
+            );
+            continue;
+        };
+        let dim = sensor_type.dim();
+        let datatype = sensor_datatype(sensor_type);
+        let (objtype, objid) = self.resolve_sensor_object(
+            sensor_type, &mjcf_sensor.objname
+        )?;
+
+        self.sensor_type.push(sensor_type);
+        self.sensor_datatype.push(datatype);
+        self.sensor_objtype.push(objtype);
+        self.sensor_objid.push(objid);
+        self.sensor_reftype.push(MjObjectType::None);
+        self.sensor_refid.push(0);
+        self.sensor_adr.push(adr);
+        self.sensor_dim.push(dim);
+        self.sensor_noise.push(mjcf_sensor.noise);
+        self.sensor_cutoff.push(mjcf_sensor.cutoff);
+        self.sensor_name.push(if mjcf_sensor.name.is_empty() {
+            None
+        } else {
+            Some(mjcf_sensor.name.clone())
+        });
+
+        adr += dim;
+    }
+
+    self.nsensor = self.sensor_type.len();
+    self.nsensordata = adr;
+    Ok(())
+}
+```
+
+**3g. Call site in `model_from_mjcf()`.**
+
+Insert after equality constraints (line 134) and before `builder.build()` (line 137):
+
+```rust
+// 7.5. Process sensors (after tendons, actuators, equality constraints)
+builder.process_sensors(&mjcf.sensors)?;
+```
+
+**3h. Transfer builder fields to Model in `build()`.**
+
+In the `build()` method, replace the empty sensor initialization (lines 1733-1746)
+with the accumulated builder fields:
+
+```rust
+nsensor: self.nsensor,
+nsensordata: self.nsensordata,
+sensor_type: self.sensor_type,
+sensor_datatype: self.sensor_datatype,
+sensor_objtype: self.sensor_objtype,
+sensor_objid: self.sensor_objid,
+sensor_reftype: self.sensor_reftype,
+sensor_refid: self.sensor_refid,
+sensor_adr: self.sensor_adr,
+sensor_dim: self.sensor_dim,
+sensor_noise: self.sensor_noise,
+sensor_cutoff: self.sensor_cutoff,
+sensor_name: self.sensor_name,
+```
+
+`make_data()` already allocates `sensordata: DVector::zeros(self.nsensordata)`
+(line 1900), so no change needed there — it will now allocate the correct size
+based on the populated `nsensordata`.
+
+##### Step 4: Simplify ActuatorVel Sensor (Gap D)
+
+**Pipeline ordering constraint:** In `forward()`, the call order is:
+
+```
+mj_sensor_pos()       ← position sensors (ActuatorPos evaluated here)
+mj_actuator_length()  ← populates data.actuator_length / data.actuator_velocity
+mj_sensor_vel()       ← velocity sensors (ActuatorVel evaluated here)
+```
+
+Because `mj_actuator_length()` runs AFTER `mj_sensor_pos()`, **ActuatorPos
+cannot read `data.actuator_length`** — it would be zero. ActuatorPos must
+continue computing inline (current behavior is correct). However, ActuatorVel
+runs in the velocity stage, which is after `mj_actuator_length()`, so it CAN
+read from the pre-computed field.
+
+In `mj_sensor_vel()`, replace the ActuatorVel match arm (~lines 5600-5630):
+
+```rust
+MjSensorType::ActuatorVel => {
+    let act_id = model.sensor_objid[sensor_id];
+    if act_id < model.nu {
+        sensor_write(&mut data.sensordata, adr, 0, data.actuator_velocity[act_id]);
+    }
+}
+```
+
+**ActuatorPos is left unchanged** — it continues to compute inline per
+transmission type. This is functionally correct and necessary due to pipeline
+ordering. The Site transmission stub in the ActuatorPos arm (line 5409) remains
+and will continue to produce 0.0 until Site transmission is implemented.
+
+##### Step 5: Move Magnetometer to Position Stage (Gap F)
+
+**Dependency:** Step 2 must be applied first so that `model.magnetic` is nonzero
+for MJCF-loaded models. Without Step 2, the magnetometer code move is correct
+but integration tests cannot verify nonzero output.
+
+Move the `MjSensorType::Magnetometer` match arm from `mj_sensor_acc()` to
+`mj_sensor_pos()`. The magnetometer only depends on `model.magnetic` (constant)
+and `site_xmat` (computed during FK in `mj_fwd_position()`). MuJoCo evaluates
+it in `mj_sensorPos`.
+
+In `mj_sensor_pos()`, add after the Rangefinder arm. The code must be moved
+verbatim from `mj_sensor_acc()` — it already dispatches on `sensor_objtype`
+to support both Site and Body objects with an identity-matrix fallback:
+
+```rust
+MjSensorType::Magnetometer => {
+    // Magnetometer: measures the global magnetic field in the sensor's
+    // local frame. B_sensor = R^T * B_world
+    let site_mat = match model.sensor_objtype[sensor_id] {
+        MjObjectType::Site if objid < model.nsite => data.site_xmat[objid],
+        MjObjectType::Body if objid < model.nbody => data.xmat[objid],
+        _ => Matrix3::identity(),
+    };
+    let b_sensor = site_mat.transpose() * model.magnetic;
+    sensor_write3(&mut data.sensordata, adr, &b_sensor);
+}
+```
+
+Remove the Magnetometer arm from `mj_sensor_acc()`.
+
+**Important:** This is a verbatim move — do not simplify the code. The existing
+implementation correctly handles both Site and Body object types and has an
+identity-matrix fallback for unrecognized types.
+
+The datatype mapping in Step 3d already assigns `MjSensorDataType::Position`
+for Magnetometer. Two existing tests construct Models programmatically with
+`MjSensorDataType::Acceleration` for Magnetometer and must be updated to use
+`MjSensorDataType::Position`:
+- `test_magnetometer_identity_frame` (line 11200 of `mujoco_pipeline.rs`)
+- `test_magnetometer_zero_field` (line 11230 of `mujoco_pipeline.rs`)
+
+##### Step 6: Remove Dead Touch Arm from mj_sensor_pos() (Gap G)
+
+Remove the unreachable `MjSensorType::Touch` match arm at line 5277 of
+`mj_sensor_pos()`. Touch has datatype `Acceleration`, so the `continue` filter
+at line 5164 skips it. The 0.0 write never executes. Removing it eliminates
+confusion about Touch's evaluation stage.
+
+##### Step 7: Verify `forward()` Pipeline Order
+
+No changes needed to `forward()` or `forward_skip_sensors()`. Confirm that the
+existing call order supports the sensor changes:
+
+```
+forward():
+  mj_fwd_position()    ← FK: body/geom/site poses, tendon kinematics
+  mj_collision()       ← contact detection
+  mj_sensor_pos()      ← position sensors (+ magnetometer after Step 5)
+  mj_energy_pos()
+  mj_fwd_velocity()    ← velocity kinematics
+  mj_actuator_length() ← actuator_length/velocity (read by ActuatorVel in Step 4)
+  mj_sensor_vel()      ← velocity sensors
+  mj_fwd_actuation()   ← actuator forces
+  mj_crba()            ← mass matrix
+  mj_rne()             ← bias forces
+  mj_energy_vel()
+  mj_fwd_passive()     ← spring/damper forces
+  mj_fwd_constraint()  ← contact solver → efc_lambda
+  mj_fwd_acceleration()← final qacc
+  mj_sensor_acc()      ← acceleration sensors (Touch reads efc_lambda here)
+  mj_sensor_postprocess()
+```
+
+Key ordering constraints verified:
+- `mj_actuator_length()` runs AFTER `mj_sensor_pos()` but BEFORE `mj_sensor_vel()`
+  → ActuatorPos must compute inline (cannot read `data.actuator_length`).
+  → ActuatorVel can safely read `data.actuator_velocity` (Step 4).
+- `mj_fwd_constraint()` runs before `mj_sensor_acc()` → Touch reads solved
+  `efc_lambda`.
+- `site_xmat` available before `mj_sensor_pos()` → Magnetometer reads site
+  rotation matrix.
+
+Note: `forward_skip_sensors()` (line 2632) is a private method used internally
+by the RK4 integrator (line 10268). It skips all 4 sensor stages. No changes
+needed.
+
+##### Step 8: Integration Test (`mjcf_sensors.rs`)
+
+Create `sim/L0/tests/integration/mjcf_sensors.rs` and register it in
+`sim/L0/tests/integration/mod.rs` as `pub mod mjcf_sensors;`.
+
+Note: `sensors.rs` already exists in `sim/L0/tests/integration/` for the
+standalone `sim-sensor` crate tests. This new file tests the MuJoCo pipeline's
+MJCF→sensor wiring specifically.
+
+The test should exercise the full MJCF→pipeline round-trip for at least
+one sensor from each category (position, velocity, acceleration). Minimal
+example for `jointpos`:
+
+```rust
+use sim_core::MjSensorType;
+use sim_mjcf::load_model;
+
+#[test]
+fn test_jointpos_sensor_roundtrip() {
+    let mjcf = r#"
+        <mujoco model="sensor_test">
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="hinge1" type="hinge" axis="0 1 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <sensor>
+                <jointpos joint="hinge1"/>
+            </sensor>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    assert_eq!(model.nsensor, 1);
+    assert_eq!(model.nsensordata, 1);
+    assert_eq!(model.sensor_type[0], MjSensorType::JointPos);
+
+    let mut data = model.make_data();
+    data.qpos[model.jnt_qpos_adr[0]] = 0.5; // set joint angle
+    data.forward(&model).expect("forward");
+    assert!((data.sensordata[0] - 0.5).abs() < 1e-12);
+}
+```
+
+Additional tests to include (each as a separate `#[test]` function):
+- `test_framepos_sensor_site` — `<framepos site="s1"/>`, verify 3D position matches `data.site_xpos[id]`
+- `test_magnetometer_sensor_roundtrip` — verify nonzero output using MuJoCo's
+  default magnetic field `(0, -0.5, 0)` (requires Step 2 for `set_options()`
+  fix). Use an identity-rotation site and verify `sensordata` matches the
+  global field rotated into the site frame.
+- `test_tendonpos_sensor` — requires `<tendon>` + `<spatial>`, verify `sensordata` matches `data.ten_length[id]`
+- `test_actuatorpos_sensor` — requires `<actuator>` + `<general>`, verify inline computation works
+- `test_unsupported_sensor_skipped` — `<jointlimitfrc joint="j1"/>` produces `nsensor == 0` with warning
+- `test_missing_reference_error` — `<jointpos joint="nonexistent"/>` returns `Err`
+
+#### Scope Exclusions
+
+The following are explicitly **out of scope** for this item:
+
+1. **Site transmission** (Gap E) — Implementing `ActuatorTransmission::Site`
+   requires computing site-to-site distance and its time derivative. This is
+   blocked on spatial site infrastructure and is better addressed as part of
+   spatial tendon support. The 6 stub locations will continue to produce 0.0.
+   After Step 4, ActuatorVel sensors will correctly report 0.0 for
+   Site-transmission actuators (matching `mj_actuator_length()`'s stub output).
+   ActuatorPos retains its inline computation with its own Site stub (line 5409).
+
+2. **JointLimitFrc / TendonLimitFrc** (Gap C) — Requires decomposing
+   `qfrc_constraint` by constraint type. The constraint solver currently
+   aggregates all constraint forces. Deferred.
+
+3. **Sensor noise** — The pipeline has `model.sensor_noise` but intentionally
+   does not apply it (deterministic physics for RL). This is documented and
+   intentional (comment at line 5896), not a gap.
+
+4. **Frame sensor `objtype` attribute parsing** — MuJoCo frame sensors support
+   an `objtype=` attribute in MJCF (`"site"`, `"body"`, `"geom"`) to specify
+   the target object type. Our parser does not read this attribute; Step 3e
+   resolves frame sensor objname by trying site → body → geom in order. This
+   is correct for the common case (`<framepos site="s1"/>`) but does not handle
+   `<framepos body="b1"/>` if a site with the same name also exists. Full
+   `objtype` parsing is a follow-up.
+
+5. **Frame sensor `reftype`/`refid`** — MuJoCo frame sensors can measure
+   quantities relative to a reference frame (another site/body). The
+   `sensor_reftype`/`sensor_refid` fields exist but are not wired. This is a
+   follow-up enhancement.
+
+6. **Multi-geom Touch bodies** — The Touch sensor wiring (Step 3e) resolves
+   to the first geom on the site's parent body. If a body has multiple geoms,
+   only the first geom's contacts are summed. Full multi-geom support requires
+   changing the evaluation code in `mj_sensor_acc()` to iterate all geoms on
+   the body, which is a separate fix.
+
+7. **User sensor `dim` attribute** — MuJoCo's `<user>` sensor element accepts
+   a `dim=` attribute to specify the output dimension. The MJCF parser does
+   not capture this field (`MjcfSensor` has no `dim` field).
+   `MjSensorType::User.dim()` (pipeline-side, `mujoco_pipeline.rs` line 630)
+   returns 0, meaning User sensors get no sensordata slots allocated. Note:
+   `MjcfSensorType::User.dim()` (parser-side, `types.rs` line 2292) returns 1,
+   but `process_sensors()` uses the pipeline-side dim (via
+   `sensor_type.dim()`), so this mismatch does not cause incorrect allocation.
+   Parsing the `dim` attribute and propagating it through `process_sensors()`
+   is a follow-up.
+
+8. **Sensor `<default>` class resolution** — `DefaultResolver.apply_to_sensor()`
+   exists and can apply noise/cutoff/user defaults from `<default>` classes,
+   but it is not called during model building (`model_from_mjcf()` does not
+   invoke the `DefaultResolver` for any element type). `process_sensors()`
+   reads `mjcf_sensor.noise` and `mjcf_sensor.cutoff` directly from the
+   parsed values (0.0 if not specified in MJCF). This matches the existing
+   pattern for all other element types. Wiring `DefaultResolver` into the
+   model building pipeline is a cross-cutting concern, not sensor-specific.
 
 #### Acceptance Criteria
-1. ~~Force and Torque sensors return non-zero values when constraint forces are active.~~ Done.
-2. ~~Touch sensor returns actual contact force magnitude (not `depth * 10000`).~~ Done.
-3. ~~Rangefinder returns correct distance for a known geom placement (within 1e-6).~~ Done.
-4. ~~Magnetometer returns the global magnetic field rotated into the site frame.~~ Done.
-5. ~~TendonPos/TendonVel return `ten_length`/`ten_velocity` when tendon pipeline (#4) is active.~~ Done.
-6. ~~ActuatorPos/ActuatorVel return correct values for all transmission types.~~ Done (tendon; Site stub remains).
+
+1. **Physics environment fields wired:** `set_options()` copies `magnetic`,
+   `wind`, `density`, and `viscosity` from `MjcfOption` to the builder. Models
+   loaded from MJCF inherit MuJoCo's default magnetic field `(0, -0.5, 0)`.
+2. **MJCF round-trip:** An MJCF file with `<sensor><jointpos joint="hinge1"/></sensor>`
+   produces a `Model` with `nsensor == 1`, `sensor_type[0] == JointPos`,
+   `sensor_objid[0]` pointing to the correct joint index, and `sensordata`
+   allocated to the correct size (1 element).
+3. **All 30 sensor types parseable:** Every `MjcfSensorType` variant (32 total
+   after Step 1, minus 2 unsupported) maps to a pipeline `MjSensorType` and
+   produces correct output after `forward()`.
+4. **Datatype correctness:** Each wired sensor has the correct `MjSensorDataType`
+   so it is evaluated in the right pipeline stage. Specifically: Touch is
+   `Acceleration` (not Position), Magnetometer is `Position` (not Acceleration).
+5. **Object type correctness:** `sensor_objtype` uses `MjObjectType` variants
+   that match what the evaluation code dispatches on. Specifically: Touch is
+   `MjObjectType::Geom` (not Site), Frame sensors are Site/Body/Geom based on
+   resolution, Subtree sensors are `Body`.
+6. **ActuatorVel reads from pre-computed field:** `ActuatorVel` returns
+   `data.actuator_velocity[act_id]` rather than recomputing per-transmission.
+   `ActuatorPos` continues to compute inline (pipeline ordering constraint:
+   `mj_actuator_length()` runs after `mj_sensor_pos()`).
+7. **Magnetometer in position stage:** Magnetometer output is available after
+   `mj_sensor_pos()` completes. Existing magnetometer tests updated to use
+   `MjSensorDataType::Position`.
+8. **Dead code removed:** The unreachable Touch arm in `mj_sensor_pos()` is
+   deleted.
+9. **Existing tests pass:** All current sensor tests (constructed with hand-
+   populated `Model` sensor arrays) continue to pass. The only required
+   change is updating magnetometer tests to use `MjSensorDataType::Position`
+   (Step 5); behavioral results are identical.
+10. **New integration test** (`sim/L0/tests/integration/mjcf_sensors.rs`, Step 8):
+    Uses `sim_mjcf::load_model()` to parse MJCF strings with sensors, calls
+    `data.forward(&model)`, verifies `data.sensordata` contains expected values.
+    Covers at minimum: `jointpos`, `framepos` (site target), `magnetometer`
+    (nonzero output via default magnetic field), `tendonpos`, `actuatorpos`,
+    unsupported type skipping, missing reference error.
+11. **Unsupported types produce warning:** `Jointlimitfrc` and `Tendonlimitfrc`
+    sensors in MJCF are skipped with a `warn!` log (already imported at
+    `model_builder.rs` line 23), not silently ignored.
+12. **Error on missing references:** A sensor referencing a nonexistent joint/
+    site/body/tendon/actuator produces `ModelConversionError`, not a silent
+    default.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modified (4 stub sites in `mj_sensor_pos()` and `mj_sensor_vel()` replaced with live reads)
-- `sim/docs/SENSOR_FIXES_SPEC.md` — reference for completed correctness fixes
+
+- `sim/L0/mjcf/src/types.rs` — modify: add 8 `MjcfSensorType` variants, update `from_str`/`as_str`/`dim()`
+- `sim/L0/mjcf/src/model_builder.rs` — modify:
+  - Add 4 lines to `set_options()` for `magnetic`, `wind`, `density`, `viscosity`
+  - Add `actuator_name_to_id` HashMap to `ModelBuilder`
+  - Add sensor accumulation fields to `ModelBuilder`
+  - Add imports: `MjSensorType`, `MjSensorDataType`, `MjObjectType` from `sim_core`;
+    `MjcfSensor`, `MjcfSensorType` from `crate::types`
+  - Add `process_sensors()`, `convert_sensor_type()`, `sensor_datatype()`, `resolve_sensor_object()`
+  - Update `build()` to transfer sensor fields to Model
+  - Update `model_from_mjcf()` call order to include sensor processing
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - Simplify `ActuatorVel` match arm in `mj_sensor_vel()` to read from `data.actuator_velocity` (ActuatorPos stays inline due to pipeline ordering)
+  - Move `Magnetometer` from `mj_sensor_acc()` to `mj_sensor_pos()`
+  - Remove dead `Touch` arm from `mj_sensor_pos()`
+  - Update magnetometer test(s) to use `MjSensorDataType::Position`
+- `sim/L0/tests/integration/mjcf_sensors.rs` — new: MJCF sensor wiring integration test
+  (Note: `sensors.rs` already exists in `sim/L0/tests/integration/` for standalone
+  `sim-sensor` crate tests; this file tests the MuJoCo pipeline's MJCF→sensor
+  wiring. Must be registered in `sim/L0/tests/integration/mod.rs` as
+  `pub mod mjcf_sensors;`)
+- `sim/docs/SENSOR_FIXES_SPEC.md` — reference for completed correctness fixes (no changes)
 
 ---
 ## Group C — Integrator & Dynamics
@@ -3140,60 +3930,838 @@ made at implementation time:
 ---
 ## Group B (cont.) — Actuation
 
-### 12. General Gain/Bias Actuator Force Model
-**Status:** Not started | **Effort:** M | **Prerequisites:** #5
+### 12. ~~General Gain/Bias Actuator Force Model~~ ✅ DONE
+**Status:** Complete | **Effort:** M | **Prerequisites:** #5 ✅
 
-#### Current State
+#### Pre-Implementation State (historical)
 
-`mj_fwd_actuation()` (after #5) computes force for non-muscle actuators as
-`force = input` — either raw `ctrl` (`DynType::None`) or filtered activation
-(`DynType::Filter`/`Integrator`). This is correct for Motor actuators but wrong
-for Position and Velocity servos.
+> The description below documents the state **before** #12 was implemented.
+> It is preserved for reference to explain the motivation for the changes.
+> See the implementation (steps 1–7 above) for the current state.
 
-MuJoCo's full actuator pipeline uses `gain_type`/`bias_type` with parameter
-arrays `gainprm`/`biasprm` to compute:
-
-```
-actuator_force = gain(gainprm, input, length, velocity)
-               + bias(biasprm, input, length, velocity)
-```
-
-For Position servos: `gain = kp`, `bias = [0, -kp, 0]`, producing
-`force = kp * act - kp * length = kp * (act - length)` — a proportional
-controller. For Velocity servos: `force = kv * (act - velocity)`.
-
-After #5 lands, the `actuator_gainprm`/`actuator_biasprm` arrays already exist
-on Model (used for muscles), and `actuator_length`/`actuator_velocity` are
-computed in `mj_actuator_length()`. This task extends the non-muscle force path
-in Step 9's Phase 2 to use the general gain/bias formula.
+`mj_fwd_actuation()` previously computed force for non-muscle actuators as
+`force = input` — no gain/bias processing. Phase 2 dispatched on `dyntype`
+instead of `gaintype`/`biastype`. No `GainType` or `BiasType` enums existed.
+Position/Velocity actuators were unconditionally assigned `Filter` dynamics
+(should be `None` unless `timeconst > 0`). `gainprm`/`biasprm` were set to
+`[gear, 0, ..., 0]` for all non-muscle types (should be type-specific).
+`kp`/`kv` were parsed from MJCF but discarded by the model builder.
 
 #### Objective
 
-Implement MuJoCo-compatible gain/bias force generation for all actuator types
-(Position, Velocity, Cylinder, General), replacing the `force = input` stub.
+Implement MuJoCo-compatible gain/bias force generation for all non-muscle
+actuator types, replacing the `force = input` stub with the general formula:
+
+```
+force = gain * input + bias
+```
+
+where `gain` and `bias` are computed from `gaintype`/`biastype` and their
+respective parameter arrays, and `input` is either `ctrl` (when
+`dyntype = None`) or the current activation value `act` (for
+Filter/FilterExact/Integrator).
+
+#### MuJoCo Reference: Shortcut Expansion Table
+
+Each MJCF shortcut actuator type expands to a `general` actuator with specific
+gain/bias/dynamics settings. These expansions are authoritative — verified
+against MuJoCo source (`src/user/user_api.cc`):
+
+| Shortcut | `gaintype` | `gainprm[0..3]` | `biastype` | `biasprm[0..3]` | `dyntype` | `dynprm[0]` |
+|----------|-----------|-----------------|-----------|-----------------|----------|------------|
+| **Motor** | Fixed | `[1, 0, 0]` | None | `[0, 0, 0]` | None | — |
+| **Position** | Fixed | `[kp, 0, 0]` | Affine | `[0, -kp, -kv]` | None (default) | — |
+| **Position** (timeconst>0) | Fixed | `[kp, 0, 0]` | Affine | `[0, -kp, -kv]` | FilterExact | timeconst |
+| **Velocity** | Fixed | `[kv, 0, 0]` | Affine | `[0, 0, -kv]` | None | — |
+| **Damper** | Affine | `[0, 0, -kv]` | None | `[0, 0, 0]` | None | — |
+| **Cylinder** | Fixed | `[area, 0, 0]` | Affine | `[bias0, bias1, bias2]` | Filter | timeconst |
+| **Muscle** | Muscle | (FLV params) | Muscle | (FLV params) | Muscle | (tau_act, tau_deact) |
+| **Adhesion** | Fixed | `[gain, 0, 0]` | None | `[0, 0, 0]` | None | — |
+
+For Position: `kv` comes from either explicit `kv` attribute or is `0.0` by
+default. The `dampratio` attribute (alternative to `kv`) is **deferred** — see
+Scope Decision below. When both `kp` and `kv` are specified:
+`force = kp * input + (0 - kp * length - kv * velocity) = kp * (input - length) - kv * velocity`.
+
+For Damper: `gain = 0 + 0*length + (-kv)*velocity = -kv * velocity`, so
+`force = (-kv * velocity) * ctrl`. Since `ctrl ∈ [0, ctrlrange_max]` (damper
+requires `ctrllimited=true`, non-negative range), this produces a
+velocity-opposing force scaled by control input.
+
+#### Scope Decision: `dampratio` Deferred
+
+MuJoCo position actuators support `dampratio` as an alternative to `kv`:
+`kv = dampratio * 2 * sqrt(kp * inertia)`. This requires computing effective
+inertia from `acc0` at model compile time. The `dampratio` attribute is not
+parsed today, and `acc0` is only computed for muscle actuators (in
+`compute_muscle_params()`).
+
+**This PR does not implement `dampratio`.** Rationale:
+- `dampratio` is not commonly specified in RL models (most use explicit `kv` or
+  `kv = 0` for pure position servos).
+- `acc0` computation for non-muscle actuators requires extending
+  `compute_muscle_params()` into a general `compute_actuator_params()` function,
+  which is orthogonal to the gain/bias force path.
+- The gain/bias formula itself is complete without `dampratio` — it only
+  affects how `biasprm[2]` is resolved in the builder. Adding `dampratio`
+  support later is a builder-only change with no pipeline modifications.
+
+When `dampratio` is added, the builder will:
+1. Parse `dampratio` from MJCF (mutually exclusive with `kv`).
+2. Compute reflected inertia for all actuators (extending
+   `compute_muscle_params()` into a general `compute_actuator_params()`).
+   MuJoCo computes this from `dof_M0` and the actuator transmission, not from
+   `1/acc0` — the two are equivalent for simple transmissions but differ for
+   compound transmissions.
+3. Resolve `kv = dampratio * 2 * sqrt(kp * inertia)` (where `inertia` is the
+   reflected inertia from step 2). Reference: MuJoCo `engine_setconst.c`.
+4. Store `-kv` in `biasprm[2]`.
+
+#### Scope Decision: `general` Actuator MJCF Parsing Deferred
+
+MuJoCo's `<general>` actuator element accepts explicit `gaintype`, `biastype`,
+`dyntype`, `gainprm`, `biasprm`, `dynprm` attributes. The parser currently
+handles `<general>` by routing it through `MjcfActuatorType::General` with
+the same attribute set as other shortcuts.
+
+**This PR does not add `gaintype`/`biastype`/`dyntype` MJCF attribute parsing
+for `<general>`.** Rationale:
+- No RL models in common use (MuJoCo Menagerie, DM Control, Gymnasium) use
+  `<general>` with explicit gain/bias types. They all use the shortcut types.
+- The gain/bias *runtime* is fully general — any combination of Fixed/Affine/None
+  works. Only the *builder wiring* from MJCF attributes is missing.
+- Adding MJCF parsing for `gaintype`/`biastype` is a parser+builder change
+  with no pipeline modifications. It can land independently.
+
+For now, `<general>` actuators are treated as Motor-like (gaintype=Fixed,
+gainprm=[1,0,0], biastype=None).
 
 #### Specification
 
-To be written when this task is picked up. Key design points:
+**Implementation ordering note:** Steps are numbered by logical grouping, not
+strict code order. In the builder function, the `timeconst` and `kv` resolution
+from Step 6 must execute *before* the dyntype match (Step 3) and the gain/bias
+match (Step 4), since both depend on the resolved values. Concretely, place the
+`let timeconst = ...` and `let kv = ...` lines at the top of the actuator
+processing loop, before the `let dyntype = match ...` block.
 
-- Add `actuator_gaintype` and `actuator_biastype` fields to Model (enum: Fixed,
-  Affine, Muscle).
-- Populate `gainprm`/`biasprm` correctly for Position (`kp`), Velocity (`kv`),
-  and Cylinder actuators in the builder.
-- Replace the `_ => { input }` branch in `mj_fwd_actuation` Phase 2 with the
-  general formula.
+##### Step 1: Add `FilterExact` Variant, `GainType` and `BiasType` Enums
+
+Add `FilterExact` to the existing `ActuatorDynamics` enum
+(`mujoco_pipeline.rs:426`):
+
+```rust
+pub enum ActuatorDynamics {
+    /// No dynamics — input = ctrl (direct passthrough).
+    #[default]
+    None,
+    /// First-order filter (Euler): act_dot = (ctrl - act) / tau.
+    Filter,
+    /// First-order filter (exact): act_dot = (ctrl - act) / tau,
+    /// integrated as act += act_dot * tau * (1 - exp(-h/tau)).
+    /// MuJoCo reference: `mjDYN_FILTEREXACT`.
+    FilterExact,
+    /// Integrator: act_dot = ctrl.
+    Integrator,
+    /// Muscle activation dynamics.
+    Muscle,
+}
+```
+
+The `FilterExact` variant computes `act_dot` identically to `Filter` in Phase 1.
+The difference is only at integration time — `FilterExact` uses the closed-form
+solution `act += act_dot * tau * (1 - exp(-h/tau))` instead of Euler
+`act += h * act_dot`. This is MuJoCo's `mjDYN_FILTEREXACT`, used by Position
+actuators with `timeconst > 0`.
+
+Then add `GainType` and `BiasType` enums directly after `ActuatorDynamics`:
+
+```rust
+/// Actuator gain type — controls how `gain` is computed in Phase 2.
+///
+/// MuJoCo reference: `mjtGain` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum GainType {
+    /// gain = gainprm[0] (constant).
+    #[default]
+    Fixed,
+    /// gain = gainprm[0] + gainprm[1]*length + gainprm[2]*velocity.
+    Affine,
+    /// Muscle FLV gain (handled separately in the Muscle path).
+    Muscle,
+}
+
+/// Actuator bias type — controls how `bias` is computed in Phase 2.
+///
+/// MuJoCo reference: `mjtBias` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum BiasType {
+    /// bias = 0.
+    #[default]
+    None,
+    /// bias = biasprm[0] + biasprm[1]*length + biasprm[2]*velocity.
+    Affine,
+    /// Muscle passive force (handled separately in the Muscle path).
+    Muscle,
+}
+```
+
+##### Step 2: Add `actuator_gaintype` and `actuator_biastype` to Model
+
+Add to the Model struct, after `actuator_act_num` (line 921) and before
+`actuator_dynprm` (line 926):
+
+```rust
+/// Gain type per actuator — dispatches force gain computation.
+pub actuator_gaintype: Vec<GainType>,
+/// Bias type per actuator — dispatches force bias computation.
+pub actuator_biastype: Vec<BiasType>,
+```
+
+Initialize to empty vecs in `Model::empty()` (alongside other actuator
+Vec inits).
+
+##### Step 3: Fix Dynamics Type Assignment in Model Builder
+
+Replace the dynamics type match in `model_builder.rs` (lines 1209-1217):
+
+```rust
+// Current (WRONG):
+let dyntype = match actuator.actuator_type {
+    MjcfActuatorType::Motor
+    | MjcfActuatorType::General
+    | MjcfActuatorType::Damper
+    | MjcfActuatorType::Adhesion => ActuatorDynamics::None,
+    MjcfActuatorType::Position | MjcfActuatorType::Velocity => ActuatorDynamics::Filter,
+    MjcfActuatorType::Muscle => ActuatorDynamics::Muscle,
+    MjcfActuatorType::Cylinder => ActuatorDynamics::Integrator,
+};
+```
+
+With:
+
+```rust
+// MuJoCo semantics: dyntype is determined by the shortcut type AND timeconst.
+// Position defaults to None; if timeconst > 0, uses FilterExact (exact discrete filter).
+// Cylinder always uses Filter (Euler-approximated; timeconst defaults to 1.0).
+// Motor/General/Damper/Adhesion/Velocity: no dynamics.
+// Muscle: muscle activation dynamics.
+let dyntype = match actuator.actuator_type {
+    MjcfActuatorType::Motor
+    | MjcfActuatorType::General
+    | MjcfActuatorType::Damper
+    | MjcfActuatorType::Adhesion
+    | MjcfActuatorType::Velocity => ActuatorDynamics::None,
+    MjcfActuatorType::Position => {
+        // timeconst already resolved from Option<f64> (default 0.0 for position)
+        if timeconst > 0.0 {
+            ActuatorDynamics::FilterExact // MuJoCo: mjDYN_FILTEREXACT
+        } else {
+            ActuatorDynamics::None
+        }
+    }
+    MjcfActuatorType::Muscle => ActuatorDynamics::Muscle,
+    MjcfActuatorType::Cylinder => ActuatorDynamics::Filter, // was Integrator — MuJoCo uses Filter
+};
+```
+
+**Update `act_num` match** (`model_builder.rs:1248-1251`): The `FilterExact`
+variant needs `act_num = 1` (it has an activation state, same as `Filter`).
+Update the existing match:
+
+```rust
+let act_num = match dyntype {
+    ActuatorDynamics::None => 0,
+    ActuatorDynamics::Filter
+    | ActuatorDynamics::FilterExact
+    | ActuatorDynamics::Integrator
+    | ActuatorDynamics::Muscle => 1,
+};
+```
+
+**Update Phase 1 `input` match** (`mujoco_pipeline.rs:6500-6521`): This is an
+exhaustive match over `ActuatorDynamics` that will fail to compile without a
+`FilterExact` arm. See Step 5a for the arm to add.
+
+**Behavioral changes:**
+
+- Position and Velocity actuators with default `timeconst=0` will now have
+  `dyntype=None`, `act_num=0` (no activation state), and `input = ctrl`
+  (direct passthrough). Previously they had `dyntype=Filter`, `act_num=1`,
+  and `input = act` (first-order filtered). This is the correct MuJoCo
+  behavior — unfiltered position/velocity servos respond instantly. This
+  changes `Model.na` (total activation states), which affects `Data.act`
+  and `Data.act_dot` dimensions. Existing tests that construct
+  Position/Velocity actuators without explicit `timeconst > 0` will see
+  `na` decrease. This is correct — the old behavior was a bug.
+
+- Cylinder actuators change from `ActuatorDynamics::Integrator` to
+  `ActuatorDynamics::Filter`. MuJoCo uses `mjDYN_FILTER` for cylinders —
+  the pressure is filtered (first-order lag from `ctrl`), not integrated.
+  The old `Integrator` assignment was incorrect: a pure integrator would
+  integrate `ctrl` as `act_dot = ctrl`, making `act` grow unboundedly,
+  while a filter converges to `ctrl` with time constant `dynprm[0]`.
+
+- Velocity actuators are unconditionally `dyntype=None`. The `timeconst`
+  attribute is silently ignored for Velocity — if someone writes
+  `<velocity joint="j1" timeconst="0.1"/>`, the parser stores it in
+  `MjcfActuator.timeconst` but the builder never reads it for Velocity.
+  This matches MuJoCo: `mjs_setToVelocity` does not accept a `timeconst`
+  parameter and always sets `dyntype = mjDYN_NONE`.
+
+**Note on `MjcfActuator.timeconst` default:** The `Default` impl for
+`MjcfActuator` sets `timeconst: 1.0` (`types.rs:1867`). This default is
+for Cylinder actuators (MuJoCo's cylinder default is `timeconst=1.0`). For
+Position actuators, MuJoCo's default is `timeconst=0` (no filter). To avoid
+the Position path inheriting the Cylinder default, the builder must check
+whether `timeconst` was explicitly set. The simplest approach: change
+`MjcfActuator.timeconst` to `Option<f64>` (defaulting to `None`), and resolve
+the default per actuator type in the builder:
+
+```rust
+let timeconst = actuator.timeconst.unwrap_or(match actuator.actuator_type {
+    MjcfActuatorType::Cylinder => 1.0,
+    _ => 0.0,
+});
+```
+
+This requires updating `types.rs` (field type), `parser.rs` (parse into
+`Some(value)`), and the builder. The `MjcfActuator::cylinder()` constructor
+should continue to produce `timeconst: Some(1.0)`.
+
+**`FilterExact` vs `Filter`:** MuJoCo's Position actuator (with `timeconst > 0`)
+uses `mjDYN_FILTEREXACT`, while Cylinder uses `mjDYN_FILTER`. Both compute
+`act_dot = (ctrl - act) / tau` identically in Phase 1. The difference is at
+integration time:
+
+- **Filter** (Euler): `act += h * act_dot`
+- **FilterExact** (exact): `act += act_dot * tau * (1 - exp(-h/tau))`
+
+The exact formula is the closed-form solution of `d(act)/dt = (ctrl - act) / tau`
+over timestep `h`. For `tau >> h` both converge, but FilterExact is more accurate
+when `tau` is comparable to `h`. MuJoCo uses FilterExact specifically for Position
+actuators. See Step 5a below for integration changes.
+
+##### Step 4: Populate `gaintype`, `biastype`, `gainprm`, `biasprm`, `dynprm` per Shortcut Type
+
+Replace the dynprm/gain/bias parameter block in `model_builder.rs` (lines 1257-1292)
+with per-type expansion. This is the core of the shortcut-to-general mapping:
+
+```rust
+// Gain/Bias/Dynamics parameters — expand shortcut type to general actuator.
+// Reference: MuJoCo src/user/user_api.cc (mjs_setToMotor, mjs_setToPosition, etc.)
+let (gaintype, biastype, gainprm, biasprm, dynprm) = match actuator.actuator_type {
+    MjcfActuatorType::Motor => (
+        GainType::Fixed,
+        BiasType::None,
+        {
+            let mut p = [0.0; 9];
+            p[0] = 1.0; // unit gain
+            p
+        },
+        [0.0; 9],
+        [0.0; 3],
+    ),
+
+    MjcfActuatorType::Position => {
+        let kp = actuator.kp; // default 1.0
+        // kv resolved above from Option<f64> (default 0.0 for position)
+        let tc = timeconst;   // resolved above (default 0.0 for position)
+        let mut gp = [0.0; 9];
+        gp[0] = kp;
+        let mut bp = [0.0; 9];
+        bp[1] = -kp;
+        bp[2] = -kv;
+        (
+            GainType::Fixed,
+            BiasType::Affine,
+            gp,
+            bp,
+            [tc, 0.0, 0.0],
+        )
+    }
+
+    MjcfActuatorType::Velocity => {
+        // kv resolved above from Option<f64> (default 1.0 for velocity)
+        let mut gp = [0.0; 9];
+        gp[0] = kv;
+        let mut bp = [0.0; 9];
+        bp[2] = -kv;
+        (
+            GainType::Fixed,
+            BiasType::Affine,
+            gp,
+            bp,
+            [0.0; 3],
+        )
+    }
+
+    MjcfActuatorType::Damper => {
+        // kv resolved above from Option<f64> (default 0.0 for damper)
+        let mut gp = [0.0; 9];
+        gp[2] = -kv; // gain = -kv * velocity
+        (
+            GainType::Affine,
+            BiasType::None,
+            gp,
+            [0.0; 9],
+            [0.0; 3],
+        )
+    }
+
+    MjcfActuatorType::Cylinder => {
+        let area = if let Some(d) = actuator.diameter {
+            std::f64::consts::PI / 4.0 * d * d
+        } else {
+            actuator.area
+        };
+        let tc = timeconst; // resolved above (default 1.0 for cylinder)
+        let mut gp = [0.0; 9];
+        gp[0] = area;
+        let mut bp = [0.0; 9];
+        bp[0] = actuator.bias[0];
+        bp[1] = actuator.bias[1];
+        bp[2] = actuator.bias[2];
+        (
+            GainType::Fixed,
+            BiasType::Affine,
+            gp,
+            bp,
+            [tc, 0.0, 0.0],
+        )
+    }
+
+    MjcfActuatorType::Adhesion => {
+        let mut gp = [0.0; 9];
+        gp[0] = actuator.gain;
+        (
+            GainType::Fixed,
+            BiasType::None,
+            gp,
+            [0.0; 9],
+            [0.0; 3],
+        )
+    }
+
+    MjcfActuatorType::Muscle => {
+        // Muscle: unchanged from #5 implementation.
+        let gp = [
+            actuator.range.0, actuator.range.1, actuator.force,
+            actuator.scale, actuator.lmin, actuator.lmax,
+            actuator.vmax, actuator.fpmax, actuator.fvmax,
+        ];
+        (
+            GainType::Muscle,
+            BiasType::Muscle,
+            gp,
+            gp, // biasprm = gainprm (shared layout, MuJoCo convention)
+            [actuator.muscle_timeconst.0, actuator.muscle_timeconst.1, 0.0],
+        )
+    }
+
+    MjcfActuatorType::General => {
+        // TODO(general-actuator): <general> without explicit gaintype/biastype
+        // is treated as Motor-like. Full MJCF attribute parsing for gaintype,
+        // biastype, dyntype, gainprm, biasprm, dynprm is deferred. When added,
+        // emit a warning if <general> is encountered without these attributes,
+        // since the Motor-like fallback may not match user intent.
+        // See Scope Decision: `general` Actuator MJCF Parsing Deferred.
+        let mut gp = [0.0; 9];
+        gp[0] = 1.0;
+        (
+            GainType::Fixed,
+            BiasType::None,
+            gp,
+            [0.0; 9],
+            [0.0; 3],
+        )
+    }
+};
+
+self.actuator_gaintype.push(gaintype);
+self.actuator_biastype.push(biastype);
+self.actuator_gainprm.push(gainprm);
+self.actuator_biasprm.push(biasprm);
+self.actuator_dynprm.push(dynprm);
+```
+
+This replaces the existing `is_muscle` branch and the `[0.0; 3]` dynprm
+fallback. The Muscle arm is equivalent to the existing #5 code; the new arms
+populate the correct shortcut-specific parameters.
+
+**Damper/Adhesion `ctrllimited` enforcement:** MuJoCo's damper and adhesion
+shortcuts unconditionally set `ctrllimited = 1` (`mjs_setToDamper` and
+`mjs_setToAdhesion` in `user_api.cc`). Add this before the ctrlrange gate
+(`model_builder.rs:1224`):
+
+```rust
+// Damper and Adhesion actuators force ctrllimited
+// (MuJoCo: mjs_setToDamper and mjs_setToAdhesion both set ctrllimited=1).
+let ctrllimited = match actuator.actuator_type {
+    MjcfActuatorType::Damper | MjcfActuatorType::Adhesion => true,
+    _ => actuator.ctrllimited,
+};
+```
+
+Then use `ctrllimited` (the local variable) instead of `actuator.ctrllimited` at
+line 1226. Without this, a `<damper joint="j1" kv="5"/>` (no explicit
+`ctrllimited="true"`) would get unbounded ctrlrange, allowing negative control
+values that produce force in the direction of motion — the opposite of a damper.
+Similarly, an `<adhesion>` without explicit `ctrllimited` would allow negative
+control values, which is invalid for adhesion force scaling.
+
+##### Step 5: Replace Phase 2 Force Dispatch in `mj_fwd_actuation()`
+
+Replace the Phase 2 block (`mujoco_pipeline.rs:6523-6552`) with gain/bias
+dispatch on `gaintype`/`biastype`:
+
+```rust
+// --- Phase 2: Force generation (gain * input + bias) ---
+let length = data.actuator_length[i];
+let velocity = data.actuator_velocity[i];
+
+let gain = match model.actuator_gaintype[i] {
+    GainType::Fixed => model.actuator_gainprm[i][0],
+    GainType::Affine => {
+        model.actuator_gainprm[i][0]
+            + model.actuator_gainprm[i][1] * length
+            + model.actuator_gainprm[i][2] * velocity
+    }
+    GainType::Muscle => {
+        // Muscle gain = -F0 * FL(L) * FV(V)
+        let prm = &model.actuator_gainprm[i];
+        let lengthrange = model.actuator_lengthrange[i];
+        let f0 = prm[2]; // resolved by compute_muscle_params()
+
+        let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
+        let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
+        let norm_vel = velocity / (l0 * prm[6]).max(1e-10);
+
+        let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
+        let fv = muscle_gain_velocity(norm_vel, prm[8]);
+        -f0 * fl * fv
+    }
+};
+
+let bias = match model.actuator_biastype[i] {
+    BiasType::None => 0.0,
+    BiasType::Affine => {
+        model.actuator_biasprm[i][0]
+            + model.actuator_biasprm[i][1] * length
+            + model.actuator_biasprm[i][2] * velocity
+    }
+    BiasType::Muscle => {
+        let prm = &model.actuator_gainprm[i]; // muscle uses gainprm for both
+        let lengthrange = model.actuator_lengthrange[i];
+        let f0 = prm[2];
+
+        let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
+        let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
+
+        let fp = muscle_passive_force(norm_len, prm[5], prm[7]);
+        -f0 * fp
+    }
+};
+
+let force = gain * input + bias;
+```
+
+This replaces the existing `match model.actuator_dyntype[i]` dispatch with
+`match model.actuator_gaintype[i]` + `match model.actuator_biastype[i]`.
+
+**The muscle path is logically identical to the existing code** — same FLV
+curves, same F0 handling — just restructured to use the gain/bias dispatch.
+This eliminates the special-case `ActuatorDynamics::Muscle` match in Phase 2
+and unifies all actuator types under one formula: `force = gain * input + bias`.
+
+##### Step 5a: Add `FilterExact` to Phase 1 and Integration
+
+**Phase 1 (`mj_fwd_actuation`, line 6500):** Add a `FilterExact` arm to the
+`input` match. The `act_dot` computation is identical to `Filter`:
+
+```rust
+ActuatorDynamics::FilterExact => {
+    // Same act_dot as Filter; exact integration happens in integrate().
+    let act_adr = model.actuator_act_adr[i];
+    let tau = model.actuator_dynprm[i][0].max(1e-10);
+    data.act_dot[act_adr] = (ctrl - data.act[act_adr]) / tau;
+    data.act[act_adr]
+}
+```
+
+**Euler integration (`Data::integrate()`, line 2635):** Replace the uniform
+`act += h * act_dot` with a per-actuator integration step:
+
+```rust
+for i in 0..model.nu {
+    let act_adr = model.actuator_act_adr[i];
+    let act_num = model.actuator_act_num[i];
+    for k in 0..act_num {
+        let j = act_adr + k;
+        match model.actuator_dyntype[i] {
+            ActuatorDynamics::FilterExact => {
+                // Exact: act += act_dot * tau * (1 - exp(-h/tau))
+                let tau = model.actuator_dynprm[i][0].max(1e-10);
+                self.act[j] += self.act_dot[j] * tau * (1.0 - (-h / tau).exp());
+            }
+            _ => {
+                // Euler: act += h * act_dot
+                self.act[j] += h * self.act_dot[j];
+            }
+        }
+    }
+    // Clamp muscle activation to [0, 1]
+    if model.actuator_dyntype[i] == ActuatorDynamics::Muscle {
+        for k in 0..act_num {
+            self.act[act_adr + k] = self.act[act_adr + k].clamp(0.0, 1.0);
+        }
+    }
+}
+```
+
+**RK4 integration (`mj_runge_kutta`, line 10229):** Same change for the final
+activation combination. Replace `act = saved + h * combined` with:
+
+```rust
+for a in 0..na {
+    let dact_combined: f64 = (0..4).map(|j| RK4_B[j] * data.rk4_act_dot[j][a]).sum();
+    // Find which actuator owns this activation slot
+    // (actuator_act_adr[i] <= a < actuator_act_adr[i] + actuator_act_num[i])
+    let actuator_idx = model.actuator_act_adr.iter()
+        .enumerate()
+        .rev()
+        .find(|&(i, &adr)| adr <= a && a < adr + model.actuator_act_num[i])
+        .map(|(i, _)| i)
+        .unwrap();
+    match model.actuator_dyntype[actuator_idx] {
+        ActuatorDynamics::FilterExact => {
+            let tau = model.actuator_dynprm[actuator_idx][0].max(1e-10);
+            data.act[a] = data.rk4_act_saved[a]
+                + dact_combined * tau * (1.0 - (-h / tau).exp());
+        }
+        _ => {
+            data.act[a] = data.rk4_act_saved[a] + h * dact_combined;
+        }
+    }
+}
+```
+
+The same per-actuator check applies to the RK4 trial states (line 10164). The
+reverse lookup from activation index to actuator index can be precomputed as a
+`Vec<usize>` of length `na` at model build time if the per-step lookup is a
+performance concern. For now the linear scan is correct and `nu` is typically
+small (<100).
+
+##### Step 6: Fix `MjcfActuator` Per-Type Defaults
+
+Several `MjcfActuator` fields have a single struct-level default that is wrong
+for some actuator types. MuJoCo resolves defaults per actuator type at compile
+time. To distinguish "attribute not set" from "attribute set to 0", change these
+fields from `f64` to `Option<f64>`:
+
+**`timeconst`** — in `MjcfActuator` struct (line 1814):
+```rust
+/// Activation dynamics time constant (s). `None` means use actuator-type default.
+pub timeconst: Option<f64>,
+```
+
+In `Default` impl (line 1867): `timeconst: None,`
+In `MjcfActuator::cylinder()`: `timeconst: Some(1.0),`
+In `parser.rs` (line 1123): parse into `Some(value)`.
+
+Builder resolution:
+```rust
+let timeconst = actuator.timeconst.unwrap_or(match actuator.actuator_type {
+    MjcfActuatorType::Cylinder => 1.0,
+    _ => 0.0,
+});
+```
+
+**`kv`** — in `MjcfActuator` struct (line 1804):
+```rust
+/// Velocity gain. `None` means use actuator-type default.
+pub kv: Option<f64>,
+```
+
+In `Default` impl (line 1863): `kv: None,`
+In `MjcfActuator::velocity()`: `kv: Some(kv),`
+In `parser.rs` (line 1110): parse into `Some(value)`.
+
+Builder resolution:
+```rust
+let kv = actuator.kv.unwrap_or(match actuator.actuator_type {
+    MjcfActuatorType::Velocity => 1.0,
+    _ => 0.0, // Damper defaults to 0.0 (MuJoCo: mjs_setToDamper uses kv=0)
+});
+```
+
+MuJoCo defaults: `kv = 1.0` for `<velocity>`, `kv = 0.0` for `<damper>`,
+`<position>`, and all other types. A `<damper>` without explicit `kv` is
+effectively a no-op in MuJoCo (zero gain); in practice all real MJCF damper
+actuators specify `kv` explicitly. Without `Option`, a `<velocity joint="j1"/>`
+without explicit `kv` would use `kv = 0.0` (producing zero force), which is
+wrong.
+
+**`kp`** remains `f64` with default `1.0` — this matches MuJoCo's default for
+all actuator types that use `kp` (Position). No per-type resolution needed.
+
+**Add `damper()` constructor** — `MjcfActuator` has constructors for motor,
+position, velocity, cylinder, muscle, and adhesion, but not damper. Add one
+to `types.rs` (after `cylinder()`, line 1931):
+
+```rust
+/// Create a damper actuator for a joint.
+#[must_use]
+pub fn damper(name: impl Into<String>, joint: impl Into<String>, kv: f64) -> Self {
+    Self {
+        name: name.into(),
+        actuator_type: MjcfActuatorType::Damper,
+        joint: Some(joint.into()),
+        kv: Some(kv),
+        ..Default::default()
+    }
+}
+```
+
+This enables clean test construction for damper acceptance criteria (#6, #13)
+without MJCF XML boilerplate.
+
+##### Step 7: Update `MUJOCO_REFERENCE.md` Phase 2 Documentation
+
+Replace the non-muscle stub (line 182):
+```python
+    else:
+        force = input                 # ctrl or filtered activation
+```
+
+With:
+```python
+    else:
+        # General gain/bias formula
+        if gaintype[i] == Fixed:
+            gain = gainprm[i][0]
+        elif gaintype[i] == Affine:
+            gain = gainprm[i][0] + gainprm[i][1]*length[i] + gainprm[i][2]*velocity[i]
+
+        if biastype[i] == None:
+            bias = 0.0
+        elif biastype[i] == Affine:
+            bias = biasprm[i][0] + biasprm[i][1]*length[i] + biasprm[i][2]*velocity[i]
+
+        force = gain * input + bias
+```
 
 #### Acceptance Criteria
-1. Position servo with `kp = 100`, `ctrl = 1.0` at `length = 0.5` produces
-   `force = 100 * (act - 0.5)`.
-2. Velocity servo with `kv = 10`, `ctrl = 1.0` at `velocity = 0.2` produces
-   `force = 10 * (act - 0.2)`.
-3. Motor actuators (`DynType::None`) remain unchanged.
-4. Muscle force path unchanged.
+
+1. **Motor actuator (regression):** `DynType::None`, `gaintype=Fixed`,
+   `gainprm=[1,0,0]`, `biastype=None`. With `ctrl = 5.0`:
+   `force = 1.0 * 5.0 + 0.0 = 5.0`. Identical to pre-change behavior.
+
+2. **Position servo (P-only):** `kp = 100`, `kv = 0`, `timeconst = 0` (no
+   filter). `dyntype=None`, `gaintype=Fixed`, `gainprm=[100,0,0]`,
+   `biastype=Affine`, `biasprm=[0,-100,0]`. With `ctrl = 1.0`,
+   `actuator_length = 0.5`:
+   `force = 100 * 1.0 + (0 - 100*0.5 - 0) = 100 - 50 = 50`.
+   Equivalently: `force = kp * (ctrl - length) = 100 * (1.0 - 0.5) = 50`.
+
+3. **Position servo (PD):** `kp = 100`, `kv = 10`, `timeconst = 0`.
+   With `ctrl = 1.0`, `actuator_length = 0.5`, `actuator_velocity = 0.2`:
+   `force = 100 * 1.0 + (0 - 100*0.5 - 10*0.2) = 100 - 50 - 2 = 48`.
+   Equivalently: `force = kp*(ctrl - length) - kv*velocity`.
+
+4. **Position servo (filtered):** `kp = 100`, `kv = 0`, `timeconst = 0.1`.
+   `dyntype=FilterExact`, `dynprm=[0.1,0,0]`, `act_num=1`. After several steps
+   with `ctrl = 1.0`, activation converges toward `1.0`. Force at steady state:
+   `force = kp * (act - length)`. Verify exact filter dynamics: after one step
+   with `h = 0.002`, `act = 0 + (1-0)/0.1 * 0.1 * (1 - exp(-0.002/0.1))`
+   = `1 * (1 - exp(-0.02))` ≈ `0.0198`. Compare to Euler: `0 + 0.002 * 1/0.1`
+   = `0.02`. The exact result is slightly smaller.
+
+5. **Velocity servo:** `kv = 10`, `dyntype=None`. With `ctrl = 1.0`,
+   `actuator_velocity = 0.2`:
+   `force = 10 * 1.0 + (0 + 0 - 10*0.2) = 10 - 2 = 8`.
+   Equivalently: `force = kv * (ctrl - velocity) = 10 * (1.0 - 0.2) = 8`.
+
+6. **Damper:** `kv = 5`, `gaintype=Affine`, `gainprm=[0,0,-5]`,
+   `biastype=None`. With `ctrl = 0.8`, `actuator_velocity = 2.0`:
+   `gain = 0 + 0 + (-5)*2.0 = -10`, `force = -10 * 0.8 + 0 = -8.0`.
+   Force opposes velocity, scaled by control.
+
+7. **Cylinder:** `area = 0.01`, `bias = [0, 0, -100]`, `timeconst = 1.0`,
+   `dyntype=Filter`. `gainprm=[0.01,0,0]`, `biasprm=[0,0,-100]`.
+   With `act = 500000` (pressure, filtered from ctrl), `velocity = 0.1`:
+   `force = 0.01 * 500000 + (0 + 0 - 100*0.1) = 5000 - 10 = 4990`.
+
+8. **Adhesion:** `gain = 50`, `gaintype=Fixed`, `gainprm=[50,0,0]`,
+   `biastype=None`. With `ctrl = 1.0`: `force = 50 * 1.0 = 50`.
+
+9. **Muscle path unchanged:** Verify the restructured gain/bias dispatch
+   produces identical results to the pre-change muscle-specific code path.
+   Compare force output for a muscle actuator at known `(act, length, velocity)`
+   to ≤ 1e-15 relative error.
+
+10. **Dynamics type fix for Position/Velocity:** A Position actuator with
+    default `timeconst = 0` has `dyntype=None`, `act_num=0`, `input = ctrl`.
+    A Position actuator with `timeconst = 0.1` has `dyntype=FilterExact`,
+    `act_num=1`, `input = act`.
+
+11. **Dynamics type fix for Cylinder:** Cylinder has `dyntype=Filter` (not
+    `Integrator`), `dynprm=[1.0, 0, 0]`. Filter dynamics:
+    `act_dot = (ctrl - act) / 1.0`. Activation converges to `ctrl`.
+
+12. **`kv` default for Velocity:** `<velocity joint="j1"/>` without explicit
+    `kv` produces `kv = 1.0` (MuJoCo default), not `kv = 0.0`.
+
+13. **Damper/Adhesion `ctrllimited` enforcement:** `<damper joint="j1" kv="5"/>`
+    and `<adhesion body="b1"/>` without explicit `ctrllimited` both have
+    `ctrllimited=true` and bounded `ctrlrange` (not `(-inf, inf)`).
+
+14. **Existing tests pass or are updated:** All integration tests (implicit, RK4,
+    musculoskeletal, collision, sensor) pass. The builder test
+    `test_actuator_activation_states` (`model_builder.rs:2812`) must be
+    updated: Position/Velocity without `timeconst` now have `dyntype=None`,
+    `act_num=0`, `na=0` (was `Filter`, `1`, `2`). The parser test
+    `test_parse_cylinder_actuator` (`parser.rs:2953`) must be updated for
+    `timeconst: Option<f64>`. Both are correct fixes — the old assertions
+    encoded wrong semantics or types.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify `mj_fwd_actuation` Phase 2
-- `sim/L0/mjcf/src/model_builder.rs` — populate gain/bias types and parameters
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - Add `FilterExact` variant to `ActuatorDynamics` enum (line 426)
+  - Add `GainType`, `BiasType` enums (after `ActuatorDynamics`, line 436)
+  - Add `actuator_gaintype`, `actuator_biastype` fields to Model (line 921)
+  - Initialize new fields in `Model::empty()`
+  - Add `FilterExact` arm to Phase 1 in `mj_fwd_actuation()` (line 6500)
+  - Replace Phase 2 in `mj_fwd_actuation()` (lines 6523-6552)
+  - Update `Data::integrate()` for `FilterExact` (line 2635)
+  - Update `mj_runge_kutta()` for `FilterExact` (lines 10164, 10229)
+- `sim/L0/mjcf/src/model_builder.rs` — modify:
+  - Fix dynamics type assignment (lines 1209-1217)
+  - Add `FilterExact` to `act_num` match (lines 1248-1251)
+  - Replace dynprm/gain/bias population (lines 1257-1292, the `is_muscle` branch)
+  - Push `gaintype`, `biastype` to Model
+  - Resolve `timeconst` per actuator type (before dyntype match)
+  - Resolve `kv` per actuator type (before dyntype match)
+  - Enforce `ctrllimited = true` for Damper and Adhesion (before line 1226)
+- `sim/L0/mjcf/src/types.rs` — modify:
+  - Change `MjcfActuator.timeconst` from `f64` to `Option<f64>` (line 1814)
+  - Change `MjcfActuator.kv` from `f64` to `Option<f64>` (line 1804)
+  - Update `Default` impl (line 1867): `timeconst: None`, `kv: None`
+  - Update `MjcfActuator::cylinder()` constructor (`timeconst: Some(1.0)`)
+  - Update `MjcfActuator::velocity()` constructor (`kv: Some(kv)`)
+  - Add `MjcfActuator::damper()` constructor (after `cylinder()`, line 1931)
+- `sim/L0/mjcf/src/parser.rs` — modify:
+  - Parse `timeconst` into `Some(value)` (line 1123)
+  - Parse `kv` into `Some(value)` (line 1110)
+  - Update test `test_parse_cylinder_actuator` (line 2953): `cyl.timeconst` becomes
+    `Option<f64>`, so change `assert_relative_eq!(cyl.timeconst, 0.5, ...)` to
+    `assert_eq!(cyl.timeconst, Some(0.5))`.
+- `sim/L0/mjcf/src/defaults.rs` — modify:
+  - Update `apply_to_actuator()` (line 276): sentinel check `result.kv == 0.0`
+    becomes `result.kv.is_none()`, and `result.kv = kv` becomes
+    `result.kv = Some(kv)`.
+- `sim/docs/MUJOCO_REFERENCE.md` — modify:
+  - Update Phase 2 documentation (line 182)
 
 ---
 ## Cleanup Tasks

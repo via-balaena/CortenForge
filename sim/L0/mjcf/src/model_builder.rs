@@ -14,8 +14,8 @@
 use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{
-    ActuatorDynamics, ActuatorTransmission, EqualityType, GeomType, Integrator, MjJointType, Model,
-    TendonType, WrapType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, GainType, GeomType, Integrator,
+    MjJointType, MjObjectType, MjSensorDataType, MjSensorType, Model, TendonType, WrapType,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,8 +25,8 @@ use tracing::warn;
 use crate::error::Result;
 use crate::types::{
     MjcfActuator, MjcfActuatorType, MjcfBody, MjcfEquality, MjcfGeom, MjcfGeomType, MjcfInertial,
-    MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption, MjcfSite,
-    MjcfTendon, MjcfTendonType,
+    MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption, MjcfSensor,
+    MjcfSensorType, MjcfSite, MjcfTendon, MjcfTendonType,
 };
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -132,6 +132,9 @@ pub fn model_from_mjcf(
 
     // Process equality constraints (must be after bodies and joints)
     builder.process_equality_constraints(&mjcf.equality)?;
+
+    // Process sensors (must be after bodies, joints, tendons, actuators)
+    builder.process_sensors(&mjcf.sensors)?;
 
     // Build final model
     Ok(builder.build())
@@ -278,6 +281,8 @@ struct ModelBuilder {
     actuator_name: Vec<Option<String>>,
     actuator_act_adr: Vec<usize>,
     actuator_act_num: Vec<usize>,
+    actuator_gaintype: Vec<GainType>,
+    actuator_biastype: Vec<BiasType>,
     actuator_dynprm: Vec<[f64; 3]>,
     actuator_gainprm: Vec<[f64; 9]>,
     actuator_biasprm: Vec<[f64; 9]>,
@@ -317,6 +322,9 @@ struct ModelBuilder {
     site_name_to_id: HashMap<String, usize>,
     geom_name_to_id: HashMap<String, usize>,
 
+    // Actuator name lookup (for sensor wiring)
+    actuator_name_to_id: HashMap<String, usize>,
+
     // Tendon arrays (populated by process_tendons)
     tendon_name_to_id: HashMap<String, usize>,
     tendon_type: Vec<TendonType>,
@@ -345,6 +353,21 @@ struct ModelBuilder {
     eq_solimp: Vec<[f64; 5]>,
     eq_solref: Vec<[f64; 2]>,
     eq_name: Vec<Option<String>>,
+
+    // Sensor accumulation fields (populated by process_sensors)
+    sensor_type: Vec<MjSensorType>,
+    sensor_datatype: Vec<MjSensorDataType>,
+    sensor_objtype: Vec<MjObjectType>,
+    sensor_objid: Vec<usize>,
+    sensor_reftype: Vec<MjObjectType>,
+    sensor_refid: Vec<usize>,
+    sensor_adr: Vec<usize>,
+    sensor_dim: Vec<usize>,
+    sensor_noise: Vec<f64>,
+    sensor_cutoff: Vec<f64>,
+    sensor_name_list: Vec<Option<String>>,
+    nsensor: usize,
+    nsensordata: usize,
 }
 
 impl ModelBuilder {
@@ -432,6 +455,8 @@ impl ModelBuilder {
             actuator_name: vec![],
             actuator_act_adr: vec![],
             actuator_act_num: vec![],
+            actuator_gaintype: vec![],
+            actuator_biastype: vec![],
             actuator_dynprm: vec![],
             actuator_gainprm: vec![],
             actuator_biasprm: vec![],
@@ -487,6 +512,9 @@ impl ModelBuilder {
             wrap_objid: vec![],
             wrap_prm: vec![],
 
+            // Actuator name lookup
+            actuator_name_to_id: HashMap::new(),
+
             // Equality constraints (populated by process_equality_constraints)
             eq_type: vec![],
             eq_obj1id: vec![],
@@ -496,6 +524,21 @@ impl ModelBuilder {
             eq_solimp: vec![],
             eq_solref: vec![],
             eq_name: vec![],
+
+            // Sensors (populated by process_sensors)
+            sensor_type: vec![],
+            sensor_datatype: vec![],
+            sensor_objtype: vec![],
+            sensor_objid: vec![],
+            sensor_reftype: vec![],
+            sensor_refid: vec![],
+            sensor_adr: vec![],
+            sensor_dim: vec![],
+            sensor_noise: vec![],
+            sensor_cutoff: vec![],
+            sensor_name_list: vec![],
+            nsensor: 0,
+            nsensordata: 0,
         }
     }
 
@@ -518,6 +561,10 @@ impl ModelBuilder {
                 Integrator::ImplicitSpringDamper
             }
         };
+        self.magnetic = option.magnetic;
+        self.wind = option.wind;
+        self.density = option.density;
+        self.viscosity = option.viscosity;
     }
 
     /// Process a single mesh asset from MJCF.
@@ -1152,6 +1199,12 @@ impl ModelBuilder {
     ) -> std::result::Result<usize, ModelConversionError> {
         let act_id = self.actuator_trntype.len();
 
+        // Register actuator name for sensor wiring
+        if !actuator.name.is_empty() {
+            self.actuator_name_to_id
+                .insert(actuator.name.clone(), act_id);
+        }
+
         // Determine transmission type and target
         // MuJoCo supports Joint, Tendon, Site, Body transmissions
         // We currently only support Joint; others require site/tendon arrays in Model
@@ -1200,20 +1253,45 @@ impl ModelBuilder {
             });
         };
 
-        // Determine dynamics type
-        // MuJoCo semantics:
-        // - Motor/General/Damper/Adhesion: Direct force, no activation state
-        // - Position/Velocity: First-order filter dynamics
-        // - Muscle: Muscle activation dynamics (2 states)
-        // - Cylinder: Integrator dynamics (pneumatic)
+        // Resolve per-type defaults for Option fields.
+        // These must be resolved before dyntype/gain/bias decisions that depend on them.
+        let timeconst = actuator.timeconst.unwrap_or(match actuator.actuator_type {
+            MjcfActuatorType::Cylinder => 1.0,
+            _ => 0.0,
+        });
+        let kv = actuator.kv.unwrap_or(match actuator.actuator_type {
+            MjcfActuatorType::Velocity => 1.0,
+            _ => 0.0, // Damper defaults to 0.0 (MuJoCo: mjs_setToDamper uses kv=0)
+        });
+
+        // Damper and Adhesion actuators force ctrllimited
+        // (MuJoCo: mjs_setToDamper and mjs_setToAdhesion both set ctrllimited=1).
+        let ctrllimited = match actuator.actuator_type {
+            MjcfActuatorType::Damper | MjcfActuatorType::Adhesion => true,
+            _ => actuator.ctrllimited,
+        };
+
+        // Determine dynamics type.
+        // MuJoCo semantics: dyntype is determined by the shortcut type AND timeconst.
+        // Position defaults to None; if timeconst > 0, uses FilterExact (exact discrete filter).
+        // Cylinder always uses Filter (Euler-approximated; timeconst defaults to 1.0).
+        // Motor/General/Damper/Adhesion/Velocity: no dynamics.
+        // Muscle: muscle activation dynamics.
         let dyntype = match actuator.actuator_type {
             MjcfActuatorType::Motor
             | MjcfActuatorType::General
             | MjcfActuatorType::Damper
-            | MjcfActuatorType::Adhesion => ActuatorDynamics::None,
-            MjcfActuatorType::Position | MjcfActuatorType::Velocity => ActuatorDynamics::Filter,
+            | MjcfActuatorType::Adhesion
+            | MjcfActuatorType::Velocity => ActuatorDynamics::None,
+            MjcfActuatorType::Position => {
+                if timeconst > 0.0 {
+                    ActuatorDynamics::FilterExact // MuJoCo: mjDYN_FILTEREXACT
+                } else {
+                    ActuatorDynamics::None
+                }
+            }
             MjcfActuatorType::Muscle => ActuatorDynamics::Muscle,
-            MjcfActuatorType::Cylinder => ActuatorDynamics::Integrator,
+            MjcfActuatorType::Cylinder => ActuatorDynamics::Filter,
         };
 
         self.actuator_trntype.push(trntype);
@@ -1223,7 +1301,7 @@ impl ModelBuilder {
 
         // Gate ctrlrange/forcerange on ctrllimited/forcelimited (MuJoCo semantics).
         // When limited=false, range is effectively unbounded regardless of attribute value.
-        self.actuator_ctrlrange.push(if actuator.ctrllimited {
+        self.actuator_ctrlrange.push(if ctrllimited {
             actuator.ctrlrange.unwrap_or((-1.0, 1.0))
         } else {
             (f64::NEG_INFINITY, f64::INFINITY)
@@ -1243,59 +1321,317 @@ impl ModelBuilder {
         });
 
         // Compute activation state count based on dynamics type
-        // MuJoCo semantics: None=0, Filter/Integrator=1, Muscle=1
-        // (Muscle has 1 activation state — the activation level `act`)
         let act_num = match dyntype {
             ActuatorDynamics::None => 0,
-            ActuatorDynamics::Filter | ActuatorDynamics::Integrator | ActuatorDynamics::Muscle => 1,
+            ActuatorDynamics::Filter
+            | ActuatorDynamics::FilterExact
+            | ActuatorDynamics::Integrator
+            | ActuatorDynamics::Muscle => 1,
         };
 
         self.actuator_act_adr.push(self.na);
         self.actuator_act_num.push(act_num);
         self.na += act_num;
 
-        // Dynamics parameters
-        let is_muscle = actuator.actuator_type == MjcfActuatorType::Muscle;
-        let dynprm = if is_muscle {
-            [
-                actuator.muscle_timeconst.0, // tau_act (default 0.01)
-                actuator.muscle_timeconst.1, // tau_deact (default 0.04)
-                0.0,                         // tausmooth (default 0, hard switch)
-            ]
-        } else {
-            [0.0; 3]
-        };
-        self.actuator_dynprm.push(dynprm);
+        // Gain/Bias/Dynamics parameters — expand shortcut type to general actuator.
+        // Reference: MuJoCo src/user/user_api.cc (mjs_setToMotor, mjs_setToPosition, etc.)
+        let (gaintype, biastype, gainprm, biasprm, dynprm) = match actuator.actuator_type {
+            MjcfActuatorType::Motor => (
+                GainType::Fixed,
+                BiasType::None,
+                {
+                    let mut p = [0.0; 9];
+                    p[0] = 1.0; // unit gain
+                    p
+                },
+                [0.0; 9],
+                [0.0; 3],
+            ),
 
-        // Gain/Bias parameters (shared layout for muscle)
-        let gainprm = if is_muscle {
-            [
-                actuator.range.0, // range[0], default 0.75
-                actuator.range.1, // range[1], default 1.05
-                actuator.force,   // force, default -1.0 (auto)
-                actuator.scale,   // scale, default 200.0
-                actuator.lmin,    // lmin, default 0.5
-                actuator.lmax,    // lmax, default 1.6
-                actuator.vmax,    // vmax, default 1.5
-                actuator.fpmax,   // fpmax, default 1.3
-                actuator.fvmax,   // fvmax, default 1.2
-            ]
-        } else {
-            let mut prm = [0.0; 9];
-            prm[0] = actuator.gear;
-            prm
+            MjcfActuatorType::Position => {
+                let kp = actuator.kp; // default 1.0
+                // kv resolved above from Option<f64> (default 0.0 for position)
+                let tc = timeconst; // resolved above (default 0.0 for position)
+                let mut gp = [0.0; 9];
+                gp[0] = kp;
+                let mut bp = [0.0; 9];
+                bp[1] = -kp;
+                bp[2] = -kv;
+                (GainType::Fixed, BiasType::Affine, gp, bp, [tc, 0.0, 0.0])
+            }
+
+            MjcfActuatorType::Velocity => {
+                // kv resolved above from Option<f64> (default 1.0 for velocity)
+                let mut gp = [0.0; 9];
+                gp[0] = kv;
+                let mut bp = [0.0; 9];
+                bp[2] = -kv;
+                (GainType::Fixed, BiasType::Affine, gp, bp, [0.0; 3])
+            }
+
+            MjcfActuatorType::Damper => {
+                // kv resolved above from Option<f64> (default 0.0 for damper)
+                let mut gp = [0.0; 9];
+                gp[2] = -kv; // gain = -kv * velocity
+                (GainType::Affine, BiasType::None, gp, [0.0; 9], [0.0; 3])
+            }
+
+            MjcfActuatorType::Cylinder => {
+                let area = if let Some(d) = actuator.diameter {
+                    std::f64::consts::PI / 4.0 * d * d
+                } else {
+                    actuator.area
+                };
+                let tc = timeconst; // resolved above (default 1.0 for cylinder)
+                let mut gp = [0.0; 9];
+                gp[0] = area;
+                let mut bp = [0.0; 9];
+                bp[0] = actuator.bias[0];
+                bp[1] = actuator.bias[1];
+                bp[2] = actuator.bias[2];
+                (GainType::Fixed, BiasType::Affine, gp, bp, [tc, 0.0, 0.0])
+            }
+
+            MjcfActuatorType::Adhesion => {
+                let mut gp = [0.0; 9];
+                gp[0] = actuator.gain;
+                (GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 3])
+            }
+
+            MjcfActuatorType::Muscle => {
+                // Muscle: unchanged from #5 implementation.
+                let gp = [
+                    actuator.range.0,
+                    actuator.range.1,
+                    actuator.force,
+                    actuator.scale,
+                    actuator.lmin,
+                    actuator.lmax,
+                    actuator.vmax,
+                    actuator.fpmax,
+                    actuator.fvmax,
+                ];
+                (
+                    GainType::Muscle,
+                    BiasType::Muscle,
+                    gp,
+                    gp, // biasprm = gainprm (shared layout, MuJoCo convention)
+                    [
+                        actuator.muscle_timeconst.0,
+                        actuator.muscle_timeconst.1,
+                        0.0,
+                    ],
+                )
+            }
+
+            MjcfActuatorType::General => {
+                // TODO(general-actuator): <general> without explicit gaintype/biastype
+                // is treated as Motor-like. Full MJCF attribute parsing for gaintype,
+                // biastype, dyntype, gainprm, biasprm, dynprm is deferred.
+                let mut gp = [0.0; 9];
+                gp[0] = 1.0;
+                (GainType::Fixed, BiasType::None, gp, [0.0; 9], [0.0; 3])
+            }
         };
+
+        self.actuator_gaintype.push(gaintype);
+        self.actuator_biastype.push(biastype);
         self.actuator_gainprm.push(gainprm);
-        // Muscle: biasprm = gainprm (shared layout, MuJoCo convention).
-        // The runtime muscle path reads gainprm only; biasprm is stored for
-        // MuJoCo memory layout compatibility.
-        self.actuator_biasprm.push(gainprm);
+        self.actuator_biasprm.push(biasprm);
+        self.actuator_dynprm.push(dynprm);
 
         // Lengthrange and acc0: initialized to zero, computed by compute_muscle_params()
         self.actuator_lengthrange.push((0.0, 0.0));
         self.actuator_acc0.push(0.0);
 
         Ok(act_id)
+    }
+
+    /// Process sensor definitions from MJCF.
+    ///
+    /// Converts `MjcfSensor` objects into the 13 pipeline sensor arrays.
+    /// Must be called AFTER all bodies, joints, tendons, and actuators are processed
+    /// (requires name→id lookups for object resolution).
+    fn process_sensors(
+        &mut self,
+        sensors: &[MjcfSensor],
+    ) -> std::result::Result<(), ModelConversionError> {
+        let mut adr = 0usize;
+
+        for mjcf_sensor in sensors {
+            let Some(sensor_type) = convert_sensor_type(mjcf_sensor.sensor_type) else {
+                // Unsupported type (Jointlimitfrc, Tendonlimitfrc) — skip with log
+                warn!(
+                    "Skipping unsupported sensor type '{:?}' (sensor '{}')",
+                    mjcf_sensor.sensor_type, mjcf_sensor.name,
+                );
+                continue;
+            };
+            let dim = sensor_type.dim();
+            let datatype = sensor_datatype(sensor_type);
+            let (objtype, objid) =
+                self.resolve_sensor_object(sensor_type, mjcf_sensor.objname.as_deref())?;
+
+            self.sensor_type.push(sensor_type);
+            self.sensor_datatype.push(datatype);
+            self.sensor_objtype.push(objtype);
+            self.sensor_objid.push(objid);
+            self.sensor_reftype.push(MjObjectType::None);
+            self.sensor_refid.push(0);
+            self.sensor_adr.push(adr);
+            self.sensor_dim.push(dim);
+            self.sensor_noise.push(mjcf_sensor.noise);
+            self.sensor_cutoff.push(mjcf_sensor.cutoff);
+            self.sensor_name_list.push(if mjcf_sensor.name.is_empty() {
+                None
+            } else {
+                Some(mjcf_sensor.name.clone())
+            });
+
+            adr += dim;
+        }
+
+        self.nsensor = self.sensor_type.len();
+        self.nsensordata = adr;
+        Ok(())
+    }
+
+    /// Returns (MjObjectType, objid) for a given sensor type and MJCF objname.
+    fn resolve_sensor_object(
+        &self,
+        sensor_type: MjSensorType,
+        objname: Option<&str>,
+    ) -> std::result::Result<(MjObjectType, usize), ModelConversionError> {
+        // User sensors have no object reference
+        if sensor_type == MjSensorType::User {
+            return Ok((MjObjectType::None, 0));
+        }
+
+        let name = objname.ok_or_else(|| ModelConversionError {
+            message: "sensor missing object name".into(),
+        })?;
+
+        match sensor_type {
+            // Joint sensors: objname is a joint name
+            MjSensorType::JointPos
+            | MjSensorType::JointVel
+            | MjSensorType::BallQuat
+            | MjSensorType::BallAngVel => {
+                let id = *self
+                    .joint_name_to_id
+                    .get(name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("sensor references unknown joint '{name}'"),
+                    })?;
+                Ok((MjObjectType::Joint, id))
+            }
+
+            // Tendon sensors: objname is a tendon name
+            MjSensorType::TendonPos | MjSensorType::TendonVel => {
+                let id = *self
+                    .tendon_name_to_id
+                    .get(name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("sensor references unknown tendon '{name}'"),
+                    })?;
+                Ok((MjObjectType::Tendon, id))
+            }
+
+            // Actuator sensors: objname is an actuator name
+            MjSensorType::ActuatorPos | MjSensorType::ActuatorVel | MjSensorType::ActuatorFrc => {
+                let id =
+                    *self
+                        .actuator_name_to_id
+                        .get(name)
+                        .ok_or_else(|| ModelConversionError {
+                            message: format!("sensor references unknown actuator '{name}'"),
+                        })?;
+                Ok((MjObjectType::Actuator, id))
+            }
+
+            // Site-attached sensors: objname is a site name
+            MjSensorType::Accelerometer
+            | MjSensorType::Velocimeter
+            | MjSensorType::Gyro
+            | MjSensorType::Force
+            | MjSensorType::Torque
+            | MjSensorType::Magnetometer
+            | MjSensorType::Rangefinder => {
+                let id = *self
+                    .site_name_to_id
+                    .get(name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("sensor references unknown site '{name}'"),
+                    })?;
+                Ok((MjObjectType::Site, id))
+            }
+
+            // Touch: MJCF uses site=, but pipeline expects geom ID.
+            // Resolve site → body → first geom on that body.
+            MjSensorType::Touch => {
+                let site_id =
+                    *self
+                        .site_name_to_id
+                        .get(name)
+                        .ok_or_else(|| ModelConversionError {
+                            message: format!("touch sensor references unknown site '{name}'"),
+                        })?;
+                let body_id = *self
+                    .site_body
+                    .get(site_id)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "touch sensor: site_id {site_id} out of range for site_body"
+                        ),
+                    })?;
+                // Find first geom belonging to this body
+                let geom_id = self
+                    .geom_body
+                    .iter()
+                    .position(|&b| b == body_id)
+                    .unwrap_or(usize::MAX);
+                Ok((MjObjectType::Geom, geom_id))
+            }
+
+            // Frame sensors: resolve objname by trying site → body → geom
+            MjSensorType::FramePos
+            | MjSensorType::FrameQuat
+            | MjSensorType::FrameXAxis
+            | MjSensorType::FrameYAxis
+            | MjSensorType::FrameZAxis
+            | MjSensorType::FrameLinVel
+            | MjSensorType::FrameAngVel
+            | MjSensorType::FrameLinAcc
+            | MjSensorType::FrameAngAcc => {
+                if let Some(&id) = self.site_name_to_id.get(name) {
+                    Ok((MjObjectType::Site, id))
+                } else if let Some(&id) = self.body_name_to_id.get(name) {
+                    Ok((MjObjectType::Body, id))
+                } else if let Some(&id) = self.geom_name_to_id.get(name) {
+                    Ok((MjObjectType::Geom, id))
+                } else {
+                    Err(ModelConversionError {
+                        message: format!("frame sensor references unknown object '{name}'"),
+                    })
+                }
+            }
+
+            // Subtree sensors: objname is a body name
+            MjSensorType::SubtreeCom
+            | MjSensorType::SubtreeLinVel
+            | MjSensorType::SubtreeAngMom => {
+                let id = *self
+                    .body_name_to_id
+                    .get(name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("sensor references unknown body '{name}'"),
+                    })?;
+                Ok((MjObjectType::Body, id))
+            }
+
+            // User handled above (early return)
+            MjSensorType::User => unreachable!(),
+        }
     }
 
     /// Process equality constraints from MJCF.
@@ -1630,20 +1966,20 @@ impl ModelBuilder {
             site_size: self.site_size,
             site_name: self.site_name,
 
-            // Sensors (empty for now - will be populated from MJCF sensor definitions)
-            nsensor: 0,
-            nsensordata: 0,
-            sensor_type: vec![],
-            sensor_datatype: vec![],
-            sensor_objtype: vec![],
-            sensor_objid: vec![],
-            sensor_reftype: vec![],
-            sensor_refid: vec![],
-            sensor_adr: vec![],
-            sensor_dim: vec![],
-            sensor_noise: vec![],
-            sensor_cutoff: vec![],
-            sensor_name: vec![],
+            // Sensors (populated by process_sensors)
+            nsensor: self.nsensor,
+            nsensordata: self.nsensordata,
+            sensor_type: self.sensor_type,
+            sensor_datatype: self.sensor_datatype,
+            sensor_objtype: self.sensor_objtype,
+            sensor_objid: self.sensor_objid,
+            sensor_reftype: self.sensor_reftype,
+            sensor_refid: self.sensor_refid,
+            sensor_adr: self.sensor_adr,
+            sensor_dim: self.sensor_dim,
+            sensor_noise: self.sensor_noise,
+            sensor_cutoff: self.sensor_cutoff,
+            sensor_name: self.sensor_name_list,
 
             actuator_trntype: self.actuator_trntype,
             actuator_dyntype: self.actuator_dyntype,
@@ -1654,6 +1990,8 @@ impl ModelBuilder {
             actuator_name: self.actuator_name,
             actuator_act_adr: self.actuator_act_adr,
             actuator_act_num: self.actuator_act_num,
+            actuator_gaintype: self.actuator_gaintype,
+            actuator_biastype: self.actuator_biastype,
             actuator_dynprm: self.actuator_dynprm,
             actuator_gainprm: self.actuator_gainprm,
             actuator_biasprm: self.actuator_biasprm,
@@ -2341,6 +2679,87 @@ fn geom_size_to_vec3(size: &[f64], geom_type: GeomType) -> Vector3<f64> {
     }
 }
 
+/// Map `MjcfSensorType` to pipeline `MjSensorType`.
+/// Returns `None` for types not yet implemented in the pipeline.
+fn convert_sensor_type(mjcf: MjcfSensorType) -> Option<MjSensorType> {
+    match mjcf {
+        MjcfSensorType::Jointpos => Some(MjSensorType::JointPos),
+        MjcfSensorType::Jointvel => Some(MjSensorType::JointVel),
+        MjcfSensorType::Ballquat => Some(MjSensorType::BallQuat),
+        MjcfSensorType::Ballangvel => Some(MjSensorType::BallAngVel),
+        MjcfSensorType::Tendonpos => Some(MjSensorType::TendonPos),
+        MjcfSensorType::Tendonvel => Some(MjSensorType::TendonVel),
+        MjcfSensorType::Actuatorpos => Some(MjSensorType::ActuatorPos),
+        MjcfSensorType::Actuatorvel => Some(MjSensorType::ActuatorVel),
+        MjcfSensorType::Actuatorfrc => Some(MjSensorType::ActuatorFrc),
+        MjcfSensorType::Framepos => Some(MjSensorType::FramePos),
+        MjcfSensorType::Framequat => Some(MjSensorType::FrameQuat),
+        MjcfSensorType::Framexaxis => Some(MjSensorType::FrameXAxis),
+        MjcfSensorType::Frameyaxis => Some(MjSensorType::FrameYAxis),
+        MjcfSensorType::Framezaxis => Some(MjSensorType::FrameZAxis),
+        MjcfSensorType::Framelinvel => Some(MjSensorType::FrameLinVel),
+        MjcfSensorType::Frameangvel => Some(MjSensorType::FrameAngVel),
+        MjcfSensorType::Framelinacc => Some(MjSensorType::FrameLinAcc),
+        MjcfSensorType::Frameangacc => Some(MjSensorType::FrameAngAcc),
+        MjcfSensorType::Touch => Some(MjSensorType::Touch),
+        MjcfSensorType::Force => Some(MjSensorType::Force),
+        MjcfSensorType::Torque => Some(MjSensorType::Torque),
+        MjcfSensorType::Accelerometer => Some(MjSensorType::Accelerometer),
+        MjcfSensorType::Gyro => Some(MjSensorType::Gyro),
+        MjcfSensorType::Velocimeter => Some(MjSensorType::Velocimeter),
+        MjcfSensorType::Magnetometer => Some(MjSensorType::Magnetometer),
+        MjcfSensorType::Rangefinder => Some(MjSensorType::Rangefinder),
+        MjcfSensorType::Subtreecom => Some(MjSensorType::SubtreeCom),
+        MjcfSensorType::Subtreelinvel => Some(MjSensorType::SubtreeLinVel),
+        MjcfSensorType::Subtreeangmom => Some(MjSensorType::SubtreeAngMom),
+        MjcfSensorType::User => Some(MjSensorType::User),
+        // Not yet implemented in pipeline — skip with warning
+        MjcfSensorType::Jointlimitfrc | MjcfSensorType::Tendonlimitfrc => None,
+    }
+}
+
+/// Determine which evaluation stage processes a given sensor type.
+fn sensor_datatype(t: MjSensorType) -> MjSensorDataType {
+    match t {
+        // Position stage (evaluated in mj_sensor_pos, after FK)
+        MjSensorType::JointPos
+        | MjSensorType::BallQuat
+        | MjSensorType::TendonPos
+        | MjSensorType::ActuatorPos
+        | MjSensorType::FramePos
+        | MjSensorType::FrameQuat
+        | MjSensorType::FrameXAxis
+        | MjSensorType::FrameYAxis
+        | MjSensorType::FrameZAxis
+        | MjSensorType::SubtreeCom
+        | MjSensorType::Rangefinder
+        | MjSensorType::Magnetometer => MjSensorDataType::Position,
+
+        // Velocity stage (evaluated in mj_sensor_vel, after velocity FK)
+        MjSensorType::JointVel
+        | MjSensorType::BallAngVel
+        | MjSensorType::TendonVel
+        | MjSensorType::ActuatorVel
+        | MjSensorType::Gyro
+        | MjSensorType::Velocimeter
+        | MjSensorType::FrameLinVel
+        | MjSensorType::FrameAngVel
+        | MjSensorType::SubtreeLinVel
+        | MjSensorType::SubtreeAngMom => MjSensorDataType::Velocity,
+
+        // Acceleration stage (evaluated in mj_sensor_acc, after constraint solver).
+        // User sensors also default to acceleration (evaluated last).
+        MjSensorType::Accelerometer
+        | MjSensorType::Force
+        | MjSensorType::Torque
+        | MjSensorType::Touch
+        | MjSensorType::ActuatorFrc
+        | MjSensorType::FrameLinAcc
+        | MjSensorType::FrameAngAcc
+        | MjSensorType::User => MjSensorDataType::Acceleration,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
@@ -2838,18 +3257,19 @@ mod tests {
         assert_eq!(model.actuator_act_adr[0], 0);
         assert_eq!(model.actuator_act_num[0], 0);
 
-        // Position servo has filter dynamics -> 1 activation state
-        assert_eq!(model.actuator_dyntype[1], ActuatorDynamics::Filter);
+        // Position servo (no timeconst) has no dynamics -> 0 activation states
+        // MuJoCo: Position defaults to dyntype=None when timeconst=0.
+        assert_eq!(model.actuator_dyntype[1], ActuatorDynamics::None);
         assert_eq!(model.actuator_act_adr[1], 0);
-        assert_eq!(model.actuator_act_num[1], 1);
+        assert_eq!(model.actuator_act_num[1], 0);
 
-        // Velocity servo has filter dynamics -> 1 activation state
-        assert_eq!(model.actuator_dyntype[2], ActuatorDynamics::Filter);
-        assert_eq!(model.actuator_act_adr[2], 1); // Starts after position servo's 1 state
-        assert_eq!(model.actuator_act_num[2], 1);
+        // Velocity servo always has no dynamics -> 0 activation states
+        assert_eq!(model.actuator_dyntype[2], ActuatorDynamics::None);
+        assert_eq!(model.actuator_act_adr[2], 0);
+        assert_eq!(model.actuator_act_num[2], 0);
 
         // Total activation states
-        assert_eq!(model.na, 2); // 0 + 1 + 1 = 2
+        assert_eq!(model.na, 0); // 0 + 0 + 0 = 0
     }
 
     // =========================================================================

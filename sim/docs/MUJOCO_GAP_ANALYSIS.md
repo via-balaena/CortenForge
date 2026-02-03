@@ -17,7 +17,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ## 📊 Executive Summary
 
-**Overall completion: ~70-75%** of MuJoCo's core pipeline features are functional end-to-end. Some standalone crates exist but are not yet wired into the MuJoCo pipeline (`mujoco_pipeline.rs`). See `sim/docs/FUTURE_WORK.md` for the roadmap (11 items total, 7 completed, 4 remaining).
+**Overall completion: ~75-80%** of MuJoCo's core pipeline features are functional end-to-end. Some standalone crates exist but are not yet wired into the MuJoCo pipeline (`mujoco_pipeline.rs`). See `sim/docs/FUTURE_WORK.md` for the roadmap (12 items total, 8 completed, 4 remaining).
 
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal spring/damper only — see [FUTURE_WORK #7](./FUTURE_WORK.md))
@@ -25,8 +25,8 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Contact model (Compliant with solref/solimp, circular friction cone condim 3, contype/conaffinity filtering)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free**)
-- Actuators: Motor (`ctrl * gear`), Muscle (MuJoCo FLV curves, activation dynamics), Filter/Integrator dynamics, control/force clamping
-- Sensors (27 functional in pipeline): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer
+- Actuators: All 8 shortcut types (Motor, Position, Velocity, Damper, Cylinder, Adhesion, Muscle, General) with MuJoCo-compatible gain/bias force model (`force = gain * input + bias`), GainType/BiasType dispatch, FilterExact dynamics, control/force clamping
+- Sensors (30 pipeline types, all wired from MJCF): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer, User (0-dim), plus JointLimitFrc/TendonLimitFrc parsed but deferred
 - Model loading (URDF, MJCF with `<default>` parsing, **MJB binary format**) — note: `DefaultResolver` is implemented but **not called** by `model_builder.rs`; defaults are parsed then dropped
 
 ### Placeholder / Stub (in pipeline)
@@ -35,9 +35,10 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Site actuation — placeholder in `mj_fwd_actuation()` (requires spatial tendon support)
 
 ### Recently Implemented (previously stubs)
+- General gain/bias actuator force model ✅ — all 8 shortcut types expanded to gain/bias/dynamics, `force = gain * input + bias`, GainType/BiasType dispatch, FilterExact integration ([FUTURE_WORK #12](./FUTURE_WORK.md))
 - Muscle pipeline ✅ — MuJoCo FLV curves, activation dynamics, act_dot architecture, RK4 integration ([FUTURE_WORK #5](./FUTURE_WORK.md))
-- Activation dynamics ✅ — Filter, Integrator, Muscle types all functional; `data.act` integrated by Euler/RK4
-- Control/force clamping ✅ — `ctrlrange`/`forcerange` gated by `ctrllimited`/`forcelimited`
+- Activation dynamics ✅ — Filter, FilterExact, Integrator, Muscle types all functional; `data.act` integrated by Euler/RK4
+- Control/force clamping ✅ — `ctrlrange`/`forcerange` gated by `ctrllimited`/`forcelimited`; Damper/Adhesion force `ctrllimited=true`
 - TendonPos/TendonVel sensors ✅ — now read live `ten_length`/`ten_velocity` ([FUTURE_WORK #4](./FUTURE_WORK.md))
 - Tendon actuation ✅ — J^T force mapping in `mj_fwd_actuation()` ([FUTURE_WORK #4](./FUTURE_WORK.md))
 - Fixed tendon pipeline ✅ — kinematics, passive forces, limit constraints ([FUTURE_WORK #4](./FUTURE_WORK.md))
@@ -49,7 +50,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - sim-sensor (rangefinder, magnetometer, force/torque) — standalone crate with own API; pipeline has independent implementations
 - CGSolver in sim-constraint (1,664 lines) — 0 pipeline callers ([FUTURE_WORK #3](./FUTURE_WORK.md))
 - ~~`integrators.rs` trait system~~ — removed in FUTURE_WORK C1
-- Pneumatic, Adhesion actuators in sim-constraint — not in `mj_fwd_actuation()`
+- Pneumatic actuators in sim-constraint — standalone `PneumaticCylinderActuator`; pipeline cylinder/adhesion actuators use gain/bias model ([FUTURE_WORK #12](./FUTURE_WORK.md) ✅)
 - Planar, Cylindrical joints in sim-constraint — not in pipeline `MjJointType` (MJCF model builder errors)
 
 ### Removed (Phase 3 Consolidation)
@@ -63,18 +64,19 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 | Feature | Implementation | Section |
 |---------|----------------|---------|
+| General gain/bias actuator force model | All 8 shortcut types with `GainType`/`BiasType` dispatch, `FilterExact` dynamics, `ctrllimited` enforcement for Damper/Adhesion | [§7](#7-actuators) |
 | RK4 integrator | True 4-stage Runge-Kutta via `mj_runge_kutta()` with quaternion-safe position updates | [§1](#1-integration-methods) |
-| Pipeline sensors (27 types) | Force, Torque, Touch, Rangefinder, Magnetometer, SubtreeAngMom, ActuatorPos/Vel, TendonPos/Vel all functional | [§8](#8-sensors) |
+| Pipeline sensors (30 types) | All 30 types functional and wired from MJCF `<sensor>` elements via `model_builder.rs`; `set_options()` propagates `magnetic`/`wind`/`density`/`viscosity` | [§8](#8-sensors) |
 | Non-convex mesh collision | TriangleMesh ↔ all primitives + mesh-mesh with BVH acceleration | [§5](#5-geom-types-collision-shapes) |
 | SDF collision | All 10 shape combinations (Sphere, Capsule, Box, Cylinder, Ellipsoid, ConvexMesh, Plane, TriangleMesh, HeightField, Sdf↔Sdf) | [§5](#5-geom-types-collision-shapes) |
 | MJCF `<default>` element | ⚠️ Parsed only — `DefaultResolver` implemented but **not called** by `model_builder.rs`; defaults are silently dropped | [§13](#13-model-format) |
 | MJCF `<tendon>` parsing + pipeline | Fixed tendons fully wired (kinematics, actuation, passive, constraints, sensors); spatial tendons scaffolded | [§13](#13-model-format) |
-| MJCF `<sensor>` parsing | 24 sensor types (position, velocity, force, IMU, etc.) | [§13](#13-model-format) |
+| MJCF `<sensor>` parsing + wiring | 32 sensor types parsed; 30 wired to pipeline via `process_sensors()`; 2 deferred | [§13](#13-model-format) |
 | Muscle pipeline | MuJoCo FLV curves, activation dynamics (Millard 2013), act_dot/integrator architecture, RK4 activation | [§6](#6-actuation) |
 | Multi-threading | `parallel` feature with rayon (island-parallel solving removed in Phase 3) | [§12](#12-performance-optimizations) |
 | SIMD optimization | `sim-simd` crate with `Vec3x4`, `Vec3x8`, batch operations | [§12](#12-performance-optimizations) |
 
-**For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics), sensors (27 types), and fixed tendons are functional. Spatial tendons and deformable bodies require pipeline integration before they produce correct results. See `sim/docs/FUTURE_WORK.md` for the full gap list.
+**For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics), sensors (30 pipeline types, all wired from MJCF), and fixed tendons are functional. Spatial tendons and deformable bodies require pipeline integration before they produce correct results. See `sim/docs/FUTURE_WORK.md` for the full gap list.
 
 ---
 
@@ -561,18 +563,18 @@ FreeJoint is fully implemented in the pipeline. PlanarJoint and CylindricalJoint
 
 | Actuator | MuJoCo | CortenForge | Status | Priority | Complexity |
 |----------|--------|-------------|--------|----------|------------|
-| Motor (direct torque) | Yes | `mj_fwd_actuation()` (`ctrl * gear`) | **Implemented** | - | - |
-| Position servo | Yes | `JointMotor::position` | **Standalone** (in sim-constraint; pipeline has no gain/bias logic — treats as raw motor) | - | - |
-| Velocity servo | Yes | `JointMotor::velocity` | **Standalone** (in sim-constraint; pipeline has no gain/bias logic — treats as raw motor) | - | - |
-| PD control | Yes | `JointMotor::compute_force` with Kp/Kd | **Standalone** (in sim-constraint, not called by pipeline) | - | - |
+| Motor (direct torque) | Yes | `mj_fwd_actuation()` (gain/bias: `force = 1.0 * ctrl`) | **Implemented** | - | - |
+| Position servo | Yes | `mj_fwd_actuation()` (gain/bias: `force = kp*input - kp*length - kv*velocity`; FilterExact dynamics when `timeconst > 0`) | **Implemented** ([FUTURE_WORK #12](./FUTURE_WORK.md) ✅) | - | - |
+| Velocity servo | Yes | `mj_fwd_actuation()` (gain/bias: `force = kv*ctrl - kv*velocity`) | **Implemented** ([FUTURE_WORK #12](./FUTURE_WORK.md) ✅) | - | - |
+| PD control | Yes | Position servo with `kp` + `kv` (equivalent to PD control) | **Implemented** (via Position actuator with explicit `kv`) | - | - |
 | Integrated velocity | Yes | `IntegratedVelocityActuator` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
-| Damper | Yes | Passive joint damping in `mj_fwd_passive()` | **Partial** (passive damping works; MuJoCo `<damper>` actuator type not implemented — pipeline applies `ctrl * gear` instead of `-kv * qvel`) | - | - |
-| Cylinder (pneumatic) | Yes | `PneumaticCylinderActuator` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
+| Damper | Yes | `mj_fwd_actuation()` (gain/bias: Affine gain `= -kv*velocity`, `force = gain * ctrl`; `ctrllimited` enforced) | **Implemented** ([FUTURE_WORK #12](./FUTURE_WORK.md) ✅) | - | - |
+| Cylinder (pneumatic) | Yes | `mj_fwd_actuation()` (gain/bias: `force = area*act + bias[0] + bias[1]*length + bias[2]*velocity`; Filter dynamics with `timeconst`) | **Implemented** ([FUTURE_WORK #12](./FUTURE_WORK.md) ✅) | - | - |
 | Muscle (MuJoCo FLV) | Yes | MuJoCo FLV in pipeline + `HillMuscle` (standalone via sim-muscle) | **Implemented** (MuJoCo-compatible FLV curves, activation dynamics, act_dot architecture; [FUTURE_WORK #5](./FUTURE_WORK.md) ✅) | - | - |
-| Adhesion | Yes | `AdhesionActuator` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
-| General (custom) | Yes | `CustomActuator<F>` | **Standalone** (in sim-constraint, not in pipeline) | - | - |
+| Adhesion | Yes | `mj_fwd_actuation()` (gain/bias: `force = gain * ctrl`; `ctrllimited` enforced) | **Implemented** ([FUTURE_WORK #12](./FUTURE_WORK.md) ✅) | - | - |
+| General (custom) | Yes | Pipeline treats as Motor-like (gaintype=Fixed, biastype=None); full MJCF `gaintype`/`biastype` attribute parsing deferred | **Partial** (runtime is fully general; MJCF attribute wiring deferred) | - | - |
 
-> **Pipeline vs standalone actuators.** The MuJoCo pipeline's `mj_fwd_actuation()` implements a 3-phase architecture: (1) compute `act_dot` per `ActuatorDynamics` type (None → ctrl passthrough, Muscle → Millard activation dynamics, Filter → first-order, Integrator → ctrl), (2) compute force via gain/bias (Muscle → FLV curves, others → input passthrough), (3) map force to generalized coordinates via transmission J^T. Control clamping (`ctrlrange`, gated by `ctrllimited`) and force clamping (`forcerange`, gated by `forcelimited`) are enforced. `data.act` is integrated by the Euler/RK4 integrator using `act_dot` (activation is never modified inside `mj_fwd_actuation` — matching MuJoCo's `mjData.act_dot` convention). `ActuatorTransmission::Site` remains a placeholder (requires spatial tendon support). Position/Velocity/Damper servos still lack gain/bias processing (treated as raw motors). The sim-muscle crate (2,550 lines) provides a richer Hill-type model as a standalone alternative; sim-constraint actuators (`JointMotor`, `IntegratedVelocityActuator`, `PneumaticCylinderActuator`, `AdhesionActuator`, `CustomActuator`) remain standalone.
+> **Pipeline vs standalone actuators.** The MuJoCo pipeline's `mj_fwd_actuation()` implements a 3-phase architecture: (1) compute `act_dot` per `ActuatorDynamics` type (None → ctrl passthrough, Muscle → Millard activation dynamics, Filter/FilterExact → first-order filter, Integrator → ctrl), (2) compute force via general gain/bias formula `force = gain * input + bias` dispatched on `GainType`/`BiasType` (Fixed, Affine, Muscle), (3) map force to generalized coordinates via transmission J^T. All 8 MJCF shortcut actuator types (Motor, Position, Velocity, Damper, Cylinder, Adhesion, Muscle, General) are expanded to their general gain/bias/dynamics representation in the model builder, matching MuJoCo's `user_api.cc`. Control clamping (`ctrlrange`, gated by `ctrllimited`) and force clamping (`forcerange`, gated by `forcelimited`) are enforced. Damper and Adhesion actuators force `ctrllimited=true`. `data.act` is integrated by the Euler/RK4 integrator using `act_dot` (activation is never modified inside `mj_fwd_actuation` — matching MuJoCo's `mjData.act_dot` convention). FilterExact uses exact discrete integration `act += act_dot * tau * (1 - exp(-h/tau))` while Filter uses Euler. `ActuatorTransmission::Site` remains a placeholder (requires spatial tendon support). The sim-muscle crate (2,550 lines) provides a richer Hill-type model as a standalone alternative; sim-constraint actuators (`JointMotor`, `IntegratedVelocityActuator`, `PneumaticCylinderActuator`, `AdhesionActuator`, `CustomActuator`) remain standalone.
 
 ### Implementation Notes: Muscle Model ✅ COMPLETED (pipeline + standalone)
 
@@ -715,7 +717,7 @@ let torque = elbow.compute_joint_force(velocity, dt);
 | TendonPos / TendonVel | Yes | `MjSensorType::TendonPos/Vel` | ✅ **Implemented** (reads `ten_length`/`ten_velocity`; [FUTURE_WORK #4](./FUTURE_WORK.md)) | - |
 | Camera (rendered) | Yes | Out of scope | N/A | - |
 
-> **Two sensor systems exist.** The sim-sensor crate has standalone `Imu`, `ForceTorqueSensor`, `TouchSensor`, `Rangefinder`, and `Magnetometer` implementations that operate on `RigidBodyState` objects. The MuJoCo pipeline has its own sensor readout in `mj_sensor_pos()`/`mj_sensor_vel()`/`mj_sensor_acc()` within `mujoco_pipeline.rs`. All 27 pipeline sensor types are now functional, including TendonPos/TendonVel which read live tendon data since [FUTURE_WORK #4](./FUTURE_WORK.md).
+> **Two sensor systems exist.** The sim-sensor crate has standalone `Imu`, `ForceTorqueSensor`, `TouchSensor`, `Rangefinder`, and `Magnetometer` implementations that operate on `RigidBodyState` objects. The MuJoCo pipeline has its own sensor readout in `mj_sensor_pos()`/`mj_sensor_vel()`/`mj_sensor_acc()` within `mujoco_pipeline.rs`. All 30 pipeline sensor types are functional and fully wired from MJCF `<sensor>` elements via `process_sensors()` in `model_builder.rs` ([FUTURE_WORK #6](./FUTURE_WORK.md)). The MJCF parser recognizes 32 `MjcfSensorType` variants; 30 map to pipeline `MjSensorType`, 2 (JointLimitFrc, TendonLimitFrc) are skipped with a warning. `set_options()` propagates `magnetic`, `wind`, `density`, and `viscosity` from MJCF `<option>`. Magnetometer is evaluated in the Position stage (depends only on `site_xmat` from FK). ActuatorVel reads from pre-computed `data.actuator_velocity`.
 
 ### Implementation Notes: Sensors ✅ COMPLETED (both standalone sim-sensor crate and pipeline sensors)
 
@@ -1271,7 +1273,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<site>` | Parsed | Markers (not used in physics) |
 | `<actuator>` | Full | motor, position, velocity, cylinder, muscle, adhesion, damper, general |
 | `<tendon>` | Full (fixed) | Fixed tendons fully wired into pipeline via `process_tendons()`; spatial tendons scaffolded but deferred |
-| `<sensor>` | Full | 24 sensor types parsed and wired into pipeline; all 27 types functional (including tendon sensors) |
+| `<sensor>` | Full | 32 sensor types parsed (all MuJoCo types); 30 wired into pipeline via `process_sensors()`; 2 deferred (JointLimitFrc, TendonLimitFrc) |
 | `<contact>` | Partial | contype/conaffinity bitmasks on geoms work; `<pair>` and `<exclude>` sub-elements are **not parsed** |
 
 **Supported Joint Types:**
@@ -1408,7 +1410,7 @@ assert!(ext_config.flags.contact);
 
 ### ⚠️ Status: Partially Complete (January 2026)
 
-> **The authoritative roadmap is [`sim/docs/FUTURE_WORK.md`](./FUTURE_WORK.md)**, which lists 11 items (7 completed, 4 remaining) with verified code references and acceptance criteria. The phases below reflect historical development milestones. Features marked with ⚠️ were later removed or remain standalone (not wired into the pipeline).
+> **The authoritative roadmap is [`sim/docs/FUTURE_WORK.md`](./FUTURE_WORK.md)**, which lists 12 items (8 completed, 4 remaining) with verified code references and acceptance criteria. The phases below reflect historical development milestones. Features marked with ⚠️ were later removed or remain standalone (not wired into the pipeline).
 
 The following were completed in January 2026:
 
@@ -1418,7 +1420,7 @@ The following were completed in January 2026:
 | SDF collision | §5 Geoms | All 10 shape combinations implemented |
 | MJCF `<default>` element | §13 Model Format | ⚠️ `DefaultResolver` implemented but not called by `model_builder.rs` — defaults are parsed then dropped |
 | MJCF `<tendon>` parsing | §13 Model Format | Spatial and fixed tendons |
-| MJCF `<sensor>` parsing | §13 Model Format | 24 sensor types |
+| MJCF `<sensor>` parsing + wiring | §13 Model Format | 32 `MjcfSensorType` variants parsed; 30 wired to pipeline via `process_sensors()`; 2 deferred (JointLimitFrc, TendonLimitFrc) |
 
 See [FUTURE_WORK.md](./FUTURE_WORK.md) for remaining items.
 
@@ -1645,14 +1647,14 @@ let contact_model = ContactModel::default()
 
 ### Phase 7: Actuators & Control ⚠️ STANDALONE (sim-constraint only — not in pipeline)
 
-Focus: New actuator types and joint coupling in sim-constraint. **All items are standalone** — pipeline `mj_fwd_actuation()` has full gain/bias processing for muscle actuators (FLV curves, activation dynamics) but non-muscle actuators use `force = input` (no position/velocity servo gain/bias).
+Focus: New actuator types and joint coupling in sim-constraint. **All items are standalone** — pipeline `mj_fwd_actuation()` has full gain/bias processing for all actuator types (GainType/BiasType dispatch, FLV curves for muscles, Fixed/Affine gain/bias for non-muscle types, FilterExact dynamics).
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|
-| ~~Integrated velocity actuator~~ | §7 Actuators | Low | ✅ → ⚠️ **Standalone** (sim-constraint; pipeline has no gain/bias logic) |
-| ~~General custom actuator~~ | §7 Actuators | Medium | ✅ → ⚠️ **Standalone** (sim-constraint; not called by pipeline) |
-| ~~Pneumatic cylinder actuator~~ | §7 Actuators | Medium | ✅ → ⚠️ **Standalone** (sim-constraint; not called by pipeline) |
-| ~~Adhesion actuator~~ | §7 Actuators | Medium | ✅ → ⚠️ **Standalone** (sim-constraint; not called by pipeline) |
+| ~~Integrated velocity actuator~~ | §7 Actuators | Low | ✅ → ⚠️ **Standalone** (sim-constraint; pipeline has its own velocity actuator via gain/bias) |
+| ~~General custom actuator~~ | §7 Actuators | Medium | ✅ → ⚠️ **Standalone** (sim-constraint; pipeline has its own general actuator via GainType/BiasType) |
+| ~~Pneumatic cylinder actuator~~ | §7 Actuators | Medium | ✅ → ⚠️ **Standalone** (sim-constraint; pipeline has its own cylinder actuator via gain/bias + Filter dynamics) |
+| ~~Adhesion actuator~~ | §7 Actuators | Medium | ✅ → ⚠️ **Standalone** (sim-constraint; pipeline has its own adhesion actuator via gain/bias) |
 | ~~Joint coupling constraints~~ | §10 Equality | Medium | ✅ → ⚠️ **Standalone** (sim-constraint; pipeline has its own equality constraint solver) |
 
 **Implemented:**

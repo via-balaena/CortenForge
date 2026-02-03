@@ -1108,7 +1108,7 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
         actuator.kp = kp;
     }
     if let Some(kv) = parse_float_attr(e, "kv") {
-        actuator.kv = kv;
+        actuator.kv = Some(kv);
     }
 
     // ========================================================================
@@ -1121,7 +1121,7 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
         actuator.diameter = Some(diameter);
     }
     if let Some(timeconst) = parse_float_attr(e, "timeconst") {
-        actuator.timeconst = timeconst;
+        actuator.timeconst = Some(timeconst);
     }
     if let Some(bias) = get_attribute_opt(e, "bias") {
         let parts = parse_float_array(&bias)?;
@@ -2950,7 +2950,7 @@ mod tests {
         assert_eq!(cyl.actuator_type, MjcfActuatorType::Cylinder);
         assert_eq!(cyl.joint, Some("joint1".to_string()));
         assert_relative_eq!(cyl.area, 0.002, epsilon = 1e-10);
-        assert_relative_eq!(cyl.timeconst, 0.5, epsilon = 1e-10);
+        assert_eq!(cyl.timeconst, Some(0.5));
         assert_relative_eq!(cyl.bias[0], 1.0, epsilon = 1e-10);
         assert_relative_eq!(cyl.bias[1], 2.0, epsilon = 1e-10);
         assert_relative_eq!(cyl.bias[2], 3.0, epsilon = 1e-10);

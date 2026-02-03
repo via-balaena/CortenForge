@@ -126,9 +126,11 @@ for i in range(nu):
         act_dot[act_adr[i]] = muscle_activation_dynamics(ctrl_clamped, act[act_adr[i]], dynprm[i])
         input = act[act_adr[i]]       # use CURRENT activation for force
 
-    elif dyntype[i] == Filter:
+    elif dyntype[i] in (Filter, FilterExact):
         act_dot[act_adr[i]] = (ctrl_clamped - act[act_adr[i]]) / max(tau, 1e-10)
         input = act[act_adr[i]]
+        # Filter uses Euler integration, FilterExact uses exact discrete integration.
+        # Both compute the same act_dot here; the difference is in integrate().
 
     elif dyntype[i] == Integrator:
         act_dot[act_adr[i]] = ctrl_clamped
@@ -165,7 +167,12 @@ Default `dynprm` for muscles: `[tau_act=0.01, tau_deact=0.04, tausmooth=0.0]`.
 ### Phase 2: Force Generation (Gain/Bias)
 
 ```python
-    if dyntype[i] == Muscle:
+    # Gain dispatch (on gaintype, not dyntype)
+    if gaintype[i] == Fixed:
+        gain = gainprm[i][0]
+    elif gaintype[i] == Affine:
+        gain = gainprm[i][0] + gainprm[i][1]*length[i] + gainprm[i][2]*velocity[i]
+    elif gaintype[i] == Muscle:
         prm = gainprm[i]
         L0 = (lengthrange[i][1] - lengthrange[i][0]) / max(prm[1] - prm[0], 1e-10)
         norm_len = prm[0] + (actuator_length[i] - lengthrange[i][0]) / max(L0, 1e-10)
@@ -173,13 +180,18 @@ Default `dynprm` for muscles: `[tau_act=0.01, tau_deact=0.04, tausmooth=0.0]`.
 
         FL = muscle_gain_length(norm_len, lmin=prm[4], lmax=prm[5])
         FV = muscle_gain_velocity(norm_vel, fvmax=prm[8])
-        FP = muscle_passive_force(norm_len, lmax=prm[5], fpmax=prm[7])
-
         gain = -F0 * FL * FV
+
+    # Bias dispatch (on biastype, not dyntype)
+    if biastype[i] == None:
+        bias = 0.0
+    elif biastype[i] == Affine:
+        bias = biasprm[i][0] + biasprm[i][1]*length[i] + biasprm[i][2]*velocity[i]
+    elif biastype[i] == Muscle:
+        FP = muscle_passive_force(norm_len, lmax=prm[5], fpmax=prm[7])
         bias = -F0 * FP
-        force = gain * input + bias   # = -F0 * (FL*FV*act + FP)
-    else:
-        force = input                 # ctrl or filtered activation
+
+    force = gain * input + bias   # unified for all types
 ```
 
 **Force-Length curve** (`muscle_gain_length`): Piecewise-quadratic bump.
@@ -540,10 +552,15 @@ Activation uses `act_dot` (computed by `mj_fwd_actuation()` without modifying
 
 **Semi-implicit Euler (default, `Integrator::Euler`):**
 ```python
-# 0. Integrate activation
+# 0. Integrate activation (per actuator, then clamp muscles)
 for i in range(nu):
     for k in range(actuator_act_num[i]):
-        act[act_adr[i] + k] += h * act_dot[act_adr[i] + k]
+        j = act_adr[i] + k
+        if dyntype[i] == FilterExact:
+            tau = max(dynprm[i][0], 1e-10)
+            act[j] += act_dot[j] * tau * (1 - exp(-h / tau))   # exact discrete
+        else:
+            act[j] += h * act_dot[j]                            # Euler
     if dyntype[i] == Muscle:
         act[act_adr[i]:act_adr[i]+act_num[i]] = clamp(act[...], 0, 1)
 
@@ -604,8 +621,14 @@ for i in [1, 2, 3]:
     qvel = rk4_qvel[i]                        # set Data.qvel
 
     # Advance activation trial state from saved initial activation
-    for a in range(na):
-        act[a] = act_saved[a] + h * sum(A[i-1][j] * rk4_act_dot[j][a] for j in 0..3)
+    for each actuator act_i:
+        for each activation slot a owned by act_i:
+            weighted = sum(A[i-1][j] * rk4_act_dot[j][a] for j in 0..3)
+            if dyntype[act_i] == FilterExact:
+                tau = max(dynprm[act_i][0], 1e-10)
+                act[a] = act_saved[a] + weighted * tau * (1 - exp(-h / tau))
+            else:
+                act[a] = act_saved[a] + h * weighted
     clamp_muscle_activations(act, 0, 1)
 
     forward_skip_sensors()               # full pipeline minus sensors
@@ -617,8 +640,14 @@ qvel = rk4_qvel[0] + h * sum(B[i] * rk4_qacc[i] for i in 0..4)
 qpos = mj_integrate_pos_explicit(qpos_saved, sum(B[i] * rk4_qvel[i]), h)
 
 # Activation final combination
-for a in range(na):
-    act[a] = act_saved[a] + h * sum(B[j] * rk4_act_dot[j][a] for j in 0..4)
+for each actuator act_i:
+    for each activation slot a owned by act_i:
+        combined = sum(B[j] * rk4_act_dot[j][a] for j in 0..4)
+        if dyntype[act_i] == FilterExact:
+            tau = max(dynprm[act_i][0], 1e-10)
+            act[a] = act_saved[a] + combined * tau * (1 - exp(-h / tau))
+        else:
+            act[a] = act_saved[a] + h * combined
 clamp_muscle_activations(act, 0, 1)
 
 efc_lambda = efc_lambda_saved            # restore warmstart
@@ -660,12 +689,14 @@ Key details:
 | `jnt_springref[i]` | `f64` | Spring equilibrium position |
 | `jnt_solref[i]` | `[f64; 2]` | [timeconst, dampratio] for limits |
 | `jnt_solimp[i]` | `[f64; 5]` | [d0, d_width, width, midpoint, power] |
-| `actuator_dyntype[i]` | `ActuatorDynamics` | None, Filter, Integrator, or Muscle |
+| `actuator_dyntype[i]` | `ActuatorDynamics` | None, Filter, FilterExact, Integrator, or Muscle |
 | `actuator_trntype[i]` | `ActuatorTransmission` | Joint, Tendon, or Site |
 | `actuator_gear[i]` | `f64` | Transmission gear ratio |
-| `actuator_dynprm[i]` | `[f64; 3]` | Dynamics params (Muscle: [τ_act, τ_deact, τ_smooth]) |
-| `actuator_gainprm[i]` | `[f64; 9]` | Gain params (Muscle: [range0..1, F0, scale, lmin..vmax, fpmax, fvmax]) |
-| `actuator_biasprm[i]` | `[f64; 9]` | Bias params (Muscle: shared with gainprm) |
+| `actuator_gaintype[i]` | `GainType` | Fixed, Affine, or Muscle — dispatches gain computation |
+| `actuator_biastype[i]` | `BiasType` | None, Affine, or Muscle — dispatches bias computation |
+| `actuator_dynprm[i]` | `[f64; 3]` | Dynamics params (Muscle: [τ_act, τ_deact, τ_smooth]; Filter/FilterExact: [τ, 0, 0]) |
+| `actuator_gainprm[i]` | `[f64; 9]` | Gain params (per-type: Motor=[1,0,...], Position=[kp,0,...], Damper=[0,0,-kv,...], Muscle=[range0..1, F0, scale, lmin..vmax, fpmax, fvmax]) |
+| `actuator_biasprm[i]` | `[f64; 9]` | Bias params (per-type: Position=[0,-kp,-kv,...], Velocity=[0,0,-kv,...], Muscle=shared with gainprm) |
 | `actuator_lengthrange[i]` | `(f64, f64)` | Transmission length extremes (gear-scaled) |
 | `actuator_acc0[i]` | `f64` | ‖M⁻¹J‖ at qpos0 (for F0 auto-computation) |
 | `actuator_ctrlrange[i]` | `(f64, f64)` | Control input limits (gated by ctrllimited) |

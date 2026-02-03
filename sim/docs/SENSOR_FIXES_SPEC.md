@@ -621,16 +621,15 @@ each sensor discards the component it does not need.
 **Future fix**: Cache `(force, torque)` results keyed by `(body_id, site_pos)`.
 Only matters when both sensor types are attached to the same site.
 
-### Magnetometer in Wrong Evaluation Stage
+### ~~Magnetometer in Wrong Evaluation Stage~~ ✅ Fixed
 
-The magnetometer is evaluated in `mj_sensor_acc` (acceleration stage), but MuJoCo
+~~The magnetometer was evaluated in `mj_sensor_acc` (acceleration stage), but MuJoCo
 evaluates it in `mj_sensorPos` (position stage) because it only depends on
-`site_xmat` (computed during FK). Numerically this doesn't matter — `site_xmat`
-is the same in all stages. But it means the magnetometer won't produce output if
-a caller only runs the position stage.
+`site_xmat` (computed during FK).~~
 
-**Future fix**: Move magnetometer from `mj_sensor_acc` to `mj_sensor_pos`. Add
-the `MjSensorDataType::Position` tag for magnetometer sensors.
+**Fixed** in [FUTURE_WORK #6](./FUTURE_WORK.md) (Sensor Completion, Step 5):
+Magnetometer moved from `mj_sensor_acc()` to `mj_sensor_pos()` with
+`MjSensorDataType::Position`. Existing magnetometer tests updated accordingly.
 
 ### Unused Loop Variable in Touch Sensor
 
