@@ -3141,59 +3141,879 @@ made at implementation time:
 ## Group B (cont.) — Actuation
 
 ### 12. General Gain/Bias Actuator Force Model
-**Status:** Not started | **Effort:** M | **Prerequisites:** #5
+**Status:** Not started | **Effort:** M | **Prerequisites:** #5 ✅
 
 #### Current State
 
-`mj_fwd_actuation()` (after #5) computes force for non-muscle actuators as
-`force = input` — either raw `ctrl` (`DynType::None`) or filtered activation
-(`DynType::Filter`/`Integrator`). This is correct for Motor actuators but wrong
-for Position and Velocity servos.
+`mj_fwd_actuation()` (`mujoco_pipeline.rs:6493`) computes force for non-muscle
+actuators as `force = input` (`mujoco_pipeline.rs:6546-6551`):
 
-MuJoCo's full actuator pipeline uses `gain_type`/`bias_type` with parameter
-arrays `gainprm`/`biasprm` to compute:
-
+```rust
+_ => {
+    // Simple actuators: force = input (ctrl or filtered activation).
+    // MuJoCo's full gain/bias system is not implemented for non-muscle
+    // actuators in this spec. Tracked as future work.
+    input
+}
 ```
-actuator_force = gain(gainprm, input, length, velocity)
-               + bias(biasprm, input, length, velocity)
-```
 
-For Position servos: `gain = kp`, `bias = [0, -kp, 0]`, producing
-`force = kp * act - kp * length = kp * (act - length)` — a proportional
-controller. For Velocity servos: `force = kv * (act - velocity)`.
+Phase 2 dispatches on `model.actuator_dyntype[i]` (`mujoco_pipeline.rs:6524`),
+using `ActuatorDynamics::Muscle` as the match arm for the muscle path and `_`
+for everything else. This is incorrect — MuJoCo dispatches Phase 2 on
+`gaintype`/`biastype`, not `dyntype`. The dynamics type controls Phase 1
+(activation), while gain/bias types control Phase 2 (force).
 
-After #5 lands, the `actuator_gainprm`/`actuator_biasprm` arrays already exist
-on Model (used for muscles), and `actuator_length`/`actuator_velocity` are
-computed in `mj_actuator_length()`. This task extends the non-muscle force path
-in Step 9's Phase 2 to use the general gain/bias formula.
+**The `force = input` stub is wrong for Position, Velocity, Cylinder, and
+Damper actuators.** These are the most common actuator types in RL models
+(MuJoCo Menagerie humanoids, DM Control suite). Without gain/bias, any model
+using position or velocity servos produces incorrect torques.
+
+**What already exists (from #5):**
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| `actuator_gainprm: Vec<[f64; 9]>` | Model, line 932 | Exists, populated for Muscle only |
+| `actuator_biasprm: Vec<[f64; 9]>` | Model, line 937 | Exists, populated = gainprm for Muscle, `[gear, 0, ...]` for others |
+| `actuator_dynprm: Vec<[f64; 3]>` | Model, line 926 | Exists, populated for Muscle; `[0.0; 3]` for others |
+| `actuator_length: Vec<f64>` | Data, line 1310 | Exists, populated by `mj_actuator_length()` |
+| `actuator_velocity: Vec<f64>` | Data, line 1315 | Exists, populated by `mj_actuator_length()` |
+| `actuator_force: Vec<f64>` | Data, line 1319 | Exists, written in Phase 3 |
+| `mj_actuator_length()` | `mujoco_pipeline.rs:6347` | Complete for Joint and Tendon transmissions |
+| `ActuatorDynamics` enum | `mujoco_pipeline.rs:426` | `None`, `Filter`, `Integrator`, `Muscle` |
+| `MjcfActuator.kp` / `.kv` | `types.rs:1802-1804` | Parsed from MJCF, **not transferred to Model** |
+| `MjcfActuator.area` / `.bias` / `.timeconst` | `types.rs:1810-1816` | Parsed, **not transferred to Model** |
+
+**No `GainType` or `BiasType` enum exists.** No `actuator_gaintype` or
+`actuator_biastype` field exists on Model.
+
+**Bugs in current builder (`model_builder.rs:1203-1217`):**
+
+1. **Dynamics type for Position/Velocity:** The builder sets
+   `Position | Velocity => ActuatorDynamics::Filter` unconditionally.
+   MuJoCo defaults both to `mjDYN_NONE` (no filter, `input = ctrl`). A
+   first-order filter is only activated when the MJCF `timeconst` attribute is
+   explicitly set to a nonzero value. The current code incorrectly always
+   allocates an activation state for position/velocity actuators.
+
+2. **`dynprm` for non-muscle actuators:** Set to `[0.0; 3]` for all non-muscle
+   types (`model_builder.rs:1266`). For Cylinder actuators, `dynprm[0]` should
+   be `timeconst` (defaults to `1.0`). For Position/Velocity with explicit
+   `timeconst > 0`, `dynprm[0]` should be that value.
+
+3. **`gainprm`/`biasprm` for non-muscle actuators:** Set to `[gear, 0, ..., 0]`
+   for both (`model_builder.rs:1284-1292`). MuJoCo sets different values per
+   actuator type — `kp` for position, `kv` for velocity, `area` for cylinder,
+   and specific bias vectors for each (see Specification table below).
+
+4. **`kp`/`kv` parsed but discarded:** `MjcfActuator.kp` (default `1.0`) and
+   `.kv` (default `0.0`) are parsed (`parser.rs:1107-1111`) but never read by
+   the model builder.
 
 #### Objective
 
-Implement MuJoCo-compatible gain/bias force generation for all actuator types
-(Position, Velocity, Cylinder, General), replacing the `force = input` stub.
+Implement MuJoCo-compatible gain/bias force generation for all non-muscle
+actuator types, replacing the `force = input` stub with the general formula:
+
+```
+force = gain * input + bias
+```
+
+where `gain` and `bias` are computed from `gaintype`/`biastype` and their
+respective parameter arrays, and `input` is either `ctrl` (when
+`dyntype = None`) or the current activation value `act` (for
+Filter/FilterExact/Integrator).
+
+#### MuJoCo Reference: Shortcut Expansion Table
+
+Each MJCF shortcut actuator type expands to a `general` actuator with specific
+gain/bias/dynamics settings. These expansions are authoritative — verified
+against MuJoCo source (`src/user/user_api.cc`):
+
+| Shortcut | `gaintype` | `gainprm[0..3]` | `biastype` | `biasprm[0..3]` | `dyntype` | `dynprm[0]` |
+|----------|-----------|-----------------|-----------|-----------------|----------|------------|
+| **Motor** | Fixed | `[1, 0, 0]` | None | `[0, 0, 0]` | None | — |
+| **Position** | Fixed | `[kp, 0, 0]` | Affine | `[0, -kp, -kv]` | None (default) | — |
+| **Position** (timeconst>0) | Fixed | `[kp, 0, 0]` | Affine | `[0, -kp, -kv]` | FilterExact | timeconst |
+| **Velocity** | Fixed | `[kv, 0, 0]` | Affine | `[0, 0, -kv]` | None | — |
+| **Damper** | Affine | `[0, 0, -kv]` | None | `[0, 0, 0]` | None | — |
+| **Cylinder** | Fixed | `[area, 0, 0]` | Affine | `[bias0, bias1, bias2]` | Filter | timeconst |
+| **Muscle** | Muscle | (FLV params) | Muscle | (FLV params) | Muscle | (tau_act, tau_deact) |
+| **Adhesion** | Fixed | `[gain, 0, 0]` | None | `[0, 0, 0]` | None | — |
+
+For Position: `kv` comes from either explicit `kv` attribute or is `0.0` by
+default. The `dampratio` attribute (alternative to `kv`) is **deferred** — see
+Scope Decision below. When both `kp` and `kv` are specified:
+`force = kp * input + (0 - kp * length - kv * velocity) = kp * (input - length) - kv * velocity`.
+
+For Damper: `gain = 0 + 0*length + (-kv)*velocity = -kv * velocity`, so
+`force = (-kv * velocity) * ctrl`. Since `ctrl ∈ [0, ctrlrange_max]` (damper
+requires `ctrllimited=true`, non-negative range), this produces a
+velocity-opposing force scaled by control input.
+
+#### Scope Decision: `dampratio` Deferred
+
+MuJoCo position actuators support `dampratio` as an alternative to `kv`:
+`kv = dampratio * 2 * sqrt(kp * inertia)`. This requires computing effective
+inertia from `acc0` at model compile time. The `dampratio` attribute is not
+parsed today, and `acc0` is only computed for muscle actuators (in
+`compute_muscle_params()`).
+
+**This PR does not implement `dampratio`.** Rationale:
+- `dampratio` is not commonly specified in RL models (most use explicit `kv` or
+  `kv = 0` for pure position servos).
+- `acc0` computation for non-muscle actuators requires extending
+  `compute_muscle_params()` into a general `compute_actuator_params()` function,
+  which is orthogonal to the gain/bias force path.
+- The gain/bias formula itself is complete without `dampratio` — it only
+  affects how `biasprm[2]` is resolved in the builder. Adding `dampratio`
+  support later is a builder-only change with no pipeline modifications.
+
+When `dampratio` is added, the builder will:
+1. Parse `dampratio` from MJCF (mutually exclusive with `kv`).
+2. Compute `acc0` for all actuators (extending `compute_muscle_params()`).
+3. Resolve `kv = dampratio * 2 * sqrt(kp / acc0)` (where `1/acc0` is effective
+   inertia).
+4. Store `-kv` in `biasprm[2]`.
+
+#### Scope Decision: `general` Actuator MJCF Parsing Deferred
+
+MuJoCo's `<general>` actuator element accepts explicit `gaintype`, `biastype`,
+`dyntype`, `gainprm`, `biasprm`, `dynprm` attributes. The parser currently
+handles `<general>` by routing it through `MjcfActuatorType::General` with
+the same attribute set as other shortcuts.
+
+**This PR does not add `gaintype`/`biastype`/`dyntype` MJCF attribute parsing
+for `<general>`.** Rationale:
+- No RL models in common use (MuJoCo Menagerie, DM Control, Gymnasium) use
+  `<general>` with explicit gain/bias types. They all use the shortcut types.
+- The gain/bias *runtime* is fully general — any combination of Fixed/Affine/None
+  works. Only the *builder wiring* from MJCF attributes is missing.
+- Adding MJCF parsing for `gaintype`/`biastype` is a parser+builder change
+  with no pipeline modifications. It can land independently.
+
+For now, `<general>` actuators are treated as Motor-like (gaintype=Fixed,
+gainprm=[1,0,0], biastype=None).
 
 #### Specification
 
-To be written when this task is picked up. Key design points:
+**Implementation ordering note:** Steps are numbered by logical grouping, not
+strict code order. In the builder function, the `timeconst` and `kv` resolution
+from Step 6 must execute *before* the dyntype match (Step 3) and the gain/bias
+match (Step 4), since both depend on the resolved values. Concretely, place the
+`let timeconst = ...` and `let kv = ...` lines at the top of the actuator
+processing loop, before the `let dyntype = match ...` block.
 
-- Add `actuator_gaintype` and `actuator_biastype` fields to Model (enum: Fixed,
-  Affine, Muscle).
-- Populate `gainprm`/`biasprm` correctly for Position (`kp`), Velocity (`kv`),
-  and Cylinder actuators in the builder.
-- Replace the `_ => { input }` branch in `mj_fwd_actuation` Phase 2 with the
-  general formula.
+##### Step 1: Add `FilterExact` Variant, `GainType` and `BiasType` Enums
+
+Add `FilterExact` to the existing `ActuatorDynamics` enum
+(`mujoco_pipeline.rs:426`):
+
+```rust
+pub enum ActuatorDynamics {
+    /// No dynamics — input = ctrl (direct passthrough).
+    #[default]
+    None,
+    /// First-order filter (Euler): act_dot = (ctrl - act) / tau.
+    Filter,
+    /// First-order filter (exact): act_dot = (ctrl - act) / tau,
+    /// integrated as act += act_dot * tau * (1 - exp(-h/tau)).
+    /// MuJoCo reference: `mjDYN_FILTEREXACT`.
+    FilterExact,
+    /// Integrator: act_dot = ctrl.
+    Integrator,
+    /// Muscle activation dynamics.
+    Muscle,
+}
+```
+
+The `FilterExact` variant computes `act_dot` identically to `Filter` in Phase 1.
+The difference is only at integration time — `FilterExact` uses the closed-form
+solution `act += act_dot * tau * (1 - exp(-h/tau))` instead of Euler
+`act += h * act_dot`. This is MuJoCo's `mjDYN_FILTEREXACT`, used by Position
+actuators with `timeconst > 0`.
+
+Then add `GainType` and `BiasType` enums directly after `ActuatorDynamics`:
+
+```rust
+/// Actuator gain type — controls how `gain` is computed in Phase 2.
+///
+/// MuJoCo reference: `mjtGain` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum GainType {
+    /// gain = gainprm[0] (constant).
+    #[default]
+    Fixed,
+    /// gain = gainprm[0] + gainprm[1]*length + gainprm[2]*velocity.
+    Affine,
+    /// Muscle FLV gain (handled separately in the Muscle path).
+    Muscle,
+}
+
+/// Actuator bias type — controls how `bias` is computed in Phase 2.
+///
+/// MuJoCo reference: `mjtBias` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum BiasType {
+    /// bias = 0.
+    #[default]
+    None,
+    /// bias = biasprm[0] + biasprm[1]*length + biasprm[2]*velocity.
+    Affine,
+    /// Muscle passive force (handled separately in the Muscle path).
+    Muscle,
+}
+```
+
+##### Step 2: Add `actuator_gaintype` and `actuator_biastype` to Model
+
+Add to the Model struct, after `actuator_act_num` (line 921) and before
+`actuator_dynprm` (line 926):
+
+```rust
+/// Gain type per actuator — dispatches force gain computation.
+pub actuator_gaintype: Vec<GainType>,
+/// Bias type per actuator — dispatches force bias computation.
+pub actuator_biastype: Vec<BiasType>,
+```
+
+Initialize to empty vecs in `Model::empty()` (alongside other actuator
+Vec inits).
+
+##### Step 3: Fix Dynamics Type Assignment in Model Builder
+
+Replace the dynamics type match in `model_builder.rs` (lines 1209-1217):
+
+```rust
+// Current (WRONG):
+let dyntype = match actuator.actuator_type {
+    MjcfActuatorType::Motor
+    | MjcfActuatorType::General
+    | MjcfActuatorType::Damper
+    | MjcfActuatorType::Adhesion => ActuatorDynamics::None,
+    MjcfActuatorType::Position | MjcfActuatorType::Velocity => ActuatorDynamics::Filter,
+    MjcfActuatorType::Muscle => ActuatorDynamics::Muscle,
+    MjcfActuatorType::Cylinder => ActuatorDynamics::Integrator,
+};
+```
+
+With:
+
+```rust
+// MuJoCo semantics: dyntype is determined by the shortcut type AND timeconst.
+// Position defaults to None; if timeconst > 0, uses FilterExact (exact discrete filter).
+// Cylinder always uses Filter (Euler-approximated; timeconst defaults to 1.0).
+// Motor/General/Damper/Adhesion/Velocity: no dynamics.
+// Muscle: muscle activation dynamics.
+let dyntype = match actuator.actuator_type {
+    MjcfActuatorType::Motor
+    | MjcfActuatorType::General
+    | MjcfActuatorType::Damper
+    | MjcfActuatorType::Adhesion
+    | MjcfActuatorType::Velocity => ActuatorDynamics::None,
+    MjcfActuatorType::Position => {
+        // timeconst already resolved from Option<f64> (default 0.0 for position)
+        if timeconst > 0.0 {
+            ActuatorDynamics::FilterExact // MuJoCo: mjDYN_FILTEREXACT
+        } else {
+            ActuatorDynamics::None
+        }
+    }
+    MjcfActuatorType::Muscle => ActuatorDynamics::Muscle,
+    MjcfActuatorType::Cylinder => ActuatorDynamics::Filter, // was Integrator — MuJoCo uses Filter
+};
+```
+
+**Update `act_num` match** (`model_builder.rs:1248-1251`): The `FilterExact`
+variant needs `act_num = 1` (it has an activation state, same as `Filter`).
+Update the existing match:
+
+```rust
+let act_num = match dyntype {
+    ActuatorDynamics::None => 0,
+    ActuatorDynamics::Filter
+    | ActuatorDynamics::FilterExact
+    | ActuatorDynamics::Integrator
+    | ActuatorDynamics::Muscle => 1,
+};
+```
+
+**Update Phase 1 `input` match** (`mujoco_pipeline.rs:6500-6521`): This is an
+exhaustive match over `ActuatorDynamics` that will fail to compile without a
+`FilterExact` arm. See Step 5a for the arm to add.
+
+**Behavioral changes:**
+
+- Position and Velocity actuators with default `timeconst=0` will now have
+  `dyntype=None`, `act_num=0` (no activation state), and `input = ctrl`
+  (direct passthrough). Previously they had `dyntype=Filter`, `act_num=1`,
+  and `input = act` (first-order filtered). This is the correct MuJoCo
+  behavior — unfiltered position/velocity servos respond instantly. This
+  changes `Model.na` (total activation states), which affects `Data.act`
+  and `Data.act_dot` dimensions. Existing tests that construct
+  Position/Velocity actuators without explicit `timeconst > 0` will see
+  `na` decrease. This is correct — the old behavior was a bug.
+
+- Cylinder actuators change from `ActuatorDynamics::Integrator` to
+  `ActuatorDynamics::Filter`. MuJoCo uses `mjDYN_FILTER` for cylinders —
+  the pressure is filtered (first-order lag from `ctrl`), not integrated.
+  The old `Integrator` assignment was incorrect: a pure integrator would
+  integrate `ctrl` as `act_dot = ctrl`, making `act` grow unboundedly,
+  while a filter converges to `ctrl` with time constant `dynprm[0]`.
+
+- Velocity actuators are unconditionally `dyntype=None`. The `timeconst`
+  attribute is silently ignored for Velocity — if someone writes
+  `<velocity joint="j1" timeconst="0.1"/>`, the parser stores it in
+  `MjcfActuator.timeconst` but the builder never reads it for Velocity.
+  This matches MuJoCo: `mjs_setToVelocity` does not accept a `timeconst`
+  parameter and always sets `dyntype = mjDYN_NONE`.
+
+**Note on `MjcfActuator.timeconst` default:** The `Default` impl for
+`MjcfActuator` sets `timeconst: 1.0` (`types.rs:1867`). This default is
+for Cylinder actuators (MuJoCo's cylinder default is `timeconst=1.0`). For
+Position actuators, MuJoCo's default is `timeconst=0` (no filter). To avoid
+the Position path inheriting the Cylinder default, the builder must check
+whether `timeconst` was explicitly set. The simplest approach: change
+`MjcfActuator.timeconst` to `Option<f64>` (defaulting to `None`), and resolve
+the default per actuator type in the builder:
+
+```rust
+let timeconst = actuator.timeconst.unwrap_or(match actuator.actuator_type {
+    MjcfActuatorType::Cylinder => 1.0,
+    _ => 0.0,
+});
+```
+
+This requires updating `types.rs` (field type), `parser.rs` (parse into
+`Some(value)`), and the builder. The `MjcfActuator::cylinder()` constructor
+should continue to produce `timeconst: Some(1.0)`.
+
+**`FilterExact` vs `Filter`:** MuJoCo's Position actuator (with `timeconst > 0`)
+uses `mjDYN_FILTEREXACT`, while Cylinder uses `mjDYN_FILTER`. Both compute
+`act_dot = (ctrl - act) / tau` identically in Phase 1. The difference is at
+integration time:
+
+- **Filter** (Euler): `act += h * act_dot`
+- **FilterExact** (exact): `act += act_dot * tau * (1 - exp(-h/tau))`
+
+The exact formula is the closed-form solution of `d(act)/dt = (ctrl - act) / tau`
+over timestep `h`. For `tau >> h` both converge, but FilterExact is more accurate
+when `tau` is comparable to `h`. MuJoCo uses FilterExact specifically for Position
+actuators. See Step 5a below for integration changes.
+
+##### Step 4: Populate `gaintype`, `biastype`, `gainprm`, `biasprm`, `dynprm` per Shortcut Type
+
+Replace the dynprm/gain/bias parameter block in `model_builder.rs` (lines 1257-1292)
+with per-type expansion. This is the core of the shortcut-to-general mapping:
+
+```rust
+// Gain/Bias/Dynamics parameters — expand shortcut type to general actuator.
+// Reference: MuJoCo src/user/user_api.cc (mjs_setToMotor, mjs_setToPosition, etc.)
+let (gaintype, biastype, gainprm, biasprm, dynprm) = match actuator.actuator_type {
+    MjcfActuatorType::Motor => (
+        GainType::Fixed,
+        BiasType::None,
+        {
+            let mut p = [0.0; 9];
+            p[0] = 1.0; // unit gain
+            p
+        },
+        [0.0; 9],
+        [0.0; 3],
+    ),
+
+    MjcfActuatorType::Position => {
+        let kp = actuator.kp; // default 1.0
+        // kv resolved above from Option<f64> (default 0.0 for position)
+        let tc = timeconst;   // resolved above (default 0.0 for position)
+        let mut gp = [0.0; 9];
+        gp[0] = kp;
+        let mut bp = [0.0; 9];
+        bp[1] = -kp;
+        bp[2] = -kv;
+        (
+            GainType::Fixed,
+            BiasType::Affine,
+            gp,
+            bp,
+            [tc, 0.0, 0.0],
+        )
+    }
+
+    MjcfActuatorType::Velocity => {
+        // kv resolved above from Option<f64> (default 1.0 for velocity)
+        let mut gp = [0.0; 9];
+        gp[0] = kv;
+        let mut bp = [0.0; 9];
+        bp[2] = -kv;
+        (
+            GainType::Fixed,
+            BiasType::Affine,
+            gp,
+            bp,
+            [0.0; 3],
+        )
+    }
+
+    MjcfActuatorType::Damper => {
+        // kv resolved above from Option<f64> (default 1.0 for damper)
+        let mut gp = [0.0; 9];
+        gp[2] = -kv; // gain = -kv * velocity
+        (
+            GainType::Affine,
+            BiasType::None,
+            gp,
+            [0.0; 9],
+            [0.0; 3],
+        )
+    }
+
+    MjcfActuatorType::Cylinder => {
+        let area = if let Some(d) = actuator.diameter {
+            std::f64::consts::PI / 4.0 * d * d
+        } else {
+            actuator.area
+        };
+        let tc = timeconst; // resolved above (default 1.0 for cylinder)
+        let mut gp = [0.0; 9];
+        gp[0] = area;
+        let mut bp = [0.0; 9];
+        bp[0] = actuator.bias[0];
+        bp[1] = actuator.bias[1];
+        bp[2] = actuator.bias[2];
+        (
+            GainType::Fixed,
+            BiasType::Affine,
+            gp,
+            bp,
+            [tc, 0.0, 0.0],
+        )
+    }
+
+    MjcfActuatorType::Adhesion => {
+        let mut gp = [0.0; 9];
+        gp[0] = actuator.gain;
+        (
+            GainType::Fixed,
+            BiasType::None,
+            gp,
+            [0.0; 9],
+            [0.0; 3],
+        )
+    }
+
+    MjcfActuatorType::Muscle => {
+        // Muscle: unchanged from #5 implementation.
+        let gp = [
+            actuator.range.0, actuator.range.1, actuator.force,
+            actuator.scale, actuator.lmin, actuator.lmax,
+            actuator.vmax, actuator.fpmax, actuator.fvmax,
+        ];
+        (
+            GainType::Muscle,
+            BiasType::Muscle,
+            gp,
+            gp, // biasprm = gainprm (shared layout, MuJoCo convention)
+            [actuator.muscle_timeconst.0, actuator.muscle_timeconst.1, 0.0],
+        )
+    }
+
+    MjcfActuatorType::General => {
+        // TODO(general-actuator): <general> without explicit gaintype/biastype
+        // is treated as Motor-like. Full MJCF attribute parsing for gaintype,
+        // biastype, dyntype, gainprm, biasprm, dynprm is deferred. When added,
+        // emit a warning if <general> is encountered without these attributes,
+        // since the Motor-like fallback may not match user intent.
+        // See Scope Decision: `general` Actuator MJCF Parsing Deferred.
+        let mut gp = [0.0; 9];
+        gp[0] = 1.0;
+        (
+            GainType::Fixed,
+            BiasType::None,
+            gp,
+            [0.0; 9],
+            [0.0; 3],
+        )
+    }
+};
+
+self.actuator_gaintype.push(gaintype);
+self.actuator_biastype.push(biastype);
+self.actuator_gainprm.push(gainprm);
+self.actuator_biasprm.push(biasprm);
+self.actuator_dynprm.push(dynprm);
+```
+
+This replaces the existing `is_muscle` branch and the `[0.0; 3]` dynprm
+fallback. The Muscle arm is equivalent to the existing #5 code; the new arms
+populate the correct shortcut-specific parameters.
+
+**Damper `ctrllimited` enforcement:** MuJoCo's damper shortcut unconditionally
+sets `ctrllimited = 1` (`mjs_setToDamper` in `user_api.cc`). Add this before
+the ctrlrange gate (`model_builder.rs:1224`):
+
+```rust
+// Damper actuators force ctrllimited (MuJoCo: mjs_setToDamper sets ctrllimited=1).
+let ctrllimited = match actuator.actuator_type {
+    MjcfActuatorType::Damper => true,
+    _ => actuator.ctrllimited,
+};
+```
+
+Then use `ctrllimited` (the local variable) instead of `actuator.ctrllimited` at
+line 1226. Without this, a `<damper joint="j1" kv="5"/>` (no explicit
+`ctrllimited="true"`) would get unbounded ctrlrange, allowing negative control
+values that produce force in the direction of motion — the opposite of a damper.
+
+##### Step 5: Replace Phase 2 Force Dispatch in `mj_fwd_actuation()`
+
+Replace the Phase 2 block (`mujoco_pipeline.rs:6523-6552`) with gain/bias
+dispatch on `gaintype`/`biastype`:
+
+```rust
+// --- Phase 2: Force generation (gain * input + bias) ---
+let length = data.actuator_length[i];
+let velocity = data.actuator_velocity[i];
+
+let gain = match model.actuator_gaintype[i] {
+    GainType::Fixed => model.actuator_gainprm[i][0],
+    GainType::Affine => {
+        model.actuator_gainprm[i][0]
+            + model.actuator_gainprm[i][1] * length
+            + model.actuator_gainprm[i][2] * velocity
+    }
+    GainType::Muscle => {
+        // Muscle gain = -F0 * FL(L) * FV(V)
+        let prm = &model.actuator_gainprm[i];
+        let lengthrange = model.actuator_lengthrange[i];
+        let f0 = prm[2]; // resolved by compute_muscle_params()
+
+        let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
+        let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
+        let norm_vel = velocity / (l0 * prm[6]).max(1e-10);
+
+        let fl = muscle_gain_length(norm_len, prm[4], prm[5]);
+        let fv = muscle_gain_velocity(norm_vel, prm[8]);
+        -f0 * fl * fv
+    }
+};
+
+let bias = match model.actuator_biastype[i] {
+    BiasType::None => 0.0,
+    BiasType::Affine => {
+        model.actuator_biasprm[i][0]
+            + model.actuator_biasprm[i][1] * length
+            + model.actuator_biasprm[i][2] * velocity
+    }
+    BiasType::Muscle => {
+        let prm = &model.actuator_gainprm[i]; // muscle uses gainprm for both
+        let lengthrange = model.actuator_lengthrange[i];
+        let f0 = prm[2];
+
+        let l0 = (lengthrange.1 - lengthrange.0) / (prm[1] - prm[0]).max(1e-10);
+        let norm_len = prm[0] + (length - lengthrange.0) / l0.max(1e-10);
+
+        let fp = muscle_passive_force(norm_len, prm[5], prm[7]);
+        -f0 * fp
+    }
+};
+
+let force = gain * input + bias;
+```
+
+This replaces the existing `match model.actuator_dyntype[i]` dispatch with
+`match model.actuator_gaintype[i]` + `match model.actuator_biastype[i]`.
+
+**The muscle path is logically identical to the existing code** — same FLV
+curves, same F0 handling — just restructured to use the gain/bias dispatch.
+This eliminates the special-case `ActuatorDynamics::Muscle` match in Phase 2
+and unifies all actuator types under one formula: `force = gain * input + bias`.
+
+##### Step 5a: Add `FilterExact` to Phase 1 and Integration
+
+**Phase 1 (`mj_fwd_actuation`, line 6500):** Add a `FilterExact` arm to the
+`input` match. The `act_dot` computation is identical to `Filter`:
+
+```rust
+ActuatorDynamics::FilterExact => {
+    // Same act_dot as Filter; exact integration happens in integrate().
+    let act_adr = model.actuator_act_adr[i];
+    let tau = model.actuator_dynprm[i][0].max(1e-10);
+    data.act_dot[act_adr] = (ctrl - data.act[act_adr]) / tau;
+    data.act[act_adr]
+}
+```
+
+**Euler integration (`Data::integrate()`, line 2635):** Replace the uniform
+`act += h * act_dot` with a per-actuator integration step:
+
+```rust
+for i in 0..model.nu {
+    let act_adr = model.actuator_act_adr[i];
+    let act_num = model.actuator_act_num[i];
+    for k in 0..act_num {
+        let j = act_adr + k;
+        match model.actuator_dyntype[i] {
+            ActuatorDynamics::FilterExact => {
+                // Exact: act += act_dot * tau * (1 - exp(-h/tau))
+                let tau = model.actuator_dynprm[i][0].max(1e-10);
+                self.act[j] += self.act_dot[j] * tau * (1.0 - (-h / tau).exp());
+            }
+            _ => {
+                // Euler: act += h * act_dot
+                self.act[j] += h * self.act_dot[j];
+            }
+        }
+    }
+    // Clamp muscle activation to [0, 1]
+    if model.actuator_dyntype[i] == ActuatorDynamics::Muscle {
+        for k in 0..act_num {
+            self.act[act_adr + k] = self.act[act_adr + k].clamp(0.0, 1.0);
+        }
+    }
+}
+```
+
+**RK4 integration (`mj_runge_kutta`, line 10229):** Same change for the final
+activation combination. Replace `act = saved + h * combined` with:
+
+```rust
+for a in 0..na {
+    let dact_combined: f64 = (0..4).map(|j| RK4_B[j] * data.rk4_act_dot[j][a]).sum();
+    // Find which actuator owns this activation slot
+    // (actuator_act_adr[i] <= a < actuator_act_adr[i] + actuator_act_num[i])
+    let actuator_idx = model.actuator_act_adr.iter()
+        .enumerate()
+        .rev()
+        .find(|&(i, &adr)| adr <= a && a < adr + model.actuator_act_num[i])
+        .map(|(i, _)| i)
+        .unwrap();
+    match model.actuator_dyntype[actuator_idx] {
+        ActuatorDynamics::FilterExact => {
+            let tau = model.actuator_dynprm[actuator_idx][0].max(1e-10);
+            data.act[a] = data.rk4_act_saved[a]
+                + dact_combined * tau * (1.0 - (-h / tau).exp());
+        }
+        _ => {
+            data.act[a] = data.rk4_act_saved[a] + h * dact_combined;
+        }
+    }
+}
+```
+
+The same per-actuator check applies to the RK4 trial states (line 10164). The
+reverse lookup from activation index to actuator index can be precomputed as a
+`Vec<usize>` of length `na` at model build time if the per-step lookup is a
+performance concern. For now the linear scan is correct and `nu` is typically
+small (<100).
+
+##### Step 6: Fix `MjcfActuator` Per-Type Defaults
+
+Several `MjcfActuator` fields have a single struct-level default that is wrong
+for some actuator types. MuJoCo resolves defaults per actuator type at compile
+time. To distinguish "attribute not set" from "attribute set to 0", change these
+fields from `f64` to `Option<f64>`:
+
+**`timeconst`** — in `MjcfActuator` struct (line 1814):
+```rust
+/// Activation dynamics time constant (s). `None` means use actuator-type default.
+pub timeconst: Option<f64>,
+```
+
+In `Default` impl (line 1867): `timeconst: None,`
+In `MjcfActuator::cylinder()`: `timeconst: Some(1.0),`
+In `parser.rs` (line 1123): parse into `Some(value)`.
+
+Builder resolution:
+```rust
+let timeconst = actuator.timeconst.unwrap_or(match actuator.actuator_type {
+    MjcfActuatorType::Cylinder => 1.0,
+    _ => 0.0,
+});
+```
+
+**`kv`** — in `MjcfActuator` struct (line 1804):
+```rust
+/// Velocity gain. `None` means use actuator-type default.
+pub kv: Option<f64>,
+```
+
+In `Default` impl (line 1863): `kv: None,`
+In `MjcfActuator::velocity()`: `kv: Some(kv),`
+In `parser.rs` (line 1110): parse into `Some(value)`.
+
+Builder resolution:
+```rust
+let kv = actuator.kv.unwrap_or(match actuator.actuator_type {
+    MjcfActuatorType::Velocity | MjcfActuatorType::Damper => 1.0,
+    _ => 0.0,
+});
+```
+
+MuJoCo defaults: `kv = 1.0` for `<velocity>` and `<damper>`, `kv = 0.0` for
+`<position>` and all other types. Without `Option`, a `<velocity joint="j1"/>`
+without explicit `kv` would use `kv = 0.0` (producing zero force), which is
+wrong.
+
+**`kp`** remains `f64` with default `1.0` — this matches MuJoCo's default for
+all actuator types that use `kp` (Position). No per-type resolution needed.
+
+**Add `damper()` constructor** — `MjcfActuator` has constructors for motor,
+position, velocity, cylinder, muscle, and adhesion, but not damper. Add one
+to `types.rs` (after `cylinder()`, line 1931):
+
+```rust
+/// Create a damper actuator for a joint.
+#[must_use]
+pub fn damper(name: impl Into<String>, joint: impl Into<String>, kv: f64) -> Self {
+    Self {
+        name: name.into(),
+        actuator_type: MjcfActuatorType::Damper,
+        joint: Some(joint.into()),
+        kv: Some(kv),
+        ..Default::default()
+    }
+}
+```
+
+This enables clean test construction for damper acceptance criteria (#6, #13)
+without MJCF XML boilerplate.
+
+##### Step 7: Update `MUJOCO_REFERENCE.md` Phase 2 Documentation
+
+Replace the non-muscle stub (line 182):
+```python
+    else:
+        force = input                 # ctrl or filtered activation
+```
+
+With:
+```python
+    else:
+        # General gain/bias formula
+        if gaintype[i] == Fixed:
+            gain = gainprm[i][0]
+        elif gaintype[i] == Affine:
+            gain = gainprm[i][0] + gainprm[i][1]*length[i] + gainprm[i][2]*velocity[i]
+
+        if biastype[i] == None:
+            bias = 0.0
+        elif biastype[i] == Affine:
+            bias = biasprm[i][0] + biasprm[i][1]*length[i] + biasprm[i][2]*velocity[i]
+
+        force = gain * input + bias
+```
 
 #### Acceptance Criteria
-1. Position servo with `kp = 100`, `ctrl = 1.0` at `length = 0.5` produces
-   `force = 100 * (act - 0.5)`.
-2. Velocity servo with `kv = 10`, `ctrl = 1.0` at `velocity = 0.2` produces
-   `force = 10 * (act - 0.2)`.
-3. Motor actuators (`DynType::None`) remain unchanged.
-4. Muscle force path unchanged.
+
+1. **Motor actuator (regression):** `DynType::None`, `gaintype=Fixed`,
+   `gainprm=[1,0,0]`, `biastype=None`. With `ctrl = 5.0`:
+   `force = 1.0 * 5.0 + 0.0 = 5.0`. Identical to pre-change behavior.
+
+2. **Position servo (P-only):** `kp = 100`, `kv = 0`, `timeconst = 0` (no
+   filter). `dyntype=None`, `gaintype=Fixed`, `gainprm=[100,0,0]`,
+   `biastype=Affine`, `biasprm=[0,-100,0]`. With `ctrl = 1.0`,
+   `actuator_length = 0.5`:
+   `force = 100 * 1.0 + (0 - 100*0.5 - 0) = 100 - 50 = 50`.
+   Equivalently: `force = kp * (ctrl - length) = 100 * (1.0 - 0.5) = 50`.
+
+3. **Position servo (PD):** `kp = 100`, `kv = 10`, `timeconst = 0`.
+   With `ctrl = 1.0`, `actuator_length = 0.5`, `actuator_velocity = 0.2`:
+   `force = 100 * 1.0 + (0 - 100*0.5 - 10*0.2) = 100 - 50 - 2 = 48`.
+   Equivalently: `force = kp*(ctrl - length) - kv*velocity`.
+
+4. **Position servo (filtered):** `kp = 100`, `kv = 0`, `timeconst = 0.1`.
+   `dyntype=FilterExact`, `dynprm=[0.1,0,0]`, `act_num=1`. After several steps
+   with `ctrl = 1.0`, activation converges toward `1.0`. Force at steady state:
+   `force = kp * (act - length)`. Verify exact filter dynamics: after one step
+   with `h = 0.002`, `act = 0 + (1-0)/0.1 * 0.1 * (1 - exp(-0.002/0.1))`
+   = `1 * (1 - exp(-0.02))` ≈ `0.0198`. Compare to Euler: `0 + 0.002 * 1/0.1`
+   = `0.02`. The exact result is slightly smaller.
+
+5. **Velocity servo:** `kv = 10`, `dyntype=None`. With `ctrl = 1.0`,
+   `actuator_velocity = 0.2`:
+   `force = 10 * 1.0 + (0 + 0 - 10*0.2) = 10 - 2 = 8`.
+   Equivalently: `force = kv * (ctrl - velocity) = 10 * (1.0 - 0.2) = 8`.
+
+6. **Damper:** `kv = 5`, `gaintype=Affine`, `gainprm=[0,0,-5]`,
+   `biastype=None`. With `ctrl = 0.8`, `actuator_velocity = 2.0`:
+   `gain = 0 + 0 + (-5)*2.0 = -10`, `force = -10 * 0.8 + 0 = -8.0`.
+   Force opposes velocity, scaled by control.
+
+7. **Cylinder:** `area = 0.01`, `bias = [0, 0, -100]`, `timeconst = 1.0`,
+   `dyntype=Filter`. `gainprm=[0.01,0,0]`, `biasprm=[0,0,-100]`.
+   With `act = 500000` (pressure, filtered from ctrl), `velocity = 0.1`:
+   `force = 0.01 * 500000 + (0 + 0 - 100*0.1) = 5000 - 10 = 4990`.
+
+8. **Adhesion:** `gain = 50`, `gaintype=Fixed`, `gainprm=[50,0,0]`,
+   `biastype=None`. With `ctrl = 1.0`: `force = 50 * 1.0 = 50`.
+
+9. **Muscle path unchanged:** Verify the restructured gain/bias dispatch
+   produces identical results to the pre-change muscle-specific code path.
+   Compare force output for a muscle actuator at known `(act, length, velocity)`
+   to ≤ 1e-15 relative error.
+
+10. **Dynamics type fix for Position/Velocity:** A Position actuator with
+    default `timeconst = 0` has `dyntype=None`, `act_num=0`, `input = ctrl`.
+    A Position actuator with `timeconst = 0.1` has `dyntype=FilterExact`,
+    `act_num=1`, `input = act`.
+
+11. **Dynamics type fix for Cylinder:** Cylinder has `dyntype=Filter` (not
+    `Integrator`), `dynprm=[1.0, 0, 0]`. Filter dynamics:
+    `act_dot = (ctrl - act) / 1.0`. Activation converges to `ctrl`.
+
+12. **`kv` default for Velocity:** `<velocity joint="j1"/>` without explicit
+    `kv` produces `kv = 1.0` (MuJoCo default), not `kv = 0.0`.
+
+13. **Damper `ctrllimited` enforcement:** `<damper joint="j1" kv="5"/>` without
+    explicit `ctrllimited` has `ctrllimited=true` and bounded `ctrlrange`
+    (not `(-inf, inf)`).
+
+14. **Existing tests pass or are updated:** All integration tests (implicit, RK4,
+    musculoskeletal, collision, sensor) pass. The builder test
+    `test_actuator_activation_states` (`model_builder.rs:2812`) must be
+    updated: Position/Velocity without `timeconst` now have `dyntype=None`,
+    `act_num=0`, `na=0` (was `Filter`, `1`, `2`). The parser test
+    `test_parse_cylinder_actuator` (`parser.rs:2953`) must be updated for
+    `timeconst: Option<f64>`. Both are correct fixes — the old assertions
+    encoded wrong semantics or types.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify `mj_fwd_actuation` Phase 2
-- `sim/L0/mjcf/src/model_builder.rs` — populate gain/bias types and parameters
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - Add `FilterExact` variant to `ActuatorDynamics` enum (line 426)
+  - Add `GainType`, `BiasType` enums (after `ActuatorDynamics`, line 436)
+  - Add `actuator_gaintype`, `actuator_biastype` fields to Model (line 921)
+  - Initialize new fields in `Model::empty()`
+  - Add `FilterExact` arm to Phase 1 in `mj_fwd_actuation()` (line 6500)
+  - Replace Phase 2 in `mj_fwd_actuation()` (lines 6523-6552)
+  - Update `Data::integrate()` for `FilterExact` (line 2635)
+  - Update `mj_runge_kutta()` for `FilterExact` (lines 10164, 10229)
+- `sim/L0/mjcf/src/model_builder.rs` — modify:
+  - Fix dynamics type assignment (lines 1209-1217)
+  - Add `FilterExact` to `act_num` match (lines 1248-1251)
+  - Replace dynprm/gain/bias population (lines 1257-1292, the `is_muscle` branch)
+  - Push `gaintype`, `biastype` to Model
+  - Resolve `timeconst` per actuator type (before dyntype match)
+  - Resolve `kv` per actuator type (before dyntype match)
+  - Enforce `ctrllimited = true` for Damper (before line 1226)
+- `sim/L0/mjcf/src/types.rs` — modify:
+  - Change `MjcfActuator.timeconst` from `f64` to `Option<f64>` (line 1814)
+  - Change `MjcfActuator.kv` from `f64` to `Option<f64>` (line 1804)
+  - Update `Default` impl (line 1867): `timeconst: None`, `kv: None`
+  - Update `MjcfActuator::cylinder()` constructor (`timeconst: Some(1.0)`)
+  - Update `MjcfActuator::velocity()` constructor (`kv: Some(kv)`)
+  - Add `MjcfActuator::damper()` constructor (after `cylinder()`, line 1931)
+- `sim/L0/mjcf/src/parser.rs` — modify:
+  - Parse `timeconst` into `Some(value)` (line 1123)
+  - Parse `kv` into `Some(value)` (line 1110)
+  - Update test `test_parse_cylinder_actuator` (line 2953): `cyl.timeconst` becomes
+    `Option<f64>`, so change `assert_relative_eq!(cyl.timeconst, 0.5, ...)` to
+    `assert_eq!(cyl.timeconst, Some(0.5))`.
+- `sim/L0/mjcf/src/defaults.rs` — modify:
+  - Update `apply_to_actuator()` (line 276): sentinel check `result.kv == 0.0`
+    becomes `result.kv.is_none()`, and `result.kv = kv` becomes
+    `result.kv = Some(kv)`.
+- `sim/docs/MUJOCO_REFERENCE.md` — modify:
+  - Update Phase 2 documentation (line 182)
 
 ---
 ## Cleanup Tasks
