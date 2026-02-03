@@ -444,10 +444,10 @@ pub enum ActuatorDynamics {
 /// MuJoCo reference: `mjtGain` enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GainType {
-    /// gain = gainprm[0] (constant).
+    /// gain = gainprm\[0\] (constant).
     #[default]
     Fixed,
-    /// gain = gainprm[0] + gainprm[1]*length + gainprm[2]*velocity.
+    /// gain = gainprm\[0\] + gainprm\[1\]*length + gainprm\[2\]*velocity.
     Affine,
     /// Muscle FLV gain (handled separately in the Muscle path).
     Muscle,
@@ -461,7 +461,7 @@ pub enum BiasType {
     /// bias = 0.
     #[default]
     None,
-    /// bias = biasprm[0] + biasprm[1]*length + biasprm[2]*velocity.
+    /// bias = biasprm\[0\] + biasprm\[1\]*length + biasprm\[2\]*velocity.
     Affine,
     /// Muscle passive force (handled separately in the Muscle path).
     Muscle,
