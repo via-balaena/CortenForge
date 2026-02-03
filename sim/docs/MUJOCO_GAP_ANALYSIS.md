@@ -1408,7 +1408,7 @@ assert!(ext_config.flags.contact);
 
 ### ⚠️ Status: Partially Complete (January 2026)
 
-> **The authoritative roadmap is [`sim/docs/FUTURE_WORK.md`](./FUTURE_WORK.md)**, which lists 11 items (6 completed, 5 remaining) with verified code references and acceptance criteria. The phases below reflect historical development milestones. Features marked with ⚠️ were later removed or remain standalone (not wired into the pipeline).
+> **The authoritative roadmap is [`sim/docs/FUTURE_WORK.md`](./FUTURE_WORK.md)**, which lists 11 items (7 completed, 4 remaining) with verified code references and acceptance criteria. The phases below reflect historical development milestones. Features marked with ⚠️ were later removed or remain standalone (not wired into the pipeline).
 
 The following were completed in January 2026:
 
@@ -1645,7 +1645,7 @@ let contact_model = ContactModel::default()
 
 ### Phase 7: Actuators & Control ⚠️ STANDALONE (sim-constraint only — not in pipeline)
 
-Focus: New actuator types and joint coupling in sim-constraint. **All items are standalone** — pipeline `mj_fwd_actuation()` computes `ctrl * gear` for joint transmission and J^T mapped force for tendon transmission, but has no gain/bias processing.
+Focus: New actuator types and joint coupling in sim-constraint. **All items are standalone** — pipeline `mj_fwd_actuation()` has full gain/bias processing for muscle actuators (FLV curves, activation dynamics) but non-muscle actuators use `force = input` (no position/velocity servo gain/bias).
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|

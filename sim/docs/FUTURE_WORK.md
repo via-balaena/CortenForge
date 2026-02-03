@@ -2841,14 +2841,14 @@ match model.integrator {
 within the RK4 loop computes `qacc = M^{-1} * f` in the standard way; the difference
 is that RK4 calls it 4 times at different states.
 
-##### Activation State (Deferred)
+##### Activation State ✅ (Resolved by FUTURE_WORK #5)
 
 MuJoCo's `mj_RungeKutta` includes actuator activation state (`act`, `act_dot`) in
-its state and rate vectors. Our `Data.act` exists (`mujoco_pipeline.rs:1255`) but
-`act_dot` does not — `mj_fwd_actuation()` (`mujoco_pipeline.rs:5997`) is a stateless
-`ctrl * gear` function with no activation dynamics. Activation integration is deferred
-until FUTURE_WORK #5 (Muscle Pipeline) introduces `act_dot`. A `TODO(FUTURE_WORK#5)`
-comment should mark the extension points in `mj_runge_kutta()`.
+its state and rate vectors. ~~Our `Data.act` exists but `act_dot` does not.~~
+**Resolved:** `act_dot` is now computed by `mj_fwd_actuation()` and integrated by
+both `integrate()` (Euler) and `mj_runge_kutta()` (RK4). RK4 carries `rk4_act_dot`
+and `rk4_act_saved` buffers for proper 4-stage activation integration with the same
+Butcher tableau weights as `qpos`/`qvel`.
 
 ##### Sensor Evaluation
 
