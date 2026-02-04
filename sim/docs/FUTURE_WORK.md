@@ -15,14 +15,14 @@ can be tackled in any order unless a prerequisite is noted.
 
 | # | Item | RL Impact | Correctness | Effort | Prerequisites |
 |---|------|-----------|-------------|--------|---------------|
-| 1 | In-Place Cholesky | Low | Low | S | None |
-| 2 | Sparse L^T D L | Medium | Low | M | #1 |
+| ~~1~~ | ~~In-Place Cholesky~~ | ~~Low~~ | ~~Low~~ | ~~S~~ | ~~None~~ ✅ |
+| ~~2~~ | ~~Sparse L^T D L~~ | ~~Medium~~ | ~~Low~~ | ~~M~~ | ~~#1~~ ✅ |
 | 3 | CG Contact Solver | Medium | Low | L | None (#1, #2 help perf) |
-| 4 | Tendon Pipeline | Low | High | L | None |
-| 5 | Muscle Pipeline | Low | High | L | #4 ✅ |
+| ~~4~~ | ~~Tendon Pipeline~~ | ~~Low~~ | ~~High~~ | ~~L~~ | ~~None~~ ✅ |
+| ~~5~~ | ~~Muscle Pipeline~~ | ~~Low~~ | ~~High~~ | ~~L~~ | ~~#4~~ ✅ |
 | ~~6~~ | ~~Sensor Completion~~ | ~~High~~ | ~~High~~ | ~~S~~ | ~~#4 for tendon sensors~~ ✅ |
-| 7 | Integrator Rename | Low | Medium | S | None |
-| 8 | True RK4 Integration | Low | Medium | M | None |
+| ~~7~~ | ~~Integrator Rename~~ | ~~Low~~ | ~~Medium~~ | ~~S~~ | ~~None~~ ✅ |
+| ~~8~~ | ~~True RK4 Integration~~ | ~~Low~~ | ~~Medium~~ | ~~M~~ | ~~None~~ ✅ |
 | 9 | Deformable Body Integration | Medium | Low | XL | None |
 | 10 | Batched Simulation | High | Low | L | None |
 | 11 | GPU Acceleration | High | Low | XL | #10 |
@@ -84,13 +84,12 @@ can be tackled in any order unless a prerequisite is noted.
 **Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8969`) uses `std::mem::replace`
-to swap `scratch_m_impl` out for nalgebra's `.cholesky()` (which takes ownership),
-replacing it with a freshly allocated `DMatrix::zeros(nv, nv)` every step
-(`mujoco_pipeline.rs:9019`). For nv=100 this is ~78 KB/step of unnecessary heap
-allocation and zeroing.
+`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:9677`) previously used
+`std::mem::replace` to swap `scratch_m_impl` out for nalgebra's `.cholesky()` (which
+takes ownership), replacing it with a freshly allocated `DMatrix::zeros(nv, nv)` every
+step. For nv=100 this was ~78 KB/step of unnecessary heap allocation and zeroing.
 
-The current flow (`mujoco_pipeline.rs:9019-9025`):
+The pre-implementation flow was:
 ```rust
 let chol = std::mem::replace(&mut data.scratch_m_impl, DMatrix::zeros(nv, nv))
     .cholesky()
@@ -99,13 +98,13 @@ data.scratch_v_new.copy_from(&data.scratch_rhs);
 chol.solve_mut(&mut data.scratch_v_new);
 ```
 
-`scratch_m_impl` is pre-allocated in `make_data()` (`mujoco_pipeline.rs:1785`) and
-populated each step via `copy_from(&data.qM)` (`mujoco_pipeline.rs:8993`) which
+`scratch_m_impl` is pre-allocated in `make_data()` (`mujoco_pipeline.rs:1910`) and
+populated each step via `copy_from(&data.qM)` (`mujoco_pipeline.rs:9701`) which
 overwrites the full matrix. After Cholesky, the matrix is never read again until
-the next step's `copy_from`. The replacement zero matrix is therefore wasted — the
+the next step's `copy_from`. The replacement zero matrix was therefore wasted — the
 next `copy_from` would overwrite it entirely regardless of contents.
 
-`StepError::CholeskyFailed` already exists (`mujoco_pipeline.rs:654`).
+`StepError::CholeskyFailed` already exists (`mujoco_pipeline.rs:696`).
 
 #### Objective
 Zero-allocation Cholesky factorization that overwrites `scratch_m_impl` in place,
@@ -113,9 +112,9 @@ eliminating the `std::mem::replace` + `DMatrix::zeros` pattern.
 
 #### Specification
 
-Add two functions to `mujoco_pipeline.rs`, directly above `mj_fwd_acceleration_implicit()`:
+Add two functions to `mujoco_pipeline.rs`, directly above `mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:9677`):
 
-**`cholesky_in_place(m: &mut DMatrix<f64>) -> Result<(), StepError>`**
+**`cholesky_in_place(m: &mut DMatrix<f64>) -> Result<(), StepError>`** (`mujoco_pipeline.rs:9505`)
 
 Standard Cholesky (LL^T) factorization, overwriting the lower triangle in place.
 Columns are processed left-to-right; references to `m[(j,k)]` for `k < j` read
@@ -133,7 +132,7 @@ already-computed L entries from previous columns (this is what makes it in-place
    fully overwrites the matrix at the start of the next step, and
    `cholesky_solve_in_place` only reads the lower triangle.
 
-**`cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>)`**
+**`cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>)`** (`mujoco_pipeline.rs:9535`)
 
 Solve L·L^T·x = b where L is stored in the lower triangle of `l`:
 
@@ -147,9 +146,8 @@ Solve L·L^T·x = b where L is stored in the lower triangle of `l`:
 Both functions operate on borrowed data. No allocations, no ownership transfers,
 no nalgebra `Cholesky` type.
 
-**Modify `mj_fwd_acceleration_implicit()`** — replace lines 8838-8852
-(the Cholesky comment block, `let nv`, `std::mem::replace`, and `chol.solve_mut`)
-with:
+**Modify `mj_fwd_acceleration_implicit()`** — replace the old Cholesky comment block,
+`let nv`, `std::mem::replace`, and `chol.solve_mut` with (now at `mujoco_pipeline.rs:9725-9729`):
 
 ```rust
 // Factorize M_impl in place (overwrites lower triangle with L where M_impl = L·L^T).
@@ -170,7 +168,8 @@ The `Cholesky` import stayed at the time of #1 — it was later removed by #2 al
 2. `scratch_m_impl` is reused across steps — populated via `copy_from(&data.qM)`,
    factorized in place, then fully overwritten again next step.
 3. Numeric results match nalgebra `Cholesky::solve` to ≤ 1e-12 relative error on the
-   solved vector. Verified by a unit test that compares both paths on random SPD matrices.
+   solved vector. Verified by `in_place_cholesky_matches_nalgebra()` (`mujoco_pipeline.rs:12307`)
+   which compares both paths on random SPD matrices at sizes 1, 2, 3, 5, 10, 20.
 4. Zero heap allocations in the factorize/solve path — neither function allocates.
    (No `#[global_allocator]` test required; the functions take only `&mut` references
    and contain no `Vec`, `Box`, or `DMatrix` constructors.)
@@ -189,28 +188,29 @@ The `Cholesky` import stayed at the time of #1 — it was later removed by #2 al
 
 Three consumers solve linear systems involving the mass matrix M:
 
-| Consumer | Location | Current method | Cost |
-|----------|----------|---------------|------|
-| `mj_fwd_acceleration_explicit()` | `mujoco_pipeline.rs:8779` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
-| `mj_fwd_acceleration_implicit()` | `mujoco_pipeline.rs:8969` | `cholesky_in_place()` on M_impl | O(nv³) factorize + solve |
-| `pgs_solve_contacts()` | `mujoco_pipeline.rs:7081` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
+| Consumer | Location | Pre-impl method | Pre-impl cost |
+|----------|----------|----------------|---------------|
+| `mj_fwd_acceleration_explicit()` | `mujoco_pipeline.rs:9487` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
+| `mj_fwd_acceleration_implicit()` | `mujoco_pipeline.rs:9677` | `cholesky_in_place()` on M_impl | O(nv³) factorize + solve |
+| `pgs_solve_contacts()` | `mujoco_pipeline.rs:7736` | `data.qM_cholesky` (nalgebra) | O(nv²) solve, O(nv³) factorize |
 
 For tree-structured robots, `M[i,j] ≠ 0` only when DOF `j` is an ancestor of DOF `i`
 (or vice versa) in the kinematic tree encoded by `model.dof_parent: Vec<Option<usize>>`
-(`mujoco_pipeline.rs:795`). This tree sparsity enables O(nv) factorization and solve.
+(`mujoco_pipeline.rs:837`). This tree sparsity enables O(nv) factorization and solve.
 
-**Data scaffolds** exist in `Data` (`mujoco_pipeline.rs:1332-1339`):
+**Data fields** in `Data` (`mujoco_pipeline.rs:1436-1443`):
 ```rust
 pub qLD_diag: DVector<f64>,                  // D[i,i] diagonal
 pub qLD_L: Vec<Vec<(usize, f64)>>,           // L[i,:] sparse off-diagonal per row
 pub qLD_valid: bool,                         // dispatch flag
 ```
-Initialized at `mujoco_pipeline.rs:1742-1744` (zeros/empty/false), never populated.
-The `TODO(FUTURE_WORK#2)` comment was at `mujoco_pipeline.rs:1327` (removed when #2 was completed).
+Initialized at `mujoco_pipeline.rs:1867-1869` (zeros/empty/false), populated by
+`mj_factor_sparse()` (`mujoco_pipeline.rs:9572`).
 
-The `qM_cholesky: Option<Cholesky<f64, Dyn>>` (removed when #2 was completed) was computed
-in `mj_crba()` Phase 5 (`mujoco_pipeline.rs:6049`) via `data.qM.clone().cholesky()` —
-this clone+factorize was the O(nv³) cost eliminated for the explicit/contact paths.
+The `qM_cholesky: Option<Cholesky<f64, Dyn>>` (removed when #2 was completed) was
+previously computed in `mj_crba()` Phase 5 via `data.qM.clone().cholesky()` — that
+clone+factorize was the O(nv³) cost eliminated for the explicit/contact paths. Phase 5
+now calls `mj_factor_sparse()` (`mujoco_pipeline.rs:6812`).
 
 #### Objective
 O(nv) factorization and solve for tree-structured robots, matching MuJoCo's
@@ -331,7 +331,7 @@ fn mj_solve_sparse(
 
 ##### Step 3: Integration into `mj_crba()` (Phase 5 replacement)
 
-At `mujoco_pipeline.rs:6049-6050`, replace the nalgebra Cholesky with sparse factorization:
+At `mj_crba()` (`mujoco_pipeline.rs:6654`), replace the nalgebra Cholesky with sparse factorization (now at line 6812):
 
 ```rust
 // Phase 5: Factorize mass matrix (sparse L^T D L)
@@ -342,13 +342,13 @@ if model.nv > 0 {
 // The sparse factorization replaces this for all consumers.
 ```
 
-Also set `data.qLD_valid = false` at the **top** of `mj_crba()` (before qM is zeroed),
+Also set `data.qLD_valid = false` at the **top** of `mj_crba()` (`mujoco_pipeline.rs:6655`),
 so stale factorization is never used during the CRBA computation.
 
 Remove the `qM_cholesky` field from `Data` entirely (along with its initialization
 in `make_data()` and the doc comments referencing it).
 
-##### Step 4: Dispatch in `mj_fwd_acceleration_explicit()` (line 8779)
+##### Step 4: Dispatch in `mj_fwd_acceleration_explicit()` (`mujoco_pipeline.rs:9487`)
 
 Replace the `qM_cholesky` match with sparse solve:
 
@@ -367,7 +367,7 @@ If the mass matrix is degenerate, `mj_factor_sparse` will produce a zero or
 negative `qLD_diag[i]`, and the solve will produce inf/NaN — same as MuJoCo's
 behavior (garbage-in-garbage-out for degenerate systems).
 
-##### Step 5: Migrate `pgs_solve_contacts()` (line 7081)
+##### Step 5: Migrate `pgs_solve_contacts()` (`mujoco_pipeline.rs:7736`)
 
 Replace all `chol.solve(&x)` calls with sparse solve:
 
@@ -385,10 +385,10 @@ Remove the `qM_cholesky` match guard at the top. The fallback to penalty
 for singular M is no longer needed — if sparse factorization is invalid
 (`!data.qLD_valid`), that's a bug (CRBA always runs before contacts).
 
-##### Step 6: Dispatch in `mj_fwd_acceleration_implicit()` (line 8969)
+##### Step 6: Dispatch in `mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:9677`)
 
 The implicit path uses `M_impl = M + h·D + h²·K`. The diagonal modification
-(`+= h*d[i] + h²*k[i]` at line 8995) means we **cannot** reuse the CRBA sparse
+(`+= h*d[i] + h²*k[i]` at `mujoco_pipeline.rs:9703`) means we **cannot** reuse the CRBA sparse
 factorization — the modified matrix has different diagonal values.
 
 **Keep dense for implicit.** Rationale: the implicit path already uses
@@ -432,8 +432,8 @@ The implicit path (`mj_fwd_acceleration_implicit`) is **unchanged** by this PR.
   - Remove `qM_cholesky` field + initialization + doc comments
   - Remove `use nalgebra::linalg::Cholesky` import (if unused after removal)
   - New test module `sparse_factorization_tests` (~100 lines)
-- `sim/docs/MUJOCO_REFERENCE.md` — update Phase 5 description (line 143-145)
-- `sim/docs/ARCHITECTURE.md` — update `qM_cholesky` reference (line 74)
+- `sim/docs/MUJOCO_REFERENCE.md` — update Phase 5 description (line 291)
+- `sim/docs/ARCHITECTURE.md` — update data fields table (line 80)
 
 ---
 
@@ -441,83 +441,606 @@ The implicit path (`mj_fwd_acceleration_implicit`) is **unchanged** by this PR.
 **Status:** Not started | **Effort:** L | **Prerequisites:** None (#1, #2 improve M⁻¹ performance but are not hard dependencies)
 
 #### Current State
-`CGSolver` in `sim-constraint/src/cg.rs` (1,664 lines, `cg.rs:309`) implements
-preconditioned conjugate gradient with Block Jacobi preconditioning. It solves joint
-constraints via the `Joint` trait (`cg.rs:408`): `solve<J: Joint>(&mut self, joints: &[J], ...)`.
-The pipeline uses PGS via `pgs_solve_contacts()` (`mujoco_pipeline.rs:7081`) for contact
-constraints. CGSolver has zero callers in the pipeline.
 
-The `Joint` trait expects rigid-body joint semantics (`parent()`, `child()`,
-`parent_anchor()`, `joint_type()`). Contact constraints have none of these — they are
-geometric collisions defined by normal, tangent frame, and friction coefficient. The
-type systems are incompatible; no adapter exists.
+`pgs_solve_contacts()` (`mujoco_pipeline.rs:7736`) solves the mixed LCP for contact
+constraints using Projected Gauss-Seidel. It takes `&Model`, `&Data`, `&[Contact]`,
+`&[DMatrix<f64>]` (Jacobians), `max_iterations`, `tolerance`, and
+`&mut HashMap<(usize, usize), [f64; 3]>` (warmstart cache). The function assembles the
+Delassus matrix `A = J · M⁻¹ · J^T` (lines 7783–7891), builds the RHS from
+unconstrained accelerations, contact velocities, and Baumgarte stabilization (lines
+7893–7933), warmstarts from `efc_lambda` keyed by canonical geom-pair `(min, max)`
+(lines 7938–7949), and iterates Gauss-Seidel with friction cone projection (lines
+7965–8017). It returns `Vec<Vector3<f64>>`.
+
+`mj_fwd_constraint()` (`mujoco_pipeline.rs:9155`) builds contact Jacobians via
+`compute_contact_jacobian()` (`mujoco_pipeline.rs:7556`), calls `pgs_solve_contacts()`
+(line 9302), and applies forces via `J^T` (lines 9321–9339). The solver is
+unconditionally PGS — there is no dispatch mechanism for alternative solvers.
+
+`CGSolver` in `sim-constraint/src/cg.rs` (1,664 lines, line 309) implements
+preconditioned CG for joint constraints via the `Joint` trait (`cg.rs:59`). It
+requires `parent()`, `child()`, `parent_anchor()`, `joint_type()` — none of which
+exist for contact constraints. The type systems are incompatible. Furthermore,
+`sim-core` and `sim-constraint` are decoupled crates with no cross-dependencies;
+`cg.rs` cannot import `Contact`, `Model`, or `Data`.
+
+The MJCF parser already parses `<option solver="CG"/>` into `MjcfSolverType::CG`
+(`types.rs:92`) and stores it in `MjcfOption.solver` (`types.rs:248`).
+`ExtendedSolverConfig` (`config.rs:61`) holds `solver_type: MjcfSolverType`. However,
+the `ModelBuilder` (`model_builder.rs:545–568`) does NOT propagate `option.solver` to
+the `Model` struct — the `Model` has `solver_iterations` (`mujoco_pipeline.rs:1072`)
+and `solver_tolerance` (`mujoco_pipeline.rs:1074`) but no `solver_type` field. The
+solver type parsed from MJCF is currently dead data.
+
+`Data` has a scaffold field `solver_niter: usize` (`mujoco_pipeline.rs:1492`),
+initialized to 0 (`mujoco_pipeline.rs:1895`), never written to by PGS. Both solvers
+should populate it. Since `pgs_solve_contacts()` takes `&Data` (immutable), it cannot
+set `solver_niter` internally. This task changes PGS to return `(Vec<Vector3<f64>>,
+usize)` — the force vector and actual iteration count — so `mj_fwd_constraint()` sets
+`data.solver_niter` in the dispatch code for both solver paths.
 
 #### Objective
-CG-based contact constraint solver as an alternative to PGS, selectable per-model.
+
+CG-based contact constraint solver in `mujoco_pipeline.rs` as an alternative to PGS,
+selectable per-model via `<option solver="CG"/>`.
 
 #### Specification
 
-New function in `cg.rs`:
+##### Step 1: `SolverType` enum and Model field
+
+Add `SolverType` enum directly above `Integrator` (before `mujoco_pipeline.rs:669`):
 
 ```rust
-pub fn cg_solve_contacts(
-    contacts: &[Contact],
-    jacobians: &[DMatrix<f64>],
-    model: &Model,
-    data: &Data,
-    efc_lambda: &mut HashMap<(usize, usize), [f64; 3]>,
-    config: &CGSolverConfig,
-) -> CGContactResult
-```
-
-Algorithm:
-
-1. Assemble the Delassus matrix W = J M⁻¹ J^T from pre-computed contact Jacobians
-   (from `compute_contact_jacobian()` at `mujoco_pipeline.rs:6901`).
-2. Build the constraint RHS from penetration depths, approach velocities, and
-   solref/solimp parameters (same physics as PGS).
-3. Solve W·λ = rhs via preconditioned conjugate gradient with friction cone
-   projection at each iteration (λ_n ≥ 0, |λ_t| ≤ μ·λ_n).
-4. Each contact is one 3-row block (normal + 2 friction tangents). Block Jacobi
-   preconditioner inverts these 3×3 diagonal blocks via Cholesky.
-
-```rust
-pub struct CGContactResult {
-    pub forces: Vec<Vector3<f64>>,
-    pub iterations_used: usize,
-    pub residual_norm: f64,
-    pub converged: bool,
+/// Contact constraint solver algorithm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SolverType {
+    /// Projected Gauss-Seidel (default, matches MuJoCo).
+    #[default]
+    PGS,
+    /// Conjugate Gradient with friction cone projection (contact solver).
+    /// Falls back to PGS if CG fails to converge.
+    /// Note: this is the contact CG in sim-core, not the joint CGSolver
+    /// in sim-constraint (which uses the Joint trait independently).
+    CG,
+    /// Strict CG: sets data.solver_niter = max_iterations and returns zero
+    /// forces on non-convergence. Use in tests to catch CG regressions
+    /// without silent PGS fallback.
+    CGStrict,
 }
 ```
 
-New enum in `mujoco_pipeline.rs`:
+Add field to `Model`, after `solver_tolerance` (`mujoco_pipeline.rs:1074`):
 
 ```rust
-pub enum SolverType { PGS, CG }
+/// Contact constraint solver algorithm (PGS or CG).
+pub solver_type: SolverType,
 ```
 
-Stored as `solver_type: SolverType` in `Model`. Default: `PGS`. Parsed from MJCF
-`<option solver="CG"/>`. `mj_fwd_constraint()` (`mujoco_pipeline.rs:8500`) dispatches
-on `model.solver_type`.
+Initialize to `SolverType::PGS` in `Model::empty()` (after `mujoco_pipeline.rs:1746`).
 
-**Fallback policy (testing concern):** If CG does not converge within
-`config.max_iterations`, the step falls back to PGS and logs a warning. This
-silent-fallback pattern means CG correctness bugs can hide behind PGS. The test
-suite should include cases where CG is required to converge (no fallback) to
-catch regressions. Consider a `SolverType::CGStrict` variant that returns
-`Err(StepError::SolverFailed)` instead of falling back, for use in tests.
+Add `SolverType` to the `pub use mujoco_pipeline::{...}` re-export in `lib.rs`
+(after `Integrator` at line 119), so that `model_builder.rs` can import it via
+`use sim_core::SolverType`.
+
+##### Step 2: `cg_solve_contacts()` function
+
+Place directly below `pgs_solve_contacts()` (after `mujoco_pipeline.rs:8043`). The
+signature mirrors PGS exactly, with `Option` return for convergence signaling:
+
+```rust
+/// Solve contact constraints using preconditioned Conjugate Gradient.
+///
+/// Solves the same system as pgs_solve_contacts:
+///   A * lambda = -b
+/// where A is the Delassus matrix (with CFM regularization on diagonal)
+/// and b is the constraint RHS. Friction cone projection applied after
+/// each CG iteration (projected CG).
+///
+/// Returns `Some((forces, iterations_used))` on convergence, `None` on non-convergence.
+/// The caller decides whether to fall back to PGS or signal failure.
+fn cg_solve_contacts(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<(usize, usize), [f64; 3]>,
+) -> Option<(Vec<Vector3<f64>>, usize)>
+```
+
+Returns `Option<(forces, iterations_used)>`.
+
+##### Step 3: Extract `assemble_contact_system()`
+
+Extract Delassus matrix + RHS assembly from `pgs_solve_contacts()` (lines 7755–7933)
+into a shared helper so both PGS and CG use identical physics formulas.
+
+**Scalability note:** Both PGS and CG form the dense Delassus matrix A (O(nefc²)
+memory, O(nefc² · nv) assembly). For 100 contacts this is ~700 KB; for 1000 contacts,
+~69 MB. MuJoCo's production CG avoids this by computing `J · M⁻¹ · J^T · p` as a
+sequence of sparse operations (O(nv · nefc) per iteration). Transitioning to implicit
+matrix-vector products is a future optimization for large contact counts.
+
+```rust
+/// Assemble Delassus matrix A and constraint RHS b for contact constraints.
+/// Shared by PGS and CG solvers.
+///
+/// A[i,j] = J_i · M⁻¹ · J_j^T (with CFM regularization on diagonal).
+/// b includes unconstrained acceleration, contact velocities, and Baumgarte
+/// stabilization from solref/solimp.
+fn assemble_contact_system(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+) -> (DMatrix<f64>, DVector<f64>)
+```
+
+The assembly contains:
+
+**Unconstrained acceleration** (current PGS lines 7763–7767):
+```
+qacc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias
+mj_solve_sparse(&qLD_diag, &qLD_L, &mut qacc_smooth)
+```
+
+**M⁻¹ · J^T precomputation** (current PGS lines 7770–7781): For each contact,
+solve 3 sparse systems `M · x = J^T[:, col]` via `mj_solve_sparse()`
+(`mujoco_pipeline.rs:9630`).
+
+**Delassus diagonal blocks** (current PGS lines 7802–7810):
+```
+A[i,i] = J_i · minv_jt[i] + cfm · I
+```
+Where `cfm = base_regularization + (1 - d) · model.regularization · 100`, and
+`d = compute_impedance(contact.solimp, |contact.depth|)` (`mujoco_pipeline.rs:8258`).
+
+**Delassus off-diagonal blocks** (current PGS lines 7819–7891):
+```
+A[i,j] = J_i · minv_jt[j]     (symmetric, only if contacts share dynamic bodies)
+```
+Uses `bodies_share_chain()` (`mujoco_pipeline.rs:7696`) bitmask optimization.
+
+**ERP from solref** (current PGS lines 7785–7817):
+```
+timeconst = max(contact.solref[0], 0.001)
+dampratio = max(contact.solref[1], 0.0)
+dt        = max(model.timestep, 1e-6)        // line 7816 — prevents division by zero
+erp = (dt / (dt + timeconst)) · min(dampratio, 1.0)
+```
+
+**RHS assembly** (current PGS lines 7893–7933):
+```
+b[i·3]     = J·qacc_smooth[0] + vn/dt + (erp/dt)·depth     (normal)
+b[i·3 + 1] = J·qacc_smooth[1] + vt1                         (friction 1)
+b[i·3 + 2] = J·qacc_smooth[2] + vt2                         (friction 2)
+```
+Where `vn`, `vt1`, `vt2` are relative contact-frame velocities from
+`compute_point_velocity()` (`mujoco_pipeline.rs:9343`).
+
+After extraction, `pgs_solve_contacts()` becomes:
+1. Call `assemble_contact_system()` → `(A, b)`
+2. Load warmstart from `efc_lambda` into `lambda` (lines 7935–7949, duplicated in CG)
+3. Compute `diag_inv` — per-element inverse of A's diagonal (lines 7951–7963, PGS-only;
+   CG uses block Jacobi preconditioner instead)
+4. Run the existing Gauss-Seidel iteration loop (lines 7965–8017, unchanged)
+5. Call `extract_forces(&lambda, ncon)` to convert the lambda vector to `Vec<Vector3>`
+   (replaces the inline loop at lines 8032–8040)
+
+`cg_solve_contacts()` calls the same `assemble_contact_system()` helper then runs
+the CG loop below.
+
+Define `project_friction_cone()` as a utility that projects an entire lambda vector
+onto the friction cone in a single pass. **Only CG calls this function** (after each
+full CG iteration). PGS retains its existing per-contact inline projection inside the
+Gauss-Seidel sweep (lines 7991–8005) — this ordering is essential to GS semantics,
+where contact `i+1` sees the already-projected lambda of contact `i`. Changing PGS
+to call the all-at-once function would alter iteration trajectories and break AC #11
+(bit-identity). The function's per-contact logic is identical to PGS's inline code:
+
+```rust
+/// Project lambda onto the friction cone for all contacts.
+/// Used by CG after each full iteration. PGS does NOT call this -- it inlines
+/// per-contact projection inside the GS sweep for correct Gauss-Seidel ordering.
+fn project_friction_cone(lambda: &mut DVector<f64>, contacts: &[Contact], ncon: usize) {
+    for i in 0..ncon {
+        let base = i * 3;
+        lambda[base] = lambda[base].max(0.0);           // λ_n ≥ 0
+        let mu = contacts[i].friction;
+        let max_friction = mu * lambda[base];
+        let friction_mag = (lambda[base + 1].powi(2) + lambda[base + 2].powi(2)).sqrt();
+        if friction_mag > max_friction && friction_mag > 1e-10 {
+            let scale = max_friction / friction_mag;
+            lambda[base + 1] *= scale;
+            lambda[base + 2] *= scale;
+        }
+    }
+}
+```
+
+And `extract_forces()`:
+
+```rust
+fn extract_forces(lambda: &DVector<f64>, ncon: usize) -> Vec<Vector3<f64>> {
+    (0..ncon)
+        .map(|i| Vector3::new(lambda[i * 3], lambda[i * 3 + 1], lambda[i * 3 + 2]))
+        .collect()
+}
+```
+
+##### Step 4: CG iteration loop with friction cone projection
+
+Fletcher-Reeves CG with PR+ restart, adapted for contact constraints. Friction cone
+projection after each iteration destroys CG conjugacy; the PR+ restart clamp
+`beta = max(0, ...)` automatically restarts when conjugacy is lost (the formula
+`beta = rz_new / rz` is Fletcher-Reeves; the `max(0, ...)` clamp is the
+Polak-Ribière+ restart strategy). Residual is recomputed from scratch each iteration
+(not incremental) because projection modifies `lambda` non-linearly.
+
+```
+fn cg_solve_contacts(...) -> Option<(Vec<Vector3<f64>>, usize)>:
+    ncon = contacts.len()
+    if ncon == 0: return Some((vec![], 0))
+    nefc = ncon * 3
+
+    (A, b) = assemble_contact_system(model, data, contacts, jacobians)
+
+    // ---- Block Jacobi preconditioner (Step 5) ----
+    precond_inv = compute_block_jacobi_preconditioner(&A, ncon)
+
+    // ---- Warmstart ----
+    lambda = DVector::zeros(nefc)
+    for (i, contact) in contacts.enumerate():
+        key = (min(contact.geom1, contact.geom2), max(contact.geom1, contact.geom2))
+        if let Some(prev) = efc_lambda.get(&key):
+            lambda[i*3] = prev[0]; lambda[i*3+1] = prev[1]; lambda[i*3+2] = prev[2]
+
+    // ---- Single-contact direct solve ----
+    if ncon == 1:
+        lam = -(precond_inv[0] * Vector3::new(b[0], b[1], b[2]))
+        // Project onto friction cone (inline, since lam is Vector3 not DVector):
+        lam[0] = lam[0].max(0.0)                    // λ_n ≥ 0
+        let mu = contacts[0].friction
+        let max_f = mu * lam[0]
+        let f_mag = (lam[1].powi(2) + lam[2].powi(2)).sqrt()
+        if f_mag > max_f && f_mag > 1e-10:
+            let scale = max_f / f_mag
+            lam[1] *= scale; lam[2] *= scale
+        // Store warmstart (clear stale entries from previous frames):
+        efc_lambda.clear()
+        key = (min(contacts[0].geom1, contacts[0].geom2), max(contacts[0].geom1, contacts[0].geom2))
+        efc_lambda.insert(key, [lam[0], lam[1], lam[2]])
+        return Some((vec![lam], 0))
+
+    // ---- Project initial guess onto feasible set ----
+    project_friction_cone(&mut lambda, contacts, ncon)
+
+    // ---- Initial residual: r = -(A · lambda + b) ----
+    r = -(&A * &lambda + &b)
+    z = apply_preconditioner(&precond_inv, &r, ncon)
+    p = z.clone()
+    rz = r.dot(&z)
+    b_norm = b.norm()
+    if b_norm < 1e-14:
+        efc_lambda.clear()  // Don't carry stale warmstart to next frame
+        return Some((vec![Vector3::zeros(); ncon], 0))
+    // b ≈ 0 means the unconstrained system already satisfies constraints;
+    // return zero contact forces and clear warmstart cache.
+
+    converged = false
+    iters_used = max_iterations
+    for iter in 0..max_iterations:
+        // Matrix-vector product
+        Ap = &A * &p
+
+        // Step length
+        pAp = p.dot(&Ap)
+        if pAp <= 0.0: break   // A not positive definite along p
+
+        alpha = rz / pAp
+
+        // Update and project
+        lambda += alpha * &p
+        project_friction_cone(&mut lambda, contacts, ncon)
+
+        // Recompute residual from scratch (projection invalidates incremental update)
+        r = -(&A * &lambda + &b)
+
+        // Convergence check: relative residual
+        if r.norm() / b_norm < tolerance:
+            converged = true
+            iters_used = iter + 1
+            break
+
+        // Precondition
+        z_new = apply_preconditioner(&precond_inv, &r, ncon)
+        rz_new = r.dot(&z_new)
+
+        // Fletcher-Reeves with PR+ restart: beta = max(0, rz_new / rz)
+        beta = if rz.abs() < 1e-30 { 0.0 } else { (rz_new / rz).max(0.0) }
+        p = &z_new + beta * &p
+        rz = rz_new
+
+    // ---- Store warmstart (even on non-convergence — partial solution helps next frame) ----
+    efc_lambda.clear()
+    for (i, contact) in contacts.enumerate():
+        key = (min(contact.geom1, contact.geom2), max(contact.geom1, contact.geom2))
+        efc_lambda.insert(key, [lambda[i*3], lambda[i*3+1], lambda[i*3+2]])
+
+    if converged: Some((extract_forces(&lambda, ncon), iters_used)) else: None
+```
+
+**Known limitation (warmstart key collision):** The canonical `(min(geom1, geom2),
+max(geom1, geom2))` key does not disambiguate multiple contacts between the same pair
+of geometries (e.g., 4 corner contacts of a box on a plane). In such cases,
+`HashMap::insert` retains only the last contact's lambda — earlier contacts in the
+iteration order receive no warmstart on the next frame. This is a pre-existing PGS
+limitation (lines 7938–7949) that CG inherits for warmstart parity. A future
+improvement could key by `(geom_pair, contact_subindex)` or store `Vec<[f64; 3]>`
+per key.
+
+##### Step 5: Block Jacobi preconditioner
+
+Extract 3×3 diagonal blocks from `A`, invert each via `nalgebra::Matrix3::cholesky()`.
+Each block is SPD because `A_ii = J_i · M⁻¹ · J_i^T + cfm · I` where M is SPD and
+cfm > 0. If Cholesky fails (degenerate contact geometry), fall back to scalar Jacobi
+(invert diagonal only).
+
+```rust
+fn compute_block_jacobi_preconditioner(
+    a: &DMatrix<f64>, ncon: usize,
+) -> Vec<Matrix3<f64>> {
+    let mut blocks = Vec::with_capacity(ncon);
+    for i in 0..ncon {
+        let base = i * 3;
+        let block = Matrix3::new(
+            a[(base,base)],   a[(base,base+1)],   a[(base,base+2)],
+            a[(base+1,base)], a[(base+1,base+1)], a[(base+1,base+2)],
+            a[(base+2,base)], a[(base+2,base+1)], a[(base+2,base+2)],
+        );
+        let inv = match block.cholesky() {
+            Some(chol) => chol.inverse(),
+            None => {
+                // Scalar Jacobi fallback: invert diagonal only
+                let d0 = if block[(0,0)].abs() > 1e-12 { 1.0/block[(0,0)] } else { 0.0 };
+                let d1 = if block[(1,1)].abs() > 1e-12 { 1.0/block[(1,1)] } else { 0.0 };
+                let d2 = if block[(2,2)].abs() > 1e-12 { 1.0/block[(2,2)] } else { 0.0 };
+                Matrix3::new(d0, 0.0, 0.0,  0.0, d1, 0.0,  0.0, 0.0, d2)
+            }
+        };
+        blocks.push(inv);
+    }
+    blocks
+}
+
+fn apply_preconditioner(
+    precond_inv: &[Matrix3<f64>], r: &DVector<f64>, ncon: usize,
+) -> DVector<f64> {
+    let mut z = DVector::zeros(ncon * 3);
+    for i in 0..ncon {
+        let base = i * 3;
+        let r_block = Vector3::new(r[base], r[base + 1], r[base + 2]);
+        let z_block = precond_inv[i] * r_block;
+        z[base] = z_block[0]; z[base + 1] = z_block[1]; z[base + 2] = z_block[2];
+    }
+    z
+}
+```
+
+##### Step 6: Convergence and fallback
+
+**Convergence criterion:** Relative residual `||r|| / ||b|| < tolerance`.
+Values of `tolerance` and `max_iterations` come from `model.solver_tolerance`
+and `model.solver_iterations` (`mujoco_pipeline.rs:1072–1074`), same as PGS.
+
+**Note on criterion asymmetry:** PGS uses a different convergence measure —
+`max_delta < tolerance` where `max_delta` is the maximum absolute change in any
+`lambda` component per iteration (lines 8008–8016). CG uses relative residual norm.
+The same `tolerance` value therefore has different meanings for the two solvers: a
+tolerance of 1e-8 is very tight for PGS (absolute change) but moderate for CG
+(relative residual). This is intentional — CG's relative criterion is standard for
+Krylov methods and well-suited to the matrix formulation. Acceptance criteria compare
+solver *outputs* (forces, velocities) rather than convergence metrics, so the
+asymmetry does not affect correctness testing.
+
+**Fallback policy by solver type:**
+
+| `SolverType` | On convergence | On non-convergence |
+|---|---|---|
+| `PGS` | Use PGS result | N/A (PGS always returns a result) |
+| `CG` | Use CG result | `#[cfg(debug_assertions)]` warning, rerun with PGS |
+| `CGStrict` | Use CG result | Set `data.solver_niter = max_iterations`, return zero forces |
+
+Both PGS and CG return their actual iteration count. The `mj_fwd_constraint()`
+dispatch (Step 7) sets `data.solver_niter` (`mujoco_pipeline.rs:1492`) for both
+paths. This requires changing `pgs_solve_contacts()` return type from
+`Vec<Vector3<f64>>` to `(Vec<Vector3<f64>>, usize)` — the force vector and
+iteration count at which convergence occurred (or `max_iterations` if not converged).
+
+**PGS iteration tracking change:** The current PGS loop variable is `_iter`
+(unused, line 7965). Change to `iter`, add `let mut iters_used = max_iterations;`
+before the loop, and on early break (`max_delta < tolerance`, line 8014) set
+`iters_used = iter + 1;`. Return `(forces, iters_used)` instead of `forces`.
+
+##### Step 7: Dispatch in `mj_fwd_constraint()`
+
+Replace the unconditional PGS call at `mujoco_pipeline.rs:9301–9316` with:
+
+```rust
+// The existing std::mem::take pattern (line 9292) remains unchanged:
+// let mut efc_lambda = std::mem::take(&mut data.efc_lambda);
+// This separates efc_lambda from data so we can pass &Data + &mut HashMap
+// without borrow conflicts. After the match, restore: data.efc_lambda = efc_lambda;
+
+let constraint_forces = match model.solver_type {
+    SolverType::PGS => {
+        let (forces, niter) = pgs_solve_contacts(
+            model, data, &data.contacts, &jacobians,
+            model.solver_iterations.max(10), model.solver_tolerance.max(1e-8),
+            &mut efc_lambda,
+        );
+        data.solver_niter = niter;
+        forces
+    }
+    SolverType::CG => {
+        match cg_solve_contacts(
+            model, data, &data.contacts, &jacobians,
+            model.solver_iterations.max(10), model.solver_tolerance.max(1e-8),
+            &mut efc_lambda,
+        ) {
+            Some((forces, niter)) => {
+                data.solver_niter = niter;
+                forces
+            }
+            None => {
+                // CG did not converge — fall back to PGS.
+                // efc_lambda already updated by CG with partial solution;
+                // PGS benefits from this warmstart.
+                // NOTE: PGS calls assemble_contact_system() internally, so the
+                // Delassus matrix is assembled twice on this path (once in CG,
+                // once in PGS). This O(ncon²) duplication is acceptable for a
+                // fallback path; if profiling shows it matters, a future
+                // optimization could pass the pre-assembled (A, b) to PGS.
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "warn: CG contact solver did not converge ({} contacts), \
+                     falling back to PGS", data.contacts.len()
+                );
+                let (forces, niter) = pgs_solve_contacts(
+                    model, data, &data.contacts, &jacobians,
+                    model.solver_iterations.max(10), model.solver_tolerance.max(1e-8),
+                    &mut efc_lambda,
+                );
+                data.solver_niter = niter;
+                forces
+            }
+        }
+    }
+    SolverType::CGStrict => {
+        match cg_solve_contacts(
+            model, data, &data.contacts, &jacobians,
+            model.solver_iterations.max(10), model.solver_tolerance.max(1e-8),
+            &mut efc_lambda,
+        ) {
+            Some((forces, niter)) => {
+                data.solver_niter = niter;
+                forces
+            }
+            None => {
+                // Use the clamped value (same as what was passed to the solver)
+                data.solver_niter = model.solver_iterations.max(10);
+                vec![Vector3::zeros(); data.contacts.len()]
+            }
+        }
+    }
+};
+```
+
+##### Step 8: MJCF wiring
+
+**Parser** (`parser.rs`): Already parses `<option solver="CG"/>` into
+`MjcfSolverType::CG`. No changes needed.
+
+**Model builder** (`model_builder.rs`):
+
+Add `SolverType` to the existing `use sim_core::{...}` import (line 17).
+Add `solver_type` field to the builder struct (after `solver_tolerance` at line 303).
+Initialize to `SolverType::PGS` in `ModelBuilder::new()` (after line 476).
+
+Wire in `set_options()` (after line 549):
+```rust
+self.solver_type = match option.solver {
+    MjcfSolverType::PGS | MjcfSolverType::Newton => SolverType::PGS,
+    MjcfSolverType::CG => SolverType::CG,
+    // Newton maps to PGS: MjcfSolverType::Newton is the #[default] (types.rs:94),
+    // so every MJCF without explicit solver="CG" must remain PGS to avoid
+    // behavioral regression.
+};
+```
+
+Propagate in `build()` (after line 2040):
+```rust
+solver_type: self.solver_type,
+```
 
 #### Acceptance Criteria
-1. For any contact configuration where PGS converges, CG produces forces satisfying the same friction cone constraints (λ_n ≥ 0, |λ_t| ≤ μ·λ_n).
-2. CG and PGS are interchangeable — switching `solver_type` does not change physical behavior, only solver performance.
-3. Test suite includes ≥ 5 contact scenarios run with both PGS and CG, verifying force equivalence within tolerance.
-4. Test suite includes `CGStrict` mode tests that fail on non-convergence rather than silently falling back.
-5. Benchmark showing stable CG iteration count as contact count grows (expected crossover vs PGS at ~100 simultaneous contacts).
+
+1. **PGS parity (sphere-on-plane):** A sphere (mass 1 kg, radius 0.05 m) resting on
+   a ground plane under gravity (g = -9.81). After 1000 steps (dt = 0.002), CG and PGS
+   produce contact normal forces within 1e-4 relative error. Run with
+   `SolverType::CGStrict` to prove convergence.
+
+2. **PGS parity (multi-contact stack):** A stack of 3 boxes on a ground plane. After
+   500 steps, CG and PGS produce `qfrc_constraint` within 1e-3 relative error
+   (`||qfrc_cg - qfrc_pgs|| / ||qfrc_pgs||`). Run with `SolverType::CGStrict`.
+
+3. **PGS parity (friction slide):** A box on a tilted plane (25°, friction = 0.3).
+   After 200 steps, CG and PGS produce final velocities within 1e-3 relative error.
+   Run with `SolverType::CGStrict`.
+
+4. **Friction cone satisfaction:** For each scenario above, every contact force
+   satisfies `lambda_n >= 0` and
+   `sqrt(lambda_t1² + lambda_t2²) <= mu · lambda_n + 1e-10`.
+
+5. **Zero contacts:** Call `cg_solve_contacts()` directly (not through
+   `mj_fwd_constraint()`, which early-returns at line 9280 for empty contacts).
+   Pass `contacts = &[]`. Verify it returns `Some((vec![], 0))`.
+
+6. **Single-contact direct solve:** Call `cg_solve_contacts()` directly with exactly
+   1 contact. Verify it uses the direct 3×3 solve (no iteration loop) and returns
+   `iterations_used == 0`.
+
+7. **CGStrict failure detection:** Call `cg_solve_contacts()` directly on the 3-box
+   stack from AC #2 (ensures ncon >= 2, bypassing the single-contact direct solve)
+   with `max_iterations = 1` and `tolerance = 1e-15` (bypassing the `.max(10)` /
+   `.max(1e-8)` clamps in the dispatch). Verify it returns `None`. Then verify that
+   the `CGStrict` dispatch arm sets `data.solver_niter == model.solver_iterations.max(10)`
+   and returns zero forces when the solver returns `None`.
+
+8. **CG fallback to PGS:** Call `cg_solve_contacts()` directly with the same
+   parameters as (7) to confirm it returns `None`. Then verify through the
+   `SolverType::CG` dispatch that the fallback produces valid non-zero forces (PGS
+   fallback activated).
+
+9. **Warmstart effectiveness:** Run sphere-on-plane for 100 frames with
+   `SolverType::CGStrict`. Read `data.solver_niter` each frame. On frame 1 (cold
+   start, no warmstart), CG may use `max_iterations`. After frame 10 (warmstarted),
+   the average `solver_niter` is at least 30% lower than frame 1's value.
+
+10. **MJCF round-trip:** Parse `<option solver="CG"/>`, build a Model, verify
+    `model.solver_type == SolverType::CG`.
+
+11. **Shared assembly correctness:** After extracting `assemble_contact_system()`, PGS
+    produces bit-identical results to the pre-refactor version on the sphere-on-plane
+    test.
 
 #### Files
-- `sim/L0/constraint/src/cg.rs` — modify (new `cg_solve_contacts()`)
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`SolverType` enum, dispatch in `mj_fwd_constraint()`)
-- `sim/L0/mjcf/src/parser.rs` — modify (`solver` attribute parsing)
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - `SolverType` enum (before line 669)
+  - `solver_type: SolverType` field in `Model` (after line 1074) and `Model::empty()`
+    (after line 1746)
+  - `pgs_solve_contacts()` return type changed to `(Vec<Vector3<f64>>, usize)`
+  - `assemble_contact_system()` extracted from `pgs_solve_contacts()` (lines 7755–7933)
+  - `project_friction_cone()` new utility (CG-only; PGS retains inline per-contact projection)
+  - `extract_forces()` helper
+  - `cg_solve_contacts()` (after line 8043)
+  - `compute_block_jacobi_preconditioner()` and `apply_preconditioner()`
+  - `mj_fwd_constraint()` dispatch (lines 9301–9316)
+  - PGS and CG both set `data.solver_niter` (line 1492)
+  - Tests: `test_cg_pgs_parity_sphere_plane`, `test_cg_pgs_parity_box_stack`,
+    `test_cg_pgs_parity_friction_slide`, `test_cg_friction_cone`,
+    `test_cg_zero_contacts`, `test_cg_single_contact_direct`,
+    `test_cg_strict_failure`, `test_cg_fallback`, `test_cg_warmstart`,
+    `test_cg_mjcf_roundtrip`, `test_cg_shared_assembly`
+- `sim/L0/core/src/lib.rs` — modify:
+  - Add `SolverType` to `pub use mujoco_pipeline::{...}` re-export (after line 119)
+- `sim/L0/mjcf/src/model_builder.rs` — modify:
+  - Add `SolverType` to `use sim_core::{...}` import (line 17)
+  - `solver_type` field (line 303), initialization (line 476), `set_options()` wiring
+    (line 549), `build()` propagation (line 2040)
+- `sim/L0/mjcf/src/parser.rs` — no changes (already parses solver attribute)
 
 ---
 ## Group B — Pipeline Integration
@@ -3315,11 +3838,10 @@ The following are explicitly **out of scope** for this item:
 **Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-The pipeline `Integrator` enum (`mujoco_pipeline.rs:629-637`) has three variants:
-`Euler`, `RungeKutta4`, `Implicit`. The `Implicit` variant's doc comment has been
-corrected to "Implicit Euler for diagonal per-DOF spring/damper forces"
-(`mujoco_pipeline.rs:636`). The actual implementation in
-`mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:8969`) solves:
+The pipeline `Integrator` enum (`mujoco_pipeline.rs:671-679`) has three variants:
+`Euler`, `RungeKutta4`, `ImplicitSpringDamper`. The doc comment reads "Implicit Euler
+for diagonal per-DOF spring/damper forces" (`mujoco_pipeline.rs:677`). The actual
+implementation in `mj_fwd_acceleration_implicit()` (`mujoco_pipeline.rs:9677`) solves:
 
 ```
 (M + h·D + h²·K)·v_new = M·v_old + h·f_ext - h·K·(q - q_eq)
@@ -3341,12 +3863,13 @@ a clear slot for a future true `ImplicitEuler` variant that handles coupled
 2. Doc comment is already correct ("Implicit Euler for diagonal per-DOF spring/damper
    forces") — no change needed.
 3. Update all match arms and equality checks that reference `Integrator::Implicit`:
-   - `mujoco_pipeline.rs:2403` — velocity update skip in `Data::integrate()`
-   - `mujoco_pipeline.rs:6707` — `implicit_mode` flag in `mj_fwd_passive()`
-   - `mujoco_pipeline.rs:8768` — acceleration dispatch in `mj_fwd_acceleration()`
+   - `mujoco_pipeline.rs:2547` — integrator dispatch in `Data::step()`
+   - `mujoco_pipeline.rs:2707` — velocity update skip in `Data::integrate()`
+   - `mujoco_pipeline.rs:7312` — `implicit_mode` flag in `mj_fwd_passive()`
+   - `mujoco_pipeline.rs:9476` — acceleration dispatch in `mj_fwd_acceleration()`
 4. Update MJCF layer:
    - `types.rs` — rename `MjcfIntegrator::Implicit` variant
-   - `model_builder.rs:459` — update `MjcfIntegrator::Implicit` → Sim conversion
+   - `model_builder.rs:560` — update `MjcfIntegrator::Implicit` → Sim conversion
    - `parser.rs` — accept both `"implicit"` and `"implicitspringdamper"` strings
 5. Update tests:
    - `parser.rs:2178` — parser test referencing `MjcfIntegrator::Implicit`
@@ -3359,9 +3882,8 @@ a clear slot for a future true `ImplicitEuler` variant that handles coupled
 4. All existing tests pass without modification (behavior is identical).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (enum definition, 3 match arms/equality checks)
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify (enum definition, 4 match arms/equality checks)
 - `sim/L0/mjcf/src/types.rs` — modify (`MjcfIntegrator` enum variant rename, `from_str`, `as_str`)
-- `sim/L0/mjcf/src/config.rs` — modify (`From<MjcfIntegrator>` impl + its test)
 - `sim/L0/mjcf/src/model_builder.rs` — modify (MJCF → Sim integrator conversion)
 - `sim/L0/mjcf/src/parser.rs` — modify (integrator string parsing, parser test)
 - `sim/L0/tests/integration/implicit_integration.rs` — modify (test assertion)
