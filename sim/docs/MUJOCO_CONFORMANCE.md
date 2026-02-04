@@ -26,7 +26,7 @@ Run MuJoCo's own test suite against CortenForge implementations.
 |----------|---------------|-------------------|
 | Forward dynamics | `test/engine_forward_test.cc` | sim-core |
 | Contact physics | `test/engine_collision_test.cc` | sim-core |
-| Constraint solver | `test/engine_core_smooth_test.cc` | sim-core + sim-constraint (CGSolver, joints) |
+| Constraint solver | `test/engine_core_smooth_test.cc` | sim-core (PGS + CG contact solvers) + sim-constraint (CGSolver, joints) |
 | MJCF parsing | `test/xml_test.cc` | sim-mjcf |
 | Sensor readings | `test/sensor_test.cc` | sim-core (pipeline sensors) + sim-sensor (standalone) |
 
@@ -302,7 +302,7 @@ Some differences from MuJoCo are by design:
 | Memory model | Pre-allocated pools | Dynamic allocation | Rust idioms, safety |
 | Threading | OpenMP | Rayon | Rust ecosystem |
 | GPU | Custom CUDA | Future: wgpu | Cross-platform |
-| Contact solver | Custom sparse | PGS solver (mujoco_pipeline) | Maintainability |
+| Contact solver | Custom sparse | PGS + CG/PGD solver (mujoco_pipeline) | Maintainability |
 | Visualization | Built-in | Separate L1 crate | Headless training |
 
 ---
@@ -322,10 +322,12 @@ sim/L0/tests/
 │   ├── collision_plane.rs
 │   ├── collision_edge_cases.rs
 │   ├── collision_performance.rs
+│   ├── cg_solver.rs
 │   ├── collision_test_utils.rs
 │   ├── equality_constraints.rs
 │   ├── implicit_integration.rs
 │   ├── rk4_integration.rs
+│   ├── mjcf_sensors.rs
 │   ├── musculoskeletal.rs
 │   ├── passive_forces.rs
 │   ├── sensors.rs

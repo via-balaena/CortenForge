@@ -478,11 +478,13 @@ fn test_rk4_warmstart_efc_lambda_preservation() {
     );
 
     // Verify the efc_lambda values are finite
-    for ((g1, g2), lambda) in &lambda_after_step {
+    for (key, lambda) in &lambda_after_step {
         for &l in lambda {
             assert!(
                 l.is_finite(),
-                "efc_lambda[({g1}, {g2})] contains non-finite value: {l}"
+                "efc_lambda[({}, {})] contains non-finite value: {l}",
+                key.geom_lo,
+                key.geom_hi
             );
         }
     }

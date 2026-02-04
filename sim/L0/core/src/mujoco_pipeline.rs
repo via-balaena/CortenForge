@@ -74,6 +74,7 @@ use nalgebra::{
     DMatrix, DVector, Matrix3, Matrix6, Point3, UnitQuaternion, UnitVector3, Vector3, Vector6,
 };
 use sim_types::Pose;
+use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
@@ -666,6 +667,26 @@ pub enum MjObjectType {
     Tendon,
 }
 
+/// Contact constraint solver algorithm.
+///
+/// This selects the solver used in `mj_fwd_constraint` for contact forces.
+/// Distinct from `sim_constraint::CGSolver`, which operates on joint-space
+/// constraints via the `Joint` trait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SolverType {
+    /// Projected Gauss-Seidel (default, matches MuJoCo).
+    #[default]
+    PGS,
+    /// Preconditioned projected gradient descent (PGD) with Barzilai-Borwein
+    /// step size. Named "CG" for MuJoCo API compatibility.
+    /// Falls back to PGS if PGD fails to converge within `solver_iterations`.
+    CG,
+    /// Strict PGD: returns zero forces on non-convergence instead of
+    /// falling back to PGS. Sets `data.solver_niter = max_iterations`.
+    /// Use in tests to detect convergence regressions without silent fallback.
+    CGStrict,
+}
+
 /// Integration method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Integrator {
@@ -1095,6 +1116,8 @@ pub struct Model {
     pub enableflags: u32,
     /// Integration method.
     pub integrator: Integrator,
+    /// Contact constraint solver algorithm (PGS or CG).
+    pub solver_type: SolverType,
 
     // ==================== Cached Implicit Integration Parameters ====================
     // These are pre-computed from joint properties for implicit spring-damper integration.
@@ -1122,6 +1145,52 @@ pub struct Model {
     /// Bit (jnt_id % 64) is set if joint jnt_id is an ancestor of this body.
     /// Supports unlimited joints with O(1) lookup per word.
     pub body_ancestor_mask: Vec<Vec<u64>>,
+}
+
+/// Warmstart key for contact force caching across frames.
+///
+/// Combines a canonical geom pair with a discretized contact position so
+/// that multiple contacts within the same geom pair (e.g., 4 corner contacts
+/// for box-on-plane) each get their own warmstart entry.
+///
+/// Grid resolution is 1 cm — coarse enough to match contacts across frames
+/// despite small position drift, fine enough to distinguish distinct contact
+/// points separated by more than ~1 cm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WarmstartKey {
+    /// Lower geom index of the canonical pair (min of geom1, geom2).
+    pub geom_lo: usize,
+    /// Upper geom index of the canonical pair (max of geom1, geom2).
+    pub geom_hi: usize,
+    /// Discretized x grid cell of the contact position.
+    pub cell_x: i64,
+    /// Discretized y grid cell of the contact position.
+    pub cell_y: i64,
+    /// Discretized z grid cell of the contact position.
+    pub cell_z: i64,
+}
+
+/// Grid resolution for warmstart spatial hashing (meters).
+/// 1 cm is coarse enough to tolerate frame-to-frame position jitter
+/// while distinguishing contacts separated by more than ~1 cm.
+const WARMSTART_GRID_RES: f64 = 0.01;
+
+/// Compute the warmstart cache key for a contact.
+///
+/// Combines canonical geom pair IDs with a discretized contact position
+/// so that multiple contacts between the same geom pair (e.g., box corners)
+/// each get their own warmstart entry.
+#[inline]
+#[must_use]
+pub fn warmstart_key(contact: &Contact) -> WarmstartKey {
+    let inv = 1.0 / WARMSTART_GRID_RES;
+    WarmstartKey {
+        geom_lo: contact.geom1.min(contact.geom2),
+        geom_hi: contact.geom1.max(contact.geom2),
+        cell_x: (contact.pos.x * inv).round() as i64,
+        cell_y: (contact.pos.y * inv).round() as i64,
+        cell_z: (contact.pos.z * inv).round() as i64,
+    }
 }
 
 /// Contact point for constraint generation.
@@ -1494,14 +1563,14 @@ pub struct Data {
     pub solver_nnz: usize,
     /// Constraint force multipliers from previous solve, used for warm-starting.
     ///
-    /// Maps canonical (min(geom1,geom2), max(geom1,geom2)) contact pair to
-    /// `[λ_normal, λ_friction1, λ_friction2]`. Keyed by geom IDs (not contact
-    /// indices) so that persistent contacts reuse previous lambda values even
-    /// when contact ordering changes between frames.
+    /// Maps `WarmstartKey` (canonical geom pair + spatial grid cell) to
+    /// `[λ_normal, λ_friction1, λ_friction2]`. The spatial component allows
+    /// multiple contacts within the same geom pair (e.g., box-on-plane corners)
+    /// to each cache their own lambda, rather than overwriting each other.
     ///
-    /// Warm-starting initializes the PGS solver near the previous solution,
+    /// Warm-starting initializes the solver near the previous solution,
     /// typically reducing iteration count by 30-50% for stable contact scenarios.
-    pub efc_lambda: std::collections::HashMap<(usize, usize), [f64; 3]>,
+    pub efc_lambda: HashMap<WarmstartKey, [f64; 3]>,
 
     // ==================== Sensors ====================
     /// Sensor data array (length `nsensordata`).
@@ -1755,6 +1824,7 @@ impl Model {
             disableflags: 0,               // Nothing disabled
             enableflags: 0,                // Nothing extra enabled
             integrator: Integrator::Euler,
+            solver_type: SolverType::PGS,
 
             // Cached implicit integration parameters (empty for empty model)
             implicit_stiffness: DVector::zeros(0),
@@ -1894,7 +1964,7 @@ impl Model {
             // Solver state
             solver_niter: 0,
             solver_nnz: 0,
-            efc_lambda: std::collections::HashMap::with_capacity(256), // Contact correspondence warmstart
+            efc_lambda: HashMap::with_capacity(256), // Contact correspondence warmstart
 
             // Sensors
             sensordata: DVector::zeros(self.nsensordata),
@@ -5728,20 +5798,13 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 // at position stage (because MuJoCo's sensor pipeline is called once
                 // after all stages complete).
                 let mut total_force = 0.0;
-                for (i, contact) in data.contacts.iter().enumerate() {
+                for contact in &data.contacts {
                     if contact.geom1 == objid || contact.geom2 == objid {
                         // Look up the solved contact force from efc_lambda
-                        let key = (
-                            contact.geom1.min(contact.geom2),
-                            contact.geom1.max(contact.geom2),
-                        );
+                        let key = warmstart_key(contact);
                         if let Some(lambda) = data.efc_lambda.get(&key) {
                             // lambda[0] is the normal force magnitude (always >= 0)
                             total_force += lambda[0];
-                        } else {
-                            // Fallback: if no lambda entry (shouldn't happen for active contacts),
-                            // estimate from constraint force projection
-                            let _ = i; // suppress unused warning
                         }
                     }
                 }
@@ -7558,7 +7621,13 @@ fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -> DM
     let body1 = model.geom_body[contact.geom1];
     let body2 = model.geom_body[contact.geom2];
 
-    // Build orthonormal tangent basis
+    // TODO: Use the pre-computed contact.frame tangent vectors instead of
+    // recomputing via build_tangent_basis(). The Contact struct already stores
+    // frame[0] (t1) and frame[1] (t2) from collision detection. All three call
+    // sites (here, assemble_contact_system, mj_fwd_constraint force application)
+    // recompute the same basis. Using contact.frame would eliminate redundant
+    // Gram-Schmidt and ensure exact consistency with the collision detector's
+    // frame. Requires verifying contact.frame is always populated.
     let normal = contact.normal;
     let (tangent1, tangent2) = build_tangent_basis(&normal);
 
@@ -7721,37 +7790,21 @@ fn bodies_share_chain(model: &Model, body_a: usize, body_b: usize) -> bool {
     false
 }
 
-/// Projected Gauss-Seidel solver for contact constraints.
+/// Assemble Delassus matrix A and constraint RHS b for contact constraints.
+/// Shared by PGS and CG solvers.
 ///
-/// Solves the LCP:
-///   minimize: (1/2) λ^T (A + R) λ + λ^T b
-///   subject to: λ_n ≥ 0, |λ_t| ≤ μ λ_n
-///
-/// Where:
-///   A = J * M^{-1} * J^T (constraint-space inverse inertia)
-///   R = regularization (softness)
-///   b = J * qacc_smooth - aref (velocity error with Baumgarte stabilization)
-///
-/// Returns the constraint forces in contact-frame (λ).
-fn pgs_solve_contacts(
+/// A[i,j] = J_i * M^{-1} * J_j^T (with CFM regularization on diagonal).
+/// b includes unconstrained acceleration, contact velocities, and Baumgarte
+/// stabilization from solref/solimp.
+fn assemble_contact_system(
     model: &Model,
     data: &Data,
     contacts: &[Contact],
     jacobians: &[DMatrix<f64>],
-    max_iterations: usize,
-    tolerance: f64,
-    efc_lambda: &mut std::collections::HashMap<(usize, usize), [f64; 3]>,
-) -> Vec<Vector3<f64>> {
+) -> (DMatrix<f64>, DVector<f64>) {
     let ncon = contacts.len();
-    if ncon == 0 {
-        return vec![];
-    }
-
-    // Build the constraint system
-    // Each contact has 3 rows: 1 normal + 2 friction
     let nefc = ncon * 3;
 
-    // Build the full Jacobian and RHS
     let mut a = DMatrix::zeros(nefc, nefc);
     let mut b = DVector::zeros(nefc);
 
@@ -7932,14 +7985,86 @@ fn pgs_solve_contacts(
         b[i * 3 + 2] = j_qacc_smooth[2] + vt2; // Friction 2
     }
 
-    // PGS iteration with contact correspondence warmstart
-    // Look up previous lambda by (geom1, geom2) pair - works even when contacts reorder
+    (a, b)
+}
+
+/// Project lambda onto the friction cone for all contacts.
+/// Used by CG after each full iteration. PGS does NOT call this — it inlines
+/// per-contact projection inside the GS sweep for correct Gauss-Seidel ordering.
+fn project_friction_cone(lambda: &mut DVector<f64>, contacts: &[Contact], ncon: usize) {
+    for i in 0..ncon {
+        let base = i * 3;
+        lambda[base] = lambda[base].max(0.0); // λ_n ≥ 0
+        let mu = contacts[i].friction;
+        let max_friction = mu * lambda[base];
+        let friction_mag = (lambda[base + 1].powi(2) + lambda[base + 2].powi(2)).sqrt();
+        if friction_mag > max_friction && friction_mag > 1e-10 {
+            let scale = max_friction / friction_mag;
+            lambda[base + 1] *= scale;
+            lambda[base + 2] *= scale;
+        }
+    }
+}
+
+/// Convert lambda vector to per-contact force vectors.
+fn extract_forces(lambda: &DVector<f64>, ncon: usize) -> Vec<Vector3<f64>> {
+    (0..ncon)
+        .map(|i| Vector3::new(lambda[i * 3], lambda[i * 3 + 1], lambda[i * 3 + 2]))
+        .collect()
+}
+
+/// Projected Gauss-Seidel solver for contact constraints.
+///
+/// Solves the LCP:
+///   minimize: (1/2) λ^T (A + R) λ + λ^T b
+///   subject to: λ_n ≥ 0, |λ_t| ≤ μ λ_n
+///
+/// Where:
+///   A = J * M^{-1} * J^T (constraint-space inverse inertia)
+///   R = regularization (softness)
+///   b = J * qacc_smooth - aref (velocity error with Baumgarte stabilization)
+///
+/// Returns the constraint forces in contact-frame (λ) and iterations used.
+fn pgs_solve_contacts(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
+) -> (Vec<Vector3<f64>>, usize) {
+    let ncon = contacts.len();
+    if ncon == 0 {
+        return (vec![], 0);
+    }
+
+    let (a, b) = assemble_contact_system(model, data, contacts, jacobians);
+    pgs_solve_with_system(contacts, &a, &b, max_iterations, tolerance, efc_lambda)
+}
+
+/// PGS solver core: operates on a pre-assembled (A, b) system.
+/// Separated from `pgs_solve_contacts` so the CG fallback path can reuse
+/// the already-computed Delassus matrix without redundant assembly.
+fn pgs_solve_with_system(
+    contacts: &[Contact],
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
+) -> (Vec<Vector3<f64>>, usize) {
+    let ncon = contacts.len();
+    if ncon == 0 {
+        return (vec![], 0);
+    }
+
+    let nefc = ncon * 3;
+
+    // Warmstart from previous frame using spatially-keyed contact correspondence.
     let mut lambda = DVector::zeros(nefc);
     for (i, contact) in contacts.iter().enumerate() {
-        let key = (
-            contact.geom1.min(contact.geom2),
-            contact.geom1.max(contact.geom2),
-        );
+        let key = warmstart_key(contact);
         if let Some(prev_lambda) = efc_lambda.get(&key) {
             let base = i * 3;
             lambda[base] = prev_lambda[0];
@@ -7949,20 +8074,15 @@ fn pgs_solve_contacts(
     }
 
     // Compute diagonal inverse with protection against singular diagonals
-    // A diagonal of zero indicates a degenerate constraint configuration
     let diag_inv: Vec<f64> = (0..nefc)
         .map(|i| {
             let d = a[(i, i)];
-            if d.abs() < 1e-12 {
-                // Degenerate: return zero inverse (constraint will be ignored)
-                0.0
-            } else {
-                1.0 / d
-            }
+            if d.abs() < 1e-12 { 0.0 } else { 1.0 / d }
         })
         .collect();
 
-    for _iter in 0..max_iterations {
+    let mut iters_used = max_iterations;
+    for iter in 0..max_iterations {
         let mut max_delta = 0.0_f64;
 
         for i in 0..ncon {
@@ -7998,7 +8118,6 @@ fn pgs_solve_contacts(
 
             let friction_mag = (lambda[base + 1].powi(2) + lambda[base + 2].powi(2)).sqrt();
             if friction_mag > max_friction && friction_mag > 1e-10 {
-                // Project onto friction cone
                 let scale = max_friction / friction_mag;
                 lambda[base + 1] *= scale;
                 lambda[base + 2] *= scale;
@@ -8012,34 +8131,261 @@ fn pgs_solve_contacts(
         }
 
         if max_delta < tolerance {
+            iters_used = iter + 1;
             break;
         }
     }
 
-    // Store lambda for warmstart on next frame using contact correspondence
-    // Clear old entries and insert new ones with canonical (min, max) key ordering
+    // Store lambda for warmstart on next frame.
+    // Note: if two contacts share a WarmstartKey (same geom pair, same 1cm cell),
+    // the later one overwrites the earlier. This is acceptable — contacts within
+    // 1cm of each other have similar forces, and the alternative (accumulation)
+    // would bias the warmstart. The 1cm grid makes collisions rare in practice.
     efc_lambda.clear();
     for (i, contact) in contacts.iter().enumerate() {
         let base = i * 3;
-        let key = (
-            contact.geom1.min(contact.geom2),
-            contact.geom1.max(contact.geom2),
-        );
+        let key = warmstart_key(contact);
         efc_lambda.insert(key, [lambda[base], lambda[base + 1], lambda[base + 2]]);
     }
 
-    // Extract per-contact forces
-    let mut forces = Vec::with_capacity(ncon);
+    (extract_forces(&lambda, ncon), iters_used)
+}
+
+/// Compute block Jacobi preconditioner for CG solver.
+///
+/// Extracts 3x3 diagonal blocks from A and inverts each via Cholesky.
+/// Falls back to scalar Jacobi (diagonal-only inverse) if Cholesky fails.
+fn compute_block_jacobi_preconditioner(a: &DMatrix<f64>, ncon: usize) -> Vec<Matrix3<f64>> {
+    let mut blocks = Vec::with_capacity(ncon);
     for i in 0..ncon {
         let base = i * 3;
-        forces.push(Vector3::new(
-            lambda[base],
-            lambda[base + 1],
-            lambda[base + 2],
-        ));
+        let block = Matrix3::new(
+            a[(base, base)],
+            a[(base, base + 1)],
+            a[(base, base + 2)],
+            a[(base + 1, base)],
+            a[(base + 1, base + 1)],
+            a[(base + 1, base + 2)],
+            a[(base + 2, base)],
+            a[(base + 2, base + 1)],
+            a[(base + 2, base + 2)],
+        );
+        let inv = if let Some(chol) = block.cholesky() {
+            chol.inverse()
+        } else {
+            // Scalar Jacobi fallback: invert diagonal only
+            let d0 = if block[(0, 0)].abs() > 1e-12 {
+                1.0 / block[(0, 0)]
+            } else {
+                0.0
+            };
+            let d1 = if block[(1, 1)].abs() > 1e-12 {
+                1.0 / block[(1, 1)]
+            } else {
+                0.0
+            };
+            let d2 = if block[(2, 2)].abs() > 1e-12 {
+                1.0 / block[(2, 2)]
+            } else {
+                0.0
+            };
+            Matrix3::new(d0, 0.0, 0.0, 0.0, d1, 0.0, 0.0, 0.0, d2)
+        };
+        blocks.push(inv);
+    }
+    blocks
+}
+
+/// Apply block Jacobi preconditioner: z = M^{-1} * r (block-diagonal solve).
+fn apply_preconditioner(
+    precond_inv: &[Matrix3<f64>],
+    r: &DVector<f64>,
+    ncon: usize,
+) -> DVector<f64> {
+    let mut z = DVector::zeros(ncon * 3);
+    for i in 0..ncon {
+        let base = i * 3;
+        let r_block = Vector3::new(r[base], r[base + 1], r[base + 2]);
+        let z_block = precond_inv[i] * r_block;
+        z[base] = z_block[0];
+        z[base + 1] = z_block[1];
+        z[base + 2] = z_block[2];
+    }
+    z
+}
+
+/// Solve contact constraints using preconditioned projected gradient descent.
+///
+/// Named "CG" for API compatibility with MuJoCo's solver selector, but the
+/// algorithm is preconditioned projected gradient descent (PGD) with
+/// Barzilai-Borwein adaptive step size — better suited to the friction cone
+/// (second-order cone) constraint than true conjugate gradient, which requires
+/// active-set tracking for non-box constraints.
+///
+/// Solves the same QP as `pgs_solve_contacts`:
+///   minimize: 0.5 * λ^T A λ + b^T λ
+///   subject to: λ_n ≥ 0, |λ_t| ≤ μ λ_n
+///
+/// Uses block Jacobi preconditioning (3×3 diagonal block inverse per contact),
+/// with Cholesky factorization and scalar Jacobi fallback. For a single contact,
+/// the preconditioner is the exact inverse of A, enabling a direct solve in 0
+/// iterations.
+///
+/// Convergence criterion: relative change in λ falls below tolerance
+/// (`||λ_{k+1} - λ_k|| / ||λ_k|| < tol`). This fixed-point criterion is
+/// appropriate for constrained problems where the gradient at the optimum is
+/// non-zero due to active constraints.
+///
+/// Returns `Ok((forces, iterations_used))` on convergence, or
+/// `Err((A, b))` on non-convergence — returning the pre-computed Delassus
+/// system so the caller can pass it to `pgs_solve_with_system()` without
+/// redundant assembly.
+#[allow(clippy::many_single_char_names)] // a, b, g, z, s are standard math notation
+fn cg_solve_contacts(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
+) -> Result<(Vec<Vector3<f64>>, usize), (DMatrix<f64>, DVector<f64>)> {
+    let ncon = contacts.len();
+    if ncon == 0 {
+        return Ok((vec![], 0));
+    }
+    let nefc = ncon * 3;
+
+    let (a, b) = assemble_contact_system(model, data, contacts, jacobians);
+
+    // Block Jacobi preconditioner
+    let precond_inv = compute_block_jacobi_preconditioner(&a, ncon);
+
+    // Warmstart from previous frame using spatially-keyed contact correspondence.
+    let mut lambda = DVector::zeros(nefc);
+    for (i, contact) in contacts.iter().enumerate() {
+        let key = warmstart_key(contact);
+        if let Some(prev) = efc_lambda.get(&key) {
+            lambda[i * 3] = prev[0];
+            lambda[i * 3 + 1] = prev[1];
+            lambda[i * 3 + 2] = prev[2];
+        }
     }
 
-    forces
+    // Single-contact direct solve: exact 3×3 inversion, no iteration needed.
+    // For ncon=1, A is exactly 3×3 — the preconditioner block is the full inverse.
+    // Use try_inverse as a fallback if Cholesky failed (precond_inv was scalar Jacobi).
+    if ncon == 1 {
+        let a_block = Matrix3::new(
+            a[(0, 0)],
+            a[(0, 1)],
+            a[(0, 2)],
+            a[(1, 0)],
+            a[(1, 1)],
+            a[(1, 2)],
+            a[(2, 0)],
+            a[(2, 1)],
+            a[(2, 2)],
+        );
+        let inv = a_block.try_inverse().unwrap_or(precond_inv[0]);
+        let mut lam = -(inv * Vector3::new(b[0], b[1], b[2]));
+        // Project onto friction cone
+        lam[0] = lam[0].max(0.0);
+        let mu = contacts[0].friction;
+        let max_f = mu * lam[0];
+        let f_mag = (lam[1].powi(2) + lam[2].powi(2)).sqrt();
+        if f_mag > max_f && f_mag > 1e-10 {
+            let scale = max_f / f_mag;
+            lam[1] *= scale;
+            lam[2] *= scale;
+        }
+        efc_lambda.clear();
+        let key = warmstart_key(&contacts[0]);
+        efc_lambda.insert(key, [lam[0], lam[1], lam[2]]);
+        return Ok((vec![lam], 0));
+    }
+
+    // Project initial guess onto feasible set
+    project_friction_cone(&mut lambda, contacts, ncon);
+
+    // Preconditioned Projected Gradient Descent (PGD) for the contact QP:
+    //   min 0.5 * lambda^T A lambda + b^T lambda
+    //   subject to lambda_n >= 0, |lambda_t| <= mu * lambda_n
+    //
+    // Uses block Jacobi preconditioner M^{-1} and an adaptive step size.
+    // The preconditioner approximates A^{-1} per-contact block, so the
+    // preconditioned gradient z = M^{-1}*g is a good search direction.
+    //
+    // Step size: start with alpha=0.8 (slightly under-relaxed preconditioned
+    // step), then adapt using Barzilai-Borwein for off-diagonal coupling.
+
+    let b_norm = b.norm();
+    if b_norm < 1e-14 {
+        efc_lambda.clear();
+        return Ok((vec![Vector3::zeros(); ncon], 0));
+    }
+
+    // Initial step size for preconditioned gradient descent.
+    // alpha=1 would be exact for block-diagonal A. For coupled contacts,
+    // we start slightly under-relaxed to ensure convergence.
+    let mut alpha = 0.8;
+
+    let mut converged = false;
+    let mut iters_used = max_iterations;
+
+    for iter in 0..max_iterations {
+        // Gradient: g = A * lambda + b
+        let g = &a * &lambda + &b;
+
+        // Preconditioned gradient: z = M^{-1} * g
+        let z = apply_preconditioner(&precond_inv, &g, ncon);
+
+        // Projected gradient descent step
+        let lambda_new = {
+            let mut trial = &lambda - alpha * &z;
+            project_friction_cone(&mut trial, contacts, ncon);
+            trial
+        };
+
+        // Convergence check: relative change in lambda (fixed-point criterion)
+        let delta = (&lambda_new - &lambda).norm();
+        let lam_norm = lambda.norm().max(1e-10);
+
+        if delta / lam_norm < tolerance {
+            lambda = lambda_new;
+            converged = true;
+            iters_used = iter + 1;
+            break;
+        }
+
+        // Barzilai-Borwein step size adaptation.
+        // Compute: alpha_bb = (s^T s) / (s^T (g_new - g))
+        // where s = lambda_new - lambda.
+        let g_new = &a * &lambda_new + &b;
+        let s = &lambda_new - &lambda;
+        let y_bb = &g_new - &g;
+        let sy = s.dot(&y_bb);
+        if sy > 1e-30 {
+            let alpha_bb = s.dot(&s) / sy;
+            // Blend new step size with old for stability
+            alpha = alpha_bb.clamp(0.01, 2.0);
+        }
+
+        lambda = lambda_new;
+    }
+
+    // Store warmstart (even on non-convergence — partial solution helps next frame)
+    efc_lambda.clear();
+    for (i, contact) in contacts.iter().enumerate() {
+        let key = warmstart_key(contact);
+        efc_lambda.insert(key, [lambda[i * 3], lambda[i * 3 + 1], lambda[i * 3 + 2]]);
+    }
+
+    if converged {
+        Ok((extract_forces(&lambda, ncon), iters_used))
+    } else {
+        Err((a, b))
+    }
 }
 
 /// Apply equality constraint forces using penalty method.
@@ -9277,13 +9623,17 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     // For small contact counts or when M is singular, fall back to penalty method
     // which is simpler and more robust for simple scenarios.
 
-    // Early exit if no contacts
+    // Early exit if no contacts — clear stale warmstart so a future frame
+    // with new contacts doesn't accidentally match old lambda values.
     if data.contacts.is_empty() {
+        data.efc_lambda.clear();
         return;
     }
 
-    // For systems without DOFs, use simple penalty
+    // For systems without DOFs, skip constraint solve (no generalized forces
+    // to apply). Clear warmstart to avoid stale data if DOFs are added later.
     if model.nv == 0 {
+        data.efc_lambda.clear();
         return;
     }
 
@@ -9298,27 +9648,85 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         .map(|c| compute_contact_jacobian(model, data, c))
         .collect();
 
-    // Solve using PGS (takes &Data + separate &mut HashMap for warmstart)
-    let constraint_forces = pgs_solve_contacts(
-        model,
-        data,
-        &data.contacts,
-        &jacobians,
-        // Safety clamp: minimum 10 iterations prevents premature termination
-        // on well-conditioned systems where 1-2 iterations would under-resolve contacts.
-        // Not configurable — values below 10 risk visible penetration artifacts.
-        model.solver_iterations.max(10),
-        // Safety clamp: minimum tolerance 1e-8 prevents infinite iteration on
-        // systems that cannot converge to machine epsilon due to regularization.
-        // Not configurable — tighter tolerances produce no meaningful improvement.
-        model.solver_tolerance.max(1e-8),
-        &mut efc_lambda,
-    );
+    // Dispatch to configured solver.
+    // Safety clamps: minimum 10 iterations, minimum 1e-8 tolerance.
+    let clamped_iters = model.solver_iterations.max(10);
+    let clamped_tol = model.solver_tolerance.max(1e-8);
+
+    let constraint_forces = match model.solver_type {
+        SolverType::PGS => {
+            let (forces, niter) = pgs_solve_contacts(
+                model,
+                data,
+                &data.contacts,
+                &jacobians,
+                clamped_iters,
+                clamped_tol,
+                &mut efc_lambda,
+            );
+            data.solver_niter = niter;
+            forces
+        }
+        SolverType::CG => {
+            match cg_solve_contacts(
+                model,
+                data,
+                &data.contacts,
+                &jacobians,
+                clamped_iters,
+                clamped_tol,
+                &mut efc_lambda,
+            ) {
+                Ok((forces, niter)) => {
+                    data.solver_niter = niter;
+                    forces
+                }
+                Err((a, b)) => {
+                    // CG did not converge — fall back to PGS.
+                    // Reuse the already-computed Delassus matrix (A, b) to
+                    // avoid redundant assembly. efc_lambda was updated by CG
+                    // with the partial solution, so PGS gets a warmstart.
+                    let (forces, niter) = pgs_solve_with_system(
+                        &data.contacts,
+                        &a,
+                        &b,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    );
+                    data.solver_niter = niter;
+                    forces
+                }
+            }
+        }
+        SolverType::CGStrict => {
+            if let Ok((forces, niter)) = cg_solve_contacts(
+                model,
+                data,
+                &data.contacts,
+                &jacobians,
+                clamped_iters,
+                clamped_tol,
+                &mut efc_lambda,
+            ) {
+                data.solver_niter = niter;
+                forces
+            } else {
+                data.solver_niter = clamped_iters;
+                vec![Vector3::zeros(); data.contacts.len()]
+            }
+        }
+    };
 
     // Restore warmstart cache
     data.efc_lambda = efc_lambda;
 
-    // Apply forces via J^T
+    // DECISION: Force application uses manual world-frame conversion +
+    // apply_contact_force() instead of the pre-computed Jacobians (J^T * lambda).
+    // Both are mathematically equivalent. The manual approach is more readable
+    // and avoids dense matrix-vector multiplication, but does redundant kinematic
+    // chain traversal. Switching to J^T * lambda would be a single matvec per
+    // contact but couples force application to the Jacobian representation.
     // qfrc_constraint += J^T * λ
     for (i, (_jacobian, lambda)) in jacobians.iter().zip(constraint_forces.iter()).enumerate() {
         let normal = data.contacts[i].normal;
@@ -9327,8 +9735,7 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         // Convert contact-frame forces to world-frame force
         let world_force = normal * lambda.x + tangent1 * lambda.y + tangent2 * lambda.z;
 
-        // Apply via Jacobian transpose
-        // This applies the force to both bodies through the kinematic chain
+        // Apply via kinematic chain traversal (equivalent to J^T * lambda)
         let body1 = model.geom_body[data.contacts[i].geom1];
         let body2 = model.geom_body[data.contacts[i].geom2];
         let pos = data.contacts[i].pos;
@@ -11149,7 +11556,10 @@ mod sensor_tests {
             99,   // geom2 = some other geom
             1.0,  // friction
         ));
-        data.efc_lambda.insert((0, 99), [42.0, 1.0, 2.0]);
+        data.efc_lambda.insert(
+            warmstart_key(data.contacts.last().unwrap()),
+            [42.0, 1.0, 2.0],
+        );
 
         // Run acc sensors directly to test Touch
         mj_sensor_acc(&model, &mut data);
@@ -13167,5 +13577,332 @@ mod muscle_tests {
         assert_eq!(sigmoid(1.5), 1.0);
         // Midpoint should be 0.5
         assert!((sigmoid(0.5) - 0.5).abs() < 1e-10);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
+mod cg_solver_unit_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// AC #5: cg_solve_contacts with zero contacts returns Ok((vec![], 0)).
+    #[test]
+    fn test_cg_zero_contacts_direct() {
+        let model = Model::empty();
+        let data = model.make_data();
+        let contacts: &[Contact] = &[];
+        let jacobians: &[DMatrix<f64>] = &[];
+        let mut efc_lambda: HashMap<WarmstartKey, [f64; 3]> = HashMap::new();
+
+        let result = cg_solve_contacts(
+            &model,
+            &data,
+            contacts,
+            jacobians,
+            100,
+            1e-8,
+            &mut efc_lambda,
+        );
+        assert!(result.is_ok(), "Zero contacts should return Ok");
+        let (forces, iters) = result.unwrap();
+        assert!(
+            forces.is_empty(),
+            "Zero contacts should return empty forces"
+        );
+        assert_eq!(iters, 0, "Zero contacts should use 0 iterations");
+    }
+
+    /// AC #6: cg_solve_contacts with single contact uses direct 3×3 solve (iterations_used == 0).
+    #[test]
+    fn test_cg_single_contact_direct_call() {
+        // Build a minimal model with 1 DOF so we can construct a valid system.
+        // Use a sphere-on-plane loaded from MJCF, step to generate contacts,
+        // then call cg_solve_contacts directly.
+        let mut model = Model::n_link_pendulum(1, 0.5, 1.0);
+        model.solver_type = SolverType::CGStrict;
+        // Add a geom so contact geom indices are valid.
+        model.ngeom = 1;
+        model.geom_type = vec![GeomType::Sphere];
+        model.geom_body = vec![1]; // attached to body 1
+        model.geom_pos = vec![Vector3::zeros()];
+        model.geom_quat = vec![UnitQuaternion::identity()];
+        model.geom_size = vec![Vector3::new(0.1, 0.0, 0.0)];
+        model.geom_friction = vec![Vector3::new(0.5, 0.005, 0.0001)];
+        model.geom_solref = vec![[0.02, 1.0]];
+        model.geom_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.geom_contype = vec![1];
+        model.geom_conaffinity = vec![1];
+        let mut data = model.make_data();
+        data.step(&model).expect("step");
+
+        // Create a synthetic single contact with a valid Jacobian.
+        let nv = model.nv;
+        let contact = Contact {
+            pos: Vector3::new(0.0, 0.0, 0.0),
+            normal: Vector3::new(0.0, 0.0, 1.0),
+            frame: [Vector3::new(1.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0)],
+            depth: 0.001,
+            geom1: 0,
+            geom2: 0,
+            friction: 0.5,
+            dim: 3,
+            includemargin: false,
+            mu: [0.5, 0.0],
+            solref: [0.02, 1.0],
+            solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+        };
+        let jacobian = DMatrix::from_fn(3, nv, |r, c| if r == 0 && c == 0 { 1.0 } else { 0.0 });
+
+        let mut efc_lambda: HashMap<WarmstartKey, [f64; 3]> = HashMap::new();
+        let result = cg_solve_contacts(
+            &model,
+            &data,
+            &[contact],
+            &[jacobian],
+            100,
+            1e-8,
+            &mut efc_lambda,
+        );
+
+        assert!(result.is_ok(), "Single contact should converge");
+        let (forces, iters) = result.unwrap();
+        assert_eq!(forces.len(), 1, "Should return 1 force vector");
+        assert_eq!(
+            iters, 0,
+            "Single contact direct solve should use 0 iterations"
+        );
+    }
+
+    /// Test project_friction_cone: normal force clamped, friction bounded by mu.
+    #[test]
+    fn test_project_friction_cone_unit() {
+        let contact = Contact {
+            pos: Vector3::zeros(),
+            normal: Vector3::z(),
+            frame: [Vector3::x(), Vector3::y()],
+            depth: 0.0,
+            geom1: 0,
+            geom2: 0,
+            friction: 0.5,
+            dim: 3,
+            includemargin: false,
+            mu: [0.5, 0.0],
+            solref: [0.02, 1.0],
+            solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+        };
+
+        // Case 1: negative normal → clamped to 0
+        let mut lambda = DVector::from_vec(vec![-1.0, 0.3, 0.4]);
+        project_friction_cone(&mut lambda, std::slice::from_ref(&contact), 1);
+        assert_eq!(lambda[0], 0.0, "Negative normal should be clamped to 0");
+        assert_eq!(lambda[1], 0.0, "Friction should be 0 when normal is 0");
+        assert_eq!(lambda[2], 0.0, "Friction should be 0 when normal is 0");
+
+        // Case 2: friction exceeds cone → projected
+        let mut lambda = DVector::from_vec(vec![2.0, 1.5, 0.0]);
+        project_friction_cone(&mut lambda, std::slice::from_ref(&contact), 1);
+        assert_eq!(lambda[0], 2.0, "Normal should not change");
+        let friction_mag = (lambda[1].powi(2) + lambda[2].powi(2)).sqrt();
+        let max_friction = 0.5 * lambda[0];
+        assert!(
+            friction_mag <= max_friction + 1e-10,
+            "Friction {friction_mag} should be <= mu*lambda_n {max_friction}"
+        );
+
+        // Case 3: friction within cone → unchanged
+        let mut lambda = DVector::from_vec(vec![10.0, 0.1, 0.1]);
+        let orig = lambda.clone();
+        project_friction_cone(&mut lambda, &[contact], 1);
+        assert_eq!(lambda, orig, "Friction within cone should be unchanged");
+    }
+
+    /// Test extract_forces utility.
+    #[test]
+    fn test_extract_forces_unit() {
+        let lambda = DVector::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let forces = extract_forces(&lambda, 2);
+        assert_eq!(forces.len(), 2);
+        assert_eq!(forces[0], Vector3::new(1.0, 2.0, 3.0));
+        assert_eq!(forces[1], Vector3::new(4.0, 5.0, 6.0));
+    }
+
+    /// Test block Jacobi preconditioner with a known SPD matrix.
+    #[test]
+    fn test_block_jacobi_preconditioner() {
+        // 3x3 identity block → preconditioner should be identity
+        let a = DMatrix::identity(3, 3);
+        let blocks = compute_block_jacobi_preconditioner(&a, 1);
+        assert_eq!(blocks.len(), 1);
+        let inv = blocks[0];
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (inv[(i, j)] - expected).abs() < 1e-10,
+                    "Preconditioner of identity should be identity"
+                );
+            }
+        }
+    }
+
+    /// Test block Jacobi preconditioner with a non-trivial SPD matrix.
+    /// Verifies that Cholesky decomposition produces correct inverse.
+    #[test]
+    fn test_block_jacobi_preconditioner_nontrivial() {
+        // Build a 6×6 matrix with two 3×3 SPD diagonal blocks.
+        // Block 0: diag(2,3,4) → inv = diag(0.5, 0.333, 0.25)
+        // Block 1: a non-diagonal SPD matrix [[4,2,0],[2,5,1],[0,1,3]]
+        let mut a = DMatrix::zeros(6, 6);
+        // Block 0: diagonal
+        a[(0, 0)] = 2.0;
+        a[(1, 1)] = 3.0;
+        a[(2, 2)] = 4.0;
+        // Block 1: non-diagonal SPD
+        a[(3, 3)] = 4.0;
+        a[(3, 4)] = 2.0;
+        a[(3, 5)] = 0.0;
+        a[(4, 3)] = 2.0;
+        a[(4, 4)] = 5.0;
+        a[(4, 5)] = 1.0;
+        a[(5, 3)] = 0.0;
+        a[(5, 4)] = 1.0;
+        a[(5, 5)] = 3.0;
+
+        let blocks = compute_block_jacobi_preconditioner(&a, 2);
+        assert_eq!(blocks.len(), 2);
+
+        // Block 0: diagonal inverse
+        assert_relative_eq!(blocks[0][(0, 0)], 0.5, epsilon = 1e-10);
+        assert_relative_eq!(blocks[0][(1, 1)], 1.0 / 3.0, epsilon = 1e-10);
+        assert_relative_eq!(blocks[0][(2, 2)], 0.25, epsilon = 1e-10);
+
+        // Block 1: verify M * M^{-1} = I
+        let orig_mat = Matrix3::new(4.0, 2.0, 0.0, 2.0, 5.0, 1.0, 0.0, 1.0, 3.0);
+        let product = orig_mat * blocks[1];
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (product[(i, j)] - expected).abs() < 1e-10,
+                    "Block1 * inv(Block1) should be identity, got [{i},{j}]={:.6e}",
+                    product[(i, j)]
+                );
+            }
+        }
+    }
+
+    /// Test block Jacobi preconditioner falls back to scalar Jacobi for
+    /// a non-positive-definite block (Cholesky fails).
+    #[test]
+    fn test_block_jacobi_preconditioner_fallback() {
+        // Build a 3×3 matrix that is NOT positive definite (negative eigenvalue).
+        // Cholesky should fail, triggering scalar Jacobi fallback.
+        let mut a = DMatrix::zeros(3, 3);
+        a[(0, 0)] = 1.0;
+        a[(1, 1)] = 2.0;
+        a[(2, 2)] = 3.0;
+        // Off-diagonal makes it indefinite
+        a[(0, 1)] = 10.0;
+        a[(1, 0)] = 10.0;
+
+        let blocks = compute_block_jacobi_preconditioner(&a, 1);
+        assert_eq!(blocks.len(), 1);
+
+        // Should fall back to scalar Jacobi: diag(1/1, 1/2, 1/3)
+        let inv = blocks[0];
+        assert_relative_eq!(inv[(0, 0)], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(inv[(1, 1)], 0.5, epsilon = 1e-10);
+        assert_relative_eq!(inv[(2, 2)], 1.0 / 3.0, epsilon = 1e-10);
+        // Off-diagonals should be zero (scalar Jacobi is diagonal)
+        assert_relative_eq!(inv[(0, 1)], 0.0, epsilon = 1e-10);
+        assert_relative_eq!(inv[(1, 0)], 0.0, epsilon = 1e-10);
+    }
+
+    /// Test project_friction_cone with zero friction coefficient.
+    #[test]
+    fn test_project_friction_cone_zero_mu() {
+        let contact = Contact {
+            pos: Vector3::zeros(),
+            normal: Vector3::z(),
+            frame: [Vector3::x(), Vector3::y()],
+            depth: 0.0,
+            geom1: 0,
+            geom2: 0,
+            friction: 0.0, // Frictionless
+            dim: 3,
+            includemargin: false,
+            mu: [0.0, 0.0],
+            solref: [0.02, 1.0],
+            solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+        };
+
+        // Normal force should be kept, friction should be zeroed
+        let mut lambda = DVector::from_vec(vec![5.0, 2.0, 3.0]);
+        project_friction_cone(&mut lambda, &[contact], 1);
+        assert_eq!(lambda[0], 5.0, "Normal force should be unchanged");
+        assert_eq!(lambda[1], 0.0, "Friction should be zero with mu=0");
+        assert_eq!(lambda[2], 0.0, "Friction should be zero with mu=0");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
+mod warmstart_key_tests {
+    use super::*;
+
+    fn make_contact(geom1: usize, geom2: usize, x: f64, y: f64, z: f64) -> Contact {
+        Contact::new(Vector3::new(x, y, z), Vector3::z(), 0.01, geom1, geom2, 1.0)
+    }
+
+    #[test]
+    fn canonical_geom_ordering() {
+        let c1 = make_contact(3, 7, 0.0, 0.0, 0.0);
+        let c2 = make_contact(7, 3, 0.0, 0.0, 0.0);
+        assert_eq!(warmstart_key(&c1), warmstart_key(&c2));
+        // Both should have (3, 7) as the geom pair
+        let key = warmstart_key(&c1);
+        assert_eq!(key.geom_lo, 3);
+        assert_eq!(key.geom_hi, 7);
+    }
+
+    #[test]
+    fn same_cell_same_key() {
+        // Two positions within the same 1cm grid cell.
+        // 0.101 / 0.01 = 10.1 → rounds to 10; 0.103 / 0.01 = 10.3 → rounds to 10
+        let c1 = make_contact(0, 1, 0.101, 0.201, 0.301);
+        let c2 = make_contact(0, 1, 0.103, 0.203, 0.303);
+        assert_eq!(warmstart_key(&c1), warmstart_key(&c2));
+    }
+
+    #[test]
+    fn different_cells_different_keys() {
+        let c1 = make_contact(0, 1, 0.0, 0.0, 0.0);
+        let c2 = make_contact(0, 1, 0.02, 0.0, 0.0); // 2cm apart in x
+        assert_ne!(warmstart_key(&c1), warmstart_key(&c2));
+    }
+
+    #[test]
+    fn different_geom_pairs_different_keys() {
+        let c1 = make_contact(0, 1, 0.0, 0.0, 0.0);
+        let c2 = make_contact(0, 2, 0.0, 0.0, 0.0);
+        assert_ne!(warmstart_key(&c1), warmstart_key(&c2));
+    }
+
+    #[test]
+    fn negative_positions() {
+        let key = warmstart_key(&make_contact(0, 1, -0.5, -1.0, -2.0));
+        assert_eq!(key.cell_x, -50);
+        assert_eq!(key.cell_y, -100);
+        assert_eq!(key.cell_z, -200);
+    }
+
+    #[test]
+    fn grid_resolution_is_1cm() {
+        // Positions 0.004 and 0.006 round to 0 and 1 respectively at 1cm grid
+        let key_below = warmstart_key(&make_contact(0, 1, 0.004, 0.0, 0.0));
+        let key_above = warmstart_key(&make_contact(0, 1, 0.006, 0.0, 0.0));
+        assert_eq!(key_below.cell_x, 0); // 0.004 / 0.01 = 0.4, rounds to 0
+        assert_eq!(key_above.cell_x, 1); // 0.006 / 0.01 = 0.6, rounds to 1
     }
 }

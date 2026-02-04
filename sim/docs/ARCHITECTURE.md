@@ -43,7 +43,7 @@ sim/
 
 ## Core Architecture: Model/Data
 
-The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~13,100 lines).
+The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~13,900 lines).
 It implements MuJoCo's computation pipeline end-to-end.
 
 ### Model (static)
@@ -64,7 +64,7 @@ Key fields:
 - `actuator_gaintype[i]` — `GainType` (Fixed, Affine, Muscle) — dispatches Phase 2 gain computation
 - `actuator_biastype[i]` — `BiasType` (None, Affine, Muscle) — dispatches Phase 2 bias computation
 - `actuator_dynprm[i]`/`actuator_gainprm[i]`/`actuator_biasprm[i]` — dynamics and force parameters
-- `timestep`, `gravity`, `integrator`, `solver_iterations`, `solver_tolerance`
+- `timestep`, `gravity`, `integrator`, `solver_type`, `solver_iterations`, `solver_tolerance`
 
 Constructed from MJCF via `sim-mjcf` or URDF via `sim-urdf`.
 
@@ -81,7 +81,7 @@ residual heap allocation occurs for contact vector growth and RK4 warmstart save
 | Forces | `qfrc_bias`, `qfrc_passive`, `qfrc_actuator`, `qfrc_applied`, `qfrc_constraint` | Generalized force components |
 | Actuation | `actuator_length`, `actuator_velocity`, `actuator_force`, `act_dot` | Actuator-space state and activation derivatives |
 | Acceleration | `qacc` | Computed as `M^-1 * f_total` |
-| Contacts | `contacts`, `efc_lambda` | Active contacts and warmstart cache |
+| Contacts | `contacts`, `efc_lambda` | Active contacts and warmstart cache (`HashMap<WarmstartKey, [f64; 3]>`) |
 
 ### Stepping
 
@@ -119,7 +119,7 @@ forward():
   Dynamics     mj_crba                Mass matrix (Composite Rigid Body)
                mj_rne                 Bias forces (Recursive Newton-Euler)
                mj_fwd_passive         Springs, dampers, friction loss (joints + tendons)
-  Constraints  mj_fwd_constraint      Joint/tendon limits + equality + contact PGS
+  Constraints  mj_fwd_constraint      Joint/tendon limits + equality + contact PGS/CG
   Solve        mj_fwd_acceleration    qacc = M^-1 * f  (or implicit solve)
 integrate() [Euler / ImplicitSpringDamper]:
   Activation integration (act += dt * act_dot, muscle clamp to [0,1])
@@ -143,7 +143,9 @@ mj_runge_kutta() [RungeKutta4]:
 **Constraint enforcement:**
 - Joint/tendon limits and equality constraints use penalty + Baumgarte stabilization
   with configurable stiffness via `solref`/`solimp` parameters
-- Contacts use PGS (Projected Gauss-Seidel) with friction cones and warmstart
+- Contacts use PGS (Projected Gauss-Seidel) or CG (preconditioned projected gradient
+  descent with Barzilai-Borwein step) with friction cones and warmstart, selectable
+  via `<option solver="CG"/>` in MJCF or `model.solver_type = SolverType::CG`
 
 ## Collision Detection
 
@@ -243,8 +245,9 @@ Joint types, motors, limits, and CGSolver for articulated body simulation:
 
 Also provides: `JointLimits`, `JointMotor`, `MotorMode`, equality constraints
 (connect, gear coupling, differential, tendon networks), actuator types,
-and `CGSolver` (Conjugate Gradient solver with Block Jacobi preconditioner,
-retained for future pipeline integration — see `FUTURE_WORK.md`).
+and `CGSolver` (Conjugate Gradient solver with Block Jacobi preconditioner —
+standalone library for joint-space constraints, distinct from the pipeline's CG
+contact solver in `mujoco_pipeline.rs`; see `FUTURE_WORK.md`).
 
 ### sim-sensor
 
@@ -353,16 +356,30 @@ declared in `ViewerConfig` but not yet implemented (no drawing systems).
 
 ### Contact Solver
 
-The production contact solver is the PGS (Projected Gauss-Seidel) solver
-in `mujoco_pipeline.rs`. It uses Lagrange multiplier contacts with
-solref/solimp parameters and warmstarting. Contact geometry types
-(`ContactPoint`, etc.) are in `sim-core/src/contact.rs`.
+The pipeline supports two contact solvers selectable via `model.solver_type`:
+
+- **PGS** (default) — Projected Gauss-Seidel. Matches MuJoCo's default. Uses
+  per-contact inline friction cone projection inside the GS sweep.
+- **CG** — Preconditioned projected gradient descent (PGD) with Barzilai-Borwein
+  adaptive step size. Named "CG" for MuJoCo API compatibility. Falls back to PGS
+  on non-convergence, reusing the pre-assembled Delassus matrix.
+- **CGStrict** — Same as CG but returns zero forces on non-convergence instead of
+  falling back. Use in tests to detect CG regressions.
+
+Both solvers share `assemble_contact_system()` for Delassus matrix + RHS construction,
+`WarmstartKey`-based contact correspondence, and friction cone projection. The warmstart
+key combines canonical geom pair IDs with a discretized 1 cm spatial grid cell, so
+multiple contacts within the same geom pair (e.g., box-on-plane corners) each get
+their own cached lambda. Contact geometry types (`ContactPoint`, etc.) are in
+`sim-core/src/contact.rs`.
+
+Solver selection: `<option solver="CG"/>` in MJCF or `model.solver_type = SolverType::CG`.
 
 ### Determinism
 
-The PGS solver uses a fixed iteration cap (`solver_iterations`, default 100)
-with an early-exit tolerance. Same inputs produce same outputs. Fixed
-computational cost is essential for RL training.
+Both solvers use a fixed iteration cap (`solver_iterations`, default 100) with an
+early-exit tolerance. Same inputs produce same outputs. Fixed computational cost is
+essential for RL training.
 
 ### Layer 0 (No Bevy)
 
@@ -374,7 +391,7 @@ is Layer 1 only.
 
 | Flag | Crates | Description |
 |------|--------|-------------|
-| `parallel` | sim-core | Rayon-based parallelization. **Reserved** — declared but no `#[cfg]` guards yet; see [FUTURE_WORK #10](./FUTURE_WORK.md) |
+| `parallel` | sim-core | Rayon-based parallelization. **Reserved** — declared but no `#[cfg]` guards yet; see [future_work_2.md #9](./future_work_2.md) |
 | `serde` | Most crates | Serialization support |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 | `muscle` | sim-constraint | Hill-type muscle integration |
