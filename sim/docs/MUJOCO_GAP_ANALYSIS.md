@@ -21,7 +21,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal spring/damper only — see [FUTURE_WORK #7](./FUTURE_WORK.md))
-- Constraint solver: PGS (plain Gauss-Seidel, no SOR), Warm Starting
+- Constraint solver: PGS (plain Gauss-Seidel, no SOR) + CG (preconditioned PGD with Barzilai-Borwein), Warm Starting via `WarmstartKey`
 - Contact model (Compliant with solref/solimp, circular friction cone condim 3, contype/conaffinity filtering)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free**)
@@ -48,7 +48,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - sim-muscle (2,550 lines) — standalone Hill model; MuJoCo FLV muscle model now implemented directly in pipeline ([FUTURE_WORK #5](./FUTURE_WORK.md) ✅)
 - sim-deformable (7,733 lines) — XPBD solver not called from `Data::step()` ([FUTURE_WORK #9](./FUTURE_WORK.md))
 - sim-sensor (rangefinder, magnetometer, force/torque) — standalone crate with own API; pipeline has independent implementations
-- CGSolver in sim-constraint (1,664 lines) — 0 pipeline callers ([FUTURE_WORK #3](./FUTURE_WORK.md))
+- CGSolver in sim-constraint (1,664 lines) — standalone joint-space CG; pipeline contact CG is separate in `mujoco_pipeline.rs` ([FUTURE_WORK #3](./FUTURE_WORK.md) ✅)
 - ~~`integrators.rs` trait system~~ — removed in FUTURE_WORK C1
 - Pneumatic actuators in sim-constraint — standalone `PneumaticCylinderActuator`; pipeline cylinder/adhesion actuators use gain/bias model ([FUTURE_WORK #12](./FUTURE_WORK.md) ✅)
 - Planar, Cylindrical joints in sim-constraint — not in pipeline `MjJointType` (MJCF model builder errors)
@@ -156,11 +156,11 @@ data.step(&model).expect("step");
 |---------|--------|-------------|--------|----------|------------|
 | PGS (Gauss-Seidel) | Supported | `pgs_solve_contacts()` in pipeline (plain GS, no SOR) | **Implemented** (no SOR) | - | - |
 | Newton solver | Default, 2-3 iterations | `NewtonConstraintSolver` | **Removed** (Phase 3 consolidation) | - | - |
-| Conjugate Gradient | Supported | `CGSolver` | **Standalone** (0 pipeline callers; see [FUTURE_WORK #3](./FUTURE_WORK.md)) | - | - |
+| Conjugate Gradient | Supported | `cg_solve_contacts()` in pipeline (PGD+BB, named "CG") | **Implemented** ([FUTURE_WORK #3](./FUTURE_WORK.md) ✅) | - | - |
 | Constraint islands | Auto-detected | `ConstraintIslands` | **Removed** (Phase 3 consolidation) | - | - |
-| Warm starting | Supported | `warm_starting` in pipeline PGS | **Implemented** | - | - |
+| Warm starting | Supported | `WarmstartKey` spatial hash + `efc_lambda` | **Implemented** | - | - |
 
-> **Note:** The pipeline's PGS solver lives in `mujoco_pipeline.rs:7081` (`pgs_solve_contacts()`), not in `sim-constraint/src/pgs.rs` (which was deleted in Phase 3). The pipeline PGS uses standard Gauss-Seidel (ω=1.0) with no SOR relaxation factor. CGSolver exists in `sim-constraint/src/cg.rs` (1,664 lines) but has zero callers in the pipeline — see [FUTURE_WORK #3](./FUTURE_WORK.md) for the plan to wire it in.
+> **Note:** The pipeline now has two contact solvers in `mujoco_pipeline.rs`: `pgs_solve_contacts()` (PGS, default) and `cg_solve_contacts()` (preconditioned PGD with Barzilai-Borwein, selected via `solver_type: SolverType::CG`). Both share `assemble_contact_system()` for Delassus assembly. The pipeline PGS uses standard Gauss-Seidel (ω=1.0) with no SOR. `CGSolver` in `sim-constraint/src/cg.rs` remains a standalone joint-space solver unrelated to the pipeline contact CG.
 
 ### Implementation Notes: Newton Solver ⚠️ REMOVED (Phase 3 consolidation)
 
@@ -202,7 +202,7 @@ if result.converged {
 
 ### Implementation Notes: PGS (Gauss-Seidel) Solver ⚠️ REMOVED from sim-constraint; reimplemented in pipeline
 
-> The `PGSSolver` described below was in `sim-constraint/src/pgs.rs` and was **deleted in Phase 3 consolidation**. The pipeline now has its own PGS in `mujoco_pipeline.rs:7081` (`pgs_solve_contacts()`) which uses plain Gauss-Seidel (ω=1.0) **without SOR**.
+> The `PGSSolver` described below was in `sim-constraint/src/pgs.rs` and was **deleted in Phase 3 consolidation**. The pipeline now has its own PGS in `mujoco_pipeline.rs` (`pgs_solve_contacts()`, line 8028) and CG (`cg_solve_contacts()`, line 8244). PGS uses plain Gauss-Seidel (ω=1.0) **without SOR**.
 
 The original PGS solver implemented a full iterative Projected Gauss-Seidel method with
 Successive Over-Relaxation (SOR).
@@ -1834,7 +1834,7 @@ Focus: Large standalone features, each potentially its own PR.
 | Feature | Section | Complexity | Status | Notes |
 |---------|---------|------------|--------|-------|
 | ~~Height field collision~~ | §4 Collision, §5 Geoms | High | ✅ COMPLETED | Terrain simulation |
-| ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED → ⚠️ **Standalone** | Built in sim-constraint, 0 pipeline callers (see FUTURE_WORK #3) |
+| ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED | Pipeline CG in `mujoco_pipeline.rs` (`cg_solve_contacts()`); `CGSolver` in sim-constraint remains standalone joint-space solver (see FUTURE_WORK #3 ✅) |
 | ~~Tendon coupling constraints~~ | §10 Equality | Low | ✅ COMPLETED → ⚠️ **Standalone** | In sim-constraint; pipeline tendon *equality* constraints not yet implemented (tendon kinematics/actuation/limits ARE in pipeline) |
 | ~~Flex edge constraints~~ | §10 Equality | Low | ✅ COMPLETED → ⚠️ **Standalone** | In sim-deformable, XPBD not called from pipeline |
 | ~~SDF collision~~ | §4 Collision, §5 Geoms | High | ✅ **COMPLETED** | All 10 shape combinations implemented (see §5 notes) |
@@ -1844,7 +1844,7 @@ Focus: Large standalone features, each potentially its own PR.
 
 **Implemented (some now standalone or removed — see table above for current status):**
 
-> **⚠️ Note:** The CG solver below is standalone (`sim-constraint`), not called by the pipeline. Tendon *equality* constraints (`TendonConstraint`) are in `sim-constraint` and not used by the pipeline (the pipeline handles tendon kinematics, actuation, limits, and passive forces directly). Island-parallel solving was removed in Phase 3 consolidation.
+> **⚠️ Note:** The `CGSolver` below is standalone (`sim-constraint`), operating on joint-space constraints via the `Joint` trait. The pipeline's contact CG solver (`cg_solve_contacts()` in `mujoco_pipeline.rs`) is a separate implementation using PGD with Barzilai-Borwein step. Tendon *equality* constraints (`TendonConstraint`) are in `sim-constraint` and not used by the pipeline (the pipeline handles tendon kinematics, actuation, limits, and passive forces directly). Island-parallel solving was removed in Phase 3 consolidation.
 
 **Conjugate Gradient Solver (`sim-constraint/src/cg.rs`) — ⚠️ Standalone:**
 - `CGSolver` - Conjugate gradient method for constraint solving
