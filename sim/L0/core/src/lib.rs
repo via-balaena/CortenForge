@@ -132,11 +132,14 @@ pub use mujoco_pipeline::{
     StepError,
     // Tendon types
     TendonType,
+    // Warmstart key type for efc_lambda contact cache
+    WarmstartKey,
     // Wrap object types
     WrapType,
     // Utility functions for position/velocity differentiation
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
+    warmstart_key,
 };
 
 // Re-export key types from sim-types for convenience

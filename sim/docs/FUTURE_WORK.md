@@ -445,11 +445,11 @@ The implicit path (`mj_fwd_acceleration_implicit`) is **unchanged** by this PR.
 `pgs_solve_contacts()` (`mujoco_pipeline.rs:7736`) solves the mixed LCP for contact
 constraints using Projected Gauss-Seidel. It takes `&Model`, `&Data`, `&[Contact]`,
 `&[DMatrix<f64>]` (Jacobians), `max_iterations`, `tolerance`, and
-`&mut HashMap<(usize, usize), [f64; 3]>` (warmstart cache). The function assembles the
+`&mut HashMap<WarmstartKey, [f64; 3]>` (warmstart cache). The function assembles the
 Delassus matrix `A = J · M⁻¹ · J^T` (lines 7783–7891), builds the RHS from
 unconstrained accelerations, contact velocities, and Baumgarte stabilization (lines
-7893–7933), warmstarts from `efc_lambda` keyed by canonical geom-pair `(min, max)`
-(lines 7938–7949), and iterates Gauss-Seidel with friction cone projection (lines
+7893–7933), warmstarts from `efc_lambda` keyed by `WarmstartKey` (geom pair + spatial
+grid cell), and iterates Gauss-Seidel with friction cone projection (lines
 7965–8017). It returns `Vec<Vector3<f64>>`.
 
 `mj_fwd_constraint()` (`mujoco_pipeline.rs:9155`) builds contact Jacobians via
@@ -799,14 +799,12 @@ fn cg_solve_contacts(...) -> Option<(Vec<Vector3<f64>>, usize)>:
     if converged: Some((extract_forces(&lambda, ncon), iters_used)) else: None
 ```
 
-**Known limitation (warmstart key collision):** The canonical `(min(geom1, geom2),
-max(geom1, geom2))` key does not disambiguate multiple contacts between the same pair
-of geometries (e.g., 4 corner contacts of a box on a plane). In such cases,
-`HashMap::insert` retains only the last contact's lambda — earlier contacts in the
-iteration order receive no warmstart on the next frame. This is a pre-existing PGS
-limitation (lines 7938–7949) that CG inherits for warmstart parity. A future
-improvement could key by `(geom_pair, contact_subindex)` or store `Vec<[f64; 3]>`
-per key.
+**Resolved (warmstart key collision):** The warmstart key now uses `WarmstartKey =
+(geom_lo, geom_hi, cell_x, cell_y, cell_z)` where the spatial component is a
+discretized grid cell (1 cm resolution) of the contact position. This disambiguates
+multiple contacts within the same geom pair (e.g., 4 corner contacts of a box on a
+plane), giving each its own cached lambda. See `warmstart_key()` in
+`mujoco_pipeline.rs`.
 
 ##### Step 5: Block Jacobi preconditioner
 

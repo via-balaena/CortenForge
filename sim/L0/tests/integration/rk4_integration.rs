@@ -478,7 +478,7 @@ fn test_rk4_warmstart_efc_lambda_preservation() {
     );
 
     // Verify the efc_lambda values are finite
-    for ((g1, g2), lambda) in &lambda_after_step {
+    for (&(g1, g2, _, _, _), lambda) in &lambda_after_step {
         for &l in lambda {
             assert!(
                 l.is_finite(),

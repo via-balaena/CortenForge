@@ -1146,6 +1146,41 @@ pub struct Model {
     pub body_ancestor_mask: Vec<Vec<u64>>,
 }
 
+/// Warmstart key for contact force caching across frames.
+///
+/// `(geom_lo, geom_hi, cell_x, cell_y, cell_z)` where:
+/// - `geom_lo, geom_hi` = canonical geom pair (min, max)
+/// - `cell_x, cell_y, cell_z` = spatial grid cell of the contact position
+///
+/// The spatial component disambiguates multiple contacts within the same
+/// geom pair (e.g., 4 corner contacts for box-on-plane). Grid resolution
+/// is 1 cm, coarse enough to match contacts across frames despite small
+/// position drift, but fine enough to distinguish distinct contact points.
+pub type WarmstartKey = (usize, usize, i64, i64, i64);
+
+/// Grid resolution for warmstart spatial hashing (meters).
+/// 1 cm is coarse enough to tolerate frame-to-frame position jitter
+/// while distinguishing contacts separated by more than ~1 cm.
+const WARMSTART_GRID_RES: f64 = 0.01;
+
+/// Compute the warmstart cache key for a contact.
+///
+/// Combines canonical geom pair IDs with a discretized contact position
+/// so that multiple contacts between the same geom pair (e.g., box corners)
+/// each get their own warmstart entry.
+#[inline]
+#[must_use]
+pub fn warmstart_key(contact: &Contact) -> WarmstartKey {
+    let inv = 1.0 / WARMSTART_GRID_RES;
+    (
+        contact.geom1.min(contact.geom2),
+        contact.geom1.max(contact.geom2),
+        (contact.pos.x * inv).round() as i64,
+        (contact.pos.y * inv).round() as i64,
+        (contact.pos.z * inv).round() as i64,
+    )
+}
+
 /// Contact point for constraint generation.
 ///
 /// Matches MuJoCo's mjContact structure with all relevant fields
@@ -1516,14 +1551,14 @@ pub struct Data {
     pub solver_nnz: usize,
     /// Constraint force multipliers from previous solve, used for warm-starting.
     ///
-    /// Maps canonical (min(geom1,geom2), max(geom1,geom2)) contact pair to
-    /// `[λ_normal, λ_friction1, λ_friction2]`. Keyed by geom IDs (not contact
-    /// indices) so that persistent contacts reuse previous lambda values even
-    /// when contact ordering changes between frames.
+    /// Maps `WarmstartKey` (canonical geom pair + spatial grid cell) to
+    /// `[λ_normal, λ_friction1, λ_friction2]`. The spatial component allows
+    /// multiple contacts within the same geom pair (e.g., box-on-plane corners)
+    /// to each cache their own lambda, rather than overwriting each other.
     ///
-    /// Warm-starting initializes the PGS solver near the previous solution,
+    /// Warm-starting initializes the solver near the previous solution,
     /// typically reducing iteration count by 30-50% for stable contact scenarios.
-    pub efc_lambda: std::collections::HashMap<(usize, usize), [f64; 3]>,
+    pub efc_lambda: std::collections::HashMap<WarmstartKey, [f64; 3]>,
 
     // ==================== Sensors ====================
     /// Sensor data array (length `nsensordata`).
@@ -5754,10 +5789,7 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 for (i, contact) in data.contacts.iter().enumerate() {
                     if contact.geom1 == objid || contact.geom2 == objid {
                         // Look up the solved contact force from efc_lambda
-                        let key = (
-                            contact.geom1.min(contact.geom2),
-                            contact.geom1.max(contact.geom2),
-                        );
+                        let key = warmstart_key(contact);
                         if let Some(lambda) = data.efc_lambda.get(&key) {
                             // lambda[0] is the normal force magnitude (always >= 0)
                             total_force += lambda[0];
@@ -7992,7 +8024,7 @@ fn pgs_solve_contacts(
     jacobians: &[DMatrix<f64>],
     max_iterations: usize,
     tolerance: f64,
-    efc_lambda: &mut std::collections::HashMap<(usize, usize), [f64; 3]>,
+    efc_lambda: &mut std::collections::HashMap<WarmstartKey, [f64; 3]>,
 ) -> (Vec<Vector3<f64>>, usize) {
     let ncon = contacts.len();
     if ncon == 0 {
@@ -8012,7 +8044,7 @@ fn pgs_solve_with_system(
     b: &DVector<f64>,
     max_iterations: usize,
     tolerance: f64,
-    efc_lambda: &mut std::collections::HashMap<(usize, usize), [f64; 3]>,
+    efc_lambda: &mut std::collections::HashMap<WarmstartKey, [f64; 3]>,
 ) -> (Vec<Vector3<f64>>, usize) {
     let ncon = contacts.len();
     if ncon == 0 {
@@ -8021,19 +8053,10 @@ fn pgs_solve_with_system(
 
     let nefc = ncon * 3;
 
-    // Warmstart from previous frame using contact correspondence.
-    // TODO: The (geom1, geom2) key can't distinguish multiple contacts
-    // within the same geom pair (e.g. 4 corner contacts for box-on-plane).
-    // HashMap::insert overwrites, so only the last contact's lambda is
-    // cached. All contacts in the pair get the same warmstart — suboptimal
-    // but not incorrect. A better key would include a spatial hash of the
-    // contact position.
+    // Warmstart from previous frame using spatially-keyed contact correspondence.
     let mut lambda = DVector::zeros(nefc);
     for (i, contact) in contacts.iter().enumerate() {
-        let key = (
-            contact.geom1.min(contact.geom2),
-            contact.geom1.max(contact.geom2),
-        );
+        let key = warmstart_key(contact);
         if let Some(prev_lambda) = efc_lambda.get(&key) {
             let base = i * 3;
             lambda[base] = prev_lambda[0];
@@ -8109,10 +8132,7 @@ fn pgs_solve_with_system(
     efc_lambda.clear();
     for (i, contact) in contacts.iter().enumerate() {
         let base = i * 3;
-        let key = (
-            contact.geom1.min(contact.geom2),
-            contact.geom1.max(contact.geom2),
-        );
+        let key = warmstart_key(contact);
         efc_lambda.insert(key, [lambda[base], lambda[base + 1], lambda[base + 2]]);
     }
 
@@ -8216,7 +8236,7 @@ fn cg_solve_contacts(
     jacobians: &[DMatrix<f64>],
     max_iterations: usize,
     tolerance: f64,
-    efc_lambda: &mut std::collections::HashMap<(usize, usize), [f64; 3]>,
+    efc_lambda: &mut std::collections::HashMap<WarmstartKey, [f64; 3]>,
 ) -> Result<(Vec<Vector3<f64>>, usize), (DMatrix<f64>, DVector<f64>)> {
     let ncon = contacts.len();
     if ncon == 0 {
@@ -8229,14 +8249,10 @@ fn cg_solve_contacts(
     // Block Jacobi preconditioner
     let precond_inv = compute_block_jacobi_preconditioner(&a, ncon);
 
-    // Warmstart from previous frame (see TODO in pgs_solve_with_system
-    // about multi-contact geom pair key collisions)
+    // Warmstart from previous frame using spatially-keyed contact correspondence.
     let mut lambda = DVector::zeros(nefc);
     for (i, contact) in contacts.iter().enumerate() {
-        let key = (
-            contact.geom1.min(contact.geom2),
-            contact.geom1.max(contact.geom2),
-        );
+        let key = warmstart_key(contact);
         if let Some(prev) = efc_lambda.get(&key) {
             lambda[i * 3] = prev[0];
             lambda[i * 3 + 1] = prev[1];
@@ -8272,10 +8288,7 @@ fn cg_solve_contacts(
             lam[2] *= scale;
         }
         efc_lambda.clear();
-        let key = (
-            contacts[0].geom1.min(contacts[0].geom2),
-            contacts[0].geom1.max(contacts[0].geom2),
-        );
+        let key = warmstart_key(&contacts[0]);
         efc_lambda.insert(key, [lam[0], lam[1], lam[2]]);
         return Ok((vec![lam], 0));
     }
@@ -8352,10 +8365,7 @@ fn cg_solve_contacts(
     // Store warmstart (even on non-convergence — partial solution helps next frame)
     efc_lambda.clear();
     for (i, contact) in contacts.iter().enumerate() {
-        let key = (
-            contact.geom1.min(contact.geom2),
-            contact.geom1.max(contact.geom2),
-        );
+        let key = warmstart_key(contact);
         efc_lambda.insert(key, [lambda[i * 3], lambda[i * 3 + 1], lambda[i * 3 + 2]]);
     }
 
@@ -11530,7 +11540,10 @@ mod sensor_tests {
             99,   // geom2 = some other geom
             1.0,  // friction
         ));
-        data.efc_lambda.insert((0, 99), [42.0, 1.0, 2.0]);
+        data.efc_lambda.insert(
+            warmstart_key(data.contacts.last().unwrap()),
+            [42.0, 1.0, 2.0],
+        );
 
         // Run acc sensors directly to test Touch
         mj_sensor_acc(&model, &mut data);
@@ -13565,7 +13578,7 @@ mod cg_solver_unit_tests {
         let data = model.make_data();
         let contacts: &[Contact] = &[];
         let jacobians: &[DMatrix<f64>] = &[];
-        let mut efc_lambda: HashMap<(usize, usize), [f64; 3]> = HashMap::new();
+        let mut efc_lambda: HashMap<WarmstartKey, [f64; 3]> = HashMap::new();
 
         let result = cg_solve_contacts(
             &model,
@@ -13626,7 +13639,7 @@ mod cg_solver_unit_tests {
         };
         let jacobian = DMatrix::from_fn(3, nv, |r, c| if r == 0 && c == 0 { 1.0 } else { 0.0 });
 
-        let mut efc_lambda: HashMap<(usize, usize), [f64; 3]> = HashMap::new();
+        let mut efc_lambda: HashMap<WarmstartKey, [f64; 3]> = HashMap::new();
         let result = cg_solve_contacts(
             &model,
             &data,
