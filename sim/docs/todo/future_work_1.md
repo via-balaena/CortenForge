@@ -1,7 +1,7 @@
 # Simulation — Future Work (Phase 1)
 
 > **Phase 1 is complete.** All 12 tasks below are either done (✅) or transferred
-> to Phase 2. See [future_work_2.md](./future_work_2.md) for the active roadmap.
+> to Phase 2. See [index.md](./index.md) for the active roadmap.
 
 ## Priority Framework
 
@@ -26,9 +26,9 @@ can be tackled in any order unless a prerequisite is noted.
 | ~~6~~ | ~~Sensor Completion~~ | ~~High~~ | ~~High~~ | ~~S~~ | ~~#4 for tendon sensors~~ ✅ |
 | ~~7~~ | ~~Integrator Rename~~ | ~~Low~~ | ~~Medium~~ | ~~S~~ | ~~None~~ ✅ |
 | ~~8~~ | ~~True RK4 Integration~~ | ~~Low~~ | ~~Medium~~ | ~~M~~ | ~~None~~ ✅ |
-| ~~9~~ | ~~Deformable Body Integration~~ | ~~Medium~~ | ~~Low~~ | ~~XL~~ | ~~None~~ → [future_work_2.md #11](./future_work_2.md) |
-| ~~10~~ | ~~Batched Simulation~~ | ~~High~~ | ~~Low~~ | ~~L~~ | ~~None~~ → [future_work_2.md #9](./future_work_2.md) |
-| ~~11~~ | ~~GPU Acceleration~~ | ~~High~~ | ~~Low~~ | ~~XL~~ | ~~#10~~ → [future_work_2.md #10](./future_work_2.md) |
+| ~~9~~ | ~~Deformable Body Integration~~ | ~~Medium~~ | ~~Low~~ | ~~XL~~ | ~~None~~ → [future_work_4.md #11](./future_work_4.md) |
+| ~~10~~ | ~~Batched Simulation~~ | ~~High~~ | ~~Low~~ | ~~L~~ | ~~None~~ → [future_work_3.md #9](./future_work_3.md) |
+| ~~11~~ | ~~GPU Acceleration~~ | ~~High~~ | ~~Low~~ | ~~XL~~ | ~~#10~~ → [future_work_3.md #10](./future_work_3.md) |
 | ~~12~~ | ~~General Gain/Bias Actuator Force Model~~ | ~~High~~ | ~~High~~ | ~~M~~ | ~~#5~~ ✅ |
 
 ## Dependency Graph
@@ -65,7 +65,7 @@ can be tackled in any order unless a prerequisite is noted.
    │ 7 │   │ 8 │ Integrator items        (independent)
    └───┘   └───┘
 
-   (Tasks 9, 10, 11 transferred to future_work_2.md — see Phase 2 roadmap)
+   (Tasks 9, 10, 11 transferred to Phase 2 — see index.md)
 ```
 
 ---
@@ -4213,17 +4213,17 @@ Sensors are evaluated once per `step()` call:
 ## ~~Group D — Deformable Body~~ → Phase 2
 
 ### ~~9. Deformable Body Pipeline Integration~~
-**Status:** Transferred to [future_work_2.md #11](./future_work_2.md)
+**Status:** Transferred to [future_work_4.md #11](./future_work_4.md)
 
 ---
 
 ## ~~Group E — Scaling & Performance~~ → Phase 2
 
 ### ~~10. Batched Simulation~~
-**Status:** Transferred to [future_work_2.md #9](./future_work_2.md)
+**Status:** Transferred to [future_work_3.md #9](./future_work_3.md)
 
 ### ~~11. GPU Acceleration~~
-**Status:** Transferred to [future_work_2.md #10](./future_work_2.md)
+**Status:** Transferred to [future_work_3.md #10](./future_work_3.md)
 
 ---
 ## Group B (cont.) — Actuation
@@ -5282,7 +5282,7 @@ Remove the `integrators.rs` bullet from the sim-core file listing. Replace:
 - `integrators.rs` — standalone trait system with 6 integrators (ExplicitEuler,
   SemiImplicitEuler, VelocityVerlet, RungeKutta4, ImplicitVelocity, ImplicitFast).
   **Not used by the MuJoCo pipeline** — the pipeline has its own `Integrator` enum
-  in `mujoco_pipeline.rs`. See [FUTURE_WORK C1](./FUTURE_WORK.md) for disambiguation plan.
+  in `mujoco_pipeline.rs`. See FUTURE_WORK C1 (below) for disambiguation plan.
 ```
 
 with nothing (delete the 4-line bullet entirely). The pipeline's `Integrator`
@@ -5296,7 +5296,7 @@ This file has six locations referencing the deleted system.
 
 Replace:
 ```
-- `integrators.rs` trait system (1,005 lines) — disconnected from pipeline ([FUTURE_WORK C1](./FUTURE_WORK.md))
+- `integrators.rs` trait system (1,005 lines) — disconnected from pipeline (FUTURE_WORK C1 (below))
 ```
 with:
 ```
@@ -5368,7 +5368,7 @@ Update section heading (line 100) to:
 
 Replace:
 ```
-3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ ✅ → ⚠️ **Standalone** (in `integrators.rs` trait, not in pipeline; see [FUTURE_WORK C1](./FUTURE_WORK.md))
+3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ ✅ → ⚠️ **Standalone** (in `integrators.rs` trait, not in pipeline; see FUTURE_WORK C1 (below))
 ```
 with:
 ```
@@ -5450,7 +5450,7 @@ set of compile errors matches expectations:
 | 3 (update types) | `IntegrationMethod` in `mjcf/src/config.rs` → unresolved |
 | 4 (update mjcf) | `IntegrationMethod` in `physics/src/lib.rs` prelude → unresolved |
 | 5 (update physics) | Zero errors. `cargo test --workspace` should pass. |
-| 6 (update docs) | N/A (markdown, not compiled). Grep-verify: `grep -rn 'integrators\.\|IntegrationMethod\|ImplicitVelocity\|integrate_with_method' sim/docs/` should return only FUTURE_WORK.md (historical reference). |
+| 6 (update docs) | N/A (markdown, not compiled). Grep-verify: `grep -rn 'integrators\.\|IntegrationMethod\|ImplicitVelocity\|integrate_with_method' sim/docs/` should return only future_work_1.md (historical reference). |
 
 #### Net Change
 

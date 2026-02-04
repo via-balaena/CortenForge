@@ -627,7 +627,7 @@ Only matters when both sensor types are attached to the same site.
 evaluates it in `mj_sensorPos` (position stage) because it only depends on
 `site_xmat` (computed during FK).~~
 
-**Fixed** in [FUTURE_WORK #6](./FUTURE_WORK.md) (Sensor Completion, Step 5):
+**Fixed** in [future_work_1 #6](./todo/future_work_1.md) (Sensor Completion, Step 5):
 Magnetometer moved from `mj_sensor_acc()` to `mj_sensor_pos()` with
 `MjSensorDataType::Position`. Existing magnetometer tests updated accordingly.
 

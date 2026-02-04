@@ -8491,7 +8491,7 @@ fn apply_equality_constraints(model: &Model, data: &mut Data) {
                 WARN_ONCE.call_once(|| {
                     eprintln!(
                         "Warning: Tendon equality constraints are not yet implemented; \
-                         these constraints will be ignored. See sim/docs/FUTURE_WORK.md."
+                         these constraints will be ignored. See sim/docs/todo/index.md."
                     );
                 });
             }

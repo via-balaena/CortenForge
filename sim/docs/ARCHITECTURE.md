@@ -34,7 +34,13 @@ sim/
 │   └── bevy/              # sim-bevy — Visualization
 └── docs/                              # Simulation documentation
     ├── ARCHITECTURE.md                # This file
-    ├── FUTURE_WORK.md                 # Roadmap and remaining work
+    ├── todo/                           # Roadmap and remaining work
+    │   ├── index.md                   # Priority table, dependency graph, file map
+    │   ├── future_work_1.md           # Phase 1 (complete)
+    │   ├── future_work_2.md           # Phase 2: Correctness #1–5
+    │   ├── future_work_3.md           # Phase 2: Correctness + Scaling #6–10
+    │   ├── future_work_4.md           # Phase 2: Physics Completeness #11–14
+    │   └── future_work_5.md           # Phase 2: Quality of Life #15–17
     ├── MUJOCO_CONFORMANCE.md          # MuJoCo conformance testing plan
     ├── MUJOCO_GAP_ANALYSIS.md         # Feature-by-feature gap analysis
     ├── MUJOCO_REFERENCE.md            # Pipeline algorithms and pseudocode
@@ -247,7 +253,7 @@ Also provides: `JointLimits`, `JointMotor`, `MotorMode`, equality constraints
 (connect, gear coupling, differential, tendon networks), actuator types,
 and `CGSolver` (Conjugate Gradient solver with Block Jacobi preconditioner —
 standalone library for joint-space constraints, distinct from the pipeline's CG
-contact solver in `mujoco_pipeline.rs`; see `FUTURE_WORK.md`).
+contact solver in `mujoco_pipeline.rs`; see [future_work_1 #3](./todo/future_work_1.md)).
 
 ### sim-sensor
 
@@ -391,7 +397,7 @@ is Layer 1 only.
 
 | Flag | Crates | Description |
 |------|--------|-------------|
-| `parallel` | sim-core | Rayon-based parallelization. **Reserved** — declared but no `#[cfg]` guards yet; see [future_work_2.md #9](./future_work_2.md) |
+| `parallel` | sim-core | Rayon-based parallelization. **Reserved** — declared but no `#[cfg]` guards yet; see [future_work_3 #9](./todo/future_work_3.md) |
 | `serde` | Most crates | Serialization support |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 | `muscle` | sim-constraint | Hill-type muscle integration |
