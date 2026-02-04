@@ -458,7 +458,7 @@ unconstrained accelerations, contact velocities, and Baumgarte stabilization (li
 unconditionally PGS — there is no dispatch mechanism for alternative solvers.
 
 `CGSolver` in `sim-constraint/src/cg.rs` (1,664 lines, line 309) implements
-preconditioned CG for joint constraints via the `Joint` trait (`cg.rs:59`). It
+preconditioned CG for joint constraints via the `Joint` trait (`joint.rs:19`, imported in `cg.rs:59`). It
 requires `parent()`, `child()`, `parent_anchor()`, `joint_type()` — none of which
 exist for contact constraints. The type systems are incompatible. Furthermore,
 `sim-core` and `sim-constraint` are decoupled crates with no cross-dependencies;
@@ -466,7 +466,7 @@ exist for contact constraints. The type systems are incompatible. Furthermore,
 
 The MJCF parser already parses `<option solver="CG"/>` into `MjcfSolverType::CG`
 (`types.rs:92`) and stores it in `MjcfOption.solver` (`types.rs:248`).
-`ExtendedSolverConfig` (`config.rs:61`) holds `solver_type: MjcfSolverType`. However,
+`ExtendedSolverConfig` (`config.rs:56`) holds `solver_type: MjcfSolverType` (`config.rs:61`). However,
 the `ModelBuilder` (`model_builder.rs:545–568`) does NOT propagate `option.solver` to
 the `Model` struct — the `Model` has `solver_iterations` (`mujoco_pipeline.rs:1072`)
 and `solver_tolerance` (`mujoco_pipeline.rs:1074`) but no `solver_type` field. The
@@ -538,6 +538,12 @@ signature mirrors PGS exactly, with `Option` return for convergence signaling:
 ///
 /// Returns `Some((forces, iterations_used))` on convergence, `None` on non-convergence.
 /// The caller decides whether to fall back to PGS or signal failure.
+///
+/// **Design note:** `None` discards the CG iteration count. On the fallback path,
+/// `data.solver_niter` reflects PGS iterations only — the CG attempt's cost is not
+/// observable. A future improvement could return `Result<(forces, iters), iters>` to
+/// expose CG iteration count on failure, but this adds API complexity for a diagnostic
+/// that is only useful during solver tuning.
 fn cg_solve_contacts(
     model: &Model,
     data: &Data,
@@ -585,9 +591,11 @@ qacc_smooth = qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias
 mj_solve_sparse(&qLD_diag, &qLD_L, &mut qacc_smooth)
 ```
 
-**M⁻¹ · J^T precomputation** (current PGS lines 7770–7781): For each contact,
-solve 3 sparse systems `M · x = J^T[:, col]` via `mj_solve_sparse()`
-(`mujoco_pipeline.rs:9630`).
+**M⁻¹ · J^T precomputation** (current PGS lines 7770–7781): Each contact Jacobian
+`J_i` is a `3 × nv` matrix (row 0 = normal, rows 1–2 = friction directions).
+For each contact, solve 3 sparse systems `M · x = J_i^T[:, col]` via
+`mj_solve_sparse()` (`mujoco_pipeline.rs:9630`), yielding `minv_jt[i]`: an
+`nv × 3` matrix.
 
 **Delassus diagonal blocks** (current PGS lines 7802–7810):
 ```
@@ -602,17 +610,18 @@ A[i,j] = J_i · minv_jt[j]     (symmetric, only if contacts share dynamic bodies
 ```
 Uses `bodies_share_chain()` (`mujoco_pipeline.rs:7696`) bitmask optimization.
 
-**ERP from solref** (current PGS lines 7785–7817):
+**Impedance, CFM, and ERP from solref/solimp** (current PGS lines 7785–7800 for
+impedance/CFM, 7812–7817 for ERP; lines 7802–7810 are the diagonal blocks above):
 ```
 timeconst = max(contact.solref[0], 0.001)
 dampratio = max(contact.solref[1], 0.0)
 dt        = max(model.timestep, 1e-6)        // line 7816 — prevents division by zero
-erp = (dt / (dt + timeconst)) · min(dampratio, 1.0)
+erp_i = (dt / (dt + timeconst)) · min(dampratio, 1.0)   // per-contact (code: erp_i, line 7817)
 ```
 
 **RHS assembly** (current PGS lines 7893–7933):
 ```
-b[i·3]     = J·qacc_smooth[0] + vn/dt + (erp/dt)·depth     (normal)
+b[i·3]     = J·qacc_smooth[0] + vn/dt + (erp_i/dt)·depth   (normal)
 b[i·3 + 1] = J·qacc_smooth[1] + vt1                         (friction 1)
 b[i·3 + 2] = J·qacc_smooth[2] + vt2                         (friction 2)
 ```
@@ -671,12 +680,14 @@ fn extract_forces(lambda: &DVector<f64>, ncon: usize) -> Vec<Vector3<f64>> {
 
 ##### Step 4: CG iteration loop with friction cone projection
 
-Fletcher-Reeves CG with PR+ restart, adapted for contact constraints. Friction cone
-projection after each iteration destroys CG conjugacy; the PR+ restart clamp
-`beta = max(0, ...)` automatically restarts when conjugacy is lost (the formula
-`beta = rz_new / rz` is Fletcher-Reeves; the `max(0, ...)` clamp is the
-Polak-Ribière+ restart strategy). Residual is recomputed from scratch each iteration
-(not incremental) because projection modifies `lambda` non-linearly.
+Fletcher-Reeves CG with non-negative beta restart, adapted for contact constraints.
+Friction cone projection after each iteration destroys CG conjugacy; the restart clamp
+`beta = max(0, ...)` automatically resets the search direction to steepest descent when
+conjugacy is lost (`beta_FR = rz_new / rz` can become negative after projection
+invalidates the normal CG invariants; for standard preconditioned CG with an SPD
+system, `rz = r^T M^{-1} r >= 0` always, but projection makes this non-standard).
+Residual is recomputed from scratch each iteration (not incremental) because projection
+modifies `lambda` non-linearly.
 
 ```
 fn cg_solve_contacts(...) -> Option<(Vec<Vector3<f64>>, usize)>:
@@ -697,7 +708,11 @@ fn cg_solve_contacts(...) -> Option<(Vec<Vector3<f64>>, usize)>:
             lambda[i*3] = prev[0]; lambda[i*3+1] = prev[1]; lambda[i*3+2] = prev[2]
 
     // ---- Single-contact direct solve ----
+    // Warmstart loaded above is unused — direct solve gives the exact answer.
     if ncon == 1:
+        // Direct solve: precond_inv[0] is the Cholesky inverse of the 3×3 block A[0:3,0:3].
+        // cfm > 0 guarantees SPD, so Cholesky cannot fail here. If the scalar Jacobi
+        // fallback were used (degenerate block), this would be approximate, not exact.
         lam = -(precond_inv[0] * Vector3::new(b[0], b[1], b[2]))
         // Project onto friction cone (inline, since lam is Vector3 not DVector):
         lam[0] = lam[0].max(0.0)                    // λ_n ≥ 0
@@ -736,7 +751,9 @@ fn cg_solve_contacts(...) -> Option<(Vec<Vector3<f64>>, usize)>:
 
         // Step length
         pAp = p.dot(&Ap)
-        if pAp <= 0.0: break   // A not positive definite along p
+        if pAp <= 0.0:
+            iters_used = iter + 1
+            break   // A not positive definite along p
 
         alpha = rz / pAp
 
@@ -747,7 +764,13 @@ fn cg_solve_contacts(...) -> Option<(Vec<Vector3<f64>>, usize)>:
         // Recompute residual from scratch (projection invalidates incremental update)
         r = -(&A * &lambda + &b)
 
-        // Convergence check: relative residual
+        // Convergence check: relative residual after projection.
+        // This measures how close lambda is to the unconstrained solution A*lambda = -b.
+        // When the unconstrained solution is inside the friction cone, convergence is
+        // exact. When projection is active, the criterion may oscillate near tolerance
+        // (projection can increase the residual). The non-negative beta restart prevents
+        // divergence. If oscillation is observed in practice, tightening tolerance by 10x
+        // or switching to a complementarity residual (KKT violation) would be more robust.
         if r.norm() / b_norm < tolerance:
             converged = true
             iters_used = iter + 1
@@ -757,12 +780,16 @@ fn cg_solve_contacts(...) -> Option<(Vec<Vector3<f64>>, usize)>:
         z_new = apply_preconditioner(&precond_inv, &r, ncon)
         rz_new = r.dot(&z_new)
 
-        // Fletcher-Reeves with PR+ restart: beta = max(0, rz_new / rz)
+        // Fletcher-Reeves with non-negative beta restart: beta = max(0, rz_new / rz)
         beta = if rz.abs() < 1e-30 { 0.0 } else { (rz_new / rz).max(0.0) }
         p = &z_new + beta * &p
         rz = rz_new
 
     // ---- Store warmstart (even on non-convergence — partial solution helps next frame) ----
+    // Note: if pAp <= 0 triggered on iteration 0, lambda is just the projected
+    // warmstart (alpha is never computed on this path because break precedes the
+    // division). The warmstart is still stored because the projected initial guess
+    // is a reasonable starting point for the next frame.
     efc_lambda.clear()
     for (i, contact) in contacts.enumerate():
         key = (min(contact.geom1, contact.geom2), max(contact.geom1, contact.geom2))
@@ -856,7 +883,9 @@ Both PGS and CG return their actual iteration count. The `mj_fwd_constraint()`
 dispatch (Step 7) sets `data.solver_niter` (`mujoco_pipeline.rs:1492`) for both
 paths. This requires changing `pgs_solve_contacts()` return type from
 `Vec<Vector3<f64>>` to `(Vec<Vector3<f64>>, usize)` — the force vector and
-iteration count at which convergence occurred (or `max_iterations` if not converged).
+iteration count at which convergence occurred (or `max_iterations` if the loop
+exhausts all iterations — this value is the same whether convergence happened on the
+final iteration or not, matching standard solver convention).
 
 **PGS iteration tracking change:** The current PGS loop variable is `_iter`
 (unused, line 7965). Change to `iter`, add `let mut iters_used = max_iterations;`
@@ -948,7 +977,7 @@ Add `SolverType` to the existing `use sim_core::{...}` import (line 17).
 Add `solver_type` field to the builder struct (after `solver_tolerance` at line 303).
 Initialize to `SolverType::PGS` in `ModelBuilder::new()` (after line 476).
 
-Wire in `set_options()` (after line 549):
+Wire in `set_options()` (after the integrator match block, line 563):
 ```rust
 self.solver_type = match option.solver {
     MjcfSolverType::PGS | MjcfSolverType::Newton => SolverType::PGS,
@@ -971,49 +1000,68 @@ solver_type: self.solver_type,
    produce contact normal forces within 1e-4 relative error. Run with
    `SolverType::CGStrict` to prove convergence.
 
-2. **PGS parity (multi-contact stack):** A stack of 3 boxes on a ground plane. After
-   500 steps, CG and PGS produce `qfrc_constraint` within 1e-3 relative error
-   (`||qfrc_cg - qfrc_pgs|| / ||qfrc_pgs||`). Run with `SolverType::CGStrict`.
+2. **PGS parity (multi-contact stack):** A stack of 3 boxes (half-extents 0.05 m,
+   mass 1 kg each, friction = 0.5) on a ground plane under gravity (g = -9.81).
+   After 500 steps (dt = 0.002), CG and PGS produce `qfrc_constraint` within 1e-3
+   relative error (`||qfrc_cg - qfrc_pgs|| / ||qfrc_pgs||`). Run with
+   `SolverType::CGStrict`.
 
-3. **PGS parity (friction slide):** A box on a tilted plane (25°, friction = 0.3).
-   After 200 steps, CG and PGS produce final velocities within 1e-3 relative error.
-   Run with `SolverType::CGStrict`.
+3. **PGS parity (friction slide):** A box (half-extents 0.05 m, mass 1 kg,
+   friction = 0.3) on a tilted plane (25°) under gravity (g = -9.81). After 200
+   steps (dt = 0.002), CG and PGS produce final velocities within 1e-3 relative
+   error. Run with `SolverType::CGStrict`.
 
 4. **Friction cone satisfaction:** For each scenario above, every contact force
    satisfies `lambda_n >= 0` and
    `sqrt(lambda_t1² + lambda_t2²) <= mu · lambda_n + 1e-10`.
 
 5. **Zero contacts:** Call `cg_solve_contacts()` directly (not through
-   `mj_fwd_constraint()`, which early-returns at line 9280 for empty contacts).
+   `mj_fwd_constraint()`, which early-returns at line 9281 for empty contacts).
    Pass `contacts = &[]`. Verify it returns `Some((vec![], 0))`.
 
 6. **Single-contact direct solve:** Call `cg_solve_contacts()` directly with exactly
    1 contact. Verify it uses the direct 3×3 solve (no iteration loop) and returns
    `iterations_used == 0`.
 
-7. **CGStrict failure detection:** Call `cg_solve_contacts()` directly on the 3-box
-   stack from AC #2 (ensures ncon >= 2, bypassing the single-contact direct solve)
-   with `max_iterations = 1` and `tolerance = 1e-15` (bypassing the `.max(10)` /
-   `.max(1e-8)` clamps in the dispatch). Verify it returns `None`. Then verify that
-   the `CGStrict` dispatch arm sets `data.solver_niter == model.solver_iterations.max(10)`
-   and returns zero forces when the solver returns `None`.
+7. **CGStrict failure detection:** Two sub-tests:
+   **(a)** Call `cg_solve_contacts()` directly on the 3-box stack from AC #2
+   (ensures ncon >= 2, bypassing the single-contact direct solve) with
+   `max_iterations = 1` and `tolerance = 1e-15`. Verify it returns `None`.
+   **(b)** Verify the `CGStrict` dispatch arm's zero-force behavior: build a Model
+   with `solver_type = SolverType::CGStrict`, `solver_iterations = 1`,
+   `solver_tolerance = 1e-15`. Call `mj_fwd_constraint()` on a 10-box stack
+   (same parameters as AC #2: half-extents 0.05 m, mass 1 kg, friction = 0.5,
+   g = -9.81, dt = 0.002). Assert `data.contacts.len() >= 20` to confirm
+   sufficient contact count. The clamped 10 iterations at 1e-8 are insufficient
+   for 20+ contacts. Verify `data.solver_niter == model.solver_iterations.max(10)`
+   (i.e., 10) and that all contact forces are zero.
 
-8. **CG fallback to PGS:** Call `cg_solve_contacts()` directly with the same
-   parameters as (7) to confirm it returns `None`. Then verify through the
-   `SolverType::CG` dispatch that the fallback produces valid non-zero forces (PGS
-   fallback activated).
+8. **CG fallback to PGS:** Two sub-tests:
+   **(a)** Call `cg_solve_contacts()` directly with the 3-box stack from AC #2,
+   `max_iterations = 1`, and `tolerance = 1e-15` to confirm it returns `None`.
+   **(b)** Build a Model with `solver_type = SolverType::CG`, `solver_iterations = 1`,
+   `solver_tolerance = 1e-15`. Call `mj_fwd_constraint()` on the 10-box stack
+   from AC #7(b) (ncon >= 20, ensuring the clamped 10 iterations at 1e-8 are
+   insufficient). Verify that `data.solver_niter` reflects PGS (not CG) and
+   that all contact forces are non-zero (PGS fallback activated).
 
-9. **Warmstart effectiveness:** Run sphere-on-plane for 100 frames with
-   `SolverType::CGStrict`. Read `data.solver_niter` each frame. On frame 1 (cold
-   start, no warmstart), CG may use `max_iterations`. After frame 10 (warmstarted),
-   the average `solver_niter` is at least 30% lower than frame 1's value.
+9. **Warmstart effectiveness:** Run the 3-box stack from AC #2 for 100 frames with
+   `SolverType::CGStrict` (ncon >= 2, ensuring the CG iteration loop is used — the
+   sphere-on-plane scene has only 1 contact and always takes the direct-solve path
+   with `iterations_used == 0`). Read `data.solver_niter` each frame. On frame 1
+   (cold start, no warmstart), CG may use many iterations. After frame 10
+   (warmstarted), the average `solver_niter` over frames 10–100 is at least 30%
+   lower than frame 1's value.
 
 10. **MJCF round-trip:** Parse `<option solver="CG"/>`, build a Model, verify
     `model.solver_type == SolverType::CG`.
 
 11. **Shared assembly correctness:** After extracting `assemble_contact_system()`, PGS
     produces bit-identical results to the pre-refactor version on the sphere-on-plane
-    test.
+    test. Run at both `opt-level=0` (debug) and `opt-level=2` (release). If the
+    compiler reorders floating-point operations across the function boundary, release
+    mode may diverge; in that case, mark the bit-identity test as debug-only and relax
+    the release criterion to 1e-14 relative error.
 
 #### Files
 
@@ -1039,7 +1087,7 @@ solver_type: self.solver_type,
 - `sim/L0/mjcf/src/model_builder.rs` — modify:
   - Add `SolverType` to `use sim_core::{...}` import (line 17)
   - `solver_type` field (line 303), initialization (line 476), `set_options()` wiring
-    (line 549), `build()` propagation (line 2040)
+    (line 563), `build()` propagation (line 2040)
 - `sim/L0/mjcf/src/parser.rs` — no changes (already parses solver attribute)
 
 ---
