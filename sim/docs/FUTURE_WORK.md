@@ -467,7 +467,7 @@ exist for contact constraints. The type systems are incompatible. Furthermore,
 The MJCF parser already parses `<option solver="CG"/>` into `MjcfSolverType::CG`
 (`types.rs:92`) and stores it in `MjcfOption.solver` (`types.rs:248`).
 `ExtendedSolverConfig` (`config.rs:56`) holds `solver_type: MjcfSolverType` (`config.rs:61`). However,
-the `ModelBuilder` (`model_builder.rs:545–568`) does NOT propagate `option.solver` to
+the `ModelBuilder`'s `set_options()` (`model_builder.rs:545–568`) does NOT propagate `option.solver` to
 the `Model` struct — the `Model` has `solver_iterations` (`mujoco_pipeline.rs:1072`)
 and `solver_tolerance` (`mujoco_pipeline.rs:1074`) but no `solver_type` field. The
 solver type parsed from MJCF is currently dead data.
@@ -509,14 +509,15 @@ pub enum SolverType {
 }
 ```
 
-Add field to `Model`, after `solver_tolerance` (`mujoco_pipeline.rs:1074`):
+Add field to `Model`, after `integrator` (`mujoco_pipeline.rs:1097`):
 
 ```rust
 /// Contact constraint solver algorithm (PGS or CG).
 pub solver_type: SolverType,
 ```
 
-Initialize to `SolverType::PGS` in `Model::empty()` (after `mujoco_pipeline.rs:1746`).
+Initialize to `SolverType::PGS` in `Model::empty()` (line 1583; insert after
+`integrator: Integrator::Euler,` at `mujoco_pipeline.rs:1757`).
 
 Add `SolverType` to the `pub use mujoco_pipeline::{...}` re-export in `lib.rs`
 (after `Integrator` at line 119), so that `model_builder.rs` can import it via
@@ -974,8 +975,9 @@ let constraint_forces = match model.solver_type {
 **Model builder** (`model_builder.rs`):
 
 Add `SolverType` to the existing `use sim_core::{...}` import (line 17).
-Add `solver_type` field to the builder struct (after `solver_tolerance` at line 303).
-Initialize to `SolverType::PGS` in `ModelBuilder::new()` (after line 476).
+Add `solver_type` field to the builder struct (after `integrator` at line 314).
+Initialize to `SolverType::PGS` in `ModelBuilder::new()` (after `integrator` init at
+line 487).
 
 Wire in `set_options()` (after the integrator match block, line 563):
 ```rust
@@ -988,7 +990,7 @@ self.solver_type = match option.solver {
 };
 ```
 
-Propagate in `build()` (after line 2040):
+Propagate in `build()` (after `integrator: self.integrator,` at line 2051):
 ```rust
 solver_type: self.solver_type,
 ```
@@ -1067,8 +1069,8 @@ solver_type: self.solver_type,
 
 - `sim/L0/core/src/mujoco_pipeline.rs` — modify:
   - `SolverType` enum (before line 669)
-  - `solver_type: SolverType` field in `Model` (after line 1074) and `Model::empty()`
-    (after line 1746)
+  - `solver_type: SolverType` field in `Model` (after `integrator` at line 1097) and
+    `Model::empty()` (after `integrator` init at line 1757)
   - `pgs_solve_contacts()` return type changed to `(Vec<Vector3<f64>>, usize)`
   - `assemble_contact_system()` extracted from `pgs_solve_contacts()` (lines 7755–7933)
   - `project_friction_cone()` new utility (CG-only; PGS retains inline per-contact projection)
@@ -1086,8 +1088,8 @@ solver_type: self.solver_type,
   - Add `SolverType` to `pub use mujoco_pipeline::{...}` re-export (after line 119)
 - `sim/L0/mjcf/src/model_builder.rs` — modify:
   - Add `SolverType` to `use sim_core::{...}` import (line 17)
-  - `solver_type` field (line 303), initialization (line 476), `set_options()` wiring
-    (line 563), `build()` propagation (line 2040)
+  - `solver_type` field (after `integrator` at line 314), initialization (after line 487),
+    `set_options()` wiring (after line 563), `build()` propagation (after line 2051)
 - `sim/L0/mjcf/src/parser.rs` — no changes (already parses solver attribute)
 
 ---

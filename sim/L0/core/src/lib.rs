@@ -124,6 +124,8 @@ pub use mujoco_pipeline::{
     MjSensorDataType,
     MjSensorType,
     Model,
+    // Constraint solver algorithm
+    SolverType,
     // Spatial algebra types
     SpatialVector,
     // Error handling

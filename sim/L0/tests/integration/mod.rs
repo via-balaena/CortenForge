@@ -54,6 +54,7 @@ pub mod rk4_integration;
 // Existing Test Modules
 // ============================================================================
 
+pub mod cg_solver;
 pub mod mjcf_sensors;
 pub mod model_data_pipeline;
 pub mod musculoskeletal;

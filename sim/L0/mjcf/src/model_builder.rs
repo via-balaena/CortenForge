@@ -15,7 +15,8 @@ use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, EqualityType, GainType, GeomType, Integrator,
-    MjJointType, MjObjectType, MjSensorDataType, MjSensorType, Model, TendonType, WrapType,
+    MjJointType, MjObjectType, MjSensorDataType, MjSensorType, Model, SolverType, TendonType,
+    WrapType,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,7 @@ use crate::error::Result;
 use crate::types::{
     MjcfActuator, MjcfActuatorType, MjcfBody, MjcfEquality, MjcfGeom, MjcfGeomType, MjcfInertial,
     MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption, MjcfSensor,
-    MjcfSensorType, MjcfSite, MjcfTendon, MjcfTendonType,
+    MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon, MjcfTendonType,
 };
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -312,6 +313,7 @@ struct ModelBuilder {
     disableflags: u32,
     enableflags: u32,
     integrator: Integrator,
+    solver_type: SolverType,
 
     // qpos0 values (built as we process joints)
     qpos0_values: Vec<f64>,
@@ -485,6 +487,7 @@ impl ModelBuilder {
             disableflags: 0,
             enableflags: 0,
             integrator: Integrator::Euler,
+            solver_type: SolverType::PGS,
 
             qpos0_values: vec![],
 
@@ -560,6 +563,10 @@ impl ModelBuilder {
             MjcfIntegrator::ImplicitSpringDamper | MjcfIntegrator::ImplicitFast => {
                 Integrator::ImplicitSpringDamper
             }
+        };
+        self.solver_type = match option.solver {
+            MjcfSolverType::PGS | MjcfSolverType::Newton => SolverType::PGS,
+            MjcfSolverType::CG => SolverType::CG,
         };
         self.magnetic = option.magnetic;
         self.wind = option.wind;
@@ -2049,6 +2056,7 @@ impl ModelBuilder {
             disableflags: self.disableflags,
             enableflags: self.enableflags,
             integrator: self.integrator,
+            solver_type: self.solver_type,
 
             // Cached implicit integration parameters (computed below)
             implicit_stiffness: DVector::zeros(self.nv),
