@@ -17,7 +17,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ## 📊 Executive Summary
 
-**Overall completion: ~75-80%** of MuJoCo's core pipeline features are functional end-to-end. Some standalone crates exist but are not yet wired into the MuJoCo pipeline (`mujoco_pipeline.rs`). See `sim/docs/FUTURE_WORK.md` for the roadmap (12 items total, 8 completed, 4 remaining).
+**Overall completion: ~75-80%** of MuJoCo's core pipeline features are functional end-to-end. Some standalone crates exist but are not yet wired into the MuJoCo pipeline (`mujoco_pipeline.rs`). See `sim/docs/FUTURE_WORK.md` for Phase 1 (12 items, all completed or transferred) and `sim/docs/future_work_2.md` for the Phase 2 roadmap (17 items).
 
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal spring/damper only — see [FUTURE_WORK #7](./FUTURE_WORK.md))
@@ -46,7 +46,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 ### Standalone Crates (not wired into pipeline)
 - sim-tendon (3,919 lines) — standalone crate; fixed tendons now implemented directly in pipeline ([FUTURE_WORK #4](./FUTURE_WORK.md) ✅)
 - sim-muscle (2,550 lines) — standalone Hill model; MuJoCo FLV muscle model now implemented directly in pipeline ([FUTURE_WORK #5](./FUTURE_WORK.md) ✅)
-- sim-deformable (7,733 lines) — XPBD solver not called from `Data::step()` ([FUTURE_WORK #9](./FUTURE_WORK.md))
+- sim-deformable (7,733 lines) — XPBD solver not called from `Data::step()` ([future_work_2 #11](./future_work_2.md))
 - sim-sensor (rangefinder, magnetometer, force/torque) — standalone crate with own API; pipeline has independent implementations
 - CGSolver in sim-constraint (1,664 lines) — standalone joint-space CG; pipeline contact CG is separate in `mujoco_pipeline.rs` ([FUTURE_WORK #3](./FUTURE_WORK.md) ✅)
 - ~~`integrators.rs` trait system~~ — removed in FUTURE_WORK C1
@@ -858,7 +858,7 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 | Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (in pipeline; standalone `DistanceConstraint` in sim-constraint is unused) | - |
 | Joint coupling | Yes | Pipeline `EqualityType::Joint` + `apply_joint_equality_constraint()` | **Implemented** (in pipeline; standalone `JointCoupling`/`GearCoupling`/`DifferentialCoupling` in sim-constraint are unused) | - |
 | Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Standalone** (in sim-constraint; pipeline uses `EqualityType::Tendon` warning — tendon *equality* constraints not yet implemented) | - |
-| Flex (edge length) | Yes | `FlexEdgeConstraint` | **Standalone** (in sim-deformable, XPBD not called from pipeline; see [FUTURE_WORK #9](./FUTURE_WORK.md)) | - |
+| Flex (edge length) | Yes | `FlexEdgeConstraint` | **Standalone** (in sim-deformable, XPBD not called from pipeline; see [future_work_2 #11](./future_work_2.md)) | - |
 
 ### Implementation Notes: Connect (Ball) Constraint ✅ COMPLETED
 
@@ -938,7 +938,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 | Skinned meshes | Yes | `SkinnedMesh` | **Standalone** (sim-deformable crate, not in pipeline) | - | - |
 | Deformable-rigid collision | Yes | `ConstraintType::Collision` | **Missing** (enum variant defined but unimplemented) | - | - |
 
-> **Standalone crate with zero pipeline coupling.** sim-deformable is a 7,733-line crate (86 tests) with `XpbdSolver`, `Cloth`, `SoftBody`, `CapsuleChain`, and `DeformableBody` trait. The XPBD solver works standalone but is **not called from `Data::step()`**. No deformable-rigid collision detection exists — `ConstraintType::Collision` is an enum variant defined at `constraints.rs:42-43` but unimplemented. `Material.friction` and per-body `radius`/`thickness` fields are declared but unused by any collision system. See [FUTURE_WORK #9](./FUTURE_WORK.md) for the pipeline integration spec.
+> **Standalone crate with zero pipeline coupling.** sim-deformable is a 7,733-line crate (86 tests) with `XpbdSolver`, `Cloth`, `SoftBody`, `CapsuleChain`, and `DeformableBody` trait. The XPBD solver works standalone but is **not called from `Data::step()`**. No deformable-rigid collision detection exists — `ConstraintType::Collision` is an enum variant defined at `constraints.rs:42-43` but unimplemented. `Material.friction` and per-body `radius`/`thickness` fields are declared but unused by any collision system. See [future_work_2 #11](./future_work_2.md) for the pipeline integration spec.
 
 ### Implementation Notes: Skinned Meshes ✅ COMPLETED (standalone only)
 
@@ -1082,7 +1082,7 @@ for _ in 0..100 {
 | Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` (was in `sparse.rs`) | **Removed** (Phase 3 consolidation) | - |
 | Sleeping bodies | Native | — | **Not implemented** (removed with World/Stepper) | - |
 | Constraint islands | Auto | `ConstraintIslands` (was in `islands.rs`) | **Removed** (Phase 3 consolidation) | - |
-| **Multi-threading** | Model-data separation | `parallel` feature with rayon | **Reserved** (Cargo.toml wiring exists but zero `#[cfg(feature = "parallel")]` or rayon usage in code; see [FUTURE_WORK #10](./FUTURE_WORK.md)) | - |
+| **Multi-threading** | Model-data separation | `parallel` feature with rayon | **Reserved** (Cargo.toml wiring exists but zero `#[cfg(feature = "parallel")]` or rayon usage in code; see [future_work_2 #9](./future_work_2.md)) | - |
 | SIMD | Likely | `sim-simd` crate | **Partial** (only `find_max_dot()` is used by sim-core GJK; all other batch ops have zero callers outside benchmarks) | - |
 
 ### Implementation Notes: SIMD Optimization ⚠️ PARTIAL (crate complete; only `find_max_dot` has production callers)
@@ -1143,7 +1143,7 @@ use sim_core::{ContactPoint, ContactManifold, ContactForce};
 
 ### Implementation Notes: Multi-threading ⚠️ PARTIALLY REMOVED
 
-> The island-parallel constraint solving described below was **deleted in Phase 3 consolidation** along with the Newton solver and `islands.rs`. The `parallel` feature and rayon dependency remain available in sim-core (`core/Cargo.toml:17,31`) but have no active constraint-parallelism callers. See [FUTURE_WORK #10](./FUTURE_WORK.md) for the batched simulation plan which will use rayon for cross-environment parallelism.
+> The island-parallel constraint solving described below was **deleted in Phase 3 consolidation** along with the Newton solver and `islands.rs`. The `parallel` feature and rayon dependency remain available in sim-core (`core/Cargo.toml:17,31`) but have no active constraint-parallelism callers. See [future_work_2 #9](./future_work_2.md) for the batched simulation plan which will use rayon for cross-environment parallelism.
 
 The original `parallel` feature enabled multi-threaded constraint solving using rayon.
 Before the Model/Data refactor, the original design used a snapshot-based approach
@@ -1427,7 +1427,7 @@ See [FUTURE_WORK.md](./FUTURE_WORK.md) for remaining items.
 ### ⚠️ Recently Completed then Partially Removed: Multi-threading
 
 The `parallel` feature originally enabled multi-threaded constraint solving and body integration.
-Island-parallel constraint solving (`solve_islands_parallel()`) and its dependencies (Newton solver, `islands.rs`) were **removed in Phase 3 consolidation**. The rayon dependency and `parallel` feature flag remain available for future batched simulation ([FUTURE_WORK #10](./FUTURE_WORK.md)).
+Island-parallel constraint solving (`solve_islands_parallel()`) and its dependencies (Newton solver, `islands.rs`) were **removed in Phase 3 consolidation**. The rayon dependency and `parallel` feature flag remain available for future batched simulation ([future_work_2 #9](./future_work_2.md)).
 
 **Files:** `sim-types/src/config.rs` (ParallelConfig). Removed: `sim-constraint/src/parallel.rs`, `sim-core/src/world.rs`, `sim-core/src/stepper.rs`
 
@@ -1468,7 +1468,7 @@ These joint types now have full constraint solver support:
 1. ~~**MJCF loading**: For MuJoCo model compatibility~~ ✅
 2. ~~**Muscle actuators**: For biomechanics~~ ✅ **Pipeline** (MuJoCo FLV model in `mj_fwd_actuation()` with activation dynamics, control/force clamping; sim-muscle crate provides richer standalone Hill-type model; see [FUTURE_WORK #5](./FUTURE_WORK.md) ✅)
 3. ~~**Tendons**: For cable robots~~ ✅ **Pipeline** (fixed tendons fully integrated; spatial tendons deferred; see [FUTURE_WORK #4](./FUTURE_WORK.md))
-4. ~~**Deformables**: For soft body simulation~~ ✅ → ⚠️ **Standalone** (sim-deformable crate exists, not called from `Data::step()`; see [FUTURE_WORK #9](./FUTURE_WORK.md))
+4. ~~**Deformables**: For soft body simulation~~ ✅ → ⚠️ **Standalone** (sim-deformable crate exists, not called from `Data::step()`; see [future_work_2 #11](./future_work_2.md))
 
 ### ⚠️ Phase 4: Solver & Performance (built then partially removed)
 
@@ -1839,7 +1839,7 @@ Focus: Large standalone features, each potentially its own PR.
 | ~~Flex edge constraints~~ | §10 Equality | Low | ✅ COMPLETED → ⚠️ **Standalone** | In sim-deformable, XPBD not called from pipeline |
 | ~~SDF collision~~ | §4 Collision, §5 Geoms | High | ✅ **COMPLETED** | All 10 shape combinations implemented (see §5 notes) |
 | ~~Skinned meshes~~ | §11 Deformables | High | ✅ **COMPLETED** | Visual deformation for rendering |
-| ~~Multi-threading~~ | §12 Performance | Medium | ⚠️ **Reserved** | Island-parallel solving removed in Phase 3; rayon is an optional dep with no callers in code; see [FUTURE_WORK #10](./FUTURE_WORK.md) |
+| ~~Multi-threading~~ | §12 Performance | Medium | ⚠️ **Reserved** | Island-parallel solving removed in Phase 3; rayon is an optional dep with no callers in code; see [future_work_2 #9](./future_work_2.md) |
 | ~~MJB binary format~~ | §13 Model Format | Low | ✅ **COMPLETED** | Faster loading via bincode serialization |
 
 **Implemented (some now standalone or removed — see table above for current status):**

@@ -1,4 +1,7 @@
-# Simulation — Future Work
+# Simulation — Future Work (Phase 1)
+
+> **Phase 1 is complete.** All 12 tasks below are either done (✅) or transferred
+> to Phase 2. See [future_work_2.md](./future_work_2.md) for the active roadmap.
 
 ## Priority Framework
 
@@ -23,9 +26,9 @@ can be tackled in any order unless a prerequisite is noted.
 | ~~6~~ | ~~Sensor Completion~~ | ~~High~~ | ~~High~~ | ~~S~~ | ~~#4 for tendon sensors~~ ✅ |
 | ~~7~~ | ~~Integrator Rename~~ | ~~Low~~ | ~~Medium~~ | ~~S~~ | ~~None~~ ✅ |
 | ~~8~~ | ~~True RK4 Integration~~ | ~~Low~~ | ~~Medium~~ | ~~M~~ | ~~None~~ ✅ |
-| 9 | Deformable Body Integration | Medium | Low | XL | None |
-| 10 | Batched Simulation | High | Low | L | None |
-| 11 | GPU Acceleration | High | Low | XL | #10 |
+| ~~9~~ | ~~Deformable Body Integration~~ | ~~Medium~~ | ~~Low~~ | ~~XL~~ | ~~None~~ → [future_work_2.md #11](./future_work_2.md) |
+| ~~10~~ | ~~Batched Simulation~~ | ~~High~~ | ~~Low~~ | ~~L~~ | ~~None~~ → [future_work_2.md #9](./future_work_2.md) |
+| ~~11~~ | ~~GPU Acceleration~~ | ~~High~~ | ~~Low~~ | ~~XL~~ | ~~#10~~ → [future_work_2.md #10](./future_work_2.md) |
 | ~~12~~ | ~~General Gain/Bias Actuator Force Model~~ | ~~High~~ | ~~High~~ | ~~M~~ | ~~#5~~ ✅ |
 
 ## Dependency Graph
@@ -62,18 +65,7 @@ can be tackled in any order unless a prerequisite is noted.
    │ 7 │   │ 8 │ Integrator items        (independent)
    └───┘   └───┘
 
-   ┌───┐
-   │ 9 │ Deformable Body                (independent)
-   └───┘
-
-   ┌────┐
-   │ 10 │ Batched Simulation
-   └─┬──┘
-     │
-     ▼
-   ┌────┐
-   │ 11 │ GPU Acceleration
-   └────┘
+   (Tasks 9, 10, 11 transferred to future_work_2.md — see Phase 2 roadmap)
 ```
 
 ---
@@ -4217,225 +4209,21 @@ Sensors are evaluated once per `step()` call:
 - `sim/L0/tests/integration/mod.rs` — register `rk4_integration` module
 
 ---
-## Group D — Deformable Body
 
-### 9. Deformable Body Pipeline Integration
-**Status:** Not started | **Effort:** XL | **Prerequisites:** None
+## ~~Group D — Deformable Body~~ → Phase 2
 
-#### Current State
-sim-deformable is a standalone 7,733-line crate (86 tests):
-
-| Component | Location | Description |
-|-----------|----------|-------------|
-| `XpbdSolver` | `solver.rs:134` | XPBD constraint solver. `step(&mut self, body: &mut dyn DeformableBody, gravity: Vector3<f64>, dt: f64)` (`solver.rs:196`). Configurable substeps, damping, sleeping. |
-| `DeformableBody` trait | `lib.rs:173` | Common interface for Cloth, SoftBody, CapsuleChain. |
-| `Cloth` | `cloth.rs` | Triangle meshes with distance + dihedral bending constraints. `thickness` field (`cloth.rs:50`). Presets: cotton, silk, leather, rubber, paper, membrane. |
-| `SoftBody` | `soft_body.rs` | Tetrahedral meshes with distance + volume constraints. Presets: rubber, gelatin, soft tissue, muscle, foam, stiff. |
-| `CapsuleChain` | `capsule_chain.rs` | 1D particle chains with distance + bending constraints. `radius` field (`capsule_chain.rs:41`). Presets: rope, steel cable, hair, chain. |
-| `Material` | `material.rs` | Young's modulus, Poisson's ratio, density, `friction` (`material.rs:94`). 14 presets. |
-| `ConstraintType::Collision` | `constraints.rs:42-43` | Enum variant defined but unimplemented — no constraint implements it. |
-| `FlexEdge` | `constraints.rs` | Stretch, shear, twist constraint variants. |
-
-The crate has zero coupling to the MuJoCo pipeline. sim-physics re-exports it behind
-the `deformable` feature flag (`physics/src/lib.rs:109-110`). `Material.friction` and
-per-body `radius`/`thickness` fields are declared but unused by the collision system
-(which doesn't exist yet).
-
-#### Objective
-Deformable bodies interact with rigid bodies through the same contact solver and
-step in the same simulation loop.
-
-#### Specification
-
-**Collision detection** (greenfield — no infrastructure exists):
-
-1. **Broadphase:** Deformable vertex AABBs vs rigid geom AABBs. Vertex AABBs are
-   point + radius/thickness margin. Use `batch_aabb_overlap_4()` (`simd/src/batch_ops.rs:251`)
-   for batched broadphase queries.
-2. **Narrowphase:** Vertex-vs-geom closest point computation. Produces `Contact` structs
-   identical to rigid-rigid contacts (same normal, depth, friction, solref/solimp).
-3. **Friction:** Combine `Material.friction` (deformable side) with geom friction
-   (rigid side) using the same combination rule as rigid-rigid contacts.
-
-**Contact solver coupling:**
-
-Deformable-rigid contacts feed into PGS (or CG, per #3) alongside rigid-rigid
-contacts. Each deformable vertex is a 3-DOF point mass. Its inverse mass comes from
-the XPBD solver's per-particle mass. Contact Jacobians for deformable vertices are
-3×3 identity blocks (point mass — no rotational DOFs).
-
-**Force feedback:**
-
-Contact impulses from PGS apply to deformable vertex velocities directly and to
-rigid body `qfrc_constraint` through the standard Jacobian transpose. XPBD
-constraint projection runs after contact resolution within the same timestep.
-
-**Substep iteration (XPBD/contact ordering):**
-
-A single pass (contact solve → XPBD) may leave contacts invalid because XPBD
-constraint projection moves vertices after contacts are computed. For stiff
-deformable bodies or deep penetrations, this causes jitter.
-
-Options (to be chosen at implementation time):
-- **Option A (simple):** Single pass, accept minor inaccuracy. Sufficient for cloth
-  and rope where deformation is small relative to contact depth.
-- **Option B (robust):** Iterate contact-detection + solve + XPBD for
-  `n_substep_iterations` (default 1, configurable up to 4). Each iteration
-  re-detects contacts at updated vertex positions. More expensive but handles
-  stiff soft bodies contacting rigid surfaces.
-
-The choice should be configurable per-model via an MJCF option.
-
-**Pipeline integration in `Data::step()`:**
-
-```
-1. Rigid: forward kinematics, collision, forces
-2. Deformable-rigid collision detection → Contact list
-3. Combined contact solve (rigid + deformable contacts)
-4. Apply contact impulses to rigid bodies and deformable vertices
-5. XpbdSolver::step() for each registered deformable body
-6. (Optional) Repeat steps 2-5 for substep iterations > 1
-7. Rigid: position integration
-```
-
-#### Acceptance Criteria
-1. A rigid body resting on a deformable surface experiences the same contact forces as resting on a rigid surface of equivalent geometry.
-2. XPBD internal constraints (distance, bending, volume) are satisfied after contact resolution — contact forces do not violate deformable material properties.
-3. `Material.friction` is used in deformable-rigid contacts (not hardcoded).
-4. `ConstraintType::Collision` is implemented in the constraint system.
-5. Zero-deformable-body configurations have zero overhead (no broadphase, no substep).
-6. Cloth draped over a rigid sphere reaches stable equilibrium without jitter.
-7. Substep iteration count is configurable; default (1) works for cloth/rope use cases.
-
-#### Files
-- `sim/L0/deformable/src/` — modify (collision detection, `ConstraintType::Collision` implementation)
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (pipeline integration in `Data::step()`, deformable body registration)
-- `sim/L0/simd/src/batch_ops.rs` — reference (`batch_aabb_overlap_4()`)
-
----
-## Group E — Scaling & Performance
-
-### 10. Batched Simulation
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
-
-#### Current State
-Single-environment execution. `Data::step(&mut self, &Model)` (`mujoco_pipeline.rs:2257`)
-steps one simulation. `Model` is immutable after construction, uses
-`Arc<TriangleMeshData>` for shared mesh data (`mujoco_pipeline.rs:849`). `Data` is
-fully independent — no shared mutable state, no interior mutability, derives `Clone`
-(`mujoco_pipeline.rs:1240`).
-
-#### Objective
-Step N independent environments in parallel on CPU. Foundation for GPU acceleration
-(#11) and large-scale RL training.
-
-#### Specification
-
-```rust
-pub struct BatchSim {
-    model: Arc<Model>,
-    envs: Vec<Data>,
-}
-
-impl BatchSim {
-    pub fn new(model: Arc<Model>, n: usize) -> Self;
-    pub fn step_all(&mut self) -> BatchResult;
-    pub fn reset(&mut self, env_idx: usize);
-    pub fn reset_where(&mut self, mask: &[bool]);
-}
-```
-
-`step_all()` uses rayon `par_iter_mut` over `envs`. Each `Data` steps independently
-against the shared `Arc<Model>`. rayon 1.10 is already a workspace dependency;
-sim-core declares it optional under the `parallel` feature flag
-(`core/Cargo.toml:19,33`).
-
-```rust
-pub struct BatchResult {
-    pub states: DMatrix<f64>,       // (n_envs, nq + nv) row-major
-    pub rewards: DVector<f64>,      // (n_envs,)
-    pub terminated: Vec<bool>,      // per-env episode termination
-    pub truncated: Vec<bool>,       // per-env time limit
-    pub errors: Vec<Option<StepError>>, // None = success
-}
-```
-
-`states` is a contiguous matrix for direct consumption by RL frameworks (numpy
-interop via row-major layout). Reward computation is user-defined:
-
-```rust
-pub trait RewardFn: Send + Sync {
-    fn compute(&self, model: &Model, data: &Data) -> f64;
-}
-```
-
-**Design constraint — single Model:** All environments share the same `Arc<Model>`
-(same nq, nv, geom set). The `states: DMatrix<f64>` layout (n_envs, nq + nv)
-requires uniform state dimensions. Multi-model batching (different robots in the
-same batch) would require a fundamentally different design and is explicitly
-out of scope.
-
-**Error handling:** Environments that fail (e.g., `CholeskyFailed`,
-`SingularMassMatrix`) are recorded in `errors`, flagged in `terminated`, and
-auto-reset on the next `step_all()` call. The batch never aborts due to a single
-environment failure.
-
-**SIMD integration:** sim-simd provides within-environment acceleration:
-`batch_dot_product_4()`, `batch_aabb_overlap_4()`, `batch_normal_force_4()`,
-`batch_friction_force_4()`, `batch_integrate_position_4()`,
-`batch_integrate_velocity_4()`. These accelerate the inner loop of each
-environment's step. Cross-environment parallelism comes from rayon, not SIMD.
-
-#### Acceptance Criteria
-1. `BatchSim::step_all()` produces identical results to calling `Data::step()` on each environment sequentially — parallelism does not change simulation output.
-2. `states` matrix layout is stable: row = env, cols = qpos ++ qvel.
-3. Failed environments do not affect healthy environments in the same batch.
-4. Linear throughput scaling up to available CPU cores (verified by benchmark with 1, 2, 4, 8 threads).
-5. Zero-copy state extraction — `states` is filled directly from `Data` fields without intermediate allocations.
-6. `reset_where()` resets only flagged environments without touching others.
-
-#### Files
-- `sim/L0/core/src/` — create `batch.rs` module
-- `sim/L0/core/Cargo.toml` — modify (enable rayon under `parallel` feature)
+### ~~9. Deformable Body Pipeline Integration~~
+**Status:** Transferred to [future_work_2.md #11](./future_work_2.md)
 
 ---
 
-### 11. GPU Acceleration
-**Status:** Not started | **Effort:** XL | **Prerequisites:** #10
+## ~~Group E — Scaling & Performance~~ → Phase 2
 
-#### Current State
-CPU-only. No GPU infrastructure exists in the simulation pipeline. The `mesh-gpu`
-crate provides wgpu context and buffer management for rendering but has no compute
-shader infrastructure.
+### ~~10. Batched Simulation~~
+**Status:** Transferred to [future_work_2.md #9](./future_work_2.md)
 
-#### Objective
-wgpu compute shader backend for batch simulation. Thousands of parallel environments
-on a single GPU for RL training at scale.
-
-#### Specification
-
-Port the inner loop of `Data::step()` (FK, collision, PGS, integration) to compute
-shaders via wgpu. The `BatchSim` API from #10 defines the memory layout that the
-GPU backend fills.
-
-This item is intentionally kept sparse — it is blocked on #10 and should not be
-over-specified until the CPU batching API stabilizes. Key design decisions to be
-made at implementation time:
-
-- Which pipeline stages move to GPU first (integration is simplest, collision is
-  most impactful).
-- Data transfer strategy (host-pinned memory, persistent GPU buffers, double-buffering).
-- Whether to use wgpu compute shaders or a lower-level API (Vulkan compute, Metal).
-- Fallback path for systems without GPU support.
-
-#### Acceptance Criteria
-1. GPU-batched simulation produces identical results to CPU-batched (#10) for the same inputs.
-2. For ≥ 1024 environments, GPU throughput exceeds CPU throughput on supported hardware.
-3. Graceful fallback to CPU batching when no GPU is available.
-
-#### Files
-- `sim/L0/core/src/` — create `gpu.rs` module or new `sim-gpu` crate
-- `mesh-gpu/` — reference for wgpu context management
+### ~~11. GPU Acceleration~~
+**Status:** Transferred to [future_work_2.md #10](./future_work_2.md)
 
 ---
 ## Group B (cont.) — Actuation

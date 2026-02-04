@@ -391,7 +391,7 @@ is Layer 1 only.
 
 | Flag | Crates | Description |
 |------|--------|-------------|
-| `parallel` | sim-core | Rayon-based parallelization. **Reserved** — declared but no `#[cfg]` guards yet; see [FUTURE_WORK #10](./FUTURE_WORK.md) |
+| `parallel` | sim-core | Rayon-based parallelization. **Reserved** — declared but no `#[cfg]` guards yet; see [future_work_2.md #9](./future_work_2.md) |
 | `serde` | Most crates | Serialization support |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 | `muscle` | sim-constraint | Hill-type muscle integration |
