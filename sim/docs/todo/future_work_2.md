@@ -6,7 +6,7 @@ priority table, dependency graph, and file map.
 ---
 
 ### 1. `<default>` Class Resolution
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+**Status:** Complete | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 `DefaultResolver` is fully implemented in `defaults.rs` (1,052 lines, 13 tests).
@@ -56,12 +56,12 @@ defaults. The resolver already handles class → parent → root lookup internal
 
 | Element type | Resolver method | Where applied | `class` field? |
 |-------------|----------------|---------------|----------------|
-| `MjcfJoint` | `apply_to_joint()` | Before `process_joint()` call in `process_body_with_world_frame()` (:685) | Yes |
-| `MjcfGeom` | `apply_to_geom()` | Before `compute_inertia_from_geoms()` (:733) and `process_geom()` (:782) in `process_body_with_world_frame()`, and in `process_worldbody_geoms_and_sites()` (:620). See ordering constraint below. | Yes |
-| `MjcfActuator` | `apply_to_actuator()` | Before `process_actuator()` call in `model_from_mjcf()` (:130) | Yes |
-| `MjcfTendon` | `apply_to_tendon()` | Inside `process_tendons()` loop (:1108), Pattern B | Yes |
-| `MjcfSensor` | `apply_to_sensor()` | Inside `process_sensors()` loop (:1468), Pattern B | Yes |
-| `MjcfSite` | `apply_to_site()` | Before `process_site()` calls | No — applies root defaults only |
+| `MjcfJoint` | `apply_to_joint()` | Before `process_joint()` call in `process_body_with_world_frame()` (:779) | Yes |
+| `MjcfGeom` | `apply_to_geom()` | Before `compute_inertia_from_geoms()` (:738) and `process_geom()` (:797) in `process_body_with_world_frame()`, and in `process_worldbody_geoms_and_sites()` (:635). See ordering constraint below. | Yes |
+| `MjcfActuator` | `apply_to_actuator()` | Before `process_actuator()` call in `model_from_mjcf()` (:132) | Yes |
+| `MjcfTendon` | `apply_to_tendon()` | Inside `process_tendons()` loop (:1124), Pattern B | Yes |
+| `MjcfSensor` | `apply_to_sensor()` | Inside `process_sensors()` loop (:1485), Pattern B | Yes |
+| `MjcfSite` | `apply_to_site()` | Before `process_site()` calls in `process_body_with_world_frame()` (:803) and `process_worldbody_geoms_and_sites()` (:641) | No — applies root defaults only |
 
 **Resolution patterns.** Three distinct patterns arise depending on how the
 caller iterates elements:
@@ -71,7 +71,7 @@ iterates elements and calls a `process_*` method for each one. Resolution
 happens in the loop body, before the call:
 
 ```rust
-// Before (process_body_with_world_frame, line 765):
+// Before (process_body_with_world_frame, line 779):
 for joint in &body.joints {
     self.process_joint(joint, body_id, current_last_dof, world_pos, world_quat)?;
 }
@@ -83,7 +83,7 @@ for joint in &body.joints {
 }
 ```
 
-Same pattern applies to the actuator loop in `model_from_mjcf()` (line 130),
+Same pattern applies to the actuator loop in `model_from_mjcf()` (line 132),
 except that `model_from_mjcf` is a free function — use `builder.resolver`
 instead of `self.resolver`:
 
@@ -94,19 +94,24 @@ for actuator in &mjcf.actuators {
 }
 ```
 
+Same pattern applies to worldbody geoms and sites in
+`process_worldbody_geoms_and_sites()` (line 627). The geom loop (line 635) and
+site loop (line 641) each get a resolver call before the existing `process_*`
+call — identical to Pattern A above.
+
 *Pattern B — internal loop (tendons, sensors).* `process_tendons(&[MjcfTendon])`
 and `process_sensors(&[MjcfSensor])` receive a slice and iterate internally.
 Resolution happens inside these methods at the top of their `for` loop:
 
 ```rust
-// Inside process_tendons (line 1108):
+// Inside process_tendons (line 1124):
 for (t_idx, tendon) in tendons.iter().enumerate() {
     let tendon = self.resolver.apply_to_tendon(tendon);  // ← add
     // ... existing code uses `tendon.stiffness`, `tendon.damping`, etc.
 }
 ```
 
-Same pattern for `process_sensors` (line 1468). The shadowed `tendon`/`sensor`
+Same pattern for `process_sensors` (line 1485). The shadowed `tendon`/`sensor`
 binding replaces the borrowed reference with an owned resolved copy.
 
 *Pattern C — geom pre-resolution (inertia ordering).* See ordering constraint
@@ -122,7 +127,7 @@ changes are needed.
 
 **Ordering constraint: geom defaults must resolve before inertia computation.**
 `process_body_with_world_frame()` calls `compute_inertia_from_geoms(&body.geoms)`
-at line 733, *before* the geom processing loop at line 782. This function reads
+at line 738, *before* the geom processing loop at line 797. This function reads
 `geom.density`, `geom.mass`, `geom.geom_type`, and `geom.size` to compute body
 mass and inertia. If defaults change any of these fields, inertia will be wrong.
 
@@ -148,7 +153,7 @@ for geom in &resolved_geoms {
 
 This resolves each geom once (not twice) and ensures both inertia computation
 and geom processing see the same default-applied values. The subsequent
-`body_geom_num.push(body.geoms.len())` at line 785 still uses the original
+`body_geom_num.push(body.geoms.len())` at line 800 still uses the original
 slice length, which is correct since `resolved_geoms.len() == body.geoms.len()`.
 
 **How "explicit vs default" detection works.** The `apply_to_*` methods use
@@ -160,13 +165,14 @@ The parser initializes `MjcfJoint` fields to MuJoCo's documented default values
 fields work correctly — a user who never specifies damping gets class defaults
 applied.
 
-**Note:** `get_defaults()` (`defaults.rs:72`) has a misleading doc comment
-claiming it "returns the root defaults if the class doesn't exist." The
-implementation actually returns `None` for unknown class names (line 74:
-`self.resolved_defaults.get(class_name)`). This is safe — `apply_to_*` methods
-handle `None` by returning the element unchanged — but an implementer reading
-the doc comment might expect different behavior. Consider fixing the doc comment
-as part of this task.
+**Doc-comment fix (required).** `get_defaults()` (`defaults.rs:72`) has a
+misleading doc comment claiming it "returns the root defaults if the class
+doesn't exist." The implementation actually returns `None` for unknown class
+names (line 74: `self.resolved_defaults.get(class_name)`). This is safe —
+`apply_to_*` methods handle `None` by returning the element unchanged — but an
+implementer reading the doc comment might expect different behavior. Fix the doc
+comment to say "Returns `None` if the class name is not found" as part of this
+task.
 
 **Known limitation: sentinel-based detection diverges from MuJoCo.** MuJoCo
 internally initializes attributes in a special "undefined state" distinct from
@@ -224,14 +230,15 @@ sites across `ModelBuilder`:
 
 | Call site | Elements resolved |
 |-----------|------------------|
-| `model_from_mjcf()` (:130) | actuators |
-| `process_body_with_world_frame()` (:765, :782, :788) | joints, geoms, sites |
-| `process_worldbody_geoms_and_sites()` (:628, :633) | worldbody geoms, sites |
-| `process_tendons()` (:1108) | tendons |
-| `process_sensors()` (:1468) | sensors |
+| `model_from_mjcf()` (:132) | actuators |
+| `process_body_with_world_frame()` (:779, :797, :803) | joints, geoms, sites |
+| `process_worldbody_geoms_and_sites()` (:635, :641) | worldbody geoms, sites |
+| `process_tendons()` (:1124) | tendons |
+| `process_sensors()` (:1485) | sensors |
 
-**Approach: store on `ModelBuilder`.** Add a `resolver: DefaultResolver` field,
-initialized to `DefaultResolver::default()` in `ModelBuilder::new()` and set to
+**Approach: store on `ModelBuilder`.** Add a `resolver: DefaultResolver` field
+to the `ModelBuilder` struct (defined at `model_builder.rs:190`), initialized to
+`DefaultResolver::default()` in `ModelBuilder::new()` (:382) and set to
 `DefaultResolver::from_model(&mjcf)` at the start of `model_from_mjcf()` before
 any processing begins. All methods access `self.resolver`. This avoids threading
 a parameter through six method signatures and the recursive

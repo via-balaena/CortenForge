@@ -2995,7 +2995,7 @@ round-trip.
 - **Site transmission** — blocked on spatial site infrastructure (6 stubs remain)
 - **Frame sensor `objtype` attribute** — resolved by name priority (site→body→geom)
 - **User sensor `dim` attribute** — parser does not capture; User gets 0 slots
-- **Sensor `<default>` class resolution** — `DefaultResolver` not called (cross-cutting)
+- ~~**Sensor `<default>` class resolution**~~ — resolved: `DefaultResolver` now wired into `model_builder.rs` for all element types including sensors ([future_work_2 §1](./future_work_2.md))
 - **Multi-geom Touch bodies** — resolves to first geom only
 - **Sensor `reftype`/`refid`** — fields exist but not wired
 
@@ -3733,14 +3733,11 @@ The following are explicitly **out of scope** for this item:
    Parsing the `dim` attribute and propagating it through `process_sensors()`
    is a follow-up.
 
-8. **Sensor `<default>` class resolution** — `DefaultResolver.apply_to_sensor()`
-   exists and can apply noise/cutoff/user defaults from `<default>` classes,
-   but it is not called during model building (`model_from_mjcf()` does not
-   invoke the `DefaultResolver` for any element type). `process_sensors()`
-   reads `mjcf_sensor.noise` and `mjcf_sensor.cutoff` directly from the
-   parsed values (0.0 if not specified in MJCF). This matches the existing
-   pattern for all other element types. Wiring `DefaultResolver` into the
-   model building pipeline is a cross-cutting concern, not sensor-specific.
+8. ~~**Sensor `<default>` class resolution**~~ — **Resolved.** `DefaultResolver`
+   is now wired into `model_builder.rs` for all element types (joints, geoms,
+   sites, actuators, tendons, sensors). `process_sensors()` receives
+   resolver-applied values with noise/cutoff from `<default>` classes.
+   See [future_work_2 §1](./future_work_2.md).
 
 #### Acceptance Criteria
 

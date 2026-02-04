@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::warn;
 
+use crate::defaults::DefaultResolver;
 use crate::error::Result;
 use crate::types::{
     MjcfActuator, MjcfActuatorType, MjcfBody, MjcfEquality, MjcfGeom, MjcfGeomType, MjcfInertial,
@@ -96,6 +97,7 @@ pub fn model_from_mjcf(
     base_path: Option<&Path>,
 ) -> std::result::Result<Model, ModelConversionError> {
     let mut builder = ModelBuilder::new();
+    builder.resolver = DefaultResolver::from_model(mjcf);
 
     // Set model name
     builder.name.clone_from(&mjcf.name);
@@ -128,7 +130,8 @@ pub fn model_from_mjcf(
 
     // Process actuators
     for actuator in &mjcf.actuators {
-        builder.process_actuator(actuator)?;
+        let actuator = builder.resolver.apply_to_actuator(actuator);
+        builder.process_actuator(&actuator)?;
     }
 
     // Process equality constraints (must be after bodies and joints)
@@ -187,6 +190,9 @@ pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
 struct ModelBuilder {
     // Model name
     name: String,
+
+    // Default class resolver (applies <default> class attributes to elements)
+    resolver: DefaultResolver,
 
     // Dimensions (computed during building)
     nq: usize,
@@ -377,6 +383,7 @@ impl ModelBuilder {
         // Initialize with world body (body 0)
         Self {
             name: String::new(),
+            resolver: DefaultResolver::default(),
             nq: 0,
             nv: 0,
 
@@ -626,12 +633,14 @@ impl ModelBuilder {
 
         // Process worldbody geoms
         for geom in &worldbody.geoms {
-            self.process_geom(geom, 0)?;
+            let geom = self.resolver.apply_to_geom(geom);
+            self.process_geom(&geom, 0)?;
         }
 
         // Process worldbody sites
         for site in &worldbody.sites {
-            self.process_site(site, 0)?;
+            let site = self.resolver.apply_to_site(site);
+            self.process_site(&site, 0)?;
         }
 
         // Update body 0's geom range
@@ -725,12 +734,19 @@ impl ModelBuilder {
         self.body_world_pos.push(world_pos);
         self.body_world_quat.push(world_quat);
 
+        // Resolve geom defaults once for both inertia computation and geom processing
+        let resolved_geoms: Vec<MjcfGeom> = body
+            .geoms
+            .iter()
+            .map(|g| self.resolver.apply_to_geom(g))
+            .collect();
+
         // Process inertial properties with full MuJoCo semantics
         let (mass, inertia, ipos, iquat) = if let Some(ref inertial) = body.inertial {
             extract_inertial_properties(inertial)
         } else {
             // Compute from geoms if no explicit inertial
-            compute_inertia_from_geoms(&body.geoms)
+            compute_inertia_from_geoms(&resolved_geoms)
         };
 
         // Track joint/DOF addresses for this body
@@ -763,8 +779,9 @@ impl ModelBuilder {
         let mut current_last_dof = parent_last_dof;
 
         for joint in &body.joints {
+            let joint = self.resolver.apply_to_joint(joint);
             let jnt_id =
-                self.process_joint(joint, body_id, current_last_dof, world_pos, world_quat)?;
+                self.process_joint(&joint, body_id, current_last_dof, world_pos, world_quat)?;
             let jnt_nv = self.jnt_type[jnt_id].nv();
             body_nv += jnt_nv;
 
@@ -778,15 +795,16 @@ impl ModelBuilder {
         self.body_jnt_num.push(body.joints.len());
         self.body_dof_num.push(body_nv);
 
-        // Process geoms for this body
-        for geom in &body.geoms {
+        // Process geoms for this body (using pre-resolved defaults)
+        for geom in &resolved_geoms {
             self.process_geom(geom, body_id)?;
         }
         self.body_geom_num.push(body.geoms.len());
 
         // Process sites for this body
         for site in &body.sites {
-            self.process_site(site, body_id)?;
+            let site = self.resolver.apply_to_site(site);
+            self.process_site(&site, body_id)?;
         }
 
         // Recursively process children, passing this body's last DOF and world frame
@@ -1106,6 +1124,7 @@ impl ModelBuilder {
         tendons: &[MjcfTendon],
     ) -> std::result::Result<(), ModelConversionError> {
         for (t_idx, tendon) in tendons.iter().enumerate() {
+            let tendon = self.resolver.apply_to_tendon(tendon);
             if !tendon.name.is_empty() {
                 self.tendon_name_to_id.insert(tendon.name.clone(), t_idx);
             }
@@ -1466,6 +1485,7 @@ impl ModelBuilder {
         let mut adr = 0usize;
 
         for mjcf_sensor in sensors {
+            let mjcf_sensor = self.resolver.apply_to_sensor(mjcf_sensor);
             let Some(sensor_type) = convert_sensor_type(mjcf_sensor.sensor_type) else {
                 // Unsupported type (Jointlimitfrc, Tendonlimitfrc) — skip with log
                 warn!(

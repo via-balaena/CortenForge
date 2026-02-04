@@ -51,6 +51,13 @@ pub mod implicit_integration;
 pub mod rk4_integration;
 
 // ============================================================================
+// Default Class Resolution Tests
+// ============================================================================
+
+/// Default class resolution: wiring DefaultResolver into model_builder.
+pub mod default_classes;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 

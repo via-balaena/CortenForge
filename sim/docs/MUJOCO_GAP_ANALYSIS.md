@@ -27,7 +27,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free**)
 - Actuators: All 8 shortcut types (Motor, Position, Velocity, Damper, Cylinder, Adhesion, Muscle, General) with MuJoCo-compatible gain/bias force model (`force = gain * input + bias`), GainType/BiasType dispatch, FilterExact dynamics, control/force clamping
 - Sensors (30 pipeline types, all wired from MJCF): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer, User (0-dim), plus JointLimitFrc/TendonLimitFrc parsed but deferred
-- Model loading (URDF, MJCF with `<default>` parsing, **MJB binary format**) — note: `DefaultResolver` is implemented but **not called** by `model_builder.rs`; defaults are parsed then dropped
+- Model loading (URDF, MJCF with `<default>` class resolution, **MJB binary format**) — `DefaultResolver` is wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors)
 
 ### Placeholder / Stub (in pipeline)
 - Elliptic/Pyramidal friction cones — `cone` field stored but solver hardcodes circular cone
@@ -69,7 +69,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Pipeline sensors (30 types) | All 30 types functional and wired from MJCF `<sensor>` elements via `model_builder.rs`; `set_options()` propagates `magnetic`/`wind`/`density`/`viscosity` | [§8](#8-sensors) |
 | Non-convex mesh collision | TriangleMesh ↔ all primitives + mesh-mesh with BVH acceleration | [§5](#5-geom-types-collision-shapes) |
 | SDF collision | All 10 shape combinations (Sphere, Capsule, Box, Cylinder, Ellipsoid, ConvexMesh, Plane, TriangleMesh, HeightField, Sdf↔Sdf) | [§5](#5-geom-types-collision-shapes) |
-| MJCF `<default>` element | ⚠️ Parsed only — `DefaultResolver` implemented but **not called** by `model_builder.rs`; defaults are silently dropped | [§13](#13-model-format) |
+| MJCF `<default>` element | ✅ Full | `DefaultResolver` wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors) | [§13](#13-model-format) |
 | MJCF `<tendon>` parsing + pipeline | Fixed tendons fully wired (kinematics, actuation, passive, constraints, sensors); spatial tendons scaffolded | [§13](#13-model-format) |
 | MJCF `<sensor>` parsing + wiring | 32 sensor types parsed; 30 wired to pipeline via `process_sensors()`; 2 deferred | [§13](#13-model-format) |
 | Muscle pipeline | MuJoCo FLV curves, activation dynamics (Millard 2013), act_dot/integrator architecture, RK4 activation | [§6](#6-actuation) |
@@ -1264,7 +1264,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 |---------|---------|-------|
 | `<mujoco>` | Full | Root element, model name |
 | `<option>` | Full | All attributes, flags, solver params, collision options |
-| `<default>` | ⚠️ Parsed only | `DefaultResolver` implemented in `defaults.rs` but **never called** by `model_builder.rs` — defaults are silently dropped during Model conversion |
+| `<default>` | Full | `DefaultResolver` wired into `model_builder.rs` — class defaults applied to joints, geoms, sites, actuators, tendons, sensors before per-element attributes |
 | `<worldbody>` | Full | Body tree root |
 | `<body>` | Full | Hierarchical bodies with pos, quat, euler |
 | `<inertial>` | Full | mass, diaginertia, fullinertia |
@@ -1418,7 +1418,7 @@ The following were completed in January 2026:
 |---------|---------|-------|
 | Non-convex mesh collision | §5 Geoms | `CollisionShape::TriangleMesh` with BVH acceleration |
 | SDF collision | §5 Geoms | All 10 shape combinations implemented |
-| MJCF `<default>` element | §13 Model Format | ⚠️ `DefaultResolver` implemented but not called by `model_builder.rs` — defaults are parsed then dropped |
+| MJCF `<default>` element | §13 Model Format | ✅ `DefaultResolver` wired into `model_builder.rs` for all element types |
 | MJCF `<tendon>` parsing | §13 Model Format | Spatial and fixed tendons |
 | MJCF `<sensor>` parsing + wiring | §13 Model Format | 32 `MjcfSensorType` variants parsed; 30 wired to pipeline via `process_sensors()`; 2 deferred (JointLimitFrc, TendonLimitFrc) |
 
