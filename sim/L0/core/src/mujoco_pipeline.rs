@@ -1149,15 +1149,26 @@ pub struct Model {
 
 /// Warmstart key for contact force caching across frames.
 ///
-/// `(geom_lo, geom_hi, cell_x, cell_y, cell_z)` where:
-/// - `geom_lo, geom_hi` = canonical geom pair (min, max)
-/// - `cell_x, cell_y, cell_z` = spatial grid cell of the contact position
+/// Combines a canonical geom pair with a discretized contact position so
+/// that multiple contacts within the same geom pair (e.g., 4 corner contacts
+/// for box-on-plane) each get their own warmstart entry.
 ///
-/// The spatial component disambiguates multiple contacts within the same
-/// geom pair (e.g., 4 corner contacts for box-on-plane). Grid resolution
-/// is 1 cm, coarse enough to match contacts across frames despite small
-/// position drift, but fine enough to distinguish distinct contact points.
-pub type WarmstartKey = (usize, usize, i64, i64, i64);
+/// Grid resolution is 1 cm — coarse enough to match contacts across frames
+/// despite small position drift, fine enough to distinguish distinct contact
+/// points separated by more than ~1 cm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WarmstartKey {
+    /// Lower geom index of the canonical pair (min of geom1, geom2).
+    pub geom_lo: usize,
+    /// Upper geom index of the canonical pair (max of geom1, geom2).
+    pub geom_hi: usize,
+    /// Discretized x grid cell of the contact position.
+    pub cell_x: i64,
+    /// Discretized y grid cell of the contact position.
+    pub cell_y: i64,
+    /// Discretized z grid cell of the contact position.
+    pub cell_z: i64,
+}
 
 /// Grid resolution for warmstart spatial hashing (meters).
 /// 1 cm is coarse enough to tolerate frame-to-frame position jitter
@@ -1173,13 +1184,13 @@ const WARMSTART_GRID_RES: f64 = 0.01;
 #[must_use]
 pub fn warmstart_key(contact: &Contact) -> WarmstartKey {
     let inv = 1.0 / WARMSTART_GRID_RES;
-    (
-        contact.geom1.min(contact.geom2),
-        contact.geom1.max(contact.geom2),
-        (contact.pos.x * inv).round() as i64,
-        (contact.pos.y * inv).round() as i64,
-        (contact.pos.z * inv).round() as i64,
-    )
+    WarmstartKey {
+        geom_lo: contact.geom1.min(contact.geom2),
+        geom_hi: contact.geom1.max(contact.geom2),
+        cell_x: (contact.pos.x * inv).round() as i64,
+        cell_y: (contact.pos.y * inv).round() as i64,
+        cell_z: (contact.pos.z * inv).round() as i64,
+    }
 }
 
 /// Contact point for constraint generation.
@@ -9619,8 +9630,10 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
         return;
     }
 
-    // For systems without DOFs, use simple penalty
+    // For systems without DOFs, skip constraint solve (no generalized forces
+    // to apply). Clear warmstart to avoid stale data if DOFs are added later.
     if model.nv == 0 {
+        data.efc_lambda.clear();
         return;
     }
 
@@ -13834,12 +13847,7 @@ mod cg_solver_unit_tests {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::float_cmp,
-    clippy::similar_names
-)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 mod warmstart_key_tests {
     use super::*;
 
@@ -13852,10 +13860,10 @@ mod warmstart_key_tests {
         let c1 = make_contact(3, 7, 0.0, 0.0, 0.0);
         let c2 = make_contact(7, 3, 0.0, 0.0, 0.0);
         assert_eq!(warmstart_key(&c1), warmstart_key(&c2));
-        // Both should have (3, 7, ...) as the geom pair
-        let (lo, hi, _, _, _) = warmstart_key(&c1);
-        assert_eq!(lo, 3);
-        assert_eq!(hi, 7);
+        // Both should have (3, 7) as the geom pair
+        let key = warmstart_key(&c1);
+        assert_eq!(key.geom_lo, 3);
+        assert_eq!(key.geom_hi, 7);
     }
 
     #[test]
@@ -13883,21 +13891,18 @@ mod warmstart_key_tests {
 
     #[test]
     fn negative_positions() {
-        let c1 = make_contact(0, 1, -0.5, -1.0, -2.0);
-        let (_, _, cx, cy, cz) = warmstart_key(&c1);
-        assert_eq!(cx, -50);
-        assert_eq!(cy, -100);
-        assert_eq!(cz, -200);
+        let key = warmstart_key(&make_contact(0, 1, -0.5, -1.0, -2.0));
+        assert_eq!(key.cell_x, -50);
+        assert_eq!(key.cell_y, -100);
+        assert_eq!(key.cell_z, -200);
     }
 
     #[test]
     fn grid_resolution_is_1cm() {
-        // Positions 0.004 and 0.005 round to 0 and 1 respectively at 1cm grid
-        let c_below = make_contact(0, 1, 0.004, 0.0, 0.0);
-        let c_above = make_contact(0, 1, 0.006, 0.0, 0.0);
-        let (_, _, cx_below, _, _) = warmstart_key(&c_below);
-        let (_, _, cx_above, _, _) = warmstart_key(&c_above);
-        assert_eq!(cx_below, 0); // 0.004 / 0.01 = 0.4, rounds to 0
-        assert_eq!(cx_above, 1); // 0.006 / 0.01 = 0.6, rounds to 1
+        // Positions 0.004 and 0.006 round to 0 and 1 respectively at 1cm grid
+        let key_below = warmstart_key(&make_contact(0, 1, 0.004, 0.0, 0.0));
+        let key_above = warmstart_key(&make_contact(0, 1, 0.006, 0.0, 0.0));
+        assert_eq!(key_below.cell_x, 0); // 0.004 / 0.01 = 0.4, rounds to 0
+        assert_eq!(key_above.cell_x, 1); // 0.006 / 0.01 = 0.6, rounds to 1
     }
 }

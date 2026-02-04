@@ -591,3 +591,63 @@ fn test_cg_frictionless_contacts() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Warmstart lifecycle: contacts → no contacts → contacts reappear
+// ---------------------------------------------------------------------------
+// Verifies that efc_lambda is cleared when contacts disappear, so returning
+// contacts don't pick up stale warmstart entries from a previous configuration.
+
+#[test]
+fn test_warmstart_cleared_when_contacts_disappear() {
+    let mjcf = sphere_plane_mjcf();
+    let model = load_model(mjcf).expect("load model");
+    let mut data = model.make_data();
+
+    // Phase 1: Sphere resting on ground — should have contacts and warmstart.
+    data.qpos[2] = 0.05; // sphere center at radius height (touching ground)
+    for _ in 0..10 {
+        data.step(&model).expect("step failed");
+    }
+    assert!(
+        !data.efc_lambda.is_empty(),
+        "Phase 1: should have warmstart entries while in contact"
+    );
+
+    // Phase 2: Lift sphere well above ground — no contacts.
+    data.qpos[2] = 5.0;
+    data.qvel.fill(0.0);
+    data.forward(&model).expect("forward failed");
+    assert!(
+        data.contacts.is_empty(),
+        "Phase 2: sphere at z=5 should have no contacts"
+    );
+    // Step once so mj_fwd_constraint runs and clears efc_lambda.
+    data.step(&model).expect("step failed");
+    assert!(
+        data.efc_lambda.is_empty(),
+        "Phase 2: efc_lambda should be empty after a no-contact step"
+    );
+
+    // Phase 3: Drop sphere back to ground — contacts reappear.
+    data.qpos[2] = 0.05;
+    data.qvel.fill(0.0);
+    for _ in 0..10 {
+        data.step(&model).expect("step failed");
+    }
+    // Verify warmstart is populated from fresh solve, not stale Phase 1 data.
+    // The key test is that Phase 2 cleared the cache — if it didn't, we'd have
+    // stale entries from Phase 1 that might not match the new contact geometry.
+    if !data.contacts.is_empty() {
+        assert!(
+            !data.efc_lambda.is_empty(),
+            "Phase 3: should have fresh warmstart entries after contacts reappear"
+        );
+        // All lambda values should be finite (no corruption from stale data)
+        for lambda in data.efc_lambda.values() {
+            for &l in lambda {
+                assert!(l.is_finite(), "Warmstart lambda should be finite, got {l}");
+            }
+        }
+    }
+}

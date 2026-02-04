@@ -537,14 +537,10 @@ signature mirrors PGS exactly, with `Option` return for convergence signaling:
 /// and b is the constraint RHS. Friction cone projection applied after
 /// each CG iteration (projected CG).
 ///
-/// Returns `Some((forces, iterations_used))` on convergence, `None` on non-convergence.
-/// The caller decides whether to fall back to PGS or signal failure.
-///
-/// **Design note:** `None` discards the CG iteration count. On the fallback path,
-/// `data.solver_niter` reflects PGS iterations only — the CG attempt's cost is not
-/// observable. A future improvement could return `Result<(forces, iters), iters>` to
-/// expose CG iteration count on failure, but this adds API complexity for a diagnostic
-/// that is only useful during solver tuning.
+/// Returns `Ok((forces, iterations_used))` on convergence, `Err((A, b))` on
+/// non-convergence — returning the pre-assembled Delassus matrix so the
+/// fallback PGS path can reuse it via `pgs_solve_with_system()` without
+/// redundant O(ncon² · nv) assembly.
 fn cg_solve_contacts(
     model: &Model,
     data: &Data,
@@ -553,10 +549,10 @@ fn cg_solve_contacts(
     max_iterations: usize,
     tolerance: f64,
     efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
-) -> Option<(Vec<Vector3<f64>>, usize)>
+) -> Result<(Vec<Vector3<f64>>, usize), (DMatrix<f64>, DVector<f64>)>
 ```
 
-Returns `Option<(forces, iterations_used)>`.
+Returns `Ok((forces, iterations_used))` on convergence, `Err((A, b))` on failure.
 
 ##### Step 3: Extract `assemble_contact_system()`
 
@@ -796,15 +792,15 @@ fn cg_solve_contacts(...) -> Option<(Vec<Vector3<f64>>, usize)>:
         key = warmstart_key(contact)
         efc_lambda.insert(key, [lambda[i*3], lambda[i*3+1], lambda[i*3+2]])
 
-    if converged: Some((extract_forces(&lambda, ncon), iters_used)) else: None
+    if converged: Ok((extract_forces(&lambda, ncon), iters_used)) else: Err((A, b))
 ```
 
-**Resolved (warmstart key collision):** The warmstart key now uses `WarmstartKey =
-(geom_lo, geom_hi, cell_x, cell_y, cell_z)` where the spatial component is a
-discretized grid cell (1 cm resolution) of the contact position. This disambiguates
-multiple contacts within the same geom pair (e.g., 4 corner contacts of a box on a
-plane), giving each its own cached lambda. See `warmstart_key()` in
-`mujoco_pipeline.rs`.
+**Resolved (warmstart key collision):** The warmstart key now uses `WarmstartKey`
+(a named struct with fields `geom_lo`, `geom_hi`, `cell_x`, `cell_y`, `cell_z`)
+where the spatial component is a discretized grid cell (1 cm resolution) of the
+contact position. This disambiguates multiple contacts within the same geom pair
+(e.g., 4 corner contacts of a box on a plane), giving each its own cached lambda.
+See `warmstart_key()` in `mujoco_pipeline.rs`.
 
 ##### Step 5: Block Jacobi preconditioner
 
@@ -901,12 +897,14 @@ Replace the unconditional PGS call at `mujoco_pipeline.rs:9301–9316` with:
 // This separates efc_lambda from data so we can pass &Data + &mut HashMap
 // without borrow conflicts. After the match, restore: data.efc_lambda = efc_lambda;
 
+let clamped_iters = model.solver_iterations.max(10);
+let clamped_tol = model.solver_tolerance.max(1e-8);
+
 let constraint_forces = match model.solver_type {
     SolverType::PGS => {
         let (forces, niter) = pgs_solve_contacts(
             model, data, &data.contacts, &jacobians,
-            model.solver_iterations.max(10), model.solver_tolerance.max(1e-8),
-            &mut efc_lambda,
+            clamped_iters, clamped_tol, &mut efc_lambda,
         );
         data.solver_niter = niter;
         forces
@@ -914,31 +912,21 @@ let constraint_forces = match model.solver_type {
     SolverType::CG => {
         match cg_solve_contacts(
             model, data, &data.contacts, &jacobians,
-            model.solver_iterations.max(10), model.solver_tolerance.max(1e-8),
-            &mut efc_lambda,
+            clamped_iters, clamped_tol, &mut efc_lambda,
         ) {
-            Some((forces, niter)) => {
+            Ok((forces, niter)) => {
                 data.solver_niter = niter;
                 forces
             }
-            None => {
+            Err((a, b)) => {
                 // CG did not converge — fall back to PGS.
+                // Reuse the pre-assembled Delassus matrix (A, b) from the Err
+                // variant to avoid redundant O(ncon² · nv) assembly.
                 // efc_lambda already updated by CG with partial solution;
                 // PGS benefits from this warmstart.
-                // NOTE: PGS calls assemble_contact_system() internally, so the
-                // Delassus matrix is assembled twice on this path (once in CG,
-                // once in PGS). This O(ncon²) duplication is acceptable for a
-                // fallback path; if profiling shows it matters, a future
-                // optimization could pass the pre-assembled (A, b) to PGS.
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "warn: CG contact solver did not converge ({} contacts), \
-                     falling back to PGS", data.contacts.len()
-                );
-                let (forces, niter) = pgs_solve_contacts(
-                    model, data, &data.contacts, &jacobians,
-                    model.solver_iterations.max(10), model.solver_tolerance.max(1e-8),
-                    &mut efc_lambda,
+                let (forces, niter) = pgs_solve_with_system(
+                    &data.contacts, &a, &b,
+                    clamped_iters, clamped_tol, &mut efc_lambda,
                 );
                 data.solver_niter = niter;
                 forces
@@ -946,20 +934,15 @@ let constraint_forces = match model.solver_type {
         }
     }
     SolverType::CGStrict => {
-        match cg_solve_contacts(
+        if let Ok((forces, niter)) = cg_solve_contacts(
             model, data, &data.contacts, &jacobians,
-            model.solver_iterations.max(10), model.solver_tolerance.max(1e-8),
-            &mut efc_lambda,
+            clamped_iters, clamped_tol, &mut efc_lambda,
         ) {
-            Some((forces, niter)) => {
-                data.solver_niter = niter;
-                forces
-            }
-            None => {
-                // Use the clamped value (same as what was passed to the solver)
-                data.solver_niter = model.solver_iterations.max(10);
-                vec![Vector3::zeros(); data.contacts.len()]
-            }
+            data.solver_niter = niter;
+            forces
+        } else {
+            data.solver_niter = clamped_iters;
+            vec![Vector3::zeros(); data.contacts.len()]
         }
     }
 };
