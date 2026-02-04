@@ -74,6 +74,7 @@ use nalgebra::{
     DMatrix, DVector, Matrix3, Matrix6, Point3, UnitQuaternion, UnitVector3, Vector3, Vector6,
 };
 use sim_types::Pose;
+use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
@@ -1558,7 +1559,7 @@ pub struct Data {
     ///
     /// Warm-starting initializes the solver near the previous solution,
     /// typically reducing iteration count by 30-50% for stable contact scenarios.
-    pub efc_lambda: std::collections::HashMap<WarmstartKey, [f64; 3]>,
+    pub efc_lambda: HashMap<WarmstartKey, [f64; 3]>,
 
     // ==================== Sensors ====================
     /// Sensor data array (length `nsensordata`).
@@ -1952,7 +1953,7 @@ impl Model {
             // Solver state
             solver_niter: 0,
             solver_nnz: 0,
-            efc_lambda: std::collections::HashMap::with_capacity(256), // Contact correspondence warmstart
+            efc_lambda: HashMap::with_capacity(256), // Contact correspondence warmstart
 
             // Sensors
             sensordata: DVector::zeros(self.nsensordata),
@@ -5786,17 +5787,13 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 // at position stage (because MuJoCo's sensor pipeline is called once
                 // after all stages complete).
                 let mut total_force = 0.0;
-                for (i, contact) in data.contacts.iter().enumerate() {
+                for contact in &data.contacts {
                     if contact.geom1 == objid || contact.geom2 == objid {
                         // Look up the solved contact force from efc_lambda
                         let key = warmstart_key(contact);
                         if let Some(lambda) = data.efc_lambda.get(&key) {
                             // lambda[0] is the normal force magnitude (always >= 0)
                             total_force += lambda[0];
-                        } else {
-                            // Fallback: if no lambda entry (shouldn't happen for active contacts),
-                            // estimate from constraint force projection
-                            let _ = i; // suppress unused warning
                         }
                     }
                 }
@@ -8024,7 +8021,7 @@ fn pgs_solve_contacts(
     jacobians: &[DMatrix<f64>],
     max_iterations: usize,
     tolerance: f64,
-    efc_lambda: &mut std::collections::HashMap<WarmstartKey, [f64; 3]>,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
 ) -> (Vec<Vector3<f64>>, usize) {
     let ncon = contacts.len();
     if ncon == 0 {
@@ -8044,7 +8041,7 @@ fn pgs_solve_with_system(
     b: &DVector<f64>,
     max_iterations: usize,
     tolerance: f64,
-    efc_lambda: &mut std::collections::HashMap<WarmstartKey, [f64; 3]>,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
 ) -> (Vec<Vector3<f64>>, usize) {
     let ncon = contacts.len();
     if ncon == 0 {
@@ -8128,7 +8125,11 @@ fn pgs_solve_with_system(
         }
     }
 
-    // Store lambda for warmstart on next frame
+    // Store lambda for warmstart on next frame.
+    // Note: if two contacts share a WarmstartKey (same geom pair, same 1cm cell),
+    // the later one overwrites the earlier. This is acceptable — contacts within
+    // 1cm of each other have similar forces, and the alternative (accumulation)
+    // would bias the warmstart. The 1cm grid makes collisions rare in practice.
     efc_lambda.clear();
     for (i, contact) in contacts.iter().enumerate() {
         let base = i * 3;
@@ -8236,7 +8237,7 @@ fn cg_solve_contacts(
     jacobians: &[DMatrix<f64>],
     max_iterations: usize,
     tolerance: f64,
-    efc_lambda: &mut std::collections::HashMap<WarmstartKey, [f64; 3]>,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
 ) -> Result<(Vec<Vector3<f64>>, usize), (DMatrix<f64>, DVector<f64>)> {
     let ncon = contacts.len();
     if ncon == 0 {
@@ -9611,8 +9612,10 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     // For small contact counts or when M is singular, fall back to penalty method
     // which is simpler and more robust for simple scenarios.
 
-    // Early exit if no contacts
+    // Early exit if no contacts — clear stale warmstart so a future frame
+    // with new contacts doesn't accidentally match old lambda values.
     if data.contacts.is_empty() {
+        data.efc_lambda.clear();
         return;
     }
 
@@ -13569,7 +13572,6 @@ mod muscle_tests {
 mod cg_solver_unit_tests {
     use super::*;
     use approx::assert_relative_eq;
-    use std::collections::HashMap;
 
     /// AC #5: cg_solve_contacts with zero contacts returns Ok((vec![], 0)).
     #[test]
@@ -13828,5 +13830,74 @@ mod cg_solver_unit_tests {
         assert_eq!(lambda[0], 5.0, "Normal force should be unchanged");
         assert_eq!(lambda[1], 0.0, "Friction should be zero with mu=0");
         assert_eq!(lambda[2], 0.0, "Friction should be zero with mu=0");
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::float_cmp,
+    clippy::similar_names
+)]
+mod warmstart_key_tests {
+    use super::*;
+
+    fn make_contact(geom1: usize, geom2: usize, x: f64, y: f64, z: f64) -> Contact {
+        Contact::new(Vector3::new(x, y, z), Vector3::z(), 0.01, geom1, geom2, 1.0)
+    }
+
+    #[test]
+    fn canonical_geom_ordering() {
+        let c1 = make_contact(3, 7, 0.0, 0.0, 0.0);
+        let c2 = make_contact(7, 3, 0.0, 0.0, 0.0);
+        assert_eq!(warmstart_key(&c1), warmstart_key(&c2));
+        // Both should have (3, 7, ...) as the geom pair
+        let (lo, hi, _, _, _) = warmstart_key(&c1);
+        assert_eq!(lo, 3);
+        assert_eq!(hi, 7);
+    }
+
+    #[test]
+    fn same_cell_same_key() {
+        // Two positions within the same 1cm grid cell.
+        // 0.101 / 0.01 = 10.1 → rounds to 10; 0.103 / 0.01 = 10.3 → rounds to 10
+        let c1 = make_contact(0, 1, 0.101, 0.201, 0.301);
+        let c2 = make_contact(0, 1, 0.103, 0.203, 0.303);
+        assert_eq!(warmstart_key(&c1), warmstart_key(&c2));
+    }
+
+    #[test]
+    fn different_cells_different_keys() {
+        let c1 = make_contact(0, 1, 0.0, 0.0, 0.0);
+        let c2 = make_contact(0, 1, 0.02, 0.0, 0.0); // 2cm apart in x
+        assert_ne!(warmstart_key(&c1), warmstart_key(&c2));
+    }
+
+    #[test]
+    fn different_geom_pairs_different_keys() {
+        let c1 = make_contact(0, 1, 0.0, 0.0, 0.0);
+        let c2 = make_contact(0, 2, 0.0, 0.0, 0.0);
+        assert_ne!(warmstart_key(&c1), warmstart_key(&c2));
+    }
+
+    #[test]
+    fn negative_positions() {
+        let c1 = make_contact(0, 1, -0.5, -1.0, -2.0);
+        let (_, _, cx, cy, cz) = warmstart_key(&c1);
+        assert_eq!(cx, -50);
+        assert_eq!(cy, -100);
+        assert_eq!(cz, -200);
+    }
+
+    #[test]
+    fn grid_resolution_is_1cm() {
+        // Positions 0.004 and 0.005 round to 0 and 1 respectively at 1cm grid
+        let c_below = make_contact(0, 1, 0.004, 0.0, 0.0);
+        let c_above = make_contact(0, 1, 0.006, 0.0, 0.0);
+        let (_, _, cx_below, _, _) = warmstart_key(&c_below);
+        let (_, _, cx_above, _, _) = warmstart_key(&c_above);
+        assert_eq!(cx_below, 0); // 0.004 / 0.01 = 0.4, rounds to 0
+        assert_eq!(cx_above, 1); // 0.006 / 0.01 = 0.6, rounds to 1
     }
 }

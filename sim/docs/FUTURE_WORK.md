@@ -552,7 +552,7 @@ fn cg_solve_contacts(
     jacobians: &[DMatrix<f64>],
     max_iterations: usize,
     tolerance: f64,
-    efc_lambda: &mut HashMap<(usize, usize), [f64; 3]>,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
 ) -> Option<(Vec<Vector3<f64>>, usize)>
 ```
 
@@ -704,7 +704,7 @@ fn cg_solve_contacts(...) -> Option<(Vec<Vector3<f64>>, usize)>:
     // ---- Warmstart ----
     lambda = DVector::zeros(nefc)
     for (i, contact) in contacts.enumerate():
-        key = (min(contact.geom1, contact.geom2), max(contact.geom1, contact.geom2))
+        key = warmstart_key(contact)
         if let Some(prev) = efc_lambda.get(&key):
             lambda[i*3] = prev[0]; lambda[i*3+1] = prev[1]; lambda[i*3+2] = prev[2]
 
@@ -725,7 +725,7 @@ fn cg_solve_contacts(...) -> Option<(Vec<Vector3<f64>>, usize)>:
             lam[1] *= scale; lam[2] *= scale
         // Store warmstart (clear stale entries from previous frames):
         efc_lambda.clear()
-        key = (min(contacts[0].geom1, contacts[0].geom2), max(contacts[0].geom1, contacts[0].geom2))
+        key = warmstart_key(&contacts[0])
         efc_lambda.insert(key, [lam[0], lam[1], lam[2]])
         return Some((vec![lam], 0))
 
@@ -793,7 +793,7 @@ fn cg_solve_contacts(...) -> Option<(Vec<Vector3<f64>>, usize)>:
     // is a reasonable starting point for the next frame.
     efc_lambda.clear()
     for (i, contact) in contacts.enumerate():
-        key = (min(contact.geom1, contact.geom2), max(contact.geom1, contact.geom2))
+        key = warmstart_key(contact)
         efc_lambda.insert(key, [lambda[i*3], lambda[i*3+1], lambda[i*3+2]])
 
     if converged: Some((extract_forces(&lambda, ncon), iters_used)) else: None
