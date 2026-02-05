@@ -388,39 +388,16 @@ Pre-0 (tangent basis) ─→ A (model plumbing) ──→ B (Jacobian) ──→
 
 ---
 
-**Pre-requisite 0: Unify tangent basis functions**
+**Pre-requisite 0: Unify tangent basis functions** ✅ COMPLETE
 
-Two separate functions compute tangent vectors from a contact normal:
-- `compute_tangent_frame()` (`:1348–1379`) — used in `Contact::with_solver_params()`
-- `build_tangent_basis()` (`:7724–7744`) — used in `compute_contact_jacobian()`,
-  `assemble_contact_system()`, `mj_fwd_constraint()` force loop
-
-Both use the same algorithm (Gram-Schmidt from a reference vector) but
-**differ in edge-case handling**: `compute_tangent_frame()` normalizes the input
-normal; `build_tangent_basis()` assumes unit-length input. For non-unit normals,
-`build_tangent_basis()` produces a non-unit `tangent2` (via `normal.cross(&t1)`),
-which would corrupt Jacobian and force computations. There is an existing TODO
-at `:7624–7630` noting this redundancy.
-
-**Fix:** Switch all three solver call sites to read from `contact.frame[0]` and
-`contact.frame[1]` (the tangent vectors pre-computed during contact construction).
-This eliminates redundant computation, guarantees consistency between
-Jacobian/assembly/force-application, and resolves the edge-case divergence. The
-condim refactor touches all three call sites anyway, so this is a zero-marginal-
-cost change.
-
-Changes:
-- `compute_contact_jacobian()` (`:7632`): replace
-  `let (tangent1, tangent2) = build_tangent_basis(&normal)` with
-  `let (tangent1, tangent2) = (contact.frame[0], contact.frame[1])`
-- `assemble_contact_system()` (`:7960`): same replacement
-- `mj_fwd_constraint()` force loop (`:9733`): same replacement
-- `build_tangent_basis()` can be removed or kept as a private utility (it's
-  no longer on any hot path)
+All three call sites now use `contact.frame[]` instead of `build_tangent_basis()`.
+The redundant function was removed. See `compute_contact_jacobian()`,
+`assemble_contact_system()`, and `mj_fwd_constraint()` force loop in current code.
 
 ---
 
-**Sub-task A: Model plumbing — `geom_condim` + friction propagation**
+<details>
+<summary><b>Sub-task A: Model plumbing</b> ✅ COMPLETE (click to expand)</summary>
 
 **A.1.** Add `geom_condim: Vec<i32>` to `Model` (`mujoco_pipeline.rs`). Initialize
 in `Model::empty()` as an empty `Vec` (the struct derives `Clone` and `Debug`, so
@@ -533,9 +510,12 @@ All three must be updated to `mu: [f64; 5]` format when `Contact.mu` changes.
 Update to e.g. `mu: [0.5, 0.5, 0.0, 0.0, 0.0]` or refactor to use
 `Contact::new()`. No other struct literal callers exist in the codebase.
 
+</details>
+
 ---
 
-**Sub-task B: Variable-dimension Jacobian — `compute_contact_jacobian()`**
+<details>
+<summary><b>Sub-task B: Variable-dimension Jacobian</b> ✅ COMPLETE (click to expand)</summary>
 
 The contact Jacobian must produce `dim` rows instead of 3. The first 3 rows
 are unchanged (normal, tangent1, tangent2). Rows 4–6 are angular Jacobian rows
@@ -679,9 +659,12 @@ if dim >= 6 {
 }
 ```
 
+</details>
+
 ---
 
-**Sub-task C: Variable-dimension system assembly — `assemble_contact_system()`**
+<details>
+<summary><b>Sub-task C: Variable-dimension system assembly</b> ✅ COMPLETE (click to expand)</summary>
 
 **C.1.** Extract `efc_offsets` computation into a shared helper:
 
@@ -820,6 +803,12 @@ velocity projected onto the contact frame. The angular velocity terms use
 an angular analogue would compute relative angular velocity — a different
 quantity that would need a separate function. Using the Jacobian rows directly
 is simpler since they are already computed.
+
+</details>
+
+---
+
+## Phase 2 Sub-tasks (TO IMPLEMENT)
 
 ---
 
@@ -1023,7 +1012,7 @@ fn project_friction_cone(
 
 **Sub-task E: Solver updates — PGS and CG**
 
-**E.1. `pgs_solve_with_system()` (`:8049`).**
+**E.1. `pgs_solve_with_system()`**
 
 Compute `efc_offsets` and `nefc` from contacts (same as sub-task C). Replace
 all `i * 3` indexing with `efc_offsets[i]`. The existing `diag_inv`
@@ -1071,16 +1060,15 @@ for i in 0..ncon {
 }
 ```
 
-**E.1b. `pgs_solve_contacts()` wrapper (`:8028`).** This is a pass-through
+**E.1b. `pgs_solve_contacts()` wrapper.** This is a pass-through
 wrapper that calls `assemble_contact_system()` then `pgs_solve_with_system()`.
-Changes: compute `efc_offsets` and pass to both callees. Accept
-`efc_offsets: &[usize]` as a parameter (computed by `mj_fwd_constraint()`).
+Changes: use `efc_offsets` from the return value of `assemble_contact_system()`.
 Return type changes from `(Vec<Vector3<f64>>, usize)` to
 `(Vec<DVector<f64>>, usize)` per the type propagation table. No logic changes
-beyond parameter threading.
+beyond indexing updates.
 
 **E.2. Warmstart format.** Change `efc_lambda: HashMap<WarmstartKey, [f64; 3]>`
-(`Data` struct, `:1573`) to `HashMap<WarmstartKey, Vec<f64>>`. The `Vec` length
+(`Data` struct) to `HashMap<WarmstartKey, Vec<f64>>`. The `Vec` length
 matches the contact's dim. On warmstart load, if the stored dim differs from
 the current contact's dim (e.g., condim changed between frames), discard the
 warmstart for that contact (use zero initialization). On store, save
@@ -1090,19 +1078,19 @@ warmstart for that contact (use zero initialization). On store, save
 
 | Location | Current usage | Change |
 |----------|--------------|--------|
-| `pgs_solve_with_system()` `:8068–8072` | Load `[f64; 3]` into `lambda[base..base+3]` | Load `Vec<f64>`, check len == dim |
-| `pgs_solve_with_system()` `:8144–8148` | Store `[lambda[base], ...]` | Store `lambda[base..base+dim].to_vec()` |
-| `cg_solve_contacts()` `:8266–8272` | Load `[f64; 3]` | Same as PGS |
-| `cg_solve_contacts()` `:8302–8304` | Store `[lam[0], lam[1], lam[2]]` | Store `lam.as_slice().to_vec()` |
-| `cg_solve_contacts()` `:8378–8381` | Store `[lambda[i*3], ...]` | Store `lambda[base..base+dim].to_vec()` |
-| Touch sensor `:5805` | `data.efc_lambda.get(&key)` → `lambda[0]` | `lambda[0]` still correct (normal force) |
-| RK4 integrator `:10566` | `data.efc_lambda.clone()` | Works unchanged (`HashMap<K, Vec>` is `Clone`) |
-| Test code `:13596`, `:13657` | `HashMap<WarmstartKey, [f64; 3]>` | Update to `Vec<f64>` |
+| `pgs_solve_with_system()` warmstart load | `[f64; 3]` into `lambda[base..base+3]` | `Vec<f64>`, check len == dim |
+| `pgs_solve_with_system()` warmstart store | `[lambda[base], ...]` | `lambda[base..base+dim].to_vec()` |
+| `cg_solve_contacts()` warmstart load | `[f64; 3]` | Same as PGS |
+| `cg_solve_contacts()` single-contact store | `[lam[0], lam[1], lam[2]]` | `lam.as_slice().to_vec()` |
+| `cg_solve_contacts()` multi-contact store | `[lambda[i*3], ...]` | `lambda[base..base+dim].to_vec()` |
+| Touch sensor | `lambda[0]` via `[f64; 3]` | `lambda[0]` via `Vec<f64>` (logic unchanged) |
+| RK4 integrator | `data.efc_lambda.clone()` | Works unchanged (`HashMap<K, Vec>` is `Clone`) |
+| Test code | `HashMap<WarmstartKey, [f64; 3]>` | Update to `Vec<f64>` |
 
-The touch sensor (`:5805`) reads `lambda[0]` which is the normal force
+The touch sensor reads `lambda[0]` which is the normal force
 regardless of condim — no logic change needed, only the type annotation.
 
-**E.3. `compute_block_jacobi_preconditioner()` (`:8158`).** Replace `Matrix3`
+**E.3. `compute_block_jacobi_preconditioner()`.** Replace `Matrix3`
 blocks with `DMatrix` blocks of size `dim × dim`:
 
 ```rust
@@ -1130,7 +1118,7 @@ fn compute_block_jacobi_preconditioner(
 }
 ```
 
-**E.4. `apply_preconditioner()` (`:8200`).** Change from `Vector3` blocks to
+**E.4. `apply_preconditioner()`.** Change from `Vector3` blocks to
 `DVector` blocks, indexing via `efc_offsets`:
 
 ```rust
@@ -1152,7 +1140,7 @@ fn apply_preconditioner(
 }
 ```
 
-**E.5. `cg_solve_contacts()` (`:8244`).** Note: despite the `cg_` name, this
+**E.5. `cg_solve_contacts()`.** Note: despite the `cg_` name, this
 solver implements Preconditioned Projected Gradient Descent (PGD) with
 Barzilai-Borwein adaptive step size, not conjugate gradient. The "CG" name is
 historical. The following changes preserve the PGD algorithm.
@@ -1184,7 +1172,7 @@ historical. The following changes preserve the PGD algorithm.
   }
   ```
 
-**E.6. `extract_forces()` (`:8010`).** Change return type from
+**E.6. `extract_forces()`.** Change return type from
 `Vec<Vector3<f64>>` to `Vec<DVector<f64>>`:
 
 ```rust
@@ -1204,7 +1192,7 @@ fn extract_forces(
 
 **Sub-task F: Force application — `mj_fwd_constraint()`**
 
-The force application loop (`:9731–9746`) currently converts lambda
+The force application loop in `mj_fwd_constraint()` currently converts lambda
 (`Vector3<f64>`) to a world-frame linear force. For condim ≥ 4, torsional and
 rolling components are torques, not forces. They require a different
 application path.
