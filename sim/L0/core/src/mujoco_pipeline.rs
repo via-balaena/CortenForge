@@ -1331,9 +1331,9 @@ impl Contact {
     /// where condim and friction values come from combining both geom properties.
     ///
     /// # Arguments
-    /// * `sliding` - Sliding friction coefficient (mu[0], mu[1])
-    /// * `torsional` - Torsional/spin friction coefficient (mu[2])
-    /// * `rolling` - Rolling friction coefficient (mu[3], mu[4])
+    /// * `sliding` - Sliding friction coefficient (mu\[0\], mu\[1\])
+    /// * `torsional` - Torsional/spin friction coefficient (mu\[2\])
+    /// * `rolling` - Rolling friction coefficient (mu\[3\], mu\[4\])
     /// * `condim` - Contact dimension (1, 3, 4, or 6)
     #[must_use]
     #[inline]
