@@ -103,7 +103,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `geom/@fromto` | ✓ | ✓ | Capsule/cylinder shorthand |
 | `geom/@contype` | ✓ | ✓ | Contact type bitmask |
 | `geom/@conaffinity` | ✓ | ✓ | Contact affinity bitmask |
-| `geom/@condim` | ✓ | ⚠️ | Contact dimensionality |
+| `geom/@condim` | ✓ | ✓ | Contact dimensionality (1, 3, 4, 6) — full variable-dim support |
 | `geom/@friction` | ✓ | ✓ | Sliding, torsional, rolling |
 | `geom/@solref` | ✓ | ✓ | Solver reference params |
 | `geom/@solimp` | ✓ | ✓ | Solver impedance params |
@@ -302,7 +302,7 @@ Some differences from MuJoCo are by design:
 | Memory model | Pre-allocated pools | Dynamic allocation | Rust idioms, safety |
 | Threading | OpenMP | Rayon | Rust ecosystem |
 | GPU | Custom CUDA | Future: wgpu | Cross-platform |
-| Contact solver | Custom sparse | PGS + CG/PGD solver (mujoco_pipeline) | Maintainability |
+| Contact solver | Custom sparse | PGS + CG/PGD solver with variable condim (1/3/4/6), elliptic friction cones | Maintainability |
 | Visualization | Built-in | Separate L1 crate | Headless training |
 
 ---

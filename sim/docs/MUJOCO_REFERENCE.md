@@ -477,26 +477,30 @@ Signs are positive for body1 and negative for body2.
 ```python
 H = A + R
 H_diag_inv = 1.0 / diag(H)
-lambda = warmstart   # from previous timestep via contact correspondence
+lambda = warmstart   # from previous timestep via WarmstartKey correspondence
 
 for iteration in range(max_iter):
     max_delta = 0
 
-    for c in range(n_contacts):        # iterate per-contact (3 rows each)
-        base = c * 3
-        # Gauss-Seidel update for all 3 rows (normal + 2 friction)
-        for j in [0, 1, 2]:
+    for c in range(n_contacts):
+        base = efc_offsets[c]           # variable offset per contact
+        dim = contacts[c].dim           # 1, 3, 4, or 6
+        mu = contacts[c].mu             # [sliding1, sliding2, torsional, rolling1, rolling2]
+
+        # Gauss-Seidel update for all rows of this contact
+        for j in range(dim):
             residual = H[base+j,:] @ lambda + b[base+j]
             lambda[base+j] -= residual * H_diag_inv[base+j]
 
-        # Project: normal >= 0, then rescale 2D friction vector
-        lambda[base] = max(0, lambda[base])
-        friction_mag = sqrt(lambda[base+1]^2 + lambda[base+2]^2)
-        max_friction = mu * lambda[base]
-        if friction_mag > max_friction:
-            scale = max_friction / friction_mag
-            lambda[base+1] *= scale
-            lambda[base+2] *= scale
+        # Project onto elliptic friction cone (two-step)
+        # Step 1: Unilateral constraint — release if separating
+        if lambda[base] < 0:
+            lambda[base:base+dim] = 0
+            continue
+
+        # Step 2: Scale friction to cone boundary if exceeded
+        # s = sqrt(sum((lambda[i]/mu[i-1])^2 for i in 1..dim))
+        # if s > lambda[base]: scale all friction by lambda[base]/s
 
         max_delta = max(max_delta, ...)
 
@@ -508,12 +512,21 @@ for iteration in range(max_iter):
 
 | Constraint | Projection |
 |------------|------------|
-| Contact normal | `max(0, lambda)` |
-| Contact friction | Rescale 2D friction vector: if `\|lambda_t\| > mu * lambda_n`, scale to `mu * lambda_n` (circular cone, no per-axis clamp) |
+| Contact normal (condim ≥ 1) | `max(0, lambda_n)` — unilateral constraint, release if separating |
+| Contact friction (condim ≥ 3) | Elliptic cone: if `‖(λ_i/μ_i)‖ > λ_n`, scale friction to boundary |
+| Torsional friction (condim ≥ 4) | Included in elliptic cone projection with `mu[2]` |
+| Rolling friction (condim = 6) | Included in elliptic cone projection with `mu[3..5]` |
 
-**Warmstart:** Contact forces are cached by canonical geom pair
-`(min(g1,g2), max(g1,g2))`. When the same pair reappears next frame,
-previous lambda values seed the iteration.
+**Variable condim:** Contact dimension determines constraint size:
+- condim 1: Normal only (frictionless) — 1 constraint row
+- condim 3: Normal + 2D tangential — 3 constraint rows
+- condim 4: + torsional friction — 4 constraint rows
+- condim 6: + rolling friction — 6 constraint rows
+
+**Warmstart:** Contact forces are cached by `WarmstartKey` combining canonical geom pair
+`(min(g1,g2), max(g1,g2))` with 1cm spatial grid cell. Stored as `Vec<f64>` (variable length
+for different condim). When the same key reappears next frame, previous lambda values seed
+the iteration (with dimension check).
 
 ### 4.8 Forward Acceleration
 

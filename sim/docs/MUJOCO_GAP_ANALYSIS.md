@@ -22,7 +22,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal spring/damper only — see [future_work_1 #7](./todo/future_work_1.md))
 - Constraint solver: PGS (plain Gauss-Seidel, no SOR) + CG (preconditioned PGD with Barzilai-Borwein), Warm Starting via `WarmstartKey`
-- Contact model (Compliant with solref/solimp, circular friction cone condim 3, contype/conaffinity filtering)
+- Contact model (Compliant with solref/solimp, elliptic friction cones with variable condim 1/3/4/6, torsional/rolling friction, contype/conaffinity filtering)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free**)
 - Actuators: All 8 shortcut types (Motor, Position, Velocity, Damper, Cylinder, Adhesion, Muscle, General) with MuJoCo-compatible gain/bias force model (`force = gain * input + bias`), GainType/BiasType dispatch, FilterExact dynamics, control/force clamping
@@ -30,8 +30,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Model loading (URDF, MJCF with `<default>` class resolution, **MJB binary format**) — `DefaultResolver` is wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors)
 
 ### Placeholder / Stub (in pipeline)
-- Elliptic/Pyramidal friction cones — `cone` field stored but solver hardcodes circular cone
-- Torsional/Rolling friction — `Contact.dim` and `geom_friction.y/.z` stored but solver is condim 3 only
+- Pyramidal friction cones — `cone` field stored but solver uses elliptic cones (warning emitted if pyramidal requested)
 - Site actuation — placeholder in `mj_fwd_actuation()` (requires spatial tendon support)
 
 ### Recently Implemented (previously stubs)
@@ -64,6 +63,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 | Feature | Implementation | Section |
 |---------|----------------|---------|
+| Contact Condim (1/3/4/6) + Friction Cones | Variable-dimension contacts with elliptic friction cones, torsional friction (condim 4), rolling friction (condim 6), two-step projection, `apply_contact_torque()` | [§3](#3-contact-physics) |
 | General gain/bias actuator force model | All 8 shortcut types with `GainType`/`BiasType` dispatch, `FilterExact` dynamics, `ctrllimited` enforcement for Damper/Adhesion | [§7](#7-actuators) |
 | RK4 integrator | True 4-stage Runge-Kutta via `mj_runge_kutta()` with quaternion-safe position updates | [§1](#1-integration-methods) |
 | Pipeline sensors (30 types) | All 30 types functional and wired from MJCF `<sensor>` elements via `model_builder.rs`; `set_options()` propagates `magnetic`/`wind`/`density`/`viscosity` | [§8](#8-sensors) |
@@ -323,47 +323,59 @@ let result = solver.solve_islands(&joints, &islands, &get_body_state, dt);
 | Spring-damper (F = k*d^p + c*v) | Core | `compute_normal_force_magnitude` | **Standalone** (in sim-simd `batch_ops.rs` only; pipeline uses constraint-based PGS, not penalty spring-damper) | - | - |
 | Nonlinear stiffness (d^p) | Core | `stiffness_power` param | **Standalone** (same as above — sim-simd only) | - | - |
 | Contact margin | Supported | `contact_margin` param | **Implemented** (field stored; effect on collision thresholds TBD) | - | - |
-| Elliptic friction cones | Default | `Model.cone` field | **Stub** (`cone` field parsed and stored but PGS solver ignores it — hardcodes circular cone) | - | - |
-| Pyramidal friction cones | Alternative | `Model.cone` field | **Stub** (`cone` field stored but solver ignores it) | - | - |
-| Torsional friction | condim 4-6 | `Contact.dim`, `Contact.mu[1]` | **Stub** (data fields exist but solver is hardcoded to 3 rows per contact — condim 3 only) | - | - |
-| Rolling friction | condim 6-10 | `geom_friction.y`/`.z` | **Stub** (data stored but only `.x` sliding friction is extracted for contacts) | - | - |
-| Complete friction model | condim 6 | — | **Stub** (consequence of above — only condim 3 circular cone is functional) | - | - |
+| Elliptic friction cones | Default | `Model.cone = 1`, `project_elliptic_cone()` | **Implemented** (two-step projection: unilateral constraint + friction scaling) | - | - |
+| Pyramidal friction cones | Alternative | `Model.cone` field | **Stub** (warning emitted, falls back to elliptic — requires different system size) | - | - |
+| Variable condim (1/3/4/6) | Core | `Contact.dim`, `efc_offsets`, variable-dim solvers | **Implemented** (full variable-dimension support in PGS/CG) | - | - |
+| Torsional friction | condim ≥ 4 | `Contact.mu[2]`, angular Jacobian row 3 | **Implemented** (Jacobian + solver + `apply_contact_torque()`) | - | - |
+| Rolling friction | condim = 6 | `Contact.mu[3..5]`, angular Jacobian rows 4-5 | **Implemented** (Jacobian + solver + `apply_contact_torque()`) | - | - |
+| Complete friction model | condim 6 | All components integrated | **Implemented** (condim 1, 3, 4, 6 all functional) | - | - |
 | Contact pairs filtering | Supported | `contype`/`conaffinity` bitmasks | **Implemented** | - | - |
 | solref/solimp params | MuJoCo-specific | `jnt_solref`, `geom_solimp`, `eq_solref`, etc. in `Model` | **Implemented** (in MuJoCo pipeline) | - | - |
 
-### Implementation Notes: Elliptic Friction Cones ⚠️ STUB (types exist but solver ignores cone field)
+### Implementation Notes: Elliptic Friction Cones ✅ IMPLEMENTED
 
 MuJoCo uses elliptic cones by default:
 ```
-f_n ≥ 0, (f_t1/μ_1)² + (f_t2/μ_2)² ≤ f_n²
+f_n ≥ 0, ||(f_t1/μ_1, f_t2/μ_2, ...)|| ≤ f_n
 ```
 
-**Implemented:**
-- `EllipticFrictionCone` struct with anisotropic friction coefficients (μ_1, μ_2)
-- Newton-based projection onto ellipse boundary for forces outside the cone
-- `FrictionModelType::Elliptic` for ContactModel integration
-- `ContactParams::friction_anisotropy` parameter for anisotropic surfaces
-- Presets: `ContactParams::treaded()`, `ContactParams::brushed_metal()`
-- Conversions between circular and elliptic cones
+**Implemented (February 2026):**
+- `project_elliptic_cone()` — Two-step physical projection:
+  1. Unilateral constraint: if λ_n < 0, contact releases (all forces = 0)
+  2. Friction scaling: if friction exceeds cone, scale by λ_n/s
+- `project_friction_cone()` — Dispatcher for condim 1/3/4/6
+- `Model.cone = 1` (elliptic) as default; pyramidal emits warning and falls back
+- Per-contact `mu: [f64; 5]` for [sliding1, sliding2, torsional, rolling1, rolling2]
 
-**Files modified:** `sim-core/src/contact.rs`, `sim-core/src/mujoco_pipeline.rs` (formerly in `sim-contact`, now consolidated into `sim-core`)
+**Files modified:** `sim-core/src/mujoco_pipeline.rs` (lines 8248-8312)
 
-### Implementation Notes: Advanced Friction Models ⚠️ STUB (data fields exist; solver hardcodes condim 3; former sim-contact code removed)
+### Implementation Notes: Variable Condim + Advanced Friction Models ✅ IMPLEMENTED
 
 MuJoCo uses contact dimensionality (`condim`) to specify which friction components are active:
-- **condim 1**: Normal force only (frictionless)
-- **condim 3**: Normal + 2D tangential friction (sliding)
-- **condim 4**: condim 3 + torsional friction (spinning resistance)
-- **condim 6**: condim 4 + 2D rolling friction (rolling resistance)
+- **condim 1**: Normal force only (frictionless) — `lambda[0]` clamped ≥ 0
+- **condim 3**: Normal + 2D tangential friction (sliding) — elliptic cone projection
+- **condim 4**: condim 3 + torsional friction (spinning resistance) — angular Jacobian row 3
+- **condim 6**: condim 4 + 2D rolling friction (rolling resistance) — angular Jacobian rows 4-5
 
-**Torsional Friction:**
-Opposes rotation about the contact normal (spinning). Torque is:
-```
-τ_torsion = -μ_torsion * r_contact * F_n * sign(ω_n)
+**Implemented (February 2026):**
+- `compute_efc_offsets()` — Per-contact row offsets for variable-dimension system
+- `compute_contact_jacobian()` — Returns `dim×nv` matrix with angular rows for condim ≥ 4
+- `add_angular_jacobian()` — Helper for torsional/rolling Jacobian rows
+- `apply_contact_torque()` — Maps world torque to generalized forces via angular Jacobian transpose
+- `compute_block_jacobi_preconditioner()` — Variable `dim×dim` blocks
+- `Data.efc_lambda: HashMap<WarmstartKey, Vec<f64>>` — Variable-length warmstart
+- PGS and CG solvers updated for variable-dimension indexing
+
+**Torsional Friction (condim ≥ 4):**
+Opposes rotation about the contact normal (spinning). Applied via `apply_contact_torque()`:
+```rust
+let torsional_torque = normal * lambda[3];
+apply_contact_torque(model, data, body1, -torsional_torque);
+apply_contact_torque(model, data, body2, torsional_torque);
 ```
 
-**Rolling Friction:**
-Opposes rotation perpendicular to the contact normal (rolling). Torque is:
+**Rolling Friction (condim = 6):**
+Opposes rotation perpendicular to the contact normal. Applied via `apply_contact_torque()`:
 ```
 τ_roll = -μ_roll * r_roll * F_n * normalize(ω_tangent)
 ```
@@ -1452,7 +1464,7 @@ These joint types now have full constraint solver support:
 
 1. ~~**Collision shapes**: Box-box, box-sphere, capsule detection~~ ✅
 2. ~~**Broad-phase**: Sweep-and-prune or BVH integration~~ ✅
-3. ~~**Elliptic friction cones**: Replace circular with elliptic~~ ✅ → ⚠️ **Stub** (`cone` field stored but solver hardcodes circular cone condim 3; see §3)
+3. ~~**Elliptic friction cones**: Replace circular with elliptic~~ ✅ (full elliptic cones with variable condim 1/3/4/6 in PGS/CG solvers)
 4. ~~**Sensors**: IMU, force/torque, touch sensors~~ ✅ (sim-sensor crate standalone + 27 pipeline sensor types functional)
 5. ~~**Implicit integration**: Implicit-in-velocity method~~ ✅
 
@@ -1554,96 +1566,71 @@ Focus: All collision detection improvements, primarily in sim-core.
 
 **Files:** `sim-core/src/mujoco_pipeline.rs`, `sim-core/src/gjk_epa.rs`, `sim-core/src/mid_phase.rs`, `sim-mjcf/src/model_builder.rs`
 
-### Phase 6: Contact Physics ⚠️ REMOVED (Phase 3 consolidation)
+### Phase 6: Contact Physics ✅ RE-IMPLEMENTED
 
-Focus: Advanced friction models — **all items were implemented in sim-contact then removed** in Phase 3 consolidation. Pipeline PGS solver hardcodes circular cone condim 3.
+Focus: Advanced friction models — **originally implemented in sim-contact, removed in Phase 3 consolidation, then re-implemented directly in the pipeline** with full variable-dimension support.
 
 | Feature | Section | Complexity | Notes |
 |---------|---------|------------|-------|
-| ~~Torsional friction~~ | §3 Contact | Medium | ✅ → ⚠️ **Removed** (was in `sim-contact/src/friction.rs`; pipeline is condim 3 only) |
-| ~~Rolling friction~~ | §3 Contact | High | ✅ → ⚠️ **Removed** (was in `sim-contact/src/friction.rs`; pipeline is condim 3 only) |
-| ~~Pyramidal friction cones~~ | §3 Contact | Low | ✅ → ⚠️ **Removed** (was in `sim-contact/src/friction.rs`; pipeline uses circular cone) |
+| ~~Torsional friction~~ | §3 Contact | Medium | ✅ **Implemented** (`Contact.mu[2]`, angular Jacobian row 3, `apply_contact_torque()`) |
+| ~~Rolling friction~~ | §3 Contact | High | ✅ **Implemented** (`Contact.mu[3..5]`, angular Jacobian rows 4-5, `apply_contact_torque()`) |
+| ~~Pyramidal friction cones~~ | §3 Contact | Low | ⚠️ **Stub** (warning emitted, falls back to elliptic — requires different system size) |
 
-**Implemented:**
+**Implemented (in `sim-core/src/mujoco_pipeline.rs`):**
 
-**Torsional Friction (removed — formerly `sim-contact/src/friction.rs`):**
-- `TorsionalFriction` - Resistance to spinning (rotation about contact normal)
-- Configurable friction coefficient and contact radius
-- Regularization for smooth force response near zero velocity
-- `compute_torque()` - Compute torque opposing spinning motion
-- `max_torque()`, `project_torque()` - Friction limit helpers
+**Variable Contact Dimensions:**
+- `Contact.dim: usize` — Contact dimensionality (1, 3, 4, or 6)
+- `Contact.mu: [f64; 5]` — Friction coefficients [sliding1, sliding2, torsional, rolling1, rolling2]
+- `efc_offsets: Vec<usize>` — Starting row for each contact in the constraint system
+- Variable-length warmstart with `HashMap<WarmstartKey, Vec<f64>>`
 
-**Rolling Friction (removed — formerly `sim-contact/src/friction.rs`):**
-- `RollingFriction` - Resistance to rolling (rotation perpendicular to normal)
-- Configurable friction coefficient and rolling radius
-- `compute_torque()` - Compute torque opposing rolling motion
-- `compute_resistance_force()` - Equivalent linear resistance force
-- Regularization for smooth force response
+**Elliptic Friction Cone Projection (`project_elliptic_cone()`):**
+- Two-step physically-correct projection:
+  1. Enforce unilateral constraint (λ_n ≥ 0, else release contact)
+  2. Scale friction components to cone boundary if `||(λ_i/μ_i)|| > λ_n`
+- Handles per-direction friction coefficients for anisotropic friction
+- Zero-mu components clamped without affecting others
 
-**Pyramidal Friction Cones (removed — formerly `sim-contact/src/friction.rs`, `model.rs`):**
-- `PyramidalFrictionCone` - Linearized approximation to circular/elliptic cones
-- Configurable number of faces (3-64, typical: 4, 8, or 16)
-- Presets: `box_approximation()`, `octagonal()`, `high_accuracy()`
-- `contains()`, `project()` - Cone containment and projection
-- `constraint_matrix()` - Generate linear constraints for LCP/QP solvers
-- `FrictionModelType::Pyramidal { num_faces }` - ContactModel integration
+**Dispatcher (`project_friction_cone()`):**
+- Routes to appropriate projection based on contact dimension
+- condim 1: Normal only (frictionless)
+- condim 3: Normal + 2D tangential (sliding friction)
+- condim 4: condim 3 + torsional (spinning resistance)
+- condim 6: condim 4 + rolling (full MuJoCo model)
 
-**Complete Friction Model (removed — formerly `sim-contact/src/friction.rs`):**
-- `CompleteFrictionModel` - Unified tangential + torsional + rolling friction
-- MuJoCo-style `condim()` method returning contact dimensionality (1, 3, 4, or 6)
-- Factory methods: `tangential_only()`, `with_torsional()`, `complete()`
-- Presets: `rubber_ball()`, `wheel()`, `sliding_box()`
-- `CompleteFrictionResult` - Combined force and torque output
+**Torsional Friction (condim ≥ 4):**
+- Angular Jacobian row 3: `J_ω[0..3] = contact_normal`
+- Torque applied via `apply_contact_torque()` using `Contact.mu[2]`
+- Opposes rotation about the contact normal (spinning)
 
-**Usage:**
+**Rolling Friction (condim = 6):**
+- Angular Jacobian rows 4-5: perpendicular to contact normal
+- Torques applied via `apply_contact_torque()` using `Contact.mu[3..5]`
+- Opposes rotation perpendicular to the contact normal
+
+**Torque Application (`apply_contact_torque()`):**
 ```rust
-// NOTE: These types were in sim-contact and have been removed.
-// ContactPoint, ContactManifold, ContactForce now live in sim-core.
-use sim_core::{ContactPoint, ContactManifold, ContactForce};
-use nalgebra::Vector3;
-
-// Torsional friction (spinning resistance)
-let torsional = TorsionalFriction::new(0.05, 0.01); // μ=0.05, radius=1cm
-let normal = Vector3::z();
-let angular_vel = Vector3::new(0.0, 0.0, 5.0); // Spinning at 5 rad/s
-let torque = torsional.compute_torque(&normal, &angular_vel, 100.0);
-
-// Rolling friction
-let rolling = RollingFriction::new(0.02, 0.05); // μ=0.02, radius=5cm
-let angular_vel = Vector3::new(0.0, 10.0, 0.0); // Rolling about Y
-let torque = rolling.compute_torque(&normal, &angular_vel, 100.0);
-
-// Pyramidal friction cone (for LCP/QP solvers)
-let pyramid = PyramidalFrictionCone::octagonal(0.5);
-let force = Vector3::new(100.0, 0.0, 0.0);
-let projected = pyramid.project(force, 100.0); // Project to cone
-let (a, b) = pyramid.constraint_matrix(100.0); // Linear constraints
-
-// Complete friction model (MuJoCo condim 6)
-let model = CompleteFrictionModel::complete(
-    0.5,   // tangential μ
-    0.03,  // torsional μ
-    0.01,  // contact radius
-    0.02,  // rolling μ
-    0.05,  // rolling radius
-);
-assert_eq!(model.condim(), 6);
-
-let result = model.compute_force_and_torque(
-    &normal,
-    &Vector3::new(0.1, 0.0, 0.0), // tangent velocity
-    &Vector3::new(0.0, 5.0, 2.0), // angular velocity (rolling + spinning)
-    100.0, // normal force
-);
-
-// Use pyramidal cones in ContactModel
-let contact_model = ContactModel::default()
-    .with_pyramidal_friction(8); // 8-face pyramid
+// Apply torsional/rolling friction torques to body angular accelerations
+fn apply_contact_torque(data: &mut Data, contact: &Contact, lambda: &[f64]) {
+    // Torsional (row 3): torque about contact normal
+    if contact.dim >= 4 && lambda.len() > 3 {
+        let torque = contact.normal * lambda[3];
+        // Apply to both bodies with opposite signs...
+    }
+    // Rolling (rows 4-5): torque perpendicular to normal
+    if contact.dim == 6 && lambda.len() > 5 {
+        let tangent1 = contact.frame.col(0);
+        let tangent2 = contact.frame.col(1);
+        let torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+        // Apply to both bodies with opposite signs...
+    }
+}
 ```
 
 **Files:**
-- Formerly `sim-contact/src/friction.rs`, `sim-contact/src/model.rs`, `sim-contact/src/lib.rs` — all removed
-- Contact types (`ContactPoint`, `ContactManifold`, `ContactForce`) now in `sim-core/src/contact.rs`
+- `sim-core/src/mujoco_pipeline.rs` — `project_elliptic_cone()`, `project_friction_cone()`, `apply_contact_torque()`, PGS/CG solvers
+- `sim-core/src/contact.rs` — `Contact` struct with `dim`, `mu`, `frame` fields
+- Formerly `sim-contact/src/friction.rs`, `sim-contact/src/model.rs` — removed in Phase 3 consolidation, re-implemented in pipeline
 
 ### Phase 7: Actuators & Control ⚠️ STANDALONE (sim-constraint only — not in pipeline)
 
