@@ -1,7 +1,7 @@
 //! RK4 Integration Tests.
 //!
 //! Validates the true 4-stage Runge-Kutta integrator against acceptance criteria
-//! from FUTURE_WORK §8:
+//! from future_work_1 §8:
 //!
 //! - **AC #2**: Order of convergence (O(h⁴) for RK4 vs O(h) for symplectic Euler)
 //! - **AC #3**: Euler/RK4 consistency at small timestep

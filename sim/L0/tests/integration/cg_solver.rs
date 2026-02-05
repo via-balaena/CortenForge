@@ -1,4 +1,4 @@
-//! Acceptance tests for the CG contact solver (FUTURE_WORK.md Section 3).
+//! Acceptance tests for the CG contact solver (future_work_1.md Section 3).
 //!
 //! The CG solver uses preconditioned projected gradient descent (PGD) with
 //! Barzilai-Borwein step size, named "CG" for MuJoCo API compatibility.

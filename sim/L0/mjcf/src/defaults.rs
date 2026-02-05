@@ -67,7 +67,7 @@ impl DefaultResolver {
 
     /// Get the resolved defaults for a class name.
     ///
-    /// Returns the root defaults (empty class name) if the class doesn't exist.
+    /// Returns `None` if the class name is not found in the resolved defaults.
     #[must_use]
     pub fn get_defaults(&self, class: Option<&str>) -> Option<&MjcfDefault> {
         let class_name = class.unwrap_or("");
