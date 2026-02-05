@@ -301,89 +301,1477 @@ a parameter through six method signatures and the recursive
 ---
 
 ### 2. Contact Condim (1/4/6) + Friction Cones
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Status:** Complete (Phase 1 + Phase 2) | **Effort:** M | **Prerequisites:** None
 
-#### Current State
-The contact solver is hardcoded to condim 3 (normal + 2D tangential friction):
+#### Implementation Status
 
-- `nefc = ncon * 3` at three locations (`mujoco_pipeline.rs:7806`, `8062`, `8257`)
-- `project_friction_cone()` implements circular cone only (`|λ_t| ≤ μ * λ_n`)
-- `Model.cone` field (0=pyramidal, 1=elliptic) is parsed and stored but **ignored**
-  by the solver
-- `geom_friction[i].y` (torsional) and `.z` (rolling) are stored but **never read**
-  — only `.x` (sliding) is extracted for contacts
-- `Contact.dim` stores the condim value but the solver never checks it
-- `Contact::new()` already computes a meaningful `dim` value
-  (`dim: if friction > 0.0 { 3 } else { 1 }` at `mujoco_pipeline.rs:1307`), so
-  part of the plumbing exists — the solver simply ignores it
+**Phase 1 — Complete (PR #46)**
 
-This means:
-- **condim 1** (frictionless): Not supported — all contacts get friction
-- **condim 3** (sliding friction): The only mode that works
-- **condim 4** (+ torsional): Torsional friction silently dropped
-- **condim 6** (+ rolling): Rolling friction silently dropped
-- **Elliptic cones**: Parsed, ignored — circular cone used regardless
-- **Pyramidal cones**: Parsed, ignored — circular cone used regardless
+Infrastructure for variable contact dimensions is in place:
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `Model.geom_condim: Vec<i32>` | ✅ | Parsed from MJCF, validated to {1,3,4,6} with round-up |
+| `Contact.mu: [f64; 5]` | ✅ | `[sliding1, sliding2, torsional, rolling1, rolling2]` |
+| `Contact::with_condim()` | ✅ | Sets `dim` directly from condim |
+| `make_contact_from_geoms()` | ✅ | Geometric mean per friction type, `max(condim1, condim2)` |
+| `compute_contact_jacobian()` | ✅ | Returns `dim×nv` matrix, uses `contact.frame[]` |
+| `add_angular_jacobian()` | ✅ | Helper for torsional/rolling rows |
+| `compute_efc_offsets()` | ✅ | Tracks per-contact row offsets |
+| `assemble_contact_system()` | ✅ | Uses `contact.frame[]`, variable-sized Delassus |
+| Tangent basis unification | ✅ | All call sites use `contact.frame[]` (Pre-req 0) |
+
+**Phase 2 — Complete**
+
+All solver functions updated for variable-dimension contacts:
+
+| Function | Status | Implementation |
+|----------|--------|----------------|
+| `pgs_solve_with_system()` | ✅ | Uses `efc_offsets[i]` for indexing |
+| `pgs_solve_contacts()` | ✅ | Returns `Vec<DVector<f64>>` |
+| `cg_solve_contacts()` | ✅ | Uses sum of `contact.dim` for `nefc` |
+| `Data.efc_lambda` | ✅ | `HashMap<_, Vec<f64>>` for variable condim |
+| `compute_block_jacobi_preconditioner()` | ✅ | Returns `Vec<DMatrix<f64>>` for variable `dim×dim` blocks |
+| `apply_preconditioner()` | ✅ | Handles variable-dim blocks with `efc_offsets` |
+| `extract_forces()` | ✅ | Returns `Vec<DVector<f64>>` |
+| `project_elliptic_cone()` | ✅ | Two-step projection (unilateral + friction scaling) |
+| `project_friction_cone()` | ✅ | Dispatches to `project_elliptic_cone()` for dim 3/4/6 |
+| `apply_contact_torque()` | ✅ | New function for torsional/rolling torques |
+| `mj_fwd_constraint()` force loop | ✅ | Applies torques for dim ≥ 4/6 |
+| `Model::empty().cone` | ✅ | Default changed to 1 (elliptic) |
+
+**All 565 tests pass (323 unit + 242 integration).**
+
+**Pre-req 0 (tangent basis unification)** is complete — all three call sites
+(`compute_contact_jacobian()`, `assemble_contact_system()`, `mj_fwd_constraint()`)
+now use `contact.frame[]` instead of recomputing via `build_tangent_basis()`.
+The redundant `build_tangent_basis()` function was removed.
+
+**Elliptic cone projection** is fully implemented. Pyramidal cones are not
+supported — if `cone == 0` is specified in MJCF, a warning is emitted and
+elliptic behavior is used.
+
+**Current behavior:**
+- **condim 1** (frictionless): Solver handles correctly (normal force only)
+- **condim 3** (sliding): Fully functional with elliptic cone projection
+- **condim 4** (torsional): Jacobian + solver + torque application working
+- **condim 6** (rolling): Jacobian + solver + torque application working
 
 #### Objective
 Support the full range of MuJoCo contact dimensionalities (1, 3, 4, 6) and
-friction cone types (elliptic, pyramidal, circular).
+both friction cone types (elliptic, pyramidal) so that the solver generates
+correct constraint forces for all contact configurations.
 
 #### Specification
 
-**Variable-size constraint blocks:**
+This task is organized into seven sub-tasks. **All sub-tasks complete.**
 
-Replace `nefc = ncon * 3` with `nefc = sum(contact[i].dim)`. The Delassus matrix
-becomes block-structured with variable block sizes. `assemble_contact_system()`
-must build blocks of size `dim × dim` per contact instead of fixed 3×3.
+**Dependency order:**
 
-**Condim dispatch:**
+```
+Pre-0 (tangent basis) ─→ A (model plumbing) ──→ B (Jacobian) ──→ C (system assembly) ──→ E (solvers)
+        ✅                      ✅                   ✅                   ✅                  ✅
+                                                                                            ↗
+                                                 D (cone projection) ──────────────────────┘
+                                                         ✅
+                                                 F (force application) ← E
+                                                         ✅
+                                                 G (cone validation) — independent
+                                                         ✅
+```
 
-| condim | DOFs per contact | Description |
-|--------|-----------------|-------------|
-| 1 | 1 | Normal only (frictionless) |
-| 3 | 3 | Normal + 2D tangential (current) |
-| 4 | 4 | Normal + 2D tangential + torsional |
-| 6 | 6 | Normal + 2D tangential + torsional + 2D rolling |
+**Phase 2 completed sub-tasks:**
+- **D** (cone projection): Two-step `project_elliptic_cone()` for condim 1/3/4/6
+- **E** (solvers): PGS/CG use `efc_offsets`, variable-dim blocks, `Vec<f64>` warmstart
+- **F** (force application): `apply_contact_torque()` for torsional/rolling
+- **G** (cone validation): Pyramidal cone warning, default to elliptic (`Model.cone = 1`)
 
-For condim 1: Skip friction rows entirely. Constraint is scalar `λ_n ≥ 0`.
+**Phase 1 completed sub-tasks (for reference only — see code):**
+- Pre-0: Tangent basis unification (all call sites use `contact.frame[]`)
+- A: Model plumbing (`geom_condim`, `Contact.mu: [f64; 5]`)
+- B: Variable-dimension Jacobian (`dim×nv` matrix with angular rows)
+- C: System assembly (`assemble_contact_system()` uses `efc_offsets`)
 
-For condim 4: Add torsional friction row. Torsional moment `τ_t ≤ μ_t * λ_n`
-where `μ_t = geom_friction[i].y`. Requires spin velocity computation at contact.
+---
 
-For condim 6: Add 2 rolling friction rows. Rolling moment
-`|τ_r| ≤ μ_r * λ_n` where `μ_r = geom_friction[i].z`.
+**Pre-requisite 0: Unify tangent basis functions** ✅ COMPLETE
 
-**Friction cone types:**
+All three call sites now use `contact.frame[]` instead of `build_tangent_basis()`.
+The redundant function was removed. See `compute_contact_jacobian()`,
+`assemble_contact_system()`, and `mj_fwd_constraint()` force loop in current code.
 
-| Type | Projection |
-|------|-----------|
-| Circular (current) | `‖λ_t‖ ≤ μ * λ_n` |
-| Elliptic (MuJoCo default) | `(λ_t1/μ₁)² + (λ_t2/μ₂)² ≤ λ_n²` |
-| Pyramidal | Linearized: `|λ_t1| + |λ_t2| ≤ μ * λ_n` (or N-face approximation) |
+---
 
-Dispatch on `Model.cone` in `project_friction_cone()`.
+<details>
+<summary><b>Sub-task A: Model plumbing</b> ✅ COMPLETE (click to expand)</summary>
 
-**Impact on CG solver:**
+**A.1.** Add `geom_condim: Vec<i32>` to `Model` (`mujoco_pipeline.rs`). Initialize
+in `Model::empty()` as an empty `Vec` (the struct derives `Clone` and `Debug`, so
+adding a `Vec<i32>` field requires no trait changes). Populate in
+`model_builder.rs:process_geom()` from `MjcfGeom.condim` — push immediately after
+the `geom_friction` push (`:1050`), adjacent to the other per-geom solver data.
+Validate in `process_geom()` (not the parser — the parser should faithfully
+represent the XML): clamp to `{1, 3, 4, 6}` — if a geom specifies an invalid
+condim, map to the nearest valid value and emit `tracing::warn!`:
+- `condim ≤ 0` → `1` (frictionless)
+- `condim = 2` → `3` (round up)
+- `condim = 5` → `6` (round up)
+- `condim > 6` → `6` (cap at max)
 
-Both PGS and CG (`cg_solve_contacts()`, `pgs_solve_with_system()`) must handle
-variable block sizes. The preconditioner (`compute_block_jacobi_preconditioner()`)
-changes from 3×3 diagonal blocks to `dim × dim` blocks.
+**A.2.** Condim resolution per contact. MuJoCo rule: when two geoms collide,
+contact condim = `max(condim1, condim2)` (both geoms have equal priority; geom
+priority override is not parsed today and is out of scope). In
+`make_contact_from_geoms()` (`:3580`), compute:
+
+```rust
+let condim = model.geom_condim[geom1].max(model.geom_condim[geom2]) as usize;
+```
+
+**A.3.** Friction coefficient combination. MuJoCo stores 5 friction coefficients
+per contact: `[sliding1, sliding2, torsional, rolling1, rolling2]`. Per-geom
+friction has 3 values: `[sliding, torsional, rolling]`. The per-contact 5-tuple
+is formed by:
+
+- `sliding1 = sliding2 = sqrt(geom1.friction.x * geom2.friction.x)` (isotropic
+  sliding — anisotropic sliding requires per-pair override, out of scope)
+- `torsional = sqrt(geom1.friction.y * geom2.friction.y)`
+- `rolling1 = rolling2 = sqrt(geom1.friction.z * geom2.friction.z)`
+
+**Known non-conformance:** MuJoCo uses element-wise max for friction combination
+(when geom priorities are equal). We use geometric mean for all three components,
+matching our existing sliding friction convention (`make_contact_from_geoms` line
+3591). This is a pre-existing divergence from MuJoCo — not introduced by this
+task. Switching to element-wise max would be a one-line change per component but
+would alter every existing simulation's behavior — this is better done as a
+deliberate conformance task with before/after validation, not buried in a condim
+refactor.
+
+**A.4.** Expand `Contact.mu` from `[f64; 2]` to `[f64; 5]`:
+
+```rust
+pub mu: [f64; 5],  // [sliding1, sliding2, torsional, rolling1, rolling2]
+```
+
+Update `Contact::with_solver_params()` signature to accept a `condim: usize`
+parameter and a `mu: [f64; 5]` array. Set `self.dim = condim`. Remove the
+`dim: if friction > 0.0 { 3 } else { 1 }` heuristic — condim is now an
+explicit input from model data.
+
+`Contact.friction` is retained for API compatibility (used by `Contact::new()`
+and debug display). It equals `mu[0]` (sliding1). After this refactor, the solver
+projection reads from `mu`, not `friction`.
+
+**Edge case: condim > 1 with zero friction.** If a geom specifies `condim="3"`
+but `friction="0 0 0"`, the contact has `dim=3` with `mu=[0,0,0,0,0]`. The
+projection's Step 0 clamp zeroes all friction lambdas — physically correct
+(frictionless behavior) but wasteful (3 constraint rows for a 1D problem). A
+future optimization could detect `mu[0..dim-1] == 0` in `make_contact_from_geoms()`
+and downgrade to `condim=1`.
+
+**A.5.** Update `make_contact_from_geoms()` to pass the resolved condim and
+full 5-element friction array:
+
+```rust
+fn make_contact_from_geoms(
+    model: &Model,
+    pos: Vector3<f64>,
+    normal: Vector3<f64>,
+    depth: f64,
+    geom1: usize,
+    geom2: usize,
+) -> Contact {
+    let condim = model.geom_condim[geom1].max(model.geom_condim[geom2]) as usize;
+
+    // Sliding friction (geometric mean, existing convention)
+    let sliding = (model.geom_friction[geom1].x * model.geom_friction[geom2].x).sqrt();
+    let torsional = (model.geom_friction[geom1].y * model.geom_friction[geom2].y).sqrt();
+    let rolling = (model.geom_friction[geom1].z * model.geom_friction[geom2].z).sqrt();
+
+    let mu = [sliding, sliding, torsional, rolling, rolling];
+
+    let (solref, solimp) = combine_solver_params(
+        model.geom_solref[geom1], model.geom_solimp[geom1],
+        model.geom_solref[geom2], model.geom_solimp[geom2],
+    );
+
+    Contact::with_solver_params(pos, normal, depth, geom1, geom2, sliding,
+                                condim, mu, solref, solimp)
+}
+```
+
+**A.6.** `Contact::new()` (used by unit tests and direct callers at `:11551`,
+`:13855`) retains its existing signature. Internally it calls
+`with_solver_params()` with inferred defaults:
+`condim = if friction > 0.0 { 3 } else { 1 }` and `mu = [friction, friction,
+friction * 0.005, friction * 0.0001, friction * 0.0001]`. The torsional/rolling
+ratios (0.005, 0.0001) match MuJoCo's per-geom defaults (`types.rs:857`:
+`friction: Vector3::new(1.0, 0.005, 0.0001)`) scaled by the sliding coefficient.
+This preserves backward compatibility — all existing test code compiles
+unchanged and produces identical contact parameters.
+
+**Struct literal callers.** Three test functions construct `Contact` via struct
+literal syntax (bypassing constructors), all in `mujoco_pipeline.rs`:
+- `test_cg_solve_single_contact` (`:13641`) — `mu: [0.5, 0.0]`
+- `test_project_friction_cone_unit` (`:13680`) — `mu: [0.5, 0.0]`
+- `test_project_friction_cone_zero_mu` (`:13825`) — `mu: [0.0, 0.0]`
+
+All three must be updated to `mu: [f64; 5]` format when `Contact.mu` changes.
+Update to e.g. `mu: [0.5, 0.5, 0.0, 0.0, 0.0]` or refactor to use
+`Contact::new()`. No other struct literal callers exist in the codebase.
+
+</details>
+
+---
+
+<details>
+<summary><b>Sub-task B: Variable-dimension Jacobian</b> ✅ COMPLETE (click to expand)</summary>
+
+The contact Jacobian must produce `dim` rows instead of 3. The first 3 rows
+are unchanged (normal, tangent1, tangent2). Rows 4–6 are angular Jacobian rows
+in the contact frame.
+
+**B.1.** Function signature is unchanged:
+`fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -> DMatrix<f64>`.
+Change `DMatrix::zeros(3, nv)` to `DMatrix::zeros(dim, nv)` where
+`dim = contact.dim`. Return type stays `DMatrix<f64>` (already dynamic).
+For condim 1, the result is a 1×nv matrix — only the normal row. For condim
+3, identical to today (3×nv). For condim 4/6, rows 3+ are angular.
+
+**B.2.** Rows 0–2 (unchanged for dim ≥ 3; only row 0 for dim = 1): linear
+relative velocity Jacobian in the contact frame directions (normal, tangent1,
+tangent2). These map joint velocities to the relative linear velocity at the
+contact point, projected onto each direction. For condim 1, rows 1–2 are
+absent — the function conditionally skips tangent row construction:
+
+```rust
+// Row 0: normal (always)
+add_body_jacobian(&mut j, 0, &normal, body2, 1.0);
+add_body_jacobian(&mut j, 0, &normal, body1, -1.0);
+
+if dim >= 3 {
+    // Rows 1–2: tangent (condim ≥ 3)
+    add_body_jacobian(&mut j, 1, &tangent1, body2, 1.0);
+    add_body_jacobian(&mut j, 1, &tangent1, body1, -1.0);
+    add_body_jacobian(&mut j, 2, &tangent2, body2, 1.0);
+    add_body_jacobian(&mut j, 2, &tangent2, body1, -1.0);
+}
+```
+
+**B.3.** Row 3 (torsional, condim ≥ 4): angular relative velocity about the
+contact normal. For a joint in the kinematic chain:
+
+```
+J_torsional[dof] = sign * (contact_normal · ω_basis)
+```
+
+where `ω_basis` is the angular velocity basis for the joint:
+- Hinge: `axis` (the joint axis direction)
+- Slide: `0` (prismatic joints produce no angular velocity)
+- Ball: `e_i` for each of the 3 DOFs (local frame basis vectors)
+- Free (angular DOFs only): `e_x, e_y, e_z` for DOFs 3,4,5
+
+This is the projection of relative angular velocity onto the contact normal.
+The `r × F` terms that appear in linear rows are absent here — torsional
+friction is a pure torque about the contact normal.
+
+**B.4.** Rows 4–5 (rolling, condim = 6): angular relative velocity in the
+tangent plane. Same structure as row 3 but projected onto tangent1 and tangent2:
+
+```
+J_rolling1[dof] = sign * (tangent1 · ω_basis)
+J_rolling2[dof] = sign * (tangent2 · ω_basis)
+```
+
+**B.5.** Implementation: refactor the inner `add_body_jacobian` closure. The
+current closure takes `(j, row, direction, body_id, sign)` and computes linear
+velocity Jacobian entries. Add a second closure `add_angular_jacobian` that
+computes angular velocity Jacobian entries for a given direction. The angular
+Jacobian is simpler than the linear one — no `r = contact_point - jpos` cross
+product, just direct projection of the angular velocity basis:
+
+```rust
+let add_angular_jacobian =
+    |j: &mut DMatrix<f64>, row: usize, direction: &Vector3<f64>,
+     body_id: usize, sign: f64| {
+        if body_id == 0 { return; }
+        let mut current_body = body_id;
+        while current_body != 0 {
+            let jnt_start = model.body_jnt_adr[current_body];
+            let jnt_end = jnt_start + model.body_jnt_num[current_body];
+            for jnt_id in jnt_start..jnt_end {
+                let dof_adr = model.jnt_dof_adr[jnt_id];
+                let jnt_body = model.jnt_body[jnt_id];
+                match model.jnt_type[jnt_id] {
+                    MjJointType::Hinge => {
+                        let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                        j[(row, dof_adr)] += sign * direction.dot(&axis);
+                    }
+                    MjJointType::Slide => { /* no angular contribution */ }
+                    MjJointType::Ball => {
+                        let rot = data.xquat[jnt_body].to_rotation_matrix();
+                        for i in 0..3 {
+                            let omega = rot * Vector3::ith(i, 1.0);
+                            j[(row, dof_adr + i)] += sign * direction.dot(&omega);
+                        }
+                    }
+                    MjJointType::Free => {
+                        // Only angular DOFs (3,4,5) contribute
+                        j[(row, dof_adr + 3)] += sign * direction.x;
+                        j[(row, dof_adr + 4)] += sign * direction.y;
+                        j[(row, dof_adr + 5)] += sign * direction.z;
+                    }
+                }
+            }
+            current_body = model.body_parent[current_body];
+        }
+    };
+```
+
+**DOF conventions for angular Jacobian.** The angular Jacobian computes the
+projection of relative angular velocity onto a direction (normal, tangent1, or
+tangent2). The mapping from DOFs to world-frame angular velocity depends on
+joint type:
+
+- **Hinge:** Single DOF. Angular velocity = `qvel[dof] * axis`, where `axis` is
+  the joint axis rotated to world frame. Jacobian column = `direction · axis`.
+- **Slide:** No angular contribution. Prismatic joints produce zero angular
+  velocity.
+- **Ball:** 3 DOFs representing angular velocity in **body-local** coordinates.
+  The rotation `rot * e_i` maps body-frame basis vector `e_i` to its world-frame
+  angular velocity contribution. Jacobian column for DOF `i` =
+  `direction · (rot * e_i)`. This is consistent with the existing linear
+  Jacobian (`:7670–7675`).
+- **Free:** Angular DOFs 3–5 represent world-frame angular velocity
+  `(ωx, ωy, ωz)` directly. The angular Jacobian column for DOF `3+k` is simply
+  `direction[k]` — the identity projection from world-frame angular velocity
+  onto the contact direction. Note: this differs from the *linear* Jacobian's
+  angular DOF entries (which compute `direction · (eₖ × r)` — the linear
+  velocity at the contact point due to rotation). The difference is correct:
+  the angular Jacobian maps DOFs to angular velocity (not linear velocity at
+  a point).
+
+Then for condim ≥ 4, add row 3 (torsional):
+```rust
+if dim >= 4 {
+    add_angular_jacobian(&mut j, 3, &normal, body2, 1.0);
+    add_angular_jacobian(&mut j, 3, &normal, body1, -1.0);
+}
+```
+
+And for condim = 6, add rows 4–5 (rolling):
+```rust
+if dim >= 6 {
+    add_angular_jacobian(&mut j, 4, &tangent1, body2, 1.0);
+    add_angular_jacobian(&mut j, 4, &tangent1, body1, -1.0);
+    add_angular_jacobian(&mut j, 5, &tangent2, body2, 1.0);
+    add_angular_jacobian(&mut j, 5, &tangent2, body1, -1.0);
+}
+```
+
+</details>
+
+---
+
+<details>
+<summary><b>Sub-task C: Variable-dimension system assembly</b> ✅ COMPLETE (click to expand)</summary>
+
+**C.1.** Extract `efc_offsets` computation into a shared helper:
+
+```rust
+/// Compute per-contact row offsets and total constraint count for variable-dim contacts.
+/// Returns (offsets, nefc) where offsets[i] = starting row index for contact i.
+fn compute_efc_offsets(contacts: &[Contact]) -> (Vec<usize>, usize) {
+    let mut offsets = Vec::with_capacity(contacts.len());
+    let mut nefc = 0;
+    for c in contacts {
+        offsets.push(nefc);
+        nefc += c.dim;
+    }
+    (offsets, nefc)
+}
+```
+
+This replaces `nefc = ncon * 3` in `assemble_contact_system()` (`:7806`),
+`pgs_solve_with_system()` (`:8062`), and `cg_solve_contacts()` (`:8257`).
+
+In `mj_fwd_constraint()`, compute offsets once and pass to all solver
+functions via an added parameter:
+
+```rust
+// In mj_fwd_constraint(), before solver dispatch:
+let (efc_offsets, nefc) = compute_efc_offsets(&data.contacts);
+
+// Compute Jacobians (per-contact, variable row count):
+let jacobians: Vec<DMatrix<f64>> = data.contacts.iter()
+    .map(|c| compute_contact_jacobian(model, data, c))
+    .collect();
+
+// Assemble Delassus system (Jacobians passed in, not returned):
+let (a, b) = assemble_contact_system(
+    model, data, &data.contacts, &jacobians, &efc_offsets, nefc,
+);
+
+// Thread to solver dispatch (PGS or CG):
+let (forces, niter) = pgs_solve_contacts(..., &efc_offsets, ...);
+// or: cg_solve_contacts(..., &efc_offsets, ...);
+
+// Thread to force application loop:
+for (i, lambda) in forces.iter().enumerate() {
+    let base = efc_offsets[i]; // used for warmstart store
+    // ...
+}
+```
+
+All three solver entry points (`pgs_solve_contacts`, `pgs_solve_with_system`,
+`cg_solve_contacts`) need to use `efc_offsets` for variable-dimension indexing.
+
+**Phase 1 implemented signature** (already in codebase):
+```rust
+fn assemble_contact_system(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+) -> (DMatrix<f64>, DVector<f64>, Vec<usize>)  // Returns efc_offsets
+```
+
+The function computes `efc_offsets` internally via `compute_efc_offsets()` and
+returns it as the third tuple element. Callers extract offsets from the return
+value rather than passing them in.
+
+The return type is unchanged — a 2-tuple of `(A, b)` (Delassus matrix and RHS
+vector). Jacobians are passed **in** as a parameter (computed separately in
+`mj_fwd_constraint()`), not returned. The new `efc_offsets` and `nefc`
+parameters replace the internal `ncon * 3` computation.
+
+**C.2.** `M⁻¹ * Jᵀ` computation (`:7823–7834`). The inner loop currently
+iterates `for col in 0..3`. Change to `for col in 0..contact_dim` where
+`contact_dim = contacts[i].dim`. The `minv_jt_contact` matrix becomes
+`nv × dim` instead of `nv × 3`.
+
+**C.3.** Diagonal block assembly (`:7856–7863`). Currently `for ri in 0..3 { for
+ci in 0..3 }`. Change to `for ri in 0..dim_i { for ci in 0..dim_i }` where
+`dim_i = contacts[i].dim`. Indexing changes from `i * 3 + ri` to
+`efc_offsets[i] + ri`. The same CFM (derived from per-contact solimp) applies to
+all `dim` diagonal entries, matching MuJoCo's per-row impedance which uses
+identical solimp for all rows of a single contact.
+
+**C.4.** Off-diagonal block assembly (`:7936–7942`). Same change: `for ri in
+0..dim_i { for ci in 0..dim_j }` with offset-based indexing.
+
+**C.5.** RHS construction (`:7946–7985`). **Requires sub-task B to be complete**
+so that `jac_i` has `dim` rows and `j_qacc_smooth = jac_i * &qacc_smooth`
+produces a `dim`-element vector. The current code computes `vn, vt1, vt2` from
+linear relative velocity. For condim ≥ 4, also compute angular relative velocity
+at the contact point and project onto the torsional/rolling directions:
+
+```rust
+let base = efc_offsets[i];
+let dim = contacts[i].dim;
+
+// Rows 0–2: linear relative velocity (unchanged)
+b[base]     = j_qacc_smooth[0] + velocity_damping * vn + depth_correction * depth;
+if dim >= 3 {
+    b[base + 1] = j_qacc_smooth[1] + vt1;
+    b[base + 2] = j_qacc_smooth[2] + vt2;
+}
+
+// Rows 3+: angular relative velocity
+// The angular relative velocity is computed by the Jacobian rows 3+,
+// so j_qacc_smooth[3..] already contains the correct acceleration terms.
+// The velocity terms come from the angular Jacobian applied to qvel.
+if dim >= 4 {
+    let j_qvel_torsional = jacobians[i].row(3).dot(&data.qvel);
+    b[base + 3] = j_qacc_smooth[3] + j_qvel_torsional;
+}
+if dim >= 6 {
+    let j_qvel_roll1 = jacobians[i].row(4).dot(&data.qvel);
+    let j_qvel_roll2 = jacobians[i].row(5).dot(&data.qvel);
+    b[base + 4] = j_qacc_smooth[4] + j_qvel_roll1;
+    b[base + 5] = j_qacc_smooth[5] + j_qvel_roll2;
+}
+```
+
+**Condim-1 safety.** For condim 1, `jac_i` is 1×nv and `j_qacc_smooth` is a
+1-element vector. The `if dim >= 3` guard prevents out-of-bounds access at
+`j_qacc_smooth[1]`. The `vt1`/`vt2` computation (`:7962–7964`) is still
+executed but harmless — the values are unused. Similarly, `contact.frame`
+tangent vectors are computed but unused for condim 1 (~20 FLOPs per
+frictionless contact). Both are micro-optimizations — skip only if profiling
+shows this path is hot (unlikely — contact detection dominates).
+
+Note: the normal row includes Baumgarte position correction
+(`depth_correction * depth`). The friction/torsional/rolling rows do not — they
+are velocity-only constraints, matching MuJoCo's formulation.
+
+**Velocity computation paths.** The linear velocity terms (`vn`, `vt1`, `vt2`)
+are computed via `compute_point_velocity()` (`:7955–7964`) — body-relative
+velocity projected onto the contact frame. The angular velocity terms use
+`J[row,:] · qvel` instead (the Jacobian). These are mathematically equivalent;
+`compute_point_velocity()` computes relative linear velocity at a point, while
+an angular analogue would compute relative angular velocity — a different
+quantity that would need a separate function. Using the Jacobian rows directly
+is simpler since they are already computed.
+
+</details>
+
+---
+
+## Phase 2 Sub-tasks (COMPLETE)
+
+---
+
+**Sub-task D: Friction cone projection — `project_friction_cone()`** ✅ COMPLETE
+
+This is the core mathematical change. The projection depends on both `condim`
+and `Model.cone`.
+
+**D.1. Elliptic cone projection.**
+
+For condim `d`, the feasible set is a second-order cone (SOC):
+
+```
+K = { λ ∈ ℝ^d : λ₀ ≥ 0,  λ₀² ≥ Σᵢ₌₁^{d-1} (λᵢ / μᵢ)² }
+```
+
+where `μᵢ = contact.mu[i-1]` (the `i`-th friction coefficient).
+
+**Lambda-to-mu index mapping:**
+
+| lambda index | Physical meaning | mu index | mu field |
+|:---:|:---|:---:|:---|
+| 0 | Normal force | — | (no mu; clamped ≥ 0) |
+| 1 | Sliding friction 1 | 0 | sliding1 |
+| 2 | Sliding friction 2 | 1 | sliding2 |
+| 3 | Torsional friction | 2 | torsional |
+| 4 | Rolling friction 1 | 3 | rolling1 |
+| 5 | Rolling friction 2 | 4 | rolling2 |
+
+**MuJoCo's approach (for reference).** MuJoCo's PGS solver does a coupled
+QCQP projection per contact block: it solves
+`min 0.5 x'Ax + x'b  s.t. Σ(xᵢ/μᵢ)² ≤ r²` using Newton iteration on the
+Lagrange multiplier (functions `mju_QCQP`, `mju_QCQP2`, `mju_QCQP3` in
+`engine_util_solve.c`). This produces the exact minimum of the local QP
+subject to the cone constraint — the resulting friction direction can differ
+from the unconstrained update direction because the off-diagonal Delassus
+coupling is accounted for in the projection.
+
+**Our approach: Two-step physical projection.** Instead of the pure SOC
+projection (which would project negative normal forces to the cone boundary),
+we use a physically-motivated two-step approach that matches MuJoCo's
+constraint-level semantics:
+
+1. **Unilateral constraint** (`λ₀ < 0`): contact is separating → release
+   completely (all forces = 0). A negative normal force is physically
+   impossible — it would mean the contact is pulling the bodies together.
+2. **Friction cone** (`s > λ₀`): friction exceeds cone boundary → scale
+   friction components by `λ₀/s` to project to the boundary. The normal
+   force is preserved.
+
+Where `s = √(Σ (λᵢ/μᵢ)²)` is the weighted friction norm.
+
+This differs from the pure SOC projection which would handle Case 1 differently
+(projecting to the cone boundary rather than the origin). The two-step approach
+is physically correct: when the solver produces a negative normal force, the
+contact should release entirely rather than producing non-zero friction.
+
+```rust
+fn project_elliptic_cone(lambda: &mut [f64], mu: &[f64; 5], dim: usize) {
+    // Step 1: Enforce unilateral constraint (normal force must be non-negative)
+    // Negative normal force = separating contact = release completely
+    if lambda[0] < 0.0 {
+        for l in lambda.iter_mut().take(dim) {
+            *l = 0.0;
+        }
+        return;
+    }
+
+    // Step 2: Clamp friction components where mu ≈ 0 (infinite resistance = no sliding)
+    for i in 1..dim {
+        if mu[i - 1] <= 1e-12 {
+            lambda[i] = 0.0;
+        }
+    }
+
+    // Step 3: Compute weighted friction norm (elliptic cone radius)
+    // s = sqrt( Σ (λ_i / μ_i)² ) for i = 1..dim-1
+    let mut s_sq = 0.0;
+    for i in 1..dim {
+        if mu[i - 1] > 1e-12 {
+            s_sq += (lambda[i] / mu[i - 1]).powi(2);
+        }
+    }
+    let s = s_sq.sqrt();
+
+    // Step 4: If friction exceeds cone boundary, scale to boundary
+    // Cone constraint: s ≤ λ_n, i.e., ||(λ_i/μ_i)|| ≤ λ_n
+    if s > lambda[0] && s > 1e-10 {
+        let scale = lambda[0] / s;
+        for l in lambda.iter_mut().take(dim).skip(1) {
+            *l *= scale;
+        }
+    }
+}
+```
+
+**Why two-step over pure SOC?** The pure SOC projection has a third case:
+when `λ₀ < 0` but `λ₀ > -s` (negative normal but not in the polar cone), it
+projects to the cone *boundary* at `t = (λ₀ + s)/2`, producing non-zero forces.
+This is mathematically the nearest point on the cone, but physically incorrect:
+a separating contact should not produce any force. The two-step approach
+ensures that any separating contact (λ₀ < 0) releases completely.
+
+When `μ₁ = μ₂` (isotropic sliding), the friction scaling reduces exactly to
+the circular cone projection (`‖λ_t‖ ≤ μ * λ_n`).
+
+**Divergence from MuJoCo's QCQP.** MuJoCo's QCQP projection solves a local QP
+that can rotate the friction direction toward the optimum. Our projection
+preserves the friction *direction* in μ-weighted space and only scales the
+magnitude. For diagonal-dominant Delassus matrices (typical in practice —
+contacts on independent or weakly coupled bodies), the off-diagonal terms are
+small and the sequential projection is an excellent approximation. For strongly
+coupled contacts (multiple contacts on a single small body), the QCQP would
+converge in fewer iterations. Upgrading to QCQP projection is a separate
+optimization task.
+
+**Anisotropic scaling approximation.** The uniform scaling `lambda[i] *= scale`
+projects to the cone boundary by preserving the friction direction in μ-weighted
+space, not the nearest Euclidean point in physical space. For the exact
+projection when `μᵢ` differ, one would solve a scalar nonlinear equation
+(Newton on the KKT Lagrange multiplier) per contact. The error is proportional
+to the anisotropy ratio `max(μ)/min(μ) - 1`; for typical torsional/rolling
+coefficients (≪ sliding), the approximation is excellent. When all `μᵢ` are
+equal (isotropic), the uniform scaling is exact.
+
+**Note: when mu[i] ≈ 0.** If a friction coefficient is near zero (≤ 1e-12),
+`lambda[i]` is clamped to zero in Step 2 (before computing `s`). This is
+necessary because any nonzero `λᵢ` with `μᵢ → 0` makes `λᵢ/μᵢ → ∞`,
+violating the cone constraint. This handles degenerate cases like condim 4
+with zero torsional friction — the torsional row exists in the Jacobian/Delassus
+but the cone constraint forces it to zero.
+
+**D.2. Pyramidal cone projection (`cone == 0`, MuJoCo default).**
+
+The pyramidal formulation is fundamentally different from elliptic. MuJoCo's
+pyramidal cone uses `2(d-1)` non-negative variables instead of `d` cone-
+projected variables. Each non-negative variable corresponds to one edge of the
+pyramid. The solver state is:
+
+```
+f₊₁, f₋₁, f₊₂, f₋₂, ...   (all ≥ 0)
+```
+
+The physical force is recovered as:
+```
+λ_normal = Σ fₖ              (all edge forces contribute to normal)
+λ_friction_i = f₊ᵢ - f₋ᵢ    (net friction in each direction)
+```
+
+Projection is trivial: clamp each `fₖ ≥ 0`. However, this changes the system
+size — a condim-3 contact produces 4 non-negative variables (not 3 cone
+variables), condim-4 produces 6, condim-6 produces 10.
+
+**Decision: defer pyramidal cones.** Pyramidal cones require a different system
+size, different Jacobian basis construction, and different warmstart format.
+This is a substantial architectural change on top of the already-large variable-
+dimension refactor. Since MuJoCo's default is `pyramidal` but the elliptic cone
+is mathematically cleaner and our solver already uses cone projection (not LP),
+we implement elliptic cones first. Pyramidal support is tracked as a follow-up.
+`Model.cone` is validated: if `cone == 0` (pyramidal), emit a
+`tracing::warn!` and fall back to elliptic behavior.
+
+**D.3.** Condim-1 projection: simply `lambda[0] = lambda[0].max(0.0)`. No
+friction components.
+
+**D.4.** Update `project_friction_cone()` signature:
+
+```rust
+fn project_friction_cone(
+    lambda: &mut DVector<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+) {
+    for (i, contact) in contacts.iter().enumerate() {
+        let base = efc_offsets[i];
+        let dim = contact.dim;
+        match dim {
+            1 => {
+                lambda[base] = lambda[base].max(0.0);
+            }
+            3 | 4 | 6 => {
+                project_elliptic_cone(
+                    &mut lambda.as_mut_slice()[base..base + dim],
+                    &contact.mu,
+                    dim,
+                );
+            }
+            _ => {
+                // Invalid condim — treat as frictionless for safety
+                lambda[base] = lambda[base].max(0.0);
+                for j in 1..dim {
+                    lambda[base + j] = 0.0;
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+**Sub-task E: Solver updates — PGS and CG** ✅ COMPLETE
+
+**E.1. `pgs_solve_with_system()`**
+
+Compute `efc_offsets` and `nefc` from contacts (same as sub-task C). Replace
+all `i * 3` indexing with `efc_offsets[i]`. The existing `diag_inv`
+precomputation (`1/A[i,i]` for each of the `nefc` rows, with zero fallback for
+singular diagonals) is unchanged — it already operates on the full
+`nefc`-length diagonal. The per-contact GS sweep changes:
+
+```rust
+for i in 0..ncon {
+    let base = efc_offsets[i];
+    let dim = contacts[i].dim;
+
+    // Compute residuals for all dim rows of this contact
+    let mut residuals = vec![0.0; dim];
+    for r in 0..dim {
+        residuals[r] = b[base + r];
+        for j in 0..nefc {
+            residuals[r] += a[(base + r, j)] * lambda[j];
+        }
+    }
+
+    // GS update
+    let old: Vec<f64> = (0..dim).map(|r| lambda[base + r]).collect();
+    for r in 0..dim {
+        lambda[base + r] -= residuals[r] * diag_inv[base + r];
+    }
+
+    // Project this contact onto its friction cone
+    match dim {
+        1 => { lambda[base] = lambda[base].max(0.0); }
+        3 | 4 | 6 => {
+            project_elliptic_cone(
+                &mut lambda.as_mut_slice()[base..base + dim],
+                &contacts[i].mu,
+                dim,
+            );
+        }
+        _ => { /* unreachable after A.1 validation */ }
+    }
+
+    // Track convergence
+    for r in 0..dim {
+        max_delta = max_delta.max((lambda[base + r] - old[r]).abs());
+    }
+}
+```
+
+**E.1b. `pgs_solve_contacts()` wrapper.** This is a pass-through
+wrapper that calls `assemble_contact_system()` then `pgs_solve_with_system()`.
+Changes: use `efc_offsets` from the return value of `assemble_contact_system()`.
+Return type changes from `(Vec<Vector3<f64>>, usize)` to
+`(Vec<DVector<f64>>, usize)` per the type propagation table. No logic changes
+beyond indexing updates.
+
+**E.2. Warmstart format.** Change `efc_lambda: HashMap<WarmstartKey, [f64; 3]>`
+(`Data` struct) to `HashMap<WarmstartKey, Vec<f64>>`. The `Vec` length
+matches the contact's dim. On warmstart load, if the stored dim differs from
+the current contact's dim (e.g., condim changed between frames), discard the
+warmstart for that contact (use zero initialization). On store, save
+`lambda[base..base+dim].to_vec()`.
+
+**Callers that must update:**
+
+| Location | Current usage | Change |
+|----------|--------------|--------|
+| `pgs_solve_with_system()` warmstart load | `[f64; 3]` into `lambda[base..base+3]` | `Vec<f64>`, check len == dim |
+| `pgs_solve_with_system()` warmstart store | `[lambda[base], ...]` | `lambda[base..base+dim].to_vec()` |
+| `cg_solve_contacts()` warmstart load | `[f64; 3]` | Same as PGS |
+| `cg_solve_contacts()` single-contact store | `[lam[0], lam[1], lam[2]]` | `lam.as_slice().to_vec()` |
+| `cg_solve_contacts()` multi-contact store | `[lambda[i*3], ...]` | `lambda[base..base+dim].to_vec()` |
+| Touch sensor | `lambda[0]` via `[f64; 3]` | `lambda[0]` via `Vec<f64>` (logic unchanged) |
+| RK4 integrator | `data.efc_lambda.clone()` | Works unchanged (`HashMap<K, Vec>` is `Clone`) |
+| Test code | `HashMap<WarmstartKey, [f64; 3]>` | Update to `Vec<f64>` |
+
+The touch sensor reads `lambda[0]` which is the normal force
+regardless of condim — no logic change needed, only the type annotation.
+
+**E.3. `compute_block_jacobi_preconditioner()`.** Replace `Matrix3`
+blocks with `DMatrix` blocks of size `dim × dim`:
+
+```rust
+fn compute_block_jacobi_preconditioner(
+    a: &DMatrix<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+) -> Vec<DMatrix<f64>> {
+    contacts.iter().enumerate().map(|(i, contact)| {
+        let base = efc_offsets[i];
+        let dim = contact.dim;
+        let block = a.view((base, base), (dim, dim)).clone_owned();
+        if let Some(chol) = block.cholesky() {
+            chol.inverse()
+        } else {
+            // Scalar Jacobi fallback
+            let mut inv = DMatrix::zeros(dim, dim);
+            for r in 0..dim {
+                let d = block[(r, r)];
+                inv[(r, r)] = if d.abs() > 1e-12 { 1.0 / d } else { 0.0 };
+            }
+            inv
+        }
+    }).collect()
+}
+```
+
+**E.4. `apply_preconditioner()`.** Change from `Vector3` blocks to
+`DVector` blocks, indexing via `efc_offsets`:
+
+```rust
+fn apply_preconditioner(
+    precond: &[DMatrix<f64>],
+    v: &DVector<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+) -> DVector<f64> {
+    let mut result = DVector::zeros(v.len());
+    for (i, contact) in contacts.iter().enumerate() {
+        let base = efc_offsets[i];
+        let dim = contact.dim;
+        let block = v.rows(base, dim);
+        let applied = &precond[i] * block; // dim × dim inverse block * dim vector
+        result.rows_mut(base, dim).copy_from(&applied);
+    }
+    result
+}
+```
+
+**E.5. `cg_solve_contacts()`.** Note: despite the `cg_` name, this
+solver implements Preconditioned Projected Gradient Descent (PGD) with
+Barzilai-Borwein adaptive step size, not conjugate gradient. The "CG" name is
+historical. The following changes preserve the PGD algorithm.
+
+- Accept `efc_offsets: &[usize]` parameter; use for `nefc` and all indexing
+- Single-contact direct solve (`:8278–8306`): replace `Matrix3` / `Vector3`
+  with `DMatrix` / `DVector` of size `dim × dim` / `dim`. The existing
+  `a_block.try_inverse()` becomes `a.view((0,0),(dim,dim)).clone_owned()
+  .try_inverse()`. Cone projection uses `project_elliptic_cone()` on a
+  `dim`-element slice instead of manual inline clamping. Warmstart store
+  saves `lam.as_slice().to_vec()` instead of `[lam[0], lam[1], lam[2]]`
+- `project_friction_cone()` call passes `efc_offsets`
+- Warmstart load: if `prev.len() != contact.dim`, skip (zero init)
+- `b_norm` check (`:8322`): unchanged — operates on the full `DVector`
+- `apply_preconditioner()` call: uses updated variable-dim version (E.4)
+- Return type: `Result<(Vec<DVector<f64>>, usize), (DMatrix<f64>, DVector<f64>)>`.
+  The `Err` variant carries the pre-assembled Delassus system `(A, b)` so the
+  CG→PGS fallback in `mj_fwd_constraint()` can call `pgs_solve_with_system()`
+  directly without re-assembling the matrix. This pattern is unchanged — only
+  the `Ok` forces type changes from `Vec<Vector3>` to `Vec<DVector>`.
+  The fallback call passes `efc_offsets`:
+  ```rust
+  Err((a, b)) => {
+      let (forces, niter) = pgs_solve_with_system(
+          &data.contacts, &a, &b, &efc_offsets,
+          clamped_iters, clamped_tol, &mut efc_lambda,
+      );
+      // ...
+  }
+  ```
+
+**E.6. `extract_forces()`.** Change return type from
+`Vec<Vector3<f64>>` to `Vec<DVector<f64>>`:
+
+```rust
+fn extract_forces(
+    lambda: &DVector<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+) -> Vec<DVector<f64>> {
+    contacts.iter().enumerate().map(|(i, c)| {
+        let base = efc_offsets[i];
+        lambda.rows(base, c.dim).clone_owned()
+    }).collect()
+}
+```
+
+**E.7. Consolidated signature changes.**
+
+All function signatures that change in Phase 2, with line references to current
+implementation in `mujoco_pipeline.rs`:
+
+```rust
+// CURRENT (line 8236):
+fn project_friction_cone(lambda: &mut DVector<f64>, contacts: &[Contact], ncon: usize)
+
+// AFTER:
+fn project_friction_cone(
+    lambda: &mut DVector<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+)
+```
+
+```rust
+// CURRENT (line 8291):
+fn pgs_solve_with_system(
+    contacts: &[Contact],
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
+) -> (Vec<Vector3<f64>>, usize)
+
+// AFTER:
+fn pgs_solve_with_system(
+    contacts: &[Contact],
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    efc_offsets: &[usize],                              // NEW
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, Vec<f64>>,   // CHANGED
+) -> (Vec<DVector<f64>>, usize)                         // CHANGED
+```
+
+```rust
+// CURRENT (line 8270):
+fn pgs_solve_contacts(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
+) -> (Vec<Vector3<f64>>, usize)
+
+// AFTER:
+fn pgs_solve_contacts(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, Vec<f64>>,   // CHANGED
+) -> (Vec<DVector<f64>>, usize)                         // CHANGED
+```
+
+```rust
+// CURRENT (line 8486):
+fn cg_solve_contacts(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
+) -> Result<(Vec<Vector3<f64>>, usize), (DMatrix<f64>, DVector<f64>)>
+
+// AFTER:
+fn cg_solve_contacts(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, Vec<f64>>,   // CHANGED
+) -> Result<(Vec<DVector<f64>>, usize), (DMatrix<f64>, DVector<f64>)>  // CHANGED
+```
+
+```rust
+// CURRENT (line 8252):
+fn extract_forces(lambda: &DVector<f64>, ncon: usize) -> Vec<Vector3<f64>>
+
+// AFTER:
+fn extract_forces(
+    lambda: &DVector<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+) -> Vec<DVector<f64>>
+```
+
+```rust
+// CURRENT (line ~8400, inside cg_solve_contacts):
+fn compute_block_jacobi_preconditioner(a: &DMatrix<f64>, ncon: usize) -> Vec<Matrix3<f64>>
+
+// AFTER:
+fn compute_block_jacobi_preconditioner(
+    a: &DMatrix<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+) -> Vec<DMatrix<f64>>
+```
+
+```rust
+// CURRENT (line ~8420, inside cg_solve_contacts):
+fn apply_preconditioner(precond: &[Matrix3<f64>], v: &DVector<f64>) -> DVector<f64>
+
+// AFTER:
+fn apply_preconditioner(
+    precond: &[DMatrix<f64>],
+    v: &DVector<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+) -> DVector<f64>
+```
+
+```rust
+// CURRENT (line 1677, Data struct):
+pub efc_lambda: HashMap<WarmstartKey, [f64; 3]>,
+
+// AFTER:
+pub efc_lambda: HashMap<WarmstartKey, Vec<f64>>,
+```
+
+---
+
+**Sub-task F: Force application — `mj_fwd_constraint()`** ✅ COMPLETE
+
+The force application loop in `mj_fwd_constraint()` currently converts lambda
+(`Vector3<f64>`) to a world-frame linear force. For condim ≥ 4, torsional and
+rolling components are torques, not forces. They require a different
+application path.
+
+**F.1.** Add `apply_contact_torque()` alongside `apply_contact_force()`. This
+function traverses the kinematic chain and applies the torque contribution to
+each joint's DOF — the angular Jacobian transpose:
+
+```rust
+fn apply_contact_torque(
+    model: &Model,
+    data: &mut Data,
+    body_id: usize,
+    torque: Vector3<f64>,
+) {
+    if body_id == 0 { return; }
+    let mut current_body = body_id;
+    while current_body != 0 {
+        let jnt_start = model.body_jnt_adr[current_body];
+        let jnt_end = jnt_start + model.body_jnt_num[current_body];
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    data.qfrc_constraint[dof_adr] += axis.dot(&torque);
+                }
+                MjJointType::Slide => { /* no angular DOF */ }
+                MjJointType::Ball => {
+                    let body_torque = data.xquat[jnt_body].inverse() * torque;
+                    data.qfrc_constraint[dof_adr] += body_torque.x;
+                    data.qfrc_constraint[dof_adr + 1] += body_torque.y;
+                    data.qfrc_constraint[dof_adr + 2] += body_torque.z;
+                }
+                MjJointType::Free => {
+                    data.qfrc_constraint[dof_adr + 3] += torque.x;
+                    data.qfrc_constraint[dof_adr + 4] += torque.y;
+                    data.qfrc_constraint[dof_adr + 5] += torque.z;
+                }
+            }
+        }
+        current_body = model.body_parent[current_body];
+    }
+}
+```
+
+**F.2.** Update the force application loop in `mj_fwd_constraint()`:
+
+```rust
+for (i, lambda) in constraint_forces.iter().enumerate() {
+    let contact = &data.contacts[i];
+    let normal = contact.normal;
+    let (tangent1, tangent2) = (contact.frame[0], contact.frame[1]); // Pre-req 0
+    let dim = contact.dim;
+
+    // Linear force (rows 0–2, when dim ≥ 3)
+    let world_force = if dim >= 3 {
+        normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
+    } else {
+        normal * lambda[0]  // condim 1: normal only
+    };
+
+    let body1 = model.geom_body[contact.geom1];
+    let body2 = model.geom_body[contact.geom2];
+    let pos = contact.pos;
+
+    apply_contact_force(model, data, body1, pos, -world_force);
+    apply_contact_force(model, data, body2, pos, world_force);
+
+    // Torsional torque (row 3, when dim ≥ 4)
+    if dim >= 4 {
+        let torsional_torque = normal * lambda[3];
+        apply_contact_torque(model, data, body1, -torsional_torque);
+        apply_contact_torque(model, data, body2, torsional_torque);
+    }
+
+    // Rolling torques (rows 4–5, when dim = 6)
+    if dim >= 6 {
+        let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+        apply_contact_torque(model, data, body1, -rolling_torque);
+        apply_contact_torque(model, data, body2, rolling_torque);
+    }
+}
+```
+
+---
+
+**Sub-task G: MuJoCo conformance — cone type validation** ✅ COMPLETE
+
+**G.1.** Change `Model::empty()` default from `cone: 0` (pyramidal) to
+`cone: 1` (elliptic). Since we don't implement pyramidal cones, our default
+should match what we support. Additionally, in `model_from_mjcf()`, if the
+MJCF explicitly specifies `cone == 0` (pyramidal), emit
+`tracing::warn!("pyramidal friction cones not yet supported — using elliptic")`
+and set `cone = 1`. This prevents silent incorrect behavior without warning
+noise on every default-configured model.
+
+**G.2.** When `cone == 1` (elliptic), use the `project_elliptic_cone()` from
+sub-task D.1.
+
+**G.3.** When full elliptic semantics are active and `mu[0] != mu[1]`
+(anisotropic sliding), the projection in D.1 already handles this correctly
+via the per-coefficient scaling `(λᵢ / μᵢ)²`.
+
+---
+
+**Borrow / ownership analysis.**
+
+- `efc_offsets` is a `Vec<usize>` computed once in `mj_fwd_constraint()` from
+  `&data.contacts` (immutable borrow ends before solver call). Passed as
+  `&[usize]` to all solver functions — no borrow conflicts.
+- `project_friction_cone()` borrows `lambda` mutably and `contacts`/
+  `efc_offsets` immutably. No overlap with the A matrix or b vector.
+- `compute_contact_jacobian()` borrows `model` and `data` immutably, returns
+  owned `DMatrix`. No change to borrow semantics.
+- The existing `std::mem::take(&mut data.efc_lambda)` pattern (`:9642`) still
+  works — `HashMap<K, Vec<f64>>` implements `Default` via `HashMap::new()`.
+- Warmstart `HashMap<WarmstartKey, Vec<f64>>` uses heap-allocated values, which
+  increases allocation pressure vs the current `[f64; 3]`. For typical contact
+  counts (< 100), this is negligible. If profiling shows issues, a
+  `SmallVec<[f64; 6]>` can be substituted without API changes.
+- `data.efc_lambda.clone()` in RK4 (`:10566`) remains valid — both `HashMap`
+  and `Vec<f64>` are `Clone`.
+
+**Performance considerations.**
+
+- For the common condim-3 case, the variable-dimension code should not be
+  measurably slower than the current fixed-3 code. The `efc_offsets` lookup
+  replaces a multiply by 3, and the `dim`-bounded loops have the same trip
+  count. The `DMatrix`-based preconditioner blocks are heap-allocated where
+  `Matrix3` was stack-allocated — for condim 3, this could be optimized with
+  `SmallVec` or `enum { Fixed3(Matrix3), Dynamic(DMatrix) }` if profiling
+  warrants it.
+- For mixed-condim scenes, the variable block sizes mean the Delassus matrix
+  has irregular structure. No special sparse format is needed — the existing
+  dense `DMatrix` representation handles this. The off-diagonal sparsity
+  optimization (`:7900, bodies_share_chain`) still works unchanged.
+
+---
+
+**Type change propagation.**
+
+The `Contact.mu` expansion and variable-dim lambda propagate type changes
+through many function signatures. This section consolidates all changes for
+implementer reference.
+
+**`[f64; 3] → Vec<f64>` warmstart chain:**
+
+| Location | Current | After |
+|:---|:---|:---|
+| `Data.efc_lambda` (`:1573`) | `HashMap<WarmstartKey, [f64; 3]>` | `HashMap<WarmstartKey, Vec<f64>>` |
+| `pgs_solve_contacts()` (`:8028`) param | `efc_lambda: &mut HashMap<..., [f64; 3]>` | `&mut HashMap<..., Vec<f64>>` |
+| `pgs_solve_contacts()` return | `(Vec<Vector3<f64>>, usize)` | `(Vec<DVector<f64>>, usize)` |
+| `pgs_solve_with_system()` (`:8049`) param + return | same as above | same as above |
+| `cg_solve_contacts()` (`:8244`) param | same efc_lambda change | same |
+| `cg_solve_contacts()` return | `Result<(Vec<Vector3<f64>>, usize), (DMatrix, DVector)>` | `Result<(Vec<DVector<f64>>, usize), (DMatrix, DVector)>` — error type unchanged |
+| Touch sensor (`:5805`) | `lambda[0]` via `[f64; 3]` | `lambda[0]` via `Vec<f64>` — logic unchanged |
+| RK4 (`:10566`) | `data.efc_lambda.clone()` | Works unchanged — `HashMap<K, Vec>` is `Clone` |
+| Test code (`:13596`, `:13657`) | `HashMap<WarmstartKey, [f64; 3]>` | Update to `Vec<f64>` |
+
+**`Vector3 → DVector` forces chain:**
+
+| Location | Current | After |
+|:---|:---|:---|
+| `extract_forces()` (`:8010`) return | `Vec<Vector3<f64>>` | `Vec<DVector<f64>>` |
+| `mj_fwd_constraint()` force loop (`:9731`) | `lambda.x / .y / .z` | `lambda[0] / [1] / [2]` |
+| `SolverType::CGStrict` fallback (`:9714–9716`) | `vec![Vector3::zeros(); n]` | `data.contacts.iter().map(\|c\| DVector::zeros(c.dim)).collect()` |
+
+---
+
+**Known limitation: `J^T * λ` vs manual force application.** The current code
+applies contact forces by manually traversing the kinematic chain
+(`apply_contact_force()`), not by computing `J^T * λ`. This decision is
+documented at `:9724–9730`. For condim 4/6 we add `apply_contact_torque()`
+which is the angular analogue. An alternative would be to use the pre-computed
+Jacobian: `qfrc_constraint += Jᵢᵀ * λᵢ` for each contact. This would be
+mathematically equivalent and avoid the separate torque function, but would
+couple force application to the Jacobian representation. The manual approach
+is retained for consistency with the existing design and readability.
+
+**Not in scope: pyramidal friction cones.** See sub-task D.2 rationale.
+Pyramidal cones require a fundamentally different variable count per contact
+(2(d-1) vs d), different Jacobian basis construction, and changes to every
+solver loop. This is better implemented as a separate task once elliptic cones
+are working.
+
+**Not in scope: per-pair condim override.** `<contact><pair condim="...">` is
+task #3 (contact pair/exclude). This task reads condim from `geom_condim` only.
+
+**Not in scope: anisotropic sliding from MJCF.** MuJoCo supports different
+`mu[0]` and `mu[1]` (sliding1 ≠ sliding2) per contact, but only via
+`<contact><pair>` overrides. Per-geom friction has a single sliding value that
+fills both slots. The elliptic projection handles anisotropic `mu` correctly
+if provided by a future pair override.
+
+**Not in scope: geom priority.** MuJoCo uses `geom/@priority` to break ties
+in condim/friction combination. Our parser does not read `priority`. We use
+`max(condim1, condim2)` unconditionally.
+
+**Not in scope: QCQP-based cone projection.** MuJoCo's PGS solver uses a
+per-contact QCQP (quadratically constrained QP) to jointly project normal and
+friction forces onto the cone. Our solver uses sequential SOC projection
+(clamp normal, then scale friction). See D.1 divergence analysis. Upgrading
+to QCQP projection would improve convergence for strongly coupled contacts
+but is a separate optimization task.
+
+**Not in scope: friction combination method.** MuJoCo uses element-wise max
+for combining friction between equal-priority geoms. We use geometric mean.
+See A.3 rationale.
 
 #### Acceptance Criteria
-1. condim 1 contact produces zero tangential force.
-2. condim 3 contact matches current behavior (regression).
-3. condim 4 contact limits torsional moment by `μ_t * λ_n`.
-4. condim 6 contact limits rolling moment by `μ_r * λ_n`.
-5. Elliptic cone projection matches MuJoCo for anisotropic friction.
-6. Mixed condim contacts in the same scene work (different contacts have
-   different dim values).
-7. `Model.cone` selects the friction cone type at model load time.
+
+**Pre-requisite regression (1 criterion):**
+0. Pre-req 0 regression: condim-3 solver forces are bit-identical before and
+   after switching from `build_tangent_basis()` to `contact.frame`. Run the
+   existing contact test suite — no output changes.
+
+**Condim correctness (7 criteria):**
+1. condim 1 contact produces zero tangential force — only `λ_n ≥ 0`.
+2. condim 3 contact matches current behavior exactly (regression).
+3. condim 4 contact limits torsional moment: `|λ_torsional| ≤ μ_torsional *
+   λ_n`. A spinning top on a surface with `condim=4` decelerates; with
+   `condim=3` it spins forever.
+4. condim 6 contact limits rolling moment: `|λ_rolling| ≤ μ_rolling * λ_n`.
+   A ball rolling on a surface with `condim=6` decelerates; with `condim=3`
+   it rolls forever.
+5. Mixed condim contacts in the same scene produce correct forces for each
+   contact independently. Two contacts with condim 1 and condim 6 coexist.
+6. Contact condim = `max(geom1.condim, geom2.condim)` — a condim-1 geom
+   touching a condim-3 geom produces a condim-3 contact.
+7. A model with no condim attributes (all defaults = 3) behaves identically
+   to current behavior.
+
+**Friction cone correctness (3 criteria):**
+8. Elliptic cone projection with isotropic friction (`mu[0] == mu[1]`) matches
+   current circular cone behavior (regression).
+9. Elliptic cone projection with anisotropic friction
+   (`mu[0] = 1.0, mu[1] = 0.5`) produces the correct elliptical boundary.
+10. `Model.cone = 0` (pyramidal) emits a warning and falls back to elliptic.
+
+**Solver correctness (3 criteria):**
+11. PGS solver converges for mixed-condim scenes.
+12. CG solver converges for mixed-condim scenes.
+13. CG → PGS fallback works with variable block sizes. Test by setting
+    `max_iterations=1` for CG (force non-convergence), verify PGS fallback
+    produces physically reasonable forces for a mixed-condim scene.
+
+**Jacobian correctness (2 criteria):**
+14. Contact Jacobian row 3 (torsional) maps joint velocities to relative
+    angular velocity about the contact normal. Verified by finite difference:
+    perturb a hinge joint angle by ε, recompute contact angular velocity
+    about normal, compare `(ω(q+ε) - ω(q))/ε` to `J[3, dof]`.
+15. Contact Jacobian rows 4–5 (rolling) map to angular velocity in tangent
+    plane. Same finite-difference verification.
+
+**Edge cases (3 criteria):**
+16. A scene with only condim-1 contacts (all frictionless) produces correct
+    normal-only forces and the system `nefc = ncon`.
+17. Warmstart works across frames when condim is constant; warmstart is
+    discarded when a contact's condim changes between frames. *(Unit test on
+    warmstart load logic: verify `prev.len() != contact.dim` triggers discard,
+    not integration test — dynamic condim changes are unusual in simulation.)*
+18. Zero contacts still produces an empty solution (no crash from
+    `efc_offsets` being empty).
+
+#### Test Models
+
+Concrete MJCF models for acceptance criteria tests. All use
+`sim_mjcf::load_model(xml)` and step via `data.step()`.
+
+**Frictionless contact (criteria 1, 16):**
+```xml
+<mujoco>
+  <option timestep="0.001"/>
+  <worldbody>
+    <body pos="0 0 0.1">
+      <freejoint/>
+      <geom type="sphere" size="0.05" condim="1"/>
+    </body>
+    <geom type="plane" size="1 1 0.1" condim="1"/>
+  </worldbody>
+</mujoco>
+```
+- Apply lateral force via `qfrc_applied`
+- Assert: zero tangential constraint force in `efc_lambda` (only normal)
+- Assert: `nefc == ncon` (1 row per contact)
+
+**Torsional friction (criteria 3):**
+```xml
+<mujoco>
+  <option timestep="0.001"/>
+  <worldbody>
+    <body pos="0 0 0.06">
+      <freejoint/>
+      <geom type="cylinder" size="0.05 0.01" condim="4"
+            friction="1.0 0.1 0.0001"/>
+    </body>
+    <geom type="plane" size="1 1 0.1" condim="4"
+          friction="1.0 0.1 0.0001"/>
+  </worldbody>
+</mujoco>
+```
+- Initialize with angular velocity about z-axis: `qvel[5] = 10.0` (spinning)
+- Step 200 times
+- Assert: `qvel[5]` magnitude decreases (torsional friction decelerates spin)
+- Control: same model with `condim="3"` — `qvel[5]` unchanged (no torsional)
+
+**Rolling friction (criteria 4):**
+```xml
+<mujoco>
+  <option timestep="0.001"/>
+  <worldbody>
+    <body pos="0 0 0.06">
+      <freejoint/>
+      <geom type="sphere" size="0.05" condim="6"
+            friction="1.0 0.005 0.01"/>
+    </body>
+    <geom type="plane" size="1 1 0.1" condim="6"
+          friction="1.0 0.005 0.01"/>
+  </worldbody>
+</mujoco>
+```
+- Initialize with linear velocity: `qvel[0] = 1.0` (rolling along x)
+- Step 200 times
+- Assert: `qvel[0]` magnitude decreases (rolling friction decelerates)
+- Control: same model with `condim="3"` — velocity unchanged (no rolling)
+
+**Mixed condim (criteria 5, 6):**
+```xml
+<mujoco>
+  <option timestep="0.001"/>
+  <worldbody>
+    <body name="ball" pos="-0.3 0 0.06">
+      <freejoint/>
+      <geom type="sphere" size="0.05" condim="6"
+            friction="1.0 0.005 0.01"/>
+    </body>
+    <body name="ice" pos="0.3 0 0.06">
+      <freejoint/>
+      <geom type="sphere" size="0.05" condim="1"/>
+    </body>
+    <geom type="plane" size="1 1 0.1" condim="3"
+          friction="1.0 0.005 0.0001"/>
+  </worldbody>
+</mujoco>
+```
+- Assert: ball-plane contact has condim = max(6, 3) = 6
+- Assert: ice-plane contact has condim = max(1, 3) = 3
+- Assert: both contacts coexist and produce correct forces
+
+**Elliptic cone projection unit tests (criteria 8, 9, 10):**
+
+These are unit tests on `project_elliptic_cone()` directly (no MJCF model needed).
+
+- **Criterion 8 (isotropic regression):** Call `project_elliptic_cone` with
+  isotropic `mu = [0.5, 0.5, 0.0, 0.0, 0.0]`, `dim = 3` for several input
+  vectors: inside cone `(2, 0.5, 0.5)`, outside cone `(1, 2, 2)`, negative
+  normal `(-1, 0.5, 0.5)`, zero friction `(1, 0, 0)`. Verify output matches
+  the existing `project_friction_cone()` for each case.
+- **Criterion 9 (anisotropic elliptic):** Call with `mu = [1.0, 0.5, 0.0, 0.0, 0.0]`,
+  `dim = 3`, input `(1, 0.8, 0.4)`. Check: `(0.8/1.0)² + (0.4/0.5)² = 1.28 > 1`
+  → outside cone. Projected point must satisfy
+  `(λ₁/μ₁)² + (λ₂/μ₂)² = λ₀²` (on boundary). Also verify the projection is
+  tighter in the smaller-μ direction.
+- **Criterion 10 (pyramidal warning):** Set `Model.cone = 0`, load any model,
+  verify `tracing::warn!` is emitted and solver uses elliptic projection.
+
+#### Jacobian Finite-Difference Verification (criteria 14–15)
+
+**Setup:**
+- Model: single hinge joint, body with sphere geom resting on plane, condim=4
+- ε = 1e-7 (joint angle perturbation)
+- Tolerance: `|J_fd - J_analytical| / max(|J_analytical|, 1e-8) < 1e-4`
+
+**Procedure:**
+1. Set joint angle `q`, run `mj_fwd_position()` to get body poses
+2. Detect contact, compute analytical Jacobian via `compute_contact_jacobian()`
+3. Extract row 3 (torsional): `J_analytical = J[3, :]`
+4. Set joint angle `q + ε`, run `mj_fwd_position()` again
+5. Compute angular velocity of body about contact normal at both poses:
+   `ω_n(q) = (contact_normal · body_angular_velocity(q))`
+6. Finite-difference: `J_fd[dof] = (ω_n(q+ε) - ω_n(q)) / ε`
+7. Compare element-wise: `|J_fd[dof] - J_analytical[dof]| < tol`
+
+Repeat for rows 4–5 (rolling) with condim=6, projecting onto tangent1/tangent2
+instead of normal.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`assemble_contact_system()`,
-  `project_friction_cone()`, `pgs_solve_with_system()`, `cg_solve_contacts()`,
-  `compute_block_jacobi_preconditioner()`)
+
+**Phase 2 changes — `sim/L0/core/src/mujoco_pipeline.rs`:**
+
+| Item | Sub-task | Line | Change |
+|------|----------|:----:|--------|
+| `project_elliptic_cone()` | D.1 | new | New function for SOC projection (insert near `:8236`) |
+| `project_friction_cone()` | D.4 | :8236 | Update: condim dispatch via `efc_offsets` |
+| `pgs_solve_with_system()` | E.1 | :8291 | Update: use `efc_offsets`, variable-dim GS sweep |
+| `pgs_solve_contacts()` | E.1b | :8270 | Update: thread `efc_offsets`, return `Vec<DVector>` |
+| `cg_solve_contacts()` | E.5 | :8486 | Update: variable-dim, return `Vec<DVector>` |
+| `compute_block_jacobi_preconditioner()` | E.3 | :8400~ | Update: `DMatrix` blocks instead of `Matrix3` |
+| `apply_preconditioner()` | E.4 | :8420~ | Update: `DVector` blocks instead of `Vector3` |
+| `extract_forces()` | E.6 | :8252 | Update: return `Vec<DVector<f64>>` |
+| `Data.efc_lambda` | E.2 | :1677 | Update: `HashMap<K, [f64;3]>` → `HashMap<K, Vec<f64>>` |
+| `apply_contact_torque()` | F.1 | new | New function (insert near `apply_contact_force` `:9600~`) |
+| `mj_fwd_constraint()` force loop | F.2 | :9731~ | Update: add torque application for condim ≥ 4 |
+| `Model::empty()` | G.1 | :1400~ | Update: `cone: 0` → `cone: 1` (default to elliptic) |
+| Touch sensor | E.2 | :5805~ | Update: type annotation for `Vec` access |
+
+**Phase 2 changes — `sim/L0/mjcf/src/model_builder.rs`:**
+- `model_from_mjcf()` — pyramidal cone warning (sub-task G.1)
+
+**Phase 2 changes — `sim/L0/tests/integration/`:**
+- New file `condim_friction.rs` with acceptance criteria tests
+- Register in `mod.rs`
+
+**Already completed in Phase 1 (no changes needed):**
+- `compute_contact_jacobian()` — uses `contact.frame[]`, returns `dim×nv`
+- `assemble_contact_system()` — uses `contact.frame[]`, variable-dim blocks
+- `compute_efc_offsets()` — already implemented
+- `add_angular_jacobian()` — already implemented
+- `Model.geom_condim` — already added
+- `Contact.mu: [f64; 5]` — already expanded
+- `Contact::with_condim()` — already implemented
+- `make_contact_from_geoms()` — already updated
+- Test struct literals — already updated to `[f64; 5]`
+- `process_geom()` condim validation — already done
+
+#### Design Decisions
+
+| # | Question | Decision | Rationale |
+|:---:|:---|:---|:---|
+| D1 | Unify tangent basis functions as pre-req? | **Yes** | Eliminates consistency risk; zero marginal cost since condim touches all call sites |
+| D2 | Default `cone` to elliptic? | **Yes** | Our default should match what we implement; pyramidal warn only on explicit MJCF request |
+| D3 | Friction combination: keep geometric mean? | **Yes** | Defer to separate conformance task — changing behavior is orthogonal to condim |
+| D4 | `Contact.friction` field: keep or remove? | **Keep** | Retained for backward compat; documented as `== mu[0]`; solver reads `mu` |
+| D5 | Warmstart: `Vec<f64>` or `SmallVec<[f64; 6]>`? | **`Vec<f64>`** | Optimize later if profiling shows heap allocation pressure |
+| D6 | `contact.frame` fields: use everywhere? | **Yes** | See D1; pre-computed frame ensures consistency across Jacobian/assembly/forces |
 
 ---
 

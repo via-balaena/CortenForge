@@ -15,25 +15,25 @@ Priority is **Correctness + RL Impact**, tie-broken by inverse Effort.
 
 ## Phase 2 Priority Table
 
-| # | Item | RL Impact | Correctness | Effort | Prerequisites | File |
-|---|------|-----------|-------------|--------|---------------|------|
-| 1 | `<default>` class resolution | High | **Critical** | S | None | [future_work_2.md](./future_work_2.md) |
-| 2 | Contact condim (1/4/6) + friction cones | Medium | **Critical** | L | None | [future_work_2.md](./future_work_2.md) |
-| 3 | `<contact>` pair/exclude | Medium | High | M | None | [future_work_2.md](./future_work_2.md) |
-| 4 | Spatial tendons + wrapping | Low | High | M | None | [future_work_2.md](./future_work_2.md) |
-| 5 | Site-transmission actuators | Low | High | M | #4 | [future_work_2.md](./future_work_2.md) |
-| 6 | Height field + SDF collision (MJCF wiring) | Low | Medium | S | None | [future_work_3.md](./future_work_3.md) |
-| 7 | Deferred sensors (JointLimitFrc, TendonLimitFrc) | Low | Medium | S | None | [future_work_3.md](./future_work_3.md) |
-| 8 | `<general>` actuator MJCF attributes | Low | Medium | S | None | [future_work_3.md](./future_work_3.md) |
-| 9 | Batched simulation | **High** | Low | L | None | [future_work_3.md](./future_work_3.md) |
-| 10 | GPU acceleration | **High** | Low | XL | #9 | [future_work_3.md](./future_work_3.md) |
-| 11 | Deformable body integration | Medium | Low | XL | None | [future_work_4.md](./future_work_4.md) |
-| 12 | Analytical derivatives (mjd_*) | **High** | Low | XL | None | [future_work_4.md](./future_work_4.md) |
-| 13 | Full implicit integrator | Low | Medium | L | None | [future_work_4.md](./future_work_4.md) |
-| 14 | Keyframes, mocap bodies, user callbacks | Medium | Low | L | None | [future_work_4.md](./future_work_4.md) |
-| 15 | Newton solver | Low | Low | XL | None | [future_work_5.md](./future_work_5.md) |
-| 16 | Sleeping / body deactivation | Low | Low | M | None | [future_work_5.md](./future_work_5.md) |
-| 17 | SOR relaxation for PGS | Low | Low | S | None | [future_work_5.md](./future_work_5.md) |
+| # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
+|---|------|-----------|-------------|--------|---------------|------|--------|
+| 1 | `<default>` class resolution | High | **Critical** | S | None | [future_work_2.md](./future_work_2.md) | |
+| 2 | Contact condim (1/4/6) + friction cones | Medium | **Critical** | L | None | [future_work_2.md](./future_work_2.md) | ✅ Complete |
+| 3 | `<contact>` pair/exclude | Medium | High | M | None | [future_work_2.md](./future_work_2.md) | |
+| 4 | Spatial tendons + wrapping | Low | High | M | None | [future_work_2.md](./future_work_2.md) | |
+| 5 | Site-transmission actuators | Low | High | M | #4 | [future_work_2.md](./future_work_2.md) | |
+| 6 | Height field + SDF collision (MJCF wiring) | Low | Medium | S | None | [future_work_3.md](./future_work_3.md) | |
+| 7 | Deferred sensors (JointLimitFrc, TendonLimitFrc) | Low | Medium | S | None | [future_work_3.md](./future_work_3.md) | |
+| 8 | `<general>` actuator MJCF attributes | Low | Medium | S | None | [future_work_3.md](./future_work_3.md) | |
+| 9 | Batched simulation | **High** | Low | L | None | [future_work_3.md](./future_work_3.md) | |
+| 10 | GPU acceleration | **High** | Low | XL | #9 | [future_work_3.md](./future_work_3.md) | |
+| 11 | Deformable body integration | Medium | Low | XL | None | [future_work_4.md](./future_work_4.md) | |
+| 12 | Analytical derivatives (mjd_*) | **High** | Low | XL | None | [future_work_4.md](./future_work_4.md) | |
+| 13 | Full implicit integrator | Low | Medium | L | None | [future_work_4.md](./future_work_4.md) | |
+| 14 | Keyframes, mocap bodies, user callbacks | Medium | Low | L | None | [future_work_4.md](./future_work_4.md) | |
+| 15 | Newton solver | Low | Low | XL | None | [future_work_5.md](./future_work_5.md) | |
+| 16 | Sleeping / body deactivation | Low | Low | M | None | [future_work_5.md](./future_work_5.md) | |
+| 17 | SOR relaxation for PGS | Low | Low | S | None | [future_work_5.md](./future_work_5.md) | |
 
 ## Dependency Graph
 

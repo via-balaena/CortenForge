@@ -247,6 +247,7 @@ struct ModelBuilder {
     geom_quat: Vec<UnitQuaternion<f64>>,
     geom_size: Vec<Vector3<f64>>,
     geom_friction: Vec<Vector3<f64>>,
+    geom_condim: Vec<i32>,
     geom_contype: Vec<u32>,
     geom_conaffinity: Vec<u32>,
     geom_name: Vec<Option<String>>,
@@ -433,6 +434,7 @@ impl ModelBuilder {
             geom_quat: vec![],
             geom_size: vec![],
             geom_friction: vec![],
+            geom_condim: vec![],
             geom_contype: vec![],
             geom_conaffinity: vec![],
             geom_name: vec![],
@@ -1048,6 +1050,48 @@ impl ModelBuilder {
         self.geom_quat.push(quat);
         self.geom_size.push(size);
         self.geom_friction.push(geom.friction);
+
+        // Validate and clamp condim to valid values {1, 3, 4, 6}
+        // Invalid values are rounded up to the next valid value per MuJoCo convention
+        let condim = match geom.condim {
+            1 => 1,
+            2 => {
+                tracing::warn!(
+                    "Geom {:?} has invalid condim=2, rounding up to 3",
+                    geom.name
+                );
+                3
+            }
+            3 => 3,
+            4 => 4,
+            5 => {
+                tracing::warn!(
+                    "Geom {:?} has invalid condim=5, rounding up to 6",
+                    geom.name
+                );
+                6
+            }
+            c if c >= 6 => {
+                if c > 6 {
+                    tracing::warn!(
+                        "Geom {:?} has invalid condim={}, clamping to 6",
+                        geom.name,
+                        c
+                    );
+                }
+                6
+            }
+            c => {
+                // condim <= 0
+                tracing::warn!(
+                    "Geom {:?} has invalid condim={}, defaulting to 3",
+                    geom.name,
+                    c
+                );
+                3
+            }
+        };
+        self.geom_condim.push(condim);
         #[allow(clippy::cast_sign_loss)]
         {
             self.geom_contype.push(geom.contype as u32);
@@ -1969,6 +2013,7 @@ impl ModelBuilder {
             geom_quat: self.geom_quat,
             geom_size: self.geom_size,
             geom_friction: self.geom_friction,
+            geom_condim: self.geom_condim,
             geom_contype: self.geom_contype,
             geom_conaffinity: self.geom_conaffinity,
             geom_margin: vec![0.0; ngeom], // Default margin

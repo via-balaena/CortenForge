@@ -87,7 +87,7 @@ residual heap allocation occurs for contact vector growth and RK4 warmstart save
 | Forces | `qfrc_bias`, `qfrc_passive`, `qfrc_actuator`, `qfrc_applied`, `qfrc_constraint` | Generalized force components |
 | Actuation | `actuator_length`, `actuator_velocity`, `actuator_force`, `act_dot` | Actuator-space state and activation derivatives |
 | Acceleration | `qacc` | Computed as `M^-1 * f_total` |
-| Contacts | `contacts`, `efc_lambda` | Active contacts and warmstart cache (`HashMap<WarmstartKey, [f64; 3]>`) |
+| Contacts | `contacts`, `efc_lambda` | Active contacts and warmstart cache (`HashMap<WarmstartKey, Vec<f64>>` for variable condim) |
 
 ### Stepping
 
@@ -230,7 +230,8 @@ The physics engine. Depends on sim-types and sim-simd. Contains:
 `ContactPoint`, `ContactManifold`, and `ContactForce` live in
 `sim-core/src/contact.rs`. These represent collision geometry output
 (position, normal, penetration, body pair) and resulting forces.
-The MuJoCo pipeline uses its own PGS contact solver in `mujoco_pipeline.rs`.
+The MuJoCo pipeline uses PGS/CG contact solvers in `mujoco_pipeline.rs` with
+variable condim (1/3/4/6) and elliptic friction cones.
 
 ### sim-constraint
 
@@ -365,19 +366,34 @@ declared in `ViewerConfig` but not yet implemented (no drawing systems).
 The pipeline supports two contact solvers selectable via `model.solver_type`:
 
 - **PGS** (default) — Projected Gauss-Seidel. Matches MuJoCo's default. Uses
-  per-contact inline friction cone projection inside the GS sweep.
+  per-contact inline elliptic friction cone projection inside the GS sweep.
 - **CG** — Preconditioned projected gradient descent (PGD) with Barzilai-Borwein
   adaptive step size. Named "CG" for MuJoCo API compatibility. Falls back to PGS
   on non-convergence, reusing the pre-assembled Delassus matrix.
 - **CGStrict** — Same as CG but returns zero forces on non-convergence instead of
   falling back. Use in tests to detect CG regressions.
 
+**Variable Contact Dimensions (condim):**
+- condim 1: Normal force only (frictionless contact)
+- condim 3: Normal + 2D tangential (sliding friction)
+- condim 4: condim 3 + torsional friction (spinning resistance via `apply_contact_torque()`)
+- condim 6: condim 4 + rolling friction (full MuJoCo model)
+
+Each contact stores `Contact.dim` and `Contact.mu: [f64; 5]` (sliding1, sliding2, torsional,
+rolling1, rolling2). The `efc_offsets` array tracks each contact's starting row in the
+variable-size constraint system.
+
+**Elliptic Friction Cones:**
+Projection uses a two-step physically-correct algorithm: (1) enforce unilateral constraint
+λ_n ≥ 0 (else release contact), (2) scale friction components to cone boundary if
+`||(λ_i/μ_i)|| > λ_n`. This handles anisotropic friction (different coefficients per direction).
+
 Both solvers share `assemble_contact_system()` for Delassus matrix + RHS construction,
 `WarmstartKey`-based contact correspondence, and friction cone projection. The warmstart
 key combines canonical geom pair IDs with a discretized 1 cm spatial grid cell, so
 multiple contacts within the same geom pair (e.g., box-on-plane corners) each get
-their own cached lambda. Contact geometry types (`ContactPoint`, etc.) are in
-`sim-core/src/contact.rs`.
+their own cached lambda (`Vec<f64>` for variable length). Contact geometry types
+(`ContactPoint`, etc.) are in `sim-core/src/contact.rs`.
 
 Solver selection: `<option solver="CG"/>` in MJCF or `model.solver_type = SolverType::CG`.
 
