@@ -406,8 +406,11 @@ adding a `Vec<i32>` field requires no trait changes). Populate in
 the `geom_friction` push (`:1050`), adjacent to the other per-geom solver data.
 Validate in `process_geom()` (not the parser — the parser should faithfully
 represent the XML): clamp to `{1, 3, 4, 6}` — if a geom specifies an invalid
-condim (2, 5, or > 6), round up to the next valid value (2→3, 5→6, >6→6) and
-emit `tracing::warn!`.
+condim, map to the nearest valid value and emit `tracing::warn!`:
+- `condim ≤ 0` → `1` (frictionless)
+- `condim = 2` → `3` (round up)
+- `condim = 5` → `6` (round up)
+- `condim > 6` → `6` (cap at max)
 
 **A.2.** Condim resolution per contact. MuJoCo rule: when two geoms collide,
 contact condim = `max(condim1, condim2)` (both geoms have equal priority; geom
@@ -1188,6 +1191,139 @@ fn extract_forces(
 }
 ```
 
+**E.7. Consolidated signature changes.**
+
+All function signatures that change in Phase 2, with line references to current
+implementation in `mujoco_pipeline.rs`:
+
+```rust
+// CURRENT (line 8236):
+fn project_friction_cone(lambda: &mut DVector<f64>, contacts: &[Contact], ncon: usize)
+
+// AFTER:
+fn project_friction_cone(
+    lambda: &mut DVector<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+)
+```
+
+```rust
+// CURRENT (line 8291):
+fn pgs_solve_with_system(
+    contacts: &[Contact],
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
+) -> (Vec<Vector3<f64>>, usize)
+
+// AFTER:
+fn pgs_solve_with_system(
+    contacts: &[Contact],
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    efc_offsets: &[usize],                              // NEW
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, Vec<f64>>,   // CHANGED
+) -> (Vec<DVector<f64>>, usize)                         // CHANGED
+```
+
+```rust
+// CURRENT (line 8270):
+fn pgs_solve_contacts(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
+) -> (Vec<Vector3<f64>>, usize)
+
+// AFTER:
+fn pgs_solve_contacts(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, Vec<f64>>,   // CHANGED
+) -> (Vec<DVector<f64>>, usize)                         // CHANGED
+```
+
+```rust
+// CURRENT (line 8486):
+fn cg_solve_contacts(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, [f64; 3]>,
+) -> Result<(Vec<Vector3<f64>>, usize), (DMatrix<f64>, DVector<f64>)>
+
+// AFTER:
+fn cg_solve_contacts(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians: &[DMatrix<f64>],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, Vec<f64>>,   // CHANGED
+) -> Result<(Vec<DVector<f64>>, usize), (DMatrix<f64>, DVector<f64>)>  // CHANGED
+```
+
+```rust
+// CURRENT (line 8252):
+fn extract_forces(lambda: &DVector<f64>, ncon: usize) -> Vec<Vector3<f64>>
+
+// AFTER:
+fn extract_forces(
+    lambda: &DVector<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+) -> Vec<DVector<f64>>
+```
+
+```rust
+// CURRENT (line ~8400, inside cg_solve_contacts):
+fn compute_block_jacobi_preconditioner(a: &DMatrix<f64>, ncon: usize) -> Vec<Matrix3<f64>>
+
+// AFTER:
+fn compute_block_jacobi_preconditioner(
+    a: &DMatrix<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+) -> Vec<DMatrix<f64>>
+```
+
+```rust
+// CURRENT (line ~8420, inside cg_solve_contacts):
+fn apply_preconditioner(precond: &[Matrix3<f64>], v: &DVector<f64>) -> DVector<f64>
+
+// AFTER:
+fn apply_preconditioner(
+    precond: &[DMatrix<f64>],
+    v: &DVector<f64>,
+    contacts: &[Contact],
+    efc_offsets: &[usize],
+) -> DVector<f64>
+```
+
+```rust
+// CURRENT (line 1677, Data struct):
+pub efc_lambda: HashMap<WarmstartKey, [f64; 3]>,
+
+// AFTER:
+pub efc_lambda: HashMap<WarmstartKey, Vec<f64>>,
+```
+
 ---
 
 **Sub-task F: Force application — `mj_fwd_constraint()`**
@@ -1453,7 +1589,9 @@ See A.3 rationale.
 16. A scene with only condim-1 contacts (all frictionless) produces correct
     normal-only forces and the system `nefc = ncon`.
 17. Warmstart works across frames when condim is constant; warmstart is
-    discarded when a contact's condim changes between frames.
+    discarded when a contact's condim changes between frames. *(Unit test on
+    warmstart load logic: verify `prev.len() != contact.dim` triggers discard,
+    not integration test — dynamic condim changes are unusual in simulation.)*
 18. Zero contacts still produces an empty solution (no crash from
     `efc_offsets` being empty).
 
@@ -1583,21 +1721,21 @@ instead of normal.
 
 **Phase 2 changes — `sim/L0/core/src/mujoco_pipeline.rs`:**
 
-| Item | Sub-task | Change |
-|------|----------|--------|
-| `project_elliptic_cone()` | D.1 | New function for SOC projection |
-| `project_friction_cone()` | D.4 | Update: condim dispatch via `efc_offsets` |
-| `pgs_solve_with_system()` | E.1 | Update: use `efc_offsets`, variable-dim GS sweep |
-| `pgs_solve_contacts()` | E.1b | Update: thread `efc_offsets`, return `Vec<DVector>` |
-| `cg_solve_contacts()` | E.5 | Update: variable-dim, return `Vec<DVector>` |
-| `compute_block_jacobi_preconditioner()` | E.3 | Update: `DMatrix` blocks instead of `Matrix3` |
-| `apply_preconditioner()` | E.4 | Update: `DVector` blocks instead of `Vector3` |
-| `extract_forces()` | E.6 | Update: return `Vec<DVector<f64>>` |
-| `Data.efc_lambda` | E.2 | Update: `HashMap<K, [f64;3]>` → `HashMap<K, Vec<f64>>` |
-| `apply_contact_torque()` | F.1 | New function (angular J^T for torque) |
-| `mj_fwd_constraint()` force loop | F.2 | Update: add torque application for condim ≥ 4 |
-| `Model::empty()` | G.1 | Update: `cone: 0` → `cone: 1` (default to elliptic) |
-| Touch sensor | E.2 | Update: type annotation for `Vec` access |
+| Item | Sub-task | Line | Change |
+|------|----------|:----:|--------|
+| `project_elliptic_cone()` | D.1 | new | New function for SOC projection (insert near `:8236`) |
+| `project_friction_cone()` | D.4 | :8236 | Update: condim dispatch via `efc_offsets` |
+| `pgs_solve_with_system()` | E.1 | :8291 | Update: use `efc_offsets`, variable-dim GS sweep |
+| `pgs_solve_contacts()` | E.1b | :8270 | Update: thread `efc_offsets`, return `Vec<DVector>` |
+| `cg_solve_contacts()` | E.5 | :8486 | Update: variable-dim, return `Vec<DVector>` |
+| `compute_block_jacobi_preconditioner()` | E.3 | :8400~ | Update: `DMatrix` blocks instead of `Matrix3` |
+| `apply_preconditioner()` | E.4 | :8420~ | Update: `DVector` blocks instead of `Vector3` |
+| `extract_forces()` | E.6 | :8252 | Update: return `Vec<DVector<f64>>` |
+| `Data.efc_lambda` | E.2 | :1677 | Update: `HashMap<K, [f64;3]>` → `HashMap<K, Vec<f64>>` |
+| `apply_contact_torque()` | F.1 | new | New function (insert near `apply_contact_force` `:9600~`) |
+| `mj_fwd_constraint()` force loop | F.2 | :9731~ | Update: add torque application for condim ≥ 4 |
+| `Model::empty()` | G.1 | :1400~ | Update: `cone: 0` → `cone: 1` (default to elliptic) |
+| Touch sensor | E.2 | :5805~ | Update: type annotation for `Vec` access |
 
 **Phase 2 changes — `sim/L0/mjcf/src/model_builder.rs`:**
 - `model_from_mjcf()` — pyramidal cone warning (sub-task G.1)
