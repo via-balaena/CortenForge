@@ -1050,7 +1050,48 @@ impl ModelBuilder {
         self.geom_quat.push(quat);
         self.geom_size.push(size);
         self.geom_friction.push(geom.friction);
-        self.geom_condim.push(geom.condim);
+
+        // Validate and clamp condim to valid values {1, 3, 4, 6}
+        // Invalid values are rounded up to the next valid value per MuJoCo convention
+        let condim = match geom.condim {
+            1 => 1,
+            2 => {
+                tracing::warn!(
+                    "Geom {:?} has invalid condim=2, rounding up to 3",
+                    geom.name
+                );
+                3
+            }
+            3 => 3,
+            4 => 4,
+            5 => {
+                tracing::warn!(
+                    "Geom {:?} has invalid condim=5, rounding up to 6",
+                    geom.name
+                );
+                6
+            }
+            c if c >= 6 => {
+                if c > 6 {
+                    tracing::warn!(
+                        "Geom {:?} has invalid condim={}, clamping to 6",
+                        geom.name,
+                        c
+                    );
+                }
+                6
+            }
+            c => {
+                // condim <= 0
+                tracing::warn!(
+                    "Geom {:?} has invalid condim={}, defaulting to 3",
+                    geom.name,
+                    c
+                );
+                3
+            }
+        };
+        self.geom_condim.push(condim);
         #[allow(clippy::cast_sign_loss)]
         {
             self.geom_contype.push(geom.contype as u32);

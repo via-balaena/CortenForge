@@ -311,14 +311,15 @@ Infrastructure for variable contact dimensions is in place:
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| `Model.geom_condim: Vec<i32>` | ✅ | Parsed from MJCF, default 3 |
+| `Model.geom_condim: Vec<i32>` | ✅ | Parsed from MJCF, validated to {1,3,4,6} with round-up |
 | `Contact.mu: [f64; 5]` | ✅ | `[sliding1, sliding2, torsional, rolling1, rolling2]` |
 | `Contact::with_condim()` | ✅ | Sets `dim` directly from condim |
 | `make_contact_from_geoms()` | ✅ | Geometric mean per friction type, `max(condim1, condim2)` |
-| `compute_contact_jacobian()` | ✅ | Returns `dim×nv` matrix with rows 0-5 |
+| `compute_contact_jacobian()` | ✅ | Returns `dim×nv` matrix, uses `contact.frame[]` |
 | `add_angular_jacobian()` | ✅ | Helper for torsional/rolling rows |
 | `compute_efc_offsets()` | ✅ | Tracks per-contact row offsets |
-| `assemble_contact_system()` | ✅ | Builds variable-sized Delassus matrix |
+| `assemble_contact_system()` | ✅ | Uses `contact.frame[]`, variable-sized Delassus |
+| Tangent basis unification | ✅ | All call sites use `contact.frame[]` (Pre-req 0) |
 
 **Phase 2 — Remaining Work**
 
@@ -334,9 +335,10 @@ The PGS and CG solvers still use `ncon * 3` internally. Functions requiring upda
 | `project_friction_cone()` | Circular cone (dim=3) | Elliptic cones (dim=4,6) |
 | `mj_fwd_constraint()` | Force only | Add torque for torsional/rolling |
 
-**Pre-req 0 (tangent basis unification)** was deferred — solver still uses
-`build_tangent_basis()` rather than `contact.frame[]`. This is a cleanup
-opportunity but not blocking.
+**Pre-req 0 (tangent basis unification)** is complete — all three call sites
+(`compute_contact_jacobian()`, `assemble_contact_system()`, `mj_fwd_constraint()`)
+now use `contact.frame[]` instead of recomputing via `build_tangent_basis()`.
+The redundant `build_tangent_basis()` function was removed.
 
 **Elliptic/pyramidal cone types** (`Model.cone`) remain unimplemented.
 

@@ -1380,14 +1380,25 @@ impl Contact {
         // condim=3: normal + 2 sliding friction
         // condim=4: normal + 2 sliding + 1 torsional
         // condim=6: normal + 2 sliding + 1 torsional + 2 rolling
-        #[allow(clippy::match_same_arms)] // Explicit arms for documentation clarity
+        //
+        // Note: condim is validated and clamped in the MJCF loader (model_builder.rs)
+        // to {1, 3, 4, 6}. This fallback handles test code that constructs contacts
+        // directly without going through the loader.
+        //
+        // Explicit match arms document valid values; clippy::match_same_arms allowed
+        // because the structure mirrors the MJCF loader's validation pattern.
+        // cast_sign_loss is safe because all arms return positive values.
+        #[allow(clippy::match_same_arms, clippy::cast_sign_loss)]
         let dim = match condim {
             1 => 1,
             3 => 3,
             4 => 4,
             6 => 6,
-            _ => 3, // Default to 3 for invalid condim
-        };
+            // Round up invalid values (matches MJCF loader behavior)
+            0 | 2 => 3,
+            5 => 6,
+            _ => 6, // >6 clamps to 6
+        } as usize;
 
         Self {
             pos,
@@ -7731,15 +7742,13 @@ fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -> DM
     let body1 = model.geom_body[contact.geom1];
     let body2 = model.geom_body[contact.geom2];
 
-    // TODO: Use the pre-computed contact.frame tangent vectors instead of
-    // recomputing via build_tangent_basis(). The Contact struct already stores
-    // frame[0] (t1) and frame[1] (t2) from collision detection. All three call
-    // sites (here, assemble_contact_system, mj_fwd_constraint force application)
-    // recompute the same basis. Using contact.frame would eliminate redundant
-    // Gram-Schmidt and ensure exact consistency with the collision detector's
-    // frame. Requires verifying contact.frame is always populated.
+    // Use the pre-computed contact frame for consistency.
+    // contact.frame[] was computed during contact construction via compute_tangent_frame().
+    // This ensures the Jacobian rows align exactly with the RHS computation in
+    // assemble_contact_system() and force application in mj_fwd_constraint().
     let normal = contact.normal;
-    let (tangent1, tangent2) = build_tangent_basis(&normal);
+    let tangent1 = contact.frame[0];
+    let tangent2 = contact.frame[1];
 
     // Allocate dim×nv Jacobian
     let mut j = DMatrix::zeros(dim, nv);
@@ -7906,29 +7915,6 @@ fn add_angular_jacobian(
         }
         current_body = model.body_parent[current_body];
     }
-}
-
-/// Build an orthonormal tangent basis from a normal vector.
-fn build_tangent_basis(normal: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
-    // Pick a vector not parallel to normal
-    let ref_vec = if normal.x.abs() < 0.9 {
-        Vector3::x()
-    } else {
-        Vector3::y()
-    };
-
-    // Gram-Schmidt: project out the normal component
-    let tangent_unnorm = ref_vec - normal * normal.dot(&ref_vec);
-    let tangent_norm = tangent_unnorm.norm();
-    let tangent1 = if tangent_norm > 1e-10 {
-        tangent_unnorm / tangent_norm
-    } else {
-        // Degenerate case: normal is zero or parallel to ref_vec
-        Vector3::x()
-    };
-    let tangent2 = normal.cross(&tangent1);
-
-    (tangent1, tangent2)
 }
 
 // ============================================================================
@@ -8168,8 +8154,11 @@ fn assemble_contact_system(
         let vel2 = compute_point_velocity(data, body_i2, contact_i.pos);
         let rel_vel = vel2 - vel1;
 
+        // Use the pre-computed contact frame for consistency with the Jacobian.
+        // contact.frame[] was computed during contact construction via compute_tangent_frame().
         let normal = contact_i.normal;
-        let (tangent1, tangent2) = build_tangent_basis(&normal);
+        let tangent1 = contact_i.frame[0];
+        let tangent2 = contact_i.frame[1];
 
         let vn = rel_vel.dot(&normal);
         let vt1 = rel_vel.dot(&tangent1);
@@ -9982,8 +9971,11 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     // contact but couples force application to the Jacobian representation.
     // qfrc_constraint += J^T * λ
     for (i, (_jacobian, lambda)) in jacobians.iter().zip(constraint_forces.iter()).enumerate() {
-        let normal = data.contacts[i].normal;
-        let (tangent1, tangent2) = build_tangent_basis(&normal);
+        // Use the pre-computed contact frame for consistency with Jacobian and RHS.
+        let contact = &data.contacts[i];
+        let normal = contact.normal;
+        let tangent1 = contact.frame[0];
+        let tangent2 = contact.frame[1];
 
         // Convert contact-frame forces to world-frame force
         let world_force = normal * lambda.x + tangent1 * lambda.y + tangent2 * lambda.z;
