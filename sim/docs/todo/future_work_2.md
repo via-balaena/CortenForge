@@ -301,9 +301,33 @@ a parameter through six method signatures and the recursive
 ---
 
 ### 2. Contact Condim (1/4/6) + Friction Cones
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Status:** Phase 1 Complete | **Effort:** L | **Prerequisites:** None
 
-#### Current State
+#### Implementation Status (Phase 1 - Complete)
+
+The following has been implemented:
+- ✅ `geom_condim: Vec<i32>` added to `Model` struct
+- ✅ `geom_condim` parsed and populated from MJCF loader
+- ✅ `Contact.mu` changed from `[f64; 2]` to `[f64; 5]` (MuJoCo-style)
+- ✅ `make_contact_from_geoms()` computes all friction components (sliding, torsional, rolling)
+- ✅ `Contact::with_condim()` constructor uses condim directly for dimension
+- ✅ `compute_contact_jacobian()` returns variable `dim×nv` matrix with angular rows
+- ✅ `assemble_contact_system()` builds variable-sized matrices using `efc_offsets`
+- ✅ Added `compute_efc_offsets()` and `add_angular_jacobian()` helpers
+
+**Remaining Work (Phase 2):**
+The PGS and CG solvers still use `ncon * 3` internally. To fully support condim 1/4/6:
+- `pgs_solve_with_system()`: Change `base = i * 3` to use `efc_offsets[i]`
+- `cg_solve_contacts()`: Change `nefc = ncon * 3` and warmstart from `[f64; 3]` to `Vec<f64>`
+- `compute_block_jacobi_preconditioner()`: Handle variable block sizes (not just 3×3)
+- `extract_forces()`: Return variable-dimension force vectors
+- `project_friction_cone()`: Handle torsional (dim=4) and rolling (dim=6) cone constraints
+- `mj_fwd_constraint()`: Apply torques for torsional/rolling constraints
+
+**Note:** Phase 1 is fully backward-compatible. All contacts default to condim=3, and
+all 565+ tests pass including `test_performance_scaling`.
+
+#### Current State (Pre-Phase 1)
 The contact solver is hardcoded to condim 3 (normal + 2D tangential friction).
 Twelve functions and data structures must change.
 

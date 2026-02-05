@@ -247,6 +247,7 @@ struct ModelBuilder {
     geom_quat: Vec<UnitQuaternion<f64>>,
     geom_size: Vec<Vector3<f64>>,
     geom_friction: Vec<Vector3<f64>>,
+    geom_condim: Vec<i32>,
     geom_contype: Vec<u32>,
     geom_conaffinity: Vec<u32>,
     geom_name: Vec<Option<String>>,
@@ -433,6 +434,7 @@ impl ModelBuilder {
             geom_quat: vec![],
             geom_size: vec![],
             geom_friction: vec![],
+            geom_condim: vec![],
             geom_contype: vec![],
             geom_conaffinity: vec![],
             geom_name: vec![],
@@ -1048,6 +1050,7 @@ impl ModelBuilder {
         self.geom_quat.push(quat);
         self.geom_size.push(size);
         self.geom_friction.push(geom.friction);
+        self.geom_condim.push(geom.condim);
         #[allow(clippy::cast_sign_loss)]
         {
             self.geom_contype.push(geom.contype as u32);
@@ -1969,6 +1972,7 @@ impl ModelBuilder {
             geom_quat: self.geom_quat,
             geom_size: self.geom_size,
             geom_friction: self.geom_friction,
+            geom_condim: self.geom_condim,
             geom_contype: self.geom_contype,
             geom_conaffinity: self.geom_conaffinity,
             geom_margin: vec![0.0; ngeom], // Default margin

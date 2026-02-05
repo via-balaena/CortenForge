@@ -878,6 +878,8 @@ pub struct Model {
     pub geom_size: Vec<Vector3<f64>>,
     /// Friction coefficients [sliding, torsional, rolling].
     pub geom_friction: Vec<Vector3<f64>>,
+    /// Contact dimensionality (1=frictionless, 3=sliding, 4=+torsional, 6=+rolling).
+    pub geom_condim: Vec<i32>,
     /// Contact type bitmask.
     pub geom_contype: Vec<u32>,
     /// Contact affinity bitmask.
@@ -1215,9 +1217,12 @@ pub struct Contact {
     pub dim: usize,
     /// Whether margin was included in distance computation.
     pub includemargin: bool,
-    /// Friction parameters `[mu, mu2]` for anisotropic friction.
-    /// `mu[0]` = sliding, `mu[1]` = torsional/rolling.
-    pub mu: [f64; 2],
+    /// Friction parameters for MuJoCo-style 5-element friction.
+    /// `[sliding1, sliding2, torsional, rolling1, rolling2]`
+    /// - sliding1/2: tangent friction coefficients
+    /// - torsional: spin friction coefficient
+    /// - rolling1/2: rolling friction coefficients
+    pub mu: [f64; 5],
     /// Solver reference parameters (from geom pair).
     pub solref: [f64; 2],
     /// Solver impedance parameters (from geom pair).
@@ -1306,7 +1311,95 @@ impl Contact {
             friction,
             dim: if friction > 0.0 { 3 } else { 1 }, // 3D friction cone or frictionless
             includemargin: false,
-            mu: [friction, friction * 0.005], // sliding, torsional
+            // MuJoCo 5-element friction: [sliding1, sliding2, torsional, rolling1, rolling2]
+            mu: [
+                friction,
+                friction,
+                friction * 0.005,
+                friction * 0.001,
+                friction * 0.001,
+            ],
+            solref,
+            solimp,
+            frame: [t1, t2],
+        }
+    }
+
+    /// Create a contact with explicit condim and per-type friction coefficients.
+    ///
+    /// This constructor is used when creating contacts from collision detection
+    /// where condim and friction values come from combining both geom properties.
+    ///
+    /// # Arguments
+    /// * `sliding` - Sliding friction coefficient (mu[0], mu[1])
+    /// * `torsional` - Torsional/spin friction coefficient (mu[2])
+    /// * `rolling` - Rolling friction coefficient (mu[3], mu[4])
+    /// * `condim` - Contact dimension (1, 3, 4, or 6)
+    #[must_use]
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_condim(
+        pos: Vector3<f64>,
+        normal: Vector3<f64>,
+        depth: f64,
+        geom1: usize,
+        geom2: usize,
+        sliding: f64,
+        torsional: f64,
+        rolling: f64,
+        condim: i32,
+        solref: [f64; 2],
+        solimp: [f64; 5],
+    ) -> Self {
+        // Safety: clamp friction values to non-negative finite
+        let sliding = if sliding.is_finite() && sliding > 0.0 {
+            sliding
+        } else {
+            0.0
+        };
+        let torsional = if torsional.is_finite() && torsional > 0.0 {
+            torsional
+        } else {
+            0.0
+        };
+        let rolling = if rolling.is_finite() && rolling > 0.0 {
+            rolling
+        } else {
+            0.0
+        };
+
+        // Safety: ensure depth is finite
+        let depth = if depth.is_finite() { depth } else { 0.0 };
+
+        // Compute tangent frame from normal
+        let (t1, t2) = compute_tangent_frame(&normal);
+
+        // Contact dimension is determined directly by condim
+        // The friction coefficients determine the cone shape, not the structure
+        // condim=1: frictionless (normal only)
+        // condim=3: normal + 2 sliding friction
+        // condim=4: normal + 2 sliding + 1 torsional
+        // condim=6: normal + 2 sliding + 1 torsional + 2 rolling
+        #[allow(clippy::match_same_arms)] // Explicit arms for documentation clarity
+        let dim = match condim {
+            1 => 1,
+            3 => 3,
+            4 => 4,
+            6 => 6,
+            _ => 3, // Default to 3 for invalid condim
+        };
+
+        Self {
+            pos,
+            normal,
+            depth,
+            geom1,
+            geom2,
+            friction: sliding, // Keep legacy field for compatibility
+            dim,
+            includemargin: false,
+            // MuJoCo 5-element friction: [sliding1, sliding2, torsional, rolling1, rolling2]
+            mu: [sliding, sliding, torsional, rolling, rolling],
             solref,
             solimp,
             frame: [t1, t2],
@@ -1716,6 +1809,7 @@ impl Model {
             geom_quat: vec![],
             geom_size: vec![],
             geom_friction: vec![],
+            geom_condim: vec![],
             geom_contype: vec![],
             geom_conaffinity: vec![],
             geom_margin: vec![],
@@ -3573,7 +3667,8 @@ fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Co
 ///
 /// This helper combines friction (geometric mean) and solver params from both
 /// geoms according to MuJoCo conventions:
-/// - friction: geometric mean of both geoms
+/// - friction: geometric mean of both geoms (per friction type)
+/// - condim: minimum of both geom condim values
 /// - solref: element-wise minimum (stiffer wins)
 /// - solimp: element-wise maximum (harder wins)
 #[inline]
@@ -3585,10 +3680,21 @@ fn make_contact_from_geoms(
     geom1: usize,
     geom2: usize,
 ) -> Contact {
-    // Compute friction (geometric mean)
-    let friction1 = model.geom_friction[geom1].x;
-    let friction2 = model.geom_friction[geom2].x;
-    let friction = (friction1 * friction2).sqrt();
+    // Get friction vectors from both geoms
+    // geom_friction: [sliding, torsional, rolling]
+    let f1 = model.geom_friction[geom1];
+    let f2 = model.geom_friction[geom2];
+
+    // Compute geometric mean for each friction component
+    let sliding = (f1.x * f2.x).sqrt();
+    let torsional = (f1.y * f2.y).sqrt();
+    let rolling = (f1.z * f2.z).sqrt();
+
+    // Contact dimension: minimum of both geom condim values
+    // MuJoCo uses min so the more constrained geom "wins"
+    let condim1 = model.geom_condim[geom1];
+    let condim2 = model.geom_condim[geom2];
+    let condim = condim1.min(condim2);
 
     // Combine solver parameters from both geoms
     let (solref, solimp) = combine_solver_params(
@@ -3598,7 +3704,9 @@ fn make_contact_from_geoms(
         model.geom_solimp[geom2],
     );
 
-    Contact::with_solver_params(pos, normal, depth, geom1, geom2, friction, solref, solimp)
+    Contact::with_condim(
+        pos, normal, depth, geom1, geom2, sliding, torsional, rolling, condim, solref, solimp,
+    )
 }
 
 /// Minimum norm threshold for geometric operations.
@@ -7610,14 +7718,16 @@ fn compute_body_jacobian_at_point(
     jacobian
 }
 
-/// Compute the full 3xnv contact Jacobian for a contact point.
+/// Compute the full dim×nv contact Jacobian for a contact point.
 ///
-/// Returns a 3×nv matrix where:
-/// - Row 0: normal direction Jacobian
-/// - Row 1: tangent1 direction Jacobian
-/// - Row 2: tangent2 direction Jacobian
+/// Returns a `contact.dim`×nv matrix where rows depend on contact dimension:
+/// - dim=1: Row 0: normal direction
+/// - dim=3: Row 0: normal, Row 1-2: tangents (sliding friction)
+/// - dim=4: Rows 0-2: as dim=3, Row 3: torsional (spin about normal)
+/// - dim=6: Rows 0-3: as dim=4, Rows 4-5: rolling (angular velocity tangent components)
 fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -> DMatrix<f64> {
     let nv = model.nv;
+    let dim = contact.dim;
     let body1 = model.geom_body[contact.geom1];
     let body2 = model.geom_body[contact.geom2];
 
@@ -7631,8 +7741,8 @@ fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -> DM
     let normal = contact.normal;
     let (tangent1, tangent2) = build_tangent_basis(&normal);
 
-    // Allocate 3×nv Jacobian
-    let mut j = DMatrix::zeros(3, nv);
+    // Allocate dim×nv Jacobian
+    let mut j = DMatrix::zeros(dim, nv);
 
     // Helper: add body Jacobian contribution for one direction
     let add_body_jacobian =
@@ -7708,16 +7818,94 @@ fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -> DM
     //
     // Body2 contributes positively (its velocity in +normal direction = separating)
     // Body1 contributes negatively (its velocity in +normal direction = approaching body2)
+
+    // Row 0: normal direction (always present)
     add_body_jacobian(&mut j, 0, &normal, body2, 1.0);
     add_body_jacobian(&mut j, 0, &normal, body1, -1.0);
 
-    add_body_jacobian(&mut j, 1, &tangent1, body2, 1.0);
-    add_body_jacobian(&mut j, 1, &tangent1, body1, -1.0);
+    // Rows 1-2: tangent directions (dim >= 3: sliding friction)
+    if dim >= 3 {
+        add_body_jacobian(&mut j, 1, &tangent1, body2, 1.0);
+        add_body_jacobian(&mut j, 1, &tangent1, body1, -1.0);
 
-    add_body_jacobian(&mut j, 2, &tangent2, body2, 1.0);
-    add_body_jacobian(&mut j, 2, &tangent2, body1, -1.0);
+        add_body_jacobian(&mut j, 2, &tangent2, body2, 1.0);
+        add_body_jacobian(&mut j, 2, &tangent2, body1, -1.0);
+    }
+
+    // Row 3: torsional/spin (dim >= 4: angular velocity about contact normal)
+    // This constrains relative spinning about the contact normal
+    if dim >= 4 {
+        add_angular_jacobian(&mut j, 3, &normal, body2, 1.0, model, data);
+        add_angular_jacobian(&mut j, 3, &normal, body1, -1.0, model, data);
+    }
+
+    // Rows 4-5: rolling friction (dim = 6: angular velocity in tangent plane)
+    // This constrains relative rolling in the tangent directions
+    if dim >= 6 {
+        add_angular_jacobian(&mut j, 4, &tangent1, body2, 1.0, model, data);
+        add_angular_jacobian(&mut j, 4, &tangent1, body1, -1.0, model, data);
+
+        add_angular_jacobian(&mut j, 5, &tangent2, body2, 1.0, model, data);
+        add_angular_jacobian(&mut j, 5, &tangent2, body1, -1.0, model, data);
+    }
 
     j
+}
+
+/// Add angular Jacobian contribution for a body in a given direction.
+///
+/// This computes how joint velocities affect angular velocity of the body
+/// in the specified direction. Used for torsional and rolling constraints.
+#[inline]
+fn add_angular_jacobian(
+    j: &mut DMatrix<f64>,
+    row: usize,
+    direction: &Vector3<f64>,
+    body_id: usize,
+    sign: f64,
+    model: &Model,
+    data: &Data,
+) {
+    if body_id == 0 {
+        return; // World has no DOFs
+    }
+
+    let mut current_body = body_id;
+    while current_body != 0 {
+        let jnt_start = model.body_jnt_adr[current_body];
+        let jnt_end = jnt_start + model.body_jnt_num[current_body];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    // Hinge contributes angular velocity along its axis
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    j[(row, dof_adr)] += sign * direction.dot(&axis);
+                }
+                MjJointType::Slide => {
+                    // Slide joints don't contribute to angular velocity
+                }
+                MjJointType::Ball => {
+                    // Ball joint contributes angular velocity in all 3 axes
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    for i in 0..3 {
+                        let omega_world = rot * Vector3::ith(i, 1.0);
+                        j[(row, dof_adr + i)] += sign * direction.dot(&omega_world);
+                    }
+                }
+                MjJointType::Free => {
+                    // Free joint: only angular DOFs contribute (DOFs 3-5)
+                    j[(row, dof_adr + 3)] += sign * direction.x;
+                    j[(row, dof_adr + 4)] += sign * direction.y;
+                    j[(row, dof_adr + 5)] += sign * direction.z;
+                }
+            }
+        }
+        current_body = model.body_parent[current_body];
+    }
 }
 
 /// Build an orthonormal tangent basis from a normal vector.
@@ -7790,20 +7978,38 @@ fn bodies_share_chain(model: &Model, body_a: usize, body_b: usize) -> bool {
     false
 }
 
+/// Compute starting row index for each contact in the constraint system.
+///
+/// Returns (efc_offsets, nefc) where:
+/// - efc_offsets[i] = starting row for contact i
+/// - nefc = total constraint rows = sum of all contact dimensions
+#[inline]
+fn compute_efc_offsets(contacts: &[Contact]) -> (Vec<usize>, usize) {
+    let mut offsets = Vec::with_capacity(contacts.len());
+    let mut offset = 0;
+    for contact in contacts {
+        offsets.push(offset);
+        offset += contact.dim;
+    }
+    (offsets, offset)
+}
+
 /// Assemble Delassus matrix A and constraint RHS b for contact constraints.
 /// Shared by PGS and CG solvers.
 ///
 /// A[i,j] = J_i * M^{-1} * J_j^T (with CFM regularization on diagonal).
 /// b includes unconstrained acceleration, contact velocities, and Baumgarte
 /// stabilization from solref/solimp.
+///
+/// Returns (A, b, efc_offsets) where efc_offsets[i] is the starting row for contact i.
 fn assemble_contact_system(
     model: &Model,
     data: &Data,
     contacts: &[Contact],
     jacobians: &[DMatrix<f64>],
-) -> (DMatrix<f64>, DVector<f64>) {
+) -> (DMatrix<f64>, DVector<f64>, Vec<usize>) {
     let ncon = contacts.len();
-    let nefc = ncon * 3;
+    let (efc_offsets, nefc) = compute_efc_offsets(contacts);
 
     let mut a = DMatrix::zeros(nefc, nefc);
     let mut b = DVector::zeros(nefc);
@@ -7819,13 +8025,14 @@ fn assemble_contact_system(
     qacc_smooth -= &data.qfrc_bias;
     mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
 
-    // Pre-compute M^{-1} * J^T for each contact
+    // Pre-compute M^{-1} * J^T for each contact (variable dimension per contact)
     let mut minv_jt: Vec<DMatrix<f64>> = Vec::with_capacity(ncon);
-    for jacobian in jacobians {
+    for (k, jacobian) in jacobians.iter().enumerate() {
+        let dim_k = contacts[k].dim;
         let jt = jacobian.transpose();
-        // Solve M * X = J^T for each column
-        let mut minv_jt_contact = DMatrix::zeros(model.nv, 3);
-        for col in 0..3 {
+        // Solve M * X = J^T for each column (dim_k columns)
+        let mut minv_jt_contact = DMatrix::zeros(model.nv, dim_k);
+        for col in 0..dim_k {
             let mut x = jt.column(col).clone_owned();
             mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x);
             minv_jt_contact.set_column(col, &x);
@@ -7852,14 +8059,17 @@ fn assemble_contact_system(
         // Higher d (closer to 1) = stiffer constraint = lower CFM
         let cfm = base_regularization + (1.0 - d) * model.regularization * 100.0;
 
+        let dim_i = contact_i.dim;
+        let offset_i = efc_offsets[i];
+
         // Diagonal block: A[i,i] = J_i * M^{-1} * J_i^T
         let a_ii = jac_i * &minv_jt[i];
-        for ri in 0..3 {
-            for ci in 0..3 {
-                a[(i * 3 + ri, i * 3 + ci)] = a_ii[(ri, ci)];
+        for ri in 0..dim_i {
+            for ci in 0..dim_i {
+                a[(offset_i + ri, offset_i + ci)] = a_ii[(ri, ci)];
             }
             // Add regularization to diagonal
-            a[(i * 3 + ri, i * 3 + ri)] += cfm;
+            a[(offset_i + ri, offset_i + ri)] += cfm;
         }
 
         // Store ERP for RHS computation below
@@ -7933,11 +8143,13 @@ fn assemble_contact_system(
                     continue;
                 }
 
+                let dim_j = contacts[j].dim;
+                let offset_j = efc_offsets[j];
                 let block_ij = jac_i * &minv_jt[j];
-                for ri in 0..3 {
-                    for ci in 0..3 {
-                        a[(i * 3 + ri, j * 3 + ci)] = block_ij[(ri, ci)];
-                        a[(j * 3 + ci, i * 3 + ri)] = block_ij[(ri, ci)]; // Symmetric
+                for ri in 0..dim_i {
+                    for ci in 0..dim_j {
+                        a[(offset_i + ri, offset_j + ci)] = block_ij[(ri, ci)];
+                        a[(offset_j + ci, offset_i + ri)] = block_ij[(ri, ci)]; // Symmetric
                     }
                 }
             }
@@ -7980,12 +8192,53 @@ fn assemble_contact_system(
         //
         // b should be negative when the constraint needs to activate
         // Normal: if J*qacc_smooth < 0 (accelerating into surface), we need λ > 0
-        b[i * 3] = j_qacc_smooth[0] + velocity_damping * vn + depth_correction * contact_i.depth;
-        b[i * 3 + 1] = j_qacc_smooth[1] + vt1; // Friction 1
-        b[i * 3 + 2] = j_qacc_smooth[2] + vt2; // Friction 2
+
+        // Row 0: normal direction (always present)
+        b[offset_i] = j_qacc_smooth[0] + velocity_damping * vn + depth_correction * contact_i.depth;
+
+        // Rows 1-2: tangent directions (dim >= 3: sliding friction)
+        if dim_i >= 3 {
+            b[offset_i + 1] = j_qacc_smooth[1] + vt1; // Friction tangent 1
+            b[offset_i + 2] = j_qacc_smooth[2] + vt2; // Friction tangent 2
+        }
+
+        // Row 3: torsional (dim >= 4: angular velocity about normal)
+        if dim_i >= 4 {
+            let omega1 = compute_body_angular_velocity(data, body_i1);
+            let omega2 = compute_body_angular_velocity(data, body_i2);
+            let rel_omega = omega2 - omega1;
+            let omega_n = rel_omega.dot(&normal);
+            b[offset_i + 3] = j_qacc_smooth[3] + omega_n;
+        }
+
+        // Rows 4-5: rolling (dim >= 6: angular velocity in tangent plane)
+        if dim_i >= 6 {
+            let omega1 = compute_body_angular_velocity(data, body_i1);
+            let omega2 = compute_body_angular_velocity(data, body_i2);
+            let rel_omega = omega2 - omega1;
+            let omega_t1 = rel_omega.dot(&tangent1);
+            let omega_t2 = rel_omega.dot(&tangent2);
+            b[offset_i + 4] = j_qacc_smooth[4] + omega_t1;
+            b[offset_i + 5] = j_qacc_smooth[5] + omega_t2;
+        }
     }
 
-    (a, b)
+    (a, b, efc_offsets)
+}
+
+/// Compute the angular velocity of a body in world frame.
+#[inline]
+fn compute_body_angular_velocity(data: &Data, body_id: usize) -> Vector3<f64> {
+    if body_id == 0 {
+        return Vector3::zeros(); // World has no velocity
+    }
+    // The body's angular velocity is stored in cvel (6D spatial velocity)
+    // cvel[body] = [omega_x, omega_y, omega_z, v_x, v_y, v_z]
+    Vector3::new(
+        data.cvel[body_id].x,
+        data.cvel[body_id].y,
+        data.cvel[body_id].z,
+    )
 }
 
 /// Project lambda onto the friction cone for all contacts.
@@ -8039,7 +8292,7 @@ fn pgs_solve_contacts(
         return (vec![], 0);
     }
 
-    let (a, b) = assemble_contact_system(model, data, contacts, jacobians);
+    let (a, b, _efc_offsets) = assemble_contact_system(model, data, contacts, jacobians);
     pgs_solve_with_system(contacts, &a, &b, max_iterations, tolerance, efc_lambda)
 }
 
@@ -8256,7 +8509,7 @@ fn cg_solve_contacts(
     }
     let nefc = ncon * 3;
 
-    let (a, b) = assemble_contact_system(model, data, contacts, jacobians);
+    let (a, b, _efc_offsets) = assemble_contact_system(model, data, contacts, jacobians);
 
     // Block Jacobi preconditioner
     let precond_inv = compute_block_jacobi_preconditioner(&a, ncon);
@@ -10729,6 +10982,7 @@ mod primitive_collision_tests {
         model.geom_quat = vec![UnitQuaternion::identity(); ngeom];
         model.geom_size = vec![Vector3::new(1.0, 1.0, 1.0); ngeom];
         model.geom_friction = vec![Vector3::new(1.0, 0.005, 0.0001); ngeom];
+        model.geom_condim = vec![3; ngeom]; // Default condim = 3 (sliding friction)
         model.geom_contype = vec![1; ngeom];
         model.geom_conaffinity = vec![1; ngeom];
         model.geom_margin = vec![0.0; ngeom];
@@ -11461,6 +11715,7 @@ mod sensor_tests {
         model.geom_quat.push(UnitQuaternion::identity());
         model.geom_size.push(Vector3::new(0.1, 0.1, 0.1));
         model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        model.geom_condim.push(3);
         model.geom_contype.push(1);
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
@@ -11859,6 +12114,7 @@ mod sensor_tests {
         model.geom_quat.push(UnitQuaternion::identity());
         model.geom_size.push(Vector3::new(0.5, 0.5, 0.5)); // radius 0.5
         model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        model.geom_condim.push(3);
         model.geom_contype.push(1);
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
@@ -11919,6 +12175,7 @@ mod sensor_tests {
         model.geom_quat.push(UnitQuaternion::identity());
         model.geom_size.push(Vector3::new(0.5, 0.5, 0.5));
         model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        model.geom_condim.push(3);
         model.geom_contype.push(1);
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
@@ -12467,6 +12724,7 @@ mod sensor_tests {
         model.geom_quat.push(UnitQuaternion::identity());
         model.geom_size.push(Vector3::new(0.1, 0.1, 0.1));
         model.geom_friction.push(Vector3::new(1.0, 0.005, 0.0001));
+        model.geom_condim.push(3);
         model.geom_contype.push(1);
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
@@ -13629,6 +13887,7 @@ mod cg_solver_unit_tests {
         model.geom_quat = vec![UnitQuaternion::identity()];
         model.geom_size = vec![Vector3::new(0.1, 0.0, 0.0)];
         model.geom_friction = vec![Vector3::new(0.5, 0.005, 0.0001)];
+        model.geom_condim = vec![3];
         model.geom_solref = vec![[0.02, 1.0]];
         model.geom_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
         model.geom_contype = vec![1];
@@ -13648,7 +13907,7 @@ mod cg_solver_unit_tests {
             friction: 0.5,
             dim: 3,
             includemargin: false,
-            mu: [0.5, 0.0],
+            mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
         };
@@ -13687,7 +13946,7 @@ mod cg_solver_unit_tests {
             friction: 0.5,
             dim: 3,
             includemargin: false,
-            mu: [0.5, 0.0],
+            mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
         };
@@ -13832,7 +14091,7 @@ mod cg_solver_unit_tests {
             friction: 0.0, // Frictionless
             dim: 3,
             includemargin: false,
-            mu: [0.0, 0.0],
+            mu: [0.0, 0.0, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
         };
