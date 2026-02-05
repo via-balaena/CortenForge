@@ -357,21 +357,34 @@ correct constraint forces for all contact configurations.
 
 #### Specification
 
-This task is organized into seven sub-tasks. Each is independently testable.
-Dependency order:
+This task is organized into seven sub-tasks. **Phase 1 completed Pre-0 through C.**
+Phase 2 implements D, E, F, G.
+
+**Dependency order:**
 
 ```
 Pre-0 (tangent basis) ─→ A (model plumbing) ──→ B (Jacobian) ──→ C (system assembly) ──→ E (solvers)
-                                                                                        ↗
-                                                 D (cone projection) ──────────────────┘
+        ✅                      ✅                   ✅                   ✅                  ⬚
+                                                                                            ↗
+                                                 D (cone projection) ──────────────────────┘
+                                                         ⬚
                                                  F (force application) ← E
+                                                         ⬚
                                                  G (cone validation) — independent
+                                                         ⬚
 ```
 
-A must land first (all downstream code reads `Contact.dim` and `Contact.mu`).
-B and D can be developed in parallel. C depends on B (Jacobian sizes).
-E depends on C and D. F depends on E (return type change).
-Pre-req 0 should land before any sub-task (tangent basis consistency).
+**Phase 2 remaining sub-tasks:**
+- **D** (cone projection): `project_elliptic_cone()` for condim 1/4/6
+- **E** (solvers): Update PGS/CG to use `efc_offsets`, variable-dim blocks
+- **F** (force application): Add torque for torsional/rolling
+- **G** (cone validation): Pyramidal cone warning, default to elliptic
+
+**Phase 1 completed sub-tasks (for reference only — see code):**
+- Pre-0: Tangent basis unification (all call sites use `contact.frame[]`)
+- A: Model plumbing (`geom_condim`, `Contact.mu: [f64; 5]`)
+- B: Variable-dimension Jacobian (`dim×nv` matrix with angular rows)
+- C: System assembly (`assemble_contact_system()` uses `efc_offsets`)
 
 ---
 
@@ -718,21 +731,21 @@ for (i, lambda) in forces.iter().enumerate() {
 ```
 
 All three solver entry points (`pgs_solve_contacts`, `pgs_solve_with_system`,
-`cg_solve_contacts`) gain an `efc_offsets: &[usize]` parameter.
-`assemble_contact_system` also gains this parameter (it currently recomputes
-`ncon * 3` locally).
+`cg_solve_contacts`) need to use `efc_offsets` for variable-dimension indexing.
 
-**Updated signature:**
+**Phase 1 implemented signature** (already in codebase):
 ```rust
 fn assemble_contact_system(
     model: &Model,
     data: &Data,
     contacts: &[Contact],
     jacobians: &[DMatrix<f64>],
-    efc_offsets: &[usize],
-    nefc: usize,
-) -> (DMatrix<f64>, DVector<f64>)
+) -> (DMatrix<f64>, DVector<f64>, Vec<usize>)  // Returns efc_offsets
 ```
+
+The function computes `efc_offsets` internally via `compute_efc_offsets()` and
+returns it as the third tuple element. Callers extract offsets from the return
+value rather than passing them in.
 
 The return type is unchanged — a 2-tuple of `(A, b)` (Delassus matrix and RHS
 vector). Jacobians are passed **in** as a parameter (computed separately in
@@ -1580,45 +1593,42 @@ instead of normal.
 
 #### Files
 
-**`sim/L0/core/src/mujoco_pipeline.rs`** — modify (15 functions + 2 structs):
+**Phase 2 changes — `sim/L0/core/src/mujoco_pipeline.rs`:**
 
 | Item | Sub-task | Change |
 |------|----------|--------|
-| `compute_contact_jacobian()` | Pre-0, B | Use `contact.frame` (Pre-0); add angular rows, `dim×nv` matrix (B) |
-| `assemble_contact_system()` | Pre-0, C | Use `contact.frame` (Pre-0); variable-dim blocks, `efc_offsets` (C) |
-| `mj_fwd_constraint()` force loop | Pre-0, F | Use `contact.frame` (Pre-0); torque application, `efc_offsets` (F) |
-| `Model` struct | A.1 | Add `geom_condim: Vec<i32>` field |
-| `Model::empty()` | A.1, G.1 | Init `geom_condim` as empty Vec; change `cone: 0` → `cone: 1` |
-| `Contact` struct | A.4 | `mu: [f64; 2]` → `[f64; 5]` |
-| `Contact::with_solver_params()` | A.4 | Add `condim`, `mu` params |
-| `Contact::new()` | A.6 | Infer condim/mu from friction (backward compat) |
-| `make_contact_from_geoms()` | A.5 | Resolve condim, combine all 3 friction components |
-| `Data` struct | E.2 | `efc_lambda: HashMap<K, [f64;3]>` → `HashMap<K, Vec<f64>>` |
-| `compute_efc_offsets()` | C.1 | New helper; called from `mj_fwd_constraint()`, passed to `assemble_contact_system()`, `pgs_*`, `cg_*` |
-| `project_elliptic_cone()` | D.1 | New function |
-| `project_friction_cone()` | D.4 | Condim dispatch, `efc_offsets` |
-| `pgs_solve_contacts()` | E.1 | Pass `efc_offsets`, return `Vec<DVector>` |
-| `pgs_solve_with_system()` | E.1 | Variable-dim GS sweep, return `Vec<DVector>` |
-| `compute_block_jacobi_preconditioner()` | E.3 | `DMatrix` blocks |
-| `apply_preconditioner()` | E.4 | `DVector` blocks |
-| `cg_solve_contacts()` | E.5 | Variable-dim, `DMatrix` direct solve, return `Vec<DVector>` |
-| `extract_forces()` | E.6 | `Vec<DVector<f64>>` return |
-| `apply_contact_torque()` | F.1 | New function (angular J^T) |
-| Touch sensor (`:5805`) | E.2 | Type annotation only (`Vec` access) |
-| Test struct literals (`:13641, :13680, :13825`) | A.4 | Update `mu: [f64; 2]` → `[f64; 5]` |
+| `project_elliptic_cone()` | D.1 | New function for SOC projection |
+| `project_friction_cone()` | D.4 | Update: condim dispatch via `efc_offsets` |
+| `pgs_solve_with_system()` | E.1 | Update: use `efc_offsets`, variable-dim GS sweep |
+| `pgs_solve_contacts()` | E.1b | Update: thread `efc_offsets`, return `Vec<DVector>` |
+| `cg_solve_contacts()` | E.5 | Update: variable-dim, return `Vec<DVector>` |
+| `compute_block_jacobi_preconditioner()` | E.3 | Update: `DMatrix` blocks instead of `Matrix3` |
+| `apply_preconditioner()` | E.4 | Update: `DVector` blocks instead of `Vector3` |
+| `extract_forces()` | E.6 | Update: return `Vec<DVector<f64>>` |
+| `Data.efc_lambda` | E.2 | Update: `HashMap<K, [f64;3]>` → `HashMap<K, Vec<f64>>` |
+| `apply_contact_torque()` | F.1 | New function (angular J^T for torque) |
+| `mj_fwd_constraint()` force loop | F.2 | Update: add torque application for condim ≥ 4 |
+| `Model::empty()` | G.1 | Update: `cone: 0` → `cone: 1` (default to elliptic) |
+| Touch sensor | E.2 | Update: type annotation for `Vec` access |
 
-**`sim/L0/mjcf/src/model_builder.rs`** — modify:
-- `process_geom()` — push `geom.condim` to `Model.geom_condim` (after `:1050`),
-  validate condim to `{1, 3, 4, 6}`
+**Phase 2 changes — `sim/L0/mjcf/src/model_builder.rs`:**
 - `model_from_mjcf()` — pyramidal cone warning (sub-task G.1)
 
-**`sim/L0/tests/integration/`** — new file `condim_friction.rs`:
-- 19 acceptance criteria tests (0–18) + 4 test models (see Test Models above)
+**Phase 2 changes — `sim/L0/tests/integration/`:**
+- New file `condim_friction.rs` with acceptance criteria tests
 - Register in `mod.rs`
-- Tests use `sim_mjcf::load_model(xml)` with MJCF snippets specifying
-  different condim values per geom
-- Jacobian tests (criteria 14–15) use finite-difference verification against
-  analytical Jacobian rows (see FD Verification above)
+
+**Already completed in Phase 1 (no changes needed):**
+- `compute_contact_jacobian()` — uses `contact.frame[]`, returns `dim×nv`
+- `assemble_contact_system()` — uses `contact.frame[]`, variable-dim blocks
+- `compute_efc_offsets()` — already implemented
+- `add_angular_jacobian()` — already implemented
+- `Model.geom_condim` — already added
+- `Contact.mu: [f64; 5]` — already expanded
+- `Contact::with_condim()` — already implemented
+- `make_contact_from_geoms()` — already updated
+- Test struct literals — already updated to `[f64; 5]`
+- `process_geom()` condim validation — already done
 
 #### Design Decisions
 
