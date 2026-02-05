@@ -301,78 +301,52 @@ a parameter through six method signatures and the recursive
 ---
 
 ### 2. Contact Condim (1/4/6) + Friction Cones
-**Status:** Phase 1 Complete | **Effort:** L | **Prerequisites:** None
+**Status:** Phase 1 Complete | **Effort:** M (Phase 2) | **Prerequisites:** None
 
-#### Implementation Status (Phase 1 - Complete)
+#### Implementation Status
 
-The following has been implemented:
-- ✅ `geom_condim: Vec<i32>` added to `Model` struct
-- ✅ `geom_condim` parsed and populated from MJCF loader
-- ✅ `Contact.mu` changed from `[f64; 2]` to `[f64; 5]` (MuJoCo-style)
-- ✅ `make_contact_from_geoms()` computes all friction components (sliding, torsional, rolling)
-- ✅ `Contact::with_condim()` constructor uses condim directly for dimension
-- ✅ `compute_contact_jacobian()` returns variable `dim×nv` matrix with angular rows
-- ✅ `assemble_contact_system()` builds variable-sized matrices using `efc_offsets`
-- ✅ Added `compute_efc_offsets()` and `add_angular_jacobian()` helpers
+**Phase 1 — Complete (PR #46)**
 
-**Remaining Work (Phase 2):**
-The PGS and CG solvers still use `ncon * 3` internally. To fully support condim 1/4/6:
-- `pgs_solve_with_system()`: Change `base = i * 3` to use `efc_offsets[i]`
-- `cg_solve_contacts()`: Change `nefc = ncon * 3` and warmstart from `[f64; 3]` to `Vec<f64>`
-- `compute_block_jacobi_preconditioner()`: Handle variable block sizes (not just 3×3)
-- `extract_forces()`: Return variable-dimension force vectors
-- `project_friction_cone()`: Handle torsional (dim=4) and rolling (dim=6) cone constraints
-- `mj_fwd_constraint()`: Apply torques for torsional/rolling constraints
+Infrastructure for variable contact dimensions is in place:
 
-**Note:** Phase 1 is fully backward-compatible. All contacts default to condim=3, and
-all 565+ tests pass including `test_performance_scaling`.
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `Model.geom_condim: Vec<i32>` | ✅ | Parsed from MJCF, default 3 |
+| `Contact.mu: [f64; 5]` | ✅ | `[sliding1, sliding2, torsional, rolling1, rolling2]` |
+| `Contact::with_condim()` | ✅ | Sets `dim` directly from condim |
+| `make_contact_from_geoms()` | ✅ | Geometric mean per friction type, `max(condim1, condim2)` |
+| `compute_contact_jacobian()` | ✅ | Returns `dim×nv` matrix with rows 0-5 |
+| `add_angular_jacobian()` | ✅ | Helper for torsional/rolling rows |
+| `compute_efc_offsets()` | ✅ | Tracks per-contact row offsets |
+| `assemble_contact_system()` | ✅ | Builds variable-sized Delassus matrix |
 
-#### Current State (Pre-Phase 1)
-The contact solver is hardcoded to condim 3 (normal + 2D tangential friction).
-Twelve functions and data structures must change.
+**Phase 2 — Remaining Work**
 
-**What exists (solver — `mujoco_pipeline.rs`):**
-- `nefc = ncon * 3` hardcoded at three locations (`:7806`, `:8062`, `:8257`)
-- `compute_contact_jacobian()` (`:7619`) returns a fixed 3×nv matrix (rows:
-  normal, tangent1, tangent2) — no angular rows exist
-- `assemble_contact_system()` (`:7799`) builds 3×3 blocks for the Delassus
-  matrix. `M⁻¹ * Jᵀ` solve loop (`:7828`) iterates `for col in 0..3`
-- `project_friction_cone()` (`:7994`) implements circular cone only
-  (`‖λ_t‖ ≤ μ * λ_n`)
-- `compute_block_jacobi_preconditioner()` (`:8158`) extracts `Matrix3` blocks
-- `apply_preconditioner()` (`:8200`) operates on `Vector3` blocks
-- `pgs_solve_with_system()` (`:8049`) uses `base = i * 3`, inline 3-row
-  residual/update/projection
-- `cg_solve_contacts()` (`:8244`) uses `nefc = ncon * 3`, single-contact direct
-  solve with `Matrix3` / `Vector3`, warmstart as `[f64; 3]`
-- `extract_forces()` (`:8010`) returns `Vec<Vector3<f64>>`
-- Force application in `mj_fwd_constraint()` (`:9731`) converts lambda to a
-  world-frame `Vector3` force and calls `apply_contact_force()` — no torque path
+The PGS and CG solvers still use `ncon * 3` internally. Functions requiring updates:
 
-**What exists (contact creation):**
-- `make_contact_from_geoms()` (`:3580`) only reads `geom_friction[i].x` (sliding)
-  and combines via `sqrt(μ₁ * μ₂)`. Torsional (`.y`) and rolling (`.z`) are
-  **never read**
-- `Contact::with_solver_params()` (`:1277`) sets `dim: if friction > 0.0 { 3 }
-  else { 1 }` and `mu: [friction, friction * 0.005]` — dim is stored but never
-  consumed by the solver
-- `Contact.mu` is `[f64; 2]` — MuJoCo uses 5 friction coefficients per contact
+| Function | Current | Required Change |
+|----------|---------|-----------------|
+| `pgs_solve_with_system()` | `base = i * 3` | Use `efc_offsets[i]` |
+| `cg_solve_contacts()` | `nefc = ncon * 3` | Sum of `contact.dim` |
+| `cg_solve_contacts()` warmstart | `HashMap<_, [f64; 3]>` | `HashMap<_, Vec<f64>>` |
+| `compute_block_jacobi_preconditioner()` | `Matrix3` blocks | Variable `dim×dim` blocks |
+| `extract_forces()` | `Vec<Vector3<f64>>` | Variable-length force vectors |
+| `project_friction_cone()` | Circular cone (dim=3) | Elliptic cones (dim=4,6) |
+| `mj_fwd_constraint()` | Force only | Add torque for torsional/rolling |
 
-**What exists (model / MJCF):**
-- `MjcfGeom.condim` (`types.rs:836`) is parsed from XML (`parser.rs:921`) with
-  default 3, but `model_builder.rs` **never propagates it to `Model`** — there
-  is no `Model.geom_condim` field
-- `Model.cone: u8` (`:1112`) is parsed and stored (0=pyramidal, 1=elliptic)
-  but **ignored** by the solver
-- `geom_friction: Vec<Vector3<f64>>` stores all three friction components per
-  geom but only `.x` is consumed
+**Pre-req 0 (tangent basis unification)** was deferred — solver still uses
+`build_tangent_basis()` rather than `contact.frame[]`. This is a cleanup
+opportunity but not blocking.
 
-**Net result:**
-- **condim 1** (frictionless): Not supported — all contacts get friction rows
-- **condim 3** (sliding friction): Only working mode
-- **condim 4** (+ torsional): Torsional friction silently dropped
-- **condim 6** (+ rolling): Rolling friction silently dropped
-- **Elliptic/pyramidal cones**: Parsed, ignored — circular cone always used
+**Elliptic/pyramidal cone types** (`Model.cone`) remain unimplemented.
+
+**Current behavior:**
+- **condim 1** (frictionless): Jacobian correct, but solver pads to 3 rows
+- **condim 3** (sliding): Fully functional
+- **condim 4/6** (torsional/rolling): Jacobian/system correct, but solver
+  treats as condim=3 (extra rows ignored)
+
+All 565+ tests pass including `test_performance_scaling`.
 
 #### Objective
 Support the full range of MuJoCo contact dimensionalities (1, 3, 4, 6) and

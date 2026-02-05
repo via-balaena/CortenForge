@@ -3668,7 +3668,7 @@ fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Co
 /// This helper combines friction (geometric mean) and solver params from both
 /// geoms according to MuJoCo conventions:
 /// - friction: geometric mean of both geoms (per friction type)
-/// - condim: minimum of both geom condim values
+/// - condim: maximum of both geom condim values (sufficient dimensionality)
 /// - solref: element-wise minimum (stiffer wins)
 /// - solimp: element-wise maximum (harder wins)
 #[inline]
@@ -3690,11 +3690,11 @@ fn make_contact_from_geoms(
     let torsional = (f1.y * f2.y).sqrt();
     let rolling = (f1.z * f2.z).sqrt();
 
-    // Contact dimension: minimum of both geom condim values
-    // MuJoCo uses min so the more constrained geom "wins"
+    // Contact dimension: maximum of both geom condim values
+    // MuJoCo uses max so the contact has sufficient dimensionality
     let condim1 = model.geom_condim[geom1];
     let condim2 = model.geom_condim[geom2];
-    let condim = condim1.min(condim2);
+    let condim = condim1.max(condim2);
 
     // Combine solver parameters from both geoms
     let (solref, solimp) = combine_solver_params(
