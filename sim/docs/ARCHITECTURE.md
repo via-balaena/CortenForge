@@ -117,7 +117,7 @@ Each timestep executes these stages in order:
 ```
 forward():
   Position     mj_fwd_position       FK from qpos → body poses
-               mj_fwd_tendon         Tendon lengths + Jacobians (fixed tendons)
+               mj_fwd_tendon         Tendon lengths + Jacobians (fixed + spatial)
                mj_collision           Broad + narrow phase contacts
   Velocity     mj_fwd_velocity        Body spatial velocities + tendon velocities
                mj_actuator_length     Actuator length/velocity from transmission
@@ -311,9 +311,11 @@ Standalone cable-driven actuation and routing library:
 `TendonActuator` trait: `rest_length`, `compute_length`, `compute_velocity`,
 `compute_force`, `jacobian`, `num_joints` (6 methods).
 
-**Note:** Fixed tendons are implemented directly in the MuJoCo pipeline
-(`mj_fwd_tendon` in sim-core) and do not use sim-tendon. This crate remains
-a standalone reference library for advanced tendon analysis.
+**Note:** Both fixed and spatial tendons are implemented directly in the MuJoCo
+pipeline (`mj_fwd_tendon` in sim-core). Spatial tendons include sphere and
+cylinder wrapping, sidesite disambiguation, pulley divisors, and Jacobian
+computation via `accumulate_point_jacobian()`. This crate remains a standalone
+reference library for advanced tendon analysis.
 
 ### sim-mjcf
 
@@ -324,7 +326,8 @@ contype/conaffinity contact bitmasks, `<contact>` `<pair>`/`<exclude>` elements
 (two-mechanism collision architecture with per-pair parameter overrides),
 default class inheritance, and MJB binary format.
 `<tendon>` and `<sensor>` elements are parsed and wired into the pipeline
-(fixed tendons fully supported; spatial tendons scaffolded but deferred;
+(fixed and spatial tendons fully supported, including sphere/cylinder wrapping,
+sidesite disambiguation, and pulley divisors;
 all 30 pipeline sensor types functional and wired from MJCF via
 `process_sensors()` in `model_builder.rs`). The model builder expands all 8 actuator
 shortcut types to their general gain/bias/dynamics representation (matching

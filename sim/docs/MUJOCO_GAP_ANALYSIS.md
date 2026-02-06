@@ -31,9 +31,10 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ### Placeholder / Stub (in pipeline)
 - Pyramidal friction cones — `cone` field stored but solver uses elliptic cones (warning emitted if pyramidal requested)
-- Site actuation — placeholder in `mj_fwd_actuation()` (requires spatial tendon support)
+- Site actuation — placeholder in `mj_fwd_actuation()` (spatial tendons now complete; site-transmission actuators are next, see [future_work_2 #5](./todo/future_work_2.md))
 
 ### Recently Implemented (previously stubs)
+- Spatial tendon pipeline ✅ — 3D routing with `mj_fwd_tendon_spatial()`, sphere/cylinder wrapping, sidesite disambiguation, pulley divisors, free-joint Jacobians, `accumulate_point_jacobian()`, 31 acceptance tests verified against MuJoCo 3.4.0 ([future_work_2 #4](./todo/future_work_2.md))
 - General gain/bias actuator force model ✅ — all 8 shortcut types expanded to gain/bias/dynamics, `force = gain * input + bias`, GainType/BiasType dispatch, FilterExact integration ([future_work_1 #12](./todo/future_work_1.md))
 - Muscle pipeline ✅ — MuJoCo FLV curves, activation dynamics, act_dot architecture, RK4 integration ([future_work_1 #5](./todo/future_work_1.md))
 - Activation dynamics ✅ — Filter, FilterExact, Integrator, Muscle types all functional; `data.act` integrated by Euler/RK4
@@ -70,13 +71,13 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Non-convex mesh collision | TriangleMesh ↔ all primitives + mesh-mesh with BVH acceleration | [§5](#5-geom-types-collision-shapes) |
 | SDF collision | All 10 shape combinations (Sphere, Capsule, Box, Cylinder, Ellipsoid, ConvexMesh, Plane, TriangleMesh, HeightField, Sdf↔Sdf) | [§5](#5-geom-types-collision-shapes) |
 | MJCF `<default>` element | ✅ Full | `DefaultResolver` wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors) | [§13](#13-model-format) |
-| MJCF `<tendon>` parsing + pipeline | Fixed tendons fully wired (kinematics, actuation, passive, constraints, sensors); spatial tendons scaffolded | [§13](#13-model-format) |
+| MJCF `<tendon>` parsing + pipeline | Fixed + spatial tendons fully wired (kinematics, wrapping, actuation, passive, constraints, sensors) | [§13](#13-model-format) |
 | MJCF `<sensor>` parsing + wiring | 32 sensor types parsed; 30 wired to pipeline via `process_sensors()`; 2 deferred | [§13](#13-model-format) |
 | Muscle pipeline | MuJoCo FLV curves, activation dynamics (Millard 2013), act_dot/integrator architecture, RK4 activation | [§6](#6-actuation) |
 | Multi-threading | `parallel` feature with rayon (island-parallel solving removed in Phase 3) | [§12](#12-performance-optimizations) |
 | SIMD optimization | `sim-simd` crate with `Vec3x4`, `Vec3x8`, batch operations | [§12](#12-performance-optimizations) |
 
-**For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics), sensors (30 pipeline types, all wired from MJCF), and fixed tendons are functional. Spatial tendons and deformable bodies require pipeline integration before they produce correct results. See [`sim/docs/todo/index.md`](./todo/index.md) for the full gap list.
+**For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics), sensors (30 pipeline types, all wired from MJCF), and fixed + spatial tendons (including sphere/cylinder wrapping, sidesite, pulley) are functional. Deformable bodies require pipeline integration before they produce correct results. See [`sim/docs/todo/index.md`](./todo/index.md) for the full gap list.
 
 ---
 
@@ -766,13 +767,13 @@ let obs = touch.read_as_observation(&contacts, 0.001);
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
 | Fixed tendons | Yes | `FixedTendon` | ✅ **Pipeline** — `mj_fwd_tendon_fixed()`, full kinematics/actuation/passive/constraints | - | - |
-| Spatial tendons | Yes | `SpatialTendon` | **Scaffolded** (type dispatch exists, zeroed at runtime; sim-tendon has standalone impl) | - | - |
-| Wrapping (sphere/cylinder) | Yes | `SphereWrap`, `CylinderWrap` | **Standalone** (sim-tendon crate, not in pipeline) | - | - |
-| Pulley systems | Yes | `PulleySystem` | **Standalone** (sim-tendon crate, not in pipeline) | - | - |
+| Spatial tendons | Yes | `SpatialTendon` | ✅ **Pipeline** — `mj_fwd_tendon_spatial()`, 3D routing, Jacobian via `accumulate_point_jacobian()`, passive/constraints/actuation | - | - |
+| Wrapping (sphere/cylinder) | Yes | `sphere_wrap`, `cylinder_wrap` | ✅ **Pipeline** — dual-candidate tangent selection, sidesite disambiguation, helical arc length | - | - |
+| Pulley systems | Yes | Pulley divisor | ✅ **Pipeline** — `WrapType::Pulley` pair-skip, length/Jacobian scaling by divisor | - | - |
 
-> **Fixed tendons are fully integrated into the pipeline.** The model builder (`process_tendons()`) converts MJCF `<tendon><fixed>` elements into pipeline Model arrays. `mj_fwd_tendon()` computes tendon lengths and Jacobians in `mj_fwd_position()`, tendon velocities in `mj_fwd_velocity()`, passive forces (spring/damper/friction) in `mj_fwd_passive()`, limit constraints in `mj_fwd_constraint()`, and actuation via J^T mapping in `mj_fwd_actuation()`. TendonPos/TendonVel/ActuatorPos/ActuatorVel sensors read live tendon data. Spatial tendons are scaffolded (type dispatch, wrap arrays) but deferred. sim-tendon remains a standalone reference crate. See [future_work_1 #4](./todo/future_work_1.md).
+> **Both fixed and spatial tendons are fully integrated into the pipeline.** The model builder (`process_tendons()`) converts MJCF `<tendon><fixed>` and `<tendon><spatial>` elements into pipeline Model arrays. `mj_fwd_tendon()` computes tendon lengths and Jacobians in `mj_fwd_position()` (fixed via linear coupling, spatial via 3D pairwise routing with `accumulate_point_jacobian()`), tendon velocities in `mj_fwd_velocity()`, passive forces (spring/damper/friction) in `mj_fwd_passive()`, limit constraints in `mj_fwd_constraint()`, and actuation via J^T mapping in `mj_fwd_actuation()`. Spatial tendons support sphere and cylinder wrapping (`sphere_wrap`, `cylinder_wrap`), sidesite disambiguation, pulley divisors, and free-joint Jacobians. All tendon sensor types (TendonPos/TendonVel/ActuatorPos/ActuatorVel) read live tendon data. See [future_work_1 #4](./todo/future_work_1.md), [future_work_2 #4](./todo/future_work_2.md).
 
-### Implementation Notes: Tendons ✅ COMPLETED (fixed tendons in pipeline; sim-tendon crate standalone)
+### Implementation Notes: Tendons ✅ COMPLETED (fixed + spatial tendons in pipeline; sim-tendon crate standalone)
 
 Created `sim-tendon` crate with comprehensive tendon/cable modeling for cable-driven robots and biomechanics:
 
@@ -1284,7 +1285,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<geom>` | Partial | sphere, box, capsule, cylinder, ellipsoid, plane, mesh (convex + non-convex); hfield/sdf parsed but fall back to Box |
 | `<site>` | Parsed | Markers (not used in physics) |
 | `<actuator>` | Full | motor, position, velocity, cylinder, muscle, adhesion, damper, general |
-| `<tendon>` | Full (fixed) | Fixed tendons fully wired into pipeline via `process_tendons()`; spatial tendons scaffolded but deferred |
+| `<tendon>` | Full | Fixed + spatial tendons fully wired into pipeline via `process_tendons()`; spatial tendons include sphere/cylinder wrapping, sidesite, pulley |
 | `<sensor>` | Full | 32 sensor types parsed (all MuJoCo types); 30 wired into pipeline via `process_sensors()`; 2 deferred (JointLimitFrc, TendonLimitFrc) |
 | `<contact>` | Full | `<pair>` (explicit geom pairs with per-pair condim/friction/solref/solimp overrides), `<exclude>` (body-pair exclusions), contype/conaffinity bitmasks; two-mechanism collision architecture |
 
@@ -1479,7 +1480,7 @@ These joint types now have full constraint solver support:
 
 1. ~~**MJCF loading**: For MuJoCo model compatibility~~ ✅
 2. ~~**Muscle actuators**: For biomechanics~~ ✅ **Pipeline** (MuJoCo FLV model in `mj_fwd_actuation()` with activation dynamics, control/force clamping; sim-muscle crate provides richer standalone Hill-type model; see [future_work_1 #5](./todo/future_work_1.md) ✅)
-3. ~~**Tendons**: For cable robots~~ ✅ **Pipeline** (fixed tendons fully integrated; spatial tendons deferred; see [future_work_1 #4](./todo/future_work_1.md))
+3. ~~**Tendons**: For cable robots~~ ✅ **Pipeline** (fixed + spatial tendons fully integrated, including sphere/cylinder wrapping, sidesite, pulley; see [future_work_1 #4](./todo/future_work_1.md), [future_work_2 #4](./todo/future_work_2.md))
 4. ~~**Deformables**: For soft body simulation~~ ✅ → ⚠️ **Standalone** (sim-deformable crate exists, not called from `Data::step()`; see [future_work_4 #11](./todo/future_work_4.md))
 
 ### ⚠️ Phase 4: Solver & Performance (built then partially removed)
