@@ -29,6 +29,7 @@ use crate::types::{
     MjcfActuator, MjcfActuatorType, MjcfBody, MjcfContact, MjcfEquality, MjcfGeom, MjcfGeomType,
     MjcfInertial, MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption,
     MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon, MjcfTendonType,
+    SpatialPathElement,
 };
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -355,6 +356,7 @@ struct ModelBuilder {
     wrap_type: Vec<WrapType>,
     wrap_objid: Vec<usize>,
     wrap_prm: Vec<f64>,
+    wrap_sidesite: Vec<usize>,
 
     // Equality constraint arrays
     eq_type: Vec<EqualityType>,
@@ -531,6 +533,7 @@ impl ModelBuilder {
             wrap_type: vec![],
             wrap_objid: vec![],
             wrap_prm: vec![],
+            wrap_sidesite: vec![],
 
             // Actuator name lookup
             actuator_name_to_id: HashMap::new(),
@@ -1244,30 +1247,83 @@ impl ModelBuilder {
                         self.wrap_type.push(WrapType::Joint);
                         self.wrap_objid.push(dof_adr);
                         self.wrap_prm.push(*coef);
+                        self.wrap_sidesite.push(usize::MAX);
                     }
                 }
                 MjcfTendonType::Spatial => {
-                    // Spatial tendon wrap objects: sites, wrapping geoms.
-                    // Log a one-time warning at model load time.
-                    warn!(
-                        "Tendon '{}' is spatial — spatial tendons are not yet implemented \
-                         and will produce zero forces. Fixed tendons are fully supported.",
-                        tendon.name
-                    );
-                    for site_name in &tendon.sites {
-                        let site_idx =
-                            *self
-                                .site_name_to_id
-                                .get(site_name.as_str())
-                                .ok_or_else(|| ModelConversionError {
-                                    message: format!(
-                                        "Tendon '{}' references unknown site '{}'",
-                                        tendon.name, site_name
-                                    ),
-                                })?;
-                        self.wrap_type.push(WrapType::Site);
-                        self.wrap_objid.push(site_idx);
-                        self.wrap_prm.push(1.0); // Default divisor
+                    for elem in &tendon.path_elements {
+                        match elem {
+                            SpatialPathElement::Site { site } => {
+                                let site_idx = *self
+                                    .site_name_to_id
+                                    .get(site.as_str())
+                                    .ok_or_else(|| ModelConversionError {
+                                        message: format!(
+                                            "Tendon '{}' references unknown site '{}'",
+                                            tendon.name, site
+                                        ),
+                                    })?;
+                                self.wrap_type.push(WrapType::Site);
+                                self.wrap_objid.push(site_idx);
+                                self.wrap_prm.push(0.0);
+                                self.wrap_sidesite.push(usize::MAX);
+                            }
+                            SpatialPathElement::Geom { geom, sidesite } => {
+                                let geom_id =
+                                    *self.geom_name_to_id.get(geom.as_str()).ok_or_else(|| {
+                                        ModelConversionError {
+                                            message: format!(
+                                                "Tendon '{}' references unknown geom '{}'",
+                                                tendon.name, geom
+                                            ),
+                                        }
+                                    })?;
+                                // Validate geom type: must be Sphere or Cylinder
+                                let gt = self.geom_type[geom_id];
+                                if gt != GeomType::Sphere && gt != GeomType::Cylinder {
+                                    return Err(ModelConversionError {
+                                        message: format!(
+                                            "Tendon '{}' wrapping geom '{}' has type {:?}, \
+                                             but only Sphere and Cylinder are supported",
+                                            tendon.name, geom, gt
+                                        ),
+                                    });
+                                }
+                                // Validate geom radius > 0 (rule 5)
+                                let radius = self.geom_size[geom_id].x;
+                                if radius <= 0.0 {
+                                    return Err(ModelConversionError {
+                                        message: format!(
+                                            "Tendon '{}' wrapping geom '{}' has zero or \
+                                             negative radius {}",
+                                            tendon.name, geom, radius
+                                        ),
+                                    });
+                                }
+                                let ss_id = if let Some(ss) = sidesite {
+                                    *self.site_name_to_id.get(ss.as_str()).ok_or_else(|| {
+                                        ModelConversionError {
+                                            message: format!(
+                                                "Tendon '{}' references unknown sidesite '{}'",
+                                                tendon.name, ss
+                                            ),
+                                        }
+                                    })?
+                                } else {
+                                    usize::MAX
+                                };
+                                self.wrap_type.push(WrapType::Geom);
+                                self.wrap_objid.push(geom_id);
+                                self.wrap_prm.push(0.0);
+                                self.wrap_sidesite.push(ss_id);
+                            }
+                            SpatialPathElement::Pulley { divisor } => {
+                                self.wrap_type.push(WrapType::Pulley);
+                                self.wrap_objid.push(0);
+                                self.wrap_prm.push(*divisor);
+                                self.wrap_sidesite.push(usize::MAX);
+                            }
+                        }
                     }
                 }
             }
@@ -2242,6 +2298,7 @@ impl ModelBuilder {
             wrap_type: self.wrap_type,
             wrap_objid: self.wrap_objid,
             wrap_prm: self.wrap_prm,
+            wrap_sidesite: self.wrap_sidesite,
 
             // Equality constraints (populated by process_equality_constraints)
             neq: self.eq_type.len(),
@@ -2296,6 +2353,10 @@ impl ModelBuilder {
 
         // Pre-compute implicit integration parameters (K, D, q_eq diagonals)
         model.compute_implicit_params();
+
+        // Compute tendon_length0 for spatial tendons (requires FK via mj_fwd_position).
+        // Must run before compute_muscle_params() which needs valid tendon_length0.
+        model.compute_spatial_tendon_length0();
 
         // Pre-compute muscle-derived parameters (lengthrange, acc0, F0)
         model.compute_muscle_params();

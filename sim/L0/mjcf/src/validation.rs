@@ -339,23 +339,39 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
 /// Returns Err on fatal issues (unknown references), matching the existing
 /// validation pattern which uses `Result<()>` with `MjcfError`.
 pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
-    // Collect joint and site names from the body tree (joints/sites are nested
-    // inside MjcfBody, not top-level on MjcfModel).
+    // Collect joint, site, and geom names from the body tree (joints/sites/geoms
+    // are nested inside MjcfBody, not top-level on MjcfModel).
     let mut joint_names = HashSet::new();
     let mut site_names = HashSet::new();
-    fn collect_names(body: &MjcfBody, joints: &mut HashSet<String>, sites: &mut HashSet<String>) {
+    let mut geom_names = HashSet::new();
+    fn collect_names(
+        body: &MjcfBody,
+        joints: &mut HashSet<String>,
+        sites: &mut HashSet<String>,
+        geoms: &mut HashSet<String>,
+    ) {
         for joint in &body.joints {
             joints.insert(joint.name.clone());
         }
         for site in &body.sites {
             sites.insert(site.name.clone());
         }
+        for geom in &body.geoms {
+            if let Some(ref name) = geom.name {
+                geoms.insert(name.clone());
+            }
+        }
         for child in &body.children {
-            collect_names(child, joints, sites);
+            collect_names(child, joints, sites, geoms);
         }
     }
-    // Collect from worldbody itself (may have sites) and all children
-    collect_names(&model.worldbody, &mut joint_names, &mut site_names);
+    // Collect from worldbody itself (may have sites/geoms) and all children
+    collect_names(
+        &model.worldbody,
+        &mut joint_names,
+        &mut site_names,
+        &mut geom_names,
+    );
 
     for tendon in &model.tendons {
         // Fixed tendons must reference existing joints with valid coefficients
@@ -388,27 +404,174 @@ pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
             }
         }
 
-        // Spatial tendons must reference existing sites
+        // Spatial tendons: validate path_elements ordering, name resolution, and constraints
         if tendon.tendon_type == MjcfTendonType::Spatial {
-            if tendon.sites.len() < 2 {
+            use crate::types::SpatialPathElement;
+
+            let site_count = tendon
+                .path_elements
+                .iter()
+                .filter(|e| matches!(e, SpatialPathElement::Site { .. }))
+                .count();
+
+            // Rule 3: must have at least 2 sites
+            if site_count < 2 {
                 return Err(MjcfError::invalid_option(
                     "tendon",
                     format!(
                         "Spatial tendon '{}' needs at least 2 sites, has {}",
-                        tendon.name,
-                        tendon.sites.len()
+                        tendon.name, site_count
                     ),
                 ));
             }
-            for site_name in &tendon.sites {
-                if !site_names.contains(site_name.as_str()) {
+
+            // Rule 1: path must start and end with a Site
+            if let Some(first) = tendon.path_elements.first() {
+                if !matches!(first, SpatialPathElement::Site { .. }) {
                     return Err(MjcfError::invalid_option(
                         "tendon",
                         format!(
-                            "Tendon '{}' references unknown site '{}'",
-                            tendon.name, site_name
+                            "Spatial tendon '{}' path must start with a Site element",
+                            tendon.name
                         ),
                     ));
+                }
+            }
+            if let Some(last) = tendon.path_elements.last() {
+                if !matches!(last, SpatialPathElement::Site { .. }) {
+                    return Err(MjcfError::invalid_option(
+                        "tendon",
+                        format!(
+                            "Spatial tendon '{}' path must end with a Site element",
+                            tendon.name
+                        ),
+                    ));
+                }
+            }
+
+            // Rules 2, 6: validate element adjacency
+            for (i, elem) in tendon.path_elements.iter().enumerate() {
+                match elem {
+                    SpatialPathElement::Geom { .. } => {
+                        // Rule 2: every Geom must be immediately followed by a Site
+                        let next = tendon.path_elements.get(i + 1);
+                        if !matches!(next, Some(SpatialPathElement::Site { .. })) {
+                            return Err(MjcfError::invalid_option(
+                                "tendon",
+                                format!(
+                                    "Spatial tendon '{}': Geom element at position {} \
+                                     must be immediately followed by a Site element",
+                                    tendon.name, i
+                                ),
+                            ));
+                        }
+                    }
+                    SpatialPathElement::Pulley { divisor } => {
+                        // Rule 7: divisor must be positive
+                        if *divisor <= 0.0 {
+                            return Err(MjcfError::invalid_option(
+                                "tendon",
+                                format!(
+                                    "Spatial tendon '{}': Pulley at position {} \
+                                     has non-positive divisor {}",
+                                    tendon.name, i, divisor
+                                ),
+                            ));
+                        }
+                        // Rule 6: Pulley must not be immediately followed by a Geom
+                        let next = tendon.path_elements.get(i + 1);
+                        if matches!(next, Some(SpatialPathElement::Geom { .. })) {
+                            return Err(MjcfError::invalid_option(
+                                "tendon",
+                                format!(
+                                    "Spatial tendon '{}': Pulley at position {} \
+                                     must not be immediately followed by a Geom element",
+                                    tendon.name, i
+                                ),
+                            ));
+                        }
+                    }
+                    SpatialPathElement::Site { .. } => {}
+                }
+            }
+
+            // Rule 8: each pulley-delimited branch must contain at least 2 sites (warning)
+            {
+                let mut branch_start = 0;
+                let mut branch_idx = 0usize;
+                for (i, elem) in tendon.path_elements.iter().enumerate() {
+                    if matches!(elem, SpatialPathElement::Pulley { .. }) {
+                        let branch_sites = tendon.path_elements[branch_start..i]
+                            .iter()
+                            .filter(|e| matches!(e, SpatialPathElement::Site { .. }))
+                            .count();
+                        if branch_sites < 2 {
+                            tracing::warn!(
+                                "Spatial tendon '{}': branch {} (elements {}..{}) \
+                                 has fewer than 2 sites",
+                                tendon.name,
+                                branch_idx,
+                                branch_start,
+                                i
+                            );
+                        }
+                        branch_start = i + 1;
+                        branch_idx += 1;
+                    }
+                }
+                // Final branch (after last pulley or entire path if no pulleys)
+                let branch_sites = tendon.path_elements[branch_start..]
+                    .iter()
+                    .filter(|e| matches!(e, SpatialPathElement::Site { .. }))
+                    .count();
+                if branch_sites < 2 {
+                    tracing::warn!(
+                        "Spatial tendon '{}': branch {} (elements {}..) \
+                         has fewer than 2 sites",
+                        tendon.name,
+                        branch_idx,
+                        branch_start
+                    );
+                }
+            }
+
+            // Rule 4: all referenced names must resolve
+            for elem in &tendon.path_elements {
+                match elem {
+                    SpatialPathElement::Site { site } => {
+                        if !site_names.contains(site.as_str()) {
+                            return Err(MjcfError::invalid_option(
+                                "tendon",
+                                format!(
+                                    "Tendon '{}' references unknown site '{}'",
+                                    tendon.name, site
+                                ),
+                            ));
+                        }
+                    }
+                    SpatialPathElement::Geom { geom, sidesite } => {
+                        if !geom_names.contains(geom.as_str()) {
+                            return Err(MjcfError::invalid_option(
+                                "tendon",
+                                format!(
+                                    "Tendon '{}' references unknown geom '{}'",
+                                    tendon.name, geom
+                                ),
+                            ));
+                        }
+                        if let Some(ss) = sidesite {
+                            if !site_names.contains(ss.as_str()) {
+                                return Err(MjcfError::invalid_option(
+                                    "tendon",
+                                    format!(
+                                        "Tendon '{}' references unknown sidesite '{}'",
+                                        tendon.name, ss
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    SpatialPathElement::Pulley { .. } => {}
                 }
             }
         }
