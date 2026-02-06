@@ -157,11 +157,21 @@ mj_runge_kutta() [RungeKutta4]:
 
 ### Pipeline
 
+MuJoCo's two-mechanism architecture:
+
+**Mechanism 1 (automatic pipeline):**
+
 | Phase | Method | Output |
 |-------|--------|--------|
 | Broad | Sweep-and-prune on AABBs | Candidate pairs |
-| Filter | contype/conaffinity bitmasks, parent-child exclusion | Filtered pairs |
+| Filter | Body-pair excludes, explicit pair-set suppression, same-body, parent-child, contype/conaffinity bitmasks | Filtered pairs |
 | Narrow | Per-pair geometry tests | Contact points |
+
+**Mechanism 2 (explicit `<pair>` pipeline):**
+
+Explicit `<pair>` entries bypass all kinematic and bitmask filters. They go
+through a bounding-sphere distance cull and narrow-phase, then
+`apply_pair_overrides` applies per-pair condim/friction/solref/solimp.
 
 ### Narrow Phase Dispatch
 
@@ -310,8 +320,9 @@ a standalone reference library for advanced tendon analysis.
 MuJoCo XML format parser. Supports: bodies, joints (hinge, slide, ball, free),
 geoms (sphere, box, capsule, cylinder, ellipsoid, plane, mesh), actuators
 (motor, position, velocity, general, muscle, cylinder, damper, adhesion),
-contype/conaffinity contact bitmasks, default class inheritance, and MJB binary
-format. **Note:** `<contact>` `<pair>`/`<exclude>` elements are not parsed.
+contype/conaffinity contact bitmasks, `<contact>` `<pair>`/`<exclude>` elements
+(two-mechanism collision architecture with per-pair parameter overrides),
+default class inheritance, and MJB binary format.
 `<tendon>` and `<sensor>` elements are parsed and wired into the pipeline
 (fixed tendons fully supported; spatial tendons scaffolded but deferred;
 all 30 pipeline sensor types functional and wired from MJCF via

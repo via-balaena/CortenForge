@@ -82,7 +82,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<extension>` | ✓ | ❌ | Plugin system, low priority |
 | `<asset>` | ✓ | ⚠️ | Mesh, texture refs |
 | `<worldbody>` | ✓ | ✓ | Body hierarchy |
-| `<contact>` | ✓ | ✓ | Contact filtering |
+| `<contact>` | ✓ | ✓ | `<pair>`, `<exclude>`, contype/conaffinity bitmasks |
 | `<equality>` | ✓ | ✓ | Equality constraints |
 | `<tendon>` | ✓ | ✓ | Fixed and spatial tendons |
 | `<actuator>` | ✓ | ✓ | All 8 shortcut types (motor, position, velocity, damper, cylinder, adhesion, muscle, general) with MuJoCo-compatible gain/bias force model, GainType/BiasType dispatch, FilterExact dynamics |

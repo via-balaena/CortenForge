@@ -19,7 +19,7 @@ Priority is **Correctness + RL Impact**, tie-broken by inverse Effort.
 |---|------|-----------|-------------|--------|---------------|------|--------|
 | 1 | `<default>` class resolution | High | **Critical** | S | None | [future_work_2.md](./future_work_2.md) | |
 | 2 | Contact condim (1/4/6) + friction cones | Medium | **Critical** | L | None | [future_work_2.md](./future_work_2.md) | ✅ Complete |
-| 3 | `<contact>` pair/exclude | Medium | High | M | None | [future_work_2.md](./future_work_2.md) | |
+| 3 | `<contact>` pair/exclude | Medium | High | M | None | [future_work_2.md](./future_work_2.md) | ✅ Complete |
 | 4 | Spatial tendons + wrapping | Low | High | M | None | [future_work_2.md](./future_work_2.md) | |
 | 5 | Site-transmission actuators | Low | High | M | #4 | [future_work_2.md](./future_work_2.md) | |
 | 6 | Height field + SDF collision (MJCF wiring) | Low | Medium | S | None | [future_work_3.md](./future_work_3.md) | |

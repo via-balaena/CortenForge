@@ -1523,13 +1523,14 @@ solver loop. This is better implemented as a separate task once elliptic cones
 are working.
 
 **Not in scope: per-pair condim override.** `<contact><pair condim="...">` is
-task #3 (contact pair/exclude). This task reads condim from `geom_condim` only.
+task #3 (contact pair/exclude, now implemented — see §3). This task reads
+condim from `geom_condim` only.
 
 **Not in scope: anisotropic sliding from MJCF.** MuJoCo supports different
 `mu[0]` and `mu[1]` (sliding1 ≠ sliding2) per contact, but only via
-`<contact><pair>` overrides. Per-geom friction has a single sliding value that
-fills both slots. The elliptic projection handles anisotropic `mu` correctly
-if provided by a future pair override.
+`<contact><pair>` overrides (now implemented in task #3 — see §3). Per-geom
+friction has a single sliding value that fills both slots. The elliptic
+projection handles anisotropic `mu` correctly when provided by a pair override.
 
 **Not in scope: geom priority.** MuJoCo uses `geom/@priority` to break ties
 in condim/friction combination. Our parser does not read `priority`. We use

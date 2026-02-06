@@ -22,7 +22,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal spring/damper only — see [future_work_1 #7](./todo/future_work_1.md))
 - Constraint solver: PGS (plain Gauss-Seidel, no SOR) + CG (preconditioned PGD with Barzilai-Borwein), Warm Starting via `WarmstartKey`
-- Contact model (Compliant with solref/solimp, elliptic friction cones with variable condim 1/3/4/6, torsional/rolling friction, contype/conaffinity filtering)
+- Contact model (Compliant with solref/solimp, elliptic friction cones with variable condim 1/3/4/6, torsional/rolling friction, contype/conaffinity filtering, `<contact><pair>`/`<exclude>` two-mechanism architecture)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free**)
 - Actuators: All 8 shortcut types (Motor, Position, Velocity, Damper, Cylinder, Adhesion, Muscle, General) with MuJoCo-compatible gain/bias force model (`force = gain * input + bias`), GainType/BiasType dispatch, FilterExact dynamics, control/force clamping
@@ -329,7 +329,7 @@ let result = solver.solve_islands(&joints, &islands, &get_body_state, dt);
 | Torsional friction | condim ≥ 4 | `Contact.mu[2]`, angular Jacobian row 3 | **Implemented** (Jacobian + solver + `apply_contact_torque()`) | - | - |
 | Rolling friction | condim = 6 | `Contact.mu[3..5]`, angular Jacobian rows 4-5 | **Implemented** (Jacobian + solver + `apply_contact_torque()`) | - | - |
 | Complete friction model | condim 6 | All components integrated | **Implemented** (condim 1, 3, 4, 6 all functional) | - | - |
-| Contact pairs filtering | Supported | `contype`/`conaffinity` bitmasks | **Implemented** | - | - |
+| Contact pairs filtering | Supported | `contype`/`conaffinity` bitmasks, `<exclude>` body-pair exclusions, `<pair>` explicit pairs | **Implemented** (two-mechanism architecture) | - | - |
 | solref/solimp params | MuJoCo-specific | `jnt_solref`, `geom_solimp`, `eq_solref`, etc. in `Model` | **Implemented** (in MuJoCo pipeline) | - | - |
 
 ### Implementation Notes: Elliptic Friction Cones ✅ IMPLEMENTED
@@ -1286,7 +1286,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<actuator>` | Full | motor, position, velocity, cylinder, muscle, adhesion, damper, general |
 | `<tendon>` | Full (fixed) | Fixed tendons fully wired into pipeline via `process_tendons()`; spatial tendons scaffolded but deferred |
 | `<sensor>` | Full | 32 sensor types parsed (all MuJoCo types); 30 wired into pipeline via `process_sensors()`; 2 deferred (JointLimitFrc, TendonLimitFrc) |
-| `<contact>` | Partial | contype/conaffinity bitmasks on geoms work; `<pair>` and `<exclude>` sub-elements are **not parsed** |
+| `<contact>` | Full | `<pair>` (explicit geom pairs with per-pair condim/friction/solref/solimp overrides), `<exclude>` (body-pair exclusions), contype/conaffinity bitmasks; two-mechanism collision architecture |
 
 **Supported Joint Types:**
 - `hinge` → `RevoluteJoint` (1 DOF rotation)
