@@ -7196,6 +7196,38 @@ fn compute_tangent_pair(
     )
 }
 
+/// Compute the tangent point from an external 2D point `p` to a circle of `radius` at the origin.
+///
+/// `sign` (+1 or −1) selects which of the two tangent lines to use (clockwise vs
+/// counterclockwise). 2D analog of [`sphere_tangent_point`].
+fn circle_tangent_2d(p: Vector2<f64>, radius: f64, sign: f64) -> Vector2<f64> {
+    let d = p.norm();
+    debug_assert!(d >= radius, "circle_tangent_2d: p is inside circle");
+    let cos_theta = radius / d;
+    let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt();
+    let u = p / d; // unit radial
+    let v = Vector2::new(-u.y, u.x) * sign; // perpendicular (rotated 90°), signed
+    radius * (u * cos_theta + v * sin_theta)
+}
+
+/// Compute both candidate 2D tangent-point pairs from `p1_xy` and `p2_xy` to a circle.
+///
+/// Uses **crossed pairing** (p2 uses `-sign`), the 2D analog of [`compute_tangent_pair`].
+///
+/// **Sign-to-ind mapping**: `sign=+1` → MuJoCo candidate `i=1` (`ind=1`),
+/// `sign=−1` → MuJoCo candidate `i=0` (`ind=0`). See spec §4.8 for derivation.
+fn compute_tangent_pair_2d(
+    p1_xy: Vector2<f64>,
+    p2_xy: Vector2<f64>,
+    radius: f64,
+    sign: f64,
+) -> (Vector2<f64>, Vector2<f64>) {
+    (
+        circle_tangent_2d(p1_xy, radius, sign),
+        circle_tangent_2d(p2_xy, radius, -sign), // negated for p2 (crossed pairing)
+    )
+}
+
 /// Compute the shortest path around a sphere between two points.
 ///
 /// Works in the geom-local frame where the sphere is centered at the origin.
@@ -7332,16 +7364,141 @@ fn sphere_wrap(
     }
 }
 
-/// Cylinder wrapping — stub for Step 7.
+/// Compute the shortest path around an infinite cylinder between two points.
 ///
-/// Returns `NoWrap` until cylinder wrapping is implemented.
+/// Works in the geom-local frame where the cylinder axis is Z and center is the
+/// origin. The problem reduces to a 2D circle-tangent problem in XY (perpendicular
+/// to the axis), plus Z-interpolation for the axial (helical) component.
+/// Returns tangent points in the geom-local frame; the caller transforms to world frame.
+#[allow(clippy::similar_names)] // Dual-candidate algorithm requires paired naming (a1/a2, b1/b2).
 fn cylinder_wrap(
-    _p1: Vector3<f64>,
-    _p2: Vector3<f64>,
-    _radius: f64,
-    _sidesite: Option<Vector3<f64>>,
+    p1: Vector3<f64>,
+    p2: Vector3<f64>,
+    radius: f64,
+    sidesite: Option<Vector3<f64>>,
 ) -> WrapResult {
-    WrapResult::NoWrap
+    // 1. Project onto XY plane (perpendicular to cylinder axis).
+    let p1_xy = Vector2::new(p1.x, p1.y);
+    let p2_xy = Vector2::new(p2.x, p2.y);
+
+    // 2. Early exits.
+    if radius <= 0.0 {
+        return WrapResult::NoWrap; // degenerate geom
+    }
+    if p1_xy.norm() < radius || p2_xy.norm() < radius {
+        return WrapResult::NoWrap; // endpoint inside cylinder cross-section
+    }
+
+    // 3. Compute sidesite XY projection once (used in both early-exit and
+    //    candidate selection). MuJoCo computes this once in mju_wrap and
+    //    passes it to wrap_circle as the `side` parameter.
+    let ss_dir = sidesite.map(|ss| {
+        let ss_xy = Vector2::new(ss.x, ss.y);
+        if ss_xy.norm() > 1e-10 {
+            ss_xy.normalize()
+        } else {
+            ss_xy
+        }
+    });
+
+    // 4. Check if the 2D line segment misses the cylinder cross-section.
+    let d_xy = p2_xy - p1_xy;
+    if d_xy.norm_squared() < 1e-20 {
+        return WrapResult::NoWrap; // coincident sites in XY projection
+    }
+    let t_param = -(p1_xy.dot(&d_xy)) / d_xy.norm_squared();
+    let closest = p1_xy + t_param.clamp(0.0, 1.0) * d_xy;
+    if closest.norm() > radius {
+        // Straight line clears the cylinder. Same sidesite-forced wrapping
+        // logic as sphere (see §4.7 step 2).
+        match ss_dir {
+            None => return WrapResult::NoWrap,
+            Some(sd) if closest.dot(&sd) >= 0.0 => return WrapResult::NoWrap,
+            _ => {} // sidesite forces wrapping — fall through
+        }
+    }
+
+    // 5. Compute both candidate 2D tangent-point pairs (±wrap direction).
+    //    sign=+1 → MuJoCo candidate i=1 → ind=1
+    //    sign=-1 → MuJoCo candidate i=0 → ind=0
+    let (cand_a1, cand_a2) = compute_tangent_pair_2d(p1_xy, p2_xy, radius, 1.0); // MuJoCo i=1
+    let (cand_b1, cand_b2) = compute_tangent_pair_2d(p1_xy, p2_xy, radius, -1.0); // MuJoCo i=0
+
+    // 6. Select the best candidate using MuJoCo's goodness heuristic.
+    //    Phase 1: Compute goodness score (sidesite alignment or chord distance).
+    let (mut good_a, mut good_b) = if let Some(sd) = ss_dir {
+        // With sidesite: goodness = dot(normalized midpoint, sidesite direction).
+        let sum_a = cand_a1 + cand_a2;
+        let sum_b = cand_b1 + cand_b2;
+        let ga = if sum_a.norm() > 1e-10 {
+            sum_a.normalize().dot(&sd)
+        } else {
+            -1e10
+        };
+        let gb = if sum_b.norm() > 1e-10 {
+            sum_b.normalize().dot(&sd)
+        } else {
+            -1e10
+        };
+        (ga, gb)
+    } else {
+        // No sidesite: goodness = negative squared chord distance.
+        let chord_a = (cand_a1 - cand_a2).norm_squared();
+        let chord_b = (cand_b1 - cand_b2).norm_squared();
+        (-chord_a, -chord_b)
+    };
+
+    // Phase 1b: Penalize self-intersecting candidates.
+    if segments_intersect_2d(p1_xy, cand_a1, p2_xy, cand_a2) {
+        good_a = -10000.0;
+    }
+    if segments_intersect_2d(p1_xy, cand_b1, p2_xy, cand_b2) {
+        good_b = -10000.0;
+    }
+
+    // Phase 2: Select the better candidate with correct ind mapping.
+    //          On tie (good_a == good_b), select candidate A (ind=1) to match
+    //          MuJoCo's `i = (good[0] > good[1] ? 0 : 1)` which defaults to i=1.
+    let (win1_xy, win2_xy, ind) = if good_a >= good_b {
+        (cand_a1, cand_a2, 1) // sign=+1 → MuJoCo ind=1
+    } else {
+        (cand_b1, cand_b2, 0) // sign=-1 → MuJoCo ind=0
+    };
+
+    // Phase 3: Reject wrapping if the selected candidate self-intersects.
+    if segments_intersect_2d(p1_xy, win1_xy, p2_xy, win2_xy) {
+        return WrapResult::NoWrap;
+    }
+
+    // 7. Compute directional wrap angle (MuJoCo's length_circle algorithm).
+    let wrap_angle = directional_wrap_angle(win1_xy, win2_xy, ind);
+
+    // 8. Z-interpolation: path-length-proportional (MuJoCo formula).
+    //    The axial (Z) coordinate is linearly interpolated based on the
+    //    fraction of total 2D path length (straight1 + arc + straight2).
+    //    This produces a helical path with uniform axial velocity.
+    let len_straight1 = (p1_xy - win1_xy).norm(); // 2D straight: p1 → tangent1
+    let len_arc = radius * wrap_angle; // 2D arc on cylinder surface
+    let len_straight2 = (p2_xy - win2_xy).norm(); // 2D straight: tangent2 → p2
+    let total_2d = len_straight1 + len_arc + len_straight2;
+    if total_2d < 1e-10 {
+        return WrapResult::NoWrap;
+    }
+    let t1_z = p1.z + (p2.z - p1.z) * len_straight1 / total_2d;
+    let t2_z = p1.z + (p2.z - p1.z) * (len_straight1 + len_arc) / total_2d;
+
+    // 9. Arc length of the helical path on the cylinder surface.
+    let axial_disp = t2_z - t1_z; // axial travel on surface
+    let arc_length = (len_arc * len_arc + axial_disp * axial_disp).sqrt();
+
+    let t1 = Vector3::new(win1_xy.x, win1_xy.y, t1_z);
+    let t2 = Vector3::new(win2_xy.x, win2_xy.y, t2_z);
+
+    WrapResult::Wrapped {
+        tangent_point_1: t1,
+        tangent_point_2: t2,
+        arc_length,
+    }
 }
 
 /// Compute actuator length and velocity from transmission state.

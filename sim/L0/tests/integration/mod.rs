@@ -58,6 +58,13 @@ pub mod rk4_integration;
 pub mod default_classes;
 
 // ============================================================================
+// Spatial Tendon Tests (Acceptance tests for §4 Spatial Tendons + Wrapping)
+// ============================================================================
+
+/// Spatial tendon tests: pulley divisor, wrapping, Jacobian correctness.
+pub mod spatial_tendons;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 

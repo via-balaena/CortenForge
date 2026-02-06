@@ -2442,7 +2442,7 @@ explicit pair pipelines equally.
 ---
 
 ### 4. Spatial Tendons + Wrapping
-**Status:** In progress (steps 1-6 done, step 7 next) | **Effort:** L | **Prerequisites:** None
+**Status:** In progress (steps 1-8 done, step 9 next) | **Effort:** L | **Prerequisites:** None
 
 #### Current State
 
@@ -4280,10 +4280,10 @@ not just wrong results.
    integration into `mj_fwd_tendon_spatial()`. Write tests 3, 11, 14
    (sub-cases a and c: Models E, J), 15 (Model H), 19 (Model L: mixed
    straight + wrapping segments).~~ **DONE**
-7. **Cylinder wrapping** — `cylinder_wrap()` + Z-interpolation + integration.
-   Write test 4. Write test 14 sub-case b (Model I: cylinder sidesite).
-8. **Pulley divisor** — already in the pairwise loop structure; verify with
-   dedicated test. Write test 10.
+7. ~~**Cylinder wrapping** — `cylinder_wrap()` + Z-interpolation + integration.
+   Write test 4. Write test 14 sub-case b (Model I: cylinder sidesite).~~ **DONE**
+8. ~~**Pulley divisor** — already in the pairwise loop structure; verify with
+   dedicated test. Write test 10.~~ **DONE**
 9. **MuJoCo conformance test** — end-to-end comparison. Test 16.
 
 #### Files
