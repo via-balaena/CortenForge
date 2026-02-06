@@ -33,9 +33,9 @@
 use std::collections::HashMap;
 
 use crate::types::{
-    MjcfActuator, MjcfActuatorDefaults, MjcfDefault, MjcfGeom, MjcfGeomDefaults, MjcfJoint,
-    MjcfJointDefaults, MjcfMeshDefaults, MjcfModel, MjcfSensor, MjcfSensorDefaults, MjcfSite,
-    MjcfSiteDefaults, MjcfTendon, MjcfTendonDefaults,
+    MjcfActuator, MjcfActuatorDefaults, MjcfContactPair, MjcfDefault, MjcfGeom, MjcfGeomDefaults,
+    MjcfJoint, MjcfJointDefaults, MjcfMeshDefaults, MjcfModel, MjcfPairDefaults, MjcfSensor,
+    MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfTendon, MjcfTendonDefaults,
 };
 
 /// Resolves and applies default classes to MJCF elements.
@@ -114,6 +114,12 @@ impl DefaultResolver {
     #[must_use]
     pub fn site_defaults(&self, class: Option<&str>) -> Option<&MjcfSiteDefaults> {
         self.get_defaults(class).and_then(|d| d.site.as_ref())
+    }
+
+    /// Get the resolved pair defaults for a class.
+    #[must_use]
+    pub fn pair_defaults(&self, class: Option<&str>) -> Option<&MjcfPairDefaults> {
+        self.get_defaults(class).and_then(|d| d.pair.as_ref())
     }
 
     /// Apply defaults to a joint, returning a new joint with defaults applied.
@@ -408,6 +414,38 @@ impl DefaultResolver {
         result
     }
 
+    /// Apply defaults to a contact pair, returning a new pair with defaults applied.
+    ///
+    /// Values explicitly set on the pair take precedence over defaults.
+    #[must_use]
+    pub fn apply_to_pair(&self, pair: &MjcfContactPair) -> MjcfContactPair {
+        let mut result = pair.clone();
+        if let Some(defaults) = self.pair_defaults(pair.class.as_deref()) {
+            if result.condim.is_none() {
+                result.condim = defaults.condim;
+            }
+            if result.friction.is_none() {
+                result.friction = defaults.friction;
+            }
+            if result.solref.is_none() {
+                result.solref = defaults.solref;
+            }
+            if result.solreffriction.is_none() {
+                result.solreffriction = defaults.solreffriction;
+            }
+            if result.solimp.is_none() {
+                result.solimp = defaults.solimp;
+            }
+            if result.margin.is_none() {
+                result.margin = defaults.margin;
+            }
+            if result.gap.is_none() {
+                result.gap = defaults.gap;
+            }
+        }
+        result
+    }
+
     /// Resolve all defaults by building inheritance chains.
     fn resolve_all(defaults: &[MjcfDefault]) -> HashMap<String, MjcfDefault> {
         // First, build a map of raw defaults
@@ -476,6 +514,7 @@ impl DefaultResolver {
             sensor: Self::merge_sensor_defaults(parent.sensor.as_ref(), child.sensor.as_ref()),
             mesh: Self::merge_mesh_defaults(parent.mesh.as_ref(), child.mesh.as_ref()),
             site: Self::merge_site_defaults(parent.site.as_ref(), child.site.as_ref()),
+            pair: Self::merge_pair_defaults(parent.pair.as_ref(), child.pair.as_ref()),
         }
     }
 
@@ -600,6 +639,26 @@ impl DefaultResolver {
                 site_type: c.site_type.clone().or_else(|| p.site_type.clone()),
                 size: c.size.clone().or_else(|| p.size.clone()),
                 rgba: c.rgba.or(p.rgba),
+            }),
+        }
+    }
+
+    fn merge_pair_defaults(
+        parent: Option<&MjcfPairDefaults>,
+        child: Option<&MjcfPairDefaults>,
+    ) -> Option<MjcfPairDefaults> {
+        match (parent, child) {
+            (None, None) => None,
+            (Some(p), None) => Some(p.clone()),
+            (None, Some(c)) => Some(c.clone()),
+            (Some(p), Some(c)) => Some(MjcfPairDefaults {
+                condim: c.condim.or(p.condim),
+                friction: c.friction.or(p.friction),
+                solref: c.solref.or(p.solref),
+                solreffriction: c.solreffriction.or(p.solreffriction),
+                solimp: c.solimp.or(p.solimp),
+                margin: c.margin.or(p.margin),
+                gap: c.gap.or(p.gap),
             }),
         }
     }

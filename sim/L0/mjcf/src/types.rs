@@ -438,6 +438,8 @@ pub struct MjcfDefault {
     pub mesh: Option<MjcfMeshDefaults>,
     /// Default site parameters.
     pub site: Option<MjcfSiteDefaults>,
+    /// Default pair parameters.
+    pub pair: Option<MjcfPairDefaults>,
 }
 
 /// Default joint parameters.
@@ -654,6 +656,26 @@ pub struct MjcfSiteDefaults {
     pub size: Option<Vec<f64>>,
     /// RGBA color.
     pub rgba: Option<Vector4<f64>>,
+}
+
+/// Default pair parameters (from `<default><pair .../>`).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfPairDefaults {
+    /// Contact dimensionality (1, 3, 4, 6).
+    pub condim: Option<i32>,
+    /// 5-element friction: [tan1, tan2, torsional, roll1, roll2].
+    pub friction: Option<[f64; 5]>,
+    /// Solver reference (normal direction).
+    pub solref: Option<[f64; 2]>,
+    /// Solver reference (friction directions).
+    pub solreffriction: Option<[f64; 2]>,
+    /// Solver impedance.
+    pub solimp: Option<[f64; 5]>,
+    /// Distance threshold for contact activation.
+    pub margin: Option<f64>,
+    /// Contact included if distance < margin - gap.
+    pub gap: Option<f64>,
 }
 
 // ============================================================================
@@ -2676,6 +2698,60 @@ impl MjcfSkin {
 }
 
 // ============================================================================
+// Contact
+// ============================================================================
+
+/// Parsed `<contact><pair>` element.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfContactPair {
+    /// Identifier for this pair.
+    pub name: Option<String>,
+    /// Defaults class (inherits `<default><pair .../>`).
+    pub class: Option<String>,
+    /// First geom (by name).
+    pub geom1: String,
+    /// Second geom (by name).
+    pub geom2: String,
+    /// Contact dimensionality (1, 3, 4, 6).
+    pub condim: Option<i32>,
+    /// 5-element friction: [tan1, tan2, torsional, roll1, roll2].
+    pub friction: Option<[f64; 5]>,
+    /// Solver reference (normal direction).
+    pub solref: Option<[f64; 2]>,
+    /// Solver reference (friction directions).
+    pub solreffriction: Option<[f64; 2]>,
+    /// Solver impedance.
+    pub solimp: Option<[f64; 5]>,
+    /// Distance threshold for contact activation.
+    pub margin: Option<f64>,
+    /// Contact included if distance < margin - gap.
+    pub gap: Option<f64>,
+}
+
+/// Parsed `<contact><exclude>` element.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfContactExclude {
+    /// Identifier for this exclusion.
+    pub name: Option<String>,
+    /// First body (by name).
+    pub body1: String,
+    /// Second body (by name).
+    pub body2: String,
+}
+
+/// Parsed `<contact>` element (grouping container).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfContact {
+    /// Explicit contact pairs.
+    pub pairs: Vec<MjcfContactPair>,
+    /// Body-pair exclusions.
+    pub excludes: Vec<MjcfContactExclude>,
+}
+
+// ============================================================================
 // Model
 // ============================================================================
 
@@ -2701,6 +2777,8 @@ pub struct MjcfModel {
     pub sensors: Vec<MjcfSensor>,
     /// Equality constraints.
     pub equality: MjcfEquality,
+    /// Contact pairs and exclusions.
+    pub contact: MjcfContact,
     /// Skinned meshes for visual deformation.
     pub skins: Vec<MjcfSkin>,
 }
@@ -2717,6 +2795,7 @@ impl Default for MjcfModel {
             tendons: Vec::new(),
             sensors: Vec::new(),
             equality: MjcfEquality::default(),
+            contact: MjcfContact::default(),
             skins: Vec::new(),
         }
     }

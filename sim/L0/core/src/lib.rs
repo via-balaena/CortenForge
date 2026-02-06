@@ -108,6 +108,7 @@ pub use mujoco_pipeline::{
     BiasType,
     // Contact representation
     Contact,
+    ContactPair,
     // MuJoCo-aligned Model/Data architecture (core API)
     Data,
     // Equality constraint types
