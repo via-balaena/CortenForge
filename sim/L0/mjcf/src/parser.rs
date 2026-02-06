@@ -17,12 +17,12 @@ fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
 }
 use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
-    MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
-    MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
-    MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
-    MjcfSensor, MjcfSensorDefaults, MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin,
-    MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType,
-    MjcfWeld,
+    MjcfContact, MjcfContactExclude, MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality,
+    MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator,
+    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfMesh,
+    MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults,
+    MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex,
+    MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfWeld,
 };
 
 /// Parse an MJCF string into a model.
@@ -101,7 +101,10 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         let sensors = parse_sensors(reader)?;
                         model.sensors = sensors;
                     }
-                    // Skip other elements (contact, etc.)
+                    b"contact" => {
+                        model.contact = parse_contact(reader)?;
+                    }
+                    // Skip other elements
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
@@ -109,6 +112,8 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                 // Handle self-closing elements
                 if e.name().as_ref() == b"option" {
                     model.option = parse_option_attrs(e)?;
+                } else if e.name().as_ref() == b"contact" {
+                    model.contact = MjcfContact::default();
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"mujoco" => break,
@@ -340,6 +345,9 @@ fn parse_default<R: BufRead>(
                     b"site" => {
                         default.site = Some(parse_site_defaults(e)?);
                     }
+                    b"pair" => {
+                        default.pair = Some(parse_pair_defaults(e)?);
+                    }
                     b"default" => {
                         // Nested default class
                         let nested = parse_default(reader, e, Some(class.clone()))?;
@@ -369,6 +377,9 @@ fn parse_default<R: BufRead>(
                 }
                 b"site" => {
                     default.site = Some(parse_site_defaults(e)?);
+                }
+                b"pair" => {
+                    default.pair = Some(parse_pair_defaults(e)?);
                 }
                 _ => {}
             },
@@ -520,6 +531,152 @@ fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
     }
 
     Ok(defaults)
+}
+
+/// Parse pair defaults from `<default><pair .../>`.
+fn parse_pair_defaults(e: &BytesStart) -> Result<MjcfPairDefaults> {
+    let mut defaults = MjcfPairDefaults::default();
+
+    defaults.condim = parse_int_attr(e, "condim");
+    defaults.margin = parse_float_attr(e, "margin");
+    defaults.gap = parse_float_attr(e, "gap");
+
+    if let Some(friction) = get_attribute_opt(e, "friction") {
+        let parts = parse_float_array(&friction)?;
+        if parts.len() >= 5 {
+            defaults.friction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            defaults.solref = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solreffriction) = get_attribute_opt(e, "solreffriction") {
+        let parts = parse_float_array(&solreffriction)?;
+        if parts.len() >= 2 {
+            defaults.solreffriction = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            defaults.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+
+    Ok(defaults)
+}
+
+/// Parse `<contact>` element containing `<pair>` and `<exclude>` children.
+fn parse_contact<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfContact> {
+    let mut contact = MjcfContact::default();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                match elem_name.as_slice() {
+                    b"pair" => {
+                        let pair = parse_contact_pair_attrs(e)?;
+                        contact.pairs.push(pair);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    b"exclude" => {
+                        let exclude = parse_contact_exclude_attrs(e)?;
+                        contact.excludes.push(exclude);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    _ => skip_element(reader, &elem_name)?,
+                }
+            }
+            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                b"pair" => {
+                    let pair = parse_contact_pair_attrs(e)?;
+                    contact.pairs.push(pair);
+                }
+                b"exclude" => {
+                    let exclude = parse_contact_exclude_attrs(e)?;
+                    contact.excludes.push(exclude);
+                }
+                _ => {}
+            },
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"contact" => break,
+            Ok(Event::Eof) => {
+                return Err(MjcfError::XmlParse("unexpected EOF in contact".into()));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(contact)
+}
+
+/// Parse attributes of a `<contact><pair .../>` element.
+fn parse_contact_pair_attrs(e: &BytesStart) -> Result<MjcfContactPair> {
+    let geom1 = get_attribute_opt(e, "geom1")
+        .ok_or_else(|| MjcfError::missing_attribute("geom1", "pair"))?;
+    let geom2 = get_attribute_opt(e, "geom2")
+        .ok_or_else(|| MjcfError::missing_attribute("geom2", "pair"))?;
+
+    let mut pair = MjcfContactPair {
+        name: get_attribute_opt(e, "name"),
+        class: get_attribute_opt(e, "class"),
+        geom1,
+        geom2,
+        condim: parse_int_attr(e, "condim"),
+        friction: None,
+        solref: None,
+        solreffriction: None,
+        solimp: None,
+        margin: parse_float_attr(e, "margin"),
+        gap: parse_float_attr(e, "gap"),
+    };
+
+    if let Some(friction) = get_attribute_opt(e, "friction") {
+        let parts = parse_float_array(&friction)?;
+        if parts.len() >= 5 {
+            pair.friction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            pair.solref = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solreffriction) = get_attribute_opt(e, "solreffriction") {
+        let parts = parse_float_array(&solreffriction)?;
+        if parts.len() >= 2 {
+            pair.solreffriction = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            pair.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+
+    Ok(pair)
+}
+
+/// Parse attributes of a `<contact><exclude .../>` element.
+fn parse_contact_exclude_attrs(e: &BytesStart) -> Result<MjcfContactExclude> {
+    let body1 = get_attribute_opt(e, "body1")
+        .ok_or_else(|| MjcfError::missing_attribute("body1", "exclude"))?;
+    let body2 = get_attribute_opt(e, "body2")
+        .ok_or_else(|| MjcfError::missing_attribute("body2", "exclude"))?;
+
+    Ok(MjcfContactExclude {
+        name: get_attribute_opt(e, "name"),
+        body1,
+        body2,
+    })
 }
 
 /// Parse asset element (contains mesh, texture, material definitions).

@@ -74,7 +74,7 @@ use nalgebra::{
     DMatrix, DVector, Matrix3, Matrix6, Point3, UnitQuaternion, UnitVector3, Vector3, Vector6,
 };
 use sim_types::Pose;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 use std::sync::Arc;
 
@@ -1147,6 +1147,18 @@ pub struct Model {
     /// Bit (jnt_id % 64) is set if joint jnt_id is an ancestor of this body.
     /// Supports unlimited joints with O(1) lookup per word.
     pub body_ancestor_mask: Vec<Vec<u64>>,
+
+    // ==================== Explicit Contact Pairs/Excludes ====================
+    /// Explicit contact pairs from `<contact><pair>`.
+    /// Processed in mechanism 2 (bypass kinematic and bitmask filters).
+    pub contact_pairs: Vec<ContactPair>,
+    /// Explicit pair geom-pair set for O(1) lookup during automatic pipeline.
+    /// Canonical key: `(min(geom1, geom2), max(geom1, geom2))`.
+    /// Used to suppress automatic-pipeline contacts for pairs that have explicit overrides.
+    pub contact_pair_set: HashSet<(usize, usize)>,
+    /// Excluded body-pair set from `<contact><exclude>`.
+    /// Canonical key: `(min(body1, body2), max(body1, body2))`.
+    pub contact_excludes: HashSet<(usize, usize)>,
 }
 
 /// Warmstart key for contact force caching across frames.
@@ -1193,6 +1205,30 @@ pub fn warmstart_key(contact: &Contact) -> WarmstartKey {
         cell_y: (contact.pos.y * inv).round() as i64,
         cell_z: (contact.pos.z * inv).round() as i64,
     }
+}
+
+/// Explicit contact pair: geom indices + per-pair overrides.
+/// All fields are fully resolved at build time (no Options).
+#[derive(Debug, Clone)]
+pub struct ContactPair {
+    /// First geometry index.
+    pub geom1: usize,
+    /// Second geometry index.
+    pub geom2: usize,
+    /// Contact dimensionality (1, 3, 4, 6).
+    pub condim: i32,
+    /// 5-element friction: [tan1, tan2, torsional, roll1, roll2].
+    pub friction: [f64; 5],
+    /// Solver reference (normal direction).
+    pub solref: [f64; 2],
+    /// Solver reference (friction directions).
+    pub solreffriction: [f64; 2],
+    /// Solver impedance.
+    pub solimp: [f64; 5],
+    /// Distance threshold for contact activation.
+    pub margin: f64,
+    /// Contact included if distance < margin - gap.
+    pub gap: f64,
 }
 
 /// Contact point for constraint generation.
@@ -1941,6 +1977,11 @@ impl Model {
             // Pre-computed kinematic data (world body has no ancestors)
             body_ancestor_joints: vec![vec![]],
             body_ancestor_mask: vec![vec![]], // Empty vec for world body (no joints yet)
+
+            // Contact pairs / excludes (empty = no explicit pairs or excludes)
+            contact_pairs: vec![],
+            contact_pair_set: HashSet::new(),
+            contact_excludes: HashSet::new(),
         }
     }
 
@@ -3398,6 +3439,19 @@ fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize) -> bool {
     let body1 = model.geom_body[geom1];
     let body2 = model.geom_body[geom2];
 
+    // Check body-pair exclude list (from <contact><exclude>)
+    let exclude_key = (body1.min(body2), body1.max(body2));
+    if model.contact_excludes.contains(&exclude_key) {
+        return false;
+    }
+
+    // Skip if this geom pair has an explicit <pair> entry —
+    // mechanism 2 will handle it with its overridden parameters.
+    let pair_key = (geom1.min(geom2), geom1.max(geom2));
+    if model.contact_pair_set.contains(&pair_key) {
+        return false;
+    }
+
     // Same body - no collision
     if body1 == body2 {
         return false;
@@ -3495,6 +3549,33 @@ fn mj_collision(model: &Model, data: &mut Data) {
 
         // Narrow-phase collision detection
         if let Some(contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
+            data.contacts.push(contact);
+            data.ncon += 1;
+        }
+    }
+
+    // Mechanism 2: explicit contact pairs (bypass kinematic + bitmask filters)
+    for pair in &model.contact_pairs {
+        let geom1 = pair.geom1;
+        let geom2 = pair.geom2;
+
+        // Distance cull using bounding radii (replaces SAP broad-phase for pairs).
+        // geom_rbound is the bounding sphere radius, pre-computed per geom.
+        // For planes, rbound = INFINITY so this check always passes.
+        // Margin is added to match MuJoCo's mj_filterSphere.
+        let dist = (data.geom_xpos[geom1] - data.geom_xpos[geom2]).norm();
+        if dist > model.geom_rbound[geom1] + model.geom_rbound[geom2] + pair.margin {
+            continue;
+        }
+
+        // Narrow-phase collision detection
+        let pos1 = data.geom_xpos[geom1];
+        let mat1 = data.geom_xmat[geom1];
+        let pos2 = data.geom_xpos[geom2];
+        let mat2 = data.geom_xmat[geom2];
+
+        if let Some(mut contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
+            apply_pair_overrides(&mut contact, pair);
             data.contacts.push(contact);
             data.ncon += 1;
         }
@@ -3675,6 +3756,36 @@ fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Co
 // This separation follows the Todorov principle: compute derived values once
 // in the dispatcher, then pass them to the implementation.
 // ============================================================================
+
+/// Apply explicit `<pair>` overrides to a contact produced by `collide_geoms`.
+///
+/// `collide_geoms` combines friction/condim/solref/solimp from the two geoms.
+/// For mechanism-2 contacts, those geom-combined values are overwritten here
+/// with the fully-resolved pair parameters.
+#[inline]
+fn apply_pair_overrides(contact: &mut Contact, pair: &ContactPair) {
+    // condim → dim mapping (same logic as Contact::with_condim)
+    #[allow(clippy::match_same_arms, clippy::cast_sign_loss)]
+    let dim = match pair.condim {
+        1 => 1,
+        3 => 3,
+        4 => 4,
+        6 => 6,
+        0 | 2 => 3,
+        5 => 6,
+        _ => 6,
+    } as usize;
+    contact.dim = dim;
+    // 5D friction: directly from pair (already fully resolved)
+    contact.mu = pair.friction;
+    contact.friction = pair.friction[0]; // legacy scalar = tan1
+    // Solver params
+    contact.solref = pair.solref;
+    contact.solimp = pair.solimp;
+    // NOTE: solreffriction is NOT applied here — Contact has a single solref
+    // field; per-direction solver params require solver changes (see §G).
+    // NOTE: margin/gap are NOT applied here — no runtime effect yet (see §H).
+}
 
 /// Create a contact with solver parameters derived from the colliding geoms.
 ///

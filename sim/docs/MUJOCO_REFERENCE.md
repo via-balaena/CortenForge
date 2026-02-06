@@ -51,9 +51,21 @@ Where `X_joint[i]` depends on joint type:
 
 ### 1.2 Collision Detection (`mj_collision`)
 
+Two-mechanism architecture:
+
+**Mechanism 1 (automatic pipeline):**
 - Broad phase: sweep-and-prune on AABBs
-- Affinity filter: contype/conaffinity bitmasks, parent-child exclusion
+- Filters (in order): body-pair excludes (`contact_excludes`), explicit pair-set
+  suppression (`contact_pair_set`), same-body, parent-child,
+  contype/conaffinity bitmasks
 - Narrow phase: per-pair geometry tests
+
+**Mechanism 2 (explicit `<pair>` pipeline):**
+- Iterates `contact_pairs` (from `<contact><pair>`)
+- Bypasses all kinematic and bitmask filters
+- Bounding-sphere distance cull (rbound + margin)
+- Narrow phase via `collide_geoms`
+- `apply_pair_overrides` applies per-pair condim/friction/solref/solimp
 
 Narrow phase dispatches analytically for common pairs (sphere-sphere,
 sphere-capsule, box-box via SAT, etc.) and falls back to GJK/EPA for

@@ -1523,13 +1523,14 @@ solver loop. This is better implemented as a separate task once elliptic cones
 are working.
 
 **Not in scope: per-pair condim override.** `<contact><pair condim="...">` is
-task #3 (contact pair/exclude). This task reads condim from `geom_condim` only.
+task #3 (contact pair/exclude, now implemented — see §3). This task reads
+condim from `geom_condim` only.
 
 **Not in scope: anisotropic sliding from MJCF.** MuJoCo supports different
 `mu[0]` and `mu[1]` (sliding1 ≠ sliding2) per contact, but only via
-`<contact><pair>` overrides. Per-geom friction has a single sliding value that
-fills both slots. The elliptic projection handles anisotropic `mu` correctly
-if provided by a future pair override.
+`<contact><pair>` overrides (now implemented in task #3 — see §3). Per-geom
+friction has a single sliding value that fills both slots. The elliptic
+projection handles anisotropic `mu` correctly when provided by a pair override.
 
 **Not in scope: geom priority.** MuJoCo uses `geom/@priority` to break ties
 in condim/friction combination. Our parser does not read `priority`. We use
@@ -1776,59 +1777,667 @@ instead of normal.
 ---
 
 ### 3. `<contact>` Pair/Exclude
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Status:** Done | **Effort:** M–L | **Prerequisites:** None
 
 #### Current State
-Contact filtering uses `contype`/`conaffinity` bitmasks only
-(`mujoco_pipeline.rs:3278–3328`). The `<contact>` MJCF element with `<pair>` and
-`<exclude>` sub-elements is not parsed. Users cannot:
 
-- Force contacts between specific geom pairs regardless of bitmasks
-- Exclude contacts between specific geom pairs (e.g., self-collision filtering)
-- Override solref/solimp per pair
+The two-mechanism contact architecture is fully implemented:
+
+- `<contact><pair>` and `<contact><exclude>` are parsed from MJCF
+- Mechanism 1 (automatic pipeline): `check_collision_affinity` checks body-pair
+  excludes and explicit pair-set before same-body/parent-child/bitmask filters
+- Mechanism 2 (explicit pairs): dedicated loop in `mj_collision` bypasses all
+  kinematic and bitmask filters, applies rbound+margin distance cull, narrow-phase,
+  and `apply_pair_overrides` for per-pair parameter overrides
+- Defaults class resolution via `DefaultResolver::apply_to_pair` and
+  `merge_pair_defaults`
+- Geom-combination fallbacks for unspecified attributes in `process_contact`
+- Duplicate pair deduplication (last-wins, canonical key)
+- Body-pair excludes via `HashSet` for O(1) lookup
 
 #### Objective
-Parse `<contact><pair>` and `<contact><exclude>` from MJCF and apply them in
-collision filtering.
+
+Parse `<contact><pair>` and `<contact><exclude>` from MJCF and apply them in the
+collision pipeline, matching MuJoCo's two-mechanism architecture.
+
+#### Background: MuJoCo's Two-Mechanism Architecture
+
+MuJoCo generates contact candidates via two **independent** mechanisms:
+
+1. **Automatic pipeline:** Broad-phase (sweep-and-prune) → body-pair excludes →
+   same-body filter → parent-child filter → contype/conaffinity bitmask → narrow-phase.
+2. **Explicit pair pipeline:** `<pair>` entries are injected directly as additional
+   candidates. They bypass the same-body filter, parent-child filter, and bitmask
+   filter. They still go through a bounding-sphere distance cull and narrow-phase.
+
+These mechanisms are **additive/independent**: an `<exclude>` removes body pairs
+from mechanism 1 only. An explicit `<pair>` naming geoms on those same bodies still
+produces contacts via mechanism 2. Excludes do not suppress explicit pairs.
 
 #### Specification
 
-**Data structures in Model:**
+##### A. MJCF Parsing
 
-```rust
-pub contact_pairs: Vec<ContactPair>,   // force contact between specific geoms
-pub contact_excludes: Vec<(usize, usize)>,  // exclude contact between body pairs
-```
+**`<contact>` element** — grouping container with no attributes of its own.
 
-**`ContactPair`:** Stores `(geom1, geom2)` indices plus per-pair overrides for
-`condim`, `friction`, `solref`, `solimp`, `margin`, `gap`.
+**`<pair>` sub-element** — references two geom names:
 
-**Collision filtering update in `can_collide()`:**
+| Attribute | Type | Required | Default | Semantics |
+|-----------|------|----------|---------|-----------|
+| `name` | string | no | — | Identifier for this pair |
+| `class` | string | no | — | Defaults class (inherits `<default><pair .../>`) |
+| `geom1` | string | **yes** | — | First geom (by name) |
+| `geom2` | string | **yes** | — | Second geom (by name) |
+| `condim` | int | no | from geoms† | Contact dimensionality (1, 3, 4, 6) |
+| `friction` | real(5) | no | from geoms† | 5D friction `[tan1, tan2, torsional, roll1, roll2]` |
+| `solref` | real(2) | no | from geoms† | Solver reference (normal direction) |
+| `solreffriction` | real(2) | no | = pair solref | Solver reference (friction directions) |
+| `solimp` | real(5) | no | from geoms† | Solver impedance |
+| `margin` | real | no | from geoms† | Distance threshold for contact activation |
+| `gap` | real | no | from geoms† | Contact included if distance < margin - gap |
 
-1. Check exclude list first — if body pair is excluded, skip
-2. Check pair list — if geom pair has explicit pair, force include (ignore bitmasks)
-3. Fall through to existing contype/conaffinity bitmask check
+**†Divergence from MuJoCo defaults:** MuJoCo's `<pair>` has hard-coded defaults
+independent of the referenced geoms (condim=3, friction={1,1,0.005,0.0001,0.0001},
+solref={0.02,1}, solimp={0.9,0.95,0.001,0.5,2}, margin=0, gap=0). We instead
+fall back to geom-combination rules when an attribute is unspecified. This means
+a bare `<pair geom1="A" geom2="B"/>` with no overrides produces the same contact
+parameters that the automatic pipeline would compute — which is more intuitive
+for users who want to force a pair without changing its physics. MuJoCo's
+approach means an override-free `<pair>` silently changes contact parameters
+relative to the automatic pipeline.
 
-**MJCF parsing:**
+**Array length handling:** The parser uses `parse_float_array` + `len() >= N`
+checks, matching the existing pattern for `solimp`/`solref`/`o_friction`. If
+fewer than the required number of elements are provided (e.g., `friction="0.5"`
+instead of 5 values), the attribute is treated as if it were not specified
+(falls through to geom-combination fallback). **Minor divergence:** MuJoCo's
+pair friction is natively 5D — when fewer values are given, only the provided
+positions are overwritten and the remaining positions keep their struct defaults
+(`{1, 1, 0.005, 0.0001, 0.0001}`), e.g., `friction="0.5"` yields
+`{0.5, 1, 0.005, 0.0001, 0.0001}`. Our approach instead falls through to the
+geom-combination fallback, which produces reasonable values but differs from
+MuJoCo for partial-array inputs. This edge case is rare in practice and our
+behavior is safe (no silent corruption).
+
+**Fallback rule:** Each attribute is independent. When unspecified (and not
+inherited from a defaults class), it is computed from the two referenced geoms
+using our existing combination rules (from `make_contact_from_geoms` +
+`combine_solver_params`):
+- `condim` → `max(geom1.condim, geom2.condim)` (matches MuJoCo for equal-priority
+  geoms; we don't implement `geom/@priority` — see §I)
+- `friction` → each geom's 3-element `[sliding, torsional, rolling]` is expanded
+  to 5D as `[sliding, sliding, torsional, rolling, rolling]`, then per-element
+  geometric mean across the two expanded vectors. **Known divergence:** MuJoCo
+  uses element-wise max on 3D friction, then expands to 5D. We use geometric
+  mean, matching our existing convention (see §2, "Known non-conformance").
+  Fixing this is a separate conformance task.
+- `solref` → element-wise minimum. **Known divergence:** MuJoCo uses
+  `solmix`-weighted average for positive solref values (element-wise min only
+  for non-positive/direct format). Since we don't implement `solmix` (see §I),
+  element-wise min is our standing approximation.
+- `solreffriction` → falls back to the pair's resolved `solref` (no geom-level
+  counterpart exists; matches MuJoCo where `{0,0}` default means "use solref")
+- `solimp` → element-wise maximum. **Known divergence:** MuJoCo uses
+  `solmix`-weighted average. Same rationale as solref above.
+- `margin` → `max(geom1.margin, geom2.margin)` (currently always 0.0; see §H.
+  Matches MuJoCo — margin/gap always use max regardless of priority.)
+- `gap` → `max(geom1.gap, geom2.gap)` (currently always 0.0; see §H)
+
+**`<exclude>` sub-element** — references two body names:
+
+| Attribute | Type | Required | Default | Semantics |
+|-----------|------|----------|---------|-----------|
+| `name` | string | no | — | Identifier for this exclusion |
+| `body1` | string | **yes** | — | First body (by name) |
+| `body2` | string | **yes** | — | Second body (by name) |
+
+When specified, **all** geom pairs where one geom belongs to `body1` and the other
+belongs to `body2` are excluded from the automatic collision pipeline.
+
+**Example MJCF:**
 
 ```xml
 <contact>
   <pair geom1="left_hand" geom2="right_hand" condim="1"/>
+  <pair geom1="finger_tip" geom2="table_top"
+        friction="0.8 0.8 0.01 0.001 0.001"
+        solref="0.01 0.5"/>
   <exclude body1="upper_arm" body2="forearm"/>
 </contact>
 ```
 
+**Parser implementation (`parse_contact`):** Follow the `parse_sensors`/`parse_actuators`
+container pattern (line ~1963). Loop on `Event::Start`/`Event::Empty`/`Event::End`:
+
+- `b"pair"` — parse attributes into `MjcfContactPair`. Required attributes
+  (`geom1`, `geom2`) use the existing `get_attribute_opt(...).ok_or_else(||
+  MjcfError::missing_attribute("geom1", "pair"))?` pattern (see `parse_connect_attrs`
+  line ~1411). Optional attributes use `parse_int_attr` / `parse_float_attr` /
+  `get_attribute_opt` + `parse_float_array` + length check, matching existing
+  geom/tendon parsing. For `Event::Start`, call `skip_element` after parsing
+  (to consume any unexpected children); for `Event::Empty`, no skip needed.
+- `b"exclude"` — parse `body1`/`body2` (required, same `missing_attribute` pattern)
+  and optional `name`.
+- `_` — `skip_element` for `Event::Start`, ignore for `Event::Empty`.
+- Break on `Event::End(b"contact")`.
+
+**Parser implementation (`parse_pair_defaults`):** Follow the `parse_tendon_defaults`
+pattern (line ~472). Parse optional attributes from `BytesStart` into
+`MjcfPairDefaults`. Uses `parse_int_attr` for `condim`, `parse_float_attr` for
+`margin`/`gap`, and `get_attribute_opt` + `parse_float_array` + `len() >= N`
+for `friction`/`solref`/`solreffriction`/`solimp`. Add `b"pair"` to both
+`Event::Start` and `Event::Empty` branches in `parse_default` (line ~324/359),
+since `<pair .../>` is typically self-closing.
+
+##### B. MJCF Types (`sim/L0/mjcf/src/types.rs`)
+
+All new types follow the existing crate convention for derives:
+`#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]`.
+
+```rust
+/// Parsed `<contact><pair>` element.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfContactPair {
+    pub name: Option<String>,
+    pub class: Option<String>,
+    pub geom1: String,
+    pub geom2: String,
+    pub condim: Option<i32>,
+    /// 5-element friction: [tan1, tan2, torsional, roll1, roll2].
+    pub friction: Option<[f64; 5]>,
+    pub solref: Option<[f64; 2]>,
+    pub solreffriction: Option<[f64; 2]>,
+    pub solimp: Option<[f64; 5]>,
+    pub margin: Option<f64>,
+    pub gap: Option<f64>,
+}
+
+/// Parsed `<contact><exclude>` element.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfContactExclude {
+    pub name: Option<String>,
+    pub body1: String,
+    pub body2: String,
+}
+
+/// Parsed `<contact>` element (grouping container).
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfContact {
+    pub pairs: Vec<MjcfContactPair>,
+    pub excludes: Vec<MjcfContactExclude>,
+}
+```
+
+Add `pub contact: MjcfContact` to `MjcfModel`. `MjcfModel` has a **manual
+`Default` impl** (line ~2786, not `#[derive(Default)]`), so also add
+`contact: MjcfContact::default(),` to the struct literal in
+`impl Default for MjcfModel`.
+
+##### C. Defaults Class Extension (`MjcfDefault`)
+
+Add `pub pair: Option<MjcfPairDefaults>` to `MjcfDefault`:
+
+```rust
+/// Default pair parameters (from `<default><pair .../>`)
+#[derive(Debug, Clone, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfPairDefaults {
+    pub condim: Option<i32>,
+    pub friction: Option<[f64; 5]>,
+    pub solref: Option<[f64; 2]>,
+    pub solreffriction: Option<[f64; 2]>,
+    pub solimp: Option<[f64; 5]>,
+    pub margin: Option<f64>,
+    pub gap: Option<f64>,
+}
+```
+
+**`merge_defaults` update:** `DefaultResolver::merge_defaults` (line ~503) constructs
+a `MjcfDefault` with merged fields for every default type. Add a `pair` field using
+`merge_pair_defaults`:
+
+```rust
+pair: Self::merge_pair_defaults(parent.pair.as_ref(), child.pair.as_ref()),
+```
+
+`merge_pair_defaults` follows the same `(None, None) | (Some, None) | (None, Some) | (Some, Some)` pattern as `merge_joint_defaults` etc., using `c.field.or(p.field)` for
+each `Option` field on `MjcfPairDefaults`. Without this, class inheritance chains
+that set pair defaults on a parent class will silently fail to propagate to children.
+
+##### D. Model Data Structures (`mujoco_pipeline.rs` → `Model`)
+
+```rust
+/// Explicit contact pair: geom indices + per-pair overrides.
+/// All fields are fully resolved at build time (no Options).
+#[derive(Debug, Clone)]
+pub struct ContactPair {
+    pub geom1: usize,
+    pub geom2: usize,
+    pub condim: i32,
+    /// 5-element friction: [tan1, tan2, torsional, roll1, roll2].
+    pub friction: [f64; 5],
+    pub solref: [f64; 2],
+    pub solreffriction: [f64; 2],
+    pub solimp: [f64; 5],
+    pub margin: f64,
+    pub gap: f64,
+}
+```
+
+Add to `Model`:
+
+```rust
+/// Explicit contact pairs from `<contact><pair>`.
+/// Processed in mechanism 2 (bypass kinematic and bitmask filters).
+pub contact_pairs: Vec<ContactPair>,
+/// Explicit pair geom-pair set for O(1) lookup during automatic pipeline.
+/// Canonical key: `(min(geom1, geom2), max(geom1, geom2))`.
+/// Used to suppress automatic-pipeline contacts for pairs that have explicit overrides.
+pub contact_pair_set: HashSet<(usize, usize)>,
+/// Excluded body-pair set from `<contact><exclude>`.
+/// Canonical key: `(min(body1, body2), max(body1, body2))`.
+pub contact_excludes: HashSet<(usize, usize)>,
+```
+
+Initialize in `Model::empty()`:
+
+```rust
+contact_pairs: vec![],
+contact_pair_set: HashSet::new(),
+contact_excludes: HashSet::new(),
+```
+
+This is backward-compatible with all existing test Model constructors (they use
+`Model::empty()` + field assignment and will inherit the empty defaults).
+
+Import uses `use std::collections::{HashMap, HashSet};`.
+
+**Why `HashSet` for excludes:** The exclude check runs in the hot loop for every
+candidate pair from the automatic pipeline. `O(1)` lookup vs `O(n)` linear scan
+on a `Vec`. Canonical ordering `(min, max)` ensures symmetry: excluding (A, B)
+also excludes (B, A).
+
+**Why `contact_pair_set`:** Prevents duplicate contacts. When a geom pair appears
+both in the automatic pipeline (via bitmask match) and as an explicit `<pair>`,
+only the explicit pair should produce a contact (it may carry overridden
+parameters). Without deduplication, both mechanisms would produce a contact for
+the same geom pair. The `contact_pair_set` is populated alongside `contact_pairs`
+in the builder; the automatic pipeline checks it to skip pairs that will be
+handled by mechanism 2.
+
+##### E. Model Builder (`model_builder.rs`)
+
+Two-stage resolution follows the existing pattern (e.g., geoms, tendons):
+
+**Stage 1 — Defaults class merge (in `DefaultResolver`):**
+
+Add `apply_to_pair(&self, pair: &MjcfContactPair) -> MjcfContactPair`. The
+defaults class is resolved via `pair.class.as_deref()`, following the same
+pattern as `apply_to_joint` / `apply_to_tendon`:
+
+```rust
+pub fn apply_to_pair(&self, pair: &MjcfContactPair) -> MjcfContactPair {
+    let mut result = pair.clone();
+    if let Some(defaults) = self.pair_defaults(pair.class.as_deref()) {
+        if result.condim.is_none() { result.condim = defaults.condim; }
+        if result.friction.is_none() { result.friction = defaults.friction; }
+        if result.solref.is_none() { result.solref = defaults.solref; }
+        if result.solreffriction.is_none() { result.solreffriction = defaults.solreffriction; }
+        if result.solimp.is_none() { result.solimp = defaults.solimp; }
+        if result.margin.is_none() { result.margin = defaults.margin; }
+        if result.gap.is_none() { result.gap = defaults.gap; }
+    }
+    result
+}
+```
+
+**Stage 2 — Geom/body fallback resolution (new `process_contact` method):**
+
+Add `builder.process_contact(&mjcf.contact)?;` to `model_from_mjcf()` after
+body tree processing (which populates `geom_name_to_id` and `body_name_to_id`)
+and before `builder.build()`. The only dependency is on name-to-id maps from
+body tree processing, so it can go anywhere after that; the natural insertion
+point is after `process_sensors` (line ~141) and before `build()` (line ~147):
+
+```rust
+// in model_from_mjcf(), after process_sensors (line ~141):
+builder.process_contact(&mjcf.contact)?;
+
+// Build final model
+Ok(builder.build())
+```
+
+`process_contact` iterates:
+
+1. For each `MjcfContactPair`:
+   - Apply defaults: `let pair = self.resolver.apply_to_pair(mjcf_pair);`
+   - Resolve `geom1`/`geom2` names via `geom_name_to_id`. Error if not found.
+   - For each still-`None` attribute, compute from the two referenced geoms using
+     the standard combination rules on the builder's geom arrays:
+     - `condim` → `max(geom_condim[g1], geom_condim[g2])`
+     - `friction` → `geom_friction[g]` is `Vector3<f64>` = `[sliding, torsional,
+       rolling]`. Combine in 3D via geometric mean (`sqrt(f1[i] * f2[i])`), then
+       expand to 5D: `[s, s, t, r, r]` where `s = sqrt(f1.x*f2.x)`,
+       `t = sqrt(f1.y*f2.y)`, `r = sqrt(f1.z*f2.z)` (matches
+       `make_contact_from_geoms` line ~3799 + `with_condim` line ~1377)
+     - `solref` → `element-wise min(geom_solref[g1], geom_solref[g2])` (our
+       `combine_solver_params`; see §A fallback rules for divergence note)
+     - `solimp` → `element-wise max(geom_solimp[g1], geom_solimp[g2])` (same)
+     - `margin` → `0.0` (geom-level margin is not yet parsed; `build()` initializes
+       `geom_margin` as `vec![0.0; ngeom]`, and `ModelBuilder` does not store it
+       as a field, so it is unavailable during `process_contact()`)
+     - `gap` → `0.0` (same rationale as margin)
+     - `solreffriction` → falls back to the pair's resolved `solref` value
+       (there is no geom-level `solreffriction`; MuJoCo defaults it to solref)
+   - Compute canonical key `let key = (g1.min(g2), g1.max(g2));`
+   - **Deduplicate:** If `contact_pair_set` already contains `key`, find and
+     replace the existing entry in `contact_pairs` (last-wins semantics,
+     matching MuJoCo's signature-based merge). Use
+     `contact_pairs.iter().position(|p| ...).ok_or_else(|| ...)` to locate
+     the existing entry and overwrite it (returns `ModelConversionError` on
+     invariant violation). Otherwise push a new entry and insert `key` into
+     `contact_pair_set`.
+
+2. For each `MjcfContactExclude`:
+   - Resolve `body1`/`body2` names via `body_name_to_id`. Error if not found.
+   - Insert `(min(id1, id2), max(id1, id2))` into `contact_excludes`.
+
+**`build()` struct literal:** The `build()` function (line ~2105) constructs
+`Model` via struct literal. Add the three new fields:
+
+```rust
+contact_pairs: self.contact_pairs,
+contact_pair_set: self.contact_pair_set,
+contact_excludes: self.contact_excludes,
+```
+
+These fields must also be declared on `ModelBuilder` and initialized empty in
+`ModelBuilder::new()`.
+
+##### F. Collision Pipeline Changes (`mj_collision`)
+
+**Automatic pipeline (mechanism 1) — modify `check_collision_affinity`:**
+
+Add exclude and explicit-pair checks before the existing filters:
+
+```rust
+fn check_collision_affinity(model: &Model, geom1: usize, geom2: usize) -> bool {
+    let body1 = model.geom_body[geom1];
+    let body2 = model.geom_body[geom2];
+
+    // NEW: Check body-pair exclude list
+    let exclude_key = (body1.min(body2), body1.max(body2));
+    if model.contact_excludes.contains(&exclude_key) {
+        return false;
+    }
+
+    // NEW: Skip if this geom pair has an explicit <pair> entry —
+    // mechanism 2 will handle it with its overridden parameters.
+    let pair_key = (geom1.min(geom2), geom1.max(geom2));
+    if model.contact_pair_set.contains(&pair_key) {
+        return false;
+    }
+
+    // Existing: same-body, parent-child, contype/conaffinity ...
+}
+```
+
+This prevents duplicate contacts: a geom pair that appears both in the automatic
+pipeline (via bitmask match) and as an explicit `<pair>` is only processed by
+mechanism 2, which applies the correct overridden parameters.
+
+**Explicit pair pipeline (mechanism 2) — add to `mj_collision`:**
+
+After the existing automatic loop, process explicit pairs. These bypass the
+SAP broad-phase, so we use a direct `geom_rbound`-based distance cull instead:
+
+```rust
+// Mechanism 2: explicit contact pairs (bypass kinematic + bitmask filters)
+for pair in &model.contact_pairs {
+    let geom1 = pair.geom1;
+    let geom2 = pair.geom2;
+
+    // Distance cull using bounding radii (replaces SAP broad-phase for pairs).
+    // geom_rbound is the bounding sphere radius, pre-computed per geom.
+    // For planes, rbound = INFINITY (line 402) so this check always passes.
+    // Margin is added to match MuJoCo's mj_filterSphere: rbound1 + rbound2 + margin.
+    // Currently pair.margin defaults to 0.0 (§H) so this has no runtime effect yet,
+    // but keeps the code correct when margin-aware collision is implemented.
+    let dist = (data.geom_xpos[geom1] - data.geom_xpos[geom2]).norm();
+    if dist > model.geom_rbound[geom1] + model.geom_rbound[geom2] + pair.margin {
+        continue;
+    }
+
+    // Narrow-phase collision detection
+    let pos1 = data.geom_xpos[geom1];
+    let mat1 = data.geom_xmat[geom1];
+    let pos2 = data.geom_xpos[geom2];
+    let mat2 = data.geom_xmat[geom2];
+
+    if let Some(mut contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
+        // Apply pair overrides to the contact
+        apply_pair_overrides(&mut contact, pair);
+        data.contacts.push(contact);
+        data.ncon += 1;
+    }
+}
+```
+
+**No `geom_types_compatible` extraction needed.** `collide_geoms` already returns
+`Option<Contact>` — it returns `None` for any geom type combination it can't
+handle (unsupported types, non-penetrating geometry). The mechanism-2 loop
+simply calls `collide_geoms` directly; if it returns `None`, no contact is
+produced.
+
+**`apply_pair_overrides(contact: &mut Contact, pair: &ContactPair)`:**
+
+Overwrites the contact fields that `collide_geoms` populated from geom defaults:
+
+```rust
+fn apply_pair_overrides(contact: &mut Contact, pair: &ContactPair) {
+    // condim → dim mapping (same logic as Contact::with_condim)
+    contact.dim = match pair.condim {
+        1 => 1, 3 => 3, 4 => 4, 6 => 6,
+        0 | 2 => 3, 5 => 6, _ => 6,
+    } as usize;
+    // 5D friction: directly from pair (already fully resolved)
+    contact.mu = pair.friction;
+    contact.friction = pair.friction[0]; // legacy scalar = tan1
+    // Solver params
+    contact.solref = pair.solref;
+    contact.solimp = pair.solimp;
+    // NOTE: solreffriction is NOT applied here — Contact has a single solref
+    // field; per-direction solver params require solver changes (see §G).
+    // NOTE: margin/gap are NOT applied here — no runtime effect yet (see §H).
+}
+```
+
+Note: `collide_geoms` internally calls `make_contact_from_geoms`, which combines
+friction/condim/solref/solimp from the two geoms. For mechanism-2 contacts, this
+combination is computed and then immediately overwritten by `apply_pair_overrides`.
+This is intentional — keeping `collide_geoms` unchanged avoids threading pair
+context through the entire narrow-phase dispatch tree. The redundant combination
+is negligible cost (a few arithmetic ops per contact, dwarfed by GJK/EPA).
+
+##### G. `solreffriction` Handling
+
+The `Contact` struct currently has a single `solref` field. For now, store
+`solreffriction` in the `ContactPair` but do **not** add it to `Contact` — it
+only takes effect when the solver processes friction constraint rows, and the
+current solver uses a single `solref` for all rows. When the solver is upgraded
+to support per-direction solver params, `Contact` can be extended. Document this
+as a known divergence.
+
+**Out of scope (defer):** Applying `solreffriction` in the constraint solver.
+Parse and store it so the data is available, but do not change solver behavior.
+
+##### H. Margin/Gap: Parse and Store, No Runtime Effect Yet
+
+Our collision pipeline does not currently use `geom_margin` or `geom_gap` anywhere:
+`aabb_from_geom` builds AABBs from pure geometry (no margin inflation), and
+`collide_geoms` detects only geometric penetration (no margin-expanded envelope).
+Both fields default to 0.0 in all existing models.
+
+For this task we **parse and store** pair-level `margin`/`gap` for data
+completeness. Unspecified pair margin/gap fallback to 0.0 (geom-level
+`margin`/`gap` are not yet parsed from MJCF — `ModelBuilder` does not store
+them as fields, and `build()` initializes them as `vec![0.0; ngeom]`). Both
+fields have **no runtime effect** until margin-aware collision detection is
+implemented. That is a separate future task affecting both the automatic and
+explicit pair pipelines equally.
+
+##### I. Not in Scope
+
+- **Geom `priority` attribute.** Our combination rules use `max(condim)` and
+  geometric-mean friction unconditionally. This is documented in future_work_2
+  §2 ("Not in scope: geom priority").
+- **`solmix` attribute.** MuJoCo uses `solmix`-weighted averaging for
+  solref/solimp combination (with element-wise min as fallback for non-positive
+  solref). Our `combine_solver_params` uses element-wise min for solref and
+  element-wise max for solimp. This is a pre-existing divergence in the
+  automatic pipeline — not introduced by this task. The pair fallback rules
+  (§A) use the same combination functions for consistency.
+- **Margin-aware collision detection.** See §H above.
+
+##### J. Implementation Notes
+
+- **Duplicate `<pair>` deduplication (implemented).** If the same geom pair
+  appears in multiple `<pair>` entries, `process_contact` deduplicates by
+  canonical key `(min(g1, g2), max(g1, g2))`, keeping the **last** entry
+  (last-wins, matching MuJoCo's behavior where signature-based merging in
+  `engine_collision_driver.c` ensures at most one contact per geom pair).
+  Without deduplication, duplicate entries would produce duplicate contacts at
+  the same point — doubling contact force and over-constraining the pair. The
+  `contact_pair_set` already uses `HashSet` so the suppression of
+  automatic-pipeline duplicates is inherently idempotent. Duplicate `<exclude>`
+  entries for the same body pair are likewise idempotent (`HashSet` insert is a
+  no-op). The dedup lookup uses `.ok_or_else(|| ModelConversionError { .. })?`
+  rather than `if let Some(pos)` to catch invariant violations between the
+  `contact_pair_set` and `contact_pairs` vec.
+- **`ContactPair` re-export.** `ContactPair` is re-exported from `sim_core`
+  via `lib.rs` so that `sim_mjcf`'s `model_builder` can reference it.
+
+**Edge cases (valid behavior, no special handling needed):**
+
+- **Empty `<contact>` element:** `<contact></contact>` (parsed via `Event::Start`
+  → `parse_contact()` returns empty `MjcfContact`) and `<contact/>` (parsed via
+  `Event::Empty` → directly assign `MjcfContact::default()`) both produce an
+  empty `MjcfContact`. `parse_mujoco` dispatches `b"contact"` in both the
+  `Event::Start` branch (calling `parse_contact()`) and the `Event::Empty`
+  branch (assigning `MjcfContact::default()`).
+- **Self-pair (`geom1 == geom2`):** Allowed. `collide_geoms(g, g, ...)` returns
+  `None` for all current geom types (zero depth / degenerate normal), so no
+  contact is produced. No validation needed.
+- **Unknown child elements inside `<contact>`:** Follow existing parser pattern:
+  `skip_element` for `Event::Start`, ignore for `Event::Empty`. No error.
+- **`<pair>` order preservation:** The order of `<pair>` entries in MJCF is
+  preserved in `model.contact_pairs`. Mechanism-2 processes them in order, so
+  contact order in `data.contacts` matches MJCF document order (after automatic
+  contacts).
+
 #### Acceptance Criteria
-1. `<exclude>` prevents contacts between specified body pairs.
-2. `<pair>` forces contacts between specified geom pairs, overriding bitmasks.
-3. Per-pair condim/friction/solref/solimp overrides apply to paired contacts.
-4. Existing contype/conaffinity filtering is unchanged for non-paired/excluded geoms.
+
+1. `<exclude>` prevents all contacts between geoms on the specified body pair,
+   via the automatic pipeline.
+2. `<exclude>` does **not** suppress an explicit `<pair>` between geoms on the
+   same bodies (two-mechanism independence).
+3. `<pair>` produces contacts between the specified geoms, bypassing same-body,
+   parent-child, and contype/conaffinity filters.
+4. `<pair>` still goes through bounding-sphere distance cull and narrow-phase
+   (no contacts when geoms are far apart or non-penetrating).
+5. No duplicate contacts: a geom pair that matches both the automatic pipeline
+   and an explicit `<pair>` produces exactly one contact (from mechanism 2).
+6. Per-pair `condim` override changes contact dimensionality for that pair.
+7. Per-pair 5D `friction` override replaces the geom-combined friction
+   (both `mu` array and legacy `friction` scalar on `Contact`).
+8. Per-pair `solref`/`solimp` overrides replace the geom-combined solver params.
+9. Per-pair `margin`/`gap` are parsed and stored but have no runtime effect (see §H).
+10. Per-pair `solreffriction` defaults to the pair's resolved `solref` when
+    unspecified (no geom-level fallback exists).
+11. When pair attributes are unspecified, they fall back to the standard geom
+    combination rules (identical behavior to automatic contacts).
+12. Existing contype/conaffinity filtering is unchanged for non-paired/excluded
+    geoms (regression test).
+13. Unknown geom/body names in `<pair>`/`<exclude>` produce a clear
+    `ModelConversionError` naming the bad reference and the element
+    (e.g., `"<pair> references unknown geom 'foo' in geom1"`).
+14. `<pair>` `class` attribute inherits from the referenced defaults class.
+15. `<exclude body1="X" body2="X"/>` is accepted without error (no-op; same-body
+    contacts are already filtered by the automatic pipeline).
+16. Duplicate `<pair>` entries for the same geom pair produce exactly one
+    `ContactPair` (last-wins deduplication). Only one contact is generated,
+    not two.
+17. Missing required attributes (`geom1`/`geom2` on `<pair>`,
+    `body1`/`body2` on `<exclude>`) produce `MjcfError::MissingAttribute`
+    at parse time.
+
+#### Conformance Tests
+
+- **Exclude basic:** Two bodies with geoms that normally collide. Add `<exclude>`.
+  Verify zero contacts.
+- **Exclude + pair independence:** Exclude bodies A/B. Add explicit `<pair>` for
+  geoms on A/B. Verify the pair still produces contacts.
+- **Exclude self-body:** `<exclude body1="A" body2="A"/>`. Verify no error (no-op,
+  same-body contacts are already filtered). *(AC 15)*
+- **Pair bypass bitmask:** Two geoms with `contype=0 conaffinity=0` (would never
+  collide automatically). Add `<pair>`. Verify contacts are produced. *(AC 3)*
+- **Pair bypass parent-child:** Parent and child body geoms (normally filtered).
+  Add `<pair>`. Verify contacts are produced. *(AC 3)*
+- **Pair bypass same-body:** Two geoms on the same body (normally filtered by
+  same-body check). Add `<pair>`. Verify contacts are produced. *(AC 3)*
+- **Pair no duplicate:** Two geoms with matching bitmasks (would collide
+  automatically) plus an explicit `<pair>` with `condim="1"`. Verify exactly
+  one contact with `dim == 1` (mechanism-2 only, not both).
+- **Pair condim override:** Pair with `condim="1"` between two `condim="3"` geoms.
+  Verify contact `dim == 1`.
+- **Pair friction override:** Pair with explicit 5D friction. Verify contact `mu`
+  matches the pair, not the geom combination.
+- **Pair partial override:** Pair with only `condim` specified. Verify other
+  params (friction, solref, solimp) match the geom-combined values.
+- **Pair with class:** Pair with `class="custom"` referencing a defaults class
+  that sets `condim="4"`. Verify contact `dim == 4`.
+- **Pair solref/solimp override:** Pair with explicit `solref="0.05 0.8"` and
+  `solimp="0.85 0.9 0.002 0.4 1.5"`. Verify contact `solref` and `solimp`
+  match the pair values, not the geom-combined values. *(AC 8)*
+- **Pair margin/gap stored:** Parse a `<pair margin="0.1" gap="0.05" .../>`.
+  Verify the `ContactPair` in `model.contact_pairs` has `margin == 0.1` and
+  `gap == 0.05`. Verify no runtime effect on contact generation (contacts are
+  produced identically with or without margin/gap). *(AC 9)*
+- **Pair solreffriction default:** Parse a `<pair solref="0.05 0.8" .../>` with
+  no `solreffriction` attribute. Verify `ContactPair.solreffriction == [0.05, 0.8]`
+  (matches the pair's resolved solref). *(AC 10)*
+- **Pair distant geoms:** Two geoms far apart with explicit `<pair>`. Verify no
+  contact produced (bounding-sphere cull works). *(AC 4)*
+- **Parse error — bad geom name:** `<pair geom1="nonexistent" .../>`. Verify
+  error is `ModelConversionError` and message contains `"nonexistent"` and
+  `"geom1"`. *(AC 13)*
+- **Parse error — bad body name:** `<exclude body1="nonexistent" .../>`. Verify
+  error is `ModelConversionError` and message contains `"nonexistent"` and
+  `"body1"`. *(AC 13)*
+- **Duplicate pair dedup:** Two `<pair>` entries for the same geom pair, first
+  with `condim="1"`, second with `condim="4"`. Verify `model.contact_pairs`
+  contains exactly one entry for that geom pair with `condim == 4` (last wins).
+  Verify exactly one contact is produced, with `dim == 4`. *(AC 16)*
+- **Parse error — missing geom1:** `<pair geom2="foo"/>` (no `geom1`). Verify
+  error is `MjcfError::MissingAttribute` with `attribute == "geom1"`. *(AC 17)*
+- **Parse error — missing body1:** `<exclude body2="bar"/>` (no `body1`). Verify
+  error is `MjcfError::MissingAttribute` with `attribute == "body1"`. *(AC 17)*
+- **Regression:** Run existing contact test suite unchanged. No output changes.
+  *(AC 12)*
 
 #### Files
-- `sim/L0/mjcf/src/parser.rs` — modify (parse `<contact>` block)
-- `sim/L0/mjcf/src/types.rs` — modify (add `MjcfContactPair`, `MjcfContactExclude`)
-- `sim/L0/mjcf/src/model_builder.rs` — modify (build pair/exclude lists)
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`can_collide()`, Model fields)
+
+| File | Change | Details |
+|------|--------|---------|
+| `sim/L0/mjcf/src/types.rs` | modify | Add `MjcfContactPair`, `MjcfContactExclude`, `MjcfContact`, `MjcfPairDefaults` (all with serde cfg_attr); add `contact` field to `MjcfModel` + update manual `Default` impl; add `pair` field to `MjcfDefault` |
+| `sim/L0/mjcf/src/parser.rs` | modify | Add `b"contact"` arm in `parse_mujoco` dispatch in **both** `Event::Start` (line ~67, calls `parse_contact()`) **and** `Event::Empty` (line ~111, assigns `MjcfContact::default()` for self-closing `<contact/>`); new `parse_contact()` function for `<pair>`/`<exclude>` children; add `b"pair"` arm in `parse_default` (both `Event::Start` and `Event::Empty` branches, since `<pair .../>` is typically self-closing) |
+| `sim/L0/mjcf/src/defaults.rs` | modify | Add `MjcfContactPair`, `MjcfPairDefaults` to imports; add `pair_defaults()` accessor, `apply_to_pair()` method, and `merge_pair_defaults()` to `DefaultResolver`; add `pair` field to `merge_defaults()` struct literal |
+| `sim/L0/mjcf/src/model_builder.rs` | modify | Add `HashSet` import (line ~21); add `ContactPair` import from sim_core; add `MjcfContact` to types import; add `contact_pairs`, `contact_pair_set`, `contact_excludes` fields to `ModelBuilder`; new `process_contact()` method (resolve names, apply defaults, compute geom fallbacks incl. `solreffriction` → `solref`); call `process_contact()` in `model_from_mjcf()` after body tree; move fields into `Model` in `build()` struct literal |
+| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `ContactPair` struct and `contact_pairs`/`contact_pair_set`/`contact_excludes` to `Model`; add `HashSet` import; initialize new fields in `Model::empty()`; add exclude + pair-set checks in `check_collision_affinity`; add mechanism-2 loop in `mj_collision` (rbound cull + `collide_geoms` + `apply_pair_overrides`) |
+| `sim/L0/core/src/lib.rs` | modify | Add `ContactPair` to re-exports from `mujoco_pipeline` |
 
 ---
 
