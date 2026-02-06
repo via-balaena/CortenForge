@@ -22,7 +22,7 @@ use crate::types::{
     MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfMesh,
     MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults,
     MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex,
-    MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfWeld,
+    MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfWeld, SpatialPathElement,
 };
 
 /// Parse an MJCF string into a model.
@@ -1865,12 +1865,21 @@ fn parse_tendon<R: BufRead>(
                 let name_bytes = e.name().as_ref().to_vec();
                 match name_bytes.as_slice() {
                     b"site" => {
-                        // Site reference for spatial tendon
+                        // Site reference for spatial tendon path
                         if let Some(site_name) = get_attribute_opt(e, "site") {
-                            tendon.sites.push(site_name);
+                            tendon
+                                .path_elements
+                                .push(SpatialPathElement::Site { site: site_name });
                         }
                     }
                     b"joint" => {
+                        if tendon.tendon_type == MjcfTendonType::Spatial {
+                            return Err(MjcfError::XmlParse(format!(
+                                "Joint elements inside spatial tendons are not supported \
+                                 (tendon '{}'). Use a fixed tendon for joint coupling.",
+                                tendon.name
+                            )));
+                        }
                         // Joint reference for fixed tendon
                         if let Some(joint_name) = get_attribute_opt(e, "joint") {
                             let coef = parse_float_attr(e, "coef").unwrap_or(1.0);
@@ -1878,10 +1887,21 @@ fn parse_tendon<R: BufRead>(
                         }
                     }
                     b"geom" => {
-                        // Wrapping geom reference for spatial tendon
+                        // Wrapping geom reference for spatial tendon path
                         if let Some(geom_name) = get_attribute_opt(e, "geom") {
-                            tendon.wrapping_geoms.push(geom_name);
+                            let sidesite = get_attribute_opt(e, "sidesite");
+                            tendon.path_elements.push(SpatialPathElement::Geom {
+                                geom: geom_name,
+                                sidesite,
+                            });
                         }
+                    }
+                    b"pulley" => {
+                        // Pulley element for spatial tendon path
+                        let divisor = parse_float_attr(e, "divisor").unwrap_or(1.0);
+                        tendon
+                            .path_elements
+                            .push(SpatialPathElement::Pulley { divisor });
                     }
                     _ => {}
                 }
@@ -3319,7 +3339,25 @@ mod tests {
         assert_relative_eq!(tendon.stiffness, 1000.0, epsilon = 1e-10);
         assert_relative_eq!(tendon.damping, 10.0, epsilon = 1e-10);
         assert_relative_eq!(tendon.width, 0.005, epsilon = 1e-10);
-        assert_eq!(tendon.sites, vec!["s1", "s2", "s3"]);
+        assert_eq!(tendon.path_elements.len(), 3);
+        assert_eq!(
+            tendon.path_elements[0],
+            SpatialPathElement::Site {
+                site: "s1".to_string()
+            }
+        );
+        assert_eq!(
+            tendon.path_elements[1],
+            SpatialPathElement::Site {
+                site: "s2".to_string()
+            }
+        );
+        assert_eq!(
+            tendon.path_elements[2],
+            SpatialPathElement::Site {
+                site: "s3".to_string()
+            }
+        );
     }
 
     #[test]

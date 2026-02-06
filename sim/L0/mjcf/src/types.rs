@@ -2028,9 +2028,36 @@ impl MjcfTendonType {
 
 /// A tendon from `<tendon>` element.
 ///
-/// MuJoCo tendons can connect multiple joints or sites and apply forces
-/// based on their length. They are commonly used for modeling cables,
-/// tendons in biomechanical systems, or any force transmission mechanism.
+/// A single element in a spatial tendon path, preserving MJCF ordering.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum SpatialPathElement {
+    /// Via-point: tendon passes through this site.
+    Site {
+        /// Site name reference.
+        site: String,
+    },
+    /// Wrapping surface: tendon wraps around this geom (sphere or cylinder only).
+    /// `sidesite` determines which side of the geometry the tendon wraps around,
+    /// preventing discontinuous jumps when multiple wrapping solutions exist.
+    Geom {
+        /// Wrapping geom name reference.
+        geom: String,
+        /// Optional sidesite for wrapping side disambiguation.
+        sidesite: Option<String>,
+    },
+    /// Pulley: scales subsequent path length and Jacobian contributions by
+    /// 1/divisor until the next pulley element or end of tendon.
+    Pulley {
+        /// Pulley divisor (must be positive).
+        divisor: f64,
+    },
+}
+
+/// MuJoCo tendon specification.
+///
+/// Tendons connect multiple joints or sites and apply forces based on their
+/// length. Used for modeling cables, tendons, or force transmission mechanisms.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfTendon {
@@ -2054,12 +2081,10 @@ pub struct MjcfTendon {
     pub width: f64,
     /// RGBA color for visualization.
     pub rgba: Vector4<f64>,
-    /// Sites for spatial tendons (ordered list of site names).
-    pub sites: Vec<String>,
+    /// Ordered path elements for spatial tendons (sites, wrapping geoms, pulleys).
+    pub path_elements: Vec<SpatialPathElement>,
     /// Joint coefficients for fixed tendons: (joint_name, coefficient).
     pub joints: Vec<(String, f64)>,
-    /// Wrapping geom references for spatial tendons (geom names).
-    pub wrapping_geoms: Vec<String>,
 }
 
 impl Default for MjcfTendon {
@@ -2075,9 +2100,8 @@ impl Default for MjcfTendon {
             frictionloss: 0.0,
             width: 0.003, // MuJoCo default
             rgba: Vector4::new(0.5, 0.5, 0.5, 1.0),
-            sites: Vec::new(),
+            path_elements: Vec::new(),
             joints: Vec::new(),
-            wrapping_geoms: Vec::new(),
         }
     }
 }
@@ -2103,10 +2127,11 @@ impl MjcfTendon {
         }
     }
 
-    /// Add a site to a spatial tendon.
+    /// Add a site path element to a spatial tendon.
     #[must_use]
     pub fn with_site(mut self, site: impl Into<String>) -> Self {
-        self.sites.push(site.into());
+        self.path_elements
+            .push(SpatialPathElement::Site { site: site.into() });
         self
     }
 
@@ -2139,10 +2164,35 @@ impl MjcfTendon {
         self
     }
 
-    /// Add a wrapping geom reference to a spatial tendon.
+    /// Add a wrapping geom path element to a spatial tendon.
     #[must_use]
     pub fn with_wrapping_geom(mut self, geom: impl Into<String>) -> Self {
-        self.wrapping_geoms.push(geom.into());
+        self.path_elements.push(SpatialPathElement::Geom {
+            geom: geom.into(),
+            sidesite: None,
+        });
+        self
+    }
+
+    /// Add a wrapping geom path element with sidesite to a spatial tendon.
+    #[must_use]
+    pub fn with_wrapping_geom_sidesite(
+        mut self,
+        geom: impl Into<String>,
+        sidesite: impl Into<String>,
+    ) -> Self {
+        self.path_elements.push(SpatialPathElement::Geom {
+            geom: geom.into(),
+            sidesite: Some(sidesite.into()),
+        });
+        self
+    }
+
+    /// Add a pulley path element to a spatial tendon.
+    #[must_use]
+    pub fn with_pulley(mut self, divisor: f64) -> Self {
+        self.path_elements
+            .push(SpatialPathElement::Pulley { divisor });
         self
     }
 }

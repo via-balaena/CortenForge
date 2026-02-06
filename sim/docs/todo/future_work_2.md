@@ -2442,7 +2442,7 @@ explicit pair pipelines equally.
 ---
 
 ### 4. Spatial Tendons + Wrapping
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Status:** In progress (steps 1-6 done, step 7 next) | **Effort:** L | **Prerequisites:** None
 
 #### Current State
 
@@ -4250,14 +4250,14 @@ kinematics (step 3) without the force-mapping fix (step 4) would cause these
 sites to write forces to garbage DOF indices — producing silent data corruption,
 not just wrong results.
 
-1. **MJCF parser + types** — `SpatialPathElement` enum, ordered path parsing,
+1. ~~**MJCF parser + types** — `SpatialPathElement` enum, ordered path parsing,
    `sidesite` and `divisor` attribute parsing. Update `validation.rs`.
-   Write parser/validation tests (test 17, parser-side cases).
-2. **Model builder** — `process_tendons()` spatial path → wrap arrays with
+   Write parser/validation tests (test 17, parser-side cases).~~ **DONE**
+2. ~~**Model builder** — `process_tendons()` spatial path → wrap arrays with
    `wrap_sidesite`. Validation rules (including rule 9: sidesite outside
    geometry). Remove spatial tendon warning.
-   Write builder validation tests (test 17, builder-side cases).
-3. **`mj_fwd_tendon_spatial()` + `accumulate_point_jacobian()`** — straight-line
+   Write builder validation tests (test 17, builder-side cases).~~ **DONE**
+3. ~~**`mj_fwd_tendon_spatial()` + `accumulate_point_jacobian()`** — straight-line
    path only (sites, no wrapping geoms). `accumulate_point_jacobian` is a standalone
    helper testable in isolation against `compute_contact_jacobian`'s
    `add_body_jacobian`. Write acceptance tests 1, 2, 5, 6, 18.
@@ -4265,21 +4265,21 @@ not just wrong results.
    joint angular DOFs, matching MuJoCo's `cdof` convention. The existing
    `add_body_jacobian` (line 7923) has a pre-existing bug using world-frame unit
    vectors instead — do NOT match that bug. See the Free joint case in the
-   pseudocode above.
-4. **Force transmission fix** — `apply_tendon_force()` helper. Update
+   pseudocode above.~~ **DONE**
+4. ~~**Force transmission fix** — `apply_tendon_force()` helper. Update
    `mj_fwd_passive()`, `mj_fwd_constraint()`, and `mj_fwd_actuation()`.
    **Must be in the same commit as step 3** (see atomicity constraint above).
-   Write tests 7, 8, 9.
-5. **Model-build fixes** — `tendon_length0` computation for spatial tendons,
+   Write tests 7, 8, 9.~~ **DONE**
+5. ~~**Model-build fixes** — `tendon_length0` computation for spatial tendons,
    `compute_muscle_params()` spatial tendon Jacobian, `actuator_lengthrange`
-   warning for unlimited spatial tendons. Write tests 12, 13.
-6. **Sphere wrapping** — `sphere_wrap()` + `WrapResult` type + dual-candidate
+   warning for unlimited spatial tendons. Write tests 12, 13.~~ **DONE**
+6. ~~**Sphere wrapping** — `sphere_wrap()` + `WrapResult` type + dual-candidate
    sidesite selection + sidesite-forced wrapping (when straight path clears
    the geometry but sidesite prevents early exit) + collinear degenerate
    fallback + self-intersection rejection (`segments_intersect_2d`) +
    integration into `mj_fwd_tendon_spatial()`. Write tests 3, 11, 14
    (sub-cases a and c: Models E, J), 15 (Model H), 19 (Model L: mixed
-   straight + wrapping segments).
+   straight + wrapping segments).~~ **DONE**
 7. **Cylinder wrapping** — `cylinder_wrap()` + Z-interpolation + integration.
    Write test 4. Write test 14 sub-case b (Model I: cylinder sidesite).
 8. **Pulley divisor** — already in the pairwise loop structure; verify with
