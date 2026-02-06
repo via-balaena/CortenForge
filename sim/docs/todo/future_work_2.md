@@ -2568,11 +2568,19 @@ variants for each child element in document order:
 - `<site site="...">` → `SpatialPathElement::Site { site }`
 - `<geom geom="..." sidesite="...">` → `SpatialPathElement::Geom { geom, sidesite }`
 - `<pulley divisor="...">` → `SpatialPathElement::Pulley { divisor }` (default 1.0)
+- `<joint ...>` → emit error: "Joint elements inside spatial tendons are not
+  supported (tendon '{name}'). Use a fixed tendon for joint coupling."
 
 ##### 4.2 Model Builder: Spatial Tendon Path → Wrap Arrays
 
 `process_tendons()` in `model_builder.rs` translates `path_elements` into the
 flat wrap arrays, **preserving element order**.
+
+**Existing types:** `WrapType::Geom` and `WrapType::Pulley` already exist in
+the `WrapType` enum (line 471) but are currently unused by the model builder —
+only `WrapType::Joint` is emitted for fixed tendons and `WrapType::Site` for
+spatial tendon sites. This spec activates `WrapType::Geom` and
+`WrapType::Pulley` for spatial tendon wrap arrays.
 
 **New Model field:**
 ```rust
@@ -2601,13 +2609,23 @@ For each `SpatialPathElement`:
 
 **Validation rules:**
 1. Path must start and end with a `Site` element.
-2. Two consecutive `Geom` elements without an intervening `Site` are an error
-   (MuJoCo requires wrapping geoms to be separated by sites).
+2. Every `Geom` element must be immediately followed by a `Site` element.
+   This prevents three dangerous sequences: (a) consecutive `Geom` elements
+   (MuJoCo requires wrapping geoms to be separated by sites), (b) `Geom`
+   followed by `Pulley` (the Site-Geom-Site branch reads `wrap_objid[j+2]`
+   as a site ID — if position `j+2` is a Pulley with `objid=0`, it silently
+   reads `site_xpos[0]`, producing wrong position data), and (c) `Geom` as
+   the last element (out-of-bounds read). Combined with rule 1
+   (path ends with Site), this ensures the pairwise loop's Site-Geom-Site
+   branch always has a valid Site at `j+2`.
 3. A tendon with fewer than 2 `Site` elements is an error.
 4. All site names, geom names, and sidesite names referenced in `path_elements`
    must resolve to existing model objects. Emit an error with the tendon name
    and unresolved name otherwise.
-5. Wrapping geoms must have `geom_size[0] > 0`. A zero-radius wrapping geom
+5. Wrapping geoms must have `geom_size[0] > 0` (MuJoCo convention for the
+   primary radius). In the codebase, `geom_size` is `Vec<Vector3<f64>>`
+   (declared at line 878), so `geom_size[0]` in MuJoCo terminology corresponds
+   to `model.geom_size[geom_id].x` in Rust. A zero-radius wrapping geom
    causes division by zero in the arc angle computation.
 6. A `Pulley` element must not be immediately followed by a `Geom` element.
    The pairwise loop assumes `type0` is always a `Site` after pulley handling.
@@ -2640,6 +2658,12 @@ For each `SpatialPathElement`:
    inside `compute_spatial_tendon_length0()` (which runs `mj_fwd_position()`
    first), not in `process_tendons()`. MuJoCo similarly validates at compile
    time after computing initial body transforms from `qpos0`.
+10. A `<joint>` element inside a `<spatial>` tendon is an error. MuJoCo
+    supports `mjWRAP_JOINT` within spatial tendons, but this is uncommon and
+    not implemented. Emit an error: "Joint elements inside spatial tendons are
+    not supported (tendon '{name}'). Use a fixed tendon for joint coupling."
+    This is enforced at parse time (§4.1) but also validated here as
+    defense-in-depth.
 
 Remove the spatial tendon warning log.
 
@@ -2651,6 +2675,13 @@ tendons, extend this by adding a new public `Model` method:
 
 ```rust
 pub fn compute_spatial_tendon_length0(&mut self) {
+    // Early return if no spatial tendons — avoid unnecessary FK + Data allocation.
+    // Mirrors compute_muscle_params() which returns early when there are no muscles.
+    let has_spatial = (0..self.ntendon).any(|t| self.tendon_type[t] == TendonType::Spatial);
+    if !has_spatial {
+        return;
+    }
+
     let mut data = self.make_data();
     mj_fwd_position(self, &mut data);  // runs FK + mj_fwd_tendon
 
@@ -2669,15 +2700,21 @@ pub fn compute_spatial_tendon_length0(&mut self) {
             let ss_id = self.wrap_sidesite[w];
             let ss_local = data.geom_xmat[geom_id].transpose()
                 * (data.site_xpos[ss_id] - data.geom_xpos[geom_id]);
-            let r = self.geom_size[geom_id][0];
+            let r = self.geom_size[geom_id].x;
             let inside = match self.geom_type[geom_id] {
                 Sphere   => ss_local.norm() < r,
                 Cylinder => Vector2::new(ss_local.x, ss_local.y).norm() < r,
                 _ => false,
             };
             if inside {
-                panic!("Sidesite '{}' is inside wrapping geom '{}' on tendon {}. \
-                        wrap_inside algorithm not implemented.", ss_id, geom_id, t);
+                let ss_name = self.site_name[ss_id].as_deref().unwrap_or("?");
+                let g_name = self.geom_name[geom_id].as_deref().unwrap_or("?");
+                let t_name = self.tendon_name[t].as_deref().unwrap_or("?");
+                panic!("Sidesite '{}' (site {}) is inside wrapping geom '{}' \
+                        (geom {}) on tendon '{}' (tendon {}). The wrap_inside \
+                        algorithm is not implemented. Move the sidesite outside \
+                        the wrapping geometry surface.",
+                        ss_name, ss_id, g_name, geom_id, t_name, t);
             }
         }
     }
@@ -2694,13 +2731,35 @@ pub fn compute_spatial_tendon_length0(&mut self) {
 }
 ```
 
-**Build ordering:** In `model_builder.rs`'s `build()` method, the current order
-is: (1) assemble Model, (2) `compute_ancestors()`, (3) `compute_implicit_params()`,
-(4) `compute_muscle_params()`, (5) fixed tendon `tendon_length0` loop.
-`compute_spatial_tendon_length0()` must run before `compute_muscle_params()`
-because it populates `tendon_length0` (needed for `lengthspring` defaulting)
-and validates sidesite positions (which requires FK). The correct ordering is:
-(4a) `compute_spatial_tendon_length0()`, then (4b) `compute_muscle_params()`.
+**Build ordering:** In `model_builder.rs`'s `build()` method, the current
+order is:
+
+1. Assemble `Model` struct literal (line ~2105)
+2. `compute_ancestors()` (line 2295)
+3. `compute_implicit_params()` (line 2298)
+4. `compute_muscle_params()` (line 2301)
+5. Geom bounding radii loop (line 2304)
+6. Fixed tendon `tendon_length0` loop (line 2319)
+
+`compute_spatial_tendon_length0()` must run **before** `compute_muscle_params()`
+because it populates `tendon_length0` for spatial tendons (needed for
+`lengthspring` defaulting) and validates sidesite positions (which requires FK).
+It does **not** depend on any step after (3), so the correct insertion point is
+between (3) and (4). The fixed tendon loop (6) stays where it is — it handles
+only `TendonType::Fixed` and uses simple linear algebra (no FK needed).
+
+The new order becomes:
+
+1. Assemble `Model` struct literal
+2. `compute_ancestors()`
+3. `compute_implicit_params()`
+4. **`compute_spatial_tendon_length0()`** — new; requires FK via `mj_fwd_position`
+5. `compute_muscle_params()` — now sees valid `tendon_length0` for all types
+6. Geom bounding radii loop — unchanged
+7. Fixed tendon `tendon_length0` loop — unchanged; overwrites spatial values
+   for `TendonType::Fixed` tendons (which is correct: fixed tendon length0 is
+   analytic, not FK-derived)
+
 Note: the current `compute_muscle_params()` does not read spatial tendon FK
 data directly (it uses the wrap-array shortcut for fixed tendons), but the
 spatial tendon `tendon_length0` must be valid before any downstream code that
@@ -2710,6 +2769,13 @@ No circular dependency: `wrap_sidesite` is static model data populated by
 `process_tendons()` before `build()` returns. `mj_fwd_tendon_spatial()` reads
 it at runtime. `tendon_length0` is derived data computed after the model
 structure is complete.
+
+**Borrow safety:** The `&mut self` method passes `self` to `mj_fwd_position(self,
+&mut data)` — Rust auto-reborrows `self` as `&Model` for the call. After
+`mj_fwd_position` returns, `self` is writeable again for `self.tendon_length0[t]
+= data.ten_length[t]`. `data` is an owned `Data` value (from `make_data()`,
+which clones `qpos0`), so it does not hold references into `self`. This is the
+same borrow pattern used by `compute_muscle_params()` (line 2336-2337).
 
 **Note on `springlength`:** MuJoCo's MJCF attribute `springlength` is actually
 a `real(2)` pair `(low, high)` with default `(-1, -1)`. When both are -1,
@@ -2724,6 +2790,22 @@ Add `springlength` parsing + deadband semantics as a follow-up item.
 ##### 4.3 Spatial Tendon Length + Jacobian: `mj_fwd_tendon_spatial()`
 
 New function called from `mj_fwd_tendon()` for `TendonType::Spatial`.
+
+**Dispatch point:** In `mj_fwd_tendon()` (line 6599), replace the
+`TendonType::Spatial` stub (lines 6611-6614, which sets `ten_length=0` and
+`ten_J.fill(0.0)`) with a call to `mj_fwd_tendon_spatial(model, data, t)`.
+This parallels the `TendonType::Fixed` arm which calls
+`mj_fwd_tendon_fixed(model, data, t)`.
+
+**`ten_J` storage:** `Data.ten_J` is a `Vec<DVector<f64>>` — one dense vector
+of length `nv` per tendon (declared at line 1684, initialized at line 2103 as
+`vec![DVector::zeros(self.nv); self.ntendon]`). `mj_fwd_tendon_spatial()` zeros
+`data.ten_J[t]` with `.fill(0.0)` at entry and accumulates Jacobian
+contributions via `data.ten_J[t][dof] += scale * direction.dot(&j_col)` through
+`accumulate_point_jacobian()`. This matches the fixed-tendon pattern in
+`mj_fwd_tendon_fixed()` (lines 6632/6645). The dense storage is acceptable for
+correctness; a sparse representation is a follow-up optimization (see §4.5
+performance note).
 
 **Algorithm overview.** MuJoCo processes spatial tendons using a pairwise loop
 over the wrap array (`engine_core_smooth.c`, function `mj_tendon`). At each
@@ -2760,6 +2842,7 @@ enum WrapResult {
     NoWrap,
     /// Path wraps around the obstacle, producing two tangent points and an arc.
     /// Tangent points are in the **geom-local frame** (caller transforms to world).
+    /// `arc_length` is a scalar distance (frame-independent: same in local and world).
     Wrapped {
         tangent_point_1: Vector3<f64>,
         tangent_point_2: Vector3<f64>,
@@ -2819,15 +2902,20 @@ fn mj_fwd_tendon_spatial(model, data, t):
             // distances below 1e-10 — a deliberate safety improvement.
             if dist > 1e-10 && body0 != body1:
                 let dir = diff / dist
-                accumulate_point_jacobian(model, data, &mut data.ten_J[t],
+                accumulate_point_jacobian(model, &data.xpos, &data.xquat, &mut data.ten_J[t],
                     body1, p1, &dir, 1.0 / divisor)
-                accumulate_point_jacobian(model, data, &mut data.ten_J[t],
+                accumulate_point_jacobian(model, &data.xpos, &data.xquat, &mut data.ten_J[t],
                     body0, p0, &dir, -1.0 / divisor)
 
             j += 1  // advance to site1 (it becomes type0 on next iteration)
 
         else if type1 == WrapType::Geom:
             // ---- Site–Geom–Site: wrapping segment ----
+            // Safety: j+2 < num is guaranteed by validation rules 1-2:
+            //   - Rule 1: path ends with Site (so a Geom cannot be last)
+            //   - Rule 2: every Geom must be followed by a Site
+            // Together these ensure every Geom at position j+1 has a Site at j+2.
+            debug_assert!(j + 2 < num, "Geom at j+1 must be followed by Site at j+2")
             let geom_id = model.wrap_objid[adr + j + 1]
             let geom_body = model.geom_body[geom_id]
 
@@ -2852,9 +2940,9 @@ fn mj_fwd_tendon_spatial(model, data, t):
             // Dispatch to wrapping geometry
             let wrap_result = match model.geom_type[geom_id]:
                 Sphere   => sphere_wrap(p0_local, p1_local,
-                               model.geom_size[geom_id][0], sidesite_local)
+                               model.geom_size[geom_id].x, sidesite_local)
                 Cylinder => cylinder_wrap(p0_local, p1_local,
-                               model.geom_size[geom_id][0], sidesite_local)
+                               model.geom_size[geom_id].x, sidesite_local)
                 _        => unreachable (validated at model build)
 
             match wrap_result:
@@ -2876,8 +2964,8 @@ fn mj_fwd_tendon_spatial(model, data, t):
                 // Sub-segment 1: p0 (body0) → t1 (geom_body)
                 if dist1 > 1e-10 && body0 != geom_body:
                     let dir1 = d1 / dist1
-                    accumulate_point_jacobian(model, data, &mut ten_j, geom_body, t1, &dir1, 1.0/divisor)
-                    accumulate_point_jacobian(model, data, &mut ten_j, body0, p0, &dir1, -1.0/divisor)
+                    accumulate_point_jacobian(model, &data.xpos, &data.xquat, &mut data.ten_J[t], geom_body, t1, &dir1, 1.0/divisor)
+                    accumulate_point_jacobian(model, &data.xpos, &data.xquat, &mut data.ten_J[t], body0, p0, &dir1, -1.0/divisor)
 
                 // Sub-segment 2: t1 → t2 (arc on geom surface)
                 // Both endpoints on geom_body → Jacobian difference is zero.
@@ -2886,8 +2974,8 @@ fn mj_fwd_tendon_spatial(model, data, t):
                 // Sub-segment 3: t2 (geom_body) → p1 (body1)
                 if dist3 > 1e-10 && geom_body != body1:
                     let dir3 = d3 / dist3
-                    accumulate_point_jacobian(model, data, &mut ten_j, body1, p1, &dir3, 1.0/divisor)
-                    accumulate_point_jacobian(model, data, &mut ten_j, geom_body, t2, &dir3, -1.0/divisor)
+                    accumulate_point_jacobian(model, &data.xpos, &data.xquat, &mut data.ten_J[t], body1, p1, &dir3, 1.0/divisor)
+                    accumulate_point_jacobian(model, &data.xpos, &data.xquat, &mut data.ten_J[t], geom_body, t2, &dir3, -1.0/divisor)
 
               NoWrap =>
                 // No wrapping — straight segment p0 → p1
@@ -2895,8 +2983,8 @@ fn mj_fwd_tendon_spatial(model, data, t):
                 total_length += dist / divisor
                 if dist > 1e-10 && body0 != body1:
                     let dir = diff / dist
-                    accumulate_point_jacobian(model, data, &mut ten_j, body1, p1, &dir, 1.0/divisor)
-                    accumulate_point_jacobian(model, data, &mut ten_j, body0, p0, &dir, -1.0/divisor)
+                    accumulate_point_jacobian(model, &data.xpos, &data.xquat, &mut data.ten_J[t], body1, p1, &dir, 1.0/divisor)
+                    accumulate_point_jacobian(model, &data.xpos, &data.xquat, &mut data.ten_J[t], body0, p0, &dir, -1.0/divisor)
 
             j += 2  // advance past the geom to site1 (becomes type0 next)
 
@@ -2919,8 +3007,25 @@ verified to exactly match the existing `add_body_jacobian` implementation.
 broken implementation (only stores `.x` component) — do NOT use it as a
 reference.
 
+**Borrow safety:** The function takes `ten_j: &mut DVector<f64>` as a direct
+mutable reference (not through `data`), plus immutable references `xpos` and
+`xquat` for the body poses. The caller obtains these via field-level borrow
+splitting on `Data`:
+```rust
+accumulate_point_jacobian(model, &data.xpos, &data.xquat,
+    &mut data.ten_J[t], body_id, &point, &dir, scale);
 ```
-fn accumulate_point_jacobian(model, data, ten_j, body_id, point, direction, scale):
+This is safe because `data.ten_J`, `data.xpos`, and `data.xquat` are disjoint
+fields of `Data`. The alternative — implementing as a closure that captures
+`data` (like `add_body_jacobian`) — would work too, but a standalone function
+is more testable.
+
+```
+fn accumulate_point_jacobian(model: &Model, xpos: &[Vector3<f64>],
+                             xquat: &[UnitQuaternion<f64>],
+                             ten_j: &mut DVector<f64>,
+                             body_id: usize, point: &Vector3<f64>,
+                             direction: &Vector3<f64>, scale: f64):
     if body_id == 0: return  // world body has no DOFs
 
     let mut current = body_id
@@ -2932,19 +3037,21 @@ fn accumulate_point_jacobian(model, data, ten_j, body_id, point, direction, scal
             let jnt_body = model.jnt_body[jnt_id]
             match model.jnt_type[jnt_id]:
                 Hinge =>
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id]
-                    let jpos = data.xpos[jnt_body]
-                            + data.xquat[jnt_body] * model.jnt_pos[jnt_id]
+                    // jnt_axis and jnt_pos are body-local (declared at line 823);
+                    // rotated to world frame by xquat[body].
+                    let axis = xquat[jnt_body] * model.jnt_axis[jnt_id]
+                    let jpos = xpos[jnt_body]
+                            + xquat[jnt_body] * model.jnt_pos[jnt_id]
                     let r = point - jpos
                     ten_j[dof] += scale * direction.dot(&axis.cross(&r))
                 Slide =>
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id]
+                    let axis = xquat[jnt_body] * model.jnt_axis[jnt_id]
                     ten_j[dof] += scale * direction.dot(&axis)
                 Ball =>
-                    let jpos = data.xpos[jnt_body]
-                            + data.xquat[jnt_body] * model.jnt_pos[jnt_id]
+                    let jpos = xpos[jnt_body]
+                            + xquat[jnt_body] * model.jnt_pos[jnt_id]
                     let r = point - jpos
-                    let rot = data.xquat[jnt_body].to_rotation_matrix()
+                    let rot = xquat[jnt_body].to_rotation_matrix()
                     for i in 0..3:
                         let omega = rot * Vector3::ith(i, 1.0)
                         ten_j[dof+i] += scale * direction.dot(&omega.cross(&r))
@@ -2964,14 +3071,27 @@ fn accumulate_point_jacobian(model, data, ten_j, body_id, point, direction, scal
                     // bodies with non-identity orientation. We implement the
                     // correct formula here (matching MuJoCo and the Ball case).
                     // The `add_body_jacobian` bug should be fixed separately.
-                    let jpos = data.xpos[jnt_body]
+                    let jpos = xpos[jnt_body]
                     let r = point - jpos
-                    let rot = data.xquat[jnt_body].to_rotation_matrix()
+                    let rot = xquat[jnt_body].to_rotation_matrix()
                     for i in 0..3:
                         let omega = rot * Vector3::ith(i, 1.0)
                         ten_j[dof+3+i] += scale * direction.dot(&omega.cross(&r))
         current = model.body_parent[current]
 ```
+
+**Convention note:** `model.jnt_pos` stores the joint anchor position in body
+frame (declared at line 823: `/// Joint anchor position in body frame.`). The
+world-frame anchor is computed as `xpos[body] + xquat[body] * jnt_pos[jnt]`
+(using the function's `xpos`/`xquat` parameters, which are `&data.xpos` and
+`&data.xquat` at the call site). This matches the existing `add_body_jacobian`
+closure (lines 7889, 7900) and all other joint anchor references in the
+pipeline (`mj_fwd_position` line 7244, `mj_rne` line 7342). Similarly,
+`model.jnt_axis` is body-local and rotated to world via
+`xquat[body] * jnt_axis[jnt]`. The codebase uses `UnitQuaternion`
+multiplication (`xquat * vec`) as the standard rotation operation; `xmat`
+(stored as `Matrix3<f64>`) is available but `xquat` is preferred for rotating
+individual vectors.
 
 ##### 4.4 Tendon Velocity
 
@@ -2998,8 +3118,9 @@ efficient. For `TendonType::Spatial`, use the already-computed `ten_J[t]` via
 `J^T * force`:
 
 ```
-fn apply_tendon_force(model, data, t, force, target: &mut DVector<f64>):
-    match model.tendon_type[t]:
+fn apply_tendon_force(model: &Model, ten_j: &DVector<f64>, tendon_type: TendonType,
+                      t: usize, force: f64, target: &mut DVector<f64>):
+    match tendon_type:
         TendonType::Fixed =>
             let adr = model.tendon_adr[t]
             let num = model.tendon_num[t]
@@ -3010,10 +3131,21 @@ fn apply_tendon_force(model, data, t, force, target: &mut DVector<f64>):
                     target[dof_adr] += coef * force
         TendonType::Spatial =>
             for dof in 0..model.nv:
-                let j = data.ten_J[t][dof]
+                let j = ten_j[dof]
                 if j != 0.0:
                     target[dof] += j * force
 ```
+
+**Borrow safety:** The function takes `ten_j: &DVector<f64>` (an immutable
+reference to `data.ten_J[t]`) and `target: &mut DVector<f64>` (a mutable
+reference to `data.qfrc_passive` / `data.qfrc_constraint` / `data.qfrc_actuator`).
+These are disjoint fields of `Data`, so Rust's borrow checker allows
+simultaneous access via field-level splitting:
+```rust
+apply_tendon_force(model, &data.ten_J[t], model.tendon_type[t],
+                   t, force, &mut data.qfrc_passive);
+```
+This pattern avoids passing `&mut data` (which would prevent reading `ten_J`).
 
 **Performance note:** The spatial branch iterates all `nv` DOFs. A spatial
 tendon typically has 6-20 nonzero Jacobian entries, so this is wasteful for
@@ -3026,38 +3158,102 @@ and iterate only those indices in `apply_tendon_force`.
 **Apply this pattern at all three sites:**
 
 1. **`mj_fwd_passive()`** — after computing `ten_force[t]`:
-   `apply_tendon_force(model, data, t, ten_force[t], &mut qfrc_passive)`.
-2. **`mj_fwd_constraint()`** — tendon limit penalty forces. **Note the sign
-   convention:** the existing code uses `+= coef * force` for lower-limit
-   violations and `-= coef * force` for upper-limit violations. With
-   `apply_tendon_force`, call it with `+force` for lower limit (force pushes
-   length up toward minimum) and `-force` for upper limit (force pushes length
-   down toward maximum):
-   - Lower limit: `apply_tendon_force(model, data, t, +force, &mut qfrc_constraint)`
-   - Upper limit: `apply_tendon_force(model, data, t, -force, &mut qfrc_constraint)`
-3. **`mj_fwd_actuation()`** — `ActuatorTransmission::Tendon` branch:
-   `apply_tendon_force(model, data, tid, gear * force, &mut qfrc_actuator)`.
+   `apply_tendon_force(model, &data.ten_J[t], model.tendon_type[t], t, force, &mut data.qfrc_passive)`.
+2. **`mj_fwd_constraint()`** — tendon limit penalty forces (lines 9999-10050).
+   **Sign convention** (verified against the existing code): for lower-limit
+   violations (length < min), the code uses `+= coef * force` (line 10028);
+   for upper-limit violations (length > max), it uses `-= coef * force`
+   (line 10046). The `force` variable is always non-negative — computed as
+   `stiffness * penetration + damping * vel_into` where `penetration` is
+   positive when violated and `vel_into` is clamped to `max(0.0)`. With
+   `apply_tendon_force`:
+   - Lower limit: `apply_tendon_force(model, &data.ten_J[t], ..., t, +force, &mut data.qfrc_constraint)`
+     (force pushes tendon length up, away from lower bound)
+   - Upper limit: `apply_tendon_force(model, &data.ten_J[t], ..., t, -force, &mut data.qfrc_constraint)`
+     (force pushes tendon length down, away from upper bound)
+3. **`mj_fwd_actuation()`** — `ActuatorTransmission::Tendon` branch (the
+   local variable is `tendon_id` at line 6907, aliased from `trnid`):
+   `apply_tendon_force(model, &data.ten_J[tendon_id], ..., tendon_id, gear * force, &mut data.qfrc_actuator)`.
 
 ##### 4.6 Model-Build-Time Fixes
 
 Two model-build-time computations use the wrap-array pattern and need spatial
 tendon handling:
 
-**A. `compute_muscle_params()` — Jacobian vector for `acc0`:**
+**A. `compute_muscle_params()` Phase 2 — Jacobian vector for `acc0`:**
 
-Currently builds `j_vec[dof] = gear * coef` from wrap arrays. For spatial tendons,
-the Jacobian is configuration-dependent — it must be computed from the actual
-tendon path at `qpos0`. Fix: after running `mj_fwd_tendon()` on the initial
-`Data` (which populates `ten_J`), copy `gear * data.ten_J[tid]` into `j_vec`.
+Currently builds `j_vec[dof] = gear * coef` from wrap arrays (lines 2356-2368).
+For spatial tendons, the Jacobian is configuration-dependent — it must be
+computed from the actual tendon path at `qpos0`.
 
-**B. `actuator_lengthrange` for unlimited spatial-tendon actuators:**
+The existing `mj_fwd_position(self, &mut data)` call at line 2337 already
+invokes `mj_fwd_tendon()` internally, which populates `data.ten_J`. No
+additional FK or tendon evaluation call is needed — just read `data.ten_J[tid]`
+after `mj_fwd_position` returns.
 
-Currently estimates length range from joint ranges via wrap-array DOF lookup.
-For spatial tendons, the tendon length is a nonlinear function of joint positions
-— the linear estimation is wrong. Fix: if the spatial tendon has declared
-`tendon_range` limits, use those (this path already works). If unlimited, skip
-the range estimation and leave `lengthrange = (0, 0)` — muscle actuators on
-unlimited spatial tendons will need explicit `lengthrange` in MJCF. Log a warning.
+Replace the `ActuatorTransmission::Tendon` branch in Phase 2 (lines 2356-2368)
+with a tendon-type dispatch:
+
+```
+ActuatorTransmission::Tendon => {
+    let tid = self.actuator_trnid[i];
+    if tid < self.ntendon {
+        match self.tendon_type[tid] {
+            TendonType::Fixed => {
+                // Existing wrap-array pattern (constant J for fixed tendons).
+                let adr = self.tendon_adr[tid];
+                let num = self.tendon_num[tid];
+                for w in adr..(adr + num) {
+                    let dof_adr = self.wrap_objid[w];
+                    let coef = self.wrap_prm[w];
+                    if dof_adr < self.nv {
+                        j_vec[dof_adr] = gear * coef;
+                    }
+                }
+            }
+            TendonType::Spatial => {
+                // Configuration-dependent J — use ten_J from FK at qpos0.
+                // mj_fwd_position() already called mj_fwd_tendon() which
+                // populated data.ten_J[tid].
+                for dof in 0..self.nv {
+                    j_vec[dof] = gear * data.ten_J[tid][dof];
+                }
+            }
+        }
+    }
+}
+```
+
+**B. `compute_muscle_params()` Phase 1 — `actuator_lengthrange` for unlimited
+spatial-tendon actuators:**
+
+Currently estimates length range from joint ranges via wrap-array DOF lookup
+(lines 2294-2317). For spatial tendons, the tendon length is a nonlinear
+function of joint positions — the linear estimation is wrong. The limited
+branch (line 2291) already uses `tendon_range` directly, which works for
+spatial tendons. The unlimited branch (lines 2294-2317) must be guarded.
+
+Insert a spatial tendon guard at the top of the unlimited branch (after
+`} else {` on line 2294):
+
+```
+} else {
+    // For unlimited spatial tendons, wrap-array DOF lookup is
+    // semantically wrong (wrap_objid holds site/geom IDs, not DOFs).
+    // Skip estimation and leave lengthrange = (0, 0).
+    if self.tendon_type[tid] == TendonType::Spatial {
+        log::warn!("Unlimited spatial tendon {}: cannot estimate \
+                    actuator_lengthrange from joint ranges. Specify \
+                    explicit lengthrange in MJCF for muscle actuators.", tid);
+        continue;  // leave lengthrange = (0, 0)
+    }
+    // ... existing fixed-tendon wrap-array estimation ...
+```
+
+Fix: if the spatial tendon has declared `tendon_range` limits, use those (this
+path already works). If unlimited, skip the range estimation and leave
+`lengthrange = (0, 0)` — muscle actuators on unlimited spatial tendons will
+need explicit `lengthrange` in MJCF. Log a warning.
 
 ##### 4.7 Wrapping Geometry: Sphere
 
@@ -3131,11 +3327,18 @@ fn sphere_wrap(p1: Vector3, p2: Vector3, radius: f64, sidesite: Option<Vector3>)
     let axis1 = plane_normal.cross(&axis0).normalize()
 
     // Project endpoints and sidesite into the 2D wrapping plane.
-    let p1_2d = Vector2::new(p1.dot(&axis0), p1.dot(&axis1))
+    // Note: p1_2d.y is always 0 because axis0 = p1.normalize(), so
+    // p1.dot(axis1) = 0 (axis1 is perpendicular to axis0 by construction).
+    // This is expected — p1 defines the "x" axis of the 2D frame.
+    let p1_2d = Vector2::new(p1.dot(&axis0), p1.dot(&axis1))  // = (||p1||, 0)
     let p2_2d = Vector2::new(p2.dot(&axis0), p2.dot(&axis1))
     let ss_2d = sidesite.map(|ss| {
         let v = Vector2::new(ss.dot(&axis0), ss.dot(&axis1))
-        if v.norm() > 1e-10 { v.normalize() * radius } else { v }
+        // Normalize to unit direction. The goodness heuristic (step 5) compares
+        // dot products with the midpoint direction — only the sidesite direction
+        // matters, not its magnitude. Both candidates use the same sidesite, so
+        // any uniform scaling would cancel in the comparison.
+        if v.norm() > 1e-10 { v.normalize() } else { v }
     })
 
     // 4b. Compute both candidate tangent-point pairs (±normal).
@@ -3213,13 +3416,22 @@ MuJoCo, `p2` uses the negated `normal`, producing a crossed tangent pair.
 fn sphere_tangent_point(p: Vector3, radius: f64, normal: Vector3) -> Vector3:
     // Tangent point from external point p to sphere of radius r at origin.
     // The tangent line is in the half-plane defined by (origin, p, normal).
+    //
+    // Geometric reasoning: `normal` is the wrapping plane normal (perpendicular
+    // to the plane containing origin, p1, p2). Since p lies in this plane,
+    // u = p/||p|| also lies in it. Therefore `normal × u` produces a vector
+    // that is (a) in the wrapping plane (perpendicular to `normal`) and
+    // (b) perpendicular to `u`. This gives us a 2D basis {u, v} within the
+    // wrapping plane for constructing the tangent point via rotation.
+    //
     // Precondition: ||p|| >= radius (caller guards via early exit in sphere_wrap).
+    // Precondition: ||normal|| ≈ 1 (caller normalizes plane_normal before calling).
     let d = p.norm()
     debug_assert!(d >= radius, "sphere_tangent_point: p is inside sphere")
     let cos_theta = radius / d
     let sin_theta = (1.0 - cos_theta * cos_theta).max(0.0).sqrt()
-    let u = p / d                        // unit vector toward p
-    let v = normal.cross(&u).normalize() // perpendicular in wrapping plane
+    let u = p / d                        // unit vector toward p (in wrapping plane)
+    let v = normal.cross(&u).normalize() // perpendicular to u, in wrapping plane
     // Tangent point on sphere surface at angle theta from the center-to-p line:
     radius * (u * cos_theta + v * sin_theta)
 
@@ -3344,6 +3556,10 @@ fn cylinder_wrap(p1: Vector3, p2: Vector3, radius: f64, sidesite: Option<Vector3
     let wrap_angle = directional_wrap_angle(t1_xy, t2_xy, ind)
 
     // 8. Z-interpolation: path-length-proportional (MuJoCo formula).
+    //    All coordinates (p1, p2, t1_xy, t2_xy) are in the geom-local frame
+    //    where Z is the cylinder axis. The returned tangent points are also
+    //    in geom-local frame — the caller (`mj_fwd_tendon_spatial`) transforms
+    //    them to world frame via `geom_pos + geom_mat * tangent_point`.
     //    The axial (Z) coordinate is linearly interpolated based on the
     //    fraction of total 2D path length (straight1 + arc + straight2).
     //    This produces a helical path with uniform axial velocity.
@@ -3487,8 +3703,9 @@ fn segments_intersect_2d(a1, a2, b1, b2) -> bool:
   the pair representation and parsing `springlength` from MJCF is a follow-up.
 - **`WrapType::Joint`** — MuJoCo supports `<joint>` elements inside spatial tendons
   (`mjWRAP_JOINT`), which create fixed-tendon-like contributions within a spatial
-  tendon path. This wrap type is uncommon and not parsed or handled. If encountered
-  in MJCF, the parser should emit an unsupported-feature error.
+  tendon path. This wrap type is uncommon and not implemented. The parser rejects
+  `<joint>` inside `<spatial>` at parse time (§4.1), and validation rule 10 (§4.2)
+  provides defense-in-depth.
 - **`wrap_inside` code path (sidesite inside wrapping geometry)** — MuJoCo has a
   separate wrapping algorithm (`wrap_inside` in `engine_util_misc.c`) invoked
   when a sidesite is present and its distance from the geometry center is less
@@ -3540,13 +3757,18 @@ All tests compare against MuJoCo reference values. Tolerance: `1e-6` for lengths
 | 12 | **Model build: `tendon_length0`** — computed at `qpos0`, used as default `lengthspring`. | Unit test: build model with spatial tendon, verify `tendon_length0` matches `ten_length` after FK at `qpos0`. |
 | 13 | **Model build: `acc0` for muscle on spatial tendon** — `compute_muscle_params()` uses configuration-dependent Jacobian from `ten_J`, not wrap-array shortcut. | Unit test: muscle actuator on spatial tendon. Verify `actuator_acc0` is non-zero and physically reasonable. |
 | 14 | **Sidesite disambiguation** — wrapping with a `sidesite` attribute selects the correct wrapping direction. Covers three sub-cases: (a) sphere sidesite (Model E), (b) cylinder sidesite (Model I), (c) sidesite-forced wrapping when straight path clears the geometry (Model J). | Unit test: sphere wrapping with sidesite on each side. Verify the two cases produce different tangent points and arc lengths. Verify the selected path passes on the sidesite's side of the geometry. Test cylinder sidesite separately (XY-projected direction code path). Test sidesite-forced wrapping: verify wrapping occurs when `closest.norm() > radius` but sidesite is on the opposite side. |
-| 15 | **Degenerate wrapping plane** — sphere wrapping when p1, center, p2 are collinear does not produce NaN. An arbitrary wrapping plane is chosen. | Unit test: place sites on opposite sides of a sphere along a line through the center (Model H). Verify `ten_length` is finite and equals `√(d1²−r²) + πr + √(d2²−r²)` where d1=\|\|p1\|\|, d2=\|\|p2\|\| are site-to-center distances. For Model H: `2√(0.3²−0.1²) + π×0.1 ≈ 0.8798`. |
+| 15 | **Degenerate wrapping plane** — sphere wrapping when p1, center, p2 are collinear does not produce NaN. An arbitrary wrapping plane is chosen. The crossed tangent pairing places both tangent points on the same side of the sphere, so the arc angle is `acos(7/9) ≈ 0.6797 rad` (not π) for the symmetric d=3r case. | Unit test: place sites on opposite sides of a sphere along a line through the center (Model H). Verify `ten_length` is finite and equals `2×√(d²−r²) + r×acos(7/9)` where d=0.3, r=0.1. Expected: `0.63365281` (**confirmed against MuJoCo 3.4.0**). MuJoCo's tangent points at qpos=0 are both on the same side of the sphere (y=z≈0.067), confirming crossed tangent pairing with arc angle `acos(7/9) ≈ 0.6797`. |
 | 16 | **MuJoCo conformance** — end-to-end test with representative MJCF models. Compare `ten_length`, `ten_velocity`, `ten_force` against MuJoCo output at multiple timesteps. | Conformance test: load each test model, step 100 frames, compare state vectors against MuJoCo reference data. |
-| 17 | **Parser/validation rejection** — invalid spatial tendon MJCF is rejected with clear errors. Covers: fewer than 2 sites, path not starting/ending with Site, consecutive Geom elements, Pulley immediately followed by Geom, unsupported geom type (e.g., box), zero-radius wrapping geom, zero/negative pulley divisor, unresolved site/geom/sidesite names, sidesite inside wrapping geometry. | Unit tests: for each invalid pattern, parse the MJCF and assert that the appropriate error is returned. |
+| 17 | **Parser/validation rejection** — invalid spatial tendon MJCF is rejected with clear errors. Covers: fewer than 2 sites, path not starting/ending with Site, Geom not followed by Site (includes consecutive Geoms and Geom-Pulley sequences), Pulley immediately followed by Geom, unsupported geom type (e.g., box), zero-radius wrapping geom, zero/negative pulley divisor, unresolved site/geom/sidesite names, sidesite inside wrapping geometry, `<joint>` element inside spatial tendon. | Unit tests: for each invalid pattern, parse the MJCF and assert that the appropriate error is returned. |
+| 18 | **Free-joint angular Jacobian** — `accumulate_point_jacobian` uses body-frame axes (`R*e_i`) for free joint angular DOFs, not world-frame unit vectors. | Unit test (Model K): free body rotated 45° about Y with spatial tendon. Attach site at `pos="0.2 0.1 0"` — the Y-offset is critical for discrimination (without it, DOFs 3 and 5 are zero in both conventions). Verify `ten_J` angular columns (DOFs 3-5) via finite difference. MuJoCo reference: `J = [0.989, 0.087, -0.122, +0.061, -0.122, -0.061]`. The test must fail if world-frame unit vectors are used: world-frame would give `J[3]=0.0, J[5]=-0.087` vs correct `J[3]=+0.061, J[5]=-0.061`. |
+| 19 | **Mixed straight + wrapping segments** — spatial tendon with both site-site (straight) and site-geom-site (wrapped) segments in sequence. | Unit test (Model L): 4-site tendon with a wrapping geom between sites 2 and 3 but not between sites 1 and 2. Verify total length = straight_segment_1 + wrapped_segment_2. Verify Jacobian via finite difference covers all DOFs across both segment types. |
 
 #### Test MJCF Models
 
 **Model A — Straight-line spatial tendon (no wrapping):**
+
+MuJoCo reference (3.4.0): `ten_length = 0.70000000` at qpos=0.
+
 ```xml
 <mujoco>
   <worldbody>
@@ -3578,6 +3800,8 @@ All tests compare against MuJoCo reference values. Tolerance: `1e-6` for lengths
 ```
 
 **Model B — Sphere wrapping:**
+
+MuJoCo reference (3.4.0): `ten_length = 0.60843263` at qpos=0.
 
 Sites are offset in Y (`y=0.05`) so the straight-line path intersects the sphere
 (closest approach = 0.05 < radius = 0.1) without being collinear through the
@@ -3612,6 +3836,8 @@ center at qpos=0. This tests non-degenerate sphere wrapping (criterion 3).
 
 **Model C — Cylinder wrapping:**
 
+MuJoCo reference (3.4.0): `ten_length = 0.74507207` at qpos=0.
+
 Sites have non-zero Y coordinates so the XY projection does not pass through
 the cylinder axis, producing a non-degenerate arc angle at qpos=0. Slide
 joints move along X, varying the wrap angle as sites move.
@@ -3642,6 +3868,8 @@ joints move along X, varying the wrap angle as sites move.
 ```
 
 **Model D — Pulley with mechanical advantage:**
+
+MuJoCo reference (3.4.0): `ten_length = 0.75000000`, `ten_J = [1.0, -0.5]`.
 
 MuJoCo pulley semantics: a pulley element divides the tendon into "branches."
 Segments before the pulley use divisor=1, segments after use divisor=D.
@@ -3678,6 +3906,8 @@ Expected length: `||s1-s2||/1 + ||s3-s4||/2`.
 ```
 
 **Model E — Sphere wrapping with sidesite:**
+
+MuJoCo reference (3.4.0): `ten_length = 0.64131210` at qpos=0.
 
 Exercises dual-candidate sidesite selection. The asymmetric Y-placement
 (origin at y=0.15, insertion at y=-0.05) breaks X-symmetry so the two
@@ -3718,6 +3948,9 @@ origin < radius = 0.1), ensuring wrapping occurs at qpos=0.
 
 **Model F — Multi-site spatial tendon (3+ sites, no wrapping):**
 
+MuJoCo reference (3.4.0): `ten_length = 1.05000000` at qpos=0
+(= 0.70 + 0.35, sum of segment distances).
+
 Three-body chain with a site on each body and a single spatial tendon
 connecting all three. Tests criterion 2 (multi-site length = sum of segments).
 
@@ -3752,6 +3985,11 @@ connecting all three. Tests criterion 2 (multi-site length = sum of segments).
 
 **Model G — Tendon limits + muscle actuator:**
 
+MuJoCo reference (3.4.0): `ten_length = 0.70000000` at qpos=0. Note: the
+muscle actuator requires explicit `lengthrange="0.35 0.9"` in MJCF — MuJoCo's
+automatic estimation fails for this 2-site straight spatial tendon because
+`compute_muscle_params` finds identical min/max lengths.
+
 Exercises tendon limit constraints (criterion 8) and muscle `acc0` computation
 (criterion 13). The tendon has `limited="true"` with `range="0.35 0.9"`. At
 qpos=0, tendon length is 0.7 (within range). The minimum achievable distance
@@ -3782,7 +4020,7 @@ which tests `compute_muscle_params()` with the spatial-tendon Jacobian fix.
     </spatial>
   </tendon>
   <actuator>
-    <muscle name="muscle1" tendon="t_lim" force="100"/>
+    <muscle name="muscle1" tendon="t_lim" force="100" lengthrange="0.35 0.9"/>
   </actuator>
 </mujoco>
 ```
@@ -3791,8 +4029,32 @@ which tests `compute_muscle_params()` with the spatial-tendon Jacobian fix.
 
 Sites are placed on the X-axis, directly opposite each other through the sphere
 center. This forces the collinear fallback in `sphere_wrap` (step 3 — arbitrary
-perpendicular). Expected length at qpos=0:
-`2×√(0.3²−0.1²) + π×0.1 = 2×0.2828 + 0.3142 ≈ 0.8798`.
+perpendicular via least-aligned cardinal axis). The dual-candidate selection
+(step 5) evaluates both ±normal solutions; for the collinear case they produce
+the same arc by symmetry, so the test exercises the arbitrary-plane fallback
+path without sidesite involvement.
+
+Expected length at qpos=0: **`0.63365281`** (**confirmed against MuJoCo 3.4.0**).
+Formula: `2×√(d²−r²) + r×acos(7/9)` where d=0.3, r=0.1.
+
+MuJoCo's tangent points: `t1 = (-0.0333, 0.0667, 0.0667)`,
+`t2 = (0.0333, 0.0667, 0.0667)` — both on the same side of the sphere,
+confirming crossed tangent pairing. The arbitrary wrapping plane chosen by
+MuJoCo includes a Z component (not pure XY), but the arc angle is
+plane-invariant: `θ = acos(t1·t2/r²) = acos(7/9) ≈ 0.6797 rad`.
+
+Note: the sim-tendon reference implementation (`wrapping.rs`) produces
+`θ = π` for this case because it uses independent `find_perpendicular`
+per point (which places tangent points on opposite sides). This is a
+known algorithmic divergence — the pipeline must implement the crossed
+pairing algorithm to match MuJoCo.
+
+Algebraic derivation:
+- `cos_θ = r/d = 1/3`, `sin_θ = 2√2/3`
+- t1 = r×(u₁×cos_θ + v₁×sin_θ), t2 = r×(u₂×cos_θ + v₂×sin_θ)
+- Crossed pairing: v₁ = n×u₁, v₂ = (−n)×u₂ — both perpendiculars point the
+  same way, so t1 and t2 end up on the same side of the sphere
+- `cos(θ) = t1·t2 / (r²) = 7/9` → `θ = acos(7/9)`
 
 ```xml
 <mujoco>
@@ -3822,6 +4084,9 @@ perpendicular). Expected length at qpos=0:
 ```
 
 **Model I — Cylinder wrapping with sidesite:**
+
+MuJoCo reference (3.4.0): `ten_length = 0.74507207` at qpos=0 (same geometry
+as Model C; sidesite selects same wrapping direction as no-sidesite default).
 
 Exercises cylinder sidesite disambiguation (the XY-projected sidesite direction
 code path, which is distinct from the sphere sidesite path). Sites offset in Y
@@ -3857,6 +4122,9 @@ the wrap angle.
 
 **Model J — Sidesite-forced wrapping (straight path clears sphere):**
 
+MuJoCo reference (3.4.0): `ten_length = 0.86662782` at qpos=0 (wrapping
+confirmed: `ten_wrapnum = 4`).
+
 Sites are placed far from the X-axis (Y=0.2) so the straight-line path
 **clears** the sphere (closest approach = 0.2 > radius = 0.1). The sidesite
 at `(0, -0.3, 0)` is on the **opposite** side, forcing wrapping even though
@@ -3891,6 +4159,85 @@ wrapping code path (spec §4.7 step 2, lines 3022-3033).
 </mujoco>
 ```
 
+**Model K — Free-joint spatial tendon:**
+
+Exercises `accumulate_point_jacobian` with a free joint (6 DOFs: 3 translational
++ 3 rotational). The spatial tendon connects a site on the world body to a site
+on the free-floating body. The body is initially rotated 45° about Y via
+`euler="0 45 0"` to ensure the angular Jacobian uses body-frame axes (`R*e_i`),
+not world-frame unit vectors. The attach site is at `pos="0.2 0.1 0"` — the
+Y-offset is critical: without it (e.g., `pos="0.2 0 0"`), the lever arm `r`
+lies in the XZ rotation plane, making angular DOFs 3 and 5 identically zero
+in **both** body-frame and world-frame conventions. The Y=0.1 offset breaks
+this symmetry so that world-frame axes produce `J[3]=0.0, J[5]=-0.087` while
+body-frame axes produce `J[3]=+0.061, J[5]=-0.061` — a clear discriminator.
+
+MuJoCo reference (MuJoCo 3.4.0): `ten_length = 1.15448807`,
+`ten_J = [0.98868, 0.08662, -0.12250, +0.06125, -0.12250, -0.06125]`.
+
+```xml
+<mujoco>
+  <worldbody>
+    <site name="anchor" pos="0 0 0"/>
+    <body name="floating" pos="1 0 0" euler="0 45 0">
+      <freejoint name="free"/>
+      <geom type="sphere" size="0.05"/>
+      <site name="attach" pos="0.2 0.1 0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_free" stiffness="100">
+      <site site="anchor"/>
+      <site site="attach"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+
+**Model L — Mixed straight + wrapping segments:**
+
+A 3-body chain where the first segment (s1→s2) is a straight site-site path and
+the second segment (s2→geom→s3) wraps around a sphere. This exercises the
+pairwise loop's `j` advancement logic across different segment types within
+a single tendon: first `j += 1` (site-site), then `j += 2` (site-geom-site).
+Sites s1 and s2 are offset in Y (0.3 and 0.15) to keep the first segment well
+clear of the wrapping sphere. Site s3 has Y=0 so the s2→s3 line passes through
+the sphere cross-section at qpos=0 (closest approach ≈ 0.070 < radius 0.08),
+ensuring wrapping is active at the home configuration.
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b1" pos="0 0 1">
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.5"/>
+      <site name="s1" pos="0 0.3 0"/>
+      <body name="b2" pos="0 0 -0.5">
+        <joint name="j2" type="hinge" axis="0 1 0"/>
+        <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.4"/>
+        <site name="s2" pos="0 0.15 0"/>
+        <body name="wrap_body" pos="0 0 -0.2">
+          <geom name="wrap_sphere" type="sphere" size="0.08"/>
+        </body>
+        <body name="b3" pos="0 0 -0.4">
+          <joint name="j3" type="hinge" axis="0 1 0"/>
+          <geom type="capsule" size="0.02" fromto="0 0 0 0 0 -0.3"/>
+          <site name="s3" pos="0 0 0"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_mixed" stiffness="100">
+      <site site="s1"/>
+      <site site="s2"/>
+      <geom geom="wrap_sphere"/>
+      <site site="s3"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+
 #### Implementation Order
 
 **Atomicity constraint:** Steps 3 and 4 **must ship in the same commit**.
@@ -3913,7 +4260,7 @@ not just wrong results.
 3. **`mj_fwd_tendon_spatial()` + `accumulate_point_jacobian()`** — straight-line
    path only (sites, no wrapping geoms). `accumulate_point_jacobian` is a standalone
    helper testable in isolation against `compute_contact_jacobian`'s
-   `add_body_jacobian`. Write acceptance tests 1, 2, 5, 6.
+   `add_body_jacobian`. Write acceptance tests 1, 2, 5, 6, 18.
    **Note:** `accumulate_point_jacobian` uses body-frame axes (`R*e_i`) for free
    joint angular DOFs, matching MuJoCo's `cdof` convention. The existing
    `add_body_jacobian` (line 7923) has a pre-existing bug using world-frame unit
@@ -3931,7 +4278,8 @@ not just wrong results.
    the geometry but sidesite prevents early exit) + collinear degenerate
    fallback + self-intersection rejection (`segments_intersect_2d`) +
    integration into `mj_fwd_tendon_spatial()`. Write tests 3, 11, 14
-   (sub-cases a and c: Models E, J), 15 (Model H).
+   (sub-cases a and c: Models E, J), 15 (Model H), 19 (Model L: mixed
+   straight + wrapping segments).
 7. **Cylinder wrapping** — `cylinder_wrap()` + Z-interpolation + integration.
    Write test 4. Write test 14 sub-case b (Model I: cylinder sidesite).
 8. **Pulley divisor** — already in the pairwise loop structure; verify with
@@ -3945,11 +4293,11 @@ not just wrong results.
 | `sim/L0/mjcf/src/types.rs` | modify | Add `SpatialPathElement` enum. Replace `sites`+`wrapping_geoms` fields on `MjcfTendon` with `path_elements: Vec<SpatialPathElement>`. |
 | `sim/L0/mjcf/src/parser.rs` | modify | `parse_tendon()`: add `b"pulley"` match arm (currently missing — `<pulley>` elements are silently ignored by the `_ => {}` default). Push `SpatialPathElement` variants in document order. Parse `sidesite` attr on `<geom>` children, `divisor` attr on new `<pulley>` children. |
 | `sim/L0/mjcf/src/model_builder.rs` | modify | `process_tendons()`: iterate `path_elements`, populate `wrap_sidesite`, add geom type validation. Remove spatial tendon warning. Call `compute_spatial_tendon_length0()` before `compute_muscle_params()` in `build()`. Skip `actuator_lengthrange` estimation for unlimited spatial-tendon actuators (log warning; see 4.6B). |
-| `sim/L0/mjcf/src/validation.rs` | modify | Update spatial tendon validation: replace `tendon.sites.len() < 2` check with `path_elements` counting of `Site` variants. Update site/geom/sidesite name-existence checks to iterate `path_elements`. Add validation for geom-between-sites rule, start/end-with-Site rule, geom `size[0] > 0` rule, Pulley-Geom adjacency rule, pulley `divisor > 0` rule, per-branch minimum 2 sites (rule 8, warning), and sidesite-outside-geometry rule (rule 9). |
+| `sim/L0/mjcf/src/validation.rs` | modify | Update spatial tendon validation: replace `tendon.sites.len() < 2` check with `path_elements` counting of `Site` variants. Update site/geom/sidesite name-existence checks to iterate `path_elements`. Add validation for Geom-must-be-followed-by-Site rule, start/end-with-Site rule, geom `size[0] > 0` rule, Pulley-Geom adjacency rule, pulley `divisor > 0` rule, per-branch minimum 2 sites (rule 8, warning), sidesite-outside-geometry rule (rule 9), and `<joint>` inside spatial tendon rejection (rule 10). |
 | `sim/L0/mjcf/src/defaults.rs` | verify | `apply_to_tendon()` does not reference `sites`/`wrapping_geoms` — only sets scalar fields (stiffness, damping, etc.). No changes needed, but verify after field removal. |
 | `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `Model::wrap_sidesite` field. Add `mj_fwd_tendon_spatial()`, `accumulate_point_jacobian()`, `sphere_wrap()` + `compute_tangent_pair()` + `sphere_tangent_point()`, `cylinder_wrap()` + `compute_tangent_pair_2d()` + `circle_tangent_2d()` + `directional_wrap_angle()` + `segments_intersect_2d()`, `apply_tendon_force()`, `compute_spatial_tendon_length0()`. Fix force mapping in `mj_fwd_passive()`, `mj_fwd_constraint()`, `mj_fwd_actuation()`. Fix `compute_muscle_params()` for spatial tendons. |
 | `sim/L0/tendon/src/wrapping.rs` | reference | Use `SphereWrap::compute_wrap()` and `CylinderWrap::compute_wrap()` as **rough sanity checks** in tests. These implementations have significant algorithmic divergences from MuJoCo (no sidesite, no dual-candidate selection, no self-intersection check, angle-based Z-interpolation instead of path-length-proportional, 1% margin hack on sphere clearance). They cannot serve as exact verification oracles — use MuJoCo reference data for conformance testing. |
-| `sim/conformance-tests/` | create | Acceptance tests 1-17 and MJCF test models A-J. Parser/validation rejection tests (test 17). MuJoCo conformance tests (test 16). |
+| `sim/conformance-tests/` | create | Acceptance tests 1-19 and MJCF test models A-L. Parser/validation rejection tests (test 17). Free-joint Jacobian test (test 18, Model K). Mixed straight + wrapping segments test (test 19, Model L). MuJoCo conformance tests (test 16). |
 
 ---
 
