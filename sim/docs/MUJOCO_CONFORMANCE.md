@@ -85,7 +85,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<contact>` | ✓ | ✓ | `<pair>`, `<exclude>`, contype/conaffinity bitmasks |
 | `<equality>` | ✓ | ✓ | Equality constraints |
 | `<tendon>` | ✓ | ✓ | Fixed and spatial tendons |
-| `<actuator>` | ✓ | ✓ | All 8 shortcut types (motor, position, velocity, damper, cylinder, adhesion, muscle, general) with MuJoCo-compatible gain/bias force model, GainType/BiasType dispatch, FilterExact dynamics |
+| `<actuator>` | ✓ | ✓ | All 8 shortcut types (motor, position, velocity, damper, cylinder, adhesion, muscle, general) with MuJoCo-compatible gain/bias force model, GainType/BiasType dispatch, FilterExact dynamics. `<general>` supports explicit `gaintype`/`biastype`/`dyntype`/`gainprm`/`biasprm`/`dynprm` attributes with default class inheritance. |
 | `<sensor>` | ✓ | ✓ | Various sensor types |
 | `<keyframe>` | ✓ | ❌ | State snapshots |
 
