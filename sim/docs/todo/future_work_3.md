@@ -6,7 +6,7 @@ priority table, dependency graph, and file map.
 ---
 
 ### 6a. Height Field MJCF Wiring
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Status:** Done | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 
@@ -566,23 +566,63 @@ broad-phase.
 ---
 
 ### 6b. SDF MJCF Wiring (CortenForge Extension)
-**Status:** Not started | **Effort:** S | **Prerequisites:** 6a
+**Status:** Done | **Effort:** S | **Prerequisites:** 6a
 
 #### Current State
 
 **sim-core** has full SDF collision support:
-- `SdfCollisionData` (`sim-core/src/sdf.rs:100–118`) — 3D grid with uniform
-  `cell_size`, ZYX storage order, arbitrary origin.
+- `SdfCollisionData` (`sdf.rs:100–118`) — 3D grid with uniform `cell_size`,
+  ZYX storage order, arbitrary origin. Has `aabb()` method (`sdf.rs:514`)
+  returning `(Point3<f64>, Point3<f64>)`.
 - `CollisionShape::Sdf { data: Arc<SdfCollisionData> }` with constructor
   `CollisionShape::sdf(data)` (`collision_shape.rs:320`).
-- Contact functions for all 10 shape pairs: Sphere, Capsule, Box, Cylinder,
-  Ellipsoid, ConvexMesh, Plane, TriangleMesh, HeightField, Sdf↔Sdf —
-  all in `sdf.rs`.
+- `SdfContact` struct (`sdf.rs:557–564`): `point: Point3<f64>`,
+  `normal: Vector3<f64>`, `penetration: f64`.
+- 10 shape-pair contact functions + 1 utility (`sdf_point_contact`), all in
+  `sdf.rs`. ~50 unit tests.
+
+**SDF contact function signatures** (all return `Option<SdfContact>`):
+
+| Function | Parameters (after `sdf, sdf_pose`) |
+|----------|-----------------------------------|
+| `sdf_sphere_contact` | `sphere_center: Point3, sphere_radius: f64` |
+| `sdf_capsule_contact` | `capsule_start: Point3, capsule_end: Point3, capsule_radius: f64` |
+| `sdf_box_contact` | `box_pose: &Pose, half_extents: &Vector3` |
+| `sdf_cylinder_contact` | `cylinder_pose: &Pose, half_height: f64, radius: f64` |
+| `sdf_ellipsoid_contact` | `ellipsoid_pose: &Pose, radii: &Vector3` |
+| `sdf_convex_mesh_contact` | `mesh_pose: &Pose, vertices: &[Point3]` |
+| `sdf_triangle_mesh_contact` | `mesh: &TriangleMeshData, mesh_pose: &Pose` |
+| `sdf_plane_contact` | `plane_normal: &Vector3, plane_offset: f64` |
+| `sdf_heightfield_contact` | `heightfield: &HeightFieldData, heightfield_pose: &Pose` |
+| `sdf_sdf_contact` | `sdf_b: &SdfCollisionData, pose_b: &Pose` |
+
+**Normal conventions per function:**
+- **Sphere, capsule, box, cylinder, ellipsoid, convex mesh, heightfield:**
+  Normal points **outward from the SDF surface** (SDF gradient direction).
+- **Plane:** Normal is the **plane normal** (pointing from plane toward SDF),
+  not the SDF gradient (`sdf.rs:1176`).
+- **SDF↔SDF:** Normal is the **outward gradient of whichever SDF the contact
+  point is closer to the surface of** (`sdf.rs:1536–1542`). Not guaranteed
+  to be "from sdf_a toward sdf_b".
 
 **MJCF layer** recognizes `type="sdf"` but does not wire it:
-- `MjcfGeomType::Sdf` is parsed (`types.rs:777`).
-- `model_builder.rs:1007–1013` falls back to `GeomType::Box` with a warning.
-- `GeomType` enum has no `Sdf` variant.
+- `MjcfGeomType::Sdf` is parsed (`types.rs:795` — enum at `types.rs:777`).
+- `model_builder.rs:1044–1049` falls back to `GeomType::Box` with a warning.
+- `GeomType` enum (`mujoco_pipeline.rs:365–383`) has no `Sdf` variant.
+
+**Collision pipeline** has no SDF dispatch:
+- `collide_geoms()` (`mujoco_pipeline.rs:3837`) dispatch order:
+  Mesh → Hfield → Plane → analytical pairs → GJK/EPA.
+- `geom_to_collision_shape()` (`mujoco_pipeline.rs:3968`): no Sdf arm (exhaustive).
+- `aabb_from_geom()` (`mujoco_pipeline.rs:3404`): no Sdf arm (exhaustive).
+- `bounding_radius()` (`mujoco_pipeline.rs:402`): no Sdf arm (exhaustive).
+- `collide_with_mesh()` inner matches: explicit arms for each `GeomType`,
+  including `Hfield => unreachable!()`. No Sdf arm — **compile error** if Sdf
+  variant is added.
+- `collide_with_hfield()` (`mujoco_pipeline.rs:4117`): wildcard `_ => return None`
+  catches unknown types. Sdf would silently produce no contact.
+- `collide_with_plane()` (`mujoco_pipeline.rs:4367`): explicit arms, no Sdf arm
+  — **compile error** if Sdf variant is added.
 
 **MuJoCo reference:** MuJoCo does **not** have a built-in `type="sdf"` geom.
 MuJoCo SDF support is through its plugin system (first-party plugins define
@@ -601,73 +641,418 @@ only — there is no `<sdf>` asset element to parse.
 
 **Step 1 — GeomType enum** (`mujoco_pipeline.rs`)
 
-Add `Sdf` variant to `GeomType` (alongside `Hfield` from 6a):
+Add `Sdf` variant to `GeomType` (`mujoco_pipeline.rs:365`):
 
 ```rust
 pub enum GeomType {
     Plane, Sphere, Capsule, Cylinder, Box, Ellipsoid, Mesh,
-    Hfield, Sdf,
+    Hfield, Sdf,  // NEW
+}
+```
+
+Add `bounding_radius()` arm (`mujoco_pipeline.rs:402`):
+
+```rust
+Self::Sdf => {
+    // Conservative: treat as axis-aligned box with half-extents from geom_size.
+    // For programmatic SDF geoms, geom_size stores SDF AABB half-extents
+    // (set by post-build pass). True bounding radius is overwritten by
+    // the post-build pass using SdfCollisionData::aabb().
+    size.norm()
 }
 ```
 
 **Step 2 — Model storage** (`mujoco_pipeline.rs`)
 
-Add to `Model`:
+Add to `Model` (after hfield fields at `mujoco_pipeline.rs:939`, before the
+Sites section):
 
 ```rust
+// ==================== SDFs (indexed by sdf_id) ====================
+/// Number of SDF assets.
 pub nsdf: usize,
+/// SDF collision data.
+/// `Arc` for cheap cloning (multiple geoms can reference the same SDF asset).
 pub sdf_data: Vec<Arc<SdfCollisionData>>,
-pub geom_sdf: Vec<Option<usize>>,  // sdf_id per geom
+
+// In geom arrays (alongside geom_mesh, geom_hfield):
+/// SDF index for each geom (`None` if not an SDF geom).
+/// Length: ngeom. Only geoms with `geom_type == GeomType::Sdf` have `Some(sdf_id)`.
+pub geom_sdf: Vec<Option<usize>>,
+```
+
+Add to `Model::empty()` (after hfield initialization at `mujoco_pipeline.rs:1918`):
+
+```rust
+// SDFs (empty)
+nsdf: 0,
+sdf_data: vec![],
+geom_sdf: vec![],
 ```
 
 **Step 3 — Model builder** (`model_builder.rs`)
 
-- `MjcfGeomType::Sdf` → `GeomType::Sdf` (remove fallback to `Box`).
-- SDF geoms in MJCF will fail with a clear error: "SDF geoms must be constructed
-  programmatically via Model API — no MJCF asset format exists." This is because
-  there is no `<sdf>` asset element to parse. Users construct SDF geoms by building
-  a `Model` directly or by post-processing the model after MJCF loading.
+Change the `MjcfGeomType::Sdf` arm in `process_geom()` (currently at
+`model_builder.rs:1044–1049`) from a Box fallback to `GeomType::Sdf`:
+
+```rust
+MjcfGeomType::Sdf => GeomType::Sdf,
+```
+
+Add `geom_sdf` field to `ModelBuilder` (alongside `geom_mesh` and `geom_hfield`):
+
+```rust
+geom_sdf: Vec<Option<usize>>,
+```
+
+Initialize to `Vec::new()` in `ModelBuilder::new()`.
+
+In `process_geom()`, push `geom_sdf` at the end (alongside `geom_mesh` and
+`geom_hfield`):
+
+```rust
+self.geom_sdf.push(None);  // SDF geoms are programmatic — never set via MJCF
+```
+
+SDF geoms in MJCF have no asset element to parse — `<geom type="sdf"/>` is
+legal at parse time (it is a recognized `MjcfGeomType`) but produces a geom
+with `GeomType::Sdf` and `geom_sdf == None`. At collision time,
+`collide_with_sdf()` returns `None` for geoms where `geom_sdf` is `None`
+(no data → no collision). This matches the pattern where a mesh geom with
+`geom_mesh == None` would also produce no collision.
+
+**No error is thrown for SDF geoms in MJCF** — the geom is silently non-colliding.
+This is preferable to erroring because:
+- Users may load an MJCF that declares SDF geom placeholders and populate
+  `sdf_data` + `geom_sdf` programmatically after loading.
+- Erroring would prevent round-tripping MJCF files that contain SDF geoms.
+
+**geom_size for SDF geoms:** `geom_size_to_vec3()` falls through to the catch-all
+`_ => Vector3::new(0.1, 0.1, 0.1)` for Sdf. This is acceptable — the post-build
+bounding radius pass overwrites it with the true AABB half-extents. No override
+in `process_geom()` is needed (unlike Hfield, which has asset data available at
+build time via `hfield_size`).
+
+Wire `geom_sdf`, `nsdf`, `sdf_data` into `build()` (alongside mesh/hfield
+fields):
+
+```rust
+geom_sdf: self.geom_sdf,
+nsdf: 0,       // programmatic — always 0 from MJCF
+sdf_data: vec![],  // programmatic — always empty from MJCF
+```
+
+**Post-build bounding radius pass** (`model_builder.rs:2475`): extend the
+if/else chain with an SDF branch after hfield:
+
+```rust
+model.geom_rbound[geom_id] = if let Some(mesh_id) = model.geom_mesh[geom_id] {
+    // Mesh geom: half-diagonal of AABB
+    let (aabb_min, aabb_max) = model.mesh_data[mesh_id].aabb();
+    let half_diagonal = (aabb_max - aabb_min) / 2.0;
+    half_diagonal.norm()
+} else if let Some(hfield_id) = model.geom_hfield[geom_id] {
+    // Hfield geom: half-diagonal of AABB
+    let (aabb_min, aabb_max) = model.hfield_data[hfield_id].aabb();
+    let half_diagonal = (aabb_max.coords - aabb_min.coords) / 2.0;
+    half_diagonal.norm()
+} else if let Some(sdf_id) = model.geom_sdf[geom_id] {
+    // SDF geom: half-diagonal of AABB (same pattern as mesh/hfield).
+    // SdfCollisionData::aabb() returns (Point3, Point3) — origin-based bounds.
+    let (aabb_min, aabb_max) = model.sdf_data[sdf_id].aabb();
+    let half_diagonal = (aabb_max.coords - aabb_min.coords) / 2.0;
+    half_diagonal.norm()
+} else {
+    // Primitive geom: use GeomType::bounding_radius()
+    model.geom_type[geom_id].bounding_radius(model.geom_size[geom_id])
+};
+```
+
+Note: for MJCF-loaded models, the SDF branch never fires (`geom_sdf` is always
+`None` from MJCF). It activates only for programmatically constructed models
+where `geom_sdf` and `sdf_data` are populated directly.
 
 **Step 4 — Collision pipeline** (`mujoco_pipeline.rs`)
 
-In `collide_geoms()`, add SDF branch (after hfield, before GJK/EPA):
+**Dispatch order.** Add SDF branch **before Mesh** in `collide_geoms()`
+(`mujoco_pipeline.rs:3855`). This is critical because:
+- SDF↔Mesh: if Mesh fires first, `collide_with_mesh()` has no SDF arm →
+  would require adding dispatch logic inside `collide_with_mesh`. Putting SDF
+  first keeps all SDF dispatch in one function.
+- SDF↔Hfield: if Hfield fires first, `collide_with_hfield()` wildcard returns
+  `None` — silently drops valid contacts. `sdf_heightfield_contact()` exists
+  and should be used.
+- SDF↔Plane: `collide_with_plane()` has no SDF arm → same issue.
+
+New dispatch order:
 
 ```rust
+// Special case: SDF collision (before mesh/hfield/plane — SDF has its own
+// contact functions for all shapes including Mesh, Hfield, and Plane)
 if type1 == GeomType::Sdf || type2 == GeomType::Sdf {
     return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2);
 }
+
+// Special case: mesh collision (existing)
+if type1 == GeomType::Mesh || type2 == GeomType::Mesh {
+    return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2);
+}
+
+// Special case: hfield collision (existing)
+if type1 == GeomType::Hfield || type2 == GeomType::Hfield {
+    return collide_with_hfield(model, geom1, geom2, pos1, mat1, pos2, mat2);
+}
+
+// Special case: plane collision (existing)
+// ... rest unchanged ...
 ```
 
-Implement `collide_with_sdf()` dispatching to the existing `sdf_*_contact()`
-functions from `sdf.rs`, converting `SdfContact` → `Contact`.
+**Exhaustive match arms.** Adding `GeomType::Sdf` requires new arms in:
 
-Update `geom_to_collision_shape()` — `GeomType::Sdf => None`.
+- `collide_with_mesh()`: two inner `match prim_type` blocks (Mesh-vs-prim and
+  prim-vs-Mesh). Add `GeomType::Sdf => unreachable!("handled by collide_with_sdf")`
+  to both (same pattern as `GeomType::Hfield`).
+- `collide_with_plane()`: inner `match other_type` block. Add
+  `GeomType::Sdf => unreachable!("handled by collide_with_sdf")`.
+- `collide_with_hfield()`: uses wildcard `_ => return None` — no change needed
+  (Sdf falls into wildcard). However, since SDF dispatch is now before Hfield,
+  this arm is unreachable for Sdf anyway.
 
-Update `aabb_from_geom()` — add `GeomType::Sdf` arm. Like Hfield (see 6a),
+**Implement `collide_with_sdf()`:**
+
+```rust
+/// Handle collision between an SDF geom and any other geom.
+///
+/// Dispatches to the appropriate `sdf_*_contact()` function from `sdf.rs`.
+/// SDF contact normals point outward from the SDF surface. The pipeline
+/// convention is that the normal points from geom1 toward geom2. When the
+/// SDF is geom2 (not geom1), the normal must be negated.
+fn collide_with_sdf(
+    model: &Model, geom1: usize, geom2: usize,
+    pos1: Vector3<f64>, mat1: Matrix3<f64>,
+    pos2: Vector3<f64>, mat2: Matrix3<f64>,
+) -> Option<Contact> {
+    // Identify which geom is the SDF, which is the other
+    let (sdf_geom, other_geom, sdf_pos, sdf_mat, other_pos, other_mat) =
+        if model.geom_type[geom1] == GeomType::Sdf {
+            (geom1, geom2, pos1, mat1, pos2, mat2)
+        } else {
+            (geom2, geom1, pos2, mat2, pos1, mat1)
+        };
+
+    let sdf_id = model.geom_sdf[sdf_geom]?;
+    let sdf = &model.sdf_data[sdf_id];
+
+    // Build SDF pose (no centering offset needed — SdfCollisionData uses
+    // an arbitrary origin stored internally, unlike HeightFieldData which
+    // uses corner-origin requiring a centering offset)
+    let sdf_quat = UnitQuaternion::from_matrix(&sdf_mat);
+    let sdf_pose = Pose::from_position_rotation(Point3::from(sdf_pos), sdf_quat);
+
+    // Build other geom's parameters
+    let other_quat = UnitQuaternion::from_matrix(&other_mat);
+    let other_pose = Pose::from_position_rotation(Point3::from(other_pos), other_quat);
+    let other_size = model.geom_size[other_geom];
+
+    // Dispatch on the other geom's type
+    let contact = match model.geom_type[other_geom] {
+        GeomType::Sphere => {
+            sdf_sphere_contact(sdf, &sdf_pose, other_pose.position, other_size.x)
+        }
+        GeomType::Capsule => {
+            let axis = other_pose.rotation * Vector3::z();
+            let start = other_pose.position - axis * other_size.y;
+            let end = other_pose.position + axis * other_size.y;
+            sdf_capsule_contact(sdf, &sdf_pose, start, end, other_size.x)
+        }
+        GeomType::Box => {
+            sdf_box_contact(sdf, &sdf_pose, &other_pose, &other_size)
+        }
+        GeomType::Cylinder => {
+            // sdf_cylinder_contact takes (pose, half_height, radius)
+            // geom_size for Cylinder: x = radius, y = half_length
+            sdf_cylinder_contact(sdf, &sdf_pose, &other_pose, other_size.y, other_size.x)
+        }
+        GeomType::Ellipsoid => {
+            sdf_ellipsoid_contact(sdf, &sdf_pose, &other_pose, &other_size)
+        }
+        GeomType::Mesh => {
+            // Use sdf_triangle_mesh_contact with the mesh's TriangleMeshData
+            let mesh_id = model.geom_mesh[other_geom]?;
+            let mesh_data = &model.mesh_data[mesh_id];
+            sdf_triangle_mesh_contact(sdf, &sdf_pose, mesh_data, &other_pose)
+        }
+        GeomType::Hfield => {
+            // Use sdf_heightfield_contact with the hfield's HeightFieldData
+            let hfield_id = model.geom_hfield[other_geom]?;
+            let hfield = &model.hfield_data[hfield_id];
+            let hf_size = &model.hfield_size[hfield_id];
+            // Apply centering offset (same as collide_with_hfield)
+            let hf_offset = other_mat * Vector3::new(-hf_size[0], -hf_size[1], 0.0);
+            let hf_pose = Pose::from_position_rotation(
+                Point3::from(other_pos + hf_offset), other_quat,
+            );
+            sdf_heightfield_contact(sdf, &sdf_pose, hfield, &hf_pose)
+        }
+        GeomType::Plane => {
+            // sdf_plane_contact takes (plane_normal, plane_offset)
+            // Plane normal = Z-axis of plane's frame; offset = normal · position
+            let plane_normal = other_mat.column(2).into_owned();
+            let plane_offset = plane_normal.dot(&other_pos);
+            sdf_plane_contact(sdf, &sdf_pose, &plane_normal, plane_offset)
+        }
+        GeomType::Sdf => {
+            // SDF↔SDF — dispatch to sdf_sdf_contact
+            let other_sdf_id = model.geom_sdf[other_geom]?;
+            let other_sdf = &model.sdf_data[other_sdf_id];
+            sdf_sdf_contact(sdf, &sdf_pose, other_sdf, &other_pose)
+        }
+    };
+
+    // Convert SdfContact → pipeline Contact.
+    //
+    // Normal direction:
+    // - For most sdf_*_contact functions: SdfContact.normal points outward
+    //   from the SDF surface (away from interior, toward exterior).
+    // - For sdf_plane_contact: normal is the plane normal (from plane toward SDF).
+    // - For sdf_sdf_contact: normal is the outward gradient of whichever SDF
+    //   the contact point is closer to the surface of.
+    //
+    // Pipeline convention: normal must point from geom1 toward geom2.
+    //
+    // When the SDF is geom1: the SDF outward normal points away from geom1
+    // (the SDF), which is toward geom2. This matches the pipeline convention.
+    //
+    // When the SDF is geom2 (swapped = true): the SDF outward normal points
+    // away from geom2, which is away from geom2 toward geom1 — opposite of
+    // the pipeline convention. Negate it.
+    //
+    // Exception — sdf_plane_contact: the normal points from the plane toward
+    // the SDF. If the SDF is geom1 and the plane is geom2, the plane-toward-SDF
+    // normal points from geom2 toward geom1 — wrong direction. If the SDF is
+    // geom2 and the plane is geom1, the plane-toward-SDF normal points from
+    // geom1 toward geom2 — correct. So for Plane, the swap logic is inverted.
+    // However, the standard swap (negate when SDF is geom2) handles this:
+    //   - SDF=geom1, Plane=geom2: normal points plane→SDF = geom2→geom1.
+    //     swapped=false, no negate → WRONG direction.
+    //   - Need special case: for Plane, negate when NOT swapped.
+    //
+    // Exception — sdf_sdf_contact: the normal is the outward gradient of
+    // whichever SDF is nearer to the surface. This is NOT consistently from
+    // sdf_a outward. The direction depends on which SDF dominates at the
+    // contact point. For correctness, we would need to determine which SDF
+    // contributed the normal and adjust accordingly. However, since
+    // sdf_sdf_contact is symmetric and the normal is the "best separation
+    // direction," we treat it the same as the standard case: the normal is
+    // approximately outward from the first SDF argument (sdf_a = our SDF geom),
+    // and swap when needed. This is a conservative approximation — the contact
+    // solver will still produce reasonable forces even if the normal is
+    // slightly off.
+    let swapped = sdf_geom != geom1;
+    let is_plane = model.geom_type[other_geom] == GeomType::Plane;
+
+    contact.map(|c| {
+        let normal = match (swapped, is_plane) {
+            // Standard: SDF is geom1, normal points outward from SDF (geom1→geom2) ✓
+            (false, false) => c.normal,
+            // Standard: SDF is geom2, negate to get geom1→geom2
+            (true, false) => -c.normal,
+            // Plane: SDF is geom1, normal points plane→SDF (geom2→geom1), negate
+            (false, true) => -c.normal,
+            // Plane: SDF is geom2, normal points plane→SDF (geom1→geom2) ✓
+            (true, true) => c.normal,
+        };
+        make_contact_from_geoms(model, c.point.coords, normal, c.penetration, geom1, geom2)
+    })
+}
+```
+
+**Update `geom_to_collision_shape()`** (`mujoco_pipeline.rs:3968`):
+
+```rust
+GeomType::Sdf => None,  // Handled via collide_with_sdf()
+```
+
+**Update `aabb_from_geom()`** (`mujoco_pipeline.rs:3404`):
+
 `aabb_from_geom` has **no Model reference** — only `(geom_type, size, pos, mat)`.
-Use the same conservative rotated-box approach as Hfield, with `geom_size`
-storing the SDF grid half-extents. If `geom_size` is not meaningful for SDF
-(programmatic construction), use a conservative fallback similar to Mesh
-(`const SDF_DEFAULT_EXTENT: f64 = 10.0`).
+For MJCF-loaded SDF geoms, `geom_size` is `(0.1, 0.1, 0.1)` (the catch-all
+default from `geom_size_to_vec3`). For programmatically constructed models,
+`geom_size` should be set to meaningful half-extents by the user. Use the same
+conservative rotated-box approach as Hfield:
 
-Update the post-build bounding radius pass (line 2392) to add an SDF branch
-after hfield, following the same AABB-based half-diagonal pattern using
-`SdfCollisionData::aabb()` (if available) or `geom_size`.
+```rust
+GeomType::Sdf => {
+    // Conservative: rotated box with half-extents from geom_size.
+    // For programmatic SDF geoms, geom_size should store meaningful
+    // half-extents. For MJCF placeholders, defaults to 0.1 —
+    // small AABB is acceptable since the geom has no sdf_data.
+    let half = size;
+    let mut min = pos;
+    let mut max = pos;
+    for i in 0..3 {
+        let axis = mat.column(i).into_owned();
+        let extent = half[i] * axis.abs();
+        min -= extent;
+        max += extent;
+    }
+    Aabb::new(Point3::from(min), Point3::from(max))
+}
+```
+
+#### Scope Exclusions
+
+- **MJCF `<sdf>` asset element:** No such element exists in standard MuJoCo.
+  SDF geoms are populated programmatically. A future `<sdf>` asset element for
+  inline distance grids could be added without API changes.
+- **ConvexMesh dispatch via `sdf_convex_mesh_contact`:** The pipeline's `GeomType`
+  does not have a `ConvexMesh` variant (meshes are `TriangleMeshData`).
+  `sdf_convex_mesh_contact` is unused in the pipeline dispatch but remains
+  available for direct API use.
 
 #### Acceptance Criteria
 
 1. A programmatically constructed `Model` with `GeomType::Sdf` and valid
-   `SdfCollisionData` produces working collision with all supported primitives.
-2. `<geom type="sdf"/>` in MJCF produces a clear error explaining that SDF geoms
-   require programmatic construction.
-3. SDF bounding radius and AABB are correct for broad-phase culling.
-4. SDF↔SDF collision works for two SDF geoms in the same scene.
+   `SdfCollisionData` produces working collision with Sphere, Capsule, Box,
+   Cylinder, Ellipsoid, Mesh, Hfield, Plane, and SDF geoms.
+2. `<geom type="sdf"/>` in MJCF produces a `Model` with `GeomType::Sdf` and
+   `geom_sdf == None`. No error is thrown; the geom is silently non-colliding
+   until `sdf_data` and `geom_sdf` are populated programmatically.
+3. SDF bounding radius uses `SdfCollisionData::aabb()` half-diagonal (post-build
+   pass). For MJCF placeholders without `sdf_data`, the primitive
+   `bounding_radius()` fallback (`size.norm()`) is used.
+4. SDF AABB in `aabb_from_geom()` uses the conservative rotated-box formula
+   with `geom_size`.
+5. SDF↔SDF collision works for two SDF geoms in the same scene via
+   `sdf_sdf_contact()`.
+6. Contact normal direction is correct regardless of geom ordering: whether
+   the SDF is geom1 or geom2, the contact normal points from geom1 toward
+   geom2 (consistent with pipeline convention). Special handling for
+   `sdf_plane_contact` (normal points plane→SDF, not SDF outward).
+7. `collide_with_sdf()` is dispatched **before** Mesh/Hfield/Plane in
+   `collide_geoms()` so SDF↔Mesh, SDF↔Hfield, and SDF↔Plane are all handled
+   by the SDF dispatcher (not by `collide_with_mesh`/`collide_with_hfield`/
+   `collide_with_plane`).
+8. Adding `GeomType::Sdf` does not cause compile errors: `unreachable!()` arms
+   are added in `collide_with_mesh()` (2 inner matches) and
+   `collide_with_plane()` (1 inner match).
+9. `Model::empty()` includes all new fields (`nsdf`, `sdf_data`, `geom_sdf`)
+   with empty/zero initialization.
+10. SDF↔Hfield collision applies the centering offset (`-hf_size[0]`,
+    `-hf_size[1]`) to the hfield pose, same as `collide_with_hfield()`.
+11. Unsupported programmatic combinations (SDF geom with `geom_sdf == None`)
+    silently return no contact — no panic, no error.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — `GeomType::Sdf`, `sdf_data`/`geom_sdf`
-  on `Model`, `collide_with_sdf()`, AABB/bounding radius
-- `sim/L0/mjcf/src/model_builder.rs` — error on MJCF SDF geoms (no asset to wire)
+- `sim/L0/core/src/mujoco_pipeline.rs` — `GeomType::Sdf` + `bounding_radius()`
+  arm, `sdf_data`/`nsdf`/`geom_sdf` on `Model` + `Model::empty()`,
+  `collide_with_sdf()`, SDF dispatch in `collide_geoms()`, `aabb_from_geom()`
+  arm, `geom_to_collision_shape()` arm, `unreachable!()` arms in
+  `collide_with_mesh()` and `collide_with_plane()`
+- `sim/L0/mjcf/src/model_builder.rs` — `MjcfGeomType::Sdf → GeomType::Sdf`
+  (remove Box fallback), `geom_sdf` field + push, `build()` wiring,
+  post-build bounding radius SDF branch
 
 ---
 

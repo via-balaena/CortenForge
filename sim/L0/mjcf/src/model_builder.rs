@@ -287,6 +287,9 @@ struct ModelBuilder {
     hfield_size: Vec<[f64; 4]>,
     /// Hfield index per geom (like geom_mesh).
     geom_hfield: Vec<Option<usize>>,
+    /// SDF index per geom (like geom_mesh). Always `None` from MJCF — SDF geoms
+    /// are populated programmatically.
+    geom_sdf: Vec<Option<usize>>,
 
     // Site arrays
     site_body: Vec<usize>,
@@ -479,6 +482,7 @@ impl ModelBuilder {
             hfield_data: vec![],
             hfield_size: vec![],
             geom_hfield: vec![],
+            geom_sdf: vec![],
 
             site_body: vec![],
             site_type: vec![],
@@ -1041,13 +1045,7 @@ impl ModelBuilder {
             MjcfGeomType::Plane => GeomType::Plane,
             MjcfGeomType::Mesh | MjcfGeomType::TriangleMesh => GeomType::Mesh,
             MjcfGeomType::Hfield => GeomType::Hfield,
-            MjcfGeomType::Sdf => {
-                warn!(
-                    geom_name = ?geom.name,
-                    "SDF geom type not yet supported in Model, using Box as fallback"
-                );
-                GeomType::Box
-            }
+            MjcfGeomType::Sdf => GeomType::Sdf,
         };
 
         // Handle mesh geom linking
@@ -1197,6 +1195,7 @@ impl ModelBuilder {
         }
         self.geom_mesh.push(geom_mesh_ref);
         self.geom_hfield.push(geom_hfield_ref);
+        self.geom_sdf.push(None); // SDF geoms are programmatic — never set via MJCF
 
         // Solver parameters (fall back to MuJoCo defaults if not specified in MJCF)
         self.geom_solref.push(geom.solref.unwrap_or(DEFAULT_SOLREF));
@@ -2339,6 +2338,8 @@ impl ModelBuilder {
             geom_mesh: self.geom_mesh,
             // Hfield index for each geom (populated by process_geom)
             geom_hfield: self.geom_hfield,
+            // SDF index for each geom (always None from MJCF — programmatic only)
+            geom_sdf: self.geom_sdf,
 
             // Mesh assets (from MJCF <asset><mesh> elements)
             nmesh: self.mesh_data.len(),
@@ -2350,6 +2351,10 @@ impl ModelBuilder {
             hfield_name: self.hfield_name,
             hfield_data: self.hfield_data,
             hfield_size: self.hfield_size,
+
+            // SDF assets (programmatic — always empty from MJCF)
+            nsdf: 0,
+            sdf_data: vec![],
 
             site_body: self.site_body,
             site_type: self.site_type,
@@ -2485,6 +2490,12 @@ impl ModelBuilder {
                 // HeightFieldData::aabb() returns corner-origin bounds; the half-diagonal
                 // is origin-independent so the centering offset does not affect it.
                 let (aabb_min, aabb_max) = model.hfield_data[hfield_id].aabb();
+                let half_diagonal = (aabb_max.coords - aabb_min.coords) / 2.0;
+                half_diagonal.norm()
+            } else if let Some(sdf_id) = model.geom_sdf[geom_id] {
+                // SDF geom: half-diagonal of AABB (same pattern as mesh/hfield).
+                // SdfCollisionData::aabb() returns (Point3, Point3).
+                let (aabb_min, aabb_max) = model.sdf_data[sdf_id].aabb();
                 let half_diagonal = (aabb_max.coords - aabb_min.coords) / 2.0;
                 half_diagonal.norm()
             } else {

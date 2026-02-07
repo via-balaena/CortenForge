@@ -74,6 +74,11 @@ use crate::mesh::{
     mesh_mesh_deepest_contact, mesh_sphere_contact,
 };
 use crate::raycast::raycast_shape;
+use crate::sdf::{
+    SdfCollisionData, sdf_box_contact, sdf_capsule_contact, sdf_cylinder_contact,
+    sdf_ellipsoid_contact, sdf_heightfield_contact, sdf_plane_contact, sdf_sdf_contact,
+    sdf_sphere_contact, sdf_triangle_mesh_contact,
+};
 use nalgebra::{
     DMatrix, DVector, Matrix3, Matrix6, Point3, UnitQuaternion, UnitVector3, Vector2, Vector3,
     Vector6,
@@ -380,6 +385,8 @@ pub enum GeomType {
     Mesh,
     /// Height field terrain.
     Hfield,
+    /// Signed distance field (CortenForge extension — programmatic construction only).
+    Sdf,
 }
 
 impl GeomType {
@@ -417,6 +424,12 @@ impl GeomType {
                 // Conservative: horizontal half-diagonal from geom_size [x, y, z_top].
                 // True bounding radius is overwritten by post-build pass.
                 nalgebra::Vector2::new(size.x, size.y).norm()
+            }
+            Self::Sdf => {
+                // Conservative: treat as axis-aligned box with half-extents from geom_size.
+                // True bounding radius is overwritten by post-build pass using
+                // SdfCollisionData::aabb().
+                size.norm()
             }
         }
     }
@@ -918,6 +931,9 @@ pub struct Model {
     /// Hfield index for each geom (`None` if not an hfield geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Hfield` have `Some(hfield_id)`.
     pub geom_hfield: Vec<Option<usize>>,
+    /// SDF index for each geom (`None` if not an SDF geom).
+    /// Length: ngeom. Only geoms with `geom_type == GeomType::Sdf` have `Some(sdf_id)`.
+    pub geom_sdf: Vec<Option<usize>>,
 
     // ==================== Meshes (indexed by mesh_id) ====================
     /// Number of mesh assets.
@@ -937,6 +953,13 @@ pub struct Model {
     pub hfield_data: Vec<Arc<HeightFieldData>>,
     /// Original MuJoCo size `[x, y, z_top, z_bottom]` for centering offset at collision time.
     pub hfield_size: Vec<[f64; 4]>,
+
+    // ==================== SDFs (indexed by sdf_id) ====================
+    /// Number of SDF assets.
+    pub nsdf: usize,
+    /// SDF collision data.
+    /// `Arc` for cheap cloning (multiple geoms can reference the same SDF asset).
+    pub sdf_data: Vec<Arc<SdfCollisionData>>,
 
     // ==================== Sites (indexed by site_id) ====================
     /// Parent body for each site.
@@ -1905,6 +1928,7 @@ impl Model {
             geom_rbound: vec![],
             geom_mesh: vec![],
             geom_hfield: vec![],
+            geom_sdf: vec![],
 
             // Meshes (empty)
             nmesh: 0,
@@ -1916,6 +1940,10 @@ impl Model {
             hfield_name: vec![],
             hfield_data: vec![],
             hfield_size: vec![],
+
+            // SDFs (empty)
+            nsdf: 0,
+            sdf_data: vec![],
 
             // Sites (empty)
             site_body: vec![],
@@ -3541,6 +3569,22 @@ fn aabb_from_geom(
             }
             Aabb::new(Point3::from(min), Point3::from(max))
         }
+        GeomType::Sdf => {
+            // Conservative: rotated box with half-extents from geom_size.
+            // For programmatic SDF geoms, geom_size should store meaningful
+            // half-extents. For MJCF placeholders, defaults to 0.1 —
+            // small AABB is acceptable since the geom has no sdf_data.
+            let half = size;
+            let mut min = pos;
+            let mut max = pos;
+            for i in 0..3 {
+                let axis = mat.column(i).into_owned();
+                let extent = half[i] * axis.abs();
+                min -= extent;
+                max += extent;
+            }
+            Aabb::new(Point3::from(min), Point3::from(max))
+        }
     }
 }
 
@@ -3851,6 +3895,12 @@ fn collide_geoms(
     // Fast path: handle all analytical collision cases first
     // These avoid the expensive quaternion conversion and GJK/EPA
 
+    // Special case: SDF collision (before mesh/hfield/plane — SDF has its own
+    // contact functions for all shapes including Mesh, Hfield, and Plane)
+    if type1 == GeomType::Sdf || type2 == GeomType::Sdf {
+        return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2);
+    }
+
     // Special case: mesh collision (has its own BVH-accelerated path)
     if type1 == GeomType::Mesh || type2 == GeomType::Mesh {
         return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2);
@@ -3981,6 +4031,7 @@ fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Co
         GeomType::Plane => None,  // Handled via collide_with_plane()
         GeomType::Mesh => None,   // Handled via collide_with_mesh()
         GeomType::Hfield => None, // Handled via collide_with_hfield()
+        GeomType::Sdf => None,    // Handled via collide_with_sdf()
     }
 }
 
@@ -4186,6 +4237,117 @@ fn collide_with_hfield(
     })
 }
 
+/// Collision detection involving at least one SDF geometry.
+///
+/// Dispatches to the appropriate `sdf_*_contact()` function from `sdf.rs`.
+/// Handles all `GeomType` pairings including Mesh, Hfield, Plane, and SDF↔SDF.
+#[allow(clippy::too_many_arguments)]
+fn collide_with_sdf(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+) -> Option<Contact> {
+    // Identify which geom is the SDF, which is the other
+    let (sdf_geom, other_geom, sdf_pos, sdf_mat, other_pos, other_mat) =
+        if model.geom_type[geom1] == GeomType::Sdf {
+            (geom1, geom2, pos1, mat1, pos2, mat2)
+        } else {
+            (geom2, geom1, pos2, mat2, pos1, mat1)
+        };
+
+    let sdf_id = model.geom_sdf[sdf_geom]?;
+    let sdf = &model.sdf_data[sdf_id];
+
+    // Build SDF pose (no centering offset needed — SdfCollisionData uses
+    // an arbitrary origin stored internally, unlike HeightFieldData which
+    // uses corner-origin requiring a centering offset)
+    let sdf_quat = UnitQuaternion::from_matrix(&sdf_mat);
+    let sdf_pose = Pose::from_position_rotation(Point3::from(sdf_pos), sdf_quat);
+
+    // Build other geom's parameters
+    let other_quat = UnitQuaternion::from_matrix(&other_mat);
+    let other_pose = Pose::from_position_rotation(Point3::from(other_pos), other_quat);
+    let other_size = model.geom_size[other_geom];
+
+    // Dispatch on the other geom's type
+    let contact = match model.geom_type[other_geom] {
+        GeomType::Sphere => sdf_sphere_contact(sdf, &sdf_pose, other_pose.position, other_size.x),
+        GeomType::Capsule => {
+            let axis = other_pose.rotation * Vector3::z();
+            let start = other_pose.position - axis * other_size.y;
+            let end = other_pose.position + axis * other_size.y;
+            sdf_capsule_contact(sdf, &sdf_pose, start, end, other_size.x)
+        }
+        GeomType::Box => sdf_box_contact(sdf, &sdf_pose, &other_pose, &other_size),
+        GeomType::Cylinder => {
+            // sdf_cylinder_contact takes (pose, half_height, radius)
+            // geom_size for Cylinder: x = radius, y = half_length
+            sdf_cylinder_contact(sdf, &sdf_pose, &other_pose, other_size.y, other_size.x)
+        }
+        GeomType::Ellipsoid => sdf_ellipsoid_contact(sdf, &sdf_pose, &other_pose, &other_size),
+        GeomType::Mesh => {
+            let mesh_id = model.geom_mesh[other_geom]?;
+            let mesh_data = &model.mesh_data[mesh_id];
+            sdf_triangle_mesh_contact(sdf, &sdf_pose, mesh_data, &other_pose)
+        }
+        GeomType::Hfield => {
+            let hfield_id = model.geom_hfield[other_geom]?;
+            let hfield = &model.hfield_data[hfield_id];
+            let hf_size = &model.hfield_size[hfield_id];
+            // Apply centering offset (same as collide_with_hfield)
+            let hf_offset = other_mat * Vector3::new(-hf_size[0], -hf_size[1], 0.0);
+            let hf_pose =
+                Pose::from_position_rotation(Point3::from(other_pos + hf_offset), other_quat);
+            sdf_heightfield_contact(sdf, &sdf_pose, hfield, &hf_pose)
+        }
+        GeomType::Plane => {
+            // Plane normal = Z-axis of plane's frame; offset = normal · position
+            let plane_normal = other_mat.column(2).into_owned();
+            let plane_offset = plane_normal.dot(&other_pos);
+            sdf_plane_contact(sdf, &sdf_pose, &plane_normal, plane_offset)
+        }
+        GeomType::Sdf => {
+            let other_sdf_id = model.geom_sdf[other_geom]?;
+            let other_sdf = &model.sdf_data[other_sdf_id];
+            sdf_sdf_contact(sdf, &sdf_pose, other_sdf, &other_pose)
+        }
+    };
+
+    // Convert SdfContact → pipeline Contact.
+    //
+    // Normal direction conventions:
+    // - Most sdf_*_contact: normal points outward from SDF surface
+    // - sdf_plane_contact: normal is the plane normal (from plane toward SDF)
+    // - sdf_sdf_contact: normal from whichever SDF the contact is closer to
+    //
+    // Pipeline convention: normal must point from geom1 toward geom2.
+    //
+    // Standard case: SDF outward normal points away from the SDF. When SDF is
+    // geom1, this is toward geom2 (correct). When SDF is geom2 (swapped), negate.
+    //
+    // Plane exception: sdf_plane_contact returns the plane normal (from plane
+    // toward SDF). When SDF is geom1 and plane is geom2, this points geom2→geom1
+    // (wrong) — negate. When SDF is geom2 and plane is geom1, this points
+    // geom1→geom2 (correct) — keep. So for plane, swap logic is inverted.
+    let swapped = sdf_geom != geom1;
+    let is_plane = model.geom_type[other_geom] == GeomType::Plane;
+
+    contact.map(|c| {
+        // Negate when exactly one of swapped/is_plane is true (XOR).
+        // See comments above for the full derivation.
+        let normal = if swapped ^ is_plane {
+            -c.normal
+        } else {
+            c.normal
+        };
+        make_contact_from_geoms(model, c.point.coords, normal, c.penetration, geom1, geom2)
+    })
+}
+
 /// Collision detection involving at least one mesh geometry.
 ///
 /// Dispatches to specialized mesh-primitive or mesh-mesh implementations.
@@ -4254,6 +4416,7 @@ fn collide_with_mesh(
                 }
                 GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
                 GeomType::Hfield => unreachable!("handled by collide_with_hfield"),
+                GeomType::Sdf => unreachable!("handled by collide_with_sdf"),
             }
         }
 
@@ -4284,6 +4447,7 @@ fn collide_with_mesh(
                 }
                 GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
                 GeomType::Hfield => unreachable!("handled by collide_with_hfield"),
+                GeomType::Sdf => unreachable!("handled by collide_with_sdf"),
             };
 
             // Negate normal since we swapped the order (mesh was geom2, but contact
@@ -4555,6 +4719,8 @@ fn collide_with_plane(
         GeomType::Plane => None,
         // Hfield is dispatched before plane in collide_geoms()
         GeomType::Hfield => unreachable!("handled by collide_with_hfield"),
+        // SDF is dispatched before plane in collide_geoms()
+        GeomType::Sdf => unreachable!("handled by collide_with_sdf"),
     }
 }
 
