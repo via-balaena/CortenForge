@@ -18,7 +18,7 @@ fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
 use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
     MjcfContact, MjcfContactExclude, MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality,
-    MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator,
+    MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfHfield, MjcfInertial, MjcfIntegrator,
     MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfMesh,
     MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults,
     MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex,
@@ -75,8 +75,9 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         model.defaults.extend(defaults);
                     }
                     b"asset" => {
-                        let meshes = parse_asset(reader)?;
+                        let (meshes, hfields) = parse_asset(reader)?;
                         model.meshes = meshes;
+                        model.hfields = hfields;
                     }
                     b"worldbody" => {
                         model.worldbody = parse_worldbody(reader)?;
@@ -687,8 +688,9 @@ fn parse_contact_exclude_attrs(e: &BytesStart) -> Result<MjcfContactExclude> {
 }
 
 /// Parse asset element (contains mesh, texture, material definitions).
-fn parse_asset<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfMesh>> {
+fn parse_asset<R: BufRead>(reader: &mut Reader<R>) -> Result<(Vec<MjcfMesh>, Vec<MjcfHfield>)> {
     let mut meshes = Vec::new();
+    let mut hfields = Vec::new();
     let mut buf = Vec::new();
 
     loop {
@@ -700,7 +702,13 @@ fn parse_asset<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfMesh>> {
                         let mesh = parse_mesh(reader, e)?;
                         meshes.push(mesh);
                     }
-                    // Skip other asset types (texture, material, hfield, etc.)
+                    b"hfield" => {
+                        let hfield = parse_hfield_attrs(e)?;
+                        // <hfield> has no child elements — skip to closing tag
+                        skip_element(reader, &elem_name)?;
+                        hfields.push(hfield);
+                    }
+                    // Skip other asset types (texture, material, etc.)
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
@@ -708,6 +716,9 @@ fn parse_asset<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfMesh>> {
                 if e.name().as_ref() == b"mesh" {
                     let mesh = parse_mesh_attrs(e)?;
                     meshes.push(mesh);
+                } else if e.name().as_ref() == b"hfield" {
+                    let hfield = parse_hfield_attrs(e)?;
+                    hfields.push(hfield);
                 }
                 // Skip other self-closing asset types
             }
@@ -719,7 +730,7 @@ fn parse_asset<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfMesh>> {
         buf.clear();
     }
 
-    Ok(meshes)
+    Ok((meshes, hfields))
 }
 
 /// Parse mesh element.
@@ -766,6 +777,77 @@ fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     }
 
     Ok(mesh)
+}
+
+/// Parse hfield attributes from a `<hfield>` element.
+fn parse_hfield_attrs(e: &BytesStart) -> Result<MjcfHfield> {
+    let name = get_attribute_opt(e, "name").ok_or_else(|| {
+        MjcfError::XmlParse("hfield element missing required 'name' attribute".into())
+    })?;
+
+    let nrow: usize = get_attribute_opt(e, "nrow")
+        .ok_or_else(|| {
+            MjcfError::XmlParse("hfield element missing required 'nrow' attribute".into())
+        })?
+        .parse()
+        .map_err(|_| MjcfError::XmlParse("hfield 'nrow' must be a positive integer".into()))?;
+
+    let ncol: usize = get_attribute_opt(e, "ncol")
+        .ok_or_else(|| {
+            MjcfError::XmlParse("hfield element missing required 'ncol' attribute".into())
+        })?
+        .parse()
+        .map_err(|_| MjcfError::XmlParse("hfield 'ncol' must be a positive integer".into()))?;
+
+    if nrow < 2 || ncol < 2 {
+        return Err(MjcfError::XmlParse(format!(
+            "hfield '{name}': nrow ({nrow}) and ncol ({ncol}) must be >= 2",
+        )));
+    }
+
+    let size_str = get_attribute_opt(e, "size").ok_or_else(|| {
+        MjcfError::XmlParse("hfield element missing required 'size' attribute".into())
+    })?;
+    let size_vec = parse_float_array(&size_str)?;
+    if size_vec.len() != 4 {
+        return Err(MjcfError::XmlParse(format!(
+            "hfield '{}': size requires exactly 4 values, got {}",
+            name,
+            size_vec.len(),
+        )));
+    }
+    let size = [size_vec[0], size_vec[1], size_vec[2], size_vec[3]];
+    if size[0] <= 0.0 || size[1] <= 0.0 {
+        return Err(MjcfError::XmlParse(format!(
+            "hfield '{name}': size[0] and size[1] (half-extents) must be > 0",
+        )));
+    }
+    if size[2] < 0.0 || size[3] < 0.0 {
+        return Err(MjcfError::XmlParse(format!(
+            "hfield '{name}': size[2] (z_top) and size[3] (z_bottom) must be >= 0",
+        )));
+    }
+
+    let elevation_str = get_attribute_opt(e, "elevation").ok_or_else(|| {
+        MjcfError::XmlParse("hfield element missing required 'elevation' attribute".into())
+    })?;
+    let elevation = parse_float_array(&elevation_str)?;
+    if elevation.len() != nrow * ncol {
+        return Err(MjcfError::XmlParse(format!(
+            "hfield '{}': elevation length ({}) must equal nrow * ncol ({})",
+            name,
+            elevation.len(),
+            nrow * ncol,
+        )));
+    }
+
+    Ok(MjcfHfield {
+        name,
+        size,
+        nrow,
+        ncol,
+        elevation,
+    })
 }
 
 /// Parse worldbody element.
@@ -1086,6 +1168,7 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
         geom.condim = condim;
     }
     geom.mesh = get_attribute_opt(e, "mesh");
+    geom.hfield = get_attribute_opt(e, "hfield");
 
     // Contact solver parameters: solref=[timeconst, dampratio],
     // solimp=[d0, d_width, width, midpoint, power].

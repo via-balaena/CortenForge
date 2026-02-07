@@ -65,6 +65,10 @@
 //! - `mj_rne()`: Recursive Newton-Euler for bias forces
 
 use crate::collision_shape::{Aabb, CollisionShape};
+use crate::heightfield::{
+    HeightFieldData, heightfield_box_contact, heightfield_capsule_contact,
+    heightfield_sphere_contact,
+};
 use crate::mesh::{
     MeshContact, TriangleMeshData, mesh_box_contact, mesh_capsule_contact,
     mesh_mesh_deepest_contact, mesh_sphere_contact,
@@ -374,6 +378,8 @@ pub enum GeomType {
     Ellipsoid,
     /// Convex mesh (requires mesh data).
     Mesh,
+    /// Height field terrain.
+    Hfield,
 }
 
 impl GeomType {
@@ -406,6 +412,11 @@ impl GeomType {
                 // Full implementation would use mesh AABB at load time.
                 let scale = size.x.max(size.y).max(size.z);
                 if scale > 0.0 { scale * 10.0 } else { 10.0 }
+            }
+            Self::Hfield => {
+                // Conservative: horizontal half-diagonal from geom_size [x, y, z_top].
+                // True bounding radius is overwritten by post-build pass.
+                nalgebra::Vector2::new(size.x, size.y).norm()
             }
         }
     }
@@ -904,6 +915,9 @@ pub struct Model {
     /// Mesh index for each geom (`None` if not a mesh geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Mesh` have `Some(mesh_id)`.
     pub geom_mesh: Vec<Option<usize>>,
+    /// Hfield index for each geom (`None` if not an hfield geom).
+    /// Length: ngeom. Only geoms with `geom_type == GeomType::Hfield` have `Some(hfield_id)`.
+    pub geom_hfield: Vec<Option<usize>>,
 
     // ==================== Meshes (indexed by mesh_id) ====================
     /// Number of mesh assets.
@@ -913,6 +927,16 @@ pub struct Model {
     /// Triangle mesh data with prebuilt BVH.
     /// `Arc` for cheap cloning (multiple geoms can reference the same mesh asset).
     pub mesh_data: Vec<Arc<TriangleMeshData>>,
+
+    // ==================== Height Fields (indexed by hfield_id) ====================
+    /// Number of height field assets.
+    pub nhfield: usize,
+    /// Height field names (for lookup by name).
+    pub hfield_name: Vec<String>,
+    /// Height field terrain data.
+    pub hfield_data: Vec<Arc<HeightFieldData>>,
+    /// Original MuJoCo size `[x, y, z_top, z_bottom]` for centering offset at collision time.
+    pub hfield_size: Vec<[f64; 4]>,
 
     // ==================== Sites (indexed by site_id) ====================
     /// Parent body for each site.
@@ -1880,11 +1904,18 @@ impl Model {
             geom_name: vec![],
             geom_rbound: vec![],
             geom_mesh: vec![],
+            geom_hfield: vec![],
 
             // Meshes (empty)
             nmesh: 0,
             mesh_name: vec![],
             mesh_data: vec![],
+
+            // Height fields (empty)
+            nhfield: 0,
+            hfield_name: vec![],
+            hfield_data: vec![],
+            hfield_size: vec![],
 
             // Sites (empty)
             site_body: vec![],
@@ -3496,6 +3527,20 @@ fn aabb_from_geom(
                 ),
             )
         }
+        GeomType::Hfield => {
+            // Conservative: treat as a rotated box with half-extents from geom_size
+            // [x_half_extent, y_half_extent, z_top]. Same formula as GeomType::Box.
+            let half = size;
+            let mut min = pos;
+            let mut max = pos;
+            for i in 0..3 {
+                let axis = mat.column(i).into_owned();
+                let extent = half[i] * axis.abs();
+                min -= extent;
+                max += extent;
+            }
+            Aabb::new(Point3::from(min), Point3::from(max))
+        }
     }
 }
 
@@ -3811,6 +3856,11 @@ fn collide_geoms(
         return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2);
     }
 
+    // Special case: height field collision
+    if type1 == GeomType::Hfield || type2 == GeomType::Hfield {
+        return collide_with_hfield(model, geom1, geom2, pos1, mat1, pos2, mat2);
+    }
+
     // Special case: plane collision
     if type1 == GeomType::Plane || type2 == GeomType::Plane {
         return collide_with_plane(
@@ -3928,8 +3978,9 @@ fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Co
             radius: size.x,
         }),
         GeomType::Ellipsoid => Some(CollisionShape::Ellipsoid { radii: size }),
-        GeomType::Plane => None, // Handled via collide_with_plane()
-        GeomType::Mesh => None,  // Handled via collide_with_mesh()
+        GeomType::Plane => None,  // Handled via collide_with_plane()
+        GeomType::Mesh => None,   // Handled via collide_with_mesh()
+        GeomType::Hfield => None, // Handled via collide_with_hfield()
     }
 }
 
@@ -4061,6 +4112,80 @@ const CAP_COLLISION_THRESHOLD: f64 = 0.7;
 // Mesh Collision Detection
 // =============================================================================
 
+/// Height field collision: dispatch to the appropriate contact function
+/// based on the other geom's type, then convert to pipeline Contact.
+fn collide_with_hfield(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+) -> Option<Contact> {
+    // Identify which geom is the hfield, which is the other
+    let (hf_geom, other_geom, hf_pos, hf_mat, other_pos, other_mat) =
+        if model.geom_type[geom1] == GeomType::Hfield {
+            (geom1, geom2, pos1, mat1, pos2, mat2)
+        } else {
+            (geom2, geom1, pos2, mat2, pos1, mat1)
+        };
+
+    let hfield_id = model.geom_hfield[hf_geom]?;
+    let hfield = &model.hfield_data[hfield_id];
+    let hf_size = &model.hfield_size[hfield_id];
+
+    // Build hfield pose — apply centering offset so HeightFieldData's
+    // corner-origin (0,0) maps to MuJoCo's center-origin (-size[0], -size[1])
+    let quat = UnitQuaternion::from_matrix(&hf_mat);
+    let offset = hf_mat * Vector3::new(-hf_size[0], -hf_size[1], 0.0);
+    let hf_pose = Pose::from_position_rotation(Point3::from(hf_pos + offset), quat);
+
+    // Build other geom's parameters
+    let other_quat = UnitQuaternion::from_matrix(&other_mat);
+    let other_pose = Pose::from_position_rotation(Point3::from(other_pos), other_quat);
+    let other_size = model.geom_size[other_geom];
+
+    // Dispatch on the other geom's type
+    let hf_contact = match model.geom_type[other_geom] {
+        GeomType::Sphere => {
+            heightfield_sphere_contact(hfield, &hf_pose, other_pose.position, other_size.x)
+        }
+        GeomType::Capsule => {
+            let axis = other_pose.rotation * Vector3::z();
+            let start = other_pose.position - axis * other_size.y;
+            let end = other_pose.position + axis * other_size.y;
+            heightfield_capsule_contact(hfield, &hf_pose, start, end, other_size.x)
+        }
+        GeomType::Box => heightfield_box_contact(hfield, &hf_pose, &other_pose, &other_size),
+        GeomType::Cylinder => {
+            // Approximate cylinder as capsule (conservative, same as collide_with_mesh)
+            let axis = other_pose.rotation * Vector3::z();
+            let start = other_pose.position - axis * other_size.y;
+            let end = other_pose.position + axis * other_size.y;
+            heightfield_capsule_contact(hfield, &hf_pose, start, end, other_size.x)
+        }
+        GeomType::Ellipsoid => {
+            // Approximate as sphere with max radius (conservative)
+            let max_r = other_size.x.max(other_size.y).max(other_size.z);
+            heightfield_sphere_contact(hfield, &hf_pose, other_pose.position, max_r)
+        }
+        // Hfield↔Hfield, Hfield↔Plane, Hfield↔Mesh: not supported
+        _ => return None,
+    };
+
+    // Convert HeightFieldContact → pipeline Contact.
+    // Normal direction: HeightFieldContact.normal always points "up from terrain".
+    // Following the collide_with_mesh pattern, when the surface geometry (hfield)
+    // is geom2 and the primitive is geom1, negate the normal so it points from
+    // geom1 toward geom2.
+    let swapped = hf_geom != geom1;
+    hf_contact.map(|c| {
+        let normal = if swapped { -c.normal } else { c.normal };
+        make_contact_from_geoms(model, c.point.coords, normal, c.penetration, geom1, geom2)
+    })
+}
+
 /// Collision detection involving at least one mesh geometry.
 ///
 /// Dispatches to specialized mesh-primitive or mesh-mesh implementations.
@@ -4128,6 +4253,7 @@ fn collide_with_mesh(
                     collide_mesh_plane(mesh, &pose1, plane_normal, plane_d)
                 }
                 GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
+                GeomType::Hfield => unreachable!("handled by collide_with_hfield"),
             }
         }
 
@@ -4157,6 +4283,7 @@ fn collide_with_mesh(
                     collide_mesh_plane(mesh, &pose2, plane_normal, plane_d)
                 }
                 GeomType::Mesh => unreachable!("handled in Mesh-Mesh case above"),
+                GeomType::Hfield => unreachable!("handled by collide_with_hfield"),
             };
 
             // Negate normal since we swapped the order (mesh was geom2, but contact
@@ -4426,6 +4553,8 @@ fn collide_with_plane(
         // Plane-plane: two infinite half-spaces. Intersection is either empty, a plane,
         // or a half-space—none of which produce a meaningful contact point.
         GeomType::Plane => None,
+        // Hfield is dispatched before plane in collide_geoms()
+        GeomType::Hfield => unreachable!("handled by collide_with_hfield"),
     }
 }
 
