@@ -333,6 +333,8 @@ all 32 pipeline sensor types functional and wired from MJCF via
 shortcut types to their general gain/bias/dynamics representation (matching
 MuJoCo's `user_api.cc`), populating `actuator_gaintype`, `actuator_biastype`,
 `actuator_gainprm`, `actuator_biasprm`, and `actuator_dynprm` per actuator.
+`<general>` actuators support explicit `gaintype`, `biastype`, `dyntype`,
+`gainprm`, `biasprm`, `dynprm` attributes with default class inheritance.
 Muscle parameters are parsed and transferred; `compute_muscle_params()`
 resolves `lengthrange`, `acc0`, and auto-computes `F0` at model build time.
 

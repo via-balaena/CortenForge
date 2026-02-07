@@ -473,6 +473,17 @@ fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
         defaults.forcelimited = Some(forcelimited == "true");
     }
 
+    // <general>-specific attributes — parsed unconditionally because
+    // parse_actuator_defaults() is called for all actuator element names
+    // (actuator|motor|position|velocity|general). The model builder
+    // ignores these for shortcut types.
+    defaults.gaintype = get_attribute_opt(e, "gaintype");
+    defaults.biastype = get_attribute_opt(e, "biastype");
+    defaults.dyntype = get_attribute_opt(e, "dyntype");
+    defaults.gainprm = parse_float_array_opt(e, "gainprm")?;
+    defaults.biasprm = parse_float_array_opt(e, "biasprm")?;
+    defaults.dynprm = parse_float_array_opt(e, "dynprm")?;
+
     Ok(defaults)
 }
 
@@ -1365,6 +1376,20 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
     }
 
     // ========================================================================
+    // <general>-specific attributes
+    // ========================================================================
+    // These are only parsed for <general> actuators. For shortcut types,
+    // these attributes are not part of the MJCF schema and are ignored.
+    if actuator_type == MjcfActuatorType::General {
+        actuator.gaintype = get_attribute_opt(e, "gaintype");
+        actuator.biastype = get_attribute_opt(e, "biastype");
+        actuator.dyntype = get_attribute_opt(e, "dyntype");
+        actuator.gainprm = parse_float_array_opt(e, "gainprm")?;
+        actuator.biasprm = parse_float_array_opt(e, "biasprm")?;
+        actuator.dynprm = parse_float_array_opt(e, "dynprm")?;
+    }
+
+    // ========================================================================
     // Cylinder-specific attributes
     // ========================================================================
     if let Some(area) = parse_float_attr(e, "area") {
@@ -1905,6 +1930,16 @@ fn parse_float_array(s: &str) -> Result<Vec<f64>> {
                 .map_err(|_| MjcfError::XmlParse(format!("invalid float: {p}")))
         })
         .collect()
+}
+
+/// Parse an optional space-separated float array attribute.
+/// Returns `Ok(None)` when absent, `Ok(Some(vec))` when present and valid,
+/// `Err` when present but contains unparseable floats.
+fn parse_float_array_opt(e: &BytesStart, name: &str) -> Result<Option<Vec<f64>>> {
+    match get_attribute_opt(e, name) {
+        Some(s) => Ok(Some(parse_float_array(&s)?)),
+        None => Ok(None),
+    }
 }
 
 // ============================================================================

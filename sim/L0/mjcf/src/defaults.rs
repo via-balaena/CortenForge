@@ -290,6 +290,28 @@ impl DefaultResolver {
                     result.kv = Some(kv);
                 }
             }
+
+            // Apply <general>-specific defaults.
+            // These only matter for <general> actuators, but we apply them
+            // unconditionally — the model builder ignores them for shortcut types.
+            if result.gaintype.is_none() {
+                result.gaintype.clone_from(&defaults.gaintype);
+            }
+            if result.biastype.is_none() {
+                result.biastype.clone_from(&defaults.biastype);
+            }
+            if result.dyntype.is_none() {
+                result.dyntype.clone_from(&defaults.dyntype);
+            }
+            if result.gainprm.is_none() {
+                result.gainprm.clone_from(&defaults.gainprm);
+            }
+            if result.biasprm.is_none() {
+                result.biasprm.clone_from(&defaults.biasprm);
+            }
+            if result.dynprm.is_none() {
+                result.dynprm.clone_from(&defaults.dynprm);
+            }
         }
 
         result
@@ -579,6 +601,12 @@ impl DefaultResolver {
                 kv: c.kv.or(p.kv),
                 ctrllimited: c.ctrllimited.or(p.ctrllimited),
                 forcelimited: c.forcelimited.or(p.forcelimited),
+                gaintype: c.gaintype.clone().or_else(|| p.gaintype.clone()),
+                biastype: c.biastype.clone().or_else(|| p.biastype.clone()),
+                dyntype: c.dyntype.clone().or_else(|| p.dyntype.clone()),
+                gainprm: c.gainprm.clone().or_else(|| p.gainprm.clone()),
+                biasprm: c.biasprm.clone().or_else(|| p.biasprm.clone()),
+                dynprm: c.dynprm.clone().or_else(|| p.dynprm.clone()),
             }),
         }
     }

@@ -4312,6 +4312,11 @@ When `dampratio` is added, the builder will:
 
 #### Scope Decision: `general` Actuator MJCF Parsing Deferred
 
+> **Resolved:** Full `<general>` MJCF attribute parsing implemented in
+> [future_work_3 #8](./future_work_3.md). All 6 attributes (`gaintype`,
+> `biastype`, `dyntype`, `gainprm`, `biasprm`, `dynprm`) are now parsed,
+> wired through defaults, and consumed by the model builder.
+
 MuJoCo's `<general>` actuator element accepts explicit `gaintype`, `biastype`,
 `dyntype`, `gainprm`, `biasprm`, `dynprm` attributes. The parser currently
 handles `<general>` by routing it through `MjcfActuatorType::General` with

@@ -1171,42 +1171,583 @@ All 12 acceptance criteria verified:
 ---
 
 ### 8. `<general>` Actuator MJCF Attributes
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+**Status:** Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-The gain/bias runtime is fully general (any combination of Fixed/Affine/None
-works). Only the MJCF parser-to-builder wiring for `<general>` actuators is
-missing. Currently `<general>` actuators are treated as Motor-like
-(gaintype=Fixed, gainprm=[1,0,0], biastype=None).
 
-Deferred in Phase 1 (#12) because no RL models in common use require it. Included
-here for completeness.
+**Runtime layer is fully general.** `mj_fwd_actuation()`
+(`mujoco_pipeline.rs:8300`) dispatches on `GainType` (Fixed/Affine/Muscle),
+`BiasType` (None/Affine/Muscle), and `ActuatorDynamics`
+(None/Filter/FilterExact/Integrator/Muscle) using per-actuator parameter
+arrays `gainprm: [f64; 9]`, `biasprm: [f64; 9]`, `dynprm: [f64; 3]`. The
+force equation `force = gain * input + bias` is computed at line 8379. All
+type combinations work correctly at runtime — no runtime changes needed.
+
+**MJCF layer is incomplete.** The parser recognizes `<general>` as
+`MjcfActuatorType::General` (`types.rs:1790`) and parses common attributes
+(name, joint, gear, ctrlrange, etc.) via `parse_actuator_attrs()`
+(`parser.rs:1316`). However, **six critical attributes are not parsed**:
+`gaintype`, `biastype`, `dyntype`, `gainprm`, `biasprm`, `dynprm`.
+
+**Model builder hardcodes Motor-like defaults.** `process_actuator()`
+(`model_builder.rs:1668–1675`) has a TODO comment and treats all `<general>`
+actuators as Motor-like: `GainType::Fixed`, `BiasType::None`,
+`gainprm=[1,0,...,0]`, `biasprm=[0,...,0]`, `dynprm=[0,0,0]`. The dyntype
+determination (`model_builder.rs:1521–1526`) also hardcodes General →
+`ActuatorDynamics::None`, ignoring any parsed `dyntype`.
+
+**`MjcfActuator` struct lacks fields** (`types.rs:1819–1890`) for
+`gaintype`, `biastype`, `dyntype`, `gainprm`, `biasprm`, `dynprm`.
+
+**`MjcfActuatorDefaults` struct lacks fields** (`types.rs:486–501`) for
+the general actuator attributes. `apply_to_actuator()` (`defaults.rs:239–296`)
+does not propagate them.
+
+**`actlimited`/`actrange` are not supported anywhere** in the codebase —
+not parsed, not stored on `Model`, not enforced at runtime. These are needed
+for stateful actuators (`dyntype != none`) where activation can grow
+unbounded. This is a **separate concern** (see Scope Exclusions).
 
 #### Objective
-Parse explicit `gaintype`, `biastype`, `dyntype`, `gainprm`, `biasprm`, `dynprm`
-attributes on `<general>` actuator elements.
+
+Parse explicit `gaintype`, `biastype`, `dyntype`, `gainprm`, `biasprm`,
+`dynprm` attributes on `<general>` actuator elements and wire them through
+the model builder so the existing runtime dispatch produces correct behavior
+for arbitrary `<general>` actuator configurations.
+
+#### MuJoCo Reference
+
+Source: `mjmodel.h` (constants, enums), `user_init.c`
+(`mjs_defaultActuator`), `user_api.cc` (`mjs_setToMotor` et al.),
+`xml_native_reader.cc` (parser).
+
+**`<general>` default attribute values** (from `mjs_defaultActuator`):
+
+| Attribute | Default | Notes |
+|-----------|---------|-------|
+| `gaintype` | `"fixed"` (mjGAIN_FIXED) | |
+| `biastype` | `"none"` (mjBIAS_NONE) | |
+| `dyntype` | `"none"` (mjDYN_NONE) | |
+| `gainprm` | `[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]` | 10 elements (mjNGAIN=10) |
+| `biasprm` | `[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]` | 10 elements (mjNBIAS=10) |
+| `dynprm` | `[1, 0, 0, 0, 0, 0, 0, 0, 0, 0]` | 10 elements (mjNDYN=10) |
+| `gear` | `[1, 0, 0, 0, 0, 0]` | Already parsed |
+
+These defaults mean that a bare `<general joint="j"/>` behaves identically
+to `<motor joint="j"/>` — fixed unit gain, no bias, no dynamics.
+
+**Enum string mappings** (from `xml_native_reader.cc`):
+
+`gaintype` (gain_map):
+- `"fixed"` → mjGAIN_FIXED → `GainType::Fixed`
+- `"affine"` → mjGAIN_AFFINE → `GainType::Affine`
+- `"muscle"` → mjGAIN_MUSCLE → `GainType::Muscle`
+- `"user"` → mjGAIN_USER → **out of scope** (callback)
+
+`biastype` (bias_map):
+- `"none"` → mjBIAS_NONE → `BiasType::None`
+- `"affine"` → mjBIAS_AFFINE → `BiasType::Affine`
+- `"muscle"` → mjBIAS_MUSCLE → `BiasType::Muscle`
+- `"user"` → mjBIAS_USER → **out of scope** (callback)
+
+`dyntype` (dyn_map):
+- `"none"` → mjDYN_NONE → `ActuatorDynamics::None`
+- `"integrator"` → mjDYN_INTEGRATOR → `ActuatorDynamics::Integrator`
+- `"filter"` → mjDYN_FILTER → `ActuatorDynamics::Filter`
+- `"filterexact"` → mjDYN_FILTEREXACT → `ActuatorDynamics::FilterExact`
+- `"muscle"` → mjDYN_MUSCLE → `ActuatorDynamics::Muscle`
+- `"user"` → mjDYN_USER → **out of scope** (callback)
+
+**Parameter array sizing — CortenForge divergence:**
+
+MuJoCo uses 10-element arrays for all three (`mjNGAIN=10`, `mjNBIAS=10`,
+`mjNDYN=10`). CortenForge uses `[f64; 9]` for gainprm/biasprm and
+`[f64; 3]` for dynprm (`mujoco_pipeline.rs:1044–1055`). This is intentional:
+- `gainprm`/`biasprm`: only indices 0–8 are used by Fixed/Affine/Muscle
+  gain/bias (the 10th element, index 9, is only used by MuJoCo's `user`
+  callback type, which is out of scope).
+- `dynprm`: only indices 0–2 are used (tau_act, tau_deact, tausmooth for
+  Muscle; tau for Filter/FilterExact; unused for Integrator/None).
+
+When parsing MJCF `gainprm`/`biasprm`/`dynprm` attributes, accept up to
+10 space-separated floats (matching MuJoCo) but only store the first 9/9/3
+respectively. Extra values are silently ignored. If fewer values are
+provided, pad with zeros (matching MuJoCo's `memset(0)` + selective
+initialization).
+
+**Shortcut actuator expansion** (for reference — these are already
+implemented and should not change):
+
+| Shortcut | gaintype | biastype | dyntype | gainprm[0..2] | biasprm[0..2] | dynprm[0] |
+|----------|----------|----------|---------|---------------|---------------|-----------|
+| Motor | fixed | none | none | [1, 0, 0] | [0, 0, 0] | 0 |
+| Position | fixed | affine | none/filterexact | [kp, 0, 0] | [0, -kp, -kv] | tc |
+| Velocity | fixed | affine | none | [kv, 0, 0] | [0, 0, -kv] | 0 |
+| Damper | affine | none | none | [0, 0, -kv] | [0, 0, 0] | 0 |
+| Cylinder | fixed | affine | filter | [area, 0, 0] | [b0, b1, b2] | tc |
+| Adhesion | fixed | none | none | [gain, 0, 0] | [0, 0, 0] | 0 |
+| Muscle | muscle | muscle | muscle | [range/F/scale/lim] | =gainprm | [τ_a, τ_d, 0] |
+
+**Example MJCF — damper via `<general>`:**
+
+```xml
+<actuator>
+  <general joint="slide" gaintype="affine" gainprm="0 0 -5"
+           biastype="none" ctrllimited="true" ctrlrange="0 1"/>
+</actuator>
+```
+
+This produces: `gain = 0 + 0*length + (-5)*velocity`, `bias = 0`,
+`force = gain * ctrl + 0 = -5 * velocity * ctrl`. With `ctrl ∈ [0,1]`,
+this is a controllable damper with maximum damping coefficient 5.
+
+**Example MJCF — PD servo via `<general>`:**
+
+```xml
+<actuator>
+  <general joint="hinge" gaintype="fixed" gainprm="100"
+           biastype="affine" biasprm="0 -100 -10"
+           dyntype="filterexact" dynprm="0.01"/>
+</actuator>
+```
+
+This produces: `gain = 100`, `bias = 0 - 100*length - 10*velocity`,
+`force = 100*act + (−100*length − 10*velocity)`. With FilterExact dynamics
+(`τ = 0.01`), the activation tracks ctrl with a 10ms time constant. This
+is equivalent to `<position kp="100" kv="10" timeconst="0.01"/>`.
 
 #### Specification
-In `parser.rs`, when parsing `<general>` actuators, read optional attributes:
 
-- `gaintype` → `GainType` (Fixed, Affine, Muscle)
-- `biastype` → `BiasType` (None, Affine, Muscle)
-- `dyntype` → `ActuatorDynamics` (None, Filter, FilterExact, Integrator, Muscle)
-- `gainprm`, `biasprm`, `dynprm` → `[f64; 10]` parameter arrays
+**Step 1 — MJCF types** (`types.rs`)
 
-In `model_builder.rs`, when the actuator type is `General` and explicit types are
-provided, use them directly instead of the Motor-like defaults.
+Add fields to `MjcfActuator` (`types.rs:1889`, before the closing brace):
+
+```rust
+    // --- <general> actuator attributes ---
+    // These are only meaningful for MjcfActuatorType::General.
+    // For shortcut types (Motor, Position, etc.), these are ignored —
+    // the model builder expands shortcuts using their own dedicated logic.
+
+    /// Gain type: "fixed", "affine", "muscle".
+    /// None means use default (Fixed). Only parsed for <general>.
+    pub gaintype: Option<String>,
+    /// Bias type: "none", "affine", "muscle".
+    /// None means use default (None/no bias). Only parsed for <general>.
+    pub biastype: Option<String>,
+    /// Dynamics type: "none", "integrator", "filter", "filterexact", "muscle".
+    /// None means use default (None/direct). Only parsed for <general>.
+    pub dyntype: Option<String>,
+    /// Gain parameters (up to 9 elements, zero-padded).
+    /// None means use default [1, 0, ..., 0]. Only parsed for <general>.
+    pub gainprm: Option<Vec<f64>>,
+    /// Bias parameters (up to 9 elements, zero-padded).
+    /// None means use default [0, ..., 0]. Only parsed for <general>.
+    pub biasprm: Option<Vec<f64>>,
+    /// Dynamics parameters (up to 3 elements, zero-padded).
+    /// None means use default [1, 0, 0]. Only parsed for <general>.
+    pub dynprm: Option<Vec<f64>>,
+```
+
+Update `MjcfActuator::default()` (`types.rs:1892`): add all six fields as
+`None`.
+
+Store types as `Option<String>` (not enums) in the MJCF layer. Enum
+conversion happens in the model builder, where unknown values produce
+`ModelConversionError`. This defers validation to the builder for simplicity
+— `process_actuator()` has the actuator name in scope, so error messages
+can include context (e.g., "actuator 'foo': unknown gaintype 'invalid'").
+Note: this differs from `MjcfGeomType` and `MjcfActuatorType`, which
+validate at parse time via `from_str()`. The `Option<String>` approach is
+chosen here because these attributes are only meaningful for `<general>`
+actuators and are ignored for all shortcut types — deferring validation
+avoids parse-time errors for attributes that will never be consumed.
+
+Add fields to `MjcfActuatorDefaults` (`types.rs:500`, before closing brace):
+
+```rust
+    /// Gain type default for <general> actuators.
+    pub gaintype: Option<String>,
+    /// Bias type default for <general> actuators.
+    pub biastype: Option<String>,
+    /// Dynamics type default for <general> actuators.
+    pub dyntype: Option<String>,
+    /// Gain parameters default for <general> actuators.
+    pub gainprm: Option<Vec<f64>>,
+    /// Bias parameters default for <general> actuators.
+    pub biasprm: Option<Vec<f64>>,
+    /// Dynamics parameters default for <general> actuators.
+    pub dynprm: Option<Vec<f64>>,
+```
+
+`MjcfActuatorDefaults` uses `#[derive(Default)]` — the new `Option<String>`
+and `Option<Vec<f64>>` fields auto-derive to `None`. No manual `Default`
+update needed.
+
+**Step 2 — Parser** (`parser.rs`)
+
+In `parse_actuator_attrs()` (`parser.rs:1365`, after the `kp`/`kv` block,
+before the cylinder-specific section), add a `<general>`-specific block:
+
+```rust
+// --- <general>-specific attributes ---
+// These are only parsed for <general> actuators. For shortcut types,
+// these attributes are not part of the MJCF schema and are ignored.
+if actuator.actuator_type == MjcfActuatorType::General {
+    actuator.gaintype = get_attribute_opt(e, "gaintype");
+    actuator.biastype = get_attribute_opt(e, "biastype");
+    actuator.dyntype = get_attribute_opt(e, "dyntype");
+    actuator.gainprm = parse_float_array_opt(e, "gainprm")?;
+    actuator.biasprm = parse_float_array_opt(e, "biasprm")?;
+    actuator.dynprm = parse_float_array_opt(e, "dynprm")?;
+}
+```
+
+`parse_float_array_opt()` is a new helper:
+
+```rust
+fn parse_float_array_opt(e: &BytesStart, name: &str) -> Result<Option<Vec<f64>>> {
+    match get_attribute_opt(e, name) {
+        Some(s) => Ok(Some(parse_float_array(&s)?)),
+        None => Ok(None),
+    }
+}
+```
+
+Returns `Result<Option<Vec<f64>>>`: `Ok(None)` when the attribute is
+absent, `Ok(Some(vec))` when present and valid, `Err` when present but
+contains unparseable floats (e.g., `gainprm="1.0 abc"`). This follows the
+existing `gear` parsing pattern (`parser.rs:1330–1337`) which propagates
+parse errors via `?`. If zero elements are provided (empty string),
+`parse_float_array` returns `Ok(vec![])` → `Ok(Some(vec![]))` —
+`floats_to_array` in the model builder then returns the full default array
+unchanged (e.g., `gainprm=""` silently produces `[1,0,...,0]`). This is a
+harmless edge case — MuJoCo would reject an empty `gainprm` attribute, but
+silently defaulting is acceptable behavior.
+
+In `parse_actuator_defaults()` (`parser.rs:443–477`), add after the
+`forcelimited` block (`parser.rs:472`):
+
+```rust
+defaults.gaintype = get_attribute_opt(e, "gaintype");
+defaults.biastype = get_attribute_opt(e, "biastype");
+defaults.dyntype = get_attribute_opt(e, "dyntype");
+defaults.gainprm = parse_float_array_opt(e, "gainprm")?;
+defaults.biasprm = parse_float_array_opt(e, "biasprm")?;
+defaults.dynprm = parse_float_array_opt(e, "dynprm")?;
+```
+
+Note: `parse_actuator_defaults()` is called for **all** actuator default
+element names — `<actuator>`, `<motor>`, `<position>`, `<velocity>`, and
+`<general>` (`parser.rs:334`). Parsing these attributes unconditionally
+(no type guard) is intentional: the single `MjcfActuatorDefaults` struct
+stores defaults for all actuator element names in a class, and the model
+builder ignores `gaintype`/`biastype`/`dyntype` for shortcut types. This
+matches MuJoCo's defaults system where attributes are per-element-name
+but stored in a shared defaults struct.
+
+**Step 3 — Defaults** (`defaults.rs`)
+
+In `apply_to_actuator()` (`defaults.rs:288`, after the `kv` block), add:
+
+```rust
+// Apply <general>-specific defaults.
+// These only matter for <general> actuators, but we apply them
+// unconditionally — the model builder ignores them for shortcut types.
+if result.gaintype.is_none() {
+    result.gaintype = defaults.gaintype.clone();
+}
+if result.biastype.is_none() {
+    result.biastype = defaults.biastype.clone();
+}
+if result.dyntype.is_none() {
+    result.dyntype = defaults.dyntype.clone();
+}
+if result.gainprm.is_none() {
+    result.gainprm = defaults.gainprm.clone();
+}
+if result.biasprm.is_none() {
+    result.biasprm = defaults.biasprm.clone();
+}
+if result.dynprm.is_none() {
+    result.dynprm = defaults.dynprm.clone();
+}
+```
+
+Note: the mutable variable is `result` (not `actuator`), matching the
+existing function pattern where `let mut result = actuator.clone()` at
+line 240 and all subsequent mutations operate on `result`.
+
+The pattern `if result.field.is_none() { result.field = defaults.field.clone() }`
+is the correct semantics: an explicit attribute on the element overrides
+the class default, and an absent attribute inherits from the class default.
+This matches how `ctrlrange`, `forcerange`, and `kv` are already handled.
+
+**Step 4 — Model builder** (`model_builder.rs`)
+
+**4a. Enum conversion helpers.** Add three private functions:
+
+```rust
+fn parse_gaintype(s: &str) -> Result<GainType, ModelConversionError> {
+    match s {
+        "fixed" => Ok(GainType::Fixed),
+        "affine" => Ok(GainType::Affine),
+        "muscle" => Ok(GainType::Muscle),
+        _ => Err(ModelConversionError {
+            message: format!("unknown gaintype '{s}' (valid: fixed, affine, muscle)"),
+        }),
+    }
+}
+
+fn parse_biastype(s: &str) -> Result<BiasType, ModelConversionError> {
+    match s {
+        "none" => Ok(BiasType::None),
+        "affine" => Ok(BiasType::Affine),
+        "muscle" => Ok(BiasType::Muscle),
+        _ => Err(ModelConversionError {
+            message: format!("unknown biastype '{s}' (valid: none, affine, muscle)"),
+        }),
+    }
+}
+
+fn parse_dyntype(s: &str) -> Result<ActuatorDynamics, ModelConversionError> {
+    match s {
+        "none" => Ok(ActuatorDynamics::None),
+        "integrator" => Ok(ActuatorDynamics::Integrator),
+        "filter" => Ok(ActuatorDynamics::Filter),
+        "filterexact" => Ok(ActuatorDynamics::FilterExact),
+        "muscle" => Ok(ActuatorDynamics::Muscle),
+        _ => Err(ModelConversionError {
+            message: format!(
+                "unknown dyntype '{s}' (valid: none, integrator, filter, filterexact, muscle)"
+            ),
+        }),
+    }
+}
+```
+
+**4b. Parameter array conversion helper.** Add:
+
+```rust
+/// Convert a variable-length parsed float vector into a fixed-size array,
+/// padding with the given default value. Truncates if input exceeds `N`.
+fn floats_to_array<const N: usize>(input: &[f64], default: [f64; N]) -> [f64; N] {
+    let mut out = default;
+    for (i, &v) in input.iter().enumerate().take(N) {
+        out[i] = v;
+    }
+    out
+}
+```
+
+**4c. Dyntype determination** (`model_builder.rs:1521–1536`).
+
+Change the General arm from the hardcoded `ActuatorDynamics::None` to use
+the parsed `dyntype` attribute:
+
+```rust
+let dyntype = match actuator.actuator_type {
+    MjcfActuatorType::Motor
+    | MjcfActuatorType::Damper
+    | MjcfActuatorType::Adhesion
+    | MjcfActuatorType::Velocity => ActuatorDynamics::None,
+    MjcfActuatorType::General => {
+        // <general> uses explicit dyntype attribute; defaults to None
+        match &actuator.dyntype {
+            Some(s) => parse_dyntype(s)?,
+            None => ActuatorDynamics::None,
+        }
+    }
+    MjcfActuatorType::Position => {
+        if timeconst > 0.0 {
+            ActuatorDynamics::FilterExact
+        } else {
+            ActuatorDynamics::None
+        }
+    }
+    MjcfActuatorType::Muscle => ActuatorDynamics::Muscle,
+    MjcfActuatorType::Cylinder => ActuatorDynamics::Filter,
+};
+```
+
+This is critical: dyntype must be determined **before** the activation state
+count (`act_num`) computation at line 1565, because `act_num` depends on
+`dyntype`. A `<general dyntype="filter">` must allocate 1 activation state.
+
+**4d. Gain/bias/dynprm expansion** (`model_builder.rs:1668–1675`).
+
+Replace the current General arm:
+
+```rust
+MjcfActuatorType::General => {
+    // <general> uses explicit attributes; defaults match MuJoCo's
+    // mjs_defaultActuator: gaintype=fixed, biastype=none,
+    // gainprm=[1,0,...], biasprm=[0,...], dynprm=[1,0,0].
+    let gt = match &actuator.gaintype {
+        Some(s) => parse_gaintype(s)?,
+        None => GainType::Fixed,
+    };
+    let bt = match &actuator.biastype {
+        Some(s) => parse_biastype(s)?,
+        None => BiasType::None,
+    };
+    let gp = match &actuator.gainprm {
+        Some(v) => floats_to_array(v, {
+            let mut d = [0.0; 9];
+            d[0] = 1.0; // MuJoCo default
+            d
+        }),
+        None => {
+            let mut d = [0.0; 9];
+            d[0] = 1.0;
+            d
+        },
+    };
+    let bp = match &actuator.biasprm {
+        Some(v) => floats_to_array(v, [0.0; 9]),
+        None => [0.0; 9],
+    };
+    let dp = match &actuator.dynprm {
+        Some(v) => floats_to_array(v, {
+            let mut d = [0.0; 3];
+            d[0] = 1.0; // MuJoCo default
+            d
+        }),
+        None => [1.0, 0.0, 0.0], // MuJoCo: dynprm[0]=1
+    };
+    (gt, bt, gp, bp, dp)
+}
+```
+
+**Note on dynprm default.** MuJoCo defaults `dynprm[0]=1`. This is the
+time constant for Filter/FilterExact dynamics. When `dyntype=none`, dynprm
+is unused. When `dyntype=filter` without explicit `dynprm`, the default
+`τ=1.0` gives a 1-second time constant — matching MuJoCo. The current
+codebase uses `[0.0; 3]` for other shortcut types (Motor, Velocity, Damper),
+which is correct for those types because they all have `dyntype=none`. The
+`[1.0, 0.0, 0.0]` default only applies to the General case.
+
+**Note on gainprm partial specification.** If the user writes
+`gainprm="100"` (1 element), `floats_to_array` produces
+`[100, 0, 0, 0, 0, 0, 0, 0, 0]` — the first element is overridden, the
+rest keep the zero default. But the MuJoCo default for `gainprm[0]` is 1,
+not 0. This is correct because MuJoCo's `ReadAttr` overwrites the entire
+array from index 0 up to the number of provided values, and the remaining
+elements keep their `memset(0)` initialization (the `gainprm[0]=1` default
+from `mjs_defaultActuator` is overwritten by `ReadAttr`). Our
+`floats_to_array` with a default array of `[1,0,...,0]` matches: index 0
+is overwritten by the user's value, and indices beyond the user's input
+retain the default array values (which are 0 for indices 1–8).
+
+#### Scope Exclusions
+
+- **`gaintype="user"`, `biastype="user"`, `dyntype="user"`:** MuJoCo's
+  callback types. These require a plugin/callback system that does not exist
+  in CortenForge. These values fall into the wildcard `_` arm of
+  `parse_gaintype`/`parse_biastype`/`parse_dyntype` and produce
+  `ModelConversionError` with message `"unknown gaintype 'user'"` (same
+  error as any unrecognized string). No special-case handling is needed —
+  the error message is clear enough. These can be added later without API
+  changes.
+- **`actlimited` / `actrange`:** Activation clamping for stateful actuators.
+  Not currently supported anywhere in the codebase (no parsing, no Model
+  field, no runtime enforcement). This is orthogonal to `<general>` attribute
+  parsing and should be a separate work item. Without `actlimited`,
+  `dyntype=integrator` actuators have unbounded activation — users must
+  manage this via `ctrlrange` or manual clamping. A warning is not emitted
+  because `actlimited` defaults to `mjLIMITED_AUTO` (=false when actrange
+  is absent) in MuJoCo, so the no-clamping behavior is technically correct.
+- **`actearly`:** Controls whether activation dynamics are computed before
+  or after the control signal. MuJoCo default is false. Out of scope —
+  our pipeline always computes dynamics in the standard order.
+- **`actdim`:** Number of activation variables per actuator. MuJoCo default
+  is -1 (auto-detect from dyntype: 0 for none, 1 for others). Our pipeline
+  hardcodes the same auto-detection logic (`model_builder.rs:1565–1571`).
+  Explicit `actdim` override is not needed.
+- **Additional transmission types:** `cranksite`, `slidersite`,
+  `jointinparent` are not supported by the existing transmission resolver
+  (`model_builder.rs:1425–1495`) and are not part of this work item.
+- **`nsample`, `interp`, `delay`:** MuJoCo 3.x additions for
+  interpolation-based actuators. Out of scope.
+- **Default class for shortcut types:** If a `<default>` element sets
+  `gaintype="affine"` and a `<motor>` uses that class, the `gaintype` is
+  ignored for the motor (the model builder's shortcut expansion overrides
+  it). This is correct MuJoCo behavior — class defaults for these attributes
+  only affect `<general>` actuators.
 
 #### Acceptance Criteria
-1. `<general gaintype="affine" gainprm="0 0 -5" biastype="none"/>` produces a
-   damper-like actuator with `GainType::Affine`.
-2. `<general>` without explicit type attributes still defaults to Motor-like
-   (Fixed/None) — backward compatible.
-3. All valid combinations of gaintype/biastype produce correct force output.
+
+1. **Explicit gaintype/biastype.** `<general joint="j" gaintype="affine"
+   gainprm="0 0 -5" biastype="none" ctrllimited="true" ctrlrange="0 1"/>`
+   produces `GainType::Affine`, `BiasType::None`, `gainprm=[0,0,-5,0,...,0]`.
+   Force = `(0 + 0*length − 5*velocity) * ctrl + 0`.
+2. **Explicit dyntype.** `<general joint="j" dyntype="filter"
+   dynprm="0.05"/>` produces `ActuatorDynamics::Filter`, `dynprm=[0.05,0,0]`,
+   and allocates 1 activation state (`act_num == 1`).
+3. **Bare `<general>` backward compatibility.** `<general joint="j"/>`
+   without explicit type attributes produces Motor-like behavior:
+   `GainType::Fixed`, `BiasType::None`, `ActuatorDynamics::None`,
+   `gainprm=[1,0,...,0]`, `biasprm=[0,...,0]`, `dynprm=[1,0,0]`. Force =
+   `1 * ctrl + 0 = ctrl`. Note: `dynprm` changes from `[0,0,0]` (current
+   codebase) to `[1,0,0]` (MuJoCo default). This is functionally irrelevant
+   because `dyntype=none` ignores `dynprm`, but aligns the stored values
+   with MuJoCo for correctness.
+4. **PD servo via `<general>`.** `<general joint="j" gaintype="fixed"
+   gainprm="100" biastype="affine" biasprm="0 -100 -10"
+   dyntype="filterexact" dynprm="0.01"/>` produces identical force output
+   to `<position joint="j" kp="100" kv="10" timeconst="0.01"/>`.
+5. **Muscle via `<general>`.** `<general joint="j" gaintype="muscle"
+   biastype="muscle" dyntype="muscle" gainprm="0.75 1.05 -1 200 0.5 1.6
+   1.5 0.6 1.4" dynprm="0.01 0.04 0"/>` produces identical force output
+   to the equivalent `<muscle>` shortcut with the same parameters. Note:
+   `biasprm` is not specified here — it defaults to `[0,...,0]`. This is
+   correct because `BiasType::Muscle` reads from `gainprm` at runtime
+   (`mujoco_pipeline.rs:8367`: `let prm = &model.actuator_gainprm[i]`),
+   not from `biasprm`. The `<muscle>` shortcut sets `biasprm = gainprm`
+   (MuJoCo convention), but the actual `biasprm` values are unused for
+   `BiasType::Muscle`.
+6. **Default class inheritance.** A `<default class="d"><general
+   gaintype="affine" gainprm="0 0 -10"/></default>` applied to
+   `<general class="d" joint="j"/>` produces `GainType::Affine`,
+   `gainprm=[0,0,-10,0,...,0]`. Explicit attributes on the element override
+   class defaults.
+7. **Partial gainprm.** `<general joint="j" gainprm="50"/>` produces
+   `gainprm=[50,0,0,0,...,0]` (first element overridden, rest zero-padded).
+8. **dynprm default.** `<general joint="j" dyntype="filter"/>` without
+   explicit `dynprm` produces `dynprm=[1,0,0]` (MuJoCo default τ=1.0s).
+9. **Invalid enum error.** `<general joint="j" gaintype="invalid"/>`
+   produces `ModelConversionError` with message containing "unknown gaintype"
+   and the valid options.
+10. **User type error.** `<general joint="j" gaintype="user"/>` produces
+    `ModelConversionError` with message containing "unknown gaintype 'user'".
+11. **Shortcut types unaffected.** `gaintype`/`biastype`/`dyntype`
+    attributes on `<motor>`, `<position>`, `<velocity>`, `<damper>`,
+    `<cylinder>`, `<adhesion>`, or `<muscle>` elements are silently ignored
+    by the parser (not parsed — the parsing block is gated by
+    `actuator_type == General`). The shortcut expansion logic is unchanged.
+12. **All dyntype values wire correctly.** `dyntype="none"` → 0 activation
+    states; `dyntype="integrator"` → 1 state, `act_dot = ctrl`;
+    `dyntype="filter"` → 1 state, `act_dot = (ctrl − act) / τ`;
+    `dyntype="filterexact"` → 1 state (same act_dot, different integration);
+    `dyntype="muscle"` → 1 state, muscle activation dynamics.
+13. **Extra gainprm elements silently ignored.** `gainprm="1 2 3 4 5 6 7 8
+    9 10"` (10 elements) stores only the first 9 — element at index 9 is
+    dropped without error.
 
 #### Files
-- `sim/L0/mjcf/src/parser.rs` — modify (parse attributes on `<general>`)
-- `sim/L0/mjcf/src/model_builder.rs` — modify (wire parsed types)
+
+- `sim/L0/mjcf/src/types.rs` — add `gaintype`, `biastype`, `dyntype`,
+  `gainprm`, `biasprm`, `dynprm` fields on `MjcfActuator` + update
+  `Default`; add same fields on `MjcfActuatorDefaults` + update `Default`
+- `sim/L0/mjcf/src/parser.rs` — add `parse_float_array_opt()` helper;
+  parse 6 new attributes in `parse_actuator_attrs()` (gated by
+  `actuator_type == General`); parse same in `parse_actuator_defaults()`
+- `sim/L0/mjcf/src/defaults.rs` — extend `apply_to_actuator()` with
+  6 new `is_none()` default propagation blocks
+- `sim/L0/mjcf/src/model_builder.rs` — add `parse_gaintype()`,
+  `parse_biastype()`, `parse_dyntype()`, `floats_to_array()` helpers;
+  replace General arm in dyntype determination (`model_builder.rs:1521`);
+  replace General arm in gain/bias/dynprm expansion
+  (`model_builder.rs:1668`)
 
 ---
 
