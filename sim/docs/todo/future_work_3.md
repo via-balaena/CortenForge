@@ -25,25 +25,25 @@ priority table, dependency graph, and file map.
   cells only. Non-square MuJoCo hfields (where `radius_x/ncol ≠ radius_y/nrow`)
   require resampling (see Step 5).
 
-**MJCF layer** recognizes hfield at parse time but does not wire it:
+**MJCF layer** fully wires hfield geoms:
 - `MjcfGeomType::Hfield` parsed from `type="hfield"` (`types.rs:775`).
-- `model_builder.rs:1000–1006` falls back to `GeomType::Box` with a warning.
-- `parse_asset()` (`parser.rs:690`) returns `Vec<MjcfMesh>` only; skips `<hfield>`
-  elements (`parser.rs:703`: "Skip other asset types (texture, material, hfield, etc.)").
-- `MjcfGeom` has no `hfield: Option<String>` field (unlike `mesh: Option<String>`
-  at `types.rs:860`). `MjcfGeom::default()` (`types.rs:868`) would need `hfield: None`.
-- `MjcfModel` has no `hfields` field (`types.rs:2814`).
-- `GeomType` enum (`mujoco_pipeline.rs:361–377`) has no `Hfield` variant.
+- `MjcfHfield` struct stores asset data (`types.rs`); `MjcfGeom.hfield` links geom
+  to asset; `MjcfModel.hfields` stores parsed assets.
+- `parse_asset()` (`parser.rs`) parses `<hfield>` elements (both `Event::Start` and
+  `Event::Empty`). `parse_hfield_attrs()` validates nrow/ncol/size/elevation.
+- `model_builder.rs`: `process_hfield()` converts MJCF hfield to `HeightFieldData`;
+  `process_geom()` maps `MjcfGeomType::Hfield → GeomType::Hfield` with asset linking
+  and geom_size override from `hfield_size`.
+- `GeomType::Hfield` variant in enum (`mujoco_pipeline.rs`).
 
-**Collision pipeline** has no hfield dispatch:
-- `collide_geoms()` (`mujoco_pipeline.rs:3792`) dispatches on `GeomType` with
-  special-case branches for Mesh (`collide_with_mesh`), Plane (`collide_with_plane`),
-  and analytical primitives. No height field branch exists.
-- `geom_to_collision_shape()` (`mujoco_pipeline.rs:3918`) has no Hfield arm.
-- `aabb_from_geom()` (`mujoco_pipeline.rs:3374`) has no Hfield arm.
-- `GeomType::bounding_radius()` (`mujoco_pipeline.rs:396`) has no Hfield arm.
-- `geom_size_to_vec3()` (`model_builder.rs:2969`) falls through to catch-all
-  `_ => Vector3::new(0.1, 0.1, 0.1)` for Hfield — incorrect.
+**Collision pipeline** has full hfield dispatch:
+- `collide_geoms()` dispatches `GeomType::Hfield` to `collide_with_hfield()`.
+- `collide_with_hfield()` handles Sphere, Capsule, Box (direct), Cylinder (capsule
+  approximation), Ellipsoid (sphere approximation). Hfield↔Hfield/Plane/Mesh return None.
+- `geom_to_collision_shape()`: `Hfield => None` (handled by dedicated dispatcher).
+- `aabb_from_geom()`: rotated-box formula using hfield half-extents.
+- `bounding_radius()`: conservative estimate from geom_size; post-build pass overwrites
+  with true AABB half-diagonal from `HeightFieldData::aabb()`.
 
 #### Objective
 
@@ -605,24 +605,26 @@ broad-phase.
   point is closer to the surface of** (`sdf.rs:1536–1542`). Not guaranteed
   to be "from sdf_a toward sdf_b".
 
-**MJCF layer** recognizes `type="sdf"` but does not wire it:
-- `MjcfGeomType::Sdf` is parsed (`types.rs:795` — enum at `types.rs:777`).
-- `model_builder.rs:1044–1049` falls back to `GeomType::Box` with a warning.
-- `GeomType` enum (`mujoco_pipeline.rs:365–383`) has no `Sdf` variant.
+**MJCF layer** wires `type="sdf"` for programmatic construction:
+- `MjcfGeomType::Sdf` is parsed (`types.rs`).
+- `model_builder.rs`: `MjcfGeomType::Sdf → GeomType::Sdf` (no Box fallback).
+  `geom_sdf` always `None` from MJCF — SDF data is populated programmatically.
+- `GeomType::Sdf` variant in enum (`mujoco_pipeline.rs`).
+- `Model` stores `nsdf`, `sdf_data: Vec<Arc<SdfCollisionData>>`, and
+  `geom_sdf: Vec<Option<usize>>`.
 
-**Collision pipeline** has no SDF dispatch:
-- `collide_geoms()` (`mujoco_pipeline.rs:3837`) dispatch order:
-  Mesh → Hfield → Plane → analytical pairs → GJK/EPA.
-- `geom_to_collision_shape()` (`mujoco_pipeline.rs:3968`): no Sdf arm (exhaustive).
-- `aabb_from_geom()` (`mujoco_pipeline.rs:3404`): no Sdf arm (exhaustive).
-- `bounding_radius()` (`mujoco_pipeline.rs:402`): no Sdf arm (exhaustive).
-- `collide_with_mesh()` inner matches: explicit arms for each `GeomType`,
-  including `Hfield => unreachable!()`. No Sdf arm — **compile error** if Sdf
-  variant is added.
-- `collide_with_hfield()` (`mujoco_pipeline.rs:4117`): wildcard `_ => return None`
-  catches unknown types. Sdf would silently produce no contact.
-- `collide_with_plane()` (`mujoco_pipeline.rs:4367`): explicit arms, no Sdf arm
-  — **compile error** if Sdf variant is added.
+**Collision pipeline** has full SDF dispatch:
+- `collide_geoms()` dispatch order: SDF → Mesh → Hfield → Plane → analytical → GJK/EPA.
+  SDF is dispatched **first** so SDF↔Mesh, SDF↔Hfield, and SDF↔Plane are all
+  handled by `collide_with_sdf()`.
+- `collide_with_sdf()` dispatches to all 10 `sdf_*_contact()` functions for every
+  `GeomType` (Sphere, Capsule, Box, Cylinder, Ellipsoid, Mesh, Hfield, Plane, SDF).
+  Normal direction uses XOR logic (`swapped ^ is_plane`) for the plane exception.
+- `geom_to_collision_shape()`: `Sdf => None` (handled by dedicated dispatcher).
+- `aabb_from_geom()`: rotated-box formula using geom_size half-extents.
+- `bounding_radius()`: `size.norm()` fallback; post-build pass overwrites with
+  true AABB half-diagonal from `SdfCollisionData::aabb()`.
+- `collide_with_mesh()` and `collide_with_plane()`: `Sdf => unreachable!()` arms.
 
 **MuJoCo reference:** MuJoCo does **not** have a built-in `type="sdf"` geom.
 MuJoCo SDF support is through its plugin system (first-party plugins define
