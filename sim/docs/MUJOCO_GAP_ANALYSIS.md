@@ -407,8 +407,8 @@ The pyramid circumscribes the circular cone (vertices touch the circle). More fa
 | Cylinder | Native | `CollisionShape::Cylinder` | **Implemented** | - | - |
 | Ellipsoid | Native | `CollisionShape::Ellipsoid` | **Implemented** | - | - |
 | Convex mesh | GJK/EPA | `CollisionShape::ConvexMesh` | **Implemented** | - | - |
-| Height field | Native | `CollisionShape::HeightField` | **Implemented** (sim-core only; MJCF falls back to Box) | - | - |
-| SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** (sim-core only; MJCF falls back to Box) | - | - |
+| Height field | Native | `CollisionShape::HeightField` | **Implemented** | - | - |
+| SDF (signed distance) | Native | `CollisionShape::Sdf` | **Implemented** | - | - |
 | Broad-phase (sweep-prune) | Native | `SweepAndPrune` | **Implemented** | - | - |
 | Mid-phase (BVH per body) | Static AABB | `Bvh` | **Implemented** | - | - |
 | Narrow-phase (GJK/EPA) | Default | `gjk_epa` module | **Implemented** | - | - |
@@ -490,9 +490,9 @@ let tetra = CollisionShape::tetrahedron(0.5); // circumradius 0.5
 | Convex Mesh | Yes (convexified) | `CollisionShape::ConvexMesh` | **Implemented** |
 | Cylinder | Yes | `CollisionShape::Cylinder` | **Implemented** |
 | Ellipsoid | Yes | `CollisionShape::Ellipsoid` | **Implemented** |
-| Height field | Yes | `CollisionShape::HeightField` | **Implemented** (sim-core; MJCF→Box fallback) |
+| Height field | Yes | `CollisionShape::HeightField` | **Implemented** ✅ |
 | **Mesh (non-convex)** | Yes | `CollisionShape::TriangleMesh` | **Implemented** ✅ |
-| **SDF** | Yes | `CollisionShape::Sdf` | **Implemented** (sim-core; MJCF→Box fallback) |
+| **SDF** | Yes | `CollisionShape::Sdf` | **Implemented** ✅ |
 
 ### Implementation Notes: Non-Convex Mesh ✅ COMPLETED (January 2026)
 
@@ -507,12 +507,12 @@ Full triangle mesh collision support is now implemented:
 - `sim-core/src/mesh.rs` - Triangle mesh collision and mesh-mesh BVH traversal
 - `sim-core/src/mid_phase.rs` - BVH for collision culling
 
-### Implementation Notes: SDF Collision ✅ COMPLETED (sim-core only — not wired through MJCF model builder)
+### Implementation Notes: SDF Collision ✅ COMPLETED
 
-Full SDF (Signed Distance Field) collision support is implemented in sim-core.
-The MJCF model builder (`model_builder.rs`) currently falls back to Box for
-`hfield` and `sdf` geom types. Wiring these through to the sim-core collision
-shapes is a remaining integration task.
+Full SDF (Signed Distance Field) collision support is implemented in sim-core
+and wired through the MJCF pipeline. `GeomType::Sdf` is dispatched first in
+`collide_geoms()` to `collide_with_sdf()`, which handles all 10 shape
+combinations. SDF geoms are programmatic (no MJCF asset element).
 - `CollisionShape::Sdf` variant with 3D grid storage
 - Trilinear interpolation for distance queries
 - Gradient-based normal computation
@@ -1283,7 +1283,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<body>` | Full | Hierarchical bodies with pos, quat, euler |
 | `<inertial>` | Full | mass, diaginertia, fullinertia |
 | `<joint>` | Full | hinge, slide, ball, free types |
-| `<geom>` | Partial | sphere, box, capsule, cylinder, ellipsoid, plane, mesh (convex + non-convex); hfield/sdf parsed but fall back to Box |
+| `<geom>` | Full | sphere, box, capsule, cylinder, ellipsoid, plane, mesh (convex + non-convex), hfield, sdf |
 | `<site>` | Parsed | Markers (not used in physics) |
 | `<actuator>` | Full | motor, position, velocity, cylinder, muscle, adhesion, damper, general |
 | `<tendon>` | Full | Fixed + spatial tendons fully wired into pipeline via `process_tendons()`; spatial tendons include sphere/cylinder wrapping, sidesite, pulley |
@@ -1304,8 +1304,8 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 - `ellipsoid` → `CollisionShape::Ellipsoid`
 - `plane` → `CollisionShape::Plane`
 - `mesh` → `CollisionShape::ConvexMesh` (convex hull) or `CollisionShape::TriangleMesh` (non-convex)
-- `hfield` → parsed, falls back to `CollisionShape::Box` (sim-core `HeightField` exists but not wired)
-- `sdf` → parsed, falls back to `CollisionShape::Box` (sim-core `Sdf` exists but not wired)
+- `hfield` → `GeomType::Hfield`, fully wired to `collide_with_hfield()` pipeline
+- `sdf` → `GeomType::Sdf`, fully wired to `collide_with_sdf()` pipeline (programmatic data)
 
 **Usage:**
 ```rust

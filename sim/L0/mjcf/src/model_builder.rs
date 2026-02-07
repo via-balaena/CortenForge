@@ -12,6 +12,7 @@
 //! - **Capsule inertia**: Exact formula including hemispherical end caps
 
 use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3};
+use sim_core::HeightFieldData;
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, ContactPair, EqualityType, GainType,
@@ -27,8 +28,8 @@ use crate::defaults::DefaultResolver;
 use crate::error::Result;
 use crate::types::{
     MjcfActuator, MjcfActuatorType, MjcfBody, MjcfContact, MjcfEquality, MjcfGeom, MjcfGeomType,
-    MjcfInertial, MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel, MjcfOption,
-    MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon, MjcfTendonType,
+    MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel,
+    MjcfOption, MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon, MjcfTendonType,
     SpatialPathElement,
 };
 
@@ -109,6 +110,11 @@ pub fn model_from_mjcf(
     // Process mesh assets FIRST (before geoms can reference them)
     for mesh in &mjcf.meshes {
         builder.process_mesh(mesh, base_path)?;
+    }
+
+    // Process hfield assets (before geoms can reference them)
+    for hfield in &mjcf.hfields {
+        builder.process_hfield(hfield)?;
     }
 
     // Process worldbody's own geoms and sites (attached to body 0)
@@ -269,6 +275,21 @@ struct ModelBuilder {
     mesh_name: Vec<String>,
     /// Triangle mesh data with prebuilt BVH (Arc for cheap cloning).
     mesh_data: Vec<Arc<TriangleMeshData>>,
+
+    // Height field arrays (built from MJCF <asset><hfield> elements)
+    /// Name-to-index lookup for hfield assets.
+    hfield_name_to_id: HashMap<String, usize>,
+    /// Hfield names (for Model).
+    hfield_name: Vec<String>,
+    /// Height field terrain data (Arc for cheap cloning).
+    hfield_data: Vec<Arc<HeightFieldData>>,
+    /// Original MuJoCo size [x, y, z_top, z_bottom] per hfield asset.
+    hfield_size: Vec<[f64; 4]>,
+    /// Hfield index per geom (like geom_mesh).
+    geom_hfield: Vec<Option<usize>>,
+    /// SDF index per geom (like geom_mesh). Always `None` from MJCF — SDF geoms
+    /// are populated programmatically.
+    geom_sdf: Vec<Option<usize>>,
 
     // Site arrays
     site_body: Vec<usize>,
@@ -456,6 +477,13 @@ impl ModelBuilder {
             mesh_name: vec![],
             mesh_data: vec![],
 
+            hfield_name_to_id: HashMap::new(),
+            hfield_name: vec![],
+            hfield_data: vec![],
+            hfield_size: vec![],
+            geom_hfield: vec![],
+            geom_sdf: vec![],
+
             site_body: vec![],
             site_type: vec![],
             site_pos: vec![],
@@ -635,6 +663,25 @@ impl ModelBuilder {
         self.mesh_name.push(mjcf_mesh.name.clone());
         self.mesh_data.push(Arc::new(mesh_data));
 
+        Ok(())
+    }
+
+    /// Process a height field asset from MJCF.
+    fn process_hfield(
+        &mut self,
+        hfield: &MjcfHfield,
+    ) -> std::result::Result<(), ModelConversionError> {
+        if self.hfield_name_to_id.contains_key(&hfield.name) {
+            return Err(ModelConversionError {
+                message: format!("duplicate hfield '{}'", hfield.name),
+            });
+        }
+        let data = convert_mjcf_hfield(hfield)?;
+        let id = self.hfield_data.len();
+        self.hfield_name_to_id.insert(hfield.name.clone(), id);
+        self.hfield_name.push(hfield.name.clone());
+        self.hfield_data.push(Arc::new(data));
+        self.hfield_size.push(hfield.size);
         Ok(())
     }
 
@@ -997,20 +1044,8 @@ impl ModelBuilder {
             MjcfGeomType::Ellipsoid => GeomType::Ellipsoid,
             MjcfGeomType::Plane => GeomType::Plane,
             MjcfGeomType::Mesh | MjcfGeomType::TriangleMesh => GeomType::Mesh,
-            MjcfGeomType::Hfield => {
-                warn!(
-                    geom_name = ?geom.name,
-                    "Heightfield geom type not yet supported in Model, using Box as fallback"
-                );
-                GeomType::Box
-            }
-            MjcfGeomType::Sdf => {
-                warn!(
-                    geom_name = ?geom.name,
-                    "SDF geom type not yet supported in Model, using Box as fallback"
-                );
-                GeomType::Box
-            }
+            MjcfGeomType::Hfield => GeomType::Hfield,
+            MjcfGeomType::Sdf => GeomType::Sdf,
         };
 
         // Handle mesh geom linking
@@ -1041,6 +1076,35 @@ impl ModelBuilder {
             None
         };
 
+        // Handle hfield geom linking
+        let geom_hfield_ref = if geom_type == GeomType::Hfield {
+            match &geom.hfield {
+                Some(name) => {
+                    let hfield_id =
+                        self.hfield_name_to_id
+                            .get(name)
+                            .ok_or_else(|| ModelConversionError {
+                                message: format!(
+                                    "geom '{}': references undefined hfield '{}'",
+                                    geom.name.as_deref().unwrap_or("<unnamed>"),
+                                    name
+                                ),
+                            })?;
+                    Some(*hfield_id)
+                }
+                None => {
+                    return Err(ModelConversionError {
+                        message: format!(
+                            "geom '{}': type is hfield but no hfield attribute specified",
+                            geom.name.as_deref().unwrap_or("<unnamed>")
+                        ),
+                    });
+                }
+            }
+        } else {
+            None
+        };
+
         // Handle fromto for capsules/cylinders
         let (pos, quat, size) = if let Some(fromto) = geom.fromto {
             compute_fromto_pose(fromto, &geom.size)
@@ -1058,6 +1122,16 @@ impl ModelBuilder {
                 orientation,
                 geom_size_to_vec3(&geom.size, geom_type),
             )
+        };
+
+        // Override geom_size for hfield geoms with asset dimensions.
+        // geom_size_to_vec3() has no access to hfield asset data (only gets the MJCF
+        // geom's size attribute, which is typically absent for hfield geoms).
+        let size = if let Some(hfield_id) = geom_hfield_ref {
+            let hf_size = &self.hfield_size[hfield_id];
+            Vector3::new(hf_size[0], hf_size[1], hf_size[2])
+        } else {
+            size
         };
 
         self.geom_type.push(geom_type);
@@ -1120,6 +1194,8 @@ impl ModelBuilder {
             }
         }
         self.geom_mesh.push(geom_mesh_ref);
+        self.geom_hfield.push(geom_hfield_ref);
+        self.geom_sdf.push(None); // SDF geoms are programmatic — never set via MJCF
 
         // Solver parameters (fall back to MuJoCo defaults if not specified in MJCF)
         self.geom_solref.push(geom.solref.unwrap_or(DEFAULT_SOLREF));
@@ -2260,11 +2336,25 @@ impl ModelBuilder {
             geom_rbound: vec![0.0; ngeom],
             // Mesh index for each geom (populated by process_geom)
             geom_mesh: self.geom_mesh,
+            // Hfield index for each geom (populated by process_geom)
+            geom_hfield: self.geom_hfield,
+            // SDF index for each geom (always None from MJCF — programmatic only)
+            geom_sdf: self.geom_sdf,
 
             // Mesh assets (from MJCF <asset><mesh> elements)
             nmesh: self.mesh_data.len(),
             mesh_name: self.mesh_name,
             mesh_data: self.mesh_data,
+
+            // Height field assets (from MJCF <asset><hfield> elements)
+            nhfield: self.hfield_data.len(),
+            hfield_name: self.hfield_name,
+            hfield_data: self.hfield_data,
+            hfield_size: self.hfield_size,
+
+            // SDF assets (programmatic — always empty from MJCF)
+            nsdf: 0,
+            sdf_data: vec![],
 
             site_body: self.site_body,
             site_type: self.site_type,
@@ -2394,6 +2484,19 @@ impl ModelBuilder {
                 // This is the half-diagonal of the AABB, guaranteeing all vertices are inside.
                 let (aabb_min, aabb_max) = model.mesh_data[mesh_id].aabb();
                 let half_diagonal = (aabb_max - aabb_min) / 2.0;
+                half_diagonal.norm()
+            } else if let Some(hfield_id) = model.geom_hfield[geom_id] {
+                // Hfield geom: half-diagonal of AABB (same pattern as mesh).
+                // HeightFieldData::aabb() returns corner-origin bounds; the half-diagonal
+                // is origin-independent so the centering offset does not affect it.
+                let (aabb_min, aabb_max) = model.hfield_data[hfield_id].aabb();
+                let half_diagonal = (aabb_max.coords - aabb_min.coords) / 2.0;
+                half_diagonal.norm()
+            } else if let Some(sdf_id) = model.geom_sdf[geom_id] {
+                // SDF geom: half-diagonal of AABB (same pattern as mesh/hfield).
+                // SdfCollisionData::aabb() returns (Point3, Point3).
+                let (aabb_min, aabb_max) = model.sdf_data[sdf_id].aabb();
+                let half_diagonal = (aabb_max.coords - aabb_min.coords) / 2.0;
                 half_diagonal.norm()
             } else {
                 // Primitive geom: use GeomType::bounding_radius() - the single source of truth
@@ -2573,6 +2676,71 @@ fn load_mesh_file(
     Ok(TriangleMeshData::new(vertices, indices))
 }
 
+/// Convert an MJCF hfield asset to `HeightFieldData`.
+///
+/// MuJoCo elevation formula: `vertex_z = elevation[i] × size[2]`.
+/// MuJoCo vertex positions: centered at origin, x ∈ `[−size[0], +size[0]]`, y ∈ `[−size[1], +size[1]]`.
+/// `HeightFieldData` uses corner-origin `(0,0)` with uniform `cell_size`.
+#[allow(
+    clippy::cast_precision_loss,   // nrow/ncol are small ints, well within f64 mantissa
+    clippy::cast_possible_truncation, // f64→usize for grid indices after bounds checks
+    clippy::cast_sign_loss,        // values are guaranteed non-negative in this context
+)]
+fn convert_mjcf_hfield(
+    hfield: &MjcfHfield,
+) -> std::result::Result<HeightFieldData, ModelConversionError> {
+    let ncol = hfield.ncol;
+    let nrow = hfield.nrow;
+    let z_top = hfield.size[2];
+
+    // Compute cell spacings
+    let dx = 2.0 * hfield.size[0] / (ncol as f64 - 1.0);
+    let dy = 2.0 * hfield.size[1] / (nrow as f64 - 1.0);
+
+    // HeightFieldData requires uniform cell_size (square cells)
+    let (cell_size, heights) = if (dx - dy).abs() / dx.max(dy) < 0.01 {
+        // Within 1% tolerance: use average
+        let cell_size = f64::midpoint(dx, dy);
+        let heights: Vec<f64> = hfield.elevation.iter().map(|&e| e * z_top).collect();
+        (cell_size, heights)
+    } else {
+        // Non-square: resample to finer resolution
+        warn!(
+            hfield_name = %hfield.name,
+            dx, dy,
+            "hfield has non-square cells (dx={dx:.4}, dy={dy:.4}), resampling to uniform grid"
+        );
+        let cell_size = dx.min(dy);
+        let new_ncol = ((2.0 * hfield.size[0]) / cell_size).round() as usize + 1;
+        let new_nrow = ((2.0 * hfield.size[1]) / cell_size).round() as usize + 1;
+
+        let mut heights = Vec::with_capacity(new_nrow * new_ncol);
+        for row in 0..new_nrow {
+            let fy = row as f64 / (new_nrow as f64 - 1.0) * (nrow as f64 - 1.0);
+            let iy = (fy as usize).min(nrow - 2);
+            let ty = fy - iy as f64;
+            for col in 0..new_ncol {
+                let fx = col as f64 / (new_ncol as f64 - 1.0) * (ncol as f64 - 1.0);
+                let ix = (fx as usize).min(ncol - 2);
+                let tx = fx - ix as f64;
+                // Bilinear interpolation
+                let e00 = hfield.elevation[iy * ncol + ix];
+                let e10 = hfield.elevation[iy * ncol + ix + 1];
+                let e01 = hfield.elevation[(iy + 1) * ncol + ix];
+                let e11 = hfield.elevation[(iy + 1) * ncol + ix + 1];
+                let e = e00 * (1.0 - tx) * (1.0 - ty)
+                    + e10 * tx * (1.0 - ty)
+                    + e01 * (1.0 - tx) * ty
+                    + e11 * tx * ty;
+                heights.push(e * z_top);
+            }
+        }
+        return Ok(HeightFieldData::new(heights, new_ncol, new_nrow, cell_size));
+    };
+
+    Ok(HeightFieldData::new(heights, ncol, nrow, cell_size))
+}
+
 /// Convert MJCF mesh asset to `TriangleMeshData`.
 ///
 /// Handles two sources of mesh data:
@@ -2580,18 +2748,6 @@ fn load_mesh_file(
 /// 2. **File-based**: `file` attribute pointing to STL/OBJ/PLY/3MF
 ///
 /// Scale is applied to all vertices. BVH is built automatically.
-///
-/// # Arguments
-///
-/// * `mjcf_mesh` - The MJCF mesh definition
-/// * `base_path` - Base directory for resolving relative mesh file paths
-///
-/// # Errors
-///
-/// Returns `ModelConversionError` if:
-/// - Neither `vertex` nor `file` is specified
-/// - Embedded data is malformed (count not divisible by 3, out-of-bounds indices)
-/// - File loading fails (see [`load_mesh_file`])
 fn convert_mjcf_mesh(
     mjcf_mesh: &MjcfMesh,
     base_path: Option<&Path>,
@@ -3467,6 +3623,7 @@ mod tests {
             conaffinity: 1,
             condim: 3,
             mesh: None,
+            hfield: None,
             solref: None,
             solimp: None,
         };

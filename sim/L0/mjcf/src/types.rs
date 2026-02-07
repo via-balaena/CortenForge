@@ -582,6 +582,24 @@ impl Default for MjcfMesh {
     }
 }
 
+/// Height field asset parsed from `<hfield>` element in MJCF.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfHfield {
+    /// Asset name (referenced by `<geom hfield="...">`).
+    pub name: String,
+    /// Size: `[x, y, z_top, z_bottom]`.
+    /// x/y = half-extents; z_top = elevation scale; z_bottom = base depth.
+    pub size: [f64; 4],
+    /// Number of rows (Y samples).
+    pub nrow: usize,
+    /// Number of columns (X samples).
+    pub ncol: usize,
+    /// Normalized elevation data, row-major (row 0 = min Y, X varies fastest).
+    /// Length: `nrow × ncol`.
+    pub elevation: Vec<f64>,
+}
+
 impl MjcfMesh {
     /// Create a new mesh asset with a name.
     #[must_use]
@@ -858,6 +876,8 @@ pub struct MjcfGeom {
     pub condim: i32,
     /// Mesh asset name (for type="mesh").
     pub mesh: Option<String>,
+    /// Height field asset name (for type="hfield").
+    pub hfield: Option<String>,
     /// Solver reference parameters for contacts [timeconst, dampratio].
     /// Controls contact softness/stiffness.
     pub solref: Option<[f64; 2]>,
@@ -884,6 +904,7 @@ impl Default for MjcfGeom {
             conaffinity: 1,
             condim: 3,
             mesh: None,
+            hfield: None,
             solref: None,
             solimp: None,
         }
@@ -2820,6 +2841,8 @@ pub struct MjcfModel {
     pub defaults: Vec<MjcfDefault>,
     /// Mesh assets.
     pub meshes: Vec<MjcfMesh>,
+    /// Height field assets.
+    pub hfields: Vec<MjcfHfield>,
     /// Root worldbody containing the body tree.
     pub worldbody: MjcfBody,
     /// Actuators.
@@ -2843,6 +2866,7 @@ impl Default for MjcfModel {
             option: MjcfOption::default(),
             defaults: Vec::new(),
             meshes: Vec::new(),
+            hfields: Vec::new(),
             worldbody: MjcfBody::new("world"),
             actuators: Vec::new(),
             tendons: Vec::new(),
