@@ -15692,3 +15692,244 @@ mod warmstart_key_tests {
         assert_eq!(key_above.cell_x, 1); // 0.006 / 0.01 = 0.6, rounds to 1
     }
 }
+
+// =============================================================================
+// Unit tests — subquat
+// =============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod subquat_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn identity_difference_is_zero() {
+        let q = UnitQuaternion::identity();
+        let res = subquat(&q, &q);
+        assert_relative_eq!(res.norm(), 0.0, epsilon = 1e-14);
+    }
+
+    #[test]
+    fn ninety_degrees_about_x() {
+        let angle = std::f64::consts::FRAC_PI_2;
+        let qa = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), angle);
+        let qb = UnitQuaternion::identity();
+        let res = subquat(&qa, &qb);
+        // Should be (π/2, 0, 0)
+        assert_relative_eq!(res.x, angle, epsilon = 1e-12);
+        assert_relative_eq!(res.y, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(res.z, 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn ninety_degrees_about_z() {
+        let angle = std::f64::consts::FRAC_PI_2;
+        let qa = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), angle);
+        let qb = UnitQuaternion::identity();
+        let res = subquat(&qa, &qb);
+        assert_relative_eq!(res.x, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(res.y, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(res.z, angle, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn opposite_quaternions_give_pi() {
+        // 180° about y
+        let qa = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), std::f64::consts::PI);
+        let qb = UnitQuaternion::identity();
+        let res = subquat(&qa, &qb);
+        // Magnitude should be π
+        assert_relative_eq!(res.norm(), std::f64::consts::PI, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn shortest_path_wraps() {
+        // qa = 270° about x = -90° via shortest path
+        let qa =
+            UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 3.0 * std::f64::consts::FRAC_PI_2);
+        let qb = UnitQuaternion::identity();
+        let res = subquat(&qa, &qb);
+        // Should report -π/2 about x (shortest path)
+        assert_relative_eq!(res.x, -std::f64::consts::FRAC_PI_2, epsilon = 1e-10);
+        assert_relative_eq!(res.norm(), std::f64::consts::FRAC_PI_2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn relative_rotation() {
+        // qa = 60° about z, qb = 20° about z → difference = 40° about z
+        let qa = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 60.0_f64.to_radians());
+        let qb = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 20.0_f64.to_radians());
+        let res = subquat(&qa, &qb);
+        assert_relative_eq!(res.z, 40.0_f64.to_radians(), epsilon = 1e-10);
+        assert_relative_eq!(res.x, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(res.y, 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn small_angle_near_zero() {
+        let tiny = 1e-15;
+        let qa = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), tiny);
+        let qb = UnitQuaternion::identity();
+        let res = subquat(&qa, &qb);
+        // Should be zero vector (within small-angle guard)
+        assert_relative_eq!(res.norm(), 0.0, epsilon = 1e-10);
+    }
+}
+
+// =============================================================================
+// Unit tests — mj_jac_site vs accumulate_point_jacobian
+// =============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod jac_site_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Build a minimal Model + Data for a single-joint body with a site.
+    fn make_single_joint_site_model(
+        jnt_type: MjJointType,
+        joint_axis: Vector3<f64>,
+        site_offset: Vector3<f64>,
+        body_pos: Vector3<f64>,
+        qpos_val: f64,
+    ) -> (Model, Data) {
+        let mut model = Model::empty();
+
+        // Add body 1 with a joint
+        model.nbody = 2;
+        model.body_parent = vec![0, 0];
+        model.body_rootid = vec![0, 1];
+        model.body_jnt_adr = vec![0, 0];
+        model.body_jnt_num = vec![0, 1];
+        model.body_dof_adr = vec![0, 0];
+        model.body_dof_num = vec![0, jnt_type.nv()];
+        model.body_geom_adr = vec![0, 0];
+        model.body_geom_num = vec![0, 0];
+        model.body_pos = vec![Vector3::zeros(), body_pos];
+        model.body_quat = vec![UnitQuaternion::identity(); 2];
+        model.body_ipos = vec![Vector3::zeros(); 2];
+        model.body_iquat = vec![UnitQuaternion::identity(); 2];
+        model.body_mass = vec![0.0, 1.0];
+        model.body_inertia = vec![Vector3::zeros(), Vector3::new(0.01, 0.01, 0.01)];
+        model.body_name = vec![Some("world".to_string()), Some("b1".to_string())];
+        model.body_subtreemass = vec![1.0, 1.0];
+
+        let nv = jnt_type.nv();
+        let nq = jnt_type.nq();
+        model.njnt = 1;
+        model.nq = nq;
+        model.nv = nv;
+        model.jnt_type = vec![jnt_type];
+        model.jnt_body = vec![1];
+        model.jnt_qpos_adr = vec![0];
+        model.jnt_dof_adr = vec![0];
+        model.jnt_pos = vec![Vector3::zeros()];
+        model.jnt_axis = vec![joint_axis];
+        model.jnt_limited = vec![false];
+        model.jnt_range = vec![(0.0, 0.0)];
+        model.jnt_stiffness = vec![0.0];
+        model.jnt_springref = vec![0.0];
+        model.jnt_damping = vec![0.0];
+        model.jnt_armature = vec![0.0];
+        model.jnt_solref = vec![[0.02, 1.0]];
+        model.jnt_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]];
+        model.jnt_name = vec![Some("j1".to_string())];
+
+        // DOFs
+        model.dof_body = vec![1; nv];
+        model.dof_jnt = vec![0; nv];
+        model.dof_parent = vec![None; nv];
+        model.dof_armature = vec![0.0; nv];
+        model.dof_damping = vec![0.0; nv];
+        model.dof_frictionloss = vec![0.0; nv];
+
+        // Site
+        model.nsite = 1;
+        model.site_body = vec![1];
+        model.site_pos = vec![site_offset];
+        model.site_quat = vec![UnitQuaternion::identity()];
+        model.site_type = vec![GeomType::Sphere];
+        model.site_size = vec![Vector3::new(0.01, 0.01, 0.01)];
+        model.site_name = vec![Some("s1".to_string())];
+
+        model.qpos0 = DVector::zeros(nq);
+        model.timestep = 0.001;
+
+        model.body_ancestor_joints = vec![vec![]; 2];
+        model.body_ancestor_mask = vec![vec![]; 2];
+        model.compute_ancestors();
+
+        let mut data = model.make_data();
+        data.qpos[0] = qpos_val;
+        mj_fwd_position(&model, &mut data);
+
+        (model, data)
+    }
+
+    /// mj_jac_site translational column for hinge must agree with
+    /// accumulate_point_jacobian for the same direction projection.
+    #[test]
+    fn jac_site_agrees_with_accumulate_hinge() {
+        let (model, data) = make_single_joint_site_model(
+            MjJointType::Hinge,
+            Vector3::y(),
+            Vector3::new(0.5, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            0.3,
+        );
+
+        let (jac_t, jac_r) = mj_jac_site(&model, &data, 0);
+
+        // For each cardinal direction, accumulate_point_jacobian projecting
+        // onto that direction should agree with the corresponding row of jac_t.
+        for dir_idx in 0..3 {
+            let direction = Vector3::ith(dir_idx, 1.0);
+            let mut ten_j = DVector::zeros(model.nv);
+            accumulate_point_jacobian(
+                &model,
+                &data.xpos,
+                &data.xquat,
+                &mut ten_j,
+                model.site_body[0],
+                &data.site_xpos[0],
+                &direction,
+                1.0,
+            );
+
+            assert_relative_eq!(jac_t[(dir_idx, 0)], ten_j[0], epsilon = 1e-12);
+        }
+
+        // Rotational Jacobian for hinge: should be the world-frame joint axis.
+        let world_axis = data.xquat[1] * model.jnt_axis[0];
+        for k in 0..3 {
+            assert_relative_eq!(jac_r[(k, 0)], world_axis[k], epsilon = 1e-12);
+        }
+    }
+
+    /// For a slide joint, translational Jacobian is the axis; rotational is zero.
+    #[test]
+    fn jac_site_slide_joint() {
+        let (model, data) = make_single_joint_site_model(
+            MjJointType::Slide,
+            Vector3::z(),
+            Vector3::new(0.2, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 1.0),
+            0.1,
+        );
+
+        let (jac_t, jac_r) = mj_jac_site(&model, &data, 0);
+
+        // Slide: translational Jacobian = world-frame axis
+        let world_axis = data.xquat[1] * model.jnt_axis[0];
+        for k in 0..3 {
+            assert_relative_eq!(jac_t[(k, 0)], world_axis[k], epsilon = 1e-12);
+        }
+
+        // Slide: no rotational contribution
+        for k in 0..3 {
+            assert_relative_eq!(jac_r[(k, 0)], 0.0, epsilon = 1e-14);
+        }
+    }
+}

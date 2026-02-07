@@ -1353,6 +1353,13 @@ impl ModelBuilder {
                     .ok_or_else(|| ModelConversionError {
                         message: format!("Actuator references unknown joint: {joint_name}"),
                     })?;
+            if actuator.refsite.is_some() {
+                warn!(
+                    "Actuator '{}' has refsite but uses joint transmission — \
+                     refsite is only meaningful for site transmissions; ignoring",
+                    actuator.name
+                );
+            }
             (ActuatorTransmission::Joint, [*jnt_id, usize::MAX])
         } else if let Some(ref tendon_name) = actuator.tendon {
             let tendon_idx = *self
@@ -1364,6 +1371,13 @@ impl ModelBuilder {
                         actuator.name, tendon_name
                     ),
                 })?;
+            if actuator.refsite.is_some() {
+                warn!(
+                    "Actuator '{}' has refsite but uses tendon transmission — \
+                     refsite is only meaningful for site transmissions; ignoring",
+                    actuator.name
+                );
+            }
             (ActuatorTransmission::Tendon, [tendon_idx, usize::MAX])
         } else if let Some(ref site_name) = actuator.site {
             let site_id =

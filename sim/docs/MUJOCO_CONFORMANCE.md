@@ -331,6 +331,8 @@ sim/L0/tests/
 │   ├── musculoskeletal.rs
 │   ├── passive_forces.rs
 │   ├── sensors.rs
+│   ├── site_transmission.rs
+│   ├── spatial_tendons.rs
 │   └── validation.rs
 └── assets/
     ├── mujoco_menagerie/  (git submodule)
@@ -382,6 +384,21 @@ jobs:
 | Doc comparison | Medium | Not started | - | Guides implementation gaps |
 | Model loading | High | ✅ Complete | - | Menagerie + DM Control models load (2026-01-24) |
 | Trajectory comparison | High | Not started | - | Numerical correctness |
+
+### §5 — Site-Transmission Actuator Conformance
+
+**Status:** Deferred — requires MuJoCo reference data
+
+Acceptance criterion 22 of the site-transmission spec (`future_work_2.md` §5) requires
+actuator length, velocity, and generalized forces to match MuJoCo ≤ 1e-8 relative tolerance
+for both Mode A (no refsite) and Mode B (with refsite).
+
+A placeholder `#[ignore]` test exists at `integration/site_transmission.rs::test_mujoco_conformance_site_transmission`.
+The established pattern for populating it is the same as `spatial_tendons.rs` test 16:
+hardcode MuJoCo 3.4.0 reference values as constants, then `assert_relative_eq!` with epsilon.
+
+**To unblock:** Run a 3-link arm model with site actuators through MuJoCo 3.4.0 (Python bindings),
+record `actuator_length`, `actuator_velocity`, and `qfrc_actuator`, then hardcode as constants.
 
 ---
 

@@ -65,6 +65,13 @@ pub mod default_classes;
 pub mod spatial_tendons;
 
 // ============================================================================
+// Site-Transmission Actuator Tests (§5 Site-Transmission Actuators)
+// ============================================================================
+
+/// Site-transmission tests: Mode A/B, common-ancestor, sensors, validation.
+pub mod site_transmission;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 

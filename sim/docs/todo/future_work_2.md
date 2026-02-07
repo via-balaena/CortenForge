@@ -4302,7 +4302,7 @@ not just wrong results.
 ---
 
 ### 5. Site-Transmission Actuators
-**Status:** Not started | **Effort:** L | **Prerequisites:** #4 (complete)
+**Status:** Complete (criteria 1–21 implemented; criterion 22 deferred — requires external MuJoCo reference data) | **Effort:** L | **Prerequisites:** #4 (complete)
 
 #### Objective
 Implement MuJoCo-conformant site-based actuator transmission. Site transmissions
