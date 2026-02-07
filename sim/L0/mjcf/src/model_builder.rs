@@ -4263,7 +4263,7 @@ mod tests {
         )
     }
 
-    /// Criterion 1: Explicit gaintype/biastype on <general>.
+    /// Criterion 1: Explicit gaintype/biastype on `<general>`.
     #[test]
     fn test_general_explicit_gaintype_biastype() {
         let xml = general_actuator_model(
@@ -4298,7 +4298,7 @@ mod tests {
         assert_eq!(model.actuator_act_num[0], 1);
     }
 
-    /// Criterion 3: Bare <general> backward compatibility (Motor-like defaults).
+    /// Criterion 3: Bare `<general>` backward compatibility (Motor-like defaults).
     #[test]
     fn test_general_bare_defaults() {
         let xml = general_actuator_model(r#"<general joint="j"/>"#);
@@ -4325,7 +4325,7 @@ mod tests {
         assert_eq!(model.actuator_act_num[0], 0);
     }
 
-    /// Criterion 4: PD servo via <general> matches <position> shortcut.
+    /// Criterion 4: PD servo via `<general>` matches `<position>` shortcut.
     #[test]
     fn test_general_pd_servo_equivalence() {
         let general_xml = general_actuator_model(
@@ -4367,7 +4367,7 @@ mod tests {
         assert_eq!(m_gen.actuator_act_num[0], m_pos.actuator_act_num[0]);
     }
 
-    /// Criterion 5: Muscle via <general> matches <muscle> shortcut.
+    /// Criterion 5: Muscle via `<general>` matches `<muscle>` shortcut.
     #[test]
     fn test_general_muscle_equivalence() {
         let general_xml = general_actuator_model(
@@ -4407,7 +4407,7 @@ mod tests {
         assert_eq!(m_gen.actuator_act_num[0], m_mus.actuator_act_num[0]);
     }
 
-    /// Criterion 6: Default class inheritance for <general> attributes.
+    /// Criterion 6: Default class inheritance for `<general>` attributes.
     #[test]
     fn test_general_default_class_inheritance() {
         let xml = r#"
