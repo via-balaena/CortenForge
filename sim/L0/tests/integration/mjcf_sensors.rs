@@ -215,12 +215,11 @@ fn test_actuatorpos_sensor() {
 // Edge cases
 // ============================================================================
 
-/// Unsupported sensor type (jointlimitfrc) should be silently skipped,
-/// resulting in nsensor == 0.
+/// JointLimitFrc sensor is now supported — verify it wires correctly.
 #[test]
-fn test_unsupported_sensor_skipped() {
+fn test_joint_limit_frc_sensor() {
     let mjcf = r#"
-        <mujoco model="unsupported_test">
+        <mujoco model="jlf_test">
             <worldbody>
                 <body name="b1" pos="0 0 0">
                     <joint name="j1" type="hinge" axis="0 1 0"/>
@@ -234,10 +233,9 @@ fn test_unsupported_sensor_skipped() {
     "#;
 
     let model = load_model(mjcf).expect("should load");
-    // jointlimitfrc is unsupported (maps to None in convert_sensor_type),
-    // so it should be skipped with a warning
-    assert_eq!(model.nsensor, 0);
-    assert_eq!(model.nsensordata, 0);
+    assert_eq!(model.nsensor, 1);
+    assert_eq!(model.nsensordata, 1);
+    assert_eq!(model.sensor_type[0], MjSensorType::JointLimitFrc);
 }
 
 /// Missing reference (nonexistent joint) should produce an error.

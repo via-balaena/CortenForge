@@ -2981,8 +2981,8 @@ Data fields (Step 3) to avoid per-step heap allocation on the hot path.
 
 All 8 steps have been implemented. MJCF `<sensor>` elements are now fully wired
 into the pipeline via `model_builder.rs`. The MJCF parser recognizes all 32
-`MjcfSensorType` variants (30 map to pipeline types, 2 unsupported are skipped
-with a warning). `set_options()` propagates `magnetic`, `wind`, `density`, and
+`MjcfSensorType` variants (all 32 now map to pipeline types; JointLimitFrc/
+TendonLimitFrc were added in [future_work_3 §7](./future_work_3.md)). `set_options()` propagates `magnetic`, `wind`, `density`, and
 `viscosity` from `MjcfOption`. Magnetometer is evaluated in the correct
 (Position) stage. ActuatorVel reads from the pre-computed
 `data.actuator_velocity` field. Dead code (unreachable Touch arm in
@@ -2991,7 +2991,7 @@ with a warning). `set_options()` propagates `magnetic`, `wind`, `density`, and
 round-trip.
 
 **Remaining scope exclusions** (documented below in the specification):
-- **JointLimitFrc / TendonLimitFrc** — requires constraint force decomposition
+- ~~**JointLimitFrc / TendonLimitFrc**~~ — **Resolved** in [future_work_3 §7](./future_work_3.md) ✅. Penalty force caching in `mj_fwd_constraint()`, sensor evaluation in `mj_sensor_acc()`
 - ~~**Site transmission**~~ — resolved: all 6 stubs filled ([future_work_2 §5](./future_work_2.md) ✅)
 - **Frame sensor `objtype` attribute** — resolved by name priority (site→body→geom)
 - **User sensor `dim` attribute** — parser does not capture; User gets 0 slots
@@ -3002,7 +3002,7 @@ round-trip.
 #### Pre-Implementation State (historical)
 
 **Sensor evaluation functions** (all in `mujoco_pipeline.rs`) were fully implemented
-for all 30 `MjSensorType` variants across four pipeline stages:
+for all 30 `MjSensorType` variants (now 32 with JointLimitFrc/TendonLimitFrc) across four pipeline stages:
 
 | Stage | Function | Sensors |
 |-------|----------|---------|
@@ -3021,7 +3021,7 @@ produces zeros.
 |-----|----------|------------|
 | **A. MJCF → pipeline sensor wiring** | HIGH | `process_sensors()` and `resolve_sensor_object()` in `model_builder.rs` populate all 13 sensor arrays from parsed `MjcfSensor` objects. `actuator_name_to_id` map added for actuator sensor resolution. |
 | **B. MJCF parser missing 8 sensor types** | MEDIUM | 8 variants added to `MjcfSensorType`: Velocimeter, Magnetometer, Rangefinder, Subtreecom, Subtreelinvel, Subtreeangmom, Framelinacc, Frameangacc. Total: 32 variants. |
-| **C. Pipeline missing 2 sensor types** | LOW | Deferred — JointLimitFrc/TendonLimitFrc skipped with `warn!`. |
+| **C. Pipeline missing 2 sensor types** | LOW | ~~Deferred~~ → **Resolved** in [future_work_3 §7](./future_work_3.md) ✅. JointLimitFrc/TendonLimitFrc fully wired. |
 | **D. ActuatorVel duplicate computation** | LOW | Simplified to read `data.actuator_velocity[act_id]`. |
 | **E. Site transmission stubs** | LOW | ~~Out of scope~~ — resolved in [future_work_2 §5](./future_work_2.md) ✅. All 6 stubs filled. |
 | **F. Magnetometer evaluation stage** | LOW | Moved from `mj_sensor_acc()` to `mj_sensor_pos()`. Datatype changed to `Position`. |
@@ -3204,7 +3204,7 @@ fn convert_sensor_type(mjcf: MjcfSensorType) -> Option<MjSensorType> {
         MjcfSensorType::Subtreelinvel => Some(MjSensorType::SubtreeLinVel),
         MjcfSensorType::Subtreeangmom => Some(MjSensorType::SubtreeAngMom),
         MjcfSensorType::User => Some(MjSensorType::User),
-        // Not yet implemented in pipeline — skip with warning
+        // [HISTORICAL — now fully wired in future_work_3 §7]
         MjcfSensorType::Jointlimitfrc | MjcfSensorType::Tendonlimitfrc => None,
     }
 }
@@ -3435,7 +3435,7 @@ fn process_sensors(
 
     for mjcf_sensor in sensors {
         let Some(sensor_type) = convert_sensor_type(mjcf_sensor.sensor_type) else {
-            // Unsupported type (Jointlimitfrc, Tendonlimitfrc) — skip with log
+            // [HISTORICAL — Jointlimitfrc/Tendonlimitfrc now wired; see future_work_3 §7]
             warn!(
                 "Skipping unsupported sensor type '{:?}' (sensor '{}')",
                 mjcf_sensor.sensor_type,
@@ -3680,7 +3680,7 @@ Additional tests to include (each as a separate `#[test]` function):
   global field rotated into the site frame.
 - `test_tendonpos_sensor` — requires `<tendon>` + `<spatial>`, verify `sensordata` matches `data.ten_length[id]`
 - `test_actuatorpos_sensor` — requires `<actuator>` + `<general>`, verify inline computation works
-- `test_unsupported_sensor_skipped` — `<jointlimitfrc joint="j1"/>` produces `nsensor == 0` with warning
+- ~~`test_unsupported_sensor_skipped`~~ → renamed to `test_joint_limit_frc_sensor` — `<jointlimitfrc joint="j1"/>` now produces `nsensor == 1` with `JointLimitFrc` type ([future_work_3 §7](./future_work_3.md) ✅)
 - `test_missing_reference_error` — `<jointpos joint="nonexistent"/>` returns `Err`
 
 #### Scope Exclusions
@@ -3692,9 +3692,9 @@ The following are explicitly **out of scope** for this item:
    `mj_transmission_site()`, `subquat()`, and common-ancestor zeroing.
    23 integration tests + 9 unit tests cover criteria 1–21.
 
-2. **JointLimitFrc / TendonLimitFrc** (Gap C) — Requires decomposing
-   `qfrc_constraint` by constraint type. The constraint solver currently
-   aggregates all constraint forces. Deferred.
+2. ~~**JointLimitFrc / TendonLimitFrc** (Gap C)~~ — **Resolved** in
+   [future_work_3 §7](./future_work_3.md) ✅. Penalty forces cached in
+   `mj_fwd_constraint()`, read as sensors in `mj_sensor_acc()`.
 
 3. **Sensor noise** — The pipeline has `model.sensor_noise` but intentionally
    does not apply it (deterministic physics for RL). This is documented and
@@ -3745,9 +3745,9 @@ The following are explicitly **out of scope** for this item:
    produces a `Model` with `nsensor == 1`, `sensor_type[0] == JointPos`,
    `sensor_objid[0]` pointing to the correct joint index, and `sensordata`
    allocated to the correct size (1 element).
-3. **All 30 sensor types parseable:** Every `MjcfSensorType` variant (32 total
-   after Step 1, minus 2 unsupported) maps to a pipeline `MjSensorType` and
-   produces correct output after `forward()`.
+3. **All 32 sensor types parseable:** Every `MjcfSensorType` variant maps to a
+   pipeline `MjSensorType` and produces correct output after `forward()`.
+   (Originally 30; JointLimitFrc/TendonLimitFrc added in [future_work_3 §7](./future_work_3.md).)
 4. **Datatype correctness:** Each wired sensor has the correct `MjSensorDataType`
    so it is evaluated in the right pipeline stage. Specifically: Touch is
    `Acceleration` (not Position), Magnetometer is `Position` (not Acceleration).
@@ -3774,9 +3774,10 @@ The following are explicitly **out of scope** for this item:
     Covers at minimum: `jointpos`, `framepos` (site target), `magnetometer`
     (nonzero output via default magnetic field), `tendonpos`, `actuatorpos`,
     unsupported type skipping, missing reference error.
-11. **Unsupported types produce warning:** `Jointlimitfrc` and `Tendonlimitfrc`
-    sensors in MJCF are skipped with a `warn!` log (already imported at
-    `model_builder.rs` line 23), not silently ignored.
+11. ~~**Unsupported types produce warning:**~~ No longer applicable —
+    `Jointlimitfrc` and `Tendonlimitfrc` are now fully supported
+    ([future_work_3 §7](./future_work_3.md) ✅). All 32 sensor types wire
+    through `convert_sensor_type()` with no `None` returns.
 12. **Error on missing references:** A sensor referencing a nonexistent joint/
     site/body/tendon/actuator produces `ModelConversionError`, not a silent
     default.

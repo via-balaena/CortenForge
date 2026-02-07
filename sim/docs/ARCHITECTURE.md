@@ -328,7 +328,7 @@ default class inheritance, and MJB binary format.
 `<tendon>` and `<sensor>` elements are parsed and wired into the pipeline
 (fixed and spatial tendons fully supported, including sphere/cylinder wrapping,
 sidesite disambiguation, and pulley divisors;
-all 30 pipeline sensor types functional and wired from MJCF via
+all 32 pipeline sensor types functional and wired from MJCF via
 `process_sensors()` in `model_builder.rs`). The model builder expands all 8 actuator
 shortcut types to their general gain/bias/dynamics representation (matching
 MuJoCo's `user_api.cc`), populating `actuator_gaintype`, `actuator_biastype`,

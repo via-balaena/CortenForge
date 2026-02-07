@@ -1059,49 +1059,114 @@ GeomType::Sdf => {
 ---
 
 ### 7. Deferred Sensors (JointLimitFrc, TendonLimitFrc)
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
 
-#### Current State
-32 MJCF sensor types are parsed (`MjcfSensorType` in `types.rs`). Of these, 30
-are converted to pipeline sensor types (`MjSensorType` in `mujoco_pipeline.rs`)
-via `convert_sensor_type()` in `model_builder.rs:2694–2725` and fully evaluated
-in the pipeline. Two are recognized at parse time but return `None` from
-conversion and are skipped with a warning at model build time:
+#### Summary
 
-- `Jointlimitfrc` — joint limit constraint force
-- `Tendonlimitfrc` — tendon limit constraint force
+All 32 MJCF sensor types are now fully wired into the pipeline. The two
+formerly-deferred types — `JointLimitFrc` and `TendonLimitFrc` — read cached
+penalty force magnitudes from `mj_fwd_constraint()` and report them as
+scalar (1D) Acceleration-stage sensors.
 
-Neither has a corresponding `MjSensorType` variant. Both require reading
-constraint forces from `qfrc_constraint` and mapping them back to the specific
-joint/tendon limit that generated them.
+#### Architecture
 
-#### Objective
-Wire the two deferred sensors into the pipeline.
+**Constraint solver context:** CortenForge uses a **penalty method** for
+joint and tendon limit constraints (not the PGS/CG solver, which handles
+contacts only). MuJoCo stores per-constraint forces in `efc_force[]` with
+typed metadata (`efc_type[]`, `efc_id[]`) and sensors scan those arrays.
+CortenForge has no per-constraint force arrays — limit forces are computed
+inline and immediately summed into `qfrc_constraint`. To support these
+sensors, the scalar penalty force is **cached** during `mj_fwd_constraint()`
+before being dispersed into generalized coordinates.
 
-#### Specification
-In `process_sensors()`, add evaluation arms for `JointLimitFrc` and
-`TendonLimitFrc`:
+**Sign convention:** The cached value is the **unsigned penalty magnitude**
+`f = stiffness × penetration + damping × vel_into` (always ≥ 0), matching
+MuJoCo's non-negative `efc_force` convention. The directional sign is applied
+separately when accumulating into `qfrc_constraint`.
 
-- **JointLimitFrc:** After constraint solving, identify the constraint force
-  contribution from the sensor's target joint limit. The force is the component
-  of `qfrc_constraint` attributable to the joint's limit constraint (stored
-  during PGS/CG solve). Return scalar force magnitude.
+**Pipeline ordering:** `mj_fwd_constraint()` populates the caches →
+`mj_fwd_acceleration()` → `mj_sensor_acc()` reads the caches.
 
-- **TendonLimitFrc:** Same pattern but for tendon limit constraints. The tendon
-  limit force is the constraint force projected onto the tendon length direction.
+#### Implementation
 
-Both sensors return 0 when the joint/tendon is within its limit range.
+**`Data` cache fields** (`mujoco_pipeline.rs`, after `qfrc_constraint`):
+- `jnt_limit_frc: Vec<f64>` — per-joint limit force cache (length `njnt`)
+- `ten_limit_frc: Vec<f64>` — per-tendon limit force cache (length `ntendon`)
 
-#### Acceptance Criteria
-1. `JointLimitFrc` sensor reads the constraint force contribution from its
-   joint's limit.
-2. `TendonLimitFrc` sensor reads the constraint force contribution from its
-   tendon's limit.
-3. Zero force when joint/tendon is within limits.
+Both are initialized to zero in `Model::make_data()` and cleared at the top
+of `mj_fwd_constraint()` each forward pass.
 
-#### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (sensor evaluation in
-  `process_sensors()`)
+**Cache population** (`mj_fwd_constraint()`):
+- Joint limits: in the Hinge/Slide branch, the penalty `force` is extracted
+  as a local variable and cached via `data.jnt_limit_frc[jnt_id] = force`
+  in both lower-limit and upper-limit branches.
+- Tendon limits: `data.ten_limit_frc[t] = force` in both branches. The
+  tendon code uses two `if` blocks (not `if/else if`), so in the degenerate
+  case where `limit_min > limit_max`, the upper-limit value overwrites the
+  lower-limit value (matching the existing `qfrc_constraint` additive
+  behavior — physically meaningless configuration).
+
+**Sensor evaluation** (`mj_sensor_acc()`):
+- `JointLimitFrc` → `sensor_write(data.jnt_limit_frc[objid])`
+- `TendonLimitFrc` → `sensor_write(data.ten_limit_frc[objid])`
+
+Both are simple cache reads with bounds checking.
+
+**Model builder wiring** (`model_builder.rs`):
+- `convert_sensor_type()`: `Jointlimitfrc → JointLimitFrc`,
+  `Tendonlimitfrc → TendonLimitFrc`
+- `sensor_datatype()`: both in the `Acceleration` arm
+- `resolve_sensor_object()`: `JointLimitFrc` in the joint arm (resolves
+  `objname` via `joint_name_to_id`), `TendonLimitFrc` in the tendon arm
+  (resolves via `tendon_name_to_id`)
+
+**`MjSensorType` enum** (`mujoco_pipeline.rs`):
+- `JointLimitFrc` and `TendonLimitFrc` variants after `ActuatorFrc`
+- Both in the `dim() => 1` arm
+
+#### MuJoCo Reference
+
+Source: `engine_sensor.c`, `mj_computeSensorAcc`, cases
+`mjSENS_JOINTLIMITFRC` / `mjSENS_TENDONLIMITFRC`. MuJoCo scans `efc_force[]`
+in `[ne+nf, nefc)` for matching `efc_type`/`efc_id`; returns
+`efc_force[j]` (non-negative constraint multiplier λ) or 0 if not active.
+
+#### Verification
+
+All 12 acceptance criteria verified:
+
+1. ✅ Basic joint limit force — penalty `f = stiffness × penetration +
+   damping × vel_into` cached and read correctly
+2. ✅ Basic tendon limit force — same formula, tendon cache path
+3. ✅ Zero when within limits — caches cleared each step, only written
+   inside violation branches
+4. ✅ Non-negative output — `penetration ≥ 0`, `vel_into ≥ 0`,
+   `stiffness ≥ 0`, `damping ≥ 0` → `force ≥ 0` always
+5. ✅ Non-limited joint/tendon — `continue` skips non-limited, cache
+   remains at cleared 0.0
+6. ✅ Cache cleared each step — `fill(0.0)` at top of
+   `mj_fwd_constraint()`
+7. ✅ MJCF round-trip — `test_joint_limit_frc_sensor` validates
+   `nsensor == 1`, `nsensordata == 1`, correct `sensor_type`
+8. ✅ Object resolution errors — `joint_name_to_id.get()` returns
+   `ModelConversionError` for unknown names
+9. ✅ Sensor data stage — `sensor_datatype() == Acceleration`
+10. ✅ Multiple sensors on same joint — shared cache entry, same value
+11. ✅ Postprocessing — not in positive-only list, gets real-type
+    `[-cutoff, cutoff]` clamping
+12. ✅ Sensor dimension — `dim() == 1`
+
+#### Files Changed
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — `JointLimitFrc`/`TendonLimitFrc`
+  enum variants + `dim()` arm; `jnt_limit_frc`/`ten_limit_frc` cache fields
+  on `Data` + initialization in `Model::make_data()`; cache clearing and
+  population in `mj_fwd_constraint()`; evaluation arms in `mj_sensor_acc()`
+- `sim/L0/mjcf/src/model_builder.rs` — `convert_sensor_type()` mappings;
+  `sensor_datatype()` Acceleration arm; `resolve_sensor_object()` joint and
+  tendon arms
+- `sim/L0/tests/integration/mjcf_sensors.rs` — `test_joint_limit_frc_sensor`
+  (replaced former `test_unsupported_sensor_skipped`)
 
 ---
 

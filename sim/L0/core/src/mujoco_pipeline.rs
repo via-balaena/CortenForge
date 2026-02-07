@@ -583,6 +583,14 @@ pub enum MjSensorType {
     ActuatorVel,
     /// Actuator force (1D).
     ActuatorFrc,
+    /// Joint limit force (scalar, 1D). MuJoCo: mjSENS_JOINTLIMITFRC.
+    /// Returns the unsigned penalty force magnitude when the joint's position
+    /// limit is active; 0 when within limits.
+    JointLimitFrc,
+    /// Tendon limit force (scalar, 1D). MuJoCo: mjSENS_TENDONLIMITFRC.
+    /// Returns the unsigned penalty force magnitude when the tendon's length
+    /// limit is active; 0 when within limits.
+    TendonLimitFrc,
 
     // ========== Position/orientation sensors ==========
     /// Site/body frame position (3D).
@@ -630,6 +638,8 @@ impl MjSensorType {
             | Self::ActuatorPos
             | Self::ActuatorVel
             | Self::ActuatorFrc
+            | Self::JointLimitFrc
+            | Self::TendonLimitFrc
             | Self::Rangefinder => 1,
 
             Self::Accelerometer
@@ -1676,6 +1686,23 @@ pub struct Data {
     /// Constraint forces (contacts + joint limits) (length `nv`).
     pub qfrc_constraint: DVector<f64>,
 
+    /// Per-joint limit force cache (length `njnt`).
+    /// Populated by `mj_fwd_constraint()`. Contains the unsigned penalty force
+    /// magnitude for each joint's active limit constraint. Zero when the joint is
+    /// within its limits or is not limited.
+    ///
+    /// This is the CortenForge equivalent of scanning MuJoCo's `efc_force[]` for
+    /// `mjCNSTR_LIMIT_JOINT` entries. Since CortenForge uses penalty forces
+    /// (not a constraint solver with per-constraint force arrays), we cache the
+    /// scalar force during computation to avoid recomputation at sensor eval time.
+    pub jnt_limit_frc: Vec<f64>,
+
+    /// Per-tendon limit force cache (length `ntendon`).
+    /// Populated by `mj_fwd_constraint()`. Contains the unsigned penalty force
+    /// magnitude for each tendon's active limit constraint. Zero when the tendon
+    /// is within its limits or is not limited.
+    pub ten_limit_frc: Vec<f64>,
+
     // Cartesian forces (alternative input method)
     /// Applied spatial forces in world frame (length `nbody`).
     pub xfrc_applied: Vec<SpatialVector>,
@@ -2150,6 +2177,8 @@ impl Model {
             qfrc_bias: DVector::zeros(self.nv),
             qfrc_passive: DVector::zeros(self.nv),
             qfrc_constraint: DVector::zeros(self.nv),
+            jnt_limit_frc: vec![0.0; self.njnt],
+            ten_limit_frc: vec![0.0; self.ntendon],
             xfrc_applied: vec![SpatialVector::zeros(); self.nbody],
 
             // Mass matrix (dense)
@@ -6544,6 +6573,22 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                 // Matches MuJoCo: actuatorfrc sensor = actuator_force[objid].
                 if objid < model.nu {
                     sensor_write(&mut data.sensordata, adr, 0, data.actuator_force[objid]);
+                }
+            }
+
+            MjSensorType::JointLimitFrc => {
+                // Joint limit force: read cached penalty magnitude.
+                // objid is the joint index (resolved by model builder).
+                if objid < data.jnt_limit_frc.len() {
+                    sensor_write(&mut data.sensordata, adr, 0, data.jnt_limit_frc[objid]);
+                }
+            }
+
+            MjSensorType::TendonLimitFrc => {
+                // Tendon limit force: read cached penalty magnitude.
+                // objid is the tendon index (resolved by model builder).
+                if objid < data.ten_limit_frc.len() {
+                    sensor_write(&mut data.sensordata, adr, 0, data.ten_limit_frc[objid]);
                 }
             }
 
@@ -11400,6 +11445,8 @@ fn apply_constraint_torque_to_body(
 /// where λ is found by solving the LCP with PGS.
 fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     data.qfrc_constraint.fill(0.0);
+    data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
+    data.ten_limit_frc.iter_mut().for_each(|f| *f = 0.0);
 
     // Note: data.contacts is populated by mj_collision() which runs before this.
     // Do NOT clear contacts here.
@@ -11437,14 +11484,16 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
                     // Below lower limit - push up
                     let penetration = limit_min - q;
                     let vel_into = (-qdot).max(0.0);
-                    data.qfrc_constraint[dof_adr] +=
-                        limit_stiffness * penetration + limit_damping * vel_into;
+                    let force = limit_stiffness * penetration + limit_damping * vel_into;
+                    data.qfrc_constraint[dof_adr] += force;
+                    data.jnt_limit_frc[jnt_id] = force; // Cache unsigned magnitude
                 } else if q > limit_max {
                     // Above upper limit - push down
                     let penetration = q - limit_max;
                     let vel_into = qdot.max(0.0);
-                    data.qfrc_constraint[dof_adr] -=
-                        limit_stiffness * penetration + limit_damping * vel_into;
+                    let force = limit_stiffness * penetration + limit_damping * vel_into;
+                    data.qfrc_constraint[dof_adr] -= force;
+                    data.jnt_limit_frc[jnt_id] = force; // Cache unsigned magnitude
                 }
             }
             MjJointType::Ball | MjJointType::Free => {
@@ -11475,6 +11524,7 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
             let penetration = limit_min - length;
             let vel_into = (-data.ten_velocity[t]).max(0.0);
             let force = limit_stiffness * penetration + limit_damping * vel_into;
+            data.ten_limit_frc[t] = force; // Cache unsigned magnitude
 
             // Map to joint forces via J^T (force pushes tendon toward longer)
             apply_tendon_force(
@@ -11492,6 +11542,7 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
             let penetration = length - limit_max;
             let vel_into = data.ten_velocity[t].max(0.0);
             let force = limit_stiffness * penetration + limit_damping * vel_into;
+            data.ten_limit_frc[t] = force; // Cache unsigned magnitude
 
             // Map to joint forces via J^T (force pushes tendon toward shorter)
             apply_tendon_force(
