@@ -1754,89 +1754,434 @@ retain the default array values (which are 0 for indices 1–8).
 ## Group B — Scaling & Performance
 
 ### 9. Batched Simulation
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** L | **Prerequisites:** None
 
 *Transferred from [future_work_1.md](./future_work_1.md) #10.*
 
 #### Current State
-Single-environment execution. `Data::step(&mut self, &Model)` (`mujoco_pipeline.rs:2599`)
-steps one simulation. `Model` is immutable after construction, uses
-`Arc<TriangleMeshData>` for shared mesh data (`mujoco_pipeline.rs:912`). `Data` is
-fully independent — no shared mutable state, no interior mutability, derives `Clone`
-(`mujoco_pipeline.rs:1391`).
+
+Single-environment execution. `Data::step(&mut self, &Model)`
+(`mujoco_pipeline.rs:3032`) steps one simulation. `Model` is immutable after
+construction, uses `Arc<TriangleMeshData>` for shared mesh data
+(`mujoco_pipeline.rs:955`). `Data` is fully independent — no shared mutable
+state, no interior mutability, derives `Clone` (`mujoco_pipeline.rs:1593`).
+
+`Data::reset(&mut self, &Model)` (`mujoco_pipeline.rs:2993`) resets a subset
+of fields to initial state:
+- **Zeroed:** `qpos` (← `qpos0`), `qvel`, `qacc`, `qacc_warmstart`, `ctrl`,
+  `act`, `act_dot`, `actuator_length`, `actuator_velocity`, `actuator_force`,
+  `sensordata`, `time`, `ncon`, `contacts` (cleared).
+- **NOT reset (user inputs):** `qfrc_applied`, `xfrc_applied` — these are
+  user-applied forces that persist across `reset()`. Callers must zero them
+  explicitly if a clean reset is needed.
+- **NOT reset (intermediates):** FK outputs (`xpos`, `xquat`, etc.), force
+  intermediates (`qfrc_bias`, `qfrc_passive`, `qfrc_constraint`,
+  `qfrc_actuator`), mass matrix (`qM`, `qLD_*`), body/composite inertia,
+  tendon/equality state, energy, solver state, scratch buffers. All of these
+  are recomputed on the next `forward()` call, so stale values are harmless.
+- **NOT reset (warmstart):** `efc_lambda` — the HashMap retains entries from
+  the previous episode. Stale warmstarts are harmless (solver converges
+  regardless, just with fewer saved iterations) and clearing is O(capacity)
+  work with no correctness benefit.
 
 #### Objective
-Step N independent environments in parallel on CPU. Foundation for GPU acceleration
-(#10) and large-scale RL training.
+
+Step N independent environments in parallel on CPU. This is a **pure physics
+batching** API — it knows nothing about rewards, episodes, or RL semantics.
+Higher-level RL wrappers (Gymnasium, etc.) are built on top by consumers, not
+inside sim-core. Foundation for GPU acceleration (#10).
+
+#### Architecture
+
+**Parallelism model:** Task-level parallelism via rayon. Each `Data` runs its
+full `step()` pipeline independently on a rayon worker thread. No data sharing
+between environments during a step. This is embarrassingly parallel — the only
+synchronization point is the rayon `join` at the end of `step_all()`.
+
+**Memory layout:** `Vec<Data>` — each environment owns its own heap allocations
+(scratch buffers, contact vectors, warmstart HashMap, etc.). This means N
+environments produce N × (number of arrays in `Data`) separate heap
+allocations. For typical use (N ≤ 4096, model nv ≤ 200), total memory is
+dominated by the `nv × nv` mass matrix per env (~320 KB at nv=200), giving
+~1.3 GB for 4096 envs. This is acceptable for CPU batching. A future
+structure-of-arrays (SoA) layout across environments would improve cache
+locality for bulk state extraction but adds significant complexity and is
+explicitly deferred to the GPU acceleration work (#10).
+
+**Why not SoA now:** The `Data::step()` pipeline reads and writes dozens of
+fields on `Data` throughout a single step (FK, collision, RNE, constraint
+solve, integration). Converting to SoA would require rewriting every pipeline
+function to accept strided slices instead of `&mut Data`. The performance
+gain for CPU batching is marginal (each thread operates on one env's contiguous
+`Data`), while the implementation cost is enormous. SoA becomes essential only
+when SIMD or GPU kernels need to process the same field across all envs
+simultaneously.
+
+#### Thread Safety Verification
+
+`Data` derives `Clone` and contains only owned types (`DVector<f64>`,
+`Vec<T>`, `HashMap<K,V>`, `f64`). All fields are `Send + Sync`. `Model`
+contains `Arc<TriangleMeshData>`, `Arc<HeightFieldData>`,
+`Arc<SdfCollisionData>` — all `Send + Sync`. `Data::step(&mut self, &Model)`
+takes `&Model` (shared immutable) and `&mut self` (exclusive mutable).
+rayon's `par_iter_mut` gives each closure an `&mut Data` — exclusive, no
+aliasing.
+
+**Known global state:** One `static WARN_ONCE: Once` exists in
+`mj_fwd_constraint()` (`mujoco_pipeline.rs:10435`) for unimplemented tendon
+equality constraints. `Once` is `Sync` — concurrent calls are safe (one thread
+prints, others skip). No correctness impact.
+
+**No other global/thread-local state.** Verified: no `thread_local!`, no
+`lazy_static!`, no `static mut`, no `RefCell`, no `Mutex`/`RwLock` in
+sim-core's non-test code. The `HashMap<WarmstartKey, Vec<f64>>` in `Data` is
+per-instance (not shared), so no contention.
+
+**Conclusion:** `Data` is trivially `Send`. rayon `par_iter_mut` over
+`Vec<Data>` is sound without any code changes to the step pipeline.
 
 #### Specification
 
 ```rust
+/// Batched simulation: N independent environments sharing one Model.
+///
+/// All environments have identical physics (same Model), but independent
+/// state (separate Data). Stepping is parallelized across CPU cores via
+/// rayon when the `parallel` feature is enabled; sequential fallback
+/// when disabled.
+///
+/// # Examples
+///
+/// ```
+/// use sim_core::{BatchSim, Model};
+/// use std::sync::Arc;
+///
+/// let model = Arc::new(load_model("humanoid.xml"));
+/// let mut batch = BatchSim::new(model, 64);
+///
+/// // Set controls for each environment
+/// for (i, env) in batch.envs_mut().enumerate() {
+///     env.ctrl[0] = actions[i];
+/// }
+///
+/// // Step all environments in parallel
+/// let errors = batch.step_all();
+///
+/// // Read results
+/// for (i, env) in batch.envs().enumerate() {
+///     observations[i] = env.qpos.as_slice();
+/// }
+///
+/// // Reset failed environments
+/// let failed: Vec<bool> = errors.iter().map(|e| e.is_some()).collect();
+/// batch.reset_where(&failed);
+/// ```
 pub struct BatchSim {
     model: Arc<Model>,
     envs: Vec<Data>,
 }
+```
 
+**Construction:**
+
+```rust
 impl BatchSim {
-    pub fn new(model: Arc<Model>, n: usize) -> Self;
-    pub fn step_all(&mut self) -> BatchResult;
-    pub fn reset(&mut self, env_idx: usize);
-    pub fn reset_where(&mut self, mask: &[bool]);
+    /// Create a batch of `n` environments, each initialized via
+    /// `model.make_data()` (qpos = qpos0, qvel = 0, time = 0).
+    pub fn new(model: Arc<Model>, n: usize) -> Self {
+        let envs = (0..n).map(|_| model.make_data()).collect();
+        Self { model, envs }
+    }
+
+    /// Number of environments.
+    #[must_use]
+    pub fn len(&self) -> usize { self.envs.len() }
+
+    /// Whether the batch is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool { self.envs.is_empty() }
+
+    /// Shared model reference.
+    #[must_use]
+    pub fn model(&self) -> &Model { &self.model }
 }
 ```
 
-`step_all()` uses rayon `par_iter_mut` over `envs`. Each `Data` steps independently
-against the shared `Arc<Model>`. rayon 1.10 is already a workspace dependency;
-sim-core declares it optional under the `parallel` feature flag
-(`core/Cargo.toml:19,33`).
+**Environment access — direct `Data` references:**
 
 ```rust
-pub struct BatchResult {
-    pub states: DMatrix<f64>,       // (n_envs, nq + nv) row-major
-    pub rewards: DVector<f64>,      // (n_envs,)
-    pub terminated: Vec<bool>,      // per-env episode termination
-    pub truncated: Vec<bool>,       // per-env time limit
-    pub errors: Vec<Option<StepError>>, // None = success
+impl BatchSim {
+    /// Immutable access to environment `i`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if `i >= len()`.
+    #[must_use]
+    pub fn env(&self, i: usize) -> Option<&Data> {
+        self.envs.get(i)
+    }
+
+    /// Mutable access to environment `i`.
+    ///
+    /// Use this to set `ctrl`, `qfrc_applied`, `xfrc_applied`, or
+    /// any other input field before calling `step_all()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if `i >= len()`.
+    pub fn env_mut(&mut self, i: usize) -> Option<&mut Data> {
+        self.envs.get_mut(i)
+    }
+
+    /// Iterator over all environments (immutable).
+    pub fn envs(&self) -> impl ExactSizeIterator<Item = &Data> {
+        self.envs.iter()
+    }
+
+    /// Iterator over all environments (mutable).
+    ///
+    /// Primary mechanism for setting per-env controls before `step_all()`:
+    /// ```
+    /// for (i, env) in batch.envs_mut().enumerate() {
+    ///     env.ctrl.copy_from_slice(&actions[i]);
+    /// }
+    /// ```
+    pub fn envs_mut(&mut self) -> impl ExactSizeIterator<Item = &mut Data> {
+        self.envs.iter_mut()
+    }
 }
 ```
 
-`states` is a contiguous matrix for direct consumption by RL frameworks (numpy
-interop via row-major layout). Reward computation is user-defined:
+Users set `ctrl` (and any other inputs) directly on each `Data` via
+`env_mut()` or `envs_mut()` before calling `step_all()`. This avoids
+inventing a batched control-input API that would duplicate what `Data`
+already provides. The `Data` struct's fields are public — this is
+intentional and matches MuJoCo's `mjData` design.
+
+**Stepping:**
 
 ```rust
-pub trait RewardFn: Send + Sync {
-    fn compute(&self, model: &Model, data: &Data) -> f64;
+impl BatchSim {
+    /// Step all environments by one timestep.
+    ///
+    /// Returns per-environment errors. `None` = success, `Some(e)` = that
+    /// environment's step failed. Failed environments are **not**
+    /// auto-reset — the caller decides what to do (reset, skip, abort).
+    ///
+    /// When the `parallel` feature is enabled, environments are stepped
+    /// in parallel via rayon `par_iter_mut`. When disabled, environments
+    /// are stepped sequentially (identical results, useful for debugging).
+    ///
+    /// # Determinism
+    ///
+    /// Output is independent of thread count and scheduling order.
+    /// Each environment's step is a pure function of its own `Data` and
+    /// the shared `Model`. No cross-environment communication occurs.
+    pub fn step_all(&mut self) -> Vec<Option<StepError>> {
+        let model = &self.model;
+
+        #[cfg(feature = "parallel")]
+        {
+            use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+            self.envs
+                .par_iter_mut()
+                .map(|data| data.step(model).err())
+                .collect()
+        }
+
+        #[cfg(not(feature = "parallel"))]
+        {
+            self.envs
+                .iter_mut()
+                .map(|data| data.step(model).err())
+                .collect()
+        }
+    }
 }
 ```
 
-**Design constraint — single Model:** All environments share the same `Arc<Model>`
-(same nq, nv, geom set). The `states: DMatrix<f64>` layout (n_envs, nq + nv)
-requires uniform state dimensions. Multi-model batching (different robots in the
-same batch) would require a fundamentally different design and is explicitly
-out of scope.
+**No auto-reset.** The original spec had failed envs auto-resetting on the
+next `step_all()`. This is removed: auto-reset bakes RL episode semantics
+into the physics layer. The caller knows whether a `StepError` means "reset
+this env" or "this model is broken, abort the whole batch." sim-core provides
+the mechanism (`reset`/`reset_where`); the policy belongs to the consumer.
 
-**Error handling:** Environments that fail (e.g., `CholeskyFailed`,
-`SingularMassMatrix`) are recorded in `errors`, flagged in `terminated`, and
-auto-reset on the next `step_all()` call. The batch never aborts due to a single
-environment failure.
+**Reset:**
 
-**SIMD integration:** sim-simd provides within-environment acceleration:
-`batch_dot_product_4()`, `batch_aabb_overlap_4()`, `batch_normal_force_4()`,
-`batch_friction_force_4()`, `batch_integrate_position_4()`,
-`batch_integrate_velocity_4()`. These accelerate the inner loop of each
-environment's step. Cross-environment parallelism comes from rayon, not SIMD.
+`Data::reset()` resets the source-of-truth fields (qpos, qvel, ctrl, etc.)
+but does **not** zero `qfrc_applied` or `xfrc_applied`. These are user
+inputs that persist across reset — callers who need a fully clean state
+must zero them explicitly. See the "Current State" section for the complete
+field-by-field breakdown.
+
+```rust
+impl BatchSim {
+    /// Reset environment `i` to initial state via `Data::reset(&Model)`.
+    ///
+    /// Does **not** zero `qfrc_applied` / `xfrc_applied` (see `Data::reset`
+    /// documentation). Callers must zero these explicitly if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `None` if `i >= len()`.
+    pub fn reset(&mut self, i: usize) -> Option<()> {
+        self.envs.get_mut(i)?.reset(&self.model);
+        Some(())
+    }
+
+    /// Reset all environments where `mask[i]` is true.
+    ///
+    /// Environments where `mask[i]` is false are untouched.
+    /// If `mask.len() < len()`, unaddressed environments are untouched.
+    /// If `mask.len() > len()`, excess entries are ignored.
+    pub fn reset_where(&mut self, mask: &[bool]) {
+        let model = &self.model;
+        for (i, data) in self.envs.iter_mut().enumerate() {
+            if mask.get(i).copied().unwrap_or(false) {
+                data.reset(model);
+            }
+        }
+    }
+
+    /// Reset all environments to initial state.
+    pub fn reset_all(&mut self) {
+        let model = &self.model;
+        for data in &mut self.envs {
+            data.reset(model);
+        }
+    }
+}
+```
+
+**No parallel reset.** `Data::reset()` is O(nq + nv + nu + na) — a handful
+of `fill(0.0)` calls on small vectors. For a humanoid (nv=28), reset takes
+~100 ns. Even at 4096 envs, sequential reset is ~0.4 ms — negligible
+compared to a single `step_all()` (~ms per env). Parallelizing reset via
+rayon would add thread-pool overhead that exceeds the work itself. If this
+becomes a bottleneck at much larger scales, parallelization can be added
+trivially (the pattern is identical to `step_all()`).
+
+**Design constraint — single Model:** All environments share the same
+`Arc<Model>` (same `nq`, `nv`, body tree, geom set). Multi-model batching
+(different robots in the same batch) would require per-env dimensions and
+is explicitly out of scope.
+
+**What this API does NOT include (and why):**
+
+- **No `RewardFn` / rewards** — reward computation is an RL concern, not a
+  physics concern. MuJoCo itself has no reward concept. Consumers compute
+  rewards by reading `Data` fields after `step_all()`.
+- **No `terminated` / `truncated`** — episode boundary semantics belong to
+  the RL wrapper (Gymnasium, etc.), not the physics engine. The engine
+  reports `StepError`; the wrapper interprets it.
+- **No `BatchResult` / `states: DMatrix`** — a fixed `(n_envs, nq+nv)`
+  matrix is too rigid (ignores `act`, `sensordata`, `xpos`, contacts) and
+  too narrow (RL frameworks need different observation spaces). Instead,
+  users read whatever fields they need directly from each `Data`. If
+  contiguous matrix extraction is needed (e.g., for numpy interop via FFI),
+  that belongs in a future Python binding layer, not in the core API.
+- **No `set_ctrl_batch(matrix)`** — would duplicate `Data.ctrl` which is
+  already public. Direct field access is simpler and more flexible (users
+  can set `qfrc_applied`, `xfrc_applied`, `act` too).
+
+**SIMD integration:** sim-simd provides within-environment acceleration
+(`batch_dot_product_4()`, `batch_aabb_overlap_4()`, etc.). These accelerate
+the inner loop of each environment's step. Cross-environment parallelism
+comes from rayon, not SIMD. The two are orthogonal and compose naturally.
 
 #### Acceptance Criteria
-1. `BatchSim::step_all()` produces identical results to calling `Data::step()` on each environment sequentially — parallelism does not change simulation output.
-2. `states` matrix layout is stable: row = env, cols = qpos ++ qvel.
-3. Failed environments do not affect healthy environments in the same batch.
-4. Linear throughput scaling up to available CPU cores (verified by benchmark with 1, 2, 4, 8 threads).
-5. Zero-copy state extraction — `states` is filled directly from `Data` fields without intermediate allocations.
-6. `reset_where()` resets only flagged environments without touching others.
+
+1. **Bit-exact determinism:** `BatchSim::step_all()` produces identical
+   `Data` state (qpos, qvel, qacc, contacts, sensordata — all fields) to
+   calling `Data::step()` on each environment sequentially. Verified by
+   test: step N envs with distinct initial states both batched and
+   sequential, assert `Data` fields are bitwise equal.
+
+2. **Error isolation:** A `StepError` in environment `i` does not affect
+   any other environment's state. Verified by test: inject a NaN into one
+   env's `qpos`, step the batch, confirm all other envs stepped correctly.
+
+3. **No auto-reset:** Failed environments retain their error state after
+   `step_all()`. A subsequent `step_all()` without explicit `reset()` will
+   produce the same (or another) error for that env. Verified by test.
+
+4. **Reset correctness:** `reset(i)` delegates to `Data::reset(&Model)`,
+   which zeros source-of-truth fields (qpos ← qpos0, qvel, qacc, ctrl,
+   act, sensordata, time, contacts) but does **not** zero `qfrc_applied`,
+   `xfrc_applied`, or `efc_lambda` (see "Current State" for full breakdown).
+   Intermediate fields (FK outputs, forces, mass matrix) are stale after
+   reset but recomputed on the next `forward()` — this is correct.
+   `reset(out_of_bounds)` returns `None`. `reset_where([true, false, true])`
+   resets envs 0 and 2, leaves env 1 untouched. Verified by test.
+
+5. **Throughput scaling:** Benchmark with a non-trivial model (humanoid,
+   nv ≥ 28, with contacts) at N = {1, 16, 64, 256, 1024} environments.
+   Measure wall-clock time for 100 steps. With `parallel` feature:
+   throughput (envs × steps / sec) scales ≥ 0.7× linearly up to the
+   number of physical CPU cores. Rayon's work-stealing handles load
+   imbalance (some envs have more contacts than others).
+
+6. **Sequential fallback:** Without `parallel` feature, `step_all()`
+   compiles and produces identical results. No `#[cfg]` pollution outside
+   `batch.rs`.
+
+7. **Feature-gated:** `BatchSim` is available unconditionally (it's useful
+   even without parallelism for managing multiple envs). Only the rayon
+   `par_iter_mut` path is gated behind `#[cfg(feature = "parallel")]`.
+   When `parallel` is disabled, the sequential path is used — no rayon
+   dependency pulled in.
+
+8. **Zero `unwrap()` / `expect()`:** All indexing uses `.get()` returning
+   `Option` or bounds-checked iteration. `step()` returns `Result`.
+   `reset()` returns `Option<()>`. No panics in library code.
+
+#### Implementation Notes
+
+**`Data::reset()` semantics:** Fully documented in the "Current State"
+section. Key point for implementors: `qfrc_applied` and `xfrc_applied`
+persist across `Data::reset()`. The `BatchSim` API does not add its own
+reset logic — it delegates directly to `Data::reset()`. If a future
+`Data::reset()` change adds/removes fields from the reset set, `BatchSim`
+inherits the change automatically.
+
+**`static WARN_ONCE` in `mj_fwd_constraint()`:** The `Once` at
+`mujoco_pipeline.rs:10435` prints a warning for unimplemented tendon equality
+constraints. `Once` is `Sync`, so concurrent calls from rayon threads are
+safe — one thread prints, others skip. No code change needed.
+
+**Rayon thread pool:** `step_all()` uses the global rayon thread pool
+(default: one thread per logical core). Users who need custom thread counts
+can configure it via `rayon::ThreadPoolBuilder::new().num_threads(n).build_global()`.
+We do not expose thread pool configuration in `BatchSim` — that's rayon's
+API surface, not ours.
+
+#### Benchmark Specification
+
+Create `benches/batch_benchmarks.rs` with:
+
+```rust
+// Model: humanoid with contacts (ground plane + feet)
+// Envs: [1, 16, 64, 256, 1024]
+// Steps per measurement: 100
+// Metric: envs * steps / wall_seconds (throughput)
+//
+// Baseline: single-env sequential (BatchSim with parallel disabled)
+// Compare: BatchSim with parallel enabled
+//
+// Report: throughput ratio vs single-env at each N
+```
+
+Use `criterion` (already a dev-dependency). The benchmark model should be
+constructed programmatically (no external XML dependency in benchmarks).
 
 #### Files
-- `sim/L0/core/src/` — create `batch.rs` module
-- `sim/L0/core/Cargo.toml` — modify (enable rayon under `parallel` feature)
+
+- `sim/L0/core/src/batch.rs` — new module, contains `BatchSim`
+- `sim/L0/core/src/lib.rs` — add `pub mod batch;` and re-export `BatchSim`
+- `sim/L0/core/Cargo.toml` — already correct (`parallel = ["dep:rayon"]`)
+- `sim/L0/core/benches/batch_benchmarks.rs` — new benchmark
+- Tests: inline `#[cfg(test)]` in `batch.rs` + integration test in
+  `sim/L0/tests/integration/`
 
 ---
 

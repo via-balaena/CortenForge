@@ -84,6 +84,10 @@ pub mod sdf;
 // Contact geometry types (moved from sim-contact)
 pub mod contact;
 
+// Batched simulation (N independent environments sharing one Model)
+pub mod batch;
+
+pub use batch::BatchSim;
 pub use collision_shape::{Aabb, Axis, CollisionShape};
 
 pub use contact::{ContactForce, ContactManifold, ContactPoint};

@@ -75,7 +75,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | MJCF `<tendon>` parsing + pipeline | Fixed + spatial tendons fully wired (kinematics, wrapping, actuation, passive, constraints, sensors) | [§13](#13-model-format) |
 | MJCF `<sensor>` parsing + wiring | 32 sensor types parsed; all 32 wired to pipeline via `process_sensors()` | [§13](#13-model-format) |
 | Muscle pipeline | MuJoCo FLV curves, activation dynamics (Millard 2013), act_dot/integrator architecture, RK4 activation | [§6](#6-actuation) |
-| Multi-threading | `parallel` feature with rayon (island-parallel solving removed in Phase 3) | [§12](#12-performance-optimizations) |
+| Multi-threading | `parallel` feature with rayon: `BatchSim::step_all()` for cross-environment parallelism (island-parallel solving removed in Phase 3) | [§12](#12-performance-optimizations) |
 | SIMD optimization | `sim-simd` crate with `Vec3x4`, `Vec3x8`, batch operations | [§12](#12-performance-optimizations) |
 
 **For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics + site transmissions), sensors (32 pipeline types, all wired from MJCF), and fixed + spatial tendons (including sphere/cylinder wrapping, sidesite, pulley) are functional. Deformable bodies require pipeline integration before they produce correct results. See [`sim/docs/todo/index.md`](./todo/index.md) for the full gap list.
@@ -1096,7 +1096,7 @@ for _ in 0..100 {
 | Sparse matrix ops | Native | `SparseJacobian`, `JacobianBuilder` (was in `sparse.rs`) | **Removed** (Phase 3 consolidation) | - |
 | Sleeping bodies | Native | — | **Not implemented** (removed with World/Stepper) | - |
 | Constraint islands | Auto | `ConstraintIslands` (was in `islands.rs`) | **Removed** (Phase 3 consolidation) | - |
-| **Multi-threading** | Model-data separation | `parallel` feature with rayon | **Reserved** (Cargo.toml wiring exists but zero `#[cfg(feature = "parallel")]` or rayon usage in code; see [future_work_3 #9](./todo/future_work_3.md)) | - |
+| **Multi-threading** | Model-data separation | `parallel` feature with rayon | **Active** — `BatchSim::step_all()` uses `par_iter_mut` for cross-environment parallelism (`batch.rs`); see [future_work_3 #9](./todo/future_work_3.md) | - |
 | SIMD | Likely | `sim-simd` crate | **Partial** (only `find_max_dot()` is used by sim-core GJK; all other batch ops have zero callers outside benchmarks) | - |
 
 ### Implementation Notes: SIMD Optimization ⚠️ PARTIAL (crate complete; only `find_max_dot` has production callers)
@@ -1155,9 +1155,9 @@ use sim_core::{ContactPoint, ContactManifold, ContactForce};
 
 **Files:** `sim-simd/src/`, `sim-core/src/gjk_epa.rs` (batch contact processor removed; contact types now in `sim-core`)
 
-### Implementation Notes: Multi-threading ⚠️ PARTIALLY REMOVED
+### Implementation Notes: Multi-threading ✅ ACTIVE (cross-environment parallelism via BatchSim)
 
-> The island-parallel constraint solving described below was **deleted in Phase 3 consolidation** along with the Newton solver and `islands.rs`. The `parallel` feature and rayon dependency remain available in sim-core (`core/Cargo.toml:17,31`) but have no active constraint-parallelism callers. See [future_work_3 #9](./todo/future_work_3.md) for the batched simulation plan which will use rayon for cross-environment parallelism.
+> The island-parallel constraint solving described below was **deleted in Phase 3 consolidation** along with the Newton solver and `islands.rs`. The `parallel` feature and rayon dependency remain available in sim-core (`core/Cargo.toml:17,31`). The `parallel` feature is now used by `BatchSim::step_all()` (`batch.rs`) for cross-environment parallelism via `par_iter_mut`. See [future_work_3 #9](./todo/future_work_3.md).
 
 The original `parallel` feature enabled multi-threaded constraint solving using rayon.
 Before the Model/Data refactor, the original design used a snapshot-based approach
@@ -1201,7 +1201,8 @@ config.solver.parallel.min_islands_for_parallel = 2;
 config.solver.parallel = ParallelConfig::many_islands();
 
 // Note: Island-parallel constraint solving was removed in Phase 3.
-// The parallel feature and rayon dependency remain for future use.
+// The parallel feature is now used by BatchSim::step_all() for
+// cross-environment parallelism (see batch.rs).
 ```
 
 **Performance notes:**
@@ -1438,12 +1439,12 @@ The following were completed in January 2026:
 
 See [future_work_1.md](./todo/future_work_1.md) for remaining items.
 
-### ⚠️ Recently Completed then Partially Removed: Multi-threading
+### ✅ Multi-threading (constraint-parallel removed; cross-env parallelism active)
 
 The `parallel` feature originally enabled multi-threaded constraint solving and body integration.
-Island-parallel constraint solving (`solve_islands_parallel()`) and its dependencies (Newton solver, `islands.rs`) were **removed in Phase 3 consolidation**. The rayon dependency and `parallel` feature flag remain available for future batched simulation ([future_work_3 #9](./todo/future_work_3.md)).
+Island-parallel constraint solving (`solve_islands_parallel()`) and its dependencies (Newton solver, `islands.rs`) were **removed in Phase 3 consolidation**. The rayon dependency and `parallel` feature flag are now used by `BatchSim::step_all()` for cross-environment parallelism ([future_work_3 #9](./todo/future_work_3.md)).
 
-**Files:** `sim-types/src/config.rs` (ParallelConfig). Removed: `sim-constraint/src/parallel.rs`, `sim-core/src/world.rs`, `sim-core/src/stepper.rs`
+**Files:** `sim-core/src/batch.rs` (BatchSim), `sim-types/src/config.rs` (ParallelConfig). Removed: `sim-constraint/src/parallel.rs`, `sim-core/src/world.rs`, `sim-core/src/stepper.rs`
 
 ### ✅ Recently Completed: MJB Binary Format
 
@@ -1828,7 +1829,7 @@ Focus: Large standalone features, each potentially its own PR.
 | ~~Flex edge constraints~~ | §10 Equality | Low | ✅ COMPLETED → ⚠️ **Standalone** | In sim-deformable, XPBD not called from pipeline |
 | ~~SDF collision~~ | §4 Collision, §5 Geoms | High | ✅ **COMPLETED** | All 10 shape combinations implemented (see §5 notes) |
 | ~~Skinned meshes~~ | §11 Deformables | High | ✅ **COMPLETED** | Visual deformation for rendering |
-| ~~Multi-threading~~ | §12 Performance | Medium | ⚠️ **Reserved** | Island-parallel solving removed in Phase 3; rayon is an optional dep with no callers in code; see [future_work_3 #9](./todo/future_work_3.md) |
+| ~~Multi-threading~~ | §12 Performance | Medium | ✅ **Active** | Island-parallel solving removed in Phase 3; `BatchSim::step_all()` now uses rayon `par_iter_mut` for cross-environment parallelism; see [future_work_3 #9](./todo/future_work_3.md) |
 | ~~MJB binary format~~ | §13 Model Format | Low | ✅ **COMPLETED** | Faster loading via bincode serialization |
 
 **Implemented (some now standalone or removed — see table above for current status):**

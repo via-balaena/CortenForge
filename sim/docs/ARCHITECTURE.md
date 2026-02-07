@@ -234,6 +234,7 @@ The physics engine. Depends on sim-types and sim-simd. Contains:
 - `mesh.rs` — Triangle mesh collision functions
 - `heightfield.rs`, `sdf.rs` — Terrain and implicit surface collision
 - `raycast.rs` — Ray-shape intersection
+- `batch.rs` — `BatchSim`: N independent `Data` environments sharing one `Arc<Model>`, parallel stepping via rayon (`parallel` feature)
 
 ### Contact Types (in sim-core)
 
@@ -429,7 +430,7 @@ is Layer 1 only.
 
 | Flag | Crates | Description |
 |------|--------|-------------|
-| `parallel` | sim-core | Rayon-based parallelization. **Reserved** — declared but no `#[cfg]` guards yet; see [future_work_3 #9](./todo/future_work_3.md) |
+| `parallel` | sim-core | Rayon-based parallelization for `BatchSim::step_all()`. Sequential fallback when disabled. See [future_work_3 #9](./todo/future_work_3.md) |
 | `serde` | Most crates | Serialization support |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 | `muscle` | sim-constraint | Hill-type muscle integration |
