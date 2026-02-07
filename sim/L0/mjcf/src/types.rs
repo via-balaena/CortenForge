@@ -498,6 +498,18 @@ pub struct MjcfActuatorDefaults {
     pub ctrllimited: Option<bool>,
     /// Force limited.
     pub forcelimited: Option<bool>,
+    /// Gain type default for <general> actuators.
+    pub gaintype: Option<String>,
+    /// Bias type default for <general> actuators.
+    pub biastype: Option<String>,
+    /// Dynamics type default for <general> actuators.
+    pub dyntype: Option<String>,
+    /// Gain parameters default for <general> actuators.
+    pub gainprm: Option<Vec<f64>>,
+    /// Bias parameters default for <general> actuators.
+    pub biasprm: Option<Vec<f64>>,
+    /// Dynamics parameters default for <general> actuators.
+    pub dynprm: Option<Vec<f64>>,
 }
 
 /// Default tendon parameters.
@@ -1887,6 +1899,31 @@ pub struct MjcfActuator {
     // ========================================================================
     /// Gain in force units for adhesion (total force = control × gain).
     pub gain: f64,
+
+    // ========================================================================
+    // <general>-specific attributes
+    // ========================================================================
+    // These are only meaningful for MjcfActuatorType::General.
+    // For shortcut types (Motor, Position, etc.), these are ignored —
+    // the model builder expands shortcuts using their own dedicated logic.
+    /// Gain type: "fixed", "affine", "muscle".
+    /// None means use default (Fixed). Only parsed for <general>.
+    pub gaintype: Option<String>,
+    /// Bias type: "none", "affine", "muscle".
+    /// None means use default (None/no bias). Only parsed for <general>.
+    pub biastype: Option<String>,
+    /// Dynamics type: "none", "integrator", "filter", "filterexact", "muscle".
+    /// None means use default (None/direct). Only parsed for <general>.
+    pub dyntype: Option<String>,
+    /// Gain parameters (up to 9 elements, zero-padded).
+    /// None means use default [1, 0, ..., 0]. Only parsed for <general>.
+    pub gainprm: Option<Vec<f64>>,
+    /// Bias parameters (up to 9 elements, zero-padded).
+    /// None means use default [0, ..., 0]. Only parsed for <general>.
+    pub biasprm: Option<Vec<f64>>,
+    /// Dynamics parameters (up to 3 elements, zero-padded).
+    /// None means use default [1, 0, 0]. Only parsed for <general>.
+    pub dynprm: Option<Vec<f64>>,
 }
 
 impl Default for MjcfActuator {
@@ -1924,6 +1961,13 @@ impl Default for MjcfActuator {
             fvmax: 1.2,
             // Adhesion defaults
             gain: 1.0,
+            // <general>-specific defaults (all None = use MuJoCo defaults in model builder)
+            gaintype: None,
+            biastype: None,
+            dyntype: None,
+            gainprm: None,
+            biasprm: None,
+            dynprm: None,
         }
     }
 }
