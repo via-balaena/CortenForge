@@ -240,8 +240,14 @@ impl DefaultResolver {
         let mut result = actuator.clone();
 
         if let Some(defaults) = self.actuator_defaults(actuator.class.as_deref()) {
-            // Gear: apply default if at default (1.0)
-            if (result.gear - 1.0).abs() < 1e-10 {
+            // Gear: apply default if at default [1, 0, 0, 0, 0, 0]
+            let default_gear = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+            if result
+                .gear
+                .iter()
+                .zip(default_gear.iter())
+                .all(|(a, b)| (a - b).abs() < 1e-10)
+            {
                 if let Some(gear) = defaults.gear {
                     result.gear = gear;
                 }
@@ -865,7 +871,7 @@ mod tests {
             class: "motor".to_string(),
             parent_class: None,
             actuator: Some(MjcfActuatorDefaults {
-                gear: Some(100.0),
+                gear: Some([100.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 ctrlrange: Some((-1.0, 1.0)),
                 kp: Some(50.0),
                 ..Default::default()
@@ -881,7 +887,7 @@ mod tests {
         };
 
         let resolved = resolver.apply_to_actuator(&actuator);
-        assert_relative_eq!(resolved.gear, 100.0, epsilon = 1e-10);
+        assert_relative_eq!(resolved.gear[0], 100.0, epsilon = 1e-10);
         assert_eq!(resolved.ctrlrange, Some((-1.0, 1.0)));
         assert_relative_eq!(resolved.kp, 50.0, epsilon = 1e-10);
     }

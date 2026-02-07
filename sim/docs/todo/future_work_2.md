@@ -4657,15 +4657,16 @@ body-level walk is strictly more conservative (zeros more DOFs), which is safe.
 
 #### Quaternion Subtraction (`subquat`)
 MuJoCo's `mju_subQuat(res, qa, qb)` computes the orientation difference as an
-axis-angle 3-vector:
+axis-angle 3-vector satisfying `qb * quat(res) = qa`:
 ```
-dq = qa * conjugate(qb)        // relative quaternion
-if dq.w < 0: dq = -dq          // shortest path
-angle = 2 * asin(||dq.xyz||)   // with clamp for numerical safety
-if ||dq.xyz|| > ε:
-    res = dq.xyz / ||dq.xyz|| * angle
-else:
-    res = 2 * dq.xyz            // small-angle limit
+dq = conjugate(qb) * qa              // relative quaternion in qb's frame
+axis = normalize(dq.xyz)             // unit rotation axis
+sin_half = ||dq.xyz||                // before normalization
+angle = 2 * atan2(sin_half, dq.w)   // full-range angle via atan2
+if angle > π: angle -= 2π            // shortest path
+res = axis * angle                   // axis-angle 3-vector
+// small-angle limit: when sin_half ≈ 0, axis is undefined;
+// atan2(0, 1) = 0 so res = 0-vector (correct)
 ```
 This must be implemented as a utility. It is the rotational analogue of the
 translational position difference `p_site - p_ref`.

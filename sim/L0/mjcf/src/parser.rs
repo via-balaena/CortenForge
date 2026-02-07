@@ -454,7 +454,14 @@ fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
             defaults.forcerange = Some((parts[0], parts[1]));
         }
     }
-    defaults.gear = parse_float_attr(e, "gear");
+    if let Some(gear_str) = get_attribute_opt(e, "gear") {
+        let parts = parse_float_array(&gear_str)?;
+        let mut gear = [0.0f64; 6];
+        for (i, &v) in parts.iter().take(6).enumerate() {
+            gear[i] = v;
+        }
+        defaults.gear = Some(gear);
+    }
     defaults.kp = parse_float_attr(e, "kp");
     defaults.kv = parse_float_attr(e, "kv");
 
@@ -1237,9 +1244,15 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
     actuator.tendon = get_attribute_opt(e, "tendon");
     actuator.body = get_attribute_opt(e, "body");
 
-    if let Some(gear) = parse_float_attr(e, "gear") {
+    if let Some(gear_str) = get_attribute_opt(e, "gear") {
+        let parts = parse_float_array(&gear_str)?;
+        let mut gear = [0.0f64; 6];
+        for (i, &v) in parts.iter().take(6).enumerate() {
+            gear[i] = v;
+        }
         actuator.gear = gear;
     }
+    actuator.refsite = get_attribute_opt(e, "refsite");
 
     if let Some(ctrlrange) = get_attribute_opt(e, "ctrlrange") {
         let parts = parse_float_array(&ctrlrange)?;
@@ -2222,7 +2235,7 @@ mod tests {
         assert_eq!(motor.name, "motor1");
         assert_eq!(motor.actuator_type, MjcfActuatorType::Motor);
         assert_eq!(motor.joint, Some("joint1".to_string()));
-        assert_relative_eq!(motor.gear, 100.0, epsilon = 1e-10);
+        assert_relative_eq!(motor.gear[0], 100.0, epsilon = 1e-10);
 
         let servo = &model.actuators[1];
         assert_eq!(servo.name, "servo1");
@@ -2593,7 +2606,7 @@ mod tests {
             .actuator
             .as_ref()
             .expect("should have actuator defaults");
-        assert_relative_eq!(actuator_defaults.gear.unwrap(), 100.0, epsilon = 1e-10);
+        assert_relative_eq!(actuator_defaults.gear.unwrap()[0], 100.0, epsilon = 1e-10);
         assert_eq!(actuator_defaults.ctrlrange, Some((-1.0, 1.0)));
         assert_relative_eq!(actuator_defaults.kp.unwrap(), 50.0, epsilon = 1e-10);
         assert_relative_eq!(actuator_defaults.kv.unwrap(), 5.0, epsilon = 1e-10);

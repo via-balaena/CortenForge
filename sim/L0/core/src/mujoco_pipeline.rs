@@ -961,10 +961,11 @@ pub struct Model {
     pub actuator_trntype: Vec<ActuatorTransmission>,
     /// Dynamics type (None, Filter, Integrator, Muscle).
     pub actuator_dyntype: Vec<ActuatorDynamics>,
-    /// Transmission target ID (joint/tendon/site).
-    pub actuator_trnid: Vec<usize>,
-    /// Transmission gear ratio.
-    pub actuator_gear: Vec<f64>,
+    /// Transmission target ID (joint/tendon/site). Second slot is refsite for
+    /// site transmissions, `usize::MAX` when unused.
+    pub actuator_trnid: Vec<[usize; 2]>,
+    /// Transmission gear ratio (6D: [tx ty tz rx ry rz]).
+    pub actuator_gear: Vec<[f64; 6]>,
     /// Control input limits [min, max].
     pub actuator_ctrlrange: Vec<(f64, f64)>,
     /// Force output limits [min, max].
@@ -1567,6 +1568,11 @@ pub struct Data {
     /// The scalar force produced by each actuator after gain/bias/activation.
     pub actuator_force: Vec<f64>,
 
+    /// Actuator moment vectors (length `nu`, each nv-dimensional).
+    /// Populated for Site transmissions by `mj_transmission_site`.
+    /// Maps scalar actuator force to generalized forces: `qfrc += moment * force`.
+    pub actuator_moment: Vec<DVector<f64>>,
+
     /// Activation time-derivative (length `na`).
     /// Computed by `mj_fwd_actuation()`, integrated by the integrator (Euler/RK4).
     /// Separating derivative from integration matches MuJoCo's `mjData.act_dot`
@@ -1596,6 +1602,8 @@ pub struct Data {
     pub site_xpos: Vec<Vector3<f64>>,
     /// Site rotation matrices (length `nsite`).
     pub site_xmat: Vec<Matrix3<f64>>,
+    /// Site orientations in world frame (length `nsite`).
+    pub site_xquat: Vec<UnitQuaternion<f64>>,
 
     // ==================== Velocities (computed from qvel) ====================
     /// Body spatial velocities (length `nbody`): (angular, linear).
@@ -2051,6 +2059,7 @@ impl Model {
             actuator_length: vec![0.0; self.nu],
             actuator_velocity: vec![0.0; self.nu],
             actuator_force: vec![0.0; self.nu],
+            actuator_moment: vec![DVector::zeros(self.nv); self.nu],
             act_dot: DVector::zeros(self.na),
 
             // Body states
@@ -2067,6 +2076,7 @@ impl Model {
             // Site poses
             site_xpos: vec![Vector3::zeros(); self.nsite],
             site_xmat: vec![Matrix3::identity(); self.nsite],
+            site_xquat: vec![UnitQuaternion::identity(); self.nsite],
 
             // Velocities
             cvel: vec![SpatialVector::zeros(); self.nbody],
@@ -2278,7 +2288,7 @@ impl Model {
                 continue;
             }
 
-            let gear = self.actuator_gear[i];
+            let gear = self.actuator_gear[i][0];
 
             // actuator_length = gear * transmission_length,
             // so lengthrange = gear * transmission_lengthrange.
@@ -2291,7 +2301,7 @@ impl Model {
 
             match self.actuator_trntype[i] {
                 ActuatorTransmission::Tendon => {
-                    let tid = self.actuator_trnid[i];
+                    let tid = self.actuator_trnid[i][0];
                     if tid < self.ntendon {
                         if self.tendon_limited[tid] {
                             let (lo, hi) = self.tendon_range[tid];
@@ -2336,13 +2346,17 @@ impl Model {
                     }
                 }
                 ActuatorTransmission::Joint => {
-                    let jid = self.actuator_trnid[i];
+                    let jid = self.actuator_trnid[i][0];
                     if jid < self.njnt {
                         let (lo, hi) = self.jnt_range[jid];
                         self.actuator_lengthrange[i] = scale_range(lo, hi);
                     }
                 }
-                ActuatorTransmission::Site => {}
+                ActuatorTransmission::Site => {
+                    // Site length is configuration-dependent (full FK required).
+                    // Explicit lengthrange must be provided in MJCF for muscle
+                    // actuators with site transmission. No-op: leave at (0, 0).
+                }
             }
         }
 
@@ -2361,18 +2375,18 @@ impl Model {
             }
 
             // Build transmission moment J (maps unit actuator force → generalized forces).
-            let gear = self.actuator_gear[i];
+            let gear = self.actuator_gear[i][0];
             let mut j_vec = DVector::zeros(self.nv);
             match self.actuator_trntype[i] {
                 ActuatorTransmission::Joint => {
-                    let jid = self.actuator_trnid[i];
+                    let jid = self.actuator_trnid[i][0];
                     if jid < self.njnt {
                         let dof_adr = self.jnt_dof_adr[jid];
                         j_vec[dof_adr] = gear;
                     }
                 }
                 ActuatorTransmission::Tendon => {
-                    let tid = self.actuator_trnid[i];
+                    let tid = self.actuator_trnid[i][0];
                     if tid < self.ntendon {
                         match self.tendon_type[tid] {
                             TendonType::Fixed => {
@@ -2398,7 +2412,84 @@ impl Model {
                         }
                     }
                 }
-                ActuatorTransmission::Site => {}
+                ActuatorTransmission::Site => {
+                    let sid = self.actuator_trnid[i][0];
+                    let refid = self.actuator_trnid[i][1];
+                    let (jac_t, jac_r) = mj_jac_site(self, &data, sid);
+                    let full_gear = self.actuator_gear[i];
+
+                    if refid == usize::MAX {
+                        // Mode A: wrench in world frame via site rotation.
+                        let wrench_t = data.site_xmat[sid]
+                            * Vector3::new(full_gear[0], full_gear[1], full_gear[2]);
+                        let wrench_r = data.site_xmat[sid]
+                            * Vector3::new(full_gear[3], full_gear[4], full_gear[5]);
+                        for dof in 0..self.nv {
+                            j_vec[dof] =
+                                jac_t.column(dof).dot(&wrench_t) + jac_r.column(dof).dot(&wrench_r);
+                        }
+                    } else {
+                        // Mode B: difference Jacobian with common-ancestor zeroing.
+                        let (ref_jac_t, ref_jac_r) = mj_jac_site(self, &data, refid);
+                        let mut diff_t = &jac_t - &ref_jac_t;
+                        let mut diff_r = &jac_r - &ref_jac_r;
+
+                        // Zero common-ancestor DOF columns.
+                        let b0 = self.site_body[sid];
+                        let b1 = self.site_body[refid];
+                        let mut ancestors = Vec::new();
+                        {
+                            let mut b = b0;
+                            while b != 0 {
+                                ancestors.push(b);
+                                b = self.body_parent[b];
+                            }
+                            ancestors.push(0);
+                        }
+                        let bca = {
+                            let mut b = b1;
+                            loop {
+                                if ancestors.contains(&b) {
+                                    break b;
+                                }
+                                if b == 0 {
+                                    break 0;
+                                }
+                                b = self.body_parent[b];
+                            }
+                        };
+                        {
+                            let mut b = bca;
+                            loop {
+                                let js = self.body_jnt_adr[b];
+                                let je = js + self.body_jnt_num[b];
+                                for jid in js..je {
+                                    let ds = self.jnt_dof_adr[jid];
+                                    let nd = self.jnt_type[jid].nv();
+                                    for d in ds..(ds + nd) {
+                                        for k in 0..3 {
+                                            diff_t[(k, d)] = 0.0;
+                                            diff_r[(k, d)] = 0.0;
+                                        }
+                                    }
+                                }
+                                if b == 0 {
+                                    break;
+                                }
+                                b = self.body_parent[b];
+                            }
+                        }
+
+                        let wrench_t = data.site_xmat[refid]
+                            * Vector3::new(full_gear[0], full_gear[1], full_gear[2]);
+                        let wrench_r = data.site_xmat[refid]
+                            * Vector3::new(full_gear[3], full_gear[4], full_gear[5]);
+                        for dof in 0..self.nv {
+                            j_vec[dof] = diff_t.column(dof).dot(&wrench_t)
+                                + diff_r.column(dof).dot(&wrench_r);
+                        }
+                    }
+                }
             }
 
             // Solve M * x = J using the sparse L^T D L factorization from CRBA.
@@ -2898,6 +2989,10 @@ impl Data {
         // Stage 1a: Forward kinematics - compute body/geom/site poses from qpos
         mj_fwd_position(model, self);
 
+        // Stage 1a': Site transmission - compute actuator_length + actuator_moment
+        // for Site transmissions (needs FK output, before sensors read actuator_length).
+        mj_transmission_site(model, self);
+
         // Stage 1b: Collision detection - detect contacts from geometry pairs
         mj_collision(model, self);
 
@@ -3225,9 +3320,9 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
         let body_quat = data.xquat[body_id];
 
         data.site_xpos[site_id] = body_pos + body_quat * model.site_pos[site_id];
-        data.site_xmat[site_id] = (body_quat * model.site_quat[site_id])
-            .to_rotation_matrix()
-            .into_inner();
+        let site_world_quat = body_quat * model.site_quat[site_id];
+        data.site_xmat[site_id] = site_world_quat.to_rotation_matrix().into_inner();
+        data.site_xquat[site_id] = site_world_quat;
     }
 
     // Tendon kinematics (after site poses, before subtree COM)
@@ -5796,14 +5891,14 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
 
             MjSensorType::ActuatorPos => {
                 // Actuator position: transmission length = gear * joint_position.
-                // For joint-type transmissions, this is gear * qpos[qpos_adr].
+                // For joint-type transmissions, this is gear[0] * qpos[qpos_adr].
                 if objid < model.nu {
                     match model.actuator_trntype[objid] {
                         ActuatorTransmission::Joint => {
-                            let jnt_id = model.actuator_trnid[objid];
+                            let jnt_id = model.actuator_trnid[objid][0];
                             if jnt_id < model.njnt {
                                 let qpos_adr = model.jnt_qpos_adr[jnt_id];
-                                let gear = model.actuator_gear[objid];
+                                let gear = model.actuator_gear[objid][0];
                                 sensor_write(
                                     &mut data.sensordata,
                                     adr,
@@ -5813,17 +5908,17 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                             }
                         }
                         ActuatorTransmission::Tendon => {
-                            let tendon_id = model.actuator_trnid[objid];
+                            let tendon_id = model.actuator_trnid[objid][0];
                             let value = if tendon_id < model.ntendon {
-                                data.ten_length[tendon_id] * model.actuator_gear[objid]
+                                data.ten_length[tendon_id] * model.actuator_gear[objid][0]
                             } else {
                                 0.0
                             };
                             sensor_write(&mut data.sensordata, adr, 0, value);
                         }
                         ActuatorTransmission::Site => {
-                            // Site transmission length not yet available.
-                            sensor_write(&mut data.sensordata, adr, 0, 0.0);
+                            // Length set by mj_transmission_site (runs before this).
+                            sensor_write(&mut data.sensordata, adr, 0, data.actuator_length[objid]);
                         }
                     }
                 }
@@ -6150,13 +6245,10 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::ActuatorFrc => {
-                // Actuator force
+                // Scalar actuator force (transmission-independent).
+                // Matches MuJoCo: actuatorfrc sensor = actuator_force[objid].
                 if objid < model.nu {
-                    let jnt_id = model.actuator_trnid[objid];
-                    if jnt_id < model.njnt {
-                        let dof_adr = model.jnt_dof_adr[jnt_id];
-                        sensor_write(&mut data.sensordata, adr, 0, data.qfrc_actuator[dof_adr]);
-                    }
+                    sensor_write(&mut data.sensordata, adr, 0, data.actuator_force[objid]);
                 }
             }
 
@@ -7067,6 +7159,82 @@ fn accumulate_point_jacobian(
     }
 }
 
+/// Compute the full site Jacobian: 3×nv translational and 3×nv rotational.
+///
+/// Analogous to MuJoCo's `mj_jacSite`. Walks the kinematic chain from
+/// `site_body[site_id]` to root, accumulating per-joint contributions.
+/// Returns `(jac_trans, jac_rot)` where each is a 3×nv `DMatrix`.
+fn mj_jac_site(model: &Model, data: &Data, site_id: usize) -> (DMatrix<f64>, DMatrix<f64>) {
+    let mut jac_trans = DMatrix::zeros(3, model.nv);
+    let mut jac_rot = DMatrix::zeros(3, model.nv);
+
+    let site_pos = data.site_xpos[site_id];
+    let mut current = model.site_body[site_id];
+
+    while current != 0 {
+        let jnt_start = model.body_jnt_adr[current];
+        let jnt_end = jnt_start + model.body_jnt_num[current];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let anchor = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = site_pos - anchor;
+                    let cross = axis.cross(&r);
+                    for k in 0..3 {
+                        jac_trans[(k, dof)] += cross[k];
+                        jac_rot[(k, dof)] += axis[k];
+                    }
+                }
+                MjJointType::Slide => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    for k in 0..3 {
+                        jac_trans[(k, dof)] += axis[k];
+                    }
+                    // No rotational contribution.
+                }
+                MjJointType::Ball => {
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    let anchor = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = site_pos - anchor;
+                    for i in 0..3 {
+                        let omega = rot * Vector3::ith(i, 1.0);
+                        let cross = omega.cross(&r);
+                        for k in 0..3 {
+                            jac_trans[(k, dof + i)] += cross[k];
+                            jac_rot[(k, dof + i)] += omega[k];
+                        }
+                    }
+                }
+                MjJointType::Free => {
+                    // Translational DOFs (dof+0..dof+3): identity columns.
+                    for i in 0..3 {
+                        jac_trans[(i, dof + i)] += 1.0;
+                    }
+                    // Rotational DOFs (dof+3..dof+6).
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    let r = site_pos - data.xpos[jnt_body];
+                    for i in 0..3 {
+                        let omega = rot * Vector3::ith(i, 1.0);
+                        let cross = omega.cross(&r);
+                        for k in 0..3 {
+                            jac_trans[(k, dof + 3 + i)] += cross[k];
+                            jac_rot[(k, dof + 3 + i)] += omega[k];
+                        }
+                    }
+                }
+            }
+        }
+        current = model.body_parent[current];
+    }
+
+    (jac_trans, jac_rot)
+}
+
 /// Map a scalar tendon force to generalized forces via J^T.
 ///
 /// For `TendonType::Fixed`, uses the sparse wrap-array pattern (DOF addresses
@@ -7102,6 +7270,28 @@ fn apply_tendon_force(
             }
         }
     }
+}
+
+/// Compute quaternion difference as axis-angle 3-vector.
+///
+/// Satisfies `qb * quat(res) = qa`, matching MuJoCo's `mju_subQuat`.
+/// Returns the rotation from `qb` to `qa` expressed as an expmap vector.
+fn subquat(qa: &UnitQuaternion<f64>, qb: &UnitQuaternion<f64>) -> Vector3<f64> {
+    // dq = conjugate(qb) * qa  — relative quaternion in qb's frame
+    let dq = qb.conjugate() * qa;
+    let xyz = Vector3::new(dq.i, dq.j, dq.k);
+    let sin_half = xyz.norm();
+    if sin_half < 1e-14 {
+        // Small-angle limit: atan2(0, ~1) → 0, so result is zero vector.
+        return Vector3::zeros();
+    }
+    let axis = xyz / sin_half;
+    let mut angle = 2.0 * sin_half.atan2(dq.w);
+    // Shortest path
+    if angle > std::f64::consts::PI {
+        angle -= 2.0 * std::f64::consts::PI;
+    }
+    axis * angle
 }
 
 /// Result of a wrapping geometry computation.
@@ -7501,6 +7691,119 @@ fn cylinder_wrap(
     }
 }
 
+/// Compute actuator length and moment for site transmissions only.
+///
+/// For each Site-transmission actuator, computes `actuator_length` and
+/// `actuator_moment` (nv-vector). Joint/Tendon transmissions are untouched.
+/// Must run after `mj_fwd_position` (needs site poses) and before
+/// `mj_sensor_pos` (which reads `actuator_length`).
+fn mj_transmission_site(model: &Model, data: &mut Data) {
+    for i in 0..model.nu {
+        if model.actuator_trntype[i] != ActuatorTransmission::Site {
+            continue;
+        }
+
+        let sid = model.actuator_trnid[i][0];
+        let refid = model.actuator_trnid[i][1];
+        let gear = model.actuator_gear[i];
+
+        let (jac_t, jac_r) = mj_jac_site(model, data, sid);
+
+        if refid == usize::MAX {
+            // Mode A — no refsite: length = 0, moment from wrench projection.
+            data.actuator_length[i] = 0.0;
+
+            // Wrench in world frame: rotate gear from site-local to world.
+            let wrench_t = data.site_xmat[sid] * Vector3::new(gear[0], gear[1], gear[2]);
+            let wrench_r = data.site_xmat[sid] * Vector3::new(gear[3], gear[4], gear[5]);
+
+            // moment = J_trans^T @ wrench_t + J_rot^T @ wrench_r
+            let moment = &mut data.actuator_moment[i];
+            for dof in 0..model.nv {
+                moment[dof] = jac_t.column(dof).dot(&wrench_t) + jac_r.column(dof).dot(&wrench_r);
+            }
+        } else {
+            // Mode B — with refsite: length from position/quaternion differences,
+            // moment from difference Jacobian.
+            let (ref_jac_t, ref_jac_r) = mj_jac_site(model, data, refid);
+
+            // Translational length: gear[0:3] · (R_ref^T @ (p_site - p_ref))
+            let dp = data.site_xpos[sid] - data.site_xpos[refid];
+            let dp_ref = data.site_xmat[refid].transpose() * dp;
+            let len_trans = gear[0] * dp_ref.x + gear[1] * dp_ref.y + gear[2] * dp_ref.z;
+
+            // Rotational length: gear[3:6] · subquat(q_site, q_ref)
+            let dq = subquat(&data.site_xquat[sid], &data.site_xquat[refid]);
+            let len_rot = gear[3] * dq.x + gear[4] * dq.y + gear[5] * dq.z;
+
+            data.actuator_length[i] = len_trans + len_rot;
+
+            // Difference Jacobian with common-ancestor DOF zeroing.
+            let mut diff_jac_t = &jac_t - &ref_jac_t;
+            let mut diff_jac_r = &jac_r - &ref_jac_r;
+
+            // Zero common-ancestor DOF columns.
+            let b0 = model.site_body[sid];
+            let b1 = model.site_body[refid];
+            // Find lowest common ancestor.
+            let mut ancestors_b0 = Vec::new();
+            {
+                let mut b = b0;
+                while b != 0 {
+                    ancestors_b0.push(b);
+                    b = model.body_parent[b];
+                }
+                ancestors_b0.push(0);
+            }
+            let bca = {
+                let mut b = b1;
+                loop {
+                    if ancestors_b0.contains(&b) {
+                        break b;
+                    }
+                    if b == 0 {
+                        break 0;
+                    }
+                    b = model.body_parent[b];
+                }
+            };
+            // Zero DOFs for bca and all its ancestors up to root.
+            {
+                let mut b = bca;
+                loop {
+                    let jnt_start = model.body_jnt_adr[b];
+                    let jnt_end = jnt_start + model.body_jnt_num[b];
+                    for jnt_id in jnt_start..jnt_end {
+                        let dof_start = model.jnt_dof_adr[jnt_id];
+                        let ndof = model.jnt_type[jnt_id].nv();
+                        for d in dof_start..(dof_start + ndof) {
+                            for k in 0..3 {
+                                diff_jac_t[(k, d)] = 0.0;
+                                diff_jac_r[(k, d)] = 0.0;
+                            }
+                        }
+                    }
+                    if b == 0 {
+                        break;
+                    }
+                    b = model.body_parent[b];
+                }
+            }
+
+            // Wrench in world frame: rotate gear by refsite frame.
+            let wrench_t = data.site_xmat[refid] * Vector3::new(gear[0], gear[1], gear[2]);
+            let wrench_r = data.site_xmat[refid] * Vector3::new(gear[3], gear[4], gear[5]);
+
+            // moment = diff_J_trans^T @ wrench_t + diff_J_rot^T @ wrench_r
+            let moment = &mut data.actuator_moment[i];
+            for dof in 0..model.nv {
+                moment[dof] =
+                    diff_jac_t.column(dof).dot(&wrench_t) + diff_jac_r.column(dof).dot(&wrench_r);
+            }
+        }
+    }
+}
+
 /// Compute actuator length and velocity from transmission state.
 ///
 /// For each actuator, computes `actuator_length = gear * transmission_length`
@@ -7508,10 +7811,10 @@ fn cylinder_wrap(
 /// Called after `mj_fwd_velocity()` (which provides `ten_velocity`).
 fn mj_actuator_length(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
-        let gear = model.actuator_gear[i];
+        let gear = model.actuator_gear[i][0];
         match model.actuator_trntype[i] {
             ActuatorTransmission::Joint => {
-                let jid = model.actuator_trnid[i];
+                let jid = model.actuator_trnid[i][0];
                 if jid < model.njnt {
                     // Joint transmission only meaningful for Hinge/Slide (scalar qpos).
                     let nv = model.jnt_type[jid].nv();
@@ -7524,14 +7827,16 @@ fn mj_actuator_length(model: &Model, data: &mut Data) {
                 }
             }
             ActuatorTransmission::Tendon => {
-                let tid = model.actuator_trnid[i];
+                let tid = model.actuator_trnid[i][0];
                 if tid < model.ntendon {
                     data.actuator_length[i] = gear * data.ten_length[tid];
                     data.actuator_velocity[i] = gear * data.ten_velocity[tid];
                 }
             }
             ActuatorTransmission::Site => {
-                // Not yet implemented
+                // Length already set by mj_transmission_site (position stage).
+                // Velocity from cached moment:
+                data.actuator_velocity[i] = data.actuator_moment[i].dot(&data.qvel);
             }
         }
     }
@@ -7743,8 +8048,8 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
         // --- Phase 3: Transmission (actuator_force → generalized forces) ---
         // qfrc_actuator += moment^T * actuator_force
         // where moment = gear * raw_Jacobian.
-        let gear = model.actuator_gear[i];
-        let trnid = model.actuator_trnid[i];
+        let gear = model.actuator_gear[i][0];
+        let trnid = model.actuator_trnid[i][0];
         match model.actuator_trntype[i] {
             ActuatorTransmission::Joint => {
                 if trnid < model.njnt {
@@ -7768,7 +8073,15 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     );
                 }
             }
-            ActuatorTransmission::Site => {}
+            ActuatorTransmission::Site => {
+                // Use cached moment vector from mj_transmission_site.
+                for dof in 0..model.nv {
+                    let m = data.actuator_moment[i][dof];
+                    if m != 0.0 {
+                        data.qfrc_actuator[dof] += m * force;
+                    }
+                }
+            }
         }
     }
 }
@@ -13004,8 +13317,8 @@ mod sensor_tests {
         // Add an actuator on the joint
         model.nu = 1;
         model.actuator_trntype.push(ActuatorTransmission::Joint);
-        model.actuator_trnid.push(0); // joint 0
-        model.actuator_gear.push(2.0); // gear ratio 2
+        model.actuator_trnid.push([0, usize::MAX]); // joint 0
+        model.actuator_gear.push([2.0, 0.0, 0.0, 0.0, 0.0, 0.0]); // gear ratio 2
         model.actuator_dyntype.push(ActuatorDynamics::None);
         model.actuator_ctrlrange.push((-1.0, 1.0));
         model.actuator_forcerange.push((-100.0, 100.0));
@@ -13048,8 +13361,8 @@ mod sensor_tests {
         // Add actuator
         model.nu = 1;
         model.actuator_trntype.push(ActuatorTransmission::Joint);
-        model.actuator_trnid.push(0);
-        model.actuator_gear.push(3.0); // gear ratio 3
+        model.actuator_trnid.push([0, usize::MAX]);
+        model.actuator_gear.push([3.0, 0.0, 0.0, 0.0, 0.0, 0.0]); // gear ratio 3
         model.actuator_dyntype.push(ActuatorDynamics::None);
         model.actuator_ctrlrange.push((-1.0, 1.0));
         model.actuator_forcerange.push((-100.0, 100.0));
@@ -13481,8 +13794,8 @@ mod sensor_tests {
         // Add actuator for ActuatorPos/Vel sensors
         model.nu = 1;
         model.actuator_trntype.push(ActuatorTransmission::Joint);
-        model.actuator_trnid.push(0);
-        model.actuator_gear.push(1.0);
+        model.actuator_trnid.push([0, usize::MAX]);
+        model.actuator_gear.push([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         model.actuator_dyntype.push(ActuatorDynamics::None);
         model.actuator_ctrlrange.push((-1.0, 1.0));
         model.actuator_forcerange.push((-100.0, 100.0));
@@ -14464,8 +14777,8 @@ mod muscle_tests {
         model.na = 1;
         model.actuator_trntype = vec![ActuatorTransmission::Joint];
         model.actuator_dyntype = vec![ActuatorDynamics::Muscle];
-        model.actuator_trnid = vec![0]; // joint 0
-        model.actuator_gear = vec![gear];
+        model.actuator_trnid = vec![[0, usize::MAX]]; // joint 0
+        model.actuator_gear = vec![[gear, 0.0, 0.0, 0.0, 0.0, 0.0]];
         model.actuator_ctrlrange = vec![(f64::NEG_INFINITY, f64::INFINITY)];
         model.actuator_forcerange = vec![(f64::NEG_INFINITY, f64::INFINITY)];
         model.actuator_name = vec![Some("muscle".to_string())];
@@ -14714,8 +15027,8 @@ mod muscle_tests {
         model.na = 0;
         model.actuator_trntype = vec![ActuatorTransmission::Joint];
         model.actuator_dyntype = vec![ActuatorDynamics::None];
-        model.actuator_trnid = vec![0];
-        model.actuator_gear = vec![2.0];
+        model.actuator_trnid = vec![[0, usize::MAX]];
+        model.actuator_gear = vec![[2.0, 0.0, 0.0, 0.0, 0.0, 0.0]];
         model.actuator_ctrlrange = vec![(f64::NEG_INFINITY, f64::INFINITY)];
         model.actuator_forcerange = vec![(f64::NEG_INFINITY, f64::INFINITY)];
         model.actuator_name = vec![Some("motor".to_string())];

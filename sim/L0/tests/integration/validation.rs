@@ -1636,7 +1636,7 @@ fn test_mjcf_with_actuators() {
     let model = load_model(mjcf).expect("should load");
 
     assert_eq!(model.nu, 1, "should have 1 actuator");
-    assert_eq!(model.actuator_gear[0], 10.0);
+    assert_eq!(model.actuator_gear[0][0], 10.0);
 
     let mut data = model.make_data();
     assert_eq!(data.ctrl.len(), 1);

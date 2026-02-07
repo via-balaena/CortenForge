@@ -303,6 +303,23 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
         )?;
     }
 
+    // Collect site names from body tree for actuator validation.
+    let mut site_names_set = HashSet::new();
+    fn collect_site_names(body: &MjcfBody, names: &mut HashSet<String>) {
+        for site in &body.sites {
+            names.insert(site.name.clone());
+        }
+        for child in &body.children {
+            collect_site_names(child, names);
+        }
+    }
+    for site in &model.worldbody.sites {
+        site_names_set.insert(site.name.clone());
+    }
+    for body in &model.worldbody.children {
+        collect_site_names(body, &mut site_names_set);
+    }
+
     // Check actuators
     let mut all_actuator_names = Vec::new();
     for actuator in &model.actuators {
@@ -321,6 +338,44 @@ pub fn validate(model: &MjcfModel) -> Result<ValidationResult> {
                     format!("actuator '{}'", actuator.name),
                 ));
             }
+        }
+
+        // Check that site reference is valid
+        if let Some(ref site_name) = actuator.site {
+            if !site_names_set.contains(site_name.as_str()) {
+                return Err(MjcfError::undefined_site(
+                    site_name,
+                    format!("actuator '{}'", actuator.name),
+                ));
+            }
+        }
+
+        // Check that refsite reference is valid
+        if let Some(ref refsite_name) = actuator.refsite {
+            if !site_names_set.contains(refsite_name.as_str()) {
+                return Err(MjcfError::undefined_site(
+                    refsite_name,
+                    format!("actuator '{}' refsite", actuator.name),
+                ));
+            }
+        }
+
+        // Check mutual exclusivity of transmission targets
+        let target_count = [
+            actuator.joint.is_some(),
+            actuator.tendon.is_some(),
+            actuator.site.is_some(),
+            actuator.body.is_some(),
+        ]
+        .iter()
+        .filter(|&&v| v)
+        .count();
+        if target_count > 1 {
+            return Err(MjcfError::invalid_attribute(
+                "joint/tendon/site/body",
+                format!("actuator '{}'", actuator.name),
+                "multiple transmission targets are mutually exclusive",
+            ));
         }
     }
 
