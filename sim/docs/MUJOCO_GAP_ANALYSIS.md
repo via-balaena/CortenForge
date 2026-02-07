@@ -26,7 +26,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free**)
 - Actuators: All 8 shortcut types (Motor, Position, Velocity, Damper, Cylinder, Adhesion, Muscle, General) with MuJoCo-compatible gain/bias force model (`force = gain * input + bias`), GainType/BiasType dispatch, FilterExact dynamics, control/force clamping; **Site transmissions** (6D gear, refsite, Jacobian-based wrench projection, common-ancestor zeroing)
-- Sensors (30 pipeline types, all wired from MJCF): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer, User (0-dim), plus JointLimitFrc/TendonLimitFrc parsed but deferred
+- Sensors (32 pipeline types, all wired from MJCF): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, JointLimitFrc, TendonLimitFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer, User (0-dim)
 - Model loading (URDF, MJCF with `<default>` class resolution, **MJB binary format**) — `DefaultResolver` is wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors)
 
 ### Placeholder / Stub (in pipeline)
@@ -68,17 +68,17 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Contact Condim (1/3/4/6) + Friction Cones | Variable-dimension contacts with elliptic friction cones, torsional friction (condim 4), rolling friction (condim 6), two-step projection, `apply_contact_torque()` | [§3](#3-contact-physics) |
 | General gain/bias actuator force model | All 8 shortcut types with `GainType`/`BiasType` dispatch, `FilterExact` dynamics, `ctrllimited` enforcement for Damper/Adhesion | [§7](#7-actuators) |
 | RK4 integrator | True 4-stage Runge-Kutta via `mj_runge_kutta()` with quaternion-safe position updates | [§1](#1-integration-methods) |
-| Pipeline sensors (30 types) | All 30 types functional and wired from MJCF `<sensor>` elements via `model_builder.rs`; `set_options()` propagates `magnetic`/`wind`/`density`/`viscosity` | [§8](#8-sensors) |
+| Pipeline sensors (32 types) | All 32 types functional and wired from MJCF `<sensor>` elements via `model_builder.rs`; `set_options()` propagates `magnetic`/`wind`/`density`/`viscosity` | [§8](#8-sensors) |
 | Non-convex mesh collision | TriangleMesh ↔ all primitives + mesh-mesh with BVH acceleration | [§5](#5-geom-types-collision-shapes) |
 | SDF collision | All 10 shape combinations (Sphere, Capsule, Box, Cylinder, Ellipsoid, ConvexMesh, Plane, TriangleMesh, HeightField, Sdf↔Sdf) | [§5](#5-geom-types-collision-shapes) |
 | MJCF `<default>` element | ✅ Full | `DefaultResolver` wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors) | [§13](#13-model-format) |
 | MJCF `<tendon>` parsing + pipeline | Fixed + spatial tendons fully wired (kinematics, wrapping, actuation, passive, constraints, sensors) | [§13](#13-model-format) |
-| MJCF `<sensor>` parsing + wiring | 32 sensor types parsed; 30 wired to pipeline via `process_sensors()`; 2 deferred | [§13](#13-model-format) |
+| MJCF `<sensor>` parsing + wiring | 32 sensor types parsed; all 32 wired to pipeline via `process_sensors()` | [§13](#13-model-format) |
 | Muscle pipeline | MuJoCo FLV curves, activation dynamics (Millard 2013), act_dot/integrator architecture, RK4 activation | [§6](#6-actuation) |
 | Multi-threading | `parallel` feature with rayon (island-parallel solving removed in Phase 3) | [§12](#12-performance-optimizations) |
 | SIMD optimization | `sim-simd` crate with `Vec3x4`, `Vec3x8`, batch operations | [§12](#12-performance-optimizations) |
 
-**For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics + site transmissions), sensors (30 pipeline types, all wired from MJCF), and fixed + spatial tendons (including sphere/cylinder wrapping, sidesite, pulley) are functional. Deformable bodies require pipeline integration before they produce correct results. See [`sim/docs/todo/index.md`](./todo/index.md) for the full gap list.
+**For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics + site transmissions), sensors (32 pipeline types, all wired from MJCF), and fixed + spatial tendons (including sphere/cylinder wrapping, sidesite, pulley) are functional. Deformable bodies require pipeline integration before they produce correct results. See [`sim/docs/todo/index.md`](./todo/index.md) for the full gap list.
 
 ---
 
@@ -731,7 +731,7 @@ let torque = elbow.compute_joint_force(velocity, dt);
 | TendonPos / TendonVel | Yes | `MjSensorType::TendonPos/Vel` | ✅ **Implemented** (reads `ten_length`/`ten_velocity`; [future_work_1 #4](./todo/future_work_1.md)) | - |
 | Camera (rendered) | Yes | Out of scope | N/A | - |
 
-> **Two sensor systems exist.** The sim-sensor crate has standalone `Imu`, `ForceTorqueSensor`, `TouchSensor`, `Rangefinder`, and `Magnetometer` implementations that operate on `RigidBodyState` objects. The MuJoCo pipeline has its own sensor readout in `mj_sensor_pos()`/`mj_sensor_vel()`/`mj_sensor_acc()` within `mujoco_pipeline.rs`. All 30 pipeline sensor types are functional and fully wired from MJCF `<sensor>` elements via `process_sensors()` in `model_builder.rs` ([future_work_1 #6](./todo/future_work_1.md)). The MJCF parser recognizes 32 `MjcfSensorType` variants; 30 map to pipeline `MjSensorType`, 2 (JointLimitFrc, TendonLimitFrc) are skipped with a warning. `set_options()` propagates `magnetic`, `wind`, `density`, and `viscosity` from MJCF `<option>`. Magnetometer is evaluated in the Position stage (depends only on `site_xmat` from FK). ActuatorVel reads from pre-computed `data.actuator_velocity`.
+> **Two sensor systems exist.** The sim-sensor crate has standalone `Imu`, `ForceTorqueSensor`, `TouchSensor`, `Rangefinder`, and `Magnetometer` implementations that operate on `RigidBodyState` objects. The MuJoCo pipeline has its own sensor readout in `mj_sensor_pos()`/`mj_sensor_vel()`/`mj_sensor_acc()` within `mujoco_pipeline.rs`. All 32 pipeline sensor types are functional and fully wired from MJCF `<sensor>` elements via `process_sensors()` in `model_builder.rs` ([future_work_1 #6](./todo/future_work_1.md)). The MJCF parser recognizes 32 `MjcfSensorType` variants; all 32 map to pipeline `MjSensorType`. JointLimitFrc and TendonLimitFrc read cached penalty force magnitudes from `mj_fwd_constraint()`. `set_options()` propagates `magnetic`, `wind`, `density`, and `viscosity` from MJCF `<option>`. Magnetometer is evaluated in the Position stage (depends only on `site_xmat` from FK). ActuatorVel reads from pre-computed `data.actuator_velocity`.
 
 ### Implementation Notes: Sensors ✅ COMPLETED (both standalone sim-sensor crate and pipeline sensors)
 
@@ -1287,7 +1287,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<site>` | Parsed | Markers (not used in physics) |
 | `<actuator>` | Full | motor, position, velocity, cylinder, muscle, adhesion, damper, general |
 | `<tendon>` | Full | Fixed + spatial tendons fully wired into pipeline via `process_tendons()`; spatial tendons include sphere/cylinder wrapping, sidesite, pulley |
-| `<sensor>` | Full | 32 sensor types parsed (all MuJoCo types); 30 wired into pipeline via `process_sensors()`; 2 deferred (JointLimitFrc, TendonLimitFrc) |
+| `<sensor>` | Full | 32 sensor types parsed (all MuJoCo types); all 32 wired into pipeline via `process_sensors()` |
 | `<contact>` | Full | `<pair>` (explicit geom pairs with per-pair condim/friction/solref/solimp overrides), `<exclude>` (body-pair exclusions), contype/conaffinity bitmasks; two-mechanism collision architecture |
 
 **Supported Joint Types:**
@@ -1434,7 +1434,7 @@ The following were completed in January 2026:
 | SDF collision | §5 Geoms | All 10 shape combinations implemented |
 | MJCF `<default>` element | §13 Model Format | ✅ `DefaultResolver` wired into `model_builder.rs` for all element types |
 | MJCF `<tendon>` parsing | §13 Model Format | Spatial and fixed tendons |
-| MJCF `<sensor>` parsing + wiring | §13 Model Format | 32 `MjcfSensorType` variants parsed; 30 wired to pipeline via `process_sensors()`; 2 deferred (JointLimitFrc, TendonLimitFrc) |
+| MJCF `<sensor>` parsing + wiring | §13 Model Format | 32 `MjcfSensorType` variants parsed; all 32 wired to pipeline via `process_sensors()` |
 
 See [future_work_1.md](./todo/future_work_1.md) for remaining items.
 

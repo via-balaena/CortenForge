@@ -1898,7 +1898,8 @@ impl ModelBuilder {
             MjSensorType::JointPos
             | MjSensorType::JointVel
             | MjSensorType::BallQuat
-            | MjSensorType::BallAngVel => {
+            | MjSensorType::BallAngVel
+            | MjSensorType::JointLimitFrc => {
                 let id = *self
                     .joint_name_to_id
                     .get(name)
@@ -1909,7 +1910,7 @@ impl ModelBuilder {
             }
 
             // Tendon sensors: objname is a tendon name
-            MjSensorType::TendonPos | MjSensorType::TendonVel => {
+            MjSensorType::TendonPos | MjSensorType::TendonVel | MjSensorType::TendonLimitFrc => {
                 let id = *self
                     .tendon_name_to_id
                     .get(name)
@@ -3187,8 +3188,8 @@ fn convert_sensor_type(mjcf: MjcfSensorType) -> Option<MjSensorType> {
         MjcfSensorType::Subtreelinvel => Some(MjSensorType::SubtreeLinVel),
         MjcfSensorType::Subtreeangmom => Some(MjSensorType::SubtreeAngMom),
         MjcfSensorType::User => Some(MjSensorType::User),
-        // Not yet implemented in pipeline — skip with warning
-        MjcfSensorType::Jointlimitfrc | MjcfSensorType::Tendonlimitfrc => None,
+        MjcfSensorType::Jointlimitfrc => Some(MjSensorType::JointLimitFrc),
+        MjcfSensorType::Tendonlimitfrc => Some(MjSensorType::TendonLimitFrc),
     }
 }
 
@@ -3228,6 +3229,8 @@ fn sensor_datatype(t: MjSensorType) -> MjSensorDataType {
         | MjSensorType::Torque
         | MjSensorType::Touch
         | MjSensorType::ActuatorFrc
+        | MjSensorType::JointLimitFrc
+        | MjSensorType::TendonLimitFrc
         | MjSensorType::FrameLinAcc
         | MjSensorType::FrameAngAcc
         | MjSensorType::User => MjSensorDataType::Acceleration,
