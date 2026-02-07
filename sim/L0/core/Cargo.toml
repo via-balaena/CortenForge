@@ -26,6 +26,10 @@ rand = { workspace = true }
 name = "collision_benchmarks"
 harness = false
 
+[[bench]]
+name = "batch_benchmarks"
+harness = false
+
 [features]
 default = []
 parallel = ["dep:rayon"]
