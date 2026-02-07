@@ -706,7 +706,7 @@ fn test_actuator_force_transmission() {
     data.ctrl[0] = 10.0;
     data.forward(&model).expect("forward failed");
 
-    let gear = model.actuator_gear[0];
+    let gear = model.actuator_gear[0][0];
     let act_force = data.actuator_force[0];
 
     // qfrc_actuator should include gear * J^T * force

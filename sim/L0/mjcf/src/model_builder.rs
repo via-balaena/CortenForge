@@ -286,8 +286,8 @@ struct ModelBuilder {
     // Actuator arrays
     actuator_trntype: Vec<ActuatorTransmission>,
     actuator_dyntype: Vec<ActuatorDynamics>,
-    actuator_trnid: Vec<usize>,
-    actuator_gear: Vec<f64>,
+    actuator_trnid: Vec<[usize; 2]>,
+    actuator_gear: Vec<[f64; 6]>,
     actuator_ctrlrange: Vec<(f64, f64)>,
     actuator_forcerange: Vec<(f64, f64)>,
     actuator_name: Vec<Option<String>>,
@@ -1344,9 +1344,8 @@ impl ModelBuilder {
                 .insert(actuator.name.clone(), act_id);
         }
 
-        // Determine transmission type and target
-        // MuJoCo supports Joint, Tendon, Site, Body transmissions
-        // We currently only support Joint; others require site/tendon arrays in Model
+        // Determine transmission type and target (2-slot: [primary, secondary])
+        // Secondary slot is usize::MAX when unused (Joint, Tendon, Site without refsite).
         let (trntype, trnid) = if let Some(ref joint_name) = actuator.joint {
             let jnt_id =
                 self.joint_name_to_id
@@ -1354,9 +1353,15 @@ impl ModelBuilder {
                     .ok_or_else(|| ModelConversionError {
                         message: format!("Actuator references unknown joint: {joint_name}"),
                     })?;
-            (ActuatorTransmission::Joint, *jnt_id)
+            if actuator.refsite.is_some() {
+                warn!(
+                    "Actuator '{}' has refsite but uses joint transmission — \
+                     refsite is only meaningful for site transmissions; ignoring",
+                    actuator.name
+                );
+            }
+            (ActuatorTransmission::Joint, [*jnt_id, usize::MAX])
         } else if let Some(ref tendon_name) = actuator.tendon {
-            // Tendon transmission: resolve tendon name → index
             let tendon_idx = *self
                 .tendon_name_to_id
                 .get(tendon_name.as_str())
@@ -1366,15 +1371,36 @@ impl ModelBuilder {
                         actuator.name, tendon_name
                     ),
                 })?;
-            (ActuatorTransmission::Tendon, tendon_idx)
+            if actuator.refsite.is_some() {
+                warn!(
+                    "Actuator '{}' has refsite but uses tendon transmission — \
+                     refsite is only meaningful for site transmissions; ignoring",
+                    actuator.name
+                );
+            }
+            (ActuatorTransmission::Tendon, [tendon_idx, usize::MAX])
         } else if let Some(ref site_name) = actuator.site {
             let site_id =
-                self.site_name_to_id
+                *self
+                    .site_name_to_id
                     .get(site_name)
                     .ok_or_else(|| ModelConversionError {
                         message: format!("Actuator references unknown site: {site_name}"),
                     })?;
-            (ActuatorTransmission::Site, *site_id)
+            let refsite_id = if let Some(ref refsite_name) = actuator.refsite {
+                *self
+                    .site_name_to_id
+                    .get(refsite_name)
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!(
+                            "Actuator '{}' references unknown refsite: {refsite_name}",
+                            actuator.name
+                        ),
+                    })?
+            } else {
+                usize::MAX
+            };
+            (ActuatorTransmission::Site, [site_id, refsite_id])
         } else if let Some(ref body_name) = actuator.body {
             // Body transmission (adhesion actuators) not yet implemented
             return Err(ModelConversionError {
@@ -3147,8 +3173,9 @@ mod tests {
 
         assert_eq!(model.nu, 1);
         assert_eq!(model.actuator_trntype[0], ActuatorTransmission::Joint);
-        assert_eq!(model.actuator_trnid[0], 0); // First joint
-        assert!((model.actuator_gear[0] - 100.0).abs() < 1e-10);
+        assert_eq!(model.actuator_trnid[0][0], 0); // First joint
+        assert_eq!(model.actuator_trnid[0][1], usize::MAX); // No refsite
+        assert!((model.actuator_gear[0][0] - 100.0).abs() < 1e-10);
     }
 
     #[test]
@@ -3514,8 +3541,9 @@ mod tests {
 
         assert_eq!(model.nu, 1);
         assert_eq!(model.actuator_trntype[0], ActuatorTransmission::Site);
-        assert_eq!(model.actuator_trnid[0], 0); // First site
-        assert!((model.actuator_gear[0] - 50.0).abs() < 1e-10);
+        assert_eq!(model.actuator_trnid[0][0], 0); // First site
+        assert_eq!(model.actuator_trnid[0][1], usize::MAX); // No refsite
+        assert!((model.actuator_gear[0][0] - 50.0).abs() < 1e-10);
     }
 
     /// Test actuator activation states (na) computation.

@@ -131,7 +131,7 @@ fn test_actuator_gear_defaults() {
     "#;
 
     let model = load_model(mjcf).expect("should load");
-    assert_relative_eq!(model.actuator_gear[0], 100.0, epsilon = 1e-10);
+    assert_relative_eq!(model.actuator_gear[0][0], 100.0, epsilon = 1e-10);
 }
 
 /// Criterion 6: Tendon stiffness defaults apply.

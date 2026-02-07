@@ -4302,36 +4302,414 @@ not just wrong results.
 ---
 
 ### 5. Site-Transmission Actuators
-**Status:** Not started | **Effort:** M | **Prerequisites:** #4
-
-#### Current State
-`ActuatorTransmission::Site` enum variant exists and is parsed from MJCF.
-Five dispatch points in the pipeline are stubs (`=> {}`):
-
-- `mujoco_pipeline.rs:2180` — length computation
-- `mujoco_pipeline.rs:2222` — velocity computation
-- `mujoco_pipeline.rs:5486` — Jacobian computation
-- `mujoco_pipeline.rs:6449` — force application
-- `mujoco_pipeline.rs:6688` — Phase 2 actuation
+**Status:** Complete (criteria 1–21 implemented; criterion 22 deferred — requires external MuJoCo reference data) | **Effort:** L | **Prerequisites:** #4 (complete)
 
 #### Objective
-Implement site-based actuator transmission so that actuator forces can be applied
-at arbitrary body sites.
+Implement MuJoCo-conformant site-based actuator transmission. Site transmissions
+apply Cartesian forces/torques at a site frame, enabling jet/propeller modelling
+(without refsite) and task-space end-effector control (with refsite). This
+requires upgrading the gear representation from scalar to 6D and adding a refsite
+slot to the transmission target.
 
-#### Specification
-Site transmission computes actuator length as the distance (or projected distance)
-from the site to a reference. Force is applied at the site frame and transmitted
-to the parent body via the site Jacobian (3×nv or 6×nv matrix mapping joint
-velocities to site linear/angular velocity).
+#### MuJoCo Reference Semantics
+MuJoCo site transmissions have two modes, selected by the presence or absence of
+the `refsite` attribute. In both modes, the moment vector and velocity are related
+by the same universal formula used for all transmission types:
 
-Requires spatial tendon infrastructure (#4) for the Jacobian computation — a
-site-transmission actuator is effectively a degenerate spatial tendon with a
-single attachment point.
+```
+velocity_i  = moment_i · qvel                              (always)
+qfrc_actuator += moment_i * force_i                        (always)
+```
+
+**Mode A — No refsite (jets/propellers):**
+```
+length_i(q) = 0                            (constant zero)
+moment_i    = J_site^T @ R_site @ gear     (nv-vector)
+```
+The 6D gear vector `[tx ty tz rx ry rz]` is expressed in the site's local frame.
+`R_site` rotates it to world frame. `J_site` is the 6×nv stacked
+translational/rotational Jacobian of the site. Force/torque is fixed to the site
+frame and moves with the body — useful for thrusters and propellers.
+
+Note: `length` is formally zero, but `velocity = moment · qvel` is generally
+**nonzero** — it captures the instantaneous power conjugate of the actuator
+wrench. This is physically correct and required for velocity-feedback actuators
+(`dyntype=integrator`) and damping terms to function on site transmissions.
+
+**Mode B — With refsite (Cartesian control):**
+```
+length_i(q) = (R_ref^T @ (p_site - p_ref)) · gear[0:3]     (translational)
+            + subquat(q_site, q_ref)       · gear[3:6]      (rotational)
+
+moment_i    = (J_site - J_ref)^T @ R_ref @ gear             (nv-vector)
+              with common-ancestor DOF columns zeroed
+```
+Where:
+- `p_site`, `p_ref` are world-frame site positions
+- `R_ref` is the refsite rotation matrix (3×3)
+- `q_site`, `q_ref` are world-frame site quaternions
+- `subquat(a, b)` is the quaternion difference expressed as axis-angle (expmap)
+- `J_site`, `J_ref` are 6×nv site Jacobians (3×nv translational + 3×nv rotational)
+- Common-ancestor DOFs: DOFs on the shared kinematic chain between site and refsite
+  bodies are zeroed in the difference Jacobian to avoid double-counting
+
+The moment vector (nv-dimensional) maps scalar actuator force to generalized
+forces: `qfrc_actuator += moment * force`.
+
+#### Implementation Summary
+All five pipeline stubs have been resolved and all data-model changes applied.
+The implementation spans two commits: `828df4d` (core implementation) and
+`24b8a88` (A+ test coverage + conformance placeholder). Key additions:
+
+- `mj_jac_site()` — full 3×nv site Jacobian (translational + rotational)
+- `mj_transmission_site()` — pipeline step for Site length + moment
+- `subquat()` — quaternion difference as axis-angle 3-vector
+- Common-ancestor DOF zeroing for Mode B difference Jacobians
+- `ActuatorFrc` sensor bug fix (reads `actuator_force[objid]`)
+- Refsite warning for non-Site transmissions (Joint/Tendon branches)
+
+**Test coverage:** 23 integration tests (22 active + 1 `#[ignore]` conformance
+placeholder) + 9 unit tests (7 subquat + 2 jac_site). Criteria 1–21 all have
+passing tests. Criterion 22 (MuJoCo conformance ≤ 1e-8) is deferred pending
+external reference data — see `MUJOCO_CONFORMANCE.md` §5.
+
+#### Data-Model Changes
+
+**1. Gear: scalar → 6D**
+
+| Layer | Current | Target |
+|-------|---------|--------|
+| `MjcfActuator.gear` (types.rs:1814) | `f64` | `[f64; 6]` |
+| `MjcfActuatorDefaults.gear` (types.rs:492) | `Option<f64>` | `Option<[f64; 6]>` |
+| MJCF parser (parser.rs:1240) | `parse_float_attr` → single f64 | `parse_float_array`, pad to 6 with zeros |
+| `Model.actuator_gear` (mujoco_pipeline.rs:967) | `Vec<f64>` | `Vec<[f64; 6]>` |
+| model_builder (model_builder.rs:1439) | `push(actuator.gear)` | `push(actuator.gear)` (type changes) |
+| `MjcfActuator::default()` (types.rs:1879) | `gear: 1.0` | `gear: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]` |
+
+MuJoCo default: `gear="1 0 0 0 0 0"`. When the user writes `gear="50"`, parse as
+`[50, 0, 0, 0, 0, 0]`. Parse up to 6 floats; ignore extras beyond 6; pad with
+zeros if fewer than 6. Existing Joint and Tendon transmissions only use `gear[0]`
+(the scalar they use today), so all current behaviour is preserved.
+
+**2. Refsite: add optional second transmission target**
+
+| Layer | Current | Target |
+|-------|---------|--------|
+| `MjcfActuator` (types.rs) | no `refsite` field | `pub refsite: Option<String>` |
+| MJCF parser (parser.rs) | — | `get_attribute_opt(e, "refsite")` |
+| `Model.actuator_trnid` (mujoco_pipeline.rs:965) | `Vec<usize>` (1 per actuator) | `Vec<[usize; 2]>` — `[site_id, refsite_id]` where `refsite_id = usize::MAX` means absent |
+| model_builder | pushes single usize | pushes `[site_id, refsite_id_or_MAX]` |
+
+All existing Joint/Tendon code reads `actuator_trnid[i]` — change to
+`actuator_trnid[i][0]`. The `[1]` slot is `usize::MAX` for Joint and Tendon
+transmissions regardless of MJCF content. This is a mechanical refactor.
+
+Validation: if `refsite` is specified on a non-Site transmission (e.g.
+`<general joint="j1" refsite="s1">`), ignore it and emit a warning. `refsite`
+is only meaningful for `trntype=Site`.
+
+**3. World-frame site quaternions**
+
+The rotational length computation (Mode B) requires world-frame site quaternions.
+`Data` currently has `site_xmat: Vec<Matrix3<f64>>` (world rotation matrix) but
+no world-frame quaternion. `Model.site_quat` is in **body frame**, not world.
+
+Add to `Data`:
+```
+pub site_xquat: Vec<UnitQuaternion<f64>>   // length nsite, world frame
+```
+Computed during FK alongside `site_xmat`, matching MuJoCo's approach:
+```
+site_xquat[s] = xquat[site_body[s]] * model.site_quat[s]
+```
+
+**4. Site Jacobian function: `mj_jac_site`**
+
+New function in `mujoco_pipeline.rs`:
+```
+fn mj_jac_site(
+    model: &Model,
+    data: &Data,
+    site_id: usize,
+) -> (DMatrix<f64>, DMatrix<f64>)   // (jac_trans 3×nv, jac_rot 3×nv)
+```
+
+Computes the full 3×nv translational and 3×nv rotational Jacobian for a site by
+walking the kinematic chain from `model.site_body[site_id]` to root. For each
+joint on the chain:
+
+- `axis` = world-frame joint axis = `xquat[jnt_body] * jnt_axis[jid]`
+- `joint_anchor` = `xpos[jnt_body] + xquat[jnt_body] * jnt_pos[jid]`
+  (for Free joints: `joint_anchor = xpos[jnt_body]`, i.e. body origin)
+- `r` = `site_xpos[site_id] - joint_anchor`
+
+Per joint type:
+
+- **Hinge:**
+  `jac_trans.column_mut(dof) += cross(axis, r)` ;
+  `jac_rot.column_mut(dof) += axis`
+- **Slide:**
+  `jac_trans.column_mut(dof) += axis`
+  (no rotational contribution)
+- **Ball** (k = 0, 1, 2):
+  `let omega_k = R_body * e_k` ;
+  `jac_trans.column_mut(dof+k) += cross(omega_k, r)` ;
+  `jac_rot.column_mut(dof+k) += omega_k`
+- **Free:**
+  Translational DOFs (dof+0..dof+3):
+    `jac_trans.column_mut(dof+k) += e_k` (identity columns)
+    (no rotational contribution from translational DOFs)
+  Rotational DOFs (dof+3..dof+6, k = 0, 1, 2):
+    `let omega_k = R_body * e_k` ;
+    `jac_trans.column_mut(dof+3+k) += cross(omega_k, r)` ;
+    `jac_rot.column_mut(dof+3+k) += omega_k`
+
+This function is analogous to MuJoCo's `mj_jacSite`. It builds on the pattern in
+`accumulate_point_jacobian` but returns full 3-row matrices instead of projecting
+onto a single direction.
+
+**5. Actuator moment cache and `mj_transmission_site` pipeline step**
+
+Add to `Data`:
+```
+pub actuator_moment: Vec<DVector<f64>>   // length nu, each DVector is nv
+```
+
+New function `mj_transmission_site(model, data)` computes `actuator_length` and
+`actuator_moment` for **Site transmissions only** (velocity is deferred to
+`mj_actuator_length` at step 7):
+
+- **Site (Mode A):** moment from `mj_jac_site` + wrench projection ;
+  `length = 0`
+- **Site (Mode B):** moment from difference Jacobian + wrench projection ;
+  `length` from position/quaternion differences
+
+Joint and Tendon transmissions do **not** use `mj_transmission_site`. Their
+length/velocity computation remains in `mj_actuator_length` exactly as today.
+Their force application remains as direct dispatch (Joint → single DOF write,
+Tendon → `apply_tendon_force`). This minimizes regression risk and preserves
+the existing sparse/direct-write performance for Joint/Tendon paths.
+
+The `actuator_moment` cache is populated for Site transmissions only. Joint and
+Tendon transmissions do not need it — their force mapping is already efficient
+via the existing per-type dispatch.
+
+#### Pipeline Placement (implemented)
+
+The `forward()` pipeline with site-transmission integration:
+
+```
+ 1. mj_fwd_position()          — FK: site_xpos, site_xmat, site_xquat computed
+ 2. mj_transmission_site()     — NEW: sets actuator_length + actuator_moment
+                                  for Site transmissions only (needs FK output)
+ 3. mj_collision()
+ 4. mj_sensor_pos()            — can now read actuator_length (stub 3 resolved)
+ 5. mj_energy_pos()
+ 6. mj_fwd_velocity()          — body/tendon velocities
+ 7. mj_actuator_length()       — UNCHANGED: Joint/Tendon length+velocity as today;
+                                  Site case adds: velocity = moment · qvel
+ 8. mj_sensor_vel()
+ 9. mj_fwd_actuation()         — Joint/Tendon force dispatch unchanged;
+                                  Site uses cached moment (stub 5)
+10. mj_crba()                  — (unchanged, shown for completeness)
+11. mj_rne()                   — (unchanged)
+12. mj_energy_vel()            — (unchanged)
+13. mj_fwd_passive()           — (unchanged)
+14. mj_fwd_constraint()        — (unchanged)
+15. mj_fwd_acceleration()      — (unchanged)
+16. mj_sensor_acc()            — ActuatorFrc sensor fix reads actuator_force here
+17. mj_sensor_postprocess()    — (unchanged)
+```
+
+`mj_transmission_site` must run after `mj_fwd_position` (needs site poses) and
+before `mj_sensor_pos` (which reads `actuator_length`). This matches MuJoCo's
+ordering where `mj_transmission` runs inside `mj_fwdPosition`, before
+`mj_sensorPos`.
+
+Site velocity (`actuator_velocity = moment · qvel`) is computed inside
+`mj_actuator_length` (step 7, the existing Stub 4 location) rather than at
+step 2, because `qvel` is semantically part of the velocity stage. While `qvel`
+doesn't change during the position/velocity stages (it's an input), placing the
+velocity write at step 7 keeps it adjacent to the Joint/Tendon velocity writes
+and matches MuJoCo's pipeline ordering.
+
+#### Stub Resolutions (all complete)
+
+**Stub 4 — `mj_actuator_length` (length & velocity):** ✅
+
+Site branch reads pre-computed length from `mj_transmission_site`, computes
+velocity as `moment · qvel`. Joint/Tendon logic unchanged.
+
+**Stub 5 — `mj_fwd_actuation` (force application):** ✅
+
+Site branch applies force via cached moment vector (`qfrc += moment * force`).
+Joint (O(1) direct write) and Tendon (`apply_tendon_force`) branches unchanged.
+
+**Stub 3 — `mj_sensor_pos` (ActuatorPos sensor):** ✅
+
+Site case reads `data.actuator_length[objid]`, which was already populated by
+`mj_transmission_site` (step 2) before `mj_sensor_pos` (step 4).
+
+**Stub 2 — `compute_muscle_params` (muscle acc0 Jacobian):** ✅
+
+Uses `mj_jac_site` at build time. Mode A: wrench rotated by site frame.
+Mode B: difference Jacobian with common-ancestor zeroing, wrench in refsite frame.
+
+**Stub 1 — `compute_muscle_params` (length-range estimation):** ✅
+
+No-op for site transmissions — explicit `lengthrange` required in MJCF for
+muscle actuators with site transmission (matches MuJoCo behavior).
+
+#### Bug Fix: `ActuatorFrc` Sensor (done)
+
+The `ActuatorFrc` sensor in `mj_sensor_acc` previously read
+`qfrc_actuator[dof_adr]` using `actuator_trnid` as a joint ID — a pre-existing
+bug that only worked for Joint transmissions and produced incorrect values for
+Tendon and Site transmissions.
+
+Fixed to read `data.actuator_force[objid]` (transmission-independent scalar
+actuator force, after gain/bias/clamp). This matches MuJoCo's semantics where
+the `actuatorfrc` sensor reports the scalar actuator force, not the generalized
+force at a specific DOF.
+
+#### Common-Ancestor DOF Zeroing (Mode B only)
+When site and refsite share part of their kinematic chain, the difference
+Jacobian `J_site - J_ref` has non-zero entries for DOFs that move both sites
+identically — these must be zeroed. Algorithm:
+
+1. Let `b0 = site_body[sid]`, `b1 = site_body[refid]`
+2. Walk `b0` and `b1` up via `body_parent` to find their lowest common ancestor
+   body `bca`
+3. All DOFs belonging to `bca` and its ancestors are "common" DOFs — collect
+   via `body_jnt_adr[b]`/`body_jnt_num[b]` → `jnt_dof_adr[j]`/`jnt_type[j].nv()`
+   for each body on the ancestor chain
+4. Zero those columns in the difference Jacobian before projecting onto the
+   wrench vector
+
+Note: MuJoCo uses `dof_parentid` to walk the DOF tree directly at DOF
+granularity. We walk the body tree via `body_parent` and collect DOFs per body.
+This is equivalent when each body has at most one joint (the common case). For
+multi-joint bodies (e.g. a body with both hinge and slide), both approaches zero
+all DOFs on that body — the result is identical because the body-level walk
+captures all joints on the ancestor chain. If a body has joints that belong to
+different kinematic sub-chains (not possible in MuJoCo's tree topology), the
+body-level walk is strictly more conservative (zeros more DOFs), which is safe.
+
+#### Quaternion Subtraction (`subquat`)
+MuJoCo's `mju_subQuat(res, qa, qb)` computes the orientation difference as an
+axis-angle 3-vector satisfying `qb * quat(res) = qa`:
+```
+dq = conjugate(qb) * qa              // relative quaternion in qb's frame
+axis = normalize(dq.xyz)             // unit rotation axis
+sin_half = ||dq.xyz||                // before normalization
+angle = 2 * atan2(sin_half, dq.w)   // full-range angle via atan2
+if angle > π: angle -= 2π            // shortest path
+res = axis * angle                   // axis-angle 3-vector
+// small-angle limit: when sin_half ≈ 0, axis is undefined;
+// atan2(0, 1) = 0 so res = 0-vector (correct)
+```
+Implemented as `subquat()` in `mujoco_pipeline.rs` with 7 unit tests covering
+identity, cardinal axes, 180°, shortest-path wrapping, relative rotation,
+and small-angle guard. It is the rotational analogue of the translational
+position difference `p_site - p_ref`.
+
+#### Implementation Order (all complete)
+1. ✅ **Data-model changes** — 6D gear, 2-slot trnid, refsite parsing,
+   `Data.site_xquat`, `Data.actuator_moment`, `subquat` utility. Mechanical
+   refactor of all existing Joint/Tendon code to use `gear[0]` and `trnid[i][0]`.
+2. ✅ **`mj_jac_site`** — new function, unit-tested against `accumulate_point_jacobian`
+   (single-direction projection must agree).
+3. ✅ **`mj_transmission_site`** — new pipeline step computing `actuator_length` +
+   `actuator_moment` for Site transmissions only. Wired into `forward()` after
+   `mj_fwd_position`, before `mj_collision`.
+4. ✅ **Stub 4** — Site velocity in `mj_actuator_length`: `moment · qvel`.
+5. ✅ **Stub 5** — Site force application in `mj_fwd_actuation` via cached moment.
+   Joint/Tendon force paths unchanged.
+6. ✅ **Stub 3** — Site sensor read in `mj_sensor_pos` (reads `actuator_length`).
+7. ✅ **Stub 2** — muscle acc0 (uses `mj_jac_site` at build time).
+8. ✅ **Stub 1** — length-range (no-op for sites; explicit `lengthrange` required
+   for muscle site actuators).
+9. ✅ **`ActuatorFrc` sensor fix** — `mj_sensor_acc` reads
+   `data.actuator_force[objid]` instead of `qfrc_actuator[dof_adr]`. Fixes
+   pre-existing bug for Tendon transmissions.
+10. ✅ **Validation** — site/refsite reference validation in `validation.rs`.
+    Mutual exclusivity of transmission targets (joint/tendon/site/body).
 
 #### Acceptance Criteria
-1. Site actuator length equals site position projected onto actuator axis.
-2. Site actuator force produces correct joint torques via Jacobian transpose.
-3. Site actuators work with all gain/bias types (Fixed, Affine, Muscle).
 
-#### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (fill in 5 `Site => {}` stubs)
+All criteria 1–21 have passing integration tests in
+`sim/L0/tests/integration/site_transmission.rs`. Criterion 22 has an
+`#[ignore]` placeholder pending MuJoCo reference data.
+
+**Correctness — Mode A (no refsite):**
+1. `actuator_length[i] == 0.0` regardless of configuration.
+2. `actuator_velocity[i] == actuator_moment[i] · qvel` — generally nonzero when
+   the site is moving. Verified numerically: for a hinge joint at constant
+   `qvel`, `actuator_velocity` equals the rate of change of the wrench's power
+   direction.
+3. A site actuator with `gear="0 0 1 0 0 0"` on a body with a hinge joint
+   produces `qfrc_actuator[dof] = force * dot(cross(world_joint_axis, r), z_site)`
+   where `r` is the lever arm from joint anchor to site position (world frame)
+   and `z_site` is the site's local z-axis rotated to world frame
+   (`site_xmat * [0,0,1]`).
+4. Rotational gear component (`gear="0 0 0 1 0 0"`) produces a pure torque about
+   the site's local x-axis, with correct Jacobian mapping to joint torques:
+   `qfrc_actuator[dof] = force * dot(world_joint_axis, x_site)` for a hinge.
+5. Mixed translational + rotational gear produces the correct superposition.
+
+**Correctness — Mode B (with refsite):**
+6. Translational length: for two sites separated by `[dx, dy, dz]` in the refsite
+   frame, `actuator_length == gear[0]*dx + gear[1]*dy + gear[2]*dz`.
+7. Rotational length: for a 90° rotation about the refsite's x-axis,
+   `actuator_length` includes `gear[3] * π/2` (axis-angle magnitude).
+8. Velocity: `actuator_velocity == actuator_moment · qvel` (verified numerically
+   against finite-difference of length over a small dt).
+9. Force application: `qfrc_actuator == actuator_moment * force` (verified by
+   energy conservation: `force * velocity == qfrc_actuator · qvel`).
+10. Common-ancestor zeroing: when site and refsite are on the same body,
+    `actuator_moment` is identically zero (force on a rigid body against itself
+    produces no net generalized force).
+11. When site and refsite share a partial chain, only the shared-chain DOFs are
+    zeroed; DOFs unique to either branch retain their Jacobian contributions.
+
+**Backward compatibility:**
+12. All existing Joint and Tendon actuator tests pass without modification (the
+    6D gear change uses only `gear[0]` for these transmission types; their
+    force-application and length/velocity paths are structurally unchanged).
+13. MJCF models with scalar `gear="50"` parse as `[50, 0, 0, 0, 0, 0]`.
+    Models with `gear="1 2 3 4 5 6 7"` parse as `[1, 2, 3, 4, 5, 6]` (extras
+    ignored).
+
+**Gain/bias compatibility:**
+14. Site actuators work with all gain/bias types: Fixed, Affine, Muscle.
+15. Muscle actuators with site transmission produce correct `acc0` (validated
+    against manually-computed `||M^{-1} * moment||` where `moment` is the
+    nv-vector from `mj_jac_site` wrench projection).
+
+**Sensor correctness:**
+16. `ActuatorFrc` sensor reports `data.actuator_force[i]` (scalar actuator force)
+    for all transmission types, not `qfrc_actuator[dof_adr]`.
+17. `ActuatorPos` sensor for Site transmissions returns the same value as
+    `data.actuator_length[i]`.
+18. `ActuatorVel` sensor for Site transmissions returns the same value as
+    `data.actuator_velocity[i]`.
+
+**Validation:**
+19. MJCF with `site="nonexistent"` produces a parse/validation error.
+20. MJCF with `refsite="nonexistent"` produces a parse/validation error.
+21. MJCF with both `joint="j1"` and `site="s1"` on the same actuator produces a
+    validation error (mutually exclusive transmission targets).
+
+**MuJoCo conformance:**
+22. For a representative model (e.g. 3-link arm with site actuators), actuator
+    length, velocity, and generalized forces match MuJoCo ≤ 1e-8 relative
+    tolerance. Test both Mode A and Mode B.
+
+#### Files (all modified)
+- ✅ `sim/L0/mjcf/src/types.rs` — `MjcfActuator.gear` → `[f64; 6]`, `refsite: Option<String>`, defaults updated
+- ✅ `sim/L0/mjcf/src/parser.rs` — 6D gear parsing (1–6 floats, zero-padded), `refsite` attribute
+- ✅ `sim/L0/mjcf/src/defaults.rs` — 6D gear defaults propagation
+- ✅ `sim/L0/mjcf/src/model_builder.rs` — refsite → `actuator_trnid[i][1]`, 6D gear push, refsite warning for non-Site
+- ✅ `sim/L0/mjcf/src/validation.rs` — site/refsite reference validation, mutual exclusivity enforcement
+- ✅ `sim/L0/core/src/mujoco_pipeline.rs` — `actuator_gear` → `Vec<[f64; 6]>`, `actuator_trnid` → `Vec<[usize; 2]>`, `Data.site_xquat`, `Data.actuator_moment`, `mj_jac_site()`, `mj_transmission_site()`, 5 stubs filled, `ActuatorFrc` sensor fix, `subquat()`, common-ancestor zeroing, `subquat_tests` (7), `jac_site_tests` (2)
+- ✅ `sim/L0/tests/integration/site_transmission.rs` — 23 integration tests (criteria 1–21 active, criterion 22 `#[ignore]`)

@@ -488,8 +488,8 @@ pub struct MjcfActuatorDefaults {
     pub ctrlrange: Option<(f64, f64)>,
     /// Force range.
     pub forcerange: Option<(f64, f64)>,
-    /// Gear ratio.
-    pub gear: Option<f64>,
+    /// Gear ratio (6D: [tx ty tz rx ry rz]).
+    pub gear: Option<[f64; 6]>,
     /// Position gain (kp) for position actuators.
     pub kp: Option<f64>,
     /// Velocity gain (kv) for velocity actuators.
@@ -1810,8 +1810,10 @@ pub struct MjcfActuator {
     pub tendon: Option<String>,
     /// Target body name (for adhesion actuators).
     pub body: Option<String>,
-    /// Gear ratio (torque/force scaling).
-    pub gear: f64,
+    /// Reference site name (for site transmissions with Cartesian control).
+    pub refsite: Option<String>,
+    /// Gear ratio (6D: [tx ty tz rx ry rz]).
+    pub gear: [f64; 6],
     /// Control range [lower, upper].
     pub ctrlrange: Option<(f64, f64)>,
     /// Force range [lower, upper].
@@ -1876,7 +1878,8 @@ impl Default for MjcfActuator {
             site: None,
             tendon: None,
             body: None,
-            gear: 1.0,
+            refsite: None,
+            gear: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             ctrlrange: None,
             forcerange: None,
             ctrllimited: false,

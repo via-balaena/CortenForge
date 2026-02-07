@@ -2992,7 +2992,7 @@ round-trip.
 
 **Remaining scope exclusions** (documented below in the specification):
 - **JointLimitFrc / TendonLimitFrc** — requires constraint force decomposition
-- **Site transmission** — blocked on spatial site infrastructure (6 stubs remain)
+- ~~**Site transmission**~~ — resolved: all 6 stubs filled ([future_work_2 §5](./future_work_2.md) ✅)
 - **Frame sensor `objtype` attribute** — resolved by name priority (site→body→geom)
 - **User sensor `dim` attribute** — parser does not capture; User gets 0 slots
 - ~~**Sensor `<default>` class resolution**~~ — resolved: `DefaultResolver` now wired into `model_builder.rs` for all element types including sensors ([future_work_2 §1](./future_work_2.md))
@@ -3023,7 +3023,7 @@ produces zeros.
 | **B. MJCF parser missing 8 sensor types** | MEDIUM | 8 variants added to `MjcfSensorType`: Velocimeter, Magnetometer, Rangefinder, Subtreecom, Subtreelinvel, Subtreeangmom, Framelinacc, Frameangacc. Total: 32 variants. |
 | **C. Pipeline missing 2 sensor types** | LOW | Deferred — JointLimitFrc/TendonLimitFrc skipped with `warn!`. |
 | **D. ActuatorVel duplicate computation** | LOW | Simplified to read `data.actuator_velocity[act_id]`. |
-| **E. Site transmission stubs** | LOW | Out of scope — 6 stubs remain. |
+| **E. Site transmission stubs** | LOW | ~~Out of scope~~ — resolved in [future_work_2 §5](./future_work_2.md) ✅. All 6 stubs filled. |
 | **F. Magnetometer evaluation stage** | LOW | Moved from `mj_sensor_acc()` to `mj_sensor_pos()`. Datatype changed to `Position`. |
 | **G. Dead Touch arm in mj_sensor_pos()** | LOW | Removed. |
 | **H. `set_options()` missing physics fields** | MEDIUM | `magnetic`, `wind`, `density`, `viscosity` now copied from `MjcfOption`. |
@@ -3537,8 +3537,8 @@ MjSensorType::ActuatorVel => {
 
 **ActuatorPos is left unchanged** — it continues to compute inline per
 transmission type. This is functionally correct and necessary due to pipeline
-ordering. The Site transmission stub in the ActuatorPos arm (line 5409) remains
-and will continue to produce 0.0 until Site transmission is implemented.
+ordering. ~~The Site transmission stub in the ActuatorPos arm (line 5409) remains
+and will continue to produce 0.0 until Site transmission is implemented.~~ (Resolved: Site transmission is now fully implemented — see [future_work_2 §5](./future_work_2.md) ✅.)
 
 ##### Step 5: Move Magnetometer to Position Stage (Gap F)
 
@@ -3687,13 +3687,10 @@ Additional tests to include (each as a separate `#[test]` function):
 
 The following are explicitly **out of scope** for this item:
 
-1. **Site transmission** (Gap E) — Implementing `ActuatorTransmission::Site`
-   requires computing site-to-site distance and its time derivative. This is
-   blocked on spatial site infrastructure and is better addressed as part of
-   spatial tendon support. The 6 stub locations will continue to produce 0.0.
-   After Step 4, ActuatorVel sensors will correctly report 0.0 for
-   Site-transmission actuators (matching `mj_actuator_length()`'s stub output).
-   ActuatorPos retains its inline computation with its own Site stub (line 5409).
+1. ~~**Site transmission** (Gap E)~~ — **Resolved** in [future_work_2 §5](./future_work_2.md) ✅.
+   All 6 stubs filled with full 6D gear, refsite (Mode A/B), `mj_jac_site()`,
+   `mj_transmission_site()`, `subquat()`, and common-ancestor zeroing.
+   23 integration tests + 9 unit tests cover criteria 1–21.
 
 2. **JointLimitFrc / TendonLimitFrc** (Gap C) — Requires decomposing
    `qfrc_constraint` by constraint type. The constraint solver currently
