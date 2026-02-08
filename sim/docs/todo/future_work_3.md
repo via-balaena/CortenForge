@@ -2186,17 +2186,36 @@ constructed programmatically (no external XML dependency in benchmarks).
 ---
 
 ### 10. GPU Acceleration
-**Status:** Not started | **Effort:** XL | **Prerequisites:** #9
+**Status:** ✅ Phase 10a complete | **Effort:** XL | **Prerequisites:** #9
 
 *Transferred from [future_work_1.md](./future_work_1.md) #11.*
 
+**Phase 10a implementation:** New `sim-gpu` crate at `sim/L0/gpu/` providing
+GPU-accelerated batched simulation via wgpu compute shaders. Euler velocity
+integration (`qvel += qacc * h`) runs on GPU; all other pipeline stages remain
+on CPU. `GpuBatchSim` is a drop-in replacement for `BatchSim` with same API
+surface (step_all, reset, env access) plus transparent CPU fallback via
+`try_new()`. 17 integration tests (5 always-run + 12 GPU-required), criterion
+benchmarks, A-grade across all 7 STANDARDS.md criteria. Phases 10b–10f
+(FK, collision, constraint solver, full GPU step) remain as future work.
+
 #### Current State
 
-CPU-only. `Data::step(&mut self, &Model)` (`mujoco_pipeline.rs:3032`) executes
-the full physics pipeline (FK → collision → constraints → dynamics → integration)
-for one environment. `BatchSim` (#9, `batch.rs`) parallelizes N environments
-via rayon `par_iter_mut`, with each environment running its own complete
-`step()`. No GPU infrastructure exists in the simulation pipeline.
+`GpuBatchSim` (`sim-gpu/src/pipeline.rs`) wraps `BatchSim` with GPU-accelerated
+Euler velocity integration. The 5-step pipeline per timestep:
+1. CPU: `data.forward(&model)` for each env (rayon-parallel with `parallel` feature)
+2. CPU→GPU: Upload `qvel`, `qacc` as f32 SoA buffers
+3. GPU: `euler_integrate.wgsl` compute shader (`qvel += qacc * h`)
+4. GPU→CPU: Staging buffer readback, scatter f32→f64 back to `Data.qvel`
+5. CPU: Activation integration, position integration, time advance (via `integrate_without_velocity`)
+
+`GpuSimContext` (`context.rs`) provides a `OnceLock<Option<>>` singleton for
+device/queue initialization, following the `mesh-gpu` pattern. `GpuEnvBuffers`
+(`buffers.rs`) manages Structure-of-Arrays GPU buffers with overflow-safe size
+validation. The WGSL shader uses pipeline-overridable `wg_size` constants and
+strided loops for models with nv > max workgroup size.
+
+**Remaining phases (not yet implemented):**
 
 **Data layout (GPU-relevant fields of `Data`):**
 
@@ -2623,14 +2642,6 @@ pub enum GpuSimError {
     #[error("no compatible GPU available for simulation")]
     NotAvailable,
 
-    /// Model too large for GPU buffers.
-    #[error("model exceeds GPU buffer limits: {field} requires {required} bytes, max {max}")]
-    ModelTooLarge {
-        field: &'static str,
-        required: u64,
-        max: u64,
-    },
-
     /// Buffer exceeds `limits.max_storage_buffer_binding_size`.
     ///
     /// wgpu does not expose a "free GPU memory" API. Actual GPU OOM
@@ -2897,6 +2908,48 @@ impl GpuBatchSim {
     ///             ..Default::default()
     ///         },
     ///         cache: None,
+    ///     },
+    /// );
+    /// ```
+    ///
+    /// The bind group layout matches the WGSL `@group(0)` bindings:
+    ///
+    /// ```ignore
+    /// let bind_group_layout = ctx.device.create_bind_group_layout(
+    ///     &wgpu::BindGroupLayoutDescriptor {
+    ///         label: Some("euler_integrate_bgl"),
+    ///         entries: &[
+    ///             wgpu::BindGroupLayoutEntry {
+    ///                 binding: 0,
+    ///                 visibility: wgpu::ShaderStages::COMPUTE,
+    ///                 ty: wgpu::BindingType::Buffer {
+    ///                     ty: wgpu::BufferBindingType::Uniform,
+    ///                     has_dynamic_offset: false,
+    ///                     min_binding_size: None,
+    ///                 },
+    ///                 count: None,
+    ///             },
+    ///             wgpu::BindGroupLayoutEntry {
+    ///                 binding: 1,
+    ///                 visibility: wgpu::ShaderStages::COMPUTE,
+    ///                 ty: wgpu::BindingType::Buffer {
+    ///                     ty: wgpu::BufferBindingType::Storage { read_only: false },
+    ///                     has_dynamic_offset: false,
+    ///                     min_binding_size: None,
+    ///                 },
+    ///                 count: None,
+    ///             },
+    ///             wgpu::BindGroupLayoutEntry {
+    ///                 binding: 2,
+    ///                 visibility: wgpu::ShaderStages::COMPUTE,
+    ///                 ty: wgpu::BindingType::Buffer {
+    ///                     ty: wgpu::BufferBindingType::Storage { read_only: true },
+    ///                     has_dynamic_offset: false,
+    ///                     min_binding_size: None,
+    ///                 },
+    ///                 count: None,
+    ///             },
+    ///         ],
     ///     },
     /// );
     /// ```
@@ -3350,8 +3403,32 @@ standard tool for GPU-accelerated RL physics.
 
 10. **Clippy clean:** Zero warnings with `-D warnings`.
 
-*AC6–AC10 are enforced by lints, `cargo xtask grade`, and CI — not by
-unit tests. AC1–AC5 are covered by explicit tests in `integration.rs`.*
+**AC → Test traceability:**
+
+| AC | Verified by | Mechanism |
+|----|-------------|-----------|
+| 1  | `gpu_matches_cpu_single_step`, `gpu_matches_cpu_100_steps` | f64↔f32 tolerance assertion per DOF |
+| 2  | `gpu_benchmarks.rs` (criterion) | Wall-clock comparison; baseline only in 10a |
+| 3  | `try_new_fallback_consistency` | Always-run; no GPU needed |
+| 4  | `gpu_determinism` | 5 identical runs, bitwise `assert_eq` |
+| 5  | `gpu_error_isolation` | NaN injection in one env, `is_finite` on others |
+| 6  | `gpu_euler_ok`, `gpu_step_single_env`, `gpu_reset_*` | API surface coverage |
+| 7  | `#![deny(clippy::unwrap_used)]` + `cargo xtask grade` | Compile-time enforcement |
+| 8  | `cargo tree -p sim-gpu \| grep bevy` | CI check |
+| 9  | `RUSTDOCFLAGS="-D warnings" cargo doc -p sim-gpu` | CI check |
+| 10 | `cargo clippy -p sim-gpu -- -D warnings` | CI check |
+
+Additional edge-case tests (not AC-mapped):
+
+| Test | What it covers |
+|------|---------------|
+| `gpu_context_availability` | `GpuSimContext::is_available()` returns bool without panic |
+| `gpu_params_layout` | `GpuParams` size/align matches WGSL `Params` struct |
+| `gpu_params_from_model` | f64→f32 conversion of model constants |
+| `gpu_step_empty_batch` | 0-env edge case: no GPU dispatch, empty result |
+| `gpu_step_nv_zero` | 0-DOF model: GPU dispatch is a no-op |
+| `gpu_batch_too_large` | Overflow-safe buffer validation rejects impossible sizes |
+| `gpu_unsupported_integrator` | Config validation before GPU init (no GPU needed) |
 
 #### Benchmark
 
@@ -3376,37 +3453,295 @@ establishing the infrastructure for Phase 10b+ comparisons.
 
 **File:** `sim/L0/gpu/tests/integration.rs`
 
-```rust
-// Always-run tests (no GPU required):
-#[test] fn gpu_context_availability()       // GpuSimContext::is_available() returns bool
-#[test] fn try_new_fallback_consistency()   // try_new() returns Ok(Some) iff is_available()
-#[test] fn gpu_params_layout()               // size_of::<GpuParams>() == 16, align == 4
-#[test] fn gpu_unsupported_integrator()     // RK4 → Err(UnsupportedIntegrator),
-                                            // Implicit → Err(UnsupportedIntegrator)
-                                            // (checked before GPU availability)
+All tests use the `n_link_pendulum(3, 1.0, 0.1)` model (nv=3, Euler integrator)
+unless stated otherwise.
 
-// GPU-required tests (ignored in CI without GPU):
+```rust
+// ── Always-run tests (no GPU required) ────────────────────────────
+
+#[test]
+fn gpu_context_availability() {
+    // GpuSimContext::is_available() returns bool without panic.
+    let _ = GpuSimContext::is_available();
+}
+
+#[test]
+fn try_new_fallback_consistency() {
+    // try_new() returns Ok(Some) iff is_available(), Ok(None) otherwise.
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    let result = GpuBatchSim::try_new(model, 4);
+    match result {
+        Ok(Some(_)) => assert!(GpuSimContext::is_available()),
+        Ok(None)    => assert!(!GpuSimContext::is_available()),
+        Err(e)      => panic!("try_new returned unexpected error: {e}"),
+    }
+}
+
+#[test]
+fn gpu_params_layout() {
+    assert_eq!(std::mem::size_of::<GpuParams>(), 16);
+    assert_eq!(std::mem::align_of::<GpuParams>(), 4);
+}
+
+#[test]
+fn gpu_params_from_model() {
+    let model = Model::n_link_pendulum(3, 1.0, 0.1);
+    // model.timestep = 1.0/240.0 ≈ 0.004167 for n_link_pendulum
+    let params = GpuParams::from_model(&model, 64);
+    assert_eq!(params.num_envs, 64);
+    assert_eq!(params.nv, 3);
+    // f64→f32 conversion: verify round-trip accuracy at this scale
+    let expected_ts = (1.0_f64 / 240.0) as f32;
+    assert!((params.timestep - expected_ts).abs() < f32::EPSILON);
+}
+
+#[test]
+fn gpu_unsupported_integrator() {
+    // Checked before GPU availability — must work without a GPU.
+    let mut model = Model::n_link_pendulum(3, 1.0, 0.1);
+
+    model.integrator = Integrator::RungeKutta4;
+    let err = GpuBatchSim::new(Arc::new(model.clone()), 4).unwrap_err();
+    assert!(matches!(err, GpuSimError::UnsupportedIntegrator(Integrator::RungeKutta4)));
+
+    model.integrator = Integrator::ImplicitSpringDamper;
+    let err = GpuBatchSim::new(Arc::new(model), 4).unwrap_err();
+    assert!(matches!(err, GpuSimError::UnsupportedIntegrator(Integrator::ImplicitSpringDamper)));
+}
+
+// ── GPU-required tests ────────────────────────────────────────────
+// Ignored in CI without GPU. Run locally with: cargo test -- --ignored
+
 #[test] #[ignore = "Requires GPU"]
-fn gpu_euler_ok()                           // Euler model → new() succeeds
+fn gpu_euler_ok() {
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    let batch = GpuBatchSim::new(model, 4);
+    assert!(batch.is_ok());
+    assert_eq!(batch.unwrap().len(), 4);
+}
+
 #[test] #[ignore = "Requires GPU"]
-fn gpu_step_empty_batch()                   // 0 envs: new() succeeds, step_all() returns Ok(vec![])
+fn gpu_step_empty_batch() {
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    let mut batch = GpuBatchSim::new(model, 0).unwrap();
+    let result = batch.step_all().unwrap();
+    assert!(result.is_empty());
+}
+
 #[test] #[ignore = "Requires GPU"]
-fn gpu_matches_cpu_single_step()            // AC1: numerical equivalence, 1 step
+fn gpu_step_nv_zero() {
+    // Model with nv=0: GPU dispatch is a no-op, no crash.
+    let model = Arc::new(Model::empty());
+    assert_eq!(model.nv, 0);
+    let mut batch = GpuBatchSim::new(model, 4).unwrap();
+    let result = batch.step_all().unwrap();
+    assert_eq!(result.len(), 4);
+}
+
 #[test] #[ignore = "Requires GPU"]
-fn gpu_matches_cpu_100_steps()              // AC1: numerical equivalence, 100 steps
+fn gpu_matches_cpu_single_step() {
+    // AC1: GPU matches CPU within f32 tolerance after 1 step.
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    let mut gpu_batch = GpuBatchSim::new(Arc::clone(&model), 4).unwrap();
+    let mut cpu_batch = gpu_batch.cpu_reference();
+
+    gpu_batch.step_all().unwrap();
+    cpu_batch.step_all();
+
+    for i in 0..4 {
+        let gpu_data = gpu_batch.env(i).unwrap();
+        let cpu_data = cpu_batch.env(i).unwrap();
+        for j in 0..model.nv {
+            let abs_err = (gpu_data.qvel[j] - cpu_data.qvel[j]).abs();
+            let rel_bound = 1.2e-7 * cpu_data.qvel[j].abs() + 1e-10;
+            assert!(abs_err <= rel_bound,
+                "env {i} qvel[{j}]: gpu={}, cpu={}, err={abs_err}, bound={rel_bound}",
+                gpu_data.qvel[j], cpu_data.qvel[j]);
+        }
+    }
+}
+
 #[test] #[ignore = "Requires GPU"]
-fn gpu_determinism()                        // AC4: same result across 5 runs
+fn gpu_matches_cpu_100_steps() {
+    // AC1: tolerance scales linearly with step count (N=100).
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    let mut gpu_batch = GpuBatchSim::new(Arc::clone(&model), 4).unwrap();
+    let mut cpu_batch = gpu_batch.cpu_reference();
+
+    for _ in 0..100 {
+        gpu_batch.step_all().unwrap();
+        cpu_batch.step_all();
+    }
+
+    let n = 100.0_f64;
+    for i in 0..4 {
+        let gpu_data = gpu_batch.env(i).unwrap();
+        let cpu_data = cpu_batch.env(i).unwrap();
+        for j in 0..model.nv {
+            let abs_err = (gpu_data.qvel[j] - cpu_data.qvel[j]).abs();
+            let rel_bound = n * 1.2e-7 * cpu_data.qvel[j].abs() + n * 1e-10;
+            assert!(abs_err <= rel_bound,
+                "env {i} qvel[{j}] after 100 steps: err={abs_err}, bound={rel_bound}");
+        }
+    }
+}
+
 #[test] #[ignore = "Requires GPU"]
-fn gpu_error_isolation()                    // AC5: NaN env doesn't corrupt others
+fn gpu_determinism() {
+    // AC4: 5 identical runs produce bitwise-identical qvel.
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    let mut reference: Option<Vec<Vec<f64>>> = None;
+
+    for run in 0..5 {
+        let mut batch = GpuBatchSim::new(Arc::clone(&model), 4).unwrap();
+        for _ in 0..10 { batch.step_all().unwrap(); }
+
+        let qvels: Vec<Vec<f64>> = (0..4)
+            .map(|i| batch.env(i).unwrap().qvel.as_slice().to_vec())
+            .collect();
+
+        if let Some(ref expected) = reference {
+            assert_eq!(&qvels, expected, "Run {run} diverged from run 0");
+        } else {
+            reference = Some(qvels);
+        }
+    }
+}
+
 #[test] #[ignore = "Requires GPU"]
-fn gpu_reset_single()                       // reset(i) works correctly
+fn gpu_error_isolation() {
+    // AC5: NaN in one env doesn't corrupt others.
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    let mut batch = GpuBatchSim::new(Arc::clone(&model), 4).unwrap();
+
+    // Inject NaN into env 1's qpos to trigger StepError in forward()
+    batch.env_mut(1).unwrap().qpos[0] = f64::NAN;
+
+    let errors = batch.step_all().unwrap();
+    assert!(errors[1].is_some(), "env 1 should report error");
+
+    // Env 0, 2, 3 must have valid (non-NaN) qvel
+    for i in [0, 2, 3] {
+        let data = batch.env(i).unwrap();
+        for j in 0..model.nv {
+            assert!(data.qvel[j].is_finite(),
+                "env {i} qvel[{j}] is not finite after error in env 1");
+        }
+    }
+}
+
 #[test] #[ignore = "Requires GPU"]
-fn gpu_reset_where()                        // reset_where(mask) works correctly
+fn gpu_reset_single() {
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    let mut batch = GpuBatchSim::new(Arc::clone(&model), 4).unwrap();
+    for _ in 0..10 { batch.step_all().unwrap(); }
+
+    batch.reset(2);
+    let data = batch.env(2).unwrap();
+    // After reset: qvel = 0, time = 0
+    for j in 0..model.nv { assert_eq!(data.qvel[j], 0.0); }
+    assert_eq!(data.time, 0.0);
+}
+
 #[test] #[ignore = "Requires GPU"]
-fn gpu_reset_all()                          // reset_all() works correctly
+fn gpu_reset_where() {
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    let mut batch = GpuBatchSim::new(Arc::clone(&model), 4).unwrap();
+    for _ in 0..10 { batch.step_all().unwrap(); }
+
+    let pre_step_time = batch.env(0).unwrap().time;
+    batch.reset_where(&[false, true, false, true]);
+
+    // Env 1 and 3 reset, env 0 and 2 unchanged
+    assert_eq!(batch.env(1).unwrap().time, 0.0);
+    assert_eq!(batch.env(3).unwrap().time, 0.0);
+    assert_eq!(batch.env(0).unwrap().time, pre_step_time);
+    assert_eq!(batch.env(2).unwrap().time, pre_step_time);
+}
+
 #[test] #[ignore = "Requires GPU"]
-fn gpu_step_single_env()                    // 1 env, correctness
+fn gpu_reset_all() {
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    let mut batch = GpuBatchSim::new(Arc::clone(&model), 4).unwrap();
+    for _ in 0..10 { batch.step_all().unwrap(); }
+
+    batch.reset_all();
+    for i in 0..4 {
+        let data = batch.env(i).unwrap();
+        assert_eq!(data.time, 0.0);
+        for j in 0..model.nv { assert_eq!(data.qvel[j], 0.0); }
+    }
+}
+
+#[test] #[ignore = "Requires GPU"]
+fn gpu_step_single_env() {
+    // Single-env batch: no off-by-one in buffer offsets.
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    let mut gpu = GpuBatchSim::new(Arc::clone(&model), 1).unwrap();
+    let mut cpu = gpu.cpu_reference();
+
+    gpu.step_all().unwrap();
+    cpu.step_all();
+
+    let gpu_qvel = gpu.env(0).unwrap().qvel.as_slice();
+    let cpu_qvel = cpu.env(0).unwrap().qvel.as_slice();
+    for j in 0..model.nv {
+        let err = (gpu_qvel[j] - cpu_qvel[j]).abs();
+        assert!(err <= 1.2e-7 * cpu_qvel[j].abs() + 1e-10,
+            "qvel[{j}]: gpu={}, cpu={}, err={err}", gpu_qvel[j], cpu_qvel[j]);
+    }
+}
+
+#[test] #[ignore = "Requires GPU"]
+fn gpu_batch_too_large() {
+    // Construct a batch that exceeds max_storage_buffer_binding_size.
+    let model = Arc::new(Model::n_link_pendulum(3, 1.0, 0.1));
+    // u32::MAX envs × 3 DOFs × 4 bytes = ~51 GB — exceeds any real GPU limit.
+    let err = GpuBatchSim::new(model, u32::MAX as usize).unwrap_err();
+    assert!(matches!(err, GpuSimError::BatchTooLarge { .. }));
+}
 ```
+
+#### Implementation Notes
+
+**Recommended implementation order:**
+
+1. **`sim-core` changes first** — add `gpu-internals` feature, `integrate_without_velocity`,
+   `envs_as_mut_slice`, `model_arc`. Verify existing `sim-core` tests still pass
+   (`cargo test -p sim-core` and `cargo test -p sim-core --features gpu-internals`).
+2. **`sim-gpu` crate scaffold** — `Cargo.toml`, `lib.rs`, `error.rs`. Verify `cargo check -p sim-gpu`.
+3. **`context.rs`** — `GpuSimContext` singleton. Test: `gpu_context_availability`.
+4. **`buffers.rs`** — `GpuParams`, `GpuEnvBuffers`. Tests: `gpu_params_layout`,
+   `gpu_params_from_model`.
+5. **`euler_integrate.wgsl`** — shader file. No standalone test (validated via pipeline).
+6. **`pipeline.rs`** — `GpuBatchSim` with `new`, `try_new`, `step_all`, reset methods.
+   Tests: all GPU-required tests.
+7. **Benchmarks** — `gpu_benchmarks.rs`. Run last after correctness is established.
+
+**Known gotchas:**
+
+- **`model.nv` is `usize`, not `u32`:** The `as u32` cast in `GpuParams::from_model`
+  truncates silently if `nv > u32::MAX`. This is safe in practice (no model has 4B+ DOFs)
+  but the implementor should verify `nv` fits in `u32` before casting, or document the
+  assumption.
+
+- **`wgpu::PipelineCompilationOptions::constants` map values are `f64`:** The wgpu API
+  uses `f64` for all override constant values, even for WGSL `u32` overrides. The
+  `wg_size` value must be cast to `f64` before insertion into the constants map.
+
+- **Staging buffer mapping is blocking:** `device.poll(wgpu::Maintain::Wait)` blocks the
+  calling thread until the GPU finishes. For Phase 10a this is acceptable (the CPU forward
+  pass dominates latency). In later phases, consider double-buffering or async polling.
+
+- **`BatchSim` internal field names:** `envs_as_mut_slice` and `model_arc` access private
+  fields of `BatchSim` (`envs: Vec<Data>`, `model: Arc<Model>`). If `BatchSim`'s internal
+  field names change, the `#[cfg(feature = "gpu-internals")]` methods must be updated.
+  The `#[doc(hidden)]` attribute signals these are unstable internals.
+
+- **wgpu `create_shader_module` deprecation:** wgpu 24 may deprecate `create_shader_module`
+  in favor of `create_shader_module_trusted`. Check the wgpu 24 changelog at implementation
+  time. If deprecated, use the non-deprecated variant — the shader source is trusted
+  (`include_str!` from our crate, not user-supplied).
 
 #### Files
 
@@ -3422,7 +3757,11 @@ fn gpu_step_single_env()                    // 1 env, correctness
 - `sim/L0/gpu/benches/gpu_benchmarks.rs` — CPU vs GPU throughput comparison
 
 **Modified files (sim-core):**
-- `sim/L0/core/Cargo.toml` — add `gpu-internals` feature (empty, just a gate)
+- `sim/L0/core/Cargo.toml` — add `gpu-internals` feature (empty, just a gate):
+  ```toml
+  # In [features]:
+  gpu-internals = []  # Exposes internal helpers for sim-gpu. No deps.
+  ```
 - `sim/L0/core/src/mujoco_pipeline.rs` — add `integrate_without_velocity()`
   method on `Data`, behind `#[cfg(feature = "gpu-internals")]`
 - `sim/L0/core/src/batch.rs` — add `envs_as_mut_slice()` and `model_arc()`

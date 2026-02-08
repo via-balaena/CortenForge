@@ -1,0 +1,33 @@
+[package]
+name = "sim-gpu"
+description = "GPU-accelerated batched physics simulation via wgpu compute shaders"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sim-core = { path = "../core", features = ["gpu-internals"] }
+wgpu = "24"
+bytemuck = { version = "1.14", features = ["derive"] }
+pollster = "0.4"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rayon = { workspace = true, optional = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "gpu_benchmarks"
+harness = false
+
+[features]
+default = []
+parallel = ["dep:rayon", "sim-core/parallel"]
+
+[lints]
+workspace = true

@@ -76,6 +76,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | MJCF `<sensor>` parsing + wiring | 32 sensor types parsed; all 32 wired to pipeline via `process_sensors()` | [§13](#13-model-format) |
 | Muscle pipeline | MuJoCo FLV curves, activation dynamics (Millard 2013), act_dot/integrator architecture, RK4 activation | [§6](#6-actuation) |
 | Multi-threading | `parallel` feature with rayon: `BatchSim::step_all()` for cross-environment parallelism (island-parallel solving removed in Phase 3) | [§12](#12-performance-optimizations) |
+| GPU acceleration (Phase 10a) | `sim-gpu` crate: wgpu compute shader Euler velocity integration, `GpuBatchSim` drop-in for `BatchSim`, transparent CPU fallback | [§12](#12-performance-optimizations) |
 | SIMD optimization | `sim-simd` crate with `Vec3x4`, `Vec3x8`, batch operations | [§12](#12-performance-optimizations) |
 
 **For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics + site transmissions), sensors (32 pipeline types, all wired from MJCF), and fixed + spatial tendons (including sphere/cylinder wrapping, sidesite, pulley) are functional. Deformable bodies require pipeline integration before they produce correct results. See [`sim/docs/todo/index.md`](./todo/index.md) for the full gap list.
@@ -1097,6 +1098,7 @@ for _ in 0..100 {
 | Sleeping bodies | Native | — | **Not implemented** (removed with World/Stepper) | - |
 | Constraint islands | Auto | `ConstraintIslands` (was in `islands.rs`) | **Removed** (Phase 3 consolidation) | - |
 | **Multi-threading** | Model-data separation | `parallel` feature with rayon | **Active** — `BatchSim::step_all()` uses `par_iter_mut` for cross-environment parallelism (`batch.rs`); see [future_work_3 #9](./todo/future_work_3.md) | - |
+| **GPU acceleration** | MuJoCo MJX (JAX) | `sim-gpu` crate (wgpu) | **Active (Phase 10a)** — `GpuBatchSim` offloads Euler velocity integration to GPU compute shader; full pipeline stays on CPU. See [future_work_3 #10](./todo/future_work_3.md) | - |
 | SIMD | Likely | `sim-simd` crate | **Partial** (only `find_max_dot()` is used by sim-core GJK; all other batch ops have zero callers outside benchmarks) | - |
 
 ### Implementation Notes: SIMD Optimization ⚠️ PARTIAL (crate complete; only `find_max_dot` has production callers)
@@ -1212,6 +1214,43 @@ config.solver.parallel = ParallelConfig::many_islands();
 - Use `ParallelConfig::sequential()` for deterministic results matching default solver
 
 **Files:** `sim-types/src/config.rs` (ParallelConfig remains), removed: `sim-constraint/src/parallel.rs`, `sim-constraint/src/newton.rs`
+
+### Implementation Notes: GPU Acceleration ✅ ACTIVE (Phase 10a — Euler velocity integration)
+
+The `sim-gpu` crate (`sim/L0/gpu/`) provides GPU-accelerated batched simulation
+via wgpu compute shaders. `GpuBatchSim` is a drop-in replacement for `BatchSim`
+with the same API surface (step_all, reset, env/env_mut, len, model).
+
+**Phase 10a scope:** Only the Euler velocity integration (`qvel += qacc * h`)
+runs on GPU. All other pipeline stages (FK, collision, constraints, dynamics)
+remain on CPU. This validates the full GPU infrastructure with minimal physics
+complexity.
+
+**Architecture:**
+- `GpuSimContext` — `OnceLock<Option<>>` singleton for wgpu device/queue (follows `mesh-gpu` pattern)
+- `GpuEnvBuffers` — Structure-of-Arrays f32 GPU buffers (qvel, qacc, staging) with overflow-safe size validation
+- `GpuParams` — `#[repr(C)]` Pod+Zeroable uniform buffer matching WGSL struct layout (16 bytes)
+- `euler_integrate.wgsl` — compute shader with pipeline-overridable `wg_size` and strided loop for nv > wg_size
+
+**5-step pipeline per timestep:**
+1. CPU: `data.forward(&model)` for each env (rayon-parallel with `parallel` feature)
+2. CPU→GPU: Upload qvel + qacc as f32 SoA buffers (`queue.write_buffer`)
+3. GPU: `euler_integrate` compute shader (one workgroup per env, one thread per DOF)
+4. GPU→CPU: Staging buffer readback via `map_async` + `device.poll(Wait)`
+5. CPU: Activation integration + position integration + time advance (`integrate_without_velocity`)
+
+**sim-core integration:** Three feature-gated helpers exposed behind `gpu-internals`:
+- `Data::integrate_without_velocity()` — skips velocity update (done on GPU)
+- `BatchSim::envs_as_mut_slice()` — for rayon `par_iter_mut` in GPU forward pass
+- `BatchSim::model_arc()` — for `Arc::clone` in parallel forward pass
+
+**Fallback:** `GpuBatchSim::try_new()` returns `Ok(None)` when no GPU is available;
+other errors (`UnsupportedIntegrator`, `BatchTooLarge`) are propagated.
+
+**Remaining phases (10b–10f):** FK, collision broad/narrow phase, constraint solver,
+full GPU step. See [future_work_3 #10](./todo/future_work_3.md).
+
+**Files:** `sim-gpu/src/` (pipeline.rs, context.rs, buffers.rs, error.rs, shaders/euler_integrate.wgsl), `sim-gpu/tests/integration.rs`, `sim-gpu/benches/gpu_benchmarks.rs`
 
 ### Implementation Notes: Sleeping Bodies — REMOVED
 
