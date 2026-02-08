@@ -6,32 +6,31 @@ priority table, dependency graph, and file map.
 ---
 
 ### 11. Deformable Body Pipeline Integration
-**Status:** Not started | **Effort:** XL | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** XL | **Prerequisites:** None
 
 *Transferred from [future_work_1.md](./future_work_1.md) #9.*
 
-#### Current State
+#### Pre-Implementation State (historical)
 
-sim-deformable is a standalone 7,733-line crate (86 tests) with zero coupling to the
-MuJoCo pipeline:
+sim-deformable was a standalone 7,733-line crate (86 tests) with zero coupling to the
+MuJoCo pipeline. All items below have been resolved by the implementation:
 
 | Component | Location | Description |
 |-----------|----------|-------------|
-| `XpbdSolver` | `solver.rs:134` | XPBD constraint solver. `step(&mut self, body: &mut dyn DeformableBody, gravity: Vector3<f64>, dt: f64)` (`solver.rs:196`). Configurable substeps (1–4), damping, sleeping. |
-| `DeformableBody` trait | `lib.rs:173` | Common interface: `positions()`, `velocities()`, `inverse_masses()`, `constraints()`, `material()`, `bounding_box()`. Implemented by Cloth, SoftBody, CapsuleChain. |
-| `Cloth` | `cloth.rs` | Triangle meshes with distance + dihedral bending constraints. `thickness` field (`cloth.rs:50`). 6 presets. |
-| `SoftBody` | `soft_body.rs` | Tetrahedral meshes with distance + volume constraints. 6 presets. |
-| `CapsuleChain` | `capsule_chain.rs` | 1D particle chains with distance + bending constraints. `radius` field (`capsule_chain.rs:41`). 5 presets. |
-| `Material` | `material.rs:94` | `friction: f64` (default 0.5). 14 presets. Unused by any collision system. |
-| `ConstraintType::Collision` | `constraints.rs:43` | Enum variant defined but no `Constraint::Collision(...)` variant in the `Constraint` enum — dead code. |
-| `VertexFlags::COLLIDING` | `types.rs:55` | Bitflag defined but never set. |
+| `XpbdSolver` | `solver.rs:134` | XPBD constraint solver. Now called from `mj_deformable_step()` in pipeline. |
+| `DeformableBody` trait | `lib.rs:173` | Common interface. Extended with `collision_margin()`, `clone_box()`, `Debug` supertrait. |
+| `Cloth` | `cloth.rs` | Triangle meshes. Now participates in deformable-rigid contact. |
+| `SoftBody` | `soft_body.rs` | Tetrahedral meshes. Now participates in deformable-rigid contact. |
+| `CapsuleChain` | `capsule_chain.rs` | 1D particle chains. Now participates in deformable-rigid contact. |
+| `Material` | `material.rs:94` | `friction: f64` (default 0.5). Now used by `mj_deformable_collision()` for geometric friction. |
+| `Constraint::Collision(CollisionConstraint)` | `constraints.rs` | ~~Dead code~~ → fully implemented with `solve()` method. |
+| `VertexFlags::COLLIDING` | `types.rs:55` | ~~Never set~~ → set/cleared each step by `mj_deformable_collision()`. |
 
-sim-physics re-exports the crate behind the `deformable` feature flag
-(`physics/src/lib.rs:109-110`). `Model` (`mujoco_pipeline.rs:788`) and `Data`
-(`mujoco_pipeline.rs:1595`) have zero deformable-related fields. The pipeline
-functions `mj_collision()` (`mujoco_pipeline.rs:3886`), `mj_fwd_constraint()`
-(`mujoco_pipeline.rs:11504`), and `Data::integrate()` (`mujoco_pipeline.rs:3175`)
-operate exclusively on rigid bodies.
+`Model` has cfg-gated deformable solver params (`deformable_condim`, `deformable_solref`,
+`deformable_solimp`). `Data` has cfg-gated fields (`deformable_bodies`, `deformable_solvers`,
+`deformable_contacts`). Pipeline functions `mj_deformable_collision()`,
+`solve_deformable_contacts()`, and `mj_deformable_step()` are wired into `forward()`,
+`mj_fwd_constraint()`, `integrate()`, and `mj_runge_kutta()`.
 
 #### MuJoCo Reference
 
@@ -1117,6 +1116,63 @@ impl Clone for Data {
   to `ModelBuilder::build()` struct literal (~line 2305) with default values
 - `sim/L0/core/src/batch.rs` — no changes (deformable state lives in `Data`)
 - `sim/L0/tests/integration/` — new: `deformable_contact.rs` test file
+
+#### Implementation Notes ✅
+
+Implemented via split-solve approach: velocity-level Jacobi PGS contact solver
+for deformable-rigid coupling, followed by position-level correction, followed
+by XPBD internal constraint projection. All changes `#[cfg(feature = "deformable")]`-gated.
+
+**Phase A — sim-deformable trait/constraint changes:**
+- Added `Debug` supertrait, `collision_margin()` default method, `clone_box()` required method
+- Added `CollisionConstraint` struct with `solve()` returning pre-correction depth
+- Implemented on all three body types; `CapsuleChain` returns `config.radius`,
+  `Cloth` returns `config.thickness / 2.0`, `SoftBody` uses default 0.005
+- All trait object bounds use `Send + Sync` for bevy `Resource` compatibility
+
+**Phase B — sim-core Model/Data fields:**
+- `DeformableContact` struct (cfg-gated): vertex/body/geom indices, contact frame,
+  depth, friction, solver parameters
+- Model fields: `deformable_condim`, `deformable_solref`, `deformable_solimp`
+- Data fields: `deformable_bodies: Vec<Box<dyn DeformableBody + Send + Sync>>`,
+  `deformable_solvers: Vec<XpbdSolver>`, `deformable_contacts: Vec<DeformableContact>`
+- Manual `impl Clone for Data` (~71 fields) with cfg-gated `clone_box()` for trait objects
+- Registration API: `register_deformable()`, `deformable()`, `deformable_mut()`
+- `Data::reset()` clears contacts, zeros velocities, clears forces
+
+**Phase C — Collision detection (`mj_deformable_collision()`):**
+- Phase 1: Clear `VertexFlags::COLLIDING`
+- Phase 2: Per-body collision with rigid geoms (broadphase AABB + narrowphase dispatch)
+- Phase 3: Set `VertexFlags::COLLIDING` on contacted vertices
+- Phase 4: Position-level correction (enhancement beyond spec — prevents penetration drift)
+- `collide_vertex_geom()`: plane, sphere, box, capsule, cylinder, ellipsoid dispatch
+- Plane broadphase bypass (enhancement — infinite planes can't use thin-slab AABBs)
+
+**Phase D — Contact solver (`solve_deformable_contacts()`):**
+- Jacobi-style 3-phase solver with Baumgarte stabilization
+- `compute_erp()`, `compute_rigid_inv_mass_at_point()` helpers
+- Early exit on solver tolerance convergence
+
+**Phase E — Pipeline wiring:**
+- `mj_deformable_step()`: steps all XPBD solvers
+- Inserted into `forward()`, `forward_skip_sensors()`, `mj_fwd_constraint()`,
+  `integrate()`, and `mj_runge_kutta()`
+
+**Phase F — MJCF builder:** cfg-gated default fields in `ModelBuilder::build()`
+
+**Phase G — Integration tests (12 tests):**
+1. `test_zero_deformable_zero_overhead`
+2. `test_cloth_sphere_contact_force`
+3. `test_cloth_penetration_bounded`
+4. `test_capsule_chain_on_box_equilibrium`
+5. `test_collision_constraint_solve`
+6. `test_vertex_flags_colliding`
+7. `test_contact_normal_direction`
+8. `test_friction_combination`
+9. `test_pinned_vertex_no_collision`
+10. `test_deformable_clone`
+11. `test_deformable_reset`
+12. `test_rk4_with_deformable`
 
 ---
 

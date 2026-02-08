@@ -276,7 +276,8 @@ Simulated sensor suite: `Imu` (6-axis accel + gyro), `ForceTorqueSensor`
 
 ### sim-deformable
 
-Soft body simulation using XPBD (Extended Position-Based Dynamics):
+Soft body simulation using XPBD (Extended Position-Based Dynamics), integrated
+into the rigid pipeline via split-solve deformable-rigid contact (`#[cfg(feature = "deformable")]`):
 
 | Type | Dimension | Use Cases |
 |------|-----------|-----------|
@@ -284,6 +285,11 @@ Soft body simulation using XPBD (Extended Position-Based Dynamics):
 | `Cloth` | 2D | Membranes, shells, fabric |
 | `SoftBody` | 3D | Tetrahedral volumetric meshes |
 | `SkinnedMesh` | — | Bone-driven mesh deformation |
+
+Pipeline integration: `Data::register_deformable()` adds bodies to the pipeline.
+`mj_deformable_collision()` detects vertex-vs-geom contacts (plane/sphere/box/
+capsule/cylinder/ellipsoid). `solve_deformable_contacts()` resolves via Jacobi PGS
+with position-level correction. `mj_deformable_step()` runs XPBD internal constraints.
 
 Material model: Young's modulus, Poisson's ratio, density, damping.
 Presets: rubber, tendon, gelatin, foam, cloth, soft-tissue, muscle, cartilage,
@@ -453,7 +459,7 @@ is Layer 1 only.
 | `serde` | Most crates | Serialization support |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 | `muscle` | sim-constraint | Hill-type muscle integration |
-| `deformable` | sim-physics | XPBD soft body support |
+| `deformable` | sim-core, sim-mjcf, sim-physics | XPBD soft body support with pipeline-integrated deformable-rigid contact |
 
 ## References
 

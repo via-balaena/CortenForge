@@ -26,7 +26,7 @@ can be tackled in any order unless a prerequisite is noted.
 | ~~6~~ | ~~Sensor Completion~~ | ~~High~~ | ~~High~~ | ~~S~~ | ~~#4 for tendon sensors~~ ✅ |
 | ~~7~~ | ~~Integrator Rename~~ | ~~Low~~ | ~~Medium~~ | ~~S~~ | ~~None~~ ✅ |
 | ~~8~~ | ~~True RK4 Integration~~ | ~~Low~~ | ~~Medium~~ | ~~M~~ | ~~None~~ ✅ |
-| ~~9~~ | ~~Deformable Body Integration~~ | ~~Medium~~ | ~~Low~~ | ~~XL~~ | ~~None~~ → [future_work_4.md #11](./future_work_4.md) |
+| ~~9~~ | ~~Deformable Body Integration~~ | ~~Medium~~ | ~~Low~~ | ~~XL~~ | ~~None~~ → [future_work_4.md #11](./future_work_4.md) ✅ |
 | ~~10~~ | ~~Batched Simulation~~ | ~~High~~ | ~~Low~~ | ~~L~~ | ~~None~~ → [future_work_3.md #9](./future_work_3.md) |
 | ~~11~~ | ~~GPU Acceleration~~ | ~~High~~ | ~~Low~~ | ~~XL~~ | ~~#10~~ → [future_work_3.md #10](./future_work_3.md) |
 | ~~12~~ | ~~General Gain/Bias Actuator Force Model~~ | ~~High~~ | ~~High~~ | ~~M~~ | ~~#5~~ ✅ |
@@ -4208,7 +4208,7 @@ Sensors are evaluated once per `step()` call:
 ## ~~Group D — Deformable Body~~ → Phase 2
 
 ### ~~9. Deformable Body Pipeline Integration~~
-**Status:** Transferred to [future_work_4.md #11](./future_work_4.md)
+**Status:** Transferred to [future_work_4.md #11](./future_work_4.md) ✅ Complete
 
 ---
 

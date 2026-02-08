@@ -46,7 +46,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 ### Standalone Crates (not wired into pipeline)
 - sim-tendon (3,919 lines) — standalone crate; fixed tendons now implemented directly in pipeline ([future_work_1 #4](./todo/future_work_1.md) ✅)
 - sim-muscle (2,550 lines) — standalone Hill model; MuJoCo FLV muscle model now implemented directly in pipeline ([future_work_1 #5](./todo/future_work_1.md) ✅)
-- sim-deformable (7,733 lines) — XPBD solver not called from `Data::step()` ([future_work_4 #11](./todo/future_work_4.md))
+- ~~sim-deformable (7,733 lines) — XPBD solver not called from `Data::step()`~~ ✅ **Pipeline** (deformable-rigid contact via split-solve Jacobi PGS + position correction + XPBD; see [future_work_4 #11](./todo/future_work_4.md) ✅)
 - sim-sensor (rangefinder, magnetometer, force/torque) — standalone crate with own API; pipeline has independent implementations
 - CGSolver in sim-constraint (1,664 lines) — standalone joint-space CG; pipeline contact CG is separate in `mujoco_pipeline.rs` ([future_work_1 #3](./todo/future_work_1.md) ✅)
 - ~~`integrators.rs` trait system~~ — removed in FUTURE_WORK C1
@@ -79,7 +79,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | GPU acceleration (Phase 10a) | `sim-gpu` crate: wgpu compute shader Euler velocity integration, `GpuBatchSim` drop-in for `BatchSim`, transparent CPU fallback | [§12](#12-performance-optimizations) |
 | SIMD optimization | `sim-simd` crate with `Vec3x4`, `Vec3x8`, batch operations | [§12](#12-performance-optimizations) |
 
-**For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics + site transmissions), sensors (32 pipeline types, all wired from MJCF), and fixed + spatial tendons (including sphere/cylinder wrapping, sidesite, pulley) are functional. Deformable bodies require pipeline integration before they produce correct results. See [`sim/docs/todo/index.md`](./todo/index.md) for the full gap list.
+**For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics + site transmissions), sensors (32 pipeline types, all wired from MJCF), fixed + spatial tendons (including sphere/cylinder wrapping, sidesite, pulley), and deformable bodies (split-solve contact with rigid geoms) are functional. See [`sim/docs/todo/index.md`](./todo/index.md) for the full gap list.
 
 ---
 
@@ -873,7 +873,7 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 | Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (in pipeline; standalone `DistanceConstraint` in sim-constraint is unused) | - |
 | Joint coupling | Yes | Pipeline `EqualityType::Joint` + `apply_joint_equality_constraint()` | **Implemented** (in pipeline; standalone `JointCoupling`/`GearCoupling`/`DifferentialCoupling` in sim-constraint are unused) | - |
 | Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Standalone** (in sim-constraint; pipeline uses `EqualityType::Tendon` warning — tendon *equality* constraints not yet implemented) | - |
-| Flex (edge length) | Yes | `FlexEdgeConstraint` | **Standalone** (in sim-deformable, XPBD not called from pipeline; see [future_work_4 #11](./todo/future_work_4.md)) | - |
+| Flex (edge length) | Yes | `FlexEdgeConstraint` | ✅ **Pipeline** (XPBD solver called from `mj_deformable_step()` in `integrate()` and `mj_runge_kutta()`; see [future_work_4 #11](./todo/future_work_4.md) ✅) | - |
 
 ### Implementation Notes: Connect (Ball) Constraint ✅ COMPLETED
 
@@ -947,13 +947,13 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| 1D (capsule chains) | Yes | `CapsuleChain` | **Standalone** (sim-deformable crate, not in pipeline) | - | - |
-| 2D (triangle shells) | Yes | `Cloth` | **Standalone** (sim-deformable crate, not in pipeline) | - | - |
-| 3D (tetrahedra) | Yes | `SoftBody` | **Standalone** (sim-deformable crate, not in pipeline) | - | - |
-| Skinned meshes | Yes | `SkinnedMesh` | **Standalone** (sim-deformable crate, not in pipeline) | - | - |
-| Deformable-rigid collision | Yes | `ConstraintType::Collision` | **Missing** (enum variant defined but unimplemented) | - | - |
+| 1D (capsule chains) | Yes | `CapsuleChain` | ✅ **Pipeline** (XPBD + deformable-rigid contact) | - | - |
+| 2D (triangle shells) | Yes | `Cloth` | ✅ **Pipeline** (XPBD + deformable-rigid contact) | - | - |
+| 3D (tetrahedra) | Yes | `SoftBody` | ✅ **Pipeline** (XPBD + deformable-rigid contact) | - | - |
+| Skinned meshes | Yes | `SkinnedMesh` | **Standalone** (visual deformation only, not in contact pipeline) | - | - |
+| Deformable-rigid collision | Yes | `CollisionConstraint`, `DeformableContact` | ✅ **Implemented** (vertex-vs-geom narrowphase: plane/sphere/box/capsule/cylinder/ellipsoid) | - | - |
 
-> **Standalone crate with zero pipeline coupling.** sim-deformable is a 7,733-line crate (86 tests) with `XpbdSolver`, `Cloth`, `SoftBody`, `CapsuleChain`, and `DeformableBody` trait. The XPBD solver works standalone but is **not called from `Data::step()`**. No deformable-rigid collision detection exists — `ConstraintType::Collision` is an enum variant defined at `constraints.rs:42-43` but unimplemented. `Material.friction` and per-body `radius`/`thickness` fields are declared but unused by any collision system. See [future_work_4 #11](./todo/future_work_4.md) for the pipeline integration spec.
+> ✅ **Pipeline-integrated via split-solve approach.** Deformable bodies registered via `Data::register_deformable()` participate in collision detection (`mj_deformable_collision()`) and contact resolution (`solve_deformable_contacts()`) with rigid geoms. XPBD internal constraints solved via `mj_deformable_step()` in both Euler and RK4 integrators. Feature-gated behind `#[cfg(feature = "deformable")]` for zero overhead when disabled. See [future_work_4 #11](./todo/future_work_4.md) ✅.
 
 ### Implementation Notes: Skinned Meshes ✅ COMPLETED (standalone only)
 
@@ -977,7 +977,7 @@ Skinned meshes provide visual deformation for rendering soft bodies:
 - Parser support for `<skin>`, `<bone>`, and `<vertex>` elements
 4. Export skinned vertex positions for rendering
 
-### Implementation Notes: Deformables ✅ COMPLETED (standalone sim-deformable crate only — not in pipeline)
+### Implementation Notes: Deformables ✅ COMPLETED (pipeline-integrated)
 
 Created `sim-deformable` crate using XPBD (Extended Position-Based Dynamics) for stable, physically-accurate soft body simulation:
 
@@ -1522,7 +1522,7 @@ These joint types now have full constraint solver support:
 1. ~~**MJCF loading**: For MuJoCo model compatibility~~ ✅
 2. ~~**Muscle actuators**: For biomechanics~~ ✅ **Pipeline** (MuJoCo FLV model in `mj_fwd_actuation()` with activation dynamics, control/force clamping; sim-muscle crate provides richer standalone Hill-type model; see [future_work_1 #5](./todo/future_work_1.md) ✅)
 3. ~~**Tendons**: For cable robots~~ ✅ **Pipeline** (fixed + spatial tendons fully integrated, including sphere/cylinder wrapping, sidesite, pulley; see [future_work_1 #4](./todo/future_work_1.md), [future_work_2 #4](./todo/future_work_2.md))
-4. ~~**Deformables**: For soft body simulation~~ ✅ → ⚠️ **Standalone** (sim-deformable crate exists, not called from `Data::step()`; see [future_work_4 #11](./todo/future_work_4.md))
+4. ~~**Deformables**: For soft body simulation~~ ✅ **Pipeline** (split-solve deformable-rigid contact + XPBD; see [future_work_4 #11](./todo/future_work_4.md) ✅)
 
 ### ⚠️ Phase 4: Solver & Performance (built then partially removed)
 
@@ -1865,7 +1865,7 @@ Focus: Large standalone features, each potentially its own PR.
 | ~~Height field collision~~ | §4 Collision, §5 Geoms | High | ✅ COMPLETED | Terrain simulation |
 | ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED | Pipeline CG in `mujoco_pipeline.rs` (`cg_solve_contacts()`); `CGSolver` in sim-constraint remains standalone joint-space solver (see FUTURE_WORK #3 ✅) |
 | ~~Tendon coupling constraints~~ | §10 Equality | Low | ✅ COMPLETED → ⚠️ **Standalone** | In sim-constraint; pipeline tendon *equality* constraints not yet implemented (tendon kinematics/actuation/limits ARE in pipeline) |
-| ~~Flex edge constraints~~ | §10 Equality | Low | ✅ COMPLETED → ⚠️ **Standalone** | In sim-deformable, XPBD not called from pipeline |
+| ~~Flex edge constraints~~ | §10 Equality | Low | ✅ **COMPLETED** | XPBD called from pipeline via `mj_deformable_step()` |
 | ~~SDF collision~~ | §4 Collision, §5 Geoms | High | ✅ **COMPLETED** | All 10 shape combinations implemented (see §5 notes) |
 | ~~Skinned meshes~~ | §11 Deformables | High | ✅ **COMPLETED** | Visual deformation for rendering |
 | ~~Multi-threading~~ | §12 Performance | Medium | ✅ **Active** | Island-parallel solving removed in Phase 3; `BatchSim::step_all()` now uses rayon `par_iter_mut` for cross-environment parallelism; see [future_work_3 #9](./todo/future_work_3.md) |
@@ -1920,7 +1920,7 @@ network.add_tendon(tendon);
 let forces = network.compute_all_forces(&get_position, &get_velocity, dt);
 ```
 
-**Flex Edge Constraints (`sim-deformable/src/constraints.rs`) — ⚠️ Standalone:**
+**Flex Edge Constraints (`sim-deformable/src/constraints.rs`) — ✅ Pipeline-integrated:**
 - `FlexEdgeType` - Stretch, Shear, StretchShear, or Twist constraint types
 - `FlexEdgeConstraint` - XPBD constraint for deformable edge behavior
 - Stretch constraint for distance maintenance (2 vertices)
@@ -1996,7 +1996,7 @@ let terrain = CollisionShape::heightfield(Arc::new(data));
 | `sim-mjcf` | MJCF loading | `lib.rs`, `parser.rs`, `types.rs`, `validation.rs`, `model_builder.rs`, `defaults.rs`, `config.rs`, `error.rs`, `mjb.rs` |
 | `sim-muscle` | Muscle actuators (⚠️ standalone) | `activation.rs`, `curves.rs`, `hill.rs`, `kinematics.rs` |
 | `sim-tendon` | Tendon/cable systems (⚠️ standalone) | `fixed.rs`, `spatial.rs`, `path.rs`, `wrapping.rs`, `pulley.rs`, `cable.rs` |
-| `sim-deformable` | Soft body simulation (⚠️ standalone) | `capsule_chain.rs`, `cloth.rs`, `soft_body.rs`, `solver.rs`, `constraints.rs`, `skinning.rs`, `material.rs`, `mesh.rs` |
+| `sim-deformable` | Soft body simulation (✅ pipeline-integrated) | `capsule_chain.rs`, `cloth.rs`, `soft_body.rs`, `solver.rs`, `constraints.rs`, `skinning.rs`, `material.rs`, `mesh.rs` |
 | `sim-physics` | Umbrella re-export | `lib.rs` |
 
 ---
