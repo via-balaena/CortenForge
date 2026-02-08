@@ -1270,9 +1270,10 @@ models have `nv < 100`, making the O(nv²) storage (~80 KB for nv=100) negligibl
 and avoiding the complexity of sparse row/column indexing. Additionally, MuJoCo's
 `mjd_transitionFD` writes sensor derivatives (C, D matrices) — we defer these
 (see Scope Exclusions) and reserve `Option` fields for future implementation.
-The Coriolis matrix computation uses column-perturbation RNE (O(nv·nbody))
-rather than full analytical Featherstone velocity derivatives, trading some
-redundant computation for implementation simplicity as a pragmatic first step.
+The bias force velocity derivative (`mjd_rne_vel`) uses the same chain-rule
+propagation approach as MuJoCo (forward/backward Jacobian accumulation through
+the kinematic tree) but stores per-body Jacobians in dense 6×nv matrices
+rather than MuJoCo's sparse band-limited format.
 
 #### Objective
 
@@ -1334,7 +1335,7 @@ velocity and activation columns.
 | **Part 1** | 0–7 | Types, pure FD (`mjd_transition_fd`), analytical qDeriv (`mjd_smooth_vel`) | Yes — FD unblocks iLQR/DDP/MPC workflows. `mjd_smooth_vel` validates against FD. |
 | **Part 2** | 8–12 | Integration derivatives, hybrid (`mjd_transition_hybrid`), public API dispatch, validation utilities, module exports | Yes — hybrid provides ~2× speedup over pure FD. |
 
-Part 1 acceptance criteria: 1–22. Part 2 acceptance criteria: 23–32.
+Part 1 acceptance criteria: 1–25. Part 2 acceptance criteria: 26–35.
 
 ##### Step 0 — `TransitionMatrices` output struct
 
@@ -1519,6 +1520,7 @@ let qpos_0 = data.qpos.clone();
 let qvel_0 = data.qvel.clone();
 let act_0 = data.act.clone();
 let ctrl_0 = data.ctrl.clone();
+let time_0 = data.time;
 // efc_lambda is HashMap<WarmstartKey, Vec<f64>> — clone is O(n_contacts).
 // This is acceptable because FD already does O(nx + nu) full step() calls.
 let efc_lambda_0 = data.efc_lambda.clone();
@@ -1527,11 +1529,14 @@ let efc_lambda_0 = data.efc_lambda.clone();
 let y_0 = if !config.centered {
     scratch.step(model)?;
     let y = extract_state(model, &scratch, &qpos_0);
-    // Restore scratch to nominal for subsequent perturbations
+    // Restore scratch to nominal for subsequent perturbations.
+    // All derived fields (xpos, qM, qfrc_*, etc.) are recomputed by
+    // forward() inside step(), so only input fields need restoration.
     scratch.qpos.copy_from(&qpos_0);
     scratch.qvel.copy_from(&qvel_0);
     scratch.act.copy_from(&act_0);
     scratch.ctrl.copy_from(&ctrl_0);
+    scratch.time = time_0;
     scratch.efc_lambda = efc_lambda_0.clone();
     Some(y)
 } else {
@@ -1673,34 +1678,35 @@ have analytically computable velocity derivatives.
 pub qDeriv: DMatrix<f64>,
 ```
 
-**Additional scratch buffers** for `mjd_rne_vel()` column-perturbation
-(in `mujoco_pipeline.rs`, after `body_min_inertia`, ~line 1935):
+**Per-body Jacobian scratch buffers** for `mjd_rne_vel()` chain-rule
+propagation (in `mujoco_pipeline.rs`, after `body_min_inertia`, ~line 1935):
 
 ```rust
-/// Scratch body velocity for analytical Coriolis computation (length `nbody`).
-pub deriv_cvel: Vec<SpatialVector>,
-/// Scratch bias acceleration for analytical Coriolis computation (length `nbody`).
-pub deriv_cacc_bias: Vec<SpatialVector>,
-/// Scratch bias force for analytical Coriolis computation (length `nbody`).
-pub deriv_cfrc_bias: Vec<SpatialVector>,
+/// Scratch Jacobian ∂(cvel)/∂(qvel) per body (length `nbody`, each 6 × nv).
+/// Used by `mjd_rne_vel()` for chain-rule derivative propagation.
+pub deriv_Dcvel: Vec<DMatrix<f64>>,
+/// Scratch Jacobian ∂(cacc)/∂(qvel) per body (length `nbody`, each 6 × nv).
+pub deriv_Dcacc: Vec<DMatrix<f64>>,
+/// Scratch Jacobian ∂(cfrc)/∂(qvel) per body (length `nbody`, each 6 × nv).
+pub deriv_Dcfrc: Vec<DMatrix<f64>>,
 ```
 
 **Initialization in `make_data()`** (~line 2309):
 
 ```rust
 qDeriv: DMatrix::zeros(model.nv, model.nv),
-deriv_cvel: vec![SpatialVector::zeros(); model.nbody],
-deriv_cacc_bias: vec![SpatialVector::zeros(); model.nbody],
-deriv_cfrc_bias: vec![SpatialVector::zeros(); model.nbody],
+deriv_Dcvel: vec![DMatrix::zeros(6, model.nv); model.nbody],
+deriv_Dcacc: vec![DMatrix::zeros(6, model.nv); model.nbody],
+deriv_Dcfrc: vec![DMatrix::zeros(6, model.nv); model.nbody],
 ```
 
 **Clone:** Add to manual `impl Clone for Data`:
 
 ```rust
 qDeriv: self.qDeriv.clone(),
-deriv_cvel: self.deriv_cvel.clone(),
-deriv_cacc_bias: self.deriv_cacc_bias.clone(),
-deriv_cfrc_bias: self.deriv_cfrc_bias.clone(),
+deriv_Dcvel: self.deriv_Dcvel.clone(),
+deriv_Dcacc: self.deriv_Dcacc.clone(),
+deriv_Dcfrc: self.deriv_Dcfrc.clone(),
 ```
 
 ##### Step 4 — `mjd_passive_vel()`: Passive force velocity derivatives
@@ -1840,100 +1846,145 @@ fn mjd_actuator_vel(model: &Model, data: &mut Data) {
 **Borrow analysis:** Reads `data.ctrl`, `data.act`, `data.ten_J`,
 `data.actuator_moment`. Writes `data.qDeriv`. All separate fields.
 
-##### Step 6 — `mjd_rne_vel()`: Coriolis matrix via column-perturbation RNE
+**Multi-DOF joints:** Joint transmission applies force to the first DOF only
+(`qfrc_actuator[dof_adr] += gear * force`, line 8688). This is consistent with
+MuJoCo — to control all DOFs of a Ball/Free joint, use multiple actuators (one
+per DOF). The spec's scalar diagonal entry `qDeriv[(dof_adr, dof_adr)]` is
+therefore correct for all joint types.
+
+##### Step 6 — `mjd_rne_vel()`: Bias force velocity derivative via chain-rule RNE
 
 ```rust
 /// Compute ∂(qfrc_bias)/∂qvel and SUBTRACT from data.qDeriv.
 ///
-/// The bias force has two velocity-dependent components:
-/// 1. Gravity: ∂/∂qvel = 0 (position-only).
-/// 2. Coriolis/centrifugal: C(q,v) · v where C is the Coriolis matrix.
+/// The bias force `qfrc_bias = C(q)·v + g(q)` contains:
+/// 1. Gravity `g(q)`: ∂/∂qvel = 0 (position-only, excluded).
+/// 2. Coriolis/centrifugal terms: quadratic in velocity.
 ///
-/// # Algorithm: Column-perturbation of velocity-only RNE
+/// Because the Coriolis/centrifugal force is QUADRATIC in velocity,
+/// `∂(bias)/∂v` depends on the current velocity. A naive column-perturbation
+/// (running RNE with `v = e_j`) would only evaluate `bias(q, e_j)`, not the
+/// derivative at the actual v. MuJoCo's `mjd_rne_vel` (engine_derivative.c)
+/// uses chain-rule propagation through the kinematic tree — this spec follows
+/// the same approach.
 ///
-/// For each DOF j, compute C[:,j] by running the velocity-dependent part of
-/// RNE with qvel = e_j (j-th unit vector):
-///   1. Forward pass with v = e_j → body velocities, bias accelerations
-///   2. Backward pass → bias forces (gravity excluded)
-///   3. Project to joint space → column j of C
+/// # Algorithm: Chain-rule derivative propagation
+///
+/// Single-pass O(nbody) algorithm. Propagates per-body Jacobian matrices
+/// `Dcvel[b]`, `Dcacc[b]`, `Dcfrc[b]` (each 6 × nv, dense) through the
+/// kinematic tree, accumulating the effect of each DOF's velocity on every
+/// body's acceleration and force. The actual `data.qvel` is used in the
+/// chain-rule terms — not unit vectors.
 ///
 /// # Complexity
 ///
-/// O(nv · nbody). For nv ~ nbody ~ 30 (humanoid): ~27,000 small matrix-vector
-/// operations (6×6 spatial inertia). Fast for models up to ~100 DOFs.
+/// O(nbody · nv) with constant factor ~36 (6×6 matrix-matrix products in
+/// the backward pass dominate). For nv ~ nbody ~ 30 (humanoid): ~33k flops.
+/// Dense Jacobian storage: 3 × nbody × 6 × nv floats.
+/// For nv=30, nbody=31: ~45 KB. Acceptable for target models (nv < 100).
 ///
-/// # Optimization note
+/// # MuJoCo equivalence
 ///
-/// The Coriolis matrix satisfies C + C^T = dM/dt. This could halve the work
-/// (compute upper triangle and mirror). Deferred.
-fn mjd_rne_vel(model: &Model, data: &mut Data) {
-    for j in 0..model.nv {
-        let col = rne_velocity_column(model, data, j);
-        for i in 0..model.nv {
-            data.qDeriv[(i, j)] -= col[i];
-        }
-    }
-}
+/// MuJoCo's `mjd_rne_vel` uses sparse per-body Jacobians (band-limited by
+/// kinematic tree depth). We use dense matrices because nv < 100 and sparse
+/// indexing adds implementation complexity without significant memory savings.
+fn mjd_rne_vel(model: &Model, data: &mut Data)
 ```
 
-**`rne_velocity_column()` helper:**
+**Algorithm detail:**
+
+```
+Initialize:
+  Dcvel[world] = 0 (6 × nv)
+  Dcacc[world] = 0 (6 × nv)
+
+Forward pass (root to leaves), for each body b:
+  parent = model.body_parent[b]
+
+  // Propagate velocity Jacobian from parent
+  Dcvel[b] = Dcvel[parent]
+
+  // For each joint j of body b (with DOFs dof_adr..dof_adr+ndof):
+  for each joint j in body b:
+    S = joint_motion_subspace(model, data, j)
+
+    // Direct contribution: ∂(cvel)/∂(v_dof) += S[:, d]
+    for d in 0..ndof:
+      Dcvel[b][:, dof_adr + d] += S[:, d]
+
+  // Propagate acceleration Jacobian from parent
+  Dcacc[b] = Dcacc[parent]
+
+  // For each joint j of body b:
+  for each joint j in body b:
+    S = joint_motion_subspace(model, data, j)
+
+    // Recompute v_joint = S · qvel[dof_adr..dof_adr+ndof]
+    v_joint = Σ_d S[:, d] · qvel[dof_adr + d]
+
+    // The velocity-product acceleration is:
+    //   cdof_dot = crossMotion(cvel[parent], v_joint)
+    // Its derivative w.r.t. qvel has two terms:
+    //
+    // Term 1 (direct): ∂(crossMotion(cvel_parent, S·v))/∂v_dof
+    //   = crossMotion(cvel_parent, S[:, d])  when dof == dof_adr+d
+    for d in 0..ndof:
+      Dcacc[b][:, dof_adr + d] += spatial_cross_motion(cvel[parent], S[:, d])
+
+    // Term 2 (chain rule through cvel_parent):
+    //   ∂(crossMotion(cvel_parent, v_joint))/∂(cvel_parent) · Dcvel[parent]
+    //   = mjd_cross_motion_vel(v_joint) · Dcvel[parent]
+    // This captures how ancestor velocity perturbations affect cdof_dot.
+    let mat = mjd_cross_motion_vel(v_joint)  // 6×6
+    Dcacc[b] += mat · Dcvel[parent]  // 6×nv += 6×6 · 6×nv
+
+Backward pass (leaves to root), for each body b:
+  // Dcfrc[b] = I[b] · Dcacc[b] + d(crossForce(v, I·v))/dv · Dcvel[b]
+  //
+  // crossForce(v, I·v): quadratic in v
+  //   d/dv = crossForce_vel(I·v) · Dcvel + crossForce_frc(v) · I · Dcvel
+  Dcfrc[b] = I[b] · Dcacc[b]
+           + crossForce_vel(I[b] · cvel[b]) · Dcvel[b]
+           + crossForce_frc(cvel[b]) · I[b] · Dcvel[b]
+
+  // Accumulate to parent
+  Dcfrc[parent] += Dcfrc[b]
+
+Projection (same as standard RNE):
+  for each DOF j in body b:
+    qDeriv[j, :] -= S[:, d]^T · Dcfrc[b]   for each DOF d
+```
+
+**New helper functions** (in `derivatives.rs`):
 
 ```rust
-/// Compute one column of the Coriolis matrix C(q, ·) by running a
-/// **velocity-only** variant of RNE with qvel = e_j (j-th unit vector).
-///
-/// This is NOT the same as calling `mj_rne()` with qvel = e_j. The
-/// velocity-only variant differs in two critical ways:
-///
-/// 1. **No gravity:** The root body has `a_bias = 0` (not `-g`). Gravity is
-///    position-dependent and does not contribute to ∂(bias)/∂qvel.
-///
-/// 2. **No parent bias acceleration propagation:** The standard RNE forward
-///    pass sets `a_bias[b] = a_bias[parent] + ...`, which would propagate
-///    gravity and other position-dependent accelerations. The velocity-only
-///    variant computes ONLY the velocity-product term:
-///    `a_bias[b] = v_parent ×_m v_joint` (no a_parent term).
-///    This is correct because a_parent contains only position-dependent
-///    terms (gravity) when qvel = e_j, and we want only velocity derivatives.
-///
-/// Uses `data.deriv_cvel`, `data.deriv_cacc_bias`, `data.deriv_cfrc_bias` as
-/// scratch buffers (pre-allocated, length nbody each). Reads position-dependent
-/// FK quantities (`xpos`, `xquat`, `cinert`) which are stable.
-///
-/// # Algorithm
-///
-/// Initialization:
-///   v[world] = 0,  a_bias[world] = 0   (no gravity!)
-///
-/// Forward pass (root to leaves):
-///   Let v_joint = S_b · e_j[dof_b]     (nonzero only if dof_b == j)
-///   v[b] = v[parent] + v_joint
-///   a_bias[b] = spatial_cross_motion(v[parent], v_joint)
-///
-///   Note: for bodies whose DOF ≠ j, v_joint = 0, so v[b] = v[parent] and
-///   a_bias[b] = 0. Velocities propagate unchanged; bias accelerations
-///   are zero until body b's parent chain includes the DOF j body.
-///
-/// Backward pass (leaves to root):
-///   f[b] = I[b] · a_bias[b] + spatial_cross_force(v[b], I[b] · v[b])
-///   f[parent] += f[b]
-///
-/// Projection:
-///   C[dof, j] = S_b^T · f[b]   for each joint's DOFs
-fn rne_velocity_column(model: &Model, data: &mut Data, dof_j: usize) -> DVector<f64>
+/// Derivative of spatial_cross_motion(v, s) w.r.t. v.
+/// Returns 6×6 matrix M such that d(v ×_m s)/dv = M · dv.
+/// Used in chain-rule propagation of bias acceleration derivatives.
+fn mjd_cross_motion_vel(s: &SpatialVector) -> Matrix6<f64>
+
+/// Derivative of spatial_cross_force(v, f) w.r.t. v.
+/// Returns 6×6 matrix M such that d(v ×_f f)/dv = M · dv.
+fn mjd_cross_force_vel(f: &SpatialVector) -> Matrix6<f64>
+
+/// Derivative of spatial_cross_force(v, f) w.r.t. f.
+/// Returns 6×6 matrix M such that d(v ×_f f)/df = M · df.
+fn mjd_cross_force_frc(v: &SpatialVector) -> Matrix6<f64>
 ```
 
-**Borrow analysis:** `rne_velocity_column` takes `&mut Data` because it writes
-to `data.deriv_cvel`, `data.deriv_cacc_bias`, `data.deriv_cfrc_bias`. It reads
-`data.xpos`, `data.xquat`, `data.cinert` which are not modified. The caller
-(`mjd_rne_vel`) reads the returned `DVector` and writes to `data.qDeriv` between
-calls — no overlap with the scratch buffers.
+These are small 6×6 matrices derived from the spatial cross product definitions
+at `mujoco_pipeline.rs:112` and `:135`.
 
-**Relationship to `mj_rne()`:** This function implements a stripped-down RNE
-that shares the spatial algebra primitives (`joint_motion_subspace`,
-`spatial_cross_motion`, `spatial_cross_force`, body `cinert`) but does NOT
-call `mj_rne()` directly. The full `mj_rne()` includes gravity, gyroscopic
-terms, and uses actual qvel — none of which apply here.
+**Scratch buffers:** Uses `data.deriv_Dcvel`, `data.deriv_Dcacc`,
+`data.deriv_Dcfrc` (per-body 6×nv Jacobian matrices, defined in Step 3).
+Each is zeroed at the start of `mjd_rne_vel()` before accumulation.
+
+**Memory:** 3 × nbody × 6 × nv × 8 bytes. For nv=30, nbody=31: ~45 KB.
+For nv=100, nbody=101: ~1.5 MB. Acceptable for target use cases.
+
+**Borrow analysis:** `mjd_rne_vel` takes `&mut Data` to write `deriv_Dcvel`,
+`deriv_Dcacc`, `deriv_Dcfrc`, and `qDeriv`. Reads `data.cvel`, `data.cinert`,
+`data.qvel`, `data.xpos`, `data.xquat`. All separate fields — no aliasing.
 
 **Required visibility changes in `mujoco_pipeline.rs`:**
 
@@ -1970,9 +2021,10 @@ pub fn mjd_smooth_vel(model: &Model, data: &mut Data) {
 ```
 
 **Visibility:** `mjd_smooth_vel` and `mjd_transition_fd` are `pub` (public API).
-`mjd_passive_vel`, `mjd_actuator_vel`, `mjd_rne_vel`, `rne_velocity_column`,
-and `extract_state` are private to the `derivatives` module (implementation
-details, tested indirectly through `mjd_smooth_vel` and FD comparison).
+`mjd_passive_vel`, `mjd_actuator_vel`, `mjd_rne_vel`, `mjd_cross_motion_vel`,
+`mjd_cross_force_vel`, `mjd_cross_force_frc`, and `extract_state` are private
+to the `derivatives` module (implementation details, tested indirectly through
+`mjd_smooth_vel` and FD comparison).
 
 **Part 1 module structure:** At the end of Part 1, add to `sim/L0/core/src/lib.rs`:
 
@@ -2001,7 +2053,7 @@ explaining:
 existing public API is modified. The `derivatives` module is new; the four
 `pub(crate)` visibility changes on existing private functions expose them only
 within the crate (not to downstream users). Data gains four new fields
-(`qDeriv`, `deriv_cvel`, `deriv_cacc_bias`, `deriv_cfrc_bias`) which are
+(`qDeriv`, `deriv_Dcvel`, `deriv_Dcacc`, `deriv_Dcfrc`) which are
 initialized automatically in `make_data()` and cloned in `impl Clone for Data`.
 No breaking changes.
 
@@ -2226,6 +2278,15 @@ by `mj_fwd_acceleration_implicit()` and stored in `data.scratch_m_impl`.
 Compute `(M + h·(qDeriv + D))` column-by-column and solve via
 `cholesky_solve_in_place()`.
 
+**Tendon damping caveat:** The `+D` adjustment only cancels the diagonal
+per-DOF damping. `mjd_passive_vel` also contributes off-diagonal tendon
+damping terms `(−b · J^T · J)` to `qDeriv`, but tendon damping is likewise
+skipped in `mj_fwd_passive` for implicit mode (lines 9417-9430). These
+off-diagonal terms are NOT corrected by `+D`. This is a known limitation of
+the current diagonal-only implicit integrator — resolving it requires the
+full implicit integrator (spec #13) with non-diagonal K/D matrices. For
+models without tendons (the common case), the `+D` adjustment is exact.
+
 ##### Step 10 — Public API dispatch
 
 ```rust
@@ -2312,8 +2373,14 @@ pub use derivatives::{
     DerivativeConfig, TransitionMatrices,
     mjd_transition, mjd_transition_fd, mjd_transition_hybrid,
     mjd_smooth_vel,
+    max_relative_error, validate_analytical_vs_fd, fd_convergence_check,
 };
 ```
+
+Validation utilities (`max_relative_error`, `validate_analytical_vs_fd`,
+`fd_convergence_check`) and `mjd_quat_integrate` are re-exported for
+downstream use in tests and analysis tools. `mjd_quat_integrate` is also
+`pub` but primarily consumed internally by `compute_integration_derivatives`.
 
 #### Acceptance Criteria
 
@@ -2374,29 +2441,45 @@ pub use derivatives::{
     `mjd_actuator_vel()` adds `g² · (g_v · input + b_v)` to
     `qDeriv[(dof, dof)]`. Verified against FD of `qfrc_actuator` w.r.t.
     `qvel` to within `1e-8`.
-15. **Coriolis matrix**: For a 2-link pendulum at `qvel = [1.0, 0.5]`,
-    `mjd_rne_vel()` produces Coriolis matrix C(q,v) matching FD of `qfrc_bias`
-    w.r.t. `qvel` (column-by-column, ε=1e-7) to within `1e-6`.
+15. **Bias force velocity derivative**: For a 2-link pendulum at a
+    non-equilibrium configuration (`qpos = [0.3, 0.7]`, `qvel = [1.0, 0.5]`),
+    `mjd_rne_vel()` produces `∂(qfrc_bias)/∂qvel` matching FD of
+    `qfrc_bias` w.r.t. `qvel` (column-by-column, ε=1e-7) to within `1e-6`.
 16. **qDeriv combined**: `mjd_smooth_vel()` zeroes `qDeriv` before accumulating.
     For a model with dampers, tendons, and actuators, the combined `qDeriv`
     matches FD of `(qfrc_passive + qfrc_actuator − qfrc_bias)` w.r.t. `qvel`
     to within `1e-5`.
-17. **Scratch buffer isolation**: `deriv_cvel`, `deriv_cacc_bias`,
-    `deriv_cfrc_bias` are NOT aliased with `data.cvel`, `data.cacc_bias`,
-    `data.cfrc_bias`. Calling `mjd_rne_vel()` does not corrupt the actual body
-    velocities/forces. Verified by comparing `data.cvel` before and after.
+17. **Scratch buffer isolation**: `deriv_Dcvel`, `deriv_Dcacc`, `deriv_Dcfrc`
+    are NOT aliased with `data.cvel`, `data.cacc_bias`, `data.cfrc_bias`.
+    Calling `mjd_rne_vel()` does not corrupt the actual body velocities/forces.
+    Verified by comparing `data.cvel` before and after.
+
+**Multi-DOF joint coverage:**
+
+18. **Ball/Free joint FD**: For a model with a Free joint (nv=6, nq=7),
+    `mjd_transition_fd()` produces a `12×12` A matrix. The position-velocity
+    block `A[0..6, 6..12]` is approximately `h · I₆` (identity scaled by
+    timestep, to within `1e-3`), confirming tangent-space derivatives handle
+    all 6 DOFs correctly.
+19. **Ball joint Coriolis**: For a model with a Ball joint (nv=3), `mjd_rne_vel()`
+    produces a 3×3 Coriolis sub-matrix. At `qpos` giving a non-trivial
+    orientation, the Coriolis matrix is nonzero (gyroscopic terms). Matches
+    FD of `qfrc_bias` w.r.t. `qvel` to within `1e-6`.
 
 **Part 1 infrastructure:**
 
-18. **Warmstart copying**: Perturbed FD solves use nominal warmstart.
+20. **Config validation**: `mjd_transition_fd()` panics when called with
+    `eps = 0.0`, `eps = -1.0`, `eps = f64::NAN`, or `eps = 0.1` (> 1e-2).
+    No panic with `eps = 1e-6` (default).
+21. **Warmstart copying**: Perturbed FD solves use nominal warmstart.
     `solver_niter` for perturbed steps ≤ 2× nominal `solver_niter`.
-19. **Performance**: FD derivatives for `Model::n_link_pendulum(6, 1.0, 0.1)`
+22. **Performance**: FD derivatives for `Model::n_link_pendulum(6, 1.0, 0.1)`
     (nv=6, nu=0, na=0) complete in < 10ms (wall clock, release mode).
-20. **`cargo clippy -p sim-core -- -D warnings`** passes clean.
-21. **All existing sim-core tests pass unchanged** (additive module, no behavior
+23. **`cargo clippy -p sim-core -- -D warnings`** passes clean.
+24. **All existing sim-core tests pass unchanged** (additive module, no behavior
     changes to existing code).
-22. **At least 17 new tests** in `sim/L0/tests/integration/derivatives.rs`
-    covering Part 1 criteria (1–17).
+25. **At least 20 new tests** in `sim/L0/tests/integration/derivatives.rs`
+    covering Part 1 criteria (1–19).
 
 ---
 
@@ -2404,35 +2487,35 @@ pub use derivatives::{
 
 **Phase C/D — Integration + Hybrid:**
 
-23. **Hybrid vs FD agreement**: `validate_analytical_vs_fd()` returns
+26. **Hybrid vs FD agreement**: `validate_analytical_vs_fd()` returns
     `max_error_A < 1e-3` and `max_error_B < 1e-3` for a 3-link pendulum with
     torque actuators (Euler integrator).
-24. **Hybrid velocity columns**: For a damped 3-link pendulum (damping=1.0),
+27. **Hybrid velocity columns**: For a damped 3-link pendulum (damping=1.0),
     velocity columns of A from hybrid match pure FD columns to within `1e-4`
     relative error (element-wise via `max_relative_error`).
-25. **Hybrid cost savings**: For a 10-DOF model (nu=10, na=0, all simple Joint
+28. **Hybrid cost savings**: For a 10-DOF model (nu=10, na=0, all simple Joint
     actuators), hybrid mode calls `step()` at most `2 · nv` times (centered).
     Pure FD would require `2 · (2·nv + nu) = 60` calls. Hybrid requires
     `2 · nv = 20`. Verified by counting (add a step counter in test).
-26. **ImplicitSpringDamper analytical**: For a stiff spring system
+29. **ImplicitSpringDamper analytical**: For a stiff spring system
     (stiffness=1000, damping=10) with `Integrator::ImplicitSpringDamper`, hybrid
     velocity derivatives use the `(M + hD + h²K)⁻¹` correction. The velocity
     block of A matches pure FD to within `1e-3`.
-27. **Activation columns analytical**: For a model with `ActuatorDynamics::Filter`
+30. **Activation columns analytical**: For a model with `ActuatorDynamics::Filter`
     (na=2), hybrid computes activation columns of A analytically:
     `∂v⁺/∂act` via `h · M⁻¹ · moment · gain`. Matches FD to within `1e-3`.
-28. **mjd_transition dispatch**: `mjd_transition()` with `use_analytical=true`
+31. **mjd_transition dispatch**: `mjd_transition()` with `use_analytical=true`
     and Euler returns the same result as `mjd_transition_hybrid()`. With
     `use_analytical=false` or RK4, returns same as `mjd_transition_fd()`.
-29. **Data convenience method**: `data.transition_derivatives(model, config)`
+32. **Data convenience method**: `data.transition_derivatives(model, config)`
     returns the same result as `mjd_transition(model, &data, config)`.
 
 **Part 2 infrastructure:**
 
-30. **FD convergence utility**: `fd_convergence_check()` returns `true` for
+33. **FD convergence utility**: `fd_convergence_check()` returns `true` for
     epsilon in `[1e-4, 1e-8]` with tolerance `1e-3`.
-31. **`cargo clippy -p sim-core -- -D warnings`** still passes clean.
-32. **At least 10 additional tests** covering Part 2 criteria (23–29).
+34. **`cargo clippy -p sim-core -- -D warnings`** still passes clean.
+35. **At least 10 additional tests** covering Part 2 criteria (26–32).
 
 #### Files
 
@@ -2440,19 +2523,19 @@ pub use derivatives::{
 
 | File | Action | Description |
 |------|--------|-------------|
-| `sim/L0/core/src/derivatives.rs` | **new** | `TransitionMatrices`, `DerivativeConfig`, `mjd_transition_fd()`, `extract_state()`, `mjd_smooth_vel()`, `mjd_passive_vel()`, `mjd_actuator_vel()`, `mjd_rne_vel()`, `rne_velocity_column()` |
+| `sim/L0/core/src/derivatives.rs` | **new** | `TransitionMatrices`, `DerivativeConfig`, `mjd_transition_fd()`, `extract_state()`, `mjd_smooth_vel()`, `mjd_passive_vel()`, `mjd_actuator_vel()`, `mjd_rne_vel()`, `mjd_cross_motion_vel()`, `mjd_cross_force_vel()`, `mjd_cross_force_frc()` |
 | `sim/L0/core/src/lib.rs` | **modify** | Add `pub mod derivatives;` and re-export `DerivativeConfig`, `TransitionMatrices`, `mjd_transition_fd`, `mjd_smooth_vel` |
-| `sim/L0/core/src/mujoco_pipeline.rs` | **modify** | Add `qDeriv: DMatrix<f64>` and `deriv_cvel`/`deriv_cacc_bias`/`deriv_cfrc_bias` scratch fields to `Data` (~line 1889). Initialize in `make_data()` (~line 2309). Add to `impl Clone for Data` (~line 1939). Change visibility of `mj_solve_sparse`, `joint_motion_subspace`, `spatial_cross_motion`, `spatial_cross_force` from private to `pub(crate)` |
+| `sim/L0/core/src/mujoco_pipeline.rs` | **modify** | Add `qDeriv: DMatrix<f64>` and `deriv_Dcvel`/`deriv_Dcacc`/`deriv_Dcfrc` per-body Jacobian fields to `Data` (~line 1889). Initialize in `make_data()` (~line 2309). Add to `impl Clone for Data` (~line 1939). Change visibility of `mj_solve_sparse`, `joint_motion_subspace`, `spatial_cross_motion`, `spatial_cross_force` from private to `pub(crate)` |
 | `sim/L0/tests/integration/mod.rs` | **modify** | Add `mod derivatives;` |
-| `sim/L0/tests/integration/derivatives.rs` | **new** | 17+ integration tests covering Part 1 acceptance criteria (1–17) |
+| `sim/L0/tests/integration/derivatives.rs` | **new** | 20+ integration tests covering Part 1 acceptance criteria (1–19) |
 
 **Part 2 (Steps 8–12):**
 
 | File | Action | Description |
 |------|--------|-------------|
 | `sim/L0/core/src/derivatives.rs` | **modify** | Add `IntegrationDerivatives`, `mjd_transition_hybrid()`, `mjd_transition()`, `compute_integration_derivatives()`, `mjd_quat_integrate()`, `max_relative_error()`, `validate_analytical_vs_fd()`, `fd_convergence_check()`, `impl Data { fn transition_derivatives() }` |
-| `sim/L0/core/src/lib.rs` | **modify** | Expand re-exports: add `mjd_transition`, `mjd_transition_hybrid` |
-| `sim/L0/tests/integration/derivatives.rs` | **modify** | Add tests for Part 2 acceptance criteria (18–29) |
+| `sim/L0/core/src/lib.rs` | **modify** | Expand re-exports: add `mjd_transition`, `mjd_transition_hybrid`, `max_relative_error`, `validate_analytical_vs_fd`, `fd_convergence_check` |
+| `sim/L0/tests/integration/derivatives.rs` | **modify** | Add tests for Part 2 acceptance criteria (26–32) |
 
 ---
 
