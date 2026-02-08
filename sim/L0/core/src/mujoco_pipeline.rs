@@ -109,7 +109,7 @@ pub type SpatialVector = Vector6<f64>;
 #[allow(clippy::inline_always)] // Profiling shows inlining improves debug performance
 #[inline(always)]
 #[must_use]
-fn spatial_cross_motion(v: SpatialVector, s: SpatialVector) -> SpatialVector {
+pub(crate) fn spatial_cross_motion(v: SpatialVector, s: SpatialVector) -> SpatialVector {
     let w = Vector3::new(v[0], v[1], v[2]);
     let v_lin = Vector3::new(v[3], v[4], v[5]);
     let s_ang = Vector3::new(s[0], s[1], s[2]);
@@ -132,7 +132,7 @@ fn spatial_cross_motion(v: SpatialVector, s: SpatialVector) -> SpatialVector {
 #[allow(clippy::inline_always)] // Profiling shows inlining improves debug performance
 #[inline(always)]
 #[must_use]
-fn spatial_cross_force(v: SpatialVector, f: SpatialVector) -> SpatialVector {
+pub(crate) fn spatial_cross_force(v: SpatialVector, f: SpatialVector) -> SpatialVector {
     let w = Vector3::new(v[0], v[1], v[2]);
     let v_lin = Vector3::new(v[3], v[4], v[5]);
     let f_ang = Vector3::new(f[0], f[1], f[2]);
@@ -1921,6 +1921,32 @@ pub struct Data {
     /// RK4 stage activation derivatives: `act_dot` at each stage (4 buffers, each length na).
     pub rk4_act_dot: [DVector<f64>; 4],
 
+    // ==================== Derivative Scratch Buffers ====================
+    /// Analytical derivative of smooth forces w.r.t. velocity: ∂(qfrc_smooth)/∂qvel.
+    /// Dense nv × nv matrix. Populated by `mjd_smooth_vel()`.
+    ///
+    /// Components:
+    ///   ∂(qfrc_passive)/∂qvel  = diagonal damping (+ tendon damping J^T·b·J
+    ///                            in explicit mode only; skipped for ImplicitSpringDamper)
+    ///   ∂(qfrc_actuator)/∂qvel = affine velocity-dependent gain/bias terms
+    ///   −∂(qfrc_bias)/∂qvel    = −C(q,v) (Coriolis matrix)
+    ///
+    /// MuJoCo equivalent: `mjData.qDeriv` (sparse nv×nv). Dense here because
+    /// nv < 100 for target use cases.
+    #[allow(non_snake_case)]
+    pub qDeriv: DMatrix<f64>,
+
+    /// Scratch Jacobian ∂(cvel)/∂(qvel) per body (length `nbody`, each 6 × nv).
+    /// Used by `mjd_rne_vel()` for chain-rule derivative propagation.
+    #[allow(non_snake_case)]
+    pub deriv_Dcvel: Vec<DMatrix<f64>>,
+    /// Scratch Jacobian ∂(cacc)/∂(qvel) per body (length `nbody`, each 6 × nv).
+    #[allow(non_snake_case)]
+    pub deriv_Dcacc: Vec<DMatrix<f64>>,
+    /// Scratch Jacobian ∂(cfrc)/∂(qvel) per body (length `nbody`, each 6 × nv).
+    #[allow(non_snake_case)]
+    pub deriv_Dcfrc: Vec<DMatrix<f64>>,
+
     // ==================== Cached Body Effective Mass/Inertia ====================
     // These are extracted from the mass matrix diagonal during forward() and cached
     // for use by constraint force limiting. This avoids O(joints) traversal per constraint.
@@ -2037,6 +2063,11 @@ impl Clone for Data {
             rk4_dX_acc: self.rk4_dX_acc.clone(),
             rk4_act_saved: self.rk4_act_saved.clone(),
             rk4_act_dot: self.rk4_act_dot.clone(),
+            // Derivative scratch buffers
+            qDeriv: self.qDeriv.clone(),
+            deriv_Dcvel: self.deriv_Dcvel.clone(),
+            deriv_Dcacc: self.deriv_Dcacc.clone(),
+            deriv_Dcfrc: self.deriv_Dcfrc.clone(),
             // Cached body mass/inertia
             body_min_mass: self.body_min_mass.clone(),
             body_min_inertia: self.body_min_inertia.clone(),
@@ -2426,6 +2457,12 @@ impl Model {
             rk4_dX_acc: DVector::zeros(self.nv),
             rk4_act_saved: DVector::zeros(self.na),
             rk4_act_dot: std::array::from_fn(|_| DVector::zeros(self.na)),
+
+            // Derivative scratch buffers (for mjd_smooth_vel / mjd_rne_vel)
+            qDeriv: DMatrix::zeros(self.nv, self.nv),
+            deriv_Dcvel: vec![DMatrix::zeros(6, self.nv); self.nbody],
+            deriv_Dcacc: vec![DMatrix::zeros(6, self.nv); self.nbody],
+            deriv_Dcfrc: vec![DMatrix::zeros(6, self.nv); self.nbody],
 
             // Cached body mass/inertia (computed in forward() after CRBA)
             // Initialize world body (index 0) to infinity, others to default
@@ -9022,7 +9059,7 @@ fn cache_body_effective_mass(model: &Model, data: &mut Data) {
 #[allow(clippy::similar_names)]
 #[allow(clippy::inline_always)] // Hot path in CRBA/RNE - profiling shows inlining improves debug performance
 #[inline(always)]
-fn joint_motion_subspace(
+pub(crate) fn joint_motion_subspace(
     model: &Model,
     data: &Data,
     jnt_id: usize,
@@ -12822,7 +12859,7 @@ fn cholesky_in_place(m: &mut DMatrix<f64>) -> Result<(), StepError> {
 /// On entry `x` contains b; on exit `x` contains the solution.
 ///
 /// Zero allocations — operates entirely on borrowed data.
-fn cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>) {
+pub(crate) fn cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>) {
     let n = l.nrows();
 
     // Forward substitution: L·y = b
@@ -12917,7 +12954,11 @@ fn mj_factor_sparse(model: &Model, data: &mut Data) {
 /// calling with `x = &mut data.qacc` without borrow conflicts.
 ///
 /// Zero allocations — operates entirely on borrowed data.
-fn mj_solve_sparse(qld_diag: &DVector<f64>, qld_l: &[Vec<(usize, f64)>], x: &mut DVector<f64>) {
+pub(crate) fn mj_solve_sparse(
+    qld_diag: &DVector<f64>,
+    qld_l: &[Vec<(usize, f64)>],
+    x: &mut DVector<f64>,
+) {
     let nv = x.len();
 
     // Phase 1: Solve L^T y = b (scatter: propagate each DOF to its ancestors).

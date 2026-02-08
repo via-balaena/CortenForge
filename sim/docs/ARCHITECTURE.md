@@ -89,6 +89,7 @@ residual heap allocation occurs for contact vector growth and RK4 warmstart save
 | Actuation | `actuator_length`, `actuator_velocity`, `actuator_force`, `act_dot` | Actuator-space state and activation derivatives |
 | Acceleration | `qacc` | Computed as `M^-1 * f_total` |
 | Contacts | `contacts`, `efc_lambda` | Active contacts and warmstart cache (`HashMap<WarmstartKey, Vec<f64>>` for variable condim) |
+| Derivatives | `qDeriv`, `deriv_Dcvel`, `deriv_Dcacc`, `deriv_Dcfrc` | Analytical `∂(qfrc_smooth)/∂qvel` (nv×nv) and per-body chain-rule Jacobians (6×nv each) |
 
 ### Stepping
 
@@ -137,6 +138,26 @@ mj_runge_kutta() [RungeKutta4]:
   Integrates activation alongside qpos/qvel with same RK4 weights
   Stage 0 reuses initial forward(); stages 1-3 call forward_skip_sensors()
   Uses mj_integrate_pos_explicit() for quaternion-safe position updates
+```
+
+**Derivative computation** (optional, after `forward()`):
+
+```
+mjd_smooth_vel():
+  Zeros data.qDeriv, then accumulates:
+    mjd_passive_vel        ∂(qfrc_passive)/∂qvel (diagonal damping + tendon rank-1)
+    mjd_actuator_vel       ∂(qfrc_actuator)/∂qvel (affine gain/bias velocity terms)
+    mjd_rne_vel            −∂(qfrc_bias)/∂qvel (chain-rule RNE + direct gyroscopic)
+mjd_transition_fd():
+  Pure FD Jacobians: A = ∂x⁺/∂x, B = ∂x⁺/∂u via centered/forward differences
+  Tangent-space perturbation for quaternion joints (Ball, Free)
+mjd_transition_hybrid():
+  Analytical velocity/activation columns + FD position columns
+  Euler: I + h·M⁻¹·qDeriv via sparse LDL
+  Implicit: (M+hD+h²K)⁻¹·(M+h·(qDeriv+D)) via Cholesky
+  ~nv FD calls (position columns only) vs 2·(2nv+na+nu) for pure FD
+mjd_transition():
+  Public dispatch: FD-only or hybrid based on DerivativeConfig.use_analytical
 ```
 
 **Integration methods** (`Integrator` enum):
@@ -229,6 +250,7 @@ by sim-core (GJK); all other batch ops are benchmarked but have no callers.
 The physics engine. Depends on sim-types and sim-simd. Contains:
 
 - `mujoco_pipeline.rs` — `Model`, `Data`, full MuJoCo-aligned pipeline
+- `derivatives.rs` — Simulation transition derivatives (FD, analytical qDeriv, hybrid FD+analytical, SO(3) Jacobians, validation utilities)
 - `collision_shape.rs` — `CollisionShape` enum, `Aabb`
 - `mid_phase.rs` — BVH tree (median-split construction, traversal, ray queries)
 - `gjk_epa.rs` — GJK/EPA for convex shapes

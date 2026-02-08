@@ -701,6 +701,108 @@ Key details:
 
 ---
 
+## Stage 6: Derivatives (optional, after `forward()`)
+
+Implemented in `sim-core/src/derivatives.rs` (~1685 lines). Four modes:
+
+### 6.1 Pure Finite-Difference: `mjd_transition_fd()`
+
+Linearizes the transition `x_{t+1} = f(x_t, u_t)` around the current state.
+
+```
+state x = [dq (nv tangent), qvel (nv), act (na)]    dim = 2*nv + na
+control u = ctrl                                      dim = nu
+
+centered FD (O(ε²) error):
+  for each state dimension i:
+    x⁺ = step(x + ε·eᵢ)
+    x⁻ = step(x − ε·eᵢ)
+    A[:, i] = (x⁺ − x⁻) / (2·ε)
+  for each control dimension j:
+    x⁺ = step(x, u + ε·eⱼ)
+    x⁻ = step(x, u − ε·eⱼ)
+    B[:, j] = (x⁺ − x⁻) / (2·ε)
+
+Position perturbations: mj_integrate_pos_explicit() (tangent → coordinate)
+Position differences:   mj_differentiate_pos()      (coordinate → tangent)
+```
+
+Cost: `2·(2·nv + na + nu)` step() calls (centered). Handles any integrator
+including RK4. Captures contact transitions naturally.
+
+### 6.2 Analytical Velocity Derivatives: `mjd_smooth_vel()`
+
+Computes `∂(qfrc_smooth)/∂qvel` analytically, stored in `Data.qDeriv`:
+
+```
+qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias
+
+qDeriv = ∂(passive)/∂v + ∂(actuator)/∂v − ∂(bias)/∂v
+
+mjd_passive_vel():   diagonal −damping[i] + tendon rank-1 −b·J^T·J
+mjd_actuator_vel():  affine gain/bias velocity terms via transmission
+mjd_rne_vel():       chain-rule derivative propagation through kinematic tree
+                     Forward pass: Dcvel, Dcacc (6×nv per body)
+                     Backward pass: Dcfrc accumulation + projection to joint space
+                     + direct gyroscopic derivative for Ball/Free joints
+```
+
+Cross-product derivative signs (critical):
+- `d(a × b)/d(a) = −[b]×`  (negative skew of second argument)
+- `d(a × b)/d(b) = [a]×`   (positive skew of first argument)
+
+MuJoCo correspondence: `mjd_smooth_vel` → `mjd_smooth_vel`, `Data.qDeriv` →
+`mjData.qDeriv` (sparse in MuJoCo, dense here).
+
+### 6.3 Quaternion Integration Jacobians: `mjd_quat_integrate()`
+
+Computes SO(3) Jacobians for quaternion integration `q_new = q_old ⊗ exp(ω·h/2)`:
+
+```
+Returns (dpos_dpos, dpos_dvel):
+  dpos_dpos: ∂(q_new_tangent)/∂(q_old_tangent) — adjoint exp(-ω·h) via Rodrigues
+  dpos_dvel: ∂(q_new_tangent)/∂ω — h × right Jacobian of SO(3)
+
+Right Jacobian: J_r(θ) = I - (1-cos‖θ‖)/‖θ‖² · [θ]× + (‖θ‖-sin‖θ‖)/‖θ‖³ · [θ]×²
+```
+
+Used by `compute_integration_derivatives()` for Ball and Free joints. Hinge/Slide
+joints use simple scalar chain rules (identity + h·I).
+
+### 6.4 Hybrid FD+Analytical: `mjd_transition_hybrid()`
+
+Combines analytical velocity/activation columns with FD position columns:
+
+```
+Velocity columns (analytical):
+  Euler:    ∂v⁺/∂v = I + h · M⁻¹ · qDeriv   (sparse LDL solve)
+  Implicit: ∂v⁺/∂v = (M+hD+h²K)⁻¹ · (M + h·(qDeriv+D))  (Cholesky solve)
+
+Activation columns (analytical):
+  DynType::None:        no activation → skip
+  Filter/FilterExact:   ∂act⁺/∂act = exp(-h/τ) or 1-h/τ; force via gain·moment
+  Integrator:           ∂act⁺/∂act = 1; no force-through-act derivative
+  Muscle:               FD fallback (FLV curve gradients too complex)
+
+Position columns: FD (captures contact transitions, implicit spring ∂v/∂q)
+B matrix: analytical for DynType::None, FD for actuators with dynamics
+
+Cost: ~nv FD step() calls (position columns only) vs 2·(2nv+na+nu) for pure FD
+```
+
+### 6.5 Public Dispatch: `mjd_transition()`
+
+Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` based on
+`DerivativeConfig.use_analytical`. Also available as `Data::transition_derivatives()`.
+
+### 6.6 Validation Utilities
+
+- `validate_analytical_vs_fd()`: compares hybrid vs pure FD, returns max error
+- `fd_convergence_check()`: verifies FD at ε and ε/10 converge (ratio test)
+- `max_relative_error()`: element-wise max relative error between two matrices
+
+---
+
 ## Key Data Structures
 
 ### Model (static, immutable after loading)
@@ -769,6 +871,10 @@ Key details:
 | `act_dot[na]` | `DVector` | Activation time-derivative (integrated by Euler/RK4) |
 | `contacts[ncon]` | `Vec<Contact>` | Active contact points |
 | `efc_lambda` | `HashMap` | Warmstart cache (keyed by geom pair) |
+| `qDeriv[nv,nv]` | `DMatrix` | Analytical ∂(qfrc_smooth)/∂qvel (populated by `mjd_smooth_vel`) |
+| `deriv_Dcvel[nbody]` | `Vec<DMatrix(6,nv)>` | Per-body ∂(cvel)/∂(qvel) scratch Jacobians |
+| `deriv_Dcacc[nbody]` | `Vec<DMatrix(6,nv)>` | Per-body ∂(cacc)/∂(qvel) scratch Jacobians |
+| `deriv_Dcfrc[nbody]` | `Vec<DMatrix(6,nv)>` | Per-body ∂(cfrc)/∂(qvel) scratch Jacobians |
 
 ---
 

@@ -333,7 +333,8 @@ sim/L0/tests/
 │   ├── sensors.rs
 │   ├── site_transmission.rs
 │   ├── spatial_tendons.rs
-│   └── validation.rs
+│   ├── validation.rs
+│   └── derivatives.rs
 └── assets/
     ├── mujoco_menagerie/  (git submodule)
     └── dm_control/        (git submodule)
@@ -399,6 +400,35 @@ hardcode MuJoCo 3.4.0 reference values as constants, then `assert_relative_eq!` 
 
 **To unblock:** Run a 3-link arm model with site actuators through MuJoCo 3.4.0 (Python bindings),
 record `actuator_length`, `actuator_velocity`, and `qfrc_actuator`, then hardcode as constants.
+
+---
+
+### §12 — Analytical Derivatives Conformance
+
+**Status:** ✅ Complete (Parts 1 & 2, 30+ tests) — FD + analytical qDeriv + hybrid transition Jacobians
+
+The derivative infrastructure (`sim-core/src/derivatives.rs`, ~1685 lines) is verified by
+30+ integration tests in `integration/derivatives.rs` covering acceptance criteria 1–41 from
+the spec (Part 1: criteria 1–27, Part 2: criteria 28–41).
+
+| MuJoCo Function | CortenForge | Verification | Status |
+|-----------------|-------------|--------------|--------|
+| `mjd_transitionFD` (pure FD) | `mjd_transition_fd()` | FD convergence, centered vs forward, quaternion handling, contact sensitivity, integrator coverage | ✅ |
+| `mjd_smooth_vel` | `mjd_smooth_vel()` | Combined qDeriv matches FD of smooth forces to `1e-4` | ✅ |
+| `mjd_passive_vel` | `mjd_passive_vel()` | Diagonal damping exact, tendon damping matches FD to `1e-6` | ✅ |
+| `mjd_actuator_vel` | `mjd_actuator_vel()` | Affine gain/bias velocity derivative matches FD to `1e-6` | ✅ |
+| `mjd_rne_vel` | `mjd_rne_vel()` | Coriolis matrix (hinge, ball, free joints) matches FD to `1e-5` | ✅ |
+| `mjData.qDeriv` | `Data.qDeriv` | Dense nv×nv (MuJoCo uses sparse) — values match | ✅ |
+| `mjd_quatIntegrate` | `mjd_quat_integrate()` | SO(3) Jacobians via Rodrigues formula (right Jacobian + adjoint) | ✅ |
+| `mjd_transitionFD` (hybrid) | `mjd_transition_hybrid()` | Analytical velocity/activation columns + FD position columns; matches pure FD | ✅ |
+| `mjd_transition` (dispatch) | `mjd_transition()` | Public API dispatch (FD-only or hybrid based on config) | ✅ |
+
+**Validation utilities:** `validate_analytical_vs_fd()` compares hybrid vs pure FD
+Jacobians. `fd_convergence_check()` verifies FD convergence at two epsilon scales.
+`max_relative_error()` computes element-wise max relative error.
+
+**Design divergence:** MuJoCo stores `qDeriv` in sparse band-limited format.
+CortenForge uses dense `DMatrix<f64>` (target models have nv < 100).
 
 ---
 
