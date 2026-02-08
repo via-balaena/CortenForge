@@ -325,6 +325,10 @@ impl XpbdSolver {
                         let mut c = c.clone();
                         c.solve(positions, inv_masses, dt)
                     }
+                    Constraint::Collision(c) => {
+                        let mut c = *c;
+                        c.solve(positions, inv_masses, dt)
+                    }
                 };
 
                 max_error = max_error.max(error);
@@ -365,7 +369,7 @@ impl XpbdSolver {
 ///
 /// This provides a basic implementation of the `DeformableBody` trait
 /// that can be used for testing the solver.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SimpleDeformable {
     id: crate::types::DeformableId,
     name: String,
@@ -539,6 +543,10 @@ impl DeformableBody for SimpleDeformable {
         }
 
         (min, max)
+    }
+
+    fn clone_box(&self) -> Box<dyn DeformableBody + Send + Sync> {
+        Box::new(self.clone())
     }
 }
 

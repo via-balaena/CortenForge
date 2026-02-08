@@ -580,6 +580,14 @@ impl DeformableBody for CapsuleChain {
 
         (min, max)
     }
+
+    fn collision_margin(&self) -> f64 {
+        self.config.radius
+    }
+
+    fn clone_box(&self) -> Box<dyn DeformableBody + Send + Sync> {
+        Box::new(self.clone())
+    }
 }
 
 #[cfg(test)]

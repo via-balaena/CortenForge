@@ -140,7 +140,7 @@ Items acknowledged but not prioritized for Phase 2:
 | `<extension>` element (plugins) | Large design effort, no immediate need. |
 | `<visual>` element | L1 concern (sim-bevy), not core physics. |
 | `<statistic>` element | Auto-computed model stats. Informational only. |
-| Sleeping bodies in deformable | Depends on both #11 and #16. |
+| Sleeping bodies in deformable | Depends on #16. (#11 deformable pipeline ✅ complete) |
 | Sparse mass matrix (deeper MuJoCo parity) | Phase 1 #1/#2 cover the main path. Full sparse pipeline is diminishing returns. |
 | MuJoCo conformance test suite | Important but orthogonal to features — can be built incrementally. Without this, acceptance criteria for items #1–#17 rely on ad-hoc verification rather than systematic comparison against MuJoCo reference outputs. Consider bootstrapping a minimal conformance harness (load model, step N times, compare state vectors against MuJoCo ground truth) as infrastructure that benefits all items. |
 | SIMD utilization (unused batch ops) | sim-simd exists; utilization will come naturally with #9/#10. |
@@ -152,6 +152,6 @@ Items acknowledged but not prioritized for Phase 2:
 
 | Phase 1 # | Phase 2 # | Notes |
 |-----------|-----------|-------|
-| #9 (Deformable Body) | #11 | Transferred verbatim |
+| #9 (Deformable Body) | #11 | Transferred verbatim ✅ Complete |
 | #10 (Batched Simulation) | #9 | Transferred verbatim |
 | #11 (GPU Acceleration) | #10 | Transferred verbatim |

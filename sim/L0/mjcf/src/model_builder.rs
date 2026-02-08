@@ -2486,6 +2486,12 @@ impl ModelBuilder {
             cone: self.cone,
             disableflags: self.disableflags,
             enableflags: self.enableflags,
+            #[cfg(feature = "deformable")]
+            deformable_condim: 3,
+            #[cfg(feature = "deformable")]
+            deformable_solref: [0.02, 1.0],
+            #[cfg(feature = "deformable")]
+            deformable_solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
             integrator: self.integrator,
             solver_type: self.solver_type,
 

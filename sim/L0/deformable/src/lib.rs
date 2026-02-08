@@ -152,8 +152,8 @@ pub mod types;
 pub use capsule_chain::{CapsuleChain, CapsuleChainConfig};
 pub use cloth::{Cloth, ClothConfig};
 pub use constraints::{
-    BendingConstraint, Constraint, ConstraintType, DistanceConstraint, FlexEdgeConstraint,
-    FlexEdgeType, VolumeConstraint,
+    BendingConstraint, CollisionConstraint, Constraint, ConstraintType, DistanceConstraint,
+    FlexEdgeConstraint, FlexEdgeType, VolumeConstraint,
 };
 pub use error::DeformableError;
 pub use material::{Material, MaterialPreset};
@@ -170,7 +170,7 @@ pub use types::{DeformableId, Vertex, VertexFlags};
 ///
 /// This trait provides a common interface for different deformable body types,
 /// allowing them to be used with the XPBD solver.
-pub trait DeformableBody {
+pub trait DeformableBody: std::fmt::Debug {
     /// Get the deformable body's unique identifier.
     fn id(&self) -> DeformableId;
 
@@ -233,6 +233,18 @@ pub trait DeformableBody {
 
     /// Get the bounding box of the deformable body.
     fn bounding_box(&self) -> (nalgebra::Point3<f64>, nalgebra::Point3<f64>);
+
+    /// Get the collision margin (radius/thickness) for broadphase expansion.
+    /// Default: 0.005 (5 mm). Override for bodies with geometry-specific margins.
+    fn collision_margin(&self) -> f64 {
+        0.005
+    }
+
+    /// Clone this deformable body into a new Box.
+    ///
+    /// Required for `Data: Clone` since `Box<dyn DeformableBody + Send + Sync>` is not
+    /// `Clone` by default. Standard "`clone_box`" pattern for clonable trait objects.
+    fn clone_box(&self) -> Box<dyn DeformableBody + Send + Sync>;
 }
 
 #[cfg(test)]

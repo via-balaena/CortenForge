@@ -11,6 +11,7 @@ rust-version.workspace = true
 [dependencies]
 sim-types = { workspace = true }
 sim-simd = { workspace = true }
+sim-deformable = { workspace = true, optional = true }
 nalgebra = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
@@ -33,6 +34,7 @@ harness = false
 [features]
 default = []
 parallel = ["dep:rayon"]
+deformable = ["sim-deformable"]
 serde = ["dep:serde", "serde/rc", "sim-types/serde", "nalgebra/serde-serialize"]
 gpu-internals = []  # Exposes internal helpers for sim-gpu. No deps.
 

@@ -10,6 +10,7 @@ publish = false
 sim-mjcf = { path = "../mjcf" }
 sim-urdf = { path = "../urdf" }
 sim-core = { path = "../core" }
+sim-deformable = { path = "../deformable" }
 sim-types = { path = "../types" }
 sim-muscle = { path = "../muscle" }
 sim-tendon = { path = "../tendon" }
@@ -24,3 +25,7 @@ path = "mujoco_conformance/mod.rs"
 [[test]]
 name = "integration"
 path = "integration/mod.rs"
+
+[features]
+default = []
+deformable = ["sim-core/deformable", "sim-mjcf/deformable"]
