@@ -1177,13 +1177,33 @@ by XPBD internal constraint projection. All changes `#[cfg(feature = "deformable
 ---
 
 ### 12. Analytical Derivatives (mjd_*)
-**Status:** Not started | **Effort:** XL | **Prerequisites:** None
+**Status:** Part 1 ✅ Complete (Steps 0–7) / Part 2 not started (Steps 8–12) | **Effort:** XL | **Prerequisites:** None
 
 #### Current State
 
-No derivative infrastructure exists. The pipeline computes several Jacobians
-internally for the constraint solver, but these are not exposed as a general
-derivative API:
+**Part 1 (Steps 0–7) is complete.** The derivative infrastructure is implemented
+in `sim-core/src/derivatives.rs` (~965 lines) with 30 integration tests in
+`sim/L0/tests/integration/derivatives.rs`. Public API:
+
+| Function / Type | Description |
+|-----------------|-------------|
+| `TransitionMatrices` | Struct: A (state), B (control), C/D (sensor, `None` for now) |
+| `DerivativeConfig` | Struct: eps, centered, use_analytical |
+| `mjd_transition_fd()` | Pure FD transition Jacobians (centered/forward, any integrator) |
+| `mjd_smooth_vel()` | Analytical `∂(qfrc_smooth)/∂qvel` → `Data.qDeriv` |
+
+Data fields added: `qDeriv` (nv×nv), `deriv_Dcvel`/`deriv_Dcacc`/`deriv_Dcfrc`
+(per-body 6×nv Jacobians). Visibility changed to `pub(crate)`:
+`spatial_cross_motion`, `spatial_cross_force`, `joint_motion_subspace`,
+`mj_solve_sparse`.
+
+**Part 2 (Steps 8–12) remains.** Needs: analytical integration derivatives
+(quaternion chain rules), hybrid FD+analytical dispatch, `mjd_transition()` API,
+`data.transition_derivatives()` convenience method, FD convergence utility.
+
+Pre-Part 1 state (historical — the table below describes what existed before
+Part 1 was implemented). The pipeline computed several Jacobians internally for
+the constraint solver, but these were not exposed as a general derivative API:
 
 | Component | Location | Description |
 |-----------|----------|-------------|
@@ -1335,7 +1355,7 @@ velocity and activation columns.
 | **Part 1** | 0–7 | Types, pure FD (`mjd_transition_fd`), analytical qDeriv (`mjd_smooth_vel`) | Yes — FD unblocks iLQR/DDP/MPC workflows. `mjd_smooth_vel` validates against FD. |
 | **Part 2** | 8–12 | Integration derivatives, hybrid (`mjd_transition_hybrid`), public API dispatch, validation utilities, module exports | Yes — hybrid provides ~2× speedup over pure FD. |
 
-Part 1 acceptance criteria: 1–25. Part 2 acceptance criteria: 26–35.
+Part 1 acceptance criteria: 1–27. Part 2 acceptance criteria: 28–37.
 
 ##### Step 0 — `TransitionMatrices` output struct
 
@@ -1548,7 +1568,11 @@ Phase 1 — State perturbation (A matrix, nx columns), for each `i in 0..nx`:
 
 ```rust
 if i < nv {
-    // Position tangent: mj_integrate_pos_explicit maps dq[i]=±eps to coordinates
+    // Position tangent: mj_integrate_pos_explicit maps dq[i]=±eps to coordinates.
+    // The velocity `dq` with `dt=1.0` produces a tangent-space displacement of
+    // exactly `eps` in direction `i`: qpos_out = qpos_0 ⊕ (1.0 · dq).
+    // For scalar joints this is addition; for quaternion joints (Ball/Free)
+    // it applies the exponential map, keeping the quaternion on the unit sphere.
     let mut dq = DVector::zeros(nv);
     dq[i] = eps;
     mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos_0, &dq, 1.0);
@@ -1568,18 +1592,21 @@ if i < nv {
     scratch.act[i - 2 * nv] += eps;
 }
 scratch.ctrl.copy_from(&ctrl_0);
+scratch.time = time_0;
 scratch.efc_lambda = efc_lambda_0.clone();
 scratch.step(model)?;
 let y_plus = extract_state(model, &scratch, &qpos_0);
 
-// For centered: also compute y_minus with -eps, then:
+// For centered: restore nominal (qpos, qvel, act, ctrl, time, efc_lambda),
+// apply -eps perturbation, step to get y_minus, then:
 //   A.column(i) = (y_plus - y_minus) / (2.0 * eps);
 // For forward:
 //   A.column(i) = (y_plus - y_0) / eps;
 ```
 
-Phase 2 — Control perturbation (B matrix, nu columns): same pattern with
-`scratch.ctrl[j] += eps`.
+Phase 2 — Control perturbation (B matrix, nu columns): same pattern
+(restore `qpos`, `qvel`, `act`, `ctrl`, `time`, `efc_lambda` to nominal,
+then `scratch.ctrl[j] += eps`, step, extract, difference).
 
 Phase 3 — `extract_state()`:
 
@@ -1621,10 +1648,12 @@ clones into `scratch`. All mutations go through `scratch`. The original `data`
 is only read (for `qpos_0`, `qvel_0`, etc. and for `extract_state` with
 forward differences). No aliasing issues.
 
-**Scratch reuse:** Single clone upfront. State fields (`qpos`, `qvel`, `act`,
-`ctrl`) restored before each perturbation. `step()` overwrites computed fields
-(`xpos`, `xquat`, `qM`, `qfrc_*`, etc.) — no explicit restore needed for
-those.
+**Scratch reuse:** Single clone upfront. Input state fields (`qpos`, `qvel`,
+`act`, `ctrl`, `time`, `efc_lambda`) restored before each perturbation.
+`step()` overwrites computed fields (`xpos`, `xquat`, `qM`, `qfrc_*`, etc.)
+— no explicit restore needed for those. `time` must be restored because
+`step()` calls `self.time += h` (line 3464); without restoration, successive
+perturbations would step from increasingly future times.
 
 **Warmstart:** Before each perturbed `step()`, copy nominal `efc_lambda` into
 scratch. `efc_lambda` is `HashMap<WarmstartKey, Vec<f64>>` — the clone cost is
@@ -1668,7 +1697,8 @@ have analytically computable velocity derivatives.
 /// Dense nv × nv matrix. Populated by `mjd_smooth_vel()`.
 ///
 /// Components:
-///   ∂(qfrc_passive)/∂qvel  = diagonal damping + tendon damping J^T·b·J
+///   ∂(qfrc_passive)/∂qvel  = diagonal damping (+ tendon damping J^T·b·J
+///                            in explicit mode only; skipped for ImplicitSpringDamper)
 ///   ∂(qfrc_actuator)/∂qvel = affine velocity-dependent gain/bias terms
 ///   −∂(qfrc_bias)/∂qvel    = −C(q,v) (Coriolis matrix)
 ///
@@ -1718,30 +1748,64 @@ deriv_Dcfrc: self.deriv_Dcfrc.clone(),
 ///   qfrc_passive[i] -= damping[i] · qvel[i]
 ///   ⇒ ∂/∂qvel[i] = −damping[i]  (diagonal)
 ///
-/// Tendon damping:
+/// Tendon damping (explicit mode only):
 ///   qfrc_passive += J^T · (−b · J · qvel)
 ///   ⇒ ∂/∂qvel = −b · J^T · J   (rank-1 update per tendon)
 ///
 /// Friction loss (tanh-smoothed) is NOT included (MuJoCo also omits it).
 ///
-/// Reuses `model.implicit_damping[i]` (cached diagonal, line 1213) for
-/// per-DOF terms. Tendon damping uses `data.ten_J[t]` (line 1819).
+/// # Per-DOF damping source
+///
+/// Uses `model.implicit_damping[i]` — the canonical per-DOF damping vector
+/// that merges `jnt_damping[jnt_id]` for Hinge/Slide joints and
+/// `dof_damping[dof_idx]` for Ball/Free joints (see `compute_implicit_params`,
+/// line 2506). This mirrors what `mj_fwd_passive()` uses: `jnt_damping` at
+/// line 9496 (Hinge/Slide) and `dof_damping` at line 9514 (Ball/Free).
+/// Always populated by model construction (`n_link_pendulum` calls
+/// `compute_implicit_params()` at line 2987; MJCF model builder calls it
+/// at `model_builder.rs:2512`).
+///
+/// # Implicit mode guard
+///
+/// In `ImplicitSpringDamper` mode, `mj_fwd_passive()` skips per-DOF
+/// spring/damper forces (line 9488) and tendon spring/damper forces
+/// (line 9417). The damping is instead absorbed into the implicit mass
+/// matrix modification `(M + h·D + h²·K)`. This function must match:
+/// per-DOF damping is included regardless of mode (needed by both Euler
+/// and implicit velocity derivative formulas), but tendon damping is
+/// skipped in implicit mode because tendon damping forces are not applied
+/// in `mj_fwd_passive` for implicit mode.
+///
+/// See Step 9 for how the implicit velocity derivative formula adjusts
+/// `qDeriv` via `+D` to account for the damping being in the mass matrix
+/// rather than in `f_ext`.
 fn mjd_passive_vel(model: &Model, data: &mut Data) {
-    // Per-DOF damping: diagonal entries
+    // Per-DOF damping: diagonal entries.
+    // Included for all integrator modes — the Euler path uses this directly
+    // in qDeriv; the implicit path's Step 9 adjustment adds D back to cancel
+    // the −D contributed here, leaving only the actuator + bias terms in the
+    // implicit formula's f_ext derivative.
     for i in 0..model.nv {
         data.qDeriv[(i, i)] += -model.implicit_damping[i];
     }
 
-    // Tendon damping: −b · J^T · J (rank-1 outer product per tendon)
-    for t in 0..model.ntendon {
-        let b = model.tendon_damping[t];
-        if b <= 0.0 { continue; }
-        let j = &data.ten_J[t];
-        for r in 0..model.nv {
-            if j[r] == 0.0 { continue; }
-            for c in 0..model.nv {
-                if j[c] == 0.0 { continue; }
-                data.qDeriv[(r, c)] += -b * j[r] * j[c];
+    // Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
+    // Skipped in implicit mode: mj_fwd_passive skips tendon damping forces
+    // when implicit_mode is true (line 9417), so there is no tendon damping
+    // contribution to differentiate. Including it would produce incorrect
+    // qDeriv for ImplicitSpringDamper integrator.
+    let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
+    if !implicit_mode {
+        for t in 0..model.ntendon {
+            let b = model.tendon_damping[t];
+            if b <= 0.0 { continue; }
+            let j = &data.ten_J[t];
+            for r in 0..model.nv {
+                if j[r] == 0.0 { continue; }
+                for c in 0..model.nv {
+                    if j[c] == 0.0 { continue; }
+                    data.qDeriv[(r, c)] += -b * j[r] * j[c];
+                }
             }
         }
     }
@@ -1749,12 +1813,12 @@ fn mjd_passive_vel(model: &Model, data: &mut Data) {
 ```
 
 **Borrow analysis:** Reads `model.implicit_damping`, `model.tendon_damping`,
-`data.ten_J`. Writes `data.qDeriv`. No aliasing — `ten_J` and `qDeriv` are
-separate fields of `Data`.
+`model.integrator`, `data.ten_J`. Writes `data.qDeriv`. No aliasing — `ten_J`
+and `qDeriv` are separate fields of `Data`.
 
 **Complexity:** O(nv) diagonal + O(ntendon · nnz_J²). Tendon Jacobians are
 typically very sparse (only DOFs along the tendon path), so effectively
-O(nv + ntendon · depth²).
+O(nv + ntendon · depth²). In implicit mode the tendon loop is skipped entirely.
 
 ##### Step 5 — `mjd_actuator_vel()`: Actuator force velocity derivatives
 
@@ -1891,6 +1955,18 @@ therefore correct for all joint types.
 fn mjd_rne_vel(model: &Model, data: &mut Data)
 ```
 
+**Body ordering invariant:** Bodies are indexed in topological order
+(parent index < child index), guaranteed by `compute_ancestors()` (line 2544).
+The forward pass `for b in 1..nbody` visits parents before children; the
+backward pass `for b in (1..nbody).rev()` visits children before parents.
+This is the same ordering used by `mj_rne()` (line 9113).
+
+**Motion subspace convention:** `joint_motion_subspace()` (line 9025) returns
+a `SMatrix<f64, 6, 6>` regardless of joint type. Only the first `ndof`
+columns contain the motion subspace vectors (1 for Hinge/Slide, 3 for Ball,
+6 for Free); remaining columns are zero. The pseudocode below uses
+`S[:, d]` for `d in 0..ndof`, which naturally selects only the active columns.
+
 **Algorithm detail:**
 
 ```
@@ -1898,7 +1974,7 @@ Initialize:
   Dcvel[world] = 0 (6 × nv)
   Dcacc[world] = 0 (6 × nv)
 
-Forward pass (root to leaves), for each body b:
+Forward pass (root to leaves), for each body b in 1..nbody:
   parent = model.body_parent[b]
 
   // Propagate velocity Jacobian from parent
@@ -1938,21 +2014,30 @@ Forward pass (root to leaves), for each body b:
     let mat = mjd_cross_motion_vel(v_joint)  // 6×6
     Dcacc[b] += mat · Dcvel[parent]  // 6×nv += 6×6 · 6×nv
 
-Backward pass (leaves to root), for each body b:
-  // Dcfrc[b] = I[b] · Dcacc[b] + d(crossForce(v, I·v))/dv · Dcvel[b]
-  //
-  // crossForce(v, I·v): quadratic in v
-  //   d/dv = crossForce_vel(I·v) · Dcvel + crossForce_frc(v) · I · Dcvel
-  Dcfrc[b] = I[b] · Dcacc[b]
-           + crossForce_vel(I[b] · cvel[b]) · Dcvel[b]
-           + crossForce_frc(cvel[b]) · I[b] · Dcvel[b]
+Backward pass — two phases (mirrors mj_rne lines 9315-9341):
 
-  // Accumulate to parent
-  Dcfrc[parent] += Dcfrc[b]
+  Phase 1: Compute local body force derivatives (for each body b in 1..nbody):
+    // Dcfrc[b] starts at 0 (zeroed at function entry).
+    // Assign the local contribution — children have NOT accumulated yet.
+    Dcfrc[b] = I[b] · Dcacc[b]
+             + crossForce_vel(I[b] · cvel[b]) · Dcvel[b]
+             + crossForce_frc(cvel[b]) · I[b] · Dcvel[b]
+    //
+    // The three terms differentiate cfrc = I·a_bias + v ×* (I·v):
+    //   1. I · Dcacc: inertia × acceleration derivative (linear in a_bias)
+    //   2. crossForce_vel(I·v) · Dcvel: d(v ×* f)/dv with f = I·v held fixed
+    //   3. crossForce_frc(v) · I · Dcvel: d(v ×* f)/df with df = I·Dcvel
 
-Projection (same as standard RNE):
-  for each DOF j in body b:
-    qDeriv[j, :] -= S[:, d]^T · Dcfrc[b]   for each DOF d
+  Phase 2: Accumulate to parent (leaves to root, for b in (1..nbody).rev()):
+    Dcfrc[parent] += Dcfrc[b]
+
+    // After this loop, Dcfrc[b] contains the derivative of the subtree
+    // force rooted at body b, matching cfrc_bias accumulation in mj_rne.
+
+Projection (same as standard RNE, for each joint jnt_id in 0..njnt):
+  body_id = model.jnt_body[jnt_id]
+  for d in 0..ndof:
+    qDeriv[dof_adr + d, :] -= S[:, d]^T · Dcfrc[body_id]
 ```
 
 **New helper functions** (in `derivatives.rs`):
@@ -2278,14 +2363,15 @@ by `mj_fwd_acceleration_implicit()` and stored in `data.scratch_m_impl`.
 Compute `(M + h·(qDeriv + D))` column-by-column and solve via
 `cholesky_solve_in_place()`.
 
-**Tendon damping caveat:** The `+D` adjustment only cancels the diagonal
-per-DOF damping. `mjd_passive_vel` also contributes off-diagonal tendon
-damping terms `(−b · J^T · J)` to `qDeriv`, but tendon damping is likewise
-skipped in `mj_fwd_passive` for implicit mode (lines 9417-9430). These
-off-diagonal terms are NOT corrected by `+D`. This is a known limitation of
-the current diagonal-only implicit integrator — resolving it requires the
-full implicit integrator (spec #13) with non-diagonal K/D matrices. For
-models without tendons (the common case), the `+D` adjustment is exact.
+**Tendon damping consistency:** `mjd_passive_vel` (Step 4) skips tendon
+damping in implicit mode, matching `mj_fwd_passive` which also skips tendon
+spring/damper forces in implicit mode (lines 9417-9430). This means `qDeriv`
+contains only diagonal per-DOF damping from passive forces (plus actuator
+and bias terms), and the `+D` adjustment exactly cancels the diagonal
+`−D` contribution, leaving `∂f_ext/∂v = ∂(actuator)/∂v − ∂(bias)/∂v`.
+The full implicit integrator (spec #13) with non-diagonal K/D matrices
+would need to revisit this when tendon coupling is absorbed into the
+implicit mass matrix.
 
 ##### Step 10 — Public API dispatch
 
@@ -2473,13 +2559,24 @@ downstream use in tests and analysis tools. `mjd_quat_integrate` is also
     No panic with `eps = 1e-6` (default).
 21. **Warmstart copying**: Perturbed FD solves use nominal warmstart.
     `solver_niter` for perturbed steps ≤ 2× nominal `solver_niter`.
-22. **Performance**: FD derivatives for `Model::n_link_pendulum(6, 1.0, 0.1)`
+22. **Scratch state restoration**: After `mjd_transition_fd()` completes,
+    the original `data` is unmodified (`&Data` borrow). Internally, every
+    perturbed `step()` starts from identical nominal state: `qpos`, `qvel`,
+    `act`, `ctrl`, `time`, and `efc_lambda` are all restored before each
+    perturbation. Verified by checking that centered FD at `eps=1e-6`
+    produces identical A matrices when called twice on the same `(model, data)`.
+23. **Tendon damping implicit guard**: For a model with one tendon (damping
+    `b > 0`) and `Integrator::ImplicitSpringDamper`, `mjd_passive_vel()`
+    does NOT add tendon damping terms to `qDeriv` (tendon damping is skipped
+    in implicit mode by `mj_fwd_passive`, line 9417). The diagonal per-DOF
+    damping entries are still present.
+24. **Performance**: FD derivatives for `Model::n_link_pendulum(6, 1.0, 0.1)`
     (nv=6, nu=0, na=0) complete in < 10ms (wall clock, release mode).
-23. **`cargo clippy -p sim-core -- -D warnings`** passes clean.
-24. **All existing sim-core tests pass unchanged** (additive module, no behavior
+25. **`cargo clippy -p sim-core -- -D warnings`** passes clean.
+26. **All existing sim-core tests pass unchanged** (additive module, no behavior
     changes to existing code).
-25. **At least 20 new tests** in `sim/L0/tests/integration/derivatives.rs`
-    covering Part 1 criteria (1–19).
+27. **At least 22 new tests** in `sim/L0/tests/integration/derivatives.rs`
+    covering Part 1 criteria (1–23).
 
 ---
 
@@ -2487,35 +2584,35 @@ downstream use in tests and analysis tools. `mjd_quat_integrate` is also
 
 **Phase C/D — Integration + Hybrid:**
 
-26. **Hybrid vs FD agreement**: `validate_analytical_vs_fd()` returns
+28. **Hybrid vs FD agreement**: `validate_analytical_vs_fd()` returns
     `max_error_A < 1e-3` and `max_error_B < 1e-3` for a 3-link pendulum with
     torque actuators (Euler integrator).
-27. **Hybrid velocity columns**: For a damped 3-link pendulum (damping=1.0),
+29. **Hybrid velocity columns**: For a damped 3-link pendulum (damping=1.0),
     velocity columns of A from hybrid match pure FD columns to within `1e-4`
     relative error (element-wise via `max_relative_error`).
-28. **Hybrid cost savings**: For a 10-DOF model (nu=10, na=0, all simple Joint
+30. **Hybrid cost savings**: For a 10-DOF model (nu=10, na=0, all simple Joint
     actuators), hybrid mode calls `step()` at most `2 · nv` times (centered).
     Pure FD would require `2 · (2·nv + nu) = 60` calls. Hybrid requires
     `2 · nv = 20`. Verified by counting (add a step counter in test).
-29. **ImplicitSpringDamper analytical**: For a stiff spring system
+31. **ImplicitSpringDamper analytical**: For a stiff spring system
     (stiffness=1000, damping=10) with `Integrator::ImplicitSpringDamper`, hybrid
     velocity derivatives use the `(M + hD + h²K)⁻¹` correction. The velocity
     block of A matches pure FD to within `1e-3`.
-30. **Activation columns analytical**: For a model with `ActuatorDynamics::Filter`
+32. **Activation columns analytical**: For a model with `ActuatorDynamics::Filter`
     (na=2), hybrid computes activation columns of A analytically:
     `∂v⁺/∂act` via `h · M⁻¹ · moment · gain`. Matches FD to within `1e-3`.
-31. **mjd_transition dispatch**: `mjd_transition()` with `use_analytical=true`
+33. **mjd_transition dispatch**: `mjd_transition()` with `use_analytical=true`
     and Euler returns the same result as `mjd_transition_hybrid()`. With
     `use_analytical=false` or RK4, returns same as `mjd_transition_fd()`.
-32. **Data convenience method**: `data.transition_derivatives(model, config)`
+34. **Data convenience method**: `data.transition_derivatives(model, config)`
     returns the same result as `mjd_transition(model, &data, config)`.
 
 **Part 2 infrastructure:**
 
-33. **FD convergence utility**: `fd_convergence_check()` returns `true` for
+35. **FD convergence utility**: `fd_convergence_check()` returns `true` for
     epsilon in `[1e-4, 1e-8]` with tolerance `1e-3`.
-34. **`cargo clippy -p sim-core -- -D warnings`** still passes clean.
-35. **At least 10 additional tests** covering Part 2 criteria (26–32).
+36. **`cargo clippy -p sim-core -- -D warnings`** still passes clean.
+37. **At least 10 additional tests** covering Part 2 criteria (28–34).
 
 #### Files
 

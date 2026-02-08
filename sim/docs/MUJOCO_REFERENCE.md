@@ -701,6 +701,61 @@ Key details:
 
 ---
 
+## Stage 6: Derivatives (optional, after `forward()`)
+
+Implemented in `sim-core/src/derivatives.rs`. Two modes:
+
+### 6.1 Pure Finite-Difference: `mjd_transition_fd()`
+
+Linearizes the transition `x_{t+1} = f(x_t, u_t)` around the current state.
+
+```
+state x = [dq (nv tangent), qvel (nv), act (na)]    dim = 2*nv + na
+control u = ctrl                                      dim = nu
+
+centered FD (O(ε²) error):
+  for each state dimension i:
+    x⁺ = step(x + ε·eᵢ)
+    x⁻ = step(x − ε·eᵢ)
+    A[:, i] = (x⁺ − x⁻) / (2·ε)
+  for each control dimension j:
+    x⁺ = step(x, u + ε·eⱼ)
+    x⁻ = step(x, u − ε·eⱼ)
+    B[:, j] = (x⁺ − x⁻) / (2·ε)
+
+Position perturbations: mj_integrate_pos_explicit() (tangent → coordinate)
+Position differences:   mj_differentiate_pos()      (coordinate → tangent)
+```
+
+Cost: `2·(2·nv + na + nu)` step() calls (centered). Handles any integrator
+including RK4. Captures contact transitions naturally.
+
+### 6.2 Analytical Velocity Derivatives: `mjd_smooth_vel()`
+
+Computes `∂(qfrc_smooth)/∂qvel` analytically, stored in `Data.qDeriv`:
+
+```
+qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias
+
+qDeriv = ∂(passive)/∂v + ∂(actuator)/∂v − ∂(bias)/∂v
+
+mjd_passive_vel():   diagonal −damping[i] + tendon rank-1 −b·J^T·J
+mjd_actuator_vel():  affine gain/bias velocity terms via transmission
+mjd_rne_vel():       chain-rule derivative propagation through kinematic tree
+                     Forward pass: Dcvel, Dcacc (6×nv per body)
+                     Backward pass: Dcfrc accumulation + projection to joint space
+                     + direct gyroscopic derivative for Ball/Free joints
+```
+
+Cross-product derivative signs (critical):
+- `d(a × b)/d(a) = −[b]×`  (negative skew of second argument)
+- `d(a × b)/d(b) = [a]×`   (positive skew of first argument)
+
+MuJoCo correspondence: `mjd_smooth_vel` → `mjd_smooth_vel`, `Data.qDeriv` →
+`mjData.qDeriv` (sparse in MuJoCo, dense here).
+
+---
+
 ## Key Data Structures
 
 ### Model (static, immutable after loading)
@@ -769,6 +824,10 @@ Key details:
 | `act_dot[na]` | `DVector` | Activation time-derivative (integrated by Euler/RK4) |
 | `contacts[ncon]` | `Vec<Contact>` | Active contact points |
 | `efc_lambda` | `HashMap` | Warmstart cache (keyed by geom pair) |
+| `qDeriv[nv,nv]` | `DMatrix` | Analytical ∂(qfrc_smooth)/∂qvel (populated by `mjd_smooth_vel`) |
+| `deriv_Dcvel[nbody]` | `Vec<DMatrix(6,nv)>` | Per-body ∂(cvel)/∂(qvel) scratch Jacobians |
+| `deriv_Dcacc[nbody]` | `Vec<DMatrix(6,nv)>` | Per-body ∂(cacc)/∂(qvel) scratch Jacobians |
+| `deriv_Dcfrc[nbody]` | `Vec<DMatrix(6,nv)>` | Per-body ∂(cfrc)/∂(qvel) scratch Jacobians |
 
 ---
 

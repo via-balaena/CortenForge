@@ -81,6 +81,9 @@ pub mod mujoco_pipeline;
 pub mod raycast;
 pub mod sdf;
 
+// Simulation transition derivatives (FD and analytical)
+pub mod derivatives;
+
 // Contact geometry types (moved from sim-contact)
 pub mod contact;
 
@@ -146,6 +149,8 @@ pub use mujoco_pipeline::{
     mj_integrate_pos_explicit,
     warmstart_key,
 };
+
+pub use derivatives::{DerivativeConfig, TransitionMatrices, mjd_smooth_vel, mjd_transition_fd};
 
 // Re-export key types from sim-types for convenience
 pub use sim_types::{

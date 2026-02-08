@@ -333,7 +333,8 @@ sim/L0/tests/
 │   ├── sensors.rs
 │   ├── site_transmission.rs
 │   ├── spatial_tendons.rs
-│   └── validation.rs
+│   ├── validation.rs
+│   └── derivatives.rs
 └── assets/
     ├── mujoco_menagerie/  (git submodule)
     └── dm_control/        (git submodule)
@@ -399,6 +400,28 @@ hardcode MuJoCo 3.4.0 reference values as constants, then `assert_relative_eq!` 
 
 **To unblock:** Run a 3-link arm model with site actuators through MuJoCo 3.4.0 (Python bindings),
 record `actuator_length`, `actuator_velocity`, and `qfrc_actuator`, then hardcode as constants.
+
+---
+
+### §12 — Analytical Derivatives Conformance
+
+**Status:** Part 1 ✅ Complete (30 tests) — FD transition Jacobians + analytical qDeriv
+
+The derivative infrastructure (`sim-core/src/derivatives.rs`) is verified by 30 integration
+tests in `integration/derivatives.rs` covering acceptance criteria 1–27 from the spec.
+
+| MuJoCo Function | CortenForge | Verification | Status |
+|-----------------|-------------|--------------|--------|
+| `mjd_transitionFD` (pure FD) | `mjd_transition_fd()` | FD convergence, centered vs forward, quaternion handling, contact sensitivity, integrator coverage | ✅ |
+| `mjd_smooth_vel` | `mjd_smooth_vel()` | Combined qDeriv matches FD of smooth forces to `1e-4` | ✅ |
+| `mjd_passive_vel` | `mjd_passive_vel()` | Diagonal damping exact, tendon damping matches FD to `1e-6` | ✅ |
+| `mjd_actuator_vel` | `mjd_actuator_vel()` | Affine gain/bias velocity derivative matches FD to `1e-6` | ✅ |
+| `mjd_rne_vel` | `mjd_rne_vel()` | Coriolis matrix (hinge, ball, free joints) matches FD to `1e-5` | ✅ |
+| `mjData.qDeriv` | `Data.qDeriv` | Dense nv×nv (MuJoCo uses sparse) — values match | ✅ |
+| `mjd_transitionFD` (hybrid) | Not yet | Part 2: analytical velocity columns + FD position columns | Planned |
+
+**Design divergence:** MuJoCo stores `qDeriv` in sparse band-limited format.
+CortenForge uses dense `DMatrix<f64>` (target models have nv < 100).
 
 ---
 

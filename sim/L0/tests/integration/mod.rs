@@ -91,3 +91,10 @@ pub mod validation;
 /// Deformable-rigid contact pipeline tests.
 #[cfg(feature = "deformable")]
 pub mod deformable_contact;
+
+// ============================================================================
+// Analytical Derivatives Tests (§12, Part 1: Steps 0–7)
+// ============================================================================
+
+/// Derivative infrastructure tests: FD, analytical qDeriv, acceptance criteria 1–23.
+pub mod derivatives;
