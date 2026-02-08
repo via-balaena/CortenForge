@@ -633,6 +633,14 @@ impl DeformableBody for Cloth {
 
         (min, max)
     }
+
+    fn collision_margin(&self) -> f64 {
+        self.config.thickness / 2.0
+    }
+
+    fn clone_box(&self) -> Box<dyn DeformableBody + Send + Sync> {
+        Box::new(self.clone())
+    }
 }
 
 #[cfg(test)]

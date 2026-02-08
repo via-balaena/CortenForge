@@ -28,6 +28,7 @@ tempfile = { workspace = true }
 default = []
 serde = ["dep:serde", "sim-types/serde"]
 mjb = ["serde", "dep:bincode"]
+deformable = ["sim-core/deformable"]
 
 [lints]
 workspace = true

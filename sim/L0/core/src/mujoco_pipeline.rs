@@ -88,6 +88,12 @@ use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 use std::sync::Arc;
 
+#[cfg(feature = "deformable")]
+use sim_deformable::{
+    DeformableBody, Material as DeformableMaterial, SolverConfig as XpbdSolverConfig, VertexFlags,
+    XpbdSolver,
+};
+
 /// 6D spatial vector: [angular (3), linear (3)].
 ///
 /// Following Featherstone's convention:
@@ -1178,6 +1184,19 @@ pub struct Model {
     pub disableflags: u32,
     /// Enable flags (bitmask for enabling optional behaviors).
     pub enableflags: u32,
+
+    // ==================== Deformable Configuration (feature-gated) ====================
+    /// Contact dimension for deformable-rigid contacts (1, 3, 4, or 6).
+    /// Default: 3 (normal + 2D sliding friction). Applies to all deformable bodies.
+    #[cfg(feature = "deformable")]
+    pub deformable_condim: i32,
+    /// Solver reference parameters for deformable-rigid contacts.
+    #[cfg(feature = "deformable")]
+    pub deformable_solref: [f64; 2],
+    /// Solver impedance parameters for deformable-rigid contacts.
+    #[cfg(feature = "deformable")]
+    pub deformable_solimp: [f64; 5],
+
     /// Integration method.
     pub integrator: Integrator,
     /// Contact constraint solver algorithm (PGS or CG).
@@ -1327,6 +1346,36 @@ pub struct Contact {
     pub solimp: [f64; 5],
     /// Contact frame tangent vectors (orthogonal to normal).
     /// `frame[0..3]` = t1, `frame[3..6]` = t2 (for friction cone).
+    pub frame: [Vector3<f64>; 2],
+}
+
+/// A contact between a deformable vertex and a rigid geom.
+#[derive(Debug, Clone)]
+#[cfg(feature = "deformable")]
+pub struct DeformableContact {
+    /// Index into `deformable_bodies` array.
+    pub deformable_idx: usize,
+    /// Vertex index within the deformable body.
+    pub vertex_idx: usize,
+    /// Rigid geom index (into `model.geom_*` arrays).
+    pub geom_idx: usize,
+    /// Contact position in world frame (closest point on rigid geom surface).
+    pub pos: Vector3<f64>,
+    /// Contact normal (from rigid surface toward deformable vertex, unit vector).
+    pub normal: Vector3<f64>,
+    /// Penetration depth (positive = overlapping).
+    pub depth: f64,
+    /// Combined sliding friction: sqrt(material.friction * geom_friction.x).
+    pub friction: f64,
+    /// Contact dimension (from model.deformable_condim).
+    pub dim: usize,
+    /// 5-element friction vector [sliding1, sliding2, torsional, rolling1, rolling2].
+    pub mu: [f64; 5],
+    /// Solver reference parameters.
+    pub solref: [f64; 2],
+    /// Solver impedance parameters.
+    pub solimp: [f64; 5],
+    /// Tangent frame vectors for friction cone.
     pub frame: [Vector3<f64>; 2],
 }
 
@@ -1590,7 +1639,7 @@ fn compute_tangent_frame(normal: &Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) 
 ///
 /// `qpos` and `qvel` are the ONLY state variables. Everything else
 /// (xpos, xquat, qfrc_*, etc.) is COMPUTED from them via forward dynamics.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[allow(non_snake_case)] // qM matches MuJoCo naming convention
 pub struct Data {
     // ==================== Generalized Coordinates (THE source of truth) ====================
@@ -1811,6 +1860,18 @@ pub struct Data {
     /// Kinetic energy.
     pub energy_kinetic: f64,
 
+    // ==================== Deformable State (feature-gated) ====================
+    /// Registered deformable bodies. Boxed trait objects allow heterogeneous storage.
+    /// `Send + Sync` bounds required for rayon `par_iter_mut()` and bevy `Resource`.
+    #[cfg(feature = "deformable")]
+    pub deformable_bodies: Vec<Box<dyn DeformableBody + Send + Sync>>,
+    /// Per-body XPBD solver instances. Parallel array with `deformable_bodies`.
+    #[cfg(feature = "deformable")]
+    pub deformable_solvers: Vec<XpbdSolver>,
+    /// Deformable-rigid contacts detected this step.
+    #[cfg(feature = "deformable")]
+    pub deformable_contacts: Vec<DeformableContact>,
+
     // ==================== Time ====================
     /// Simulation time in seconds.
     pub time: f64,
@@ -1872,6 +1933,115 @@ pub struct Data {
     /// Extracted from qM diagonal for angular DOFs (free joint 3-5, ball 0-2, hinge).
     /// World body (index 0) has value `f64::INFINITY`.
     pub body_min_inertia: Vec<f64>,
+}
+
+#[allow(non_snake_case)] // qM, qLD matches MuJoCo naming convention
+impl Clone for Data {
+    fn clone(&self) -> Self {
+        Self {
+            // Generalized coordinates
+            qpos: self.qpos.clone(),
+            qvel: self.qvel.clone(),
+            qacc: self.qacc.clone(),
+            qacc_warmstart: self.qacc_warmstart.clone(),
+            // Control / Actuation
+            ctrl: self.ctrl.clone(),
+            act: self.act.clone(),
+            qfrc_actuator: self.qfrc_actuator.clone(),
+            actuator_length: self.actuator_length.clone(),
+            actuator_velocity: self.actuator_velocity.clone(),
+            actuator_force: self.actuator_force.clone(),
+            actuator_moment: self.actuator_moment.clone(),
+            act_dot: self.act_dot.clone(),
+            // Computed body states
+            xpos: self.xpos.clone(),
+            xquat: self.xquat.clone(),
+            xmat: self.xmat.clone(),
+            xipos: self.xipos.clone(),
+            ximat: self.ximat.clone(),
+            geom_xpos: self.geom_xpos.clone(),
+            geom_xmat: self.geom_xmat.clone(),
+            site_xpos: self.site_xpos.clone(),
+            site_xmat: self.site_xmat.clone(),
+            site_xquat: self.site_xquat.clone(),
+            // Velocities
+            cvel: self.cvel.clone(),
+            cdof: self.cdof.clone(),
+            // RNE intermediate
+            cacc_bias: self.cacc_bias.clone(),
+            cfrc_bias: self.cfrc_bias.clone(),
+            // Forces
+            qfrc_applied: self.qfrc_applied.clone(),
+            qfrc_bias: self.qfrc_bias.clone(),
+            qfrc_passive: self.qfrc_passive.clone(),
+            qfrc_constraint: self.qfrc_constraint.clone(),
+            jnt_limit_frc: self.jnt_limit_frc.clone(),
+            ten_limit_frc: self.ten_limit_frc.clone(),
+            xfrc_applied: self.xfrc_applied.clone(),
+            // Mass matrix
+            qM: self.qM.clone(),
+            // Sparse factorization
+            qLD_diag: self.qLD_diag.clone(),
+            qLD_L: self.qLD_L.clone(),
+            qLD_valid: self.qLD_valid,
+            // Body/composite inertia
+            cinert: self.cinert.clone(),
+            crb_inertia: self.crb_inertia.clone(),
+            // Subtree mass/COM
+            subtree_mass: self.subtree_mass.clone(),
+            subtree_com: self.subtree_com.clone(),
+            // Tendon state
+            ten_length: self.ten_length.clone(),
+            ten_velocity: self.ten_velocity.clone(),
+            ten_force: self.ten_force.clone(),
+            ten_J: self.ten_J.clone(),
+            // Equality constraints
+            eq_violation: self.eq_violation.clone(),
+            eq_force: self.eq_force.clone(),
+            // Contacts
+            contacts: self.contacts.clone(),
+            ncon: self.ncon,
+            // Solver state
+            solver_niter: self.solver_niter,
+            solver_nnz: self.solver_nnz,
+            efc_lambda: self.efc_lambda.clone(),
+            // Sensors
+            sensordata: self.sensordata.clone(),
+            // Energy
+            energy_potential: self.energy_potential,
+            energy_kinetic: self.energy_kinetic,
+            // Deformable state (feature-gated)
+            #[cfg(feature = "deformable")]
+            deformable_bodies: self
+                .deformable_bodies
+                .iter()
+                .map(|b| b.clone_box())
+                .collect(),
+            #[cfg(feature = "deformable")]
+            deformable_solvers: self.deformable_solvers.clone(),
+            #[cfg(feature = "deformable")]
+            deformable_contacts: self.deformable_contacts.clone(),
+            // Time
+            time: self.time,
+            // Scratch buffers
+            scratch_m_impl: self.scratch_m_impl.clone(),
+            scratch_force: self.scratch_force.clone(),
+            scratch_rhs: self.scratch_rhs.clone(),
+            scratch_v_new: self.scratch_v_new.clone(),
+            // RK4 scratch
+            rk4_qpos_saved: self.rk4_qpos_saved.clone(),
+            rk4_qpos_stage: self.rk4_qpos_stage.clone(),
+            rk4_qvel: self.rk4_qvel.clone(),
+            rk4_qacc: self.rk4_qacc.clone(),
+            rk4_dX_vel: self.rk4_dX_vel.clone(),
+            rk4_dX_acc: self.rk4_dX_acc.clone(),
+            rk4_act_saved: self.rk4_act_saved.clone(),
+            rk4_act_dot: self.rk4_act_dot.clone(),
+            // Cached body mass/inertia
+            body_min_mass: self.body_min_mass.clone(),
+            body_min_inertia: self.body_min_inertia.clone(),
+        }
+    }
 }
 
 impl Model {
@@ -2065,6 +2235,12 @@ impl Model {
             cone: 1,                       // Elliptic friction cone (pyramidal not supported)
             disableflags: 0,               // Nothing disabled
             enableflags: 0,                // Nothing extra enabled
+            #[cfg(feature = "deformable")]
+            deformable_condim: 3,
+            #[cfg(feature = "deformable")]
+            deformable_solref: [0.02, 1.0],
+            #[cfg(feature = "deformable")]
+            deformable_solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
 
@@ -2223,6 +2399,14 @@ impl Model {
             // Energy
             energy_potential: 0.0,
             energy_kinetic: 0.0,
+
+            // Deformable state (feature-gated)
+            #[cfg(feature = "deformable")]
+            deformable_bodies: Vec::new(),
+            #[cfg(feature = "deformable")]
+            deformable_solvers: Vec::new(),
+            #[cfg(feature = "deformable")]
+            deformable_contacts: Vec::with_capacity(256),
 
             // Time
             time: 0.0,
@@ -3005,6 +3189,46 @@ impl Data {
         self.time = 0.0;
         self.ncon = 0;
         self.contacts.clear();
+
+        #[cfg(feature = "deformable")]
+        {
+            self.deformable_contacts.clear();
+            for body in &mut self.deformable_bodies {
+                for vel in body.velocities_mut() {
+                    *vel = Vector3::zeros();
+                }
+                body.clear_forces();
+            }
+        }
+    }
+
+    /// Register a deformable body for simulation.
+    ///
+    /// The body is consumed and stored internally. Returns the index into
+    /// `deformable_bodies` for later reference.
+    #[cfg(feature = "deformable")]
+    pub fn register_deformable(
+        &mut self,
+        body: Box<dyn DeformableBody + Send + Sync>,
+        solver_config: XpbdSolverConfig,
+    ) -> usize {
+        let idx = self.deformable_bodies.len();
+        self.deformable_bodies.push(body);
+        self.deformable_solvers.push(XpbdSolver::new(solver_config));
+        idx
+    }
+
+    /// Get a reference to a registered deformable body.
+    #[cfg(feature = "deformable")]
+    #[must_use]
+    pub fn deformable(&self, idx: usize) -> &dyn DeformableBody {
+        self.deformable_bodies[idx].as_ref()
+    }
+
+    /// Get a mutable reference to a registered deformable body.
+    #[cfg(feature = "deformable")]
+    pub fn deformable_mut(&mut self, idx: usize) -> &mut dyn DeformableBody {
+        self.deformable_bodies[idx].as_mut()
     }
 
     /// Get total mechanical energy (kinetic + potential).
@@ -3084,6 +3308,10 @@ impl Data {
         // Stage 1b: Collision detection - detect contacts from geometry pairs
         mj_collision(model, self);
 
+        // Stage 1b': Deformable-rigid collision detection
+        #[cfg(feature = "deformable")]
+        mj_deformable_collision(model, self);
+
         // Stage 1c: Position-dependent sensors (joint positions, frame positions, etc.)
         mj_sensor_pos(model, self);
 
@@ -3140,6 +3368,8 @@ impl Data {
         // ========== Position Stage ==========
         mj_fwd_position(model, self);
         mj_collision(model, self);
+        #[cfg(feature = "deformable")]
+        mj_deformable_collision(model, self);
         // skip: mj_sensor_pos
         mj_energy_pos(model, self);
 
@@ -3225,6 +3455,10 @@ impl Data {
 
         // Normalize quaternions to prevent drift
         mj_normalize_quat(model, self);
+
+        // Step deformable bodies (XPBD internal constraints)
+        #[cfg(feature = "deformable")]
+        mj_deformable_step(model, self);
 
         // Advance time
         self.time += h;
@@ -11777,6 +12011,570 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
             apply_contact_torque(model, data, body2, rolling_torque);
         }
     }
+
+    // Deformable-rigid contact resolution
+    #[cfg(feature = "deformable")]
+    solve_deformable_contacts(model, data);
+}
+
+// ============================================================================
+// Deformable Body Pipeline (feature-gated)
+// ============================================================================
+
+/// Compute error reduction parameter from solver reference parameters.
+///
+/// MuJoCo solref = [timeconst, dampratio]:
+///   erp = dt / (dt + 2 * timeconst * dampratio)
+#[cfg(feature = "deformable")]
+#[inline]
+fn compute_erp(dt: f64, solref: &[f64; 2]) -> f64 {
+    let timeconst = solref[0];
+    let dampratio = solref[1];
+    dt / (dt + 2.0 * timeconst * dampratio)
+}
+
+/// Compute the effective inverse mass of a rigid body at a contact point
+/// projected onto a contact normal direction.
+///
+/// inv_m_eff = n^T * J * M^{-1} * J^T * n
+#[cfg(feature = "deformable")]
+fn compute_rigid_inv_mass_at_point(
+    model: &Model,
+    data: &Data,
+    body_id: usize,
+    point: Vector3<f64>,
+    normal: &Vector3<f64>,
+) -> f64 {
+    if body_id == 0 {
+        return 0.0; // World body = infinite mass
+    }
+
+    // Build 3×nv translational Jacobian at point.
+    let mut jac = DMatrix::zeros(3, model.nv);
+
+    let mut current_body = body_id;
+    while current_body != 0 {
+        let jnt_start = model.body_jnt_adr[current_body];
+        let jnt_end = jnt_start + model.body_jnt_num[current_body];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - jpos;
+                    let j_col = axis.cross(&r);
+                    jac[(0, dof_adr)] = j_col.x;
+                    jac[(1, dof_adr)] = j_col.y;
+                    jac[(2, dof_adr)] = j_col.z;
+                }
+                MjJointType::Slide => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    jac[(0, dof_adr)] = axis.x;
+                    jac[(1, dof_adr)] = axis.y;
+                    jac[(2, dof_adr)] = axis.z;
+                }
+                MjJointType::Ball => {
+                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - jpos;
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    for i in 0..3 {
+                        let omega_world = rot * Vector3::ith(i, 1.0);
+                        let j_col = omega_world.cross(&r);
+                        jac[(0, dof_adr + i)] = j_col.x;
+                        jac[(1, dof_adr + i)] = j_col.y;
+                        jac[(2, dof_adr + i)] = j_col.z;
+                    }
+                }
+                MjJointType::Free => {
+                    // Linear DOFs (translations)
+                    jac[(0, dof_adr)] = 1.0;
+                    jac[(1, dof_adr + 1)] = 1.0;
+                    jac[(2, dof_adr + 2)] = 1.0;
+                    // Angular DOFs (d(v)/d(omega) = skew(r))
+                    let jpos = data.xpos[jnt_body];
+                    let r = point - jpos;
+                    // omega_x: v = omega_x × r = (0, r.z, -r.y)
+                    jac[(1, dof_adr + 3)] = r.z;
+                    jac[(2, dof_adr + 3)] = -r.y;
+                    // omega_y: v = omega_y × r = (-r.z, 0, r.x)
+                    jac[(0, dof_adr + 4)] = -r.z;
+                    jac[(2, dof_adr + 4)] = r.x;
+                    // omega_z: v = omega_z × r = (r.y, -r.x, 0)
+                    jac[(0, dof_adr + 5)] = r.y;
+                    jac[(1, dof_adr + 5)] = -r.x;
+                }
+            }
+        }
+        current_body = model.body_parent[current_body];
+    }
+
+    if model.nv == 0 {
+        return 0.0;
+    }
+
+    // j_n = J^T * n (nv×1)
+    let n = DVector::from_column_slice(normal.as_slice());
+    let j_n = jac.transpose() * &n;
+
+    // M^{-1} * j_n via sparse factored mass matrix
+    let mut m_inv_jn = j_n.clone();
+    if data.qLD_valid {
+        mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut m_inv_jn);
+    } else {
+        // Fallback: use diagonal of mass matrix
+        for i in 0..model.nv {
+            let m_diag = data.qM[(i, i)];
+            if m_diag > 1e-10 {
+                m_inv_jn[i] /= m_diag;
+            }
+        }
+    }
+    j_n.dot(&m_inv_jn)
+}
+
+/// Solve deformable-rigid contact forces using Jacobi-style iteration.
+///
+/// Each deformable vertex is a 3-DOF point mass. The contact Jacobian is the
+/// identity matrix (vertex velocity maps directly to contact-frame velocity).
+///
+/// Three-phase algorithm for borrow safety:
+///
+/// 1. Read phase: iterate contacts, compute impulses into scratch buffer
+/// 2. Write phase: apply impulses to vertex velocities
+/// 3. Reaction phase: apply reaction forces to rigid bodies
+#[cfg(feature = "deformable")]
+fn solve_deformable_contacts(model: &Model, data: &mut Data) {
+    let mut impulses: Vec<(usize, Vector3<f64>)> =
+        Vec::with_capacity(data.deformable_contacts.len());
+
+    let dt = model.timestep;
+
+    for _iter in 0..model.solver_iterations {
+        let mut max_delta = 0.0_f64;
+        impulses.clear();
+
+        // Phase 1: Read-only solve
+        for (contact_idx, contact) in data.deformable_contacts.iter().enumerate() {
+            let body = &data.deformable_bodies[contact.deformable_idx];
+            let inv_m = body.inverse_masses()[contact.vertex_idx];
+
+            if inv_m <= 0.0 {
+                continue; // Pinned vertex
+            }
+
+            let v_deform = body.velocities()[contact.vertex_idx];
+
+            // Rigid body velocity at contact point
+            let rigid_body_idx = model.geom_body[contact.geom_idx];
+            let v_rigid = compute_point_velocity(data, rigid_body_idx, contact.pos);
+
+            // Relative velocity in contact frame
+            let v_rel = v_deform - v_rigid;
+            let v_n = v_rel.dot(&contact.normal);
+
+            // Normal impulse with Baumgarte correction
+            let erp = compute_erp(dt, &contact.solref);
+            let rhs = v_n + erp * contact.depth / dt;
+
+            // Effective inverse mass (deformable point mass + rigid contribution)
+            let inv_m_eff = inv_m
+                + compute_rigid_inv_mass_at_point(
+                    model,
+                    data,
+                    rigid_body_idx,
+                    contact.pos,
+                    &contact.normal,
+                );
+
+            let lambda_n = (-rhs / inv_m_eff).max(0.0);
+            max_delta = max_delta.max(lambda_n.abs());
+
+            let impulse = contact.normal * lambda_n;
+            impulses.push((contact_idx, impulse));
+        }
+
+        // Phase 2a: Apply velocity updates to deformable vertices
+        for &(contact_idx, ref impulse) in &impulses {
+            let contact = &data.deformable_contacts[contact_idx];
+            let body = &mut data.deformable_bodies[contact.deformable_idx];
+            let inv_m = body.inverse_masses()[contact.vertex_idx];
+            body.velocities_mut()[contact.vertex_idx] += impulse * inv_m;
+        }
+
+        // Phase 2b: Apply reaction impulses to rigid bodies
+        // Copy contact fields to locals before the &mut data call.
+        for &(contact_idx, ref impulse) in &impulses {
+            let geom_idx = data.deformable_contacts[contact_idx].geom_idx;
+            let pos = data.deformable_contacts[contact_idx].pos;
+            let rigid_body_idx = model.geom_body[geom_idx];
+            apply_contact_force(model, data, rigid_body_idx, pos, -*impulse);
+        }
+
+        if max_delta < model.solver_tolerance {
+            break;
+        }
+    }
+}
+
+/// Detect contacts between deformable vertices and rigid geoms.
+#[cfg(feature = "deformable")]
+fn mj_deformable_collision(model: &Model, data: &mut Data) {
+    data.deformable_contacts.clear();
+
+    if data.deformable_bodies.is_empty() {
+        return; // Zero overhead when no deformables registered
+    }
+
+    // Phase 1: Clear COLLIDING flags
+    for body in &mut data.deformable_bodies {
+        for flag in body.vertex_flags_mut() {
+            flag.remove(VertexFlags::COLLIDING);
+        }
+    }
+
+    // Phase 2: Detect contacts
+    // Pre-compute rigid geom AABBs
+    let rigid_aabbs: Vec<Aabb> = (0..model.ngeom)
+        .map(|g| {
+            aabb_from_geom(
+                model.geom_type[g],
+                model.geom_size[g],
+                data.geom_xpos[g],
+                data.geom_xmat[g],
+            )
+        })
+        .collect();
+
+    for (deform_idx, body) in data.deformable_bodies.iter().enumerate() {
+        let margin = body.collision_margin();
+        let positions = body.positions();
+        let material = body.material();
+
+        for (vert_idx, pos) in positions.iter().enumerate() {
+            // Skip pinned vertices
+            if body.inverse_masses()[vert_idx] <= 0.0 {
+                continue;
+            }
+
+            // Vertex AABB: point ± margin
+            let vert_aabb = Aabb::from_center(*pos, Vector3::new(margin, margin, margin));
+
+            // Broadphase: test vertex AABB against all rigid geom AABBs
+            for geom_idx in 0..model.ngeom {
+                // Skip broadphase for planes — they are infinite and the thin
+                // slab AABB can miss fast-moving deformable vertices.
+                if model.geom_type[geom_idx] != GeomType::Plane
+                    && !vert_aabb.overlaps(&rigid_aabbs[geom_idx])
+                {
+                    continue;
+                }
+
+                // Narrowphase: vertex-vs-geom closest point
+                if let Some(contact) = collide_vertex_geom(
+                    pos,
+                    margin,
+                    model,
+                    geom_idx,
+                    data.geom_xpos[geom_idx],
+                    data.geom_xmat[geom_idx],
+                    material,
+                    deform_idx,
+                    vert_idx,
+                ) {
+                    data.deformable_contacts.push(contact);
+                }
+            }
+        }
+    }
+
+    // Phase 3: Set COLLIDING flags on contacted vertices
+    for contact in &data.deformable_contacts {
+        data.deformable_bodies[contact.deformable_idx].vertex_flags_mut()[contact.vertex_idx]
+            .insert(VertexFlags::COLLIDING);
+    }
+
+    // Phase 4: Position-level correction
+    // Push penetrating vertices to the contact surface. The velocity-level
+    // solver in mj_fwd_constraint handles impulses, but without position
+    // correction vertices can drift into the surface over time.
+    for contact in &data.deformable_contacts {
+        let body = &mut data.deformable_bodies[contact.deformable_idx];
+        let inv_m = body.inverse_masses()[contact.vertex_idx];
+        if inv_m <= 0.0 {
+            continue; // Pinned
+        }
+        // Only correct actual surface penetration (depth > margin means
+        // the vertex is below the surface, not just within the margin zone).
+        let margin = body.collision_margin();
+        let surface_penetration = contact.depth - margin;
+        if surface_penetration > 0.0 {
+            body.positions_mut()[contact.vertex_idx] += contact.normal * surface_penetration;
+            // Also zero out the normal velocity component to prevent
+            // the vertex from immediately falling back in.
+            let v = body.velocities()[contact.vertex_idx];
+            let v_n = v.dot(&contact.normal);
+            if v_n < 0.0 {
+                body.velocities_mut()[contact.vertex_idx] -= contact.normal * v_n;
+            }
+        }
+    }
+}
+
+/// Compute contact between a deformable vertex and a rigid geom.
+///
+/// The vertex is treated as a sphere with the given margin radius.
+/// Returns `DeformableContact` if penetrating, `None` otherwise.
+#[cfg(feature = "deformable")]
+#[allow(clippy::too_many_arguments)]
+fn collide_vertex_geom(
+    vertex_pos: &Point3<f64>,
+    vertex_margin: f64,
+    model: &Model,
+    geom_idx: usize,
+    geom_pos: Vector3<f64>,
+    geom_mat: Matrix3<f64>,
+    material: &DeformableMaterial,
+    deform_idx: usize,
+    vert_idx: usize,
+) -> Option<DeformableContact> {
+    let v = vertex_pos.coords;
+
+    // Compute signed distance from vertex to geom surface and contact normal
+    let (d_surface, normal) = match model.geom_type[geom_idx] {
+        GeomType::Plane => {
+            // Plane normal is the z-axis of the geom frame
+            let plane_normal = geom_mat.column(2).into_owned();
+            let d = (v - geom_pos).dot(&plane_normal);
+            (d, plane_normal)
+        }
+
+        GeomType::Sphere => {
+            let radius = model.geom_size[geom_idx].x;
+            let diff = v - geom_pos;
+            let dist = diff.norm();
+            if dist < 1e-10 {
+                // Vertex at sphere center — use fallback normal
+                (-radius, Vector3::new(0.0, 0.0, 1.0))
+            } else {
+                let normal = diff / dist;
+                (dist - radius, normal)
+            }
+        }
+
+        GeomType::Box => {
+            let half = model.geom_size[geom_idx];
+            // Transform vertex to local box frame
+            let v_local = geom_mat.transpose() * (v - geom_pos);
+
+            // Clamp to box
+            let clamped = Vector3::new(
+                v_local.x.clamp(-half.x, half.x),
+                v_local.y.clamp(-half.y, half.y),
+                v_local.z.clamp(-half.z, half.z),
+            );
+
+            let diff_local = v_local - clamped;
+            let dist_outside = diff_local.norm();
+
+            if dist_outside > 1e-10 {
+                // Outside the box
+                let normal_local = diff_local / dist_outside;
+                let normal_world = geom_mat * normal_local;
+                (dist_outside, normal_world)
+            } else {
+                // Inside the box — find closest face
+                let dx = half.x - v_local.x.abs();
+                let dy = half.y - v_local.y.abs();
+                let dz = half.z - v_local.z.abs();
+                let min_depth = dx.min(dy).min(dz);
+
+                let normal_local = if (dx - min_depth).abs() < 1e-10 {
+                    Vector3::new(v_local.x.signum(), 0.0, 0.0)
+                } else if (dy - min_depth).abs() < 1e-10 {
+                    Vector3::new(0.0, v_local.y.signum(), 0.0)
+                } else {
+                    Vector3::new(0.0, 0.0, v_local.z.signum())
+                };
+                let normal_world = geom_mat * normal_local;
+                (-min_depth, normal_world)
+            }
+        }
+
+        GeomType::Capsule => {
+            let radius = model.geom_size[geom_idx].x;
+            let half_len = model.geom_size[geom_idx].y;
+            let axis = geom_mat.column(2).into_owned();
+            let a = geom_pos - axis * half_len;
+            let b = geom_pos + axis * half_len;
+            let closest = closest_point_segment(a, b, v);
+            let diff = v - closest;
+            let dist = diff.norm();
+            if dist < 1e-10 {
+                (-radius, Vector3::new(0.0, 0.0, 1.0))
+            } else {
+                let normal = diff / dist;
+                (dist - radius, normal)
+            }
+        }
+
+        GeomType::Cylinder => {
+            let radius = model.geom_size[geom_idx].x;
+            let half_len = model.geom_size[geom_idx].y;
+            // Transform to cylinder local frame
+            let v_local = geom_mat.transpose() * (v - geom_pos);
+
+            let radial = Vector2::new(v_local.x, v_local.y);
+            let radial_dist = radial.norm();
+            let z_clamped = v_local.z.clamp(-half_len, half_len);
+
+            // Three cases: barrel, endcap, or edge
+            let on_barrel = v_local.z.abs() <= half_len;
+            let in_radial = radial_dist <= radius;
+
+            if on_barrel && in_radial {
+                // Inside cylinder — find closest surface
+                let d_radial = radius - radial_dist;
+                let d_axial = half_len - v_local.z.abs();
+                if d_radial < d_axial {
+                    // Closer to barrel
+                    let normal_local = if radial_dist > 1e-10 {
+                        Vector3::new(v_local.x / radial_dist, v_local.y / radial_dist, 0.0)
+                    } else {
+                        Vector3::new(1.0, 0.0, 0.0)
+                    };
+                    let normal_world = geom_mat * normal_local;
+                    (-d_radial, normal_world)
+                } else {
+                    // Closer to endcap
+                    let normal_local = Vector3::new(0.0, 0.0, v_local.z.signum());
+                    let normal_world = geom_mat * normal_local;
+                    (-d_axial, normal_world)
+                }
+            } else if on_barrel {
+                // Outside radially
+                let normal_local = if radial_dist > 1e-10 {
+                    Vector3::new(v_local.x / radial_dist, v_local.y / radial_dist, 0.0)
+                } else {
+                    Vector3::new(1.0, 0.0, 0.0)
+                };
+                let normal_world = geom_mat * normal_local;
+                (radial_dist - radius, normal_world)
+            } else if in_radial {
+                // Outside axially (endcap)
+                let normal_local = Vector3::new(0.0, 0.0, v_local.z.signum());
+                let normal_world = geom_mat * normal_local;
+                (v_local.z.abs() - half_len, normal_world)
+            } else {
+                // Outside both (edge region)
+                let closest_local = Vector3::new(
+                    v_local.x * radius / radial_dist,
+                    v_local.y * radius / radial_dist,
+                    z_clamped,
+                );
+                let diff_local = Vector3::new(v_local.x, v_local.y, v_local.z) - closest_local;
+                let dist = diff_local.norm();
+                if dist < 1e-10 {
+                    return None;
+                }
+                let normal_local = diff_local / dist;
+                let normal_world = geom_mat * normal_local;
+                (dist, normal_world)
+            }
+        }
+
+        GeomType::Ellipsoid => {
+            let radii = model.geom_size[geom_idx];
+            // Transform to local frame and scale to unit sphere
+            let v_local = geom_mat.transpose() * (v - geom_pos);
+            let v_scaled = Vector3::new(
+                v_local.x / radii.x,
+                v_local.y / radii.y,
+                v_local.z / radii.z,
+            );
+            let dist_scaled = v_scaled.norm();
+            if dist_scaled < 1e-10 {
+                return None;
+            }
+            // Approximate: distance in scaled space, normal from scaled gradient
+            let d_surface_approx = (dist_scaled - 1.0) * radii.x.min(radii.y).min(radii.z);
+            let grad_local = Vector3::new(
+                v_local.x / (radii.x * radii.x),
+                v_local.y / (radii.y * radii.y),
+                v_local.z / (radii.z * radii.z),
+            );
+            let grad_len = grad_local.norm();
+            if grad_len < 1e-10 {
+                return None;
+            }
+            let normal_local = grad_local / grad_len;
+            let normal_world = geom_mat * normal_local;
+            (d_surface_approx, normal_world)
+        }
+
+        // Out of scope
+        GeomType::Mesh | GeomType::Hfield | GeomType::Sdf => {
+            return None;
+        }
+    };
+
+    // Contact generated when margin-sphere overlaps the geom
+    let depth = vertex_margin - d_surface;
+    if depth <= 0.0 {
+        return None;
+    }
+
+    // Friction combination (geometric mean, same as make_contact_from_geoms)
+    let deform_friction = material.friction;
+    let rigid_friction = model.geom_friction[geom_idx];
+    let sliding = (deform_friction * rigid_friction.x).sqrt();
+    let torsional = (deform_friction * rigid_friction.y).sqrt();
+    let rolling = (deform_friction * rigid_friction.z).sqrt();
+
+    // Tangent frame
+    let (t1, t2) = compute_tangent_frame(&normal);
+
+    let dim = model.deformable_condim.unsigned_abs() as usize;
+
+    Some(DeformableContact {
+        deformable_idx: deform_idx,
+        vertex_idx: vert_idx,
+        geom_idx,
+        pos: Point3::from(v - normal * d_surface).coords,
+        normal,
+        depth,
+        friction: sliding,
+        dim,
+        mu: [sliding, sliding, torsional, rolling, rolling],
+        solref: model.deformable_solref,
+        solimp: model.deformable_solimp,
+        frame: [t1, t2],
+    })
+}
+
+/// Step all deformable bodies through XPBD.
+///
+/// Contact impulses must already be applied to vertex velocities
+/// (in `solve_deformable_contacts`) before calling this function.
+#[cfg(feature = "deformable")]
+fn mj_deformable_step(model: &Model, data: &mut Data) {
+    if data.deformable_bodies.is_empty() {
+        return;
+    }
+
+    let gravity = model.gravity;
+    let dt = model.timestep;
+
+    for (solver, body) in data
+        .deformable_solvers
+        .iter_mut()
+        .zip(data.deformable_bodies.iter_mut())
+    {
+        solver.step(body.as_mut(), gravity, dt);
+    }
 }
 
 /// Compute the velocity of a point on a body.
@@ -12790,6 +13588,10 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     // Restore warmstart from initial solve
     data.efc_lambda = efc_lambda_saved;
     data.time = t0 + h;
+
+    // Step deformable bodies (XPBD internal constraints)
+    #[cfg(feature = "deformable")]
+    mj_deformable_step(model, data);
 
     Ok(())
 }

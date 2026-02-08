@@ -83,3 +83,11 @@ pub mod musculoskeletal;
 pub mod passive_forces;
 pub mod sensors;
 pub mod validation;
+
+// ============================================================================
+// Deformable Body Pipeline Tests (§11, feature-gated)
+// ============================================================================
+
+/// Deformable-rigid contact pipeline tests.
+#[cfg(feature = "deformable")]
+pub mod deformable_contact;

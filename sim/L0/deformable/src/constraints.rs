@@ -23,7 +23,7 @@
 //! - `w` are inverse masses
 //! - `∇C` is the constraint gradient
 
-use nalgebra::Point3;
+use nalgebra::{Point3, Vector3};
 use smallvec::SmallVec;
 
 #[cfg(feature = "serde")]
@@ -57,6 +57,8 @@ pub enum Constraint {
     Volume(VolumeConstraint),
     /// Flex edge constraint.
     FlexEdge(FlexEdgeConstraint),
+    /// Collision constraint.
+    Collision(CollisionConstraint),
 }
 
 impl Constraint {
@@ -68,6 +70,7 @@ impl Constraint {
             Self::Bending(_) => ConstraintType::Bending,
             Self::Volume(_) => ConstraintType::Volume,
             Self::FlexEdge(_) => ConstraintType::FlexEdge,
+            Self::Collision(_) => ConstraintType::Collision,
         }
     }
 
@@ -84,6 +87,11 @@ impl Constraint {
             Self::Bending(c) => c.vertices.clone(),
             Self::Volume(c) => SmallVec::from_slice(&c.vertices),
             Self::FlexEdge(c) => SmallVec::from_slice(&c.vertices),
+            Self::Collision(c) => {
+                let mut v = SmallVec::new();
+                v.push(c.vertex);
+                v
+            }
         }
     }
 
@@ -95,6 +103,7 @@ impl Constraint {
             Self::Bending(c) => c.compliance,
             Self::Volume(c) => c.compliance,
             Self::FlexEdge(c) => c.stretch_compliance,
+            Self::Collision(c) => c.compliance,
         }
     }
 
@@ -115,6 +124,7 @@ impl Constraint {
             Self::Bending(c) => c.solve(positions, inv_masses, dt),
             Self::Volume(c) => c.solve(positions, inv_masses, dt),
             Self::FlexEdge(c) => c.solve(positions, inv_masses, dt),
+            Self::Collision(c) => c.solve(positions, inv_masses, dt),
         }
     }
 }
@@ -648,6 +658,74 @@ impl VolumeConstraint {
         positions[v2] += grad2 * (w2 * delta_lambda);
         positions[v3] += grad3 * (w3 * delta_lambda);
 
+        self.lambda += delta_lambda;
+
+        c.abs()
+    }
+}
+
+// ============================================================================
+// Collision Constraint
+// ============================================================================
+
+/// Collision constraint for deformable-rigid contacts.
+///
+/// Maintains separation between a deformable vertex and a rigid surface.
+/// Used by the XPBD solver to enforce contact constraints during the
+/// internal substep loop.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct CollisionConstraint {
+    /// Vertex index.
+    pub vertex: usize,
+    /// Contact normal (from rigid surface toward vertex — push direction).
+    pub normal: Vector3<f64>,
+    /// Penetration depth (positive = penetrating).
+    pub depth: f64,
+    /// Compliance (0 = rigid contact).
+    pub compliance: f64,
+    /// Accumulated Lagrange multiplier.
+    lambda: f64,
+}
+
+impl CollisionConstraint {
+    /// Create a new collision constraint.
+    #[must_use]
+    pub const fn new(vertex: usize, normal: Vector3<f64>, depth: f64) -> Self {
+        Self {
+            vertex,
+            normal,
+            depth,
+            compliance: 0.0,
+            lambda: 0.0,
+        }
+    }
+
+    /// Reset the Lagrange multiplier.
+    pub const fn reset(&mut self) {
+        self.lambda = 0.0;
+    }
+
+    /// Solve this constraint using XPBD.
+    ///
+    /// Returns the constraint error magnitude.
+    pub fn solve(&mut self, positions: &mut [Point3<f64>], inv_masses: &[f64], dt: f64) -> f64 {
+        let w = inv_masses[self.vertex];
+        if w <= 0.0 {
+            return 0.0;
+        }
+
+        // Constraint: C = -depth (negative when penetrating)
+        let c = -self.depth;
+        if c >= 0.0 {
+            return 0.0; // Not penetrating
+        }
+
+        let alpha_tilde = self.compliance / (dt * dt);
+        let delta_lambda = alpha_tilde.mul_add(-self.lambda, -c) / (w + alpha_tilde);
+        let delta_lambda = delta_lambda.max(-self.lambda); // Clamp: no adhesion
+
+        positions[self.vertex] += self.normal * (w * delta_lambda);
         self.lambda += delta_lambda;
 
         c.abs()

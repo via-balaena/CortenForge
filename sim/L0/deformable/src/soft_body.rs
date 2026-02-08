@@ -593,6 +593,10 @@ impl DeformableBody for SoftBody {
 
         (min, max)
     }
+
+    fn clone_box(&self) -> Box<dyn DeformableBody + Send + Sync> {
+        Box::new(self.clone())
+    }
 }
 
 #[cfg(test)]
