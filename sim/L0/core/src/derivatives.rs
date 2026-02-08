@@ -23,8 +23,8 @@
 //!
 //! All state vectors use tangent-space representation (dimension `nv`, not `nq`).
 //! Position perturbations map to/from coordinates via
-//! [`mj_integrate_pos_explicit`](crate::mj_integrate_pos_explicit) and
-//! [`mj_differentiate_pos`](crate::mj_differentiate_pos). This avoids quaternion
+//! [`mj_integrate_pos_explicit`] and
+//! [`mj_differentiate_pos`]. This avoids quaternion
 //! singularities for Ball and Free joints.
 //!
 //! # MuJoCo correspondence
