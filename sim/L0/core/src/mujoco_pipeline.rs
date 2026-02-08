@@ -12859,7 +12859,7 @@ fn cholesky_in_place(m: &mut DMatrix<f64>) -> Result<(), StepError> {
 /// On entry `x` contains b; on exit `x` contains the solution.
 ///
 /// Zero allocations — operates entirely on borrowed data.
-fn cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>) {
+pub(crate) fn cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>) {
     let n = l.nrows();
 
     // Forward substitution: L·y = b

@@ -65,12 +65,14 @@ use crate::mujoco_pipeline::{
     SpatialVector,
     StepError,
     // pub(crate) functions from mujoco_pipeline
+    cholesky_solve_in_place,
     joint_motion_subspace,
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
+    mj_solve_sparse,
     spatial_cross_motion,
 };
-use nalgebra::{DMatrix, DVector, Matrix6, Vector3};
+use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 
 // ============================================================================
 // Step 0 — TransitionMatrices
@@ -972,4 +974,712 @@ pub fn mjd_smooth_vel(model: &Model, data: &mut Data) {
     mjd_passive_vel(model, data);
     mjd_actuator_vel(model, data);
     mjd_rne_vel(model, data);
+}
+
+// ============================================================================
+// Step 8 — Phase C: Analytical integration derivatives
+// ============================================================================
+
+/// Quaternion integration derivatives on SO(3).
+///
+/// Given `q_new = q_old · exp(ω·h/2)`, computes two 3×3 tangent-space Jacobians:
+///
+/// - `dqnew_dqold = exp(−[ω·h]×)` — adjoint representation (rotation by −ω·h)
+/// - `dqnew_domega = h · J_r(ω·h)` — h times the right Jacobian of SO(3)
+///
+/// When `θ = ‖ω‖·h < 1e-8`, both Jacobians use small-angle limits (I and h·I).
+#[must_use]
+#[allow(non_snake_case)]
+pub fn mjd_quat_integrate(
+    _quat: &UnitQuaternion<f64>,
+    omega: &Vector3<f64>,
+    h: f64,
+) -> (Matrix3<f64>, Matrix3<f64>) {
+    let theta_vec = omega * h; // ω·h
+    let theta = theta_vec.norm(); // ‖ω‖·h
+
+    if theta < 1e-8 {
+        // Small-angle limits
+        return (Matrix3::identity(), Matrix3::identity() * h);
+    }
+
+    let theta2 = theta * theta;
+    let theta3 = theta2 * theta;
+
+    // Skew-symmetric matrix [θ̂]×  where θ̂ = ω·h
+    let skew_theta = Matrix3::new(
+        0.0,
+        -theta_vec.z,
+        theta_vec.y,
+        theta_vec.z,
+        0.0,
+        -theta_vec.x,
+        -theta_vec.y,
+        theta_vec.x,
+        0.0,
+    );
+    let skew_theta_sq = skew_theta * skew_theta;
+
+    let sin_theta = theta.sin();
+    let cos_theta = theta.cos();
+
+    // dqnew_dqold = exp(−[ω·h]×) = I − sin(θ)/θ · [θ̂]× + (1−cos(θ))/θ² · [θ̂]×²
+    let dqnew_dqold = Matrix3::identity() - skew_theta * (sin_theta / theta)
+        + skew_theta_sq * ((1.0 - cos_theta) / theta2);
+
+    // dqnew_domega = h · J_r(ω·h)
+    //             = h · (I − (1−cos(θ))/θ² · [θ̂]× + (θ−sin(θ))/θ³ · [θ̂]×²)
+    let jr = Matrix3::identity() - skew_theta * ((1.0 - cos_theta) / theta2)
+        + skew_theta_sq * ((theta - sin_theta) / theta3);
+    let dqnew_domega = jr * h;
+
+    (dqnew_dqold, dqnew_domega)
+}
+
+/// Integration Jacobian blocks for one Euler or ImplicitSpringDamper step.
+///
+/// Contains `∂qpos/∂qpos`, `∂qpos/∂qvel`, `∂act/∂act`, and `∂act/∂act_dot`
+/// from the integration stage only (not the force-velocity coupling).
+#[allow(non_snake_case)]
+struct IntegrationDerivatives {
+    /// ∂qpos_{t+1}/∂qpos_t in tangent space. nv × nv, block-diagonal per joint.
+    /// Currently unused — position columns use FD which captures this implicitly.
+    /// Retained for potential future fully-analytical position columns.
+    #[allow(dead_code)]
+    dqpos_dqpos: DMatrix<f64>,
+    /// ∂qpos_{t+1}/∂qvel_{t+1} in tangent space. nv × nv, block-diagonal.
+    dqpos_dqvel: DMatrix<f64>,
+    /// ∂act_{t+1}/∂act_t. na × na, diagonal.
+    dact_dact: DMatrix<f64>,
+    /// ∂act_{t+1}/∂act_dot. na × na, diagonal.
+    /// Currently unused by the hybrid path — act_dot does not depend on qvel
+    /// for any existing dyntype. Retained for future dynamics types.
+    #[allow(dead_code)]
+    dact_dactdot: DMatrix<f64>,
+}
+
+/// Compute integration Jacobians (pure function, no mutation).
+#[allow(non_snake_case)]
+fn compute_integration_derivatives(model: &Model, data: &Data) -> IntegrationDerivatives {
+    let nv = model.nv;
+    let na = model.na;
+    let h = model.timestep;
+
+    let mut dqpos_dqpos = DMatrix::zeros(nv, nv);
+    let mut dqpos_dqvel = DMatrix::zeros(nv, nv);
+    let mut dact_dact = DMatrix::zeros(na, na);
+    let mut dact_dactdot = DMatrix::zeros(na, na);
+
+    // Joint dispatch
+    for jnt_id in 0..model.njnt {
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge | MjJointType::Slide => {
+                dqpos_dqpos[(dof_adr, dof_adr)] = 1.0;
+                dqpos_dqvel[(dof_adr, dof_adr)] = h;
+            }
+            MjJointType::Ball => {
+                let omega = Vector3::new(
+                    data.qvel[dof_adr],
+                    data.qvel[dof_adr + 1],
+                    data.qvel[dof_adr + 2],
+                );
+                let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    data.qpos[qpos_adr],
+                    data.qpos[qpos_adr + 1],
+                    data.qpos[qpos_adr + 2],
+                    data.qpos[qpos_adr + 3],
+                ));
+                let (dpos_dpos, dpos_dvel) = mjd_quat_integrate(&quat, &omega, h);
+                dqpos_dqpos
+                    .view_mut((dof_adr, dof_adr), (3, 3))
+                    .copy_from(&dpos_dpos);
+                dqpos_dqvel
+                    .view_mut((dof_adr, dof_adr), (3, 3))
+                    .copy_from(&dpos_dvel);
+            }
+            MjJointType::Free => {
+                // Linear part (dof_adr..dof_adr+3)
+                for i in 0..3 {
+                    dqpos_dqpos[(dof_adr + i, dof_adr + i)] = 1.0;
+                    dqpos_dqvel[(dof_adr + i, dof_adr + i)] = h;
+                }
+                // Angular part (dof_adr+3..dof_adr+6)
+                let omega = Vector3::new(
+                    data.qvel[dof_adr + 3],
+                    data.qvel[dof_adr + 4],
+                    data.qvel[dof_adr + 5],
+                );
+                let quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                    data.qpos[qpos_adr + 3],
+                    data.qpos[qpos_adr + 4],
+                    data.qpos[qpos_adr + 5],
+                    data.qpos[qpos_adr + 6],
+                ));
+                let (dpos_dpos, dpos_dvel) = mjd_quat_integrate(&quat, &omega, h);
+                dqpos_dqpos
+                    .view_mut((dof_adr + 3, dof_adr + 3), (3, 3))
+                    .copy_from(&dpos_dpos);
+                dqpos_dqvel
+                    .view_mut((dof_adr + 3, dof_adr + 3), (3, 3))
+                    .copy_from(&dpos_dvel);
+            }
+        }
+    }
+
+    // Activation dispatch
+    for i in 0..model.nu {
+        let act_adr = model.actuator_act_adr[i];
+        let act_num = model.actuator_act_num[i];
+        for k in 0..act_num {
+            let j = act_adr + k;
+            match model.actuator_dyntype[i] {
+                ActuatorDynamics::Filter => {
+                    let tau = model.actuator_dynprm[i][0].max(1e-10);
+                    dact_dact[(j, j)] = 1.0 - h / tau;
+                    dact_dactdot[(j, j)] = h;
+                }
+                ActuatorDynamics::FilterExact => {
+                    let tau = model.actuator_dynprm[i][0].max(1e-10);
+                    dact_dact[(j, j)] = (-h / tau).exp();
+                    dact_dactdot[(j, j)] = tau * (1.0 - (-h / tau).exp());
+                }
+                ActuatorDynamics::Integrator => {
+                    dact_dact[(j, j)] = 1.0;
+                    dact_dactdot[(j, j)] = h;
+                }
+                ActuatorDynamics::Muscle => {
+                    // Approximate: ignores ∂act_dot/∂act from act-dependent
+                    // time constants. Not consumed by hybrid (Muscle uses FD).
+                    let at_boundary = data.act[j] <= 0.0 || data.act[j] >= 1.0;
+                    dact_dact[(j, j)] = if at_boundary { 0.0 } else { 1.0 };
+                    dact_dactdot[(j, j)] = if at_boundary { 0.0 } else { h };
+                }
+                ActuatorDynamics::None => {
+                    // No activation state
+                }
+            }
+        }
+    }
+
+    IntegrationDerivatives {
+        dqpos_dqpos,
+        dqpos_dqvel,
+        dact_dact,
+        dact_dactdot,
+    }
+}
+
+// ============================================================================
+// Step 9 — Phase D: mjd_transition_hybrid (hybrid analytical+FD)
+// ============================================================================
+
+/// Compute hybrid analytical+FD transition derivatives.
+///
+/// Uses analytical `qDeriv` for velocity columns of A, FD for position columns.
+/// Falls back to pure FD for RK4 or when `config.use_analytical == false`.
+///
+/// See module-level docs for the four-phase strategy.
+///
+/// # Panics
+///
+/// Panics if `config.eps` is not finite, not positive, or exceeds 1e-2.
+///
+/// # Errors
+///
+/// Returns `StepError` if any simulation step during FD perturbation fails.
+#[allow(non_snake_case, clippy::similar_names)]
+pub fn mjd_transition_hybrid(
+    model: &Model,
+    data: &Data,
+    config: &DerivativeConfig,
+) -> Result<TransitionMatrices, StepError> {
+    assert!(
+        config.eps.is_finite() && config.eps > 0.0 && config.eps <= 1e-2,
+        "DerivativeConfig::eps must be in (0, 1e-2], got {}",
+        config.eps
+    );
+
+    let eps = config.eps;
+    let h = model.timestep;
+    let nv = model.nv;
+    let na = model.na;
+    let nu = model.nu;
+    let nx = 2 * nv + na;
+
+    // 1. Populate qDeriv analytically on a cloned working copy.
+    //    The clone preserves qLD_diag/qLD_L, scratch_m_impl, qM — all
+    //    unmodified by mjd_smooth_vel.
+    let mut data_work = data.clone();
+    mjd_smooth_vel(model, &mut data_work);
+
+    // 2. Compute integration derivatives (pure function).
+    let integ = compute_integration_derivatives(model, data);
+
+    // 3. Allocate output.
+    let mut a_mat = DMatrix::zeros(nx, nx);
+    let mut b_mat = DMatrix::zeros(nx, nu);
+
+    // === 3a/3b. Velocity columns of A (analytical) ===
+    let dvdv = match model.integrator {
+        Integrator::Euler => {
+            // ∂v⁺/∂v = I + h · M⁻¹ · qDeriv
+            let mut dvdv = DMatrix::identity(nv, nv);
+            for j in 0..nv {
+                let mut col = data_work.qDeriv.column(j).clone_owned();
+                mj_solve_sparse(&data_work.qLD_diag, &data_work.qLD_L, &mut col);
+                for i in 0..nv {
+                    dvdv[(i, j)] += h * col[i];
+                }
+            }
+            dvdv
+        }
+        Integrator::ImplicitSpringDamper => {
+            // ∂v⁺/∂v = (M+hD+h²K)⁻¹ · (M + h·(qDeriv + D))
+            let d = &model.implicit_damping;
+            let mut dvdv = DMatrix::zeros(nv, nv);
+            for j in 0..nv {
+                let mut rhs = DVector::zeros(nv);
+                for i in 0..nv {
+                    rhs[i] = data_work.qM[(i, j)]
+                        + h * data_work.qDeriv[(i, j)]
+                        + if i == j { h * d[i] } else { 0.0 };
+                }
+                cholesky_solve_in_place(&data_work.scratch_m_impl, &mut rhs);
+                dvdv.column_mut(j).copy_from(&rhs);
+            }
+            dvdv
+        }
+        Integrator::RungeKutta4 => {
+            // Should not reach here — caller should use mjd_transition_fd
+            return mjd_transition_fd(model, data, config);
+        }
+    };
+
+    // Chain rule: ∂q⁺/∂v = dqpos_dqvel · dvdv
+    let dqdv = &integ.dqpos_dqvel * &dvdv;
+
+    // Fill velocity columns of A
+    a_mat.view_mut((0, nv), (nv, nv)).copy_from(&dqdv);
+    a_mat.view_mut((nv, nv), (nv, nv)).copy_from(&dvdv);
+    // activation-velocity block is zero (no coupling)
+
+    // === 4. Activation columns of A ===
+    // Track which activation indices use FD fallback
+    let mut act_fd_indices: Vec<usize> = Vec::new();
+
+    for actuator_idx in 0..model.nu {
+        let act_adr = model.actuator_act_adr[actuator_idx];
+        let act_num = model.actuator_act_num[actuator_idx];
+        if act_num == 0 {
+            continue;
+        }
+
+        let is_muscle = matches!(
+            model.actuator_dyntype[actuator_idx],
+            ActuatorDynamics::Muscle
+        );
+
+        for k in 0..act_num {
+            let j = act_adr + k;
+            let state_col = 2 * nv + j;
+
+            if is_muscle {
+                // FD fallback for this column
+                act_fd_indices.push(state_col);
+                continue;
+            }
+
+            // Analytical: ∂force/∂act = gain
+            let gain = match model.actuator_gaintype[actuator_idx] {
+                GainType::Fixed => model.actuator_gainprm[actuator_idx][0],
+                GainType::Affine => {
+                    model.actuator_gainprm[actuator_idx][0]
+                        + model.actuator_gainprm[actuator_idx][1]
+                            * data.actuator_length[actuator_idx]
+                        + model.actuator_gainprm[actuator_idx][2]
+                            * data.actuator_velocity[actuator_idx]
+                }
+                GainType::Muscle => {
+                    // Should not reach — guarded by is_muscle check above
+                    act_fd_indices.push(state_col);
+                    continue;
+                }
+            };
+
+            // ∂qfrc/∂act = moment · gain
+            let moment = &data.actuator_moment[actuator_idx];
+            let mut dvdact = DVector::zeros(nv);
+            for dof in 0..nv {
+                dvdact[dof] = h * gain * moment[dof];
+            }
+
+            // Solve: M⁻¹ or (M+hD+h²K)⁻¹
+            match model.integrator {
+                Integrator::Euler => {
+                    mj_solve_sparse(&data_work.qLD_diag, &data_work.qLD_L, &mut dvdact);
+                }
+                Integrator::ImplicitSpringDamper => {
+                    cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdact);
+                }
+                Integrator::RungeKutta4 => unreachable!(),
+            }
+
+            // Fill activation column
+            let dqdact = &integ.dqpos_dqvel * &dvdact;
+            for r in 0..nv {
+                a_mat[(r, state_col)] = dqdact[r];
+            }
+            for r in 0..nv {
+                a_mat[(nv + r, state_col)] = dvdact[r];
+            }
+            a_mat[(state_col, state_col)] = integ.dact_dact[(j, j)];
+        }
+    }
+
+    // === 5. Position columns of A (FD) ===
+    // Save nominal state for FD perturbation loop
+    let qpos_0 = data.qpos.clone();
+    let qvel_0 = data.qvel.clone();
+    let act_0 = data.act.clone();
+    let ctrl_0 = data.ctrl.clone();
+    let time_0 = data.time;
+    let efc_lambda_0 = data.efc_lambda.clone();
+    let mut scratch = data.clone();
+
+    // Compute nominal output for forward differences
+    let y_0 = if config.centered {
+        None
+    } else {
+        scratch.step(model)?;
+        let y = extract_state(model, &scratch, &qpos_0);
+        scratch.qpos.copy_from(&qpos_0);
+        scratch.qvel.copy_from(&qvel_0);
+        scratch.act.copy_from(&act_0);
+        scratch.ctrl.copy_from(&ctrl_0);
+        scratch.time = time_0;
+        scratch.efc_lambda.clone_from(&efc_lambda_0);
+        Some(y)
+    };
+
+    // Position FD columns (0..nv)
+    for i in 0..nv {
+        apply_state_perturbation(
+            model,
+            &mut scratch,
+            &qpos_0,
+            &qvel_0,
+            &act_0,
+            &ctrl_0,
+            time_0,
+            &efc_lambda_0,
+            i,
+            eps,
+            nv,
+            na,
+        );
+        scratch.step(model)?;
+        let y_plus = extract_state(model, &scratch, &qpos_0);
+
+        if config.centered {
+            apply_state_perturbation(
+                model,
+                &mut scratch,
+                &qpos_0,
+                &qvel_0,
+                &act_0,
+                &ctrl_0,
+                time_0,
+                &efc_lambda_0,
+                i,
+                -eps,
+                nv,
+                na,
+            );
+            scratch.step(model)?;
+            let y_minus = extract_state(model, &scratch, &qpos_0);
+            let col = (&y_plus - &y_minus) / (2.0 * eps);
+            a_mat.column_mut(i).copy_from(&col);
+        } else if let Some(ref y_ref) = y_0 {
+            let col = (&y_plus - y_ref) / eps;
+            a_mat.column_mut(i).copy_from(&col);
+        }
+    }
+
+    // Muscle activation FD fallback columns
+    for &state_col in &act_fd_indices {
+        apply_state_perturbation(
+            model,
+            &mut scratch,
+            &qpos_0,
+            &qvel_0,
+            &act_0,
+            &ctrl_0,
+            time_0,
+            &efc_lambda_0,
+            state_col,
+            eps,
+            nv,
+            na,
+        );
+        scratch.step(model)?;
+        let y_plus = extract_state(model, &scratch, &qpos_0);
+
+        if config.centered {
+            apply_state_perturbation(
+                model,
+                &mut scratch,
+                &qpos_0,
+                &qvel_0,
+                &act_0,
+                &ctrl_0,
+                time_0,
+                &efc_lambda_0,
+                state_col,
+                -eps,
+                nv,
+                na,
+            );
+            scratch.step(model)?;
+            let y_minus = extract_state(model, &scratch, &qpos_0);
+            let col = (&y_plus - &y_minus) / (2.0 * eps);
+            a_mat.column_mut(state_col).copy_from(&col);
+        } else if let Some(ref y_ref) = y_0 {
+            let col = (&y_plus - y_ref) / eps;
+            a_mat.column_mut(state_col).copy_from(&col);
+        }
+    }
+
+    // === 6. B matrix ===
+    // Track which ctrl columns need FD
+    let mut ctrl_fd_indices: Vec<usize> = Vec::new();
+
+    for actuator_idx in 0..nu {
+        let is_direct = matches!(model.actuator_dyntype[actuator_idx], ActuatorDynamics::None);
+
+        if is_direct {
+            // Analytical: ∂v⁺/∂ctrl = h · M⁻¹ · moment · gain
+            let gain = match model.actuator_gaintype[actuator_idx] {
+                GainType::Fixed => model.actuator_gainprm[actuator_idx][0],
+                GainType::Affine => {
+                    model.actuator_gainprm[actuator_idx][0]
+                        + model.actuator_gainprm[actuator_idx][1]
+                            * data.actuator_length[actuator_idx]
+                        + model.actuator_gainprm[actuator_idx][2]
+                            * data.actuator_velocity[actuator_idx]
+                }
+                GainType::Muscle => {
+                    ctrl_fd_indices.push(actuator_idx);
+                    continue;
+                }
+            };
+
+            let moment = &data.actuator_moment[actuator_idx];
+            let mut dvdctrl = DVector::zeros(nv);
+            for dof in 0..nv {
+                dvdctrl[dof] = h * gain * moment[dof];
+            }
+
+            match model.integrator {
+                Integrator::Euler => {
+                    mj_solve_sparse(&data_work.qLD_diag, &data_work.qLD_L, &mut dvdctrl);
+                }
+                Integrator::ImplicitSpringDamper => {
+                    cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdctrl);
+                }
+                Integrator::RungeKutta4 => unreachable!(),
+            }
+
+            let dqdctrl = &integ.dqpos_dqvel * &dvdctrl;
+            for r in 0..nv {
+                b_mat[(r, actuator_idx)] = dqdctrl[r];
+            }
+            for r in 0..nv {
+                b_mat[(nv + r, actuator_idx)] = dvdctrl[r];
+            }
+            // activation rows zero for DynType::None
+        } else {
+            ctrl_fd_indices.push(actuator_idx);
+        }
+    }
+
+    // FD for non-analytical B columns
+    for &j in &ctrl_fd_indices {
+        scratch.qpos.copy_from(&qpos_0);
+        scratch.qvel.copy_from(&qvel_0);
+        scratch.act.copy_from(&act_0);
+        scratch.ctrl.copy_from(&ctrl_0);
+        scratch.ctrl[j] += eps;
+        scratch.time = time_0;
+        scratch.efc_lambda.clone_from(&efc_lambda_0);
+        scratch.step(model)?;
+        let y_plus = extract_state(model, &scratch, &qpos_0);
+
+        if config.centered {
+            scratch.qpos.copy_from(&qpos_0);
+            scratch.qvel.copy_from(&qvel_0);
+            scratch.act.copy_from(&act_0);
+            scratch.ctrl.copy_from(&ctrl_0);
+            scratch.ctrl[j] -= eps;
+            scratch.time = time_0;
+            scratch.efc_lambda.clone_from(&efc_lambda_0);
+            scratch.step(model)?;
+            let y_minus = extract_state(model, &scratch, &qpos_0);
+            let col = (&y_plus - &y_minus) / (2.0 * eps);
+            b_mat.column_mut(j).copy_from(&col);
+        } else if let Some(ref y_ref) = y_0 {
+            let col = (&y_plus - y_ref) / eps;
+            b_mat.column_mut(j).copy_from(&col);
+        }
+    }
+
+    Ok(TransitionMatrices {
+        A: a_mat,
+        B: b_mat,
+        C: None,
+        D: None,
+    })
+}
+
+// ============================================================================
+// Step 10 — Public API dispatch
+// ============================================================================
+
+/// Compute transition derivatives using the best available method.
+///
+/// When `config.use_analytical == true` and the integrator is Euler or
+/// ImplicitSpringDamper, uses hybrid analytical+FD (Phase D). Otherwise
+/// falls back to pure FD (Phase A).
+///
+/// # Errors
+///
+/// Returns `StepError` if any simulation step during derivative computation fails.
+pub fn mjd_transition(
+    model: &Model,
+    data: &Data,
+    config: &DerivativeConfig,
+) -> Result<TransitionMatrices, StepError> {
+    let can_analytical =
+        config.use_analytical && !matches!(model.integrator, Integrator::RungeKutta4);
+    if can_analytical {
+        mjd_transition_hybrid(model, data, config)
+    } else {
+        mjd_transition_fd(model, data, config)
+    }
+}
+
+/// Convenience method: compute transition derivatives at the current state.
+impl Data {
+    /// Compute transition derivatives at the current state.
+    ///
+    /// Equivalent to `mjd_transition(model, self, config)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StepError` if any simulation step during derivative computation fails.
+    pub fn transition_derivatives(
+        &self,
+        model: &Model,
+        config: &DerivativeConfig,
+    ) -> Result<TransitionMatrices, StepError> {
+        mjd_transition(model, self, config)
+    }
+}
+
+// ============================================================================
+// Step 11 — Validation utilities
+// ============================================================================
+
+/// Compare matrices element-wise, returning max relative error and location.
+///
+/// Uses `floor` to prevent division-by-zero for near-zero entries:
+/// `rel_error(i,j) = |a(i,j) − b(i,j)| / max(|a(i,j)|, |b(i,j)|, floor)`
+///
+/// # Panics
+///
+/// Panics if `a` and `b` have different dimensions.
+#[must_use]
+#[allow(non_snake_case)]
+pub fn max_relative_error(a: &DMatrix<f64>, b: &DMatrix<f64>, floor: f64) -> (f64, (usize, usize)) {
+    assert_eq!(a.nrows(), b.nrows());
+    assert_eq!(a.ncols(), b.ncols());
+    let mut max_err = 0.0_f64;
+    let mut max_loc = (0, 0);
+    for r in 0..a.nrows() {
+        for c in 0..a.ncols() {
+            let va = a[(r, c)];
+            let vb = b[(r, c)];
+            let denom = va.abs().max(vb.abs()).max(floor);
+            let err = (va - vb).abs() / denom;
+            if err > max_err {
+                max_err = err;
+                max_loc = (r, c);
+            }
+        }
+    }
+    (max_err, max_loc)
+}
+
+/// Compare FD and hybrid derivatives to validate analytical implementation.
+///
+/// Returns `(max_error_A, max_error_B)` — the max relative errors between
+/// pure-FD and hybrid A/B matrices. The caller checks against desired tolerance.
+///
+/// # Errors
+///
+/// Returns `StepError` if any simulation step during derivative computation fails.
+#[allow(non_snake_case)]
+pub fn validate_analytical_vs_fd(model: &Model, data: &Data) -> Result<(f64, f64), StepError> {
+    let fd = mjd_transition(
+        model,
+        data,
+        &DerivativeConfig {
+            use_analytical: false,
+            ..Default::default()
+        },
+    )?;
+    let hybrid = mjd_transition(
+        model,
+        data,
+        &DerivativeConfig {
+            use_analytical: true,
+            ..Default::default()
+        },
+    )?;
+    let (err_a, _) = max_relative_error(&fd.A, &hybrid.A, 1e-10);
+    let (err_b, _) = max_relative_error(&fd.B, &hybrid.B, 1e-10);
+    Ok((err_a, err_b))
+}
+
+/// Check FD convergence by comparing derivatives at two epsilon scales.
+///
+/// Computes `mjd_transition_fd` at `eps` and `eps/10` (both centered),
+/// then compares A matrices via `max_relative_error`. Returns `true`
+/// if the max relative error is below `tol`.
+///
+/// # Errors
+///
+/// Returns `StepError` if any simulation step during FD computation fails.
+pub fn fd_convergence_check(
+    model: &Model,
+    data: &Data,
+    eps: f64,
+    tol: f64,
+) -> Result<bool, StepError> {
+    let c1 = DerivativeConfig {
+        eps,
+        centered: true,
+        use_analytical: false,
+    };
+    let c2 = DerivativeConfig {
+        eps: eps / 10.0,
+        centered: true,
+        use_analytical: false,
+    };
+    let d1 = mjd_transition_fd(model, data, &c1)?;
+    let d2 = mjd_transition_fd(model, data, &c2)?;
+    let (err, _) = max_relative_error(&d1.A, &d2.A, 1e-10);
+    Ok(err < tol)
 }

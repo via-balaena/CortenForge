@@ -1355,7 +1355,7 @@ velocity and activation columns.
 | **Part 1** | 0–7 | Types, pure FD (`mjd_transition_fd`), analytical qDeriv (`mjd_smooth_vel`) | Yes — FD unblocks iLQR/DDP/MPC workflows. `mjd_smooth_vel` validates against FD. |
 | **Part 2** | 8–12 | Integration derivatives, hybrid (`mjd_transition_hybrid`), public API dispatch, validation utilities, module exports | Yes — hybrid provides ~2× speedup over pure FD. |
 
-Part 1 acceptance criteria: 1–27. Part 2 acceptance criteria: 28–37.
+Part 1 acceptance criteria: 1–27. Part 2 acceptance criteria: 28–41.
 
 ##### Step 0 — `TransitionMatrices` output struct
 
@@ -2156,14 +2156,52 @@ etc. For damping, set `model.jnt_damping[i]` directly and rebuild
 ```rust
 /// Quaternion integration derivatives.
 ///
-/// Given: q_new = q_old · exp(ω · h / 2)  (Euler quaternion integration)
+/// Given the integration formula (from `integrate_quaternion`, line 13119):
+///   q_new = q_old · exp(ω · h / 2)
 ///
-/// Computes:
-/// - d(q_new_tangent)/d(q_old_tangent): 3×3 matrix (identity for small ωh)
-/// - d(q_new_tangent)/d(ω): 3×3 matrix (h · I for small ωh, Rodrigues
-///   formula derivative for finite ωh)
+/// where `exp` is the quaternion exponential map, this function computes
+/// two 3×3 Jacobians in the tangent space:
 ///
-/// MuJoCo equivalent: `mjd_quatIntegrate`.
+/// **Jacobian 1 — `dqnew_dqold`: ∂(q_new_tangent)/∂(q_old_tangent)**
+///
+///   This is the rotation matrix `R(−ω·h)` (inverse rotation by the
+///   integration angle), corresponding to the adjoint representation:
+///
+///   ```text
+///   dqnew_dqold = exp(−[ω·h]×)
+///               = I − sin(θ)/θ · [θ̂]× + (1−cos(θ))/θ² · [θ̂]×²
+///   ```
+///
+///   where `θ = ||ω||·h` and `θ̂ = ω·h`. For `θ < 1e-8`: `dqnew_dqold ≈ I`.
+///
+/// **Jacobian 2 — `dqnew_domega`: ∂(q_new_tangent)/∂ω**
+///
+///   This is `h` times the right Jacobian of SO(3):
+///
+///   ```text
+///   dqnew_domega = h · J_r(ω·h)
+///                = h · (I − (1−cos(θ))/θ² · [θ̂]× + (θ−sin(θ))/θ³ · [θ̂]×²)
+///   ```
+///
+///   where `θ = ||ω||·h` and `θ̂ = ω·h`. For `θ < 1e-8`: `dqnew_domega ≈ h·I`.
+///
+///   The right Jacobian `J_r` relates differential angular velocity to
+///   the differential change in the resulting quaternion, accounting for
+///   the non-commutativity of rotations.
+///
+/// **Numerical stability:** When `θ < 1e-8`, both Jacobians use their
+/// small-angle limits (I and h·I respectively) to avoid division by zero.
+/// The Rodrigues series converges rapidly, so the 1e-8 threshold provides
+/// full double-precision accuracy.
+///
+/// **MuJoCo equivalence:** MuJoCo's `mjd_quatIntegrate` (engine_derivative.c)
+/// computes the same two Jacobians, written into two 9-element arrays.
+/// Our version returns nalgebra `Matrix3` types.
+///
+/// **Standalone testability:** `mjd_quat_integrate` should be validated
+/// against FD of the quaternion integration function itself: perturb
+/// `quat` and `omega` independently, integrate, map back to tangent space,
+/// and verify the Jacobians match FD columns to within `1e-6`.
 pub fn mjd_quat_integrate(
     quat: &UnitQuaternion<f64>,
     omega: &Vector3<f64>,
@@ -2177,7 +2215,7 @@ pub fn mjd_quat_integrate(
 /// # Semi-implicit Euler
 ///
 /// The integrator is semi-implicit (symplectic): velocity is updated FIRST,
-/// then position uses the NEW velocity (see `integrate()`, line 3435):
+/// then position uses the NEW velocity (see `integrate()`, line 3442):
 ///
 ///   qvel_{t+1} = qvel_t + h · qacc          (velocity update)
 ///   qpos_{t+1} = qpos_t ⊕ h · qvel_{t+1}   (position uses NEW velocity)
@@ -2189,11 +2227,16 @@ pub fn mjd_quat_integrate(
 ///                        = dqpos_dqvel · (I + h · M⁻¹ · qDeriv)  [Euler]
 ///
 /// For scalar joints (Hinge/Slide):
-///   ∂qpos_{t+1}/∂qpos_t = I
+///   ∂qpos_{t+1}/∂qpos_t = I  (identity; scalar position is linear)
 ///   ∂qpos_{t+1}/∂qvel_{t+1} = h · I   (= dqpos_dqvel)
 ///
 /// For quaternion joints (Ball/Free):
-///   Uses mjd_quat_integrate() for the 3×3 blocks.
+///   Uses mjd_quat_integrate() for the 3×3 blocks:
+///   - dqpos_dqpos block = dqnew_dqold (from mjd_quat_integrate)
+///   - dqpos_dqvel block = dqnew_domega (from mjd_quat_integrate)
+///   For Ball: 3×3 block at (dof_adr, dof_adr)
+///   For Free: linear part uses h·I (3×3 at dof_adr..dof_adr+3),
+///             angular part uses mjd_quat_integrate (3×3 at dof_adr+3..dof_adr+6)
 ///
 /// # ImplicitSpringDamper
 ///
@@ -2206,11 +2249,34 @@ pub fn mjd_quat_integrate(
 /// the force-velocity coupling via qDeriv — see Step 9 for the combined
 /// formula: ∂v⁺/∂v = (M + hD + h²K)⁻¹ · (M + h·(qDeriv + D)).
 ///
+/// **Important:** The implicit `∂v_new/∂q = −(M+hD+h²K)⁻¹ · h·K` term
+/// captures how spring restoring forces couple position to next-step
+/// velocity. This is NOT computed analytically here — it is captured
+/// automatically by FD in the position columns of A (which always use FD).
+/// `IntegrationDerivatives` only stores the velocity→velocity and
+/// velocity→position blocks needed by the analytical velocity columns.
+///
 /// # Activation integration
 ///
-/// Filter/Integrator: ∂act/∂act = 1, ∂act/∂act_dot = h
-/// FilterExact: ∂act/∂act = 1, ∂act/∂act_dot = τ · (1 − exp(−h/τ))
-/// Muscle (clamped): derivative is 0 at [0,1] boundaries, 1 otherwise.
+/// Per-actuator activation derivatives depend on `ActuatorDynamics` type:
+///
+/// | DynType | ∂act⁺/∂act | ∂act⁺/∂act_dot | Notes |
+/// |---------|------------|----------------|-------|
+/// | `Filter` (Euler) | `1 − h/τ` | `h` | `act_dot = (ctrl−act)/τ`, so `∂act_dot/∂act = −1/τ`, chain: `∂act⁺/∂act = 1 + h·(−1/τ) = 1−h/τ` |
+/// | `FilterExact` | `exp(−h/τ)` | `τ·(1−exp(−h/τ))` | Exact: `act⁺ = act + act_dot·τ·(1−exp(−h/τ))` |
+/// | `Integrator` | `1` | `h` | `act_dot = ctrl` (no dependence on act) |
+/// | `Muscle` | `1` if `act ∈ (0,1)`, `0` at boundaries | `h` | **Approximate only** — ignores `∂act_dot/∂act` from act-dependent time constants. Not consumed by hybrid path (Muscle always uses FD fallback in Step 9). |
+/// | `None` | N/A | N/A | No activation state (na_i = 0) |
+///
+/// **Filter ∂act⁺/∂act derivation:** The combined update is:
+///   `act⁺ = act + h · (ctrl − act)/τ = act · (1 − h/τ) + h·ctrl/τ`
+///   So `∂act⁺/∂act = 1 − h/τ`.
+///
+/// For FilterExact, the exact integration gives:
+///   `act⁺ = act + act_dot · τ · (1 − exp(−h/τ))`
+///   `     = act + ((ctrl−act)/τ) · τ · (1 − exp(−h/τ))`
+///   `     = act · exp(−h/τ) + ctrl · (1 − exp(−h/τ))`
+///   So `∂act⁺/∂act = exp(−h/τ)`.
 struct IntegrationDerivatives {
     /// ∂qpos_{t+1}/∂qpos_t in tangent space. nv × nv, block-diagonal per joint.
     dqpos_dqpos: DMatrix<f64>,
@@ -2219,6 +2285,10 @@ struct IntegrationDerivatives {
     /// ∂act_{t+1}/∂act_t. na × na, diagonal.
     dact_dact: DMatrix<f64>,
     /// ∂act_{t+1}/∂act_dot. na × na, diagonal.
+    /// **Currently unused** by the hybrid path — `act_dot` does not depend on
+    /// `qvel` for any existing dyntype, so the activation-velocity cross term
+    /// `∂act⁺/∂v = dact_dactdot · ∂act_dot/∂v = 0`. Retained for future
+    /// dynamics types where `act_dot` may depend on velocity.
     dact_dactdot: DMatrix<f64>,
 }
 
@@ -2230,6 +2300,58 @@ fn compute_integration_derivatives(
 
 **Borrow analysis:** `compute_integration_derivatives` takes `&Model`, `&Data`
 (shared). Returns owned struct. Pure computation, no mutation.
+
+**Joint dispatch in `compute_integration_derivatives`:**
+
+```
+for each joint jnt_id:
+  dof_adr = model.jnt_dof_adr[jnt_id]
+  match model.jnt_type[jnt_id]:
+    Hinge | Slide:
+      dqpos_dqpos[(dof_adr, dof_adr)] = 1.0
+      dqpos_dqvel[(dof_adr, dof_adr)] = h
+    Ball:
+      omega = qvel[dof_adr..dof_adr+3]
+      quat = extract quaternion from qpos at jnt qpos_adr
+      (dq_dq, dq_dw) = mjd_quat_integrate(&quat, &omega, h)
+      dqpos_dqpos[dof_adr..+3, dof_adr..+3] = dq_dq
+      dqpos_dqvel[dof_adr..+3, dof_adr..+3] = dq_dw
+    Free:
+      // Linear part (dof_adr..dof_adr+3):
+      dqpos_dqpos[i, i] = 1.0  for i in dof_adr..dof_adr+3
+      dqpos_dqvel[i, i] = h    for i in dof_adr..dof_adr+3
+      // Angular part (dof_adr+3..dof_adr+6):
+      omega = qvel[dof_adr+3..dof_adr+6]
+      quat = extract quaternion from qpos at jnt qpos_adr+3
+      (dq_dq, dq_dw) = mjd_quat_integrate(&quat, &omega, h)
+      dqpos_dqpos[dof_adr+3..+3, dof_adr+3..+3] = dq_dq
+      dqpos_dqvel[dof_adr+3..+3, dof_adr+3..+3] = dq_dw
+
+for each actuator i:
+  act_adr = model.actuator_act_adr[i]
+  act_num = model.actuator_act_num[i]
+  for k in 0..act_num:
+    j = act_adr + k
+    match model.actuator_dyntype[i]:
+      Filter:
+        tau = max(dynprm[0], 1e-10)
+        dact_dact[(j, j)] = 1.0 - h / tau
+        dact_dactdot[(j, j)] = h
+      FilterExact:
+        tau = max(dynprm[0], 1e-10)
+        dact_dact[(j, j)] = exp(-h / tau)
+        dact_dactdot[(j, j)] = tau * (1.0 - exp(-h / tau))
+      Integrator:
+        dact_dact[(j, j)] = 1.0
+        dact_dactdot[(j, j)] = h
+      Muscle:
+        // Clamped to [0,1]: derivative is 0 at boundaries, 1 otherwise
+        let at_boundary = data.act[j] <= 0.0 || data.act[j] >= 1.0;
+        dact_dact[(j, j)] = if at_boundary { 0.0 } else { 1.0 };
+        dact_dactdot[(j, j)] = if at_boundary { 0.0 } else { h };
+      None:
+        // No activation state — skip
+```
 
 ##### Step 9 — Phase D: `mjd_transition_hybrid()` — hybrid analytical+FD
 
@@ -2280,53 +2402,247 @@ pub fn mjd_transition_hybrid(
 ) -> Result<TransitionMatrices, StepError>
 ```
 
-**Internal algorithm sketch:**
+**Internal algorithm — concrete steps:**
 
-```rust
-// 1. Populate qDeriv via analytical smooth-force derivatives
+```
+// === Setup ===
+let h = model.timestep;
+let nv = model.nv;
+let na = model.na;
+let nu = model.nu;
+let nx = 2 * nv + na;
+
+// 1. Populate qDeriv via analytical smooth-force derivatives.
+//    Clone data to get a mutable working copy. The clone preserves:
+//    - qLD_diag/qLD_L (sparse LDL factorization of M, from mj_crba)
+//    - scratch_m_impl (Cholesky L of M+hD+h²K, from mj_fwd_acceleration_implicit)
+//    - qM (unfactored dense mass matrix)
+//    mjd_smooth_vel writes ONLY qDeriv and deriv_Dc* scratch buffers.
 let mut data_work = data.clone();
 mjd_smooth_vel(model, &mut data_work);
 
-// 2. Compute integration derivatives
+// 2. Compute integration derivatives (pure function, no mutation).
 let integ = compute_integration_derivatives(model, data);
 
-// 3. Velocity columns of A (analytical)
-// Euler: ∂v⁺/∂v = I + h · M⁻¹ · qDeriv
-//   Uses L^T D L factorization (from mj_crba → mj_factor_sparse)
-// Implicit: ∂v⁺/∂v = (M + hD + h²K)⁻¹ · (M + h·(qDeriv + D))
-//   Uses Cholesky factorization of M_impl (from mj_fwd_acceleration_implicit)
-//
-// Euler path: compute M⁻¹ · qDeriv column-by-column via nv sparse solves
-let mut dvdv = DMatrix::identity(nv, nv);
-for j in 0..nv {
-    let mut col = data_work.qDeriv.column(j).clone_owned();
-    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut col);
-    for i in 0..nv { dvdv[(i, j)] += h * col[i]; }
-}
-// ∂q⁺/∂v = dqpos_dqvel · dvdv
-let dqdv = &integ.dqpos_dqvel * &dvdv;
-// Fill velocity columns of A
-
-// 4. Activation columns of A (analytical)
-// For each act state k, find owning actuator, compute:
-//   ∂force/∂act_k = gain (input = act, so d(gain·act)/d(act) = gain)
-//   ∂qfrc/∂act_k = moment · gain
-//   ∂v⁺/∂act_k = h · M⁻¹ · ∂qfrc/∂act_k
-// Muscle gain uses FD fallback.
-
-// 5. Position columns of A (FD, same as Phase A)
-// Clone scratch, perturb position tangent ±eps, step, extract, difference.
-
-// 6. B matrix
-// Simple actuators (None/Fixed/Affine): analytical
-//   ∂force/∂ctrl = gain
-//   ∂qfrc/∂ctrl = moment · gain
-//   ∂v⁺/∂ctrl = h · M⁻¹ · moment · gain
-// Complex actuators (Filter/Muscle): FD
+// 3. Allocate output matrices.
+let mut A = DMatrix::zeros(nx, nx);
+let mut B = DMatrix::zeros(nx, nu);
 ```
 
-**ImplicitSpringDamper velocity columns:** The implicit integrator solves
-(see `mj_fwd_acceleration_implicit`, line 12967):
+**3a. Velocity columns of A (analytical) — Euler path:**
+
+```
+// Euler: ∂v⁺/∂v = I + h · M⁻¹ · qDeriv
+// Uses sparse LDL factorization from mj_crba → mj_factor_sparse.
+// data_work.qLD_diag / data_work.qLD_L are copies of the original
+// (mjd_smooth_vel does NOT touch mass matrix fields).
+
+let mut dvdv = DMatrix::identity(nv, nv);
+for j in 0..nv {
+    // Solve M · x = qDeriv[:, j] using sparse LDL
+    let mut col = data_work.qDeriv.column(j).clone_owned();
+    mj_solve_sparse(&data_work.qLD_diag, &data_work.qLD_L, &mut col);
+    // dvdv[:, j] += h · M⁻¹ · qDeriv[:, j]
+    for i in 0..nv {
+        dvdv[(i, j)] += h * col[i];
+    }
+}
+// ∂q⁺/∂v = dqpos_dqvel · dvdv  (chain rule: position uses NEW velocity)
+let dqdv = &integ.dqpos_dqvel * &dvdv;
+
+// Fill velocity columns of A:
+//   A[0..nv,    nv..2*nv] = dqdv       (position-velocity block)
+//   A[nv..2*nv, nv..2*nv] = dvdv       (velocity-velocity block)
+//   A[2*nv..,   nv..2*nv] = 0          (activation-velocity: no coupling)
+```
+
+**3b. Velocity columns of A (analytical) — ImplicitSpringDamper path:**
+
+```
+// Implicit: ∂v⁺/∂v = (M + hD + h²K)⁻¹ · (M + h · (qDeriv + D))
+//
+// Key invariant: after forward() with ImplicitSpringDamper, the field
+// data.scratch_m_impl contains the Cholesky L factor (lower triangle)
+// of (M + h·D + h²·K), computed by mj_fwd_acceleration_implicit()
+// at line 13058: `cholesky_in_place(&mut data.scratch_m_impl)`.
+// The clone data_work.scratch_m_impl preserves this factored L.
+//
+// The RHS matrix (M + h·(qDeriv + D)) is constructed column-by-column.
+// D = model.implicit_damping (diagonal per-DOF damping vector).
+// qM = data_work.qM (unfactored dense mass matrix, still valid).
+
+let d = &model.implicit_damping;  // diagonal D
+let mut dvdv = DMatrix::zeros(nv, nv);
+for j in 0..nv {
+    // Build RHS column j: rhs[i] = qM[(i,j)] + h * (qDeriv[(i,j)] + D[i]·δ(i,j))
+    let mut rhs = DVector::zeros(nv);
+    for i in 0..nv {
+        rhs[i] = data_work.qM[(i, j)]
+                + h * data_work.qDeriv[(i, j)]
+                + if i == j { h * d[i] } else { 0.0 };
+    }
+    // Solve (M+hD+h²K) · x = rhs using the pre-factored Cholesky L
+    cholesky_solve_in_place(&data_work.scratch_m_impl, &mut rhs);
+    dvdv.column_mut(j).copy_from(&rhs);
+}
+// Chain rule through position integration: same as Euler path
+let dqdv = &integ.dqpos_dqvel * &dvdv;
+// Fill velocity columns of A (same layout as Euler)
+```
+
+**Required visibility change:** `cholesky_solve_in_place` (line 12862 in
+`mujoco_pipeline.rs`) must be changed from private to `pub(crate)` so that
+`derivatives.rs` can call it for the implicit hybrid path.
+
+**4. Activation columns of A (analytical or FD):**
+
+Activation column `k` (state index `2*nv + k`) affects the next state through:
+1. The activation integration: `∂act⁺/∂act` (from `IntegrationDerivatives`)
+2. The force chain: `act → force → qfrc → qacc → v⁺ → q⁺`
+
+The force chain depends on the actuator type:
+
+| `ActuatorDynamics` | `∂force/∂act` | Analytical? | Notes |
+|-------------------|---------------|-------------|-------|
+| `Filter`/`FilterExact`/`Integrator` | `gain` (from `gainprm[0]` for Fixed gain) | Yes | `input = act`, `force = gain · act + bias`, `∂force/∂act = gain` |
+| `Muscle` | piecewise FLV gradient | **No — FD fallback** | Muscle FLV curves have non-trivial derivatives |
+| `None` | N/A | N/A | No activation state |
+
+```
+for each actuator i with act_num > 0:
+  act_adr = model.actuator_act_adr[i]
+  for k in 0..act_num:
+    j = act_adr + k  // state index: 2*nv + j
+
+    if actuator is Muscle:
+      // FD fallback: perturb act[j] ±eps, step, extract, difference
+      // (same as Phase A position perturbation)
+      continue
+
+    // Analytical path: compute ∂force/∂act = gain at current state.
+    // Inline gain computation (mirrors mj_fwd_actuation lines 8649-8698):
+    let gain = match model.actuator_gaintype[i] {
+        GainType::Fixed => model.actuator_gainprm[i][0],
+        GainType::Affine => {
+            model.actuator_gainprm[i][0]
+            + model.actuator_gainprm[i][1] * data.actuator_length[i]
+            + model.actuator_gainprm[i][2] * data.actuator_velocity[i]
+        }
+        GainType::Muscle => unreachable!("Muscle uses FD fallback"),
+    };
+    let moment = &data.actuator_moment[i];  // nv-dim transmission vector
+
+    // ∂qfrc/∂act = moment · gain
+    let dqfrc_dact: DVector<f64> = moment * gain;
+
+    // ∂v⁺/∂act = h · M⁻¹ · dqfrc_dact  [Euler]
+    //          = (M+hD+h²K)⁻¹ · h · dqfrc_dact  [Implicit]
+    let mut dvdact = h * dqfrc_dact;
+    // Solve using integrator-appropriate factorization:
+    match model.integrator {
+        Euler => mj_solve_sparse(
+            &data_work.qLD_diag, &data_work.qLD_L, &mut dvdact),
+        ImplicitSpringDamper => cholesky_solve_in_place(
+            &data_work.scratch_m_impl, &mut dvdact),
+        RungeKutta4 => unreachable!("hybrid path excludes RK4"),
+    }
+
+    // Fill activation column of A:
+    //   A[0..nv,   2*nv+j] = dqpos_dqvel · dvdact   (position)
+    //   A[nv..2*nv, 2*nv+j] = dvdact                  (velocity)
+    //   A[2*nv+j,  2*nv+j] = integ.dact_dact[(j,j)]   (activation self)
+```
+
+**5. Position columns of A (FD — same as Phase A):**
+
+Position columns always use FD because analytical `∂FK/∂q`, `∂M/∂q`, and
+`∂contacts/∂q` derivatives are massive complexity (see Scope Exclusions).
+
+```
+// For each position tangent direction i in 0..nv:
+//   Clone scratch from nominal data
+//   Perturb: mj_integrate_pos_explicit(model, &mut scratch.qpos, &qpos_0, &dq, 1.0)
+//            where dq[i] = ±eps
+//   step(model) on scratch
+//   extract_state → y_plus / y_minus
+//   A[:, i] = (y_plus - y_minus) / (2·eps)  [centered]
+```
+
+This is identical to Phase A's position perturbation loop (Step 2). Note that
+FD through `step()` already captures the full `∂x⁺/∂q` including integration
+effects (`dqpos_dqpos` from `IntegrationDerivatives`), so no separate
+multiplication by `dqpos_dqpos` is needed for position columns.
+
+**6. B matrix (analytical or FD):**
+
+B columns are analytical or FD depending on `ActuatorDynamics`:
+
+| `ActuatorDynamics` | B column method | Formula |
+|-------------------|-----------------|---------|
+| `None` (no activation) | **Analytical** | `∂v⁺/∂ctrl = h · M⁻¹ · moment · gain` |
+| `Filter`/`FilterExact` | **FD** | ctrl → act_dot → act⁺ → force (indirect path through next-step activation) |
+| `Integrator` | **FD** | ctrl → act_dot → act⁺ (same indirect path) |
+| `Muscle` | **FD** | Complex activation dynamics |
+
+For `DynType::None` (direct actuators, no activation state):
+
+```
+for each actuator i with dyntype == None:
+  // Inline gain (same as activation columns — mirrors mj_fwd_actuation):
+  let gain = match model.actuator_gaintype[i] {
+      GainType::Fixed => model.actuator_gainprm[i][0],
+      GainType::Affine => {
+          model.actuator_gainprm[i][0]
+          + model.actuator_gainprm[i][1] * data.actuator_length[i]
+          + model.actuator_gainprm[i][2] * data.actuator_velocity[i]
+      }
+      GainType::Muscle => unreachable!("Muscle has DynType::Muscle, not None"),
+  };
+  let moment = &data.actuator_moment[i];
+
+  // ∂qfrc/∂ctrl = moment · gain
+  let dqfrc_dctrl = moment * gain;
+
+  // ∂v⁺/∂ctrl = h · M⁻¹ · dqfrc_dctrl  [Euler]
+  //           = (M+hD+h²K)⁻¹ · h · dqfrc_dctrl  [Implicit]
+  let mut dvdctrl = h * dqfrc_dctrl;
+  // Dispatch to integrator-appropriate solve:
+  match model.integrator {
+      Euler => mj_solve_sparse(
+          &data_work.qLD_diag, &data_work.qLD_L, &mut dvdctrl),
+      ImplicitSpringDamper => cholesky_solve_in_place(
+          &data_work.scratch_m_impl, &mut dvdctrl),
+      RungeKutta4 => unreachable!("hybrid path excludes RK4"),
+  };
+
+  // Fill B column i:
+  //   B[0..nv, i]    = dqpos_dqvel · dvdctrl   (position)
+  //   B[nv..2*nv, i] = dvdctrl                  (velocity)
+  //   B[2*nv.., i]   = 0                        (no activation)
+```
+
+For actuators with dynamics (Filter, FilterExact, Integrator, Muscle), use
+FD: perturb `ctrl[i] ±eps`, step, extract, difference. The ctrl→act_dot→act
+path makes one-step analytical derivatives intractable without unrolling the
+activation integration.
+
+**Position rows of A (chain rule):**
+
+The position block of A is filled as follows:
+- Position columns (0..nv): from FD (step 5 above)
+- Velocity columns (nv..2*nv): `A[0..nv, nv..2*nv] = dqpos_dqvel · dvdv`
+- Activation columns: `A[0..nv, 2*nv+j] = dqpos_dqvel · dvdact`
+
+The `dqpos_dqpos` from `IntegrationDerivatives` is used in position columns
+only to provide the position-position block `A[0..nv, 0..nv]` — but since
+position columns use FD, `dqpos_dqpos` is NOT directly used in hybrid mode.
+It remains available for future analytical position columns (if ever
+implemented).
+
+**ImplicitSpringDamper velocity columns — derivation:**
+
+The implicit integrator solves
+(see `mj_fwd_acceleration_implicit`, line 13008):
 
 ```
 (M + h·D + h²·K) · v_new = M · v_old + h · f_ext − h·K·(q − q_eq)
@@ -2359,9 +2675,11 @@ is wrong for implicit mode. Fix: add `D` back:
 ```
 
 This reuses the Cholesky factorization of `(M + hD + h²K)` already computed
-by `mj_fwd_acceleration_implicit()` and stored in `data.scratch_m_impl`.
-Compute `(M + h·(qDeriv + D))` column-by-column and solve via
-`cholesky_solve_in_place()`.
+by `mj_fwd_acceleration_implicit()` and stored in `data.scratch_m_impl`
+(lower triangle contains L factor after `cholesky_in_place`, line 13058).
+The clone `data_work.scratch_m_impl` preserves this factored L. The solve
+uses `cholesky_solve_in_place(&data_work.scratch_m_impl, &mut rhs_col)`
+for each column of the RHS matrix.
 
 **Tendon damping consistency:** `mjd_passive_vel` (Step 4) skips tendon
 damping in implicit mode, matching `mj_fwd_passive` which also skips tendon
@@ -2423,11 +2741,13 @@ pub fn max_relative_error(
 ) -> (f64, (usize, usize))
 
 /// Compare FD and hybrid derivatives to validate analytical implementation.
-/// Returns `(max_error_A, max_error_B)`.
+/// Returns `(max_error_A, max_error_B)` — the max relative errors between
+/// pure-FD and hybrid A/B matrices.
+///
+/// The caller checks the returned errors against their desired tolerance.
 pub fn validate_analytical_vs_fd(
     model: &Model,
     data: &Data,
-    tol: f64,
 ) -> Result<(f64, f64), StepError> {
     let fd = mjd_transition(model, data,
         &DerivativeConfig { use_analytical: false, ..Default::default() })?;
@@ -2438,18 +2758,41 @@ pub fn validate_analytical_vs_fd(
     Ok((err_a, err_b))
 }
 
-/// Check FD convergence by comparing eps and eps/10 derivatives.
+/// Check FD convergence by comparing derivatives at two epsilon scales.
+///
+/// Computes `mjd_transition_fd` at `eps` and `eps/10` (both centered),
+/// then compares the A matrices via `max_relative_error`. Returns `true`
+/// if the max relative error is below `tol`.
+///
+/// This validates that the FD approximation is in the convergent regime:
+/// if decreasing epsilon by 10x doesn't significantly change the result,
+/// the derivative estimate is stable.
+///
+/// # Example
+///
+/// ```ignore
+/// let converged = fd_convergence_check(&model, &data, 1e-6, 1e-3)?;
+/// assert!(converged, "FD not converged at eps=1e-6");
+/// ```
 pub fn fd_convergence_check(
     model: &Model,
     data: &Data,
     eps: f64,
     tol: f64,
-) -> Result<bool, StepError>
+) -> Result<bool, StepError> {
+    let c1 = DerivativeConfig { eps, centered: true, use_analytical: false };
+    let c2 = DerivativeConfig { eps: eps / 10.0, centered: true, use_analytical: false };
+    let d1 = mjd_transition_fd(model, data, &c1)?;
+    let d2 = mjd_transition_fd(model, data, &c2)?;
+    let (err, _) = max_relative_error(&d1.A, &d2.A, 1e-10);
+    Ok(err < tol)
+}
 ```
 
 ##### Step 12 — Module structure and exports
 
-New file `sim/L0/core/src/derivatives.rs`. Add to `sim/L0/core/src/lib.rs`:
+`derivatives.rs` already exists from Part 1. Update `sim/L0/core/src/lib.rs`
+to expand the re-exports:
 
 ```rust
 /// Simulation transition derivatives (FD, analytical, and hybrid).
@@ -2458,15 +2801,24 @@ pub mod derivatives;
 pub use derivatives::{
     DerivativeConfig, TransitionMatrices,
     mjd_transition, mjd_transition_fd, mjd_transition_hybrid,
-    mjd_smooth_vel,
+    mjd_smooth_vel, mjd_quat_integrate,
     max_relative_error, validate_analytical_vs_fd, fd_convergence_check,
 };
 ```
 
-Validation utilities (`max_relative_error`, `validate_analytical_vs_fd`,
-`fd_convergence_check`) and `mjd_quat_integrate` are re-exported for
-downstream use in tests and analysis tools. `mjd_quat_integrate` is also
-`pub` but primarily consumed internally by `compute_integration_derivatives`.
+**Visibility summary for Part 2 public items in `derivatives.rs`:**
+
+| Item | Visibility | Rationale |
+|------|-----------|-----------|
+| `mjd_transition` | `pub` | Primary API entry point |
+| `mjd_transition_hybrid` | `pub` | Advanced users who want explicit hybrid |
+| `mjd_quat_integrate` | `pub` | Useful standalone for SO(3) tooling |
+| `max_relative_error` | `pub` | Validation utility for downstream tests |
+| `validate_analytical_vs_fd` | `pub` | One-call validation |
+| `fd_convergence_check` | `pub` | One-call convergence check |
+| `IntegrationDerivatives` | private | Internal struct, not part of API |
+| `compute_integration_derivatives` | private | Internal, consumed by hybrid |
+| `Data::transition_derivatives` | `pub` | Convenience method on Data |
 
 #### Acceptance Criteria
 
@@ -2582,37 +2934,56 @@ downstream use in tests and analysis tools. `mjd_quat_integrate` is also
 
 **Part 2 acceptance criteria (Steps 8–12):**
 
-**Phase C/D — Integration + Hybrid:**
+**Phase C — Integration derivatives:**
 
-28. **Hybrid vs FD agreement**: `validate_analytical_vs_fd()` returns
+28. **mjd_quat_integrate standalone**: For a non-trivial quaternion and angular
+    velocity (`ω = [1.0, 0.5, -0.3]`, `h = 0.001`), the two Jacobians from
+    `mjd_quat_integrate` match FD of the quaternion integration function
+    (perturb `quat` tangent and `omega` independently, integrate, map to
+    tangent, compute FD columns) to within `1e-6`.
+29. **Integration derivatives scalar joints**: For a 3-link hinge pendulum,
+    `compute_integration_derivatives` returns `dqpos_dqpos ≈ I₃` and
+    `dqpos_dqvel ≈ h·I₃`. Verified to machine precision.
+30. **Integration derivatives Ball joint**: For a model with a Ball joint,
+    `dqpos_dqvel` block is approximately `h·I₃` at zero angular velocity
+    and deviates from `h·I₃` at `ω = [2.0, 1.0, -1.5]` (right Jacobian
+    correction). Both cases match FD to within `1e-5`.
+31. **Activation integration FilterExact**: For `ActuatorDynamics::FilterExact`
+    with `τ = 0.05`, `h = 0.001`: `dact_dact[(j,j)] ≈ exp(-h/τ) ≈ 0.9802`.
+    Verified against FD of the activation integration to within `1e-6`.
+
+**Phase D — Hybrid:**
+
+32. **Hybrid vs FD agreement**: `validate_analytical_vs_fd()` returns
     `max_error_A < 1e-3` and `max_error_B < 1e-3` for a 3-link pendulum with
     torque actuators (Euler integrator).
-29. **Hybrid velocity columns**: For a damped 3-link pendulum (damping=1.0),
-    velocity columns of A from hybrid match pure FD columns to within `1e-4`
-    relative error (element-wise via `max_relative_error`).
-30. **Hybrid cost savings**: For a 10-DOF model (nu=10, na=0, all simple Joint
-    actuators), hybrid mode calls `step()` at most `2 · nv` times (centered).
-    Pure FD would require `2 · (2·nv + nu) = 60` calls. Hybrid requires
-    `2 · nv = 20`. Verified by counting (add a step counter in test).
-31. **ImplicitSpringDamper analytical**: For a stiff spring system
+33. **Hybrid velocity columns**: For a damped 3-link pendulum (damping=1.0),
+    velocity columns of A from hybrid match pure FD velocity columns to within
+    `1e-4` relative error (element-wise via `max_relative_error`).
+34. **Hybrid correctness with B matrix**: For `Model::n_link_pendulum(10, 1.0, 0.1)`
+    with 10 torque actuators added via `add_torque_actuators(&mut model, 10)`
+    (nu=10, na=0, all `DynType::None` Joint actuators), hybrid A and B matrices
+    match pure FD A and B to within `1e-3`. This confirms both position-FD and
+    velocity/control-analytical paths produce consistent results.
+35. **ImplicitSpringDamper analytical**: For a stiff spring system
     (stiffness=1000, damping=10) with `Integrator::ImplicitSpringDamper`, hybrid
     velocity derivatives use the `(M + hD + h²K)⁻¹` correction. The velocity
     block of A matches pure FD to within `1e-3`.
-32. **Activation columns analytical**: For a model with `ActuatorDynamics::Filter`
+36. **Activation columns analytical**: For a model with `ActuatorDynamics::Filter`
     (na=2), hybrid computes activation columns of A analytically:
     `∂v⁺/∂act` via `h · M⁻¹ · moment · gain`. Matches FD to within `1e-3`.
-33. **mjd_transition dispatch**: `mjd_transition()` with `use_analytical=true`
+37. **mjd_transition dispatch**: `mjd_transition()` with `use_analytical=true`
     and Euler returns the same result as `mjd_transition_hybrid()`. With
     `use_analytical=false` or RK4, returns same as `mjd_transition_fd()`.
-34. **Data convenience method**: `data.transition_derivatives(model, config)`
+38. **Data convenience method**: `data.transition_derivatives(model, config)`
     returns the same result as `mjd_transition(model, &data, config)`.
 
 **Part 2 infrastructure:**
 
-35. **FD convergence utility**: `fd_convergence_check()` returns `true` for
+39. **FD convergence utility**: `fd_convergence_check()` returns `true` for
     epsilon in `[1e-4, 1e-8]` with tolerance `1e-3`.
-36. **`cargo clippy -p sim-core -- -D warnings`** still passes clean.
-37. **At least 10 additional tests** covering Part 2 criteria (28–34).
+40. **`cargo clippy -p sim-core -- -D warnings`** still passes clean.
+41. **At least 14 additional tests** covering Part 2 criteria (28–39).
 
 #### Files
 
@@ -2631,8 +3002,9 @@ downstream use in tests and analysis tools. `mjd_quat_integrate` is also
 | File | Action | Description |
 |------|--------|-------------|
 | `sim/L0/core/src/derivatives.rs` | **modify** | Add `IntegrationDerivatives`, `mjd_transition_hybrid()`, `mjd_transition()`, `compute_integration_derivatives()`, `mjd_quat_integrate()`, `max_relative_error()`, `validate_analytical_vs_fd()`, `fd_convergence_check()`, `impl Data { fn transition_derivatives() }` |
-| `sim/L0/core/src/lib.rs` | **modify** | Expand re-exports: add `mjd_transition`, `mjd_transition_hybrid`, `max_relative_error`, `validate_analytical_vs_fd`, `fd_convergence_check` |
-| `sim/L0/tests/integration/derivatives.rs` | **modify** | Add tests for Part 2 acceptance criteria (26–32) |
+| `sim/L0/core/src/mujoco_pipeline.rs` | **modify** | Change visibility of `cholesky_solve_in_place` from private to `pub(crate)` (needed by hybrid ImplicitSpringDamper path) |
+| `sim/L0/core/src/lib.rs` | **modify** | Expand re-exports: add `mjd_transition`, `mjd_transition_hybrid`, `mjd_quat_integrate`, `max_relative_error`, `validate_analytical_vs_fd`, `fd_convergence_check` |
+| `sim/L0/tests/integration/derivatives.rs` | **modify** | Add tests for Part 2 acceptance criteria (28–39) |
 
 ---
 

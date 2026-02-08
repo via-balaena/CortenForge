@@ -150,7 +150,11 @@ pub use mujoco_pipeline::{
     warmstart_key,
 };
 
-pub use derivatives::{DerivativeConfig, TransitionMatrices, mjd_smooth_vel, mjd_transition_fd};
+pub use derivatives::{
+    DerivativeConfig, TransitionMatrices, fd_convergence_check, max_relative_error,
+    mjd_quat_integrate, mjd_smooth_vel, mjd_transition, mjd_transition_fd, mjd_transition_hybrid,
+    validate_analytical_vs_fd,
+};
 
 // Re-export key types from sim-types for convenience
 pub use sim_types::{
