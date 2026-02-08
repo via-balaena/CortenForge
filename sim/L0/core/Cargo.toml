@@ -34,6 +34,7 @@ harness = false
 default = []
 parallel = ["dep:rayon"]
 serde = ["dep:serde", "serde/rc", "sim-types/serde", "nalgebra/serde-serialize"]
+gpu-internals = []  # Exposes internal helpers for sim-gpu. No deps.
 
 [lints]
 workspace = true

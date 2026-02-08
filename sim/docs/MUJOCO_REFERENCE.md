@@ -612,6 +612,12 @@ semi-implicit and provides energy stability that plain Euler lacks.
 Muscle activations are clamped to `[0, 1]` after integration to enforce the
 physiological range.
 
+**GPU path (`sim-gpu`, Phase 10a):** When using `GpuBatchSim`, step 1
+(`qvel += qacc * h`) is replaced by a wgpu compute shader dispatch operating
+on all environments in parallel. Steps 0 (activation), 2 (position), and 3
+(quaternion normalization) remain on CPU via `Data::integrate_without_velocity()`.
+See [future_work_3 #10](../todo/future_work_3.md).
+
 **Implicit (`Integrator::ImplicitSpringDamper`):**
 
 Activation integration is identical to Euler (step 0 above). Velocity was

@@ -3229,6 +3229,64 @@ impl Data {
         // Advance time
         self.time += h;
     }
+
+    /// Integration step without velocity update.
+    ///
+    /// Performs activation integration, position integration, quaternion
+    /// normalization, and time advance. Skips `qvel += qacc * h` (assumed
+    /// to have been done externally, e.g., on GPU).
+    ///
+    /// Used by the GPU backend (`sim-gpu`) where velocity integration
+    /// is performed on GPU via compute shader.
+    ///
+    /// # Visibility
+    ///
+    /// This method is public but feature-gated behind `gpu-internals`.
+    /// It is not part of the stable `sim-core` API — only `sim-gpu`
+    /// should depend on this feature.
+    #[cfg(feature = "gpu-internals")]
+    #[doc(hidden)]
+    pub fn integrate_without_velocity(&mut self, model: &Model) {
+        // Guard: this method assumes velocity was updated externally (GPU Euler).
+        // If a future phase relaxes the Euler-only check in GpuBatchSim::new(),
+        // this assert will catch misuse before silent physics errors.
+        debug_assert!(
+            matches!(model.integrator, Integrator::Euler),
+            "integrate_without_velocity only valid for Euler integrator, got {:?}",
+            model.integrator
+        );
+        let h = model.timestep;
+
+        // 1. Activation integration (identical to integrate())
+        for i in 0..model.nu {
+            let act_adr = model.actuator_act_adr[i];
+            let act_num = model.actuator_act_num[i];
+            for k in 0..act_num {
+                let j = act_adr + k;
+                match model.actuator_dyntype[i] {
+                    ActuatorDynamics::FilterExact => {
+                        let tau = model.actuator_dynprm[i][0].max(1e-10);
+                        self.act[j] += self.act_dot[j] * tau * (1.0 - (-h / tau).exp());
+                    }
+                    _ => {
+                        self.act[j] += h * self.act_dot[j];
+                    }
+                }
+            }
+            if model.actuator_dyntype[i] == ActuatorDynamics::Muscle {
+                for k in 0..act_num {
+                    self.act[act_adr + k] = self.act[act_adr + k].clamp(0.0, 1.0);
+                }
+            }
+        }
+
+        // 2. Skip velocity integration (done on GPU)
+
+        // 3. Position integration + quaternion normalization + time advance
+        mj_integrate_pos(model, self, h);
+        mj_normalize_quat(model, self);
+        self.time += h;
+    }
 }
 
 // ============================================================================

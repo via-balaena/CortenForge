@@ -78,6 +78,9 @@ members = [
     "sim/L0/physics",
     "sim/L0/tests",
 
+    # Simulation domain - Layer 0 GPU (Bevy-free)
+    "sim/L0/gpu",
+
     # Simulation domain - Layer 1 (Bevy integration)
     "sim/L1/bevy",
 ]
@@ -298,6 +301,7 @@ sim-tendon = { path = "sim/L0/tendon" }
 sim-mjcf = { path = "sim/L0/mjcf" }
 sim-urdf = { path = "sim/L0/urdf" }
 sim-physics = { path = "sim/L0/physics" }
+sim-gpu = { path = "sim/L0/gpu" }
 
 # Sim domain - Layer 1 (Bevy integration)
 sim-bevy = { path = "sim/L1/bevy" }

@@ -26,6 +26,7 @@ sim/
 │   ├── deformable/        # sim-deformable — XPBD soft bodies
 │   ├── muscle/            # sim-muscle — Hill-type muscles
 │   ├── tendon/            # sim-tendon — Cable/tendon routing
+│   ├── gpu/               # sim-gpu — GPU-accelerated batched sim (wgpu)
 │   ├── mjcf/              # sim-mjcf — MuJoCo format parser
 │   ├── urdf/              # sim-urdf — URDF parser
 │   ├── physics/           # sim-physics — Unified L0 API
@@ -347,6 +348,23 @@ geometry (box, sphere, cylinder; mesh parsed but not converted), dynamics
 (damping; friction parsed but not converted), limits. **Planar joints are
 lossy** — approximated as a single hinge (loses 2 of 3 DOF).
 
+### sim-gpu
+
+GPU-accelerated batched simulation via wgpu compute shaders. Drop-in
+replacement for `BatchSim` that offloads the integration step to GPU.
+Dependencies: sim-core (with `gpu-internals` feature), wgpu, bytemuck,
+pollster, thiserror, tracing. Optional rayon (behind `parallel` feature).
+
+- `GpuBatchSim` — wraps `BatchSim` with GPU Euler velocity integration
+- `GpuSimContext` — `OnceLock<Option<>>` singleton for device/queue init
+- `GpuEnvBuffers` — Structure-of-Arrays f32 GPU buffers with size validation
+- `GpuParams` — `#[repr(C)]` uniform buffer matching WGSL struct layout
+- `euler_integrate.wgsl` — compute shader: `qvel += qacc * h` per DOF per env
+
+**Phase 10a scope:** Only Euler velocity integration on GPU. FK, collision,
+constraints, dynamics remain on CPU. Transparent fallback via `try_new()`.
+See [future_work_3 #10](./todo/future_work_3.md) for remaining phases.
+
 ### sim-physics
 
 Unified L0 API re-exporting all simulation crates:
@@ -430,7 +448,8 @@ is Layer 1 only.
 
 | Flag | Crates | Description |
 |------|--------|-------------|
-| `parallel` | sim-core | Rayon-based parallelization for `BatchSim::step_all()`. Sequential fallback when disabled. See [future_work_3 #9](./todo/future_work_3.md) |
+| `parallel` | sim-core, sim-gpu | Rayon-based parallelization for `BatchSim::step_all()` and `GpuBatchSim::step_all()` CPU forward pass. Sequential fallback when disabled. See [future_work_3 #9](./todo/future_work_3.md) |
+| `gpu-internals` | sim-core | Exposes internal helpers (`integrate_without_velocity`, `envs_as_mut_slice`, `model_arc`) for sim-gpu. No additional deps. |
 | `serde` | Most crates | Serialization support |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 | `muscle` | sim-constraint | Hill-type muscle integration |

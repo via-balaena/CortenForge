@@ -7493,6 +7493,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-gpu"
+version = "0.7.0"
+dependencies = [
+ "approx 0.5.1",
+ "bytemuck",
+ "criterion",
+ "pollster",
+ "rayon",
+ "sim-core",
+ "thiserror 2.0.18",
+ "tracing",
+ "wgpu 24.0.5",
+]
+
+[[package]]
 name = "sim-mjcf"
 version = "0.7.0"
 dependencies = [
