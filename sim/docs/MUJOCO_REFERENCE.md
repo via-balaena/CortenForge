@@ -703,7 +703,7 @@ Key details:
 
 ## Stage 6: Derivatives (optional, after `forward()`)
 
-Implemented in `sim-core/src/derivatives.rs`. Two modes:
+Implemented in `sim-core/src/derivatives.rs` (~1685 lines). Four modes:
 
 ### 6.1 Pure Finite-Difference: `mjd_transition_fd()`
 
@@ -753,6 +753,53 @@ Cross-product derivative signs (critical):
 
 MuJoCo correspondence: `mjd_smooth_vel` → `mjd_smooth_vel`, `Data.qDeriv` →
 `mjData.qDeriv` (sparse in MuJoCo, dense here).
+
+### 6.3 Quaternion Integration Jacobians: `mjd_quat_integrate()`
+
+Computes SO(3) Jacobians for quaternion integration `q_new = q_old ⊗ exp(ω·h/2)`:
+
+```
+Returns (dpos_dpos, dpos_dvel):
+  dpos_dpos: ∂(q_new_tangent)/∂(q_old_tangent) — adjoint exp(-ω·h) via Rodrigues
+  dpos_dvel: ∂(q_new_tangent)/∂ω — h × right Jacobian of SO(3)
+
+Right Jacobian: J_r(θ) = I - (1-cos‖θ‖)/‖θ‖² · [θ]× + (‖θ‖-sin‖θ‖)/‖θ‖³ · [θ]×²
+```
+
+Used by `compute_integration_derivatives()` for Ball and Free joints. Hinge/Slide
+joints use simple scalar chain rules (identity + h·I).
+
+### 6.4 Hybrid FD+Analytical: `mjd_transition_hybrid()`
+
+Combines analytical velocity/activation columns with FD position columns:
+
+```
+Velocity columns (analytical):
+  Euler:    ∂v⁺/∂v = I + h · M⁻¹ · qDeriv   (sparse LDL solve)
+  Implicit: ∂v⁺/∂v = (M+hD+h²K)⁻¹ · (M + h·(qDeriv+D))  (Cholesky solve)
+
+Activation columns (analytical):
+  DynType::None:        no activation → skip
+  Filter/FilterExact:   ∂act⁺/∂act = exp(-h/τ) or 1-h/τ; force via gain·moment
+  Integrator:           ∂act⁺/∂act = 1; no force-through-act derivative
+  Muscle:               FD fallback (FLV curve gradients too complex)
+
+Position columns: FD (captures contact transitions, implicit spring ∂v/∂q)
+B matrix: analytical for DynType::None, FD for actuators with dynamics
+
+Cost: ~nv FD step() calls (position columns only) vs 2·(2nv+na+nu) for pure FD
+```
+
+### 6.5 Public Dispatch: `mjd_transition()`
+
+Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` based on
+`DerivativeConfig.use_analytical`. Also available as `Data::transition_derivatives()`.
+
+### 6.6 Validation Utilities
+
+- `validate_analytical_vs_fd()`: compares hybrid vs pure FD, returns max error
+- `fd_convergence_check()`: verifies FD at ε and ε/10 converge (ratio test)
+- `max_relative_error()`: element-wise max relative error between two matrices
 
 ---
 

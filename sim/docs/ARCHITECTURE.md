@@ -151,6 +151,13 @@ mjd_smooth_vel():
 mjd_transition_fd():
   Pure FD Jacobians: A = ∂x⁺/∂x, B = ∂x⁺/∂u via centered/forward differences
   Tangent-space perturbation for quaternion joints (Ball, Free)
+mjd_transition_hybrid():
+  Analytical velocity/activation columns + FD position columns
+  Euler: I + h·M⁻¹·qDeriv via sparse LDL
+  Implicit: (M+hD+h²K)⁻¹·(M+h·(qDeriv+D)) via Cholesky
+  ~nv FD calls (position columns only) vs 2·(2nv+na+nu) for pure FD
+mjd_transition():
+  Public dispatch: FD-only or hybrid based on DerivativeConfig.use_analytical
 ```
 
 **Integration methods** (`Integrator` enum):
@@ -243,7 +250,7 @@ by sim-core (GJK); all other batch ops are benchmarked but have no callers.
 The physics engine. Depends on sim-types and sim-simd. Contains:
 
 - `mujoco_pipeline.rs` — `Model`, `Data`, full MuJoCo-aligned pipeline
-- `derivatives.rs` — Simulation transition derivatives (FD and analytical `qDeriv`)
+- `derivatives.rs` — Simulation transition derivatives (FD, analytical qDeriv, hybrid FD+analytical, SO(3) Jacobians, validation utilities)
 - `collision_shape.rs` — `CollisionShape` enum, `Aabb`
 - `mid_phase.rs` — BVH tree (median-split construction, traversal, ray queries)
 - `gjk_epa.rs` — GJK/EPA for convex shapes

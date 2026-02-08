@@ -1177,29 +1177,32 @@ by XPBD internal constraint projection. All changes `#[cfg(feature = "deformable
 ---
 
 ### 12. Analytical Derivatives (mjd_*)
-**Status:** Part 1 ✅ Complete (Steps 0–7) / Part 2 not started (Steps 8–12) | **Effort:** XL | **Prerequisites:** None
+**Status:** ✅ Complete (Parts 1 & 2, Steps 0–12) | **Effort:** XL | **Prerequisites:** None
 
 #### Current State
 
-**Part 1 (Steps 0–7) is complete.** The derivative infrastructure is implemented
-in `sim-core/src/derivatives.rs` (~965 lines) with 30 integration tests in
-`sim/L0/tests/integration/derivatives.rs`. Public API:
+**Both Part 1 (Steps 0–7) and Part 2 (Steps 8–12) are complete.** The derivative
+infrastructure is implemented in `sim-core/src/derivatives.rs` (~1685 lines) with
+30+ integration tests in `sim/L0/tests/integration/derivatives.rs`. Public API:
 
-| Function / Type | Description |
-|-----------------|-------------|
-| `TransitionMatrices` | Struct: A (state), B (control), C/D (sensor, `None` for now) |
-| `DerivativeConfig` | Struct: eps, centered, use_analytical |
-| `mjd_transition_fd()` | Pure FD transition Jacobians (centered/forward, any integrator) |
-| `mjd_smooth_vel()` | Analytical `∂(qfrc_smooth)/∂qvel` → `Data.qDeriv` |
+| Function / Type | Description | Part |
+|-----------------|-------------|------|
+| `TransitionMatrices` | Struct: A (state), B (control), C/D (sensor, `None` for now) | 1 |
+| `DerivativeConfig` | Struct: eps, centered, use_analytical | 1 |
+| `mjd_transition_fd()` | Pure FD transition Jacobians (centered/forward, any integrator) | 1 |
+| `mjd_smooth_vel()` | Analytical `∂(qfrc_smooth)/∂qvel` → `Data.qDeriv` | 1 |
+| `mjd_quat_integrate()` | SO(3) Jacobians for quaternion integration (right Jacobian + adjoint) | 2 |
+| `mjd_transition_hybrid()` | Hybrid FD+analytical: analytical velocity/activation columns, FD position columns | 2 |
+| `mjd_transition()` | Public dispatch: FD-only or hybrid based on `DerivativeConfig.use_analytical` | 2 |
+| `Data::transition_derivatives()` | Convenience method on `Data` | 2 |
+| `validate_analytical_vs_fd()` | Compares analytical vs FD Jacobians, returns max error | 2 |
+| `fd_convergence_check()` | Verifies FD convergence at two epsilon scales | 2 |
+| `max_relative_error()` | Element-wise max relative error between two matrices | 2 |
 
 Data fields added: `qDeriv` (nv×nv), `deriv_Dcvel`/`deriv_Dcacc`/`deriv_Dcfrc`
 (per-body 6×nv Jacobians). Visibility changed to `pub(crate)`:
 `spatial_cross_motion`, `spatial_cross_force`, `joint_motion_subspace`,
-`mj_solve_sparse`.
-
-**Part 2 (Steps 8–12) remains.** Needs: analytical integration derivatives
-(quaternion chain rules), hybrid FD+analytical dispatch, `mjd_transition()` API,
-`data.transition_derivatives()` convenience method, FD convergence utility.
+`mj_solve_sparse`, `cholesky_solve_in_place`.
 
 Pre-Part 1 state (historical — the table below describes what existed before
 Part 1 was implemented). The pipeline computed several Jacobians internally for
@@ -2123,8 +2126,9 @@ pub use derivatives::{
 };
 ```
 
-Part 2 will expand these exports with `mjd_transition`, `mjd_transition_hybrid`,
-and validation utilities.
+Part 2 expanded these exports with `mjd_transition`, `mjd_transition_hybrid`,
+`mjd_quat_integrate`, `validate_analytical_vs_fd`, `fd_convergence_check`,
+and `max_relative_error`.
 
 **Module-level documentation:** `derivatives.rs` must have a module doc comment
 explaining:
