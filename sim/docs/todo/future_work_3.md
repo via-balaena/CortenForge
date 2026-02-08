@@ -2232,6 +2232,12 @@ scale. The crate is a **drop-in accelerator** — same `BatchSim` semantics
 (step, reset, env access), same physics results, but with GPU execution
 when available and transparent CPU fallback when not.
 
+**Phase 10a scope (this spec):** Only the Euler velocity integration
+(`qvel += qacc * h`) runs on GPU. All other pipeline stages (FK,
+collision, constraints, dynamics) remain on CPU. This validates the full
+GPU infrastructure with minimal physics complexity. Subsequent phases
+(10b–10f) progressively port more stages to GPU.
+
 #### Architecture
 
 **Crate placement:** New crate at `sim/L0/gpu/` (package name `sim-gpu`).
@@ -2266,8 +2272,11 @@ dispatch_workgroups(num_envs, 1, 1)
 ```
 
 The workgroup size is set at pipeline creation via WGSL `override` constants
-to `next_power_of_2(nv)` for Phase 10a (or `max(nbody, ngeom, nv)` for
-later phases). For a model with nv=30, `wg_size = 32`. Each env uses
+to `min(next_power_of_2(nv), limits.max_compute_workgroup_size_x)` for
+Phase 10a (or `max(nbody, ngeom, nv)` for later phases). For a model with
+nv=30, `wg_size = 32`. For nv=300 on a GPU with max workgroup size 256,
+`wg_size = 256` and each thread processes multiple DOFs via a strided
+loop in the shader (standard GPU pattern). Each env uses
 `workgroup_id.x` as its environment index. This maps naturally to GPU
 hardware: independent envs → independent
 workgroups → can execute on different SMs/CUs without synchronization.
@@ -2278,21 +2287,35 @@ The GPU backend uses a **Structure-of-Arrays** (SoA) layout with fixed
 maximum sizes. All N environments' data is packed into contiguous GPU
 buffers with known strides.
 
-**GpuModel** (uniform buffer, uploaded once, read-only):
+**Phase 10a buffers** (implemented in this spec):
 
-For Phase 10a, only `nv`, `num_envs`, and `timestep` are needed (see the
-`Params` struct in the integration shader). The full `GpuModelHeader`
-below is the **target layout for Phase 10b+** when FK and collision move
-to GPU:
+Only `qvel` and `qacc` are uploaded/downloaded in Phase 10a:
+
+```
+Buffer: gpu_qvel    — layout: [env0_qvel[0..nv], env1_qvel[0..nv], ...]
+Buffer: gpu_qacc    — layout: [env0_qacc[0..nv], env1_qacc[0..nv], ...]
+```
+
+All values are **f32** on GPU. The CPU↔GPU boundary performs f64↔f32
+conversion. GPU f64 throughput is 1/32nd of f32 on consumer GPUs. For RL
+training at scale, f32 physics is standard (MuJoCo MJX, Isaac Gym, Brax
+all use f32). CPU path remains f64 for offline validation and precision.
+
+Model parameters (`nv`, `num_envs`, `timestep`) are uploaded once via the
+`GpuParams` uniform buffer (see section 4 below).
+
+---
+
+**Future-phase buffer layout (Phase 10b+ — NOT implemented in this spec):**
+
+<details>
+<summary>Click to expand future data layout design</summary>
+
+**GpuModelHeader** (uniform buffer, uploaded once, read-only):
 
 ```rust
 /// GPU-side model constants (Phase 10b+ target).
-/// Uploaded once per model, shared by all envs.
-/// All fields are f32 (GPU operates in single precision).
-///
-/// Layout follows WebGPU alignment rules:
-/// - vec4<f32> requires 16-byte alignment
-/// - Uniform buffer total size must be a multiple of 16 bytes
+/// All fields are f32. Layout follows WebGPU alignment rules.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GpuModelHeader {
@@ -2306,20 +2329,16 @@ struct GpuModelHeader {
     _pad: u32,            // offset 28 (align gravity to 32 = 16*2)
     gravity: [f32; 4],    // offset 32, .w = padding
     // Total: 48 bytes (multiple of 16) ✓
-    // Followed by body/joint/geom arrays in separate storage buffers
 }
 ```
 
-Model arrays that the shader needs (body tree, joint params, geom params)
-are uploaded as storage buffers, not uniforms, because they exceed the
-65KB uniform buffer limit for non-trivial models.
+Model arrays (body tree, joint params, geom params) use storage buffers
+(exceed 65KB uniform limit for non-trivial models).
 
-**GpuData** (storage buffers, per-env SoA):
+**Additional per-env SoA buffers:**
 
 ```
 Buffer: gpu_qpos    — layout: [env0_qpos[0..nq], env1_qpos[0..nq], ...]
-Buffer: gpu_qvel    — layout: [env0_qvel[0..nv], env1_qvel[0..nv], ...]
-Buffer: gpu_qacc    — layout: [env0_qacc[0..nv], env1_qacc[0..nv], ...]
 Buffer: gpu_ctrl    — layout: [env0_ctrl[0..nu], env1_ctrl[0..nu], ...]
 Buffer: gpu_xpos    — layout: [env0_xpos[0..nbody*4], env1_xpos[0..nbody*4], ...]
 Buffer: gpu_xquat   — layout: [env0_xquat[0..nbody*4], env1_xquat[0..nbody*4], ...]
@@ -2327,57 +2346,33 @@ Buffer: gpu_qM      — layout: [env0_qM[0..nv*nv], env1_qM[0..nv*nv], ...]
 Buffer: gpu_qfrc_*  — layout: [env0_qfrc[0..nv], env1_qfrc[0..nv], ...]
 ```
 
-All values are **f32** on GPU. The CPU↔GPU boundary performs f64↔f32
-conversion. This is intentional — GPU f64 throughput is 1/32nd of f32 on
-consumer GPUs and 1/2 on datacenter GPUs. For RL training at scale, f32
-physics is standard practice (MuJoCo MJX uses f32, Isaac Gym uses f32,
-Brax uses f32).
+**Contact buffer** (dynamic-length, pre-allocated to max):
 
-**Why f32 is acceptable for this use case:**
-- RL training tolerates noise; policy gradients dominate over physics precision.
-- Acceptance criterion 1 (below) is relaxed to ε-approximate rather than
-  bitwise-identical, matching industry standard (MuJoCo MJX documents this
-  same tradeoff).
-- CPU path remains f64 for offline validation, research, and users who need
-  full precision.
+Pre-allocate `MAX_CONTACTS_PER_ENV` (default 128) per env. Atomic counter
+per env tracks actual count. Contacts exceeding cap dropped
+(least-penetrating first).
 
-**Contact buffer (dynamic-length, pre-allocated to max):**
-
-Contacts are the hardest GPU data structure because their count varies per
-step. Strategy: pre-allocate a fixed-size contact buffer per environment
-with capacity `MAX_CONTACTS_PER_ENV` (default 128, configurable). An
-atomic counter per environment tracks actual contact count. Contacts
-exceeding the cap are dropped (least-penetrating first).
-
-```
-Buffer: gpu_contacts     — [env0_contacts[0..MAX_C], env1_contacts[0..MAX_C], ...]
-Buffer: gpu_contact_count — [env0_ncon, env1_ncon, ...]  (u32 per env)
-```
-
-Each `GpuContact` is a fixed-size `#[repr(C)]` struct:
 ```rust
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GpuContact {
-    pos: [f32; 4],        // 16B: contact point (world frame), .w = padding
+    pos: [f32; 4],        // 16B: contact point, .w = padding
     normal: [f32; 4],     // 16B: contact normal, .w = penetration depth
-    friction: [f32; 4],   // 16B: [mu_slide, mu_torsion, mu_roll, condim as f32]
+    friction: [f32; 4],   // 16B: [mu_slide, mu_torsion, mu_roll, condim]
     geom_ids: [u32; 2],   //  8B: geom pair
-    body_ids: [u32; 2],   //  8B: body pair (for Jacobian construction)
+    body_ids: [u32; 2],   //  8B: body pair
     solref: [f32; 2],     //  8B: solver reference params
-    solimp: [f32; 2],     //  8B: solver impedance (truncated to 2 most important)
+    solimp: [f32; 2],     //  8B: solver impedance (truncated)
 }
-// Size: 80 bytes (16+16+16+8+8+8+8), naturally aligned
+// Size: 80 bytes, 16-byte aligned
 ```
 
-**Warmstart:** The `HashMap<WarmstartKey, Vec<f64>>` warmstart cache does
-not port to GPU. Instead, the GPU backend uses a **frame-coherent warmstart
-buffer**: a flat `[f32; MAX_CONTACTS * MAX_CONDIM]` per environment.
-Contact-to-warmstart correspondence uses the contact buffer index from the
-previous frame (contacts are spatially stable frame-to-frame for persistent
-contacts). This is simpler and faster than hash lookups, at the cost of
-losing warmstart when contact ordering changes. For GPU batch RL, the
-marginal solver iteration cost is negligible vs. the parallelism gain.
+**Warmstart:** Frame-coherent warmstart buffer (flat
+`[f32; MAX_CONTACTS * MAX_CONDIM]` per env) replaces the CPU
+`HashMap<WarmstartKey, Vec<f64>>`. Contact-to-warmstart correspondence
+uses contact buffer index from previous frame.
+
+</details>
 
 #### Pipeline Stages — GPU Porting Strategy
 
@@ -2436,21 +2431,26 @@ fn euler_integrate(
     @builtin(local_invocation_id) local_id: vec3<u32>,
 ) {
     let env_idx = wg_id.x;
-    let dof_idx = local_id.x;
+    if env_idx >= params.num_envs { return; }
 
-    if env_idx >= params.num_envs || dof_idx >= params.nv {
-        return;
+    // Strided loop: each thread processes DOFs at stride wg_size.
+    // Handles nv > wg_size (e.g., nv=300 with wg_size=256).
+    var dof_idx = local_id.x;
+    let base = env_idx * params.nv;
+    loop {
+        if dof_idx >= params.nv { break; }
+        let offset = base + dof_idx;
+        qvel[offset] = qvel[offset] + qacc[offset] * params.timestep;
+        dof_idx += wg_size;
     }
-
-    let offset = env_idx * params.nv + dof_idx;
-    qvel[offset] = qvel[offset] + qacc[offset] * params.timestep;
 }
 ```
 
 **Why integration-only first:**
 1. Validates the full GPU stack (wgpu init, buffer management, shader
    compilation, dispatch, readback) with minimal physics complexity.
-2. The integration shader is trivially verifiable (one multiply-add per DOF).
+2. The integration shader is trivially verifiable (one multiply-add per DOF,
+   strided loop for large nv).
 3. Establishes the SoA buffer layout, upload/download patterns, and
    `GpuBatchSim` API that all subsequent stages will use.
 4. Even this minimal GPU path provides measurable throughput data for
@@ -2517,8 +2517,8 @@ workspace = true
 **File:** `sim/L0/gpu/src/lib.rs`
 
 ```rust
-#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
-#![warn(clippy::all, clippy::pedantic, missing_docs)]
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![warn(missing_docs)]
 
 //! GPU-accelerated batched physics simulation via wgpu compute shaders.
 //!
@@ -2567,6 +2567,9 @@ pub struct GpuSimContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
     limits: wgpu::Limits,
+    /// Adapter info (GPU name, vendor, backend) for logging/debugging.
+    /// Matches `mesh-gpu::GpuContext` pattern.
+    adapter_info: wgpu::AdapterInfo,
 }
 
 impl GpuSimContext {
@@ -2576,6 +2579,11 @@ impl GpuSimContext {
 
     /// Convenience: `Self::get().is_some()`.
     pub fn is_available() -> bool { Self::get().is_some() }
+
+    /// Adapter information (GPU name, vendor, device type, backend).
+    /// Useful for logging which GPU is being used in RL training runs.
+    #[must_use]
+    pub fn adapter_info(&self) -> &wgpu::AdapterInfo { &self.adapter_info }
 }
 ```
 
@@ -2584,6 +2592,25 @@ same GPU but may diverge in requested features. Coupling them would force
 `sim-gpu` to depend on `mesh-gpu` (unnecessary dep) or vice versa. Each
 context is a thin wrapper around wgpu device init — the duplication is
 < 50 lines and avoids an artificial dependency.
+
+**Thread safety:** `GpuBatchSim` is `Send + Sync` on native wgpu backends
+(Vulkan, Metal, DX12) because wgpu's `Device`, `Queue`, `Buffer`,
+`ComputePipeline`, and `BindGroup` are all `Send + Sync` on native. On
+the wgpu WebGL2 backend they are `!Send`, but WebGL2 is not a target for
+batch RL training. The spec does not add manual `Send`/`Sync` impls —
+the auto-derived bounds from wgpu types are correct. If RL training code
+needs to move `GpuBatchSim` across threads, it works on native backends
+(the primary target).
+
+**Model immutability invariant:** `GpuBatchSim` captures model parameters
+(`nv`, `timestep`, `integrator`) at construction time into the GPU
+`params_buffer` and pipeline configuration. The `Model` is stored as
+`Arc<Model>` inside the inner `BatchSim`, which provides only `&Model`
+access (no mutation through `Arc` without sole ownership via
+`Arc::get_mut`). This is safe: no code path can mutate the model while
+`GpuBatchSim` holds a clone of the `Arc`. If model parameters need to
+change (e.g., varying timestep for curriculum learning), the
+`GpuBatchSim` must be recreated with a new `Model`.
 
 ##### 3. Error types (`error.rs`)
 
@@ -2604,12 +2631,17 @@ pub enum GpuSimError {
         max: u64,
     },
 
-    /// Too many environments for available GPU memory.
-    #[error("batch of {num_envs} environments requires {required} bytes, available: {available}")]
+    /// Buffer exceeds `limits.max_storage_buffer_binding_size`.
+    ///
+    /// wgpu does not expose a "free GPU memory" API. Actual GPU OOM
+    /// surfaces as [`DeviceLost`](GpuSimError::DeviceLost). This error
+    /// catches the checkable limit: individual buffer size vs. the
+    /// device's max storage buffer binding size.
+    #[error("batch of {num_envs} envs needs {required}B buffer, limit: {limit}B")]
     BatchTooLarge {
         num_envs: usize,
         required: u64,
-        available: u64,
+        limit: u64,
     },
 
     /// GPU device lost during computation.
@@ -2646,6 +2678,8 @@ pub type GpuSimResult<T> = Result<T, GpuSimError>;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuParams {
+    /// Environment count (capped at `u32::MAX` by the WGSL shader's u32
+    /// indexing). `GpuBatchSim::new()` truncates `n: usize` to `u32`.
     pub num_envs: u32,
     pub nv: u32,
     pub timestep: f32,
@@ -2701,6 +2735,56 @@ pub struct GpuEnvBuffers {
     /// Degrees of freedom per env.
     pub nv: u32,
 }
+
+impl GpuEnvBuffers {
+    /// Allocate SoA buffers for `num_envs` environments with `nv` DOFs each.
+    ///
+    /// Checks each buffer size against `limits.max_storage_buffer_binding_size`.
+    /// Returns `Err(GpuSimError::BatchTooLarge)` if exceeded.
+    ///
+    /// When `num_envs == 0` or `nv == 0`, allocates minimum-size (4 byte)
+    /// buffers to satisfy wgpu's `size > 0` requirement.
+    pub fn new(ctx: &GpuSimContext, num_envs: u32, nv: u32) -> GpuSimResult<Self> {
+        let limit = ctx.limits.max_storage_buffer_binding_size as u64;
+        // Overflow-safe size computation. checked_mul catches u64
+        // overflow; the subsequent limit check catches over-size.
+        let raw_size = (num_envs as u64)
+            .checked_mul(nv as u64)
+            .and_then(|x| x.checked_mul(std::mem::size_of::<f32>() as u64))
+            .ok_or(GpuSimError::BatchTooLarge {
+                num_envs: num_envs as usize,
+                required: u64::MAX, // overflowed — true size exceeds u64
+                limit,
+            })?;
+        if raw_size > limit {
+            return Err(GpuSimError::BatchTooLarge {
+                num_envs: num_envs as usize,
+                required: raw_size, // actual computed size for diagnostics
+                limit,
+            });
+        }
+        let buf_size = raw_size.max(4); // wgpu requires size > 0
+        let qvel = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sim_qvel"),
+            size: buf_size,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let qacc = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sim_qacc"),
+            size: buf_size,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let download_staging = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("sim_staging"),
+            size: buf_size,
+            usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Ok(Self { qvel, qacc, download_staging, num_envs, nv })
+    }
+}
 ```
 
 **Upload path:** Gather f64 `qvel`/`qacc` from each `Data`, convert to f32,
@@ -2755,11 +2839,24 @@ pub struct GpuBatchSim {
 impl GpuBatchSim {
     /// Create a GPU-accelerated batch of `n` environments.
     ///
-    /// Returns `Err(GpuSimError::NotAvailable)` if no GPU is available.
-    /// Returns `Err(GpuSimError::UnsupportedIntegrator)` if
-    /// `model.integrator` is not `Euler`.
-    /// Returns `Err(GpuSimError::BatchTooLarge)` if the batch exceeds
-    /// GPU memory.
+    /// **Validation order** (checked in this order; first failure wins):
+    /// 1. Returns `Err(GpuSimError::UnsupportedIntegrator)` if
+    ///    `model.integrator` is not `Euler`.
+    /// 2. Returns `Err(GpuSimError::NotAvailable)` if no GPU is available.
+    /// 3. Returns `Err(GpuSimError::BatchTooLarge)` if a buffer exceeds
+    ///    `limits.max_storage_buffer_binding_size`.
+    ///
+    /// Integrator checking is first so that
+    /// `gpu_unsupported_integrator` and other config-validation tests
+    /// can run without a GPU.
+    ///
+    /// **Edge cases:** `n == 0` and `model.nv == 0` are accepted without
+    /// error. For `n == 0`, the inner `BatchSim` is empty and `step_all()`
+    /// returns `Ok(vec![])` immediately (no GPU dispatch). For `nv == 0`,
+    /// the GPU dispatch is a no-op (shader exits immediately). In both
+    /// cases, GPU buffers are allocated with minimum size 4 bytes
+    /// (wgpu requires `size > 0`) to avoid validation errors. The 4-byte
+    /// buffers are never meaningfully read or written.
     ///
     /// The `Model` is uploaded to GPU once. Per-env buffers are allocated
     /// for the maximum batch size; they are not resized.
@@ -2770,11 +2867,24 @@ impl GpuBatchSim {
     /// device/queue call `GpuSimContext::get()` each time (same pattern
     /// as `mesh-gpu::SdfPipeline`).
     ///
-    /// Pipeline creation sets the WGSL `override wg_size` constant to
-    /// `next_power_of_2(model.nv)` via `PipelineCompilationOptions`:
+    /// The shader is loaded at compile time via `include_str!` and
+    /// compiled into a `ShaderModule` in `new()`:
     ///
     /// ```ignore
-    /// let wg_size = model.nv.next_power_of_two() as f64;
+    /// const INTEGRATE_SHADER: &str = include_str!("shaders/euler_integrate.wgsl");
+    /// let shader_module = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    ///     label: Some("euler_integrate"),
+    ///     source: wgpu::ShaderSource::Wgsl(INTEGRATE_SHADER.into()),
+    /// });
+    /// ```
+    ///
+    /// Pipeline creation sets the WGSL `override wg_size` constant to
+    /// `min(next_power_of_2(nv), max_workgroup_size)` via
+    /// `PipelineCompilationOptions`:
+    ///
+    /// ```ignore
+    /// let max_wg = ctx.limits.max_compute_workgroup_size_x as usize;
+    /// let wg_size = model.nv.next_power_of_two().min(max_wg) as f64;
     /// let constants = HashMap::from([("wg_size".to_string(), wg_size)]);
     /// let pipeline = ctx.device.create_compute_pipeline(
     ///     &wgpu::ComputePipelineDescriptor {
@@ -2807,19 +2917,29 @@ impl GpuBatchSim {
     /// ```
     pub fn new(model: Arc<Model>, n: usize) -> GpuSimResult<Self> { ... }
 
-    /// Create a GPU-accelerated batch, returning `None` if no GPU
-    /// is available. Convenience wrapper around `new()` for fallback
-    /// patterns:
+    /// Create a GPU-accelerated batch, returning `None` only when no
+    /// GPU is available (`NotAvailable`). Other errors
+    /// (`UnsupportedIntegrator`, `BatchTooLarge`, etc.) are propagated
+    /// so callers learn about fixable configuration problems rather
+    /// than silently falling back to CPU.
     ///
     /// ```ignore
     /// let model = Arc::new(model);
-    /// match GpuBatchSim::try_new(Arc::clone(&model), 1024) {
+    /// match GpuBatchSim::try_new(Arc::clone(&model), 1024)? {
     ///     Some(gpu) => { /* use gpu.step_all()? */ },
-    ///     None      => { /* fall back to BatchSim::new(model, 1024) */ },
+    ///     None      => { /* no GPU — fall back to BatchSim */ },
     /// }
     /// ```
-    #[must_use]
-    pub fn try_new(model: Arc<Model>, n: usize) -> Option<Self> { ... }
+    ///
+    /// Implementation: calls `new()`, maps `NotAvailable` → `Ok(None)`,
+    /// re-wraps success as `Ok(Some(self))`, propagates all other errors.
+    pub fn try_new(model: Arc<Model>, n: usize) -> GpuSimResult<Option<Self>> {
+        match Self::new(model, n) {
+            Ok(sim) => Ok(Some(sim)),
+            Err(GpuSimError::NotAvailable) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 
     /// Number of environments.
     #[must_use]
@@ -2863,6 +2983,16 @@ impl GpuBatchSim {
     /// (device lost, buffer mapping error). On success, returns
     /// per-environment errors with the same semantics as
     /// [`BatchSim::step_all()`].
+    ///
+    /// # Failure Semantics
+    ///
+    /// If `step_all()` returns `Err`, the environments are in a
+    /// partially-updated state: `forward()` has already run (mutating
+    /// internal FK/force/contact data) but integration has not completed.
+    /// The `Data.qvel` values are stale. Callers should treat a
+    /// `GpuSimError` as unrecoverable for the current batch state and
+    /// call `reset_all()` before continuing, or recreate the
+    /// `GpuBatchSim`. Do not retry `step_all()` without resetting.
     pub fn step_all(&mut self) -> GpuSimResult<Vec<Option<StepError>>> { ... }
 
     /// Reset environment `i` to initial state.
@@ -3184,10 +3314,10 @@ standard tool for GPU-accelerated RL physics.
    This criterion becomes a hard pass/fail gate in Phase 10b+ when FK
    moves to GPU.
 
-3. **Graceful CPU fallback:** `GpuBatchSim::try_new()` returns `None` when
-   no GPU is available. `GpuBatchSim::new()` returns
-   `Err(GpuSimError::NotAvailable)`. No panic, no silent degradation.
-   Tested via `#[ignore = "Requires GPU"]` + always-run fallback test.
+3. **Graceful CPU fallback:** `GpuBatchSim::try_new()` returns `Ok(None)`
+   when no GPU is available (other errors propagate via `Err`).
+   `GpuBatchSim::new()` returns `Err(GpuSimError::NotAvailable)`.
+   No panic, no silent degradation. Tested via always-run fallback test.
 
 4. **Determinism:** Same model + same initial state + same controls →
    identical GPU results across runs. No non-determinism from thread
@@ -3204,7 +3334,8 @@ standard tool for GPU-accelerated RL physics.
 6. **API parity with `BatchSim`:** `GpuBatchSim` exposes the same public
    methods as `BatchSim` (`len`, `is_empty`, `model`, `env`, `env_mut`,
    `envs`, `envs_mut`, `step_all`, `reset`, `reset_where`, `reset_all`)
-   plus `try_new`. The only signature difference: `step_all` returns
+   plus `try_new` and `cpu_reference`. The only signature difference:
+   `step_all` returns
    `GpuSimResult<Vec<Option<StepError>>>` (wrapping GPU errors) vs.
    `BatchSim`'s `Vec<Option<StepError>>`. Callers add one `?` to switch.
 
@@ -3218,6 +3349,9 @@ standard tool for GPU-accelerated RL physics.
    docs explain the GPU/CPU tradeoff and Phase 10a scope.
 
 10. **Clippy clean:** Zero warnings with `-D warnings`.
+
+*AC6–AC10 are enforced by lints, `cargo xtask grade`, and CI — not by
+unit tests. AC1–AC5 are covered by explicit tests in `integration.rs`.*
 
 #### Benchmark
 
@@ -3245,10 +3379,17 @@ establishing the infrastructure for Phase 10b+ comparisons.
 ```rust
 // Always-run tests (no GPU required):
 #[test] fn gpu_context_availability()       // GpuSimContext::is_available() returns bool
-#[test] fn try_new_fallback_consistency()   // try_new() returns Some iff is_available()
+#[test] fn try_new_fallback_consistency()   // try_new() returns Ok(Some) iff is_available()
 #[test] fn gpu_params_layout()               // size_of::<GpuParams>() == 16, align == 4
+#[test] fn gpu_unsupported_integrator()     // RK4 → Err(UnsupportedIntegrator),
+                                            // Implicit → Err(UnsupportedIntegrator)
+                                            // (checked before GPU availability)
 
 // GPU-required tests (ignored in CI without GPU):
+#[test] #[ignore = "Requires GPU"]
+fn gpu_euler_ok()                           // Euler model → new() succeeds
+#[test] #[ignore = "Requires GPU"]
+fn gpu_step_empty_batch()                   // 0 envs: new() succeeds, step_all() returns Ok(vec![])
 #[test] #[ignore = "Requires GPU"]
 fn gpu_matches_cpu_single_step()            // AC1: numerical equivalence, 1 step
 #[test] #[ignore = "Requires GPU"]
@@ -3264,11 +3405,7 @@ fn gpu_reset_where()                        // reset_where(mask) works correctly
 #[test] #[ignore = "Requires GPU"]
 fn gpu_reset_all()                          // reset_all() works correctly
 #[test] #[ignore = "Requires GPU"]
-fn gpu_step_empty_batch()                   // 0 envs, no panic
-#[test] #[ignore = "Requires GPU"]
 fn gpu_step_single_env()                    // 1 env, correctness
-#[test] #[ignore = "Requires GPU"]
-fn gpu_euler_only()                         // RK4 → Err, Implicit → Err, Euler → Ok
 ```
 
 #### Files
