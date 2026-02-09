@@ -519,11 +519,11 @@ fn test_cg_default_convergence() {
 }
 
 // ---------------------------------------------------------------------------
-// Additional: Newton maps to PGS
+// Additional: Newton MJCF default maps to SolverType::Newton
 // ---------------------------------------------------------------------------
 #[test]
-fn test_newton_maps_to_pgs() {
-    // MjcfSolverType::Newton (the MJCF default) should map to SolverType::PGS
+fn test_newton_maps_to_newton() {
+    // MjcfSolverType::Newton (the MJCF default) should map to SolverType::Newton
     let mjcf = r#"
     <mujoco model="default_solver">
         <worldbody>
@@ -538,8 +538,8 @@ fn test_newton_maps_to_pgs() {
     let model = load_model(mjcf).expect("load");
     assert_eq!(
         model.solver_type,
-        SolverType::PGS,
-        "Default (Newton) MJCF solver should map to PGS"
+        SolverType::Newton,
+        "Default (Newton) MJCF solver should map to SolverType::Newton"
     );
 }
 

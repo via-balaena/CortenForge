@@ -105,3 +105,10 @@ pub mod derivatives;
 
 /// Keyframe parsing, reset, mocap body semantics, validation error tests.
 pub mod keyframes;
+
+// ============================================================================
+// Newton Solver Tests (§15 Phase A)
+// ============================================================================
+
+/// Newton solver integration tests: convergence, warmstart, fallbacks.
+pub mod newton_solver;

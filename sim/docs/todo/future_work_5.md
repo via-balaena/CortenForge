@@ -6,7 +6,7 @@ priority table, dependency graph, and file map.
 ---
 
 ### 15. Newton Solver
-**Status:** Not started | **Effort:** XL | **Prerequisites:** None
+**Status:** Phase B Complete | **Effort:** XL | **Prerequisites:** None
 
 #### Current State
 The standalone Newton solver implementation was deleted during Phase 3 crate
@@ -120,14 +120,15 @@ Each row type already has an implicit Jacobian in the existing penalty code:
   The `diagApprox` computation extracts just the diagonal of A per row
   (§15.1), avoiding the full O(nc²·nv) Delassus assembly.
 
-**Friction loss migration.** In MuJoCo, joint/tendon `frictionloss` creates
+**Friction loss migration.** MuJoCo has **always** treated `frictionloss` as
 constraint rows (`mjCNSTR_FRICTION_DOF`, `mjCNSTR_FRICTION_TENDON`) with
-Huber cost — NOT passive forces. Our pipeline currently handles frictionloss
-in `mj_fwd_passive()` via `−frictionloss · tanh(qvel · friction_smoothing)`
-(where `friction_smoothing` defaults to 1000.0, configurable on Model)
-written to `qfrc_passive` (lines 9729–9738). This is a smooth approximation that differs
-from MuJoCo's semantics. For the Newton solver, frictionloss must move into
-the constraint system as proper Huber rows:
+Huber cost — it was never a passive force in MuJoCo. Our pipeline diverged
+from MuJoCo here from the start: we handle frictionloss in `mj_fwd_passive()`
+via `−frictionloss · tanh(qvel · friction_smoothing)` (where
+`friction_smoothing` defaults to 1000.0, configurable on Model) written to
+`qfrc_passive` (lines 9729–9738). This smooth `tanh` approximation differs
+from MuJoCo's Huber-cost constraint semantics. For the Newton solver,
+frictionloss must be handled as proper constraint rows matching MuJoCo:
 - DOF friction: 1×nv sparse row with `1.0` at the DOF index
 - Tendon friction: 1×nv row = `ten_J[t]`
 - `floss = frictionloss` value from the joint/tendon
@@ -147,7 +148,7 @@ forces and instead includes it in J.
   `qfrc_passive − qfrc_frictionloss`. PGS/CG use `qfrc_passive` as-is.
 Approach (b) is preferred because it avoids coupling `mj_fwd_passive()` to
 solver type and preserves the friction loss vector for diagnostics and PGS
-fallback (§15.12 Phase A step 15). With approach (b), PGS fallback can use
+fallback (§15.12 Phase A step 14). With approach (b), PGS fallback can use
 `qfrc_passive` directly (which includes friction loss) without re-running
 `mj_fwd_passive()`.
 
@@ -211,15 +212,15 @@ constraint-space residual `jar_i = (J · qacc − aref)_i`:
 
 - `D_i = 1 / R_i` is the inverse regularization (constraint stiffness)
 
-- `R_i = max(ε, (1 − imp_i) / imp_i · diagApprox_i)` where `ε = 1e-10`
+- `R_i = max(mjMINVAL, (1 − imp_i) / imp_i · diagApprox_i)` where `mjMINVAL = 1e-15`
 
 - `imp_i` is the impedance from `solimp = [dmin, dmax, width, midpoint, power]`:
   ```
   // Clamp solimp parameters (matching MuJoCo's getsolparam() and existing compute_impedance())
-  dmin     = clamp(solimp[0], MJ_MIN_IMP, MJ_MAX_IMP)   // MJ_MIN_IMP = 0.0001
-  dmax     = clamp(solimp[1], MJ_MIN_IMP, MJ_MAX_IMP)    // MJ_MAX_IMP = 0.9999
+  dmin     = clamp(solimp[0], mjMINIMP, mjMAXIMP)   // mjMINIMP = 0.0001
+  dmax     = clamp(solimp[1], mjMINIMP, mjMAXIMP)    // mjMAXIMP = 0.9999
   width    = solimp[2]
-  midpoint = clamp(solimp[3], mjMINVAL, 1.0 − mjMINVAL)  // mjMINVAL = 1e-15
+  midpoint = clamp(solimp[3], mjMINIMP, mjMAXIMP)         // mjMINIMP = 0.0001
   power    = max(1.0, solimp[4])                          // MuJoCo enforces power ≥ 1
 
   // Guard: width ≤ 0 → skip sigmoid, return midpoint
@@ -258,20 +259,30 @@ constraint-space residual `jar_i = (J · qacc − aref)_i`:
   subtraction — the Newton path's callers must subtract margin before calling.
 
 - `diagApprox_i` approximates the `i`-th diagonal of `A = J·M⁻¹·J^T` without
-  forming the full Delassus matrix. For each constraint row, it sums the
-  inverse effective inertias of the bodies the Jacobian touches:
+  forming the full Delassus matrix. MuJoCo's `mj_diagApprox()` uses
+  precomputed per-body scalar weights `body_invweight0[2*body]` (translational)
+  and `body_invweight0[2*body+1]` (rotational):
   ```
-  diagApprox_i = Σ_b  J_i_b^T · invWeight_b · J_i_b
+  // Per constraint type:
+  //   Equality Connect: tran_b1 + tran_b2
+  //   Equality Weld: tran or rot depending on row index (0-2 → tran, 3-5 → rot)
+  //   Joint limit / DOF friction: dof_invweight0[dof]
+  //   Tendon limit / friction: tendon_invweight0[tendon]
+  //   Elliptic contact: rows 0-2 → tran_b1+tran_b2, rows 3+ → rot_b1+rot_b2
+  // where tran_bN = body_invweight0[2*bN], rot_bN = body_invweight0[2*bN+1]
   ```
-  Where `invWeight_b = 1 / (mass_b + trace(inertia_b)/3)` is a scalar
-  per-body inverse inertia weight. For simple cases (hinge joint limit):
-  `diagApprox ≈ 1 / M_diag[dof]`. For contacts touching two bodies:
-  `diagApprox ≈ invWeight_b1 + invWeight_b2` (Gauss-Seidel approximation).
+  This is a cheap O(1)-per-row approximation that avoids any M⁻¹ solves.
+  For simple cases (hinge joint limit touching one body):
+  `diagApprox ≈ dof_invweight0[dof] ≈ 1 / M_diag[dof]`.
 
-  **Implementation note:** An initial simplified version may use the existing
-  full Delassus diagonal `A_ii` (already computed in `assemble_contact_system()`)
-  rather than the body-weight approximation. The approximation matters for
-  sparse/large systems where forming A is expensive.
+  **Phase A uses the exact diagonal instead** (§15.12 step 2): compute
+  `diagApprox_i = J_i · M⁻¹ · J_i^T` via sparse LDL solve, which is
+  O(nv) per row. This is more accurate than MuJoCo's approximation at
+  higher cost. Phase C may switch to the body-weight approximation for
+  large systems where the O(nv · nefc) cost dominates. Implementing the
+  body-weight approximation requires adding `body_invweight0`,
+  `dof_invweight0`, and `tendon_invweight0` to Model (computed at build
+  time from the mass matrix at `qpos0`).
 
 - `floss_i` is the friction loss saturation force (`frictionloss` attribute on
   the joint or tendon, zero for non-friction constraints)
@@ -294,12 +305,14 @@ constraint-space residual `jar_i = (J · qacc − aref)_i`:
       or `timeconst → 0` (both are legal `solref` values). This matches
       MuJoCo's `mju_max(mjMINVAL, ...)` in `mj_referenceConstraint()`
     - Direct mode (`solref[0] ≤ 0`):
-      `K = −solref[0] / imp_max²`,
-      `B = −solref[1] / imp_max`
-      Note: `imp_max = dmax` is clamped to `[MJ_MIN_IMP, MJ_MAX_IMP]` so
-      the denominator is at least `0.0001²`. Very small `dmax` with large
-      direct stiffness can produce `K ~ 1e8+`; this is numerically valid but
-      produces very stiff constraints (high `D_i`).
+      `K = −solref[0] / max(mjMINVAL, imp_max²)`,
+      `B = −solref[1] / max(mjMINVAL, imp_max)`
+      The `max(mjMINVAL, ...)` guard matches MuJoCo's `mju_max(mjMINVAL, ...)`
+      in `mj_makeImpedance()`. In practice the guard is redundant since
+      `imp_max = dmax` is clamped to `[mjMINIMP, mjMAXIMP]` (denominator ≥
+      `0.0001²`), but it is included for defensive correctness. Very small
+      `dmax` with large direct stiffness can produce `K ~ 1e8+`; this is
+      numerically valid but produces very stiff constraints (high `D_i`).
 
   **Important:** In the `aref` formula, impedance `imp_i` multiplies only the
   position term, NOT the velocity term. This is the MuJoCo KBIP convention:
@@ -351,15 +364,21 @@ Where:
   vector. For Newton, `qfrc_smooth` **excludes** friction loss forces (which
   are constraint rows instead):
   `qfrc_smooth = qfrc_applied + qfrc_actuator + (qfrc_passive − qfrc_frictionloss) − qfrc_bias`
+  **Note:** MuJoCo also includes `xfrc_applied` (external Cartesian body
+  forces accumulated via `mj_xfrcAccumulate()`). Our pipeline does not
+  currently support `xfrc_applied`; when/if it is added, it must be included
+  in `qfrc_smooth`.
 - `s_i` is the per-constraint penalty (table in §15.1)
 
-**Cost variable convention:** Throughout this spec, `cost` returned by
-`PrimalUpdateConstraint`/`classify_constraint_states` is always **constraint-only**
-(`Σ_i s_i`, excluding the Gauss term). Full cost (Gauss + constraint) is computed
-separately where needed: warmstart comparison (`PrimalCost` in §15.8) and line
-search cost evaluation (`PrimalEval` in §15.5, where `total₀` starts from
-`quadGauss[0]`). The convergence check (§15.8 step 7) uses constraint-only cost
-improvement, with the gradient check capturing the Gauss term.
+**Cost variable convention:** Throughout this spec, `cost` tracked by the
+solver (and returned by `PrimalUpdateConstraint`/`classify_constraint_states`)
+is **total cost** (Gauss + constraint): `cost = costGauss + Σ_i s_i`. This
+matches MuJoCo's `PrimalUpdateConstraint()`, which first computes
+constraint-only cost via `mj_constraintUpdate_impl()`, then immediately adds
+the Gauss term (`ctx->cost += Gauss`). The convergence check (§15.8 step 6)
+and warmstart comparison both use this total cost. The line search cost
+evaluation (`PrimalEval` in §15.5) also computes total cost (the quadGauss
+terms provide the Gauss contribution).
 
 When `nefc = 0` (no active constraints), the solution is trivially
 `qacc = qacc_smooth` with zero Newton iterations.
@@ -424,15 +443,37 @@ fn cholesky_rank1_update(
 ) -> bool
 ```
 
-##### 15.4 Newton Direction
+##### 15.4 Gradient Computation and Newton Direction
 
-Solve `H · search = −g` via the Cholesky factor (use `L_cone` if cone states
-exist, else `L`):
+**Gradient and preconditioned gradient** (matching MuJoCo's `PrimalUpdateGradient`):
+
+MuJoCo separates constraint update from gradient computation into two distinct
+functions: `PrimalUpdateConstraint` (forces + cost) and `PrimalUpdateGradient`
+(gradient + search direction). Our implementation follows this separation:
 
 ```
-L · z = −g          (forward substitution)
-L^T · search = z    (back substitution)
+// Step 1: Compute raw gradient
+qfrc_constraint = J^T · efc_force
+grad = Ma − qfrc_smooth − qfrc_constraint
+
+// Step 2: Compute preconditioned gradient (= Newton direction)
+Mgrad = solve(L_cone or L, grad)      // H⁻¹ · grad via Cholesky
 ```
+
+Where `L_cone` is used if any cone states exist, else `L`. The solve is:
+```
+L · z = grad          (forward substitution)
+L^T · Mgrad = z       (back substitution)
+```
+
+`Mgrad` is a solver-local `nv`-vector storing the preconditioned gradient.
+For Newton, `Mgrad = H⁻¹·grad`. (For CG, MuJoCo uses `Mgrad = M⁻¹·grad`
+instead — this is why MuJoCo separates gradient from preconditioning.)
+
+**Search direction**: `search = −Mgrad` (negated preconditioned gradient).
+
+`qfrc_constraint` is also written to `Data.qfrc_constraint` at the end of
+the solve (RECOVER block, §15.8) for diagnostic access by sensors.
 
 Cost: `O(nv²)` per solve (dense).
 
@@ -444,16 +485,36 @@ The step size `α` minimizes cost along the search direction:
 qacc(α) = qacc + α · search
 ```
 
-**Pre-computation** (once per outer iteration):
+**Pre-computation** (all performed inside `PrimalSearch()`, before the first
+`PrimalEval` call — matching MuJoCo where `Mv`/`Jv` and `PrimalPrepare` are
+internal to `PrimalSearch()`, not outer-loop steps):
 - `Mv = M · search` (nv-vector)
 - `Jv = J · search` (nefc-vector)
-- `snorm = ||search||`; if `snorm < 1e-14`, return `α = 0`
+- `snorm = ||search||`; if `snorm < mjMINVAL`, return `α = 0`
 - `gtol = ls_tol · snorm / scale` where `ls_tol = solver_tolerance · ls_tolerance`
   (MuJoCo pre-multiplies the two tolerances before passing to the line search)
+- `PrimalPrepare(...)` — assembles all quadratic coefficients (below)
 
-**Per-constraint quadratic coefficients** (`quad[3*i..3*i+3]` for scalar
-constraints):
+**`PrimalPrepare`** (called once per line search, inside `PrimalSearch()`):
 
+Computes `quadGauss` and per-constraint `quad` arrays. MuJoCo's
+`PrimalPrepare()` is a separate function; our implementation may inline it.
+
+Gauss term quadratics (from expanding `½·||qacc + α·search − qacc_smooth||²_M`):
+```
+quadGauss[0] = costGauss    // set by PrimalUpdateConstraint (= current Gauss cost)
+quadGauss[1] = search^T · (Ma − qfrc_smooth)             (linear coefficient)
+quadGauss[2] = ½ · search^T · Mv                 (= ½ · search^T · M · search)
+```
+Where `Mv = M · search`. Note `Mv^T · qacc = search^T · Ma` by symmetry of M.
+**Important:** `quadGauss[0]` is NOT computed here — it was already computed by
+`PrimalUpdateConstraint` (§15.12 step 7) and stored for reuse. `PrimalPrepare`
+only computes `quadGauss[1]` and `quadGauss[2]`.
+
+**Per-constraint quadratic coefficients:**
+
+For **scalar constraints** (non-elliptic), `quad` stores 3 elements at
+`quad[3*i..3*i+3]`:
 ```
 quad_i = [q₀, q₁, q₂] where:
   q₀ = ½ · D_i · jar_i²              (constant term — current cost contribution)
@@ -461,13 +522,25 @@ quad_i = [q₀, q₁, q₂] where:
   q₂ = ½ · Jv_i · D_i · Jv_i         (quadratic in α)
 ```
 
-Gauss term quadratics (from expanding `½·||qacc + α·search − qacc_smooth||²_M`):
+For **elliptic contacts** (dim ≥ 3), `PrimalPrepare` stores 9 elements at
+`quad[3*i..3*i+9]` (overflowing into the slots of subsequent friction rows,
+which are skipped by `i += (dim-1)`):
 ```
-quadGauss[0] = costGauss                         (= ½·(Ma − qfrc_smooth)^T · (qacc − qacc_smooth))
-quadGauss[1] = search^T · (Ma − qfrc_smooth)             (linear coefficient of Gauss term)
-quadGauss[2] = ½ · search^T · Mv                 (= ½ · search^T · M · search)
+quad[3*i+0] = ½ · Σ_j D[i+j]·jar[i+j]²   (summed over all dim rows)
+quad[3*i+1] = Σ_j Jv[i+j]·D[i+j]·jar[i+j]
+quad[3*i+2] = ½ · Σ_j Jv[i+j]·D[i+j]·Jv[i+j]
+quad[3*i+3] = U0 = jar[i]·μ                 (normal channel, scaled)
+quad[3*i+4] = V0 = Jv[i]·μ                  (normal channel velocity)
+quad[3*i+5] = UU = Σ_{j≥1} (jar[i+j]·friction[j−1])²
+quad[3*i+6] = UV = Σ_{j≥1} jar[i+j]·friction[j−1]·Jv[i+j]·friction[j−1]
+quad[3*i+7] = VV = Σ_{j≥1} (Jv[i+j]·friction[j−1])²
+quad[3*i+8] = Dm = D[i] / (μ²·(1+μ²))
 ```
-Where `Mv = M · search`. Note `Mv^T · qacc = search^T · Ma` by symmetry of M.
+The first 3 entries (`q₀, q₁, q₂`) are the **per-row quadratic sums** over all
+`dim` rows — used when the contact falls in the Bottom zone (per-row Quadratic).
+The remaining 6 entries are the **cone auxiliary values** — used when the contact
+falls in the Middle zone (cone cost). This avoids recomputing them per `PrimalEval`
+call. `PrimalPrepare` iterates with the same `i += (dim-1)` skip pattern.
 
 **1D cost at step α** (`PrimalEval`): For each constraint, the contribution
 depends on the state *at that α*:
@@ -480,13 +553,10 @@ depends on the state *at that α*:
   evaluates to `−½·R_i·floss_i²`, matching both linear cost expressions from §15.1)
 - **Unilateral** (limits/contact normal): if `jar_i + α·Jv_i < 0` → add
   quadratic; else → zero (satisfied)
-- **Elliptic contacts**: Pre-compute auxiliary quadratics per contact:
-  ```
-  U0 = jar[i]·μ,  V0 = Jv[i]·μ                          (normal channel)
-  UU = Σ_{j≥1} (jar[i+j]·friction[j−1])²                (tangent² constant)
-  UV = Σ_{j≥1} jar[i+j]·friction[j−1] · Jv[i+j]·friction[j−1]  (tangent² linear)
-  VV = Σ_{j≥1} (Jv[i+j]·friction[j−1])²                 (tangent² quadratic)
-  ```
+- **Elliptic contacts**: Read auxiliary values from `quad[3*i+3..3*i+9]`
+  (pre-computed by `PrimalPrepare`):
+  `U0 = quad[3*i+3]`, `V0 = quad[3*i+4]`, `UU = quad[3*i+5]`,
+  `UV = quad[3*i+6]`, `VV = quad[3*i+7]`, `Dm = quad[3*i+8]`.
   At each α: `N = U0 + α·V0`, `T² = UU + α·(2·UV + α·VV)`,
   `T = sqrt(max(0, T²))`. Note: `T²` is mathematically non-negative
   (it equals `Σ_j (a_j + α·b_j)²` by Cauchy-Schwarz); the `max(0, ...)`
@@ -506,9 +576,10 @@ depends on the state *at that α*:
 
 **Accumulation.** Initialize `total₀ = quadGauss[0]`, `total₁ = quadGauss[1]`,
 `total₂ = quadGauss[2]`, `deriv[0] = 0`, `deriv[1] = 0`, `cost_cone = 0`.
-The loop iterates over constraint rows with `i += efc_dim[i]` stepping
-(same pattern as `PrimalUpdateConstraint`), processing elliptic contacts
-as groups and scalar constraints individually. For each constraint:
+The loop iterates per-row (`for i=0..nefc; i++`) with elliptic contacts
+doing `i += (dim-1)` inside the loop body (net advance = `dim`), matching
+the same stepping pattern as `PrimalUpdateConstraint` and `HessianIncremental`.
+Scalar constraints advance by 1, elliptic contacts are processed as groups. For each constraint:
 quadratic constraints (equality, friction, unilateral, and elliptic-bottom)
 add to the `[total₀, total₁, total₂]` triple. Cone constraints in the
 middle zone contribute `½·Dm·(N − μ·T)²` to `cost_cone`, and their
@@ -527,21 +598,30 @@ follows from the Gauss term: `quadGauss[2] = ½·search^T·M·search > 0`
 if cone `deriv[1]` contributions are negative, they cannot overcome the
 strictly positive Gauss contribution because the overall cost is convex.
 
-**Two-phase algorithm:**
+**Convexity guard:** Despite the theoretical guarantee, floating-point
+rounding can cause `f''(α) ≤ 0` in degenerate cases. MuJoCo includes an
+explicit guard: if `f''(α) ≤ 0`, emit a warning and clamp
+`f''(α) = mjMINVAL` to prevent negative Newton steps. The implementation
+must include this guard.
 
-*Phase 1 — Unbounded (finding a bracket):*
-1. Evaluate at `α₀ = 0` → get `f'(0)`, `f''(0)`. Record `sign₀ = sign(f'(0))`.
-2. Newton step: `α₁ = −f'(0) / f''(0)`; evaluate at `α₁`
-3. If `|f'(α₁)| < gtol` → return `α₁`
-4. If `sign(f'(α₁)) ≠ sign₀` → bracket found between `α₀` and `α₁` → Phase 2
-5. Otherwise, take another Newton step from `α₁`: `α₂ = α₁ − f'(α₁)/f''(α₁)`;
-   repeat sign check. Continue stepping (each step is another 1D Newton from
-   the latest point) until either: derivative sign changes (→ Phase 2),
-   convergence (`|f'| < gtol` → return), or `ls_iterations` exhausted (→
-   return best α so far by lowest cost).
+**Three-phase algorithm** (matching MuJoCo's `PrimalSearch` structure):
 
-*Phase 2 — Bracketed (converging to root of f'):*
-1. Bracket `[lo, hi]` where `f'(lo) < 0` and `f'(hi) > 0` (from Phase 1).
+*Phase 1 — Initial Newton step:*
+1. Evaluate at `α₀ = 0` → get `f'(0)`, `f''(0)`.
+2. If `|f'(0)| < gtol` → already converged, return `α = 0`.
+3. Newton step: `α₁ = −f'(0) / f''(0)`; evaluate at `α₁`.
+4. If `|f'(α₁)| < gtol` → return `α₁`.
+5. If `sign(f'(α₁)) ≠ sign(f'(0))` → bracket found → Phase 3.
+
+*Phase 2 — One-sided stepping (finding a bracket):*
+1. Continue taking Newton steps in the direction `dir = sign(−f'(0))`:
+   `α_{k+1} = α_k − f'(α_k) / f''(α_k)`.
+2. After each step: if `|f'| < gtol` → return. If derivative sign changes
+   from Phase 1's sign → bracket found → Phase 3. If `ls_iterations`
+   exhausted → return best α so far by lowest cost.
+
+*Phase 3 — Bracketed refinement (converging to root of f'):*
+1. Bracket `[lo, hi]` where `f'(lo) < 0` and `f'(hi) > 0` (from Phase 1/2).
    If `f'(lo) > 0` and `f'(hi) < 0`, swap so the convention holds.
 2. Compute three candidate step sizes:
    - `α_mid = (lo + hi) / 2`
@@ -558,19 +638,24 @@ strictly positive Gauss contribution because the overall cost is convex.
 7. Repeat from step 2 until `ls_iterations` exhausted → return best α.
 
 ```rust
+/// PrimalSearch: line search wrapper that computes Mv, Jv, calls PrimalPrepare,
+/// then runs the 3-phase line search. Returns optimal step size α.
+/// After return, ctx.Mv and ctx.Jv are available for the MOVE step.
 fn primal_line_search(
-    ctx: &PrimalContext,             // qacc, M, J, jar, aref, qfrc_smooth, ...
-    search: &DVector<f64>,           // Newton direction
-    mv: &DVector<f64>,               // M · search (precomputed)
-    jv: &DVector<f64>,               // J · search (precomputed)
-    quad: &[f64],                    // per-constraint quadratic coefficients
-    quad_gauss: &[f64; 3],           // Gauss term coefficients
+    ctx: &mut PrimalContext,         // solver state: qacc, M, J, jar, Ma, qfrc_smooth,
+                                     //   search, efc_*, quad, quadGauss, Mv, Jv, ...
     data: &Data,                     // efc_type, efc_floss, efc_mu, efc_dim, efc_D, efc_R
     ls_iterations: usize,
-    ls_tolerance: f64,
+    ls_tolerance: f64,               // = solver_tolerance * ls_tolerance (pre-multiplied)
     scale: f64,                      // 1 / (meaninertia · max(1, nv))
 ) -> f64                             // optimal step α
 ```
+Internally, this function:
+1. Computes `ctx.Mv = M · search`, `ctx.Jv = J · search`
+2. Computes `snorm = ||search||`; if `snorm < mjMINVAL`, returns `α = 0`
+3. Computes `gtol = ls_tolerance · snorm / scale`
+4. Calls `PrimalPrepare` to fill `ctx.quad` and `ctx.quadGauss[1..2]`
+5. Runs the 3-phase algorithm (Phase 1/2/3)
 
 **`PrimalEval`** — evaluates cost derivatives at a given α. Called by the line
 search. Not a separate public function; implemented inline within
@@ -595,12 +680,14 @@ Terminate when **either** condition is met:
 
 1. **Scaled improvement** `< tolerance`:
    `(cost_prev − cost_curr) · scale < tolerance`
+   where `cost_prev`, `cost_curr` are **total cost** (Gauss + constraint)
 2. **Scaled gradient** `< tolerance`:
    `||g|| · scale < tolerance`
 
 Where `scale = 1 / (meaninertia · max(1, nv))` and
-`meaninertia = trace(M) / nv`. Scaling makes the tolerance dimensionless
-and invariant to model size.
+`meaninertia = Model.stat_meaninertia` (computed once at model build time
+from the home position `qpos0`, matching MuJoCo's `m->stat.meaninertia`).
+Scaling makes the tolerance dimensionless and invariant to model size.
 
 Also terminate immediately if line search returns `α = 0` (no improvement
 possible).
@@ -674,6 +761,12 @@ elliptic contact group. All rows share the classified state (Quadratic,
 Satisfied, or Cone). Individual per-row classification is never applied to
 elliptic contacts — the coupled cone geometry determines a single zone.
 
+**State replication:** After classifying the contact group, the state must
+be explicitly written to all `dim` rows: `efc_state[i+j] = state` for
+`j = 0..dim−1`. This is required because `HessianIncremental` (§15.3)
+iterates per-row (`i += 1`) and checks `efc_state[i]` for each row
+individually. MuJoCo does this explicitly in `mj_constraintUpdate_impl`.
+
 `T` is a norm so `T ≥ 0` always. The `T < T_min` conditions below (with
 `T_min = 1e-15`, matching MuJoCo's `mjMINVAL`) guard against degenerate
 tangential magnitude. **The Cone state is only reached when `T ≥ T_min`**,
@@ -741,12 +834,17 @@ e.g. `H_c[j, 0]` from `H_c[0, j]`).
 The resulting `H_c[0,0] = Dm·μ²`, `H_c[0,j] = −Dm·μ²·friction[j−1]·U[j]/T`,
 etc. This matches MuJoCo's `mj_constraintUpdate_impl` cone Hessian.
 
-**Applying cone Hessian to global Cholesky:**
+**Applying cone Hessian to global Cholesky** (`HessianCone`):
 1. Copy base factor `L → L_cone`
-2. For each contact in `Cone` state:
-   a. Cholesky-factor the local `H_c = L_c · L_c^T` (`dim × dim`)
-   b. Compute `rows = L_c^T · J_block` where `J_block` is `dim × nv`
-   c. For each row `r` of `rows`: rank-1 update `L_cone` with that row
+2. Iterate `for i = 0..nefc` (stepping `i += 1` in the loop header):
+   - If `efc_state[i] == Cone`:
+     a. Get `dim` from the contact, `J_block = efc_J[i..i+dim, :]`
+     b. Cholesky-factor the local `H_c = L_c · L_c^T` (`dim × dim`)
+     c. Compute `rows = L_c^T · J_block` (`dim × nv`)
+     d. For each row `r` of `rows`: rank-1 update `L_cone` with that row
+     e. Advance `i += (dim − 1)` (net advance = `dim` including loop increment)
+   - Since state is replicated to all dim rows (§15.7), any row of a cone
+     group triggers processing; the `i += (dim-1)` skip avoids reprocessing.
 3. Use `L_cone` for Newton direction solve
 
 ##### 15.8 Outer Iteration Loop
@@ -773,72 +871,88 @@ INITIALIZE:
     If nefc == 0:
         qacc = qacc_smooth; return   (no constraints → unconstrained solution)
 
-    scale = 1 / (meaninertia · max(1, nv))
-    // Warmstart selection: evaluate cost at qacc_warmstart and qacc_smooth,
-    // use whichever has lower total cost (Gauss + constraint). On the first
-    // timestep, qacc_warmstart is zero-initialized (from reset()), so
-    // qacc_smooth typically wins. On subsequent steps, the previous qacc
-    // (warmstart) usually wins. MuJoCo always performs this comparison.
-    // PrimalCost(x) = ½·||x − qacc_smooth||²_M + Σ_i s_i(J·x − aref)
-    // Implemented inline (not a public function). Steps:
-    //   1. tmp_jar = J · x − aref
-    //   2. constraint_cost = classify states per §15.1/§15.7, sum s_i(tmp_jar_i)
-    //   3. gauss_cost = ½·(M·x − qfrc_smooth)^T · (x − qacc_smooth)
-    //   4. return gauss_cost + constraint_cost
-    // Use temporary arrays for jar and state — do NOT overwrite the solver's
-    // efc_state/efc_force. Note: this returns FULL cost (Gauss + constraint),
-    // unlike PrimalUpdateConstraint which returns constraint-only cost.
+    scale = 1 / (Model.stat_meaninertia · max(1, nv))
+
+    // Warmstart selection. MuJoCo performs this in a separate `warmstart()`
+    // function in engine_forward.c, before the solver is called. We inline
+    // it here for simplicity. The semantics are identical:
+    //
+    // For Newton/CG: compare total cost (Gauss + constraint) at two points:
+    //   cost_warmstart = constraint_cost(jar_warmstart) + gauss_cost(qacc_warmstart)
+    //   cost_smooth    = constraint_cost(jar_smooth)     (Gauss = 0 at qacc_smooth)
+    //
+    // MuJoCo computes jar_smooth as `efc_b = J·qacc_smooth − aref`, which is
+    // pre-computed during constraint assembly. We can reuse the same value.
+    //
+    // Steps:
+    //   1. jar_warmstart = J · qacc_warmstart − aref
+    //   2. constraint_cost_warmstart = Σ_i s_i(jar_warmstart_i)  (via mj_constraintUpdate)
+    //   3. gauss_warmstart = ½·(M·qacc_warmstart − qfrc_smooth)^T
+    //                          · (qacc_warmstart − qacc_smooth)
+    //   4. cost_warmstart = constraint_cost_warmstart + gauss_warmstart
+    //   5. efc_b = J · qacc_smooth − aref  (pre-computed during assembly)
+    //   6. cost_smooth = Σ_i s_i(efc_b_i)  (Gauss term is zero at qacc_smooth)
+    //   7. Pick whichever has lower total cost
+    //
+    // On the first timestep, qacc_warmstart is zero-initialized (from reset()),
+    // so qacc_smooth typically wins. On subsequent steps, the previous qacc
+    // (warmstart) usually wins.
     cost_warmstart = PrimalCost(qacc_warmstart)   // Gauss + constraint cost
     cost_smooth    = PrimalCost(qacc_smooth)       // Gauss = 0 at qacc_smooth, but
                                                    // constraint cost may be nonzero
     qacc = if cost_warmstart < cost_smooth { qacc_warmstart } else { qacc_smooth }
     Ma = M · qacc
     jar = J · qacc − aref
-    PrimalUpdateConstraint(jar) → efc_state, efc_force, cost   // cost = Σ_i s_i (constraint-only, excludes Gauss)
+    PrimalUpdateConstraint(jar, Ma, qfrc_smooth, qacc, qacc_smooth)
+        → efc_state, efc_force, cost   // cost = Gauss + Σ_i s_i (total cost)
     MakeHessian(efc_state) → H = M + J^T · diag(D_active) · J
     FactorizeHessian(H) → L (and L_cone if cone states)
     // If Cholesky factorization fails (numerically non-PD despite theoretical
-    // guarantee), fall back to PGS immediately (§15.12 Phase A step 15).
+    // guarantee), fall back to PGS immediately (§15.12 Phase A step 14).
     // This can happen with extreme D_i values from very stiff constraints.
+    // PrimalUpdateGradient (§15.4): gradient + preconditioned gradient.
+    // Reads efc_force written by the preceding PrimalUpdateConstraint call.
     qfrc_constraint = J^T · efc_force
     grad = Ma − qfrc_smooth − qfrc_constraint
+    Mgrad = solve(L_cone or L, grad)           // H⁻¹ · grad
 
     // Initial convergence check. Note: MuJoCo checks gradient convergence
-    // at the *bottom* of the loop (step 7), not before entering it. We add
+    // at the *bottom* of the loop (step 6), not before entering it. We add
     // this pre-loop check as an optimization to skip the first search
     // direction + line search when the warmstart is already converged.
     // This is a CortenForge extension — functionally equivalent since the
-    // first iteration's step-7 check would catch it anyway.
+    // first iteration's step-6 check would catch it anyway.
     If scale · ||grad|| < tolerance: goto RECOVER
 
-    search = −solve(L_cone or L, grad)
+    search = −Mgrad
 
 ITERATE (up to solver_iterations):
-    1. PRE-COMPUTE:
-       Mv = M · search
-       Jv = J · search
-       Compute per-constraint quadratic coefficients
-
-    2. LINE SEARCH:
-       α = primal_line_search(...)
+    1. LINE SEARCH:
+       // PrimalSearch internally computes Mv, Jv, calls PrimalPrepare
+       // (quad coefficients + quadGauss[1..2]), then runs the 3-phase
+       // line search algorithm (§15.5). quadGauss[0] was already set by
+       // PrimalUpdateConstraint in the previous step (or INITIALIZE).
+       α = primal_line_search(search, ...)
        If α == 0: break
 
-    3. MOVE:
+    2. MOVE:
        qacc += α · search
-       Ma += α · Mv
-       jar += α · Jv
+       Ma += α · Mv            // Mv from line search pre-computation
+       jar += α · Jv            // Jv from line search pre-computation
 
-    4. UPDATE CONSTRAINTS:
+    3. UPDATE CONSTRAINTS:
        oldstate = efc_state.clone()
        oldcost = cost
-       PrimalUpdateConstraint(jar) → efc_state, efc_force, cost
+       PrimalUpdateConstraint(jar, Ma, qfrc_smooth, qacc, qacc_smooth)
+           → efc_state, efc_force, cost   // total cost (Gauss + constraint)
 
-    5. HESSIAN UPDATE:
+    4. HESSIAN UPDATE:
        Process in constraint-row order (i = 0..nefc-1, stepping i += 1),
        interleaving updates and downdates as encountered (matching MuJoCo's
-       HessianIncremental). Note: unlike PrimalUpdateConstraint (which steps
-       by efc_dim[i]), this loop steps per-row because each row contributes
-       an independent rank-1 term to the Cholesky factor:
+       HessianIncremental). Both HessianIncremental and PrimalUpdateConstraint
+       iterate per-row (`for i=0..nefc; i++`) with elliptic contacts doing
+       `i += (dim-1)` inside the loop body. Each row contributes an
+       independent rank-1 term to the Cholesky factor:
          For each row i where oldstate[i] != efc_state[i]:
            If Quadratic→other: rank-1 downdate on L
              If downdate fails (diagonal ≤ 0): set needs_full_recompute = true; break
@@ -850,27 +964,29 @@ ITERATE (up to solver_iterations):
            // The partially-updated L is discarded; rebuild from scratch
            Rebuild D_active from current efc_state
            H = M + J^T · diag(D_active) · J
-           L = cholesky(H)   // If this also fails → PGS fallback (step 15)
+           L = cholesky(H)   // If this also fails → PGS fallback (step 14)
        If any cone states: rebuild L_cone from L + cone blocks
        (L_cone is rebuilt from scratch each iteration — copy L, add all
        current cone H_c blocks — because cone Hessians depend on jar
        which changes each step)
 
-    6. GRADIENT + DIRECTION:
+    5. GRADIENT + PRECONDITIONED GRADIENT (PrimalUpdateGradient, §15.4):
        qfrc_constraint = J^T · efc_force
        grad = Ma − qfrc_smooth − qfrc_constraint
-       search = −solve(L_cone or L, grad)
+       Mgrad = solve(L_cone or L, grad)           // H⁻¹ · grad
 
-    7. CONVERGENCE CHECK:
-       // cost and oldcost are constraint-only (Σ s_i); Gauss term change
-       // is captured by the gradient check. Matches MuJoCo's mj_solPrimal.
-       // Note: improvement can be negative (constraint cost increased while
-       // total cost decreased via Gauss term). Negative improvement < tolerance
-       // triggers termination, which is intentional — the gradient check
-       // provides the safety net. This matches MuJoCo's behavior.
+    6. CONVERGENCE CHECK:
+       // cost and oldcost are TOTAL cost (Gauss + constraint), matching
+       // MuJoCo's mj_solPrimal where PrimalUpdateConstraint adds the Gauss
+       // term to ctx.cost. Improvement is positive when total cost decreases.
        improvement = scale · (oldcost − cost)
        gradient = scale · ||grad||
        If improvement < tolerance OR gradient < tolerance: break
+
+    7. SEARCH DIRECTION:
+       // Compute after convergence check to avoid wasted work on the
+       // last iteration. Matches MuJoCo's loop order.
+       search = −Mgrad
 
 RECOVER:
     // Assembly fields (efc_J, efc_type, efc_pos, etc.) were already written
@@ -898,12 +1014,25 @@ RECOVER:
 
 **Pipeline integration — `mj_fwd_acceleration()` skip:**
 
-In the existing pipeline, `mj_fwd_constraint()` writes `qfrc_constraint` and
-then `mj_fwd_acceleration()` computes `qacc = M⁻¹·(τ_total + qfrc_constraint)`.
-This is correct for PGS/CG (which solve for forces), but Newton produces
-`qacc` directly — the forces are *recovered from* qacc, not vice versa. If
-`mj_fwd_acceleration()` runs after Newton, it would overwrite Newton's optimized
-`qacc` with a redundant (and potentially less accurate) inertia solve.
+**MuJoCo vs our pipeline ordering:** MuJoCo runs `mj_fwdAcceleration()` BEFORE
+`mj_fwdConstraint()` — it computes `qacc_smooth = M⁻¹·qfrc_smooth` as input
+to the constraint solver. Our pipeline has the reverse order:
+`mj_fwd_constraint()` runs first (computing `qfrc_constraint`), then
+`mj_fwd_acceleration()` computes `qacc = M⁻¹·(τ_total + qfrc_constraint)`.
+
+For PGS/CG this works: they solve for forces, and acceleration is derived
+afterward. Newton, however, produces `qacc` directly — the forces are
+*recovered from* qacc, not vice versa. If `mj_fwd_acceleration()` runs after
+Newton, it would overwrite Newton's optimized `qacc` with a redundant (and
+potentially less accurate) inertia solve.
+
+**The Newton path computes `qacc_smooth` internally.** Since our
+`mj_fwd_acceleration()` runs after (not before) the constraint solver, the
+Newton solver must compute `qacc_smooth = M⁻¹·qfrc_smooth` itself inside
+`mj_fwd_constraint()`, using the pre-existing sparse LDL factorization
+(`qLD`) from CRBA. This is a single sparse forward/back substitution — the
+same operation that `mj_fwd_acceleration_explicit()` does, but on smooth
+forces only (excluding constraint forces).
 
 **Required change:** The Newton solver writes both `Data.qacc` and
 `Data.qfrc_constraint` inside `mj_fwd_constraint()`. The `forward()` dispatch
@@ -912,16 +1041,14 @@ must **skip** `mj_fwd_acceleration()` when `SolverType::Newton`:
 ```
 fn forward() {
     ...
-    mj_fwd_constraint();  // Newton writes qacc + qfrc_constraint here
+    mj_fwd_constraint();  // Newton computes qacc_smooth internally,
+                           // then solves and writes qacc + qfrc_constraint
     if solver_type != Newton {
         mj_fwd_acceleration();  // PGS/CG: compute qacc from forces
     }
     ...
 }
 ```
-
-This is consistent with MuJoCo's architecture where `mj_solPrimal()` writes
-`qacc` directly and the subsequent acceleration step is a no-op for Newton.
 
 **Integrator compatibility:** Newton is compatible with **Euler** and **RK4**
 integrators, which use `mj_fwd_acceleration()` purely as `qacc = M⁻¹·(forces)`.
@@ -942,19 +1069,18 @@ Newton initializes from this. Warm-starting has modest benefit for Newton
 (already converges in 2–3 iterations) but avoids wasted work on the first
 iteration.
 
-**Save point:** `qacc_warmstart = qacc` must be written after the **final**
-forward dynamics computation of each timestep, **for all integrators** (Euler,
-implicit, RK4). Currently only the RK4 path saves it. The Euler and
-implicit-fast paths must be updated.
+**Save point:** `qacc_warmstart = qacc` must be written at the **end of
+`Data::step()`**, after `integrate()` or `mj_runge_kutta()` returns. This
+is integrator-independent — one save per timestep, always capturing the
+final qacc. This matches MuJoCo's `mj_advance()` which saves
+`qacc_warmstart` at the very end of the step.
 
-**RK4 caveat:** RK4 calls `forward()`/`forward_skip_sensors()` multiple times
-per step (k1, k2, k3, k4). Only the final stage's qacc should be saved to
-warmstart — intermediate evaluations produce non-physical accelerations at
-shifted positions/velocities. The save should happen in `step()` after the
-final RK4 qacc is computed, NOT inside `mj_fwd_constraint()` (which would
-overwrite warmstart with intermediate values). For Euler/implicit, the save
-can happen at the end of `mj_fwd_constraint()` since these integrators call
-it exactly once per step.
+Currently only the RK4 path saves warmstart (line 13990), and it saves the
+**stage-3 qacc** rather than the final weighted combination — this is a
+pre-existing bug. The Euler and implicit paths do not save at all. The fix
+is straightforward: add `data.qacc_warmstart.copy_from(&data.qacc)` at the
+end of `Data::step()`, after all integration is complete, and remove the
+incorrect RK4 mid-step save.
 
 The existing `efc_lambda` warmstart cache (keyed by `WarmstartKey`) remains
 for PGS/CG. The Newton solver does not use it — it works in `qacc` space.
@@ -1004,6 +1130,7 @@ pub enum ConstraintType {
 
 **New `Model` fields:**
 ```rust
+pub stat_meaninertia: f64,      // trace(M) / nv at qpos0, computed at model build (for solver scaling)
 pub ls_iterations: usize,       // max line search iters (default 50)
 pub ls_tolerance: f64,          // line search gradient tol (default 0.01)
 pub noslip_iterations: usize,   // parsed from MJCF, stored, ignored (default 0)
@@ -1019,6 +1146,11 @@ pub qacc_warmstart: DVector<f64>,           // nv-vector, previous qacc
 pub qfrc_frictionloss: DVector<f64>,        // nv-vector, friction loss component of qfrc_passive
 
 // --- Unified constraint system (nefc = total constraint rows) ---
+pub efc_b: DVector<f64>,                    // nefc-vector: J·qacc_smooth − aref. Computed during
+                                            //   assembly, consumed by warmstart cost comparison
+                                            //   (§15.8 INITIALIZE). Persists in Data after the
+                                            //   solve for diagnostic access (matches MuJoCo's
+                                            //   d->efc_b), but is NOT updated by the solver loop
 pub efc_J: DMatrix<f64>,                    // nefc × nv unified Jacobian
 pub efc_type: Vec<ConstraintType>,          // per-row type annotation
 pub efc_pos: Vec<f64>,                      // per-row constraint violation
@@ -1030,6 +1162,13 @@ pub efc_diagApprox: Vec<f64>,              // per-row diagonal approximation of 
 pub efc_R: Vec<f64>,                        // per-row regularization R
 pub efc_D: Vec<f64>,                        // per-row D = 1/R (constraint stiffness)
 pub efc_imp: Vec<f64>,                      // per-row impedance value (from solimp sigmoid)
+// Note: MuJoCo packs K, B, imp, and impP into a single `efc_KBIP[4*i+{0,1,2,3}]`
+// array. We decompose this: K and B are transient (used only during `aref`
+// computation, not stored); `imp` is stored as `efc_imp`; `impP` (the derivative
+// of impedance w.r.t. penetration distance) is omitted — it is computed and stored
+// by MuJoCo but never read by any MuJoCo subsystem (solvers, sensors, derivatives).
+// It exists solely for external API introspection. If external parity is needed,
+// Phase C can add `efc_impP: Vec<f64>`.
 pub efc_aref: DVector<f64>,                 // per-row reference acceleration
 pub efc_floss: Vec<f64>,                    // per-row friction loss saturation
 pub efc_mu: Vec<[f64; 5]>,                  // per-row friction coefs (contacts, [0;5] otherwise)
@@ -1042,7 +1181,7 @@ pub efc_id: Vec<usize>,                     // per-row source object index (join
 pub efc_state: Vec<ConstraintState>,        // per-row constraint state
 pub efc_force: DVector<f64>,                // per-row constraint force
 pub efc_jar: DVector<f64>,                  // per-row J·qacc − aref
-pub efc_cost: f64,                          // total constraint cost
+pub efc_cost: f64,                          // total cost (Gauss + constraint)
 ```
 
 **MJCF wiring:**
@@ -1053,7 +1192,9 @@ pub efc_cost: f64,                          // total constraint cost
 ##### 15.12 Implementation Phasing
 
 **Phase A — Unified constraint assembly + Core Newton (minimum viable):**
-1. `ConstraintType`, `ConstraintState` enums, all new `Data` fields (§15.11)
+1. `ConstraintType`, `ConstraintState` enums, all new `Data`/`Model` fields
+   (§15.11). Compute `Model.stat_meaninertia = trace(M) / nv` at model build
+   time (run CRBA at `qpos0`, take trace of resulting M, divide by nv)
 2. `diagApprox` computation — for ALL constraint rows (contacts and non-contacts
    alike), compute `diagApprox_i = J_i · M⁻¹ · J_i^T` by solving `M · w = J_i^T`
    via forward/back substitution against the pre-existing mass matrix factorization
@@ -1074,10 +1215,16 @@ pub efc_cost: f64,                          // total constraint cost
    - **Joint** (1 row): `q[joint2] − target` → 1×nv. For **single-joint**
      equality: `+1` at joint2's DOF. For **two-joint** equality: the Jacobian
      row has entries at BOTH DOFs — `poly'(q1)` at joint1's DOF and `1` at
-     joint2's DOF — because the constraint is `q2 − poly(q1) = 0`. Note:
-     the current penalty code (`apply_joint_equality_constraint`) applies
-     force only to joint2's DOF and relies on implicit force propagation
-     through M. The Newton path needs the explicit full Jacobian row.
+     joint2's DOF — because the constraint is `q2 − poly(q1) = 0`.
+     `poly'(q1)` is the analytical derivative of the polynomial
+     `polycoef[0] + polycoef[1]·q1 + polycoef[2]·q1² + ...`, evaluated at
+     the current `q1`: `poly'(q1) = polycoef[1] + 2·polycoef[2]·q1 + ...`
+     (standard Horner differentiation over the `polycoef` array, up to 5
+     terms). The sign is negated (`−poly'(q1)`) because increasing `q1`
+     decreases the residual `q2 − poly(q1)`. Note: the current penalty code
+     (`apply_joint_equality_constraint`) applies force only to joint2's DOF
+     and relies on implicit force propagation through M. The Newton path
+     needs the explicit full Jacobian row.
    - **Distance** (1 row): `||p2−p1|| − target` → 1×nv (distance direction)
 5. Friction loss migration: store friction loss contribution separately
    (`Data.qfrc_frictionloss`) per §15.0 approach (b). This must precede
@@ -1087,37 +1234,50 @@ pub efc_cost: f64,                          // total constraint cost
 6. Unified Jacobian assembly: `assemble_unified_constraints()` that builds
    `efc_J`, `efc_aref`, `efc_D`, `efc_R`, `efc_imp`, `efc_type`, `efc_floss`,
    `efc_pos`, `efc_margin`, `efc_vel`, `efc_solref`, `efc_solimp`,
-   `efc_diagApprox`, `efc_mu`, `efc_dim`, `efc_id` using the extracted Jacobians from
-   step 4, existing contact Jacobians, and friction loss rows from step 5
-7. `classify_constraint_states(jar) → efc_state, efc_force, cost` — also
-   called `PrimalUpdateConstraint` in the pseudocode (§15.8); these are the
-   same function. For scalar constraints (non-contact or `ContactNonElliptic`),
+   `efc_diagApprox`, `efc_mu`, `efc_dim`, `efc_id`, `efc_b` using the extracted
+   Jacobians from step 4, existing contact Jacobians, and friction loss rows
+   from step 5. `efc_b = J · qacc_smooth − aref` is computed after assembly
+   for use in warmstart cost comparison (§15.8)
+7. `classify_constraint_states(jar, Ma, qfrc_smooth, qacc, qacc_smooth)
+   → efc_state, efc_force, cost` — also called `PrimalUpdateConstraint` in
+   the pseudocode (§15.8); these are the same function. Returns **total cost**
+   (constraint + Gauss), matching MuJoCo's PrimalUpdateConstraint. The function
+   first computes constraint-only cost from the state machine, then adds the
+   Gauss term: `costGauss = ½·(Ma − qfrc_smooth)^T · (qacc − qacc_smooth)`,
+   `cost += costGauss`. The Gauss cost is also stored as `quadGauss[0]` for
+   reuse by the line search's `PrimalPrepare` (§15.5) — MuJoCo's
+   `PrimalPrepare` reads this value rather than recomputing it.
+   For scalar constraints (non-contact or `ContactNonElliptic`),
    apply the state machine table (§15.1) per row, advancing `i += 1`. For
    `ContactElliptic` rows, process all `dim` rows as a group using the
-   three-zone classification (§15.7), advancing `i += efc_dim[i]`. The first
-   row of each group is the normal row; subsequent `dim−1` rows are friction.
-   This stepping pattern (`i += efc_dim[i]`) correctly handles consecutive
-   contacts of different condim (e.g., condim=3 then condim=1 then condim=6).
-8. Gradient computation: `grad = Ma − qfrc_smooth − J^T·efc_force`
+   three-zone classification (§15.7), then advance `i += (dim−1)` (net
+   advance = `dim` including the loop increment). The first row of each
+   group is the normal row; subsequent `dim−1` rows are friction. After
+   classifying, replicate the state to all `dim` rows (§15.7). This
+   per-row loop with skip pattern matches MuJoCo's `mj_constraintUpdate_impl`
+   and correctly handles consecutive contacts of different condim.
+8. `PrimalUpdateGradient` (§15.4): compute `qfrc_constraint = J^T·efc_force`,
+   `grad = Ma − qfrc_smooth − qfrc_constraint`, `Mgrad = H⁻¹·grad` via
+   Cholesky solve, `search = −Mgrad`
 9. Full Hessian assembly `H = M + J^T·D·J` with dense Cholesky
-10. Newton direction via forward/back substitution
-11. Simple backtracking line search (Armijo) as initial placeholder: try
-    `α = 1`, halve until cost decreases (`cost(α) < cost(0)`), return 0
-    if `α < 1e-10`. Note: the Armijo cost evaluation must use **full cost**
-    (Gauss + constraint), not just constraint-only cost, since the line
-    search optimizes the total objective. The §15.5 exact 1D Newton line
-    search replaces this in Phase B. The pseudocode in §15.8 calls
-    `primal_line_search(...)`; for Phase A, this is the Armijo version
-    with the same return signature
-12. Outer loop with convergence check
-13. `SolverType::Newton` wiring + `model_builder.rs` fix +
+10. Simple backtracking line search (Armijo) as initial placeholder: try
+    `α = 1`, halve until cost decreases (`cost(α) < cost(0)`), up to
+    20 halvings (i.e., minimum `α ≈ 1e-6`); return `α = 0` if no
+    improvement found. Each halving evaluates full cost (Gauss +
+    constraint) via a temporary `PrimalUpdateConstraint` call at the
+    trial `qacc + α·search` — this is O(nefc) per evaluation, so
+    the worst case is 20 constraint evaluations per outer iteration.
+    The §15.5 exact 1D Newton line search replaces this in Phase B.
+    The pseudocode in §15.8 calls `primal_line_search(...)`; for
+    Phase A, this is the Armijo version with the same return signature
+11. Outer loop with convergence check
+12. `SolverType::Newton` wiring + `model_builder.rs` fix +
     `forward()` and `forward_skip_sensors()` dispatch to skip
     `mj_fwd_acceleration()` for Newton (Euler and RK4 only; Newton +
     implicit → warn and fall back to PGS per §15.8)
-14. `qacc_warmstart` save in Euler and implicit integrator paths (at the end
-    of `mj_fwd_constraint()`, since these integrators call it exactly once per
-    step). RK4 warmstart save is deferred to Phase B (§15.9 multi-stage caveat)
-15. PGS fallback on non-convergence **or Cholesky failure**: re-dispatch through the PGS/CG path
+13. `qacc_warmstart` save at end of `Data::step()`, integrator-independent
+    (§15.9). Remove the incorrect RK4 mid-step save at line 13990
+14. PGS fallback on non-convergence **or Cholesky failure**: re-dispatch through the PGS/CG path
     from the beginning — run penalty-based limit/equality forces (the existing
     `apply_*` functions writing to `qfrc_constraint`), then invoke PGS on the
     contact-only system. The unified constraint assembly is discarded.
@@ -1131,28 +1291,37 @@ pub efc_cost: f64,                          // total constraint cost
     The `efc_*` arrays should be zeroed/truncated to avoid stale unified-system
     data persisting alongside PGS's contact-only results.
 
-**Phase B — MuJoCo parity:**
-1. Exact 1D Newton line search with per-constraint quadratics and bracketing
-2. Incremental Cholesky rank-1 updates/downdates (`cholesky_rank1_update`)
-3. Elliptic cone Hessian blocks (`hessian_cone`) with `L_cone` copy
-4. RK4 warmstart correctness: ensure only the final-stage qacc is saved (not
-   intermediate k1-k4 evaluations). Phase A saves warmstart in Euler/implicit
-   paths; Phase B handles the RK4 multi-stage case per §15.9.
-5. `PrimalEval` for all constraint types (equality, friction, unilateral,
+**Phase B — MuJoCo parity: ✅ COMPLETE**
+1. ✅ Exact 1D Newton line search (`primal_prepare`, `primal_eval`, `primal_search`)
+   with per-constraint quadratics and three-phase bracketing
+2. ✅ Incremental Cholesky rank-1 updates/downdates (`cholesky_rank1_update`,
+   `cholesky_rank1_downdate`) using Linpack DCHUD/DCHDD algorithms
+3. ✅ Elliptic cone Hessian blocks (`hessian_cone`) with `L_cone` copy and
+   per-contact H_c construction in `classify_constraint_states`
+4. (Moved to Phase A step 13 — warmstart save is now integrator-independent.)
+5. ✅ `primal_eval` for all constraint types (equality, friction, unilateral,
    elliptic) with correct zone transitions along the search direction
+6. ✅ K/B formula fix in `compute_kbip` for negative dampratio (direct mode)
+7. ✅ `efc_lambda` population in `recover_newton` for warmstart + touch sensors
+8. ✅ `hessian_incremental` for incremental Hessian modification on state changes
+9. ✅ Armijo line search deleted, replaced by exact Newton line search
 
 **Phase C — Polish:**
 1. Noslip post-processor (if needed)
-2. Sparse Hessian path (for large nv — symbolic + numeric Cholesky)
+2. Sparse Hessian path: when `nv > ~60` (articulated humanoids and above),
+   switch from dense O(nv³) Cholesky to sparse supernodal LDL^T (CSC format).
+   The sparsity pattern of `H = M + J^T·D·J` is fixed per assembly (depends on
+   kinematic tree + active constraint topology), so symbolic factorization can
+   be cached across Newton iterations within a timestep and only recomputed
+   when `nefc` changes. Expected complexity: O(nv · fill²) where fill is the
+   Cholesky fill-in, typically O(nv^1.5) for tree-structured robots. Evaluate
+   `cholmod` (via `suitesparse` crate) or a custom supernodal implementation
 3. Solver statistics: iteration count, cost, gradient norm, active constraints
-4. `meaninertia` caching: `trace(M) / nv` depends on the mass matrix which
-   varies with configuration (for rigid-body systems M depends on joint angles).
-   In Phase A, compute it fresh each solve: `meaninertia = trace(M) / nv`.
-   For optimization, cache it per-step in `Data` (not `Model`) and recompute
-   when positions change. MuJoCo computes `stat.meaninertia` from the home
-   position as a model-level constant — this is an approximation acceptable for
-   scaling but not exact. Phase C should evaluate whether the per-step value
-   or the home-position approximation performs better.
+4. Evaluate per-step `meaninertia = trace(M) / nv` vs the model-level
+   constant from `qpos0`. The model-level constant (used in Phase A,
+   matching MuJoCo) is an approximation that may degrade for models with
+   large configuration-dependent inertia variation. Per-step computation
+   is more accurate but adds O(nv) cost per solve
 
 #### Acceptance Criteria
 

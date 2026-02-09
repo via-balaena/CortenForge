@@ -188,8 +188,14 @@ fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     if let Some(ls_iter) = parse_int_attr(e, "ls_iterations") {
         option.ls_iterations = ls_iter.max(0) as usize;
     }
+    if let Some(ls_tol) = parse_float_attr(e, "ls_tolerance") {
+        option.ls_tolerance = ls_tol;
+    }
     if let Some(noslip) = parse_int_attr(e, "noslip_iterations") {
         option.noslip_iterations = noslip.max(0) as usize;
+    }
+    if let Some(noslip_tol) = parse_float_attr(e, "noslip_tolerance") {
+        option.noslip_tolerance = noslip_tol;
     }
     if let Some(ccd) = parse_int_attr(e, "ccd_iterations") {
         option.ccd_iterations = ccd.max(0) as usize;

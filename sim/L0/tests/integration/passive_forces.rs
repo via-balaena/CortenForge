@@ -364,11 +364,15 @@ fn test_frictionloss_reduces_velocity() {
 /// Higher frictionloss should produce faster deceleration.
 #[test]
 fn test_frictionloss_scaling() {
+    // Use PGS solver: the penalty model produces force = frictionloss * sign(vel),
+    // so doubling frictionloss doubles deceleration.  Newton solver's Huber cost
+    // has a quadratic zone whose slope (D) is independent of frictionloss, making
+    // the scaling test meaningful only under PGS.
     let make_model = |frictionloss: f64| {
         format!(
             r#"
             <mujoco model="friction_scaling">
-                <option gravity="0 0 0" timestep="0.001"/>
+                <option gravity="0 0 0" timestep="0.001" solver="PGS"/>
                 <worldbody>
                     <body name="pendulum" pos="0 0 0">
                         <joint name="hinge" type="hinge" axis="0 1 0"
