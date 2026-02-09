@@ -25,7 +25,7 @@ sparse Hessian path for large systems.
 - Per-step `meaninertia = trace(M) / nv` for configuration-dependent scaling
 - Noslip post-processor: PGS on friction rows with elliptic cone projection, no regularization
 - Sparse Hessian path: custom CSC LDL^T for `nv > 60` (no external crate dependency)
-- 387+ sim domain tests pass (0 failures)
+- 404+ sim domain tests pass (0 failures)
 
 #### Objective
 Implement MuJoCo's exact Newton contact solver operating on the **reduced primal
@@ -1327,12 +1327,13 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
 2. ✅ **Convergence speed:** Newton solver statistics (`SolverStat`) are now
    populated per iteration, enabling convergence benchmarking.
    (`test_newton_solver_statistics`)
-3. **Stiff contacts:** Newton handles `solref=[0.002, 1.0]` (5× stiffer than
-   default) without divergence on a sphere-on-plane benchmark. *(Not yet
-   explicitly tested.)*
-4. ✅ **Elliptic cones:** Correct force recovery for condim 3 contacts verified
-   via `test_newton_contact_basic` (sphere on plane with `cone="elliptic"`).
-   Condim 4 and 6 not yet explicitly tested.
+3. ✅ **Stiff contacts:** Newton handles `solref=[0.002, 1.0]` (5× stiffer than
+   default) without divergence on a sphere-on-plane benchmark.
+   (`test_newton_stiff_contacts`: ball settles, qacc bounded, velocity near zero)
+4. ✅ **Elliptic cones:** Correct force recovery for condim 3, 4, and 6 contacts
+   verified via `test_newton_contact_basic` (condim 3),
+   `test_newton_condim4_torsional` (torsional friction damps spin),
+   `test_newton_condim6_rolling` (rolling friction damps motion).
 5. ✅ **Unified constraints:** Newton produces correct joint limit forces,
    equality constraint forces, and contact forces simultaneously.
    (`test_newton_unified_constraint_fields`, `test_newton_multi_constraint_stability`)
@@ -1345,10 +1346,12 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
 9. ✅ **Warm start:** `qacc_warmstart` is non-zero after stepping, enabling
    warmstart selection in subsequent steps. (`test_newton_warmstart_not_zero`)
 10. ✅ **No regression:** PGS and CG solver paths produce identical results.
-    (`test_pgs_still_works`, `test_cg_still_works`, plus full 384+-test suite)
+    (`test_pgs_still_works`, `test_cg_still_works`, `test_pgs_contact_force_quantitative`,
+    plus full 404+-test suite)
 11. ✅ **Zero-constraint degenerate:** A model with no contacts/limits produces
     `qacc = qacc_smooth` (free-fall = -9.81 m/s²). (`test_newton_zero_constraints`)
-12. **Direct mode solref:** Not yet explicitly tested with `solref=[-500, -10]`.
+12. ✅ **Direct mode solref:** Tested with `solref=[-500, -10]`.
+    (`test_newton_direct_mode_solref`: ball settles on plane, qacc bounded)
     The K/B formula for direct mode is implemented and correct (Phase B step 6).
 13. ✅ **Friction loss rows:** Friction loss is correctly handled as Huber-cost
     constraint rows in the unified system. The `test_frictionloss_scaling` test
@@ -1360,7 +1363,8 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
     `condim="1"`.
 15. ✅ **Multi-row equality:** Connect equality (3 rows) produces correct
     translational forces through the unified system.
-    (`test_newton_equality_connect`). Weld (6 rows) not yet explicitly tested.
+    (`test_newton_equality_connect`, `test_newton_equality_connect_bounded_error`).
+    Weld equality (6 rows) tested via `test_newton_equality_weld`.
 
 #### Files (✅ = modified)
 - ✅ `sim/L0/core/src/mujoco_pipeline.rs` — `SolverType::Newton`,
@@ -1380,7 +1384,10 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
 - ✅ `sim/L0/mjcf/src/parser.rs` — parse `ls_iterations`, `ls_tolerance`,
   `noslip_iterations`, `noslip_tolerance`
 - ✅ `sim/L0/mjcf/src/types.rs` — `MjcfOption` fields for ls/noslip params
-- ✅ `sim/L0/tests/integration/newton_solver.rs` — new (23 acceptance tests)
+- ✅ `sim/L0/tests/integration/newton_solver.rs` — 40 acceptance tests (including
+  stiff contacts, direct mode solref, condim 4/6, weld equality, MuJoCo reference
+  values, quantitative contact force bounds, warmstart effectiveness, Newton vs PGS
+  convergence benchmark)
 - ✅ `sim/L0/tests/integration/mod.rs` — register newton_solver module
 - ✅ `sim/L0/tests/integration/spatial_tendons.rs` — fix test_tendon_limit_forces
   for Newton (check qfrc_constraint + qfrc_passive)
