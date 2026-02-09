@@ -3230,6 +3230,10 @@ fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) -> Result<()
     data.scratch_rhs -= &data.qfrc_bias;
 
     // Step 5: Solve (M − h·D) · qacc = rhs via dense Cholesky
+    //   After this, scratch_m_impl holds the Cholesky factors (L where M−hD = L·L^T).
+    //   These persist in data and are reused by mjd_transition_hybrid (D.4) for
+    //   derivative column solves — the derivative pass clones data, inheriting
+    //   the factored scratch_m_impl.
     cholesky_in_place(&mut data.scratch_m_impl)?;
     data.qacc.copy_from(&data.scratch_rhs);
     cholesky_solve_in_place(&data.scratch_m_impl, &mut data.qacc);
@@ -3237,6 +3241,22 @@ fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) -> Result<()
     Ok(())
 }
 ```
+
+**Data flow note:** This function writes `data.qDeriv` (forward-pass D, without
+Coriolis) and `data.scratch_m_impl` (Cholesky factors of `M − h·D`). Both
+persist in `data` after return. The derivative pass (`mjd_transition_hybrid`,
+D.4) clones `data` into `data_work`, then calls `mjd_smooth_vel` which
+overwrites `data_work.qDeriv` with the **full** D (including Coriolis via
+`mjd_rne_vel`). However, `data_work.scratch_m_impl` is NOT overwritten — it
+retains the forward-pass Cholesky factors. This means the derivative pass uses
+`(M − h·D_fast)⁻¹ · D_full` — mixing the fast LHS with the full RHS. See
+KA#8 for analysis.
+
+Unlike the legacy `ImplicitSpringDamper` (which solves for `v_new` directly
+and back-computes `qacc = (v_new − v_old)/h`), both new variants solve for
+`qacc` directly. The `scratch_v_new` buffer (`:1888`) is NOT used by the new
+variants. Velocity integration (`qvel += h * qacc`) is handled by the
+standard path in `Data::integrate()` (`:3474`).
 
 **Key design decisions:**
 - **Dense Cholesky** (not sparse L^T D L): The existing codebase uses dense
@@ -3251,6 +3271,10 @@ fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) -> Result<()
   dispatch. Position integration then uses the updated velocity (semi-implicit).
 
 **A.5. Wire dispatch** (`mujoco_pipeline.rs`)
+
+The `mj_fwd_acceleration` wrapper (`:12797`) already has an `nv == 0` early
+return (`:12798`). The new functions are called through this wrapper, so they
+do NOT need their own `nv == 0` guard.
 
 All three matches below are **exhaustive** (no wildcard `_`) and will fail
 compilation without the new arms. These are the `mujoco_pipeline.rs` counterpart
@@ -3340,6 +3364,8 @@ fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(
 
     // Step 5: Factor (M − h·D) = P·L·U, then solve for qacc
     //   Factors persist in scratch_m_impl + scratch_lu_piv for derivative reuse (D.4).
+    //   The derivative pass clones data, inheriting the factored scratch_m_impl and
+    //   scratch_lu_piv, then calls lu_solve_factored for each derivative column.
     lu_factor_in_place(&mut data.scratch_m_impl, &mut data.scratch_lu_piv)?;
     data.qacc.copy_from(&data.scratch_rhs);
     lu_solve_factored(&data.scratch_m_impl, &data.scratch_lu_piv, &mut data.qacc);
@@ -3688,15 +3714,31 @@ for compilation. The `ImplicitFast` arms use `cholesky_solve_in_place` on
    actuator configurations. Mitigation: use `Implicit` (LU, no SPD
    requirement) for models with positive velocity feedback.
 
-8. **ImplicitFast derivative uses unsymmetrized qDeriv with symmetrized LHS:**
+8. **ImplicitFast derivative uses full qDeriv with fast-approximated LHS:**
    The forward pass builds `(M − h·D_sym)` (Coriolis excluded, D symmetrized)
-   but the derivative pass recomputes fresh `qDeriv` via `mjd_smooth_vel`
-   (Coriolis included, unsymmetrized). The analytical transition derivative is
+   and stores its Cholesky factors in `data.scratch_m_impl`. The derivative
+   pass (`mjd_transition_hybrid`) clones data, then calls `mjd_smooth_vel`
+   (`:972`) which **unconditionally** calls all three components: `mjd_passive_vel`,
+   `mjd_actuator_vel`, AND `mjd_rne_vel` — there is no integrator gate in
+   `mjd_smooth_vel`. This overwrites `data_work.qDeriv` with the full D
+   (Coriolis included, unsymmetrized), while `data_work.scratch_m_impl` retains
+   the forward-pass Cholesky factors. The analytical transition derivative is
    therefore `dvdv = I + h · (M − h·D_sym)⁻¹ · D_full`, mixing the fast
-   approximation in the LHS with the full derivative in the RHS. This is a
-   minor accuracy concern vs finite-difference truth of the actual integration
-   step, but does not cause numerical failure. MuJoCo sidesteps this by using
-   finite-difference derivatives exclusively.
+   approximation in the LHS with the full derivative in the RHS.
+
+   **Impact:** This produces slightly different derivatives than a pure
+   finite-difference of the actual `ImplicitFast` integration step would. The
+   discrepancy is proportional to `h · ‖D_coriolis‖ / ‖M‖` and is small for
+   typical timesteps. It does not cause numerical failure. MuJoCo sidesteps
+   this entirely by using finite-difference derivatives exclusively.
+
+   **Design rationale:** We intentionally keep `mjd_smooth_vel` ungated (always
+   full D) because: (1) it matches MuJoCo's separation of forward vs derivative
+   paths, (2) the full D gives more accurate derivatives even when the forward
+   integration is approximate, and (3) adding an integrator gate to
+   `mjd_smooth_vel` would complicate the API for marginal benefit. If exact
+   consistency between forward and derivative is needed, use finite-difference
+   derivatives (`config.use_analytical = false`).
 
 #### Acceptance Criteria
 
@@ -3740,27 +3782,42 @@ for compilation. The `ImplicitFast` arms use `cholesky_solve_in_place` on
    no tendon damping, verify that `ImplicitFast` produces the same `qfrc_passive`
    as `Euler` (tendon spring forces are explicit in both).
 
+9. **Analytical vs FD derivative consistency (`ImplicitFast`):** For a model
+   with joint damping and tendon damping (but no Coriolis-dominant dynamics),
+   compute transition matrices analytically (`use_analytical = true`) and via
+   centered FD (`use_analytical = false`). The velocity-velocity block `dvdv`
+   should match within `max_element_error < 1e-3` (relaxed due to KA#8:
+   analytical uses full D in RHS but fast-approximated LHS).
+
+10. **Analytical vs FD derivative consistency (`Implicit`):** Same test with
+    `integrator="implicit"`. Should match within `max_element_error < 1e-5`
+    (tighter than ImplicitFast because both LHS and RHS use full D — no
+    KA#8 mismatch).
+
 **Performance:**
 
-9. **No regression for Euler/RK4:** Euler and RK4 step times are unchanged
-   (implicit code is not on their path).
+11. **No regression for Euler/RK4:** Euler and RK4 step times are unchanged
+    (implicit code is not on their path).
 
-10. **ImplicitFast overhead:** For a 30-DOF humanoid, `ImplicitFast` step time is
+12. **ImplicitFast overhead:** For a 30-DOF humanoid, `ImplicitFast` step time is
     within 3× of `Euler` step time. The overhead comes from assembling qDeriv
     (O(nv²) for J^T B J) + dense Cholesky (O(nv³/3)).
 
-11. **Implicit overhead:** For the same humanoid, `Implicit` step time is within
+13. **Implicit overhead:** For the same humanoid, `Implicit` step time is within
     5× of `Euler` (Coriolis derivatives via `mjd_rne_vel` are O(nv² · nbody)).
 
 **Safety:**
 
-12. Zero `unwrap()`/`expect()` in new code. All error paths return
+14. Zero `unwrap()`/`expect()` in new code. All error paths return
     `Result<(), StepError>`.
 
-13. `lu_factor_in_place` returns `Err(StepError::LuSingular)` if any pivot is
-    below `1e-30` (matching Cholesky's tolerance in `cholesky_in_place` `:12832`).
+15. `lu_factor_in_place` returns `Err(StepError::LuSingular)` if any pivot
+    magnitude is below `1e-30`. (Note: `cholesky_in_place` (`:12832`) uses
+    `diag <= 0.0` — a different check because Cholesky requires positive
+    diagonals, while LU requires non-zero pivots. The `1e-30` threshold for
+    LU is conservative against near-singular matrices.)
 
-14. **Cholesky failure on positive velocity feedback (KA #7):** A single-DOF
+16. **Cholesky failure on positive velocity feedback (KA #7):** A single-DOF
     actuator with `gainprm="0 0 1000"` (strong positive velocity feedback) and
     large `ctrl > 0` causes `ImplicitFast` to return
     `Err(StepError::CholeskyFailed)`. Same model under `Implicit` (LU) succeeds
@@ -3773,8 +3830,9 @@ for compilation. The `ImplicitFast` arms use `cholesky_solve_in_place` on
 | `sim/L0/core/src/mujoco_pipeline.rs` | **modify** | Extend `Integrator` enum (`:733`) with `Implicit`, `ImplicitFast`, add `#[non_exhaustive]`; add `LuSingular` to `StepError` (`:748`) + add arm to `Display for StepError` (`:763`); add `mj_fwd_acceleration_implicitfast()` and `mj_fwd_acceleration_implicit_full()` (new functions near `:13008`); add `lu_factor_in_place()` + `lu_solve_factored()` (split LU for derivative reuse); add `scratch_lu_piv: Vec<usize>` to Data (`:1882`); update forward acceleration dispatch (`:12802`); update velocity integration dispatch (`:3474`); update `step()` dispatch (`:3303`) |
 | `sim/L0/core/src/derivatives.rs` | **modify** | Update exhaustive matches at `:1226` (dvdv — add `ImplicitFast`/`Implicit` arms with `(M−hD)⁻¹` solve), `:1320` (dvdact solve dispatch), `:1485` (dvdctrl solve dispatch). All three need new arms for both variants. |
 | `sim/L0/mjcf/src/types.rs` | **modify** | Add `Implicit` variant to `MjcfIntegrator` (`:15`); update `from_str` (`:33`): `"implicit"` → `Implicit`, keep `"implicitspringdamper"` → `ImplicitSpringDamper`; update `as_str` (`:44`): add `Implicit` → `"implicit"`, change `ImplicitSpringDamper` → `"implicitspringdamper"` |
+| `sim/L0/mjcf/src/parser.rs` | **modify** | Update `test_parse_option_integrator_types` (`:2482`): `("implicit", MjcfIntegrator::Implicit)` replaces `("implicit", MjcfIntegrator::ImplicitSpringDamper)`; add `("implicit", MjcfIntegrator::Implicit)` test case |
 | `sim/L0/mjcf/src/model_builder.rs` | **modify** | Separate `ImplicitFast` and `ImplicitSpringDamper` mapping (`:616`); add `Implicit` → `Integrator::Implicit` |
-| `sim/L0/tests/integration/implicit_integration.rs` | **modify** | Add tests for acceptance criteria 1–8, 14: tendon stability, actuator stability, diagonal regression, zero-damping equivalence, Coriolis delta, MuJoCo conformance ×2, tendon spring explicit, Cholesky failure on positive velocity feedback |
+| `sim/L0/tests/integration/implicit_integration.rs` | **modify** | Add tests for acceptance criteria 1–10, 16: tendon stability, actuator stability, diagonal regression, zero-damping equivalence, Coriolis delta, MuJoCo conformance ×2, tendon spring explicit, derivative consistency ×2, Cholesky failure on positive velocity feedback |
 | `sim/docs/MUJOCO_REFERENCE.md` | **modify** | Update implicit path description (`:554–568`) to document both `implicit` and `implicitfast` algorithms, D matrix assembly via `mjd_smooth_vel`, linearization derivation, and factorization strategy |
 | `sim/docs/MUJOCO_CONFORMANCE.md` | **modify** | Add conformance entries for `implicit` and `implicitfast` integrators |
 

@@ -41,7 +41,7 @@ fn test_implicit_spring_energy_bounded() {
     // We use dt=0.002, which should work with explicit, but let's verify implicit works
     let mjcf = r#"
         <mujoco model="stiff_spring">
-            <option timestep="0.002" integrator="implicit"/>
+            <option timestep="0.002" integrator="implicitspringdamper"/>
             <worldbody>
                 <body name="mass" pos="0 0 1">
                     <joint name="slide" type="slide" axis="0 0 1"
@@ -116,7 +116,7 @@ fn test_implicit_spring_energy_bounded() {
 fn test_implicit_matches_analytic_oscillator() {
     let mjcf = r#"
         <mujoco model="oscillator">
-            <option timestep="0.001" integrator="implicit" gravity="0 0 0"/>
+            <option timestep="0.001" integrator="implicitspringdamper" gravity="0 0 0"/>
             <worldbody>
                 <body name="mass" pos="0 0 0">
                     <joint name="slide" type="slide" axis="1 0 0"
@@ -194,7 +194,7 @@ fn test_implicit_matches_analytic_oscillator() {
 fn test_implicit_stability_at_high_stiffness() {
     let mjcf = r#"
         <mujoco model="very_stiff_spring">
-            <option timestep="0.01" integrator="implicit" gravity="0 0 0"/>
+            <option timestep="0.01" integrator="implicitspringdamper" gravity="0 0 0"/>
             <worldbody>
                 <body name="mass" pos="0 0 0">
                     <joint name="slide" type="slide" axis="1 0 0"
@@ -257,7 +257,7 @@ fn test_implicit_damped_convergence() {
     // Critical damping: c = 2√(km) = 2√(100*1) = 20
     let mjcf = r#"
         <mujoco model="critically_damped">
-            <option timestep="0.002" integrator="implicit" gravity="0 0 0"/>
+            <option timestep="0.002" integrator="implicitspringdamper" gravity="0 0 0"/>
             <worldbody>
                 <body name="mass" pos="0 0 0">
                     <joint name="slide" type="slide" axis="1 0 0"
@@ -308,7 +308,7 @@ fn test_implicit_overdamped_convergence() {
     // Overdamping: c = 40 > c_critical = 20
     let mjcf = r#"
         <mujoco model="overdamped">
-            <option timestep="0.002" integrator="implicit" gravity="0 0 0"/>
+            <option timestep="0.002" integrator="implicitspringdamper" gravity="0 0 0"/>
             <worldbody>
                 <body name="mass" pos="0 0 0">
                     <joint name="slide" type="slide" axis="1 0 0"
@@ -383,7 +383,7 @@ fn test_explicit_implicit_agreement_low_stiffness() {
 
     let mjcf_implicit = r#"
         <mujoco model="low_stiffness_implicit">
-            <option timestep="0.001" integrator="implicit" gravity="0 0 0"/>
+            <option timestep="0.001" integrator="implicitspringdamper" gravity="0 0 0"/>
             <worldbody>
                 <body name="mass" pos="0 0 0">
                     <joint name="slide" type="slide" axis="1 0 0"
@@ -444,7 +444,7 @@ fn test_implicit_friction_loss_applied() {
     // Spring with friction loss (no damping, so dissipation is purely from friction)
     let mjcf = r#"
         <mujoco model="friction_loss_test">
-            <option timestep="0.001" integrator="implicit" gravity="0 0 0"/>
+            <option timestep="0.001" integrator="implicitspringdamper" gravity="0 0 0"/>
             <worldbody>
                 <body name="mass" pos="0 0 0">
                     <joint name="slide" type="slide" axis="1 0 0"
@@ -493,7 +493,7 @@ fn test_implicit_multi_dof_chain() {
     // Double pendulum with springs on both joints
     let mjcf = r#"
         <mujoco model="double_pendulum">
-            <option timestep="0.001" integrator="implicit" gravity="0 0 -10"/>
+            <option timestep="0.001" integrator="implicitspringdamper" gravity="0 0 -10"/>
             <worldbody>
                 <body name="link1" pos="0 0 0">
                     <joint name="j1" type="hinge" axis="0 1 0"
@@ -563,7 +563,7 @@ fn test_implicit_free_joint_damping() {
     // (freejoint shorthand doesn't parse damping attribute)
     let mjcf = r#"
         <mujoco model="free_body">
-            <option timestep="0.002" integrator="implicit" gravity="0 0 0"/>
+            <option timestep="0.002" integrator="implicitspringdamper" gravity="0 0 0"/>
             <worldbody>
                 <body name="floater" pos="0 0 1">
                     <joint name="free" type="free" damping="5"/>
@@ -610,7 +610,7 @@ fn test_implicit_free_joint_damping() {
 fn test_implicit_external_forces() {
     let mjcf = r#"
         <mujoco model="forced_oscillator">
-            <option timestep="0.001" integrator="implicit" gravity="0 0 0"/>
+            <option timestep="0.001" integrator="implicitspringdamper" gravity="0 0 0"/>
             <worldbody>
                 <body name="mass" pos="0 0 0">
                     <joint name="slide" type="slide" axis="1 0 0"
@@ -656,7 +656,7 @@ fn test_implicit_with_equality_constraints() {
     // Two bodies connected by a weld, both with springs
     let mjcf = r#"
         <mujoco model="constrained_springs">
-            <option timestep="0.002" integrator="implicit" gravity="0 0 -10"/>
+            <option timestep="0.002" integrator="implicitspringdamper" gravity="0 0 -10"/>
             <worldbody>
                 <body name="b1" pos="0 0 1">
                     <joint name="j1" type="slide" axis="0 0 1"
@@ -702,5 +702,478 @@ fn test_implicit_with_equality_constraints() {
         data.qpos[0],
         data.qpos[1],
         diff
+    );
+}
+
+// ============================================================================
+// Full Implicit Integrator Tests (§13)
+// ============================================================================
+
+/// AC-1: Tendon-coupled damping stability under ImplicitFast.
+/// A two-joint arm with tendon damping=100, dt=0.01 — Euler diverges,
+/// ImplicitFast stays bounded.
+#[test]
+fn test_implicitfast_tendon_damping_stability() {
+    let mjcf_fast = r#"
+        <mujoco model="tendon_damp">
+            <option timestep="0.01" integrator="implicitfast" gravity="0 0 -9.81"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j0" type="hinge" axis="0 1 0" damping="0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <body name="b2" pos="0 0 -1">
+                        <joint name="j1" type="hinge" axis="0 1 0" damping="0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t0" damping="100.0">
+                    <joint joint="j0" coef="1.0"/>
+                    <joint joint="j1" coef="1.0"/>
+                </fixed>
+            </tendon>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf_fast).unwrap();
+    assert_eq!(model.integrator, sim_core::Integrator::ImplicitFast);
+    let mut data = model.make_data();
+    data.qvel[0] = 5.0;
+    data.qvel[1] = -3.0;
+
+    for step in 0..1000 {
+        data.step(&model).expect("ImplicitFast step failed");
+        let ke = 0.5 * (data.qvel[0] * data.qvel[0] + data.qvel[1] * data.qvel[1]);
+        assert!(ke < 1e6, "Energy exploded at step {step}: KE={ke}");
+    }
+}
+
+/// AC-2: Tendon-coupled actuator stability under ImplicitFast.
+/// A velocity-dependent actuator gain produces stable ImplicitFast integration.
+#[test]
+fn test_implicitfast_actuator_velocity_stability() {
+    let mjcf = r#"
+        <mujoco model="actuator_vel">
+            <option timestep="0.005" integrator="implicitfast" gravity="0 0 0"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j0" type="hinge" axis="0 1 0" damping="0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general name="a0" joint="j0" gaintype="affine"
+                         gainprm="0 0 -10" biasprm="0 0 0"/>
+            </actuator>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).unwrap();
+    assert_eq!(model.integrator, sim_core::Integrator::ImplicitFast);
+    let mut data = model.make_data();
+    data.qvel[0] = 10.0;
+    data.ctrl[0] = 1.0;
+
+    for step in 0..500 {
+        data.step(&model).expect("ImplicitFast step failed");
+        assert!(data.qvel[0].is_finite(), "Velocity diverged at step {step}");
+    }
+}
+
+// AC-3: Diagonal regression — existing ImplicitSpringDamper tests still pass.
+// (Covered by all existing tests in this file which use "implicitspringdamper".)
+
+/// AC-4: ImplicitFast zero-damping equivalence with Euler.
+/// With D=0, both solve M·qacc = f, so qacc should match closely.
+#[test]
+fn test_implicitfast_zero_damping_matches_euler() {
+    let base_mjcf = |integrator: &str| {
+        format!(
+            r#"
+            <mujoco model="zero_damp">
+                <option timestep="0.001" integrator="{integrator}" gravity="0 0 -9.81"/>
+                <worldbody>
+                    <body name="b1" pos="0 0 0">
+                        <joint name="j0" type="hinge" axis="0 1 0" damping="0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <body name="b2" pos="0 0 -1">
+                            <joint name="j1" type="hinge" axis="0 1 0" damping="0"/>
+                            <geom type="sphere" size="0.1" mass="1.0"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#
+        )
+    };
+
+    let model_euler = load_model(&base_mjcf("Euler")).unwrap();
+    let model_fast = load_model(&base_mjcf("implicitfast")).unwrap();
+
+    let mut data_euler = model_euler.make_data();
+    let mut data_fast = model_fast.make_data();
+
+    data_euler.qpos[0] = 0.5;
+    data_fast.qpos[0] = 0.5;
+
+    data_euler.step(&model_euler).unwrap();
+    data_fast.step(&model_fast).unwrap();
+
+    for i in 0..model_euler.nv {
+        let rel_err = if data_euler.qacc[i].abs() > 1e-12 {
+            ((data_fast.qacc[i] - data_euler.qacc[i]) / data_euler.qacc[i]).abs()
+        } else {
+            (data_fast.qacc[i] - data_euler.qacc[i]).abs()
+        };
+        assert!(
+            rel_err < 1e-10,
+            "qacc[{i}] mismatch: euler={}, fast={}, rel_err={rel_err}",
+            data_euler.qacc[i],
+            data_fast.qacc[i]
+        );
+    }
+}
+
+/// AC-5: Implicit vs ImplicitFast delta with Coriolis forces.
+/// Use a ball joint with non-spherical inertia (box geometry) to produce
+/// non-trivial gyroscopic Coriolis terms that mjd_rne_vel captures.
+/// Hinge-only chains can produce zero Coriolis at certain configurations,
+/// but ball joints with asymmetric inertia always produce gyroscopic torques.
+#[test]
+fn test_implicit_vs_implicitfast_coriolis_delta() {
+    use sim_core::derivatives::mjd_smooth_vel;
+
+    let base_mjcf = |integrator: &str| {
+        format!(
+            r#"
+            <mujoco model="coriolis">
+                <option timestep="0.01" integrator="{integrator}" gravity="0 0 -9.81"/>
+                <worldbody>
+                    <body name="b1" pos="0 0 0">
+                        <joint name="ball" type="ball" damping="0.1"/>
+                        <geom type="box" size="0.3 0.1 0.05" mass="2.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#
+        )
+    };
+
+    let model_full = load_model(&base_mjcf("implicit")).unwrap();
+    let model_fast = load_model(&base_mjcf("implicitfast")).unwrap();
+    assert_eq!(model_full.integrator, sim_core::Integrator::Implicit);
+    assert_eq!(model_fast.integrator, sim_core::Integrator::ImplicitFast);
+
+    let mut data_full = model_full.make_data();
+    let mut data_fast = model_fast.make_data();
+
+    // Asymmetric angular velocity to trigger gyroscopic terms
+    let nv = model_full.nv;
+    data_full.qvel[0] = 10.0;
+    data_full.qvel[1] = 5.0;
+    data_full.qvel[2] = -3.0;
+    data_fast.qvel[0] = 10.0;
+    data_fast.qvel[1] = 5.0;
+    data_fast.qvel[2] = -3.0;
+
+    // Verify that mjd_smooth_vel (with Coriolis) produces different qDeriv
+    data_full.forward(&model_full).unwrap();
+    data_fast.forward(&model_fast).unwrap();
+
+    // mjd_smooth_vel includes all three components (passive + actuator + Coriolis)
+    mjd_smooth_vel(&model_full, &mut data_full);
+    let qderiv_full = data_full.qDeriv.clone();
+
+    // For implicitfast, qDeriv was computed during forward (no Coriolis)
+    let qderiv_fast = data_fast.qDeriv.clone();
+
+    // Non-spherical inertia box should produce non-zero gyroscopic Coriolis
+    let mut max_qderiv_diff = 0.0_f64;
+    for i in 0..nv {
+        for j in 0..nv {
+            let diff = (qderiv_full[(i, j)] - qderiv_fast[(i, j)]).abs();
+            max_qderiv_diff = max_qderiv_diff.max(diff);
+        }
+    }
+    assert!(
+        max_qderiv_diff > 1e-6,
+        "qDeriv should differ between Implicit and ImplicitFast due to Coriolis, \
+         max_diff={max_qderiv_diff}"
+    );
+
+    // Run multi-step and verify trajectories diverge
+    let mut data_full2 = model_full.make_data();
+    let mut data_fast2 = model_fast.make_data();
+    for i in 0..nv {
+        data_full2.qvel[i] = data_full.qvel[i];
+        data_fast2.qvel[i] = data_fast.qvel[i];
+    }
+
+    for _ in 0..200 {
+        data_full2.step(&model_full).expect("Implicit step failed");
+        data_fast2
+            .step(&model_fast)
+            .expect("ImplicitFast step failed");
+    }
+
+    // Both should be stable (finite)
+    for i in 0..nv {
+        assert!(data_full2.qvel[i].is_finite(), "Implicit diverged");
+        assert!(data_fast2.qvel[i].is_finite(), "ImplicitFast diverged");
+    }
+
+    // They should produce different trajectories
+    let mut diff = 0.0_f64;
+    for i in 0..nv {
+        diff += (data_full2.qvel[i] - data_fast2.qvel[i]).abs();
+    }
+    assert!(
+        diff > 1e-6,
+        "Implicit and ImplicitFast velocities should diverge with Coriolis, diff={diff}"
+    );
+}
+
+/// AC-8: Tendon spring explicit treatment.
+/// With tendon stiffness but no tendon damping, ImplicitFast produces the same
+/// qfrc_passive as Euler (tendon spring forces are explicit in both).
+#[test]
+fn test_implicitfast_tendon_spring_explicit() {
+    let base_mjcf = |integrator: &str| {
+        format!(
+            r#"
+            <mujoco model="tendon_spring">
+                <option timestep="0.001" integrator="{integrator}" gravity="0 0 0"/>
+                <worldbody>
+                    <body name="b1" pos="0 0 0">
+                        <joint name="j0" type="hinge" axis="0 1 0" damping="0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <body name="b2" pos="0 0 -1">
+                            <joint name="j1" type="hinge" axis="0 1 0" damping="0"/>
+                            <geom type="sphere" size="0.1" mass="1.0"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <tendon>
+                    <fixed name="t0" stiffness="50.0" damping="0.0">
+                        <joint joint="j0" coef="1.0"/>
+                        <joint joint="j1" coef="-1.0"/>
+                    </fixed>
+                </tendon>
+            </mujoco>
+            "#
+        )
+    };
+
+    let model_euler = load_model(&base_mjcf("Euler")).unwrap();
+    let model_fast = load_model(&base_mjcf("implicitfast")).unwrap();
+
+    let mut data_euler = model_euler.make_data();
+    let mut data_fast = model_fast.make_data();
+
+    data_euler.qpos[0] = 0.3;
+    data_fast.qpos[0] = 0.3;
+
+    data_euler.forward(&model_euler).unwrap();
+    data_fast.forward(&model_fast).unwrap();
+
+    for i in 0..model_euler.nv {
+        let diff = (data_euler.qfrc_passive[i] - data_fast.qfrc_passive[i]).abs();
+        assert!(
+            diff < 1e-12,
+            "qfrc_passive[{i}] differs: euler={}, fast={}, diff={diff}",
+            data_euler.qfrc_passive[i],
+            data_fast.qfrc_passive[i]
+        );
+    }
+}
+
+/// AC-16: Cholesky failure on positive velocity feedback (KA #7).
+/// Strong positive velocity feedback causes ImplicitFast (Cholesky) to fail,
+/// while Implicit (LU) succeeds.
+#[test]
+fn test_cholesky_failure_positive_velocity_feedback() {
+    let base_mjcf = |integrator: &str| {
+        format!(
+            r#"
+            <mujoco model="pos_feedback">
+                <option timestep="0.01" integrator="{integrator}" gravity="0 0 0"/>
+                <worldbody>
+                    <body name="b1" pos="0 0 0">
+                        <joint name="j0" type="hinge" axis="0 1 0" damping="0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <general name="a0" joint="j0" gaintype="affine"
+                             gainprm="0 0 1000" biasprm="0 0 0"/>
+                </actuator>
+            </mujoco>
+            "#
+        )
+    };
+
+    let model_fast = load_model(&base_mjcf("implicitfast")).unwrap();
+    let model_full = load_model(&base_mjcf("implicit")).unwrap();
+
+    let mut data_fast = model_fast.make_data();
+    let mut data_full = model_full.make_data();
+
+    // Large positive ctrl makes dforce_dv > 0 via gainprm[2]=1000
+    data_fast.ctrl[0] = 10.0;
+    data_fast.qvel[0] = 1.0;
+    data_full.ctrl[0] = 10.0;
+    data_full.qvel[0] = 1.0;
+
+    let result_fast = data_fast.step(&model_fast);
+    let result_full = data_full.step(&model_full);
+
+    assert_eq!(
+        result_fast,
+        Err(sim_core::StepError::CholeskyFailed),
+        "ImplicitFast should fail with CholeskyFailed for positive velocity feedback"
+    );
+    assert!(
+        result_full.is_ok(),
+        "Implicit (LU) should succeed for positive velocity feedback"
+    );
+}
+
+/// AC-9: Analytical vs FD derivative consistency for ImplicitFast.
+#[test]
+fn test_implicitfast_derivative_consistency() {
+    use sim_core::derivatives::{DerivativeConfig, mjd_transition};
+
+    let mjcf = r#"
+        <mujoco model="deriv_fast">
+            <option timestep="0.005" integrator="implicitfast" gravity="0 0 -9.81"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j0" type="hinge" axis="0 1 0" damping="5"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <body name="b2" pos="0 0 -1">
+                        <joint name="j1" type="hinge" axis="0 1 0" damping="3"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t0" damping="2.0">
+                    <joint joint="j0" coef="1.0"/>
+                    <joint joint="j1" coef="1.0"/>
+                </fixed>
+            </tendon>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).unwrap();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qvel[0] = 1.0;
+    data.qvel[1] = -0.5;
+    data.forward(&model).unwrap();
+
+    let analytical = mjd_transition(
+        &model,
+        &data,
+        &DerivativeConfig {
+            use_analytical: true,
+            centered: true,
+            eps: 1e-6,
+        },
+    )
+    .unwrap();
+    let fd = mjd_transition(
+        &model,
+        &data,
+        &DerivativeConfig {
+            use_analytical: false,
+            centered: true,
+            eps: 1e-6,
+        },
+    )
+    .unwrap();
+
+    let nv = model.nv;
+    // Compare velocity-velocity block (rows nv..2*nv, cols nv..2*nv)
+    let mut max_err = 0.0_f64;
+    for i in 0..nv {
+        for j in 0..nv {
+            let a = analytical.A[(nv + i, nv + j)];
+            let fd_val = fd.A[(nv + i, nv + j)];
+            let err = (a - fd_val).abs();
+            max_err = max_err.max(err);
+        }
+    }
+    assert!(
+        max_err < 1e-3,
+        "ImplicitFast dvdv analytical vs FD max_err={max_err} (relaxed due to KA#8)"
+    );
+}
+
+/// AC-10: Analytical vs FD derivative consistency for Implicit.
+#[test]
+fn test_implicit_derivative_consistency() {
+    use sim_core::derivatives::{DerivativeConfig, mjd_transition};
+
+    let mjcf = r#"
+        <mujoco model="deriv_full">
+            <option timestep="0.005" integrator="implicit" gravity="0 0 -9.81"/>
+            <worldbody>
+                <body name="b1" pos="0 0 0">
+                    <joint name="j0" type="hinge" axis="0 1 0" damping="5"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <body name="b2" pos="0 0 -1">
+                        <joint name="j1" type="hinge" axis="0 1 0" damping="3"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+            <tendon>
+                <fixed name="t0" damping="2.0">
+                    <joint joint="j0" coef="1.0"/>
+                    <joint joint="j1" coef="1.0"/>
+                </fixed>
+            </tendon>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).unwrap();
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qvel[0] = 1.0;
+    data.qvel[1] = -0.5;
+    data.forward(&model).unwrap();
+
+    let analytical = mjd_transition(
+        &model,
+        &data,
+        &DerivativeConfig {
+            use_analytical: true,
+            centered: true,
+            eps: 1e-6,
+        },
+    )
+    .unwrap();
+    let fd = mjd_transition(
+        &model,
+        &data,
+        &DerivativeConfig {
+            use_analytical: false,
+            centered: true,
+            eps: 1e-6,
+        },
+    )
+    .unwrap();
+
+    let nv = model.nv;
+    let mut max_err = 0.0_f64;
+    for i in 0..nv {
+        for j in 0..nv {
+            let a = analytical.A[(nv + i, nv + j)];
+            let fd_val = fd.A[(nv + i, nv + j)];
+            let err = (a - fd_val).abs();
+            max_err = max_err.max(err);
+        }
+    }
+    assert!(
+        max_err < 1e-5,
+        "Implicit dvdv analytical vs FD max_err={max_err}"
     );
 }

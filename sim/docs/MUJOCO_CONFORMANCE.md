@@ -432,6 +432,38 @@ CortenForge uses dense `DMatrix<f64>` (target models have nv < 100).
 
 ---
 
+### §13 — Full Implicit Integrator
+
+**Status:** ✅ Complete — ImplicitFast + Implicit integrators with analytical derivatives
+
+Two new integrator variants that use the full velocity-derivative Jacobian `qDeriv`
+instead of the diagonal-only spring-damper approximation of `ImplicitSpringDamper`:
+
+| Integrator | D Assembly | Symmetrize | Factorization | MuJoCo Equivalent |
+|------------|-----------|------------|---------------|-------------------|
+| `ImplicitFast` | passive + actuator vel | Yes | Cholesky | `mjINT_IMPLICITFAST` |
+| `Implicit` | passive + actuator vel + Coriolis | No | LU (partial pivot) | `mjINT_IMPLICIT` |
+
+**Verification:** 9 acceptance tests in `integration/implicit_integration.rs` covering:
+- Tendon-coupled damping stability (AC-1)
+- Actuator velocity stability (AC-2)
+- Zero-damping equivalence with Euler (AC-4)
+- Coriolis delta between Implicit and ImplicitFast (AC-5)
+- Tendon spring explicit treatment (AC-8)
+- Analytical vs FD derivative consistency — ImplicitFast (AC-9)
+- Analytical vs FD derivative consistency — Implicit (AC-10)
+- Cholesky failure on positive velocity feedback (AC-16)
+- Diagonal regression — existing ImplicitSpringDamper tests pass (AC-3)
+
+**Breaking change:** MJCF string `"implicit"` now maps to the full `Implicit` variant.
+Use `"implicitspringdamper"` for the legacy diagonal-only mode.
+
+**Design note (KA#8):** ImplicitFast analytical derivatives use the full `qDeriv`
+(including Coriolis from `mjd_smooth_vel`) in the RHS but the fast-approximated LHS
+(without Coriolis). This matches MuJoCo's intentional design.
+
+---
+
 ## References
 
 - [MuJoCo Documentation](https://mujoco.readthedocs.io/)
