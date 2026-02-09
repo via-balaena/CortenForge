@@ -30,7 +30,7 @@ Priority is **Correctness + RL Impact**, tie-broken by inverse Effort.
 | 11 | Deformable body integration | Medium | Low | XL | None | [future_work_4.md](./future_work_4.md) | ✅ Complete |
 | 12 | Analytical derivatives (mjd_*) | **High** | Low | XL | None | [future_work_4.md](./future_work_4.md) | ✅ Complete |
 | 13 | Full implicit integrator | Low | Medium | L | None | [future_work_4.md](./future_work_4.md) | ✅ Complete |
-| 14 | Keyframes, mocap bodies, user callbacks | Medium | Low | L | None | [future_work_4.md](./future_work_4.md) | |
+| 14 | Keyframes, mocap bodies, user callbacks | Medium | Low | L | None | [future_work_4.md](./future_work_4.md) | ✅ Complete |
 | 15 | Newton solver | Low | Low | XL | None | [future_work_5.md](./future_work_5.md) | |
 | 16 | Sleeping / body deactivation | Low | Low | M | None | [future_work_5.md](./future_work_5.md) | |
 | 17 | SOR relaxation for PGS | Low | Low | S | None | [future_work_5.md](./future_work_5.md) | |
