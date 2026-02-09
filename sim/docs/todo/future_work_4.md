@@ -3013,7 +3013,7 @@ pub use derivatives::{
 ---
 
 ### 13. Full Implicit Integrator
-**Status:** Not started | **Effort:** XL | **Prerequisites:** #12 (Derivatives)
+**Status:** ✅ Complete | **Effort:** XL | **Prerequisites:** #12 (Derivatives)
 
 #### Current State
 

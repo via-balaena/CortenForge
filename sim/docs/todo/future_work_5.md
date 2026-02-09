@@ -134,7 +134,7 @@ Items acknowledged but not prioritized for Phase 2:
 | `dampratio` attribute (Position actuators) | Builder-only change, no RL models use it. Deferred in Phase 1 #12. |
 | Explicit Euler integrator | MuJoCo supports it but semi-implicit Euler is strictly superior. No use case. |
 | Velocity Verlet integrator | Not in MuJoCo. Was in standalone system (deleted). No pipeline need. |
-| Implicit-fast (no Coriolis) | Optimization variant. ImplicitSpringDamper covers primary use case. |
+| ~~Implicit-fast (no Coriolis)~~ | ✅ Implemented in §13 as `Integrator::ImplicitFast`. |
 | Planar/Cylindrical joints in pipeline | In sim-constraint standalone. No MJCF models use them. |
 | `<custom>` element (user data) | Low priority — no simulation effect. |
 | `<extension>` element (plugins) | Large design effort, no immediate need. |
