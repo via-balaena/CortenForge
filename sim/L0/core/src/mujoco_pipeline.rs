@@ -12532,40 +12532,52 @@ impl SparseHessian {
     }
 
     /// Fill CSC values with H = M + Σ_{Quadratic} D_i · J_i^T · J_i.
-    fn fill_numeric(&mut self, _model: &Model, data: &Data, nv: usize, nefc: usize) {
+    fn fill_numeric(&mut self, model: &Model, data: &Data, nv: usize, nefc: usize) {
         // Zero all values
         self.vals.iter_mut().for_each(|v| *v = 0.0);
 
-        // Add M (lower triangle)
-        for col in 0..nv {
-            for row in col..nv {
-                let m_val = data.qM[(row, col)];
-                if m_val != 0.0 {
-                    if let Some(idx) = self.find_entry(col, row) {
-                        self.vals[idx] += m_val;
-                    }
+        // Add M using tree sparsity: only walk (i, ancestor) pairs via dof_parent.
+        // This is O(nv · depth) instead of O(nv²) — much cheaper for tree-structured
+        // robots where depth << nv.
+        for i in 0..nv {
+            // Diagonal
+            if let Some(idx) = self.find_entry(i, i) {
+                self.vals[idx] += data.qM[(i, i)];
+            }
+            // Off-diagonal: walk ancestors
+            let mut p = model.dof_parent[i];
+            while let Some(j) = p {
+                // M[i,j] non-zero, j < i (ancestor). Store in lower triangle: col=j, row=i.
+                let m_val = data.qM[(i, j)];
+                if let Some(idx) = self.find_entry(j, i) {
+                    self.vals[idx] += m_val;
                 }
+                p = model.dof_parent[j];
             }
         }
 
-        // Add J^T · D · J for Quadratic rows
+        // Add J^T · D · J for Quadratic rows.
+        // Cache non-zero column indices per constraint row to avoid O(nv) scans
+        // in the inner loop — reduces J^T·D·J fill from O(nefc·nv²) to
+        // O(nefc·nnz_per_row²) where nnz_per_row is typically << nv.
         for r in 0..nefc {
             if data.efc_state[r] != ConstraintState::Quadratic {
                 continue;
             }
             let d_r = data.efc_D[r];
-            for col_a in 0..nv {
-                let j_a = data.efc_J[(r, col_a)];
-                if j_a == 0.0 {
-                    continue;
+            // Collect non-zero columns for this J row
+            let mut nz_cols: Vec<(usize, f64)> = Vec::new();
+            for col in 0..nv {
+                let j_val = data.efc_J[(r, col)];
+                if j_val != 0.0 {
+                    nz_cols.push((col, j_val));
                 }
+            }
+            // Outer product over non-zero pairs only
+            for (ai, &(col_a, j_a)) in nz_cols.iter().enumerate() {
                 let d_j_a = d_r * j_a;
-                for col_b in col_a..nv {
-                    let j_b = data.efc_J[(r, col_b)];
-                    if j_b == 0.0 {
-                        continue;
-                    }
-                    // Lower triangle: (col_b, col_a) where col_b >= col_a
+                for &(col_b, j_b) in &nz_cols[ai..] {
+                    // Lower triangle: col_b >= col_a
                     if let Some(idx) = self.find_entry(col_a, col_b) {
                         self.vals[idx] += d_j_a * j_b;
                     }

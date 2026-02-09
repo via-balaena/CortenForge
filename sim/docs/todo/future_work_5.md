@@ -25,7 +25,7 @@ sparse Hessian path for large systems.
 - Per-step `meaninertia = trace(M) / nv` for configuration-dependent scaling
 - Noslip post-processor: PGS on friction rows with elliptic cone projection, no regularization
 - Sparse Hessian path: custom CSC LDL^T for `nv > 60` (no external crate dependency)
-- 384+ sim domain tests pass (0 failures)
+- 387+ sim domain tests pass (0 failures)
 
 #### Objective
 Implement MuJoCo's exact Newton contact solver operating on the **reduced primal
@@ -1380,7 +1380,7 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
 - ✅ `sim/L0/mjcf/src/parser.rs` — parse `ls_iterations`, `ls_tolerance`,
   `noslip_iterations`, `noslip_tolerance`
 - ✅ `sim/L0/mjcf/src/types.rs` — `MjcfOption` fields for ls/noslip params
-- ✅ `sim/L0/tests/integration/newton_solver.rs` — new (21 acceptance tests)
+- ✅ `sim/L0/tests/integration/newton_solver.rs` — new (23 acceptance tests)
 - ✅ `sim/L0/tests/integration/mod.rs` — register newton_solver module
 - ✅ `sim/L0/tests/integration/spatial_tendons.rs` — fix test_tendon_limit_forces
   for Newton (check qfrc_constraint + qfrc_passive)
