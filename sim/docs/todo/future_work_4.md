@@ -3842,61 +3842,786 @@ for compilation. The `ImplicitFast` arms use `cholesky_solve_in_place` on
 **Status:** Not started | **Effort:** L | **Prerequisites:** None
 
 #### Current State
-None of these features exist in the pipeline. The only reference to "keyframe" in
-the codebase is a doc comment in sim-constraint's equality module.
+
+None of these features exist in the pipeline. There is no `<keyframe>` parsing,
+no mocap body concept, and no user callback infrastructure. The only reference to
+"keyframe" in the codebase is a doc comment in sim-constraint's equality module.
+
+Relevant existing state:
+- `Model::qpos0` (`mujoco_pipeline.rs:1164`) stores the default joint positions
+  (used by `Model::make_data()` initialization). There is no equivalent for qvel,
+  act, or ctrl defaults — those initialize to zero.
+- Bodies are stored in topological order (`body_parent`, `body_jnt_adr`,
+  `body_jnt_num`, `body_dof_adr`, `body_dof_num`). Body 0 is always the world.
+- FK (`mj_fwd_position`, `:3637`) traverses all bodies unconditionally.
+- Integration (`integrate`, `:3464`) uses a joint visitor that iterates all joints.
+- Collision (`mj_collision`, `:4178`) operates on geoms via `geom_xpos`/`geom_xmat`
+  and checks affinity via `contype`/`conaffinity` bitmasks.
+- Contact Jacobian construction (`compute_contact_jacobian`, `:9705`) walks the
+  kinematic chain from the contact's geom-owning body to world. Bodies with no
+  joints contribute zero columns — they are naturally "fixed" from the solver's
+  perspective.
+- `MjcfBody` (`types.rs:1668`) has no `mocap` field.
+- `MjcfModel` (`types.rs:2883`) has no `keyframes` field.
+
+#### MuJoCo Reference
+
+**Keyframes (`mjModel` fields):**
+
+MuJoCo stores `nkey` keyframes in flat row-major arrays:
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| `nkey` | `int` | 1 | Number of keyframes |
+| `key_time` | `mjtNum*` | nkey | Simulation time for each keyframe |
+| `key_qpos` | `mjtNum*` | nkey × nq | Joint positions |
+| `key_qvel` | `mjtNum*` | nkey × nv | Joint velocities |
+| `key_act` | `mjtNum*` | nkey × na | Actuator activations |
+| `key_ctrl` | `mjtNum*` | nkey × nu | Control signals |
+| `key_mpos` | `mjtNum*` | nkey × (3 × nmocap) | Mocap body positions |
+| `key_mquat` | `mjtNum*` | nkey × (4 × nmocap) | Mocap body quaternions |
+
+`mj_resetDataKeyframe(m, d, key)`:
+- If `key < 0` or `key >= m->nkey`: performs a standard `mj_resetData` (defaults).
+- Otherwise: resets all `Data` fields to model defaults first, then overwrites
+  `d->time`, `d->qpos`, `d->qvel`, `d->act`, `d->ctrl`, `d->mocap_pos`,
+  `d->mocap_quat` from the keyframe's stored values.
+
+MJCF `<key>` attributes are all optional. Unspecified fields retain model defaults
+(qpos0 for qpos, zero for qvel/act/ctrl, body_pos/body_quat for mocap).
+
+**Mocap bodies (`body/@mocap`):**
+
+A body with `mocap="true"` is a kinematic input channel — its world-frame pose is
+set directly by the user via `mjData.mocap_pos[i]` / `mjData.mocap_quat[i]` and
+is **not** computed from joint positions.
+
+MuJoCo constraints on mocap bodies (from `user_objects.cc`):
+- **Must be a direct child of the world body** with **zero DOFs** (no joints).
+  The compiler enforces this with a single check:
+  `mocap && (dofnum || (parent->name != "world"))` → error.
+- **Can have child bodies.** MuJoCo does NOT forbid children. Child bodies on a
+  mocap body are effectively welded (since the mocap body has no joints, and the
+  children's poses are computed relative to it via normal FK). This is used for
+  attaching visual-only sub-structures.
+- **Can have geoms** (which participate in collision normally).
+- **Can have sites** (attachment points for sensors, tendons, actuators).
+- **Mass and inertia are computed normally** from geoms/`<inertial>`. MuJoCo does
+  NOT zero out mass for mocap bodies (`user_model.cc` copies `body->mass` without
+  mocap-conditional logic). However, since mocap bodies have no DOFs, their mass
+  does not enter the mass matrix or affect dynamics — it only appears in
+  `body_mass`, `body_inertia`, and `subtree_mass`/`subtree_com`.
+
+MuJoCo model fields:
+- `body_mocapid: Vec<i32>` (size nbody): `-1` for non-mocap bodies; otherwise the
+  index into the `mocap_pos`/`mocap_quat` arrays.
+- `nmocap: int`: number of mocap bodies.
+
+FK behavior: During `mj_kinematics1()`, for a body with `body_mocapid[i] >= 0`,
+MuJoCo replaces the local-frame inputs (`body_pos`/`body_quat`) with
+`mocap_pos[body_mocapid[i]]` / `mocap_quat[body_mocapid[i]]` (after normalizing
+the mocap quaternion via `mju_normalize4`). These are then transformed through
+the parent chain normally. Since MuJoCo enforces mocap bodies are direct world
+children (parent = body 0 at origin), the transform simplifies to
+`xpos = mocap_pos`, `xquat = mocap_quat` — effectively a direct world-frame set.
+Geom and site poses are then computed from the overridden body pose normally.
+
+Velocity FK: In `mj_comVel`, each body's `cvel` starts as `cvel_parent`, then
+accumulates joint DOF contributions. Mocap bodies inherit their parent's cvel
+(world body, which is explicitly zeroed), and have zero DOFs — so `cvel = 0`.
+There is no special mocap check in `mj_comVel`; the zero result follows from
+the world-parent + zero-joint structure.
+
+CRBA / RNE: Mocap bodies have non-zero mass/inertia (computed from geoms) but
+**zero DOFs**. The CRBA joint-space projection loop iterates over joints — mocap
+bodies are naturally excluded. Their `cinert` (spatial inertia) propagates to the
+parent (world body) in the backward pass, but the world body's composite inertia
+is never projected to joint space (it has no DOFs either). RNE's gravity and
+Coriolis passes iterate over joints for force projection — mocap bodies
+contribute nothing. Mocap body mass DOES appear in `subtree_mass`/`subtree_com`
+of the world body.
+
+**`mj_resetData` default initialization for mocap:**
+`mocap_pos` initialized from `model.body_pos[body_id]` and `mocap_quat` from
+`model.body_quat[body_id]` for each mocap body — i.e., the body's offset in
+the MJCF tree becomes the default mocap pose.
+
+**User callbacks (MuJoCo):**
+
+MuJoCo exposes global function pointers (`mjcb_passive`, `mjcb_control`,
+`mjcb_sensor`, `mjcb_contactfilter`, `mjcb_act_dyn`, `mjcb_act_gain`,
+`mjcb_act_bias`) called at specific pipeline stages. These are global mutable
+state — not thread-safe, not composable. Poor fit for Rust's ownership model.
 
 #### Objective
+
 Support MJCF `<keyframe>` state snapshots for quick reset, `mocap` bodies for
-externally driven poses, and (deferred) user callback hooks for custom logic
-injection during simulation.
+externally driven kinematic poses, and (deferred) user callback hooks for custom
+logic injection during simulation.
+
+#### Scope Exclusions
+
+- **User callbacks:** MuJoCo's `mjcb_*` global function pointers require careful
+  Rust API design (closures vs trait objects, `&mut Data` borrowing during
+  `forward()`, thread safety for `BatchSim`). Deferred to a dedicated follow-up.
+  Keyframes and mocap are higher priority and self-contained.
+- **Keyframe `key_mpos` / `key_mquat`:** Per-keyframe mocap poses are implemented
+  as part of the `Keyframe` struct and `reset_to_keyframe()` — not called out as
+  a separate feature. See Steps 3c, 5 (items 5-6), and 8; acceptance criterion 19.
+- **Mocap body child bodies:** MuJoCo permits child bodies on mocap bodies (they
+  are welded — their FK is computed relative to the mocap body's overridden pose).
+  No special code is needed: the FK override sets the mocap body's pose, and the
+  existing FK traversal already computes child body poses relative to their parent.
+  Acceptance criteria include a test for this (criterion 14).
+- **Mocap body + equality weld constraints:** MuJoCo allows using equality weld
+  constraints to attach dynamic bodies to mocap bodies (common for robot
+  manipulation tasks). The existing equality constraint solver already supports
+  weld constraints — no additional work needed, but this is not explicitly tested
+  in this item's acceptance criteria.
+- **MJCF `<key>` attributes beyond qpos/qvel/act/ctrl/mpos/mquat/time:** MuJoCo
+  also supports `key_userdata` — out of scope (no `userdata` concept in
+  CortenForge).
 
 #### Specification
 
-**Keyframes:**
+##### Step 1 — MJCF types for keyframes and mocap
 
-Store named state snapshots in `Model`:
+**1a.** Add `mocap: bool` to `MjcfBody` (`types.rs:1668`):
 
 ```rust
-pub struct Keyframe {
-    pub name: String,
-    pub qpos: DVector<f64>,
-    pub qvel: DVector<f64>,
-    pub act: DVector<f64>,
-    pub ctrl: DVector<f64>,
+pub struct MjcfBody {
+    // ... existing fields ...
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub mocap: bool,      // NEW: default false
 }
 ```
 
-`Data::reset_to_keyframe(&mut self, &Model, keyframe_idx: usize)` restores
-state. Parse from MJCF `<keyframe><key name="..." qpos="..."/></keyframe>`.
+`MjcfBody` conditionally derives `Serialize`/`Deserialize` via
+`#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]` (`:1667`).
+The `#[serde(default)]` annotation is required for backward compatibility —
+existing serialized `MjcfBody` data (from `.mjb` files) lacks this field;
+`bool::default()` is `false`, matching the desired default.
 
-**Mocap bodies:**
+Update `MjcfBody`'s `Default` impl (`types.rs:1693`) to set `mocap: false`.
+All existing construction sites use `Default::default()` or `MjcfBody::new()` →
+`..Default::default()`, so adding the field with a default is zero-breakage.
 
-Bodies with `mocap="true"` have externally driven position/orientation. They
-participate in collision but are not integrated — their pose is set directly
-via `data.mocap_pos[i]` and `data.mocap_quat[i]`.
+**1b.** Add `MjcfKeyframe` type and `keyframes` to `MjcfModel` (`types.rs`):
 
 ```rust
-// In Data:
+/// A single MJCF `<key>` element within `<keyframe>`.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfKeyframe {
+    pub name: String,
+    /// None means "use model default (qpos0)".
+    pub qpos: Option<Vec<f64>>,
+    /// None means "use model default (zeros)".
+    pub qvel: Option<Vec<f64>>,
+    /// None means "use model default (zeros)".
+    pub act: Option<Vec<f64>>,
+    /// None means "use model default (zeros)".
+    pub ctrl: Option<Vec<f64>>,
+    /// None means "use model default (body_pos for each mocap body)".
+    pub mpos: Option<Vec<f64>>,
+    /// None means "use model default (body_quat for each mocap body)".
+    pub mquat: Option<Vec<f64>>,
+    /// Simulation time for this keyframe. Default: 0.0.
+    pub time: f64,
+}
+```
+
+Add to `MjcfModel`:
+
+```rust
+pub struct MjcfModel {
+    // ... existing fields ...
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub keyframes: Vec<MjcfKeyframe>,   // NEW
+}
+```
+
+Update `MjcfModel`'s `Default` impl (`types.rs:2910`) to set
+`keyframes: Vec::new()`. Same zero-breakage pattern — all construction sites use
+`Default` or `MjcfModel::new()` → `..Default::default()`.
+
+The `#[serde(default)]` annotation ensures existing `.mjb` files (serialized
+without `keyframes`) deserialize correctly with an empty Vec.
+`Vec::default()` = `Vec::new()`, matching the desired empty-keyframes default.
+
+##### Step 2 — Parse `<keyframe>` and `mocap` attribute
+
+**2a.** Parse `mocap` attribute in `parse_body_attrs()` (`parser.rs:1010`):
+
+Read `mocap` as a boolean attribute (default `false`). Use the existing inline
+boolean parsing pattern (e.g., `joint.limited = limited == "true"` at `:1068`):
+
+```rust
+if let Some(mocap) = get_attribute_opt(e, "mocap") {
+    body.mocap = mocap == "true" || mocap == "1";
+}
+```
+
+Note: The parser has no dedicated `parse_bool()` helper — boolean attributes use
+inline `== "true"` comparisons throughout. The `|| mocap == "1"` addition handles
+MuJoCo's alternate `"0"/"1"` syntax.
+
+**2b.** Parse `<keyframe>` element in `parse_mujoco()` (`parser.rs:60`):
+
+In the `Event::Start` match block (`:69`), add `b"keyframe"` before the catch-all
+`_ => skip_element(...)` at `:109`:
+
+```rust
+b"keyframe" => {
+    model.keyframes = parse_keyframes(reader)?;
+}
+```
+
+The `<keyframe>` element contains `<key>` sub-elements:
+
+```xml
+<keyframe>
+  <key name="home" qpos="0 0 0.5 1 0 0 0" />
+  <key name="up" time="1.0" qpos="0 0 2.0 1 0 0 0" qvel="0 0 1 0 0 0" />
+</keyframe>
+```
+
+New `parse_keyframes()` helper: iterates `<key>` children (may be `Event::Empty`
+for self-closing tags or `Event::Start` + `Event::End`). For each `<key>`:
+- `name`: `get_attribute_opt(e, "name").unwrap_or_default()`
+- `time`: `get_attribute_opt(e, "time")` → parse as `f64` (default `0.0`)
+- `qpos`, `qvel`, `act`, `ctrl`, `mpos`, `mquat`: use existing
+  `parse_float_array_opt(e, "qpos")` (`:1938`) which returns
+  `Result<Option<Vec<f64>>>`. `None` if the attribute is absent.
+
+Length validation is deferred to the model builder (Step 5) because
+nq/nv/na/nu/nmocap are not yet known at parse time.
+
+##### Step 3 — Model fields for keyframes and mocap
+
+**3a.** Add mocap fields to `Model` (`mujoco_pipeline.rs`, after body fields ~`:867`):
+
+```rust
+/// Number of mocap bodies. Mocap arrays are indexed 0..nmocap.
+pub nmocap: usize,
+
+/// Maps body_id → mocap array index. `None` for non-mocap bodies.
+/// Length: nbody.
+pub body_mocapid: Vec<Option<usize>>,
+```
+
+**3b.** Add keyframe fields to `Model` (after existing `qpos0`, ~`:1164`):
+
+```rust
+/// Number of keyframes parsed from MJCF `<keyframe>`.
+pub nkeyframe: usize,
+
+/// Named state snapshots for quick reset.
+pub keyframes: Vec<Keyframe>,
+```
+
+**3c.** Define the `Keyframe` struct (in `mujoco_pipeline.rs`, near `Model`):
+
+```rust
+/// A named state snapshot for resetting simulation state.
+///
+/// All vectors are sized to match the model dimensions (nq, nv, na, nu,
+/// nmocap). Unspecified fields in the MJCF `<key>` are filled with model
+/// defaults at build time.
+#[derive(Debug, Clone)]
+pub struct Keyframe {
+    /// Keyframe name (from MJCF `name` attribute).
+    pub name: String,
+    /// Simulation time. Default: 0.0.
+    pub time: f64,
+    /// Joint positions (length nq). Default: model.qpos0.
+    pub qpos: DVector<f64>,
+    /// Joint velocities (length nv). Default: zeros.
+    pub qvel: DVector<f64>,
+    /// Actuator activations (length na). Default: zeros.
+    pub act: DVector<f64>,
+    /// Control signals (length nu). Default: zeros.
+    pub ctrl: DVector<f64>,
+    /// Mocap body positions (length nmocap). Default: body_pos for each
+    /// mocap body.
+    pub mpos: Vec<Vector3<f64>>,
+    /// Mocap body quaternions (length nmocap). Default: body_quat for each
+    /// mocap body.
+    pub mquat: Vec<UnitQuaternion<f64>>,
+}
+```
+
+**3d.** Add mocap state to `Data` (`mujoco_pipeline.rs`, after existing state fields):
+
+```rust
+/// Mocap body positions in world frame (length nmocap).
+/// User-settable: modified between steps to drive mocap body poses.
+/// Initialized to the body_pos offset for each mocap body.
 pub mocap_pos: Vec<Vector3<f64>>,
+
+/// Mocap body orientations in world frame (length nmocap).
+/// User-settable: modified between steps to drive mocap body poses.
+/// Initialized to the body_quat offset for each mocap body.
 pub mocap_quat: Vec<UnitQuaternion<f64>>,
 ```
 
-Pipeline skips FK and integration for mocap bodies; collision uses the
-mocap-set pose directly.
+**3e.** Update `Model::empty()` (`mujoco_pipeline.rs:2099`):
 
-**User callbacks (deferred):**
+```rust
+nmocap: 0,
+body_mocapid: vec![None],  // world body
+nkeyframe: 0,
+keyframes: Vec::new(),
+```
 
-MuJoCo's `mjcb_*` hooks (passive force, control, sensor, collision filter) are
-useful but require careful API design for Rust's ownership model. Defer to a
-follow-up — keyframes and mocap are higher priority.
+**3f.** Update `Model::make_data()` (`mujoco_pipeline.rs:2358`) to initialize
+`mocap_pos` and `mocap_quat` from model body offsets:
+
+```rust
+mocap_pos: (0..self.nbody)
+    .filter_map(|i| self.body_mocapid[i].map(|_| self.body_pos[i]))
+    .collect(),
+mocap_quat: (0..self.nbody)
+    .filter_map(|i| self.body_mocapid[i].map(|_| self.body_quat[i]))
+    .collect(),
+```
+
+Place after `ximat` initialization (~line 2381), in the "Body states" section.
+
+**3g.** Update `Data`'s manual `Clone` impl (`mujoco_pipeline.rs:1982`). `Data`
+derives only `Debug`; `Clone` is implemented manually (required by the
+cfg-gated `deformable_bodies: Vec<Box<dyn DeformableBody + Send>>` field which
+needs `clone_box()`). Add:
+
+```rust
+mocap_pos: self.mocap_pos.clone(),
+mocap_quat: self.mocap_quat.clone(),
+```
+
+**3h.** Update `Data::reset()` (`mujoco_pipeline.rs:3233`) to reset mocap state
+to model defaults (matching the existing reset pattern):
+
+```rust
+// Reset mocap poses to model defaults (body_pos/body_quat offsets).
+for (i, body_id) in (0..model.nbody)
+    .filter(|&b| model.body_mocapid[b].is_some())
+    .enumerate()
+{
+    self.mocap_pos[i] = model.body_pos[body_id];
+    self.mocap_quat[i] = model.body_quat[body_id];
+}
+```
+
+##### Step 4 — Model builder: mocap body processing
+
+**Validation site:** `validate()` (`validation.rs`) is NOT called during
+`model_from_mjcf()` — only `validate_tendons()` is (`:131`). Therefore, mocap
+validation cannot live in `traverse_body()`. Instead, mocap constraints are
+enforced **in the builder** during `process_body()` / `process_body_with_world_frame()`,
+where `parent_id: usize` is available. `parent_id == 0` means "direct child
+of world."
+
+**4a. Validation rules** (in `process_body_with_world_frame`, `model_builder.rs:759`):
+
+When `body.mocap` is `true`, check before registration:
+
+1. **Must be a direct child of the world body.** If `parent_id != 0`:
+   ```rust
+   return Err(ModelConversionError {
+       message: format!(
+           "mocap body '{}' must be a direct child of worldbody",
+           body.name
+       ),
+   });
+   ```
+2. **Must have no joints.** If `body.joints` is non-empty:
+   ```rust
+   return Err(ModelConversionError {
+       message: format!(
+           "mocap body '{}' must not have joints (has {})",
+           body.name, body.joints.len()
+       ),
+   });
+   ```
+
+Note: MuJoCo does NOT forbid child bodies on mocap bodies. Children are welded
+(their FK is computed relative to the mocap body's overridden pose via the
+normal traversal). No "no children" validation is needed.
+
+**4b. Registration** (in `process_body_with_world_frame`, `model_builder.rs:759`):
+
+When `body.mocap` is `true` and validation has passed:
+
+- **Mass/inertia: computed normally** from geoms or explicit `<inertial>`, matching
+  MuJoCo behavior. MuJoCo does NOT zero out mass for mocap bodies. The mass
+  appears in `body_mass`/`body_inertia`/`subtree_mass` but does not affect
+  dynamics because mocap bodies have zero DOFs and are not integrated.
+- Assign `body_mocapid[body_id] = Some(self.nmocap)` and increment `self.nmocap`.
+- The body's joint processing loop (`body.joints` at `:846`) naturally produces
+  zero iterations since validation enforced no joints. `body_jnt_num` and
+  `body_dof_num` are pushed as 0 — the existing code handles this correctly.
+- Body `body_pos` and `body_quat` are set normally from the MJCF offset — these
+  become the default mocap pose.
+- Child bodies (if any) are processed recursively as normal. Their FK will
+  compute relative to the mocap body's overridden pose.
+
+**4c.** Non-mocap bodies get `body_mocapid[body_id] = None`.
+
+##### Step 5 — Model builder: keyframe processing
+
+`build()` (`model_builder.rs:2298`) consumes the builder and returns a `Model`.
+It does **not** have access to the `MjcfModel`. Keyframe processing therefore
+happens in `model_from_mjcf()` (`model_builder.rs:97`), which orchestrates the
+full MJCF → Model pipeline and has access to both `mjcf: &MjcfModel` and the
+built `Model`.
+
+Currently `model_from_mjcf()` returns `Ok(builder.build())` at `:154`.
+Restructure to `let mut model = builder.build();`, add keyframe processing,
+then `Ok(model)`:
+
+```rust
+// Process keyframes (after build, so nq/nv/na/nu/nmocap are finalized).
+for mjcf_kf in &mjcf.keyframes {
+    model.keyframes.push(resolve_keyframe(mjcf_kf, &model)?);
+}
+model.nkeyframe = model.keyframes.len();
+```
+
+The `resolve_keyframe()` helper (new function in `model_builder.rs`):
+
+For each `MjcfKeyframe`:
+
+1. **qpos:** If `Some(v)`, validate `v.len() == model.nq`, convert to `DVector`.
+   If `None`, clone `model.qpos0`.
+2. **qvel:** If `Some(v)`, validate `v.len() == model.nv`, convert. If `None`,
+   `DVector::zeros(model.nv)`.
+3. **act:** If `Some(v)`, validate `v.len() == model.na`, convert. If `None`,
+   `DVector::zeros(model.na)`.
+4. **ctrl:** If `Some(v)`, validate `v.len() == model.nu`, convert. If `None`,
+   `DVector::zeros(model.nu)`.
+5. **mpos:** If `Some(v)`, validate `v.len() == 3 * model.nmocap`, reshape into
+   `Vec<Vector3<f64>>`. If `None`, collect default mocap positions: for each
+   mocap body (in body_id order where `body_mocapid[i].is_some()`), use
+   `model.body_pos[body_id]`.
+6. **mquat:** If `Some(v)`, validate `v.len() == 4 * model.nmocap`, reshape into
+   `Vec<UnitQuaternion<f64>>` (normalize each quaternion). If `None`, collect
+   default mocap quaternions: for each mocap body, use `model.body_quat[body_id]`.
+7. **time:** Use the parsed `time` value directly.
+
+**Finiteness validation:** After length checks pass, validate that all provided
+float values are finite (`f64::is_finite`). Non-finite values (NaN, ±Inf) in
+keyframe data would propagate silently through `forward()` after reset (since
+`forward()` does not validate qpos finiteness — only `step()` does). Reject
+at build time with a descriptive error naming the keyframe and the field.
+
+**Length mismatch error:** `ModelConversionError` is a flat struct with a
+`message: String` field (`:50`), not an enum. Follow the existing pattern:
+
+```rust
+return Err(ModelConversionError {
+    message: format!(
+        "keyframe '{}': qpos length {} does not match nq {}",
+        mjcf_kf.name, v.len(), model.nq
+    ),
+});
+```
+
+##### Step 6 — FK override for mocap bodies
+
+In `mj_fwd_position()` (`mujoco_pipeline.rs:3637`), the body traversal loop
+currently computes every body's world pose from `parent + body_pos/body_quat +
+joints`. For mocap bodies, we replace the local-frame offsets with the mocap
+arrays (matching MuJoCo's `mj_kinematics1` mechanism). Since mocap bodies are
+always direct world children (parent at origin, identity rotation) and have no
+joints, this simplifies to directly setting world-frame pose.
+
+Modify the loop by inserting a mocap check **before** the parent-frame and joint
+logic:
+
+```rust
+for body_id in 1..model.nbody {
+    if let Some(mocap_idx) = model.body_mocapid[body_id] {
+        // Mocap body: replace body_pos/body_quat with mocap arrays.
+        // Parent is always world (origin), so xpos = mocap_pos, xquat = mocap_quat.
+        // Normalize quaternion (matching MuJoCo's mju_normalize4 in mj_kinematics1).
+        let mquat = UnitQuaternion::new_normalize(
+            data.mocap_quat[mocap_idx].into_inner()
+        );
+        data.xpos[body_id] = data.mocap_pos[mocap_idx];
+        data.xquat[body_id] = mquat;
+        data.xmat[body_id] = mquat.to_rotation_matrix().into_inner();
+        // Compute inertial frame from overridden body pose + model offsets.
+        // (Same computation as regular bodies, but using the mocap-set pose.)
+        data.xipos[body_id] = data.xpos[body_id]
+            + data.xmat[body_id] * model.body_ipos[body_id];
+        let iq = data.xquat[body_id] * model.body_iquat[body_id];
+        data.ximat[body_id] = iq.to_rotation_matrix().into_inner();
+        // Cinert: compute spatial inertia normally (non-zero mass).
+        // MuJoCo does NOT zero mass for mocap bodies. The cinert
+        // propagates to the world body in the CRBA backward pass but
+        // never enters joint-space (mocap body has zero DOFs).
+        let h = data.xipos[body_id] - data.xpos[body_id];
+        data.cinert[body_id] = compute_body_spatial_inertia(
+            model.body_mass[body_id],
+            model.body_inertia[body_id],
+            &data.ximat[body_id],
+            h,
+        );
+        // Skip joint processing (mocap body has zero joints).
+        continue;
+    }
+    // ... existing FK computation for regular bodies (parent + body_pos + joints) ...
+}
+// Geom and site pose loops (`:3742`, `:3755`) run AFTER the body loop —
+// they use xpos[body_id]/xmat[body_id], so mocap geoms/sites get correct
+// world-frame poses automatically. No changes needed.
+```
+
+Note: The `continue` skips the joint loop and `cinert` computation for the
+non-mocap path (which would both produce correct results anyway for a zero-joint
+body, but the mocap branch computes `cinert` itself). The geom and site pose
+loops are already **separate loops after the body loop** (`:3742` for geoms,
+`:3755` for sites) — so the `continue` does not skip them.
+
+**Subtree mass backward pass:** Mocap bodies have normal mass (computed from
+geoms). Their mass contributes to `subtree_mass` / `subtree_com` of the world
+body, matching MuJoCo behavior. No change needed — the existing backward pass
+handles this correctly.
+
+##### Step 7 — Velocity FK: zero velocity for mocap bodies
+
+In `mj_fwd_velocity()` (`mujoco_pipeline.rs:7387`), the body velocity loop
+starts with `cvel_parent` (world=0 for mocap bodies), then adds joint DOF
+contributions (zero for mocap bodies). The result is already correct without
+changes — but for clarity and to avoid the unnecessary lever-arm computation,
+explicitly zero cvel and skip:
+
+```rust
+for body_id in 1..model.nbody {
+    if model.body_mocapid[body_id].is_some() {
+        // Mocap body: inherits cvel from world parent (zero), has no joints.
+        // Explicitly set to zero and skip lever-arm computation.
+        data.cvel[body_id] = SpatialVector::zeros();
+        continue;
+    }
+    // ... existing velocity FK ...
+}
+```
+
+(`SpatialVector` is a type alias for `Vector6<f64>`, defined at
+`mujoco_pipeline.rs:102`.)
+
+Note: MuJoCo's `mj_comVel` does NOT special-case mocap bodies — the zero
+velocity emerges naturally from world-parent + zero joints. Our explicit
+check is an optimization that also makes the mocap semantics self-documenting.
+
+##### Step 8 — `Data::reset_to_keyframe()`
+
+```rust
+impl Data {
+    /// Reset simulation state to a named keyframe.
+    ///
+    /// Overwrites `time`, `qpos`, `qvel`, `act`, `ctrl`, `mocap_pos`, and
+    /// `mocap_quat` from the keyframe. Clears `qacc` and computed quantities.
+    /// Caller must invoke `forward()` after reset to recompute derived state.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `keyframe_idx >= model.nkeyframe`.
+    pub fn reset_to_keyframe(
+        &mut self,
+        model: &Model,
+        keyframe_idx: usize,
+    ) -> Result<(), ResetError> {
+        let kf = model.keyframes.get(keyframe_idx)
+            .ok_or(ResetError::InvalidKeyframeIndex {
+                index: keyframe_idx,
+                nkeyframe: model.nkeyframe,
+            })?;
+
+        self.time = kf.time;
+        self.qpos.copy_from(&kf.qpos);
+        self.qvel.copy_from(&kf.qvel);
+        self.act.copy_from(&kf.act);
+        self.ctrl.copy_from(&kf.ctrl);
+
+        // Mocap state (length may be 0 if no mocap bodies).
+        self.mocap_pos.copy_from_slice(&kf.mpos);
+        self.mocap_quat.copy_from_slice(&kf.mquat);
+
+        // Clear acceleration and applied forces.
+        self.qacc.fill(0.0);
+        self.qfrc_applied.fill(0.0);
+        for v in &mut self.xfrc_applied {
+            *v = SpatialVector::zeros();
+        }
+
+        Ok(())
+    }
+}
+```
+
+**`ResetError`** (new enum, alongside `StepError`):
+
+```rust
+/// Error returned by state reset operations.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum ResetError {
+    InvalidKeyframeIndex { index: usize, nkeyframe: usize },
+}
+
+impl std::fmt::Display for ResetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResetError::InvalidKeyframeIndex { index, nkeyframe } => {
+                write!(f, "invalid keyframe index {index} (model has {nkeyframe} keyframes)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ResetError {}
+```
+
+Follow the same manual `Display` + `Error` pattern used by `StepError`
+(`mujoco_pipeline.rs:755`), which does not use `thiserror` derive.
+
+##### Step 9 — No integration changes needed
+
+Mocap bodies have **no joints** (`body_jnt_num == 0`, `body_dof_num == 0`).
+The integration visitor (`mj_integrate_pos`, `integrate()`) iterates over joints,
+not bodies — so mocap bodies are naturally skipped. No explicit mocap check is
+needed in the integrator.
+
+Similarly, `mj_runge_kutta()` iterates DOFs and joints — mocap bodies contribute
+zero DOFs and are naturally excluded.
+
+##### Step 10 — Collision: no changes needed
+
+The collision pipeline operates on geoms, not bodies. Mocap body geoms have valid
+`geom_xpos`/`geom_xmat` (set by FK in Step 6) and participate in:
+- Broad-phase (AABB from geom pose) — works unchanged.
+- Affinity check (`contype`/`conaffinity`) — works unchanged.
+- Narrow-phase (`collide_geoms`) — works unchanged.
+- Contact Jacobian: `compute_contact_jacobian` walks from the contact body to
+  world via `body_parent`. A mocap body has no joints, so the walk contributes
+  zero Jacobian columns for the mocap side. The dynamic body in the contact pair
+  gets full Jacobian entries. This means constraint forces act on the dynamic body
+  but cannot move the mocap body — correct behavior for a kinematic body.
+
+No collision code changes required.
+
+##### Step 11 — BatchSim compatibility
+
+`BatchSim` (`batch.rs`) shares `Model` via `Arc<Model>` and creates per-
+environment `Data` instances via `model.make_data()`. Resets use
+`data.reset(&model)`. `mocap_pos`/`mocap_quat` on `Data` are plain
+`Vec<Vector3<f64>>`/`Vec<UnitQuaternion<f64>>` — both `Send + Sync + Clone`.
+No `BatchSim` changes needed.
+
+Users set `envs[i].data.mocap_pos[j]` per-environment before stepping.
 
 #### Acceptance Criteria
-1. `Data::reset_to_keyframe()` restores exact state from MJCF `<keyframe>`.
-2. Mocap body pose is externally settable and affects collision but not integration.
-3. Mocap bodies have zero mass contribution to the system.
+
+**Keyframes:**
+
+1. MJCF with `<keyframe><key name="home" qpos="..." /></keyframe>` parses into
+   `model.keyframes` with correct name and qpos values.
+2. Partial keyframes (only `qpos` specified) fill `qvel`/`act`/`ctrl` with model
+   defaults (zeros) and `mpos`/`mquat` with default mocap poses.
+3. `Data::reset_to_keyframe(model, 0)` overwrites `time`, `qpos`, `qvel`, `act`,
+   `ctrl`, `mocap_pos`, `mocap_quat` to match keyframe values. After `forward()`,
+   body poses match the keyframe state.
+4. `Data::reset_to_keyframe(model, out_of_range)` returns
+   `Err(ResetError::InvalidKeyframeIndex { .. })`.
+5. Round-trip: step 100 times, reset to keyframe 0, verify state matches initial.
+6. Multiple keyframes: parse 3+ keyframes, reset to each, verify state differs.
+
+**Mocap bodies:**
+
+7. MJCF body with `mocap="true"` as a direct child of worldbody (no joints)
+   produces a body with `body_mocapid[i] = Some(k)`, `body_jnt_num[i] == 0`,
+   and `body_mass[i]` computed normally from geoms (non-zero if geoms have density).
+8. `model.nmocap` equals the number of mocap bodies.
+9. After `forward()`, `data.xpos[mocap_body]` equals `data.mocap_pos[k]`.
+10. Setting `data.mocap_pos[k]` to a new position and calling `forward()` updates
+    `xpos`, `geom_xpos` for the mocap body's geoms.
+11. Mocap body geoms produce contacts with dynamic bodies. The contact force
+    affects the dynamic body's acceleration; the mocap body is unaffected.
+12. Mocap body's `cvel` is zero after velocity FK.
+13. Mocap body mass appears in `subtree_mass` of the world body (matching MuJoCo —
+    mass is NOT zeroed for mocap bodies).
+14. Mocap body with child bodies: children's FK is computed relative to mocap
+    body's overridden pose. Moving mocap_pos moves the children too.
+
+**Mocap validation:**
+
+15. MJCF with `mocap="true"` on a non-world-child body produces a
+    `ModelConversionError` at `load_model()` time.
+16. MJCF with `mocap="true"` on a body that has joints produces a
+    `ModelConversionError` at `load_model()` time.
+
+**Keyframe validation:**
+
+17. MJCF `<key qpos="...">` with wrong-length qpos (e.g., 3 values when nq is 7)
+    produces a `ModelConversionError` at `load_model()` time with a descriptive
+    message naming the keyframe and the mismatched field.
+18. MJCF `<key qpos="NaN 0 0 ...">` produces a `ModelConversionError` (finiteness
+    check — prevents silent NaN propagation through `forward()` after reset).
+
+**Integration / no-change verification:**
+
+19. After `step()`, a mocap body's world pose remains equal to `mocap_pos`/
+    `mocap_quat` (integration does not alter it — mocap body has no joints/DOFs).
+20. `BatchSim`: create a model with mocap bodies, spawn multiple environments,
+    set different `mocap_pos` per environment, step each — verify poses are
+    independent.
+
+**Keyframe + Mocap integration:**
+
+21. Keyframe with `mpos`/`mquat` attributes: after `reset_to_keyframe()`, mocap
+    arrays contain the keyframe's mocap poses (not defaults).
+22. `Data::reset()` restores mocap poses to model defaults (body_pos/body_quat
+    offsets for each mocap body).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (Model fields, Data fields,
-  `Data::step()` skip for mocap, `reset_to_keyframe()`)
-- `sim/L0/mjcf/src/parser.rs` — modify (parse `<keyframe>`, `mocap` attribute)
-- `sim/L0/mjcf/src/model_builder.rs` — modify (build keyframe/mocap data)
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — modify:
+  - Add `Keyframe` struct (~near `Model`), `ResetError` enum (~near `StepError` at `:755`)
+  - `Model` (`:807`): add `nmocap`, `body_mocapid`, `nkeyframe`, `keyframes` fields
+  - `Data` (`:1655`): add `mocap_pos`, `mocap_quat` fields
+  - `Data` manual `Clone` impl (`:1982`): add the two new fields
+  - `Model::empty()` (`:2099`): initialize new Model fields
+  - `Model::make_data()` (`:2358`): initialize `mocap_pos`/`mocap_quat` from body offsets
+  - `Data::reset()` (`:3233`): add mocap reset to model defaults
+  - `Data::reset_to_keyframe()`: new method (`:3233` impl block)
+  - `mj_fwd_position()` (`:3637`): mocap body FK override
+  - `mj_fwd_velocity()` (`:7387`): zero velocity for mocap bodies
+- `sim/L0/mjcf/src/types.rs` — modify:
+  - `MjcfBody` (`:1668`): add `mocap: bool` field
+  - `MjcfBody` `Default` impl (`:1693`): add `mocap: false`
+  - New `MjcfKeyframe` struct
+  - `MjcfModel` (`:2883`): add `keyframes: Vec<MjcfKeyframe>` (`#[serde(default)]`)
+  - `MjcfModel` `Default` impl (`:2910`): add `keyframes: Vec::new()`
+- `sim/L0/mjcf/src/parser.rs` — modify:
+  - `parse_body_attrs()` (`:1010`): parse `mocap` attribute
+  - `parse_mujoco()` (`:60`): add `b"keyframe"` match arm (currently falls through
+    to `skip_element` catch-all at `:109`)
+  - New `parse_keyframes()` helper function for `<key>` sub-elements
+- `sim/L0/mjcf/src/model_builder.rs` — modify:
+  - `ModelBuilder` struct (`:200`): add `body_mocapid: Vec<Option<usize>>`,
+    `nmocap: usize` tracking fields (after body arrays ~`:226`)
+  - `process_body_with_world_frame()` (`:759`): mocap body validation
+    (world parent + no joints → `ModelConversionError`) and registration
+    (set `body_mocapid`, increment `nmocap`; mass computed normally)
+  - `build()` (`:2298`): add `nmocap`, `body_mocapid`, `nkeyframe`, `keyframes`
+    to Model struct literal
+  - `model_from_mjcf()` (`:97`): restructure to `let mut model = builder.build();`
+    (currently returns `Ok(builder.build())` at `:154`), add keyframe processing
+    after build (new `resolve_keyframe()` helper), then `Ok(model)`
+- `sim/L0/mjcf/src/validation.rs` — no changes (mocap validation is in builder)
+- `sim/L0/tests/integration/keyframes.rs` — new: keyframe parsing, reset, mocap
+  body semantics, validation error tests
+- `sim/L0/tests/integration/mod.rs` — modify: add `pub mod keyframes;` with
+  section comment following existing naming pattern
