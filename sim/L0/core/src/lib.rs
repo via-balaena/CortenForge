@@ -125,6 +125,8 @@ pub use mujoco_pipeline::{
     GeomType,
     // Integration method selection
     Integrator,
+    // Keyframe types
+    Keyframe,
     // Joint types
     MjJointType,
     // Sensor types
@@ -132,11 +134,12 @@ pub use mujoco_pipeline::{
     MjSensorDataType,
     MjSensorType,
     Model,
+    // Error handling
+    ResetError,
     // Constraint solver algorithm
     SolverType,
     // Spatial algebra types
     SpatialVector,
-    // Error handling
     StepError,
     // Tendon types
     TendonType,

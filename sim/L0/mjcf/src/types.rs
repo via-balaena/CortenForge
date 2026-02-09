@@ -1688,6 +1688,9 @@ pub struct MjcfBody {
     pub children: Vec<MjcfBody>,
     /// Parent body name (set during flattening).
     pub parent: Option<String>,
+    /// Whether this body is a mocap (kinematic input) body.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub mocap: bool,
 }
 
 impl Default for MjcfBody {
@@ -1704,6 +1707,7 @@ impl Default for MjcfBody {
             sites: Vec::new(),
             children: Vec::new(),
             parent: None,
+            mocap: false,
         }
     }
 }
@@ -2874,6 +2878,51 @@ pub struct MjcfContact {
 }
 
 // ============================================================================
+// Keyframe
+// ============================================================================
+
+/// A single MJCF `<key>` element within `<keyframe>`.
+///
+/// All state fields are optional — `None` means "use model default" (qpos0
+/// for qpos, zeros for qvel/act/ctrl, body_pos/body_quat for mocap). The
+/// `name` field uses an empty string for unnamed keyframes.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfKeyframe {
+    /// Keyframe name from MJCF `name` attribute. Empty string if unnamed.
+    pub name: String,
+    /// None means "use model default (qpos0)".
+    pub qpos: Option<Vec<f64>>,
+    /// None means "use model default (zeros)".
+    pub qvel: Option<Vec<f64>>,
+    /// None means "use model default (zeros)".
+    pub act: Option<Vec<f64>>,
+    /// None means "use model default (zeros)".
+    pub ctrl: Option<Vec<f64>>,
+    /// None means "use model default (body_pos for each mocap body)".
+    pub mpos: Option<Vec<f64>>,
+    /// None means "use model default (body_quat for each mocap body)".
+    pub mquat: Option<Vec<f64>>,
+    /// Simulation time for this keyframe. Default: 0.0.
+    pub time: f64,
+}
+
+impl Default for MjcfKeyframe {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            qpos: None,
+            qvel: None,
+            act: None,
+            ctrl: None,
+            mpos: None,
+            mquat: None,
+            time: 0.0,
+        }
+    }
+}
+
+// ============================================================================
 // Model
 // ============================================================================
 
@@ -2905,6 +2954,9 @@ pub struct MjcfModel {
     pub contact: MjcfContact,
     /// Skinned meshes for visual deformation.
     pub skins: Vec<MjcfSkin>,
+    /// Keyframes for quick state reset.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub keyframes: Vec<MjcfKeyframe>,
 }
 
 impl Default for MjcfModel {
@@ -2922,6 +2974,7 @@ impl Default for MjcfModel {
             equality: MjcfEquality::default(),
             contact: MjcfContact::default(),
             skins: Vec::new(),
+            keyframes: Vec::new(),
         }
     }
 }

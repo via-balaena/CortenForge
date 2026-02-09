@@ -16,8 +16,8 @@ use sim_core::HeightFieldData;
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, ContactPair, EqualityType, GainType,
-    GeomType, Integrator, MjJointType, MjObjectType, MjSensorDataType, MjSensorType, Model,
-    SolverType, TendonType, WrapType,
+    GeomType, Integrator, Keyframe, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
+    Model, SolverType, TendonType, WrapType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -28,9 +28,9 @@ use crate::defaults::DefaultResolver;
 use crate::error::Result;
 use crate::types::{
     MjcfActuator, MjcfActuatorType, MjcfBody, MjcfContact, MjcfEquality, MjcfGeom, MjcfGeomType,
-    MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfMesh, MjcfModel,
-    MjcfOption, MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon, MjcfTendonType,
-    SpatialPathElement,
+    MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfKeyframe, MjcfMesh,
+    MjcfModel, MjcfOption, MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon,
+    MjcfTendonType, SpatialPathElement,
 };
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -62,10 +62,118 @@ impl std::fmt::Display for ModelConversionError {
 
 impl std::error::Error for ModelConversionError {}
 
-/// Convert a parsed `MjcfModel` to a sim-core `Model`.
+// Resolve an `MjcfKeyframe` into a `Keyframe` with model-validated dimensions.
+//
+// Validates lengths, finiteness, and fills missing fields with model defaults.
+fn resolve_keyframe(
+    mjcf_kf: &MjcfKeyframe,
+    model: &Model,
+) -> std::result::Result<Keyframe, ModelConversionError> {
+    // Validate time finiteness
+    if !mjcf_kf.time.is_finite() {
+        return Err(ModelConversionError {
+            message: format!(
+                "keyframe '{}': time is not finite ({})",
+                mjcf_kf.name, mjcf_kf.time
+            ),
+        });
+    }
+
+    // Helper: validate length and finiteness for a float array field.
+    let validate_field = |field: &Option<Vec<f64>>,
+                          field_name: &str,
+                          expected_len: usize|
+     -> std::result::Result<(), ModelConversionError> {
+        if let Some(ref v) = *field {
+            if v.len() != expected_len {
+                return Err(ModelConversionError {
+                    message: format!(
+                        "keyframe '{}': {} length {} does not match {}",
+                        mjcf_kf.name,
+                        field_name,
+                        v.len(),
+                        expected_len
+                    ),
+                });
+            }
+            if let Some(pos) = v.iter().position(|x| !x.is_finite()) {
+                return Err(ModelConversionError {
+                    message: format!(
+                        "keyframe '{}': {}[{}] is not finite ({})",
+                        mjcf_kf.name, field_name, pos, v[pos]
+                    ),
+                });
+            }
+        }
+        Ok(())
+    };
+
+    validate_field(&mjcf_kf.qpos, "qpos", model.nq)?;
+    validate_field(&mjcf_kf.qvel, "qvel", model.nv)?;
+    validate_field(&mjcf_kf.act, "act", model.na)?;
+    validate_field(&mjcf_kf.ctrl, "ctrl", model.nu)?;
+    validate_field(&mjcf_kf.mpos, "mpos", 3 * model.nmocap)?;
+    validate_field(&mjcf_kf.mquat, "mquat", 4 * model.nmocap)?;
+
+    // Build resolved keyframe with model defaults for missing fields
+    let qpos = match mjcf_kf.qpos {
+        Some(ref v) => DVector::from_vec(v.clone()),
+        None => model.qpos0.clone(),
+    };
+    let qvel = match mjcf_kf.qvel {
+        Some(ref v) => DVector::from_vec(v.clone()),
+        None => DVector::zeros(model.nv),
+    };
+    let act = match mjcf_kf.act {
+        Some(ref v) => DVector::from_vec(v.clone()),
+        None => DVector::zeros(model.na),
+    };
+    let ctrl = match mjcf_kf.ctrl {
+        Some(ref v) => DVector::from_vec(v.clone()),
+        None => DVector::zeros(model.nu),
+    };
+
+    // Mocap positions: reshape flat array into Vec<Vector3<f64>>
+    let mpos = match mjcf_kf.mpos {
+        Some(ref v) => v
+            .chunks_exact(3)
+            .map(|c| Vector3::new(c[0], c[1], c[2]))
+            .collect(),
+        None => (0..model.nbody)
+            .filter_map(|i| model.body_mocapid[i].map(|_| model.body_pos[i]))
+            .collect(),
+    };
+
+    // Mocap quaternions: reshape flat array into Vec<UnitQuaternion<f64>>
+    let mquat = match mjcf_kf.mquat {
+        Some(ref v) => v
+            .chunks_exact(4)
+            .map(|c| {
+                UnitQuaternion::new_normalize(nalgebra::Quaternion::new(c[0], c[1], c[2], c[3]))
+            })
+            .collect(),
+        None => (0..model.nbody)
+            .filter_map(|i| model.body_mocapid[i].map(|_| model.body_quat[i]))
+            .collect(),
+    };
+
+    Ok(Keyframe {
+        name: mjcf_kf.name.clone(),
+        time: mjcf_kf.time,
+        qpos,
+        qvel,
+        act,
+        ctrl,
+        mpos,
+        mquat,
+    })
+}
+
+/// Convert a parsed [`MjcfModel`] into a physics [`Model`].
 ///
-/// This is the primary entry point for the new Model-based MJCF loading.
-/// It builds all Model arrays in a single tree traversal.
+/// This is the primary entry point for Model-based MJCF loading. It builds
+/// all Model arrays in a single tree traversal, resolves keyframes, and
+/// validates mocap body constraints.
 ///
 /// # Arguments
 ///
@@ -151,7 +259,20 @@ pub fn model_from_mjcf(
     builder.process_contact(&mjcf.contact)?;
 
     // Build final model
-    Ok(builder.build())
+    let mut model = builder.build();
+
+    // Process keyframes (after build, so nq/nv/na/nu/nmocap are finalized).
+    // Collect into a temporary Vec first — calling resolve_keyframe(&model)
+    // borrows model immutably, which conflicts with model.keyframes.push()
+    // (mutable borrow). Collecting then assigning avoids the overlap.
+    model.keyframes = mjcf
+        .keyframes
+        .iter()
+        .map(|kf| resolve_keyframe(kf, &model))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    model.nkeyframe = model.keyframes.len();
+
+    Ok(model)
 }
 
 /// Parse MJCF XML and convert directly to Model.
@@ -224,6 +345,8 @@ struct ModelBuilder {
     body_mass: Vec<f64>,
     body_inertia: Vec<Vector3<f64>>,
     body_name: Vec<Option<String>>,
+    body_mocapid: Vec<Option<usize>>,
+    nmocap: usize,
 
     // Joint arrays
     jnt_type: Vec<MjJointType>,
@@ -435,6 +558,8 @@ impl ModelBuilder {
             body_mass: vec![0.0],
             body_inertia: vec![Vector3::zeros()],
             body_name: vec![Some("world".to_string())],
+            body_mocapid: vec![None], // world body is not mocap
+            nmocap: 0,
 
             jnt_type: vec![],
             jnt_body: vec![],
@@ -766,6 +891,27 @@ impl ModelBuilder {
     ) -> std::result::Result<usize, ModelConversionError> {
         let body_id = self.body_parent.len();
 
+        // Validate mocap body constraints (before any state mutations)
+        if body.mocap {
+            if parent_id != 0 {
+                return Err(ModelConversionError {
+                    message: format!(
+                        "mocap body '{}' must be a direct child of worldbody",
+                        body.name
+                    ),
+                });
+            }
+            if !body.joints.is_empty() {
+                return Err(ModelConversionError {
+                    message: format!(
+                        "mocap body '{}' must not have joints (has {})",
+                        body.name,
+                        body.joints.len()
+                    ),
+                });
+            }
+        }
+
         // Store name mapping
         if !body.name.is_empty() {
             self.body_name_to_id.insert(body.name.clone(), body_id);
@@ -831,6 +977,12 @@ impl ModelBuilder {
         self.body_iquat.push(iquat);
         self.body_mass.push(mass);
         self.body_inertia.push(inertia);
+        if body.mocap {
+            self.body_mocapid.push(Some(self.nmocap));
+            self.nmocap += 1;
+        } else {
+            self.body_mocapid.push(None);
+        }
         self.body_name.push(if body.name.is_empty() {
             None
         } else {
@@ -2312,6 +2464,8 @@ impl ModelBuilder {
             nsite,
             nu,
             na: self.na,
+            nmocap: self.nmocap,
+            nkeyframe: 0,
 
             body_parent: self.body_parent,
             body_rootid: self.body_rootid,
@@ -2329,6 +2483,7 @@ impl ModelBuilder {
             body_inertia: self.body_inertia,
             body_name: self.body_name,
             body_subtreemass: vec![0.0; nbody], // Computed after model construction
+            body_mocapid: self.body_mocapid,
 
             jnt_type: self.jnt_type,
             jnt_body: self.jnt_body,
@@ -2470,6 +2625,7 @@ impl ModelBuilder {
             timestep: self.timestep,
             gravity: self.gravity,
             qpos0: DVector::from_vec(self.qpos0_values),
+            keyframes: Vec::new(), // Populated post-build in model_from_mjcf()
             wind: self.wind,
             magnetic: self.magnetic,
             density: self.density,
