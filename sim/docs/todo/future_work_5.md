@@ -14,8 +14,8 @@ consolidation (commit `a5cef72`) — `sim/L0/constraint/src/newton.rs` (2,273
 lines) was removed. The pipeline has PGS and CG (PGD+BB) solvers.
 
 **MJCF-layer remnants still exist.** `MjcfSolverType::Newton` is defined in
-`types.rs:95` and is the MuJoCo default. The parser accepts `solver="Newton"`
-(`parser.rs:2201`). The model builder silently maps it to PGS:
+`types.rs:99` and is the MuJoCo default. The parser accepts `solver="Newton"`
+(`parser.rs:177`). The model builder silently maps it to PGS:
 `MjcfSolverType::PGS | MjcfSolverType::Newton => SolverType::PGS`
 (`model_builder.rs:745`). Users who load standard MJCF models (which default to
 Newton) get PGS without any warning.
@@ -87,6 +87,24 @@ number of contact **constraint rows** (= `Σ_k dim_k` over all contacts),
 not the number of contacts. E.g., 3 contacts with condim=3 contribute
 `nc = 9` rows.
 
+**Row admission criteria** (which constraints get rows in J):
+- **Equality constraints**: ALL active equality constraints always get rows.
+  MuJoCo creates rows for every equality constraint (they're always Quadratic).
+- **Friction loss**: ALL joints/tendons with `frictionloss > 0` get rows.
+- **Joint limits**: A joint limit gets a row **only when potentially active**:
+  lower limit row if `q ≤ limit_min + margin`, upper limit row if
+  `q ≥ limit_max − margin` (where `margin` is geom margin, typically 0 for
+  joints). MuJoCo uses `efc_pos > -margin` as the inclusion test. For joints
+  with no margin, this simplifies to: include the row when `efc_pos ≥ 0`
+  (i.e., the limit is currently violated). Rows that fail the inclusion
+  test are NOT emitted — they don't exist in J at all.
+  **Important:** At most one limit row per joint is emitted (lower XOR upper),
+  since a joint cannot simultaneously violate both limits.
+- **Tendon limits**: Same criterion as joint limits, applied to tendon length
+  vs tendon limit range.
+- **Contacts**: ALL detected contacts (from broad/narrow phase) get rows.
+  The Newton solver classifies them as Quadratic or Satisfied based on jar.
+
 Each row type already has an implicit Jacobian in the existing penalty code:
 - **Joint limits** (hinge/slide): 1×nv sparse row with a single `±1` at
   `dof_adr` (sign: `+1` for lower limit violation, `−1` for upper)
@@ -94,13 +112,20 @@ Each row type already has an implicit Jacobian in the existing penalty code:
 - **Equality constraints**: Connect = 3×nv, Weld = 6×nv, Joint = 1×nv,
   Distance = 1×nv — extracted from the existing `apply_equality_constraints()`
   internals which currently compute these Jacobians implicitly
-- **Contacts**: dim×nv — the existing `compute_contact_jacobian()`
+- **Contacts**: dim×nv — the existing `compute_contact_jacobian()`. The
+  Newton path reuses the contact detection pipeline (broad + narrow phase)
+  and the per-contact Jacobian computation, but does NOT form the full
+  Delassus matrix `A = J·M⁻¹·J^T` (which PGS/CG need). Instead, the
+  contact Jacobian rows are copied directly into the unified `efc_J`.
+  The `diagApprox` computation extracts just the diagonal of A per row
+  (§15.1), avoiding the full O(nc²·nv) Delassus assembly.
 
 **Friction loss migration.** In MuJoCo, joint/tendon `frictionloss` creates
 constraint rows (`mjCNSTR_FRICTION_DOF`, `mjCNSTR_FRICTION_TENDON`) with
 Huber cost — NOT passive forces. Our pipeline currently handles frictionloss
-in `mj_fwd_passive()` via `−frictionloss · tanh(qvel · 1000)` written to
-`qfrc_passive` (lines 9729–9738). This is a smooth approximation that differs
+in `mj_fwd_passive()` via `−frictionloss · tanh(qvel · friction_smoothing)`
+(where `friction_smoothing` defaults to 1000.0, configurable on Model)
+written to `qfrc_passive` (lines 9729–9738). This is a smooth approximation that differs
 from MuJoCo's semantics. For the Newton solver, frictionloss must move into
 the constraint system as proper Huber rows:
 - DOF friction: 1×nv sparse row with `1.0` at the DOF index
@@ -122,7 +147,7 @@ forces and instead includes it in J.
   `qfrc_passive − qfrc_frictionloss`. PGS/CG use `qfrc_passive` as-is.
 Approach (b) is preferred because it avoids coupling `mj_fwd_passive()` to
 solver type and preserves the friction loss vector for diagnostics and PGS
-fallback (§15.12 Phase A step 14). With approach (b), PGS fallback can use
+fallback (§15.12 Phase A step 15). With approach (b), PGS fallback can use
 `qfrc_passive` directly (which includes friction loss) without re-running
 `mj_fwd_passive()`.
 
@@ -149,8 +174,18 @@ by constraint row. During assembly, each constraint row populates these fields:
   - Equality: per-axis signed error (can be positive or negative)
   - Friction loss: `0`
 - `efc_margin[i]`: per-constraint margin (geom margin for contacts, 0 otherwise)
-- `efc_vel[i]`: constraint-space velocity `(J·qvel)_i`
+- `efc_vel[i]`: constraint-space velocity `(J·qvel)_i`. Computed during
+  assembly for ALL row types: `efc_vel[i] = J_row_i · qvel`. For contacts
+  this is the existing contact-space velocity; for limits it's `±qvel[dof]`;
+  for equality it's the time-derivative of the constraint error; for friction
+  loss it's `qvel[dof]` or `ten_vel[t]`. Used in the `aref` formula (§15.1)
 - `efc_floss[i]`: friction loss saturation (`frictionloss` value, 0 if N/A)
+- `efc_solref[i]` **source per constraint type:** Equality → `Model.eq_solref[eq_id]`;
+  Joint limits → `Model.jnt_solref[jnt_id]`; Tendon limits →
+  `Model.tendon_solref[tendon_id]`; Contacts → `Contact.solref` (resolved at
+  collision time). **Friction loss** → `DEFAULT_SOLREF` for Phase A (MuJoCo has
+  separate `dof_solref_fri`/`dof_solimp_fri` fields; Phase C should add these
+  if parity is needed). Same source pattern applies to `efc_solimp[i]`.
 - `efc_mu[i]`: 5-element friction coefficients (contacts only, `[0;5]` otherwise)
 - `efc_dim[i]`: constraint group size for stepping. For elliptic contacts:
   `dim` for all rows belonging to the same contact group. For everything else
@@ -181,9 +216,11 @@ constraint-space residual `jar_i = (J · qacc − aref)_i`:
 - `imp_i` is the impedance from `solimp = [dmin, dmax, width, midpoint, power]`:
   ```
   // Clamp solimp parameters (matching MuJoCo's getsolparam() and existing compute_impedance())
-  dmin  = clamp(solimp[0], MJ_MIN_IMP, MJ_MAX_IMP)   // MJ_MIN_IMP = 0.0001
-  dmax  = clamp(solimp[1], MJ_MIN_IMP, MJ_MAX_IMP)    // MJ_MAX_IMP = 0.9999
-  width = solimp[2]
+  dmin     = clamp(solimp[0], MJ_MIN_IMP, MJ_MAX_IMP)   // MJ_MIN_IMP = 0.0001
+  dmax     = clamp(solimp[1], MJ_MIN_IMP, MJ_MAX_IMP)    // MJ_MAX_IMP = 0.9999
+  width    = solimp[2]
+  midpoint = clamp(solimp[3], mjMINVAL, 1.0 − mjMINVAL)  // mjMINVAL = 1e-15
+  power    = max(1.0, solimp[4])                          // MuJoCo enforces power ≥ 1
 
   // Guard: width ≤ 0 → skip sigmoid, return midpoint
   if width ≤ 1e-10:
@@ -197,7 +234,7 @@ constraint-space residual `jar_i = (J · qacc − aref)_i`:
   where `smooth_sigmoid(x, midpoint, power)` is a C¹ piecewise-power sigmoid:
   ```
   fn smooth_sigmoid(x: f64, midpoint: f64, power: f64) -> f64:
-      if |power − 1| < ε:     return x            // linear case
+      if |power − 1| < 1e-10:  return x            // linear case (ε = 1e-10)
       if x ≤ midpoint:
           a = 1 / midpoint^(power − 1)
           return a · x^power                       // lower half
@@ -207,9 +244,11 @@ constraint-space residual `jar_i = (J · qacc − aref)_i`:
   ```
   The `dmin`/`dmax` clamping prevents `imp = 0` (which would make `R = inf`)
   and `imp = 1` (which would make `R = ε`, `D = 1/ε = 1e10` — extremely
-  stiff but numerically valid). The `width` guard prevents division by zero
-  in the sigmoid input. Both match the existing `compute_impedance()`
-  implementation (lines 11120–11127).
+  stiff but numerically valid). The `midpoint`/`power` clamping prevents
+  NaN from `0^(negative)` or `1/0` in `smooth_sigmoid` (matching MuJoCo's
+  `getsolparam()`). The `width` guard prevents division by zero in the
+  sigmoid input. All match the existing `compute_impedance()` implementation
+  (lines 11120–11127).
 
   The margin subtraction matches MuJoCo's `mj_referenceConstraint()` which
   computes impedance on `abs(efc_pos - margin)`. For equality constraints and
@@ -248,12 +287,19 @@ constraint-space residual `jar_i = (J · qacc − aref)_i`:
   - `margin_i` — per-constraint margin (geom margin for contacts, 0 otherwise)
   - `K_i, B_i` — stiffness and damping derived from `solref`:
     - Standard mode (`solref[0] > 0`):
-      `K = 1 / (imp_max² · timeconst² · dampratio²)`,
-      `B = 2 / (imp_max · timeconst)`
-      where `imp_max = solimp[1]` (= `dmax`)
+      `K = 1 / max(ε, imp_max² · timeconst² · dampratio²)`,
+      `B = 2 / max(ε, imp_max · timeconst)`
+      where `imp_max = solimp[1]` (= `dmax`), `ε = mjMINVAL = 1e-15`.
+      The `max(ε, ...)` guard prevents division by zero when `dampratio = 0`
+      or `timeconst → 0` (both are legal `solref` values). This matches
+      MuJoCo's `mju_max(mjMINVAL, ...)` in `mj_referenceConstraint()`
     - Direct mode (`solref[0] ≤ 0`):
       `K = −solref[0] / imp_max²`,
       `B = −solref[1] / imp_max`
+      Note: `imp_max = dmax` is clamped to `[MJ_MIN_IMP, MJ_MAX_IMP]` so
+      the denominator is at least `0.0001²`. Very small `dmax` with large
+      direct stiffness can produce `K ~ 1e8+`; this is numerically valid but
+      produces very stiff constraints (high `D_i`).
 
   **Important:** In the `aref` formula, impedance `imp_i` multiplies only the
   position term, NOT the velocity term. This is the MuJoCo KBIP convention:
@@ -307,6 +353,14 @@ Where:
   `qfrc_smooth = qfrc_applied + qfrc_actuator + (qfrc_passive − qfrc_frictionloss) − qfrc_bias`
 - `s_i` is the per-constraint penalty (table in §15.1)
 
+**Cost variable convention:** Throughout this spec, `cost` returned by
+`PrimalUpdateConstraint`/`classify_constraint_states` is always **constraint-only**
+(`Σ_i s_i`, excluding the Gauss term). Full cost (Gauss + constraint) is computed
+separately where needed: warmstart comparison (`PrimalCost` in §15.8) and line
+search cost evaluation (`PrimalEval` in §15.5, where `total₀` starts from
+`quadGauss[0]`). The convergence check (§15.8 step 7) uses constraint-only cost
+improvement, with the gradient check capturing the Gauss term.
+
 When `nefc = 0` (no active constraints), the solution is trivially
 `qacc = qacc_smooth` with zero Newton iterations.
 
@@ -330,7 +384,8 @@ The Hessian of the cost in `qacc` space:
 H = M + J^T · diag(D_active) · J     (nv × nv, SPD)
 ```
 
-Where `D_active[i] = D_i` if state is `Quadratic`, 0 otherwise. For elliptic
+Where `D_active[i] = efc_D[i]` if `efc_state[i] == Quadratic`, `0` otherwise
+(a solver-local array derived on-the-fly from `efc_state` and `efc_D`). For elliptic
 cones in `Cone` state, additional off-diagonal blocks within each contact's
 dim are added via `hessian_cone()` (§15.7).
 
@@ -421,8 +476,8 @@ depends on the state *at that α*:
 - **Friction loss**: if `|jar_i + α·Jv_i| < R_i·floss_i` → add quadratic;
   else → add linear `{floss_i·(±jar_i − ½·R_i·floss_i), ±floss_i·Jv_i, 0}`
   (sign convention: `+jar` and `+Jv` for `LinearPos`, `−jar` and `−Jv` for
-  `LinearNeg`; the `−½·R_i·floss_i` term is always negative, matching the
-  `−½·R_i·floss_i²` constant in both linear cost expressions from §15.1)
+  `LinearNeg`; after multiplication by the outer `floss_i` factor, the constant
+  evaluates to `−½·R_i·floss_i²`, matching both linear cost expressions from §15.1)
 - **Unilateral** (limits/contact normal): if `jar_i + α·Jv_i < 0` → add
   quadratic; else → zero (satisfied)
 - **Elliptic contacts**: Pre-compute auxiliary quadratics per contact:
@@ -433,11 +488,15 @@ depends on the state *at that α*:
   VV = Σ_{j≥1} (Jv[i+j]·friction[j−1])²                 (tangent² quadratic)
   ```
   At each α: `N = U0 + α·V0`, `T² = UU + α·(2·UV + α·VV)`,
-  `T = sqrt(max(0, T²))`. **Guard:** If `T < T_min` (with `T_min = 1e-15`,
+  `T = sqrt(max(0, T²))`. Note: `T²` is mathematically non-negative
+  (it equals `Σ_j (a_j + α·b_j)²` by Cauchy-Schwarz); the `max(0, ...)`
+  guards only against floating-point rounding. **Guard:** If `T < T_min`
+  (with `T_min = 1e-15`,
   matching MuJoCo's `mjMINVAL`), reclassify: if `N ≥ 0` → top (zero), else
   → bottom (per-row quadratic). This prevents division by zero in cone
   derivatives when `T²` underflows during the line search sweep.
-  Then classify zone (§15.7): top → zero; bottom → add per-row quad; middle
+  Then classify zone (§15.7): top → zero; bottom → for each sub-row
+  `j = 0..dim−1`, add `quad[3*(i+j)..3*(i+j)+3]` to totals; middle
   (cone) → cost `½·Dm·(N − μ·T)²` with analytical derivatives:
   ```
   T1 = (UV + α·VV) / T
@@ -494,7 +553,8 @@ strictly positive Gauss contribution because the overall cost is convex.
 5. Update bracket: for each candidate with `f' < 0`, it can replace `lo`;
    with `f' > 0`, it can replace `hi`. Keep the tightest bracket.
 6. If bracket width did not decrease (all candidates on same side, or
-   `|hi − lo| < ε`) → return the candidate with lowest cost.
+   `|hi − lo| < ε` with `ε = 1e-14 · max(1, |lo|, |hi|)`) → return the
+   candidate with lowest cost.
 7. Repeat from step 2 until `ls_iterations` exhausted → return best α.
 
 ```rust
@@ -560,6 +620,15 @@ Typical convergence: **2–3 outer iterations** for standard robotics models.
 
 ##### 15.7 Elliptic Friction Cones
 
+**Cone type selection:** The `Model.cone` field (0 = pyramidal, 1 = elliptic)
+controls which friction cone formulation is used. MuJoCo's Newton solver only
+supports **elliptic** cones (`cone = 1`, which is the MuJoCo default). If
+`model.cone == 0` (pyramidal), the Newton solver should warn and fall back to
+PGS, since pyramidal cones require a different formulation not covered by this
+spec. This matches MuJoCo's behavior where `mj_solPrimal()` assumes elliptic
+cones. The `ContactElliptic` vs `ContactNonElliptic` classification in §15.0
+applies only when `model.cone == 1`.
+
 For contacts with `dim ≥ 3`, the penalty function couples the `dim` rows
 (1 normal + `dim−1` friction). The state depends on position in the dual cone.
 
@@ -621,11 +690,14 @@ iteration classification (`PrimalUpdateConstraint`) and the line search
 
 **Cost continuity at zone boundaries:** The Top/Cone boundary (`N = μ·T`) is
 C¹ (cost and forces are both zero). The Bottom/Cone boundary (`μ·N + T = 0`)
-is C⁰ only — cost is continuous but forces have a discontinuity. This is
-intentional in MuJoCo's formulation: the Hessian switches between the
-per-row diagonal form (Bottom) and the coupled cone form (Middle), which are
-generally not equal at the boundary. The Newton solver handles this through
-its state-change detection and Cholesky update/downdate mechanism.
+has a cost discontinuity in general: Bottom cost is `Σ_j ½·D[i+j]·jar[i+j]²`
+using per-row stiffnesses, while Cone cost is `½·Dm·(N−μ·T)²` using only
+`D[i]` (normal row). Since friction rows have `efc_pos = 0` → `imp = dmin`
+while the normal row uses penetration depth → different `imp`, the per-row
+`D[i+j]` values differ from what `Dm = D[i]/(μ²·(1+μ²))` implies. This
+matches MuJoCo's behavior — the formulation intentionally trades exact
+boundary continuity for a simpler Hessian structure. The Newton solver
+handles this through state-change detection and Cholesky update/downdate.
 
 **Cone-state forces** (middle zone — `T > 0` guaranteed):
 
@@ -656,10 +728,11 @@ H_raw[k, j] = (μ·N / T³) · U[j] · U[k]                             for k �
 H_raw[j, j] += (μ² − μ·N/T)                                        (diagonal add for j ≥ 1)
 ```
 
-Then apply per-element scaling with `scale[a] = μ` for `a=0`,
-`scale[a] = friction[a−1]` for `a ≥ 1`:
+Then apply per-element scaling with `cone_scale[a] = μ` for `a=0`,
+`cone_scale[a] = friction[a−1]` for `a ≥ 1` (local to the cone Hessian
+construction; NOT the convergence `scale = 1/(meaninertia·max(1,nv))` from §15.6):
 ```
-H_c[a, b] = Dm · scale[a] · scale[b] · H_raw[a, b]
+H_c[a, b] = Dm · cone_scale[a] · cone_scale[b] · H_raw[a, b]
 ```
 
 Finally symmetrize: `H_c[a, b] = H_c[b, a]` (fills entries not set above,
@@ -706,14 +779,27 @@ INITIALIZE:
     // timestep, qacc_warmstart is zero-initialized (from reset()), so
     // qacc_smooth typically wins. On subsequent steps, the previous qacc
     // (warmstart) usually wins. MuJoCo always performs this comparison.
+    // PrimalCost(x) = ½·||x − qacc_smooth||²_M + Σ_i s_i(J·x − aref)
+    // Implemented inline (not a public function). Steps:
+    //   1. tmp_jar = J · x − aref
+    //   2. constraint_cost = classify states per §15.1/§15.7, sum s_i(tmp_jar_i)
+    //   3. gauss_cost = ½·(M·x − qfrc_smooth)^T · (x − qacc_smooth)
+    //   4. return gauss_cost + constraint_cost
+    // Use temporary arrays for jar and state — do NOT overwrite the solver's
+    // efc_state/efc_force. Note: this returns FULL cost (Gauss + constraint),
+    // unlike PrimalUpdateConstraint which returns constraint-only cost.
     cost_warmstart = PrimalCost(qacc_warmstart)   // Gauss + constraint cost
-    cost_smooth    = PrimalCost(qacc_smooth)       // just Gauss = 0 (by definition)
+    cost_smooth    = PrimalCost(qacc_smooth)       // Gauss = 0 at qacc_smooth, but
+                                                   // constraint cost may be nonzero
     qacc = if cost_warmstart < cost_smooth { qacc_warmstart } else { qacc_smooth }
     Ma = M · qacc
     jar = J · qacc − aref
     PrimalUpdateConstraint(jar) → efc_state, efc_force, cost   // cost = Σ_i s_i (constraint-only, excludes Gauss)
     MakeHessian(efc_state) → H = M + J^T · diag(D_active) · J
     FactorizeHessian(H) → L (and L_cone if cone states)
+    // If Cholesky factorization fails (numerically non-PD despite theoretical
+    // guarantee), fall back to PGS immediately (§15.12 Phase A step 15).
+    // This can happen with extreme D_i values from very stiff constraints.
     qfrc_constraint = J^T · efc_force
     grad = Ma − qfrc_smooth − qfrc_constraint
 
@@ -757,11 +843,14 @@ ITERATE (up to solver_iterations):
            If Quadratic→other: rank-1 downdate on L
              If downdate fails (diagonal ≤ 0): set needs_full_recompute = true; break
            If other→Quadratic: rank-1 update on L
+           // Note: Satisfied↔Cone transitions require NO L updates (neither
+           // state contributes to D_active). The cone Hessian is handled
+           // separately via L_cone reconstruction below.
        If needs_full_recompute:
            // The partially-updated L is discarded; rebuild from scratch
            Rebuild D_active from current efc_state
            H = M + J^T · diag(D_active) · J
-           L = cholesky(H)
+           L = cholesky(H)   // If this also fails → PGS fallback (step 15)
        If any cone states: rebuild L_cone from L + cone blocks
        (L_cone is rebuilt from scratch each iteration — copy L, add all
        current cone H_c blocks — because cone Hessians depend on jar
@@ -775,6 +864,10 @@ ITERATE (up to solver_iterations):
     7. CONVERGENCE CHECK:
        // cost and oldcost are constraint-only (Σ s_i); Gauss term change
        // is captured by the gradient check. Matches MuJoCo's mj_solPrimal.
+       // Note: improvement can be negative (constraint cost increased while
+       // total cost decreased via Gauss term). Negative improvement < tolerance
+       // triggers termination, which is intentional — the gradient check
+       // provides the safety net. This matches MuJoCo's behavior.
        improvement = scale · (oldcost − cost)
        gradient = scale · ||grad||
        If improvement < tolerance OR gradient < tolerance: break
@@ -791,6 +884,12 @@ RECOVER:
 
     // Extract per-joint and per-tendon limit forces for downstream sensors.
     // efc_id[i] stores the joint/tendon index that generated row i (§15.11).
+    // At most one limit row per joint exists in J (lower XOR upper, per
+    // the admission criteria in §15.0), so no overwrite conflicts occur.
+    // Zero jnt_limit_frc/ten_limit_frc first since not all joints have
+    // active limit rows.
+    Data.jnt_limit_frc.fill(0.0)
+    Data.ten_limit_frc.fill(0.0)
     for each row i where efc_type[i] == LimitJoint:
         Data.jnt_limit_frc[efc_id[i]] = efc_force[i]
     for each row i where efc_type[i] == LimitTendon:
@@ -955,13 +1054,13 @@ pub efc_cost: f64,                          // total constraint cost
 
 **Phase A — Unified constraint assembly + Core Newton (minimum viable):**
 1. `ConstraintType`, `ConstraintState` enums, all new `Data` fields (§15.11)
-2. `diagApprox` computation — for contacts, extract from the existing Delassus
-   diagonal (`A_ii`); for non-contact rows (equality, limits, friction loss)
-   where no Delassus matrix is assembled, compute per-row as
-   `diagApprox_i = J_i · M⁻¹ · J_i^T` via a single sparse LDL solve per row,
-   or use the body-weight approximation from §15.1. The per-row solve is
-   O(nv) per row (backward/forward substitution against the already-factored
-   `qLD`) and is acceptable for Phase A since non-contact row counts are small
+2. `diagApprox` computation — for ALL constraint rows (contacts and non-contacts
+   alike), compute `diagApprox_i = J_i · M⁻¹ · J_i^T` by solving `M · w = J_i^T`
+   via forward/back substitution against the pre-existing mass matrix factorization
+   (`qLD`), then computing `diagApprox_i = J_i · w` (one dot product). This is
+   O(nv) per row and O(nv · nefc) total, acceptable for Phase A. Phase C may
+   extract contact-row diagonals more efficiently from a partial Delassus assembly
+   or use the body-weight approximation from §15.1 for sparse/large systems
 3. `compute_aref()` — reference acceleration from solref/solimp per row, using
    the full KBIP derivation (§15.1) with `|pos − margin|` impedance
 4. **Prerequisite refactor:** Extract explicit Jacobian rows from
@@ -972,16 +1071,24 @@ pub efc_cost: f64,                          // total constraint cost
    - **Connect** (3 rows): body2_pos − body1_pos in world frame → 3×nv
      (3 translational rows, sparse columns at both bodies' DOFs)
    - **Weld** (6 rows): 3 translational + 3 rotational error → 6×nv
-   - **Joint** (1 row): `q[joint] − target` → 1×nv with `1` at joint's DOF
+   - **Joint** (1 row): `q[joint2] − target` → 1×nv. For **single-joint**
+     equality: `+1` at joint2's DOF. For **two-joint** equality: the Jacobian
+     row has entries at BOTH DOFs — `poly'(q1)` at joint1's DOF and `1` at
+     joint2's DOF — because the constraint is `q2 − poly(q1) = 0`. Note:
+     the current penalty code (`apply_joint_equality_constraint`) applies
+     force only to joint2's DOF and relies on implicit force propagation
+     through M. The Newton path needs the explicit full Jacobian row.
    - **Distance** (1 row): `||p2−p1|| − target` → 1×nv (distance direction)
-5. Unified Jacobian assembly: `assemble_unified_constraints()` that builds
+5. Friction loss migration: store friction loss contribution separately
+   (`Data.qfrc_frictionloss`) per §15.0 approach (b). This must precede
+   unified assembly because: (a) friction loss rows need to be available
+   for inclusion in J, and (b) `qfrc_smooth` computation needs
+   `qfrc_frictionloss` to be separated from `qfrc_passive`
+6. Unified Jacobian assembly: `assemble_unified_constraints()` that builds
    `efc_J`, `efc_aref`, `efc_D`, `efc_R`, `efc_imp`, `efc_type`, `efc_floss`,
    `efc_pos`, `efc_margin`, `efc_vel`, `efc_solref`, `efc_solimp`,
    `efc_diagApprox`, `efc_mu`, `efc_dim`, `efc_id` using the extracted Jacobians from
-   step 4, existing contact Jacobians, and trivial limit/friction loss rows
-6. Friction loss migration: store friction loss contribution separately
-   (`Data.qfrc_frictionloss`) per §15.0 approach (b); include as constraint
-   rows in the unified Jacobian for Newton
+   step 4, existing contact Jacobians, and friction loss rows from step 5
 7. `classify_constraint_states(jar) → efc_state, efc_force, cost` — also
    called `PrimalUpdateConstraint` in the pseudocode (§15.8); these are the
    same function. For scalar constraints (non-contact or `ContactNonElliptic`),
@@ -1010,7 +1117,7 @@ pub efc_cost: f64,                          // total constraint cost
 14. `qacc_warmstart` save in Euler and implicit integrator paths (at the end
     of `mj_fwd_constraint()`, since these integrators call it exactly once per
     step). RK4 warmstart save is deferred to Phase B (§15.9 multi-stage caveat)
-15. PGS fallback on non-convergence: re-dispatch through the PGS/CG path
+15. PGS fallback on non-convergence **or Cholesky failure**: re-dispatch through the PGS/CG path
     from the beginning — run penalty-based limit/equality forces (the existing
     `apply_*` functions writing to `qfrc_constraint`), then invoke PGS on the
     contact-only system. The unified constraint assembly is discarded.
