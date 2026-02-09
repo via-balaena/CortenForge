@@ -20,7 +20,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 **Overall completion: ~75-80%** of MuJoCo's core pipeline features are functional end-to-end. Some standalone crates exist but are not yet wired into the MuJoCo pipeline (`mujoco_pipeline.rs`). See [`sim/docs/todo/index.md`](./todo/index.md) for the full roadmap (Phase 1: 12 items complete, Phase 2: 17 items).
 
 ### Fully Implemented (in pipeline)
-- Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal spring/damper only — see [future_work_1 #7](./todo/future_work_1.md))
+- Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal), ImplicitFast (symmetric D, Cholesky), Implicit (asymmetric D + Coriolis, LU)
 - Constraint solver: PGS (plain Gauss-Seidel, no SOR) + CG (preconditioned PGD with Barzilai-Borwein), Warm Starting via `WarmstartKey`
 - Contact model (Compliant with solref/solimp, elliptic friction cones with variable condim 1/3/4/6, torsional/rolling friction, contype/conaffinity filtering, `<contact><pair>`/`<exclude>` two-mechanism architecture)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
@@ -107,30 +107,35 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | RK4 | Supported | `RungeKutta4` | **Implemented** (true 4-stage RK4 via `mj_runge_kutta()`; see [future_work_1 #8](./todo/future_work_1.md) ✅) | - | - |
 | Explicit Euler | Supported | - | Not implemented (removed standalone-only code) | - | - |
 | Velocity Verlet | - | - | Not implemented (removed standalone-only code) | - | - |
-| Implicit-in-velocity | Core feature | - | **Implemented** (pipeline `ImplicitSpringDamper` for diagonal spring/damper) | - | - |
-| Implicit-fast (no Coriolis) | Optimization | - | Not separately implemented; `ImplicitSpringDamper` covers the primary use case | - | - |
+| Implicit-in-velocity | Core feature | - | **Implemented** (`Implicit` — full D with Coriolis, LU factorization) | - | - |
+| Implicit-fast (no Coriolis) | Optimization | - | **Implemented** (`ImplicitFast` — symmetric D, Cholesky factorization) | - | - |
 
-> The pipeline uses a single `Integrator` enum (`mujoco_pipeline.rs:629`)
-> with three variants: `Euler` (semi-implicit), `RungeKutta4` (true 4-stage),
-> and `ImplicitSpringDamper` (diagonal spring/damper implicit Euler).
-> A standalone trait-based integrator system was removed in FUTURE_WORK C1.
+> The pipeline uses a single `Integrator` enum (`mujoco_pipeline.rs:733`)
+> with five variants: `Euler` (semi-implicit), `RungeKutta4` (true 4-stage),
+> `ImplicitSpringDamper` (diagonal spring/damper implicit Euler),
+> `ImplicitFast` (symmetric D, Cholesky), and `Implicit` (asymmetric D
+> with Coriolis, LU). A standalone trait-based integrator system was
+> removed in FUTURE_WORK C1.
 
 ### Implementation Notes: Implicit Integration ✅ COMPLETED
 
-MuJoCo's implicit integrators solve:
-```
-(M + h·D + h²·K) · v_new = M · v_old + h · f_ext - h · K · (q - q_eq)
-```
+Three implicit integrator variants are implemented:
 
-Where `D` captures per-DOF damping and `K` captures per-DOF stiffness. This is critical for:
-- Very stiff contacts
-- Highly damped systems
-- Muscle models with activation dynamics
-
-**Implemented (pipeline):**
-- `Integrator::ImplicitSpringDamper` in `mujoco_pipeline.rs` — implicit Euler
-  for diagonal per-DOF spring stiffness K and damping D.
+**`ImplicitSpringDamper` (legacy diagonal-only):**
 - Solves: `(M + h·D + h²·K)·v_new = M·v_old + h·f_ext - h·K·(q - q_eq)`
+- D and K are diagonal (per-DOF damping and stiffness only)
+- MJCF: `integrator="implicitspringdamper"`
+
+**`ImplicitFast` (full Jacobian, Cholesky):**
+- Solves: `(M − h·D)·qacc = qfrc_smooth + qfrc_applied + qfrc_constraint`
+- D = ∂(qfrc_smooth)/∂(qvel) via `mjd_passive_vel` + `mjd_actuator_vel`
+- D is symmetrized: `D ← (D + D^T)/2`, then Cholesky factorization
+- MJCF: `integrator="implicitfast"`
+
+**`Implicit` (full Jacobian, LU):**
+- Same as ImplicitFast but includes Coriolis derivatives (`mjd_rne_vel`)
+- D is asymmetric, solved via LU with partial pivoting
+- MJCF: `integrator="implicit"`
 
 **Usage:**
 ```rust
@@ -151,7 +156,7 @@ let mut data = model.make_data();
 data.step(&model).expect("step");
 ```
 
-**Files:** `sim-core/src/mujoco_pipeline.rs` (`Integrator::ImplicitSpringDamper`)
+**Files:** `sim-core/src/mujoco_pipeline.rs` (`Integrator::ImplicitSpringDamper`, `Integrator::ImplicitFast`, `Integrator::Implicit`)
 
 ---
 
@@ -1423,7 +1428,7 @@ All 20 MuJoCo flags supported:
 **Configuration Types:**
 - `MjcfOption` - Complete option parsing with defaults
 - `MjcfFlag` - All 20 boolean flags
-- `MjcfIntegrator` - Euler, RK4, ImplicitSpringDamper, ImplicitFast
+- `MjcfIntegrator` - Euler, RK4, Implicit, ImplicitFast, ImplicitSpringDamper
 - `MjcfConeType` - Pyramidal, Elliptic
 - `MjcfSolverType` - PGS, CG, Newton
 - `MjcfJacobianType` - Dense, Sparse, Auto
@@ -1549,11 +1554,12 @@ Focus: Internal solver improvements for better performance.
 - `SolverStats` - Track warm start usage and convergence metrics
 - Lambda values cached between frames, scaled by warm start factor
 
-**Implicit-Fast Integration (removed):**
+**Implicit-Fast Integration (re-implemented in §13):**
 - The standalone `ImplicitFast` integrator and its `IntegrationMethod::ImplicitFast`
   dispatch variant were removed in FUTURE_WORK C1 (dead code — not called by
-  the pipeline). The pipeline's `Integrator::ImplicitSpringDamper` covers the
-  primary use case (diagonal spring/damper implicit Euler).
+  the pipeline). Re-implemented as `Integrator::ImplicitFast` in §13 with
+  full velocity-derivative Jacobian assembly and Cholesky factorization.
+  `Integrator::Implicit` (LU, with Coriolis) also added.
 
 **Files (removed in consolidation):**
 - `sim-constraint/src/sparse.rs` — removed in Phase 3

@@ -551,7 +551,7 @@ qacc = M^-1 @ qfrc_total
 Solved via `mj_solve_sparse` using the sparse L^T D L factorization from CRBA.
 The solve applies L^T, D, then L in three passes — each O(nv) for tree-sparse L.
 
-**Implicit path:**
+**Implicit path (ImplicitSpringDamper — legacy diagonal):**
 
 Solves the implicit system for new velocity directly:
 ```
@@ -566,6 +566,26 @@ Where:
 
 The modified matrix `M + h*D + h^2*K` is SPD when `M` is SPD and `D, K >= 0`.
 After solving, `qacc = (v_new - v_old) / h` for consistency.
+
+**Implicit path (ImplicitFast — full Jacobian, Cholesky):**
+
+Assembles the full velocity-derivative Jacobian `D = qDeriv = ∂(qfrc_smooth)/∂(qvel)` via:
+1. `mjd_passive_vel()` — DOF damping + tendon damping J^T B J
+2. `mjd_actuator_vel()` — actuator velocity derivatives (Affine gain/bias)
+
+Symmetrizes D, then solves `(M − h·D) · qacc = f` via dense Cholesky factorization.
+Skips Coriolis derivatives (`mjd_rne_vel`). Returns `StepError::CholeskyFailed` if
+`M − h·D` is not positive definite (e.g., strong positive velocity feedback).
+
+**Implicit path (Implicit — full Jacobian, LU):**
+
+Same as ImplicitFast but also includes Coriolis velocity derivatives via `mjd_rne_vel()`.
+Does NOT symmetrize D (Coriolis terms break symmetry). Uses LU factorization with
+partial pivoting instead of Cholesky. Returns `StepError::LuSingular` if any pivot
+magnitude is below `1e-30`.
+
+Both ImplicitFast and Implicit compute `qacc` (not `v_new` directly), then velocity
+is updated in the integration step via `qvel += h * qacc`, matching MuJoCo's approach.
 
 ---
 
@@ -618,11 +638,17 @@ on all environments in parallel. Steps 0 (activation), 2 (position), and 3
 (quaternion normalization) remain on CPU via `Data::integrate_without_velocity()`.
 See [future_work_3 #10](../todo/future_work_3.md).
 
-**Implicit (`Integrator::ImplicitSpringDamper`):**
+**ImplicitSpringDamper (`Integrator::ImplicitSpringDamper`):**
 
 Activation integration is identical to Euler (step 0 above). Velocity was
 already updated in `mj_fwd_acceleration_implicit`. Integration only updates
 positions using the new velocity, identical to step 2 above.
+
+**ImplicitFast / Implicit (`Integrator::ImplicitFast`, `Integrator::Implicit`):**
+
+Activation integration is identical to Euler (step 0 above). Velocity is
+updated in the integration step via `qvel += h * qacc` (same as Euler).
+Position update uses the new velocity, identical to step 2 above.
 
 **Runge-Kutta 4 (`Integrator::RungeKutta4`):**
 

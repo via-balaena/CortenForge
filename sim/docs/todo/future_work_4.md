@@ -3013,50 +3013,828 @@ pub use derivatives::{
 ---
 
 ### 13. Full Implicit Integrator
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** XL | **Prerequisites:** #12 (Derivatives)
 
 #### Current State
-`Integrator::ImplicitSpringDamper` implements diagonal-only implicit integration:
 
-- Per-DOF stiffness K and damping D from joint properties
-- Solves `(M + h*D + h^2*K) * v_new = M*v_old + h*f_ext - h*K*(q - q_eq)`
-- Diagonal K and D — no off-diagonal coupling
-- Tendon springs/dampers explicitly skipped in implicit mode
-  (`mujoco_pipeline.rs:7403–7406`, comment: "Tendon springs/dampers couple multiple
-  joints (non-diagonal K/D), so they cannot be absorbed into the existing diagonal
-  implicit modification.")
+`Integrator::ImplicitSpringDamper` (`:733–741`) implements a diagonal-only implicit
+scheme that absorbs per-DOF joint stiffness K and damping D into the mass matrix:
 
-MuJoCo's full implicit integrator handles the complete mass-matrix coupling
-including off-diagonal stiffness and damping terms from tendons and other
-multi-joint coupling elements.
+```
+(M + h*D_diag + h²*K_diag) v_new = M*v_old + h*f_ext − h*K_diag*(q − q_eq)
+```
+
+- K, D stored as `DVector<f64>` — `Model::implicit_stiffness` (`:1210`),
+  `Model::implicit_damping` (`:1213`), `Model::implicit_springref` (`:1216`).
+- Tendon spring/damper forces are **skipped** in implicit mode
+  (`mj_fwd_passive()` `:9454–9467`) because their J^T coupling is non-diagonal.
+- The `ImplicitFast` MJCF variant is parsed (`types.rs:27`) but maps to the
+  same diagonal solver (`model_builder.rs:616–618`).
+
+**What MuJoCo actually does:** MuJoCo's implicit integrators (`implicit` and
+`implicitfast`) do not construct a stiffness matrix K. They are implicit **only
+in velocity-dependent forces**. Spring forces (position-dependent) remain
+explicit — already evaluated in `qfrc_passive` at the current `qpos`. The system
+solved is:
+
+```
+(M − h·D) · qacc = qfrc_smooth + qfrc_applied + qfrc_constraint
+```
+
+where `qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias` (note: `qfrc_applied`
+is NOT part of `qfrc_smooth` — it is a user-set external force with
+`∂qfrc_applied/∂qvel = 0`, added separately to the RHS).
+
+D = `∂(qfrc_smooth)/∂(qvel)` is the **full analytical velocity-derivative
+Jacobian** (`qDeriv`), assembled by `mjd_smooth_vel()` (derivatives.rs:972) from:
+
+1. **DOF damping** (diagonal): `D[i,i] += −dof_damping[i]`
+2. **Tendon damping** (off-diagonal via J^T B J): `D += −b_t · J_ten^T · J_ten`
+3. **Actuator velocity derivatives** (off-diagonal via J^T B J):
+   `D += dF_act/dV · J_act^T · J_act`
+4. **Coriolis/centripetal derivatives** (full, asymmetric):
+   `D += −∂(qfrc_bias)/∂(qvel)` via recursive Newton-Euler chain-rule
+5. **Fluid drag derivatives** (6×6 body-level): drag-velocity Jacobian per body.
+   *Not yet implemented in CortenForge — fluid drag computation exists
+   (`Model::wind` `:1153`, `density` `:1157`, `viscosity` `:1159`) but
+   `mjd_passive_vel` does not compute drag-velocity Jacobians. This is a known
+   gap — acceptable because fluid drag is rare in RL workloads. Can be added
+   later as a standalone sub-task.*
+
+The two variants differ in:
+
+| | `implicit` | `implicitfast` |
+|---|---|---|
+| Coriolis derivatives | included | **skipped** |
+| D symmetry | asymmetric | symmetrized: `D ← (D + D^T)/2` |
+| Factorization | LU | Cholesky (cheaper, symmetric) |
+| MuJoCo storage | `qLU` (nD pattern) | `qH` (nC pattern) |
+
+**Why explicit damping + D correction is NOT double-counting:** Both
+`qfrc_passive` (RHS) and `qDeriv` (LHS) include damping, but they play
+mathematically distinct roles. The implicit scheme is a linearized
+backward-Euler step:
+
+```
+We want:   M · a_new = f(v_old + h · a_new)        (implicit in velocity)
+Taylor:    f(v_old + h·a) ≈ f(v_old) + h·(∂f/∂v)·a = f(v_old) + h·D·a
+Rearrange: (M − h·D) · a = f(v_old)
+```
+
+The RHS `f(v_old)` is the force at the *current* velocity — it includes the
+explicit damping term `−b·v`. The LHS `−h·D` is the *derivative* of that force
+w.r.t. velocity — it includes `−b` on the diagonal. These are the function
+value and its Jacobian respectively; both are needed for Newton-style
+linearization. MuJoCo confirms this: `mj_passive()` computes damping into
+`qfrc_passive` unconditionally (no integrator gate), and `mjd_passive_vel`
+independently adds `−dof_damping` to `qDeriv`.
 
 #### Objective
-Extend the implicit integrator to handle full (non-diagonal) stiffness and damping
-matrices, including tendon spring/damper coupling across joints.
+
+Replace the diagonal `(M + h*D + h²*K)` scheme with MuJoCo-conformant implicit
+integration using the full velocity-derivative Jacobian `qDeriv`. Implement both
+`implicitfast` (symmetric, Cholesky) and `implicit` (asymmetric, LU) variants.
+
+**Phasing:** Implement in two sub-phases:
+- **Phase A:** `implicitfast` — symmetric D, dense Cholesky factorization.
+- **Phase B:** `implicit` — asymmetric D, dense LU factorization.
 
 #### Specification
 
-Replace diagonal K/D vectors with sparse K/D matrices. In `mj_fwd_passive()`,
-compute off-diagonal entries from tendon Jacobians:
+##### Sub-task 13.A: `Integrator::ImplicitFast`
+
+**A.1. Extend `Integrator` enum** (`mujoco_pipeline.rs:733`)
+
+Add `ImplicitFast` and `Implicit` variants alongside existing
+`ImplicitSpringDamper`. Both `Integrator` and `StepError` should carry
+`#[non_exhaustive]` per STANDARDS.md (enums that may grow):
+
+```rust
+#[non_exhaustive]
+pub enum Integrator {
+    #[default]
+    Euler,
+    RungeKutta4,
+    ImplicitSpringDamper,  // Keep for backward compat (diagonal-only)
+    Implicit,              // Full asymmetric D, LU factorization
+    ImplicitFast,          // Symmetric D (no Coriolis), Cholesky factorization
+}
+```
+
+Retain `ImplicitSpringDamper` as a distinct variant so existing tests and models
+that depend on the diagonal-only behavior continue to work without any change.
+
+Update `model_builder.rs:616–618` to map `MjcfIntegrator::ImplicitFast` →
+`Integrator::ImplicitFast` (currently both map to `ImplicitSpringDamper`).
+
+**A.2. Modify `mj_fwd_passive()` to restore tendon spring/damper forces**
+(`mujoco_pipeline.rs:9437`)
+
+The `implicit_mode` flag (`:9440`) currently gates **all** tendon spring and damper
+forces. In the new implicit variants, all passive forces are computed explicitly
+into `qfrc_passive` — matching MuJoCo, where `mj_passive()` has no integrator
+gate. The implicit correction comes entirely from the `(M − h·D)` matrix on the
+LHS.
+
+The existing `implicit_mode` check (`:9440`) is:
+
+```rust
+let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
+```
+
+This is already correct — `implicit_mode` is true only for the legacy diagonal
+variant, not for the new `Implicit`/`ImplicitFast`. So the joint visitor
+(`PassiveForceVisitor::visit_1dof_joint` `:9525`) already computes spring and
+damper forces for the new variants.
+
+The tendon loop conditional (`:9454`) also correctly gates on `implicit_mode`:
+
+```rust
+if !implicit_mode {
+    // spring + damper computed
+}
+```
+
+Since `implicit_mode` is false for `ImplicitFast`/`Implicit`, tendon springs and
+dampers are computed. **No code change needed here** — the existing gate is
+already correct for the new variants.
+
+**A.3. Fix `mjd_passive_vel` tendon-derivative gate** (`derivatives.rs:484`)
+
+Currently `mjd_passive_vel` skips tendon damping derivatives when
+`implicit_mode` is true (`:484–504`). This was correct for the diagonal-only
+scheme (tendon damping forces were skipped, so there's nothing to differentiate).
+For the new implicit variants, tendon damping forces ARE computed explicitly AND
+their derivatives must be included in D.
+
+The current condition is:
+
+```rust
+let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
+if !implicit_mode { ... tendon damping J^T B J ... }
+```
+
+This is already correct for the new variants — `implicit_mode` is false for
+`ImplicitFast`/`Implicit`, so tendon damping J^T B J terms ARE accumulated.
+**No code change needed** — the condition works as-is because the new enum
+variants don't match `ImplicitSpringDamper`.
+
+**A.4. Implement `mj_fwd_acceleration_implicitfast()`**
+(`mujoco_pipeline.rs`, new function near `:13008`)
+
+```rust
+fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) -> Result<(), StepError> {
+    let h = model.timestep;
+
+    // Step 1: Assemble qDeriv = ∂(qfrc_smooth)/∂(qvel)
+    //   Components: DOF damping + tendon damping J^T B J + actuator vel derivatives
+    //   Coriolis terms SKIPPED for implicitfast.
+    data.qDeriv.fill(0.0);
+    mjd_passive_vel(model, data);    // DOF damping (diag) + tendon damping (J^T B J)
+    mjd_actuator_vel(model, data);   // Actuator velocity derivatives (J^T B J)
+    // mjd_rne_vel() intentionally omitted — this is what makes it "fast"
+
+    // Step 2: Symmetrize D ← (D + D^T) / 2
+    //   Without Coriolis, D is nearly symmetric (tendon/actuator J^T B J terms are
+    //   symmetric by construction). Symmetrization cleans up any residual asymmetry
+    //   and guarantees Cholesky applicability.
+    for i in 0..model.nv {
+        for j in (i + 1)..model.nv {
+            let avg = 0.5 * (data.qDeriv[(i, j)] + data.qDeriv[(j, i)]);
+            data.qDeriv[(i, j)] = avg;
+            data.qDeriv[(j, i)] = avg;
+        }
+    }
+
+    // Step 3: Form M_hat = M − h·D into scratch_m_impl
+    //   M is SPD (from CRBA). For well-posed models (damping/drag forces oppose
+    //   velocity), D is NSD and M − h·D is SPD, guaranteeing Cholesky succeeds.
+    //   However, actuators with positive velocity feedback (dforce_dv > 0) can
+    //   make D non-NSD, in which case Cholesky may fail — same as MuJoCo.
+    //   See Known Approximations #7.
+    data.scratch_m_impl.copy_from(&data.qM);
+    for i in 0..model.nv {
+        for j in 0..model.nv {
+            data.scratch_m_impl[(i, j)] -= h * data.qDeriv[(i, j)];
+        }
+    }
+
+    // Step 4: RHS = qfrc_smooth + qfrc_applied + qfrc_constraint
+    //   qfrc_smooth = qfrc_passive + qfrc_actuator − qfrc_bias  (velocity-dependent)
+    //   qfrc_applied is user-set external force (∂/∂qvel = 0, not part of qfrc_smooth)
+    //   qfrc_passive includes ALL spring/damper/friction forces (explicit).
+    data.scratch_rhs.copy_from(&data.qfrc_applied);
+    data.scratch_rhs += &data.qfrc_actuator;
+    data.scratch_rhs += &data.qfrc_passive;
+    data.scratch_rhs += &data.qfrc_constraint;
+    data.scratch_rhs -= &data.qfrc_bias;
+
+    // Step 5: Solve (M − h·D) · qacc = rhs via dense Cholesky
+    //   After this, scratch_m_impl holds the Cholesky factors (L where M−hD = L·L^T).
+    //   These persist in data and are reused by mjd_transition_hybrid (D.4) for
+    //   derivative column solves — the derivative pass clones data, inheriting
+    //   the factored scratch_m_impl.
+    cholesky_in_place(&mut data.scratch_m_impl)?;
+    data.qacc.copy_from(&data.scratch_rhs);
+    cholesky_solve_in_place(&data.scratch_m_impl, &mut data.qacc);
+
+    Ok(())
+}
+```
+
+**Data flow note:** This function writes `data.qDeriv` (forward-pass D, without
+Coriolis) and `data.scratch_m_impl` (Cholesky factors of `M − h·D`). Both
+persist in `data` after return. The derivative pass (`mjd_transition_hybrid`,
+D.4) clones `data` into `data_work`, then calls `mjd_smooth_vel` which
+overwrites `data_work.qDeriv` with the **full** D (including Coriolis via
+`mjd_rne_vel`). However, `data_work.scratch_m_impl` is NOT overwritten — it
+retains the forward-pass Cholesky factors. This means the derivative pass uses
+`(M − h·D_fast)⁻¹ · D_full` — mixing the fast LHS with the full RHS. See
+KA#8 for analysis.
+
+Unlike the legacy `ImplicitSpringDamper` (which solves for `v_new` directly
+and back-computes `qacc = (v_new − v_old)/h`), both new variants solve for
+`qacc` directly. The `scratch_v_new` buffer (`:1888`) is NOT used by the new
+variants. Velocity integration (`qvel += h * qacc`) is handled by the
+standard path in `Data::integrate()` (`:3474`).
+
+**Key design decisions:**
+- **Dense Cholesky** (not sparse L^T D L): The existing codebase uses dense
+  `DMatrix<f64>` for qM (`:1763`), qDeriv (`:1937`), and all scratch buffers.
+  The sparse L^T D L path (`mj_factor_sparse` `:12899`) operates on the tree
+  topology of M but cannot handle the **filled-in** pattern from D (tendon/actuator
+  coupling adds entries outside the tree envelope). Dense Cholesky on the
+  `scratch_m_impl` matrix is correct and efficient for the target nv < 100 range.
+- **qacc-only output:** The function computes `qacc` but does NOT update `qvel`.
+  Velocity integration (`qvel += h * qacc`) is handled by the existing Euler
+  integration path in `Data::integrate()` (`:3474`), avoiding special-case
+  dispatch. Position integration then uses the updated velocity (semi-implicit).
+
+**A.5. Wire dispatch** (`mujoco_pipeline.rs`)
+
+The `mj_fwd_acceleration` wrapper (`:12797`) already has an `nv == 0` early
+return (`:12798`). The new functions are called through this wrapper, so they
+do NOT need their own `nv == 0` guard.
+
+All three matches below are **exhaustive** (no wildcard `_`) and will fail
+compilation without the new arms. These are the `mujoco_pipeline.rs` counterpart
+to the `derivatives.rs` matches documented in D.4.
+
+Forward acceleration dispatch (`:12802`):
+
+```rust
+match model.integrator {
+    Integrator::ImplicitSpringDamper => mj_fwd_acceleration_implicit(model, data),
+    Integrator::ImplicitFast => mj_fwd_acceleration_implicitfast(model, data),
+    Integrator::Implicit => mj_fwd_acceleration_implicit_full(model, data),
+    Integrator::Euler | Integrator::RungeKutta4 => {
+        mj_fwd_acceleration_explicit(model, data);
+        Ok(())
+    }
+}
+```
+
+Velocity integration dispatch (`:3474`): `ImplicitFast` and `Implicit` compute
+`qacc` only, so velocity is updated via the standard Euler path:
+
+```rust
+match model.integrator {
+    Integrator::Euler | Integrator::ImplicitFast | Integrator::Implicit => {
+        for i in 0..model.nv {
+            self.qvel[i] += self.qacc[i] * h;
+        }
+    }
+    Integrator::ImplicitSpringDamper => {
+        // Velocity already updated by mj_fwd_acceleration_implicit
+        // (legacy path solves for v_new directly, not qacc)
+    }
+    Integrator::RungeKutta4 => unreachable!(),
+}
+```
+
+**A.6. Wire `step()` dispatch** (`mujoco_pipeline.rs:3303`)
+
+Add `ImplicitFast` and `Implicit` alongside Euler/ImplicitSpringDamper in the
+non-RK4 branch:
+
+```rust
+Integrator::Euler | Integrator::ImplicitSpringDamper
+    | Integrator::ImplicitFast | Integrator::Implicit => {
+    self.forward(model)?;
+    mj_check_acc(model, self)?;
+    self.integrate(model);
+}
+```
+
+##### Sub-task 13.B: `Integrator::Implicit` (full asymmetric)
+
+**B.1. Implement `mj_fwd_acceleration_implicit_full()`**
+
+Same structure as `mj_fwd_acceleration_implicitfast` with three differences:
+- **Include** `mjd_rne_vel(model, data)` (Coriolis derivatives)
+- **No symmetrization** — D is asymmetric
+- **LU factorization** instead of Cholesky
+
+```rust
+fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(), StepError> {
+    let h = model.timestep;
+
+    // Step 1: Assemble qDeriv = ∂(qfrc_smooth)/∂(qvel) — ALL components
+    data.qDeriv.fill(0.0);
+    mjd_passive_vel(model, data);
+    mjd_actuator_vel(model, data);
+    mjd_rne_vel(model, data);  // Full Coriolis — O(nv² · nbody)
+
+    // Step 2: No symmetrization — D is asymmetric (Coriolis terms break symmetry)
+
+    // Step 3: Form M_hat = M − h·D into scratch_m_impl
+    data.scratch_m_impl.copy_from(&data.qM);
+    for i in 0..model.nv {
+        for j in 0..model.nv {
+            data.scratch_m_impl[(i, j)] -= h * data.qDeriv[(i, j)];
+        }
+    }
+
+    // Step 4: RHS = qfrc_smooth + qfrc_applied + qfrc_constraint
+    data.scratch_rhs.copy_from(&data.qfrc_applied);
+    data.scratch_rhs += &data.qfrc_actuator;
+    data.scratch_rhs += &data.qfrc_passive;
+    data.scratch_rhs += &data.qfrc_constraint;
+    data.scratch_rhs -= &data.qfrc_bias;
+
+    // Step 5: Factor (M − h·D) = P·L·U, then solve for qacc
+    //   Factors persist in scratch_m_impl + scratch_lu_piv for derivative reuse (D.4).
+    //   The derivative pass clones data, inheriting the factored scratch_m_impl and
+    //   scratch_lu_piv, then calls lu_solve_factored for each derivative column.
+    lu_factor_in_place(&mut data.scratch_m_impl, &mut data.scratch_lu_piv)?;
+    data.qacc.copy_from(&data.scratch_rhs);
+    lu_solve_factored(&data.scratch_m_impl, &data.scratch_lu_piv, &mut data.qacc);
+
+    Ok(())
+}
+```
+
+**B.2. Implement LU factorization and solve** (new functions in `mujoco_pipeline.rs`)
+
+Split into two functions so the derivative pass (D.4) can reuse the factored
+matrix for multiple solves:
+
+```rust
+/// Factor A = P·L·U in place. Stores L (unit lower) and U (upper) in `a`.
+/// Stores pivot permutation in `piv`. O(n³/3).
+fn lu_factor_in_place(
+    a: &mut DMatrix<f64>,
+    piv: &mut [usize],
+) -> Result<(), StepError> {
+    let n = a.nrows();
+    for k in 0..n {
+        // Partial pivot: find max |a[i,k]| for i in k..n
+        let mut max_val = a[(k, k)].abs();
+        let mut max_row = k;
+        for i in (k + 1)..n {
+            let v = a[(i, k)].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = i;
+            }
+        }
+        if max_val < 1e-30 {
+            return Err(StepError::LuSingular);
+        }
+        piv[k] = max_row;
+
+        if max_row != k {
+            for j in 0..n {
+                let tmp = a[(k, j)];
+                a[(k, j)] = a[(max_row, j)];
+                a[(max_row, j)] = tmp;
+            }
+        }
+
+        for i in (k + 1)..n {
+            a[(i, k)] /= a[(k, k)];
+            for j in (k + 1)..n {
+                a[(i, j)] -= a[(i, k)] * a[(k, j)];
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Solve P·L·U·x = b using pre-computed factors. Non-destructive on `a`/`piv`.
+/// Can be called multiple times for different RHS vectors.
+fn lu_solve_factored(a: &DMatrix<f64>, piv: &[usize], x: &mut DVector<f64>) {
+    let n = a.nrows();
+
+    // Apply row permutation to RHS
+    for k in 0..n {
+        if piv[k] != k {
+            x.swap_rows(k, piv[k]);
+        }
+    }
+
+    // Forward substitution (L·y = Pb)
+    for i in 1..n {
+        for k in 0..i {
+            x[i] -= a[(i, k)] * x[k];
+        }
+    }
+
+    // Back substitution (U·x = y)
+    for i in (0..n).rev() {
+        for k in (i + 1)..n {
+            x[i] -= a[(i, k)] * x[k];
+        }
+        x[i] /= a[(i, i)];
+    }
+}
+```
+
+**B.3. Add `LuSingular` to `StepError`** (`mujoco_pipeline.rs:748`)
+
+```rust
+#[non_exhaustive]
+pub enum StepError {
+    // ... existing variants ...
+    /// LU decomposition failed (zero pivot in M − h·D).
+    LuSingular,
+}
+```
+
+Update the `Display` impl (`mujoco_pipeline.rs:763`) — this is an exhaustive match
+and will fail compilation without the new arm:
+
+```rust
+Self::LuSingular => {
+    write!(f, "LU decomposition failed in implicit integration")
+}
+```
+
+**B.4. Wire dispatch** — covered in A.5 above.
+
+##### Sub-task 13.C: Update `model_builder.rs` and MJCF Mapping
+
+**C.1.** Map MJCF variants to distinct core integrators (`model_builder.rs:616`):
+
+```rust
+// Before:
+MjcfIntegrator::ImplicitSpringDamper | MjcfIntegrator::ImplicitFast => {
+    Integrator::ImplicitSpringDamper
+}
+
+// After:
+MjcfIntegrator::ImplicitSpringDamper => Integrator::ImplicitSpringDamper,
+MjcfIntegrator::ImplicitFast => Integrator::ImplicitFast,
+MjcfIntegrator::Implicit => Integrator::Implicit,
+```
+
+**C.2.** Add `Implicit` variant to MJCF types (`types.rs:15`):
+
+```rust
+pub enum MjcfIntegrator {
+    Euler,
+    RK4,
+    Implicit,              // NEW: full implicit (asymmetric D, LU)
+    ImplicitFast,          // Symmetric D, Cholesky
+    ImplicitSpringDamper,  // Legacy diagonal-only (keep for regression tests)
+}
+```
+
+**C.3.** Update parser and serialization (`types.rs:33, :44`):
+
+Update `from_str` (`:33`):
+```rust
+"implicit" => Some(Self::Implicit),
+"implicitfast" => Some(Self::ImplicitFast),
+"implicitspringdamper" => Some(Self::ImplicitSpringDamper),
+```
+
+Update `as_str` (`:44`) — exhaustive match, will fail compilation without new arm.
+Note: `ImplicitSpringDamper` currently returns `"implicit"` from `as_str()`;
+change it to `"implicitspringdamper"` so the new `Implicit` variant owns `"implicit"`:
+```rust
+Self::Implicit => "implicit",
+Self::ImplicitSpringDamper => "implicitspringdamper",
+```
+
+MuJoCo models specifying `integrator="implicit"` now get the full implicit solver.
+Models wanting the old diagonal behavior must use `"implicitspringdamper"`.
+
+**⚠ Breaking change:** The string `"implicit"` currently maps to
+`ImplicitSpringDamper` (diagonal-only). After this change, it maps to the new
+full `Implicit` variant with asymmetric D and LU factorization. Any existing
+MJCF models using `integrator="implicit"` will silently change integration
+behavior. Migration: switch to `integrator="implicitspringdamper"` to preserve
+the old diagonal-only behavior. Per project principles, this breaking change is
+intentional — it aligns the parser with MuJoCo's semantics.
+
+##### Sub-task 13.D: Derivatives Interop
+
+**D.1. Force-derivative assembly (`mjd_smooth_vel`):** `mjd_smooth_vel`
+(derivatives.rs:972) is already correctly structured with three additive
+components. The `implicit_mode` gates in `mjd_passive_vel` (`:484`) use
+`== Integrator::ImplicitSpringDamper` comparisons, so the new variants
+automatically get correct behavior (tendon derivatives included).
+
+**D.2. Actuator velocity derivatives (`mjd_actuator_vel`):** The existing
+implementation (`:527–603`) correctly handles Joint, Tendon, and Site
+transmissions. **Muscle actuators are skipped** (`:529–531`). This matches
+MuJoCo.
+
+**D.3. Coriolis derivatives (`mjd_rne_vel`):** (`:732–952`) computes the full
+Coriolis velocity Jacobian. Already implemented and tested by Task #12. No
+changes needed.
+
+**D.4. Transition derivative dispatch (`mjd_transition_hybrid`):** Three
+exhaustive match sites in `derivatives.rs` must be updated to handle the new
+variants. These compute analytical transition matrices `∂x_{t+1}/∂x_t`:
+
+**(a) `dvdv` computation** (`:1226`): The velocity-velocity Jacobian block.
+
+For `ImplicitFast`/`Implicit`, the implicit update is `v⁺ = v + h·qacc` where
+`(M − h·D)·qacc = f(v)`. Differentiating w.r.t. v:
 
 ```
-K_ij += J_tendon[i] * k_tendon * J_tendon[j]
-D_ij += J_tendon[i] * d_tendon * J_tendon[j]
+∂v⁺/∂v = I + h · (M − h·D)⁻¹ · ∂f/∂v = I + h · (M − h·D)⁻¹ · qDeriv
 ```
 
-The implicit solve becomes `(M + h*D + h^2*K) * v = rhs` with sparse M+hD+h^2K.
-Reuse the existing sparse Cholesky infrastructure from Task #2 (Phase 1).
+This has the same structure as the Euler case (`I + h · M⁻¹ · qDeriv`) but
+with `(M − h·D)⁻¹` replacing `M⁻¹`. Note: unlike `ImplicitSpringDamper`
+(which uses `(M+hD+h²K)⁻¹ · (M + h·(qDeriv + D))` with an extra `+D`
+correction), the new variants do NOT need the `+D` term because damping forces
+are computed explicitly into `qfrc_passive` and therefore already captured by
+`qDeriv`. In `ImplicitSpringDamper`, damping is absorbed into the matrix and
+excluded from `qfrc_passive`, requiring the separate `+D` compensation.
+
+Implementation: use `scratch_m_impl`
+(which holds the factorized M − h·D from the forward step) to solve each
+column of qDeriv:
+
+```rust
+Integrator::ImplicitFast => {
+    // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv
+    // scratch_m_impl holds Cholesky factors of (M − h·D) from forward pass
+    let mut dvdv = DMatrix::identity(nv, nv);
+    for j in 0..nv {
+        let mut col = data_work.qDeriv.column(j).clone_owned();
+        cholesky_solve_in_place(&data_work.scratch_m_impl, &mut col);
+        for i in 0..nv {
+            dvdv[(i, j)] += h * col[i];
+        }
+    }
+    dvdv
+}
+Integrator::Implicit => {
+    // Same formula but scratch_m_impl holds LU factors
+    let mut dvdv = DMatrix::identity(nv, nv);
+    for j in 0..nv {
+        let mut col = data_work.qDeriv.column(j).clone_owned();
+        lu_solve_factored(&data_work.scratch_m_impl, &data_work.scratch_lu_piv, &mut col);
+        for i in 0..nv {
+            dvdv[(i, j)] += h * col[i];
+        }
+    }
+    dvdv
+}
+```
+
+Note: this requires the factorized `scratch_m_impl` to persist from the forward
+pass into the derivative computation. Currently `mj_fwd_acceleration_implicit`
+leaves `scratch_m_impl` holding the Cholesky/LU factors after solving, so this
+is automatically available. However, LU factorization and solve must be split
+into separate functions (`lu_factor_in_place` + `lu_solve_factored`) so the
+derivative pass can reuse the factors for multiple column solves. See B.2, E.2.
+
+**(b) Activation/control column solves** (`:1320`, `:1485`): These solve
+`(effective mass)⁻¹ · rhs` for derivative columns. Same dispatch pattern:
+
+```rust
+Integrator::ImplicitFast => {
+    cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdact);
+}
+Integrator::Implicit => {
+    lu_solve_factored(&data_work.scratch_m_impl, &data_work.scratch_lu_piv, &mut dvdact);
+}
+```
+
+**(c) Analytical derivative gate** (`:1565`): `can_analytical` uses
+`!matches!(model.integrator, Integrator::RungeKutta4)`. New variants will
+correctly default to `can_analytical = true`, which is correct — both
+`ImplicitFast` and `Implicit` support analytical derivatives.
+
+**D.5. Fluid drag velocity derivatives:** Not yet implemented. `mjd_passive_vel`
+does not compute drag-velocity Jacobians. In MuJoCo, this contributes 6×6
+body-level coupling blocks to D via `addJTBJSparse`. For models with non-zero
+`density`/`viscosity`, the implicit integrator will underestimate D (missing drag
+linearization). Acceptable for Phase A/B — fluid drag is rare in RL workloads.
+Can be added as a follow-up sub-task when needed.
+
+##### Sub-task 13.E: Scratch Buffer Adjustments
+
+**E.1.** The existing `scratch_m_impl` (`:1882`) is `DMatrix::zeros(nv, nv)` —
+sufficient for the dense M − h·D matrix. No new scratch buffers needed for
+Phase A.
+
+**E.2. LU factor/solve split (Phase B):** The derivative interop (D.4) requires
+solving multiple RHS vectors against the same factorized `(M − h·D)`. A combined factor+solve function would destroy the factors during solve. For
+`Implicit`, split into:
+
+- `lu_factor_in_place(a, piv)` — factorize A = P·L·U, store factors in `a`,
+  permutation in `piv`
+- `lu_solve_factored(a, piv, x)` — solve using pre-computed factors (reusable)
+
+Add `scratch_lu_piv: Vec<usize>` field to Data, initialized to `vec![0; nv]`.
+Update both `Model::make_data()` (`:2340`) and the manual `Clone` impl for Data
+(`:2050`) — both use explicit struct literals, so the compiler will enforce this.
+The forward pass calls `lu_factor_in_place`, then `lu_solve_factored` for qacc.
+The derivative pass calls `lu_solve_factored` for each column of qDeriv. For
+`ImplicitFast`, `cholesky_solve_in_place` already supports multiple solves
+against the same factors (Cholesky is non-destructive on the factor matrix).
+
+#### Dependency Graph
+
+```
+A.1 (Integrator enum + #[non_exhaustive])
+ ├─→ A.4 (mj_fwd_acceleration_implicitfast)
+ │    └─→ A.5 (forward accel + velocity + step dispatch wiring)
+ ├─→ C.1 + C.2 + C.3 (model_builder + MJCF types + parser)
+ ├─→ D.4 (derivatives.rs match site updates: :1226, :1320, :1485)
+ ├─→ B.1 (mj_fwd_acceleration_implicit_full)
+ │    ├─→ B.2 (lu_factor_in_place + lu_solve_factored)
+ │    │    └─→ B.3 (StepError::LuSingular + Display arm + #[non_exhaustive])
+ │    └─→ E.2 (scratch_lu_piv field in Data)
+ └─→ (A.2, A.3 — no code changes needed; verified correct by construction)
+```
+
+Note: A.2 and A.3 require **no code changes** because the existing
+`== Integrator::ImplicitSpringDamper` comparisons automatically exclude the new
+variants. They are listed for documentation/verification only.
+
+Note: D.4 is required even for Phase A (`ImplicitFast`) because adding the new
+enum variant to the exhaustive matches at `:1226`, `:1320`, `:1485` is needed
+for compilation. The `ImplicitFast` arms use `cholesky_solve_in_place` on
+`scratch_m_impl`. The `Implicit` arms (Phase B) use `lu_solve_factored`.
+
+#### Known Approximations & Non-Conformances
+
+1. **Dense storage for qDeriv and M_hat:** MuJoCo uses CSR with a tree-topology
+   sparsity pattern for D, and off-tree-envelope entries from tendon/actuator
+   coupling are silently dropped. Our dense `DMatrix` avoids this — we capture
+   **all** coupling terms regardless of tree topology. This is more correct than
+   MuJoCo for tendon paths crossing kinematic branches, but O(nv²) in memory
+   vs MuJoCo's O(nv·depth). Acceptable for target nv < 100.
+
+2. **Muscle actuator velocity derivatives skipped** (`:529–531`): Matches MuJoCo.
+   Muscle FLV curve gradients are piecewise and not cleanly linearizable.
+
+3. **Fluid drag velocity derivatives not implemented** (D.5): Models with
+   non-zero `density`/`viscosity` will have incomplete D. Acceptable for
+   initial implementation; add as follow-up when drag is used in practice.
+
+4. **No `skipfactor` / factorization reuse:** MuJoCo's `mj_implicitSkip` allows
+   reusing a previously computed factorization when `skipfactor > 0`, amortizing
+   cost across steps. Not implemented. Can be added later as an optimization.
+
+5. **No sleep filtering:** MuJoCo filters awake/asleep DOFs to reduce system
+   size. Not implemented (sleeping is Task #16). When sleeping is added, the
+   implicit solver should operate only on awake DOFs.
+
+6. **Constraint force derivatives excluded:** Matches MuJoCo — neither `implicit`
+   nor `implicitfast` includes `∂(qfrc_constraint)/∂(qvel)`.
+
+7. **Cholesky SPD precondition not guaranteed:** `ImplicitFast` uses Cholesky,
+   which requires `M − h·D` to be SPD. This holds when D is NSD (all
+   velocity-derivative components are dissipative). However, actuators with
+   positive velocity feedback (`gainprm[2] > 0`, or `gainprm[2] < 0` with
+   negative `ctrl` input) produce `dforce_dv > 0`, making the actuator
+   contribution to D positive-semi-definite rather than NSD. For sufficiently
+   large positive `dforce_dv` or large `h`, `M − h·D` may lose positive-
+   definiteness and Cholesky fails with `StepError::CholeskyFailed`. This
+   matches MuJoCo's behavior — `implicitfast` can also fail with exotic
+   actuator configurations. Mitigation: use `Implicit` (LU, no SPD
+   requirement) for models with positive velocity feedback.
+
+8. **ImplicitFast derivative uses full qDeriv with fast-approximated LHS:**
+   The forward pass builds `(M − h·D_sym)` (Coriolis excluded, D symmetrized)
+   and stores its Cholesky factors in `data.scratch_m_impl`. The derivative
+   pass (`mjd_transition_hybrid`) clones data, then calls `mjd_smooth_vel`
+   (`:972`) which **unconditionally** calls all three components: `mjd_passive_vel`,
+   `mjd_actuator_vel`, AND `mjd_rne_vel` — there is no integrator gate in
+   `mjd_smooth_vel`. This overwrites `data_work.qDeriv` with the full D
+   (Coriolis included, unsymmetrized), while `data_work.scratch_m_impl` retains
+   the forward-pass Cholesky factors. The analytical transition derivative is
+   therefore `dvdv = I + h · (M − h·D_sym)⁻¹ · D_full`, mixing the fast
+   approximation in the LHS with the full derivative in the RHS.
+
+   **Impact:** This produces slightly different derivatives than a pure
+   finite-difference of the actual `ImplicitFast` integration step would. The
+   discrepancy is proportional to `h · ‖D_coriolis‖ / ‖M‖` and is small for
+   typical timesteps. It does not cause numerical failure. MuJoCo sidesteps
+   this entirely by using finite-difference derivatives exclusively.
+
+   **Design rationale:** We intentionally keep `mjd_smooth_vel` ungated (always
+   full D) because: (1) it matches MuJoCo's separation of forward vs derivative
+   paths, (2) the full D gives more accurate derivatives even when the forward
+   integration is approximate, and (3) adding an integrator gate to
+   `mjd_smooth_vel` would complicate the API for marginal benefit. If exact
+   consistency between forward and derivative is needed, use finite-difference
+   derivatives (`config.use_analytical = false`).
 
 #### Acceptance Criteria
-1. With tendon springs, implicit integrator produces stable integration where
-   explicit Euler diverges.
-2. Diagonal-only case (no tendons) matches current `ImplicitSpringDamper` output
-   (regression test).
-3. Off-diagonal K/D terms are sparse — zero overhead for joints without coupling.
+
+**Correctness:**
+
+1. **Tendon-coupled damping stability:** A two-joint arm connected by a tendon
+   with `damping=100`, `dt=0.01` produces stable integration under `ImplicitFast`
+   where `Euler` diverges. Verify energy is bounded over 1000 steps.
+
+2. **Tendon-coupled actuator stability:** A tendon-driven actuator with
+   `gainprm="0 0 -10"` (velocity-dependent gain) produces stable `ImplicitFast`
+   integration where `Euler` diverges.
+
+3. **Diagonal regression (`ImplicitSpringDamper`):** Existing implicit integration
+   tests (`sim/L0/tests/integration/implicit_integration.rs`) pass unchanged.
+   The `ImplicitSpringDamper` variant is untouched.
+
+4. **`ImplicitFast` zero-damping equivalence:** For a model with zero joint
+   damping, zero tendon damping, no velocity-dependent actuators, and no fluid
+   drag, `ImplicitFast` produces `qacc` matching `Euler` within `1e-10`
+   relative tolerance (D = 0, so both solve `M·qacc = f`, but via different
+   factorizations — sparse L^T D L vs dense LL^T — causing different
+   floating-point rounding).
+
+5. **`Implicit` vs `ImplicitFast` delta:** For a model with Coriolis forces
+   (e.g., spinning double pendulum at high angular velocity), `Implicit` and
+   `ImplicitFast` produce different trajectories. Verify both are stable but
+   `Implicit` has lower energy drift (Coriolis correction improves conservation).
+
+6. **MuJoCo conformance — `ImplicitFast`:** Run the standard conformance model
+   suite with `integrator="implicitfast"`. For models without muscles, `qacc`
+   matches MuJoCo's `implicitfast` output within `max_relative_error < 1e-6`
+   per DOF per step. Document any models that exceed this tolerance with
+   root-cause analysis (expected source: dense vs sparse D — our dense D
+   captures cross-branch coupling that MuJoCo's sparse D drops).
+
+7. **MuJoCo conformance — `Implicit`:** Same as above with `integrator="implicit"`.
+   Tolerance `max_relative_error < 1e-6`.
+
+8. **Tendon spring explicit treatment:** For a model with tendon stiffness but
+   no tendon damping, verify that `ImplicitFast` produces the same `qfrc_passive`
+   as `Euler` (tendon spring forces are explicit in both).
+
+9. **Analytical vs FD derivative consistency (`ImplicitFast`):** For a model
+   with joint damping and tendon damping (but no Coriolis-dominant dynamics),
+   compute transition matrices analytically (`use_analytical = true`) and via
+   centered FD (`use_analytical = false`). The velocity-velocity block `dvdv`
+   should match within `max_element_error < 1e-3` (relaxed due to KA#8:
+   analytical uses full D in RHS but fast-approximated LHS).
+
+10. **Analytical vs FD derivative consistency (`Implicit`):** Same test with
+    `integrator="implicit"`. Should match within `max_element_error < 1e-5`
+    (tighter than ImplicitFast because both LHS and RHS use full D — no
+    KA#8 mismatch).
+
+**Performance:**
+
+11. **No regression for Euler/RK4:** Euler and RK4 step times are unchanged
+    (implicit code is not on their path).
+
+12. **ImplicitFast overhead:** For a 30-DOF humanoid, `ImplicitFast` step time is
+    within 3× of `Euler` step time. The overhead comes from assembling qDeriv
+    (O(nv²) for J^T B J) + dense Cholesky (O(nv³/3)).
+
+13. **Implicit overhead:** For the same humanoid, `Implicit` step time is within
+    5× of `Euler` (Coriolis derivatives via `mjd_rne_vel` are O(nv² · nbody)).
+
+**Safety:**
+
+14. Zero `unwrap()`/`expect()` in new code. All error paths return
+    `Result<(), StepError>`.
+
+15. `lu_factor_in_place` returns `Err(StepError::LuSingular)` if any pivot
+    magnitude is below `1e-30`. (Note: `cholesky_in_place` (`:12832`) uses
+    `diag <= 0.0` — a different check because Cholesky requires positive
+    diagonals, while LU requires non-zero pivots. The `1e-30` threshold for
+    LU is conservative against near-singular matrices.)
+
+16. **Cholesky failure on positive velocity feedback (KA #7):** A single-DOF
+    actuator with `gainprm="0 0 1000"` (strong positive velocity feedback) and
+    large `ctrl > 0` causes `ImplicitFast` to return
+    `Err(StepError::CholeskyFailed)`. Same model under `Implicit` (LU) succeeds
+    (LU has no SPD requirement). Verifies the documented limitation in KA #7.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`mj_fwd_passive()`,
-  `mj_fwd_acceleration_implicit()`, implicit parameter storage)
+
+| File | Action | Changes |
+|------|--------|---------|
+| `sim/L0/core/src/mujoco_pipeline.rs` | **modify** | Extend `Integrator` enum (`:733`) with `Implicit`, `ImplicitFast`, add `#[non_exhaustive]`; add `LuSingular` to `StepError` (`:748`) + add arm to `Display for StepError` (`:763`); add `mj_fwd_acceleration_implicitfast()` and `mj_fwd_acceleration_implicit_full()` (new functions near `:13008`); add `lu_factor_in_place()` + `lu_solve_factored()` (split LU for derivative reuse); add `scratch_lu_piv: Vec<usize>` to Data (`:1882`); update forward acceleration dispatch (`:12802`); update velocity integration dispatch (`:3474`); update `step()` dispatch (`:3303`) |
+| `sim/L0/core/src/derivatives.rs` | **modify** | Update exhaustive matches at `:1226` (dvdv — add `ImplicitFast`/`Implicit` arms with `(M−hD)⁻¹` solve), `:1320` (dvdact solve dispatch), `:1485` (dvdctrl solve dispatch). All three need new arms for both variants. |
+| `sim/L0/mjcf/src/types.rs` | **modify** | Add `Implicit` variant to `MjcfIntegrator` (`:15`); update `from_str` (`:33`): `"implicit"` → `Implicit`, keep `"implicitspringdamper"` → `ImplicitSpringDamper`; update `as_str` (`:44`): add `Implicit` → `"implicit"`, change `ImplicitSpringDamper` → `"implicitspringdamper"` |
+| `sim/L0/mjcf/src/parser.rs` | **modify** | Update `test_parse_option_integrator_types` (`:2482`): `("implicit", MjcfIntegrator::Implicit)` replaces `("implicit", MjcfIntegrator::ImplicitSpringDamper)`; add `("implicit", MjcfIntegrator::Implicit)` test case |
+| `sim/L0/mjcf/src/model_builder.rs` | **modify** | Separate `ImplicitFast` and `ImplicitSpringDamper` mapping (`:616`); add `Implicit` → `Integrator::Implicit` |
+| `sim/L0/tests/integration/implicit_integration.rs` | **modify** | Add tests for acceptance criteria 1–10, 16: tendon stability, actuator stability, diagonal regression, zero-damping equivalence, Coriolis delta, MuJoCo conformance ×2, tendon spring explicit, derivative consistency ×2, Cholesky failure on positive velocity feedback |
+| `sim/docs/MUJOCO_REFERENCE.md` | **modify** | Update implicit path description (`:554–568`) to document both `implicit` and `implicitfast` algorithms, D matrix assembly via `mjd_smooth_vel`, linearization derivation, and factorization strategy |
+| `sim/docs/MUJOCO_CONFORMANCE.md` | **modify** | Add conformance entries for `implicit` and `implicitfast` integrators |
 
 ---
 

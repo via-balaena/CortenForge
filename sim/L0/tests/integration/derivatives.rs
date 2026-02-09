@@ -1017,10 +1017,10 @@ fn test_scratch_state_restoration() {
 #[test]
 fn test_tendon_damping_implicit_guard() {
     // Use MJCF: 2 hinges with zero damping, one tendon with damping=5.0,
-    // using ImplicitSpringDamper integrator
+    // using ImplicitSpringDamper integrator (legacy diagonal-only)
     let mjcf = r#"
         <mujoco model="tendon_implicit">
-            <option gravity="0 0 -9.81" timestep="0.001" integrator="implicit"/>
+            <option gravity="0 0 -9.81" timestep="0.001" integrator="implicitspringdamper"/>
             <worldbody>
                 <body name="b1" pos="0 0 0">
                     <joint name="j0" type="hinge" axis="0 1 0" damping="0"/>

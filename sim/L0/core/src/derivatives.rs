@@ -67,6 +67,7 @@ use crate::mujoco_pipeline::{
     // pub(crate) functions from mujoco_pipeline
     cholesky_solve_in_place,
     joint_motion_subspace,
+    lu_solve_factored,
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
     mj_solve_sparse,
@@ -471,7 +472,7 @@ fn extract_state(model: &Model, data: &Data, qpos_ref: &DVector<f64>) -> DVector
 /// forces. Per-DOF damping is included for all modes (needed by both Euler
 /// and implicit velocity derivative formulas).
 #[allow(non_snake_case)]
-fn mjd_passive_vel(model: &Model, data: &mut Data) {
+pub(crate) fn mjd_passive_vel(model: &Model, data: &mut Data) {
     // Per-DOF damping: diagonal entries.
     for i in 0..model.nv {
         data.qDeriv[(i, i)] += -model.implicit_damping[i];
@@ -524,7 +525,7 @@ fn mjd_passive_vel(model: &Model, data: &mut Data) {
 /// Muscle actuators are SKIPPED (velocity derivatives involve piecewise
 /// FLV curve gradients, captured via FD in Phase D).
 #[allow(non_snake_case)]
-fn mjd_actuator_vel(model: &Model, data: &mut Data) {
+pub(crate) fn mjd_actuator_vel(model: &Model, data: &mut Data) {
     for i in 0..model.nu {
         if matches!(model.actuator_gaintype[i], GainType::Muscle) {
             continue;
@@ -729,7 +730,7 @@ fn skew(a: &Vector3<f64>) -> nalgebra::Matrix3<f64> {
 /// - Gravity `g(q)`: ∂/∂qvel = 0 (position-only)
 /// - Coriolis/centrifugal: quadratic in velocity, differentiated here
 #[allow(non_snake_case, clippy::similar_names, clippy::needless_range_loop)]
-fn mjd_rne_vel(model: &Model, data: &mut Data) {
+pub(crate) fn mjd_rne_vel(model: &Model, data: &mut Data) {
     let nv = model.nv;
     let nbody = model.nbody;
 
@@ -1252,6 +1253,36 @@ pub fn mjd_transition_hybrid(
             }
             dvdv
         }
+        Integrator::ImplicitFast => {
+            // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv
+            // scratch_m_impl holds Cholesky factors of (M − h·D) from forward pass
+            let mut dvdv = DMatrix::identity(nv, nv);
+            for j in 0..nv {
+                let mut col = data_work.qDeriv.column(j).clone_owned();
+                cholesky_solve_in_place(&data_work.scratch_m_impl, &mut col);
+                for i in 0..nv {
+                    dvdv[(i, j)] += h * col[i];
+                }
+            }
+            dvdv
+        }
+        Integrator::Implicit => {
+            // ∂v⁺/∂v = I + h · (M − h·D)⁻¹ · qDeriv
+            // scratch_m_impl holds LU factors, scratch_lu_piv holds pivots
+            let mut dvdv = DMatrix::identity(nv, nv);
+            for j in 0..nv {
+                let mut col = data_work.qDeriv.column(j).clone_owned();
+                lu_solve_factored(
+                    &data_work.scratch_m_impl,
+                    &data_work.scratch_lu_piv,
+                    &mut col,
+                );
+                for i in 0..nv {
+                    dvdv[(i, j)] += h * col[i];
+                }
+            }
+            dvdv
+        }
         Integrator::RungeKutta4 => {
             // Should not reach here — caller should use mjd_transition_fd
             return mjd_transition_fd(model, data, config);
@@ -1316,13 +1347,20 @@ pub fn mjd_transition_hybrid(
                 dvdact[dof] = h * gain * moment[dof];
             }
 
-            // Solve: M⁻¹ or (M+hD+h²K)⁻¹
+            // Solve: M⁻¹ or (M−hD)⁻¹ or (M+hD+h²K)⁻¹
             match model.integrator {
                 Integrator::Euler => {
                     mj_solve_sparse(&data_work.qLD_diag, &data_work.qLD_L, &mut dvdact);
                 }
-                Integrator::ImplicitSpringDamper => {
+                Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdact);
+                }
+                Integrator::Implicit => {
+                    lu_solve_factored(
+                        &data_work.scratch_m_impl,
+                        &data_work.scratch_lu_piv,
+                        &mut dvdact,
+                    );
                 }
                 Integrator::RungeKutta4 => unreachable!(),
             }
@@ -1486,8 +1524,15 @@ pub fn mjd_transition_hybrid(
                 Integrator::Euler => {
                     mj_solve_sparse(&data_work.qLD_diag, &data_work.qLD_L, &mut dvdctrl);
                 }
-                Integrator::ImplicitSpringDamper => {
+                Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdctrl);
+                }
+                Integrator::Implicit => {
+                    lu_solve_factored(
+                        &data_work.scratch_m_impl,
+                        &data_work.scratch_lu_piv,
+                        &mut dvdctrl,
+                    );
                 }
                 Integrator::RungeKutta4 => unreachable!(),
             }

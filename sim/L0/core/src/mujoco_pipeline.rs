@@ -730,6 +730,7 @@ pub enum SolverType {
 
 /// Integration method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum Integrator {
     /// Semi-implicit Euler (`MuJoCo` default).
     #[default]
@@ -738,6 +739,12 @@ pub enum Integrator {
     RungeKutta4,
     /// Implicit Euler for diagonal per-DOF spring/damper forces.
     ImplicitSpringDamper,
+    /// Full implicit integration with asymmetric D and LU factorization.
+    /// Includes Coriolis velocity derivatives for maximum accuracy.
+    Implicit,
+    /// Fast implicit integration with symmetric D and Cholesky factorization.
+    /// Skips Coriolis velocity derivatives for performance.
+    ImplicitFast,
 }
 
 /// Errors that can occur during a simulation step.
@@ -745,6 +752,7 @@ pub enum Integrator {
 /// Following Rust idioms, step() returns Result<(), StepError> instead of
 /// silently correcting issues. Users must handle failures explicitly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StepError {
     /// Position coordinates contain NaN or Inf.
     InvalidPosition,
@@ -756,6 +764,8 @@ pub enum StepError {
     /// This indicates the modified mass matrix (M + h*D + h²*K) is not positive definite,
     /// likely due to negative stiffness/damping or numerical instability.
     CholeskyFailed,
+    /// LU decomposition failed (zero pivot in M − h·D).
+    LuSingular,
     /// Timestep is zero or negative.
     InvalidTimestep,
 }
@@ -768,6 +778,9 @@ impl std::fmt::Display for StepError {
             Self::InvalidAcceleration => write!(f, "acceleration contains NaN"),
             Self::CholeskyFailed => {
                 write!(f, "Cholesky decomposition failed in implicit integration")
+            }
+            Self::LuSingular => {
+                write!(f, "LU decomposition failed in implicit integration")
             }
             Self::InvalidTimestep => write!(f, "timestep is zero or negative"),
         }
@@ -1887,6 +1900,10 @@ pub struct Data {
     /// Scratch vector for new velocity in implicit solve (length `nv`).
     /// Used to hold v_new while computing qacc = (v_new - v_old) / h.
     pub scratch_v_new: DVector<f64>,
+    /// Pivot permutation for LU factorization in `Integrator::Implicit` (length `nv`).
+    /// Stores row swap indices from partial pivoting. Persists after forward pass
+    /// for reuse by derivative column solves in `mjd_transition_hybrid`.
+    pub scratch_lu_piv: Vec<usize>,
 
     // ==================== RK4 Scratch Buffers ====================
     // State and rate buffers for 4-stage Runge-Kutta integration.
@@ -2054,6 +2071,7 @@ impl Clone for Data {
             scratch_force: self.scratch_force.clone(),
             scratch_rhs: self.scratch_rhs.clone(),
             scratch_v_new: self.scratch_v_new.clone(),
+            scratch_lu_piv: self.scratch_lu_piv.clone(),
             // RK4 scratch
             rk4_qpos_saved: self.rk4_qpos_saved.clone(),
             rk4_qpos_stage: self.rk4_qpos_stage.clone(),
@@ -2447,6 +2465,7 @@ impl Model {
             scratch_force: DVector::zeros(self.nv),
             scratch_rhs: DVector::zeros(self.nv),
             scratch_v_new: DVector::zeros(self.nv),
+            scratch_lu_piv: vec![0; self.nv],
 
             // RK4 scratch buffers
             rk4_qpos_saved: DVector::zeros(self.nq),
@@ -3308,7 +3327,10 @@ impl Data {
                 mj_check_acc(model, self)?;
                 mj_runge_kutta(model, self)?;
             }
-            Integrator::Euler | Integrator::ImplicitSpringDamper => {
+            Integrator::Euler
+            | Integrator::ImplicitSpringDamper
+            | Integrator::ImplicitFast
+            | Integrator::Implicit => {
                 self.forward(model)?;
                 mj_check_acc(model, self)?;
                 self.integrate(model);
@@ -3469,18 +3491,17 @@ impl Data {
             }
         }
 
-        // For Euler, update velocity using computed acceleration
-        // For implicit integrator, velocity was already updated in mj_fwd_acceleration_implicit
+        // For Euler and new implicit variants, update velocity using computed acceleration.
+        // For legacy ImplicitSpringDamper, velocity was already updated in mj_fwd_acceleration_implicit.
         match model.integrator {
-            Integrator::Euler => {
-                // Semi-implicit Euler: update velocity first, then position
+            Integrator::Euler | Integrator::ImplicitFast | Integrator::Implicit => {
                 for i in 0..model.nv {
                     self.qvel[i] += self.qacc[i] * h;
                 }
             }
             Integrator::ImplicitSpringDamper => {
                 // Velocity already updated by mj_fwd_acceleration_implicit
-                // qacc was back-computed as (v_new - v_old) / h for consistency
+                // (legacy path solves for v_new directly, not qacc)
             }
             Integrator::RungeKutta4 => {
                 unreachable!("RK4 integration handled by mj_runge_kutta()")
@@ -12801,6 +12822,8 @@ fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepError> 
 
     match model.integrator {
         Integrator::ImplicitSpringDamper => mj_fwd_acceleration_implicit(model, data),
+        Integrator::ImplicitFast => mj_fwd_acceleration_implicitfast(model, data),
+        Integrator::Implicit => mj_fwd_acceleration_implicit_full(model, data),
         Integrator::Euler | Integrator::RungeKutta4 => {
             mj_fwd_acceleration_explicit(model, data);
             Ok(())
@@ -13092,6 +13115,185 @@ impl JointVisitor for ImplicitSpringVisitor<'_> {
     }
 
     // Ball and Free joints have no springs (k = 0), so default no-ops are correct.
+}
+
+/// Implicit-fast forward acceleration: symmetric D, Cholesky factorization.
+///
+/// Solves `(M − h·D) · qacc = qfrc_smooth + qfrc_applied + qfrc_constraint`
+/// where D = ∂(qfrc_smooth)/∂(qvel) is assembled from DOF damping, tendon
+/// damping, and actuator velocity derivatives (Coriolis terms skipped).
+/// D is symmetrized: `D ← (D + D^T) / 2`.
+///
+/// After return, `data.scratch_m_impl` holds the Cholesky factors (L where
+/// M−hD = L·L^T), available for derivative column solves in
+/// `mjd_transition_hybrid`.
+///
+/// # Errors
+///
+/// Returns `Err(StepError::CholeskyFailed)` if `M − h·D` is not positive
+/// definite (can happen with positive velocity feedback actuators, see KA#7).
+fn mj_fwd_acceleration_implicitfast(model: &Model, data: &mut Data) -> Result<(), StepError> {
+    use crate::derivatives::{mjd_actuator_vel, mjd_passive_vel};
+
+    let h = model.timestep;
+
+    // Step 1: Assemble qDeriv = ∂(qfrc_smooth)/∂(qvel)
+    //   Components: DOF damping + tendon damping J^T B J + actuator vel derivatives
+    //   Coriolis terms SKIPPED for implicitfast.
+    data.qDeriv.fill(0.0);
+    mjd_passive_vel(model, data);
+    mjd_actuator_vel(model, data);
+
+    // Step 2: Symmetrize D ← (D + D^T) / 2
+    for i in 0..model.nv {
+        for j in (i + 1)..model.nv {
+            let avg = 0.5 * (data.qDeriv[(i, j)] + data.qDeriv[(j, i)]);
+            data.qDeriv[(i, j)] = avg;
+            data.qDeriv[(j, i)] = avg;
+        }
+    }
+
+    // Step 3: Form M_hat = M − h·D into scratch_m_impl
+    data.scratch_m_impl.copy_from(&data.qM);
+    for i in 0..model.nv {
+        for j in 0..model.nv {
+            data.scratch_m_impl[(i, j)] -= h * data.qDeriv[(i, j)];
+        }
+    }
+
+    // Step 4: RHS = qfrc_smooth + qfrc_applied + qfrc_constraint
+    data.scratch_rhs.copy_from(&data.qfrc_applied);
+    data.scratch_rhs += &data.qfrc_actuator;
+    data.scratch_rhs += &data.qfrc_passive;
+    data.scratch_rhs += &data.qfrc_constraint;
+    data.scratch_rhs -= &data.qfrc_bias;
+
+    // Step 5: Solve (M − h·D) · qacc = rhs via dense Cholesky
+    cholesky_in_place(&mut data.scratch_m_impl)?;
+    data.qacc.copy_from(&data.scratch_rhs);
+    cholesky_solve_in_place(&data.scratch_m_impl, &mut data.qacc);
+
+    Ok(())
+}
+
+/// Full implicit forward acceleration: asymmetric D, LU factorization.
+///
+/// Same as `mj_fwd_acceleration_implicitfast` but includes Coriolis velocity
+/// derivatives (`mjd_rne_vel`), does NOT symmetrize D, and uses LU
+/// factorization instead of Cholesky.
+///
+/// After return, `data.scratch_m_impl` holds the LU factors and
+/// `data.scratch_lu_piv` holds the pivot permutation, available for
+/// derivative column solves in `mjd_transition_hybrid`.
+///
+/// # Errors
+///
+/// Returns `Err(StepError::LuSingular)` if any pivot magnitude is below
+/// `1e-30` during LU factorization.
+fn mj_fwd_acceleration_implicit_full(model: &Model, data: &mut Data) -> Result<(), StepError> {
+    use crate::derivatives::{mjd_actuator_vel, mjd_passive_vel, mjd_rne_vel};
+
+    let h = model.timestep;
+
+    // Step 1: Assemble qDeriv = ∂(qfrc_smooth)/∂(qvel) — ALL components
+    data.qDeriv.fill(0.0);
+    mjd_passive_vel(model, data);
+    mjd_actuator_vel(model, data);
+    mjd_rne_vel(model, data);
+
+    // Step 2: No symmetrization — D is asymmetric (Coriolis terms break symmetry)
+
+    // Step 3: Form M_hat = M − h·D into scratch_m_impl
+    data.scratch_m_impl.copy_from(&data.qM);
+    for i in 0..model.nv {
+        for j in 0..model.nv {
+            data.scratch_m_impl[(i, j)] -= h * data.qDeriv[(i, j)];
+        }
+    }
+
+    // Step 4: RHS = qfrc_smooth + qfrc_applied + qfrc_constraint
+    data.scratch_rhs.copy_from(&data.qfrc_applied);
+    data.scratch_rhs += &data.qfrc_actuator;
+    data.scratch_rhs += &data.qfrc_passive;
+    data.scratch_rhs += &data.qfrc_constraint;
+    data.scratch_rhs -= &data.qfrc_bias;
+
+    // Step 5: Factor (M − h·D) = P·L·U, then solve for qacc
+    lu_factor_in_place(&mut data.scratch_m_impl, &mut data.scratch_lu_piv)?;
+    data.qacc.copy_from(&data.scratch_rhs);
+    lu_solve_factored(&data.scratch_m_impl, &data.scratch_lu_piv, &mut data.qacc);
+
+    Ok(())
+}
+
+/// Factor A = P·L·U in place. Stores L (unit lower) and U (upper) in `a`.
+/// Stores pivot permutation in `piv`. O(n³/3).
+///
+/// # Errors
+///
+/// Returns `Err(StepError::LuSingular)` if any pivot magnitude is below `1e-30`.
+fn lu_factor_in_place(a: &mut DMatrix<f64>, piv: &mut [usize]) -> Result<(), StepError> {
+    let n = a.nrows();
+    for k in 0..n {
+        // Partial pivot: find max |a[i,k]| for i in k..n
+        let mut max_val = a[(k, k)].abs();
+        let mut max_row = k;
+        for i in (k + 1)..n {
+            let v = a[(i, k)].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = i;
+            }
+        }
+        if max_val < 1e-30 {
+            return Err(StepError::LuSingular);
+        }
+        piv[k] = max_row;
+
+        if max_row != k {
+            for j in 0..n {
+                let tmp = a[(k, j)];
+                a[(k, j)] = a[(max_row, j)];
+                a[(max_row, j)] = tmp;
+            }
+        }
+
+        for i in (k + 1)..n {
+            a[(i, k)] /= a[(k, k)];
+            for j in (k + 1)..n {
+                a[(i, j)] -= a[(i, k)] * a[(k, j)];
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Solve P·L·U·x = b using pre-computed factors. Non-destructive on `a`/`piv`.
+/// Can be called multiple times for different RHS vectors.
+pub(crate) fn lu_solve_factored(a: &DMatrix<f64>, piv: &[usize], x: &mut DVector<f64>) {
+    let n = a.nrows();
+
+    // Apply row permutation to RHS
+    for k in 0..n {
+        if piv[k] != k {
+            x.swap_rows(k, piv[k]);
+        }
+    }
+
+    // Forward substitution (L·y = Pb)
+    for i in 1..n {
+        for k in 0..i {
+            x[i] -= a[(i, k)] * x[k];
+        }
+    }
+
+    // Back substitution (U·x = y)
+    for i in (0..n).rev() {
+        for k in (i + 1)..n {
+            x[i] -= a[(i, k)] * x[k];
+        }
+        x[i] /= a[(i, i)];
+    }
 }
 
 /// Proper position integration that handles quaternions on SO(3) manifold.

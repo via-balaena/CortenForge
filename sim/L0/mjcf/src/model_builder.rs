@@ -613,9 +613,9 @@ impl ModelBuilder {
         self.integrator = match option.integrator {
             MjcfIntegrator::Euler => Integrator::Euler,
             MjcfIntegrator::RK4 => Integrator::RungeKutta4,
-            MjcfIntegrator::ImplicitSpringDamper | MjcfIntegrator::ImplicitFast => {
-                Integrator::ImplicitSpringDamper
-            }
+            MjcfIntegrator::Implicit => Integrator::Implicit,
+            MjcfIntegrator::ImplicitFast => Integrator::ImplicitFast,
+            MjcfIntegrator::ImplicitSpringDamper => Integrator::ImplicitSpringDamper,
         };
         self.solver_type = match option.solver {
             MjcfSolverType::PGS | MjcfSolverType::Newton => SolverType::PGS,
