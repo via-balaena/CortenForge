@@ -107,7 +107,7 @@ pub mod derivatives;
 pub mod keyframes;
 
 // ============================================================================
-// Newton Solver Tests (§15 Phase A)
+// Newton Solver Tests (§15 Phase A + B)
 // ============================================================================
 
 /// Newton solver integration tests: convergence, warmstart, fallbacks.

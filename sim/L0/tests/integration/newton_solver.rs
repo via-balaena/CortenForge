@@ -1,13 +1,15 @@
-//! Newton solver integration tests (§15 Phase A).
+//! Newton solver integration tests (§15 Phase A + B).
 //!
-//! These tests verify the Phase A Newton solver implementation:
+//! These tests verify the Newton solver implementation:
 //! - Unified constraint assembly
-//! - Armijo line search convergence
-//! - PGS fallback on failure
-//! - Implicit integrator guards
+//! - Exact 1D Newton line search convergence
+//! - PGS fallback on failure / implicit integrators
 //! - Warmstart behavior
 //! - Zero-constraint degenerate case
 //! - Energy stability
+//! - Contact handling with elliptic cones
+//! - Equality constraints
+//! - Multi-constraint stability
 
 use approx::assert_relative_eq;
 use sim_mjcf::load_model;
