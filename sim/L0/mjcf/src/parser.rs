@@ -19,10 +19,11 @@ use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
     MjcfContact, MjcfContactExclude, MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality,
     MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfHfield, MjcfInertial, MjcfIntegrator,
-    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfMesh,
-    MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults,
-    MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex,
-    MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfWeld, SpatialPathElement,
+    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfKeyframe,
+    MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfPairDefaults, MjcfSensor,
+    MjcfSensorDefaults, MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone,
+    MjcfSkinVertex, MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfWeld,
+    SpatialPathElement,
 };
 
 /// Parse an MJCF string into a model.
@@ -105,6 +106,9 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                     b"contact" => {
                         model.contact = parse_contact(reader)?;
                     }
+                    b"keyframe" => {
+                        model.keyframes = parse_keyframes(reader)?;
+                    }
                     // Skip other elements
                     _ => skip_element(reader, &elem_name)?,
                 }
@@ -115,6 +119,9 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                     model.option = parse_option_attrs(e)?;
                 } else if e.name().as_ref() == b"contact" {
                     model.contact = MjcfContact::default();
+                } else if e.name().as_ref() == b"keyframe" {
+                    // Empty <keyframe/> — no keyframes defined. model.keyframes is
+                    // already Vec::new() from Default, so nothing to do.
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"mujoco" => break,
@@ -698,6 +705,61 @@ fn parse_contact_exclude_attrs(e: &BytesStart) -> Result<MjcfContactExclude> {
     })
 }
 
+// ============================================================================
+// Keyframe parsing
+// ============================================================================
+
+/// Parse the `<keyframe>` element containing `<key>` children.
+fn parse_keyframes<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfKeyframe>> {
+    let mut keyframes = Vec::new();
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                match elem_name.as_slice() {
+                    b"key" => {
+                        keyframes.push(parse_key_attrs(e)?);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    _ => skip_element(reader, &elem_name)?,
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                if e.name().as_ref() == b"key" {
+                    keyframes.push(parse_key_attrs(e)?);
+                }
+            }
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"keyframe" => break,
+            Ok(Event::Eof) => {
+                return Err(MjcfError::XmlParse("unexpected EOF in keyframe".into()));
+            }
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(keyframes)
+}
+
+/// Parse attributes of a single `<key>` element.
+fn parse_key_attrs(e: &BytesStart) -> Result<MjcfKeyframe> {
+    let mut kf = MjcfKeyframe::default();
+
+    kf.name = get_attribute_opt(e, "name").unwrap_or_default();
+    kf.time = parse_float_attr(e, "time").unwrap_or(0.0);
+    kf.qpos = parse_float_array_opt(e, "qpos")?;
+    kf.qvel = parse_float_array_opt(e, "qvel")?;
+    kf.act = parse_float_array_opt(e, "act")?;
+    kf.ctrl = parse_float_array_opt(e, "ctrl")?;
+    kf.mpos = parse_float_array_opt(e, "mpos")?;
+    kf.mquat = parse_float_array_opt(e, "mquat")?;
+
+    Ok(kf)
+}
+
 /// Parse asset element (contains mesh, texture, material definitions).
 fn parse_asset<R: BufRead>(reader: &mut Reader<R>) -> Result<(Vec<MjcfMesh>, Vec<MjcfHfield>)> {
     let mut meshes = Vec::new();
@@ -1022,6 +1084,9 @@ fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     }
     if let Some(aa) = get_attribute_opt(e, "axisangle") {
         body.axisangle = Some(parse_vector4(&aa)?);
+    }
+    if let Some(mocap) = get_attribute_opt(e, "mocap") {
+        body.mocap = mocap == "true";
     }
 
     Ok(body)

@@ -87,13 +87,14 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<tendon>` | ✓ | ✓ | Fixed and spatial tendons |
 | `<actuator>` | ✓ | ✓ | All 8 shortcut types (motor, position, velocity, damper, cylinder, adhesion, muscle, general) with MuJoCo-compatible gain/bias force model, GainType/BiasType dispatch, FilterExact dynamics. `<general>` supports explicit `gaintype`/`biastype`/`dyntype`/`gainprm`/`biasprm`/`dynprm` attributes with default class inheritance. |
 | `<sensor>` | ✓ | ✓ | Various sensor types |
-| `<keyframe>` | ✓ | ❌ | State snapshots |
+| `<keyframe>` | ✓ | ✓ | State snapshots: `<key>` elements with qpos/qvel/act/ctrl/mpos/mquat/time, `Data::reset_to_keyframe()` |
 
 #### Body/Geom/Joint attributes
 | Attribute | MuJoCo | sim-mjcf | Notes |
 |-----------|--------|----------|-------|
 | `body/@pos` | ✓ | ✓ | Position |
 | `body/@quat` | ✓ | ✓ | Orientation |
+| `body/@mocap` | ✓ | ✓ | Mocap body: kinematic input channel, world-child with no joints, FK override from `Data::mocap_pos`/`mocap_quat` |
 | `body/@euler` | ✓ | ✓ | Euler angles |
 | `body/@axisangle` | ✓ | ⚠️ | Check implementation |
 | `body/@xyaxes` | ✓ | ⚠️ | Check implementation |

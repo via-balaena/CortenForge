@@ -789,6 +789,61 @@ impl std::fmt::Display for StepError {
 
 impl std::error::Error for StepError {}
 
+/// Error returned by state reset operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ResetError {
+    /// The keyframe index is out of range.
+    InvalidKeyframeIndex {
+        /// The requested index.
+        index: usize,
+        /// The number of keyframes in the model.
+        nkeyframe: usize,
+    },
+}
+
+impl std::fmt::Display for ResetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidKeyframeIndex { index, nkeyframe } => {
+                write!(
+                    f,
+                    "invalid keyframe index {index} (model has {nkeyframe} keyframes)"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ResetError {}
+
+/// A named state snapshot for resetting simulation state.
+///
+/// All vectors are sized to match the model dimensions (nq, nv, na, nu,
+/// nmocap). Unspecified fields in the MJCF `<key>` are filled with model
+/// defaults at build time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Keyframe {
+    /// Keyframe name (from MJCF `name` attribute). Empty string if unnamed.
+    pub name: String,
+    /// Simulation time. Default: 0.0.
+    pub time: f64,
+    /// Joint positions (length nq). Default: model.qpos0.
+    pub qpos: DVector<f64>,
+    /// Joint velocities (length nv). Default: zeros.
+    pub qvel: DVector<f64>,
+    /// Actuator activations (length na). Default: zeros.
+    pub act: DVector<f64>,
+    /// Control signals (length nu). Default: zeros.
+    pub ctrl: DVector<f64>,
+    /// Mocap body positions (length nmocap). Default: body_pos for each
+    /// mocap body.
+    pub mpos: Vec<Vector3<f64>>,
+    /// Mocap body quaternions (length nmocap). Default: body_quat for each
+    /// mocap body.
+    pub mquat: Vec<UnitQuaternion<f64>>,
+}
+
 /// Static model definition (like mjModel).
 ///
 /// Immutable after construction - all memory allocated upfront.
@@ -826,6 +881,10 @@ pub struct Model {
     pub nu: usize,
     /// Number of activation states (for muscle/filter actuators).
     pub na: usize,
+    /// Number of mocap bodies. Mocap arrays are indexed 0..nmocap.
+    pub nmocap: usize,
+    /// Number of keyframes parsed from MJCF `<keyframe>`.
+    pub nkeyframe: usize,
 
     // ==================== Body Tree (indexed by body_id, 0 = world) ====================
     /// Parent body index (0 for root bodies attached to world).
@@ -863,6 +922,18 @@ pub struct Model {
     /// Total mass of subtree rooted at this body (precomputed).
     /// `body_subtreemass[0]` is total mass of entire system.
     pub body_subtreemass: Vec<f64>,
+    /// Maps body_id to mocap array index. `None` for non-mocap bodies.
+    /// Length: nbody.
+    ///
+    /// **Ordering invariant:** Mocap IDs are assigned sequentially during body
+    /// processing in topological order. Since the body traversal visits
+    /// parents before children, and mocap bodies must be direct world children,
+    /// all mocap bodies are visited before any non-world-child body. The
+    /// mocap_id for body B equals the count of mocap bodies with body_id < B.
+    /// This invariant is relied upon by `make_data()` and `Data::reset()`,
+    /// which iterate bodies in order and use `enumerate()` to correlate with
+    /// mocap array indices.
+    pub body_mocapid: Vec<Option<usize>>,
 
     // ==================== Joints (indexed by jnt_id) ====================
     /// Joint type (Hinge, Slide, Ball, Free).
@@ -1162,6 +1233,8 @@ pub struct Model {
     pub gravity: Vector3<f64>,
     /// Default/reference joint positions.
     pub qpos0: DVector<f64>,
+    /// Named state snapshots for quick reset.
+    pub keyframes: Vec<Keyframe>,
     /// Wind velocity in world frame (for aerodynamic forces).
     pub wind: Vector3<f64>,
     /// Magnetic field in world frame (for magnetic actuators).
@@ -1698,6 +1771,16 @@ pub struct Data {
     /// and is required for correct RK4 integration of activation states.
     pub act_dot: DVector<f64>,
 
+    // ==================== Mocap Bodies ====================
+    /// Mocap body positions in world frame (length nmocap).
+    /// User-settable: modified between steps to drive mocap body poses.
+    /// Initialized to the body_pos offset for each mocap body.
+    pub mocap_pos: Vec<Vector3<f64>>,
+    /// Mocap body orientations in world frame (length nmocap).
+    /// User-settable: modified between steps to drive mocap body poses.
+    /// Initialized to the body_quat offset for each mocap body.
+    pub mocap_quat: Vec<UnitQuaternion<f64>>,
+
     // ==================== Computed Body States (from FK - outputs, not inputs) ====================
     /// Body positions in world frame (length `nbody`).
     pub xpos: Vec<Vector3<f64>>,
@@ -1996,6 +2079,9 @@ impl Clone for Data {
             actuator_force: self.actuator_force.clone(),
             actuator_moment: self.actuator_moment.clone(),
             act_dot: self.act_dot.clone(),
+            // Mocap bodies
+            mocap_pos: self.mocap_pos.clone(),
+            mocap_quat: self.mocap_quat.clone(),
             // Computed body states
             xpos: self.xpos.clone(),
             xquat: self.xquat.clone(),
@@ -2110,6 +2196,8 @@ impl Model {
             nsite: 0,
             nu: 0,
             na: 0,
+            nmocap: 0,
+            nkeyframe: 0,
 
             // Body tree (initialize world body)
             body_parent: vec![0], // World is its own parent
@@ -2130,6 +2218,7 @@ impl Model {
             body_inertia: vec![Vector3::zeros()],
             body_name: vec![Some("world".to_string())],
             body_subtreemass: vec![0.0], // World subtree mass (will be total system mass)
+            body_mocapid: vec![None],    // world body
 
             // Joints (empty)
             jnt_type: vec![],
@@ -2268,6 +2357,8 @@ impl Model {
             timestep: 0.002,                        // 500 Hz
             gravity: Vector3::new(0.0, 0.0, -9.81), // Z-up
             qpos0: DVector::zeros(0),
+            // Keyframes
+            keyframes: Vec::new(),
             wind: Vector3::zeros(),
             magnetic: Vector3::zeros(),
             density: 0.0,   // No fluid by default
@@ -2379,6 +2470,26 @@ impl Model {
             xmat: vec![Matrix3::identity(); self.nbody],
             xipos: vec![Vector3::zeros(); self.nbody],
             ximat: vec![Matrix3::identity(); self.nbody],
+
+            // Mocap bodies (default to body_pos/body_quat for each mocap body)
+            mocap_pos: if self.nmocap == 0 {
+                Vec::new()
+            } else {
+                self.body_mocapid
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, mid)| mid.map(|_| self.body_pos[i]))
+                    .collect()
+            },
+            mocap_quat: if self.nmocap == 0 {
+                Vec::new()
+            } else {
+                self.body_mocapid
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, mid)| mid.map(|_| self.body_quat[i]))
+                    .collect()
+            },
 
             // Geom poses
             geom_xpos: vec![Vector3::zeros(); self.ngeom],
@@ -2998,6 +3109,7 @@ impl Model {
             model.body_inertia.push(Vector3::new(0.001, 0.001, 0.001));
             model.body_name.push(Some(format!("link_{i}")));
             model.body_subtreemass.push(0.0); // Will be computed after model is built
+            model.body_mocapid.push(None);
 
             // Joint definition (hinge at parent's frame, rotating around Y)
             model.jnt_type.push(MjJointType::Hinge);
@@ -3095,6 +3207,7 @@ impl Model {
         model.body_inertia.push(Vector3::new(0.001, 0.001, 0.001));
         model.body_name.push(Some("bob".to_string()));
         model.body_subtreemass.push(0.0); // Will be computed after model is built
+        model.body_mocapid.push(None);
 
         // Ball joint at world origin
         model.jnt_type.push(MjJointType::Ball);
@@ -3179,6 +3292,7 @@ impl Model {
         model.body_inertia.push(inertia);
         model.body_name.push(Some("free_body".to_string()));
         model.body_subtreemass.push(0.0); // Will be computed after model is built
+        model.body_mocapid.push(None);
 
         // Free joint
         model.jnt_type.push(MjJointType::Free);
@@ -3256,6 +3370,78 @@ impl Data {
                 body.clear_forces();
             }
         }
+
+        // Reset mocap poses to model defaults (body_pos/body_quat offsets).
+        let mut mocap_idx = 0;
+        for (body_id, mid) in model.body_mocapid.iter().enumerate() {
+            if mid.is_some() {
+                self.mocap_pos[mocap_idx] = model.body_pos[body_id];
+                self.mocap_quat[mocap_idx] = model.body_quat[body_id];
+                mocap_idx += 1;
+            }
+        }
+    }
+
+    /// Reset simulation state to a keyframe by index.
+    ///
+    /// Overwrites `time`, `qpos`, `qvel`, `act`, `ctrl`, `mocap_pos`, and
+    /// `mocap_quat` from the keyframe. Clears derived quantities (`qacc`,
+    /// `qacc_warmstart`, actuator arrays, `sensordata`, contacts).
+    /// Does **not** clear `qfrc_applied` or `xfrc_applied` — matching the
+    /// convention of `Data::reset()`, which also preserves user-applied forces.
+    /// Caller must invoke `forward()` after reset to recompute derived state.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if `keyframe_idx >= model.nkeyframe`.
+    pub fn reset_to_keyframe(
+        &mut self,
+        model: &Model,
+        keyframe_idx: usize,
+    ) -> Result<(), ResetError> {
+        let kf = model
+            .keyframes
+            .get(keyframe_idx)
+            .ok_or(ResetError::InvalidKeyframeIndex {
+                index: keyframe_idx,
+                nkeyframe: model.nkeyframe,
+            })?;
+
+        // Overwrite primary state from keyframe.
+        self.time = kf.time;
+        self.qpos.copy_from(&kf.qpos);
+        self.qvel.copy_from(&kf.qvel);
+        self.act.copy_from(&kf.act);
+        self.ctrl.copy_from(&kf.ctrl);
+
+        // Mocap state (length may be 0 if no mocap bodies).
+        self.mocap_pos.copy_from_slice(&kf.mpos);
+        self.mocap_quat.copy_from_slice(&kf.mquat);
+
+        // Clear derived quantities (matching Data::reset() convention).
+        self.qacc.fill(0.0);
+        self.qacc_warmstart.fill(0.0);
+        self.act_dot.fill(0.0);
+        self.actuator_length.fill(0.0);
+        self.actuator_velocity.fill(0.0);
+        self.actuator_force.fill(0.0);
+        self.sensordata.fill(0.0);
+        self.ncon = 0;
+        self.contacts.clear();
+
+        // Feature-gated deformable clearing (matching Data::reset()).
+        #[cfg(feature = "deformable")]
+        {
+            self.deformable_contacts.clear();
+            for body in &mut self.deformable_bodies {
+                for vel in body.velocities_mut() {
+                    *vel = Vector3::zeros();
+                }
+                body.clear_forces();
+            }
+        }
+
+        Ok(())
     }
 
     /// Register a deformable body for simulation.
@@ -3644,89 +3830,105 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
     for body_id in 1..model.nbody {
         let parent_id = model.body_parent[body_id];
 
-        // Start with parent's frame
-        let mut pos = data.xpos[parent_id];
-        let mut quat = data.xquat[parent_id];
+        // Determine body pose: mocap bodies use mocap arrays, regular bodies
+        // use parent frame + body offset + joints.
+        let (pos, quat) = if let Some(&Some(mocap_idx)) = model.body_mocapid.get(body_id) {
+            // Mocap body: replace body_pos/body_quat with mocap arrays.
+            // Parent is always world (origin), so xpos = mocap_pos, xquat = mocap_quat.
+            //
+            // Renormalize quaternion (matching MuJoCo's mju_normalize4 in
+            // mj_kinematics1). Users set mocap_quat between steps; floating-point
+            // arithmetic can cause drift from unit norm.
+            let mquat = UnitQuaternion::new_normalize(data.mocap_quat[mocap_idx].into_inner());
+            (data.mocap_pos[mocap_idx], mquat)
+        } else {
+            // Regular body: parent frame + body offset + joints.
+            let mut pos = data.xpos[parent_id];
+            let mut quat = data.xquat[parent_id];
 
-        // Apply body offset in parent frame
-        pos += quat * model.body_pos[body_id];
-        quat *= model.body_quat[body_id];
+            // Apply body offset in parent frame
+            pos += quat * model.body_pos[body_id];
+            quat *= model.body_quat[body_id];
 
-        // Apply each joint for this body
-        let jnt_start = model.body_jnt_adr[body_id];
-        let jnt_end = jnt_start + model.body_jnt_num[body_id];
+            // Apply each joint for this body
+            let jnt_start = model.body_jnt_adr[body_id];
+            let jnt_end = jnt_start + model.body_jnt_num[body_id];
 
-        for jnt_id in jnt_start..jnt_end {
-            let qpos_adr = model.jnt_qpos_adr[jnt_id];
+            for jnt_id in jnt_start..jnt_end {
+                let qpos_adr = model.jnt_qpos_adr[jnt_id];
 
-            match model.jnt_type[jnt_id] {
-                MjJointType::Hinge => {
-                    let angle = data.qpos[qpos_adr];
-                    let axis = model.jnt_axis[jnt_id];
-                    let anchor = model.jnt_pos[jnt_id];
+                match model.jnt_type[jnt_id] {
+                    MjJointType::Hinge => {
+                        let angle = data.qpos[qpos_adr];
+                        let axis = model.jnt_axis[jnt_id];
+                        let anchor = model.jnt_pos[jnt_id];
 
-                    // Transform anchor to current frame
-                    let world_anchor = pos + quat * anchor;
+                        // Transform anchor to current frame
+                        let world_anchor = pos + quat * anchor;
 
-                    // Rotate around axis
-                    let world_axis = quat * axis;
-                    // Safety: use try_new_normalize to handle degenerate cases
-                    let rot = if let Some(unit_axis) = nalgebra::Unit::try_new(world_axis, 1e-10) {
-                        UnitQuaternion::from_axis_angle(&unit_axis, angle)
-                    } else {
-                        // Degenerate axis - no rotation (should not happen with valid model)
-                        UnitQuaternion::identity()
-                    };
-                    quat = rot * quat;
+                        // Rotate around axis
+                        let world_axis = quat * axis;
+                        // Safety: use try_new_normalize to handle degenerate cases
+                        let rot =
+                            if let Some(unit_axis) = nalgebra::Unit::try_new(world_axis, 1e-10) {
+                                UnitQuaternion::from_axis_angle(&unit_axis, angle)
+                            } else {
+                                // Degenerate axis - no rotation (should not happen with valid model)
+                                UnitQuaternion::identity()
+                            };
+                        quat = rot * quat;
 
-                    // Adjust position for rotation around anchor
-                    pos = world_anchor + rot * (pos - world_anchor);
-                }
-                MjJointType::Slide => {
-                    let displacement = data.qpos[qpos_adr];
-                    let axis = model.jnt_axis[jnt_id];
-                    pos += quat * (axis * displacement);
-                }
-                MjJointType::Ball => {
-                    // qpos stores quaternion [w, x, y, z]
-                    let q = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                        data.qpos[qpos_adr],
-                        data.qpos[qpos_adr + 1],
-                        data.qpos[qpos_adr + 2],
-                        data.qpos[qpos_adr + 3],
-                    ));
-                    quat *= q;
-                }
-                MjJointType::Free => {
-                    // qpos stores [x, y, z, qw, qx, qy, qz]
-                    pos = Vector3::new(
-                        data.qpos[qpos_adr],
-                        data.qpos[qpos_adr + 1],
-                        data.qpos[qpos_adr + 2],
-                    );
-                    quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
-                        data.qpos[qpos_adr + 3],
-                        data.qpos[qpos_adr + 4],
-                        data.qpos[qpos_adr + 5],
-                        data.qpos[qpos_adr + 6],
-                    ));
+                        // Adjust position for rotation around anchor
+                        pos = world_anchor + rot * (pos - world_anchor);
+                    }
+                    MjJointType::Slide => {
+                        let displacement = data.qpos[qpos_adr];
+                        let axis = model.jnt_axis[jnt_id];
+                        pos += quat * (axis * displacement);
+                    }
+                    MjJointType::Ball => {
+                        // qpos stores quaternion [w, x, y, z]
+                        let q = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                            data.qpos[qpos_adr],
+                            data.qpos[qpos_adr + 1],
+                            data.qpos[qpos_adr + 2],
+                            data.qpos[qpos_adr + 3],
+                        ));
+                        quat *= q;
+                    }
+                    MjJointType::Free => {
+                        // qpos stores [x, y, z, qw, qx, qy, qz]
+                        pos = Vector3::new(
+                            data.qpos[qpos_adr],
+                            data.qpos[qpos_adr + 1],
+                            data.qpos[qpos_adr + 2],
+                        );
+                        quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                            data.qpos[qpos_adr + 3],
+                            data.qpos[qpos_adr + 4],
+                            data.qpos[qpos_adr + 5],
+                            data.qpos[qpos_adr + 6],
+                        ));
+                    }
                 }
             }
-        }
 
-        // Store computed pose
+            (pos, quat)
+        };
+
+        // Store computed pose (shared path for both mocap and regular bodies)
         data.xpos[body_id] = pos;
         data.xquat[body_id] = quat;
         data.xmat[body_id] = quat.to_rotation_matrix().into_inner();
 
-        // Compute inertial frame position
+        // Compute inertial frame position (shared)
         data.xipos[body_id] = pos + quat * model.body_ipos[body_id];
         data.ximat[body_id] = (quat * model.body_iquat[body_id])
             .to_rotation_matrix()
             .into_inner();
 
-        // Compute body spatial inertia in world frame (cinert)
-        // This is computed once and used by both CRBA and RNE
+        // Compute body spatial inertia in world frame (cinert, shared).
+        // MuJoCo does NOT zero mass for mocap bodies, and neither do we.
         let h = data.xipos[body_id] - pos; // COM offset from body origin in world frame
         data.cinert[body_id] = compute_body_spatial_inertia(
             model.body_mass[body_id],

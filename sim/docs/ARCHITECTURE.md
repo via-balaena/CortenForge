@@ -72,6 +72,8 @@ Key fields:
 - `actuator_biastype[i]` — `BiasType` (None, Affine, Muscle) — dispatches Phase 2 bias computation
 - `actuator_dynprm[i]`/`actuator_gainprm[i]`/`actuator_biasprm[i]` — dynamics and force parameters
 - `timestep`, `gravity`, `integrator`, `solver_type`, `solver_iterations`, `solver_tolerance`
+- `nmocap`, `body_mocapid[i]` — mocap body count and body→mocap index mapping
+- `nkeyframe`, `keyframes` — named state snapshots for quick reset
 
 Constructed from MJCF via `sim-mjcf` or URDF via `sim-urdf`.
 
@@ -83,6 +85,7 @@ residual heap allocation occurs for contact vector growth and RK4 warmstart save
 | Category | Fields | Description |
 |----------|--------|-------------|
 | State | `qpos`, `qvel`, `act`, `ctrl`, `time` | Source of truth (act = activation states for muscles/filters) |
+| Mocap state | `mocap_pos`, `mocap_quat` | User-settable kinematic input for mocap bodies (length nmocap); FK overrides body pose |
 | Body poses | `xpos`, `xquat`, `xmat` | Computed by forward kinematics |
 | Mass matrix | `qM`, `qLD_diag`, `qLD_L` | Computed by CRBA; sparse L^T D L factorization cached |
 | Forces | `qfrc_bias`, `qfrc_passive`, `qfrc_actuator`, `qfrc_applied`, `qfrc_constraint` | Generalized force components |

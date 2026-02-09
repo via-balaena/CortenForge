@@ -98,3 +98,10 @@ pub mod deformable_contact;
 
 /// Derivative infrastructure tests: FD, analytical qDeriv, acceptance criteria 1–23.
 pub mod derivatives;
+
+// ============================================================================
+// Keyframe & Mocap Body Tests (§14)
+// ============================================================================
+
+/// Keyframe parsing, reset, mocap body semantics, validation error tests.
+pub mod keyframes;
