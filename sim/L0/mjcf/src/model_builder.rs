@@ -465,6 +465,10 @@ struct ModelBuilder {
     max_constraint_angvel: f64,
     friction_smoothing: f64,
     cone: u8,
+    ls_iterations: usize,
+    ls_tolerance: f64,
+    noslip_iterations: usize,
+    noslip_tolerance: f64,
     disableflags: u32,
     enableflags: u32,
     integrator: Integrator,
@@ -656,6 +660,10 @@ impl ModelBuilder {
             max_constraint_angvel: 1.0,
             friction_smoothing: 1000.0,
             cone: 0,
+            ls_iterations: 50,
+            ls_tolerance: 0.01,
+            noslip_iterations: 0,
+            noslip_tolerance: 1e-6,
             disableflags: 0,
             enableflags: 0,
             integrator: Integrator::Euler,
@@ -743,9 +751,14 @@ impl ModelBuilder {
             MjcfIntegrator::ImplicitSpringDamper => Integrator::ImplicitSpringDamper,
         };
         self.solver_type = match option.solver {
-            MjcfSolverType::PGS | MjcfSolverType::Newton => SolverType::PGS,
+            MjcfSolverType::PGS => SolverType::PGS,
             MjcfSolverType::CG => SolverType::CG,
+            MjcfSolverType::Newton => SolverType::Newton,
         };
+        self.ls_iterations = option.ls_iterations;
+        self.ls_tolerance = option.ls_tolerance;
+        self.noslip_iterations = option.noslip_iterations;
+        self.noslip_tolerance = option.noslip_tolerance;
         self.magnetic = option.magnetic;
         self.wind = option.wind;
         self.density = option.density;
@@ -1431,7 +1444,7 @@ impl ModelBuilder {
             } else {
                 Some(tendon.name.clone())
             });
-            self.tendon_solref.push([0.0, 0.0]); // Default: use model defaults
+            self.tendon_solref.push(DEFAULT_SOLREF);
             self.tendon_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]); // MuJoCo defaults
             self.tendon_lengthspring.push(0.0); // Set to length0 if stiffness > 0
             self.tendon_length0.push(0.0); // Computed after construction from qpos0
@@ -2640,6 +2653,11 @@ impl ModelBuilder {
             max_constraint_angvel: self.max_constraint_angvel,
             friction_smoothing: self.friction_smoothing,
             cone: self.cone,
+            stat_meaninertia: 1.0, // Computed post-build in Step 3
+            ls_iterations: self.ls_iterations,
+            ls_tolerance: self.ls_tolerance,
+            noslip_iterations: self.noslip_iterations,
+            noslip_tolerance: self.noslip_tolerance,
             disableflags: self.disableflags,
             enableflags: self.enableflags,
             #[cfg(feature = "deformable")]
@@ -2673,6 +2691,9 @@ impl ModelBuilder {
 
         // Pre-compute muscle-derived parameters (lengthrange, acc0, F0)
         model.compute_muscle_params();
+
+        // Compute stat_meaninertia = trace(M) / nv at qpos0 (for Newton solver scaling, §15.11)
+        model.compute_stat_meaninertia();
 
         // Pre-compute bounding sphere radii for all geoms (used in collision broad-phase)
         for geom_id in 0..ngeom {

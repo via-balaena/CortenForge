@@ -260,8 +260,14 @@ pub struct MjcfOption {
     /// Maximum iterations for line search in CG/Newton solvers (default: 50).
     pub ls_iterations: usize,
 
+    /// Line search gradient tolerance for Newton solver (default: 0.01).
+    pub ls_tolerance: f64,
+
     /// Iterations for no-slip solver (default: 0 = disabled).
     pub noslip_iterations: usize,
+
+    /// Tolerance for no-slip solver (default: 1e-6).
+    pub noslip_tolerance: f64,
 
     /// Iterations for convex collision detection (default: 50).
     pub ccd_iterations: usize,
@@ -351,7 +357,9 @@ impl Default for MjcfOption {
             iterations: 100,
             tolerance: 1e-8,
             ls_iterations: 50,
+            ls_tolerance: 0.01,
             noslip_iterations: 0,
+            noslip_tolerance: 1e-6,
             ccd_iterations: 50,
 
             // Contact configuration

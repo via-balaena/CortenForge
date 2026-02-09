@@ -726,6 +726,73 @@ pub enum SolverType {
     /// falling back to PGS. Sets `data.solver_niter = max_iterations`.
     /// Use in tests to detect convergence regressions without silent fallback.
     CGStrict,
+    /// Newton solver with analytical second-order derivatives (§15 of spec).
+    /// Operates on unified constraint Jacobian (equality, friction loss, limits,
+    /// contacts). Converges in 2-3 iterations vs PGS's 20+. Falls back to PGS
+    /// on Cholesky failure or non-convergence.
+    Newton,
+}
+
+/// Constraint type annotation per row in the unified constraint system.
+///
+/// Each scalar row of the constraint Jacobian (`efc_J`) is tagged with one
+/// of these types to determine its cost function and state machine behavior
+/// in `PrimalUpdateConstraint` (§15.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConstraintType {
+    /// Equality constraint (connect, weld, joint, distance).
+    Equality,
+    /// DOF or tendon friction loss (Huber cost).
+    FrictionLoss,
+    /// Joint limit constraint.
+    LimitJoint,
+    /// Tendon limit constraint.
+    LimitTendon,
+    /// Contact with pyramidal friction cone (condim < 3 or cone == pyramidal).
+    ContactNonElliptic,
+    /// Contact with elliptic friction cone (condim ≥ 3 and cone == elliptic).
+    ContactElliptic,
+}
+
+/// Constraint state per scalar row, determined by `PrimalUpdateConstraint`.
+///
+/// Maps to MuJoCo's `mjCNSTRSTATE_*` values. The state determines which
+/// branch of the cost function and Hessian contribution is active for each
+/// constraint row during Newton iterations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ConstraintState {
+    /// Active with quadratic cost: row contributes D_i * J_i^T * J_i to Hessian.
+    #[default]
+    Quadratic,
+    /// Constraint satisfied (inactive): zero force, no Hessian contribution.
+    Satisfied,
+    /// Linear regime, negative side (friction loss below -R*floss).
+    LinearNeg,
+    /// Linear regime, positive side (friction loss above +R*floss).
+    LinearPos,
+    /// Elliptic friction cone active: coupled Hessian across contact rows.
+    Cone,
+}
+
+/// Per-iteration Newton solver statistics, matching MuJoCo's `mjSolverStat`.
+///
+/// Populated by `newton_solve()` during each outer iteration. The array
+/// `data.solver_stat` has length `data.solver_niter` after convergence.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SolverStat {
+    /// Scaled cost improvement: `scale * (old_cost - new_cost)`.
+    pub improvement: f64,
+    /// Scaled gradient norm: `scale * ||grad||`.
+    pub gradient: f64,
+    /// Directional derivative along search direction at step start:
+    /// `grad^T · search / ||search||`. Negative means descent.
+    pub lineslope: f64,
+    /// Number of active constraints (state == Quadratic or Cone).
+    pub nactive: usize,
+    /// Number of constraint state transitions this iteration.
+    pub nchange: usize,
+    /// Number of line search evaluations this iteration.
+    pub nline: usize,
 }
 
 /// Integration method.
@@ -1266,6 +1333,20 @@ pub struct Model {
     pub friction_smoothing: f64,
     /// Friction cone type: 0=pyramidal, 1=elliptic.
     pub cone: u8,
+
+    // Newton solver parameters (§15)
+    /// Mean inertia: trace(M) / nv at qpos0. Used by Newton solver for scaling.
+    /// Computed at model build time by running CRBA at qpos0.
+    pub stat_meaninertia: f64,
+    /// Maximum line search iterations for Newton solver (default 50).
+    pub ls_iterations: usize,
+    /// Line search gradient tolerance for Newton solver (default 0.01).
+    pub ls_tolerance: f64,
+    /// Noslip solver iterations (parsed from MJCF, stored, not yet implemented; default 0).
+    pub noslip_iterations: usize,
+    /// Noslip solver tolerance (parsed from MJCF, stored, not yet implemented; default 1e-6).
+    pub noslip_tolerance: f64,
+
     /// Disable flags (bitmask for disabling default behaviors).
     pub disableflags: u32,
     /// Enable flags (bitmask for enabling optional behaviors).
@@ -1945,6 +2026,93 @@ pub struct Data {
     /// If a contact's condim changes between frames, the warmstart is discarded.
     pub efc_lambda: HashMap<WarmstartKey, Vec<f64>>,
 
+    // ==================== Unified Constraint System (Newton solver, §15) ====================
+    // These fields are populated by `assemble_unified_constraints()` and consumed
+    // by the Newton solver loop. For PGS/CG solvers, they remain empty (zero-length).
+    /// Friction loss component of qfrc_passive (length nv). Separated from
+    /// qfrc_passive for Newton solver which treats friction loss as explicit
+    /// constraint rows (§15.0 approach b).
+    pub qfrc_frictionloss: DVector<f64>,
+
+    /// Constraint bias: J·qacc_smooth − aref (length nefc). Computed during
+    /// assembly, consumed by warmstart cost comparison (§15.8 INITIALIZE).
+    /// Persists in Data for diagnostic access (matches MuJoCo's d->efc_b),
+    /// but is NOT updated by the solver loop.
+    pub efc_b: DVector<f64>,
+    /// Unified constraint Jacobian (nefc × nv). Rows ordered: equality,
+    /// friction loss, joint limits, tendon limits, contacts.
+    pub efc_J: DMatrix<f64>,
+    /// Per-row constraint type annotation.
+    pub efc_type: Vec<ConstraintType>,
+    /// Per-row constraint violation (penetration distance for contacts).
+    pub efc_pos: Vec<f64>,
+    /// Per-row margin (geom margin for contacts, 0 for non-contacts).
+    pub efc_margin: Vec<f64>,
+    /// Per-row constraint-space velocity: J·qvel.
+    pub efc_vel: DVector<f64>,
+    /// Per-row solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    pub efc_solref: Vec<[f64; 2]>,
+    /// Per-row solver impedance parameters [dmin, dmax, width, midpoint, power].
+    pub efc_solimp: Vec<[f64; 5]>,
+    /// Per-row diagonal approximation of A = J·M⁻¹·J^T (for regularization scaling).
+    #[allow(non_snake_case)]
+    pub efc_diagApprox: Vec<f64>,
+    /// Per-row regularization R (constraint softness).
+    #[allow(non_snake_case)]
+    pub efc_R: Vec<f64>,
+    /// Per-row D = 1/R (constraint stiffness, inverse of regularization).
+    #[allow(non_snake_case)]
+    pub efc_D: Vec<f64>,
+    /// Per-row impedance value (from solimp sigmoid, in [dmin, dmax]).
+    pub efc_imp: Vec<f64>,
+    // Note: MuJoCo packs K, B, imp, and impP into a single `efc_KBIP[4*i+{0,1,2,3}]`
+    // array. We decompose this: K and B are transient (used only during `aref`
+    // computation, not stored); `imp` is stored as `efc_imp`; `impP` (the derivative
+    // of impedance w.r.t. penetration distance) is omitted — it is computed and stored
+    // by MuJoCo but never read by any MuJoCo subsystem (solvers, sensors, derivatives).
+    // It exists solely for external API introspection. If external parity is needed,
+    // Phase C can add `efc_impP: Vec<f64>`.
+    /// Per-row reference acceleration (aref = -B·vel - K·imp·(pos-margin)).
+    pub efc_aref: DVector<f64>,
+    /// Per-row friction loss saturation value (R * floss for Huber threshold).
+    pub efc_floss: Vec<f64>,
+    /// Per-row friction coefficients. For contacts: [mu1, mu2, ...] from geom.
+    /// For non-contacts: [0; 5].
+    pub efc_mu: Vec<[f64; 5]>,
+    /// Per-row condim of parent contact (1 for non-contact rows).
+    pub efc_dim: Vec<usize>,
+    /// Per-row source object index (joint ID for LimitJoint, tendon ID for
+    /// LimitTendon, equality ID for Equality, contact index for Contact*,
+    /// DOF/tendon index for FrictionLoss).
+    pub efc_id: Vec<usize>,
+
+    // Solver output (written to Data in RECOVER after convergence)
+    /// Per-row constraint state (Quadratic, Satisfied, LinearNeg/Pos, Cone).
+    pub efc_state: Vec<ConstraintState>,
+    /// Per-row constraint force (length nefc).
+    pub efc_force: DVector<f64>,
+    /// Per-row J·qacc − aref (constraint residual, length nefc).
+    pub efc_jar: DVector<f64>,
+    /// Total cost (Gauss + constraint terms) at convergence.
+    pub efc_cost: f64,
+    /// Per-contact cone Hessian matrices (dim x dim). Indexed parallel to contacts.
+    /// Only populated for contacts in the Cone state. `None` for non-cone or Satisfied contacts.
+    pub efc_cone_hessian: Vec<Option<DMatrix<f64>>>,
+    /// Number of contacts currently in the Cone state.
+    pub ncone: usize,
+    /// Whether Newton solver computed qacc directly this step.
+    /// When true, mj_fwd_acceleration should be skipped.
+    pub newton_solved: bool,
+
+    /// Per-iteration Newton solver statistics (length `solver_niter` after solve).
+    /// Populated by Newton solver; empty for PGS/CG.
+    pub solver_stat: Vec<SolverStat>,
+
+    /// Per-step mean inertia: `trace(qM) / nv`. More accurate than the
+    /// model-level constant for configuration-dependent inertia.
+    /// Updated at the start of each Newton solve from the current `qM`.
+    pub stat_meaninertia: f64,
+
     // ==================== Sensors ====================
     /// Sensor data array (length `nsensordata`).
     /// Each sensor writes to `sensordata[sensor_adr[i]..sensor_adr[i]+sensor_dim[i]]`.
@@ -2134,6 +2302,34 @@ impl Clone for Data {
             solver_niter: self.solver_niter,
             solver_nnz: self.solver_nnz,
             efc_lambda: self.efc_lambda.clone(),
+            // Unified constraint system (Newton solver)
+            qfrc_frictionloss: self.qfrc_frictionloss.clone(),
+            efc_b: self.efc_b.clone(),
+            efc_J: self.efc_J.clone(),
+            efc_type: self.efc_type.clone(),
+            efc_pos: self.efc_pos.clone(),
+            efc_margin: self.efc_margin.clone(),
+            efc_vel: self.efc_vel.clone(),
+            efc_solref: self.efc_solref.clone(),
+            efc_solimp: self.efc_solimp.clone(),
+            efc_diagApprox: self.efc_diagApprox.clone(),
+            efc_R: self.efc_R.clone(),
+            efc_D: self.efc_D.clone(),
+            efc_imp: self.efc_imp.clone(),
+            efc_aref: self.efc_aref.clone(),
+            efc_floss: self.efc_floss.clone(),
+            efc_mu: self.efc_mu.clone(),
+            efc_dim: self.efc_dim.clone(),
+            efc_id: self.efc_id.clone(),
+            efc_state: self.efc_state.clone(),
+            efc_force: self.efc_force.clone(),
+            efc_jar: self.efc_jar.clone(),
+            efc_cost: self.efc_cost,
+            efc_cone_hessian: self.efc_cone_hessian.clone(),
+            ncone: self.ncone,
+            newton_solved: self.newton_solved,
+            solver_stat: self.solver_stat.clone(),
+            stat_meaninertia: self.stat_meaninertia,
             // Sensors
             sensordata: self.sensordata.clone(),
             // Energy
@@ -2373,6 +2569,11 @@ impl Model {
             max_constraint_angvel: 1.0,    // Max angular delta-v per step (rad/s)
             friction_smoothing: 1000.0,    // tanh transition sharpness
             cone: 1,                       // Elliptic friction cone (pyramidal not supported)
+            stat_meaninertia: 1.0,         // Default (computed at model build from CRBA)
+            ls_iterations: 50,             // Newton line search iterations
+            ls_tolerance: 0.01,            // Newton line search gradient tolerance
+            noslip_iterations: 0,          // Not yet implemented
+            noslip_tolerance: 1e-6,        // Not yet implemented
             disableflags: 0,               // Nothing disabled
             enableflags: 0,                // Nothing extra enabled
             #[cfg(feature = "deformable")]
@@ -2552,6 +2753,36 @@ impl Model {
             solver_niter: 0,
             solver_nnz: 0,
             efc_lambda: HashMap::with_capacity(256), // Contact correspondence warmstart
+
+            // Unified constraint system (Newton solver) — initially empty (zero-length).
+            // Populated by assemble_unified_constraints() only when Newton solver is active.
+            qfrc_frictionloss: DVector::zeros(self.nv),
+            efc_b: DVector::zeros(0),
+            efc_J: DMatrix::zeros(0, self.nv),
+            efc_type: Vec::new(),
+            efc_pos: Vec::new(),
+            efc_margin: Vec::new(),
+            efc_vel: DVector::zeros(0),
+            efc_solref: Vec::new(),
+            efc_solimp: Vec::new(),
+            efc_diagApprox: Vec::new(),
+            efc_R: Vec::new(),
+            efc_D: Vec::new(),
+            efc_imp: Vec::new(),
+            efc_aref: DVector::zeros(0),
+            efc_floss: Vec::new(),
+            efc_mu: Vec::new(),
+            efc_dim: Vec::new(),
+            efc_id: Vec::new(),
+            efc_state: Vec::new(),
+            efc_force: DVector::zeros(0),
+            efc_jar: DVector::zeros(0),
+            efc_cost: 0.0,
+            efc_cone_hessian: Vec::new(),
+            ncone: 0,
+            newton_solved: false,
+            solver_stat: Vec::new(),
+            stat_meaninertia: 1.0,
 
             // Sensors
             sensordata: DVector::zeros(self.nsensordata),
@@ -3020,6 +3251,27 @@ impl Model {
                     self.tendon_lengthspring[t] = data.ten_length[t];
                 }
             }
+        }
+    }
+
+    /// Compute `stat_meaninertia = trace(M) / nv` at `qpos0`.
+    ///
+    /// Creates a temporary Data, runs FK + CRBA to fill qM, then takes the
+    /// trace of the mass matrix divided by nv. Guards nv == 0 → 1.0.
+    /// Called once at model build time (§15.11).
+    pub fn compute_stat_meaninertia(&mut self) {
+        if self.nv == 0 {
+            self.stat_meaninertia = 1.0;
+            return;
+        }
+        let mut data = self.make_data();
+        mj_fwd_position(self, &mut data);
+        mj_crba(self, &mut data);
+        let trace: f64 = (0..self.nv).map(|i| data.qM[(i, i)]).sum();
+        self.stat_meaninertia = trace / self.nv as f64;
+        // Guard against degenerate models with zero inertia
+        if self.stat_meaninertia <= 0.0 {
+            self.stat_meaninertia = 1.0;
         }
     }
 
@@ -3523,6 +3775,11 @@ impl Data {
             }
         }
 
+        // Save qacc for next-step warmstart (§15.9).
+        // Done at the very end of step(), after integration, matching MuJoCo's
+        // mj_advance() which saves qacc_warmstart after the step completes.
+        self.qacc_warmstart.copy_from(&self.qacc);
+
         Ok(())
     }
 
@@ -3592,7 +3849,11 @@ impl Data {
         mj_fwd_constraint(model, self);
 
         // Stage 3f: Compute final acceleration
-        mj_fwd_acceleration(model, self)?;
+        // Newton solver computes qacc directly — skip mj_fwd_acceleration to
+        // avoid overwriting Newton's optimized qacc (§15.8).
+        if !self.newton_solved {
+            mj_fwd_acceleration(model, self)?;
+        }
 
         // Stage 3g: Acceleration-dependent sensors (accelerometer, etc.)
         mj_sensor_acc(model, self);
@@ -3630,7 +3891,10 @@ impl Data {
         mj_energy_vel(model, self);
         mj_fwd_passive(model, self);
         mj_fwd_constraint(model, self);
-        mj_fwd_acceleration(model, self)?;
+        // Newton solver computes qacc directly — skip mj_fwd_acceleration (§15.8).
+        if !self.newton_solved {
+            mj_fwd_acceleration(model, self)?;
+        }
         // skip: mj_sensor_acc, mj_sensor_postprocess
 
         Ok(())
@@ -9659,6 +9923,7 @@ const FRICTION_VELOCITY_THRESHOLD: f64 = 1e-12;
 /// linearized into the implicit solve).
 fn mj_fwd_passive(model: &Model, data: &mut Data) {
     data.qfrc_passive.fill(0.0);
+    data.qfrc_frictionloss.fill(0.0);
 
     let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
     let mut visitor = PassiveForceVisitor {
@@ -9697,9 +9962,13 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
         // Always explicit (velocity-sign-dependent, cannot linearize).
         // Uses tanh approximation matching the joint friction pattern.
         let fl = model.tendon_frictionloss[t];
+        let fl_force;
         if fl > 0.0 && velocity.abs() > FRICTION_VELOCITY_THRESHOLD {
             let smooth_sign = (velocity * model.friction_smoothing).tanh();
-            force -= fl * smooth_sign;
+            fl_force = fl * smooth_sign;
+            force -= fl_force;
+        } else {
+            fl_force = 0.0;
         }
 
         data.ten_force[t] = force;
@@ -9713,6 +9982,18 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
                 t,
                 force,
                 &mut data.qfrc_passive,
+            );
+        }
+
+        // Also accumulate friction loss component separately for Newton solver (§15.0).
+        if fl_force != 0.0 {
+            apply_tendon_force(
+                model,
+                &data.ten_J[t],
+                model.tendon_type[t],
+                t,
+                -fl_force,
+                &mut data.qfrc_frictionloss,
             );
         }
     }
@@ -9734,7 +10015,9 @@ impl PassiveForceVisitor<'_> {
         let frictionloss = self.model.dof_frictionloss[dof_idx];
         if frictionloss > 0.0 && qvel.abs() > FRICTION_VELOCITY_THRESHOLD {
             let smooth_sign = (qvel * self.model.friction_smoothing).tanh();
-            self.data.qfrc_passive[dof_idx] -= frictionloss * smooth_sign;
+            let fl_force = frictionloss * smooth_sign;
+            self.data.qfrc_passive[dof_idx] -= fl_force;
+            self.data.qfrc_frictionloss[dof_idx] -= fl_force;
         }
     }
 
@@ -11273,6 +11556,2605 @@ fn quaternion_to_axis_angle(quat: &UnitQuaternion<f64>) -> Vector3<f64> {
     Vector3::new(qx, qy, qz) * (angle / sin_half_angle)
 }
 
+// =============================================================================
+// Newton Solver: KBIP, diagApprox, Regularization (§15.1, Step 6)
+// =============================================================================
+
+/// Minimum value to prevent division by zero (matches MuJoCo's mjMINVAL).
+const MJ_MINVAL: f64 = 1e-15;
+
+/// Compute KBIP stiffness K and damping B from solref parameters (§15.1).
+///
+/// Returns `(K, B)` where:
+/// - Standard mode (solref[0] > 0):
+///   - K = 1/(dmax²·timeconst²·dampratio²)
+///   - B = 2/(dmax·timeconst)          when dampratio > 0
+///   - B = -dampratio/dmax             when dampratio ≤ 0
+/// - Direct mode (solref[0] ≤ 0): K = -solref[0]/dmax², B = -solref[1]/dmax
+///
+/// `dmax` = solimp[1] (clamped to [mjMINIMP, mjMAXIMP]).
+/// Matches MuJoCo's `mj_makeImpedance` in `engine_core_constraint.c`.
+fn compute_kbip(solref: [f64; 2], solimp: [f64; 5]) -> (f64, f64) {
+    const MJ_MIN_IMP: f64 = 0.0001;
+    const MJ_MAX_IMP: f64 = 0.9999;
+
+    let dmax = solimp[1].clamp(MJ_MIN_IMP, MJ_MAX_IMP);
+
+    if solref[0] > 0.0 {
+        // Standard mode: solref = [timeconst, dampratio]
+        let timeconst = solref[0];
+        let dampratio = solref[1];
+
+        let k = 1.0 / (dmax * dmax * timeconst * timeconst * dampratio * dampratio).max(MJ_MINVAL);
+        let b = if dampratio > 0.0 {
+            2.0 / (dmax * timeconst).max(MJ_MINVAL)
+        } else {
+            -dampratio / dmax.max(MJ_MINVAL)
+        };
+        (k, b)
+    } else {
+        // Direct mode: solref = [-stiffness, -damping]
+        let k = -solref[0] / (dmax * dmax).max(MJ_MINVAL);
+        let b = -solref[1] / dmax.max(MJ_MINVAL);
+        (k, b)
+    }
+}
+
+/// Compute reference acceleration aref for a single constraint row (§15.1).
+///
+/// `aref = -B * vel - K * imp * (pos - margin)`
+///
+/// This is the MuJoCo KBIP convention where impedance multiplies only the
+/// position term, NOT the velocity term.
+#[inline]
+fn compute_aref(k: f64, b: f64, imp: f64, pos: f64, margin: f64, vel: f64) -> f64 {
+    -b * vel - k * imp * (pos - margin)
+}
+
+/// Compute exact diagonal approximation of A = J·M⁻¹·J^T for one row (§15.12 step 2).
+///
+/// Solves M·w = J_i^T via the sparse LDL factorization, then computes
+/// diagApprox_i = J_i · w (one dot product). O(nv) per row.
+///
+/// Falls back to dense Cholesky if sparse factorization is not valid.
+fn compute_diag_approx_exact(j_row: &[f64], nv: usize, model: &Model, data: &Data) -> f64 {
+    // Solve M * w = J_row^T
+    let mut w = DVector::zeros(nv);
+    for i in 0..nv {
+        w[i] = j_row[i];
+    }
+
+    if data.qLD_valid {
+        // Use sparse LDL: forward/back substitution
+        mj_solve_sparse_vec(model, data, &mut w);
+    } else {
+        // Fallback: use dense M and solve via Cholesky
+        // Build a copy of qM and factor it
+        let mut m_copy = data.qM.clone();
+        // Cholesky failure means M is singular; w will be approximate.
+        // The Newton solver detects and handles this via PGS fallback.
+        if cholesky_in_place(&mut m_copy).is_err() {
+            return MJ_MINVAL;
+        }
+        cholesky_solve_in_place(&m_copy, &mut w);
+    }
+
+    // diagApprox = J_row · w = J_row · M⁻¹ · J_row^T
+    let mut result = 0.0;
+    for i in 0..nv {
+        result += j_row[i] * w[i];
+    }
+    result.max(MJ_MINVAL)
+}
+
+/// Solve M·x = b using the sparse LDL factorization (in-place).
+///
+/// Forward substitution: L^T · z = b, then D · y = z, then L · x = y.
+/// Matches the tree-sparse structure from mj_factor_sparse.
+fn mj_solve_sparse_vec(model: &Model, data: &Data, x: &mut DVector<f64>) {
+    let nv = model.nv;
+
+    // Forward substitution: solve L^T * z = x (L is unit lower triangular)
+    // Process from leaves to root (high index to low)
+    for i in (0..nv).rev() {
+        for &(col, val) in &data.qLD_L[i] {
+            x[col] -= val * x[i];
+        }
+    }
+
+    // Diagonal solve: z = z / D
+    for i in 0..nv {
+        if data.qLD_diag[i].abs() > MJ_MINVAL {
+            x[i] /= data.qLD_diag[i];
+        }
+    }
+
+    // Back substitution: solve L * x = z
+    // Process from root to leaves (low index to high)
+    for i in 0..nv {
+        for &(col, val) in &data.qLD_L[i] {
+            x[i] -= val * x[col];
+        }
+    }
+}
+
+/// Compute regularization R and constraint stiffness D from impedance and diagApprox (§15.1).
+///
+/// R = max(mjMINVAL, (1 - imp) / imp * diagApprox)
+/// D = 1 / R
+#[inline]
+fn compute_regularization(imp: f64, diag_approx: f64) -> (f64, f64) {
+    let r = ((1.0 - imp) / imp * diag_approx).max(MJ_MINVAL);
+    let d = 1.0 / r;
+    (r, d)
+}
+
+// =============================================================================
+// Unified Constraint Assembly (§15, Step 7)
+// =============================================================================
+
+/// Assemble the unified constraint Jacobian and metadata for the Newton solver.
+///
+/// Populates all `efc_*` fields on Data. Row ordering:
+/// 1. Equality constraints (connect, weld, joint, distance)
+/// 2. DOF friction loss
+/// 3. Tendon friction loss
+/// 4. Joint limits (potentially active only)
+/// 5. Tendon limits (potentially active only)
+/// 6. Contacts
+///
+/// `qacc_smooth` is the unconstrained acceleration (M⁻¹ · qfrc_smooth), needed for efc_b.
+fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DVector<f64>) {
+    let nv = model.nv;
+
+    // === Phase 1: Count rows ===
+    let mut nefc = 0usize;
+
+    // Equality constraints
+    for eq_id in 0..model.neq {
+        if !model.eq_active[eq_id] {
+            continue;
+        }
+        nefc += match model.eq_type[eq_id] {
+            EqualityType::Connect => 3,
+            EqualityType::Weld => 6,
+            EqualityType::Joint | EqualityType::Distance => 1,
+            EqualityType::Tendon => 0, // Not yet implemented
+        };
+    }
+
+    // DOF friction loss
+    for dof_idx in 0..nv {
+        if model.dof_frictionloss[dof_idx] > 0.0 {
+            nefc += 1;
+        }
+    }
+
+    // Tendon friction loss
+    for t in 0..model.ntendon {
+        if model.tendon_frictionloss[t] > 0.0 {
+            nefc += 1;
+        }
+    }
+
+    // Joint limits (MuJoCo convention: dist < 0 means violated)
+    for jnt_id in 0..model.njnt {
+        if !model.jnt_limited[jnt_id] {
+            continue;
+        }
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge | MjJointType::Slide => {
+                let (limit_min, limit_max) = model.jnt_range[jnt_id];
+                let q = data.qpos[model.jnt_qpos_adr[jnt_id]];
+                // Lower limit: dist = q - limit_min (negative when violated)
+                if q - limit_min < 0.0 {
+                    nefc += 1;
+                }
+                // Upper limit: dist = limit_max - q (negative when violated)
+                if limit_max - q < 0.0 {
+                    nefc += 1;
+                }
+            }
+            _ => {} // Ball/Free limits not implemented
+        }
+    }
+
+    // Tendon limits (MuJoCo convention: dist < 0 means violated)
+    for t in 0..model.ntendon {
+        if !model.tendon_limited[t] {
+            continue;
+        }
+        let (limit_min, limit_max) = model.tendon_range[t];
+        let length = data.ten_length[t];
+        // Lower tendon limit: dist = length - limit_min (negative when too short)
+        if length - limit_min < 0.0 {
+            nefc += 1;
+        }
+        // Upper tendon limit: dist = limit_max - length (negative when too long)
+        if limit_max - length < 0.0 {
+            nefc += 1;
+        }
+    }
+
+    // Contacts
+    for c in &data.contacts {
+        nefc += c.dim;
+    }
+
+    // === Phase 2: Allocate ===
+    data.efc_J = DMatrix::zeros(nefc, nv);
+    data.efc_type = Vec::with_capacity(nefc);
+    data.efc_pos = Vec::with_capacity(nefc);
+    data.efc_margin = Vec::with_capacity(nefc);
+    data.efc_vel = DVector::zeros(nefc);
+    data.efc_solref = Vec::with_capacity(nefc);
+    data.efc_solimp = Vec::with_capacity(nefc);
+    data.efc_diagApprox = Vec::with_capacity(nefc);
+    data.efc_R = Vec::with_capacity(nefc);
+    data.efc_D = Vec::with_capacity(nefc);
+    data.efc_imp = Vec::with_capacity(nefc);
+    data.efc_aref = DVector::zeros(nefc);
+    data.efc_floss = Vec::with_capacity(nefc);
+    data.efc_mu = Vec::with_capacity(nefc);
+    data.efc_dim = Vec::with_capacity(nefc);
+    data.efc_id = Vec::with_capacity(nefc);
+    data.efc_state = vec![ConstraintState::Quadratic; nefc];
+    data.efc_force = DVector::zeros(nefc);
+    data.efc_jar = DVector::zeros(nefc);
+    data.efc_b = DVector::zeros(nefc);
+    data.efc_cone_hessian = vec![None; data.contacts.len()];
+    data.ncone = 0;
+
+    let mut row = 0usize;
+
+    // Helper: populate per-row metadata and compute impedance, KBIP, aref, diagApprox, R, D.
+    // Must be called for each row after J row and pos/vel/margin are set.
+    macro_rules! finalize_row {
+        ($solref:expr, $solimp:expr, $pos:expr, $margin:expr, $vel:expr, $floss:expr,
+         $ctype:expr, $dim_val:expr, $id_val:expr, $mu_val:expr) => {{
+            let sr: [f64; 2] = $solref;
+            let si: [f64; 5] = $solimp;
+            let pos_val: f64 = $pos;
+            let margin_val: f64 = $margin;
+            let vel_val: f64 = $vel;
+            let floss_val: f64 = $floss;
+
+            data.efc_type.push($ctype);
+            data.efc_pos.push(pos_val);
+            data.efc_margin.push(margin_val);
+            data.efc_vel[row] = vel_val;
+            data.efc_solref.push(sr);
+            data.efc_solimp.push(si);
+            data.efc_floss.push(floss_val);
+            data.efc_mu.push($mu_val);
+            data.efc_dim.push($dim_val);
+            data.efc_id.push($id_val);
+
+            // Impedance
+            let violation = (pos_val - margin_val).abs();
+            let imp = compute_impedance(si, violation);
+            data.efc_imp.push(imp);
+
+            // diagApprox (exact diagonal via M⁻¹ solve)
+            let j_row_slice: Vec<f64> = (0..nv).map(|col| data.efc_J[(row, col)]).collect();
+            let diag = compute_diag_approx_exact(&j_row_slice, nv, model, data);
+            data.efc_diagApprox.push(diag);
+
+            // Regularization
+            let (r_val, d_val) = compute_regularization(imp, diag);
+            data.efc_R.push(r_val);
+            data.efc_D.push(d_val);
+
+            // KBIP + aref
+            let (k, b) = compute_kbip(sr, si);
+            data.efc_aref[row] = compute_aref(k, b, imp, pos_val, margin_val, vel_val);
+
+            // efc_b = J_row · qacc_smooth - aref
+            let mut j_dot_qacc = 0.0;
+            for col in 0..nv {
+                j_dot_qacc += data.efc_J[(row, col)] * qacc_smooth[col];
+            }
+            data.efc_b[row] = j_dot_qacc - data.efc_aref[row];
+
+            row += 1;
+        }};
+    }
+
+    // === Phase 3: Populate rows ===
+
+    // --- 3a: Equality constraints ---
+    for eq_id in 0..model.neq {
+        if !model.eq_active[eq_id] {
+            continue;
+        }
+
+        let rows = match model.eq_type[eq_id] {
+            EqualityType::Connect => extract_connect_jacobian(model, data, eq_id),
+            EqualityType::Weld => extract_weld_jacobian(model, data, eq_id),
+            EqualityType::Joint => extract_joint_equality_jacobian(model, data, eq_id),
+            EqualityType::Distance => extract_distance_jacobian(model, data, eq_id),
+            EqualityType::Tendon => continue,
+        };
+
+        let sr = model.eq_solref[eq_id];
+        let si = model.eq_solimp[eq_id];
+        let nrows = rows.j_rows.nrows();
+
+        for r in 0..nrows {
+            // Copy J row
+            for col in 0..nv {
+                data.efc_J[(row, col)] = rows.j_rows[(r, col)];
+            }
+            finalize_row!(
+                sr,
+                si,
+                rows.pos[r],
+                0.0,
+                rows.vel[r],
+                0.0,
+                ConstraintType::Equality,
+                1,
+                eq_id,
+                [0.0; 5]
+            );
+        }
+    }
+
+    // --- 3b: DOF friction loss ---
+    for dof_idx in 0..nv {
+        let fl = model.dof_frictionloss[dof_idx];
+        if fl <= 0.0 {
+            continue;
+        }
+        // Jacobian: 1×nv with 1.0 at dof_idx
+        data.efc_J[(row, dof_idx)] = 1.0;
+        let vel = data.qvel[dof_idx];
+        finalize_row!(
+            DEFAULT_SOLREF,
+            DEFAULT_SOLIMP,
+            0.0,
+            0.0,
+            vel,
+            fl,
+            ConstraintType::FrictionLoss,
+            1,
+            dof_idx,
+            [0.0; 5]
+        );
+    }
+
+    // --- 3c: Tendon friction loss ---
+    for t in 0..model.ntendon {
+        let fl = model.tendon_frictionloss[t];
+        if fl <= 0.0 {
+            continue;
+        }
+        // Jacobian: tendon Jacobian row
+        for col in 0..nv {
+            data.efc_J[(row, col)] = data.ten_J[t][col];
+        }
+        let vel = data.ten_velocity[t];
+        finalize_row!(
+            DEFAULT_SOLREF,
+            DEFAULT_SOLIMP,
+            0.0,
+            0.0,
+            vel,
+            fl,
+            ConstraintType::FrictionLoss,
+            1,
+            t,
+            [0.0; 5]
+        );
+    }
+
+    // --- 3d: Joint limits ---
+    for jnt_id in 0..model.njnt {
+        if !model.jnt_limited[jnt_id] {
+            continue;
+        }
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge | MjJointType::Slide => {
+                let (limit_min, limit_max) = model.jnt_range[jnt_id];
+                let dof_adr = model.jnt_dof_adr[jnt_id];
+                let q = data.qpos[model.jnt_qpos_adr[jnt_id]];
+                let qdot = data.qvel[dof_adr];
+                let sr = model.jnt_solref[jnt_id];
+                let si = model.jnt_solimp[jnt_id];
+
+                // MuJoCo convention: dist > 0 = satisfied, dist < 0 = violated.
+                // Constraint is instantiated when dist < margin (here margin=0,
+                // so when dist < 0, i.e., limit violated).
+
+                // Lower limit: dist = q - limit_min (negative when q < limit_min)
+                let dist_lower = q - limit_min;
+                if dist_lower < 0.0 {
+                    // J = +1 (MuJoCo: jac = -side, side=-1 → jac=+1)
+                    data.efc_J[(row, dof_adr)] = 1.0;
+                    // pos = dist (negative = violated, MuJoCo convention)
+                    // vel = J*qdot = qdot
+                    finalize_row!(
+                        sr,
+                        si,
+                        dist_lower,
+                        0.0,
+                        qdot,
+                        0.0,
+                        ConstraintType::LimitJoint,
+                        1,
+                        jnt_id,
+                        [0.0; 5]
+                    );
+                }
+
+                // Upper limit: dist = limit_max - q (negative when q > limit_max)
+                let dist_upper = limit_max - q;
+                if dist_upper < 0.0 {
+                    // J = -1 (MuJoCo: jac = -side, side=+1 → jac=-1)
+                    data.efc_J[(row, dof_adr)] = -1.0;
+                    // pos = dist (negative = violated, MuJoCo convention)
+                    // vel = J*qdot = -qdot
+                    finalize_row!(
+                        sr,
+                        si,
+                        dist_upper,
+                        0.0,
+                        -qdot,
+                        0.0,
+                        ConstraintType::LimitJoint,
+                        1,
+                        jnt_id,
+                        [0.0; 5]
+                    );
+                }
+            }
+            _ => {} // Ball/Free limits not implemented
+        }
+    }
+
+    // --- 3e: Tendon limits ---
+    for t in 0..model.ntendon {
+        if !model.tendon_limited[t] {
+            continue;
+        }
+        let (limit_min, limit_max) = model.tendon_range[t];
+        let length = data.ten_length[t];
+        let vel = data.ten_velocity[t];
+        let sr = model.tendon_solref[t];
+        let si = model.tendon_solimp[t];
+
+        // MuJoCo convention: dist > 0 = satisfied, dist < 0 = violated.
+        // Tendon limits follow the same pattern as joint limits.
+
+        // Lower tendon limit: dist = length - limit_min (negative when too short)
+        let dist_lower = length - limit_min;
+        if dist_lower < 0.0 {
+            // J = +ten_J (MuJoCo convention: pushes length up)
+            for col in 0..nv {
+                data.efc_J[(row, col)] = data.ten_J[t][col];
+            }
+            // pos = dist (negative = violated, MuJoCo convention)
+            // vel = J·qdot ≈ ten_velocity
+            finalize_row!(
+                sr,
+                si,
+                dist_lower,
+                0.0,
+                vel,
+                0.0,
+                ConstraintType::LimitTendon,
+                1,
+                t,
+                [0.0; 5]
+            );
+        }
+
+        // Upper tendon limit: dist = limit_max - length (negative when too long)
+        let dist_upper = limit_max - length;
+        if dist_upper < 0.0 {
+            // J = -ten_J (MuJoCo convention: pushes length down)
+            for col in 0..nv {
+                data.efc_J[(row, col)] = -data.ten_J[t][col];
+            }
+            // pos = dist (negative = violated, MuJoCo convention)
+            // vel = -ten_velocity
+            finalize_row!(
+                sr,
+                si,
+                dist_upper,
+                0.0,
+                -vel,
+                0.0,
+                ConstraintType::LimitTendon,
+                1,
+                t,
+                [0.0; 5]
+            );
+        }
+    }
+
+    // --- 3f: Contacts ---
+    let contacts = data.contacts.clone(); // Clone to avoid borrow conflict
+    for (ci, contact) in contacts.iter().enumerate() {
+        let dim = contact.dim;
+        let cj = compute_contact_jacobian(model, data, contact);
+
+        let sr = contact.solref;
+        let si = contact.solimp;
+        // Contact margin is 0.0 for now — margin/gap not yet applied at contact creation
+        // (see line 4876 note). When non-zero geom_margin is supported, subtract it here.
+        let margin = 0.0_f64;
+        let is_elliptic = dim >= 3 && model.cone == 1 && contact.mu[0] >= 1e-10;
+        let ctype = if is_elliptic {
+            ConstraintType::ContactElliptic
+        } else {
+            ConstraintType::ContactNonElliptic
+        };
+
+        for r in 0..dim {
+            for col in 0..nv {
+                data.efc_J[(row, col)] = cj[(r, col)];
+            }
+
+            // pos: row 0 = penetration depth, rows 1+ = 0
+            let pos = if r == 0 { contact.depth } else { 0.0 };
+            let margin_r = if r == 0 { margin } else { 0.0 };
+
+            // vel: J_row · qvel
+            let mut vel = 0.0;
+            for col in 0..nv {
+                vel += cj[(r, col)] * data.qvel[col];
+            }
+
+            finalize_row!(sr, si, pos, margin_r, vel, 0.0, ctype, dim, ci, contact.mu);
+        }
+    }
+
+    debug_assert_eq!(row, nefc, "Row count mismatch in constraint assembly");
+    data.efc_cost = 0.0;
+}
+
+/// Classify constraint states, compute forces, and evaluate total cost.
+///
+/// Implements PrimalUpdateConstraint from §15.1:
+/// - Per-row state machine (Quadratic, Satisfied, LinearNeg, LinearPos, Cone)
+/// - Force computation from state
+/// - Total cost = Gauss term + constraint penalties
+///
+/// # Arguments
+/// * `model` - Model with solver parameters
+/// * `data` - Data with efc_* arrays (modified: efc_state, efc_force, efc_cost)
+/// * `qacc` - Current acceleration estimate
+/// * `qacc_smooth` - Unconstrained smooth acceleration (M⁻¹ · qfrc_smooth)
+/// * `qfrc_smooth` - Smooth force (excluding friction loss)
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::many_single_char_names)]
+fn classify_constraint_states(
+    model: &Model,
+    data: &mut Data,
+    qacc: &DVector<f64>,
+    qacc_smooth: &DVector<f64>,
+    qfrc_smooth: &DVector<f64>,
+) {
+    let nv = model.nv;
+    let nefc = data.efc_type.len();
+
+    // Reset cone Hessian tracking for this classification pass
+    data.ncone = 0;
+    for hc in &mut data.efc_cone_hessian {
+        *hc = None;
+    }
+
+    // Compute jar = J · qacc - aref for all rows
+    for i in 0..nefc {
+        let mut j_dot_qacc = 0.0;
+        for col in 0..nv {
+            j_dot_qacc += data.efc_J[(i, col)] * qacc[col];
+        }
+        data.efc_jar[i] = j_dot_qacc - data.efc_aref[i];
+    }
+
+    // Compute Ma = M · qacc
+    let mut ma = DVector::<f64>::zeros(nv);
+    for row_idx in 0..nv {
+        for col_idx in 0..nv {
+            ma[row_idx] += data.qM[(row_idx, col_idx)] * qacc[col_idx];
+        }
+    }
+
+    // Classify each row and compute forces
+    let mut constraint_cost = 0.0;
+    let mut i = 0;
+    while i < nefc {
+        let ctype = data.efc_type[i];
+        let jar = data.efc_jar[i];
+        let d = data.efc_D[i];
+        let r = data.efc_R[i];
+
+        match ctype {
+            ConstraintType::Equality => {
+                // Always Quadratic
+                data.efc_state[i] = ConstraintState::Quadratic;
+                data.efc_force[i] = -d * jar;
+                constraint_cost += 0.5 * d * jar * jar;
+                i += 1;
+            }
+
+            ConstraintType::FrictionLoss => {
+                // Huber threshold at ±R·floss
+                let floss = data.efc_floss[i];
+                let threshold = r * floss;
+                if jar >= threshold {
+                    // LinearPos
+                    data.efc_state[i] = ConstraintState::LinearPos;
+                    data.efc_force[i] = -floss;
+                    constraint_cost += floss * jar - 0.5 * r * floss * floss;
+                } else if jar <= -threshold {
+                    // LinearNeg
+                    data.efc_state[i] = ConstraintState::LinearNeg;
+                    data.efc_force[i] = floss;
+                    constraint_cost += -floss * jar - 0.5 * r * floss * floss;
+                } else {
+                    // Quadratic
+                    data.efc_state[i] = ConstraintState::Quadratic;
+                    data.efc_force[i] = -d * jar;
+                    constraint_cost += 0.5 * d * jar * jar;
+                }
+                i += 1;
+            }
+
+            ConstraintType::LimitJoint
+            | ConstraintType::LimitTendon
+            | ConstraintType::ContactNonElliptic => {
+                // jar < 0 → Quadratic; jar >= 0 → Satisfied
+                if jar < 0.0 {
+                    data.efc_state[i] = ConstraintState::Quadratic;
+                    data.efc_force[i] = -d * jar;
+                    constraint_cost += 0.5 * d * jar * jar;
+                } else {
+                    data.efc_state[i] = ConstraintState::Satisfied;
+                    data.efc_force[i] = 0.0;
+                }
+                i += 1;
+            }
+
+            ConstraintType::ContactElliptic => {
+                // Three-zone classification over all dim rows
+                let dim = data.efc_dim[i];
+                let mu = data.efc_mu[i][0]; // Primary friction coefficient
+
+                // Compute U vector and N, T
+                // U[0] = jar[i] · μ (normal, scaled)
+                // U[j] = jar[i+j] · friction[j-1]  for j = 1..dim-1
+                // friction[j-1] = mu[j-1] from the 5-element mu array
+                let u0 = data.efc_jar[i] * mu;
+                let n = u0;
+
+                let mut t_sq = 0.0;
+                for j in 1..dim {
+                    let friction_j = data.efc_mu[i][j - 1]; // mu[j-1]
+                    let uj = data.efc_jar[i + j] * friction_j;
+                    t_sq += uj * uj;
+                }
+                let t = t_sq.sqrt();
+
+                let t_min = MJ_MINVAL; // 1e-15
+
+                // Three-zone classification
+                if n >= mu * t || (t < t_min && n >= 0.0) {
+                    // Top (separated) → Satisfied
+                    for j in 0..dim {
+                        data.efc_state[i + j] = ConstraintState::Satisfied;
+                        data.efc_force[i + j] = 0.0;
+                    }
+                } else if mu * n + t <= 0.0 || (t < t_min && n < 0.0) {
+                    // Bottom (fully active) → Quadratic, per-row
+                    for j in 0..dim {
+                        let jar_j = data.efc_jar[i + j];
+                        let d_j = data.efc_D[i + j];
+                        data.efc_state[i + j] = ConstraintState::Quadratic;
+                        data.efc_force[i + j] = -d_j * jar_j;
+                        constraint_cost += 0.5 * d_j * jar_j * jar_j;
+                    }
+                } else {
+                    // Middle (cone surface) → Cone state
+                    let d_normal = data.efc_D[i];
+                    let dm = d_normal / (mu * mu * (1.0 + mu * mu));
+                    let n_minus_mu_t = n - mu * t;
+
+                    // Cost: ½·Dm·(N − μ·T)²
+                    constraint_cost += 0.5 * dm * n_minus_mu_t * n_minus_mu_t;
+
+                    // Forces:
+                    // f[i]   = −Dm · NmT · μ  (normal force)
+                    // f[i+j] = (Dm · NmT · μ / T) · U[j] · friction[j−1]  for j = 1..dim-1
+                    let f_normal = -dm * n_minus_mu_t * mu;
+                    data.efc_force[i] = f_normal;
+
+                    for j in 1..dim {
+                        let friction_j = data.efc_mu[i][j - 1];
+                        let uj = data.efc_jar[i + j] * friction_j;
+                        data.efc_force[i + j] = (dm * n_minus_mu_t * mu / t) * uj * friction_j;
+                    }
+
+                    // Replicate Cone state to all dim rows
+                    for j in 0..dim {
+                        data.efc_state[i + j] = ConstraintState::Cone;
+                    }
+
+                    // Build per-contact cone Hessian H_c (dim × dim)
+                    // MuJoCo formula: H_raw then scale by diag(mu, friction) · Dm
+                    let ci = data.efc_id[i]; // contact index
+                    let t_safe = t.max(MJ_MINVAL);
+                    let mut hc = DMatrix::<f64>::zeros(dim, dim);
+
+                    // H_raw[0,0] = 1
+                    hc[(0, 0)] = 1.0;
+
+                    // Compute U vector (scaled jar)
+                    let mut u_vec = vec![0.0_f64; dim];
+                    u_vec[0] = u0; // jar[i] * mu
+                    for j in 1..dim {
+                        let friction_j = data.efc_mu[i][j - 1];
+                        u_vec[j] = data.efc_jar[i + j] * friction_j;
+                    }
+
+                    // H_raw[0,j] = -mu * U[j] / T  for j >= 1
+                    // H_raw[j,0] = H_raw[0,j]  (symmetric)
+                    for j in 1..dim {
+                        let val = -mu * u_vec[j] / t_safe;
+                        hc[(0, j)] = val;
+                        hc[(j, 0)] = val;
+                    }
+
+                    // H_raw[k,j] = mu * N / T³ * U[k] * U[j]  for k,j >= 1
+                    // diagonal: += mu² - mu * N / T
+                    for k in 1..dim {
+                        for j in 1..dim {
+                            hc[(k, j)] = mu * n / (t_safe * t_safe * t_safe) * u_vec[k] * u_vec[j];
+                        }
+                        hc[(k, k)] += mu * mu - mu * n / t_safe;
+                    }
+
+                    // Scale: H = diag(mu, friction[0..]) · H_raw · diag(mu, friction[0..]) · Dm
+                    // Build scale vector
+                    let mut scale = vec![0.0_f64; dim];
+                    scale[0] = mu;
+                    scale[1..dim].copy_from_slice(&data.efc_mu[i][..(dim - 1)]);
+                    // Apply: H[k,j] *= scale[k] * scale[j] * dm
+                    for k in 0..dim {
+                        for j in 0..dim {
+                            hc[(k, j)] *= scale[k] * scale[j] * dm;
+                        }
+                    }
+
+                    data.efc_cone_hessian[ci] = Some(hc);
+                    data.ncone += 1;
+                }
+                i += dim;
+            }
+        }
+    }
+
+    // Gauss term: ½·(Ma − qfrc_smooth)·(qacc − qacc_smooth)
+    let mut cost_gauss = 0.0;
+    for k in 0..nv {
+        cost_gauss += (ma[k] - qfrc_smooth[k]) * (qacc[k] - qacc_smooth[k]);
+    }
+    cost_gauss *= 0.5;
+
+    data.efc_cost = cost_gauss + constraint_cost;
+}
+
+/// Assemble the Newton Hessian and factor via Cholesky.
+///
+/// Phase A: H = M + Σ_{Quadratic rows} D_i · J_i^T · J_i
+/// (No cone Hessian in Phase A — cone rows are treated as Quadratic per-row.)
+///
+/// Returns the Cholesky factor L (lower triangular) such that H = L · L^T,
+/// or an error if the Hessian is not positive definite.
+fn assemble_hessian(data: &Data, nv: usize) -> Result<DMatrix<f64>, StepError> {
+    let nefc = data.efc_type.len();
+
+    // Start with mass matrix
+    let mut h = DMatrix::<f64>::zeros(nv, nv);
+    for r in 0..nv {
+        for c in 0..nv {
+            h[(r, c)] = data.qM[(r, c)];
+        }
+    }
+
+    // Add Σ_{Quadratic rows} D_i · J_i^T · J_i
+    for i in 0..nefc {
+        if data.efc_state[i] != ConstraintState::Quadratic {
+            continue;
+        }
+        let d_i = data.efc_D[i];
+        // Rank-1 update: H += D_i · j_i · j_i^T
+        for r in 0..nv {
+            let j_r = data.efc_J[(i, r)];
+            if j_r == 0.0 {
+                continue;
+            }
+            let d_j_r = d_i * j_r;
+            for c in r..nv {
+                let j_c = data.efc_J[(i, c)];
+                if j_c == 0.0 {
+                    continue;
+                }
+                let val = d_j_r * j_c;
+                h[(r, c)] += val;
+                if r != c {
+                    h[(c, r)] += val;
+                }
+            }
+        }
+    }
+
+    // Cholesky factorize in-place
+    cholesky_in_place(&mut h)?;
+    Ok(h)
+}
+
+// ============================================================================
+// Sparse Hessian path (Phase C): for large systems (nv > NV_SPARSE_THRESHOLD)
+// ============================================================================
+
+/// DOF count above which Newton switches from dense O(nv³) Cholesky to
+/// sparse LDL^T. At nv ≈ 60, sparse becomes competitive with dense.
+const NV_SPARSE_THRESHOLD: usize = 60;
+
+/// Sparse Hessian H = M + J^T·D·J in CSC lower-triangle format with
+/// cached symbolic/numeric LDL^T factorization.
+///
+/// The sparsity pattern comes from:
+/// - M: tree sparsity via `dof_parent` (entry (i,j) iff j is ancestor of i)
+/// - J^T·D·J: couples DOFs that share constraint rows
+///
+/// Symbolic factorization (elimination tree + L structure) is computed once
+/// per `assemble` call. Numeric factorization is recomputed each Newton
+/// iteration via `factor()`. Solve is forward/diagonal/back substitution.
+struct SparseHessian {
+    nv: usize,
+    /// CSC column pointers for lower triangle of H (length nv+1).
+    col_ptr: Vec<usize>,
+    /// CSC row indices (length nnz). Sorted within each column.
+    row_idx: Vec<usize>,
+    /// CSC values (length nnz).
+    vals: Vec<f64>,
+    /// Elimination tree: parent[j] = parent of column j in etree, or None for root.
+    etree: Vec<Option<usize>>,
+    /// CSC column pointers for L factor (length nv+1).
+    l_col_ptr: Vec<usize>,
+    /// CSC row indices for L factor.
+    l_row_idx: Vec<usize>,
+    /// Numeric values of L factor (unit lower triangular: L[j,j] = 1, not stored).
+    l_vals: Vec<f64>,
+    /// Diagonal D from LDL^T factorization (length nv).
+    l_diag: Vec<f64>,
+}
+
+impl SparseHessian {
+    /// Build the sparse Hessian from Model/Data. Computes:
+    /// 1. Sparsity pattern of H = M + J^T·D·J (CSC lower triangle)
+    /// 2. Numeric values
+    /// 3. Symbolic factorization (elimination tree + L structure)
+    /// 4. Numeric LDL^T factorization
+    fn assemble(model: &Model, data: &Data, nv: usize) -> Result<Self, StepError> {
+        let nefc = data.efc_type.len();
+
+        // --- Step 1: Determine sparsity pattern ---
+        // Use a dense boolean mask per column (acceptable since this is O(nv²) and
+        // we only enter the sparse path when nv > 60 where this is ~3600 entries).
+        let mut has_entry = vec![vec![false; nv]; nv]; // has_entry[col][row], row >= col
+
+        // M sparsity: tree structure from dof_parent
+        for i in 0..nv {
+            has_entry[i][i] = true; // diagonal always present
+            let mut p = model.dof_parent[i];
+            while let Some(j) = p {
+                // M[i,j] is non-zero (j < i since j is ancestor)
+                has_entry[j][i] = true; // lower triangle: row=i, col=j
+                p = model.dof_parent[j];
+            }
+        }
+
+        // J^T·D·J sparsity: for each Quadratic constraint row, the outer product
+        // of its non-zero J entries determines fill. We conservatively include all
+        // non-zero pairs.
+        for r in 0..nefc {
+            if data.efc_state[r] != ConstraintState::Quadratic {
+                continue;
+            }
+            // Collect non-zero column indices in this J row
+            let mut nz_cols: Vec<usize> = Vec::new();
+            for col in 0..nv {
+                if data.efc_J[(r, col)] != 0.0 {
+                    nz_cols.push(col);
+                }
+            }
+            // Mark all pairs (lower triangle)
+            for &ci in &nz_cols {
+                for &cj in &nz_cols {
+                    let (lo, hi) = if ci <= cj { (ci, cj) } else { (cj, ci) };
+                    has_entry[lo][hi] = true;
+                }
+            }
+        }
+
+        // --- Step 2: Build CSC arrays ---
+        let mut col_ptr = vec![0usize; nv + 1];
+        let mut row_idx_vec = Vec::new();
+        let mut vals_vec = Vec::new();
+
+        for col in 0..nv {
+            col_ptr[col] = row_idx_vec.len();
+            for row in col..nv {
+                if has_entry[col][row] {
+                    row_idx_vec.push(row);
+                    vals_vec.push(0.0); // will be filled in fill_numeric
+                }
+            }
+        }
+        col_ptr[nv] = row_idx_vec.len();
+
+        let mut h = Self {
+            nv,
+            col_ptr,
+            row_idx: row_idx_vec,
+            vals: vals_vec,
+            etree: vec![None; nv],
+            l_col_ptr: vec![0; nv + 1],
+            l_row_idx: Vec::new(),
+            l_vals: Vec::new(),
+            l_diag: vec![0.0; nv],
+        };
+
+        // --- Step 3: Fill numeric values ---
+        h.fill_numeric(model, data, nv, nefc);
+
+        // --- Step 4: Symbolic factorization ---
+        h.symbolic_factor();
+
+        // --- Step 5: Numeric factorization ---
+        h.numeric_factor()?;
+
+        Ok(h)
+    }
+
+    /// Refactor with updated numeric values (same sparsity pattern).
+    /// Used when constraint states change but sparsity doesn't.
+    fn refactor(&mut self, model: &Model, data: &Data) -> Result<(), StepError> {
+        let nv = self.nv;
+        let nefc = data.efc_type.len();
+        self.fill_numeric(model, data, nv, nefc);
+        self.numeric_factor()
+    }
+
+    /// Fill CSC values with H = M + Σ_{Quadratic} D_i · J_i^T · J_i.
+    fn fill_numeric(&mut self, model: &Model, data: &Data, nv: usize, nefc: usize) {
+        // Zero all values
+        self.vals.iter_mut().for_each(|v| *v = 0.0);
+
+        // Add M using tree sparsity: only walk (i, ancestor) pairs via dof_parent.
+        // This is O(nv · depth) instead of O(nv²) — much cheaper for tree-structured
+        // robots where depth << nv.
+        for i in 0..nv {
+            // Diagonal
+            if let Some(idx) = self.find_entry(i, i) {
+                self.vals[idx] += data.qM[(i, i)];
+            }
+            // Off-diagonal: walk ancestors
+            let mut p = model.dof_parent[i];
+            while let Some(j) = p {
+                // M[i,j] non-zero, j < i (ancestor). Store in lower triangle: col=j, row=i.
+                let m_val = data.qM[(i, j)];
+                if let Some(idx) = self.find_entry(j, i) {
+                    self.vals[idx] += m_val;
+                }
+                p = model.dof_parent[j];
+            }
+        }
+
+        // Add J^T · D · J for Quadratic rows.
+        // Cache non-zero column indices per constraint row to avoid O(nv) scans
+        // in the inner loop — reduces J^T·D·J fill from O(nefc·nv²) to
+        // O(nefc·nnz_per_row²) where nnz_per_row is typically << nv.
+        for r in 0..nefc {
+            if data.efc_state[r] != ConstraintState::Quadratic {
+                continue;
+            }
+            let d_r = data.efc_D[r];
+            // Collect non-zero columns for this J row
+            let mut nz_cols: Vec<(usize, f64)> = Vec::new();
+            for col in 0..nv {
+                let j_val = data.efc_J[(r, col)];
+                if j_val != 0.0 {
+                    nz_cols.push((col, j_val));
+                }
+            }
+            // Outer product over non-zero pairs only
+            for (ai, &(col_a, j_a)) in nz_cols.iter().enumerate() {
+                let d_j_a = d_r * j_a;
+                for &(col_b, j_b) in &nz_cols[ai..] {
+                    // Lower triangle: col_b >= col_a
+                    if let Some(idx) = self.find_entry(col_a, col_b) {
+                        self.vals[idx] += d_j_a * j_b;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Find the CSC index for entry (col, row) where row >= col.
+    fn find_entry(&self, col: usize, row: usize) -> Option<usize> {
+        let start = self.col_ptr[col];
+        let end = self.col_ptr[col + 1];
+        // Binary search in the sorted row indices for this column
+        self.row_idx[start..end]
+            .binary_search(&row)
+            .ok()
+            .map(|offset| start + offset)
+    }
+
+    /// Compute elimination tree from the CSC sparsity pattern.
+    /// etree[j] = min { i > j : L[i,j] != 0 }, which equals the first
+    /// off-diagonal non-zero row in column j of L.
+    ///
+    /// Also computes the symbolic structure of L (l_col_ptr, l_row_idx).
+    fn symbolic_factor(&mut self) {
+        let n = self.nv;
+
+        // Compute elimination tree using the Liu algorithm:
+        // For each column j, the row indices of H below the diagonal determine
+        // which columns will have fill in L. The parent of j in the etree is
+        // the first row index > j that appears in column j of H or through
+        // fill propagation.
+        let mut parent = vec![None; n];
+        let mut ancestor = vec![0usize; n]; // path-compressed ancestor
+
+        for j in 0..n {
+            ancestor[j] = j;
+            let start = self.col_ptr[j];
+            let end = self.col_ptr[j + 1];
+            for k in start..end {
+                let i = self.row_idx[k];
+                if i <= j {
+                    continue;
+                }
+                // Walk up the etree from i using path compression
+                let mut r = i;
+                while ancestor[r] != r && ancestor[r] != j {
+                    let next = ancestor[r];
+                    ancestor[r] = j;
+                    r = next;
+                }
+                if ancestor[r] == r {
+                    // r is a root — make j its parent
+                    parent[r] = Some(j);
+                    ancestor[r] = j;
+                }
+            }
+        }
+
+        self.etree = parent;
+
+        // Compute symbolic L structure: for each column j, L has non-zero entries
+        // at all rows that appear in H[:,j] below diagonal, plus fill from the etree.
+        // Use row counts approach: for each column j, collect all row indices in the
+        // subtree of j's column in H, then propagate up the etree.
+        let mut l_row_sets: Vec<Vec<usize>> = vec![Vec::new(); n];
+
+        for j in 0..n {
+            let start = self.col_ptr[j];
+            let end = self.col_ptr[j + 1];
+            for k in start..end {
+                let i = self.row_idx[k];
+                if i > j {
+                    l_row_sets[j].push(i);
+                }
+            }
+        }
+
+        // Propagate fill: for each column j (in order), merge its row set into
+        // parent's row set (excluding j itself, since L[j,j] = 1 implicitly).
+        for j in 0..n {
+            l_row_sets[j].sort_unstable();
+            l_row_sets[j].dedup();
+            if let Some(p) = self.etree[j] {
+                // All rows in L[:,j] that are > p are also in L[:,p]
+                let fill: Vec<usize> = l_row_sets[j].iter().copied().filter(|&r| r > p).collect();
+                // Need to clone to avoid borrow conflict
+                l_row_sets[p].extend(fill);
+            }
+        }
+
+        // Sort and dedup all sets again after propagation
+        for j in 0..n {
+            l_row_sets[j].sort_unstable();
+            l_row_sets[j].dedup();
+        }
+
+        // Build CSC for L
+        let mut l_col_ptr = vec![0usize; n + 1];
+        let mut l_row_idx = Vec::new();
+        for j in 0..n {
+            l_col_ptr[j] = l_row_idx.len();
+            l_row_idx.extend_from_slice(&l_row_sets[j]);
+        }
+        l_col_ptr[n] = l_row_idx.len();
+
+        let l_nnz = l_row_idx.len();
+        self.l_col_ptr = l_col_ptr;
+        self.l_row_idx = l_row_idx;
+        self.l_vals = vec![0.0; l_nnz];
+        self.l_diag = vec![0.0; n];
+    }
+
+    /// Numeric LDL^T factorization.
+    ///
+    /// Computes L (unit lower triangular) and D (diagonal) such that H = L·D·L^T.
+    /// Uses a left-looking approach: for each column j, subtract contributions from
+    /// columns to the left, then scale.
+    fn numeric_factor(&mut self) -> Result<(), StepError> {
+        let n = self.nv;
+
+        // Work arrays
+        let mut y = vec![0.0f64; n]; // dense accumulator for column j of L*D
+        let mut pattern = vec![false; n]; // which rows have non-zero in current column
+
+        for j in 0..n {
+            // Initialize y with column j of H (lower triangle)
+            let h_start = self.col_ptr[j];
+            let h_end = self.col_ptr[j + 1];
+            for k in h_start..h_end {
+                let i = self.row_idx[k];
+                y[i] = self.vals[k];
+                pattern[i] = true;
+            }
+
+            // Subtract contributions from earlier columns that have non-zero in row j
+            // For each column k < j where L[j,k] != 0:
+            //   y[i] -= L[j,k] * D[k] * L[i,k] for all i in L[:,k] with i >= j
+            for k in 0..j {
+                let l_start = self.l_col_ptr[k];
+                let l_end = self.l_col_ptr[k + 1];
+
+                // Find L[j,k] in L[:,k]
+                let mut ljk = 0.0;
+                for p in l_start..l_end {
+                    if self.l_row_idx[p] == j {
+                        ljk = self.l_vals[p];
+                        break;
+                    }
+                    if self.l_row_idx[p] > j {
+                        break; // sorted, so we're past j
+                    }
+                }
+
+                if ljk == 0.0 {
+                    continue;
+                }
+
+                let dk = self.l_diag[k];
+                let ljk_dk = ljk * dk;
+
+                // Subtract from diagonal
+                y[j] -= ljk_dk * ljk;
+
+                // Subtract from below-diagonal entries
+                for p in l_start..l_end {
+                    let i = self.l_row_idx[p];
+                    if i <= j {
+                        continue;
+                    }
+                    y[i] -= ljk_dk * self.l_vals[p];
+                }
+            }
+
+            // Extract D[j] = y[j]
+            let dj = y[j];
+            if dj <= 0.0 {
+                // Clean up work arrays before returning error
+                for k in h_start..h_end {
+                    let i = self.row_idx[k];
+                    y[i] = 0.0;
+                    pattern[i] = false;
+                }
+                return Err(StepError::CholeskyFailed);
+            }
+            self.l_diag[j] = dj;
+            let dj_inv = 1.0 / dj;
+
+            // Extract L[:,j] = y[j+1:] / D[j]
+            let l_start = self.l_col_ptr[j];
+            let l_end = self.l_col_ptr[j + 1];
+            for p in l_start..l_end {
+                let i = self.l_row_idx[p];
+                self.l_vals[p] = y[i] * dj_inv;
+            }
+
+            // Clean up work arrays
+            y[j] = 0.0;
+            pattern[j] = false;
+            for k in h_start..h_end {
+                let i = self.row_idx[k];
+                y[i] = 0.0;
+                pattern[i] = false;
+            }
+            for p in l_start..l_end {
+                let i = self.l_row_idx[p];
+                y[i] = 0.0;
+                pattern[i] = false;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Solve L·D·L^T · x = b in place.
+    fn solve(&self, x: &mut DVector<f64>) {
+        let n = self.nv;
+
+        // Forward substitution: L · y = b
+        // L is unit lower triangular (L[j,j] = 1, not stored)
+        for j in 0..n {
+            let xj = x[j];
+            if xj == 0.0 {
+                continue;
+            }
+            let l_start = self.l_col_ptr[j];
+            let l_end = self.l_col_ptr[j + 1];
+            for p in l_start..l_end {
+                let i = self.l_row_idx[p];
+                x[i] -= self.l_vals[p] * xj;
+            }
+        }
+
+        // Diagonal solve: D · z = y
+        for j in 0..n {
+            x[j] /= self.l_diag[j];
+        }
+
+        // Back substitution: L^T · w = z
+        // L^T is unit upper triangular
+        for j in (0..n).rev() {
+            let l_start = self.l_col_ptr[j];
+            let l_end = self.l_col_ptr[j + 1];
+            for p in l_start..l_end {
+                let i = self.l_row_idx[p];
+                x[j] -= self.l_vals[p] * x[i];
+            }
+        }
+    }
+}
+
+/// Incrementally update the Cholesky factor when constraint states change.
+///
+/// Instead of reassembling the full Hessian and re-factoring, uses rank-1
+/// updates and downdates to modify the existing Cholesky factor L:
+/// - Old state != Quadratic AND new state == Quadratic → rank-1 update (add D_i · J_i^T · J_i)
+/// - Old state == Quadratic AND new state != Quadratic → rank-1 downdate (remove D_i · J_i^T · J_i)
+///
+/// Falls back to full `assemble_hessian` if a downdate fails (would make H non-PD).
+fn hessian_incremental(
+    data: &Data,
+    nv: usize,
+    chol_l: &mut DMatrix<f64>,
+    old_states: &[ConstraintState],
+) -> Result<(), StepError> {
+    let nefc = data.efc_type.len();
+
+    for i in 0..nefc {
+        let old = old_states[i];
+        let new = data.efc_state[i];
+
+        // Skip if state didn't change w.r.t. Quadratic membership
+        let was_quad = old == ConstraintState::Quadratic;
+        let is_quad = new == ConstraintState::Quadratic;
+
+        if was_quad == is_quad {
+            continue;
+        }
+
+        // Build the rank-1 vector: v = sqrt(D_i) * J_i
+        let d_i = data.efc_D[i];
+        let sqrt_d = d_i.sqrt();
+        let mut v = vec![0.0_f64; nv];
+        for col in 0..nv {
+            v[col] = sqrt_d * data.efc_J[(i, col)];
+        }
+
+        if !was_quad && is_quad {
+            // Became Quadratic → update (add contribution)
+            cholesky_rank1_update(chol_l, &mut v)?;
+        } else {
+            // Was Quadratic, now not → downdate (remove contribution)
+            if cholesky_rank1_downdate(chol_l, &mut v).is_err() {
+                // Downdate failed — fall back to full reassembly
+                *chol_l = assemble_hessian(data, nv)?;
+                return Ok(());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Produce L_cone from L by adding cone Hessian contributions via rank-1 updates.
+///
+/// For each cone-state contact with a stored `efc_cone_hessian[ci]`:
+/// 1. Factor the local dim×dim H_c via Cholesky → L_local
+/// 2. For each column k of L_local, build v = L_local[:,k]^T * J_contact (nv vector)
+/// 3. Apply rank-1 update to L_cone with v
+///
+/// Returns the modified Cholesky factor, or falls back to full `assemble_hessian` if
+/// any update fails.
+fn hessian_cone(data: &Data, nv: usize, chol_l: &DMatrix<f64>) -> Result<DMatrix<f64>, StepError> {
+    let mut l_cone = chol_l.clone();
+
+    for (ci, hc_opt) in data.efc_cone_hessian.iter().enumerate() {
+        let hc = match hc_opt {
+            Some(h) => h,
+            None => continue,
+        };
+
+        let dim = hc.nrows();
+
+        // Find the starting efc row for this contact.
+        // Scan efc_id to find the first row with id == ci and type == ContactElliptic.
+        let efc_start = data
+            .efc_id
+            .iter()
+            .position(|&id| id == ci && data.efc_type[id] == ConstraintType::ContactElliptic);
+        let efc_start = match efc_start {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Factor H_c via Cholesky: H_c = L_local · L_local^T
+        let mut l_local = hc.clone();
+        if cholesky_in_place(&mut l_local).is_err() {
+            // H_c not PD — skip this cone (degenerate)
+            continue;
+        }
+
+        // For each column k of L_local, compute v = sum_j L_local[j,k] * J[efc_start+j, :]
+        // Then rank-1 update L_cone with v
+        for k in 0..dim {
+            let mut v = vec![0.0_f64; nv];
+            for j in k..dim {
+                // L_local is lower triangular, so L_local[j,k] = 0 for j < k
+                let ljk = l_local[(j, k)];
+                if ljk == 0.0 {
+                    continue;
+                }
+                let efc_row = efc_start + j;
+                for col in 0..nv {
+                    v[col] += ljk * data.efc_J[(efc_row, col)];
+                }
+            }
+            cholesky_rank1_update(&mut l_cone, &mut v)?;
+        }
+    }
+
+    Ok(l_cone)
+}
+
+/// Compute gradient and preconditioned search direction (PrimalUpdateGradient, §15.4).
+///
+/// Returns (grad, search) where:
+/// - `qfrc_constraint = J^T · efc_force`
+/// - `grad = Ma - qfrc_smooth - qfrc_constraint`
+/// - `search = -H⁻¹ · grad` (via Cholesky solve)
+fn compute_gradient_and_search(
+    data: &Data,
+    nv: usize,
+    ma: &DVector<f64>,
+    qfrc_smooth: &DVector<f64>,
+    chol_l: &DMatrix<f64>,
+) -> (DVector<f64>, DVector<f64>) {
+    let nefc = data.efc_type.len();
+
+    // qfrc_constraint = J^T · efc_force
+    let mut qfrc_constraint = DVector::<f64>::zeros(nv);
+    for i in 0..nefc {
+        let f = data.efc_force[i];
+        if f == 0.0 {
+            continue;
+        }
+        for col in 0..nv {
+            qfrc_constraint[col] += data.efc_J[(i, col)] * f;
+        }
+    }
+
+    // grad = Ma - qfrc_smooth - qfrc_constraint
+    let mut grad = DVector::<f64>::zeros(nv);
+    for k in 0..nv {
+        grad[k] = ma[k] - qfrc_smooth[k] - qfrc_constraint[k];
+    }
+
+    // search = -H⁻¹ · grad = -solve(L, grad)
+    let mut search = grad.clone();
+    cholesky_solve_in_place(chol_l, &mut search);
+    for k in 0..nv {
+        search[k] = -search[k];
+    }
+
+    (grad, search)
+}
+
+/// Sparse variant of `compute_gradient_and_search` using `SparseHessian::solve`.
+fn compute_gradient_and_search_sparse(
+    data: &Data,
+    nv: usize,
+    ma: &DVector<f64>,
+    qfrc_smooth: &DVector<f64>,
+    sparse_h: &SparseHessian,
+) -> (DVector<f64>, DVector<f64>) {
+    let nefc = data.efc_type.len();
+
+    // qfrc_constraint = J^T · efc_force
+    let mut qfrc_constraint = DVector::<f64>::zeros(nv);
+    for i in 0..nefc {
+        let f = data.efc_force[i];
+        if f == 0.0 {
+            continue;
+        }
+        for col in 0..nv {
+            qfrc_constraint[col] += data.efc_J[(i, col)] * f;
+        }
+    }
+
+    // grad = Ma - qfrc_smooth - qfrc_constraint
+    let mut grad = DVector::<f64>::zeros(nv);
+    for k in 0..nv {
+        grad[k] = ma[k] - qfrc_smooth[k] - qfrc_constraint[k];
+    }
+
+    // search = -H⁻¹ · grad via sparse LDL^T solve
+    let mut search = grad.clone();
+    sparse_h.solve(&mut search);
+    for k in 0..nv {
+        search[k] = -search[k];
+    }
+
+    (grad, search)
+}
+
+// ==========================================================================
+// Phase B: Exact 1D Newton line search infrastructure (§15.5)
+// ==========================================================================
+
+/// Precomputed quadratic polynomials for fast 1D cost evaluation along search direction.
+///
+/// For constraint i: cost(alpha) depends on `jar_trial = jar + alpha * jv`
+/// For the Gauss regularisation: cost is exactly quadratic in alpha.
+struct PrimalQuad {
+    /// Per-constraint quadratic coefficients.
+    /// For Quadratic/Equality rows:   [0.5*D*jar², D*jar*jv, 0.5*D*jv²]
+    /// For LinearPos:                  [+floss*jar - 0.5*R*floss², +floss*jv, 0]
+    /// For LinearNeg:                  [-floss*jar - 0.5*R*floss², -floss*jv, 0]
+    /// For Satisfied:                  [0, 0, 0]
+    /// For Contact rows: use raw values, re-classify per alpha in primal_eval.
+    quad: Vec<[f64; 3]>,
+
+    /// Per-elliptic-cone extra coefficients.
+    /// Each entry: [U0, V0, UU, UV, VV, Dm] for the rescaled cone decomposition.
+    /// Indexed by sequential cone index (not efc row).
+    cone_quad: Vec<[f64; 6]>,
+
+    /// Mapping from sequential cone index to the starting efc row and dim.
+    cone_map: Vec<(usize, usize)>,
+
+    /// Gauss term quadratic: [constant, linear, quadratic].
+    /// cost_gauss(alpha) = quad_gauss[0] + alpha*quad_gauss[1] + alpha²*quad_gauss[2]
+    quad_gauss: [f64; 3],
+
+    /// Norm of the search direction ||search||.
+    snorm: f64,
+}
+
+/// A point on the 1D cost curve, evaluated at step size `alpha`.
+#[derive(Debug, Clone, Copy)]
+struct PrimalPoint {
+    /// Step size.
+    alpha: f64,
+    /// [dcost/dalpha, d²cost/dalpha²]
+    deriv: [f64; 2],
+    /// Total cost at this alpha (used for diagnostics / future cost monitoring).
+    #[allow(dead_code)]
+    cost: f64,
+}
+
+/// Precompute quadratic polynomial coefficients for the 1D line search (§15.5).
+///
+/// Called once per Newton iteration before entering the line search. The
+/// precomputed coefficients allow O(nefc) cost+derivative evaluation at each
+/// trial alpha without any matrix-vector products.
+#[allow(clippy::many_single_char_names, clippy::too_many_arguments)]
+fn primal_prepare(
+    data: &Data,
+    _nv: usize,
+    qacc: &DVector<f64>,
+    qacc_smooth: &DVector<f64>,
+    ma: &DVector<f64>,
+    qfrc_smooth: &DVector<f64>,
+    search: &DVector<f64>,
+    mv: &DVector<f64>,
+    jv: &DVector<f64>,
+) -> PrimalQuad {
+    let nefc = data.efc_type.len();
+    let mut quad = vec![[0.0_f64; 3]; nefc];
+    let mut cone_quad = Vec::new();
+    let mut cone_map = Vec::new();
+
+    let mut i = 0;
+    while i < nefc {
+        let jar_i = data.efc_jar[i];
+        let d_i = data.efc_D[i];
+        let jv_i = jv[i];
+
+        if data.efc_type[i] == ConstraintType::ContactElliptic {
+            let dim = data.efc_dim[i];
+            let mu = data.efc_mu[i][0];
+
+            // Per-row quadratic (for bottom zone / per-component evaluation)
+            for j in 0..dim {
+                let jar_j = data.efc_jar[i + j];
+                let d_j = data.efc_D[i + j];
+                let jv_j = jv[i + j];
+                quad[i + j] = [
+                    0.5 * d_j * jar_j * jar_j,
+                    d_j * jar_j * jv_j,
+                    0.5 * d_j * jv_j * jv_j,
+                ];
+            }
+
+            // Cone-specific: rescale to circular cone space
+            let u0 = jar_i * mu;
+            let v0 = jv_i * mu;
+            let mut uu = 0.0;
+            let mut uv = 0.0;
+            let mut vv = 0.0;
+
+            for j in 1..dim {
+                let friction_j = data.efc_mu[i][j - 1];
+                let uj = data.efc_jar[i + j] * friction_j;
+                let vj = jv[i + j] * friction_j;
+                uu += uj * uj;
+                uv += uj * vj;
+                vv += vj * vj;
+            }
+
+            let dm = d_i / (mu * mu * (1.0 + mu * mu));
+            cone_quad.push([u0, v0, uu, uv, vv, dm]);
+            cone_map.push((i, dim));
+
+            i += dim;
+        } else {
+            // Scalar constraint: store raw D·jar quadratic
+            quad[i] = [
+                0.5 * d_i * jar_i * jar_i,
+                d_i * jar_i * jv_i,
+                0.5 * d_i * jv_i * jv_i,
+            ];
+            i += 1;
+        }
+    }
+
+    // Gauss quadratic: cost(alpha) = G0 + alpha*G1 + alpha²*G2
+    // G0 = 0.5 * (Ma - qfrc_smooth) · (qacc - qacc_smooth)  [already in data.efc_cost - constraint_cost]
+    // G1 = search · Ma - qfrc_smooth · search = search · (Ma - qfrc_smooth)
+    // G2 = 0.5 * search · Mv
+    let nv = search.len();
+    let mut g1 = 0.0;
+    let mut g2 = 0.0;
+    for k in 0..nv {
+        g1 += search[k] * (ma[k] - qfrc_smooth[k]);
+        g2 += search[k] * mv[k];
+    }
+    g2 *= 0.5;
+
+    // G0 = 0.5 * (Ma - qfrc_smooth) · (qacc - qacc_smooth)
+    // Exact since Gauss cost is purely quadratic in qacc (linear in alpha).
+    let mut g0 = 0.0;
+    for k in 0..nv {
+        g0 += (ma[k] - qfrc_smooth[k]) * (qacc[k] - qacc_smooth[k]);
+    }
+    g0 *= 0.5;
+
+    let snorm: f64 = search.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+    PrimalQuad {
+        quad,
+        cone_quad,
+        cone_map,
+        quad_gauss: [g0, g1, g2],
+        snorm,
+    }
+}
+
+/// Evaluate cost, first derivative, and second derivative at alpha along the search direction.
+///
+/// Uses precomputed `PrimalQuad` coefficients for O(nefc) evaluation without
+/// matrix-vector products. This is the inner loop of `PrimalSearch`.
+#[allow(clippy::many_single_char_names)]
+fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> PrimalPoint {
+    let nefc = data.efc_type.len();
+    let mut cost = 0.0;
+    let mut deriv = [0.0_f64; 2];
+
+    // Batch quadratic accumulator for simple constraints and bottom-zone cones
+    let mut quad_total = [0.0_f64; 3];
+
+    let mut cone_idx = 0;
+    let mut i = 0;
+    while i < nefc {
+        match data.efc_type[i] {
+            ConstraintType::Equality => {
+                // Always quadratic
+                quad_total[0] += pq.quad[i][0];
+                quad_total[1] += pq.quad[i][1];
+                quad_total[2] += pq.quad[i][2];
+                i += 1;
+            }
+
+            ConstraintType::FrictionLoss => {
+                let floss = data.efc_floss[i];
+                let r_i = data.efc_R[i];
+                let threshold = r_i * floss;
+                // Trial jar at alpha
+                let jar_trial = data.efc_jar[i] + alpha * jv[i];
+
+                if jar_trial >= threshold {
+                    // LinearPos
+                    cost += floss * jar_trial - 0.5 * r_i * floss * floss;
+                    deriv[0] += floss * jv[i];
+                    // deriv[1] += 0 (linear)
+                } else if jar_trial <= -threshold {
+                    // LinearNeg
+                    cost += -floss * jar_trial - 0.5 * r_i * floss * floss;
+                    deriv[0] += -floss * jv[i];
+                    // deriv[1] += 0
+                } else {
+                    // Quadratic
+                    quad_total[0] += pq.quad[i][0];
+                    quad_total[1] += pq.quad[i][1];
+                    quad_total[2] += pq.quad[i][2];
+                }
+                i += 1;
+            }
+
+            ConstraintType::LimitJoint
+            | ConstraintType::LimitTendon
+            | ConstraintType::ContactNonElliptic => {
+                // Re-classify at trial alpha
+                let jar_trial = data.efc_jar[i] + alpha * jv[i];
+                if jar_trial < 0.0 {
+                    // Quadratic (active)
+                    quad_total[0] += pq.quad[i][0];
+                    quad_total[1] += pq.quad[i][1];
+                    quad_total[2] += pq.quad[i][2];
+                }
+                // else: Satisfied — zero cost
+                i += 1;
+            }
+
+            ConstraintType::ContactElliptic => {
+                let dim = data.efc_dim[i];
+                let mu = data.efc_mu[i][0];
+                let cq = &pq.cone_quad[cone_idx];
+                let (_, _) = pq.cone_map[cone_idx];
+                cone_idx += 1;
+
+                // Compute N(alpha) and T(alpha) in rescaled cone space
+                let n_alpha = cq[0] + alpha * cq[1]; // U0 + alpha*V0
+                let t_sq = (cq[2] + alpha * (2.0 * cq[3] + alpha * cq[4])).max(0.0); // UU + 2*alpha*UV + alpha²*VV
+                let t_alpha = t_sq.sqrt();
+                let dm = cq[5];
+
+                let t_min = MJ_MINVAL;
+
+                if n_alpha >= mu * t_alpha || (t_alpha < t_min && n_alpha >= 0.0) {
+                    // Top zone: satisfied, zero cost
+                } else if mu * n_alpha + t_alpha <= 0.0 || (t_alpha < t_min && n_alpha < 0.0) {
+                    // Bottom zone: per-row quadratic
+                    for j in 0..dim {
+                        quad_total[0] += pq.quad[i + j][0];
+                        quad_total[1] += pq.quad[i + j][1];
+                        quad_total[2] += pq.quad[i + j][2];
+                    }
+                } else {
+                    // Middle zone: cone cost
+                    let nmt = n_alpha - mu * t_alpha;
+                    cost += 0.5 * dm * nmt * nmt;
+
+                    // First derivative: d(cost)/d(alpha)
+                    // d(N)/d(alpha) = V0
+                    // d(T)/d(alpha) = (UV + alpha*VV) / T (when T > 0)
+                    let n1 = cq[1]; // V0
+                    let t1 = if t_alpha > t_min {
+                        (cq[3] + alpha * cq[4]) / t_alpha
+                    } else {
+                        0.0
+                    };
+                    let nmt1 = n1 - mu * t1; // d(N-mu*T)/d(alpha)
+                    deriv[0] += dm * nmt * nmt1;
+
+                    // Second derivative: d²(cost)/d(alpha)²
+                    // d²(T)/d(alpha)² = (VV - t1²) / T (when T > 0)
+                    let t2 = if t_alpha > t_min {
+                        (cq[4] - t1 * t1) / t_alpha
+                    } else {
+                        0.0
+                    };
+                    deriv[1] += dm * (nmt1 * nmt1 + nmt * (-mu * t2));
+                }
+
+                i += dim;
+            }
+        }
+    }
+
+    // Evaluate batched quadratic total
+    let q_cost = quad_total[0] + alpha * quad_total[1] + alpha * alpha * quad_total[2];
+    let q_d1 = quad_total[1] + 2.0 * alpha * quad_total[2];
+    let q_d2 = 2.0 * quad_total[2];
+    cost += q_cost;
+    deriv[0] += q_d1;
+    deriv[1] += q_d2;
+
+    // Add Gauss term (exactly quadratic in alpha)
+    cost += pq.quad_gauss[0] + alpha * pq.quad_gauss[1] + alpha * alpha * pq.quad_gauss[2];
+    deriv[0] += pq.quad_gauss[1] + 2.0 * alpha * pq.quad_gauss[2];
+    deriv[1] += 2.0 * pq.quad_gauss[2];
+
+    PrimalPoint { alpha, deriv, cost }
+}
+
+/// Three-phase exact Newton line search (§15.5 PrimalSearch).
+///
+/// Finds the step size `alpha` that minimizes the 1D cost along the search
+/// direction. Uses the precomputed `PrimalQuad` from `primal_prepare` and
+/// evaluates via `primal_eval`.
+///
+/// # Phases
+/// 1. **Initial Newton step** from alpha=0. If derivative is small enough, done.
+/// 2. **Bracket search**: step in the direction of the initial derivative until
+///    the derivative sign changes, establishing a bracket [lo, hi].
+/// 3. **Bracketed refinement**: three candidates (Newton from lo, Newton from hi,
+///    midpoint). Pick the best converged candidate, or tighten the bracket.
+///
+/// Returns the optimal alpha, or 0.0 if no improvement is possible.
+#[allow(clippy::many_single_char_names)]
+fn primal_search(
+    data: &Data,
+    pq: &PrimalQuad,
+    jv: &[f64],
+    tolerance: f64,
+    ls_tolerance: f64,
+    max_ls_iter: usize,
+    scale: f64,
+) -> (f64, usize) {
+    let mut neval: usize = 0;
+
+    // Gradient tolerance for convergence
+    let gtol = tolerance * ls_tolerance * pq.snorm / scale.max(MJ_MINVAL);
+    if gtol <= 0.0 || pq.snorm < MJ_MINVAL {
+        return (0.0, neval);
+    }
+
+    // Phase 1: Initial Newton step from alpha=0
+    let p0 = primal_eval(data, pq, jv, 0.0);
+    neval += 1;
+
+    // Check if gradient at 0 is already small (unconstrained minimum at 0)
+    if p0.deriv[0].abs() < gtol {
+        return (0.0, neval);
+    }
+
+    // Newton step: alpha1 = -f'(0) / f''(0)
+    let alpha1 = if p0.deriv[1] > MJ_MINVAL {
+        -p0.deriv[0] / p0.deriv[1]
+    } else {
+        // Hessian too small; take unit step in descent direction
+        if p0.deriv[0] < 0.0 { 1.0 } else { -1.0 }
+    };
+
+    // Guard: step must be positive (descent direction)
+    if alpha1 <= 0.0 {
+        return (0.0, neval);
+    }
+
+    let p1 = primal_eval(data, pq, jv, alpha1);
+    neval += 1;
+
+    // Check convergence at p1
+    if p1.deriv[0].abs() < gtol {
+        return (alpha1, neval);
+    }
+
+    // Phase 2: One-sided bracket search
+    // Determine search direction based on sign of p1's derivative
+    let mut lo;
+    let mut hi;
+    if p1.deriv[0] < 0.0 {
+        // Derivative still negative — minimum is to the right of p1
+        lo = p1;
+        hi = p1; // will be updated
+        let mut step = alpha1; // step size doubles each iteration
+        for _ in 0..max_ls_iter {
+            step *= 2.0;
+            let trial = lo.alpha + step;
+            let pt = primal_eval(data, pq, jv, trial);
+            neval += 1;
+            if pt.deriv[0].abs() < gtol {
+                return (pt.alpha, neval);
+            }
+            if pt.deriv[0] > 0.0 {
+                // Derivative changed sign — bracket found: [lo, pt]
+                hi = pt;
+                break;
+            }
+            // Still negative — continue stepping right
+            lo = pt;
+            step = pt.alpha - lo.alpha; // geometric increase
+        }
+        // If hi was never updated (loop exhausted), return best we have
+        if hi.alpha <= lo.alpha {
+            return (lo.alpha, neval);
+        }
+    } else {
+        // Derivative positive at p1 — minimum is between 0 and p1
+        lo = p0;
+        hi = p1;
+    }
+
+    // Phase 3: Bracketed refinement
+    for _ in 0..max_ls_iter {
+        // Bracket width check
+        let width = hi.alpha - lo.alpha;
+        if width < MJ_MINVAL {
+            break;
+        }
+
+        // Three candidates:
+        // 1. Newton step from lo
+        let c1 = if lo.deriv[1] > MJ_MINVAL {
+            let a = lo.alpha - lo.deriv[0] / lo.deriv[1];
+            if a > lo.alpha && a < hi.alpha {
+                Some(a)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // 2. Newton step from hi
+        let c2 = if hi.deriv[1] > MJ_MINVAL {
+            let a = hi.alpha - hi.deriv[0] / hi.deriv[1];
+            if a > lo.alpha && a < hi.alpha {
+                Some(a)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // 3. Midpoint
+        let mid = 0.5 * (lo.alpha + hi.alpha);
+
+        // Evaluate all candidates, pick the best
+        let mut best = None;
+        let mut best_deriv_abs = f64::MAX;
+
+        for alpha in [c1, c2, Some(mid)].into_iter().flatten() {
+            let pt = primal_eval(data, pq, jv, alpha);
+            neval += 1;
+            if pt.deriv[0].abs() < gtol {
+                return (pt.alpha, neval);
+            }
+            if pt.deriv[0].abs() < best_deriv_abs {
+                best_deriv_abs = pt.deriv[0].abs();
+                best = Some(pt);
+            }
+        }
+
+        // Tighten the bracket using the best candidate
+        if let Some(pt) = best {
+            if pt.deriv[0] < 0.0 {
+                lo = pt;
+            } else {
+                hi = pt;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // Return the endpoint with smaller |derivative|
+    let alpha = if lo.deriv[0].abs() < hi.deriv[0].abs() {
+        lo.alpha
+    } else {
+        hi.alpha
+    };
+    (alpha, neval)
+}
+
+/// Evaluate total cost (Gauss + constraint) at a trial acceleration.
+///
+/// Does not modify any data fields — purely evaluative.
+/// Used by warmstart comparison in `newton_solve`.
+#[allow(clippy::many_single_char_names)]
+fn evaluate_cost_at(
+    data: &Data,
+    model: &Model,
+    qacc_trial: &DVector<f64>,
+    qacc_smooth: &DVector<f64>,
+    qfrc_smooth: &DVector<f64>,
+) -> f64 {
+    let nv = model.nv;
+    let nefc = data.efc_type.len();
+
+    // Compute jar_trial = J · qacc_trial - aref
+    let mut jar_trial = DVector::<f64>::zeros(nefc);
+    for i in 0..nefc {
+        let mut j_dot_qacc = 0.0;
+        for col in 0..nv {
+            j_dot_qacc += data.efc_J[(i, col)] * qacc_trial[col];
+        }
+        jar_trial[i] = j_dot_qacc - data.efc_aref[i];
+    }
+
+    // Compute Ma_trial = M · qacc_trial
+    let mut ma_trial = DVector::<f64>::zeros(nv);
+    for r in 0..nv {
+        for c in 0..nv {
+            ma_trial[r] += data.qM[(r, c)] * qacc_trial[c];
+        }
+    }
+
+    // Gauss term: ½·(Ma_trial - qfrc_smooth)·(qacc_trial - qacc_smooth)
+    let mut cost_gauss = 0.0;
+    for k in 0..nv {
+        cost_gauss += (ma_trial[k] - qfrc_smooth[k]) * (qacc_trial[k] - qacc_smooth[k]);
+    }
+    cost_gauss *= 0.5;
+
+    // Constraint cost
+    let mut constraint_cost = 0.0;
+    let mut i = 0;
+    while i < nefc {
+        let ctype = data.efc_type[i];
+        let jar = jar_trial[i];
+        let d = data.efc_D[i];
+        let r = data.efc_R[i];
+
+        match ctype {
+            ConstraintType::Equality => {
+                constraint_cost += 0.5 * d * jar * jar;
+                i += 1;
+            }
+            ConstraintType::FrictionLoss => {
+                let floss = data.efc_floss[i];
+                let threshold = r * floss;
+                if jar >= threshold {
+                    constraint_cost += floss * jar - 0.5 * r * floss * floss;
+                } else if jar <= -threshold {
+                    constraint_cost += -floss * jar - 0.5 * r * floss * floss;
+                } else {
+                    constraint_cost += 0.5 * d * jar * jar;
+                }
+                i += 1;
+            }
+            ConstraintType::LimitJoint
+            | ConstraintType::LimitTendon
+            | ConstraintType::ContactNonElliptic => {
+                if jar < 0.0 {
+                    constraint_cost += 0.5 * d * jar * jar;
+                }
+                i += 1;
+            }
+            ConstraintType::ContactElliptic => {
+                let dim = data.efc_dim[i];
+                let mu = data.efc_mu[i][0];
+
+                let u0 = jar_trial[i] * mu;
+                let n = u0;
+                let mut t_sq = 0.0;
+                for j in 1..dim {
+                    let friction_j = data.efc_mu[i][j - 1];
+                    let uj = jar_trial[i + j] * friction_j;
+                    t_sq += uj * uj;
+                }
+                let t = t_sq.sqrt();
+                let t_min = MJ_MINVAL;
+
+                if n >= mu * t || (t < t_min && n >= 0.0) {
+                    // Top → zero cost
+                } else if mu * n + t <= 0.0 || (t < t_min && n < 0.0) {
+                    // Bottom → per-row quadratic
+                    for j in 0..dim {
+                        let jar_j = jar_trial[i + j];
+                        let d_j = data.efc_D[i + j];
+                        constraint_cost += 0.5 * d_j * jar_j * jar_j;
+                    }
+                } else {
+                    // Middle → cone cost
+                    let d_normal = data.efc_D[i];
+                    let dm = d_normal / (mu * mu * (1.0 + mu * mu));
+                    let n_minus_mu_t = n - mu * t;
+                    constraint_cost += 0.5 * dm * n_minus_mu_t * n_minus_mu_t;
+                }
+                i += dim;
+            }
+        }
+    }
+
+    cost_gauss + constraint_cost
+}
+
+/// Result of the Newton solver. Used by Step 14 (PGS fallback).
+#[derive(Debug)]
+enum NewtonResult {
+    /// Solver converged successfully.
+    Converged,
+    /// Cholesky factorization failed (Hessian not positive definite).
+    CholeskyFailed,
+    /// Maximum iterations reached without convergence.
+    MaxIterationsExceeded,
+}
+
+/// Newton solver outer loop (§15.8).
+///
+/// Computes qacc, qfrc_constraint, efc_state, efc_force, efc_jar, efc_cost
+/// directly via reduced primal optimization. Returns early with `NewtonResult`
+/// indicating success or failure mode for PGS fallback.
+#[allow(clippy::too_many_lines)]
+fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
+    let nv = model.nv;
+
+    // === PER-STEP MEANINERTIA (Phase C) ===
+    // More accurate than model-level constant for configuration-dependent inertia.
+    // O(nv) — free since qM is already filled by CRBA this step.
+    let meaninertia = if nv > 0 {
+        let trace: f64 = (0..nv).map(|i| data.qM[(i, i)]).sum();
+        let mi = trace / nv as f64;
+        if mi > 0.0 { mi } else { model.stat_meaninertia }
+    } else {
+        model.stat_meaninertia
+    };
+    data.stat_meaninertia = meaninertia;
+
+    // === INITIALIZE ===
+    // qfrc_smooth = qfrc_applied + qfrc_actuator + (qfrc_passive - qfrc_frictionloss) - qfrc_bias
+    let mut qfrc_smooth = DVector::<f64>::zeros(nv);
+    for k in 0..nv {
+        qfrc_smooth[k] = data.qfrc_applied[k]
+            + data.qfrc_actuator[k]
+            + (data.qfrc_passive[k] - data.qfrc_frictionloss[k])
+            - data.qfrc_bias[k];
+    }
+
+    // qacc_smooth = M⁻¹ · qfrc_smooth (via sparse LDL solve)
+    let mut qacc_smooth = qfrc_smooth.clone();
+    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
+
+    // Assemble unified constraints
+    assemble_unified_constraints(model, data, &qacc_smooth);
+    let nefc = data.efc_type.len();
+
+    // No constraints → unconstrained solution
+    if nefc == 0 {
+        data.qacc.copy_from(&qacc_smooth);
+        data.qfrc_constraint.fill(0.0);
+        data.efc_lambda.clear();
+        data.solver_niter = 0;
+        data.solver_stat.clear();
+        return NewtonResult::Converged;
+    }
+
+    let scale = 1.0 / (meaninertia * (1.0_f64).max(nv as f64));
+    let tolerance = model.solver_tolerance;
+
+    // Initialize efc_state and efc_force vectors to correct size
+    data.efc_state.resize(nefc, ConstraintState::Quadratic);
+    data.efc_force = DVector::zeros(nefc);
+    data.efc_jar = DVector::zeros(nefc);
+
+    // --- Warmstart selection ---
+    // Evaluate cost at qacc_warmstart
+    let cost_warmstart = evaluate_cost_at(
+        data,
+        model,
+        &data.qacc_warmstart.clone(),
+        &qacc_smooth,
+        &qfrc_smooth,
+    );
+    // Evaluate cost at qacc_smooth (Gauss = 0, only constraint cost from efc_b)
+    let cost_smooth = evaluate_cost_at(data, model, &qacc_smooth, &qacc_smooth, &qfrc_smooth);
+
+    let mut qacc = if cost_warmstart < cost_smooth {
+        data.qacc_warmstart.clone()
+    } else {
+        qacc_smooth.clone()
+    };
+
+    // Compute Ma = M · qacc
+    let mut ma = DVector::<f64>::zeros(nv);
+    for r in 0..nv {
+        for c in 0..nv {
+            ma[r] += data.qM[(r, c)] * qacc[c];
+        }
+    }
+
+    // Initial constraint classification
+    classify_constraint_states(model, data, &qacc, &qacc_smooth, &qfrc_smooth);
+
+    // Select dense vs sparse Hessian path (Phase C).
+    // Sparse path: full refactorization each iteration, no incremental updates.
+    // Dense path: incremental rank-1 updates + cone Hessian augmentation.
+    let use_sparse = nv > NV_SPARSE_THRESHOLD;
+
+    // Initial Hessian + gradient + search direction
+    let mut chol_l_dense: Option<DMatrix<f64>> = None;
+    let mut sparse_h: Option<SparseHessian> = None;
+
+    let (mut grad, mut search) = if use_sparse {
+        let Ok(sh) = SparseHessian::assemble(model, data, nv) else {
+            data.solver_niter = 0;
+            data.solver_stat.clear();
+            return NewtonResult::CholeskyFailed;
+        };
+        let gs = compute_gradient_and_search_sparse(data, nv, &ma, &qfrc_smooth, &sh);
+        sparse_h = Some(sh);
+        gs
+    } else {
+        let Ok(l) = assemble_hessian(data, nv) else {
+            data.solver_niter = 0;
+            data.solver_stat.clear();
+            return NewtonResult::CholeskyFailed;
+        };
+        let gs = compute_gradient_and_search(data, nv, &ma, &qfrc_smooth, &l);
+        chol_l_dense = Some(l);
+        gs
+    };
+
+    // Pre-loop convergence check
+    let grad_norm: f64 = grad.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if scale * grad_norm < tolerance {
+        // Already converged — go to RECOVER
+        data.solver_niter = 0;
+        data.solver_stat.clear();
+        recover_newton(model, data, &qacc, &qfrc_smooth);
+        return NewtonResult::Converged;
+    }
+
+    // === ITERATE (Phase B: exact Newton line search + incremental Hessian) ===
+    let max_iters = model.solver_iterations;
+    let max_ls_iter = model.ls_iterations.max(20);
+    let ls_tolerance = model.ls_tolerance;
+    let mut converged = false;
+    let mut solver_stats = Vec::with_capacity(max_iters);
+
+    // Precompute Mv = M*search and Jv = J*search for the initial search direction
+    let mut mv = DVector::<f64>::zeros(nv);
+    for r in 0..nv {
+        for c in 0..nv {
+            mv[r] += data.qM[(r, c)] * search[c];
+        }
+    }
+    let mut jv = DVector::<f64>::zeros(nefc);
+    for i in 0..nefc {
+        for col in 0..nv {
+            jv[i] += data.efc_J[(i, col)] * search[col];
+        }
+    }
+
+    for _iter in 0..max_iters {
+        // Compute lineslope before line search: grad · search / ||search||
+        let search_norm = search.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let lineslope = if search_norm > 0.0 {
+            grad.iter()
+                .zip(search.iter())
+                .map(|(g, s)| g * s)
+                .sum::<f64>()
+                / search_norm
+        } else {
+            0.0
+        };
+
+        // 1. LINE SEARCH (Phase B: exact Newton)
+        let pq = primal_prepare(
+            data,
+            nv,
+            &qacc,
+            &qacc_smooth,
+            &ma,
+            &qfrc_smooth,
+            &search,
+            &mv,
+            &jv,
+        );
+        let (alpha, nline) = primal_search(
+            data,
+            &pq,
+            jv.as_slice(),
+            tolerance,
+            ls_tolerance,
+            max_ls_iter,
+            scale,
+        );
+
+        if alpha == 0.0 {
+            // Record final stat entry for the alpha=0 iteration
+            let nactive = data
+                .efc_state
+                .iter()
+                .filter(|s| matches!(s, ConstraintState::Quadratic | ConstraintState::Cone))
+                .count();
+            solver_stats.push(SolverStat {
+                improvement: 0.0,
+                gradient: scale * grad.iter().map(|x| x * x).sum::<f64>().sqrt(),
+                lineslope,
+                nactive,
+                nchange: 0,
+                nline,
+            });
+            converged = true; // No improvement — treat as converged (local minimum)
+            break;
+        }
+
+        // 2. MOVE
+        for k in 0..nv {
+            qacc[k] += alpha * search[k];
+            ma[k] += alpha * mv[k];
+        }
+        for i in 0..nefc {
+            data.efc_jar[i] += alpha * jv[i];
+        }
+
+        // 3. UPDATE CONSTRAINTS (save old states for incremental Hessian)
+        let old_states = data.efc_state.clone();
+        let old_cost = data.efc_cost;
+        classify_constraint_states(model, data, &qacc, &qacc_smooth, &qfrc_smooth);
+
+        // 4-5. HESSIAN + GRADIENT (dense vs sparse)
+        let (g, s) = if use_sparse {
+            // Sparse path: full refactorization each iteration
+            let sh = sparse_h.as_mut().unwrap_or_else(|| unreachable!());
+            if sh.refactor(model, data).is_err() {
+                // Refactorization failed — try full reassembly
+                if let Ok(new_sh) = SparseHessian::assemble(model, data, nv) {
+                    *sh = new_sh;
+                } else {
+                    data.solver_niter = solver_stats.len();
+                    data.solver_stat = solver_stats;
+                    return NewtonResult::CholeskyFailed;
+                }
+            }
+            compute_gradient_and_search_sparse(data, nv, &ma, &qfrc_smooth, sh)
+        } else {
+            // Dense path: incremental rank-1 updates + cone Hessian
+            let chol_l = chol_l_dense.as_mut().unwrap_or_else(|| unreachable!());
+            if hessian_incremental(data, nv, chol_l, &old_states).is_err() {
+                // Incremental update failed — fall back to full reassembly
+                if let Ok(l) = assemble_hessian(data, nv) {
+                    *chol_l = l;
+                } else {
+                    data.solver_niter = solver_stats.len();
+                    data.solver_stat = solver_stats;
+                    return NewtonResult::CholeskyFailed;
+                }
+            }
+
+            // Use cone Hessian if any cone contacts
+            let l_for_solve = if data.ncone > 0 {
+                match hessian_cone(data, nv, chol_l) {
+                    Ok(lc) => lc,
+                    Err(_) => chol_l.clone(),
+                }
+            } else {
+                chol_l.clone()
+            };
+
+            compute_gradient_and_search(data, nv, &ma, &qfrc_smooth, &l_for_solve)
+        };
+        grad = g;
+
+        // 6. CONVERGENCE CHECK + SOLVER STATISTICS
+        let improvement = scale * (old_cost - data.efc_cost);
+        let gradient = scale * grad.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+        let nactive = data
+            .efc_state
+            .iter()
+            .filter(|s| matches!(s, ConstraintState::Quadratic | ConstraintState::Cone))
+            .count();
+        let nchange = old_states
+            .iter()
+            .zip(data.efc_state.iter())
+            .filter(|(old, new)| old != new)
+            .count();
+
+        solver_stats.push(SolverStat {
+            improvement,
+            gradient,
+            lineslope,
+            nactive,
+            nchange,
+            nline,
+        });
+
+        if improvement < tolerance || gradient < tolerance {
+            converged = true;
+            break;
+        }
+
+        // 7. SEARCH DIRECTION + recompute Mv, Jv for next iteration
+        search = s;
+
+        // Recompute Mv = M * search
+        mv.fill(0.0);
+        for r in 0..nv {
+            for c in 0..nv {
+                mv[r] += data.qM[(r, c)] * search[c];
+            }
+        }
+        // Recompute Jv = J * search
+        jv.fill(0.0);
+        for i in 0..nefc {
+            for col in 0..nv {
+                jv[i] += data.efc_J[(i, col)] * search[col];
+            }
+        }
+    }
+
+    // === RECOVER ===
+    data.solver_niter = solver_stats.len();
+    data.solver_stat = solver_stats;
+    recover_newton(model, data, &qacc, &qfrc_smooth);
+
+    if converged {
+        NewtonResult::Converged
+    } else {
+        NewtonResult::MaxIterationsExceeded
+    }
+}
+
+/// RECOVER block: write final Newton results to Data.
+fn recover_newton(
+    model: &Model,
+    data: &mut Data,
+    qacc: &DVector<f64>,
+    _qfrc_smooth: &DVector<f64>,
+) {
+    let nv = model.nv;
+    let nefc = data.efc_type.len();
+
+    // Write qacc
+    data.qacc.copy_from(qacc);
+
+    // Compute and write qfrc_constraint = J^T · efc_force
+    data.qfrc_constraint.fill(0.0);
+    for i in 0..nefc {
+        let f = data.efc_force[i];
+        if f == 0.0 {
+            continue;
+        }
+        for col in 0..nv {
+            data.qfrc_constraint[col] += data.efc_J[(i, col)] * f;
+        }
+    }
+
+    // Extract per-joint and per-tendon limit forces
+    data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
+    data.ten_limit_frc.iter_mut().for_each(|f| *f = 0.0);
+
+    for i in 0..nefc {
+        match data.efc_type[i] {
+            ConstraintType::LimitJoint => {
+                data.jnt_limit_frc[data.efc_id[i]] = data.efc_force[i];
+            }
+            ConstraintType::LimitTendon => {
+                data.ten_limit_frc[data.efc_id[i]] = data.efc_force[i];
+            }
+            _ => {}
+        }
+    }
+
+    // Populate efc_lambda for warmstart and touch sensors.
+    // Map Newton's efc_force back to the WarmstartKey-based HashMap.
+    data.efc_lambda.clear();
+    let mut i = 0;
+    while i < nefc {
+        let dim = data.efc_dim[i];
+        match data.efc_type[i] {
+            ConstraintType::ContactElliptic | ConstraintType::ContactNonElliptic => {
+                let ci = data.efc_id[i];
+                if ci < data.contacts.len() {
+                    let key = warmstart_key(&data.contacts[ci]);
+                    let forces: Vec<f64> = (0..dim).map(|j| data.efc_force[i + j]).collect();
+                    data.efc_lambda.insert(key, forces);
+                }
+                i += dim;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+}
+
+/// Noslip post-processor: suppresses residual contact slip (§15.10).
+///
+/// Runs a modified PGS pass on friction force rows only, without
+/// regularization, using the current normal forces as fixed cone limits.
+/// This matches MuJoCo's `mj_solNoSlip`.
+///
+/// Called after `newton_solve()` converges when `model.noslip_iterations > 0`.
+fn noslip_postprocess(model: &Model, data: &mut Data) {
+    let nv = model.nv;
+    let nefc = data.efc_type.len();
+    let noslip_iter = model.noslip_iterations;
+    let noslip_tol = model.noslip_tolerance;
+
+    if noslip_iter == 0 || nefc == 0 {
+        return;
+    }
+
+    // 1. Identify friction rows and their parent contacts.
+    // friction_rows[k] = efc row index of the k-th friction row
+    // friction_contact[k] = (contact_start_efc_row, dim) for the parent contact
+    let mut friction_rows: Vec<usize> = Vec::new();
+    let mut friction_contact: Vec<(usize, usize)> = Vec::new();
+
+    let mut i = 0;
+    while i < nefc {
+        let ctype = data.efc_type[i];
+        let dim = data.efc_dim[i];
+
+        match ctype {
+            ConstraintType::ContactElliptic | ConstraintType::ContactNonElliptic => {
+                // Only process contacts with friction (dim >= 3) and active normal
+                if dim >= 3 && data.efc_state[i] != ConstraintState::Satisfied {
+                    for j in 1..dim {
+                        friction_rows.push(i + j);
+                        friction_contact.push((i, dim));
+                    }
+                }
+                i += dim;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    let nfric = friction_rows.len();
+    if nfric == 0 {
+        return;
+    }
+
+    // 2. Build friction-only Delassus matrix A (no regularization on diagonal).
+    // A[fi,fj] = J[friction_rows[fi]] · M⁻¹ · J[friction_rows[fj]]^T
+    let mut a_fric = DMatrix::<f64>::zeros(nfric, nfric);
+    for (fi, &row_i) in friction_rows.iter().enumerate() {
+        // Solve M · x = J_row_i^T via sparse LDL
+        let mut minv_ji = DVector::<f64>::zeros(nv);
+        for col in 0..nv {
+            minv_ji[col] = data.efc_J[(row_i, col)];
+        }
+        mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut minv_ji);
+
+        for (fj, &row_j) in friction_rows.iter().enumerate() {
+            let mut dot = 0.0;
+            for col in 0..nv {
+                dot += data.efc_J[(row_j, col)] * minv_ji[col];
+            }
+            a_fric[(fi, fj)] = dot;
+        }
+    }
+
+    // 3. Extract current friction forces as starting point
+    let mut f_fric: Vec<f64> = friction_rows.iter().map(|&r| data.efc_force[r]).collect();
+
+    // Precompute diagonal inverse (no regularization)
+    let diag_inv: Vec<f64> = (0..nfric)
+        .map(|fi| {
+            let d = a_fric[(fi, fi)];
+            if d.abs() < MJ_MINVAL { 0.0 } else { 1.0 / d }
+        })
+        .collect();
+
+    // 4. RHS: b[fi] = J[friction_row] · qacc (target friction acceleration = 0,
+    //    so b = J·qacc − 0 = J·qacc). For friction rows, aref is 0 (position and
+    //    margin are 0 for friction dimensions), so efc_jar = J·qacc − aref = J·qacc.
+    let b_fric: Vec<f64> = friction_rows.iter().map(|&r| data.efc_jar[r]).collect();
+
+    // 5. PGS iterations on friction rows
+    for _iter in 0..noslip_iter {
+        let mut max_delta = 0.0_f64;
+
+        // Process contact-by-contact for correct cone projection
+        let mut fi = 0;
+        while fi < nfric {
+            let (contact_start, dim) = friction_contact[fi];
+            let fric_dim = dim - 1; // number of friction rows for this contact
+
+            // GS update for each friction row of this contact
+            for local_j in 0..fric_dim {
+                let idx = fi + local_j;
+                // residual = Σ_k A[idx,k]·f[k] + b[idx]
+                let mut residual = b_fric[idx];
+                for k in 0..nfric {
+                    residual += a_fric[(idx, k)] * f_fric[k];
+                }
+                let old = f_fric[idx];
+                f_fric[idx] -= residual * diag_inv[idx];
+                max_delta = max_delta.max((f_fric[idx] - old).abs());
+            }
+
+            // Project friction forces onto the friction cone.
+            // Elliptic cone: Σ_j (f_j / mu_j)² ≤ f_normal²
+            let normal_force = data.efc_force[contact_start]; // Fixed from Newton
+            let mu = data.efc_mu[contact_start];
+
+            let mut s_sq = 0.0;
+            for local_j in 0..fric_dim {
+                let mu_j = mu[local_j]; // mu[0..dim-1] for friction dims
+                if mu_j > MJ_MINVAL {
+                    s_sq += (f_fric[fi + local_j] / mu_j).powi(2);
+                }
+            }
+            let s = s_sq.sqrt();
+            let fn_abs = normal_force.abs();
+            if s > fn_abs && s > MJ_MINVAL {
+                let cone_scale = fn_abs / s;
+                for local_j in 0..fric_dim {
+                    f_fric[fi + local_j] *= cone_scale;
+                }
+            }
+
+            fi += fric_dim;
+        }
+
+        if max_delta < noslip_tol {
+            break;
+        }
+    }
+
+    // 6. Write back updated friction forces
+    for (fi, &row) in friction_rows.iter().enumerate() {
+        data.efc_force[row] = f_fric[fi];
+    }
+
+    // 7. Recompute qfrc_constraint = J^T · efc_force
+    data.qfrc_constraint.fill(0.0);
+    for i_row in 0..nefc {
+        let f = data.efc_force[i_row];
+        if f == 0.0 {
+            continue;
+        }
+        for col in 0..nv {
+            data.qfrc_constraint[col] += data.efc_J[(i_row, col)] * f;
+        }
+    }
+
+    // 8. Recompute qacc = M⁻¹ · (qfrc_smooth + qfrc_constraint)
+    for k in 0..nv {
+        data.qacc[k] = data.qfrc_applied[k]
+            + data.qfrc_actuator[k]
+            + (data.qfrc_passive[k] - data.qfrc_frictionloss[k])
+            - data.qfrc_bias[k]
+            + data.qfrc_constraint[k];
+    }
+    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut data.qacc);
+}
+
 /// Apply a Connect (ball-and-socket) equality constraint.
 ///
 /// Constrains anchor point on body1 to coincide with body2's position.
@@ -11865,6 +14747,453 @@ fn apply_joint_equality_constraint(
     }
 }
 
+// =============================================================================
+// Equality Constraint Jacobian Extraction (§15, Step 5)
+//
+// These functions extract explicit Jacobian rows, position violations, and
+// velocities from equality constraints. Used by the Newton solver's unified
+// constraint assembly. The existing apply_* functions remain unchanged for
+// PGS/CG penalty-based enforcement.
+// =============================================================================
+
+/// Extracted equality constraint data for Newton solver assembly.
+struct EqualityConstraintRows {
+    /// Jacobian rows (nrows × nv). Connect: 3×nv, Weld: 6×nv, Joint: 1×nv, Distance: 1×nv.
+    j_rows: DMatrix<f64>,
+    /// Per-row constraint violation (signed).
+    pos: Vec<f64>,
+    /// Per-row constraint velocity (J·qvel).
+    vel: Vec<f64>,
+}
+
+/// Extract connect constraint Jacobian (3 translational rows).
+///
+/// Constraint: anchor_on_body1 = body2_origin (3D position match).
+/// Jacobian structure: 3×nv with sparse columns at both bodies' DOFs.
+fn extract_connect_jacobian(model: &Model, data: &Data, eq_id: usize) -> EqualityConstraintRows {
+    let body1 = model.eq_obj1id[eq_id];
+    let body2 = model.eq_obj2id[eq_id];
+    let eq_data = &model.eq_data[eq_id];
+    let nv = model.nv;
+
+    let anchor = Vector3::new(eq_data[0], eq_data[1], eq_data[2]);
+    let p1 = data.xpos[body1];
+    let r1 = data.xquat[body1];
+    let p2 = if body2 != 0 {
+        data.xpos[body2]
+    } else {
+        Vector3::zeros()
+    };
+
+    let anchor_world = p1 + r1 * anchor;
+    let pos_error = anchor_world - p2;
+
+    let mut j = DMatrix::zeros(3, nv);
+
+    // For each of the 3 Cartesian directions, build a row using the
+    // body-chain traversal pattern from compute_contact_jacobian.
+    for row in 0..3 {
+        let direction = Vector3::ith(row, 1.0);
+        // Body1 contributes positively (anchor moves with body1)
+        add_body_point_jacobian_row(
+            &mut j,
+            row,
+            &direction,
+            body1,
+            anchor_world,
+            1.0,
+            model,
+            data,
+        );
+        // Body2 contributes negatively (constraint wants p2 to match anchor)
+        add_body_point_jacobian_row(&mut j, row, &direction, body2, p2, -1.0, model, data);
+    }
+
+    // Velocity: relative velocity at constraint point
+    let v1 = if body1 != 0 {
+        let cvel1 = &data.cvel[body1];
+        let omega1 = Vector3::new(cvel1[0], cvel1[1], cvel1[2]);
+        let v_lin1 = Vector3::new(cvel1[3], cvel1[4], cvel1[5]);
+        let r1_anchor = r1 * anchor;
+        v_lin1 + omega1.cross(&r1_anchor)
+    } else {
+        Vector3::zeros()
+    };
+    let v2 = if body2 != 0 {
+        let cvel2 = &data.cvel[body2];
+        Vector3::new(cvel2[3], cvel2[4], cvel2[5])
+    } else {
+        Vector3::zeros()
+    };
+    let vel_error = v1 - v2;
+
+    EqualityConstraintRows {
+        j_rows: j,
+        pos: vec![pos_error.x, pos_error.y, pos_error.z],
+        vel: vec![vel_error.x, vel_error.y, vel_error.z],
+    }
+}
+
+/// Extract weld constraint Jacobian (6 rows: 3 translational + 3 rotational).
+///
+/// Constraint: anchor_on_body1 = body2_origin AND orientation match.
+fn extract_weld_jacobian(model: &Model, data: &Data, eq_id: usize) -> EqualityConstraintRows {
+    let body1 = model.eq_obj1id[eq_id];
+    let body2 = model.eq_obj2id[eq_id];
+    let eq_data = &model.eq_data[eq_id];
+    let nv = model.nv;
+
+    let anchor = Vector3::new(eq_data[0], eq_data[1], eq_data[2]);
+    let target_quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+        eq_data[3], eq_data[4], eq_data[5], eq_data[6],
+    ));
+
+    let p1 = data.xpos[body1];
+    let r1 = data.xquat[body1];
+    let (p2, r2) = if body2 != 0 {
+        (data.xpos[body2], data.xquat[body2])
+    } else {
+        (Vector3::zeros(), UnitQuaternion::identity())
+    };
+
+    // Position error
+    let anchor_world = p1 + r1 * anchor;
+    let pos_error = anchor_world - p2;
+
+    // Orientation error (axis-angle)
+    let target_r1 = r2 * target_quat;
+    let rot_error_quat = r1 * target_r1.inverse();
+    let rot_error = quaternion_to_axis_angle(&rot_error_quat);
+
+    let mut j = DMatrix::zeros(6, nv);
+
+    // Rows 0-2: translational (same as connect)
+    for row in 0..3 {
+        let direction = Vector3::ith(row, 1.0);
+        add_body_point_jacobian_row(
+            &mut j,
+            row,
+            &direction,
+            body1,
+            anchor_world,
+            1.0,
+            model,
+            data,
+        );
+        add_body_point_jacobian_row(&mut j, row, &direction, body2, p2, -1.0, model, data);
+    }
+
+    // Rows 3-5: rotational Jacobian
+    for row in 0..3 {
+        let direction = Vector3::ith(row, 1.0);
+        add_body_angular_jacobian_row(&mut j, 3 + row, &direction, body1, 1.0, model, data);
+        add_body_angular_jacobian_row(&mut j, 3 + row, &direction, body2, -1.0, model, data);
+    }
+
+    // Velocities
+    let (vel_error, ang_vel_error) = if body1 != 0 {
+        let cvel1 = &data.cvel[body1];
+        let omega1 = Vector3::new(cvel1[0], cvel1[1], cvel1[2]);
+        let v1 = Vector3::new(cvel1[3], cvel1[4], cvel1[5]);
+        let r1_anchor = r1 * anchor;
+        let v_anchor = v1 + omega1.cross(&r1_anchor);
+
+        if body2 != 0 {
+            let cvel2 = &data.cvel[body2];
+            let omega2 = Vector3::new(cvel2[0], cvel2[1], cvel2[2]);
+            let v2 = Vector3::new(cvel2[3], cvel2[4], cvel2[5]);
+            (v_anchor - v2, omega1 - omega2)
+        } else {
+            (v_anchor, omega1)
+        }
+    } else {
+        (Vector3::zeros(), Vector3::zeros())
+    };
+
+    EqualityConstraintRows {
+        j_rows: j,
+        pos: vec![
+            pos_error.x,
+            pos_error.y,
+            pos_error.z,
+            rot_error.x,
+            rot_error.y,
+            rot_error.z,
+        ],
+        vel: vec![
+            vel_error.x,
+            vel_error.y,
+            vel_error.z,
+            ang_vel_error.x,
+            ang_vel_error.y,
+            ang_vel_error.z,
+        ],
+    }
+}
+
+/// Extract joint equality constraint Jacobian (1 row).
+///
+/// Two-joint: constraint is q2 − poly(q1) = 0, Jacobian has -poly'(q1) at dof1 and +1 at dof2.
+/// Single-joint: constraint is q1 − c0 = 0, Jacobian has +1 at dof1.
+fn extract_joint_equality_jacobian(
+    model: &Model,
+    data: &Data,
+    eq_id: usize,
+) -> EqualityConstraintRows {
+    let joint1_id = model.eq_obj1id[eq_id];
+    let joint2_id = model.eq_obj2id[eq_id];
+    let eq_data = &model.eq_data[eq_id];
+    let nv = model.nv;
+
+    let c0 = eq_data[0];
+    let c1 = eq_data[1];
+    let c2 = eq_data[2];
+    let c3 = eq_data[3];
+    let c4 = eq_data[4];
+
+    let qpos1_adr = model.jnt_qpos_adr[joint1_id];
+    let dof1_adr = model.jnt_dof_adr[joint1_id];
+    let q1 = data.qpos[qpos1_adr];
+    let qd1 = data.qvel[dof1_adr];
+
+    // poly(q1) = c0 + c1*q1 + c2*q1² + c3*q1³ + c4*q1⁴
+    let q2_target = c0 + c1 * q1 + c2 * q1 * q1 + c3 * q1 * q1 * q1 + c4 * q1 * q1 * q1 * q1;
+
+    // poly'(q1) = c1 + 2*c2*q1 + 3*c3*q1² + 4*c4*q1³ (§15, Round 4 Fix 6)
+    let dpoly_dq1 = c1 + 2.0 * c2 * q1 + 3.0 * c3 * q1 * q1 + 4.0 * c4 * q1 * q1 * q1;
+    let qd2_target = dpoly_dq1 * qd1;
+
+    let mut j = DMatrix::zeros(1, nv);
+
+    if joint2_id < model.njnt {
+        // Two-joint equality: constraint = q2 - poly(q1) = 0
+        let qpos2_adr = model.jnt_qpos_adr[joint2_id];
+        let dof2_adr = model.jnt_dof_adr[joint2_id];
+        let q2 = data.qpos[qpos2_adr];
+        let qd2 = data.qvel[dof2_adr];
+
+        let pos_error = q2 - q2_target;
+        let vel_error = qd2 - qd2_target;
+
+        // Jacobian: d(q2 - poly(q1))/d_qvel = +1 at dof2, -dpoly/dq1 at dof1
+        j[(0, dof2_adr)] = 1.0;
+        j[(0, dof1_adr)] = -dpoly_dq1;
+
+        EqualityConstraintRows {
+            j_rows: j,
+            pos: vec![pos_error],
+            vel: vec![vel_error],
+        }
+    } else {
+        // Single-joint: lock q1 to c0
+        let pos_error = q1 - c0;
+        let vel_error = qd1;
+
+        // Jacobian: d(q1 - c0)/d_qvel = +1 at dof1
+        j[(0, dof1_adr)] = 1.0;
+
+        EqualityConstraintRows {
+            j_rows: j,
+            pos: vec![pos_error],
+            vel: vec![vel_error],
+        }
+    }
+}
+
+/// Extract distance equality constraint Jacobian (1 row).
+///
+/// Constraint: |p1 - p2| = target_distance.
+/// Jacobian is the direction vector projected onto body DOFs.
+fn extract_distance_jacobian(model: &Model, data: &Data, eq_id: usize) -> EqualityConstraintRows {
+    const SINGULARITY_EPS: f64 = 1e-10;
+
+    let geom1_id = model.eq_obj1id[eq_id];
+    let geom2_id = model.eq_obj2id[eq_id];
+    let target_dist = model.eq_data[eq_id][0];
+    let nv = model.nv;
+
+    let p1 = data.geom_xpos[geom1_id];
+    let p2 = if geom2_id == usize::MAX {
+        Vector3::zeros()
+    } else {
+        data.geom_xpos[geom2_id]
+    };
+
+    let body1 = model.geom_body[geom1_id];
+    let body2 = if geom2_id == usize::MAX {
+        0
+    } else {
+        model.geom_body[geom2_id]
+    };
+
+    let diff = p1 - p2;
+    let current_dist = diff.norm();
+
+    let (direction, scalar_error) = if current_dist > SINGULARITY_EPS {
+        (diff / current_dist, current_dist - target_dist)
+    } else if target_dist > SINGULARITY_EPS {
+        (Vector3::z(), -target_dist)
+    } else {
+        return EqualityConstraintRows {
+            j_rows: DMatrix::zeros(1, nv),
+            pos: vec![0.0],
+            vel: vec![0.0],
+        };
+    };
+
+    let mut j = DMatrix::zeros(1, nv);
+
+    // The scalar constraint is d(|p1-p2|)/dt, Jacobian row = direction·(J_body1 - J_body2)
+    add_body_point_jacobian_row(&mut j, 0, &direction, body1, p1, 1.0, model, data);
+    add_body_point_jacobian_row(&mut j, 0, &direction, body2, p2, -1.0, model, data);
+
+    // Velocity: relative velocity projected onto direction
+    let v1 = if body1 != 0 {
+        compute_point_velocity(data, body1, p1)
+    } else {
+        Vector3::zeros()
+    };
+    let v2 = if body2 != 0 {
+        compute_point_velocity(data, body2, p2)
+    } else {
+        Vector3::zeros()
+    };
+    let vel_error = (v1 - v2).dot(&direction);
+
+    EqualityConstraintRows {
+        j_rows: j,
+        pos: vec![scalar_error],
+        vel: vec![vel_error],
+    }
+}
+
+/// Build one row of a translational (point) Jacobian for a body.
+///
+/// Traverses the kinematic chain from `body_id` to root, adding the
+/// contribution of each joint's DOF to the Jacobian row. The row
+/// corresponds to a 3D direction projected onto the body's DOF space.
+#[allow(clippy::too_many_arguments)]
+fn add_body_point_jacobian_row(
+    j: &mut DMatrix<f64>,
+    row: usize,
+    direction: &Vector3<f64>,
+    body_id: usize,
+    point: Vector3<f64>,
+    sign: f64,
+    model: &Model,
+    data: &Data,
+) {
+    if body_id == 0 {
+        return;
+    }
+    let mut current_body = body_id;
+    while current_body != 0 {
+        let jnt_start = model.body_jnt_adr[current_body];
+        let jnt_end = jnt_start + model.body_jnt_num[current_body];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - jpos;
+                    let j_col = axis.cross(&r);
+                    j[(row, dof_adr)] += sign * direction.dot(&j_col);
+                }
+                MjJointType::Slide => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    j[(row, dof_adr)] += sign * direction.dot(&axis);
+                }
+                MjJointType::Ball => {
+                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - jpos;
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    for i in 0..3 {
+                        let omega_world = rot * Vector3::ith(i, 1.0);
+                        let j_col = omega_world.cross(&r);
+                        j[(row, dof_adr + i)] += sign * direction.dot(&j_col);
+                    }
+                }
+                MjJointType::Free => {
+                    // Linear DOFs
+                    j[(row, dof_adr)] += sign * direction.x;
+                    j[(row, dof_adr + 1)] += sign * direction.y;
+                    j[(row, dof_adr + 2)] += sign * direction.z;
+                    // Angular DOFs
+                    let jpos = Vector3::new(
+                        data.qpos[model.jnt_qpos_adr[jnt_id]],
+                        data.qpos[model.jnt_qpos_adr[jnt_id] + 1],
+                        data.qpos[model.jnt_qpos_adr[jnt_id] + 2],
+                    );
+                    let r = point - jpos;
+                    let ex = Vector3::x();
+                    let ey = Vector3::y();
+                    let ez = Vector3::z();
+                    j[(row, dof_adr + 3)] += sign * direction.dot(&ex.cross(&r));
+                    j[(row, dof_adr + 4)] += sign * direction.dot(&ey.cross(&r));
+                    j[(row, dof_adr + 5)] += sign * direction.dot(&ez.cross(&r));
+                }
+            }
+        }
+        current_body = model.body_parent[current_body];
+    }
+}
+
+/// Build one row of an angular Jacobian for a body.
+///
+/// Maps angular velocity components to generalized coordinates. Used for
+/// weld constraint rotational rows (rows 3-5).
+fn add_body_angular_jacobian_row(
+    j: &mut DMatrix<f64>,
+    row: usize,
+    direction: &Vector3<f64>,
+    body_id: usize,
+    sign: f64,
+    model: &Model,
+    data: &Data,
+) {
+    if body_id == 0 {
+        return;
+    }
+    let mut current_body = body_id;
+    while current_body != 0 {
+        let jnt_start = model.body_jnt_adr[current_body];
+        let jnt_end = jnt_start + model.body_jnt_num[current_body];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof_adr = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    j[(row, dof_adr)] += sign * direction.dot(&axis);
+                }
+                MjJointType::Slide => {
+                    // Slide joint doesn't contribute to angular velocity
+                }
+                MjJointType::Ball => {
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    for i in 0..3 {
+                        let omega_world = rot * Vector3::ith(i, 1.0);
+                        j[(row, dof_adr + i)] += sign * direction.dot(&omega_world);
+                    }
+                }
+                MjJointType::Free => {
+                    // Angular DOFs (indices 3-5)
+                    j[(row, dof_adr + 3)] += sign * direction.x;
+                    j[(row, dof_adr + 4)] += sign * direction.y;
+                    j[(row, dof_adr + 5)] += sign * direction.z;
+                }
+            }
+        }
+        current_body = model.body_parent[current_body];
+    }
+}
+
 /// Apply a constraint force to a body at a specific world point.
 ///
 /// Maps the force to generalized coordinates via Jacobian transpose.
@@ -11999,9 +15328,71 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     data.qfrc_constraint.fill(0.0);
     data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
     data.ten_limit_frc.iter_mut().for_each(|f| *f = 0.0);
+    data.newton_solved = false;
 
     // Note: data.contacts is populated by mj_collision() which runs before this.
     // Do NOT clear contacts here.
+
+    // Newton solver handles ALL constraint types (limits, equality, contacts)
+    // in a unified way. It runs before penalty-based constraints and returns early.
+    if model.solver_type == SolverType::Newton {
+        // Guard: implicit integrators not supported with Newton (§15.8)
+        let is_implicit = matches!(
+            model.integrator,
+            Integrator::Implicit | Integrator::ImplicitFast | Integrator::ImplicitSpringDamper
+        );
+        // Guard: pyramidal cones not supported with Newton (§15.7)
+        let is_pyramidal_with_contacts = model.cone == 0 && !data.contacts.is_empty();
+
+        if is_implicit {
+            // Implicit integrators need mj_fwd_acceleration — fall through to PGS
+        } else if is_pyramidal_with_contacts {
+            // Pyramidal cones with contacts — fall through to PGS
+        } else {
+            let result = newton_solve(model, data);
+            match result {
+                NewtonResult::Converged => {
+                    // Noslip post-processor (Phase C §15.10): suppress residual contact slip
+                    if model.noslip_iterations > 0 {
+                        noslip_postprocess(model, data);
+                    }
+                    data.newton_solved = true;
+                    return;
+                }
+                NewtonResult::CholeskyFailed | NewtonResult::MaxIterationsExceeded => {
+                    // PGS fallback: clear Newton-written efc_* fields, reset
+                    // qfrc_constraint, fall through to penalty+PGS path.
+                    data.efc_type.clear();
+                    data.efc_pos.clear();
+                    data.efc_margin.clear();
+                    data.efc_vel = DVector::zeros(0);
+                    data.efc_solref.clear();
+                    data.efc_solimp.clear();
+                    data.efc_diagApprox.clear();
+                    data.efc_R.clear();
+                    data.efc_D.clear();
+                    data.efc_imp.clear();
+                    data.efc_aref = DVector::zeros(0);
+                    data.efc_floss.clear();
+                    data.efc_mu.clear();
+                    data.efc_dim.clear();
+                    data.efc_id.clear();
+                    data.efc_state.clear();
+                    data.efc_force = DVector::zeros(0);
+                    data.efc_jar = DVector::zeros(0);
+                    data.efc_b = DVector::zeros(0);
+                    data.efc_J = DMatrix::zeros(0, model.nv.max(1));
+                    data.efc_cost = 0.0;
+                    data.efc_cone_hessian.clear();
+                    data.ncone = 0;
+                    data.qfrc_constraint.fill(0.0);
+                    data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
+                    data.ten_limit_frc.iter_mut().for_each(|f| *f = 0.0);
+                    // Fall through to penalty+PGS below
+                }
+            }
+        }
+    }
 
     // ========== Joint Limit Constraints ==========
     // Using penalty method with Baumgarte stabilization:
@@ -12220,6 +15611,21 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
                     .map(|c| DVector::zeros(c.dim))
                     .collect()
             }
+        }
+        SolverType::Newton => {
+            // Newton solver already returned early at top of mj_fwd_constraint.
+            // If we reach here, it's a PGS fallback (Cholesky failed or pyramidal cones).
+            let (forces, niter) = pgs_solve_contacts(
+                model,
+                data,
+                &data.contacts,
+                &jacobians,
+                clamped_iters,
+                clamped_tol,
+                &mut efc_lambda,
+            );
+            data.solver_niter = niter;
+            forces
         }
     };
 
@@ -13104,6 +16510,100 @@ pub(crate) fn cholesky_solve_in_place(l: &DMatrix<f64>, x: &mut DVector<f64>) {
     }
 }
 
+/// Dense Cholesky rank-1 update: given L such that L·L^T = H, compute L' in-place
+/// such that L'·L'^T = H + v·v^T.
+///
+/// Uses the Linpack DCHUD algorithm (Givens rotations). O(n²).
+/// The vector `v` is used as workspace and modified.
+///
+/// Returns `Err(StepError::CholeskyFailed)` if the diagonal becomes non-positive.
+#[allow(clippy::many_single_char_names)]
+fn cholesky_rank1_update(l: &mut DMatrix<f64>, v: &mut [f64]) -> Result<(), StepError> {
+    let n = l.nrows();
+    debug_assert_eq!(v.len(), n);
+
+    for j in 0..n {
+        let a = l[(j, j)];
+        let b = v[j];
+        let r = (a * a + b * b).sqrt();
+        if r <= 0.0 {
+            return Err(StepError::CholeskyFailed);
+        }
+        let c = a / r;
+        let s = b / r;
+        l[(j, j)] = r;
+
+        // Apply Givens rotation to remaining entries in column j and v
+        for i in (j + 1)..n {
+            let t = l[(i, j)];
+            l[(i, j)] = c * t + s * v[i];
+            v[i] = -s * t + c * v[i];
+        }
+    }
+    Ok(())
+}
+
+/// Dense Cholesky rank-1 downdate: given L such that L·L^T = H, compute L' in-place
+/// such that L'·L'^T = H - v·v^T.
+///
+/// Uses the Linpack DCHDD algorithm (forward solve + reverse Givens). O(n²).
+/// The vector `v` is used as workspace and modified.
+///
+/// Returns `Err(StepError::CholeskyFailed)` if the result would be indefinite.
+#[allow(clippy::many_single_char_names)]
+fn cholesky_rank1_downdate(l: &mut DMatrix<f64>, v: &mut [f64]) -> Result<(), StepError> {
+    let n = l.nrows();
+    debug_assert_eq!(v.len(), n);
+
+    // Step 1: Forward solve L·p = v, store p in v
+    for j in 0..n {
+        for k in 0..j {
+            v[j] -= l[(j, k)] * v[k];
+        }
+        if l[(j, j)].abs() < MJ_MINVAL {
+            return Err(StepError::CholeskyFailed);
+        }
+        v[j] /= l[(j, j)];
+    }
+
+    // Step 2: Check positive-definiteness: alpha² = 1 - ||p||² > 0
+    let p_norm_sq: f64 = v.iter().map(|x| x * x).sum();
+    let alpha_sq = 1.0 - p_norm_sq;
+    if alpha_sq <= 0.0 {
+        return Err(StepError::CholeskyFailed);
+    }
+    let mut alpha = alpha_sq.sqrt();
+
+    // Step 3: Reverse Givens rotations to produce L'
+    for j in (0..n).rev() {
+        let a = alpha;
+        let b = v[j];
+        let r = (a * a + b * b).sqrt();
+        if r <= 0.0 {
+            return Err(StepError::CholeskyFailed);
+        }
+        let c = a / r;
+        let s = b / r;
+        alpha = r;
+
+        // Update column j of L
+        for i in (j + 1)..n {
+            let t = l[(i, j)];
+            // Accumulate the p-vector contribution back
+            l[(i, j)] = (t - s * v[i]) / c;
+            v[i] = c * v[i] - s * t;
+        }
+
+        // Update diagonal
+        l[(j, j)] *= c;
+        if l[(j, j)] <= 0.0 {
+            return Err(StepError::CholeskyFailed);
+        }
+    }
+
+    Ok(())
+}
+
 /// Sparse L^T D L factorization of the mass matrix, exploiting tree structure.
 ///
 /// Computes `M = L^T D L` where `L` is unit lower triangular (L[i,i] = 1 implicitly,
@@ -13986,8 +17486,7 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     }
 
     // 4. ADVANCE from initial state
-    // Save stage 3 qacc for warmstart (matches MuJoCo's mj_advance behavior)
-    data.qacc_warmstart.copy_from(&data.qacc);
+    // Note: qacc_warmstart is now saved at end of step() (§15.9), not here.
 
     // Restore initial velocity, then advance
     data.qvel.copy_from(&data.rk4_qvel[0]);

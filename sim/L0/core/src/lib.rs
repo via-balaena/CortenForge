@@ -113,6 +113,9 @@ pub use mujoco_pipeline::{
     ActuatorDynamics,
     ActuatorTransmission,
     BiasType,
+    // Constraint types and state
+    ConstraintState,
+    ConstraintType,
     // Contact representation
     Contact,
     ContactPair,
@@ -137,6 +140,7 @@ pub use mujoco_pipeline::{
     // Error handling
     ResetError,
     // Constraint solver algorithm
+    SolverStat,
     SolverType,
     // Spatial algebra types
     SpatialVector,
