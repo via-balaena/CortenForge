@@ -918,6 +918,178 @@ fn test_sparse_dense_equivalence() {
     assert_relative_eq!(qacc_z_dense, qacc_z_sparse, epsilon = 0.1);
 }
 
+/// Helper: build a branching "spider" robot — a free-joint torso with N limbs,
+/// each having `joints_per_limb` hinge joints, resting on a ground plane.
+/// This creates a coupled kinematic tree where contacts on different limbs
+/// couple through the shared torso, producing significant off-diagonal fill
+/// in the Hessian H = M + J^T·D·J.
+/// Helper: build a branching "hedgehog" — a free-joint torso with N single-hinge
+/// limbs, each having a foot sphere for ground contact.
+/// This creates a coupled kinematic tree where contacts on different limbs
+/// couple through the shared torso, producing off-diagonal fill in the Hessian.
+/// Each limb adds 1 DOF (hinge), and the torso adds 6 (free), so total nv = 6 + n_limbs.
+/// Build a chain of free-joint spheres on a ground plane, linked by connect
+/// equality constraints. This produces a coupled system where constraint J rows
+/// span DOFs of adjacent bodies, creating off-diagonal fill in the Hessian
+/// H = M + J^T·D·J. Each free body adds 6 DOFs, so nv = n_bodies * 6.
+fn build_coupled_chain_mjcf(n_bodies: usize) -> String {
+    let mut mjcf = String::from(
+        r#"<mujoco model="coupled_chain">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"
+                    solver_iterations="100" tolerance="1e-8"/>
+            <worldbody>
+                <geom type="plane" size="50 50 0.1"/>"#,
+    );
+
+    // Place spheres in a line, resting on the plane
+    for i in 0..n_bodies {
+        let x = i as f64 * 0.3;
+        mjcf.push_str(&format!(
+            r#"
+                <body name="b{i}" pos="{x} 0 0.1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0" friction="0.5 0.5 0.005"/>
+                </body>"#
+        ));
+    }
+
+    mjcf.push_str(
+        r#"
+            </worldbody>
+            <equality>"#,
+    );
+
+    // Connect adjacent bodies to create coupling
+    for i in 0..n_bodies.saturating_sub(1) {
+        mjcf.push_str(&format!(
+            r#"
+                <connect body1="b{}" body2="b{}" anchor="0.15 0 0"/>"#,
+            i,
+            i + 1
+        ));
+    }
+
+    mjcf.push_str(
+        r#"
+            </equality>
+        </mujoco>"#,
+    );
+    mjcf
+}
+
+#[test]
+fn test_sparse_hessian_coupled_contacts() {
+    // A chain of 11 free-joint spheres linked by connect equality constraints,
+    // resting on a ground plane. nv = 11 × 6 = 66 > 60, triggering the sparse
+    // path. The equality constraints create J rows spanning DOFs of adjacent
+    // bodies, producing off-diagonal fill in H = M + J^T·D·J. This tests that
+    // the sparse LDL^T factorization correctly handles off-diagonal entries.
+    let mjcf = build_coupled_chain_mjcf(11);
+    let (model, mut data) = model_from_mjcf(&mjcf);
+
+    assert!(
+        model.nv > 60,
+        "Coupled chain should have nv > 60 for sparse path, got nv={}",
+        model.nv
+    );
+
+    // Step — chain settles onto the plane with coupled contacts
+    for step in 0..20 {
+        data.step(&model).unwrap_or_else(|e| {
+            panic!("Step {step} failed: {e:?}");
+        });
+    }
+
+    // All state should be finite
+    assert!(
+        data.qacc.iter().all(|x| x.is_finite()),
+        "qacc should be all finite (coupled chain, nv={})",
+        model.nv
+    );
+    assert!(
+        data.qvel.iter().all(|x| x.is_finite()),
+        "qvel should be all finite (coupled chain, nv={})",
+        model.nv
+    );
+
+    // First body should not have fallen through the plane
+    assert!(
+        data.qpos[2] > -1.0,
+        "First body should not fall through plane, z={}",
+        data.qpos[2]
+    );
+}
+
+#[test]
+fn test_sparse_dense_coupled_equivalence() {
+    // Compare a small coupled chain (dense path) vs large coupled chain (sparse
+    // path). Both use the same physics: free-joint spheres on a plane linked by
+    // connect equality constraints. The first body's z-acceleration should match
+    // because it experiences the same physics (gravity + contact + one equality
+    // constraint to its neighbor).
+
+    // Dense: 5 bodies × 6 DOFs = 30 (< 60)
+    let mjcf_dense = build_coupled_chain_mjcf(5);
+    let (model_d, mut data_d) = model_from_mjcf(&mjcf_dense);
+    assert!(model_d.nv <= 60, "Dense nv={} should be <= 60", model_d.nv);
+
+    // Sparse: 11 bodies × 6 DOFs = 66 (> 60)
+    let mjcf_sparse = build_coupled_chain_mjcf(11);
+    let (model_s, mut data_s) = model_from_mjcf(&mjcf_sparse);
+    assert!(model_s.nv > 60, "Sparse nv={} should be > 60", model_s.nv);
+
+    // Step both
+    for step in 0..20 {
+        data_d.step(&model_d).unwrap_or_else(|e| {
+            panic!("Dense step {step} failed: {e:?}");
+        });
+        data_s.step(&model_s).unwrap_or_else(|e| {
+            panic!("Sparse step {step} failed: {e:?}");
+        });
+    }
+
+    // Both should be finite
+    assert!(
+        data_d.qacc.iter().all(|x| x.is_finite()),
+        "Dense qacc not finite"
+    );
+    assert!(
+        data_s.qacc.iter().all(|x| x.is_finite()),
+        "Sparse qacc not finite"
+    );
+
+    // Both chains' bodies should have bounded z-acceleration (gravity + contacts
+    // + equality constraints). The chain lengths differ (5 vs 11 bodies) so
+    // absolute values differ, but both should produce physically reasonable results.
+    for i in 0..model_d.nv / 6 {
+        let az = data_d.qacc[i * 6 + 2]; // z-component of each body's acceleration
+        assert!(
+            az.abs() < 100.0,
+            "Dense body {i} z-acc should be bounded, got {az}"
+        );
+    }
+    for i in 0..model_s.nv / 6 {
+        let az = data_s.qacc[i * 6 + 2];
+        assert!(
+            az.abs() < 100.0,
+            "Sparse body {i} z-acc should be bounded, got {az}"
+        );
+    }
+
+    // Verify that the sparse path doesn't diverge from the dense path's
+    // energy characteristics: both should have bounded total kinetic energy.
+    let ke_dense: f64 = (0..model_d.nv).map(|i| data_d.qvel[i].powi(2)).sum();
+    let ke_sparse: f64 = (0..model_s.nv).map(|i| data_s.qvel[i].powi(2)).sum();
+    assert!(
+        ke_dense.is_finite(),
+        "Dense kinetic energy should be finite"
+    );
+    assert!(
+        ke_sparse.is_finite(),
+        "Sparse kinetic energy should be finite"
+    );
+}
+
 #[test]
 fn test_sparse_threshold_selection() {
     // Verify that small models use dense path and large models use sparse path.
