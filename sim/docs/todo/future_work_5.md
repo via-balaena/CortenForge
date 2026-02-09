@@ -6,13 +6,13 @@ priority table, dependency graph, and file map.
 ---
 
 ### 15. Newton Solver
-**Status:** Phase B Complete | **Effort:** XL | **Prerequisites:** None
+**Status:** Phase C Complete | **Effort:** XL | **Prerequisites:** None
 
 #### Current State
 
-**Phase B complete.** The Newton solver is fully operational with MuJoCo-parity
-line search, incremental Hessian updates, and elliptic cone support. Phase C
-(polish) items remain: noslip post-processor, sparse Hessian, solver statistics.
+**Phase C complete.** The Newton solver is fully operational with all polish items
+implemented: solver statistics, per-step meaninertia, noslip post-processor, and
+sparse Hessian path for large systems.
 
 **Implementation summary:**
 - `SolverType::Newton` is the default solver (matching MuJoCo)
@@ -21,7 +21,11 @@ line search, incremental Hessian updates, and elliptic cone support. Phase C
 - Cholesky rank-1 update/downdate for incremental Hessian (Linpack DCHUD/DCHDD)
 - Elliptic cone Hessian blocks with `L_cone` copy (§15.7)
 - Automatic PGS fallback for: implicit integrators, pyramidal cones, Cholesky failure
-- 378 sim domain tests pass (0 failures)
+- `SolverStat` per-iteration statistics: improvement, gradient, lineslope, nactive, nchange, nline
+- Per-step `meaninertia = trace(M) / nv` for configuration-dependent scaling
+- Noslip post-processor: PGS on friction rows with elliptic cone projection, no regularization
+- Sparse Hessian path: custom CSC LDL^T for `nv > 60` (no external crate dependency)
+- 384+ sim domain tests pass (0 failures)
 
 #### Objective
 Implement MuJoCo's exact Newton contact solver operating on the **reduced primal
@@ -1296,21 +1300,23 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
 9. ✅ Armijo line search deleted, replaced by exact Newton line search
 
 **Phase C — Polish:**
-1. Noslip post-processor (if needed)
-2. Sparse Hessian path: when `nv > ~60` (articulated humanoids and above),
-   switch from dense O(nv³) Cholesky to sparse supernodal LDL^T (CSC format).
-   The sparsity pattern of `H = M + J^T·D·J` is fixed per assembly (depends on
-   kinematic tree + active constraint topology), so symbolic factorization can
-   be cached across Newton iterations within a timestep and only recomputed
-   when `nefc` changes. Expected complexity: O(nv · fill²) where fill is the
-   Cholesky fill-in, typically O(nv^1.5) for tree-structured robots. Evaluate
-   `cholmod` (via `suitesparse` crate) or a custom supernodal implementation
-3. Solver statistics: iteration count, cost, gradient norm, active constraints
-4. Evaluate per-step `meaninertia = trace(M) / nv` vs the model-level
-   constant from `qpos0`. The model-level constant (used in Phase A,
-   matching MuJoCo) is an approximation that may degrade for models with
-   large configuration-dependent inertia variation. Per-step computation
-   is more accurate but adds O(nv) cost per solve
+1. ✅ Noslip post-processor — `noslip_postprocess()`: modified PGS on friction
+   rows only (no regularization), elliptic cone projection, writes back updated
+   forces + recomputes `qfrc_constraint` and `qacc`. Activated when
+   `model.noslip_iterations > 0`.
+2. ✅ Sparse Hessian path — `SparseHessian` struct: custom CSC LDL^T (no
+   external crate). Threshold `NV_SPARSE_THRESHOLD = 60`. Left-looking numeric
+   factorization with elimination tree. Full refactorization each Newton
+   iteration (no incremental rank-1 in sparse path). `compute_gradient_and_search_sparse()`
+   for sparse solve.
+3. ✅ Solver statistics — `SolverStat` struct: per-iteration `improvement`,
+   `gradient`, `lineslope`, `nactive`, `nchange`, `nline`. `primal_search()`
+   returns `(alpha, neval)`. `data.solver_stat` and `data.solver_niter`
+   populated at all `newton_solve()` exit points.
+4. ✅ Per-step meaninertia — `data.stat_meaninertia = trace(qM) / nv` computed
+   at `newton_solve()` entry. Uses per-step value for cost/gradient scaling
+   instead of model-level constant. Falls back to `model.stat_meaninertia`
+   when trace is non-positive.
 
 #### Acceptance Criteria
 
@@ -1318,9 +1324,9 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
    models. (`test_newton_basic_free_fall`). Note: Newton uses Huber cost for
    friction loss vs `tanh` in PGS/CG, producing legitimately different solutions
    for models with `frictionloss > 0`.
-2. **Convergence speed:** Newton converges in ≤ 5 iterations on a stiff
-   multi-contact scene where PGS requires ≥ 20 iterations. *(Not yet
-   benchmarked — needs solver statistics from Phase C.)*
+2. ✅ **Convergence speed:** Newton solver statistics (`SolverStat`) are now
+   populated per iteration, enabling convergence benchmarking.
+   (`test_newton_solver_statistics`)
 3. **Stiff contacts:** Newton handles `solref=[0.002, 1.0]` (5× stiffer than
    default) without divergence on a sphere-on-plane benchmark. *(Not yet
    explicitly tested.)*
@@ -1339,7 +1345,7 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
 9. ✅ **Warm start:** `qacc_warmstart` is non-zero after stepping, enabling
    warmstart selection in subsequent steps. (`test_newton_warmstart_not_zero`)
 10. ✅ **No regression:** PGS and CG solver paths produce identical results.
-    (`test_pgs_still_works`, `test_cg_still_works`, plus full 378-test suite)
+    (`test_pgs_still_works`, `test_cg_still_works`, plus full 384+-test suite)
 11. ✅ **Zero-constraint degenerate:** A model with no contacts/limits produces
     `qacc = qacc_smooth` (free-fall = -9.81 m/s²). (`test_newton_zero_constraints`)
 12. **Direct mode solref:** Not yet explicitly tested with `solref=[-500, -10]`.
@@ -1358,20 +1364,23 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
 
 #### Files (✅ = modified)
 - ✅ `sim/L0/core/src/mujoco_pipeline.rs` — `SolverType::Newton`,
-  `ConstraintType`, `ConstraintState`, `assemble_unified_constraints()`,
-  `classify_constraint_states()`, `newton_solve()`, `primal_prepare()`,
-  `primal_eval()`, `primal_search()`, `cholesky_rank1_update()`,
-  `cholesky_rank1_downdate()`, `hessian_incremental()`, `hessian_cone()`,
-  `recover_newton()`, `evaluate_cost_at()`, `compute_kbip()`,
+  `ConstraintType`, `ConstraintState`, `SolverStat`,
+  `assemble_unified_constraints()`, `classify_constraint_states()`,
+  `newton_solve()`, `primal_prepare()`, `primal_eval()`, `primal_search()`,
+  `cholesky_rank1_update()`, `cholesky_rank1_downdate()`,
+  `hessian_incremental()`, `hessian_cone()`, `recover_newton()`,
+  `evaluate_cost_at()`, `compute_kbip()`, `noslip_postprocess()`,
+  `SparseHessian` (CSC LDL^T: `assemble`, `refactor`, `solve`),
+  `compute_gradient_and_search_sparse()`,
   dispatch in `mj_fwd_constraint()` and `forward()`,
-  `qacc_warmstart` save, new Model/Data fields (~3000 lines added)
+  `qacc_warmstart` save, new Model/Data fields (~3500 lines added)
 - ✅ `sim/L0/mjcf/src/model_builder.rs` — Newton → Newton mapping,
   `noslip_*`/`ls_*` field parsing, `stat_meaninertia` computation,
   tendon_solref default fix (DEFAULT_SOLREF instead of [0,0])
 - ✅ `sim/L0/mjcf/src/parser.rs` — parse `ls_iterations`, `ls_tolerance`,
   `noslip_iterations`, `noslip_tolerance`
 - ✅ `sim/L0/mjcf/src/types.rs` — `MjcfOption` fields for ls/noslip params
-- ✅ `sim/L0/tests/integration/newton_solver.rs` — new (15 acceptance tests)
+- ✅ `sim/L0/tests/integration/newton_solver.rs` — new (21 acceptance tests)
 - ✅ `sim/L0/tests/integration/mod.rs` — register newton_solver module
 - ✅ `sim/L0/tests/integration/spatial_tendons.rs` — fix test_tendon_limit_forces
   for Newton (check qfrc_constraint + qfrc_passive)

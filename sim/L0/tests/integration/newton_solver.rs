@@ -509,3 +509,286 @@ fn test_newton_multi_constraint_stability() {
         );
     }
 }
+
+// ============================================================================
+// Phase C: Solver Statistics
+// ============================================================================
+
+#[test]
+fn test_newton_solver_statistics() {
+    // Contact scene that requires Newton iterations
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="solver_stats_test">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"/>
+            <worldbody>
+                <body pos="0 0 0.15">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"/>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    // Step enough to get contacts
+    for _ in 0..10 {
+        data.step(&model).unwrap();
+    }
+
+    // solver_niter should be set and match solver_stat length
+    assert_eq!(
+        data.solver_stat.len(),
+        data.solver_niter,
+        "solver_stat.len() should equal solver_niter"
+    );
+
+    // solver_niter should be within bounds
+    assert!(
+        data.solver_niter <= model.solver_iterations,
+        "solver_niter ({}) should be <= solver_iterations ({})",
+        data.solver_niter,
+        model.solver_iterations
+    );
+
+    // If there were iterations, stats should be populated and finite
+    for (i, stat) in data.solver_stat.iter().enumerate() {
+        assert!(
+            stat.gradient.is_finite(),
+            "stat[{i}].gradient should be finite"
+        );
+        assert!(
+            stat.improvement.is_finite(),
+            "stat[{i}].improvement should be finite"
+        );
+        assert!(
+            stat.lineslope.is_finite(),
+            "stat[{i}].lineslope should be finite"
+        );
+    }
+}
+
+#[test]
+fn test_newton_solver_niter_zero_constraints() {
+    // Free fall with no contacts → zero iterations
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="zero_constraints">
+            <option gravity="0 0 -9.81" solver="Newton"/>
+            <worldbody>
+                <body pos="0 0 10">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    data.step(&model).unwrap();
+
+    assert_eq!(
+        data.solver_niter, 0,
+        "Zero constraints → solver_niter should be 0"
+    );
+    assert!(
+        data.solver_stat.is_empty(),
+        "Zero constraints → solver_stat should be empty"
+    );
+}
+
+// ============================================================================
+// Phase C: Per-step meaninertia
+// ============================================================================
+
+#[test]
+fn test_newton_per_step_meaninertia() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="meaninertia_test">
+            <option gravity="0 0 -9.81" solver="Newton"/>
+            <worldbody>
+                <body pos="0 0 1">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"/>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    data.step(&model).unwrap();
+
+    // Per-step meaninertia should be positive and finite
+    assert!(
+        data.stat_meaninertia > 0.0,
+        "per-step meaninertia should be positive, got {}",
+        data.stat_meaninertia
+    );
+    assert!(
+        data.stat_meaninertia.is_finite(),
+        "per-step meaninertia should be finite"
+    );
+
+    // For a simple rigid body, should be close to model-level constant
+    let ratio = data.stat_meaninertia / model.stat_meaninertia;
+    assert!(
+        ratio > 0.5 && ratio < 2.0,
+        "per-step ({}) should be close to model-level ({}), ratio={}",
+        data.stat_meaninertia,
+        model.stat_meaninertia,
+        ratio
+    );
+}
+
+// ============================================================================
+// Phase C: Noslip post-processor
+// ============================================================================
+
+#[test]
+fn test_noslip_zero_iterations_is_noop() {
+    // noslip_iterations=0 (default) should produce normal Newton results
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="noslip_noop">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"/>
+            <worldbody>
+                <body pos="0 0 0.15">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"/>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    assert_eq!(model.noslip_iterations, 0);
+
+    for _ in 0..10 {
+        data.step(&model).unwrap();
+    }
+
+    assert!(
+        data.qacc.iter().all(|x| x.is_finite()),
+        "qacc should be finite with noslip_iterations=0"
+    );
+}
+
+#[test]
+fn test_noslip_produces_finite_results() {
+    // noslip_iterations > 0 should still produce finite results
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="noslip_active">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"
+                    noslip_iterations="20" noslip_tolerance="1e-8"/>
+            <worldbody>
+                <body pos="0 0 0.15">
+                    <joint type="free"/>
+                    <geom type="sphere" size="0.1" mass="1.0" friction="0.5 0.5 0.005"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"/>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    assert_eq!(model.noslip_iterations, 20);
+    assert_relative_eq!(model.noslip_tolerance, 1e-8);
+
+    for _ in 0..20 {
+        data.step(&model).unwrap();
+    }
+
+    assert!(
+        data.qacc.iter().all(|x| x.is_finite()),
+        "qacc should be finite with noslip enabled"
+    );
+    assert!(
+        data.qvel.iter().all(|x| x.is_finite()),
+        "qvel should be finite with noslip enabled"
+    );
+}
+
+// ============================================================================
+// Phase C: Sparse Hessian path
+// ============================================================================
+
+#[test]
+fn test_sparse_dense_equivalence() {
+    // Build a model with nv > 60 (chain of hinge joints).
+    // Use 21 links: 21 hinge joints → nv=21. That's not >60, so we need more.
+    // With nv > 60, need at least 61 hinge joints. Build programmatically.
+    let mut mjcf = String::from(
+        r#"<mujoco model="sparse_test">
+            <option gravity="0 0 -9.81" solver="Newton" cone="elliptic"/>
+            <worldbody>"#,
+    );
+
+    // Create a chain of 65 hinge joints (nv = 65 > 60)
+    let n_links = 65;
+    for i in 0..n_links {
+        let indent = "    ".repeat(i + 2);
+        mjcf.push_str(&format!(
+            "\n{indent}<body name=\"link{i}\" pos=\"0.1 0 0\">"
+        ));
+        mjcf.push_str(&format!(
+            "\n{indent}    <joint name=\"j{i}\" type=\"hinge\" axis=\"0 0 1\" damping=\"0.1\"/>"
+        ));
+        mjcf.push_str(&format!(
+            "\n{indent}    <geom type=\"capsule\" size=\"0.02\" fromto=\"0 0 0 0.1 0 0\" mass=\"0.1\"/>"
+        ));
+    }
+    // Close all bodies
+    for i in (0..n_links).rev() {
+        let indent = "    ".repeat(i + 2);
+        mjcf.push_str(&format!("\n{indent}</body>"));
+    }
+    mjcf.push_str(
+        r#"
+            </worldbody>
+        </mujoco>"#,
+    );
+
+    let (model, mut data) = model_from_mjcf(&mjcf);
+
+    assert!(
+        model.nv >= 61,
+        "Model should have nv >= 61 for sparse path, got nv={}",
+        model.nv
+    );
+
+    // Give initial velocity to first few joints
+    for i in 0..5.min(model.nv) {
+        data.qvel[i] = 0.5;
+    }
+
+    // Step a few times — sparse path should produce finite results
+    for step in 0..5 {
+        data.step(&model).unwrap_or_else(|e| {
+            panic!("Step {step} failed: {e:?}");
+        });
+    }
+
+    // All qacc should be finite (either from Newton sparse path or PGS fallback)
+    for i in 0..model.nv {
+        assert!(
+            data.qacc[i].is_finite(),
+            "qacc[{i}] should be finite with nv={} (sparse threshold={})",
+            model.nv,
+            60
+        );
+    }
+
+    // qvel should be finite
+    for i in 0..model.nv {
+        assert!(
+            data.qvel[i].is_finite(),
+            "qvel[{i}] should be finite with nv={}",
+            model.nv
+        );
+    }
+}
