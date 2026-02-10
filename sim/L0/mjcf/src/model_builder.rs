@@ -2977,6 +2977,32 @@ impl ModelBuilder {
                 }
             }
 
+            // §16.18.2: Multi-tree tendon policy relaxation.
+            // Passive multi-tree tendons (spanning 2 trees) with nonzero stiffness,
+            // damping, or active limits create inter-tree coupling forces that prevent
+            // independent sleeping. Mark their spanning trees as AutoNever.
+            // Zero-stiffness/zero-damping/unlimited tendons are purely geometric
+            // (observational) and allow sleep.
+            for t in 0..model.ntendon {
+                if model.tendon_treenum[t] < 2 {
+                    continue; // Single-tree or zero-tree tendon — no coupling
+                }
+                let has_stiffness = model.tendon_stiffness[t].abs() > 0.0;
+                let has_damping = model.tendon_damping[t].abs() > 0.0;
+                let has_limit = model.tendon_limited[t];
+                if has_stiffness || has_damping || has_limit {
+                    // This tendon creates passive inter-tree forces → AutoNever
+                    let t1 = model.tendon_tree[2 * t];
+                    let t2 = model.tendon_tree[2 * t + 1];
+                    if t1 < model.ntree && model.tree_sleep_policy[t1] == SleepPolicy::Auto {
+                        model.tree_sleep_policy[t1] = SleepPolicy::AutoNever;
+                    }
+                    if t2 < model.ntree && model.tree_sleep_policy[t2] == SleepPolicy::Auto {
+                        model.tree_sleep_policy[t2] = SleepPolicy::AutoNever;
+                    }
+                }
+            }
+
             // §16.26.4: Deformable body policy guard. In the current architecture,
             // deformable bodies are registered at runtime (Data::register_deformable_body),
             // not at model construction time. Therefore, this guard cannot run here —

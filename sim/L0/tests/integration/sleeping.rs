@@ -2837,3 +2837,213 @@ fn test_disable_island_bit_identical() {
     data_a.forward(&model_a).expect("forward");
     assert_eq!(data_a.nisland, 0, "DISABLE_ISLAND should keep nisland=0");
 }
+
+// ============================================================================
+// T56: test_policy_relaxation_actuated_allowed (§16.18.1, AC #25)
+// ============================================================================
+
+#[test]
+fn test_policy_relaxation_actuated_allowed() {
+    // An actuated tree with explicit sleep="allowed" should be able to sleep,
+    // overriding the automatic AutoNever policy from the actuator.
+    let mjcf = r#"
+    <mujoco model="actuated_allowed">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="arm" pos="0 0 0.5" sleep="allowed">
+                <freejoint name="arm_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <motor joint="arm_free" gear="1 0 0 0 0 0"/>
+        </actuator>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load model");
+
+    // The tree should have Allowed policy (not AutoNever from actuator)
+    let tree = model.body_treeid[1];
+    assert_eq!(
+        model.tree_sleep_policy[tree],
+        SleepPolicy::Allowed,
+        "explicit sleep='allowed' should override AutoNever from actuator"
+    );
+
+    // It should actually be able to sleep
+    let mut data = model.make_data();
+    for _ in 0..5000 {
+        data.step(&model).expect("step");
+    }
+    assert!(
+        data.tree_asleep[tree] >= 0,
+        "Allowed-policy actuated tree should be asleep after settling"
+    );
+}
+
+// ============================================================================
+// T57: test_policy_relaxation_tendon_zero_stiffness (§16.18.2, AC #26)
+// ============================================================================
+
+#[test]
+fn test_policy_relaxation_tendon_zero_stiffness() {
+    // A multi-tree tendon with zero stiffness and zero damping should NOT
+    // prevent its spanning trees from sleeping.
+    let mjcf = r#"
+    <mujoco model="tendon_zero_stiffness">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="body_a" pos="-1 0 0.5">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+                <site name="s_a" pos="0 0 0"/>
+            </body>
+            <body name="body_b" pos="1 0 0.5">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+                <site name="s_b" pos="0 0 0"/>
+            </body>
+        </worldbody>
+        <tendon>
+            <spatial name="t_ab" stiffness="0" damping="0">
+                <site site="s_a"/>
+                <site site="s_b"/>
+            </spatial>
+        </tendon>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load model");
+
+    // Both trees should have AutoAllowed (not AutoNever)
+    let tree_a = model.body_treeid[1];
+    let tree_b = model.body_treeid[2];
+    assert_eq!(
+        model.tree_sleep_policy[tree_a],
+        SleepPolicy::AutoAllowed,
+        "zero-stiffness tendon should allow sleep for tree A"
+    );
+    assert_eq!(
+        model.tree_sleep_policy[tree_b],
+        SleepPolicy::AutoAllowed,
+        "zero-stiffness tendon should allow sleep for tree B"
+    );
+}
+
+// ============================================================================
+// T58: test_policy_relaxation_tendon_nonzero_stiffness (§16.18.2, AC #27)
+// ============================================================================
+
+#[test]
+fn test_policy_relaxation_tendon_nonzero_stiffness() {
+    // A multi-tree tendon with nonzero stiffness should force AutoNever
+    // on its spanning trees (passive coupling prevents independent sleep).
+    let mjcf = r#"
+    <mujoco model="tendon_nonzero_stiffness">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="body_a" pos="-1 0 0.5">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+                <site name="s_a" pos="0 0 0"/>
+            </body>
+            <body name="body_b" pos="1 0 0.5">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+                <site name="s_b" pos="0 0 0"/>
+            </body>
+        </worldbody>
+        <tendon>
+            <spatial name="t_ab" stiffness="100">
+                <site site="s_a"/>
+                <site site="s_b"/>
+            </spatial>
+        </tendon>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load model");
+
+    // Both trees should have AutoNever (stiff tendon couples them)
+    let tree_a = model.body_treeid[1];
+    let tree_b = model.body_treeid[2];
+    assert_eq!(
+        model.tree_sleep_policy[tree_a],
+        SleepPolicy::AutoNever,
+        "nonzero-stiffness tendon should force AutoNever on tree A"
+    );
+    assert_eq!(
+        model.tree_sleep_policy[tree_b],
+        SleepPolicy::AutoNever,
+        "nonzero-stiffness tendon should force AutoNever on tree B"
+    );
+}
+
+// ============================================================================
+// T71: test_actuated_sleep_zeros_qfrc_actuator (§16.18.1, AC #40)
+// ============================================================================
+
+#[test]
+fn test_actuated_sleep_zeros_qfrc_actuator() {
+    // When an actuated tree with Allowed policy sleeps, qfrc_actuator for
+    // its DOFs must be zeroed. Verify this via sleep_trees() behavior.
+    let mjcf = r#"
+    <mujoco model="actuated_sleep_zero">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="arm" pos="0 0 0.5" sleep="allowed">
+                <freejoint name="arm_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+        <actuator>
+            <motor joint="arm_free" gear="1 0 0 0 0 0"/>
+        </actuator>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load model");
+    let mut data = model.make_data();
+
+    // Apply nonzero control briefly to produce qfrc_actuator
+    data.ctrl[0] = 1.0;
+    for _ in 0..5 {
+        data.step(&model).expect("step");
+    }
+    // Verify qfrc_actuator was nonzero from control
+    let tree = model.body_treeid[1];
+    let dof_start = model.tree_dof_adr[tree];
+    assert!(
+        data.qfrc_actuator[dof_start] != 0.0,
+        "qfrc_actuator should be nonzero with active control"
+    );
+
+    // Zero control and let it settle to sleep
+    data.ctrl[0] = 0.0;
+    for _ in 0..8000 {
+        data.step(&model).expect("step");
+    }
+
+    assert!(
+        data.tree_asleep[tree] >= 0,
+        "tree should be asleep after settling"
+    );
+
+    // qfrc_actuator for the sleeping tree's DOFs should be zero
+    let dof_count = model.tree_dof_num[tree];
+    for dof in dof_start..dof_start + dof_count {
+        assert_eq!(
+            data.qfrc_actuator[dof], 0.0,
+            "qfrc_actuator[{dof}] should be zeroed when sleeping"
+        );
+    }
+}
