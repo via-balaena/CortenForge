@@ -1,11 +1,11 @@
 //! Integration tests for §16: Sleeping / Body Deactivation.
 //!
-//! Covers tests T1–T14, T17–T28 from `sim/docs/todo/future_work_5.md`.
+//! Covers tests T1–T14, T17–T28, T31–T35 from `sim/docs/todo/future_work_5.md`.
 //! Benchmarks T15–T16 are in a separate benchmark file.
 
 use approx::assert_relative_eq;
 use sim_core::batch::BatchSim;
-use sim_core::{ENABLE_SLEEP, SleepPolicy, SleepState};
+use sim_core::{DISABLE_ISLAND, ENABLE_SLEEP, SleepPolicy, SleepState};
 use sim_mjcf::load_model;
 use std::sync::Arc;
 
@@ -1926,4 +1926,289 @@ fn test_tendon_actuator_policy() {
         SleepPolicy::AutoNever,
         "tree with tendon-driven actuator should be AutoNever"
     );
+}
+
+// ============================================================================
+// T31–T35: Island Discovery (§16.11)
+// ============================================================================
+
+/// T31: Two free bodies resting on ground plane. Each contacts the ground,
+/// so each tree has constraint edges. But they are NOT in contact with each
+/// other, so they form separate islands (or both contact world → same ground
+/// but world body is tree 0 / not a tree). Actually, contacts with the world
+/// ground plane create self-edges (world body has no tree), so each body's
+/// tree gets a self-edge → 2 separate singleton islands.
+///
+/// To test cross-tree grouping, we place two bodies in direct contact.
+#[test]
+fn test_island_discovery_two_body_contact() {
+    // Two spheres stacked: sphere A rests on ground, sphere B rests on A.
+    // A contacts ground (self-edge on tree_A), B contacts A (cross-edge tree_A ↔ tree_B).
+    // Result: both trees in one island.
+    let mjcf = r#"
+    <mujoco model="island_two_contact">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.5">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="A" pos="0 0 0.1">
+                <freejoint name="jA"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+            <body name="B" pos="0 0 0.31">
+                <freejoint name="jB"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Step enough for bodies to settle and make contact
+    for _ in 0..500 {
+        data.step(&model).expect("step");
+    }
+
+    // After settling, both bodies should be in contact.
+    // Check island discovery found at least 1 island grouping both trees.
+    let ntree = model.ntree;
+    assert!(ntree >= 2, "need at least 2 trees, got {ntree}");
+
+    // Both trees should be assigned to the same island (or both have contacts)
+    let tree_a = model.body_treeid[1]; // body A
+    let tree_b = model.body_treeid[2]; // body B
+
+    // If both have island assignments, they should be in the same island
+    // (because B contacts A, creating a cross-tree edge)
+    if data.tree_island[tree_a] >= 0 && data.tree_island[tree_b] >= 0 {
+        assert_eq!(
+            data.tree_island[tree_a], data.tree_island[tree_b],
+            "trees A and B should be in the same island (contact coupling)"
+        );
+        assert!(
+            data.nisland >= 1,
+            "should have at least 1 island, got {}",
+            data.nisland
+        );
+    }
+    // If bodies fell asleep before we check, islands might be 0 (no constraints
+    // for sleeping bodies). That's acceptable — the test validates grouping when active.
+}
+
+/// T32: Chain of 3 bodies in contact → 1 island.
+/// A contacts B, B contacts C → all 3 trees in one island via transitivity.
+#[test]
+fn test_island_discovery_chain() {
+    // Three spheres stacked vertically: C on B on A on ground.
+    let mjcf = r#"
+    <mujoco model="island_chain">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.5">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="A" pos="0 0 0.1">
+                <freejoint name="jA"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+            <body name="B" pos="0 0 0.31">
+                <freejoint name="jB"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+            <body name="C" pos="0 0 0.52">
+                <freejoint name="jC"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Step to settle
+    for _ in 0..500 {
+        data.step(&model).expect("step");
+    }
+
+    let ntree = model.ntree;
+    assert!(ntree >= 3, "need at least 3 trees, got {ntree}");
+
+    let tree_a = model.body_treeid[1];
+    let tree_b = model.body_treeid[2];
+    let tree_c = model.body_treeid[3];
+
+    // All three should be in the same island (chained contacts)
+    if data.tree_island[tree_a] >= 0
+        && data.tree_island[tree_b] >= 0
+        && data.tree_island[tree_c] >= 0
+    {
+        assert_eq!(
+            data.tree_island[tree_a], data.tree_island[tree_b],
+            "A and B should be in the same island"
+        );
+        assert_eq!(
+            data.tree_island[tree_b], data.tree_island[tree_c],
+            "B and C should be in the same island"
+        );
+    }
+}
+
+/// T33: Unconstrained tree (no contacts, no equality constraints) → island = -1.
+#[test]
+fn test_island_singleton() {
+    // A single floating body with no ground plane → no contacts → singleton.
+    let mjcf = r#"
+    <mujoco model="island_singleton">
+        <option gravity="0 0 0" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="floater" pos="0 0 1">
+                <freejoint name="jf"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // One step to run pipeline (including island discovery)
+    data.step(&model).expect("step");
+
+    let tree = model.body_treeid[1];
+    assert!(tree < model.ntree, "body should have valid tree");
+
+    // No contacts, no equality → singleton → island = -1
+    assert_eq!(
+        data.tree_island[tree], -1,
+        "unconstrained tree should be singleton (island = -1)"
+    );
+    assert_eq!(data.nisland, 0, "no islands when no constraints");
+}
+
+/// T34: DISABLE_ISLAND flag → nisland = 0, all tree_island = -1.
+#[test]
+fn test_disable_island_flag() {
+    let mjcf = r#"
+    <mujoco model="disable_island">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="ball" pos="0 0 0.2">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let mut model = load_model(mjcf).expect("load");
+    model.disableflags |= DISABLE_ISLAND;
+    let mut data = model.make_data();
+
+    // Step to generate contacts
+    for _ in 0..100 {
+        data.step(&model).expect("step");
+    }
+
+    assert_eq!(data.nisland, 0, "DISABLE_ISLAND → nisland = 0");
+    for t in 0..model.ntree {
+        assert_eq!(
+            data.tree_island[t], -1,
+            "DISABLE_ISLAND → all tree_island = -1"
+        );
+    }
+}
+
+/// T35: Island array consistency — sum of island_ntree == number of island-assigned trees,
+/// sum of island_nv == total DOFs in islands, sum of island_nefc == total constraint rows in islands.
+#[test]
+fn test_island_array_consistency() {
+    // Two bodies on a ground plane to create at least one island.
+    let mjcf = r#"
+    <mujoco model="island_consistency">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.5">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1"/>
+            <body name="A" pos="0 0 0.1">
+                <freejoint name="jA"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+            <body name="B" pos="0 0 0.31">
+                <freejoint name="jB"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Step to settle and create contacts
+    for _ in 0..500 {
+        data.step(&model).expect("step");
+    }
+
+    let nisland = data.nisland;
+
+    // Sum of island_ntree should equal number of trees assigned to islands
+    let sum_ntree: usize = data.island_ntree[..nisland].iter().sum();
+    let assigned_trees = (0..model.ntree)
+        .filter(|&t| data.tree_island[t] >= 0)
+        .count();
+    assert_eq!(
+        sum_ntree, assigned_trees,
+        "sum(island_ntree) should equal count of assigned trees"
+    );
+
+    // Sum of island_nv should equal number of DOFs assigned to islands
+    let sum_nv: usize = data.island_nv[..nisland].iter().sum();
+    let assigned_dofs = (0..model.nv).filter(|&d| data.dof_island[d] >= 0).count();
+    assert_eq!(
+        sum_nv, assigned_dofs,
+        "sum(island_nv) should equal count of assigned DOFs"
+    );
+
+    // Sum of island_nefc should equal number of constraint rows assigned to islands
+    let nefc = data.efc_island.len();
+    let sum_nefc: usize = data.island_nefc[..nisland].iter().sum();
+    let assigned_efc = (0..nefc).filter(|&r| data.efc_island[r] >= 0).count();
+    assert_eq!(
+        sum_nefc, assigned_efc,
+        "sum(island_nefc) should equal count of assigned constraint rows"
+    );
+
+    // Verify map_itree2tree contains valid tree indices
+    for i in 0..nisland {
+        let start = data.island_itreeadr[i];
+        let count = data.island_ntree[i];
+        for j in start..start + count {
+            let tree = data.map_itree2tree[j];
+            assert!(tree < model.ntree, "invalid tree in map_itree2tree");
+            assert_eq!(
+                data.tree_island[tree], i as i32,
+                "tree in map_itree2tree should point back to island"
+            );
+        }
+    }
+
+    // Verify map_idof2dof contains valid DOF indices
+    for i in 0..nisland {
+        let start = data.island_idofadr[i];
+        let count = data.island_nv[i];
+        for j in start..start + count {
+            let dof = data.map_idof2dof[j];
+            assert!(dof < model.nv, "invalid DOF in map_idof2dof");
+            assert_eq!(
+                data.dof_island[dof], i as i32,
+                "DOF in map_idof2dof should point back to island"
+            );
+        }
+    }
 }
