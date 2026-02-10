@@ -2559,6 +2559,12 @@ impl ModelBuilder {
             dof_damping: self.dof_damping,
             dof_frictionloss: self.dof_frictionloss,
 
+            // Sparse LDL CSR metadata (computed below via compute_qld_csr_metadata)
+            qLD_rowadr: vec![],
+            qLD_rownnz: vec![],
+            qLD_colind: vec![],
+            qLD_nnz: 0,
+
             geom_type: self.geom_type,
             geom_body: self.geom_body,
             geom_pos: self.geom_pos,
@@ -2725,6 +2731,11 @@ impl ModelBuilder {
 
         // Pre-compute implicit integration parameters (K, D, q_eq diagonals)
         model.compute_implicit_params();
+
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization.
+        // Must be called after dof_parent is finalized and before anything that
+        // calls mj_crba (which uses mj_factor_sparse).
+        model.compute_qld_csr_metadata();
 
         // Compute tendon_length0 for spatial tendons (requires FK via mj_fwd_position).
         // Must run before compute_muscle_params() which needs valid tendon_length0.

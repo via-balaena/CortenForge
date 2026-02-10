@@ -303,25 +303,65 @@ M[dof,dof] += armature[dof]
 **Phase 5 — Sparse L^T D L factorization (`mj_factor_sparse`):**
 
 Exploits kinematic tree sparsity via `dof_parent` for O(Σ depth(i)²)
-factorization vs O(nv³) dense Cholesky. Stores result in `qLD_diag` (diagonal D)
-and `qLD_L` (unit lower triangular L as sparse rows). Reused by
-`mj_fwd_acceleration_explicit` and `pgs_solve_contacts` via `mj_solve_sparse`.
+factorization vs O(nv³) dense Cholesky. Uses flat CSR storage matching
+MuJoCo's `mj_factorI`: immutable sparsity metadata in Model
+(`qLD_rowadr`, `qLD_rownnz`, `qLD_colind`) and factored values in Data
+(`qLD_data` with unified diagonal layout, `qLD_diag_inv` for precomputed
+reciprocals).
+
+**Unified diagonal layout:** The diagonal element D[i,i] is stored as the
+last element of each CSR row: `qLD_data[rowadr[i] + rownnz[i] - 1]`.
+Off-diagonal L entries occupy `qLD_data[rowadr[i]..rowadr[i]+rownnz[i]-1]`.
+During factorization, `qLD_diag_inv[i] = 1.0 / D[i,i]` is precomputed so
+that the solve phase uses multiply (`x[i] *= diag_inv[i]`) instead of
+divide, avoiding per-DOF division in the hot path.
+
+The inner loop uses bulk row updates (MuJoCo's `mju_addToScl` pattern)
+instead of per-element column search, exploiting the ancestor row superset
+property: if DOF `j` is ancestor of DOF `i`, then `ancestors(j) ⊆ ancestors(i)`
+and `row_i[0..nnz_j]` has identical column indices to `row_j[0..nnz_j]`.
+
+When sleep is enabled with sleeping trees, `mj_factor_sparse_selective`
+dispatches to partial factorization that skips sleeping DOFs entirely
+(C3b, §16.29.5). Tree independence guarantees no cross-contamination.
 
 ```python
+# CSR metadata (immutable, computed once at model build):
+# rowadr[i] = start address of row i in qLD_data
+# rownnz[i] = total entries in row i (off-diagonal L entries + 1 diagonal)
+# colind[rowadr[i]..rowadr[i]+rownnz[i]] = ancestor column indices
+#
+# Unified diagonal layout:
+#   off-diagonal L entries: qLD_data[rowadr[i] .. rowadr[i]+rownnz[i]-1]
+#   diagonal D[i,i]:        qLD_data[rowadr[i] + rownnz[i] - 1]
+
 # Phase 1: Copy M's sparse entries into qLD working storage
 for i in range(nv):
-    qLD_diag[i] = M[i,i]
-    qLD_L[i] = [(j, M[i,j]) for j in ancestors(i)]  # via dof_parent chain
+    # Off-diagonal entries
+    for k in range(rownnz[i] - 1):
+        qLD_data[rowadr[i]+k] = M[i, colind[rowadr[i]+k]]
+    # Diagonal as last element
+    qLD_data[rowadr[i] + rownnz[i] - 1] = M[i,i]
 
-# Phase 2: Eliminate from leaves to root
+# Phase 2: Eliminate from leaves to root (bulk row update)
 for i in range(nv-1, -1, -1):
-    di = qLD_diag[i]
-    for (j, val) in qLD_L[i]:
-        qLD_L[i][j] = val / di          # Normalize L entries
-    for (j, lij) in qLD_L[i]:
-        qLD_diag[j] -= lij * lij * di   # Update ancestor diagonal
-        for (k, lik) in qLD_L[i] where k < j:
-            qLD_L[j][k] -= lij * lik * di  # Update ancestor off-diagonal
+    diag_i = rowadr[i] + rownnz[i] - 1       # index of D[i,i] in qLD_data
+    di = qLD_data[diag_i]
+    inv_di = 1.0 / di
+    diag_inv[i] = inv_di                       # precompute for solve phase
+    n_offdiag = rownnz[i] - 1                  # number of off-diagonal entries
+    for k in range(n_offdiag):
+        qLD_data[rowadr[i]+k] *= inv_di        # Normalize L entries
+    for a in range(n_offdiag-1, -1, -1):       # deep-to-shallow
+        j = colind[rowadr[i]+a]
+        lij = qLD_data[rowadr[i]+a]
+        diag_j = rowadr[j] + rownnz[j] - 1
+        qLD_data[diag_j] -= lij * lij * di     # Update D[j,j]
+        # Bulk update: row_j[0..n_offdiag_j] += scale * row_i[0..a]
+        # (ancestor superset property guarantees aligned columns)
+        scale = -lij * di
+        for k in range(a):
+            qLD_data[rowadr[j]+k] += scale * qLD_data[rowadr[i]+k]
 ```
 
 ### 4.2 Recursive Newton-Euler (`mj_rne`)
@@ -549,7 +589,31 @@ qacc = M^-1 @ qfrc_total
 ```
 
 Solved via `mj_solve_sparse` using the sparse L^T D L factorization from CRBA.
-The solve applies L^T, D, then L in three passes — each O(nv) for tree-sparse L.
+The solve applies L^T, D^{-1}, then L in three passes — each O(nv) for tree-sparse L.
+The D^{-1} pass uses the precomputed `diag_inv[i]` via multiply (`x[i] *= diag_inv[i]`)
+rather than divide, since the reciprocals were cached during factorization.
+
+```python
+# mj_solve_sparse(rowadr, rownnz, colind, qLD_data, diag_inv, x):
+#
+# Phase 1: L^T solve (forward, i = nv-1 down to 0)
+for i in range(nv-1, -1, -1):
+    n_offdiag = rownnz[i] - 1
+    for k in range(n_offdiag):
+        j = colind[rowadr[i]+k]
+        x[j] -= qLD_data[rowadr[i]+k] * x[i]
+
+# Phase 2: D^{-1} solve (multiply by precomputed reciprocal)
+for i in range(nv):
+    x[i] *= diag_inv[i]       # NOT x[i] /= D[i] — division precomputed
+
+# Phase 3: L solve (backward, i = 0 up to nv-1)
+for i in range(nv):
+    n_offdiag = rownnz[i] - 1
+    for k in range(n_offdiag):
+        j = colind[rowadr[i]+k]
+        x[i] -= qLD_data[rowadr[i]+k] * x[j]
+```
 
 **Implicit path (ImplicitSpringDamper — legacy diagonal):**
 

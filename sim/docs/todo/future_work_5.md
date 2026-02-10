@@ -5168,7 +5168,8 @@ qacc_smooth -= &data.qfrc_bias;
 // assemble_contact_system() at line 12432. Penalty forces (limits,
 // equality) are applied separately via qfrc_constraint and do not
 // enter the Delassus assembly.
-mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
+let (rowadr, rownnz, colind) = model.qld_csr();
+mj_solve_sparse(&data.qLD_diag, rowadr, rownnz, colind, &data.qLD_data, &mut qacc_smooth);
 
 // Per island: extract slice
 for i in 0..nv_k {
@@ -5285,7 +5286,7 @@ Hence the two-sub-step split: C3a (body loops, low risk) and C3b
   never touches tree B's `qLD` entries. If tree B is sleeping, its
   `qLD` entries are untouched by the partial elimination and remain
   valid from the last awake step.
-- `mj_solve_sparse()` reads sleeping DOFs' `qLD_L` and `qLD_diag` in
+- `mj_solve_sparse()` reads sleeping DOFs' `qLD_data` and `qLD_diag` in
   its forward/backward substitution. For sleeping DOFs, the RHS is zero,
   so the output for those DOFs is zero regardless of the `qLD` values.
   The critical property: the solve does NOT propagate sleeping DOF
@@ -5726,14 +5727,16 @@ Both fixes are covered by existing tests: Discovery 1 by
 
 ###### 16.29.5 Step C3b — Partial LDL Factorization
 
-**Scope:** Replace `mj_factor_sparse(model, data)` with
-`mj_factor_sparse_selective(model, data)` that skips DOF blocks
-belonging to sleeping trees. This is a **separate commit** from C3a,
-deferred until profiling shows LDL factorization is a meaningful
-fraction of `mj_crba`'s runtime.
+**Status: ✅ Complete.**
 
-**Precondition:** C3a complete. Profiling data showing LDL > 20% of
-selective CRBA runtime for target model sizes.
+**Scope:** `mj_factor_sparse_selective(model, data)` replaces
+`mj_factor_sparse` in `mj_crba`'s Phase 5. When sleeping trees are
+present, it skips DOF blocks belonging to sleeping trees. Implemented
+alongside CSR migration — `qLD_L: Vec<Vec<(usize, f64)>>` replaced
+with flat CSR storage (`qLD_data: Vec<f64>` + immutable Model metadata
+`qLD_rowadr`/`qLD_rownnz`/`qLD_colind`), matching MuJoCo's `mj_factorI`.
+
+**Precondition:** C3a complete.
 
 **Key insight — tree independence simplifies everything:**
 
@@ -5756,60 +5759,53 @@ analysis needed. No cross-tree contamination possible.
 
 ```rust
 fn mj_factor_sparse_selective(model: &Model, data: &mut Data) {
-    let nv = model.nv;
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     let sleep_filter = sleep_enabled && data.nv_awake < model.nv;
 
     if !sleep_filter {
-        // Full factorization (original code, unchanged)
-        mj_factor_sparse_full(model, data);
+        mj_factor_sparse(model, data);  // Full factorization fast path
         return;
     }
 
-    // Phase 1: Copy M's sparse entries into qLD working storage.
-    // Only process awake DOFs. Sleeping DOFs' qLD entries are
-    // preserved from their last awake step.
+    let (rowadr, rownnz, colind) = model.qld_csr();
+
+    // Phase 1: Copy M into CSR for awake DOFs only.
+    // Sleeping DOFs' qLD_diag and qLD_data entries are preserved.
     for idx in 0..data.nv_awake {
         let i = data.dof_awake_ind[idx];
         data.qLD_diag[i] = data.qM[(i, i)];
-        data.qLD_L[i].clear();
-        let mut p = model.dof_parent[i];
-        while let Some(j) = p {
-            data.qLD_L[i].push((j, data.qM[(i, j)]));
-            p = model.dof_parent[j];
+        let start = rowadr[i];
+        let nnz = rownnz[i];
+        for k in 0..nnz {
+            data.qLD_data[start + k] = data.qM[(i, colind[start + k])];
         }
-        data.qLD_L[i].reverse();
     }
 
-    // Phase 2: Eliminate from leaves to root, awake DOFs only.
-    //
-    // Process awake DOFs in reverse global order. Since dof_awake_ind
-    // is sorted ascending, iterate it in reverse:
+    // Phase 2: Eliminate awake DOFs only (reverse order).
+    // Uses bulk row update (mju_addToScl pattern) — no find() scan.
     for idx in (0..data.nv_awake).rev() {
         let i = data.dof_awake_ind[idx];
         let di = data.qLD_diag[i];
+        let start_i = rowadr[i];
+        let nnz_i = rownnz[i];
+        if nnz_i == 0 { continue; }
 
-        // Scale off-diagonals: L[i,j] = working[i,j] / D[i]
-        for entry in &mut data.qLD_L[i] {
-            entry.1 /= di;
+        let inv_di = 1.0 / di;
+        for k in 0..nnz_i {
+            data.qLD_data[start_i + k] *= inv_di;
         }
 
-        // Propagate rank-1 update to ancestors.
-        // All ancestors of i are in the same tree (awake), so their
-        // qLD entries are being computed this step — no stale reads.
-        let (lo, hi) = data.qLD_L.split_at_mut(i);
-        let row_i = &hi[0];
-
-        for idx_a in 0..row_i.len() {
-            let (j, lij) = row_i[idx_a];
+        for a in (0..nnz_i).rev() {
+            let j = colind[start_i + a];
+            let lij = data.qLD_data[start_i + a];
             data.qLD_diag[j] -= lij * lij * di;
-            for idx_b in 0..idx_a {
-                let (k, lik) = row_i[idx_b];
-                if let Some(entry) = lo[j].iter_mut()
-                    .find(|(col, _)| *col == k)
-                {
-                    entry.1 -= lij * lik * di;
-                }
+            // Bulk update: row_j[0..nnz_j] += scale * row_i[0..a]
+            // (a == rownnz[j] by ancestor superset property)
+            let start_j = rowadr[j];
+            let scale = -lij * di;
+            let (lo, hi) = data.qLD_data.split_at_mut(start_i);
+            for k in 0..a {
+                lo[start_j + k] += scale * hi[k];
             }
         }
     }
@@ -5828,7 +5824,7 @@ fn mj_factor_sparse_selective(model: &Model, data: &mut Data) {
 
 2. **Sleeping DOFs untouched:** No sleeping DOF index appears in
    `dof_awake_ind`. The Phase 1 copy and Phase 2 elimination loops
-   only visit awake DOFs. Sleeping DOFs' `qLD_diag` and `qLD_L`
+   only visit awake DOFs. Sleeping DOFs' `qLD_diag` and `qLD_data`
    entries are not read or written.
 
 3. **Ordering preserved:** The elimination must process DOFs from
@@ -5847,8 +5843,9 @@ fn mj_factor_sparse_selective(model: &Model, data: &mut Data) {
 
 **`mj_solve_sparse` — no changes needed:**
 
-The solve function `mj_solve_sparse(qld_diag, qld_l, x)` reads all
-`nv` entries of `qLD_diag` and `qLD_L`. For sleeping DOFs:
+The solve function `mj_solve_sparse(qld_diag, rowadr, rownnz, colind,
+qld_data, x)` reads all `nv` entries of `qLD_diag` and `qLD_data`.
+For sleeping DOFs:
 - Phase 1 (L^T solve): `x[j] -= lij * x[i]`. For sleeping DOF `i`,
   `x[i] = 0` (sleeping DOFs have zero RHS), so the subtraction is
   zero. For sleeping DOF `j` as an ancestor, `j` is in the same tree
@@ -5870,12 +5867,12 @@ sleeping DOFs. No modification needed.
 | Numerical instability from stale sleeping qLD | Low | Medium (solve divergence) | Tree independence guarantees no cross-contamination. SPD property preserved per-block. Test T104 validates positive diagonal (SPD preservation). |
 | Performance regression when all awake | Low | Low (wasted branch) | `sleep_filter` short-circuit returns to original full path. Test T103 verifies all-awake bit-identity. |
 | `qLD_diag[sleeping] = 0` causing division by zero in solve | None | High | Sleeping DOFs' `qLD_diag` entries are preserved from last awake step (positive by SPD). Never zeroed. |
-| Stale `qLD_L` entries causing incorrect awake solve | None | High | Tree independence: awake DOF's ancestor chain is entirely within the awake tree. No sleeping DOF's `qLD_L` is read during awake elimination. |
+| Stale `qLD_data` entries causing incorrect awake solve | None | High | Tree independence: awake DOF's ancestor chain is entirely within the awake tree. No sleeping DOF's `qLD_data` is read during awake elimination. |
 
-**Deferred trigger:** Implement C3b when profiling a representative
-model (humanoid + 50 sleeping props) shows `mj_factor_sparse` > 20%
-of `mj_crba` (with sleep filtering) runtime. Expected to trigger for models with
-nv > 100 and shallow tree structure.
+**Implementation note:** C3b was implemented proactively alongside the
+CSR migration. The flat CSR storage eliminates the O(depth) `find()`
+scan from the original `Vec<Vec<(usize, f64)>>` approach, making the
+partial factorization both correct and performant.
 
 ###### 16.29.7 Acceptance Criteria
 
@@ -5883,7 +5880,7 @@ nv > 100 and shallow tree structure.
 
 59. Selective CRBA produces identical `qM` entries for awake DOFs as
     full CRBA (bit-identical, not epsilon-close).
-60. `qLD_diag` and `qLD_L` for **awake** DOFs are identical whether
+60. `qLD_diag` and `qLD_data` for **awake** DOFs are identical whether
     the input `qM` came from selective CRBA or full CRBA. (Both run
     full `mj_factor_sparse`, but sleeping DOFs' `qM` entries differ:
     zeros from full CRBA vs stale-from-last-awake from selective.
@@ -5917,9 +5914,9 @@ nv > 100 and shallow tree structure.
 
 **C3b (Partial LDL factorization):**
 
-70. Partial LDL produces identical `qLD_diag` and `qLD_L` for awake
+70. Partial LDL produces identical `qLD_diag` and `qLD_data` for awake
     DOFs as full `mj_factor_sparse` (bit-identical).
-71. Sleeping DOFs' `qLD_diag` and `qLD_L` entries are preserved from
+71. Sleeping DOFs' `qLD_diag` and `qLD_data` entries are preserved from
     their last awake step (not modified by partial elimination).
 72. `mj_solve_sparse` with partial `qLD` produces identical `qacc`
     for awake DOFs as full `qLD` (when RHS has zero entries for
@@ -5975,7 +5972,7 @@ Phase C has four steps, ordered by dependency and risk:
 | C1 | §16.27 | Awake-index pipeline iteration | Phase B complete | Low | ✅ Done |
 | C2 | §16.28 | Island-local Delassus assembly | C1 (uses `dof_awake_ind` patterns) | Medium | ✅ Done |
 | C3a | §16.29 | Selective CRBA body loops | C1 (uses `body_awake_ind`) | Medium | ✅ Done |
-| C3b | §16.29 | Partial LDL factorization | C3a + profiling trigger | Medium | Deferred |
+| C3b | §16.29 | Partial LDL factorization | C3a + profiling trigger | Medium | ✅ Done |
 
 **C1 first** because it establishes the indirection iteration pattern
 that C2 and C3 build on. It's also the lowest-risk change — purely
@@ -5991,10 +5988,11 @@ sleeping DOFs' `qM` entries, reducing the risk of stale values).
 C3a preserves full LDL factorization — no correctness risk from
 partial elimination.
 
-**C3b deferred** until profiling shows LDL factorization is > 20% of
-selective CRBA runtime. The tree-independence insight (§16.29.5) reduces
-C3b's risk from "High" to "Medium" — no complex reachability analysis
-needed, just skip sleeping trees' DOF ranges.
+**C3b complete.** Implemented alongside the CSR migration (flat CSR
+storage matching MuJoCo's `mj_factorI`). `mj_factor_sparse_selective`
+dispatches to partial factorization when sleeping trees are present,
+skipping sleeping DOFs entirely. Tests T99–T106 validate all acceptance
+criteria #70–76.
 
 **C3a implementation sub-order:**
 1. Phase 0: Selective `qM` zeroing (per-tree diagonal blocks).
@@ -6232,6 +6230,7 @@ Items acknowledged but not prioritized for Phase 2:
 | `<visual>` element | L1 concern (sim-bevy), not core physics. |
 | `<statistic>` element | Auto-computed model stats. Informational only. |
 | Sleeping bodies in deformable | Depends on #16. (#11 deformable pipeline ✅ complete) |
+| ~~Separate `qLD_diag` field (diagonal layout divergence)~~ | ✅ **Fixed.** Unified diagonal layout implemented: D[i,i] is now stored as the last element of each CSR row in `qLD_data` (`qLD_data[rowadr[i] + rownnz[i] - 1]`), eliminating the separate `qLD_diag` array. `qLD_diag_inv[i] = 1/D[i,i]` is precomputed during factorization so the solve phase uses multiply (`x[i] *= diag_inv[i]`) instead of divide. This matches MuJoCo's inline diagonal storage and removes the layout divergence. Note: pseudocode in §16.29.5 (C3b partial factorization) still references the old `qLD_diag` field name for historical context; the implementation uses the unified layout. |
 | Sparse mass matrix (deeper MuJoCo parity) | Phase 1 #1/#2 cover the main path. Full sparse pipeline is diminishing returns. |
 | MuJoCo conformance test suite | Important but orthogonal to features — can be built incrementally. Without this, acceptance criteria for items #1–#17 rely on ad-hoc verification rather than systematic comparison against MuJoCo reference outputs. Consider bootstrapping a minimal conformance harness (load model, step N times, compare state vectors against MuJoCo ground truth) as infrastructure that benefits all items. |
 | SIMD utilization (unused batch ops) | sim-simd exists; utilization will come naturally with #9/#10. |

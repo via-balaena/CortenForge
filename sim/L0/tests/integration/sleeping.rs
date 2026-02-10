@@ -1,7 +1,8 @@
 //! Integration tests for §16: Sleeping / Body Deactivation.
 //!
-//! Covers tests T1–T14, T17–T28, T31–T42, T59–T60, T72–T98 from `sim/docs/todo/future_work_5.md`.
+//! Covers tests T1–T14, T17–T28, T31–T42, T59–T60, T72–T106 from `sim/docs/todo/future_work_5.md`.
 //! Phase C step C3a tests T89–T98 validate selective CRBA (§16.29.3).
+//! Phase C step C3b tests T99–T106 validate partial LDL factorization (§16.29.5).
 //! Benchmarks T15–T16 are in a separate benchmark file.
 
 use approx::assert_relative_eq;
@@ -4354,10 +4355,11 @@ fn test_selective_crba_multi_tree() {
 
     // Verify qLD is valid (no NaN, positive diagonals)
     for d in 0..model.nv {
+        let diag = data.qld_diag(&model, d);
         assert!(
-            data.qLD_diag[d].is_finite() && data.qLD_diag[d] > 0.0,
+            diag.is_finite() && diag > 0.0,
             "qLD_diag[{d}] should be positive finite, got {}",
-            data.qLD_diag[d]
+            diag
         );
     }
 }
@@ -4460,10 +4462,11 @@ fn test_selective_crba_deep_chain() {
 
     // Verify LDL valid
     for d in 0..model.nv {
+        let diag = data.qld_diag(&model, d);
         assert!(
-            data.qLD_diag[d].is_finite() && data.qLD_diag[d] > 0.0,
+            diag.is_finite() && diag > 0.0,
             "qLD_diag[{d}] should be positive finite, got {}",
-            data.qLD_diag[d]
+            diag
         );
     }
 }
@@ -4503,6 +4506,7 @@ fn test_selective_crba_qld_awake_matches_full() {
     data_ref.step(&model_ref).expect("ref step");
 
     // Compare qLD for awake DOFs
+    let (rowadr, rownnz, _colind) = model.qld_csr();
     for t in 0..model.ntree {
         if data.tree_asleep[t] >= 0 {
             continue; // Skip sleeping trees
@@ -4511,28 +4515,578 @@ fn test_selective_crba_qld_awake_matches_full() {
         let dof_count = model.tree_dof_num[t];
         for d in dof_start..dof_start + dof_count {
             assert_eq!(
-                data.qLD_diag[d], data_ref.qLD_diag[d],
+                data.qld_diag(&model, d),
+                data_ref.qld_diag(&model_ref, d),
                 "qLD_diag[{d}] differs for awake tree {t}"
             );
-            assert_eq!(
-                data.qLD_L[d].len(),
-                data_ref.qLD_L[d].len(),
-                "qLD_L[{d}] length differs for awake tree {t}"
-            );
-            for (idx, (&(col_a, val_a), &(col_b, val_b))) in data.qLD_L[d]
-                .iter()
-                .zip(data_ref.qLD_L[d].iter())
-                .enumerate()
-            {
+            let start = rowadr[d];
+            let nnz = rownnz[d];
+            for k in 0..nnz {
                 assert_eq!(
-                    col_a, col_b,
-                    "qLD_L[{d}][{idx}] column differs for awake tree {t}"
-                );
-                assert_eq!(
-                    val_a, val_b,
-                    "qLD_L[{d}][{idx}] value differs for awake tree {t}"
+                    data.qLD_data[start + k],
+                    data_ref.qLD_data[start + k],
+                    "qLD_data[{d}][{k}] value differs for awake tree {t}"
                 );
             }
         }
     }
+}
+
+// ============================================================================
+// C3b: Partial LDL Factorization (§16.29.5) — Tests T99–T106
+// ============================================================================
+
+/// MJCF fixture for C3b tests: two 3-link hinge chains as separate trees.
+/// Hinge chains produce non-trivial off-diagonal qLD entries (ancestor coupling).
+/// High damping ensures fast settling to sleep.
+fn two_chain_c3b_mjcf() -> &'static str {
+    r#"
+    <mujoco model="two_chain_c3b">
+        <option gravity="0 0 -9.81" timestep="0.001" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="a1" pos="-2 0 0">
+                <joint name="ha1" type="hinge" axis="0 1 0" damping="20"/>
+                <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                <body name="a2" pos="0 0 -0.3">
+                    <joint name="ha2" type="hinge" axis="0 1 0" damping="20"/>
+                    <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    <body name="a3" pos="0 0 -0.3">
+                        <joint name="ha3" type="hinge" axis="0 1 0" damping="20"/>
+                        <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    </body>
+                </body>
+            </body>
+            <body name="b1" pos="2 0 0">
+                <joint name="hb1" type="hinge" axis="0 1 0" damping="20"/>
+                <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                <body name="b2" pos="0 0 -0.3">
+                    <joint name="hb2" type="hinge" axis="0 1 0" damping="20"/>
+                    <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    <body name="b3" pos="0 0 -0.3">
+                        <joint name="hb3" type="hinge" axis="0 1 0" damping="20"/>
+                        <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    </body>
+                </body>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#
+}
+
+/// T99: Partial LDL produces identical qLD for awake DOFs as full factorization (AC #70).
+///
+/// Runs sleep and no-sleep models side by side. After trees sleep and one wakes,
+/// the awake DOFs' qLD_diag and qLD_data must match the full (no-sleep) factorization.
+#[test]
+fn test_partial_ldl_awake_identical() {
+    let model = load_model(two_chain_c3b_mjcf()).expect("load model");
+    let mut data = model.make_data();
+    assert_eq!(model.ntree, 2);
+    assert_eq!(model.nv, 6);
+
+    let nosleep_mjcf =
+        two_chain_c3b_mjcf().replace(r#"<flag sleep="enable"/>"#, r#"<flag sleep="disable"/>"#);
+    let model_ref = load_model(&nosleep_mjcf).expect("load ref");
+    let mut data_ref = model_ref.make_data();
+
+    // Step until both trees sleep
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+        data_ref.step(&model_ref).expect("ref step");
+    }
+    assert!(
+        (0..model.ntree).all(|t| data.tree_asleep[t] >= 0),
+        "both trees should be sleeping"
+    );
+
+    // Wake tree 0 only
+    let body_a1 = model.tree_body_adr[0];
+    data.xfrc_applied[body_a1][2] = 5.0;
+    data_ref.xfrc_applied[body_a1][2] = 5.0;
+
+    // Sync state
+    data_ref.qpos.copy_from(&data.qpos);
+    data_ref.qvel.copy_from(&data.qvel);
+
+    data.step(&model).expect("step");
+    data_ref.step(&model_ref).expect("ref step");
+
+    // Tree 0 should be awake, tree 1 sleeping
+    assert!(data.tree_asleep[0] < 0, "tree 0 should be awake");
+    assert!(data.tree_asleep[1] >= 0, "tree 1 should be sleeping");
+
+    // Compare qLD for awake DOFs (tree 0) — should be bit-identical
+    let (rowadr, rownnz, _colind) = model.qld_csr();
+    let dof_start = model.tree_dof_adr[0];
+    let dof_count = model.tree_dof_num[0];
+    for d in dof_start..dof_start + dof_count {
+        assert_eq!(
+            data.qld_diag(&model, d),
+            data_ref.qld_diag(&model_ref, d),
+            "qLD_diag[{d}] differs for awake tree 0"
+        );
+        let start = rowadr[d];
+        let nnz = rownnz[d];
+        for k in 0..nnz {
+            assert_eq!(
+                data.qLD_data[start + k],
+                data_ref.qLD_data[start + k],
+                "qLD_data[{d}] entry {k} differs for awake tree 0"
+            );
+        }
+    }
+}
+
+/// T100: Sleeping DOFs' qLD entries are preserved from last awake step (AC #71).
+///
+/// Records qLD_diag and qLD_data for a sleeping tree, then steps multiple times
+/// and verifies those entries are unchanged.
+#[test]
+fn test_partial_ldl_sleeping_preserved() {
+    let model = load_model(two_chain_c3b_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Step until at least one tree sleeps
+    let mut slept_tree = None;
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+        for t in 0..model.ntree {
+            if data.tree_asleep[t] >= 0 {
+                slept_tree = Some(t);
+                break;
+            }
+        }
+        if slept_tree.is_some() {
+            break;
+        }
+    }
+    let tree = slept_tree.expect("a tree should have gone to sleep");
+
+    // Record qLD entries for the sleeping tree's DOFs
+    let (rowadr, rownnz, _colind) = model.qld_csr();
+    let dof_start = model.tree_dof_adr[tree];
+    let dof_count = model.tree_dof_num[tree];
+    let saved_diag: Vec<f64> = (dof_start..dof_start + dof_count)
+        .map(|d| data.qld_diag(&model, d))
+        .collect();
+    let saved_data: Vec<Vec<f64>> = (dof_start..dof_start + dof_count)
+        .map(|d| {
+            let start = rowadr[d];
+            let nnz = rownnz[d];
+            (0..nnz).map(|k| data.qLD_data[start + k]).collect()
+        })
+        .collect();
+
+    // Verify entries are non-trivial (positive diagonals from valid factorization)
+    assert!(
+        saved_diag.iter().all(|&d| d > 0.0),
+        "sleeping tree's qLD_diag should be positive"
+    );
+
+    // Step several more times while tree remains asleep
+    for step in 0..20 {
+        data.step(&model).expect("step");
+        assert!(
+            data.tree_asleep[tree] >= 0,
+            "tree should still be asleep at step {step}"
+        );
+
+        // Compare: sleeping DOFs' qLD must be unchanged
+        for (idx, d) in (dof_start..dof_start + dof_count).enumerate() {
+            assert_eq!(
+                data.qld_diag(&model, d),
+                saved_diag[idx],
+                "qLD_diag[{d}] changed while sleeping at step {step}"
+            );
+            let start = rowadr[d];
+            let nnz = rownnz[d];
+            for (k, &saved_val) in saved_data[idx].iter().enumerate().take(nnz) {
+                assert_eq!(
+                    data.qLD_data[start + k],
+                    saved_val,
+                    "qLD_data[{d}] entry {k} changed while sleeping at step {step}"
+                );
+            }
+        }
+    }
+}
+
+/// T101: mj_solve_sparse with partial qLD produces correct qacc for awake DOFs (AC #72).
+///
+/// Compares qacc from sleep-enabled and sleep-disabled models after partial sleep.
+/// Awake DOFs' accelerations should match (sleeping DOFs have zero qacc in both).
+#[test]
+fn test_partial_ldl_solve_correct() {
+    let model = load_model(two_chain_c3b_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    let nosleep_mjcf =
+        two_chain_c3b_mjcf().replace(r#"<flag sleep="enable"/>"#, r#"<flag sleep="disable"/>"#);
+    let model_ref = load_model(&nosleep_mjcf).expect("load ref");
+    let mut data_ref = model_ref.make_data();
+
+    // Step until both trees sleep
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+        data_ref.step(&model_ref).expect("ref step");
+    }
+
+    // Wake tree 0
+    let body_a1 = model.tree_body_adr[0];
+    data.xfrc_applied[body_a1][2] = 5.0;
+    data_ref.xfrc_applied[body_a1][2] = 5.0;
+
+    // Sync state
+    data_ref.qpos.copy_from(&data.qpos);
+    data_ref.qvel.copy_from(&data.qvel);
+
+    data.step(&model).expect("step");
+    data_ref.step(&model_ref).expect("ref step");
+
+    // Compare qacc for awake DOFs (tree 0)
+    let dof_start = model.tree_dof_adr[0];
+    let dof_count = model.tree_dof_num[0];
+    for d in dof_start..dof_start + dof_count {
+        assert_relative_eq!(
+            data.qacc[d],
+            data_ref.qacc[d],
+            epsilon = 1e-10,
+            max_relative = 1e-10,
+        );
+    }
+
+    // Sleeping DOFs should have zero qacc
+    let dof_start_b = model.tree_dof_adr[1];
+    let dof_count_b = model.tree_dof_num[1];
+    for d in dof_start_b..dof_start_b + dof_count_b {
+        assert_eq!(data.qacc[d], 0.0, "sleeping tree qacc[{d}] should be zero");
+    }
+}
+
+/// T102: Waking tree gets fresh qLD (AC #73).
+///
+/// Puts a tree to sleep, records stale qLD, then wakes it and verifies the next
+/// factorization produces identical results to a never-slept simulation.
+#[test]
+fn test_partial_ldl_wake_recomputes() {
+    let model = load_model(two_chain_c3b_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    let nosleep_mjcf =
+        two_chain_c3b_mjcf().replace(r#"<flag sleep="enable"/>"#, r#"<flag sleep="disable"/>"#);
+    let model_ref = load_model(&nosleep_mjcf).expect("load ref");
+    let mut data_ref = model_ref.make_data();
+
+    // Step until both trees sleep
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+        data_ref.step(&model_ref).expect("ref step");
+    }
+
+    // Record sleeping tree 1's qLD as "stale"
+    let (rowadr, rownnz, _colind) = model.qld_csr();
+    let dof_start_b = model.tree_dof_adr[1];
+    let dof_count_b = model.tree_dof_num[1];
+    let _stale_diag: Vec<f64> = (dof_start_b..dof_start_b + dof_count_b)
+        .map(|d| data.qld_diag(&model, d))
+        .collect();
+
+    // Wake BOTH trees — both get fresh factorization
+    let body_a1 = model.tree_body_adr[0];
+    let body_b1 = model.tree_body_adr[1];
+    data.xfrc_applied[body_a1][2] = 10.0;
+    data.xfrc_applied[body_b1][2] = 10.0;
+    data_ref.xfrc_applied[body_a1][2] = 10.0;
+    data_ref.xfrc_applied[body_b1][2] = 10.0;
+
+    // Sync state
+    data_ref.qpos.copy_from(&data.qpos);
+    data_ref.qvel.copy_from(&data.qvel);
+
+    data.step(&model).expect("step");
+    data_ref.step(&model_ref).expect("ref step");
+
+    // All DOFs should be awake now
+    assert!(
+        data.nv_awake == model.nv,
+        "all DOFs should be awake after waking both trees"
+    );
+
+    // After waking, qLD should match the reference (never-slept) factorization
+    for d in 0..model.nv {
+        assert_eq!(
+            data.qld_diag(&model, d),
+            data_ref.qld_diag(&model_ref, d),
+            "qLD_diag[{d}] differs after waking (should match full factorization)"
+        );
+        let start = rowadr[d];
+        let nnz = rownnz[d];
+        for k in 0..nnz {
+            assert_eq!(
+                data.qLD_data[start + k],
+                data_ref.qLD_data[start + k],
+                "qLD_data[{d}] entry {k} differs after waking"
+            );
+        }
+    }
+}
+
+/// T103: With all bodies awake, selective factorization is bit-identical to full (AC #74).
+///
+/// Runs two identical simulations — one with sleep enabled (but nothing sleeping),
+/// one with sleep disabled. qLD must be bit-identical.
+#[test]
+fn test_partial_ldl_all_awake_noop() {
+    let model = load_model(two_chain_c3b_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    let nosleep_mjcf =
+        two_chain_c3b_mjcf().replace(r#"<flag sleep="enable"/>"#, r#"<flag sleep="disable"/>"#);
+    let model_ref = load_model(&nosleep_mjcf).expect("load ref");
+    let mut data_ref = model_ref.make_data();
+
+    // Apply forces to keep everything awake
+    let body_a1 = model.tree_body_adr[0];
+    let body_b1 = model.tree_body_adr[1];
+
+    // Run for a few steps with constant perturbation (nothing sleeps)
+    for _ in 0..50 {
+        data.xfrc_applied[body_a1][2] = 1.0;
+        data.xfrc_applied[body_b1][2] = -1.0;
+        data_ref.xfrc_applied[body_a1][2] = 1.0;
+        data_ref.xfrc_applied[body_b1][2] = -1.0;
+
+        data.step(&model).expect("step");
+        data_ref.step(&model_ref).expect("ref step");
+    }
+
+    // All DOFs should be awake
+    assert_eq!(data.nv_awake, model.nv, "all DOFs should be awake");
+
+    // qLD must be bit-identical
+    let (rowadr, rownnz, _colind) = model.qld_csr();
+    for d in 0..model.nv {
+        assert_eq!(
+            data.qld_diag(&model, d),
+            data_ref.qld_diag(&model_ref, d),
+            "qLD_diag[{d}] differs with all awake"
+        );
+        let start = rowadr[d];
+        let nnz = rownnz[d];
+        for k in 0..nnz {
+            assert_eq!(
+                data.qLD_data[start + k],
+                data_ref.qLD_data[start + k],
+                "qLD_data[{d}] entry {k} differs with all awake"
+            );
+        }
+    }
+
+    // qacc must also be identical
+    for d in 0..model.nv {
+        assert_eq!(
+            data.qacc[d], data_ref.qacc[d],
+            "qacc[{d}] differs with all awake"
+        );
+    }
+}
+
+/// T104: Partial LDL does not produce negative qLD_diag entries — SPD preserved (AC #75).
+///
+/// Runs the simulation through sleep/wake cycles and checks every qLD_diag entry
+/// is strictly positive after each step.
+#[test]
+fn test_partial_ldl_spd_preserved() {
+    let model = load_model(two_chain_c3b_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Phase 1: Run until sleeping
+    for step in 0..3000 {
+        data.step(&model).expect("step");
+        for d in 0..model.nv {
+            let diag = data.qld_diag(&model, d);
+            assert!(
+                diag > 0.0,
+                "qLD_diag[{d}] not positive at step {step}: {}",
+                diag
+            );
+        }
+    }
+
+    // Phase 2: Wake one tree, continue checking
+    let body_a1 = model.tree_body_adr[0];
+    data.xfrc_applied[body_a1][2] = 5.0;
+
+    for step in 0..100 {
+        data.step(&model).expect("step");
+        for d in 0..model.nv {
+            let diag = data.qld_diag(&model, d);
+            assert!(
+                diag > 0.0,
+                "qLD_diag[{d}] not positive at wake-step {step}: {}",
+                diag
+            );
+        }
+    }
+
+    // Phase 3: Remove force, let it re-settle
+    data.xfrc_applied[body_a1][2] = 0.0;
+    for step in 0..200 {
+        data.step(&model).expect("step");
+        for d in 0..model.nv {
+            let diag = data.qld_diag(&model, d);
+            assert!(
+                diag > 0.0,
+                "qLD_diag[{d}] not positive at settle-step {step}: {}",
+                diag
+            );
+        }
+    }
+}
+
+/// T105: Tree A's factorization doesn't touch tree B's qLD entries (AC #70+71).
+///
+/// Uses the three-tree MJCF: wakes trees 0 and 2, leaves tree 1 sleeping.
+/// Verifies tree 1's qLD is exactly preserved while trees 0 and 2 are factored.
+#[test]
+fn test_partial_ldl_multi_tree_independence() {
+    let model = load_model(three_tree_crba_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Step until all trees sleep
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+    }
+    assert!(
+        (0..model.ntree).all(|t| data.tree_asleep[t] >= 0),
+        "all trees should be sleeping"
+    );
+
+    // Record tree 1's (middle tree) qLD entries
+    let (rowadr, rownnz, _colind) = model.qld_csr();
+    let dof_start_b = model.tree_dof_adr[1];
+    let dof_count_b = model.tree_dof_num[1];
+    let saved_diag_b: Vec<f64> = (dof_start_b..dof_start_b + dof_count_b)
+        .map(|d| data.qld_diag(&model, d))
+        .collect();
+    let saved_data_b: Vec<Vec<f64>> = (dof_start_b..dof_start_b + dof_count_b)
+        .map(|d| {
+            let start = rowadr[d];
+            let nnz = rownnz[d];
+            (0..nnz).map(|k| data.qLD_data[start + k]).collect()
+        })
+        .collect();
+
+    // Wake trees 0 and 2, leave tree 1 sleeping
+    let body_a = model.tree_body_adr[0];
+    let body_c = model.tree_body_adr[2];
+    data.xfrc_applied[body_a][2] = 5.0;
+    data.xfrc_applied[body_c][2] = 5.0;
+
+    // Step multiple times with tree 1 sleeping
+    for step in 0..10 {
+        data.step(&model).expect("step");
+        assert!(
+            data.tree_asleep[1] >= 0,
+            "tree 1 should remain sleeping at step {step}"
+        );
+
+        // Tree 1's qLD must be exactly unchanged
+        for (idx, d) in (dof_start_b..dof_start_b + dof_count_b).enumerate() {
+            assert_eq!(
+                data.qld_diag(&model, d),
+                saved_diag_b[idx],
+                "tree 1 qLD_diag[{d}] modified at step {step} (tree independence violated)"
+            );
+            let start = rowadr[d];
+            let nnz = rownnz[d];
+            for (k, &saved_val) in saved_data_b[idx].iter().enumerate().take(nnz) {
+                assert_eq!(
+                    data.qLD_data[start + k],
+                    saved_val,
+                    "tree 1 qLD_data[{d}][{k}] modified at step {step} (tree independence violated)"
+                );
+            }
+        }
+    }
+
+    // Verify awake trees have valid (positive) qLD
+    for t in [0, 2] {
+        let dof_start = model.tree_dof_adr[t];
+        let dof_count = model.tree_dof_num[t];
+        for d in dof_start..dof_start + dof_count {
+            let diag = data.qld_diag(&model, d);
+            assert!(
+                diag > 0.0,
+                "awake tree {t}: qLD_diag[{d}] should be positive, got {}",
+                diag
+            );
+        }
+    }
+}
+
+/// T106: Solve with zero RHS for sleeping DOFs yields zero output (AC #72).
+///
+/// After partial factorization, sleeping DOFs have zero qvel and qacc.
+/// Uses the three-tree free-body model where forces directly produce non-zero
+/// accelerations on free-joint DOFs. Verifies that sleeping trees' qacc stays
+/// zero while awake trees get non-zero qacc from the applied force.
+#[test]
+fn test_partial_ldl_solve_zero_sleeping_rhs() {
+    let model = load_model(three_tree_crba_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Step until all trees sleep
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+    }
+    assert!(
+        (0..model.ntree).all(|t| data.tree_asleep[t] >= 0),
+        "all trees should be sleeping"
+    );
+
+    // All sleeping — qvel and qacc should be zero
+    for d in 0..model.nv {
+        assert_eq!(data.qvel[d], 0.0, "sleeping qvel[{d}] should be zero");
+        assert_eq!(data.qacc[d], 0.0, "sleeping qacc[{d}] should be zero");
+    }
+
+    // Wake tree 0 only (free-body sphere — force directly produces acceleration)
+    let body_a = model.tree_body_adr[0];
+    data.xfrc_applied[body_a][2] = 50.0; // large upward force on free body
+    data.step(&model).expect("step after wake");
+    assert!(
+        data.tree_asleep[0] < 0,
+        "tree 0 should be awake after force"
+    );
+
+    // Sleeping trees (1 and 2) — qacc and qvel should be zero
+    for t in 1..model.ntree {
+        if data.tree_asleep[t] < 0 {
+            continue; // skip if this tree also woke
+        }
+        let dof_start = model.tree_dof_adr[t];
+        let dof_count = model.tree_dof_num[t];
+        for d in dof_start..dof_start + dof_count {
+            assert_eq!(
+                data.qacc[d], 0.0,
+                "sleeping tree {t} qacc[{d}] should be zero after partial solve"
+            );
+            assert_eq!(
+                data.qvel[d], 0.0,
+                "sleeping tree {t} qvel[{d}] should be zero"
+            );
+        }
+    }
+
+    // Tree 0 is awake — its qacc should be non-zero (force applied to free body)
+    let dof_start_a = model.tree_dof_adr[0];
+    let dof_count_a = model.tree_dof_num[0];
+    let any_nonzero = (dof_start_a..dof_start_a + dof_count_a).any(|d| data.qacc[d].abs() > 1e-15);
+    assert!(
+        any_nonzero,
+        "awake tree 0 should have non-zero qacc (force applied to free body)"
+    );
 }

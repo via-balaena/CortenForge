@@ -1136,6 +1136,7 @@ pub struct Keyframe {
 /// - `geom_*` arrays indexed by `geom_id`
 /// - `actuator_*` arrays indexed by `actuator_id`
 #[derive(Debug, Clone)]
+#[allow(non_snake_case)] // qLD_* matches MuJoCo naming convention
 pub struct Model {
     // ==================== Metadata ====================
     /// Model name (from MJCF model attribute or URDF robot name).
@@ -1291,6 +1292,27 @@ pub struct Model {
     /// Applied as: τ_friction = -frictionloss * tanh(qvel * friction_smoothing)
     /// where the tanh provides a smooth approximation to sign(qvel) for numerical stability.
     pub dof_frictionloss: Vec<f64>,
+
+    // ==================== Sparse LDL CSR Metadata (immutable, computed once at build) =====
+    // The sparsity pattern of the LDL factorization is determined by `dof_parent` chains
+    // and is invariant across simulation steps. Column indices and row layout are computed
+    // once; only the values in `Data::qLD_data` change each step.
+    //
+    // Each row stores off-diagonal entries (ancestors) followed by the diagonal (self-index)
+    // as the last element, matching MuJoCo's `mj_factorI` layout.
+    /// Starting address of row k's entries in `Data::qLD_data` (length `nv`).
+    pub qLD_rowadr: Vec<usize>,
+    /// Total non-zeros in row k, including diagonal (length `nv`).
+    /// `rownnz[i] - 1` = off-diagonal count = depth of DOF k in `dof_parent` tree.
+    /// `rownnz[i] >= 1` always (at minimum the diagonal entry).
+    pub qLD_rownnz: Vec<usize>,
+    /// Column indices for flat CSR storage (length `qLD_nnz`).
+    /// `qLD_colind[qLD_rowadr[k] + j]` = column of j-th entry in row k.
+    /// Off-diagonals sorted ascending (ancestors from root toward DOF k),
+    /// followed by self-index `k` as the last element (diagonal).
+    pub qLD_colind: Vec<usize>,
+    /// Total number of non-zeros across all rows (including diagonals).
+    pub qLD_nnz: usize,
 
     // ==================== Geoms (indexed by geom_id) ====================
     /// Geometry type.
@@ -2190,17 +2212,24 @@ pub struct Data {
     /// M = L^T D L where L is unit lower triangular and D is diagonal.
     /// For tree-structured robots, this achieves O(n) factorization and solve.
     ///
-    /// Layout: qLD stores both L and D compactly:
-    /// - `qLD_diag\[i\] = D\[i,i\]` (diagonal of D)
-    /// - `qLD\[i\]` contains non-zero entries of `L\[i, :\]` below diagonal
+    /// Layout matches MuJoCo's combined format — each CSR row stores:
+    /// - Off-diagonal L entries at positions `0..rownnz[i]-1`
+    /// - Diagonal D[i,i] at position `rownnz[i]-1` (last element)
     ///
     /// The sparsity pattern is determined by the kinematic tree:
     /// `L[i,j]` is non-zero only if DOF j is an ancestor of DOF i.
-    pub qLD_diag: DVector<f64>,
-    /// Sparse lower triangular factor L (non-zero entries only).
-    /// `qLD_L[i] = [(col_idx, value), ...]` for row i, sorted by col_idx.
-    /// For tree robots, each row has at most depth(i) non-zeros.
-    pub qLD_L: Vec<Vec<(usize, f64)>>,
+    ///
+    /// Use `data.qld_diag(model, i)` to read D[i,i] from the CSR data.
+    ///
+    /// Flat CSR value buffer (off-diagonal L + diagonal D).
+    /// Layout defined by `Model::qLD_rowadr`/`qLD_rownnz`/`qLD_colind`.
+    /// Length: `model.qLD_nnz`.
+    pub qLD_data: Vec<f64>,
+    /// Precomputed inverse diagonal: `qLD_diag_inv[i] = 1.0 / D[i,i]`.
+    /// Computed during `mj_factor_sparse()`. Used by `mj_solve_sparse()` to
+    /// replace division with multiplication (matching MuJoCo's `qLDiagInv`).
+    /// Length: `nv`.
+    pub qLD_diag_inv: Vec<f64>,
     /// Whether sparse factorization is valid and should be used.
     /// Set to true after `mj_factor_sparse()` is called.
     pub qLD_valid: bool,
@@ -2599,8 +2628,8 @@ impl Clone for Data {
             // Mass matrix
             qM: self.qM.clone(),
             // Sparse factorization
-            qLD_diag: self.qLD_diag.clone(),
-            qLD_L: self.qLD_L.clone(),
+            qLD_data: self.qLD_data.clone(),
+            qLD_diag_inv: self.qLD_diag_inv.clone(),
             qLD_valid: self.qLD_valid,
             // Body/composite inertia
             cinert: self.cinert.clone(),
@@ -2810,6 +2839,12 @@ impl Model {
             dof_damping: vec![],
             dof_frictionloss: vec![],
 
+            // Sparse LDL CSR metadata (empty — populated by compute_qld_csr_metadata)
+            qLD_rowadr: vec![],
+            qLD_rownnz: vec![],
+            qLD_colind: vec![],
+            qLD_nnz: 0,
+
             // Geoms (empty)
             geom_type: vec![],
             geom_body: vec![],
@@ -3016,6 +3051,65 @@ impl Model {
         }
     }
 
+    /// Compute CSR metadata for sparse LDL factorization from `dof_parent` chains.
+    ///
+    /// Must be called after `dof_parent` is finalized (in `ModelBuilder::build()` or
+    /// test helpers that construct Model manually). The sparsity pattern is immutable
+    /// after this call.
+    ///
+    /// Each row stores off-diagonal entries (ancestors) followed by the diagonal
+    /// (self-index) as the last element, matching MuJoCo's `mj_factorI` layout.
+    /// `rownnz[i]` includes the diagonal, so `rownnz[i] - 1` is the off-diagonal count.
+    pub fn compute_qld_csr_metadata(&mut self) {
+        let nv = self.nv;
+        self.qLD_rownnz = vec![0; nv];
+        self.qLD_rowadr = vec![0; nv];
+
+        // Pass 1: Count entries per row (ancestors + 1 for diagonal)
+        for i in 0..nv {
+            let mut count = 0;
+            let mut p = self.dof_parent[i];
+            while let Some(j) = p {
+                count += 1;
+                p = self.dof_parent[j];
+            }
+            self.qLD_rownnz[i] = count + 1; // +1 for diagonal
+        }
+
+        // Pass 2: Compute row addresses (prefix sum)
+        let mut offset = 0;
+        for i in 0..nv {
+            self.qLD_rowadr[i] = offset;
+            offset += self.qLD_rownnz[i];
+        }
+        self.qLD_nnz = offset;
+
+        // Pass 3: Fill column indices (ancestors ascending, then self-index for diagonal)
+        self.qLD_colind = vec![0; self.qLD_nnz];
+        for i in 0..nv {
+            let mut ancestors = Vec::new();
+            let mut p = self.dof_parent[i];
+            while let Some(j) = p {
+                ancestors.push(j);
+                p = self.dof_parent[j];
+            }
+            ancestors.reverse(); // ascending order (root ancestor first)
+            let start = self.qLD_rowadr[i];
+            for (k, &col) in ancestors.iter().enumerate() {
+                self.qLD_colind[start + k] = col;
+            }
+            // Diagonal as last element (matching MuJoCo's layout)
+            self.qLD_colind[start + ancestors.len()] = i;
+        }
+    }
+
+    /// Returns CSR metadata for the sparse LDL factorization: `(rowadr, rownnz, colind)`.
+    #[inline]
+    #[must_use]
+    pub fn qld_csr(&self) -> (&[usize], &[usize], &[usize]) {
+        (&self.qLD_rowadr, &self.qLD_rownnz, &self.qLD_colind)
+    }
+
     /// Create initial Data struct for this model with all arrays pre-allocated.
     #[must_use]
     pub fn make_data(&self) -> Data {
@@ -3093,8 +3187,8 @@ impl Model {
             qM: DMatrix::zeros(self.nv, self.nv),
 
             // Mass matrix (sparse L^T D L — computed in mj_crba via mj_factor_sparse)
-            qLD_diag: DVector::zeros(self.nv),
-            qLD_L: vec![Vec::new(); self.nv],
+            qLD_data: vec![0.0; self.qLD_nnz],
+            qLD_diag_inv: vec![0.0; self.nv],
             qLD_valid: false,
 
             // Body spatial inertias (computed once in FK, used by CRBA and RNE)
@@ -3671,7 +3765,15 @@ impl Model {
 
             // Solve M * x = J using the sparse L^T D L factorization from CRBA.
             let mut x = j_vec;
-            mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x);
+            let (rowadr, rownnz, colind) = self.qld_csr();
+            mj_solve_sparse(
+                rowadr,
+                rownnz,
+                colind,
+                &data.qLD_data,
+                &data.qLD_diag_inv,
+                &mut x,
+            );
 
             // acc0 = ||M^{-1} J||_2
             self.actuator_acc0[i] = x.norm().max(1e-10);
@@ -3913,6 +4015,9 @@ impl Model {
         // Pre-compute implicit integration parameters
         model.compute_implicit_params();
 
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
+
         model
     }
 
@@ -4012,6 +4117,9 @@ impl Model {
         // Pre-compute implicit integration parameters
         model.compute_implicit_params();
 
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
+
         model
     }
 
@@ -4097,11 +4205,24 @@ impl Model {
         // Pre-compute implicit integration parameters
         model.compute_implicit_params();
 
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
+
         model
     }
 }
 
 impl Data {
+    /// Read the diagonal entry `D[i,i]` from the sparse LDL factorization.
+    ///
+    /// Reads from `qLD_data[rowadr[i] + rownnz[i] - 1]` (last element of CSR row).
+    #[inline]
+    #[must_use]
+    pub fn qld_diag(&self, model: &Model, i: usize) -> f64 {
+        let (rowadr, rownnz, _) = model.qld_csr();
+        self.qLD_data[rowadr[i] + rownnz[i] - 1]
+    }
+
     /// Reset state to model defaults.
     pub fn reset(&mut self, model: &Model) {
         self.qpos = model.qpos0.clone();
@@ -10124,13 +10245,13 @@ fn mj_crba(model: &Model, data: &mut Data) {
     }
 
     // ============================================================
-    // Phase 5: Sparse L^T D L factorization (unchanged in C3a)
+    // Phase 5: Sparse L^T D L factorization
     // ============================================================
     // Exploits tree sparsity from dof_parent for O(n) factorization and solve.
     // Reused in mj_fwd_acceleration_explicit() and pgs_solve_contacts().
-    // Full factorization runs unconditionally — sleeping DOFs' qM entries
-    // are stale-but-valid from their last awake step, producing correct qLD.
-    mj_factor_sparse(model, data);
+    // C3b: Selective factorization skips sleeping DOFs when sleep is enabled.
+    // Sleeping DOFs' qLD entries are preserved from their last awake step.
+    mj_factor_sparse_selective(model, data);
 
     // ============================================================
     // Phase 6: Cache body effective mass/inertia from qM diagonal
@@ -12649,20 +12770,32 @@ fn assemble_contact_system(
     qacc_smooth += &data.qfrc_actuator;
     qacc_smooth += &data.qfrc_passive;
     qacc_smooth -= &data.qfrc_bias;
-    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
+    let (rowadr, rownnz, colind) = model.qld_csr();
+    mj_solve_sparse(
+        rowadr,
+        rownnz,
+        colind,
+        &data.qLD_data,
+        &data.qLD_diag_inv,
+        &mut qacc_smooth,
+    );
 
-    // Pre-compute M^{-1} * J^T for each contact (variable dimension per contact)
+    // Pre-compute M^{-1} * J^T for each contact (variable dimension per contact).
+    // Uses batch solve: 1 CSR metadata sweep per contact instead of dim_k separate sweeps.
     let mut minv_jt: Vec<DMatrix<f64>> = Vec::with_capacity(ncon);
     for (k, jacobian) in jacobians.iter().enumerate() {
         let dim_k = contacts[k].dim;
-        let jt = jacobian.transpose();
-        // Solve M * X = J^T for each column (dim_k columns)
-        let mut minv_jt_contact = DMatrix::zeros(model.nv, dim_k);
-        for col in 0..dim_k {
-            let mut x = jt.column(col).clone_owned();
-            mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x);
-            minv_jt_contact.set_column(col, &x);
-        }
+        let mut minv_jt_contact = jacobian.transpose();
+        mj_solve_sparse_batch(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut minv_jt_contact,
+        );
+        debug_assert_eq!(minv_jt_contact.nrows(), model.nv);
+        debug_assert_eq!(minv_jt_contact.ncols(), dim_k);
         minv_jt.push(minv_jt_contact);
     }
 
@@ -14015,29 +14148,46 @@ fn compute_diag_approx_exact(j_row: &[f64], nv: usize, model: &Model, data: &Dat
 ///
 /// Forward substitution: L^T · z = b, then D · y = z, then L · x = y.
 /// Matches the tree-sparse structure from mj_factor_sparse.
+///
+/// `rownnz[i]` includes diagonal (last element); off-diagonal count = `rownnz[i] - 1`.
 fn mj_solve_sparse_vec(model: &Model, data: &Data, x: &mut DVector<f64>) {
     let nv = model.nv;
+    let (rowadr, rownnz, colind) = model.qld_csr();
 
     // Forward substitution: solve L^T * z = x (L is unit lower triangular)
     // Process from leaves to root (high index to low)
+    // Zero-skip + diagonal-only skip matching MuJoCo's mj_solveLD.
     for i in (0..nv).rev() {
-        for &(col, val) in &data.qLD_L[i] {
-            x[col] -= val * x[i];
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let xi = x[i];
+        if xi == 0.0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for k in 0..nnz_offdiag {
+            x[colind[start + k]] -= data.qLD_data[start + k] * xi;
         }
     }
 
-    // Diagonal solve: z = z / D
+    // Diagonal solve: z = z * D^-1 (multiply by precomputed inverse, matching MuJoCo).
     for i in 0..nv {
-        if data.qLD_diag[i].abs() > MJ_MINVAL {
-            x[i] /= data.qLD_diag[i];
-        }
+        x[i] *= data.qLD_diag_inv[i];
     }
 
     // Back substitution: solve L * x = z
     // Process from root to leaves (low index to high)
+    // Diagonal-only skip: rownnz == 1 means no off-diagonals.
     for i in 0..nv {
-        for &(col, val) in &data.qLD_L[i] {
-            x[i] -= val * x[col];
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for k in 0..nnz_offdiag {
+            x[i] -= data.qLD_data[start + k] * x[colind[start + k]];
         }
     }
 }
@@ -16005,7 +16155,15 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
 
     // qacc_smooth = M⁻¹ · qfrc_smooth (via sparse LDL solve)
     let mut qacc_smooth = qfrc_smooth.clone();
-    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
+    let (rowadr, rownnz, colind) = model.qld_csr();
+    mj_solve_sparse(
+        rowadr,
+        rownnz,
+        colind,
+        &data.qLD_data,
+        &data.qLD_diag_inv,
+        &mut qacc_smooth,
+    );
 
     // Assemble unified constraints
     assemble_unified_constraints(model, data, &qacc_smooth);
@@ -16412,7 +16570,15 @@ fn noslip_postprocess(model: &Model, data: &mut Data) {
         for col in 0..nv {
             minv_ji[col] = data.efc_J[(row_i, col)];
         }
-        mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut minv_ji);
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        mj_solve_sparse(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut minv_ji,
+        );
 
         for (fj, &row_j) in friction_rows.iter().enumerate() {
             let mut dot = 0.0;
@@ -16516,7 +16682,15 @@ fn noslip_postprocess(model: &Model, data: &mut Data) {
             - data.qfrc_bias[k]
             + data.qfrc_constraint[k];
     }
-    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut data.qacc);
+    let (rowadr, rownnz, colind) = model.qld_csr();
+    mj_solve_sparse(
+        rowadr,
+        rownnz,
+        colind,
+        &data.qLD_data,
+        &data.qLD_diag_inv,
+        &mut data.qacc,
+    );
 }
 
 /// Apply a Connect (ball-and-socket) equality constraint.
@@ -17808,7 +17982,15 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
     qacc_smooth_global += &data.qfrc_actuator;
     qacc_smooth_global += &data.qfrc_passive;
     qacc_smooth_global -= &data.qfrc_bias;
-    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth_global);
+    let (rowadr, rownnz, colind) = model.qld_csr();
+    mj_solve_sparse(
+        rowadr,
+        rownnz,
+        colind,
+        &data.qLD_data,
+        &data.qLD_diag_inv,
+        &mut qacc_smooth_global,
+    );
 
     // Partition contacts by island
     let nisland = data.nisland;
@@ -18633,7 +18815,15 @@ fn compute_rigid_inv_mass_at_point(
     // M^{-1} * j_n via sparse factored mass matrix
     let mut m_inv_jn = j_n.clone();
     if data.qLD_valid {
-        mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut m_inv_jn);
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        mj_solve_sparse(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut m_inv_jn,
+        );
     } else {
         // Fallback: use diagonal of mass matrix
         for i in 0..model.nv {
@@ -19286,7 +19476,7 @@ fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepError> 
 /// Explicit forward acceleration (semi-implicit Euler or RK4).
 ///
 /// Computes: qacc = M⁻¹ * (f_applied + f_actuator + f_passive + f_constraint - f_bias)
-fn mj_fwd_acceleration_explicit(_model: &Model, data: &mut Data) {
+fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
     // Sum all forces: τ = applied + actuator + passive + constraint - bias
     let mut qfrc_total = data.qfrc_applied.clone();
     qfrc_total += &data.qfrc_actuator;
@@ -19296,7 +19486,15 @@ fn mj_fwd_acceleration_explicit(_model: &Model, data: &mut Data) {
 
     // Solve M * qacc = qfrc_total using sparse L^T D L factorization from mj_crba
     data.qacc.copy_from(&qfrc_total);
-    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut data.qacc);
+    let (rowadr, rownnz, colind) = model.qld_csr();
+    mj_solve_sparse(
+        rowadr,
+        rownnz,
+        colind,
+        &data.qLD_data,
+        &data.qLD_diag_inv,
+        &mut data.qacc,
+    );
 }
 
 /// In-place Cholesky (LL^T) factorization. Overwrites the lower triangle of `m` with L.
@@ -19448,67 +19646,180 @@ fn cholesky_rank1_downdate(l: &mut DMatrix<f64>, v: &mut [f64]) -> Result<(), St
     Ok(())
 }
 
-/// Sparse L^T D L factorization of the mass matrix, exploiting tree structure.
+/// Sparse L^T D L factorization of the mass matrix using flat CSR storage.
 ///
 /// Computes `M = L^T D L` where `L` is unit lower triangular (L[i,i] = 1 implicitly,
-/// stored entries are off-diagonal only) and `D` is diagonal. The sparsity pattern
-/// is determined by the kinematic tree: `L[i,j] ≠ 0` only if DOF `j` is an ancestor
-/// of DOF `i` in `model.dof_parent`.
+/// stored entries include diagonal as last element) and `D` is diagonal. Uses flat CSR
+/// storage (`Model::qLD_rowadr`/`qLD_rownnz`/`qLD_colind` + `Data::qLD_data`). The
+/// inner loop uses MuJoCo's bulk `addToScl` pattern for O(1) ancestor row access.
 ///
-/// **Algorithm:** Process DOFs from leaves to root (i = nv-1 down to 0). For each DOF,
-/// copy its row from M, scale by the diagonal to extract L entries, then propagate a
-/// rank-1 update to all ancestor pairs. This is equivalent to Gaussian elimination
-/// reordered to exploit tree sparsity.
+/// Matches MuJoCo's `mj_factorI` exactly:
+/// - Diagonal `D[i]` stored at `qLD_data[rowadr[i] + rownnz[i] - 1]`
+/// - `qLD_diag_inv[i] = 1/D[i]` precomputed for the solve phase (multiply, not divide)
+/// - `rownnz[i]` includes the diagonal, so off-diagonal count = `rownnz[i] - 1`
 ///
-/// **Complexity:** O(Σ depth(i)²). For balanced trees O(n log² n), for typical
-/// humanoids (depth ≤ 8) effectively O(n).
+/// # Ancestor Row Superset Property
 ///
-/// Zero heap allocations after the first call — `qLD_L[i].clear()` + `push()` reuses
-/// existing `Vec` capacity.
+/// If DOF `j` is an ancestor of DOF `i`, then `ancestors(j) ⊆ ancestors(i)`.
+/// Both are stored ascending in `qLD_colind`. Row `i`'s off-diagonal entries at
+/// positions `0..a` (where `a` is `j`'s position in row `i`) are exactly
+/// `ancestors(j)`, so `a == rownnz[j] - 1`. This means `row_i[0..a]` and
+/// `row_j[0..rownnz_j-1]` have identical column indices — a simple element-wise
+/// scaled addition suffices.
+#[allow(non_snake_case)]
 fn mj_factor_sparse(model: &Model, data: &mut Data) {
     let nv = model.nv;
+    let (rowadr, rownnz, colind) = model.qld_csr();
 
-    // Phase 1: Copy M's sparse entries into qLD working storage.
-    // qLD_diag[i] starts as M[i,i]; qLD_L[i] holds (col, M[i,col]) for ancestors.
+    // Phase 1: Copy M's sparse entries into flat CSR (diagonal included as last element).
     for i in 0..nv {
-        data.qLD_diag[i] = data.qM[(i, i)];
-        data.qLD_L[i].clear();
-        let mut p = model.dof_parent[i];
-        while let Some(j) = p {
-            data.qLD_L[i].push((j, data.qM[(i, j)]));
-            p = model.dof_parent[j];
+        let start = rowadr[i];
+        let nnz = rownnz[i];
+        for k in 0..nnz {
+            data.qLD_data[start + k] = data.qM[(i, colind[start + k])];
         }
-        // Parent chain yields descending col indices; reverse for ascending order.
-        data.qLD_L[i].reverse();
     }
 
     // Phase 2: Eliminate from leaves to root.
-    // When we process DOF i, all descendants k > i are already factored.
-    // We propagate i's contribution to ancestors j < i, which requires
-    // mutating qLD_L[j] while reading qLD_L[i]. Since j < i always,
-    // we use split_at_mut to get non-overlapping borrows.
+    // Process DOF i, scale its off-diagonals by 1/D[i], then propagate
+    // rank-1 update to all ancestor pairs using bulk row addition.
     for i in (0..nv).rev() {
-        let di = data.qLD_diag[i];
+        let start_i = rowadr[i];
+        let nnz_i = rownnz[i];
+        let diag_pos = start_i + nnz_i - 1;
+        let di = data.qLD_data[diag_pos];
 
-        // Scale off-diagonals: L[i,j] = working[i,j] / D[i]
-        for entry in &mut data.qLD_L[i] {
-            entry.1 /= di;
+        // Precompute inverse diagonal (matching MuJoCo's diaginv output).
+        let inv_di = 1.0 / di;
+        data.qLD_diag_inv[i] = inv_di;
+
+        // Root DOFs with no off-diagonals (rownnz == 1): only diagonal, no elimination.
+        let nnz_offdiag = nnz_i - 1;
+        if nnz_offdiag == 0 {
+            continue;
         }
 
-        // Propagate rank-1 update to ancestors.
-        // Split: [0..i] and [i..nv] give non-overlapping mutable access.
-        let (lo, hi) = data.qLD_L.split_at_mut(i);
-        let row_i = &hi[0]; // qLD_L[i], immutable borrow
+        // Scale off-diagonals: L[i,j] = working[i,j] / D[i]
+        for k in 0..nnz_offdiag {
+            data.qLD_data[start_i + k] *= inv_di;
+        }
 
-        for idx_a in 0..row_i.len() {
-            let (j, lij) = row_i[idx_a];
-            data.qLD_diag[j] -= lij * lij * di;
-            for idx_b in 0..idx_a {
-                let (k, lik) = row_i[idx_b];
-                // k < j < i, so both are in `lo`
-                if let Some(entry) = lo[j].iter_mut().find(|(col, _)| *col == k) {
-                    entry.1 -= lij * lik * di;
-                }
+        // Propagate rank-1 update to ancestors (deep-to-shallow, matching MuJoCo).
+        // For each ancestor j of i (traversed from deepest to shallowest):
+        //   - Diagonal update: D[j] -= L[i,j]^2 * D[i]
+        //   - Bulk row update: row_j[0..nnz_j-1] -= L[i,j] * row_i[0..a] * D[i]
+        //     where a is j's off-diag position in row i, and a == rownnz[j]-1.
+        for a in (0..nnz_offdiag).rev() {
+            let j = colind[start_i + a];
+            let lij = data.qLD_data[start_i + a];
+
+            // Diagonal update on ancestor j
+            let j_diag_pos = rowadr[j] + rownnz[j] - 1;
+            data.qLD_data[j_diag_pos] -= lij * lij * di;
+
+            // Bulk row update: row_j[0..a] -= lij * D[i] * row_i[0..a]
+            // Ancestor superset: off-diag count of j == a (i.e., rownnz[j] - 1 == a).
+            let j_nnz_offdiag = rownnz[j] - 1;
+            debug_assert_eq!(
+                a, j_nnz_offdiag,
+                "ancestor row superset property violated: \
+                DOF {i} entry at position {a} maps to ancestor DOF {j} with offdiag_nnz={j_nnz_offdiag}"
+            );
+            let scale = -lij * di;
+
+            // split_at_mut(start_i) safe: j < i guarantees rowadr[j]+rownnz[j] <= rowadr[i].
+            let start_j = rowadr[j];
+            let (lo, hi) = data.qLD_data.split_at_mut(start_i);
+            let dst = &mut lo[start_j..start_j + a];
+            let src = &hi[..a];
+            for k in 0..a {
+                dst[k] += scale * src[k];
+            }
+        }
+    }
+
+    data.qLD_valid = true;
+}
+
+/// Sleep-aware sparse L^T D L factorization (C3b).
+///
+/// When sleeping is enabled and some DOFs are asleep, only awake DOFs are
+/// factored. Sleeping DOFs' `qLD_data` and `qLD_diag_inv` entries are preserved
+/// from their last awake step.
+///
+/// # Tree Independence
+///
+/// `dof_parent` chains never cross tree boundaries. Sleeping is per-tree.
+/// Therefore, the elimination of awake DOF `i` only updates ancestors in the
+/// same (awake) tree — sleeping trees' qLD entries are never touched.
+///
+/// When all DOFs are awake (or sleep is disabled), dispatches to the full
+/// `mj_factor_sparse` with zero overhead.
+#[allow(non_snake_case)]
+fn mj_factor_sparse_selective(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nv_awake < model.nv;
+
+    if !sleep_filter {
+        mj_factor_sparse(model, data);
+        return;
+    }
+
+    let (rowadr, rownnz, colind) = model.qld_csr();
+
+    // Phase 1: Copy M into CSR for awake DOFs only.
+    // Sleeping DOFs' qLD_data entries are preserved from last awake step.
+    // rownnz[i] includes diagonal; we copy all entries (off-diag + diag at last position).
+    for idx in 0..data.nv_awake {
+        let i = data.dof_awake_ind[idx];
+        let start = rowadr[i];
+        let nnz = rownnz[i];
+        for k in 0..nnz {
+            data.qLD_data[start + k] = data.qM[(i, colind[start + k])];
+        }
+    }
+
+    // Phase 2: Eliminate awake DOFs only (reverse order).
+    // dof_awake_ind is sorted ascending; reverse iteration gives leaf-to-root order.
+    // All ancestors of an awake DOF are in the same awake tree (per-tree invariant).
+    // rownnz[i] includes diagonal; off-diag count = rownnz[i] - 1.
+    for idx in (0..data.nv_awake).rev() {
+        let i = data.dof_awake_ind[idx];
+        let start_i = rowadr[i];
+        let nnz_i = rownnz[i];
+        let diag_pos = start_i + nnz_i - 1;
+        let di = data.qLD_data[diag_pos];
+
+        let inv_di = 1.0 / di;
+        data.qLD_diag_inv[i] = inv_di;
+
+        let nnz_offdiag = nnz_i - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+
+        for k in 0..nnz_offdiag {
+            data.qLD_data[start_i + k] *= inv_di;
+        }
+
+        for a in (0..nnz_offdiag).rev() {
+            let j = colind[start_i + a];
+            let lij = data.qLD_data[start_i + a];
+
+            // Diagonal update on ancestor j
+            let j_diag_pos = rowadr[j] + rownnz[j] - 1;
+            data.qLD_data[j_diag_pos] -= lij * lij * di;
+
+            let start_j = rowadr[j];
+            let nnz_j_offdiag = rownnz[j] - 1;
+            debug_assert_eq!(a, nnz_j_offdiag);
+            let scale = -lij * di;
+
+            let (lo, hi) = data.qLD_data.split_at_mut(start_i);
+            let dst = &mut lo[start_j..start_j + nnz_j_offdiag];
+            let src = &hi[..a];
+            for k in 0..a {
+                dst[k] += scale * src[k];
             }
         }
     }
@@ -19518,35 +19829,123 @@ fn mj_factor_sparse(model: &Model, data: &mut Data) {
 
 /// Solve `L^T D L x = b` using the sparse factorization from `mj_factor_sparse`.
 ///
-/// On entry `x` contains `b`; on exit `x` contains the solution.
-/// Takes `qLD_diag` and `qLD_L` by reference separately from `x` to allow
-/// calling with `x = &mut data.qacc` without borrow conflicts.
+/// Matches MuJoCo's `mj_solveLD`:
+/// - Off-diagonal entries at positions `0..rownnz[i]-1`
+/// - Diagonal phase uses precomputed `qld_diag_inv[i]` (multiply, not divide)
 ///
+/// On entry `x` contains `b`; on exit `x` contains the solution.
 /// Zero allocations — operates entirely on borrowed data.
+#[allow(non_snake_case)]
 pub(crate) fn mj_solve_sparse(
-    qld_diag: &DVector<f64>,
-    qld_l: &[Vec<(usize, f64)>],
+    rowadr: &[usize],
+    rownnz: &[usize],
+    colind: &[usize],
+    qld_data: &[f64],
+    qld_diag_inv: &[f64],
     x: &mut DVector<f64>,
 ) {
     let nv = x.len();
 
     // Phase 1: Solve L^T y = b (scatter: propagate each DOF to its ancestors).
-    // L is unit-lower-triangular, so L^T is unit-upper-triangular.
+    // Off-diagonal entries only: positions 0..rownnz[i]-1.
+    // Zero-skip: if x[i] == 0 the scatter is a no-op (MuJoCo: `if ((x_i = x[i]))`).
+    // Diagonal-only skip: rownnz == 1 means no off-diagonals (MuJoCo: `if (rownnz[i] == 1)`).
     for i in (0..nv).rev() {
-        for &(j, lij) in &qld_l[i] {
-            x[j] -= lij * x[i];
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let xi = x[i];
+        if xi == 0.0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for k in 0..nnz_offdiag {
+            x[colind[start + k]] -= qld_data[start + k] * xi;
         }
     }
 
-    // Phase 2: Solve D z = y
+    // Phase 2: Solve D z = y (multiply by precomputed inverse, matching MuJoCo's diaginv).
     for i in 0..nv {
-        x[i] /= qld_diag[i];
+        x[i] *= qld_diag_inv[i];
     }
 
-    // Phase 3: Solve L w = z (standard forward substitution)
+    // Phase 3: Solve L w = z (gather from ancestors)
+    // Off-diagonal entries only: positions 0..rownnz[i]-1.
+    // Diagonal-only skip: rownnz == 1 means no off-diagonals (MuJoCo: `if (rownnz[i] == 1)`).
     for i in 0..nv {
-        for &(j, lij) in &qld_l[i] {
-            x[i] -= lij * x[j];
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for k in 0..nnz_offdiag {
+            x[i] -= qld_data[start + k] * x[colind[start + k]];
+        }
+    }
+}
+
+/// Batch solve `L^T D L X = B` for multiple right-hand sides simultaneously.
+///
+/// Matches MuJoCo's `mj_solveLD` with `n > 1`: the outer loop sweeps CSR metadata
+/// once per DOF, the inner loop iterates across `n` vectors. This gives O(1) CSR
+/// metadata loads vs O(n) for `n` separate `mj_solve_sparse` calls.
+///
+/// `x` is an nv × n column-major matrix (nalgebra `DMatrix`). Each column is an
+/// independent RHS; on exit each column contains the corresponding solution.
+///
+/// Includes zero-skip in L^T phase (per-vector) and diagonal-only row skip.
+#[allow(non_snake_case)]
+pub(crate) fn mj_solve_sparse_batch(
+    rowadr: &[usize],
+    rownnz: &[usize],
+    colind: &[usize],
+    qld_data: &[f64],
+    qld_diag_inv: &[f64],
+    x: &mut DMatrix<f64>,
+) {
+    let nv = x.nrows();
+    let n = x.ncols();
+
+    // Phase 1: Solve L^T Y = B (scatter across all vectors).
+    for i in (0..nv).rev() {
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for v in 0..n {
+            let xi = x[(i, v)];
+            if xi == 0.0 {
+                continue;
+            }
+            for k in 0..nnz_offdiag {
+                x[(colind[start + k], v)] -= qld_data[start + k] * xi;
+            }
+        }
+    }
+
+    // Phase 2: Solve D Z = Y (multiply by precomputed inverse).
+    for i in 0..nv {
+        let inv_di = qld_diag_inv[i];
+        for v in 0..n {
+            x[(i, v)] *= inv_di;
+        }
+    }
+
+    // Phase 3: Solve L W = Z (gather across all vectors).
+    for i in 0..nv {
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for v in 0..n {
+            let mut acc = 0.0;
+            for k in 0..nnz_offdiag {
+                acc += qld_data[start + k] * x[(colind[start + k], v)];
+            }
+            x[(i, v)] -= acc;
         }
     }
 }
@@ -21187,6 +21586,9 @@ mod sensor_tests {
         // Initialize qpos0
         model.qpos0 = DVector::zeros(model.nq);
 
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
+
         model
     }
 
@@ -22064,6 +22466,9 @@ mod sensor_tests {
         model.qpos0 = DVector::zeros(model.nq);
         model.qpos0[3] = 1.0; // w component of quaternion
 
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
+
         add_sensor(
             &mut model,
             MjSensorType::Accelerometer,
@@ -22196,6 +22601,9 @@ mod sensor_tests {
         // Initialize qpos0 to identity quaternion [w=1, x=0, y=0, z=0]
         model.qpos0 = DVector::zeros(model.nq);
         model.qpos0[0] = 1.0; // w component
+
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
 
         model
     }
@@ -22496,6 +22904,7 @@ mod sparse_factorization_tests {
         model.dof_armature = vec![0.0; nv];
         model.dof_damping = vec![0.0; nv];
         model.dof_frictionloss = vec![0.0; nv];
+        model.compute_qld_csr_metadata();
         let mut data = model.make_data();
         data.qM.copy_from(qm);
         mj_factor_sparse(&model, &mut data);
@@ -22503,19 +22912,27 @@ mod sparse_factorization_tests {
     }
 
     /// Verify sparse solve matches nalgebra dense Cholesky.
-    fn assert_solve_matches(data: &Data, qm: &DMatrix<f64>, nv: usize) {
+    fn assert_solve_matches(model: &Model, data: &Data, qm: &DMatrix<f64>, nv: usize) {
         let rhs = DVector::from_fn(nv, |i, _| (i as f64 + 1.0) * 0.7);
 
         // Reference: nalgebra dense Cholesky
         let chol = qm.clone().cholesky().expect("nalgebra cholesky failed");
         let x_ref = chol.solve(&rhs);
 
-        // Our sparse solve
-        let mut x_sparse = rhs;
-        mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x_sparse);
+        // CSR sparse solve — validate against reference
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        let mut x_csr = rhs;
+        mj_solve_sparse(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut x_csr,
+        );
 
         for i in 0..nv {
-            assert_relative_eq!(x_sparse[i], x_ref[i], epsilon = 1e-12, max_relative = 1e-12);
+            assert_relative_eq!(x_csr[i], x_ref[i], epsilon = 1e-12, max_relative = 1e-12);
         }
     }
 
@@ -22527,14 +22944,14 @@ mod sparse_factorization_tests {
         let mut qm = DMatrix::zeros(1, 1);
         qm[(0, 0)] = 5.0;
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
 
         // D[0] = 5.0, L has no off-diag entries
-        assert_relative_eq!(data.qLD_diag[0], 5.0);
-        assert!(data.qLD_L[0].is_empty());
+        assert_relative_eq!(data.qld_diag(&model, 0), 5.0);
+        assert_eq!(model.qLD_rownnz[0], 1); // diagonal only
         assert!(data.qLD_valid);
 
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -22549,16 +22966,20 @@ mod sparse_factorization_tests {
         qm[(1, 0)] = 2.0;
         qm[(1, 1)] = 3.0;
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
 
         // Manual: D[1] = 3, L[1,0] = 2/3, D[0] = 4 - (2/3)^2 * 3 = 4 - 4/3 = 8/3
-        assert_relative_eq!(data.qLD_diag[1], 3.0);
-        assert_relative_eq!(data.qLD_diag[0], 8.0 / 3.0, epsilon = 1e-14);
-        assert_eq!(data.qLD_L[1].len(), 1);
-        assert_eq!(data.qLD_L[1][0].0, 0);
-        assert_relative_eq!(data.qLD_L[1][0].1, 2.0 / 3.0, epsilon = 1e-14);
+        assert_relative_eq!(data.qld_diag(&model, 1), 3.0);
+        assert_relative_eq!(data.qld_diag(&model, 0), 8.0 / 3.0, epsilon = 1e-14);
+        assert_eq!(model.qLD_rownnz[1], 2); // 1 off-diag + 1 diagonal
+        assert_eq!(model.qLD_colind[model.qLD_rowadr[1]], 0);
+        assert_relative_eq!(
+            data.qLD_data[model.qLD_rowadr[1]],
+            2.0 / 3.0,
+            epsilon = 1e-14
+        );
 
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -22577,16 +22998,16 @@ mod sparse_factorization_tests {
         qm[(2, 0)] = 1.0;
         qm[(2, 2)] = 3.0;
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
 
         // D[2] = 3, L[2,0] = 1/3
         // D[1] = 4, L[1,0] = 2/4 = 0.5
         // D[0] = 5 - (0.5)^2 * 4 - (1/3)^2 * 3 = 5 - 1 - 1/3 = 11/3
-        assert_relative_eq!(data.qLD_diag[2], 3.0);
-        assert_relative_eq!(data.qLD_diag[1], 4.0);
-        assert_relative_eq!(data.qLD_diag[0], 11.0 / 3.0, epsilon = 1e-14);
+        assert_relative_eq!(data.qld_diag(&model, 2), 3.0);
+        assert_relative_eq!(data.qld_diag(&model, 1), 4.0);
+        assert_relative_eq!(data.qld_diag(&model, 0), 11.0 / 3.0, epsilon = 1e-14);
 
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -22619,9 +23040,9 @@ mod sparse_factorization_tests {
         qm[(3, 2)] = 1.5;
         qm[(2, 3)] = 1.5;
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
         assert!(data.qLD_valid);
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -22643,9 +23064,9 @@ mod sparse_factorization_tests {
         let a = DMatrix::from_fn(nv, nv, |_, _| next());
         let qm = a.transpose() * &a + DMatrix::identity(nv, nv) * (nv as f64);
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
         assert!(data.qLD_valid);
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -22688,22 +23109,28 @@ mod sparse_factorization_tests {
         qm[(0, 4)] = 0.8;
         // Non-ancestor pairs are zero (enforced by zeros init)
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
         assert!(data.qLD_valid);
 
         // Verify zero entries in L for non-ancestor pairs
         // DOF 2's ancestors: [0, 1] — should not have entry for 3 or 4
-        for &(col, _) in &data.qLD_L[2] {
+        // rownnz includes diagonal (last element is self-index), so off-diag = 0..rownnz-1
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        let nnz_offdiag_2 = rownnz[2] - 1;
+        for k in 0..nnz_offdiag_2 {
+            let col = colind[rowadr[2] + k];
             assert!(
                 col == 0 || col == 1,
                 "DOF 2 should only have ancestors 0 and 1"
             );
         }
+        // Last element should be self-index (diagonal)
+        assert_eq!(colind[rowadr[2] + nnz_offdiag_2], 2);
         // DOF 4's ancestors: [0] — should not have entry for 1, 2, or 3
-        assert_eq!(data.qLD_L[4].len(), 1);
-        assert_eq!(data.qLD_L[4][0].0, 0);
+        assert_eq!(model.qLD_rownnz[4], 2); // 1 off-diag + 1 diagonal
+        assert_eq!(model.qLD_colind[model.qLD_rowadr[4]], 0);
 
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -22722,6 +23149,71 @@ mod sparse_factorization_tests {
         // Simulate invalidation (as mj_crba would do)
         data.qLD_valid = false;
         assert!(!data.qLD_valid);
+    }
+
+    #[test]
+    fn batch_solve_matches_single() {
+        // nv=3 branching tree, solve 3 different RHS via batch and single.
+        let nv = 3;
+        let dof_parent = vec![None, Some(0), Some(0)];
+        let mut qm = DMatrix::zeros(3, 3);
+        qm[(0, 0)] = 5.0;
+        qm[(0, 1)] = 2.0;
+        qm[(1, 0)] = 2.0;
+        qm[(1, 1)] = 4.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 0)] = 1.0;
+        qm[(2, 2)] = 3.0;
+
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        let n_rhs = 3;
+
+        // Build nv × n_rhs matrix of RHS vectors.
+        let mut batch_rhs = DMatrix::zeros(nv, n_rhs);
+        for v in 0..n_rhs {
+            for i in 0..nv {
+                batch_rhs[(i, v)] = (i as f64 + 1.0) * (v as f64 + 0.5);
+            }
+        }
+
+        // Single-vector solve for each column.
+        let mut single_results = Vec::new();
+        for v in 0..n_rhs {
+            let mut x = batch_rhs.column(v).clone_owned();
+            mj_solve_sparse(
+                rowadr,
+                rownnz,
+                colind,
+                &data.qLD_data,
+                &data.qLD_diag_inv,
+                &mut x,
+            );
+            single_results.push(x);
+        }
+
+        // Batch solve.
+        let mut batch_x = batch_rhs;
+        mj_solve_sparse_batch(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut batch_x,
+        );
+
+        // Compare: each batch column must match the corresponding single solve.
+        for v in 0..n_rhs {
+            for i in 0..nv {
+                assert_relative_eq!(
+                    batch_x[(i, v)],
+                    single_results[v][i],
+                    epsilon = 1e-14,
+                    max_relative = 1e-14
+                );
+            }
+        }
     }
 }
 
@@ -22821,6 +23313,7 @@ mod muscle_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
         model.compute_muscle_params();
 
         model
@@ -23074,6 +23567,7 @@ mod muscle_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
 
         let mut data = model.make_data();
         data.ctrl[0] = 0.5;
@@ -23881,6 +24375,7 @@ mod jac_site_tests {
         model.body_ancestor_joints = vec![vec![]; 2];
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
+        model.compute_qld_csr_metadata();
 
         let mut data = model.make_data();
         data.qpos[0] = qpos_val;

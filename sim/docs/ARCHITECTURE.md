@@ -87,7 +87,7 @@ residual heap allocation occurs for contact vector growth and RK4 warmstart save
 | State | `qpos`, `qvel`, `act`, `ctrl`, `time` | Source of truth (act = activation states for muscles/filters) |
 | Mocap state | `mocap_pos`, `mocap_quat` | User-settable kinematic input for mocap bodies (length nmocap); FK overrides body pose |
 | Body poses | `xpos`, `xquat`, `xmat` | Computed by forward kinematics |
-| Mass matrix | `qM`, `qLD_diag`, `qLD_L` | Computed by CRBA; sparse L^T D L factorization cached |
+| Mass matrix | `qM`, `qLD_data`, `qLD_diag_inv` | Computed by CRBA; sparse L^T D L factorization in flat CSR storage (diagonal D[i,i] stored as the last element of each CSR row in `qLD_data`; `qLD_diag_inv` stores precomputed 1/D[i,i] for fast solves) |
 | Forces | `qfrc_bias`, `qfrc_passive`, `qfrc_actuator`, `qfrc_applied`, `qfrc_constraint` | Generalized force components |
 | Actuation | `actuator_length`, `actuator_velocity`, `actuator_force`, `act_dot` | Actuator-space state and activation derivatives |
 | Acceleration | `qacc` | Computed as `M^-1 * f_total` |

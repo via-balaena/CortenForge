@@ -71,6 +71,7 @@ use crate::mujoco_pipeline::{
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
     mj_solve_sparse,
+    mj_solve_sparse_batch,
     spatial_cross_motion,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
@@ -1211,7 +1212,7 @@ pub fn mjd_transition_hybrid(
     let nx = 2 * nv + na;
 
     // 1. Populate qDeriv analytically on a cloned working copy.
-    //    The clone preserves qLD_diag/qLD_L, scratch_m_impl, qM — all
+    //    The clone preserves qLD_data/qLD_diag_inv, scratch_m_impl, qM — all
     //    unmodified by mjd_smooth_vel.
     let mut data_work = data.clone();
     mjd_smooth_vel(model, &mut data_work);
@@ -1227,14 +1228,20 @@ pub fn mjd_transition_hybrid(
     let dvdv = match model.integrator {
         Integrator::Euler => {
             // ∂v⁺/∂v = I + h · M⁻¹ · qDeriv
+            // Batch solve: solve M⁻¹ · qDeriv for all nv columns at once.
+            // O(1) CSR metadata sweeps vs O(nv) for separate solves.
+            let mut minv_qderiv = data_work.qDeriv.clone();
+            let (rowadr, rownnz, colind) = model.qld_csr();
+            mj_solve_sparse_batch(
+                rowadr,
+                rownnz,
+                colind,
+                &data_work.qLD_data,
+                &data_work.qLD_diag_inv,
+                &mut minv_qderiv,
+            );
             let mut dvdv = DMatrix::identity(nv, nv);
-            for j in 0..nv {
-                let mut col = data_work.qDeriv.column(j).clone_owned();
-                mj_solve_sparse(&data_work.qLD_diag, &data_work.qLD_L, &mut col);
-                for i in 0..nv {
-                    dvdv[(i, j)] += h * col[i];
-                }
-            }
+            dvdv += h * &minv_qderiv;
             dvdv
         }
         Integrator::ImplicitSpringDamper => {
@@ -1350,7 +1357,15 @@ pub fn mjd_transition_hybrid(
             // Solve: M⁻¹ or (M−hD)⁻¹ or (M+hD+h²K)⁻¹
             match model.integrator {
                 Integrator::Euler => {
-                    mj_solve_sparse(&data_work.qLD_diag, &data_work.qLD_L, &mut dvdact);
+                    let (rowadr, rownnz, colind) = model.qld_csr();
+                    mj_solve_sparse(
+                        rowadr,
+                        rownnz,
+                        colind,
+                        &data_work.qLD_data,
+                        &data_work.qLD_diag_inv,
+                        &mut dvdact,
+                    );
                 }
                 Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdact);
@@ -1522,7 +1537,15 @@ pub fn mjd_transition_hybrid(
 
             match model.integrator {
                 Integrator::Euler => {
-                    mj_solve_sparse(&data_work.qLD_diag, &data_work.qLD_L, &mut dvdctrl);
+                    let (rowadr, rownnz, colind) = model.qld_csr();
+                    mj_solve_sparse(
+                        rowadr,
+                        rownnz,
+                        colind,
+                        &data_work.qLD_data,
+                        &data_work.qLD_diag_inv,
+                        &mut dvdctrl,
+                    );
                 }
                 Integrator::ImplicitSpringDamper | Integrator::ImplicitFast => {
                     cholesky_solve_in_place(&data_work.scratch_m_impl, &mut dvdctrl);
