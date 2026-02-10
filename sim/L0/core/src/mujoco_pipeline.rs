@@ -4111,9 +4111,13 @@ impl Data {
             }
         }
 
-        // Sleep update (§16.3): check thresholds, transition sleeping trees.
+        // Sleep update (§16.12): Phase B island-aware sleep transition.
         // After integration and before warmstart save.
-        mj_update_sleep(model, self);
+        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+        if sleep_enabled {
+            mj_sleep(model, self);
+            mj_update_sleep_arrays(model, self);
+        }
 
         // Save qacc for next-step warmstart (§15.9).
         // Done at the very end of step(), after integration, matching MuJoCo's
@@ -10618,41 +10622,100 @@ pub fn compute_dof_lengths(model: &mut Model) {
 ///
 /// Called at the end of `step()`, after integration completes and before
 /// the warmstart save. This is the central sleep state machine.
-fn mj_update_sleep(model: &Model, data: &mut Data) {
+/// Phase B sleep transition function (§16.12.2).
+///
+/// Three-phase approach:
+/// 1. Countdown: awake trees that can sleep have their timer incremented
+/// 2. Island sleep: entire islands where ALL trees are ready (timer == -1)
+/// 3. Singleton sleep: unconstrained trees (no island) that are ready
+///
+/// Returns the number of trees that were put to sleep.
+#[allow(clippy::cast_sign_loss)]
+fn mj_sleep(model: &Model, data: &mut Data) -> usize {
     if model.enableflags & ENABLE_SLEEP == 0 {
-        return; // Sleep disabled — no-op
+        return 0;
     }
 
-    // Phase 1: Check velocity threshold for each awake tree
+    // Phase 1: Countdown for awake trees
     for t in 0..model.ntree {
         if data.tree_asleep[t] >= 0 {
             continue; // Already asleep
         }
-        if model.tree_sleep_policy[t] == SleepPolicy::Never
-            || model.tree_sleep_policy[t] == SleepPolicy::AutoNever
-        {
-            continue; // Policy forbids sleeping
+        if !tree_can_sleep(model, data, t) {
+            data.tree_asleep[t] = -(1 + MIN_AWAKE); // Reset
+            continue;
         }
-
-        let can_sleep = tree_velocity_below_threshold(model, data, t);
-
-        if can_sleep {
-            // Increment timer toward -1 (ready to sleep)
-            if data.tree_asleep[t] < -1 {
-                data.tree_asleep[t] += 1;
-            }
-            // When timer reaches -1: put to sleep
-            if data.tree_asleep[t] == -1 {
-                put_tree_to_sleep(model, data, t);
-            }
-        } else {
-            // Reset timer to fully awake
-            data.tree_asleep[t] = -(1 + MIN_AWAKE);
+        // Increment toward -1 (ready to sleep)
+        if data.tree_asleep[t] < -1 {
+            data.tree_asleep[t] += 1;
         }
     }
 
-    // Phase 2: Recompute derived arrays
-    mj_update_sleep_arrays(model, data);
+    let mut nslept = 0;
+
+    // Phase 2: Sleep entire islands where ALL trees are ready
+    for island in 0..data.nisland {
+        let itree_start = data.island_itreeadr[island];
+        let itree_end = itree_start + data.island_ntree[island];
+
+        let all_ready = (itree_start..itree_end).all(|idx| {
+            let tree = data.map_itree2tree[idx];
+            data.tree_asleep[tree] == -1
+        });
+
+        if all_ready {
+            let trees: Vec<usize> = (itree_start..itree_end)
+                .map(|idx| data.map_itree2tree[idx])
+                .collect();
+            sleep_trees(model, data, &trees);
+            nslept += trees.len();
+        }
+    }
+
+    // Phase 3: Sleep unconstrained singleton trees that are ready
+    for t in 0..model.ntree {
+        if data.tree_island[t] < 0 && data.tree_asleep[t] == -1 {
+            sleep_trees(model, data, &[t]); // Self-link
+            nslept += 1;
+        }
+    }
+
+    nslept
+}
+
+/// Check if a tree is eligible to sleep (§16.12.2).
+///
+/// Returns `false` if policy forbids sleeping, external forces are applied,
+/// or any DOF velocity exceeds the sleep threshold.
+fn tree_can_sleep(model: &Model, data: &Data, tree: usize) -> bool {
+    // Policy check
+    if model.tree_sleep_policy[tree] == SleepPolicy::Never
+        || model.tree_sleep_policy[tree] == SleepPolicy::AutoNever
+    {
+        return false;
+    }
+
+    // External force check: xfrc_applied on any body in tree
+    let body_start = model.tree_body_adr[tree];
+    let body_end = body_start + model.tree_body_num[tree];
+    for body_id in body_start..body_end {
+        let f = &data.xfrc_applied[body_id];
+        if f[0] != 0.0 || f[1] != 0.0 || f[2] != 0.0 || f[3] != 0.0 || f[4] != 0.0 || f[5] != 0.0 {
+            return false;
+        }
+    }
+
+    // External force check: qfrc_applied on any DOF in tree
+    let dof_start = model.tree_dof_adr[tree];
+    let dof_end = dof_start + model.tree_dof_num[tree];
+    for dof in dof_start..dof_end {
+        if data.qfrc_applied[dof] != 0.0 {
+            return false;
+        }
+    }
+
+    // Velocity threshold check
+    tree_velocity_below_threshold(model, data, tree)
 }
 
 /// Check if all DOFs in a tree have velocities below the sleep threshold.
@@ -10667,42 +10730,57 @@ fn tree_velocity_below_threshold(model: &Model, data: &Data, tree: usize) -> boo
     true // All DOFs below threshold (L∞ norm check)
 }
 
-/// Transition a tree to sleep: zero velocities/accelerations, mark as asleep.
-fn put_tree_to_sleep(model: &Model, data: &mut Data, tree: usize) {
-    // 1. Mark as asleep (self-link for Phase A)
-    #[allow(clippy::cast_possible_wrap)]
-    {
-        data.tree_asleep[tree] = tree as i32; // ntree ≤ nbody ≪ i32::MAX
+/// Sleep a set of trees as a circular linked list (§16.12.1).
+///
+/// Creates a circular sleep cycle among the given trees, zeros all DOF-level
+/// and body-level arrays, and syncs xpos/xquat with post-integration qpos.
+/// For a single tree, this creates a self-link (Phase A compatible).
+#[allow(clippy::cast_possible_wrap)]
+fn sleep_trees(model: &Model, data: &mut Data, trees: &[usize]) {
+    let n = trees.len();
+    if n == 0 {
+        return;
     }
 
-    // 2. Zero velocities and accelerations for all DOFs in this tree
-    let dof_start = model.tree_dof_adr[tree];
-    let dof_end = dof_start + model.tree_dof_num[tree];
-    for dof in dof_start..dof_end {
-        data.qvel[dof] = 0.0;
-        data.qacc[dof] = 0.0;
-    }
+    for i in 0..n {
+        let tree = trees[i];
+        let next = trees[(i + 1) % n];
 
-    // 3. Zero velocity-dependent cached quantities for bodies in this tree.
+        // Create circular linked list
+        data.tree_asleep[tree] = next as i32;
+
+        // Zero DOF-level arrays
+        let dof_start = model.tree_dof_adr[tree];
+        let dof_end = dof_start + model.tree_dof_num[tree];
+        for dof in dof_start..dof_end {
+            data.qvel[dof] = 0.0;
+            data.qacc[dof] = 0.0;
+            data.qfrc_bias[dof] = 0.0;
+            data.qfrc_passive[dof] = 0.0;
+            data.qfrc_constraint[dof] = 0.0;
+            data.qfrc_actuator[dof] = 0.0; // §16.26.7: needed for policy relaxation
+        }
+
+        // Zero body-level arrays
+        let body_start = model.tree_body_adr[tree];
+        let body_end = body_start + model.tree_body_num[tree];
+        for body_id in body_start..body_end {
+            data.cvel[body_id] = SpatialVector::zeros();
+            data.cacc_bias[body_id] = SpatialVector::zeros();
+            data.cfrc_bias[body_id] = SpatialVector::zeros();
+        }
+
+        // Sync xpos/xquat with post-integration qpos (§16.15 compatibility)
+        sync_tree_fk(model, data, tree);
+    }
+}
+
+/// Recompute FK for a single tree's bodies to sync xpos/xquat with current qpos.
+///
+/// Called after integration to prevent false positives in qpos change detection.
+fn sync_tree_fk(model: &Model, data: &mut Data, tree: usize) {
     let body_start = model.tree_body_adr[tree];
     let body_end = body_start + model.tree_body_num[tree];
-    for body_id in body_start..body_end {
-        data.cvel[body_id] = SpatialVector::zeros();
-        data.cacc_bias[body_id] = SpatialVector::zeros();
-        data.cfrc_bias[body_id] = SpatialVector::zeros();
-    }
-    // Also zero force arrays for sleeping DOFs
-    for dof in dof_start..dof_end {
-        data.qfrc_bias[dof] = 0.0;
-        data.qfrc_passive[dof] = 0.0;
-        data.qfrc_constraint[dof] = 0.0;
-    }
-
-    // 4. Sync xpos/xquat with post-integration qpos (§16.15 compatibility).
-    // This is called after integration, so qpos may have been updated since
-    // the last FK. Recomputing FK for this tree ensures the stored xpos/xquat
-    // matches the current qpos, preventing false positives in qpos change
-    // detection on the next step.
     for body_id in body_start..body_end {
         let parent_id = model.body_parent[body_id];
         let mut pos = data.xpos[parent_id];
@@ -10889,7 +10967,7 @@ fn mj_check_qpos_changed(model: &Model, data: &mut Data) -> bool {
     for t in 0..model.ntree {
         if data.tree_qpos_dirty[t] && data.tree_asleep[t] >= 0 {
             // Tree was sleeping but FK detected a pose change from external qpos modification.
-            wake_tree(model, data, t);
+            mj_wake_tree(model, data, t);
             woke_any = true;
         }
     }
@@ -11484,7 +11562,7 @@ fn mj_wake(model: &Model, data: &mut Data) {
         // Use to_bits() != 0 instead of != 0.0 because IEEE 754 treats -0.0 == 0.0.
         let force = &data.xfrc_applied[body_id];
         if force.iter().any(|&v| v.to_bits() != 0) {
-            wake_tree(model, data, model.body_treeid[body_id]);
+            mj_wake_tree(model, data, model.body_treeid[body_id]);
         }
     }
 
@@ -11492,7 +11570,7 @@ fn mj_wake(model: &Model, data: &mut Data) {
     for dof in 0..model.nv {
         let tree = model.dof_treeid[dof];
         if !data.tree_awake[tree] && data.qfrc_applied[dof].to_bits() != 0 {
-            wake_tree(model, data, tree);
+            mj_wake_tree(model, data, tree);
         }
     }
 }
@@ -11524,7 +11602,7 @@ fn mj_wake_collision(model: &Model, data: &mut Data) -> bool {
         if let Some(body_id) = need_wake {
             let tree = model.body_treeid[body_id];
             if tree < model.ntree {
-                wake_tree(model, data, tree);
+                mj_wake_tree(model, data, tree);
                 woke_any = true;
             }
         }
@@ -11533,20 +11611,41 @@ fn mj_wake_collision(model: &Model, data: &mut Data) -> bool {
 }
 
 /// Wake a single tree: reset timer, update derived arrays.
-fn wake_tree(model: &Model, data: &mut Data, tree: usize) {
+/// Wake a tree and its entire sleep cycle (§16.12.3).
+///
+/// Traverses the circular linked list to wake all trees in the sleeping
+/// island. Eagerly updates `tree_awake` and `body_sleep_state` so
+/// subsequent wake functions in the same pass see the updated state.
+#[allow(clippy::cast_sign_loss)]
+fn mj_wake_tree(model: &Model, data: &mut Data, tree: usize) {
     if data.tree_awake[tree] {
         return; // Already awake
     }
-    data.tree_asleep[tree] = -(1 + MIN_AWAKE); // Fully awake, reset timer
-    data.tree_awake[tree] = true;
-    data.ntree_awake += 1;
-    data.nv_awake += model.tree_dof_num[tree];
 
-    // Update body states for all bodies in this tree
-    let body_start = model.tree_body_adr[tree];
-    let body_end = body_start + model.tree_body_num[tree];
-    for body_id in body_start..body_end {
-        data.body_sleep_state[body_id] = SleepState::Awake;
+    if data.tree_asleep[tree] < 0 {
+        // Awake but tree_awake flag stale — just update the flag
+        data.tree_awake[tree] = true;
+        return;
+    }
+
+    // Traverse the sleep cycle, waking each tree
+    let mut current = tree;
+    loop {
+        let next = data.tree_asleep[current] as usize;
+        data.tree_asleep[current] = -(1 + MIN_AWAKE); // Fully awake
+        data.tree_awake[current] = true;
+
+        // Update body states
+        let body_start = model.tree_body_adr[current];
+        let body_end = body_start + model.tree_body_num[current];
+        for body_id in body_start..body_end {
+            data.body_sleep_state[body_id] = SleepState::Awake;
+        }
+
+        current = next;
+        if current == tree {
+            break; // Full cycle traversed
+        }
     }
 }
 
