@@ -3316,8 +3316,10 @@ impl Model {
         // from their first forward()/step() call.
         let has_init_asleep = (0..self.ntree).any(|t| data.tree_asleep[t] >= 0);
         if has_init_asleep {
-            // Temporarily wake all bodies for FK
+            // Temporarily wake all bodies for FK + CRBA
             let saved_body_sleep = data.body_sleep_state.clone();
+            let saved_tree_asleep = data.tree_asleep.clone();
+            let saved_tree_awake = data.tree_awake.clone();
             for b in 1..self.nbody {
                 data.body_sleep_state[b] = SleepState::Awake;
             }
@@ -3325,12 +3327,20 @@ impl Model {
                 data.tree_awake[t] = true;
                 data.tree_asleep[t] = -(1 + MIN_AWAKE);
             }
+            // Temporarily update awake-index arrays so CRBA's sleep_filter
+            // evaluates to false (all bodies awake).
+            mj_update_sleep_arrays(self, &mut data);
 
-            // Run FK only (not full forward — just position computation)
+            // Run FK and CRBA to populate body positions and mass matrix.
+            // CRBA is required so that Init-asleep bodies have valid qM
+            // entries before selective CRBA (§16.29.3) begins preserving them.
             mj_fwd_position(self, &mut data);
+            mj_crba(self, &mut data);
 
-            // Restore body sleep states
+            // Restore sleep states
             data.body_sleep_state = saved_body_sleep;
+            data.tree_asleep = saved_tree_asleep;
+            data.tree_awake = saved_tree_awake;
         }
 
         // Initialize sleep state with union-find validation (§16.24).
@@ -4366,8 +4376,10 @@ impl Data {
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
         // ===== Pre-pipeline: Wake detection (§16.4) =====
-        if sleep_enabled {
-            mj_wake(model, self);
+        // Must update sleep arrays after user-force wake so that
+        // body_awake_ind/dof_awake_ind are current before mj_crba (§16.29.3).
+        if sleep_enabled && mj_wake(model, self) {
+            mj_update_sleep_arrays(model, self);
         }
 
         // ========== Position Stage ==========
@@ -9911,8 +9923,36 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
     clippy::needless_range_loop
 )]
 fn mj_crba(model: &Model, data: &mut Data) {
+    // ============================================================
+    // Phase 0: Preamble — sleep filter + selective qM zeroing (§16.29.3)
+    // ============================================================
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+
     data.qLD_valid = false;
-    data.qM.fill(0.0);
+
+    if sleep_filter {
+        // Selective path: zero only awake trees' DOF diagonal blocks.
+        // DOFs within a tree are contiguous (§16.0 body ordering guarantee).
+        // Cross-tree entries in qM are always zero (CRBA's dof_parent walk
+        // never crosses tree boundaries), so zeroing only the intra-tree
+        // diagonal block for each awake tree is sufficient.
+        for tree_id in 0..model.ntree {
+            if !data.tree_awake[tree_id] {
+                continue; // Sleeping tree — preserve qM entries
+            }
+            let dof_start = model.tree_dof_adr[tree_id];
+            let dof_count = model.tree_dof_num[tree_id];
+            for i in dof_start..(dof_start + dof_count) {
+                for j in dof_start..(dof_start + dof_count) {
+                    data.qM[(i, j)] = 0.0;
+                }
+            }
+        }
+    } else {
+        // Fast path: all bodies awake, zero everything (original behavior)
+        data.qM.fill(0.0);
+    }
 
     if model.nv == 0 {
         return;
@@ -9923,8 +9963,18 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // ============================================================
     // Copy cinert (computed once in FK) to crb_inertia as starting point.
     // cinert contains 6x6 spatial inertias for individual bodies in world frame.
-    for body_id in 0..model.nbody {
-        data.crb_inertia[body_id] = data.cinert[body_id];
+    // Sleeping bodies' crb_inertia values are preserved from their last awake
+    // step — Phase 1 is overwrite (=), not accumulate (+=), so there is no
+    // stale-accumulation hazard.
+    if sleep_filter {
+        for idx in 0..data.nbody_awake {
+            let body_id = data.body_awake_ind[idx];
+            data.crb_inertia[body_id] = data.cinert[body_id];
+        }
+    } else {
+        for body_id in 0..model.nbody {
+            data.crb_inertia[body_id] = data.cinert[body_id];
+        }
     }
 
     // ============================================================
@@ -9938,15 +9988,37 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // child's spatial inertia to the parent's reference point using the
     // parallel axis theorem. Without this shift, the rotational block would
     // be incorrect because the two inertias are about different points.
-
-    for body_id in (1..model.nbody).rev() {
-        let parent_id = model.body_parent[body_id];
-        if parent_id != 0 {
-            // Shift child's spatial inertia from child origin to parent origin,
-            // then add to parent's composite inertia.
-            let d = data.xpos[body_id] - data.xpos[parent_id];
-            let child_shifted = shift_spatial_inertia(&data.crb_inertia[body_id], &d);
-            data.crb_inertia[parent_id] += child_shifted;
+    //
+    // §16.29.3 §16.27 exception note: Unlike RNE backward pass (which
+    // accumulates velocity-dependent cfrc_bias and needs sleeping roots for
+    // correct body 0 accumulation), CRBA backward pass accumulates
+    // crb_inertia (position-only, frozen for sleeping bodies) and body 0
+    // has no DOFs so its crb_inertia is never consumed by Phase 3.
+    // Therefore body_awake_ind (not parent_awake_ind) is correct here.
+    if sleep_filter {
+        // Selective: iterate only awake bodies in reverse.
+        // Per-tree invariant: all bodies in a tree share sleep state, so
+        // the backward accumulation only involves bodies in the same tree,
+        // all of which are in body_awake_ind.
+        for idx in (1..data.nbody_awake).rev() {
+            let body_id = data.body_awake_ind[idx];
+            let parent_id = model.body_parent[body_id];
+            if parent_id != 0 {
+                let d = data.xpos[body_id] - data.xpos[parent_id];
+                let child_shifted = shift_spatial_inertia(&data.crb_inertia[body_id], &d);
+                data.crb_inertia[parent_id] += child_shifted;
+            }
+        }
+    } else {
+        for body_id in (1..model.nbody).rev() {
+            let parent_id = model.body_parent[body_id];
+            if parent_id != 0 {
+                // Shift child's spatial inertia from child origin to parent origin,
+                // then add to parent's composite inertia.
+                let d = data.xpos[body_id] - data.xpos[parent_id];
+                let child_shifted = shift_spatial_inertia(&data.crb_inertia[body_id], &d);
+                data.crb_inertia[parent_id] += child_shifted;
+            }
         }
     }
 
@@ -9962,6 +10034,9 @@ fn mj_crba(model: &Model, data: &mut Data) {
 
     // Pre-compute per-DOF motion subspace columns (cdof).
     // First build per-joint subspaces, then extract individual DOF columns.
+    // Sleeping joints' subspaces are computed but never read because the
+    // outer loop skips sleeping DOFs, and the dof_parent walk only visits
+    // ancestors in the same awake tree.
     let joint_subspaces: Vec<_> = (0..model.njnt)
         .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
         .collect();
@@ -9974,7 +10049,17 @@ fn mj_crba(model: &Model, data: &mut Data) {
         })
         .collect();
 
-    for dof_i in 0..model.nv {
+    let nv_iter = if sleep_filter {
+        data.nv_awake
+    } else {
+        model.nv
+    };
+    for v in 0..nv_iter {
+        let dof_i = if sleep_filter {
+            data.dof_awake_ind[v]
+        } else {
+            v
+        };
         let body_i = model.dof_body[dof_i];
         let ic = &data.crb_inertia[body_i];
 
@@ -9984,7 +10069,9 @@ fn mj_crba(model: &Model, data: &mut Data) {
         // Diagonal: M[i,i] = cdof[i]^T * buf
         data.qM[(dof_i, dof_i)] = cdof[dof_i].dot(&buf);
 
-        // Walk dof_parent chain for off-diagonal entries
+        // Walk dof_parent chain for off-diagonal entries.
+        // All ancestors are in the same awake tree (per-tree invariant),
+        // so no sleep check is needed in the ancestor walk.
         let mut current_body = body_i;
         let mut j = model.dof_parent[dof_i];
 
@@ -10021,6 +10108,9 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // Phase 4: Add armature inertia to diagonal
     // ============================================================
     for jnt_id in 0..model.njnt {
+        if sleep_filter && data.body_sleep_state[model.jnt_body[jnt_id]] == SleepState::Asleep {
+            continue;
+        }
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let nv = model.jnt_type[jnt_id].nv();
         let armature = model.jnt_armature[jnt_id];
@@ -10034,10 +10124,12 @@ fn mj_crba(model: &Model, data: &mut Data) {
     }
 
     // ============================================================
-    // Phase 5: Sparse L^T D L factorization
+    // Phase 5: Sparse L^T D L factorization (unchanged in C3a)
     // ============================================================
     // Exploits tree sparsity from dof_parent for O(n) factorization and solve.
     // Reused in mj_fwd_acceleration_explicit() and pgs_solve_contacts().
+    // Full factorization runs unconditionally — sleeping DOFs' qM entries
+    // are stale-but-valid from their last awake step, producing correct qLD.
     mj_factor_sparse(model, data);
 
     // ============================================================
@@ -10045,7 +10137,7 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // ============================================================
     // Extract per-body min mass/inertia for constraint force limiting.
     // This avoids O(joints) traversal per constraint.
-    cache_body_effective_mass(model, data);
+    cache_body_effective_mass(model, data, sleep_filter);
 }
 
 /// Cache per-body minimum mass and inertia from the mass matrix diagonal.
@@ -10057,17 +10149,25 @@ fn mj_crba(model: &Model, data: &mut Data) {
 /// Uses the `JointVisitor` pattern to ensure consistency with joint iteration
 /// elsewhere in the codebase.
 ///
+/// When `sleep_filter` is true, sleeping bodies' cached values are preserved
+/// from their last awake step (not recomputed, not zeroed). All three sub-phases
+/// (reset, visitor, fallback) skip sleeping bodies. (§16.29.3 Phase 6)
+///
 /// Must be called after `mj_crba()` has computed the mass matrix.
-fn cache_body_effective_mass(model: &Model, data: &mut Data) {
+fn cache_body_effective_mass(model: &Model, data: &mut Data, sleep_filter: bool) {
     // Visitor struct for JointVisitor pattern (defined before statements per clippy)
     struct MassCacheVisitor<'a> {
         model: &'a Model,
         data: &'a mut Data,
+        sleep_filter: bool,
     }
 
     impl JointVisitor for MassCacheVisitor<'_> {
         fn visit_free(&mut self, ctx: JointContext) {
             let body_id = self.model.jnt_body[ctx.jnt_id];
+            if self.sleep_filter && self.data.body_sleep_state[body_id] == SleepState::Asleep {
+                return;
+            }
             // Linear DOFs at 0-2
             for i in 0..3 {
                 let dof = ctx.dof_adr + i;
@@ -10094,6 +10194,9 @@ fn cache_body_effective_mass(model: &Model, data: &mut Data) {
 
         fn visit_ball(&mut self, ctx: JointContext) {
             let body_id = self.model.jnt_body[ctx.jnt_id];
+            if self.sleep_filter && self.data.body_sleep_state[body_id] == SleepState::Asleep {
+                return;
+            }
             // All 3 DOFs are angular
             for i in 0..3 {
                 let dof = ctx.dof_adr + i;
@@ -10109,6 +10212,9 @@ fn cache_body_effective_mass(model: &Model, data: &mut Data) {
 
         fn visit_hinge(&mut self, ctx: JointContext) {
             let body_id = self.model.jnt_body[ctx.jnt_id];
+            if self.sleep_filter && self.data.body_sleep_state[body_id] == SleepState::Asleep {
+                return;
+            }
             // Single angular DOF
             if ctx.dof_adr < self.model.nv {
                 let inertia = self.data.qM[(ctx.dof_adr, ctx.dof_adr)];
@@ -10121,6 +10227,9 @@ fn cache_body_effective_mass(model: &Model, data: &mut Data) {
 
         fn visit_slide(&mut self, ctx: JointContext) {
             let body_id = self.model.jnt_body[ctx.jnt_id];
+            if self.sleep_filter && self.data.body_sleep_state[body_id] == SleepState::Asleep {
+                return;
+            }
             // Single linear DOF
             if ctx.dof_adr < self.model.nv {
                 let mass = self.data.qM[(ctx.dof_adr, ctx.dof_adr)];
@@ -10131,17 +10240,29 @@ fn cache_body_effective_mass(model: &Model, data: &mut Data) {
         }
     }
 
-    // Reset to defaults (world body stays at infinity)
+    // Sub-phase 1: Reset only awake bodies.
+    // CRITICAL: sleeping bodies' cached values must be preserved.
     for i in 1..model.nbody {
+        if sleep_filter && data.body_sleep_state[i] == SleepState::Asleep {
+            continue; // Preserve cached values from last awake step
+        }
         data.body_min_mass[i] = f64::INFINITY;
         data.body_min_inertia[i] = f64::INFINITY;
     }
 
-    let mut visitor = MassCacheVisitor { model, data };
+    // Sub-phase 2: Visitor with sleep guard.
+    let mut visitor = MassCacheVisitor {
+        model,
+        data,
+        sleep_filter,
+    };
     model.visit_joints(&mut visitor);
 
-    // Replace infinity with default for bodies that had no DOFs of that type
+    // Sub-phase 3: Fallback — only awake bodies.
     for i in 1..model.nbody {
+        if sleep_filter && data.body_sleep_state[i] == SleepState::Asleep {
+            continue; // Preserve cached values from last awake step
+        }
         if data.body_min_mass[i] == f64::INFINITY {
             data.body_min_mass[i] = DEFAULT_MASS_FALLBACK;
         }
@@ -11866,10 +11987,15 @@ fn constraint_tree(model: &Model, data: &Data, row: usize) -> usize {
 /// Wake detection: check user-applied forces on sleeping bodies (§16.4).
 ///
 /// Called at the start of `forward()`, before any pipeline stage.
-fn mj_wake(model: &Model, data: &mut Data) {
+/// Wake detection for user-applied forces (§16.4).
+///
+/// Returns `true` if any tree was woken (caller must update sleep arrays).
+fn mj_wake(model: &Model, data: &mut Data) -> bool {
     if model.enableflags & ENABLE_SLEEP == 0 {
-        return;
+        return false;
     }
+
+    let mut woke_any = false;
 
     // Check xfrc_applied (per-body Cartesian forces)
     for body_id in 1..model.nbody {
@@ -11881,6 +12007,7 @@ fn mj_wake(model: &Model, data: &mut Data) {
         let force = &data.xfrc_applied[body_id];
         if force.iter().any(|&v| v.to_bits() != 0) {
             mj_wake_tree(model, data, model.body_treeid[body_id]);
+            woke_any = true;
         }
     }
 
@@ -11889,8 +12016,11 @@ fn mj_wake(model: &Model, data: &mut Data) {
         let tree = model.dof_treeid[dof];
         if !data.tree_awake[tree] && data.qfrc_applied[dof].to_bits() != 0 {
             mj_wake_tree(model, data, tree);
+            woke_any = true;
         }
     }
+
+    woke_any
 }
 
 /// Wake detection after collision: check contacts between sleeping and awake bodies (§16.4).

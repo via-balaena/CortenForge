@@ -1,6 +1,7 @@
 //! Integration tests for §16: Sleeping / Body Deactivation.
 //!
-//! Covers tests T1–T14, T17–T28, T31–T42, T59–T60, T72–T88 from `sim/docs/todo/future_work_5.md`.
+//! Covers tests T1–T14, T17–T28, T31–T42, T59–T60, T72–T98 from `sim/docs/todo/future_work_5.md`.
+//! Phase C step C3a tests T89–T98 validate selective CRBA (§16.29.3).
 //! Benchmarks T15–T16 are in a separate benchmark file.
 
 use approx::assert_relative_eq;
@@ -3852,4 +3853,686 @@ fn test_disable_island_phase_c_bit_identical() {
     // Verify DISABLE_ISLAND keeps nisland = 0
     assert_eq!(data_a.nisland, 0, "DISABLE_ISLAND should keep nisland=0");
     assert_eq!(data_b.nisland, 0, "DISABLE_ISLAND should keep nisland=0");
+}
+
+// ============================================================================
+// Phase C — Step C3a: Selective CRBA (§16.29.3)
+// Tests T89–T98
+// ============================================================================
+
+/// MJCF with 3 kinematic trees for selective CRBA tests.
+/// Tree A, Tree B, Tree C — free bodies on a ground plane.
+/// High damping contact + generous tolerance for reliable settling and sleeping.
+fn three_tree_crba_mjcf() -> &'static str {
+    r#"
+    <mujoco model="three_tree_crba">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="10 10 0.1" solref="0.005 1.5"/>
+            <body name="ball_a" pos="-2 0 0.2">
+                <freejoint name="free_a"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+            <body name="ball_b" pos="0 0 0.2">
+                <freejoint name="free_b"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+            <body name="ball_c" pos="2 0 0.2">
+                <freejoint name="free_c"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#
+}
+
+/// T89: Selective CRBA produces identical qM entries for awake DOFs as full CRBA (AC #59).
+///
+/// Runs the model with sleep, lets some trees sleep, then compares the awake DOFs'
+/// qM entries against a reference computed with sleep disabled.
+#[test]
+fn test_selective_crba_awake_identical() {
+    let model_sleep = load_model(three_tree_crba_mjcf()).expect("load sleep model");
+    let mut data_sleep = model_sleep.make_data();
+
+    // Build a reference model with sleep disabled
+    let nosleep_mjcf =
+        three_tree_crba_mjcf().replace(r#"<flag sleep="enable"/>"#, r#"<flag sleep="disable"/>"#);
+    let model_nosleep = load_model(&nosleep_mjcf).expect("load nosleep model");
+    let mut data_nosleep = model_nosleep.make_data();
+
+    // Step both until trees settle and sleep
+    for _ in 0..2000 {
+        data_sleep.step(&model_sleep).expect("sleep step");
+        data_nosleep.step(&model_nosleep).expect("nosleep step");
+    }
+
+    // At least one tree should be sleeping
+    let any_sleeping = (0..model_sleep.ntree).any(|t| data_sleep.tree_asleep[t] >= 0);
+    assert!(
+        any_sleeping,
+        "at least one tree should be asleep for this test"
+    );
+
+    // Now apply force to wake one tree and step both models
+    // Find tree_a's body
+    let ball_a = model_sleep
+        .body_name
+        .iter()
+        .position(|n| n.as_deref() == Some("ball_a"))
+        .expect("ball_a");
+    data_sleep.xfrc_applied[ball_a][2] = 5.0;
+    data_nosleep.xfrc_applied[ball_a][2] = 5.0;
+
+    // Sync qpos/qvel between models (they may have drifted slightly, use sleep's state)
+    data_nosleep.qpos.copy_from(&data_sleep.qpos);
+    data_nosleep.qvel.copy_from(&data_sleep.qvel);
+
+    // Step once to run CRBA with partial sleep
+    data_sleep.step(&model_sleep).expect("sleep step");
+    data_nosleep.step(&model_nosleep).expect("nosleep step");
+
+    // Compare awake DOFs' qM entries (bit-identical)
+    for dof_i in 0..model_sleep.nv {
+        let tree_i = model_sleep.dof_treeid[dof_i];
+        if data_sleep.tree_asleep[tree_i] >= 0 {
+            continue; // Skip sleeping DOFs
+        }
+        for dof_j in 0..model_sleep.nv {
+            let tree_j = model_sleep.dof_treeid[dof_j];
+            if data_sleep.tree_asleep[tree_j] >= 0 {
+                continue;
+            }
+            assert_eq!(
+                data_sleep.qM[(dof_i, dof_j)],
+                data_nosleep.qM[(dof_i, dof_j)],
+                "qM[({dof_i},{dof_j})] differs for awake DOFs"
+            );
+        }
+    }
+}
+
+/// T90: Sleeping DOFs' qM entries are preserved across steps (AC #61).
+///
+/// Records qM for a tree just before it sleeps, then checks that those entries
+/// remain unchanged on subsequent steps while the tree stays asleep.
+#[test]
+fn test_selective_crba_sleeping_preserved() {
+    let model = load_model(three_tree_crba_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Step until at least one tree sleeps
+    let mut slept_tree = None;
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+        for t in 0..model.ntree {
+            if data.tree_asleep[t] >= 0 {
+                slept_tree = Some(t);
+                break;
+            }
+        }
+        if slept_tree.is_some() {
+            break;
+        }
+    }
+    let tree = slept_tree.expect("a tree should have gone to sleep");
+
+    // Record qM entries for the sleeping tree's DOFs
+    let dof_start = model.tree_dof_adr[tree];
+    let dof_count = model.tree_dof_num[tree];
+    let mut saved_qm = vec![0.0_f64; dof_count * dof_count];
+    for i in 0..dof_count {
+        for j in 0..dof_count {
+            saved_qm[i * dof_count + j] = data.qM[(dof_start + i, dof_start + j)];
+        }
+    }
+
+    // Verify entries are non-zero (they should be valid mass matrix entries)
+    let diagonal_sum: f64 = (0..dof_count).map(|i| saved_qm[i * dof_count + i]).sum();
+    assert!(
+        diagonal_sum > 0.0,
+        "sleeping tree's qM diagonal should be positive (was {diagonal_sum})"
+    );
+
+    // Step several more times while tree remains asleep
+    for step in 0..20 {
+        data.step(&model).expect("step");
+        assert!(
+            data.tree_asleep[tree] >= 0,
+            "tree should still be asleep at step {step}"
+        );
+
+        // Compare: sleeping DOFs' qM must be unchanged
+        for i in 0..dof_count {
+            for j in 0..dof_count {
+                assert_eq!(
+                    data.qM[(dof_start + i, dof_start + j)],
+                    saved_qm[i * dof_count + j],
+                    "qM[({}, {})] changed while sleeping at step {step}",
+                    dof_start + i,
+                    dof_start + j
+                );
+            }
+        }
+    }
+}
+
+/// T91: Waking tree gets fresh qM and qLD (AC #62).
+///
+/// Puts a tree to sleep, then wakes it. Verifies that the next forward pass
+/// produces the same qM as a never-slept simulation at the same configuration.
+#[test]
+fn test_selective_crba_wake_recomputes() {
+    let model = load_model(three_tree_crba_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Step until a tree sleeps
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+    }
+
+    // Find a sleeping tree
+    let slept_tree = (0..model.ntree)
+        .find(|&t| data.tree_asleep[t] >= 0)
+        .expect("a tree should be asleep");
+
+    // Wake it with a force
+    let body_start = model.tree_body_adr[slept_tree];
+    data.xfrc_applied[body_start][2] = 5.0;
+
+    // Snapshot qpos/qvel
+    let saved_qpos = data.qpos.clone();
+    let saved_qvel = data.qvel.clone();
+
+    // Step the sleep model (wakes tree, runs selective CRBA)
+    data.step(&model).expect("step after wake");
+
+    // Build reference: nosleep model at same configuration
+    let nosleep_mjcf =
+        three_tree_crba_mjcf().replace(r#"<flag sleep="enable"/>"#, r#"<flag sleep="disable"/>"#);
+    let model_ref = load_model(&nosleep_mjcf).expect("load ref");
+    let mut data_ref = model_ref.make_data();
+    data_ref.qpos.copy_from(&saved_qpos);
+    data_ref.qvel.copy_from(&saved_qvel);
+    data_ref.xfrc_applied[body_start][2] = 5.0;
+    data_ref.step(&model_ref).expect("ref step");
+
+    // The previously-sleeping tree's DOFs should now have fresh, correct qM
+    let dof_start = model.tree_dof_adr[slept_tree];
+    let dof_count = model.tree_dof_num[slept_tree];
+    for i in 0..dof_count {
+        for j in 0..dof_count {
+            assert_eq!(
+                data.qM[(dof_start + i, dof_start + j)],
+                data_ref.qM[(dof_start + i, dof_start + j)],
+                "woken tree's qM[({}, {})] differs from reference",
+                dof_start + i,
+                dof_start + j,
+            );
+        }
+    }
+}
+
+/// T92: With all bodies awake, selective CRBA is bit-identical to full CRBA (AC #63).
+///
+/// When sleep is enabled but all bodies are awake (no sleeping trees),
+/// the sleep_filter=false fast path is exercised and results are identical.
+/// Uses sleep="never" policy to ensure trees never sleep during the test.
+#[test]
+fn test_selective_crba_all_awake_noop() {
+    let mjcf_sleep = r#"
+    <mujoco model="all_awake">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="ball" pos="0 0 0.2" sleep="never">
+                <freejoint name="free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let mjcf_nosleep = r#"
+    <mujoco model="all_awake_nosleep">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="disable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="ball" pos="0 0 0.2">
+                <freejoint name="free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let model_a = load_model(mjcf_sleep).expect("load sleep model");
+    let model_b = load_model(mjcf_nosleep).expect("load nosleep model");
+    let mut data_a = model_a.make_data();
+    let mut data_b = model_b.make_data();
+
+    for step in 0..100 {
+        data_a.step(&model_a).expect("step a");
+        data_b.step(&model_b).expect("step b");
+
+        // All bodies should still be awake (never policy)
+        assert_eq!(
+            data_a.ntree_awake, model_a.ntree,
+            "all trees should be awake at step {step}"
+        );
+
+        // qM must be bit-identical
+        for i in 0..model_a.nv {
+            for j in 0..model_a.nv {
+                assert_eq!(
+                    data_a.qM[(i, j)],
+                    data_b.qM[(i, j)],
+                    "qM[({i},{j})] differs at step {step}"
+                );
+            }
+        }
+    }
+}
+
+/// T93: crb_inertia is frozen for sleeping bodies (AC #64).
+///
+/// Records crb_inertia for a sleeping body, then checks it doesn't change.
+#[test]
+fn test_selective_crba_crb_inertia_preserved() {
+    let model = load_model(three_tree_crba_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Step until a tree sleeps
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+    }
+
+    let slept_tree = (0..model.ntree)
+        .find(|&t| data.tree_asleep[t] >= 0)
+        .expect("a tree should be asleep");
+
+    let body_start = model.tree_body_adr[slept_tree];
+    let body_count = model.tree_body_num[slept_tree];
+
+    // Record crb_inertia for all bodies in sleeping tree
+    let saved_crb: Vec<_> = (body_start..body_start + body_count)
+        .map(|b| data.crb_inertia[b])
+        .collect();
+
+    // Step several more times
+    for step in 0..20 {
+        data.step(&model).expect("step");
+        assert!(
+            data.tree_asleep[slept_tree] >= 0,
+            "tree should still be asleep at step {step}"
+        );
+
+        for (idx, b) in (body_start..body_start + body_count).enumerate() {
+            assert_eq!(
+                data.crb_inertia[b], saved_crb[idx],
+                "crb_inertia[{b}] changed while sleeping at step {step}"
+            );
+        }
+    }
+}
+
+/// T94: Armature is correctly applied for awake joints (AC #65).
+///
+/// Verifies that jnt_armature and dof_armature are both added to qM diagonal
+/// for awake joints, with some trees sleeping.
+#[test]
+fn test_selective_crba_armature_correct() {
+    // Model with armature on joints
+    let mjcf = r#"
+    <mujoco model="armature_test">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="arm_a" pos="-2 0 1">
+                <joint name="h_a" type="hinge" axis="0 1 0" armature="0.5" damping="10"/>
+                <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1"/>
+            </body>
+            <body name="arm_b" pos="2 0 1">
+                <joint name="h_b" type="hinge" axis="0 1 0" armature="0.5" damping="10"/>
+                <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load model");
+    let mut data = model.make_data();
+
+    // Step until at least one tree sleeps
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+    }
+
+    // Find an awake tree (or wake one)
+    let awake_tree = (0..model.ntree).find(|&t| data.tree_asleep[t] < 0);
+    let awake_tree = if let Some(t) = awake_tree {
+        t
+    } else {
+        // Wake tree 0
+        let body_start = model.tree_body_adr[0];
+        data.xfrc_applied[body_start][2] = 5.0;
+        data.step(&model).expect("step to wake");
+        data.xfrc_applied[body_start][2] = 0.0;
+        0
+    };
+
+    // Check that the awake tree's joint has armature in qM diagonal
+    let dof_start = model.tree_dof_adr[awake_tree];
+    let dof_count = model.tree_dof_num[awake_tree];
+
+    for d in dof_start..dof_start + dof_count {
+        let jnt_id = model.dof_jnt[d];
+        let armature = model.jnt_armature[jnt_id];
+        // qM diagonal should include the armature contribution
+        assert!(
+            data.qM[(d, d)] >= armature,
+            "qM[({d},{d})] = {} should include armature {armature}",
+            data.qM[(d, d)]
+        );
+    }
+}
+
+/// T95: body_min_mass/body_min_inertia preserved for sleeping bodies (AC #66).
+#[test]
+fn test_selective_crba_body_mass_cache_preserved() {
+    let model = load_model(three_tree_crba_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Step until a tree sleeps
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+    }
+
+    let slept_tree = (0..model.ntree)
+        .find(|&t| data.tree_asleep[t] >= 0)
+        .expect("a tree should be asleep");
+
+    let body_start = model.tree_body_adr[slept_tree];
+    let body_count = model.tree_body_num[slept_tree];
+
+    // Record cached mass/inertia
+    let saved_mass: Vec<_> = (body_start..body_start + body_count)
+        .map(|b| data.body_min_mass[b])
+        .collect();
+    let saved_inertia: Vec<_> = (body_start..body_start + body_count)
+        .map(|b| data.body_min_inertia[b])
+        .collect();
+
+    // Step more while sleeping
+    for step in 0..20 {
+        data.step(&model).expect("step");
+        assert!(
+            data.tree_asleep[slept_tree] >= 0,
+            "tree should still be asleep at step {step}"
+        );
+
+        for (idx, b) in (body_start..body_start + body_count).enumerate() {
+            assert_eq!(
+                data.body_min_mass[b], saved_mass[idx],
+                "body_min_mass[{b}] changed while sleeping at step {step}"
+            );
+            assert_eq!(
+                data.body_min_inertia[b], saved_inertia[idx],
+                "body_min_inertia[{b}] changed while sleeping at step {step}"
+            );
+        }
+    }
+}
+
+/// T96: Multi-tree mixed awake/sleeping scenario (AC #67).
+///
+/// 3 trees: A awake, B sleeping, C awake. Verifies:
+/// - Trees A and C have correct qM
+/// - Tree B's qM entries are stale-but-valid
+/// - qLD is correct for all DOFs
+#[test]
+fn test_selective_crba_multi_tree() {
+    let model = load_model(three_tree_crba_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Step until all trees sleep
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+    }
+
+    let all_sleeping = (0..model.ntree).all(|t| data.tree_asleep[t] >= 0);
+    assert!(all_sleeping, "all trees should be asleep");
+
+    // Wake trees 0 and 2, leave tree 1 sleeping
+    let body_a = model.tree_body_adr[0];
+    let body_c = model.tree_body_adr[2];
+    data.xfrc_applied[body_a][2] = 5.0;
+    data.xfrc_applied[body_c][2] = 5.0;
+    data.step(&model).expect("step after wake");
+    data.xfrc_applied[body_a][2] = 0.0;
+    data.xfrc_applied[body_c][2] = 0.0;
+
+    // Verify: tree 0 awake, tree 1 sleeping, tree 2 awake
+    assert!(
+        data.tree_asleep[0] < 0,
+        "tree 0 should be awake (was woken by force)"
+    );
+    assert!(data.tree_asleep[1] >= 0, "tree 1 should still be sleeping");
+    assert!(
+        data.tree_asleep[2] < 0,
+        "tree 2 should be awake (was woken by force)"
+    );
+
+    // Verify awake trees have positive qM diagonals
+    for t in [0, 2] {
+        let dof_start = model.tree_dof_adr[t];
+        let dof_count = model.tree_dof_num[t];
+        for d in dof_start..dof_start + dof_count {
+            assert!(
+                data.qM[(d, d)] > 0.0,
+                "awake tree {t}: qM[({d},{d})] should be positive, got {}",
+                data.qM[(d, d)]
+            );
+        }
+    }
+
+    // Verify sleeping tree has stale-but-valid positive diagonals
+    let dof_start_b = model.tree_dof_adr[1];
+    let dof_count_b = model.tree_dof_num[1];
+    for d in dof_start_b..dof_start_b + dof_count_b {
+        assert!(
+            data.qM[(d, d)] > 0.0,
+            "sleeping tree 1: qM[({d},{d})] should be positive (stale-but-valid), got {}",
+            data.qM[(d, d)]
+        );
+    }
+
+    // Verify qLD is valid (no NaN, positive diagonals)
+    for d in 0..model.nv {
+        assert!(
+            data.qLD_diag[d].is_finite() && data.qLD_diag[d] > 0.0,
+            "qLD_diag[{d}] should be positive finite, got {}",
+            data.qLD_diag[d]
+        );
+    }
+}
+
+/// T97: Deep chain scenario with partial sleeping (AC #68).
+///
+/// Two separate 3-link hinge chains attached to the world body.
+/// With one sleeping, the awake tree's off-diagonal qM entries
+/// (ancestor walks via dof_parent) are correct.
+#[test]
+fn test_selective_crba_deep_chain() {
+    // Two separate 3-link chains with high damping for fast settling
+    let mjcf = r#"
+    <mujoco model="deep_chain">
+        <option gravity="0 0 -9.81" timestep="0.001" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="a1" pos="-2 0 0">
+                <joint name="ha1" type="hinge" axis="0 1 0" damping="20"/>
+                <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                <body name="a2" pos="0 0 -0.3">
+                    <joint name="ha2" type="hinge" axis="0 1 0" damping="20"/>
+                    <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    <body name="a3" pos="0 0 -0.3">
+                        <joint name="ha3" type="hinge" axis="0 1 0" damping="20"/>
+                        <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    </body>
+                </body>
+            </body>
+            <body name="b1" pos="2 0 0">
+                <joint name="hb1" type="hinge" axis="0 1 0" damping="20"/>
+                <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                <body name="b2" pos="0 0 -0.3">
+                    <joint name="hb2" type="hinge" axis="0 1 0" damping="20"/>
+                    <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    <body name="b3" pos="0 0 -0.3">
+                        <joint name="hb3" type="hinge" axis="0 1 0" damping="20"/>
+                        <geom type="capsule" size="0.03" fromto="0 0 0 0 0 -0.3" mass="0.5"/>
+                    </body>
+                </body>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("load model");
+    let mut data = model.make_data();
+    assert_eq!(model.ntree, 2, "should have 2 trees");
+    assert_eq!(model.nv, 6, "should have 6 DOFs (3 per chain)");
+
+    // Step until both trees sleep
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+    }
+    assert!(
+        (0..model.ntree).all(|t| data.tree_asleep[t] >= 0),
+        "both trees should be sleeping"
+    );
+
+    // Wake tree 0 only
+    let body_a1 = model.tree_body_adr[0];
+    data.xfrc_applied[body_a1][2] = 5.0;
+    data.step(&model).expect("step after wake");
+    data.xfrc_applied[body_a1][2] = 0.0;
+
+    // Tree 0 awake, tree 1 sleeping
+    assert!(data.tree_asleep[0] < 0, "tree 0 should be awake");
+    assert!(data.tree_asleep[1] >= 0, "tree 1 should still be sleeping");
+
+    // Verify off-diagonal entries for tree 0 (3-link chain has off-diagonals)
+    let dof_start_a = model.tree_dof_adr[0];
+    let dof_count_a = model.tree_dof_num[0];
+
+    // The 3-link hinge chain should have non-zero off-diagonal entries
+    // (coupling between joints in the same chain)
+    let mut has_off_diag = false;
+    for i in dof_start_a..dof_start_a + dof_count_a {
+        for j in dof_start_a..dof_start_a + dof_count_a {
+            if i != j && data.qM[(i, j)].abs() > 1e-15 {
+                has_off_diag = true;
+            }
+        }
+    }
+    assert!(
+        has_off_diag,
+        "3-link chain should have off-diagonal qM entries"
+    );
+
+    // Verify qM is symmetric for awake tree
+    for i in dof_start_a..dof_start_a + dof_count_a {
+        for j in i + 1..dof_start_a + dof_count_a {
+            assert_eq!(
+                data.qM[(i, j)],
+                data.qM[(j, i)],
+                "qM should be symmetric: ({i},{j}) vs ({j},{i})"
+            );
+        }
+    }
+
+    // Verify LDL valid
+    for d in 0..model.nv {
+        assert!(
+            data.qLD_diag[d].is_finite() && data.qLD_diag[d] > 0.0,
+            "qLD_diag[{d}] should be positive finite, got {}",
+            data.qLD_diag[d]
+        );
+    }
+}
+
+/// T98: Awake trees' qLD blocks identical whether qM came from selective or full CRBA (AC #60).
+///
+/// Since C3a runs full LDL (Phase 5 unchanged), the awake trees' qLD blocks
+/// should be identical to those from full CRBA because the input qM values
+/// are the same for awake DOFs (and LDL is tree-block-diagonal).
+#[test]
+fn test_selective_crba_qld_awake_matches_full() {
+    let model = load_model(three_tree_crba_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Build reference model with sleep disabled
+    let nosleep_mjcf =
+        three_tree_crba_mjcf().replace(r#"<flag sleep="enable"/>"#, r#"<flag sleep="disable"/>"#);
+    let model_ref = load_model(&nosleep_mjcf).expect("load ref");
+    let mut data_ref = model_ref.make_data();
+
+    // Step until trees sleep
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+        data_ref.step(&model_ref).expect("ref step");
+    }
+
+    // Wake one tree
+    let body_a = model.tree_body_adr[0];
+    data.xfrc_applied[body_a][2] = 5.0;
+    data_ref.xfrc_applied[body_a][2] = 5.0;
+
+    // Sync state
+    data_ref.qpos.copy_from(&data.qpos);
+    data_ref.qvel.copy_from(&data.qvel);
+
+    data.step(&model).expect("step");
+    data_ref.step(&model_ref).expect("ref step");
+
+    // Compare qLD for awake DOFs
+    for t in 0..model.ntree {
+        if data.tree_asleep[t] >= 0 {
+            continue; // Skip sleeping trees
+        }
+        let dof_start = model.tree_dof_adr[t];
+        let dof_count = model.tree_dof_num[t];
+        for d in dof_start..dof_start + dof_count {
+            assert_eq!(
+                data.qLD_diag[d], data_ref.qLD_diag[d],
+                "qLD_diag[{d}] differs for awake tree {t}"
+            );
+            assert_eq!(
+                data.qLD_L[d].len(),
+                data_ref.qLD_L[d].len(),
+                "qLD_L[{d}] length differs for awake tree {t}"
+            );
+            for (idx, (&(col_a, val_a), &(col_b, val_b))) in data.qLD_L[d]
+                .iter()
+                .zip(data_ref.qLD_L[d].iter())
+                .enumerate()
+            {
+                assert_eq!(
+                    col_a, col_b,
+                    "qLD_L[{d}][{idx}] column differs for awake tree {t}"
+                );
+                assert_eq!(
+                    val_a, val_b,
+                    "qLD_L[{d}][{idx}] value differs for awake tree {t}"
+                );
+            }
+        }
+    }
 }

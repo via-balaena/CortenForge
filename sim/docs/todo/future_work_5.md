@@ -5429,6 +5429,16 @@ if !sleep_filter {
 
 **Correctness of selective backward pass:**
 
+**§16.27 exception note:** §16.27.2 prohibits converting backward-pass
+body loops to `parent_awake_ind` indirection because RNE's backward
+pass accumulates `cfrc_bias` (a dynamic, velocity-dependent quantity)
+and requires visiting sleeping tree roots for correct accumulation
+into body 0. CRBA's backward pass is a **specific exception** to that
+rule: it accumulates `crb_inertia` (a position-only quantity that is
+frozen for sleeping bodies), and body 0's `crb_inertia` is never
+consumed by Phase 3 (body 0 has no DOFs). Therefore, `body_awake_ind`
+— not `parent_awake_ind` — is the correct index array here.
+
 Unlike the RNE backward pass (excluded from indirection in §16.27.2
 because `cfrc_ext` depends on dynamic quantities), CRBA backward pass
 is safe to run only over awake bodies:
@@ -5480,7 +5490,7 @@ let cdof: Vec<Vector6<f64>> = (0..model.nv)
     })
     .collect();
 
-let nv_iter = if sleep_filter { data.ndof_awake } else { model.nv };
+let nv_iter = if sleep_filter { data.nv_awake } else { model.nv };
 for v in 0..nv_iter {
     let dof_i = if sleep_filter { data.dof_awake_ind[v] } else { v };
     let body_i = model.dof_body[dof_i];
@@ -5575,9 +5585,9 @@ The existing `cache_body_effective_mass()` has three phases:
 With selective CRBA, ALL THREE phases must skip sleeping bodies:
 
 ```rust
-fn cache_body_effective_mass(model: &Model, data: &mut Data) {
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-    let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+fn cache_body_effective_mass(model: &Model, data: &mut Data, sleep_filter: bool) {
+    // sleep_filter is passed in from mj_crba's preamble rather than
+    // recomputed, ensuring the same gate governs all phases.
 
     // Phase 1: Reset only awake bodies.
     // CRITICAL: sleeping bodies' cached values must be preserved.
@@ -5643,9 +5653,10 @@ variant needed). When `sleep_filter = false`, all guards are skipped
 2. Replace `qM.fill(0.0)` with per-tree selective zeroing.
 3. Gate Phase 1 `crb_inertia` init on `body_awake_ind`.
 4. Gate Phase 2 backward pass on `body_awake_ind` (reverse iteration).
-5. Gate Phase 3 joint loop on `body_sleep_state` check (`continue`
-   before subspace access). Keep `joint_subspaces: Vec<_>` type
-   unchanged (no `Option` wrapper — see Phase 3 rationale).
+5. Gate Phase 3 DOF loop on `dof_awake_ind` indirection (outer loop
+   iterates `0..nv_awake`, indexing via `dof_awake_ind[v]`).
+   `joint_subspaces` and `cdof` computed for ALL DOFs unconditionally
+   (cheap O(njnt) + O(nv) fill); only the outer loop is gated.
 6. Gate Phase 4 armature loop on `body_sleep_state` check.
 7. Phase 5 unchanged (full `mj_factor_sparse`).
 8. Gate Phase 6 `cache_body_effective_mass` via `sleep_filter` flag in
@@ -5665,6 +5676,53 @@ variant needed). When `sleep_filter = false`, all guards are skipped
 | Phase 6: sleeping body's cached mass reset to infinity | Low | Medium (constraint force limiting wrong) | No `body_min_mass.fill(f64::INFINITY)` for sleeping bodies. The `sleep_filter` guard in the visitor returns early, preserving existing values. Test T95 validates preservation. |
 | `sleep_filter = false` path diverges from original | Low | High (regression) | Entire function has two code paths: `if !sleep_filter { original }` for each phase. Test T92 validates bit-identity when all awake. |
 | Wake transition: first step after wake has stale qM | None | N/A | `mj_update_sleep_arrays()` runs before `mj_crba()` in `forward_core()`. Newly awake bodies are in `body_awake_ind`, so Phase 0 zeros their DOF block and Phases 1-4 compute fresh values. Test T91 validates. |
+
+###### 16.29.4b Step C3a — Implementation Discoveries
+
+Two pre-existing gaps were exposed during C3a implementation. Both were
+invisible before C3a because the full-CRBA path always recomputed
+everything, masking stale or missing data:
+
+**Discovery 1: `mj_wake()` must trigger `mj_update_sleep_arrays()`.**
+
+`mj_wake()` updates `tree_awake` and `body_sleep_state` (the semantic
+sleep flags), but does NOT update the indirection arrays
+(`body_awake_ind`, `nbody_awake`, `dof_awake_ind`, `nv_awake`). Before
+C3a, this was harmless — full CRBA iterated `0..nbody` and `0..nv`
+regardless. With selective CRBA, the indirection arrays drive Phases 1-3.
+If a tree wakes via `mj_wake()` but the indirection arrays still reflect
+the old state (e.g., `nbody_awake = 1` with only body 0), Phases 1-3
+compute nothing for the newly woken tree, leaving its `qM` entries as
+zeros → zero LDL diagonal → NaN in `qacc`.
+
+**Fix:** `mj_wake()` now returns `bool` (true if any tree was woken).
+In `forward_core()`, after `mj_wake(model, self)` returns `true`,
+`mj_update_sleep_arrays(model, self)` is called to refresh the
+indirection arrays before CRBA runs. This ensures that newly woken
+bodies appear in `body_awake_ind` / `dof_awake_ind` and their DOF
+blocks are properly zeroed and recomputed by Phases 0-4.
+
+**Discovery 2: `make_data()` must run CRBA for init-asleep bodies.**
+
+Bodies with `sleep="init"` policy start asleep. `make_data()` initializes
+`qM` as a zero matrix (`DMatrix::zeros(nv, nv)`). Before C3a, the first
+`forward()` call ran full CRBA, which overwrote the zeros for all DOFs.
+With selective CRBA, if bodies start asleep, `sleep_filter = true` on
+the first step, and Phases 1-4 skip the sleeping DOFs, preserving their
+zero `qM` entries → zero LDL diagonal → NaN.
+
+**Fix:** In `make_data()`, during the existing temporary wake-up for
+init-asleep bodies (which already runs `mj_fwd_position()`), also call
+`mj_crba()`. Before running FK + CRBA, save and restore `tree_asleep` /
+`tree_awake` arrays, and call `mj_update_sleep_arrays()` so that
+`sleep_filter` evaluates to `false` (all bodies appear awake), ensuring
+full CRBA computes valid `qM` entries for every DOF. This guarantees
+that even init-asleep bodies have a valid mass matrix before their
+first awake step.
+
+Both fixes are covered by existing tests: Discovery 1 by
+`test_wake_on_contact` and `test_wake_on_xfrc_applied`; Discovery 2 by
+`test_reset_restores_sleep_state` and `test_sleep_init_policy`.
 
 ###### 16.29.5 Step C3b — Partial LDL Factorization
 
@@ -5916,7 +5974,7 @@ Phase C has four steps, ordered by dependency and risk:
 |------|---------|-------------|------------|------|--------|
 | C1 | §16.27 | Awake-index pipeline iteration | Phase B complete | Low | ✅ Done |
 | C2 | §16.28 | Island-local Delassus assembly | C1 (uses `dof_awake_ind` patterns) | Medium | ✅ Done |
-| C3a | §16.29 | Selective CRBA body loops | C1 (uses `body_awake_ind`) | Medium | |
+| C3a | §16.29 | Selective CRBA body loops | C1 (uses `body_awake_ind`) | Medium | ✅ Done |
 | C3b | §16.29 | Partial LDL factorization | C3a + profiling trigger | Medium | Deferred |
 
 **C1 first** because it establishes the indirection iteration pattern
@@ -5942,8 +6000,8 @@ needed, just skip sleeping trees' DOF ranges.
 1. Phase 0: Selective `qM` zeroing (per-tree diagonal blocks).
 2. Phase 1: Gate `crb_inertia` init on `body_awake_ind`.
 3. Phase 2: Gate backward accumulation on `body_awake_ind` (reverse).
-4. Phase 3: Gate joint loop on `body_sleep_state` (`continue` guard).
-   `joint_subspaces` type unchanged — compute all, skip via guard.
+4. Phase 3: Gate DOF loop on `dof_awake_ind` (outer loop indirection).
+   `joint_subspaces` and `cdof` computed unconditionally, gating via outer loop only.
 5. Phase 4: Gate armature loop on `body_sleep_state`.
 6. Phase 6: Gate `cache_body_effective_mass` via `sleep_filter` in
    visitor struct.
