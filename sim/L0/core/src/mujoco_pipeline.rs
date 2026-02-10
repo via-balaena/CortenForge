@@ -2214,18 +2214,18 @@ pub struct Data {
     ///
     /// Layout matches MuJoCo's combined format — each CSR row stores:
     /// - Off-diagonal L entries at positions `0..rownnz[i]-1`
-    /// - Diagonal D[i,i] at position `rownnz[i]-1` (last element)
+    /// - Diagonal D\[i,i\] at position `rownnz[i]-1` (last element)
     ///
     /// The sparsity pattern is determined by the kinematic tree:
-    /// `L[i,j]` is non-zero only if DOF j is an ancestor of DOF i.
+    /// `L\[i,j\]` is non-zero only if DOF j is an ancestor of DOF i.
     ///
-    /// Use `data.qld_diag(model, i)` to read D[i,i] from the CSR data.
+    /// Use `data.qld_diag(model, i)` to read D\[i,i\] from the CSR data.
     ///
     /// Flat CSR value buffer (off-diagonal L + diagonal D).
     /// Layout defined by `Model::qLD_rowadr`/`qLD_rownnz`/`qLD_colind`.
     /// Length: `model.qLD_nnz`.
     pub qLD_data: Vec<f64>,
-    /// Precomputed inverse diagonal: `qLD_diag_inv[i] = 1.0 / D[i,i]`.
+    /// Precomputed inverse diagonal: `qLD_diag_inv[i] = 1.0 / D\[i,i\]`.
     /// Computed during `mj_factor_sparse()`. Used by `mj_solve_sparse()` to
     /// replace division with multiplication (matching MuJoCo's `qLDiagInv`).
     /// Length: `nv`.
@@ -4213,7 +4213,7 @@ impl Model {
 }
 
 impl Data {
-    /// Read the diagonal entry `D[i,i]` from the sparse LDL factorization.
+    /// Read the diagonal entry `D\[i,i\]` from the sparse LDL factorization.
     ///
     /// Reads from `qLD_data[rowadr[i] + rownnz[i] - 1]` (last element of CSR row).
     #[inline]
@@ -10026,7 +10026,7 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 ///
 /// The algorithm works by:
 /// 1. Computing composite inertias by accumulating from leaves to root
-/// 2. Computing `M[i,j]` = `S_i^T` * `I_c` * `S_j` for each joint pair
+/// 2. Computing `M\[i,j\]` = `S_i^T` * `I_c` * `S_j` for each joint pair
 ///
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 6
 /// Composite Rigid Body Algorithm (CRBA) - Featherstone O(n) version.
@@ -12744,7 +12744,7 @@ fn remap_jacobian_to_island(
 /// Assemble Delassus matrix A and constraint RHS b for contact constraints.
 /// Shared by PGS and CG solvers.
 ///
-/// A[i,j] = J_i * M^{-1} * J_j^T (with CFM regularization on diagonal).
+/// A\[i,j\] = J_i * M^{-1} * J_j^T (with CFM regularization on diagonal).
 /// b includes unconstrained acceleration, contact velocities, and Baumgarte
 /// stabilization from solref/solimp.
 ///
@@ -15112,7 +15112,7 @@ impl SparseHessian {
     }
 
     /// Compute elimination tree from the CSC sparsity pattern.
-    /// etree[j] = min { i > j : L[i,j] != 0 }, which equals the first
+    /// etree\[j\] = min { i > j : L\[i,j\] != 0 }, which equals the first
     /// off-diagonal non-zero row in column j of L.
     ///
     /// Also computes the symbolic structure of L (l_col_ptr, l_row_idx).
@@ -19648,7 +19648,7 @@ fn cholesky_rank1_downdate(l: &mut DMatrix<f64>, v: &mut [f64]) -> Result<(), St
 
 /// Sparse L^T D L factorization of the mass matrix using flat CSR storage.
 ///
-/// Computes `M = L^T D L` where `L` is unit lower triangular (L[i,i] = 1 implicitly,
+/// Computes `M = L^T D L` where `L` is unit lower triangular (L\[i,i\] = 1 implicitly,
 /// stored entries include diagonal as last element) and `D` is diagonal. Uses flat CSR
 /// storage (`Model::qLD_rowadr`/`qLD_rownnz`/`qLD_colind` + `Data::qLD_data`). The
 /// inner loop uses MuJoCo's bulk `addToScl` pattern for O(1) ancestor row access.
