@@ -10379,6 +10379,70 @@ impl JointVisitor for PassiveForceVisitor<'_> {
 }
 
 // ============================================================================
+// dof_length Mechanism Length (§16.14)
+// ============================================================================
+
+/// Compute characteristic body length for dof_length normalization (§16.14.1).
+///
+/// For each body, compute the maximum extent from this body through the
+/// kinematic chain to any descendant. This gives a length scale that converts
+/// angular velocity [rad/s] to tip velocity [m/s] for the mechanism rooted
+/// at this body.
+fn compute_body_lengths(model: &Model) -> Vec<f64> {
+    let mut body_length = vec![0.0_f64; model.nbody];
+
+    // Backward pass: accumulate subtree extents from leaves to root
+    for body_id in (1..model.nbody).rev() {
+        let parent = model.body_parent[body_id];
+
+        // Distance from parent to this body (local position in parent frame)
+        let pos = &model.body_pos[body_id];
+        let dist = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
+
+        // This body's extent: own subtree extent + distance to parent
+        let child_extent = body_length[body_id] + dist;
+        body_length[parent] = body_length[parent].max(child_extent);
+    }
+
+    // Ensure minimum length (no normalization for tiny/zero-extent bodies)
+    for length in &mut body_length {
+        if *length < 1e-10 {
+            *length = 1.0;
+        }
+    }
+
+    body_length
+}
+
+/// Compute per-DOF mechanism lengths (§16.14.2).
+///
+/// Rotational DOFs get the body length (converts rad/s to m/s at the tip).
+/// Translational DOFs keep 1.0 (already in m/s).
+///
+/// Called during model construction to replace the Phase A uniform 1.0.
+pub fn compute_dof_lengths(model: &mut Model) {
+    let body_length = compute_body_lengths(model);
+
+    for dof in 0..model.nv {
+        let jnt_id = model.dof_jnt[dof];
+        let jnt_type = model.jnt_type[jnt_id];
+        let offset = dof - model.jnt_dof_adr[jnt_id];
+
+        let is_rotational = match jnt_type {
+            MjJointType::Hinge | MjJointType::Ball => true,
+            MjJointType::Free => offset >= 3, // DOFs 3,4,5 are rotational
+            MjJointType::Slide => false,
+        };
+
+        if is_rotational {
+            model.dof_length[dof] = body_length[model.dof_body[dof]];
+        } else {
+            model.dof_length[dof] = 1.0; // translational: already in [m/s]
+        }
+    }
+}
+
+// ============================================================================
 // Sleep / Body Deactivation (§16)
 // ============================================================================
 

@@ -1026,18 +1026,13 @@ fn test_dof_length_computation() {
 
     assert_eq!(model.nv, 6, "free joint should have 6 DOFs");
 
-    // All dof_length values should be positive
-    for dof in 0..model.nv {
-        assert!(
-            model.dof_length[dof] > 0.0,
-            "dof_length[{}] should be positive: {}",
-            dof,
-            model.dof_length[dof]
-        );
-    }
-
     // Translational DOFs (first 3) should have length 1.0
     for dof in 0..3 {
+        assert_relative_eq!(model.dof_length[dof], 1.0, epsilon = 1e-10);
+    }
+
+    // Rotational DOFs (3,4,5): leaf body with no children → clamped to 1.0
+    for dof in 3..6 {
         assert_relative_eq!(model.dof_length[dof], 1.0, epsilon = 1e-10);
     }
 
@@ -1057,10 +1052,8 @@ fn test_dof_length_computation() {
     "#;
     let model_hinge = load_model(mjcf_hinge).expect("load model");
     assert_eq!(model_hinge.nv, 1);
-    assert!(
-        model_hinge.dof_length[0] > 0.0,
-        "hinge dof_length should be positive"
-    );
+    // Leaf body (no children): body_length clamped to 1.0
+    assert_relative_eq!(model_hinge.dof_length[0], 1.0, epsilon = 1e-10);
 
     // Slide DOF
     let mjcf_slide = r#"
@@ -1395,6 +1388,213 @@ fn test_wake_on_negative_zero() {
 // ============================================================================
 // Phase B Tests
 // ============================================================================
+
+// ============================================================================
+// T43: test_dof_length_hinge_1m (§16.14)
+// ============================================================================
+
+#[test]
+fn test_dof_length_hinge_1m() {
+    // A hinge joint on a body with a 1-meter child should get dof_length ≈ 1.0
+    let mjcf = r#"
+    <mujoco model="hinge_1m">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="hinge1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.05" mass="1.0"/>
+                <body name="link2" pos="1 0 0">
+                    <geom type="sphere" size="0.05" mass="0.5"/>
+                </body>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load model");
+
+    assert_eq!(model.nv, 1, "single hinge DOF");
+    assert_relative_eq!(model.dof_length[0], 1.0, epsilon = 1e-6);
+}
+
+// ============================================================================
+// T44: test_dof_length_hinge_01m (§16.14)
+// ============================================================================
+
+#[test]
+fn test_dof_length_hinge_01m() {
+    // A hinge joint on a body with a 0.1-meter child should get dof_length ≈ 0.1
+    let mjcf = r#"
+    <mujoco model="hinge_01m">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="hinge1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.05" mass="1.0"/>
+                <body name="link2" pos="0.1 0 0">
+                    <geom type="sphere" size="0.05" mass="0.5"/>
+                </body>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load model");
+
+    assert_eq!(model.nv, 1, "single hinge DOF");
+    assert_relative_eq!(model.dof_length[0], 0.1, epsilon = 1e-6);
+}
+
+// ============================================================================
+// T45: test_dof_length_slide (§16.14)
+// ============================================================================
+
+#[test]
+fn test_dof_length_slide() {
+    // Slide joint should always have dof_length = 1.0 regardless of arm length
+    let mjcf = r#"
+    <mujoco model="slide_dof_length">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="slide1" type="slide" axis="0 0 1"/>
+                <geom type="sphere" size="0.05" mass="1.0"/>
+                <body name="link2" pos="2 0 0">
+                    <geom type="sphere" size="0.05" mass="0.5"/>
+                </body>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load model");
+
+    assert_eq!(model.nv, 1, "single slide DOF");
+    // Slide is translational → always 1.0
+    assert_relative_eq!(model.dof_length[0], 1.0, epsilon = 1e-10);
+}
+
+// ============================================================================
+// T46: test_dof_length_free_joint (§16.14)
+// ============================================================================
+
+#[test]
+fn test_dof_length_free_joint() {
+    // Free joint: translational DOFs (0,1,2) = 1.0; rotational DOFs (3,4,5) = body_length
+    let mjcf = r#"
+    <mujoco model="free_dof_length">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="base" pos="0 0 1">
+                <freejoint name="free1"/>
+                <geom type="sphere" size="0.05" mass="1.0"/>
+                <body name="child" pos="0.5 0 0">
+                    <geom type="sphere" size="0.05" mass="0.5"/>
+                </body>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load model");
+
+    assert_eq!(model.nv, 6, "free joint has 6 DOFs");
+
+    // Translational DOFs (0,1,2) should be 1.0
+    for dof in 0..3 {
+        assert!(
+            (model.dof_length[dof] - 1.0).abs() < 1e-10,
+            "translational dof_length[{dof}] should be 1.0, got {}",
+            model.dof_length[dof]
+        );
+    }
+
+    // Rotational DOFs (3,4,5) should be body_length ≈ 0.5 (child at 0.5m)
+    for dof in 3..6 {
+        assert!(
+            (model.dof_length[dof] - 0.5).abs() < 1e-6,
+            "rotational dof_length[{dof}] should be ≈ 0.5, got {}",
+            model.dof_length[dof]
+        );
+    }
+}
+
+// ============================================================================
+// T68: test_dof_length_nonuniform_threshold (§16.14)
+// ============================================================================
+
+#[test]
+fn test_dof_length_nonuniform_threshold() {
+    // Arm length should affect the effective sleep threshold.
+    // With sleep_tolerance = 1e-4:
+    //   1-meter arm: threshold = 1e-4 * 1.0 = 1e-4 rad/s
+    //   0.1-meter arm: threshold = 1e-4 * 0.1 = 1e-5 rad/s (tighter)
+    //
+    // Verify this by checking that dof_length differs for different arm lengths.
+
+    // 1-meter arm
+    let mjcf_1m = r#"
+    <mujoco model="arm_1m">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.05" mass="1.0"/>
+                <body name="tip" pos="1 0 0">
+                    <geom type="sphere" size="0.05" mass="0.5"/>
+                </body>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model_1m = load_model(mjcf_1m).expect("load model");
+
+    // 0.1-meter arm
+    let mjcf_01m = r#"
+    <mujoco model="arm_01m">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="hinge" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.05" mass="1.0"/>
+                <body name="tip" pos="0.1 0 0">
+                    <geom type="sphere" size="0.05" mass="0.5"/>
+                </body>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model_01m = load_model(mjcf_01m).expect("load model");
+
+    // dof_length should reflect the arm length
+    assert_relative_eq!(model_1m.dof_length[0], 1.0, epsilon = 1e-6);
+    assert_relative_eq!(model_01m.dof_length[0], 0.1, epsilon = 1e-6);
+
+    // The ratio should be 10:1
+    let ratio = model_1m.dof_length[0] / model_01m.dof_length[0];
+    assert_relative_eq!(ratio, 10.0, epsilon = 1e-3);
+
+    // Effective threshold difference: for sleep_tolerance=1e-4,
+    // 1m arm threshold = 1e-4, 0.1m arm threshold = 1e-5
+    let tol = 1e-4;
+    let threshold_1m = tol * model_1m.dof_length[0];
+    let threshold_01m = tol * model_01m.dof_length[0];
+    assert!(
+        threshold_1m > threshold_01m,
+        "shorter arm should have tighter threshold: {} vs {}",
+        threshold_1m,
+        threshold_01m
+    );
+    assert_relative_eq!(threshold_1m / threshold_01m, 10.0, epsilon = 1e-3);
+}
 
 // ============================================================================
 // T70: test_tendon_actuator_policy (§16.26.5)

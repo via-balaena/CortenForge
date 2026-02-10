@@ -17,7 +17,7 @@ use sim_core::mesh::TriangleMeshData;
 use sim_core::{
     ActuatorDynamics, ActuatorTransmission, BiasType, ContactPair, ENABLE_SLEEP, EqualityType,
     GainType, GeomType, Integrator, Keyframe, MjJointType, MjObjectType, MjSensorDataType,
-    MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType,
+    MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType, compute_dof_lengths,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -2955,14 +2955,10 @@ impl ModelBuilder {
                 }
             }
 
-            // ===== dof_length Computation (§16.0) =====
-            // dof_length converts angular velocity to linear for sleep threshold
-            // comparison. MuJoCo uses the mechanism length (joint anchor → subtree
-            // COM) for rotational DOFs. We default to 1.0 for all DOFs for now,
-            // meaning angular velocity threshold equals sleep_tolerance directly.
-            for dof in 0..model.nv {
-                model.dof_length[dof] = 1.0;
-            }
+            // ===== dof_length Computation (§16.14) =====
+            // Compute mechanism lengths: rotational DOFs get the body's subtree
+            // extent (converts rad/s to m/s at tip), translational DOFs get 1.0.
+            compute_dof_lengths(&mut model);
 
             // ===== RK4 Incompatibility Guard (§16.6) =====
             if model.enableflags & ENABLE_SLEEP != 0 && model.integrator == Integrator::RungeKutta4
