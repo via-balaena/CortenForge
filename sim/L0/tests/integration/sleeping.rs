@@ -1597,6 +1597,100 @@ fn test_dof_length_nonuniform_threshold() {
 }
 
 // ============================================================================
+// T51: test_indirection_equivalence (§16.17)
+// ============================================================================
+
+#[test]
+fn test_indirection_equivalence() {
+    // Verify that awake-index indirection arrays match Phase A per-body skip logic.
+    // Two trees: one will sleep, one stays awake. Check arrays are consistent.
+    let mjcf = r#"
+    <mujoco model="indirection_test">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="ball1" pos="0 0 0.2">
+                <freejoint name="j1"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+            <body name="ball2" pos="2 0 0.2">
+                <freejoint name="j2"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load model");
+    let mut data = model.make_data();
+
+    // Initially all awake — body_awake_ind should contain all bodies
+    // (body 0 = world/static, body 1 = ball1, body 2 = ball2)
+    assert_eq!(
+        data.nbody_awake, 3,
+        "all bodies should be in body_awake_ind"
+    );
+    assert_eq!(data.body_awake_ind[0], 0, "world body");
+    assert_eq!(data.body_awake_ind[1], 1, "ball1");
+    assert_eq!(data.body_awake_ind[2], 2, "ball2");
+
+    // parent_awake_ind: all bodies have awake/static parents
+    assert_eq!(data.nparent_awake, 3);
+
+    // dof_awake_ind: all 12 DOFs awake (2 free joints × 6 DOFs)
+    assert_eq!(model.nv, 12);
+    assert_eq!(data.nv_awake, 12);
+    for i in 0..12 {
+        assert_eq!(data.dof_awake_ind[i], i);
+    }
+
+    // Step until one body falls asleep
+    for _ in 0..5000 {
+        data.step(&model).expect("step failed");
+    }
+
+    // Verify indirection arrays match body_sleep_state
+    let expected_awake_bodies: Vec<usize> = (0..model.nbody)
+        .filter(|&b| data.body_sleep_state[b] != SleepState::Asleep)
+        .collect();
+    assert_eq!(
+        &data.body_awake_ind[..data.nbody_awake],
+        &expected_awake_bodies[..],
+        "body_awake_ind must match non-asleep bodies"
+    );
+
+    // Verify dof_awake_ind matches tree_awake
+    let expected_awake_dofs: Vec<usize> = (0..model.nv)
+        .filter(|&d| {
+            let tree = model.dof_treeid[d];
+            tree < model.ntree && data.tree_awake[tree]
+        })
+        .collect();
+    assert_eq!(
+        &data.dof_awake_ind[..data.nv_awake],
+        &expected_awake_dofs[..],
+        "dof_awake_ind must match awake DOFs"
+    );
+
+    // Verify parent_awake_ind: bodies whose parent is not asleep
+    let expected_parent_awake: Vec<usize> = (0..model.nbody)
+        .filter(|&b| {
+            if b == 0 {
+                return true; // World is always in
+            }
+            let parent = model.body_parent[b];
+            data.body_sleep_state[parent] != SleepState::Asleep
+        })
+        .collect();
+    assert_eq!(
+        &data.parent_awake_ind[..data.nparent_awake],
+        &expected_parent_awake[..],
+        "parent_awake_ind must match bodies with awake parents"
+    );
+}
+
+// ============================================================================
 // T70: test_tendon_actuator_policy (§16.26.5)
 // ============================================================================
 

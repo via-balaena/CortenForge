@@ -2215,6 +2215,21 @@ pub struct Data {
     /// Number of awake DOFs (diagnostics / performance monitoring).
     pub nv_awake: usize,
 
+    // ==================== Awake-Index Indirection (§16.17) ====================
+    /// Sorted indices of awake + static bodies (length ≤ nbody).
+    /// Used for cache-friendly iteration in FK, velocity kinematics, etc.
+    pub body_awake_ind: Vec<usize>,
+    /// Number of entries in `body_awake_ind`.
+    pub nbody_awake: usize,
+    /// Sorted indices of bodies whose parent is awake or static (length ≤ nbody).
+    /// Used for backward-pass loops (subtree COM, RNE).
+    pub parent_awake_ind: Vec<usize>,
+    /// Number of entries in `parent_awake_ind`.
+    pub nparent_awake: usize,
+    /// Sorted indices of awake DOFs (length ≤ nv).
+    /// Used for velocity integration, CRBA, force accumulation.
+    pub dof_awake_ind: Vec<usize>,
+
     // ==================== Time ====================
     /// Simulation time in seconds.
     pub time: f64,
@@ -2431,6 +2446,12 @@ impl Clone for Data {
             body_sleep_state: self.body_sleep_state.clone(),
             ntree_awake: self.ntree_awake,
             nv_awake: self.nv_awake,
+            // Awake-index indirection (§16.17)
+            body_awake_ind: self.body_awake_ind.clone(),
+            nbody_awake: self.nbody_awake,
+            parent_awake_ind: self.parent_awake_ind.clone(),
+            nparent_awake: self.nparent_awake,
+            dof_awake_ind: self.dof_awake_ind.clone(),
             // Time
             time: self.time,
             // Scratch buffers
@@ -2955,6 +2976,14 @@ impl Model {
                 count
             },
 
+            // Awake-index indirection arrays (§16.17).
+            // Allocated to worst-case size; populated by mj_update_sleep_arrays().
+            body_awake_ind: vec![0; self.nbody],
+            nbody_awake: 0, // Set by mj_update_sleep_arrays below
+            parent_awake_ind: vec![0; self.nbody],
+            nparent_awake: 0,
+            dof_awake_ind: vec![0; self.nv],
+
             // Time
             time: 0.0,
 
@@ -3029,6 +3058,9 @@ impl Model {
             data.tree_awake = saved_tree_awake;
             data.tree_asleep = saved_tree_asleep;
         }
+
+        // Populate awake-index indirection arrays (§16.17).
+        mj_update_sleep_arrays(self, &mut data);
 
         data
     }
@@ -10549,7 +10581,10 @@ fn reset_sleep_state(model: &Model, data: &mut Data) {
     mj_update_sleep_arrays(model, data);
 }
 
-/// Recompute derived sleep arrays from `tree_asleep` (§16.3).
+/// Recompute derived sleep arrays from `tree_asleep` (§16.3, §16.17).
+///
+/// Updates: tree_awake, body_sleep_state, ntree_awake, nv_awake,
+/// and the awake-index indirection arrays (body_awake_ind, parent_awake_ind, dof_awake_ind).
 fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
     data.ntree_awake = 0;
     data.nv_awake = 0;
@@ -10559,29 +10594,81 @@ fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
         data.tree_awake[t] = awake;
         if awake {
             data.ntree_awake += 1;
-            data.nv_awake += model.tree_dof_num[t];
         }
     }
 
-    // Body 0 (world) is always Static
+    // --- Body sleep states + body_awake_ind + parent_awake_ind (§16.17.1) ---
+    let mut nbody_awake = 0;
+    let mut nparent_awake = 0;
+
+    // Body 0 (world) is always Static and always in both indirection arrays
     if !data.body_sleep_state.is_empty() {
         data.body_sleep_state[0] = SleepState::Static;
+        if !data.body_awake_ind.is_empty() {
+            data.body_awake_ind[0] = 0;
+            nbody_awake = 1;
+        }
+        if !data.parent_awake_ind.is_empty() {
+            data.parent_awake_ind[0] = 0;
+            nparent_awake = 1;
+        }
     }
-    // Only update per-body sleep states if tree enumeration was done
+
+    // Update per-body sleep states and build indirection arrays
     if model.body_treeid.len() == model.nbody {
         for body_id in 1..model.nbody {
             let tree = model.body_treeid[body_id];
-            if tree < model.ntree {
-                data.body_sleep_state[body_id] = if data.tree_awake[tree] {
-                    SleepState::Awake
-                } else {
-                    SleepState::Asleep
-                };
+            let awake = if tree < model.ntree {
+                data.tree_awake[tree]
             } else {
-                data.body_sleep_state[body_id] = SleepState::Awake;
+                true // No tree info → treat as awake
+            };
+
+            data.body_sleep_state[body_id] = if awake {
+                SleepState::Awake
+            } else {
+                SleepState::Asleep
+            };
+
+            // Include in body_awake_ind if awake
+            if awake && nbody_awake < data.body_awake_ind.len() {
+                data.body_awake_ind[nbody_awake] = body_id;
+                nbody_awake += 1;
+            }
+
+            // Include in parent_awake_ind if parent is awake or static
+            let parent = model.body_parent[body_id];
+            let parent_awake = data.body_sleep_state[parent] != SleepState::Asleep;
+            if parent_awake && nparent_awake < data.parent_awake_ind.len() {
+                data.parent_awake_ind[nparent_awake] = body_id;
+                nparent_awake += 1;
             }
         }
     }
+
+    data.nbody_awake = nbody_awake;
+    data.nparent_awake = nparent_awake;
+
+    // --- DOF awake indices (§16.17.1) ---
+    let mut nv_awake = 0;
+    for dof in 0..model.nv {
+        if model.dof_treeid.len() > dof {
+            let tree = model.dof_treeid[dof];
+            if tree < model.ntree && data.tree_awake[tree] {
+                if nv_awake < data.dof_awake_ind.len() {
+                    data.dof_awake_ind[nv_awake] = dof;
+                }
+                nv_awake += 1;
+            }
+        } else {
+            // No tree info → treat as awake
+            if nv_awake < data.dof_awake_ind.len() {
+                data.dof_awake_ind[nv_awake] = dof;
+            }
+            nv_awake += 1;
+        }
+    }
+    data.nv_awake = nv_awake;
 }
 
 /// Wake detection: check user-applied forces on sleeping bodies (§16.4).
