@@ -121,6 +121,7 @@ pub use mujoco_pipeline::{
     ContactPair,
     // MuJoCo-aligned Model/Data architecture (core API)
     Data,
+    ENABLE_SLEEP,
     // Equality constraint types
     EqualityType,
     GainType,
@@ -130,6 +131,7 @@ pub use mujoco_pipeline::{
     Integrator,
     // Keyframe types
     Keyframe,
+    MIN_AWAKE,
     // Joint types
     MjJointType,
     // Sensor types
@@ -139,6 +141,9 @@ pub use mujoco_pipeline::{
     Model,
     // Error handling
     ResetError,
+    // Sleep / deactivation types (§16)
+    SleepPolicy,
+    SleepState,
     // Constraint solver algorithm
     SolverStat,
     SolverType,

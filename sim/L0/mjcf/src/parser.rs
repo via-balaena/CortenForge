@@ -282,6 +282,11 @@ fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
         }
     }
 
+    // Sleep
+    if let Some(st) = parse_float_attr(e, "sleep_tolerance") {
+        option.sleep_tolerance = st;
+    }
+
     Ok(option)
 }
 
@@ -314,6 +319,7 @@ fn parse_flag_attrs(e: &BytesStart) -> Result<MjcfFlag> {
     flag.energy = parse_flag(e, "energy", flag.energy);
     flag.island = parse_flag(e, "island", flag.island);
     flag.multiccd = parse_flag(e, "multiccd", flag.multiccd);
+    flag.sleep = parse_flag(e, "sleep", flag.sleep);
 
     Ok(flag)
 }
@@ -1093,6 +1099,9 @@ fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     }
     if let Some(mocap) = get_attribute_opt(e, "mocap") {
         body.mocap = mocap == "true";
+    }
+    if let Some(sleep) = get_attribute_opt(e, "sleep") {
+        body.sleep = Some(sleep);
     }
 
     Ok(body)

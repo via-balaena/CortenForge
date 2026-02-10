@@ -15,9 +15,9 @@ use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_core::HeightFieldData;
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, ContactPair, EqualityType, GainType,
-    GeomType, Integrator, Keyframe, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
-    Model, SolverType, TendonType, WrapType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, ContactPair, ENABLE_SLEEP, EqualityType,
+    GainType, GeomType, Integrator, Keyframe, MjJointType, MjObjectType, MjSensorDataType,
+    MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -346,6 +346,8 @@ struct ModelBuilder {
     body_inertia: Vec<Vector3<f64>>,
     body_name: Vec<Option<String>>,
     body_mocapid: Vec<Option<usize>>,
+    /// Per-body sleep policy from MJCF `sleep` attribute (None = default Auto).
+    body_sleep_policy: Vec<Option<SleepPolicy>>,
     nmocap: usize,
 
     // Joint arrays
@@ -473,6 +475,7 @@ struct ModelBuilder {
     enableflags: u32,
     integrator: Integrator,
     solver_type: SolverType,
+    sleep_tolerance: f64,
 
     // qpos0 values (built as we process joints)
     qpos0_values: Vec<f64>,
@@ -562,7 +565,8 @@ impl ModelBuilder {
             body_mass: vec![0.0],
             body_inertia: vec![Vector3::zeros()],
             body_name: vec![Some("world".to_string())],
-            body_mocapid: vec![None], // world body is not mocap
+            body_mocapid: vec![None],      // world body is not mocap
+            body_sleep_policy: vec![None], // world body has no sleep policy
             nmocap: 0,
 
             jnt_type: vec![],
@@ -668,6 +672,7 @@ impl ModelBuilder {
             enableflags: 0,
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
+            sleep_tolerance: 1e-4,
 
             qpos0_values: vec![],
 
@@ -763,6 +768,11 @@ impl ModelBuilder {
         self.wind = option.wind;
         self.density = option.density;
         self.viscosity = option.viscosity;
+        self.sleep_tolerance = option.sleep_tolerance;
+        // Set ENABLE_SLEEP from flag
+        if option.flag.sleep {
+            self.enableflags |= ENABLE_SLEEP;
+        }
     }
 
     /// Process a single mesh asset from MJCF.
@@ -1001,6 +1011,21 @@ impl ModelBuilder {
         } else {
             Some(body.name.clone())
         });
+        // Parse body-level sleep policy
+        let sleep_policy = body.sleep.as_ref().and_then(|s| match s.as_str() {
+            "auto" => Some(SleepPolicy::Auto),
+            "allowed" => Some(SleepPolicy::Allowed),
+            "never" => Some(SleepPolicy::Never),
+            "init" => Some(SleepPolicy::Init),
+            _ => {
+                warn!(
+                    "body '{}': unknown sleep policy '{}', ignoring",
+                    body.name, s
+                );
+                None
+            }
+        });
+        self.body_sleep_policy.push(sleep_policy);
 
         // Process joints for this body, tracking the last DOF for kinematic tree linkage
         // MuJoCo semantics: first DOF of first joint links to parent body's last DOF,
@@ -2480,6 +2505,18 @@ impl ModelBuilder {
             nmocap: self.nmocap,
             nkeyframe: 0,
 
+            // Kinematic trees (§16.0) — computed below
+            ntree: 0,
+            tree_body_adr: vec![],
+            tree_body_num: vec![],
+            tree_dof_adr: vec![],
+            tree_dof_num: vec![],
+            body_treeid: vec![usize::MAX; nbody],
+            dof_treeid: vec![0; self.nv],
+            tree_sleep_policy: vec![],
+            dof_length: vec![1.0; self.nv],
+            sleep_tolerance: self.sleep_tolerance,
+
             body_parent: self.body_parent,
             body_rootid: self.body_rootid,
             body_jnt_adr: self.body_jnt_adr,
@@ -2741,6 +2778,143 @@ impl ModelBuilder {
                 if model.tendon_stiffness[t] > 0.0 && model.tendon_lengthspring[t] == 0.0 {
                     model.tendon_lengthspring[t] = length;
                 }
+            }
+        }
+
+        // ===== Kinematic Tree Enumeration (§16.0) =====
+        // Group bodies by body_rootid to discover kinematic trees.
+        // Body 0 (world) is excluded — it is its own tree but never sleeps.
+        {
+            use std::collections::BTreeMap;
+            let mut trees: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+            for body_id in 1..nbody {
+                trees
+                    .entry(model.body_rootid[body_id])
+                    .or_default()
+                    .push(body_id);
+            }
+            model.ntree = trees.len();
+            model.tree_body_adr = Vec::with_capacity(model.ntree);
+            model.tree_body_num = Vec::with_capacity(model.ntree);
+            model.tree_dof_adr = Vec::with_capacity(model.ntree);
+            model.tree_dof_num = Vec::with_capacity(model.ntree);
+            model.tree_sleep_policy = vec![SleepPolicy::Auto; model.ntree];
+
+            // body_treeid[0] = usize::MAX (world sentinel, already set)
+            for (tree_idx, (_root_body, body_ids)) in trees.iter().enumerate() {
+                let first_body = body_ids[0];
+                let body_count = body_ids.len();
+                model.tree_body_adr.push(first_body);
+                model.tree_body_num.push(body_count);
+
+                // Assign tree id to each body
+                for &bid in body_ids {
+                    model.body_treeid[bid] = tree_idx;
+                }
+
+                // DOF range: find min dof and total DOFs for this tree
+                let mut min_dof = model.nv;
+                let mut total_dofs = 0usize;
+                for &bid in body_ids {
+                    let dof_start = model.body_dof_adr[bid];
+                    let dof_count = model.body_dof_num[bid];
+                    if dof_count > 0 && dof_start < min_dof {
+                        min_dof = dof_start;
+                    }
+                    total_dofs += dof_count;
+                }
+                if total_dofs == 0 {
+                    min_dof = 0; // Bodyless tree (e.g., static geoms)
+                }
+                model.tree_dof_adr.push(min_dof);
+                model.tree_dof_num.push(total_dofs);
+
+                // Assign tree id to each DOF
+                for &bid in body_ids {
+                    let dof_start = model.body_dof_adr[bid];
+                    let dof_count = model.body_dof_num[bid];
+                    for dof in dof_start..(dof_start + dof_count) {
+                        model.dof_treeid[dof] = tree_idx;
+                    }
+                }
+            }
+
+            // ===== Sleep Policy Resolution (§16.0 steps 1-3) =====
+            // Step 2: Mark trees with actuators as AutoNever
+            for act_id in 0..nu {
+                let trn = model.actuator_trntype[act_id];
+                let trnid = model.actuator_trnid[act_id];
+                let body_id = match trn {
+                    ActuatorTransmission::Joint => {
+                        // trnid[0] is the joint index
+                        if trnid[0] < model.njnt {
+                            Some(model.jnt_body[trnid[0]])
+                        } else {
+                            None
+                        }
+                    }
+                    ActuatorTransmission::Tendon => None, // Phase B concern
+                    ActuatorTransmission::Site => {
+                        // trnid[0] is the site index
+                        if trnid[0] < model.nsite {
+                            Some(model.site_body[trnid[0]])
+                        } else {
+                            None
+                        }
+                    }
+                };
+                if let Some(bid) = body_id {
+                    if bid > 0 {
+                        let tree = model.body_treeid[bid];
+                        if tree < model.ntree {
+                            model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
+                        }
+                    }
+                }
+            }
+
+            // Step 2b: Apply explicit body-level sleep policies from MJCF
+            for body_id in 1..nbody {
+                if let Some(policy) = self.body_sleep_policy[body_id] {
+                    let tree = model.body_treeid[body_id];
+                    if tree < model.ntree {
+                        // Warn if set on non-root body (propagates to tree root)
+                        let root_body = model.tree_body_adr[tree];
+                        if body_id != root_body {
+                            let body_name =
+                                model.body_name[body_id].as_deref().unwrap_or("unnamed");
+                            warn!(
+                                "body '{}': sleep attribute on non-root body propagates to tree root",
+                                body_name
+                            );
+                        }
+                        // Explicit policy overrides automatic resolution
+                        model.tree_sleep_policy[tree] = policy;
+                    }
+                }
+            }
+
+            // Step 3: Convert remaining Auto to AutoAllowed
+            for t in 0..model.ntree {
+                if model.tree_sleep_policy[t] == SleepPolicy::Auto {
+                    model.tree_sleep_policy[t] = SleepPolicy::AutoAllowed;
+                }
+            }
+
+            // ===== dof_length Computation (§16.0) =====
+            // dof_length converts angular velocity to linear for sleep threshold
+            // comparison. MuJoCo uses the mechanism length (joint anchor → subtree
+            // COM) for rotational DOFs. We default to 1.0 for all DOFs for now,
+            // meaning angular velocity threshold equals sleep_tolerance directly.
+            for dof in 0..model.nv {
+                model.dof_length[dof] = 1.0;
+            }
+
+            // ===== RK4 Incompatibility Guard (§16.6) =====
+            if model.enableflags & ENABLE_SLEEP != 0 && model.integrator == Integrator::RungeKutta4
+            {
+                warn!("Sleeping is incompatible with RK4 integrator. Disabling sleep.");
+                model.enableflags &= !ENABLE_SLEEP;
             }
         }
 

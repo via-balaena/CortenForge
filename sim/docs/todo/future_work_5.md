@@ -1413,7 +1413,7 @@ pub efc_cost: f64,                          // total cost (Gauss + constraint)
 ---
 
 ### 16. Sleeping / Body Deactivation
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** XL | **Prerequisites:** None
 
 #### Current State
 No sleep/deactivation system. Every body is simulated every step regardless of
@@ -1421,33 +1421,2971 @@ whether it is stationary. MuJoCo deactivates bodies whose velocity is below a
 threshold for a configurable duration, skipping their dynamics until an external
 force or contact wakes them.
 
+A prior sleep implementation (`Body::is_sleeping`, `put_to_sleep()`, `wake_up()`)
+existed in the old World/Stepper architecture but was removed during the Model/Data
+refactor (see MUJOCO_GAP_ANALYSIS.md §"Sleeping Bodies — REMOVED").
+
+#### MuJoCo Reference
+
+MuJoCo (as of 3.x) implements sleeping at the **constraint-island** level, not
+per-body. Key reference points:
+
+- **Enable flag:** `mjENBL_SLEEP` (bit 5 of `enableflags`). XML:
+  `<option><flag sleep="enable"/></option>`. Default: disabled.
+- **Threshold:** `mjOption.sleep_tolerance` (default `1e-4`). XML:
+  `<option sleep_tolerance="real"/>`. Each DOF's velocity is checked against
+  `sleep_tolerance * dof_length[dof]`, where `dof_length` normalizes angular
+  vs linear DOFs to consistent [length/time] units.
+- **Timer:** `mjData.tree_asleep` array (per kinematic tree). Countdown from
+  `-(1 + mjMINAWAKE)` (i.e. `-11`) toward `-1` over `mjMINAWAKE = 10`
+  consecutive timesteps where all DOFs in the tree are below threshold.
+  Values `≥ 0` encode a sleep-cycle linked list among trees in the same island.
+- **Island discovery:** `mj_island()` performs flood-fill/DFS over a tree-tree
+  adjacency graph built from active constraints (contacts, equality, limited
+  tendons, friction). All trees in an island sleep/wake atomically.
+- **Sleep policy:** Per-tree `mjtSleepPolicy` enum: `AUTO`, `AUTO_NEVER`,
+  `AUTO_ALLOWED`, `NEVER`, `ALLOWED`, `INIT`. Trees with actuators,
+  multi-tree tendons, stiff/damped tendons, or flex elements receive
+  `AUTO_NEVER`. XML: `<body sleep="auto|allowed|never|init">`.
+- **Deactivation effects:** Sleeping islands skip the position stage (FK,
+  collision, CRBA, mass matrix factorization) and velocity stage (Coriolis,
+  passive damping). `qvel` and `qacc` are zeroed for sleeping DOFs.
+- **Wake conditions:** Non-zero `qfrc_applied` or `xfrc_applied` (bytewise
+  check); contact with awake tree; active limited tendon to awake tree;
+  active/disabled cross-island equality constraint to awake tree.
+- **Collision on wake:** Collision detection runs twice on the wake timestep
+  (first to detect the wake condition, second to detect contacts inside the
+  newly-awake island).
+- **RK4 limitation:** RK4 integrator is unsupported with sleeping (substep
+  wake semantics are ill-defined).
+- **Initialized sleep:** `sleep="init"` allows trees to start asleep,
+  avoiding the 10-step countdown for large scenes. All trees in an island
+  must be marked together.
+
 #### Objective
-Bodies at rest are automatically deactivated, reducing computation for scenes with
-many stationary objects.
+
+Implement tree-based body sleeping/deactivation that is semantically
+compatible with MuJoCo's island-sleeping system. Bodies at rest are
+automatically deactivated, reducing computation for scenes with many
+stationary objects. The implementation is phased: Phase A delivers
+per-tree sleeping without island discovery (each tree is its own island);
+Phase B adds full island discovery for multi-tree constraint coupling.
+
+#### Scope Exclusions
+
+- **Deformable body sleeping:** Deferred (see Appendix: "Sleeping bodies in
+  deformable"). Trees containing deformable bodies receive `NEVER` policy.
+- **Full `sleep="init"` with island validation:** Phase A supports per-tree
+  `sleep="init"` without cross-tree island consistency checks. Phase B adds
+  island-level validation.
+- **Sparse per-island constraint solving:** Phase B opportunity. Phase A
+  skips entire trees but does not restructure constraint solving per-island.
 
 #### Specification
 
-Per-body sleep state:
+> **Note:** Line numbers referenced below are from the pre-implementation
+> codebase and may be stale. Use function names and `grep` to locate code.
+
+##### 16.0 Architectural Foundation: Kinematic Trees
+
+**Existing infrastructure.** `Model.body_rootid: Vec<usize>` already maps
+each body to its kinematic tree root. A "kinematic tree" is the set of
+bodies sharing the same `body_rootid`. Body 0 (world) is its own tree and
+is always static — never sleeps, never wakes.
+
+**New Model field — tree enumeration:**
 
 ```rust
-pub body_sleep_time: Vec<f64>,   // time at zero velocity (in Model or Data)
-pub body_asleep: Vec<bool>,      // deactivation flag
+/// In Model:
+pub ntree: usize,                        // number of kinematic trees (excluding world)
+pub tree_body_adr: Vec<usize>,           // first body index for tree t
+pub tree_body_num: Vec<usize>,           // number of bodies in tree t
+pub tree_dof_adr: Vec<usize>,            // first DOF index for tree t
+pub tree_dof_num: Vec<usize>,            // number of DOFs in tree t
+pub body_treeid: Vec<usize>,             // tree index for each body (body 0 → usize::MAX sentinel)
+pub dof_treeid: Vec<usize>,              // tree index for each DOF
+pub tree_sleep_policy: Vec<SleepPolicy>, // per-tree sleep policy (computed at model build)
+pub dof_length: Vec<f64>,                // per-DOF length scale for threshold normalization
 ```
 
-In `Data::step()`, after integration:
-1. For each body, if `|v| < sleep_threshold` for `sleep_duration` steps, set
-   `body_asleep = true`.
-2. Asleep bodies skip FK, force computation, and integration.
-3. Wake on: external force applied, contact with awake body, `ctrl` change on
-   attached actuator.
+**`SleepPolicy` enum:**
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepPolicy {
+    /// Compiler decides (initial state, resolved before use).
+    Auto,
+    /// Compiler determined: never sleep (has actuators, multi-tree tendons, etc.).
+    AutoNever,
+    /// Compiler determined: allowed to sleep.
+    AutoAllowed,
+    /// User policy: never sleep. XML: `sleep="never"`.
+    Never,
+    /// User policy: allowed to sleep. XML: `sleep="allowed"`.
+    Allowed,
+    /// User policy: start asleep. XML: `sleep="init"`.
+    Init,
+}
+```
+
+**Policy resolution** (during `Model` construction, after all bodies/joints/
+actuators/tendons are registered):
+
+1. Initialize all trees to `Auto`.
+2. Mark tree as `AutoNever` if:
+   - Any actuator targets a joint/tendon/site in that tree (via
+     `actuator_trntype`/`actuator_trnid` → `jnt_body`/`site_body` →
+     `body_treeid`).
+   - Tree contains a body with deformable bodies (`#[cfg(feature = "deformable")]`).
+   - (Phase B) Tree is connected to a multi-tree tendon or a tendon with
+     non-zero stiffness/damping.
+3. Convert remaining `Auto` to `AutoAllowed`.
+4. Apply user overrides from MJCF `<body sleep="...">` attribute.
+5. Validate: error if user sets `Allowed` or `Init` on a tree that was
+   marked `AutoNever` due to multi-tree tendon (Phase B).
+
+**`dof_length` computation** (during `Model` construction):
+
+```rust
+for dof in 0..model.nv {
+    let jnt_id = model.dof_jnt[dof];
+    let jnt_type = model.jnt_type[jnt_id];
+    let local_dof = dof - model.jnt_dof_adr[jnt_id]; // 0-based offset within joint
+
+    let is_translational = match jnt_type {
+        MjJointType::Slide => true,
+        MjJointType::Hinge => false,
+        MjJointType::Ball => false,   // 3 rotational DOFs
+        MjJointType::Free => local_dof < 3, // DOFs 0,1,2 = translational; 3,4,5 = rotational
+    };
+
+    if is_translational {
+        // Translational DOFs: length = 1.0 (threshold has units [m/s])
+        model.dof_length[dof] = 1.0;
+    } else {
+        // Rotational DOFs: approximate mechanism length.
+        // Use distance from joint anchor to subtree center of mass.
+        // Fallback: 1.0 if body has zero mass or zero subtree extent.
+        let body_id = model.dof_body[dof];
+        model.dof_length[dof] = compute_dof_length(model, body_id).max(1e-6);
+    }
+}
+```
+
+**`compute_dof_length(model, body_id)`** estimates the characteristic
+length of the mechanism at this body — the distance from the body's
+joint anchor to the subtree center of mass. This makes angular velocity
+thresholds scale-invariant: a 1 rad/s rotation on a 10 cm arm produces
+0.1 m/s tip velocity, so `dof_length ≈ 0.1` and the effective threshold
+is `1e-4 * 0.1 = 1e-5` rad/s. Fallback to `1.0` if `body_subtreemass`
+is zero or the subtree COM coincides with the joint anchor.
+
+**Note on Free joints:** A Free joint produces 6 DOFs — 3 translational
+(indices 0–2 from `jnt_dof_adr`) and 3 rotational (indices 3–5). The
+translational DOFs get `dof_length = 1.0`; the rotational DOFs get the
+mechanism-length estimate. This matches MuJoCo's `dof_length` semantics
+where linear and angular DOFs are scaled differently.
+
+**Tree enumeration** is computed once during `Model` construction by
+grouping bodies by `body_rootid`:
+
+```rust
+// Pseudocode for tree enumeration
+let mut trees: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+for body_id in 1..model.nbody {  // skip world body
+    trees.entry(model.body_rootid[body_id]).or_default().push(body_id);
+}
+model.ntree = trees.len();
+// Populate body_treeid for each body, dof_treeid for each DOF
+```
+
+**Body ordering:** Bodies in MJCF models are added in depth-first document
+order, so bodies within a single tree are typically contiguous. However,
+this is NOT guaranteed for programmatically-constructed models. Therefore:
+
+- `tree_body_adr[t]` = index of the **first** body in tree `t` (the root)
+- `tree_body_num[t]` = number of bodies in tree `t`
+- These are valid because MJCF parsing adds all bodies of a subtree
+  contiguously (depth-first traversal). For `Model::empty()` + manual
+  construction, the builder must ensure bodies of the same tree are added
+  contiguously (document this constraint).
+- `tree_dof_adr[t]` / `tree_dof_num[t]` follow the same pattern: DOFs
+  are ordered by joint, joints are ordered by body, bodies within a tree
+  are contiguous → DOFs within a tree are contiguous.
+
+Similarly for DOFs: each DOF's tree is `body_treeid[dof_body[dof]]`.
+
+**Construction sites requiring new fields:**
+
+1. `Model::empty()` (`mujoco_pipeline.rs:~2382`) — initialize tree arrays
+   as empty vecs, `ntree = 0`, `sleep_tolerance = 1e-4`.
+2. `ModelBuilder::build()` (`model_builder.rs:~2470`) — compute tree
+   enumeration from `body_rootid`, resolve sleep policies, compute
+   `dof_length`. This is where the policy resolution algorithm (§16.0
+   steps 1–5) executes.
+
+**`JointContext` extension:** The existing `JointContext` struct (line ~307)
+provides `jnt_id`, `jnt_type`, `dof_adr`, `qpos_adr`, `nv`, `nq`. Sleep
+skip logic in visitors needs `model.jnt_body[ctx.jnt_id]` to look up the
+body. This field is already available through `model.jnt_body` — no change
+to `JointContext` is needed. Visitors that need sleep gating simply index
+`model.jnt_body[ctx.jnt_id]` directly.
+
+##### 16.1 Data Fields — Sleep State
+
+```rust
+/// In Data:
+
+/// Per-tree sleep timer. Semantics:
+/// - `< 0`: Tree is awake. Countdown from `-(1 + MIN_AWAKE)` toward `-1`.
+///   When timer reaches `-1`, tree is "ready to sleep".
+/// - `≥ 0`: Tree is asleep. Value encodes next tree index in sleep-cycle
+///   linked list (Phase B; Phase A uses self-link: `tree_asleep[t] = t`).
+pub tree_asleep: Vec<i32>,           // length: ntree
+
+/// Per-tree awake flag (derived from tree_asleep for fast branching).
+pub tree_awake: Vec<bool>,           // length: ntree
+
+/// Per-body sleep state for efficient per-body queries.
+pub body_sleep_state: Vec<SleepState>,  // length: nbody
+
+/// Number of awake trees (for diagnostics / early-exit).
+pub ntree_awake: usize,
+
+/// Number of awake DOFs (for diagnostics / performance monitoring).
+pub nv_awake: usize,
+```
+
+**`SleepState` enum:**
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepState {
+    /// Body 0 (world) or body with no DOFs. Always computed, never sleeps.
+    Static,
+    /// Body is asleep. Position/velocity stages are skipped.
+    Asleep,
+    /// Body is awake. Full pipeline computation.
+    Awake,
+}
+```
+
+**Constant:**
+
+```rust
+/// Minimum number of consecutive sub-threshold timesteps before a tree
+/// can transition to sleep. Matches MuJoCo's `mjMINAWAKE = 10`.
+const MIN_AWAKE: i32 = 10;
+```
+
+**Option fields** (in `Model`):
+
+```rust
+/// Sleep velocity tolerance. Bodies with all DOF velocities below
+/// `sleep_tolerance * dof_length[dof]` for MIN_AWAKE consecutive steps
+/// are eligible for sleep. Default: 1e-4. Units: [m/s].
+/// Set via MJCF `<option sleep_tolerance="..."/>`.
+pub sleep_tolerance: f64,
+```
+
+**Enable flag.** Add `SLEEP` to the enable-flags bitmask:
+
+```rust
+/// Bit 5: enable body sleeping/deactivation.
+pub const ENABLE_SLEEP: u32 = 1 << 5;
+```
+
+Sleep logic is gated on `model.enableflags & ENABLE_SLEEP != 0`. When the
+flag is not set, all trees remain awake and the sleep pipeline is a no-op.
+
+**`Data` construction site:** All `Data` instances are created via
+`Model::make_data()` (`mujoco_pipeline.rs:~2650`). Add sleep field
+initialization:
+
+```rust
+// In Model::make_data():
+tree_asleep: vec![-(1 + MIN_AWAKE); self.ntree],  // All awake initially
+tree_awake: vec![true; self.ntree],
+body_sleep_state: {
+    let mut v = vec![SleepState::Awake; self.nbody];
+    v[0] = SleepState::Static;  // World body
+    v
+},
+ntree_awake: self.ntree,
+nv_awake: self.nv,
+```
+
+Then apply `Init` policy overrides (§16.7).
+
+**`Data` clone site:** `Data` has a manual `impl Clone` (line ~2233) that
+enumerates every field. The new sleep fields (`tree_asleep`, `tree_awake`,
+`body_sleep_state`, `ntree_awake`, `nv_awake`) must be added to this
+clone impl. RK4's `mj_runge_kutta()` clones `Data` for intermediate
+stages — sleep state must be preserved across these clones (though sleep
+is disabled for RK4, the clone impl must still be complete).
+
+##### 16.2 MJCF Parsing
+
+Extend the MJCF parser to handle sleep-related attributes:
+
+**`<option>` element:**
+- `sleep_tolerance="real"` → `Model.sleep_tolerance` (default `1e-4`).
+
+**`<option><flag>` element:**
+- `sleep="enable|disable"` → set/clear `ENABLE_SLEEP` bit in
+  `Model.enableflags` (default: `disable`).
+
+**`<body>` element:**
+- `sleep="auto|allowed|never|init"` → stored during parsing, applied to
+  tree during policy resolution (§16.0). The attribute applies to the
+  **entire kinematic tree** rooted at the body where it appears. If set on
+  a non-root body, it propagates to the tree root and a warning is emitted.
+
+##### 16.3 Sleep Update — Core Algorithm
+
+**`mj_update_sleep(model, data)`** — called at the end of `Data::step()`,
+after integration completes and before the warmstart save. Insertion point
+in `step()`:
+
+```rust
+pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
+    // ... validation ...
+    match model.integrator {
+        Integrator::RungeKutta4 => { /* ... RK4 path (sleep disabled by §16.6) ... */ }
+        _ => {
+            self.forward(model)?;
+            mj_check_acc(model, self)?;
+            self.integrate(model);
+        }
+    }
+    // === Sleep update: check thresholds, transition sleeping trees ===
+    mj_update_sleep(model, self);
+    self.qacc_warmstart.copy_from(&self.qacc);
+    Ok(())
+}
+```
+
+This placement ensures:
+- Sleep evaluation sees the **post-integration** velocities (the velocities
+  that will persist into the next step).
+- Wake detection in `forward()` (§16.4) runs at the **start** of the next
+  step, before FK, so newly-awake bodies get their full pipeline pass.
+- The sleep→wake→sleep cycle is: `integrate → mj_update_sleep (may sleep)
+  → next step → forward → mj_wake (may wake) → FK/collision/dynamics`.
+
+This is the central sleep state machine:
+
+```rust
+fn mj_update_sleep(model: &Model, data: &mut Data) {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return;  // Sleep disabled — no-op
+    }
+
+    // Phase 1: Check velocity threshold for each awake tree
+    for t in 0..model.ntree {
+        if data.tree_asleep[t] >= 0 {
+            continue;  // Already asleep
+        }
+        if model.tree_sleep_policy[t] == SleepPolicy::Never
+            || model.tree_sleep_policy[t] == SleepPolicy::AutoNever
+        {
+            continue;  // Policy forbids sleeping
+        }
+
+        let can_sleep = tree_velocity_below_threshold(model, data, t);
+
+        if can_sleep {
+            // Increment timer toward -1 (ready to sleep)
+            if data.tree_asleep[t] < -1 {
+                data.tree_asleep[t] += 1;
+            }
+            // When timer reaches -1: put to sleep
+            if data.tree_asleep[t] == -1 {
+                put_tree_to_sleep(model, data, t);
+            }
+        } else {
+            // Reset timer to fully awake
+            data.tree_asleep[t] = -(1 + MIN_AWAKE);
+        }
+    }
+
+    // Phase 2: Recompute derived arrays
+    mj_update_sleep_arrays(model, data);
+}
+```
+
+**`tree_velocity_below_threshold`:**
+
+```rust
+fn tree_velocity_below_threshold(model: &Model, data: &Data, tree: usize) -> bool {
+    let dof_start = model.tree_dof_adr[tree];
+    let dof_end = dof_start + model.tree_dof_num[tree];
+    for dof in dof_start..dof_end {
+        if data.qvel[dof].abs() > model.sleep_tolerance * model.dof_length[dof] {
+            return false;
+        }
+    }
+    true  // All DOFs below threshold (L∞ norm check)
+}
+```
+
+**`put_tree_to_sleep`:**
+
+```rust
+fn put_tree_to_sleep(model: &Model, data: &mut Data, tree: usize) {
+    // 1. Mark as asleep (self-link for Phase A; Phase B: link into island cycle)
+    data.tree_asleep[tree] = tree as i32;
+
+    // 2. Zero velocities and accelerations for all DOFs in this tree
+    let dof_start = model.tree_dof_adr[tree];
+    let dof_end = dof_start + model.tree_dof_num[tree];
+    for dof in dof_start..dof_end {
+        data.qvel[dof] = 0.0;
+        data.qacc[dof] = 0.0;
+    }
+
+    // 3. Zero velocity-dependent cached quantities for bodies in this tree.
+    //    With qvel = 0, cvel (spatial velocity), cacc_bias (Coriolis/centrifugal),
+    //    and cfrc_bias (RNE backward-pass forces) are all zero.
+    //    Position-dependent quantities (xpos, xquat, xipos, cinert) remain valid.
+    let body_start = model.tree_body_adr[tree];
+    let body_end = body_start + model.tree_body_num[tree];
+    for body_id in body_start..body_end {
+        data.cvel[body_id] = SpatialVector::zeros();
+        data.cacc_bias[body_id] = SpatialVector::zeros();
+        data.cfrc_bias[body_id] = SpatialVector::zeros();
+    }
+    // Also zero qfrc_bias, qfrc_passive, qfrc_constraint for sleeping DOFs
+    for dof in dof_start..dof_end {
+        data.qfrc_bias[dof] = 0.0;
+        data.qfrc_passive[dof] = 0.0;
+        data.qfrc_constraint[dof] = 0.0;
+    }
+}
+```
+
+**`mj_update_sleep_arrays`** — recomputes `tree_awake`, `body_sleep_state`,
+`ntree_awake`, `nv_awake` from `tree_asleep`:
+
+```rust
+fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
+    data.ntree_awake = 0;
+    data.nv_awake = 0;
+
+    for t in 0..model.ntree {
+        let awake = data.tree_asleep[t] < 0;
+        data.tree_awake[t] = awake;
+        if awake {
+            data.ntree_awake += 1;
+            data.nv_awake += model.tree_dof_num[t];
+        }
+    }
+
+    // Body 0 (world) is always Static
+    data.body_sleep_state[0] = SleepState::Static;
+    for body_id in 1..model.nbody {
+        let tree = model.body_treeid[body_id];
+        data.body_sleep_state[body_id] = if data.tree_awake[tree] {
+            SleepState::Awake
+        } else {
+            SleepState::Asleep
+        };
+    }
+}
+```
+
+##### 16.4 Wake Detection
+
+Wake detection runs at the **start** of `forward()`, before any pipeline
+stage. This is critical: wake must happen before FK so that newly-awake
+bodies get their full pipeline pass.
+
+**`mj_wake(model, data)`** — check user perturbations:
+
+```rust
+fn mj_wake(model: &Model, data: &mut Data) {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return;
+    }
+
+    // Check xfrc_applied (per-body Cartesian forces)
+    for body_id in 1..model.nbody {
+        if data.body_sleep_state[body_id] != SleepState::Asleep {
+            continue;
+        }
+        // Bytewise nonzero check (matches MuJoCo: -0.0 wakes)
+        let force = &data.xfrc_applied[body_id];
+        if !is_zero_spatial_vector(force) {
+            wake_tree(model, data, model.body_treeid[body_id]);
+        }
+    }
+
+    // Check qfrc_applied (per-DOF generalized forces)
+    for dof in 0..model.nv {
+        let tree = model.dof_treeid[dof];
+        if !data.tree_awake[tree] && data.qfrc_applied[dof] != 0.0 {
+            wake_tree(model, data, tree);
+        }
+    }
+}
+```
+
+**`mj_wake_collision(model, data)`** — check contacts between sleeping
+and awake bodies. Called after `mj_collision()`:
+
+```rust
+fn mj_wake_collision(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for contact in &data.contacts[..data.ncon] {
+        let body1 = model.geom_body[contact.geom1];
+        let body2 = model.geom_body[contact.geom2];
+        let state1 = data.body_sleep_state[body1];
+        let state2 = data.body_sleep_state[body2];
+
+        // Wake sleeping body if partner is awake or static (world)
+        let need_wake = match (state1, state2) {
+            (SleepState::Asleep, SleepState::Awake | SleepState::Static) => Some(body1),
+            (SleepState::Awake | SleepState::Static, SleepState::Asleep) => Some(body2),
+            // Both asleep: don't wake (they're resting on each other)
+            // Both awake: nothing to do
+            _ => None,
+        };
+
+        if let Some(body_id) = need_wake {
+            wake_tree(model, data, model.body_treeid[body_id]);
+            woke_any = true;
+        }
+    }
+    woke_any
+}
+```
+
+**`wake_tree`:**
+
+```rust
+fn wake_tree(model: &Model, data: &mut Data, tree: usize) {
+    if data.tree_awake[tree] {
+        return;  // Already awake
+    }
+    data.tree_asleep[tree] = -(1 + MIN_AWAKE);  // Fully awake, reset timer
+    data.tree_awake[tree] = true;
+    data.ntree_awake += 1;
+    data.nv_awake += model.tree_dof_num[tree];
+
+    // Update body states for all bodies in this tree
+    let body_start = model.tree_body_adr[tree];
+    let body_end = body_start + model.tree_body_num[tree];
+    for body_id in body_start..body_end {
+        data.body_sleep_state[body_id] = SleepState::Awake;
+    }
+}
+```
+
+##### 16.5 Pipeline Integration — Skip Logic
+
+The sleep system modifies the `forward()` pipeline to skip sleeping bodies.
+Each pipeline stage gets an awake-body or awake-tree gate. The key principle:
+**sleeping trees have valid, frozen position-stage data** (poses don't
+change) and **zeroed velocity/acceleration** (set at sleep time).
+
+**Modified `forward()` and `forward_skip_sensors()` sequences:**
+
+Sleep logic must be added to **both** forward paths. `forward()` is used
+by Euler/Implicit integrators; `forward_skip_sensors()` is used by RK4
+intermediate stages. The sleep modifications are identical except that
+`forward_skip_sensors()` omits the sensor stages. To avoid duplication,
+extract the sleep-aware pipeline core into a shared helper:
+
+```rust
+/// Shared pipeline core with sleep gating.
+/// `compute_sensors`: true for forward(), false for forward_skip_sensors().
+fn forward_core(
+    &mut self,
+    model: &Model,
+    compute_sensors: bool,
+) -> Result<(), StepError> {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
+    // ===== Pre-pipeline: Wake detection =====
+    if sleep_enabled {
+        mj_wake(model, self);
+    }
+
+    // ===== Position Stage =====
+    mj_fwd_position(model, self);         // FK — internal sleep skip (§16.5a)
+    mj_transmission_site(model, self);
+    mj_collision(model, self);            // Collision — internal sleep filter (§16.5b)
+
+    // Wake-on-contact: if sleeping body touched awake body, wake it
+    // and re-run collision for the newly-awake tree's geoms
+    if sleep_enabled && mj_wake_collision(model, self) {
+        mj_update_sleep_arrays(model, self);
+        mj_collision(model, self);        // Phase A: full re-collision
+    }
+
+    #[cfg(feature = "deformable")]
+    mj_deformable_collision(model, self);
+    if compute_sensors { mj_sensor_pos(model, self); }
+    mj_energy_pos(model, self);
+
+    // ===== Velocity Stage =====
+    mj_fwd_velocity(model, self);         // Internal sleep skip (§16.5a)
+    mj_actuator_length(model, self);
+    if compute_sensors { mj_sensor_vel(model, self); }
+
+    // ===== Acceleration Stage =====
+    mj_fwd_actuation(model, self);
+    mj_crba(model, self);                 // Full mass matrix — NOT skipped (§16.5 note)
+    mj_rne(model, self);                  // Internal sleep skip (§16.5a)
+    mj_energy_vel(model, self);
+    mj_fwd_passive(model, self);          // Internal sleep skip (§16.5a')
+    mj_fwd_constraint(model, self);
+    if !self.newton_solved {
+        mj_fwd_acceleration(model, self)?;
+    }
+    if compute_sensors {
+        mj_sensor_acc(model, self);
+        mj_sensor_postprocess(model, self);
+    }
+
+    Ok(())
+}
+
+pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
+    self.forward_core(model, true)
+}
+
+fn forward_skip_sensors(&mut self, model: &Model) -> Result<(), StepError> {
+    self.forward_core(model, false)
+}
+```
+
+**Design note:** The sleep skip logic lives **inside** each pipeline
+function (FK, CRBA, RNE, passive, collision) rather than calling separate
+`_sleep` variants. This avoids function proliferation — each function
+checks `sleep_enabled` once and skips per-body/per-joint as needed. The
+`forward_core` helper eliminates the sensor-duplication concern entirely.
+
+**`mj_crba` — NOT skipped for sleeping bodies.** CRBA begins with
+`data.qM.fill(0.0)` and rebuilds the mass matrix from composite rigid
+body inertias. If sleeping bodies were skipped, their `qM` entries would
+be zero, causing the LDL factorization to produce NaN or fail (zero
+diagonal). Fixing this (preserving previous mass matrix entries for
+sleeping DOFs) requires either:
+- Selective zeroing of only awake DOF rows/columns (O(nv_awake × nv))
+- A separate "sleep-safe" mass matrix path
+
+Both add complexity for modest gain — CRBA body loops are O(nbody) with
+small constant factors (6×6 matrix operations), much cheaper than FK
+(trigonometric per joint) or collision (O(n²) narrow-phase). Therefore,
+**Phase A computes CRBA for ALL bodies every step.** The mass matrix and
+LDL factorization are always valid. Phase B can optimize this by
+per-island block-diagonal CRBA.
+
+**`mj_fwd_acceleration` and `mj_fwd_constraint`** — these operate on the
+full `nv`-dimensional system (sparse LDL solve, constraint Jacobians).
+With the full mass matrix always valid, sleeping DOFs have all-zero forces
+(`qfrc_bias`, `qfrc_passive`, `qfrc_actuator`, `qfrc_constraint` all
+zeroed in `put_tree_to_sleep`). The solve produces `qacc = 0` for sleeping
+DOFs correctly. The solver still processes them — acceptable overhead for
+Phase A. Phase B can restructure for per-island block-diagonal solving.
+
+**§16.5a — Gating FK, velocity kinematics, CRBA, RNE:**
+
+These functions contain `for body_id in 1..model.nbody` loops. The sleep
+modification adds a skip check at the top of each iteration:
+
+```rust
+// In mj_fwd_position — FK body loop only (the main per-body pose computation):
+for body_id in 1..model.nbody {
+    if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
+        continue;  // Pose is frozen — skip FK
+    }
+    // ... existing FK computation (parent transform, joint integration, geom/site poses) ...
+}
+
+// Subtree mass/COM loops (also in mj_fwd_position) are NOT skipped — they are
+// simple O(nbody) accumulations with tiny constants and need all bodies for
+// correct backward accumulation into body 0. Sleeping bodies have frozen xipos
+// which produces correct subtree mass/COM without recomputing FK.
+
+// Same per-body skip pattern in mj_fwd_velocity, mj_rne (forward + backward passes).
+```
+
+**CRBA is NOT skipped** — see note below §16.5d on mass matrix safety.
+
+For **RNE** which has reverse (leaf-to-root) passes that accumulate into
+parent bodies, the skip logic is safe: all bodies in a tree share sleep
+state (a child cannot be awake while its parent is asleep within the same
+tree). Cross-tree accumulation into body 0 (world) is handled by the
+existing `body_parent[root_body] = 0` path; body 0 is always `Static`
+(never skipped).
+
+**§16.5a' — Gating passive forces (`mj_fwd_passive`):**
+
+`mj_fwd_passive` uses the `JointVisitor` pattern (via
+`model.visit_joints()`) and a separate per-tendon loop. Skip logic must
+be applied in both:
+
+**Joint passive forces:** The `PassiveForceVisitor` holds `&Model` and
+`&mut Data`. Add a sleep check at the start of each `visit_*` method:
+
+```rust
+impl PassiveForceVisitor<'_> {
+    #[inline]
+    fn is_joint_sleeping(&self, ctx: &JointContext) -> bool {
+        self.model.enableflags & ENABLE_SLEEP != 0
+            && self.data.body_sleep_state[self.model.jnt_body[ctx.jnt_id]]
+                == SleepState::Asleep
+    }
+}
+
+impl JointVisitor for PassiveForceVisitor<'_> {
+    fn visit_hinge(&mut self, ctx: JointContext) {
+        if self.is_joint_sleeping(&ctx) { return; }
+        // ... existing spring/damper/friction logic ...
+    }
+    // Same for visit_slide, visit_ball, visit_free
+}
+```
+
+**Tendon passive forces:** The per-tendon loop (`for t in 0..model.ntendon`)
+applies spring, damper, and friction-loss forces mapped through `ten_J`.
+In Phase A, tendons spanning multiple trees are rare (actuated trees get
+`AutoNever`, and multi-tree tendons are a Phase B concern). The safe
+approach: skip tendon passive forces only if **all** DOFs receiving force
+from `ten_J[t]` belong to sleeping trees. Implementation:
+
+```rust
+for t in 0..model.ntendon {
+    if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+        continue;  // All target DOFs are in sleeping trees
+    }
+    // ... existing tendon force computation ...
+}
+
+fn tendon_all_dofs_sleeping(model: &Model, data: &Data, t: usize) -> bool {
+    // ten_J[t] is a sparse vector: check each nonzero entry's DOF
+    for &(dof, _) in &data.ten_J[t] {
+        if data.tree_awake[model.dof_treeid[dof]] {
+            return false;  // At least one target DOF is awake
+        }
+    }
+    true
+}
+```
+
+This is conservative: if any DOF target of a tendon is awake, the tendon
+force is computed for all DOFs (including sleeping ones). This avoids
+inconsistency from partial tendon force application.
+
+**§16.5a'' — Gating integration (`integrate`):**
+
+`integrate()` has two phases: velocity update (per-DOF loop) and position
+update (`mj_integrate_pos` via `JointVisitor`).
+
+**Velocity integration** (per-DOF loop at line ~3948):
+
+```rust
+for i in 0..model.nv {
+    if sleep_enabled && !data.tree_awake[model.dof_treeid[i]] {
+        continue;  // Already zero for sleeping DOFs, skip for perf
+    }
+    self.qvel[i] += self.qacc[i] * h;
+}
+```
+
+**Position integration** (`mj_integrate_pos`): uses `PositionIntegrateVisitor`
+which implements `JointVisitor`. The visitor currently holds only
+`qpos`, `qvel`, and `h` — it does NOT have access to `Model` or `Data`
+for sleep checks. Two options:
+
+**(a)** Extend `PositionIntegrateVisitor` to hold `&Model` and `&Data`
+(or just `&[SleepState]` and `&[usize]` for `jnt_body`):
+
+```rust
+struct PositionIntegrateVisitor<'a> {
+    qpos: &'a mut DVector<f64>,
+    qvel: &'a DVector<f64>,
+    h: f64,
+    // Sleep gating:
+    sleep_enabled: bool,
+    jnt_body: &'a [usize],
+    body_sleep_state: &'a [SleepState],
+}
+
+impl JointVisitor for PositionIntegrateVisitor<'_> {
+    fn visit_hinge(&mut self, ctx: JointContext) {
+        if self.sleep_enabled
+            && self.body_sleep_state[self.jnt_body[ctx.jnt_id]] == SleepState::Asleep
+        {
+            return;  // Joint belongs to sleeping tree
+        }
+        self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
+    }
+    // Same for visit_slide, visit_ball, visit_free
+}
+```
+
+**(b)** Add a `should_skip` callback or bitmask to `JointVisitor`. Option
+(a) is preferred: minimal API change, sleep data is passed by reference
+with zero allocation, and the check is a single indexed load + compare.
+
+**Activation integration** (per-actuator loop at line ~3919): actuator
+activation dynamics should still run for all actuators (activation state
+must track ctrl input even if the actuated tree is asleep). However, the
+`qfrc_actuator` mapping in `mj_fwd_actuation` already skips sleeping DOFs
+implicitly because actuated trees have `AutoNever` policy in Phase A. No
+change needed here.
+
+**§16.5b — Gating collision detection:**
+
+In `mj_collision()`, the broad-phase (sweep-and-prune) naturally handles
+sleeping bodies because sleeping geoms have frozen AABBs.
+
+**Important:** `check_collision_affinity(model, geom1, geom2)` does NOT
+take `&Data` — it only has `&Model`. Adding `&Data` would change the
+hot-path signature and affect all call sites. Instead, the sleep filter
+is added **in the `mj_collision()` candidate loop**, after the affinity
+check and before the narrow-phase:
+
+```rust
+// In mj_collision(), mechanism 1 (automatic pipeline):
+for (geom1, geom2) in candidates {
+    if !check_collision_affinity(model, geom1, geom2) {
+        continue;
+    }
+
+    // Sleep filter: skip narrow-phase if BOTH geoms belong to sleeping bodies.
+    // Keep sleeping-vs-awake pairs — they may trigger wake detection (§16.4).
+    if sleep_enabled {
+        let b1 = model.geom_body[geom1];
+        let b2 = model.geom_body[geom2];
+        if data.body_sleep_state[b1] == SleepState::Asleep
+            && data.body_sleep_state[b2] == SleepState::Asleep
+        {
+            continue;
+        }
+    }
+
+    // Narrow-phase collision detection
+    if let Some(contact) = collide_geoms(model, geom1, geom2, ...) {
+        data.contacts.push(contact);
+        data.ncon += 1;
+    }
+}
+
+// Mechanism 2 (explicit pairs): same sleep filter before narrow-phase
+for pair in &model.contact_pairs {
+    if sleep_enabled {
+        let b1 = model.geom_body[pair.geom1];
+        let b2 = model.geom_body[pair.geom2];
+        if data.body_sleep_state[b1] == SleepState::Asleep
+            && data.body_sleep_state[b2] == SleepState::Asleep
+        {
+            continue;
+        }
+    }
+    // ... existing distance cull + narrow-phase ...
+}
+```
+
+This preserves contacts between sleeping-vs-awake pairs (needed for wake
+detection in §16.4) while skipping sleeping-vs-sleeping narrow-phase
+(the dominant collision cost). The `check_collision_affinity` signature
+is unchanged.
+
+**§16.5c — `mj_collision_incremental`:**
+
+When `mj_wake_collision` wakes trees, a second collision pass is needed
+to detect contacts *within* the newly-awake trees and between them and
+existing awake bodies. This is implemented as a targeted re-collision:
+
+```rust
+fn mj_collision_incremental(model: &Model, data: &mut Data) {
+    // Only re-collide geoms belonging to trees that were just woken.
+    // Use the same broad-phase + narrow-phase pipeline but restricted
+    // to geom pairs where at least one geom belongs to a just-woken tree.
+    // Implementation: flag trees woken this step, filter SAP candidates.
+}
+```
+
+For Phase A, a simpler approach is acceptable: re-run `mj_collision()`
+fully. The incremental optimization is a Phase B improvement.
+
+**§16.5d — Sensor skip logic:**
+
+Sensors iterate per-sensor (`for sensor_id in 0..model.nsensor`). To skip
+sensors for sleeping bodies, we need a mapping from
+`(sensor_objtype, sensor_objid)` → `body_id`:
+
+```rust
+fn sensor_body_id(model: &Model, sensor_id: usize) -> Option<usize> {
+    let objid = model.sensor_objid[sensor_id];
+    match model.sensor_objtype[sensor_id] {
+        MjObjectType::Body => Some(objid),
+        MjObjectType::Xbody => Some(objid),
+        MjObjectType::Joint => Some(model.jnt_body[objid]),
+        MjObjectType::Geom => Some(model.geom_body[objid]),
+        MjObjectType::Site => Some(model.site_body[objid]),
+        MjObjectType::Tendon => None,  // Multi-body — always compute
+        MjObjectType::Actuator => None, // Actuated trees are AutoNever — always compute
+        MjObjectType::Sensor => None,   // Meta-sensor — always compute
+        _ => None,  // Unknown — always compute (safe default)
+    }
+}
+```
+
+In `mj_sensor_pos`, `mj_sensor_vel`, and `mj_sensor_acc`, add:
+
+```rust
+for sensor_id in 0..model.nsensor {
+    if sleep_enabled {
+        if let Some(body_id) = sensor_body_id(model, sensor_id) {
+            if data.body_sleep_state[body_id] == SleepState::Asleep {
+                continue;  // Sensor value frozen at sleep time
+            }
+        }
+    }
+    // ... existing sensor computation ...
+}
+```
+
+Sensors on sleeping bodies retain their last-computed values (stored in
+`data.sensordata`). They are NOT zeroed. This is semantically correct:
+the body's pose/velocity are frozen, so the sensor reading is still valid.
+
+##### 16.6 RK4 Interaction
+
+Sleeping is incompatible with the RK4 integrator. If `ENABLE_SLEEP` is
+set and `model.integrator == Integrator::RungeKutta4`, emit a warning
+during model construction and disable sleeping (clear the `ENABLE_SLEEP`
+bit). This matches MuJoCo's limitation.
+
+```rust
+// In Model construction / validation:
+if self.enableflags & ENABLE_SLEEP != 0
+    && self.integrator == Integrator::RungeKutta4
+{
+    eprintln!("WARNING: Sleeping is incompatible with RK4 integrator. Disabling sleep.");
+    self.enableflags &= !ENABLE_SLEEP;
+}
+```
+
+##### 16.7 `Data::reset()` and `Data::new()` Integration
+
+**`Data::new(model)`:** Initialize sleep state based on tree policies:
+
+```rust
+// In Data::new():
+for t in 0..model.ntree {
+    match model.tree_sleep_policy[t] {
+        SleepPolicy::Init => {
+            data.tree_asleep[t] = t as i32;  // Start asleep
+            // Zero velocities for this tree's DOFs
+            let dof_start = model.tree_dof_adr[t];
+            let dof_end = dof_start + model.tree_dof_num[t];
+            for dof in dof_start..dof_end {
+                data.qvel[dof] = 0.0;
+            }
+        }
+        _ => {
+            data.tree_asleep[t] = -(1 + MIN_AWAKE);  // Fully awake
+        }
+    }
+}
+mj_update_sleep_arrays(model, &mut data);
+```
+
+**`Data::reset(model)`:** Same as `new()` — re-initialize sleep state
+from policies.
+
+**`BatchSim` interaction:** Each `Data` in the batch has independent sleep
+state. `BatchSim::step_all()` requires no changes — each `data.step(model)`
+handles its own sleep logic. `BatchSim::reset()` delegates to
+`Data::reset()` which re-initializes sleep state.
+
+##### 16.8 Phased Implementation
+
+**Phase A — Per-tree sleeping (this spec):**
+- Tree enumeration infrastructure (§16.0)
+- Sleep state in Data (§16.1)
+- MJCF parsing for sleep attributes (§16.2)
+- Sleep update state machine (§16.3)
+- Wake detection: user forces + contact (§16.4)
+- Pipeline skip logic for all stages (§16.5)
+- RK4 guard (§16.6)
+- Data init/reset (§16.7)
+- Each tree is treated as its own island (no cross-tree coupling)
+- Actuated trees receive `AutoNever` policy (safe default)
+
+**Phase B — Island discovery and full sleep parity:**
+
+Phase A treats each kinematic tree as its own island. This is correct
+for uncoupled trees but breaks when constraints (contacts, equality,
+tendons) couple multiple trees: the coupled trees must sleep and wake
+as a unit. Phase B adds MuJoCo-compatible island discovery, the
+sleep-cycle linked list, cross-island wake detection, `dof_length`
+mechanism length computation, qpos/qvel change detection, per-island
+block-diagonal constraint solving, and awake-index indirection arrays
+for cache-friendly pipeline iteration.
+
+Phase A is self-contained and delivers the primary performance benefit
+(skipping stationary trees). Phase B is needed for scenes where
+sleeping trees are coupled by constraints — common in stacking,
+articulated chains, and environments with equality constraints between
+bodies on different trees.
+
+##### 16.9b Phase B — step() Overview
+
+The Phase B `step()` function replaces `mj_update_sleep()` with the
+island-aware `mj_sleep()`, and inserts `mj_island()` into the forward
+pipeline. The complete call sequence:
+
+```rust
+pub fn step(&mut self, model: &Model) -> Result<(), StepError> {
+    // ... validation ...
+    match model.integrator {
+        Integrator::RungeKutta4 => { /* RK4 path (sleep disabled by §16.6) */ }
+        _ => {
+            self.forward(model)?;     // ← contains island discovery (§16.11)
+            mj_check_acc(model, self)?;
+            self.integrate(model);
+        }
+    }
+    // === Phase B: island-aware sleep (replaces Phase A mj_update_sleep) ===
+    mj_sleep(model, self);            // §16.12.2: countdown + island sleep
+    mj_update_sleep(model, self);     // §16.17.1: recompute awake-index arrays
+    self.qacc_warmstart.copy_from(&self.qacc);
+    Ok(())
+}
+```
+
+**Key differences from Phase A `step()`:**
+- `mj_sleep()` (§16.12.2) replaces the Phase A `mj_update_sleep()`'s
+  sleep-transition logic. It handles per-tree countdown AND island-level
+  sleep decisions (all trees in an island must be ready).
+- `mj_update_sleep()` (§16.17.1) is now a separate function that only
+  recomputes derived arrays (`body_awake_ind`, `dof_awake_ind`,
+  `parent_awake_ind`, `body_sleep_state`). In Phase A these were combined.
+- `forward()` now contains `mj_island()` after `mj_make_constraint()`,
+  and the full wake ordering (§16.13.1).
+
+**Complete Phase B `forward()` pipeline:**
+
+```rust
+fn forward(&mut self, model: &Model) -> Result<(), StepError> {
+    // --- Position-dependent (mj_fwd_position) ---
+
+    // 1. FK part 1 (qpos → xpos/xquat)
+    mj_kinematics1(model, self);
+
+    // 2. qpos change detection: wake sleeping trees whose pose changed (§16.15)
+    if mj_check_qpos_changed(model, self) {
+        mj_update_sleep(model, self);
+    }
+
+    // 3. FK part 2 (inertia, geoms, sites — only awake bodies)
+    mj_kinematics2(model, self);
+
+    // 4. Tendon wake (§16.13.2): tendons coupling sleeping ↔ awake trees
+    //    Must come after FK (needs updated tendon lengths) and before collision.
+    if mj_wake_tendon(model, self) {
+        mj_update_sleep(model, self);
+    }
+
+    // 5. Collision
+    mj_collision(model, self);
+
+    // 6. Contact wake (§16.13, extends Phase A §16.4)
+    if mj_wake_collision(model, self) {
+        mj_update_sleep(model, self);
+        mj_collision(model, self);          // Re-collide for newly-awake geoms
+    }
+
+    // 7. Equality constraint wake (§16.13.3)
+    if mj_wake_equality(model, self) {
+        mj_update_sleep(model, self);
+    }
+
+    // 8. Build constraints + islands
+    mj_make_constraint(model, self);
+    mj_island(model, self);                 // §16.11: island discovery
+
+    // --- Position-dependent (continued) ---
+    mj_com_pos(model, self);                // COM positions
+    mj_crba_islands(model, self);           // §16.16.4: selective CRBA
+    mj_factor_m(model, self);               // LDL factorization
+
+    // --- Velocity-dependent ---
+    mj_fwd_velocity(model, self);           // velocity kinematics
+    mj_fwd_actuation(model, self);          // actuator forces
+    mj_fwd_acceleration(model, self);       // acceleration from forces
+
+    // --- Constraint solve ---
+    mj_fwd_constraint_islands(model, self); // §16.16.2: per-island solve
+
+    Ok(())
+}
+```
+
+> **Note on pipeline ordering:** This `forward()` listing is the
+> authoritative Phase B pipeline. Section §16.13.1 shows the same
+> wake-detection ordering within `mj_fwd_position()` (a conceptual
+> subset). The key invariant: `mj_wake_tendon` runs after FK part 2
+> and before collision; `mj_wake_collision` runs after collision;
+> `mj_wake_equality` runs after contact wake. CRBA and LDL run after
+> island discovery so that `mj_crba_islands()` can use island
+> information for selective computation.
+
+##### 16.10 Phase B — Data Structures
+
+###### 16.10.1 New Model Fields
+
+```rust
+/// In Model:
+
+/// Disable-flags enum gains a new bit:
+pub const DISABLE_ISLAND: u32 = 1 << 18;  // disable island discovery
+
+/// Number of distinct kinematic trees spanned by each tendon.
+/// Length: ntendon. Value 0 = no bodies, 1 = single tree, 2 = two trees.
+/// Computed during model construction by scanning tendon path waypoints.
+pub tendon_treenum: Vec<usize>,
+
+/// Packed tree indices for tendons with treenum == 2.
+/// For tendon t: tree_a = tendon_tree[2*t], tree_b = tendon_tree[2*t+1].
+/// Unused entries (treenum != 2) are set to usize::MAX.
+/// Length: 2 * ntendon.
+pub tendon_tree: Vec<usize>,
+```
+
+When `DISABLE_ISLAND` is set, `mj_island()` is a no-op and each tree
+is its own island (Phase A fallback). This allows profiling island
+discovery overhead independently.
+
+**`tendon_treenum` / `tendon_tree` computation** (during model
+construction, after tendon waypoints are registered):
+
+```rust
+for t in 0..model.ntendon {
+    let mut trees = BTreeSet::new();
+    for wp in tendon_waypoints(model, t) {
+        let body = waypoint_body(model, wp);
+        if body > 0 {  // skip world body
+            trees.insert(model.body_treeid[body]);
+        }
+    }
+    model.tendon_treenum[t] = trees.len();
+    if trees.len() == 2 {
+        let mut iter = trees.iter();
+        model.tendon_tree[2 * t] = *iter.next().unwrap();
+        model.tendon_tree[2 * t + 1] = *iter.next().unwrap();
+    }
+}
+```
+
+###### 16.10.2 New Data Fields
+
+Island discovery is recomputed every step from the current constraint
+set. All island arrays are allocated from an arena or pre-sized to
+worst-case bounds.
+
+```rust
+/// In Data — Island Discovery Output:
+
+/// Number of constraint islands discovered this step.
+pub nisland: usize,
+
+/// Total DOFs across all constrained trees (trees that appear in at
+/// least one island). Unconstrained trees are NOT counted.
+pub nidof: usize,
+
+// --- Tree → Island mapping ---
+
+/// Island index for each tree. -1 if tree has no active constraints
+/// (singleton — not part of any island).
+/// Length: ntree.
+pub tree_island: Vec<i32>,
+
+/// Number of trees per island. Length: nisland.
+pub island_ntree: Vec<usize>,
+
+/// Start index in `map_itree2tree` for each island. Length: nisland.
+pub island_itreeadr: Vec<usize>,
+
+/// Packed array of tree indices, grouped by island. Length: ntree
+/// (upper bound; actual used = sum of island_ntree).
+pub map_itree2tree: Vec<usize>,
+
+// --- DOF → Island mapping ---
+
+/// Island index for each DOF. -1 if DOF's tree is unconstrained.
+/// Length: nv.
+pub dof_island: Vec<i32>,
+
+/// Number of DOFs per island. Length: nisland.
+pub island_nv: Vec<usize>,
+
+/// Start index in `map_idof2dof` for each island. Length: nisland.
+pub island_idofadr: Vec<usize>,
+
+/// Start DOF index for each island (into the original qvel array).
+/// Length: nisland. Used for block-diagonal extraction.
+pub island_dofadr: Vec<usize>,
+
+/// DOF → island-local DOF index. Length: nv.
+pub map_dof2idof: Vec<i32>,
+
+/// Island-local DOF index → global DOF index. Length: nv
+/// (first nidof entries are constrained DOFs; rest are unconstrained).
+pub map_idof2dof: Vec<usize>,
+
+// --- Constraint → Island mapping ---
+
+/// Island index for each constraint row. Length: nefc.
+pub efc_island: Vec<i32>,
+
+/// Per-island equality constraint count. Length: nisland.
+pub island_ne: Vec<usize>,
+
+/// Per-island friction constraint count. Length: nisland.
+pub island_nf: Vec<usize>,
+
+/// Per-island total constraint row count. Length: nisland.
+pub island_nefc: Vec<usize>,
+
+/// Start index in `map_iefc2efc` for each island. Length: nisland.
+pub island_iefcadr: Vec<usize>,
+
+/// Global constraint row → island-local row. Length: nefc.
+pub map_efc2iefc: Vec<i32>,
+
+/// Island-local row → global constraint row. Length: nefc.
+pub map_iefc2efc: Vec<usize>,
+
+// --- Block-diagonal copies (per-island solver input) ---
+
+/// Island-reordered mass matrix (sparse). Block-diagonal extraction
+/// of `qM` restricted to each island's DOFs. Length: ≤ nnz(qM).
+pub iM: Vec<f64>,
+
+/// Island-reordered LDL factorization. Length: ≤ nnz(qLD).
+pub iLD: Vec<f64>,
+
+/// Island-reordered Jacobian (sparse or dense depending on model).
+/// Length: nefc × max(island_nv).
+pub iJ: Vec<f64>,
+
+/// Per-island reordered constraint vectors: efc_type, efc_D, efc_R,
+/// efc_frictionloss, etc. These are gathered from the global arrays
+/// using map_iefc2efc.
+
+// --- Block-diagonal constraint vectors (per-island solver input) ---
+
+/// Per-island reordered constraint type. Length: nefc.
+pub iefc_type: Vec<i32>,
+
+/// Per-island reordered diagonal D (impedance). Length: nefc.
+pub iefc_D: Vec<f64>,
+
+/// Per-island reordered diagonal R (regularizer). Length: nefc.
+pub iefc_R: Vec<f64>,
+
+/// Per-island reordered friction loss. Length: nefc.
+pub iefc_frictionloss: Vec<f64>,
+
+// --- Awake-Index Indirection Arrays ---
+
+/// Sorted indices of awake + static bodies. Length: ≤ nbody.
+/// Used for cache-friendly iteration in FK, velocity kinematics, etc.
+pub body_awake_ind: Vec<usize>,
+
+/// Number of entries in body_awake_ind (awake + static bodies).
+pub nbody_awake: usize,
+
+/// Sorted indices of bodies whose parent is awake or static.
+/// Length: ≤ nbody. Used for backward-pass loops (subtree COM, RNE).
+pub parent_awake_ind: Vec<usize>,
+
+/// Number of entries in parent_awake_ind.
+pub nparent_awake: usize,
+
+/// Sorted indices of awake DOFs. Length: ≤ nv.
+/// Used for velocity integration, CRBA, force accumulation.
+pub dof_awake_ind: Vec<usize>,
+```
+
+**Sparse format for block-diagonal matrices:** `iM`, `iLD`, and `iJ`
+use the same sparse storage format as the global `qM`, `qLD`, and
+`efc_J`. Specifically:
+- `iM` and `iLD` use the same CSC (Compressed Sparse Column) format as
+  `qM`/`qLD`, with row indices rewritten to island-local DOF indices
+  via `map_dof2idof`. The sparsity pattern is a sub-matrix of the
+  global pattern, extracted by selecting columns/rows for the island's
+  DOFs.
+- `iJ` uses the same format as `efc_J` (dense row-major if the model
+  uses dense Jacobians; sparse CSR with `efc_J_rownnz`/`efc_J_rowadr`/
+  `efc_J_colind` if the model uses sparse Jacobians). Column indices
+  are rewritten to island-local DOF indices.
+
+**Memory budget:** Island arrays use `O(ntree + nv + nefc)` storage,
+allocated once at `make_data()` to worst-case bounds (ntree, nv, nefc
+from Model). Re-filled each step. The block-diagonal copies (`iM`,
+`iLD`, `iJ`) are pre-allocated at `make_data()` to the same size as
+their global counterparts (upper bound; actual used per step ≤ global).
+
+###### 16.10.3 Sleep State Encoding Change
+
+Phase A uses a self-link for sleeping trees: `tree_asleep[t] = t as i32`.
+Phase B replaces this with a **circular linked list** encoding:
+
+```
+Awake tree:    tree_asleep[t] < 0
+               Values from -(1+MIN_AWAKE) to -1 represent countdown.
+
+Sleeping tree: tree_asleep[t] >= 0
+               Value is the index of the NEXT tree in the island's
+               sleep cycle. The cycle is circular:
+               tree_asleep[a] = b, tree_asleep[b] = c, tree_asleep[c] = a
+               for a 3-tree island {a, b, c}.
+               A single-tree island self-links: tree_asleep[t] = t
+               (backward compatible with Phase A).
+```
+
+**Traversal:** To enumerate all trees in a sleeping island starting
+from tree `i`:
+
+```rust
+fn for_each_tree_in_cycle(tree_asleep: &[i32], start: usize, mut f: impl FnMut(usize)) {
+    let mut current = start;
+    loop {
+        f(current);
+        current = tree_asleep[current] as usize;
+        if current == start {
+            break;
+        }
+    }
+}
+```
+
+**Cycle minimum:** `mj_sleep_cycle(tree_asleep, i)` returns the smallest
+tree index in the cycle — used as a canonical island identifier for
+sleeping islands:
+
+```rust
+fn mj_sleep_cycle(tree_asleep: &[i32], start: usize) -> usize {
+    let mut min_tree = start;
+    let mut current = tree_asleep[start] as usize;
+    while current != start {
+        if current < min_tree {
+            min_tree = current;
+        }
+        current = tree_asleep[current] as usize;
+    }
+    min_tree
+}
+```
+
+##### 16.11 Phase B — Island Discovery Algorithm
+
+###### 16.11.1 Overview
+
+`mj_island(model, data)` discovers constraint islands by building a
+tree-tree adjacency graph from the active constraint Jacobian, then
+performing flood-fill (connected components) on this graph. Called once
+per step, after `mj_make_constraint()` populates `data.efc_J`.
+
+```
+mj_fwd_position(model, data)
+  mj_wake_tendon(model, data)  → mj_update_sleep(model, data)
+  mj_collision(model, data)
+  mj_wake_collision(model, data) → mj_update_sleep(model, data) → mj_collision(model, data)
+  mj_wake_equality(model, data) → mj_update_sleep(model, data)
+  mj_make_constraint(model, data)
+  mj_island(model, data)          // ← HERE
+```
+
+###### 16.11.2 Edge Extraction
+
+For each constraint row `r` in `0..data.nefc`:
+
+1. **Fast path** (`tree_first`): For known constraint types (contact,
+   joint limit, joint friction, connect/weld equality), directly look
+   up the 1–2 trees involved from the constraint's metadata:
+   - Contact: `body_treeid[geom_body[contact.geom1]]` and
+     `body_treeid[geom_body[contact.geom2]]`.
+   - Joint limit/friction: single tree from `jnt_body[efc_id]`.
+   - Connect/weld equality: `body_treeid[eq_obj1id]` and
+     `body_treeid[eq_obj2id]`.
+
+2. **Slow path** (`tree_next`): For general constraints, scan the
+   Jacobian row `efc_J[r]` for nonzero entries. Each nonzero at
+   column `dof` maps to `dof_treeid[dof]`. Collect the set of distinct
+   trees that appear.
+
+3. **Edge generation** (`add_edge`): For each pair of distinct trees
+   `(ta, tb)` found in a constraint row, emit edge `(ta, tb)`. If
+   `ta == tb`, emit a self-edge (marks the tree as constrained but
+   doesn't create a cross-tree coupling). Deduplicate against the
+   previous edge to avoid redundant entries.
+
+**Output:** A list of `(tree_a, tree_b)` edges and per-tree edge
+counts `rownnz[t]`.
+
+###### 16.11.3 Flood Fill
+
+Build a CSR (Compressed Sparse Row) representation of the tree-tree
+adjacency graph from the edge list:
+
+```rust
+fn mj_flood_fill(
+    island: &mut [i32],       // output: island[tree] = island_id (-1 = no edges)
+    rownnz: &[usize],         // edges per tree
+    rowadr: &[usize],         // CSR row pointers
+    colind: &[usize],         // CSR column indices
+    stack: &mut [usize],      // DFS stack (length ntree)
+    ntree: usize,
+) -> usize {
+    let mut nisland = 0;
+    island.fill(-1);
+
+    for seed in 0..ntree {
+        if island[seed] >= 0 || rownnz[seed] == 0 {
+            continue;  // Already assigned or no edges (singleton)
+        }
+
+        // DFS from seed
+        let mut top = 0;
+        stack[top] = seed;
+        island[seed] = nisland as i32;
+
+        while top < usize::MAX {  // while stack not empty
+            let node = stack[top];
+            top = top.wrapping_sub(1);
+
+            for j in rowadr[node]..rowadr[node] + rownnz[node] {
+                let neighbor = colind[j];
+                if island[neighbor] < 0 {
+                    island[neighbor] = nisland as i32;
+                    top = top.wrapping_add(1);
+                    stack[top] = neighbor;
+                }
+            }
+        }
+
+        nisland += 1;
+    }
+
+    nisland
+}
+```
+
+Trees with no constraint edges (`rownnz[t] == 0`) get `island[t] = -1`
+(singletons). They sleep/wake independently, exactly as in Phase A.
+
+**Complexity:** O(ntree + nedges) — linear in the graph size. The
+constraint Jacobian scan in edge extraction is O(nefc × nv_max_per_row)
+for the fast path (constant per constraint type) or O(nefc × nv) for
+the slow path.
+
+###### 16.11.4 Island Array Population
+
+After flood fill, populate the island arrays:
+
+1. **Trees:** Scan `tree_island[t]` to compute `island_ntree[i]` and
+   `island_itreeadr[i]`. Pack `map_itree2tree` grouped by island.
+
+2. **DOFs:** For each tree in each island, copy its DOF range into the
+   island's DOF set. Compute `island_nv[i]`, `island_idofadr[i]`,
+   `island_dofadr[i]`. Build `map_dof2idof` and `map_idof2dof`
+   bidirectional maps.
+
+3. **Constraints:** For each constraint row, `efc_island[r] =
+   tree_island[tree_of_constraint_r]`. Compute `island_ne[i]`,
+   `island_nf[i]`, `island_nefc[i]`, `island_iefcadr[i]`. Build
+   `map_efc2iefc` and `map_iefc2efc`.
+
+4. **Block-diagonal extraction:** Use the DOF and constraint maps to
+   extract per-island sub-matrices from the global `qM`, `qLD`, and
+   `efc_J`. The extraction uses `mju_block_diag_sparse()` (or Rust
+   equivalent) to produce compact block-diagonal representations in
+   `iM`, `iLD`, `iJ`.
+
+###### 16.11.5 Disable Flag
+
+When `model.disableflags & DISABLE_ISLAND != 0`:
+- `mj_island()` returns immediately.
+- `nisland = 0`, all `tree_island` = -1.
+- Each tree sleeps/wakes independently (Phase A semantics).
+- The constraint solver uses the global system (no per-island solve).
+
+This flag allows benchmarking island discovery overhead and provides
+a fallback if island discovery introduces bugs.
+
+##### 16.12 Phase B — Sleep Cycle Linked List
+
+###### 16.12.1 Sleeping an Island
+
+When `mj_sleep()` determines an island should sleep (all trees in the
+island have `tree_asleep == -1`, i.e., all ready to sleep), it creates
+a circular linked list among the island's trees:
+
+```rust
+fn sleep_trees(model: &Model, data: &mut Data, trees: &[usize]) {
+    let n = trees.len();
+    assert!(n > 0);
+
+    // Create circular linked list: tree[0] → tree[1] → ... → tree[n-1] → tree[0]
+    for i in 0..n {
+        let next = trees[(i + 1) % n];
+        #[allow(clippy::cast_possible_wrap)]
+        {
+            data.tree_asleep[trees[i]] = next as i32;
+        }
+
+        // Zero qvel and qacc for this tree
+        let dof_start = model.tree_dof_adr[trees[i]];
+        let dof_end = dof_start + model.tree_dof_num[trees[i]];
+        for dof in dof_start..dof_end {
+            data.qvel[dof] = 0.0;
+            data.qacc[dof] = 0.0;
+        }
+    }
+}
+```
+
+For single-tree islands (no constraints), this creates a self-link:
+`tree_asleep[t] = t as i32`, which is identical to Phase A behavior.
+
+###### 16.12.2 The mj_sleep() Function (Phase B)
+
+```rust
+fn mj_sleep(model: &Model, data: &mut Data) -> usize {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return 0;
+    }
+
+    let mut nslept = 0;
+
+    // Phase 1: Countdown for awake trees
+    for t in 0..model.ntree {
+        if data.tree_asleep[t] >= 0 {
+            continue;  // Already asleep
+        }
+        if !tree_can_sleep(model, data, t) {
+            data.tree_asleep[t] = -(1 + MIN_AWAKE);  // Reset
+            continue;
+        }
+        // Increment toward -1
+        if data.tree_asleep[t] < -1 {
+            data.tree_asleep[t] += 1;
+        }
+    }
+
+    // Phase 2: Sleep entire islands where ALL trees are ready
+    for island in 0..data.nisland {
+        let itree_start = data.island_itreeadr[island];
+        let itree_end = itree_start + data.island_ntree[island];
+
+        let all_ready = (itree_start..itree_end).all(|idx| {
+            let tree = data.map_itree2tree[idx];
+            data.tree_asleep[tree] == -1
+        });
+
+        if all_ready {
+            let trees: Vec<usize> = (itree_start..itree_end)
+                .map(|idx| data.map_itree2tree[idx])
+                .collect();
+            sleep_trees(model, data, &trees);
+            nslept += trees.len();
+        }
+    }
+
+    // Phase 3: Sleep unconstrained singleton trees that are ready
+    for t in 0..model.ntree {
+        if data.tree_island[t] < 0 && data.tree_asleep[t] == -1 {
+            sleep_trees(model, data, &[t]);  // Self-link
+            nslept += 1;
+        }
+    }
+
+    nslept
+}
+```
+
+**`tree_can_sleep(model, data, tree)`** returns `false` if:
+- `tree_sleep_policy[t]` is `Never` or `AutoNever`.
+- Any `xfrc_applied` on the tree's bodies is bytewise nonzero.
+- Any `qfrc_applied` on the tree's DOFs is bytewise nonzero.
+- Any `qvel[dof]` exceeds `sleep_tolerance * dof_length[dof]`.
+
+###### 16.12.3 Atomic Island Wake
+
+Waking any tree in a sleeping island wakes the **entire island**.
+`mj_wake_tree()` traverses the sleep cycle and wakes every tree:
+
+```rust
+fn mj_wake_tree(model: &Model, data: &mut Data, tree: usize) {
+    if data.tree_asleep[tree] < 0 {
+        // Already awake — optionally update countdown if provided
+        return;
+    }
+
+    // Traverse the sleep cycle, waking each tree
+    let mut current = tree;
+    loop {
+        let next = data.tree_asleep[current] as usize;
+        data.tree_asleep[current] = -(1 + MIN_AWAKE);  // Fully awake
+        data.tree_awake[current] = true;
+
+        // Update body states
+        let body_start = model.tree_body_adr[current];
+        let body_end = body_start + model.tree_body_num[current];
+        for body_id in body_start..body_end {
+            data.body_sleep_state[body_id] = SleepState::Awake;
+        }
+
+        current = next;
+        if current == tree {
+            break;  // Full cycle traversed
+        }
+    }
+}
+```
+
+This is the key semantic difference from Phase A: waking one tree now
+wakes all coupled trees. Without this, a sleeping tree could have
+nonzero constraint forces from an awake partner but remain frozen.
+
+##### 16.13 Phase B — Cross-Island Wake Detection
+
+Phase A detects wake via user forces (`mj_wake`) and contacts
+(`mj_wake_collision`). Phase B adds two more wake sources and refines
+the wake ordering in the forward pass.
+
+###### 16.13.1 Wake Ordering in forward()
+
+```rust
+// Wake-detection portion of forward(), extracted here for clarity.
+// See §16.9b for the complete forward() pipeline.
+//
+// Steps 1-8 correspond to the same numbering in §16.9b forward():
+
+mj_kinematics1(model, data);                  // 1. FK part 1
+
+if mj_check_qpos_changed(model, data) {       // 2. qpos change detection (§16.15)
+    mj_update_sleep(model, data);
+}
+
+mj_kinematics2(model, data);                  // 3. FK part 2
+
+if mj_wake_tendon(model, data) {              // 4. Tendon wake (§16.13.2)
+    mj_update_sleep(model, data);
+}
+
+mj_collision(model, data);                    // 5. Collision
+
+if mj_wake_collision(model, data) {           // 6. Contact wake
+    mj_update_sleep(model, data);
+    mj_collision(model, data);
+}
+
+if mj_wake_equality(model, data) {            // 7. Equality wake (§16.13.3)
+    mj_update_sleep(model, data);
+}
+
+mj_make_constraint(model, data);              // 8. Build constraints + islands
+mj_island(model, data);
+```
+
+**Why this order matters:** Each wake function may wake sleeping islands,
+which changes the set of active bodies/geoms/constraints. The
+`mj_update_sleep()` call between wake functions recomputes the
+awake-index arrays so subsequent stages iterate over the correct set.
+
+###### 16.13.2 mj_wake_tendon()
+
+Tendons that span two trees (`tendon.treenum == 2`) and have an active
+limit constraint can couple a sleeping tree to an awake tree:
+
+```rust
+fn mj_wake_tendon(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for t in 0..model.ntendon {
+        // Only 2-tree tendons with active limits can wake
+        if model.tendon_treenum[t] != 2 {
+            continue;
+        }
+        if !tendon_limit_active(model, data, t) {
+            continue;
+        }
+
+        let tree_a = model.tendon_tree[2 * t];
+        let tree_b = model.tendon_tree[2 * t + 1];
+        let awake_a = data.tree_awake[tree_a];
+        let awake_b = data.tree_awake[tree_b];
+
+        match (awake_a, awake_b) {
+            (true, false) => {
+                mj_wake_tree(model, data, tree_b);
+                woke_any = true;
+            }
+            (false, true) => {
+                mj_wake_tree(model, data, tree_a);
+                woke_any = true;
+            }
+            _ => {}  // Both awake or both asleep — no action
+        }
+    }
+    woke_any
+}
+```
+
+**`tendon_limit_active(model, data, tendon_id)`** returns `true` if
+the tendon has a limit constraint and the current tendon length is
+outside the limit range:
+
+```rust
+fn tendon_limit_active(model: &Model, data: &Data, t: usize) -> bool {
+    // Tendon must have limits defined
+    if !model.tendon_limited[t] {
+        return false;
+    }
+    let length = data.ten_length[t];
+    length < model.tendon_range[t][0] || length > model.tendon_range[t][1]
+}
+```
+
+**Prerequisite fields:** `tendon_treenum: Vec<usize>` (number of
+distinct trees spanned by each tendon) and `tendon_tree: Vec<usize>`
+(packed tree indices, 2 per tendon for `treenum == 2`). These are
+computed during model construction by scanning each tendon's path
+waypoints for the trees they touch.
+
+###### 16.13.3 mj_wake_equality()
+
+Equality constraints (connect, weld, joint) can couple trees:
+
+```rust
+fn mj_wake_equality(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for eq in 0..model.neq {
+        if !model.eq_active[eq] {
+            continue;  // Disabled equality constraint
+        }
+
+        let (tree_a, tree_b) = equality_trees(model, eq);
+        if tree_a == tree_b {
+            continue;  // Same tree — no cross-tree coupling
+        }
+
+        let awake_a = data.tree_awake[tree_a];
+        let awake_b = data.tree_awake[tree_b];
+
+        match (awake_a, awake_b) {
+            (true, false) => {
+                mj_wake_tree(model, data, tree_b);
+                woke_any = true;
+            }
+            (false, true) => {
+                mj_wake_tree(model, data, tree_a);
+                woke_any = true;
+            }
+            (false, false) => {
+                // Both asleep but in different cycles: merge by waking both.
+                // This handles the case where two independently-sleeping islands
+                // are coupled by a newly-activated equality constraint.
+                let cycle_a = mj_sleep_cycle(&data.tree_asleep, tree_a);
+                let cycle_b = mj_sleep_cycle(&data.tree_asleep, tree_b);
+                if cycle_a != cycle_b {
+                    mj_wake_tree(model, data, tree_a);
+                    mj_wake_tree(model, data, tree_b);
+                    woke_any = true;
+                }
+                // Same cycle: both are in the same sleeping island — no action
+            }
+            _ => {}  // Both awake — no action
+        }
+    }
+    woke_any
+}
+```
+
+**`equality_trees(model, eq)`** returns the two tree indices for an
+equality constraint:
+- `EqType::Connect | EqType::Weld`: `body_treeid[eq_obj1id[eq]]` and
+  `body_treeid[eq_obj2id[eq]]`.
+- `EqType::Joint`: `body_treeid[jnt_body[eq_obj1id[eq]]]` and
+  `body_treeid[jnt_body[eq_obj2id[eq]]]`.
+
+**Both-asleep-different-cycle case:** When two sleeping islands are
+coupled by an equality constraint, they must be merged. The simplest
+approach: wake both, let them go through the countdown again, and
+`mj_sleep()` will create a single island cycle on the next sleep pass.
+
+##### 16.14 Phase B — dof_length Mechanism Length
+
+Phase A sets `dof_length[dof] = 1.0` for all DOFs. Phase B computes
+the actual mechanism length for rotational DOFs, following the same
+approach as MuJoCo's `engine_setconst.c` (subtree extent from
+`body_pos` distances). The MuJoCo implementation also factors in
+geom sizes for leaf bodies; the algorithm below uses inter-body
+distances only, which is a close approximation. If exact parity is
+needed, refine the leaf extent calculation during implementation.
+
+###### 16.14.1 Body Length Computation
+
+MuJoCo computes a per-body characteristic length during `mj_setConst`:
+
+```rust
+/// Compute characteristic body length for dof_length normalization.
+///
+/// For each body, compute the maximum extent from the body's center of mass
+/// to any descendant body's center of mass, plus the body's own geometric
+/// extent. This gives a length scale that converts angular velocity [rad/s]
+/// to tip velocity [m/s] for the mechanism rooted at this body.
+fn compute_body_lengths(model: &Model) -> Vec<f64> {
+    let mut body_length = vec![0.0_f64; model.nbody];
+
+    // Backward pass: accumulate subtree extents from leaves to root
+    for body_id in (1..model.nbody).rev() {
+        let parent = model.body_parent[body_id];
+
+        // Distance from parent COM to this body's COM
+        let dx = model.body_pos[body_id][0];  // local position in parent frame
+        let dy = model.body_pos[body_id][1];
+        let dz = model.body_pos[body_id][2];
+        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+
+        // This body's extent: max of own geom extent and children's extent + distance
+        let child_extent = body_length[body_id] + dist;
+        body_length[parent] = body_length[parent].max(child_extent);
+    }
+
+    // Ensure minimum length of 1.0 (no normalization for tiny/zero-mass bodies)
+    for length in &mut body_length {
+        if *length < 1e-10 {
+            *length = 1.0;
+        }
+    }
+
+    body_length
+}
+```
+
+###### 16.14.2 Per-DOF Length Assignment
+
+```rust
+fn compute_dof_lengths(model: &mut Model) {
+    let body_length = compute_body_lengths(model);
+
+    for dof in 0..model.nv {
+        let jnt_id = model.dof_jnt[dof];
+        let jnt_type = model.jnt_type[jnt_id];
+        let offset = dof - model.jnt_dof_adr[jnt_id];
+
+        let is_rotational = match jnt_type {
+            MjJointType::Hinge => true,
+            MjJointType::Ball => true,  // all 3 DOFs are rotational
+            MjJointType::Free => offset >= 3,  // DOFs 3,4,5 are rotational
+            MjJointType::Slide => false,
+        };
+
+        if is_rotational {
+            model.dof_length[dof] = body_length[model.dof_body[dof]];
+        } else {
+            model.dof_length[dof] = 1.0;  // translational: already in [m/s]
+        }
+    }
+}
+```
+
+**Effect:** A 1-meter arm with a hinge joint gets `dof_length ≈ 1.0`,
+so `sleep_tolerance * 1.0 = 1e-4 rad/s`. A 10-cm arm gets
+`dof_length ≈ 0.1`, so the threshold is `1e-4 * 0.1 = 1e-5 rad/s` —
+tighter, because the same angular velocity produces less tip motion.
+
+**Phase A → Phase B migration:** Replace the `for dof { dof_length[dof] = 1.0 }`
+loop in `model_builder.rs` with a call to `compute_dof_lengths(model)`.
+
+##### 16.15 Phase B — qpos/qvel Change Detection
+
+MuJoCo detects external modifications to `qpos` (e.g., from RL
+environment resets that set `qpos` directly without calling `reset()`).
+If a sleeping body's `qpos` changed since the last step, it must be
+woken so FK recomputes its pose.
+
+###### 16.15.1 Algorithm
+
+Inside `mj_kinematics1()`, after computing the new `xpos`/`xquat`
+from `qpos` for each body, compare against the stored values:
+
+```rust
+// In mj_kinematics1(), for each body:
+for body_id in 1..model.nbody {
+    // Compute xpos, xquat from qpos (existing FK)
+    let (new_xpos, new_xquat) = compute_body_pose(model, data, body_id);
+
+    // If sleeping and pose changed: mark for waking
+    if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
+        if new_xpos != data.xpos[body_id] || new_xquat != data.xquat[body_id] {
+            data.tree_awake[model.body_treeid[body_id]] = true;
+            // Don't skip FK — we need the new pose
+        }
+    }
+
+    // Store new pose
+    data.xpos[body_id] = new_xpos;
+    data.xquat[body_id] = new_xquat;
+    // ... compute xmat from xquat ...
+}
+```
+
+**Key insight:** The comparison uses exact floating-point equality
+(bitwise match), matching MuJoCo. This is correct because if the user
+didn't modify `qpos`, the FK computation is deterministic and will
+produce exactly the same `xpos`/`xquat`. Any difference indicates
+external modification.
+
+After `mj_kinematics1()` completes, check if any trees were marked
+awake. If so, call `mj_wake()` (which propagates across sleep cycles)
+and `mj_update_sleep()` before proceeding to `mj_kinematics2()`.
+
+The standalone wrapper function referenced in §16.9b:
+
+```rust
+/// Check if any sleeping tree's qpos was externally modified.
+/// Returns true if any tree was newly marked awake.
+fn mj_check_qpos_changed(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for t in 0..model.ntree {
+        // tree_awake[t] was set to true by mj_kinematics1() if
+        // any of the tree's bodies had a pose change.
+        if data.tree_awake[t] && data.tree_asleep[t] >= 0 {
+            // Tree was sleeping but kinematics1 flagged a pose change.
+            mj_wake_tree(model, data, t);  // Wake entire island
+            woke_any = true;
+        }
+    }
+    woke_any
+}
+```
+
+##### 16.16 Phase B — Per-Island Block-Diagonal Solving
+
+The most significant Phase B performance optimization: instead of
+solving the full `nv`-dimensional system, solve each island's
+constraint problem independently.
+
+###### 16.16.1 Block-Diagonal Structure
+
+After `mj_island()`, the mass matrix `qM` has a block-diagonal
+structure when DOFs are reordered by island. Each island's DOFs form
+an independent diagonal block. The constraint Jacobian `efc_J` also
+decomposes: each constraint row only references DOFs within its island.
+
+```
+Global system: M * qacc = qfrc_total,  J * qacc = efc_aref
+              [M_1  0   0 ] [qacc_1]   [f_1]
+              [ 0  M_2  0 ] [qacc_2] = [f_2]
+              [ 0   0  M_3] [qacc_3]   [f_3]
+
+Per-island:   M_i * qacc_i = f_i,  J_i * qacc_i = efc_aref_i
+```
+
+###### 16.16.2 Solver Modification
+
+The constraint solver (PGS, Newton, CG) currently operates on the full
+`nv`-dimensional system. With islands, each solver is parameterized to
+accept an `IslandView` — a sub-problem scoped to a single island's
+DOFs and constraints.
+
+**`IslandView` struct:**
+
+```rust
+/// A view into the global Data arrays scoped to a single island.
+/// All indices are island-local (0-based within the island).
+struct IslandView<'a> {
+    island_id: usize,
+    nv: usize,                    // island DOF count
+    nefc: usize,                  // island constraint row count
+    ne: usize,                    // island equality constraint count
+    nf: usize,                    // island friction constraint count
+
+    // Island-local mass matrix and factorization (from iM, iLD)
+    qM: &'a [f64],               // sparse CSC, island-local indices
+    qLD: &'a [f64],              // sparse CSC, island-local indices
+
+    // Island-local Jacobian (from iJ)
+    efc_J: &'a [f64],            // dense or sparse, island-local column indices
+
+    // Island-local constraint vectors (gathered from global via map_iefc2efc)
+    efc_D: &'a [f64],            // impedance diagonal
+    efc_R: &'a [f64],            // regularizer diagonal
+    efc_aref: &'a [f64],         // constraint reference acceleration
+    efc_frictionloss: &'a [f64], // friction loss coefficients
+    efc_type: &'a [i32],         // constraint types
+
+    // Island-local force/result vectors (slices into scratch space)
+    qacc: &'a mut [f64],         // output: island-local accelerations
+    efc_force: &'a mut [f64],    // output: constraint forces
+    qfrc_constraint: &'a mut [f64], // output: J^T * efc_force
+
+    // Warmstart from previous step (gathered from global)
+    qacc_warmstart: &'a [f64],
+}
+```
+
+**Solver dispatch:**
+
+```rust
+fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
+    if data.nisland == 0 {
+        // No islands — use global solver (same as Phase A)
+        mj_fwd_constraint(model, data);
+        return;
+    }
+
+    for island in 0..data.nisland {
+        let nefc_island = data.island_nefc[island];
+        if nefc_island == 0 {
+            continue;
+        }
+
+        // 1. Gather: build IslandView from global arrays using maps
+        let view = gather_island_view(model, data, island);
+
+        // 2. Solve: dispatch to the configured solver
+        match model.solver {
+            Solver::PGS => pgs_solve_island(&view, model),
+            Solver::Newton => newton_solve_island(&view, model),
+            Solver::CG => cg_solve_island(&view, model),
+        }
+
+        // 3. Track per-island solver statistics
+        let stat_idx = island.min(MAX_ISLAND_STATS - 1);
+        data.solver_niter[stat_idx] = view.iterations;
+        data.solver_nnz[stat_idx] = view.nnz;
+    }
+
+    // 4. Scatter: write island-local results back to global arrays
+    scatter_island_results(model, data);
+}
+```
+
+**`gather_island_view()`** builds the `IslandView` by:
+1. Extracting slices of `iM`, `iLD`, `iJ` for this island using
+   `island_idofadr[island]` and `island_iefcadr[island]` as offsets.
+2. Gathering `efc_D`, `efc_R`, `efc_aref`, `efc_frictionloss`,
+   `efc_type` using `map_iefc2efc[start..start+nefc]` to index into
+   the global arrays.
+3. Gathering `qacc_warmstart` for warmstart using
+   `map_idof2dof[start..start+nv]`.
+4. Allocating island-local output slices (`qacc`, `efc_force`,
+   `qfrc_constraint`) from scratch space.
+
+**Per-island result storage:** Solver results are written into
+contiguous scratch buffers packed by island. These buffers are
+allocated in `make_data()` to worst-case size:
+
+```rust
+/// In Data — per-island solver scratch (packed, contiguous):
+pub island_qacc: Vec<f64>,           // Length: nv. Island results packed by island_idofadr.
+pub island_efc_force: Vec<f64>,      // Length: nefc (worst case). Packed by island_iefcadr.
+pub island_qfrc_constraint: Vec<f64>, // Length: nv. Packed by island_idofadr.
+```
+
+Each island's results occupy a contiguous slice:
+- `island_qacc[island_idofadr[i] .. island_idofadr[i] + island_nv[i]]`
+- `island_efc_force[island_iefcadr[i] .. island_iefcadr[i] + island_nefc[i]]`
+- `island_qfrc_constraint[island_idofadr[i] .. island_idofadr[i] + island_nv[i]]`
+
+**`scatter_island_results()`** writes results back to global arrays:
+
+```rust
+fn scatter_island_results(model: &Model, data: &mut Data) {
+    for island in 0..data.nisland {
+        let nv = data.island_nv[island];
+        let nefc = data.island_nefc[island];
+        let dof_start = data.island_idofadr[island];
+        let efc_start = data.island_iefcadr[island];
+
+        // Scatter qacc: island-local → global
+        for i in 0..nv {
+            let global_dof = data.map_idof2dof[dof_start + i];
+            data.qacc[global_dof] = data.island_qacc[dof_start + i];
+        }
+
+        // Scatter efc_force: island-local → global
+        for i in 0..nefc {
+            let global_efc = data.map_iefc2efc[efc_start + i];
+            data.efc_force[global_efc] = data.island_efc_force[efc_start + i];
+        }
+
+        // Scatter qfrc_constraint: island-local → global
+        for i in 0..nv {
+            let global_dof = data.map_idof2dof[dof_start + i];
+            data.qfrc_constraint[global_dof] = data.island_qfrc_constraint[dof_start + i];
+        }
+    }
+
+    // Unconstrained DOFs (not in any island): qacc comes from the
+    // unconstrained forward dynamics. These DOFs have no constraints,
+    // so qacc[dof] = qfrc_total[dof] / M[dof,dof] (computed by
+    // mj_fwd_acceleration before the constraint solve).
+    // The scatter loop leaves these untouched — their qacc values
+    // from mj_fwd_acceleration are already correct.
+}
+```
+
+**Solver refactoring:** The existing `pgs_solve_with_system()`,
+`newton_solve()`, and `cg_solve()` currently accept `&Model` and
+`&mut Data` and operate on the full `nv`/`nefc` system. The refactoring
+extracts the core solve loop into a generic function parameterized by
+the matrix dimensions:
+
+```rust
+/// Core PGS solve loop, parameterized by system size.
+/// Works for both global (nv, nefc) and island-scoped (nv_island, nefc_island).
+fn pgs_solve_core(
+    nv: usize,
+    nefc: usize,
+    ne: usize,          // equality constraints
+    nf: usize,          // friction constraints
+    qM: &[f64],         // mass matrix (sparse CSC)
+    qLD: &[f64],        // LDL factorization
+    efc_J: &[f64],      // constraint Jacobian
+    efc_D: &[f64],      // impedance diagonal
+    efc_R: &[f64],      // regularizer
+    efc_aref: &[f64],   // reference acceleration
+    efc_frictionloss: &[f64],
+    qacc: &mut [f64],    // output
+    efc_force: &mut [f64], // output
+    qfrc_constraint: &mut [f64], // output
+    warmstart: &[f64],   // initial qacc guess
+    max_iter: usize,
+    tolerance: f64,
+) -> usize {  // returns iteration count
+    // Initialize from warmstart
+    qacc.copy_from_slice(&warmstart[..nv]);
+
+    for iter in 0..max_iter {
+        // Standard PGS iteration over constraint rows
+        // (identical to existing logic, but using local nv/nefc dimensions
+        //  and the island-scoped matrices passed as arguments)
+        // ...
+        if converged(tolerance) { return iter + 1; }
+    }
+    max_iter
+}
+```
+
+The Newton and CG solvers follow the same pattern: extract the core
+algorithm into a dimension-parameterized function that accepts matrix
+slices. The outer `newton_solve_island()` / `cg_solve_island()` wrappers
+construct the arguments from `IslandView` and call the core function.
+
+**Warmstart:** Per-island warmstart gathers `qacc_warmstart` values for
+the island's DOFs from the global `data.qacc_warmstart` using
+`map_idof2dof`. After solving, the island's `qacc` results are
+scattered back to `data.qacc_warmstart` for the next step.
+
+###### 16.16.3 Solver Statistics
+
+MuJoCo stores per-island solver statistics:
+
+```rust
+/// Per-island solver statistics. MuJoCo uses mjNISLAND = 20 as the
+/// maximum number of islands tracked for solver statistics.
+pub const MAX_ISLAND_STATS: usize = 20;
+
+/// In Data:
+pub solver_niter: [usize; MAX_ISLAND_STATS],  // iterations per island
+pub solver_nnz: [usize; MAX_ISLAND_STATS],     // Jacobian nonzeros per island
+```
+
+Islands beyond `MAX_ISLAND_STATS` share the last statistics slot.
+
+###### 16.16.4 CRBA Optimization
+
+Phase A computes CRBA for all bodies. Phase B can skip CRBA for
+sleeping islands because their mass matrix entries don't change.
+
+**Key insight:** CRBA uses a backward accumulation pass:
+`crb[parent] += crb[child]`. For sleeping bodies, `crb[body]` hasn't
+changed since the last awake step. Rather than preserving a `crb_saved`
+array, we use the fact that sleeping bodies' `cinert` (composite inertia
+in global frame) hasn't changed — the CRBA result depends only on
+`cinert` and the kinematic chain, both frozen for sleeping bodies.
+
+```rust
+fn mj_crba_islands(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
+    // If all bodies awake or sleep disabled: full CRBA (Phase A path)
+    if !sleep_enabled || data.nbody_awake == model.nbody {
+        mj_crba(model, data);
+        return;
+    }
+
+    // Phase B selective CRBA:
+    // 1. Do NOT zero the full qM — only zero entries for awake DOF pairs.
+    //    Sleeping DOFs' qM entries are preserved from their last awake step.
+    for idx_i in 0..data.nv_awake {
+        let dof_i = data.dof_awake_ind[idx_i];
+        // Zero qM entries in this DOF's row/column
+        // (sparse format: iterate nonzeros in column dof_i, zero those
+        //  where the row DOF is also awake)
+        zero_qm_column_awake(data, dof_i);
+    }
+
+    // 2. Backward CRBA accumulation for awake bodies only.
+    //    Use body_awake_ind in reverse order (leaf-to-root among awake bodies).
+    //    Sleeping children's cinert contributions are already baked into
+    //    their parents' qM from the last step they were awake.
+    for idx in (0..data.nbody_awake).rev() {
+        let body_id = data.body_awake_ind[idx];
+        if body_id == 0 { continue; }  // world body
+
+        // Standard CRBA: compute crb[body_id], accumulate to parent,
+        // project onto DOFs to fill qM entries.
+        crba_body(model, data, body_id);
+    }
+
+    // 3. LDL factorization for awake DOF blocks only.
+    //    Sleeping DOFs' qLD entries are preserved.
+    ldl_factor_awake(model, data);
+}
+```
+
+**Correctness argument:** When a tree wakes, its first `forward()` pass
+runs full CRBA (because `nbody_awake` now includes the waking bodies),
+so the mass matrix is recomputed correctly. While the tree sleeps, its
+`qM` entries are stale but consistent — the sleeping DOFs have zero
+velocity and zero force, so the solver produces zero acceleration
+regardless of the mass matrix values.
+
+This optimization reduces CRBA cost from O(nbody) to O(nbody_awake).
+
+##### 16.17 Phase B — Awake-Index Indirection Arrays
+
+Phase A uses `body_sleep_state[body_id] == SleepState::Asleep` checks
+in per-body loops. This causes branch mispredictions when awake and
+sleeping bodies are interleaved. Phase B adds indirection arrays for
+cache-friendly iteration.
+
+###### 16.17.1 mj_update_sleep (Phase B version)
+
+`mj_update_sleep()` recomputes the awake-index arrays:
+
+```rust
+fn mj_update_sleep(model: &Model, data: &mut Data) {
+    data.ntree_awake = 0;
+    data.nv_awake = 0;
+
+    // Tree awake flags
+    for t in 0..model.ntree {
+        let awake = data.tree_asleep[t] < 0;
+        data.tree_awake[t] = awake;
+        if awake {
+            data.ntree_awake += 1;
+        }
+    }
+
+    // Body awake states + body_awake_ind + parent_awake_ind
+    let mut nbody_awake = 0;
+    let mut nparent_awake = 0;
+
+    data.body_sleep_state[0] = SleepState::Static;
+    // World body is always in body_awake_ind (it's "static", included)
+    data.body_awake_ind[nbody_awake] = 0;
+    nbody_awake += 1;
+    data.parent_awake_ind[nparent_awake] = 0;
+    nparent_awake += 1;
+
+    for body_id in 1..model.nbody {
+        let tree = model.body_treeid[body_id];
+        let awake = tree < model.ntree && data.tree_awake[tree];
+
+        data.body_sleep_state[body_id] = if awake {
+            SleepState::Awake
+        } else {
+            SleepState::Asleep
+        };
+
+        // Include in body_awake_ind if awake
+        // (body 0 / Static is handled above; bodies > 0 are Awake or Asleep)
+        if awake {
+            data.body_awake_ind[nbody_awake] = body_id;
+            nbody_awake += 1;
+        }
+
+        // Include in parent_awake_ind if parent is awake or static
+        let parent = model.body_parent[body_id];
+        let parent_awake = data.body_sleep_state[parent] != SleepState::Asleep;
+        if parent_awake {
+            data.parent_awake_ind[nparent_awake] = body_id;
+            nparent_awake += 1;
+        }
+    }
+
+    // DOF awake indices
+    let mut nv_awake = 0;
+    for dof in 0..model.nv {
+        let tree = model.dof_treeid[dof];
+        if tree < model.ntree && data.tree_awake[tree] {
+            data.dof_awake_ind[nv_awake] = dof;
+            nv_awake += 1;
+        }
+    }
+
+    data.nbody_awake = nbody_awake;
+    data.nparent_awake = nparent_awake;
+    data.nv_awake = nv_awake;
+}
+```
+
+###### 16.17.2 Pipeline Iteration Pattern
+
+Phase A:
+```rust
+for body_id in 1..model.nbody {
+    if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
+        continue;
+    }
+    // ... compute ...
+}
+```
+
+Phase B (indirection):
+```rust
+let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+let nbody = if sleep_filter { data.nbody_awake } else { model.nbody };
+
+for b in 0..nbody {
+    let body_id = if sleep_filter { data.body_awake_ind[b] } else { b };
+    // ... compute (no branch needed) ...
+}
+```
+
+This eliminates per-body branches entirely. The `body_awake_ind` array
+contains only awake body indices, so the loop body executes for every
+iteration. Cache behavior is also improved: the awake bodies are
+accessed in sorted order.
+
+The same pattern applies to `dof_awake_ind` for per-DOF loops and
+`parent_awake_ind` for backward-pass loops.
+
+##### 16.18 Phase B — Policy Relaxation
+
+Phase A assigns `AutoNever` to all actuated trees, preventing them
+from sleeping. Phase B relaxes this:
+
+###### 16.18.1 User Override for Actuated Trees
+
+If a user explicitly sets `sleep="allowed"` or `sleep="init"` on an
+actuated tree, Phase B respects this. The actuator's activation dynamics
+still run (the `act` state tracks `ctrl`), but the tree can sleep when
+velocity is below threshold. The key requirement: when the tree sleeps,
+`qfrc_actuator` for its DOFs must be zeroed (already done by
+`put_tree_to_sleep`). When the tree wakes, the actuator force is
+recomputed from the current `act` state.
+
+**Validation:** If a tree has a multi-tree tendon (spanning other trees),
+`Allowed`/`Init` is still an error — the tendon coupling requires
+island-level sleep, and the tree cannot be in an island with trees that
+have `Never` policy.
+
+###### 16.18.2 Multi-Tree Tendon Policy
+
+Phase A marks trees with multi-tree tendons as `AutoNever`. Phase B
+refines this: if the tendon has zero stiffness and zero damping
+(purely geometric, no passive forces), the trees can sleep. Only
+tendons with nonzero stiffness, damping, or active limits force
+`AutoNever`.
+
+##### 16.19 Phase B — Acceptance Criteria
+
+**Island Discovery:**
+1. `mj_island()` correctly groups constraint-coupled trees into islands.
+   Two-body contact: both trees in the same island. Three-body chain:
+   all three trees in one island.
+2. Singleton trees (no constraints) get `tree_island = -1`.
+3. `DISABLE_ISLAND` flag causes `nisland = 0` (Phase A fallback).
+4. Island arrays are consistent: `sum(island_ntree) == number of
+   constrained trees`, `sum(island_nv) == nidof`.
+
+**Sleep Cycle:**
+5. Sleeping a 3-tree island creates cycle: `tree_asleep[a] = b`,
+   `tree_asleep[b] = c`, `tree_asleep[c] = a`.
+6. Waking any tree in the cycle wakes all three.
+7. Single-tree sleep cycle: `tree_asleep[t] = t` (Phase A compatible).
+
+**Cross-Island Wake:**
+8. Contact between sleeping tree and awake tree: sleeping tree's entire
+   island wakes.
+9. Active equality constraint between sleeping and awake trees: sleeping
+   tree's entire island wakes.
+10. Active limited tendon between sleeping and awake trees: sleeping
+    tree's entire island wakes.
+11. Two sleeping trees in different islands coupled by equality
+    constraint: both islands wake.
+
+**dof_length:**
+12. Hinge joint on 1-meter arm: `dof_length ≈ 1.0`.
+13. Hinge joint on 0.1-meter arm: `dof_length ≈ 0.1`.
+14. Slide joint: `dof_length = 1.0` regardless of arm length.
+15. Free joint: translational DOFs = 1.0, rotational DOFs = body length.
+
+**qpos Change Detection:**
+16. Externally modifying `qpos` of a sleeping body wakes its tree.
+17. Stepping without modifying `qpos` does NOT wake (FK is deterministic).
+
+**Per-Island Solve:**
+18. Per-island solve produces identical `qacc` as global solve (within
+    floating-point tolerance).
+19. Scene with 2 independent islands: solve time scales with the larger
+    island, not the total system.
+
+**Awake-Index Indirection:**
+20. Pipeline produces identical results whether using indirection arrays
+    or Phase A per-body skip checks.
+
+**Regression:**
+21. All Phase A tests (T1–T28) pass unchanged.
+22. All existing sim domain tests pass unchanged.
+23. `DISABLE_ISLAND` produces bit-identical results to Phase A.
+24. `DISABLE_ISLAND` produces no performance regression relative to
+    Phase A (island overhead is zero when disabled).
+
+**Policy Relaxation:**
+25. Actuated tree with explicit `sleep="allowed"`: tree sleeps when
+    velocity drops below threshold (unlike Phase A `AutoNever`).
+26. Multi-tree tendon with zero stiffness and zero damping: trees
+    are NOT forced to `AutoNever` (can sleep).
+27. Multi-tree tendon with nonzero stiffness: trees forced to
+    `AutoNever` (cannot sleep via auto policy).
+
+**Init-Sleep Validation:**
+28. Init-sleep tree with valid DOFs: passes validation, starts asleep.
+29. Mixed island (some Init, some non-Init trees): returns
+    `SleepError::InitSleepMixedIsland`.
+
+**Public API:**
+30. `mj_sleep_state(data, body_id)` returns correct `SleepState` for
+    static, sleeping, and awake bodies.
+31. `mj_tree_awake(data, tree_id)` returns `false` for sleeping trees,
+    `true` for awake trees.
+32. `mj_nisland(data)` returns the number of islands discovered this step.
+
+**make_data / reset:**
+33. After `make_data()`, all island arrays are allocated to correct
+    worst-case bounds (lengths match `ntree`, `nv`, `nefc`).
+34. After `Data::reset()`, sleep state is re-initialized from policies
+    and awake-index arrays are recomputed.
+
+**Performance:**
+35. Scene with 100 resting bodies in 10 islands, 1 active body: step
+    time is measurably faster than Phase A (per-island solve + CRBA skip
+    reduces work from O(100 DOFs) to O(~10 DOFs) in the solver).
+
+##### 16.20 Phase B — Test Plan
+
+| # | Test | Type | Validates |
+|---|------|------|-----------|
+| T31 | `test_island_discovery_two_body_contact` | Unit | AC #1: contact groups 2 trees |
+| T32 | `test_island_discovery_chain` | Unit | AC #1: chain of 3 contacts → 1 island |
+| T33 | `test_island_singleton` | Unit | AC #2: unconstrained tree → island = -1 |
+| T34 | `test_disable_island_flag` | Unit | AC #3: DISABLE_ISLAND → nisland = 0 |
+| T35 | `test_island_array_consistency` | Unit | AC #4: sum checks |
+| T36 | `test_sleep_cycle_three_trees` | Unit | AC #5: circular linked list |
+| T37 | `test_wake_cycle_propagation` | Unit | AC #6: wake one → all wake |
+| T38 | `test_sleep_cycle_single_tree` | Unit | AC #7: self-link |
+| T39 | `test_wake_contact_island` | Integration | AC #8: contact wakes entire island |
+| T40 | `test_wake_equality_island` | Integration | AC #9: equality wakes island |
+| T41 | `test_wake_tendon_island` | Integration | AC #10: tendon wakes island |
+| T42 | `test_wake_two_sleeping_islands` | Integration | AC #11: both islands wake |
+| T43 | `test_dof_length_hinge_1m` | Unit | AC #12: hinge on 1m arm |
+| T44 | `test_dof_length_hinge_01m` | Unit | AC #13: hinge on 0.1m arm |
+| T45 | `test_dof_length_slide` | Unit | AC #14: slide = 1.0 |
+| T46 | `test_dof_length_free_joint` | Unit | AC #15: free joint mixed |
+| T47 | `test_qpos_change_wakes` | Integration | AC #16: external qpos mod wakes |
+| T48 | `test_qpos_stable_no_wake` | Integration | AC #17: deterministic FK → no wake |
+| T49 | `test_per_island_solve_equivalence` | Unit | AC #18: matches global solve |
+| T50 | `test_per_island_solve_scaling` | Benchmark | AC #19: scales with island size |
+| T51 | `test_indirection_equivalence` | Unit | AC #20: same results as Phase A skip |
+| T52 | `test_phase_a_regression` | Regression | AC #21: all T1–T28 pass |
+| T53 | `test_sim_domain_regression` | Regression | AC #22: all existing sim tests pass |
+| T54 | `test_disable_island_bit_identical` | Unit | AC #23: DISABLE_ISLAND = Phase A |
+| T55 | `test_disable_island_no_perf_regression` | Benchmark | AC #24: DISABLE_ISLAND same perf as Phase A |
+| T56 | `test_policy_relaxation_actuated_allowed` | Integration | AC #25: actuated tree with `sleep="allowed"` can sleep |
+| T57 | `test_policy_relaxation_tendon_zero_stiffness` | Unit | AC #26: zero-stiffness tendon allows sleep |
+| T58 | `test_policy_relaxation_tendon_nonzero_stiffness` | Unit | AC #27: nonzero-stiffness tendon forces AutoNever |
+| T59 | `test_init_sleep_valid` | Unit | AC #28: valid Init-sleep passes validation |
+| T60 | `test_init_sleep_mixed_island_error` | Unit | AC #29: mixed Init/non-Init island errors |
+| T61 | `test_mj_sleep_state_api` | Unit | AC #30: mj_sleep_state returns correct states |
+| T62 | `test_mj_tree_awake_api` | Unit | AC #31: mj_tree_awake correct |
+| T63 | `test_mj_nisland_api` | Unit | AC #32: mj_nisland returns island count |
+| T64 | `test_make_data_island_array_sizes` | Unit | AC #33: array allocations correct |
+| T65 | `test_reset_reinitializes_sleep` | Unit | AC #34: reset re-inits from policies |
+| T66 | `test_island_solve_performance` | Benchmark | AC #35: faster than Phase A |
+
+##### 16.21 Phase B — Files
+
+| File | Action | Description |
+|------|--------|-------------|
+| `sim/L0/core/src/mujoco_pipeline.rs` | Modify | Island discovery (§16.11), sleep cycle (§16.12), cross-island wake (§16.13), dof_length (§16.14), qpos detection (§16.15), per-island solve (§16.16), awake-index arrays (§16.17), policy relaxation (§16.18) |
+| `sim/L0/core/src/lib.rs` | Modify | Export new types, DISABLE_ISLAND constant |
+| `sim/L0/mjcf/src/model_builder.rs` | Modify | dof_length computation (§16.14), tendon tree enumeration for wake (§16.13.2) |
+| `sim/L0/mjcf/src/parser.rs` | Modify | Parse `<flag island="enable\|disable"/>` attribute |
+| `sim/L0/tests/integration/sleeping.rs` | Modify | Add tests T31–T65 (excluding benchmarks) |
+| `sim/L0/core/benches/sleep_benchmarks.rs` | Modify | Add island benchmarks T50, T55, T66 |
+
+##### 16.22 Phase B — Implementation Order
+
+1. **dof_length** (§16.14) — standalone, no dependencies, immediate
+   correctness improvement.
+2. **Awake-index arrays** (§16.17) — improves Phase A performance,
+   no semantic change.
+3. **make_data / reset Phase B fields** (§16.23.5) — allocate island
+   arrays, update init logic. Required before island discovery.
+4. **qpos change detection** (§16.15) — correctness fix for external
+   qpos modification.
+5. **Island discovery** (§16.11) — the core algorithm. Requires
+   constraint Jacobian to be populated.
+6. **Sleep cycle linked list** (§16.12) — requires island discovery.
+7. **Cross-island wake** (§16.13) — requires sleep cycles.
+8. **Init-sleep island validation** (§16.24) — requires island discovery.
+9. **Per-island solve** (§16.16) — requires island discovery + block
+   diagonal extraction. Largest effort item.
+10. **Public API** (§16.25) — trivial wrappers, add after core is stable.
+11. **Policy relaxation** (§16.18) — final polish.
+
+##### 16.23 Phase B — Phase A→B Migration Guide
+
+This section documents the exact changes from Phase A to Phase B for
+each affected function, field, and semantic.
+
+###### 16.23.1 Function Renames and Splits
+
+| Phase A | Phase B | Change |
+|---------|---------|--------|
+| `mj_update_sleep()` (sleep transitions + array recomputation) | `mj_sleep()` (transitions only) + `mj_update_sleep()` (arrays only) | Split into two functions. Phase A combined sleep transitions and array recomputation in one function. Phase B separates them: `mj_sleep()` handles countdown and island-level sleep decisions; `mj_update_sleep()` recomputes `body_awake_ind`, `dof_awake_ind`, `parent_awake_ind`, `body_sleep_state`. |
+| `wake_tree()` (internal) | `mj_wake_tree()` (public) | Rename + cycle traversal. Phase A wakes a single tree. Phase B traverses the sleep cycle to wake all trees in the island. |
+| `put_tree_to_sleep()` | `sleep_trees()` | Generalized to accept a slice of tree indices for multi-tree island sleep. Single-tree case is backward compatible. |
+| `mj_wake_collision()` | `mj_wake_collision()` (unchanged name) | Same interface. Now calls `mj_wake_tree()` which propagates across cycles. |
+| N/A | `mj_wake_tendon()` | New function (§16.13.2). |
+| N/A | `mj_wake_equality()` | New function (§16.13.3). |
+| N/A | `mj_island()` | New function (§16.11). |
+| N/A | `mj_fwd_constraint_islands()` | New function (§16.16.2). Wraps solver dispatch with per-island gather/scatter. |
+| N/A | `mj_crba_islands()` | New function (§16.16.4). Replaces `mj_crba()` for sleep-aware CRBA. |
+| N/A | `mj_check_qpos_changed()` | New function (§16.15). |
+
+###### 16.23.2 Field Additions
+
+| Location | New Fields | Notes |
+|----------|-----------|-------|
+| Model | `DISABLE_ISLAND`, `tendon_treenum`, `tendon_tree` | §16.10.1 |
+| Data | Island arrays (`nisland`, `nidof`, `tree_island`, etc.) | §16.10.2, 25 new fields |
+| Data | Block-diagonal copies (`iM`, `iLD`, `iJ`, `iefc_*`) | §16.10.2 |
+| Data | Awake-index arrays (`body_awake_ind`, `nbody_awake`, etc.) | §16.10.2 |
+| Data | Solver stats (`solver_niter`, `solver_nnz`) | §16.16.3 |
+
+###### 16.23.3 Semantic Changes
+
+1. **`tree_asleep` encoding:** Phase A uses self-link (`tree_asleep[t] = t`)
+   for sleeping. Phase B uses circular linked list among island trees.
+   Single-tree islands still self-link (backward compatible).
+
+2. **`step()` call sequence:** Phase A calls `mj_update_sleep()` after
+   integrate. Phase B calls `mj_sleep()` then `mj_update_sleep()`.
+   See §16.9b for the complete Phase B `step()`.
+
+3. **`forward()` pipeline:** Phase A has `mj_wake` + `mj_wake_collision`.
+   Phase B adds `mj_wake_tendon`, `mj_wake_equality`, `mj_check_qpos_changed`,
+   `mj_island`, and `mj_fwd_constraint_islands`. See §16.9b for the
+   complete Phase B `forward()`.
+
+4. **CRBA:** Phase A runs full CRBA. Phase B optionally runs selective
+   CRBA via `mj_crba_islands()` (§16.16.4).
+
+5. **dof_length:** Phase A sets all `dof_length = 1.0`. Phase B computes
+   mechanism lengths for rotational DOFs (§16.14).
+
+6. **Policy for actuated trees:** Phase A: always `AutoNever`. Phase B:
+   `AutoNever` unless user explicitly overrides with `sleep="allowed"`
+   or `sleep="init"` (§16.18).
+
+###### 16.23.4 Code That Phase B Replaces
+
+Phase A code that is **deleted** (not just extended):
+- The `mj_update_sleep()` sleep-transition logic (countdown + put-to-sleep)
+  → replaced by `mj_sleep()`.
+- The `dof_length = 1.0` initialization loop in `model_builder.rs`
+  → replaced by `compute_dof_lengths()`.
+
+Phase A code that is **extended** (backward compatible):
+- `mj_wake_collision()` — same interface, but now calls `mj_wake_tree()`
+  which handles cycle traversal.
+- `Data::new()` / `Data::reset()` — same sleep initialization, plus
+  new island array allocation/zeroing.
+- `forward()` / `forward_skip_sensors()` — same structure, with new
+  wake and island steps inserted.
+
+###### 16.23.5 make_data() and reset() for Phase B Fields
+
+**`make_data()` additions** — allocate all Phase B arrays to worst-case
+bounds from the Model:
+
+```rust
+// In Model::make_data():
+
+// Island discovery arrays
+data.tree_island = vec![-1_i32; model.ntree];
+data.island_ntree = vec![0_usize; model.ntree];  // worst case: each tree is its own island
+data.island_itreeadr = vec![0_usize; model.ntree];
+data.map_itree2tree = vec![0_usize; model.ntree];
+data.dof_island = vec![-1_i32; model.nv];
+data.island_nv = vec![0_usize; model.ntree];
+data.island_idofadr = vec![0_usize; model.ntree];
+data.island_dofadr = vec![0_usize; model.ntree];
+data.map_dof2idof = vec![-1_i32; model.nv];
+data.map_idof2dof = vec![0_usize; model.nv];
+data.efc_island = Vec::new();  // resized after constraint assembly (nefc varies)
+data.island_ne = vec![0_usize; model.ntree];
+data.island_nf = vec![0_usize; model.ntree];
+data.island_nefc = vec![0_usize; model.ntree];
+data.island_iefcadr = vec![0_usize; model.ntree];
+data.map_efc2iefc = Vec::new();  // resized per step
+data.map_iefc2efc = Vec::new();  // resized per step
+
+// Block-diagonal copies (upper bound = global size)
+data.iM = vec![0.0_f64; nnz_qM];   // same nnz as global qM
+data.iLD = vec![0.0_f64; nnz_qLD];  // same nnz as global qLD
+data.iJ = Vec::new();               // resized per step (depends on nefc)
+data.iefc_type = Vec::new();
+data.iefc_D = Vec::new();
+data.iefc_R = Vec::new();
+data.iefc_frictionloss = Vec::new();
+
+// Awake-index arrays
+data.body_awake_ind = vec![0_usize; model.nbody];
+data.parent_awake_ind = vec![0_usize; model.nbody];
+data.dof_awake_ind = vec![0_usize; model.nv];
+data.nbody_awake = model.nbody;      // initially all awake
+data.nparent_awake = model.nbody;
+data.nv_awake = model.nv;
+
+// Solver statistics
+data.solver_niter = [0_usize; MAX_ISLAND_STATS];
+data.solver_nnz = [0_usize; MAX_ISLAND_STATS];
+
+// Island scratch space (for flood fill)
+data.island_scratch_stack = vec![0_usize; model.ntree];
+data.island_scratch_rownnz = vec![0_usize; model.ntree];
+data.island_scratch_rowadr = vec![0_usize; model.ntree];
+// Edge list: worst case = nefc edges (each constraint creates one edge)
+data.island_scratch_colind = Vec::new();  // resized per step
+
+// Per-island solver result buffers (packed by island, see §16.16.2)
+data.island_qacc = vec![0.0_f64; model.nv];
+data.island_efc_force = Vec::new();           // resized per step (nefc varies)
+data.island_qfrc_constraint = vec![0.0_f64; model.nv];
+```
+
+**`Data::new()` Phase B additions** — after Phase A sleep initialization:
+
+```rust
+// Phase A sleep init (existing):
+for t in 0..model.ntree {
+    match model.tree_sleep_policy[t] {
+        SleepPolicy::Init => { /* ... set asleep, zero qvel ... */ }
+        _ => { data.tree_asleep[t] = -(1 + MIN_AWAKE); }
+    }
+}
+
+// Phase B additions:
+// Initialize awake-index arrays from initial sleep state
+mj_update_sleep(model, &mut data);
+
+// For Init-sleep trees: run FK so xpos/xquat are valid before
+// the first step (sleeping bodies skip FK, so their poses must be
+// computed during init). Only needed if any trees start asleep.
+if data.ntree_awake < model.ntree {
+    mj_kinematics1(model, &mut data);
+    mj_kinematics2(model, &mut data);
+}
+```
+
+**`Data::reset(model)` and `Data::reset_to_keyframe(model, key)`:**
+Both call the same Phase A sleep re-initialization (§16.7) followed by
+the Phase B awake-index recomputation and conditional FK above.
+
+##### 16.24 Phase B — Init-Sleep Island Validation
+
+MuJoCo validates Init-sleep trees during `_resetData()`: if an
+Init-sleep tree cannot actually be put to sleep (because it fails the
+`tree_can_sleep` check), an error is raised. Phase B adds this
+validation.
+
+###### 16.24.1 Algorithm
+
+After the initial FK in `Data::new()` / `Data::reset()`:
+
+```rust
+fn validate_init_sleep(model: &Model, data: &mut Data) -> Result<(), SleepError> {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return Ok(());
+    }
+
+    for t in 0..model.ntree {
+        if model.tree_sleep_policy[t] != SleepPolicy::Init {
+            continue;
+        }
+
+        // The tree was set to asleep during init. Verify it can stay asleep.
+        // Temporarily mark as "ready" (tree_asleep = -1) and check conditions.
+        // MuJoCo calls mj_updateSleepInit with flg_staticawake=true:
+        // - Check no nonzero xfrc_applied (already zero at init, but verify)
+        // - Check no nonzero qfrc_applied (already zero at init, but verify)
+        // - Velocity is zero (we zeroed it during init)
+        // The main validation: the tree's sleep policy allows sleeping.
+        // Since we explicitly set Init policy, this should always pass.
+        // The real check is that the tree exists and has valid DOFs.
+
+        if model.tree_dof_num[t] == 0 {
+            // Bodyless tree (e.g., world body) — cannot meaningfully sleep.
+            return Err(SleepError::InitSleepInvalidTree { tree: t });
+        }
+    }
+
+    // Mark validated Init trees as fully asleep via mj_sleep()
+    // (Phase A already set tree_asleep[t] = t; Phase B may need to
+    // link Init trees that share an island into a cycle)
+    for island in 0..data.nisland {
+        let itree_start = data.island_itreeadr[island];
+        let itree_end = itree_start + data.island_ntree[island];
+
+        let all_init = (itree_start..itree_end).all(|idx| {
+            let tree = data.map_itree2tree[idx];
+            model.tree_sleep_policy[tree] == SleepPolicy::Init
+        });
+
+        let any_init = (itree_start..itree_end).any(|idx| {
+            let tree = data.map_itree2tree[idx];
+            model.tree_sleep_policy[tree] == SleepPolicy::Init
+        });
+
+        if any_init && !all_init {
+            // Mixed island: some Init, some non-Init. This is invalid —
+            // the Init trees expect to start asleep but their island
+            // partners don't. Return error.
+            return Err(SleepError::InitSleepMixedIsland { island });
+        }
+
+        if all_init {
+            // Create sleep cycle for this island's trees
+            let trees: Vec<usize> = (itree_start..itree_end)
+                .map(|idx| data.map_itree2tree[idx])
+                .collect();
+            sleep_trees(model, data, &trees);
+        }
+    }
+
+    Ok(())
+}
+```
+
+###### 16.24.2 Error Types
+
+```rust
+#[derive(Debug)]
+pub enum SleepError {
+    /// Init-sleep tree has no DOFs (cannot meaningfully sleep).
+    InitSleepInvalidTree { tree: usize },
+    /// Island contains mix of Init and non-Init trees. All trees in
+    /// a constraint-coupled island must have the same Init policy.
+    InitSleepMixedIsland { island: usize },
+}
+```
+
+##### 16.25 Phase B — mj_sleepState() Public API
+
+Expose sleep state for external inspection (RL observation, debugging):
+
+```rust
+/// Query the sleep state of a body.
+///
+/// Returns `SleepState::Static` for the world body (body 0),
+/// `SleepState::Asleep` for sleeping bodies, `SleepState::Awake`
+/// for active bodies.
+///
+/// This is the recommended way to check sleep state — reading
+/// `data.body_sleep_state[body_id]` directly is valid but this
+/// function adds bounds checking and is stable across Phase A/B.
+pub fn mj_sleep_state(data: &Data, body_id: usize) -> SleepState {
+    if body_id >= data.body_sleep_state.len() {
+        panic!("body_id {} out of range (nbody={})", body_id, data.body_sleep_state.len());
+    }
+    data.body_sleep_state[body_id]
+}
+
+/// Query whether a kinematic tree is awake.
+pub fn mj_tree_awake(data: &Data, tree_id: usize) -> bool {
+    data.tree_asleep[tree_id] < 0
+}
+
+/// Query the number of awake bodies (including the world body).
+pub fn mj_nbody_awake(data: &Data) -> usize {
+    data.nbody_awake
+}
+
+/// Query the number of constraint islands discovered this step.
+pub fn mj_nisland(data: &Data) -> usize {
+    data.nisland
+}
+```
+
+##### 16.9 Performance Considerations
+
+**Branch cost.** Each skip check adds a branch per body/DOF in FK, RNE,
+velocity kinematics, passive forces, collision, integration, and sensors.
+For awake bodies this is a single predicted-taken branch with negligible
+cost. For sleeping bodies the branch saves the entire computation for
+that body. CRBA and LDL factorization are NOT skipped in Phase A (§16.5
+mass matrix safety note) — this is a Phase B optimization opportunity.
+
+**Memory.** New fields add `O(ntree + nbody + nv)` storage — negligible
+relative to existing Data allocations.
+
+**Cache locality.** In MJCF models, bodies within a tree are typically
+contiguous in memory (added in document order, depth-first). The skip
+check in the per-body loops is a single indexed load (`body_sleep_state
+[body_id]`) with excellent branch-prediction characteristics (sleeping
+bodies form long runs of skips). For models where tree bodies are
+non-contiguous, the skip checks still use sequential iteration over the
+same arrays.
+
+**Collision.** The sleep-vs-sleep filter in `mj_collision()` (§16.5b)
+eliminates O(n²) narrow-phase calls for n sleeping geoms. Broad-phase
+cost remains O(n log n) for all geoms (AABBs are still in the SAP structure)
+but narrow-phase is the dominant cost.
+
+**Worst case.** All trees awake: every body checks one `bool` per pipeline
+stage — zero measurable overhead. All trees asleep: FK, RNE, velocity
+kinematics, passive forces, collision, and integration skip immediately;
+CRBA and LDL factorization still run at full cost (Phase A). Mixed:
+linear cost in awake bodies for skipped stages.
 
 #### Acceptance Criteria
-1. Stationary bodies deactivate after configurable duration.
-2. Contact with an active body wakes sleeping bodies.
-3. Scene with 100 resting bodies and 1 active body runs faster than all-active.
+
+**Correctness:**
+1. With `ENABLE_SLEEP` cleared, behavior is bit-identical to the pre-sleep
+   codebase. The only overhead is O(1) flag checks that short-circuit
+   immediately — no sleep state is read, no body is skipped.
+2. A single free-falling body with sleep enabled: body falls, comes to rest
+   on a plane, velocity drops below threshold, body sleeps after exactly
+   `MIN_AWAKE` sub-threshold steps, `qvel` and `qacc` are exactly zero,
+   body pose is frozen.
+3. Sleeping body wakes when `xfrc_applied` is set to nonzero. Wakes when
+   `qfrc_applied` is set to nonzero on any of its DOFs.
+4. Sleeping body wakes when an awake body's geom contacts one of its geoms.
+   After wake, the body participates in collision response on the same step.
+5. Tree `sleep="never"` policy: body never sleeps regardless of velocity.
+6. Tree `sleep="init"` policy: body starts asleep, wakes on first contact
+   or applied force.
+7. RK4 + sleep enabled: warning is emitted and sleep is silently disabled.
+8. Body 0 (world) is always `Static`, never `Asleep` or `Awake`.
+
+**Conformance:**
+9. Scene with 10 resting bodies (free joints on a ground plane, sleep
+   enabled): after 10+ steps of rest, all bodies are asleep. Drop a ball
+   onto one — it wakes, its contact partner wakes, others remain asleep.
+   Matches MuJoCo behavior qualitatively (exact floating-point match is
+   not required; threshold and timer semantics must match).
+10. `sleep_tolerance` parameter: halving the tolerance roughly doubles the
+    time to sleep (bodies must be more still). Verify with a damped
+    pendulum that decays through the threshold.
+
+**Performance:**
+11. Scene with 100 resting bodies (asleep) and 1 active body: `step()` time
+    is measurably faster than the same scene with sleep disabled (all bodies
+    active). Target: ≥ 3× speedup for the 100:1 ratio. Measured via
+    `criterion` benchmark.
+12. Scene with all bodies awake and sleep enabled: step time is within 2%
+    of sleep-disabled (overhead of skip checks is negligible).
+
+**Integration:**
+13. `BatchSim` with sleep: different environments can have different sleep
+    states. Environment 0 has all bodies asleep; environment 1 has all
+    awake. `step_all()` produces correct results for both.
+14. All existing sim domain tests pass unchanged (`cargo test -p sim-core
+    -p sim-conformance-tests -p sim-physics`). Sleep is disabled by default,
+    so existing tests see zero behavior change.
+15. Sensors on sleeping bodies report their last-computed values (not NaN
+    or zero). Sensor values are frozen at the moment of sleep, not zeroed.
+
+#### Test Plan
+
+| # | Test | Type | Validates |
+|---|------|------|-----------|
+| T1 | `test_sleep_disabled_noop` | Unit | AC #1: no behavior change when sleep disabled |
+| T2 | `test_tree_enumeration` | Unit | §16.0: tree arrays are correct for multi-tree model |
+| T3 | `test_sleep_policy_resolution` | Unit | §16.0: actuated trees get `AutoNever`, others get `AutoAllowed` |
+| T4 | `test_sleep_countdown_timer` | Unit | §16.3: tree sleeps after exactly MIN_AWAKE sub-threshold steps |
+| T5 | `test_sleep_zeros_velocity` | Unit | §16.3: sleeping tree has qvel=0, qacc=0 |
+| T6 | `test_wake_on_xfrc_applied` | Unit | AC #3: xfrc_applied wakes sleeping body |
+| T7 | `test_wake_on_qfrc_applied` | Unit | AC #3: qfrc_applied wakes sleeping DOF's tree |
+| T8 | `test_wake_on_contact` | Integration | AC #4: awake body colliding with sleeping body wakes it |
+| T9 | `test_sleep_never_policy` | Unit | AC #5: `Never` policy prevents sleep |
+| T10 | `test_sleep_init_policy` | Unit | AC #6: `Init` policy starts body asleep |
+| T11 | `test_rk4_sleep_warning` | Unit | AC #7: RK4 + sleep → warning + sleep disabled |
+| T12 | `test_world_body_static` | Unit | AC #8: body 0 always Static |
+| T13 | `test_sleep_wake_scenario` | Integration | AC #9: multi-body scene with selective wake |
+| T14 | `test_sleep_tolerance_scaling` | Integration | AC #10: threshold affects sleep onset |
+| T15 | `test_sleep_performance` | Benchmark | AC #11: 100:1 scene ≥ 3× faster |
+| T16 | `test_sleep_overhead` | Benchmark | AC #12: all-awake ≤ 2% overhead |
+| T17 | `test_batch_sleep_independence` | Integration | AC #13: per-environment sleep state |
+| T18 | `test_existing_tests_pass` | Regression | AC #14: `cargo test` on sim domain |
+| T19 | `test_sensor_frozen_on_sleep` | Unit | AC #15: sensors report last value, not zero |
+| T20 | `test_fk_skip_sleeping_body` | Unit | §16.5a: FK not called for sleeping bodies |
+| T21 | `test_collision_skip_both_sleeping` | Unit | §16.5b: no narrow-phase for sleeping-sleeping pairs |
+| T22 | `test_mjcf_sleep_attributes` | Unit | §16.2: MJCF parsing of sleep options |
+| T23 | `test_dof_length_computation` | Unit | §16.0: dof_length correct for hinge/slide/free |
+| T24 | `test_passive_force_skip_sleeping` | Unit | §16.5a': passive forces not computed for sleeping joints |
+| T25 | `test_position_integration_skip` | Unit | §16.5a'': qpos unchanged for sleeping joints via visitor |
+| T26 | `test_tendon_passive_mixed_sleep` | Unit | §16.5a': tendon with mixed awake/sleeping targets computes force |
+| T27 | `test_forward_skip_sensors_sleep` | Unit | Sleep logic active in forward_skip_sensors (RK4 path) |
+| T28 | `test_sensor_frozen_value_not_zero` | Unit | §16.5d: sensor value preserved (not zeroed) after sleep |
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (sleep tracking, skip logic)
+
+| File | Action | Description |
+|------|--------|-------------|
+| `sim/L0/core/src/mujoco_pipeline.rs` | Modify | Model fields (§16.0), Data fields (§16.1), sleep update (§16.3), wake detection (§16.4), pipeline skip logic (§16.5), RK4 guard (§16.6), init/reset (§16.7) |
+| `sim/L0/mjcf/src/parser.rs` | Modify | Parse `sleep_tolerance`, `<flag sleep>`, `<body sleep>` attributes (§16.2) |
+| `sim/L0/mjcf/src/types.rs` | Modify | Add `SleepPolicy` to MJCF types, `sleep` field on body element |
+| `sim/L0/mjcf/src/model_builder.rs` | Modify | Propagate sleep attributes to `Model` during build |
+| `sim/L0/tests/integration/mod.rs` | Modify | Register new test modules |
+| `sim/L0/tests/integration/sleeping.rs` | Create | Tests T1–T14, T17–T28 |
+| `sim/L0/core/benches/sleep_benchmarks.rs` | Create | Benchmarks T15–T16 |
 
 ---
 

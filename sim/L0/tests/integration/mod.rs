@@ -112,3 +112,11 @@ pub mod keyframes;
 
 /// Newton solver integration tests: convergence, warmstart, fallbacks.
 pub mod newton_solver;
+
+// ============================================================================
+// Sleeping / Body Deactivation Tests (§16)
+// ============================================================================
+
+/// Sleep deactivation tests: tree enumeration, policies, wake detection,
+/// pipeline skip, sensor freezing, batch independence.
+pub mod sleeping;

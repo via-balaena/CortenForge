@@ -708,6 +708,46 @@ pub enum MjObjectType {
     Tendon,
 }
 
+/// Per-tree sleep policy controlling automatic body deactivation (§16.0).
+///
+/// Resolved during model construction: `Auto` variants are computed from
+/// tree properties (actuators, tendons, deformable bodies); user variants
+/// come from the MJCF `<body sleep="...">` attribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepPolicy {
+    /// Compiler decides (initial state, resolved before use).
+    Auto,
+    /// Compiler determined: never sleep (has actuators, multi-tree tendons, etc.).
+    AutoNever,
+    /// Compiler determined: allowed to sleep.
+    AutoAllowed,
+    /// User policy: never sleep. XML: `sleep="never"`.
+    Never,
+    /// User policy: allowed to sleep. XML: `sleep="allowed"`.
+    Allowed,
+    /// User policy: start asleep. XML: `sleep="init"`.
+    Init,
+}
+
+/// Per-body sleep state for efficient pipeline gating (§16.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepState {
+    /// Body 0 (world) or body with no DOFs. Always computed, never sleeps.
+    Static,
+    /// Body is asleep. Position/velocity stages are skipped.
+    Asleep,
+    /// Body is awake. Full pipeline computation.
+    Awake,
+}
+
+/// Enable flag bit for body sleeping/deactivation.
+/// Set via MJCF `<option><flag sleep="enable"/>`.
+pub const ENABLE_SLEEP: u32 = 1 << 5;
+
+/// Minimum number of consecutive sub-threshold timesteps before a tree
+/// can transition to sleep. Matches MuJoCo's `mjMINAWAKE = 10`.
+pub const MIN_AWAKE: i32 = 10;
+
 /// Contact constraint solver algorithm.
 ///
 /// This selects the solver used in `mj_fwd_constraint` for contact forces.
@@ -952,6 +992,31 @@ pub struct Model {
     pub nmocap: usize,
     /// Number of keyframes parsed from MJCF `<keyframe>`.
     pub nkeyframe: usize,
+
+    // ==================== Kinematic Trees (§16.0) ====================
+    /// Number of kinematic trees (excluding world body).
+    pub ntree: usize,
+    /// First body index for tree `t` (length `ntree`).
+    pub tree_body_adr: Vec<usize>,
+    /// Number of bodies in tree `t` (length `ntree`).
+    pub tree_body_num: Vec<usize>,
+    /// First DOF index for tree `t` (length `ntree`).
+    pub tree_dof_adr: Vec<usize>,
+    /// Number of DOFs in tree `t` (length `ntree`).
+    pub tree_dof_num: Vec<usize>,
+    /// Tree index for each body (body 0 → `usize::MAX` sentinel, length `nbody`).
+    pub body_treeid: Vec<usize>,
+    /// Tree index for each DOF (length `nv`).
+    pub dof_treeid: Vec<usize>,
+    /// Per-tree sleep policy (computed at model build, length `ntree`).
+    pub tree_sleep_policy: Vec<SleepPolicy>,
+    /// Per-DOF length scale for sleep threshold normalization (length `nv`).
+    /// Translational DOFs = 1.0; rotational DOFs = mechanism length estimate.
+    pub dof_length: Vec<f64>,
+    /// Sleep velocity tolerance. Bodies with all DOF velocities below
+    /// `sleep_tolerance * dof_length[dof]` for `MIN_AWAKE` consecutive steps
+    /// are eligible for sleep. Default: `1e-4`. Units: `[m/s]`.
+    pub sleep_tolerance: f64,
 
     // ==================== Body Tree (indexed by body_id, 0 = world) ====================
     /// Parent body index (0 for root bodies attached to world).
@@ -2136,6 +2201,20 @@ pub struct Data {
     #[cfg(feature = "deformable")]
     pub deformable_contacts: Vec<DeformableContact>,
 
+    // ==================== Sleep State (§16.1) ====================
+    /// Per-tree sleep timer (length `ntree`).
+    /// `< 0`: Tree is awake. Countdown from `-(1 + MIN_AWAKE)` toward `-1`.
+    /// `≥ 0`: Tree is asleep (self-link in Phase A).
+    pub tree_asleep: Vec<i32>,
+    /// Per-tree awake flag for fast branching (length `ntree`).
+    pub tree_awake: Vec<bool>,
+    /// Per-body sleep state for efficient per-body queries (length `nbody`).
+    pub body_sleep_state: Vec<SleepState>,
+    /// Number of awake trees (diagnostics / early-exit).
+    pub ntree_awake: usize,
+    /// Number of awake DOFs (diagnostics / performance monitoring).
+    pub nv_awake: usize,
+
     // ==================== Time ====================
     /// Simulation time in seconds.
     pub time: f64,
@@ -2346,6 +2425,12 @@ impl Clone for Data {
             deformable_solvers: self.deformable_solvers.clone(),
             #[cfg(feature = "deformable")]
             deformable_contacts: self.deformable_contacts.clone(),
+            // Sleep state
+            tree_asleep: self.tree_asleep.clone(),
+            tree_awake: self.tree_awake.clone(),
+            body_sleep_state: self.body_sleep_state.clone(),
+            ntree_awake: self.ntree_awake,
+            nv_awake: self.nv_awake,
             // Time
             time: self.time,
             // Scratch buffers
@@ -2394,6 +2479,18 @@ impl Model {
             na: 0,
             nmocap: 0,
             nkeyframe: 0,
+
+            // Kinematic trees (§16.0) — empty model has no trees
+            ntree: 0,
+            tree_body_adr: vec![],
+            tree_body_num: vec![],
+            tree_dof_adr: vec![],
+            tree_dof_num: vec![],
+            body_treeid: vec![usize::MAX], // World body sentinel
+            dof_treeid: vec![],
+            tree_sleep_policy: vec![],
+            dof_length: vec![],
+            sleep_tolerance: 1e-4,
 
             // Body tree (initialize world body)
             body_parent: vec![0], // World is its own parent
@@ -2648,7 +2745,7 @@ impl Model {
     /// Create initial Data struct for this model with all arrays pre-allocated.
     #[must_use]
     pub fn make_data(&self) -> Data {
-        Data {
+        let mut data = Data {
             // Generalized coordinates
             qpos: self.qpos0.clone(),
             qvel: DVector::zeros(self.nv),
@@ -2799,6 +2896,65 @@ impl Model {
             #[cfg(feature = "deformable")]
             deformable_contacts: Vec::with_capacity(256),
 
+            // Sleep state (§16.7) — initialized from tree sleep policies.
+            // For models not built through MJCF (ntree == 0 or body_treeid not populated),
+            // all bodies start awake and sleep is effectively a no-op.
+            tree_asleep: {
+                let mut v = vec![-(1 + MIN_AWAKE); self.ntree];
+                for t in 0..self.ntree {
+                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
+                        #[allow(clippy::cast_possible_wrap)]
+                        {
+                            v[t] = t as i32; // Start asleep (ntree ≤ nbody ≪ i32::MAX)
+                        }
+                    }
+                }
+                v
+            },
+            tree_awake: {
+                let mut v = vec![true; self.ntree];
+                for t in 0..self.ntree {
+                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
+                        v[t] = false;
+                    }
+                }
+                v
+            },
+            body_sleep_state: {
+                let mut v = vec![SleepState::Awake; self.nbody];
+                if self.nbody > 0 {
+                    v[0] = SleepState::Static; // World body
+                }
+                // Mark bodies in Init trees as Asleep (only if tree enumeration was run)
+                if self.body_treeid.len() == self.nbody {
+                    for body_id in 1..self.nbody {
+                        let tree = self.body_treeid[body_id];
+                        if tree < self.ntree && self.tree_sleep_policy[tree] == SleepPolicy::Init {
+                            v[body_id] = SleepState::Asleep;
+                        }
+                    }
+                }
+                v
+            },
+            ntree_awake: {
+                let mut count = self.ntree;
+                for t in 0..self.ntree {
+                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
+                        count -= 1;
+                    }
+                }
+                count
+            },
+            nv_awake: {
+                let mut count = self.nv;
+                for t in 0..self.ntree {
+                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
+                        count -= self.tree_dof_num[t];
+                    }
+                }
+                count
+            },
+
             // Time
             time: 0.0,
 
@@ -2841,7 +2997,40 @@ impl Model {
                 }
                 v
             },
+        };
+
+        // Run initial FK to populate body/geom/site positions from qpos0.
+        // This must happen BEFORE sleep gating takes effect so that Init-asleep
+        // bodies have correct world positions. We temporarily mark all bodies
+        // as Awake, run FK, then restore the Init-sleep state.
+        // Only needed when there are Init-asleep trees; other models get FK
+        // from their first forward()/step() call.
+        let has_init_asleep = (0..self.ntree).any(|t| data.tree_asleep[t] >= 0);
+        if has_init_asleep {
+            // Save init sleep state
+            let saved_body_sleep = data.body_sleep_state.clone();
+            let saved_tree_awake = data.tree_awake.clone();
+            let saved_tree_asleep = data.tree_asleep.clone();
+
+            // Temporarily wake all bodies for FK
+            for b in 1..self.nbody {
+                data.body_sleep_state[b] = SleepState::Awake;
+            }
+            for t in 0..self.ntree {
+                data.tree_awake[t] = true;
+                data.tree_asleep[t] = -(1 + MIN_AWAKE);
+            }
+
+            // Run FK only (not full forward — just position computation)
+            mj_fwd_position(self, &mut data);
+
+            // Restore sleep state
+            data.body_sleep_state = saved_body_sleep;
+            data.tree_awake = saved_tree_awake;
+            data.tree_asleep = saved_tree_asleep;
         }
+
+        data
     }
 
     /// Get reference position for specified joint (from qpos0).
@@ -3632,6 +3821,9 @@ impl Data {
                 mocap_idx += 1;
             }
         }
+
+        // Reset sleep state from model policies (§16.7).
+        reset_sleep_state(model, self);
     }
 
     /// Reset simulation state to a keyframe by index.
@@ -3692,6 +3884,9 @@ impl Data {
                 body.clear_forces();
             }
         }
+
+        // Reset sleep state from model policies (§16.7).
+        reset_sleep_state(model, self);
 
         Ok(())
     }
@@ -3775,6 +3970,10 @@ impl Data {
             }
         }
 
+        // Sleep update (§16.3): check thresholds, transition sleeping trees.
+        // After integration and before warmstart save.
+        mj_update_sleep(model, self);
+
         // Save qacc for next-step warmstart (§15.9).
         // Done at the very end of step(), after integration, matching MuJoCo's
         // mj_advance() which saves qacc_warmstart after the step completes.
@@ -3799,103 +3998,71 @@ impl Data {
     /// Returns `Err(StepError::CholeskyFailed)` if using implicit integrator
     /// and the modified mass matrix decomposition fails.
     pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
-        // ========== Position Stage ==========
-        // Stage 1a: Forward kinematics - compute body/geom/site poses from qpos
-        mj_fwd_position(model, self);
-
-        // Stage 1a': Site transmission - compute actuator_length + actuator_moment
-        // for Site transmissions (needs FK output, before sensors read actuator_length).
-        mj_transmission_site(model, self);
-
-        // Stage 1b: Collision detection - detect contacts from geometry pairs
-        mj_collision(model, self);
-
-        // Stage 1b': Deformable-rigid collision detection
-        #[cfg(feature = "deformable")]
-        mj_deformable_collision(model, self);
-
-        // Stage 1c: Position-dependent sensors (joint positions, frame positions, etc.)
-        mj_sensor_pos(model, self);
-
-        // Stage 1c: Potential energy (gravity + springs)
-        mj_energy_pos(model, self);
-
-        // ========== Velocity Stage ==========
-        // Stage 2a: Velocity kinematics - compute body velocities from qvel
-        mj_fwd_velocity(model, self);
-
-        // Stage 2b: Actuator length/velocity (needs ten_length from position stage,
-        //           ten_velocity from velocity stage)
-        mj_actuator_length(model, self);
-
-        // Stage 2c: Velocity-dependent sensors (gyro, velocimeter, etc.)
-        mj_sensor_vel(model, self);
-
-        // ========== Acceleration Stage ==========
-        // Stage 3a: Actuation - compute actuator forces and activation derivatives
-        mj_fwd_actuation(model, self);
-
-        // Stage 3b: Dynamics - compute mass matrix and bias forces
-        mj_crba(model, self); // Composite Rigid Body Algorithm
-        mj_rne(model, self); // Recursive Newton-Euler for bias forces
-
-        // Stage 3c: Kinetic energy (needs mass matrix from CRBA)
-        mj_energy_vel(model, self);
-
-        // Stage 3d: Passive forces - springs and dampers
-        mj_fwd_passive(model, self);
-
-        // Stage 3e: Constraint forces - contacts and joint limits
-        mj_fwd_constraint(model, self);
-
-        // Stage 3f: Compute final acceleration
-        // Newton solver computes qacc directly — skip mj_fwd_acceleration to
-        // avoid overwriting Newton's optimized qacc (§15.8).
-        if !self.newton_solved {
-            mj_fwd_acceleration(model, self)?;
-        }
-
-        // Stage 3g: Acceleration-dependent sensors (accelerometer, etc.)
-        mj_sensor_acc(model, self);
-
-        // Stage 3h: Sensor post-processing (noise and cutoff)
-        mj_sensor_postprocess(model, self);
-
-        Ok(())
+        self.forward_core(model, true)
     }
 
     /// Forward dynamics pipeline without sensor evaluation.
     ///
-    /// Identical to [`forward()`](Self::forward) but skips all 4 sensor stages
-    /// (`mj_sensor_pos`, `mj_sensor_vel`, `mj_sensor_acc`, `mj_sensor_postprocess`).
-    /// Used by RK4 intermediate stages to match MuJoCo's
-    /// `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)` where `1` = skip sensors.
+    /// Identical to [`forward()`](Self::forward) but skips all 4 sensor stages.
+    /// Used by RK4 intermediate stages.
     fn forward_skip_sensors(&mut self, model: &Model) -> Result<(), StepError> {
+        self.forward_core(model, false)
+    }
+
+    /// Shared pipeline core with sleep gating (§16.5).
+    ///
+    /// `compute_sensors`: `true` for `forward()`, `false` for `forward_skip_sensors()`.
+    fn forward_core(&mut self, model: &Model, compute_sensors: bool) -> Result<(), StepError> {
+        // Sleep is only active after the initial forward pass.
+        // The first forward (time == 0.0) must compute FK for all bodies
+        // to establish initial positions, even for Init-sleeping bodies.
+        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
+        // ===== Pre-pipeline: Wake detection (§16.4) =====
+        if sleep_enabled {
+            mj_wake(model, self);
+        }
+
         // ========== Position Stage ==========
         mj_fwd_position(model, self);
+        mj_transmission_site(model, self);
         mj_collision(model, self);
+
+        // Wake-on-contact: if sleeping body touched awake body, wake it
+        // and re-run collision for the newly-awake tree's geoms (§16.5c)
+        if sleep_enabled && mj_wake_collision(model, self) {
+            mj_update_sleep_arrays(model, self);
+            mj_collision(model, self); // Phase A: full re-collision
+        }
+
         #[cfg(feature = "deformable")]
         mj_deformable_collision(model, self);
-        // skip: mj_sensor_pos
+        if compute_sensors {
+            mj_sensor_pos(model, self);
+        }
         mj_energy_pos(model, self);
 
         // ========== Velocity Stage ==========
         mj_fwd_velocity(model, self);
         mj_actuator_length(model, self);
-        // skip: mj_sensor_vel
+        if compute_sensors {
+            mj_sensor_vel(model, self);
+        }
 
         // ========== Acceleration Stage ==========
         mj_fwd_actuation(model, self);
-        mj_crba(model, self);
+        mj_crba(model, self); // Full mass matrix — NOT skipped (§16.5 note)
         mj_rne(model, self);
         mj_energy_vel(model, self);
         mj_fwd_passive(model, self);
         mj_fwd_constraint(model, self);
-        // Newton solver computes qacc directly — skip mj_fwd_acceleration (§15.8).
         if !self.newton_solved {
             mj_fwd_acceleration(model, self)?;
         }
-        // skip: mj_sensor_acc, mj_sensor_postprocess
+        if compute_sensors {
+            mj_sensor_acc(model, self);
+            mj_sensor_postprocess(model, self);
+        }
 
         Ok(())
     }
@@ -3913,6 +4080,7 @@ impl Data {
     ///   We only integrate positions here.
     fn integrate(&mut self, model: &Model) {
         let h = model.timestep;
+        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
         // Integrate activation per actuator, then clamp muscles to [0, 1].
         // MuJoCo order: activation → velocity → position.
@@ -3946,6 +4114,10 @@ impl Data {
         match model.integrator {
             Integrator::Euler | Integrator::ImplicitFast | Integrator::Implicit => {
                 for i in 0..model.nv {
+                    // §16.5a'': Skip velocity update for sleeping DOFs
+                    if sleep_enabled && !data_tree_awake_for_dof(model, self, i) {
+                        continue;
+                    }
                     self.qvel[i] += self.qacc[i] * h;
                 }
             }
@@ -4085,6 +4257,8 @@ fn mj_check_acc(model: &Model, data: &Data) -> Result<(), StepError> {
 /// This traverses the kinematic tree from root to leaves, computing
 /// the world-frame position and orientation of each body.
 fn mj_fwd_position(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     // Body 0 (world) is always at origin
     data.xpos[0] = Vector3::zeros();
     data.xquat[0] = UnitQuaternion::identity();
@@ -4092,6 +4266,11 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
 
     // Process bodies in order (assumes topological sort: parent before child)
     for body_id in 1..model.nbody {
+        // §16.5a: Skip FK for sleeping bodies — pose is frozen
+        if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
+            continue;
+        }
+
         let parent_id = model.body_parent[body_id];
 
         // Determine body pose: mocap bodies use mocap arrays, regular bodies
@@ -4668,12 +4847,26 @@ fn mj_collision(model: &Model, data: &mut Data) {
     let sap = SweepAndPrune::new(aabbs);
     let candidates = sap.query_pairs();
 
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     // Process candidate pairs
     // The SAP already filtered to only AABB-overlapping pairs
     for (geom1, geom2) in candidates {
         // Affinity check: same body, parent-child, contype/conaffinity
         if !check_collision_affinity(model, geom1, geom2) {
             continue;
+        }
+
+        // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
+        // Keep sleeping-vs-awake pairs — they may trigger wake detection (§16.4).
+        if sleep_enabled {
+            let b1 = model.geom_body[geom1];
+            let b2 = model.geom_body[geom2];
+            if data.body_sleep_state[b1] == SleepState::Asleep
+                && data.body_sleep_state[b2] == SleepState::Asleep
+            {
+                continue;
+            }
         }
 
         // Get world-space poses
@@ -4693,6 +4886,17 @@ fn mj_collision(model: &Model, data: &mut Data) {
     for pair in &model.contact_pairs {
         let geom1 = pair.geom1;
         let geom2 = pair.geom2;
+
+        // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
+        if sleep_enabled {
+            let b1 = model.geom_body[geom1];
+            let b2 = model.geom_body[geom2];
+            if data.body_sleep_state[b1] == SleepState::Asleep
+                && data.body_sleep_state[b2] == SleepState::Asleep
+            {
+                continue;
+            }
+        }
 
         // Distance cull using bounding radii (replaces SAP broad-phase for pairs).
         // geom_rbound is the bounding sphere radius, pre-computed per geom.
@@ -6802,10 +7006,21 @@ fn mj_energy_vel(model: &Model, data: &mut Data) {
 /// - Touch: contact detection
 #[allow(clippy::too_many_lines)]
 fn mj_sensor_pos(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     for sensor_id in 0..model.nsensor {
         // Skip non-position sensors
         if model.sensor_datatype[sensor_id] != MjSensorDataType::Position {
             continue;
+        }
+
+        // §16.5d: Skip sensors on sleeping bodies — values frozen at sleep time
+        if sleep_enabled {
+            if let Some(body_id) = sensor_body_id(model, sensor_id) {
+                if data.body_sleep_state[body_id] == SleepState::Asleep {
+                    continue;
+                }
+            }
         }
 
         let adr = model.sensor_adr[sensor_id];
@@ -7093,10 +7308,21 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
 /// - `ActuatorVel`: actuator velocity
 #[allow(clippy::too_many_lines)]
 fn mj_sensor_vel(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     for sensor_id in 0..model.nsensor {
         // Skip non-velocity sensors
         if model.sensor_datatype[sensor_id] != MjSensorDataType::Velocity {
             continue;
+        }
+
+        // §16.5d: Skip sensors on sleeping bodies
+        if sleep_enabled {
+            if let Some(body_id) = sensor_body_id(model, sensor_id) {
+                if data.body_sleep_state[body_id] == SleepState::Asleep {
+                    continue;
+                }
+            }
         }
 
         let adr = model.sensor_adr[sensor_id];
@@ -7283,10 +7509,21 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
 /// - `FrameAngAcc`: angular acceleration
 /// - `ActuatorFrc`: actuator force
 fn mj_sensor_acc(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     for sensor_id in 0..model.nsensor {
         // Skip non-acceleration sensors
         if model.sensor_datatype[sensor_id] != MjSensorDataType::Acceleration {
             continue;
+        }
+
+        // §16.5d: Skip sensors on sleeping bodies
+        if sleep_enabled {
+            if let Some(body_id) = sensor_body_id(model, sensor_id) {
+                if data.body_sleep_state[body_id] == SleepState::Asleep {
+                    continue;
+                }
+            }
         }
 
         let adr = model.sensor_adr[sensor_id];
@@ -7851,6 +8088,8 @@ fn compute_subtree_angmom(model: &Model, data: &Data, root_body: usize) -> Vecto
 
 /// Velocity kinematics: compute body velocities from qvel.
 fn mj_fwd_velocity(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     // World body has zero velocity
     data.cvel[0] = SpatialVector::zeros();
 
@@ -7865,6 +8104,11 @@ fn mj_fwd_velocity(model: &Model, data: &mut Data) {
     // This lever arm effect is critical for Coriolis forces in serial chains!
 
     for body_id in 1..model.nbody {
+        // §16.5a: Skip velocity kinematics for sleeping bodies — velocity is zeroed
+        if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
+            continue;
+        }
+
         let parent_id = model.body_parent[body_id];
 
         // Parent velocity
@@ -9635,6 +9879,8 @@ pub(crate) fn joint_motion_subspace(
     clippy::needless_range_loop
 )]
 fn mj_rne(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     data.qfrc_bias.fill(0.0);
 
     if model.nv == 0 {
@@ -9648,6 +9894,11 @@ fn mj_rne(model: &Model, data: &mut Data) {
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let jnt_body = model.jnt_body[jnt_id];
+
+        // §16.5a: Skip RNE for sleeping bodies — bias forces are zeroed
+        if sleep_enabled && data.body_sleep_state[jnt_body] == SleepState::Asleep {
+            continue;
+        }
 
         // Use precomputed subtree mass and COM for O(n) gravity
         let subtree_mass = data.subtree_mass[jnt_body];
@@ -9701,6 +9952,11 @@ fn mj_rne(model: &Model, data: &mut Data) {
     // τ_gyro = ω × (I * ω) - the gyroscopic torque
     // This is the dominant Coriolis effect for 3D rotations
     for body_id in 1..model.nbody {
+        // §16.5a: Skip gyroscopic terms for sleeping bodies
+        if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
+            continue;
+        }
+
         let jnt_start = model.body_jnt_adr[body_id];
         let jnt_end = jnt_start + model.body_jnt_num[body_id];
 
@@ -9922,19 +10178,29 @@ const FRICTION_VELOCITY_THRESHOLD: f64 = 1e-12;
 /// computes friction loss (which is velocity-sign-dependent and cannot be
 /// linearized into the implicit solve).
 fn mj_fwd_passive(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     data.qfrc_passive.fill(0.0);
     data.qfrc_frictionloss.fill(0.0);
 
     let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
-    let mut visitor = PassiveForceVisitor {
-        model,
-        data,
-        implicit_mode,
-    };
-    model.visit_joints(&mut visitor);
+    {
+        let mut visitor = PassiveForceVisitor {
+            model,
+            data,
+            implicit_mode,
+            sleep_enabled,
+        };
+        model.visit_joints(&mut visitor);
+    }
+    // visitor is dropped here, releasing the mutable borrow on data
 
     // Tendon passive forces: spring + damper + friction loss.
     for t in 0..model.ntendon {
+        // §16.5a': Skip tendon if ALL target DOFs are sleeping
+        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+            continue;
+        }
         let length = data.ten_length[t];
         let velocity = data.ten_velocity[t];
         let mut force = 0.0;
@@ -9999,14 +10265,33 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
     }
 }
 
+/// Check if all DOFs affected by a tendon's Jacobian belong to sleeping trees (§16.5a').
+fn tendon_all_dofs_sleeping(model: &Model, data: &Data, t: usize) -> bool {
+    let ten_j = &data.ten_J[t];
+    for dof in 0..model.nv {
+        if ten_j[dof] != 0.0 && data.tree_awake[model.dof_treeid[dof]] {
+            return false; // At least one target DOF is awake
+        }
+    }
+    true
+}
+
 /// Visitor for computing passive forces (springs, dampers, friction loss).
 struct PassiveForceVisitor<'a> {
     model: &'a Model,
     data: &'a mut Data,
     implicit_mode: bool,
+    sleep_enabled: bool,
 }
 
 impl PassiveForceVisitor<'_> {
+    /// Check if a joint's body is sleeping (§16.5a').
+    #[inline]
+    fn is_joint_sleeping(&self, ctx: &JointContext) -> bool {
+        self.sleep_enabled
+            && self.data.body_sleep_state[self.model.jnt_body[ctx.jnt_id]] == SleepState::Asleep
+    }
+
     /// Apply friction loss force at a single DOF.
     /// Friction loss is always explicit (velocity-sign-dependent, cannot linearize).
     #[inline]
@@ -10024,6 +10309,9 @@ impl PassiveForceVisitor<'_> {
     /// Process a 1-DOF joint (Hinge or Slide) with spring, damper, and friction.
     #[inline]
     fn visit_1dof_joint(&mut self, ctx: JointContext) {
+        if self.is_joint_sleeping(&ctx) {
+            return;
+        }
         let dof_adr = ctx.dof_adr;
         let qpos_adr = ctx.qpos_adr;
         let jnt_id = ctx.jnt_id;
@@ -10049,6 +10337,9 @@ impl PassiveForceVisitor<'_> {
     /// No springs (would require quaternion spring formulation).
     #[inline]
     fn visit_multi_dof_joint(&mut self, ctx: JointContext) {
+        if self.is_joint_sleeping(&ctx) {
+            return;
+        }
         for i in 0..ctx.nv {
             let dof_idx = ctx.dof_adr + i;
 
@@ -10084,6 +10375,275 @@ impl JointVisitor for PassiveForceVisitor<'_> {
     #[inline]
     fn visit_free(&mut self, ctx: JointContext) {
         self.visit_multi_dof_joint(ctx);
+    }
+}
+
+// ============================================================================
+// Sleep / Body Deactivation (§16)
+// ============================================================================
+
+/// Sleep update: check velocity thresholds, transition sleeping trees (§16.3).
+///
+/// Called at the end of `step()`, after integration completes and before
+/// the warmstart save. This is the central sleep state machine.
+fn mj_update_sleep(model: &Model, data: &mut Data) {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return; // Sleep disabled — no-op
+    }
+
+    // Phase 1: Check velocity threshold for each awake tree
+    for t in 0..model.ntree {
+        if data.tree_asleep[t] >= 0 {
+            continue; // Already asleep
+        }
+        if model.tree_sleep_policy[t] == SleepPolicy::Never
+            || model.tree_sleep_policy[t] == SleepPolicy::AutoNever
+        {
+            continue; // Policy forbids sleeping
+        }
+
+        let can_sleep = tree_velocity_below_threshold(model, data, t);
+
+        if can_sleep {
+            // Increment timer toward -1 (ready to sleep)
+            if data.tree_asleep[t] < -1 {
+                data.tree_asleep[t] += 1;
+            }
+            // When timer reaches -1: put to sleep
+            if data.tree_asleep[t] == -1 {
+                put_tree_to_sleep(model, data, t);
+            }
+        } else {
+            // Reset timer to fully awake
+            data.tree_asleep[t] = -(1 + MIN_AWAKE);
+        }
+    }
+
+    // Phase 2: Recompute derived arrays
+    mj_update_sleep_arrays(model, data);
+}
+
+/// Check if all DOFs in a tree have velocities below the sleep threshold.
+fn tree_velocity_below_threshold(model: &Model, data: &Data, tree: usize) -> bool {
+    let dof_start = model.tree_dof_adr[tree];
+    let dof_end = dof_start + model.tree_dof_num[tree];
+    for dof in dof_start..dof_end {
+        if data.qvel[dof].abs() > model.sleep_tolerance * model.dof_length[dof] {
+            return false;
+        }
+    }
+    true // All DOFs below threshold (L∞ norm check)
+}
+
+/// Transition a tree to sleep: zero velocities/accelerations, mark as asleep.
+fn put_tree_to_sleep(model: &Model, data: &mut Data, tree: usize) {
+    // 1. Mark as asleep (self-link for Phase A)
+    #[allow(clippy::cast_possible_wrap)]
+    {
+        data.tree_asleep[tree] = tree as i32; // ntree ≤ nbody ≪ i32::MAX
+    }
+
+    // 2. Zero velocities and accelerations for all DOFs in this tree
+    let dof_start = model.tree_dof_adr[tree];
+    let dof_end = dof_start + model.tree_dof_num[tree];
+    for dof in dof_start..dof_end {
+        data.qvel[dof] = 0.0;
+        data.qacc[dof] = 0.0;
+    }
+
+    // 3. Zero velocity-dependent cached quantities for bodies in this tree.
+    let body_start = model.tree_body_adr[tree];
+    let body_end = body_start + model.tree_body_num[tree];
+    for body_id in body_start..body_end {
+        data.cvel[body_id] = SpatialVector::zeros();
+        data.cacc_bias[body_id] = SpatialVector::zeros();
+        data.cfrc_bias[body_id] = SpatialVector::zeros();
+    }
+    // Also zero force arrays for sleeping DOFs
+    for dof in dof_start..dof_end {
+        data.qfrc_bias[dof] = 0.0;
+        data.qfrc_passive[dof] = 0.0;
+        data.qfrc_constraint[dof] = 0.0;
+    }
+}
+
+/// Re-initialize all sleep state from model policies (§16.7).
+///
+/// Called by `Data::reset()` and `Data::reset_to_keyframe()` to ensure sleep
+/// state matches the model's tree sleep policies after a reset.
+fn reset_sleep_state(model: &Model, data: &mut Data) {
+    for t in 0..model.ntree {
+        if model.tree_sleep_policy[t] == SleepPolicy::Init {
+            #[allow(clippy::cast_possible_wrap)]
+            {
+                data.tree_asleep[t] = t as i32; // Asleep (self-link for Phase A)
+            }
+        } else {
+            data.tree_asleep[t] = -(1 + MIN_AWAKE); // Fully awake
+        }
+    }
+    mj_update_sleep_arrays(model, data);
+}
+
+/// Recompute derived sleep arrays from `tree_asleep` (§16.3).
+fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
+    data.ntree_awake = 0;
+    data.nv_awake = 0;
+
+    for t in 0..model.ntree {
+        let awake = data.tree_asleep[t] < 0;
+        data.tree_awake[t] = awake;
+        if awake {
+            data.ntree_awake += 1;
+            data.nv_awake += model.tree_dof_num[t];
+        }
+    }
+
+    // Body 0 (world) is always Static
+    if !data.body_sleep_state.is_empty() {
+        data.body_sleep_state[0] = SleepState::Static;
+    }
+    // Only update per-body sleep states if tree enumeration was done
+    if model.body_treeid.len() == model.nbody {
+        for body_id in 1..model.nbody {
+            let tree = model.body_treeid[body_id];
+            if tree < model.ntree {
+                data.body_sleep_state[body_id] = if data.tree_awake[tree] {
+                    SleepState::Awake
+                } else {
+                    SleepState::Asleep
+                };
+            } else {
+                data.body_sleep_state[body_id] = SleepState::Awake;
+            }
+        }
+    }
+}
+
+/// Wake detection: check user-applied forces on sleeping bodies (§16.4).
+///
+/// Called at the start of `forward()`, before any pipeline stage.
+fn mj_wake(model: &Model, data: &mut Data) {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return;
+    }
+
+    // Check xfrc_applied (per-body Cartesian forces)
+    for body_id in 1..model.nbody {
+        if data.body_sleep_state[body_id] != SleepState::Asleep {
+            continue;
+        }
+        // Bytewise nonzero check (matches MuJoCo: -0.0 wakes because sign bit is set).
+        // Use to_bits() != 0 instead of != 0.0 because IEEE 754 treats -0.0 == 0.0.
+        let force = &data.xfrc_applied[body_id];
+        if force.iter().any(|&v| v.to_bits() != 0) {
+            wake_tree(model, data, model.body_treeid[body_id]);
+        }
+    }
+
+    // Check qfrc_applied (per-DOF generalized forces)
+    for dof in 0..model.nv {
+        let tree = model.dof_treeid[dof];
+        if !data.tree_awake[tree] && data.qfrc_applied[dof].to_bits() != 0 {
+            wake_tree(model, data, tree);
+        }
+    }
+}
+
+/// Wake detection after collision: check contacts between sleeping and awake bodies (§16.4).
+///
+/// Returns `true` if any tree was woken (triggers re-collision).
+fn mj_wake_collision(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for contact_idx in 0..data.ncon {
+        let contact = &data.contacts[contact_idx];
+        let body1 = model.geom_body[contact.geom1];
+        let body2 = model.geom_body[contact.geom2];
+        let state1 = data.body_sleep_state[body1];
+        let state2 = data.body_sleep_state[body2];
+
+        // Wake sleeping body if partner is awake (not static — static bodies
+        // like the world/ground don't wake sleeping bodies).
+        let need_wake = match (state1, state2) {
+            (SleepState::Asleep, SleepState::Awake) => Some(body1),
+            (SleepState::Awake, SleepState::Asleep) => Some(body2),
+            _ => None,
+        };
+
+        if let Some(body_id) = need_wake {
+            let tree = model.body_treeid[body_id];
+            if tree < model.ntree {
+                wake_tree(model, data, tree);
+                woke_any = true;
+            }
+        }
+    }
+    woke_any
+}
+
+/// Wake a single tree: reset timer, update derived arrays.
+fn wake_tree(model: &Model, data: &mut Data, tree: usize) {
+    if data.tree_awake[tree] {
+        return; // Already awake
+    }
+    data.tree_asleep[tree] = -(1 + MIN_AWAKE); // Fully awake, reset timer
+    data.tree_awake[tree] = true;
+    data.ntree_awake += 1;
+    data.nv_awake += model.tree_dof_num[tree];
+
+    // Update body states for all bodies in this tree
+    let body_start = model.tree_body_adr[tree];
+    let body_end = body_start + model.tree_body_num[tree];
+    for body_id in body_start..body_end {
+        data.body_sleep_state[body_id] = SleepState::Awake;
+    }
+}
+
+/// Check if a DOF's tree is awake (helper for integration skip).
+#[inline]
+fn data_tree_awake_for_dof(model: &Model, data: &Data, dof: usize) -> bool {
+    if model.dof_treeid.len() <= dof {
+        return true; // No tree info → treat as awake
+    }
+    let tree = model.dof_treeid[dof];
+    if tree >= data.tree_awake.len() {
+        return true;
+    }
+    data.tree_awake[tree]
+}
+
+/// Map a sensor to its associated body_id, or `None` if multi-body (§16.5d).
+fn sensor_body_id(model: &Model, sensor_id: usize) -> Option<usize> {
+    let objid = model.sensor_objid[sensor_id];
+    match model.sensor_objtype[sensor_id] {
+        MjObjectType::Body => Some(objid),
+        MjObjectType::Joint => {
+            if objid < model.njnt {
+                Some(model.jnt_body[objid])
+            } else {
+                None
+            }
+        }
+        MjObjectType::Geom => {
+            if objid < model.ngeom {
+                Some(model.geom_body[objid])
+            } else {
+                None
+            }
+        }
+        MjObjectType::Site => {
+            if objid < model.nsite {
+                Some(model.site_body[objid])
+            } else {
+                None
+            }
+        }
+        // Multi-body, actuated, or world-relative sensors — always compute
+        MjObjectType::Tendon | MjObjectType::Actuator | MjObjectType::None => None,
     }
 }
 
@@ -17000,10 +17560,14 @@ pub(crate) fn lu_solve_factored(a: &DMatrix<f64>, piv: &[usize], x: &mut DVector
 
 /// Proper position integration that handles quaternions on SO(3) manifold.
 fn mj_integrate_pos(model: &Model, data: &mut Data, h: f64) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     let mut visitor = PositionIntegrateVisitor {
         qpos: &mut data.qpos,
         qvel: &data.qvel,
         h,
+        sleep_enabled,
+        jnt_body: &model.jnt_body,
+        body_sleep_state: &data.body_sleep_state,
     };
     model.visit_joints(&mut visitor);
 }
@@ -17013,6 +17577,9 @@ struct PositionIntegrateVisitor<'a> {
     qpos: &'a mut DVector<f64>,
     qvel: &'a DVector<f64>,
     h: f64,
+    sleep_enabled: bool,
+    jnt_body: &'a [usize],
+    body_sleep_state: &'a [SleepState],
 }
 
 impl PositionIntegrateVisitor<'_> {
@@ -17043,21 +17610,38 @@ impl PositionIntegrateVisitor<'_> {
     }
 }
 
+impl PositionIntegrateVisitor<'_> {
+    /// Check if this joint's body is sleeping (§16.5a'').
+    #[inline]
+    fn is_sleeping(&self, ctx: &JointContext) -> bool {
+        self.sleep_enabled && self.body_sleep_state[self.jnt_body[ctx.jnt_id]] == SleepState::Asleep
+    }
+}
+
 impl JointVisitor for PositionIntegrateVisitor<'_> {
     #[inline]
     fn visit_hinge(&mut self, ctx: JointContext) {
+        if self.is_sleeping(&ctx) {
+            return;
+        }
         // Simple scalar: qpos += qvel * h
         self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
     }
 
     #[inline]
     fn visit_slide(&mut self, ctx: JointContext) {
+        if self.is_sleeping(&ctx) {
+            return;
+        }
         // Simple scalar: qpos += qvel * h
         self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
     }
 
     #[inline]
     fn visit_ball(&mut self, ctx: JointContext) {
+        if self.is_sleeping(&ctx) {
+            return;
+        }
         // Quaternion: integrate angular velocity on SO(3)
         let omega = Vector3::new(
             self.qvel[ctx.dof_adr],
@@ -17069,6 +17653,9 @@ impl JointVisitor for PositionIntegrateVisitor<'_> {
 
     #[inline]
     fn visit_free(&mut self, ctx: JointContext) {
+        if self.is_sleeping(&ctx) {
+            return;
+        }
         // Position: linear integration (first 3 components)
         self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
         self.qpos[ctx.qpos_adr + 1] += self.qvel[ctx.dof_adr + 1] * self.h;
