@@ -2414,7 +2414,7 @@ handles its own sleep logic. `BatchSim::reset()` delegates to
 
 ##### 16.8 Phased Implementation
 
-**Phase A — Per-tree sleeping (this spec):**
+**Phase A — Per-tree sleeping (this spec): COMPLETE**
 - Tree enumeration infrastructure (§16.0)
 - Sleep state in Data (§16.1)
 - MJCF parsing for sleep attributes (§16.2)
@@ -2426,7 +2426,7 @@ handles its own sleep logic. `BatchSim::reset()` delegates to
 - Each tree is treated as its own island (no cross-tree coupling)
 - Actuated trees receive `AutoNever` policy (safe default)
 
-**Phase B — Island discovery and full sleep parity:**
+**Phase B — Island discovery and full sleep parity: COMPLETE**
 
 Phase A treats each kinematic tree as its own island. This is correct
 for uncoupled trees but breaks when constraints (contacts, equality,
@@ -2442,6 +2442,40 @@ Phase A is self-contained and delivers the primary performance benefit
 sleeping trees are coupled by constraints — common in stacking,
 articulated chains, and environments with equality constraints between
 bodies on different trees.
+
+**Phase C — Sleep performance optimization:**
+
+Phase B delivers correctness parity with MuJoCo's island-based sleeping.
+Phase C closes the remaining performance gaps by exploiting the sleep
+infrastructure that Phase B already allocates. Three optimizations, in
+construction order:
+
+1. **Awake-index pipeline iteration (§16.27):** Replace branch-per-body
+   sleep checks with compact indirection arrays. The arrays
+   (`body_awake_ind`, `dof_awake_ind`, `parent_awake_ind`) are already
+   allocated and populated by `mj_update_sleep_arrays()`. Phase C wires
+   them into every hot-path pipeline function so that loops iterate only
+   over awake bodies/DOFs — zero branches, better cache locality.
+
+2. **Island-local Delassus assembly (§16.28):** The per-island contact
+   solver currently passes full `nv`-wide Jacobians to
+   `assemble_contact_system()`, which computes full-size `M^{-1} * J^T`.
+   Phase C extracts island-local sub-matrices: build a small
+   `nv_island × nv_island` mass matrix, factor it, and assemble a
+   compact Delassus matrix. For 10 islands of 10 contacts each, this
+   turns one 300×300 solve into ten 30×30 solves.
+
+3. **Selective CRBA (§16.29):** Skip composite-inertia accumulation and
+   mass matrix construction for sleeping bodies. Sleeping DOFs retain
+   their last-awake `qM` entries. The sparse LDL factorization runs
+   only for awake DOF blocks. This is the highest-risk optimization —
+   partial LDL refactorization must preserve positive-definiteness.
+
+Phase C is purely performance. No new Data fields. No semantic changes.
+Every test from Phase A and Phase B must remain bit-identical when all
+bodies are awake (the optimizations are no-ops when `nbody_awake ==
+nbody`). The per-step invariant: results with sleep optimization ON vs
+OFF are identical to machine epsilon for awake bodies.
 
 ##### 16.9b Phase B — step() Overview
 
@@ -4631,6 +4665,612 @@ Add to §16.20:
 | T74 | `test_tendon_both_asleep_different_cycles_wake` | Integration | AC #43: tendon wakes both sleeping islands |
 | T75 | `test_qpos_dirty_flag_isolation` | Unit | AC #44: tree_qpos_dirty separate from tree_awake |
 | T76 | `test_init_sleep_validation_model_time` | Unit | AC #45: union-find validation at init time |
+
+##### 16.27 Phase C — Awake-Index Pipeline Iteration
+
+###### 16.27.1 Motivation
+
+Phase B allocates and populates three indirection arrays every step via
+`mj_update_sleep_arrays()`:
+
+- `body_awake_ind[0..nbody_awake]` — sorted indices of awake + static bodies
+- `parent_awake_ind[0..nparent_awake]` — bodies whose parent is awake/static
+- `dof_awake_ind[0..nv_awake]` — sorted indices of awake DOFs
+
+These arrays are computed but **never read** by the pipeline — every
+hot-path function still uses the Phase A pattern:
+
+```rust
+for body_id in 1..model.nbody {
+    if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
+        continue;
+    }
+    // ... compute ...
+}
+```
+
+This has two costs:
+1. **Branch mispredictions** when awake/asleep bodies are interleaved.
+2. **Cache misses** from touching `body_sleep_state` for every body.
+
+The indirection pattern eliminates both:
+
+```rust
+let (n, use_ind) = if sleep_enabled && data.nbody_awake < model.nbody {
+    (data.nbody_awake, true)
+} else {
+    (model.nbody, false)
+};
+for idx in 0..n {
+    let body_id = if use_ind { data.body_awake_ind[idx] } else { idx };
+    // ... compute (no branch needed) ...
+}
+```
+
+When all bodies are awake, `nbody_awake == nbody` and the fast path
+(`use_ind = false`) runs — the indirection is a no-op with zero
+overhead.
+
+###### 16.27.2 Target Functions
+
+Each function below currently has a body or DOF loop with a sleep
+check. Phase C replaces the check with indirection iteration.
+
+**Body loops (use `body_awake_ind`):**
+
+| Function | Loop | Current Skip | Notes |
+|----------|------|-------------|-------|
+| `mj_fwd_velocity()` | `for body_id in 1..nbody` | Yes (§16.5a) | Velocity kinematics |
+| `mj_energy_pos()` | `for body_id in 1..nbody` | No | Gravitational PE — add skip |
+| `mj_energy_vel()` | `for body_id in 1..nbody` | No | Kinetic energy — add skip |
+| `mj_sensor_pos()` | subtree loops | Yes (§16.5d) | Position sensors |
+| `mj_sensor_vel()` | subtree loops | Yes (§16.5d) | Velocity sensors |
+
+**Backward-pass body loops (use `parent_awake_ind` in reverse):**
+
+| Function | Loop | Current Skip | Notes |
+|----------|------|-------------|-------|
+| `mj_rne()` | backward body loop | Yes (§16.5a) | Gyroscopic forces |
+
+**DOF loops (use `dof_awake_ind`):**
+
+| Function | Loop | Current Skip | Notes |
+|----------|------|-------------|-------|
+| `mj_rne()` | joint loop | Yes (§16.5a) | Bias force projection |
+| `mj_fwd_passive()` | joint visitor + tendon | Yes (§16.5a') | Spring/damper forces |
+| `mj_fwd_actuation()` | actuator loop | No | Actuator forces — add skip |
+| `integrate()` | DOF loops (×3) | No | Euler/implicit integration |
+
+**Not converted (intentional):**
+
+| Function | Reason |
+|----------|--------|
+| `mj_fwd_position()` | Must compute FK for ALL bodies including sleeping to detect qpos changes (§16.15). Sleeping bodies still need xpos/xquat for collision broad-phase. |
+| `mj_collision()` | Already skips sleeping-vs-sleeping pairs (§16.5b). Broad-phase still needs all geom AABBs. |
+| `mj_crba()` | Deferred to §16.29 (requires partial LDL refactoring). |
+
+###### 16.27.3 Implementation Pattern
+
+For each target function, the conversion is mechanical:
+
+**Step 1:** Add the indirection preamble at the top of the function:
+
+```rust
+let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+let use_body_ind = sleep_enabled && data.nbody_awake < model.nbody;
+let use_dof_ind = sleep_enabled && data.nv_awake < model.nv;
+```
+
+**Step 2:** Replace the loop header and remove the branch:
+
+```rust
+// Before:
+for body_id in 1..model.nbody {
+    if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
+        continue;
+    }
+    do_work(body_id);
+}
+
+// After:
+let nbody = if use_body_ind { data.nbody_awake } else { model.nbody };
+for idx in 0..nbody {
+    let body_id = if use_body_ind { data.body_awake_ind[idx] } else { idx };
+    do_work(body_id);
+}
+```
+
+**Step 3:** For backward passes (leaf-to-root), iterate
+`parent_awake_ind` in reverse:
+
+```rust
+let nparent = if use_body_ind { data.nparent_awake } else { model.nbody };
+for idx in (0..nparent).rev() {
+    let body_id = if use_body_ind { data.parent_awake_ind[idx] } else { idx };
+    do_work(body_id);
+}
+```
+
+###### 16.27.4 Energy Functions: New Sleep Awareness
+
+`mj_energy_pos()` and `mj_energy_vel()` currently have no sleep checks
+at all. Phase C adds indirection iteration:
+
+- **`mj_energy_pos()`:** Skip gravitational PE for sleeping bodies
+  (their pose is frozen, so their PE contribution is constant). The
+  accumulated PE may differ from a full-body computation by the frozen
+  contribution — but since sleeping bodies' positions don't change,
+  re-adding their contribution each step is redundant. **Strategy:**
+  compute PE only for awake bodies. Document that `energy_potential`
+  reflects awake-body PE only when sleep is active.
+
+- **`mj_energy_vel()`:** Skip KE for sleeping bodies (qvel = 0 by
+  invariant). Result is identical — sleeping bodies contribute zero KE.
+
+###### 16.27.5 Acceptance Criteria
+
+46. With `ENABLE_SLEEP` cleared, all pipeline functions produce
+    bit-identical results to pre-Phase-C behavior.
+47. With all bodies awake and sleep enabled, pipeline output is
+    bit-identical to `ENABLE_SLEEP` cleared (the indirection is a
+    no-op).
+48. With sleeping bodies, `mj_fwd_velocity()` via indirection produces
+    identical `cvel` for awake bodies as the Phase B branch-skip.
+49. `mj_energy_vel()` returns zero KE contribution from sleeping bodies.
+50. `integrate()` via `dof_awake_ind` produces identical qpos/qvel for
+    awake DOFs.
+
+###### 16.27.6 Tests
+
+| # | Test | Type | Validates |
+|---|------|------|-----------|
+| T77 | `test_indirection_velocity_equivalence` | Unit | AC #48: mj_fwd_velocity indirection matches branch-skip |
+| T78 | `test_indirection_integration_equivalence` | Unit | AC #50: integrate() via dof_awake_ind matches full |
+| T79 | `test_energy_sleeping_zero_ke` | Unit | AC #49: sleeping bodies contribute zero KE |
+| T80 | `test_all_awake_bit_identical` | Regression | AC #47: no-op when all awake |
+
+##### 16.28 Phase C — Island-Local Delassus Assembly
+
+###### 16.28.1 Motivation
+
+`mj_fwd_constraint_islands()` partitions contacts by island and solves
+each island independently. But the solver call chain still operates on
+full `nv`-dimensional data:
+
+1. `compute_contact_jacobian()` builds `dim × nv` Jacobians (full width)
+2. `assemble_contact_system()` computes `M^{-1} * J^T` via
+   `mj_solve_sparse()` on the full LDL factorization
+3. The Delassus matrix `A = J * M^{-1} * J^T` is `nefc × nefc` but
+   has block-diagonal structure that isn't exploited
+
+For a scene with 100 contacts across 10 islands of 10 contacts each:
+- Current: 10 calls to `assemble_contact_system()`, each solving `nv`
+  systems and building a 30×30 Delassus matrix from `nv`-wide Jacobians
+- Island-local: 10 calls building `nv_island × nv_island` mass matrices
+  and `dim × nv_island` Jacobians, assembling 30×30 Delassus matrices
+  from island-local data
+
+The `M^{-1} * J^T` computation dominates: each column requires a full
+LDL solve (O(nv) per column). With island-local factorization, each
+column requires O(nv_island) — potentially orders of magnitude smaller.
+
+###### 16.28.2 Algorithm
+
+For each island `k` with `nv_k` DOFs and `nc_k` contacts:
+
+**Step 1: Extract island-local mass matrix.**
+
+```rust
+// M_island is the principal submatrix of qM for island k's DOFs.
+// island DOFs come from map_idof2dof[island_idofadr[k]..+island_nv[k]].
+let nv_k = data.island_nv[k];
+let dof_start = data.island_idofadr[k];
+let mut M_island = DMatrix::zeros(nv_k, nv_k);
+for i in 0..nv_k {
+    let gi = data.map_idof2dof[dof_start + i];
+    for j in 0..nv_k {
+        let gj = data.map_idof2dof[dof_start + j];
+        M_island[(i, j)] = data.qM[(gi, gj)];
+    }
+}
+```
+
+**Step 2: Factor island-local mass matrix.**
+
+Use nalgebra's dense Cholesky: `M_island.cholesky()`. This is correct
+because `qM` is symmetric positive-definite and any principal submatrix
+of an SPD matrix is SPD. Dense Cholesky on a small `nv_k × nv_k`
+matrix is faster than the sparse tree-structured LDL solve on the
+full `nv × nv` system when `nv_k << nv`.
+
+```rust
+let chol = M_island.cholesky()
+    .expect("island mass matrix must be SPD");
+```
+
+**Step 3: Build island-local Jacobians.**
+
+Remap each contact's Jacobian columns from global DOF indices to
+island-local indices:
+
+```rust
+fn remap_jacobian_to_island(
+    j_global: &DMatrix<f64>,
+    map_dof2idof: &[i32],
+    nv_island: usize,
+) -> DMatrix<f64> {
+    let dim = j_global.nrows();
+    let mut j_local = DMatrix::zeros(dim, nv_island);
+    for col in 0..j_global.ncols() {
+        let local_col = map_dof2idof[col];
+        if local_col >= 0 {
+            let lc = local_col as usize;
+            for row in 0..dim {
+                j_local[(row, lc)] = j_global[(row, col)];
+            }
+        }
+    }
+    j_local
+}
+```
+
+**Step 4: Assemble island-local Delassus matrix.**
+
+Replace `mj_solve_sparse()` calls with `chol.solve()` on the island-
+local system:
+
+```rust
+// M_island^{-1} * J_local^T  (nv_k × dim per contact)
+let mut minv_jt = DMatrix::zeros(nv_k, dim_k);
+for col in 0..dim_k {
+    let jt_col = j_local.column(col).clone_owned();
+    let solved = chol.solve(&jt_col);
+    minv_jt.set_column(col, &solved);
+}
+
+// A_block = J_local * minv_jt  (dim_k × dim_k)
+let a_block = j_local * &minv_jt;
+```
+
+**Step 5: Compute island-local qacc_smooth.**
+
+```rust
+// Extract qfrc_smooth for island DOFs, solve with island M
+let mut qacc_smooth_island = DVector::zeros(nv_k);
+for i in 0..nv_k {
+    let gi = data.map_idof2dof[dof_start + i];
+    qacc_smooth_island[i] = qfrc_smooth[gi];
+}
+let qacc_smooth_island = chol.solve(&qacc_smooth_island);
+```
+
+The RHS computation (`b = J * qacc_smooth + aref`) then uses
+`qacc_smooth_island` and `j_local` instead of the global versions.
+
+###### 16.28.3 Refactoring Strategy
+
+The refactoring introduces a new function `assemble_contact_system_island()`
+that accepts island-local inputs. The existing `assemble_contact_system()`
+is preserved for the global fallback path (Newton solver, `nisland == 0`).
+
+```rust
+fn assemble_contact_system_island(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians_local: &[DMatrix<f64>],  // dim × nv_island each
+    chol: &Cholesky<f64, Dyn>,         // island-local M factorization
+    qacc_smooth_island: &DVector<f64>, // island-local unconstrained accel
+    nv_island: usize,
+) -> (DMatrix<f64>, DVector<f64>, Vec<usize>)
+```
+
+The core assembly logic (Baumgarte stabilization, impedance, CFM,
+friction parameters) is identical — only the matrix dimensions and
+solve calls change.
+
+**`mj_fwd_constraint_islands()` changes:**
+
+```rust
+// Before each island's solve loop:
+// 1. Extract M_island, factor it (once per island)
+// 2. Compute qacc_smooth_island (once per island)
+// 3. Remap each contact Jacobian to island-local
+// 4. Call assemble_contact_system_island() instead of assemble_contact_system()
+// 5. Call pgs_solve_with_system() / cg equivalent (unchanged — works on any size)
+// 6. Apply forces (unchanged)
+```
+
+The PGS/CG solvers (`pgs_solve_with_system`, `cg_solve_contacts`) are
+dimension-agnostic — they operate on the `(A, b)` matrices regardless
+of whether those came from global or island-local assembly. No changes
+needed to the solver cores.
+
+###### 16.28.4 Global qacc_smooth Precomputation
+
+The unconstrained acceleration `qacc_smooth = M^{-1} * qfrc_smooth` is
+computed once globally (full `nv` LDL solve), then island-local slices
+are extracted by DOF index. This avoids redundant per-island force
+accumulation:
+
+```rust
+// Compute once at the top of mj_fwd_constraint_islands():
+let mut qacc_smooth = data.qfrc_applied.clone();
+qacc_smooth += &data.qfrc_actuator;
+qacc_smooth += &data.qfrc_passive;
+qacc_smooth -= &data.qfrc_bias;
+qacc_smooth += &data.qfrc_constraint;  // penalty forces already applied
+mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
+
+// Per island: extract slice
+for i in 0..nv_k {
+    qacc_smooth_island[i] = qacc_smooth[data.map_idof2dof[dof_start + i]];
+}
+```
+
+This preserves the penalty constraint contributions (joint limits,
+tendon limits, equality) that were applied globally earlier in
+`mj_fwd_constraint_islands()`.
+
+###### 16.28.5 When to Use Island-Local vs Global
+
+| Condition | Path |
+|-----------|------|
+| `nisland == 0` | Global `mj_fwd_constraint()` |
+| Newton solver | Global `mj_fwd_constraint()` |
+| `nv_island == nv` (single island spans all DOFs) | Global assembly (no benefit from extraction) |
+| `nv_island < nv` | Island-local assembly |
+
+The single-island-spans-all case is detected by `data.nisland == 1 &&
+data.island_nv[0] == model.nv`. In this case, the Cholesky extraction
+would duplicate the full mass matrix — use the global LDL path instead.
+
+###### 16.28.6 Acceptance Criteria
+
+51. Island-local Delassus assembly produces the same `A` and `b`
+    matrices as global assembly (to machine epsilon) for each island's
+    contacts.
+52. `DISABLE_ISLAND` flag produces bit-identical results to pre-Phase-C.
+53. For two independent free bodies on a plane, per-island solve
+    produces identical contact forces as global solve.
+54. For a single island spanning all DOFs, the global fallback path
+    activates.
+
+###### 16.28.7 Tests
+
+| # | Test | Type | Validates |
+|---|------|------|-----------|
+| T81 | `test_island_delassus_equivalence` | Unit | AC #51: island-local A,b match global |
+| T82 | `test_island_solve_forces_match_global` | Integration | AC #53: forces identical for decoupled bodies |
+| T83 | `test_single_island_uses_global_path` | Unit | AC #54: fallback when one island spans all DOFs |
+| T84 | `test_disable_island_phase_c_bit_identical` | Regression | AC #52: DISABLE_ISLAND unchanged |
+
+##### 16.29 Phase C — Selective CRBA
+
+###### 16.29.1 Motivation
+
+`mj_crba()` is called every step and computes the full `nv × nv` mass
+matrix plus its sparse LDL factorization. For sleeping bodies, the mass
+matrix entries are invariant (body poses frozen, joint axes frozen).
+Selective CRBA skips the computation for sleeping DOFs, preserving
+their stale-but-correct `qM` and `qLD` entries from their last awake
+step.
+
+###### 16.29.2 Correctness Argument
+
+**Why stale entries are safe:**
+- Sleeping DOFs have `qvel = 0`, `qacc = 0`, `qfrc_* = 0` by invariant.
+- The constraint solver never reads sleeping DOFs' mass matrix entries
+  (island-local assembly from §16.28 only extracts awake DOF blocks).
+- `mj_solve_sparse()` for `qacc_smooth` reads all DOFs, but sleeping
+  DOFs have zero force, so `qacc_smooth[sleeping_dof] = 0` regardless
+  of `qM` values.
+- When a tree wakes, its first `forward()` pass runs full CRBA (because
+  `nbody_awake` now includes the waking bodies), recomputing all `qM`
+  entries before the solver reads them.
+
+**When stale entries cause problems:**
+- If external code reads `qM[sleeping_dof, ...]` directly (outside the
+  pipeline). This is acceptable — document that `qM` entries for
+  sleeping DOFs are stale but self-consistent.
+
+###### 16.29.3 Algorithm
+
+Replace `mj_crba(model, data)` with `mj_crba_selective(model, data)`:
+
+**Phase 1 (init crb):** Only initialize `crb_inertia` for awake bodies.
+
+```rust
+for idx in 0..data.nbody_awake {
+    let body_id = data.body_awake_ind[idx];
+    data.crb_inertia[body_id] = data.cinert[body_id];
+}
+```
+
+**Phase 2 (backward accumulation):** Only accumulate for awake bodies.
+Use `parent_awake_ind` in reverse:
+
+```rust
+for idx in (0..data.nparent_awake).rev() {
+    let body_id = data.parent_awake_ind[idx];
+    if body_id == 0 { continue; }
+    let parent_id = model.body_parent[body_id];
+    if parent_id != 0 {
+        data.crb_inertia[parent_id] += data.crb_inertia[body_id];
+    }
+}
+```
+
+**Subtlety:** If an awake body has a sleeping child, the sleeping
+child's `crb_inertia` was accumulated into the parent during the last
+awake step and hasn't changed since. The parent's `crb_inertia` starts
+from `cinert[parent]` (current) but doesn't re-accumulate the sleeping
+child. This is **incorrect** — the parent needs the child's frozen
+contribution.
+
+**Fix:** Before the backward pass, for each awake body that has a
+sleeping child, add the sleeping child's `crb_inertia` (frozen from
+last awake step):
+
+```rust
+for idx in 0..data.nbody_awake {
+    let body_id = data.body_awake_ind[idx];
+    // Accumulate frozen crb from sleeping children
+    for child in body_children(model, body_id) {
+        if data.body_sleep_state[child] == SleepState::Asleep {
+            data.crb_inertia[body_id] += data.crb_inertia[child];
+        }
+    }
+}
+```
+
+This requires `crb_inertia` to be preserved across steps for sleeping
+bodies (not zeroed at the start of CRBA). Currently `mj_crba()` does
+not zero `crb_inertia` — it overwrites from `cinert` in Phase 1. The
+selective version must skip the overwrite for sleeping bodies, which is
+already handled by the awake-only Phase 1 loop above.
+
+**Phase 3 (mass matrix build):** Only iterate joints on awake bodies.
+Use `dof_awake_ind` to select which joints to process:
+
+```rust
+for idx in 0..data.nv_awake {
+    let dof = data.dof_awake_ind[idx];
+    let jnt_id = model.dof_jnt[dof];
+    // ... existing diagonal + off-diagonal logic for jnt_id ...
+}
+```
+
+**Phase 4 (armature):** Same — only awake DOFs.
+
+**Phase 5 (sparse LDL):** Only refactor awake DOF blocks. Sleeping
+DOFs' `qLD_diag` and `qLD_L` entries are preserved from the last awake
+step.
+
+```rust
+fn mj_factor_sparse_selective(model: &Model, data: &mut Data) {
+    // Only process awake DOFs
+    for idx in 0..data.nv_awake {
+        let i = data.dof_awake_ind[idx];
+        data.qLD_diag[i] = data.qM[(i, i)];
+        data.qLD_L[i].clear();
+        // ... same ancestor walk, but only for awake DOFs ...
+    }
+    // ... elimination loop, only for awake DOFs ...
+}
+```
+
+**Risk:** The elimination loop in `mj_factor_sparse` processes DOFs in
+reverse order and updates ancestors. If an awake DOF's ancestor is
+sleeping, the elimination writes to a sleeping DOF's `qLD` entry. This
+creates an inconsistency.
+
+**Mitigation:** Process ALL DOFs in the elimination whose subtree
+contains at least one awake DOF. This is the set of DOFs reachable by
+walking `dof_parent` from any awake DOF to the root. Pre-compute this
+set as `dof_factor_set` before the elimination loop.
+
+**Alternative (simpler, slightly less optimal):** Always run full LDL
+factorization. The CRBA body-loop savings (Phases 1-4) are the bulk of
+the win; LDL factorization is O(nv) with tree-sparse structure and has
+small constants. Deferring partial LDL to a later optimization pass
+reduces risk.
+
+###### 16.29.4 Recommended Two-Sub-Step Approach
+
+Given the LDL subtlety, split selective CRBA into two sub-steps:
+
+**Step 3a: Selective CRBA body loops (low risk).**
+Skip inertia accumulation and `qM` construction for sleeping bodies.
+Run full `mj_factor_sparse()` afterward (unchanged). This saves the
+O(nbody) backward pass and O(njnt × depth) mass matrix build, which
+are the dominant CRBA costs for deep kinematic chains.
+
+**Step 3b: Partial LDL factorization (high risk, deferred).**
+Only refactor awake DOF blocks. Requires the `dof_factor_set`
+pre-computation described above. Defer until profiling confirms LDL
+is a bottleneck.
+
+###### 16.29.5 Acceptance Criteria
+
+55. Selective CRBA produces identical `qM` entries for awake DOFs as
+    full CRBA.
+56. `qLD_diag` and `qLD_L` for awake DOFs are identical to full CRBA
+    (when full LDL is used in Step 3a).
+57. Sleeping DOFs' `qM` entries are preserved from their last awake
+    step (not zeroed or corrupted).
+58. When a sleeping tree wakes, its next `forward()` pass produces
+    identical `qM` to a never-slept simulation.
+59. With all bodies awake, selective CRBA is bit-identical to full CRBA.
+
+###### 16.29.6 Tests
+
+| # | Test | Type | Validates |
+|---|------|------|-----------|
+| T85 | `test_selective_crba_awake_identical` | Unit | AC #55: qM identical for awake DOFs |
+| T86 | `test_selective_crba_sleeping_preserved` | Unit | AC #57: sleeping qM entries preserved |
+| T87 | `test_selective_crba_wake_recomputes` | Integration | AC #58: waking tree gets fresh qM |
+| T88 | `test_selective_crba_all_awake_noop` | Regression | AC #59: bit-identical when all awake |
+
+##### 16.30 Phase C — Implementation Order and Test Plan
+
+###### 16.30.1 Construction Order
+
+Phase C has three steps, ordered by dependency and risk:
+
+| Step | Section | Description | Depends On | Risk |
+|------|---------|-------------|------------|------|
+| C1 | §16.27 | Awake-index pipeline iteration | Phase B complete | Low |
+| C2 | §16.28 | Island-local Delassus assembly | C1 (uses `dof_awake_ind` patterns) | Medium |
+| C3a | §16.29 | Selective CRBA body loops | C1 (uses `body_awake_ind`) | Medium |
+| C3b | §16.29 | Partial LDL factorization | C3a + profiling | High (defer) |
+
+**C1 first** because it establishes the indirection iteration pattern
+that C2 and C3 build on. It's also the lowest-risk change — purely
+mechanical loop transformations with no algorithmic changes.
+
+**C2 second** because it delivers the largest performance win and is
+architecturally independent of CRBA. The island-local mass matrix
+extraction uses the global `qM` (which is still fully computed in C2).
+
+**C3a third** because it depends on the indirection pattern from C1
+and benefits from the island-local solver in C2 (which no longer reads
+sleeping DOFs' `qM` entries, reducing the risk of stale values).
+
+**C3b deferred** until profiling shows LDL factorization is a
+bottleneck relative to the now-optimized CRBA body loops and island
+solver.
+
+###### 16.30.2 Per-Step Verification
+
+Each step must pass:
+1. All Phase A tests (T1-T30)
+2. All Phase B tests (T31-T76)
+3. The step's own Phase C tests
+4. `cargo clippy -- -D warnings`
+5. `cargo fmt --all -- --check`
+6. Domain test suite: `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics -p sim-constraint`
+
+After all steps:
+1. Full workspace: `cargo test`
+2. Quality gate: `cargo xtask check`
+
+###### 16.30.3 Complete Phase C Test Table
+
+| # | Test | Type | Step | Validates |
+|---|------|------|------|-----------|
+| T77 | `test_indirection_velocity_equivalence` | Unit | C1 | AC #48 |
+| T78 | `test_indirection_integration_equivalence` | Unit | C1 | AC #50 |
+| T79 | `test_energy_sleeping_zero_ke` | Unit | C1 | AC #49 |
+| T80 | `test_all_awake_bit_identical` | Regression | C1 | AC #47 |
+| T81 | `test_island_delassus_equivalence` | Unit | C2 | AC #51 |
+| T82 | `test_island_solve_forces_match_global` | Integration | C2 | AC #53 |
+| T83 | `test_single_island_uses_global_path` | Unit | C2 | AC #54 |
+| T84 | `test_disable_island_phase_c_bit_identical` | Regression | C2 | AC #52 |
+| T85 | `test_selective_crba_awake_identical` | Unit | C3a | AC #55 |
+| T86 | `test_selective_crba_sleeping_preserved` | Unit | C3a | AC #57 |
+| T87 | `test_selective_crba_wake_recomputes` | Integration | C3a | AC #58 |
+| T88 | `test_selective_crba_all_awake_noop` | Regression | C3a | AC #59 |
 
 ##### 16.9 Performance Considerations
 
