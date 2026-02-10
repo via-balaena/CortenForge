@@ -4177,13 +4177,24 @@ impl Data {
         }
 
         mj_transmission_site(model, self);
+
+        // §16.13.2: Tendon wake — multi-tree tendons with active limits
+        if sleep_enabled && mj_wake_tendon(model, self) {
+            mj_update_sleep_arrays(model, self);
+        }
+
         mj_collision(model, self);
 
         // Wake-on-contact: if sleeping body touched awake body, wake it
         // and re-run collision for the newly-awake tree's geoms (§16.5c)
         if sleep_enabled && mj_wake_collision(model, self) {
             mj_update_sleep_arrays(model, self);
-            mj_collision(model, self); // Phase A: full re-collision
+            mj_collision(model, self);
+        }
+
+        // §16.13.3: Equality constraint wake — cross-tree equality coupling
+        if sleep_enabled && mj_wake_equality(model, self) {
+            mj_update_sleep_arrays(model, self);
         }
 
         #[cfg(feature = "deformable")]
@@ -11610,7 +11621,134 @@ fn mj_wake_collision(model: &Model, data: &mut Data) -> bool {
     woke_any
 }
 
-/// Wake a single tree: reset timer, update derived arrays.
+/// Return the canonical (minimum) tree index in a sleep cycle (§16.10.3).
+///
+/// Used to identify whether two sleeping trees belong to the same cycle.
+#[allow(clippy::cast_sign_loss)]
+fn mj_sleep_cycle(tree_asleep: &[i32], start: usize) -> usize {
+    if tree_asleep[start] < 0 {
+        return start; // Not asleep — return self
+    }
+    let mut min_tree = start;
+    let mut current = tree_asleep[start] as usize;
+    while current != start {
+        if current < min_tree {
+            min_tree = current;
+        }
+        current = tree_asleep[current] as usize;
+    }
+    min_tree
+}
+
+/// Check if a tendon's limit constraint is active (§16.13.2).
+fn tendon_limit_active(model: &Model, data: &Data, t: usize) -> bool {
+    if !model.tendon_limited[t] {
+        return false;
+    }
+    let length = data.ten_length[t];
+    let (limit_min, limit_max) = model.tendon_range[t];
+    length < limit_min || length > limit_max
+}
+
+/// Wake sleeping trees coupled by multi-tree tendons with active limits (§16.13.2).
+///
+/// Returns `true` if any tree was woken.
+#[allow(clippy::cast_sign_loss)]
+fn mj_wake_tendon(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for t in 0..model.ntendon {
+        if model.tendon_treenum[t] != 2 {
+            continue;
+        }
+        if !tendon_limit_active(model, data, t) {
+            continue;
+        }
+
+        let tree_a = model.tendon_tree[2 * t];
+        let tree_b = model.tendon_tree[2 * t + 1];
+        if tree_a >= model.ntree || tree_b >= model.ntree {
+            continue;
+        }
+        let awake_a = data.tree_awake[tree_a];
+        let awake_b = data.tree_awake[tree_b];
+
+        match (awake_a, awake_b) {
+            (true, false) => {
+                mj_wake_tree(model, data, tree_b);
+                woke_any = true;
+            }
+            (false, true) => {
+                mj_wake_tree(model, data, tree_a);
+                woke_any = true;
+            }
+            (false, false) => {
+                // Both asleep in different cycles: merge by waking both
+                let cycle_a = mj_sleep_cycle(&data.tree_asleep, tree_a);
+                let cycle_b = mj_sleep_cycle(&data.tree_asleep, tree_b);
+                if cycle_a != cycle_b {
+                    mj_wake_tree(model, data, tree_a);
+                    mj_wake_tree(model, data, tree_b);
+                    woke_any = true;
+                }
+            }
+            _ => {} // Both awake — no action
+        }
+    }
+    woke_any
+}
+
+/// Wake sleeping trees coupled by active equality constraints (§16.13.3).
+///
+/// Returns `true` if any tree was woken.
+#[allow(clippy::cast_sign_loss)]
+fn mj_wake_equality(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for eq in 0..model.neq {
+        if !model.eq_active[eq] {
+            continue;
+        }
+
+        let (tree_a, tree_b) = equality_trees(model, eq);
+        if tree_a >= model.ntree || tree_b >= model.ntree || tree_a == tree_b {
+            continue; // Same tree or invalid — no cross-tree coupling
+        }
+
+        let awake_a = data.tree_awake[tree_a];
+        let awake_b = data.tree_awake[tree_b];
+
+        match (awake_a, awake_b) {
+            (true, false) => {
+                mj_wake_tree(model, data, tree_b);
+                woke_any = true;
+            }
+            (false, true) => {
+                mj_wake_tree(model, data, tree_a);
+                woke_any = true;
+            }
+            (false, false) => {
+                // Both asleep in different cycles: merge by waking both
+                let cycle_a = mj_sleep_cycle(&data.tree_asleep, tree_a);
+                let cycle_b = mj_sleep_cycle(&data.tree_asleep, tree_b);
+                if cycle_a != cycle_b {
+                    mj_wake_tree(model, data, tree_a);
+                    mj_wake_tree(model, data, tree_b);
+                    woke_any = true;
+                }
+            }
+            _ => {} // Both awake — no action
+        }
+    }
+    woke_any
+}
+
 /// Wake a tree and its entire sleep cycle (§16.12.3).
 ///
 /// Traverses the circular linked list to wake all trees in the sleeping

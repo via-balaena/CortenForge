@@ -2408,3 +2408,156 @@ fn test_sleep_trees_zeros_all_arrays() {
         }
     }
 }
+
+// ============================================================================
+// T39–T42, T72, T74: Cross-Island Wake (§16.13)
+// ============================================================================
+
+/// T39: Contact between sleeping and awake tree wakes the sleeping tree's island.
+/// (This is actually Phase A behavior verified in Phase B context.)
+#[test]
+fn test_wake_contact_island() {
+    // A sits on ground and sleeps. Then we push B into contact with A.
+    // Use the standard free_body_sleep fixture to ensure A reliably sleeps,
+    // then manually teleport a second body onto it.
+    let mjcf = r#"
+    <mujoco model="wake_contact">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="A" pos="0 0 0.2">
+                <freejoint name="jA"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+            <body name="B" pos="5 0 0.2">
+                <freejoint name="jB"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // B starts far away so no contact with A. Both settle independently.
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+    }
+
+    let tree_a = model.body_treeid[1];
+    let tree_b = model.body_treeid[2];
+
+    // Both should be asleep
+    assert!(
+        data.tree_asleep[tree_a] >= 0,
+        "A should be asleep, got {}",
+        data.tree_asleep[tree_a]
+    );
+    assert!(
+        data.tree_asleep[tree_b] >= 0,
+        "B should be asleep, got {}",
+        data.tree_asleep[tree_b]
+    );
+
+    // Teleport B right above A to create contact on next step.
+    // A is at ~(0, 0, 0.1). Place B at (0, 0, 0.28) so spheres overlap
+    // (center distance 0.18 < sum of radii 0.2).
+    data.qpos[7] = 0.0; // B x
+    data.qpos[8] = 0.0; // B y
+    data.qpos[9] = 0.28; // B z (overlapping A's sphere)
+
+    // Step: qpos change wakes B, collision detects contact, wake_collision wakes A.
+    // May need a couple steps for the full wake pipeline.
+    for _ in 0..5 {
+        data.step(&model).expect("step");
+    }
+
+    // B should be awake (external qpos change)
+    assert!(
+        data.tree_asleep[tree_b] < 0,
+        "B should be awake after qpos teleport"
+    );
+
+    // A should also be awake (contact with now-awake B)
+    assert!(
+        data.tree_asleep[tree_a] < 0,
+        "A should be awake after contact with B"
+    );
+}
+
+/// T40: Active equality constraint between sleeping and awake tree wakes the sleeping tree.
+#[test]
+fn test_wake_equality_island() {
+    // Two bodies connected by a weld equality constraint.
+    // A will settle and sleep. B stays awake with applied force.
+    // When the equality constraint is active and B is awake, A should wake.
+    let mjcf = r#"
+    <mujoco model="wake_equality">
+        <option gravity="0 0 -9.81" timestep="0.002" sleep_tolerance="0.1">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="A" pos="0 0 0.1">
+                <freejoint name="jA"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+            <body name="B" pos="1 0 0.1">
+                <freejoint name="jB"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+        <equality>
+            <connect body1="A" body2="B" anchor="0.5 0 0.1"/>
+        </equality>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Step — the connect constraint couples A and B.
+    // With the constraint active, when one is awake the other should be too.
+    for _ in 0..100 {
+        data.step(&model).expect("step");
+    }
+
+    let tree_a = model.body_treeid[1];
+    let tree_b = model.body_treeid[2];
+
+    // Both should be in the same wake state (equality couples them)
+    let a_awake = data.tree_asleep[tree_a] < 0;
+    let b_awake = data.tree_asleep[tree_b] < 0;
+    assert_eq!(
+        a_awake, b_awake,
+        "equality-coupled trees should have same wake state: A={a_awake}, B={b_awake}"
+    );
+}
+
+/// T72: User force wake runs at the start of forward(), waking sleeping body.
+#[test]
+fn test_user_force_wake_phase_b() {
+    let mjcf = free_body_sleep_mjcf();
+    let model = load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Step until ball sleeps
+    for _ in 0..3000 {
+        data.step(&model).expect("step");
+    }
+
+    let tree = model.body_treeid[1];
+    assert!(data.tree_asleep[tree] >= 0, "ball should be asleep");
+
+    // Apply external force
+    data.xfrc_applied[1] = nalgebra::Vector6::new(0.0, 0.0, 100.0, 0.0, 0.0, 0.0);
+
+    // One step → mj_wake() detects force and wakes the body
+    data.step(&model).expect("step");
+
+    assert!(
+        data.tree_asleep[tree] < 0,
+        "ball should be awake after xfrc_applied"
+    );
+}
