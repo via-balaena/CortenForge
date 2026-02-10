@@ -2853,7 +2853,54 @@ impl ModelBuilder {
                             None
                         }
                     }
-                    ActuatorTransmission::Tendon => None, // Phase B concern
+                    ActuatorTransmission::Tendon => {
+                        // §16.26.5: Tendon-actuator policy resolution.
+                        // Mark all trees spanned by the tendon as AutoNever.
+                        let tendon_idx = trnid[0];
+                        if tendon_idx < model.ntendon {
+                            let wrap_start = model.tendon_adr[tendon_idx];
+                            let wrap_count = model.tendon_num[tendon_idx];
+                            for w in wrap_start..wrap_start + wrap_count {
+                                let bid = match model.wrap_type[w] {
+                                    WrapType::Joint => {
+                                        // wrap_objid is dof_adr for fixed tendon joints
+                                        let dof_adr = model.wrap_objid[w];
+                                        if dof_adr < model.nv {
+                                            Some(model.dof_body[dof_adr])
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    WrapType::Site => {
+                                        let site_idx = model.wrap_objid[w];
+                                        if site_idx < model.nsite {
+                                            Some(model.site_body[site_idx])
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    WrapType::Geom => {
+                                        let geom_id = model.wrap_objid[w];
+                                        if geom_id < model.ngeom {
+                                            Some(model.geom_body[geom_id])
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    WrapType::Pulley => None, // No body
+                                };
+                                if let Some(bid) = bid {
+                                    if bid > 0 {
+                                        let tree = model.body_treeid[bid];
+                                        if tree < model.ntree {
+                                            model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        None // body_id not used below — trees already marked above
+                    }
                     ActuatorTransmission::Site => {
                         // trnid[0] is the site index
                         if trnid[0] < model.nsite {
@@ -2872,6 +2919,13 @@ impl ModelBuilder {
                     }
                 }
             }
+
+            // §16.26.4: Deformable body policy guard. In the current architecture,
+            // deformable bodies are registered at runtime (Data::register_deformable_body),
+            // not at model construction time. Therefore, this guard cannot run here —
+            // it will need to run at Data::register_deformable_body() time instead,
+            // marking the body's tree as AutoNever. This is deferred until the
+            // deformable feature uses tree-level sleeping.
 
             // Step 2b: Apply explicit body-level sleep policies from MJCF
             for body_id in 1..nbody {

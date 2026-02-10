@@ -1391,3 +1391,47 @@ fn test_wake_on_negative_zero() {
         "ball should wake on -0.0 xfrc_applied (bytewise check)"
     );
 }
+
+// ============================================================================
+// Phase B Tests
+// ============================================================================
+
+// ============================================================================
+// T70: test_tendon_actuator_policy (§16.26.5)
+// ============================================================================
+
+#[test]
+fn test_tendon_actuator_policy() {
+    // A tendon-driven actuator spanning a single tree should cause AutoNever
+    // on that tree (same as joint-driven actuators).
+    let mjcf = r#"
+    <mujoco model="tendon_actuator_policy">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="link1" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <tendon>
+            <fixed name="ten1">
+                <joint joint="j1" coef="1.0"/>
+            </fixed>
+        </tendon>
+        <actuator>
+            <general tendon="ten1" gainprm="100 0 0 0 0 0 0 0 0 0"/>
+        </actuator>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load model");
+
+    // The tree containing j1 should be AutoNever because it has a tendon actuator
+    assert_eq!(model.ntree, 1, "should have 1 tree");
+    assert_eq!(
+        model.tree_sleep_policy[0],
+        SleepPolicy::AutoNever,
+        "tree with tendon-driven actuator should be AutoNever"
+    );
+}
