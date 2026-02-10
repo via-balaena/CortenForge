@@ -1,6 +1,6 @@
 //! Integration tests for §16: Sleeping / Body Deactivation.
 //!
-//! Covers tests T1–T14, T17–T28, T31–T35 from `sim/docs/todo/future_work_5.md`.
+//! Covers tests T1–T14, T17–T28, T31–T42, T59–T60, T72–T76 from `sim/docs/todo/future_work_5.md`.
 //! Benchmarks T15–T16 are in a separate benchmark file.
 
 use approx::assert_relative_eq;
@@ -2560,4 +2560,146 @@ fn test_user_force_wake_phase_b() {
         data.tree_asleep[tree] < 0,
         "ball should be awake after xfrc_applied"
     );
+}
+
+// ============================================================================
+// T59, T60, T76: Init-Sleep Island Validation (§16.24)
+// ============================================================================
+
+/// T59: Valid Init-sleep tree passes validation and starts asleep.
+#[test]
+fn test_init_sleep_valid() {
+    // A single free body with sleep="init" should start asleep.
+    let mjcf = r#"
+    <mujoco model="init_valid">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="ball" pos="0 0 1" sleep="init">
+                <freejoint name="jf"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let data = model.make_data();
+
+    let tree = model.body_treeid[1];
+    assert_eq!(
+        model.tree_sleep_policy[tree],
+        SleepPolicy::Init,
+        "tree should have Init policy"
+    );
+    assert!(
+        data.tree_asleep[tree] >= 0,
+        "Init tree should start asleep, got {}",
+        data.tree_asleep[tree]
+    );
+    // Self-link for single-tree init
+    assert_eq!(
+        data.tree_asleep[tree] as usize, tree,
+        "single Init tree should have self-link"
+    );
+}
+
+/// T60: Mixed Init/non-Init in coupled group degrades gracefully.
+/// The spec says this should produce an error and degrade to awake.
+#[test]
+fn test_init_sleep_mixed_island_warning() {
+    // Two bodies connected by equality constraint: A is Init, B is not.
+    // The validation should detect the mixed group and degrade A to awake.
+    let mjcf = r#"
+    <mujoco model="init_mixed">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="A" pos="0 0 1" sleep="init">
+                <freejoint name="jA"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+            <body name="B" pos="1 0 1">
+                <freejoint name="jB"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <equality>
+            <connect body1="A" body2="B" anchor="0.5 0 1"/>
+        </equality>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let data = model.make_data();
+
+    let tree_a = model.body_treeid[1];
+    let tree_b = model.body_treeid[2];
+
+    // A has Init policy, B doesn't → mixed group → A should be degraded to awake
+    assert_eq!(model.tree_sleep_policy[tree_a], SleepPolicy::Init);
+
+    // After degradation, A should be awake (Init trees in mixed groups
+    // don't get put to sleep)
+    assert!(
+        data.tree_asleep[tree_a] < 0,
+        "mixed Init tree A should be degraded to awake, got {}",
+        data.tree_asleep[tree_a]
+    );
+    assert!(
+        data.tree_asleep[tree_b] < 0,
+        "non-Init tree B should be awake, got {}",
+        data.tree_asleep[tree_b]
+    );
+}
+
+/// T76: Init-sleep validation uses model-time adjacency (union-find), not runtime islands.
+#[test]
+fn test_init_sleep_validation_model_time() {
+    // Two Init trees connected by equality constraint should form a sleep cycle.
+    let mjcf = r#"
+    <mujoco model="init_cycle">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <body name="A" pos="0 0 1" sleep="init">
+                <freejoint name="jA"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+            <body name="B" pos="1 0 1" sleep="init">
+                <freejoint name="jB"/>
+                <geom type="sphere" size="0.1" mass="1.0"/>
+            </body>
+        </worldbody>
+        <equality>
+            <connect body1="A" body2="B" anchor="0.5 0 1"/>
+        </equality>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("load");
+    let data = model.make_data();
+
+    let tree_a = model.body_treeid[1];
+    let tree_b = model.body_treeid[2];
+
+    // Both should be Init and asleep
+    assert_eq!(model.tree_sleep_policy[tree_a], SleepPolicy::Init);
+    assert_eq!(model.tree_sleep_policy[tree_b], SleepPolicy::Init);
+
+    // Both should be asleep (validation passed, sleep cycles created)
+    assert!(
+        data.tree_asleep[tree_a] >= 0,
+        "Init tree A should be asleep"
+    );
+    assert!(
+        data.tree_asleep[tree_b] >= 0,
+        "Init tree B should be asleep"
+    );
+
+    // They should form a cycle: A→B, B→A (union-find grouped them)
+    let next_a = data.tree_asleep[tree_a] as usize;
+    let next_b = data.tree_asleep[tree_b] as usize;
+    assert_eq!(next_a, tree_b, "A should point to B in cycle");
+    assert_eq!(next_b, tree_a, "B should point to A in cycle");
 }

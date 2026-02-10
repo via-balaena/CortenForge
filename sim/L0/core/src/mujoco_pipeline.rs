@@ -898,6 +898,84 @@ impl std::fmt::Display for StepError {
     }
 }
 
+/// Errors during Init-sleep validation (§16.24).
+#[derive(Debug, Clone)]
+pub enum SleepError {
+    /// Init-sleep tree has no DOFs (cannot meaningfully sleep).
+    InitSleepInvalidTree {
+        /// The tree index that failed validation.
+        tree: usize,
+    },
+    /// Statically-coupled tree group contains a mix of Init and non-Init
+    /// trees. All trees connected by equality constraints or multi-tree
+    /// tendons must have the same Init policy.
+    InitSleepMixedIsland {
+        /// The union-find representative tree for the mixed group.
+        group_root: usize,
+    },
+}
+
+impl std::fmt::Display for SleepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InitSleepInvalidTree { tree } => {
+                write!(f, "Init-sleep tree {tree} has no DOFs")
+            }
+            Self::InitSleepMixedIsland { group_root } => {
+                write!(
+                    f,
+                    "mixed Init/non-Init trees in coupled group (root={group_root})"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SleepError {}
+
+/// Disjoint-set / union-find for Init-sleep validation (§16.24).
+///
+/// Path compression + union by rank. Used to group trees connected
+/// by equality constraints and multi-tree tendons.
+struct UnionFind {
+    parent: Vec<usize>,
+    rank: Vec<usize>,
+}
+
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        Self {
+            parent: (0..n).collect(),
+            rank: vec![0; n],
+        }
+    }
+
+    fn find(&mut self, mut x: usize) -> usize {
+        while self.parent[x] != x {
+            self.parent[x] = self.parent[self.parent[x]]; // Path compression
+            x = self.parent[x];
+        }
+        x
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra == rb {
+            return;
+        }
+        // Union by rank
+        match self.rank[ra].cmp(&self.rank[rb]) {
+            std::cmp::Ordering::Less => self.parent[ra] = rb,
+            std::cmp::Ordering::Greater => self.parent[rb] = ra,
+            std::cmp::Ordering::Equal => {
+                self.parent[rb] = ra;
+                self.rank[ra] += 1;
+            }
+        }
+    }
+}
+
 impl std::error::Error for StepError {}
 
 /// Error returned by state reset operations.
@@ -3145,12 +3223,8 @@ impl Model {
         // from their first forward()/step() call.
         let has_init_asleep = (0..self.ntree).any(|t| data.tree_asleep[t] >= 0);
         if has_init_asleep {
-            // Save init sleep state
-            let saved_body_sleep = data.body_sleep_state.clone();
-            let saved_tree_awake = data.tree_awake.clone();
-            let saved_tree_asleep = data.tree_asleep.clone();
-
             // Temporarily wake all bodies for FK
+            let saved_body_sleep = data.body_sleep_state.clone();
             for b in 1..self.nbody {
                 data.body_sleep_state[b] = SleepState::Awake;
             }
@@ -3162,14 +3236,14 @@ impl Model {
             // Run FK only (not full forward — just position computation)
             mj_fwd_position(self, &mut data);
 
-            // Restore sleep state
+            // Restore body sleep states
             data.body_sleep_state = saved_body_sleep;
-            data.tree_awake = saved_tree_awake;
-            data.tree_asleep = saved_tree_asleep;
         }
 
-        // Populate awake-index indirection arrays (§16.17).
-        mj_update_sleep_arrays(self, &mut data);
+        // Initialize sleep state with union-find validation (§16.24).
+        // This replaces the inline Init-sleep self-links with proper
+        // island-aware sleep cycles.
+        reset_sleep_state(self, &mut data);
 
         data
     }
@@ -10861,17 +10935,99 @@ fn sync_tree_fk(model: &Model, data: &mut Data, tree: usize) {
 /// Called by `Data::reset()` and `Data::reset_to_keyframe()` to ensure sleep
 /// state matches the model's tree sleep policies after a reset.
 fn reset_sleep_state(model: &Model, data: &mut Data) {
+    // First: set all trees to awake
     for t in 0..model.ntree {
-        if model.tree_sleep_policy[t] == SleepPolicy::Init {
-            #[allow(clippy::cast_possible_wrap)]
-            {
-                data.tree_asleep[t] = t as i32; // Asleep (self-link for Phase A)
-            }
-        } else {
-            data.tree_asleep[t] = -(1 + MIN_AWAKE); // Fully awake
+        data.tree_asleep[t] = -(1 + MIN_AWAKE); // Fully awake
+    }
+
+    // Then: validate and create sleep cycles for Init trees
+    if let Err(e) = validate_init_sleep(model, data) {
+        // Log warning and degrade Init trees to awake (spec §16.24)
+        #[cfg(debug_assertions)]
+        eprintln!("Init-sleep validation failed: {e}");
+        let _ = e; // Suppress unused warning in release
+    }
+
+    mj_update_sleep_arrays(model, data);
+}
+
+/// Validate Init-sleep trees and create sleep cycles (§16.24).
+///
+/// Uses union-find over model-time adjacency (equality constraints +
+/// multi-tree tendons) to group Init trees. Creates circular sleep cycles
+/// per group. Returns an error if validation fails.
+fn validate_init_sleep(model: &Model, data: &mut Data) -> Result<(), SleepError> {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return Ok(());
+    }
+
+    // Phase 1: Basic per-tree validation
+    for t in 0..model.ntree {
+        if model.tree_sleep_policy[t] != SleepPolicy::Init {
+            continue;
+        }
+        if model.tree_dof_num[t] == 0 {
+            return Err(SleepError::InitSleepInvalidTree { tree: t });
         }
     }
-    mj_update_sleep_arrays(model, data);
+
+    // Phase 2: Check for mixed Init/non-Init in statically-coupled groups
+    let mut uf = UnionFind::new(model.ntree);
+
+    // Equality constraint edges
+    for eq in 0..model.neq {
+        if !model.eq_active[eq] {
+            continue;
+        }
+        let (tree_a, tree_b) = equality_trees(model, eq);
+        if tree_a < model.ntree && tree_b < model.ntree && tree_a != tree_b {
+            uf.union(tree_a, tree_b);
+        }
+    }
+
+    // Multi-tree tendon edges
+    for t in 0..model.ntendon {
+        if model.tendon_treenum[t] == 2 {
+            let tree_a = model.tendon_tree[2 * t];
+            let tree_b = model.tendon_tree[2 * t + 1];
+            if tree_a < model.ntree && tree_b < model.ntree {
+                uf.union(tree_a, tree_b);
+            }
+        }
+    }
+
+    // Check each group for mixed Init/non-Init
+    let mut group_has_init = vec![false; model.ntree];
+    let mut group_has_noninit = vec![false; model.ntree];
+    for t in 0..model.ntree {
+        let root = uf.find(t);
+        if model.tree_sleep_policy[t] == SleepPolicy::Init {
+            group_has_init[root] = true;
+        } else {
+            group_has_noninit[root] = true;
+        }
+    }
+    for root in 0..model.ntree {
+        if group_has_init[root] && group_has_noninit[root] {
+            return Err(SleepError::InitSleepMixedIsland { group_root: root });
+        }
+    }
+
+    // Phase 3: Create sleep cycles for validated Init-sleep groups
+    // Group Init trees by their union-find root
+    let mut init_groups: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::new();
+    for t in 0..model.ntree {
+        if model.tree_sleep_policy[t] == SleepPolicy::Init {
+            let root = uf.find(t);
+            init_groups.entry(root).or_default().push(t);
+        }
+    }
+    for trees in init_groups.values() {
+        sleep_trees(model, data, trees);
+    }
+
+    Ok(())
 }
 
 /// Recompute derived sleep arrays from `tree_asleep` (§16.3, §16.17).

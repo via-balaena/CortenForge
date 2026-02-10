@@ -143,6 +143,7 @@ pub use mujoco_pipeline::{
     // Error handling
     ResetError,
     // Sleep / deactivation types (§16)
+    SleepError,
     SleepPolicy,
     SleepState,
     // Constraint solver algorithm
