@@ -3047,3 +3047,161 @@ fn test_actuated_sleep_zeros_qfrc_actuator() {
         );
     }
 }
+
+// ===== T61: test_mj_sleep_state_api =====
+// AC #30: sleep_state(body_id) returns correct SleepState for static, sleeping, and awake bodies.
+#[test]
+fn test_mj_sleep_state_api() {
+    let mjcf = r#"
+    <mujoco model="sleep_state_api">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="ball" pos="0 0 0.2">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // World body (body 0) should always be Static
+    assert_eq!(
+        data.sleep_state(0),
+        SleepState::Static,
+        "world body should be Static"
+    );
+
+    // Ball body (body 1) starts awake
+    assert_eq!(
+        data.sleep_state(1),
+        SleepState::Awake,
+        "ball should start Awake"
+    );
+
+    // Let ball settle onto plane and fall asleep
+    for _ in 0..5000 {
+        data.step(&model).expect("step");
+    }
+
+    assert_eq!(
+        data.sleep_state(1),
+        SleepState::Asleep,
+        "ball should be Asleep after settling"
+    );
+}
+
+// ===== T62: test_mj_tree_awake_api =====
+// AC #31: tree_awake(tree_id) returns false for sleeping trees, true for awake trees.
+#[test]
+fn test_mj_tree_awake_api() {
+    let mjcf = r#"
+    <mujoco model="tree_awake_api">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="ball" pos="0 0 0.2">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    let tree = model.body_treeid[1];
+
+    // Initially awake
+    assert!(data.tree_awake(tree), "tree should be awake initially");
+
+    // Let ball settle onto plane and fall asleep
+    for _ in 0..5000 {
+        data.step(&model).expect("step");
+    }
+
+    assert!(
+        !data.tree_awake(tree),
+        "tree should not be awake after settling"
+    );
+
+    // Wake it by setting qpos
+    data.qpos[2] = 0.5; // move z upward
+    data.step(&model).expect("step");
+
+    assert!(
+        data.tree_awake(tree),
+        "tree should be awake after qpos change"
+    );
+}
+
+// ===== T63: test_mj_nisland_api =====
+// AC #32: nisland() returns the number of islands discovered this step.
+#[test]
+fn test_mj_nisland_api() {
+    // Two separated balls → should form 2 islands when both are in contact with plane
+    let mjcf = r#"
+    <mujoco model="nisland_api">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="ball_a" pos="-1 0 0.2">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+            <body name="ball_b" pos="1 0 0.2">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+    let model = sim_mjcf::load_model(mjcf).expect("load");
+    let mut data = model.make_data();
+
+    // Initially no islands (no contacts yet or no stepping)
+    assert_eq!(data.nisland(), 0, "nisland should be 0 before any step");
+
+    // Step until contacts form. Balls start at z=0.2 with radius 0.1,
+    // separated 0.1m above the plane. Under gravity ~9.81 m/s² they
+    // reach the plane in ~0.14s = ~70 steps at dt=0.002.
+    // We look for the first step where nisland > 0 (contacts exist).
+    let mut found_islands = false;
+    for i in 0..500 {
+        data.step(&model).expect("step");
+        let ni = data.nisland();
+        if ni > 0 && !found_islands {
+            // Two independent balls on a plane → 2 separate islands
+            assert_eq!(ni, 2, "step {i}: two separated balls should form 2 islands");
+            found_islands = true;
+        }
+    }
+    assert!(found_islands, "should have found islands within 500 steps");
+
+    // Continue stepping until both balls are asleep
+    for _ in 0..5000 {
+        data.step(&model).expect("step");
+    }
+
+    // Sleeping trees don't participate in island discovery,
+    // so nisland should be 0 when both are asleep
+    let tree_a = model.body_treeid[1];
+    let tree_b = model.body_treeid[2];
+    assert!(
+        !data.tree_awake(tree_a) && !data.tree_awake(tree_b),
+        "both trees should be asleep after 5500 steps"
+    );
+    assert_eq!(
+        data.nisland(),
+        0,
+        "nisland should be 0 when all trees are asleep"
+    );
+}

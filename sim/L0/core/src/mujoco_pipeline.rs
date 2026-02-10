@@ -4151,6 +4151,36 @@ impl Data {
         self.energy_kinetic + self.energy_potential
     }
 
+    // ==================== Sleep Public API (§16.25) ====================
+
+    /// Query the sleep state of a body.
+    ///
+    /// Returns `SleepState::Static` for the world body (body 0),
+    /// `SleepState::Asleep` for sleeping bodies, `SleepState::Awake`
+    /// for active bodies.
+    #[must_use]
+    pub fn sleep_state(&self, body_id: usize) -> SleepState {
+        self.body_sleep_state[body_id]
+    }
+
+    /// Query whether a kinematic tree is awake.
+    #[must_use]
+    pub fn tree_awake(&self, tree_id: usize) -> bool {
+        self.tree_asleep[tree_id] < 0
+    }
+
+    /// Query the number of awake bodies (including the world body).
+    #[must_use]
+    pub fn nbody_awake(&self) -> usize {
+        self.nbody_awake
+    }
+
+    /// Query the number of constraint islands discovered this step.
+    #[must_use]
+    pub fn nisland(&self) -> usize {
+        self.nisland
+    }
+
     /// Full simulation step (like `mj_step`).
     ///
     /// This is the main entry point for advancing the simulation by one timestep.
@@ -11234,10 +11264,15 @@ fn mj_island(model: &Model, data: &mut Data) {
 
     // === Phase 1: Edge extraction (§16.11.2) ===
     // Collect edges as (tree_a, tree_b) pairs from raw data sources.
+    // Only awake trees participate in island discovery — sleeping trees
+    // don't contribute to constraint solving.
 
     // Clear scratch
     data.island_scratch_rownnz[..ntree].fill(0);
     data.island_scratch_colind.clear();
+
+    // Helper closure: returns true if tree is awake (eligible for islands)
+    let tree_awake = |tree: usize| -> bool { tree < ntree && data.tree_asleep[tree] < 0 };
 
     let ncon = data.contacts.len();
     let capacity = ncon + model.neq + model.njnt + model.ntendon;
@@ -11266,38 +11301,38 @@ fn mj_island(model: &Model, data: &mut Data) {
             usize::MAX // World body
         };
 
-        if tree1 < ntree && tree2 < ntree {
+        if tree1 < ntree && tree2 < ntree && tree_awake(tree1) && tree_awake(tree2) {
             edges.push((tree1, tree2));
             if tree1 != tree2 {
                 edges.push((tree2, tree1));
             }
-        } else if tree1 < ntree {
+        } else if tree1 < ntree && tree_awake(tree1) {
             edges.push((tree1, tree1)); // Contact with world
-        } else if tree2 < ntree {
+        } else if tree2 < ntree && tree_awake(tree2) {
             edges.push((tree2, tree2)); // Contact with world
         }
     }
 
-    // 1b: Active equality constraints → tree pairs
+    // 1b: Active equality constraints → tree pairs (awake only)
     for eq_id in 0..model.neq {
         if !model.eq_active[eq_id] {
             continue;
         }
         let (tree1, tree2) = equality_trees(model, eq_id);
-        if tree1 < ntree {
+        if tree_awake(tree1) {
             edges.push((tree1, tree1));
-            if tree2 < ntree && tree2 != tree1 {
+            if tree_awake(tree2) && tree2 != tree1 {
                 edges.push((tree1, tree2));
                 edges.push((tree2, tree1));
-            } else if tree2 < ntree {
+            } else if tree_awake(tree2) {
                 edges.push((tree2, tree2));
             }
-        } else if tree2 < ntree {
+        } else if tree_awake(tree2) {
             edges.push((tree2, tree2));
         }
     }
 
-    // 1c: Active joint limits → self-edges
+    // 1c: Active joint limits → self-edges (awake only)
     for jnt_id in 0..model.njnt {
         if !model.jnt_limited[jnt_id] {
             continue;
@@ -11310,14 +11345,14 @@ fn mj_island(model: &Model, data: &mut Data) {
             let body = model.jnt_body[jnt_id];
             if body > 0 && body < model.body_treeid.len() {
                 let tree = model.body_treeid[body];
-                if tree < ntree {
+                if tree_awake(tree) {
                     edges.push((tree, tree));
                 }
             }
         }
     }
 
-    // 1d: Active tendon limits → tree pair edges
+    // 1d: Active tendon limits → tree pair edges (awake only)
     for t in 0..model.ntendon {
         if !model.tendon_limited[t] {
             continue;
@@ -11329,13 +11364,13 @@ fn mj_island(model: &Model, data: &mut Data) {
             if model.tendon_treenum[t] == 2 {
                 let t1 = model.tendon_tree[2 * t];
                 let t2 = model.tendon_tree[2 * t + 1];
-                if t1 < ntree && t2 < ntree {
+                if tree_awake(t1) && tree_awake(t2) {
                     edges.push((t1, t2));
                     edges.push((t2, t1));
                 }
             } else if model.tendon_treenum[t] == 1 {
                 let tree = model.tendon_tree[2 * t];
-                if tree < ntree {
+                if tree_awake(tree) {
                     edges.push((tree, tree));
                 }
             }
