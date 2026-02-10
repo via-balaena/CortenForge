@@ -4166,6 +4166,12 @@ impl Data {
 
         // ========== Position Stage ==========
         mj_fwd_position(model, self);
+
+        // §16.15: If FK detected external qpos changes on sleeping bodies, wake them
+        if sleep_enabled && mj_check_qpos_changed(model, self) {
+            mj_update_sleep_arrays(model, self);
+        }
+
         mj_transmission_site(model, self);
         mj_collision(model, self);
 
@@ -4405,13 +4411,11 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
     data.xquat[0] = UnitQuaternion::identity();
     data.xmat[0] = Matrix3::identity();
 
-    // Process bodies in order (assumes topological sort: parent before child)
+    // Process bodies in order (assumes topological sort: parent before child).
+    // Phase B (§16.15): compute FK for ALL bodies (including sleeping) to detect
+    // external qpos modifications via xpos/xquat comparison. The Phase A skip
+    // is removed; performance comes from per-island constraint solve (§16.16).
     for body_id in 1..model.nbody {
-        // §16.5a: Skip FK for sleeping bodies — pose is frozen
-        if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
-            continue;
-        }
-
         let parent_id = model.body_parent[body_id];
 
         // Determine body pose: mocap bodies use mocap arrays, regular bodies
@@ -4499,6 +4503,22 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
 
             (pos, quat)
         };
+
+        // §16.15: qpos change detection — if this body was sleeping and its
+        // computed pose differs from the stored pose (exact bitwise match),
+        // mark the tree for waking. This detects external qpos modifications.
+        if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
+            let tree = model.body_treeid[body_id];
+            if tree < data.tree_qpos_dirty.len() {
+                // Compare new vs stored (exact floating-point equality)
+                let pos_changed = pos != data.xpos[body_id];
+                let quat_changed =
+                    quat.into_inner().coords != data.xquat[body_id].into_inner().coords;
+                if pos_changed || quat_changed {
+                    data.tree_qpos_dirty[tree] = true;
+                }
+            }
+        }
 
         // Store computed pose (shared path for both mocap and regular bodies)
         data.xpos[body_id] = pos;
@@ -10670,6 +10690,74 @@ fn put_tree_to_sleep(model: &Model, data: &mut Data, tree: usize) {
         data.qfrc_passive[dof] = 0.0;
         data.qfrc_constraint[dof] = 0.0;
     }
+
+    // 4. Sync xpos/xquat with post-integration qpos (§16.15 compatibility).
+    // This is called after integration, so qpos may have been updated since
+    // the last FK. Recomputing FK for this tree ensures the stored xpos/xquat
+    // matches the current qpos, preventing false positives in qpos change
+    // detection on the next step.
+    for body_id in body_start..body_end {
+        let parent_id = model.body_parent[body_id];
+        let mut pos = data.xpos[parent_id];
+        let mut quat = data.xquat[parent_id];
+
+        // Apply body offset in parent frame
+        pos += quat * model.body_pos[body_id];
+        quat *= model.body_quat[body_id];
+
+        // Apply each joint
+        let jnt_start = model.body_jnt_adr[body_id];
+        let jnt_end = jnt_start + model.body_jnt_num[body_id];
+        for jnt_id in jnt_start..jnt_end {
+            let qpos_adr = model.jnt_qpos_adr[jnt_id];
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let angle = data.qpos[qpos_adr];
+                    let axis = model.jnt_axis[jnt_id];
+                    let anchor = model.jnt_pos[jnt_id];
+                    let world_anchor = pos + quat * anchor;
+                    let world_axis = quat * axis;
+                    let rot = if let Some(unit_axis) = nalgebra::Unit::try_new(world_axis, 1e-10) {
+                        UnitQuaternion::from_axis_angle(&unit_axis, angle)
+                    } else {
+                        UnitQuaternion::identity()
+                    };
+                    quat = rot * quat;
+                    pos = world_anchor + rot * (pos - world_anchor);
+                }
+                MjJointType::Slide => {
+                    let displacement = data.qpos[qpos_adr];
+                    let axis = model.jnt_axis[jnt_id];
+                    pos += quat * (axis * displacement);
+                }
+                MjJointType::Ball => {
+                    let q = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        data.qpos[qpos_adr],
+                        data.qpos[qpos_adr + 1],
+                        data.qpos[qpos_adr + 2],
+                        data.qpos[qpos_adr + 3],
+                    ));
+                    quat *= q;
+                }
+                MjJointType::Free => {
+                    pos = nalgebra::Vector3::new(
+                        data.qpos[qpos_adr],
+                        data.qpos[qpos_adr + 1],
+                        data.qpos[qpos_adr + 2],
+                    );
+                    quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        data.qpos[qpos_adr + 3],
+                        data.qpos[qpos_adr + 4],
+                        data.qpos[qpos_adr + 5],
+                        data.qpos[qpos_adr + 6],
+                    ));
+                }
+            }
+        }
+        data.xpos[body_id] = pos;
+        data.xquat[body_id] = quat;
+        data.xmat[body_id] = quat.to_rotation_matrix().into_inner();
+    }
 }
 
 /// Re-initialize all sleep state from model policies (§16.7).
@@ -10778,6 +10866,31 @@ fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
         }
     }
     data.nv_awake = nv_awake;
+}
+
+/// Check if any sleeping tree's qpos was externally modified (§16.15).
+///
+/// Reads `tree_qpos_dirty` flags set by `mj_fwd_position()` during FK,
+/// wakes affected trees, then clears all dirty flags.
+/// Returns `true` if any tree was newly woken.
+fn mj_check_qpos_changed(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for t in 0..model.ntree {
+        if data.tree_qpos_dirty[t] && data.tree_asleep[t] >= 0 {
+            // Tree was sleeping but FK detected a pose change from external qpos modification.
+            wake_tree(model, data, t);
+            woke_any = true;
+        }
+    }
+
+    // Clear all dirty flags (whether or not they triggered a wake)
+    data.tree_qpos_dirty.fill(false);
+
+    woke_any
 }
 
 /// Wake detection: check user-applied forces on sleeping bodies (§16.4).

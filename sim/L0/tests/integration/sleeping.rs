@@ -1691,6 +1691,115 @@ fn test_indirection_equivalence() {
 }
 
 // ============================================================================
+// T47: test_qpos_change_wakes (§16.15)
+// ============================================================================
+
+#[test]
+fn test_qpos_change_wakes() {
+    // Externally modifying qpos of a sleeping body should wake its tree.
+    let model = load_model(free_body_sleep_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Let ball settle and sleep
+    for _ in 0..5000 {
+        data.step(&model).expect("step");
+    }
+
+    let ball_body = 1;
+    let tree = model.body_treeid[ball_body];
+    assert!(data.tree_asleep[tree] >= 0, "ball should be asleep");
+
+    // Externally modify qpos (simulate RL environment reset)
+    data.qpos[0] += 0.1; // Translate x
+
+    // Next forward() should detect the change and wake the body
+    data.forward(&model).expect("forward");
+
+    assert!(
+        data.tree_asleep[tree] < 0,
+        "ball should be awake after external qpos modification"
+    );
+}
+
+// ============================================================================
+// T48: test_qpos_stable_no_wake (§16.15)
+// ============================================================================
+
+#[test]
+fn test_qpos_stable_no_wake() {
+    // Stepping without modifying qpos should NOT wake sleeping bodies.
+    // FK is deterministic: same qpos → same xpos/xquat (bitwise).
+    let model = load_model(free_body_sleep_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Let ball settle and sleep
+    for _ in 0..5000 {
+        data.step(&model).expect("step");
+    }
+
+    let ball_body = 1;
+    let tree = model.body_treeid[ball_body];
+    assert!(data.tree_asleep[tree] >= 0, "ball should be asleep");
+
+    // Step more without touching qpos — should stay asleep
+    for _ in 0..100 {
+        data.step(&model).expect("step");
+    }
+
+    assert!(
+        data.tree_asleep[tree] >= 0,
+        "ball should remain asleep when qpos is not externally modified"
+    );
+}
+
+// ============================================================================
+// T75: test_qpos_dirty_flag_isolation (§16.15)
+// ============================================================================
+
+#[test]
+fn test_qpos_dirty_flag_isolation() {
+    // tree_qpos_dirty is separate from tree_awake — verify independence.
+    let model = load_model(free_body_sleep_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Initially all dirty flags should be false
+    for &d in &data.tree_qpos_dirty {
+        assert!(!d, "tree_qpos_dirty should start false");
+    }
+
+    // Let ball sleep
+    for _ in 0..5000 {
+        data.step(&model).expect("step");
+    }
+
+    let tree = model.body_treeid[1];
+    assert!(data.tree_asleep[tree] >= 0, "ball should be asleep");
+
+    // After sleeping, dirty flags should still be false (cleared each step)
+    for &d in &data.tree_qpos_dirty {
+        assert!(!d, "tree_qpos_dirty should be false after sleeping");
+    }
+
+    // Modify qpos and run forward — dirty flag should be set then cleared
+    data.qpos[2] += 0.5;
+    data.forward(&model).expect("forward");
+
+    // After forward(), mj_check_qpos_changed should have cleared the dirty flags
+    for &d in &data.tree_qpos_dirty {
+        assert!(
+            !d,
+            "tree_qpos_dirty should be cleared after mj_check_qpos_changed"
+        );
+    }
+
+    // But the body should now be awake (the dirty flag was consumed to wake it)
+    assert!(
+        data.tree_asleep[tree] < 0,
+        "body should be awake after qpos change detected"
+    );
+}
+
+// ============================================================================
 // T64: test_make_data_island_array_sizes (§16.23.5)
 // ============================================================================
 
