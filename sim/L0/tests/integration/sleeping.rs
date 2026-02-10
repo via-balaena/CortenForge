@@ -1691,6 +1691,95 @@ fn test_indirection_equivalence() {
 }
 
 // ============================================================================
+// T64: test_make_data_island_array_sizes (§16.23.5)
+// ============================================================================
+
+#[test]
+fn test_make_data_island_array_sizes() {
+    // Verify that make_data() allocates island arrays to worst-case bounds.
+    let model = load_model(two_tree_sleep_mjcf()).expect("load model");
+    let data = model.make_data();
+
+    // Island discovery arrays should be allocated
+    assert_eq!(data.tree_island.len(), model.ntree);
+    assert_eq!(data.island_ntree.len(), model.ntree);
+    assert_eq!(data.island_itreeadr.len(), model.ntree);
+    assert_eq!(data.map_itree2tree.len(), model.ntree);
+    assert_eq!(data.dof_island.len(), model.nv);
+    assert_eq!(data.island_nv.len(), model.ntree);
+    assert_eq!(data.island_idofadr.len(), model.ntree);
+    assert_eq!(data.map_dof2idof.len(), model.nv);
+    assert_eq!(data.map_idof2dof.len(), model.nv);
+    assert_eq!(data.island_nefc.len(), model.ntree);
+    assert_eq!(data.island_iefcadr.len(), model.ntree);
+
+    // Scratch arrays
+    assert_eq!(data.island_scratch_stack.len(), model.ntree);
+    assert_eq!(data.island_scratch_rownnz.len(), model.ntree);
+    assert_eq!(data.island_scratch_rowadr.len(), model.ntree);
+
+    // qpos change detection
+    assert_eq!(data.tree_qpos_dirty.len(), model.ntree);
+
+    // Initially no islands discovered
+    assert_eq!(data.nisland, 0);
+
+    // All tree_island should be -1 (no islands yet)
+    for &ti in &data.tree_island {
+        assert_eq!(ti, -1);
+    }
+}
+
+// ============================================================================
+// T65: test_reset_reinitializes_sleep (§16.23.5)
+// ============================================================================
+
+#[test]
+fn test_reset_reinitializes_sleep() {
+    // Verify that reset() reinitializes sleep state and awake-index arrays.
+    let model = load_model(free_body_sleep_mjcf()).expect("load model");
+    let mut data = model.make_data();
+
+    // Step until sleeping
+    for _ in 0..5000 {
+        data.step(&model).expect("step");
+    }
+
+    // At least one tree should be asleep
+    let was_asleep = data.tree_asleep.iter().any(|&t| t >= 0);
+    assert!(
+        was_asleep,
+        "should have at least one sleeping tree after stepping"
+    );
+
+    // Reset
+    data.reset(&model);
+
+    // After reset: sleep state should be reinitialized from policies
+    // For models without Init policy, all trees should be awake
+    for t in 0..model.ntree {
+        if model.tree_sleep_policy[t] != SleepPolicy::Init {
+            assert!(
+                data.tree_asleep[t] < 0,
+                "tree {t} should be awake after reset"
+            );
+        }
+    }
+
+    // Awake-index arrays should be consistent
+    assert_eq!(data.nbody_awake, model.nbody); // All bodies awake
+    assert_eq!(data.nv_awake, model.nv); // All DOFs awake
+
+    // tree_qpos_dirty should be cleared
+    for &d in &data.tree_qpos_dirty {
+        assert!(!d, "tree_qpos_dirty should be clear after reset");
+    }
+
+    // nisland should be 0 (no islands computed yet)
+    assert_eq!(data.nisland, 0);
+}
+
+// ============================================================================
 // T70: test_tendon_actuator_policy (§16.26.5)
 // ============================================================================
 

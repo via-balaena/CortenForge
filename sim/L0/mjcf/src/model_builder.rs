@@ -2491,6 +2491,7 @@ impl ModelBuilder {
         let ngeom = self.geom_type.len();
         let nsite = self.site_body.len();
         let nu = self.actuator_trntype.len();
+        let ntendon = self.tendon_type.len();
 
         let mut model = Model {
             name: self.name,
@@ -2644,6 +2645,9 @@ impl ModelBuilder {
             tendon_stiffness: self.tendon_stiffness,
             tendon_damping: self.tendon_damping,
             tendon_frictionloss: self.tendon_frictionloss,
+            // tendon_treenum/tendon_tree computed below after tree enumeration
+            tendon_treenum: vec![0; ntendon],
+            tendon_tree: vec![usize::MAX; 2 * ntendon],
             tendon_lengthspring: self.tendon_lengthspring,
             tendon_length0: self.tendon_length0,
             tendon_num: self.tendon_num,
@@ -2835,6 +2839,59 @@ impl ModelBuilder {
                     let dof_count = model.body_dof_num[bid];
                     for dof in dof_start..(dof_start + dof_count) {
                         model.dof_treeid[dof] = tree_idx;
+                    }
+                }
+            }
+
+            // ===== Tendon Tree Mapping (§16.10.1) =====
+            // Compute tendon_treenum/tendon_tree by scanning each tendon's waypoints.
+            for t in 0..model.ntendon {
+                let mut tree_set = std::collections::BTreeSet::new();
+                let adr = model.tendon_adr[t];
+                let num = model.tendon_num[t];
+                for w in adr..adr + num {
+                    let bid = match model.wrap_type[w] {
+                        WrapType::Joint => {
+                            let dof_adr = model.wrap_objid[w];
+                            if dof_adr < model.nv {
+                                Some(model.dof_body[dof_adr])
+                            } else {
+                                None
+                            }
+                        }
+                        WrapType::Site => {
+                            let site_idx = model.wrap_objid[w];
+                            if site_idx < model.nsite {
+                                Some(model.site_body[site_idx])
+                            } else {
+                                None
+                            }
+                        }
+                        WrapType::Geom => {
+                            let geom_id = model.wrap_objid[w];
+                            if geom_id < model.ngeom {
+                                Some(model.geom_body[geom_id])
+                            } else {
+                                None
+                            }
+                        }
+                        WrapType::Pulley => None,
+                    };
+                    if let Some(bid) = bid {
+                        if bid > 0 {
+                            let tree = model.body_treeid[bid];
+                            if tree < model.ntree {
+                                tree_set.insert(tree);
+                            }
+                        }
+                    }
+                }
+                model.tendon_treenum[t] = tree_set.len();
+                if tree_set.len() == 2 {
+                    let mut iter = tree_set.iter();
+                    if let (Some(&a), Some(&b)) = (iter.next(), iter.next()) {
+                        model.tendon_tree[2 * t] = a;
+                        model.tendon_tree[2 * t + 1] = b;
                     }
                 }
             }

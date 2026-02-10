@@ -748,6 +748,10 @@ pub const ENABLE_SLEEP: u32 = 1 << 5;
 /// can transition to sleep. Matches MuJoCo's `mjMINAWAKE = 10`.
 pub const MIN_AWAKE: i32 = 10;
 
+/// Disable-flag bit for island discovery (§16.10.1).
+/// When set, `mj_island()` is a no-op and each tree is its own island.
+pub const DISABLE_ISLAND: u32 = 1 << 18;
+
 /// Contact constraint solver algorithm.
 ///
 /// This selects the solver used in `mj_fwd_constraint` for contact forces.
@@ -1321,6 +1325,13 @@ pub struct Model {
     /// Velocity-dependent friction loss per tendon (N).
     /// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
     pub tendon_frictionloss: Vec<f64>,
+    /// Number of distinct kinematic trees spanned by each tendon (§16.10.1).
+    /// 0 = no bodies, 1 = single tree, 2 = two trees. Length: ntendon.
+    pub tendon_treenum: Vec<usize>,
+    /// Packed tree indices for two-tree tendons (§16.10.1).
+    /// For tendon t: `tendon_tree[2*t]` and `tendon_tree[2*t+1]`.
+    /// Unused entries (treenum != 2) are `usize::MAX`. Length: 2 * ntendon.
+    pub tendon_tree: Vec<usize>,
 
     // Tendon wrapping path elements (indexed by wrap_id, grouped by tendon; total length = nwrap)
     /// Wrap object type (Site, Geom, Joint, Pulley).
@@ -2230,6 +2241,53 @@ pub struct Data {
     /// Used for velocity integration, CRBA, force accumulation.
     pub dof_awake_ind: Vec<usize>,
 
+    // ==================== Island Discovery (§16.11) ====================
+    /// Number of constraint islands discovered this step.
+    pub nisland: usize,
+    /// Island index for each tree. -1 if unconstrained singleton. Length: ntree.
+    pub tree_island: Vec<i32>,
+    /// Number of trees per island. Length: ≤ ntree.
+    pub island_ntree: Vec<usize>,
+    /// Start index in `map_itree2tree` for each island. Length: ≤ ntree.
+    pub island_itreeadr: Vec<usize>,
+    /// Packed tree indices grouped by island. Length: ntree.
+    pub map_itree2tree: Vec<usize>,
+    /// Island index for each DOF. -1 if unconstrained. Length: nv.
+    pub dof_island: Vec<i32>,
+    /// Number of DOFs per island. Length: ≤ ntree.
+    pub island_nv: Vec<usize>,
+    /// Start index in `map_idof2dof` for each island. Length: ≤ ntree.
+    pub island_idofadr: Vec<usize>,
+    /// DOF → island-local DOF index. Length: nv.
+    pub map_dof2idof: Vec<i32>,
+    /// Island-local DOF → global DOF. Length: nv.
+    pub map_idof2dof: Vec<usize>,
+    /// Island index for each constraint row. Resized per step.
+    pub efc_island: Vec<i32>,
+    /// Per-island constraint row count. Length: ≤ ntree.
+    pub island_nefc: Vec<usize>,
+    /// Start index in `map_iefc2efc` for each island. Length: ≤ ntree.
+    pub island_iefcadr: Vec<usize>,
+    /// Global constraint row → island-local row. Resized per step.
+    pub map_efc2iefc: Vec<i32>,
+    /// Island-local row → global constraint row. Resized per step.
+    pub map_iefc2efc: Vec<usize>,
+
+    // ==================== Island Scratch Space (§16.11) ====================
+    /// DFS stack for flood-fill. Length: ntree.
+    pub island_scratch_stack: Vec<usize>,
+    /// Per-tree edge counts (CSR rownnz). Length: ntree.
+    pub island_scratch_rownnz: Vec<usize>,
+    /// Per-tree CSR row pointers. Length: ntree.
+    pub island_scratch_rowadr: Vec<usize>,
+    /// CSR column indices (edge targets). Resized per step.
+    pub island_scratch_colind: Vec<usize>,
+
+    // ==================== qpos Change Detection (§16.15) ====================
+    /// Per-tree dirty flag set by mj_kinematics1() when a sleeping body's
+    /// xpos/xquat changed. Read/cleared by mj_check_qpos_changed(). Length: ntree.
+    pub tree_qpos_dirty: Vec<bool>,
+
     // ==================== Time ====================
     /// Simulation time in seconds.
     pub time: f64,
@@ -2452,6 +2510,29 @@ impl Clone for Data {
             parent_awake_ind: self.parent_awake_ind.clone(),
             nparent_awake: self.nparent_awake,
             dof_awake_ind: self.dof_awake_ind.clone(),
+            // Island discovery (§16.11)
+            nisland: self.nisland,
+            tree_island: self.tree_island.clone(),
+            island_ntree: self.island_ntree.clone(),
+            island_itreeadr: self.island_itreeadr.clone(),
+            map_itree2tree: self.map_itree2tree.clone(),
+            dof_island: self.dof_island.clone(),
+            island_nv: self.island_nv.clone(),
+            island_idofadr: self.island_idofadr.clone(),
+            map_dof2idof: self.map_dof2idof.clone(),
+            map_idof2dof: self.map_idof2dof.clone(),
+            efc_island: self.efc_island.clone(),
+            island_nefc: self.island_nefc.clone(),
+            island_iefcadr: self.island_iefcadr.clone(),
+            map_efc2iefc: self.map_efc2iefc.clone(),
+            map_iefc2efc: self.map_iefc2efc.clone(),
+            // Island scratch
+            island_scratch_stack: self.island_scratch_stack.clone(),
+            island_scratch_rownnz: self.island_scratch_rownnz.clone(),
+            island_scratch_rowadr: self.island_scratch_rowadr.clone(),
+            island_scratch_colind: self.island_scratch_colind.clone(),
+            // qpos change detection
+            tree_qpos_dirty: self.tree_qpos_dirty.clone(),
             // Time
             time: self.time,
             // Scratch buffers
@@ -2651,6 +2732,8 @@ impl Model {
             tendon_solref: vec![],
             tendon_solimp: vec![],
             tendon_frictionloss: vec![],
+            tendon_treenum: vec![],
+            tendon_tree: vec![],
             wrap_type: vec![],
             wrap_objid: vec![],
             wrap_prm: vec![],
@@ -2983,6 +3066,32 @@ impl Model {
             parent_awake_ind: vec![0; self.nbody],
             nparent_awake: 0,
             dof_awake_ind: vec![0; self.nv],
+
+            // Island discovery arrays (§16.11) — worst-case: each tree is its own island.
+            nisland: 0,
+            tree_island: vec![-1_i32; self.ntree],
+            island_ntree: vec![0; self.ntree],
+            island_itreeadr: vec![0; self.ntree],
+            map_itree2tree: vec![0; self.ntree],
+            dof_island: vec![-1_i32; self.nv],
+            island_nv: vec![0; self.ntree],
+            island_idofadr: vec![0; self.ntree],
+            map_dof2idof: vec![-1_i32; self.nv],
+            map_idof2dof: vec![0; self.nv],
+            efc_island: Vec::new(),
+            island_nefc: vec![0; self.ntree],
+            island_iefcadr: vec![0; self.ntree],
+            map_efc2iefc: Vec::new(),
+            map_iefc2efc: Vec::new(),
+
+            // Island scratch space (§16.11)
+            island_scratch_stack: vec![0; self.ntree],
+            island_scratch_rownnz: vec![0; self.ntree],
+            island_scratch_rowadr: vec![0; self.ntree],
+            island_scratch_colind: Vec::new(),
+
+            // qpos change detection (§16.15)
+            tree_qpos_dirty: vec![false; self.ntree],
 
             // Time
             time: 0.0,

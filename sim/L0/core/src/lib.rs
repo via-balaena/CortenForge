@@ -120,6 +120,7 @@ pub use mujoco_pipeline::{
     Contact,
     ContactPair,
     // MuJoCo-aligned Model/Data architecture (core API)
+    DISABLE_ISLAND,
     Data,
     ENABLE_SLEEP,
     // Equality constraint types
