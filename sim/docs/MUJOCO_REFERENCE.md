@@ -13,21 +13,27 @@ mutable `Data`.
 ```
 Data::step():
   1. forward()
-     a. mj_fwd_position    — Forward kinematics
+     [sleep] mj_wake            — Wake sleeping bodies (user forces, contacts, tendons, equality)
+             mj_sleep            — Sleep state machine (countdown → sleep transition)
+             mj_island           — Island discovery (DFS flood-fill over constraints)
+     a. mj_fwd_position    — Forward kinematics (skips sleeping bodies)
         mj_fwd_tendon       — Tendon lengths + Jacobians (fixed tendons)
-        mj_collision        — Broad/narrow phase collision detection
-     b. mj_fwd_velocity    — Body + tendon velocities from joint velocities
+        mj_collision        — Broad/narrow phase collision detection (skips sleeping pairs)
+     b. mj_fwd_velocity    — Body + tendon velocities (skips sleeping DOFs)
         mj_actuator_length  — Actuator length/velocity from transmission state
      c. mj_fwd_actuation   — Activation dynamics (act_dot) + gain/bias force + clamping
-     d. mj_crba            — Mass matrix (Composite Rigid Body Algorithm)
+     d. mj_crba            — Mass matrix (selective CRBA, skips sleeping subtrees)
      e. mj_rne             — Bias forces (Recursive Newton-Euler)
-     f. mj_fwd_passive     — Spring, damper, friction loss forces (joints + tendons)
-     g. mj_fwd_constraint  — Joint/tendon limits, equality constraints, contact PGS
+     f. mj_fwd_passive     — Spring, damper, friction loss forces (skips sleeping DOFs)
+     g. mj_fwd_constraint  — Joint/tendon limits, equality, contact PGS
+        mj_fwd_constraint_islands — Per-island block-diagonal solving (when islands > 1)
      h. mj_fwd_acceleration — Solve M*qacc = f (explicit) or implicit velocity update
   2a. integrate()          — Activation integration + semi-implicit Euler or implicit
                               (for Euler / ImplicitSpringDamper integrators)
+                              (skips sleeping joints for position/velocity integration)
   2b. mj_runge_kutta()     — True 4-stage RK4 with Butcher tableau, including
                               activation state (for RungeKutta4 integrator)
+                              (sleep disabled for RK4; warning emitted)
 ```
 
 ---
@@ -995,6 +1001,157 @@ Defaults: `[0.9, 0.95, 0.001, 0.5, 2.0]`
 
 This provides soft initial contact (impedance = 0.9) that stiffens as
 penetration increases (impedance -> 0.95), over a transition zone of 0.001 m.
+
+---
+
+## Sleeping / Body Deactivation
+
+Tree-based sleeping system that deactivates stationary bodies to reduce
+computation. Matches MuJoCo's `mj_checkSleep` / `mj_island` architecture.
+
+### Tree Enumeration
+
+Bodies are partitioned into kinematic trees (connected components of
+`body_parent`). Model stores per-tree metadata:
+
+```
+ntree                    — number of kinematic trees
+tree_body_adr[t]         — first body index for tree t
+tree_body_num[t]         — number of bodies in tree t
+tree_dof_adr[t]          — first DOF index for tree t
+tree_dof_num[t]          — number of DOFs in tree t
+body_treeid[b]           — tree index for body b
+dof_treeid[d]            — tree index for DOF d
+```
+
+### Sleep Policy Resolution
+
+Each tree gets a `SleepPolicy` resolved at model build time:
+
+```python
+for tree in range(ntree):
+    if tree has actuators or multi-tree tendons:
+        policy = AutoNever       # cannot sleep (actuation coupling)
+    else:
+        policy = AutoAllowed     # may sleep
+    # User overrides (from MJCF body/@sleep attribute):
+    if any body in tree has sleep="never":   policy = Never
+    if any body in tree has sleep="allowed": policy = Allowed
+    if any body in tree has sleep="init":    policy = Init  # starts asleep
+```
+
+### Sleep State Machine (`mj_sleep`)
+
+```python
+for tree in range(ntree):
+    if not can_sleep(tree):
+        continue
+    # Check if all DOFs are below threshold
+    all_slow = True
+    for d in tree_dofs(tree):
+        if abs(qvel[d]) > sleep_tolerance * dof_length[d]:
+            all_slow = False
+            break
+    if all_slow:
+        tree_asleep[tree] += 1            # advance countdown toward -1
+        if tree_asleep[tree] >= -1:
+            sleep_trees(model, data, [tree])  # transition to sleep
+    else:
+        tree_asleep[tree] = -(1 + MIN_AWAKE)  # reset countdown
+```
+
+`sleep_trees()` zeros: `qvel`, `qacc`, `cvel`, `cacc_bias`, `cfrc_bias`,
+`qfrc_bias`, `qfrc_passive`, `qfrc_constraint`, `qfrc_actuator` for all
+DOFs/bodies in the tree.
+
+### Island Discovery (`mj_island`)
+
+DFS flood-fill over tree-tree adjacency graph. Two trees are adjacent if
+they share a contact, tendon coupling, or equality constraint:
+
+```python
+# Build adjacency from active constraints
+for each contact between body_a, body_b:
+    tree_a, tree_b = body_treeid[body_a], body_treeid[body_b]
+    if tree_a != tree_b:
+        adjacency[tree_a].add(tree_b)
+        adjacency[tree_b].add(tree_a)
+# Similar for tendons and equality constraints
+
+# DFS flood-fill to assign island IDs
+island_id = 0
+for tree in range(ntree):
+    if not visited[tree]:
+        dfs_assign(tree, island_id)
+        island_id += 1
+```
+
+Island arrays: `tree_island[t]`, `island_ntree[i]`, `dof_island[d]`,
+`contact_island[c]`, etc.
+
+### Wake Detection
+
+```python
+# mj_wake: check user forces on sleeping bodies
+for b in sleeping_bodies:
+    if xfrc_applied[b] != 0 or qfrc_applied[dofs_of(b)] != 0:   # bytewise
+        wake_island(island_of(tree_of(b)))
+
+# mj_wake_collision: check contacts between sleeping/awake bodies
+for contact in contacts:
+    if one_sleeping(contact) and one_awake(contact):
+        wake_island(island_of(sleeping_tree))
+
+# mj_wake_tendon: active limited tendons coupling sleeping ↔ awake trees
+# mj_wake_equality: equality constraints to awake trees
+# qpos change: tree_qpos_dirty flag set by mj_kinematics1()
+```
+
+### Pipeline Skip Logic
+
+When `ENABLE_SLEEP` is set, pipeline stages use awake-index indirection
+(`body_awake_ind`, `dof_awake_ind`, `parent_awake_ind`) for O(awake) iteration:
+
+| Stage | Skip behavior |
+|-------|---------------|
+| FK (`mj_fwd_position`) | Sleeping bodies: poses frozen, not recomputed |
+| Collision (`mj_collision`) | Both geoms asleep: skip narrow-phase |
+| Velocity (`mj_fwd_velocity`) | Sleeping DOFs: spatial velocity not updated |
+| Passive forces (`mj_fwd_passive`) | Sleeping DOFs: spring/damper/friction skipped |
+| Integration | Sleeping joints: qpos/qvel not updated |
+| Sensors | Sleeping bodies: return frozen values (not zeroed) |
+
+### Selective CRBA + Partial LDL (Phase C)
+
+`mj_crba` with sleep filter:
+- Phase 2 (backward pass): only accumulates composite inertia for awake bodies
+- Phase 3 (build M): only computes mass matrix entries for awake DOFs
+- Sleeping DOFs retain their last-awake `qM` entries
+
+`mj_factor_sparse_selective`: dispatches to partial factorization:
+```python
+if nv_awake < nv:
+    # Only factorize awake DOF blocks
+    for i in awake_dofs (leaves to root):
+        # Same elimination as mj_factor_sparse, but restricted to awake DOFs
+        # Tree independence guarantees no cross-contamination
+else:
+    mj_factor_sparse(model, data)  # full factorization
+```
+
+### Per-Island Constraint Solving
+
+When `nisland > 1`, `mj_fwd_constraint_islands` replaces the global solver:
+
+```python
+for island in range(nisland):
+    # Gather island-local DOFs, contacts, constraints
+    # Build small island-local Delassus matrix (island_nv × island_nv)
+    # Solve independently via PGS/CG
+    # Scatter forces back to global arrays
+```
+
+Single-island scenes use the global solver path (no overhead).
 
 ---
 

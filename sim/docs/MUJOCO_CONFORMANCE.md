@@ -95,6 +95,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `body/@pos` | ✓ | ✓ | Position |
 | `body/@quat` | ✓ | ✓ | Orientation |
 | `body/@mocap` | ✓ | ✓ | Mocap body: kinematic input channel, world-child with no joints, FK override from `Data::mocap_pos`/`mocap_quat` |
+| `body/@sleep` | ✓ | ✓ | Sleep policy: `auto` (default), `allowed`, `never`, `init` |
 | `body/@euler` | ✓ | ✓ | Euler angles |
 | `body/@axisangle` | ✓ | ⚠️ | Check implementation |
 | `body/@xyaxes` | ✓ | ⚠️ | Check implementation |
@@ -335,7 +336,8 @@ sim/L0/tests/
 │   ├── site_transmission.rs
 │   ├── spatial_tendons.rs
 │   ├── validation.rs
-│   └── derivatives.rs
+│   ├── derivatives.rs
+│   └── sleeping.rs
 └── assets/
     ├── mujoco_menagerie/  (git submodule)
     └── dm_control/        (git submodule)
@@ -462,6 +464,45 @@ Use `"implicitspringdamper"` for the legacy diagonal-only mode.
 **Design note (KA#8):** ImplicitFast analytical derivatives use the full `qDeriv`
 (including Coriolis from `mjd_smooth_vel`) in the RHS but the fast-approximated LHS
 (without Coriolis). This matches MuJoCo's intentional design.
+
+---
+
+### §16 — Sleeping / Body Deactivation
+
+**Status:** ✅ Complete (Phases A, B, C — 93 integration tests)
+
+Full tree-based sleeping/deactivation system matching MuJoCo's model, implemented
+in three phases with comprehensive test coverage.
+
+| Phase | Scope | Tests | Status |
+|-------|-------|-------|--------|
+| A | Per-tree sleeping (countdown, wake detection, pipeline skip, RK4 guard) | 27 | ✅ |
+| B | Island discovery (DFS flood-fill), cross-tree coupling, qpos change detection, per-island solving | 33 | ✅ |
+| C | Selective CRBA, partial LDL factorization, awake-index iteration, island-local Delassus | 33 | ✅ |
+
+**Key verification properties:**
+
+| Property | Test approach | Status |
+|----------|---------------|--------|
+| All-awake bit-identity | Sleep-enabled model with all bodies awake matches pre-sleep code bit-identically | ✅ |
+| Selective CRBA correctness | Awake DOFs' `qM` entries match full CRBA; sleeping DOFs' `qM` preserved | ✅ |
+| Partial LDL correctness | Awake DOFs' `qLD` matches full factorization; sleeping `qLD` preserved; SPD preserved | ✅ |
+| Per-island solve equivalence | Island-local solve matches global solve forces within tolerance | ✅ |
+| Energy continuity | Total energy continuous across sleep/wake transitions | ✅ |
+| Indirection equivalence | Awake-index loops match branch-per-body/DOF loops bit-identically | ✅ |
+| Per-function bit-identity | Each pipeline function individually bit-identical when all bodies awake | ✅ |
+
+**Test categories:**
+- Sleep state machine: countdown timer, policy resolution, init-sleep validation
+- Wake conditions: user forces (bytewise check), contacts, tendons, equality, qpos change
+- Pipeline skip: FK, collision, velocity, passive forces, integration, sensors
+- Island discovery: singleton, chain, contact coupling, disable flag
+- Sleep-cycle linked list: two-tree, single-tree, wake propagation
+- Selective CRBA: awake-identical, sleeping-preserved, wake-recomputes, multi-tree, deep chain
+- Partial LDL: awake-identical, sleeping-preserved, solve-correct, SPD-preserved, multi-tree independence
+- API: `Data::sleep_state()`, `Data::tree_awake()`, `Data::nisland()`
+
+**Files:** `sim/L0/tests/integration/sleeping.rs` (93 tests), `sim/L0/core/src/mujoco_pipeline.rs` (sleep implementation)
 
 ---
 

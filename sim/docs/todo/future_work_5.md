@@ -1423,7 +1423,8 @@ force or contact wakes them.
 
 A prior sleep implementation (`Body::is_sleeping`, `put_to_sleep()`, `wake_up()`)
 existed in the old World/Stepper architecture but was removed during the Model/Data
-refactor (see MUJOCO_GAP_ANALYSIS.md §"Sleeping Bodies — REMOVED").
+refactor. The current implementation is a ground-up redesign for the MuJoCo pipeline
+(see MUJOCO_GAP_ANALYSIS.md §"Sleeping / Body Deactivation").
 
 #### MuJoCo Reference
 
@@ -1473,13 +1474,13 @@ Phase B adds full island discovery for multi-tree constraint coupling.
 
 #### Scope Exclusions
 
-- **Deformable body sleeping:** Deferred (see Appendix: "Sleeping bodies in
-  deformable"). Trees containing deformable bodies receive `NEVER` policy.
-- **Full `sleep="init"` with island validation:** Phase A supports per-tree
-  `sleep="init"` without cross-tree island consistency checks. Phase B adds
-  island-level validation.
-- **Sparse per-island constraint solving:** Phase B opportunity. Phase A
-  skips entire trees but does not restructure constraint solving per-island.
+- **Deformable body sleeping:** ✅ Implemented (Phase C). Trees containing
+  deformable bodies receive `AutoNever` policy (automatic prevention).
+- **Full `sleep="init"` with island validation:** ✅ Implemented (Phase B).
+  Union-find validation ensures init-sleep trees form consistent islands.
+- **Per-island constraint solving:** ✅ Implemented (Phase B/C).
+  `mj_fwd_constraint_islands` builds per-island Delassus matrices and solves
+  independently via block-diagonal decomposition.
 
 #### Specification
 
@@ -6229,7 +6230,7 @@ Items acknowledged but not prioritized for Phase 2:
 | `<extension>` element (plugins) | Large design effort, no immediate need. |
 | `<visual>` element | L1 concern (sim-bevy), not core physics. |
 | `<statistic>` element | Auto-computed model stats. Informational only. |
-| Sleeping bodies in deformable | Depends on #16. (#11 deformable pipeline ✅ complete) |
+| ~~Sleeping bodies in deformable~~ | ✅ Complete (Phase C — trees with deformables receive `AutoNever` policy) |
 | ~~Separate `qLD_diag` field (diagonal layout divergence)~~ | ✅ **Fixed.** Unified diagonal layout implemented: D[i,i] is now stored as the last element of each CSR row in `qLD_data` (`qLD_data[rowadr[i] + rownnz[i] - 1]`), eliminating the separate `qLD_diag` array. `qLD_diag_inv[i] = 1/D[i,i]` is precomputed during factorization so the solve phase uses multiply (`x[i] *= diag_inv[i]`) instead of divide. This matches MuJoCo's inline diagonal storage and removes the layout divergence. Note: pseudocode in §16.29.5 (C3b partial factorization) still references the old `qLD_diag` field name for historical context; the implementation uses the unified layout. |
 | Sparse mass matrix (deeper MuJoCo parity) | Phase 1 #1/#2 cover the main path. Full sparse pipeline is diminishing returns. |
 | MuJoCo conformance test suite | Important but orthogonal to features — can be built incrementally. Without this, acceptance criteria for items #1–#17 rely on ad-hoc verification rather than systematic comparison against MuJoCo reference outputs. Consider bootstrapping a minimal conformance harness (load model, step N times, compare state vectors against MuJoCo ground truth) as infrastructure that benefits all items. |

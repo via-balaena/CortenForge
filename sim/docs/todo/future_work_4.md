@@ -3695,9 +3695,9 @@ for compilation. The `ImplicitFast` arms use `cholesky_solve_in_place` on
    reusing a previously computed factorization when `skipfactor > 0`, amortizing
    cost across steps. Not implemented. Can be added later as an optimization.
 
-5. **No sleep filtering:** MuJoCo filters awake/asleep DOFs to reduce system
-   size. Not implemented (sleeping is Task #16). When sleeping is added, the
-   implicit solver should operate only on awake DOFs.
+5. **Sleep filtering:** ✅ Implemented (Task #16). Sleeping system (Phases A/B/C)
+   filters awake/asleep DOFs via selective CRBA and partial LDL factorization.
+   Awake-index indirection arrays (`dof_awake_ind`) enable O(awake) iteration.
 
 6. **Constraint force derivatives excluded:** Matches MuJoCo — neither `implicit`
    nor `implicitfast` includes `∂(qfrc_constraint)/∂(qvel)`.
