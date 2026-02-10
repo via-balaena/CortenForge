@@ -32,7 +32,7 @@ Priority is **Correctness + RL Impact**, tie-broken by inverse Effort.
 | 13 | Full implicit integrator | Low | Medium | L | None | [future_work_4.md](./future_work_4.md) | ✅ Complete |
 | 14 | Keyframes, mocap bodies, user callbacks | Medium | Low | L | None | [future_work_4.md](./future_work_4.md) | ✅ Complete |
 | 15 | Newton solver | Low | Low | XL | None | [future_work_5.md](./future_work_5.md) | ✅ Phase C Complete |
-| 16 | Sleeping / body deactivation | Low | Low | M | None | [future_work_5.md](./future_work_5.md) | |
+| 16 | Sleeping / body deactivation | Low | Low | XL | None | [future_work_5.md](./future_work_5.md) | ✅ Complete |
 | 17 | SOR relaxation for PGS | Low | Low | S | None | [future_work_5.md](./future_work_5.md) | |
 
 ## Dependency Graph

@@ -224,6 +224,94 @@ fn compute_body_spatial_inertia(
     crb
 }
 
+/// Shift a 6×6 spatial inertia from one reference point to another.
+///
+/// Given Φ (spatial inertia about point A in world frame) and
+/// d = xpos_child - xpos_parent (vector from parent to child origin),
+/// returns the equivalent spatial inertia about the parent's origin.
+///
+/// Uses the approach: extract (I_COM, m, h) from Φ_A, then recompute
+/// Φ_B with h_new = h + d (since COM - parent = (COM - child) + (child - parent)).
+///
+/// Convention: rows 0-2 = angular, rows 3-5 = linear.
+/// Off-diagonal coupling block (upper-right 3x3) = m * skew(h).
+#[allow(clippy::similar_names)]
+fn shift_spatial_inertia(phi: &Matrix6<f64>, d: &Vector3<f64>) -> Matrix6<f64> {
+    // Extract mass from lower-right diagonal
+    let m = phi[(3, 3)];
+    if m == 0.0 {
+        return *phi;
+    }
+
+    // Extract m*h from coupling block: H = m*skew(h)
+    // skew(h) = [0, -hz, hy; hz, 0, -hx; -hy, hx, 0]
+    // So: phi[(2,4)] = m*hx, phi[(0,5)] = m*hy, phi[(1,3)] = m*hz
+    let mh_x = phi[(2, 4)];
+    let mh_y = phi[(0, 5)];
+    let mh_z = phi[(1, 3)];
+    let h_x = mh_x / m;
+    let h_y = mh_y / m;
+    let h_z = mh_z / m;
+
+    // Extract I_about_A (rotational block, upper-left 3x3)
+    // Then reverse parallel axis to get I_COM:
+    // I_COM = I_A - m*(|h|²I₃ - h*hᵀ)
+    let hh = h_x * h_x + h_y * h_y + h_z * h_z;
+    let mut i_com = Matrix3::zeros();
+    for row in 0..3 {
+        for col in 0..3 {
+            let h_rc = [h_x, h_y, h_z];
+            let delta = if row == col { 1.0 } else { 0.0 };
+            i_com[(row, col)] = phi[(row, col)] - m * (hh * delta - h_rc[row] * h_rc[col]);
+        }
+    }
+
+    // Compute new h: h_new = h + d (COM offset from parent origin)
+    let h_new_x = h_x + d.x;
+    let h_new_y = h_y + d.y;
+    let h_new_z = h_z + d.z;
+
+    // Build new 6x6 spatial inertia about parent origin
+    let h_new = [h_new_x, h_new_y, h_new_z];
+    let hh_new = h_new_x * h_new_x + h_new_y * h_new_y + h_new_z * h_new_z;
+
+    let mut result = Matrix6::zeros();
+
+    // Upper-left 3x3: I_parent = I_COM + m*(|h_new|²I₃ - h_new*h_newᵀ)
+    for row in 0..3 {
+        for col in 0..3 {
+            let delta = if row == col { 1.0 } else { 0.0 };
+            result[(row, col)] = i_com[(row, col)] + m * (hh_new * delta - h_new[row] * h_new[col]);
+        }
+    }
+
+    // Lower-right 3x3: mass
+    result[(3, 3)] = m;
+    result[(4, 4)] = m;
+    result[(5, 5)] = m;
+
+    // Off-diagonal coupling: m * skew(h_new)
+    let mhn_x = m * h_new_x;
+    let mhn_y = m * h_new_y;
+    let mhn_z = m * h_new_z;
+
+    result[(0, 4)] = -mhn_z;
+    result[(0, 5)] = mhn_y;
+    result[(1, 3)] = mhn_z;
+    result[(1, 5)] = -mhn_x;
+    result[(2, 3)] = -mhn_y;
+    result[(2, 4)] = mhn_x;
+    // Transpose (lower-left)
+    result[(4, 0)] = -mhn_z;
+    result[(5, 0)] = mhn_y;
+    result[(3, 1)] = mhn_z;
+    result[(5, 1)] = -mhn_x;
+    result[(3, 2)] = -mhn_y;
+    result[(4, 2)] = mhn_x;
+
+    result
+}
+
 // ============================================================================
 // MuJoCo-Aligned Model/Data Architecture (Phase 1)
 // ============================================================================
@@ -708,6 +796,50 @@ pub enum MjObjectType {
     Tendon,
 }
 
+/// Per-tree sleep policy controlling automatic body deactivation (§16.0).
+///
+/// Resolved during model construction: `Auto` variants are computed from
+/// tree properties (actuators, tendons, deformable bodies); user variants
+/// come from the MJCF `<body sleep="...">` attribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepPolicy {
+    /// Compiler decides (initial state, resolved before use).
+    Auto,
+    /// Compiler determined: never sleep (has actuators, multi-tree tendons, etc.).
+    AutoNever,
+    /// Compiler determined: allowed to sleep.
+    AutoAllowed,
+    /// User policy: never sleep. XML: `sleep="never"`.
+    Never,
+    /// User policy: allowed to sleep. XML: `sleep="allowed"`.
+    Allowed,
+    /// User policy: start asleep. XML: `sleep="init"`.
+    Init,
+}
+
+/// Per-body sleep state for efficient pipeline gating (§16.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepState {
+    /// Body 0 (world) or body with no DOFs. Always computed, never sleeps.
+    Static,
+    /// Body is asleep. Position/velocity stages are skipped.
+    Asleep,
+    /// Body is awake. Full pipeline computation.
+    Awake,
+}
+
+/// Enable flag bit for body sleeping/deactivation.
+/// Set via MJCF `<option><flag sleep="enable"/>`.
+pub const ENABLE_SLEEP: u32 = 1 << 5;
+
+/// Minimum number of consecutive sub-threshold timesteps before a tree
+/// can transition to sleep. Matches MuJoCo's `mjMINAWAKE = 10`.
+pub const MIN_AWAKE: i32 = 10;
+
+/// Disable-flag bit for island discovery (§16.10.1).
+/// When set, `mj_island()` is a no-op and each tree is its own island.
+pub const DISABLE_ISLAND: u32 = 1 << 18;
+
 /// Contact constraint solver algorithm.
 ///
 /// This selects the solver used in `mj_fwd_constraint` for contact forces.
@@ -854,6 +986,84 @@ impl std::fmt::Display for StepError {
     }
 }
 
+/// Errors during Init-sleep validation (§16.24).
+#[derive(Debug, Clone)]
+pub enum SleepError {
+    /// Init-sleep tree has no DOFs (cannot meaningfully sleep).
+    InitSleepInvalidTree {
+        /// The tree index that failed validation.
+        tree: usize,
+    },
+    /// Statically-coupled tree group contains a mix of Init and non-Init
+    /// trees. All trees connected by equality constraints or multi-tree
+    /// tendons must have the same Init policy.
+    InitSleepMixedIsland {
+        /// The union-find representative tree for the mixed group.
+        group_root: usize,
+    },
+}
+
+impl std::fmt::Display for SleepError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InitSleepInvalidTree { tree } => {
+                write!(f, "Init-sleep tree {tree} has no DOFs")
+            }
+            Self::InitSleepMixedIsland { group_root } => {
+                write!(
+                    f,
+                    "mixed Init/non-Init trees in coupled group (root={group_root})"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SleepError {}
+
+/// Disjoint-set / union-find for Init-sleep validation (§16.24).
+///
+/// Path compression + union by rank. Used to group trees connected
+/// by equality constraints and multi-tree tendons.
+struct UnionFind {
+    parent: Vec<usize>,
+    rank: Vec<usize>,
+}
+
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        Self {
+            parent: (0..n).collect(),
+            rank: vec![0; n],
+        }
+    }
+
+    fn find(&mut self, mut x: usize) -> usize {
+        while self.parent[x] != x {
+            self.parent[x] = self.parent[self.parent[x]]; // Path compression
+            x = self.parent[x];
+        }
+        x
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra == rb {
+            return;
+        }
+        // Union by rank
+        match self.rank[ra].cmp(&self.rank[rb]) {
+            std::cmp::Ordering::Less => self.parent[ra] = rb,
+            std::cmp::Ordering::Greater => self.parent[rb] = ra,
+            std::cmp::Ordering::Equal => {
+                self.parent[rb] = ra;
+                self.rank[ra] += 1;
+            }
+        }
+    }
+}
+
 impl std::error::Error for StepError {}
 
 /// Error returned by state reset operations.
@@ -926,6 +1136,7 @@ pub struct Keyframe {
 /// - `geom_*` arrays indexed by `geom_id`
 /// - `actuator_*` arrays indexed by `actuator_id`
 #[derive(Debug, Clone)]
+#[allow(non_snake_case)] // qLD_* matches MuJoCo naming convention
 pub struct Model {
     // ==================== Metadata ====================
     /// Model name (from MJCF model attribute or URDF robot name).
@@ -952,6 +1163,31 @@ pub struct Model {
     pub nmocap: usize,
     /// Number of keyframes parsed from MJCF `<keyframe>`.
     pub nkeyframe: usize,
+
+    // ==================== Kinematic Trees (§16.0) ====================
+    /// Number of kinematic trees (excluding world body).
+    pub ntree: usize,
+    /// First body index for tree `t` (length `ntree`).
+    pub tree_body_adr: Vec<usize>,
+    /// Number of bodies in tree `t` (length `ntree`).
+    pub tree_body_num: Vec<usize>,
+    /// First DOF index for tree `t` (length `ntree`).
+    pub tree_dof_adr: Vec<usize>,
+    /// Number of DOFs in tree `t` (length `ntree`).
+    pub tree_dof_num: Vec<usize>,
+    /// Tree index for each body (body 0 → `usize::MAX` sentinel, length `nbody`).
+    pub body_treeid: Vec<usize>,
+    /// Tree index for each DOF (length `nv`).
+    pub dof_treeid: Vec<usize>,
+    /// Per-tree sleep policy (computed at model build, length `ntree`).
+    pub tree_sleep_policy: Vec<SleepPolicy>,
+    /// Per-DOF length scale for sleep threshold normalization (length `nv`).
+    /// Translational DOFs = 1.0; rotational DOFs = mechanism length estimate.
+    pub dof_length: Vec<f64>,
+    /// Sleep velocity tolerance. Bodies with all DOF velocities below
+    /// `sleep_tolerance * dof_length[dof]` for `MIN_AWAKE` consecutive steps
+    /// are eligible for sleep. Default: `1e-4`. Units: `[m/s]`.
+    pub sleep_tolerance: f64,
 
     // ==================== Body Tree (indexed by body_id, 0 = world) ====================
     /// Parent body index (0 for root bodies attached to world).
@@ -1056,6 +1292,27 @@ pub struct Model {
     /// Applied as: τ_friction = -frictionloss * tanh(qvel * friction_smoothing)
     /// where the tanh provides a smooth approximation to sign(qvel) for numerical stability.
     pub dof_frictionloss: Vec<f64>,
+
+    // ==================== Sparse LDL CSR Metadata (immutable, computed once at build) =====
+    // The sparsity pattern of the LDL factorization is determined by `dof_parent` chains
+    // and is invariant across simulation steps. Column indices and row layout are computed
+    // once; only the values in `Data::qLD_data` change each step.
+    //
+    // Each row stores off-diagonal entries (ancestors) followed by the diagonal (self-index)
+    // as the last element, matching MuJoCo's `mj_factorI` layout.
+    /// Starting address of row k's entries in `Data::qLD_data` (length `nv`).
+    pub qLD_rowadr: Vec<usize>,
+    /// Total non-zeros in row k, including diagonal (length `nv`).
+    /// `rownnz[i] - 1` = off-diagonal count = depth of DOF k in `dof_parent` tree.
+    /// `rownnz[i] >= 1` always (at minimum the diagonal entry).
+    pub qLD_rownnz: Vec<usize>,
+    /// Column indices for flat CSR storage (length `qLD_nnz`).
+    /// `qLD_colind[qLD_rowadr[k] + j]` = column of j-th entry in row k.
+    /// Off-diagonals sorted ascending (ancestors from root toward DOF k),
+    /// followed by self-index `k` as the last element (diagonal).
+    pub qLD_colind: Vec<usize>,
+    /// Total number of non-zeros across all rows (including diagonals).
+    pub qLD_nnz: usize,
 
     // ==================== Geoms (indexed by geom_id) ====================
     /// Geometry type.
@@ -1256,6 +1513,13 @@ pub struct Model {
     /// Velocity-dependent friction loss per tendon (N).
     /// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
     pub tendon_frictionloss: Vec<f64>,
+    /// Number of distinct kinematic trees spanned by each tendon (§16.10.1).
+    /// 0 = no bodies, 1 = single tree, 2 = two trees. Length: ntendon.
+    pub tendon_treenum: Vec<usize>,
+    /// Packed tree indices for two-tree tendons (§16.10.1).
+    /// For tendon t: `tendon_tree[2*t]` and `tendon_tree[2*t+1]`.
+    /// Unused entries (treenum != 2) are `usize::MAX`. Length: 2 * ntendon.
+    pub tendon_tree: Vec<usize>,
 
     // Tendon wrapping path elements (indexed by wrap_id, grouped by tendon; total length = nwrap)
     /// Wrap object type (Site, Geom, Joint, Pulley).
@@ -1948,17 +2212,24 @@ pub struct Data {
     /// M = L^T D L where L is unit lower triangular and D is diagonal.
     /// For tree-structured robots, this achieves O(n) factorization and solve.
     ///
-    /// Layout: qLD stores both L and D compactly:
-    /// - `qLD_diag\[i\] = D\[i,i\]` (diagonal of D)
-    /// - `qLD\[i\]` contains non-zero entries of `L\[i, :\]` below diagonal
+    /// Layout matches MuJoCo's combined format — each CSR row stores:
+    /// - Off-diagonal L entries at positions `0..rownnz[i]-1`
+    /// - Diagonal D\[i,i\] at position `rownnz[i]-1` (last element)
     ///
     /// The sparsity pattern is determined by the kinematic tree:
-    /// `L[i,j]` is non-zero only if DOF j is an ancestor of DOF i.
-    pub qLD_diag: DVector<f64>,
-    /// Sparse lower triangular factor L (non-zero entries only).
-    /// `qLD_L[i] = [(col_idx, value), ...]` for row i, sorted by col_idx.
-    /// For tree robots, each row has at most depth(i) non-zeros.
-    pub qLD_L: Vec<Vec<(usize, f64)>>,
+    /// `L\[i,j\]` is non-zero only if DOF j is an ancestor of DOF i.
+    ///
+    /// Use `data.qld_diag(model, i)` to read D\[i,i\] from the CSR data.
+    ///
+    /// Flat CSR value buffer (off-diagonal L + diagonal D).
+    /// Layout defined by `Model::qLD_rowadr`/`qLD_rownnz`/`qLD_colind`.
+    /// Length: `model.qLD_nnz`.
+    pub qLD_data: Vec<f64>,
+    /// Precomputed inverse diagonal: `qLD_diag_inv[i] = 1.0 / D\[i,i\]`.
+    /// Computed during `mj_factor_sparse()`. Used by `mj_solve_sparse()` to
+    /// replace division with multiplication (matching MuJoCo's `qLDiagInv`).
+    /// Length: `nv`.
+    pub qLD_diag_inv: Vec<f64>,
     /// Whether sparse factorization is valid and should be used.
     /// Set to true after `mj_factor_sparse()` is called.
     pub qLD_valid: bool,
@@ -2136,6 +2407,85 @@ pub struct Data {
     #[cfg(feature = "deformable")]
     pub deformable_contacts: Vec<DeformableContact>,
 
+    // ==================== Sleep State (§16.1) ====================
+    /// Per-tree sleep timer (length `ntree`).
+    /// `< 0`: Tree is awake. Countdown from `-(1 + MIN_AWAKE)` toward `-1`.
+    /// `≥ 0`: Tree is asleep (self-link in Phase A).
+    pub tree_asleep: Vec<i32>,
+    /// Per-tree awake flag for fast branching (length `ntree`).
+    pub tree_awake: Vec<bool>,
+    /// Per-body sleep state for efficient per-body queries (length `nbody`).
+    pub body_sleep_state: Vec<SleepState>,
+    /// Number of awake trees (diagnostics / early-exit).
+    pub ntree_awake: usize,
+    /// Number of awake DOFs (diagnostics / performance monitoring).
+    pub nv_awake: usize,
+
+    // ==================== Awake-Index Indirection (§16.17) ====================
+    /// Sorted indices of awake + static bodies (length ≤ nbody).
+    /// Used for cache-friendly iteration in FK, velocity kinematics, etc.
+    pub body_awake_ind: Vec<usize>,
+    /// Number of entries in `body_awake_ind`.
+    pub nbody_awake: usize,
+    /// Sorted indices of bodies whose parent is awake or static (length ≤ nbody).
+    /// Used for backward-pass loops (subtree COM, RNE).
+    pub parent_awake_ind: Vec<usize>,
+    /// Number of entries in `parent_awake_ind`.
+    pub nparent_awake: usize,
+    /// Sorted indices of awake DOFs (length ≤ nv).
+    /// Used for velocity integration, CRBA, force accumulation.
+    pub dof_awake_ind: Vec<usize>,
+
+    // ==================== Island Discovery (§16.11) ====================
+    /// Number of constraint islands discovered this step.
+    pub nisland: usize,
+    /// Island index for each tree. -1 if unconstrained singleton. Length: ntree.
+    pub tree_island: Vec<i32>,
+    /// Number of trees per island. Length: ≤ ntree.
+    pub island_ntree: Vec<usize>,
+    /// Start index in `map_itree2tree` for each island. Length: ≤ ntree.
+    pub island_itreeadr: Vec<usize>,
+    /// Packed tree indices grouped by island. Length: ntree.
+    pub map_itree2tree: Vec<usize>,
+    /// Island index for each DOF. -1 if unconstrained. Length: nv.
+    pub dof_island: Vec<i32>,
+    /// Number of DOFs per island. Length: ≤ ntree.
+    pub island_nv: Vec<usize>,
+    /// Start index in `map_idof2dof` for each island. Length: ≤ ntree.
+    pub island_idofadr: Vec<usize>,
+    /// DOF → island-local DOF index. Length: nv.
+    pub map_dof2idof: Vec<i32>,
+    /// Island-local DOF → global DOF. Length: nv.
+    pub map_idof2dof: Vec<usize>,
+    /// Island index for each constraint row. Resized per step.
+    pub efc_island: Vec<i32>,
+    /// Per-island constraint row count. Length: ≤ ntree.
+    pub island_nefc: Vec<usize>,
+    /// Start index in `map_iefc2efc` for each island. Length: ≤ ntree.
+    pub island_iefcadr: Vec<usize>,
+    /// Global constraint row → island-local row. Resized per step.
+    pub map_efc2iefc: Vec<i32>,
+    /// Island-local row → global constraint row. Resized per step.
+    pub map_iefc2efc: Vec<usize>,
+    /// Island assignment for each contact. Length: data.contacts.len(). Resized per step.
+    /// -1 = not in any island (e.g., contact between two world-body geoms).
+    pub contact_island: Vec<i32>,
+
+    // ==================== Island Scratch Space (§16.11) ====================
+    /// DFS stack for flood-fill. Length: ntree.
+    pub island_scratch_stack: Vec<usize>,
+    /// Per-tree edge counts (CSR rownnz). Length: ntree.
+    pub island_scratch_rownnz: Vec<usize>,
+    /// Per-tree CSR row pointers. Length: ntree.
+    pub island_scratch_rowadr: Vec<usize>,
+    /// CSR column indices (edge targets). Resized per step.
+    pub island_scratch_colind: Vec<usize>,
+
+    // ==================== qpos Change Detection (§16.15) ====================
+    /// Per-tree dirty flag set by mj_kinematics1() when a sleeping body's
+    /// xpos/xquat changed. Read/cleared by mj_check_qpos_changed(). Length: ntree.
+    pub tree_qpos_dirty: Vec<bool>,
+
     // ==================== Time ====================
     /// Simulation time in seconds.
     pub time: f64,
@@ -2278,8 +2628,8 @@ impl Clone for Data {
             // Mass matrix
             qM: self.qM.clone(),
             // Sparse factorization
-            qLD_diag: self.qLD_diag.clone(),
-            qLD_L: self.qLD_L.clone(),
+            qLD_data: self.qLD_data.clone(),
+            qLD_diag_inv: self.qLD_diag_inv.clone(),
             qLD_valid: self.qLD_valid,
             // Body/composite inertia
             cinert: self.cinert.clone(),
@@ -2346,6 +2696,42 @@ impl Clone for Data {
             deformable_solvers: self.deformable_solvers.clone(),
             #[cfg(feature = "deformable")]
             deformable_contacts: self.deformable_contacts.clone(),
+            // Sleep state
+            tree_asleep: self.tree_asleep.clone(),
+            tree_awake: self.tree_awake.clone(),
+            body_sleep_state: self.body_sleep_state.clone(),
+            ntree_awake: self.ntree_awake,
+            nv_awake: self.nv_awake,
+            // Awake-index indirection (§16.17)
+            body_awake_ind: self.body_awake_ind.clone(),
+            nbody_awake: self.nbody_awake,
+            parent_awake_ind: self.parent_awake_ind.clone(),
+            nparent_awake: self.nparent_awake,
+            dof_awake_ind: self.dof_awake_ind.clone(),
+            // Island discovery (§16.11)
+            nisland: self.nisland,
+            tree_island: self.tree_island.clone(),
+            island_ntree: self.island_ntree.clone(),
+            island_itreeadr: self.island_itreeadr.clone(),
+            map_itree2tree: self.map_itree2tree.clone(),
+            dof_island: self.dof_island.clone(),
+            island_nv: self.island_nv.clone(),
+            island_idofadr: self.island_idofadr.clone(),
+            map_dof2idof: self.map_dof2idof.clone(),
+            map_idof2dof: self.map_idof2dof.clone(),
+            efc_island: self.efc_island.clone(),
+            island_nefc: self.island_nefc.clone(),
+            island_iefcadr: self.island_iefcadr.clone(),
+            map_efc2iefc: self.map_efc2iefc.clone(),
+            map_iefc2efc: self.map_iefc2efc.clone(),
+            contact_island: self.contact_island.clone(),
+            // Island scratch
+            island_scratch_stack: self.island_scratch_stack.clone(),
+            island_scratch_rownnz: self.island_scratch_rownnz.clone(),
+            island_scratch_rowadr: self.island_scratch_rowadr.clone(),
+            island_scratch_colind: self.island_scratch_colind.clone(),
+            // qpos change detection
+            tree_qpos_dirty: self.tree_qpos_dirty.clone(),
             // Time
             time: self.time,
             // Scratch buffers
@@ -2395,6 +2781,18 @@ impl Model {
             nmocap: 0,
             nkeyframe: 0,
 
+            // Kinematic trees (§16.0) — empty model has no trees
+            ntree: 0,
+            tree_body_adr: vec![],
+            tree_body_num: vec![],
+            tree_dof_adr: vec![],
+            tree_dof_num: vec![],
+            body_treeid: vec![usize::MAX], // World body sentinel
+            dof_treeid: vec![],
+            tree_sleep_policy: vec![],
+            dof_length: vec![],
+            sleep_tolerance: 1e-4,
+
             // Body tree (initialize world body)
             body_parent: vec![0], // World is its own parent
             body_rootid: vec![0],
@@ -2440,6 +2838,12 @@ impl Model {
             dof_armature: vec![],
             dof_damping: vec![],
             dof_frictionloss: vec![],
+
+            // Sparse LDL CSR metadata (empty — populated by compute_qld_csr_metadata)
+            qLD_rowadr: vec![],
+            qLD_rownnz: vec![],
+            qLD_colind: vec![],
+            qLD_nnz: 0,
 
             // Geoms (empty)
             geom_type: vec![],
@@ -2533,6 +2937,8 @@ impl Model {
             tendon_solref: vec![],
             tendon_solimp: vec![],
             tendon_frictionloss: vec![],
+            tendon_treenum: vec![],
+            tendon_tree: vec![],
             wrap_type: vec![],
             wrap_objid: vec![],
             wrap_prm: vec![],
@@ -2645,10 +3051,69 @@ impl Model {
         }
     }
 
+    /// Compute CSR metadata for sparse LDL factorization from `dof_parent` chains.
+    ///
+    /// Must be called after `dof_parent` is finalized (in `ModelBuilder::build()` or
+    /// test helpers that construct Model manually). The sparsity pattern is immutable
+    /// after this call.
+    ///
+    /// Each row stores off-diagonal entries (ancestors) followed by the diagonal
+    /// (self-index) as the last element, matching MuJoCo's `mj_factorI` layout.
+    /// `rownnz[i]` includes the diagonal, so `rownnz[i] - 1` is the off-diagonal count.
+    pub fn compute_qld_csr_metadata(&mut self) {
+        let nv = self.nv;
+        self.qLD_rownnz = vec![0; nv];
+        self.qLD_rowadr = vec![0; nv];
+
+        // Pass 1: Count entries per row (ancestors + 1 for diagonal)
+        for i in 0..nv {
+            let mut count = 0;
+            let mut p = self.dof_parent[i];
+            while let Some(j) = p {
+                count += 1;
+                p = self.dof_parent[j];
+            }
+            self.qLD_rownnz[i] = count + 1; // +1 for diagonal
+        }
+
+        // Pass 2: Compute row addresses (prefix sum)
+        let mut offset = 0;
+        for i in 0..nv {
+            self.qLD_rowadr[i] = offset;
+            offset += self.qLD_rownnz[i];
+        }
+        self.qLD_nnz = offset;
+
+        // Pass 3: Fill column indices (ancestors ascending, then self-index for diagonal)
+        self.qLD_colind = vec![0; self.qLD_nnz];
+        for i in 0..nv {
+            let mut ancestors = Vec::new();
+            let mut p = self.dof_parent[i];
+            while let Some(j) = p {
+                ancestors.push(j);
+                p = self.dof_parent[j];
+            }
+            ancestors.reverse(); // ascending order (root ancestor first)
+            let start = self.qLD_rowadr[i];
+            for (k, &col) in ancestors.iter().enumerate() {
+                self.qLD_colind[start + k] = col;
+            }
+            // Diagonal as last element (matching MuJoCo's layout)
+            self.qLD_colind[start + ancestors.len()] = i;
+        }
+    }
+
+    /// Returns CSR metadata for the sparse LDL factorization: `(rowadr, rownnz, colind)`.
+    #[inline]
+    #[must_use]
+    pub fn qld_csr(&self) -> (&[usize], &[usize], &[usize]) {
+        (&self.qLD_rowadr, &self.qLD_rownnz, &self.qLD_colind)
+    }
+
     /// Create initial Data struct for this model with all arrays pre-allocated.
     #[must_use]
     pub fn make_data(&self) -> Data {
-        Data {
+        let mut data = Data {
             // Generalized coordinates
             qpos: self.qpos0.clone(),
             qvel: DVector::zeros(self.nv),
@@ -2722,8 +3187,8 @@ impl Model {
             qM: DMatrix::zeros(self.nv, self.nv),
 
             // Mass matrix (sparse L^T D L — computed in mj_crba via mj_factor_sparse)
-            qLD_diag: DVector::zeros(self.nv),
-            qLD_L: vec![Vec::new(); self.nv],
+            qLD_data: vec![0.0; self.qLD_nnz],
+            qLD_diag_inv: vec![0.0; self.nv],
             qLD_valid: false,
 
             // Body spatial inertias (computed once in FK, used by CRBA and RNE)
@@ -2799,6 +3264,100 @@ impl Model {
             #[cfg(feature = "deformable")]
             deformable_contacts: Vec::with_capacity(256),
 
+            // Sleep state (§16.7) — initialized from tree sleep policies.
+            // For models not built through MJCF (ntree == 0 or body_treeid not populated),
+            // all bodies start awake and sleep is effectively a no-op.
+            tree_asleep: {
+                let mut v = vec![-(1 + MIN_AWAKE); self.ntree];
+                for t in 0..self.ntree {
+                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
+                        #[allow(clippy::cast_possible_wrap)]
+                        {
+                            v[t] = t as i32; // Start asleep (ntree ≤ nbody ≪ i32::MAX)
+                        }
+                    }
+                }
+                v
+            },
+            tree_awake: {
+                let mut v = vec![true; self.ntree];
+                for t in 0..self.ntree {
+                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
+                        v[t] = false;
+                    }
+                }
+                v
+            },
+            body_sleep_state: {
+                let mut v = vec![SleepState::Awake; self.nbody];
+                if self.nbody > 0 {
+                    v[0] = SleepState::Static; // World body
+                }
+                // Mark bodies in Init trees as Asleep (only if tree enumeration was run)
+                if self.body_treeid.len() == self.nbody {
+                    for body_id in 1..self.nbody {
+                        let tree = self.body_treeid[body_id];
+                        if tree < self.ntree && self.tree_sleep_policy[tree] == SleepPolicy::Init {
+                            v[body_id] = SleepState::Asleep;
+                        }
+                    }
+                }
+                v
+            },
+            ntree_awake: {
+                let mut count = self.ntree;
+                for t in 0..self.ntree {
+                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
+                        count -= 1;
+                    }
+                }
+                count
+            },
+            nv_awake: {
+                let mut count = self.nv;
+                for t in 0..self.ntree {
+                    if self.tree_sleep_policy[t] == SleepPolicy::Init {
+                        count -= self.tree_dof_num[t];
+                    }
+                }
+                count
+            },
+
+            // Awake-index indirection arrays (§16.17).
+            // Allocated to worst-case size; populated by mj_update_sleep_arrays().
+            body_awake_ind: vec![0; self.nbody],
+            nbody_awake: 0, // Set by mj_update_sleep_arrays below
+            parent_awake_ind: vec![0; self.nbody],
+            nparent_awake: 0,
+            dof_awake_ind: vec![0; self.nv],
+
+            // Island discovery arrays (§16.11) — worst-case: each tree is its own island.
+            nisland: 0,
+            tree_island: vec![-1_i32; self.ntree],
+            island_ntree: vec![0; self.ntree],
+            island_itreeadr: vec![0; self.ntree],
+            map_itree2tree: vec![0; self.ntree],
+            dof_island: vec![-1_i32; self.nv],
+            island_nv: vec![0; self.ntree],
+            island_idofadr: vec![0; self.ntree],
+            map_dof2idof: vec![-1_i32; self.nv],
+            map_idof2dof: vec![0; self.nv],
+            efc_island: Vec::new(),
+            island_nefc: vec![0; self.ntree],
+            island_iefcadr: vec![0; self.ntree],
+            map_efc2iefc: Vec::new(),
+            map_iefc2efc: Vec::new(),
+            contact_island: Vec::new(),
+
+            // Island scratch space (§16.11)
+            island_scratch_stack: vec![0; self.ntree],
+            island_scratch_rownnz: vec![0; self.ntree],
+            island_scratch_rowadr: vec![0; self.ntree],
+            island_scratch_colind: Vec::new(),
+
+            // qpos change detection (§16.15)
+            tree_qpos_dirty: vec![false; self.ntree],
+
             // Time
             time: 0.0,
 
@@ -2841,7 +3400,49 @@ impl Model {
                 }
                 v
             },
+        };
+
+        // Run initial FK to populate body/geom/site positions from qpos0.
+        // This must happen BEFORE sleep gating takes effect so that Init-asleep
+        // bodies have correct world positions. We temporarily mark all bodies
+        // as Awake, run FK, then restore the Init-sleep state.
+        // Only needed when there are Init-asleep trees; other models get FK
+        // from their first forward()/step() call.
+        let has_init_asleep = (0..self.ntree).any(|t| data.tree_asleep[t] >= 0);
+        if has_init_asleep {
+            // Temporarily wake all bodies for FK + CRBA
+            let saved_body_sleep = data.body_sleep_state.clone();
+            let saved_tree_asleep = data.tree_asleep.clone();
+            let saved_tree_awake = data.tree_awake.clone();
+            for b in 1..self.nbody {
+                data.body_sleep_state[b] = SleepState::Awake;
+            }
+            for t in 0..self.ntree {
+                data.tree_awake[t] = true;
+                data.tree_asleep[t] = -(1 + MIN_AWAKE);
+            }
+            // Temporarily update awake-index arrays so CRBA's sleep_filter
+            // evaluates to false (all bodies awake).
+            mj_update_sleep_arrays(self, &mut data);
+
+            // Run FK and CRBA to populate body positions and mass matrix.
+            // CRBA is required so that Init-asleep bodies have valid qM
+            // entries before selective CRBA (§16.29.3) begins preserving them.
+            mj_fwd_position(self, &mut data);
+            mj_crba(self, &mut data);
+
+            // Restore sleep states
+            data.body_sleep_state = saved_body_sleep;
+            data.tree_asleep = saved_tree_asleep;
+            data.tree_awake = saved_tree_awake;
         }
+
+        // Initialize sleep state with union-find validation (§16.24).
+        // This replaces the inline Init-sleep self-links with proper
+        // island-aware sleep cycles.
+        reset_sleep_state(self, &mut data);
+
+        data
     }
 
     /// Get reference position for specified joint (from qpos0).
@@ -3164,7 +3765,15 @@ impl Model {
 
             // Solve M * x = J using the sparse L^T D L factorization from CRBA.
             let mut x = j_vec;
-            mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x);
+            let (rowadr, rownnz, colind) = self.qld_csr();
+            mj_solve_sparse(
+                rowadr,
+                rownnz,
+                colind,
+                &data.qLD_data,
+                &data.qLD_diag_inv,
+                &mut x,
+            );
 
             // acc0 = ||M^{-1} J||_2
             self.actuator_acc0[i] = x.norm().max(1e-10);
@@ -3406,6 +4015,9 @@ impl Model {
         // Pre-compute implicit integration parameters
         model.compute_implicit_params();
 
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
+
         model
     }
 
@@ -3505,6 +4117,9 @@ impl Model {
         // Pre-compute implicit integration parameters
         model.compute_implicit_params();
 
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
+
         model
     }
 
@@ -3590,11 +4205,24 @@ impl Model {
         // Pre-compute implicit integration parameters
         model.compute_implicit_params();
 
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
+
         model
     }
 }
 
 impl Data {
+    /// Read the diagonal entry `D\[i,i\]` from the sparse LDL factorization.
+    ///
+    /// Reads from `qLD_data[rowadr[i] + rownnz[i] - 1]` (last element of CSR row).
+    #[inline]
+    #[must_use]
+    pub fn qld_diag(&self, model: &Model, i: usize) -> f64 {
+        let (rowadr, rownnz, _) = model.qld_csr();
+        self.qLD_data[rowadr[i] + rownnz[i] - 1]
+    }
+
     /// Reset state to model defaults.
     pub fn reset(&mut self, model: &Model) {
         self.qpos = model.qpos0.clone();
@@ -3632,6 +4260,14 @@ impl Data {
                 mocap_idx += 1;
             }
         }
+
+        // Reset sleep state from model policies (§16.7).
+        reset_sleep_state(model, self);
+
+        // Clear island discovery state (will be recomputed on next forward()).
+        self.nisland = 0;
+        self.tree_island[..model.ntree].fill(-1);
+        self.contact_island.clear();
     }
 
     /// Reset simulation state to a keyframe by index.
@@ -3693,6 +4329,9 @@ impl Data {
             }
         }
 
+        // Reset sleep state from model policies (§16.7).
+        reset_sleep_state(model, self);
+
         Ok(())
     }
 
@@ -3729,6 +4368,36 @@ impl Data {
     #[must_use]
     pub fn total_energy(&self) -> f64 {
         self.energy_kinetic + self.energy_potential
+    }
+
+    // ==================== Sleep Public API (§16.25) ====================
+
+    /// Query the sleep state of a body.
+    ///
+    /// Returns `SleepState::Static` for the world body (body 0),
+    /// `SleepState::Asleep` for sleeping bodies, `SleepState::Awake`
+    /// for active bodies.
+    #[must_use]
+    pub fn sleep_state(&self, body_id: usize) -> SleepState {
+        self.body_sleep_state[body_id]
+    }
+
+    /// Query whether a kinematic tree is awake.
+    #[must_use]
+    pub fn tree_awake(&self, tree_id: usize) -> bool {
+        self.tree_asleep[tree_id] < 0
+    }
+
+    /// Query the number of awake bodies (including the world body).
+    #[must_use]
+    pub fn nbody_awake(&self) -> usize {
+        self.nbody_awake
+    }
+
+    /// Query the number of constraint islands discovered this step.
+    #[must_use]
+    pub fn nisland(&self) -> usize {
+        self.nisland
     }
 
     /// Full simulation step (like `mj_step`).
@@ -3775,6 +4444,14 @@ impl Data {
             }
         }
 
+        // Sleep update (§16.12): Phase B island-aware sleep transition.
+        // After integration and before warmstart save.
+        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+        if sleep_enabled {
+            mj_sleep(model, self);
+            mj_update_sleep_arrays(model, self);
+        }
+
         // Save qacc for next-step warmstart (§15.9).
         // Done at the very end of step(), after integration, matching MuJoCo's
         // mj_advance() which saves qacc_warmstart after the step completes.
@@ -3799,90 +4476,75 @@ impl Data {
     /// Returns `Err(StepError::CholeskyFailed)` if using implicit integrator
     /// and the modified mass matrix decomposition fails.
     pub fn forward(&mut self, model: &Model) -> Result<(), StepError> {
-        // ========== Position Stage ==========
-        // Stage 1a: Forward kinematics - compute body/geom/site poses from qpos
-        mj_fwd_position(model, self);
-
-        // Stage 1a': Site transmission - compute actuator_length + actuator_moment
-        // for Site transmissions (needs FK output, before sensors read actuator_length).
-        mj_transmission_site(model, self);
-
-        // Stage 1b: Collision detection - detect contacts from geometry pairs
-        mj_collision(model, self);
-
-        // Stage 1b': Deformable-rigid collision detection
-        #[cfg(feature = "deformable")]
-        mj_deformable_collision(model, self);
-
-        // Stage 1c: Position-dependent sensors (joint positions, frame positions, etc.)
-        mj_sensor_pos(model, self);
-
-        // Stage 1c: Potential energy (gravity + springs)
-        mj_energy_pos(model, self);
-
-        // ========== Velocity Stage ==========
-        // Stage 2a: Velocity kinematics - compute body velocities from qvel
-        mj_fwd_velocity(model, self);
-
-        // Stage 2b: Actuator length/velocity (needs ten_length from position stage,
-        //           ten_velocity from velocity stage)
-        mj_actuator_length(model, self);
-
-        // Stage 2c: Velocity-dependent sensors (gyro, velocimeter, etc.)
-        mj_sensor_vel(model, self);
-
-        // ========== Acceleration Stage ==========
-        // Stage 3a: Actuation - compute actuator forces and activation derivatives
-        mj_fwd_actuation(model, self);
-
-        // Stage 3b: Dynamics - compute mass matrix and bias forces
-        mj_crba(model, self); // Composite Rigid Body Algorithm
-        mj_rne(model, self); // Recursive Newton-Euler for bias forces
-
-        // Stage 3c: Kinetic energy (needs mass matrix from CRBA)
-        mj_energy_vel(model, self);
-
-        // Stage 3d: Passive forces - springs and dampers
-        mj_fwd_passive(model, self);
-
-        // Stage 3e: Constraint forces - contacts and joint limits
-        mj_fwd_constraint(model, self);
-
-        // Stage 3f: Compute final acceleration
-        // Newton solver computes qacc directly — skip mj_fwd_acceleration to
-        // avoid overwriting Newton's optimized qacc (§15.8).
-        if !self.newton_solved {
-            mj_fwd_acceleration(model, self)?;
-        }
-
-        // Stage 3g: Acceleration-dependent sensors (accelerometer, etc.)
-        mj_sensor_acc(model, self);
-
-        // Stage 3h: Sensor post-processing (noise and cutoff)
-        mj_sensor_postprocess(model, self);
-
-        Ok(())
+        self.forward_core(model, true)
     }
 
     /// Forward dynamics pipeline without sensor evaluation.
     ///
-    /// Identical to [`forward()`](Self::forward) but skips all 4 sensor stages
-    /// (`mj_sensor_pos`, `mj_sensor_vel`, `mj_sensor_acc`, `mj_sensor_postprocess`).
-    /// Used by RK4 intermediate stages to match MuJoCo's
-    /// `mj_forwardSkip(m, d, mjSTAGE_NONE, 1)` where `1` = skip sensors.
+    /// Identical to [`forward()`](Self::forward) but skips all 4 sensor stages.
+    /// Used by RK4 intermediate stages.
     fn forward_skip_sensors(&mut self, model: &Model) -> Result<(), StepError> {
+        self.forward_core(model, false)
+    }
+
+    /// Shared pipeline core with sleep gating (§16.5).
+    ///
+    /// `compute_sensors`: `true` for `forward()`, `false` for `forward_skip_sensors()`.
+    fn forward_core(&mut self, model: &Model, compute_sensors: bool) -> Result<(), StepError> {
+        // Sleep is only active after the initial forward pass.
+        // The first forward (time == 0.0) must compute FK for all bodies
+        // to establish initial positions, even for Init-sleeping bodies.
+        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
+        // ===== Pre-pipeline: Wake detection (§16.4) =====
+        // Must update sleep arrays after user-force wake so that
+        // body_awake_ind/dof_awake_ind are current before mj_crba (§16.29.3).
+        if sleep_enabled && mj_wake(model, self) {
+            mj_update_sleep_arrays(model, self);
+        }
+
         // ========== Position Stage ==========
         mj_fwd_position(model, self);
+
+        // §16.15: If FK detected external qpos changes on sleeping bodies, wake them
+        if sleep_enabled && mj_check_qpos_changed(model, self) {
+            mj_update_sleep_arrays(model, self);
+        }
+
+        mj_transmission_site(model, self);
+
+        // §16.13.2: Tendon wake — multi-tree tendons with active limits
+        if sleep_enabled && mj_wake_tendon(model, self) {
+            mj_update_sleep_arrays(model, self);
+        }
+
         mj_collision(model, self);
+
+        // Wake-on-contact: if sleeping body touched awake body, wake it
+        // and re-run collision for the newly-awake tree's geoms (§16.5c)
+        if sleep_enabled && mj_wake_collision(model, self) {
+            mj_update_sleep_arrays(model, self);
+            mj_collision(model, self);
+        }
+
+        // §16.13.3: Equality constraint wake — cross-tree equality coupling
+        if sleep_enabled && mj_wake_equality(model, self) {
+            mj_update_sleep_arrays(model, self);
+        }
+
         #[cfg(feature = "deformable")]
         mj_deformable_collision(model, self);
-        // skip: mj_sensor_pos
+        if compute_sensors {
+            mj_sensor_pos(model, self);
+        }
         mj_energy_pos(model, self);
 
         // ========== Velocity Stage ==========
         mj_fwd_velocity(model, self);
         mj_actuator_length(model, self);
-        // skip: mj_sensor_vel
+        if compute_sensors {
+            mj_sensor_vel(model, self);
+        }
 
         // ========== Acceleration Stage ==========
         mj_fwd_actuation(model, self);
@@ -3890,12 +4552,24 @@ impl Data {
         mj_rne(model, self);
         mj_energy_vel(model, self);
         mj_fwd_passive(model, self);
-        mj_fwd_constraint(model, self);
-        // Newton solver computes qacc directly — skip mj_fwd_acceleration (§15.8).
+
+        // §16.11: Island discovery must run BEFORE constraint solve so that
+        // contact_island assignments are available for per-island partitioning.
+        if sleep_enabled {
+            mj_island(model, self);
+        }
+
+        // §16.16: Per-island constraint solve when islands are active;
+        // falls back to global solve when DISABLE_ISLAND or no islands.
+        mj_fwd_constraint_islands(model, self);
+
         if !self.newton_solved {
             mj_fwd_acceleration(model, self)?;
         }
-        // skip: mj_sensor_acc, mj_sensor_postprocess
+        if compute_sensors {
+            mj_sensor_acc(model, self);
+            mj_sensor_postprocess(model, self);
+        }
 
         Ok(())
     }
@@ -3913,6 +4587,9 @@ impl Data {
     ///   We only integrate positions here.
     fn integrate(&mut self, model: &Model) {
         let h = model.timestep;
+        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+        // §16.27: Use indirection array for cache-friendly iteration over awake DOFs.
+        let use_dof_ind = sleep_enabled && self.nv_awake < model.nv;
 
         // Integrate activation per actuator, then clamp muscles to [0, 1].
         // MuJoCo order: activation → velocity → position.
@@ -3945,7 +4622,13 @@ impl Data {
         // For legacy ImplicitSpringDamper, velocity was already updated in mj_fwd_acceleration_implicit.
         match model.integrator {
             Integrator::Euler | Integrator::ImplicitFast | Integrator::Implicit => {
-                for i in 0..model.nv {
+                let nv = if use_dof_ind { self.nv_awake } else { model.nv };
+                for idx in 0..nv {
+                    let i = if use_dof_ind {
+                        self.dof_awake_ind[idx]
+                    } else {
+                        idx
+                    };
                     self.qvel[i] += self.qacc[i] * h;
                 }
             }
@@ -4085,12 +4768,17 @@ fn mj_check_acc(model: &Model, data: &Data) -> Result<(), StepError> {
 /// This traverses the kinematic tree from root to leaves, computing
 /// the world-frame position and orientation of each body.
 fn mj_fwd_position(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     // Body 0 (world) is always at origin
     data.xpos[0] = Vector3::zeros();
     data.xquat[0] = UnitQuaternion::identity();
     data.xmat[0] = Matrix3::identity();
 
-    // Process bodies in order (assumes topological sort: parent before child)
+    // Process bodies in order (assumes topological sort: parent before child).
+    // Phase B (§16.15): compute FK for ALL bodies (including sleeping) to detect
+    // external qpos modifications via xpos/xquat comparison. The Phase A skip
+    // is removed; performance comes from per-island constraint solve (§16.16).
     for body_id in 1..model.nbody {
         let parent_id = model.body_parent[body_id];
 
@@ -4179,6 +4867,22 @@ fn mj_fwd_position(model: &Model, data: &mut Data) {
 
             (pos, quat)
         };
+
+        // §16.15: qpos change detection — if this body was sleeping and its
+        // computed pose differs from the stored pose (exact bitwise match),
+        // mark the tree for waking. This detects external qpos modifications.
+        if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
+            let tree = model.body_treeid[body_id];
+            if tree < data.tree_qpos_dirty.len() {
+                // Compare new vs stored (exact floating-point equality)
+                let pos_changed = pos != data.xpos[body_id];
+                let quat_changed =
+                    quat.into_inner().coords != data.xquat[body_id].into_inner().coords;
+                if pos_changed || quat_changed {
+                    data.tree_qpos_dirty[tree] = true;
+                }
+            }
+        }
 
         // Store computed pose (shared path for both mocap and regular bodies)
         data.xpos[body_id] = pos;
@@ -4668,12 +5372,26 @@ fn mj_collision(model: &Model, data: &mut Data) {
     let sap = SweepAndPrune::new(aabbs);
     let candidates = sap.query_pairs();
 
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     // Process candidate pairs
     // The SAP already filtered to only AABB-overlapping pairs
     for (geom1, geom2) in candidates {
         // Affinity check: same body, parent-child, contype/conaffinity
         if !check_collision_affinity(model, geom1, geom2) {
             continue;
+        }
+
+        // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
+        // Keep sleeping-vs-awake pairs — they may trigger wake detection (§16.4).
+        if sleep_enabled {
+            let b1 = model.geom_body[geom1];
+            let b2 = model.geom_body[geom2];
+            if data.body_sleep_state[b1] == SleepState::Asleep
+                && data.body_sleep_state[b2] == SleepState::Asleep
+            {
+                continue;
+            }
         }
 
         // Get world-space poses
@@ -4693,6 +5411,17 @@ fn mj_collision(model: &Model, data: &mut Data) {
     for pair in &model.contact_pairs {
         let geom1 = pair.geom1;
         let geom2 = pair.geom2;
+
+        // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
+        if sleep_enabled {
+            let b1 = model.geom_body[geom1];
+            let b2 = model.geom_body[geom2];
+            if data.body_sleep_state[b1] == SleepState::Asleep
+                && data.body_sleep_state[b2] == SleepState::Asleep
+            {
+                continue;
+            }
+        }
 
         // Distance cull using bounding radii (replaces SAP broad-phase for pairs).
         // geom_rbound is the bounding sphere radius, pre-computed per geom.
@@ -6802,10 +7531,21 @@ fn mj_energy_vel(model: &Model, data: &mut Data) {
 /// - Touch: contact detection
 #[allow(clippy::too_many_lines)]
 fn mj_sensor_pos(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     for sensor_id in 0..model.nsensor {
         // Skip non-position sensors
         if model.sensor_datatype[sensor_id] != MjSensorDataType::Position {
             continue;
+        }
+
+        // §16.5d: Skip sensors on sleeping bodies — values frozen at sleep time
+        if sleep_enabled {
+            if let Some(body_id) = sensor_body_id(model, sensor_id) {
+                if data.body_sleep_state[body_id] == SleepState::Asleep {
+                    continue;
+                }
+            }
         }
 
         let adr = model.sensor_adr[sensor_id];
@@ -7093,10 +7833,21 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
 /// - `ActuatorVel`: actuator velocity
 #[allow(clippy::too_many_lines)]
 fn mj_sensor_vel(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     for sensor_id in 0..model.nsensor {
         // Skip non-velocity sensors
         if model.sensor_datatype[sensor_id] != MjSensorDataType::Velocity {
             continue;
+        }
+
+        // §16.5d: Skip sensors on sleeping bodies
+        if sleep_enabled {
+            if let Some(body_id) = sensor_body_id(model, sensor_id) {
+                if data.body_sleep_state[body_id] == SleepState::Asleep {
+                    continue;
+                }
+            }
         }
 
         let adr = model.sensor_adr[sensor_id];
@@ -7283,10 +8034,21 @@ fn mj_sensor_vel(model: &Model, data: &mut Data) {
 /// - `FrameAngAcc`: angular acceleration
 /// - `ActuatorFrc`: actuator force
 fn mj_sensor_acc(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     for sensor_id in 0..model.nsensor {
         // Skip non-acceleration sensors
         if model.sensor_datatype[sensor_id] != MjSensorDataType::Acceleration {
             continue;
+        }
+
+        // §16.5d: Skip sensors on sleeping bodies
+        if sleep_enabled {
+            if let Some(body_id) = sensor_body_id(model, sensor_id) {
+                if data.body_sleep_state[body_id] == SleepState::Asleep {
+                    continue;
+                }
+            }
         }
 
         let adr = model.sensor_adr[sensor_id];
@@ -7851,6 +8613,10 @@ fn compute_subtree_angmom(model: &Model, data: &Data, root_body: usize) -> Vecto
 
 /// Velocity kinematics: compute body velocities from qvel.
 fn mj_fwd_velocity(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    // §16.27: Use indirection array for cache-friendly iteration over awake bodies.
+    let use_body_ind = sleep_enabled && data.nbody_awake < model.nbody;
+
     // World body has zero velocity
     data.cvel[0] = SpatialVector::zeros();
 
@@ -7864,7 +8630,18 @@ fn mj_fwd_velocity(model: &Model, data: &mut Data) {
     //
     // This lever arm effect is critical for Coriolis forces in serial chains!
 
-    for body_id in 1..model.nbody {
+    let nbody = if use_body_ind {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+    for idx in 1..nbody {
+        let body_id = if use_body_ind {
+            data.body_awake_ind[idx]
+        } else {
+            idx
+        };
+
         let parent_id = model.body_parent[body_id];
 
         // Parent velocity
@@ -9249,7 +10026,7 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
 ///
 /// The algorithm works by:
 /// 1. Computing composite inertias by accumulating from leaves to root
-/// 2. Computing `M[i,j]` = `S_i^T` * `I_c` * `S_j` for each joint pair
+/// 2. Computing `M\[i,j\]` = `S_i^T` * `I_c` * `S_j` for each joint pair
 ///
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 6
 /// Composite Rigid Body Algorithm (CRBA) - Featherstone O(n) version.
@@ -9267,8 +10044,36 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
     clippy::needless_range_loop
 )]
 fn mj_crba(model: &Model, data: &mut Data) {
+    // ============================================================
+    // Phase 0: Preamble — sleep filter + selective qM zeroing (§16.29.3)
+    // ============================================================
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+
     data.qLD_valid = false;
-    data.qM.fill(0.0);
+
+    if sleep_filter {
+        // Selective path: zero only awake trees' DOF diagonal blocks.
+        // DOFs within a tree are contiguous (§16.0 body ordering guarantee).
+        // Cross-tree entries in qM are always zero (CRBA's dof_parent walk
+        // never crosses tree boundaries), so zeroing only the intra-tree
+        // diagonal block for each awake tree is sufficient.
+        for tree_id in 0..model.ntree {
+            if !data.tree_awake[tree_id] {
+                continue; // Sleeping tree — preserve qM entries
+            }
+            let dof_start = model.tree_dof_adr[tree_id];
+            let dof_count = model.tree_dof_num[tree_id];
+            for i in dof_start..(dof_start + dof_count) {
+                for j in dof_start..(dof_start + dof_count) {
+                    data.qM[(i, j)] = 0.0;
+                }
+            }
+        }
+    } else {
+        // Fast path: all bodies awake, zero everything (original behavior)
+        data.qM.fill(0.0);
+    }
 
     if model.nv == 0 {
         return;
@@ -9279,8 +10084,18 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // ============================================================
     // Copy cinert (computed once in FK) to crb_inertia as starting point.
     // cinert contains 6x6 spatial inertias for individual bodies in world frame.
-    for body_id in 0..model.nbody {
-        data.crb_inertia[body_id] = data.cinert[body_id];
+    // Sleeping bodies' crb_inertia values are preserved from their last awake
+    // step — Phase 1 is overwrite (=), not accumulate (+=), so there is no
+    // stale-accumulation hazard.
+    if sleep_filter {
+        for idx in 0..data.nbody_awake {
+            let body_id = data.body_awake_ind[idx];
+            data.crb_inertia[body_id] = data.cinert[body_id];
+        }
+    } else {
+        for body_id in 0..model.nbody {
+            data.crb_inertia[body_id] = data.cinert[body_id];
+        }
     }
 
     // ============================================================
@@ -9289,117 +10104,124 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // Process bodies from leaves to root, adding child inertia to parent.
     // This gives Ic[i] = inertia of subtree rooted at body i.
     //
-    // Note: We need to transform child inertia to parent frame before adding.
-    // For now, use a simpler approach: all inertias are in world frame,
-    // so we just add them directly (valid because world frame is common).
-
-    for body_id in (1..model.nbody).rev() {
-        let parent_id = model.body_parent[body_id];
-        if parent_id != 0 {
-            // Add this body's composite inertia to parent's
-            // Need to clone to avoid borrow checker issues
-            let child_inertia = data.crb_inertia[body_id];
-            data.crb_inertia[parent_id] += child_inertia;
+    // Each cinert[body_id] is a 6x6 spatial inertia about that body's origin
+    // (xpos[body_id]). Before adding child to parent, we must shift the
+    // child's spatial inertia to the parent's reference point using the
+    // parallel axis theorem. Without this shift, the rotational block would
+    // be incorrect because the two inertias are about different points.
+    //
+    // §16.29.3 §16.27 exception note: Unlike RNE backward pass (which
+    // accumulates velocity-dependent cfrc_bias and needs sleeping roots for
+    // correct body 0 accumulation), CRBA backward pass accumulates
+    // crb_inertia (position-only, frozen for sleeping bodies) and body 0
+    // has no DOFs so its crb_inertia is never consumed by Phase 3.
+    // Therefore body_awake_ind (not parent_awake_ind) is correct here.
+    if sleep_filter {
+        // Selective: iterate only awake bodies in reverse.
+        // Per-tree invariant: all bodies in a tree share sleep state, so
+        // the backward accumulation only involves bodies in the same tree,
+        // all of which are in body_awake_ind.
+        for idx in (1..data.nbody_awake).rev() {
+            let body_id = data.body_awake_ind[idx];
+            let parent_id = model.body_parent[body_id];
+            if parent_id != 0 {
+                let d = data.xpos[body_id] - data.xpos[parent_id];
+                let child_shifted = shift_spatial_inertia(&data.crb_inertia[body_id], &d);
+                data.crb_inertia[parent_id] += child_shifted;
+            }
+        }
+    } else {
+        for body_id in (1..model.nbody).rev() {
+            let parent_id = model.body_parent[body_id];
+            if parent_id != 0 {
+                // Shift child's spatial inertia from child origin to parent origin,
+                // then add to parent's composite inertia.
+                let d = data.xpos[body_id] - data.xpos[parent_id];
+                let child_shifted = shift_spatial_inertia(&data.crb_inertia[body_id], &d);
+                data.crb_inertia[parent_id] += child_shifted;
+            }
         }
     }
 
     // ============================================================
     // Phase 3: Build mass matrix from composite inertias
     // ============================================================
-    // For each joint, M[i,i] = S[i]^T * Ic[body_i] * S[i]
-    // Off-diagonal elements require propagating forces up the tree.
+    // Per-DOF iteration with dof_parent walk (MuJoCo-style).
+    //
+    // This correctly handles cross-entries M[dof_A, dof_B] for bodies with
+    // multiple joints (e.g., two hinges on one body), because dof_parent
+    // chains same-body DOFs together. The prior per-joint approach missed
+    // these cross-entries because body_parent skipped the starting body.
 
-    // Pre-compute all joint motion subspaces once (O(n) instead of O(n²))
-    // This is a significant optimization for debug builds where function call
-    // overhead and matrix allocation dominate.
+    // Pre-compute per-DOF motion subspace columns (cdof).
+    // First build per-joint subspaces, then extract individual DOF columns.
+    // Sleeping joints' subspaces are computed but never read because the
+    // outer loop skips sleeping DOFs, and the dof_parent walk only visits
+    // ancestors in the same awake tree.
     let joint_subspaces: Vec<_> = (0..model.njnt)
         .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
         .collect();
 
-    for jnt_i in 0..model.njnt {
-        let body_i = model.jnt_body[jnt_i];
-        let dof_i = model.jnt_dof_adr[jnt_i];
-        let nv_i = model.jnt_type[jnt_i].nv();
+    let cdof: Vec<Vector6<f64>> = (0..model.nv)
+        .map(|dof| {
+            let jnt = model.dof_jnt[dof];
+            let dof_in_jnt = dof - model.jnt_dof_adr[jnt];
+            joint_subspaces[jnt].column(dof_in_jnt).into_owned()
+        })
+        .collect();
 
-        // Use cached joint motion subspace
-        let s_i = &joint_subspaces[jnt_i];
-
-        // Diagonal block: M[i,i] = S^T * Ic * S
+    let nv_iter = if sleep_filter {
+        data.nv_awake
+    } else {
+        model.nv
+    };
+    for v in 0..nv_iter {
+        let dof_i = if sleep_filter {
+            data.dof_awake_ind[v]
+        } else {
+            v
+        };
+        let body_i = model.dof_body[dof_i];
         let ic = &data.crb_inertia[body_i];
-        for di in 0..nv_i {
-            let s_col_i = s_i.column(di);
-            for dj in 0..nv_i {
-                let s_col_j = s_i.column(dj);
-                // Compute s_i^T * Ic * s_j
-                let ic_s_j = ic * s_col_j;
-                data.qM[(dof_i + di, dof_i + dj)] = s_col_i.dot(&ic_s_j);
-            }
-        }
 
-        // Off-diagonal: propagate to ancestor joints
-        // F = Ic * S (force due to joint motion)
-        // Then traverse ancestors, transforming F at each step:
-        //   F_parent = X^T * F_child (spatial force transform)
-        // And computing M[j,i] = S_j^T * F_transformed
-        let mut force = ic * s_i; // 6 x nv_i matrix, starts at body_i
+        // buf = Ic[body_i] * cdof[dof_i]  (spatial force at body_i's frame)
+        let mut buf: Vector6<f64> = ic * &cdof[dof_i];
 
-        let mut child_body = body_i;
-        let mut current_body = model.body_parent[body_i];
+        // Diagonal: M[i,i] = cdof[i]^T * buf
+        data.qM[(dof_i, dof_i)] = cdof[dof_i].dot(&buf);
 
-        while current_body != 0 {
-            // Transform force from child to current body using spatial force transform
-            // F_parent = [I, 0; [r]x, I]^T * F_child = [I, [r]x^T; 0, I] * F_child
-            // Where r = pos_child - pos_parent (vector from parent to child)
-            let r = data.xpos[child_body] - data.xpos[current_body];
+        // Walk dof_parent chain for off-diagonal entries.
+        // All ancestors are in the same awake tree (per-tree invariant),
+        // so no sleep check is needed in the ancestor walk.
+        let mut current_body = body_i;
+        let mut j = model.dof_parent[dof_i];
 
-            // Apply spatial force transform:
-            // F_angular_parent = F_angular_child + r × F_linear_child
-            // F_linear_parent = F_linear_child
-            for col in 0..nv_i {
-                let f_lin_x = force[(3, col)];
-                let f_lin_y = force[(4, col)];
-                let f_lin_z = force[(5, col)];
+        while let Some(dof_j) = j {
+            let body_j = model.dof_body[dof_j];
 
-                // r × f_lin
-                let cross_x = r.y * f_lin_z - r.z * f_lin_y;
-                let cross_y = r.z * f_lin_x - r.x * f_lin_z;
-                let cross_z = r.x * f_lin_y - r.y * f_lin_x;
+            // Spatial force transform only when crossing a body boundary.
+            // Same-body DOFs share an origin, so no transform is needed.
+            if body_j != current_body {
+                let r = data.xpos[current_body] - data.xpos[body_j];
 
-                force[(0, col)] += cross_x;
-                force[(1, col)] += cross_y;
-                force[(2, col)] += cross_z;
-                // Linear part stays the same
+                // Shift spatial force: angular += r × linear
+                // Linear part is unchanged (spatial force transform property).
+                let fl_x = buf[3];
+                let fl_y = buf[4];
+                let fl_z = buf[5];
+                buf[0] += r.y * fl_z - r.z * fl_y;
+                buf[1] += r.z * fl_x - r.x * fl_z;
+                buf[2] += r.x * fl_y - r.y * fl_x;
+
+                current_body = body_j;
             }
 
-            // Find joint(s) for this ancestor body
-            let jnt_start = model.body_jnt_adr[current_body];
-            let jnt_count = model.body_jnt_num[current_body];
+            // Off-diagonal: M[j,i] = cdof[j]^T * buf
+            let m_ji = cdof[dof_j].dot(&buf);
+            data.qM[(dof_j, dof_i)] = m_ji;
+            data.qM[(dof_i, dof_j)] = m_ji; // symmetry
 
-            for jnt_j in jnt_start..(jnt_start + jnt_count) {
-                if jnt_j >= model.njnt {
-                    break;
-                }
-
-                let dof_j = model.jnt_dof_adr[jnt_j];
-                let nv_j = model.jnt_type[jnt_j].nv();
-                // Use cached joint motion subspace instead of recomputing
-                let s_j = &joint_subspaces[jnt_j];
-
-                // M[j,i] = S_j^T * F
-                for dj in 0..nv_j {
-                    let s_col_j = s_j.column(dj);
-                    for di in 0..nv_i {
-                        let f_col_i = force.column(di);
-                        let m_ji = s_col_j.dot(&f_col_i);
-                        data.qM[(dof_j + dj, dof_i + di)] = m_ji;
-                        data.qM[(dof_i + di, dof_j + dj)] = m_ji; // Symmetry
-                    }
-                }
-            }
-
-            // Move up the tree
-            child_body = current_body;
-            current_body = model.body_parent[current_body];
+            j = model.dof_parent[dof_j];
         }
     }
 
@@ -9407,6 +10229,9 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // Phase 4: Add armature inertia to diagonal
     // ============================================================
     for jnt_id in 0..model.njnt {
+        if sleep_filter && data.body_sleep_state[model.jnt_body[jnt_id]] == SleepState::Asleep {
+            continue;
+        }
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let nv = model.jnt_type[jnt_id].nv();
         let armature = model.jnt_armature[jnt_id];
@@ -9424,14 +10249,16 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // ============================================================
     // Exploits tree sparsity from dof_parent for O(n) factorization and solve.
     // Reused in mj_fwd_acceleration_explicit() and pgs_solve_contacts().
-    mj_factor_sparse(model, data);
+    // C3b: Selective factorization skips sleeping DOFs when sleep is enabled.
+    // Sleeping DOFs' qLD entries are preserved from their last awake step.
+    mj_factor_sparse_selective(model, data);
 
     // ============================================================
     // Phase 6: Cache body effective mass/inertia from qM diagonal
     // ============================================================
     // Extract per-body min mass/inertia for constraint force limiting.
     // This avoids O(joints) traversal per constraint.
-    cache_body_effective_mass(model, data);
+    cache_body_effective_mass(model, data, sleep_filter);
 }
 
 /// Cache per-body minimum mass and inertia from the mass matrix diagonal.
@@ -9443,17 +10270,25 @@ fn mj_crba(model: &Model, data: &mut Data) {
 /// Uses the `JointVisitor` pattern to ensure consistency with joint iteration
 /// elsewhere in the codebase.
 ///
+/// When `sleep_filter` is true, sleeping bodies' cached values are preserved
+/// from their last awake step (not recomputed, not zeroed). All three sub-phases
+/// (reset, visitor, fallback) skip sleeping bodies. (§16.29.3 Phase 6)
+///
 /// Must be called after `mj_crba()` has computed the mass matrix.
-fn cache_body_effective_mass(model: &Model, data: &mut Data) {
+fn cache_body_effective_mass(model: &Model, data: &mut Data, sleep_filter: bool) {
     // Visitor struct for JointVisitor pattern (defined before statements per clippy)
     struct MassCacheVisitor<'a> {
         model: &'a Model,
         data: &'a mut Data,
+        sleep_filter: bool,
     }
 
     impl JointVisitor for MassCacheVisitor<'_> {
         fn visit_free(&mut self, ctx: JointContext) {
             let body_id = self.model.jnt_body[ctx.jnt_id];
+            if self.sleep_filter && self.data.body_sleep_state[body_id] == SleepState::Asleep {
+                return;
+            }
             // Linear DOFs at 0-2
             for i in 0..3 {
                 let dof = ctx.dof_adr + i;
@@ -9480,6 +10315,9 @@ fn cache_body_effective_mass(model: &Model, data: &mut Data) {
 
         fn visit_ball(&mut self, ctx: JointContext) {
             let body_id = self.model.jnt_body[ctx.jnt_id];
+            if self.sleep_filter && self.data.body_sleep_state[body_id] == SleepState::Asleep {
+                return;
+            }
             // All 3 DOFs are angular
             for i in 0..3 {
                 let dof = ctx.dof_adr + i;
@@ -9495,6 +10333,9 @@ fn cache_body_effective_mass(model: &Model, data: &mut Data) {
 
         fn visit_hinge(&mut self, ctx: JointContext) {
             let body_id = self.model.jnt_body[ctx.jnt_id];
+            if self.sleep_filter && self.data.body_sleep_state[body_id] == SleepState::Asleep {
+                return;
+            }
             // Single angular DOF
             if ctx.dof_adr < self.model.nv {
                 let inertia = self.data.qM[(ctx.dof_adr, ctx.dof_adr)];
@@ -9507,6 +10348,9 @@ fn cache_body_effective_mass(model: &Model, data: &mut Data) {
 
         fn visit_slide(&mut self, ctx: JointContext) {
             let body_id = self.model.jnt_body[ctx.jnt_id];
+            if self.sleep_filter && self.data.body_sleep_state[body_id] == SleepState::Asleep {
+                return;
+            }
             // Single linear DOF
             if ctx.dof_adr < self.model.nv {
                 let mass = self.data.qM[(ctx.dof_adr, ctx.dof_adr)];
@@ -9517,17 +10361,29 @@ fn cache_body_effective_mass(model: &Model, data: &mut Data) {
         }
     }
 
-    // Reset to defaults (world body stays at infinity)
+    // Sub-phase 1: Reset only awake bodies.
+    // CRITICAL: sleeping bodies' cached values must be preserved.
     for i in 1..model.nbody {
+        if sleep_filter && data.body_sleep_state[i] == SleepState::Asleep {
+            continue; // Preserve cached values from last awake step
+        }
         data.body_min_mass[i] = f64::INFINITY;
         data.body_min_inertia[i] = f64::INFINITY;
     }
 
-    let mut visitor = MassCacheVisitor { model, data };
+    // Sub-phase 2: Visitor with sleep guard.
+    let mut visitor = MassCacheVisitor {
+        model,
+        data,
+        sleep_filter,
+    };
     model.visit_joints(&mut visitor);
 
-    // Replace infinity with default for bodies that had no DOFs of that type
+    // Sub-phase 3: Fallback — only awake bodies.
     for i in 1..model.nbody {
+        if sleep_filter && data.body_sleep_state[i] == SleepState::Asleep {
+            continue; // Preserve cached values from last awake step
+        }
         if data.body_min_mass[i] == f64::INFINITY {
             data.body_min_mass[i] = DEFAULT_MASS_FALLBACK;
         }
@@ -9635,6 +10491,10 @@ pub(crate) fn joint_motion_subspace(
     clippy::needless_range_loop
 )]
 fn mj_rne(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    // §16.27: Use indirection array for cache-friendly iteration over awake bodies.
+    let use_body_ind = sleep_enabled && data.nbody_awake < model.nbody;
+
     data.qfrc_bias.fill(0.0);
 
     if model.nv == 0 {
@@ -9648,6 +10508,11 @@ fn mj_rne(model: &Model, data: &mut Data) {
     for jnt_id in 0..model.njnt {
         let dof_adr = model.jnt_dof_adr[jnt_id];
         let jnt_body = model.jnt_body[jnt_id];
+
+        // §16.5a: Skip RNE for sleeping bodies — bias forces are zeroed
+        if sleep_enabled && data.body_sleep_state[jnt_body] == SleepState::Asleep {
+            continue;
+        }
 
         // Use precomputed subtree mass and COM for O(n) gravity
         let subtree_mass = data.subtree_mass[jnt_body];
@@ -9700,7 +10565,18 @@ fn mj_rne(model: &Model, data: &mut Data) {
     // ========== Gyroscopic terms for Ball/Free joints ==========
     // τ_gyro = ω × (I * ω) - the gyroscopic torque
     // This is the dominant Coriolis effect for 3D rotations
-    for body_id in 1..model.nbody {
+    let nbody_gyro = if use_body_ind {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+    for idx in 1..nbody_gyro {
+        let body_id = if use_body_ind {
+            data.body_awake_ind[idx]
+        } else {
+            idx
+        };
+
         let jnt_start = model.body_jnt_adr[body_id];
         let jnt_end = jnt_start + model.body_jnt_num[body_id];
 
@@ -9922,19 +10798,29 @@ const FRICTION_VELOCITY_THRESHOLD: f64 = 1e-12;
 /// computes friction loss (which is velocity-sign-dependent and cannot be
 /// linearized into the implicit solve).
 fn mj_fwd_passive(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
     data.qfrc_passive.fill(0.0);
     data.qfrc_frictionloss.fill(0.0);
 
     let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
-    let mut visitor = PassiveForceVisitor {
-        model,
-        data,
-        implicit_mode,
-    };
-    model.visit_joints(&mut visitor);
+    {
+        let mut visitor = PassiveForceVisitor {
+            model,
+            data,
+            implicit_mode,
+            sleep_enabled,
+        };
+        model.visit_joints(&mut visitor);
+    }
+    // visitor is dropped here, releasing the mutable borrow on data
 
     // Tendon passive forces: spring + damper + friction loss.
     for t in 0..model.ntendon {
+        // §16.5a': Skip tendon if ALL target DOFs are sleeping
+        if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+            continue;
+        }
         let length = data.ten_length[t];
         let velocity = data.ten_velocity[t];
         let mut force = 0.0;
@@ -9999,14 +10885,33 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
     }
 }
 
+/// Check if all DOFs affected by a tendon's Jacobian belong to sleeping trees (§16.5a').
+fn tendon_all_dofs_sleeping(model: &Model, data: &Data, t: usize) -> bool {
+    let ten_j = &data.ten_J[t];
+    for dof in 0..model.nv {
+        if ten_j[dof] != 0.0 && data.tree_awake[model.dof_treeid[dof]] {
+            return false; // At least one target DOF is awake
+        }
+    }
+    true
+}
+
 /// Visitor for computing passive forces (springs, dampers, friction loss).
 struct PassiveForceVisitor<'a> {
     model: &'a Model,
     data: &'a mut Data,
     implicit_mode: bool,
+    sleep_enabled: bool,
 }
 
 impl PassiveForceVisitor<'_> {
+    /// Check if a joint's body is sleeping (§16.5a').
+    #[inline]
+    fn is_joint_sleeping(&self, ctx: &JointContext) -> bool {
+        self.sleep_enabled
+            && self.data.body_sleep_state[self.model.jnt_body[ctx.jnt_id]] == SleepState::Asleep
+    }
+
     /// Apply friction loss force at a single DOF.
     /// Friction loss is always explicit (velocity-sign-dependent, cannot linearize).
     #[inline]
@@ -10024,6 +10929,9 @@ impl PassiveForceVisitor<'_> {
     /// Process a 1-DOF joint (Hinge or Slide) with spring, damper, and friction.
     #[inline]
     fn visit_1dof_joint(&mut self, ctx: JointContext) {
+        if self.is_joint_sleeping(&ctx) {
+            return;
+        }
         let dof_adr = ctx.dof_adr;
         let qpos_adr = ctx.qpos_adr;
         let jnt_id = ctx.jnt_id;
@@ -10049,6 +10957,9 @@ impl PassiveForceVisitor<'_> {
     /// No springs (would require quaternion spring formulation).
     #[inline]
     fn visit_multi_dof_joint(&mut self, ctx: JointContext) {
+        if self.is_joint_sleeping(&ctx) {
+            return;
+        }
         for i in 0..ctx.nv {
             let dof_idx = ctx.dof_adr + i;
 
@@ -10084,6 +10995,1384 @@ impl JointVisitor for PassiveForceVisitor<'_> {
     #[inline]
     fn visit_free(&mut self, ctx: JointContext) {
         self.visit_multi_dof_joint(ctx);
+    }
+}
+
+// ============================================================================
+// dof_length Mechanism Length (§16.14)
+// ============================================================================
+
+/// Compute characteristic body length for dof_length normalization (§16.14.1).
+///
+/// For each body, compute the maximum extent from this body through the
+/// kinematic chain to any descendant. This gives a length scale that converts
+/// angular velocity [rad/s] to tip velocity [m/s] for the mechanism rooted
+/// at this body.
+fn compute_body_lengths(model: &Model) -> Vec<f64> {
+    let mut body_length = vec![0.0_f64; model.nbody];
+
+    // Backward pass: accumulate subtree extents from leaves to root
+    for body_id in (1..model.nbody).rev() {
+        let parent = model.body_parent[body_id];
+
+        // Distance from parent to this body (local position in parent frame)
+        let pos = &model.body_pos[body_id];
+        let dist = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
+
+        // This body's extent: own subtree extent + distance to parent
+        let child_extent = body_length[body_id] + dist;
+        body_length[parent] = body_length[parent].max(child_extent);
+    }
+
+    // Ensure minimum length (no normalization for tiny/zero-extent bodies)
+    for length in &mut body_length {
+        if *length < 1e-10 {
+            *length = 1.0;
+        }
+    }
+
+    body_length
+}
+
+/// Compute per-DOF mechanism lengths (§16.14.2).
+///
+/// Rotational DOFs get the body length (converts rad/s to m/s at the tip).
+/// Translational DOFs keep 1.0 (already in m/s).
+///
+/// Called during model construction to replace the Phase A uniform 1.0.
+pub fn compute_dof_lengths(model: &mut Model) {
+    let body_length = compute_body_lengths(model);
+
+    for dof in 0..model.nv {
+        let jnt_id = model.dof_jnt[dof];
+        let jnt_type = model.jnt_type[jnt_id];
+        let offset = dof - model.jnt_dof_adr[jnt_id];
+
+        let is_rotational = match jnt_type {
+            MjJointType::Hinge | MjJointType::Ball => true,
+            MjJointType::Free => offset >= 3, // DOFs 3,4,5 are rotational
+            MjJointType::Slide => false,
+        };
+
+        if is_rotational {
+            model.dof_length[dof] = body_length[model.dof_body[dof]];
+        } else {
+            model.dof_length[dof] = 1.0; // translational: already in [m/s]
+        }
+    }
+}
+
+// ============================================================================
+// Sleep / Body Deactivation (§16)
+// ============================================================================
+
+/// Sleep update: check velocity thresholds, transition sleeping trees (§16.3).
+///
+/// Called at the end of `step()`, after integration completes and before
+/// the warmstart save. This is the central sleep state machine.
+/// Phase B sleep transition function (§16.12.2).
+///
+/// Three-phase approach:
+/// 1. Countdown: awake trees that can sleep have their timer incremented
+/// 2. Island sleep: entire islands where ALL trees are ready (timer == -1)
+/// 3. Singleton sleep: unconstrained trees (no island) that are ready
+///
+/// Returns the number of trees that were put to sleep.
+#[allow(clippy::cast_sign_loss)]
+fn mj_sleep(model: &Model, data: &mut Data) -> usize {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return 0;
+    }
+
+    // Phase 1: Countdown for awake trees
+    for t in 0..model.ntree {
+        if data.tree_asleep[t] >= 0 {
+            continue; // Already asleep
+        }
+        if !tree_can_sleep(model, data, t) {
+            data.tree_asleep[t] = -(1 + MIN_AWAKE); // Reset
+            continue;
+        }
+        // Increment toward -1 (ready to sleep)
+        if data.tree_asleep[t] < -1 {
+            data.tree_asleep[t] += 1;
+        }
+    }
+
+    let mut nslept = 0;
+
+    // Phase 2: Sleep entire islands where ALL trees are ready
+    for island in 0..data.nisland {
+        let itree_start = data.island_itreeadr[island];
+        let itree_end = itree_start + data.island_ntree[island];
+
+        let all_ready = (itree_start..itree_end).all(|idx| {
+            let tree = data.map_itree2tree[idx];
+            data.tree_asleep[tree] == -1
+        });
+
+        if all_ready {
+            let trees: Vec<usize> = (itree_start..itree_end)
+                .map(|idx| data.map_itree2tree[idx])
+                .collect();
+            sleep_trees(model, data, &trees);
+            nslept += trees.len();
+        }
+    }
+
+    // Phase 3: Sleep unconstrained singleton trees that are ready
+    for t in 0..model.ntree {
+        if data.tree_island[t] < 0 && data.tree_asleep[t] == -1 {
+            sleep_trees(model, data, &[t]); // Self-link
+            nslept += 1;
+        }
+    }
+
+    nslept
+}
+
+/// Check if a tree is eligible to sleep (§16.12.2).
+///
+/// Returns `false` if policy forbids sleeping, external forces are applied,
+/// or any DOF velocity exceeds the sleep threshold.
+fn tree_can_sleep(model: &Model, data: &Data, tree: usize) -> bool {
+    // Policy check
+    if model.tree_sleep_policy[tree] == SleepPolicy::Never
+        || model.tree_sleep_policy[tree] == SleepPolicy::AutoNever
+    {
+        return false;
+    }
+
+    // External force check: xfrc_applied on any body in tree
+    let body_start = model.tree_body_adr[tree];
+    let body_end = body_start + model.tree_body_num[tree];
+    for body_id in body_start..body_end {
+        let f = &data.xfrc_applied[body_id];
+        if f[0] != 0.0 || f[1] != 0.0 || f[2] != 0.0 || f[3] != 0.0 || f[4] != 0.0 || f[5] != 0.0 {
+            return false;
+        }
+    }
+
+    // External force check: qfrc_applied on any DOF in tree
+    let dof_start = model.tree_dof_adr[tree];
+    let dof_end = dof_start + model.tree_dof_num[tree];
+    for dof in dof_start..dof_end {
+        if data.qfrc_applied[dof] != 0.0 {
+            return false;
+        }
+    }
+
+    // Velocity threshold check
+    tree_velocity_below_threshold(model, data, tree)
+}
+
+/// Check if all DOFs in a tree have velocities below the sleep threshold.
+fn tree_velocity_below_threshold(model: &Model, data: &Data, tree: usize) -> bool {
+    let dof_start = model.tree_dof_adr[tree];
+    let dof_end = dof_start + model.tree_dof_num[tree];
+    for dof in dof_start..dof_end {
+        if data.qvel[dof].abs() > model.sleep_tolerance * model.dof_length[dof] {
+            return false;
+        }
+    }
+    true // All DOFs below threshold (L∞ norm check)
+}
+
+/// Sleep a set of trees as a circular linked list (§16.12.1).
+///
+/// Creates a circular sleep cycle among the given trees, zeros all DOF-level
+/// and body-level arrays, and syncs xpos/xquat with post-integration qpos.
+/// For a single tree, this creates a self-link (Phase A compatible).
+#[allow(clippy::cast_possible_wrap)]
+fn sleep_trees(model: &Model, data: &mut Data, trees: &[usize]) {
+    let n = trees.len();
+    if n == 0 {
+        return;
+    }
+
+    for i in 0..n {
+        let tree = trees[i];
+        let next = trees[(i + 1) % n];
+
+        // Create circular linked list
+        data.tree_asleep[tree] = next as i32;
+
+        // Zero DOF-level arrays
+        let dof_start = model.tree_dof_adr[tree];
+        let dof_end = dof_start + model.tree_dof_num[tree];
+        for dof in dof_start..dof_end {
+            data.qvel[dof] = 0.0;
+            data.qacc[dof] = 0.0;
+            data.qfrc_bias[dof] = 0.0;
+            data.qfrc_passive[dof] = 0.0;
+            data.qfrc_constraint[dof] = 0.0;
+            data.qfrc_actuator[dof] = 0.0; // §16.26.7: needed for policy relaxation
+        }
+
+        // Zero body-level arrays
+        let body_start = model.tree_body_adr[tree];
+        let body_end = body_start + model.tree_body_num[tree];
+        for body_id in body_start..body_end {
+            data.cvel[body_id] = SpatialVector::zeros();
+            data.cacc_bias[body_id] = SpatialVector::zeros();
+            data.cfrc_bias[body_id] = SpatialVector::zeros();
+        }
+
+        // Sync xpos/xquat with post-integration qpos (§16.15 compatibility)
+        sync_tree_fk(model, data, tree);
+    }
+}
+
+/// Recompute FK for a single tree's bodies to sync xpos/xquat with current qpos.
+///
+/// Called after integration to prevent false positives in qpos change detection.
+fn sync_tree_fk(model: &Model, data: &mut Data, tree: usize) {
+    let body_start = model.tree_body_adr[tree];
+    let body_end = body_start + model.tree_body_num[tree];
+    for body_id in body_start..body_end {
+        let parent_id = model.body_parent[body_id];
+        let mut pos = data.xpos[parent_id];
+        let mut quat = data.xquat[parent_id];
+
+        // Apply body offset in parent frame
+        pos += quat * model.body_pos[body_id];
+        quat *= model.body_quat[body_id];
+
+        // Apply each joint
+        let jnt_start = model.body_jnt_adr[body_id];
+        let jnt_end = jnt_start + model.body_jnt_num[body_id];
+        for jnt_id in jnt_start..jnt_end {
+            let qpos_adr = model.jnt_qpos_adr[jnt_id];
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let angle = data.qpos[qpos_adr];
+                    let axis = model.jnt_axis[jnt_id];
+                    let anchor = model.jnt_pos[jnt_id];
+                    let world_anchor = pos + quat * anchor;
+                    let world_axis = quat * axis;
+                    let rot = if let Some(unit_axis) = nalgebra::Unit::try_new(world_axis, 1e-10) {
+                        UnitQuaternion::from_axis_angle(&unit_axis, angle)
+                    } else {
+                        UnitQuaternion::identity()
+                    };
+                    quat = rot * quat;
+                    pos = world_anchor + rot * (pos - world_anchor);
+                }
+                MjJointType::Slide => {
+                    let displacement = data.qpos[qpos_adr];
+                    let axis = model.jnt_axis[jnt_id];
+                    pos += quat * (axis * displacement);
+                }
+                MjJointType::Ball => {
+                    let q = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        data.qpos[qpos_adr],
+                        data.qpos[qpos_adr + 1],
+                        data.qpos[qpos_adr + 2],
+                        data.qpos[qpos_adr + 3],
+                    ));
+                    quat *= q;
+                }
+                MjJointType::Free => {
+                    pos = nalgebra::Vector3::new(
+                        data.qpos[qpos_adr],
+                        data.qpos[qpos_adr + 1],
+                        data.qpos[qpos_adr + 2],
+                    );
+                    quat = UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                        data.qpos[qpos_adr + 3],
+                        data.qpos[qpos_adr + 4],
+                        data.qpos[qpos_adr + 5],
+                        data.qpos[qpos_adr + 6],
+                    ));
+                }
+            }
+        }
+        data.xpos[body_id] = pos;
+        data.xquat[body_id] = quat;
+        data.xmat[body_id] = quat.to_rotation_matrix().into_inner();
+    }
+}
+
+/// Re-initialize all sleep state from model policies (§16.7).
+///
+/// Called by `Data::reset()` and `Data::reset_to_keyframe()` to ensure sleep
+/// state matches the model's tree sleep policies after a reset.
+fn reset_sleep_state(model: &Model, data: &mut Data) {
+    // First: set all trees to awake
+    for t in 0..model.ntree {
+        data.tree_asleep[t] = -(1 + MIN_AWAKE); // Fully awake
+    }
+
+    // Then: validate and create sleep cycles for Init trees
+    if let Err(e) = validate_init_sleep(model, data) {
+        // Log warning and degrade Init trees to awake (spec §16.24)
+        #[cfg(debug_assertions)]
+        eprintln!("Init-sleep validation failed: {e}");
+        let _ = e; // Suppress unused warning in release
+    }
+
+    mj_update_sleep_arrays(model, data);
+}
+
+/// Validate Init-sleep trees and create sleep cycles (§16.24).
+///
+/// Uses union-find over model-time adjacency (equality constraints +
+/// multi-tree tendons) to group Init trees. Creates circular sleep cycles
+/// per group. Returns an error if validation fails.
+fn validate_init_sleep(model: &Model, data: &mut Data) -> Result<(), SleepError> {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return Ok(());
+    }
+
+    // Phase 1: Basic per-tree validation
+    for t in 0..model.ntree {
+        if model.tree_sleep_policy[t] != SleepPolicy::Init {
+            continue;
+        }
+        if model.tree_dof_num[t] == 0 {
+            return Err(SleepError::InitSleepInvalidTree { tree: t });
+        }
+    }
+
+    // Phase 2: Check for mixed Init/non-Init in statically-coupled groups
+    let mut uf = UnionFind::new(model.ntree);
+
+    // Equality constraint edges
+    for eq in 0..model.neq {
+        if !model.eq_active[eq] {
+            continue;
+        }
+        let (tree_a, tree_b) = equality_trees(model, eq);
+        if tree_a < model.ntree && tree_b < model.ntree && tree_a != tree_b {
+            uf.union(tree_a, tree_b);
+        }
+    }
+
+    // Multi-tree tendon edges
+    for t in 0..model.ntendon {
+        if model.tendon_treenum[t] == 2 {
+            let tree_a = model.tendon_tree[2 * t];
+            let tree_b = model.tendon_tree[2 * t + 1];
+            if tree_a < model.ntree && tree_b < model.ntree {
+                uf.union(tree_a, tree_b);
+            }
+        }
+    }
+
+    // Check each group for mixed Init/non-Init
+    let mut group_has_init = vec![false; model.ntree];
+    let mut group_has_noninit = vec![false; model.ntree];
+    for t in 0..model.ntree {
+        let root = uf.find(t);
+        if model.tree_sleep_policy[t] == SleepPolicy::Init {
+            group_has_init[root] = true;
+        } else {
+            group_has_noninit[root] = true;
+        }
+    }
+    for root in 0..model.ntree {
+        if group_has_init[root] && group_has_noninit[root] {
+            return Err(SleepError::InitSleepMixedIsland { group_root: root });
+        }
+    }
+
+    // Phase 3: Create sleep cycles for validated Init-sleep groups
+    // Group Init trees by their union-find root
+    let mut init_groups: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::new();
+    for t in 0..model.ntree {
+        if model.tree_sleep_policy[t] == SleepPolicy::Init {
+            let root = uf.find(t);
+            init_groups.entry(root).or_default().push(t);
+        }
+    }
+    for trees in init_groups.values() {
+        sleep_trees(model, data, trees);
+    }
+
+    Ok(())
+}
+
+/// Recompute derived sleep arrays from `tree_asleep` (§16.3, §16.17).
+///
+/// Updates: tree_awake, body_sleep_state, ntree_awake, nv_awake,
+/// and the awake-index indirection arrays (body_awake_ind, parent_awake_ind, dof_awake_ind).
+fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
+    data.ntree_awake = 0;
+    data.nv_awake = 0;
+
+    for t in 0..model.ntree {
+        let awake = data.tree_asleep[t] < 0;
+        data.tree_awake[t] = awake;
+        if awake {
+            data.ntree_awake += 1;
+        }
+    }
+
+    // --- Body sleep states + body_awake_ind + parent_awake_ind (§16.17.1) ---
+    let mut nbody_awake = 0;
+    let mut nparent_awake = 0;
+
+    // Body 0 (world) is always Static and always in both indirection arrays
+    if !data.body_sleep_state.is_empty() {
+        data.body_sleep_state[0] = SleepState::Static;
+        if !data.body_awake_ind.is_empty() {
+            data.body_awake_ind[0] = 0;
+            nbody_awake = 1;
+        }
+        if !data.parent_awake_ind.is_empty() {
+            data.parent_awake_ind[0] = 0;
+            nparent_awake = 1;
+        }
+    }
+
+    // Update per-body sleep states and build indirection arrays
+    if model.body_treeid.len() == model.nbody {
+        for body_id in 1..model.nbody {
+            let tree = model.body_treeid[body_id];
+            let awake = if tree < model.ntree {
+                data.tree_awake[tree]
+            } else {
+                true // No tree info → treat as awake
+            };
+
+            data.body_sleep_state[body_id] = if awake {
+                SleepState::Awake
+            } else {
+                SleepState::Asleep
+            };
+
+            // Include in body_awake_ind if awake
+            if awake && nbody_awake < data.body_awake_ind.len() {
+                data.body_awake_ind[nbody_awake] = body_id;
+                nbody_awake += 1;
+            }
+
+            // Include in parent_awake_ind if parent is awake or static
+            let parent = model.body_parent[body_id];
+            let parent_awake = data.body_sleep_state[parent] != SleepState::Asleep;
+            if parent_awake && nparent_awake < data.parent_awake_ind.len() {
+                data.parent_awake_ind[nparent_awake] = body_id;
+                nparent_awake += 1;
+            }
+        }
+    }
+
+    data.nbody_awake = nbody_awake;
+    data.nparent_awake = nparent_awake;
+
+    // --- DOF awake indices (§16.17.1) ---
+    let mut nv_awake = 0;
+    for dof in 0..model.nv {
+        if model.dof_treeid.len() > dof {
+            let tree = model.dof_treeid[dof];
+            if tree < model.ntree && data.tree_awake[tree] {
+                if nv_awake < data.dof_awake_ind.len() {
+                    data.dof_awake_ind[nv_awake] = dof;
+                }
+                nv_awake += 1;
+            }
+        } else {
+            // No tree info → treat as awake
+            if nv_awake < data.dof_awake_ind.len() {
+                data.dof_awake_ind[nv_awake] = dof;
+            }
+            nv_awake += 1;
+        }
+    }
+    data.nv_awake = nv_awake;
+}
+
+/// Check if any sleeping tree's qpos was externally modified (§16.15).
+///
+/// Reads `tree_qpos_dirty` flags set by `mj_fwd_position()` during FK,
+/// wakes affected trees, then clears all dirty flags.
+/// Returns `true` if any tree was newly woken.
+fn mj_check_qpos_changed(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for t in 0..model.ntree {
+        if data.tree_qpos_dirty[t] && data.tree_asleep[t] >= 0 {
+            // Tree was sleeping but FK detected a pose change from external qpos modification.
+            mj_wake_tree(model, data, t);
+            woke_any = true;
+        }
+    }
+
+    // Clear all dirty flags (whether or not they triggered a wake)
+    data.tree_qpos_dirty.fill(false);
+
+    woke_any
+}
+
+/// Flood-fill connected components on a tree-tree adjacency graph (§16.11.3).
+///
+/// Uses DFS with an explicit stack. Trees with no edges (`rownnz[t] == 0`) get
+/// `island[t] = -1` (singletons). Returns the number of islands found.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::needless_continue
+)]
+fn mj_flood_fill(
+    island: &mut [i32],
+    rownnz: &[usize],
+    rowadr: &[usize],
+    colind: &[usize],
+    stack: &mut [usize],
+    ntree: usize,
+) -> usize {
+    island[..ntree].fill(-1);
+    let mut nisland = 0usize;
+
+    for seed in 0..ntree {
+        if island[seed] >= 0 || rownnz[seed] == 0 {
+            continue;
+        }
+
+        // DFS from seed using explicit stack with size counter
+        let mut stack_len = 1;
+        stack[0] = seed;
+        island[seed] = nisland as i32;
+
+        while stack_len > 0 {
+            stack_len -= 1;
+            let node = stack[stack_len];
+
+            for j in rowadr[node]..rowadr[node] + rownnz[node] {
+                let neighbor = colind[j];
+                if island[neighbor] < 0 {
+                    island[neighbor] = nisland as i32;
+                    stack[stack_len] = neighbor;
+                    stack_len += 1;
+                }
+            }
+        }
+
+        nisland += 1;
+    }
+
+    nisland
+}
+
+/// Discover constraint islands from the active constraint set (§16.11).
+///
+/// Builds a tree-tree adjacency graph from contacts, equality constraints,
+/// and multi-tree tendons, then runs flood-fill to find connected components.
+/// Populates all island arrays in `data`.
+///
+/// Works directly from raw data sources (contacts, model equality constraints,
+/// tendon limits, joint limits) rather than from `efc_*` arrays, so it is
+/// independent of which solver path (Newton vs PGS/CG) is active.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::too_many_lines
+)]
+fn mj_island(model: &Model, data: &mut Data) {
+    let ntree = model.ntree;
+
+    // Early return: DISABLE_ISLAND flag (§16.11.5)
+    if model.disableflags & DISABLE_ISLAND != 0 || ntree == 0 {
+        data.nisland = 0;
+        data.tree_island[..ntree].fill(-1);
+        return;
+    }
+
+    // === Phase 1: Edge extraction (§16.11.2) ===
+    // Collect edges as (tree_a, tree_b) pairs from raw data sources.
+    // Only awake trees participate in island discovery — sleeping trees
+    // don't contribute to constraint solving.
+
+    // Clear scratch
+    data.island_scratch_rownnz[..ntree].fill(0);
+    data.island_scratch_colind.clear();
+
+    // Helper closure: returns true if tree is awake (eligible for islands)
+    let tree_awake = |tree: usize| -> bool { tree < ntree && data.tree_asleep[tree] < 0 };
+
+    let ncon = data.contacts.len();
+    let capacity = ncon + model.neq + model.njnt + model.ntendon;
+    let mut edges: Vec<(usize, usize)> = Vec::with_capacity(capacity);
+
+    // 1a: Contacts → tree pairs from geom → body → tree
+    for contact in &data.contacts {
+        let body1 = if contact.geom1 < model.geom_body.len() {
+            model.geom_body[contact.geom1]
+        } else {
+            continue;
+        };
+        let body2 = if contact.geom2 < model.geom_body.len() {
+            model.geom_body[contact.geom2]
+        } else {
+            continue;
+        };
+        let tree1 = if body1 > 0 && body1 < model.body_treeid.len() {
+            model.body_treeid[body1]
+        } else {
+            usize::MAX // World body
+        };
+        let tree2 = if body2 > 0 && body2 < model.body_treeid.len() {
+            model.body_treeid[body2]
+        } else {
+            usize::MAX // World body
+        };
+
+        if tree1 < ntree && tree2 < ntree && tree_awake(tree1) && tree_awake(tree2) {
+            edges.push((tree1, tree2));
+            if tree1 != tree2 {
+                edges.push((tree2, tree1));
+            }
+        } else if tree1 < ntree && tree_awake(tree1) {
+            edges.push((tree1, tree1)); // Contact with world
+        } else if tree2 < ntree && tree_awake(tree2) {
+            edges.push((tree2, tree2)); // Contact with world
+        }
+    }
+
+    // 1b: Active equality constraints → tree pairs (awake only)
+    for eq_id in 0..model.neq {
+        if !model.eq_active[eq_id] {
+            continue;
+        }
+        let (tree1, tree2) = equality_trees(model, eq_id);
+        if tree_awake(tree1) {
+            edges.push((tree1, tree1));
+            if tree_awake(tree2) && tree2 != tree1 {
+                edges.push((tree1, tree2));
+                edges.push((tree2, tree1));
+            } else if tree_awake(tree2) {
+                edges.push((tree2, tree2));
+            }
+        } else if tree_awake(tree2) {
+            edges.push((tree2, tree2));
+        }
+    }
+
+    // 1c: Active joint limits → self-edges (awake only)
+    for jnt_id in 0..model.njnt {
+        if !model.jnt_limited[jnt_id] {
+            continue;
+        }
+        // Check if limit is actually violated (active)
+        let (limit_min, limit_max) = model.jnt_range[jnt_id];
+        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+        let q = data.qpos[qpos_adr];
+        if q < limit_min || q > limit_max {
+            let body = model.jnt_body[jnt_id];
+            if body > 0 && body < model.body_treeid.len() {
+                let tree = model.body_treeid[body];
+                if tree_awake(tree) {
+                    edges.push((tree, tree));
+                }
+            }
+        }
+    }
+
+    // 1d: Active tendon limits → tree pair edges (awake only)
+    for t in 0..model.ntendon {
+        if !model.tendon_limited[t] {
+            continue;
+        }
+        // Check if tendon limit is actually violated (active)
+        let (limit_min, limit_max) = model.tendon_range[t];
+        let length = data.ten_length[t];
+        if length < limit_min || length > limit_max {
+            if model.tendon_treenum[t] == 2 {
+                let t1 = model.tendon_tree[2 * t];
+                let t2 = model.tendon_tree[2 * t + 1];
+                if tree_awake(t1) && tree_awake(t2) {
+                    edges.push((t1, t2));
+                    edges.push((t2, t1));
+                }
+            } else if model.tendon_treenum[t] == 1 {
+                let tree = model.tendon_tree[2 * t];
+                if tree_awake(tree) {
+                    edges.push((tree, tree));
+                }
+            }
+        }
+    }
+
+    // === Phase 2: Build CSR adjacency graph (§16.11.3) ===
+
+    // Count edges per tree (rownnz)
+    for &(ta, _) in &edges {
+        if ta < ntree {
+            data.island_scratch_rownnz[ta] += 1;
+        }
+    }
+
+    // Compute row addresses (prefix sum)
+    data.island_scratch_rowadr[..ntree].fill(0);
+    if ntree > 0 {
+        let mut prefix = 0;
+        for t in 0..ntree {
+            data.island_scratch_rowadr[t] = prefix;
+            prefix += data.island_scratch_rownnz[t];
+        }
+        data.island_scratch_colind.resize(prefix, 0);
+    }
+
+    // Fill column indices
+    let mut fill_count = vec![0usize; ntree];
+    for &(ta, tb) in &edges {
+        if ta < ntree {
+            let idx = data.island_scratch_rowadr[ta] + fill_count[ta];
+            if idx < data.island_scratch_colind.len() {
+                data.island_scratch_colind[idx] = tb;
+            }
+            fill_count[ta] += 1;
+        }
+    }
+
+    // === Phase 3: Flood fill (§16.11.3) ===
+    // We need to clone scratch arrays to avoid borrow conflicts
+    let rownnz: Vec<usize> = data.island_scratch_rownnz[..ntree].to_vec();
+    let rowadr: Vec<usize> = data.island_scratch_rowadr[..ntree].to_vec();
+    let colind: Vec<usize> = data.island_scratch_colind.clone();
+
+    let mut island_out = vec![-1i32; ntree];
+    let mut stack = vec![0usize; ntree];
+
+    let nisland = mj_flood_fill(
+        &mut island_out,
+        &rownnz,
+        &rowadr,
+        &colind,
+        &mut stack,
+        ntree,
+    );
+
+    // Copy results back
+    data.tree_island[..ntree].copy_from_slice(&island_out[..ntree]);
+    data.nisland = nisland;
+
+    // === Phase 4: Populate island arrays (§16.11.4) ===
+
+    // 4a: Trees per island
+    data.island_ntree[..nisland].fill(0);
+    for t in 0..ntree {
+        if island_out[t] >= 0 {
+            let isl = island_out[t] as usize;
+            if isl < nisland {
+                data.island_ntree[isl] += 1;
+            }
+        }
+    }
+
+    // Compute island_itreeadr (prefix sum of island_ntree)
+    if nisland > 0 {
+        let mut prefix = 0;
+        for i in 0..nisland {
+            data.island_itreeadr[i] = prefix;
+            prefix += data.island_ntree[i];
+        }
+    }
+
+    // Pack map_itree2tree grouped by island
+    let mut island_fill = vec![0usize; nisland];
+    for t in 0..ntree {
+        if island_out[t] >= 0 {
+            let isl = island_out[t] as usize;
+            if isl < nisland {
+                let idx = data.island_itreeadr[isl] + island_fill[isl];
+                if idx < data.map_itree2tree.len() {
+                    data.map_itree2tree[idx] = t;
+                }
+                island_fill[isl] += 1;
+            }
+        }
+    }
+
+    // 4b: DOFs per island
+    data.island_nv[..nisland].fill(0);
+    data.dof_island[..model.nv].fill(-1);
+    data.map_dof2idof[..model.nv].fill(-1);
+
+    // First pass: compute island_nv and island_idofadr
+    for dof in 0..model.nv {
+        if dof < model.dof_treeid.len() {
+            let tree = model.dof_treeid[dof];
+            if tree < ntree && island_out[tree] >= 0 {
+                let isl = island_out[tree] as usize;
+                if isl < nisland {
+                    data.dof_island[dof] = isl as i32;
+                    data.island_nv[isl] += 1;
+                }
+            }
+        }
+    }
+
+    // Compute island_idofadr (prefix sum of island_nv)
+    if nisland > 0 {
+        let mut prefix = 0;
+        for i in 0..nisland {
+            data.island_idofadr[i] = prefix;
+            prefix += data.island_nv[i];
+        }
+    }
+
+    // Pack map_idof2dof and build map_dof2idof
+    let mut island_dof_fill = vec![0usize; nisland];
+    for dof in 0..model.nv {
+        let isl_i32 = data.dof_island[dof];
+        if isl_i32 >= 0 {
+            let isl = isl_i32 as usize;
+            if isl < nisland {
+                let local_idx = island_dof_fill[isl];
+                let global_idx = data.island_idofadr[isl] + local_idx;
+                if global_idx < data.map_idof2dof.len() {
+                    data.map_idof2dof[global_idx] = dof;
+                }
+                data.map_dof2idof[dof] = local_idx as i32;
+                island_dof_fill[isl] += 1;
+            }
+        }
+    }
+
+    // 4c: Contacts per island (§16.16)
+    // Assign each contact to an island based on its bodies' trees.
+    // For contacts with two dynamic bodies, use the first body's tree
+    // (both trees are in the same island by construction of the edge graph).
+    let ncon = data.contacts.len();
+    data.contact_island.resize(ncon, -1);
+
+    for ci in 0..ncon {
+        let contact = &data.contacts[ci];
+        let body1 = if contact.geom1 < model.geom_body.len() {
+            model.geom_body[contact.geom1]
+        } else {
+            continue;
+        };
+        let body2 = if contact.geom2 < model.geom_body.len() {
+            model.geom_body[contact.geom2]
+        } else {
+            continue;
+        };
+        // Pick the first dynamic body's tree for island assignment
+        let tree = if body1 > 0 && body1 < model.body_treeid.len() {
+            model.body_treeid[body1]
+        } else if body2 > 0 && body2 < model.body_treeid.len() {
+            model.body_treeid[body2]
+        } else {
+            continue; // Both world — shouldn't happen but skip
+        };
+        if tree < ntree && island_out[tree] >= 0 {
+            data.contact_island[ci] = island_out[tree];
+        }
+    }
+
+    // Also populate efc_island / constraint maps for Newton solver compatibility
+    let nefc = data.efc_type.len();
+    if nefc > 0 {
+        data.efc_island.resize(nefc, -1);
+        data.map_efc2iefc.resize(nefc, -1);
+        data.map_iefc2efc.resize(nefc, 0);
+        data.island_nefc[..nisland].fill(0);
+
+        for r in 0..nefc {
+            let tree = constraint_tree(model, data, r);
+            if tree < ntree && island_out[tree] >= 0 {
+                let isl = island_out[tree] as usize;
+                if isl < nisland {
+                    data.efc_island[r] = isl as i32;
+                    data.island_nefc[isl] += 1;
+                }
+            }
+        }
+
+        if nisland > 0 {
+            let mut prefix = 0;
+            for i in 0..nisland {
+                data.island_iefcadr[i] = prefix;
+                prefix += data.island_nefc[i];
+            }
+        }
+
+        let mut island_efc_fill = vec![0usize; nisland];
+        for r in 0..nefc {
+            let isl_i32 = data.efc_island[r];
+            if isl_i32 >= 0 {
+                let isl = isl_i32 as usize;
+                if isl < nisland {
+                    let local_idx = island_efc_fill[isl];
+                    let global_idx = data.island_iefcadr[isl] + local_idx;
+                    data.map_efc2iefc[r] = local_idx as i32;
+                    if global_idx < data.map_iefc2efc.len() {
+                        data.map_iefc2efc[global_idx] = r;
+                    }
+                    island_efc_fill[isl] += 1;
+                }
+            }
+        }
+    } else {
+        // No efc rows (PGS/CG path) — clear efc island arrays
+        data.efc_island.clear();
+        data.map_efc2iefc.clear();
+        data.map_iefc2efc.clear();
+        data.island_nefc[..nisland].fill(0);
+        data.island_iefcadr[..nisland].fill(0);
+    }
+}
+
+/// Get the tree pair spanned by an equality constraint (§16.11.2).
+///
+/// Returns `(tree1, tree2)` where `tree1` and `tree2` may be equal
+/// for single-tree constraints. Returns `(usize::MAX, usize::MAX)`
+/// if the trees cannot be determined.
+fn equality_trees(model: &Model, eq_id: usize) -> (usize, usize) {
+    let sentinel = usize::MAX;
+    match model.eq_type[eq_id] {
+        EqualityType::Connect | EqualityType::Weld => {
+            // obj1/obj2 are body IDs
+            let b1 = model.eq_obj1id[eq_id];
+            let b2 = model.eq_obj2id[eq_id];
+            let t1 = if b1 > 0 && b1 < model.body_treeid.len() {
+                model.body_treeid[b1]
+            } else {
+                sentinel
+            };
+            let t2 = if b2 > 0 && b2 < model.body_treeid.len() {
+                model.body_treeid[b2]
+            } else {
+                sentinel
+            };
+            (t1, t2)
+        }
+        EqualityType::Joint => {
+            // obj1/obj2 are joint IDs → jnt_body → body_treeid
+            let j1 = model.eq_obj1id[eq_id];
+            let j2 = model.eq_obj2id[eq_id];
+            let t1 = if j1 < model.jnt_body.len() {
+                let b = model.jnt_body[j1];
+                if b > 0 && b < model.body_treeid.len() {
+                    model.body_treeid[b]
+                } else {
+                    sentinel
+                }
+            } else {
+                sentinel
+            };
+            let t2 = if j2 < model.jnt_body.len() {
+                let b = model.jnt_body[j2];
+                if b > 0 && b < model.body_treeid.len() {
+                    model.body_treeid[b]
+                } else {
+                    sentinel
+                }
+            } else {
+                sentinel
+            };
+            (t1, t2)
+        }
+        EqualityType::Distance => {
+            // obj1/obj2 are geom IDs → geom_body → body_treeid
+            let g1 = model.eq_obj1id[eq_id];
+            let g2 = model.eq_obj2id[eq_id];
+            let t1 = if g1 < model.geom_body.len() {
+                let b = model.geom_body[g1];
+                if b > 0 && b < model.body_treeid.len() {
+                    model.body_treeid[b]
+                } else {
+                    sentinel
+                }
+            } else {
+                sentinel
+            };
+            let t2 = if g2 < model.geom_body.len() {
+                let b = model.geom_body[g2];
+                if b > 0 && b < model.body_treeid.len() {
+                    model.body_treeid[b]
+                } else {
+                    sentinel
+                }
+            } else {
+                sentinel
+            };
+            (t1, t2)
+        }
+        EqualityType::Tendon => {
+            // Tendon equality: scan tendon waypoints
+            // For now, return sentinel (tendon equality not yet implemented)
+            (sentinel, sentinel)
+        }
+    }
+}
+
+/// Determine the primary tree for a constraint row (§16.11.2).
+///
+/// Used for assigning constraint rows to islands. Returns `usize::MAX`
+/// if the tree cannot be determined.
+#[allow(clippy::too_many_lines)]
+fn constraint_tree(model: &Model, data: &Data, row: usize) -> usize {
+    let sentinel = usize::MAX;
+    let ctype = data.efc_type[row];
+    let id = data.efc_id[row];
+    let ntree = model.ntree;
+
+    match ctype {
+        ConstraintType::ContactNonElliptic | ConstraintType::ContactElliptic => {
+            if id >= data.contacts.len() {
+                return sentinel;
+            }
+            let contact = &data.contacts[id];
+            let body1 = if contact.geom1 < model.geom_body.len() {
+                model.geom_body[contact.geom1]
+            } else {
+                return sentinel;
+            };
+            // Use body1's tree as the primary tree for this contact
+            if body1 > 0 && body1 < model.body_treeid.len() {
+                let tree = model.body_treeid[body1];
+                if tree < ntree {
+                    return tree;
+                }
+            }
+            // Fallback: try body2
+            let body2 = if contact.geom2 < model.geom_body.len() {
+                model.geom_body[contact.geom2]
+            } else {
+                return sentinel;
+            };
+            if body2 > 0 && body2 < model.body_treeid.len() {
+                let tree = model.body_treeid[body2];
+                if tree < ntree {
+                    return tree;
+                }
+            }
+            sentinel
+        }
+        ConstraintType::Equality => {
+            if id < model.neq {
+                let (t1, t2) = equality_trees(model, id);
+                if t1 < ntree {
+                    t1
+                } else if t2 < ntree {
+                    t2
+                } else {
+                    sentinel
+                }
+            } else {
+                sentinel
+            }
+        }
+        ConstraintType::LimitJoint => {
+            if id < model.jnt_body.len() {
+                let body = model.jnt_body[id];
+                if body > 0 && body < model.body_treeid.len() {
+                    let tree = model.body_treeid[body];
+                    if tree < ntree {
+                        return tree;
+                    }
+                }
+            }
+            sentinel
+        }
+        ConstraintType::LimitTendon => {
+            // Use precomputed tendon tree mapping
+            if id < model.ntendon && model.tendon_treenum[id] >= 1 {
+                if model.tendon_treenum[id] == 2 {
+                    let t = model.tendon_tree[2 * id];
+                    if t < ntree {
+                        return t;
+                    }
+                }
+                // Single tree: scan Jacobian
+                for dof in 0..model.nv {
+                    if data.efc_J[(row, dof)].abs() > 0.0 && dof < model.dof_treeid.len() {
+                        let tree = model.dof_treeid[dof];
+                        if tree < ntree {
+                            return tree;
+                        }
+                    }
+                }
+            }
+            sentinel
+        }
+        ConstraintType::FrictionLoss => {
+            if id < model.dof_treeid.len() {
+                let tree = model.dof_treeid[id];
+                if tree < ntree {
+                    return tree;
+                }
+            }
+            sentinel
+        }
+    }
+}
+
+/// Wake detection: check user-applied forces on sleeping bodies (§16.4).
+///
+/// Called at the start of `forward()`, before any pipeline stage.
+/// Wake detection for user-applied forces (§16.4).
+///
+/// Returns `true` if any tree was woken (caller must update sleep arrays).
+fn mj_wake(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+
+    // Check xfrc_applied (per-body Cartesian forces)
+    for body_id in 1..model.nbody {
+        if data.body_sleep_state[body_id] != SleepState::Asleep {
+            continue;
+        }
+        // Bytewise nonzero check (matches MuJoCo: -0.0 wakes because sign bit is set).
+        // Use to_bits() != 0 instead of != 0.0 because IEEE 754 treats -0.0 == 0.0.
+        let force = &data.xfrc_applied[body_id];
+        if force.iter().any(|&v| v.to_bits() != 0) {
+            mj_wake_tree(model, data, model.body_treeid[body_id]);
+            woke_any = true;
+        }
+    }
+
+    // Check qfrc_applied (per-DOF generalized forces)
+    for dof in 0..model.nv {
+        let tree = model.dof_treeid[dof];
+        if !data.tree_awake[tree] && data.qfrc_applied[dof].to_bits() != 0 {
+            mj_wake_tree(model, data, tree);
+            woke_any = true;
+        }
+    }
+
+    woke_any
+}
+
+/// Wake detection after collision: check contacts between sleeping and awake bodies (§16.4).
+///
+/// Returns `true` if any tree was woken (triggers re-collision).
+fn mj_wake_collision(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for contact_idx in 0..data.ncon {
+        let contact = &data.contacts[contact_idx];
+        let body1 = model.geom_body[contact.geom1];
+        let body2 = model.geom_body[contact.geom2];
+        let state1 = data.body_sleep_state[body1];
+        let state2 = data.body_sleep_state[body2];
+
+        // Wake sleeping body if partner is awake (not static — static bodies
+        // like the world/ground don't wake sleeping bodies).
+        let need_wake = match (state1, state2) {
+            (SleepState::Asleep, SleepState::Awake) => Some(body1),
+            (SleepState::Awake, SleepState::Asleep) => Some(body2),
+            _ => None,
+        };
+
+        if let Some(body_id) = need_wake {
+            let tree = model.body_treeid[body_id];
+            if tree < model.ntree {
+                mj_wake_tree(model, data, tree);
+                woke_any = true;
+            }
+        }
+    }
+    woke_any
+}
+
+/// Return the canonical (minimum) tree index in a sleep cycle (§16.10.3).
+///
+/// Used to identify whether two sleeping trees belong to the same cycle.
+#[allow(clippy::cast_sign_loss)]
+fn mj_sleep_cycle(tree_asleep: &[i32], start: usize) -> usize {
+    if tree_asleep[start] < 0 {
+        return start; // Not asleep — return self
+    }
+    let mut min_tree = start;
+    let mut current = tree_asleep[start] as usize;
+    while current != start {
+        if current < min_tree {
+            min_tree = current;
+        }
+        current = tree_asleep[current] as usize;
+    }
+    min_tree
+}
+
+/// Check if a tendon's limit constraint is active (§16.13.2).
+fn tendon_limit_active(model: &Model, data: &Data, t: usize) -> bool {
+    if !model.tendon_limited[t] {
+        return false;
+    }
+    let length = data.ten_length[t];
+    let (limit_min, limit_max) = model.tendon_range[t];
+    length < limit_min || length > limit_max
+}
+
+/// Wake sleeping trees coupled by multi-tree tendons with active limits (§16.13.2).
+///
+/// Returns `true` if any tree was woken.
+#[allow(clippy::cast_sign_loss)]
+fn mj_wake_tendon(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for t in 0..model.ntendon {
+        if model.tendon_treenum[t] != 2 {
+            continue;
+        }
+        if !tendon_limit_active(model, data, t) {
+            continue;
+        }
+
+        let tree_a = model.tendon_tree[2 * t];
+        let tree_b = model.tendon_tree[2 * t + 1];
+        if tree_a >= model.ntree || tree_b >= model.ntree {
+            continue;
+        }
+        let awake_a = data.tree_awake[tree_a];
+        let awake_b = data.tree_awake[tree_b];
+
+        match (awake_a, awake_b) {
+            (true, false) => {
+                mj_wake_tree(model, data, tree_b);
+                woke_any = true;
+            }
+            (false, true) => {
+                mj_wake_tree(model, data, tree_a);
+                woke_any = true;
+            }
+            (false, false) => {
+                // Both asleep in different cycles: merge by waking both
+                let cycle_a = mj_sleep_cycle(&data.tree_asleep, tree_a);
+                let cycle_b = mj_sleep_cycle(&data.tree_asleep, tree_b);
+                if cycle_a != cycle_b {
+                    mj_wake_tree(model, data, tree_a);
+                    mj_wake_tree(model, data, tree_b);
+                    woke_any = true;
+                }
+            }
+            _ => {} // Both awake — no action
+        }
+    }
+    woke_any
+}
+
+/// Wake sleeping trees coupled by active equality constraints (§16.13.3).
+///
+/// Returns `true` if any tree was woken.
+#[allow(clippy::cast_sign_loss)]
+fn mj_wake_equality(model: &Model, data: &mut Data) -> bool {
+    if model.enableflags & ENABLE_SLEEP == 0 {
+        return false;
+    }
+
+    let mut woke_any = false;
+    for eq in 0..model.neq {
+        if !model.eq_active[eq] {
+            continue;
+        }
+
+        let (tree_a, tree_b) = equality_trees(model, eq);
+        if tree_a >= model.ntree || tree_b >= model.ntree || tree_a == tree_b {
+            continue; // Same tree or invalid — no cross-tree coupling
+        }
+
+        let awake_a = data.tree_awake[tree_a];
+        let awake_b = data.tree_awake[tree_b];
+
+        match (awake_a, awake_b) {
+            (true, false) => {
+                mj_wake_tree(model, data, tree_b);
+                woke_any = true;
+            }
+            (false, true) => {
+                mj_wake_tree(model, data, tree_a);
+                woke_any = true;
+            }
+            (false, false) => {
+                // Both asleep in different cycles: merge by waking both
+                let cycle_a = mj_sleep_cycle(&data.tree_asleep, tree_a);
+                let cycle_b = mj_sleep_cycle(&data.tree_asleep, tree_b);
+                if cycle_a != cycle_b {
+                    mj_wake_tree(model, data, tree_a);
+                    mj_wake_tree(model, data, tree_b);
+                    woke_any = true;
+                }
+            }
+            _ => {} // Both awake — no action
+        }
+    }
+    woke_any
+}
+
+/// Wake a tree and its entire sleep cycle (§16.12.3).
+///
+/// Traverses the circular linked list to wake all trees in the sleeping
+/// island. Eagerly updates `tree_awake` and `body_sleep_state` so
+/// subsequent wake functions in the same pass see the updated state.
+#[allow(clippy::cast_sign_loss)]
+fn mj_wake_tree(model: &Model, data: &mut Data, tree: usize) {
+    if data.tree_awake[tree] {
+        return; // Already awake
+    }
+
+    if data.tree_asleep[tree] < 0 {
+        // Awake but tree_awake flag stale — just update the flag
+        data.tree_awake[tree] = true;
+        return;
+    }
+
+    // Traverse the sleep cycle, waking each tree
+    let mut current = tree;
+    loop {
+        let next = data.tree_asleep[current] as usize;
+        data.tree_asleep[current] = -(1 + MIN_AWAKE); // Fully awake
+        data.tree_awake[current] = true;
+
+        // Update body states
+        let body_start = model.tree_body_adr[current];
+        let body_end = body_start + model.tree_body_num[current];
+        for body_id in body_start..body_end {
+            data.body_sleep_state[body_id] = SleepState::Awake;
+        }
+
+        current = next;
+        if current == tree {
+            break; // Full cycle traversed
+        }
+    }
+}
+
+/// Map a sensor to its associated body_id, or `None` if multi-body (§16.5d).
+fn sensor_body_id(model: &Model, sensor_id: usize) -> Option<usize> {
+    let objid = model.sensor_objid[sensor_id];
+    match model.sensor_objtype[sensor_id] {
+        MjObjectType::Body => Some(objid),
+        MjObjectType::Joint => {
+            if objid < model.njnt {
+                Some(model.jnt_body[objid])
+            } else {
+                None
+            }
+        }
+        MjObjectType::Geom => {
+            if objid < model.ngeom {
+                Some(model.geom_body[objid])
+            } else {
+                None
+            }
+        }
+        MjObjectType::Site => {
+            if objid < model.nsite {
+                Some(model.site_body[objid])
+            } else {
+                None
+            }
+        }
+        // Multi-body, actuated, or world-relative sensors — always compute
+        MjObjectType::Tendon | MjObjectType::Actuator | MjObjectType::None => None,
     }
 }
 
@@ -10431,10 +12720,31 @@ fn compute_efc_offsets(contacts: &[Contact]) -> (Vec<usize>, usize) {
     (offsets, offset)
 }
 
+/// Remap a global Jacobian (dim × nv) to island-local (dim × nv_island).
+///
+/// Extracts only the columns corresponding to this island's DOFs via
+/// `map_idof2dof[dof_start..dof_start + nv_island]`. O(dim × nv_island).
+fn remap_jacobian_to_island(
+    j_global: &DMatrix<f64>,
+    map_idof2dof: &[usize],
+    dof_start: usize,
+    nv_island: usize,
+) -> DMatrix<f64> {
+    let dim = j_global.nrows();
+    let mut j_local = DMatrix::zeros(dim, nv_island);
+    for local_col in 0..nv_island {
+        let global_col = map_idof2dof[dof_start + local_col];
+        for row in 0..dim {
+            j_local[(row, local_col)] = j_global[(row, global_col)];
+        }
+    }
+    j_local
+}
+
 /// Assemble Delassus matrix A and constraint RHS b for contact constraints.
 /// Shared by PGS and CG solvers.
 ///
-/// A[i,j] = J_i * M^{-1} * J_j^T (with CFM regularization on diagonal).
+/// A\[i,j\] = J_i * M^{-1} * J_j^T (with CFM regularization on diagonal).
 /// b includes unconstrained acceleration, contact velocities, and Baumgarte
 /// stabilization from solref/solimp.
 ///
@@ -10460,20 +12770,32 @@ fn assemble_contact_system(
     qacc_smooth += &data.qfrc_actuator;
     qacc_smooth += &data.qfrc_passive;
     qacc_smooth -= &data.qfrc_bias;
-    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
+    let (rowadr, rownnz, colind) = model.qld_csr();
+    mj_solve_sparse(
+        rowadr,
+        rownnz,
+        colind,
+        &data.qLD_data,
+        &data.qLD_diag_inv,
+        &mut qacc_smooth,
+    );
 
-    // Pre-compute M^{-1} * J^T for each contact (variable dimension per contact)
+    // Pre-compute M^{-1} * J^T for each contact (variable dimension per contact).
+    // Uses batch solve: 1 CSR metadata sweep per contact instead of dim_k separate sweeps.
     let mut minv_jt: Vec<DMatrix<f64>> = Vec::with_capacity(ncon);
     for (k, jacobian) in jacobians.iter().enumerate() {
         let dim_k = contacts[k].dim;
-        let jt = jacobian.transpose();
-        // Solve M * X = J^T for each column (dim_k columns)
-        let mut minv_jt_contact = DMatrix::zeros(model.nv, dim_k);
-        for col in 0..dim_k {
-            let mut x = jt.column(col).clone_owned();
-            mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x);
-            minv_jt_contact.set_column(col, &x);
-        }
+        let mut minv_jt_contact = jacobian.transpose();
+        mj_solve_sparse_batch(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut minv_jt_contact,
+        );
+        debug_assert_eq!(minv_jt_contact.nrows(), model.nv);
+        debug_assert_eq!(minv_jt_contact.ncols(), dim_k);
         minv_jt.push(minv_jt_contact);
     }
 
@@ -10652,6 +12974,172 @@ fn assemble_contact_system(
         }
 
         // Rows 4-5: rolling (dim >= 6: angular velocity in tangent plane)
+        if dim_i >= 6 {
+            let omega1 = compute_body_angular_velocity(data, body_i1);
+            let omega2 = compute_body_angular_velocity(data, body_i2);
+            let rel_omega = omega2 - omega1;
+            let omega_t1 = rel_omega.dot(&tangent1);
+            let omega_t2 = rel_omega.dot(&tangent2);
+            b[offset_i + 4] = j_qacc_smooth[4] + omega_t1;
+            b[offset_i + 5] = j_qacc_smooth[5] + omega_t2;
+        }
+    }
+
+    (a, b, efc_offsets)
+}
+
+/// Island-local Delassus assembly (§16.28).
+///
+/// Structurally identical to `assemble_contact_system()` but operates on
+/// island-local data: `nv_island`-wide Jacobians, a dense Cholesky factorization
+/// of the island mass submatrix, and a pre-sliced `qacc_smooth` vector.
+/// This avoids O(nv) sparse LDL solves per column — replacing them with
+/// O(nv_island²) dense Cholesky solves.
+fn assemble_contact_system_island(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians_local: &[DMatrix<f64>],
+    chol: &nalgebra::linalg::Cholesky<f64, nalgebra::Dyn>,
+    qacc_smooth_island: &DVector<f64>,
+    nv_island: usize,
+) -> (DMatrix<f64>, DVector<f64>, Vec<usize>) {
+    let ncon = contacts.len();
+    let (efc_offsets, nefc) = compute_efc_offsets(contacts);
+
+    let mut a = DMatrix::zeros(nefc, nefc);
+    let mut b = DVector::zeros(nefc);
+
+    let base_regularization = model.regularization;
+
+    // Pre-compute M_island^{-1} * J_local^T for each contact via dense Cholesky.
+    let mut minv_jt: Vec<DMatrix<f64>> = Vec::with_capacity(ncon);
+    for (k, jacobian) in jacobians_local.iter().enumerate() {
+        let dim_k = contacts[k].dim;
+        let jt = jacobian.transpose();
+        let mut minv_jt_contact = DMatrix::zeros(nv_island, dim_k);
+        for col in 0..dim_k {
+            let jt_col = jt.column(col).clone_owned();
+            let solved = chol.solve(&jt_col);
+            minv_jt_contact.set_column(col, &solved);
+        }
+        minv_jt.push(minv_jt_contact);
+    }
+
+    // Build A matrix blocks and RHS — identical logic to assemble_contact_system().
+    for (i, (contact_i, jac_i)) in contacts.iter().zip(jacobians_local.iter()).enumerate() {
+        let timeconst = contact_i.solref[0].max(0.001);
+        let dampratio = contact_i.solref[1].max(0.0);
+        let d = compute_impedance(contact_i.solimp, contact_i.depth.abs());
+        let cfm = base_regularization + (1.0 - d) * model.regularization * 100.0;
+
+        let dim_i = contact_i.dim;
+        let offset_i = efc_offsets[i];
+
+        // Diagonal block: A[i,i] = J_local * M_island^{-1} * J_local^T
+        let a_ii = jac_i * &minv_jt[i];
+        for ri in 0..dim_i {
+            for ci in 0..dim_i {
+                a[(offset_i + ri, offset_i + ci)] = a_ii[(ri, ci)];
+            }
+            a[(offset_i + ri, offset_i + ri)] += cfm;
+        }
+
+        let dt = model.timestep.max(1e-6);
+        let erp_i = (dt / (dt + timeconst)) * dampratio.min(1.0);
+
+        // Off-diagonal blocks with bodies_share_chain optimization
+        let body_i1 = model.geom_body[contact_i.geom1];
+        let body_i2 = model.geom_body[contact_i.geom2];
+        let dynamic_i: [Option<usize>; 2] = [
+            if body_i1 != 0 { Some(body_i1) } else { None },
+            if body_i2 != 0 { Some(body_i2) } else { None },
+        ];
+        let has_dynamic_i = dynamic_i[0].is_some() || dynamic_i[1].is_some();
+
+        if has_dynamic_i {
+            for (j, contact_j) in contacts.iter().enumerate().skip(i + 1) {
+                let geom1_body = model.geom_body[contact_j.geom1];
+                let geom2_body = model.geom_body[contact_j.geom2];
+                let dynamic_j: [Option<usize>; 2] = [
+                    if geom1_body != 0 {
+                        Some(geom1_body)
+                    } else {
+                        None
+                    },
+                    if geom2_body != 0 {
+                        Some(geom2_body)
+                    } else {
+                        None
+                    },
+                ];
+
+                if dynamic_j[0].is_none() && dynamic_j[1].is_none() {
+                    continue;
+                }
+
+                let bodies_interact = dynamic_i.iter().filter_map(|&b| b).any(|bi| {
+                    dynamic_j
+                        .iter()
+                        .filter_map(|&b| b)
+                        .any(|bj| bi == bj || bodies_share_chain(model, bi, bj))
+                });
+
+                if !bodies_interact {
+                    continue;
+                }
+
+                let dim_j = contacts[j].dim;
+                let offset_j = efc_offsets[j];
+                let block_ij = jac_i * &minv_jt[j];
+                for ri in 0..dim_i {
+                    for ci in 0..dim_j {
+                        a[(offset_i + ri, offset_j + ci)] = block_ij[(ri, ci)];
+                        a[(offset_j + ci, offset_i + ri)] = block_ij[(ri, ci)];
+                    }
+                }
+            }
+        }
+
+        // RHS: b = J_local * qacc_smooth_island + aref
+        let body_i1 = model.geom_body[contact_i.geom1];
+        let body_i2 = model.geom_body[contact_i.geom2];
+        let vel1 = compute_point_velocity(data, body_i1, contact_i.pos);
+        let vel2 = compute_point_velocity(data, body_i2, contact_i.pos);
+        let rel_vel = vel2 - vel1;
+
+        let normal = contact_i.normal;
+        let tangent1 = contact_i.frame[0];
+        let tangent2 = contact_i.frame[1];
+
+        let vn = rel_vel.dot(&normal);
+        let vt1 = rel_vel.dot(&tangent1);
+        let vt2 = rel_vel.dot(&tangent2);
+
+        let j_qacc_smooth = jac_i * qacc_smooth_island;
+
+        let velocity_damping = 1.0 / dt;
+        let depth_correction = erp_i / dt;
+
+        // Row 0: normal direction
+        b[offset_i] = j_qacc_smooth[0] + velocity_damping * vn + depth_correction * contact_i.depth;
+
+        // Rows 1-2: tangent directions (dim >= 3)
+        if dim_i >= 3 {
+            b[offset_i + 1] = j_qacc_smooth[1] + vt1;
+            b[offset_i + 2] = j_qacc_smooth[2] + vt2;
+        }
+
+        // Row 3: torsional (dim >= 4)
+        if dim_i >= 4 {
+            let omega1 = compute_body_angular_velocity(data, body_i1);
+            let omega2 = compute_body_angular_velocity(data, body_i2);
+            let rel_omega = omega2 - omega1;
+            let omega_n = rel_omega.dot(&normal);
+            b[offset_i + 3] = j_qacc_smooth[3] + omega_n;
+        }
+
+        // Rows 4-5: rolling (dim >= 6)
         if dim_i >= 6 {
             let omega1 = compute_body_angular_velocity(data, body_i1);
             let omega2 = compute_body_angular_velocity(data, body_i2);
@@ -10935,6 +13423,155 @@ fn pgs_solve_with_system(
     (extract_forces(&lambda, contacts, efc_offsets), iters_used)
 }
 
+/// CG solver core: operates on a pre-assembled (A, b) system.
+/// Separated from `cg_solve_contacts` so the island-local assembly path
+/// (§16.28) can provide its own Delassus matrix without redundant assembly.
+///
+/// Returns `Ok((forces, iterations_used))` on convergence, or `Err(())`
+/// on non-convergence. The caller owns the `(A, b)` data and can fall back
+/// to `pgs_solve_with_system()` if needed.
+#[allow(clippy::many_single_char_names)]
+fn cg_solve_with_system(
+    contacts: &[Contact],
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    efc_offsets: &[usize],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, Vec<f64>>,
+) -> Result<(Vec<DVector<f64>>, usize), ()> {
+    let ncon = contacts.len();
+    if ncon == 0 {
+        return Ok((vec![], 0));
+    }
+
+    // Compute total constraint rows from offsets
+    let nefc = if ncon > 0 {
+        efc_offsets[ncon - 1] + contacts[ncon - 1].dim
+    } else {
+        0
+    };
+
+    // Block Jacobi preconditioner
+    let precond_inv = compute_block_jacobi_preconditioner(a, contacts, efc_offsets);
+
+    // Warmstart from previous frame using spatially-keyed contact correspondence.
+    // Discard warmstart if condim changed (stored len != current dim).
+    let mut lambda = DVector::zeros(nefc);
+    for (i, contact) in contacts.iter().enumerate() {
+        let key = warmstart_key(contact);
+        if let Some(prev) = efc_lambda.get(&key) {
+            if prev.len() == contact.dim {
+                let base = efc_offsets[i];
+                for (j, &val) in prev.iter().enumerate() {
+                    lambda[base + j] = val;
+                }
+            }
+        }
+    }
+
+    // Single-contact direct solve: exact dim×dim inversion, no iteration needed.
+    // For ncon=1, A is exactly dim×dim — the preconditioner block is the full inverse.
+    if ncon == 1 {
+        let dim = contacts[0].dim;
+        let a_block = a.view((0, 0), (dim, dim)).clone_owned();
+        let inv = a_block
+            .try_inverse()
+            .unwrap_or_else(|| precond_inv[0].clone());
+        let b_block = b.rows(0, dim).clone_owned();
+        let mut lam = -(inv * b_block);
+        // Project onto friction cone
+        match dim {
+            1 => {
+                lam[0] = lam[0].max(0.0);
+            }
+            3 | 4 | 6 => {
+                project_elliptic_cone(lam.as_mut_slice(), &contacts[0].mu, dim);
+            }
+            _ => {
+                lam[0] = lam[0].max(0.0);
+                for j in 1..dim {
+                    lam[j] = 0.0;
+                }
+            }
+        }
+        efc_lambda.clear();
+        let key = warmstart_key(&contacts[0]);
+        efc_lambda.insert(key, lam.as_slice().to_vec());
+        return Ok((vec![lam], 0));
+    }
+
+    // Project initial guess onto feasible set
+    project_friction_cone(&mut lambda, contacts, efc_offsets);
+
+    // Preconditioned Projected Gradient Descent (PGD) for the contact QP:
+    //   min 0.5 * lambda^T A lambda + b^T lambda
+    //   subject to lambda_n >= 0, |lambda_t| <= mu * lambda_n
+
+    let b_norm = b.norm();
+    if b_norm < 1e-14 {
+        efc_lambda.clear();
+        return Ok((contacts.iter().map(|c| DVector::zeros(c.dim)).collect(), 0));
+    }
+
+    let mut alpha = 0.8;
+    let mut converged = false;
+    let mut iters_used = max_iterations;
+
+    for iter in 0..max_iterations {
+        // Gradient: g = A * lambda + b
+        let g = a * &lambda + b;
+
+        // Preconditioned gradient: z = M^{-1} * g
+        let z = apply_preconditioner(&precond_inv, &g, contacts, efc_offsets);
+
+        // Projected gradient descent step
+        let lambda_new = {
+            let mut trial = &lambda - alpha * &z;
+            project_friction_cone(&mut trial, contacts, efc_offsets);
+            trial
+        };
+
+        // Convergence check: relative change in lambda (fixed-point criterion)
+        let delta = (&lambda_new - &lambda).norm();
+        let lam_norm = lambda.norm().max(1e-10);
+
+        if delta / lam_norm < tolerance {
+            lambda = lambda_new;
+            converged = true;
+            iters_used = iter + 1;
+            break;
+        }
+
+        // Barzilai-Borwein step size adaptation.
+        let g_new = a * &lambda_new + b;
+        let s = &lambda_new - &lambda;
+        let y_bb = &g_new - &g;
+        let sy = s.dot(&y_bb);
+        if sy > 1e-30 {
+            let alpha_bb = s.dot(&s) / sy;
+            alpha = alpha_bb.clamp(0.01, 2.0);
+        }
+
+        lambda = lambda_new;
+    }
+
+    // Store warmstart (even on non-convergence — partial solution helps next frame)
+    efc_lambda.clear();
+    for (i, contact) in contacts.iter().enumerate() {
+        let base = efc_offsets[i];
+        let dim = contact.dim;
+        let key = warmstart_key(contact);
+        efc_lambda.insert(key, lambda.as_slice()[base..base + dim].to_vec());
+    }
+
+    if converged {
+        Ok((extract_forces(&lambda, contacts, efc_offsets), iters_used))
+    } else {
+        Err(())
+    }
+}
+
 /// Compute block Jacobi preconditioner for CG solver.
 ///
 /// Extracts dim×dim diagonal blocks from A and inverts each via Cholesky.
@@ -10996,21 +13633,9 @@ fn apply_preconditioner(
 ///   minimize: 0.5 * λ^T A λ + b^T λ
 ///   subject to: λ_n ≥ 0, |λ_t| ≤ μ λ_n
 ///
-/// Uses block Jacobi preconditioning (dim×dim diagonal block inverse per contact),
-/// with Cholesky factorization and scalar Jacobi fallback. For a single contact,
-/// the preconditioner is the exact inverse of A, enabling a direct solve in 0
-/// iterations.
-///
-/// Convergence criterion: relative change in λ falls below tolerance
-/// (`||λ_{k+1} - λ_k|| / ||λ_k|| < tol`). This fixed-point criterion is
-/// appropriate for constrained problems where the gradient at the optimum is
-/// non-zero due to active constraints.
-///
-/// Returns `Ok((forces, iterations_used))` on convergence, or
-/// `Err((A, b, efc_offsets))` on non-convergence — returning the pre-computed
-/// Delassus system and offsets so the caller can pass to `pgs_solve_with_system()`
-/// without redundant assembly.
-#[allow(clippy::many_single_char_names)] // a, b, g, z, s are standard math notation
+/// Thin wrapper around `cg_solve_with_system` that first assembles the global
+/// Delassus system. On CG non-convergence, returns the pre-assembled `(A, b,
+/// efc_offsets)` so the caller can fall back to `pgs_solve_with_system()`.
 fn cg_solve_contacts(
     model: &Model,
     data: &Data,
@@ -11026,145 +13651,17 @@ fn cg_solve_contacts(
     }
 
     let (a, b, efc_offsets) = assemble_contact_system(model, data, contacts, jacobians);
-
-    // Compute total constraint rows from offsets
-    let nefc = if ncon > 0 {
-        efc_offsets[ncon - 1] + contacts[ncon - 1].dim
-    } else {
-        0
-    };
-
-    // Block Jacobi preconditioner
-    let precond_inv = compute_block_jacobi_preconditioner(&a, contacts, &efc_offsets);
-
-    // Warmstart from previous frame using spatially-keyed contact correspondence.
-    // Discard warmstart if condim changed (stored len != current dim).
-    let mut lambda = DVector::zeros(nefc);
-    for (i, contact) in contacts.iter().enumerate() {
-        let key = warmstart_key(contact);
-        if let Some(prev) = efc_lambda.get(&key) {
-            if prev.len() == contact.dim {
-                let base = efc_offsets[i];
-                for (j, &val) in prev.iter().enumerate() {
-                    lambda[base + j] = val;
-                }
-            }
-        }
-    }
-
-    // Single-contact direct solve: exact dim×dim inversion, no iteration needed.
-    // For ncon=1, A is exactly dim×dim — the preconditioner block is the full inverse.
-    if ncon == 1 {
-        let dim = contacts[0].dim;
-        let a_block = a.view((0, 0), (dim, dim)).clone_owned();
-        let inv = a_block
-            .try_inverse()
-            .unwrap_or_else(|| precond_inv[0].clone());
-        let b_block = b.rows(0, dim).clone_owned();
-        let mut lam = -(inv * b_block);
-        // Project onto friction cone
-        match dim {
-            1 => {
-                lam[0] = lam[0].max(0.0);
-            }
-            3 | 4 | 6 => {
-                project_elliptic_cone(lam.as_mut_slice(), &contacts[0].mu, dim);
-            }
-            _ => {
-                lam[0] = lam[0].max(0.0);
-                for j in 1..dim {
-                    lam[j] = 0.0;
-                }
-            }
-        }
-        efc_lambda.clear();
-        let key = warmstart_key(&contacts[0]);
-        efc_lambda.insert(key, lam.as_slice().to_vec());
-        return Ok((vec![lam], 0));
-    }
-
-    // Project initial guess onto feasible set
-    project_friction_cone(&mut lambda, contacts, &efc_offsets);
-
-    // Preconditioned Projected Gradient Descent (PGD) for the contact QP:
-    //   min 0.5 * lambda^T A lambda + b^T lambda
-    //   subject to lambda_n >= 0, |lambda_t| <= mu * lambda_n
-    //
-    // Uses block Jacobi preconditioner M^{-1} and an adaptive step size.
-    // The preconditioner approximates A^{-1} per-contact block, so the
-    // preconditioned gradient z = M^{-1}*g is a good search direction.
-    //
-    // Step size: start with alpha=0.8 (slightly under-relaxed preconditioned
-    // step), then adapt using Barzilai-Borwein for off-diagonal coupling.
-
-    let b_norm = b.norm();
-    if b_norm < 1e-14 {
-        efc_lambda.clear();
-        return Ok((contacts.iter().map(|c| DVector::zeros(c.dim)).collect(), 0));
-    }
-
-    // Initial step size for preconditioned gradient descent.
-    // alpha=1 would be exact for block-diagonal A. For coupled contacts,
-    // we start slightly under-relaxed to ensure convergence.
-    let mut alpha = 0.8;
-
-    let mut converged = false;
-    let mut iters_used = max_iterations;
-
-    for iter in 0..max_iterations {
-        // Gradient: g = A * lambda + b
-        let g = &a * &lambda + &b;
-
-        // Preconditioned gradient: z = M^{-1} * g
-        let z = apply_preconditioner(&precond_inv, &g, contacts, &efc_offsets);
-
-        // Projected gradient descent step
-        let lambda_new = {
-            let mut trial = &lambda - alpha * &z;
-            project_friction_cone(&mut trial, contacts, &efc_offsets);
-            trial
-        };
-
-        // Convergence check: relative change in lambda (fixed-point criterion)
-        let delta = (&lambda_new - &lambda).norm();
-        let lam_norm = lambda.norm().max(1e-10);
-
-        if delta / lam_norm < tolerance {
-            lambda = lambda_new;
-            converged = true;
-            iters_used = iter + 1;
-            break;
-        }
-
-        // Barzilai-Borwein step size adaptation.
-        // Compute: alpha_bb = (s^T s) / (s^T (g_new - g))
-        // where s = lambda_new - lambda.
-        let g_new = &a * &lambda_new + &b;
-        let s = &lambda_new - &lambda;
-        let y_bb = &g_new - &g;
-        let sy = s.dot(&y_bb);
-        if sy > 1e-30 {
-            let alpha_bb = s.dot(&s) / sy;
-            // Blend new step size with old for stability
-            alpha = alpha_bb.clamp(0.01, 2.0);
-        }
-
-        lambda = lambda_new;
-    }
-
-    // Store warmstart (even on non-convergence — partial solution helps next frame)
-    efc_lambda.clear();
-    for (i, contact) in contacts.iter().enumerate() {
-        let base = efc_offsets[i];
-        let dim = contact.dim;
-        let key = warmstart_key(contact);
-        efc_lambda.insert(key, lambda.as_slice()[base..base + dim].to_vec());
-    }
-
-    if converged {
-        Ok((extract_forces(&lambda, contacts, &efc_offsets), iters_used))
-    } else {
-        Err((a, b, efc_offsets))
+    match cg_solve_with_system(
+        contacts,
+        &a,
+        &b,
+        &efc_offsets,
+        max_iterations,
+        tolerance,
+        efc_lambda,
+    ) {
+        Ok(result) => Ok(result),
+        Err(()) => Err((a, b, efc_offsets)),
     }
 }
 
@@ -11651,29 +14148,46 @@ fn compute_diag_approx_exact(j_row: &[f64], nv: usize, model: &Model, data: &Dat
 ///
 /// Forward substitution: L^T · z = b, then D · y = z, then L · x = y.
 /// Matches the tree-sparse structure from mj_factor_sparse.
+///
+/// `rownnz[i]` includes diagonal (last element); off-diagonal count = `rownnz[i] - 1`.
 fn mj_solve_sparse_vec(model: &Model, data: &Data, x: &mut DVector<f64>) {
     let nv = model.nv;
+    let (rowadr, rownnz, colind) = model.qld_csr();
 
     // Forward substitution: solve L^T * z = x (L is unit lower triangular)
     // Process from leaves to root (high index to low)
+    // Zero-skip + diagonal-only skip matching MuJoCo's mj_solveLD.
     for i in (0..nv).rev() {
-        for &(col, val) in &data.qLD_L[i] {
-            x[col] -= val * x[i];
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let xi = x[i];
+        if xi == 0.0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for k in 0..nnz_offdiag {
+            x[colind[start + k]] -= data.qLD_data[start + k] * xi;
         }
     }
 
-    // Diagonal solve: z = z / D
+    // Diagonal solve: z = z * D^-1 (multiply by precomputed inverse, matching MuJoCo).
     for i in 0..nv {
-        if data.qLD_diag[i].abs() > MJ_MINVAL {
-            x[i] /= data.qLD_diag[i];
-        }
+        x[i] *= data.qLD_diag_inv[i];
     }
 
     // Back substitution: solve L * x = z
     // Process from root to leaves (low index to high)
+    // Diagonal-only skip: rownnz == 1 means no off-diagonals.
     for i in 0..nv {
-        for &(col, val) in &data.qLD_L[i] {
-            x[i] -= val * x[col];
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for k in 0..nnz_offdiag {
+            x[i] -= data.qLD_data[start + k] * x[colind[start + k]];
         }
     }
 }
@@ -12598,7 +15112,7 @@ impl SparseHessian {
     }
 
     /// Compute elimination tree from the CSC sparsity pattern.
-    /// etree[j] = min { i > j : L[i,j] != 0 }, which equals the first
+    /// etree\[j\] = min { i > j : L\[i,j\] != 0 }, which equals the first
     /// off-diagonal non-zero row in column j of L.
     ///
     /// Also computes the symbolic structure of L (l_col_ptr, l_row_idx).
@@ -13641,7 +16155,15 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
 
     // qacc_smooth = M⁻¹ · qfrc_smooth (via sparse LDL solve)
     let mut qacc_smooth = qfrc_smooth.clone();
-    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth);
+    let (rowadr, rownnz, colind) = model.qld_csr();
+    mj_solve_sparse(
+        rowadr,
+        rownnz,
+        colind,
+        &data.qLD_data,
+        &data.qLD_diag_inv,
+        &mut qacc_smooth,
+    );
 
     // Assemble unified constraints
     assemble_unified_constraints(model, data, &qacc_smooth);
@@ -14048,7 +16570,15 @@ fn noslip_postprocess(model: &Model, data: &mut Data) {
         for col in 0..nv {
             minv_ji[col] = data.efc_J[(row_i, col)];
         }
-        mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut minv_ji);
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        mj_solve_sparse(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut minv_ji,
+        );
 
         for (fj, &row_j) in friction_rows.iter().enumerate() {
             let mut dot = 0.0;
@@ -14152,7 +16682,15 @@ fn noslip_postprocess(model: &Model, data: &mut Data) {
             - data.qfrc_bias[k]
             + data.qfrc_constraint[k];
     }
-    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut data.qacc);
+    let (rowadr, rownnz, colind) = model.qld_csr();
+    mj_solve_sparse(
+        rowadr,
+        rownnz,
+        colind,
+        &data.qLD_data,
+        &data.qLD_diag_inv,
+        &mut data.qacc,
+    );
 }
 
 /// Apply a Connect (ball-and-socket) equality constraint.
@@ -15313,6 +17851,494 @@ fn apply_constraint_torque_to_body(
     }
 }
 
+/// Phase B per-island constraint solver (§16.16).
+///
+/// When island discovery has produced `nisland > 0`, contacts are partitioned
+/// by island and each island's contact system is solved independently.
+/// Penalty constraints (joint limits, tendon limits, equality) remain global
+/// since they are already per-DOF and don't benefit from island decomposition.
+///
+/// Falls back to the global solver (`mj_fwd_constraint`) when:
+/// - `DISABLE_ISLAND` is set (`nisland == 0`)
+/// - Newton solver is active (handles all constraints unified)
+/// - No islands were discovered this step
+#[allow(clippy::cast_sign_loss, clippy::too_many_lines)]
+fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
+    // If no islands were discovered, use the global Phase A solver.
+    if data.nisland == 0 {
+        mj_fwd_constraint(model, data);
+        return;
+    }
+
+    // Newton solver handles all constraints unified — no island decomposition.
+    if model.solver_type == SolverType::Newton {
+        mj_fwd_constraint(model, data);
+        return;
+    }
+
+    // ===== Global penalty constraints (same as Phase A) =====
+    // These are per-DOF and don't need island decomposition.
+    data.qfrc_constraint.fill(0.0);
+    data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
+    data.ten_limit_frc.iter_mut().for_each(|f| *f = 0.0);
+    data.newton_solved = false;
+
+    // Joint limit penalties
+    for jnt_id in 0..model.njnt {
+        if !model.jnt_limited[jnt_id] {
+            continue;
+        }
+        let (limit_min, limit_max) = model.jnt_range[jnt_id];
+        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+        let (limit_stiffness, limit_damping) = solref_to_penalty(
+            model.jnt_solref[jnt_id],
+            model.default_eq_stiffness,
+            model.default_eq_damping,
+            model.timestep,
+        );
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge | MjJointType::Slide => {
+                let q = data.qpos[qpos_adr];
+                let qdot = data.qvel[dof_adr];
+                if q < limit_min {
+                    let penetration = limit_min - q;
+                    let vel_into = (-qdot).max(0.0);
+                    let force = limit_stiffness * penetration + limit_damping * vel_into;
+                    data.qfrc_constraint[dof_adr] += force;
+                    data.jnt_limit_frc[jnt_id] = force;
+                } else if q > limit_max {
+                    let penetration = q - limit_max;
+                    let vel_into = qdot.max(0.0);
+                    let force = limit_stiffness * penetration + limit_damping * vel_into;
+                    data.qfrc_constraint[dof_adr] -= force;
+                    data.jnt_limit_frc[jnt_id] = force;
+                }
+            }
+            MjJointType::Ball | MjJointType::Free => {}
+        }
+    }
+
+    // Tendon limit penalties
+    for t in 0..model.ntendon {
+        if !model.tendon_limited[t] {
+            continue;
+        }
+        let (limit_min, limit_max) = model.tendon_range[t];
+        let length = data.ten_length[t];
+        let (limit_stiffness, limit_damping) = solref_to_penalty(
+            model.tendon_solref[t],
+            model.default_eq_stiffness,
+            model.default_eq_damping,
+            model.timestep,
+        );
+        if length < limit_min {
+            let penetration = limit_min - length;
+            let vel_into = (-data.ten_velocity[t]).max(0.0);
+            let force = limit_stiffness * penetration + limit_damping * vel_into;
+            data.ten_limit_frc[t] = force;
+            apply_tendon_force(
+                model,
+                &data.ten_J[t],
+                model.tendon_type[t],
+                t,
+                force,
+                &mut data.qfrc_constraint,
+            );
+        }
+        if length > limit_max {
+            let penetration = length - limit_max;
+            let vel_into = data.ten_velocity[t].max(0.0);
+            let force = limit_stiffness * penetration + limit_damping * vel_into;
+            data.ten_limit_frc[t] = force;
+            apply_tendon_force(
+                model,
+                &data.ten_J[t],
+                model.tendon_type[t],
+                t,
+                -force,
+                &mut data.qfrc_constraint,
+            );
+        }
+    }
+
+    // Equality constraint penalties
+    apply_equality_constraints(model, data);
+
+    // ===== Per-island contact solve (§16.16.2, §16.28) =====
+    if data.contacts.is_empty() {
+        data.efc_lambda.clear();
+        return;
+    }
+
+    if model.nv == 0 {
+        data.efc_lambda.clear();
+        return;
+    }
+
+    // §16.28.4: Precompute global qacc_smooth once (replaces per-island computation).
+    // qacc_smooth = M^{-1} * (qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias)
+    let mut qacc_smooth_global = data.qfrc_applied.clone();
+    qacc_smooth_global += &data.qfrc_actuator;
+    qacc_smooth_global += &data.qfrc_passive;
+    qacc_smooth_global -= &data.qfrc_bias;
+    let (rowadr, rownnz, colind) = model.qld_csr();
+    mj_solve_sparse(
+        rowadr,
+        rownnz,
+        colind,
+        &data.qLD_data,
+        &data.qLD_diag_inv,
+        &mut qacc_smooth_global,
+    );
+
+    // Partition contacts by island
+    let nisland = data.nisland;
+    let mut island_contacts: Vec<Vec<usize>> = vec![Vec::new(); nisland];
+    let mut unassigned: Vec<usize> = Vec::new();
+
+    for (ci, &isl) in data.contact_island.iter().enumerate() {
+        if isl >= 0 && (isl as usize) < nisland {
+            island_contacts[isl as usize].push(ci);
+        } else {
+            unassigned.push(ci);
+        }
+    }
+
+    // Take efc_lambda out of data to avoid borrow conflicts
+    let mut efc_lambda = std::mem::take(&mut data.efc_lambda);
+
+    let clamped_iters = model.solver_iterations.max(10);
+    let clamped_tol = model.solver_tolerance.max(1e-8);
+
+    // §16.28.5: Use island-local assembly when beneficial.
+    // Skip if single island spans all DOFs (Cholesky would duplicate full M).
+    let use_island_local = !(data.nisland == 1 && data.island_nv[0] == model.nv);
+
+    // Solve each island's contacts independently
+    for island_id in 0..nisland {
+        let contact_indices = &island_contacts[island_id];
+        if contact_indices.is_empty() {
+            continue;
+        }
+
+        // Gather this island's contacts and compute their Jacobians
+        let island_contact_list: Vec<Contact> = contact_indices
+            .iter()
+            .map(|&ci| data.contacts[ci].clone())
+            .collect();
+        let island_jacobians: Vec<DMatrix<f64>> = island_contact_list
+            .iter()
+            .map(|c| compute_contact_jacobian(model, data, c))
+            .collect();
+
+        // §16.28: Island-local Delassus assembly when beneficial.
+        let nv_island = data.island_nv[island_id];
+        let dof_start = data.island_idofadr[island_id];
+
+        let constraint_forces = if use_island_local && nv_island < model.nv {
+            // ===== Island-local path (§16.28.2) =====
+
+            // Step 1: Extract island mass matrix (nv_island × nv_island)
+            let mut m_island = DMatrix::zeros(nv_island, nv_island);
+            for i in 0..nv_island {
+                let gi = data.map_idof2dof[dof_start + i];
+                for j in 0..nv_island {
+                    let gj = data.map_idof2dof[dof_start + j];
+                    m_island[(i, j)] = data.qM[(gi, gj)];
+                }
+            }
+
+            // Step 2: Dense Cholesky factorization.
+            // Any principal submatrix of an SPD matrix is SPD, so this cannot
+            // fail unless qM itself is defective (which would be a CRBA bug).
+            let Some(chol) = m_island.cholesky() else {
+                // Fallback to global path for this island if factorization fails.
+                let (forces, niter) = pgs_solve_contacts(
+                    model,
+                    data,
+                    &island_contact_list,
+                    &island_jacobians,
+                    clamped_iters,
+                    clamped_tol,
+                    &mut efc_lambda,
+                );
+                data.solver_niter = data.solver_niter.max(niter);
+                // Apply forces and continue to next island
+                for (local_idx, lambda) in forces.iter().enumerate() {
+                    let contact = &island_contact_list[local_idx];
+                    let normal = contact.normal;
+                    let tangent1 = contact.frame[0];
+                    let tangent2 = contact.frame[1];
+                    let dim = contact.dim;
+                    let world_force = if dim >= 3 {
+                        normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
+                    } else {
+                        normal * lambda[0]
+                    };
+                    let body1 = model.geom_body[contact.geom1];
+                    let body2 = model.geom_body[contact.geom2];
+                    apply_contact_force(model, data, body1, contact.pos, -world_force);
+                    apply_contact_force(model, data, body2, contact.pos, world_force);
+                    if dim >= 4 {
+                        let torsional_torque = normal * lambda[3];
+                        apply_contact_torque(model, data, body1, -torsional_torque);
+                        apply_contact_torque(model, data, body2, torsional_torque);
+                    }
+                    if dim >= 6 {
+                        let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+                        apply_contact_torque(model, data, body1, -rolling_torque);
+                        apply_contact_torque(model, data, body2, rolling_torque);
+                    }
+                }
+                continue;
+            };
+
+            // Step 3: Remap Jacobians to island-local DOFs
+            let jacobians_local: Vec<DMatrix<f64>> = island_jacobians
+                .iter()
+                .map(|j| remap_jacobian_to_island(j, &data.map_idof2dof, dof_start, nv_island))
+                .collect();
+
+            // Step 4: Extract island-local qacc_smooth
+            let mut qacc_smooth_island = DVector::zeros(nv_island);
+            for i in 0..nv_island {
+                qacc_smooth_island[i] = qacc_smooth_global[data.map_idof2dof[dof_start + i]];
+            }
+
+            // Step 5: Assemble island-local Delassus system
+            let (a, b, efc_offsets) = assemble_contact_system_island(
+                model,
+                data,
+                &island_contact_list,
+                &jacobians_local,
+                &chol,
+                &qacc_smooth_island,
+                nv_island,
+            );
+
+            // Step 6: Dispatch to solver with pre-assembled system
+            match model.solver_type {
+                SolverType::PGS | SolverType::Newton => {
+                    let (forces, niter) = pgs_solve_with_system(
+                        &island_contact_list,
+                        &a,
+                        &b,
+                        &efc_offsets,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    );
+                    data.solver_niter = data.solver_niter.max(niter);
+                    forces
+                }
+                SolverType::CG => {
+                    if let Ok((forces, niter)) = cg_solve_with_system(
+                        &island_contact_list,
+                        &a,
+                        &b,
+                        &efc_offsets,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    ) {
+                        data.solver_niter = data.solver_niter.max(niter);
+                        forces
+                    } else {
+                        let (forces, niter) = pgs_solve_with_system(
+                            &island_contact_list,
+                            &a,
+                            &b,
+                            &efc_offsets,
+                            clamped_iters,
+                            clamped_tol,
+                            &mut efc_lambda,
+                        );
+                        data.solver_niter = data.solver_niter.max(niter);
+                        forces
+                    }
+                }
+                SolverType::CGStrict => {
+                    if let Ok((forces, niter)) = cg_solve_with_system(
+                        &island_contact_list,
+                        &a,
+                        &b,
+                        &efc_offsets,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    ) {
+                        data.solver_niter = data.solver_niter.max(niter);
+                        forces
+                    } else {
+                        data.solver_niter = data.solver_niter.max(clamped_iters);
+                        island_contact_list
+                            .iter()
+                            .map(|c| DVector::zeros(c.dim))
+                            .collect()
+                    }
+                }
+            }
+        } else {
+            // ===== Global path (original assembly via full LDL) =====
+            match model.solver_type {
+                SolverType::PGS | SolverType::Newton => {
+                    let (forces, niter) = pgs_solve_contacts(
+                        model,
+                        data,
+                        &island_contact_list,
+                        &island_jacobians,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    );
+                    data.solver_niter = data.solver_niter.max(niter);
+                    forces
+                }
+                SolverType::CG => {
+                    match cg_solve_contacts(
+                        model,
+                        data,
+                        &island_contact_list,
+                        &island_jacobians,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    ) {
+                        Ok((forces, niter)) => {
+                            data.solver_niter = data.solver_niter.max(niter);
+                            forces
+                        }
+                        Err((a, b, efc_offsets)) => {
+                            let (forces, niter) = pgs_solve_with_system(
+                                &island_contact_list,
+                                &a,
+                                &b,
+                                &efc_offsets,
+                                clamped_iters,
+                                clamped_tol,
+                                &mut efc_lambda,
+                            );
+                            data.solver_niter = data.solver_niter.max(niter);
+                            forces
+                        }
+                    }
+                }
+                SolverType::CGStrict => {
+                    if let Ok((forces, niter)) = cg_solve_contacts(
+                        model,
+                        data,
+                        &island_contact_list,
+                        &island_jacobians,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    ) {
+                        data.solver_niter = data.solver_niter.max(niter);
+                        forces
+                    } else {
+                        data.solver_niter = data.solver_niter.max(clamped_iters);
+                        island_contact_list
+                            .iter()
+                            .map(|c| DVector::zeros(c.dim))
+                            .collect()
+                    }
+                }
+            }
+        };
+
+        // Apply contact forces for this island
+        for (local_idx, (lambda, _jac)) in constraint_forces
+            .iter()
+            .zip(island_jacobians.iter())
+            .enumerate()
+        {
+            let contact = &island_contact_list[local_idx];
+            let normal = contact.normal;
+            let tangent1 = contact.frame[0];
+            let tangent2 = contact.frame[1];
+            let dim = contact.dim;
+
+            let world_force = if dim >= 3 {
+                normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
+            } else {
+                normal * lambda[0]
+            };
+
+            let body1 = model.geom_body[contact.geom1];
+            let body2 = model.geom_body[contact.geom2];
+
+            apply_contact_force(model, data, body1, contact.pos, -world_force);
+            apply_contact_force(model, data, body2, contact.pos, world_force);
+
+            if dim >= 4 {
+                let torsional_torque = normal * lambda[3];
+                apply_contact_torque(model, data, body1, -torsional_torque);
+                apply_contact_torque(model, data, body2, torsional_torque);
+            }
+            if dim >= 6 {
+                let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+                apply_contact_torque(model, data, body1, -rolling_torque);
+                apply_contact_torque(model, data, body2, rolling_torque);
+            }
+        }
+    }
+
+    // Handle unassigned contacts (shouldn't normally happen, but safety net)
+    if !unassigned.is_empty() {
+        let unassigned_contacts: Vec<Contact> = unassigned
+            .iter()
+            .map(|&ci| data.contacts[ci].clone())
+            .collect();
+        let unassigned_jacobians: Vec<DMatrix<f64>> = unassigned_contacts
+            .iter()
+            .map(|c| compute_contact_jacobian(model, data, c))
+            .collect();
+        let (forces, niter) = pgs_solve_contacts(
+            model,
+            data,
+            &unassigned_contacts,
+            &unassigned_jacobians,
+            clamped_iters,
+            clamped_tol,
+            &mut efc_lambda,
+        );
+        data.solver_niter = data.solver_niter.max(niter);
+        for (local_idx, lambda) in forces.iter().enumerate() {
+            let contact = &unassigned_contacts[local_idx];
+            let normal = contact.normal;
+            let tangent1 = contact.frame[0];
+            let tangent2 = contact.frame[1];
+            let dim = contact.dim;
+            let world_force = if dim >= 3 {
+                normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
+            } else {
+                normal * lambda[0]
+            };
+            let body1 = model.geom_body[contact.geom1];
+            let body2 = model.geom_body[contact.geom2];
+            apply_contact_force(model, data, body1, contact.pos, -world_force);
+            apply_contact_force(model, data, body2, contact.pos, world_force);
+            if dim >= 4 {
+                let torsional_torque = normal * lambda[3];
+                apply_contact_torque(model, data, body1, -torsional_torque);
+                apply_contact_torque(model, data, body2, torsional_torque);
+            }
+            if dim >= 6 {
+                let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+                apply_contact_torque(model, data, body1, -rolling_torque);
+                apply_contact_torque(model, data, body2, rolling_torque);
+            }
+        }
+    }
+
+    // Restore warmstart cache
+    data.efc_lambda = efc_lambda;
+
+    #[cfg(feature = "deformable")]
+    solve_deformable_contacts(model, data);
+}
+
 /// Compute constraint forces (contacts and joint limits).
 ///
 /// This implements constraint-based enforcement using:
@@ -15789,7 +18815,15 @@ fn compute_rigid_inv_mass_at_point(
     // M^{-1} * j_n via sparse factored mass matrix
     let mut m_inv_jn = j_n.clone();
     if data.qLD_valid {
-        mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut m_inv_jn);
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        mj_solve_sparse(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut m_inv_jn,
+        );
     } else {
         // Fallback: use diagonal of mass matrix
         for i in 0..model.nv {
@@ -16442,7 +19476,7 @@ fn mj_fwd_acceleration(model: &Model, data: &mut Data) -> Result<(), StepError> 
 /// Explicit forward acceleration (semi-implicit Euler or RK4).
 ///
 /// Computes: qacc = M⁻¹ * (f_applied + f_actuator + f_passive + f_constraint - f_bias)
-fn mj_fwd_acceleration_explicit(_model: &Model, data: &mut Data) {
+fn mj_fwd_acceleration_explicit(model: &Model, data: &mut Data) {
     // Sum all forces: τ = applied + actuator + passive + constraint - bias
     let mut qfrc_total = data.qfrc_applied.clone();
     qfrc_total += &data.qfrc_actuator;
@@ -16452,7 +19486,15 @@ fn mj_fwd_acceleration_explicit(_model: &Model, data: &mut Data) {
 
     // Solve M * qacc = qfrc_total using sparse L^T D L factorization from mj_crba
     data.qacc.copy_from(&qfrc_total);
-    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut data.qacc);
+    let (rowadr, rownnz, colind) = model.qld_csr();
+    mj_solve_sparse(
+        rowadr,
+        rownnz,
+        colind,
+        &data.qLD_data,
+        &data.qLD_diag_inv,
+        &mut data.qacc,
+    );
 }
 
 /// In-place Cholesky (LL^T) factorization. Overwrites the lower triangle of `m` with L.
@@ -16604,67 +19646,180 @@ fn cholesky_rank1_downdate(l: &mut DMatrix<f64>, v: &mut [f64]) -> Result<(), St
     Ok(())
 }
 
-/// Sparse L^T D L factorization of the mass matrix, exploiting tree structure.
+/// Sparse L^T D L factorization of the mass matrix using flat CSR storage.
 ///
-/// Computes `M = L^T D L` where `L` is unit lower triangular (L[i,i] = 1 implicitly,
-/// stored entries are off-diagonal only) and `D` is diagonal. The sparsity pattern
-/// is determined by the kinematic tree: `L[i,j] ≠ 0` only if DOF `j` is an ancestor
-/// of DOF `i` in `model.dof_parent`.
+/// Computes `M = L^T D L` where `L` is unit lower triangular (L\[i,i\] = 1 implicitly,
+/// stored entries include diagonal as last element) and `D` is diagonal. Uses flat CSR
+/// storage (`Model::qLD_rowadr`/`qLD_rownnz`/`qLD_colind` + `Data::qLD_data`). The
+/// inner loop uses MuJoCo's bulk `addToScl` pattern for O(1) ancestor row access.
 ///
-/// **Algorithm:** Process DOFs from leaves to root (i = nv-1 down to 0). For each DOF,
-/// copy its row from M, scale by the diagonal to extract L entries, then propagate a
-/// rank-1 update to all ancestor pairs. This is equivalent to Gaussian elimination
-/// reordered to exploit tree sparsity.
+/// Matches MuJoCo's `mj_factorI` exactly:
+/// - Diagonal `D[i]` stored at `qLD_data[rowadr[i] + rownnz[i] - 1]`
+/// - `qLD_diag_inv[i] = 1/D[i]` precomputed for the solve phase (multiply, not divide)
+/// - `rownnz[i]` includes the diagonal, so off-diagonal count = `rownnz[i] - 1`
 ///
-/// **Complexity:** O(Σ depth(i)²). For balanced trees O(n log² n), for typical
-/// humanoids (depth ≤ 8) effectively O(n).
+/// # Ancestor Row Superset Property
 ///
-/// Zero heap allocations after the first call — `qLD_L[i].clear()` + `push()` reuses
-/// existing `Vec` capacity.
+/// If DOF `j` is an ancestor of DOF `i`, then `ancestors(j) ⊆ ancestors(i)`.
+/// Both are stored ascending in `qLD_colind`. Row `i`'s off-diagonal entries at
+/// positions `0..a` (where `a` is `j`'s position in row `i`) are exactly
+/// `ancestors(j)`, so `a == rownnz[j] - 1`. This means `row_i[0..a]` and
+/// `row_j[0..rownnz_j-1]` have identical column indices — a simple element-wise
+/// scaled addition suffices.
+#[allow(non_snake_case)]
 fn mj_factor_sparse(model: &Model, data: &mut Data) {
     let nv = model.nv;
+    let (rowadr, rownnz, colind) = model.qld_csr();
 
-    // Phase 1: Copy M's sparse entries into qLD working storage.
-    // qLD_diag[i] starts as M[i,i]; qLD_L[i] holds (col, M[i,col]) for ancestors.
+    // Phase 1: Copy M's sparse entries into flat CSR (diagonal included as last element).
     for i in 0..nv {
-        data.qLD_diag[i] = data.qM[(i, i)];
-        data.qLD_L[i].clear();
-        let mut p = model.dof_parent[i];
-        while let Some(j) = p {
-            data.qLD_L[i].push((j, data.qM[(i, j)]));
-            p = model.dof_parent[j];
+        let start = rowadr[i];
+        let nnz = rownnz[i];
+        for k in 0..nnz {
+            data.qLD_data[start + k] = data.qM[(i, colind[start + k])];
         }
-        // Parent chain yields descending col indices; reverse for ascending order.
-        data.qLD_L[i].reverse();
     }
 
     // Phase 2: Eliminate from leaves to root.
-    // When we process DOF i, all descendants k > i are already factored.
-    // We propagate i's contribution to ancestors j < i, which requires
-    // mutating qLD_L[j] while reading qLD_L[i]. Since j < i always,
-    // we use split_at_mut to get non-overlapping borrows.
+    // Process DOF i, scale its off-diagonals by 1/D[i], then propagate
+    // rank-1 update to all ancestor pairs using bulk row addition.
     for i in (0..nv).rev() {
-        let di = data.qLD_diag[i];
+        let start_i = rowadr[i];
+        let nnz_i = rownnz[i];
+        let diag_pos = start_i + nnz_i - 1;
+        let di = data.qLD_data[diag_pos];
 
-        // Scale off-diagonals: L[i,j] = working[i,j] / D[i]
-        for entry in &mut data.qLD_L[i] {
-            entry.1 /= di;
+        // Precompute inverse diagonal (matching MuJoCo's diaginv output).
+        let inv_di = 1.0 / di;
+        data.qLD_diag_inv[i] = inv_di;
+
+        // Root DOFs with no off-diagonals (rownnz == 1): only diagonal, no elimination.
+        let nnz_offdiag = nnz_i - 1;
+        if nnz_offdiag == 0 {
+            continue;
         }
 
-        // Propagate rank-1 update to ancestors.
-        // Split: [0..i] and [i..nv] give non-overlapping mutable access.
-        let (lo, hi) = data.qLD_L.split_at_mut(i);
-        let row_i = &hi[0]; // qLD_L[i], immutable borrow
+        // Scale off-diagonals: L[i,j] = working[i,j] / D[i]
+        for k in 0..nnz_offdiag {
+            data.qLD_data[start_i + k] *= inv_di;
+        }
 
-        for idx_a in 0..row_i.len() {
-            let (j, lij) = row_i[idx_a];
-            data.qLD_diag[j] -= lij * lij * di;
-            for idx_b in 0..idx_a {
-                let (k, lik) = row_i[idx_b];
-                // k < j < i, so both are in `lo`
-                if let Some(entry) = lo[j].iter_mut().find(|(col, _)| *col == k) {
-                    entry.1 -= lij * lik * di;
-                }
+        // Propagate rank-1 update to ancestors (deep-to-shallow, matching MuJoCo).
+        // For each ancestor j of i (traversed from deepest to shallowest):
+        //   - Diagonal update: D[j] -= L[i,j]^2 * D[i]
+        //   - Bulk row update: row_j[0..nnz_j-1] -= L[i,j] * row_i[0..a] * D[i]
+        //     where a is j's off-diag position in row i, and a == rownnz[j]-1.
+        for a in (0..nnz_offdiag).rev() {
+            let j = colind[start_i + a];
+            let lij = data.qLD_data[start_i + a];
+
+            // Diagonal update on ancestor j
+            let j_diag_pos = rowadr[j] + rownnz[j] - 1;
+            data.qLD_data[j_diag_pos] -= lij * lij * di;
+
+            // Bulk row update: row_j[0..a] -= lij * D[i] * row_i[0..a]
+            // Ancestor superset: off-diag count of j == a (i.e., rownnz[j] - 1 == a).
+            let j_nnz_offdiag = rownnz[j] - 1;
+            debug_assert_eq!(
+                a, j_nnz_offdiag,
+                "ancestor row superset property violated: \
+                DOF {i} entry at position {a} maps to ancestor DOF {j} with offdiag_nnz={j_nnz_offdiag}"
+            );
+            let scale = -lij * di;
+
+            // split_at_mut(start_i) safe: j < i guarantees rowadr[j]+rownnz[j] <= rowadr[i].
+            let start_j = rowadr[j];
+            let (lo, hi) = data.qLD_data.split_at_mut(start_i);
+            let dst = &mut lo[start_j..start_j + a];
+            let src = &hi[..a];
+            for k in 0..a {
+                dst[k] += scale * src[k];
+            }
+        }
+    }
+
+    data.qLD_valid = true;
+}
+
+/// Sleep-aware sparse L^T D L factorization (C3b).
+///
+/// When sleeping is enabled and some DOFs are asleep, only awake DOFs are
+/// factored. Sleeping DOFs' `qLD_data` and `qLD_diag_inv` entries are preserved
+/// from their last awake step.
+///
+/// # Tree Independence
+///
+/// `dof_parent` chains never cross tree boundaries. Sleeping is per-tree.
+/// Therefore, the elimination of awake DOF `i` only updates ancestors in the
+/// same (awake) tree — sleeping trees' qLD entries are never touched.
+///
+/// When all DOFs are awake (or sleep is disabled), dispatches to the full
+/// `mj_factor_sparse` with zero overhead.
+#[allow(non_snake_case)]
+fn mj_factor_sparse_selective(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nv_awake < model.nv;
+
+    if !sleep_filter {
+        mj_factor_sparse(model, data);
+        return;
+    }
+
+    let (rowadr, rownnz, colind) = model.qld_csr();
+
+    // Phase 1: Copy M into CSR for awake DOFs only.
+    // Sleeping DOFs' qLD_data entries are preserved from last awake step.
+    // rownnz[i] includes diagonal; we copy all entries (off-diag + diag at last position).
+    for idx in 0..data.nv_awake {
+        let i = data.dof_awake_ind[idx];
+        let start = rowadr[i];
+        let nnz = rownnz[i];
+        for k in 0..nnz {
+            data.qLD_data[start + k] = data.qM[(i, colind[start + k])];
+        }
+    }
+
+    // Phase 2: Eliminate awake DOFs only (reverse order).
+    // dof_awake_ind is sorted ascending; reverse iteration gives leaf-to-root order.
+    // All ancestors of an awake DOF are in the same awake tree (per-tree invariant).
+    // rownnz[i] includes diagonal; off-diag count = rownnz[i] - 1.
+    for idx in (0..data.nv_awake).rev() {
+        let i = data.dof_awake_ind[idx];
+        let start_i = rowadr[i];
+        let nnz_i = rownnz[i];
+        let diag_pos = start_i + nnz_i - 1;
+        let di = data.qLD_data[diag_pos];
+
+        let inv_di = 1.0 / di;
+        data.qLD_diag_inv[i] = inv_di;
+
+        let nnz_offdiag = nnz_i - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+
+        for k in 0..nnz_offdiag {
+            data.qLD_data[start_i + k] *= inv_di;
+        }
+
+        for a in (0..nnz_offdiag).rev() {
+            let j = colind[start_i + a];
+            let lij = data.qLD_data[start_i + a];
+
+            // Diagonal update on ancestor j
+            let j_diag_pos = rowadr[j] + rownnz[j] - 1;
+            data.qLD_data[j_diag_pos] -= lij * lij * di;
+
+            let start_j = rowadr[j];
+            let nnz_j_offdiag = rownnz[j] - 1;
+            debug_assert_eq!(a, nnz_j_offdiag);
+            let scale = -lij * di;
+
+            let (lo, hi) = data.qLD_data.split_at_mut(start_i);
+            let dst = &mut lo[start_j..start_j + nnz_j_offdiag];
+            let src = &hi[..a];
+            for k in 0..a {
+                dst[k] += scale * src[k];
             }
         }
     }
@@ -16674,35 +19829,123 @@ fn mj_factor_sparse(model: &Model, data: &mut Data) {
 
 /// Solve `L^T D L x = b` using the sparse factorization from `mj_factor_sparse`.
 ///
-/// On entry `x` contains `b`; on exit `x` contains the solution.
-/// Takes `qLD_diag` and `qLD_L` by reference separately from `x` to allow
-/// calling with `x = &mut data.qacc` without borrow conflicts.
+/// Matches MuJoCo's `mj_solveLD`:
+/// - Off-diagonal entries at positions `0..rownnz[i]-1`
+/// - Diagonal phase uses precomputed `qld_diag_inv[i]` (multiply, not divide)
 ///
+/// On entry `x` contains `b`; on exit `x` contains the solution.
 /// Zero allocations — operates entirely on borrowed data.
+#[allow(non_snake_case)]
 pub(crate) fn mj_solve_sparse(
-    qld_diag: &DVector<f64>,
-    qld_l: &[Vec<(usize, f64)>],
+    rowadr: &[usize],
+    rownnz: &[usize],
+    colind: &[usize],
+    qld_data: &[f64],
+    qld_diag_inv: &[f64],
     x: &mut DVector<f64>,
 ) {
     let nv = x.len();
 
     // Phase 1: Solve L^T y = b (scatter: propagate each DOF to its ancestors).
-    // L is unit-lower-triangular, so L^T is unit-upper-triangular.
+    // Off-diagonal entries only: positions 0..rownnz[i]-1.
+    // Zero-skip: if x[i] == 0 the scatter is a no-op (MuJoCo: `if ((x_i = x[i]))`).
+    // Diagonal-only skip: rownnz == 1 means no off-diagonals (MuJoCo: `if (rownnz[i] == 1)`).
     for i in (0..nv).rev() {
-        for &(j, lij) in &qld_l[i] {
-            x[j] -= lij * x[i];
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let xi = x[i];
+        if xi == 0.0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for k in 0..nnz_offdiag {
+            x[colind[start + k]] -= qld_data[start + k] * xi;
         }
     }
 
-    // Phase 2: Solve D z = y
+    // Phase 2: Solve D z = y (multiply by precomputed inverse, matching MuJoCo's diaginv).
     for i in 0..nv {
-        x[i] /= qld_diag[i];
+        x[i] *= qld_diag_inv[i];
     }
 
-    // Phase 3: Solve L w = z (standard forward substitution)
+    // Phase 3: Solve L w = z (gather from ancestors)
+    // Off-diagonal entries only: positions 0..rownnz[i]-1.
+    // Diagonal-only skip: rownnz == 1 means no off-diagonals (MuJoCo: `if (rownnz[i] == 1)`).
     for i in 0..nv {
-        for &(j, lij) in &qld_l[i] {
-            x[i] -= lij * x[j];
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for k in 0..nnz_offdiag {
+            x[i] -= qld_data[start + k] * x[colind[start + k]];
+        }
+    }
+}
+
+/// Batch solve `L^T D L X = B` for multiple right-hand sides simultaneously.
+///
+/// Matches MuJoCo's `mj_solveLD` with `n > 1`: the outer loop sweeps CSR metadata
+/// once per DOF, the inner loop iterates across `n` vectors. This gives O(1) CSR
+/// metadata loads vs O(n) for `n` separate `mj_solve_sparse` calls.
+///
+/// `x` is an nv × n column-major matrix (nalgebra `DMatrix`). Each column is an
+/// independent RHS; on exit each column contains the corresponding solution.
+///
+/// Includes zero-skip in L^T phase (per-vector) and diagonal-only row skip.
+#[allow(non_snake_case)]
+pub(crate) fn mj_solve_sparse_batch(
+    rowadr: &[usize],
+    rownnz: &[usize],
+    colind: &[usize],
+    qld_data: &[f64],
+    qld_diag_inv: &[f64],
+    x: &mut DMatrix<f64>,
+) {
+    let nv = x.nrows();
+    let n = x.ncols();
+
+    // Phase 1: Solve L^T Y = B (scatter across all vectors).
+    for i in (0..nv).rev() {
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for v in 0..n {
+            let xi = x[(i, v)];
+            if xi == 0.0 {
+                continue;
+            }
+            for k in 0..nnz_offdiag {
+                x[(colind[start + k], v)] -= qld_data[start + k] * xi;
+            }
+        }
+    }
+
+    // Phase 2: Solve D Z = Y (multiply by precomputed inverse).
+    for i in 0..nv {
+        let inv_di = qld_diag_inv[i];
+        for v in 0..n {
+            x[(i, v)] *= inv_di;
+        }
+    }
+
+    // Phase 3: Solve L W = Z (gather across all vectors).
+    for i in 0..nv {
+        let nnz_offdiag = rownnz[i] - 1;
+        if nnz_offdiag == 0 {
+            continue;
+        }
+        let start = rowadr[i];
+        for v in 0..n {
+            let mut acc = 0.0;
+            for k in 0..nnz_offdiag {
+                acc += qld_data[start + k] * x[(colind[start + k], v)];
+            }
+            x[(i, v)] -= acc;
         }
     }
 }
@@ -17000,10 +20243,14 @@ pub(crate) fn lu_solve_factored(a: &DMatrix<f64>, piv: &[usize], x: &mut DVector
 
 /// Proper position integration that handles quaternions on SO(3) manifold.
 fn mj_integrate_pos(model: &Model, data: &mut Data, h: f64) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     let mut visitor = PositionIntegrateVisitor {
         qpos: &mut data.qpos,
         qvel: &data.qvel,
         h,
+        sleep_enabled,
+        jnt_body: &model.jnt_body,
+        body_sleep_state: &data.body_sleep_state,
     };
     model.visit_joints(&mut visitor);
 }
@@ -17013,6 +20260,9 @@ struct PositionIntegrateVisitor<'a> {
     qpos: &'a mut DVector<f64>,
     qvel: &'a DVector<f64>,
     h: f64,
+    sleep_enabled: bool,
+    jnt_body: &'a [usize],
+    body_sleep_state: &'a [SleepState],
 }
 
 impl PositionIntegrateVisitor<'_> {
@@ -17043,21 +20293,38 @@ impl PositionIntegrateVisitor<'_> {
     }
 }
 
+impl PositionIntegrateVisitor<'_> {
+    /// Check if this joint's body is sleeping (§16.5a'').
+    #[inline]
+    fn is_sleeping(&self, ctx: &JointContext) -> bool {
+        self.sleep_enabled && self.body_sleep_state[self.jnt_body[ctx.jnt_id]] == SleepState::Asleep
+    }
+}
+
 impl JointVisitor for PositionIntegrateVisitor<'_> {
     #[inline]
     fn visit_hinge(&mut self, ctx: JointContext) {
+        if self.is_sleeping(&ctx) {
+            return;
+        }
         // Simple scalar: qpos += qvel * h
         self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
     }
 
     #[inline]
     fn visit_slide(&mut self, ctx: JointContext) {
+        if self.is_sleeping(&ctx) {
+            return;
+        }
         // Simple scalar: qpos += qvel * h
         self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
     }
 
     #[inline]
     fn visit_ball(&mut self, ctx: JointContext) {
+        if self.is_sleeping(&ctx) {
+            return;
+        }
         // Quaternion: integrate angular velocity on SO(3)
         let omega = Vector3::new(
             self.qvel[ctx.dof_adr],
@@ -17069,6 +20336,9 @@ impl JointVisitor for PositionIntegrateVisitor<'_> {
 
     #[inline]
     fn visit_free(&mut self, ctx: JointContext) {
+        if self.is_sleeping(&ctx) {
+            return;
+        }
         // Position: linear integration (first 3 components)
         self.qpos[ctx.qpos_adr] += self.qvel[ctx.dof_adr] * self.h;
         self.qpos[ctx.qpos_adr + 1] += self.qvel[ctx.dof_adr + 1] * self.h;
@@ -18316,6 +21586,9 @@ mod sensor_tests {
         // Initialize qpos0
         model.qpos0 = DVector::zeros(model.nq);
 
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
+
         model
     }
 
@@ -19193,6 +22466,9 @@ mod sensor_tests {
         model.qpos0 = DVector::zeros(model.nq);
         model.qpos0[3] = 1.0; // w component of quaternion
 
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
+
         add_sensor(
             &mut model,
             MjSensorType::Accelerometer,
@@ -19325,6 +22601,9 @@ mod sensor_tests {
         // Initialize qpos0 to identity quaternion [w=1, x=0, y=0, z=0]
         model.qpos0 = DVector::zeros(model.nq);
         model.qpos0[0] = 1.0; // w component
+
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization
+        model.compute_qld_csr_metadata();
 
         model
     }
@@ -19625,6 +22904,7 @@ mod sparse_factorization_tests {
         model.dof_armature = vec![0.0; nv];
         model.dof_damping = vec![0.0; nv];
         model.dof_frictionloss = vec![0.0; nv];
+        model.compute_qld_csr_metadata();
         let mut data = model.make_data();
         data.qM.copy_from(qm);
         mj_factor_sparse(&model, &mut data);
@@ -19632,19 +22912,27 @@ mod sparse_factorization_tests {
     }
 
     /// Verify sparse solve matches nalgebra dense Cholesky.
-    fn assert_solve_matches(data: &Data, qm: &DMatrix<f64>, nv: usize) {
+    fn assert_solve_matches(model: &Model, data: &Data, qm: &DMatrix<f64>, nv: usize) {
         let rhs = DVector::from_fn(nv, |i, _| (i as f64 + 1.0) * 0.7);
 
         // Reference: nalgebra dense Cholesky
         let chol = qm.clone().cholesky().expect("nalgebra cholesky failed");
         let x_ref = chol.solve(&rhs);
 
-        // Our sparse solve
-        let mut x_sparse = rhs;
-        mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut x_sparse);
+        // CSR sparse solve — validate against reference
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        let mut x_csr = rhs;
+        mj_solve_sparse(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut x_csr,
+        );
 
         for i in 0..nv {
-            assert_relative_eq!(x_sparse[i], x_ref[i], epsilon = 1e-12, max_relative = 1e-12);
+            assert_relative_eq!(x_csr[i], x_ref[i], epsilon = 1e-12, max_relative = 1e-12);
         }
     }
 
@@ -19656,14 +22944,14 @@ mod sparse_factorization_tests {
         let mut qm = DMatrix::zeros(1, 1);
         qm[(0, 0)] = 5.0;
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
 
         // D[0] = 5.0, L has no off-diag entries
-        assert_relative_eq!(data.qLD_diag[0], 5.0);
-        assert!(data.qLD_L[0].is_empty());
+        assert_relative_eq!(data.qld_diag(&model, 0), 5.0);
+        assert_eq!(model.qLD_rownnz[0], 1); // diagonal only
         assert!(data.qLD_valid);
 
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -19678,16 +22966,20 @@ mod sparse_factorization_tests {
         qm[(1, 0)] = 2.0;
         qm[(1, 1)] = 3.0;
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
 
         // Manual: D[1] = 3, L[1,0] = 2/3, D[0] = 4 - (2/3)^2 * 3 = 4 - 4/3 = 8/3
-        assert_relative_eq!(data.qLD_diag[1], 3.0);
-        assert_relative_eq!(data.qLD_diag[0], 8.0 / 3.0, epsilon = 1e-14);
-        assert_eq!(data.qLD_L[1].len(), 1);
-        assert_eq!(data.qLD_L[1][0].0, 0);
-        assert_relative_eq!(data.qLD_L[1][0].1, 2.0 / 3.0, epsilon = 1e-14);
+        assert_relative_eq!(data.qld_diag(&model, 1), 3.0);
+        assert_relative_eq!(data.qld_diag(&model, 0), 8.0 / 3.0, epsilon = 1e-14);
+        assert_eq!(model.qLD_rownnz[1], 2); // 1 off-diag + 1 diagonal
+        assert_eq!(model.qLD_colind[model.qLD_rowadr[1]], 0);
+        assert_relative_eq!(
+            data.qLD_data[model.qLD_rowadr[1]],
+            2.0 / 3.0,
+            epsilon = 1e-14
+        );
 
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -19706,16 +22998,16 @@ mod sparse_factorization_tests {
         qm[(2, 0)] = 1.0;
         qm[(2, 2)] = 3.0;
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
 
         // D[2] = 3, L[2,0] = 1/3
         // D[1] = 4, L[1,0] = 2/4 = 0.5
         // D[0] = 5 - (0.5)^2 * 4 - (1/3)^2 * 3 = 5 - 1 - 1/3 = 11/3
-        assert_relative_eq!(data.qLD_diag[2], 3.0);
-        assert_relative_eq!(data.qLD_diag[1], 4.0);
-        assert_relative_eq!(data.qLD_diag[0], 11.0 / 3.0, epsilon = 1e-14);
+        assert_relative_eq!(data.qld_diag(&model, 2), 3.0);
+        assert_relative_eq!(data.qld_diag(&model, 1), 4.0);
+        assert_relative_eq!(data.qld_diag(&model, 0), 11.0 / 3.0, epsilon = 1e-14);
 
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -19748,9 +23040,9 @@ mod sparse_factorization_tests {
         qm[(3, 2)] = 1.5;
         qm[(2, 3)] = 1.5;
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
         assert!(data.qLD_valid);
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -19772,9 +23064,9 @@ mod sparse_factorization_tests {
         let a = DMatrix::from_fn(nv, nv, |_, _| next());
         let qm = a.transpose() * &a + DMatrix::identity(nv, nv) * (nv as f64);
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
         assert!(data.qLD_valid);
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -19817,22 +23109,28 @@ mod sparse_factorization_tests {
         qm[(0, 4)] = 0.8;
         // Non-ancestor pairs are zero (enforced by zeros init)
 
-        let (_, data) = setup_sparse(nv, dof_parent, &qm);
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
         assert!(data.qLD_valid);
 
         // Verify zero entries in L for non-ancestor pairs
         // DOF 2's ancestors: [0, 1] — should not have entry for 3 or 4
-        for &(col, _) in &data.qLD_L[2] {
+        // rownnz includes diagonal (last element is self-index), so off-diag = 0..rownnz-1
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        let nnz_offdiag_2 = rownnz[2] - 1;
+        for k in 0..nnz_offdiag_2 {
+            let col = colind[rowadr[2] + k];
             assert!(
                 col == 0 || col == 1,
                 "DOF 2 should only have ancestors 0 and 1"
             );
         }
+        // Last element should be self-index (diagonal)
+        assert_eq!(colind[rowadr[2] + nnz_offdiag_2], 2);
         // DOF 4's ancestors: [0] — should not have entry for 1, 2, or 3
-        assert_eq!(data.qLD_L[4].len(), 1);
-        assert_eq!(data.qLD_L[4][0].0, 0);
+        assert_eq!(model.qLD_rownnz[4], 2); // 1 off-diag + 1 diagonal
+        assert_eq!(model.qLD_colind[model.qLD_rowadr[4]], 0);
 
-        assert_solve_matches(&data, &qm, nv);
+        assert_solve_matches(&model, &data, &qm, nv);
     }
 
     #[test]
@@ -19851,6 +23149,71 @@ mod sparse_factorization_tests {
         // Simulate invalidation (as mj_crba would do)
         data.qLD_valid = false;
         assert!(!data.qLD_valid);
+    }
+
+    #[test]
+    fn batch_solve_matches_single() {
+        // nv=3 branching tree, solve 3 different RHS via batch and single.
+        let nv = 3;
+        let dof_parent = vec![None, Some(0), Some(0)];
+        let mut qm = DMatrix::zeros(3, 3);
+        qm[(0, 0)] = 5.0;
+        qm[(0, 1)] = 2.0;
+        qm[(1, 0)] = 2.0;
+        qm[(1, 1)] = 4.0;
+        qm[(0, 2)] = 1.0;
+        qm[(2, 0)] = 1.0;
+        qm[(2, 2)] = 3.0;
+
+        let (model, data) = setup_sparse(nv, dof_parent, &qm);
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        let n_rhs = 3;
+
+        // Build nv × n_rhs matrix of RHS vectors.
+        let mut batch_rhs = DMatrix::zeros(nv, n_rhs);
+        for v in 0..n_rhs {
+            for i in 0..nv {
+                batch_rhs[(i, v)] = (i as f64 + 1.0) * (v as f64 + 0.5);
+            }
+        }
+
+        // Single-vector solve for each column.
+        let mut single_results = Vec::new();
+        for v in 0..n_rhs {
+            let mut x = batch_rhs.column(v).clone_owned();
+            mj_solve_sparse(
+                rowadr,
+                rownnz,
+                colind,
+                &data.qLD_data,
+                &data.qLD_diag_inv,
+                &mut x,
+            );
+            single_results.push(x);
+        }
+
+        // Batch solve.
+        let mut batch_x = batch_rhs;
+        mj_solve_sparse_batch(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut batch_x,
+        );
+
+        // Compare: each batch column must match the corresponding single solve.
+        for v in 0..n_rhs {
+            for i in 0..nv {
+                assert_relative_eq!(
+                    batch_x[(i, v)],
+                    single_results[v][i],
+                    epsilon = 1e-14,
+                    max_relative = 1e-14
+                );
+            }
+        }
     }
 }
 
@@ -19950,6 +23313,7 @@ mod muscle_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
         model.compute_muscle_params();
 
         model
@@ -20203,6 +23567,7 @@ mod muscle_tests {
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
         model.compute_implicit_params();
+        model.compute_qld_csr_metadata();
 
         let mut data = model.make_data();
         data.ctrl[0] = 0.5;
@@ -21010,6 +24375,7 @@ mod jac_site_tests {
         model.body_ancestor_joints = vec![vec![]; 2];
         model.body_ancestor_mask = vec![vec![]; 2];
         model.compute_ancestors();
+        model.compute_qld_csr_metadata();
 
         let mut data = model.make_data();
         data.qpos[0] = qpos_val;

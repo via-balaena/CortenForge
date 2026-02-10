@@ -204,6 +204,8 @@ pub struct MjcfFlag {
     pub island: bool,
     /// Enable multi-CCD (multiple CCD iterations).
     pub multiccd: bool,
+    /// Enable sleep/deactivation (MuJoCo sleep flag).
+    pub sleep: bool,
 }
 
 impl Default for MjcfFlag {
@@ -229,6 +231,7 @@ impl Default for MjcfFlag {
             energy: false,
             island: false,
             multiccd: false,
+            sleep: false,
         }
     }
 }
@@ -340,6 +343,10 @@ pub struct MjcfOption {
     /// Override contact friction coefficients.
     pub o_friction: Option<[f64; 5]>,
 
+    // ========== Sleep ==========
+    /// Velocity threshold for body sleeping (default: 1e-4).
+    pub sleep_tolerance: f64,
+
     // ========== Flags (child element) ==========
     /// Simulation flags controlling feature enable/disable.
     pub flag: MjcfFlag,
@@ -391,6 +398,9 @@ impl Default for MjcfOption {
             o_solimp: None,
             o_solref: None,
             o_friction: None,
+
+            // Sleep
+            sleep_tolerance: 1e-4,
 
             // Flags
             flag: MjcfFlag::default(),
@@ -1699,6 +1709,8 @@ pub struct MjcfBody {
     /// Whether this body is a mocap (kinematic input) body.
     #[cfg_attr(feature = "serde", serde(default))]
     pub mocap: bool,
+    /// Sleep policy override for this body's kinematic tree ("auto"|"allowed"|"never"|"init").
+    pub sleep: Option<String>,
 }
 
 impl Default for MjcfBody {
@@ -1716,6 +1728,7 @@ impl Default for MjcfBody {
             children: Vec::new(),
             parent: None,
             mocap: false,
+            sleep: None,
         }
     }
 }

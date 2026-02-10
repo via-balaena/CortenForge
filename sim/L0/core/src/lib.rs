@@ -120,7 +120,9 @@ pub use mujoco_pipeline::{
     Contact,
     ContactPair,
     // MuJoCo-aligned Model/Data architecture (core API)
+    DISABLE_ISLAND,
     Data,
+    ENABLE_SLEEP,
     // Equality constraint types
     EqualityType,
     GainType,
@@ -130,6 +132,7 @@ pub use mujoco_pipeline::{
     Integrator,
     // Keyframe types
     Keyframe,
+    MIN_AWAKE,
     // Joint types
     MjJointType,
     // Sensor types
@@ -139,6 +142,10 @@ pub use mujoco_pipeline::{
     Model,
     // Error handling
     ResetError,
+    // Sleep / deactivation types (§16)
+    SleepError,
+    SleepPolicy,
+    SleepState,
     // Constraint solver algorithm
     SolverStat,
     SolverType,
@@ -151,6 +158,8 @@ pub use mujoco_pipeline::{
     WarmstartKey,
     // Wrap object types
     WrapType,
+    // dof_length mechanism length computation (§16.14)
+    compute_dof_lengths,
     // Utility functions for position/velocity differentiation
     mj_differentiate_pos,
     mj_integrate_pos_explicit,

@@ -13,21 +13,27 @@ mutable `Data`.
 ```
 Data::step():
   1. forward()
-     a. mj_fwd_position    — Forward kinematics
+     [sleep] mj_wake            — Wake sleeping bodies (user forces, contacts, tendons, equality)
+             mj_sleep            — Sleep state machine (countdown → sleep transition)
+             mj_island           — Island discovery (DFS flood-fill over constraints)
+     a. mj_fwd_position    — Forward kinematics (skips sleeping bodies)
         mj_fwd_tendon       — Tendon lengths + Jacobians (fixed tendons)
-        mj_collision        — Broad/narrow phase collision detection
-     b. mj_fwd_velocity    — Body + tendon velocities from joint velocities
+        mj_collision        — Broad/narrow phase collision detection (skips sleeping pairs)
+     b. mj_fwd_velocity    — Body + tendon velocities (skips sleeping DOFs)
         mj_actuator_length  — Actuator length/velocity from transmission state
      c. mj_fwd_actuation   — Activation dynamics (act_dot) + gain/bias force + clamping
-     d. mj_crba            — Mass matrix (Composite Rigid Body Algorithm)
+     d. mj_crba            — Mass matrix (selective CRBA, skips sleeping subtrees)
      e. mj_rne             — Bias forces (Recursive Newton-Euler)
-     f. mj_fwd_passive     — Spring, damper, friction loss forces (joints + tendons)
-     g. mj_fwd_constraint  — Joint/tendon limits, equality constraints, contact PGS
+     f. mj_fwd_passive     — Spring, damper, friction loss forces (skips sleeping DOFs)
+     g. mj_fwd_constraint  — Joint/tendon limits, equality, contact PGS
+        mj_fwd_constraint_islands — Per-island block-diagonal solving (when islands > 1)
      h. mj_fwd_acceleration — Solve M*qacc = f (explicit) or implicit velocity update
   2a. integrate()          — Activation integration + semi-implicit Euler or implicit
                               (for Euler / ImplicitSpringDamper integrators)
+                              (skips sleeping joints for position/velocity integration)
   2b. mj_runge_kutta()     — True 4-stage RK4 with Butcher tableau, including
                               activation state (for RungeKutta4 integrator)
+                              (sleep disabled for RK4; warning emitted)
 ```
 
 ---
@@ -303,25 +309,65 @@ M[dof,dof] += armature[dof]
 **Phase 5 — Sparse L^T D L factorization (`mj_factor_sparse`):**
 
 Exploits kinematic tree sparsity via `dof_parent` for O(Σ depth(i)²)
-factorization vs O(nv³) dense Cholesky. Stores result in `qLD_diag` (diagonal D)
-and `qLD_L` (unit lower triangular L as sparse rows). Reused by
-`mj_fwd_acceleration_explicit` and `pgs_solve_contacts` via `mj_solve_sparse`.
+factorization vs O(nv³) dense Cholesky. Uses flat CSR storage matching
+MuJoCo's `mj_factorI`: immutable sparsity metadata in Model
+(`qLD_rowadr`, `qLD_rownnz`, `qLD_colind`) and factored values in Data
+(`qLD_data` with unified diagonal layout, `qLD_diag_inv` for precomputed
+reciprocals).
+
+**Unified diagonal layout:** The diagonal element D[i,i] is stored as the
+last element of each CSR row: `qLD_data[rowadr[i] + rownnz[i] - 1]`.
+Off-diagonal L entries occupy `qLD_data[rowadr[i]..rowadr[i]+rownnz[i]-1]`.
+During factorization, `qLD_diag_inv[i] = 1.0 / D[i,i]` is precomputed so
+that the solve phase uses multiply (`x[i] *= diag_inv[i]`) instead of
+divide, avoiding per-DOF division in the hot path.
+
+The inner loop uses bulk row updates (MuJoCo's `mju_addToScl` pattern)
+instead of per-element column search, exploiting the ancestor row superset
+property: if DOF `j` is ancestor of DOF `i`, then `ancestors(j) ⊆ ancestors(i)`
+and `row_i[0..nnz_j]` has identical column indices to `row_j[0..nnz_j]`.
+
+When sleep is enabled with sleeping trees, `mj_factor_sparse_selective`
+dispatches to partial factorization that skips sleeping DOFs entirely
+(C3b, §16.29.5). Tree independence guarantees no cross-contamination.
 
 ```python
+# CSR metadata (immutable, computed once at model build):
+# rowadr[i] = start address of row i in qLD_data
+# rownnz[i] = total entries in row i (off-diagonal L entries + 1 diagonal)
+# colind[rowadr[i]..rowadr[i]+rownnz[i]] = ancestor column indices
+#
+# Unified diagonal layout:
+#   off-diagonal L entries: qLD_data[rowadr[i] .. rowadr[i]+rownnz[i]-1]
+#   diagonal D[i,i]:        qLD_data[rowadr[i] + rownnz[i] - 1]
+
 # Phase 1: Copy M's sparse entries into qLD working storage
 for i in range(nv):
-    qLD_diag[i] = M[i,i]
-    qLD_L[i] = [(j, M[i,j]) for j in ancestors(i)]  # via dof_parent chain
+    # Off-diagonal entries
+    for k in range(rownnz[i] - 1):
+        qLD_data[rowadr[i]+k] = M[i, colind[rowadr[i]+k]]
+    # Diagonal as last element
+    qLD_data[rowadr[i] + rownnz[i] - 1] = M[i,i]
 
-# Phase 2: Eliminate from leaves to root
+# Phase 2: Eliminate from leaves to root (bulk row update)
 for i in range(nv-1, -1, -1):
-    di = qLD_diag[i]
-    for (j, val) in qLD_L[i]:
-        qLD_L[i][j] = val / di          # Normalize L entries
-    for (j, lij) in qLD_L[i]:
-        qLD_diag[j] -= lij * lij * di   # Update ancestor diagonal
-        for (k, lik) in qLD_L[i] where k < j:
-            qLD_L[j][k] -= lij * lik * di  # Update ancestor off-diagonal
+    diag_i = rowadr[i] + rownnz[i] - 1       # index of D[i,i] in qLD_data
+    di = qLD_data[diag_i]
+    inv_di = 1.0 / di
+    diag_inv[i] = inv_di                       # precompute for solve phase
+    n_offdiag = rownnz[i] - 1                  # number of off-diagonal entries
+    for k in range(n_offdiag):
+        qLD_data[rowadr[i]+k] *= inv_di        # Normalize L entries
+    for a in range(n_offdiag-1, -1, -1):       # deep-to-shallow
+        j = colind[rowadr[i]+a]
+        lij = qLD_data[rowadr[i]+a]
+        diag_j = rowadr[j] + rownnz[j] - 1
+        qLD_data[diag_j] -= lij * lij * di     # Update D[j,j]
+        # Bulk update: row_j[0..n_offdiag_j] += scale * row_i[0..a]
+        # (ancestor superset property guarantees aligned columns)
+        scale = -lij * di
+        for k in range(a):
+            qLD_data[rowadr[j]+k] += scale * qLD_data[rowadr[i]+k]
 ```
 
 ### 4.2 Recursive Newton-Euler (`mj_rne`)
@@ -549,7 +595,31 @@ qacc = M^-1 @ qfrc_total
 ```
 
 Solved via `mj_solve_sparse` using the sparse L^T D L factorization from CRBA.
-The solve applies L^T, D, then L in three passes — each O(nv) for tree-sparse L.
+The solve applies L^T, D^{-1}, then L in three passes — each O(nv) for tree-sparse L.
+The D^{-1} pass uses the precomputed `diag_inv[i]` via multiply (`x[i] *= diag_inv[i]`)
+rather than divide, since the reciprocals were cached during factorization.
+
+```python
+# mj_solve_sparse(rowadr, rownnz, colind, qLD_data, diag_inv, x):
+#
+# Phase 1: L^T solve (forward, i = nv-1 down to 0)
+for i in range(nv-1, -1, -1):
+    n_offdiag = rownnz[i] - 1
+    for k in range(n_offdiag):
+        j = colind[rowadr[i]+k]
+        x[j] -= qLD_data[rowadr[i]+k] * x[i]
+
+# Phase 2: D^{-1} solve (multiply by precomputed reciprocal)
+for i in range(nv):
+    x[i] *= diag_inv[i]       # NOT x[i] /= D[i] — division precomputed
+
+# Phase 3: L solve (backward, i = 0 up to nv-1)
+for i in range(nv):
+    n_offdiag = rownnz[i] - 1
+    for k in range(n_offdiag):
+        j = colind[rowadr[i]+k]
+        x[i] -= qLD_data[rowadr[i]+k] * x[j]
+```
 
 **Implicit path (ImplicitSpringDamper — legacy diagonal):**
 
@@ -931,6 +1001,157 @@ Defaults: `[0.9, 0.95, 0.001, 0.5, 2.0]`
 
 This provides soft initial contact (impedance = 0.9) that stiffens as
 penetration increases (impedance -> 0.95), over a transition zone of 0.001 m.
+
+---
+
+## Sleeping / Body Deactivation
+
+Tree-based sleeping system that deactivates stationary bodies to reduce
+computation. Matches MuJoCo's `mj_checkSleep` / `mj_island` architecture.
+
+### Tree Enumeration
+
+Bodies are partitioned into kinematic trees (connected components of
+`body_parent`). Model stores per-tree metadata:
+
+```
+ntree                    — number of kinematic trees
+tree_body_adr[t]         — first body index for tree t
+tree_body_num[t]         — number of bodies in tree t
+tree_dof_adr[t]          — first DOF index for tree t
+tree_dof_num[t]          — number of DOFs in tree t
+body_treeid[b]           — tree index for body b
+dof_treeid[d]            — tree index for DOF d
+```
+
+### Sleep Policy Resolution
+
+Each tree gets a `SleepPolicy` resolved at model build time:
+
+```python
+for tree in range(ntree):
+    if tree has actuators or multi-tree tendons:
+        policy = AutoNever       # cannot sleep (actuation coupling)
+    else:
+        policy = AutoAllowed     # may sleep
+    # User overrides (from MJCF body/@sleep attribute):
+    if any body in tree has sleep="never":   policy = Never
+    if any body in tree has sleep="allowed": policy = Allowed
+    if any body in tree has sleep="init":    policy = Init  # starts asleep
+```
+
+### Sleep State Machine (`mj_sleep`)
+
+```python
+for tree in range(ntree):
+    if not can_sleep(tree):
+        continue
+    # Check if all DOFs are below threshold
+    all_slow = True
+    for d in tree_dofs(tree):
+        if abs(qvel[d]) > sleep_tolerance * dof_length[d]:
+            all_slow = False
+            break
+    if all_slow:
+        tree_asleep[tree] += 1            # advance countdown toward -1
+        if tree_asleep[tree] >= -1:
+            sleep_trees(model, data, [tree])  # transition to sleep
+    else:
+        tree_asleep[tree] = -(1 + MIN_AWAKE)  # reset countdown
+```
+
+`sleep_trees()` zeros: `qvel`, `qacc`, `cvel`, `cacc_bias`, `cfrc_bias`,
+`qfrc_bias`, `qfrc_passive`, `qfrc_constraint`, `qfrc_actuator` for all
+DOFs/bodies in the tree.
+
+### Island Discovery (`mj_island`)
+
+DFS flood-fill over tree-tree adjacency graph. Two trees are adjacent if
+they share a contact, tendon coupling, or equality constraint:
+
+```python
+# Build adjacency from active constraints
+for each contact between body_a, body_b:
+    tree_a, tree_b = body_treeid[body_a], body_treeid[body_b]
+    if tree_a != tree_b:
+        adjacency[tree_a].add(tree_b)
+        adjacency[tree_b].add(tree_a)
+# Similar for tendons and equality constraints
+
+# DFS flood-fill to assign island IDs
+island_id = 0
+for tree in range(ntree):
+    if not visited[tree]:
+        dfs_assign(tree, island_id)
+        island_id += 1
+```
+
+Island arrays: `tree_island[t]`, `island_ntree[i]`, `dof_island[d]`,
+`contact_island[c]`, etc.
+
+### Wake Detection
+
+```python
+# mj_wake: check user forces on sleeping bodies
+for b in sleeping_bodies:
+    if xfrc_applied[b] != 0 or qfrc_applied[dofs_of(b)] != 0:   # bytewise
+        wake_island(island_of(tree_of(b)))
+
+# mj_wake_collision: check contacts between sleeping/awake bodies
+for contact in contacts:
+    if one_sleeping(contact) and one_awake(contact):
+        wake_island(island_of(sleeping_tree))
+
+# mj_wake_tendon: active limited tendons coupling sleeping ↔ awake trees
+# mj_wake_equality: equality constraints to awake trees
+# qpos change: tree_qpos_dirty flag set by mj_kinematics1()
+```
+
+### Pipeline Skip Logic
+
+When `ENABLE_SLEEP` is set, pipeline stages use awake-index indirection
+(`body_awake_ind`, `dof_awake_ind`, `parent_awake_ind`) for O(awake) iteration:
+
+| Stage | Skip behavior |
+|-------|---------------|
+| FK (`mj_fwd_position`) | Sleeping bodies: poses frozen, not recomputed |
+| Collision (`mj_collision`) | Both geoms asleep: skip narrow-phase |
+| Velocity (`mj_fwd_velocity`) | Sleeping DOFs: spatial velocity not updated |
+| Passive forces (`mj_fwd_passive`) | Sleeping DOFs: spring/damper/friction skipped |
+| Integration | Sleeping joints: qpos/qvel not updated |
+| Sensors | Sleeping bodies: return frozen values (not zeroed) |
+
+### Selective CRBA + Partial LDL (Phase C)
+
+`mj_crba` with sleep filter:
+- Phase 2 (backward pass): only accumulates composite inertia for awake bodies
+- Phase 3 (build M): only computes mass matrix entries for awake DOFs
+- Sleeping DOFs retain their last-awake `qM` entries
+
+`mj_factor_sparse_selective`: dispatches to partial factorization:
+```python
+if nv_awake < nv:
+    # Only factorize awake DOF blocks
+    for i in awake_dofs (leaves to root):
+        # Same elimination as mj_factor_sparse, but restricted to awake DOFs
+        # Tree independence guarantees no cross-contamination
+else:
+    mj_factor_sparse(model, data)  # full factorization
+```
+
+### Per-Island Constraint Solving
+
+When `nisland > 1`, `mj_fwd_constraint_islands` replaces the global solver:
+
+```python
+for island in range(nisland):
+    # Gather island-local DOFs, contacts, constraints
+    # Build small island-local Delassus matrix (island_nv × island_nv)
+    # Solve independently via PGS/CG
+    # Scatter forces back to global arrays
+```
+
+Single-island scenes use the global solver path (no overhead).
 
 ---
 

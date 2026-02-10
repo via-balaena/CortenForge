@@ -15,9 +15,9 @@ use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3};
 use sim_core::HeightFieldData;
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{
-    ActuatorDynamics, ActuatorTransmission, BiasType, ContactPair, EqualityType, GainType,
-    GeomType, Integrator, Keyframe, MjJointType, MjObjectType, MjSensorDataType, MjSensorType,
-    Model, SolverType, TendonType, WrapType,
+    ActuatorDynamics, ActuatorTransmission, BiasType, ContactPair, ENABLE_SLEEP, EqualityType,
+    GainType, GeomType, Integrator, Keyframe, MjJointType, MjObjectType, MjSensorDataType,
+    MjSensorType, Model, SleepPolicy, SolverType, TendonType, WrapType, compute_dof_lengths,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -346,6 +346,8 @@ struct ModelBuilder {
     body_inertia: Vec<Vector3<f64>>,
     body_name: Vec<Option<String>>,
     body_mocapid: Vec<Option<usize>>,
+    /// Per-body sleep policy from MJCF `sleep` attribute (None = default Auto).
+    body_sleep_policy: Vec<Option<SleepPolicy>>,
     nmocap: usize,
 
     // Joint arrays
@@ -473,6 +475,7 @@ struct ModelBuilder {
     enableflags: u32,
     integrator: Integrator,
     solver_type: SolverType,
+    sleep_tolerance: f64,
 
     // qpos0 values (built as we process joints)
     qpos0_values: Vec<f64>,
@@ -562,7 +565,8 @@ impl ModelBuilder {
             body_mass: vec![0.0],
             body_inertia: vec![Vector3::zeros()],
             body_name: vec![Some("world".to_string())],
-            body_mocapid: vec![None], // world body is not mocap
+            body_mocapid: vec![None],      // world body is not mocap
+            body_sleep_policy: vec![None], // world body has no sleep policy
             nmocap: 0,
 
             jnt_type: vec![],
@@ -668,6 +672,7 @@ impl ModelBuilder {
             enableflags: 0,
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
+            sleep_tolerance: 1e-4,
 
             qpos0_values: vec![],
 
@@ -763,6 +768,11 @@ impl ModelBuilder {
         self.wind = option.wind;
         self.density = option.density;
         self.viscosity = option.viscosity;
+        self.sleep_tolerance = option.sleep_tolerance;
+        // Set ENABLE_SLEEP from flag
+        if option.flag.sleep {
+            self.enableflags |= ENABLE_SLEEP;
+        }
     }
 
     /// Process a single mesh asset from MJCF.
@@ -1001,6 +1011,21 @@ impl ModelBuilder {
         } else {
             Some(body.name.clone())
         });
+        // Parse body-level sleep policy
+        let sleep_policy = body.sleep.as_ref().and_then(|s| match s.as_str() {
+            "auto" => Some(SleepPolicy::Auto),
+            "allowed" => Some(SleepPolicy::Allowed),
+            "never" => Some(SleepPolicy::Never),
+            "init" => Some(SleepPolicy::Init),
+            _ => {
+                warn!(
+                    "body '{}': unknown sleep policy '{}', ignoring",
+                    body.name, s
+                );
+                None
+            }
+        });
+        self.body_sleep_policy.push(sleep_policy);
 
         // Process joints for this body, tracking the last DOF for kinematic tree linkage
         // MuJoCo semantics: first DOF of first joint links to parent body's last DOF,
@@ -2466,6 +2491,7 @@ impl ModelBuilder {
         let ngeom = self.geom_type.len();
         let nsite = self.site_body.len();
         let nu = self.actuator_trntype.len();
+        let ntendon = self.tendon_type.len();
 
         let mut model = Model {
             name: self.name,
@@ -2479,6 +2505,18 @@ impl ModelBuilder {
             na: self.na,
             nmocap: self.nmocap,
             nkeyframe: 0,
+
+            // Kinematic trees (§16.0) — computed below
+            ntree: 0,
+            tree_body_adr: vec![],
+            tree_body_num: vec![],
+            tree_dof_adr: vec![],
+            tree_dof_num: vec![],
+            body_treeid: vec![usize::MAX; nbody],
+            dof_treeid: vec![0; self.nv],
+            tree_sleep_policy: vec![],
+            dof_length: vec![1.0; self.nv],
+            sleep_tolerance: self.sleep_tolerance,
 
             body_parent: self.body_parent,
             body_rootid: self.body_rootid,
@@ -2520,6 +2558,12 @@ impl ModelBuilder {
             dof_armature: self.dof_armature,
             dof_damping: self.dof_damping,
             dof_frictionloss: self.dof_frictionloss,
+
+            // Sparse LDL CSR metadata (computed below via compute_qld_csr_metadata)
+            qLD_rowadr: vec![],
+            qLD_rownnz: vec![],
+            qLD_colind: vec![],
+            qLD_nnz: 0,
 
             geom_type: self.geom_type,
             geom_body: self.geom_body,
@@ -2607,6 +2651,9 @@ impl ModelBuilder {
             tendon_stiffness: self.tendon_stiffness,
             tendon_damping: self.tendon_damping,
             tendon_frictionloss: self.tendon_frictionloss,
+            // tendon_treenum/tendon_tree computed below after tree enumeration
+            tendon_treenum: vec![0; ntendon],
+            tendon_tree: vec![usize::MAX; 2 * ntendon],
             tendon_lengthspring: self.tendon_lengthspring,
             tendon_length0: self.tendon_length0,
             tendon_num: self.tendon_num,
@@ -2685,6 +2732,11 @@ impl ModelBuilder {
         // Pre-compute implicit integration parameters (K, D, q_eq diagonals)
         model.compute_implicit_params();
 
+        // Pre-compute CSR sparsity metadata for sparse LDL factorization.
+        // Must be called after dof_parent is finalized and before anything that
+        // calls mj_crba (which uses mj_factor_sparse).
+        model.compute_qld_csr_metadata();
+
         // Compute tendon_length0 for spatial tendons (requires FK via mj_fwd_position).
         // Must run before compute_muscle_params() which needs valid tendon_length0.
         model.compute_spatial_tendon_length0();
@@ -2741,6 +2793,272 @@ impl ModelBuilder {
                 if model.tendon_stiffness[t] > 0.0 && model.tendon_lengthspring[t] == 0.0 {
                     model.tendon_lengthspring[t] = length;
                 }
+            }
+        }
+
+        // ===== Kinematic Tree Enumeration (§16.0) =====
+        // Group bodies by body_rootid to discover kinematic trees.
+        // Body 0 (world) is excluded — it is its own tree but never sleeps.
+        {
+            use std::collections::BTreeMap;
+            let mut trees: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+            for body_id in 1..nbody {
+                trees
+                    .entry(model.body_rootid[body_id])
+                    .or_default()
+                    .push(body_id);
+            }
+            model.ntree = trees.len();
+            model.tree_body_adr = Vec::with_capacity(model.ntree);
+            model.tree_body_num = Vec::with_capacity(model.ntree);
+            model.tree_dof_adr = Vec::with_capacity(model.ntree);
+            model.tree_dof_num = Vec::with_capacity(model.ntree);
+            model.tree_sleep_policy = vec![SleepPolicy::Auto; model.ntree];
+
+            // body_treeid[0] = usize::MAX (world sentinel, already set)
+            for (tree_idx, (_root_body, body_ids)) in trees.iter().enumerate() {
+                let first_body = body_ids[0];
+                let body_count = body_ids.len();
+                model.tree_body_adr.push(first_body);
+                model.tree_body_num.push(body_count);
+
+                // Assign tree id to each body
+                for &bid in body_ids {
+                    model.body_treeid[bid] = tree_idx;
+                }
+
+                // DOF range: find min dof and total DOFs for this tree
+                let mut min_dof = model.nv;
+                let mut total_dofs = 0usize;
+                for &bid in body_ids {
+                    let dof_start = model.body_dof_adr[bid];
+                    let dof_count = model.body_dof_num[bid];
+                    if dof_count > 0 && dof_start < min_dof {
+                        min_dof = dof_start;
+                    }
+                    total_dofs += dof_count;
+                }
+                if total_dofs == 0 {
+                    min_dof = 0; // Bodyless tree (e.g., static geoms)
+                }
+                model.tree_dof_adr.push(min_dof);
+                model.tree_dof_num.push(total_dofs);
+
+                // Assign tree id to each DOF
+                for &bid in body_ids {
+                    let dof_start = model.body_dof_adr[bid];
+                    let dof_count = model.body_dof_num[bid];
+                    for dof in dof_start..(dof_start + dof_count) {
+                        model.dof_treeid[dof] = tree_idx;
+                    }
+                }
+            }
+
+            // ===== Tendon Tree Mapping (§16.10.1) =====
+            // Compute tendon_treenum/tendon_tree by scanning each tendon's waypoints.
+            for t in 0..model.ntendon {
+                let mut tree_set = std::collections::BTreeSet::new();
+                let adr = model.tendon_adr[t];
+                let num = model.tendon_num[t];
+                for w in adr..adr + num {
+                    let bid = match model.wrap_type[w] {
+                        WrapType::Joint => {
+                            let dof_adr = model.wrap_objid[w];
+                            if dof_adr < model.nv {
+                                Some(model.dof_body[dof_adr])
+                            } else {
+                                None
+                            }
+                        }
+                        WrapType::Site => {
+                            let site_idx = model.wrap_objid[w];
+                            if site_idx < model.nsite {
+                                Some(model.site_body[site_idx])
+                            } else {
+                                None
+                            }
+                        }
+                        WrapType::Geom => {
+                            let geom_id = model.wrap_objid[w];
+                            if geom_id < model.ngeom {
+                                Some(model.geom_body[geom_id])
+                            } else {
+                                None
+                            }
+                        }
+                        WrapType::Pulley => None,
+                    };
+                    if let Some(bid) = bid {
+                        if bid > 0 {
+                            let tree = model.body_treeid[bid];
+                            if tree < model.ntree {
+                                tree_set.insert(tree);
+                            }
+                        }
+                    }
+                }
+                model.tendon_treenum[t] = tree_set.len();
+                if tree_set.len() == 2 {
+                    let mut iter = tree_set.iter();
+                    if let (Some(&a), Some(&b)) = (iter.next(), iter.next()) {
+                        model.tendon_tree[2 * t] = a;
+                        model.tendon_tree[2 * t + 1] = b;
+                    }
+                }
+            }
+
+            // ===== Sleep Policy Resolution (§16.0 steps 1-3) =====
+            // Step 2: Mark trees with actuators as AutoNever
+            for act_id in 0..nu {
+                let trn = model.actuator_trntype[act_id];
+                let trnid = model.actuator_trnid[act_id];
+                let body_id = match trn {
+                    ActuatorTransmission::Joint => {
+                        // trnid[0] is the joint index
+                        if trnid[0] < model.njnt {
+                            Some(model.jnt_body[trnid[0]])
+                        } else {
+                            None
+                        }
+                    }
+                    ActuatorTransmission::Tendon => {
+                        // §16.26.5: Tendon-actuator policy resolution.
+                        // Mark all trees spanned by the tendon as AutoNever.
+                        let tendon_idx = trnid[0];
+                        if tendon_idx < model.ntendon {
+                            let wrap_start = model.tendon_adr[tendon_idx];
+                            let wrap_count = model.tendon_num[tendon_idx];
+                            for w in wrap_start..wrap_start + wrap_count {
+                                let bid = match model.wrap_type[w] {
+                                    WrapType::Joint => {
+                                        // wrap_objid is dof_adr for fixed tendon joints
+                                        let dof_adr = model.wrap_objid[w];
+                                        if dof_adr < model.nv {
+                                            Some(model.dof_body[dof_adr])
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    WrapType::Site => {
+                                        let site_idx = model.wrap_objid[w];
+                                        if site_idx < model.nsite {
+                                            Some(model.site_body[site_idx])
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    WrapType::Geom => {
+                                        let geom_id = model.wrap_objid[w];
+                                        if geom_id < model.ngeom {
+                                            Some(model.geom_body[geom_id])
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    WrapType::Pulley => None, // No body
+                                };
+                                if let Some(bid) = bid {
+                                    if bid > 0 {
+                                        let tree = model.body_treeid[bid];
+                                        if tree < model.ntree {
+                                            model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        None // body_id not used below — trees already marked above
+                    }
+                    ActuatorTransmission::Site => {
+                        // trnid[0] is the site index
+                        if trnid[0] < model.nsite {
+                            Some(model.site_body[trnid[0]])
+                        } else {
+                            None
+                        }
+                    }
+                };
+                if let Some(bid) = body_id {
+                    if bid > 0 {
+                        let tree = model.body_treeid[bid];
+                        if tree < model.ntree {
+                            model.tree_sleep_policy[tree] = SleepPolicy::AutoNever;
+                        }
+                    }
+                }
+            }
+
+            // §16.18.2: Multi-tree tendon policy relaxation.
+            // Passive multi-tree tendons (spanning 2 trees) with nonzero stiffness,
+            // damping, or active limits create inter-tree coupling forces that prevent
+            // independent sleeping. Mark their spanning trees as AutoNever.
+            // Zero-stiffness/zero-damping/unlimited tendons are purely geometric
+            // (observational) and allow sleep.
+            for t in 0..model.ntendon {
+                if model.tendon_treenum[t] < 2 {
+                    continue; // Single-tree or zero-tree tendon — no coupling
+                }
+                let has_stiffness = model.tendon_stiffness[t].abs() > 0.0;
+                let has_damping = model.tendon_damping[t].abs() > 0.0;
+                let has_limit = model.tendon_limited[t];
+                if has_stiffness || has_damping || has_limit {
+                    // This tendon creates passive inter-tree forces → AutoNever
+                    let t1 = model.tendon_tree[2 * t];
+                    let t2 = model.tendon_tree[2 * t + 1];
+                    if t1 < model.ntree && model.tree_sleep_policy[t1] == SleepPolicy::Auto {
+                        model.tree_sleep_policy[t1] = SleepPolicy::AutoNever;
+                    }
+                    if t2 < model.ntree && model.tree_sleep_policy[t2] == SleepPolicy::Auto {
+                        model.tree_sleep_policy[t2] = SleepPolicy::AutoNever;
+                    }
+                }
+            }
+
+            // §16.26.4: Deformable body policy guard. In the current architecture,
+            // deformable bodies are registered at runtime (Data::register_deformable_body),
+            // not at model construction time. Therefore, this guard cannot run here —
+            // it will need to run at Data::register_deformable_body() time instead,
+            // marking the body's tree as AutoNever. This is deferred until the
+            // deformable feature uses tree-level sleeping.
+
+            // Step 2b: Apply explicit body-level sleep policies from MJCF
+            for body_id in 1..nbody {
+                if let Some(policy) = self.body_sleep_policy[body_id] {
+                    let tree = model.body_treeid[body_id];
+                    if tree < model.ntree {
+                        // Warn if set on non-root body (propagates to tree root)
+                        let root_body = model.tree_body_adr[tree];
+                        if body_id != root_body {
+                            let body_name =
+                                model.body_name[body_id].as_deref().unwrap_or("unnamed");
+                            warn!(
+                                "body '{}': sleep attribute on non-root body propagates to tree root",
+                                body_name
+                            );
+                        }
+                        // Explicit policy overrides automatic resolution
+                        model.tree_sleep_policy[tree] = policy;
+                    }
+                }
+            }
+
+            // Step 3: Convert remaining Auto to AutoAllowed
+            for t in 0..model.ntree {
+                if model.tree_sleep_policy[t] == SleepPolicy::Auto {
+                    model.tree_sleep_policy[t] = SleepPolicy::AutoAllowed;
+                }
+            }
+
+            // ===== dof_length Computation (§16.14) =====
+            // Compute mechanism lengths: rotational DOFs get the body's subtree
+            // extent (converts rad/s to m/s at tip), translational DOFs get 1.0.
+            compute_dof_lengths(&mut model);
+
+            // ===== RK4 Incompatibility Guard (§16.6) =====
+            if model.enableflags & ENABLE_SLEEP != 0 && model.integrator == Integrator::RungeKutta4
+            {
+                warn!("Sleeping is incompatible with RK4 integrator. Disabling sleep.");
+                model.enableflags &= !ENABLE_SLEEP;
             }
         }
 
