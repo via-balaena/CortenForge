@@ -2350,6 +2350,9 @@ pub struct Data {
     pub map_efc2iefc: Vec<i32>,
     /// Island-local row → global constraint row. Resized per step.
     pub map_iefc2efc: Vec<usize>,
+    /// Island assignment for each contact. Length: data.contacts.len(). Resized per step.
+    /// -1 = not in any island (e.g., contact between two world-body geoms).
+    pub contact_island: Vec<i32>,
 
     // ==================== Island Scratch Space (§16.11) ====================
     /// DFS stack for flood-fill. Length: ntree.
@@ -2604,6 +2607,7 @@ impl Clone for Data {
             island_iefcadr: self.island_iefcadr.clone(),
             map_efc2iefc: self.map_efc2iefc.clone(),
             map_iefc2efc: self.map_iefc2efc.clone(),
+            contact_island: self.contact_island.clone(),
             // Island scratch
             island_scratch_stack: self.island_scratch_stack.clone(),
             island_scratch_rownnz: self.island_scratch_rownnz.clone(),
@@ -3161,6 +3165,7 @@ impl Model {
             island_iefcadr: vec![0; self.ntree],
             map_efc2iefc: Vec::new(),
             map_iefc2efc: Vec::new(),
+            contact_island: Vec::new(),
 
             // Island scratch space (§16.11)
             island_scratch_stack: vec![0; self.ntree],
@@ -4039,6 +4044,11 @@ impl Data {
 
         // Reset sleep state from model policies (§16.7).
         reset_sleep_state(model, self);
+
+        // Clear island discovery state (will be recomputed on next forward()).
+        self.nisland = 0;
+        self.tree_island[..model.ntree].fill(-1);
+        self.contact_island.clear();
     }
 
     /// Reset simulation state to a keyframe by index.
@@ -4287,17 +4297,20 @@ impl Data {
 
         // ========== Acceleration Stage ==========
         mj_fwd_actuation(model, self);
-        mj_crba(model, self); // Full mass matrix — NOT skipped (§16.5 note)
+        mj_crba(model, self);
         mj_rne(model, self);
         mj_energy_vel(model, self);
         mj_fwd_passive(model, self);
-        mj_fwd_constraint(model, self);
 
-        // §16.11: Island discovery (observation-only pass — arrays populated
-        // but not yet consumed by per-island solver until Step 10).
+        // §16.11: Island discovery must run BEFORE constraint solve so that
+        // contact_island assignments are available for per-island partitioning.
         if sleep_enabled {
             mj_island(model, self);
         }
+
+        // §16.16: Per-island constraint solve when islands are active;
+        // falls back to global solve when DISABLE_ISLAND or no islands.
+        mj_fwd_constraint_islands(model, self);
 
         if !self.newton_solved {
             mj_fwd_acceleration(model, self)?;
@@ -11201,7 +11214,9 @@ fn mj_flood_fill(
 /// and multi-tree tendons, then runs flood-fill to find connected components.
 /// Populates all island arrays in `data`.
 ///
-/// Called once per step, after `assemble_unified_constraints()` populates `efc_*`.
+/// Works directly from raw data sources (contacts, model equality constraints,
+/// tendon limits, joint limits) rather than from `efc_*` arrays, so it is
+/// independent of which solver path (Newton vs PGS/CG) is active.
 #[allow(
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
@@ -11217,126 +11232,111 @@ fn mj_island(model: &Model, data: &mut Data) {
         return;
     }
 
-    let nefc = data.efc_type.len();
-
     // === Phase 1: Edge extraction (§16.11.2) ===
-    // Collect edges as (tree_a, tree_b) pairs.
-    // We use the scratch arrays for the CSR graph.
+    // Collect edges as (tree_a, tree_b) pairs from raw data sources.
 
     // Clear scratch
     data.island_scratch_rownnz[..ntree].fill(0);
     data.island_scratch_colind.clear();
 
-    // Temporary edge list: (tree_a, tree_b) pairs
-    let mut edges: Vec<(usize, usize)> = Vec::with_capacity(nefc);
+    let ncon = data.contacts.len();
+    let capacity = ncon + model.neq + model.njnt + model.ntendon;
+    let mut edges: Vec<(usize, usize)> = Vec::with_capacity(capacity);
 
-    for r in 0..nefc {
-        let ctype = data.efc_type[r];
-        let id = data.efc_id[r];
+    // 1a: Contacts → tree pairs from geom → body → tree
+    for contact in &data.contacts {
+        let body1 = if contact.geom1 < model.geom_body.len() {
+            model.geom_body[contact.geom1]
+        } else {
+            continue;
+        };
+        let body2 = if contact.geom2 < model.geom_body.len() {
+            model.geom_body[contact.geom2]
+        } else {
+            continue;
+        };
+        let tree1 = if body1 > 0 && body1 < model.body_treeid.len() {
+            model.body_treeid[body1]
+        } else {
+            usize::MAX // World body
+        };
+        let tree2 = if body2 > 0 && body2 < model.body_treeid.len() {
+            model.body_treeid[body2]
+        } else {
+            usize::MAX // World body
+        };
 
-        match ctype {
-            ConstraintType::ContactNonElliptic | ConstraintType::ContactElliptic => {
-                // Contact: get trees from geom → body → tree
-                if id < data.contacts.len() {
-                    let contact = &data.contacts[id];
-                    let body1 = if contact.geom1 < model.geom_body.len() {
-                        model.geom_body[contact.geom1]
-                    } else {
-                        continue;
-                    };
-                    let body2 = if contact.geom2 < model.geom_body.len() {
-                        model.geom_body[contact.geom2]
-                    } else {
-                        continue;
-                    };
-                    let tree1 = if body1 > 0 && body1 < model.body_treeid.len() {
-                        model.body_treeid[body1]
-                    } else {
-                        continue; // World body — skip
-                    };
-                    let tree2 = if body2 > 0 && body2 < model.body_treeid.len() {
-                        model.body_treeid[body2]
-                    } else {
-                        // Contact with world: self-edge (marks tree as constrained)
-                        if tree1 < ntree {
-                            edges.push((tree1, tree1));
-                        }
-                        continue;
-                    };
-                    if tree1 < ntree && tree2 < ntree {
-                        edges.push((tree1, tree2));
-                        if tree1 != tree2 {
-                            edges.push((tree2, tree1)); // Symmetric
-                        }
-                    }
+        if tree1 < ntree && tree2 < ntree {
+            edges.push((tree1, tree2));
+            if tree1 != tree2 {
+                edges.push((tree2, tree1));
+            }
+        } else if tree1 < ntree {
+            edges.push((tree1, tree1)); // Contact with world
+        } else if tree2 < ntree {
+            edges.push((tree2, tree2)); // Contact with world
+        }
+    }
+
+    // 1b: Active equality constraints → tree pairs
+    for eq_id in 0..model.neq {
+        if !model.eq_active[eq_id] {
+            continue;
+        }
+        let (tree1, tree2) = equality_trees(model, eq_id);
+        if tree1 < ntree {
+            edges.push((tree1, tree1));
+            if tree2 < ntree && tree2 != tree1 {
+                edges.push((tree1, tree2));
+                edges.push((tree2, tree1));
+            } else if tree2 < ntree {
+                edges.push((tree2, tree2));
+            }
+        } else if tree2 < ntree {
+            edges.push((tree2, tree2));
+        }
+    }
+
+    // 1c: Active joint limits → self-edges
+    for jnt_id in 0..model.njnt {
+        if !model.jnt_limited[jnt_id] {
+            continue;
+        }
+        // Check if limit is actually violated (active)
+        let (limit_min, limit_max) = model.jnt_range[jnt_id];
+        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+        let q = data.qpos[qpos_adr];
+        if q < limit_min || q > limit_max {
+            let body = model.jnt_body[jnt_id];
+            if body > 0 && body < model.body_treeid.len() {
+                let tree = model.body_treeid[body];
+                if tree < ntree {
+                    edges.push((tree, tree));
                 }
             }
-            ConstraintType::Equality => {
-                // Equality constraint: look up object bodies based on eq_type
-                if id < model.neq {
-                    let (tree1, tree2) = equality_trees(model, id);
-                    if tree1 < ntree {
-                        edges.push((tree1, tree1)); // Self-edge
-                        if tree2 < ntree && tree2 != tree1 {
-                            edges.push((tree1, tree2));
-                            edges.push((tree2, tree1));
-                        } else if tree2 < ntree {
-                            edges.push((tree2, tree2)); // Self-edge for tree2
-                        }
-                    } else if tree2 < ntree {
-                        edges.push((tree2, tree2));
-                    }
+        }
+    }
+
+    // 1d: Active tendon limits → tree pair edges
+    for t in 0..model.ntendon {
+        if !model.tendon_limited[t] {
+            continue;
+        }
+        // Check if tendon limit is actually violated (active)
+        let (limit_min, limit_max) = model.tendon_range[t];
+        let length = data.ten_length[t];
+        if length < limit_min || length > limit_max {
+            if model.tendon_treenum[t] == 2 {
+                let t1 = model.tendon_tree[2 * t];
+                let t2 = model.tendon_tree[2 * t + 1];
+                if t1 < ntree && t2 < ntree {
+                    edges.push((t1, t2));
+                    edges.push((t2, t1));
                 }
-            }
-            ConstraintType::LimitJoint => {
-                // Joint limit: single tree from jnt_body
-                if id < model.jnt_body.len() {
-                    let body = model.jnt_body[id];
-                    if body > 0 && body < model.body_treeid.len() {
-                        let tree = model.body_treeid[body];
-                        if tree < ntree {
-                            edges.push((tree, tree));
-                        }
-                    }
-                }
-            }
-            ConstraintType::LimitTendon => {
-                // Tendon limit: use precomputed tendon_treenum
-                if id < model.ntendon {
-                    if model.tendon_treenum[id] == 2 {
-                        let t1 = model.tendon_tree[2 * id];
-                        let t2 = model.tendon_tree[2 * id + 1];
-                        if t1 < ntree && t2 < ntree {
-                            edges.push((t1, t2));
-                            edges.push((t2, t1));
-                        }
-                    } else if model.tendon_treenum[id] == 1 {
-                        // Single-tree tendon: self-edge
-                        // Find the tree by scanning Jacobian row
-                        for dof in 0..model.nv {
-                            if data.efc_J[(r, dof)].abs() > 0.0 {
-                                let tree = model.dof_treeid[dof];
-                                if tree < ntree {
-                                    edges.push((tree, tree));
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            ConstraintType::FrictionLoss => {
-                // DOF friction loss or tendon friction loss: single tree from dof_treeid
-                // For DOF friction: efc_id = dof_idx → dof_treeid[dof_idx]
-                // For tendon friction: scan Jacobian row for nonzero DOFs
-                if id < model.nv && r < nefc {
-                    // Check if this is a DOF friction (efc_J has single 1.0 at dof_idx)
-                    if id < model.dof_treeid.len() {
-                        let tree = model.dof_treeid[id];
-                        if tree < ntree {
-                            edges.push((tree, tree));
-                        }
-                    }
+            } else if model.tendon_treenum[t] == 1 {
+                let tree = model.tendon_tree[2 * t];
+                if tree < ntree {
+                    edges.push((tree, tree));
                 }
             }
         }
@@ -11479,50 +11479,88 @@ fn mj_island(model: &Model, data: &mut Data) {
         }
     }
 
-    // 4c: Constraints per island
-    let nefc = data.efc_type.len();
-    data.efc_island.resize(nefc, -1);
-    data.map_efc2iefc.resize(nefc, -1);
-    data.map_iefc2efc.resize(nefc, 0);
-    data.island_nefc[..nisland].fill(0);
+    // 4c: Contacts per island (§16.16)
+    // Assign each contact to an island based on its bodies' trees.
+    // For contacts with two dynamic bodies, use the first body's tree
+    // (both trees are in the same island by construction of the edge graph).
+    let ncon = data.contacts.len();
+    data.contact_island.resize(ncon, -1);
 
-    // Assign each constraint row to an island based on its tree
-    for r in 0..nefc {
-        let tree = constraint_tree(model, data, r);
+    for ci in 0..ncon {
+        let contact = &data.contacts[ci];
+        let body1 = if contact.geom1 < model.geom_body.len() {
+            model.geom_body[contact.geom1]
+        } else {
+            continue;
+        };
+        let body2 = if contact.geom2 < model.geom_body.len() {
+            model.geom_body[contact.geom2]
+        } else {
+            continue;
+        };
+        // Pick the first dynamic body's tree for island assignment
+        let tree = if body1 > 0 && body1 < model.body_treeid.len() {
+            model.body_treeid[body1]
+        } else if body2 > 0 && body2 < model.body_treeid.len() {
+            model.body_treeid[body2]
+        } else {
+            continue; // Both world — shouldn't happen but skip
+        };
         if tree < ntree && island_out[tree] >= 0 {
-            let isl = island_out[tree] as usize;
-            if isl < nisland {
-                data.efc_island[r] = isl as i32;
-                data.island_nefc[isl] += 1;
-            }
+            data.contact_island[ci] = island_out[tree];
         }
     }
 
-    // Compute island_iefcadr (prefix sum of island_nefc)
-    if nisland > 0 {
-        let mut prefix = 0;
-        for i in 0..nisland {
-            data.island_iefcadr[i] = prefix;
-            prefix += data.island_nefc[i];
-        }
-    }
+    // Also populate efc_island / constraint maps for Newton solver compatibility
+    let nefc = data.efc_type.len();
+    if nefc > 0 {
+        data.efc_island.resize(nefc, -1);
+        data.map_efc2iefc.resize(nefc, -1);
+        data.map_iefc2efc.resize(nefc, 0);
+        data.island_nefc[..nisland].fill(0);
 
-    // Pack constraint maps
-    let mut island_efc_fill = vec![0usize; nisland];
-    for r in 0..nefc {
-        let isl_i32 = data.efc_island[r];
-        if isl_i32 >= 0 {
-            let isl = isl_i32 as usize;
-            if isl < nisland {
-                let local_idx = island_efc_fill[isl];
-                let global_idx = data.island_iefcadr[isl] + local_idx;
-                data.map_efc2iefc[r] = local_idx as i32;
-                if global_idx < data.map_iefc2efc.len() {
-                    data.map_iefc2efc[global_idx] = r;
+        for r in 0..nefc {
+            let tree = constraint_tree(model, data, r);
+            if tree < ntree && island_out[tree] >= 0 {
+                let isl = island_out[tree] as usize;
+                if isl < nisland {
+                    data.efc_island[r] = isl as i32;
+                    data.island_nefc[isl] += 1;
                 }
-                island_efc_fill[isl] += 1;
             }
         }
+
+        if nisland > 0 {
+            let mut prefix = 0;
+            for i in 0..nisland {
+                data.island_iefcadr[i] = prefix;
+                prefix += data.island_nefc[i];
+            }
+        }
+
+        let mut island_efc_fill = vec![0usize; nisland];
+        for r in 0..nefc {
+            let isl_i32 = data.efc_island[r];
+            if isl_i32 >= 0 {
+                let isl = isl_i32 as usize;
+                if isl < nisland {
+                    let local_idx = island_efc_fill[isl];
+                    let global_idx = data.island_iefcadr[isl] + local_idx;
+                    data.map_efc2iefc[r] = local_idx as i32;
+                    if global_idx < data.map_iefc2efc.len() {
+                        data.map_iefc2efc[global_idx] = r;
+                    }
+                    island_efc_fill[isl] += 1;
+                }
+            }
+        }
+    } else {
+        // No efc rows (PGS/CG path) — clear efc island arrays
+        data.efc_island.clear();
+        data.map_efc2iefc.clear();
+        data.map_iefc2efc.clear();
+        data.island_nefc[..nisland].fill(0);
+        data.island_iefcadr[..nisland].fill(0);
     }
 }
 
@@ -17211,6 +17249,325 @@ fn apply_constraint_torque_to_body(
         }
         current_body = model.body_parent[current_body];
     }
+}
+
+/// Phase B per-island constraint solver (§16.16).
+///
+/// When island discovery has produced `nisland > 0`, contacts are partitioned
+/// by island and each island's contact system is solved independently.
+/// Penalty constraints (joint limits, tendon limits, equality) remain global
+/// since they are already per-DOF and don't benefit from island decomposition.
+///
+/// Falls back to the global solver (`mj_fwd_constraint`) when:
+/// - `DISABLE_ISLAND` is set (`nisland == 0`)
+/// - Newton solver is active (handles all constraints unified)
+/// - No islands were discovered this step
+#[allow(clippy::cast_sign_loss, clippy::too_many_lines)]
+fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
+    // If no islands were discovered, use the global Phase A solver.
+    if data.nisland == 0 {
+        mj_fwd_constraint(model, data);
+        return;
+    }
+
+    // Newton solver handles all constraints unified — no island decomposition.
+    if model.solver_type == SolverType::Newton {
+        mj_fwd_constraint(model, data);
+        return;
+    }
+
+    // ===== Global penalty constraints (same as Phase A) =====
+    // These are per-DOF and don't need island decomposition.
+    data.qfrc_constraint.fill(0.0);
+    data.jnt_limit_frc.iter_mut().for_each(|f| *f = 0.0);
+    data.ten_limit_frc.iter_mut().for_each(|f| *f = 0.0);
+    data.newton_solved = false;
+
+    // Joint limit penalties
+    for jnt_id in 0..model.njnt {
+        if !model.jnt_limited[jnt_id] {
+            continue;
+        }
+        let (limit_min, limit_max) = model.jnt_range[jnt_id];
+        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+        let dof_adr = model.jnt_dof_adr[jnt_id];
+        let (limit_stiffness, limit_damping) = solref_to_penalty(
+            model.jnt_solref[jnt_id],
+            model.default_eq_stiffness,
+            model.default_eq_damping,
+            model.timestep,
+        );
+        match model.jnt_type[jnt_id] {
+            MjJointType::Hinge | MjJointType::Slide => {
+                let q = data.qpos[qpos_adr];
+                let qdot = data.qvel[dof_adr];
+                if q < limit_min {
+                    let penetration = limit_min - q;
+                    let vel_into = (-qdot).max(0.0);
+                    let force = limit_stiffness * penetration + limit_damping * vel_into;
+                    data.qfrc_constraint[dof_adr] += force;
+                    data.jnt_limit_frc[jnt_id] = force;
+                } else if q > limit_max {
+                    let penetration = q - limit_max;
+                    let vel_into = qdot.max(0.0);
+                    let force = limit_stiffness * penetration + limit_damping * vel_into;
+                    data.qfrc_constraint[dof_adr] -= force;
+                    data.jnt_limit_frc[jnt_id] = force;
+                }
+            }
+            MjJointType::Ball | MjJointType::Free => {}
+        }
+    }
+
+    // Tendon limit penalties
+    for t in 0..model.ntendon {
+        if !model.tendon_limited[t] {
+            continue;
+        }
+        let (limit_min, limit_max) = model.tendon_range[t];
+        let length = data.ten_length[t];
+        let (limit_stiffness, limit_damping) = solref_to_penalty(
+            model.tendon_solref[t],
+            model.default_eq_stiffness,
+            model.default_eq_damping,
+            model.timestep,
+        );
+        if length < limit_min {
+            let penetration = limit_min - length;
+            let vel_into = (-data.ten_velocity[t]).max(0.0);
+            let force = limit_stiffness * penetration + limit_damping * vel_into;
+            data.ten_limit_frc[t] = force;
+            apply_tendon_force(
+                model,
+                &data.ten_J[t],
+                model.tendon_type[t],
+                t,
+                force,
+                &mut data.qfrc_constraint,
+            );
+        }
+        if length > limit_max {
+            let penetration = length - limit_max;
+            let vel_into = data.ten_velocity[t].max(0.0);
+            let force = limit_stiffness * penetration + limit_damping * vel_into;
+            data.ten_limit_frc[t] = force;
+            apply_tendon_force(
+                model,
+                &data.ten_J[t],
+                model.tendon_type[t],
+                t,
+                -force,
+                &mut data.qfrc_constraint,
+            );
+        }
+    }
+
+    // Equality constraint penalties
+    apply_equality_constraints(model, data);
+
+    // ===== Per-island contact solve (§16.16.2) =====
+    if data.contacts.is_empty() {
+        data.efc_lambda.clear();
+        return;
+    }
+
+    if model.nv == 0 {
+        data.efc_lambda.clear();
+        return;
+    }
+
+    // Partition contacts by island
+    let nisland = data.nisland;
+    let mut island_contacts: Vec<Vec<usize>> = vec![Vec::new(); nisland];
+    let mut unassigned: Vec<usize> = Vec::new();
+
+    for (ci, &isl) in data.contact_island.iter().enumerate() {
+        if isl >= 0 && (isl as usize) < nisland {
+            island_contacts[isl as usize].push(ci);
+        } else {
+            unassigned.push(ci);
+        }
+    }
+
+    // Take efc_lambda out of data to avoid borrow conflicts
+    let mut efc_lambda = std::mem::take(&mut data.efc_lambda);
+
+    let clamped_iters = model.solver_iterations.max(10);
+    let clamped_tol = model.solver_tolerance.max(1e-8);
+
+    // Solve each island's contacts independently
+    for island_id in 0..nisland {
+        let contact_indices = &island_contacts[island_id];
+        if contact_indices.is_empty() {
+            continue;
+        }
+
+        // Gather this island's contacts and compute their Jacobians
+        let island_contact_list: Vec<Contact> = contact_indices
+            .iter()
+            .map(|&ci| data.contacts[ci].clone())
+            .collect();
+        let island_jacobians: Vec<DMatrix<f64>> = island_contact_list
+            .iter()
+            .map(|c| compute_contact_jacobian(model, data, c))
+            .collect();
+
+        // Solve using the same solver dispatch as the global path
+        let constraint_forces = match model.solver_type {
+            SolverType::PGS | SolverType::Newton => {
+                let (forces, niter) = pgs_solve_contacts(
+                    model,
+                    data,
+                    &island_contact_list,
+                    &island_jacobians,
+                    clamped_iters,
+                    clamped_tol,
+                    &mut efc_lambda,
+                );
+                data.solver_niter = data.solver_niter.max(niter);
+                forces
+            }
+            SolverType::CG => {
+                match cg_solve_contacts(
+                    model,
+                    data,
+                    &island_contact_list,
+                    &island_jacobians,
+                    clamped_iters,
+                    clamped_tol,
+                    &mut efc_lambda,
+                ) {
+                    Ok((forces, niter)) => {
+                        data.solver_niter = data.solver_niter.max(niter);
+                        forces
+                    }
+                    Err((a, b, efc_offsets)) => {
+                        let (forces, niter) = pgs_solve_with_system(
+                            &island_contact_list,
+                            &a,
+                            &b,
+                            &efc_offsets,
+                            clamped_iters,
+                            clamped_tol,
+                            &mut efc_lambda,
+                        );
+                        data.solver_niter = data.solver_niter.max(niter);
+                        forces
+                    }
+                }
+            }
+            SolverType::CGStrict => {
+                if let Ok((forces, niter)) = cg_solve_contacts(
+                    model,
+                    data,
+                    &island_contact_list,
+                    &island_jacobians,
+                    clamped_iters,
+                    clamped_tol,
+                    &mut efc_lambda,
+                ) {
+                    data.solver_niter = data.solver_niter.max(niter);
+                    forces
+                } else {
+                    data.solver_niter = data.solver_niter.max(clamped_iters);
+                    island_contact_list
+                        .iter()
+                        .map(|c| DVector::zeros(c.dim))
+                        .collect()
+                }
+            }
+        };
+
+        // Apply contact forces for this island
+        for (local_idx, (lambda, _jac)) in constraint_forces
+            .iter()
+            .zip(island_jacobians.iter())
+            .enumerate()
+        {
+            let contact = &island_contact_list[local_idx];
+            let normal = contact.normal;
+            let tangent1 = contact.frame[0];
+            let tangent2 = contact.frame[1];
+            let dim = contact.dim;
+
+            let world_force = if dim >= 3 {
+                normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
+            } else {
+                normal * lambda[0]
+            };
+
+            let body1 = model.geom_body[contact.geom1];
+            let body2 = model.geom_body[contact.geom2];
+
+            apply_contact_force(model, data, body1, contact.pos, -world_force);
+            apply_contact_force(model, data, body2, contact.pos, world_force);
+
+            if dim >= 4 {
+                let torsional_torque = normal * lambda[3];
+                apply_contact_torque(model, data, body1, -torsional_torque);
+                apply_contact_torque(model, data, body2, torsional_torque);
+            }
+            if dim >= 6 {
+                let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+                apply_contact_torque(model, data, body1, -rolling_torque);
+                apply_contact_torque(model, data, body2, rolling_torque);
+            }
+        }
+    }
+
+    // Handle unassigned contacts (shouldn't normally happen, but safety net)
+    if !unassigned.is_empty() {
+        let unassigned_contacts: Vec<Contact> = unassigned
+            .iter()
+            .map(|&ci| data.contacts[ci].clone())
+            .collect();
+        let unassigned_jacobians: Vec<DMatrix<f64>> = unassigned_contacts
+            .iter()
+            .map(|c| compute_contact_jacobian(model, data, c))
+            .collect();
+        let (forces, niter) = pgs_solve_contacts(
+            model,
+            data,
+            &unassigned_contacts,
+            &unassigned_jacobians,
+            clamped_iters,
+            clamped_tol,
+            &mut efc_lambda,
+        );
+        data.solver_niter = data.solver_niter.max(niter);
+        for (local_idx, lambda) in forces.iter().enumerate() {
+            let contact = &unassigned_contacts[local_idx];
+            let normal = contact.normal;
+            let tangent1 = contact.frame[0];
+            let tangent2 = contact.frame[1];
+            let dim = contact.dim;
+            let world_force = if dim >= 3 {
+                normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
+            } else {
+                normal * lambda[0]
+            };
+            let body1 = model.geom_body[contact.geom1];
+            let body2 = model.geom_body[contact.geom2];
+            apply_contact_force(model, data, body1, contact.pos, -world_force);
+            apply_contact_force(model, data, body2, contact.pos, world_force);
+            if dim >= 4 {
+                let torsional_torque = normal * lambda[3];
+                apply_contact_torque(model, data, body1, -torsional_torque);
+                apply_contact_torque(model, data, body2, torsional_torque);
+            }
+            if dim >= 6 {
+                let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+                apply_contact_torque(model, data, body1, -rolling_torque);
+                apply_contact_torque(model, data, body2, rolling_torque);
+            }
+        }
+    }
+
+    // Restore warmstart cache
+    data.efc_lambda = efc_lambda;
+
+    #[cfg(feature = "deformable")]
+    solve_deformable_contacts(model, data);
 }
 
 /// Compute constraint forces (contacts and joint limits).

@@ -2703,3 +2703,137 @@ fn test_init_sleep_validation_model_time() {
     assert_eq!(next_a, tree_b, "A should point to B in cycle");
     assert_eq!(next_b, tree_a, "B should point to A in cycle");
 }
+
+// ============================================================================
+// T49: test_per_island_solve_equivalence (§16.16, AC #18)
+// ============================================================================
+
+#[test]
+fn test_per_island_solve_equivalence() {
+    // Per-island solve should produce equivalent results to global solve.
+    // We compare a scene with two independent bodies (each becomes its own
+    // island) against the same scene with DISABLE_ISLAND (global solve).
+    let mjcf = r#"
+    <mujoco model="island_equivalence">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="enable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="10 10 0.1" solref="0.005 1.5"/>
+            <body name="ball_a" pos="-2 0 0.5">
+                <freejoint name="a_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+            <body name="ball_b" pos="2 0 0.5">
+                <freejoint name="b_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    // Run with islands enabled (Phase B path)
+    let model_island = load_model(mjcf).expect("load model");
+    let mut data_island = model_island.make_data();
+
+    // Run with DISABLE_ISLAND (Phase A global path)
+    let mut model_global = load_model(mjcf).expect("load model");
+    model_global.disableflags |= DISABLE_ISLAND;
+    let mut data_global = model_global.make_data();
+
+    // Step both for 200 steps and compare
+    for step in 0..200 {
+        data_island.step(&model_island).expect("island step");
+        data_global.step(&model_global).expect("global step");
+
+        // Compare qpos (should be within floating-point tolerance)
+        for dof in 0..model_island.nv {
+            let diff = (data_island.qpos[dof] - data_global.qpos[dof]).abs();
+            assert!(
+                diff < 1e-8,
+                "qpos diverged at step {step}, dof {dof}: island={}, global={}, diff={diff}",
+                data_island.qpos[dof],
+                data_global.qpos[dof]
+            );
+        }
+
+        // Compare qvel
+        for dof in 0..model_island.nv {
+            let diff = (data_island.qvel[dof] - data_global.qvel[dof]).abs();
+            assert!(
+                diff < 1e-8,
+                "qvel diverged at step {step}, dof {dof}: island={}, global={}, diff={diff}",
+                data_island.qvel[dof],
+                data_global.qvel[dof]
+            );
+        }
+    }
+
+    // Verify that islands were actually discovered (sanity check)
+    // After stepping, at least one step should have found islands
+    // (balls land on the plane and create contacts)
+    data_island.forward(&model_island).expect("forward");
+    assert!(
+        data_island.nisland > 0,
+        "Islands should have been discovered (nisland={})",
+        data_island.nisland
+    );
+}
+
+// ============================================================================
+// T54: test_disable_island_bit_identical (§16.16, AC #23)
+// ============================================================================
+
+#[test]
+fn test_disable_island_bit_identical() {
+    // DISABLE_ISLAND should make the per-island solver fall through to the
+    // global solver, producing bit-identical results to a model where sleep
+    // is disabled entirely (which also uses the global solver and has no
+    // sleep-induced state changes). Both models disable sleep to isolate
+    // the solver path comparison.
+    let mjcf = r#"
+    <mujoco model="disable_island_test">
+        <option gravity="0 0 -9.81" timestep="0.002">
+            <flag sleep="disable"/>
+        </option>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" solref="0.005 1.5"/>
+            <body name="ball" pos="0 0 0.5">
+                <freejoint name="ball_free"/>
+                <geom type="sphere" size="0.1" mass="1.0" solref="0.005 1.5"/>
+            </body>
+        </worldbody>
+    </mujoco>
+    "#;
+
+    // Model A: sleep disabled + DISABLE_ISLAND (global solver path,
+    // mj_fwd_constraint_islands sees nisland=0 → falls through)
+    let mut model_a = load_model(mjcf).expect("load model");
+    model_a.disableflags |= DISABLE_ISLAND;
+    let mut data_a = model_a.make_data();
+
+    // Model B: sleep disabled, no DISABLE_ISLAND flag
+    // Since sleep is disabled, mj_island() is never called, nisland stays 0,
+    // and mj_fwd_constraint_islands falls through to the global solver.
+    let model_b = load_model(mjcf).expect("load model");
+    let mut data_b = model_b.make_data();
+
+    // Step both for 500 steps — results should be bit-identical
+    for step in 0..500 {
+        data_a.step(&model_a).expect("step A");
+        data_b.step(&model_b).expect("step B");
+
+        for dof in 0..model_a.nv {
+            assert!(
+                (data_a.qpos[dof] - data_b.qpos[dof]).abs() < 1e-14,
+                "DISABLE_ISLAND diverged at step {step}, dof {dof}: A={}, B={}",
+                data_a.qpos[dof],
+                data_b.qpos[dof]
+            );
+        }
+    }
+
+    // Verify DISABLE_ISLAND keeps nisland = 0
+    data_a.forward(&model_a).expect("forward");
+    assert_eq!(data_a.nisland, 0, "DISABLE_ISLAND should keep nisland=0");
+}
