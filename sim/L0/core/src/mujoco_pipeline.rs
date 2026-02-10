@@ -4367,6 +4367,8 @@ impl Data {
     fn integrate(&mut self, model: &Model) {
         let h = model.timestep;
         let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+        // §16.27: Use indirection array for cache-friendly iteration over awake DOFs.
+        let use_dof_ind = sleep_enabled && self.nv_awake < model.nv;
 
         // Integrate activation per actuator, then clamp muscles to [0, 1].
         // MuJoCo order: activation → velocity → position.
@@ -4399,11 +4401,13 @@ impl Data {
         // For legacy ImplicitSpringDamper, velocity was already updated in mj_fwd_acceleration_implicit.
         match model.integrator {
             Integrator::Euler | Integrator::ImplicitFast | Integrator::Implicit => {
-                for i in 0..model.nv {
-                    // §16.5a'': Skip velocity update for sleeping DOFs
-                    if sleep_enabled && !data_tree_awake_for_dof(model, self, i) {
-                        continue;
-                    }
+                let nv = if use_dof_ind { self.nv_awake } else { model.nv };
+                for idx in 0..nv {
+                    let i = if use_dof_ind {
+                        self.dof_awake_ind[idx]
+                    } else {
+                        idx
+                    };
                     self.qvel[i] += self.qacc[i] * h;
                 }
             }
@@ -8389,6 +8393,8 @@ fn compute_subtree_angmom(model: &Model, data: &Data, root_body: usize) -> Vecto
 /// Velocity kinematics: compute body velocities from qvel.
 fn mj_fwd_velocity(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    // §16.27: Use indirection array for cache-friendly iteration over awake bodies.
+    let use_body_ind = sleep_enabled && data.nbody_awake < model.nbody;
 
     // World body has zero velocity
     data.cvel[0] = SpatialVector::zeros();
@@ -8403,11 +8409,17 @@ fn mj_fwd_velocity(model: &Model, data: &mut Data) {
     //
     // This lever arm effect is critical for Coriolis forces in serial chains!
 
-    for body_id in 1..model.nbody {
-        // §16.5a: Skip velocity kinematics for sleeping bodies — velocity is zeroed
-        if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
-            continue;
-        }
+    let nbody = if use_body_ind {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+    for idx in 1..nbody {
+        let body_id = if use_body_ind {
+            data.body_awake_ind[idx]
+        } else {
+            idx
+        };
 
         let parent_id = model.body_parent[body_id];
 
@@ -10180,6 +10192,8 @@ pub(crate) fn joint_motion_subspace(
 )]
 fn mj_rne(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    // §16.27: Use indirection array for cache-friendly iteration over awake bodies.
+    let use_body_ind = sleep_enabled && data.nbody_awake < model.nbody;
 
     data.qfrc_bias.fill(0.0);
 
@@ -10251,11 +10265,17 @@ fn mj_rne(model: &Model, data: &mut Data) {
     // ========== Gyroscopic terms for Ball/Free joints ==========
     // τ_gyro = ω × (I * ω) - the gyroscopic torque
     // This is the dominant Coriolis effect for 3D rotations
-    for body_id in 1..model.nbody {
-        // §16.5a: Skip gyroscopic terms for sleeping bodies
-        if sleep_enabled && data.body_sleep_state[body_id] == SleepState::Asleep {
-            continue;
-        }
+    let nbody_gyro = if use_body_ind {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+    for idx in 1..nbody_gyro {
+        let body_id = if use_body_ind {
+            data.body_awake_ind[idx]
+        } else {
+            idx
+        };
 
         let jnt_start = model.body_jnt_adr[body_id];
         let jnt_end = jnt_start + model.body_jnt_num[body_id];
@@ -12016,19 +12036,6 @@ fn mj_wake_tree(model: &Model, data: &mut Data, tree: usize) {
     }
 }
 
-/// Check if a DOF's tree is awake (helper for integration skip).
-#[inline]
-fn data_tree_awake_for_dof(model: &Model, data: &Data, dof: usize) -> bool {
-    if model.dof_treeid.len() <= dof {
-        return true; // No tree info → treat as awake
-    }
-    let tree = model.dof_treeid[dof];
-    if tree >= data.tree_awake.len() {
-        return true;
-    }
-    data.tree_awake[tree]
-}
-
 /// Map a sensor to its associated body_id, or `None` if multi-body (§16.5d).
 fn sensor_body_id(model: &Model, sensor_id: usize) -> Option<usize> {
     let objid = model.sensor_objid[sensor_id];
@@ -12404,6 +12411,27 @@ fn compute_efc_offsets(contacts: &[Contact]) -> (Vec<usize>, usize) {
     (offsets, offset)
 }
 
+/// Remap a global Jacobian (dim × nv) to island-local (dim × nv_island).
+///
+/// Extracts only the columns corresponding to this island's DOFs via
+/// `map_idof2dof[dof_start..dof_start + nv_island]`. O(dim × nv_island).
+fn remap_jacobian_to_island(
+    j_global: &DMatrix<f64>,
+    map_idof2dof: &[usize],
+    dof_start: usize,
+    nv_island: usize,
+) -> DMatrix<f64> {
+    let dim = j_global.nrows();
+    let mut j_local = DMatrix::zeros(dim, nv_island);
+    for local_col in 0..nv_island {
+        let global_col = map_idof2dof[dof_start + local_col];
+        for row in 0..dim {
+            j_local[(row, local_col)] = j_global[(row, global_col)];
+        }
+    }
+    j_local
+}
+
 /// Assemble Delassus matrix A and constraint RHS b for contact constraints.
 /// Shared by PGS and CG solvers.
 ///
@@ -12625,6 +12653,172 @@ fn assemble_contact_system(
         }
 
         // Rows 4-5: rolling (dim >= 6: angular velocity in tangent plane)
+        if dim_i >= 6 {
+            let omega1 = compute_body_angular_velocity(data, body_i1);
+            let omega2 = compute_body_angular_velocity(data, body_i2);
+            let rel_omega = omega2 - omega1;
+            let omega_t1 = rel_omega.dot(&tangent1);
+            let omega_t2 = rel_omega.dot(&tangent2);
+            b[offset_i + 4] = j_qacc_smooth[4] + omega_t1;
+            b[offset_i + 5] = j_qacc_smooth[5] + omega_t2;
+        }
+    }
+
+    (a, b, efc_offsets)
+}
+
+/// Island-local Delassus assembly (§16.28).
+///
+/// Structurally identical to `assemble_contact_system()` but operates on
+/// island-local data: `nv_island`-wide Jacobians, a dense Cholesky factorization
+/// of the island mass submatrix, and a pre-sliced `qacc_smooth` vector.
+/// This avoids O(nv) sparse LDL solves per column — replacing them with
+/// O(nv_island²) dense Cholesky solves.
+fn assemble_contact_system_island(
+    model: &Model,
+    data: &Data,
+    contacts: &[Contact],
+    jacobians_local: &[DMatrix<f64>],
+    chol: &nalgebra::linalg::Cholesky<f64, nalgebra::Dyn>,
+    qacc_smooth_island: &DVector<f64>,
+    nv_island: usize,
+) -> (DMatrix<f64>, DVector<f64>, Vec<usize>) {
+    let ncon = contacts.len();
+    let (efc_offsets, nefc) = compute_efc_offsets(contacts);
+
+    let mut a = DMatrix::zeros(nefc, nefc);
+    let mut b = DVector::zeros(nefc);
+
+    let base_regularization = model.regularization;
+
+    // Pre-compute M_island^{-1} * J_local^T for each contact via dense Cholesky.
+    let mut minv_jt: Vec<DMatrix<f64>> = Vec::with_capacity(ncon);
+    for (k, jacobian) in jacobians_local.iter().enumerate() {
+        let dim_k = contacts[k].dim;
+        let jt = jacobian.transpose();
+        let mut minv_jt_contact = DMatrix::zeros(nv_island, dim_k);
+        for col in 0..dim_k {
+            let jt_col = jt.column(col).clone_owned();
+            let solved = chol.solve(&jt_col);
+            minv_jt_contact.set_column(col, &solved);
+        }
+        minv_jt.push(minv_jt_contact);
+    }
+
+    // Build A matrix blocks and RHS — identical logic to assemble_contact_system().
+    for (i, (contact_i, jac_i)) in contacts.iter().zip(jacobians_local.iter()).enumerate() {
+        let timeconst = contact_i.solref[0].max(0.001);
+        let dampratio = contact_i.solref[1].max(0.0);
+        let d = compute_impedance(contact_i.solimp, contact_i.depth.abs());
+        let cfm = base_regularization + (1.0 - d) * model.regularization * 100.0;
+
+        let dim_i = contact_i.dim;
+        let offset_i = efc_offsets[i];
+
+        // Diagonal block: A[i,i] = J_local * M_island^{-1} * J_local^T
+        let a_ii = jac_i * &minv_jt[i];
+        for ri in 0..dim_i {
+            for ci in 0..dim_i {
+                a[(offset_i + ri, offset_i + ci)] = a_ii[(ri, ci)];
+            }
+            a[(offset_i + ri, offset_i + ri)] += cfm;
+        }
+
+        let dt = model.timestep.max(1e-6);
+        let erp_i = (dt / (dt + timeconst)) * dampratio.min(1.0);
+
+        // Off-diagonal blocks with bodies_share_chain optimization
+        let body_i1 = model.geom_body[contact_i.geom1];
+        let body_i2 = model.geom_body[contact_i.geom2];
+        let dynamic_i: [Option<usize>; 2] = [
+            if body_i1 != 0 { Some(body_i1) } else { None },
+            if body_i2 != 0 { Some(body_i2) } else { None },
+        ];
+        let has_dynamic_i = dynamic_i[0].is_some() || dynamic_i[1].is_some();
+
+        if has_dynamic_i {
+            for (j, contact_j) in contacts.iter().enumerate().skip(i + 1) {
+                let geom1_body = model.geom_body[contact_j.geom1];
+                let geom2_body = model.geom_body[contact_j.geom2];
+                let dynamic_j: [Option<usize>; 2] = [
+                    if geom1_body != 0 {
+                        Some(geom1_body)
+                    } else {
+                        None
+                    },
+                    if geom2_body != 0 {
+                        Some(geom2_body)
+                    } else {
+                        None
+                    },
+                ];
+
+                if dynamic_j[0].is_none() && dynamic_j[1].is_none() {
+                    continue;
+                }
+
+                let bodies_interact = dynamic_i.iter().filter_map(|&b| b).any(|bi| {
+                    dynamic_j
+                        .iter()
+                        .filter_map(|&b| b)
+                        .any(|bj| bi == bj || bodies_share_chain(model, bi, bj))
+                });
+
+                if !bodies_interact {
+                    continue;
+                }
+
+                let dim_j = contacts[j].dim;
+                let offset_j = efc_offsets[j];
+                let block_ij = jac_i * &minv_jt[j];
+                for ri in 0..dim_i {
+                    for ci in 0..dim_j {
+                        a[(offset_i + ri, offset_j + ci)] = block_ij[(ri, ci)];
+                        a[(offset_j + ci, offset_i + ri)] = block_ij[(ri, ci)];
+                    }
+                }
+            }
+        }
+
+        // RHS: b = J_local * qacc_smooth_island + aref
+        let body_i1 = model.geom_body[contact_i.geom1];
+        let body_i2 = model.geom_body[contact_i.geom2];
+        let vel1 = compute_point_velocity(data, body_i1, contact_i.pos);
+        let vel2 = compute_point_velocity(data, body_i2, contact_i.pos);
+        let rel_vel = vel2 - vel1;
+
+        let normal = contact_i.normal;
+        let tangent1 = contact_i.frame[0];
+        let tangent2 = contact_i.frame[1];
+
+        let vn = rel_vel.dot(&normal);
+        let vt1 = rel_vel.dot(&tangent1);
+        let vt2 = rel_vel.dot(&tangent2);
+
+        let j_qacc_smooth = jac_i * qacc_smooth_island;
+
+        let velocity_damping = 1.0 / dt;
+        let depth_correction = erp_i / dt;
+
+        // Row 0: normal direction
+        b[offset_i] = j_qacc_smooth[0] + velocity_damping * vn + depth_correction * contact_i.depth;
+
+        // Rows 1-2: tangent directions (dim >= 3)
+        if dim_i >= 3 {
+            b[offset_i + 1] = j_qacc_smooth[1] + vt1;
+            b[offset_i + 2] = j_qacc_smooth[2] + vt2;
+        }
+
+        // Row 3: torsional (dim >= 4)
+        if dim_i >= 4 {
+            let omega1 = compute_body_angular_velocity(data, body_i1);
+            let omega2 = compute_body_angular_velocity(data, body_i2);
+            let rel_omega = omega2 - omega1;
+            let omega_n = rel_omega.dot(&normal);
+            b[offset_i + 3] = j_qacc_smooth[3] + omega_n;
+        }
+
+        // Rows 4-5: rolling (dim >= 6)
         if dim_i >= 6 {
             let omega1 = compute_body_angular_velocity(data, body_i1);
             let omega2 = compute_body_angular_velocity(data, body_i2);
@@ -12908,6 +13102,155 @@ fn pgs_solve_with_system(
     (extract_forces(&lambda, contacts, efc_offsets), iters_used)
 }
 
+/// CG solver core: operates on a pre-assembled (A, b) system.
+/// Separated from `cg_solve_contacts` so the island-local assembly path
+/// (§16.28) can provide its own Delassus matrix without redundant assembly.
+///
+/// Returns `Ok((forces, iterations_used))` on convergence, or `Err(())`
+/// on non-convergence. The caller owns the `(A, b)` data and can fall back
+/// to `pgs_solve_with_system()` if needed.
+#[allow(clippy::many_single_char_names)]
+fn cg_solve_with_system(
+    contacts: &[Contact],
+    a: &DMatrix<f64>,
+    b: &DVector<f64>,
+    efc_offsets: &[usize],
+    max_iterations: usize,
+    tolerance: f64,
+    efc_lambda: &mut HashMap<WarmstartKey, Vec<f64>>,
+) -> Result<(Vec<DVector<f64>>, usize), ()> {
+    let ncon = contacts.len();
+    if ncon == 0 {
+        return Ok((vec![], 0));
+    }
+
+    // Compute total constraint rows from offsets
+    let nefc = if ncon > 0 {
+        efc_offsets[ncon - 1] + contacts[ncon - 1].dim
+    } else {
+        0
+    };
+
+    // Block Jacobi preconditioner
+    let precond_inv = compute_block_jacobi_preconditioner(a, contacts, efc_offsets);
+
+    // Warmstart from previous frame using spatially-keyed contact correspondence.
+    // Discard warmstart if condim changed (stored len != current dim).
+    let mut lambda = DVector::zeros(nefc);
+    for (i, contact) in contacts.iter().enumerate() {
+        let key = warmstart_key(contact);
+        if let Some(prev) = efc_lambda.get(&key) {
+            if prev.len() == contact.dim {
+                let base = efc_offsets[i];
+                for (j, &val) in prev.iter().enumerate() {
+                    lambda[base + j] = val;
+                }
+            }
+        }
+    }
+
+    // Single-contact direct solve: exact dim×dim inversion, no iteration needed.
+    // For ncon=1, A is exactly dim×dim — the preconditioner block is the full inverse.
+    if ncon == 1 {
+        let dim = contacts[0].dim;
+        let a_block = a.view((0, 0), (dim, dim)).clone_owned();
+        let inv = a_block
+            .try_inverse()
+            .unwrap_or_else(|| precond_inv[0].clone());
+        let b_block = b.rows(0, dim).clone_owned();
+        let mut lam = -(inv * b_block);
+        // Project onto friction cone
+        match dim {
+            1 => {
+                lam[0] = lam[0].max(0.0);
+            }
+            3 | 4 | 6 => {
+                project_elliptic_cone(lam.as_mut_slice(), &contacts[0].mu, dim);
+            }
+            _ => {
+                lam[0] = lam[0].max(0.0);
+                for j in 1..dim {
+                    lam[j] = 0.0;
+                }
+            }
+        }
+        efc_lambda.clear();
+        let key = warmstart_key(&contacts[0]);
+        efc_lambda.insert(key, lam.as_slice().to_vec());
+        return Ok((vec![lam], 0));
+    }
+
+    // Project initial guess onto feasible set
+    project_friction_cone(&mut lambda, contacts, efc_offsets);
+
+    // Preconditioned Projected Gradient Descent (PGD) for the contact QP:
+    //   min 0.5 * lambda^T A lambda + b^T lambda
+    //   subject to lambda_n >= 0, |lambda_t| <= mu * lambda_n
+
+    let b_norm = b.norm();
+    if b_norm < 1e-14 {
+        efc_lambda.clear();
+        return Ok((contacts.iter().map(|c| DVector::zeros(c.dim)).collect(), 0));
+    }
+
+    let mut alpha = 0.8;
+    let mut converged = false;
+    let mut iters_used = max_iterations;
+
+    for iter in 0..max_iterations {
+        // Gradient: g = A * lambda + b
+        let g = a * &lambda + b;
+
+        // Preconditioned gradient: z = M^{-1} * g
+        let z = apply_preconditioner(&precond_inv, &g, contacts, efc_offsets);
+
+        // Projected gradient descent step
+        let lambda_new = {
+            let mut trial = &lambda - alpha * &z;
+            project_friction_cone(&mut trial, contacts, efc_offsets);
+            trial
+        };
+
+        // Convergence check: relative change in lambda (fixed-point criterion)
+        let delta = (&lambda_new - &lambda).norm();
+        let lam_norm = lambda.norm().max(1e-10);
+
+        if delta / lam_norm < tolerance {
+            lambda = lambda_new;
+            converged = true;
+            iters_used = iter + 1;
+            break;
+        }
+
+        // Barzilai-Borwein step size adaptation.
+        let g_new = a * &lambda_new + b;
+        let s = &lambda_new - &lambda;
+        let y_bb = &g_new - &g;
+        let sy = s.dot(&y_bb);
+        if sy > 1e-30 {
+            let alpha_bb = s.dot(&s) / sy;
+            alpha = alpha_bb.clamp(0.01, 2.0);
+        }
+
+        lambda = lambda_new;
+    }
+
+    // Store warmstart (even on non-convergence — partial solution helps next frame)
+    efc_lambda.clear();
+    for (i, contact) in contacts.iter().enumerate() {
+        let base = efc_offsets[i];
+        let dim = contact.dim;
+        let key = warmstart_key(contact);
+        efc_lambda.insert(key, lambda.as_slice()[base..base + dim].to_vec());
+    }
+
+    if converged {
+        Ok((extract_forces(&lambda, contacts, efc_offsets), iters_used))
+    } else {
+        Err(())
+    }
+}
+
 /// Compute block Jacobi preconditioner for CG solver.
 ///
 /// Extracts dim×dim diagonal blocks from A and inverts each via Cholesky.
@@ -12969,21 +13312,9 @@ fn apply_preconditioner(
 ///   minimize: 0.5 * λ^T A λ + b^T λ
 ///   subject to: λ_n ≥ 0, |λ_t| ≤ μ λ_n
 ///
-/// Uses block Jacobi preconditioning (dim×dim diagonal block inverse per contact),
-/// with Cholesky factorization and scalar Jacobi fallback. For a single contact,
-/// the preconditioner is the exact inverse of A, enabling a direct solve in 0
-/// iterations.
-///
-/// Convergence criterion: relative change in λ falls below tolerance
-/// (`||λ_{k+1} - λ_k|| / ||λ_k|| < tol`). This fixed-point criterion is
-/// appropriate for constrained problems where the gradient at the optimum is
-/// non-zero due to active constraints.
-///
-/// Returns `Ok((forces, iterations_used))` on convergence, or
-/// `Err((A, b, efc_offsets))` on non-convergence — returning the pre-computed
-/// Delassus system and offsets so the caller can pass to `pgs_solve_with_system()`
-/// without redundant assembly.
-#[allow(clippy::many_single_char_names)] // a, b, g, z, s are standard math notation
+/// Thin wrapper around `cg_solve_with_system` that first assembles the global
+/// Delassus system. On CG non-convergence, returns the pre-assembled `(A, b,
+/// efc_offsets)` so the caller can fall back to `pgs_solve_with_system()`.
 fn cg_solve_contacts(
     model: &Model,
     data: &Data,
@@ -12999,145 +13330,17 @@ fn cg_solve_contacts(
     }
 
     let (a, b, efc_offsets) = assemble_contact_system(model, data, contacts, jacobians);
-
-    // Compute total constraint rows from offsets
-    let nefc = if ncon > 0 {
-        efc_offsets[ncon - 1] + contacts[ncon - 1].dim
-    } else {
-        0
-    };
-
-    // Block Jacobi preconditioner
-    let precond_inv = compute_block_jacobi_preconditioner(&a, contacts, &efc_offsets);
-
-    // Warmstart from previous frame using spatially-keyed contact correspondence.
-    // Discard warmstart if condim changed (stored len != current dim).
-    let mut lambda = DVector::zeros(nefc);
-    for (i, contact) in contacts.iter().enumerate() {
-        let key = warmstart_key(contact);
-        if let Some(prev) = efc_lambda.get(&key) {
-            if prev.len() == contact.dim {
-                let base = efc_offsets[i];
-                for (j, &val) in prev.iter().enumerate() {
-                    lambda[base + j] = val;
-                }
-            }
-        }
-    }
-
-    // Single-contact direct solve: exact dim×dim inversion, no iteration needed.
-    // For ncon=1, A is exactly dim×dim — the preconditioner block is the full inverse.
-    if ncon == 1 {
-        let dim = contacts[0].dim;
-        let a_block = a.view((0, 0), (dim, dim)).clone_owned();
-        let inv = a_block
-            .try_inverse()
-            .unwrap_or_else(|| precond_inv[0].clone());
-        let b_block = b.rows(0, dim).clone_owned();
-        let mut lam = -(inv * b_block);
-        // Project onto friction cone
-        match dim {
-            1 => {
-                lam[0] = lam[0].max(0.0);
-            }
-            3 | 4 | 6 => {
-                project_elliptic_cone(lam.as_mut_slice(), &contacts[0].mu, dim);
-            }
-            _ => {
-                lam[0] = lam[0].max(0.0);
-                for j in 1..dim {
-                    lam[j] = 0.0;
-                }
-            }
-        }
-        efc_lambda.clear();
-        let key = warmstart_key(&contacts[0]);
-        efc_lambda.insert(key, lam.as_slice().to_vec());
-        return Ok((vec![lam], 0));
-    }
-
-    // Project initial guess onto feasible set
-    project_friction_cone(&mut lambda, contacts, &efc_offsets);
-
-    // Preconditioned Projected Gradient Descent (PGD) for the contact QP:
-    //   min 0.5 * lambda^T A lambda + b^T lambda
-    //   subject to lambda_n >= 0, |lambda_t| <= mu * lambda_n
-    //
-    // Uses block Jacobi preconditioner M^{-1} and an adaptive step size.
-    // The preconditioner approximates A^{-1} per-contact block, so the
-    // preconditioned gradient z = M^{-1}*g is a good search direction.
-    //
-    // Step size: start with alpha=0.8 (slightly under-relaxed preconditioned
-    // step), then adapt using Barzilai-Borwein for off-diagonal coupling.
-
-    let b_norm = b.norm();
-    if b_norm < 1e-14 {
-        efc_lambda.clear();
-        return Ok((contacts.iter().map(|c| DVector::zeros(c.dim)).collect(), 0));
-    }
-
-    // Initial step size for preconditioned gradient descent.
-    // alpha=1 would be exact for block-diagonal A. For coupled contacts,
-    // we start slightly under-relaxed to ensure convergence.
-    let mut alpha = 0.8;
-
-    let mut converged = false;
-    let mut iters_used = max_iterations;
-
-    for iter in 0..max_iterations {
-        // Gradient: g = A * lambda + b
-        let g = &a * &lambda + &b;
-
-        // Preconditioned gradient: z = M^{-1} * g
-        let z = apply_preconditioner(&precond_inv, &g, contacts, &efc_offsets);
-
-        // Projected gradient descent step
-        let lambda_new = {
-            let mut trial = &lambda - alpha * &z;
-            project_friction_cone(&mut trial, contacts, &efc_offsets);
-            trial
-        };
-
-        // Convergence check: relative change in lambda (fixed-point criterion)
-        let delta = (&lambda_new - &lambda).norm();
-        let lam_norm = lambda.norm().max(1e-10);
-
-        if delta / lam_norm < tolerance {
-            lambda = lambda_new;
-            converged = true;
-            iters_used = iter + 1;
-            break;
-        }
-
-        // Barzilai-Borwein step size adaptation.
-        // Compute: alpha_bb = (s^T s) / (s^T (g_new - g))
-        // where s = lambda_new - lambda.
-        let g_new = &a * &lambda_new + &b;
-        let s = &lambda_new - &lambda;
-        let y_bb = &g_new - &g;
-        let sy = s.dot(&y_bb);
-        if sy > 1e-30 {
-            let alpha_bb = s.dot(&s) / sy;
-            // Blend new step size with old for stability
-            alpha = alpha_bb.clamp(0.01, 2.0);
-        }
-
-        lambda = lambda_new;
-    }
-
-    // Store warmstart (even on non-convergence — partial solution helps next frame)
-    efc_lambda.clear();
-    for (i, contact) in contacts.iter().enumerate() {
-        let base = efc_offsets[i];
-        let dim = contact.dim;
-        let key = warmstart_key(contact);
-        efc_lambda.insert(key, lambda.as_slice()[base..base + dim].to_vec());
-    }
-
-    if converged {
-        Ok((extract_forces(&lambda, contacts, &efc_offsets), iters_used))
-    } else {
-        Err((a, b, efc_offsets))
+    match cg_solve_with_system(
+        contacts,
+        &a,
+        &b,
+        &efc_offsets,
+        max_iterations,
+        tolerance,
+        efc_lambda,
+    ) {
+        Ok(result) => Ok(result),
+        Err(()) => Err((a, b, efc_offsets)),
     }
 }
 
@@ -17400,7 +17603,7 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
     // Equality constraint penalties
     apply_equality_constraints(model, data);
 
-    // ===== Per-island contact solve (§16.16.2) =====
+    // ===== Per-island contact solve (§16.16.2, §16.28) =====
     if data.contacts.is_empty() {
         data.efc_lambda.clear();
         return;
@@ -17410,6 +17613,14 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
         data.efc_lambda.clear();
         return;
     }
+
+    // §16.28.4: Precompute global qacc_smooth once (replaces per-island computation).
+    // qacc_smooth = M^{-1} * (qfrc_applied + qfrc_actuator + qfrc_passive - qfrc_bias)
+    let mut qacc_smooth_global = data.qfrc_applied.clone();
+    qacc_smooth_global += &data.qfrc_actuator;
+    qacc_smooth_global += &data.qfrc_passive;
+    qacc_smooth_global -= &data.qfrc_bias;
+    mj_solve_sparse(&data.qLD_diag, &data.qLD_L, &mut qacc_smooth_global);
 
     // Partition contacts by island
     let nisland = data.nisland;
@@ -17430,6 +17641,10 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
     let clamped_iters = model.solver_iterations.max(10);
     let clamped_tol = model.solver_tolerance.max(1e-8);
 
+    // §16.28.5: Use island-local assembly when beneficial.
+    // Skip if single island spans all DOFs (Cholesky would duplicate full M).
+    let use_island_local = !(data.nisland == 1 && data.island_nv[0] == model.nv);
+
     // Solve each island's contacts independently
     for island_id in 0..nisland {
         let contact_indices = &island_contacts[island_id];
@@ -17447,9 +17662,28 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
             .map(|c| compute_contact_jacobian(model, data, c))
             .collect();
 
-        // Solve using the same solver dispatch as the global path
-        let constraint_forces = match model.solver_type {
-            SolverType::PGS | SolverType::Newton => {
+        // §16.28: Island-local Delassus assembly when beneficial.
+        let nv_island = data.island_nv[island_id];
+        let dof_start = data.island_idofadr[island_id];
+
+        let constraint_forces = if use_island_local && nv_island < model.nv {
+            // ===== Island-local path (§16.28.2) =====
+
+            // Step 1: Extract island mass matrix (nv_island × nv_island)
+            let mut m_island = DMatrix::zeros(nv_island, nv_island);
+            for i in 0..nv_island {
+                let gi = data.map_idof2dof[dof_start + i];
+                for j in 0..nv_island {
+                    let gj = data.map_idof2dof[dof_start + j];
+                    m_island[(i, j)] = data.qM[(gi, gj)];
+                }
+            }
+
+            // Step 2: Dense Cholesky factorization.
+            // Any principal submatrix of an SPD matrix is SPD, so this cannot
+            // fail unless qM itself is defective (which would be a CRBA bug).
+            let Some(chol) = m_island.cholesky() else {
+                // Fallback to global path for this island if factorization fails.
                 let (forces, niter) = pgs_solve_contacts(
                     model,
                     data,
@@ -17460,23 +17694,87 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
                     &mut efc_lambda,
                 );
                 data.solver_niter = data.solver_niter.max(niter);
-                forces
+                // Apply forces and continue to next island
+                for (local_idx, lambda) in forces.iter().enumerate() {
+                    let contact = &island_contact_list[local_idx];
+                    let normal = contact.normal;
+                    let tangent1 = contact.frame[0];
+                    let tangent2 = contact.frame[1];
+                    let dim = contact.dim;
+                    let world_force = if dim >= 3 {
+                        normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
+                    } else {
+                        normal * lambda[0]
+                    };
+                    let body1 = model.geom_body[contact.geom1];
+                    let body2 = model.geom_body[contact.geom2];
+                    apply_contact_force(model, data, body1, contact.pos, -world_force);
+                    apply_contact_force(model, data, body2, contact.pos, world_force);
+                    if dim >= 4 {
+                        let torsional_torque = normal * lambda[3];
+                        apply_contact_torque(model, data, body1, -torsional_torque);
+                        apply_contact_torque(model, data, body2, torsional_torque);
+                    }
+                    if dim >= 6 {
+                        let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+                        apply_contact_torque(model, data, body1, -rolling_torque);
+                        apply_contact_torque(model, data, body2, rolling_torque);
+                    }
+                }
+                continue;
+            };
+
+            // Step 3: Remap Jacobians to island-local DOFs
+            let jacobians_local: Vec<DMatrix<f64>> = island_jacobians
+                .iter()
+                .map(|j| remap_jacobian_to_island(j, &data.map_idof2dof, dof_start, nv_island))
+                .collect();
+
+            // Step 4: Extract island-local qacc_smooth
+            let mut qacc_smooth_island = DVector::zeros(nv_island);
+            for i in 0..nv_island {
+                qacc_smooth_island[i] = qacc_smooth_global[data.map_idof2dof[dof_start + i]];
             }
-            SolverType::CG => {
-                match cg_solve_contacts(
-                    model,
-                    data,
-                    &island_contact_list,
-                    &island_jacobians,
-                    clamped_iters,
-                    clamped_tol,
-                    &mut efc_lambda,
-                ) {
-                    Ok((forces, niter)) => {
+
+            // Step 5: Assemble island-local Delassus system
+            let (a, b, efc_offsets) = assemble_contact_system_island(
+                model,
+                data,
+                &island_contact_list,
+                &jacobians_local,
+                &chol,
+                &qacc_smooth_island,
+                nv_island,
+            );
+
+            // Step 6: Dispatch to solver with pre-assembled system
+            match model.solver_type {
+                SolverType::PGS | SolverType::Newton => {
+                    let (forces, niter) = pgs_solve_with_system(
+                        &island_contact_list,
+                        &a,
+                        &b,
+                        &efc_offsets,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    );
+                    data.solver_niter = data.solver_niter.max(niter);
+                    forces
+                }
+                SolverType::CG => {
+                    if let Ok((forces, niter)) = cg_solve_with_system(
+                        &island_contact_list,
+                        &a,
+                        &b,
+                        &efc_offsets,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    ) {
                         data.solver_niter = data.solver_niter.max(niter);
                         forces
-                    }
-                    Err((a, b, efc_offsets)) => {
+                    } else {
                         let (forces, niter) = pgs_solve_with_system(
                             &island_contact_list,
                             &a,
@@ -17490,25 +17788,91 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
                         forces
                     }
                 }
+                SolverType::CGStrict => {
+                    if let Ok((forces, niter)) = cg_solve_with_system(
+                        &island_contact_list,
+                        &a,
+                        &b,
+                        &efc_offsets,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    ) {
+                        data.solver_niter = data.solver_niter.max(niter);
+                        forces
+                    } else {
+                        data.solver_niter = data.solver_niter.max(clamped_iters);
+                        island_contact_list
+                            .iter()
+                            .map(|c| DVector::zeros(c.dim))
+                            .collect()
+                    }
+                }
             }
-            SolverType::CGStrict => {
-                if let Ok((forces, niter)) = cg_solve_contacts(
-                    model,
-                    data,
-                    &island_contact_list,
-                    &island_jacobians,
-                    clamped_iters,
-                    clamped_tol,
-                    &mut efc_lambda,
-                ) {
+        } else {
+            // ===== Global path (original assembly via full LDL) =====
+            match model.solver_type {
+                SolverType::PGS | SolverType::Newton => {
+                    let (forces, niter) = pgs_solve_contacts(
+                        model,
+                        data,
+                        &island_contact_list,
+                        &island_jacobians,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    );
                     data.solver_niter = data.solver_niter.max(niter);
                     forces
-                } else {
-                    data.solver_niter = data.solver_niter.max(clamped_iters);
-                    island_contact_list
-                        .iter()
-                        .map(|c| DVector::zeros(c.dim))
-                        .collect()
+                }
+                SolverType::CG => {
+                    match cg_solve_contacts(
+                        model,
+                        data,
+                        &island_contact_list,
+                        &island_jacobians,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    ) {
+                        Ok((forces, niter)) => {
+                            data.solver_niter = data.solver_niter.max(niter);
+                            forces
+                        }
+                        Err((a, b, efc_offsets)) => {
+                            let (forces, niter) = pgs_solve_with_system(
+                                &island_contact_list,
+                                &a,
+                                &b,
+                                &efc_offsets,
+                                clamped_iters,
+                                clamped_tol,
+                                &mut efc_lambda,
+                            );
+                            data.solver_niter = data.solver_niter.max(niter);
+                            forces
+                        }
+                    }
+                }
+                SolverType::CGStrict => {
+                    if let Ok((forces, niter)) = cg_solve_contacts(
+                        model,
+                        data,
+                        &island_contact_list,
+                        &island_jacobians,
+                        clamped_iters,
+                        clamped_tol,
+                        &mut efc_lambda,
+                    ) {
+                        data.solver_niter = data.solver_niter.max(niter);
+                        forces
+                    } else {
+                        data.solver_niter = data.solver_niter.max(clamped_iters);
+                        island_contact_list
+                            .iter()
+                            .map(|c| DVector::zeros(c.dim))
+                            .collect()
+                    }
                 }
             }
         };
