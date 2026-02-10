@@ -5223,237 +5223,701 @@ assembly immediately.
 | T87 | `test_single_island_uses_global_path` | Unit | AC #58: fallback when one island spans all DOFs |
 | T88 | `test_disable_island_phase_c_bit_identical` | Regression | AC #56: DISABLE_ISLAND unchanged |
 
-##### 16.29 Phase C — Selective CRBA
+##### 16.29 Phase C — Selective CRBA & Partial LDL
 
 ###### 16.29.1 Motivation
 
 `mj_crba()` is called every step and computes the full `nv × nv` mass
 matrix plus its sparse LDL factorization. For sleeping bodies, the mass
-matrix entries are invariant (body poses frozen, joint axes frozen).
-Selective CRBA skips the computation for sleeping DOFs, preserving
-their stale-but-correct `qM` and `qLD` entries from their last awake
-step.
+matrix entries are invariant (body poses frozen, joint axes frozen,
+`cinert` unchanged). Selective CRBA skips the computation for sleeping
+DOFs, preserving their stale-but-correct `qM` and `qLD` entries from
+their last awake step.
+
+MuJoCo (3.x) implements this optimization via `nbody_awake` /
+`body_awake_ind` filtering in `mj_crb()` and `dof_awake_ind` filtering
+in `mj_factorM()`. Our implementation follows the same approach,
+adapted to our data structures.
+
+**Cost model.** CRBA has three cost centers:
+1. **Body loops (Phases 1-2):** O(nbody) — dominated by 6×6 matrix
+   copies and additions. For a humanoid (30 bodies), ~60 μs.
+2. **Mass matrix build (Phase 3):** O(nv × max_depth) — dominated by
+   6-dim dot products and ancestor walks via `dof_parent`. For deep chains
+   this is the bottleneck: a 10-link chain with hinge joints does 10×10/2 =
+   50 6-dim dot products.
+3. **LDL factorization (Phase 5):** O(Σ depth(i)²) — dominated by the
+   ancestor-pair elimination loop. For balanced trees this is O(n log²n),
+   for typical humanoids (depth ≤ 8) effectively O(n). Small constants.
+
+Phases 1-3 dominate for deep kinematic chains. Phase 5 dominates for
+wide, shallow models (many DOFs, low depth). Both are worth optimizing,
+but Phase 5 carries higher risk (correctness of partial elimination).
+Hence the two-sub-step split: C3a (body loops, low risk) and C3b
+(partial LDL, medium risk, deferred until profiling).
 
 ###### 16.29.2 Correctness Argument
 
-**Why stale entries are safe:**
+**Why stale `qM` entries are safe:**
 - Sleeping DOFs have `qvel = 0`, `qacc = 0`, `qfrc_* = 0` by invariant.
 - The constraint solver never reads sleeping DOFs' mass matrix entries
   (island-local assembly from §16.28 only extracts awake DOF blocks).
 - `mj_solve_sparse()` for `qacc_smooth` reads all DOFs, but sleeping
   DOFs have zero force, so `qacc_smooth[sleeping_dof] = 0` regardless
-  of `qM` values.
+  of `qM` values. (Proof: `qacc_smooth = M^{-1} * f_total`. For sleeping
+  DOFs, `f_total[dof] = 0` and `M` is block-diagonal across trees, so
+  the sleeping DOF slice of `qacc_smooth` is zero.)
 - When a tree wakes, its first `forward()` pass runs full CRBA (because
   `nbody_awake` now includes the waking bodies), recomputing all `qM`
   entries before the solver reads them.
+
+**Why stale `qLD` entries are safe (C3a with full LDL):**
+- C3a runs full `mj_factor_sparse()` unconditionally. The full LDL
+  reads all `qM` entries, including stale sleeping ones. But since
+  sleeping DOFs' `qM` values are unchanged from their last awake step,
+  the full factorization produces correct `qLD` entries for all DOFs.
+  There is no correctness risk in C3a — only a missed optimization
+  opportunity (which C3b addresses).
+
+**Why stale `qLD` entries are safe (C3b with partial LDL):**
+- Sleeping is per-tree. DOF parent chains (`dof_parent`) never cross
+  tree boundaries. Therefore, the LDL elimination for tree A's DOFs
+  never touches tree B's `qLD` entries. If tree B is sleeping, its
+  `qLD` entries are untouched by the partial elimination and remain
+  valid from the last awake step.
+- `mj_solve_sparse()` reads sleeping DOFs' `qLD_L` and `qLD_diag` in
+  its forward/backward substitution. For sleeping DOFs, the RHS is zero,
+  so the output for those DOFs is zero regardless of the `qLD` values.
+  The critical property: the solve does NOT propagate sleeping DOF
+  values into awake DOF results, because the tree-sparse structure
+  means sleeping and awake DOFs are in disconnected blocks of L.
 
 **When stale entries cause problems:**
 - If external code reads `qM[sleeping_dof, ...]` directly (outside the
   pipeline). This is acceptable — document that `qM` entries for
   sleeping DOFs are stale but self-consistent.
 
-###### 16.29.3 Algorithm
+**Key invariant exploited throughout:** Within a single kinematic tree,
+all bodies share the same sleep state (sleeping is per-tree, not
+per-body). Cross-tree DOF interactions are zero in both `qM` and `qLD`.
 
-Replace `mj_crba(model, data)` with `mj_crba_selective(model, data)`:
+###### 16.29.3 Step C3a — Selective CRBA Body Loops
+
+**Scope:** Modify `mj_crba(model, data)` to skip Phases 1-4 and
+Phase 6 for sleeping bodies when `sleep_filter = true`. Phase 5 (LDL)
+remains unchanged (full computation). When `sleep_filter = false`,
+behavior is bit-identical to the original. The function signature and
+all postconditions are identical.
+
+**Precondition:** C1 complete (awake-index arrays populated).
+
+**Phase 0 (preamble + selective qM zeroing):**
+
+The existing `mj_crba()` starts with `data.qM.fill(0.0)` (line 9827).
+With selective CRBA, we must NOT zero sleeping DOFs' `qM` entries —
+they must be preserved from the last awake step.
+
+**MuJoCo comparison note:** MuJoCo's `mj_crb()` zeros M *after* the
+backward pass (between Phase 2 and Phase 3), using sparse row zeroing
+via `mju_zeroSparse(M, rownnz, rowadr, dof_awake_ind, nv)`. We zero
+*before* Phase 1 using per-tree diagonal block zeroing. Both are
+correct because Phase 3 writes all awake entries unconditionally. Our
+ordering (zero first) is simpler and matches the existing code's
+structure. Our per-tree block zeroing is O(Σ dof_count_awake²) vs
+MuJoCo's O(Σ row_nnz_awake), but since we use a dense `DMatrix` (not
+sparse CSR), the per-tree block approach is natural and avoids needing
+sparse row metadata.
+
+Zero only awake DOFs' rows and columns. Since `qM` is symmetric and
+tree-sparse, only entries `qM[(i, j)]` where both `i` and `j` belong
+to awake trees need zeroing. Use the per-tree approach:
+
+```rust
+let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+
+data.qLD_valid = false;
+
+if !sleep_filter {
+    // Fast path: all bodies awake, zero everything (original behavior)
+    data.qM.fill(0.0);
+} else {
+    // Selective path: zero only awake trees' DOF blocks.
+    // DOFs within a tree are contiguous (§16.0 body ordering guarantee).
+    for tree_id in 0..model.ntree {
+        if !data.tree_awake[tree_id] {
+            continue; // Sleeping tree — preserve qM entries
+        }
+        let dof_start = model.tree_dof_adr[tree_id];
+        let dof_count = model.tree_dof_num[tree_id];
+        // Zero the tree's diagonal block and its cross-entries with
+        // other awake trees. Since qM is tree-block-diagonal (cross-tree
+        // entries are always zero), we only need to zero the
+        // [dof_start..dof_start+dof_count] × [0..nv] band.
+        // Optimization: since cross-tree entries are zero, just zero
+        // the diagonal block [dof_start..+dof_count]².
+        for i in dof_start..(dof_start + dof_count) {
+            for j in dof_start..(dof_start + dof_count) {
+                data.qM[(i, j)] = 0.0;
+            }
+        }
+    }
+}
+
+if model.nv == 0 {
+    return;
+}
+```
+
+**Why tree-block-diagonal zeroing is sufficient:** The mass matrix `qM`
+has nonzero entries only for DOF pairs (i, j) where DOFs i and j
+belong to the same kinematic tree. This is because CRBA's off-diagonal
+computation (Phase 3) walks `dof_parent` chains, which never cross
+tree boundaries. Cross-tree entries `qM[(i, j)]` where
+`dof_treeid[i] != dof_treeid[j]` are always zero. Therefore, zeroing
+only the intra-tree diagonal block for each awake tree is sufficient.
 
 **Phase 1 (init crb):** Only initialize `crb_inertia` for awake bodies.
 
 ```rust
-for idx in 0..data.nbody_awake {
-    let body_id = data.body_awake_ind[idx];
-    data.crb_inertia[body_id] = data.cinert[body_id];
+if !sleep_filter {
+    for body_id in 0..model.nbody {
+        data.crb_inertia[body_id] = data.cinert[body_id];
+    }
+} else {
+    for idx in 0..data.nbody_awake {
+        let body_id = data.body_awake_ind[idx];
+        data.crb_inertia[body_id] = data.cinert[body_id];
+    }
 }
 ```
+
+Sleeping bodies' `crb_inertia` values are preserved from their last
+awake step. This is safe because `crb_inertia` is overwritten (not
+accumulated) from `cinert` in Phase 1 — there is no stale-accumulation
+hazard.
 
 **Phase 2 (backward accumulation):** Only accumulate for awake bodies.
-Use `parent_awake_ind` in reverse:
 
 ```rust
-for idx in (0..data.nparent_awake).rev() {
-    let body_id = data.parent_awake_ind[idx];
-    if body_id == 0 { continue; }
-    let parent_id = model.body_parent[body_id];
-    if parent_id != 0 {
-        data.crb_inertia[parent_id] += data.crb_inertia[body_id];
+if !sleep_filter {
+    // Full loop: shift child inertia to parent origin before accumulating.
+    // shift_spatial_inertia() applies the parallel axis theorem to re-express
+    // the child's 6×6 spatial inertia (about xpos[child]) at xpos[parent].
+    for body_id in (1..model.nbody).rev() {
+        let parent_id = model.body_parent[body_id];
+        if parent_id != 0 {
+            let d = data.xpos[body_id] - data.xpos[parent_id];
+            let child_shifted = shift_spatial_inertia(&data.crb_inertia[body_id], &d);
+            data.crb_inertia[parent_id] += child_shifted;
+        }
+    }
+} else {
+    // Selective: iterate only awake bodies in reverse.
+    // Same shift_spatial_inertia, but using body_awake_ind.
+    for idx in (1..data.nbody_awake).rev() {
+        let body_id = data.body_awake_ind[idx];
+        let parent_id = model.body_parent[body_id];
+        if parent_id != 0 {
+            let d = data.xpos[body_id] - data.xpos[parent_id];
+            let child_shifted = shift_spatial_inertia(&data.crb_inertia[body_id], &d);
+            data.crb_inertia[parent_id] += child_shifted;
+        }
     }
 }
 ```
 
-**Correctness of backward pass with `parent_awake_ind`:**
+**Correctness of selective backward pass:**
 
-Unlike the RNE backward pass (which was excluded from indirection in
-§16.27.2 because intermediate `cfrc_ext` values for sleeping bodies
-may be stale), the CRBA backward pass is safe to run only over awake
-bodies. The key property: **within a single kinematic tree, all bodies
-share the same sleep state** (sleeping is per-tree, not per-body).
-Therefore:
+Unlike the RNE backward pass (excluded from indirection in §16.27.2
+because `cfrc_ext` depends on dynamic quantities), CRBA backward pass
+is safe to run only over awake bodies:
 
-- If body B is awake, every body in B's tree is awake. The backward
-  accumulation `crb_inertia[parent] += crb_inertia[child]` only
-  involves bodies in the same tree, all of which are in
-  `parent_awake_ind`.
-- If body B is sleeping, its entire tree is sleeping. No body in that
-  tree appears in `parent_awake_ind`, so no stale values are read.
-- Body 0 (world) receives contributions from all tree roots. Sleeping
-  tree roots' `crb_inertia[root]` values are stale, but body 0's mass
-  matrix entries are never read by the island-local solver (body 0 has
-  no DOFs). The `continue` guard at body 0 prevents accumulation.
+- **Per-tree invariant:** Within a single kinematic tree, all bodies
+  share the same sleep state. If body B is awake, every body in B's
+  tree is awake. The backward accumulation only involves bodies in the
+  same tree, all of which are in `body_awake_ind`.
+- **Sleeping trees:** If body B is sleeping, its entire tree is sleeping.
+  No body in that tree appears in `body_awake_ind`, so no stale values
+  are read or written.
+- **Body 0 (world):** Does not participate in accumulation — the guard
+  `if parent_id != 0` prevents any body from accumulating into body 0,
+  and body 0 has no DOFs so its `crb_inertia` is never read by Phase 3.
 
-This per-tree invariant is what makes CRBA backward pass safe but RNE
-backward pass unsafe: RNE accumulates `cfrc_ext` which depends on
-dynamic quantities (`cvel`, `cacc`) that change every step, whereas
-CRBA accumulates `crb_inertia` which depends only on body poses
-(frozen for sleeping bodies).
+**Why the §16.29.3 "subtlety" about sleeping children of body 0 is a
+non-issue for C3a:** The original spec identified a concern: sleeping
+tree roots' `crb_inertia` should be accumulated into body 0. However,
+body 0 has no joints and no DOFs. Phase 3 only reads
+`crb_inertia[body_i]` where `body_i = jnt_body[jnt_i]` — never body 0.
+Therefore, body 0's `crb_inertia` value is never consumed by the mass
+matrix build. The sleeping-root-to-body-0 accumulation is unnecessary
+and is **omitted** in C3a. (MuJoCo's `mj_crb` similarly does not
+special-case body 0 contributions from sleeping roots.)
 
-**Subtlety:** If an awake body has a sleeping child, the sleeping
-child's `crb_inertia` was accumulated into the parent during the last
-awake step and hasn't changed since. The parent's `crb_inertia` starts
-from `cinert[parent]` (current) but doesn't re-accumulate the sleeping
-child. This is **incorrect** — the parent needs the child's frozen
-contribution.
+**Phase 3 (mass matrix build):** Per-DOF iteration with `dof_parent` walk.
 
-**Fix:** Before the backward pass, accumulate frozen `crb_inertia`
-from sleeping tree roots into body 0. By the per-tree sleep invariant,
-this is the **only** case where an awake/static body has sleeping
-children — within any single tree, either all bodies are awake or all
-are asleep. The fix is therefore O(ntree) not O(nbody):
+The loop iterates per-DOF (not per-joint) and walks `dof_parent` for
+off-diagonal entries. This correctly handles same-body cross-entries for
+bodies with multiple joints (e.g., two hinges on one body), because
+`dof_parent` chains same-body DOFs together. With C3a, use
+`dof_awake_ind` for the outer loop:
 
 ```rust
-// Body 0 (world/static) needs frozen contributions from sleeping tree roots.
-// No `body_children()` utility exists — iterate trees directly.
-for tree_id in 0..model.ntree {
-    let root_body = model.tree_body_adr[tree_id]; // first body in tree
-    if data.body_sleep_state[root_body] == SleepState::Asleep {
-        // root_body's crb_inertia is frozen from last awake step.
-        // model.body_parent[root_body] == 0 for all tree roots.
-        data.crb_inertia[0] += data.crb_inertia[root_body];
+// Pre-compute per-DOF motion subspace columns (cdof).
+// Build per-joint subspaces for ALL joints (cheap O(njnt) matrix fill),
+// then extract individual DOF columns. Sleeping joints' subspaces are
+// computed but never read because the outer loop skips sleeping DOFs,
+// and the dof_parent walk only visits ancestors in the same awake tree.
+let joint_subspaces: Vec<_> = (0..model.njnt)
+    .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
+    .collect();
+
+let cdof: Vec<Vector6<f64>> = (0..model.nv)
+    .map(|dof| {
+        let jnt = model.dof_jnt[dof];
+        let dof_in_jnt = dof - model.jnt_dof_adr[jnt];
+        joint_subspaces[jnt].column(dof_in_jnt).into_owned()
+    })
+    .collect();
+
+let nv_iter = if sleep_filter { data.ndof_awake } else { model.nv };
+for v in 0..nv_iter {
+    let dof_i = if sleep_filter { data.dof_awake_ind[v] } else { v };
+    let body_i = model.dof_body[dof_i];
+    let ic = &data.crb_inertia[body_i];
+
+    // buf = Ic[body_i] * cdof[dof_i]  (spatial force at body_i's frame)
+    let mut buf: Vector6<f64> = ic * &cdof[dof_i];
+
+    // Diagonal: M[i,i] = cdof[i]^T * buf
+    data.qM[(dof_i, dof_i)] = cdof[dof_i].dot(&buf);
+
+    // Walk dof_parent chain for off-diagonal entries.
+    // All ancestors are in the same awake tree (per-tree invariant),
+    // so no sleep check is needed in the ancestor walk.
+    let mut current_body = body_i;
+    let mut j = model.dof_parent[dof_i];
+
+    while let Some(dof_j) = j {
+        let body_j = model.dof_body[dof_j];
+
+        // Spatial force transform only when crossing a body boundary.
+        // Same-body DOFs share an origin, so no transform is needed.
+        if body_j != current_body {
+            let r = data.xpos[current_body] - data.xpos[body_j];
+            let fl_x = buf[3];
+            let fl_y = buf[4];
+            let fl_z = buf[5];
+            buf[0] += r.y * fl_z - r.z * fl_y;
+            buf[1] += r.z * fl_x - r.x * fl_z;
+            buf[2] += r.x * fl_y - r.y * fl_x;
+            current_body = body_j;
+        }
+
+        // Off-diagonal: M[j,i] = cdof[j]^T * buf
+        let m_ji = cdof[dof_j].dot(&buf);
+        data.qM[(dof_j, dof_i)] = m_ji;
+        data.qM[(dof_i, dof_j)] = m_ji; // symmetry
+
+        j = model.dof_parent[dof_j];
     }
 }
 ```
 
-This replaces a hypothetical `body_children(model, body_id)` call
-(which does not exist in the codebase — `Model` only has `body_parent`
-for child→parent lookups). The tree-root iteration is both correct and
-efficient.
+**Safety of `dof_parent` walk:** The walk starts from an awake DOF and
+follows `dof_parent` links. Same-body DOFs share a body (and thus share
+sleep state). Cross-body links follow kinematic ancestry within the same
+tree. Since the tree is fully awake (per-tree invariant), every DOF
+encountered is awake and its `cdof`, `crb_inertia`, and `xpos` are fresh.
+The walk never crosses into a sleeping tree.
 
-This requires `crb_inertia` to be preserved across steps for sleeping
-bodies (not zeroed at the start of CRBA). Currently `mj_crba()` does
-not zero `crb_inertia` — it overwrites from `cinert` in Phase 1. The
-selective version must skip the overwrite for sleeping bodies, which is
-already handled by the awake-only Phase 1 loop above.
-
-**Phase 3 (mass matrix build):** Only iterate joints on awake bodies.
-The existing loop is per-joint (`for jnt_i in 0..model.njnt`), and each
-joint processes all its DOFs in inner loops (Ball = 3, Free = 6). Using
-`dof_awake_ind` would visit multi-DOF joints multiple times (once per
-DOF), causing redundant diagonal block computation. Instead, keep the
-per-joint loop and add a sleep check — same pattern as the RNE gravity
-decision (§16.27.2):
+**Phase 4 (armature):** Only awake joints. The existing code iterates
+per-joint (not per-DOF) and adds both `jnt_armature` and `dof_armature`.
+Preserve this structure with a sleep check:
 
 ```rust
-for jnt_i in 0..model.njnt {
-    let body_i = model.jnt_body[jnt_i];
-    if sleep_enabled && data.body_sleep_state[body_i] == SleepState::Asleep {
+for jnt_id in 0..model.njnt {
+    let body_i = model.jnt_body[jnt_id];
+    if sleep_filter
+        && data.body_sleep_state[body_i] == SleepState::Asleep
+    {
         continue;
     }
-    let dof_i = model.jnt_dof_adr[jnt_i];
-    let nv_i = model.jnt_type[jnt_i].nv();
-    // ... existing diagonal + off-diagonal logic (unchanged) ...
+    let dof_adr = model.jnt_dof_adr[jnt_id];
+    let nv = model.jnt_type[jnt_id].nv();
+    let armature = model.jnt_armature[jnt_id];
+    for i in 0..nv {
+        data.qM[(dof_adr + i, dof_adr + i)] += armature;
+        if let Some(&dof_arm) = model.dof_armature.get(dof_adr + i) {
+            data.qM[(dof_adr + i, dof_adr + i)] += dof_arm;
+        }
+    }
 }
 ```
 
-**Phase 4 (armature):** Only awake DOFs. This loop is per-DOF (not
-per-joint), so `dof_awake_ind` applies directly:
+**Phase 5 (sparse LDL):** **Unchanged in C3a.** Run full
+`mj_factor_sparse(model, data)`. This reads all `qM` entries (including
+stale sleeping ones) and produces correct `qLD` for all DOFs. The
+sleeping entries in `qM` are unchanged from their last awake step, so
+the factorization over them is redundant but correct.
+
+**Phase 6 (cache body effective mass):** Selective. Only update
+`body_min_mass` and `body_min_inertia` for awake bodies. Sleeping
+bodies' cached values are preserved from their last awake step (frozen
+`qM` diagonal → frozen cached mass).
+
+The existing `cache_body_effective_mass()` has three phases:
+1. **Reset** (line 10076): `body_min_mass[1..nbody] = f64::INFINITY`
+2. **Visitor**: Per-joint `min()` update from `qM` diagonal
+3. **Fallback** (line 10086): Replace `INFINITY` → `DEFAULT_MASS_FALLBACK`
+   for bodies with no DOFs of that type
+
+With selective CRBA, ALL THREE phases must skip sleeping bodies:
 
 ```rust
-for idx in 0..data.nv_awake {
-    let dof = data.dof_awake_ind[idx];
-    data.qM[(dof, dof)] += model.dof_armature[dof];
+fn cache_body_effective_mass(model: &Model, data: &mut Data) {
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+
+    // Phase 1: Reset only awake bodies.
+    // CRITICAL: sleeping bodies' cached values must be preserved.
+    for i in 1..model.nbody {
+        if sleep_filter
+            && data.body_sleep_state[i] == SleepState::Asleep
+        {
+            continue; // Preserve cached values from last awake step
+        }
+        data.body_min_mass[i] = f64::INFINITY;
+        data.body_min_inertia[i] = f64::INFINITY;
+    }
+
+    // Phase 2: Visitor with sleep guard.
+    struct MassCacheVisitor<'a> {
+        model: &'a Model,
+        data: &'a mut Data,
+        sleep_filter: bool,
+    }
+
+    impl JointVisitor for MassCacheVisitor<'_> {
+        fn visit_free(&mut self, ctx: JointContext) {
+            let body_id = self.model.jnt_body[ctx.jnt_id];
+            if self.sleep_filter
+                && self.data.body_sleep_state[body_id] == SleepState::Asleep
+            {
+                return;
+            }
+            // ... unchanged mass/inertia extraction from qM diagonal ...
+        }
+        // visit_ball, visit_hinge, visit_slide: same guard at top
+    }
+
+    let mut visitor = MassCacheVisitor {
+        model, data, sleep_filter,
+    };
+    model.visit_joints(&mut visitor);
+
+    // Phase 3: Fallback — only awake bodies.
+    for i in 1..model.nbody {
+        if sleep_filter
+            && data.body_sleep_state[i] == SleepState::Asleep
+        {
+            continue;
+        }
+        if data.body_min_mass[i] == f64::INFINITY {
+            data.body_min_mass[i] = DEFAULT_MASS_FALLBACK;
+        }
+        if data.body_min_inertia[i] == f64::INFINITY {
+            data.body_min_inertia[i] = DEFAULT_MASS_FALLBACK;
+        }
+    }
 }
 ```
 
-**Phase 5 (sparse LDL):** Only refactor awake DOF blocks. Sleeping
-DOFs' `qLD_diag` and `qLD_L` entries are preserved from the last awake
-step.
+This modifies the existing function in-place (no new `_selective`
+variant needed). When `sleep_filter = false`, all guards are skipped
+— zero overhead on the all-awake path.
+
+###### 16.29.4 Step C3a — Implementation Checklist
+
+1. Add `sleep_filter` preamble (Phase 0).
+2. Replace `qM.fill(0.0)` with per-tree selective zeroing.
+3. Gate Phase 1 `crb_inertia` init on `body_awake_ind`.
+4. Gate Phase 2 backward pass on `body_awake_ind` (reverse iteration).
+5. Gate Phase 3 joint loop on `body_sleep_state` check (`continue`
+   before subspace access). Keep `joint_subspaces: Vec<_>` type
+   unchanged (no `Option` wrapper — see Phase 3 rationale).
+6. Gate Phase 4 armature loop on `body_sleep_state` check.
+7. Phase 5 unchanged (full `mj_factor_sparse`).
+8. Gate Phase 6 `cache_body_effective_mass` via `sleep_filter` flag in
+   visitor struct.
+9. Verify `sleep_filter = false` path is bit-identical to original.
+
+###### 16.29.4a Step C3a — Risk Mitigation
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Phase 0: sleeping tree's `qM` entries zeroed by mistake | Medium | High (corrupt mass matrix, wrong dynamics) | Per-tree zeroing uses `tree_dof_adr`/`tree_dof_num` and only processes awake trees. Guard: `if !data.tree_awake[tree_id] { continue }`. Test T90 validates sleeping entries are preserved. |
+| Phase 1: stale `crb_inertia` from previous step leaks into accumulation | Low | High (wrong composite inertia → wrong qM) | Phase 1 is `=` (overwrite), not `+=` (accumulate). Sleeping bodies' `crb_inertia` values are never read by Phase 2 or Phase 3 for awake trees (per-tree invariant). |
+| Phase 2: backward pass misses a body in the tree | Low | High (incomplete composite inertia) | `body_awake_ind` contains ALL awake bodies, sorted ascending. Reverse iteration visits them leaf-to-root. Per-tree invariant: if one body in a tree is awake, all are. No body in an awake tree is missing from `body_awake_ind`. |
+| Phase 2: sleeping root accumulation into body 0 skipped | None | None | Body 0 has no joints/DOFs, so `crb_inertia[0]` is never consumed by Phase 3. MuJoCo's `mj_crb()` accumulates sleeping roots into body 0 via `parent_awake_ind`, but the value is unused — our skip is equivalent. |
+| Phase 3: `dof_parent` walk encounters sleeping DOF | None | N/A (cannot happen) | Walk starts from an awake DOF, follows `dof_parent`. Same-body DOFs share sleep state; cross-body links stay within the same kinematic tree (all awake). Walk terminates at `dof_parent = None` (root DOF). Cross-tree walks are impossible. |
+| Phase 4: armature added to sleeping DOF | Low | Medium (small numerical drift) | `body_sleep_state` check matches Phase 3 pattern. Sleeping joints skipped. Test T94 validates armature correctness for awake joints. |
+| Phase 6: sleeping body's cached mass reset to infinity | Low | Medium (constraint force limiting wrong) | No `body_min_mass.fill(f64::INFINITY)` for sleeping bodies. The `sleep_filter` guard in the visitor returns early, preserving existing values. Test T95 validates preservation. |
+| `sleep_filter = false` path diverges from original | Low | High (regression) | Entire function has two code paths: `if !sleep_filter { original }` for each phase. Test T92 validates bit-identity when all awake. |
+| Wake transition: first step after wake has stale qM | None | N/A | `mj_update_sleep_arrays()` runs before `mj_crba()` in `forward_core()`. Newly awake bodies are in `body_awake_ind`, so Phase 0 zeros their DOF block and Phases 1-4 compute fresh values. Test T91 validates. |
+
+###### 16.29.5 Step C3b — Partial LDL Factorization
+
+**Scope:** Replace `mj_factor_sparse(model, data)` with
+`mj_factor_sparse_selective(model, data)` that skips DOF blocks
+belonging to sleeping trees. This is a **separate commit** from C3a,
+deferred until profiling shows LDL factorization is a meaningful
+fraction of `mj_crba`'s runtime.
+
+**Precondition:** C3a complete. Profiling data showing LDL > 20% of
+selective CRBA runtime for target model sizes.
+
+**Key insight — tree independence simplifies everything:**
+
+Sleeping is per-tree. `dof_parent` chains never cross tree boundaries
+(`model.dof_parent[root_dof] == None` for each tree's root DOF). The
+LDL factorization processes DOFs in reverse order; the elimination of
+DOF `i` updates only its ancestors (DOFs reachable via `dof_parent`
+chain), all of which are in the same tree.
+
+**Consequence:** The LDL factorization is naturally block-diagonal
+across trees. A sleeping tree's DOF block is completely independent of
+all other trees' DOF blocks. Partial LDL simply means: **skip the
+factorization for sleeping trees' DOF ranges entirely.**
+
+This is dramatically simpler than the general "dof_factor_set"
+approach described in the prior spec version. No complex reachability
+analysis needed. No cross-tree contamination possible.
+
+**Algorithm:**
 
 ```rust
 fn mj_factor_sparse_selective(model: &Model, data: &mut Data) {
-    // Only process awake DOFs
+    let nv = model.nv;
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nv_awake < model.nv;
+
+    if !sleep_filter {
+        // Full factorization (original code, unchanged)
+        mj_factor_sparse_full(model, data);
+        return;
+    }
+
+    // Phase 1: Copy M's sparse entries into qLD working storage.
+    // Only process awake DOFs. Sleeping DOFs' qLD entries are
+    // preserved from their last awake step.
     for idx in 0..data.nv_awake {
         let i = data.dof_awake_ind[idx];
         data.qLD_diag[i] = data.qM[(i, i)];
         data.qLD_L[i].clear();
-        // ... same ancestor walk, but only for awake DOFs ...
+        let mut p = model.dof_parent[i];
+        while let Some(j) = p {
+            data.qLD_L[i].push((j, data.qM[(i, j)]));
+            p = model.dof_parent[j];
+        }
+        data.qLD_L[i].reverse();
     }
-    // ... elimination loop, only for awake DOFs ...
+
+    // Phase 2: Eliminate from leaves to root, awake DOFs only.
+    //
+    // Process awake DOFs in reverse global order. Since dof_awake_ind
+    // is sorted ascending, iterate it in reverse:
+    for idx in (0..data.nv_awake).rev() {
+        let i = data.dof_awake_ind[idx];
+        let di = data.qLD_diag[i];
+
+        // Scale off-diagonals: L[i,j] = working[i,j] / D[i]
+        for entry in &mut data.qLD_L[i] {
+            entry.1 /= di;
+        }
+
+        // Propagate rank-1 update to ancestors.
+        // All ancestors of i are in the same tree (awake), so their
+        // qLD entries are being computed this step — no stale reads.
+        let (lo, hi) = data.qLD_L.split_at_mut(i);
+        let row_i = &hi[0];
+
+        for idx_a in 0..row_i.len() {
+            let (j, lij) = row_i[idx_a];
+            data.qLD_diag[j] -= lij * lij * di;
+            for idx_b in 0..idx_a {
+                let (k, lik) = row_i[idx_b];
+                if let Some(entry) = lo[j].iter_mut()
+                    .find(|(col, _)| *col == k)
+                {
+                    entry.1 -= lij * lik * di;
+                }
+            }
+        }
+    }
+
+    data.qLD_valid = true;
 }
 ```
 
-**Risk:** The elimination loop in `mj_factor_sparse` processes DOFs in
-reverse order and updates ancestors. If an awake DOF's ancestor is
-sleeping, the elimination writes to a sleeping DOF's `qLD` entry. This
-creates an inconsistency.
+**Correctness proof sketch:**
 
-**Mitigation:** Process ALL DOFs in the elimination whose subtree
-contains at least one awake DOF. This is the set of DOFs reachable by
-walking `dof_parent` from any awake DOF to the root. Pre-compute this
-set as `dof_factor_set` before the elimination loop.
+1. **No cross-tree contamination:** DOF `i`'s ancestor chain
+   `dof_parent[i] → dof_parent[dof_parent[i]] → ... → None` stays
+   within `i`'s tree. The rank-1 update `qLD_diag[j] -= lij² * di`
+   only modifies `j` where `j` is an ancestor of `i` in the same tree.
+   If `i` is awake, all its ancestors are awake (per-tree invariant).
 
-**Alternative (simpler, slightly less optimal):** Always run full LDL
-factorization. The CRBA body-loop savings (Phases 1-4) are the bulk of
-the win; LDL factorization is O(nv) with tree-sparse structure and has
-small constants. Deferring partial LDL to a later optimization pass
-reduces risk.
+2. **Sleeping DOFs untouched:** No sleeping DOF index appears in
+   `dof_awake_ind`. The Phase 1 copy and Phase 2 elimination loops
+   only visit awake DOFs. Sleeping DOFs' `qLD_diag` and `qLD_L`
+   entries are not read or written.
 
-###### 16.29.4 Recommended Two-Sub-Step Approach
+3. **Ordering preserved:** The elimination must process DOFs from
+   leaves to root (high index to low). Within each tree, awake DOFs
+   maintain their relative order in `dof_awake_ind` (sorted ascending,
+   iterated in reverse). Since elimination of DOF `i` only updates
+   ancestors `j < i`, and all ancestors are awake and will be processed
+   later (lower index = processed later in reverse iteration), the
+   ordering constraint is satisfied.
 
-Given the LDL subtlety, split selective CRBA into two sub-steps:
+4. **SPD preservation:** The original mass matrix `qM` restricted to
+   any tree's DOF block is SPD (it's the mass matrix of a subsystem).
+   The LDL factorization of an SPD matrix produces positive diagonal
+   entries `D[i,i] > 0`. Since we factorize each awake tree's block
+   independently (no cross-tree coupling), each block remains SPD.
 
-**Step 3a: Selective CRBA body loops (low risk).**
-Skip inertia accumulation and `qM` construction for sleeping bodies.
-Run full `mj_factor_sparse()` afterward (unchanged). This saves the
-O(nbody) backward pass and O(njnt × depth) mass matrix build, which
-are the dominant CRBA costs for deep kinematic chains.
+**`mj_solve_sparse` — no changes needed:**
 
-**Step 3b: Partial LDL factorization (high risk, deferred).**
-Only refactor awake DOF blocks. Requires the `dof_factor_set`
-pre-computation described above. Defer until profiling confirms LDL
-is a bottleneck.
+The solve function `mj_solve_sparse(qld_diag, qld_l, x)` reads all
+`nv` entries of `qLD_diag` and `qLD_L`. For sleeping DOFs:
+- Phase 1 (L^T solve): `x[j] -= lij * x[i]`. For sleeping DOF `i`,
+  `x[i] = 0` (sleeping DOFs have zero RHS), so the subtraction is
+  zero. For sleeping DOF `j` as an ancestor, `j` is in the same tree
+  as `i` (both sleeping), so `x[i] = 0` again.
+- Phase 2 (D solve): `x[i] /= qLD_diag[i]`. For sleeping DOFs,
+  `x[i] = 0`, so `0 / D[i] = 0` (safe as long as `D[i] != 0`, which
+  is guaranteed by the SPD property from the last awake factorization).
+- Phase 3 (L solve): Same argument as Phase 1.
 
-###### 16.29.5 Acceptance Criteria
+**Result:** `mj_solve_sparse` produces correct results (zero for
+sleeping DOFs, correct for awake DOFs) with stale `qLD` entries for
+sleeping DOFs. No modification needed.
+
+###### 16.29.6 C3b — Risk Mitigation
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Ordering violation in elimination | Low | High (wrong M^{-1}) | Reverse iteration of sorted `dof_awake_ind` preserves leaf-to-root order. Unit test T99 validates awake qLD against full factorization. |
+| Numerical instability from stale sleeping qLD | Low | Medium (solve divergence) | Tree independence guarantees no cross-contamination. SPD property preserved per-block. Test T104 validates positive diagonal (SPD preservation). |
+| Performance regression when all awake | Low | Low (wasted branch) | `sleep_filter` short-circuit returns to original full path. Test T103 verifies all-awake bit-identity. |
+| `qLD_diag[sleeping] = 0` causing division by zero in solve | None | High | Sleeping DOFs' `qLD_diag` entries are preserved from last awake step (positive by SPD). Never zeroed. |
+| Stale `qLD_L` entries causing incorrect awake solve | None | High | Tree independence: awake DOF's ancestor chain is entirely within the awake tree. No sleeping DOF's `qLD_L` is read during awake elimination. |
+
+**Deferred trigger:** Implement C3b when profiling a representative
+model (humanoid + 50 sleeping props) shows `mj_factor_sparse` > 20%
+of `mj_crba` (with sleep filtering) runtime. Expected to trigger for models with
+nv > 100 and shallow tree structure.
+
+###### 16.29.7 Acceptance Criteria
+
+**C3a (Selective CRBA body loops):**
 
 59. Selective CRBA produces identical `qM` entries for awake DOFs as
-    full CRBA.
-60. `qLD_diag` and `qLD_L` for awake DOFs are identical to full CRBA.
-    Step 3a always runs full `mj_factor_sparse()` (LDL is not
-    selective), so this is guaranteed.
+    full CRBA (bit-identical, not epsilon-close).
+60. `qLD_diag` and `qLD_L` for **awake** DOFs are identical whether
+    the input `qM` came from selective CRBA or full CRBA. (Both run
+    full `mj_factor_sparse`, but sleeping DOFs' `qM` entries differ:
+    zeros from full CRBA vs stale-from-last-awake from selective.
+    Since LDL is tree-block-diagonal, awake trees' `qLD` blocks are
+    identical regardless of sleeping trees' `qM` values. Sleeping
+    trees' `qLD` entries under selective CRBA are *more correct*
+    than under full CRBA — stale-but-valid vs degenerate-from-zero.)
 61. Sleeping DOFs' `qM` entries are preserved from their last awake
-    step (not zeroed or corrupted).
+    step (not zeroed, not corrupted, not partially overwritten).
 62. When a sleeping tree wakes, its next `forward()` pass produces
-    identical `qM` to a never-slept simulation.
-63. With all bodies awake, selective CRBA is bit-identical to full CRBA.
+    identical `qM` and `qLD` to a never-slept simulation.
+63. With all bodies awake, selective CRBA is bit-identical to full CRBA
+    (the `sleep_filter = false` fast path is exercised).
+64. `crb_inertia` for sleeping bodies is preserved across steps
+    (Phase 1 skips sleeping bodies, so `crb_inertia[sleeping_body]`
+    retains its value from the last awake step).
+65. Phase 4 armature addition correctly preserves both `jnt_armature`
+    and `dof_armature` semantics for awake joints.
+66. `cache_body_effective_mass` for sleeping bodies is preserved from
+    their last awake step (not recomputed, not zeroed).
+67. Multi-tree scenario: 3 trees (A awake, B sleeping, C awake), each
+    with 2 hinge joints. Trees A and C have correct `qM`. Tree B's
+    `qM` entries are stale-but-valid. `qLD` is correct for all DOFs.
+68. Deep chain scenario: 10-link hinge chain, alternating trees of
+    depth 5. With one tree sleeping, the awake tree's off-diagonal
+    `qM` entries (ancestor walks) are correct.
+69. Performance: scene with 100 resting bodies (50 sleeping trees) and
+    1 active tree — `mj_crba` with `sleep_filter = true` is measurably
+    faster than with `sleep_filter = false` (target: ≥ 30% reduction in
+    CRBA phase time).
 
-###### 16.29.6 Tests
+**C3b (Partial LDL factorization):**
+
+70. Partial LDL produces identical `qLD_diag` and `qLD_L` for awake
+    DOFs as full `mj_factor_sparse` (bit-identical).
+71. Sleeping DOFs' `qLD_diag` and `qLD_L` entries are preserved from
+    their last awake step (not modified by partial elimination).
+72. `mj_solve_sparse` with partial `qLD` produces identical `qacc`
+    for awake DOFs as full `qLD` (when RHS has zero entries for
+    sleeping DOFs).
+73. When a sleeping tree wakes, the next full `mj_factor_sparse`
+    produces identical results to a never-slept factorization.
+74. With all bodies awake, `mj_factor_sparse_selective` is bit-identical
+    to `mj_factor_sparse` (fast path exercised).
+75. Partial LDL does not produce negative `qLD_diag` entries (SPD
+    preservation). Checked via assertion on each awake DOF's diagonal.
+76. Performance: partial LDL on a model with nv=200, 50% sleeping DOFs,
+    is measurably faster than full LDL (target: proportional to
+    nv_awake/nv ratio).
+
+###### 16.29.8 Tests
+
+**C3a Tests:**
 
 | # | Test | Type | Validates |
 |---|------|------|-----------|
 | T89 | `test_selective_crba_awake_identical` | Unit | AC #59: qM identical for awake DOFs |
-| T90 | `test_selective_crba_sleeping_preserved` | Unit | AC #61: sleeping qM entries preserved |
-| T91 | `test_selective_crba_wake_recomputes` | Integration | AC #62: waking tree gets fresh qM |
+| T90 | `test_selective_crba_sleeping_preserved` | Unit | AC #61: sleeping qM entries preserved across steps |
+| T91 | `test_selective_crba_wake_recomputes` | Integration | AC #62: waking tree gets fresh qM + qLD |
 | T92 | `test_selective_crba_all_awake_noop` | Regression | AC #63: bit-identical when all awake |
+| T93 | `test_selective_crba_crb_inertia_preserved` | Unit | AC #64: crb_inertia frozen for sleeping bodies |
+| T94 | `test_selective_crba_armature_correct` | Unit | AC #65: jnt_armature + dof_armature both applied for awake |
+| T95 | `test_selective_crba_body_mass_cache_preserved` | Unit | AC #66: body_min_mass/inertia frozen for sleeping |
+| T96 | `test_selective_crba_multi_tree` | Integration | AC #67: 3-tree mixed awake/sleeping scenario |
+| T97 | `test_selective_crba_deep_chain` | Integration | AC #68: 10-link chain with partial sleeping |
+| T98 | `test_selective_crba_qld_awake_matches_full` | Regression | AC #60: awake trees' qLD blocks identical whether qM came from selective or full CRBA |
+
+**C3b Tests:**
+
+| # | Test | Type | Validates |
+|---|------|------|-----------|
+| T99 | `test_partial_ldl_awake_identical` | Unit | AC #70: qLD identical for awake DOFs |
+| T100 | `test_partial_ldl_sleeping_preserved` | Unit | AC #71: sleeping qLD entries preserved |
+| T101 | `test_partial_ldl_solve_correct` | Integration | AC #72: mj_solve_sparse produces correct qacc with partial qLD |
+| T102 | `test_partial_ldl_wake_recomputes` | Integration | AC #73: waking tree gets fresh qLD |
+| T103 | `test_partial_ldl_all_awake_noop` | Regression | AC #74: bit-identical when all awake |
+| T104 | `test_partial_ldl_spd_preserved` | Unit | AC #75: no negative qLD_diag entries |
+| T105 | `test_partial_ldl_multi_tree_independence` | Unit | AC #70+71: tree A's factorization doesn't touch tree B's qLD |
+| T106 | `test_partial_ldl_solve_zero_sleeping_rhs` | Unit | AC #72: solve with zero RHS for sleeping DOFs yields zero output |
 
 ##### 16.30 Phase C — Implementation Order and Test Plan
 
 ###### 16.30.1 Construction Order
 
-Phase C has three steps, ordered by dependency and risk:
+Phase C has four steps, ordered by dependency and risk:
 
-| Step | Section | Description | Depends On | Risk |
-|------|---------|-------------|------------|------|
+| Step | Section | Description | Depends On | Risk | Status |
+|------|---------|-------------|------------|------|--------|
 | C1 | §16.27 | Awake-index pipeline iteration | Phase B complete | Low | ✅ Done |
 | C2 | §16.28 | Island-local Delassus assembly | C1 (uses `dof_awake_ind` patterns) | Medium | ✅ Done |
-| C3a | §16.29 | Selective CRBA body loops | C1 (uses `body_awake_ind`) | Medium |
-| C3b | §16.29 | Partial LDL factorization | C3a + profiling | High (defer) |
+| C3a | §16.29 | Selective CRBA body loops | C1 (uses `body_awake_ind`) | Medium | |
+| C3b | §16.29 | Partial LDL factorization | C3a + profiling trigger | Medium | Deferred |
 
 **C1 first** because it establishes the indirection iteration pattern
 that C2 and C3 build on. It's also the lowest-risk change — purely
@@ -5466,10 +5930,25 @@ extraction uses the global `qM` (which is still fully computed in C2).
 **C3a third** because it depends on the indirection pattern from C1
 and benefits from the island-local solver in C2 (which no longer reads
 sleeping DOFs' `qM` entries, reducing the risk of stale values).
+C3a preserves full LDL factorization — no correctness risk from
+partial elimination.
 
-**C3b deferred** until profiling shows LDL factorization is a
-bottleneck relative to the now-optimized CRBA body loops and island
-solver.
+**C3b deferred** until profiling shows LDL factorization is > 20% of
+selective CRBA runtime. The tree-independence insight (§16.29.5) reduces
+C3b's risk from "High" to "Medium" — no complex reachability analysis
+needed, just skip sleeping trees' DOF ranges.
+
+**C3a implementation sub-order:**
+1. Phase 0: Selective `qM` zeroing (per-tree diagonal blocks).
+2. Phase 1: Gate `crb_inertia` init on `body_awake_ind`.
+3. Phase 2: Gate backward accumulation on `body_awake_ind` (reverse).
+4. Phase 3: Gate joint loop on `body_sleep_state` (`continue` guard).
+   `joint_subspaces` type unchanged — compute all, skip via guard.
+5. Phase 4: Gate armature loop on `body_sleep_state`.
+6. Phase 6: Gate `cache_body_effective_mass` via `sleep_filter` in
+   visitor struct.
+7. Add tests T89-T98, verify all Phase A/B tests pass.
+8. Profile and measure CRBA speedup for target scenario (AC #69).
 
 ###### 16.30.2 Per-Step Verification
 
@@ -5505,6 +5984,20 @@ After all steps:
 | T90 | `test_selective_crba_sleeping_preserved` | Unit | C3a | AC #61 |
 | T91 | `test_selective_crba_wake_recomputes` | Integration | C3a | AC #62 |
 | T92 | `test_selective_crba_all_awake_noop` | Regression | C3a | AC #63 |
+| T93 | `test_selective_crba_crb_inertia_preserved` | Unit | C3a | AC #64 |
+| T94 | `test_selective_crba_armature_correct` | Unit | C3a | AC #65 |
+| T95 | `test_selective_crba_body_mass_cache_preserved` | Unit | C3a | AC #66 |
+| T96 | `test_selective_crba_multi_tree` | Integration | C3a | AC #67 |
+| T97 | `test_selective_crba_deep_chain` | Integration | C3a | AC #68 |
+| T98 | `test_selective_crba_qld_awake_matches_full` | Regression | C3a | AC #60 |
+| T99 | `test_partial_ldl_awake_identical` | Unit | C3b | AC #70 |
+| T100 | `test_partial_ldl_sleeping_preserved` | Unit | C3b | AC #71 |
+| T101 | `test_partial_ldl_solve_correct` | Integration | C3b | AC #72 |
+| T102 | `test_partial_ldl_wake_recomputes` | Integration | C3b | AC #73 |
+| T103 | `test_partial_ldl_all_awake_noop` | Regression | C3b | AC #74 |
+| T104 | `test_partial_ldl_spd_preserved` | Unit | C3b | AC #75 |
+| T105 | `test_partial_ldl_multi_tree_independence` | Unit | C3b | AC #70+71 |
+| T106 | `test_partial_ldl_solve_zero_sleeping_rhs` | Unit | C3b | AC #72 |
 
 ##### 16.9 Performance Considerations
 
@@ -5512,8 +6005,9 @@ After all steps:
 velocity kinematics, passive forces, collision, integration, and sensors.
 For awake bodies this is a single predicted-taken branch with negligible
 cost. For sleeping bodies the branch saves the entire computation for
-that body. CRBA and LDL factorization are NOT skipped in Phase A (§16.5
-mass matrix safety note) — this is a Phase B optimization opportunity.
+that body. CRBA and LDL factorization are NOT skipped in Phase A/B
+(§16.5 mass matrix safety note) — this is a Phase C optimization
+(§16.29: selective CRBA body loops + partial LDL).
 
 **Memory.** New fields add `O(ntree + nbody + nv)` storage — negligible
 relative to existing Data allocations.

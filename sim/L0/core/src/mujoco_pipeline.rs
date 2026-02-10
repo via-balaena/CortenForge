@@ -224,6 +224,94 @@ fn compute_body_spatial_inertia(
     crb
 }
 
+/// Shift a 6×6 spatial inertia from one reference point to another.
+///
+/// Given Φ (spatial inertia about point A in world frame) and
+/// d = xpos_child - xpos_parent (vector from parent to child origin),
+/// returns the equivalent spatial inertia about the parent's origin.
+///
+/// Uses the approach: extract (I_COM, m, h) from Φ_A, then recompute
+/// Φ_B with h_new = h + d (since COM - parent = (COM - child) + (child - parent)).
+///
+/// Convention: rows 0-2 = angular, rows 3-5 = linear.
+/// Off-diagonal coupling block (upper-right 3x3) = m * skew(h).
+#[allow(clippy::similar_names)]
+fn shift_spatial_inertia(phi: &Matrix6<f64>, d: &Vector3<f64>) -> Matrix6<f64> {
+    // Extract mass from lower-right diagonal
+    let m = phi[(3, 3)];
+    if m == 0.0 {
+        return *phi;
+    }
+
+    // Extract m*h from coupling block: H = m*skew(h)
+    // skew(h) = [0, -hz, hy; hz, 0, -hx; -hy, hx, 0]
+    // So: phi[(2,4)] = m*hx, phi[(0,5)] = m*hy, phi[(1,3)] = m*hz
+    let mh_x = phi[(2, 4)];
+    let mh_y = phi[(0, 5)];
+    let mh_z = phi[(1, 3)];
+    let h_x = mh_x / m;
+    let h_y = mh_y / m;
+    let h_z = mh_z / m;
+
+    // Extract I_about_A (rotational block, upper-left 3x3)
+    // Then reverse parallel axis to get I_COM:
+    // I_COM = I_A - m*(|h|²I₃ - h*hᵀ)
+    let hh = h_x * h_x + h_y * h_y + h_z * h_z;
+    let mut i_com = Matrix3::zeros();
+    for row in 0..3 {
+        for col in 0..3 {
+            let h_rc = [h_x, h_y, h_z];
+            let delta = if row == col { 1.0 } else { 0.0 };
+            i_com[(row, col)] = phi[(row, col)] - m * (hh * delta - h_rc[row] * h_rc[col]);
+        }
+    }
+
+    // Compute new h: h_new = h + d (COM offset from parent origin)
+    let h_new_x = h_x + d.x;
+    let h_new_y = h_y + d.y;
+    let h_new_z = h_z + d.z;
+
+    // Build new 6x6 spatial inertia about parent origin
+    let h_new = [h_new_x, h_new_y, h_new_z];
+    let hh_new = h_new_x * h_new_x + h_new_y * h_new_y + h_new_z * h_new_z;
+
+    let mut result = Matrix6::zeros();
+
+    // Upper-left 3x3: I_parent = I_COM + m*(|h_new|²I₃ - h_new*h_newᵀ)
+    for row in 0..3 {
+        for col in 0..3 {
+            let delta = if row == col { 1.0 } else { 0.0 };
+            result[(row, col)] = i_com[(row, col)] + m * (hh_new * delta - h_new[row] * h_new[col]);
+        }
+    }
+
+    // Lower-right 3x3: mass
+    result[(3, 3)] = m;
+    result[(4, 4)] = m;
+    result[(5, 5)] = m;
+
+    // Off-diagonal coupling: m * skew(h_new)
+    let mhn_x = m * h_new_x;
+    let mhn_y = m * h_new_y;
+    let mhn_z = m * h_new_z;
+
+    result[(0, 4)] = -mhn_z;
+    result[(0, 5)] = mhn_y;
+    result[(1, 3)] = mhn_z;
+    result[(1, 5)] = -mhn_x;
+    result[(2, 3)] = -mhn_y;
+    result[(2, 4)] = mhn_x;
+    // Transpose (lower-left)
+    result[(4, 0)] = -mhn_z;
+    result[(5, 0)] = mhn_y;
+    result[(3, 1)] = mhn_z;
+    result[(5, 1)] = -mhn_x;
+    result[(3, 2)] = -mhn_y;
+    result[(4, 2)] = mhn_x;
+
+    result
+}
+
 // ============================================================================
 // MuJoCo-Aligned Model/Data Architecture (Phase 1)
 // ============================================================================
@@ -9845,117 +9933,87 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // Process bodies from leaves to root, adding child inertia to parent.
     // This gives Ic[i] = inertia of subtree rooted at body i.
     //
-    // Note: We need to transform child inertia to parent frame before adding.
-    // For now, use a simpler approach: all inertias are in world frame,
-    // so we just add them directly (valid because world frame is common).
+    // Each cinert[body_id] is a 6x6 spatial inertia about that body's origin
+    // (xpos[body_id]). Before adding child to parent, we must shift the
+    // child's spatial inertia to the parent's reference point using the
+    // parallel axis theorem. Without this shift, the rotational block would
+    // be incorrect because the two inertias are about different points.
 
     for body_id in (1..model.nbody).rev() {
         let parent_id = model.body_parent[body_id];
         if parent_id != 0 {
-            // Add this body's composite inertia to parent's
-            // Need to clone to avoid borrow checker issues
-            let child_inertia = data.crb_inertia[body_id];
-            data.crb_inertia[parent_id] += child_inertia;
+            // Shift child's spatial inertia from child origin to parent origin,
+            // then add to parent's composite inertia.
+            let d = data.xpos[body_id] - data.xpos[parent_id];
+            let child_shifted = shift_spatial_inertia(&data.crb_inertia[body_id], &d);
+            data.crb_inertia[parent_id] += child_shifted;
         }
     }
 
     // ============================================================
     // Phase 3: Build mass matrix from composite inertias
     // ============================================================
-    // For each joint, M[i,i] = S[i]^T * Ic[body_i] * S[i]
-    // Off-diagonal elements require propagating forces up the tree.
+    // Per-DOF iteration with dof_parent walk (MuJoCo-style).
+    //
+    // This correctly handles cross-entries M[dof_A, dof_B] for bodies with
+    // multiple joints (e.g., two hinges on one body), because dof_parent
+    // chains same-body DOFs together. The prior per-joint approach missed
+    // these cross-entries because body_parent skipped the starting body.
 
-    // Pre-compute all joint motion subspaces once (O(n) instead of O(n²))
-    // This is a significant optimization for debug builds where function call
-    // overhead and matrix allocation dominate.
+    // Pre-compute per-DOF motion subspace columns (cdof).
+    // First build per-joint subspaces, then extract individual DOF columns.
     let joint_subspaces: Vec<_> = (0..model.njnt)
         .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
         .collect();
 
-    for jnt_i in 0..model.njnt {
-        let body_i = model.jnt_body[jnt_i];
-        let dof_i = model.jnt_dof_adr[jnt_i];
-        let nv_i = model.jnt_type[jnt_i].nv();
+    let cdof: Vec<Vector6<f64>> = (0..model.nv)
+        .map(|dof| {
+            let jnt = model.dof_jnt[dof];
+            let dof_in_jnt = dof - model.jnt_dof_adr[jnt];
+            joint_subspaces[jnt].column(dof_in_jnt).into_owned()
+        })
+        .collect();
 
-        // Use cached joint motion subspace
-        let s_i = &joint_subspaces[jnt_i];
-
-        // Diagonal block: M[i,i] = S^T * Ic * S
+    for dof_i in 0..model.nv {
+        let body_i = model.dof_body[dof_i];
         let ic = &data.crb_inertia[body_i];
-        for di in 0..nv_i {
-            let s_col_i = s_i.column(di);
-            for dj in 0..nv_i {
-                let s_col_j = s_i.column(dj);
-                // Compute s_i^T * Ic * s_j
-                let ic_s_j = ic * s_col_j;
-                data.qM[(dof_i + di, dof_i + dj)] = s_col_i.dot(&ic_s_j);
-            }
-        }
 
-        // Off-diagonal: propagate to ancestor joints
-        // F = Ic * S (force due to joint motion)
-        // Then traverse ancestors, transforming F at each step:
-        //   F_parent = X^T * F_child (spatial force transform)
-        // And computing M[j,i] = S_j^T * F_transformed
-        let mut force = ic * s_i; // 6 x nv_i matrix, starts at body_i
+        // buf = Ic[body_i] * cdof[dof_i]  (spatial force at body_i's frame)
+        let mut buf: Vector6<f64> = ic * &cdof[dof_i];
 
-        let mut child_body = body_i;
-        let mut current_body = model.body_parent[body_i];
+        // Diagonal: M[i,i] = cdof[i]^T * buf
+        data.qM[(dof_i, dof_i)] = cdof[dof_i].dot(&buf);
 
-        while current_body != 0 {
-            // Transform force from child to current body using spatial force transform
-            // F_parent = [I, 0; [r]x, I]^T * F_child = [I, [r]x^T; 0, I] * F_child
-            // Where r = pos_child - pos_parent (vector from parent to child)
-            let r = data.xpos[child_body] - data.xpos[current_body];
+        // Walk dof_parent chain for off-diagonal entries
+        let mut current_body = body_i;
+        let mut j = model.dof_parent[dof_i];
 
-            // Apply spatial force transform:
-            // F_angular_parent = F_angular_child + r × F_linear_child
-            // F_linear_parent = F_linear_child
-            for col in 0..nv_i {
-                let f_lin_x = force[(3, col)];
-                let f_lin_y = force[(4, col)];
-                let f_lin_z = force[(5, col)];
+        while let Some(dof_j) = j {
+            let body_j = model.dof_body[dof_j];
 
-                // r × f_lin
-                let cross_x = r.y * f_lin_z - r.z * f_lin_y;
-                let cross_y = r.z * f_lin_x - r.x * f_lin_z;
-                let cross_z = r.x * f_lin_y - r.y * f_lin_x;
+            // Spatial force transform only when crossing a body boundary.
+            // Same-body DOFs share an origin, so no transform is needed.
+            if body_j != current_body {
+                let r = data.xpos[current_body] - data.xpos[body_j];
 
-                force[(0, col)] += cross_x;
-                force[(1, col)] += cross_y;
-                force[(2, col)] += cross_z;
-                // Linear part stays the same
+                // Shift spatial force: angular += r × linear
+                // Linear part is unchanged (spatial force transform property).
+                let fl_x = buf[3];
+                let fl_y = buf[4];
+                let fl_z = buf[5];
+                buf[0] += r.y * fl_z - r.z * fl_y;
+                buf[1] += r.z * fl_x - r.x * fl_z;
+                buf[2] += r.x * fl_y - r.y * fl_x;
+
+                current_body = body_j;
             }
 
-            // Find joint(s) for this ancestor body
-            let jnt_start = model.body_jnt_adr[current_body];
-            let jnt_count = model.body_jnt_num[current_body];
+            // Off-diagonal: M[j,i] = cdof[j]^T * buf
+            let m_ji = cdof[dof_j].dot(&buf);
+            data.qM[(dof_j, dof_i)] = m_ji;
+            data.qM[(dof_i, dof_j)] = m_ji; // symmetry
 
-            for jnt_j in jnt_start..(jnt_start + jnt_count) {
-                if jnt_j >= model.njnt {
-                    break;
-                }
-
-                let dof_j = model.jnt_dof_adr[jnt_j];
-                let nv_j = model.jnt_type[jnt_j].nv();
-                // Use cached joint motion subspace instead of recomputing
-                let s_j = &joint_subspaces[jnt_j];
-
-                // M[j,i] = S_j^T * F
-                for dj in 0..nv_j {
-                    let s_col_j = s_j.column(dj);
-                    for di in 0..nv_i {
-                        let f_col_i = force.column(di);
-                        let m_ji = s_col_j.dot(&f_col_i);
-                        data.qM[(dof_j + dj, dof_i + di)] = m_ji;
-                        data.qM[(dof_i + di, dof_j + dj)] = m_ji; // Symmetry
-                    }
-                }
-            }
-
-            // Move up the tree
-            child_body = current_body;
-            current_body = model.body_parent[current_body];
+            j = model.dof_parent[dof_j];
         }
     }
 

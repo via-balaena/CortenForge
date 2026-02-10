@@ -384,11 +384,19 @@ fn test_crba_double_pendulum_analytical() {
     // Verify symmetry
     assert_relative_eq!(data.qM[(0, 1)], data.qM[(1, 0)], epsilon = 1e-10);
 
-    // Verify positive definiteness
-    assert!(data.qM[(0, 0)] > 0.0, "M[0,0] should be positive");
-    assert!(data.qM[(1, 1)] > 0.0, "M[1,1] should be positive");
+    // Verify against analytical values:
+    // Both bodies: mass=1.0, sphere radius=0.05, I_sphere = 2/5 * m * r² = 0.001
+    // link1 at (0,0,-1), COM at origin. link2 at (0,0,-2), COM at origin.
+    // h1: Y-axis hinge at (0,0,-1). h2: Y-axis hinge at (0,0,-2).
+    //
+    // M[1,1] = body2 only: I_yy = 0.001 (COM at joint, no lever arm)
+    // M[0,0] = body1(I_yy=0.001) + body2(I_yy + m*L²) = 0.001 + 0.001 + 1.0*1² = 1.002
+    // M[0,1] = body2(I_yy=0.001) (only body2 moves under both h1 and h2, lever arm = 0)
+    assert_relative_eq!(data.qM[(0, 0)], 1.002, epsilon = 1e-10);
+    assert_relative_eq!(data.qM[(1, 1)], 0.001, epsilon = 1e-10);
+    assert_relative_eq!(data.qM[(0, 1)], 0.001, epsilon = 1e-10);
 
-    // Verify determinant > 0 (positive definite)
+    // Verify positive definiteness
     let det = data.qM[(0, 0)] * data.qM[(1, 1)] - data.qM[(0, 1)] * data.qM[(1, 0)];
     assert!(
         det > 0.0,
@@ -463,6 +471,231 @@ fn test_crba_free_body_analytical() {
         "Free body mass matrix diagonal: {:?}",
         (0..6).map(|i| data.qM[(i, i)]).collect::<Vec<_>>()
     );
+}
+
+/// Test: Two hinge joints on the same body produce nonzero cross-entries.
+///
+/// When a body has two separate hinge joints (X and Y axes) and the mass
+/// is off-center, the composite spatial inertia couples the two axes.
+/// The mass matrix entry M[0,1] = S_x^T * Ic * S_y should be nonzero.
+///
+/// This tests the per-DOF CRBA ancestor walk which walks `dof_parent`
+/// (chaining same-body DOFs) instead of `body_parent` (which would skip
+/// the starting body and miss these cross-entries).
+#[test]
+fn test_crba_two_hinges_same_body_cross_entry() {
+    let mjcf = r#"
+        <mujoco model="two_hinges_one_body">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="link" pos="0 0 1">
+                    <joint type="hinge" axis="1 0 0" name="hinge_x"/>
+                    <joint type="hinge" axis="0 1 0" name="hinge_y"/>
+                    <geom type="sphere" size="0.1" pos="0.5 0.5 0" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    assert_eq!(model.nv, 2, "two hinge joints = 2 DOFs");
+    assert_eq!(model.njnt, 2, "two joints");
+
+    // Both joints should be on the same body
+    assert_eq!(
+        model.jnt_body[0], model.jnt_body[1],
+        "both joints must be on the same body"
+    );
+
+    // dof_parent should chain them (DOF 1's parent is DOF 0)
+    assert_eq!(
+        model.dof_parent[1],
+        Some(0),
+        "DOF 1's parent should be DOF 0 (same-body chaining)"
+    );
+
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(data.qM.nrows(), 2);
+    assert_eq!(data.qM.ncols(), 2);
+
+    // Diagonal entries must be positive
+    assert!(
+        data.qM[(0, 0)] > 0.0,
+        "M[0,0] should be positive, got {}",
+        data.qM[(0, 0)]
+    );
+    assert!(
+        data.qM[(1, 1)] > 0.0,
+        "M[1,1] should be positive, got {}",
+        data.qM[(1, 1)]
+    );
+
+    // Cross-entry M[0,1] must be nonzero (off-center mass creates coupling)
+    assert!(
+        data.qM[(0, 1)].abs() > 1e-10,
+        "M[0,1] should be nonzero for off-center mass, got {}",
+        data.qM[(0, 1)]
+    );
+
+    // Symmetry
+    assert_relative_eq!(data.qM[(0, 1)], data.qM[(1, 0)], epsilon = 1e-12);
+
+    // Positive definiteness
+    let det = data.qM[(0, 0)] * data.qM[(1, 1)] - data.qM[(0, 1)] * data.qM[(1, 0)];
+    assert!(
+        det > 0.0,
+        "Mass matrix should be positive definite, det={}",
+        det
+    );
+
+    println!(
+        "Two hinges same body:\n  M[0,0]={:.6}, M[0,1]={:.6}\n  M[1,0]={:.6}, M[1,1]={:.6}",
+        data.qM[(0, 0)],
+        data.qM[(0, 1)],
+        data.qM[(1, 0)],
+        data.qM[(1, 1)]
+    );
+}
+
+/// Test: Hinge + slide on the same body produce nonzero cross-entries.
+///
+/// A hinge about Z and a slide along X on the same body with off-center
+/// mass creates coupling between rotation and translation. The mass must
+/// have a Y-offset so that the (Z-angular, X-linear) spatial inertia
+/// coupling term m*p_y is nonzero.
+#[test]
+fn test_crba_hinge_slide_same_body_cross_entry() {
+    let mjcf = r#"
+        <mujoco model="hinge_slide_one_body">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="link" pos="0 0 1">
+                    <joint type="hinge" axis="0 0 1" name="hinge_z"/>
+                    <joint type="slide" axis="1 0 0" name="slide_x"/>
+                    <geom type="sphere" size="0.1" pos="0.5 0.3 0" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    assert_eq!(model.nv, 2, "hinge + slide = 2 DOFs");
+
+    data.forward(&model).expect("forward failed");
+
+    // Cross-entry must be nonzero (angular-linear coupling from off-center mass)
+    assert!(
+        data.qM[(0, 1)].abs() > 1e-10,
+        "M[0,1] should be nonzero for hinge+slide with off-center mass, got {}",
+        data.qM[(0, 1)]
+    );
+
+    // Symmetry
+    assert_relative_eq!(data.qM[(0, 1)], data.qM[(1, 0)], epsilon = 1e-12);
+
+    // Positive definiteness
+    let det = data.qM[(0, 0)] * data.qM[(1, 1)] - data.qM[(0, 1)] * data.qM[(1, 0)];
+    assert!(
+        det > 0.0,
+        "Mass matrix should be positive definite, det={}",
+        det
+    );
+
+    println!(
+        "Hinge+slide same body:\n  M[0,0]={:.6}, M[0,1]={:.6}\n  M[1,0]={:.6}, M[1,1]={:.6}",
+        data.qM[(0, 0)],
+        data.qM[(0, 1)],
+        data.qM[(1, 0)],
+        data.qM[(1, 1)]
+    );
+}
+
+/// Test: Multi-joint body with child body (3 DOFs).
+///
+/// Parent body has two hinges (X, Y axes), child body has one hinge (Z axis).
+/// The 3×3 mass matrix should be symmetric, positive definite, and all
+/// off-diagonal entries should be nonzero (including the same-body cross M[0,1]).
+/// The child geom has an off-center mass to ensure angular-linear coupling
+/// creates nonzero cross-entries between parent and child DOFs.
+#[test]
+fn test_crba_multi_joint_body_with_child() {
+    let mjcf = r#"
+        <mujoco model="multi_joint_with_child">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="base" pos="0 0 1">
+                    <joint type="hinge" axis="1 0 0" name="h1"/>
+                    <joint type="hinge" axis="0 1 0" name="h2"/>
+                    <geom type="sphere" size="0.1" pos="0.3 0.3 0" mass="1.0"/>
+                    <body name="child" pos="0.5 0.5 -1">
+                        <joint type="hinge" axis="0 0 1" name="h3"/>
+                        <geom type="sphere" size="0.1" pos="0.3 0.3 0" mass="1.0"/>
+                    </body>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    assert_eq!(model.nv, 3, "3 hinge joints = 3 DOFs");
+
+    data.forward(&model).expect("forward failed");
+
+    assert_eq!(data.qM.nrows(), 3);
+    assert_eq!(data.qM.ncols(), 3);
+
+    // All diagonal entries positive
+    for i in 0..3 {
+        assert!(
+            data.qM[(i, i)] > 0.0,
+            "M[{0},{0}] should be positive, got {1}",
+            i,
+            data.qM[(i, i)]
+        );
+    }
+
+    // Symmetry
+    for i in 0..3 {
+        for j in 0..3 {
+            assert_relative_eq!(data.qM[(i, j)], data.qM[(j, i)], epsilon = 1e-12);
+        }
+    }
+
+    // Verify against analytically computed values.
+    // Body 1: mass=1, COM=(0.3,0.3,1), sphere I=0.004 each axis
+    // Body 2: mass=1, COM=(0.8,0.8,0), sphere I=0.004 each axis
+    // M[0,0] = body1(0.004 + 0.09) + body2(0.004 + 1.64) = 1.738
+    assert_relative_eq!(data.qM[(0, 0)], 1.738, epsilon = 1e-10);
+    assert_relative_eq!(data.qM[(1, 1)], 1.738, epsilon = 1e-10);
+    assert_relative_eq!(data.qM[(2, 2)], 0.184, epsilon = 1e-10);
+    assert_relative_eq!(data.qM[(0, 1)], -0.73, epsilon = 1e-10);
+    assert_relative_eq!(data.qM[(0, 2)], 0.3, epsilon = 1e-10);
+    assert_relative_eq!(data.qM[(1, 2)], 0.3, epsilon = 1e-10);
+
+    // Positive definiteness: check all leading minors
+    let d1 = data.qM[(0, 0)];
+    let d2 = data.qM[(0, 0)] * data.qM[(1, 1)] - data.qM[(0, 1)] * data.qM[(1, 0)];
+    let d3 = data.qM.determinant();
+    assert!(d1 > 0.0, "Leading minor 1 should be positive: {}", d1);
+    assert!(d2 > 0.0, "Leading minor 2 should be positive: {}", d2);
+    assert!(d3 > 0.0, "Determinant should be positive: {}", d3);
+
+    println!("Multi-joint body with child (3x3 mass matrix):");
+    for i in 0..3 {
+        println!(
+            "  [{:.6}, {:.6}, {:.6}]",
+            data.qM[(i, 0)],
+            data.qM[(i, 1)],
+            data.qM[(i, 2)]
+        );
+    }
 }
 
 // ============================================================================
