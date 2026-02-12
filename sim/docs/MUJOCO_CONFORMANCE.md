@@ -26,7 +26,7 @@ Run MuJoCo's own test suite against CortenForge implementations.
 |----------|---------------|-------------------|
 | Forward dynamics | `test/engine_forward_test.cc` | sim-core |
 | Contact physics | `test/engine_collision_test.cc` | sim-core |
-| Constraint solver | `test/engine_core_smooth_test.cc` | sim-core (PGS + CG contact solvers) + sim-constraint (CGSolver, joints) |
+| Constraint solver | `test/engine_core_smooth_test.cc` | sim-core (PGS + CG + Newton contact solvers) + sim-constraint (CGSolver, joints) |
 | MJCF parsing | `test/xml_test.cc` | sim-mjcf |
 | Sensor readings | `test/sensor_test.cc` | sim-core (pipeline sensors) + sim-sensor (standalone) |
 
@@ -72,7 +72,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | Element | MuJoCo | sim-mjcf | Notes |
 |---------|--------|----------|-------|
 | `<mujoco>` | ✓ | ✓ | Root element |
-| `<compiler>` | ✓ | ✓ | Partial: angle, coordinate |
+| `<compiler>` | ✓ | ❌ | Not parsed — `angle`, `coordinate`, `meshdir`, `texturedir` all missing (Phase 3 item #18) |
 | `<option>` | ✓ | ✓ | Full: timestep, gravity, integrator, solver, cone, jacobian, wind, flags, etc. |
 | `<size>` | ✓ | ⚠️ | Memory hints, may not apply |
 | `<visual>` | ✓ | ❌ | L1 concern (sim-bevy) |
@@ -97,9 +97,9 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `body/@mocap` | ✓ | ✓ | Mocap body: kinematic input channel, world-child with no joints, FK override from `Data::mocap_pos`/`mocap_quat` |
 | `body/@sleep` | ✓ | ✓ | Sleep policy: `auto` (default), `allowed`, `never`, `init` |
 | `body/@euler` | ✓ | ✓ | Euler angles |
-| `body/@axisangle` | ✓ | ⚠️ | Check implementation |
-| `body/@xyaxes` | ✓ | ⚠️ | Check implementation |
-| `body/@zaxis` | ✓ | ⚠️ | Check implementation |
+| `body/@axisangle` | ✓ | ✓ | Parsed in `parser.rs` |
+| `body/@xyaxes` | ✓ | ❌ | Not parsed |
+| `body/@zaxis` | ✓ | ❌ | Not parsed |
 | `geom/@type` | ✓ | ✓ | sphere, box, capsule, cylinder, ellipsoid, plane, mesh |
 | `geom/@size` | ✓ | ✓ | Shape-dependent sizing |
 | `geom/@fromto` | ✓ | ✓ | Capsule/cylinder shorthand |
@@ -115,11 +115,13 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `joint/@limited` | ✓ | ✓ | Enable limits |
 | `joint/@damping` | ✓ | ✓ | Joint damping |
 | `joint/@stiffness` | ✓ | ✓ | Joint spring |
-| `joint/@armature` | ✓ | ⚠️ | Rotor inertia |
+| `joint/@armature` | ✓ | ✓ | Rotor inertia (parsed, wired through defaults) |
 
 **Action items:**
-- [ ] Create tracking issue for each ⚠️ item
-- [ ] Document intentional ❌ omissions in `sim/docs/ARCHITECTURE.md`
+- [ ] Implement `<compiler>` element (Phase 3 item #18 — `angle`, `meshdir`, `texturedir`)
+- [ ] Implement `body/@xyaxes` and `body/@zaxis` orientation parsing
+- [ ] Resolve remaining ⚠️ items: `<size>`, `<asset>` (mesh/texture refs)
+- [ ] Document intentional ❌ omissions (`<visual>`, `<custom>`, `<extension>`) in `sim/docs/ARCHITECTURE.md`
 - [ ] Add parsing tests for each ✓ attribute
 
 **Status:** `[ ] Not started`
@@ -303,8 +305,8 @@ Some differences from MuJoCo are by design:
 |------|--------|-------------|-----------|
 | Memory model | Pre-allocated pools | Dynamic allocation | Rust idioms, safety |
 | Threading | OpenMP | Rayon | Rust ecosystem |
-| GPU | Custom CUDA | Future: wgpu | Cross-platform |
-| Contact solver | Custom sparse | PGS + CG/PGD solver with variable condim (1/3/4/6), elliptic friction cones | Maintainability |
+| GPU | Custom CUDA / MJX (JAX) | `sim-gpu` crate (wgpu, Phase 10a active) | Cross-platform |
+| Contact solver | Custom sparse | PGS + CG/PGD + Newton (reduced primal, §15) with variable condim (1/3/4/6), elliptic friction cones | Maintainability |
 | Visualization | Built-in | Separate L1 crate | Headless training |
 
 ---
@@ -320,24 +322,29 @@ sim/L0/tests/
 ├── integration/
 │   ├── mod.rs
 │   ├── model_data_pipeline.rs   (Model/Data pipeline tests)
-│   ├── collision_primitives.rs
-│   ├── collision_plane.rs
+│   ├── batch_sim.rs
+│   ├── cg_solver.rs
 │   ├── collision_edge_cases.rs
 │   ├── collision_performance.rs
-│   ├── cg_solver.rs
+│   ├── collision_plane.rs
+│   ├── collision_primitives.rs
 │   ├── collision_test_utils.rs
+│   ├── default_classes.rs
+│   ├── deformable_contact.rs
+│   ├── derivatives.rs
 │   ├── equality_constraints.rs
 │   ├── implicit_integration.rs
-│   ├── rk4_integration.rs
+│   ├── keyframes.rs
 │   ├── mjcf_sensors.rs
 │   ├── musculoskeletal.rs
+│   ├── newton_solver.rs
 │   ├── passive_forces.rs
+│   ├── rk4_integration.rs
 │   ├── sensors.rs
 │   ├── site_transmission.rs
+│   ├── sleeping.rs
 │   ├── spatial_tendons.rs
-│   ├── validation.rs
-│   ├── derivatives.rs
-│   └── sleeping.rs
+│   └── validation.rs
 └── assets/
     ├── mujoco_menagerie/  (git submodule)
     └── dm_control/        (git submodule)
@@ -410,9 +417,10 @@ record `actuator_length`, `actuator_velocity`, and `qfrc_actuator`, then hardcod
 
 **Status:** ✅ Complete (Parts 1 & 2, 30+ tests) — FD + analytical qDeriv + hybrid transition Jacobians
 
-The derivative infrastructure (`sim-core/src/derivatives.rs`, ~1685 lines) is verified by
-30+ integration tests in `integration/derivatives.rs` covering acceptance criteria 1–41 from
-the spec (Part 1: criteria 1–27, Part 2: criteria 28–41).
+The derivative infrastructure (`sim-core/src/derivatives.rs`) is verified by
+30 integration tests in `integration/derivatives.rs` covering acceptance criteria 1–23 from
+the spec, plus additional tests for Part 2 functions (hybrid transition Jacobians,
+quaternion integration Jacobians, dispatch API).
 
 | MuJoCo Function | CortenForge | Verification | Status |
 |-----------------|-------------|--------------|--------|
@@ -447,7 +455,7 @@ instead of the diagonal-only spring-damper approximation of `ImplicitSpringDampe
 | `ImplicitFast` | passive + actuator vel | Yes | Cholesky | `mjINT_IMPLICITFAST` |
 | `Implicit` | passive + actuator vel + Coriolis | No | LU (partial pivot) | `mjINT_IMPLICIT` |
 
-**Verification:** 9 acceptance tests in `integration/implicit_integration.rs` covering:
+**Verification:** 19 tests in `integration/implicit_integration.rs` covering:
 - Tendon-coupled damping stability (AC-1)
 - Actuator velocity stability (AC-2)
 - Zero-damping equivalence with Euler (AC-4)

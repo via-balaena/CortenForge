@@ -17,14 +17,21 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ## 📊 Executive Summary
 
-**Overall completion: ~75-80%** of MuJoCo's core pipeline features are functional end-to-end. Some standalone crates exist but are not yet wired into the MuJoCo pipeline (`mujoco_pipeline.rs`). See [`sim/docs/todo/index.md`](./todo/index.md) for the full roadmap (Phase 1: 12 items complete, Phase 2: 17 items).
+**Overall completion: ~90-95%** of MuJoCo's core pipeline features are functional end-to-end. Phase 1 (12 items) and Phase 2 (16 items) are complete. Remaining gaps are tracked in Phase 3 (#18–39, ordered foundationally across 5 groups). See [`sim/docs/todo/index.md`](./todo/index.md) for the full roadmap.
+
+**Remaining gaps (Phase 3, foundational order):**
+- **3A Foundation + Core** (#18–22): `<include>` + `<compiler>`, conformance test suite, contact margin/gap, noslip, body-transmission actuators
+- **3B Constraint + Physics** (#23–27): tendon equality constraints, solreffriction, fluid/aerodynamic forces, `<flex>` MJCF deformable parsing, ball/free joint limits
+- **3C Format + Edge-Case** (#28–32): `<composite>`, URDF completeness, pyramidal cones, CCD, non-physics MJCF elements
+- **3D Performance + Hygiene** (#33–34): SIMD utilization, crate consolidation
+- **3E GPU Pipeline** (#35–39): GPU FK (10b), broad-phase (10c), narrow-phase (10d), constraint solver (10e), full GPU step (10f)
 
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal), ImplicitFast (symmetric D, Cholesky), Implicit (asymmetric D + Coriolis, LU)
-- Constraint solver: PGS (plain Gauss-Seidel, no SOR) + CG (preconditioned PGD with Barzilai-Borwein), Warm Starting via `WarmstartKey`
+- Constraint solver: PGS (Gauss-Seidel, MuJoCo-aligned — no SOR) + CG (preconditioned PGD with Barzilai-Borwein) + Newton (reduced primal, MJCF default), Warm Starting via `WarmstartKey`
 - Contact model (Compliant with solref/solimp, elliptic friction cones with variable condim 1/3/4/6, torsional/rolling friction, contype/conaffinity filtering, `<contact><pair>`/`<exclude>` two-mechanism architecture)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
-- Joint types (Fixed, Revolute, Prismatic, Spherical, Universal, **Free**)
+- Joint types (Fixed, Revolute, Prismatic, Spherical, **Free** — matching MuJoCo's 4 joint types; Universal/Planar/Cylindrical are CortenForge standalone extensions)
 - Actuators: All 8 shortcut types (Motor, Position, Velocity, Damper, Cylinder, Adhesion, Muscle, General) with MuJoCo-compatible gain/bias force model (`force = gain * input + bias`), GainType/BiasType dispatch, FilterExact dynamics, control/force clamping; **Site transmissions** (6D gear, refsite, Jacobian-based wrench projection, common-ancestor zeroing)
 - Sensors (32 pipeline types, all wired from MJCF): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, JointLimitFrc, TendonLimitFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer, User (0-dim)
 - Derivatives (complete): FD transition Jacobians (`mjd_transition_fd`), analytical velocity derivatives (`mjd_smooth_vel` → `Data.qDeriv`), hybrid FD+analytical transition Jacobians (`mjd_transition_hybrid`), SO(3) quaternion integration Jacobians (`mjd_quat_integrate`), public dispatch API (`mjd_transition`), validation utilities
@@ -48,19 +55,19 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 ### Standalone Crates (not wired into pipeline)
 - sim-tendon (3,919 lines) — standalone crate; fixed tendons now implemented directly in pipeline ([future_work_1 #4](./todo/future_work_1.md) ✅)
 - sim-muscle (2,550 lines) — standalone Hill model; MuJoCo FLV muscle model now implemented directly in pipeline ([future_work_1 #5](./todo/future_work_1.md) ✅)
-- ~~sim-deformable (7,733 lines) — XPBD solver not called from `Data::step()`~~ ✅ **Pipeline** (deformable-rigid contact via split-solve Jacobi PGS + position correction + XPBD; see [future_work_4 #11](./todo/future_work_4.md) ✅)
+- ~~sim-deformable (7,851 lines) — XPBD solver not called from `Data::step()`~~ ✅ **Pipeline** (deformable-rigid contact via split-solve Jacobi PGS + position correction + XPBD; see [future_work_4 #11](./todo/future_work_4.md) ✅)
 - sim-sensor (rangefinder, magnetometer, force/torque) — standalone crate with own API; pipeline has independent implementations
 - CGSolver in sim-constraint (1,664 lines) — standalone joint-space CG; pipeline contact CG is separate in `mujoco_pipeline.rs` ([future_work_1 #3](./todo/future_work_1.md) ✅)
 - ~~`integrators.rs` trait system~~ — removed in FUTURE_WORK C1
 - Pneumatic actuators in sim-constraint — standalone `PneumaticCylinderActuator`; pipeline cylinder/adhesion actuators use gain/bias model ([future_work_1 #12](./todo/future_work_1.md) ✅)
-- Planar, Cylindrical joints in sim-constraint — not in pipeline `MjJointType` (MJCF model builder errors)
+- Universal, Planar, Cylindrical joints in sim-constraint — CortenForge extensions, not MuJoCo joint types (not in pipeline `MjJointType`)
 
-### Removed (Phase 3 Consolidation)
-- Newton solver (`newton.rs` — deleted)
-- Constraint island discovery (`islands.rs` — deleted; replaced by pipeline-native `mj_island()` DFS flood-fill in `mujoco_pipeline.rs`)
-- Sparse Jacobian operations (`sparse.rs` — deleted)
-- PGS with SOR (`pgs.rs` — deleted; pipeline PGS in `mujoco_pipeline.rs` has no SOR)
-- Island-parallel constraint solving (`parallel.rs` — deleted; per-island block-diagonal solving now in `mj_fwd_constraint_islands()`)
+### Removed (Phase 3 Consolidation — standalone crate code only)
+- Standalone Newton solver (`sim-constraint/src/newton.rs` — deleted; replaced by pipeline-native `newton_solve()` in `mujoco_pipeline.rs`)
+- Standalone constraint island discovery (`sim-constraint/src/islands.rs` — deleted; replaced by pipeline-native `mj_island()` DFS flood-fill in `mujoco_pipeline.rs`)
+- Standalone sparse Jacobian operations (`sim-constraint/src/sparse.rs` — deleted)
+- Standalone PGS (`sim-constraint/src/pgs.rs` — deleted; pipeline PGS in `mujoco_pipeline.rs` is MuJoCo-aligned pure Gauss-Seidel)
+- Standalone island-parallel constraint solving (`sim-constraint/src/parallel.rs` — deleted; per-island block-diagonal solving now in `mj_fwd_constraint_islands()`)
 
 ### ✅ Recently Completed (January–February 2026)
 
@@ -73,7 +80,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Pipeline sensors (32 types) | All 32 types functional and wired from MJCF `<sensor>` elements via `model_builder.rs`; `set_options()` propagates `magnetic`/`wind`/`density`/`viscosity` | [§8](#8-sensors) |
 | Non-convex mesh collision | TriangleMesh ↔ all primitives + mesh-mesh with BVH acceleration | [§5](#5-geom-types-collision-shapes) |
 | SDF collision | All 10 shape combinations (Sphere, Capsule, Box, Cylinder, Ellipsoid, ConvexMesh, Plane, TriangleMesh, HeightField, Sdf↔Sdf) | [§5](#5-geom-types-collision-shapes) |
-| MJCF `<default>` element | ✅ Full | `DefaultResolver` wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors) | [§13](#13-model-format) |
+| MJCF `<default>` element | ✅ Full — `DefaultResolver` wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors) | [§13](#13-model-format) |
 | MJCF `<tendon>` parsing + pipeline | Fixed + spatial tendons fully wired (kinematics, wrapping, actuation, passive, constraints, sensors) | [§13](#13-model-format) |
 | MJCF `<sensor>` parsing + wiring | 32 sensor types parsed; all 32 wired to pipeline via `process_sensors()` | [§13](#13-model-format) |
 | Muscle pipeline | MuJoCo FLV curves, activation dynamics (Millard 2013), act_dot/integrator architecture, RK4 activation | [§6](#6-actuation) |
@@ -112,7 +119,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Implicit-in-velocity | Core feature | - | **Implemented** (`Implicit` — full D with Coriolis, LU factorization) | - | - |
 | Implicit-fast (no Coriolis) | Optimization | - | **Implemented** (`ImplicitFast` — symmetric D, Cholesky factorization) | - | - |
 
-> The pipeline uses a single `Integrator` enum (`mujoco_pipeline.rs:733`)
+> The pipeline uses a single `Integrator` enum (`mujoco_pipeline.rs:933`)
 > with five variants: `Euler` (semi-implicit), `RungeKutta4` (true 4-stage),
 > `ImplicitSpringDamper` (diagonal spring/damper implicit Euler),
 > `ImplicitFast` (symmetric D, Cholesky), and `Implicit` (asymmetric D
@@ -166,117 +173,38 @@ data.step(&model).expect("step");
 
 | Feature | MuJoCo | CortenForge | Status | Priority | Complexity |
 |---------|--------|-------------|--------|----------|------------|
-| PGS (Gauss-Seidel) | Supported | `pgs_solve_contacts()` in pipeline (plain GS, no SOR) | **Implemented** (no SOR) | - | - |
-| Newton solver | Default, 2-3 iterations | `NewtonConstraintSolver` | **Removed** (Phase 3 consolidation) | - | - |
+| PGS (Gauss-Seidel) | Supported (pure GS, no SOR) | `pgs_solve_contacts()` in pipeline | **Implemented** (MuJoCo-aligned) | - | - |
+| Newton solver | Default, 2-5 iterations | `newton_solve()` in pipeline | **Implemented** (reduced primal formulation, §15; [future_work_5](./todo/future_work_5.md) ✅) | - | - |
 | Conjugate Gradient | Supported | `cg_solve_contacts()` in pipeline (PGD+BB, named "CG") | **Implemented** ([future_work_1 #3](./todo/future_work_1.md) ✅) | - | - |
 | Constraint islands | Auto-detected | `mj_island()` (pipeline DFS flood-fill) | **Implemented** (replaced old `islands.rs` with pipeline-native island discovery + per-island solving) | - | - |
 | Warm starting | Supported | `WarmstartKey` spatial hash + `efc_lambda` | **Implemented** | - | - |
 
-> **Note:** The pipeline now has two contact solvers in `mujoco_pipeline.rs`: `pgs_solve_contacts()` (PGS, default) and `cg_solve_contacts()` (preconditioned PGD with Barzilai-Borwein, selected via `solver_type: SolverType::CG`). Both share `assemble_contact_system()` for Delassus assembly. The pipeline PGS uses standard Gauss-Seidel (ω=1.0) with no SOR. `CGSolver` in `sim-constraint/src/cg.rs` remains a standalone joint-space solver unrelated to the pipeline contact CG.
+> **Note:** The pipeline has four solver variants in `SolverType` enum (`mujoco_pipeline.rs`): **Newton** (reduced primal formulation, §15 — quadratic convergence in 2-5 iterations, falls back to PGS on Cholesky failure), **PGS** (pure Gauss-Seidel, ω=1.0 — MuJoCo-aligned, no SOR), **CG** (preconditioned PGD with Barzilai-Borwein step size, falls back to PGS on non-convergence), and **CGStrict** (same as CG but returns zero forces instead of PGS fallback — used in tests to detect convergence regressions). All share `assemble_contact_system()` for Delassus assembly. PGS matches MuJoCo's `mj_solPGS` — pure GS with no SOR (verified against `engine_solver.c`; `mjOption` has no `sor` field). `CGSolver` in `sim-constraint/src/cg.rs` remains a standalone joint-space solver unrelated to the pipeline contact solvers.
 
-### Implementation Notes: Newton Solver ⚠️ REMOVED (Phase 3 consolidation)
+### Implementation Notes: Newton Solver ✅ IMPLEMENTED (pipeline-native, §15)
 
-MuJoCo's Newton solver uses:
-- Analytical second-order derivatives
-- Cholesky factorization
-- Exact line-search via 1D Newton iteration
-- Typically converges in 2-3 iterations
+> **History:** An earlier standalone `NewtonConstraintSolver` in `sim-constraint/src/newton.rs` was
+> removed in Phase 3 consolidation (dead code — never called by pipeline). A ground-up
+> pipeline-native Newton solver was then implemented as §15 in the pipeline.
 
-**Implemented:**
-- `NewtonConstraintSolver` with analytical Jacobians for all joint types
-- Cholesky factorization (with LU fallback) for effective mass matrix
-- Line search for improved convergence
-- Baumgarte stabilization for position correction
-- Configuration presets: `default()`, `robotics()`, `realtime()`
+The pipeline Newton solver (`newton_solve()` in `mujoco_pipeline.rs`) uses a reduced primal
+formulation operating on the unified constraint Jacobian (equality, friction loss, limits, contacts):
 
-**Usage (historical — this code no longer compiles):**
-```rust
-use sim_constraint::{NewtonConstraintSolver, NewtonSolverConfig, RevoluteJoint};
-use sim_types::BodyId;
-use nalgebra::Vector3;
+- **Reduced primal formulation**: Optimizes over constraint forces directly
+- **Phase A**: Assemble unified constraint system (Jacobian, residuals, cost)
+- **Phase B**: Newton iterations with Cholesky factorization of Hessian
+- **Phase C**: Per-step meaninertia scaling for configuration-dependent conditioning
+- Falls back to PGS on Cholesky failure or non-convergence
+- Typically converges in 2-5 iterations (quadratic convergence)
+- Selected via `<option solver="Newton"/>` in MJCF
 
-// Create solver (typically converges in 2-3 iterations)
-let mut solver = NewtonConstraintSolver::new(NewtonSolverConfig::default());
-
-// Or use presets
-let mut robotics_solver = NewtonConstraintSolver::new(NewtonSolverConfig::robotics());
-
-// Solve constraints
-let result = solver.solve(&joints, |id| get_body_state(id), dt);
-
-// Check convergence
-if result.converged {
-    println!("Converged in {} iterations", result.iterations_used);
-}
-```
-
-**Files:** `sim-constraint/src/newton.rs` (removed in Phase 3 consolidation; solver types extracted to `sim-constraint/src/types.rs`)
+**Files:** `sim-core/src/mujoco_pipeline.rs` (`newton_solve()`, `SolverType::Newton`); see [future_work_5 §15](./todo/future_work_5.md) ✅
 
 ### Implementation Notes: PGS (Gauss-Seidel) Solver ⚠️ REMOVED from sim-constraint; reimplemented in pipeline
 
-> The `PGSSolver` described below was in `sim-constraint/src/pgs.rs` and was **deleted in Phase 3 consolidation**. The pipeline now has its own PGS in `mujoco_pipeline.rs` (`pgs_solve_contacts()`, line 8028) and CG (`cg_solve_contacts()`, line 8244). PGS uses plain Gauss-Seidel (ω=1.0) **without SOR**.
+> The standalone `PGSSolver` in `sim-constraint/src/pgs.rs` was **deleted in Phase 3 consolidation**. That solver included an SOR (Successive Over-Relaxation) parameter — this was a design error based on the incorrect assumption that MuJoCo uses SOR in its PGS. Verification against MuJoCo source (`engine_solver.c`, `mj_solPGS`) confirms MuJoCo uses pure Gauss-Seidel with no SOR blending; `mjOption` has no `sor` field and `<option>` has no `sor` attribute.
 
-The original PGS solver implemented a full iterative Projected Gauss-Seidel method with
-Successive Over-Relaxation (SOR).
-
-**Algorithm:**
-For each constraint i, we iteratively solve:
-```
-λ_i^{new} = (b_i - Σ_{j<i} A_ij λ_j^{new} - Σ_{j>i} A_ij λ_j^{old}) / A_ii
-```
-
-With SOR, the update becomes:
-```
-λ_i^{new} = (1 - ω) * λ_i^{old} + ω * λ_i^{gauss-seidel}
-```
-
-Where ω is the relaxation factor:
-- ω = 1.0: Standard Gauss-Seidel
-- ω < 1.0: Under-relaxation (more stable, slower convergence)
-- ω > 1.0: Over-relaxation (faster convergence, typically 1.2-1.8)
-
-**Implemented:**
-- `PGSSolver` - Full iterative Gauss-Seidel solver
-- `PGSSolverConfig` - Configurable tolerance, max iterations, SOR factor
-- SOR support with configurable relaxation factor (0 < ω < 2)
-- Warm starting from previous frame's solution
-- Convergence tracking with optional residual history
-- Configuration presets: `default()`, `realtime()`, `mujoco()`, `fast()`, `high_accuracy()`
-
-**Usage (historical — this code no longer compiles):**
-```rust
-use sim_constraint::{PGSSolver, PGSSolverConfig, RevoluteJoint};
-use sim_types::BodyId;
-use nalgebra::Vector3;
-
-// Create PGS solver with MuJoCo-compatible settings
-let mut solver = PGSSolver::new(PGSSolverConfig::mujoco());
-
-// Or customize with SOR for faster convergence
-let config = PGSSolverConfig {
-    max_iterations: 100,
-    tolerance: 1e-6,
-    sor_factor: 1.3,  // Over-relaxation
-    warm_starting: true,
-    warm_start_factor: 0.9,
-    ..Default::default()
-};
-let mut solver = PGSSolver::new(config);
-
-// Solve constraints
-let result = solver.solve(&joints, |id| get_body_state(id), dt);
-
-// Check convergence
-if result.converged {
-    println!("Converged in {} iterations (residual: {:.2e})",
-        result.iterations_used, result.residual_norm);
-}
-
-// Access statistics
-let stats = solver.last_stats();
-println!("Used warm start: {}, SOR factor: {}",
-    stats.used_warm_start, stats.sor_factor);
-```
+The pipeline PGS in `mujoco_pipeline.rs` (`pgs_solve_contacts()`) correctly uses pure Gauss-Seidel (ω=1.0), matching MuJoCo's implementation. SOR was considered as future work (§17) but was dropped after the MuJoCo source verification.
 
 **Files:** `sim-constraint/src/pgs.rs` (removed in Phase 3 consolidation)
 
@@ -330,7 +258,7 @@ f_n ≥ 0, ||(f_t1/μ_1, f_t2/μ_2, ...)|| ≤ f_n
 - `Model.cone = 1` (elliptic) as default; pyramidal emits warning and falls back
 - Per-contact `mu: [f64; 5]` for [sliding1, sliding2, torsional, rolling1, rolling2]
 
-**Files modified:** `sim-core/src/mujoco_pipeline.rs` (lines 8248-8312)
+**Files modified:** `sim-core/src/mujoco_pipeline.rs` (lines 13185-13220)
 
 ### Implementation Notes: Variable Condim + Advanced Friction Models ✅ IMPLEMENTED
 
@@ -519,14 +447,14 @@ combinations. SDF geoms are programmatic (no MJCF asset element).
 | Hinge (revolute) | Yes | `RevoluteJoint` | **Implemented** | |
 | Slide (prismatic) | Yes | `PrismaticJoint` | **Implemented** | |
 | Ball (spherical) | Yes | `SphericalJoint` | **Implemented** | |
-| Universal | Yes | `UniversalJoint` | **Implemented** | |
 | Free (6 DOF) | Yes | `FreeJoint` | **Implemented** | Full constraint solver support |
-| Planar | Yes | `PlanarJoint` | **Standalone** | In sim-constraint; MJCF model builder errors (not in pipeline `MjJointType`) |
-| Cylindrical | Yes | `CylindricalJoint` | **Standalone** | In sim-constraint; MJCF model builder errors (not in pipeline `MjJointType`) |
+| Universal | No (CortenForge-only) | `UniversalJoint` | **Standalone** | In sim-constraint; not a MuJoCo joint type |
+| Planar | No (CortenForge-only) | `PlanarJoint` | **Standalone** | In sim-constraint; not a MuJoCo joint type |
+| Cylindrical | No (CortenForge-only) | `CylindricalJoint` | **Standalone** | In sim-constraint; not a MuJoCo joint type |
 
-### Implementation Notes: Free/Planar/Cylindrical Joints ✅ COMPLETED (Free only; Planar/Cylindrical are Standalone)
+### Implementation Notes: Free Joint ✅ COMPLETED (pipeline); Universal/Planar/Cylindrical are Standalone (not MuJoCo types)
 
-FreeJoint is fully implemented in the pipeline. PlanarJoint and CylindricalJoint exist in sim-constraint but are not in the pipeline's `MjJointType` enum (MJCF model builder errors on them):
+FreeJoint is fully implemented in the pipeline. Universal, Planar, and Cylindrical joints exist in sim-constraint as CortenForge extensions — MuJoCo does not have these joint types (MuJoCo's 4 types are: hinge, slide, ball, free). They are not in the pipeline's `MjJointType` enum:
 
 **FreeJoint (6 DOF floating bodies):**
 - Used for floating-base robots (quadrupeds, humanoids, drones)
@@ -955,7 +883,7 @@ Skinned meshes provide visual deformation for rendering soft bodies:
 - `MjcfSkinBone` - Bone references with bind poses
 - `MjcfSkinVertex` - Per-vertex bone weights
 - Parser support for `<skin>`, `<bone>`, and `<vertex>` elements
-4. Export skinned vertex positions for rendering
+- Export skinned vertex positions for rendering
 
 ### Implementation Notes: Deformables ✅ COMPLETED (pipeline-integrated)
 
@@ -1139,61 +1067,20 @@ use sim_core::{ContactPoint, ContactManifold, ContactForce};
 
 ### Implementation Notes: Multi-threading ✅ ACTIVE (cross-environment parallelism via BatchSim)
 
-> The island-parallel constraint solving described below was **deleted in Phase 3 consolidation** along with the Newton solver and `islands.rs`. The `parallel` feature and rayon dependency remain available in sim-core (`core/Cargo.toml:17,31`). The `parallel` feature is now used by `BatchSim::step_all()` (`batch.rs`) for cross-environment parallelism via `par_iter_mut`. See [future_work_3 #9](./todo/future_work_3.md).
+The `parallel` feature enables cross-environment parallelism via `BatchSim::step_all()`,
+which uses rayon's `par_iter_mut` to step multiple simulation environments concurrently.
 
-The original `parallel` feature enabled multi-threaded constraint solving using rayon.
-Before the Model/Data refactor, the original design used a snapshot-based approach
-with island-parallel constraint solving.
+> **History:** An earlier island-parallel constraint solving implementation
+> (`sim-constraint/src/parallel.rs`, `newton.rs`) was removed in Phase 3
+> consolidation. Island-based solving is now handled natively by the pipeline
+> via `mj_fwd_constraint_islands()` (sequential per-island decomposition
+> within each environment step).
 
-**Key Design Decisions:**
+**Current implementation:**
+- `BatchSim::step_all()` in `sim-core/src/batch.rs` — rayon `par_iter_mut` over environments
+- `GpuBatchSim::step_all()` in `sim-gpu` — parallel CPU forward pass + GPU velocity integration
 
-1. **Disabled by default**: Parallel constraint solving is disabled by default
-   (`ParallelConfig::default().parallel_constraints == false`) because it uses
-   the Newton solver internally, which may produce slightly different results
-   than the default `ConstraintSolver` (removed in Phase 3 consolidation — was in `solver.rs`). Enable explicitly for performance.
-
-2. **Uses Newton solver**: The parallel implementation used `NewtonConstraintSolver`
-   (removed in Phase 3 consolidation — was in `newton.rs`)
-   rather than `ConstraintSolver` because Newton already had island-based solving
-   infrastructure and provided fast convergence (2-3 iterations vs 8-16 for Gauss-Seidel).
-
-3. **Body integration was sequential**: `integrate_bodies_parallel()` was
-   actually sequential because hashbrown's `HashMap` does not support `par_iter_mut()`.
-   The Model/Data refactor now uses `Vec`-based storage, making parallel integration feasible.
-
-4. **Minimum thresholds**: Parallel solving only activates when there are at least
-   `min_islands_for_parallel` independent islands (default: 2), avoiding rayon overhead
-   for simple single-island scenes like a single articulated robot.
-
-**Key types and methods:**
-
-- `ParallelConfig` in `sim-types/src/config.rs` - Configuration for parallel thresholds
-- `sim_constraint::parallel::solve_islands_parallel()` — removed in Phase 3 consolidation
-- `NewtonConstraintSolver::solve_islands_parallel()` — removed in Phase 3 consolidation
-
-**Usage:**
-
-```rust
-// Enable parallel (disabled by default, must opt-in)
-let mut config = SimulationConfig::default();
-config.solver.parallel.parallel_constraints = true;
-config.solver.parallel.min_islands_for_parallel = 2;
-
-// Or use the preset for multi-island scenes
-config.solver.parallel = ParallelConfig::many_islands();
-
-// Note: Island-parallel constraint solving was removed in Phase 3.
-// The parallel feature is now used by BatchSim::step_all() for
-// cross-environment parallelism (see batch.rs).
-```
-
-**Performance notes:**
-
-- Parallel constraint solving benefits scenes with 2+ independent islands
-- Falls back to sequential for small scenes to avoid parallel overhead
-- Use `ParallelConfig::sequential()` for deterministic results matching default solver
-
-**Files:** `sim-types/src/config.rs` (ParallelConfig remains), removed: `sim-constraint/src/parallel.rs`, `sim-constraint/src/newton.rs`
+**Files:** `sim-core/src/batch.rs` (BatchSim), `sim-types/src/config.rs` (ParallelConfig)
 
 ### Implementation Notes: GPU Acceleration ✅ ACTIVE (Phase 10a — Euler velocity integration)
 
@@ -1433,7 +1320,7 @@ All 21 MuJoCo flags supported:
 
 **Configuration Types:**
 - `MjcfOption` - Complete option parsing with defaults
-- `MjcfFlag` - All 20 boolean flags
+- `MjcfFlag` - All 21 boolean flags
 - `MjcfIntegrator` - Euler, RK4, Implicit, ImplicitFast, ImplicitSpringDamper
 - `MjcfConeType` - Pyramidal, Elliptic
 - `MjcfSolverType` - PGS, CG, Newton
@@ -1477,7 +1364,7 @@ assert!(ext_config.flags.contact);
 
 ### ⚠️ Status: Partially Complete (January 2026)
 
-> **The authoritative roadmap is [`sim/docs/todo/index.md`](./todo/index.md)**, which covers Phase 1 (12 items, all complete) and Phase 2 (17 items) with verified code references and acceptance criteria. The phases below reflect historical development milestones. Features marked with ⚠️ were later removed or remain standalone (not wired into the pipeline).
+> **The authoritative roadmap is [`sim/docs/todo/index.md`](./todo/index.md)**, which covers Phase 1 (12 items, all complete) and Phase 2 (16 items, #17 dropped) with verified code references and acceptance criteria. The phases below reflect historical development milestones. Features marked with ⚠️ were later removed or remain standalone (not wired into the pipeline).
 
 The following were completed in January 2026:
 
@@ -1494,7 +1381,7 @@ See [future_work_1.md](./todo/future_work_1.md) for remaining items.
 ### ✅ Multi-threading (constraint-parallel removed; cross-env parallelism active)
 
 The `parallel` feature originally enabled multi-threaded constraint solving and body integration.
-Island-parallel constraint solving (`solve_islands_parallel()`) and its dependencies (Newton solver, `islands.rs`) were **removed in Phase 3 consolidation**. The rayon dependency and `parallel` feature flag are now used by `BatchSim::step_all()` for cross-environment parallelism ([future_work_3 #9](./todo/future_work_3.md)).
+Standalone island-parallel constraint solving (`solve_islands_parallel()` and `islands.rs`) were removed in Phase 3 consolidation. The rayon dependency and `parallel` feature flag are now used by `BatchSim::step_all()` for cross-environment parallelism ([future_work_3 #9](./todo/future_work_3.md)). Note: the Newton solver was not removed — it was reimplemented as pipeline-native `newton_solve()` (§15).
 
 **Files:** `sim-core/src/batch.rs` (BatchSim), `sim-types/src/config.rs` (ParallelConfig). Removed: `sim-constraint/src/parallel.rs`, `sim-core/src/world.rs`, `sim-core/src/stepper.rs`
 
@@ -1506,12 +1393,12 @@ MJB binary format support added to `sim-mjcf` crate (requires `mjb` feature):
 - `is_mjb_file()` / `is_mjb_bytes()` - Format detection
 - File format: magic bytes (`MJB1`) + version + flags + bincode-encoded `MjcfModel`
 
-### ✅ Previously Completed: Free/Planar/Cylindrical Joint Solvers
+### ✅ Previously Completed: Free Joint (pipeline); Standalone Extensions
 
-These joint types now have full constraint solver support:
-- **FreeJoint**: 6 DOF floating base for quadrupeds, humanoids, drones
-- **PlanarJoint**: 3 DOF for mobile robots on flat surfaces
-- **CylindricalJoint**: 2 DOF for screw mechanisms (rotation + translation)
+- **FreeJoint**: 6 DOF floating base for quadrupeds, humanoids, drones — fully in pipeline `MjJointType`
+- **UniversalJoint**: 2 DOF — standalone in sim-constraint (not a MuJoCo type)
+- **PlanarJoint**: 3 DOF for mobile robots — standalone in sim-constraint (not a MuJoCo type)
+- **CylindricalJoint**: 2 DOF for screw mechanisms — standalone in sim-constraint (not a MuJoCo type)
 
 ---
 
@@ -1520,12 +1407,12 @@ These joint types now have full constraint solver support:
 1. ~~**Collision shapes**: Box-box, box-sphere, capsule detection~~ ✅
 2. ~~**Broad-phase**: Sweep-and-prune or BVH integration~~ ✅
 3. ~~**Elliptic friction cones**: Replace circular with elliptic~~ ✅ (full elliptic cones with variable condim 1/3/4/6 in PGS/CG solvers)
-4. ~~**Sensors**: IMU, force/torque, touch sensors~~ ✅ (sim-sensor crate standalone + 27 pipeline sensor types functional)
+4. ~~**Sensors**: IMU, force/torque, touch sensors~~ ✅ (sim-sensor crate standalone + 32 pipeline sensor types functional)
 5. ~~**Implicit integration**: Implicit-in-velocity method~~ ✅
 
 ### ⚠️ Phase 2: Solver Improvements (built then partially removed)
 
-1. ~~**Newton solver**: For faster convergence~~ ✅ → ⚠️ **Removed** (Phase 3 consolidation — dead code, never called by pipeline)
+1. ~~**Newton solver**: For faster convergence~~ ✅ Standalone removed → ✅ **Reimplemented** (pipeline-native `newton_solve()` — reduced primal formulation, §15)
 2. ~~**Constraint islands**: For performance~~ ✅ → ⚠️ **Removed** (Phase 3 consolidation) → ✅ **Reimplemented** (pipeline-native `mj_island()` + `mj_fwd_constraint_islands()` as part of sleeping system)
 3. ~~**Sleeping**: Deactivate stationary bodies~~ ✅ **Pipeline** (tree-based sleeping with island discovery, selective CRBA, partial LDL, per-island solving — 93 tests; [future_work_5 §16](./todo/future_work_5.md))
 4. ~~**GJK/EPA**: For convex mesh collision~~ ✅
@@ -1543,7 +1430,7 @@ Focus: Internal solver improvements for better performance.
 
 1. ~~**Sparse matrix operations**: CSR/CSC matrices for constraint Jacobians~~ ✅ → ⚠️ **Removed** (Phase 3 consolidation — `sparse.rs` deleted, never used by pipeline)
 2. ~~**Warm starting**: Initialize from previous frame's solution~~ ✅ (pipeline PGS has its own warm starting)
-3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ — Removed (standalone `integrators.rs` deleted in FUTURE_WORK C1; pipeline uses `ImplicitSpringDamper`)
+3. ~~**Implicit-fast (no Coriolis)**: Skip Coriolis terms for performance~~ — Standalone removed (`integrators.rs` deleted in FUTURE_WORK C1); **re-implemented** as pipeline `Integrator::ImplicitFast` (symmetric D, Cholesky) + `Integrator::Implicit` (asymmetric D + Coriolis, LU) in §13
 
 **Implemented:**
 
@@ -1554,11 +1441,10 @@ Focus: Internal solver improvements for better performance.
 - `InvMassBlock` - Efficient 6x6 inverse mass/inertia storage
 - Automatic dense/sparse switching based on system size (threshold: 16 bodies)
 
-**Warm Starting (`sim-constraint/src/newton.rs` — removed in Phase 3 consolidation):**
-- `NewtonSolverConfig::warm_starting` - Enable/disable warm starting
-- `NewtonSolverConfig::warm_start_factor` - Scaling factor (0.8-0.95 typical)
-- `SolverStats` - Track warm start usage and convergence metrics
-- Lambda values cached between frames, scaled by warm start factor
+**Warm Starting (pipeline-native):**
+- `WarmstartKey` spatial hash (1cm grid) in pipeline PGS — `efc_lambda: HashMap<WarmstartKey, Vec<f64>>`
+- Enabled by `<flag warmstart="true"/>` (default)
+- Standalone `NewtonSolverConfig::warm_starting` was removed in Phase 3 consolidation
 
 **Implicit-Fast Integration (re-implemented in §13):**
 - The standalone `ImplicitFast` integrator and its `IntegrationMethod::ImplicitFast`
