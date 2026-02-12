@@ -191,12 +191,7 @@ This is not marketing. This is policy enforced by CI:
 6. **Semver compliance** - cargo-semver-checks on every PR
 7. **Supply chain verified** - cargo-vet, cargo-audit, cargo-deny
 
-Why this strict? Because:
-- Robots hurt people when software fails
-- Medical devices kill when software fails
-- Vehicles crash when software fails
-
-CortenForge is built for domains where failure has consequences.
+Why this strict? Because CortenForge targets domains where correctness is non-negotiable. The standards exist so the code earns that trust.
 
 ---
 

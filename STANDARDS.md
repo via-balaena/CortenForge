@@ -11,9 +11,7 @@
 and manufacturing bio-inspired mechanisms and robotics."
 ```
 
-We build infrastructure for bio-inspired robotics and manufacturing. A bug in our mesh code could produce an unprintable part. A flaw in our routing could short-circuit a wire harness. A mistake in our physics could injure a human interacting with a robot.
-
-**Our code must be as reliable as the things built with it.**
+We build infrastructure for bio-inspired robotics and manufacturing. The domains we serve — simulation, fabrication, control — demand correctness. Our code must be as reliable as the things built with it.
 
 This document defines what "reliable" means, quantitatively.
 
