@@ -65,13 +65,27 @@ Every crate in this log has passed:
 | 2026-01-19 | route-types | automated |
 | 2026-01-19 | route-pathfind | automated |
 | 2026-01-19 | route-optimize | automated |
+| 2026-02-12 | sim-types | automated |
+| 2026-02-12 | sim-simd | automated |
+| 2026-02-12 | sim-core | automated |
+| 2026-02-12 | sim-constraint | automated |
+| 2026-02-12 | sim-sensor | automated |
+| 2026-02-12 | sim-deformable | automated |
+| 2026-02-12 | sim-muscle | automated |
+| 2026-02-12 | sim-tendon | automated |
+| 2026-02-12 | sim-gpu | automated |
+| 2026-02-12 | sim-mjcf | automated |
+| 2026-02-12 | sim-urdf | automated |
+| 2026-02-12 | sim-physics | automated |
+| 2026-02-12 | sim-conformance-tests | automated |
+| 2026-02-12 | sim-bevy | automated |
 
 ---
 
 ## Summary
 
-- **Total A-Grade Crates:** 38 (26 mesh + 1 umbrella + 1 geometry + 2 sensor + 4 ML + 1 foundation + 3 routing)
-- **Last Updated:** 2026-01-30
+- **Total A-Grade Crates:** 52+ (26 mesh + 1 umbrella + 1 geometry + 2 sensor + 4 ML + 1 foundation + 3 routing + 14 sim)
+- **Last Updated:** 2026-02-12
 - **Note:** mesh-io includes all I/O formats (STL, OBJ, PLY, 3MF, STEP)
 - **Note:** mesh (umbrella) re-exports all mesh-* crates with unified prelude
 - **Note:** sensor-types and sensor-fusion form the sensor domain foundation
@@ -79,6 +93,7 @@ Every crate in this log has passed:
 - **Note:** cf-spatial provides voxel grids, spatial queries, line-of-sight checks
 - **Note:** curve-types provides Bezier, B-spline, NURBS, arcs, helices with Frenet frames
 - **Note:** route-types, route-pathfind, route-optimize form the routing domain (A* pathfinding, multi-objective optimization)
+- **Note:** sim-* crates form the MuJoCo-aligned simulation domain (14 crates: Newton/PGS/CG solvers, implicit integration, sleeping, GPU batching)
 
 ---
 

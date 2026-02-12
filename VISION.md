@@ -1,12 +1,12 @@
 # CortenForge Vision
 
-> Industrial-grade foundation, unlimited application.
+> An open-source SDK written in pure Rust for designing, engineering, and manufacturing bio-inspired mechanisms and robotics.
 
 ---
 
 ## What CortenForge Is
 
-CortenForge is a **Rust-native simulation and fabrication SDK** for building physical things that move, sense, and act in the world.
+CortenForge is an **open-source, pure-Rust SDK for bio-inspired robotics** — spanning the full arc from mechanism design and physics simulation to perception, learning, and hardware deployment. It demonstrates that the Rust programming language is not merely adequate but *ideal* for this domain and its subdomains: real-time simulation, geometric computing, sensor fusion, and safety-critical control.
 
 It is not:
 - A game engine (though it runs on one)
@@ -80,7 +80,7 @@ Layer 0 (Pure Rust)
 ├── ml/*             Burn-native ML pipeline
 ├── routing/*        Path planning and optimization
 ├── spatial/*        Voxel grids, occupancy maps
-└── sim/*            12 L0 crates - MuJoCo-aligned physics (NO BEVY)
+└── sim/*            14 crates - MuJoCo-aligned physics (13 L0, 1 L1)
 ```
 
 ### Layer 1: Bevy Integration
@@ -109,12 +109,13 @@ When Bevy breaks (and it will), Layer 1 adapts. Layer 0 is untouched.
 sim/ (Layer 0 - Pure Rust)
 ├── sim-types        RigidBodyState, Pose, Twist, MassProperties
 ├── sim-simd         SIMD batch operations (Vec3x4/Vec3x8)
-├── sim-core         MuJoCo-aligned pipeline: Model/Data, FK, CRBA, RNE, PGS
-├── sim-constraint   Joint types, motors, limits, equality constraints
+├── sim-core         MuJoCo-aligned pipeline: Model/Data, FK, CRBA, RNE, Newton/PGS/CG solvers
+├── sim-constraint   Joint types, motors, limits, equality constraints, CGSolver
 ├── sim-sensor       IMU, F/T, touch, rangefinder, magnetometer
 ├── sim-deformable   XPBD soft bodies (ropes, cloth, volumes)
 ├── sim-muscle       Hill-type muscle model
 ├── sim-tendon       Cable/tendon routing and actuation
+├── sim-gpu          GPU-accelerated batched simulation (wgpu)
 ├── sim-mjcf         MuJoCo XML/MJB format parser
 ├── sim-urdf         URDF parser, kinematic tree validation
 ├── sim-physics      Unified L0 API re-exporting all sim crates
@@ -145,22 +146,23 @@ A headless training run uses `sim-core` directly. A visualization demo uses `CfS
 | **Routing** | Build + pathfinding | Core algorithms ourselves, graph utils from crate |
 | **Spatial** | Build + kiddo | Voxels ourselves, KD-trees from crate |
 | **Collision** | Build | MuJoCo-aligned: analytical + GJK/EPA + BVH mesh |
-| **Rigid Physics** | Build | MuJoCo-aligned: Model/Data, CRBA, RNE, PGS solver |
+| **Rigid Physics** | Build | MuJoCo-aligned: Model/Data, CRBA, RNE, Newton/PGS/CG solvers, implicit integration, sleeping |
 | **Soft Physics** | Build | XPBD (sim-deformable), Hill-type muscles (sim-muscle) |
+| **GPU Simulation** | Build | Batched sim via wgpu (sim-gpu) |
 | **Rendering** | Use Bevy | Not our domain |
 | **UI** | Use bevy_egui | Not our domain |
 
 ### Domain Roadmap
 
 ```
-COMPLETE (51 crates):
+COMPLETE (52+ crates):
 ├── Mesh Domain (27)
 ├── Sensor Domain (2)
 ├── ML Domain (4)
 ├── Spatial Domain (1)
 ├── Routing Domain (3)
 ├── Geometry Domain (1)
-└── Simulation Domain (12 L0 + 1 L1)
+└── Simulation Domain (14 crates: 13 L0 + 1 L1)
 
 NEXT PHASE:
 ├── surface-types      NURBS surfaces, patches
@@ -219,21 +221,27 @@ We're not trying to replace Siemens. We're building the foundation that could *i
 ### MuJoCo
 What they have: 15 years of physics research, soft contacts, implicit integration, GPU acceleration, massive adoption in RL research.
 
-What we have: A MuJoCo-aligned pipeline (13 crates) implementing Model/Data, FK, CRBA, RNE, PGS contact solver, implicit integration, MJCF/URDF loading, Hill-type muscles, XPBD deformables.
+What we have: A MuJoCo-aligned pipeline (14 crates) implementing Model/Data, FK, CRBA, RNE, Newton/PGS/CG contact solvers, implicit integration (Euler, RK4, implicit fast), MJCF/URDF loading, Hill-type muscles, XPBD deformables, sleeping/sparse LDL, and GPU-batched simulation via wgpu.
 
-What we need: GPU acceleration, broader actuator coverage, tendon/site transmissions, full MuJoCo XML parity.
+What we need: Broader actuator coverage, full tendon/site transmissions, full MuJoCo XML parity across all edge cases.
 
-The honest assessment: We can match TFX patterns in months. We can get useful CAD interop in a year. Full MuJoCo parity (GPU, all actuators, all constraint types) is ongoing work. See `sim/docs/ARCHITECTURE.md` and `sim/docs/MUJOCO_REFERENCE.md`.
+The honest assessment: We can match TFX patterns in months. We can get useful CAD interop in a year. Full MuJoCo parity (all actuators, all constraint types) is ongoing work. See `sim/docs/ARCHITECTURE.md` and `sim/docs/MUJOCO_REFERENCE.md`.
 
 ---
 
 ## Target Applications
 
-### Humanoid Robots
-- Mesh: Body shells, gripper designs, sensor housings
-- Simulation: Walking, manipulation, contact-rich tasks
-- ML: Imitation learning, reinforcement learning
-- Sensors: Vision, proprioception, force sensing
+### Bio-Inspired Robotics (Primary)
+- Mesh: Body shells, actuator housings, compliant mechanism design
+- Simulation: Locomotion, manipulation, contact-rich tasks with muscles and tendons
+- ML: Reinforcement learning for bio-inspired gaits, imitation learning
+- Sensors: Proprioception, force sensing, distributed tactile arrays
+
+### Humanoid and Legged Robots
+- Mesh: Link geometry, gripper designs, sensor housings
+- Simulation: Walking, reaching, whole-body dynamics
+- ML: Policy learning, sim-to-real transfer
+- Sensors: Vision, IMU, joint encoders, force/torque
 
 ### Autonomous Vehicles
 - Mesh: Chassis design, sensor mounts
@@ -253,7 +261,7 @@ The honest assessment: We can match TFX patterns in months. We can get useful CA
 - ML: Defect detection, process optimization
 - Routing: Tool paths, robot motion
 
-All four domains share:
+All five domains share:
 - Mesh processing
 - Simulation
 - ML pipelines
@@ -318,8 +326,10 @@ There is no "done." Cathedrals are never finished; they're maintained and extend
 But there are milestones:
 
 ### Milestone 1: Simulation Foundation (Largely Complete)
-- 13 sim crates implemented (MuJoCo-aligned pipeline)
-- Model/Data architecture with forward kinematics, dynamics, contact solver
+- 14 sim crates implemented (MuJoCo-aligned pipeline)
+- Model/Data architecture with forward kinematics, dynamics, Newton/PGS/CG contact solvers
+- Implicit integration, sleeping system with sparse LDL factorization
+- GPU-batched simulation via sim-gpu (wgpu)
 - sim-bevy provides Bevy visualization with debug gizmos
 - Headless training loop works via sim-core directly
 
@@ -380,4 +390,4 @@ We're building something that will run on robots, in vehicles, in medical device
 
 *This document is the north star. When in doubt, check here.*
 
-*Last updated: 2026-01-30*
+*Last updated: 2026-02-12*

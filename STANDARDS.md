@@ -7,11 +7,11 @@
 ## Philosophy
 
 ```
-"Industrial-grade foundation, unlimited application.
-From humanoid robots to vehicles to medical simulation."
+"An open-source SDK written in pure Rust for designing, engineering,
+and manufacturing bio-inspired mechanisms and robotics."
 ```
 
-We build infrastructure for creating physical things. A bug in our mesh code could produce an unprintable part. A flaw in our routing could short-circuit a wire harness. A mistake in our physics could injure a human interacting with a robot.
+We build infrastructure for bio-inspired robotics and manufacturing. A bug in our mesh code could produce an unprintable part. A flaw in our routing could short-circuit a wire harness. A mistake in our physics could injure a human interacting with a robot.
 
 **Our code must be as reliable as the things built with it.**
 
