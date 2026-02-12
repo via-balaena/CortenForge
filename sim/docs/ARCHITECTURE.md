@@ -41,7 +41,12 @@ sim/
     │   ├── future_work_2.md           # Phase 2: Correctness #1–5
     │   ├── future_work_3.md           # Phase 2: Correctness + Scaling #6–10
     │   ├── future_work_4.md           # Phase 2: Physics Completeness #11–14
-    │   └── future_work_5.md           # Phase 2: Quality of Life #15–17
+    │   ├── future_work_5.md           # Phase 2: Quality of Life #15–16
+    │   ├── future_work_6.md           # Phase 3A: Foundation + Core Correctness #18–22
+    │   ├── future_work_7.md           # Phase 3B: Constraint + Physics #23–27
+    │   ├── future_work_8.md           # Phase 3C: Format + Edge-Case #28–32
+    │   ├── future_work_9.md           # Phase 3D: Performance + Hygiene #33–34
+    │   └── future_work_10.md          # Phase 3E: GPU Pipeline #35–39
     ├── MUJOCO_CONFORMANCE.md          # MuJoCo conformance testing plan
     ├── MUJOCO_GAP_ANALYSIS.md         # Feature-by-feature gap analysis
     ├── MUJOCO_REFERENCE.md            # Pipeline algorithms and pseudocode
@@ -50,7 +55,7 @@ sim/
 
 ## Core Architecture: Model/Data
 
-The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~13,900 lines).
+The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~24,400 lines).
 It implements MuJoCo's computation pipeline end-to-end.
 
 ### Model (static)
@@ -118,10 +123,11 @@ loop {
 }
 ```
 
-`Data::step()` dispatches by integrator: for Euler and ImplicitSpringDamper it
-calls `forward()` then `integrate()`; for RK4 it calls `forward()` then
-`mj_runge_kutta()` (a true 4-stage Runge-Kutta that re-evaluates dynamics at
-each stage). See `MUJOCO_REFERENCE.md` for the complete pipeline algorithm.
+`Data::step()` dispatches by integrator: for Euler, ImplicitSpringDamper,
+ImplicitFast, and Implicit it calls `forward()` then `integrate()`; for RK4 it
+calls `forward()` then `mj_runge_kutta()` (a true 4-stage Runge-Kutta that
+re-evaluates dynamics at each stage). See `MUJOCO_REFERENCE.md` for the
+complete pipeline algorithm.
 
 ## Physics Pipeline
 
@@ -144,7 +150,7 @@ forward():
   Dynamics     mj_crba                Selective CRBA (skips sleeping subtrees)
                mj_rne                 Bias forces (Recursive Newton-Euler)
                mj_fwd_passive         Springs, dampers, friction loss (skips sleeping DOFs)
-  Constraints  mj_fwd_constraint      Joint/tendon limits + equality + contact PGS/CG
+  Constraints  mj_fwd_constraint      Joint/tendon limits + equality + contact PGS/CG/Newton
                mj_fwd_constraint_islands  Per-island block-diagonal solving (when islands > 1)
   Solve        mj_fwd_acceleration    qacc = M^-1 * f  (or implicit solve)
 integrate() [Euler / ImplicitFast / Implicit / ImplicitSpringDamper]:
@@ -188,13 +194,18 @@ mjd_transition():
   `mj_integrate_pos_explicit()` for quaternion-safe position updates
 - `ImplicitSpringDamper` — unconditionally stable for stiff springs/dampers; solves
   `(M + h*D + h^2*K) v_new = M*v_old + h*f_ext - h*K*(q - q_eq)`
+- `Implicit` — full implicit with asymmetric D (includes Coriolis velocity derivatives)
+  and LU factorization with partial pivoting; maximum accuracy
+- `ImplicitFast` — fast implicit with symmetric D (skips Coriolis terms) and Cholesky
+  factorization; faster than `Implicit` with nearly identical results for most models
 
 **Constraint enforcement:**
 - Joint/tendon limits and equality constraints use penalty + Baumgarte stabilization
   with configurable stiffness via `solref`/`solimp` parameters
-- Contacts use PGS (Projected Gauss-Seidel) or CG (preconditioned projected gradient
-  descent with Barzilai-Borwein step) with friction cones and warmstart, selectable
-  via `<option solver="CG"/>` in MJCF or `model.solver_type = SolverType::CG`
+- Contacts use PGS (Projected Gauss-Seidel), CG (preconditioned projected gradient
+  descent with Barzilai-Borwein step), or Newton (reduced primal formulation with
+  sparse LDL factorization) with friction cones and warmstart, selectable via
+  `<option solver="Newton"/>` in MJCF or `model.solver_type = SolverType::Newton`
 
 ## Collision Detection
 
@@ -285,8 +296,8 @@ The physics engine. Depends on sim-types and sim-simd. Contains:
 `ContactPoint`, `ContactManifold`, and `ContactForce` live in
 `sim-core/src/contact.rs`. These represent collision geometry output
 (position, normal, penetration, body pair) and resulting forces.
-The MuJoCo pipeline uses PGS/CG contact solvers in `mujoco_pipeline.rs` with
-variable condim (1/3/4/6) and elliptic friction cones.
+The MuJoCo pipeline uses PGS/CG/Newton contact solvers in `mujoco_pipeline.rs`
+with variable condim (1/3/4/6) and elliptic friction cones.
 
 ### sim-constraint
 
@@ -541,15 +552,19 @@ Phase C (selective CRBA, partial LDL, awake-index iteration, island-local solvin
 
 ### Contact Solver
 
-The pipeline supports two contact solvers selectable via `model.solver_type`:
+The pipeline supports four contact solvers selectable via `model.solver_type`:
 
-- **PGS** (default) — Projected Gauss-Seidel. Matches MuJoCo's default. Uses
-  per-contact inline elliptic friction cone projection inside the GS sweep.
+- **PGS** (programmatic default) — Projected Gauss-Seidel. Uses per-contact
+  inline elliptic friction cone projection inside the GS sweep.
 - **CG** — Preconditioned projected gradient descent (PGD) with Barzilai-Borwein
   adaptive step size. Named "CG" for MuJoCo API compatibility. Falls back to PGS
   on non-convergence, reusing the pre-assembled Delassus matrix.
 - **CGStrict** — Same as CG but returns zero forces on non-convergence instead of
   falling back. Use in tests to detect CG regressions.
+- **Newton** (MJCF default, matching MuJoCo) — Reduced primal formulation with
+  sparse LDL factorization. Operates on unified constraint Jacobian (equality,
+  friction loss, limits, contacts). Converges in 2–3 iterations vs PGS's 20+.
+  Falls back to PGS on Cholesky failure or non-convergence.
 
 **Variable Contact Dimensions (condim):**
 - condim 1: Normal force only (frictionless contact)
@@ -566,7 +581,7 @@ Projection uses a two-step physically-correct algorithm: (1) enforce unilateral 
 λ_n ≥ 0 (else release contact), (2) scale friction components to cone boundary if
 `||(λ_i/μ_i)|| > λ_n`. This handles anisotropic friction (different coefficients per direction).
 
-Both solvers share `assemble_contact_system()` for Delassus matrix + RHS construction,
+All solvers share `assemble_contact_system()` for Delassus matrix + RHS construction,
 `WarmstartKey`-based contact correspondence, and friction cone projection. The warmstart
 key combines canonical geom pair IDs with a discretized 1 cm spatial grid cell, so
 multiple contacts within the same geom pair (e.g., box-on-plane corners) each get
@@ -577,7 +592,7 @@ Solver selection: `<option solver="CG"/>` in MJCF or `model.solver_type = Solver
 
 ### Determinism
 
-Both solvers use a fixed iteration cap (`solver_iterations`, default 100) with an
+All solvers use a fixed iteration cap (`solver_iterations`, default 100) with an
 early-exit tolerance. Same inputs produce same outputs. Fixed computational cost is
 essential for RL training.
 

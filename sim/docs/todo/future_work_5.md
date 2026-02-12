@@ -6183,35 +6183,32 @@ linear cost in awake bodies for skipped stages.
 
 ---
 
-### 17. SOR Relaxation for PGS
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### ~~17. SOR Relaxation for PGS~~ — DROPPED
 
-#### Current State
-PGS uses plain Gauss-Seidel (relaxation factor omega = 1.0). MuJoCo's PGS uses SOR
-with configurable omega for accelerated convergence.
+**Status:** Dropped | **Reason:** Incorrect premise; MuJoCo does not implement SOR
 
-#### Objective
-Add SOR relaxation parameter to PGS solver.
+#### Why This Was Dropped
 
-#### Specification
+The original spec claimed "MuJoCo's PGS uses SOR with configurable omega." This is
+factually incorrect. Verification against MuJoCo's source code (`engine_solver.c`,
+`mj_solPGS`) and the `mjOption` struct (`mjmodel.h`) confirms:
 
-In `pgs_solve_with_system()` (`mujoco_pipeline.rs:8049`), after the GS update:
+1. **MuJoCo's PGS uses pure Gauss-Seidel (ω=1.0).** The update is a direct
+   coordinate-descent step: `force[i] -= res[0] * ARinv[i]`, followed by projection.
+   No SOR blending is applied.
+2. **There is no `sor` field** in `mjOption`.
+3. **There is no `<option sor="..."/>` attribute** in the MJCF XML schema.
 
-```rust
-lambda_new = (1 - omega) * lambda_old + omega * lambda_gs;
-```
+MuJoCo's answer to slow PGS convergence is the Newton solver (quadratic convergence,
+2-5 iterations), not SOR. Our Newton solver (§15) already provides this.
 
-where `omega` is read from `Model.solver_sor` (default 1.0, parsed from MJCF
-`<option sor="..."/>`).
+SOR *is* used by ODE (default ω=1.3) and Bullet, but those engines lack a Newton
+fallback — their PGS is the only solver. For CortenForge, PGS is either:
+- The primary solver for simple scenes (converges fine without SOR), or
+- A fallback for degenerate cases (where ω>1 risks divergence on cone-constrained QCQPs)
 
-#### Acceptance Criteria
-1. omega = 1.0 matches current behavior (regression).
-2. omega = 1.3 converges in fewer iterations for a stiff contact benchmark.
-3. omega < 1.0 (under-relaxation) is stable for pathological cases.
-
-#### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — modify (`pgs_solve_with_system()`,
-  Model field)
+Adding a non-MuJoCo knob with no convergence guarantee and narrow model-dependent
+sweet spots is net-negative complexity.
 
 ---
 
@@ -6233,9 +6230,10 @@ Items acknowledged but not prioritized for Phase 2:
 | ~~Sleeping bodies in deformable~~ | ✅ Complete (Phase C — trees with deformables receive `AutoNever` policy) |
 | ~~Separate `qLD_diag` field (diagonal layout divergence)~~ | ✅ **Fixed.** Unified diagonal layout implemented: D[i,i] is now stored as the last element of each CSR row in `qLD_data` (`qLD_data[rowadr[i] + rownnz[i] - 1]`), eliminating the separate `qLD_diag` array. `qLD_diag_inv[i] = 1/D[i,i]` is precomputed during factorization so the solve phase uses multiply (`x[i] *= diag_inv[i]`) instead of divide. This matches MuJoCo's inline diagonal storage and removes the layout divergence. Note: pseudocode in §16.29.5 (C3b partial factorization) still references the old `qLD_diag` field name for historical context; the implementation uses the unified layout. |
 | Sparse mass matrix (deeper MuJoCo parity) | Phase 1 #1/#2 cover the main path. Full sparse pipeline is diminishing returns. |
-| MuJoCo conformance test suite | Important but orthogonal to features — can be built incrementally. Without this, acceptance criteria for items #1–#17 rely on ad-hoc verification rather than systematic comparison against MuJoCo reference outputs. Consider bootstrapping a minimal conformance harness (load model, step N times, compare state vectors against MuJoCo ground truth) as infrastructure that benefits all items. |
+| MuJoCo conformance test suite | Important but orthogonal to features — can be built incrementally. Without this, acceptance criteria for items #1–#16 rely on ad-hoc verification rather than systematic comparison against MuJoCo reference outputs. Consider bootstrapping a minimal conformance harness (load model, step N times, compare state vectors against MuJoCo ground truth) as infrastructure that benefits all items. |
 | SIMD utilization (unused batch ops) | sim-simd exists; utilization will come naturally with #9/#10. |
 | Tendon equality constraints | Standalone in sim-constraint. Pipeline tendons work; equality coupling is rare. Runtime warning at `mujoco_pipeline.rs:8493` fires when models include them — these constraints are silently ignored. |
+| ~~SOR relaxation for PGS~~ | **Dropped.** Original spec incorrectly claimed MuJoCo uses SOR — it does not (`mjOption` has no `sor` field, `mj_solPGS` uses pure GS). Newton solver (§15) supersedes PGS acceleration. ODE/Bullet use SOR but lack Newton fallback. |
 
 ---
 
