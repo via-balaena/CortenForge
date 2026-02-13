@@ -11,7 +11,7 @@
 //! - **Inertia computation**: Parallel axis theorem for composite bodies
 //! - **Capsule inertia**: Exact formula including hemispherical end caps
 
-use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3};
+use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3, Vector4};
 use sim_core::HeightFieldData;
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{
@@ -27,10 +27,10 @@ use tracing::warn;
 use crate::defaults::DefaultResolver;
 use crate::error::Result;
 use crate::types::{
-    MjcfActuator, MjcfActuatorType, MjcfBody, MjcfContact, MjcfEquality, MjcfGeom, MjcfGeomType,
-    MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfKeyframe, MjcfMesh,
-    MjcfModel, MjcfOption, MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon,
-    MjcfTendonType, SpatialPathElement,
+    AngleUnit, InertiaFromGeom, MjcfActuator, MjcfActuatorType, MjcfBody, MjcfCompiler,
+    MjcfContact, MjcfEquality, MjcfGeom, MjcfGeomType, MjcfHfield, MjcfInertial, MjcfIntegrator,
+    MjcfJoint, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfModel, MjcfOption, MjcfSensor,
+    MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon, MjcfTendonType, SpatialPathElement,
 };
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -206,8 +206,18 @@ pub fn model_from_mjcf(
     mjcf: &MjcfModel,
     base_path: Option<&Path>,
 ) -> std::result::Result<Model, ModelConversionError> {
+    // Apply compiler pre-processing passes on a mutable clone
+    let mut mjcf = mjcf.clone();
+    if mjcf.compiler.discardvisual {
+        apply_discardvisual(&mut mjcf);
+    }
+    if mjcf.compiler.fusestatic {
+        apply_fusestatic(&mut mjcf);
+    }
+
     let mut builder = ModelBuilder::new();
-    builder.resolver = DefaultResolver::from_model(mjcf);
+    builder.resolver = DefaultResolver::from_model(&mjcf);
+    builder.compiler = mjcf.compiler.clone();
 
     // Set model name
     builder.name.clone_from(&mjcf.name);
@@ -236,7 +246,7 @@ pub fn model_from_mjcf(
     }
 
     // Validate tendons before processing (catches bad references early)
-    crate::validation::validate_tendons(mjcf).map_err(|e| ModelConversionError {
+    crate::validation::validate_tendons(&mjcf).map_err(|e| ModelConversionError {
         message: format!("Tendon validation failed: {e}"),
     })?;
 
@@ -257,6 +267,9 @@ pub fn model_from_mjcf(
 
     // Process contact pairs and excludes (must be after body tree for name-to-id maps)
     builder.process_contact(&mjcf.contact)?;
+
+    // Apply mass pipeline (balanceinertia, boundmass/boundinertia, settotalmass)
+    builder.apply_mass_pipeline();
 
     // Build final model
     let mut model = builder.build();
@@ -279,7 +292,17 @@ pub fn model_from_mjcf(
 ///
 /// Convenience function that combines parsing and conversion.
 /// Uses no base path, so meshes must use embedded data or absolute paths.
+///
+/// Models containing `<include>` elements cannot be loaded from strings —
+/// use [`load_model_from_file`] instead. This function will return an error
+/// if `<include` is detected in the XML.
 pub fn load_model(xml: &str) -> Result<Model> {
+    if xml.contains("<include") {
+        return Err(crate::error::MjcfError::IncludeError(
+            "<include> elements require file-based loading; use load_model_from_file() instead"
+                .to_string(),
+        ));
+    }
     let mjcf = crate::parse_mjcf_str(xml)?;
     model_from_mjcf(&mjcf, None).map_err(|e| crate::error::MjcfError::Unsupported(e.message))
 }
@@ -311,7 +334,11 @@ pub fn load_model_from_file<P: AsRef<Path>>(path: P) -> Result<Model> {
         ))
     })?;
 
-    let mjcf = crate::parse_mjcf_str(&xml)?;
+    // Expand <include> elements before parsing
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let expanded_xml = crate::include::expand_includes(&xml, base_dir)?;
+
+    let mjcf = crate::parse_mjcf_str(&expanded_xml)?;
     let base_path = path.parent();
 
     model_from_mjcf(&mjcf, base_path).map_err(|e| crate::error::MjcfError::Unsupported(e.message))
@@ -324,6 +351,9 @@ struct ModelBuilder {
 
     // Default class resolver (applies <default> class attributes to elements)
     resolver: DefaultResolver,
+
+    // Compiler settings (controls angle conversion, euler sequence, etc.)
+    compiler: MjcfCompiler,
 
     // Dimensions (computed during building)
     nq: usize,
@@ -546,6 +576,7 @@ impl ModelBuilder {
         Self {
             name: String::new(),
             resolver: DefaultResolver::default(),
+            compiler: MjcfCompiler::default(),
             nq: 0,
             nv: 0,
 
@@ -803,7 +834,7 @@ impl ModelBuilder {
         }
 
         // Convert MJCF mesh to TriangleMeshData
-        let mesh_data = convert_mjcf_mesh(mjcf_mesh, base_path)?;
+        let mesh_data = convert_mjcf_mesh(mjcf_mesh, base_path, &self.compiler)?;
 
         // Register in lookup table
         let mesh_id = self.mesh_data.len();
@@ -948,14 +979,29 @@ impl ModelBuilder {
         };
 
         // Body position/orientation relative to parent.
-        // Euler angles override quat if specified (MuJoCo convention).
-        // MJCF euler is in degrees with XYZ intrinsic rotation order (lowercase = body-fixed axes).
-        // Intrinsic XYZ: rotate about X, then about new Y, then about new Z.
-        // Quaternion composition: q = Rx * Ry * Rz
+        // Priority: euler > axisangle > quat (MuJoCo convention).
         let body_pos = body.pos;
-        let body_quat = if let Some(euler_deg) = body.euler {
-            let euler_rad = euler_deg * (std::f64::consts::PI / 180.0);
-            euler_xyz_to_quat(euler_rad)
+        let body_quat = if let Some(euler) = body.euler {
+            let euler_rad = if self.compiler.angle == AngleUnit::Degree {
+                euler * (std::f64::consts::PI / 180.0)
+            } else {
+                euler
+            };
+            euler_seq_to_quat(euler_rad, &self.compiler.eulerseq)
+        } else if let Some(aa) = body.axisangle {
+            // axisangle = [ax, ay, az, angle]. Angle component is angle-valued.
+            let axis = Vector3::new(aa.x, aa.y, aa.z);
+            let angle = if self.compiler.angle == AngleUnit::Degree {
+                aa.w * (std::f64::consts::PI / 180.0)
+            } else {
+                aa.w
+            };
+            let norm = axis.norm();
+            if norm > 1e-10 {
+                UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle)
+            } else {
+                UnitQuaternion::identity()
+            }
         } else {
             quat_from_wxyz(body.quat)
         };
@@ -975,12 +1021,32 @@ impl ModelBuilder {
             .map(|g| self.resolver.apply_to_geom(g))
             .collect();
 
-        // Process inertial properties with full MuJoCo semantics
-        let (mass, inertia, ipos, iquat) = if let Some(ref inertial) = body.inertial {
-            extract_inertial_properties(inertial)
-        } else {
-            // Compute from geoms if no explicit inertial
-            compute_inertia_from_geoms(&resolved_geoms)
+        // Process inertial properties with full MuJoCo semantics.
+        // Gated by compiler.inertiafromgeom:
+        //   True  — always compute from geoms (overrides explicit <inertial>)
+        //   Auto  — compute from geoms only when no explicit <inertial>
+        //   False — use explicit <inertial> or zero
+        let (mass, inertia, ipos, iquat) = match self.compiler.inertiafromgeom {
+            InertiaFromGeom::True => compute_inertia_from_geoms(&resolved_geoms),
+            InertiaFromGeom::Auto => {
+                if let Some(ref inertial) = body.inertial {
+                    extract_inertial_properties(inertial)
+                } else {
+                    compute_inertia_from_geoms(&resolved_geoms)
+                }
+            }
+            InertiaFromGeom::False => {
+                if let Some(ref inertial) = body.inertial {
+                    extract_inertial_properties(inertial)
+                } else {
+                    (
+                        0.0,
+                        Vector3::zeros(),
+                        Vector3::zeros(),
+                        UnitQuaternion::identity(),
+                    )
+                }
+            }
         };
 
         // Track joint/DOF addresses for this body
@@ -1147,14 +1213,45 @@ impl ModelBuilder {
             Vector3::z()
         };
         self.jnt_axis.push(axis);
-        self.jnt_limited.push(joint.limited);
-        self.jnt_range.push(
-            joint
-                .range
-                .unwrap_or((-std::f64::consts::PI, std::f64::consts::PI)),
-        );
+        // Autolimits: infer limited from range presence when no explicit value.
+        let limited = match joint.limited {
+            Some(v) => v,
+            None => {
+                if self.compiler.autolimits {
+                    joint.range.is_some()
+                } else {
+                    false
+                }
+            }
+        };
+        self.jnt_limited.push(limited);
+
+        // Angle conversion: hinge and ball joint range/ref/springref are angle-valued.
+        // When compiler.angle == Degree (default), convert to radians.
+        // Slide and Free joints are not angle-valued — never convert.
+        let deg2rad = std::f64::consts::PI / 180.0;
+        let is_angle_joint = matches!(jnt_type, MjJointType::Hinge | MjJointType::Ball);
+        let convert = is_angle_joint && self.compiler.angle == AngleUnit::Degree;
+
+        let range = joint
+            .range
+            .unwrap_or((-std::f64::consts::PI, std::f64::consts::PI));
+        self.jnt_range.push(if convert {
+            (range.0 * deg2rad, range.1 * deg2rad)
+        } else {
+            range
+        });
         self.jnt_stiffness.push(joint.stiffness);
-        self.jnt_springref.push(joint.spring_ref);
+
+        // ref_pos and spring_ref: angle-valued for hinge joints only.
+        // Ball joint ref is a quaternion, not angle-valued.
+        let convert_ref =
+            matches!(jnt_type, MjJointType::Hinge) && self.compiler.angle == AngleUnit::Degree;
+        self.jnt_springref.push(if convert_ref {
+            joint.spring_ref * deg2rad
+        } else {
+            joint.spring_ref
+        });
         self.jnt_damping.push(joint.damping);
         self.jnt_armature.push(joint.armature);
         self.jnt_solref
@@ -1188,7 +1285,16 @@ impl ModelBuilder {
 
         // Add qpos0 values (default positions)
         match jnt_type {
-            MjJointType::Hinge | MjJointType::Slide => {
+            MjJointType::Hinge => {
+                let ref_val = if self.compiler.angle == AngleUnit::Degree {
+                    joint.ref_pos * deg2rad
+                } else {
+                    joint.ref_pos
+                };
+                self.qpos0_values.push(ref_val);
+            }
+            MjJointType::Slide => {
+                // Slide ref is translational — not angle-valued
                 self.qpos0_values.push(joint.ref_pos);
             }
             MjJointType::Ball => {
@@ -1300,10 +1406,13 @@ impl ModelBuilder {
             compute_fromto_pose(fromto, &geom.size)
         } else {
             // Euler angles override quat if specified (MuJoCo convention).
-            // MJCF euler is in degrees with XYZ intrinsic rotation order.
-            let orientation = if let Some(euler_deg) = geom.euler {
-                let euler_rad = euler_deg * (std::f64::consts::PI / 180.0);
-                euler_xyz_to_quat(euler_rad)
+            let orientation = if let Some(euler) = geom.euler {
+                let euler_rad = if self.compiler.angle == AngleUnit::Degree {
+                    euler * (std::f64::consts::PI / 180.0)
+                } else {
+                    euler
+                };
+                euler_seq_to_quat(euler_rad, &self.compiler.eulerseq)
             } else {
                 quat_from_wxyz(geom.quat)
             };
@@ -1460,7 +1569,18 @@ impl ModelBuilder {
             });
             self.tendon_range
                 .push(tendon.range.unwrap_or((-f64::MAX, f64::MAX)));
-            self.tendon_limited.push(tendon.limited);
+            // Autolimits: infer limited from range presence.
+            let tendon_limited = match tendon.limited {
+                Some(v) => v,
+                None => {
+                    if self.compiler.autolimits {
+                        tendon.range.is_some()
+                    } else {
+                        false
+                    }
+                }
+            };
+            self.tendon_limited.push(tendon_limited);
             self.tendon_stiffness.push(tendon.stiffness);
             self.tendon_damping.push(tendon.damping);
             self.tendon_frictionloss.push(tendon.frictionloss);
@@ -1699,7 +1819,16 @@ impl ModelBuilder {
         // (MuJoCo: mjs_setToDamper and mjs_setToAdhesion both set ctrllimited=1).
         let ctrllimited = match actuator.actuator_type {
             MjcfActuatorType::Damper | MjcfActuatorType::Adhesion => true,
-            _ => actuator.ctrllimited,
+            _ => match actuator.ctrllimited {
+                Some(v) => v,
+                None => {
+                    if self.compiler.autolimits {
+                        actuator.ctrlrange.is_some()
+                    } else {
+                        false
+                    }
+                }
+            },
         };
 
         // Determine dynamics type.
@@ -1744,7 +1873,17 @@ impl ModelBuilder {
         } else {
             (f64::NEG_INFINITY, f64::INFINITY)
         });
-        self.actuator_forcerange.push(if actuator.forcelimited {
+        let forcelimited = match actuator.forcelimited {
+            Some(v) => v,
+            None => {
+                if self.compiler.autolimits {
+                    actuator.forcerange.is_some()
+                } else {
+                    false
+                }
+            }
+        };
+        self.actuator_forcerange.push(if forcelimited {
             actuator
                 .forcerange
                 .unwrap_or((f64::NEG_INFINITY, f64::INFINITY))
@@ -2485,6 +2624,62 @@ impl ModelBuilder {
         }
     }
 
+    /// Apply the mass pipeline post-processing in MuJoCo order:
+    ///   1. inertiafromgeom — already handled per-body in process_body
+    ///   2. balanceinertia — triangle inequality correction
+    ///   3. boundmass / boundinertia — minimum clamping
+    ///   4. settotalmass — rescale to target total mass
+    fn apply_mass_pipeline(&mut self) {
+        let nbody = self.body_mass.len();
+
+        // Step 2: balanceinertia (A7)
+        // For each non-world body, check the triangle inequality on diagonal inertia.
+        // If violated (A + B < C for any permutation), set all three to their mean.
+        if self.compiler.balanceinertia {
+            for i in 1..nbody {
+                let inertia = &self.body_inertia[i];
+                let a = inertia.x;
+                let b = inertia.y;
+                let c = inertia.z;
+                if a + b < c || a + c < b || b + c < a {
+                    let mean = (a + b + c) / 3.0;
+                    self.body_inertia[i] = Vector3::new(mean, mean, mean);
+                }
+            }
+        }
+
+        // Step 3: boundmass / boundinertia (A6)
+        // Clamp every non-world body's mass and inertia to compiler minimums.
+        if self.compiler.boundmass > 0.0 {
+            for i in 1..nbody {
+                if self.body_mass[i] < self.compiler.boundmass {
+                    self.body_mass[i] = self.compiler.boundmass;
+                }
+            }
+        }
+        if self.compiler.boundinertia > 0.0 {
+            for i in 1..nbody {
+                let inertia = &mut self.body_inertia[i];
+                inertia.x = inertia.x.max(self.compiler.boundinertia);
+                inertia.y = inertia.y.max(self.compiler.boundinertia);
+                inertia.z = inertia.z.max(self.compiler.boundinertia);
+            }
+        }
+
+        // Step 4: settotalmass (A8)
+        // When positive, rescale all body masses and inertias so total == target.
+        if self.compiler.settotalmass > 0.0 {
+            let total_mass: f64 = (1..nbody).map(|i| self.body_mass[i]).sum();
+            if total_mass > 0.0 {
+                let scale = self.compiler.settotalmass / total_mass;
+                for i in 1..nbody {
+                    self.body_mass[i] *= scale;
+                    self.body_inertia[i] *= scale;
+                }
+            }
+        }
+    }
+
     fn build(self) -> Model {
         let njnt = self.jnt_type.len();
         let nbody = self.body_parent.len();
@@ -3122,69 +3317,128 @@ fn quat_from_wxyz(q: nalgebra::Vector4<f64>) -> UnitQuaternion<f64> {
     UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(q[0], q[1], q[2], q[3]))
 }
 
-/// Convert euler angles (radians) to quaternion using MuJoCo's intrinsic XYZ order.
+/// Convert euler angles (radians) to quaternion using a configurable rotation sequence.
 ///
-/// MuJoCo's default `eulerseq='xyz'` (lowercase) means intrinsic rotations:
-/// - First rotate about the body-fixed X axis
-/// - Then rotate about the new (rotated) Y axis
-/// - Finally rotate about the new (rotated) Z axis
+/// Mirrors MuJoCo's `mju_euler2Quat` exactly:
+/// - Each character in `seq` selects the rotation axis (x/y/z).
+/// - **Lowercase** = intrinsic (body-fixed): **post-multiply** `q = q * R_i`.
+/// - **Uppercase** = extrinsic (space-fixed): **pre-multiply** `q = R_i * q`.
 ///
-/// In quaternion composition, intrinsic XYZ is: q = Rx * Ry * Rz
-///
-/// Note: nalgebra's `from_euler_angles(roll, pitch, yaw)` uses extrinsic XYZ order
-/// (equivalent to intrinsic ZYX), so we cannot use it directly.
-fn euler_xyz_to_quat(euler_rad: Vector3<f64>) -> UnitQuaternion<f64> {
-    let rx = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), euler_rad.x);
-    let ry = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), euler_rad.y);
-    let rz = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), euler_rad.z);
-    rx * ry * rz
+/// Examples:
+/// - `"xyz"` (default) → intrinsic XYZ: `q = Rx * Ry * Rz`
+/// - `"XYZ"` → extrinsic XYZ: `q = Rz * Ry * Rx`
+/// - `"XYz"` → extrinsic X, extrinsic Y, intrinsic z: `q = Ry * Rx * Rz`
+fn euler_seq_to_quat(euler_rad: Vector3<f64>, seq: &str) -> UnitQuaternion<f64> {
+    let mut q = UnitQuaternion::identity();
+    for (i, ch) in seq.chars().enumerate() {
+        let angle = euler_rad[i];
+        let axis = match ch.to_ascii_lowercase() {
+            'x' => Vector3::x_axis(),
+            'y' => Vector3::y_axis(),
+            // 'z' or validated-at-parse-time fallback
+            _ => Vector3::z_axis(),
+        };
+        let r = UnitQuaternion::from_axis_angle(&axis, angle);
+        if ch.is_ascii_lowercase() {
+            // Intrinsic: post-multiply
+            q *= r;
+        } else {
+            // Extrinsic: pre-multiply
+            q = r * q;
+        }
+    }
+    q
 }
 
 // =============================================================================
 // Mesh File Loading
 // =============================================================================
 
-/// Resolve a mesh file path to an absolute path.
+/// Asset type for path resolution.
+#[allow(dead_code)] // Texture used when texture loading lands
+enum AssetKind {
+    /// Mesh or hfield file (uses `meshdir`).
+    Mesh,
+    /// Texture file (uses `texturedir`).
+    Texture,
+}
+
+/// Resolve an asset file path using compiler path settings.
 ///
-/// # Path Resolution Rules
+/// # Path Resolution Rules (matches MuJoCo exactly)
 ///
-/// 1. **Absolute paths** are used as-is (detected via [`Path::is_absolute`])
-/// 2. **Relative paths** are resolved against `base_path`
+/// 1. If `strippath` is enabled, strip directory components first.
+/// 2. If the filename is an absolute path → use it directly.
+/// 3. If the type-specific dir (`meshdir` for Mesh, `texturedir` for Texture) is set:
+///    - If that dir is absolute → `dir / filename`.
+///    - Else → `model_file_dir / dir / filename`.
+/// 4. Else if `assetdir` is set → same logic as above using `assetdir`.
+/// 5. Else → `model_file_dir / filename`.
 ///
 /// # Errors
 ///
 /// Returns `ModelConversionError` if:
-/// - Path is relative but `base_path` is `None`
+/// - Path is relative but no base path or directory is available
 /// - Resolved path does not exist
-fn resolve_mesh_path(
+fn resolve_asset_path(
     file_path: &str,
     base_path: Option<&Path>,
+    compiler: &MjcfCompiler,
+    kind: AssetKind,
 ) -> std::result::Result<PathBuf, ModelConversionError> {
-    let path = Path::new(file_path);
+    // A9. strippath: strip directory components, keeping only the base filename.
+    let file_name = if compiler.strippath {
+        Path::new(file_path)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| file_path.to_string())
+    } else {
+        file_path.to_string()
+    };
+
+    let path = Path::new(&file_name);
 
     // Absolute paths are used directly
     if path.is_absolute() {
         if !path.exists() {
             return Err(ModelConversionError {
-                message: format!("mesh file not found: '{}'", path.display()),
+                message: format!("asset file not found: '{}'", path.display()),
             });
         }
         return Ok(path.to_path_buf());
     }
 
-    // Relative paths require a base path
-    let base = base_path.ok_or_else(|| ModelConversionError {
-        message: format!(
-            "mesh file '{file_path}' is relative but no base path provided (use load_model_from_file or pass base_path to model_from_mjcf)"
-        ),
-    })?;
+    // A3. Type-specific directory takes precedence over assetdir.
+    let type_dir = match kind {
+        AssetKind::Mesh => compiler.meshdir.as_deref(),
+        AssetKind::Texture => compiler.texturedir.as_deref(),
+    };
 
-    let resolved = base.join(path);
+    // Try: type-specific dir, then assetdir, then bare base_path
+    let resolved = if let Some(dir) = type_dir.or(compiler.assetdir.as_deref()) {
+        let dir_path = Path::new(dir);
+        if dir_path.is_absolute() {
+            dir_path.join(path)
+        } else if let Some(base) = base_path {
+            base.join(dir_path).join(path)
+        } else {
+            // No base path but relative dir — try dir/filename as-is
+            dir_path.join(path)
+        }
+    } else if let Some(base) = base_path {
+        base.join(path)
+    } else {
+        return Err(ModelConversionError {
+            message: format!(
+                "asset file '{file_path}' is relative but no base path provided (use load_model_from_file or pass base_path to model_from_mjcf)"
+            ),
+        });
+    };
 
     if !resolved.exists() {
         return Err(ModelConversionError {
             message: format!(
-                "mesh file not found: '{}' (resolved to '{}')",
+                "asset file not found: '{}' (resolved to '{}')",
                 file_path,
                 resolved.display()
             ),
@@ -3215,11 +3469,12 @@ fn resolve_mesh_path(
 fn load_mesh_file(
     file_path: &str,
     base_path: Option<&Path>,
+    compiler: &MjcfCompiler,
     scale: Vector3<f64>,
     mesh_name: &str,
 ) -> std::result::Result<TriangleMeshData, ModelConversionError> {
-    // 1. Resolve path
-    let resolved_path = resolve_mesh_path(file_path, base_path)?;
+    // 1. Resolve path using compiler path settings
+    let resolved_path = resolve_asset_path(file_path, base_path, compiler, AssetKind::Mesh)?;
 
     // 2. Load mesh via mesh-io
     let indexed_mesh = mesh_io::load_mesh(&resolved_path).map_err(|e| ModelConversionError {
@@ -3338,15 +3593,20 @@ fn convert_mjcf_hfield(
 fn convert_mjcf_mesh(
     mjcf_mesh: &MjcfMesh,
     base_path: Option<&Path>,
+    compiler: &MjcfCompiler,
 ) -> std::result::Result<TriangleMeshData, ModelConversionError> {
     // Dispatch based on data source
     match (&mjcf_mesh.vertex, &mjcf_mesh.file) {
         // Embedded vertex data takes precedence (MuJoCo semantics)
         (Some(verts), _) => convert_embedded_mesh(mjcf_mesh, verts),
         // File-based loading
-        (None, Some(file_path)) => {
-            load_mesh_file(file_path, base_path, mjcf_mesh.scale, &mjcf_mesh.name)
-        }
+        (None, Some(file_path)) => load_mesh_file(
+            file_path,
+            base_path,
+            compiler,
+            mjcf_mesh.scale,
+            &mjcf_mesh.name,
+        ),
         // Neither specified
         (None, None) => Err(ModelConversionError {
             message: format!(
@@ -3502,15 +3762,251 @@ fn extract_inertial_properties(
     }
 }
 
+/// Apply `discardvisual` pre-processing: remove visual-only geoms (contype=0, conaffinity=0)
+/// and unreferenced mesh assets. Geoms referenced by sensors or actuators are protected.
+fn apply_discardvisual(mjcf: &mut MjcfModel) {
+    // Collect geom names referenced by sensors (site-based sensors reference sites, not geoms,
+    // but frame sensors can resolve to geoms) and actuators (no geom refs currently, but future-proof).
+    let mut protected_geoms: HashSet<String> = HashSet::new();
+    for sensor in &mjcf.sensors {
+        // Frame sensors can resolve objname as a geom; protect any objname that might be a geom.
+        if let Some(ref name) = sensor.objname {
+            protected_geoms.insert(name.clone());
+        }
+    }
+
+    fn remove_visual_geoms(body: &mut MjcfBody, protected: &HashSet<String>) {
+        body.geoms.retain(|g| {
+            g.contype != 0
+                || g.conaffinity != 0
+                || g.name.as_ref().is_some_and(|n| protected.contains(n))
+        });
+        for child in &mut body.children {
+            remove_visual_geoms(child, protected);
+        }
+    }
+
+    remove_visual_geoms(&mut mjcf.worldbody, &protected_geoms);
+
+    // Collect all mesh names still referenced
+    fn collect_mesh_refs(body: &MjcfBody, refs: &mut HashSet<String>) {
+        for g in &body.geoms {
+            if let Some(ref m) = g.mesh {
+                refs.insert(m.clone());
+            }
+        }
+        for child in &body.children {
+            collect_mesh_refs(child, refs);
+        }
+    }
+    let mut used_meshes = HashSet::new();
+    collect_mesh_refs(&mjcf.worldbody, &mut used_meshes);
+
+    // Remove unreferenced meshes
+    mjcf.meshes.retain(|m| used_meshes.contains(&m.name));
+}
+
+/// Apply `fusestatic` pre-processing: fuse jointless bodies into their parent.
+///
+/// Bodies without joints are "static" relative to their parent. Fusing them
+/// transfers their geoms, sites, and children to the parent, reducing the body
+/// count. Bodies referenced by equality constraints, sensors, or actuators are
+/// not fused (their names must remain valid).
+fn apply_fusestatic(mjcf: &mut MjcfModel) {
+    // Collect names of bodies referenced by constraints, sensors, actuators, skins
+    let mut protected: HashSet<String> = HashSet::new();
+
+    // Equality constraints
+    for c in &mjcf.equality.connects {
+        protected.insert(c.body1.clone());
+        if let Some(ref b2) = c.body2 {
+            protected.insert(b2.clone());
+        }
+    }
+    for w in &mjcf.equality.welds {
+        protected.insert(w.body1.clone());
+        if let Some(ref b2) = w.body2 {
+            protected.insert(b2.clone());
+        }
+    }
+
+    // Sensors that reference bodies: subtree sensors always reference body names,
+    // frame sensors can resolve to bodies. Protect objnames for both.
+    for sensor in &mjcf.sensors {
+        use crate::types::MjcfSensorType;
+        match sensor.sensor_type {
+            MjcfSensorType::Subtreecom
+            | MjcfSensorType::Subtreelinvel
+            | MjcfSensorType::Subtreeangmom
+            | MjcfSensorType::Framepos
+            | MjcfSensorType::Framequat
+            | MjcfSensorType::Framexaxis
+            | MjcfSensorType::Frameyaxis
+            | MjcfSensorType::Framezaxis
+            | MjcfSensorType::Framelinvel
+            | MjcfSensorType::Frameangvel
+            | MjcfSensorType::Framelinacc
+            | MjcfSensorType::Frameangacc => {
+                if let Some(ref name) = sensor.objname {
+                    protected.insert(name.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Actuators with body transmission (adhesion actuators)
+    for actuator in &mjcf.actuators {
+        if let Some(ref body_name) = actuator.body {
+            protected.insert(body_name.clone());
+        }
+    }
+
+    // Skin bones reference body names
+    for skin in &mjcf.skins {
+        for bone in &skin.bones {
+            protected.insert(bone.body.clone());
+        }
+    }
+
+    // Recursively fuse static children in the worldbody tree.
+    fuse_static_body(&mut mjcf.worldbody, &protected, &mjcf.compiler);
+}
+
+/// Convert a `UnitQuaternion` back to MJCF `Vector4<f64>` (w, x, y, z order).
+fn quat_to_wxyz(q: &UnitQuaternion<f64>) -> Vector4<f64> {
+    let qi = q.into_inner();
+    Vector4::new(qi.w, qi.i, qi.j, qi.k)
+}
+
+/// Compute a body's rotation, accounting for the compiler's angle unit and euler sequence.
+/// This is needed because `MjcfBody::rotation()` always interprets euler as radians,
+/// but at the MJCF pre-processing stage values may be in degrees.
+fn body_rotation_with_compiler(body: &MjcfBody, compiler: &MjcfCompiler) -> UnitQuaternion<f64> {
+    if let Some(euler) = body.euler {
+        let euler_rad = if compiler.angle == AngleUnit::Degree {
+            euler * (std::f64::consts::PI / 180.0)
+        } else {
+            euler
+        };
+        euler_seq_to_quat(euler_rad, &compiler.eulerseq)
+    } else if let Some(aa) = body.axisangle {
+        let axis = Vector3::new(aa.x, aa.y, aa.z);
+        let angle = if compiler.angle == AngleUnit::Degree {
+            aa.w * (std::f64::consts::PI / 180.0)
+        } else {
+            aa.w
+        };
+        let norm = axis.norm();
+        if norm > 1e-10 {
+            UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle)
+        } else {
+            UnitQuaternion::identity()
+        }
+    } else {
+        quat_from_wxyz(body.quat)
+    }
+}
+
+/// Compute a geom's rotation from its quat/euler, accounting for compiler angle settings.
+fn geom_rotation_with_compiler(geom: &MjcfGeom, compiler: &MjcfCompiler) -> UnitQuaternion<f64> {
+    if let Some(euler) = geom.euler {
+        let euler_rad = if compiler.angle == AngleUnit::Degree {
+            euler * (std::f64::consts::PI / 180.0)
+        } else {
+            euler
+        };
+        euler_seq_to_quat(euler_rad, &compiler.eulerseq)
+    } else {
+        quat_from_wxyz(geom.quat)
+    }
+}
+
+/// Recursively fuse jointless, unprotected children into their parent body.
+/// Operates on a parent body: scans its children, and for any that are static
+/// (no joints, not protected), transfers their geoms, sites, and grandchildren
+/// to the parent, adjusting positions and orientations by the fused body's frame.
+fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler: &MjcfCompiler) {
+    // Depth-first: fuse within each child first
+    for child in &mut parent.children {
+        fuse_static_body(child, protected, compiler);
+    }
+
+    // Now fuse static children into this parent
+    let mut i = 0;
+    while i < parent.children.len() {
+        let is_static =
+            parent.children[i].joints.is_empty() && !protected.contains(&parent.children[i].name);
+
+        if is_static {
+            let mut removed = parent.children.remove(i);
+            let body_pos = removed.pos;
+            let body_quat = body_rotation_with_compiler(&removed, compiler);
+            let has_rotation = body_quat.angle() > 1e-10;
+
+            // Transform geoms into parent frame
+            for g in &mut removed.geoms {
+                if has_rotation {
+                    g.pos = body_quat * g.pos + body_pos;
+                    let composed = body_quat * geom_rotation_with_compiler(g, compiler);
+                    g.quat = quat_to_wxyz(&composed);
+                    g.euler = None; // Normalize to quat-only after composition
+                } else {
+                    g.pos += body_pos;
+                }
+            }
+
+            // Transform sites into parent frame (sites have only quat, no euler)
+            for s in &mut removed.sites {
+                if has_rotation {
+                    s.pos = body_quat * s.pos + body_pos;
+                    let site_quat = quat_from_wxyz(s.quat);
+                    let composed = body_quat * site_quat;
+                    s.quat = quat_to_wxyz(&composed);
+                } else {
+                    s.pos += body_pos;
+                }
+            }
+
+            // Transform child body frames into parent frame
+            for c in &mut removed.children {
+                if has_rotation {
+                    c.pos = body_quat * c.pos + body_pos;
+                    let child_quat = body_rotation_with_compiler(c, compiler);
+                    let composed = body_quat * child_quat;
+                    c.quat = quat_to_wxyz(&composed);
+                    c.euler = None;
+                    c.axisangle = None;
+                } else {
+                    c.pos += body_pos;
+                }
+            }
+
+            // Transfer geoms and sites to parent
+            parent.geoms.extend(removed.geoms);
+            parent.sites.extend(removed.sites);
+
+            // Splice grandchildren at position i
+            for (j, gc) in removed.children.into_iter().enumerate() {
+                parent.children.insert(i + j, gc);
+            }
+            // Don't increment i — re-check from the same position
+        } else {
+            i += 1;
+        }
+    }
+}
+
 /// Compute inertia from geoms (fallback when no explicit inertial).
 fn compute_inertia_from_geoms(
     geoms: &[MjcfGeom],
 ) -> (f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>) {
     if geoms.is_empty() {
-        // No geoms: use small default mass
+        // No geoms: zero mass/inertia (matches MuJoCo).
+        // Use boundmass/boundinertia to set minimums instead.
         return (
-            0.001,
-            Vector3::new(0.001, 0.001, 0.001),
+            0.0,
+            Vector3::zeros(),
             Vector3::zeros(),
             UnitQuaternion::identity(),
         );
@@ -4342,15 +4838,16 @@ mod tests {
     // Mesh file loading tests
     // =========================================================================
 
-    /// Test resolve_mesh_path with absolute path.
+    /// Test resolve_asset_path with absolute path.
     #[test]
-    fn test_resolve_mesh_path_absolute() {
+    fn test_resolve_asset_path_absolute() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let mesh_path = temp_dir.path().join("test.stl");
         std::fs::write(&mesh_path, b"dummy").expect("Failed to write test file");
 
         let abs_path = mesh_path.to_string_lossy().to_string();
-        let result = resolve_mesh_path(&abs_path, None);
+        let compiler = MjcfCompiler::default();
+        let result = resolve_asset_path(&abs_path, None, &compiler, AssetKind::Mesh);
         assert!(
             result.is_ok(),
             "Absolute path should resolve without base_path"
@@ -4358,16 +4855,17 @@ mod tests {
         assert_eq!(result.unwrap(), mesh_path);
     }
 
-    /// Test resolve_mesh_path fails for non-existent absolute path.
+    /// Test resolve_asset_path fails for non-existent absolute path.
     #[test]
-    fn test_resolve_mesh_path_absolute_not_found() {
+    fn test_resolve_asset_path_absolute_not_found() {
         // Use platform-appropriate absolute path that definitely doesn't exist
         #[cfg(windows)]
         let nonexistent_path = "C:\\nonexistent_dir_12345\\mesh.stl";
         #[cfg(not(windows))]
         let nonexistent_path = "/nonexistent_dir_12345/mesh.stl";
 
-        let result = resolve_mesh_path(nonexistent_path, None);
+        let compiler = MjcfCompiler::default();
+        let result = resolve_asset_path(nonexistent_path, None, &compiler, AssetKind::Mesh);
         assert!(result.is_err());
         assert!(
             result.unwrap_err().to_string().contains("not found"),
@@ -4375,36 +4873,89 @@ mod tests {
         );
     }
 
-    /// Test resolve_mesh_path with relative path and base_path.
+    /// Test resolve_asset_path with relative path and base_path.
     #[test]
-    fn test_resolve_mesh_path_relative() {
+    fn test_resolve_asset_path_relative() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let mesh_path = temp_dir.path().join("meshes").join("test.stl");
         std::fs::create_dir_all(mesh_path.parent().unwrap()).unwrap();
         std::fs::write(&mesh_path, b"dummy").expect("Failed to write test file");
 
-        let result = resolve_mesh_path("meshes/test.stl", Some(temp_dir.path()));
+        let compiler = MjcfCompiler::default();
+        let result = resolve_asset_path(
+            "meshes/test.stl",
+            Some(temp_dir.path()),
+            &compiler,
+            AssetKind::Mesh,
+        );
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), mesh_path);
     }
 
-    /// Test resolve_mesh_path fails for relative path without base_path.
+    /// Test resolve_asset_path fails for relative path without base_path.
     #[test]
-    fn test_resolve_mesh_path_relative_no_base() {
-        let result = resolve_mesh_path("meshes/test.stl", None);
+    fn test_resolve_asset_path_relative_no_base() {
+        let compiler = MjcfCompiler::default();
+        let result = resolve_asset_path("meshes/test.stl", None, &compiler, AssetKind::Mesh);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("relative"));
         assert!(err.contains("no base path"));
     }
 
-    /// Test resolve_mesh_path fails for relative path when file doesn't exist.
+    /// Test resolve_asset_path fails for relative path when file doesn't exist.
     #[test]
-    fn test_resolve_mesh_path_relative_not_found() {
+    fn test_resolve_asset_path_relative_not_found() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
-        let result = resolve_mesh_path("nonexistent.stl", Some(temp_dir.path()));
+        let compiler = MjcfCompiler::default();
+        let result = resolve_asset_path(
+            "nonexistent.stl",
+            Some(temp_dir.path()),
+            &compiler,
+            AssetKind::Mesh,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    /// Test resolve_asset_path with meshdir setting.
+    #[test]
+    fn test_resolve_asset_path_meshdir() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("custom_meshes").join("test.stl");
+        std::fs::create_dir_all(mesh_path.parent().unwrap()).unwrap();
+        std::fs::write(&mesh_path, b"dummy").expect("Failed to write test file");
+
+        let mut compiler = MjcfCompiler::default();
+        compiler.meshdir = Some("custom_meshes".to_string());
+        let result = resolve_asset_path(
+            "test.stl",
+            Some(temp_dir.path()),
+            &compiler,
+            AssetKind::Mesh,
+        );
+        assert!(result.is_ok(), "meshdir should resolve: {result:?}");
+        assert_eq!(result.unwrap(), mesh_path);
+    }
+
+    /// Test resolve_asset_path with strippath.
+    #[test]
+    fn test_resolve_asset_path_strippath() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let mesh_path = temp_dir.path().join("test.stl");
+        std::fs::write(&mesh_path, b"dummy").expect("Failed to write test file");
+
+        let mut compiler = MjcfCompiler::default();
+        compiler.strippath = true;
+        // File path has directory components, but strippath removes them
+        let result = resolve_asset_path(
+            "some/nested/dir/test.stl",
+            Some(temp_dir.path()),
+            &compiler,
+            AssetKind::Mesh,
+        );
+        assert!(result.is_ok(), "strippath should strip dirs: {result:?}");
+        assert_eq!(result.unwrap(), mesh_path);
     }
 
     /// Helper to create a simple STL file for testing.
@@ -4435,6 +4986,7 @@ mod tests {
         let result = load_mesh_file(
             &mesh_path.to_string_lossy(),
             None,
+            &MjcfCompiler::default(),
             Vector3::new(1.0, 1.0, 1.0),
             "test_mesh",
         );
@@ -4462,6 +5014,7 @@ mod tests {
         let unscaled = load_mesh_file(
             &mesh_path.to_string_lossy(),
             None,
+            &MjcfCompiler::default(),
             Vector3::new(1.0, 1.0, 1.0),
             "unscaled",
         )
@@ -4471,6 +5024,7 @@ mod tests {
         let scaled = load_mesh_file(
             &mesh_path.to_string_lossy(),
             None,
+            &MjcfCompiler::default(),
             Vector3::new(2.0, 2.0, 2.0),
             "scaled",
         )
@@ -4512,6 +5066,7 @@ mod tests {
         let scaled = load_mesh_file(
             &mesh_path.to_string_lossy(),
             None,
+            &MjcfCompiler::default(),
             Vector3::new(1.0, 2.0, 3.0),
             "nonuniform",
         )
@@ -4521,6 +5076,7 @@ mod tests {
         let unscaled = load_mesh_file(
             &mesh_path.to_string_lossy(),
             None,
+            &MjcfCompiler::default(),
             Vector3::new(1.0, 1.0, 1.0),
             "unscaled",
         )
@@ -4544,6 +5100,7 @@ mod tests {
         let result = load_mesh_file(
             &mesh_path.to_string_lossy(),
             None,
+            &MjcfCompiler::default(),
             Vector3::new(1.0, 1.0, 1.0),
             "unsupported",
         );
@@ -4567,6 +5124,7 @@ mod tests {
         let result = load_mesh_file(
             &mesh_path.to_string_lossy(),
             None,
+            &MjcfCompiler::default(),
             Vector3::new(1.0, 1.0, 1.0),
             "corrupt_mesh",
         );
@@ -4594,7 +5152,7 @@ mod tests {
             scale: Vector3::new(1.0, 1.0, 1.0),
         };
 
-        let result = convert_mjcf_mesh(&mjcf_mesh, None);
+        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
         assert!(result.is_ok());
         let mesh_data = result.unwrap();
         assert!(!mesh_data.vertices().is_empty());
@@ -4618,7 +5176,7 @@ mod tests {
             scale: Vector3::new(1.0, 1.0, 1.0),
         };
 
-        let result = convert_mjcf_mesh(&mjcf_mesh, Some(temp_dir.path()));
+        let result = convert_mjcf_mesh(&mjcf_mesh, Some(temp_dir.path()), &MjcfCompiler::default());
         assert!(result.is_ok());
     }
 
@@ -4643,7 +5201,7 @@ mod tests {
             scale: Vector3::new(1.0, 1.0, 1.0),
         };
 
-        let result = convert_mjcf_mesh(&mjcf_mesh, None);
+        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
         assert!(result.is_ok());
         let mesh_data = result.unwrap();
         assert_eq!(mesh_data.vertices().len(), 4);
@@ -4661,7 +5219,7 @@ mod tests {
             scale: Vector3::new(1.0, 1.0, 1.0),
         };
 
-        let result = convert_mjcf_mesh(&mjcf_mesh, None);
+        let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("no vertex data"));
     }
@@ -5075,5 +5633,1121 @@ mod tests {
             );
         }
         // 10th element (index 9) is silently dropped — no error, and array is only 9 elements
+    }
+
+    // =========================================================================
+    // Compiler / Angle Conversion / Euler Sequence Tests
+    // =========================================================================
+
+    #[test]
+    fn test_euler_seq_to_quat_intrinsic_xyz() {
+        // Default MuJoCo sequence: intrinsic xyz → Rx * Ry * Rz
+        let euler = Vector3::new(0.1, 0.2, 0.3);
+        let q = euler_seq_to_quat(euler, "xyz");
+
+        let rx = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.1);
+        let ry = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.2);
+        let rz = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.3);
+        let expected = rx * ry * rz;
+
+        assert!(
+            (q.into_inner() - expected.into_inner()).norm() < 1e-12,
+            "intrinsic xyz failed: got {q:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_euler_seq_to_quat_extrinsic_xyz() {
+        // Extrinsic XYZ → pre-multiply: Rz * Ry * Rx (= intrinsic zyx)
+        let euler = Vector3::new(0.1, 0.2, 0.3);
+        let q = euler_seq_to_quat(euler, "XYZ");
+
+        let rx = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.1);
+        let ry = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.2);
+        let rz = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.3);
+        let expected = rz * ry * rx;
+
+        assert!(
+            (q.into_inner() - expected.into_inner()).norm() < 1e-12,
+            "extrinsic XYZ failed: got {q:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_euler_seq_to_quat_mixed_case() {
+        // Mixed: XYz → extrinsic X, extrinsic Y, intrinsic z
+        // q = identity
+        // ch='X' (extrinsic): q = Rx * q = Rx
+        // ch='Y' (extrinsic): q = Ry * q = Ry * Rx
+        // ch='z' (intrinsic): q = q * Rz = Ry * Rx * Rz
+        let euler = Vector3::new(0.1, 0.2, 0.3);
+        let q = euler_seq_to_quat(euler, "XYz");
+
+        let rx = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.1);
+        let ry = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.2);
+        let rz = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.3);
+        let expected = ry * rx * rz;
+
+        assert!(
+            (q.into_inner() - expected.into_inner()).norm() < 1e-12,
+            "mixed XYz failed: got {q:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_euler_seq_zyx_matches_different_order() {
+        // Intrinsic zyx should match nalgebra's from_euler_angles(roll, pitch, yaw)
+        // which is extrinsic XYZ
+        let euler = Vector3::new(0.3, 0.2, 0.1); // z, y, x angles
+        let q = euler_seq_to_quat(euler, "zyx");
+
+        // Intrinsic zyx: Rz * Ry * Rx
+        let rz = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 0.3);
+        let ry = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), 0.2);
+        let rx = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 0.1);
+        let expected = rz * ry * rx;
+
+        assert!(
+            (q.into_inner() - expected.into_inner()).norm() < 1e-12,
+            "intrinsic zyx failed"
+        );
+    }
+
+    #[test]
+    fn test_angle_conversion_hinge_joint_degrees() {
+        // Default compiler: angle=degree. Hinge range in degrees → converted to radians.
+        let model = load_model(
+            r#"
+            <mujoco model="deg_test">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" limited="true" range="-90 90"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let pi = std::f64::consts::PI;
+        assert!(
+            (model.jnt_range[0].0 - (-pi / 2.0)).abs() < 1e-10,
+            "range lo: expected {}, got {}",
+            -pi / 2.0,
+            model.jnt_range[0].0
+        );
+        assert!(
+            (model.jnt_range[0].1 - (pi / 2.0)).abs() < 1e-10,
+            "range hi: expected {}, got {}",
+            pi / 2.0,
+            model.jnt_range[0].1
+        );
+    }
+
+    #[test]
+    fn test_angle_conversion_radian_passthrough() {
+        // With angle="radian", values pass through unchanged.
+        let model = load_model(
+            r#"
+            <mujoco model="rad_test">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" limited="true" range="-1.57 1.57"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(
+            (model.jnt_range[0].0 - (-1.57)).abs() < 1e-10,
+            "range lo: expected -1.57, got {}",
+            model.jnt_range[0].0
+        );
+        assert!(
+            (model.jnt_range[0].1 - 1.57).abs() < 1e-10,
+            "range hi: expected 1.57, got {}",
+            model.jnt_range[0].1
+        );
+    }
+
+    #[test]
+    fn test_angle_conversion_slide_joint_not_converted() {
+        // Slide joint range is translational — never converted even with angle=degree.
+        let model = load_model(
+            r#"
+            <mujoco model="slide_test">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="slide" limited="true" range="-0.5 0.5"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(
+            (model.jnt_range[0].0 - (-0.5)).abs() < 1e-10,
+            "slide range should not be converted"
+        );
+        assert!(
+            (model.jnt_range[0].1 - 0.5).abs() < 1e-10,
+            "slide range should not be converted"
+        );
+    }
+
+    #[test]
+    fn test_angle_conversion_springref_degrees() {
+        // Hinge springref in degrees → converted to radians.
+        let model = load_model(
+            r#"
+            <mujoco model="springref_deg">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" stiffness="100" springref="45"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = 45.0 * std::f64::consts::PI / 180.0;
+        assert!(
+            (model.jnt_springref[0] - expected).abs() < 1e-10,
+            "springref: expected {expected}, got {}",
+            model.jnt_springref[0]
+        );
+    }
+
+    #[test]
+    fn test_body_axisangle_orientation() {
+        // Body with axisangle should produce correct quaternion.
+        // axisangle="0 0 1 90" with default degree → 90° around Z.
+        let model = load_model(
+            r#"
+            <mujoco model="axisangle_test">
+                <worldbody>
+                    <body name="b" axisangle="0 0 1 90">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // 90° around Z: quaternion = [cos(45°), 0, 0, sin(45°)]
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let got = model.body_quat[1]; // body 0 is world, body 1 is "b"
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "axisangle 90° Z: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_body_axisangle_radian() {
+        // With angle="radian", axisangle angle is in radians.
+        let pi_2 = std::f64::consts::FRAC_PI_2;
+        let model = load_model(&format!(
+            r#"
+                <mujoco model="axisangle_rad">
+                    <compiler angle="radian"/>
+                    <worldbody>
+                        <body name="b" axisangle="0 0 1 {pi_2}">
+                            <geom type="sphere" size="0.1" mass="1.0"/>
+                        </body>
+                    </worldbody>
+                </mujoco>
+                "#,
+        ))
+        .expect("should load");
+
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), pi_2);
+        let got = model.body_quat[1];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "axisangle radian: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_euler_seq_zyx_body_orientation() {
+        // With eulerseq="ZYX" and angle="radian", body euler should use ZYX sequence.
+        let model = load_model(
+            r#"
+            <mujoco model="eulerseq_test">
+                <compiler angle="radian" eulerseq="ZYX"/>
+                <worldbody>
+                    <body name="b" euler="0.3 0.2 0.1">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = euler_seq_to_quat(Vector3::new(0.3, 0.2, 0.1), "ZYX");
+        let got = model.body_quat[1];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "ZYX euler: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn test_autolimits_infers_limited_from_range() {
+        // Default autolimits=true: range present + no explicit limited → limited=true.
+        let model = load_model(
+            r#"
+            <mujoco model="autolimits_test">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" range="-1.0 1.0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(
+            model.jnt_limited[0],
+            "autolimits should infer limited=true from range"
+        );
+    }
+
+    #[test]
+    fn test_autolimits_false_requires_explicit_limited() {
+        // With autolimits=false, range without limited → limited=false.
+        let model = load_model(
+            r#"
+            <mujoco model="no_autolimits">
+                <compiler angle="radian" autolimits="false"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" range="-1.0 1.0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(
+            !model.jnt_limited[0],
+            "autolimits=false should not infer limited"
+        );
+    }
+
+    #[test]
+    fn test_autolimits_explicit_limited_takes_precedence() {
+        // Explicit limited=false overrides autolimits inference.
+        let model = load_model(
+            r#"
+            <mujoco model="explicit_limited">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge" limited="false" range="-1.0 1.0"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(
+            !model.jnt_limited[0],
+            "explicit limited=false should override autolimits"
+        );
+    }
+
+    #[test]
+    fn test_autolimits_no_range_no_limited() {
+        // No range and no limited → limited=false (regardless of autolimits).
+        let model = load_model(
+            r#"
+            <mujoco model="no_range">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="hinge"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        assert!(!model.jnt_limited[0], "no range should mean not limited");
+    }
+
+    // ── Mass pipeline tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_inertiafromgeom_true_overrides_explicit_inertial() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" inertiafromgeom="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <inertial pos="0 0 0" mass="999.0" diaginertia="1 1 1"/>
+                        <geom type="sphere" size="0.1" mass="2.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // inertiafromgeom="true" → geom mass (2.0) overrides explicit 999.0
+        assert!(
+            (model.body_mass[1] - 2.0).abs() < 1e-10,
+            "mass should come from geom, got {}",
+            model.body_mass[1]
+        );
+    }
+
+    #[test]
+    fn test_inertiafromgeom_false_uses_explicit_only() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" inertiafromgeom="false"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <inertial pos="0 0 0" mass="5.0" diaginertia="1 1 1"/>
+                        <geom type="sphere" size="0.1" mass="2.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        assert!(
+            (model.body_mass[1] - 5.0).abs() < 1e-10,
+            "mass should come from explicit inertial, got {}",
+            model.body_mass[1]
+        );
+    }
+
+    #[test]
+    fn test_inertiafromgeom_false_no_inertial_gives_zero() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" inertiafromgeom="false"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom type="sphere" size="0.1" mass="2.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        assert!(
+            model.body_mass[1].abs() < 1e-10,
+            "mass should be zero without explicit inertial, got {}",
+            model.body_mass[1]
+        );
+    }
+
+    #[test]
+    fn test_inertiafromgeom_auto_no_geoms_gives_zero() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <joint type="hinge" axis="0 1 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // Auto mode with no geoms and no inertial → zero mass
+        assert!(
+            model.body_mass[1].abs() < 1e-10,
+            "empty body should have zero mass, got {}",
+            model.body_mass[1]
+        );
+    }
+
+    #[test]
+    fn test_boundmass_clamps_minimum() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" boundmass="0.5"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom type="sphere" size="0.01" mass="0.001"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        assert!(
+            (model.body_mass[1] - 0.5).abs() < 1e-10,
+            "mass should be clamped to 0.5, got {}",
+            model.body_mass[1]
+        );
+    }
+
+    #[test]
+    fn test_boundinertia_clamps_minimum() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" boundinertia="0.01"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.001 0.001 0.001"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        let inertia = model.body_inertia[1];
+        assert!(
+            (inertia.x - 0.01).abs() < 1e-10
+                && (inertia.y - 0.01).abs() < 1e-10
+                && (inertia.z - 0.01).abs() < 1e-10,
+            "inertia should be clamped to 0.01, got {inertia:?}"
+        );
+    }
+
+    #[test]
+    fn test_balanceinertia_fixes_triangle_inequality() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" balanceinertia="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.1 0.1 0.5"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // 0.1 + 0.1 < 0.5 violates triangle inequality → mean = (0.1+0.1+0.5)/3
+        let expected = (0.1 + 0.1 + 0.5) / 3.0;
+        let inertia = model.body_inertia[1];
+        assert!(
+            (inertia.x - expected).abs() < 1e-10
+                && (inertia.y - expected).abs() < 1e-10
+                && (inertia.z - expected).abs() < 1e-10,
+            "inertia should be balanced to mean {expected}, got {inertia:?}"
+        );
+    }
+
+    #[test]
+    fn test_balanceinertia_no_change_when_valid() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" balanceinertia="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <inertial pos="0 0 0" mass="1.0" diaginertia="0.3 0.3 0.3"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        let inertia = model.body_inertia[1];
+        assert!(
+            (inertia.x - 0.3).abs() < 1e-10
+                && (inertia.y - 0.3).abs() < 1e-10
+                && (inertia.z - 0.3).abs() < 1e-10,
+            "valid inertia should not change, got {inertia:?}"
+        );
+    }
+
+    #[test]
+    fn test_settotalmass_rescales() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" settotalmass="10.0"/>
+                <worldbody>
+                    <body name="a" pos="0 0 0">
+                        <geom type="sphere" size="0.1" mass="3.0"/>
+                    </body>
+                    <body name="b" pos="1 0 0">
+                        <geom type="sphere" size="0.1" mass="7.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // Original total = 3 + 7 = 10, settotalmass = 10 → no change
+        let total: f64 = (1..model.nbody).map(|i| model.body_mass[i]).sum();
+        assert!(
+            (total - 10.0).abs() < 1e-10,
+            "total mass should be 10.0, got {total}"
+        );
+    }
+
+    #[test]
+    fn test_settotalmass_rescales_different_target() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" settotalmass="20.0"/>
+                <worldbody>
+                    <body name="a" pos="0 0 0">
+                        <geom type="sphere" size="0.1" mass="3.0"/>
+                    </body>
+                    <body name="b" pos="1 0 0">
+                        <geom type="sphere" size="0.1" mass="7.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // Original total = 10, target = 20 → scale = 2x
+        let total: f64 = (1..model.nbody).map(|i| model.body_mass[i]).sum();
+        assert!(
+            (total - 20.0).abs() < 1e-10,
+            "total mass should be 20.0, got {total}"
+        );
+        // Mass ratios should be preserved: a=6.0, b=14.0
+        assert!(
+            (model.body_mass[1] - 6.0).abs() < 1e-10,
+            "body a mass should be 6.0, got {}",
+            model.body_mass[1]
+        );
+        assert!(
+            (model.body_mass[2] - 14.0).abs() < 1e-10,
+            "body b mass should be 14.0, got {}",
+            model.body_mass[2]
+        );
+    }
+
+    #[test]
+    fn test_mass_pipeline_order_bound_then_settotalmass() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" boundmass="1.0" settotalmass="5.0"/>
+                <worldbody>
+                    <body name="a" pos="0 0 0">
+                        <geom type="sphere" size="0.01" mass="0.1"/>
+                    </body>
+                    <body name="b" pos="1 0 0">
+                        <geom type="sphere" size="0.1" mass="2.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // After boundmass: a=1.0, b=2.0, total=3.0
+        // After settotalmass(5.0): scale=5/3, a=5/3, b=10/3
+        let total: f64 = (1..model.nbody).map(|i| model.body_mass[i]).sum();
+        assert!(
+            (total - 5.0).abs() < 1e-10,
+            "total mass should be 5.0, got {total}"
+        );
+    }
+
+    // ── Include file integration tests ───────────────────────────────
+
+    #[test]
+    fn test_load_model_from_file_with_includes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Main model file
+        std::fs::write(
+            dir.path().join("main.xml"),
+            r#"<mujoco model="included">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <include file="arm.xml"/>
+                </worldbody>
+                <include file="actuators.xml"/>
+            </mujoco>"#,
+        )
+        .unwrap();
+
+        // Body definitions
+        std::fs::write(
+            dir.path().join("arm.xml"),
+            r#"<wrapper>
+                <body name="link1" pos="0 0 0.5">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05" fromto="0 0 0 0 0 0.5"/>
+                </body>
+            </wrapper>"#,
+        )
+        .unwrap();
+
+        // Actuator definitions
+        std::fs::write(
+            dir.path().join("actuators.xml"),
+            r#"<mujoco>
+                <actuator>
+                    <motor joint="j1" name="m1"/>
+                </actuator>
+            </mujoco>"#,
+        )
+        .unwrap();
+
+        let model = load_model_from_file(dir.path().join("main.xml")).expect("should load");
+        assert_eq!(model.name, "included");
+        assert!(model.nbody >= 2, "should have world + link1");
+        assert_eq!(model.njnt, 1, "should have 1 joint");
+        assert_eq!(model.nu, 1, "should have 1 actuator");
+    }
+
+    #[test]
+    fn test_load_model_string_rejects_includes() {
+        let result = load_model(
+            r#"<mujoco>
+                <worldbody>
+                    <include file="bodies.xml"/>
+                </worldbody>
+            </mujoco>"#,
+        );
+        assert!(result.is_err(), "string API should reject includes");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("include"),
+            "error should mention include: {err}"
+        );
+    }
+
+    // ── discardvisual / fusestatic tests ─────────────────────────────
+
+    #[test]
+    fn test_discardvisual_removes_visual_geoms() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" discardvisual="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom name="collision" type="sphere" size="0.1" contype="1" conaffinity="1"/>
+                        <geom name="visual" type="sphere" size="0.12" contype="0" conaffinity="0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // Only collision geom should remain
+        assert_eq!(model.ngeom, 1, "visual geom should be discarded");
+    }
+
+    #[test]
+    fn test_discardvisual_false_keeps_all_geoms() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" discardvisual="false"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom name="collision" type="sphere" size="0.1" contype="1" conaffinity="1"/>
+                        <geom name="visual" type="sphere" size="0.12" contype="0" conaffinity="0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        assert_eq!(
+            model.ngeom, 2,
+            "all geoms should remain when discardvisual=false"
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_merges_jointless_body() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1"/>
+                        <body name="static_child" pos="0 0 0.5">
+                            <geom type="box" size="0.05 0.05 0.05"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // static_child (no joints) should be fused into parent
+        // parent + world = 2 bodies (static_child merged)
+        assert_eq!(
+            model.nbody, 2,
+            "static child should be fused: nbody={}",
+            model.nbody
+        );
+        // Geoms: parent sphere + fused box = 2
+        assert_eq!(model.ngeom, 2, "both geoms should remain after fusion");
+    }
+
+    #[test]
+    fn test_fusestatic_preserves_jointed_body() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" fusestatic="true"/>
+                <worldbody>
+                    <body name="base" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1"/>
+                        <body name="link" pos="0 0 0.5">
+                            <joint name="j2" type="hinge" axis="0 1 0"/>
+                            <geom type="sphere" size="0.08"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        // Both bodies have joints — no fusion
+        assert_eq!(
+            model.nbody, 3,
+            "jointed bodies should not be fused: nbody={}",
+            model.nbody
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_false_preserves_all_bodies() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" fusestatic="false"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1"/>
+                        <body name="static_child" pos="0 0 0.5">
+                            <geom type="box" size="0.05 0.05 0.05"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+        assert_eq!(model.nbody, 3, "fusestatic=false should keep all bodies");
+    }
+
+    #[test]
+    fn test_fusestatic_orientation_handling() {
+        // A static body rotated 90° around Z should rotate its child geom position and orientation.
+        // Parent body at origin with a static child rotated 90° around Z at pos [1, 0, 0].
+        // Child has a geom at local pos [0.5, 0, 0].
+        // After fusion: geom pos should be rotated by 90° Z: [1, 0, 0] + rot90z([0.5, 0, 0])
+        //   = [1, 0, 0] + [0, 0.5, 0] = [1, 0.5, 0]
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom name="parent_geom" type="sphere" size="0.1" mass="1"/>
+                        <body name="rotated_static" pos="1 0 0" euler="0 0 90">
+                            <geom name="child_geom" type="sphere" size="0.05" pos="0.5 0 0" mass="0.5"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // The static body should be fused into parent: 2 bodies (world + parent)
+        assert_eq!(model.nbody, 2, "rotated static body should be fused");
+        // Parent should have 2 geoms (its own + child's)
+        assert_eq!(
+            model.body_geom_num[1], 2,
+            "parent should have 2 geoms after fusion"
+        );
+
+        // Check the fused geom position: should be [1, 0.5, 0] after rotation
+        // geom[0] is parent_geom (from worldbody geom processing), geom[1] is child_geom
+        let child_geom_idx = 1; // second geom on this body
+        let fused_pos = model.geom_pos[child_geom_idx];
+        assert!(
+            (fused_pos.x - 1.0).abs() < 1e-10,
+            "fused geom x should be 1.0, got {}",
+            fused_pos.x
+        );
+        assert!(
+            (fused_pos.y - 0.5).abs() < 1e-10,
+            "fused geom y should be 0.5 (rotated), got {}",
+            fused_pos.y
+        );
+        assert!(
+            fused_pos.z.abs() < 1e-10,
+            "fused geom z should be 0, got {}",
+            fused_pos.z
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_no_rotation_preserves_geom_euler() {
+        // A static body with NO rotation but a geom that HAS euler orientation.
+        // After fusion the geom euler should still produce the correct orientation.
+        // This tests the no-rotation branch: euler must remain valid in parent frame.
+        //
+        // Setup: static body at pos [0, 0, 1] with identity orientation.
+        //        geom at local pos [0, 0, 0] with euler="0 0 90" (45° around Z).
+        // After fusion: geom at [0, 0, 1] with same 90° Z rotation.
+        // Compare against a model WITHOUT fusestatic to verify identical geom_quat.
+        let with_fuse = load_model(
+            r#"
+            <mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom name="g0" type="sphere" size="0.1" mass="1"/>
+                        <body name="static_child" pos="0 0 1">
+                            <geom name="g1" type="sphere" size="0.05" pos="0 0 0" euler="0 0 90" mass="0.5"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("fuse model should load");
+
+        let without_fuse = load_model(
+            r#"
+            <mujoco>
+                <compiler fusestatic="false"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom name="g0" type="sphere" size="0.1" mass="1"/>
+                        <body name="static_child" pos="0 0 1">
+                            <geom name="g1" type="sphere" size="0.05" pos="0 0 0" euler="0 0 90" mass="0.5"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("no-fuse model should load");
+
+        // Find g1's geom index in each model
+        // With fusion: 2 bodies (world + parent), g1 is second geom on parent (idx 1)
+        // Without fusion: 3 bodies (world + parent + static_child), g1 is first geom on static_child (idx 1)
+        assert_eq!(with_fuse.nbody, 2, "fused model should have 2 bodies");
+        assert_eq!(without_fuse.nbody, 3, "unfused model should have 3 bodies");
+
+        // Both models should have 2 geoms total (g0 + g1)
+        assert_eq!(with_fuse.ngeom, 2);
+        assert_eq!(without_fuse.ngeom, 2);
+
+        // Geom quaternions should match — proving euler is preserved correctly through fusion
+        let fused_quat = with_fuse.geom_quat[1];
+        let unfused_quat = without_fuse.geom_quat[1];
+        let diff = (fused_quat.into_inner() - unfused_quat.into_inner()).norm();
+        assert!(
+            diff < 1e-10,
+            "fused geom quat should match unfused: fused={fused_quat:?}, unfused={unfused_quat:?}, diff={diff}"
+        );
+
+        // Geom positions should account for body offset
+        let fused_pos = with_fuse.geom_pos[1];
+        assert!(
+            (fused_pos.z - 1.0).abs() < 1e-10,
+            "fused geom z should be 1.0 (body offset), got {}",
+            fused_pos.z
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_protects_sensor_referenced_body() {
+        // A subtreecom sensor references a body by name — that body must not be fused.
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1" mass="1"/>
+                        <body name="sensor_target" pos="0 0 0.5">
+                            <geom type="box" size="0.05 0.05 0.05" mass="0.5"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <subtreecom name="com_sensor" body="sensor_target"/>
+                </sensor>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // sensor_target should NOT be fused because it's referenced by a sensor
+        assert_eq!(
+            model.nbody, 3,
+            "sensor-referenced body should be protected from fusion"
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_protects_actuator_referenced_body() {
+        // An adhesion actuator references a body by name — that body must not be fused.
+        // Test at the MjcfModel level since body transmission isn't wired to Model yet.
+        let mut mjcf = crate::parse_mjcf_str(
+            r#"
+            <mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom type="sphere" size="0.1"/>
+                        <body name="actuator_target" pos="0 0 0.5">
+                            <geom type="box" size="0.05 0.05 0.05"/>
+                        </body>
+                        <body name="unprotected" pos="0 0 1">
+                            <geom type="sphere" size="0.05"/>
+                        </body>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <adhesion name="stick" body="actuator_target" gain="1"/>
+                </actuator>
+            </mujoco>
+            "#,
+        )
+        .expect("should parse");
+
+        apply_fusestatic(&mut mjcf);
+
+        // actuator_target should still exist, unprotected should be fused
+        let parent = &mjcf.worldbody.children[0];
+        let child_names: Vec<&str> = parent.children.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            child_names.contains(&"actuator_target"),
+            "actuator-referenced body should be protected: {child_names:?}"
+        );
+        assert!(
+            !child_names.contains(&"unprotected"),
+            "unprotected body should be fused away: {child_names:?}"
+        );
+    }
+
+    #[test]
+    fn test_discardvisual_protects_sensor_referenced_geom() {
+        // A visual geom (contype=0, conaffinity=0) referenced by a frame sensor
+        // should NOT be discarded.
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" discardvisual="true"/>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <joint name="j1" type="hinge" axis="0 0 1"/>
+                        <geom name="collision_geom" type="sphere" size="0.1" mass="1"/>
+                        <geom name="visual_ref" type="sphere" size="0.2" contype="0" conaffinity="0"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <framepos name="vis_sensor" objname="visual_ref"/>
+                </sensor>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // visual_ref should be kept because it's referenced by a sensor
+        assert_eq!(
+            model.ngeom, 2,
+            "sensor-referenced visual geom should be protected from discard"
+        );
+    }
+
+    #[test]
+    fn test_resolve_asset_path_texturedir() {
+        let dir = tempfile::tempdir().unwrap();
+        let tex_dir = dir.path().join("textures");
+        std::fs::create_dir_all(&tex_dir).unwrap();
+        std::fs::write(tex_dir.join("wood.png"), b"fake_texture").unwrap();
+
+        let mut compiler = MjcfCompiler::default();
+        compiler.texturedir = Some("textures/".to_string());
+
+        let result =
+            resolve_asset_path("wood.png", Some(dir.path()), &compiler, AssetKind::Texture);
+        assert!(
+            result.is_ok(),
+            "texturedir should resolve texture paths: {result:?}"
+        );
+        assert!(
+            result.unwrap().ends_with("textures/wood.png"),
+            "should resolve to textures/wood.png"
+        );
+    }
+
+    #[test]
+    fn test_resolve_asset_path_texturedir_vs_meshdir() {
+        // meshdir applies to meshes, texturedir applies to textures
+        let dir = tempfile::tempdir().unwrap();
+        let mesh_dir = dir.path().join("meshes");
+        let tex_dir = dir.path().join("textures");
+        std::fs::create_dir_all(&mesh_dir).unwrap();
+        std::fs::create_dir_all(&tex_dir).unwrap();
+        std::fs::write(mesh_dir.join("box.stl"), b"fake_mesh").unwrap();
+        std::fs::write(tex_dir.join("wood.png"), b"fake_texture").unwrap();
+
+        let mut compiler = MjcfCompiler::default();
+        compiler.meshdir = Some("meshes/".to_string());
+        compiler.texturedir = Some("textures/".to_string());
+
+        let mesh_result =
+            resolve_asset_path("box.stl", Some(dir.path()), &compiler, AssetKind::Mesh);
+        let tex_result =
+            resolve_asset_path("wood.png", Some(dir.path()), &compiler, AssetKind::Texture);
+        assert!(mesh_result.is_ok(), "mesh should resolve via meshdir");
+        assert!(tex_result.is_ok(), "texture should resolve via texturedir");
+        assert!(
+            mesh_result.unwrap().to_string_lossy().contains("meshes"),
+            "mesh path should use meshdir"
+        );
+        assert!(
+            tex_result.unwrap().to_string_lossy().contains("textures"),
+            "texture path should use texturedir"
+        );
     }
 }

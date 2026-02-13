@@ -236,6 +236,107 @@ impl Default for MjcfFlag {
     }
 }
 
+// ============================================================================
+// Compiler Settings
+// ============================================================================
+
+/// Angular unit for MJCF compiler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum AngleUnit {
+    /// Angles specified in degrees (MuJoCo default).
+    #[default]
+    Degree,
+    /// Angles specified in radians.
+    Radian,
+}
+
+/// Inertia computation control from `<compiler inertiafromgeom="..."/>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum InertiaFromGeom {
+    /// Never compute inertia from geoms.
+    False,
+    /// Always compute inertia from geoms, overriding explicit `<inertial>`.
+    True,
+    /// Compute from geoms only when body lacks explicit `<inertial>` child.
+    #[default]
+    Auto,
+}
+
+/// Compiler settings from `<compiler>` element.
+///
+/// Controls how the MJCF model is compiled into simulation data.
+/// All attributes use MuJoCo defaults.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[allow(clippy::struct_excessive_bools)]
+pub struct MjcfCompiler {
+    /// Angular unit for all angle-valued attributes.
+    pub angle: AngleUnit,
+    /// Euler angle rotation sequence (3 chars from `{x,y,z,X,Y,Z}`).
+    pub eulerseq: String,
+    /// Directory for mesh and hfield files.
+    pub meshdir: Option<String>,
+    /// Directory for texture files.
+    pub texturedir: Option<String>,
+    /// Fallback directory for all asset files.
+    pub assetdir: Option<String>,
+    /// Automatically infer `limited` from `range` presence.
+    pub autolimits: bool,
+    /// Controls inertia computation from geoms.
+    pub inertiafromgeom: InertiaFromGeom,
+    /// Minimum mass for non-world bodies (0 = disabled).
+    pub boundmass: f64,
+    /// Minimum diagonal inertia for non-world bodies (0 = disabled).
+    pub boundinertia: f64,
+    /// Correct inertia matrix when triangle inequality is violated.
+    pub balanceinertia: bool,
+    /// Rescale all masses so total equals this value (-1 = disabled).
+    pub settotalmass: f64,
+    /// Strip directory components from asset file references.
+    pub strippath: bool,
+    /// Discard visual-only geoms during compilation.
+    pub discardvisual: bool,
+    /// Fuse static (jointless) bodies into their parent.
+    pub fusestatic: bool,
+    // Deferred attributes (stored, no behavior yet):
+    /// Fit AABBs to geom groups.
+    pub fitaabb: bool,
+    /// Enable multi-threaded compilation.
+    pub usethread: bool,
+    /// Align free joints to body frame.
+    pub alignfree: bool,
+}
+
+impl Default for MjcfCompiler {
+    fn default() -> Self {
+        Self {
+            angle: AngleUnit::Degree,
+            eulerseq: "xyz".to_string(),
+            meshdir: None,
+            texturedir: None,
+            assetdir: None,
+            autolimits: true,
+            inertiafromgeom: InertiaFromGeom::Auto,
+            boundmass: 0.0,
+            boundinertia: 0.0,
+            balanceinertia: false,
+            settotalmass: -1.0,
+            strippath: false,
+            discardvisual: false,
+            fusestatic: false,
+            fitaabb: false,
+            usethread: true,
+            alignfree: false,
+        }
+    }
+}
+
+// ============================================================================
+// Simulation Options
+// ============================================================================
+
 /// Global simulation options from `<option>` element.
 ///
 /// These settings control the core simulation parameters including
@@ -1086,8 +1187,9 @@ pub struct MjcfJoint {
     pub pos: Vector3<f64>,
     /// Joint axis (for hinge and slide).
     pub axis: Vector3<f64>,
-    /// Whether position limits are enabled.
-    pub limited: bool,
+    /// Whether position limits are enabled. `None` means not explicitly set
+    /// (subject to autolimits inference).
+    pub limited: Option<bool>,
     /// Position limit range [lower, upper].
     pub range: Option<(f64, f64)>,
     /// Joint reference position.
@@ -1119,7 +1221,7 @@ impl Default for MjcfJoint {
             joint_type: MjcfJointType::Hinge,
             pos: Vector3::zeros(),
             axis: Vector3::z(), // Default Z-axis
-            limited: false,
+            limited: None,
             range: None,
             ref_pos: 0.0,
             spring_ref: 0.0,
@@ -1160,7 +1262,7 @@ impl MjcfJoint {
     /// Set position limits.
     #[must_use]
     pub fn with_limits(mut self, lower: f64, upper: f64) -> Self {
-        self.limited = true;
+        self.limited = Some(true);
         self.range = Some((lower, upper));
         self
     }
@@ -1880,10 +1982,12 @@ pub struct MjcfActuator {
     pub ctrlrange: Option<(f64, f64)>,
     /// Force range [lower, upper].
     pub forcerange: Option<(f64, f64)>,
-    /// Whether control is clamped to range.
-    pub ctrllimited: bool,
-    /// Whether force is clamped to range.
-    pub forcelimited: bool,
+    /// Whether control is clamped to range. `None` means not explicitly set
+    /// (subject to autolimits inference).
+    pub ctrllimited: Option<bool>,
+    /// Whether force is clamped to range. `None` means not explicitly set
+    /// (subject to autolimits inference).
+    pub forcelimited: Option<bool>,
     /// Position gain (for position actuators).
     pub kp: f64,
     /// Velocity gain. `None` means use actuator-type default.
@@ -1969,8 +2073,8 @@ impl Default for MjcfActuator {
             gear: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             ctrlrange: None,
             forcerange: None,
-            ctrllimited: false,
-            forcelimited: false,
+            ctrllimited: None,
+            forcelimited: None,
             kp: 1.0,
             kv: None,
             // Cylinder defaults (MuJoCo defaults)
@@ -2166,8 +2270,9 @@ pub struct MjcfTendon {
     pub tendon_type: MjcfTendonType,
     /// Range limits [lower, upper] for tendon length.
     pub range: Option<(f64, f64)>,
-    /// Whether range limits are enabled.
-    pub limited: bool,
+    /// Whether range limits are enabled. `None` means not explicitly set
+    /// (subject to autolimits inference).
+    pub limited: Option<bool>,
     /// Stiffness coefficient.
     pub stiffness: f64,
     /// Damping coefficient.
@@ -2191,7 +2296,7 @@ impl Default for MjcfTendon {
             class: None,
             tendon_type: MjcfTendonType::default(),
             range: None,
-            limited: false,
+            limited: None,
             stiffness: 0.0,
             damping: 0.0,
             frictionloss: 0.0,
@@ -2256,7 +2361,7 @@ impl MjcfTendon {
     /// Set range limits.
     #[must_use]
     pub fn with_limits(mut self, lower: f64, upper: f64) -> Self {
-        self.limited = true;
+        self.limited = Some(true);
         self.range = Some((lower, upper));
         self
     }
@@ -2955,6 +3060,8 @@ pub struct MjcfModel {
     pub name: String,
     /// Global simulation options.
     pub option: MjcfOption,
+    /// Compiler settings.
+    pub compiler: MjcfCompiler,
     /// Default parameter classes.
     pub defaults: Vec<MjcfDefault>,
     /// Mesh assets.
@@ -2985,6 +3092,7 @@ impl Default for MjcfModel {
         Self {
             name: "unnamed".to_string(),
             option: MjcfOption::default(),
+            compiler: MjcfCompiler::default(),
             defaults: Vec::new(),
             meshes: Vec::new(),
             hfields: Vec::new(),

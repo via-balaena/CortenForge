@@ -384,6 +384,7 @@ mod tests {
         parse_mjcf_str(
             r#"
             <mujoco model="two_link_arm">
+                <compiler angle="radian"/>
                 <option timestep="0.002" integrator="RK4"/>
                 <worldbody>
                     <body name="link1" pos="0 0 1">
@@ -529,6 +530,7 @@ mod tests {
 
         let xml = r#"
             <mujoco model="two_link_arm">
+                <compiler angle="radian"/>
                 <option timestep="0.002" integrator="RK4"/>
                 <worldbody>
                     <body name="link1" pos="0 0 1">

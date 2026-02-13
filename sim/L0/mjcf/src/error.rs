@@ -146,9 +146,13 @@ pub enum MjcfError {
     #[error("unsupported MJCF feature: {0}")]
     Unsupported(String),
 
-    /// Include file not supported.
-    #[error("include files are not supported: {0}")]
-    IncludeNotSupported(String),
+    /// Include file error.
+    #[error("include error: {0}")]
+    IncludeError(String),
+
+    /// Duplicate include file (same file included more than once).
+    #[error("duplicate include: {0}")]
+    DuplicateInclude(String),
 
     /// Invalid option value.
     #[error("invalid option '{option}': {message}")]

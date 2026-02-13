@@ -72,7 +72,8 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | Element | MuJoCo | sim-mjcf | Notes |
 |---------|--------|----------|-------|
 | `<mujoco>` | ✓ | ✓ | Root element |
-| `<compiler>` | ✓ | ❌ | Not parsed — `angle`, `coordinate`, `meshdir`, `texturedir` all missing (Phase 3 item #18) |
+| `<compiler>` | ✓ | ✓ | Full: angle, eulerseq, meshdir/texturedir/assetdir, autolimits, inertiafromgeom, boundmass/boundinertia, balanceinertia, settotalmass, strippath, discardvisual, fusestatic, coordinate |
+| `<include>` | ✓ | ✓ | Pre-parse XML expansion with recursive includes, duplicate detection, path resolution relative to main model |
 | `<option>` | ✓ | ✓ | Full: timestep, gravity, integrator, solver, cone, jacobian, wind, flags, etc. |
 | `<size>` | ✓ | ⚠️ | Memory hints, may not apply |
 | `<visual>` | ✓ | ❌ | L1 concern (sim-bevy) |
@@ -118,7 +119,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `joint/@armature` | ✓ | ✓ | Rotor inertia (parsed, wired through defaults) |
 
 **Action items:**
-- [ ] Implement `<compiler>` element (Phase 3 item #18 — `angle`, `meshdir`, `texturedir`)
+- [x] Implement `<compiler>` element (Phase 3 item #18 — `angle`, `meshdir`, `texturedir`) — Done: all A1–A12 attributes
 - [ ] Implement `body/@xyaxes` and `body/@zaxis` orientation parsing
 - [ ] Resolve remaining ⚠️ items: `<size>`, `<asset>` (mesh/texture refs)
 - [ ] Document intentional ❌ omissions (`<visual>`, `<custom>`, `<extension>`) in `sim/docs/ARCHITECTURE.md`

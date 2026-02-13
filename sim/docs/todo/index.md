@@ -45,7 +45,7 @@ group, items proceed from most foundational to most independent.
 
 | # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
 |---|------|-----------|-------------|--------|---------------|------|--------|
-| 18 | `<include>` file support + `<compiler>` element | **High** | **Critical** | L | None | [future_work_6.md](./future_work_6.md) | |
+| 18 | `<include>` file support + `<compiler>` element | **High** | **Critical** | L | None | [future_work_6.md](./future_work_6.md) | ✅ Done |
 | 19 | MuJoCo conformance test suite | Medium | **Critical** | XL | None (benefits from #18) | [future_work_6.md](./future_work_6.md) | |
 | 20 | Contact margin/gap runtime effect | Medium | **Critical** | S | None | [future_work_6.md](./future_work_6.md) | |
 | 21 | Noslip post-processor | Low | Medium | S | None | [future_work_6.md](./future_work_6.md) | |

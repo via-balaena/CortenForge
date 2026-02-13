@@ -126,7 +126,7 @@ impl<'a> Converter<'a> {
         self.write_line("");
 
         // Write compiler settings for URDF compatibility
-        self.write_line(r#"<compiler angle="radian" eulerseq="xyz"/>"#);
+        self.write_line(r#"<compiler angle="radian" eulerseq="xyz" fusestatic="true" discardvisual="true" strippath="true"/>"#);
         self.write_line("");
 
         // Write worldbody

@@ -42,6 +42,7 @@ use sim_mjcf::load_model;
 /// - Hinge joints for elbows/knees (1-DOF each)
 const HUMANOID_MJCF: &str = r#"
 <mujoco model="humanoid">
+    <compiler angle="radian"/>
     <option gravity="0 0 -9.81" timestep="0.002"/>
 
     <default>

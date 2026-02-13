@@ -145,10 +145,10 @@ impl DefaultResolver {
                 }
             }
 
-            // Limited: apply default if not explicitly set
-            if !result.limited {
+            // Limited: apply default only if not explicitly set on element
+            if result.limited.is_none() {
                 if let Some(limited) = defaults.limited {
-                    result.limited = limited;
+                    result.limited = Some(limited);
                 }
             }
 
@@ -263,17 +263,17 @@ impl DefaultResolver {
                 result.forcerange = defaults.forcerange;
             }
 
-            // Control limited: apply default if false
-            if !result.ctrllimited {
+            // Control limited: apply default only if not explicitly set on element
+            if result.ctrllimited.is_none() {
                 if let Some(ctrllimited) = defaults.ctrllimited {
-                    result.ctrllimited = ctrllimited;
+                    result.ctrllimited = Some(ctrllimited);
                 }
             }
 
-            // Force limited: apply default if false
-            if !result.forcelimited {
+            // Force limited: apply default only if not explicitly set on element
+            if result.forcelimited.is_none() {
                 if let Some(forcelimited) = defaults.forcelimited {
-                    result.forcelimited = forcelimited;
+                    result.forcelimited = Some(forcelimited);
                 }
             }
 
@@ -363,10 +363,10 @@ impl DefaultResolver {
                 result.range = defaults.range;
             }
 
-            // Limited: apply default if false
-            if !result.limited {
+            // Limited: apply default only if not explicitly set on element
+            if result.limited.is_none() {
                 if let Some(limited) = defaults.limited {
-                    result.limited = limited;
+                    result.limited = Some(limited);
                 }
             }
 

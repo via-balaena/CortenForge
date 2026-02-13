@@ -16,14 +16,14 @@ fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
     if n > 1e-10 { v / n } else { Vector3::z() }
 }
 use crate::types::{
-    MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
-    MjcfContact, MjcfContactExclude, MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality,
-    MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfHfield, MjcfInertial, MjcfIntegrator,
-    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfKeyframe,
-    MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfPairDefaults, MjcfSensor,
-    MjcfSensorDefaults, MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone,
-    MjcfSkinVertex, MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfWeld,
-    SpatialPathElement,
+    AngleUnit, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody,
+    MjcfCompiler, MjcfConeType, MjcfConnect, MjcfContact, MjcfContactExclude, MjcfContactPair,
+    MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
+    MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
+    MjcfJointEquality, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfMeshDefaults, MjcfModel,
+    MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSensorType, MjcfSite,
+    MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon,
+    MjcfTendonDefaults, MjcfTendonType, MjcfWeld, SpatialPathElement,
 };
 
 /// Parse an MJCF string into a model.
@@ -71,43 +71,58 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                     b"option" => {
                         model.option = parse_option(reader, e)?;
                     }
+                    b"compiler" => {
+                        model.compiler = parse_compiler_attrs(e)?;
+                        skip_element(reader, &elem_name)?;
+                    }
                     b"default" => {
                         let defaults = parse_default(reader, e, None)?;
                         model.defaults.extend(defaults);
                     }
                     b"asset" => {
                         let (meshes, hfields) = parse_asset(reader)?;
-                        model.meshes = meshes;
-                        model.hfields = hfields;
+                        model.meshes.extend(meshes);
+                        model.hfields.extend(hfields);
                     }
                     b"worldbody" => {
-                        model.worldbody = parse_worldbody(reader)?;
+                        let wb = parse_worldbody(reader)?;
+                        // Merge: append children, geoms, sites into existing worldbody
+                        model.worldbody.children.extend(wb.children);
+                        model.worldbody.geoms.extend(wb.geoms);
+                        model.worldbody.sites.extend(wb.sites);
+                        model.worldbody.joints.extend(wb.joints);
                     }
                     b"actuator" => {
                         let actuators = parse_actuators(reader)?;
-                        model.actuators = actuators;
+                        model.actuators.extend(actuators);
                     }
                     b"equality" => {
-                        model.equality = parse_equality(reader)?;
+                        let eq = parse_equality(reader)?;
+                        model.equality.connects.extend(eq.connects);
+                        model.equality.welds.extend(eq.welds);
+                        model.equality.joints.extend(eq.joints);
+                        model.equality.distances.extend(eq.distances);
                     }
                     b"deformable" => {
-                        // Deformable section contains skin elements
                         let skins = parse_deformable(reader)?;
-                        model.skins = skins;
+                        model.skins.extend(skins);
                     }
                     b"tendon" => {
                         let tendons = parse_tendons(reader)?;
-                        model.tendons = tendons;
+                        model.tendons.extend(tendons);
                     }
                     b"sensor" => {
                         let sensors = parse_sensors(reader)?;
-                        model.sensors = sensors;
+                        model.sensors.extend(sensors);
                     }
                     b"contact" => {
-                        model.contact = parse_contact(reader)?;
+                        let ct = parse_contact(reader)?;
+                        model.contact.pairs.extend(ct.pairs);
+                        model.contact.excludes.extend(ct.excludes);
                     }
                     b"keyframe" => {
-                        model.keyframes = parse_keyframes(reader)?;
+                        let kfs = parse_keyframes(reader)?;
+                        model.keyframes.extend(kfs);
                     }
                     // Skip other elements
                     _ => skip_element(reader, &elem_name)?,
@@ -117,6 +132,8 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                 // Handle self-closing elements
                 if e.name().as_ref() == b"option" {
                     model.option = parse_option_attrs(e)?;
+                } else if e.name().as_ref() == b"compiler" {
+                    model.compiler = parse_compiler_attrs(e)?;
                 } else if e.name().as_ref() == b"contact" {
                     model.contact = MjcfContact::default();
                 } else if e.name().as_ref() == b"keyframe" {
@@ -288,6 +305,139 @@ fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     }
 
     Ok(option)
+}
+
+/// Parse compiler element attributes.
+fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
+    let mut compiler = MjcfCompiler::default();
+
+    // A1. angle — angular unit
+    if let Some(angle) = get_attribute_opt(e, "angle") {
+        match angle.to_lowercase().as_str() {
+            "degree" => compiler.angle = AngleUnit::Degree,
+            "radian" => compiler.angle = AngleUnit::Radian,
+            other => {
+                return Err(MjcfError::invalid_attribute(
+                    "angle",
+                    "compiler",
+                    format!("expected 'degree' or 'radian', got '{other}'"),
+                ));
+            }
+        }
+    }
+
+    // A2. eulerseq — Euler rotation sequence
+    if let Some(seq) = get_attribute_opt(e, "eulerseq") {
+        if seq.len() != 3
+            || !seq
+                .chars()
+                .all(|c| matches!(c, 'x' | 'y' | 'z' | 'X' | 'Y' | 'Z'))
+        {
+            return Err(MjcfError::invalid_attribute(
+                "eulerseq",
+                "compiler",
+                format!("expected 3 characters from {{x,y,z,X,Y,Z}}, got '{seq}'"),
+            ));
+        }
+        compiler.eulerseq = seq;
+    }
+
+    // A3. meshdir / texturedir / assetdir — asset path resolution
+    if let Some(meshdir) = get_attribute_opt(e, "meshdir") {
+        compiler.meshdir = Some(meshdir);
+    }
+    if let Some(texturedir) = get_attribute_opt(e, "texturedir") {
+        compiler.texturedir = Some(texturedir);
+    }
+    if let Some(assetdir) = get_attribute_opt(e, "assetdir") {
+        compiler.assetdir = Some(assetdir);
+    }
+
+    // A4. autolimits
+    if let Some(autolimits) = get_attribute_opt(e, "autolimits") {
+        compiler.autolimits = autolimits == "true";
+    }
+
+    // A5. inertiafromgeom
+    if let Some(ifg) = get_attribute_opt(e, "inertiafromgeom") {
+        match ifg.to_lowercase().as_str() {
+            "false" => compiler.inertiafromgeom = InertiaFromGeom::False,
+            "true" => compiler.inertiafromgeom = InertiaFromGeom::True,
+            "auto" => compiler.inertiafromgeom = InertiaFromGeom::Auto,
+            other => {
+                return Err(MjcfError::invalid_attribute(
+                    "inertiafromgeom",
+                    "compiler",
+                    format!("expected 'false', 'true', or 'auto', got '{other}'"),
+                ));
+            }
+        }
+    }
+
+    // A6. boundmass / boundinertia
+    if let Some(bm) = parse_float_attr(e, "boundmass") {
+        compiler.boundmass = bm;
+    }
+    if let Some(bi) = parse_float_attr(e, "boundinertia") {
+        compiler.boundinertia = bi;
+    }
+
+    // A7. balanceinertia
+    if let Some(balance) = get_attribute_opt(e, "balanceinertia") {
+        compiler.balanceinertia = balance == "true";
+    }
+
+    // A8. settotalmass
+    if let Some(stm) = parse_float_attr(e, "settotalmass") {
+        compiler.settotalmass = stm;
+    }
+
+    // A9. strippath
+    if let Some(sp) = get_attribute_opt(e, "strippath") {
+        compiler.strippath = sp == "true";
+    }
+
+    // A10. discardvisual
+    if let Some(dv) = get_attribute_opt(e, "discardvisual") {
+        compiler.discardvisual = dv == "true";
+    }
+
+    // A11. fusestatic
+    if let Some(fs) = get_attribute_opt(e, "fusestatic") {
+        compiler.fusestatic = fs == "true";
+    }
+
+    // A12. coordinate (deprecated — reject "global")
+    if let Some(coord) = get_attribute_opt(e, "coordinate") {
+        match coord.to_lowercase().as_str() {
+            "local" => {} // no-op, matches current behavior
+            "global" => {
+                return Err(MjcfError::Unsupported(
+                    "coordinate='global' was removed in MuJoCo 2.3.4".to_string(),
+                ));
+            }
+            other => {
+                return Err(MjcfError::invalid_attribute(
+                    "coordinate",
+                    "compiler",
+                    format!("expected 'local' or 'global', got '{other}'"),
+                ));
+            }
+        }
+    }
+
+    // Deferred attributes (stored but no behavior yet)
+    if let Some(fitaabb) = get_attribute_opt(e, "fitaabb") {
+        compiler.fitaabb = fitaabb == "true";
+    }
+    if let Some(usethread) = get_attribute_opt(e, "usethread") {
+        compiler.usethread = usethread == "true";
+    }
+    if let Some(alignfree) = get_attribute_opt(e, "alignfree") {
+        compiler.alignfree = alignfree == "true";
+    }
+
+    Ok(compiler)
 }
 
 /// Parse flag element attributes.
@@ -1145,7 +1295,7 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
         joint.axis = safe_normalize_axis(parse_vector3(&axis)?);
     }
     if let Some(limited) = get_attribute_opt(e, "limited") {
-        joint.limited = limited == "true";
+        joint.limited = Some(limited == "true");
     }
     if let Some(range) = get_attribute_opt(e, "range") {
         let parts = parse_float_array(&range)?;
@@ -1442,10 +1592,10 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
     }
 
     if let Some(ctrllimited) = get_attribute_opt(e, "ctrllimited") {
-        actuator.ctrllimited = ctrllimited == "true";
+        actuator.ctrllimited = Some(ctrllimited == "true");
     }
     if let Some(forcelimited) = get_attribute_opt(e, "forcelimited") {
-        actuator.forcelimited = forcelimited == "true";
+        actuator.forcelimited = Some(forcelimited == "true");
     }
 
     if let Some(kp) = parse_float_attr(e, "kp") {
@@ -2156,7 +2306,7 @@ fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> MjcfTendon
     }
 
     if let Some(limited) = get_attribute_opt(e, "limited") {
-        tendon.limited = limited == "true";
+        tendon.limited = Some(limited == "true");
     }
 
     if let Some(stiffness) = parse_float_attr(e, "stiffness") {
@@ -2350,7 +2500,7 @@ mod tests {
         let joint = &body.joints[0];
         assert_eq!(joint.name, "joint1");
         assert_eq!(joint.joint_type, MjcfJointType::Hinge);
-        assert!(joint.limited);
+        assert_eq!(joint.limited, Some(true));
         assert_eq!(joint.range, Some((-1.57, 1.57)));
         assert_relative_eq!(joint.damping, 0.5, epsilon = 1e-10);
         assert_relative_eq!(joint.axis.y, 1.0, epsilon = 1e-10);
@@ -2556,6 +2706,136 @@ mod tests {
 
         // Overrides
         assert_relative_eq!(opt.o_margin, 0.002, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_parse_compiler_all_attributes() {
+        let xml = r#"
+            <mujoco model="test">
+                <compiler
+                    angle="radian"
+                    eulerseq="ZYX"
+                    meshdir="meshes/"
+                    texturedir="textures/"
+                    assetdir="assets/"
+                    autolimits="false"
+                    inertiafromgeom="true"
+                    boundmass="0.01"
+                    boundinertia="0.001"
+                    balanceinertia="true"
+                    settotalmass="10.0"
+                    strippath="true"
+                    discardvisual="true"
+                    fusestatic="true"
+                    coordinate="local"
+                    fitaabb="true"
+                    usethread="false"
+                    alignfree="true"
+                />
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let c = &model.compiler;
+
+        assert_eq!(c.angle, AngleUnit::Radian);
+        assert_eq!(c.eulerseq, "ZYX");
+        assert_eq!(c.meshdir.as_deref(), Some("meshes/"));
+        assert_eq!(c.texturedir.as_deref(), Some("textures/"));
+        assert_eq!(c.assetdir.as_deref(), Some("assets/"));
+        assert!(!c.autolimits);
+        assert_eq!(c.inertiafromgeom, InertiaFromGeom::True);
+        assert_relative_eq!(c.boundmass, 0.01, epsilon = 1e-10);
+        assert_relative_eq!(c.boundinertia, 0.001, epsilon = 1e-10);
+        assert!(c.balanceinertia);
+        assert_relative_eq!(c.settotalmass, 10.0, epsilon = 1e-10);
+        assert!(c.strippath);
+        assert!(c.discardvisual);
+        assert!(c.fusestatic);
+        assert!(c.fitaabb);
+        assert!(!c.usethread);
+        assert!(c.alignfree);
+    }
+
+    #[test]
+    fn test_parse_compiler_defaults() {
+        let xml = r#"
+            <mujoco model="test">
+                <compiler/>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        let c = &model.compiler;
+
+        assert_eq!(c.angle, AngleUnit::Degree);
+        assert_eq!(c.eulerseq, "xyz");
+        assert!(c.meshdir.is_none());
+        assert!(c.texturedir.is_none());
+        assert!(c.assetdir.is_none());
+        assert!(c.autolimits);
+        assert_eq!(c.inertiafromgeom, InertiaFromGeom::Auto);
+        assert_relative_eq!(c.boundmass, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(c.boundinertia, 0.0, epsilon = 1e-10);
+        assert!(!c.balanceinertia);
+        assert_relative_eq!(c.settotalmass, -1.0, epsilon = 1e-10);
+        assert!(!c.strippath);
+        assert!(!c.discardvisual);
+        assert!(!c.fusestatic);
+    }
+
+    #[test]
+    fn test_parse_compiler_coordinate_global_rejected() {
+        let xml = r#"
+            <mujoco model="test">
+                <compiler coordinate="global"/>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let result = parse_mjcf_str(xml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("coordinate='global'"),
+            "Error should mention coordinate='global', got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_compiler_invalid_eulerseq() {
+        let xml = r#"
+            <mujoco model="test">
+                <compiler eulerseq="ab"/>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let result = parse_mjcf_str(xml);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("eulerseq"),
+            "Error should mention eulerseq, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_compiler_with_children() {
+        // Compiler element with children should be parsed (attrs) and children skipped
+        let xml = r#"
+            <mujoco model="test">
+                <compiler angle="radian">
+                    <lengthrange/>
+                </compiler>
+                <worldbody/>
+            </mujoco>
+        "#;
+
+        let model = parse_mjcf_str(xml).expect("should parse");
+        assert_eq!(model.compiler.angle, AngleUnit::Radian);
     }
 
     #[test]
@@ -3600,7 +3880,7 @@ mod tests {
         let tendon = &model.tendons[0];
         assert_eq!(tendon.name, "coupling");
         assert_eq!(tendon.tendon_type, MjcfTendonType::Fixed);
-        assert!(tendon.limited);
+        assert_eq!(tendon.limited, Some(true));
         assert_eq!(tendon.range, Some((0.0, 0.5)));
         assert_eq!(
             tendon.joints,
@@ -3830,5 +4110,130 @@ mod tests {
         // 4D sensors (quaternion)
         assert_eq!(MjcfSensorType::Framequat.dim(), 4);
         assert_eq!(MjcfSensorType::Ballquat.dim(), 4);
+    }
+
+    // ── Section merging tests ──────────────────────────────────────
+
+    #[test]
+    fn test_duplicate_actuator_sections_merge() {
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="merge_test">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j1" type="hinge"/>
+                        <joint name="j2" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <actuator>
+                    <motor joint="j1" name="m1"/>
+                </actuator>
+                <actuator>
+                    <motor joint="j2" name="m2"/>
+                </actuator>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            model.actuators.len(),
+            2,
+            "both actuator sections should merge"
+        );
+        assert_eq!(model.actuators[0].name, "m1");
+        assert_eq!(model.actuators[1].name, "m2");
+    }
+
+    #[test]
+    fn test_duplicate_worldbody_sections_merge() {
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="merge_wb">
+                <worldbody>
+                    <body name="a">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            model.worldbody.children.len(),
+            2,
+            "worldbody children should merge"
+        );
+        assert_eq!(model.worldbody.children[0].name, "a");
+        assert_eq!(model.worldbody.children[1].name, "b");
+    }
+
+    #[test]
+    fn test_duplicate_asset_sections_merge() {
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="merge_asset">
+                <asset>
+                    <mesh name="m1" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                </asset>
+                <asset>
+                    <mesh name="m2" vertex="0 0 0 1 0 0 0 1 0 0 0 1"/>
+                </asset>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(model.meshes.len(), 2, "mesh assets should merge");
+    }
+
+    #[test]
+    fn test_duplicate_sensor_sections_merge() {
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="merge_sensor">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j1" type="hinge"/>
+                        <joint name="j2" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+                <sensor>
+                    <jointpos joint="j1"/>
+                </sensor>
+                <sensor>
+                    <jointpos joint="j2"/>
+                </sensor>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(model.sensors.len(), 2, "sensor sections should merge");
+    }
+
+    #[test]
+    fn test_compiler_last_writer_wins() {
+        let model = parse_mjcf_str(
+            r#"
+            <mujoco model="compiler_lww">
+                <compiler angle="degree"/>
+                <compiler angle="radian"/>
+                <worldbody/>
+            </mujoco>
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            model.compiler.angle,
+            AngleUnit::Radian,
+            "last compiler should win"
+        );
     }
 }
