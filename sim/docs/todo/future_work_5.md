@@ -127,11 +127,11 @@ Each row type already has an implicit Jacobian in the existing penalty code:
   The `diagApprox` computation extracts just the diagonal of A per row
   (§15.1), avoiding the full O(nc²·nv) Delassus assembly.
 
-**Friction loss migration.** ⚠️ **Migrated to
-[future_work_6_precursor_1.md](./future_work_6_precursor_1.md) #19b/#19c.**
-The full specification for migrating friction loss from tanh passive forces to
-Huber constraint rows is now tracked there. Summary of the design context that
-informed the precursor spec:
+**Friction loss migration.** ⚠️ **Tracked as [#28](./future_work_8.md)
+(Newton Huber) and [#29](./future_work_8.md) (PGS/CG).** The full
+specification for migrating friction loss from tanh passive forces to Huber
+constraint rows is in future_work_8.md. Summary of the design context that
+informed the spec:
 
 - MuJoCo treats `frictionloss` as constraint rows (`mjCNSTR_FRICTION_DOF`,
   `mjCNSTR_FRICTION_TENDON`) with Huber cost — never a passive force.
@@ -139,7 +139,7 @@ informed the precursor spec:
   friction_smoothing)`.
 - Approach (b) was chosen: `Data.qfrc_frictionloss` accumulator (implemented).
   Newton subtracts it from RHS; PGS/CG uses `qfrc_passive` as-is.
-- #19b migrates Newton to constraint rows. #19c migrates PGS/CG and removes
+- #28 migrates Newton to constraint rows. #29 migrates PGS/CG and removes
   the tanh path entirely.
 
 **Per-constraint metadata** is stored as flat `Data` fields (§15.11) indexed

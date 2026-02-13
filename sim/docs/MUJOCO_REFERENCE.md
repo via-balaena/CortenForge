@@ -473,7 +473,7 @@ Four constraint types, applied in order:
 > **⚠️ Divergence:** MuJoCo uses solver-based constraint rows for ALL four types
 > in ALL solver modes. CortenForge's PGS/CG penalty path for types 1–3 is a
 > known divergence. Migration to unified solver-based constraints is tracked as
-> #19d in [future_work_6_precursor_1.md](todo/future_work_6_precursor_1.md).
+> [#30](todo/future_work_8.md) (PGS/CG Unified Constraints).
 
 ### 4.5 Joint Limits
 

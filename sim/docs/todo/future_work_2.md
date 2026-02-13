@@ -437,11 +437,10 @@ is formed by:
 - `torsional = sqrt(geom1.friction.y * geom2.friction.y)`
 - `rolling1 = rolling2 = sqrt(geom1.friction.z * geom2.friction.z)`
 
-**Known non-conformance:** ⚠️ **Migrated to
-[future_work_6_precursor_1.md](./future_work_6_precursor_1.md) #19a.** MuJoCo
-uses element-wise max for friction combination (when geom priorities are equal).
-We use geometric mean. The fix is tracked as #19a, a prerequisite to the
-conformance test suite (#19).
+**Known non-conformance:** ⚠️ **Tracked as [#24](./future_work_7.md)
+(Friction Combination Rule).** MuJoCo uses element-wise max for friction
+combination (when geom priorities are equal). We use geometric mean. The fix
+is tracked as #24, a prerequisite to the conformance test suite (#45).
 
 **A.4.** Expand `Contact.mu` from `[f64; 2]` to `[f64; 5]`:
 
@@ -1540,8 +1539,8 @@ friction forces onto the cone. Our solver uses sequential SOC projection
 to QCQP projection would improve convergence for strongly coupled contacts
 but is a separate optimization task.
 
-**Not in scope: friction combination method.** ⚠️ Now tracked as #19a in
-[future_work_6_precursor_1.md](./future_work_6_precursor_1.md).
+**Not in scope: friction combination method.** ⚠️ Now tracked as
+[#24](./future_work_7.md) (Friction Combination Rule).
 
 #### Acceptance Criteria
 
@@ -1765,7 +1764,7 @@ instead of normal.
 |:---:|:---|:---|:---|
 | D1 | Unify tangent basis functions as pre-req? | **Yes** | Eliminates consistency risk; zero marginal cost since condim touches all call sites |
 | D2 | Default `cone` to elliptic? | **Yes** | Our default should match what we implement; pyramidal warn only on explicit MJCF request |
-| D3 | Friction combination: keep geometric mean? | **Deferred → #19a** | Now tracked in [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) #19a |
+| D3 | Friction combination: keep geometric mean? | **Deferred → #24** | Now tracked in [future_work_7.md](./future_work_7.md) #24 |
 | D4 | `Contact.friction` field: keep or remove? | **Keep** | Retained for backward compat; documented as `== mu[0]`; solver reads `mu` |
 | D5 | Warmstart: `Vec<f64>` or `SmallVec<[f64; 6]>`? | **`Vec<f64>`** | Optimize later if profiling shows heap allocation pressure |
 | D6 | `contact.frame` fields: use everywhere? | **Yes** | See D1; pre-computed frame ensures consistency across Jacobian/assembly/forces |

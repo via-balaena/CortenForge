@@ -42,11 +42,18 @@ sim/
     │   ├── future_work_3.md           # Phase 2: Correctness + Scaling #6–10
     │   ├── future_work_4.md           # Phase 2: Physics Completeness #11–14
     │   ├── future_work_5.md           # Phase 2: Quality of Life #15–16
-    │   ├── future_work_6.md           # Phase 3A: Foundation + Core Correctness #18–22
-    │   ├── future_work_7.md           # Phase 3B: Constraint + Physics #23–27
-    │   ├── future_work_8.md           # Phase 3C: Format + Edge-Case #28–32
-    │   ├── future_work_9.md           # Phase 3D: Performance + Hygiene #33–34
-    │   └── future_work_10.md          # Phase 3E: GPU Pipeline #35–39
+    │   ├── future_work_6.md           # Phase 3A-i: Parser Fundamentals #18–22
+    │   ├── future_work_7.md           # Phase 3A-ii: Inertia + Contact Parameters #23–27
+    │   ├── future_work_8.md           # Phase 3A-iii: Constraint System Overhaul #28–32
+    │   ├── future_work_9.md           # Phase 3A-iv: Noslip + Actuator/Dynamics #33–37
+    │   ├── future_work_10.md          # Phase 3A-v: Constraint/Joint + Physics #38–42
+    │   ├── future_work_11.md          # Phase 3A-vi: Cleanup + Conformance #43–45
+    │   ├── future_work_12.md          # Phase 3B: Format Completeness + Performance #46–50
+    │   ├── future_work_13.md          # Phase 3C: API + Pipeline Completeness #51–55
+    │   ├── future_work_14.md          # Phase 3C: Data Fields + Derivatives + API #56–59
+    │   ├── future_work_15.md          # Phase 3D: Edge-Case Features #60–64
+    │   ├── future_work_16.md          # Phase 3D: Mesh + Plugin Infrastructure #65–66
+    │   └── future_work_17.md          # Phase 3E: GPU Pipeline #67–71
     ├── MUJOCO_CONFORMANCE.md          # MuJoCo conformance testing plan
     ├── MUJOCO_GAP_ANALYSIS.md         # Feature-by-feature gap analysis
     ├── MUJOCO_REFERENCE.md            # Pipeline algorithms and pseudocode

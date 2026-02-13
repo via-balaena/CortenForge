@@ -1,189 +1,234 @@
-# Future Work 10 — Phase 3E: GPU Pipeline (Items #35–39)
+# Future Work 10 — Phase 3A: Constraint/Joint Features + Physics + Pipeline (Items #38–42)
 
 Part of [Simulation Phase 3 Roadmap](./index.md). See [index.md](./index.md) for
 priority table, dependency graph, and file map.
 
-Phase 10a (Euler velocity integration on GPU) is complete in `sim-gpu`. These items
-progressively move more pipeline stages to GPU, targeting full GPU-resident simulation
-where only `ctrl` upload and `qpos`/`qvel`/`sensordata` download cross PCIe.
-
-All items build on the wgpu infrastructure, SoA buffer layout, and
-environment-per-workgroup model established in Phase 10a. They form a strict
-sequential chain: each phase depends on the previous.
+All items are prerequisites to #45 (MuJoCo Conformance Test Suite). This file
+covers constraint/joint features (ball/free limits, tendon wrapping), physics
+(fluid forces), pipeline flags, and deformable body MJCF parsing.
 
 ---
 
-### 35. GPU Forward Kinematics (Phase 10b)
-**Status:** Not started | **Effort:** XL | **Prerequisites:** #10 (Phase 10a)
+### 38. Ball / Free Joint Limits (Swing-Twist Cones)
+**Status:** Not started | **Effort:** M | **Prerequisites:** None
 
 #### Current State
-FK (`mj_kinematics`, `mj_com_pos`) runs entirely on CPU. This is the largest
-single-stage cost for models with many bodies, as it involves tree traversal
-(parent-to-child propagation of body poses).
+Limit enforcement in `mj_fwd_constraint()` silently skips ball and free joints with
+`_ => {}`. MuJoCo supports cone limits (swing-twist) for ball joints — the joint's
+rotation is decomposed into swing (away from reference axis) and twist (around
+reference axis), each independently limited. Models with `limited="true"` on ball
+joints get no limit enforcement.
 
 #### Objective
-Port forward kinematics to a GPU compute shader using level-set parallel traversal.
+Implement swing-twist cone limits for ball joints and rotation limits for free joints.
 
 #### Specification
 
-1. **Level-set parallelism**: Pre-compute tree levels at model build time. Bodies at
-   the same depth have no parent-child dependency and can be computed in parallel.
-   Dispatch one workgroup pass per tree level, synchronizing between levels.
-2. **Buffers** (new SoA uploads):
-   - `gpu_qpos` — generalized positions (f32)
-   - `gpu_xpos`, `gpu_xquat` — output body poses (f32)
-   - `GpuModelHeader` — body tree topology, joint parameters (uniform buffer,
-     uploaded once at construction)
-3. **Joint types**: Shader must handle hinge, slide, ball, free joint position→pose
-   transforms. Dispatch per joint type or use branching within a unified kernel.
-4. **COM computation**: After body poses, compute subtree COM in a second pass
-   (bottom-up tree reduction).
+1. **Ball joint limits**: MuJoCo parameterizes ball joint limits as:
+   - `range[0]`: Maximum swing angle (rotation away from reference axis) in radians
+   - `range[1]`: Maximum twist angle (rotation around reference axis) in radians
+   - Constraint is `swing ≤ range[0]` and `|twist| ≤ range[1]`
+2. **Swing-twist decomposition**: Given quaternion `q` representing joint rotation:
+   - `twist = atan2(2*(q.w*q.z + q.x*q.y), q.w² + q.x² - q.y² - q.z²)`
+   - `swing = acos(clamp(2*(q.w² + q.z²) - 1, -1, 1))`
+   (or equivalent formulation matching MuJoCo's `mju_ball2Limit()`)
+3. **Constraint assembly**: When limit is violated, add constraint row(s) to the
+   equality/limit block with appropriate Jacobian (derivative of swing/twist w.r.t.
+   angular velocity).
+4. **Free joint limits**: Apply same logic to the quaternion DOFs of free joints
+   (indices 3-6 of the 7-DOF free joint).
 
 #### Acceptance Criteria
-1. GPU FK matches CPU FK within f32 tolerance for a 50-body humanoid.
-2. Throughput exceeds CPU for ≥64 parallel environments.
-3. CPU fallback path unchanged (regression).
+1. A ball joint with `range="30 45"` (degrees, if `<compiler angle="degree"/>`)
+   limits swing to 30° and twist to 45°.
+2. Limit forces push the joint back within the cone.
+3. Unlimited ball joints (`limited="false"`) unchanged (regression).
+4. Swing-twist decomposition matches MuJoCo's `mju_ball2Limit()` output.
 
 #### Files
-- `sim/L0/gpu/src/` — new `fk.wgsl` shader, buffer management
-- `sim/L0/gpu/src/lib.rs` — integrate FK pass into `GpuBatchSim::step_all()`
+- `sim/L0/core/src/mujoco_pipeline.rs` — `mj_fwd_constraint()`, limit enforcement block
 
 ---
 
-### 36. GPU Collision Broad-Phase (Phase 10c)
-**Status:** Not started | **Effort:** L | **Prerequisites:** #35 (Phase 10b)
+### 39. `wrap_inside` Algorithm (Tendon Wrapping)
+**Status:** Not started | **Effort:** M | **Prerequisites:** None
 
 #### Current State
-Broad-phase collision (AABB overlap testing, `contype`/`conaffinity` filtering) runs
-on CPU. For scenes with many geoms, this becomes a bottleneck.
+
+When a sidesite is inside a wrapping geometry, the code **panics** at
+`mujoco_pipeline.rs:3848` with "The wrap_inside algorithm is not implemented."
+This is a runtime crash on valid models.
 
 #### Objective
-Port AABB broad-phase to GPU using parallel sweep-and-prune or spatial hashing.
+
+Implement the `wrap_inside` resolution algorithm so that tendon wrapping handles
+the sidesite-inside-geometry case gracefully instead of panicking.
 
 #### Specification
 
-1. **AABB computation**: After GPU FK, compute world-space AABBs from geom poses +
-   sizes on GPU (one thread per geom).
-2. **Overlap detection**: Use sort-and-sweep on the x-axis (GPU radix sort + parallel
-   scan) or spatial hash grid.
-3. **Filtering**: Apply `contype & conaffinity` bitmask test on GPU.
-4. **Output**: Compact list of candidate pairs per environment (atomic counter +
-   append buffer).
-5. **Download**: Only candidate pair indices cross PCIe (much smaller than full
-   geom data).
+1. **Detection**: The current code already detects the inside case (distance from
+   sidesite to wrapping geometry center < radius). The `todo!()` panic needs to
+   be replaced with the resolution algorithm.
+2. **Algorithm (sphere wrapping)**: When a sidesite is inside the wrapping sphere:
+   - Project the sidesite position onto the sphere surface along the line from
+     center to sidesite.
+   - Use the projected point as the effective sidesite for wrapping calculations.
+   - If sidesite is exactly at center (degenerate), use the previous frame's
+     wrap point or a default direction.
+3. **Algorithm (cylinder wrapping)**: When a sidesite is inside the wrapping
+   cylinder:
+   - Project radially outward to the cylinder surface.
+   - Maintain the axial component.
+4. **MuJoCo reference**: MuJoCo's `mju_wrap` handles the inside case in
+   `engine_core_smooth.c`. The key behavior: when inside, the tendon path goes
+   through the wrapping geometry center (zero-length wrap segment) rather than
+   crashing.
+5. **No panic**: Replace `todo!()` with the computed wrap-inside path. Never
+   panic on valid MJCF input.
 
 #### Acceptance Criteria
-1. GPU broad-phase produces the same candidate pairs as CPU for a reference scene.
-2. Throughput exceeds CPU for ≥64 environments with ≥20 geoms each.
-3. CPU fallback path unchanged (regression).
+
+1. A model with sidesite inside wrapping sphere does not panic.
+2. A model with sidesite inside wrapping cylinder does not panic.
+3. Tendon length is continuous as sidesite transitions from outside to inside
+   the wrapping geometry.
+4. Existing wrapping tests (18 spatial tendon tests) pass unchanged.
+5. New test: sidesite deliberately placed inside wrap sphere, verify tendon
+   length matches MuJoCo.
 
 #### Files
-- `sim/L0/gpu/src/` — new `broadphase.wgsl` shader
-- `sim/L0/gpu/src/lib.rs` — integrate broad-phase into step pipeline
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — replace `todo!()` at the wrap_inside
+  call site with proper algorithm
 
 ---
 
-### 37. GPU Collision Narrow-Phase (Phase 10d)
-**Status:** Not started | **Effort:** XL | **Prerequisites:** #36 (Phase 10c)
+### 40. Fluid / Aerodynamic Forces
+**Status:** Not started | **Effort:** L | **Prerequisites:** None
 
 #### Current State
-Narrow-phase collision (GJK/EPA, primitive-primitive) runs on CPU. This is the most
-algorithmically complex stage to port — GJK is iterative with variable-length loops
-and EPA involves dynamic polytope expansion.
+`density`, `viscosity`, and `wind` fields are parsed from MJCF `<option>` and stored
+on `Model`, but no fluid drag or lift computation exists in the pipeline. Any model
+that relies on these (swimming, flying, falling with drag) produces incorrect results.
+
+MuJoCo computes viscous and inertial drag in `mj_passive()` using ellipsoid
+approximations of geom shapes. The force model has two components:
+- **Viscous drag**: `F = -6π μ r v` (Stokes drag, scaled by equivalent sphere radius)
+- **Inertial drag**: `F = -½ ρ C_d A |v| v` (form drag with ellipsoid cross-section)
 
 #### Objective
-Port narrow-phase contact generation to GPU compute shaders.
+Implement MuJoCo-compatible fluid forces in the passive force computation.
 
 #### Specification
 
-1. **Primitive pairs**: Start with sphere-sphere, sphere-capsule, sphere-plane,
-   capsule-capsule, box-plane (closed-form or simple iterative). These cover the
-   majority of contacts in typical RL models.
-2. **GJK/EPA**: Port iterative GJK distance + EPA penetration to GPU. Use fixed
-   iteration caps to avoid divergent warps.
-3. **Contact output**: Per-pair contact struct (pos, normal, depth, friction) written
-   to a dynamic contact buffer with per-environment atomic counters.
-4. **Condim dispatch**: Contact dimension determined by geom pair properties on GPU.
+1. **Equivalent ellipsoid**: For each geom, compute equivalent ellipsoid semi-axes
+   based on geom type and size (MuJoCo uses `mju_geom2Ellipsoid()`).
+2. **Viscous drag** (per-geom): `F_visc = -6π * viscosity * equiv_radius * vel_fluid`
+   where `vel_fluid = vel_body - wind`.
+3. **Inertial drag** (per-geom): `F_inertia = -½ * density * C_d * A_proj * |vel| * vel`
+   with projected area `A_proj` from ellipsoid cross-section normal to velocity.
+4. **Torque**: Both components produce torques via `r × F` from geom center to body COM.
+5. **Application**: Add forces in `mj_passive()` before constraint solving.
 
 #### Acceptance Criteria
-1. GPU narrow-phase matches CPU contact generation (positions within f32 tolerance).
-2. GJK convergence within fixed iteration cap for ≥99% of pairs.
-3. CPU fallback for unsupported pair types (hfield, SDF, mesh-mesh).
+1. A falling sphere in a viscous medium reaches terminal velocity.
+2. Wind produces lateral force on a stationary body.
+3. Zero density/viscosity/wind produces zero fluid force (regression).
+4. Force magnitudes match MuJoCo within 1% for a reference test case.
 
 #### Files
-- `sim/L0/gpu/src/` — `narrowphase.wgsl`, `gjk_gpu.wgsl` shaders
-- `sim/L0/gpu/src/lib.rs` — integrate narrow-phase, contact buffer management
+- `sim/L0/core/src/mujoco_pipeline.rs` — `mj_passive()` or new `mj_fluid()` helper
 
 ---
 
-### 38. GPU Constraint Solver (Phase 10e)
-**Status:** Not started | **Effort:** XL | **Prerequisites:** #37 (Phase 10d)
+### 41. `disableflags` — Runtime Disable Flag Effects
+**Status:** Not started | **Effort:** M | **Prerequisites:** None
 
 #### Current State
-Constraint solving (PGS, CG, Newton) runs on CPU. PGS is inherently sequential
-(Gauss-Seidel updates use already-modified values). GPU requires a parallel variant.
+
+MJCF parser parses all 21 `<flag>` attributes. But only `DISABLE_ISLAND` has a
+runtime constant and check in the pipeline. Flags like `contact="disable"`,
+`gravity="disable"`, `limit="disable"`, `equality="disable"` are parsed but have
+NO runtime effect.
 
 #### Objective
-Implement a Jacobi-style parallel constraint solver on GPU.
+
+Wire parsed disable flags into the pipeline so each flag conditionally skips its
+corresponding stage.
 
 #### Specification
 
-1. **Algorithm**: Jacobi PGS (all constraints updated simultaneously using values
-   from the previous iteration, not the current one). Converges slower than GS per
-   iteration but is fully parallel.
-2. **Delassus assembly**: Compute `A = J M^{-1} J^T + R` on GPU. For small models,
-   use dense matrix. For large models, exploit sparsity (only contacts sharing
-   bodies have non-zero off-diagonal blocks).
-3. **Iteration**: Each iteration is a single dispatch:
-   - Compute residuals for all constraints in parallel
-   - Update lambda values (Jacobi step)
-   - Project onto friction cones per-contact
-4. **Warmstart**: Frame-coherent warmstart buffer replaces CPU's HashMap-based
-   `WarmstartKey` system.
-5. **Convergence**: Check max-delta across all constraints via parallel reduction.
+1. **Flag constants**: Define constants for each disable flag (some may already
+   exist as parsed values — wire them to runtime checks).
+2. **Pipeline gates**: Add flag checks at each relevant pipeline stage:
+   - `DISABLE_GRAVITY`: skip gravity contribution in `mj_rne`.
+   - `DISABLE_CONTACT`: skip collision detection and contact constraint assembly.
+   - `DISABLE_LIMIT`: skip joint/tendon limit enforcement.
+   - `DISABLE_EQUALITY`: skip equality constraint assembly.
+   - `DISABLE_FRICTIONLOSS`: skip friction loss passive force.
+   - `DISABLE_PASSIVE`: skip all passive forces.
+   - `DISABLE_ACTUATION`: skip actuator force computation.
+   - `DISABLE_SENSOR`: skip sensor evaluation.
+   - `DISABLE_REFSAFE`: skip reference safety clamping.
+   - (remaining flags as documented in MuJoCo API reference)
+3. **Enable flags**: Similarly wire enable flags (`ENABLE_ENERGY`, etc.) —
+   `ENABLE_ENERGY` is already wired. Check others.
 
 #### Acceptance Criteria
-1. GPU solver produces contact forces within 5% of CPU solver for reference scenes.
-2. Convergence within `solver_iterations` for well-conditioned problems.
-3. Throughput exceeds CPU for ≥64 environments.
-4. PGS fallback on CPU unchanged (regression).
+
+1. `<flag contact="disable"/>` prevents contact detection.
+2. `<flag gravity="disable"/>` zeros gravitational contribution to bias forces.
+3. `<flag limit="disable"/>` prevents joint limit enforcement.
+4. All 21 parsed flags have runtime effect.
+5. Default flag values match MuJoCo defaults (all disabled flags off, all
+   enabled flags per MuJoCo spec).
 
 #### Files
-- `sim/L0/gpu/src/` — `constraint_solver.wgsl`, `delassus.wgsl` shaders
-- `sim/L0/gpu/src/lib.rs` — solver dispatch, warmstart buffer management
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — flag checks at each pipeline stage
 
 ---
 
-### 39. Full GPU Step (Phase 10f)
-**Status:** Not started | **Effort:** L | **Prerequisites:** #35–38 (Phases 10b–10e)
+### 42. `<flex>` / `<flexcomp>` MJCF Deformable Body Parsing
+**Status:** Not started | **Effort:** L | **Prerequisites:** None
 
 #### Current State
-Each pipeline stage uploads/downloads data across PCIe. The CPU orchestrates stage
-sequencing. This PCIe overhead dominates for small-to-medium models.
+The MJCF parser skips `<flex>` and `<flexcomp>` elements inside `<deformable>` — only
+`<skin>` is parsed. MuJoCo's `<flex>` is the native MJCF way to define deformable
+bodies (soft bodies, cloth, ropes), and `<flexcomp>` is its procedural counterpart
+(similar to `<composite>` but for flex bodies).
+
+CortenForge has a functional deformable pipeline (`XpbdSolver`, `DeformableBody`,
+`mj_deformable_collision()`, `mj_deformable_step()`) wired into the main pipeline,
+but it's only accessible via the programmatic API (`register_deformable()`). Models
+that define deformable bodies through MJCF `<flex>` elements silently lose them.
 
 #### Objective
-Chain all GPU stages into a single command buffer submission, minimizing PCIe traffic
-to only `ctrl` upload and `qpos`/`qvel`/`sensordata` download.
+Parse `<flex>` and `<flexcomp>` MJCF elements and wire them into the existing
+deformable pipeline.
 
 #### Specification
 
-1. **Single submission**: Record FK → broad-phase → narrow-phase → dynamics →
-   constraint solve → integration as a single wgpu command buffer with appropriate
-   barriers between stages.
-2. **Persistent buffers**: All intermediate data (xpos, xquat, contacts, lambda)
-   lives in GPU-local memory. Only `ctrl` crosses PCIe host→device, and
-   `qpos`/`qvel`/`sensordata` cross device→host.
-3. **Dynamics on GPU**: Port `mj_fwd_acceleration` (RNEA inverse dynamics, Coriolis,
-   gravity) to GPU. This is the remaining CPU stage after 10b–10e.
-4. **Sensor evaluation**: Compute pipeline sensors on GPU (position/velocity sensors
-   read from GPU-resident body poses).
+1. **`<flex>` parsing**: Parse `<flex>` elements from `<deformable>`:
+   - `name`, `dim` (1=cable, 2=shell, 3=solid)
+   - `<vertex>` — vertex positions
+   - `<element>` — element connectivity (edges/triangles/tetrahedra)
+   - `<body>` — which body each vertex belongs to
+   - Material properties: `young`, `poisson`, `damping`, `thickness`
+   - Collision: `selfcollide`, `radius`, `margin`
+2. **`<flexcomp>` parsing**: Parse procedural flex definitions:
+   - `type` (grid, box, cylinder, etc.)
+   - `count`, `spacing` — procedural dimensions
+   - Expand to equivalent `<flex>` before model building
+3. **Wiring**: Convert parsed flex data to `DeformableBody` instances and register
+   them with the pipeline's `deformable_solvers` during model construction.
+4. **`<equality><flex>`**: Parse flex equality constraints (flex-flex coupling).
 
 #### Acceptance Criteria
-1. Full GPU step matches CPU step within f32 tolerance.
-2. PCIe traffic is O(nv + nsensor) per step, not O(nbody + ngeom + ncon).
-3. Throughput exceeds CPU by ≥5× for 256+ environments on representative models.
-4. CPU-only path unchanged (regression).
+1. A `<flex dim="2">` cloth element loads and simulates correctly.
+2. `<flexcomp type="grid">` generates the expected deformable mesh.
+3. Programmatic `register_deformable()` path unchanged (regression).
 
 #### Files
-- `sim/L0/gpu/src/` — command buffer chaining, dynamics shader, sensor shader
-- `sim/L0/gpu/src/lib.rs` — unified step dispatch
+- `sim/L0/mjcf/src/parser.rs` — parse `<flex>`, `<flexcomp>` elements
+- `sim/L0/mjcf/src/model_builder.rs` — convert to `DeformableBody`, register with pipeline

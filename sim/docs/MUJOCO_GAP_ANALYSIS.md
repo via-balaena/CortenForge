@@ -17,15 +17,19 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ## 📊 Executive Summary
 
-**Overall completion: ~90-95%** of MuJoCo's core pipeline features are functional end-to-end. Phase 1 (12 items) and Phase 2 (16 items) are complete. Remaining gaps are tracked in Phase 3 (#18–39, ordered foundationally across 5 groups). See [`sim/docs/todo/index.md`](./todo/index.md) for the full roadmap.
+**Overall completion: ~90-95%** of MuJoCo's core pipeline features are functional end-to-end. Phase 1 (12 items) and Phase 2 (16 items) are complete. Remaining gaps are tracked in Phase 3 (#18–71, ordered for optimal implementation across 6 sub-groups). See [`sim/docs/todo/index.md`](./todo/index.md) for the full roadmap.
 
-**Remaining gaps (Phase 3, foundational order):**
-- **3A Foundation + Core** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, conformance test suite, contact margin/gap, noslip, body-transmission actuators
-- **3B Constraint + Physics** (#23–27): tendon equality constraints, solreffriction, fluid/aerodynamic forces, `<flex>` MJCF deformable parsing, ball/free joint limits
-- **3C Format + Edge-Case** (#28–32): `<composite>`, URDF completeness, pyramidal cones, CCD, non-physics MJCF elements
-- **3A MuJoCo Alignment** (#19a–19e): friction combination, friction loss migration, PGS/CG unified constraints, legacy crate deprecation — prerequisites to #19
-- **3D Performance** (#33): SIMD utilization (~~#34~~ moved to #19e)
-- **3E GPU Pipeline** (#35–39): GPU FK (10b), broad-phase (10c), narrow-phase (10d), constraint solver (10e), full GPU step (10f)
+**Remaining gaps (Phase 3, optimal implementation order):**
+- **3A-i Parser Fundamentals** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, `<frame>` element, `childclass` attribute, `<site>` orientation, tendon `springlength`
+- **3A-ii Inertia + Contact Parameters** (#23–27): `exactmeshinertia`, friction combination (geometric mean → element-wise max), `geom/@priority`, `solmix`, contact margin/gap
+- **3A-iii Constraint System Overhaul** (#28–32): friction loss migration (Newton Huber → PGS/CG → unified constraints), `solreffriction`, pyramidal cones
+- **3A-iv Noslip + Actuator/Dynamics** (#33–37): noslip post-processor, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality
+- **3A-v Constraint/Joint + Physics** (#38–42): ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, `<flex>`/`<flexcomp>`
+- **3A-vi Cleanup + Conformance** (#43–45): `shellinertia`, legacy crate deprecation, MuJoCo conformance test suite (depends on all #19–44)
+- **3B Format + Performance** (#46–50): `<composite>`, URDF completeness, SIMD audit, non-physics MJCF, CCD
+- **3C API + Pipeline** (#51–59): body accumulators, mj_inverse, step1/step2, heightfield gaps, user data, subtree fields, SDF options, position derivatives, name lookup
+- **3D Edge-Case Features** (#60–66): springinertia, slidercrank, missing sensors, dynprm, ball/free spring energy, mesh convex hull, plugin/extension
+- **3E GPU Pipeline** (#67–71): GPU FK (10b), broad-phase (10c), narrow-phase (10d), constraint solver (10e), full GPU step (10f)
 
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal), ImplicitFast (symmetric D, Cholesky), Implicit (asymmetric D + Coriolis, LU)
@@ -778,9 +782,9 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 
 | Constraint | MuJoCo | CortenForge | Status | Priority |
 |------------|--------|-------------|--------|----------|
-| Connect (ball) | Yes | Pipeline `EqualityType::Connect` + `apply_connect_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see #19d) | - |
-| Weld | Yes | Pipeline `EqualityType::Weld` + `apply_weld_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see #19d) | - |
-| Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see #19d) | - |
+| Connect (ball) | Yes | Pipeline `EqualityType::Connect` + `apply_connect_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see [#30](./todo/future_work_8.md)) | - |
+| Weld | Yes | Pipeline `EqualityType::Weld` + `apply_weld_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see [#30](./todo/future_work_8.md)) | - |
+| Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see [#30](./todo/future_work_8.md)) | - |
 | Joint coupling | Yes | Pipeline `EqualityType::Joint` + `apply_joint_equality_constraint()` | **Implemented** (in pipeline; standalone `JointCoupling`/`GearCoupling`/`DifferentialCoupling` in sim-constraint are unused) | - |
 | Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Standalone** (in sim-constraint; pipeline uses `EqualityType::Tendon` warning — tendon *equality* constraints not yet implemented) | - |
 | Flex (edge length) | Yes | `FlexEdgeConstraint` | ✅ **Pipeline** (XPBD solver called from `mj_deformable_step()` in `integrate()` and `mj_runge_kutta()`; see [future_work_4 #11](./todo/future_work_4.md) ✅) | - |
