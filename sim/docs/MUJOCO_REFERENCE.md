@@ -117,7 +117,9 @@ for i in range(nu):
         actuator_length[i] = gear * ten_length[tid]
         actuator_velocity[i] = gear * ten_velocity[tid]
     elif transmission[i] == Site:
-        pass  # Not yet implemented
+        (sid0, sid1) = actuator_trnid[i]    # site pair
+        actuator_length[i] = mj_transmission_site(model, data, i, gear)
+        actuator_velocity[i] = gear . (J @ qvel)  # via site Jacobian
 ```
 
 ---
@@ -245,7 +247,8 @@ L^T D L factorization from CRBA at `qpos0`.
         for w in tendon_wrap_range:
             qfrc_actuator[wrap_objid[w]] += gear * wrap_prm[w] * force  # J^T
     elif transmission[i] == Site:
-        pass  # Not yet implemented
+        J = mj_jac_site(model, data, site_id)   # 6×nv Jacobian
+        qfrc_actuator += gear . J^T * force      # 6D wrench projection
 ```
 
 ### Model Build: `compute_muscle_params()`
@@ -460,10 +463,17 @@ coupling cannot be absorbed into the diagonal implicit modification).
 
 Four constraint types, applied in order:
 
-1. **Joint limits** — penalty-based with Baumgarte stabilization
-2. **Tendon limits** — penalty-based (same as joint limits, mapped through J^T)
-3. **Equality constraints** — penalty-based with Baumgarte stabilization
-4. **Contact forces** — PGS solver with friction cones
+1. **Joint limits** — penalty-based with Baumgarte stabilization (PGS/CG path);
+   solver-based constraint rows (Newton path)
+2. **Tendon limits** — same as joint limits, mapped through J^T
+3. **Equality constraints** — penalty-based with Baumgarte stabilization (PGS/CG
+   path); solver-based constraint rows (Newton path)
+4. **Contact forces** — PGS/CG/Newton solver with friction cones
+
+> **⚠️ Divergence:** MuJoCo uses solver-based constraint rows for ALL four types
+> in ALL solver modes. CortenForge's PGS/CG penalty path for types 1–3 is a
+> known divergence. Migration to unified solver-based constraints is tracked as
+> [#30](todo/future_work_8.md) (PGS/CG Unified Constraints).
 
 ### 4.5 Joint Limits
 

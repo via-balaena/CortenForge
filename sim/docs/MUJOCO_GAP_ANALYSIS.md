@@ -17,14 +17,19 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ## 📊 Executive Summary
 
-**Overall completion: ~90-95%** of MuJoCo's core pipeline features are functional end-to-end. Phase 1 (12 items) and Phase 2 (16 items) are complete. Remaining gaps are tracked in Phase 3 (#18–39, ordered foundationally across 5 groups). See [`sim/docs/todo/index.md`](./todo/index.md) for the full roadmap.
+**Overall completion: ~90-95%** of MuJoCo's core pipeline features are functional end-to-end. Phase 1 (12 items) and Phase 2 (16 items) are complete. Remaining gaps are tracked in Phase 3 (#18–71, ordered for optimal implementation across 6 sub-groups). See [`sim/docs/todo/index.md`](./todo/index.md) for the full roadmap.
 
-**Remaining gaps (Phase 3, foundational order):**
-- **3A Foundation + Core** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, conformance test suite, contact margin/gap, noslip, body-transmission actuators
-- **3B Constraint + Physics** (#23–27): tendon equality constraints, solreffriction, fluid/aerodynamic forces, `<flex>` MJCF deformable parsing, ball/free joint limits
-- **3C Format + Edge-Case** (#28–32): `<composite>`, URDF completeness, pyramidal cones, CCD, non-physics MJCF elements
-- **3D Performance + Hygiene** (#33–34): SIMD utilization, crate consolidation
-- **3E GPU Pipeline** (#35–39): GPU FK (10b), broad-phase (10c), narrow-phase (10d), constraint solver (10e), full GPU step (10f)
+**Remaining gaps (Phase 3, optimal implementation order):**
+- **3A-i Parser Fundamentals** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, `<frame>` element, `childclass` attribute, `<site>` orientation, tendon `springlength`
+- **3A-ii Inertia + Contact Parameters** (#23–27): `exactmeshinertia`, friction combination (geometric mean → element-wise max), `geom/@priority`, `solmix`, contact margin/gap
+- **3A-iii Constraint System Overhaul** (#28–32): friction loss migration (Newton Huber → PGS/CG → unified constraints), `solreffriction`, pyramidal cones
+- **3A-iv Noslip + Actuator/Dynamics** (#33–37): noslip post-processor, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality
+- **3A-v Constraint/Joint + Physics** (#38–42): ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, `<flex>`/`<flexcomp>`
+- **3A-vi Cleanup + Conformance** (#43–45): `shellinertia`, legacy crate deprecation, MuJoCo conformance test suite (depends on all #19–44)
+- **3B Format + Performance** (#46–50): `<composite>`, URDF completeness, SIMD audit, non-physics MJCF, CCD
+- **3C API + Pipeline** (#51–59): body accumulators, mj_inverse, step1/step2, heightfield gaps, user data, subtree fields, SDF options, position derivatives, name lookup
+- **3D Edge-Case Features** (#60–66): springinertia, slidercrank, missing sensors, dynprm, ball/free spring energy, mesh convex hull, plugin/extension
+- **3E GPU Pipeline** (#67–71): GPU FK (10b), broad-phase (10c), narrow-phase (10d), constraint solver (10e), full GPU step (10f)
 
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal), ImplicitFast (symmetric D, Cholesky), Implicit (asymmetric D + Coriolis, LU)
@@ -36,7 +41,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Sensors (32 pipeline types, all wired from MJCF): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, JointLimitFrc, TendonLimitFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer, User (0-dim)
 - Derivatives (complete): FD transition Jacobians (`mjd_transition_fd`), analytical velocity derivatives (`mjd_smooth_vel` → `Data.qDeriv`), hybrid FD+analytical transition Jacobians (`mjd_transition_hybrid`), SO(3) quaternion integration Jacobians (`mjd_quat_integrate`), public dispatch API (`mjd_transition`), validation utilities
 - Sleeping / Body Deactivation (complete): Tree-based sleeping with island discovery (DFS flood-fill), selective CRBA, partial LDL factorization, awake-index iteration, per-island block-diagonal constraint solving, 93 integration tests ([future_work_5 §16](./todo/future_work_5.md))
-- Model loading (URDF, MJCF with `<default>` class resolution, **MJB binary format**) — `DefaultResolver` is wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors)
+- Model loading (URDF, MJCF with `<default>` class resolution, `<compiler>` element, `<include>` file support, **MJB binary format**) — `DefaultResolver` is wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors); `<compiler>` handles angle units, Euler sequences, asset paths, autolimits, inertia computation, mass post-processing; `<include>` supports recursive file expansion with duplicate detection
 
 ### Placeholder / Stub (in pipeline)
 - Pyramidal friction cones — `cone` field stored but solver uses elliptic cones (warning emitted if pyramidal requested)
@@ -89,6 +94,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | SIMD optimization | `sim-simd` crate with `Vec3x4`, `Vec3x8`, batch operations | [§12](#12-performance-optimizations) |
 | Analytical derivatives (complete) | Part 1: `mjd_transition_fd()`, `mjd_smooth_vel()`, `mjd_passive_vel`, `mjd_actuator_vel`, `mjd_rne_vel`. Part 2: `mjd_quat_integrate()`, `mjd_transition_hybrid()`, `mjd_transition()` dispatch, `validate_analytical_vs_fd()`, `fd_convergence_check()` — 30+ tests, all passing | [future_work_4 §12](./todo/future_work_4.md) |
 | Sleeping / Body Deactivation | Tree-based sleeping (Phases A/B/C): island discovery via DFS flood-fill, selective CRBA, partial LDL, awake-index iteration, per-island solving — 93 integration tests | [future_work_5 §16](./todo/future_work_5.md) |
+| `<include>` + `<compiler>` element | Pre-parse XML expansion (recursive, duplicate detection); `<compiler>` with angle/eulerseq/meshdir/texturedir/assetdir/autolimits/inertiafromgeom/boundmass/boundinertia/balanceinertia/settotalmass/strippath/discardvisual/fusestatic/coordinate; section merging for duplicate top-level elements; URDF converter defaults | [§13](#13-model-format), [future_work_6 §18](./todo/future_work_6.md) |
 
 **For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics + site transmissions), sensors (32 pipeline types, all wired from MJCF), fixed + spatial tendons (including sphere/cylinder wrapping, sidesite, pulley), and deformable bodies (split-solve contact with rigid geoms) are functional. See [`sim/docs/todo/index.md`](./todo/index.md) for the full gap list.
 
@@ -776,9 +782,9 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 
 | Constraint | MuJoCo | CortenForge | Status | Priority |
 |------------|--------|-------------|--------|----------|
-| Connect (ball) | Yes | Pipeline `EqualityType::Connect` + `apply_connect_constraint()` | **Implemented** (in pipeline via penalty forces; standalone `ConnectConstraint` in sim-constraint is unused) | - |
-| Weld | Yes | Pipeline `EqualityType::Weld` + `apply_weld_constraint()` | **Implemented** (in pipeline; standalone `WeldConstraint` in sim-constraint is unused) | - |
-| Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (in pipeline; standalone `DistanceConstraint` in sim-constraint is unused) | - |
+| Connect (ball) | Yes | Pipeline `EqualityType::Connect` + `apply_connect_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see [#30](./todo/future_work_8.md)) | - |
+| Weld | Yes | Pipeline `EqualityType::Weld` + `apply_weld_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see [#30](./todo/future_work_8.md)) | - |
+| Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see [#30](./todo/future_work_8.md)) | - |
 | Joint coupling | Yes | Pipeline `EqualityType::Joint` + `apply_joint_equality_constraint()` | **Implemented** (in pipeline; standalone `JointCoupling`/`GearCoupling`/`DifferentialCoupling` in sim-constraint are unused) | - |
 | Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Standalone** (in sim-constraint; pipeline uses `EqualityType::Tendon` warning — tendon *equality* constraints not yet implemented) | - |
 | Flex (edge length) | Yes | `FlexEdgeConstraint` | ✅ **Pipeline** (XPBD solver called from `mj_deformable_step()` in `integrate()` and `mj_runge_kutta()`; see [future_work_4 #11](./todo/future_work_4.md) ✅) | - |
@@ -1217,6 +1223,8 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | Element | Support | Notes |
 |---------|---------|-------|
 | `<mujoco>` | Full | Root element, model name |
+| `<compiler>` | Full | All A1–A12 attributes: `angle`, `eulerseq`, `meshdir`/`texturedir`/`assetdir`, `autolimits`, `inertiafromgeom`, `boundmass`/`boundinertia`, `balanceinertia`, `settotalmass`, `strippath`, `discardvisual`, `fusestatic`, `coordinate` |
+| `<include>` | Full | Pre-parse XML expansion with recursive nested includes, duplicate file detection, path resolution relative to main model file; works inside any MJCF section |
 | `<option>` | Full | All attributes, flags, solver params, collision options |
 | `<default>` | Full | `DefaultResolver` wired into `model_builder.rs` — class defaults applied to joints, geoms, sites, actuators, tendons, sensors before per-element attributes |
 | `<worldbody>` | Full | Body tree root |
@@ -1272,10 +1280,9 @@ data.step(&model).expect("should step");
 
 **Limitations:**
 - Composite bodies not supported
-- Include files not supported
 - Textures and materials parsed but not loaded (meshes are loaded)
 
-**Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `model_builder.rs`, `validation.rs`, `config.rs`
+**Files:** `sim-mjcf/src/lib.rs`, `parser.rs`, `types.rs`, `model_builder.rs`, `validation.rs`, `config.rs`, `include.rs`
 
 ### Implementation Notes: MJCF `<option>` Element ✅ COMPLETED
 

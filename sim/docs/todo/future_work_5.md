@@ -127,43 +127,20 @@ Each row type already has an implicit Jacobian in the existing penalty code:
   The `diagApprox` computation extracts just the diagonal of A per row
   (§15.1), avoiding the full O(nc²·nv) Delassus assembly.
 
-**Friction loss migration.** MuJoCo has **always** treated `frictionloss` as
-constraint rows (`mjCNSTR_FRICTION_DOF`, `mjCNSTR_FRICTION_TENDON`) with
-Huber cost — it was never a passive force in MuJoCo. Our pipeline diverged
-from MuJoCo here from the start: we handle frictionloss in `mj_fwd_passive()`
-via `−frictionloss · tanh(qvel · friction_smoothing)` (where
-`friction_smoothing` defaults to 1000.0, configurable on Model) written to
-`qfrc_passive` (lines 9729–9738). This smooth `tanh` approximation differs
-from MuJoCo's Huber-cost constraint semantics. For the Newton solver,
-frictionloss must be handled as proper constraint rows matching MuJoCo:
-- DOF friction: 1×nv sparse row with `1.0` at the DOF index
-- Tendon friction: 1×nv row = `ten_J[t]`
-- `floss = frictionloss` value from the joint/tendon
+**Friction loss migration.** ⚠️ **Tracked as [#28](./future_work_8.md)
+(Newton Huber) and [#29](./future_work_8.md) (PGS/CG).** The full
+specification for migrating friction loss from tanh passive forces to Huber
+constraint rows is in future_work_8.md. Summary of the design context that
+informed the spec:
 
-For PGS/CG backward compatibility, friction loss remains in `mj_fwd_passive()`
-when the solver is not Newton. The Newton path skips friction loss in passive
-forces and instead includes it in J.
-
-**Friction loss skip mechanism:** `mj_fwd_passive()` runs before
-`mj_fwd_constraint()` and currently always writes friction loss into
-`qfrc_passive`. Two approaches (either is acceptable):
-- **(a)** Pass `solver_type` to `mj_fwd_passive()`; when Newton, skip the
-  friction loss loop. `qfrc_passive` then naturally excludes friction loss.
-- **(b)** Always compute full `qfrc_passive`; store the friction loss
-  contribution separately in a new `Data.qfrc_frictionloss: DVector<f64>`.
-  The Newton path computes `qfrc_smooth` using
-  `qfrc_passive − qfrc_frictionloss`. PGS/CG use `qfrc_passive` as-is.
-Approach (b) is preferred because it avoids coupling `mj_fwd_passive()` to
-solver type and preserves the friction loss vector for diagnostics and PGS
-fallback (§15.12 Phase A step 14). With approach (b), PGS fallback can use
-`qfrc_passive` directly (which includes friction loss) without re-running
-`mj_fwd_passive()`.
-
-**Compatibility:** PGS and CG continue to operate on contacts-only via the
-existing path (penalty limits/equality + contact-only solver). Newton uses the
-unified system. The dispatch in `mj_fwd_constraint()` branches: PGS/CG take
-the existing contact-only path; Newton takes the new unified path. This avoids
-regressing PGS/CG behavior.
+- MuJoCo treats `frictionloss` as constraint rows (`mjCNSTR_FRICTION_DOF`,
+  `mjCNSTR_FRICTION_TENDON`) with Huber cost — never a passive force.
+- Our pipeline diverged: `mj_fwd_passive()` uses `−frictionloss · tanh(qvel ·
+  friction_smoothing)`.
+- Approach (b) was chosen: `Data.qfrc_frictionloss` accumulator (implemented).
+  Newton subtracts it from RHS; PGS/CG uses `qfrc_passive` as-is.
+- #28 migrates Newton to constraint rows. #29 migrates PGS/CG and removes
+  the tanh path entirely.
 
 **Per-constraint metadata** is stored as flat `Data` fields (§15.11) indexed
 by constraint row. During assembly, each constraint row populates these fields:

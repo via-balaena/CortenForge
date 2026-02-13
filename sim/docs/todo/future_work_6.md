@@ -1,11 +1,12 @@
-# Future Work 6 — Phase 3A: Foundation + Core Correctness (Items #18–22)
+# Future Work 6 — Phase 3A: Parser Fundamentals + Foundation (Items #18–22)
 
 Part of [Simulation Phase 3 Roadmap](./index.md). See [index.md](./index.md) for
 priority table, dependency graph, and file map.
 
-Items are ordered foundationally: `<include>` unlocks loading production models,
-the conformance suite unlocks verifying everything that follows, then core contact
-correctness, then solver/actuator completeness.
+Items are ordered by implementation dependency: `<include>` + `<compiler>` (#18)
+unlocks production model loading. Parser fundamentals (#19–22) fix MJCF parsing
+gaps that cause incorrect model compilation — these must be correct before any
+runtime physics testing is meaningful.
 
 ---
 
@@ -418,157 +419,173 @@ MuJoCo convention.
 
 ---
 
-### 19. MuJoCo Conformance Test Suite
-**Status:** Not started | **Effort:** XL | **Prerequisites:** None (benefits from #18)
+### 19. `<frame>` Element Parsing
+**Status:** Not started | **Effort:** S–M | **Prerequisites:** None
 
 #### Current State
-Model loading is tested (MuJoCo Menagerie + DeepMind Control Suite all load
-successfully). Numerical trajectory conformance is **not** tested — acceptance
-criteria for all implemented features rely on ad-hoc verification rather than
-systematic comparison against MuJoCo reference outputs.
 
-This is foundational infrastructure: every subsequent physics item (#20–#28) should
-be verified against MuJoCo ground truth via this harness.
+No `MjcfFrame` type, no `b"frame"` match in parser. Silently dropped by catch-all
+`skip_element()`. Models using `<frame>` for coordinate system convenience (common
+in complex humanoid MJCF files) silently lose frame transformations.
 
 #### Objective
-Build an automated conformance harness that compares CortenForge simulation
-trajectories against MuJoCo ground truth.
+
+Parse `<frame>` elements within `<body>` and apply their coordinate transformations
+to child elements.
 
 #### Specification
 
-1. **Reference generation**: Run MuJoCo (C API via mujoco-sys or Python bindings)
-   on a set of test models, recording `qpos`, `qvel`, `qacc`, `sensordata` at each
-   step. Store as binary reference files (model + N steps + state vectors).
-2. **Test harness**: For each reference file:
-   - Load the same MJCF model in CortenForge
-   - Step N times with identical `ctrl` inputs
-   - Compare state vectors against reference at each step
-   - Report per-DOF relative error, max error, and divergence step
-3. **Tolerance tiers**:
-   - **Exact** (< 1e-10): Same algorithm, same precision (e.g., FK, CRBA)
-   - **Tight** (< 1e-6): Same algorithm, minor implementation differences
-   - **Loose** (< 1e-2): Different algorithm or accumulation order (e.g., PGS
-     iteration order, contact detection order)
-4. **Test models** (minimum set):
-   - `humanoid.xml` — complex articulated body, contacts, actuators
-   - `ant.xml` — RL benchmark, 4 legs, ground contact
-   - `cartpole.xml` — minimal joint chain, no contacts
-   - `shadow_hand.xml` — high DOF, tendons, many contacts
-   - `cloth_grid.xml` — deformable (when `<composite>` supported)
-5. **CI integration**: Run as `cargo test -p sim-conformance-tests --features mujoco`
-   (feature-gated to avoid requiring MuJoCo in default builds).
+1. **MJCF semantics**: `<frame>` defines a coordinate frame transformation within
+   `<body>`. All child elements of the `<frame>` (geoms, joints, sites, other
+   frames) have their positions/orientations interpreted relative to the frame's
+   pose, NOT relative to the parent body directly.
+2. **Implementation**: `<frame>` does NOT create a new body. It is a
+   pre-processing transformation:
+   - Parse `pos` and orientation (quat/euler/axisangle/xyaxes/zaxis) of the frame.
+   - For each child element, compose the frame's transformation with the child's
+     local transformation to get the child's pose relative to the parent body.
+   - Recursively handle nested `<frame>` elements.
+3. **Expansion approach**: Like `<include>`, this can be handled as a
+   pre-processing step: expand `<frame>` by transforming children's coordinates,
+   then remove the `<frame>` wrapper. The model builder never sees `<frame>`.
+4. **Children allowed inside `<frame>`**: `<body>`, `<geom>`, `<joint>`, `<site>`,
+   `<camera>`, `<light>`, `<frame>` (nested).
 
 #### Acceptance Criteria
-1. ≥5 reference models with 100-step trajectories.
-2. Tight tolerance (< 1e-6) for FK, CRBA, RNE on all models.
-3. Loose tolerance (< 1e-2) for constrained dynamics (contact forces are
-   solver-order-dependent).
-4. CI runs pass on every PR.
+
+1. `<frame pos="1 0 0"><geom pos="0 0 0" .../></frame>` places the geom at
+   body-relative position (1, 0, 0).
+2. `<frame euler="0 0 90"><geom pos="1 0 0" .../></frame>` rotates the geom's
+   position by 90° about Z.
+3. Nested frames compose correctly.
+4. Models without `<frame>` are unaffected (regression).
+5. A real-world humanoid MJCF using `<frame>` loads with correct geometry placement.
 
 #### Files
-- `sim/L0/tests/conformance/` — reference data + test harness
-- `sim/L0/tests/conformance/generate_references.py` — MuJoCo reference generator
+
+- `sim/L0/mjcf/src/model_builder.rs` — frame parsing and coordinate transformation
 
 ---
 
-### 20. Contact Margin/Gap Runtime Effect
+### 20. `childclass` Attribute
 **Status:** Not started | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-`geom_margin` and `gap` fields are parsed from MJCF and stored on `Contact` and
-`Model.geom_margin`, but have **no runtime effect** on contact activation distance.
-Comment at `mujoco_pipeline.rs:5664`: "margin/gap are NOT applied here."
 
-In MuJoCo, `margin` widens the contact activation distance — contacts are generated
-when `dist < margin` rather than `dist < 0`. The `gap` attribute further shifts the
-reference distance for Baumgarte stabilization. Many MJCF models rely on margin for
-smooth contact activation (avoiding sudden force spikes).
+Not parsed. Documented as "Not in scope" in `future_work_2.md`. `MjcfBody` has no
+`childclass` field. The default class resolver already supports hierarchical
+lookup — just needs the inherited class name threaded through body parsing.
 
 #### Objective
-Wire `margin` and `gap` into the contact detection and constraint assembly pipeline
-so contacts activate at the correct distance and stabilization uses the correct
-reference.
+
+Parse `childclass` from `<body>` and use it as the default class for all child
+elements within that body subtree.
 
 #### Specification
 
-1. **Contact activation** (`mj_collision` / narrow-phase): Generate contacts when
-   `penetration_depth > -margin` (currently: `penetration_depth > 0`).
-2. **Constraint assembly** (`assemble_contact_system`): Use `depth - gap` as the
-   effective penetration for Baumgarte stabilization (currently: raw `depth`).
-3. **Per-geom margin**: `margin = max(geom1.margin, geom2.margin)` (MuJoCo semantics).
+1. **MJCF parsing**: Parse `childclass` (string) from `<body>` elements.
+2. **Class resolution**: When resolving defaults for a child element (geom, joint,
+   site, etc.) within a body that has `childclass="X"`:
+   - If the child element has an explicit `class="Y"`, use class Y.
+   - If the child element has no explicit class, use class X (from `childclass`).
+   - `childclass` is inherited by sub-bodies: if body A has `childclass="X"` and
+     child body B has no `childclass`, B's children also default to class X.
+   - If body B has its own `childclass="Y"`, it overrides A's for B's subtree.
+3. **Existing infrastructure**: The default class resolver already supports
+   class lookup by name. The change is threading the `childclass` name through
+   body parsing so it's used as the fallback when no explicit `class` is specified.
 
 #### Acceptance Criteria
-1. A sphere resting 1mm above a plane with `margin="0.002"` generates a contact.
-2. `gap` shifts the equilibrium penetration for compliant contacts.
-3. Zero margin/gap reproduces current behavior (regression).
+
+1. `<body childclass="robot"><geom .../></body>` applies class "robot" defaults
+   to the geom.
+2. `<body childclass="robot"><geom class="special" .../></body>` uses class
+   "special" (explicit overrides childclass).
+3. Nested bodies inherit parent's `childclass` unless overridden.
+4. Models without `childclass` are unaffected (regression).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — contact generation + constraint assembly
+
+- `sim/L0/mjcf/src/model_builder.rs` — parse childclass, thread through body
+  parsing as default class fallback
 
 ---
 
-### 21. Noslip Post-Processor
-**Status:** Parsed, partially implemented | **Effort:** S | **Prerequisites:** None
+### 21. `<site>` euler/axisangle/xyaxes/zaxis Orientation
+**Status:** Not started | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-`noslip_iterations` and `noslip_tolerance` are parsed from MJCF and stored in `Model`.
-The Newton solver has a noslip code path, but PGS/CG solvers do not. MuJoCo's noslip
-post-processor (`mj_solNoSlip`) is a secondary PGS sweep on friction rows only, using
-`AR - R` (removing the regularizer) to suppress artificial slip.
+
+Site parsing only supports `quat`. `parse_site_attrs()` handles only the `quat`
+attribute. Model builder comments: "sites have only quat, no euler." Body and geom
+elements already support all orientation formats (euler, axisangle, xyaxes, zaxis,
+quat).
 
 #### Objective
-Implement the noslip PGS post-processor for all solver types.
+
+Support all MuJoCo orientation attributes on `<site>` elements, matching the
+existing body/geom orientation parsing.
 
 #### Specification
 
-1. **When to run**: After the main constraint solve, if `noslip_iterations > 0`.
-2. **What it solves**: Only friction-dimension constraint rows (tangent, torsional,
-   rolling). Normal forces are fixed from the main solve.
-3. **Modified diagonal**: Use `1 / A[i,i]` instead of `1 / (A[i,i] + R[i])` —
-   removing the regularizer makes constraints "hard" (no softness).
-4. **Projection**: Same friction cone projection as main PGS.
-5. **Convergence**: `noslip_tolerance` for early termination.
+1. **Reuse existing orientation parsing**: The `parse_orientation()` helper (or
+   equivalent) used for body/geom elements already handles `euler`, `axisangle`,
+   `xyaxes`, `zaxis`, and `quat`. Apply the same logic to site parsing.
+2. **Compiler angle convention**: Respect `compiler.angle` (degree vs radian)
+   for euler and axisangle, just as body/geom parsing does.
+3. **Priority**: MuJoCo's attribute priority when multiple orientation attributes
+   are specified: `quat` > `axisangle` > `xyaxes` > `zaxis` > `euler`. Match
+   this priority.
 
 #### Acceptance Criteria
-1. `noslip_iterations=3` reduces tangential slip on a box-on-slope benchmark.
-2. `noslip_iterations=0` matches current behavior (regression).
-3. Normal forces are not modified by the noslip pass.
+
+1. `<site euler="90 0 0"/>` produces the correct orientation quaternion.
+2. `<site axisangle="0 0 1 90"/>` produces the correct orientation quaternion.
+3. `<site xyaxes="0 1 0 -1 0 0"/>` produces the correct orientation quaternion.
+4. `<site zaxis="0 0 1"/>` produces the correct orientation quaternion.
+5. `<site quat="..."/>` continues to work (regression).
+6. Sensors attached to sites with non-quat orientation produce correct readings.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — new `mj_sol_noslip()` function, called
-  after main solve
+
+- `sim/L0/mjcf/src/model_builder.rs` — `parse_site_attrs()` extension
 
 ---
 
-### 22. Body-Transmission Actuators (Adhesion)
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+### 22. Tendon `springlength` MJCF Parsing
+**Status:** Not started | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-`model_builder.rs:1671` returns an error: "uses body transmission which is not yet
-supported." MuJoCo adhesion actuators use body-level transmission — the actuator
-force is applied as a contact-modifying force on all contacts involving the specified
-body, rather than through joint/tendon/site Jacobians.
+
+Pipeline has `tendon_lengthspring` field and auto-computes it from `tendon_length0`.
+But the MJCF parser does NOT parse the `springlength` attribute from XML. Zero
+matches for `springlength` in `parser.rs`. The runtime field exists but can't be
+set from MJCF.
 
 #### Objective
-Implement body transmission so adhesion actuators can load and function.
+
+Parse `springlength` from `<tendon>` children (`<fixed>`, `<spatial>`) and use it
+to override the auto-computed spring rest length.
 
 #### Specification
 
-1. **Transmission type**: `TransmissionType::Body(body_id)` — identifies target body.
-2. **Force application**: In `mj_fwd_constraint()` (or post-solve), for each adhesion
-   actuator with body transmission:
-   - Find all active contacts involving `body_id`
-   - Add adhesion force to normal contact force: `F_n += gain * ctrl`
-   - This allows negative normal force (sticking), bounded by `forcerange`
-3. **MJCF parsing**: `<actuator><adhesion body="..." .../>` resolves body name to ID,
-   sets `trntype="body"`.
+1. **MJCF parsing**: Parse `springlength` (float or 2-element array) from
+   `<fixed>` and `<spatial>` tendon elements. MuJoCo supports both scalar
+   (sets both min/max to the same value) and 2-element (min, max for
+   length-dependent spring).
+2. **Model builder**: When `springlength` is explicitly provided, store it in
+   `tendon_lengthspring` instead of auto-computing from `tendon_length0`.
+3. **Auto-compute fallback**: When `springlength` is NOT provided (default),
+   preserve existing behavior (compute from initial tendon length at qpos0).
 
 #### Acceptance Criteria
-1. Adhesion actuator with body transmission loads without error.
-2. Positive control input increases normal contact force (pressing).
-3. Negative contact forces allow body to "stick" to surfaces.
-4. No adhesion actuator → existing behavior unchanged (regression).
+
+1. `<spatial springlength="0.5"/>` sets the spring rest length to 0.5.
+2. `<spatial springlength="0.3 0.7"/>` sets min/max spring rest lengths.
+3. Without `springlength`, auto-computation from qpos0 is preserved.
+4. A pre-tensioned tendon (springlength ≠ initial length) produces correct
+   spring forces.
 
 #### Files
-- `sim/L0/mjcf/src/model_builder.rs` — parsing + transmission resolution
-- `sim/L0/core/src/mujoco_pipeline.rs` — force application in constraint solve
+
+- `sim/L0/mjcf/src/model_builder.rs` — parse springlength attribute
