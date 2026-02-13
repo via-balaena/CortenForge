@@ -422,52 +422,1000 @@ MuJoCo convention.
 **Status:** Not started | **Effort:** XL | **Prerequisites:** None (benefits from #18)
 
 #### Current State
-Model loading is tested (MuJoCo Menagerie + DeepMind Control Suite all load
-successfully). Numerical trajectory conformance is **not** tested — acceptance
-criteria for all implemented features rely on ad-hoc verification rather than
-systematic comparison against MuJoCo reference outputs.
 
-This is foundational infrastructure: every subsequent physics item (#20–#28) should
-be verified against MuJoCo ground truth via this harness.
+Model loading is tested (MuJoCo Menagerie + DeepMind Control Suite all load
+successfully). Per-feature correctness relies on ad-hoc verification: analytical
+ground truth for FK/CRBA (9 tests in `validation.rs`), finite-difference
+cross-checks for derivatives (30+ tests in `derivatives.rs`), and hardcoded
+MuJoCo 3.4.0 reference values for spatial tendon lengths/Jacobians (18 tests in
+`spatial_tendons.rs`). These are valuable but **unsystematic** — they cover
+whatever the implementor tested at the time, leaving gaps between features and
+no trajectory-level validation.
+
+**What's missing:**
+- No per-pipeline-stage comparison against MuJoCo (does `mj_crba` produce the
+  same mass matrix? does `mj_rne` produce the same bias forces?)
+- No self-consistency tests (forward/inverse equivalence, island/monolithic
+  equivalence, sparse/dense equivalence)
+- No multi-step trajectory comparison (error accumulation, divergence detection)
+- No determinism verification (same inputs → identical outputs across runs)
+- No property-based tests (energy conservation ordering across integrators)
+
+This is foundational infrastructure: every subsequent physics item (#20–#39)
+should be verified against MuJoCo ground truth via this harness. MuJoCo's own
+test suite uses four complementary strategies — **unit tests** (analytical ground
+truth), **self-consistency tests** (two code paths, same answer),
+**cross-implementation tests** (C engine as oracle for MJX), and **property
+tests** (conservation laws, ordering invariants). We adopt the same taxonomy.
 
 #### Objective
-Build an automated conformance harness that compares CortenForge simulation
-trajectories against MuJoCo ground truth.
+
+Build a four-layer conformance test suite that:
+1. Validates each pipeline stage in isolation against analytical or MuJoCo ground truth
+2. Verifies internal self-consistency (forward/inverse, island/monolithic)
+3. Compares multi-step trajectories against MuJoCo reference data
+4. Enforces invariant properties (determinism, energy ordering, conservation)
+
+The suite must be **debuggable** — when a trajectory diverges at step 12, you
+can immediately identify which pipeline stage first diverged and on which DOF.
 
 #### Specification
 
-1. **Reference generation**: Run MuJoCo (C API via mujoco-sys or Python bindings)
-   on a set of test models, recording `qpos`, `qvel`, `qacc`, `sensordata` at each
-   step. Store as binary reference files (model + N steps + state vectors).
-2. **Test harness**: For each reference file:
-   - Load the same MJCF model in CortenForge
-   - Step N times with identical `ctrl` inputs
-   - Compare state vectors against reference at each step
-   - Report per-DOF relative error, max error, and divergence step
-3. **Tolerance tiers**:
-   - **Exact** (< 1e-10): Same algorithm, same precision (e.g., FK, CRBA)
-   - **Tight** (< 1e-6): Same algorithm, minor implementation differences
-   - **Loose** (< 1e-2): Different algorithm or accumulation order (e.g., PGS
-     iteration order, contact detection order)
-4. **Test models** (minimum set):
-   - `humanoid.xml` — complex articulated body, contacts, actuators
-   - `ant.xml` — RL benchmark, 4 legs, ground contact
-   - `cartpole.xml` — minimal joint chain, no contacts
-   - `shadow_hand.xml` — high DOF, tendons, many contacts
-   - `cloth_grid.xml` — deformable (when `<composite>` supported)
-5. **CI integration**: Run as `cargo test -p sim-conformance-tests --features mujoco`
-   (feature-gated to avoid requiring MuJoCo in default builds).
+The spec is organized into four layers (A–D), each independently implementable.
+Layer A requires no MuJoCo dependency. Layers B and C use pre-generated reference
+data (checked into the repo). Layer D requires no MuJoCo dependency.
+
+##### Layer A — Self-Consistency Tests (no MuJoCo dependency)
+
+Self-consistency tests verify that different code paths in CortenForge produce
+equivalent results. These are the highest-value tests because they catch bugs
+without external dependencies and never need regeneration.
+
+**Layer A model set.** These models are shared across A1–A5 (not all tests
+use all models — each test specifies which subset applies):
+
+| Model | Description | nv | Features |
+|-------|-------------|-----|---------|
+| `a_pendulum` | Single hinge, no damping | 1 | Minimal, no contacts |
+| `a_double_pendulum` | Two-link hinge chain | 2 | Off-diagonal M, Coriolis |
+| `a_spring_damper` | Hinge with stiffness + damping | 1 | Passive forces |
+| `a_ball_free` | Ball joint + free joint body | 9 | Quaternion, nq≠nv |
+| `a_three_link_arm` | 3-hinge chain with motor | 3 | Actuation, FK chain |
+| `a_sphere_on_plane` | Sphere on ground plane | 6 | Single contact |
+| `a_two_boxes` | Two boxes on plane (separate trees) | 12 | Multi-tree, islands |
+| `a_ant` | 4-leg ant model, ctrl=0 | 8 | Multiple contacts, islands, 4+ geoms |
+| `a_tendon_arm` | 3-link arm with tendon actuator | 3 | Tendon J^T mapping |
+| `a_humanoid` | Full humanoid, ctrl=0 | 27 | Integration: everything |
+
+**A1. Forward/inverse equivalence**
+
+After `forward()`, verify the force balance identity from
+`mj_fwd_acceleration_explicit`: `M * qacc == qfrc_applied + qfrc_actuator +
+qfrc_passive + qfrc_constraint - qfrc_bias`. This is CortenForge's version of
+MuJoCo's `mj_compareFwdInv()` check.
+
+- Tolerance: `1e-10` (algebraic identity — `qacc` is computed by solving
+  `M * qacc = f_total` via `mj_solve_sparse`, so the residual is factorization
+  round-trip error only).
+- Test at: `qpos0`, 3 random configurations (seeded deterministically with
+  `qpos[i] = 0.1 * sin(i * seed)` for hinge/slide DOFs; quaternion DOFs
+  use `quat = normalize([1, 0.1*sin(seed), 0.1*cos(seed), 0.05*sin(2*seed)])`
+  to stay near identity while avoiding axis-aligned degeneracies), and
+  3 mid-simulation states (step 10, 50, 100 of a default run).
+- Models: all Layer A models.
+- Implementation: single function `assert_fwd_inv_consistent(model, data, eps)`
+  that computes the residual `r = M*qacc - (qfrc_applied + qfrc_actuator +
+  qfrc_passive + qfrc_constraint - qfrc_bias)` and asserts
+  `||r||_inf / max(||qacc||_inf, 1e-10) < eps`.
+
+**A2. Island/monolithic solver equivalence**
+
+For models with multiple kinematic trees and contacts, compare:
+- `mj_fwd_constraint()` (monolithic solve via `DISABLE_ISLAND`, `nisland = 0`)
+- `mj_fwd_constraint_islands()` (per-island solve)
+
+Both must produce identical `qfrc_constraint` and `efc_force`.
+(Note: `Data::efc_lambda` in CortenForge is the warmstart cache, not the
+solved forces. The solved constraint forces are in `Data::efc_force`.)
+
+- Tolerance: `1e-8` for PGS (iteration order may differ within islands vs.
+  global), `1e-6` for CG. Newton is excluded — it always dispatches to the
+  monolithic solver (`mj_fwd_constraint`) regardless of islands, so the
+  comparison is vacuous (identical code path, `0` difference).
+- Models: `a_two_boxes` (multi-tree), `a_ant` (single tree, multiple islands).
+- Implementation: toggle `model.disableflags |= DISABLE_ISLAND` to force
+  monolithic solve (sets `nisland = 0`, which triggers the global fallback
+  in `mj_fwd_constraint_islands`). No new parameter or `#[cfg(test)]` gate
+  needed — the flag is already public on `Model`.
+
+**A3. Determinism (bit-identical replay)**
+
+Step a model 100 times. Reset to initial state. Step 100 times again. Assert
+bit-identical `qpos`, `qvel`, `qacc`, `qfrc_constraint`, `sensordata` at
+every step. This catches uninitialized memory, HashMap iteration order leaks,
+and floating-point non-determinism.
+
+- Tolerance: `0` (exact bit equality via `assert_eq!` on raw f64 bits, or
+  `f64::to_bits()` comparison). Where HashMap iteration order causes
+  unavoidable differences (warmstart cache), compare the *physics outputs*
+  bit-identically, not the cache internals.
+- Repeat with warmstart disabled to isolate warmstart-related non-determinism.
+- Models: `a_double_pendulum`, `a_sphere_on_plane`, `a_ant`, `a_humanoid`
+  (from Layer A model set — covers no-contact, single-contact,
+  multi-contact, and high-DOF systems).
+
+**A4. Integrator energy ordering**
+
+For a conservative system (spring, no damping, no contacts), verify that
+absolute energy drift after N steps satisfies:
+`|ΔE_RK4| < |ΔE_Implicit| < |ΔE_Euler|`.
+
+This is a property test — no absolute tolerance, just ordering. MuJoCo's
+`engine_forward_test.cc` (`EnergyConservation`) uses this exact pattern.
+
+- Models: a variant of `a_spring_damper` with `damping="0"` in its MJCF
+  (pure conservative spring), and `a_double_pendulum` (conservative two-link,
+  no damping or contacts by default).
+- Simulation: 1000 steps at `dt = 0.001`.
+- Assert: strict inequality `|ΔE_RK4| < |ΔE_Implicit| < |ΔE_Euler|`.
+- Note: `ImplicitFast` is not included in the ordering assertion because
+  its relationship to `Implicit` depends on whether Coriolis terms
+  contribute significant energy error for the specific model. Instead,
+  assert `|ΔE_ImplicitFast| < |ΔE_Euler|` as a separate weaker check.
+
+**A5. Sparse/dense mass matrix equivalence**
+
+Compare `qM` (dense, from CRBA) against reconstruction from sparse `qLD`
+factorization: `L^T * D * L` must equal `qM`.
+
+- Tolerance: `1e-12` (factorization round-trip).
+- Models: all Layer A models.
+- Implementation: reconstruct dense M from `qLD_data`, `qLD_rowadr`,
+  `qLD_rownnz`, `qLD_colind`, `qLD_diag_inv`; compare element-wise.
+
+**A6. Sleep bit-identity**
+
+For each pipeline function, verify that enabling sleep with all bodies awake
+produces bit-identical results to the non-sleep code path. This already has
+93 tests in `sleeping.rs` — the conformance suite should reference/extend
+these rather than duplicate.
+
+- Pattern: run forward() with `ENABLE_SLEEP` and all bodies awake, compare
+  against forward() without `ENABLE_SLEEP`. Assert bit-identity for all
+  `Data` fields.
+- This test already exists (sleeping.rs Phase C tests). Reference it in the
+  conformance index and extend to cover any new pipeline stages.
+
+##### Layer B — Per-Stage Reference Tests (MuJoCo reference data, pre-generated)
+
+Each test calls `forward()` (which runs all pipeline stages), then compares
+a specific `Data` field — the one written by the target pipeline stage —
+against a hardcoded MuJoCo 3.4.0 reference value. Although `forward()` runs
+all stages, each Layer B test checks **only the output of its target stage**.
+If B3 (RNE → `qfrc_bias`) fails but B1 (FK → `xpos`) passes, the bug is in
+RNE, not FK. This is the **diagnostic backbone** — when a trajectory test
+(Layer C) fails, you drill down to the per-stage test that fails.
+
+All reference values are hardcoded as Rust constants with a `// MuJoCo 3.4.0`
+annotation, matching the established pattern in `spatial_tendons.rs`. No
+external reference files — constants are generated once by the Python reference
+script and pasted into the test source.
+
+Layer B models are **separate** from the Layer A model set. They are purpose-built
+for per-stage testing and may overlap in concept (e.g., both layers have a double
+pendulum) but are independent MJCF definitions with different names.
+
+**B1. Forward kinematics (`mj_fwd_position`)**
+
+For each test model at `qpos0` and 3 non-trivial configurations:
+- Record `xpos[i]` and `xquat[i]` for all bodies from MuJoCo 3.4.0.
+- Assert `xpos` and `xquat` match within tolerance.
+- Tolerance: `1e-10` (identical algorithm — recursive FK from parent).
+
+Models: `single_hinge`, `double_pendulum`, `ball_joint_chain`,
+`free_body`, `humanoid_qpos0`.
+
+Existing coverage: `validation.rs` has 9 FK tests with analytical ground truth.
+Layer B adds MuJoCo-reference FK tests for complex models where analytical
+solutions are impractical.
+
+**B2. Mass matrix (`mj_crba`)**
+
+For each test model at `qpos0` and 2 non-trivial configurations:
+- Record the full `qM` matrix (dense, `nv × nv`) from MuJoCo 3.4.0.
+- Compare element-wise.
+- Tolerance: `1e-10` (identical CRBA algorithm; only difference is
+  accumulation order in the backward pass, which for tree-order traversal
+  is deterministic).
+
+Also verify: `qM` is symmetric (`|M[i,j] - M[j,i]| < 1e-14`), positive
+definite (all eigenvalues > 0), and armature appears on the diagonal
+(`qM[dof,dof] >= armature[dof]`).
+
+Models: `double_pendulum`, `three_link_arm`, `free_body`,
+`ant_standing` (8-DOF, multi-body chain).
+
+Existing coverage: `validation.rs` has 4 CRBA tests. Layer B extends with
+larger models.
+
+**B3. Bias forces (`mj_rne`)**
+
+For each test model at 3 configurations with nonzero velocity:
+- Record `qfrc_bias[nv]` from MuJoCo 3.4.0.
+- Compare element-wise.
+- Tolerance: `1e-10` (identical RNE algorithm with identical traversal order).
+
+Verify: at zero velocity with gravity, `qfrc_bias` equals the gravity
+torque from `subtree_com × gravity × subtree_mass` projected through joint
+axes (already tested analytically in `validation.rs`; Layer B adds MuJoCo
+cross-check).
+
+Models: `double_pendulum`, `three_link_arm`, `humanoid_qpos0`.
+
+**B4. Passive forces (`mj_fwd_passive`)**
+
+For each test model at 3 configurations with nonzero velocity:
+- Record `qfrc_passive[nv]` from MuJoCo 3.4.0.
+- Compare element-wise.
+- Tolerance: `1e-10` (identical formulas: `-k*(q-qref)`, `-b*qvel`,
+  `-frictionloss*tanh(qvel*1000)`).
+
+Also verify: at `qpos == springref` and `qvel == 0`, `qfrc_passive == 0`
+(equilibrium).
+
+Models: `spring_damper_hinge`, `friction_loss_slide`,
+`tendon_passive_forces`.
+
+Existing coverage: `passive_forces.rs` has 15+ tests. Layer B adds MuJoCo
+cross-check for tendon passive forces (which go through `J^T` mapping and
+are more error-prone).
+
+**B5. Contact detection (`mj_collision`)**
+
+For each contact scenario at a fixed configuration:
+- Record contact count, contact positions, normals, and depths from MuJoCo 3.4.0.
+- Compare: count must match exactly; positions/normals/depths within tolerance.
+- Tolerance: `1e-6` for positions/normals (floating-point geometry), `1e-8`
+  for depths (direct distance computation).
+
+Special cases to cover:
+- `contype`/`conaffinity` filtering (contact exists vs. suppressed)
+- `<contact><pair>` explicit pairs bypass filters
+- `<contact><exclude>` suppresses automatic pairs
+- Parent-child default filtering
+- Margin activation (`dist < margin` generates contact) — requires #20;
+  skip this sub-test until margin is implemented
+- Contact sorting order (by geom pair ID then by depth)
+
+Models: `sphere_on_plane`, `box_on_plane`, `capsule_capsule`,
+`eight_spheres_on_plane` (MuJoCo's own test: must produce exactly 8 contacts),
+`pair_override`, `exclude_test`.
+
+**B6. Constraint forces (`mj_fwd_constraint`)**
+
+For each contact scenario:
+- Record `qfrc_constraint[nv]` and `efc_force` from MuJoCo 3.4.0.
+- Tolerance depends on solver:
+  - Newton: `1e-8` (quadratic convergence, same formulation)
+  - CG: `1e-6` (same PGD algorithm, minor step-size path differences)
+  - PGS: `1e-4` (iteration order sensitive; may need relaxed tolerance
+    or iteration-count matching)
+- Also compare: joint limit forces, tendon limit forces, equality constraint
+  forces (these use penalty, not iterative solve — tolerance `1e-10`).
+
+Models: `box_on_plane_newton`, `sphere_stack_pgs`, `joint_limits_hinge`,
+`tendon_limits`, `weld_constraint`, `connect_constraint`.
+
+**B7. Actuator forces (`mj_fwd_actuation`)**
+
+For each actuator scenario:
+- Record `actuator_force[nu]`, `qfrc_actuator[nv]`, `act_dot[na]` from
+  MuJoCo 3.4.0.
+- Tolerance: `1e-10` (identical gain/bias formulas and transmission
+  Jacobians).
+
+Scenarios:
+- Motor (Fixed gain): `gain * ctrl`
+- Position servo (Affine bias): `kp * (ctrl - qpos) - kv * qvel`
+- Velocity servo: `kv * (ctrl - qvel)`
+- Damper: `-kv * |qvel|`
+- Muscle (FLV curves): gain/bias from normalized length/velocity
+- Filter dynamics: `act_dot = (ctrl - act) / tau`
+- FilterExact: same `act_dot`, different integration
+- Integrator dynamics: `act_dot = ctrl`
+- Site transmission: `mj_jac_site()` → `J^T * gear * force`
+- Tendon transmission: Jacobian-mapped force
+
+Models: `motor_hinge`, `position_servo`, `velocity_servo`,
+`muscle_arm`, `filter_actuator`, `site_transmission_3link`,
+`tendon_actuator`.
+
+Existing coverage: `site_transmission.rs` has a `#[ignore]` placeholder
+awaiting MuJoCo reference data. Layer B provides the data.
+
+**B8. Sensor readings (`mj_sensor_pos` / `mj_sensor_vel` / `mj_sensor_acc`)**
+
+For each sensor scenario:
+- Record `sensordata[nsensordata]` from MuJoCo 3.4.0.
+- Tolerance: `1e-8` for kinematics-derived sensors (JointPos, FramePos,
+  etc.), `1e-6` for force-derived sensors (Touch, Force, Torque — depend
+  on constraint solve).
+
+Sensors to cover (grouped by derivation):
+- **State-read**: JointPos, JointVel, BallQuat, BallAngVel, ActuatorPos,
+  ActuatorVel, TendonPos, TendonVel — tolerance `1e-10` (direct state/
+  tendon read).
+- **FK-derived**: FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis,
+  SubtreeCom — tolerance `1e-10`.
+- **Velocity-derived**: FrameLinVel, FrameAngVel, SubtreeLinVel,
+  SubtreeAngMom, Velocimeter, Gyro — tolerance `1e-8`.
+- **Acceleration-derived**: FrameLinAcc, FrameAngAcc, Accelerometer —
+  tolerance `1e-6` (depends on constraint forces).
+- **Force-derived**: ActuatorFrc, JointLimitFrc, TendonLimitFrc,
+  Force, Torque, Touch — tolerance `1e-6`.
+- **Geometric**: Rangefinder, Magnetometer — tolerance `1e-6`.
+
+Models: `sensor_suite_hinge` (one model with all 32 sensor types attached
+to a simple kinematic chain — maximizes coverage per model).
+
+**B9. Tendon kinematics (`mj_fwd_tendon`)**
+
+Existing coverage in `spatial_tendons.rs` (18 tests) already follows the
+Layer B pattern with MuJoCo 3.4.0 reference values. Extend with:
+- Fixed tendon `ten_length` and `ten_J` at non-default configurations.
+- `ten_velocity` at nonzero `qvel`.
+- Tolerance: `1e-6` for lengths/Jacobians (established pattern).
+
+**B10. Integration step**
+
+For each integrator at a fixed state, take one `step()` and compare the
+resulting `qpos`, `qvel`, `act`:
+- Euler: tolerance `1e-10` (identical semi-implicit formula).
+- RK4: tolerance `1e-10` (identical Butcher tableau, identical stage order).
+- ImplicitFast: tolerance `1e-8` (same D assembly, Cholesky solve may have
+  different pivoting behavior in edge cases).
+- Implicit: tolerance `1e-8` (LU factorization order may differ slightly).
+- ImplicitSpringDamper: tolerance `1e-10` (identical diagonal formula).
+
+Models: `spring_pendulum` (stiff spring, tests implicit stability),
+`damped_hinge` (tests velocity damping), `muscle_arm` (tests activation
+integration).
+
+##### Layer C — Trajectory Comparison Tests (multi-step, MuJoCo reference data)
+
+Multi-step trajectory tests catch error accumulation and feedback loops that
+single-step tests miss. A small per-step error in contact forces feeds into
+the next step's positions, which changes collision geometry, which changes
+contact forces — Layer C detects this drift.
+
+**C1. Reference data format**
+
+Reference data is stored as JSON files in `sim/L0/tests/conformance/references/`,
+generated by `generate_references.py` and **checked into the repo**. Each file
+contains:
+
+```json
+{
+  "mujoco_version": "3.4.0",
+  "model_xml": "<mujoco>...</mujoco>",
+  "timestep": 0.002,
+  "n_steps": 200,
+  "ctrl_sequence": [[0.1, -0.2], [0.1, -0.2], ...],
+  "steps": [
+    {
+      "step": 0,
+      "qpos": [0.0, 0.1, ...],
+      "qvel": [0.0, 0.0, ...],
+      "qacc": [1.2, -0.3, ...],
+      "xpos": [[0.0, 0.0, 0.0], [0.1, 0.0, 0.5], ...],
+      "xquat": [[1.0, 0.0, 0.0, 0.0], ...],
+      "qfrc_bias": [-9.81, ...],
+      "qfrc_passive": [0.0, ...],
+      "qfrc_constraint": [0.0, ...],
+      "qfrc_actuator": [0.1, ...],
+      "sensordata": [0.0, ...],
+      "ncon": 0,
+      "energy": [4.905, 0.0]
+    },
+    ...
+  ]
+}
+```
+
+The `energy` array is `[energy_potential, energy_kinetic]`, matching MuJoCo's
+`d.energy[0]` (potential) and `d.energy[1]` (kinetic).
+
+The reference includes per-step intermediate pipeline outputs — FK (`xpos`,
+`xquat`) and all force components (`qfrc_bias`, `qfrc_passive`,
+`qfrc_constraint`, `qfrc_actuator`) — so that when the trajectory diverges,
+the test harness can report *which pipeline stage* first diverged, not just
+that `qpos` drifted. CRBA (`qM`) is tested per-configuration in Layer B
+(B2) and is not included per-step in trajectories to avoid O(nv²·N) data
+bloat for high-DOF models.
+
+File size: a 200-step trajectory for a 30-DOF model with 10 sensors is ~800 KB
+JSON (~150 KB gzipped). Total for all models: < 10 MB uncompressed.
+
+**C2. Test harness**
+
+```rust
+/// Compare a CortenForge trajectory against MuJoCo reference.
+///
+/// Returns `TrajectoryReport` with per-step, per-field max errors and
+/// the first step/field where tolerance was exceeded.
+fn compare_trajectory(
+    reference: &TrajectoryReference,
+    tolerance: &ToleranceConfig,
+) -> TrajectoryReport;
+```
+
+The harness:
+1. Parses `model_xml` via `load_model()`.
+2. Creates `Data` via `model.make_data()`.
+3. For each step:
+   a. Sets `data.ctrl` from `ctrl_sequence[step]`.
+   b. Calls `data.step(&model)`.
+   c. After `step()` returns — compares all fields against reference:
+      `qpos`, `qvel`, `qacc`, `xpos`, `xquat`, `qfrc_bias`,
+      `qfrc_passive`, `qfrc_actuator`, `qfrc_constraint`, `sensordata`,
+      `energy` (`[energy_potential, energy_kinetic]`).
+      These fields persist on `Data` after `step()` — they are populated
+      by `forward()` and not cleared by `integrate()`. Including
+      `xpos`/`xquat` (FK output) enables C5 pipeline-stage diagnosis:
+      if `xpos` matches but `qfrc_bias` doesn't, the bug is in RNE, not
+      FK. The reference data records the same fields after `mj_step()`
+      in MuJoCo, which also retains them post-integration.
+   d. Compares `ncon` (contact count) at each step — must match exactly.
+      A contact-count mismatch is a hard failure (broad-phase or filtering
+      bug) and is reported immediately without checking subsequent fields.
+4. Collects `TrajectoryReport`:
+   - `max_xpos_error: f64` — max over all steps/bodies (FK diagnostic)
+   - `max_qpos_error: f64` — max over all steps/DOFs
+   - `max_qvel_error: f64`
+   - `max_qacc_error: f64`
+   - `max_force_error: f64` — max over `qfrc_bias`, `qfrc_passive`,
+     `qfrc_actuator` (not `qfrc_constraint` — solver-dependent)
+   - `max_constraint_error: f64` — `qfrc_constraint` separately
+   - `max_sensor_error: f64`
+   - `max_energy_error: f64` — max over `|E_potential - ref|`, `|E_kinetic - ref|`
+   - `ncon_mismatch: Option<(step, expected, actual)>` — first contact
+     count mismatch (hard failure)
+   - `first_violation: Option<(step, field, dof, error)>` — diagnostic
+   - `divergence_step: Option<usize>` — step where error exceeds 10×
+     tolerance (indicates exponential divergence, not just drift)
+
+**C3. Tolerance configuration**
+
+```rust
+struct ToleranceConfig {
+    qpos_per_step: f64,      // per-step position tolerance (also used for xpos/xquat)
+    qvel_per_step: f64,      // per-step velocity tolerance
+    qacc: f64,               // acceleration tolerance
+    force_smooth: f64,       // qfrc_bias + qfrc_passive + qfrc_actuator
+    force_constraint: f64,   // qfrc_constraint (solver-dependent)
+    sensor: f64,             // sensordata
+    energy: f64,             // energy_potential + energy_kinetic vs reference
+}
+```
+
+`xpos` and `xquat` (FK outputs) use `qpos_per_step` — they are smooth functions
+of `qpos`, so their error is bounded by the position tolerance. No separate field
+needed; the harness reuses `qpos_per_step` for FK comparison and C5 diagnosis.
+
+Default tiers (applied per model based on contact complexity and integrator):
+
+| Scenario                     | qpos/step | qvel/step | qacc    | force_smooth | force_constraint | sensor  |
+|------------------------------|-----------|-----------|---------|--------------|------------------|---------|
+| No contacts (Euler/RK4)     | 1e-10     | 1e-10     | 1e-10   | 1e-10        | 1e-10            | 1e-10   |
+| No contacts (Implicit*)     | 1e-8      | 1e-8      | 1e-8    | 1e-8         | 1e-10            | 1e-8    |
+| Penalty constraints          | 1e-10     | 1e-10     | 1e-10   | 1e-10        | 1e-10            | 1e-8    |
+| Contact (Newton)             | 1e-8      | 1e-8      | 1e-8    | 1e-8         | 1e-6             | 1e-6    |
+| Contact (CG)                | 1e-7      | 1e-7      | 1e-7    | 1e-7         | 1e-5             | 1e-5    |
+| Contact (PGS)               | 1e-6      | 1e-6      | 1e-6    | 1e-6         | 1e-4             | 1e-4    |
+
+Energy tolerance (`energy` field) matches `qpos_per_step` for each tier —
+energy is a smooth function of state, so it diverges at the same rate.
+
+(*) "Implicit*" covers ImplicitFast, Implicit, and ImplicitSpringDamper.
+These integrators involve implicit linear solves (Cholesky/LU) where minor
+factorization path differences produce O(1e-8) per-step state deviations
+even without contacts. Models T18/T19 use these tolerances.
+ImplicitSpringDamper is the simplest (diagonal formula, identical to MuJoCo
+at single-step `1e-10` per B10), but over 200 steps small differences
+compound, so the conservative `1e-8` tier applies to all three.
+
+Rationale:
+- MuJoCo's own tests (`engine_solver_test.cc`): Newton agrees at `1e-8` to
+  `1e-15`, CG at `1e-7`, PGS at `1e-6`. Our PGS is MuJoCo-aligned (pure GS,
+  no SOR), so `1e-4` for `force_constraint` accounts for constraint assembly
+  accumulation-order differences that compound into the state via integration.
+- Smooth forces (`qfrc_bias`, `qfrc_passive`, `qfrc_actuator`) use identical
+  algorithms, but in a trajectory comparison they are computed from
+  *diverged states*. At step N, if `|Δqpos| ≈ ε`, then `|Δforce_smooth| ≈
+  O(ε)` because forces are smooth functions of position/velocity. Therefore
+  `force_smooth` tolerance matches `qpos` tolerance for each tier. (At
+  step 0 the match is `1e-10` regardless — the tolerance is a worst-case
+  bound over the full trajectory.)
+- Euler/RK4 are explicit integrators with identical formulas — `1e-10`
+  reflects only FP accumulation order differences; states stay close so
+  smooth forces stay close.
+- Per-step tolerance is appropriate because trajectory drift is O(ε·N) for
+  stable systems — we don't need cumulative tolerance that grows with N.
+
+**C4. Test models (trajectory set)**
+
+Each model is purpose-built (minimal, inline MJCF) to isolate specific
+pipeline interactions. Complex real-world models (Menagerie, DM Control)
+are tested for *loading* (existing tests) but not for trajectory conformance
+— they conflate too many features and make diagnosis impossible.
+
+| Model ID | Description | DOF | Contacts | Actuators | Features tested |
+|----------|-------------|-----|----------|-----------|-----------------|
+| `T01_free_fall` | Sphere falling under gravity | 6 | 0 | 0 | FK, RNE (gravity only), Euler integration |
+| `T02_pendulum_swing` | Hinge pendulum, no damping | 1 | 0 | 0 | FK, RNE (gravity + Coriolis), energy conservation |
+| `T03_double_pendulum` | Two-link chain | 2 | 0 | 0 | CRBA off-diagonal, RNE Coriolis coupling |
+| `T04_spring_damper` | Hinge with stiffness + damping | 1 | 0 | 0 | Passive forces, implicit integrator stability |
+| `T05_motor_tracking` | Hinge + position servo | 1 | 0 | 1 | Actuation (Affine bias), ctrl → force path |
+| `T06_ball_joint_free` | Ball joint + free joint | 9 | 0 | 0 | Quaternion integration, nq≠nv handling |
+| `T07_sphere_on_plane` | Sphere dropped onto plane | 6 | 1 | 0 | Contact detection, normal force, Baumgarte |
+| `T08_box_on_plane` | Box resting on plane | 6 | 4 | 0 | Multi-contact, friction (condim 3) |
+| `T09_ant_standing` | 4-leg ant, ctrl=0 | 8 | 4+ | 8 | Multiple islands, contacts, actuators at rest |
+| `T10_tendon_arm` | 3-link arm with tendon actuator | 3 | 0 | 1 | Fixed tendon kinematics, J^T force mapping |
+| `T11_muscle_pendulum` | Hinge with muscle actuator | 1 | 0 | 1 | Muscle FLV, activation dynamics, FilterExact |
+| `T12_humanoid_walk` | Full humanoid, gravity-comp ctrl | 27 | 8+ | 21 | Integration test: everything together |
+| `T13_joint_limits` | Hinge driven into limits | 1 | 0 | 1 | Penalty limits, solref/solimp (motor drives past limit) |
+| `T14_equality_weld` | Two bodies welded | 12 | 0 | 0 | Weld constraint penalty |
+| `T15_friction_slide` | Box sliding on incline | 6 | 4 | 0 | Friction forces, condim 3/4/6 comparison |
+| `T16_sensor_suite` | Hinge chain with all 32 sensors | 3 | 1 | 1 | All sensor types in one model |
+| `T17_spatial_tendon` | Arm with sphere-wrapped tendon | 2 | 0 | 1 | Spatial tendon wrapping + Jacobian |
+| `T18_implicit_stiff` | Stiff spring (k=10000) | 1 | 0 | 0 | Implicit integrators vs Euler blowup |
+| `T19_rk4_accuracy` | Conservative system, long run | 2 | 0 | 0 | RK4 vs Euler energy drift comparison |
+| `T20_warmstart` | Repeated contact (box bouncing) | 6 | 0-4 | 0 | Warmstart cache effectiveness |
+
+Control inputs: `T05` uses sinusoidal `ctrl`; `T09`/`T12` use constant
+gravity-compensating `ctrl`; all others use `ctrl = 0`. Exact `ctrl_sequence`
+is stored in the reference JSON.
+
+Simulation length: 200 steps at `dt = 0.002` (0.4 seconds). This is enough
+to capture multiple contact events and oscillation cycles without excessive
+file size.
+
+**C5. Divergence detection and diagnosis**
+
+When a trajectory comparison fails, the `TrajectoryReport` provides:
+1. **First violation**: step number, field name, DOF index, actual vs expected
+   value, and relative error.
+2. **Pipeline-stage isolation**: if `qfrc_bias` diverges but `xpos`/`xquat`
+   agree, the bug is in RNE. If `qfrc_constraint` diverges but all smooth
+   forces agree, the bug is in the constraint solver. The test harness prints
+   a diagnostic summary:
+   ```
+   DIVERGENCE at step 12:
+     FK (xpos):           PASS  (max error 2.1e-14)
+     RNE (qfrc_bias):     PASS  (max error 4.2e-11)
+     Passive (qfrc_pass): PASS  (max error 0.0)
+     Actuation (qfrc_act):PASS  (max error 3.1e-11)
+     Constraint (qfrc_c): FAIL  (max error 8.3e-3, DOF 4)
+     Energy:              PASS  (max error 1.2e-4)
+     -> Root cause: constraint solver (step 12, DOF 4)
+   ```
+3. **Error trend**: plot-friendly output (step, max_error_per_field) so
+   divergence rate can be visualized externally.
+
+##### Layer D — Property and Invariant Tests (no MuJoCo dependency)
+
+Property tests verify physical invariants and mathematical properties that
+must hold regardless of the specific numerical values.
+
+**D1. Momentum conservation (contact-free)**
+
+For a single free-floating rigid body with no external forces, no gravity,
+no contacts, and no actuation:
+- Total linear momentum is conserved: `m * v_com = const`.
+- Total angular momentum about the world-frame COM is conserved.
+- Tolerance: `1e-8` for Euler (semi-implicit Euler is not exactly symplectic
+  for rotational DOF due to quaternion integration), `1e-10` for RK4.
+- Model: single free body with nonzero initial linear and angular velocity,
+  gravity disabled.
+- Steps: 500 at `dt = 0.002`.
+- Note: for multi-body free-floating systems (multiple free joints),
+  momentum is conserved only if internal joint forces cancel in aggregate.
+  Start with the single-body case; multi-body momentum conservation can
+  be added later as a stretch test.
+
+**D2. Energy conservation (conservative system)**
+
+For a system with springs but no damping, no contacts, no actuation:
+- `total_energy() = E_kinetic + E_potential` is approximately constant.
+  (Spring potential energy is included in `energy_potential` — see
+  `mj_energy_pos()` which sums gravity + spring terms.)
+- Euler: energy drift < `0.01 * E_0` over 1000 steps at `dt = 0.001`.
+- RK4: energy drift < `1e-6 * E_0` over 1000 steps.
+- ImplicitFast/Implicit/ImplicitSpringDamper: energy drift < `0.001 * E_0`
+  (dissipative — all implicit integrators introduce numerical damping).
+
+**D3. Symmetry preservation**
+
+For a symmetric model (e.g., two identical pendulums with symmetric initial
+conditions), verify that the solution preserves symmetry:
+- `|qpos[left] - qpos[right]| < 1e-12` at every step.
+- Tests numerical symmetry breaking from accumulation order.
+
+**D4. Gravity-free zero acceleration**
+
+With gravity disabled, zero velocity, no forces: `qacc == 0` everywhere.
+Tolerance: `1e-14`.
+
+**D5. Mass matrix properties**
+
+At every configuration tested:
+- Symmetric: `|M[i,j] - M[j,i]| < 1e-14`.
+- Positive definite: minimum eigenvalue > 0 (or: Cholesky succeeds).
+- Armature: `M[dof,dof] >= armature[dof]` for all DOFs.
+- Consistent with `qLD`: `L^T * D * L == M` (within `1e-12`).
+
+**D6. Quaternion normalization**
+
+After every `step()`, all quaternion-valued `qpos` entries satisfy
+`| ||q|| - 1.0 | < 1e-10` (absolute value of the norm deviation).
+Tests quaternion drift suppression.
+
+**D7. Contact force feasibility**
+
+For every active contact:
+- Normal force ≥ 0 (unilateral constraint).
+- Friction force within cone: `||f_tangent|| ≤ μ * f_normal`, where `μ`
+  is the combined sliding friction `sqrt(geom_friction[g1].x *
+  geom_friction[g2].x)` (geometric mean, matching MuJoCo's combination
+  rule in `mj_contactForce`).
+- Tolerance: `1e-8` (solver should satisfy these exactly up to solver
+  tolerance).
+
+##### Part E — Reference Data Generation
+
+**E1. Python reference generator (`generate_references.py`)**
+
+A self-contained Python script that generates all Layer B constants and
+Layer C reference JSON files. Located at
+`sim/L0/tests/conformance/generate_references.py`.
+
+Requirements:
+- Python ≥ 3.10, `mujoco == 3.4.0` (exact pin — `>=` would silently
+  regenerate references against a newer MuJoCo, causing tolerance
+  violations that look like CortenForge bugs). The script asserts
+  `mujoco.__version__ == "3.4.0"` at startup and aborts on mismatch.
+- Takes no arguments — regenerates all references from embedded model XML.
+- Outputs:
+  - `references/*.json` — Layer C trajectory files.
+  - `reference_constants.txt` — Layer B hardcoded values formatted as Rust
+    constants, ready to paste into test source files. Example:
+    ```
+    // Model: T02_pendulum_swing, qpos0, forward() only
+    // MuJoCo 3.4.0
+    const T02_QFRC_BIAS_QPOS0: &[f64] = &[-4.905000000000000];
+    const T02_QM_QPOS0: &[f64] = &[0.083333333333333];
+    ```
+- Prints MuJoCo version at startup and embeds it in all output files.
+- Deterministic: running twice produces identical output (no random seeds,
+  no HashMap iteration).
+
+All model XMLs must include `<option><flag energy="true"/></option>` (or the
+generator must set `m.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY`
+after loading). Without this, MuJoCo does not compute `d.energy` and it
+remains `[0, 0]`. CortenForge always computes energy (no flag gate), so this
+only affects the Python reference generator.
+
+Generator algorithm per model:
+1. **Layer B constants** (per-stage, single-configuration):
+   - Load model: `m = mujoco.MjModel.from_xml_string(xml)`
+   - Enable energy: `m.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY`
+   - Create data: `d = mujoco.MjData(m)`
+   - Set configuration: `d.qpos[:] = qpos_test; d.qvel[:] = qvel_test`
+   - Run forward only: `mujoco.mj_forward(m, d)` — this populates all
+     intermediate fields without integration.
+   - Extract per-stage outputs: `d.xpos`, `d.xquat` (FK), `d.qM` (CRBA),
+     `d.qfrc_bias` (RNE), `d.qfrc_passive` (passive), `d.qfrc_actuator`
+     (actuation), `d.qfrc_constraint` (constraint), `d.sensordata`
+     (sensors), `d.ten_length`/`d.ten_J` (tendons).
+   - Format each as a Rust `const` with `// MuJoCo 3.4.0` annotation.
+2. **Layer C trajectory JSON** (multi-step):
+   - Load model, create data, set initial state.
+   - Loop for `N` steps: `mujoco.mj_step(m, d)` — after each step, record
+     a snapshot of `d.qpos`, `d.qvel`, `d.qacc`, `d.xpos`, `d.xquat`,
+     `d.qfrc_bias`, `d.qfrc_passive`, `d.qfrc_actuator`,
+     `d.qfrc_constraint`, `d.sensordata`, `d.ncon`,
+     `[d.energy[0], d.energy[1]]`. (`qM` is omitted from trajectories —
+     it's tested per-configuration in Layer B to avoid O(nv²·N) bloat.)
+   - If control input is specified, set `d.ctrl[:] = ctrl_sequence[step]`
+     before each `mj_step()`.
+   - Write JSON with schema matching C1: `{ "mujoco_version": "3.4.0",
+     "model_xml": "...", "timestep": 0.002, "n_steps": 200,
+     "ctrl_sequence": [...], "steps": [ { "step": 0, ... }, ... ] }`.
+3. **Output format**: all floating-point values written with 15 decimal
+   digits (`f"{val:.15e}"`) to preserve full double precision.
+4. **Self-validation**: after generating all references, the script runs
+   MuJoCo's own `mj_compareFwdInv()` equivalent on every model (verify
+   `||M*qacc - f_total||_inf < 1e-10`). This catches model XML errors that
+   would produce valid-looking but physically wrong references. Also verify
+   energy conservation for conservative models (T02, T03) over the first 10
+   steps — energy drift should be < `1e-6` for Euler at `dt=0.002`.
+
+**E2. Version pinning and regeneration policy**
+
+- References are generated against **MuJoCo 3.4.0** (same version used
+  for existing spatial tendon references).
+- References are **checked into the repo** under
+  `sim/L0/tests/conformance/references/`. They are source-controlled
+  artifacts, not generated at test time.
+- When upgrading the MuJoCo reference version: re-run
+  `generate_references.py` with the new version, review the diff (any
+  tolerance violations indicate either a MuJoCo behavior change or a
+  CortenForge bug), update the version constant, commit.
+- The Python script is NOT run in CI. CI only runs the Rust tests against
+  the checked-in references.
+
+**E3. No MuJoCo build dependency**
+
+The Rust test crate (`sim-conformance-tests`) does **not** depend on
+`mujoco-sys` or any MuJoCo library. References are pre-generated and
+checked in. This means:
+- `cargo test -p sim-conformance-tests` works on any machine without
+  MuJoCo installed.
+- No `--features mujoco` gate needed. All conformance tests run by default.
+- The Python generator is a *development tool*, not a build dependency.
+
+This simplifies CI, avoids cross-platform MuJoCo installation issues, and
+matches the existing pattern (hardcoded constants in `spatial_tendons.rs`).
+
+##### Part F — Test Organization and CI
+
+**F1. Directory structure**
+
+```
+sim/L0/tests/
+├── conformance/
+│   ├── mod.rs                          — test module root
+│   ├── self_consistency.rs             — Layer A tests (A1–A6)
+│   ├── per_stage/
+│   │   ├── mod.rs
+│   │   ├── fk.rs                       — B1 (forward kinematics)
+│   │   ├── crba.rs                     — B2 (mass matrix)
+│   │   ├── rne.rs                      — B3 (bias forces)
+│   │   ├── passive.rs                  — B4 (passive forces)
+│   │   ├── collision.rs                — B5 (contact detection)
+│   │   ├── constraint.rs               — B6 (constraint forces)
+│   │   ├── actuation.rs                — B7 (actuator forces)
+│   │   ├── sensors.rs                  — B8 (sensor readings)
+│   │   ├── tendons.rs                  — B9 (tendon kinematics)
+│   │   └── integration.rs              — B10 (integration step)
+│   ├── trajectory/
+│   │   ├── mod.rs
+│   │   ├── harness.rs                  — TrajectoryReport, compare_trajectory()
+│   │   ├── models.rs                   — T01–T20 inline MJCF + ctrl sequences
+│   │   └── tests.rs                    — C4 trajectory comparison tests
+│   ├── properties/
+│   │   ├── mod.rs
+│   │   ├── conservation.rs             — D1 (momentum), D2 (energy)
+│   │   ├── invariants.rs               — D3–D7 (symmetry, quat, etc.)
+│   │   └── determinism.rs              — A3 (placed here, not in self_consistency.rs,
+│   │                                      because determinism is a property test that
+│   │                                      uses `step()` replay rather than comparing
+│   │                                      two different code paths)
+│   ├── references/
+│   │   ├── T01_free_fall.json          — Layer C reference data
+│   │   ├── T02_pendulum_swing.json
+│   │   ├── ...
+│   │   └── T20_warmstart.json
+│   └── generate_references.py          — E1 Python generator
+├── integration/                        — existing integration tests (unchanged)
+│   ├── spatial_tendons.rs              — keep (already follows Layer B pattern)
+│   ├── derivatives.rs                  — keep
+│   ├── sleeping.rs                     — keep (referenced by A6)
+│   └── ...
+└── mujoco_conformance/
+    └── mod.rs                          — existing stub (update to re-export conformance/)
+```
+
+**F2. Existing test migration**
+
+Existing tests in `integration/` that already follow the conformance pattern
+are **not** moved — they stay where they are. The conformance suite
+*references* them in its index but does not duplicate them:
+- `spatial_tendons.rs` tests 16–18 → Layer B (tendon kinematics, B9)
+- `derivatives.rs` → already validates analytical vs FD (not cross-impl)
+- `sleeping.rs` Phase C → Layer A (self-consistency, A6)
+- `validation.rs` FK/CRBA tests → Layer B (augmented, not replaced)
+
+**F3. CI integration**
+
+All conformance tests run as part of `cargo test -p sim-conformance-tests`
+in the existing `quality-gate.yml` workflow. No separate workflow needed.
+No MuJoCo installation required.
+
+The `generate_references.py` script runs only during development, on a
+machine with `pip install mujoco==3.4.0`. It is not part of CI.
+
+**F4. Test naming convention**
+
+All conformance tests use a structured naming scheme for greppability:
+```
+conformance_a1_fwd_inv_double_pendulum
+conformance_a3_determinism_ant
+conformance_b1_fk_humanoid_qpos0
+conformance_b6_constraint_newton_box_on_plane
+conformance_c_trajectory_T07_sphere_on_plane
+conformance_d2_energy_conservation_rk4
+```
+
+Pattern: `conformance_{layer}{number}_{description}`.
+
+##### Part G — Incremental Rollout Plan
+
+The four layers are independently implementable and deliver value at each
+step. The recommended implementation order prioritizes immediate value:
+
+**Phase 1 (immediate, no MuJoCo needed):**
+- Layer A (self-consistency): A1, A3, A4, A5 — catches bugs today.
+- Layer D (properties): D1, D2, D4, D5, D6, D7 — catches bugs today.
+- Estimated: ~800 LOC tests, ~200 LOC harness utilities.
+
+**Phase 2 (requires MuJoCo Python for one-time reference generation):**
+- Part E: write `generate_references.py`.
+- Layer B: per-stage tests B1–B10 with hardcoded constants.
+- Estimated: ~300 LOC Python, ~1500 LOC tests.
+
+**Phase 3 (trajectory infrastructure):**
+- Layer C: harness, JSON parsing, all T01–T20 trajectory tests.
+- Estimated: ~600 LOC harness, ~800 LOC tests, ~5 MB reference data.
+
+**Phase 4 (polish):**
+- Layer A: A2 (island/monolithic — uses existing `DISABLE_ISLAND` flag), A6.
+- Layer D: D3 (symmetry).
+- CI verification, documentation update.
+
+Each phase is a standalone PR. Phase 1 can ship immediately. Phase 2
+requires a one-time run of the Python generator on a dev machine. Phase 3
+is the full trajectory infrastructure. Phase 4 is optional polish.
 
 #### Acceptance Criteria
-1. ≥5 reference models with 100-step trajectories.
-2. Tight tolerance (< 1e-6) for FK, CRBA, RNE on all models.
-3. Loose tolerance (< 1e-2) for constrained dynamics (contact forces are
-   solver-order-dependent).
-4. CI runs pass on every PR.
+
+**Layer A — Self-Consistency (no external dependency):**
+1. A1: forward/inverse equivalence passes at `1e-10` for ≥5 models at ≥3
+   configurations each.
+2. A2: island/monolithic equivalence for ≥2 contact models with multiple
+   islands (Phase 4 — uses `DISABLE_ISLAND` flag to force monolithic path).
+3. A3: bit-identical replay for ≥4 models over 100 steps.
+4. A4: energy ordering `|ΔE_RK4| < |ΔE_Implicit| < |ΔE_Euler|` for ≥2
+   conservative systems.
+5. A5: sparse/dense mass matrix agreement at `1e-12` for ≥5 models.
+6. A6: sleep bit-identity referenced from existing `sleeping.rs` Phase C
+   tests (Phase 4 — extend to new pipeline stages as needed).
+
+**Layer B — Per-Stage Reference (MuJoCo 3.4.0):**
+7. B1: FK matches MuJoCo at `1e-10` for ≥5 models at ≥3 configurations.
+8. B2: CRBA matches MuJoCo at `1e-10` for ≥4 models.
+9. B3: RNE matches MuJoCo at `1e-10` for ≥3 models with nonzero velocity.
+10. B4: passive forces match at `1e-10` for ≥3 models.
+11. B5: contact detection matches (count exact, geometry `1e-6`) for ≥5
+    contact scenarios.
+12. B6: constraint forces match at solver-appropriate tolerance for ≥3
+    solver types.
+13. B7: actuator forces match at `1e-10` for ≥5 actuator types.
+14. B8: all 32 sensor types match at sensor-appropriate tolerance.
+15. B9: tendon kinematics extended beyond existing `spatial_tendons.rs`.
+16. B10: single-step integration matches for all 5 integrator types.
+
+**Layer C — Trajectory Comparison:**
+17. ≥15 trajectory models (T01–T15 minimum) with 200-step references.
+18. No-contact trajectories (T01–T06) pass at `1e-10` per-step for
+    Euler/RK4, `1e-8` for implicit integrators.
+19. Contact trajectories with Newton solver pass at `1e-8` per-step.
+20. Contact trajectories with CG solver pass at `1e-7` per-step.
+21. PGS contact trajectories pass at `1e-6` per-step.
+22. Divergence diagnostics correctly identify the first failing pipeline
+    stage in at least one intentionally-broken scenario (manual test).
+
+**Layer D — Properties:**
+23. Momentum conservation (D1) at `1e-8` for Euler, `1e-10` for RK4
+    (single free body, 500 steps).
+24. Energy conservation (D2) within bounds for all 5 integrators.
+25. Zero-gravity zero-acceleration (D4) at `1e-14`.
+26. Mass matrix properties (D5) verified for ≥5 models.
+27. Quaternion normalization (D6) at `1e-10` after 1000 steps.
+28. Contact feasibility (D7) for ≥3 contact scenarios.
+
+**Infrastructure:**
+29. `generate_references.py` runs successfully with `mujoco==3.4.0` and
+    produces deterministic output.
+30. All conformance tests pass in `cargo test -p sim-conformance-tests`
+    without MuJoCo installed.
+31. No existing test in `integration/` is broken or moved.
+
+#### Implementation Notes
+
+**Relative error function.** Use MuJoCo's corrected relative error formula
+(from `engine_derivative_test.cc`) rather than `approx::assert_relative_eq`:
+```rust
+fn relative_error(a: f64, b: f64, abs_tol: f64) -> f64 {
+    let diff = (a - b).abs();
+    if diff <= abs_tol { return 0.0; }
+    (diff - abs_tol) / (a.abs() + b.abs() + abs_tol)
+}
+```
+This handles near-zero values gracefully (avoids division by near-zero
+denominator). Use `abs_tol = 1e-12` as the floor.
+
+**Accessing intermediate pipeline state.** Layer C wants to compare
+`qfrc_bias`, `qfrc_passive`, etc. at each step. These fields are already
+populated by `forward()` and persist on `Data` after `step()` returns —
+they are *not* cleared between steps. So the harness can read them after
+`step()`. The only subtlety is that `qacc` is computed during `forward()`
+then used by `integrate()` — both before and after integration, `qacc` is
+the same value. No API changes needed.
+
+**Quaternion convention.** Both MuJoCo and CortenForge store quaternions
+in `[w, x, y, z]` order. The MuJoCo Python reference generator records
+`d.xquat` in this order, and the JSON stores `[w, x, y, z]` arrays.
+CortenForge's `xquat` is `Vec<UnitQuaternion<f64>>` (nalgebra), which
+*internally* uses `[x, y, z, w]` storage. The C2 harness must extract
+components via `q.w`, `q.i`, `q.j`, `q.k` (not raw array indexing)
+when comparing against reference `[w, x, y, z]` values.
+
+**Contact ordering.** CortenForge and MuJoCo may produce contacts in
+different order (different broad-phase traversal). Layer B5 must sort
+contacts by geom pair ID then by position before comparison. If contact
+*count* differs, that's a hard failure — no tolerance.
+
+**Warmstart cache and determinism.** The `efc_lambda` warmstart cache uses
+`HashMap<WarmstartKey, Vec<f64>>`. HashMap iteration order is
+non-deterministic across runs (random seed). This does NOT affect physics
+determinism because the cache is only *read* during constraint assembly
+(deterministic key lookup) and *written* after solve. A3 (determinism)
+must verify this claim by comparing physics outputs, not cache internals.
+
+**Existing `spatial_tendons.rs` pattern.** The established pattern for
+Layer B tests is: embed MJCF as `const`, run MuJoCo 3.4.0 on a dev
+machine, hardcode reference values as `const` with `// MuJoCo 3.4.0`
+annotation, use `assert_relative_eq!` with explicit `epsilon`. Layer B
+follows this exact pattern — no JSON files for per-stage tests (only
+Layer C trajectories use JSON, because they have too much data for inline
+constants).
+
+**`forward()` is public.** `Data::forward(&model)` is already public
+(used in `validation.rs` tests). Layer B tests call `forward()` directly
+(not `step()`) to inspect intermediate state without integration.
+
+**Example test function (Layer C):**
+```rust
+#[test]
+fn conformance_c_trajectory_T07_sphere_on_plane() {
+    let reference = load_reference("references/T07_sphere_on_plane.json");
+    let tolerance = ToleranceConfig::contact_newton();
+    let report = compare_trajectory(&reference, &tolerance);
+    assert!(
+        report.passed(),
+        "T07 sphere_on_plane failed:\n{}",
+        report.diagnostic_summary()
+    );
+}
+```
+Each trajectory test is ~5 lines: load JSON, pick tolerance tier, compare,
+assert with diagnostic output on failure.
 
 #### Files
-- `sim/L0/tests/conformance/` — reference data + test harness
-- `sim/L0/tests/conformance/generate_references.py` — MuJoCo reference generator
+
+- `sim/L0/tests/conformance/mod.rs` — conformance module root
+- `sim/L0/tests/conformance/self_consistency.rs` — Layer A (A1–A6)
+- `sim/L0/tests/conformance/per_stage/*.rs` — Layer B (B1–B10, 10 files)
+- `sim/L0/tests/conformance/trajectory/harness.rs` — `TrajectoryReport`,
+  `compare_trajectory()`, `ToleranceConfig`
+- `sim/L0/tests/conformance/trajectory/models.rs` — T01–T20 MJCF + ctrl
+- `sim/L0/tests/conformance/trajectory/tests.rs` — Layer C tests
+- `sim/L0/tests/conformance/properties/*.rs` — Layer D (3 files)
+- `sim/L0/tests/conformance/references/*.json` — Layer C reference data
+  (checked in, ~5 MB total)
+- `sim/L0/tests/conformance/generate_references.py` — Python generator
+- `sim/L0/tests/integration/` — **unchanged** (existing tests stay)
 
 ---
 
@@ -475,100 +1423,552 @@ trajectories against MuJoCo ground truth.
 **Status:** Not started | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-`geom_margin` and `gap` fields are parsed from MJCF and stored on `Contact` and
-`Model.geom_margin`, but have **no runtime effect** on contact activation distance.
-Comment at `mujoco_pipeline.rs:5664`: "margin/gap are NOT applied here."
 
-In MuJoCo, `margin` widens the contact activation distance — contacts are generated
-when `dist < margin` rather than `dist < 0`. The `gap` attribute further shifts the
-reference distance for Baumgarte stabilization. Many MJCF models rely on margin for
-smooth contact activation (avoiding sudden force spikes).
+`geom_margin` and `geom_gap` are stored on `Model` as `Vec<f64>` (one per geom,
+initialized to 0.0). `ContactPair` has `margin` and `gap` fields, correctly parsed
+from `<contact><pair>` MJCF elements. However, margin and gap have **no runtime
+effect** on contact activation or constraint assembly:
+
+- **Narrow-phase**: All collision functions (e.g., `collide_sphere_sphere`) generate
+  contacts only when `penetration > 0.0`. Margin is not checked.
+  (`mujoco_pipeline.rs`, `collide_sphere_sphere`, line ~6509.)
+- **Constraint assembly**: `margin` is hardcoded to `0.0` in `assemble_contact_system`
+  (`mujoco_pipeline.rs`, line ~14600: `let margin = 0.0_f64;`). The `compute_aref()`
+  function accepts a `margin` parameter but always receives 0.0.
+- **`apply_pair_overrides`**: Applies condim, friction, solref, solimp from
+  `ContactPair` but skips margin/gap. Comment at line ~5664: "margin/gap are NOT
+  applied here."
+- **Broad-phase**: `pair.margin` IS used in the bounding-sphere distance cull for
+  explicit pairs (line ~5431). This is correct and should be preserved.
+- **Geom-level parsing**: `<geom margin="..." gap="...">` attributes are NOT parsed.
+  `model_builder.rs` comment: "geom-level not yet parsed, default to 0.0."
+- **`efc_margin`**: The `Data` struct has an `efc_margin: Vec<f64>` field (per
+  constraint row), currently always populated with 0.0.
+
+MuJoCo's margin/gap system involves three distinct locations: contact detection
+(wider activation), constraint violation computation (shifted reference), and the
+`aref` stabilization formula. All three must be wired up.
 
 #### Objective
-Wire `margin` and `gap` into the contact detection and constraint assembly pipeline
-so contacts activate at the correct distance and stabilization uses the correct
-reference.
+
+Wire `margin` and `gap` into the full pipeline — MJCF parsing, contact detection,
+and constraint assembly — so that contacts activate at the correct distance and
+Baumgarte stabilization uses the correct reference point.
 
 #### Specification
 
-1. **Contact activation** (`mj_collision` / narrow-phase): Generate contacts when
-   `penetration_depth > -margin` (currently: `penetration_depth > 0`).
-2. **Constraint assembly** (`assemble_contact_system`): Use `depth - gap` as the
-   effective penetration for Baumgarte stabilization (currently: raw `depth`).
-3. **Per-geom margin**: `margin = max(geom1.margin, geom2.margin)` (MuJoCo semantics).
+##### S1. Margin/gap combination rule (MuJoCo semantics)
+
+MuJoCo **sums** margins and gaps from both geoms (source:
+`engine_collision_driver.c`, `mj_collideGeoms`):
+
+```
+effective_margin = geom_margin[g1] + geom_margin[g2]
+effective_gap    = geom_gap[g1]    + geom_gap[g2]
+includemargin    = effective_margin - effective_gap
+```
+
+For explicit `<contact><pair>` contacts, the pair's `margin` and `gap` attributes
+**override** the geom-summed values entirely (pair takes precedence).
+
+The `includemargin` value is the distance threshold below which a contact generates
+a constraint. It is stored on the `Contact` struct and propagated to `efc_margin`
+during constraint assembly.
+
+##### S2. Geom-level MJCF parsing
+
+Parse `margin` and `gap` attributes from `<geom>` elements. These cascade through
+the defaults system (existing infrastructure handles attribute cascading):
+
+```xml
+<geom type="sphere" size="0.1" margin="0.002" gap="0.001"/>
+```
+
+Default values: `margin = 0.0`, `gap = 0.0` (preserves current behavior when
+attributes are absent).
+
+Update `Model.geom_margin` and `Model.geom_gap` arrays, which are already
+allocated (currently zeroed). Wire through `model_builder.rs` → `process_geom()`.
+
+##### S3. Narrow-phase contact activation
+
+Change the activation condition in all narrow-phase collision functions from:
+
+```rust
+if penetration > 0.0 { ... }  // current
+```
+
+to:
+
+```rust
+if penetration > -margin { ... }  // with margin
+```
+
+where `margin` is the effective margin computed per S1. When a contact is generated
+with `penetration ∈ (-margin, 0]`, the contact's `depth` field stores the
+actual geometric penetration (which is negative — surfaces are separated). The
+`includemargin` field on the Contact stores the margin value.
+
+This means the contact exists in the constraint system but may produce zero force
+(if `depth > includemargin`, the constraint violation `r > 0` so no corrective
+force is applied). This is MuJoCo's mechanism for "pre-contact" — smooth force
+onset rather than sudden activation.
+
+Affected functions: `collide_sphere_sphere`, `collide_sphere_plane`,
+`collide_capsule_plane`, `collide_box_plane`, `collide_sphere_capsule`,
+and all other `collide_*` variants. Each function must receive the effective
+margin for the geom pair.
+
+Implementation approach: pass `margin` as a parameter to each `collide_*`
+function. Compute `margin` in the dispatch function (`collide_geoms` or explicit
+pair loop) using S1, and thread it through.
+
+##### S4. Contact struct: store `includemargin`
+
+The `Contact` struct already has a `pub includemargin: bool` field (currently
+always `false`). Replace this with a numeric field:
+
+```rust
+/// Distance threshold used for constraint activation.
+/// `includemargin = effective_margin - effective_gap`.
+/// Constraint violation: `r = depth - includemargin`.
+/// Contact exists when `depth > -effective_margin` (see S3).
+pub includemargin: f64,
+```
+
+Set by `make_contact_from_geoms()` or `apply_pair_overrides()`.
+
+##### S5. `apply_pair_overrides`: apply margin/gap from ContactPair
+
+In `apply_pair_overrides()`, set `contact.includemargin = pair.margin - pair.gap`
+when the contact comes from an explicit `<contact><pair>`. Remove the existing
+comment "margin/gap are NOT applied here."
+
+For automatic (Mechanism 1) contacts, set
+`contact.includemargin = (geom_margin[g1] + geom_margin[g2]) - (geom_gap[g1] + geom_gap[g2])`
+in `make_contact_from_geoms()`.
+
+##### S6. Constraint assembly: populate `efc_margin`
+
+In `assemble_contact_system` (line ~14598), replace the hardcoded
+`let margin = 0.0_f64` with:
+
+```rust
+let margin = contact.includemargin;
+```
+
+This value flows into:
+1. `data.efc_margin[row] = margin` — per constraint row (normal direction only;
+   friction rows get `efc_margin = 0.0`, matching MuJoCo).
+2. `compute_aref(k, b, imp, pos, margin, vel)` — the existing function already
+   computes `aref = -b * vel - k * imp * (pos - margin)`. With nonzero margin,
+   the constraint equilibrium shifts to `pos = margin` instead of `pos = 0`.
+
+No changes to `compute_aref()` itself — the function is already correct; it just
+needs a nonzero margin input.
+
+##### S7. Interaction with global `<option>` override
+
+MuJoCo supports `<option o_margin="...">` which overrides all per-geom and
+per-pair margins globally. This is a low-priority extension — defer unless existing
+models require it. Note in code with a TODO.
 
 #### Acceptance Criteria
-1. A sphere resting 1mm above a plane with `margin="0.002"` generates a contact.
-2. `gap` shifts the equilibrium penetration for compliant contacts.
-3. Zero margin/gap reproduces current behavior (regression).
+
+1. **Margin activation**: A sphere at height 1mm above a plane with
+   `geom_margin="0.002"` (each geom) generates a contact. Effective margin =
+   `0.002 + 0.002 = 0.004 > 0.001` (distance). Contact `depth ≈ -0.001`
+   (negative, surfaces separated), `includemargin = 0.004`, constraint
+   `r = -0.001 - 0.004 = -0.005 < 0` → constraint force engages.
+2. **Gap buffer**: With `margin="0.004"` and `gap="0.003"`, `includemargin = 0.001`.
+   A sphere at distance 0.002 above the plane generates a contact (within margin)
+   but `r = -0.002 - 0.001 = -0.003 < 0` → force engages. At distance 0.0005,
+   still in contact, stronger force. Verify force magnitude scales with
+   `|r|` (deeper violation → stronger force).
+3. **Pair override**: An explicit `<contact><pair margin="0.01" gap="0.005">`
+   uses `includemargin = 0.005`, ignoring geom-level margins.
+4. **Zero margin/gap regression**: All existing tests pass unchanged (default
+   margin/gap = 0.0 preserves `penetration > 0.0` activation and
+   `efc_margin = 0.0` in assembly).
+5. **MuJoCo reference**: Compare contact count and forces against MuJoCo 3.4.0
+   for a sphere-on-plane test at 5 separation distances spanning
+   `[-0.002, +0.003]` with `margin=0.004, gap=0.001`. Contact count and
+   `qfrc_constraint` must match within tolerance `1e-8`.
+6. **`efc_margin` populated**: After `forward()`, `data.efc_margin[normal_row]`
+   equals `contact.includemargin` for every active contact.
+
+#### Implementation Notes
+
+**Narrow-phase function signature change.** Every `collide_*` function currently
+takes `(model, geom1, geom2, pos1, pos2, size1, size2) -> Option<Contact>`. Add
+a `margin: f64` parameter. The dispatch function computes the effective margin
+(S1) before calling the specific collider.
+
+**Existing broad-phase is correct.** The bounding-sphere cull at line ~5431
+already adds `pair.margin` to the distance check. For automatic contacts, add
+`geom_margin[g1] + geom_margin[g2]` to the broad-phase distance threshold.
+
+**Breaking change to Contact struct.** Replacing `includemargin: bool` with
+`includemargin: f64` is a breaking change. Any existing code that checks
+`contact.includemargin` as a bool must be updated. Search for all uses.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — contact generation + constraint assembly
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — all `collide_*` functions,
+  `make_contact_from_geoms()`, `apply_pair_overrides()`,
+  `assemble_contact_system()` (margin wiring), broad-phase distance check
+- `sim/L0/mjcf/src/parser.rs` — parse `margin`/`gap` from `<geom>` elements
+- `sim/L0/mjcf/src/model_builder.rs` — wire geom-level margin/gap into
+  `Model.geom_margin`/`Model.geom_gap` in `process_geom()`
+- `sim/L0/mjcf/src/defaults.rs` — ensure margin/gap cascade through defaults
+- `sim/L0/tests/integration/` — new test file `contact_margin_gap.rs`
 
 ---
 
-### 21. Noslip Post-Processor
-**Status:** Parsed, partially implemented | **Effort:** S | **Prerequisites:** None
+### 21. Noslip Post-Processor for PGS/CG Solvers
+**Status:** Newton done, PGS/CG missing | **Effort:** S | **Prerequisites:** None
 
 #### Current State
-`noslip_iterations` and `noslip_tolerance` are parsed from MJCF and stored in `Model`.
-The Newton solver has a noslip code path, but PGS/CG solvers do not. MuJoCo's noslip
-post-processor (`mj_solNoSlip`) is a secondary PGS sweep on friction rows only, using
-`AR - R` (removing the regularizer) to suppress artificial slip.
+
+The noslip post-processor is **fully implemented for the Newton solver** as
+`noslip_postprocess()` (`mujoco_pipeline.rs`, lines ~16521–16694, ~170 LOC).
+Three integration tests verify it (`newton_solver.rs`, lines 656–777):
+- `test_noslip_zero_iterations_is_noop` — regression test
+- `test_noslip_produces_finite_results` — basic sanity
+- `test_noslip_reduces_slip` — quantitative slip reduction on box-on-slope
+
+The Newton implementation:
+1. Identifies friction rows from `efc_type`/`efc_dim` (contact rows with `dim ≥ 3`,
+   skipping the normal row 0).
+2. Builds a friction-only Delassus submatrix `A_fric` with **no regularizer** on
+   the diagonal (`1/A[i,i]` instead of `1/(A[i,i] + R[i])`).
+3. Runs PGS iterations on friction rows with elliptic cone projection.
+4. Writes back updated `efc_force` and recomputes `qfrc_constraint` and `qacc`.
+
+**What's missing:** The PGS and CG solver paths bypass noslip entirely. The solver
+dispatch at line ~18364 calls `noslip_postprocess()` only after
+`NewtonResult::Converged`. The PGS/CG code path (which runs when Newton is not
+selected, or Newton falls through) does not invoke noslip. This means models using
+`solver="PGS"` or `solver="CG"` with `noslip_iterations > 0` silently ignore the
+noslip setting.
+
+MJCF parsing is complete: `noslip_iterations` and `noslip_tolerance` are read from
+`<option>` and stored on `Model` (defaults: 0 iterations, 1e-6 tolerance).
 
 #### Objective
-Implement the noslip PGS post-processor for all solver types.
+
+Wire `noslip_postprocess()` into the PGS and CG solver paths so all three solver
+types support noslip when `noslip_iterations > 0`.
 
 #### Specification
 
-1. **When to run**: After the main constraint solve, if `noslip_iterations > 0`.
-2. **What it solves**: Only friction-dimension constraint rows (tangent, torsional,
-   rolling). Normal forces are fixed from the main solve.
-3. **Modified diagonal**: Use `1 / A[i,i]` instead of `1 / (A[i,i] + R[i])` —
-   removing the regularizer makes constraints "hard" (no softness).
-4. **Projection**: Same friction cone projection as main PGS.
-5. **Convergence**: `noslip_tolerance` for early termination.
+##### S1. Refactor `noslip_postprocess()` to be solver-agnostic
+
+The existing `noslip_postprocess()` function is already solver-agnostic internally —
+it operates on `efc_force`, `efc_type`, `efc_dim`, and the Jacobians, none of which
+are Newton-specific. The only coupling is the **call site**.
+
+Verify that the function does not access any Newton-specific state (it should not).
+If it does, factor out any Newton dependencies.
+
+##### S2. Add noslip call after PGS/CG solve
+
+In `mj_fwd_constraint()`, after the PGS or CG solver finishes (the code path that
+handles penalty contacts + iterative solve), add:
+
+```rust
+// After PGS/CG solve completes and efc_force is populated:
+if model.noslip_iterations > 0 {
+    noslip_postprocess(model, data);
+}
+```
+
+The noslip function already handles the `qacc` recomputation internally
+(`qfrc_constraint = J^T · efc_force`, then `qacc = M^{-1} · (qfrc_smooth +
+qfrc_constraint)`). No additional post-processing needed.
+
+##### S3. Constraint row handling
+
+The existing noslip implementation processes **contact friction rows only** (rows
+where `efc_type == ContactElliptic || ContactNonElliptic` and `dim ≥ 3`, skipping
+the normal row). MuJoCo's `mj_solNoSlip` also processes:
+- Equality constraint rows (indices `0..ne`)
+- Dry friction rows (indices `ne..ne+nf`) with interval clamping `[-floss, +floss]`
+
+These are currently absent from our `noslip_postprocess()`. For PGS/CG conformance:
+- **Phase 1 (this spec):** Keep current behavior — contact friction rows only.
+  This covers the primary use case (suppress tangential slip in contact).
+- **Phase 2 (stretch):** Add equality and dry friction row processing. Mark with
+  TODO in code.
+
+##### S4. Cone projection modes
+
+The existing implementation uses elliptic cone projection. MuJoCo supports both
+pyramidal and elliptic cones in noslip. Since CortenForge uses elliptic cones
+exclusively (the `model.cone` field controls this, and pyramidal is currently only
+a fallthrough from Newton), the elliptic projection is sufficient for now.
+
+If pyramidal cone support is added later, `noslip_postprocess()` must dispatch to
+the correct projection based on `model.cone`.
 
 #### Acceptance Criteria
-1. `noslip_iterations=3` reduces tangential slip on a box-on-slope benchmark.
-2. `noslip_iterations=0` matches current behavior (regression).
-3. Normal forces are not modified by the noslip pass.
+
+1. **PGS + noslip**: A box on a 20° incline with `solver="PGS"` and
+   `noslip_iterations=10` shows reduced tangential slip compared to
+   `noslip_iterations=0`. Measure `qvel` tangential component after 100 steps.
+2. **CG + noslip**: Same benchmark with `solver="CG"` — noslip reduces slip.
+3. **Newton regression**: Existing Newton noslip tests continue to pass
+   (no behavior change for Newton path).
+4. **`noslip_iterations=0` is no-op**: For all solver types, zero iterations
+   produces identical output to the no-noslip code path.
+5. **Normal forces unchanged**: After noslip, contact normal force components
+   (`efc_force[normal_row]`) are identical to pre-noslip values (bit-exact).
+6. **MuJoCo reference**: Compare `efc_force` after noslip against MuJoCo 3.4.0
+   for a box-on-slope benchmark with `solver="PGS" noslip_iterations=10`.
+   Tolerance: `1e-4` (PGS tolerance, same as main solve).
+
+#### Implementation Notes
+
+**Minimal diff.** The implementation is a 2–5 line change at the PGS/CG solver
+call site. The `noslip_postprocess()` function is already written and tested.
+The primary risk is verifying it works correctly with PGS/CG constraint assembly
+output (which uses a slightly different `efc_*` layout than Newton).
+
+**Verify `efc_type`/`efc_dim` layout.** The Newton path and PGS path may
+populate `efc_type` and `efc_dim` differently (Newton uses
+`assemble_unified_constraints`, PGS uses the penalty + PGS code path). Verify
+that `noslip_postprocess()` correctly identifies friction rows in both layouts.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — new `mj_sol_noslip()` function, called
-  after main solve
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — add noslip call after PGS/CG solve
+  (2–5 lines); verify `noslip_postprocess()` compatibility with PGS efc layout
+- `sim/L0/tests/integration/` — new tests for PGS+noslip, CG+noslip in existing
+  `newton_solver.rs` (rename to `constraint_solver.rs`?) or new file
 
 ---
 
 ### 22. Body-Transmission Actuators (Adhesion)
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Status:** Parsing done, transmission missing | **Effort:** M | **Prerequisites:** None
 
 #### Current State
-`model_builder.rs:1671` returns an error: "uses body transmission which is not yet
-supported." MuJoCo adhesion actuators use body-level transmission — the actuator
-force is applied as a contact-modifying force on all contacts involving the specified
-body, rather than through joint/tendon/site Jacobians.
+
+**What exists:**
+- **MJCF parsing**: `<actuator><adhesion>` is fully parsed. `MjcfActuatorType::Adhesion`
+  sets `gaintype = Fixed` (with user-specified gain), `biastype = None`,
+  `dyntype = None`, `ctrllimited = true`. The `body` attribute is parsed and stored
+  as `actuator.body: Option<String>`. (`parser.rs`, lines ~1685–1689;
+  `model_builder.rs`, lines ~1972–1976.)
+- **Force generation**: Adhesion uses standard gain/bias: `force = gain * ctrl`.
+  Clamped by `forcerange`. No activation dynamics. This already works through the
+  standard `mj_fwd_actuation()` Phase 2 force computation.
+- **Error on body transmission**: `model_builder.rs` line ~1794 returns
+  `ModelConversionError` when `actuator.body` is `Some(...)`: "Actuator '...' uses
+  body transmission '...' which is not yet supported." This is the **only** blocker.
+
+**What's missing:**
+- `ActuatorTransmission::Body(usize)` variant in the enum (currently: Joint/Tendon/Site).
+- `mj_transmission_body()` — computes moment arm from contact normal Jacobians.
+- Force application via `qfrc_actuator += moment_arm * force` in Phase 3 of
+  `mj_fwd_actuation()`.
+
+**Existing transmission patterns** (for reference):
+- **Joint**: `qfrc_actuator[dof] += gear * force` (direct DOF application).
+- **Tendon**: `apply_tendon_force()` with cached `ten_J` Jacobian.
+- **Site**: `qfrc_actuator[dof] += actuator_moment[i][dof] * force` (pre-computed
+  moment Jacobian from `mj_transmission_site()`).
+
+Body transmission follows the **Site pattern** — pre-compute a moment arm vector
+in a transmission function, then apply it in Phase 3.
 
 #### Objective
-Implement body transmission so adhesion actuators can load and function.
+
+Implement body transmission (`ActuatorTransmission::Body`) so adhesion actuators
+load and function. The adhesion force pulls/pushes the target body toward/away from
+surfaces via contact normal Jacobians.
 
 #### Specification
 
-1. **Transmission type**: `TransmissionType::Body(body_id)` — identifies target body.
-2. **Force application**: In `mj_fwd_constraint()` (or post-solve), for each adhesion
-   actuator with body transmission:
-   - Find all active contacts involving `body_id`
-   - Add adhesion force to normal contact force: `F_n += gain * ctrl`
-   - This allows negative normal force (sticking), bounded by `forcerange`
-3. **MJCF parsing**: `<actuator><adhesion body="..." .../>` resolves body name to ID,
-   sets `trntype="body"`.
+##### S1. `ActuatorTransmission::Body` enum variant
+
+Add a new variant to the transmission enum:
+
+```rust
+pub enum ActuatorTransmission {
+    Joint,
+    Tendon,
+    Site,
+    /// Body transmission — force applied via average of contact normal Jacobians.
+    /// The usize is the target body index.
+    Body(usize),
+}
+```
+
+##### S2. `mj_transmission_body()` — moment arm computation
+
+**Algorithm** (matches MuJoCo `engine_core_smooth.c`):
+
+```rust
+fn mj_transmission_body(
+    model: &Model,
+    data: &Data,
+    actuator_id: usize,
+) -> DVector<f64> {
+    let body_id = match model.actuator_transmission[actuator_id] {
+        ActuatorTransmission::Body(id) => id,
+        _ => unreachable!(),
+    };
+    let gear = model.actuator_gear[actuator_id];
+    let mut moment = DVector::zeros(model.nv);
+    let mut count = 0usize;
+
+    for c in 0..data.ncon {
+        let contact = &data.contacts[c];
+        let body1 = model.geom_body[contact.geom1];
+        let body2 = model.geom_body[contact.geom2];
+
+        if body1 != body_id && body2 != body_id {
+            continue;
+        }
+
+        // Compute contact Jacobian difference (J_body1 - J_body2)
+        // projected along contact normal (first axis of contact frame).
+        // This gives the normal-direction relative velocity Jacobian.
+        let j_normal = compute_contact_normal_jacobian(
+            model, data, contact,
+        );
+
+        // Accumulate (sign convention: negative = attractive)
+        moment += &j_normal;
+        count += 1;
+    }
+
+    if count > 0 {
+        // Average and negate: positive ctrl → attractive force
+        moment *= -gear / (count as f64);
+    }
+
+    moment
+}
+```
+
+The `compute_contact_normal_jacobian()` helper computes `J_diff · n` where
+`J_diff = J(body1, contact_pos) - J(body2, contact_pos)` is the relative
+velocity Jacobian at the contact point, and `n` is the contact normal.
+This is the same Jacobian row used for the normal constraint direction.
+
+**Key detail — negative sign:** The `-1/count` scaling means positive actuator
+force produces a generalized force that pulls the body *toward* the surface
+(attractive adhesion). This is MuJoCo's convention. The constraint solver
+still clamps normal force ≥ 0 — adhesion does NOT allow negative constraint
+forces. Instead, the adhesion generalized force in `qfrc_actuator` counteracts
+gravity and other forces, keeping the body in contact.
+
+##### S3. Call site in `mj_fwd_actuation()`
+
+Call `mj_transmission_body()` during the **transmission computation phase** of
+`mj_fwd_actuation()`, before the force application loop. Store the result in
+`data.actuator_moment[actuator_id]`.
+
+Then in Phase 3 (force application), handle the Body case like Site:
+
+```rust
+ActuatorTransmission::Body(_) => {
+    for dof in 0..model.nv {
+        let m = data.actuator_moment[i][dof];
+        if m != 0.0 {
+            data.qfrc_actuator[dof] += m * force;
+        }
+    }
+}
+```
+
+Note: `actuator_length[i]` for body transmission is always 0 (adhesion has no
+length, unlike tendons or joints).
+
+##### S4. Model builder: remove error, resolve body name to ID
+
+In `model_builder.rs`, replace the error at line ~1794 with body name resolution:
+
+```rust
+} else if let Some(ref body_name) = actuator.body {
+    let body_id = self.resolve_body_id(body_name)?;
+    transmission = ActuatorTransmission::Body(body_id);
+    trnid = body_id;
+}
+```
+
+##### S5. Interaction with `forcerange`
+
+The adhesion model builder already sets up `forcerange` correctly (lines
+~1876–1892). The scalar force `gain * ctrl` is clamped to `forcerange` in Phase 2
+of `mj_fwd_actuation()` (line ~9975). No changes needed — the existing clamp
+happens before the force is mapped through the moment arm.
+
+The default adhesion setup uses `ctrl ∈ [0, 1]` with positive gain, so the scalar
+force is always non-negative. The negative sign in the moment arm (S2) makes the
+generalized force attractive.
+
+##### S6. Contact count edge cases
+
+- **No contacts**: If the target body has no active contacts, `moment` is zero,
+  and the actuator produces no force. This is correct — adhesion requires contact.
+- **Multiple contacts**: Forces are averaged across all contacts involving the body.
+  This prevents the adhesion force from scaling with contact count.
+- **Excluded contacts (gap zone)**: MuJoCo accumulates contributions from contacts
+  in the margin gap zone into a separate `moment_exclude` buffer. Defer this to a
+  stretch goal — it requires #20 (margin/gap runtime effect) to be implemented first.
 
 #### Acceptance Criteria
-1. Adhesion actuator with body transmission loads without error.
-2. Positive control input increases normal contact force (pressing).
-3. Negative contact forces allow body to "stick" to surfaces.
-4. No adhesion actuator → existing behavior unchanged (regression).
+
+1. **Loading**: `<actuator><adhesion body="box" gain="100"/>` loads without error
+   for a model with a body named "box".
+2. **Zero force when no contact**: With `ctrl=1.0` but the body not in contact,
+   `qfrc_actuator` contribution from the adhesion actuator is zero.
+3. **Attractive force**: A sphere resting on a plane with adhesion `ctrl=1.0`
+   produces a downward `qfrc_actuator` (pulling sphere toward plane). Verify
+   `qfrc_actuator` has the correct sign by checking that the sphere's equilibrium
+   position is lower (more penetrated) than without adhesion.
+4. **Force magnitude**: For a single contact, the generalized force equals
+   `-(gain * ctrl) * J_normal`. Compare against MuJoCo 3.4.0 `qfrc_actuator`
+   for a sphere-on-plane adhesion scenario. Tolerance: `1e-10`.
+5. **Multiple contacts**: With 4 contacts (box on plane), moment arm is the
+   average of 4 normal Jacobians. Compare against MuJoCo 3.4.0.
+6. **Regression**: Models without adhesion actuators produce identical results
+   (no force application code path is touched).
+7. **`actuator_moment` populated**: After `forward()`, `data.actuator_moment[i]`
+   for a body-transmission actuator is nonzero when contacts exist and zero
+   when no contacts exist.
+
+#### Implementation Notes
+
+**Contact normal Jacobian reuse.** The constraint assembly already computes contact
+normal Jacobians for the constraint system (`efc_J`). However, `mj_transmission_body()`
+runs during `mj_fwd_actuation()`, which is called *before* constraint assembly in the
+pipeline. So we cannot reuse `efc_J` — we must compute the Jacobian independently.
+This matches MuJoCo's approach (transmission runs in the smooth phase, before
+constraints).
+
+Use the existing `mj_jac()` or `jac_body_com()` functions to compute the body
+Jacobians at the contact point, then difference them and project along the contact
+normal.
+
+**Pipeline ordering.** MuJoCo's pipeline: `mj_fwd_position` → `mj_fwd_velocity` →
+`mj_fwd_actuation` → `mj_fwd_acceleration` → `mj_fwd_constraint`. Body transmission
+runs in `mj_fwd_actuation`, which means it uses contacts from the *previous* step
+(contacts are detected in `mj_fwd_position` → `mj_collision`). This is the correct
+order — contacts are already populated when `mj_fwd_actuation` runs.
+
+**Gear parameter.** The adhesion shortcut sets `gear[0] = 1.0` by default. The
+`gear` value scales the moment arm in `mj_transmission_body()`. For multi-axis
+gear (not needed for adhesion), only `gear[0]` is used.
 
 #### Files
-- `sim/L0/mjcf/src/model_builder.rs` — parsing + transmission resolution
-- `sim/L0/core/src/mujoco_pipeline.rs` — force application in constraint solve
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — add `Body(usize)` to
+  `ActuatorTransmission`, implement `mj_transmission_body()`, add Body case
+  to Phase 3 force application in `mj_fwd_actuation()`
+- `sim/L0/mjcf/src/model_builder.rs` — replace error with body name resolution
+  in `process_actuator()`
+- `sim/L0/tests/integration/` — new test file `adhesion_actuator.rs` or add to
+  existing `actuator_tests.rs`
