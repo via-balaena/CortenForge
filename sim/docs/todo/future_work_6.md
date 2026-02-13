@@ -489,10 +489,55 @@ use all models — each test specifies which subset applies):
 
 **A1. Forward/inverse equivalence**
 
-After `forward()`, verify the force balance identity from
-`mj_fwd_acceleration_explicit`: `M * qacc == qfrc_applied + qfrc_actuator +
-qfrc_passive + qfrc_constraint - qfrc_bias`. This is CortenForge's version of
-MuJoCo's `mj_compareFwdInv()` check.
+After `forward()`, verify the force balance identity. This is CortenForge's
+force-balance verification, inspired by (but stronger than) MuJoCo's
+`mj_compareFwdInv()` diagnostic, which compares forward vs inverse constraint
+forces rather than the full residual.
+
+The identity depends on which code path computed `qacc`:
+
+- **Euler/RK4 (explicit path via `mj_fwd_acceleration_explicit`):**
+  `M * qacc == qfrc_applied + qfrc_actuator + qfrc_passive + qfrc_constraint - qfrc_bias`
+  Here `qfrc_passive` includes friction loss (`qfrc_frictionloss`), and the
+  explicit solver uses it directly.
+
+- **Newton solver path (lines 16679–16693):**
+  `M * qacc == qfrc_applied + qfrc_actuator + (qfrc_passive - qfrc_frictionloss) + qfrc_constraint - qfrc_bias`
+  Newton separates friction loss from smooth forces because it handles dry
+  friction within the constraint system. `qfrc_frictionloss` is a `Data` field
+  (`DVector<f64>`, populated by `mj_fwd_passive`) containing the friction-loss
+  component that is also included in `qfrc_passive`.
+
+- **Implicit integrators (ImplicitFast/Implicit/ImplicitSpringDamper):**
+  These solve `(M - h·D) * qacc = rhs` with a modified mass matrix, so
+  the `M * qacc == f_total` identity does **not** hold. A1 is not applicable
+  to implicit integrator models. (Implicit integrator correctness is tested
+  by B10 single-step comparison and the existing `implicit_integration.rs`
+  AC-9/AC-10 analytical-vs-FD tests.)
+
+The implementation must branch on `data.newton_solved` (a `bool` field on
+`Data`, set to `true` when the Newton solver computes `qacc`, `false`
+otherwise) because the two paths assemble the RHS differently:
+
+```rust
+fn assert_fwd_inv_consistent(model: &Model, data: &Data, eps: f64) {
+    // Build the RHS that was used to solve M * qacc = rhs.
+    // Newton subtracts qfrc_frictionloss from qfrc_passive (it handles
+    // dry friction in the constraint system). The explicit path uses
+    // qfrc_passive directly (which already includes frictionloss).
+    let mut rhs = &data.qfrc_applied + &data.qfrc_actuator
+        + &data.qfrc_passive
+        + &data.qfrc_constraint - &data.qfrc_bias;
+    if data.newton_solved {
+        rhs -= &data.qfrc_frictionloss;
+    }
+    // M * qacc via dense multiply (not via solve — we want the residual)
+    let m_qacc = &data.qM * &data.qacc;
+    let residual = &m_qacc - &rhs;
+    let norm = residual.amax() / data.qacc.amax().max(1e-10);
+    assert!(norm < eps, "Force balance residual {norm:.2e} exceeds {eps:.2e}");
+}
+```
 
 - Tolerance: `1e-10` (algebraic identity — `qacc` is computed by solving
   `M * qacc = f_total` via `mj_solve_sparse`, so the residual is factorization
@@ -501,12 +546,15 @@ MuJoCo's `mj_compareFwdInv()` check.
   `qpos[i] = 0.1 * sin(i * seed)` for hinge/slide DOFs; quaternion DOFs
   use `quat = normalize([1, 0.1*sin(seed), 0.1*cos(seed), 0.05*sin(2*seed)])`
   to stay near identity while avoiding axis-aligned degeneracies), and
-  3 mid-simulation states (step 10, 50, 100 of a default run).
-- Models: all Layer A models.
+  3 mid-simulation states (step 10, 50, 100 of a default run with Euler
+  integrator).
+- Models: all Layer A models **that use Euler or RK4 integrators**. Models
+  with implicit integrators are excluded (see above). All Layer A model
+  MJCF defaults to Euler, so this covers the full set unless a model
+  explicitly sets `integrator="implicit*"`.
 - Implementation: single function `assert_fwd_inv_consistent(model, data, eps)`
-  that computes the residual `r = M*qacc - (qfrc_applied + qfrc_actuator +
-  qfrc_passive + qfrc_constraint - qfrc_bias)` and asserts
-  `||r||_inf / max(||qacc||_inf, 1e-10) < eps`.
+  as shown above, branching on `data.newton_solved` to determine whether
+  `qfrc_frictionloss` is subtracted from the RHS.
 
 **A2. Island/monolithic solver equivalence**
 
@@ -535,11 +583,20 @@ bit-identical `qpos`, `qvel`, `qacc`, `qfrc_constraint`, `sensordata` at
 every step. This catches uninitialized memory, HashMap iteration order leaks,
 and floating-point non-determinism.
 
+- **Reset mechanism**: use `model.make_data()` to create a fresh `Data`, not
+  `data.reset(&model)`. The `reset()` method does not clear the `efc_lambda`
+  warmstart cache (`HashMap<WarmstartKey, Vec<f64>>`), so stale entries from
+  run 1 would leak into run 2, causing the second run to diverge from the
+  first at the first contact step. `make_data()` creates a fresh empty
+  HashMap and guarantees identical initial state.
 - Tolerance: `0` (exact bit equality via `assert_eq!` on raw f64 bits, or
   `f64::to_bits()` comparison). Where HashMap iteration order causes
   unavoidable differences (warmstart cache), compare the *physics outputs*
   bit-identically, not the cache internals.
 - Repeat with warmstart disabled to isolate warmstart-related non-determinism.
+  The MJCF `<flag warmstart="disable"/>` is parsed but not currently wired
+  into the solver. To disable warmstart in tests, manually clear the cache
+  before each step: `data.efc_lambda.clear(); data.qacc_warmstart.fill(0.0);`.
 - Models: `a_double_pendulum`, `a_sphere_on_plane`, `a_ant`, `a_humanoid`
   (from Layer A model set — covers no-contact, single-contact,
   multi-contact, and high-DOF systems).
@@ -657,14 +714,19 @@ Models: `double_pendulum`, `three_link_arm`, `humanoid_qpos0`.
 For each test model at 3 configurations with nonzero velocity:
 - Record `qfrc_passive[nv]` from MuJoCo 3.4.0.
 - Compare element-wise.
-- Tolerance: `1e-10` (identical formulas: `-k*(q-qref)`, `-b*qvel`,
-  `-frictionloss*tanh(qvel*1000)`).
+- Tolerance: `1e-10` for spring and damper forces (`-k*(q-qref)`, `-b*qvel`)
+  — identical formulas.
 
-Also verify: at `qpos == springref` and `qvel == 0`, `qfrc_passive == 0`
-(equilibrium).
+**Frictionloss divergence.** ⚠️ **Migration tracked as #19b/#19c in
+[future_work_6_precursor_1.md](./future_work_6_precursor_1.md).** CortenForge
+computes frictionloss as a tanh passive force; MuJoCo uses Huber constraint
+rows. This divergence will be resolved before #19 conformance tests are written.
+B4 frictionloss tests should be marked `#[ignore]` until #19b/#19c are complete.
 
-Models: `spring_damper_hinge`, `friction_loss_slide`,
-`tendon_passive_forces`.
+Spring and damper passive forces match MuJoCo exactly. Also verify: at
+`qpos == springref` and `qvel == 0`, `qfrc_passive == 0` (equilibrium).
+
+Models: `spring_damper_hinge`, `tendon_passive_forces`.
 
 Existing coverage: `passive_forces.rs` has 15+ tests. Layer B adds MuJoCo
 cross-check for tendon passive forces (which go through `J^T` mapping and
@@ -825,6 +887,17 @@ contains:
 The `energy` array is `[energy_potential, energy_kinetic]`, matching MuJoCo's
 `d.energy[0]` (potential) and `d.energy[1]` (kinetic).
 
+**Post-step field semantics.** Both MuJoCo's `mj_step()` and CortenForge's
+`step()` call `forward()` then `integrate()` with no second `forward()` pass.
+After `step()` returns, `qpos` and `qvel` reflect the **post-integration**
+state (time N+1), while `xpos`, `xquat`, `qfrc_bias`, `qfrc_passive`,
+`qfrc_actuator`, `qfrc_constraint`, `qacc`, `sensordata`, and `energy` all
+reflect the `forward()` pass computed from the **pre-integration** state
+(time N). The Python reference generator records fields after `mj_step()`
+which produces exactly this semantic, and the Rust harness reads fields after
+`step()` which matches. All comparisons are therefore against the same
+logical state.
+
 The reference includes per-step intermediate pipeline outputs — FK (`xpos`,
 `xquat`) and all force components (`qfrc_bias`, `qfrc_passive`,
 `qfrc_constraint`, `qfrc_actuator`) — so that when the trajectory diverges,
@@ -859,12 +932,11 @@ The harness:
       `qpos`, `qvel`, `qacc`, `xpos`, `xquat`, `qfrc_bias`,
       `qfrc_passive`, `qfrc_actuator`, `qfrc_constraint`, `sensordata`,
       `energy` (`[energy_potential, energy_kinetic]`).
-      These fields persist on `Data` after `step()` — they are populated
-      by `forward()` and not cleared by `integrate()`. Including
-      `xpos`/`xquat` (FK output) enables C5 pipeline-stage diagnosis:
-      if `xpos` matches but `qfrc_bias` doesn't, the bug is in RNE, not
-      FK. The reference data records the same fields after `mj_step()`
-      in MuJoCo, which also retains them post-integration.
+      These fields persist on `Data` after `step()` — see "Post-step
+      field semantics" in C1 for the precise state each field reflects.
+      Including `xpos`/`xquat` (FK output) enables C5 pipeline-stage
+      diagnosis: if `xpos` matches but `qfrc_bias` doesn't, the bug is
+      in RNE, not FK.
    d. Compares `ncon` (contact count) at each step — must match exactly.
       A contact-count mismatch is a hard failure (broad-phase or filtering
       bug) and is reported immediately without checking subsequent fields.
@@ -1065,9 +1137,11 @@ Tests quaternion drift suppression.
 For every active contact:
 - Normal force ≥ 0 (unilateral constraint).
 - Friction force within cone: `||f_tangent|| ≤ μ * f_normal`, where `μ`
-  is the combined sliding friction `sqrt(geom_friction[g1].x *
-  geom_friction[g2].x)` (geometric mean, matching MuJoCo's combination
-  rule in `mj_contactForce`).
+  is the combined sliding friction `max(geom_friction[g1].x,
+  geom_friction[g2].x)` (element-wise max, matching MuJoCo's combination
+  rule in `mj_contactParam`). **Note:** CortenForge currently uses geometric
+  mean — the switch to element-wise max is tracked as #19a in
+  [future_work_6_precursor_1.md](./future_work_6_precursor_1.md).
 - Tolerance: `1e-8` (solver should satisfy these exactly up to solver
   tolerance).
 
@@ -1280,8 +1354,9 @@ is the full trajectory infrastructure. Phase 4 is optional polish.
 #### Acceptance Criteria
 
 **Layer A — Self-Consistency (no external dependency):**
-1. A1: forward/inverse equivalence passes at `1e-10` for ≥5 models at ≥3
-   configurations each.
+1. A1: forward/inverse equivalence passes at `1e-10` for ≥5 models (Euler/RK4
+   integrators only) at ≥3 configurations each, with correct
+   `qfrc_frictionloss` handling for Newton-solved vs explicit paths.
 2. A2: island/monolithic equivalence for ≥2 contact models with multiple
    islands (Phase 4 — uses `DISABLE_ISLAND` flag to force monolithic path).
 3. A3: bit-identical replay for ≥4 models over 100 steps.
@@ -1420,555 +1495,17 @@ assert with diagnostic output on failure.
 ---
 
 ### 20. Contact Margin/Gap Runtime Effect
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
-
-#### Current State
-
-`geom_margin` and `geom_gap` are stored on `Model` as `Vec<f64>` (one per geom,
-initialized to 0.0). `ContactPair` has `margin` and `gap` fields, correctly parsed
-from `<contact><pair>` MJCF elements. However, margin and gap have **no runtime
-effect** on contact activation or constraint assembly:
-
-- **Narrow-phase**: All collision functions (e.g., `collide_sphere_sphere`) generate
-  contacts only when `penetration > 0.0`. Margin is not checked.
-  (`mujoco_pipeline.rs`, `collide_sphere_sphere`, line ~6509.)
-- **Constraint assembly**: `margin` is hardcoded to `0.0` in `assemble_contact_system`
-  (`mujoco_pipeline.rs`, line ~14600: `let margin = 0.0_f64;`). The `compute_aref()`
-  function accepts a `margin` parameter but always receives 0.0.
-- **`apply_pair_overrides`**: Applies condim, friction, solref, solimp from
-  `ContactPair` but skips margin/gap. Comment at line ~5664: "margin/gap are NOT
-  applied here."
-- **Broad-phase**: `pair.margin` IS used in the bounding-sphere distance cull for
-  explicit pairs (line ~5431). This is correct and should be preserved.
-- **Geom-level parsing**: `<geom margin="..." gap="...">` attributes are NOT parsed.
-  `model_builder.rs` comment: "geom-level not yet parsed, default to 0.0."
-- **`efc_margin`**: The `Data` struct has an `efc_margin: Vec<f64>` field (per
-  constraint row), currently always populated with 0.0.
-
-MuJoCo's margin/gap system involves three distinct locations: contact detection
-(wider activation), constraint violation computation (shifted reference), and the
-`aref` stabilization formula. All three must be wired up.
-
-#### Objective
-
-Wire `margin` and `gap` into the full pipeline — MJCF parsing, contact detection,
-and constraint assembly — so that contacts activate at the correct distance and
-Baumgarte stabilization uses the correct reference point.
-
-#### Specification
-
-##### S1. Margin/gap combination rule (MuJoCo semantics)
-
-MuJoCo **sums** margins and gaps from both geoms (source:
-`engine_collision_driver.c`, `mj_collideGeoms`):
-
-```
-effective_margin = geom_margin[g1] + geom_margin[g2]
-effective_gap    = geom_gap[g1]    + geom_gap[g2]
-includemargin    = effective_margin - effective_gap
-```
-
-For explicit `<contact><pair>` contacts, the pair's `margin` and `gap` attributes
-**override** the geom-summed values entirely (pair takes precedence).
-
-The `includemargin` value is the distance threshold below which a contact generates
-a constraint. It is stored on the `Contact` struct and propagated to `efc_margin`
-during constraint assembly.
-
-##### S2. Geom-level MJCF parsing
-
-Parse `margin` and `gap` attributes from `<geom>` elements. These cascade through
-the defaults system (existing infrastructure handles attribute cascading):
-
-```xml
-<geom type="sphere" size="0.1" margin="0.002" gap="0.001"/>
-```
-
-Default values: `margin = 0.0`, `gap = 0.0` (preserves current behavior when
-attributes are absent).
-
-Update `Model.geom_margin` and `Model.geom_gap` arrays, which are already
-allocated (currently zeroed). Wire through `model_builder.rs` → `process_geom()`.
-
-##### S3. Narrow-phase contact activation
-
-Change the activation condition in all narrow-phase collision functions from:
-
-```rust
-if penetration > 0.0 { ... }  // current
-```
-
-to:
-
-```rust
-if penetration > -margin { ... }  // with margin
-```
-
-where `margin` is the effective margin computed per S1. When a contact is generated
-with `penetration ∈ (-margin, 0]`, the contact's `depth` field stores the
-actual geometric penetration (which is negative — surfaces are separated). The
-`includemargin` field on the Contact stores the margin value.
-
-This means the contact exists in the constraint system but may produce zero force
-(if `depth > includemargin`, the constraint violation `r > 0` so no corrective
-force is applied). This is MuJoCo's mechanism for "pre-contact" — smooth force
-onset rather than sudden activation.
-
-Affected functions: `collide_sphere_sphere`, `collide_sphere_plane`,
-`collide_capsule_plane`, `collide_box_plane`, `collide_sphere_capsule`,
-and all other `collide_*` variants. Each function must receive the effective
-margin for the geom pair.
-
-Implementation approach: pass `margin` as a parameter to each `collide_*`
-function. Compute `margin` in the dispatch function (`collide_geoms` or explicit
-pair loop) using S1, and thread it through.
-
-##### S4. Contact struct: store `includemargin`
-
-The `Contact` struct already has a `pub includemargin: bool` field (currently
-always `false`). Replace this with a numeric field:
-
-```rust
-/// Distance threshold used for constraint activation.
-/// `includemargin = effective_margin - effective_gap`.
-/// Constraint violation: `r = depth - includemargin`.
-/// Contact exists when `depth > -effective_margin` (see S3).
-pub includemargin: f64,
-```
-
-Set by `make_contact_from_geoms()` or `apply_pair_overrides()`.
-
-##### S5. `apply_pair_overrides`: apply margin/gap from ContactPair
-
-In `apply_pair_overrides()`, set `contact.includemargin = pair.margin - pair.gap`
-when the contact comes from an explicit `<contact><pair>`. Remove the existing
-comment "margin/gap are NOT applied here."
-
-For automatic (Mechanism 1) contacts, set
-`contact.includemargin = (geom_margin[g1] + geom_margin[g2]) - (geom_gap[g1] + geom_gap[g2])`
-in `make_contact_from_geoms()`.
-
-##### S6. Constraint assembly: populate `efc_margin`
-
-In `assemble_contact_system` (line ~14598), replace the hardcoded
-`let margin = 0.0_f64` with:
-
-```rust
-let margin = contact.includemargin;
-```
-
-This value flows into:
-1. `data.efc_margin[row] = margin` — per constraint row (normal direction only;
-   friction rows get `efc_margin = 0.0`, matching MuJoCo).
-2. `compute_aref(k, b, imp, pos, margin, vel)` — the existing function already
-   computes `aref = -b * vel - k * imp * (pos - margin)`. With nonzero margin,
-   the constraint equilibrium shifts to `pos = margin` instead of `pos = 0`.
-
-No changes to `compute_aref()` itself — the function is already correct; it just
-needs a nonzero margin input.
-
-##### S7. Interaction with global `<option>` override
-
-MuJoCo supports `<option o_margin="...">` which overrides all per-geom and
-per-pair margins globally. This is a low-priority extension — defer unless existing
-models require it. Note in code with a TODO.
-
-#### Acceptance Criteria
-
-1. **Margin activation**: A sphere at height 1mm above a plane with
-   `geom_margin="0.002"` (each geom) generates a contact. Effective margin =
-   `0.002 + 0.002 = 0.004 > 0.001` (distance). Contact `depth ≈ -0.001`
-   (negative, surfaces separated), `includemargin = 0.004`, constraint
-   `r = -0.001 - 0.004 = -0.005 < 0` → constraint force engages.
-2. **Gap buffer**: With `margin="0.004"` and `gap="0.003"`, `includemargin = 0.001`.
-   A sphere at distance 0.002 above the plane generates a contact (within margin)
-   but `r = -0.002 - 0.001 = -0.003 < 0` → force engages. At distance 0.0005,
-   still in contact, stronger force. Verify force magnitude scales with
-   `|r|` (deeper violation → stronger force).
-3. **Pair override**: An explicit `<contact><pair margin="0.01" gap="0.005">`
-   uses `includemargin = 0.005`, ignoring geom-level margins.
-4. **Zero margin/gap regression**: All existing tests pass unchanged (default
-   margin/gap = 0.0 preserves `penetration > 0.0` activation and
-   `efc_margin = 0.0` in assembly).
-5. **MuJoCo reference**: Compare contact count and forces against MuJoCo 3.4.0
-   for a sphere-on-plane test at 5 separation distances spanning
-   `[-0.002, +0.003]` with `margin=0.004, gap=0.001`. Contact count and
-   `qfrc_constraint` must match within tolerance `1e-8`.
-6. **`efc_margin` populated**: After `forward()`, `data.efc_margin[normal_row]`
-   equals `contact.includemargin` for every active contact.
-
-#### Implementation Notes
-
-**Narrow-phase function signature change.** Every `collide_*` function currently
-takes `(model, geom1, geom2, pos1, pos2, size1, size2) -> Option<Contact>`. Add
-a `margin: f64` parameter. The dispatch function computes the effective margin
-(S1) before calling the specific collider.
-
-**Existing broad-phase is correct.** The bounding-sphere cull at line ~5431
-already adds `pair.margin` to the distance check. For automatic contacts, add
-`geom_margin[g1] + geom_margin[g2]` to the broad-phase distance threshold.
-
-**Breaking change to Contact struct.** Replacing `includemargin: bool` with
-`includemargin: f64` is a breaking change. Any existing code that checks
-`contact.includemargin` as a bool must be updated. Search for all uses.
-
-#### Files
-
-- `sim/L0/core/src/mujoco_pipeline.rs` — all `collide_*` functions,
-  `make_contact_from_geoms()`, `apply_pair_overrides()`,
-  `assemble_contact_system()` (margin wiring), broad-phase distance check
-- `sim/L0/mjcf/src/parser.rs` — parse `margin`/`gap` from `<geom>` elements
-- `sim/L0/mjcf/src/model_builder.rs` — wire geom-level margin/gap into
-  `Model.geom_margin`/`Model.geom_gap` in `process_geom()`
-- `sim/L0/mjcf/src/defaults.rs` — ensure margin/gap cascade through defaults
-- `sim/L0/tests/integration/` — new test file `contact_margin_gap.rs`
+⚠️ **Migrated to [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) #20.**
+Full specification is now tracked there as a prerequisite to #19.
 
 ---
 
 ### 21. Noslip Post-Processor for PGS/CG Solvers
-**Status:** Newton done, PGS/CG missing | **Effort:** S | **Prerequisites:** None
-
-#### Current State
-
-The noslip post-processor is **fully implemented for the Newton solver** as
-`noslip_postprocess()` (`mujoco_pipeline.rs`, lines ~16521–16694, ~170 LOC).
-Three integration tests verify it (`newton_solver.rs`, lines 656–777):
-- `test_noslip_zero_iterations_is_noop` — regression test
-- `test_noslip_produces_finite_results` — basic sanity
-- `test_noslip_reduces_slip` — quantitative slip reduction on box-on-slope
-
-The Newton implementation:
-1. Identifies friction rows from `efc_type`/`efc_dim` (contact rows with `dim ≥ 3`,
-   skipping the normal row 0).
-2. Builds a friction-only Delassus submatrix `A_fric` with **no regularizer** on
-   the diagonal (`1/A[i,i]` instead of `1/(A[i,i] + R[i])`).
-3. Runs PGS iterations on friction rows with elliptic cone projection.
-4. Writes back updated `efc_force` and recomputes `qfrc_constraint` and `qacc`.
-
-**What's missing:** The PGS and CG solver paths bypass noslip entirely. The solver
-dispatch at line ~18364 calls `noslip_postprocess()` only after
-`NewtonResult::Converged`. The PGS/CG code path (which runs when Newton is not
-selected, or Newton falls through) does not invoke noslip. This means models using
-`solver="PGS"` or `solver="CG"` with `noslip_iterations > 0` silently ignore the
-noslip setting.
-
-MJCF parsing is complete: `noslip_iterations` and `noslip_tolerance` are read from
-`<option>` and stored on `Model` (defaults: 0 iterations, 1e-6 tolerance).
-
-#### Objective
-
-Wire `noslip_postprocess()` into the PGS and CG solver paths so all three solver
-types support noslip when `noslip_iterations > 0`.
-
-#### Specification
-
-##### S1. Refactor `noslip_postprocess()` to be solver-agnostic
-
-The existing `noslip_postprocess()` function is already solver-agnostic internally —
-it operates on `efc_force`, `efc_type`, `efc_dim`, and the Jacobians, none of which
-are Newton-specific. The only coupling is the **call site**.
-
-Verify that the function does not access any Newton-specific state (it should not).
-If it does, factor out any Newton dependencies.
-
-##### S2. Add noslip call after PGS/CG solve
-
-In `mj_fwd_constraint()`, after the PGS or CG solver finishes (the code path that
-handles penalty contacts + iterative solve), add:
-
-```rust
-// After PGS/CG solve completes and efc_force is populated:
-if model.noslip_iterations > 0 {
-    noslip_postprocess(model, data);
-}
-```
-
-The noslip function already handles the `qacc` recomputation internally
-(`qfrc_constraint = J^T · efc_force`, then `qacc = M^{-1} · (qfrc_smooth +
-qfrc_constraint)`). No additional post-processing needed.
-
-##### S3. Constraint row handling
-
-The existing noslip implementation processes **contact friction rows only** (rows
-where `efc_type == ContactElliptic || ContactNonElliptic` and `dim ≥ 3`, skipping
-the normal row). MuJoCo's `mj_solNoSlip` also processes:
-- Equality constraint rows (indices `0..ne`)
-- Dry friction rows (indices `ne..ne+nf`) with interval clamping `[-floss, +floss]`
-
-These are currently absent from our `noslip_postprocess()`. For PGS/CG conformance:
-- **Phase 1 (this spec):** Keep current behavior — contact friction rows only.
-  This covers the primary use case (suppress tangential slip in contact).
-- **Phase 2 (stretch):** Add equality and dry friction row processing. Mark with
-  TODO in code.
-
-##### S4. Cone projection modes
-
-The existing implementation uses elliptic cone projection. MuJoCo supports both
-pyramidal and elliptic cones in noslip. Since CortenForge uses elliptic cones
-exclusively (the `model.cone` field controls this, and pyramidal is currently only
-a fallthrough from Newton), the elliptic projection is sufficient for now.
-
-If pyramidal cone support is added later, `noslip_postprocess()` must dispatch to
-the correct projection based on `model.cone`.
-
-#### Acceptance Criteria
-
-1. **PGS + noslip**: A box on a 20° incline with `solver="PGS"` and
-   `noslip_iterations=10` shows reduced tangential slip compared to
-   `noslip_iterations=0`. Measure `qvel` tangential component after 100 steps.
-2. **CG + noslip**: Same benchmark with `solver="CG"` — noslip reduces slip.
-3. **Newton regression**: Existing Newton noslip tests continue to pass
-   (no behavior change for Newton path).
-4. **`noslip_iterations=0` is no-op**: For all solver types, zero iterations
-   produces identical output to the no-noslip code path.
-5. **Normal forces unchanged**: After noslip, contact normal force components
-   (`efc_force[normal_row]`) are identical to pre-noslip values (bit-exact).
-6. **MuJoCo reference**: Compare `efc_force` after noslip against MuJoCo 3.4.0
-   for a box-on-slope benchmark with `solver="PGS" noslip_iterations=10`.
-   Tolerance: `1e-4` (PGS tolerance, same as main solve).
-
-#### Implementation Notes
-
-**Minimal diff.** The implementation is a 2–5 line change at the PGS/CG solver
-call site. The `noslip_postprocess()` function is already written and tested.
-The primary risk is verifying it works correctly with PGS/CG constraint assembly
-output (which uses a slightly different `efc_*` layout than Newton).
-
-**Verify `efc_type`/`efc_dim` layout.** The Newton path and PGS path may
-populate `efc_type` and `efc_dim` differently (Newton uses
-`assemble_unified_constraints`, PGS uses the penalty + PGS code path). Verify
-that `noslip_postprocess()` correctly identifies friction rows in both layouts.
-
-#### Files
-
-- `sim/L0/core/src/mujoco_pipeline.rs` — add noslip call after PGS/CG solve
-  (2–5 lines); verify `noslip_postprocess()` compatibility with PGS efc layout
-- `sim/L0/tests/integration/` — new tests for PGS+noslip, CG+noslip in existing
-  `newton_solver.rs` (rename to `constraint_solver.rs`?) or new file
+⚠️ **Migrated to [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) #21.**
+Full specification is now tracked there as a prerequisite to #19.
 
 ---
 
 ### 22. Body-Transmission Actuators (Adhesion)
-**Status:** Parsing done, transmission missing | **Effort:** M | **Prerequisites:** None
-
-#### Current State
-
-**What exists:**
-- **MJCF parsing**: `<actuator><adhesion>` is fully parsed. `MjcfActuatorType::Adhesion`
-  sets `gaintype = Fixed` (with user-specified gain), `biastype = None`,
-  `dyntype = None`, `ctrllimited = true`. The `body` attribute is parsed and stored
-  as `actuator.body: Option<String>`. (`parser.rs`, lines ~1685–1689;
-  `model_builder.rs`, lines ~1972–1976.)
-- **Force generation**: Adhesion uses standard gain/bias: `force = gain * ctrl`.
-  Clamped by `forcerange`. No activation dynamics. This already works through the
-  standard `mj_fwd_actuation()` Phase 2 force computation.
-- **Error on body transmission**: `model_builder.rs` line ~1794 returns
-  `ModelConversionError` when `actuator.body` is `Some(...)`: "Actuator '...' uses
-  body transmission '...' which is not yet supported." This is the **only** blocker.
-
-**What's missing:**
-- `ActuatorTransmission::Body(usize)` variant in the enum (currently: Joint/Tendon/Site).
-- `mj_transmission_body()` — computes moment arm from contact normal Jacobians.
-- Force application via `qfrc_actuator += moment_arm * force` in Phase 3 of
-  `mj_fwd_actuation()`.
-
-**Existing transmission patterns** (for reference):
-- **Joint**: `qfrc_actuator[dof] += gear * force` (direct DOF application).
-- **Tendon**: `apply_tendon_force()` with cached `ten_J` Jacobian.
-- **Site**: `qfrc_actuator[dof] += actuator_moment[i][dof] * force` (pre-computed
-  moment Jacobian from `mj_transmission_site()`).
-
-Body transmission follows the **Site pattern** — pre-compute a moment arm vector
-in a transmission function, then apply it in Phase 3.
-
-#### Objective
-
-Implement body transmission (`ActuatorTransmission::Body`) so adhesion actuators
-load and function. The adhesion force pulls/pushes the target body toward/away from
-surfaces via contact normal Jacobians.
-
-#### Specification
-
-##### S1. `ActuatorTransmission::Body` enum variant
-
-Add a new variant to the transmission enum:
-
-```rust
-pub enum ActuatorTransmission {
-    Joint,
-    Tendon,
-    Site,
-    /// Body transmission — force applied via average of contact normal Jacobians.
-    /// The usize is the target body index.
-    Body(usize),
-}
-```
-
-##### S2. `mj_transmission_body()` — moment arm computation
-
-**Algorithm** (matches MuJoCo `engine_core_smooth.c`):
-
-```rust
-fn mj_transmission_body(
-    model: &Model,
-    data: &Data,
-    actuator_id: usize,
-) -> DVector<f64> {
-    let body_id = match model.actuator_transmission[actuator_id] {
-        ActuatorTransmission::Body(id) => id,
-        _ => unreachable!(),
-    };
-    let gear = model.actuator_gear[actuator_id];
-    let mut moment = DVector::zeros(model.nv);
-    let mut count = 0usize;
-
-    for c in 0..data.ncon {
-        let contact = &data.contacts[c];
-        let body1 = model.geom_body[contact.geom1];
-        let body2 = model.geom_body[contact.geom2];
-
-        if body1 != body_id && body2 != body_id {
-            continue;
-        }
-
-        // Compute contact Jacobian difference (J_body1 - J_body2)
-        // projected along contact normal (first axis of contact frame).
-        // This gives the normal-direction relative velocity Jacobian.
-        let j_normal = compute_contact_normal_jacobian(
-            model, data, contact,
-        );
-
-        // Accumulate (sign convention: negative = attractive)
-        moment += &j_normal;
-        count += 1;
-    }
-
-    if count > 0 {
-        // Average and negate: positive ctrl → attractive force
-        moment *= -gear / (count as f64);
-    }
-
-    moment
-}
-```
-
-The `compute_contact_normal_jacobian()` helper computes `J_diff · n` where
-`J_diff = J(body1, contact_pos) - J(body2, contact_pos)` is the relative
-velocity Jacobian at the contact point, and `n` is the contact normal.
-This is the same Jacobian row used for the normal constraint direction.
-
-**Key detail — negative sign:** The `-1/count` scaling means positive actuator
-force produces a generalized force that pulls the body *toward* the surface
-(attractive adhesion). This is MuJoCo's convention. The constraint solver
-still clamps normal force ≥ 0 — adhesion does NOT allow negative constraint
-forces. Instead, the adhesion generalized force in `qfrc_actuator` counteracts
-gravity and other forces, keeping the body in contact.
-
-##### S3. Call site in `mj_fwd_actuation()`
-
-Call `mj_transmission_body()` during the **transmission computation phase** of
-`mj_fwd_actuation()`, before the force application loop. Store the result in
-`data.actuator_moment[actuator_id]`.
-
-Then in Phase 3 (force application), handle the Body case like Site:
-
-```rust
-ActuatorTransmission::Body(_) => {
-    for dof in 0..model.nv {
-        let m = data.actuator_moment[i][dof];
-        if m != 0.0 {
-            data.qfrc_actuator[dof] += m * force;
-        }
-    }
-}
-```
-
-Note: `actuator_length[i]` for body transmission is always 0 (adhesion has no
-length, unlike tendons or joints).
-
-##### S4. Model builder: remove error, resolve body name to ID
-
-In `model_builder.rs`, replace the error at line ~1794 with body name resolution:
-
-```rust
-} else if let Some(ref body_name) = actuator.body {
-    let body_id = self.resolve_body_id(body_name)?;
-    transmission = ActuatorTransmission::Body(body_id);
-    trnid = body_id;
-}
-```
-
-##### S5. Interaction with `forcerange`
-
-The adhesion model builder already sets up `forcerange` correctly (lines
-~1876–1892). The scalar force `gain * ctrl` is clamped to `forcerange` in Phase 2
-of `mj_fwd_actuation()` (line ~9975). No changes needed — the existing clamp
-happens before the force is mapped through the moment arm.
-
-The default adhesion setup uses `ctrl ∈ [0, 1]` with positive gain, so the scalar
-force is always non-negative. The negative sign in the moment arm (S2) makes the
-generalized force attractive.
-
-##### S6. Contact count edge cases
-
-- **No contacts**: If the target body has no active contacts, `moment` is zero,
-  and the actuator produces no force. This is correct — adhesion requires contact.
-- **Multiple contacts**: Forces are averaged across all contacts involving the body.
-  This prevents the adhesion force from scaling with contact count.
-- **Excluded contacts (gap zone)**: MuJoCo accumulates contributions from contacts
-  in the margin gap zone into a separate `moment_exclude` buffer. Defer this to a
-  stretch goal — it requires #20 (margin/gap runtime effect) to be implemented first.
-
-#### Acceptance Criteria
-
-1. **Loading**: `<actuator><adhesion body="box" gain="100"/>` loads without error
-   for a model with a body named "box".
-2. **Zero force when no contact**: With `ctrl=1.0` but the body not in contact,
-   `qfrc_actuator` contribution from the adhesion actuator is zero.
-3. **Attractive force**: A sphere resting on a plane with adhesion `ctrl=1.0`
-   produces a downward `qfrc_actuator` (pulling sphere toward plane). Verify
-   `qfrc_actuator` has the correct sign by checking that the sphere's equilibrium
-   position is lower (more penetrated) than without adhesion.
-4. **Force magnitude**: For a single contact, the generalized force equals
-   `-(gain * ctrl) * J_normal`. Compare against MuJoCo 3.4.0 `qfrc_actuator`
-   for a sphere-on-plane adhesion scenario. Tolerance: `1e-10`.
-5. **Multiple contacts**: With 4 contacts (box on plane), moment arm is the
-   average of 4 normal Jacobians. Compare against MuJoCo 3.4.0.
-6. **Regression**: Models without adhesion actuators produce identical results
-   (no force application code path is touched).
-7. **`actuator_moment` populated**: After `forward()`, `data.actuator_moment[i]`
-   for a body-transmission actuator is nonzero when contacts exist and zero
-   when no contacts exist.
-
-#### Implementation Notes
-
-**Contact normal Jacobian reuse.** The constraint assembly already computes contact
-normal Jacobians for the constraint system (`efc_J`). However, `mj_transmission_body()`
-runs during `mj_fwd_actuation()`, which is called *before* constraint assembly in the
-pipeline. So we cannot reuse `efc_J` — we must compute the Jacobian independently.
-This matches MuJoCo's approach (transmission runs in the smooth phase, before
-constraints).
-
-Use the existing `mj_jac()` or `jac_body_com()` functions to compute the body
-Jacobians at the contact point, then difference them and project along the contact
-normal.
-
-**Pipeline ordering.** MuJoCo's pipeline: `mj_fwd_position` → `mj_fwd_velocity` →
-`mj_fwd_actuation` → `mj_fwd_acceleration` → `mj_fwd_constraint`. Body transmission
-runs in `mj_fwd_actuation`, which means it uses contacts from the *previous* step
-(contacts are detected in `mj_fwd_position` → `mj_collision`). This is the correct
-order — contacts are already populated when `mj_fwd_actuation` runs.
-
-**Gear parameter.** The adhesion shortcut sets `gear[0] = 1.0` by default. The
-`gear` value scales the moment arm in `mj_transmission_body()`. For multi-axis
-gear (not needed for adhesion), only `gear[0]` is used.
-
-#### Files
-
-- `sim/L0/core/src/mujoco_pipeline.rs` — add `Body(usize)` to
-  `ActuatorTransmission`, implement `mj_transmission_body()`, add Body case
-  to Phase 3 force application in `mj_fwd_actuation()`
-- `sim/L0/mjcf/src/model_builder.rs` — replace error with body name resolution
-  in `process_actuator()`
-- `sim/L0/tests/integration/` — new test file `adhesion_actuator.rs` or add to
-  existing `actuator_tests.rs`
+⚠️ **Migrated to [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) #22.**
+Full specification is now tracked there as a prerequisite to #19.

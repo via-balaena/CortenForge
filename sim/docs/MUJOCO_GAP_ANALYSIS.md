@@ -23,7 +23,8 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - **3A Foundation + Core** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, conformance test suite, contact margin/gap, noslip, body-transmission actuators
 - **3B Constraint + Physics** (#23–27): tendon equality constraints, solreffriction, fluid/aerodynamic forces, `<flex>` MJCF deformable parsing, ball/free joint limits
 - **3C Format + Edge-Case** (#28–32): `<composite>`, URDF completeness, pyramidal cones, CCD, non-physics MJCF elements
-- **3D Performance + Hygiene** (#33–34): SIMD utilization, crate consolidation
+- **3A MuJoCo Alignment** (#19a–19e): friction combination, friction loss migration, PGS/CG unified constraints, legacy crate deprecation — prerequisites to #19
+- **3D Performance** (#33): SIMD utilization (~~#34~~ moved to #19e)
 - **3E GPU Pipeline** (#35–39): GPU FK (10b), broad-phase (10c), narrow-phase (10d), constraint solver (10e), full GPU step (10f)
 
 ### Fully Implemented (in pipeline)
@@ -777,9 +778,9 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 
 | Constraint | MuJoCo | CortenForge | Status | Priority |
 |------------|--------|-------------|--------|----------|
-| Connect (ball) | Yes | Pipeline `EqualityType::Connect` + `apply_connect_constraint()` | **Implemented** (in pipeline via penalty forces; standalone `ConnectConstraint` in sim-constraint is unused) | - |
-| Weld | Yes | Pipeline `EqualityType::Weld` + `apply_weld_constraint()` | **Implemented** (in pipeline; standalone `WeldConstraint` in sim-constraint is unused) | - |
-| Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (in pipeline; standalone `DistanceConstraint` in sim-constraint is unused) | - |
+| Connect (ball) | Yes | Pipeline `EqualityType::Connect` + `apply_connect_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see #19d) | - |
+| Weld | Yes | Pipeline `EqualityType::Weld` + `apply_weld_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see #19d) | - |
+| Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see #19d) | - |
 | Joint coupling | Yes | Pipeline `EqualityType::Joint` + `apply_joint_equality_constraint()` | **Implemented** (in pipeline; standalone `JointCoupling`/`GearCoupling`/`DifferentialCoupling` in sim-constraint are unused) | - |
 | Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Standalone** (in sim-constraint; pipeline uses `EqualityType::Tendon` warning — tendon *equality* constraints not yet implemented) | - |
 | Flex (edge length) | Yes | `FlexEdgeConstraint` | ✅ **Pipeline** (XPBD solver called from `mj_deformable_step()` in `integrate()` and `mj_runge_kutta()`; see [future_work_4 #11](./todo/future_work_4.md) ✅) | - |

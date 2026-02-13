@@ -90,43 +90,8 @@ Close the URDF→Model conversion gaps so standard ROS URDF models load faithful
 ---
 
 ### 30. Pyramidal Friction Cones
-**Status:** Stub | **Effort:** L | **Prerequisites:** None
-
-#### Current State
-`Model.cone` field is stored (0=pyramidal, 1=elliptic). When pyramidal is requested,
-the solver emits a warning and falls back to elliptic cones. MuJoCo supports both;
-pyramidal cones linearize the friction constraint into facets, producing a different
-(larger) constraint system.
-
-Most models use the default elliptic cones. Pyramidal cones are mainly relevant for
-legacy compatibility and for solvers that cannot handle second-order cone constraints.
-
-#### Objective
-Implement pyramidal friction cone constraints as an alternative to elliptic cones.
-
-#### Specification
-
-1. **Linearization**: For a contact with friction μ and condim=3, pyramidal cones
-   replace the single elliptic cone `||f_t|| ≤ μ f_n` with 4 linear inequalities:
-   `f_t1 ± f_t2 ≤ μ f_n` (4 constraint rows instead of 3).
-2. **Constraint sizing**: `nefc` changes based on cone type:
-   - Elliptic condim=3: 3 rows per contact (normal + 2 tangent)
-   - Pyramidal condim=3: 4 rows per contact (4 facets)
-   - Higher condim scales similarly
-3. **PGS projection**: Pyramidal constraints use simple non-negativity projection
-   (each facet force ≥ 0) instead of cone projection.
-4. **Newton solver**: Pyramidal cones require different Hessian blocks. Currently
-   Newton falls back to PGS for pyramidal — this item should make both paths work.
-
-#### Acceptance Criteria
-1. `<option cone="pyramidal"/>` uses linearized friction (no warning).
-2. Friction force magnitude matches MuJoCo pyramidal output within 5%.
-3. `<option cone="elliptic"/>` (default) is unchanged (regression).
-4. Newton solver handles pyramidal cones without PGS fallback.
-
-#### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — constraint assembly, PGS projection,
-  Newton Hessian blocks
+⚠️ **Migrated to [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) #30.**
+Full specification is now tracked there as a prerequisite to #19.
 
 ---
 

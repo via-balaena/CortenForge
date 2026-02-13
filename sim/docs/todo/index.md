@@ -46,20 +46,26 @@ group, items proceed from most foundational to most independent.
 | # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
 |---|------|-----------|-------------|--------|---------------|------|--------|
 | 18 | `<include>` file support + `<compiler>` element | **High** | **Critical** | L | None | [future_work_6.md](./future_work_6.md) | ✅ Done |
-| 19 | MuJoCo conformance test suite | Medium | **Critical** | XL | None (benefits from #18) | [future_work_6.md](./future_work_6.md) | |
-| 20 | Contact margin/gap runtime effect | Medium | **Critical** | S | None | [future_work_6.md](./future_work_6.md) | |
-| 21 | Noslip post-processor | Low | Medium | S | None | [future_work_6.md](./future_work_6.md) | |
-| 22 | Body-transmission actuators (adhesion) | Low | High | M | None | [future_work_6.md](./future_work_6.md) | |
+| 19a | Friction combination: geometric mean → element-wise max | Medium | **Critical** | S | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 19b | Friction loss: tanh passive → Huber constraint rows (Newton) | Medium | **Critical** | M | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 19c | Friction loss: tanh passive → constraint rows (PGS/CG) | Medium | **Critical** | M | #19b | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 19d | PGS/CG unified constraints: penalty → solver rows | Medium | **Critical** | L | #19c | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 19e | Legacy crate deprecation | Low | Medium | S | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 20 | Contact margin/gap runtime effect | Medium | **Critical** | S | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 21 | Noslip post-processor (PGS/CG) | Low | Medium | S | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 22 | Body-transmission actuators (adhesion) | Low | High | M | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 23 | Tendon equality constraints | Low | High | M | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 24 | `solreffriction` per-direction solver params | Low | Medium | M | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 25 | Fluid / aerodynamic forces | Medium | High | L | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 26 | `<flex>` / `<flexcomp>` MJCF deformable parsing | Medium | Medium | L | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 27 | Ball / free joint limits (swing-twist cones) | Low | High | M | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 30 | Pyramidal friction cones | Low | Medium | L | None | [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | |
+| 19 | MuJoCo conformance test suite | Medium | **Critical** | XL | #19a–#19d, #20–27, #30 | [future_work_6.md](./future_work_6.md) | |
 
-### 3B — Constraint + Physics Completeness
+### 3B — ~~Constraint + Physics Completeness~~ (Migrated)
 
-| # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
-|---|------|-----------|-------------|--------|---------------|------|--------|
-| 23 | Tendon equality constraints | Low | High | M | None | [future_work_7.md](./future_work_7.md) | |
-| 24 | `solreffriction` per-direction solver params | Low | Medium | M | None | [future_work_7.md](./future_work_7.md) | |
-| 25 | Fluid / aerodynamic forces | Medium | High | L | None | [future_work_7.md](./future_work_7.md) | |
-| 26 | `<flex>` / `<flexcomp>` MJCF deformable parsing | Medium | Medium | L | None | [future_work_7.md](./future_work_7.md) | |
-| 27 | Ball / free joint limits (swing-twist cones) | Low | High | M | None | [future_work_7.md](./future_work_7.md) | |
+All items (#23–27) moved to 3A precursor. See
+[future_work_6_precursor_1.md](./future_work_6_precursor_1.md).
 
 ### 3C — Format Completeness + Edge-Case Physics
 
@@ -67,16 +73,16 @@ group, items proceed from most foundational to most independent.
 |---|------|-----------|-------------|--------|---------------|------|--------|
 | 28 | `<composite>` element (procedural generation) | Medium | Medium | XL | #18 | [future_work_8.md](./future_work_8.md) | |
 | 29 | URDF loader completeness | Low | Medium | M | None | [future_work_8.md](./future_work_8.md) | |
-| 30 | Pyramidal friction cones | Low | Medium | L | None | [future_work_8.md](./future_work_8.md) | |
+| ~~30~~ | ~~Pyramidal friction cones~~ | — | — | — | — | — | Moved to precursor |
 | 31 | CCD (continuous collision detection) | Low | Medium | L | None | [future_work_8.md](./future_work_8.md) | |
 | 32 | Non-physics MJCF elements | Low | Low | S | None | [future_work_8.md](./future_work_8.md) | |
 
-### 3D — Performance + Crate Hygiene
+### 3D — Performance
 
 | # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
 |---|------|-----------|-------------|--------|---------------|------|--------|
 | 33 | SIMD utilization audit + wiring | Medium | Low | M | None | [future_work_9.md](./future_work_9.md) | |
-| 34 | Standalone crate consolidation | Low | Low | M | None | [future_work_9.md](./future_work_9.md) | |
+| ~~34~~ | ~~Standalone crate consolidation~~ | — | — | — | — | — | Moved to #19e |
 
 ### 3E — GPU Pipeline
 
@@ -120,43 +126,58 @@ group, items proceed from most foundational to most independent.
 ### Phase 3
 
 ```
-   Layer 0 — Foundation (unlocks loading + verification):
-   ┌────┐       ┌────┐
-   │ 18 │       │ 19 │
-   └─┬──┘       └────┘
-     │          <include> +      Conformance
-     │          <compiler>       tests verify
-     │          unlocks #28      everything
+   Layer 0 — Foundation:
+   ┌────┐
+   │ 18 │ <include> + <compiler>  ✅ Done
+   └─┬──┘
+     │ unlocks #28
      ▼
    ┌────┐
    │ 28 │ <composite>
    └────┘
 
-   Layer 1 — Core correctness (contact + solver + actuator):
+   MuJoCo alignment — all precursors to #19
+   (specs consolidated in future_work_6_precursor_1.md):
+
+   Diverged implementations (dependency chain):
+   ┌─────┐  ┌─────┐  ┌─────┐
+   │ 19a │  │ 19b │  │ 19e │
+   └─────┘  └──┬──┘  └─────┘
+   friction  friction  legacy     (all independent)
+   combo     loss(N)   crates
+               │
+             ┌─────┐
+             │ 19c │ friction loss → constraint rows (PGS/CG)
+             └──┬──┘
+               │
+             ┌─────┐
+             │ 19d │ PGS/CG unified constraints (penalty → solver)
+             └─────┘
+
+   Missing/incomplete features (all independent):
+   ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐
+   │ 20 │  │ 21 │  │ 22 │  │ 23 │  │ 24 │  │ 25 │  │ 26 │  │ 27 │  │ 30 │
+   └────┘  └────┘  └────┘  └────┘  └────┘  └────┘  └────┘  └────┘  └────┘
+   margin  noslip  adhesn  ten-eq  solrf   fluid   flex    ball-lm  pyramdl
+
+         ┌───────────────────┐
+         │        19         │ MuJoCo conformance test suite
+         └───────────────────┘
+         (depends on all of the above)
+
+   Format + edge-case:
    ┌────┐  ┌────┐  ┌────┐
-   │ 20 │  │ 21 │  │ 22 │
+   │ 29 │  │ 31 │  │ 32 │
    └────┘  └────┘  └────┘
-   margin   noslip  body-trn
+   URDF    CCD     MJCF-NP
 
-   Layer 2 — Constraint + physics completeness:
-   ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐
-   │ 23 │  │ 24 │  │ 25 │  │ 26 │  │ 27 │
-   └────┘  └────┘  └────┘  └────┘  └────┘
-   tendon-eq solreffric fluid  flex   ball-lim
+   Performance:
+   ┌────┐
+   │ 33 │
+   └────┘
+   SIMD
 
-   Layer 3 — Format + edge-case:
-   ┌────┐  ┌────┐  ┌────┐  ┌────┐
-   │ 29 │  │ 30 │  │ 31 │  │ 32 │
-   └────┘  └────┘  └────┘  └────┘
-   URDF    pyramidal CCD   MJCF-NP
-
-   Layer 4 — Performance + hygiene:
-   ┌────┐  ┌────┐
-   │ 33 │  │ 34 │
-   └────┘  └────┘
-   SIMD    crate-cleanup
-
-   Layer 5 — GPU pipeline (strict sequential chain):
+   GPU pipeline (strict sequential chain):
    ┌────┐    ┌────┐    ┌────┐    ┌────┐    ┌────┐
    │ 10 │───▶│ 35 │───▶│ 36 │───▶│ 37 │───▶│ 38 │──┐
    └────┘    └────┘    └────┘    └────┘    └────┘  │
@@ -177,8 +198,9 @@ group, items proceed from most foundational to most independent.
 | [future_work_3.md](./future_work_3.md) | 2 (complete) | A+B — Correctness + Scaling | #6–10 | Height field/SDF, deferred sensors, general actuators, batched sim, GPU Phase 10a |
 | [future_work_4.md](./future_work_4.md) | 2 (complete) | C — Physics Completeness | #11–14 | Deformable bodies, analytical derivatives, full implicit integrator, keyframes/mocap |
 | [future_work_5.md](./future_work_5.md) | 2 (complete) | D — Quality of Life + Appendix | #15–16 (~~#17~~ dropped) | Newton solver, sleeping, deferred items, cross-reference |
-| [future_work_6.md](./future_work_6.md) | 3 | 3A — Foundation + Core Correctness | #18–22 | `<include>` + `<compiler>`, conformance tests, contact margin/gap, noslip, body transmission |
-| [future_work_7.md](./future_work_7.md) | 3 | 3B — Constraint + Physics | #23–27 | Tendon equality, solreffriction, fluid forces, flex MJCF, ball/free joint limits |
-| [future_work_8.md](./future_work_8.md) | 3 | 3C — Format + Edge-Case | #28–32 | Composite bodies, URDF, pyramidal cones, CCD, non-physics MJCF |
-| [future_work_9.md](./future_work_9.md) | 3 | 3D — Performance + Hygiene | #33–34 | SIMD utilization, crate consolidation |
+| [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) | 3 | 3A — MuJoCo Alignment | #19a–19e, #20–27, #30 | Diverged implementations (friction combo, friction loss, PGS/CG unification, legacy crates) + missing features (margin/gap, noslip, adhesion, tendon equality, solreffriction, fluid, flex, ball limits, pyramidal cones) |
+| [future_work_6.md](./future_work_6.md) | 3 | 3A — Foundation + Conformance | #18, #19 | `<include>` + `<compiler>`, MuJoCo conformance test suite |
+| [future_work_7.md](./future_work_7.md) | 3 | ~~3B~~ (migrated) | ~~#23–27~~ | All items moved to precursor file |
+| [future_work_8.md](./future_work_8.md) | 3 | 3C — Format + Edge-Case | #28–29, #31–32 | Composite bodies, URDF, CCD, non-physics MJCF (#30 moved to precursor) |
+| [future_work_9.md](./future_work_9.md) | 3 | 3D — Performance | #33 | SIMD utilization |
 | [future_work_10.md](./future_work_10.md) | 3 | 3E — GPU Pipeline | #35–39 | GPU FK, broad-phase, narrow-phase, constraint solver, full GPU step |

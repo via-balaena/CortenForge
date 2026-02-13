@@ -5746,6 +5746,71 @@ mod tests {
     }
 
     #[test]
+    fn test_angle_conversion_ball_joint_range_degrees() {
+        // Ball joint range is angle-valued (swing/twist limits).
+        // With default compiler.angle=degree, range values must be converted to radians.
+        // MuJoCo semantics: range="0 60" means max-swing=0°, max-twist=60° (or similar).
+        let model = load_model(
+            r#"
+            <mujoco model="ball_deg_test">
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="ball" limited="true" range="0 60"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let pi = std::f64::consts::PI;
+        let expected_lo = 0.0;
+        let expected_hi = 60.0 * pi / 180.0; // π/3
+        assert!(
+            (model.jnt_range[0].0 - expected_lo).abs() < 1e-10,
+            "ball range lo: expected {expected_lo}, got {}",
+            model.jnt_range[0].0
+        );
+        assert!(
+            (model.jnt_range[0].1 - expected_hi).abs() < 1e-10,
+            "ball range hi: expected {expected_hi}, got {}",
+            model.jnt_range[0].1
+        );
+    }
+
+    #[test]
+    fn test_angle_conversion_ball_joint_range_radian_passthrough() {
+        // With angle="radian", ball joint range values pass through unchanged.
+        let pi_3 = std::f64::consts::PI / 3.0;
+        let model = load_model(&format!(
+            r#"
+            <mujoco model="ball_rad_test">
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <joint name="j" type="ball" limited="true" range="0 {pi_3}"/>
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        ))
+        .expect("should load");
+
+        assert!(
+            (model.jnt_range[0].0 - 0.0).abs() < 1e-10,
+            "ball radian range lo: expected 0.0, got {}",
+            model.jnt_range[0].0
+        );
+        assert!(
+            (model.jnt_range[0].1 - pi_3).abs() < 1e-10,
+            "ball radian range hi: expected {pi_3}, got {}",
+            model.jnt_range[0].1
+        );
+    }
+
+    #[test]
     fn test_angle_conversion_radian_passthrough() {
         // With angle="radian", values pass through unchanged.
         let model = load_model(

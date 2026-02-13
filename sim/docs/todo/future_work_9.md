@@ -1,10 +1,11 @@
-# Future Work 9 — Phase 3D: Performance + Crate Hygiene (Items #33–34)
+# Future Work 9 — Phase 3D: Performance (Item #33)
 
 Part of [Simulation Phase 3 Roadmap](./index.md). See [index.md](./index.md) for
 priority table, dependency graph, and file map.
 
-Performance optimization and codebase health. These items don't add physics features
-but improve throughput and reduce maintenance burden.
+Performance optimization. ~~#34 (Standalone crate consolidation)~~ has been moved
+to [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) #19e as a
+prerequisite to the MuJoCo conformance test suite.
 
 ---
 
@@ -45,47 +46,5 @@ operations where they provide measurable speedup.
 
 ---
 
-### 34. Standalone Crate Consolidation
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
-
-#### Current State
-Several standalone crates are fully superseded by pipeline-native implementations:
-- **sim-tendon** (3,919 lines): All functionality reimplemented in
-  `mj_fwd_tendon_fixed()` / `mj_fwd_tendon_spatial()`
-- **sim-muscle** (2,550 lines): MuJoCo FLV model reimplemented in
-  `mj_fwd_actuation()`
-- **sim-constraint** partial: PGS, Newton, islands all deleted or reimplemented.
-  Remaining: `PlanarJoint`, `CylindricalJoint`, `CGSolver`, `PneumaticCylinder`,
-  equality constraint types
-
-These crates add maintenance burden, confuse new contributors ("which PGS?"), and
-inflate compile times.
-
-#### Objective
-Deprecate or consolidate superseded standalone crates.
-
-#### Specification
-
-1. **sim-tendon**: Mark as `#[deprecated]`. Add top-level doc comment directing
-   users to pipeline `mj_fwd_tendon_*()`. Consider removing from default workspace
-   members.
-2. **sim-muscle**: Mark as `#[deprecated]`. Note the standalone Hill model is richer
-   than pipeline FLV but not MuJoCo-compatible. Keep available for biomechanics
-   users who don't need MuJoCo conformance.
-3. **sim-constraint**: Keep crate but audit public API. Remove re-exports of deleted
-   types (PGSSolver, NewtonSolver, etc.). Document which types are standalone-only
-   vs pipeline-compatible.
-4. **sim-sensor**: Keep — provides standalone hardware sensor API independent of
-   pipeline.
-
-#### Acceptance Criteria
-1. Deprecated crates emit compiler warnings on use.
-2. `cargo doc` shows clear deprecation notices with migration guidance.
-3. No change to pipeline behavior (regression).
-4. Workspace compiles cleanly (no dead-code warnings in deprecated crates).
-
-#### Files
-- `sim/L0/tendon/src/lib.rs` — deprecation attributes
-- `sim/L0/muscle/src/lib.rs` — deprecation attributes
-- `sim/L0/constraint/src/lib.rs` — API audit
-- `Cargo.toml` (workspace) — optional default-members adjustment
+### ~~34. Standalone Crate Consolidation~~
+**Status:** Moved to [future_work_6_precursor_1.md](./future_work_6_precursor_1.md) #19e
