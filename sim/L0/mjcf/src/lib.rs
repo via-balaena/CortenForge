@@ -125,7 +125,6 @@
 //!
 //! - Height fields (hfield) and signed distance fields (sdf) are parsed but fall back to Box geometry
 //! - Composite bodies are not supported
-//! - Include files are not supported
 //!
 //! # Coordinate System
 //!
@@ -171,6 +170,7 @@
 mod config;
 mod defaults;
 mod error;
+mod include;
 #[cfg(feature = "mjb")]
 mod mjb;
 mod model_builder;
@@ -184,12 +184,12 @@ pub use defaults::DefaultResolver;
 pub use error::{MjcfError, Result};
 pub use parser::parse_mjcf_str;
 pub use types::{
-    MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody, MjcfConeType, MjcfConnect,
-    MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
-    MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
-    MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption,
-    MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType, MjcfTendon, MjcfTendonDefaults,
-    MjcfTendonType, MjcfWeld, SpatialPathElement,
+    AngleUnit, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody,
+    MjcfCompiler, MjcfConeType, MjcfConnect, MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag,
+    MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfInertial, MjcfIntegrator, MjcfJacobianType,
+    MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfMesh, MjcfMeshDefaults,
+    MjcfModel, MjcfOption, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfSolverType,
+    MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfWeld, SpatialPathElement,
 };
 pub use validation::{ValidationResult, validate, validate_tendons};
 
@@ -213,6 +213,7 @@ mod tests {
     fn test_two_link_arm_model_data() {
         let mjcf = r#"
             <mujoco model="two_link_arm">
+                <compiler angle="radian"/>
                 <option gravity="0 0 -9.81"/>
                 <worldbody>
                     <body name="base_link" pos="0 0 0.1">

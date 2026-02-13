@@ -659,7 +659,7 @@ pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
                 ),
             ));
         }
-        if tendon.limited {
+        if tendon.limited.unwrap_or(false) {
             if let Some((min, max)) = tendon.range {
                 if min >= max {
                     return Err(MjcfError::invalid_option(

@@ -40,6 +40,7 @@ fn test_springref_shifts_equilibrium() {
     // With k=50, b=2: ζ ≈ 2 / (2 * sqrt(50 * 0.004)) ≈ 2.2 (overdamped)
     let mjcf = r#"
         <mujoco model="springref_test">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.0005"/>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">
@@ -78,6 +79,7 @@ fn test_springref_shifts_equilibrium() {
 fn test_springref_zero_force_at_equilibrium() {
     let mjcf = r#"
         <mujoco model="spring_equilibrium">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">
@@ -119,6 +121,7 @@ fn test_springref_zero_force_at_equilibrium() {
 fn test_springref_force_direction() {
     let mjcf = r#"
         <mujoco model="spring_direction">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">
@@ -172,6 +175,7 @@ fn test_spring_stiffness_scaling() {
         format!(
             r#"
             <mujoco model="spring_stiffness">
+                <compiler angle="radian"/>
                 <option gravity="0 0 0" timestep="0.001"/>
                 <worldbody>
                     <body name="pendulum" pos="0 0 0">
@@ -213,6 +217,7 @@ fn test_spring_stiffness_scaling() {
 fn test_springref_default_is_zero() {
     let mjcf = r#"
         <mujoco model="spring_default">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">
@@ -237,6 +242,7 @@ fn test_springref_default_is_zero() {
 fn test_springref_slide_joint() {
     let mjcf = r#"
         <mujoco model="slide_spring">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.002"/>
             <worldbody>
                 <body name="slider" pos="0 0 0">
@@ -277,6 +283,7 @@ fn test_springref_slide_joint() {
 fn test_frictionloss_opposes_motion() {
     let mjcf = r#"
         <mujoco model="friction_test">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">
@@ -328,6 +335,7 @@ fn test_frictionloss_opposes_motion() {
 fn test_frictionloss_reduces_velocity() {
     let mjcf = r#"
         <mujoco model="friction_rest">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">
@@ -372,6 +380,7 @@ fn test_frictionloss_scaling() {
         format!(
             r#"
             <mujoco model="friction_scaling">
+                <compiler angle="radian"/>
                 <option gravity="0 0 0" timestep="0.001" solver="PGS"/>
                 <worldbody>
                     <body name="pendulum" pos="0 0 0">
@@ -417,6 +426,7 @@ fn test_frictionloss_scaling() {
 fn test_frictionloss_zero_at_rest() {
     let mjcf = r#"
         <mujoco model="friction_rest_test">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">
@@ -451,6 +461,7 @@ fn test_frictionloss_zero_at_rest() {
 fn test_frictionloss_slide_joint() {
     let mjcf = r#"
         <mujoco model="slide_friction">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="slider" pos="0 0 0">
@@ -490,6 +501,7 @@ fn test_combined_passive_forces() {
     // Use smaller stiffness and adequate damping for stability
     let mjcf = r#"
         <mujoco model="combined_passive">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.0005"/>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">
@@ -531,6 +543,7 @@ fn test_combined_passive_forces() {
 fn test_damping_scales_with_velocity() {
     let mjcf = r#"
         <mujoco model="damping_scaling">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">
@@ -574,6 +587,7 @@ fn test_damping_scales_with_velocity() {
 fn test_moderate_stiffness_stability() {
     let mjcf = r#"
         <mujoco model="moderate_stiffness">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.0002"/>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">
@@ -618,6 +632,7 @@ fn test_moderate_stiffness_stability() {
 fn test_multiple_joints_different_springref() {
     let mjcf = r#"
         <mujoco model="multi_joint_spring">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="link1" pos="0 0 1">
@@ -673,6 +688,7 @@ fn test_springref_with_gravity() {
     // it returns toward springref=0.
     let mjcf = r#"
         <mujoco model="spring_gravity">
+            <compiler angle="radian"/>
             <option gravity="0 0 -9.81" timestep="0.0005"/>
             <worldbody>
                 <body name="pendulum" pos="0 0 0">

@@ -297,6 +297,7 @@ fn test_energy_conservation_model_data() {
 fn test_joint_limits_model_data() {
     let mjcf = r#"
         <mujoco model="limited_joint">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="arm" pos="0 0 0">

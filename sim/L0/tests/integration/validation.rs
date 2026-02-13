@@ -1893,6 +1893,7 @@ fn test_mjcf_with_actuators() {
 fn test_mjcf_joint_limits() {
     let mjcf = r#"
         <mujoco model="limited">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="arm" pos="0 0 0">
@@ -2026,7 +2027,12 @@ fn test_urdf_model_data_pipeline() {
     // Verify model dimensions
     assert_eq!(model.nv, 2, "should have 2 DOF");
     assert_eq!(model.nq, 2, "should have 2 generalized coordinates");
-    assert_eq!(model.nbody, 4, "should have world + 3 links = 4 bodies");
+    // With fusestatic="true" (URDF default), the jointless base_link is fused
+    // into the worldbody, leaving world + link1 + link2 = 3 bodies.
+    assert_eq!(
+        model.nbody, 3,
+        "should have world + 2 jointed links = 3 bodies (base_link fused)"
+    );
     assert_eq!(model.njnt, 2, "should have 2 joints");
 
     // Create data and test simulation
@@ -2053,16 +2059,17 @@ fn test_urdf_model_data_pipeline() {
 
     // Verify FK computed positions
     data.forward(&model).expect("forward failed");
-    // Body indices: world=0, base_link=1, link1=2, link2=3
+    // Body indices (with fusestatic): world=0, link1=1, link2=2
+    // (base_link is fused into worldbody)
     // link1 should be at z=0.5 (from joint origin)
     assert!(
-        data.xpos[2].z > 0.0,
+        data.xpos[1].z > 0.0,
         "link1 should be above origin, got z={}",
-        data.xpos[2].z
+        data.xpos[1].z
     );
     // link2 should be higher still
     assert!(
-        data.xpos[3].z > data.xpos[2].z * 0.5,
+        data.xpos[2].z > data.xpos[1].z * 0.5,
         "link2 should be above link1"
     );
 }
@@ -2077,6 +2084,7 @@ fn test_joint_limit_solref() {
     // Stiff joint limit (small timeconst = high stiffness)
     let mjcf_stiff = r#"
         <mujoco model="stiff_limit">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="arm" pos="0 0 0">
@@ -2092,6 +2100,7 @@ fn test_joint_limit_solref() {
     // Soft joint limit (larger timeconst = lower stiffness)
     let mjcf_soft = r#"
         <mujoco model="soft_limit">
+            <compiler angle="radian"/>
             <option gravity="0 0 0" timestep="0.001"/>
             <worldbody>
                 <body name="arm" pos="0 0 0">

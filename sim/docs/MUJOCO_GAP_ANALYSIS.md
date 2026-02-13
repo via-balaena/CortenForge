@@ -20,7 +20,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 **Overall completion: ~90-95%** of MuJoCo's core pipeline features are functional end-to-end. Phase 1 (12 items) and Phase 2 (16 items) are complete. Remaining gaps are tracked in Phase 3 (#18–39, ordered foundationally across 5 groups). See [`sim/docs/todo/index.md`](./todo/index.md) for the full roadmap.
 
 **Remaining gaps (Phase 3, foundational order):**
-- **3A Foundation + Core** (#18–22): `<include>` + `<compiler>`, conformance test suite, contact margin/gap, noslip, body-transmission actuators
+- **3A Foundation + Core** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, conformance test suite, contact margin/gap, noslip, body-transmission actuators
 - **3B Constraint + Physics** (#23–27): tendon equality constraints, solreffriction, fluid/aerodynamic forces, `<flex>` MJCF deformable parsing, ball/free joint limits
 - **3C Format + Edge-Case** (#28–32): `<composite>`, URDF completeness, pyramidal cones, CCD, non-physics MJCF elements
 - **3D Performance + Hygiene** (#33–34): SIMD utilization, crate consolidation

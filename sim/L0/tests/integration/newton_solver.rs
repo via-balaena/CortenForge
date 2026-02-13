@@ -165,6 +165,7 @@ fn test_newton_unified_constraint_fields() {
     let (model, mut data) = model_from_mjcf(
         r#"
         <mujoco model="constraint_fields">
+            <compiler angle="radian"/>
             <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"/>
             <worldbody>
                 <body name="arm" pos="0 0 0">
@@ -476,6 +477,7 @@ fn test_newton_multi_constraint_stability() {
     let (model, mut data) = model_from_mjcf(
         r#"
         <mujoco model="multi_constraint">
+            <compiler angle="radian"/>
             <option gravity="0 0 -9.81" timestep="0.002" solver="Newton" cone="elliptic"/>
             <worldbody>
                 <body name="arm1" pos="0 0 0">
@@ -1848,6 +1850,7 @@ fn test_mujoco_reference_joint_limit() {
     let (model, mut data) = model_from_mjcf(
         r#"
         <mujoco model="ref_joint_limit">
+            <compiler angle="radian"/>
             <option gravity="0 0 -9.81" timestep="0.001" solver="Newton"/>
             <worldbody>
                 <body name="arm" pos="0 0 0">
