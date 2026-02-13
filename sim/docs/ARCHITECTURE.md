@@ -111,9 +111,11 @@ residual heap allocation occurs for contact vector growth and RK4 warmstart save
 
 ```rust
 use sim_core::{Model, Data};
-use sim_mjcf::load_model;
+use sim_mjcf::{load_model, load_model_from_file};
 
 let model = load_model(mjcf_string)?;  // Static (from MJCF XML string)
+// Or from file (supports <include> file resolution):
+// let model = load_model_from_file("robot.xml")?;
 let mut data = model.make_data();      // Pre-allocated
 
 // Simulation loop
@@ -386,7 +388,18 @@ geoms (sphere, box, capsule, cylinder, ellipsoid, plane, mesh), actuators
 (motor, position, velocity, general, muscle, cylinder, damper, adhesion),
 contype/conaffinity contact bitmasks, `<contact>` `<pair>`/`<exclude>` elements
 (two-mechanism collision architecture with per-pair parameter overrides),
-default class inheritance, and MJB binary format.
+default class inheritance, `<include>` file support, `<compiler>` element,
+and MJB binary format.
+`<include>` resolves file references as a pre-parse XML expansion step with
+recursive nested includes, duplicate file detection, and path resolution
+relative to the main model file. Works inside any MJCF section (`<worldbody>`,
+`<asset>`, `<actuator>`, `<default>`, etc.); duplicate top-level sections are
+merged. `<compiler>` controls angle units (`angle`), Euler sequence
+(`eulerseq`), asset path resolution (`meshdir`/`texturedir`/`assetdir`),
+automatic limit inference (`autolimits`), inertia computation
+(`inertiafromgeom`), mass post-processing (`boundmass`/`boundinertia`,
+`balanceinertia`, `settotalmass`), and model simplification (`strippath`,
+`discardvisual`, `fusestatic`).
 `<tendon>` and `<sensor>` elements are parsed and wired into the pipeline
 (fixed and spatial tendons fully supported, including sphere/cylinder wrapping,
 sidesite disambiguation, and pulley divisors;
