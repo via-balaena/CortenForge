@@ -1,7 +1,6 @@
 # CortenForge
 
-> **Industrial-grade foundation, unlimited application.**
-> From humanoid robots to vehicles to medical simulation.
+> **An open-source SDK written in pure Rust for designing, engineering, and manufacturing bio-inspired mechanisms and robotics** — demonstrating the capabilities of the Rust programming language across simulation, geometry, perception, and fabrication.
 
 [![Quality Gate](https://github.com/cortenforge/forge/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/cortenforge/forge/actions/workflows/quality-gate.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -10,14 +9,14 @@
 
 ## What is CortenForge?
 
-CortenForge is a Rust-native SDK for building physical things in software. It provides the computational foundation for:
+CortenForge is a pure-Rust SDK for the full lifecycle of bio-inspired robotics: from mesh design and parametric geometry, through physics simulation and reinforcement learning, to sensor fusion and hardware deployment. Every crate is written in Rust with zero C/C++ bindings in the core, proving that Rust alone can power industrial-grade robotics toolchains.
 
-- **Mesh Processing** - 27 crates: load, repair, transform, boolean ops, lattices, scanning
-- **Parametric Geometry** - Bezier, B-spline, NURBS curves, arcs, helices
-- **3D Routing** - A* pathfinding on voxel grids, multi-objective optimization
-- **Physics Simulation** - MuJoCo-aligned rigid body dynamics, constraints, contact models, MJCF/URDF loading
-- **Machine Learning** - Model training, inference, and dataset management (Burn)
-- **Sensor Fusion** - Hardware-agnostic sensor types, stream synchronization
+- **Mesh Processing** — 27 crates: load, repair, transform, boolean ops, lattices, scanning
+- **Parametric Geometry** — Bezier, B-spline, NURBS curves, arcs, helices
+- **3D Routing** — A* pathfinding on voxel grids, multi-objective optimization
+- **Physics Simulation** — 14 crates: MuJoCo-aligned rigid body dynamics, Newton/PGS/CG contact solvers, implicit integration, MJCF/URDF loading, Hill-type muscles, XPBD deformables, GPU batching
+- **Machine Learning** — Model training, inference, and dataset management (Burn)
+- **Sensor Fusion** — Hardware-agnostic sensor types, stream synchronization
 
 The same code runs in simulation and on hardware. Our code must be as reliable as the things built with it.
 
@@ -40,7 +39,7 @@ The same code runs in simulation and on hardware. Our code must be as reliable a
 │                           (Zero Bevy Dependencies)                           │
 ├──────────────┬──────────────┬──────────────┬──────────────┬─────────────────┤
 │   mesh/*     │  geometry/*  │   routing/*  │     sim/*    │ ml/* sensor/* + │
-│   27 crates  │              │              │              │                 │
+│   27 crates  │              │              │   14 crates  │                 │
 ├──────────────┼──────────────┼──────────────┼──────────────┼─────────────────┤
 │ mesh-types   │ curve-types  │ route-types  │ sim-types    │ ml-types        │
 │ mesh-io      │              │ route-       │ sim-core     │ ml-models       │
@@ -104,7 +103,7 @@ fn main() {
 
 ## Crate Overview
 
-**51 crates** across 7 domains, all Layer 0 (zero Bevy dependencies) except sim-bevy.
+**52+ crates** across 7 domains, all Layer 0 (zero Bevy dependencies) except sim-bevy.
 
 ### Mesh Domain (`mesh/`) — 27 crates
 
@@ -135,18 +134,19 @@ fn main() {
 | `route-pathfind` | A* on voxel grids (6/26 connectivity), path smoothing |
 | `route-optimize` | Clearance, curvature, shortening, Pareto optimization |
 
-### Simulation Domain (`sim/`) — 13 crates
+### Simulation Domain (`sim/`) — 14 crates
 
 | Crate | Description |
 |-------|-------------|
 | `sim-types` | RigidBodyState, Pose, Twist, JointState, MassProperties |
 | `sim-simd` | SIMD batch operations (Vec3x4/Vec3x8) |
-| `sim-core` | MuJoCo-aligned pipeline: Model/Data, FK, CRBA, RNE, PGS solver |
-| `sim-constraint` | Joint types, motors, limits, equality constraints, solvers |
+| `sim-core` | MuJoCo-aligned pipeline: Model/Data, FK, CRBA, RNE, Newton/PGS/CG solvers, implicit integration, sleeping |
+| `sim-constraint` | Joint types, motors, limits, equality constraints, CGSolver |
 | `sim-sensor` | IMU, F/T, touch, rangefinder, magnetometer |
 | `sim-deformable` | XPBD soft bodies (ropes, cloth, volumes) |
 | `sim-muscle` | Hill-type muscle model |
 | `sim-tendon` | Cable/tendon routing and actuation |
+| `sim-gpu` | GPU-accelerated batched simulation (wgpu) |
 | `sim-mjcf` | MuJoCo XML/MJB format parser |
 | `sim-urdf` | URDF parser, kinematic tree validation |
 | `sim-physics` | Unified L0 API re-exporting all sim crates |

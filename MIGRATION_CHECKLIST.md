@@ -2,7 +2,7 @@
 
 > **Philosophy**: Breaking changes first. Foundation before framework. Pure Rust before Bevy.
 
-> **Vision**: Industrial-grade foundation, unlimited application. From humanoid robots to vehicles to medical simulation.
+> **Vision**: An open-source SDK written in pure Rust for designing, engineering, and manufacturing bio-inspired mechanisms and robotics.
 
 > **Standard**: A-grade or it doesn't ship. No exceptions.
 
@@ -84,7 +84,7 @@ Here's what has been migrated vs what remains:
 
 ## Quick Status
 
-### Completed Crates (38)
+### Completed Crates (52+)
 
 #### Mesh Domain (27 crates including umbrella)
 | Crate | Tests | Status |
@@ -147,6 +147,24 @@ Here's what has been migrated vs what remains:
 | Crate | Tests | Status |
 |-------|-------|--------|
 | curve-types | 71 unit, 17 doc | A-GRADE |
+
+#### Simulation Domain (14 crates)
+| Crate | Description | Status |
+|-------|-------------|--------|
+| sim-types | RigidBodyState, Pose, Twist, MassProperties | A-GRADE |
+| sim-simd | SIMD batch operations (Vec3x4/Vec3x8) | A-GRADE |
+| sim-core | Model/Data, FK, CRBA, RNE, Newton/PGS/CG solvers, implicit integration, sleeping | A-GRADE |
+| sim-constraint | Joint types, motors, limits, equality constraints, CGSolver | A-GRADE |
+| sim-sensor | IMU, F/T, touch, rangefinder, magnetometer | A-GRADE |
+| sim-deformable | XPBD soft bodies (ropes, cloth, volumes) | A-GRADE |
+| sim-muscle | Hill-type muscle model | A-GRADE |
+| sim-tendon | Cable/tendon routing and actuation | A-GRADE |
+| sim-gpu | GPU-accelerated batched simulation (wgpu) | A-GRADE |
+| sim-mjcf | MuJoCo XML/MJB format parser | A-GRADE |
+| sim-urdf | URDF parser, kinematic tree validation | A-GRADE |
+| sim-physics | Unified L0 API re-exporting all sim crates | A-GRADE |
+| sim-conformance-tests | MuJoCo conformance and integration tests | A-GRADE |
+| sim-bevy | Bevy visualization and debug gizmos (Layer 1) | A-GRADE |
 
 ### Implementation Order
 
@@ -287,7 +305,7 @@ Before marking a crate complete:
 ### Decisions Locked In
 
 - [x] Mono-repo with path dependencies
-- [x] ~~Avian for physics~~ → Custom MuJoCo-aligned pipeline (14 sim crates)
+- [x] ~~Avian for physics~~ → Custom MuJoCo-aligned pipeline (14 sim crates: Newton/PGS/CG solvers, sleeping, GPU batching)
 - [x] Layer 0 crates = pure Rust, zero Bevy deps
 - [x] Layer 1 = CortenForge Bevy plugins
 - [x] No CLI in SDK (apps own their CLI)
@@ -1681,8 +1699,8 @@ burn-ndarray = "0.15"
 7. **Burn-native**: Deep Burn integration, not generic ML traits
 8. **CI/CD ready**: Dataset and training crates support TFX-style pipelines
 9. **No vision-types crate**: `Frame`, `DetectionResult`, etc. are ML inference types → live in `ml-types`
-10. **11 non-mesh crates total**: curve-types, sensor-types, sensor-fusion, ml-types, ml-models, ml-dataset, ml-training, cf-spatial, route-types, route-pathfind, route-optimize
+10. **25 non-mesh crates total**: curve-types, sensor-types, sensor-fusion, ml-types, ml-models, ml-dataset, ml-training, cf-spatial, route-types, route-pathfind, route-optimize, sim-types, sim-simd, sim-core, sim-constraint, sim-sensor, sim-deformable, sim-muscle, sim-tendon, sim-gpu, sim-mjcf, sim-urdf, sim-physics, sim-conformance-tests, sim-bevy
 
 ---
 
-*Last updated: 2026-01-30 (mesh domain complete, sensor/ml domains complete, spatial/routing domains complete, geometry/curve-types complete - 38 A-grade crates total)*
+*Last updated: 2026-02-12 (all domains complete — mesh, sensor, ML, spatial, routing, geometry, simulation — 52+ A-grade crates total)*

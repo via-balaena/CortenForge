@@ -4,7 +4,7 @@
 > Like parametric constraints in CAD, these rules let teams scale without chaos.
 
 > **Target**: Industrial-scale reliability. ISO 26262 / IEC 62304 / DO-178C awareness.
-> Enterprise-grade foundation for physical systems: robots, vehicles, medical devices.
+> Enterprise-grade foundation for bio-inspired robotics and physical systems.
 
 ---
 
@@ -463,7 +463,7 @@ Track these metrics for health visibility:
 | Doc Warnings | 0 | 0 | → |
 | Security Advisories | 0 | ? | - |
 | Mutation Survival | <30% | ? | - |
-| A-Grade Crates | 38+ | 38 | → |
+| A-Grade Crates | 52+ | 52+ | ↑ |
 | Build Time (clean) | <10min | ? | - |
 | Build Time (cached) | <2min | ? | - |
 
@@ -502,5 +502,5 @@ Track these metrics for health visibility:
 
 ---
 
-*Last updated: 2026-01-30*
-*Version: 1.2.0 - Updated metrics to reflect sim domain and current crate count*
+*Last updated: 2026-02-12*
+*Version: 1.3.0 - Updated vision to bio-inspired robotics SDK, refreshed crate counts (52+)*
