@@ -3283,6 +3283,384 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-adaptive-prosthetic-socket"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "cf-spatial",
+ "curve-types",
+ "mesh-boolean",
+ "mesh-from-curves",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-offset",
+ "mesh-printability",
+ "mesh-repair",
+ "mesh-scan",
+ "mesh-shell",
+ "mesh-slice",
+ "mesh-types",
+ "ml-dataset",
+ "ml-models",
+ "ml-training",
+ "ml-types",
+ "route-pathfind",
+ "route-types",
+ "sensor-fusion",
+ "sensor-types",
+ "sim-constraint",
+ "sim-core",
+ "sim-deformable",
+ "sim-gpu",
+ "sim-mjcf",
+ "sim-muscle",
+ "sim-sensor",
+ "sim-tendon",
+ "sim-types",
+]
+
+[[package]]
+name = "example-antagonistic-hopping-leg"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-types",
+ "ml-dataset",
+ "ml-models",
+ "ml-training",
+ "ml-types",
+ "sensor-fusion",
+ "sensor-types",
+ "sim-constraint",
+ "sim-core",
+ "sim-gpu",
+ "sim-mjcf",
+ "sim-muscle",
+ "sim-sensor",
+ "sim-tendon",
+ "sim-types",
+]
+
+[[package]]
+name = "example-bio-inspired-manipulator"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "cf-spatial",
+ "curve-types",
+ "mesh-boolean",
+ "mesh-from-curves",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-offset",
+ "mesh-printability",
+ "mesh-repair",
+ "mesh-scan",
+ "mesh-shell",
+ "mesh-slice",
+ "mesh-types",
+ "ml-dataset",
+ "ml-models",
+ "ml-training",
+ "ml-types",
+ "route-pathfind",
+ "route-types",
+ "sensor-fusion",
+ "sensor-types",
+ "sim-constraint",
+ "sim-core",
+ "sim-deformable",
+ "sim-gpu",
+ "sim-mjcf",
+ "sim-muscle",
+ "sim-sensor",
+ "sim-tendon",
+ "sim-types",
+]
+
+[[package]]
+name = "example-compliant-gripper"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "curve-types",
+ "mesh-assembly",
+ "mesh-from-curves",
+ "mesh-io",
+ "mesh-printability",
+ "mesh-types",
+ "sim-constraint",
+ "sim-core",
+ "sim-types",
+ "sim-urdf",
+]
+
+[[package]]
+name = "example-custom-shoe"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "curve-types",
+ "mesh-boolean",
+ "mesh-from-curves",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-offset",
+ "mesh-printability",
+ "mesh-repair",
+ "mesh-scan",
+ "mesh-shell",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-ergonomic-handle"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "curve-types",
+ "mesh-boolean",
+ "mesh-from-curves",
+ "mesh-io",
+ "mesh-morph",
+ "mesh-offset",
+ "mesh-printability",
+ "mesh-repair",
+ "mesh-scan",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-four-bar-walker"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "curve-types",
+ "mesh-assembly",
+ "mesh-from-curves",
+ "mesh-io",
+ "mesh-printability",
+ "mesh-types",
+ "sim-constraint",
+ "sim-core",
+ "sim-mjcf",
+ "sim-types",
+]
+
+[[package]]
+name = "example-gesture-controlled-arm"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-types",
+ "route-pathfind",
+ "route-types",
+ "sensor-fusion",
+ "sensor-types",
+ "sim-constraint",
+ "sim-core",
+ "sim-sensor",
+ "sim-types",
+]
+
+[[package]]
+name = "example-leveling-platform"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-types",
+ "sensor-fusion",
+ "sensor-types",
+ "sim-constraint",
+ "sim-core",
+ "sim-sensor",
+ "sim-types",
+]
+
+[[package]]
+name = "example-obstacle-avoiding-robot"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "cf-spatial",
+ "mesh-io",
+ "mesh-types",
+ "route-pathfind",
+ "route-types",
+ "sensor-fusion",
+ "sensor-types",
+ "sim-core",
+ "sim-sensor",
+ "sim-types",
+]
+
+[[package]]
+name = "example-orthotic-insole"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-printability",
+ "mesh-repair",
+ "mesh-scan",
+ "mesh-shell",
+ "mesh-slice",
+ "mesh-types",
+]
+
+[[package]]
+name = "example-peristaltic-crawler"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-boolean",
+ "mesh-io",
+ "mesh-shell",
+ "mesh-slice",
+ "mesh-types",
+ "sim-core",
+ "sim-deformable",
+ "sim-types",
+]
+
+[[package]]
+name = "example-pneumatic-finger"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-boolean",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-printability",
+ "mesh-shell",
+ "mesh-slice",
+ "mesh-types",
+ "sim-core",
+ "sim-deformable",
+ "sim-types",
+]
+
+[[package]]
+name = "example-prosthetic-finger"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "curve-types",
+ "mesh-assembly",
+ "mesh-boolean",
+ "mesh-from-curves",
+ "mesh-io",
+ "mesh-printability",
+ "mesh-types",
+ "sim-constraint",
+ "sim-core",
+ "sim-mjcf",
+ "sim-types",
+]
+
+[[package]]
+name = "example-soft-robotic-massage-device"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "cf-spatial",
+ "curve-types",
+ "mesh-boolean",
+ "mesh-from-curves",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-offset",
+ "mesh-printability",
+ "mesh-repair",
+ "mesh-scan",
+ "mesh-shell",
+ "mesh-slice",
+ "mesh-types",
+ "ml-dataset",
+ "ml-models",
+ "ml-training",
+ "ml-types",
+ "route-pathfind",
+ "route-types",
+ "sensor-fusion",
+ "sensor-types",
+ "sim-constraint",
+ "sim-core",
+ "sim-deformable",
+ "sim-gpu",
+ "sim-mjcf",
+ "sim-muscle",
+ "sim-sensor",
+ "sim-tendon",
+ "sim-types",
+]
+
+[[package]]
+name = "example-tactile-adaptive-gripper"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-types",
+ "ml-dataset",
+ "ml-models",
+ "ml-training",
+ "ml-types",
+ "sensor-fusion",
+ "sensor-types",
+ "sim-core",
+ "sim-deformable",
+ "sim-gpu",
+ "sim-sensor",
+ "sim-types",
+]
+
+[[package]]
+name = "example-tendon-driven-hand"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-io",
+ "mesh-types",
+ "ml-dataset",
+ "ml-models",
+ "ml-training",
+ "ml-types",
+ "sensor-fusion",
+ "sensor-types",
+ "sim-constraint",
+ "sim-core",
+ "sim-deformable",
+ "sim-gpu",
+ "sim-mjcf",
+ "sim-muscle",
+ "sim-tendon",
+ "sim-types",
+]
+
+[[package]]
+name = "example-variable-stiffness-pad"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "mesh-boolean",
+ "mesh-io",
+ "mesh-lattice",
+ "mesh-shell",
+ "mesh-slice",
+ "mesh-types",
+ "sensor-types",
+ "sim-core",
+ "sim-deformable",
+ "sim-sensor",
+ "sim-types",
+]
+
+[[package]]
 name = "exr"
 version = "1.74.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

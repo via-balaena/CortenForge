@@ -1,0 +1,22 @@
+[package]
+name = "example-ergonomic-handle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+mesh-scan = { workspace = true }
+mesh-repair = { workspace = true }
+mesh-boolean = { workspace = true }
+mesh-offset = { workspace = true }
+mesh-morph = { workspace = true }
+mesh-printability = { workspace = true }
+mesh-io = { workspace = true }
+mesh-from-curves = { workspace = true }
+curve-types = { workspace = true }
+mesh-types = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "example-tactile-adaptive-gripper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sim-types = { workspace = true }
+sim-core = { workspace = true }
+sim-deformable = { workspace = true }
+sim-gpu = { workspace = true }
+sim-sensor = { workspace = true }
+sensor-types = { workspace = true }
+sensor-fusion = { workspace = true }
+ml-types = { workspace = true }
+ml-models = { workspace = true }
+ml-training = { workspace = true }
+ml-dataset = { workspace = true }
+mesh-types = { workspace = true }
+mesh-io = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

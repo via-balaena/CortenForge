@@ -1,0 +1,22 @@
+[package]
+name = "example-compliant-gripper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sim-types = { workspace = true }
+sim-core = { workspace = true }
+sim-constraint = { workspace = true }
+sim-urdf = { workspace = true }
+curve-types = { workspace = true }
+mesh-from-curves = { workspace = true }
+mesh-assembly = { workspace = true }
+mesh-printability = { workspace = true }
+mesh-io = { workspace = true }
+mesh-types = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

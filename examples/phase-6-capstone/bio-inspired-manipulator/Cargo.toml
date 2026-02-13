@@ -1,0 +1,56 @@
+[package]
+name = "example-bio-inspired-manipulator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# Mesh domain
+mesh-types = { workspace = true }
+mesh-scan = { workspace = true }
+mesh-repair = { workspace = true }
+mesh-boolean = { workspace = true }
+mesh-offset = { workspace = true }
+mesh-shell = { workspace = true }
+mesh-lattice = { workspace = true }
+mesh-slice = { workspace = true }
+mesh-printability = { workspace = true }
+mesh-io = { workspace = true }
+mesh-from-curves = { workspace = true }
+
+# Geometry
+curve-types = { workspace = true }
+
+# Simulation
+sim-types = { workspace = true }
+sim-core = { workspace = true }
+sim-constraint = { workspace = true }
+sim-deformable = { workspace = true }
+sim-muscle = { workspace = true }
+sim-tendon = { workspace = true }
+sim-gpu = { workspace = true }
+sim-sensor = { workspace = true }
+sim-mjcf = { workspace = true }
+
+# Perception
+sensor-types = { workspace = true }
+sensor-fusion = { workspace = true }
+
+# ML
+ml-types = { workspace = true }
+ml-models = { workspace = true }
+ml-training = { workspace = true }
+ml-dataset = { workspace = true }
+
+# Routing
+route-types = { workspace = true }
+route-pathfind = { workspace = true }
+
+# Spatial
+cf-spatial = { workspace = true }
+
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
