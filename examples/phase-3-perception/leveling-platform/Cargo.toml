@@ -1,0 +1,20 @@
+[package]
+name = "example-leveling-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sensor-types = { workspace = true }
+sensor-fusion = { workspace = true }
+sim-types = { workspace = true }
+sim-core = { workspace = true }
+sim-constraint = { workspace = true }
+sim-sensor = { workspace = true }
+mesh-types = { workspace = true }
+mesh-io = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

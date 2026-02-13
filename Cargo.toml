@@ -42,6 +42,36 @@ members = [
     # Umbrella crate (re-exports all mesh-* crates)
     "mesh/mesh",
 
+    # Phase 1 mesh product examples
+    "examples/phase-1-mesh/custom-shoe",
+    "examples/phase-1-mesh/orthotic-insole",
+    "examples/phase-1-mesh/ergonomic-handle",
+
+    # Phase 2 mechanism product examples
+    "examples/phase-2-mechanism/compliant-gripper",
+    "examples/phase-2-mechanism/prosthetic-finger",
+    "examples/phase-2-mechanism/four-bar-walker",
+
+    # Phase 3 perception product examples
+    "examples/phase-3-perception/leveling-platform",
+    "examples/phase-3-perception/obstacle-avoiding-robot",
+    "examples/phase-3-perception/gesture-controlled-arm",
+
+    # Phase 4 deformable product examples
+    "examples/phase-4-deformable/pneumatic-finger",
+    "examples/phase-4-deformable/variable-stiffness-pad",
+    "examples/phase-4-deformable/peristaltic-crawler",
+
+    # Phase 5 learning product examples
+    "examples/phase-5-learning/tendon-driven-hand",
+    "examples/phase-5-learning/antagonistic-hopping-leg",
+    "examples/phase-5-learning/tactile-adaptive-gripper",
+
+    # Phase 6 capstone product examples (all domains)
+    "examples/phase-6-capstone/adaptive-prosthetic-socket",
+    "examples/phase-6-capstone/soft-robotic-massage-device",
+    "examples/phase-6-capstone/bio-inspired-manipulator",
+
     # Geometry domain (active development)
     "geometry/curve-types",
     # "geometry/lumen-geometry",  # Archived, pull when needed

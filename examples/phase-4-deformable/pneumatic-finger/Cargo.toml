@@ -1,0 +1,22 @@
+[package]
+name = "example-pneumatic-finger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+sim-types = { workspace = true }
+sim-core = { workspace = true }
+sim-deformable = { workspace = true }
+mesh-types = { workspace = true }
+mesh-lattice = { workspace = true }
+mesh-shell = { workspace = true }
+mesh-slice = { workspace = true }
+mesh-boolean = { workspace = true }
+mesh-io = { workspace = true }
+mesh-printability = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

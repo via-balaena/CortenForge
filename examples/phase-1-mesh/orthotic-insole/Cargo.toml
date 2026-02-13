@@ -1,0 +1,20 @@
+[package]
+name = "example-orthotic-insole"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+mesh-scan = { workspace = true }
+mesh-repair = { workspace = true }
+mesh-shell = { workspace = true }
+mesh-lattice = { workspace = true }
+mesh-printability = { workspace = true }
+mesh-io = { workspace = true }
+mesh-slice = { workspace = true }
+mesh-types = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
