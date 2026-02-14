@@ -210,6 +210,11 @@ pub fn model_from_mjcf(
     // Apply compiler pre-processing passes on a mutable clone
     let mut mjcf = mjcf.clone();
 
+    // Validate childclass references before frame expansion dissolves frames.
+    // MuJoCo rejects undefined childclass at schema validation (S7).
+    let pre_resolver = DefaultResolver::from_model(&mjcf);
+    validate_childclass_references(&mjcf.worldbody, &pre_resolver)?;
+
     // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
@@ -246,8 +251,11 @@ pub fn model_from_mjcf(
     // These must be processed BEFORE child bodies so geom indices are correct
     builder.process_worldbody_geoms_and_sites(&mjcf.worldbody)?;
 
-    // Recursively process body tree starting from worldbody children
-    // World body (body 0) has no DOFs, so parent_last_dof is None
+    // Recursively process body tree starting from worldbody children.
+    // World body (body 0) has no DOFs, so parent_last_dof is None.
+    // Note: worldbody.childclass is always None for parsed MJCF — MuJoCo's schema
+    // rejects attributes on <worldbody>. Our parser (parse_worldbody) never reads
+    // worldbody attributes, so this is correct by construction.
     for child in &mjcf.worldbody.children {
         builder.process_body(child, 0, None, mjcf.worldbody.childclass.as_deref())?;
     }
@@ -875,6 +883,10 @@ impl ModelBuilder {
     ///
     /// In MJCF, the worldbody can have geoms (like ground planes) and sites
     /// directly attached to it. These are static geometries at world coordinates.
+    ///
+    /// No childclass is applied here — MuJoCo's worldbody accepts no attributes
+    /// (including childclass), so worldbody elements use only their own explicit
+    /// class or the unnamed top-level default.
     fn process_worldbody_geoms_and_sites(
         &mut self,
         worldbody: &MjcfBody,
@@ -3472,6 +3484,59 @@ fn frame_accum_child(
 ) {
     *child_pos = *frame_pos + frame_quat.transform_vector(child_pos);
     *child_quat = *frame_quat * *child_quat;
+}
+
+/// Validate that all `childclass` references in the body tree point to defined
+/// default classes. Must run BEFORE `expand_frames()` because frame expansion
+/// dissolves frames (via `std::mem::take`), losing `frame.childclass` values.
+///
+/// MuJoCo rejects undefined childclass references at schema validation (S7).
+fn validate_childclass_references(
+    body: &MjcfBody,
+    resolver: &DefaultResolver,
+) -> std::result::Result<(), ModelConversionError> {
+    if let Some(ref cc) = body.childclass {
+        if resolver.get_defaults(Some(cc.as_str())).is_none() {
+            return Err(ModelConversionError {
+                message: format!(
+                    "childclass '{}' on body '{}' references undefined default class",
+                    cc, body.name
+                ),
+            });
+        }
+    }
+    for frame in &body.frames {
+        validate_frame_childclass_refs(frame, resolver)?;
+    }
+    for child in &body.children {
+        validate_childclass_references(child, resolver)?;
+    }
+    Ok(())
+}
+
+/// Validate childclass references on a frame and its nested contents.
+fn validate_frame_childclass_refs(
+    frame: &MjcfFrame,
+    resolver: &DefaultResolver,
+) -> std::result::Result<(), ModelConversionError> {
+    if let Some(ref cc) = frame.childclass {
+        if resolver.get_defaults(Some(cc.as_str())).is_none() {
+            return Err(ModelConversionError {
+                message: format!(
+                    "childclass '{}' on frame '{}' references undefined default class",
+                    cc,
+                    frame.name.as_deref().unwrap_or("<unnamed>")
+                ),
+            });
+        }
+    }
+    for nested in &frame.frames {
+        validate_frame_childclass_refs(nested, resolver)?;
+    }
+    for child_body in &frame.bodies {
+        validate_childclass_references(child_body, resolver)?;
+    }
+    Ok(())
 }
 
 /// Recursively expand all `<frame>` elements in a body tree.
@@ -7800,6 +7865,272 @@ mod tests {
         assert!(
             (pos - Vector3::new(0.0, 1.0, 0.0)).norm() < 1e-4,
             "expected (0,1,0), got {pos:?}"
+        );
+    }
+
+    // ========================================================================
+    // AC28–AC35: Childclass edge cases (item #20)
+    // ========================================================================
+
+    // AC28: Childclass referencing a nested default class (default hierarchy)
+    #[test]
+    fn test_ac28_childclass_nested_default_hierarchy() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="robot">
+                        <geom contype="5"/>
+                        <default class="arm">
+                            <geom conaffinity="3"/>
+                        </default>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="arm">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // "arm" inherits contype=5 from parent "robot", and sets conaffinity=3 directly
+        assert_eq!(
+            model.geom_contype[0], 5,
+            "geom should inherit contype=5 from parent class 'robot' through 'arm', got {}",
+            model.geom_contype[0]
+        );
+        assert_eq!(
+            model.geom_conaffinity[0], 3,
+            "geom should get conaffinity=3 from class 'arm', got {}",
+            model.geom_conaffinity[0]
+        );
+    }
+
+    // AC29: Childclass applies to geom, joint, AND site simultaneously
+    #[test]
+    fn test_ac29_childclass_multi_element() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <default>
+                    <default class="R">
+                        <geom contype="7"/>
+                        <joint damping="5.0"/>
+                        <site size="0.05"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="R">
+                        <joint name="j" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                        <site name="s"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            model.geom_contype[0], 7,
+            "geom should inherit contype=7 from childclass 'R', got {}",
+            model.geom_contype[0]
+        );
+        assert!(
+            (model.dof_damping[0] - 5.0).abs() < 1e-10,
+            "joint should inherit damping=5.0 from childclass 'R', got {}",
+            model.dof_damping[0]
+        );
+        // Site size default is [0.01]; class "R" sets it to [0.05]
+        let site_size = model.site_size[0];
+        assert!(
+            (site_size.x - 0.05).abs() < 1e-10,
+            "site should inherit size=0.05 from childclass 'R', got {}",
+            site_size.x
+        );
+    }
+
+    // AC30: 3-level deep propagation without override
+    #[test]
+    fn test_ac30_childclass_3level_propagation() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <default>
+                    <default class="X">
+                        <joint damping="3.0"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="top" childclass="X">
+                        <geom type="sphere" size="0.1"/>
+                        <body name="mid" pos="0 0 1">
+                            <geom type="sphere" size="0.1"/>
+                            <body name="bot" pos="0 0 1">
+                                <joint name="j" type="hinge"/>
+                                <geom type="sphere" size="0.1"/>
+                            </body>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        assert!(
+            (model.dof_damping[0] - 3.0).abs() < 1e-10,
+            "joint at 3rd level should inherit damping=3.0 from top's childclass 'X', got {}",
+            model.dof_damping[0]
+        );
+    }
+
+    // AC31: 3-level with mid-hierarchy override
+    #[test]
+    fn test_ac31_childclass_3level_mid_override() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <default>
+                    <default class="A"><joint damping="1.0"/></default>
+                    <default class="B"><joint damping="9.0"/></default>
+                </default>
+                <worldbody>
+                    <body name="top" childclass="A">
+                        <geom type="sphere" size="0.1"/>
+                        <body name="mid" childclass="B" pos="0 0 1">
+                            <geom type="sphere" size="0.1"/>
+                            <body name="bot" pos="0 0 1">
+                                <joint name="j" type="hinge"/>
+                                <geom type="sphere" size="0.1"/>
+                            </body>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        assert!(
+            (model.dof_damping[0] - 9.0).abs() < 1e-10,
+            "joint should inherit damping=9.0 from mid's childclass 'B' (not top's 'A'), got {}",
+            model.dof_damping[0]
+        );
+    }
+
+    // AC32: Nested frames with childclass inheritance and override
+    #[test]
+    fn test_ac32_nested_frames_childclass() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="F1"><geom contype="4"/></default>
+                    <default class="F2"><geom contype="8"/></default>
+                </default>
+                <worldbody>
+                    <body name="b">
+                        <frame childclass="F1">
+                            <frame>
+                                <geom name="g1" type="sphere" size="0.1"/>
+                            </frame>
+                            <frame childclass="F2">
+                                <geom name="g2" type="sphere" size="0.1"/>
+                            </frame>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // g1 inherits outer frame's F1 through inner frame (no override)
+        assert_eq!(
+            model.geom_contype[0], 4,
+            "g1 should inherit contype=4 from outer frame childclass 'F1', got {}",
+            model.geom_contype[0]
+        );
+        // g2 gets F2 from inner frame override
+        assert_eq!(
+            model.geom_contype[1], 8,
+            "g2 should get contype=8 from inner frame childclass 'F2', got {}",
+            model.geom_contype[1]
+        );
+    }
+
+    // AC33: childclass="nonexistent" on body produces error
+    #[test]
+    fn test_ac33_childclass_nonexistent_body_error() {
+        let result = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b" childclass="nonexistent">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        );
+        assert!(
+            result.is_err(),
+            "childclass='nonexistent' should produce an error"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("nonexistent"),
+            "error message should mention 'nonexistent', got: {err_msg}"
+        );
+    }
+
+    // AC34: Body with childclass but no child elements succeeds
+    #[test]
+    fn test_ac34_childclass_empty_body() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="empty"><geom contype="5"/></default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="empty" pos="0 0 1">
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        assert_eq!(model.nbody, 2, "should have world + b");
+        assert_eq!(model.ngeom, 0, "body has no geoms");
+    }
+
+    // AC35: childclass="ghost" on frame produces error
+    #[test]
+    fn test_ac35_childclass_nonexistent_frame_error() {
+        let result = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame childclass="ghost">
+                            <geom type="sphere" size="0.1"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        );
+        assert!(
+            result.is_err(),
+            "childclass='ghost' on frame should produce an error"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("ghost"),
+            "error message should mention 'ghost', got: {err_msg}"
         );
     }
 

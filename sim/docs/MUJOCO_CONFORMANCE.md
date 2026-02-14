@@ -78,11 +78,11 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<size>` | ✓ | ⚠️ | Memory hints, may not apply |
 | `<visual>` | ✓ | ❌ | L1 concern (sim-bevy) |
 | `<statistic>` | ✓ | ❌ | Auto-computed |
-| `<default>` | ✓ | ✓ | Class inheritance system |
+| `<default>` | ✓ | ✓ | Class inheritance system with `childclass` propagation (body/frame), nested hierarchy resolution, undefined class validation |
 | `<custom>` | ✓ | ❌ | User data, low priority |
 | `<extension>` | ✓ | ❌ | Plugin system, low priority |
 | `<asset>` | ✓ | ⚠️ | Mesh, texture refs |
-| `<worldbody>` | ✓ | ✓ | Body hierarchy |
+| `<worldbody>` | ✓ | ✓ | Body hierarchy, `<frame>` element (pose composition, childclass, recursive nesting) |
 | `<contact>` | ✓ | ✓ | `<pair>`, `<exclude>`, contype/conaffinity bitmasks |
 | `<equality>` | ✓ | ✓ | Equality constraints |
 | `<tendon>` | ✓ | ✓ | Fixed and spatial tendons |
@@ -96,6 +96,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `body/@pos` | ✓ | ✓ | Position |
 | `body/@quat` | ✓ | ✓ | Orientation |
 | `body/@mocap` | ✓ | ✓ | Mocap body: kinematic input channel, world-child with no joints, FK override from `Data::mocap_pos`/`mocap_quat` |
+| `body/@childclass` | ✓ | ✓ | Recursive default propagation to descendant elements (geoms, joints, sites); precedence: explicit class > nearest childclass > top-level default; undefined class validated pre-expansion |
 | `body/@sleep` | ✓ | ✓ | Sleep policy: `auto` (default), `allowed`, `never`, `init` |
 | `body/@euler` | ✓ | ✓ | Euler angles |
 | `body/@axisangle` | ✓ | ✓ | Parsed in `parser.rs` |

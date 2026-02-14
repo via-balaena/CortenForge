@@ -878,52 +878,376 @@ the implementation scope — not a separate refactoring item.
 
 ---
 
-### 20. `childclass` Attribute
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### 20. `childclass` Attribute — Edge Cases & Validation
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** #19 (complete)
 
-> **Note:** Body `childclass` and frame `childclass` parsing + application are
-> implemented as part of item #19. This item's remaining scope is limited to
-> verifying edge cases and ensuring childclass interacts correctly with all
-> element types not covered in #19's tests (e.g., tendons, actuators).
+> **Scope note:** Core `childclass` mechanism (parsing, inheritance, application
+> to geoms/joints/sites, frame `childclass`, recursive propagation) was fully
+> implemented in item #19 with 6 passing tests (AC20–AC25). This item hardens
+> that implementation with edge-case coverage, one targeted code fix (nonexistent
+> class validation), and documentation of MuJoCo-conformant behavior boundaries.
 
-#### Current State
+#### Current State (Post-#19)
 
-Not parsed. Documented as "Not in scope" in `future_work_2.md`. `MjcfBody` has no
-`childclass` field. The default class resolver already supports hierarchical
-lookup — just needs the inherited class name threaded through body parsing.
+All core functionality is working. The following is implemented and tested:
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| `MjcfBody.childclass` field | `types.rs:1896` | ✅ Parsed (`parser.rs:1267`) |
+| `MjcfFrame.childclass` field | `types.rs:1833` | ✅ Parsed (`parser.rs:1652`) |
+| Effective childclass computation | `model_builder.rs:1024` | ✅ `body.childclass.or(inherited)` |
+| Geom class injection | `model_builder.rs:1028-1038` | ✅ `if g.class.is_none() → effective` |
+| Joint class injection | `model_builder.rs:1118-1123` | ✅ Same pattern |
+| Site class injection | `model_builder.rs:1146-1151` | ✅ Same pattern |
+| Recursive propagation to children | `model_builder.rs:1163` | ✅ Passes `effective_childclass` |
+| Frame expansion childclass | `model_builder.rs:3606` | ✅ `frame.childclass.or(parent)` |
+| Frame→geom/site class injection | `model_builder.rs:3613-3614, 3650-3651` | ✅ |
+| Frame→body childclass inheritance | `model_builder.rs:3673-3676` | ✅ |
+| Childclass validation (new) | `model_builder.rs:3494-3540` | ✅ Pre-expansion validation |
+| Default resolver site fix | `defaults.rs:325` | ✅ Uses `site.class.as_deref()` |
+
+**Existing tests (6):** AC20 (basic body childclass), AC21 (explicit class overrides),
+AC22 (frame childclass overrides body's), AC23 (2-level hierarchy inheritance),
+AC24 (child body overrides parent), AC25 (regression without childclass).
+
+**Remaining gaps:** Nonexistent class validation, nested default hierarchy, 3-level
+deep propagation, multi-element simultaneous application, nested frames, empty body.
 
 #### Objective
 
-Parse `childclass` from `<body>` and use it as the default class for all child
-elements within that body subtree.
+Harden `childclass` implementation with (a) validation that `childclass` references
+a defined default class (MuJoCo errors on undefined classes), and (b) comprehensive
+edge-case test coverage.
+
+#### MuJoCo Authoritative Semantics
+
+These rules govern all behavior. Every acceptance criterion traces to one or more:
+
+- **S1 — Recursive propagation:** `childclass` on a `<body>` applies to all
+  descendant elements (geoms, joints, sites) recursively, not just direct children.
+  MuJoCo docs: "causing all children of this body (and all their children etc.)
+  to use class X unless specified otherwise."
+- **S2 — Element default, not body class:** `childclass` does NOT set the body's
+  own class. It provides a default `class` for the body's child *elements* (geoms,
+  joints, sites, cameras, lights).
+- **S3 — Precedence chain:** explicit `class=` on element > nearest ancestor
+  body/frame `childclass` > unnamed top-level default (class `""`).
+- **S4 — Worldbody exclusion:** `<worldbody>` accepts NO attributes in MuJoCo's
+  schema. Our parser never reads `<worldbody>` attributes (`parse_worldbody()` at
+  `parser.rs:1090`), so `worldbody.childclass` is always `None` — correct by
+  construction.
+- **S5 — Outside kinematic tree:** `childclass` does NOT affect tendons or actuators.
+  They live in `<tendon>` and `<actuator>` sections outside the body tree and have
+  their own `class` attribute for explicit assignment.
+- **S6 — Default hierarchy resolution:** When `childclass` references a named class
+  (e.g., `"arm"`), and `"arm"` is a child of `"robot"` in the `<default>` hierarchy,
+  the full inheritance chain resolves: `"arm"` inherits from `"robot"`. The
+  `DefaultResolver` handles this automatically via `resolve_single()`.
+- **S7 — Undefined class = error:** `childclass` referencing a class name that does
+  not exist in `<default>` is an error. MuJoCo rejects this at schema validation.
 
 #### Specification
 
-1. **MJCF parsing**: Parse `childclass` (string) from `<body>` elements.
-2. **Class resolution**: When resolving defaults for a child element (geom, joint,
-   site, etc.) within a body that has `childclass="X"`:
-   - If the child element has an explicit `class="Y"`, use class Y.
-   - If the child element has no explicit class, use class X (from `childclass`).
-   - `childclass` is inherited by sub-bodies: if body A has `childclass="X"` and
-     child body B has no `childclass`, B's children also default to class X.
-   - If body B has its own `childclass="Y"`, it overrides A's for B's subtree.
-3. **Existing infrastructure**: The default class resolver already supports
-   class lookup by name. The change is threading the `childclass` name through
-   body parsing so it's used as the fallback when no explicit `class` is specified.
+##### Part A — Validation: Undefined `childclass` References (Code Fix)
 
-#### Acceptance Criteria
+**A1. `validate_childclass_references()` function** (in `model_builder.rs`)
 
-1. `<body childclass="robot"><geom .../></body>` applies class "robot" defaults
-   to the geom.
-2. `<body childclass="robot"><geom class="special" .../></body>` uses class
-   "special" (explicit overrides childclass).
-3. Nested bodies inherit parent's `childclass` unless overridden.
-4. Models without `childclass` are unaffected (regression).
+Add a validation pass that runs BEFORE `expand_frames()` in `model_from_mjcf()`.
+This must run before frame expansion because `expand_frames` dissolves frames
+(via `std::mem::take`), losing `frame.childclass` values.
+
+Two free functions near `expand_frames` (~line 3477):
+
+```rust
+fn validate_childclass_references(
+    body: &MjcfBody,
+    resolver: &DefaultResolver,
+) -> std::result::Result<(), ModelConversionError>
+```
+
+Walks the body tree recursively. For each `body.childclass`, checks
+`resolver.get_defaults(Some(cc))`. If `None` (class not found in resolved
+defaults), returns `Err` with message naming the class and body.
+
+Also walks `body.frames` recursively via a helper:
+
+```rust
+fn validate_frame_childclass_refs(
+    frame: &MjcfFrame,
+    resolver: &DefaultResolver,
+) -> std::result::Result<(), ModelConversionError>
+```
+
+Same check for `frame.childclass`. Recurses into `frame.frames` (nested) and
+`frame.bodies` (bodies inside frames may have their own childclass).
+
+**A2. Wire into `model_from_mjcf()`** (at `model_builder.rs:211-216`)
+
+Between the clone and `expand_frames`:
+
+```rust
+let mut mjcf = mjcf.clone();
+
+// Validate childclass references before frame expansion dissolves frames
+let pre_resolver = DefaultResolver::from_model(&mjcf);
+validate_childclass_references(&mjcf.worldbody, &pre_resolver)?;
+
+expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None);
+```
+
+The `DefaultResolver` is constructed twice (once here for validation, once at
+line 226 for the builder). This is acceptable — construction is a cheap HashMap
+build from a small vec of defaults. Correctness over premature optimization.
+
+**Key implementation detail:** `DefaultResolver::get_defaults(Some("name"))` at
+`defaults.rs:72-74` looks up `"name"` in `resolved_defaults` HashMap. Returns
+`None` for undefined class names. This is exactly the check needed.
+
+##### Part B — Documentation (Doc Comments Only)
+
+**B1.** At `model_builder.rs:252` (the `process_body` call): Add comment
+explaining that `worldbody.childclass` is always `None` for parsed MJCF per
+MuJoCo semantics — `<worldbody>` accepts no attributes. The programmatic API
+does not enforce this; enforcement is structural via the parser.
+
+**B2.** At `model_builder.rs:886` (in `process_worldbody_geoms_and_sites`): Add
+comment noting that no childclass is applied to worldbody's own geoms/sites,
+which is correct per MuJoCo — worldbody has no childclass (S4).
+
+##### Part C — Edge-Case Tests
+
+Eight new tests in the existing test module in `model_builder.rs`, after AC27.
+All use `load_model()` and assert on compiled model fields. (AC26–AC27 are used
+by item #19's frame orientation composition tests.)
+
+**AC28 — Childclass referencing a nested default class** (S6)
+
+Verifies that childclass resolves through the full `<default>` inheritance chain:
+class `"arm"` inherits from parent class `"robot"`.
+
+```xml
+<mujoco>
+  <default>
+    <default class="robot">
+      <geom contype="5"/>
+      <default class="arm">
+        <geom conaffinity="3"/>
+      </default>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b" childclass="arm">
+      <geom type="sphere" size="0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: geom `contype == 5` (inherited from `"robot"` through `"arm"` chain)
+AND geom `conaffinity == 3` (from `"arm"` directly).
+
+**AC29 — Childclass applies to geom, joint, AND site simultaneously** (S1)
+
+Verifies all three element types receive defaults from a single childclass.
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="R">
+      <geom contype="7"/>
+      <joint damping="5.0"/>
+      <site size="0.05"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b" childclass="R">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1"/>
+      <site name="s"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: geom `contype == 7`, joint `damping == 5.0`, site `size == 0.05`.
+
+**AC30 — 3-level deep propagation without override** (S1)
+
+Verifies childclass propagates through 3 body levels without any intermediate
+body declaring its own childclass.
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="X">
+      <joint damping="3.0"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="top" childclass="X">
+      <geom type="sphere" size="0.1"/>
+      <body name="mid" pos="0 0 1">
+        <geom type="sphere" size="0.1"/>
+        <body name="bot" pos="0 0 1">
+          <joint name="j" type="hinge"/>
+          <geom type="sphere" size="0.1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: joint `damping == 3.0` (propagated from `"top"` through `"mid"` to `"bot"`).
+
+**AC31 — 3-level with mid-hierarchy override** (S1, S3)
+
+Verifies that a childclass override at the middle level takes effect for all
+descendants below it, not the top-level childclass.
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="A"><joint damping="1.0"/></default>
+    <default class="B"><joint damping="9.0"/></default>
+  </default>
+  <worldbody>
+    <body name="top" childclass="A">
+      <geom type="sphere" size="0.1"/>
+      <body name="mid" childclass="B" pos="0 0 1">
+        <geom type="sphere" size="0.1"/>
+        <body name="bot" pos="0 0 1">
+          <joint name="j" type="hinge"/>
+          <geom type="sphere" size="0.1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: joint `damping == 9.0` (from `"B"`, not `"A"`).
+
+**AC32 — Nested frames with childclass inheritance and override** (S1)
+
+Verifies childclass propagation through nested `<frame>` elements: inner frame
+inherits outer's childclass; separate inner frame overrides with its own.
+
+```xml
+<mujoco>
+  <default>
+    <default class="F1"><geom contype="4"/></default>
+    <default class="F2"><geom contype="8"/></default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <frame childclass="F1">
+        <frame>
+          <geom name="g1" type="sphere" size="0.1"/>
+        </frame>
+        <frame childclass="F2">
+          <geom name="g2" type="sphere" size="0.1"/>
+        </frame>
+      </frame>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: geom at index 0 (`g1`) has `contype == 4` (inherits outer frame's `"F1"`
+through inner frame with no override). Geom at index 1 (`g2`) has `contype == 8`
+(inner frame overrides with `"F2"`).
+
+**AC33 — `childclass="nonexistent"` on body produces error** (S7)
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b" childclass="nonexistent">
+      <geom type="sphere" size="0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. Error message contains `"nonexistent"`.
+
+**AC34 — Body with childclass but no child elements succeeds** (correctness)
+
+```xml
+<mujoco>
+  <default>
+    <default class="empty"><geom contype="5"/></default>
+  </default>
+  <worldbody>
+    <body name="b" childclass="empty" pos="0 0 1">
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: `load_model(...)` succeeds, `model.nbody == 2`, `model.ngeom == 0`.
+
+**AC35 — `childclass="ghost"` on frame produces error** (S7)
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <frame childclass="ghost">
+        <geom type="sphere" size="0.1"/>
+      </frame>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. Error message contains `"ghost"`.
+
+#### What This Item Does NOT Cover
+
+- `childclass` on `<camera>` or `<light>` — these types are not yet parsed (item #49)
+- `childclass` interaction with tendons, actuators, or equality constraints — they
+  are outside the body tree (S5) and have their own `class` attributes
+- Schema-level rejection of `childclass` on `<worldbody>` — correct by construction (S4)
+- `range` as a defaultable joint attribute — not in `MjcfJointDefaults` (separate item)
+- Programmatic API enforcement that `worldbody.childclass` must be `None`
+
+#### Implementation Notes
+
+**Validation ordering:** The validation must run BEFORE `expand_frames()` because
+frame expansion dissolves `MjcfFrame` objects via `std::mem::take()`, permanently
+losing `frame.childclass` values. After expansion, frames are empty vecs and
+childclass from frames has already been applied to child elements' `class` fields.
+
+**No impact on existing `test_nonexistent_class_no_panic`:** That test in
+`default_classes.rs` tests an explicit `class="nonexistent"` on a joint element,
+which is graceful fallthrough (no defaults applied). This is distinct from
+`childclass="nonexistent"` on a body, which is now an error. The distinction:
+explicit `class` on an element says "use these specific defaults" (graceful if
+not found); `childclass` on a body says "all my children default to this class"
+(error if not found, because it indicates a model authoring mistake).
+
+**`childclass=""` edge case:** Our `DefaultResolver::get_defaults(Some(""))` returns
+the unnamed root default (stored as key `""` in `resolved_defaults`), so
+`childclass=""` passes validation and acts as a no-op (elements already fall back
+to the root default). MuJoCo stores the root default as `"main"` internally, so
+`""` would not match. This is a negligible divergence — no real MJCF model uses
+`childclass=""`, and the behavioral outcome is equivalent (root default applies
+either way). Acceptable as-is.
+
+**Single file change:** All code changes and tests are in
+`sim/L0/mjcf/src/model_builder.rs`. No type changes, no API changes, no new
+dependencies.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — parse childclass, thread through body
-  parsing as default class fallback
+- `sim/L0/mjcf/src/model_builder.rs` — `validate_childclass_references()` +
+  `validate_frame_childclass_refs()` (~35 lines); wire into `model_from_mjcf()`
+  (~3 lines); 2 doc comments; 8 tests AC28–AC35 (~200 lines)
 
 ---
 
