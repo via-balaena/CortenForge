@@ -389,6 +389,11 @@ impl DefaultResolver {
                 }
             }
 
+            // Springlength: apply default if not explicitly set
+            if result.springlength.is_none() {
+                result.springlength = defaults.springlength;
+            }
+
             // Width: apply default if at default value (0.003)
             if (result.width - 0.003).abs() < 1e-10 {
                 if let Some(width) = defaults.width {
@@ -623,6 +628,7 @@ impl DefaultResolver {
                 stiffness: c.stiffness.or(p.stiffness),
                 damping: c.damping.or(p.damping),
                 frictionloss: c.frictionloss.or(p.frictionloss),
+                springlength: c.springlength.or(p.springlength),
                 width: c.width.or(p.width),
                 rgba: c.rgba.or(p.rgba),
             }),

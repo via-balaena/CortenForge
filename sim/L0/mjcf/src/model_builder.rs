@@ -542,7 +542,7 @@ struct ModelBuilder {
     tendon_stiffness: Vec<f64>,
     tendon_damping: Vec<f64>,
     tendon_frictionloss: Vec<f64>,
-    tendon_lengthspring: Vec<f64>,
+    tendon_lengthspring: Vec<[f64; 2]>,
     tendon_length0: Vec<f64>,
     tendon_name: Vec<Option<String>>,
     tendon_solref: Vec<[f64; 2]>,
@@ -1621,7 +1621,11 @@ impl ModelBuilder {
             });
             self.tendon_solref.push(DEFAULT_SOLREF);
             self.tendon_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]); // MuJoCo defaults
-            self.tendon_lengthspring.push(0.0); // Set to length0 if stiffness > 0
+            // S1/S3: Use parsed springlength, or sentinel [-1, -1] for auto-compute
+            self.tendon_lengthspring.push(match tendon.springlength {
+                Some(pair) => pair.into(),
+                None => [-1.0, -1.0], // sentinel: resolved to [length0, length0] later
+            });
             self.tendon_length0.push(0.0); // Computed after construction from qpos0
 
             let wrap_start = self.wrap_type.len();
@@ -3014,9 +3018,13 @@ impl ModelBuilder {
                     }
                 }
                 model.tendon_length0[t] = length;
-                // Spring rest length defaults to length at qpos0 when stiffness > 0
-                if model.tendon_stiffness[t] > 0.0 && model.tendon_lengthspring[t] == 0.0 {
-                    model.tendon_lengthspring[t] = length;
+                // S3: Replace sentinel [-1, -1] with computed length at qpos0
+                // (MuJoCo uses qpos_spring; see S3 divergence note).
+                // Unconditional — MuJoCo resolves sentinel regardless of stiffness.
+                // Sentinel is an exact literal, never a computed float.
+                #[allow(clippy::float_cmp)]
+                if model.tendon_lengthspring[t] == [-1.0, -1.0] {
+                    model.tendon_lengthspring[t] = [length, length];
                 }
             }
         }

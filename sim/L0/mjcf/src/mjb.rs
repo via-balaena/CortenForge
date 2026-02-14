@@ -49,7 +49,7 @@ use crate::types::MjcfModel;
 pub const MJB_MAGIC: [u8; 4] = *b"MJB1";
 
 /// Current MJB format version.
-pub const MJB_VERSION: u32 = 1;
+pub const MJB_VERSION: u32 = 2;
 
 /// Header size in bytes (magic + version + flags).
 pub const MJB_HEADER_SIZE: usize = 12;

@@ -1636,40 +1636,976 @@ Expected: `UnitQuaternion::identity()`.
 
 ---
 
-### 22. Tendon `springlength` MJCF Parsing
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### 22. Tendon `springlength` MJCF Parsing + Deadband Spring Physics
+**Status:** Complete | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 
-Pipeline has `tendon_lengthspring` field and auto-computes it from `tendon_length0`.
-But the MJCF parser does NOT parse the `springlength` attribute from XML. Zero
-matches for `springlength` in `parser.rs`. The runtime field exists but can't be
-set from MJCF.
+The pipeline stores `tendon_lengthspring` as a single `f64` per tendon in two
+locations:
+
+- **`ModelBuilder`** (`model_builder.rs:545`): `tendon_lengthspring: Vec<f64>`
+- **`Model`** (runtime) (`mujoco_pipeline.rs:1495`): `pub tendon_lengthspring: Vec<f64>`
+
+The MJCF parser has **no mention** of `springlength`. The `parse_tendon_attrs()`
+function (`parser.rs:2449`) and `parse_tendon_defaults()` function (`parser.rs:661`)
+both skip this attribute entirely. The MJCF types (`MjcfTendon` at `types.rs:2352`,
+`MjcfTendonDefaults` at `types.rs:643`) have no `springlength` field.
+
+At build time, `process_tendons()` (`model_builder.rs:1624`) always pushes `0.0` as a
+sentinel. In `compile_model()` (`model_builder.rs:3018`), if
+`stiffness > 0 && lengthspring == 0.0`, the sentinel is replaced with the computed
+tendon length at `qpos0`. For spatial tendons, `compute_spatial_tendon_length0()`
+(`mujoco_pipeline.rs:3859`) uses the same pattern.
+
+At runtime, `mj_fwd_passive()` (`mujoco_pipeline.rs:10830-10833`) computes:
+```
+force -= k * (length - l_ref)
+```
+This is a classical spring with **no deadband**. MuJoCo uses a `[f64; 2]` pair
+enabling a deadband region where force is zero.
+
+**Four bugs/gaps:**
+
+1. **No MJCF parsing** — `springlength` is silently ignored in MJCF. Users cannot
+   specify pre-tensioned tendons or deadband springs.
+2. **Broken sentinel** — The current `0.0` sentinel for "not specified" collides
+   with `springlength="0"`, which is valid MJCF meaning "zero rest length."
+   MuJoCo uses `{-1, -1}` as sentinel because tendon lengths are always ≥ 0.
+3. **Single-float storage** — MuJoCo stores `ntendon x 2` (pair per tendon).
+   Our single `f64` cannot represent deadband ranges.
+4. **No deadband physics** — The force formula is `F = -k * (L - ref)` with no
+   deadband. MuJoCo applies zero force when `lower ≤ L ≤ upper`.
+
+Additionally: no default class support for `springlength`, no validation of
+`low ≤ high`, and auto-compute is incorrectly gated on `stiffness > 0` (MuJoCo
+resolves the sentinel unconditionally).
+
+#### MuJoCo Authoritative Semantics
+
+These rules govern all behavior. Every specification decision and acceptance
+criterion traces to one or more:
+
+- **S1 — Attribute type:** `springlength` is `real(2)` — a pair `(low, high)`.
+  Default: `{-1, -1}` in `mjsTendon` (`mjspec.h`). Comment:
+  `spring resting length; {-1, -1}: use qpos_spring`.
+- **S2 — Single-value shorthand:** When only 1 value is given in MJCF, it is
+  copied to both elements: `springlength="0.5"` → `[0.5, 0.5]`.
+- **S3 — Sentinel semantics:** When both values are `-1` (the default),
+  compilation replaces them with the computed tendon length: `[length0, length0]`.
+  This replacement is **unconditional** — it does not depend on `stiffness > 0`.
+  **MuJoCo divergence note:** MuJoCo resolves the sentinel by evaluating tendon
+  length at `qpos_spring` (a separate "spring reference configuration" where all
+  springs have zero force), not at `qpos0`. CortenForge has no `qpos_spring`
+  field — it uses `qpos0` for this purpose. The two are equivalent when
+  `qpos_spring == qpos0` (the default and common case). Implementing `qpos_spring`
+  is out of scope for this item; see future work. The spec and implementation here
+  use `qpos0`, matching current CortenForge behavior.
+- **S4 — Validation:** `low ≤ high` is required (non-decreasing).
+- **S5 — Compiled model:** `tendon_lengthspring` has dimensions `ntendon x 2`.
+- **S6 — Deadband force** (`engine_passive.c`):
+  ```c
+  mjtNum lower = m->tendon_lengthspring[2*i];
+  mjtNum upper = m->tendon_lengthspring[2*i+1];
+  if (length > upper)      frc_spring = stiffness * (upper - length);
+  else if (length < lower) frc_spring = stiffness * (lower - length);
+  // else: frc_spring = 0 (deadband)
+  ```
+  When `lower == upper`, this reduces to `F = -k * (L - ref)` (classical spring).
+- **S7 — Defaultable:** `springlength` is valid on `<default><tendon .../>`.
+- **S8 — Applies to both types:** Valid on both `<fixed>` and `<spatial>` tendon
+  elements.
 
 #### Objective
 
-Parse `springlength` from `<tendon>` children (`<fixed>`, `<spatial>`) and use it
-to override the auto-computed spring rest length.
+Parse `springlength` from MJCF `<fixed>` and `<spatial>` tendon elements and
+`<default><tendon>` elements. Upgrade `tendon_lengthspring` from `Vec<f64>` to
+`Vec<[f64; 2]>` throughout the pipeline. Fix the sentinel value. Implement
+MuJoCo-conformant deadband spring force formula.
+
+#### What This Item Does NOT Cover
+
+- **`qpos_spring`**: MuJoCo has a separate spring reference configuration
+  (`qpos_spring`) used when resolving the sentinel. CortenForge uses `qpos0`
+  instead (see S3 divergence note). Implementing `qpos_spring` is a separate
+  future work item.
+- **Tendon damping**: MuJoCo's tendon damping (`F = -b * velocity`) is applied
+  unconditionally — it has no deadband and does not use `lengthspring`. The
+  existing damping code is unaffected by this change.
+- **`springlength` on actuator tendons**: This item covers `<fixed>` and
+  `<spatial>` tendon elements only. Actuator-level spring behavior is separate.
 
 #### Specification
 
-1. **MJCF parsing**: Parse `springlength` (float or 2-element array) from
-   `<fixed>` and `<spatial>` tendon elements. MuJoCo supports both scalar
-   (sets both min/max to the same value) and 2-element (min, max for
-   length-dependent spring).
-2. **Model builder**: When `springlength` is explicitly provided, store it in
-   `tendon_lengthspring` instead of auto-computing from `tendon_length0`.
-3. **Auto-compute fallback**: When `springlength` is NOT provided (default),
-   preserve existing behavior (compute from initial tendon length at qpos0).
+##### Part A — Types (`types.rs`)
+
+**A1. Add `springlength` to `MjcfTendon`** (at `types.rs:2352`)
+
+After `rgba` field (line 2373), add:
+
+```rust
+/// Spring rest length pair (low, high) for deadband spring.
+/// `None` = auto-compute from tendon length at qpos0 (see S3 divergence note).
+/// Single value in MJCF → both elements equal (no deadband).
+/// When low < high, force is zero within [low, high].
+pub springlength: Option<(f64, f64)>,
+```
+
+Type: `Option<(f64, f64)>`. `None` means "not specified by the user — use
+auto-compute sentinel." `Some((low, high))` means "user provided explicit values."
+
+In the `Default` impl (line 2380), add `springlength: None`.
+
+**Design note:** Using Rust's `Option` instead of a sentinel value in the parsing
+types cleanly separates "not specified" from "explicitly set to any value including
+zero." The sentinel `[-1, -1]` is only used in the compiled model's `[f64; 2]`
+array, never in the MJCF parsing types.
+
+**A2. Add `springlength` to `MjcfTendonDefaults`** (at `types.rs:643`)
+
+After `frictionloss` field (line 653), add:
+
+```rust
+/// Spring rest length pair (low, high) for deadband spring.
+pub springlength: Option<(f64, f64)>,
+```
+
+`#[derive(Default)]` handles `Option` → `None` automatically.
+
+##### Part B — Parser (`parser.rs`)
+
+**B1. Change `parse_tendon_attrs()` return type** (at `parser.rs:2449`)
+
+The current signature returns `MjcfTendon` directly (not `Result`). Adding
+validation (`low ≤ high`) requires error propagation. Change:
+
+```rust
+// BEFORE:
+fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> MjcfTendon
+// AFTER:
+fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> Result<MjcfTendon>
+```
+
+Wrap the return value in `Ok(tendon)`. There are exactly **2 call sites** — both
+in the same file:
+- Line 2357: add `?` → `parse_tendon_attrs(e, tendon_type)?`
+- Line 2378: add `?` → `parse_tendon_attrs(start, tendon_type)?`
+
+**B2. Parse `springlength` in `parse_tendon_attrs()`** (insert after the
+`frictionloss` block at line 2480, before `width` at line 2482)
+
+```rust
+if let Some(sl_str) = get_attribute_opt(e, "springlength") {
+    if let Ok(parts) = parse_float_array(&sl_str) {
+        match parts.len() {
+            1 => {
+                if parts[0] < 0.0 || !parts[0].is_finite() {
+                    return Err(MjcfError::invalid_attribute(
+                        "springlength",
+                        tendon.name.clone(),
+                        format!(
+                            "value ({}) must be finite and >= 0",
+                            parts[0]
+                        ),
+                    ));
+                }
+                tendon.springlength = Some((parts[0], parts[0]));  // S2
+            }
+            n if n >= 2 => {
+                if parts[0] < 0.0 || parts[1] < 0.0
+                    || !parts[0].is_finite() || !parts[1].is_finite()
+                {
+                    return Err(MjcfError::invalid_attribute(
+                        "springlength",
+                        tendon.name.clone(),
+                        format!(
+                            "values ({}, {}) must be finite and >= 0",
+                            parts[0], parts[1]
+                        ),
+                    ));
+                }
+                if parts[0] > parts[1] {                             // S4
+                    return Err(MjcfError::invalid_attribute(
+                        "springlength",
+                        tendon.name.clone(),
+                        format!(
+                            "low ({}) must be <= high ({})",
+                            parts[0], parts[1]
+                        ),
+                    ));
+                }
+                tendon.springlength = Some((parts[0], parts[1]));
+            }
+            _ => {}  // empty string, ignore
+        }
+    }
+}
+```
+
+Uses existing `MjcfError::invalid_attribute()` constructor (`error.rs:208-219`)
+which takes `(&'static str, impl Into<String>, impl Into<String>)`. For unnamed
+tendons, `tendon.name` is an empty string (set by `unwrap_or_default()` at
+line 2455), so the error will show an empty element name — acceptable, matching
+how other unnamed elements report errors.
+
+**Validation:** Rejects negative values because tendon lengths are physically
+non-negative. MuJoCo reserves `-1` as the sentinel (never user-specified), and
+values like `springlength="-0.5"` are physically meaningless. NaN and infinity
+are also rejected: add `|| !parts[0].is_finite()` (and `!parts[1].is_finite()`
+for the two-value arm) to the negative-check conditions.
+
+**Parsing conventions (matching existing `parse_tendon_attrs` patterns):**
+
+- **Non-numeric values** (e.g., `springlength="abc"`): silently ignored via the
+  outer `if let Ok(parts) = parse_float_array(...)`. This matches `range`
+  (line 2459) and `rgba` (line 2487) which use the same pattern.
+- **Extra values** (e.g., `springlength="0.3 0.7 0.9"`): first 2 taken, rest
+  silently ignored via `n if n >= 2`. Matches `range` (`if parts.len() >= 2`)
+  and `rgba` (`if parts.len() >= 4`).
+- **Empty/whitespace** (e.g., `springlength=""`): `parse_float_array` returns
+  empty vec, falls to `_ => {}` no-op. Attribute effectively ignored.
+
+**B3. Parse `springlength` in `parse_tendon_defaults()`** (after `frictionloss`
+parsing, line ~675)
+
+```rust
+if let Some(sl_str) = get_attribute_opt(e, "springlength") {
+    let parts = parse_float_array(&sl_str)?;
+    match parts.len() {
+        1 => {
+            if parts[0] < 0.0 || !parts[0].is_finite() {
+                return Err(MjcfError::XmlParse(format!(
+                    "tendon default springlength: value ({}) must be finite and >= 0",
+                    parts[0]
+                )));
+            }
+            defaults.springlength = Some((parts[0], parts[0]));
+        }
+        n if n >= 2 => {
+            if parts[0] < 0.0 || parts[1] < 0.0
+                || !parts[0].is_finite() || !parts[1].is_finite()
+            {
+                return Err(MjcfError::XmlParse(format!(
+                    "tendon default springlength: values ({}, {}) must be finite and >= 0",
+                    parts[0], parts[1]
+                )));
+            }
+            if parts[0] > parts[1] {
+                return Err(MjcfError::XmlParse(format!(
+                    "tendon default springlength: low ({}) must be <= high ({})",
+                    parts[0], parts[1]
+                )));
+            }
+            defaults.springlength = Some((parts[0], parts[1]));
+        }
+        _ => {}
+    }
+}
+```
+
+**Note on error constructors:** B2 uses `MjcfError::invalid_attribute()` (which
+includes the tendon name for diagnostics), while B3 uses `MjcfError::XmlParse()`
+because `parse_tendon_defaults()` operates on `<default>` elements that have no
+tendon name. This matches how other defaults-parsing functions report errors.
+
+##### Part C — Defaults (`defaults.rs`)
+
+**C1. Apply `springlength` in `apply_to_tendon()`** (at `defaults.rs:355-408`)
+
+After the frictionloss block (line ~390), add:
+
+```rust
+// Springlength: apply default if not explicitly set
+if result.springlength.is_none() {
+    result.springlength = defaults.springlength;
+}
+```
+
+This follows the same `Option`-based pattern as `range` (line 360). `None` means
+"not explicitly set," so the default fills in the gap.
+An explicit `Some(...)` on the element always wins — even `springlength="0"`.
+
+**C2. Merge `springlength` in `merge_tendon_defaults()`** (at `defaults.rs:612-630`)
+
+In the `(Some(p), Some(c))` arm (line 620-628), add:
+
+```rust
+springlength: c.springlength.or(p.springlength),
+```
+
+The `None`-only and `Some`-only arms use `.clone()` which automatically includes
+the new field. The `(Some(p), Some(c))` arm constructs the struct field-by-field
+— the compiler will error if `springlength` is omitted, ensuring it cannot be
+forgotten.
+
+##### Part D — Model Builder (`model_builder.rs`)
+
+**D1. Change `ModelBuilder.tendon_lengthspring` type** (at `model_builder.rs:545`)
+
+```rust
+// BEFORE:
+tendon_lengthspring: Vec<f64>,
+// AFTER:
+tendon_lengthspring: Vec<[f64; 2]>,
+```
+
+Initialization at line 738 (`vec![]`) infers the new type automatically.
+
+**D2. Use parsed `springlength` in `process_tendons()`** (at
+`model_builder.rs:1624`)
+
+Replace:
+```rust
+self.tendon_lengthspring.push(0.0); // Set to length0 if stiffness > 0
+```
+With:
+```rust
+// S1/S3: Use parsed springlength, or sentinel [-1, -1] for auto-compute
+self.tendon_lengthspring.push(match tendon.springlength {
+    Some((low, high)) => [low, high],
+    None => [-1.0, -1.0],  // sentinel: resolved to [length0, length0] later
+});
+```
+
+**D3. Update fixed-tendon auto-compute in `compile_model()`** (at
+`model_builder.rs:3017-3020`)
+
+Replace:
+```rust
+if model.tendon_stiffness[t] > 0.0 && model.tendon_lengthspring[t] == 0.0 {
+    model.tendon_lengthspring[t] = length;
+}
+```
+With:
+```rust
+// S3: Replace sentinel [-1, -1] with computed length at qpos0
+// (MuJoCo uses qpos_spring; see S3 divergence note).
+// Unconditional — MuJoCo resolves sentinel regardless of stiffness.
+if model.tendon_lengthspring[t] == [-1.0, -1.0] {
+    model.tendon_lengthspring[t] = [length, length];
+}
+```
+
+**D4. Transfer to compiled model** (at `model_builder.rs:2882`)
+
+No change needed — `tendon_lengthspring: self.tendon_lengthspring` automatically
+follows the type change.
+
+##### Part E — Runtime Model (`mujoco_pipeline.rs`)
+
+**E1. Change `Model.tendon_lengthspring` type** (at `mujoco_pipeline.rs:1494-1495`)
+
+```rust
+// BEFORE:
+/// Tendon rest length (reference for spring force).
+pub tendon_lengthspring: Vec<f64>,
+// AFTER:
+/// Tendon spring rest length pair [low, high] for deadband spring.
+/// When low == high, acts as a classical spring with rest length = low.
+/// When low < high, force is zero within [low, high] (deadband).
+pub tendon_lengthspring: Vec<[f64; 2]>,
+```
+
+Initialization at line 2931 (`vec![]`) infers the new type automatically.
+
+**E2. Update spatial tendon auto-compute in `compute_spatial_tendon_length0()`**
+(at `mujoco_pipeline.rs:3859-3860`)
+
+Replace:
+```rust
+if self.tendon_lengthspring[t] == 0.0 && self.tendon_stiffness[t] > 0.0 {
+    self.tendon_lengthspring[t] = data.ten_length[t];
+}
+```
+With:
+```rust
+// S3: Replace sentinel [-1, -1] with computed length at qpos0
+if self.tendon_lengthspring[t] == [-1.0, -1.0] {
+    self.tendon_lengthspring[t] = [data.ten_length[t], data.ten_length[t]];
+}
+```
+
+**E3. Implement deadband spring in `mj_fwd_passive()`** (at
+`mujoco_pipeline.rs:10828-10834`)
+
+Replace:
+```rust
+// Spring: F = -k * (L - L_ref)
+let k = model.tendon_stiffness[t];
+if k > 0.0 {
+    let l_ref = model.tendon_lengthspring[t];
+    force -= k * (length - l_ref);
+}
+```
+With:
+```rust
+// S6: Deadband spring — force is zero within [lower, upper]
+let k = model.tendon_stiffness[t];
+if k > 0.0 {
+    let [lower, upper] = model.tendon_lengthspring[t];
+    if length > upper {
+        force += k * (upper - length);
+    } else if length < lower {
+        force += k * (lower - length);
+    }
+    // else: deadband, no spring force
+}
+```
+
+**Sign convention verification:** When `lower == upper == ref`:
+- `length > ref`: `force += k * (ref - length)` = `force -= k * (length - ref)` ✓
+- `length < ref`: `force += k * (ref - length)` = `force -= k * (length - ref)` ✓
+- Mathematically identical to the old classical spring formula. No special-casing
+  needed.
 
 #### Acceptance Criteria
 
-1. `<spatial springlength="0.5"/>` sets the spring rest length to 0.5.
-2. `<spatial springlength="0.3 0.7"/>` sets min/max spring rest lengths.
-3. Without `springlength`, auto-computation from qpos0 is preserved.
-4. A pre-tensioned tendon (springlength ≠ initial length) produces correct
-   spring forces.
+All tests use `load_model()` and assert on compiled model fields and/or physics
+output. Tolerance: `1e-10` for exact values, `1e-6` for physics output.
+
+##### Parsing and compilation
+
+**AC1 — Single-value springlength on fixed tendon** (S2, S8)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="0.5">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.5, 0.5]`.
+
+**AC2 — Two-value springlength on fixed tendon (deadband)** (S1, S8)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="0.3 0.7">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.3, 0.7]`.
+
+**AC3 — Auto-compute fallback (no springlength specified)** (S3)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge" ref="0.5"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" stiffness="100">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.5, 0.5]`. Auto-computed from tendon
+length at qpos0 = `coef * qpos0[j]` = `1.0 * 0.5` = `0.5`, replicated to both
+elements.
+
+**AC3b — Auto-compute with stiffness=0 (unconditional sentinel resolution)** (S3)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge" ref="0.5"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+No `springlength`, no `stiffness` (defaults to 0). The sentinel `[-1, -1]` must
+still be resolved to `[0.5, 0.5]` because MuJoCo resolves the sentinel
+**unconditionally** — not gated on `stiffness > 0`. This is the behavioral change
+from the current code (which skips resolution when `stiffness == 0`).
+
+Assert: `model.tendon_lengthspring[0] == [0.5, 0.5]`.
+
+**AC4 — `springlength="0"` is valid and not confused with sentinel** (S2, S3)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge" ref="0.5"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" stiffness="100" springlength="0">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.0, 0.0]`. Explicit zero, NOT
+auto-computed. This is the critical sentinel fix — the old `0.0` sentinel would
+have treated this as "unset" and auto-computed `0.5` from qpos0.
+
+**AC5 — Validation: `low > high` is rejected** (S4)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="0.7 0.3">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. Error message contains `"springlength"`.
+
+**AC5b — Validation: negative springlength is rejected** (B2 validation)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="-0.5">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. Negative values are physically
+meaningless (tendon lengths are always ≥ 0). MuJoCo reserves `-1` as the
+internal sentinel, but user-specified negative values should be rejected.
+
+**AC5c — Validation: NaN springlength is rejected** (B2 validation)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="NaN">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. Rust's `f64` parses `"NaN"` successfully,
+but `!f64::NAN.is_finite()` is `true`, so the `is_finite()` guard catches it.
+Without this guard, NaN would pass the `< 0.0` check (NaN comparisons are always
+false) and propagate silently.
+
+**AC5d — Validation: two-value with one negative is rejected** (B2 validation)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="0.3 -0.5">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. The first value is valid but the second
+is negative. The two-value arm checks `parts[0] < 0.0 || parts[1] < 0.0`.
+
+##### Default class support
+
+**AC6 — springlength from default class** (S7)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="pretensioned">
+      <tendon springlength="0.2" stiffness="50"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" class="pretensioned">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.2, 0.2]` AND
+`model.tendon_stiffness[0] == 50.0`.
+
+**AC7 — Explicit springlength overrides default** (S7)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="pretensioned">
+      <tendon springlength="0.2"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" class="pretensioned" springlength="0.8">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.8, 0.8]` (element value overrides
+default).
+
+**AC8 — Two-value springlength via default class** (S7)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="deadband">
+      <tendon springlength="0.1 0.9"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" class="deadband">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.1, 0.9]`.
+
+**AC8b — Nested default class: child inherits parent springlength** (S7, C2)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="parent">
+      <tendon springlength="0.2"/>
+      <default class="child">
+        <tendon stiffness="50"/>
+      </default>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" class="child">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.2, 0.2]` (inherited from parent) AND
+`model.tendon_stiffness[0] == 50.0` (from child). The child class sets `stiffness`
+but not `springlength`, so `merge_tendon_defaults` (C2) must propagate the parent's
+`springlength` via `c.springlength.or(p.springlength)`.
+
+##### Deadband spring physics
+
+All physics tests use the following MJCF model:
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="slide"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="SPRINGLENGTH" stiffness="STIFFNESS">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+With `coef=1.0` on a slide joint, `tendon_length = qpos[j]`. This gives direct
+control over tendon length by setting `data.qpos[0]`.
+
+**AC9 — Length within deadband: zero spring force** (S6)
+
+`springlength="0.3 0.7"`, `stiffness="100"`. Set `data.qpos[0] = 0.5`.
+Tendon length = 0.5 (within [0.3, 0.7] deadband). Run `forward()`.
+
+Assert: `data.qfrc_passive[0] == 0.0` (no spring force in deadband).
+
+**AC10 — Length above upper bound: restoring force** (S6)
+
+`springlength="0.3 0.7"`, `stiffness="100"`. Set `data.qpos[0] = 1.0`.
+Tendon length = 1.0 (above upper=0.7). Run `forward()`.
+
+Spring force = `100 * (0.7 - 1.0)` = `-30.0`. The tendon force projects to
+the joint via `coef=1.0`, so:
+
+Assert: `data.qfrc_passive[0]` ≈ `-30.0` (tolerance 1e-6).
+
+**AC11 — Length below lower bound: restoring force** (S6)
+
+`springlength="0.3 0.7"`, `stiffness="100"`. Set `data.qpos[0] = 0.1`.
+Tendon length = 0.1 (below lower=0.3). Run `forward()`.
+
+Spring force = `100 * (0.3 - 0.1)` = `20.0`. Projected via `coef=1.0`:
+
+Assert: `data.qfrc_passive[0]` ≈ `20.0` (tolerance 1e-6).
+
+**AC12 — No deadband (single value): classical spring preserved** (S6)
+
+`springlength="0.5"`, `stiffness="100"`. Set `data.qpos[0] = 0.8`.
+Tendon length = 0.8. Run `forward()`.
+
+Spring force = `100 * (0.5 - 0.8)` = `-30.0`. When `lower == upper`, the
+deadband formula is mathematically identical to `F = -k * (L - ref)`:
+
+Assert: `data.qfrc_passive[0]` ≈ `-30.0` (tolerance 1e-6). Identical to the
+pre-existing classical spring behavior.
+
+##### Spatial tendon
+
+**AC13 — springlength on spatial tendon** (S8)
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b1" pos="0 0 0">
+      <site name="s1" pos="0 0 0"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+    <body name="b2" pos="1 0 0">
+      <site name="s2" pos="0 0 0"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t" springlength="0.5 0.8">
+      <site site="s1"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.5, 0.8]`.
+
+**AC13b — Spatial tendon auto-compute fallback (no springlength)** (S3, S8, E2)
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b1" pos="0 0 0">
+      <site name="s1" pos="0 0 0"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+    <body name="b2" pos="1 0 0">
+      <site name="s2" pos="0 0 0"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t" stiffness="100">
+      <site site="s1"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+
+The spatial tendon connects two sites 1.0 apart. No `springlength` specified, so
+the sentinel `[-1, -1]` is resolved via `compute_spatial_tendon_length0()` (E2).
+
+Assert: `model.tendon_lengthspring[0] == [1.0, 1.0]` (auto-computed from tendon
+length at qpos0 = distance between sites = 1.0).
+
+##### Regression
+
+**AC14 — All existing tendon tests pass unchanged**
+
+The auto-compute sentinel change from `0.0` to `[-1.0, -1.0]` is transparent
+because the sentinel is always resolved before any physics code runs. Models
+without `springlength` produce identical physics output.
+
+Specific tests to verify:
+- `test_tendon_actuator_unknown_tendon_error` (`model_builder.rs:5006`)
+- `test_tendon_stiffness_defaults` (`default_classes.rs:139`)
+- `test_implicitfast_tendon_spring_explicit` (`implicit_integration.rs:939`)
+- All spatial tendon tests (`spatial_tendons.rs`)
+
+**AC15 — MJB version bump** (Implementation Note 9)
+
+Assert: `MJB_VERSION` (`mjb.rs:52`) is `2` after implementation. Additionally,
+loading an MJB file saved with version 1 must return
+`Err(MjcfError::UnsupportedMjbVersion(1))`. The existing test at `mjb.rs:433`
+already covers version mismatch rejection — verify it still passes.
+
+#### Implementation Notes
+
+**1. Sentinel fix is critical:** The current `0.0` sentinel is broken because
+`springlength="0"` is valid MJCF meaning "zero rest length" (fully contracted
+spring). The `0.0` sentinel would be indistinguishable from this explicit user
+value. MuJoCo uses `{-1, -1}` which is safe because tendon lengths are always
+≥ 0, so `-1` can never be a valid user-specified value. The 3 sentinel-check
+sites are:
+- `model_builder.rs:3018` (fixed tendon compile)
+- `mujoco_pipeline.rs:3859` (spatial tendon compile)
+- `model_builder.rs:1624` (initial push — changes from `push(0.0)` to
+  `push([-1.0, -1.0])`)
+
+**2. Breaking type change is contained:** `Vec<f64>` → `Vec<[f64; 2]>` affects
+exactly **2 source files** with **11 reference sites** total (6 in
+`model_builder.rs`, 5 in `mujoco_pipeline.rs`). No other crate (sim-physics,
+sim-types, sim-constraint, etc.) references `tendon_lengthspring`. The breaking
+change is fully contained.
+
+**3. `parse_tendon_attrs` signature change:** The current signature returns
+`MjcfTendon` directly (not `Result`). Adding validation (`low ≤ high`) requires
+error propagation. There are exactly **2 call sites** (lines 2357 and 2378),
+both in `parse_tendons()` / `parse_tendon()`. The blast radius is minimal.
+
+**4. Auto-compute is unconditional on sentinel:** MuJoCo replaces `{-1, -1}`
+regardless of whether `stiffness > 0`. The current code's check for
+`stiffness > 0` was an optimization (if stiffness is 0, the spring produces no
+force anyway). The new code matches MuJoCo semantics exactly: always resolve
+the sentinel. This is correct because stiffness could be changed dynamically,
+and the springlength value might be used by other systems in the future.
+
+**5. No impact on implicit integrator:** The comment at
+`mujoco_pipeline.rs:10842-10845` explicitly states that tendon springs are
+skipped in implicit mode because they couple multiple joints (non-diagonal K/D).
+The deadband change only affects the explicit spring force computation at
+lines 10828-10834, which is inside the `if !implicit_mode` block.
+
+**6. Implementation order:**
+1. Types (A1, A2) — zero compilation impact, just new optional fields
+2. Parser (B1-B3) — parses the new attribute, signature change
+3. Defaults (C1, C2) — applies defaults to the new field
+4. Model builder (D1-D3) — type change + sentinel migration + auto-compute
+5. Runtime (E1-E3) — type change + sentinel migration + deadband physics
+6. Tests (AC1-AC15, AC3b, AC5b-d, AC8b, AC13b)
+
+Steps 1-3 can be done and compiled in isolation (parsing only). Steps 4-5 must
+be done together because the `Model` struct is constructed in the model builder
+and consumed in the runtime.
+
+**7. `MjcfTendon` convenience constructors:** `MjcfTendon::spatial()` (line 2402)
+and `MjcfTendon::fixed()` (line 2412) use `..Default::default()` and will
+automatically pick up `springlength: None`. No changes needed.
+
+**8. Existing tests do not need `<compiler>` additions:** Unlike the `angle`
+change in item #18, this change does not alter the default behavior for existing
+MJCF strings. Models without `springlength` get the sentinel, which resolves to
+`[length0, length0]` — same physics as before. No existing test MJCF strings
+need modification.
+
+**9. MJB version bump required:** Adding `springlength: Option<(f64, f64)>` to
+`MjcfTendon` changes the bincode serialization layout. The MJB format (`mjb.rs`)
+uses bincode with no schema evolution — adding a field to a serialized struct
+breaks deserialization of old files. Bump `MJB_VERSION` (`mjb.rs:52`) from 1 to
+2. The existing `validate()` function (`mjb.rs:108-116`) performs strict version
+checking and will reject version-1 files with `MjcfError::UnsupportedMjbVersion`.
+No migration code is needed — the codebase has no backward-compatibility layer,
+and MJB files are regenerated from MJCF source.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — parse springlength attribute
+- `sim/L0/mjcf/src/types.rs` — Add `springlength: Option<(f64, f64)>` to
+  `MjcfTendon` (line 2373) and `MjcfTendonDefaults` (line 653); update
+  `Default` impl (line 2395)
+- `sim/L0/mjcf/src/parser.rs` — Parse `springlength` in `parse_tendon_attrs()`
+  (line 2480) and `parse_tendon_defaults()` (line 675); change
+  `parse_tendon_attrs` return type to `Result<MjcfTendon>` (line 2449);
+  update 2 call sites (lines 2357, 2378)
+- `sim/L0/mjcf/src/defaults.rs` — Apply `springlength` default in
+  `apply_to_tendon()` (line 390); merge in `merge_tendon_defaults()` (line 625)
+- `sim/L0/mjcf/src/model_builder.rs` — Change `tendon_lengthspring: Vec<f64>`
+  to `Vec<[f64; 2]>` (line 545); use parsed springlength with sentinel
+  `[-1, -1]` in `process_tendons()` (line 1624); update auto-compute in
+  `compile_model()` (lines 3017-3020); acceptance tests (AC1-AC15, AC3b, AC5b-d, AC8b, AC13b)
+- `sim/L0/core/src/mujoco_pipeline.rs` — Change `tendon_lengthspring: Vec<f64>`
+  to `Vec<[f64; 2]>` (line 1495); update spatial tendon auto-compute in
+  `compute_spatial_tendon_length0()` (lines 3859-3860); implement deadband
+  spring in `mj_fwd_passive()` (lines 10828-10834)
+- `sim/L0/mjcf/src/mjb.rs` — Bump `MJB_VERSION` from 1 to 2 (line 52)

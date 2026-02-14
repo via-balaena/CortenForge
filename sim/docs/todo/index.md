@@ -60,7 +60,7 @@ before any runtime physics testing is meaningful.
 | 19 | `<frame>` element parsing + `childclass` | Medium | High | M | #18 | [future_work_6.md](./future_work_6.md) | ✅ Done |
 | 20 | `childclass` attribute (edge cases) | Medium | High | S | #19 | [future_work_6.md](./future_work_6.md) | ✅ Done |
 | 21 | `<site>` euler/axisangle/xyaxes/zaxis orientation | Medium | High | S | None | [future_work_6.md](./future_work_6.md) | ✅ Done |
-| 22 | Tendon `springlength` MJCF parsing | Low | Medium | S | None | [future_work_6.md](./future_work_6.md) | |
+| 22 | Tendon `springlength` MJCF parsing | Low | Medium | S | None | [future_work_6.md](./future_work_6.md) | ✅ Done |
 
 #### 3A-ii: Inertia + Contact Parameter Foundation (Items #23–27)
 
@@ -311,7 +311,7 @@ simulation. Strict sequential chain — each phase depends on the previous.
 | [future_work_3.md](./future_work_3.md) | 2 (complete) | A+B — Correctness + Scaling | #6–10 | Height field/SDF, deferred sensors, general actuators, batched sim, GPU Phase 10a |
 | [future_work_4.md](./future_work_4.md) | 2 (complete) | C — Physics Completeness | #11–14 | Deformable bodies, analytical derivatives, full implicit integrator, keyframes/mocap |
 | [future_work_5.md](./future_work_5.md) | 2 (complete) | D — Quality of Life + Appendix | #15–16 (~~#17~~ dropped) | Newton solver, sleeping, deferred items, cross-reference |
-| [future_work_6.md](./future_work_6.md) | 3 | 3A-i — Parser Fundamentals | #18–22 | ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` + `childclass`~~ ✅, ~~`<site>` orientation~~ ✅, tendon `springlength` |
+| [future_work_6.md](./future_work_6.md) | 3 | 3A-i — Parser Fundamentals | #18–22 | ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` + `childclass`~~ ✅, ~~`<site>` orientation~~ ✅, ~~tendon `springlength`~~ ✅ |
 | [future_work_7.md](./future_work_7.md) | 3 | 3A-ii — Inertia + Contact Parameters | #23–27 | `exactmeshinertia`, friction combination, `geom/@priority`, `solmix`, contact margin/gap |
 | [future_work_8.md](./future_work_8.md) | 3 | 3A-iii — Constraint System Overhaul | #28–32 | Friction loss (Newton + PGS/CG), PGS/CG unified constraints, `solreffriction`, pyramidal cones |
 | [future_work_9.md](./future_work_9.md) | 3 | 3A-iv — Noslip + Actuator/Dynamics | #33–37 | Noslip PGS/CG, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality |

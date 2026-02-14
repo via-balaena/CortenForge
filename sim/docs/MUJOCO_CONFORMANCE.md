@@ -85,7 +85,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<worldbody>` | ✓ | ✓ | Body hierarchy, `<frame>` element (pose composition, childclass, recursive nesting) |
 | `<contact>` | ✓ | ✓ | `<pair>`, `<exclude>`, contype/conaffinity bitmasks |
 | `<equality>` | ✓ | ✓ | Equality constraints |
-| `<tendon>` | ✓ | ✓ | Fixed and spatial tendons |
+| `<tendon>` | ✓ | ✓ | Fixed and spatial tendons; `springlength` attribute (single or pair values); deadband spring physics; default class support |
 | `<actuator>` | ✓ | ✓ | All 8 shortcut types (motor, position, velocity, damper, cylinder, adhesion, muscle, general) with MuJoCo-compatible gain/bias force model, GainType/BiasType dispatch, FilterExact dynamics. `<general>` supports explicit `gaintype`/`biastype`/`dyntype`/`gainprm`/`biasprm`/`dynprm` attributes with default class inheritance. |
 | `<sensor>` | ✓ | ✓ | Various sensor types |
 | `<keyframe>` | ✓ | ✓ | State snapshots: `<key>` elements with qpos/qvel/act/ctrl/mpos/mquat/time, `Data::reset_to_keyframe()` |
@@ -346,6 +346,7 @@ sim/L0/tests/
 │   ├── site_transmission.rs
 │   ├── sleeping.rs
 │   ├── spatial_tendons.rs
+│   ├── tendon_springlength.rs
 │   └── validation.rs
 └── assets/
     ├── mujoco_menagerie/  (git submodule)

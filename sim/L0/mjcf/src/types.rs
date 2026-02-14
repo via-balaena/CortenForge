@@ -651,6 +651,8 @@ pub struct MjcfTendonDefaults {
     pub damping: Option<f64>,
     /// Friction loss.
     pub frictionloss: Option<f64>,
+    /// Spring rest length pair (low, high) for deadband spring.
+    pub springlength: Option<(f64, f64)>,
     /// Tendon width for visualization.
     pub width: Option<f64>,
     /// RGBA color for visualization.
@@ -2371,6 +2373,11 @@ pub struct MjcfTendon {
     pub width: f64,
     /// RGBA color for visualization.
     pub rgba: Vector4<f64>,
+    /// Spring rest length pair (low, high) for deadband spring.
+    /// `None` = auto-compute from tendon length at qpos0 (see S3 divergence note).
+    /// Single value in MJCF → both elements equal (no deadband).
+    /// When low < high, force is zero within [low, high].
+    pub springlength: Option<(f64, f64)>,
     /// Ordered path elements for spatial tendons (sites, wrapping geoms, pulleys).
     pub path_elements: Vec<SpatialPathElement>,
     /// Joint coefficients for fixed tendons: (joint_name, coefficient).
@@ -2390,6 +2397,7 @@ impl Default for MjcfTendon {
             frictionloss: 0.0,
             width: 0.003, // MuJoCo default
             rgba: Vector4::new(0.5, 0.5, 0.5, 1.0),
+            springlength: None,
             path_elements: Vec::new(),
             joints: Vec::new(),
         }
