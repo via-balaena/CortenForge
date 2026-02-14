@@ -1252,52 +1252,387 @@ dependencies.
 ---
 
 ### 21. `<site>` euler/axisangle/xyaxes/zaxis Orientation
-**Status:** Mostly complete (core in #19) | **Effort:** S | **Prerequisites:** None
-
-> **Note:** Site orientation parsing (`euler`, `axisangle`, `xyaxes`, `zaxis`) and
-> resolution via `resolve_orientation()` were implemented as part of item #19.
-> `MjcfSite` now has all orientation fields, `parse_site_attrs()` parses them,
-> and `process_site()` resolves them via the unified `resolve_orientation()`.
-> This item's remaining scope is limited to verifying edge cases and adding
-> dedicated site orientation acceptance tests beyond those in #19's test suite.
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 
-~~Site parsing only supports `quat`. `parse_site_attrs()` handles only the `quat`
-attribute. Model builder comments: "sites have only quat, no euler."~~ **Updated:**
-Site parsing now supports all orientation formats (`euler`, `axisangle`, `xyaxes`,
-`zaxis`, `quat`). `MjcfSite` has fields for all five. `process_site()` uses
-`resolve_orientation()` with the full priority chain. Body, geom, and site
-elements all share the same unified orientation resolution logic.
+Site orientation was fully implemented as part of item #19. All production code is
+in place and working:
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| `MjcfSite` with all 5 orientation fields | `types.rs:1296-1319` | ✅ Done |
+| `parse_site_attrs()` parses euler/axisangle/xyaxes/zaxis/quat | `parser.rs:1527-1564` | ✅ Done |
+| `process_site()` calls `resolve_orientation()` | `model_builder.rs:1554-1561` | ✅ Done |
+| `resolve_orientation()` unified function (body/geom/site/frame) | `model_builder.rs:3388-3468` | ✅ Done |
+| Frame expansion composes site orientation | `model_builder.rs:3647-3666` | ✅ Done |
+| `apply_to_site()` uses `site.class` correctly | `defaults.rs:322-349` | ✅ Done |
+
+**Test coverage gap:** Zero dedicated tests verify the resolved quaternion for any
+site orientation specifier. The only existing test that touches site orientation
+(`test_fusestatic_site_with_axisangle`, line 8173) validates position only, not
+the orientation quaternion.
 
 #### Objective
 
-Support all MuJoCo orientation attributes on `<site>` elements, matching the
-existing body/geom orientation parsing.
+Add comprehensive acceptance tests that verify all 5 orientation specifiers on
+`<site>` elements produce the correct `site_quat` values in the compiled model.
+Each test validates the quaternion value, not merely that the model loads.
+
+**No production code changes.** This item is test-only.
 
 #### Specification
 
-1. **Reuse existing orientation parsing**: The `parse_orientation()` helper (or
-   equivalent) used for body/geom elements already handles `euler`, `axisangle`,
-   `xyaxes`, `zaxis`, and `quat`. Apply the same logic to site parsing.
-2. **Compiler angle convention**: Respect `compiler.angle` (degree vs radian)
-   for euler and axisangle, just as body/geom parsing does.
-3. **Priority**: MuJoCo's attribute priority when multiple orientation attributes
-   are specified: `quat` > `axisangle` > `xyaxes` > `zaxis` > `euler`. Match
-   this priority.
+##### Orientation resolution semantics (already implemented)
+
+All orientation specifiers on sites use `resolve_orientation()` — the same unified
+function shared by body, geom, site, and frame elements. The semantics:
+
+- **Priority** (when multiple specifiers present — MuJoCo errors on this; we
+  silently use highest priority for robustness):
+  `euler` > `axisangle` > `xyaxes` > `zaxis` > `quat`.
+  This matches `resolve_orientation()` at `model_builder.rs:3385-3387`.
+
+- **Compiler angle unit** (`compiler.angle`): applies to `euler` (all 3 components)
+  and `axisangle` (4th element only — axis stays untouched). Default: `Degree`.
+
+- **Euler sequence** (`compiler.eulerseq`): configures rotation order for `euler`.
+  Default: `"xyz"` (intrinsic XYZ). Lowercase = intrinsic (post-multiply),
+  uppercase = extrinsic (pre-multiply). Matches MuJoCo's `mju_euler2Quat`.
+
+- **xyaxes**: Gram-Schmidt orthogonalization. X-axis normalized, Y-axis
+  orthogonalized against X then normalized, Z = cross(X, Y). Matches MuJoCo's
+  `ResolveOrientation`.
+
+- **zaxis**: Minimal rotation from default Z `(0,0,1)` to target direction.
+  Matches MuJoCo's `mjuu_z2quat`. Parallel → identity; anti-parallel → 180°
+  about X; general → `atan2`-based rotation.
+
+- **Defaults**: `MjcfSiteDefaults` covers `site_type`, `size`, `rgba` only —
+  orientation is NOT part of site defaults (correct per MuJoCo). Orientation
+  always comes from the element itself.
 
 #### Acceptance Criteria
 
-1. `<site euler="90 0 0"/>` produces the correct orientation quaternion.
-2. `<site axisangle="0 0 1 90"/>` produces the correct orientation quaternion.
-3. `<site xyaxes="0 1 0 -1 0 0"/>` produces the correct orientation quaternion.
-4. `<site zaxis="0 0 1"/>` produces the correct orientation quaternion.
-5. `<site quat="..."/>` continues to work (regression).
-6. Sensors attached to sites with non-quat orientation produce correct readings.
+All tests go in `sim/L0/mjcf/src/model_builder.rs` in the existing `#[cfg(test)]
+mod tests` block, grouped after `test_fusestatic_site_with_axisangle` (~line 8198).
+Each test uses `load_model()` and asserts on `model.site_quat[0]`.
+
+Tolerance: `1e-10` for exact single-axis cases, `1e-6` for composed/numerical
+cases (matching existing conventions: line 6257 uses `1e-10`, line 7517 uses
+`1e-6`).
+
+##### Core orientation formats
+
+**AC1 — `test_site_euler_orientation_degrees`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" euler="90 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Default compiler: `angle="degree"`, `eulerseq="xyz"`. Intrinsic X rotation 90°.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::x_axis(), PI/2)`
+= (w=0.7071068, x=0.7071068, y=0, z=0).
+
+**AC2 — `test_site_euler_orientation_radians`**
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" euler="{FRAC_PI_2} 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Same rotation as AC1 but in radians. Expected: same quaternion.
+Use `format!` to inject `FRAC_PI_2` (pattern from `test_body_axisangle_radian`,
+line 6264).
+
+**AC3 — `test_site_euler_orientation_zyx_eulerseq`**
+
+```xml
+<mujoco>
+  <compiler angle="radian" eulerseq="ZYX"/>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" euler="0.3 0.2 0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Expected: `euler_seq_to_quat(Vector3::new(0.3, 0.2, 0.1), "ZYX")`.
+Follows pattern from `test_euler_seq_zyx_body_orientation` (line 6290).
+
+**AC4 — `test_site_axisangle_orientation_degrees`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" axisangle="0 0 1 90"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+90° about Z. Expected: `UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI/2)`
+= (w=0.7071068, x=0, y=0, z=0.7071068).
+
+**AC5 — `test_site_axisangle_orientation_radians`**
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" axisangle="0 1 0 {FRAC_PI_2}"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+PI/2 about Y. Expected: `UnitQuaternion::from_axis_angle(&Vector3::y_axis(), PI/2)`
+= (w=0.7071068, x=0, y=0.7071068, z=0).
+
+##### xyaxes
+
+**AC6 — `test_site_xyaxes_orientation_orthogonal`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" xyaxes="0 1 0 -1 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+X→Y, Y→-X. Rotation matrix columns: `[(0,1,0), (-1,0,0), (0,0,1)]` = 90° about Z.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI/2)`.
+
+**AC7 — `test_site_xyaxes_orientation_gram_schmidt`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" xyaxes="1 1 0 0 1 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Non-orthogonal inputs. Gram-Schmidt:
+1. x = normalize(1,1,0) = (1/√2, 1/√2, 0)
+2. y = (0,1,0) - x·dot(x, (0,1,0)) = (0,1,0) - (1/√2, 1/√2, 0)·(1/√2) = (-0.5, 0.5, 0)
+3. y_norm = normalize(-0.5, 0.5, 0) = (-1/√2, 1/√2, 0)
+4. z = cross(x, y) = (0, 0, 1)
+5. Result: 45° rotation about Z.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI/4)`
+= (w=0.9238795, x=0, y=0, z=0.3826834).
+
+##### zaxis
+
+**AC8 — `test_site_zaxis_orientation_general`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" zaxis="1 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Minimal rotation from Z=(0,0,1) to X=(1,0,0). `mjuu_z2quat` derivation:
+axis = cross((0,0,1), (1,0,0)) = (0,1,0), s=1, angle = atan2(1, 0) = PI/2.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::y_axis(), PI/2)`.
+
+**AC9 — `test_site_zaxis_orientation_parallel_identity`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" zaxis="0 0 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Target = default Z. axis = (0,0,0), s=0 < 1e-10, fallback axis = (1,0,0),
+angle = atan2(0, 1) = 0. Expected: `UnitQuaternion::identity()`.
+
+**AC10 — `test_site_zaxis_orientation_antiparallel`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" zaxis="0 0 -1"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Target = -Z (anti-parallel). axis = cross((0,0,1), (0,0,-1)) = (0,0,0),
+s=0 < 1e-10, fallback axis = (1,0,0), angle = atan2(0, -1) = PI.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::x_axis(), PI)`
+≈ (w≈0, x=1, y=0, z=0). Tolerance `1e-10`.
+
+##### Regression + interactions
+
+**AC11 — `test_site_quat_orientation_regression`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" quat="0.7071068 0 0.7071068 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Direct quaternion (wxyz format): 90° about Y. Regression for pre-#19 behavior.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::y_axis(), PI/2)`.
+
+**AC12 — `test_site_orientation_with_default_class`**
+
+```xml
+<mujoco>
+  <default>
+    <default class="sensor_site">
+      <site type="cylinder" size="0.02 0.01"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" class="sensor_site" euler="0 0 90"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Defaults provide `type` + `size`; element provides `euler`. Since
+`MjcfSiteDefaults` does NOT include orientation, defaults must not interfere.
+Assert: `site_type[0] == GeomType::Cylinder` (from default) AND `site_quat[0]`
+matches 90° Z rotation (from element).
+
+**AC13 — `test_site_orientation_priority_euler_over_quat`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" euler="90 0 0" quat="1 0 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Both `euler` and `quat` specified. Per priority chain, euler wins. `quat` is
+identity; `euler` is 90° X. Expected: 90° X rotation, NOT identity.
+(MuJoCo would error on this; our intentional divergence uses highest priority.)
+
+##### Edge cases
+
+**AC14 — `test_site_orientation_in_frame`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <frame euler="0 0 90">
+        <site name="s" euler="90 0 0"/>
+      </frame>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Frame 90° Z, site 90° X. Frame expansion composes: `frame_q * site_q`.
+Expected: `Rz(90°) * Rx(90°)`. Tolerance `1e-6`.
+
+**AC15 — `test_site_axisangle_non_unit_axis`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" axisangle="0 0 3 90"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Non-unit axis (0,0,3). `Unit::new_normalize(axis)` normalizes to (0,0,1).
+Expected: same as `axisangle="0 0 1 90"` = 90° about Z.
+
+**AC16 — `test_site_zaxis_non_unit_direction`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" zaxis="0 0 5"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Non-unit direction (0,0,5), parallel to default Z after normalization.
+Expected: `UnitQuaternion::identity()`.
+
+#### Implementation Notes
+
+1. **Test-only item.** All production code (types, parsing, model building,
+   defaults, frame expansion, fusestatic) is complete and correct. This item
+   adds 16 acceptance tests and zero production code changes.
+
+2. **All tests use `load_model()` + assert on `model.site_quat[0]`.** Sites are
+   indexed sequentially; each test creates exactly one site at index 0.
+
+3. **Tolerance conventions:** `1e-10` for exact single-axis rotations (matches
+   `test_body_axisangle_orientation` at line 6257), `1e-6` for composed/numerical
+   cases (matches frame tests at line 7517).
+
+4. **`euler_seq_to_quat()` is available in tests** because it's a module-level
+   function in `model_builder.rs`. AC3 uses it directly to compute the expected
+   value (pattern from `test_euler_seq_zyx_body_orientation`).
+
+5. **Run with:** `cargo test -p sim-mjcf`
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — `parse_site_attrs()` extension
+- `sim/L0/mjcf/src/model_builder.rs` — 16 acceptance tests (~250 lines, tests only)
 
 ---
 

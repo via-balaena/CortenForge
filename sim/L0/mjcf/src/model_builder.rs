@@ -8259,4 +8259,442 @@ mod tests {
             "expected (1,0,0.5), got {pos:?}"
         );
     }
+
+    // =========================================================================
+    // Site orientation tests (item #21)
+    // =========================================================================
+
+    /// AC1: Site euler orientation with default angle="degree".
+    #[test]
+    fn test_site_euler_orientation_degrees() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" euler="90 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site euler 90° X deg: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC2: Site euler orientation with explicit angle="radian".
+    #[test]
+    fn test_site_euler_orientation_radians() {
+        let pi_2 = std::f64::consts::FRAC_PI_2;
+        let model = load_model(&format!(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" euler="{pi_2} 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        ))
+        .expect("should load");
+
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), pi_2);
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site euler pi/2 X rad: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC3: Site euler with non-default eulerseq="ZYX".
+    #[test]
+    fn test_site_euler_orientation_zyx_eulerseq() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" eulerseq="ZYX"/>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" euler="0.3 0.2 0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = euler_seq_to_quat(Vector3::new(0.3, 0.2, 0.1), "ZYX");
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site euler ZYX: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC4: Site axisangle orientation with default angle="degree".
+    #[test]
+    fn test_site_axisangle_orientation_degrees() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" axisangle="0 0 1 90"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site axisangle 90° Z deg: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC5: Site axisangle orientation with angle="radian".
+    #[test]
+    fn test_site_axisangle_orientation_radians() {
+        let pi_2 = std::f64::consts::FRAC_PI_2;
+        let model = load_model(&format!(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" axisangle="0 1 0 {pi_2}"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        ))
+        .expect("should load");
+
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pi_2);
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site axisangle pi/2 Y rad: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC6: Site xyaxes orientation with orthogonal inputs (90° Z rotation).
+    #[test]
+    fn test_site_xyaxes_orientation_orthogonal() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" xyaxes="0 1 0 -1 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // x=(0,1,0), y=(-1,0,0), z=cross(x,y)=(0,0,1) → 90° about Z
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site xyaxes orthogonal 90° Z: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC7: Site xyaxes with non-orthogonal inputs (Gram-Schmidt → 45° Z rotation).
+    #[test]
+    fn test_site_xyaxes_orientation_gram_schmidt() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" xyaxes="1 1 0 0 1 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Gram-Schmidt: x=norm(1,1,0)=(1/√2, 1/√2, 0), y orthogonalized → 45° about Z
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 45.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-6,
+            "site xyaxes Gram-Schmidt 45° Z: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC8: Site zaxis general direction (Z→X = 90° about Y).
+    #[test]
+    fn test_site_zaxis_orientation_general() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" zaxis="1 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Minimal rotation from (0,0,1) to (1,0,0): 90° about Y
+        let expected =
+            UnitQuaternion::from_axis_angle(&Vector3::y_axis(), std::f64::consts::FRAC_PI_2);
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site zaxis Z→X (90° Y): got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC9: Site zaxis parallel to default Z → identity.
+    #[test]
+    fn test_site_zaxis_orientation_parallel_identity() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" zaxis="0 0 1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = UnitQuaternion::identity();
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site zaxis (0,0,1) identity: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC10: Site zaxis anti-parallel (0,0,-1) → 180° about X.
+    #[test]
+    fn test_site_zaxis_orientation_antiparallel() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" zaxis="0 0 -1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Anti-parallel: fallback axis = X, angle = atan2(0, -1) = PI → 180° about X
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), std::f64::consts::PI);
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site zaxis anti-parallel 180° X: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC11: Site quat orientation (regression for pre-#19 behavior).
+    #[test]
+    fn test_site_quat_orientation_regression() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" quat="0.7071068 0 0.7071068 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Direct quaternion (wxyz): 90° about Y
+        let expected =
+            UnitQuaternion::from_axis_angle(&Vector3::y_axis(), std::f64::consts::FRAC_PI_2);
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-6,
+            "site quat regression 90° Y: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC12: Site orientation with default class (defaults provide type/size,
+    /// element provides orientation — no interference).
+    #[test]
+    fn test_site_orientation_with_default_class() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="sensor_site">
+                        <site type="cylinder" size="0.02 0.01"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" class="sensor_site" euler="0 0 90"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Type from default class
+        assert_eq!(
+            model.site_type[0],
+            GeomType::Cylinder,
+            "site type should come from default class"
+        );
+
+        // Orientation from element (not interfered by defaults)
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site euler 90° Z with default class: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC13: Orientation priority — euler takes precedence over quat when both specified.
+    #[test]
+    fn test_site_orientation_priority_euler_over_quat() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" euler="90 0 0" quat="1 0 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // euler wins over quat per priority chain. quat=(1,0,0,0) is identity;
+        // euler="90 0 0" is 90° X. Result must be 90° X, NOT identity.
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "euler should take priority over quat: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC14: Site orientation composed with frame rotation.
+    #[test]
+    fn test_site_orientation_in_frame() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame euler="0 0 90">
+                            <site name="s" euler="90 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Frame: 90° Z, Site: 90° X. Composed: frame_q * site_q
+        let frame_q = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let site_q = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 90.0_f64.to_radians());
+        let expected = frame_q * site_q;
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-6,
+            "site in frame composed: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC15: Site axisangle with non-unit axis (normalization).
+    #[test]
+    fn test_site_axisangle_non_unit_axis() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" axisangle="0 0 3 90"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Axis (0,0,3) normalizes to (0,0,1) → same as axisangle="0 0 1 90"
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site axisangle non-unit axis: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC16: Site zaxis with non-unit direction (normalization, parallel to Z).
+    #[test]
+    fn test_site_zaxis_non_unit_direction() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" zaxis="0 0 5"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // (0,0,5) normalizes to (0,0,1) → parallel to default Z → identity
+        let expected = UnitQuaternion::identity();
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site zaxis non-unit parallel: got {got:?}, expected {expected:?}"
+        );
+    }
 }

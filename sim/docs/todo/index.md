@@ -59,7 +59,7 @@ before any runtime physics testing is meaningful.
 | 18 | `<include>` file support + `<compiler>` element | **High** | **Critical** | L | None | [future_work_6.md](./future_work_6.md) | ✅ Done |
 | 19 | `<frame>` element parsing + `childclass` | Medium | High | M | #18 | [future_work_6.md](./future_work_6.md) | ✅ Done |
 | 20 | `childclass` attribute (edge cases) | Medium | High | S | #19 | [future_work_6.md](./future_work_6.md) | ✅ Done |
-| 21 | `<site>` euler/axisangle/xyaxes/zaxis orientation | Medium | High | S | None | [future_work_6.md](./future_work_6.md) | ⚡ Partial (core in #19) |
+| 21 | `<site>` euler/axisangle/xyaxes/zaxis orientation | Medium | High | S | None | [future_work_6.md](./future_work_6.md) | ✅ Done |
 | 22 | Tendon `springlength` MJCF parsing | Low | Medium | S | None | [future_work_6.md](./future_work_6.md) | |
 
 #### 3A-ii: Inertia + Contact Parameter Foundation (Items #23–27)

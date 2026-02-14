@@ -20,7 +20,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 **Overall completion: ~90-95%** of MuJoCo's core pipeline features are functional end-to-end. Phase 1 (12 items) and Phase 2 (16 items) are complete. Remaining gaps are tracked in Phase 3 (#18–71, ordered for optimal implementation across 6 sub-groups). See [`sim/docs/todo/index.md`](./todo/index.md) for the full roadmap.
 
 **Remaining gaps (Phase 3, optimal implementation order):**
-- **3A-i Parser Fundamentals** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` element~~ ✅, ~~`childclass` attribute~~ ✅, ~~`<site>` orientation~~ ✅ (partial, core in #19), tendon `springlength`
+- **3A-i Parser Fundamentals** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` element~~ ✅, ~~`childclass` attribute~~ ✅, ~~`<site>` orientation~~ ✅, tendon `springlength`
 - **3A-ii Inertia + Contact Parameters** (#23–27): `exactmeshinertia`, friction combination (geometric mean → element-wise max), `geom/@priority`, `solmix`, contact margin/gap
 - **3A-iii Constraint System Overhaul** (#28–32): friction loss migration (Newton Huber → PGS/CG → unified constraints), `solreffriction`, pyramidal cones
 - **3A-iv Noslip + Actuator/Dynamics** (#33–37): noslip post-processor, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality
