@@ -450,7 +450,14 @@ implicit solve (section 4.7). Only friction loss is computed here.
 
 **Tendon passive forces** follow the same pattern, mapped through J^T:
 ```
-ten_force[t] = -stiffness * (ten_length - lengthspring)
+# Deadband spring (lengthspring is a [lower, upper] pair):
+if ten_length > upper:    frc_spring = stiffness * (upper - ten_length)
+elif ten_length < lower:  frc_spring = stiffness * (lower - ten_length)
+else:                     frc_spring = 0    # deadband region
+
+# When lower == upper, this reduces to classical: F = -k * (L - ref)
+
+ten_force[t] = frc_spring
                - damping * ten_velocity
                - frictionloss * tanh(ten_velocity * friction_smoothing)
 

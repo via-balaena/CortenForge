@@ -878,139 +878,1734 @@ the implementation scope — not a separate refactoring item.
 
 ---
 
-### 20. `childclass` Attribute
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### 20. `childclass` Attribute — Edge Cases & Validation
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** #19 (complete)
 
-> **Note:** Body `childclass` and frame `childclass` parsing + application are
-> implemented as part of item #19. This item's remaining scope is limited to
-> verifying edge cases and ensuring childclass interacts correctly with all
-> element types not covered in #19's tests (e.g., tendons, actuators).
+> **Scope note:** Core `childclass` mechanism (parsing, inheritance, application
+> to geoms/joints/sites, frame `childclass`, recursive propagation) was fully
+> implemented in item #19 with 6 passing tests (AC20–AC25). This item hardens
+> that implementation with edge-case coverage, one targeted code fix (nonexistent
+> class validation), and documentation of MuJoCo-conformant behavior boundaries.
 
-#### Current State
+#### Current State (Post-#19)
 
-Not parsed. Documented as "Not in scope" in `future_work_2.md`. `MjcfBody` has no
-`childclass` field. The default class resolver already supports hierarchical
-lookup — just needs the inherited class name threaded through body parsing.
+All core functionality is working. The following is implemented and tested:
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| `MjcfBody.childclass` field | `types.rs:1896` | ✅ Parsed (`parser.rs:1267`) |
+| `MjcfFrame.childclass` field | `types.rs:1833` | ✅ Parsed (`parser.rs:1652`) |
+| Effective childclass computation | `model_builder.rs:1024` | ✅ `body.childclass.or(inherited)` |
+| Geom class injection | `model_builder.rs:1028-1038` | ✅ `if g.class.is_none() → effective` |
+| Joint class injection | `model_builder.rs:1118-1123` | ✅ Same pattern |
+| Site class injection | `model_builder.rs:1146-1151` | ✅ Same pattern |
+| Recursive propagation to children | `model_builder.rs:1163` | ✅ Passes `effective_childclass` |
+| Frame expansion childclass | `model_builder.rs:3606` | ✅ `frame.childclass.or(parent)` |
+| Frame→geom/site class injection | `model_builder.rs:3613-3614, 3650-3651` | ✅ |
+| Frame→body childclass inheritance | `model_builder.rs:3673-3676` | ✅ |
+| Childclass validation (new) | `model_builder.rs:3494-3540` | ✅ Pre-expansion validation |
+| Default resolver site fix | `defaults.rs:325` | ✅ Uses `site.class.as_deref()` |
+
+**Existing tests (6):** AC20 (basic body childclass), AC21 (explicit class overrides),
+AC22 (frame childclass overrides body's), AC23 (2-level hierarchy inheritance),
+AC24 (child body overrides parent), AC25 (regression without childclass).
+
+**Remaining gaps:** Nonexistent class validation, nested default hierarchy, 3-level
+deep propagation, multi-element simultaneous application, nested frames, empty body.
 
 #### Objective
 
-Parse `childclass` from `<body>` and use it as the default class for all child
-elements within that body subtree.
+Harden `childclass` implementation with (a) validation that `childclass` references
+a defined default class (MuJoCo errors on undefined classes), and (b) comprehensive
+edge-case test coverage.
+
+#### MuJoCo Authoritative Semantics
+
+These rules govern all behavior. Every acceptance criterion traces to one or more:
+
+- **S1 — Recursive propagation:** `childclass` on a `<body>` applies to all
+  descendant elements (geoms, joints, sites) recursively, not just direct children.
+  MuJoCo docs: "causing all children of this body (and all their children etc.)
+  to use class X unless specified otherwise."
+- **S2 — Element default, not body class:** `childclass` does NOT set the body's
+  own class. It provides a default `class` for the body's child *elements* (geoms,
+  joints, sites, cameras, lights).
+- **S3 — Precedence chain:** explicit `class=` on element > nearest ancestor
+  body/frame `childclass` > unnamed top-level default (class `""`).
+- **S4 — Worldbody exclusion:** `<worldbody>` accepts NO attributes in MuJoCo's
+  schema. Our parser never reads `<worldbody>` attributes (`parse_worldbody()` at
+  `parser.rs:1090`), so `worldbody.childclass` is always `None` — correct by
+  construction.
+- **S5 — Outside kinematic tree:** `childclass` does NOT affect tendons or actuators.
+  They live in `<tendon>` and `<actuator>` sections outside the body tree and have
+  their own `class` attribute for explicit assignment.
+- **S6 — Default hierarchy resolution:** When `childclass` references a named class
+  (e.g., `"arm"`), and `"arm"` is a child of `"robot"` in the `<default>` hierarchy,
+  the full inheritance chain resolves: `"arm"` inherits from `"robot"`. The
+  `DefaultResolver` handles this automatically via `resolve_single()`.
+- **S7 — Undefined class = error:** `childclass` referencing a class name that does
+  not exist in `<default>` is an error. MuJoCo rejects this at schema validation.
 
 #### Specification
 
-1. **MJCF parsing**: Parse `childclass` (string) from `<body>` elements.
-2. **Class resolution**: When resolving defaults for a child element (geom, joint,
-   site, etc.) within a body that has `childclass="X"`:
-   - If the child element has an explicit `class="Y"`, use class Y.
-   - If the child element has no explicit class, use class X (from `childclass`).
-   - `childclass` is inherited by sub-bodies: if body A has `childclass="X"` and
-     child body B has no `childclass`, B's children also default to class X.
-   - If body B has its own `childclass="Y"`, it overrides A's for B's subtree.
-3. **Existing infrastructure**: The default class resolver already supports
-   class lookup by name. The change is threading the `childclass` name through
-   body parsing so it's used as the fallback when no explicit `class` is specified.
+##### Part A — Validation: Undefined `childclass` References (Code Fix)
 
-#### Acceptance Criteria
+**A1. `validate_childclass_references()` function** (in `model_builder.rs`)
 
-1. `<body childclass="robot"><geom .../></body>` applies class "robot" defaults
-   to the geom.
-2. `<body childclass="robot"><geom class="special" .../></body>` uses class
-   "special" (explicit overrides childclass).
-3. Nested bodies inherit parent's `childclass` unless overridden.
-4. Models without `childclass` are unaffected (regression).
+Add a validation pass that runs BEFORE `expand_frames()` in `model_from_mjcf()`.
+This must run before frame expansion because `expand_frames` dissolves frames
+(via `std::mem::take`), losing `frame.childclass` values.
+
+Two free functions near `expand_frames` (~line 3477):
+
+```rust
+fn validate_childclass_references(
+    body: &MjcfBody,
+    resolver: &DefaultResolver,
+) -> std::result::Result<(), ModelConversionError>
+```
+
+Walks the body tree recursively. For each `body.childclass`, checks
+`resolver.get_defaults(Some(cc))`. If `None` (class not found in resolved
+defaults), returns `Err` with message naming the class and body.
+
+Also walks `body.frames` recursively via a helper:
+
+```rust
+fn validate_frame_childclass_refs(
+    frame: &MjcfFrame,
+    resolver: &DefaultResolver,
+) -> std::result::Result<(), ModelConversionError>
+```
+
+Same check for `frame.childclass`. Recurses into `frame.frames` (nested) and
+`frame.bodies` (bodies inside frames may have their own childclass).
+
+**A2. Wire into `model_from_mjcf()`** (at `model_builder.rs:211-216`)
+
+Between the clone and `expand_frames`:
+
+```rust
+let mut mjcf = mjcf.clone();
+
+// Validate childclass references before frame expansion dissolves frames
+let pre_resolver = DefaultResolver::from_model(&mjcf);
+validate_childclass_references(&mjcf.worldbody, &pre_resolver)?;
+
+expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None);
+```
+
+The `DefaultResolver` is constructed twice (once here for validation, once at
+line 226 for the builder). This is acceptable — construction is a cheap HashMap
+build from a small vec of defaults. Correctness over premature optimization.
+
+**Key implementation detail:** `DefaultResolver::get_defaults(Some("name"))` at
+`defaults.rs:72-74` looks up `"name"` in `resolved_defaults` HashMap. Returns
+`None` for undefined class names. This is exactly the check needed.
+
+##### Part B — Documentation (Doc Comments Only)
+
+**B1.** At `model_builder.rs:252` (the `process_body` call): Add comment
+explaining that `worldbody.childclass` is always `None` for parsed MJCF per
+MuJoCo semantics — `<worldbody>` accepts no attributes. The programmatic API
+does not enforce this; enforcement is structural via the parser.
+
+**B2.** At `model_builder.rs:886` (in `process_worldbody_geoms_and_sites`): Add
+comment noting that no childclass is applied to worldbody's own geoms/sites,
+which is correct per MuJoCo — worldbody has no childclass (S4).
+
+##### Part C — Edge-Case Tests
+
+Eight new tests in the existing test module in `model_builder.rs`, after AC27.
+All use `load_model()` and assert on compiled model fields. (AC26–AC27 are used
+by item #19's frame orientation composition tests.)
+
+**AC28 — Childclass referencing a nested default class** (S6)
+
+Verifies that childclass resolves through the full `<default>` inheritance chain:
+class `"arm"` inherits from parent class `"robot"`.
+
+```xml
+<mujoco>
+  <default>
+    <default class="robot">
+      <geom contype="5"/>
+      <default class="arm">
+        <geom conaffinity="3"/>
+      </default>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b" childclass="arm">
+      <geom type="sphere" size="0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: geom `contype == 5` (inherited from `"robot"` through `"arm"` chain)
+AND geom `conaffinity == 3` (from `"arm"` directly).
+
+**AC29 — Childclass applies to geom, joint, AND site simultaneously** (S1)
+
+Verifies all three element types receive defaults from a single childclass.
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="R">
+      <geom contype="7"/>
+      <joint damping="5.0"/>
+      <site size="0.05"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b" childclass="R">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1"/>
+      <site name="s"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: geom `contype == 7`, joint `damping == 5.0`, site `size == 0.05`.
+
+**AC30 — 3-level deep propagation without override** (S1)
+
+Verifies childclass propagates through 3 body levels without any intermediate
+body declaring its own childclass.
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="X">
+      <joint damping="3.0"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="top" childclass="X">
+      <geom type="sphere" size="0.1"/>
+      <body name="mid" pos="0 0 1">
+        <geom type="sphere" size="0.1"/>
+        <body name="bot" pos="0 0 1">
+          <joint name="j" type="hinge"/>
+          <geom type="sphere" size="0.1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: joint `damping == 3.0` (propagated from `"top"` through `"mid"` to `"bot"`).
+
+**AC31 — 3-level with mid-hierarchy override** (S1, S3)
+
+Verifies that a childclass override at the middle level takes effect for all
+descendants below it, not the top-level childclass.
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="A"><joint damping="1.0"/></default>
+    <default class="B"><joint damping="9.0"/></default>
+  </default>
+  <worldbody>
+    <body name="top" childclass="A">
+      <geom type="sphere" size="0.1"/>
+      <body name="mid" childclass="B" pos="0 0 1">
+        <geom type="sphere" size="0.1"/>
+        <body name="bot" pos="0 0 1">
+          <joint name="j" type="hinge"/>
+          <geom type="sphere" size="0.1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: joint `damping == 9.0` (from `"B"`, not `"A"`).
+
+**AC32 — Nested frames with childclass inheritance and override** (S1)
+
+Verifies childclass propagation through nested `<frame>` elements: inner frame
+inherits outer's childclass; separate inner frame overrides with its own.
+
+```xml
+<mujoco>
+  <default>
+    <default class="F1"><geom contype="4"/></default>
+    <default class="F2"><geom contype="8"/></default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <frame childclass="F1">
+        <frame>
+          <geom name="g1" type="sphere" size="0.1"/>
+        </frame>
+        <frame childclass="F2">
+          <geom name="g2" type="sphere" size="0.1"/>
+        </frame>
+      </frame>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: geom at index 0 (`g1`) has `contype == 4` (inherits outer frame's `"F1"`
+through inner frame with no override). Geom at index 1 (`g2`) has `contype == 8`
+(inner frame overrides with `"F2"`).
+
+**AC33 — `childclass="nonexistent"` on body produces error** (S7)
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b" childclass="nonexistent">
+      <geom type="sphere" size="0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. Error message contains `"nonexistent"`.
+
+**AC34 — Body with childclass but no child elements succeeds** (correctness)
+
+```xml
+<mujoco>
+  <default>
+    <default class="empty"><geom contype="5"/></default>
+  </default>
+  <worldbody>
+    <body name="b" childclass="empty" pos="0 0 1">
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: `load_model(...)` succeeds, `model.nbody == 2`, `model.ngeom == 0`.
+
+**AC35 — `childclass="ghost"` on frame produces error** (S7)
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <frame childclass="ghost">
+        <geom type="sphere" size="0.1"/>
+      </frame>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. Error message contains `"ghost"`.
+
+#### What This Item Does NOT Cover
+
+- `childclass` on `<camera>` or `<light>` — these types are not yet parsed (item #49)
+- `childclass` interaction with tendons, actuators, or equality constraints — they
+  are outside the body tree (S5) and have their own `class` attributes
+- Schema-level rejection of `childclass` on `<worldbody>` — correct by construction (S4)
+- `range` as a defaultable joint attribute — not in `MjcfJointDefaults` (separate item)
+- Programmatic API enforcement that `worldbody.childclass` must be `None`
+
+#### Implementation Notes
+
+**Validation ordering:** The validation must run BEFORE `expand_frames()` because
+frame expansion dissolves `MjcfFrame` objects via `std::mem::take()`, permanently
+losing `frame.childclass` values. After expansion, frames are empty vecs and
+childclass from frames has already been applied to child elements' `class` fields.
+
+**No impact on existing `test_nonexistent_class_no_panic`:** That test in
+`default_classes.rs` tests an explicit `class="nonexistent"` on a joint element,
+which is graceful fallthrough (no defaults applied). This is distinct from
+`childclass="nonexistent"` on a body, which is now an error. The distinction:
+explicit `class` on an element says "use these specific defaults" (graceful if
+not found); `childclass` on a body says "all my children default to this class"
+(error if not found, because it indicates a model authoring mistake).
+
+**`childclass=""` edge case:** Our `DefaultResolver::get_defaults(Some(""))` returns
+the unnamed root default (stored as key `""` in `resolved_defaults`), so
+`childclass=""` passes validation and acts as a no-op (elements already fall back
+to the root default). MuJoCo stores the root default as `"main"` internally, so
+`""` would not match. This is a negligible divergence — no real MJCF model uses
+`childclass=""`, and the behavioral outcome is equivalent (root default applies
+either way). Acceptable as-is.
+
+**Single file change:** All code changes and tests are in
+`sim/L0/mjcf/src/model_builder.rs`. No type changes, no API changes, no new
+dependencies.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — parse childclass, thread through body
-  parsing as default class fallback
+- `sim/L0/mjcf/src/model_builder.rs` — `validate_childclass_references()` +
+  `validate_frame_childclass_refs()` (~35 lines); wire into `model_from_mjcf()`
+  (~3 lines); 2 doc comments; 8 tests AC28–AC35 (~200 lines)
 
 ---
 
 ### 21. `<site>` euler/axisangle/xyaxes/zaxis Orientation
-**Status:** Mostly complete (core in #19) | **Effort:** S | **Prerequisites:** None
-
-> **Note:** Site orientation parsing (`euler`, `axisangle`, `xyaxes`, `zaxis`) and
-> resolution via `resolve_orientation()` were implemented as part of item #19.
-> `MjcfSite` now has all orientation fields, `parse_site_attrs()` parses them,
-> and `process_site()` resolves them via the unified `resolve_orientation()`.
-> This item's remaining scope is limited to verifying edge cases and adding
-> dedicated site orientation acceptance tests beyond those in #19's test suite.
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 
-~~Site parsing only supports `quat`. `parse_site_attrs()` handles only the `quat`
-attribute. Model builder comments: "sites have only quat, no euler."~~ **Updated:**
-Site parsing now supports all orientation formats (`euler`, `axisangle`, `xyaxes`,
-`zaxis`, `quat`). `MjcfSite` has fields for all five. `process_site()` uses
-`resolve_orientation()` with the full priority chain. Body, geom, and site
-elements all share the same unified orientation resolution logic.
+Site orientation was fully implemented as part of item #19. All production code is
+in place and working:
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| `MjcfSite` with all 5 orientation fields | `types.rs:1296-1319` | ✅ Done |
+| `parse_site_attrs()` parses euler/axisangle/xyaxes/zaxis/quat | `parser.rs:1527-1564` | ✅ Done |
+| `process_site()` calls `resolve_orientation()` | `model_builder.rs:1554-1561` | ✅ Done |
+| `resolve_orientation()` unified function (body/geom/site/frame) | `model_builder.rs:3388-3468` | ✅ Done |
+| Frame expansion composes site orientation | `model_builder.rs:3647-3666` | ✅ Done |
+| `apply_to_site()` uses `site.class` correctly | `defaults.rs:322-349` | ✅ Done |
+
+**Test coverage gap:** Zero dedicated tests verify the resolved quaternion for any
+site orientation specifier. The only existing test that touches site orientation
+(`test_fusestatic_site_with_axisangle`, line 8173) validates position only, not
+the orientation quaternion.
 
 #### Objective
 
-Support all MuJoCo orientation attributes on `<site>` elements, matching the
-existing body/geom orientation parsing.
+Add comprehensive acceptance tests that verify all 5 orientation specifiers on
+`<site>` elements produce the correct `site_quat` values in the compiled model.
+Each test validates the quaternion value, not merely that the model loads.
+
+**No production code changes.** This item is test-only.
 
 #### Specification
 
-1. **Reuse existing orientation parsing**: The `parse_orientation()` helper (or
-   equivalent) used for body/geom elements already handles `euler`, `axisangle`,
-   `xyaxes`, `zaxis`, and `quat`. Apply the same logic to site parsing.
-2. **Compiler angle convention**: Respect `compiler.angle` (degree vs radian)
-   for euler and axisangle, just as body/geom parsing does.
-3. **Priority**: MuJoCo's attribute priority when multiple orientation attributes
-   are specified: `quat` > `axisangle` > `xyaxes` > `zaxis` > `euler`. Match
-   this priority.
+##### Orientation resolution semantics (already implemented)
+
+All orientation specifiers on sites use `resolve_orientation()` — the same unified
+function shared by body, geom, site, and frame elements. The semantics:
+
+- **Priority** (when multiple specifiers present — MuJoCo errors on this; we
+  silently use highest priority for robustness):
+  `euler` > `axisangle` > `xyaxes` > `zaxis` > `quat`.
+  This matches `resolve_orientation()` at `model_builder.rs:3385-3387`.
+
+- **Compiler angle unit** (`compiler.angle`): applies to `euler` (all 3 components)
+  and `axisangle` (4th element only — axis stays untouched). Default: `Degree`.
+
+- **Euler sequence** (`compiler.eulerseq`): configures rotation order for `euler`.
+  Default: `"xyz"` (intrinsic XYZ). Lowercase = intrinsic (post-multiply),
+  uppercase = extrinsic (pre-multiply). Matches MuJoCo's `mju_euler2Quat`.
+
+- **xyaxes**: Gram-Schmidt orthogonalization. X-axis normalized, Y-axis
+  orthogonalized against X then normalized, Z = cross(X, Y). Matches MuJoCo's
+  `ResolveOrientation`.
+
+- **zaxis**: Minimal rotation from default Z `(0,0,1)` to target direction.
+  Matches MuJoCo's `mjuu_z2quat`. Parallel → identity; anti-parallel → 180°
+  about X; general → `atan2`-based rotation.
+
+- **Defaults**: `MjcfSiteDefaults` covers `site_type`, `size`, `rgba` only —
+  orientation is NOT part of site defaults (correct per MuJoCo). Orientation
+  always comes from the element itself.
 
 #### Acceptance Criteria
 
-1. `<site euler="90 0 0"/>` produces the correct orientation quaternion.
-2. `<site axisangle="0 0 1 90"/>` produces the correct orientation quaternion.
-3. `<site xyaxes="0 1 0 -1 0 0"/>` produces the correct orientation quaternion.
-4. `<site zaxis="0 0 1"/>` produces the correct orientation quaternion.
-5. `<site quat="..."/>` continues to work (regression).
-6. Sensors attached to sites with non-quat orientation produce correct readings.
+All tests go in `sim/L0/mjcf/src/model_builder.rs` in the existing `#[cfg(test)]
+mod tests` block, grouped after `test_fusestatic_site_with_axisangle` (~line 8198).
+Each test uses `load_model()` and asserts on `model.site_quat[0]`.
+
+Tolerance: `1e-10` for exact single-axis cases, `1e-6` for composed/numerical
+cases (matching existing conventions: line 6257 uses `1e-10`, line 7517 uses
+`1e-6`).
+
+##### Core orientation formats
+
+**AC1 — `test_site_euler_orientation_degrees`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" euler="90 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Default compiler: `angle="degree"`, `eulerseq="xyz"`. Intrinsic X rotation 90°.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::x_axis(), PI/2)`
+= (w=0.7071068, x=0.7071068, y=0, z=0).
+
+**AC2 — `test_site_euler_orientation_radians`**
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" euler="{FRAC_PI_2} 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Same rotation as AC1 but in radians. Expected: same quaternion.
+Use `format!` to inject `FRAC_PI_2` (pattern from `test_body_axisangle_radian`,
+line 6264).
+
+**AC3 — `test_site_euler_orientation_zyx_eulerseq`**
+
+```xml
+<mujoco>
+  <compiler angle="radian" eulerseq="ZYX"/>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" euler="0.3 0.2 0.1"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Expected: `euler_seq_to_quat(Vector3::new(0.3, 0.2, 0.1), "ZYX")`.
+Follows pattern from `test_euler_seq_zyx_body_orientation` (line 6290).
+
+**AC4 — `test_site_axisangle_orientation_degrees`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" axisangle="0 0 1 90"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+90° about Z. Expected: `UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI/2)`
+= (w=0.7071068, x=0, y=0, z=0.7071068).
+
+**AC5 — `test_site_axisangle_orientation_radians`**
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" axisangle="0 1 0 {FRAC_PI_2}"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+PI/2 about Y. Expected: `UnitQuaternion::from_axis_angle(&Vector3::y_axis(), PI/2)`
+= (w=0.7071068, x=0, y=0.7071068, z=0).
+
+##### xyaxes
+
+**AC6 — `test_site_xyaxes_orientation_orthogonal`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" xyaxes="0 1 0 -1 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+X→Y, Y→-X. Rotation matrix columns: `[(0,1,0), (-1,0,0), (0,0,1)]` = 90° about Z.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI/2)`.
+
+**AC7 — `test_site_xyaxes_orientation_gram_schmidt`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" xyaxes="1 1 0 0 1 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Non-orthogonal inputs. Gram-Schmidt:
+1. x = normalize(1,1,0) = (1/√2, 1/√2, 0)
+2. y = (0,1,0) - x·dot(x, (0,1,0)) = (0,1,0) - (1/√2, 1/√2, 0)·(1/√2) = (-0.5, 0.5, 0)
+3. y_norm = normalize(-0.5, 0.5, 0) = (-1/√2, 1/√2, 0)
+4. z = cross(x, y) = (0, 0, 1)
+5. Result: 45° rotation about Z.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::z_axis(), PI/4)`
+= (w=0.9238795, x=0, y=0, z=0.3826834).
+
+##### zaxis
+
+**AC8 — `test_site_zaxis_orientation_general`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" zaxis="1 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Minimal rotation from Z=(0,0,1) to X=(1,0,0). `mjuu_z2quat` derivation:
+axis = cross((0,0,1), (1,0,0)) = (0,1,0), s=1, angle = atan2(1, 0) = PI/2.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::y_axis(), PI/2)`.
+
+**AC9 — `test_site_zaxis_orientation_parallel_identity`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" zaxis="0 0 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Target = default Z. axis = (0,0,0), s=0 < 1e-10, fallback axis = (1,0,0),
+angle = atan2(0, 1) = 0. Expected: `UnitQuaternion::identity()`.
+
+**AC10 — `test_site_zaxis_orientation_antiparallel`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" zaxis="0 0 -1"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Target = -Z (anti-parallel). axis = cross((0,0,1), (0,0,-1)) = (0,0,0),
+s=0 < 1e-10, fallback axis = (1,0,0), angle = atan2(0, -1) = PI.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::x_axis(), PI)`
+≈ (w≈0, x=1, y=0, z=0). Tolerance `1e-10`.
+
+##### Regression + interactions
+
+**AC11 — `test_site_quat_orientation_regression`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" quat="0.7071068 0 0.7071068 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Direct quaternion (wxyz format): 90° about Y. Regression for pre-#19 behavior.
+Expected: `UnitQuaternion::from_axis_angle(&Vector3::y_axis(), PI/2)`.
+
+**AC12 — `test_site_orientation_with_default_class`**
+
+```xml
+<mujoco>
+  <default>
+    <default class="sensor_site">
+      <site type="cylinder" size="0.02 0.01"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" class="sensor_site" euler="0 0 90"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Defaults provide `type` + `size`; element provides `euler`. Since
+`MjcfSiteDefaults` does NOT include orientation, defaults must not interfere.
+Assert: `site_type[0] == GeomType::Cylinder` (from default) AND `site_quat[0]`
+matches 90° Z rotation (from element).
+
+**AC13 — `test_site_orientation_priority_euler_over_quat`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" euler="90 0 0" quat="1 0 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Both `euler` and `quat` specified. Per priority chain, euler wins. `quat` is
+identity; `euler` is 90° X. Expected: 90° X rotation, NOT identity.
+(MuJoCo would error on this; our intentional divergence uses highest priority.)
+
+##### Edge cases
+
+**AC14 — `test_site_orientation_in_frame`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <frame euler="0 0 90">
+        <site name="s" euler="90 0 0"/>
+      </frame>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Frame 90° Z, site 90° X. Frame expansion composes: `frame_q * site_q`.
+Expected: `Rz(90°) * Rx(90°)`. Tolerance `1e-6`.
+
+**AC15 — `test_site_axisangle_non_unit_axis`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" axisangle="0 0 3 90"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Non-unit axis (0,0,3). `Unit::new_normalize(axis)` normalizes to (0,0,1).
+Expected: same as `axisangle="0 0 1 90"` = 90° about Z.
+
+**AC16 — `test_site_zaxis_non_unit_direction`**
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b">
+      <geom type="sphere" size="0.1" mass="1.0"/>
+      <site name="s" zaxis="0 0 5"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+Non-unit direction (0,0,5), parallel to default Z after normalization.
+Expected: `UnitQuaternion::identity()`.
+
+#### Implementation Notes
+
+1. **Test-only item.** All production code (types, parsing, model building,
+   defaults, frame expansion, fusestatic) is complete and correct. This item
+   adds 16 acceptance tests and zero production code changes.
+
+2. **All tests use `load_model()` + assert on `model.site_quat[0]`.** Sites are
+   indexed sequentially; each test creates exactly one site at index 0.
+
+3. **Tolerance conventions:** `1e-10` for exact single-axis rotations (matches
+   `test_body_axisangle_orientation` at line 6257), `1e-6` for composed/numerical
+   cases (matches frame tests at line 7517).
+
+4. **`euler_seq_to_quat()` is available in tests** because it's a module-level
+   function in `model_builder.rs`. AC3 uses it directly to compute the expected
+   value (pattern from `test_euler_seq_zyx_body_orientation`).
+
+5. **Run with:** `cargo test -p sim-mjcf`
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — `parse_site_attrs()` extension
+- `sim/L0/mjcf/src/model_builder.rs` — 16 acceptance tests (~250 lines, tests only)
 
 ---
 
-### 22. Tendon `springlength` MJCF Parsing
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### 22. Tendon `springlength` MJCF Parsing + Deadband Spring Physics
+**Status:** Complete | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 
-Pipeline has `tendon_lengthspring` field and auto-computes it from `tendon_length0`.
-But the MJCF parser does NOT parse the `springlength` attribute from XML. Zero
-matches for `springlength` in `parser.rs`. The runtime field exists but can't be
-set from MJCF.
+The pipeline stores `tendon_lengthspring` as a single `f64` per tendon in two
+locations:
+
+- **`ModelBuilder`** (`model_builder.rs:545`): `tendon_lengthspring: Vec<f64>`
+- **`Model`** (runtime) (`mujoco_pipeline.rs:1495`): `pub tendon_lengthspring: Vec<f64>`
+
+The MJCF parser has **no mention** of `springlength`. The `parse_tendon_attrs()`
+function (`parser.rs:2449`) and `parse_tendon_defaults()` function (`parser.rs:661`)
+both skip this attribute entirely. The MJCF types (`MjcfTendon` at `types.rs:2352`,
+`MjcfTendonDefaults` at `types.rs:643`) have no `springlength` field.
+
+At build time, `process_tendons()` (`model_builder.rs:1624`) always pushes `0.0` as a
+sentinel. In `compile_model()` (`model_builder.rs:3018`), if
+`stiffness > 0 && lengthspring == 0.0`, the sentinel is replaced with the computed
+tendon length at `qpos0`. For spatial tendons, `compute_spatial_tendon_length0()`
+(`mujoco_pipeline.rs:3859`) uses the same pattern.
+
+At runtime, `mj_fwd_passive()` (`mujoco_pipeline.rs:10830-10833`) computes:
+```
+force -= k * (length - l_ref)
+```
+This is a classical spring with **no deadband**. MuJoCo uses a `[f64; 2]` pair
+enabling a deadband region where force is zero.
+
+**Four bugs/gaps:**
+
+1. **No MJCF parsing** — `springlength` is silently ignored in MJCF. Users cannot
+   specify pre-tensioned tendons or deadband springs.
+2. **Broken sentinel** — The current `0.0` sentinel for "not specified" collides
+   with `springlength="0"`, which is valid MJCF meaning "zero rest length."
+   MuJoCo uses `{-1, -1}` as sentinel because tendon lengths are always ≥ 0.
+3. **Single-float storage** — MuJoCo stores `ntendon x 2` (pair per tendon).
+   Our single `f64` cannot represent deadband ranges.
+4. **No deadband physics** — The force formula is `F = -k * (L - ref)` with no
+   deadband. MuJoCo applies zero force when `lower ≤ L ≤ upper`.
+
+Additionally: no default class support for `springlength`, no validation of
+`low ≤ high`, and auto-compute is incorrectly gated on `stiffness > 0` (MuJoCo
+resolves the sentinel unconditionally).
+
+#### MuJoCo Authoritative Semantics
+
+These rules govern all behavior. Every specification decision and acceptance
+criterion traces to one or more:
+
+- **S1 — Attribute type:** `springlength` is `real(2)` — a pair `(low, high)`.
+  Default: `{-1, -1}` in `mjsTendon` (`mjspec.h`). Comment:
+  `spring resting length; {-1, -1}: use qpos_spring`.
+- **S2 — Single-value shorthand:** When only 1 value is given in MJCF, it is
+  copied to both elements: `springlength="0.5"` → `[0.5, 0.5]`.
+- **S3 — Sentinel semantics:** When both values are `-1` (the default),
+  compilation replaces them with the computed tendon length: `[length0, length0]`.
+  This replacement is **unconditional** — it does not depend on `stiffness > 0`.
+  **MuJoCo divergence note:** MuJoCo resolves the sentinel by evaluating tendon
+  length at `qpos_spring` (a separate "spring reference configuration" where all
+  springs have zero force), not at `qpos0`. CortenForge has no `qpos_spring`
+  field — it uses `qpos0` for this purpose. The two are equivalent when
+  `qpos_spring == qpos0` (the default and common case). Implementing `qpos_spring`
+  is out of scope for this item; see future work. The spec and implementation here
+  use `qpos0`, matching current CortenForge behavior.
+- **S4 — Validation:** `low ≤ high` is required (non-decreasing).
+- **S5 — Compiled model:** `tendon_lengthspring` has dimensions `ntendon x 2`.
+- **S6 — Deadband force** (`engine_passive.c`):
+  ```c
+  mjtNum lower = m->tendon_lengthspring[2*i];
+  mjtNum upper = m->tendon_lengthspring[2*i+1];
+  if (length > upper)      frc_spring = stiffness * (upper - length);
+  else if (length < lower) frc_spring = stiffness * (lower - length);
+  // else: frc_spring = 0 (deadband)
+  ```
+  When `lower == upper`, this reduces to `F = -k * (L - ref)` (classical spring).
+- **S7 — Defaultable:** `springlength` is valid on `<default><tendon .../>`.
+- **S8 — Applies to both types:** Valid on both `<fixed>` and `<spatial>` tendon
+  elements.
 
 #### Objective
 
-Parse `springlength` from `<tendon>` children (`<fixed>`, `<spatial>`) and use it
-to override the auto-computed spring rest length.
+Parse `springlength` from MJCF `<fixed>` and `<spatial>` tendon elements and
+`<default><tendon>` elements. Upgrade `tendon_lengthspring` from `Vec<f64>` to
+`Vec<[f64; 2]>` throughout the pipeline. Fix the sentinel value. Implement
+MuJoCo-conformant deadband spring force formula.
+
+#### What This Item Does NOT Cover
+
+- **`qpos_spring`**: MuJoCo has a separate spring reference configuration
+  (`qpos_spring`) used when resolving the sentinel. CortenForge uses `qpos0`
+  instead (see S3 divergence note). Implementing `qpos_spring` is a separate
+  future work item.
+- **Tendon damping**: MuJoCo's tendon damping (`F = -b * velocity`) is applied
+  unconditionally — it has no deadband and does not use `lengthspring`. The
+  existing damping code is unaffected by this change.
+- **`springlength` on actuator tendons**: This item covers `<fixed>` and
+  `<spatial>` tendon elements only. Actuator-level spring behavior is separate.
 
 #### Specification
 
-1. **MJCF parsing**: Parse `springlength` (float or 2-element array) from
-   `<fixed>` and `<spatial>` tendon elements. MuJoCo supports both scalar
-   (sets both min/max to the same value) and 2-element (min, max for
-   length-dependent spring).
-2. **Model builder**: When `springlength` is explicitly provided, store it in
-   `tendon_lengthspring` instead of auto-computing from `tendon_length0`.
-3. **Auto-compute fallback**: When `springlength` is NOT provided (default),
-   preserve existing behavior (compute from initial tendon length at qpos0).
+##### Part A — Types (`types.rs`)
+
+**A1. Add `springlength` to `MjcfTendon`** (at `types.rs:2352`)
+
+After `rgba` field (line 2373), add:
+
+```rust
+/// Spring rest length pair (low, high) for deadband spring.
+/// `None` = auto-compute from tendon length at qpos0 (see S3 divergence note).
+/// Single value in MJCF → both elements equal (no deadband).
+/// When low < high, force is zero within [low, high].
+pub springlength: Option<(f64, f64)>,
+```
+
+Type: `Option<(f64, f64)>`. `None` means "not specified by the user — use
+auto-compute sentinel." `Some((low, high))` means "user provided explicit values."
+
+In the `Default` impl (line 2380), add `springlength: None`.
+
+**Design note:** Using Rust's `Option` instead of a sentinel value in the parsing
+types cleanly separates "not specified" from "explicitly set to any value including
+zero." The sentinel `[-1, -1]` is only used in the compiled model's `[f64; 2]`
+array, never in the MJCF parsing types.
+
+**A2. Add `springlength` to `MjcfTendonDefaults`** (at `types.rs:643`)
+
+After `frictionloss` field (line 653), add:
+
+```rust
+/// Spring rest length pair (low, high) for deadband spring.
+pub springlength: Option<(f64, f64)>,
+```
+
+`#[derive(Default)]` handles `Option` → `None` automatically.
+
+##### Part B — Parser (`parser.rs`)
+
+**B1. Change `parse_tendon_attrs()` return type** (at `parser.rs:2449`)
+
+The current signature returns `MjcfTendon` directly (not `Result`). Adding
+validation (`low ≤ high`) requires error propagation. Change:
+
+```rust
+// BEFORE:
+fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> MjcfTendon
+// AFTER:
+fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> Result<MjcfTendon>
+```
+
+Wrap the return value in `Ok(tendon)`. There are exactly **2 call sites** — both
+in the same file:
+- Line 2357: add `?` → `parse_tendon_attrs(e, tendon_type)?`
+- Line 2378: add `?` → `parse_tendon_attrs(start, tendon_type)?`
+
+**B2. Parse `springlength` in `parse_tendon_attrs()`** (insert after the
+`frictionloss` block at line 2480, before `width` at line 2482)
+
+```rust
+if let Some(sl_str) = get_attribute_opt(e, "springlength") {
+    if let Ok(parts) = parse_float_array(&sl_str) {
+        match parts.len() {
+            1 => {
+                if parts[0] < 0.0 || !parts[0].is_finite() {
+                    return Err(MjcfError::invalid_attribute(
+                        "springlength",
+                        tendon.name.clone(),
+                        format!(
+                            "value ({}) must be finite and >= 0",
+                            parts[0]
+                        ),
+                    ));
+                }
+                tendon.springlength = Some((parts[0], parts[0]));  // S2
+            }
+            n if n >= 2 => {
+                if parts[0] < 0.0 || parts[1] < 0.0
+                    || !parts[0].is_finite() || !parts[1].is_finite()
+                {
+                    return Err(MjcfError::invalid_attribute(
+                        "springlength",
+                        tendon.name.clone(),
+                        format!(
+                            "values ({}, {}) must be finite and >= 0",
+                            parts[0], parts[1]
+                        ),
+                    ));
+                }
+                if parts[0] > parts[1] {                             // S4
+                    return Err(MjcfError::invalid_attribute(
+                        "springlength",
+                        tendon.name.clone(),
+                        format!(
+                            "low ({}) must be <= high ({})",
+                            parts[0], parts[1]
+                        ),
+                    ));
+                }
+                tendon.springlength = Some((parts[0], parts[1]));
+            }
+            _ => {}  // empty string, ignore
+        }
+    }
+}
+```
+
+Uses existing `MjcfError::invalid_attribute()` constructor (`error.rs:208-219`)
+which takes `(&'static str, impl Into<String>, impl Into<String>)`. For unnamed
+tendons, `tendon.name` is an empty string (set by `unwrap_or_default()` at
+line 2455), so the error will show an empty element name — acceptable, matching
+how other unnamed elements report errors.
+
+**Validation:** Rejects negative values because tendon lengths are physically
+non-negative. MuJoCo reserves `-1` as the sentinel (never user-specified), and
+values like `springlength="-0.5"` are physically meaningless. NaN and infinity
+are also rejected: add `|| !parts[0].is_finite()` (and `!parts[1].is_finite()`
+for the two-value arm) to the negative-check conditions.
+
+**Parsing conventions (matching existing `parse_tendon_attrs` patterns):**
+
+- **Non-numeric values** (e.g., `springlength="abc"`): silently ignored via the
+  outer `if let Ok(parts) = parse_float_array(...)`. This matches `range`
+  (line 2459) and `rgba` (line 2487) which use the same pattern.
+- **Extra values** (e.g., `springlength="0.3 0.7 0.9"`): first 2 taken, rest
+  silently ignored via `n if n >= 2`. Matches `range` (`if parts.len() >= 2`)
+  and `rgba` (`if parts.len() >= 4`).
+- **Empty/whitespace** (e.g., `springlength=""`): `parse_float_array` returns
+  empty vec, falls to `_ => {}` no-op. Attribute effectively ignored.
+
+**B3. Parse `springlength` in `parse_tendon_defaults()`** (after `frictionloss`
+parsing, line ~675)
+
+```rust
+if let Some(sl_str) = get_attribute_opt(e, "springlength") {
+    let parts = parse_float_array(&sl_str)?;
+    match parts.len() {
+        1 => {
+            if parts[0] < 0.0 || !parts[0].is_finite() {
+                return Err(MjcfError::XmlParse(format!(
+                    "tendon default springlength: value ({}) must be finite and >= 0",
+                    parts[0]
+                )));
+            }
+            defaults.springlength = Some((parts[0], parts[0]));
+        }
+        n if n >= 2 => {
+            if parts[0] < 0.0 || parts[1] < 0.0
+                || !parts[0].is_finite() || !parts[1].is_finite()
+            {
+                return Err(MjcfError::XmlParse(format!(
+                    "tendon default springlength: values ({}, {}) must be finite and >= 0",
+                    parts[0], parts[1]
+                )));
+            }
+            if parts[0] > parts[1] {
+                return Err(MjcfError::XmlParse(format!(
+                    "tendon default springlength: low ({}) must be <= high ({})",
+                    parts[0], parts[1]
+                )));
+            }
+            defaults.springlength = Some((parts[0], parts[1]));
+        }
+        _ => {}
+    }
+}
+```
+
+**Note on error constructors:** B2 uses `MjcfError::invalid_attribute()` (which
+includes the tendon name for diagnostics), while B3 uses `MjcfError::XmlParse()`
+because `parse_tendon_defaults()` operates on `<default>` elements that have no
+tendon name. This matches how other defaults-parsing functions report errors.
+
+##### Part C — Defaults (`defaults.rs`)
+
+**C1. Apply `springlength` in `apply_to_tendon()`** (at `defaults.rs:355-408`)
+
+After the frictionloss block (line ~390), add:
+
+```rust
+// Springlength: apply default if not explicitly set
+if result.springlength.is_none() {
+    result.springlength = defaults.springlength;
+}
+```
+
+This follows the same `Option`-based pattern as `range` (line 360). `None` means
+"not explicitly set," so the default fills in the gap.
+An explicit `Some(...)` on the element always wins — even `springlength="0"`.
+
+**C2. Merge `springlength` in `merge_tendon_defaults()`** (at `defaults.rs:612-630`)
+
+In the `(Some(p), Some(c))` arm (line 620-628), add:
+
+```rust
+springlength: c.springlength.or(p.springlength),
+```
+
+The `None`-only and `Some`-only arms use `.clone()` which automatically includes
+the new field. The `(Some(p), Some(c))` arm constructs the struct field-by-field
+— the compiler will error if `springlength` is omitted, ensuring it cannot be
+forgotten.
+
+##### Part D — Model Builder (`model_builder.rs`)
+
+**D1. Change `ModelBuilder.tendon_lengthspring` type** (at `model_builder.rs:545`)
+
+```rust
+// BEFORE:
+tendon_lengthspring: Vec<f64>,
+// AFTER:
+tendon_lengthspring: Vec<[f64; 2]>,
+```
+
+Initialization at line 738 (`vec![]`) infers the new type automatically.
+
+**D2. Use parsed `springlength` in `process_tendons()`** (at
+`model_builder.rs:1624`)
+
+Replace:
+```rust
+self.tendon_lengthspring.push(0.0); // Set to length0 if stiffness > 0
+```
+With:
+```rust
+// S1/S3: Use parsed springlength, or sentinel [-1, -1] for auto-compute
+self.tendon_lengthspring.push(match tendon.springlength {
+    Some((low, high)) => [low, high],
+    None => [-1.0, -1.0],  // sentinel: resolved to [length0, length0] later
+});
+```
+
+**D3. Update fixed-tendon auto-compute in `compile_model()`** (at
+`model_builder.rs:3017-3020`)
+
+Replace:
+```rust
+if model.tendon_stiffness[t] > 0.0 && model.tendon_lengthspring[t] == 0.0 {
+    model.tendon_lengthspring[t] = length;
+}
+```
+With:
+```rust
+// S3: Replace sentinel [-1, -1] with computed length at qpos0
+// (MuJoCo uses qpos_spring; see S3 divergence note).
+// Unconditional — MuJoCo resolves sentinel regardless of stiffness.
+if model.tendon_lengthspring[t] == [-1.0, -1.0] {
+    model.tendon_lengthspring[t] = [length, length];
+}
+```
+
+**D4. Transfer to compiled model** (at `model_builder.rs:2882`)
+
+No change needed — `tendon_lengthspring: self.tendon_lengthspring` automatically
+follows the type change.
+
+##### Part E — Runtime Model (`mujoco_pipeline.rs`)
+
+**E1. Change `Model.tendon_lengthspring` type** (at `mujoco_pipeline.rs:1494-1495`)
+
+```rust
+// BEFORE:
+/// Tendon rest length (reference for spring force).
+pub tendon_lengthspring: Vec<f64>,
+// AFTER:
+/// Tendon spring rest length pair [low, high] for deadband spring.
+/// When low == high, acts as a classical spring with rest length = low.
+/// When low < high, force is zero within [low, high] (deadband).
+pub tendon_lengthspring: Vec<[f64; 2]>,
+```
+
+Initialization at line 2931 (`vec![]`) infers the new type automatically.
+
+**E2. Update spatial tendon auto-compute in `compute_spatial_tendon_length0()`**
+(at `mujoco_pipeline.rs:3859-3860`)
+
+Replace:
+```rust
+if self.tendon_lengthspring[t] == 0.0 && self.tendon_stiffness[t] > 0.0 {
+    self.tendon_lengthspring[t] = data.ten_length[t];
+}
+```
+With:
+```rust
+// S3: Replace sentinel [-1, -1] with computed length at qpos0
+if self.tendon_lengthspring[t] == [-1.0, -1.0] {
+    self.tendon_lengthspring[t] = [data.ten_length[t], data.ten_length[t]];
+}
+```
+
+**E3. Implement deadband spring in `mj_fwd_passive()`** (at
+`mujoco_pipeline.rs:10828-10834`)
+
+Replace:
+```rust
+// Spring: F = -k * (L - L_ref)
+let k = model.tendon_stiffness[t];
+if k > 0.0 {
+    let l_ref = model.tendon_lengthspring[t];
+    force -= k * (length - l_ref);
+}
+```
+With:
+```rust
+// S6: Deadband spring — force is zero within [lower, upper]
+let k = model.tendon_stiffness[t];
+if k > 0.0 {
+    let [lower, upper] = model.tendon_lengthspring[t];
+    if length > upper {
+        force += k * (upper - length);
+    } else if length < lower {
+        force += k * (lower - length);
+    }
+    // else: deadband, no spring force
+}
+```
+
+**Sign convention verification:** When `lower == upper == ref`:
+- `length > ref`: `force += k * (ref - length)` = `force -= k * (length - ref)` ✓
+- `length < ref`: `force += k * (ref - length)` = `force -= k * (length - ref)` ✓
+- Mathematically identical to the old classical spring formula. No special-casing
+  needed.
 
 #### Acceptance Criteria
 
-1. `<spatial springlength="0.5"/>` sets the spring rest length to 0.5.
-2. `<spatial springlength="0.3 0.7"/>` sets min/max spring rest lengths.
-3. Without `springlength`, auto-computation from qpos0 is preserved.
-4. A pre-tensioned tendon (springlength ≠ initial length) produces correct
-   spring forces.
+All tests use `load_model()` and assert on compiled model fields and/or physics
+output. Tolerance: `1e-10` for exact values, `1e-6` for physics output.
+
+##### Parsing and compilation
+
+**AC1 — Single-value springlength on fixed tendon** (S2, S8)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="0.5">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.5, 0.5]`.
+
+**AC2 — Two-value springlength on fixed tendon (deadband)** (S1, S8)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="0.3 0.7">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.3, 0.7]`.
+
+**AC3 — Auto-compute fallback (no springlength specified)** (S3)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge" ref="0.5"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" stiffness="100">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.5, 0.5]`. Auto-computed from tendon
+length at qpos0 = `coef * qpos0[j]` = `1.0 * 0.5` = `0.5`, replicated to both
+elements.
+
+**AC3b — Auto-compute with stiffness=0 (unconditional sentinel resolution)** (S3)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge" ref="0.5"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+No `springlength`, no `stiffness` (defaults to 0). The sentinel `[-1, -1]` must
+still be resolved to `[0.5, 0.5]` because MuJoCo resolves the sentinel
+**unconditionally** — not gated on `stiffness > 0`. This is the behavioral change
+from the current code (which skips resolution when `stiffness == 0`).
+
+Assert: `model.tendon_lengthspring[0] == [0.5, 0.5]`.
+
+**AC4 — `springlength="0"` is valid and not confused with sentinel** (S2, S3)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge" ref="0.5"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" stiffness="100" springlength="0">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.0, 0.0]`. Explicit zero, NOT
+auto-computed. This is the critical sentinel fix — the old `0.0` sentinel would
+have treated this as "unset" and auto-computed `0.5` from qpos0.
+
+**AC5 — Validation: `low > high` is rejected** (S4)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="0.7 0.3">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. Error message contains `"springlength"`.
+
+**AC5b — Validation: negative springlength is rejected** (B2 validation)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="-0.5">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. Negative values are physically
+meaningless (tendon lengths are always ≥ 0). MuJoCo reserves `-1` as the
+internal sentinel, but user-specified negative values should be rejected.
+
+**AC5c — Validation: NaN springlength is rejected** (B2 validation)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="NaN">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. Rust's `f64` parses `"NaN"` successfully,
+but `!f64::NAN.is_finite()` is `true`, so the `is_finite()` guard catches it.
+Without this guard, NaN would pass the `< 0.0` check (NaN comparisons are always
+false) and propagate silently.
+
+**AC5d — Validation: two-value with one negative is rejected** (B2 validation)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="0.3 -0.5">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `load_model(...)` returns `Err`. The first value is valid but the second
+is negative. The two-value arm checks `parts[0] < 0.0 || parts[1] < 0.0`.
+
+##### Default class support
+
+**AC6 — springlength from default class** (S7)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="pretensioned">
+      <tendon springlength="0.2" stiffness="50"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" class="pretensioned">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.2, 0.2]` AND
+`model.tendon_stiffness[0] == 50.0`.
+
+**AC7 — Explicit springlength overrides default** (S7)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="pretensioned">
+      <tendon springlength="0.2"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" class="pretensioned" springlength="0.8">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.8, 0.8]` (element value overrides
+default).
+
+**AC8 — Two-value springlength via default class** (S7)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="deadband">
+      <tendon springlength="0.1 0.9"/>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" class="deadband">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.1, 0.9]`.
+
+**AC8b — Nested default class: child inherits parent springlength** (S7, C2)
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <default>
+    <default class="parent">
+      <tendon springlength="0.2"/>
+      <default class="child">
+        <tendon stiffness="50"/>
+      </default>
+    </default>
+  </default>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="hinge"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" class="child">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.2, 0.2]` (inherited from parent) AND
+`model.tendon_stiffness[0] == 50.0` (from child). The child class sets `stiffness`
+but not `springlength`, so `merge_tendon_defaults` (C2) must propagate the parent's
+`springlength` via `c.springlength.or(p.springlength)`.
+
+##### Deadband spring physics
+
+All physics tests use the following MJCF model:
+
+```xml
+<mujoco>
+  <compiler angle="radian"/>
+  <worldbody>
+    <body name="b">
+      <joint name="j" type="slide"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="t" springlength="SPRINGLENGTH" stiffness="STIFFNESS">
+      <joint joint="j" coef="1.0"/>
+    </fixed>
+  </tendon>
+</mujoco>
+```
+
+With `coef=1.0` on a slide joint, `tendon_length = qpos[j]`. This gives direct
+control over tendon length by setting `data.qpos[0]`.
+
+**AC9 — Length within deadband: zero spring force** (S6)
+
+`springlength="0.3 0.7"`, `stiffness="100"`. Set `data.qpos[0] = 0.5`.
+Tendon length = 0.5 (within [0.3, 0.7] deadband). Run `forward()`.
+
+Assert: `data.qfrc_passive[0] == 0.0` (no spring force in deadband).
+
+**AC10 — Length above upper bound: restoring force** (S6)
+
+`springlength="0.3 0.7"`, `stiffness="100"`. Set `data.qpos[0] = 1.0`.
+Tendon length = 1.0 (above upper=0.7). Run `forward()`.
+
+Spring force = `100 * (0.7 - 1.0)` = `-30.0`. The tendon force projects to
+the joint via `coef=1.0`, so:
+
+Assert: `data.qfrc_passive[0]` ≈ `-30.0` (tolerance 1e-6).
+
+**AC11 — Length below lower bound: restoring force** (S6)
+
+`springlength="0.3 0.7"`, `stiffness="100"`. Set `data.qpos[0] = 0.1`.
+Tendon length = 0.1 (below lower=0.3). Run `forward()`.
+
+Spring force = `100 * (0.3 - 0.1)` = `20.0`. Projected via `coef=1.0`:
+
+Assert: `data.qfrc_passive[0]` ≈ `20.0` (tolerance 1e-6).
+
+**AC12 — No deadband (single value): classical spring preserved** (S6)
+
+`springlength="0.5"`, `stiffness="100"`. Set `data.qpos[0] = 0.8`.
+Tendon length = 0.8. Run `forward()`.
+
+Spring force = `100 * (0.5 - 0.8)` = `-30.0`. When `lower == upper`, the
+deadband formula is mathematically identical to `F = -k * (L - ref)`:
+
+Assert: `data.qfrc_passive[0]` ≈ `-30.0` (tolerance 1e-6). Identical to the
+pre-existing classical spring behavior.
+
+##### Spatial tendon
+
+**AC13 — springlength on spatial tendon** (S8)
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b1" pos="0 0 0">
+      <site name="s1" pos="0 0 0"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+    <body name="b2" pos="1 0 0">
+      <site name="s2" pos="0 0 0"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t" springlength="0.5 0.8">
+      <site site="s1"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+
+Assert: `model.tendon_lengthspring[0] == [0.5, 0.8]`.
+
+**AC13b — Spatial tendon auto-compute fallback (no springlength)** (S3, S8, E2)
+
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b1" pos="0 0 0">
+      <site name="s1" pos="0 0 0"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+    <body name="b2" pos="1 0 0">
+      <site name="s2" pos="0 0 0"/>
+      <geom type="sphere" size="0.1" mass="1.0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t" stiffness="100">
+      <site site="s1"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+
+The spatial tendon connects two sites 1.0 apart. No `springlength` specified, so
+the sentinel `[-1, -1]` is resolved via `compute_spatial_tendon_length0()` (E2).
+
+Assert: `model.tendon_lengthspring[0] == [1.0, 1.0]` (auto-computed from tendon
+length at qpos0 = distance between sites = 1.0).
+
+##### Regression
+
+**AC14 — All existing tendon tests pass unchanged**
+
+The auto-compute sentinel change from `0.0` to `[-1.0, -1.0]` is transparent
+because the sentinel is always resolved before any physics code runs. Models
+without `springlength` produce identical physics output.
+
+Specific tests to verify:
+- `test_tendon_actuator_unknown_tendon_error` (`model_builder.rs:5006`)
+- `test_tendon_stiffness_defaults` (`default_classes.rs:139`)
+- `test_implicitfast_tendon_spring_explicit` (`implicit_integration.rs:939`)
+- All spatial tendon tests (`spatial_tendons.rs`)
+
+**AC15 — MJB version bump** (Implementation Note 9)
+
+Assert: `MJB_VERSION` (`mjb.rs:52`) is `2` after implementation. Additionally,
+loading an MJB file saved with version 1 must return
+`Err(MjcfError::UnsupportedMjbVersion(1))`. The existing test at `mjb.rs:433`
+already covers version mismatch rejection — verify it still passes.
+
+#### Implementation Notes
+
+**1. Sentinel fix is critical:** The current `0.0` sentinel is broken because
+`springlength="0"` is valid MJCF meaning "zero rest length" (fully contracted
+spring). The `0.0` sentinel would be indistinguishable from this explicit user
+value. MuJoCo uses `{-1, -1}` which is safe because tendon lengths are always
+≥ 0, so `-1` can never be a valid user-specified value. The 3 sentinel-check
+sites are:
+- `model_builder.rs:3018` (fixed tendon compile)
+- `mujoco_pipeline.rs:3859` (spatial tendon compile)
+- `model_builder.rs:1624` (initial push — changes from `push(0.0)` to
+  `push([-1.0, -1.0])`)
+
+**2. Breaking type change is contained:** `Vec<f64>` → `Vec<[f64; 2]>` affects
+exactly **2 source files** with **11 reference sites** total (6 in
+`model_builder.rs`, 5 in `mujoco_pipeline.rs`). No other crate (sim-physics,
+sim-types, sim-constraint, etc.) references `tendon_lengthspring`. The breaking
+change is fully contained.
+
+**3. `parse_tendon_attrs` signature change:** The current signature returns
+`MjcfTendon` directly (not `Result`). Adding validation (`low ≤ high`) requires
+error propagation. There are exactly **2 call sites** (lines 2357 and 2378),
+both in `parse_tendons()` / `parse_tendon()`. The blast radius is minimal.
+
+**4. Auto-compute is unconditional on sentinel:** MuJoCo replaces `{-1, -1}`
+regardless of whether `stiffness > 0`. The current code's check for
+`stiffness > 0` was an optimization (if stiffness is 0, the spring produces no
+force anyway). The new code matches MuJoCo semantics exactly: always resolve
+the sentinel. This is correct because stiffness could be changed dynamically,
+and the springlength value might be used by other systems in the future.
+
+**5. No impact on implicit integrator:** The comment at
+`mujoco_pipeline.rs:10842-10845` explicitly states that tendon springs are
+skipped in implicit mode because they couple multiple joints (non-diagonal K/D).
+The deadband change only affects the explicit spring force computation at
+lines 10828-10834, which is inside the `if !implicit_mode` block.
+
+**6. Implementation order:**
+1. Types (A1, A2) — zero compilation impact, just new optional fields
+2. Parser (B1-B3) — parses the new attribute, signature change
+3. Defaults (C1, C2) — applies defaults to the new field
+4. Model builder (D1-D3) — type change + sentinel migration + auto-compute
+5. Runtime (E1-E3) — type change + sentinel migration + deadband physics
+6. Tests (AC1-AC15, AC3b, AC5b-d, AC8b, AC13b)
+
+Steps 1-3 can be done and compiled in isolation (parsing only). Steps 4-5 must
+be done together because the `Model` struct is constructed in the model builder
+and consumed in the runtime.
+
+**7. `MjcfTendon` convenience constructors:** `MjcfTendon::spatial()` (line 2402)
+and `MjcfTendon::fixed()` (line 2412) use `..Default::default()` and will
+automatically pick up `springlength: None`. No changes needed.
+
+**8. Existing tests do not need `<compiler>` additions:** Unlike the `angle`
+change in item #18, this change does not alter the default behavior for existing
+MJCF strings. Models without `springlength` get the sentinel, which resolves to
+`[length0, length0]` — same physics as before. No existing test MJCF strings
+need modification.
+
+**9. MJB version bump required:** Adding `springlength: Option<(f64, f64)>` to
+`MjcfTendon` changes the bincode serialization layout. The MJB format (`mjb.rs`)
+uses bincode with no schema evolution — adding a field to a serialized struct
+breaks deserialization of old files. Bump `MJB_VERSION` (`mjb.rs:52`) from 1 to
+2. The existing `validate()` function (`mjb.rs:108-116`) performs strict version
+checking and will reject version-1 files with `MjcfError::UnsupportedMjbVersion`.
+No migration code is needed — the codebase has no backward-compatibility layer,
+and MJB files are regenerated from MJCF source.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — parse springlength attribute
+- `sim/L0/mjcf/src/types.rs` — Add `springlength: Option<(f64, f64)>` to
+  `MjcfTendon` (line 2373) and `MjcfTendonDefaults` (line 653); update
+  `Default` impl (line 2395)
+- `sim/L0/mjcf/src/parser.rs` — Parse `springlength` in `parse_tendon_attrs()`
+  (line 2480) and `parse_tendon_defaults()` (line 675); change
+  `parse_tendon_attrs` return type to `Result<MjcfTendon>` (line 2449);
+  update 2 call sites (lines 2357, 2378)
+- `sim/L0/mjcf/src/defaults.rs` — Apply `springlength` default in
+  `apply_to_tendon()` (line 390); merge in `merge_tendon_defaults()` (line 625)
+- `sim/L0/mjcf/src/model_builder.rs` — Change `tendon_lengthspring: Vec<f64>`
+  to `Vec<[f64; 2]>` (line 545); use parsed springlength with sentinel
+  `[-1, -1]` in `process_tendons()` (line 1624); update auto-compute in
+  `compile_model()` (lines 3017-3020); acceptance tests (AC1-AC15, AC3b, AC5b-d, AC8b, AC13b)
+- `sim/L0/core/src/mujoco_pipeline.rs` — Change `tendon_lengthspring: Vec<f64>`
+  to `Vec<[f64; 2]>` (line 1495); update spatial tendon auto-compute in
+  `compute_spatial_tendon_length0()` (lines 3859-3860); implement deadband
+  spring in `mj_fwd_passive()` (lines 10828-10834)
+- `sim/L0/mjcf/src/mjb.rs` — Bump `MJB_VERSION` from 1 to 2 (line 52)

@@ -1491,8 +1491,10 @@ pub struct Model {
     pub tendon_stiffness: Vec<f64>,
     /// Tendon damping coefficient.
     pub tendon_damping: Vec<f64>,
-    /// Tendon rest length (reference for spring force).
-    pub tendon_lengthspring: Vec<f64>,
+    /// Tendon spring rest length pair [low, high] for deadband spring.
+    /// When low == high, acts as a classical spring with rest length = low.
+    /// When low < high, force is zero within [low, high] (deadband).
+    pub tendon_lengthspring: Vec<[f64; 2]>,
     /// Tendon length at qpos0 (precomputed reference).
     pub tendon_length0: Vec<f64>,
     /// Number of wrapping objects for this tendon.
@@ -3856,8 +3858,11 @@ impl Model {
         for t in 0..self.ntendon {
             if self.tendon_type[t] == TendonType::Spatial {
                 self.tendon_length0[t] = data.ten_length[t];
-                if self.tendon_lengthspring[t] == 0.0 && self.tendon_stiffness[t] > 0.0 {
-                    self.tendon_lengthspring[t] = data.ten_length[t];
+                // S3: Replace sentinel [-1, -1] with computed length at qpos0
+                // Sentinel is an exact literal, never a computed float.
+                #[allow(clippy::float_cmp)]
+                if self.tendon_lengthspring[t] == [-1.0, -1.0] {
+                    self.tendon_lengthspring[t] = [data.ten_length[t], data.ten_length[t]];
                 }
             }
         }
@@ -10826,11 +10831,16 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let mut force = 0.0;
 
         if !implicit_mode {
-            // Spring: F = -k * (L - L_ref)
+            // S6: Deadband spring — force is zero within [lower, upper]
             let k = model.tendon_stiffness[t];
             if k > 0.0 {
-                let l_ref = model.tendon_lengthspring[t];
-                force -= k * (length - l_ref);
+                let [lower, upper] = model.tendon_lengthspring[t];
+                if length > upper {
+                    force += k * (upper - length);
+                } else if length < lower {
+                    force += k * (lower - length);
+                }
+                // else: deadband, no spring force
             }
 
             // Damper: F = -b * v

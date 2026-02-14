@@ -673,6 +673,43 @@ fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults> {
     defaults.stiffness = parse_float_attr(e, "stiffness");
     defaults.damping = parse_float_attr(e, "damping");
     defaults.frictionloss = parse_float_attr(e, "frictionloss");
+
+    // B3: Parse springlength in defaults
+    if let Some(sl_str) = get_attribute_opt(e, "springlength") {
+        let parts = parse_float_array(&sl_str)?;
+        match parts.len() {
+            1 => {
+                if parts[0] < 0.0 || !parts[0].is_finite() {
+                    return Err(MjcfError::XmlParse(format!(
+                        "tendon default springlength: value ({}) must be finite and >= 0",
+                        parts[0]
+                    )));
+                }
+                defaults.springlength = Some((parts[0], parts[0]));
+            }
+            n if n >= 2 => {
+                if parts[0] < 0.0
+                    || parts[1] < 0.0
+                    || !parts[0].is_finite()
+                    || !parts[1].is_finite()
+                {
+                    return Err(MjcfError::XmlParse(format!(
+                        "tendon default springlength: values ({}, {}) must be finite and >= 0",
+                        parts[0], parts[1]
+                    )));
+                }
+                if parts[0] > parts[1] {
+                    return Err(MjcfError::XmlParse(format!(
+                        "tendon default springlength: low ({}) must be <= high ({})",
+                        parts[0], parts[1]
+                    )));
+                }
+                defaults.springlength = Some((parts[0], parts[1]));
+            }
+            _ => {}
+        }
+    }
+
     defaults.width = parse_float_attr(e, "width");
 
     if let Some(rgba) = get_attribute_opt(e, "rgba") {
@@ -2354,7 +2391,7 @@ fn parse_tendons<R: BufRead>(reader: &mut Reader<R>) -> Result<Vec<MjcfTendon>> 
             Ok(Event::Empty(ref e)) => {
                 let elem_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if let Some(tendon_type) = MjcfTendonType::from_str(&elem_name) {
-                    let tendon = parse_tendon_attrs(e, tendon_type);
+                    let tendon = parse_tendon_attrs(e, tendon_type)?;
                     tendons.push(tendon);
                 }
             }
@@ -2375,7 +2412,7 @@ fn parse_tendon<R: BufRead>(
     start: &BytesStart,
     tendon_type: MjcfTendonType,
 ) -> Result<MjcfTendon> {
-    let mut tendon = parse_tendon_attrs(start, tendon_type);
+    let mut tendon = parse_tendon_attrs(start, tendon_type)?;
     let mut buf = Vec::new();
 
     loop {
@@ -2446,7 +2483,7 @@ fn parse_tendon<R: BufRead>(
 }
 
 /// Parse tendon attributes.
-fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> MjcfTendon {
+fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> Result<MjcfTendon> {
     let mut tendon = MjcfTendon {
         tendon_type,
         ..Default::default()
@@ -2479,6 +2516,50 @@ fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> MjcfTendon
         tendon.frictionloss = frictionloss;
     }
 
+    // B2: Parse springlength (1 or 2 values)
+    if let Some(sl_str) = get_attribute_opt(e, "springlength") {
+        if let Ok(parts) = parse_float_array(&sl_str) {
+            match parts.len() {
+                1 => {
+                    if parts[0] < 0.0 || !parts[0].is_finite() {
+                        return Err(MjcfError::invalid_attribute(
+                            "springlength",
+                            tendon.name,
+                            format!("value ({}) must be finite and >= 0", parts[0]),
+                        ));
+                    }
+                    tendon.springlength = Some((parts[0], parts[0])); // S2
+                }
+                n if n >= 2 => {
+                    if parts[0] < 0.0
+                        || parts[1] < 0.0
+                        || !parts[0].is_finite()
+                        || !parts[1].is_finite()
+                    {
+                        return Err(MjcfError::invalid_attribute(
+                            "springlength",
+                            tendon.name,
+                            format!(
+                                "values ({}, {}) must be finite and >= 0",
+                                parts[0], parts[1]
+                            ),
+                        ));
+                    }
+                    if parts[0] > parts[1] {
+                        // S4
+                        return Err(MjcfError::invalid_attribute(
+                            "springlength",
+                            tendon.name,
+                            format!("low ({}) must be <= high ({})", parts[0], parts[1]),
+                        ));
+                    }
+                    tendon.springlength = Some((parts[0], parts[1]));
+                }
+                _ => {} // empty string, ignore
+            }
+        }
+    }
+
     if let Some(width) = parse_float_attr(e, "width") {
         tendon.width = width;
     }
@@ -2491,7 +2572,7 @@ fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> MjcfTendon
         }
     }
 
-    tendon
+    Ok(tendon)
 }
 
 // ============================================================================

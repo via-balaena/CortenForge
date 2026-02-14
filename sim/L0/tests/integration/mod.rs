@@ -65,6 +65,13 @@ pub mod default_classes;
 pub mod spatial_tendons;
 
 // ============================================================================
+// Tendon Springlength Tests (§22 Tendon springlength + Deadband Physics)
+// ============================================================================
+
+/// Tendon springlength: parsing, defaults, sentinel, deadband physics.
+pub mod tendon_springlength;
+
+// ============================================================================
 // Site-Transmission Actuator Tests (§5 Site-Transmission Actuators)
 // ============================================================================
 

@@ -210,6 +210,11 @@ pub fn model_from_mjcf(
     // Apply compiler pre-processing passes on a mutable clone
     let mut mjcf = mjcf.clone();
 
+    // Validate childclass references before frame expansion dissolves frames.
+    // MuJoCo rejects undefined childclass at schema validation (S7).
+    let pre_resolver = DefaultResolver::from_model(&mjcf);
+    validate_childclass_references(&mjcf.worldbody, &pre_resolver)?;
+
     // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
     // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
     // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
@@ -246,8 +251,11 @@ pub fn model_from_mjcf(
     // These must be processed BEFORE child bodies so geom indices are correct
     builder.process_worldbody_geoms_and_sites(&mjcf.worldbody)?;
 
-    // Recursively process body tree starting from worldbody children
-    // World body (body 0) has no DOFs, so parent_last_dof is None
+    // Recursively process body tree starting from worldbody children.
+    // World body (body 0) has no DOFs, so parent_last_dof is None.
+    // Note: worldbody.childclass is always None for parsed MJCF — MuJoCo's schema
+    // rejects attributes on <worldbody>. Our parser (parse_worldbody) never reads
+    // worldbody attributes, so this is correct by construction.
     for child in &mjcf.worldbody.children {
         builder.process_body(child, 0, None, mjcf.worldbody.childclass.as_deref())?;
     }
@@ -534,7 +542,7 @@ struct ModelBuilder {
     tendon_stiffness: Vec<f64>,
     tendon_damping: Vec<f64>,
     tendon_frictionloss: Vec<f64>,
-    tendon_lengthspring: Vec<f64>,
+    tendon_lengthspring: Vec<[f64; 2]>,
     tendon_length0: Vec<f64>,
     tendon_name: Vec<Option<String>>,
     tendon_solref: Vec<[f64; 2]>,
@@ -875,6 +883,10 @@ impl ModelBuilder {
     ///
     /// In MJCF, the worldbody can have geoms (like ground planes) and sites
     /// directly attached to it. These are static geometries at world coordinates.
+    ///
+    /// No childclass is applied here — MuJoCo's worldbody accepts no attributes
+    /// (including childclass), so worldbody elements use only their own explicit
+    /// class or the unnamed top-level default.
     fn process_worldbody_geoms_and_sites(
         &mut self,
         worldbody: &MjcfBody,
@@ -1609,7 +1621,11 @@ impl ModelBuilder {
             });
             self.tendon_solref.push(DEFAULT_SOLREF);
             self.tendon_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]); // MuJoCo defaults
-            self.tendon_lengthspring.push(0.0); // Set to length0 if stiffness > 0
+            // S1/S3: Use parsed springlength, or sentinel [-1, -1] for auto-compute
+            self.tendon_lengthspring.push(match tendon.springlength {
+                Some(pair) => pair.into(),
+                None => [-1.0, -1.0], // sentinel: resolved to [length0, length0] later
+            });
             self.tendon_length0.push(0.0); // Computed after construction from qpos0
 
             let wrap_start = self.wrap_type.len();
@@ -3002,9 +3018,13 @@ impl ModelBuilder {
                     }
                 }
                 model.tendon_length0[t] = length;
-                // Spring rest length defaults to length at qpos0 when stiffness > 0
-                if model.tendon_stiffness[t] > 0.0 && model.tendon_lengthspring[t] == 0.0 {
-                    model.tendon_lengthspring[t] = length;
+                // S3: Replace sentinel [-1, -1] with computed length at qpos0
+                // (MuJoCo uses qpos_spring; see S3 divergence note).
+                // Unconditional — MuJoCo resolves sentinel regardless of stiffness.
+                // Sentinel is an exact literal, never a computed float.
+                #[allow(clippy::float_cmp)]
+                if model.tendon_lengthspring[t] == [-1.0, -1.0] {
+                    model.tendon_lengthspring[t] = [length, length];
                 }
             }
         }
@@ -3472,6 +3492,59 @@ fn frame_accum_child(
 ) {
     *child_pos = *frame_pos + frame_quat.transform_vector(child_pos);
     *child_quat = *frame_quat * *child_quat;
+}
+
+/// Validate that all `childclass` references in the body tree point to defined
+/// default classes. Must run BEFORE `expand_frames()` because frame expansion
+/// dissolves frames (via `std::mem::take`), losing `frame.childclass` values.
+///
+/// MuJoCo rejects undefined childclass references at schema validation (S7).
+fn validate_childclass_references(
+    body: &MjcfBody,
+    resolver: &DefaultResolver,
+) -> std::result::Result<(), ModelConversionError> {
+    if let Some(ref cc) = body.childclass {
+        if resolver.get_defaults(Some(cc.as_str())).is_none() {
+            return Err(ModelConversionError {
+                message: format!(
+                    "childclass '{}' on body '{}' references undefined default class",
+                    cc, body.name
+                ),
+            });
+        }
+    }
+    for frame in &body.frames {
+        validate_frame_childclass_refs(frame, resolver)?;
+    }
+    for child in &body.children {
+        validate_childclass_references(child, resolver)?;
+    }
+    Ok(())
+}
+
+/// Validate childclass references on a frame and its nested contents.
+fn validate_frame_childclass_refs(
+    frame: &MjcfFrame,
+    resolver: &DefaultResolver,
+) -> std::result::Result<(), ModelConversionError> {
+    if let Some(ref cc) = frame.childclass {
+        if resolver.get_defaults(Some(cc.as_str())).is_none() {
+            return Err(ModelConversionError {
+                message: format!(
+                    "childclass '{}' on frame '{}' references undefined default class",
+                    cc,
+                    frame.name.as_deref().unwrap_or("<unnamed>")
+                ),
+            });
+        }
+    }
+    for nested in &frame.frames {
+        validate_frame_childclass_refs(nested, resolver)?;
+    }
+    for child_body in &frame.bodies {
+        validate_childclass_references(child_body, resolver)?;
+    }
+    Ok(())
 }
 
 /// Recursively expand all `<frame>` elements in a body tree.
@@ -7804,6 +7877,272 @@ mod tests {
     }
 
     // ========================================================================
+    // AC28–AC35: Childclass edge cases (item #20)
+    // ========================================================================
+
+    // AC28: Childclass referencing a nested default class (default hierarchy)
+    #[test]
+    fn test_ac28_childclass_nested_default_hierarchy() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="robot">
+                        <geom contype="5"/>
+                        <default class="arm">
+                            <geom conaffinity="3"/>
+                        </default>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="arm">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // "arm" inherits contype=5 from parent "robot", and sets conaffinity=3 directly
+        assert_eq!(
+            model.geom_contype[0], 5,
+            "geom should inherit contype=5 from parent class 'robot' through 'arm', got {}",
+            model.geom_contype[0]
+        );
+        assert_eq!(
+            model.geom_conaffinity[0], 3,
+            "geom should get conaffinity=3 from class 'arm', got {}",
+            model.geom_conaffinity[0]
+        );
+    }
+
+    // AC29: Childclass applies to geom, joint, AND site simultaneously
+    #[test]
+    fn test_ac29_childclass_multi_element() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <default>
+                    <default class="R">
+                        <geom contype="7"/>
+                        <joint damping="5.0"/>
+                        <site size="0.05"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="R">
+                        <joint name="j" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                        <site name="s"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        assert_eq!(
+            model.geom_contype[0], 7,
+            "geom should inherit contype=7 from childclass 'R', got {}",
+            model.geom_contype[0]
+        );
+        assert!(
+            (model.dof_damping[0] - 5.0).abs() < 1e-10,
+            "joint should inherit damping=5.0 from childclass 'R', got {}",
+            model.dof_damping[0]
+        );
+        // Site size default is [0.01]; class "R" sets it to [0.05]
+        let site_size = model.site_size[0];
+        assert!(
+            (site_size.x - 0.05).abs() < 1e-10,
+            "site should inherit size=0.05 from childclass 'R', got {}",
+            site_size.x
+        );
+    }
+
+    // AC30: 3-level deep propagation without override
+    #[test]
+    fn test_ac30_childclass_3level_propagation() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <default>
+                    <default class="X">
+                        <joint damping="3.0"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="top" childclass="X">
+                        <geom type="sphere" size="0.1"/>
+                        <body name="mid" pos="0 0 1">
+                            <geom type="sphere" size="0.1"/>
+                            <body name="bot" pos="0 0 1">
+                                <joint name="j" type="hinge"/>
+                                <geom type="sphere" size="0.1"/>
+                            </body>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        assert!(
+            (model.dof_damping[0] - 3.0).abs() < 1e-10,
+            "joint at 3rd level should inherit damping=3.0 from top's childclass 'X', got {}",
+            model.dof_damping[0]
+        );
+    }
+
+    // AC31: 3-level with mid-hierarchy override
+    #[test]
+    fn test_ac31_childclass_3level_mid_override() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <default>
+                    <default class="A"><joint damping="1.0"/></default>
+                    <default class="B"><joint damping="9.0"/></default>
+                </default>
+                <worldbody>
+                    <body name="top" childclass="A">
+                        <geom type="sphere" size="0.1"/>
+                        <body name="mid" childclass="B" pos="0 0 1">
+                            <geom type="sphere" size="0.1"/>
+                            <body name="bot" pos="0 0 1">
+                                <joint name="j" type="hinge"/>
+                                <geom type="sphere" size="0.1"/>
+                            </body>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        assert!(
+            (model.dof_damping[0] - 9.0).abs() < 1e-10,
+            "joint should inherit damping=9.0 from mid's childclass 'B' (not top's 'A'), got {}",
+            model.dof_damping[0]
+        );
+    }
+
+    // AC32: Nested frames with childclass inheritance and override
+    #[test]
+    fn test_ac32_nested_frames_childclass() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="F1"><geom contype="4"/></default>
+                    <default class="F2"><geom contype="8"/></default>
+                </default>
+                <worldbody>
+                    <body name="b">
+                        <frame childclass="F1">
+                            <frame>
+                                <geom name="g1" type="sphere" size="0.1"/>
+                            </frame>
+                            <frame childclass="F2">
+                                <geom name="g2" type="sphere" size="0.1"/>
+                            </frame>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // g1 inherits outer frame's F1 through inner frame (no override)
+        assert_eq!(
+            model.geom_contype[0], 4,
+            "g1 should inherit contype=4 from outer frame childclass 'F1', got {}",
+            model.geom_contype[0]
+        );
+        // g2 gets F2 from inner frame override
+        assert_eq!(
+            model.geom_contype[1], 8,
+            "g2 should get contype=8 from inner frame childclass 'F2', got {}",
+            model.geom_contype[1]
+        );
+    }
+
+    // AC33: childclass="nonexistent" on body produces error
+    #[test]
+    fn test_ac33_childclass_nonexistent_body_error() {
+        let result = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b" childclass="nonexistent">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        );
+        assert!(
+            result.is_err(),
+            "childclass='nonexistent' should produce an error"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("nonexistent"),
+            "error message should mention 'nonexistent', got: {err_msg}"
+        );
+    }
+
+    // AC34: Body with childclass but no child elements succeeds
+    #[test]
+    fn test_ac34_childclass_empty_body() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="empty"><geom contype="5"/></default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="empty" pos="0 0 1">
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        assert_eq!(model.nbody, 2, "should have world + b");
+        assert_eq!(model.ngeom, 0, "body has no geoms");
+    }
+
+    // AC35: childclass="ghost" on frame produces error
+    #[test]
+    fn test_ac35_childclass_nonexistent_frame_error() {
+        let result = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame childclass="ghost">
+                            <geom type="sphere" size="0.1"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        );
+        assert!(
+            result.is_err(),
+            "childclass='ghost' on frame should produce an error"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("ghost"),
+            "error message should mention 'ghost', got: {err_msg}"
+        );
+    }
+
+    // ========================================================================
     // Additional coverage: fusestatic + orientation fields, discardvisual + frame
     // ========================================================================
 
@@ -7926,6 +8265,444 @@ mod tests {
         assert!(
             (pos - Vector3::new(1.0, 0.0, 0.5)).norm() < 1e-4,
             "expected (1,0,0.5), got {pos:?}"
+        );
+    }
+
+    // =========================================================================
+    // Site orientation tests (item #21)
+    // =========================================================================
+
+    /// AC1: Site euler orientation with default angle="degree".
+    #[test]
+    fn test_site_euler_orientation_degrees() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" euler="90 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site euler 90° X deg: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC2: Site euler orientation with explicit angle="radian".
+    #[test]
+    fn test_site_euler_orientation_radians() {
+        let pi_2 = std::f64::consts::FRAC_PI_2;
+        let model = load_model(&format!(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" euler="{pi_2} 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        ))
+        .expect("should load");
+
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), pi_2);
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site euler pi/2 X rad: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC3: Site euler with non-default eulerseq="ZYX".
+    #[test]
+    fn test_site_euler_orientation_zyx_eulerseq() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian" eulerseq="ZYX"/>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" euler="0.3 0.2 0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = euler_seq_to_quat(Vector3::new(0.3, 0.2, 0.1), "ZYX");
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site euler ZYX: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC4: Site axisangle orientation with default angle="degree".
+    #[test]
+    fn test_site_axisangle_orientation_degrees() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" axisangle="0 0 1 90"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site axisangle 90° Z deg: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC5: Site axisangle orientation with angle="radian".
+    #[test]
+    fn test_site_axisangle_orientation_radians() {
+        let pi_2 = std::f64::consts::FRAC_PI_2;
+        let model = load_model(&format!(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" axisangle="0 1 0 {pi_2}"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        ))
+        .expect("should load");
+
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::y_axis(), pi_2);
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site axisangle pi/2 Y rad: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC6: Site xyaxes orientation with orthogonal inputs (90° Z rotation).
+    #[test]
+    fn test_site_xyaxes_orientation_orthogonal() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" xyaxes="0 1 0 -1 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // x=(0,1,0), y=(-1,0,0), z=cross(x,y)=(0,0,1) → 90° about Z
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site xyaxes orthogonal 90° Z: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC7: Site xyaxes with non-orthogonal inputs (Gram-Schmidt → 45° Z rotation).
+    #[test]
+    fn test_site_xyaxes_orientation_gram_schmidt() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" xyaxes="1 1 0 0 1 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Gram-Schmidt: x=norm(1,1,0)=(1/√2, 1/√2, 0), y orthogonalized → 45° about Z
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 45.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-6,
+            "site xyaxes Gram-Schmidt 45° Z: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC8: Site zaxis general direction (Z→X = 90° about Y).
+    #[test]
+    fn test_site_zaxis_orientation_general() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" zaxis="1 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Minimal rotation from (0,0,1) to (1,0,0): 90° about Y
+        let expected =
+            UnitQuaternion::from_axis_angle(&Vector3::y_axis(), std::f64::consts::FRAC_PI_2);
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site zaxis Z→X (90° Y): got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC9: Site zaxis parallel to default Z → identity.
+    #[test]
+    fn test_site_zaxis_orientation_parallel_identity() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" zaxis="0 0 1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        let expected = UnitQuaternion::identity();
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site zaxis (0,0,1) identity: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC10: Site zaxis anti-parallel (0,0,-1) → 180° about X.
+    #[test]
+    fn test_site_zaxis_orientation_antiparallel() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" zaxis="0 0 -1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Anti-parallel: fallback axis = X, angle = atan2(0, -1) = PI → 180° about X
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), std::f64::consts::PI);
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site zaxis anti-parallel 180° X: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC11: Site quat orientation (regression for pre-#19 behavior).
+    #[test]
+    fn test_site_quat_orientation_regression() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" quat="0.7071068 0 0.7071068 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Direct quaternion (wxyz): 90° about Y
+        let expected =
+            UnitQuaternion::from_axis_angle(&Vector3::y_axis(), std::f64::consts::FRAC_PI_2);
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-6,
+            "site quat regression 90° Y: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC12: Site orientation with default class (defaults provide type/size,
+    /// element provides orientation — no interference).
+    #[test]
+    fn test_site_orientation_with_default_class() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="sensor_site">
+                        <site type="cylinder" size="0.02 0.01"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" class="sensor_site" euler="0 0 90"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Type from default class
+        assert_eq!(
+            model.site_type[0],
+            GeomType::Cylinder,
+            "site type should come from default class"
+        );
+
+        // Orientation from element (not interfered by defaults)
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site euler 90° Z with default class: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC13: Orientation priority — euler takes precedence over quat when both specified.
+    #[test]
+    fn test_site_orientation_priority_euler_over_quat() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" euler="90 0 0" quat="1 0 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // euler wins over quat per priority chain. quat=(1,0,0,0) is identity;
+        // euler="90 0 0" is 90° X. Result must be 90° X, NOT identity.
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "euler should take priority over quat: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC14: Site orientation composed with frame rotation.
+    #[test]
+    fn test_site_orientation_in_frame() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame euler="0 0 90">
+                            <site name="s" euler="90 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Frame: 90° Z, Site: 90° X. Composed: frame_q * site_q
+        let frame_q = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let site_q = UnitQuaternion::from_axis_angle(&Vector3::x_axis(), 90.0_f64.to_radians());
+        let expected = frame_q * site_q;
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-6,
+            "site in frame composed: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC15: Site axisangle with non-unit axis (normalization).
+    #[test]
+    fn test_site_axisangle_non_unit_axis() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" axisangle="0 0 3 90"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // Axis (0,0,3) normalizes to (0,0,1) → same as axisangle="0 0 1 90"
+        let expected = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), 90.0_f64.to_radians());
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site axisangle non-unit axis: got {got:?}, expected {expected:?}"
+        );
+    }
+
+    /// AC16: Site zaxis with non-unit direction (normalization, parallel to Z).
+    #[test]
+    fn test_site_zaxis_non_unit_direction() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <geom type="sphere" size="0.1" mass="1.0"/>
+                        <site name="s" zaxis="0 0 5"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+            "#,
+        )
+        .expect("should load");
+
+        // (0,0,5) normalizes to (0,0,1) → parallel to default Z → identity
+        let expected = UnitQuaternion::identity();
+        let got = model.site_quat[0];
+        assert!(
+            (got.into_inner() - expected.into_inner()).norm() < 1e-10,
+            "site zaxis non-unit parallel: got {got:?}, expected {expected:?}"
         );
     }
 }

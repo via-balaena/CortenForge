@@ -395,8 +395,10 @@ geoms (sphere, box, capsule, cylinder, ellipsoid, plane, mesh), actuators
 (motor, position, velocity, general, muscle, cylinder, damper, adhesion),
 contype/conaffinity contact bitmasks, `<contact>` `<pair>`/`<exclude>` elements
 (two-mechanism collision architecture with per-pair parameter overrides),
-default class inheritance, `<include>` file support, `<compiler>` element,
-and MJB binary format.
+default class inheritance, `childclass` attribute (body/frame recursive
+propagation with undefined-class validation), `<frame>` element (pose
+composition, childclass inheritance, recursive nesting),
+`<include>` file support, `<compiler>` element, and MJB binary format.
 `<include>` resolves file references as a pre-parse XML expansion step with
 recursive nested includes, duplicate file detection, and path resolution
 relative to the main model file. Works inside any MJCF section (`<worldbody>`,
