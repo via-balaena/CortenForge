@@ -322,9 +322,7 @@ impl DefaultResolver {
     pub fn apply_to_site(&self, site: &MjcfSite) -> MjcfSite {
         let mut result = site.clone();
 
-        // Sites don't have a class field in the current implementation,
-        // so we apply root defaults
-        if let Some(defaults) = self.site_defaults(None) {
+        if let Some(defaults) = self.site_defaults(site.class.as_deref()) {
             // Type: apply default if at default sphere
             if result.site_type == "sphere" {
                 if let Some(site_type) = &defaults.site_type {
