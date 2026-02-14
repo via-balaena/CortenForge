@@ -201,12 +201,12 @@ methods. Wiring the resolver as-is is still a large net improvement: models
 that use `<default>` classes go from completely broken (all defaults silently
 dropped) to working correctly for the vast majority of real-world cases.
 
-**Not in scope: `childclass` attribute.** MuJoCo supports
+**Not in scope (now implemented): `childclass` attribute.** MuJoCo supports
 `<body childclass="X">` which sets the default class for all child elements
-that don't specify their own `class`. Neither the parser nor `MjcfBody` has a
-`childclass` field. This is a separate parser enhancement — the resolver's
-class lookup already supports it (just pass the inherited class name when
-calling `apply_to_*`). Tracked as a follow-up, not required for this task.
+that don't specify their own `class`. This was implemented as part of item #19
+(`<frame>` element parsing + body/frame `childclass`) in `future_work_6.md`.
+`MjcfBody` now has a `childclass` field, and `process_body_with_world_frame()`
+threads `inherited_childclass` through the body hierarchy.
 
 **Not in scope: mesh defaults.** `DefaultResolver` has `mesh_defaults()` and
 merges `MjcfMeshDefaults` (containing `scale: Option<Vector3<f64>>`) through

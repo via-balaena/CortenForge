@@ -18,11 +18,11 @@ fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
 use crate::types::{
     AngleUnit, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody,
     MjcfCompiler, MjcfConeType, MjcfConnect, MjcfContact, MjcfContactExclude, MjcfContactPair,
-    MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfGeom, MjcfGeomDefaults, MjcfGeomType,
-    MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint, MjcfJointDefaults,
-    MjcfJointEquality, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfMeshDefaults, MjcfModel,
-    MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSensorType, MjcfSite,
-    MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon,
+    MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfFrame, MjcfGeom, MjcfGeomDefaults,
+    MjcfGeomType, MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJacobianType, MjcfJoint,
+    MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfMeshDefaults,
+    MjcfModel, MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults, MjcfSensorType,
+    MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex, MjcfSolverType, MjcfTendon,
     MjcfTendonDefaults, MjcfTendonType, MjcfWeld, SpatialPathElement,
 };
 
@@ -86,11 +86,12 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                     }
                     b"worldbody" => {
                         let wb = parse_worldbody(reader)?;
-                        // Merge: append children, geoms, sites into existing worldbody
+                        // Merge: append children, geoms, sites, frames into existing worldbody
                         model.worldbody.children.extend(wb.children);
                         model.worldbody.geoms.extend(wb.geoms);
                         model.worldbody.sites.extend(wb.sites);
                         model.worldbody.joints.extend(wb.joints);
+                        model.worldbody.frames.extend(wb.frames);
                     }
                     b"actuator" => {
                         let actuators = parse_actuators(reader)?;
@@ -1108,6 +1109,10 @@ fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfBody> {
                         let site = parse_site(reader, e)?;
                         worldbody.sites.push(site);
                     }
+                    b"frame" => {
+                        let frame = parse_frame(reader, e)?;
+                        worldbody.frames.push(frame);
+                    }
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
@@ -1119,6 +1124,10 @@ fn parse_worldbody<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfBody> {
                 b"site" => {
                     let site = parse_site_attrs(e)?;
                     worldbody.sites.push(site);
+                }
+                b"frame" => {
+                    let frame = parse_frame_attrs(e)?;
+                    worldbody.frames.push(frame);
                 }
                 _ => {}
             },
@@ -1183,6 +1192,10 @@ fn parse_body<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
                         // Skip to end tag (freejoint has no children)
                         skip_element(reader, &elem_name)?;
                     }
+                    b"frame" => {
+                        let frame = parse_frame(reader, e)?;
+                        body.frames.push(frame);
+                    }
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
@@ -1217,6 +1230,10 @@ fn parse_body<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
                     let site = parse_site_attrs(e)?;
                     body.sites.push(site);
                 }
+                b"frame" => {
+                    let frame = parse_frame_attrs(e)?;
+                    body.frames.push(frame);
+                }
                 _ => {}
             },
             Ok(Event::End(ref e)) if e.name().as_ref() == b"body" => break,
@@ -1247,6 +1264,7 @@ fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     if let Some(aa) = get_attribute_opt(e, "axisangle") {
         body.axisangle = Some(parse_vector4(&aa)?);
     }
+    body.childclass = get_attribute_opt(e, "childclass");
     if let Some(mocap) = get_attribute_opt(e, "mocap") {
         body.mocap = mocap == "true";
     }
@@ -1379,6 +1397,18 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     if let Some(euler) = get_attribute_opt(e, "euler") {
         geom.euler = Some(parse_vector3(&euler)?);
     }
+    if let Some(aa) = get_attribute_opt(e, "axisangle") {
+        geom.axisangle = Some(parse_vector4(&aa)?);
+    }
+    if let Some(xyaxes) = get_attribute_opt(e, "xyaxes") {
+        let parts = parse_float_array(&xyaxes)?;
+        if parts.len() >= 6 {
+            geom.xyaxes = Some([parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]]);
+        }
+    }
+    if let Some(zaxis) = get_attribute_opt(e, "zaxis") {
+        geom.zaxis = Some(parse_vector3(&zaxis)?);
+    }
     if let Some(size) = get_attribute_opt(e, "size") {
         geom.size = parse_float_array(&size)?;
     }
@@ -1498,6 +1528,7 @@ fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
     let mut site = MjcfSite::default();
 
     site.name = get_attribute_opt(e, "name").unwrap_or_default();
+    site.class = get_attribute_opt(e, "class");
 
     if let Some(site_type) = get_attribute_opt(e, "type") {
         site.site_type = site_type;
@@ -1508,6 +1539,21 @@ fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
     if let Some(quat) = get_attribute_opt(e, "quat") {
         site.quat = parse_vector4(&quat)?;
     }
+    if let Some(euler) = get_attribute_opt(e, "euler") {
+        site.euler = Some(parse_vector3(&euler)?);
+    }
+    if let Some(aa) = get_attribute_opt(e, "axisangle") {
+        site.axisangle = Some(parse_vector4(&aa)?);
+    }
+    if let Some(xyaxes) = get_attribute_opt(e, "xyaxes") {
+        let parts = parse_float_array(&xyaxes)?;
+        if parts.len() >= 6 {
+            site.xyaxes = Some([parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]]);
+        }
+    }
+    if let Some(zaxis) = get_attribute_opt(e, "zaxis") {
+        site.zaxis = Some(parse_vector3(&zaxis)?);
+    }
     if let Some(size) = get_attribute_opt(e, "size") {
         site.size = parse_float_array(&size)?;
     }
@@ -1516,6 +1562,118 @@ fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
     }
 
     Ok(site)
+}
+
+/// Parse frame element (non-self-closing).
+fn parse_frame<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<MjcfFrame> {
+    let mut frame = parse_frame_attrs(start)?;
+    let mut buf = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                match elem_name.as_slice() {
+                    b"body" => {
+                        let body = parse_body(reader, e)?;
+                        frame.bodies.push(body);
+                    }
+                    b"geom" => {
+                        let geom = parse_geom(reader, e)?;
+                        frame.geoms.push(geom);
+                    }
+                    b"site" => {
+                        let site = parse_site(reader, e)?;
+                        frame.sites.push(site);
+                    }
+                    b"frame" => {
+                        let child_frame = parse_frame(reader, e)?;
+                        frame.frames.push(child_frame);
+                    }
+                    b"camera" | b"light" => {
+                        tracing::warn!(
+                            "skipping <{}> inside <frame>: camera/light not yet supported",
+                            String::from_utf8_lossy(&elem_name)
+                        );
+                        skip_element(reader, &elem_name)?;
+                    }
+                    b"joint" | b"freejoint" | b"inertial" => {
+                        return Err(MjcfError::InvalidElement(format!(
+                            "<{}> is not allowed inside <frame>",
+                            String::from_utf8_lossy(&elem_name)
+                        )));
+                    }
+                    _ => skip_element(reader, &elem_name)?,
+                }
+            }
+            Ok(Event::Empty(ref e)) => match e.name().as_ref() {
+                b"geom" => {
+                    let geom = parse_geom_attrs(e)?;
+                    frame.geoms.push(geom);
+                }
+                b"site" => {
+                    let site = parse_site_attrs(e)?;
+                    frame.sites.push(site);
+                }
+                b"frame" => {
+                    let child_frame = parse_frame_attrs(e)?;
+                    frame.frames.push(child_frame);
+                }
+                b"camera" | b"light" => {
+                    tracing::warn!(
+                        "skipping <{}/> inside <frame>: camera/light not yet supported",
+                        String::from_utf8_lossy(e.name().as_ref())
+                    );
+                }
+                b"joint" | b"freejoint" | b"inertial" => {
+                    return Err(MjcfError::InvalidElement(format!(
+                        "<{}/> is not allowed inside <frame>",
+                        String::from_utf8_lossy(e.name().as_ref())
+                    )));
+                }
+                _ => {}
+            },
+            Ok(Event::End(ref e)) if e.name().as_ref() == b"frame" => break,
+            Ok(Event::Eof) => return Err(MjcfError::XmlParse("unexpected EOF in frame".into())),
+            Ok(_) => {}
+            Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+        }
+        buf.clear();
+    }
+
+    Ok(frame)
+}
+
+/// Parse frame attributes only (for self-closing `<frame ... />`).
+fn parse_frame_attrs(e: &BytesStart) -> Result<MjcfFrame> {
+    let mut frame = MjcfFrame::default();
+
+    frame.name = get_attribute_opt(e, "name");
+    frame.childclass = get_attribute_opt(e, "childclass");
+
+    if let Some(pos) = get_attribute_opt(e, "pos") {
+        frame.pos = parse_vector3(&pos)?;
+    }
+    if let Some(quat) = get_attribute_opt(e, "quat") {
+        frame.quat = parse_vector4(&quat)?;
+    }
+    if let Some(euler) = get_attribute_opt(e, "euler") {
+        frame.euler = Some(parse_vector3(&euler)?);
+    }
+    if let Some(aa) = get_attribute_opt(e, "axisangle") {
+        frame.axisangle = Some(parse_vector4(&aa)?);
+    }
+    if let Some(xyaxes) = get_attribute_opt(e, "xyaxes") {
+        let parts = parse_float_array(&xyaxes)?;
+        if parts.len() >= 6 {
+            frame.xyaxes = Some([parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]]);
+        }
+    }
+    if let Some(zaxis) = get_attribute_opt(e, "zaxis") {
+        frame.zaxis = Some(parse_vector3(&zaxis)?);
+    }
+
+    Ok(frame)
 }
 
 /// Parse actuators element.

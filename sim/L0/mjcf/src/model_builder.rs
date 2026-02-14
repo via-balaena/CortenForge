@@ -28,9 +28,10 @@ use crate::defaults::DefaultResolver;
 use crate::error::Result;
 use crate::types::{
     AngleUnit, InertiaFromGeom, MjcfActuator, MjcfActuatorType, MjcfBody, MjcfCompiler,
-    MjcfContact, MjcfEquality, MjcfGeom, MjcfGeomType, MjcfHfield, MjcfInertial, MjcfIntegrator,
-    MjcfJoint, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfModel, MjcfOption, MjcfSensor,
-    MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon, MjcfTendonType, SpatialPathElement,
+    MjcfContact, MjcfEquality, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfHfield, MjcfInertial,
+    MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfModel, MjcfOption,
+    MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon, MjcfTendonType,
+    SpatialPathElement,
 };
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -208,6 +209,12 @@ pub fn model_from_mjcf(
 ) -> std::result::Result<Model, ModelConversionError> {
     // Apply compiler pre-processing passes on a mutable clone
     let mut mjcf = mjcf.clone();
+
+    // Expand <frame> elements first: compose transforms into children, lift onto parent bodies.
+    // This must run BEFORE discardvisual/fusestatic so that geoms/sites inside frames are
+    // visible to those passes (matches MuJoCo, which expands frames during XML parsing).
+    expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None);
+
     if mjcf.compiler.discardvisual {
         apply_discardvisual(&mut mjcf);
     }
@@ -242,7 +249,7 @@ pub fn model_from_mjcf(
     // Recursively process body tree starting from worldbody children
     // World body (body 0) has no DOFs, so parent_last_dof is None
     for child in &mjcf.worldbody.children {
-        builder.process_body(child, 0, None)?;
+        builder.process_body(child, 0, None, mjcf.worldbody.childclass.as_deref())?;
     }
 
     // Validate tendons before processing (catches bad references early)
@@ -912,6 +919,7 @@ impl ModelBuilder {
         body: &MjcfBody,
         parent_id: usize,
         parent_last_dof: Option<usize>,
+        inherited_childclass: Option<&str>,
     ) -> std::result::Result<usize, ModelConversionError> {
         // Start with parent's world frame (world body is at origin)
         let (parent_world_pos, parent_world_quat) = if parent_id == 0 {
@@ -931,6 +939,7 @@ impl ModelBuilder {
             parent_last_dof,
             parent_world_pos,
             parent_world_quat,
+            inherited_childclass,
         )
     }
 
@@ -942,6 +951,7 @@ impl ModelBuilder {
         parent_last_dof: Option<usize>,
         parent_world_pos: Vector3<f64>,
         parent_world_quat: UnitQuaternion<f64>,
+        inherited_childclass: Option<&str>,
     ) -> std::result::Result<usize, ModelConversionError> {
         let body_id = self.body_parent.len();
 
@@ -979,32 +989,16 @@ impl ModelBuilder {
         };
 
         // Body position/orientation relative to parent.
-        // Priority: euler > axisangle > quat (MuJoCo convention).
+        // Priority: euler > axisangle > xyaxes > zaxis > quat (MuJoCo convention).
         let body_pos = body.pos;
-        let body_quat = if let Some(euler) = body.euler {
-            let euler_rad = if self.compiler.angle == AngleUnit::Degree {
-                euler * (std::f64::consts::PI / 180.0)
-            } else {
-                euler
-            };
-            euler_seq_to_quat(euler_rad, &self.compiler.eulerseq)
-        } else if let Some(aa) = body.axisangle {
-            // axisangle = [ax, ay, az, angle]. Angle component is angle-valued.
-            let axis = Vector3::new(aa.x, aa.y, aa.z);
-            let angle = if self.compiler.angle == AngleUnit::Degree {
-                aa.w * (std::f64::consts::PI / 180.0)
-            } else {
-                aa.w
-            };
-            let norm = axis.norm();
-            if norm > 1e-10 {
-                UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle)
-            } else {
-                UnitQuaternion::identity()
-            }
-        } else {
-            quat_from_wxyz(body.quat)
-        };
+        let body_quat = resolve_orientation(
+            body.quat,
+            body.euler,
+            body.axisangle,
+            None,
+            None,
+            &self.compiler,
+        );
 
         // Compute world frame position for this body (used for free joint qpos0)
         let world_pos = parent_world_pos + parent_world_quat * body_pos;
@@ -1014,11 +1008,21 @@ impl ModelBuilder {
         self.body_world_pos.push(world_pos);
         self.body_world_quat.push(world_quat);
 
-        // Resolve geom defaults once for both inertia computation and geom processing
+        // Determine effective childclass for this body's children
+        let effective_childclass = body.childclass.as_deref().or(inherited_childclass);
+
+        // Resolve geom defaults once for both inertia computation and geom processing.
+        // Apply childclass: if a geom has no explicit class, set it from effective_childclass.
         let resolved_geoms: Vec<MjcfGeom> = body
             .geoms
             .iter()
-            .map(|g| self.resolver.apply_to_geom(g))
+            .map(|g| {
+                let mut g = g.clone();
+                if g.class.is_none() {
+                    g.class = effective_childclass.map(|s| s.to_string());
+                }
+                self.resolver.apply_to_geom(&g)
+            })
             .collect();
 
         // Process inertial properties with full MuJoCo semantics.
@@ -1100,7 +1104,11 @@ impl ModelBuilder {
         let mut current_last_dof = parent_last_dof;
 
         for joint in &body.joints {
-            let joint = self.resolver.apply_to_joint(joint);
+            let mut joint = joint.clone();
+            if joint.class.is_none() {
+                joint.class = effective_childclass.map(|s| s.to_string());
+            }
+            let joint = self.resolver.apply_to_joint(&joint);
             let jnt_id =
                 self.process_joint(&joint, body_id, current_last_dof, world_pos, world_quat)?;
             let jnt_nv = self.jnt_type[jnt_id].nv();
@@ -1124,7 +1132,11 @@ impl ModelBuilder {
 
         // Process sites for this body
         for site in &body.sites {
-            let site = self.resolver.apply_to_site(site);
+            let mut site = site.clone();
+            if site.class.is_none() {
+                site.class = effective_childclass.map(|s| s.to_string());
+            }
+            let site = self.resolver.apply_to_site(&site);
             self.process_site(&site, body_id)?;
         }
 
@@ -1136,6 +1148,7 @@ impl ModelBuilder {
                 current_last_dof,
                 world_pos,
                 world_quat,
+                effective_childclass,
             )?;
         }
 
@@ -1405,17 +1418,15 @@ impl ModelBuilder {
         let (pos, quat, size) = if let Some(fromto) = geom.fromto {
             compute_fromto_pose(fromto, &geom.size)
         } else {
-            // Euler angles override quat if specified (MuJoCo convention).
-            let orientation = if let Some(euler) = geom.euler {
-                let euler_rad = if self.compiler.angle == AngleUnit::Degree {
-                    euler * (std::f64::consts::PI / 180.0)
-                } else {
-                    euler
-                };
-                euler_seq_to_quat(euler_rad, &self.compiler.eulerseq)
-            } else {
-                quat_from_wxyz(geom.quat)
-            };
+            // Orientation resolution: euler > axisangle > xyaxes > zaxis > quat.
+            let orientation = resolve_orientation(
+                geom.quat,
+                geom.euler,
+                geom.axisangle,
+                geom.xyaxes,
+                geom.zaxis,
+                &self.compiler,
+            );
             (
                 geom.pos,
                 orientation,
@@ -1528,7 +1539,14 @@ impl ModelBuilder {
         self.site_type.push(geom_type);
 
         self.site_pos.push(site.pos);
-        self.site_quat.push(quat_from_wxyz(site.quat));
+        self.site_quat.push(resolve_orientation(
+            site.quat,
+            site.euler,
+            site.axisangle,
+            site.xyaxes,
+            site.zaxis,
+            &self.compiler,
+        ));
 
         // Convert site size (MuJoCo uses single value for sphere, array for others)
         let size = if site.size.is_empty() {
@@ -3350,6 +3368,273 @@ fn euler_seq_to_quat(euler_rad: Vector3<f64>, seq: &str) -> UnitQuaternion<f64> 
     q
 }
 
+/// Unified orientation resolution.
+///
+/// Priority when multiple alternatives are present (MuJoCo errors on
+/// multiple; we silently use the highest-priority one for robustness):
+/// `euler` > `axisangle` > `xyaxes` > `zaxis` > `quat`.
+fn resolve_orientation(
+    quat: Vector4<f64>,
+    euler: Option<Vector3<f64>>,
+    axisangle: Option<Vector4<f64>>,
+    xyaxes: Option<[f64; 6]>,
+    zaxis: Option<Vector3<f64>>,
+    compiler: &MjcfCompiler,
+) -> UnitQuaternion<f64> {
+    if let Some(euler) = euler {
+        let euler_rad = if compiler.angle == AngleUnit::Degree {
+            euler * (std::f64::consts::PI / 180.0)
+        } else {
+            euler
+        };
+        euler_seq_to_quat(euler_rad, &compiler.eulerseq)
+    } else if let Some(aa) = axisangle {
+        let axis = Vector3::new(aa.x, aa.y, aa.z);
+        let angle = if compiler.angle == AngleUnit::Degree {
+            aa.w * (std::f64::consts::PI / 180.0)
+        } else {
+            aa.w
+        };
+        let norm = axis.norm();
+        if norm > 1e-10 {
+            UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle)
+        } else {
+            UnitQuaternion::identity()
+        }
+    } else if let Some(xy) = xyaxes {
+        // Gram-Schmidt orthogonalization (matches MuJoCo's ResolveOrientation).
+        let mut x = Vector3::new(xy[0], xy[1], xy[2]);
+        let x_norm = x.norm();
+        if x_norm < 1e-10 {
+            return UnitQuaternion::identity();
+        }
+        x /= x_norm;
+
+        let mut y = Vector3::new(xy[3], xy[4], xy[5]);
+        // Orthogonalize y against x
+        y -= x * x.dot(&y);
+        let y_norm = y.norm();
+        if y_norm < 1e-10 {
+            return UnitQuaternion::identity();
+        }
+        y /= y_norm;
+
+        let z = x.cross(&y);
+        // z is already unit-length since x, y are orthonormal
+
+        let rot = Matrix3::from_columns(&[x, y, z]);
+        let rotation = nalgebra::Rotation3::from_matrix_unchecked(rot);
+        UnitQuaternion::from_rotation_matrix(&rotation)
+    } else if let Some(zdir) = zaxis {
+        // Minimal rotation from (0,0,1) to given direction.
+        // Matches MuJoCo's mjuu_z2quat.
+        let zn = zdir.norm();
+        if zn < 1e-10 {
+            return UnitQuaternion::identity();
+        }
+        let zdir = zdir / zn;
+
+        let default_z = Vector3::z();
+        let mut axis = default_z.cross(&zdir);
+        let s = axis.norm();
+
+        if s < 1e-10 {
+            // Parallel or anti-parallel
+            axis = Vector3::x();
+        } else {
+            axis /= s;
+        }
+
+        let angle = s.atan2(zdir.z);
+        let half = angle / 2.0;
+        let w = half.cos();
+        let xyz = axis * half.sin();
+        UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(w, xyz.x, xyz.y, xyz.z))
+    } else {
+        quat_from_wxyz(quat)
+    }
+}
+
+// =============================================================================
+// Frame Expansion
+// =============================================================================
+
+/// Core SE(3) composition — direct translation of MuJoCo's `mjuu_frameaccumChild`.
+///
+/// Composes a parent frame transform into a child's pos/quat:
+/// - `child_pos_new = frame_pos + frame_quat * child_pos_old`
+/// - `child_quat_new = frame_quat * child_quat_old`
+fn frame_accum_child(
+    frame_pos: &Vector3<f64>,
+    frame_quat: &UnitQuaternion<f64>,
+    child_pos: &mut Vector3<f64>,
+    child_quat: &mut UnitQuaternion<f64>,
+) {
+    *child_pos = *frame_pos + frame_quat.transform_vector(child_pos);
+    *child_quat = *frame_quat * *child_quat;
+}
+
+/// Recursively expand all `<frame>` elements in a body tree.
+///
+/// Frames are coordinate-system wrappers that compose their transform into
+/// each child element and then disappear. This runs before `discardvisual`/`fusestatic`
+/// (matching MuJoCo's order) and before `ModelBuilder` processes bodies.
+fn expand_frames(body: &mut MjcfBody, compiler: &MjcfCompiler, parent_childclass: Option<&str>) {
+    // Resolve effective childclass early and own it to avoid borrow conflicts
+    let effective_owned: Option<String> = body
+        .childclass
+        .clone()
+        .or_else(|| parent_childclass.map(|s| s.to_string()));
+    let effective = effective_owned.as_deref();
+
+    // Take frames out of the body to avoid borrow issues
+    let frames = std::mem::take(&mut body.frames);
+
+    for frame in &frames {
+        expand_single_frame(
+            body,
+            frame,
+            &Vector3::zeros(),
+            &UnitQuaternion::identity(),
+            compiler,
+            effective,
+        );
+    }
+
+    // Recursively expand frames in child bodies
+    for child in &mut body.children {
+        expand_frames(child, compiler, effective);
+    }
+}
+
+/// Expand a single frame, composing its transform into children and lifting
+/// them onto the parent body.
+fn expand_single_frame(
+    body: &mut MjcfBody,
+    frame: &MjcfFrame,
+    accumulated_pos: &Vector3<f64>,
+    accumulated_quat: &UnitQuaternion<f64>,
+    compiler: &MjcfCompiler,
+    parent_childclass: Option<&str>,
+) {
+    // 1. Resolve the frame's own orientation
+    let frame_quat = resolve_orientation(
+        frame.quat,
+        frame.euler,
+        frame.axisangle,
+        frame.xyaxes,
+        frame.zaxis,
+        compiler,
+    );
+
+    // 2. Compose with accumulated parent-frame transform
+    let mut composed_pos = frame.pos;
+    let mut composed_quat = frame_quat;
+    frame_accum_child(
+        accumulated_pos,
+        accumulated_quat,
+        &mut composed_pos,
+        &mut composed_quat,
+    );
+
+    // 3. Determine effective childclass: frame's overrides parent's
+    let effective = frame.childclass.as_deref().or(parent_childclass);
+
+    // 4. Process child geoms
+    for geom in &frame.geoms {
+        let mut g = geom.clone();
+
+        // Apply childclass if geom has no explicit class
+        if g.class.is_none() {
+            g.class = effective.map(|s| s.to_string());
+        }
+
+        if let Some(ref mut fromto) = g.fromto {
+            // fromto geoms: transform both endpoints through the composed frame.
+            // Leave pos/quat untouched — compute_fromto_pose() will derive them later.
+            let from = Vector3::new(fromto[0], fromto[1], fromto[2]);
+            let to = Vector3::new(fromto[3], fromto[4], fromto[5]);
+            let from_new = composed_pos + composed_quat.transform_vector(&from);
+            let to_new = composed_pos + composed_quat.transform_vector(&to);
+            *fromto = [
+                from_new.x, from_new.y, from_new.z, to_new.x, to_new.y, to_new.z,
+            ];
+        } else {
+            // Non-fromto geoms: resolve orientation, compose with frame
+            let geom_quat =
+                resolve_orientation(g.quat, g.euler, g.axisangle, g.xyaxes, g.zaxis, compiler);
+            let mut pos = g.pos;
+            let mut quat = geom_quat;
+            frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
+            g.pos = pos;
+            g.quat = quat_to_wxyz(&quat);
+            // Clear alternative orientations (already resolved)
+            g.euler = None;
+            g.axisangle = None;
+            g.xyaxes = None;
+            g.zaxis = None;
+        }
+
+        body.geoms.push(g);
+    }
+
+    // 5. Process child sites
+    for site in &frame.sites {
+        let mut s = site.clone();
+
+        if s.class.is_none() {
+            s.class = effective.map(|s| s.to_string());
+        }
+
+        let site_quat =
+            resolve_orientation(s.quat, s.euler, s.axisangle, s.xyaxes, s.zaxis, compiler);
+        let mut pos = s.pos;
+        let mut quat = site_quat;
+        frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
+        s.pos = pos;
+        s.quat = quat_to_wxyz(&quat);
+        s.euler = None;
+        s.axisangle = None;
+        s.xyaxes = None;
+        s.zaxis = None;
+
+        body.sites.push(s);
+    }
+
+    // 6. Process child bodies
+    for child_body in &frame.bodies {
+        let mut b = child_body.clone();
+
+        // If body has no own childclass, inherit from frame's effective childclass
+        if b.childclass.is_none() {
+            b.childclass = effective.map(|s| s.to_string());
+        }
+
+        let body_quat = resolve_orientation(b.quat, b.euler, b.axisangle, None, None, compiler);
+        let mut pos = b.pos;
+        let mut quat = body_quat;
+        frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
+        b.pos = pos;
+        b.quat = quat_to_wxyz(&quat);
+        b.euler = None;
+        b.axisangle = None;
+
+        body.children.push(b);
+    }
+
+    // 7. Recurse into nested frames
+    for nested in &frame.frames {
+        expand_single_frame(
+            body,
+            nested,
+            &composed_pos,
+            &composed_quat,
+            compiler,
+            effective,
+        );
+    }
+}
+
 // =============================================================================
 // Mesh File Loading
 // =============================================================================
@@ -3879,49 +4164,6 @@ fn quat_to_wxyz(q: &UnitQuaternion<f64>) -> Vector4<f64> {
     Vector4::new(qi.w, qi.i, qi.j, qi.k)
 }
 
-/// Compute a body's rotation, accounting for the compiler's angle unit and euler sequence.
-/// This is needed because `MjcfBody::rotation()` always interprets euler as radians,
-/// but at the MJCF pre-processing stage values may be in degrees.
-fn body_rotation_with_compiler(body: &MjcfBody, compiler: &MjcfCompiler) -> UnitQuaternion<f64> {
-    if let Some(euler) = body.euler {
-        let euler_rad = if compiler.angle == AngleUnit::Degree {
-            euler * (std::f64::consts::PI / 180.0)
-        } else {
-            euler
-        };
-        euler_seq_to_quat(euler_rad, &compiler.eulerseq)
-    } else if let Some(aa) = body.axisangle {
-        let axis = Vector3::new(aa.x, aa.y, aa.z);
-        let angle = if compiler.angle == AngleUnit::Degree {
-            aa.w * (std::f64::consts::PI / 180.0)
-        } else {
-            aa.w
-        };
-        let norm = axis.norm();
-        if norm > 1e-10 {
-            UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle)
-        } else {
-            UnitQuaternion::identity()
-        }
-    } else {
-        quat_from_wxyz(body.quat)
-    }
-}
-
-/// Compute a geom's rotation from its quat/euler, accounting for compiler angle settings.
-fn geom_rotation_with_compiler(geom: &MjcfGeom, compiler: &MjcfCompiler) -> UnitQuaternion<f64> {
-    if let Some(euler) = geom.euler {
-        let euler_rad = if compiler.angle == AngleUnit::Degree {
-            euler * (std::f64::consts::PI / 180.0)
-        } else {
-            euler
-        };
-        euler_seq_to_quat(euler_rad, &compiler.eulerseq)
-    } else {
-        quat_from_wxyz(geom.quat)
-    }
-}
-
 /// Recursively fuse jointless, unprotected children into their parent body.
 /// Operates on a parent body: scans its children, and for any that are static
 /// (no joints, not protected), transfers their geoms, sites, and grandchildren
@@ -3941,28 +4183,59 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
         if is_static {
             let mut removed = parent.children.remove(i);
             let body_pos = removed.pos;
-            let body_quat = body_rotation_with_compiler(&removed, compiler);
+            let body_quat = resolve_orientation(
+                removed.quat,
+                removed.euler,
+                removed.axisangle,
+                None,
+                None,
+                compiler,
+            );
             let has_rotation = body_quat.angle() > 1e-10;
 
             // Transform geoms into parent frame
             for g in &mut removed.geoms {
                 if has_rotation {
                     g.pos = body_quat * g.pos + body_pos;
-                    let composed = body_quat * geom_rotation_with_compiler(g, compiler);
+                    let geom_quat = resolve_orientation(
+                        g.quat,
+                        g.euler,
+                        g.axisangle,
+                        g.xyaxes,
+                        g.zaxis,
+                        compiler,
+                    );
+                    let composed = body_quat * geom_quat;
                     g.quat = quat_to_wxyz(&composed);
-                    g.euler = None; // Normalize to quat-only after composition
+                    // Normalize to quat-only after composition
+                    g.euler = None;
+                    g.axisangle = None;
+                    g.xyaxes = None;
+                    g.zaxis = None;
                 } else {
                     g.pos += body_pos;
                 }
             }
 
-            // Transform sites into parent frame (sites have only quat, no euler)
+            // Transform sites into parent frame
             for s in &mut removed.sites {
                 if has_rotation {
                     s.pos = body_quat * s.pos + body_pos;
-                    let site_quat = quat_from_wxyz(s.quat);
+                    let site_quat = resolve_orientation(
+                        s.quat,
+                        s.euler,
+                        s.axisangle,
+                        s.xyaxes,
+                        s.zaxis,
+                        compiler,
+                    );
                     let composed = body_quat * site_quat;
                     s.quat = quat_to_wxyz(&composed);
+                    // Normalize to quat-only after composition
+                    s.euler = None;
+                    s.axisangle = None;
+                    s.xyaxes = None;
+                    s.zaxis = None;
                 } else {
                     s.pos += body_pos;
                 }
@@ -3972,7 +4245,8 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
             for c in &mut removed.children {
                 if has_rotation {
                     c.pos = body_quat * c.pos + body_pos;
-                    let child_quat = body_rotation_with_compiler(c, compiler);
+                    let child_quat =
+                        resolve_orientation(c.quat, c.euler, c.axisangle, None, None, compiler);
                     let composed = body_quat * child_quat;
                     c.quat = quat_to_wxyz(&composed);
                     c.euler = None;
@@ -4698,6 +4972,9 @@ mod tests {
             pos: Vector3::zeros(),
             quat: nalgebra::Vector4::new(1.0, 0.0, 0.0, 0.0),
             euler: None,
+            axisangle: None,
+            xyaxes: None,
+            zaxis: None,
             size: vec![0.1, 0.5], // radius=0.1, half-height=0.5
             fromto: None,
             density: 1000.0,
@@ -6813,6 +7090,842 @@ mod tests {
         assert!(
             tex_result.unwrap().to_string_lossy().contains("textures"),
             "texture path should use texturedir"
+        );
+    }
+
+    // =========================================================================
+    // Frame expansion + childclass tests (Spec #19, 27 acceptance criteria)
+    // =========================================================================
+
+    // AC1: Frame position
+    #[test]
+    fn test_ac01_frame_position() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b" pos="0 0 0">
+                        <geom type="sphere" size="0.1"/>
+                        <frame pos="1 0 0">
+                            <geom name="fg" type="sphere" size="0.1" pos="0 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Geom 0 is the body's own geom, geom 1 is the frame's geom
+        assert_eq!(model.geom_pos.len(), 2);
+        let pos = model.geom_pos[1];
+        assert!(
+            (pos - Vector3::new(1.0, 0.0, 0.0)).norm() < 1e-10,
+            "frame geom should be at (1,0,0), got {pos:?}"
+        );
+    }
+
+    // AC2: Frame rotation
+    #[test]
+    fn test_ac02_frame_rotation() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="degree"/>
+                <worldbody>
+                    <body name="b">
+                        <frame euler="0 0 90">
+                            <geom name="fg" type="sphere" size="0.1" pos="1 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(0.0, 1.0, 0.0)).norm() < 1e-6,
+            "90deg Z rotation should map (1,0,0) to (0,1,0), got {pos:?}"
+        );
+    }
+
+    // AC3: Frame position + rotation
+    #[test]
+    fn test_ac03_frame_pos_plus_rotation() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="degree"/>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0" euler="0 0 90">
+                            <geom name="fg" type="sphere" size="0.1" pos="1 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        let pos = model.geom_pos[0];
+        // frame_pos + frame_rot * geom_pos = (1,0,0) + (0,1,0) = (1,1,0)
+        assert!(
+            (pos - Vector3::new(1.0, 1.0, 0.0)).norm() < 1e-6,
+            "expected (1,1,0), got {pos:?}"
+        );
+    }
+
+    // AC4: Nested frames
+    #[test]
+    fn test_ac04_nested_frames() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0">
+                            <frame pos="0 1 0">
+                                <geom name="fg" type="sphere" size="0.1"/>
+                            </frame>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(1.0, 1.0, 0.0)).norm() < 1e-10,
+            "expected (1,1,0), got {pos:?}"
+        );
+    }
+
+    // AC5: 3-deep nested frames
+    #[test]
+    fn test_ac05_three_deep_nested_frames() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0">
+                            <frame pos="0 1 0">
+                                <frame pos="0 0 1">
+                                    <geom name="fg" type="sphere" size="0.1"/>
+                                </frame>
+                            </frame>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(1.0, 1.0, 1.0)).norm() < 1e-10,
+            "expected (1,1,1), got {pos:?}"
+        );
+    }
+
+    // AC6: Frame wrapping body
+    #[test]
+    fn test_ac06_frame_wrapping_body() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="parent">
+                        <frame pos="2 0 0">
+                            <body name="child" pos="1 0 0">
+                                <geom type="sphere" size="0.1"/>
+                            </body>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // body_pos for child should be (3,0,0)
+        // body 0 = world, body 1 = parent, body 2 = child
+        assert_eq!(model.body_pos.len(), 3);
+        let child_pos = model.body_pos[2];
+        assert!(
+            (child_pos - Vector3::new(3.0, 0.0, 0.0)).norm() < 1e-10,
+            "body_pos should be (3,0,0), got {child_pos:?}"
+        );
+    }
+
+    // AC7: Frame with fromto geom
+    #[test]
+    fn test_ac07_frame_fromto_geom() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0">
+                            <geom type="capsule" fromto="0 0 0 0 0 1" size="0.05"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // fromto endpoints become (1,0,0)-(1,0,1), pos = midpoint (1, 0, 0.5)
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(1.0, 0.0, 0.5)).norm() < 1e-6,
+            "expected midpoint (1,0,0.5), got {pos:?}"
+        );
+    }
+
+    // AC8: Frame with fromto geom + rotation
+    #[test]
+    fn test_ac08_frame_fromto_rotation() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="degree"/>
+                <worldbody>
+                    <body name="b">
+                        <frame euler="0 90 0">
+                            <geom type="capsule" fromto="0 0 0 0 0 1" size="0.05"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // 90deg Y rotation maps Z to X. Endpoints: (0,0,0)-(1,0,0)
+        // Geom pos ≈ midpoint (0.5, 0, 0)
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(0.5, 0.0, 0.0)).norm() < 1e-6,
+            "expected midpoint (0.5,0,0), got {pos:?}"
+        );
+    }
+
+    // AC9: Frame with site
+    #[test]
+    fn test_ac09_frame_with_site() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="0.5 0 0">
+                            <site name="s" pos="0 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        let pos = model.site_pos[0];
+        assert!(
+            (pos - Vector3::new(0.5, 0.0, 0.0)).norm() < 1e-10,
+            "site should be at (0.5,0,0), got {pos:?}"
+        );
+    }
+
+    // AC10: Empty frame
+    #[test]
+    fn test_ac10_empty_frame() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0"/>
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Model should load without error, geom at (0,0,0) unaffected
+        assert_eq!(model.geom_pos.len(), 1);
+        assert!(
+            (model.geom_pos[0]).norm() < 1e-10,
+            "geom should be at origin (empty frame has no children)"
+        );
+    }
+
+    // AC11: Frame at worldbody level
+    #[test]
+    fn test_ac11_frame_at_worldbody() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <frame pos="1 0 0">
+                        <geom type="sphere" size="0.1"/>
+                    </frame>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(1.0, 0.0, 0.0)).norm() < 1e-10,
+            "worldbody frame geom should be at (1,0,0), got {pos:?}"
+        );
+    }
+
+    // AC12: Frame with only orientation (no pos)
+    #[test]
+    fn test_ac12_frame_only_orientation() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="degree"/>
+                <worldbody>
+                    <body name="b">
+                        <frame euler="0 0 90">
+                            <geom type="sphere" size="0.1" pos="1 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(0.0, 1.0, 0.0)).norm() < 1e-6,
+            "expected (0,1,0), got {pos:?}"
+        );
+    }
+
+    // AC13: Frame with only position (no orientation)
+    #[test]
+    fn test_ac13_frame_only_position() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="3 0 0">
+                            <geom type="sphere" size="0.1" pos="0 2 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(3.0, 2.0, 0.0)).norm() < 1e-10,
+            "expected (3,2,0), got {pos:?}"
+        );
+    }
+
+    // AC14: Frame with xyaxes
+    #[test]
+    fn test_ac14_frame_xyaxes() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame xyaxes="0 1 0 -1 0 0">
+                            <geom type="sphere" size="0.1" pos="1 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // xyaxes "0 1 0 -1 0 0" = 90deg Z rotation. Geom at (0, 1, 0)
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(0.0, 1.0, 0.0)).norm() < 1e-6,
+            "expected (0,1,0), got {pos:?}"
+        );
+    }
+
+    // AC15: Frame with zaxis
+    #[test]
+    fn test_ac15_frame_zaxis() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame zaxis="1 0 0">
+                            <geom type="sphere" size="0.1" pos="0 0 1"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // zaxis "1 0 0" maps Z to X. Geom at local (0,0,1) → body-relative (1, 0, 0)
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(1.0, 0.0, 0.0)).norm() < 1e-6,
+            "expected (1,0,0), got {pos:?}"
+        );
+    }
+
+    // AC16: Frame with axisangle
+    #[test]
+    fn test_ac16_frame_axisangle() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="degree"/>
+                <worldbody>
+                    <body name="b">
+                        <frame axisangle="0 0 1 90">
+                            <geom type="sphere" size="0.1" pos="1 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // 90deg about Z. Geom at (0, 1, 0)
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(0.0, 1.0, 0.0)).norm() < 1e-6,
+            "expected (0,1,0), got {pos:?}"
+        );
+    }
+
+    // AC17: Joint inside frame = error
+    #[test]
+    fn test_ac17_joint_inside_frame_error() {
+        let result = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame>
+                            <joint name="j" type="hinge"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        );
+        assert!(result.is_err(), "joint inside frame should error");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("not allowed inside <frame>"),
+            "error should mention invalid element: {err}"
+        );
+    }
+
+    // AC18: Freejoint inside frame = error
+    #[test]
+    fn test_ac18_freejoint_inside_frame_error() {
+        let result = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame>
+                            <freejoint/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        );
+        assert!(result.is_err(), "freejoint inside frame should error");
+    }
+
+    // AC19: Inertial inside frame = error
+    #[test]
+    fn test_ac19_inertial_inside_frame_error() {
+        let result = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame>
+                            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        );
+        assert!(result.is_err(), "inertial inside frame should error");
+    }
+
+    // AC20: Childclass on body
+    #[test]
+    fn test_ac20_childclass_on_body() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="red">
+                        <geom contype="7"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="red">
+                        <geom type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Geom should inherit "red" defaults (contype = 7)
+        assert_eq!(
+            model.geom_contype[0], 7,
+            "geom should inherit contype=7 from childclass 'red', got {}",
+            model.geom_contype[0]
+        );
+    }
+
+    // AC21: Childclass override by explicit class
+    #[test]
+    fn test_ac21_childclass_override_by_explicit() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="red">
+                        <geom contype="7"/>
+                    </default>
+                    <default class="blue">
+                        <geom contype="3"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="red">
+                        <geom class="blue" type="sphere" size="0.1"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Geom uses explicit class "blue" (contype=3), not childclass "red" (contype=7)
+        assert_eq!(
+            model.geom_contype[0], 3,
+            "geom should use explicit class 'blue' contype=3, got {}",
+            model.geom_contype[0]
+        );
+    }
+
+    // AC22: Childclass on frame
+    #[test]
+    fn test_ac22_childclass_on_frame() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="red">
+                        <geom contype="7"/>
+                    </default>
+                    <default class="green">
+                        <geom contype="3"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="b" childclass="red">
+                        <frame childclass="green">
+                            <geom type="sphere" size="0.1"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Geom should inherit "green" (frame's childclass overrides body's)
+        assert_eq!(
+            model.geom_contype[0], 3,
+            "geom should inherit frame childclass 'green' contype=3, got {}",
+            model.geom_contype[0]
+        );
+    }
+
+    // AC23: Childclass inheritance through body hierarchy
+    #[test]
+    fn test_ac23_childclass_inheritance_hierarchy() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="robot">
+                        <joint damping="5.0"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="parent" childclass="robot">
+                        <body name="child" pos="0 0 1">
+                            <joint name="j1" type="hinge"/>
+                            <geom type="sphere" size="0.1"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Inner body's joint should inherit class "robot" from parent
+        assert!(
+            (model.dof_damping[0] - 5.0).abs() < 1e-10,
+            "joint should inherit damping=5.0 from childclass 'robot', got {}",
+            model.dof_damping[0]
+        );
+    }
+
+    // AC24: Childclass on child body overrides parent
+    #[test]
+    fn test_ac24_childclass_child_overrides_parent() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <default>
+                    <default class="A">
+                        <geom contype="7"/>
+                    </default>
+                    <default class="B">
+                        <geom contype="3"/>
+                    </default>
+                </default>
+                <worldbody>
+                    <body name="outer" childclass="A">
+                        <body name="inner" childclass="B">
+                            <geom type="sphere" size="0.1"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Geom inherits "B" (child body's childclass overrides parent's)
+        assert_eq!(
+            model.geom_contype[0], 3,
+            "geom should inherit child body childclass 'B' contype=3, got {}",
+            model.geom_contype[0]
+        );
+    }
+
+    // AC25: Regression - no frames, no childclass
+    #[test]
+    fn test_ac25_regression_no_frames() {
+        // Simple model without frames or childclass should work identically
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b" pos="1 2 3">
+                        <joint name="j" type="hinge"/>
+                        <geom type="sphere" size="0.1"/>
+                        <site name="s" pos="0.5 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        assert_eq!(model.nbody, 2); // world + b
+        assert_eq!(model.ngeom, 1);
+        let body_pos = model.body_pos[1];
+        assert!((body_pos - Vector3::new(1.0, 2.0, 3.0)).norm() < 1e-10);
+    }
+
+    // AC26: Geom orientation composition
+    #[test]
+    fn test_ac26_geom_orientation_composition() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="degree"/>
+                <worldbody>
+                    <body name="b">
+                        <frame euler="0 0 90">
+                            <geom type="sphere" size="0.1" euler="90 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // geom orientation = frame_quat * geom_quat
+        // Both euler values resolved, then composed
+        // Just verify model loads and geom has a non-identity orientation
+        let quat = model.geom_quat[0];
+        // The composed rotation should NOT be identity
+        let is_identity = (quat.w - 1.0).abs() < 1e-6
+            && quat.i.abs() < 1e-6
+            && quat.j.abs() < 1e-6
+            && quat.k.abs() < 1e-6;
+        assert!(!is_identity, "composed rotation should not be identity");
+    }
+
+    // AC27: Frame + angle="radian"
+    #[test]
+    fn test_ac27_frame_radian_mode() {
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler angle="radian"/>
+                <worldbody>
+                    <body name="b">
+                        <frame euler="0 0 1.5707963">
+                            <geom type="sphere" size="0.1" pos="1 0 0"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        let pos = model.geom_pos[0];
+        // Same as degree case: geom at (0, 1, 0)
+        assert!(
+            (pos - Vector3::new(0.0, 1.0, 0.0)).norm() < 1e-4,
+            "expected (0,1,0), got {pos:?}"
+        );
+    }
+
+    // ========================================================================
+    // Additional coverage: fusestatic + orientation fields, discardvisual + frame
+    // ========================================================================
+
+    #[test]
+    fn test_fusestatic_geom_with_xyaxes() {
+        // A geom with xyaxes orientation on a static body (no joints).
+        // fusestatic should correctly resolve xyaxes via resolve_orientation
+        // before composing with the parent body's transform.
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent">
+                        <joint type="hinge"/>
+                        <body name="static_child" pos="1 0 0" euler="0 0 90">
+                            <geom type="sphere" size="0.1" xyaxes="0 1 0 -1 0 0"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // static_child is fused into parent. The geom's xyaxes (90° Z rotation)
+        // should compose with the body's 90° Z euler rotation = 180° total Z rotation.
+        // Position: body_quat * (0,0,0) + (1,0,0) = (1,0,0).
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(1.0, 0.0, 0.0)).norm() < 1e-4,
+            "expected (1,0,0), got {pos:?}"
+        );
+    }
+
+    #[test]
+    fn test_fusestatic_site_with_axisangle() {
+        // A site with axisangle orientation on a static body.
+        // fusestatic should correctly resolve axisangle via resolve_orientation.
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler fusestatic="true"/>
+                <worldbody>
+                    <body name="parent">
+                        <joint type="hinge"/>
+                        <body name="static_child" pos="0 0 1">
+                            <site name="s" pos="0 0 0" axisangle="0 0 1 90"/>
+                        </body>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Site should be at (0,0,1) after fusion. No body rotation so just translation.
+        let pos = model.site_pos[0];
+        assert!(
+            (pos - Vector3::new(0.0, 0.0, 1.0)).norm() < 1e-4,
+            "expected (0,0,1), got {pos:?}"
+        );
+    }
+
+    #[test]
+    fn test_discardvisual_geom_inside_frame() {
+        // A visual-only geom (contype=0, conaffinity=0) inside a frame
+        // should be discarded by discardvisual after frame expansion.
+        let model = load_model(
+            r#"
+            <mujoco>
+                <compiler discardvisual="true"/>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0">
+                            <geom type="sphere" size="0.1" contype="0" conaffinity="0"/>
+                        </frame>
+                        <geom type="sphere" size="0.1" pos="0 0 0"/>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Only the non-visual geom should survive
+        assert_eq!(
+            model.geom_pos.len(),
+            1,
+            "discardvisual should remove visual geom from frame"
+        );
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(0.0, 0.0, 0.0)).norm() < 1e-4,
+            "surviving geom should be at origin"
+        );
+    }
+
+    #[test]
+    fn test_fromto_geom_in_frame_with_pos_and_rotation() {
+        // fromto geom inside a frame that has both position and rotation.
+        // Endpoints should be transformed through the full frame transform.
+        let model = load_model(
+            r#"
+            <mujoco>
+                <worldbody>
+                    <body name="b">
+                        <frame pos="1 0 0" euler="0 0 90">
+                            <geom type="capsule" size="0.05" fromto="0 0 0 0 0 1"/>
+                        </frame>
+                    </body>
+                </worldbody>
+            </mujoco>
+        "#,
+        )
+        .unwrap();
+        // Frame: pos=(1,0,0), 90° Z rotation.
+        // fromto "0 0 0 0 0 1": from=(0,0,0), to=(0,0,1)
+        // Transformed from: (1,0,0) + rot*(0,0,0) = (1,0,0)
+        // Transformed to:   (1,0,0) + rot*(0,0,1) = (1,0,1)
+        // Midpoint: (1, 0, 0.5)
+        let pos = model.geom_pos[0];
+        assert!(
+            (pos - Vector3::new(1.0, 0.0, 0.5)).norm() < 1e-4,
+            "expected (1,0,0.5), got {pos:?}"
         );
     }
 }

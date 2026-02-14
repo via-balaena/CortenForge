@@ -154,6 +154,10 @@ pub enum MjcfError {
     #[error("duplicate include: {0}")]
     DuplicateInclude(String),
 
+    /// Element appeared in an invalid location (e.g., `<joint>` inside `<frame>`).
+    #[error("invalid element: {0}")]
+    InvalidElement(String),
+
     /// Invalid option value.
     #[error("invalid option '{option}': {message}")]
     InvalidOption {

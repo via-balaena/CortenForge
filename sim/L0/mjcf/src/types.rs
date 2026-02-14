@@ -986,6 +986,12 @@ pub struct MjcfGeom {
     pub quat: Vector4<f64>,
     /// Alternative orientation as euler angles (degrees, XYZ order).
     pub euler: Option<Vector3<f64>>,
+    /// Alternative orientation as axis-angle (x, y, z, angle).
+    pub axisangle: Option<Vector4<f64>>,
+    /// Alternative orientation as two axes (x-axis 3 floats, y-axis 3 floats).
+    pub xyaxes: Option<[f64; 6]>,
+    /// Alternative orientation as z-axis (minimal rotation from Z).
+    pub zaxis: Option<Vector3<f64>>,
     /// Size parameters (interpretation depends on type).
     /// - Sphere: `[radius]`
     /// - Capsule: `[radius, half-length]`
@@ -1029,6 +1035,9 @@ impl Default for MjcfGeom {
             pos: Vector3::zeros(),
             quat: Vector4::new(1.0, 0.0, 0.0, 0.0),
             euler: None,
+            axisangle: None,
+            xyaxes: None,
+            zaxis: None,
             size: vec![0.1], // Default sphere radius
             fromto: None,
             friction: Vector3::new(1.0, 0.005, 0.0001), // MuJoCo defaults
@@ -1287,12 +1296,22 @@ impl MjcfJoint {
 pub struct MjcfSite {
     /// Site name.
     pub name: String,
+    /// Default class.
+    pub class: Option<String>,
     /// Site type (sphere, capsule, ellipsoid, cylinder, box).
     pub site_type: String,
     /// Position relative to body frame.
     pub pos: Vector3<f64>,
     /// Orientation (quaternion: w x y z).
     pub quat: Vector4<f64>,
+    /// Alternative orientation as euler angles.
+    pub euler: Option<Vector3<f64>>,
+    /// Alternative orientation as axis-angle (x, y, z, angle).
+    pub axisangle: Option<Vector4<f64>>,
+    /// Alternative orientation as two axes (x-axis 3 floats, y-axis 3 floats).
+    pub xyaxes: Option<[f64; 6]>,
+    /// Alternative orientation as z-axis (minimal rotation from Z).
+    pub zaxis: Option<Vector3<f64>>,
     /// Size (for visualization).
     pub size: Vec<f64>,
     /// RGBA color.
@@ -1303,9 +1322,14 @@ impl Default for MjcfSite {
     fn default() -> Self {
         Self {
             name: String::new(),
+            class: None,
             site_type: "sphere".to_string(), // MuJoCo default
             pos: Vector3::zeros(),
             quat: Vector4::new(1.0, 0.0, 0.0, 0.0),
+            euler: None,
+            axisangle: None,
+            xyaxes: None,
+            zaxis: None,
             size: vec![0.01],
             rgba: Vector4::new(1.0, 0.0, 0.0, 1.0),
         }
@@ -1779,6 +1803,64 @@ impl MjcfEquality {
 }
 
 // ============================================================================
+// Frame
+// ============================================================================
+
+/// A coordinate frame transformation from `<frame>` element.
+///
+/// Frames provide local coordinate system offsets for child elements.
+/// All children have their pos/quat interpreted relative to the frame,
+/// not the parent body. Frames disappear during model building — their
+/// transforms are composed into their children's positions/orientations.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfFrame {
+    /// Optional name (not preserved in compiled model).
+    pub name: Option<String>,
+    /// Position offset relative to parent body/frame.
+    pub pos: Vector3<f64>,
+    /// Orientation quaternion (w, x, y, z).
+    pub quat: Vector4<f64>,
+    /// Alternative orientation as axis-angle (x, y, z, angle).
+    pub axisangle: Option<Vector4<f64>>,
+    /// Alternative orientation as euler angles.
+    pub euler: Option<Vector3<f64>>,
+    /// Alternative orientation as two axes (x-axis 3 floats, y-axis 3 floats).
+    pub xyaxes: Option<[f64; 6]>,
+    /// Alternative orientation as z-axis (minimal rotation from Z).
+    pub zaxis: Option<Vector3<f64>>,
+    /// Default class for child elements.
+    pub childclass: Option<String>,
+    /// Child bodies within this frame.
+    pub bodies: Vec<MjcfBody>,
+    /// Child geoms within this frame.
+    pub geoms: Vec<MjcfGeom>,
+    /// Child sites within this frame.
+    pub sites: Vec<MjcfSite>,
+    /// Nested child frames.
+    pub frames: Vec<MjcfFrame>,
+}
+
+impl Default for MjcfFrame {
+    fn default() -> Self {
+        Self {
+            name: None,
+            pos: Vector3::zeros(),
+            quat: Vector4::new(1.0, 0.0, 0.0, 0.0),
+            axisangle: None,
+            euler: None,
+            xyaxes: None,
+            zaxis: None,
+            childclass: None,
+            bodies: Vec::new(),
+            geoms: Vec::new(),
+            sites: Vec::new(),
+            frames: Vec::new(),
+        }
+    }
+}
+
+// ============================================================================
 // Body
 // ============================================================================
 
@@ -1804,10 +1886,14 @@ pub struct MjcfBody {
     pub geoms: Vec<MjcfGeom>,
     /// Sites attached to this body.
     pub sites: Vec<MjcfSite>,
+    /// Frames within this body (expanded during model building).
+    pub frames: Vec<MjcfFrame>,
     /// Child bodies.
     pub children: Vec<MjcfBody>,
     /// Parent body name (set during flattening).
     pub parent: Option<String>,
+    /// Default class for child elements (geoms, joints, sites).
+    pub childclass: Option<String>,
     /// Whether this body is a mocap (kinematic input) body.
     #[cfg_attr(feature = "serde", serde(default))]
     pub mocap: bool,
@@ -1827,8 +1913,10 @@ impl Default for MjcfBody {
             joints: Vec::new(),
             geoms: Vec::new(),
             sites: Vec::new(),
+            frames: Vec::new(),
             children: Vec::new(),
             parent: None,
+            childclass: None,
             mocap: false,
             sleep: None,
         }

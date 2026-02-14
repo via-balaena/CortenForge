@@ -419,8 +419,8 @@ MuJoCo convention.
 
 ---
 
-### 19. `<frame>` Element Parsing
-**Status:** Not started | **Effort:** S–M | **Prerequisites:** None
+### 19. `<frame>` Element Parsing + Body/Frame `childclass`
+**Status:** Complete | **Effort:** M | **Prerequisites:** #18 (compiler element)
 
 #### Current State
 
@@ -428,47 +428,463 @@ No `MjcfFrame` type, no `b"frame"` match in parser. Silently dropped by catch-al
 `skip_element()`. Models using `<frame>` for coordinate system convenience (common
 in complex humanoid MJCF files) silently lose frame transformations.
 
+Additionally, `childclass` is not parsed on `<body>` or `<frame>` elements. The
+default class resolver (`DefaultResolver`) already supports class lookup by name,
+but no mechanism exists to inherit a default class from parent bodies or frames.
+`MjcfBody` has no `childclass` field; `MjcfSite` has no `class` field.
+
 #### Objective
 
-Parse `<frame>` elements within `<body>` and apply their coordinate transformations
-to child elements.
+Parse `<frame>` elements and expand their coordinate transformations into child
+elements during model building. Parse and apply `childclass` on both `<body>` and
+`<frame>` elements.
 
 #### Specification
 
-1. **MJCF semantics**: `<frame>` defines a coordinate frame transformation within
-   `<body>`. All child elements of the `<frame>` (geoms, joints, sites, other
-   frames) have their positions/orientations interpreted relative to the frame's
-   pose, NOT relative to the parent body directly.
-2. **Implementation**: `<frame>` does NOT create a new body. It is a
-   pre-processing transformation:
-   - Parse `pos` and orientation (quat/euler/axisangle/xyaxes/zaxis) of the frame.
-   - For each child element, compose the frame's transformation with the child's
-     local transformation to get the child's pose relative to the parent body.
-   - Recursively handle nested `<frame>` elements.
-3. **Expansion approach**: Like `<include>`, this can be handled as a
-   pre-processing step: expand `<frame>` by transforming children's coordinates,
-   then remove the `<frame>` wrapper. The model builder never sees `<frame>`.
-4. **Children allowed inside `<frame>`**: `<body>`, `<geom>`, `<joint>`, `<site>`,
-   `<camera>`, `<light>`, `<frame>` (nested).
+##### Part A — Types
+
+**A1. `MjcfFrame` struct** (in `types.rs`)
+
+A coordinate frame transformation. All children have their pos/quat interpreted
+relative to the frame, not the parent body. Frames disappear during model building.
+
+Fields:
+- `name: Option<String>` — optional, not preserved in compiled model
+- `pos: Vector3<f64>` — position offset, default `(0,0,0)`
+- `quat: Vector4<f64>` — orientation quaternion (w,x,y,z), default `(1,0,0,0)`
+- `axisangle: Option<Vector4<f64>>` — alternative orientation
+- `euler: Option<Vector3<f64>>` — alternative orientation
+- `xyaxes: Option<[f64; 6]>` — alternative orientation (x-axis 3 floats, y-axis 3 floats)
+- `zaxis: Option<Vector3<f64>>` — alternative orientation (minimal rotation from Z)
+- `childclass: Option<String>` — default class for children
+- `bodies: Vec<MjcfBody>` — child bodies
+- `geoms: Vec<MjcfGeom>` — child geoms
+- `sites: Vec<MjcfSite>` — child sites
+- `frames: Vec<MjcfFrame>` — nested child frames
+
+Camera and light children are deferred until `MjcfCamera`/`MjcfLight` types exist
+(item #49). Cameras and lights inside `<frame>` emit `tracing::warn!` and are skipped.
+
+Allowed children: `<body>`, `<geom>`, `<site>`, `<camera>`, `<light>`, `<frame>`.
+**NOT** allowed: `<joint>`, `<freejoint>`, `<inertial>` — these belong directly on
+bodies. Parser returns `MjcfError::InvalidElement` if encountered.
+
+**A2. `MjcfBody` additions** (in `types.rs`)
+
+Add two fields:
+- `frames: Vec<MjcfFrame>` — frames within this body, default empty
+- `childclass: Option<String>` — default class for child elements, default `None`
+
+**A3. `MjcfGeom` orientation additions** (in `types.rs`)
+
+Add fields matching MuJoCo's supported geom orientations:
+- `axisangle: Option<Vector4<f64>>`
+- `xyaxes: Option<[f64; 6]>`
+- `zaxis: Option<Vector3<f64>>`
+
+These are needed for completeness (MuJoCo supports them on geoms) and because
+frame expansion resolves child orientations to quaternions — the geom type must
+be able to represent all formats before resolution.
+
+**A4. `MjcfSite` orientation + class additions** (in `types.rs`)
+
+Add fields:
+- `euler: Option<Vector3<f64>>`
+- `axisangle: Option<Vector4<f64>>`
+- `xyaxes: Option<[f64; 6]>`
+- `zaxis: Option<Vector3<f64>>`
+- `class: Option<String>`
+
+The `class` field is required for childclass to work (default resolution uses it).
+The orientation fields partially address item #21 and are needed because sites
+inside frames may use any orientation format.
+
+**A5. `InvalidElement` error variant** (in `error.rs`)
+
+Add: `InvalidElement(String)` — an element appeared in an invalid location
+(e.g., `<joint>` inside `<frame>`).
+
+##### Part B — Parser Changes
+
+**B1. `parse_frame()` and `parse_frame_attrs()`** (in `parser.rs`)
+
+Follow the exact same pattern as `parse_body()`/`parse_body_attrs()`:
+
+`parse_frame_attrs()` extracts: `name`, `pos`, `quat`, `euler`, `axisangle`,
+`xyaxes`, `zaxis`, `childclass`.
+
+`parse_frame()` dispatches child elements:
+- `b"body"` → `parse_body()` → `frame.bodies.push()`
+- `b"geom"` → `parse_geom()`/`parse_geom_attrs()` → `frame.geoms.push()`
+- `b"site"` → `parse_site()`/`parse_site_attrs()` → `frame.sites.push()`
+- `b"frame"` → `parse_frame()` (recursive) → `frame.frames.push()`
+- `b"camera"` | `b"light"` → `tracing::warn!` + `skip_element()`
+- `b"joint"` | `b"freejoint"` | `b"inertial"` → `Err(MjcfError::InvalidElement(...))`
+- `_` → `skip_element()`
+
+Handle both `Event::Start` and `Event::Empty` variants (empty frame = valid no-op).
+
+**B2. Modify `parse_body()` and `parse_worldbody()`** (in `parser.rs`)
+
+Add `b"frame"` match arms in both `Event::Start` and `Event::Empty` branches:
+```
+b"frame" => {
+    let frame = parse_frame(reader, e)?;  // or parse_frame_attrs(e) for Empty
+    body.frames.push(frame);
+}
+```
+
+**B3. Parse `childclass` on bodies** (in `parser.rs`)
+
+In `parse_body_attrs()`, add: `body.childclass = get_attribute_opt(e, "childclass");`
+
+**B4. Parse additional geom orientations** (in `parser.rs`)
+
+In `parse_geom_attrs()`, add parsing for `axisangle`, `xyaxes`, `zaxis`.
+
+**B5. Parse additional site orientations + class** (in `parser.rs`)
+
+In `parse_site_attrs()`, add parsing for `euler`, `axisangle`, `xyaxes`, `zaxis`,
+and `class`.
+
+##### Part C — Model Builder: Frame Expansion
+
+Frame expansion is a pre-processing step in `model_from_mjcf()`. It runs before
+`discardvisual`/`fusestatic` (matching MuJoCo's order) and before `ModelBuilder`
+processes bodies.
+
+**C1. `resolve_orientation()` — unified orientation resolution** (in `model_builder.rs`)
+
+A single function replacing the duplicated inline logic in body, geom, and site
+processing. Priority when multiple alternatives are present (MuJoCo errors on
+multiple; we silently use the highest-priority one for robustness):
+`euler` > `axisangle` > `xyaxes` > `zaxis` > `quat`.
+
+```
+fn resolve_orientation(
+    quat: Vector4<f64>,
+    euler: Option<Vector3<f64>>,
+    axisangle: Option<Vector4<f64>>,
+    xyaxes: Option<[f64; 6]>,
+    zaxis: Option<Vector3<f64>>,
+    compiler: &MjcfCompiler,
+) -> UnitQuaternion<f64>
+```
+
+- **euler**: apply `compiler.angle` conversion (degree→radian if needed), then
+  `euler_seq_to_quat(euler_rad, &compiler.eulerseq)`.
+- **axisangle**: apply `compiler.angle` conversion to the angle component (4th
+  element), then `UnitQuaternion::from_axis_angle()`.
+- **xyaxes**: `[x0,x1,x2, y0,y1,y2]`. Algorithm (matches MuJoCo's `ResolveOrientation`):
+  1. Normalize x-axis: `x = normalize(xyaxes[0..3])`. Error if norm < eps.
+  2. Gram-Schmidt orthogonalize y against x: `y -= x * dot(x, y)`.
+  3. Normalize y. Error if norm < eps (x and y were parallel).
+  4. Compute z = cross(x, y) (already unit-length since x, y are orthonormal).
+  5. Build rotation matrix R from columns [x, y, z] and convert to quaternion
+     via `nalgebra::UnitQuaternion::from_rotation_matrix()`.
+  MuJoCo skips normalizing y and z, relying on post-hoc quaternion normalization
+  in `frame2quat`. We normalize to ensure a valid rotation matrix for nalgebra.
+  For orthogonal inputs the result is identical; for non-orthogonal inputs our
+  behavior is more robust (MuJoCo's produces a slightly non-unit quaternion before
+  normalization, but the normalized result is the same).
+- **zaxis**: compute minimal rotation from default Z-axis `(0,0,1)` to given
+  direction. Algorithm (matches MuJoCo's `mjuu_z2quat`):
+  1. Normalize the input vector. Error if norm < eps.
+  2. Compute `axis = cross((0,0,1), zaxis_normalized)`.
+  3. Compute `s = norm(axis)`.
+  4. If `s < 1e-10` (parallel or anti-parallel): set `axis = (1,0,0)`.
+     Else: normalize `axis` in place (`axis /= s`).
+  5. Compute `angle = atan2(s, zaxis_normalized.z)`.
+  6. Build quaternion: `w = cos(angle/2)`, `xyz = axis * sin(angle/2)`.
+  Result: parallel → identity; anti-parallel → 180deg about X; general → minimal
+  rotation. The `atan2` handles both degenerate cases correctly.
+- **quat** (fallback): `quat_from_wxyz(quat)`.
+
+After adding this function, refactor the existing orientation resolution in
+`process_body_with_world_frame()` (lines 984–1007), `process_geom()` (lines
+1408–1424), and `process_site()` to call `resolve_orientation()`. This eliminates
+three copies of the same logic.
+
+**C2. `frame_accum_child()` — core SE(3) composition** (in `model_builder.rs`)
+
+Direct translation of MuJoCo's `mjuu_frameaccumChild`:
+
+```
+fn frame_accum_child(
+    frame_pos: &Vector3<f64>,
+    frame_quat: &UnitQuaternion<f64>,
+    child_pos: &mut Vector3<f64>,
+    child_quat: &mut UnitQuaternion<f64>,
+)
+```
+
+Math:
+- `child_pos_new = frame_pos + frame_quat.transform_vector(child_pos_old)`
+- `child_quat_new = frame_quat * child_quat_old`
+
+**C3. `expand_frames()` — recursive frame expansion** (in `model_builder.rs`)
+
+```
+fn expand_frames(
+    body: &mut MjcfBody,
+    compiler: &MjcfCompiler,
+    parent_childclass: Option<&str>,
+)
+```
+
+Algorithm:
+1. Determine effective childclass for this body's children:
+   `effective = body.childclass.as_deref().or(parent_childclass)`.
+2. Take `body.frames` via `std::mem::take()`.
+3. For each frame, call `expand_single_frame(body, frame, &zero_pos, &identity_quat,
+   compiler, effective)`.
+4. Recursively call `expand_frames(child, compiler, effective)` on each child body,
+   passing this body's effective childclass as the child's `parent_childclass`.
+
+**C4. `expand_single_frame()` — single frame expansion** (in `model_builder.rs`)
+
+```
+fn expand_single_frame(
+    body: &mut MjcfBody,
+    frame: &MjcfFrame,
+    accumulated_pos: &Vector3<f64>,
+    accumulated_quat: &UnitQuaternion<f64>,
+    compiler: &MjcfCompiler,
+    parent_childclass: Option<&str>,
+)
+```
+
+Algorithm:
+1. Resolve frame's own orientation via `resolve_orientation()`.
+2. Compose with accumulated parent-frame transform via `frame_accum_child()`:
+   `composed = accumulated ∘ frame_local`.
+3. Determine effective childclass: `frame.childclass` overrides `parent_childclass`.
+4. **For each child geom** (clone, transform, push onto body):
+   - If geom has no explicit `class`, set `class = effective_childclass`.
+   - **`fromto` geoms**: transform both endpoints through the composed frame.
+     `from_new = composed_pos + composed_quat * from_old` (same for `to`).
+     Leave `pos`/`quat` untouched — `compute_fromto_pose()` will derive them later.
+   - **Non-`fromto` geoms**: resolve geom's orientation via `resolve_orientation()`,
+     then compose with frame via `frame_accum_child()`. Store result as `quat`,
+     clear `euler`/`axisangle`/`xyaxes`/`zaxis` (already resolved).
+5. **For each child site** (clone, transform, push onto body):
+   - If site has no explicit `class`, set `class = effective_childclass`.
+   - Resolve site orientation, compose with frame, store as `quat`, clear alternatives.
+6. **For each child body** (clone, transform, push onto body.children):
+   - If body has no own `childclass`, inherit `effective_childclass`.
+   - Resolve body orientation, compose with frame, store as `quat`, clear `euler`/`axisangle`.
+7. **For each nested frame**: recurse with the composed transform and effective childclass.
+
+**C5. Wire into `model_from_mjcf()`** (in `model_builder.rs`)
+
+Insert before `discardvisual`/`fusestatic` (matching MuJoCo's expansion order):
+
+```rust
+// Expand <frame> elements: compose transforms into children, lift onto parent bodies
+expand_frames(&mut mjcf.worldbody, &mjcf.compiler, None);
+```
+
+**C6. Thread `inherited_childclass` through `process_body_with_world_frame()`**
+
+Add parameter `inherited_childclass: Option<&str>` to `process_body_with_world_frame()`.
+
+For each element type, apply childclass if the element has no explicit `class`:
+- Geoms: before `self.resolver.apply_to_geom()`, set `g.class = effective_childclass`
+  if `g.class.is_none()`.
+- Joints: same pattern with `self.resolver.apply_to_joint()`.
+- Sites: same pattern with `self.resolver.apply_to_site()`.
+
+Pass `effective_childclass` to recursive calls for child bodies.
+
+Update all call sites of `process_body_with_world_frame()` to include the new parameter.
+Initial call from `model_from_mjcf()` passes `mjcf.worldbody.childclass.as_deref()`.
+
+##### Part D — Default Resolver Fix
+
+**D1. Fix `apply_to_site()` in `defaults.rs`**
+
+Change `self.site_defaults(None)` → `self.site_defaults(site.class.as_deref())`.
+This is a prerequisite for childclass to work on sites.
 
 #### Acceptance Criteria
 
-1. `<frame pos="1 0 0"><geom pos="0 0 0" .../></frame>` places the geom at
-   body-relative position (1, 0, 0).
-2. `<frame euler="0 0 90"><geom pos="1 0 0" .../></frame>` rotates the geom's
-   position by 90° about Z.
-3. Nested frames compose correctly.
-4. Models without `<frame>` are unaffected (regression).
-5. A real-world humanoid MJCF using `<frame>` loads with correct geometry placement.
+**Frame position:**
+1. `<frame pos="1 0 0"><geom pos="0 0 0" .../></frame>` → geom at body-relative
+   `(1, 0, 0)`.
+
+**Frame rotation:**
+2. `<frame euler="0 0 90">` (with `angle="degree"`) `<geom pos="1 0 0" .../></frame>`
+   → geom at body-relative `(0, 1, 0)` (90deg Z rotation maps x to y).
+
+**Frame position + rotation:**
+3. `<frame pos="1 0 0" euler="0 0 90">` (degrees) `<geom pos="1 0 0" .../></frame>`
+   → geom at `(1, 1, 0)`. frame_pos + frame_rot * geom_pos = (1,0,0) + (0,1,0).
+
+**Nested frames:**
+4. `<frame pos="1 0 0"><frame pos="0 1 0"><geom .../></frame></frame>` → geom at
+   `(1, 1, 0)`.
+
+**3-deep nested frames:**
+5. `<frame pos="1 0 0"><frame pos="0 1 0"><frame pos="0 0 1"><geom .../></frame>
+   </frame></frame>` → geom at `(1, 1, 1)`.
+
+**Frame wrapping body:**
+6. `<frame pos="2 0 0"><body pos="1 0 0">...</body></frame>` → body_pos = `(3, 0, 0)`.
+
+**Frame with `fromto` geom:**
+7. `<frame pos="1 0 0"><geom type="capsule" fromto="0 0 0 0 0 1" .../></frame>` →
+   fromto endpoints become `(1,0,0)-(1,0,1)`, geom pos = midpoint `(1, 0, 0.5)`.
+
+**Frame with `fromto` geom + rotation:**
+8. `<frame euler="0 90 0">` (degrees, Y rotation) `<geom type="capsule"
+   fromto="0 0 0 0 0 1" .../></frame>` → 90deg Y rotation maps Z to X.
+   Endpoints: `(0,0,0)-(1,0,0)`. Geom pos approx `(0.5, 0, 0)`.
+
+**Frame with site:**
+9. `<frame pos="0.5 0 0"><site pos="0 0 0"/></frame>` → site at `(0.5, 0, 0)`.
+
+**Empty frame:**
+10. `<frame pos="1 0 0"/>` inside a body → model loads without error, no children affected.
+
+**Frame at worldbody level:**
+11. `<worldbody><frame pos="1 0 0"><geom .../></frame></worldbody>` → geom at `(1,0,0)`.
+
+**Frame with only orientation (no pos):**
+12. `<frame euler="0 0 90"><geom pos="1 0 0" .../></frame>` → geom at `(0, 1, 0)`.
+    Frame pos defaults to `(0,0,0)`.
+
+**Frame with only position (no orientation):**
+13. `<frame pos="3 0 0"><geom pos="0 2 0" .../></frame>` → geom at `(3, 2, 0)`.
+    Orientation defaults to identity.
+
+**Frame with `xyaxes`:**
+14. `<frame xyaxes="0 1 0 -1 0 0"><geom pos="1 0 0" .../></frame>` →
+    xyaxes "0 1 0 -1 0 0" = 90deg Z rotation. Geom at `(0, 1, 0)`.
+
+**Frame with `zaxis`:**
+15. `<frame zaxis="1 0 0"><geom pos="0 0 1" .../></frame>` →
+    zaxis "1 0 0" maps Z to X. Geom at local (0,0,1) → body-relative `(1, 0, 0)`.
+
+**Frame with `axisangle`:**
+16. `<frame axisangle="0 0 1 90">` (with `angle="degree"`) `<geom pos="1 0 0" .../></frame>`
+    → 90deg about Z. Geom at `(0, 1, 0)`.
+
+**Joint inside frame = error:**
+17. `<frame><joint .../></frame>` → `MjcfError::InvalidElement`.
+
+**Freejoint inside frame = error:**
+18. `<frame><freejoint/></frame>` → `MjcfError::InvalidElement`.
+
+**Inertial inside frame = error:**
+19. `<frame><inertial .../></frame>` → `MjcfError::InvalidElement`.
+
+**Childclass on body:**
+20. `<body childclass="red"><geom .../></body>` → geom inherits class "red" defaults
+    (when geom has no explicit `class`).
+
+**Childclass override by explicit class:**
+21. `<body childclass="red"><geom class="blue" .../></body>` → geom uses class "blue"
+    (explicit overrides childclass).
+
+**Childclass on frame:**
+22. `<body childclass="red"><frame childclass="green"><geom .../></frame></body>` →
+    geom inherits "green" (frame's childclass overrides body's).
+
+**Childclass inheritance through body hierarchy:**
+23. `<body childclass="robot"><body><joint .../></body></body>` → inner body's
+    joint inherits class "robot" from parent (childclass propagates down).
+
+**Childclass on child body overrides parent:**
+24. `<body childclass="A"><body childclass="B"><geom .../></body></body>` → geom
+    inherits "B" (child body's childclass overrides parent's).
+
+**Regression: no frames, no childclass:**
+25. Models without `<frame>` or `childclass` produce identical results to current behavior.
+
+**Geom orientation composition:**
+26. `<frame euler="0 0 90"><geom euler="90 0 0" .../></frame>` (degrees) → geom
+    orientation = frame_quat * geom_quat. Both euler values resolved, then composed.
+
+**Frame + angle="radian":**
+27. `<compiler angle="radian"/><frame euler="0 0 1.5707963"><geom pos="1 0 0" .../></frame>`
+    → geom at `(0, 1, 0)` (same as degree case, just radian input).
+
+#### Implementation Notes
+
+**Expansion ordering in `model_from_mjcf()`:**
+Frame expansion runs BEFORE `discardvisual`/`fusestatic`, matching MuJoCo's behavior
+(MuJoCo expands frames during XML parsing, before any compiler passes). This ensures
+geoms/sites inside frames are visible to discardvisual (can be culled if visual-only)
+and fusestatic (participate in static body fusion). After expand_frames, all frame
+vecs are empty, so fusestatic doesn't need to handle them.
+Order: **expand_frames** → discardvisual → fusestatic → builder.
+
+**`fromto` edge case detail:** When a `fromto` geom is inside a frame, the frame
+transform must be applied to the raw `fromto` endpoints, NOT to the derived
+pos/quat. The model builder's `compute_fromto_pose()` will later derive pos/quat
+from the (already-transformed) endpoints. If we instead transformed the derived
+pos/quat, the capsule/cylinder axis would be wrong because `fromto` derives
+orientation from the endpoint vector direction, which is frame-dependent.
+The geom's `pos` and `quat` fields are irrelevant for `fromto` geoms —
+`compute_fromto_pose()` overwrites them from the endpoints. During frame expansion,
+we only transform the `fromto` array and leave `pos`/`quat` at their parsed values
+(they will be overwritten later). Do NOT also transform `pos`/`quat`.
+
+**Geom orientation after frame expansion:** After composing a geom's orientation
+with the frame's, the result is stored as a `quat` and all alternative orientation
+fields (`euler`, `axisangle`, `xyaxes`, `zaxis`) are set to `None`. This prevents
+the model builder from re-resolving an already-resolved orientation.
+
+**Bodies inside frames:** When a body is inside a frame, the frame's transform is
+composed into the body's `pos`/`quat`, and the body is then appended to
+`parent_body.children`. The body's own joints, geoms, and sites are NOT
+transformed by the frame — they are relative to their own body, which has
+already absorbed the frame transform. The body's `euler`/`axisangle` are cleared
+after resolution (stored as `quat`).
+
+**childclass is NOT applied to bodies themselves:** childclass provides a default
+`class` for a body's *children* (geoms, joints, sites). It does not set the body's
+own class. A body inside a frame with `childclass="X"` inherits `X` as its own
+childclass (for its children), not as its own class.
+
+**Dual-path childclass application:** Childclass is applied in two places:
+(a) During frame expansion (C4): elements inside frames get their `class` field set
+to the effective childclass before being lifted onto the body. (b) During model
+building (C6): elements directly on bodies (not from frames) get childclass applied
+before default resolution. An element that came from a frame already has its `class`
+set (or was already explicit), so C6's "if class is None" check naturally skips it.
+There is no double-application risk.
+
+**Refactoring `resolve_orientation()`:** The existing inline orientation resolution
+(3 copies: body at model_builder.rs:984, geom at :1408, site at :1531) should be
+replaced with calls to the new `resolve_orientation()` function. This is part of
+the implementation scope — not a separate refactoring item.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — frame parsing and coordinate transformation
+- `sim/L0/mjcf/src/types.rs` — `MjcfFrame` struct; `frames`/`childclass` on
+  `MjcfBody`; `axisangle`/`xyaxes`/`zaxis` on `MjcfGeom`;
+  `euler`/`axisangle`/`xyaxes`/`zaxis`/`class` on `MjcfSite`
+- `sim/L0/mjcf/src/parser.rs` — `parse_frame()`, `parse_frame_attrs()`;
+  `b"frame"` arms in `parse_body()` and `parse_worldbody()`; `childclass` parsing
+  in `parse_body_attrs()`; additional orientation parsing in `parse_geom_attrs()`
+  and `parse_site_attrs()`
+- `sim/L0/mjcf/src/model_builder.rs` — `resolve_orientation()`,
+  `frame_accum_child()`, `expand_frames()`, `expand_single_frame()`;
+  wire into `model_from_mjcf()`; thread `inherited_childclass` through
+  `process_body_with_world_frame()`; refactor body/geom/site orientation resolution
+- `sim/L0/mjcf/src/defaults.rs` — fix `apply_to_site()` to use `site.class`
+- `sim/L0/mjcf/src/error.rs` — add `InvalidElement(String)` variant
 
 ---
 
 ### 20. `childclass` Attribute
 **Status:** Not started | **Effort:** S | **Prerequisites:** None
+
+> **Note:** Body `childclass` and frame `childclass` parsing + application are
+> implemented as part of item #19. This item's remaining scope is limited to
+> verifying edge cases and ensuring childclass interacts correctly with all
+> element types not covered in #19's tests (e.g., tendons, actuators).
 
 #### Current State
 
@@ -512,14 +928,23 @@ elements within that body subtree.
 ---
 
 ### 21. `<site>` euler/axisangle/xyaxes/zaxis Orientation
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+**Status:** Mostly complete (core in #19) | **Effort:** S | **Prerequisites:** None
+
+> **Note:** Site orientation parsing (`euler`, `axisangle`, `xyaxes`, `zaxis`) and
+> resolution via `resolve_orientation()` were implemented as part of item #19.
+> `MjcfSite` now has all orientation fields, `parse_site_attrs()` parses them,
+> and `process_site()` resolves them via the unified `resolve_orientation()`.
+> This item's remaining scope is limited to verifying edge cases and adding
+> dedicated site orientation acceptance tests beyond those in #19's test suite.
 
 #### Current State
 
-Site parsing only supports `quat`. `parse_site_attrs()` handles only the `quat`
-attribute. Model builder comments: "sites have only quat, no euler." Body and geom
-elements already support all orientation formats (euler, axisangle, xyaxes, zaxis,
-quat).
+~~Site parsing only supports `quat`. `parse_site_attrs()` handles only the `quat`
+attribute. Model builder comments: "sites have only quat, no euler."~~ **Updated:**
+Site parsing now supports all orientation formats (`euler`, `axisangle`, `xyaxes`,
+`zaxis`, `quat`). `MjcfSite` has fields for all five. `process_site()` uses
+`resolve_orientation()` with the full priority chain. Body, geom, and site
+elements all share the same unified orientation resolution logic.
 
 #### Objective
 
