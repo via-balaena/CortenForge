@@ -604,10 +604,8 @@ struct ModelBuilder {
     flex_solimp: Vec<[f64; 5]>,
     flex_edge_solref: Vec<[f64; 2]>,
     flex_edge_solimp: Vec<[f64; 5]>,
-    flex_bend_solref: Vec<[f64; 2]>,
-    flex_bend_solimp: Vec<[f64; 5]>,
-    flex_volume_solref: Vec<[f64; 2]>,
-    flex_volume_solimp: Vec<[f64; 5]>,
+    flex_bend_stiffness: Vec<f64>,
+    flex_bend_damping: Vec<f64>,
     flex_young: Vec<f64>,
     flex_poisson: Vec<f64>,
     flex_thickness: Vec<f64>,
@@ -844,10 +842,8 @@ impl ModelBuilder {
             flex_solimp: vec![],
             flex_edge_solref: vec![],
             flex_edge_solimp: vec![],
-            flex_bend_solref: vec![],
-            flex_bend_solimp: vec![],
-            flex_volume_solref: vec![],
-            flex_volume_solimp: vec![],
+            flex_bend_stiffness: vec![],
+            flex_bend_damping: vec![],
             flex_young: vec![],
             flex_poisson: vec![],
             flex_thickness: vec![],
@@ -2968,8 +2964,8 @@ impl ModelBuilder {
 
             // Compute solref from material properties
             let edge_solref = compute_edge_solref_from_material(flex);
-            let bend_solref = compute_bend_solref_from_material(flex);
-            let volume_solref = compute_volume_solref_from_material(flex);
+            let k_bend = compute_bend_stiffness_from_material(flex);
+            let b_bend = compute_bend_damping_from_material(flex, k_bend);
 
             // Per-flex arrays
             self.flex_dim.push(flex.dim);
@@ -2983,10 +2979,8 @@ impl ModelBuilder {
             self.flex_solimp.push(flex.solimp);
             self.flex_edge_solref.push(edge_solref);
             self.flex_edge_solimp.push(flex.solimp);
-            self.flex_bend_solref.push(bend_solref);
-            self.flex_bend_solimp.push(flex.solimp);
-            self.flex_volume_solref.push(volume_solref);
-            self.flex_volume_solimp.push(flex.solimp);
+            self.flex_bend_stiffness.push(k_bend);
+            self.flex_bend_damping.push(b_bend);
             self.flex_young.push(flex.young);
             self.flex_poisson.push(flex.poisson);
             self.flex_thickness.push(flex.thickness);
@@ -3139,10 +3133,8 @@ impl ModelBuilder {
             flex_selfcollide: self.flex_selfcollide,
             flex_edge_solref: self.flex_edge_solref,
             flex_edge_solimp: self.flex_edge_solimp,
-            flex_bend_solref: self.flex_bend_solref,
-            flex_bend_solimp: self.flex_bend_solimp,
-            flex_volume_solref: self.flex_volume_solref,
-            flex_volume_solimp: self.flex_volume_solimp,
+            flex_bend_stiffness: self.flex_bend_stiffness,
+            flex_bend_damping: self.flex_bend_damping,
             flex_density: self.flex_density,
             flexvert_qposadr: self.flexvert_qposadr,
             flexvert_dofadr: self.flexvert_dofadr,
@@ -5444,14 +5436,35 @@ fn compute_edge_solref_from_material(flex: &MjcfFlex) -> [f64; 2] {
     flex.solref
 }
 
-/// Compute bending constraint solref from material properties.
-fn compute_bend_solref_from_material(flex: &MjcfFlex) -> [f64; 2] {
-    flex.solref
+/// Compute bending stiffness from material properties (passive force coefficient).
+///
+/// For dim=2 (shells): Kirchhoff-Love thin plate bending stiffness
+///   D = E * t^3 / (12 * (1 - nu^2))
+/// For dim=3 (solids): characteristic stiffness D = E
+///   (the Bridson dihedral gradient provides geometric scaling)
+/// For dim=1 (cables): 0.0 (no bending)
+fn compute_bend_stiffness_from_material(flex: &MjcfFlex) -> f64 {
+    if flex.young <= 0.0 {
+        return 0.0;
+    }
+    match flex.dim {
+        2 => {
+            let nu = flex.poisson.clamp(0.0, 0.499);
+            flex.young * flex.thickness.powi(3) / (12.0 * (1.0 - nu * nu))
+        }
+        3 => flex.young,
+        _ => 0.0,
+    }
 }
 
-/// Compute volume constraint solref from material properties.
-fn compute_volume_solref_from_material(flex: &MjcfFlex) -> [f64; 2] {
-    flex.solref
+/// Compute bending damping from material properties.
+///
+/// Proportional damping model: b_bend = damping * k_bend.
+fn compute_bend_damping_from_material(flex: &MjcfFlex, k_bend: f64) -> f64 {
+    if flex.damping <= 0.0 || k_bend <= 0.0 {
+        return 0.0;
+    }
+    flex.damping * k_bend
 }
 
 #[cfg(test)]

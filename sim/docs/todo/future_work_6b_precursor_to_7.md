@@ -755,259 +755,103 @@ fn compute_edge_solref(
 }
 ```
 
-##### P7. Bending and Volume Constraints
+##### P7. Bending and Volume
 
-**New `ConstraintType` variants:**
+**MuJoCo architecture reference** (from `engine_passive.c` and `engine_forward.c`):
 
-```rust
-/// Flex dihedral bending constraint (soft equality).
-FlexBend,
-/// Flex tetrahedral volume preservation constraint (soft equality).
-FlexVolume,
-```
+| Mechanism | MuJoCo | CortenForge | Pipeline stage |
+|---|---|---|---|
+| Edge-length | Soft equality constraint in solver (`mjEQ_FLEX`) | `FlexEdge` in `ConstraintType` | `assemble_unified_constraints()` |
+| Bending (dihedral) | Passive spring-damper force in `qfrc_spring` | Passive force in `mj_fwd_passive()` | Before constraint solve |
+| Volume preservation | No dedicated mechanism (emergent from SVK) | Not implemented | N/A |
 
-**Row counting** (insert after flex edge counting):
-
-```rust
-// Flex bending constraints
-for h in 0..model.nflexhinge {
-    nefc += 1; // 1 row per hinge
-}
-// Flex volume constraints (dim=3 solids only)
-for el in 0..model.nflexelem {
-    if model.flexelem_datanum[el] == 4 { // tetrahedra only
-        nefc += 1;
-    }
-}
-```
+Bending is **not** a constraint row. MuJoCo computes bending as explicit passive
+forces that contribute to `qacc_smooth`, influencing the solver indirectly via
+the RHS. Volume preservation has no dedicated mechanism in MuJoCo — it is an
+emergent property of continuum elasticity (Saint-Venant-Kirchhoff), which is
+out of scope until §7.
 
 ---
 
-**P7a. Bending constraints** (dim=2 shells, dim=3 solids):
+**P7a. Bending passive forces** (dim=2 shells, dim=3 solids):
 
-For each hinge (pair of adjacent elements sharing an edge), preserve the rest
-dihedral angle. Involves 4 vertices: `(v_e0, v_e1)` on the shared edge,
-`v_opp_a` and `v_opp_b` as opposite vertices. Jacobian has entries on
-4 × 3 = 12 DOF columns.
+For each hinge (pair of adjacent elements sharing an edge), compute a
+spring-damper force on the dihedral angle, applied via the transpose Jacobian
+to `qfrc_passive`. This matches MuJoCo's `engine_passive.c` architecture.
 
-**Constraint function:**
-
-```
-C = θ - θ_0    (dihedral angle - rest angle)
-```
-
-**Jacobian assembly** (insert after flex edge assembly):
+**Model fields:**
 
 ```rust
-// --- 3h: Flex bending constraints ---
+/// Per-flex: bending stiffness (passive spring, N·m/rad).
+/// dim=2 (shell): D = E·t³ / (12·(1−ν²))  (Kirchhoff-Love plate theory).
+/// dim=3 (solid): D = E  (characteristic stiffness; gradient provides geometry).
+pub flex_bend_stiffness: Vec<f64>,
+/// Per-flex: bending damping (passive damper, N·m·s/rad).
+/// Proportional damping: b = damping × k_bend.
+pub flex_bend_damping: Vec<f64>,
+```
+
+**Force computation** (in `mj_fwd_passive()`, after flex vertex damping):
+
+```rust
+// Flex bending passive forces: spring-damper on dihedral angle (Bridson et al. 2003).
+// MuJoCo computes bending as passive forces in engine_passive.c, NOT as constraint rows.
+// Force = -k_bend * (theta - theta0) - b_bend * d(theta)/dt, applied via J^T.
+let dt = model.timestep;
+let k_max = 1.0 / (dt * dt); // Stability clamp for explicit integration
+
 for h in 0..model.nflexhinge {
     let [ve0, ve1, va, vb] = model.flexhinge_vert[h];
-    let pe0 = data.flexvert_xpos[ve0];
-    let pe1 = data.flexvert_xpos[ve1];
-    let pa = data.flexvert_xpos[va];
-    let pb = data.flexvert_xpos[vb];
-
-    // Shared edge vector
-    let e = pe1 - pe0;
-    let e_len_sq = e.norm_squared();
-
-    if e_len_sq < 1e-20 {
-        // Degenerate: zero-length shared edge, skip
-        finalize_row!(
-            model.flex_bend_solref[model.flexhinge_flexid[h]],
-            model.flex_bend_solimp[model.flexhinge_flexid[h]],
-            0.0, 0.0, 0.0, 0.0,
-            ConstraintType::FlexBend, 1, h, [0.0; 5]
-        );
-        continue;
-    }
-
-    // Face normals (unnormalized)
-    let va_rel = pa - pe0;  // vertex a relative to edge start
-    let vb_rel = pb - pe0;  // vertex b relative to edge start
-    let n_a = e.cross(&va_rel);   // normal of triangle (e0, e1, a)
-    let n_b = vb_rel.cross(&e);   // normal of triangle (e0, e1, b)
-
-    let n_a_len_sq = n_a.norm_squared();
-    let n_b_len_sq = n_b.norm_squared();
-
-    if n_a_len_sq < 1e-20 || n_b_len_sq < 1e-20 {
-        // Degenerate: coplanar or coincident, skip
-        finalize_row!(
-            model.flex_bend_solref[model.flexhinge_flexid[h]],
-            model.flex_bend_solimp[model.flexhinge_flexid[h]],
-            0.0, 0.0, 0.0, 0.0,
-            ConstraintType::FlexBend, 1, h, [0.0; 5]
-        );
-        continue;
-    }
-
-    // Dihedral angle via atan2 (robust, handles full [-π, π] range)
-    let e_norm = e / e_len_sq.sqrt();
-    let n_a_hat = n_a / n_a_len_sq.sqrt();
-    let n_b_hat = n_b / n_b_len_sq.sqrt();
-    let cos_theta = n_a_hat.dot(&n_b_hat).clamp(-1.0, 1.0);
-    let sin_theta = n_a_hat.cross(&n_b_hat).dot(&e_norm);
-    let theta = sin_theta.atan2(cos_theta);
-
-    let rest_angle = model.flexhinge_angle0[h];
-    let pos_error = theta - rest_angle;
-
-    // Jacobian: dihedral angle gradient (Bridson et al. 2003)
-    // ∂θ/∂x_a is along the face normal n_a, scaled by |e| / |n_a|² = 1/h_a.
-    // Geometric intuition: vertex a at height h_a above the hinge sweeps
-    // dihedral angle at rate 1/h_a per unit out-of-plane displacement.
-    let e_len = e_len_sq.sqrt();
-    let grad_a = e_len * n_a / n_a_len_sq;  // ∂θ/∂x_a: along face normal of triangle A
-    let grad_b = e_len * n_b / n_b_len_sq;  // ∂θ/∂x_b: along face normal of triangle B
-    // For the shared edge vertices (derived from ∂θ/∂x_e0 + ∂θ/∂x_e1 +
-    // ∂θ/∂x_a + ∂θ/∂x_b = 0 and lever arm ratios):
-    let t_a = va_rel.dot(&e) / e_len_sq;  // barycentric coord along edge
-    let t_b = vb_rel.dot(&e) / e_len_sq;
-    let grad_e0 = -grad_a * (1.0 - t_a) - grad_b * (1.0 - t_b);
-    let grad_e1 = -grad_a * t_a - grad_b * t_b;
-
-    // Populate Jacobian row (12 DOF columns)
-    let dof_e0 = model.flexvert_dofadr[ve0];
-    let dof_e1 = model.flexvert_dofadr[ve1];
-    let dof_a = model.flexvert_dofadr[va];
-    let dof_b = model.flexvert_dofadr[vb];
-    for k in 0..3 {
-        data.efc_J[(row, dof_e0 + k)] = grad_e0[k];
-        data.efc_J[(row, dof_e1 + k)] = grad_e1[k];
-        data.efc_J[(row, dof_a + k)]  = grad_a[k];
-        data.efc_J[(row, dof_b + k)]  = grad_b[k];
-    }
-
-    // Velocity error: J · qvel
-    let vel_e0 = data.qvel.rows(dof_e0, 3).into_owned();
-    let vel_e1 = data.qvel.rows(dof_e1, 3).into_owned();
-    let vel_a = data.qvel.rows(dof_a, 3).into_owned();
-    let vel_b = data.qvel.rows(dof_b, 3).into_owned();
-    let vel_error = grad_e0.dot(&vel_e0) + grad_e1.dot(&vel_e1)
-        + grad_a.dot(&vel_a) + grad_b.dot(&vel_b);
-
     let flex_id = model.flexhinge_flexid[h];
-    finalize_row!(
-        model.flex_bend_solref[flex_id],
-        model.flex_bend_solimp[flex_id],
-        pos_error,
-        0.0,       // margin
-        vel_error,
-        0.0,       // friction loss
-        ConstraintType::FlexBend,
-        1,         // dim
-        h,         // id (hinge index)
-        [0.0; 5]   // mu (no friction)
-    );
+    let k_bend = model.flex_bend_stiffness[flex_id].min(k_max);
+    let b_bend = model.flex_bend_damping[flex_id];
+    if k_bend <= 0.0 && b_bend <= 0.0 { continue; }
+
+    // Dihedral angle via atan2 (Bridson et al. 2003 gradient)
+    // theta = atan2(sin_theta, cos_theta)
+    // angle_error = theta - rest_angle
+    // theta_dot = J · qvel
+
+    let spring_mag = -k_bend * angle_error;
+    let damper_mag = -b_bend * theta_dot;
+    let force_mag = spring_mag + damper_mag;
+
+    // Apply via J^T to qfrc_passive (NOT qfrc_constraint)
+    let grads = [(ve0, grad_e0), (ve1, grad_e1), (va, grad_a), (vb, grad_b)];
+    for &(v_idx, grad) in &grads {
+        if model.flexvert_invmass[v_idx] > 0.0 {
+            let dof = model.flexvert_dofadr[v_idx];
+            for ax in 0..3 {
+                data.qfrc_passive[dof + ax] += grad[ax] * force_mag;
+            }
+        }
+    }
 }
 ```
 
-The dihedral gradient uses the Bridson et al. 2003 formulation with the
-shared-edge-vertex gradients derived from the constraint that all four
-gradients sum to zero and the lever arm decomposition along the edge.
+The dihedral gradient uses the Bridson et al. 2003 formulation (same geometry
+as in P6 edge constraints). The stability clamp `k_bend.min(1/(dt²))` prevents
+explicit integration instability when bending stiffness is large relative to
+the timestep.
+
+**Stiffness derivation from material properties:**
+
+| Flex dim | Formula | Source |
+|---|---|---|
+| 2 (shell) | `D = E · t³ / (12 · (1 − ν²))` | Kirchhoff-Love thin plate theory |
+| 3 (solid) | `D = E` (gradient provides geometric scaling) | Characteristic stiffness |
+| 1 (cable) | `0.0` (no bending for cables) | N/A |
+
+Damping: `b_bend = damping × k_bend` (proportional damping model).
 
 ---
 
-**P7b. Volume constraints** (dim=3 solids only):
+**P7b. Volume constraints — NOT IMPLEMENTED (matches MuJoCo):**
 
-For each tetrahedron with vertices `(a, b, c, d)`, preserve rest volume:
-
-```
-C = V - V_0    where V = (1/6) * (b-a) · ((c-a) × (d-a))
-```
-
-**Jacobian assembly** (insert after bending assembly):
-
-```rust
-// --- 3i: Flex volume constraints ---
-for el in 0..model.nflexelem {
-    if model.flexelem_datanum[el] != 4 {
-        continue; // Only tetrahedra have volume constraints
-    }
-
-    let adr = model.flexelem_dataadr[el];
-    let va = model.flexelem_data[adr];
-    let vb = model.flexelem_data[adr + 1];
-    let vc = model.flexelem_data[adr + 2];
-    let vd = model.flexelem_data[adr + 3];
-
-    let xa = data.flexvert_xpos[va];
-    let xb = data.flexvert_xpos[vb];
-    let xc = data.flexvert_xpos[vc];
-    let xd = data.flexvert_xpos[vd];
-
-    let e1 = xb - xa;
-    let e2 = xc - xa;
-    let e3 = xd - xa;
-
-    // Current volume
-    let volume = e1.dot(&e2.cross(&e3)) / 6.0;
-    let rest_vol = model.flexelem_volume0[el];
-    let pos_error = volume - rest_vol;
-
-    // Volume gradients (∂V/∂x for each vertex)
-    // These are algebraically equivalent to the standard form:
-    let grad_b = e2.cross(&e3) / 6.0;        // (c-a) × (d-a) / 6
-    let grad_c = e3.cross(&e1) / 6.0;        // (d-a) × (b-a) / 6
-    let grad_d = e1.cross(&e2) / 6.0;        // (b-a) × (c-a) / 6
-    let grad_a = -(grad_b + grad_c + grad_d); // sum to zero
-
-    // Check for degenerate tetrahedron
-    let grad_norm_sq = grad_a.norm_squared() + grad_b.norm_squared()
-        + grad_c.norm_squared() + grad_d.norm_squared();
-
-    if grad_norm_sq < 1e-20 {
-        // Degenerate: flat tetrahedron, skip
-        let flex_id = model.flexelem_flexid[el];
-        finalize_row!(
-            model.flex_volume_solref[flex_id],
-            model.flex_volume_solimp[flex_id],
-            0.0, 0.0, 0.0, 0.0,
-            ConstraintType::FlexVolume, 1, el, [0.0; 5]
-        );
-        continue;
-    }
-
-    // Populate Jacobian row (12 DOF columns)
-    let dof_a = model.flexvert_dofadr[va];
-    let dof_b = model.flexvert_dofadr[vb];
-    let dof_c = model.flexvert_dofadr[vc];
-    let dof_d = model.flexvert_dofadr[vd];
-    for k in 0..3 {
-        data.efc_J[(row, dof_a + k)] = grad_a[k];
-        data.efc_J[(row, dof_b + k)] = grad_b[k];
-        data.efc_J[(row, dof_c + k)] = grad_c[k];
-        data.efc_J[(row, dof_d + k)] = grad_d[k];
-    }
-
-    // Velocity error: J · qvel
-    let vel_a = data.qvel.rows(dof_a, 3).into_owned();
-    let vel_b = data.qvel.rows(dof_b, 3).into_owned();
-    let vel_c = data.qvel.rows(dof_c, 3).into_owned();
-    let vel_d = data.qvel.rows(dof_d, 3).into_owned();
-    let vel_error = grad_a.dot(&vel_a) + grad_b.dot(&vel_b)
-        + grad_c.dot(&vel_c) + grad_d.dot(&vel_d);
-
-    let flex_id = model.flexelem_flexid[el];
-    finalize_row!(
-        model.flex_volume_solref[flex_id],
-        model.flex_volume_solimp[flex_id],
-        pos_error,
-        0.0,       // margin
-        vel_error,
-        0.0,       // friction loss
-        ConstraintType::FlexVolume,
-        1,         // dim
-        el,        // id (element index)
-        [0.0; 5]   // mu (no friction)
-    );
-}
-```
-
-solref for volume constraints derived from bulk modulus:
-`K = E / (3 * (1 - 2ν))`. Effective stiffness `k = K * V_0^{1/3}` (pressure
-acts on the surface area, proportional to V^{2/3}).
+MuJoCo has no dedicated volume preservation mechanism for flex bodies.
+Volume preservation is an emergent property of the continuum elasticity model
+(Saint-Venant-Kirchhoff), which is planned for §7. The previously-specified
+`FlexVolume` constraint type has been removed as it had no MuJoCo equivalent.
 
 ---
 
@@ -1508,8 +1352,9 @@ Each phase must compile and pass `cargo test -p sim-core` before proceeding.
 6. **P6: Edge constraints.** Add `FlexEdge` to `ConstraintType`. Add edge
    constraint assembly in `assemble_unified_constraints()`.
 
-7. **P7: Bending + volume.** Add `FlexBend` and `FlexVolume` constraint types.
-   Assembly in `assemble_unified_constraints()`.
+7. **P7: Bending passive forces.** Compute bending as passive spring-damper
+   forces in `mj_fwd_passive()` (matching MuJoCo `engine_passive.c`).
+   Volume constraints removed — MuJoCo has no dedicated volume mechanism.
 
 8. **P8: Integration.** Add `mj_integrate_pos_flex()` for position integration.
    Velocity integration is free (existing `nv`-sized loop). Add gravity and

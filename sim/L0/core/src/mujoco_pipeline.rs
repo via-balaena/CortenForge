@@ -878,12 +878,8 @@ pub enum ConstraintType {
     ContactNonElliptic,
     /// Contact with elliptic friction cone (condim ≥ 3 and cone == elliptic).
     ContactElliptic,
-    /// Flex edge-length constraint (soft equality).
+    /// Flex edge-length constraint (soft equality, matches MuJoCo's mjEQ_FLEX).
     FlexEdge,
-    /// Flex dihedral bending constraint (soft equality).
-    FlexBend,
-    /// Flex tetrahedral volume preservation constraint (soft equality).
-    FlexVolume,
 }
 
 /// Constraint state per scalar row, determined by `PrimalUpdateConstraint`.
@@ -1415,14 +1411,14 @@ pub struct Model {
     pub flex_edge_solref: Vec<[f64; 2]>,
     /// Per-flex: edge constraint solimp.
     pub flex_edge_solimp: Vec<[f64; 5]>,
-    /// Per-flex: bending constraint solref (derived from Young's modulus × I).
-    pub flex_bend_solref: Vec<[f64; 2]>,
-    /// Per-flex: bending constraint solimp.
-    pub flex_bend_solimp: Vec<[f64; 5]>,
-    /// Per-flex: volume constraint solref (derived from bulk modulus).
-    pub flex_volume_solref: Vec<[f64; 2]>,
-    /// Per-flex: volume constraint solimp.
-    pub flex_volume_solimp: Vec<[f64; 5]>,
+    /// Per-flex: bending stiffness (passive spring, N·m/rad).
+    /// Derived from Young's modulus, thickness, and Poisson ratio.
+    /// dim=2 (shell): D = E·t³ / (12·(1−ν²))  (Kirchhoff-Love plate theory).
+    /// dim=3 (solid): D = E  (characteristic stiffness; gradient provides geometry).
+    pub flex_bend_stiffness: Vec<f64>,
+    /// Per-flex: bending damping (passive damper, N·m·s/rad).
+    /// Proportional damping: b = damping × k_bend.
+    pub flex_bend_damping: Vec<f64>,
     /// Per-flex: density. Units depend on dim:
     /// dim=1 (cable): linear density kg/m.
     /// dim=2 (shell): volumetric density kg/m³ (multiplied by thickness for area density).
@@ -2969,10 +2965,8 @@ impl Model {
             flex_selfcollide: vec![],
             flex_edge_solref: vec![],
             flex_edge_solimp: vec![],
-            flex_bend_solref: vec![],
-            flex_bend_solimp: vec![],
-            flex_volume_solref: vec![],
-            flex_volume_solimp: vec![],
+            flex_bend_stiffness: vec![],
+            flex_bend_damping: vec![],
             flex_density: vec![],
             flexvert_qposadr: vec![],
             flexvert_dofadr: vec![],
@@ -11372,6 +11366,106 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
             data.qfrc_passive[dof_base + k] -= damp * data.qvel[dof_base + k];
         }
     }
+
+    // Flex bending passive forces: spring-damper on dihedral angle (Bridson et al. 2003).
+    // MuJoCo computes bending as passive forces in engine_passive.c, NOT as constraint rows.
+    // Force = -k_bend * (theta - theta0) - b_bend * d(theta)/dt, applied via J^T.
+    let dt = model.timestep;
+    let k_max = 1.0 / (dt * dt); // Stability clamp for explicit integration
+    for h in 0..model.nflexhinge {
+        let [ve0, ve1, va, vb] = model.flexhinge_vert[h];
+        let flex_id = model.flexhinge_flexid[h];
+
+        let k_bend_raw = model.flex_bend_stiffness[flex_id];
+        let b_bend = model.flex_bend_damping[flex_id];
+        if k_bend_raw <= 0.0 && b_bend <= 0.0 {
+            continue;
+        }
+        let k_bend = k_bend_raw.min(k_max);
+
+        let pe0 = data.flexvert_xpos[ve0];
+        let pe1 = data.flexvert_xpos[ve1];
+        let pa = data.flexvert_xpos[va];
+        let pb = data.flexvert_xpos[vb];
+        let rest_angle = model.flexhinge_angle0[h];
+
+        // Shared edge vector
+        let e = pe1 - pe0;
+        let e_len_sq = e.norm_squared();
+        if e_len_sq < 1e-20 {
+            continue;
+        }
+
+        // Face normals (unnormalized)
+        let offset_a = pa - pe0;
+        let offset_b = pb - pe0;
+        let normal_face_a = e.cross(&offset_a);
+        let normal_face_b = offset_b.cross(&e);
+        let norm_sq_a = normal_face_a.norm_squared();
+        let norm_sq_b = normal_face_b.norm_squared();
+        if norm_sq_a < 1e-20 || norm_sq_b < 1e-20 {
+            continue;
+        }
+
+        // Dihedral angle via atan2
+        let e_len = e_len_sq.sqrt();
+        let e_norm = e / e_len;
+        let normal_unit_a = normal_face_a / norm_sq_a.sqrt();
+        let normal_unit_b = normal_face_b / norm_sq_b.sqrt();
+        let cos_theta = normal_unit_a.dot(&normal_unit_b).clamp(-1.0, 1.0);
+        let sin_theta = normal_unit_a.cross(&normal_unit_b).dot(&e_norm);
+        let theta = sin_theta.atan2(cos_theta);
+        let angle_error = theta - rest_angle;
+
+        // Bridson dihedral gradient (all 4 vertices)
+        let grad_a = e_len * normal_face_a / norm_sq_a;
+        let grad_b = e_len * normal_face_b / norm_sq_b;
+        let bary_a = offset_a.dot(&e) / e_len_sq;
+        let bary_b = offset_b.dot(&e) / e_len_sq;
+        let grad_e0 = -grad_a * (1.0 - bary_a) - grad_b * (1.0 - bary_b);
+        let grad_e1 = -grad_a * bary_a - grad_b * bary_b;
+
+        // Spring: F = -k * angle_error
+        let spring_mag = -k_bend * angle_error;
+
+        // Damper: F = -b * d(theta)/dt, where d(theta)/dt = J · qvel
+        let dof_e0 = model.flexvert_dofadr[ve0];
+        let dof_e1 = model.flexvert_dofadr[ve1];
+        let dof_a = model.flexvert_dofadr[va];
+        let dof_b = model.flexvert_dofadr[vb];
+        let vel_e0 = Vector3::new(
+            data.qvel[dof_e0],
+            data.qvel[dof_e0 + 1],
+            data.qvel[dof_e0 + 2],
+        );
+        let vel_e1 = Vector3::new(
+            data.qvel[dof_e1],
+            data.qvel[dof_e1 + 1],
+            data.qvel[dof_e1 + 2],
+        );
+        let vel_a = Vector3::new(data.qvel[dof_a], data.qvel[dof_a + 1], data.qvel[dof_a + 2]);
+        let vel_b = Vector3::new(data.qvel[dof_b], data.qvel[dof_b + 1], data.qvel[dof_b + 2]);
+        let theta_dot =
+            grad_e0.dot(&vel_e0) + grad_e1.dot(&vel_e1) + grad_a.dot(&vel_a) + grad_b.dot(&vel_b);
+        let damper_mag = -b_bend * theta_dot;
+
+        let force_mag = spring_mag + damper_mag;
+
+        // Apply via J^T to qfrc_passive
+        let grads = [
+            (ve0, dof_e0, grad_e0),
+            (ve1, dof_e1, grad_e1),
+            (va, dof_a, grad_a),
+            (vb, dof_b, grad_b),
+        ];
+        for &(v_idx, dof, grad) in &grads {
+            if model.flexvert_invmass[v_idx] > 0.0 {
+                for ax in 0..3 {
+                    data.qfrc_passive[dof + ax] += grad[ax] * force_mag;
+                }
+            }
+        }
+    }
 }
 
 /// Check if all DOFs affected by a tendon's Jacobian belong to sleeping trees (§16.5a').
@@ -12597,7 +12691,7 @@ fn constraint_tree(model: &Model, data: &Data, row: usize) -> usize {
             }
             sentinel
         }
-        ConstraintType::FlexEdge | ConstraintType::FlexBend | ConstraintType::FlexVolume => {
+        ConstraintType::FlexEdge => {
             // Flex constraints: scan Jacobian for nonzero DOFs and find their tree
             for dof in 0..model.nv {
                 if data.efc_J[(row, dof)].abs() > 0.0 && dof < model.dof_treeid.len() {
@@ -14479,7 +14573,7 @@ fn solref_to_penalty(solref: [f64; 2], default_k: f64, default_b: f64, dt: f64) 
 ///
 /// Forces are applied directly to `qfrc_constraint` via Jacobian transpose.
 #[allow(clippy::similar_names)] // na/nb, na_len/nb_len, na_unit/nb_unit are intentionally paired
-fn apply_flex_constraints(model: &Model, data: &mut Data) {
+fn apply_flex_edge_constraints(model: &Model, data: &mut Data) {
     if model.nflex == 0 {
         return;
     }
@@ -14531,145 +14625,8 @@ fn apply_flex_constraints(model: &Model, data: &mut Data) {
         }
     }
 
-    // --- Bending constraints (dihedral angle, Bridson et al. 2003) ---
-    // Matches the unified Jacobian formulation in assemble_unified_constraints().
-    for h in 0..model.nflexhinge {
-        let [ve0, ve1, va, vb] = model.flexhinge_vert[h];
-        let pe0 = data.flexvert_xpos[ve0];
-        let pe1 = data.flexvert_xpos[ve1];
-        let pa = data.flexvert_xpos[va];
-        let pb = data.flexvert_xpos[vb];
-        let rest_angle = model.flexhinge_angle0[h];
-        let flex_id = model.flexhinge_flexid[h];
-
-        // Shared edge vector
-        let e = pe1 - pe0;
-        let e_len_sq = e.norm_squared();
-        if e_len_sq < 1e-20 {
-            continue;
-        }
-
-        // Face normals (unnormalized) — same convention as unified Jacobian
-        let offset_a = pa - pe0;
-        let offset_b = pb - pe0;
-        let normal_face_a = e.cross(&offset_a);
-        let normal_face_b = offset_b.cross(&e);
-        let norm_sq_a = normal_face_a.norm_squared();
-        let norm_sq_b = normal_face_b.norm_squared();
-        if norm_sq_a < 1e-20 || norm_sq_b < 1e-20 {
-            continue;
-        }
-
-        // Dihedral angle via atan2
-        let e_len = e_len_sq.sqrt();
-        let e_norm = e / e_len;
-        let na_hat = normal_face_a / norm_sq_a.sqrt();
-        let nb_hat = normal_face_b / norm_sq_b.sqrt();
-        let cos_theta = na_hat.dot(&nb_hat).clamp(-1.0, 1.0);
-        let sin_theta = na_hat.cross(&nb_hat).dot(&e_norm);
-        let theta = sin_theta.atan2(cos_theta);
-        let angle_error = theta - rest_angle;
-
-        // Bridson dihedral gradient (all 4 vertices)
-        let grad_a = e_len * normal_face_a / norm_sq_a;
-        let grad_b = e_len * normal_face_b / norm_sq_b;
-        let bary_a = offset_a.dot(&e) / e_len_sq;
-        let bary_b = offset_b.dot(&e) / e_len_sq;
-        let grad_e0 = -grad_a * (1.0 - bary_a) - grad_b * (1.0 - bary_b);
-        let grad_e1 = -grad_a * bary_a - grad_b * bary_b;
-
-        // Velocity error: J · qvel
-        let dof_e0 = model.flexvert_dofadr[ve0];
-        let dof_e1 = model.flexvert_dofadr[ve1];
-        let dof_a = model.flexvert_dofadr[va];
-        let dof_b = model.flexvert_dofadr[vb];
-        let vel_e0 = Vector3::new(
-            data.qvel[dof_e0],
-            data.qvel[dof_e0 + 1],
-            data.qvel[dof_e0 + 2],
-        );
-        let vel_e1 = Vector3::new(
-            data.qvel[dof_e1],
-            data.qvel[dof_e1 + 1],
-            data.qvel[dof_e1 + 2],
-        );
-        let vel_a = Vector3::new(data.qvel[dof_a], data.qvel[dof_a + 1], data.qvel[dof_a + 2]);
-        let vel_b = Vector3::new(data.qvel[dof_b], data.qvel[dof_b + 1], data.qvel[dof_b + 2]);
-        let vel_error =
-            grad_e0.dot(&vel_e0) + grad_e1.dot(&vel_e1) + grad_a.dot(&vel_a) + grad_b.dot(&vel_b);
-
-        let (k, b_coeff) =
-            solref_to_penalty(model.flex_bend_solref[flex_id], default_k, default_b, dt);
-        let force_mag = -k * angle_error - b_coeff * vel_error;
-
-        // Apply via J^T to all 4 vertices
-        let grads = [(ve0, grad_e0), (ve1, grad_e1), (va, grad_a), (vb, grad_b)];
-        for &(v_idx, grad) in &grads {
-            if model.flexvert_invmass[v_idx] > 0.0 {
-                let dof = model.flexvert_dofadr[v_idx];
-                for ax in 0..3 {
-                    data.qfrc_constraint[dof + ax] += grad[ax] * force_mag;
-                }
-            }
-        }
-    }
-
-    // --- Volume constraints (tetrahedra only) ---
-    for el in 0..model.nflexelem {
-        if model.flexelem_datanum[el] != 4 {
-            continue; // Only tetrahedra have volume constraints
-        }
-
-        let adr = model.flexelem_dataadr[el];
-        let i0 = model.flexelem_data[adr];
-        let i1 = model.flexelem_data[adr + 1];
-        let i2 = model.flexelem_data[adr + 2];
-        let i3 = model.flexelem_data[adr + 3];
-
-        let p0 = data.flexvert_xpos[i0];
-        let p1 = data.flexvert_xpos[i1];
-        let p2 = data.flexvert_xpos[i2];
-        let p3 = data.flexvert_xpos[i3];
-
-        let e1 = p1 - p0;
-        let e2 = p2 - p0;
-        let e3 = p3 - p0;
-        let current_vol = e1.dot(&e2.cross(&e3)) / 6.0;
-        let rest_vol = model.flexelem_volume0[el];
-        let pos_error = current_vol - rest_vol;
-
-        let flex_id = model.flexelem_flexid[el];
-        let (k, b) = solref_to_penalty(model.flex_volume_solref[flex_id], default_k, default_b, dt);
-
-        // Volume gradient: ∂V/∂p_i (matches unified Jacobian in assemble_unified_constraints)
-        let grad1 = e2.cross(&e3) / 6.0; // (p2-p0) × (p3-p0) / 6
-        let grad2 = e3.cross(&e1) / 6.0; // (p3-p0) × (p1-p0) / 6
-        let grad3 = e1.cross(&e2) / 6.0; // (p1-p0) × (p2-p0) / 6
-        let grad0 = -(grad1 + grad2 + grad3);
-
-        // Velocity error: ∂V/∂t = Σ grad_i · vel_i
-        let verts = [i0, i1, i2, i3];
-        let vol_grads = [grad0, grad1, grad2, grad3];
-        let mut vel_error = 0.0;
-        for (v_idx, grad) in verts.iter().zip(vol_grads.iter()) {
-            let dof = model.flexvert_dofadr[*v_idx];
-            let vel =
-                nalgebra::Vector3::new(data.qvel[dof], data.qvel[dof + 1], data.qvel[dof + 2]);
-            vel_error += grad.dot(&vel);
-        }
-
-        let force_mag = -k * pos_error - b * vel_error;
-
-        // Apply via J^T: F_i = grad_i * force_mag
-        for (v_idx, grad) in verts.iter().zip(vol_grads.iter()) {
-            if model.flexvert_invmass[*v_idx] > 0.0 {
-                let dof = model.flexvert_dofadr[*v_idx];
-                for ax in 0..3 {
-                    data.qfrc_constraint[dof + ax] += grad[ax] * force_mag;
-                }
-            }
-        }
-    }
+    // NOTE: Bending forces moved to mj_fwd_passive() (passive spring-damper).
+    // Volume constraints removed — MuJoCo has no dedicated volume mechanism.
 }
 
 /// Compute position-dependent impedance from solimp parameters.
@@ -15132,15 +15089,8 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
     // Flex edge-length constraints (1 row per edge)
     nefc += model.nflexedge;
 
-    // Flex bending constraints (1 row per hinge)
-    nefc += model.nflexhinge;
-
-    // Flex volume constraints (tetrahedra only)
-    for el in 0..model.nflexelem {
-        if model.flexelem_datanum[el] == 4 {
-            nefc += 1;
-        }
-    }
+    // NOTE: Bending forces are passive (in mj_fwd_passive), not constraint rows.
+    // Volume constraints removed — MuJoCo has no dedicated volume mechanism.
 
     // === Phase 2: Allocate ===
     data.efc_J = DMatrix::zeros(nefc, nv);
@@ -15528,201 +15478,6 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
         );
     }
 
-    // --- 3h: Flex bending constraints ---
-    for h in 0..model.nflexhinge {
-        let [ve0, ve1, va, vb] = model.flexhinge_vert[h];
-        let pe0 = data.flexvert_xpos[ve0];
-        let pe1 = data.flexvert_xpos[ve1];
-        let pa = data.flexvert_xpos[va];
-        let pb = data.flexvert_xpos[vb];
-
-        let flex_id = model.flexhinge_flexid[h];
-
-        // Shared edge vector
-        let e = pe1 - pe0;
-        let e_len_sq = e.norm_squared();
-
-        if e_len_sq < 1e-20 {
-            finalize_row!(
-                model.flex_bend_solref[flex_id],
-                model.flex_bend_solimp[flex_id],
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                ConstraintType::FlexBend,
-                1,
-                h,
-                [0.0; 5]
-            );
-            continue;
-        }
-
-        // Face normals (unnormalized)
-        let offset_a = pa - pe0;
-        let offset_b = pb - pe0;
-        let normal_face_a = e.cross(&offset_a);
-        let normal_face_b = offset_b.cross(&e);
-
-        let norm_sq_a = normal_face_a.norm_squared();
-        let norm_sq_b = normal_face_b.norm_squared();
-
-        if norm_sq_a < 1e-20 || norm_sq_b < 1e-20 {
-            finalize_row!(
-                model.flex_bend_solref[flex_id],
-                model.flex_bend_solimp[flex_id],
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                ConstraintType::FlexBend,
-                1,
-                h,
-                [0.0; 5]
-            );
-            continue;
-        }
-
-        // Dihedral angle via atan2
-        let e_dir = e / e_len_sq.sqrt();
-        let normal_unit_a = normal_face_a / norm_sq_a.sqrt();
-        let normal_unit_b = normal_face_b / norm_sq_b.sqrt();
-        let cos_theta = normal_unit_a.dot(&normal_unit_b).clamp(-1.0, 1.0);
-        let sin_theta = normal_unit_a.cross(&normal_unit_b).dot(&e_dir);
-        let theta = sin_theta.atan2(cos_theta);
-
-        let rest_angle = model.flexhinge_angle0[h];
-        let pos_error = theta - rest_angle;
-
-        // Jacobian: dihedral angle gradient (Bridson et al. 2003)
-        let e_len = e_len_sq.sqrt();
-        let grad_a = e_len * normal_face_a / norm_sq_a;
-        let grad_b = e_len * normal_face_b / norm_sq_b;
-        let bary_a = offset_a.dot(&e) / e_len_sq;
-        let bary_b = offset_b.dot(&e) / e_len_sq;
-        let grad_e0 = -grad_a * (1.0 - bary_a) - grad_b * (1.0 - bary_b);
-        let grad_e1 = -grad_a * bary_a - grad_b * bary_b;
-
-        let dof_e0 = model.flexvert_dofadr[ve0];
-        let dof_e1 = model.flexvert_dofadr[ve1];
-        let dof_a = model.flexvert_dofadr[va];
-        let dof_b = model.flexvert_dofadr[vb];
-        for k in 0..3 {
-            data.efc_J[(row, dof_e0 + k)] = grad_e0[k];
-            data.efc_J[(row, dof_e1 + k)] = grad_e1[k];
-            data.efc_J[(row, dof_a + k)] = grad_a[k];
-            data.efc_J[(row, dof_b + k)] = grad_b[k];
-        }
-
-        // Velocity error: J · qvel
-        let vel_e0 = data.qvel.rows(dof_e0, 3).into_owned();
-        let vel_e1 = data.qvel.rows(dof_e1, 3).into_owned();
-        let vel_a = data.qvel.rows(dof_a, 3).into_owned();
-        let vel_b = data.qvel.rows(dof_b, 3).into_owned();
-        let vel_error =
-            grad_e0.dot(&vel_e0) + grad_e1.dot(&vel_e1) + grad_a.dot(&vel_a) + grad_b.dot(&vel_b);
-
-        finalize_row!(
-            model.flex_bend_solref[flex_id],
-            model.flex_bend_solimp[flex_id],
-            pos_error,
-            0.0,
-            vel_error,
-            0.0,
-            ConstraintType::FlexBend,
-            1,
-            h,
-            [0.0; 5]
-        );
-    }
-
-    // --- 3i: Flex volume constraints ---
-    for el in 0..model.nflexelem {
-        if model.flexelem_datanum[el] != 4 {
-            continue;
-        }
-
-        let adr = model.flexelem_dataadr[el];
-        let va = model.flexelem_data[adr];
-        let vb = model.flexelem_data[adr + 1];
-        let vc = model.flexelem_data[adr + 2];
-        let vd = model.flexelem_data[adr + 3];
-
-        let xa = data.flexvert_xpos[va];
-        let xb = data.flexvert_xpos[vb];
-        let xc = data.flexvert_xpos[vc];
-        let xd = data.flexvert_xpos[vd];
-
-        let e1 = xb - xa;
-        let e2 = xc - xa;
-        let e3 = xd - xa;
-
-        let volume = e1.dot(&e2.cross(&e3)) / 6.0;
-        let rest_vol = model.flexelem_volume0[el];
-        let pos_error = volume - rest_vol;
-
-        // Volume gradients
-        let grad_b = e2.cross(&e3) / 6.0;
-        let grad_c = e3.cross(&e1) / 6.0;
-        let grad_d = e1.cross(&e2) / 6.0;
-        let grad_a = -(grad_b + grad_c + grad_d);
-
-        let grad_norm_sq = grad_a.norm_squared()
-            + grad_b.norm_squared()
-            + grad_c.norm_squared()
-            + grad_d.norm_squared();
-
-        let flex_id = model.flexelem_flexid[el];
-
-        if grad_norm_sq < 1e-20 {
-            finalize_row!(
-                model.flex_volume_solref[flex_id],
-                model.flex_volume_solimp[flex_id],
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                ConstraintType::FlexVolume,
-                1,
-                el,
-                [0.0; 5]
-            );
-            continue;
-        }
-
-        let dof_a = model.flexvert_dofadr[va];
-        let dof_b = model.flexvert_dofadr[vb];
-        let dof_c = model.flexvert_dofadr[vc];
-        let dof_d = model.flexvert_dofadr[vd];
-        for k in 0..3 {
-            data.efc_J[(row, dof_a + k)] = grad_a[k];
-            data.efc_J[(row, dof_b + k)] = grad_b[k];
-            data.efc_J[(row, dof_c + k)] = grad_c[k];
-            data.efc_J[(row, dof_d + k)] = grad_d[k];
-        }
-
-        // Velocity error: J · qvel
-        let vel_a = data.qvel.rows(dof_a, 3).into_owned();
-        let vel_b = data.qvel.rows(dof_b, 3).into_owned();
-        let vel_c = data.qvel.rows(dof_c, 3).into_owned();
-        let vel_d = data.qvel.rows(dof_d, 3).into_owned();
-        let vel_error =
-            grad_a.dot(&vel_a) + grad_b.dot(&vel_b) + grad_c.dot(&vel_c) + grad_d.dot(&vel_d);
-
-        finalize_row!(
-            model.flex_volume_solref[flex_id],
-            model.flex_volume_solimp[flex_id],
-            pos_error,
-            0.0,
-            vel_error,
-            0.0,
-            ConstraintType::FlexVolume,
-            1,
-            el,
-            [0.0; 5]
-        );
-    }
-
     debug_assert_eq!(row, nefc, "Row count mismatch in constraint assembly");
     data.efc_cost = 0.0;
 }
@@ -15785,10 +15540,7 @@ fn classify_constraint_states(
         let r = data.efc_R[i];
 
         match ctype {
-            ConstraintType::Equality
-            | ConstraintType::FlexEdge
-            | ConstraintType::FlexBend
-            | ConstraintType::FlexVolume => {
+            ConstraintType::Equality | ConstraintType::FlexEdge => {
                 // Always Quadratic (two-sided soft equality)
                 data.efc_state[i] = ConstraintState::Quadratic;
                 data.efc_force[i] = -d * jar;
@@ -16808,10 +16560,7 @@ fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> PrimalPo
     let mut i = 0;
     while i < nefc {
         match data.efc_type[i] {
-            ConstraintType::Equality
-            | ConstraintType::FlexEdge
-            | ConstraintType::FlexBend
-            | ConstraintType::FlexVolume => {
+            ConstraintType::Equality | ConstraintType::FlexEdge => {
                 // Always quadratic
                 quad_total[0] += pq.quad[i][0];
                 quad_total[1] += pq.quad[i][1];
@@ -17153,10 +16902,7 @@ fn evaluate_cost_at(
         let r = data.efc_R[i];
 
         match ctype {
-            ConstraintType::Equality
-            | ConstraintType::FlexEdge
-            | ConstraintType::FlexBend
-            | ConstraintType::FlexVolume => {
+            ConstraintType::Equality | ConstraintType::FlexEdge => {
                 constraint_cost += 0.5 * d * jar * jar;
                 i += 1;
             }
@@ -19100,7 +18846,7 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
     apply_equality_constraints(model, data);
 
     // Flex edge-length, bending, and volume constraint penalties
-    apply_flex_constraints(model, data);
+    apply_flex_edge_constraints(model, data);
 
     // ===== Per-island contact solve (§16.16.2, §16.28) =====
     if data.contacts.is_empty() {
@@ -19599,7 +19345,7 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
 
     // ========== Flex Constraints ==========
     // Penalty-based Baumgarte stabilization for edge-length, bending, and volume.
-    apply_flex_constraints(model, data);
+    apply_flex_edge_constraints(model, data);
 
     // ========== Contact Constraints ==========
     // Use PGS solver for constraint-based contact forces.
