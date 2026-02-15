@@ -54,6 +54,7 @@ sim/
     │   ├── future_work_15.md          # Phase 3D: Edge-Case Features #60–64
     │   ├── future_work_16.md          # Phase 3D: Mesh + Plugin Infrastructure #65–66
     │   └── future_work_17.md          # Phase 3E: GPU Pipeline #67–71
+    ├── TRAIT_ARCHITECTURE.md            # Trait boundary vision (modeling choices vs solver variants vs core math)
     ├── MUJOCO_CONFORMANCE.md          # MuJoCo conformance testing plan
     ├── MUJOCO_GAP_ANALYSIS.md         # Feature-by-feature gap analysis
     ├── MUJOCO_REFERENCE.md            # Pipeline algorithms and pseudocode
@@ -376,7 +377,9 @@ characteristic stiffness for solids). Pinned vertices use `mass = 1e20`,
 
 See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) for the full
 specification. The previous `sim-deformable` crate (XPBD solver) has been
-deleted — useful code migrated to `model_builder.rs`.
+deleted — useful code migrated to `model_builder.rs`. The bending and
+elasticity models are being refactored into trait boundaries — see
+[TRAIT_ARCHITECTURE.md](./TRAIT_ARCHITECTURE.md) for the vision.
 
 ### sim-muscle
 
