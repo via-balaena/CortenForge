@@ -246,12 +246,24 @@ fn ac5_explicit_inertial_overrides_mesh() {
 // AC6 — COM Offset (Parallel Axis Theorem)
 // ============================================================================
 
-/// AC6: Placing a mesh geom at a non-zero position should shift the body COM
-/// and adjust inertia via the parallel axis theorem.
+/// AC6: Two identical mesh geoms at different positions should produce inertia
+/// that reflects the parallel axis theorem shift.
+///
+/// Two identical unit cubes (mass m=1000 each) placed at x=±D should produce:
+/// - Total mass = 2m = 2000
+/// - COM at origin (symmetric placement)
+/// - I_yy = I_zz increased by 2 * m * D² relative to a single cube
+///   (each cube has offset d=D from the body COM along x)
+/// - I_xx unchanged (offset is along x, so x-axis inertia unaffected)
+///
+/// This verifies that the full-tensor parallel axis theorem is working:
+///   I_shifted = I_rotated + m * (d·d * I₃ - d ⊗ d)
 #[test]
 fn ac6_com_offset_parallel_axis() {
-    // Model A: cube at origin
-    let mjcf_origin = format!(
+    let d = 2.0; // half-separation along x
+
+    // Model A: single cube at origin (reference — no PAT shift)
+    let mjcf_single = format!(
         r#"
         <mujoco>
           <compiler exactmeshinertia="true"/>
@@ -268,43 +280,69 @@ fn ac6_com_offset_parallel_axis() {
         CUBE_VERTICES, CUBE_FACES
     );
 
-    // Model B: cube at pos="2 0 0"
-    let mjcf_offset = format!(
+    // Model B: two cubes at pos="±D 0 0" (PAT applies)
+    let mjcf_pair = format!(
         r#"
         <mujoco>
           <compiler exactmeshinertia="true"/>
           <asset>
-            <mesh name="cube" vertex="{}" face="{}"/>
+            <mesh name="cube" vertex="{v}" face="{f}"/>
           </asset>
           <worldbody>
             <body name="cube_body">
-              <geom type="mesh" mesh="cube" pos="2 0 0" density="1000"/>
+              <geom type="mesh" mesh="cube" pos="{d} 0 0" density="1000"/>
+              <geom type="mesh" mesh="cube" pos="-{d} 0 0" density="1000"/>
             </body>
           </worldbody>
         </mujoco>
     "#,
-        CUBE_VERTICES, CUBE_FACES
+        v = CUBE_VERTICES,
+        f = CUBE_FACES,
+        d = d
     );
 
-    let model_a = load_model(&mjcf_origin).expect("should load origin model");
-    let model_b = load_model(&mjcf_offset).expect("should load offset model");
+    let model_single = load_model(&mjcf_single).expect("should load single cube");
+    let model_pair = load_model(&mjcf_pair).expect("should load cube pair");
 
-    // Same mass
-    assert_relative_eq!(model_a.body_mass[1], model_b.body_mass[1], epsilon = 1e-6);
+    let m_single = model_single.body_mass[1]; // ~1000
+    let i_single = model_single.body_inertia[1]; // ~166.667 on all axes
 
-    // COM of offset model should be at (2, 0, 0)
-    assert_relative_eq!(model_b.body_ipos[1].x, 2.0, epsilon = 1e-6);
-    assert_relative_eq!(model_b.body_ipos[1].y, 0.0, epsilon = 1e-6);
-    assert_relative_eq!(model_b.body_ipos[1].z, 0.0, epsilon = 1e-6);
+    let m_pair = model_pair.body_mass[1]; // ~2000
+    let i_pair = model_pair.body_inertia[1];
+    let ipos_pair = model_pair.body_ipos[1];
 
-    // For a single geom, inertia about COM is the same regardless of position
-    // (parallel axis theorem shifts are relative to body COM, which IS the geom COM
-    // for a single-geom body). So inertia should be the same.
-    let inertia_a = model_a.body_inertia[1];
-    let inertia_b = model_b.body_inertia[1];
-    assert_relative_eq!(inertia_a.x, inertia_b.x, epsilon = 1.0);
-    assert_relative_eq!(inertia_a.y, inertia_b.y, epsilon = 1.0);
-    assert_relative_eq!(inertia_a.z, inertia_b.z, epsilon = 1.0);
+    // Total mass doubles
+    assert_relative_eq!(m_pair, 2.0 * m_single, epsilon = 1.0);
+
+    // COM at origin (symmetric placement)
+    assert_relative_eq!(ipos_pair.x, 0.0, epsilon = 1e-6);
+    assert_relative_eq!(ipos_pair.y, 0.0, epsilon = 1e-6);
+    assert_relative_eq!(ipos_pair.z, 0.0, epsilon = 1e-6);
+
+    // I_xx: sum of two cubes' local I_xx, no PAT contribution (offset along x).
+    // I_xx_pair = 2 * I_xx_single (just doubled, no shift on this axis)
+    // Note: eigendecomposition may reorder axes, so we sort principal values.
+    let mut i_pair_sorted = [i_pair.x, i_pair.y, i_pair.z];
+    i_pair_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    // The smallest principal inertia is I_xx (offset along x doesn't add to it).
+    // Expected: 2 * I_single ≈ 2 * 166.667 = 333.333
+    let i_xx_pair = i_pair_sorted[0];
+    assert_relative_eq!(i_xx_pair, 2.0 * i_single.x, epsilon = 2.0);
+
+    // The two larger principal inertia values are I_yy = I_zz.
+    // Expected: 2 * I_single + 2 * m * D² = 333.333 + 2 * 1000 * 4 = 8333.333
+    let i_yy_pair = i_pair_sorted[1];
+    let i_zz_pair = i_pair_sorted[2];
+    let expected_shifted = 2.0 * i_single.x + 2.0 * m_single * d * d;
+    assert_relative_eq!(i_yy_pair, expected_shifted, epsilon = 5.0);
+    assert_relative_eq!(i_zz_pair, expected_shifted, epsilon = 5.0);
+
+    // Verify the PAT contribution is significant (not just rounding)
+    assert!(
+        i_yy_pair > 3.0 * i_xx_pair,
+        "PAT should make I_yy >> I_xx: I_yy={i_yy_pair}, I_xx={i_xx_pair}"
+    );
 }
 
 // ============================================================================
@@ -507,4 +545,57 @@ fn ac9_multi_geom_mixed_mesh_primitive() {
         !all_equal,
         "mixed mesh+primitive body should not have all-equal inertia"
     );
+}
+
+// ============================================================================
+// AC10 — Mesh COM Offset Propagation
+// ============================================================================
+
+/// AC10: A mesh whose centroid is NOT at the mesh origin should have the
+/// body COM reflect the mesh's internal COM offset.
+///
+/// Uses a unit cube with all vertices shifted to x∈[0,1] (not centered).
+/// The mesh COM is at (0.5, 0.5, 0.5). When placed at geom pos="0 0 0",
+/// the body COM should be (0.5, 0.5, 0.5), NOT (0, 0, 0).
+#[test]
+fn ac10_mesh_com_offset_propagation() {
+    // Cube with vertices at [0,1]³ instead of [-0.5,0.5]³
+    let offset_cube_vertices = "0 0 0  1 0 0  1 1 0  0 1 0  0 0 1  1 0 1  1 1 1  0 1 1";
+
+    let mjcf = format!(
+        r#"
+        <mujoco>
+          <compiler exactmeshinertia="true"/>
+          <asset>
+            <mesh name="cube" vertex="{}" face="{}"/>
+          </asset>
+          <worldbody>
+            <body name="cube_body">
+              <geom type="mesh" mesh="cube" pos="0 0 0" density="1000"/>
+            </body>
+          </worldbody>
+        </mujoco>
+    "#,
+        offset_cube_vertices, CUBE_FACES
+    );
+
+    let model = load_model(&mjcf).expect("should load offset cube mesh");
+
+    let ipos = model.body_ipos[1];
+
+    // Mesh COM is at (0.5, 0.5, 0.5) — body COM should reflect this
+    assert_relative_eq!(ipos.x, 0.5, epsilon = 1e-6);
+    assert_relative_eq!(ipos.y, 0.5, epsilon = 1e-6);
+    assert_relative_eq!(ipos.z, 0.5, epsilon = 1e-6);
+
+    // Mass should still be density * volume = 1000 * 1.0 = 1000
+    assert_relative_eq!(model.body_mass[1], 1000.0, epsilon = 1.0);
+
+    // Inertia should match the centered cube (same shape, just offset)
+    // I = (m/12)(a² + b²) = (1000/12)(1+1) = 166.667
+    let expected_inertia = 1000.0 / 12.0 * 2.0;
+    let inertia = model.body_inertia[1];
+    assert_relative_eq!(inertia.x, expected_inertia, epsilon = 1.0);
+    assert_relative_eq!(inertia.y, expected_inertia, epsilon = 1.0);
+    assert_relative_eq!(inertia.z, expected_inertia, epsilon = 1.0);
 }

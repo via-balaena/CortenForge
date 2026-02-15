@@ -4491,10 +4491,38 @@ fn resolve_mesh(
     }
 }
 
+/// Cached mesh mass properties: `(volume, com, inertia_at_com_unit_density)`.
+/// Avoids recomputing `compute_mesh_inertia()` multiple times per mesh geom.
+type MeshProps = (f64, Vector3<f64>, Matrix3<f64>);
+
+/// Compute the effective center of mass of a geom in the body frame.
+///
+/// For primitive geoms, the local COM is at the geom origin (`geom.pos`).
+/// For mesh geoms, the mesh may have a non-zero internal COM in mesh-local
+/// coordinates. The effective COM is `geom.pos + R * mesh_com` where R is
+/// the geom's orientation in the body frame.
+fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Vector3<f64> {
+    if let Some(&(_, mesh_com, _)) = mesh_props {
+        if mesh_com.norm() > 1e-14 {
+            let r = UnitQuaternion::from_quaternion(Quaternion::new(
+                geom.quat[0],
+                geom.quat[1],
+                geom.quat[2],
+                geom.quat[3],
+            ));
+            return geom.pos + r.transform_vector(&mesh_com);
+        }
+    }
+    geom.pos
+}
+
 /// Compute inertia from geoms (fallback when no explicit inertial).
 ///
 /// Accumulates full 3×3 inertia tensor with geom orientation handling,
 /// then eigendecomposes to extract principal inertia and orientation.
+///
+/// Mesh inertia is computed once per geom and cached across the mass and
+/// inertia passes (avoids O(3n) calls to `compute_mesh_inertia`).
 fn compute_inertia_from_geoms(
     geoms: &[MjcfGeom],
     mesh_lookup: &HashMap<String, usize>,
@@ -4511,15 +4539,26 @@ fn compute_inertia_from_geoms(
         );
     }
 
+    // Pre-compute mesh inertia once per geom (avoids 3× recomputation).
+    let mesh_props: Vec<Option<MeshProps>> = geoms
+        .iter()
+        .map(|geom| {
+            resolve_mesh(geom, mesh_lookup, mesh_data).map(|mesh| compute_mesh_inertia(&mesh))
+        })
+        .collect();
+
     let mut total_mass = 0.0;
     let mut com = Vector3::zeros();
 
     // First pass: compute total mass and COM
-    for geom in geoms {
-        let mesh = resolve_mesh(geom, mesh_lookup, mesh_data);
-        let geom_mass = compute_geom_mass(geom, mesh.as_deref());
+    // For mesh geoms, the effective center of mass in the body frame is
+    // `geom.pos + R * mesh_com` (mesh COM is in mesh-local coordinates).
+    // For primitive geoms, the local COM is at the geom origin: `geom.pos`.
+    for (geom, props) in geoms.iter().zip(mesh_props.iter()) {
+        let geom_mass = compute_geom_mass(geom, props.as_ref());
+        let effective_pos = geom_effective_com(geom, props.as_ref());
         total_mass += geom_mass;
-        com += geom.pos * geom_mass;
+        com += effective_pos * geom_mass;
     }
 
     if total_mass > 1e-10 {
@@ -4528,10 +4567,9 @@ fn compute_inertia_from_geoms(
 
     // Second pass: accumulate full 3×3 inertia tensor about COM
     let mut inertia_tensor = Matrix3::zeros();
-    for geom in geoms {
-        let mesh = resolve_mesh(geom, mesh_lookup, mesh_data);
-        let geom_mass = compute_geom_mass(geom, mesh.as_deref());
-        let geom_inertia = compute_geom_inertia(geom, mesh.as_deref());
+    for (geom, props) in geoms.iter().zip(mesh_props.iter()) {
+        let geom_mass = compute_geom_mass(geom, props.as_ref());
+        let geom_inertia = compute_geom_inertia(geom, props.as_ref());
 
         // 1. Rotate local inertia to body frame: I_rot = R * I_local * Rᵀ
         let r = UnitQuaternion::from_quaternion(Quaternion::new(
@@ -4545,7 +4583,9 @@ fn compute_inertia_from_geoms(
 
         // 2. Parallel axis theorem (full tensor):
         //    I_shifted = I_rotated + m * (d·d * I₃ - d ⊗ d)
-        let d = geom.pos - com;
+        //    d = displacement from body COM to geom effective COM
+        let effective_pos = geom_effective_com(geom, props.as_ref());
+        let d = effective_pos - com;
         let d_sq = d.dot(&d);
         let parallel_axis = geom_mass * (Matrix3::identity() * d_sq - d * d.transpose());
         inertia_tensor += i_rotated + parallel_axis;
@@ -4571,7 +4611,10 @@ fn compute_inertia_from_geoms(
 }
 
 /// Compute mass of a single geom.
-fn compute_geom_mass(geom: &MjcfGeom, mesh_data: Option<&TriangleMeshData>) -> f64 {
+///
+/// For mesh geoms, accepts pre-computed mesh properties to avoid redundant
+/// `compute_mesh_inertia()` calls (see `MeshProps`).
+fn compute_geom_mass(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> f64 {
     if let Some(mass) = geom.mass {
         return mass;
     }
@@ -4598,8 +4641,7 @@ fn compute_geom_mass(geom: &MjcfGeom, mesh_data: Option<&TriangleMeshData>) -> f
             std::f64::consts::PI * r.powi(2) * h * 2.0
         }
         MjcfGeomType::Mesh => {
-            if let Some(mesh) = mesh_data {
-                let (volume, _, _) = compute_mesh_inertia(mesh);
+            if let Some(&(volume, _, _)) = mesh_props {
                 volume.abs()
             } else {
                 0.001
@@ -4616,14 +4658,17 @@ fn compute_geom_mass(geom: &MjcfGeom, mesh_data: Option<&TriangleMeshData>) -> f
 /// Returns a full 3×3 matrix. Primitive geoms produce diagonal tensors;
 /// mesh geoms may have off-diagonal terms.
 ///
+/// For mesh geoms, accepts pre-computed mesh properties to avoid redundant
+/// `compute_mesh_inertia()` calls (see `MeshProps`).
+///
 /// Uses exact formulas matching MuJoCo's computation:
 /// - Sphere: I = (2/5) m r²
 /// - Box: I_x = (1/12) m (y² + z²), etc.
 /// - Cylinder: I_x = (1/12) m (3r² + h²), I_z = (1/2) m r²
 /// - Capsule: Exact formula including hemispherical end caps
 /// - Mesh: Signed tetrahedron decomposition (Mirtich 1996)
-fn compute_geom_inertia(geom: &MjcfGeom, mesh_data: Option<&TriangleMeshData>) -> Matrix3<f64> {
-    let mass = compute_geom_mass(geom, mesh_data);
+fn compute_geom_inertia(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Matrix3<f64> {
+    let mass = compute_geom_mass(geom, mesh_props);
 
     match geom.geom_type {
         MjcfGeomType::Sphere => {
@@ -4699,8 +4744,7 @@ fn compute_geom_inertia(geom: &MjcfGeom, mesh_data: Option<&TriangleMeshData>) -
             ))
         }
         MjcfGeomType::Mesh => {
-            if let Some(mesh) = mesh_data {
-                let (volume, _, inertia_unit) = compute_mesh_inertia(mesh);
+            if let Some(&(volume, _, inertia_unit)) = mesh_props {
                 let mass_actual = geom.mass.unwrap_or_else(|| geom.density * volume.abs());
                 let scale = if volume.abs() > 1e-10 {
                     mass_actual / volume.abs()
