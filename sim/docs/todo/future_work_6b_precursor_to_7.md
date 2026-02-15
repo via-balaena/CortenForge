@@ -23,7 +23,7 @@ and margin/gap (#27) each a single-site change.
 ---
 
 ### 6B. Flex Solver Unification
-**Status:** Not started | **Effort:** XL | **Prerequisites:** None | **Blocks:** #24, #25, #26, #27
+**Status:** Implemented | **Effort:** XL | **Prerequisites:** None | **Blocks:** #24, #25, #26, #27
 
 #### Current State
 
@@ -663,7 +663,7 @@ fn apply_solved_contact_lambda(model, data, contact, lambda) {
 
 **Narrowphase functions** — reuse existing `collide_*` implementations.
 The vertex acts as a small sphere of radius `flexvert_radius[vi]`. Supports
-Plane, Sphere, Box, Capsule, and Cylinder geom types.
+Plane, Sphere, Box, Capsule, Cylinder, and Ellipsoid geom types.
 
 ##### P6. Edge-Length Constraints in Unified Jacobian
 
@@ -773,27 +773,24 @@ Called from both PGS and Newton penalty paths (before the iterative solve).
 ---
 
 **Constraint stiffness derivation** — during `build()`, compute edge solref
-from material properties:
+from material properties. Currently a passthrough stub that uses the
+per-flex `solref` directly. The full material-derived per-edge solref
+(below) is deferred to a refinement pass:
 
 ```rust
 /// Derive edge constraint solref from Young's modulus and geometry.
-/// solref[0] = natural period = 2π / ω, where ω = sqrt(k / m_eff)
-/// solref[1] = damping ratio from material damping
-fn compute_edge_solref(
-    young: f64, rest_len: f64, cross_section: f64,
-    mass_eff: f64, damping: f64,
-) -> [f64; 2] {
-    // Effective stiffness: k = E * A / L (standard rod formula)
-    // Cross-section area A depends on dimensionality:
-    //   dim=1: A = π * radius²  (from cable radius)
-    //   dim=2: A = thickness * voronoi_dual_length  (shell edge cross-section)
-    //   dim=3: A = element_volume^{2/3} / rest_len  (volumetric approximation)
-    // The cross_section parameter is precomputed per-edge during build().
-    let k_eff = young * cross_section / rest_len;
-    let omega = (k_eff / mass_eff).sqrt();
-    let period = 2.0 * std::f64::consts::PI / omega;
-    let damping_ratio = damping / (2.0 * (k_eff * mass_eff).sqrt());
-    [period, damping_ratio.clamp(0.0, 2.0)]
+/// CURRENT: passthrough stub — returns flex.solref unchanged.
+/// FUTURE: per-edge derivation from material properties:
+///   solref[0] = natural period = 2π / ω, where ω = sqrt(k / m_eff)
+///   solref[1] = damping ratio from material damping
+fn compute_edge_solref_from_material(flex: &MjcfFlex) -> [f64; 2] {
+    // Full derivation (not yet implemented):
+    // let k_eff = young * cross_section / rest_len;
+    // let omega = (k_eff / mass_eff).sqrt();
+    // let period = 2.0 * PI / omega;
+    // let damping_ratio = damping / (2.0 * (k_eff * mass_eff).sqrt());
+    // [period, damping_ratio.clamp(0.0, 2.0)]
+    flex.solref // Passthrough: uses flex-level solref defaults
 }
 ```
 
@@ -1244,7 +1241,10 @@ fn process_flex(&mut self, flex: &MjcfFlex) {
             let e1 = flex.vertices[elem[1]] - flex.vertices[elem[0]];
             let e2 = flex.vertices[elem[2]] - flex.vertices[elem[0]];
             let e3 = flex.vertices[elem[3]] - flex.vertices[elem[0]];
-            e1.dot(&e2.cross(&e3)).abs() / 6.0
+            // Signed volume — matches constraint assembly convention.
+            // Both rest_vol and current volume use signed values so
+            // pos_error = volume - rest_vol is consistent regardless of winding.
+            e1.dot(&e2.cross(&e3)) / 6.0
         } else {
             0.0
         };
@@ -1328,10 +1328,13 @@ stretch force. At equilibrium, extension matches `ΔL = F * L / (E * A)` within
 A flat strip of 3 triangles (4 vertices in a row). Apply vertical force to tip.
 Deflection matches Euler-Bernoulli beam formula within 5% for small deflections.
 
-##### AC7 — Volume Preservation
+##### AC7 — Volume Preservation (REMOVED)
 
-A single tetrahedron under uniform compression. Volume change bounded by
-Poisson ratio: `ΔV/V < 3 * (1 - 2ν) * ε` where ε is strain.
+Volume constraints have no MuJoCo equivalent — volume preservation is an
+emergent property of continuum elasticity (SVK), planned for §7. The
+`FlexVolume` constraint type and this acceptance test have been removed.
+The original spec described: a single tetrahedron under uniform compression,
+volume change bounded by Poisson ratio.
 
 ##### AC8 — Pinned Vertices: Zero Motion
 

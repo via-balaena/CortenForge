@@ -3590,12 +3590,10 @@ impl ModelBuilder {
                 }
             }
 
-            // §16.26.4: Deformable body policy guard. In the current architecture,
-            // deformable bodies are registered at runtime (Data::register_deformable_body),
-            // not at model construction time. Therefore, this guard cannot run here —
-            // it will need to run at Data::register_deformable_body() time instead,
-            // marking the body's tree as AutoNever. This is deferred until the
-            // deformable feature uses tree-level sleeping.
+            // §16.26.4: Flex body policy guard. Flex DOFs are assigned
+            // dof_treeid = usize::MAX (permanently awake) so they don't participate
+            // in the tree-level sleep system. If flex vertices are ever assigned to
+            // specific kinematic trees, their trees should be marked AutoNever.
 
             // Step 2b: Apply explicit body-level sleep policies from MJCF
             for body_id in 1..nbody {
