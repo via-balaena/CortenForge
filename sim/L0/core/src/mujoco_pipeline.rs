@@ -1461,16 +1461,16 @@ pub struct Model {
     pub flexelem_dataadr: Vec<usize>,
     /// Number of vertex indices per element (2, 3, or 4).
     pub flexelem_datanum: Vec<usize>,
-    /// Rest volume of each element (for volume constraints, dim=3 only).
+    /// Rest volume of each element (dim=3 only, topology data for future SVK).
     pub flexelem_volume0: Vec<f64>,
     /// Which flex object this element belongs to.
     pub flexelem_flexid: Vec<usize>,
 
-    // --- Per-hinge arrays (bending constraints, length nflexhinge) ---
+    // --- Per-hinge arrays (bending topology, length nflexhinge) ---
     // A hinge is a pair of adjacent elements sharing an edge.
     // dim=2: two triangles sharing an edge → 4 distinct vertices.
     // dim=3: two tetrahedra sharing a face → 5 distinct vertices (but bending
-    //         constraint acts on the 4 vertices of the shared face + 2 opposite,
+    //         force acts on the 4 vertices of the shared face + 2 opposite,
     //         simplified to the same 4-vertex dihedral formulation).
     /// Hinge vertex indices: [v_e0, v_e1, v_opp_a, v_opp_b] where (v_e0, v_e1)
     /// is the shared edge and v_opp_a, v_opp_b are opposite vertices.
@@ -14565,9 +14565,9 @@ fn solref_to_penalty(solref: [f64; 2], default_k: f64, default_b: f64, dt: f64) 
     (k_clamped, b_scaled)
 }
 
-/// Apply flex edge-length, bending, and volume constraint forces in the penalty path.
+/// Apply flex edge-length constraint forces in the penalty path.
 ///
-/// This is the explicit-integration counterpart of the flex constraint rows in
+/// This is the explicit-integration counterpart of the flex edge constraint rows in
 /// `assemble_unified_constraints()`. Uses penalty-based Baumgarte stabilization:
 ///   F = -k * pos_error - b * vel_error
 ///
@@ -18845,7 +18845,7 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
     // Equality constraint penalties
     apply_equality_constraints(model, data);
 
-    // Flex edge-length, bending, and volume constraint penalties
+    // Flex edge-length constraint penalties
     apply_flex_edge_constraints(model, data);
 
     // ===== Per-island contact solve (§16.16.2, §16.28) =====
@@ -19344,7 +19344,7 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     apply_equality_constraints(model, data);
 
     // ========== Flex Constraints ==========
-    // Penalty-based Baumgarte stabilization for edge-length, bending, and volume.
+    // Penalty-based Baumgarte stabilization for edge-length constraints.
     apply_flex_edge_constraints(model, data);
 
     // ========== Contact Constraints ==========

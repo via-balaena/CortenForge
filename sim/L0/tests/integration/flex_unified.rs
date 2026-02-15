@@ -1097,3 +1097,159 @@ fn flex_edge_rest_lengths() {
     assert_relative_eq!(lengths[0], 3.0, epsilon = 1e-6);
     assert_relative_eq!(lengths[1], 4.0, epsilon = 1e-6);
 }
+
+// ============================================================================
+// AC19 — Bending: Damping-Only (k=0, b>0)
+// ============================================================================
+
+#[test]
+fn ac19_bending_damping_only() {
+    // Zero Young's modulus → k_bend = 0, but nonzero damping.
+    // From compute_bend_damping_from_material: b = damping * k_bend = 0 when k=0.
+    // So via MJCF, damping-only is not reachable (by design: proportional damping).
+    // This test verifies the early-exit guard handles the (0, 0) case gracefully:
+    // if k_bend_raw <= 0.0 && b_bend <= 0.0 { continue; }
+    let mjcf = r#"
+    <mujoco model="damping_only">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="strip" dim="2" density="100" thickness="0.005" young="0"
+                  damping="1.0">
+                <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
+                            0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
+                <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
+                <pin id="0 4"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    // k_bend should be 0 (young = 0)
+    assert_eq!(model.flex_bend_stiffness[0], 0.0);
+    // b_bend should be 0 (proportional damping with k=0)
+    assert_eq!(model.flex_bend_damping[0], 0.0);
+
+    assert!(model.nflexhinge > 0, "should have hinges");
+
+    // Simulate — should complete without NaN or panic
+    for _ in 0..100 {
+        data.step(&model).expect("step failed");
+    }
+
+    for v in &data.flexvert_xpos {
+        assert!(
+            !v.x.is_nan() && !v.y.is_nan() && !v.z.is_nan(),
+            "NaN in vertex"
+        );
+    }
+}
+
+// ============================================================================
+// AC20 — Bending: Stability Clamp (very stiff material)
+// ============================================================================
+
+#[test]
+fn ac20_bending_stability_clamp() {
+    // Very high Young's modulus with a relatively large timestep.
+    // k_max = 1/(dt^2) = 1/(0.01^2) = 10_000.
+    // Kirchhoff-Love: D = E * t^3 / (12 * (1 - nu^2))
+    //               = 1e12 * 0.005^3 / (12 * (1 - 0.09)) = 1e12 * 1.25e-7 / 10.92 ≈ 11_446
+    // Since 11_446 > 10_000, the stability clamp should activate.
+    let mjcf = r#"
+    <mujoco model="stiff_bend">
+        <option gravity="0 0 -9.81" timestep="0.01"/>
+        <deformable>
+            <flex name="strip" dim="2" density="100" thickness="0.005" young="1e12"
+                  poisson="0.3" damping="0.001">
+                <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
+                            0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
+                <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
+                <pin id="0 4"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    // Verify the raw stiffness exceeds the clamp threshold
+    let k_raw = model.flex_bend_stiffness[0];
+    let k_max = 1.0 / (model.timestep * model.timestep);
+    assert!(
+        k_raw > k_max,
+        "raw stiffness {k_raw} should exceed clamp {k_max} for this test to be meaningful"
+    );
+
+    assert!(model.nflexhinge > 0, "should have hinges");
+
+    // Perturb tip vertices
+    let v3_dof = model.flexvert_dofadr[3];
+    let v7_dof = model.flexvert_dofadr[7];
+    data.qvel[v3_dof + 2] = -1.0;
+    data.qvel[v7_dof + 2] = -1.0;
+
+    // Simulate — should remain stable (no NaN, no blow-up)
+    for _ in 0..500 {
+        data.step(&model).expect("step failed");
+    }
+
+    for v in &data.flexvert_xpos {
+        assert!(
+            !v.x.is_nan() && !v.y.is_nan() && !v.z.is_nan(),
+            "NaN in vertex — stability clamp insufficient"
+        );
+        assert!(
+            v.x.abs() < 100.0 && v.y.abs() < 100.0 && v.z.abs() < 100.0,
+            "vertex exploded: {:?} — stability clamp insufficient",
+            v
+        );
+    }
+}
+
+// ============================================================================
+// AC21 — Zero-Hinge Mesh (single triangle, no bending)
+// ============================================================================
+
+#[test]
+fn ac21_zero_hinge_simulation() {
+    // A single triangle has no shared edges between elements → 0 hinges.
+    // The bending passive force loop should simply not execute.
+    let mjcf = r#"
+    <mujoco model="single_tri">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flex name="tri" dim="2" density="300" thickness="0.002" young="5e4"
+                  damping="0.1">
+                <vertex pos="0 0 1  1 0 1  0.5 0.866 1"/>
+                <element data="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+
+    // Single triangle: 0 hinges (no adjacent element pairs)
+    assert_eq!(model.nflexhinge, 0, "single triangle should have 0 hinges");
+    assert_eq!(model.nflexelem, 1);
+    assert_eq!(model.nflexvert, 3);
+
+    // Simulate under gravity — should fall without issues
+    for _ in 0..200 {
+        data.step(&model).expect("step failed");
+    }
+
+    // All vertices should have fallen under gravity (no NaN)
+    for (i, v) in data.flexvert_xpos.iter().enumerate() {
+        assert!(
+            !v.x.is_nan() && !v.y.is_nan() && !v.z.is_nan(),
+            "NaN in vertex {i}"
+        );
+        assert!(v.z < 1.0, "vertex {i} should have fallen: z={}", v.z);
+    }
+}

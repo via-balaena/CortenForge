@@ -7,9 +7,9 @@ priority table, dependency graph, and file map.
 
 This item unifies the deformable simulation pipeline with the rigid constraint
 solver, matching MuJoCo's flex architecture. Flex vertex DOFs join the global
-`qpos`/`qvel` state, edge/bending/volume constraints enter the unified Jacobian,
-and the separate XPBD solver is removed. The `sim-deformable` crate is fully
-deprecated.
+`qpos`/`qvel` state, edge constraints enter the unified Jacobian, bending acts
+as passive forces in `mj_fwd_passive()`, and the separate XPBD solver is
+removed. The `sim-deformable` crate is fully deprecated.
 
 **Why this blocks #24–27:** The current dual code path (rigid contacts via
 `make_contact_from_geoms()` + deformable contacts via
@@ -44,7 +44,7 @@ solver, and no contact data structures.
 | `finalize_row!` macro | `mujoco_pipeline.rs:14336` | Per-row metadata: impedance, KBIP, aref, diagApprox, R, D |
 | `mj_crba()` | `mujoco_pipeline.rs:10051` | Composite rigid body algorithm → M + LDL |
 | `mj_factor_sparse()` | `mujoco_pipeline.rs:19680` | Sparse LDL factorization |
-| `ConstraintType` enum | `mujoco_pipeline.rs:874` | {Equality, FrictionLoss, LimitJoint, LimitTendon, ContactNonElliptic, ContactElliptic} |
+| `ConstraintType` enum | `mujoco_pipeline.rs:868` | {Equality, FrictionLoss, LimitJoint, LimitTendon, ContactNonElliptic, ContactElliptic, FlexEdge} |
 | `extract_distance_jacobian()` | `mujoco_pipeline.rs:17555` | 1D distance equality Jacobian (pattern reuse for flex edges) |
 | `add_body_point_jacobian_row()` | `mujoco_pipeline.rs:17624` | Kinematic chain Jacobian for body point (reuse for flex-rigid contacts) |
 
@@ -60,7 +60,7 @@ solver, and no contact data structures.
 | `DeformableContact` struct | `mujoco_pipeline.rs:1786–1813` | **Deleted.** |
 | `mj_deformable_collision()` | `mujoco_pipeline.rs:18935` | **Replaced** by vertex-vs-geom collision in unified `mj_collision()`. |
 | `solve_deformable_contacts()` | `mujoco_pipeline.rs:18860` | **Deleted.** Contact impulses computed by unified solver. |
-| `mj_deformable_step()` | `mujoco_pipeline.rs:19273` | **Deleted.** Edge/bending/volume constraints solved in `mj_fwd_constraint()`. |
+| `mj_deformable_step()` | `mujoco_pipeline.rs:19273` | **Deleted.** Edge constraints in `mj_fwd_constraint()`, bending in `mj_fwd_passive()`. |
 | `deformable` feature flag | `sim-core/Cargo.toml:37` | **Deleted.** Flex is always available (zero-cost when nflex=0). |
 
 ##### sim-deformable Crate Migration
@@ -71,7 +71,7 @@ solver, and no contact data structures.
 | SoftBody tetrahedralization | `deformable/soft_body.rs` | `sim-mjcf/model_builder.rs` (`<flexcomp type="box">` expansion) |
 | CapsuleChain construction | `deformable/capsule_chain.rs` | `sim-mjcf/model_builder.rs` (1D flex construction) |
 | Material presets | `deformable/material.rs` | `sim-mjcf/model_builder.rs` (default constants) |
-| Constraint topology extraction | `deformable/constraints.rs` | `sim-core/mujoco_pipeline.rs` (build-time edge/bending/volume extraction) |
+| Constraint topology extraction | `deformable/constraints.rs` | `sim-mjcf/model_builder.rs` (build-time edge/hinge topology extraction) |
 | Skinning (visual deformation) | `deformable/skinning.rs` | `sim-bevy` or standalone crate (rendering, not physics) |
 | XPBD solver | `deformable/solver.rs` | **Deleted.** |
 | Deformable mesh types | `deformable/mesh.rs` | `sim-core/mujoco_pipeline.rs` (Model fields) |
@@ -147,7 +147,7 @@ MuJoCo's flex implementation.
 1. Extend `Model` with flex data arrays (vertices, edges, elements, materials).
 2. Extend `Data.qpos/qvel/qacc` to include flex vertex DOFs.
 3. Extend the mass matrix M and sparse LDL factorization for flex diagonal blocks.
-4. Add flex edge/bending/volume constraints to `assemble_unified_constraints()`.
+4. Add flex edge constraints to `assemble_unified_constraints()`. Bending as passive forces in `mj_fwd_passive()`.
 5. Unify flex-rigid contacts into the regular `Contact` pipeline.
 6. Parse `<flex>` and `<flexcomp>` from MJCF.
 7. Fully deprecate the `sim-deformable` crate (migrate useful code, delete rest).
@@ -166,7 +166,7 @@ MuJoCo's flex implementation.
   material. Per-element material variation is deferred.
 - **Body-attached flex vertices.** The `flexvert_bodyid` field is parsed and
   stored, but vertices attached to rigid bodies (kinematic boundary conditions)
-  are treated as pinned (`mass = ∞`) rather than tracking body motion. Full
+  are treated as pinned (`mass = 1e20`, `invmass = 0`) rather than tracking body motion. Full
   body-vertex coupling (vertex moves with body) is deferred.
 
 #### Specification
@@ -228,14 +228,13 @@ pub flex_selfcollide: Vec<bool>,
 pub flex_edge_solref: Vec<[f64; 2]>,
 /// Per-flex: edge constraint solimp.
 pub flex_edge_solimp: Vec<[f64; 5]>,
-/// Per-flex: bending constraint solref (derived from Young's modulus × I).
-pub flex_bend_solref: Vec<[f64; 2]>,
-/// Per-flex: bending constraint solimp.
-pub flex_bend_solimp: Vec<[f64; 5]>,
-/// Per-flex: volume constraint solref (derived from bulk modulus).
-pub flex_volume_solref: Vec<[f64; 2]>,
-/// Per-flex: volume constraint solimp.
-pub flex_volume_solimp: Vec<[f64; 5]>,
+/// Per-flex: bending stiffness (passive spring, N·m/rad).
+/// dim=2 (shell): D = E·t³ / (12·(1−ν²))  (Kirchhoff-Love plate theory).
+/// dim=3 (solid): D = E  (characteristic stiffness; gradient provides geometry).
+pub flex_bend_stiffness: Vec<f64>,
+/// Per-flex: bending damping (passive damper, N·m·s/rad).
+/// Proportional damping: b = damping × k_bend.
+pub flex_bend_damping: Vec<f64>,
 /// Per-flex: density. Units depend on dim:
 /// dim=1 (cable): linear density kg/m.
 /// dim=2 (shell): volumetric density kg/m³ (multiplied by thickness for area density).
@@ -454,7 +453,8 @@ fn mj_factor_flex(model: &Model, data: &mut Data) {
 }
 ```
 
-**Pinned vertices:** `mass = f64::INFINITY` → `inv_mass = 0.0` → `qacc = 0`
+**Pinned vertices:** `mass = 1e20` (large finite, not INFINITY to avoid IEEE
+NaN from `INF * 0` in `Ma = M * qacc`) → `inv_mass = 0.0` → `qacc = 0`
 (vertex does not move). `qLD_diag_inv = 0.0` produces zero acceleration from
 any force, matching MuJoCo's behavior for welded vertices.
 
@@ -476,109 +476,68 @@ model.qLD_nnz = ld_nnz_cursor;
 
 ##### P5. Collision Detection Unification
 
-Replace `mj_deformable_collision()` with flex vertex collision in
-`mj_collision()` (`mujoco_pipeline.rs:5353+`).
+Replace `mj_deformable_collision()` with flex vertex collision via
+`mj_collision_flex()` (`mujoco_pipeline.rs:5586`), called from outside the
+`if ngeom >= 2` SAP guard in `mj_collision()`.
 
-**Approach:** Extend the existing SAP broadphase to include flex vertex AABBs.
-The current `mj_collision()` (`mujoco_pipeline.rs:5353+`) builds per-geom AABBs
-and uses `SweepAndPrune` for O(n log n + k) pair generation. We extend this:
+**Approach:** Brute-force O(V×G) broadphase for simplicity. Each flex vertex is
+tested against every rigid geom. SAP integration deferred to when nflexvert is
+large enough to warrant it (MuJoCo uses BVH midphase for this, which is a
+separate optimization item).
 
 ```rust
 /// Detect contacts between flex vertices and rigid geoms.
-/// Integrates with the SAP broadphase in mj_collision().
-///
-/// Strategy: append flex vertex AABBs to the SAP input array. Each flex
-/// vertex is a sphere of radius flexvert_radius + flex_margin. SAP returns
-/// (geom, geom) and (vertex, geom) candidate pairs. We filter vertex-vertex
-/// pairs (self-collision is deferred) and process vertex-geom narrowphase.
-///
-/// Index convention: SAP indices 0..ngeom are rigid geoms, ngeom..ngeom+nflexvert
-/// are flex vertices. After SAP, pairs where both indices >= ngeom are skipped.
-fn mj_collision_flex(model: &Model, data: &mut Data, aabbs: &mut Vec<Aabb>) {
-    let ngeom = model.ngeom;
-
-    // Append flex vertex AABBs to the existing geom AABB array
-    for vi in 0..model.nflexvert {
-        let vpos = data.flexvert_xpos[vi];
-        let flex_id = model.flexvert_flexid[vi];
-        let r = model.flexvert_radius[vi] + model.flex_margin[flex_id];
-        aabbs.push(Aabb {
-            min: vpos - Vector3::new(r, r, r),
-            max: vpos + Vector3::new(r, r, r),
-        });
+/// Uses brute-force broadphase (O(V*G)) for simplicity — SAP integration
+/// deferred to when nflexvert is large enough to warrant it.
+/// No-op when nflexvert == 0.
+fn mj_collision_flex(model: &Model, data: &mut Data) {
+    if model.nflexvert == 0 {
+        return;
     }
 
-    // Run SAP on combined array (rigid geoms + flex vertices)
-    let sap = SweepAndPrune::new(aabbs);
-    let candidates = sap.query_pairs();
-
-    for (idx_a, idx_b) in candidates {
-        // Both rigid geoms → handled by existing rigid-rigid path
-        if idx_a < ngeom && idx_b < ngeom {
-            continue; // already processed
-        }
-        // Both flex vertices → self-collision (deferred, skip)
-        if idx_a >= ngeom && idx_b >= ngeom {
+    for vi in 0..model.nflexvert {
+        // Skip pinned vertices (invmass == 0, immovable)
+        if model.flexvert_invmass[vi] <= 0.0 {
             continue;
         }
-        // One flex vertex, one rigid geom
-        let (vi, gi) = if idx_a >= ngeom {
-            (idx_a - ngeom, idx_b)
-        } else {
-            (idx_b - ngeom, idx_a)
-        };
 
-        // Narrowphase: treat vertex as sphere of radius flexvert_radius[vi]
-        if let Some((depth, normal, contact_pos)) =
-            narrowphase_sphere_geom(
-                data.flexvert_xpos[vi],
-                model.flexvert_radius[vi],
-                gi, model, data,
-            )
-        {
-            let contact = make_contact_flex_rigid(
-                model, data, vi, gi, contact_pos, normal, depth,
-            );
-            data.contacts.push(contact);
+        let vpos = data.flexvert_xpos[vi];
+        let radius = model.flexvert_radius[vi];
+        let margin = model.flex_margin[model.flexvert_flexid[vi]];
+
+        for gi in 0..model.ngeom {
+            if let Some((depth, normal, contact_pos)) =
+                narrowphase_sphere_geom(vpos, radius + margin, gi, model, ...)
+            {
+                let contact = make_contact_flex_rigid(model, vi, gi, contact_pos, normal, depth);
+                data.contacts.push(contact);
+                data.ncon += 1;
+            }
         }
     }
 }
 ```
 
-**Integration with `mj_collision()`:** Modify the existing function to build
-the AABB array, run rigid-rigid SAP first, then call `mj_collision_flex()` with
-the same array (extended). Alternatively, build combined AABBs from the start
-and dispatch pairs based on index range in a single SAP pass. The single-pass
-approach is simpler and avoids redundant SAP calls:
+**Integration with `mj_collision()`:** Called **outside** the `if ngeom >= 2`
+SAP guard, since flex collision does not use SAP:
 
 ```rust
-// In mj_collision(), after building rigid geom AABBs:
-// Append flex vertex AABBs
-for vi in 0..model.nflexvert { ... }
-// Single SAP pass
-let candidates = sap.query_pairs();
-for (a, b) in candidates {
-    if a < ngeom && b < ngeom {
-        // rigid-rigid: existing narrowphase
-    } else if a >= ngeom && b >= ngeom {
-        // flex-flex: skip (self-collision deferred)
-    } else {
-        // flex-rigid: narrowphase_sphere_geom
+fn mj_collision(model: &Model, data: &mut Data) {
+    if model.ngeom >= 2 {
+        // ... existing SAP broadphase + rigid-rigid narrowphase ...
     }
+    // Flex-rigid collision (independent of SAP, brute-force O(V*G))
+    mj_collision_flex(model, data);
 }
 ```
 
-This is O((ngeom + nflexvert) log(ngeom + nflexvert) + k) — same asymptotic
-complexity as the existing rigid broadphase. No O(V×G) brute force.
-
 **`make_contact_flex_rigid()`** — creates a `Contact` using the standard
-combination rules (element-wise max for friction after #24, max condim, combined
-solref/solimp):
+combination rules (element-wise max for friction, max condim, combined
+solref/solimp). Does NOT take `data` parameter (only needs Model):
 
 ```rust
 fn make_contact_flex_rigid(
     model: &Model,
-    data: &Data,
     vertex_idx: usize,
     geom_idx: usize,
     pos: Vector3<f64>,
@@ -586,42 +545,43 @@ fn make_contact_flex_rigid(
     depth: f64,
 ) -> Contact {
     let flex_id = model.flexvert_flexid[vertex_idx];
+    // ... friction combination, condim, solref/solimp ...
 
-    // Friction: flex has scalar friction, rigid has 3-element
-    // Use same combination rule as rigid-rigid (element-wise max after #24)
-    let flex_f = model.flex_friction[flex_id];
-    let rigid_f = model.geom_friction[geom_idx];
-    let sliding = flex_f.max(rigid_f.x);   // NOTE: max() after #24 is done
-    let torsional = flex_f.max(rigid_f.y);
-    let rolling = flex_f.max(rigid_f.z);
-
-    let condim = model.flex_condim[flex_id].max(model.geom_condim[geom_idx]);
-
-    let (solref, solimp) = combine_solver_params(
-        model.flex_solref[flex_id],
-        model.flex_solimp[flex_id],
-        model.geom_solref[geom_idx],
-        model.geom_solimp[geom_idx],
-    );
-
-    // geom1 encodes the flex vertex, geom2 is the rigid geom.
-    // We need a way to distinguish flex-rigid from rigid-rigid contacts
-    // in the Jacobian assembly. See P5a below.
-    Contact::with_condim(
+    Contact {
         pos, normal, depth,
-        vertex_idx, // overloaded: flex vertex index
-        geom_idx,
-        sliding, torsional, rolling,
-        condim, solref, solimp,
-    )
+        // For flex contacts, geom1 = geom2 = the rigid geom index.
+        // The vertex index is stored exclusively in flex_vertex.
+        // This ensures model.geom_body[contact.geom1] is always valid
+        // (flex vertices have no geom index).
+        geom1: geom_idx,
+        geom2: geom_idx,
+        flex_vertex: Some(vertex_idx),
+        // ...
+    }
 }
 ```
+
+**Contact type flag** — a field on `Contact` discriminates flex-rigid from
+rigid-rigid contacts:
+
+```rust
+/// If Some(vertex_idx), this is a flex-rigid contact.
+/// `geom1` and `geom2` both point to the rigid geom (so
+/// `model.geom_body[contact.geom1]` is always valid).
+/// The flex vertex index is stored here, not in geom1/geom2.
+/// If None, this is a standard rigid-rigid contact.
+pub flex_vertex: Option<usize>,
+```
+
+Default: `None`. Set during `mj_collision_flex()`.
+
+---
 
 **P5a. Contact Jacobian for flex-rigid contacts.**
 
 The contact Jacobian assembly (`compute_contact_jacobian`, called from
 `assemble_unified_constraints()`) must distinguish flex-rigid contacts from
-rigid-rigid contacts:
+rigid-rigid contacts via `contact.flex_vertex`:
 
 For a flex vertex `v` contacting rigid geom attached to body `b`:
 ```
@@ -633,21 +593,77 @@ The vertex side has no kinematic chain — the Jacobian is just the contact fram
 direction projected onto the vertex's 3 DOF columns. The rigid side uses the
 existing `add_body_point_jacobian_row()` pattern.
 
-**Contact type flag** — add a field to `Contact` to indicate the contact is
-flex-rigid:
+---
+
+**P5b. Contact velocity and force helpers for PGS/CG solver.**
+
+The PGS/CG contact solver computes relative velocity at contact points for the
+Delassus RHS. Three helper functions handle flex-rigid contacts:
 
 ```rust
-/// If Some(vertex_idx), this is a flex-rigid contact.
-/// `geom1` is the flex vertex index, `geom2` is the rigid geom index.
-/// If None, this is a standard rigid-rigid contact.
-pub flex_vertex: Option<usize>,
+/// Read flex vertex velocity directly from qvel (translational only).
+fn compute_flex_vertex_velocity(model: &Model, data: &Data, vertex_idx: usize) -> Vector3<f64> {
+    let dof_base = model.flexvert_dofadr[vertex_idx];
+    Vector3::new(data.qvel[dof_base], data.qvel[dof_base + 1], data.qvel[dof_base + 2])
+}
+
+/// Relative velocity at a contact, handling both rigid-rigid and flex-rigid.
+/// For flex-rigid: vel_vertex - vel_rigid (vertex is "body2", rigid is "body1").
+fn compute_contact_relative_velocity(model, data, contact) -> Vector3<f64> {
+    if let Some(vertex_idx) = contact.flex_vertex {
+        let v_vertex = compute_flex_vertex_velocity(model, data, vertex_idx);
+        let rigid_body = model.geom_body[contact.geom1];
+        let v_rigid = compute_point_velocity(data, rigid_body, contact.pos);
+        v_vertex - v_rigid
+    } else {
+        // Standard rigid-rigid
+        vel2 - vel1
+    }
+}
+
+/// Relative angular velocity: flex vertices have no angular DOFs.
+/// For flex-rigid: 0 - omega_rigid = -omega_rigid.
+fn compute_contact_relative_angular_velocity(model, data, contact) -> Vector3<f64> {
+    if contact.flex_vertex.is_some() {
+        let rigid_body = model.geom_body[contact.geom1];
+        -compute_body_angular_velocity(data, rigid_body)
+    } else {
+        omega2 - omega1
+    }
+}
 ```
 
-Default: `None`. Set during `mj_collision_flex()`.
+---
+
+**P5c. Contact force application for flex-rigid contacts.**
+
+After the PGS/CG solver produces contact impulses (lambda), forces are applied
+back to bodies/vertices via `apply_solved_contact_lambda()`:
+
+```rust
+fn apply_solved_contact_lambda(model, data, contact, lambda) {
+    let world_force = normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2];
+
+    if let Some(vertex_idx) = contact.flex_vertex {
+        // Flex-rigid: vertex gets +force directly on DOFs, rigid gets -force via chain.
+        let dof_base = model.flexvert_dofadr[vertex_idx];
+        data.qfrc_constraint[dof_base + 0..3] += world_force;
+
+        let rigid_body = model.geom_body[contact.geom1];
+        apply_contact_force(model, data, rigid_body, contact.pos, -world_force);
+
+        // Flex vertices have no angular DOFs — rigid body absorbs all torques.
+        if dim >= 4 { apply_contact_torque(rigid_body, -torsional_torque); }
+        if dim >= 6 { apply_contact_torque(rigid_body, -rolling_torque); }
+    } else {
+        // Standard rigid-rigid: both bodies via kinematic chain
+    }
+}
+```
 
 **Narrowphase functions** — reuse existing `collide_*` implementations.
-The vertex acts as a small sphere of radius `flexvert_radius[vi]`. All existing
-sphere-vs-X collision functions apply directly.
+The vertex acts as a small sphere of radius `flexvert_radius[vi]`. Supports
+Plane, Sphere, Box, Capsule, and Cylinder geom types.
 
 ##### P6. Edge-Length Constraints in Unified Jacobian
 
@@ -729,6 +745,32 @@ for e in 0..model.nflexedge {
     );
 }
 ```
+
+**Penalty path** — for PGS/CG solvers (non-Newton), edge constraints are
+applied via penalty-based Baumgarte stabilization in `apply_flex_edge_constraints()`
+(`mujoco_pipeline.rs:14576`). This is the explicit-integration counterpart of
+the unified Jacobian assembly above:
+
+```rust
+/// Apply flex edge-length constraint forces in the penalty path.
+/// F = -k * pos_error - b * vel_error, applied via J^T to qfrc_constraint.
+fn apply_flex_edge_constraints(model: &Model, data: &mut Data) {
+    for e in 0..model.nflexedge {
+        // ... same pos_error/vel_error computation as Jacobian path ...
+        let (k, b) = solref_to_penalty(model.flex_edge_solref[flex_id], ...);
+        let force_mag = -k * pos_error - b * vel_error;
+        // Apply: F_v0 = -direction * force_mag, F_v1 = +direction * force_mag
+        // Writes to qfrc_constraint (not qfrc_passive).
+        // Skips pinned vertices (invmass <= 0).
+    }
+    // NOTE: Bending forces are in mj_fwd_passive() (passive spring-damper).
+    // Volume constraints removed — MuJoCo has no dedicated volume mechanism.
+}
+```
+
+Called from both PGS and Newton penalty paths (before the iterative solve).
+
+---
 
 **Constraint stiffness derivation** — during `build()`, compute edge solref
 from material properties:
@@ -968,11 +1010,18 @@ for i in 0..model.nflexvert {
 }
 ```
 
-**Gravity for flex** — add to `mj_rne()` or bias force computation:
+**Gravity for flex** — add to `mj_rne()` or bias force computation.
+Skip pinned vertices (`invmass == 0`) to avoid writing huge values
+(`1e20 * 9.81`) into `qfrc_bias`, which can cause numerical issues in the
+Newton solver's `meaninertia` computation:
 
 ```rust
-// Flex vertex gravity: qfrc_bias includes gravity contribution
+// Flex vertex gravity: direct force on translational DOFs
+// Skip pinned vertices (invmass == 0, mass == 1e20) to avoid huge values in qfrc_bias.
 for i in 0..model.nflexvert {
+    if model.flexvert_invmass[i] == 0.0 {
+        continue; // Pinned vertex: skip gravity
+    }
     let mass = model.flexvert_mass[i];
     let dof_base = model.flexvert_dofadr[i];
     for k in 0..3 {
@@ -1286,7 +1335,7 @@ Poisson ratio: `ΔV/V < 3 * (1 - 2ν) * ε` where ε is strain.
 
 ##### AC8 — Pinned Vertices: Zero Motion
 
-Vertices marked as pinned (`mass = ∞`) have exactly zero velocity and
+Vertices marked as pinned (`mass = 1e20`, `invmass = 0`) have exactly zero velocity and
 acceleration after any number of steps. `qpos` at pinned DOFs unchanged.
 
 ##### AC9 — Rigid-Only Regression
@@ -1413,7 +1462,7 @@ Each phase must compile and pass `cargo test -p sim-core` before proceeding.
 | `sim/L0/core/src/mujoco_pipeline.rs` | Model: add `flex_*` fields, `nq_rigid`, `nv_rigid`. Data: remove deformable fields, add `flexvert_xpos`, extend allocations. Pipeline: add `mj_fwd_position_flex()`, `mj_crba_flex()`, `mj_factor_flex()`, `mj_collision_flex()`, `mj_integrate_pos_flex()`, flex constraint assembly in `assemble_unified_constraints()`, flex gravity in `mj_rne()`, flex damping in `mj_fwd_passive()`. Remove: `DeformableContact`, `mj_deformable_collision()`, `solve_deformable_contacts()`, `mj_deformable_step()`. |
 | `sim/L0/mjcf/src/parser.rs` | Add `parse_flex()`, `parse_flexcomp()` inside `parse_deformable()`. |
 | `sim/L0/mjcf/src/types.rs` | Add `MjcfFlex` struct with all flex MJCF attributes. |
-| `sim/L0/mjcf/src/model_builder.rs` | Add `process_flex()`. Migrate mesh generators from sim-deformable. Compute edge/bending/volume topology. Compute `solref` from material. |
+| `sim/L0/mjcf/src/model_builder.rs` | Add `process_flex()`. Migrate mesh generators from sim-deformable. Compute edge/hinge topology. Compute `solref` and bending stiffness from material. |
 | `sim/L0/tests/integration/` | New: `flex_unified.rs` (AC1–AC15). Update or remove `deformable_contact.rs`. |
 | `sim/L0/tests/Cargo.toml` | Remove `sim-deformable` dependency. |
 | `sim/L0/core/Cargo.toml` | Remove `sim-deformable` optional dependency and `deformable` feature. |
