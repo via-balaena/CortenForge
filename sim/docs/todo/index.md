@@ -118,6 +118,7 @@ Items #28→#29→#30 form a strict dependency chain.
 | 40 | Fluid / aerodynamic forces | Medium | High | L | None | [future_work_10.md](./future_work_10.md) | |
 | 41 | `disableflags` — runtime disable flag effects | Low | Medium | M | None | [future_work_10.md](./future_work_10.md) | |
 | ~~42~~ | ~~`<flex>` / `<flexcomp>` MJCF deformable parsing~~ | — | — | — | — | [future_work_10.md](./future_work_10.md) | Subsumed by §6B |
+| 42B | Flex bending: cotangent Laplacian + trait abstraction | Medium | **Critical** | L | §6B | [future_work_10.md](./future_work_10.md) | |
 
 #### 3A-vi: Cleanup + Conformance Test Suite (Items #43–45)
 
