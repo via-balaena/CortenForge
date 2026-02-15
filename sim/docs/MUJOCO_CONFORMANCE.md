@@ -72,7 +72,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | Element | MuJoCo | sim-mjcf | Notes |
 |---------|--------|----------|-------|
 | `<mujoco>` | ✓ | ✓ | Root element |
-| `<compiler>` | ✓ | ✓ | Full: angle, eulerseq, meshdir/texturedir/assetdir, autolimits, inertiafromgeom, boundmass/boundinertia, balanceinertia, settotalmass, strippath, discardvisual, fusestatic, coordinate |
+| `<compiler>` | ✓ | ✓ | Full: angle, eulerseq, meshdir/texturedir/assetdir, autolimits, inertiafromgeom, boundmass/boundinertia, balanceinertia, settotalmass, strippath, discardvisual, fusestatic, coordinate, exactmeshinertia |
 | `<include>` | ✓ | ✓ | Pre-parse XML expansion with recursive includes, duplicate detection, path resolution relative to main model |
 | `<option>` | ✓ | ✓ | Full: timestep, gravity, integrator, solver, cone, jacobian, wind, flags, etc. |
 | `<size>` | ✓ | ⚠️ | Memory hints, may not apply |
@@ -347,6 +347,7 @@ sim/L0/tests/
 │   ├── sleeping.rs
 │   ├── spatial_tendons.rs
 │   ├── tendon_springlength.rs
+│   ├── exactmeshinertia.rs
 │   └── validation.rs
 └── assets/
     ├── mujoco_menagerie/  (git submodule)

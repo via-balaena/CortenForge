@@ -21,7 +21,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 **Remaining gaps (Phase 3, optimal implementation order):**
 - **3A-i Parser Fundamentals** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` element~~ ✅, ~~`childclass` attribute~~ ✅, ~~`<site>` orientation~~ ✅, ~~tendon `springlength`~~ ✅
-- **3A-ii Inertia + Contact Parameters** (#23–27): `exactmeshinertia`, friction combination (geometric mean → element-wise max), `geom/@priority`, `solmix`, contact margin/gap
+- **3A-ii Inertia + Contact Parameters** (#23–27): ~~`exactmeshinertia`~~ ✅, friction combination (geometric mean → element-wise max), `geom/@priority`, `solmix`, contact margin/gap
 - **3A-iii Constraint System Overhaul** (#28–32): friction loss migration (Newton Huber → PGS/CG → unified constraints), `solreffriction`, pyramidal cones
 - **3A-iv Noslip + Actuator/Dynamics** (#33–37): noslip post-processor, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality
 - **3A-v Constraint/Joint + Physics** (#38–42): ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, `<flex>`/`<flexcomp>`
@@ -94,7 +94,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | SIMD optimization | `sim-simd` crate with `Vec3x4`, `Vec3x8`, batch operations | [§12](#12-performance-optimizations) |
 | Analytical derivatives (complete) | Part 1: `mjd_transition_fd()`, `mjd_smooth_vel()`, `mjd_passive_vel`, `mjd_actuator_vel`, `mjd_rne_vel`. Part 2: `mjd_quat_integrate()`, `mjd_transition_hybrid()`, `mjd_transition()` dispatch, `validate_analytical_vs_fd()`, `fd_convergence_check()` — 30+ tests, all passing | [future_work_4 §12](./todo/future_work_4.md) |
 | Sleeping / Body Deactivation | Tree-based sleeping (Phases A/B/C): island discovery via DFS flood-fill, selective CRBA, partial LDL, awake-index iteration, per-island solving — 93 integration tests | [future_work_5 §16](./todo/future_work_5.md) |
-| `<include>` + `<compiler>` element | Pre-parse XML expansion (recursive, duplicate detection); `<compiler>` with angle/eulerseq/meshdir/texturedir/assetdir/autolimits/inertiafromgeom/boundmass/boundinertia/balanceinertia/settotalmass/strippath/discardvisual/fusestatic/coordinate; section merging for duplicate top-level elements; URDF converter defaults | [§13](#13-model-format), [future_work_6 §18](./todo/future_work_6.md) |
+| `<include>` + `<compiler>` element | Pre-parse XML expansion (recursive, duplicate detection); `<compiler>` with angle/eulerseq/meshdir/texturedir/assetdir/autolimits/inertiafromgeom/boundmass/boundinertia/balanceinertia/settotalmass/strippath/discardvisual/fusestatic/coordinate/exactmeshinertia; section merging for duplicate top-level elements; URDF converter defaults; exact mesh inertia via signed tetrahedron decomposition (Mirtich 1996), full 3×3 tensor accumulation with geom orientation + eigendecomposition | [§13](#13-model-format), [future_work_6 §18](./todo/future_work_6.md), [future_work_7 §23](./todo/future_work_7.md) |
 
 **For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics + site transmissions), sensors (32 pipeline types, all wired from MJCF), fixed + spatial tendons (including sphere/cylinder wrapping, sidesite, pulley), and deformable bodies (split-solve contact with rigid geoms) are functional. See [`sim/docs/todo/index.md`](./todo/index.md) for the full gap list.
 

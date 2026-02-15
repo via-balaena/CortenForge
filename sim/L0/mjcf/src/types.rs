@@ -307,6 +307,10 @@ pub struct MjcfCompiler {
     pub usethread: bool,
     /// Align free joints to body frame.
     pub alignfree: bool,
+    /// Use exact mesh inertia computation (signed tetrahedron decomposition).
+    /// When false, same exact algorithm is used (CortenForge always uses exact).
+    /// Parsed for MJCF round-trip fidelity.
+    pub exactmeshinertia: bool,
 }
 
 impl Default for MjcfCompiler {
@@ -329,6 +333,7 @@ impl Default for MjcfCompiler {
             fitaabb: false,
             usethread: true,
             alignfree: false,
+            exactmeshinertia: false,
         }
     }
 }

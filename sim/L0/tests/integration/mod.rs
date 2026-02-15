@@ -72,6 +72,13 @@ pub mod spatial_tendons;
 pub mod tendon_springlength;
 
 // ============================================================================
+// Exact Mesh Inertia Tests (§23 exactmeshinertia + Full Tensor Pipeline)
+// ============================================================================
+
+/// Exact mesh inertia: parsing, algorithm, pipeline refactor, multi-geom.
+pub mod exactmeshinertia;
+
+// ============================================================================
 // Site-Transmission Actuator Tests (§5 Site-Transmission Actuators)
 // ============================================================================
 

@@ -438,6 +438,11 @@ fn parse_compiler_attrs(e: &BytesStart) -> Result<MjcfCompiler> {
         compiler.alignfree = alignfree == "true";
     }
 
+    // A13. exactmeshinertia
+    if let Some(emi) = get_attribute_opt(e, "exactmeshinertia") {
+        compiler.exactmeshinertia = emi == "true";
+    }
+
     Ok(compiler)
 }
 
