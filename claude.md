@@ -15,7 +15,7 @@ full workspace. The workspace has distinct domains (`sim-*`, `mesh-*`, `ml-*`,
 `route-*`, `sensor-*`) and cross-domain regressions are near-zero. Use
 domain-scoped test commands:
 
-- sim changes: `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics -p sim-constraint -p sim-muscle -p sim-tendon -p sim-sensor -p sim-urdf -p sim-types -p sim-simd -p sim-deformable`
+- sim changes: `cargo test -p sim-core -p sim-mjcf -p sim-conformance-tests -p sim-physics -p sim-constraint -p sim-muscle -p sim-tendon -p sim-sensor -p sim-urdf -p sim-types -p sim-simd`
 - mesh changes: `cargo test -p mesh -p mesh-types -p mesh-io` (plus any affected mesh-* crates)
 - ml changes: `cargo test -p ml-types -p ml-dataset -p ml-models -p ml-training`
 - route changes: `cargo test -p route-types -p route-pathfind -p route-optimize`

@@ -190,7 +190,12 @@ corresponding stage.
 ---
 
 ### 42. `<flex>` / `<flexcomp>` MJCF Deformable Body Parsing
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Status:** Subsumed by §6B | **Effort:** L | **Prerequisites:** None
+
+> **Note:** This item has been subsumed by [§6B Flex Solver Unification](./future_work_6b_precursor_to_7.md),
+> which implements full `<flex>`/`<flexcomp>` parsing along with the unified flex
+> constraint pipeline. See `future_work_6b_precursor_to_7.md` §P9 for the
+> implemented parsing specification.
 
 #### Current State
 The MJCF parser skips `<flex>` and `<flexcomp>` elements inside `<deformable>` — only

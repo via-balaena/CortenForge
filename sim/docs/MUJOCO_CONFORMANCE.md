@@ -89,6 +89,8 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<actuator>` | ✓ | ✓ | All 8 shortcut types (motor, position, velocity, damper, cylinder, adhesion, muscle, general) with MuJoCo-compatible gain/bias force model, GainType/BiasType dispatch, FilterExact dynamics. `<general>` supports explicit `gaintype`/`biastype`/`dyntype`/`gainprm`/`biasprm`/`dynprm` attributes with default class inheritance. |
 | `<sensor>` | ✓ | ✓ | Various sensor types |
 | `<keyframe>` | ✓ | ✓ | State snapshots: `<key>` elements with qpos/qvel/act/ctrl/mpos/mquat/time, `Data::reset_to_keyframe()` |
+| `<flex>` | ✓ | ✓ | Direct flex body specification (vertices, elements); parsed via `parse_flex()` + `process_flex()` |
+| `<flexcomp>` | ✓ | ✓ | Procedural flex generation: grid (2D shell), box (3D solid), cable (1D); parsed via `parse_flexcomp()` |
 
 #### Body/Geom/Joint attributes
 | Attribute | MuJoCo | sim-mjcf | Notes |
@@ -332,7 +334,6 @@ sim/L0/tests/
 │   ├── collision_primitives.rs
 │   ├── collision_test_utils.rs
 │   ├── default_classes.rs
-│   ├── deformable_contact.rs
 │   ├── derivatives.rs
 │   ├── equality_constraints.rs
 │   ├── implicit_integration.rs
@@ -348,6 +349,7 @@ sim/L0/tests/
 │   ├── spatial_tendons.rs
 │   ├── tendon_springlength.rs
 │   ├── exactmeshinertia.rs
+│   ├── flex_unified.rs
 │   └── validation.rs
 └── assets/
     ├── mujoco_menagerie/  (git submodule)
@@ -515,6 +517,39 @@ in three phases with comprehensive test coverage.
 - API: `Data::sleep_state()`, `Data::tree_awake()`, `Data::nisland()`
 
 **Files:** `sim/L0/tests/integration/sleeping.rs` (93 tests), `sim/L0/core/src/mujoco_pipeline.rs` (sleep implementation)
+
+---
+
+### §6B — Flex Solver Unification
+
+**Status:** ✅ Complete (21 acceptance tests)
+
+Unifies the deformable simulation pipeline with the rigid constraint solver,
+matching MuJoCo's flex architecture. The previous `sim-deformable` crate (XPBD
+solver) has been deleted.
+
+| Component | Implementation | Tests | Status |
+|-----------|----------------|-------|--------|
+| Model data extension | `flex_*` fields, `nq_rigid`/`nv_rigid` | AC9 (rigid regression), AC10 (MJCF round-trip) | ✅ |
+| Mass + LDL | `mj_crba_flex()`, `mj_factor_flex()` | AC8 (pinned vertices) | ✅ |
+| Collision | `mj_collision_flex()` (brute-force O(V×G)) | AC2 (flex-rigid contact) | ✅ |
+| Edge constraints | `FlexEdge` in unified Jacobian + penalty path | AC5 (edge stiffness) | ✅ |
+| Bending | Passive spring-damper in `mj_fwd_passive()` | AC6 (bending stiffness), AC20 (stability clamp) | ✅ |
+| Integration | `mj_integrate_pos_flex()`, gravity, damping | AC1 (cloth drape), AC3 (solid compression) | ✅ |
+| MJCF parsing | `<flex>`, `<flexcomp>` | AC10–AC15 (parsing, flexcomp types) | ✅ |
+
+**Key verification properties:**
+
+| Property | Test approach | Status |
+|----------|---------------|--------|
+| Rigid regression | All rigid-only tests pass unchanged when `nflex == 0` | ✅ |
+| Pinned vertex immobility | `qpos` at pinned DOFs unchanged after stepping | ✅ |
+| Edge stiffness | Extension matches `ΔL = F·L/(E·A)` within 1% | ✅ |
+| Bending resistance | Deflection matches Euler-Bernoulli within 5% | ✅ |
+| Bending stability clamp | No NaN/divergence with large `k_bend` | ✅ |
+| MJCF round-trip | Parse → build → verify counts and topology | ✅ |
+
+**Files:** `sim/L0/tests/integration/flex_unified.rs` (21 tests), `sim/L0/core/src/mujoco_pipeline.rs` (flex pipeline), `sim/L0/mjcf/src/model_builder.rs` (flex building)
 
 ---
 

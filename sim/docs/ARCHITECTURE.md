@@ -23,7 +23,6 @@ sim/
 │   ├── core/              # sim-core — Pipeline, collision, integration
 │   ├── constraint/        # sim-constraint — Joint types, motors, limits, CGSolver
 │   ├── sensor/            # sim-sensor — IMU, F/T, touch, rangefinder
-│   ├── deformable/        # sim-deformable — XPBD soft bodies
 │   ├── muscle/            # sim-muscle — Hill-type muscles
 │   ├── tendon/            # sim-tendon — Cable/tendon routing
 │   ├── gpu/               # sim-gpu — GPU-accelerated batched sim (wgpu)
@@ -43,6 +42,7 @@ sim/
     │   ├── future_work_4.md           # Phase 2: Physics Completeness #11–14
     │   ├── future_work_5.md           # Phase 2: Quality of Life #15–16
     │   ├── future_work_6.md           # Phase 3A-i: Parser Fundamentals #18–22
+    │   ├── future_work_6b_precursor_to_7.md # Flex Solver Unification #6B
     │   ├── future_work_7.md           # Phase 3A-ii: Inertia + Contact Parameters #23–27
     │   ├── future_work_8.md           # Phase 3A-iii: Constraint System Overhaul #28–32
     │   ├── future_work_9.md           # Phase 3A-iv: Noslip + Actuator/Dynamics #33–37
@@ -62,7 +62,7 @@ sim/
 
 ## Core Architecture: Model/Data
 
-The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~24,400 lines).
+The simulation engine lives in `sim-core/src/mujoco_pipeline.rs` (~24,800 lines).
 It implements MuJoCo's computation pipeline end-to-end.
 
 ### Model (static)
@@ -71,7 +71,9 @@ Immutable after loading. Contains the kinematic tree, joint definitions,
 geometry specifications, actuator configuration, and solver parameters.
 
 Key fields:
-- `nq`/`nv` — position coordinates vs velocity DOFs (differ for quaternion joints)
+- `nq`/`nv` — position coordinates vs velocity DOFs (differ for quaternion joints); includes flex vertex DOFs when `nflex > 0`
+- `nq_rigid`/`nv_rigid` — rigid-only DOF counts (before flex DOFs in the state vector)
+- `nflex`/`nflexvert`/`nflexedge`/`nflexelem`/`nflexhinge` — flex body dimensions
 - `nu`/`na` — actuator count, total activation dimension
 - `body_parent[i]` — kinematic tree topology
 - `body_pos[i]`/`body_quat[i]` — local frame offsets
@@ -151,14 +153,18 @@ forward():
                mj_sleep               Sleep state machine (countdown → sleep transition)
                mj_island              Island discovery (DFS flood-fill over constraints)
   Position     mj_fwd_position       FK from qpos → body poses (skips sleeping bodies)
+               mj_fwd_position_flex  Flex vertex positions from qpos
                mj_fwd_tendon         Tendon lengths + Jacobians (fixed + spatial)
                mj_collision           Broad + narrow phase contacts (skips sleeping pairs)
+                                     + mj_collision_flex (vertex-vs-geom, brute-force O(V*G))
   Velocity     mj_fwd_velocity        Body spatial velocities (skips sleeping DOFs)
                mj_actuator_length     Actuator length/velocity from transmission
   Actuation    mj_fwd_actuation       act_dot computation + gain/bias force + clamping
   Dynamics     mj_crba                Selective CRBA (skips sleeping subtrees)
-               mj_rne                 Bias forces (Recursive Newton-Euler)
-               mj_fwd_passive         Springs, dampers, friction loss (skips sleeping DOFs)
+               mj_crba_flex           Flex diagonal mass matrix
+               mj_factor_flex         Flex LDL factorization (diagonal)
+               mj_rne                 Bias forces (Recursive Newton-Euler) + flex gravity
+               mj_fwd_passive         Springs, dampers, friction loss, flex bending + vertex damping
   Constraints  mj_fwd_constraint      Joint/tendon limits + equality + contact PGS/CG/Newton
                mj_fwd_constraint_islands  Per-island block-diagonal solving (when islands > 1)
   Solve        mj_fwd_acceleration    qacc = M^-1 * f  (or implicit solve)
@@ -337,26 +343,40 @@ Simulated sensor suite: `Imu` (6-axis accel + gyro), `ForceTorqueSensor`
 (6-axis), `TouchSensor` (binary/pressure), `Rangefinder` (ray-cast),
 `Magnetometer` (heading).
 
-### sim-deformable
+### Flex (Deformable) Bodies
 
-Soft body simulation using XPBD (Extended Position-Based Dynamics), integrated
-into the rigid pipeline via split-solve deformable-rigid contact (`#[cfg(feature = "deformable")]`):
+Deformable bodies are unified into the rigid pipeline as flex bodies (matching
+MuJoCo's flex architecture). No separate crate — all flex code lives in
+`sim-core/mujoco_pipeline.rs` and `sim-mjcf/model_builder.rs`.
 
-| Type | Dimension | Use Cases |
-|------|-----------|-----------|
-| `CapsuleChain` | 1D | Ropes, cables, hair |
-| `Cloth` | 2D | Membranes, shells, fabric |
-| `SoftBody` | 3D | Tetrahedral volumetric meshes |
-| `SkinnedMesh` | — | Bone-driven mesh deformation |
+| Dimension | Use Cases | MJCF Element |
+|-----------|-----------|--------------|
+| 1D (cable) | Ropes, cables | `<flexcomp type="cable">` |
+| 2D (shell) | Membranes, cloth, shells | `<flexcomp type="grid">` |
+| 3D (solid) | Tetrahedral volumetric meshes | `<flexcomp type="box">` |
 
-Pipeline integration: `Data::register_deformable()` adds bodies to the pipeline.
-`mj_deformable_collision()` detects vertex-vs-geom contacts (plane/sphere/box/
-capsule/cylinder/ellipsoid). `solve_deformable_contacts()` resolves via Jacobi PGS
-with position-level correction. `mj_deformable_step()` runs XPBD internal constraints.
+**Architecture:** Flex vertex DOFs are appended to `qpos`/`qvel`/`qacc` after
+rigid DOFs. Edge constraints enter the unified Jacobian as `FlexEdge` rows.
+Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching
+MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries
+(discriminated by `flex_vertex: Option<usize>`).
 
-Material model: Young's modulus, Poisson's ratio, density, damping.
-Presets: rubber, tendon, gelatin, foam, cloth, soft-tissue, muscle, cartilage,
-leather, rope, steel-cable, paper, flexible-plastic, soft-wood (14 total).
+**Key pipeline functions:** `mj_collision_flex()` (brute-force vertex-vs-geom),
+`mj_crba_flex()` / `mj_factor_flex()` (diagonal mass + LDL),
+`mj_integrate_pos_flex()` (position integration),
+`mj_fwd_position_flex()` (vertex position update from qpos).
+
+**Material model:** Young's modulus, Poisson's ratio, density, thickness,
+damping. Bending stiffness derived from material (Kirchhoff-Love for shells,
+characteristic stiffness for solids). Pinned vertices use `mass = 1e20`,
+`invmass = 0`.
+
+**Parsed from MJCF:** `<flex>` (direct vertex/element specification) and
+`<flexcomp>` (procedural generation: grid, box, cable types).
+
+See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) for the full
+specification. The previous `sim-deformable` crate (XPBD solver) has been
+deleted — useful code migrated to `model_builder.rs`.
 
 ### sim-muscle
 
@@ -421,6 +441,10 @@ MuJoCo's `user_api.cc`), populating `actuator_gaintype`, `actuator_biastype`,
 `gainprm`, `biasprm`, `dynprm` attributes with default class inheritance.
 Muscle parameters are parsed and transferred; `compute_muscle_params()`
 resolves `lengthrange`, `acc0`, and auto-computes `F0` at model build time.
+`<flex>` and `<flexcomp>` elements are parsed via `parse_flex()` /
+`parse_flexcomp()` and processed by `process_flex()` in the model builder,
+which computes edge/hinge topology, bending stiffness from material properties,
+and element rest volumes.
 
 ### sim-urdf
 
@@ -633,7 +657,6 @@ is Layer 1 only.
 | `serde` | Most crates | Serialization support |
 | `mjb` | sim-mjcf | Binary MuJoCo format |
 | `muscle` | sim-constraint | Hill-type muscle integration |
-| `deformable` | sim-core, sim-mjcf, sim-physics | XPBD soft body support with pipeline-integrated deformable-rigid contact |
 
 ## References
 
@@ -641,5 +664,5 @@ is Layer 1 only.
 - [MuJoCo Technical Notes](https://mujoco.readthedocs.io/en/stable/computation.html)
 - Todorov, E. (2014). "Convex and analytically-invertible dynamics with contacts and constraints"
 - Featherstone, R. (2008). *Rigid Body Dynamics Algorithms*. Springer.
-- Macklin, M. et al. (2016). "XPBD: Position-Based Simulation of Compliant Constrained Dynamics"
+- Bridson, R. et al. (2003). "Simulation of Clothing with Folds and Wrinkles" (dihedral bending gradient)
 - Hill, A.V. (1938). "The heat of shortening and the dynamic constants of muscle"

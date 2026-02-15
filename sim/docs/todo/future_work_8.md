@@ -19,7 +19,7 @@ Items #28→#29→#30 form a strict dependency chain.
 CortenForge computes friction loss as a **passive force** in `mj_fwd_passive()`:
 
 ```rust
-// mujoco_pipeline.rs:10922
+// mujoco_pipeline.rs:11505
 let smooth_sign = (qvel * self.model.friction_smoothing).tanh();
 let fl_force = frictionloss * smooth_sign;
 self.data.qfrc_passive[dof_idx] -= fl_force;
@@ -223,11 +223,11 @@ PGS/CG path uses a different architecture:
 
 - **Contacts**: Go through the PGS/CG solver (correct)
 - **Joint limits**: Penalty forces with Baumgarte stabilization
-  (`mujoco_pipeline.rs:18423–18473`). Comment: "MuJoCo uses solver-based
+  (`mujoco_pipeline.rs:19231–19282`). Comment: "MuJoCo uses solver-based
   approach, but penalty is acceptable for most robotics."
-- **Tendon limits**: Same penalty approach (`mujoco_pipeline.rs:18475–18526`)
+- **Tendon limits**: Same penalty approach (`mujoco_pipeline.rs:19283–19334`)
 - **Equality constraints**: Penalty forces via `apply_equality_constraints()`
-  (`mujoco_pipeline.rs:18528–18536`). Comment: "Using penalty method with
+  (`mujoco_pipeline.rs:19336–19344`). Comment: "Using penalty method with
   Baumgarte stabilization (like joint limits). MuJoCo uses solver-based approach
   via PGS, but penalty is robust and simpler."
 
@@ -267,7 +267,7 @@ solver as constraint rows, matching MuJoCo's architecture for all solver types.
    - Remove `apply_equality_constraints()` penalty implementation
    - Remove `apply_connect_constraint()`, `apply_weld_constraint()`,
      `apply_joint_equality_constraint()` penalty implementations
-   - Remove penalty limit code at lines 18423–18526
+   - Remove penalty limit code at lines 19231–19334
    - Remove `default_eq_stiffness`, `default_eq_damping` from Model
 
 5. **Impedance**: Switch from penalty-style `F = -imp * k * pos - imp * b * vel`
@@ -298,8 +298,8 @@ solver as constraint rows, matching MuJoCo's architecture for all solver types.
 
 #### Origin
 
-This divergence was acknowledged in code comments at `mujoco_pipeline.rs:18428`
-and `18530` but never tracked as a work item.
+This divergence was acknowledged in code comments at `mujoco_pipeline.rs:19236`
+and `19338` but never tracked as a work item.
 
 ---
 
@@ -309,7 +309,7 @@ and `18530` but never tracked as a work item.
 #### Current State
 `Contact` has a single `solref` field applied to all constraint rows. MuJoCo supports
 `solreffriction` — separate solver parameters for friction directions (tangent,
-torsional, rolling). Comment at `mujoco_pipeline.rs:5662`: "solreffriction is NOT
+torsional, rolling). Comment at `mujoco_pipeline.rs:6040`: "solreffriction is NOT
 applied here."
 
 #### Objective

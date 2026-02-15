@@ -733,16 +733,30 @@ Each step must compile and pass existing tests before proceeding.
 
 #### Current State
 
-`make_contact_from_geoms()` (`mujoco_pipeline.rs:5690`) combines friction
-coefficients from two contacting geoms using **geometric mean**:
+There are two contact creation paths, each with its own friction combination:
 
-```rust
-let sliding = (f1.x * f2.x).sqrt();
-let torsional = (f1.y * f2.y).sqrt();
-let rolling = (f1.z * f2.z).sqrt();
-```
+1. **Rigid-rigid contacts** — `make_contact_from_geoms()` (`mujoco_pipeline.rs:6054`)
+   combines friction from two contacting geoms using **geometric mean**:
 
-The same pattern is used for deformable-rigid contacts (`mujoco_pipeline.rs:19230`).
+   ```rust
+   let sliding = (f1.x * f2.x).sqrt();
+   let torsional = (f1.y * f2.y).sqrt();
+   let rolling = (f1.z * f2.z).sqrt();
+   ```
+
+2. **Flex-rigid contacts** — `make_contact_flex_rigid()` (`mujoco_pipeline.rs:5776`)
+   already uses **element-wise max** (correct):
+
+   ```rust
+   let sliding = flex_f.max(rigid_f.x);
+   let torsional = flex_f.max(rigid_f.y);
+   let rolling = flex_f.max(rigid_f.z);
+   ```
+
+   Flex contacts combine a scalar `flex_friction[flex_id]` with the rigid geom's
+   per-axis friction vector. Since `geom1 = geom2 = rigid_geom_idx` and the
+   vertex index is stored in `flex_vertex: Option<usize>`, there is only one
+   rigid geom involved — the combination is flex material vs. rigid geom.
 
 MuJoCo uses **element-wise maximum** (when geom priorities are equal):
 
@@ -757,31 +771,29 @@ This divergence was documented as "known non-conformance" in `future_work_2.md`
 (Decision D3) and explicitly deferred: "better done as a deliberate conformance
 task with before/after validation, not buried in a condim refactor."
 
-**Impact:** Every contact between geoms with asymmetric friction values produces
-wrong friction coefficients. This affects every trajectory comparison test.
+**Impact:** Every rigid-rigid contact between geoms with asymmetric friction
+values produces wrong friction coefficients. Flex-rigid contacts are already
+correct. This affects every trajectory comparison test involving rigid-rigid
+contacts.
 
 #### Objective
 
-Switch friction combination from geometric mean to element-wise max, matching
-MuJoCo's `mj_contactParam()` behavior for equal-priority geoms.
+Switch rigid-rigid friction combination from geometric mean to element-wise max,
+matching MuJoCo's `mj_contactParam()` behavior for equal-priority geoms.
+Flex-rigid contacts (`make_contact_flex_rigid()`) already use `max()` — no
+change needed there.
 
 #### Specification
 
-1. **`make_contact_from_geoms()`** (`mujoco_pipeline.rs:5690`): Change three lines:
+1. **`make_contact_from_geoms()`** (`mujoco_pipeline.rs:6054`): Change three lines:
    ```rust
    let sliding = f1.x.max(f2.x);
    let torsional = f1.y.max(f2.y);
    let rolling = f1.z.max(f2.z);
    ```
 
-2. **Deformable-rigid contacts** (`mujoco_pipeline.rs:19230`): Same change pattern.
-   Deformable material has a single `friction: f64` combined with rigid geom's
-   per-axis friction:
-   ```rust
-   let sliding = deform_friction.max(rigid_friction.x);
-   let torsional = deform_friction.max(rigid_friction.y);
-   let rolling = deform_friction.max(rigid_friction.z);
-   ```
+2. **`make_contact_flex_rigid()`** (`mujoco_pipeline.rs:5776`): Already correct —
+   uses `flex_f.max(rigid_f.x)` etc. No change needed.
 
 3. **`<contact><pair>` override**: When a `<pair>` element specifies explicit
    `friction`, it overrides the combination rule entirely — no change needed here.
@@ -799,14 +811,14 @@ MuJoCo's `mj_contactParam()` behavior for equal-priority geoms.
 #### Acceptance Criteria
 
 1. `make_contact_from_geoms()` uses `f1.max(f2)` per component.
-2. Deformable-rigid contact friction uses `max()` combination.
+2. `make_contact_flex_rigid()` already uses `max()` — verify no regression.
 3. Existing contact tests updated — any test that relied on geometric mean
    behavior must be re-validated. Expected: tolerance tightening, not loosening.
 4. New test: two geoms with `friction="0.3"` and `friction="0.7"` produce
    contact with `sliding = 0.7` (not `sqrt(0.21) ≈ 0.458`).
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — `make_contact_from_geoms()`, deformable contacts
+- `sim/L0/core/src/mujoco_pipeline.rs` — `make_contact_from_geoms()` (line 6054)
 - `sim/L0/tests/integration/` — contact friction tests
 
 ---
