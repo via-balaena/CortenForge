@@ -1176,12 +1176,12 @@ fn ac20_bending_stability_clamp() {
     let model = load_model(mjcf).expect("should load");
     let mut data = model.make_data();
 
-    // Verify the raw stiffness exceeds the clamp threshold
+    // Verify the raw stiffness is extremely high — the per-vertex force clamp
+    // in mj_fwd_passive() should keep the simulation stable despite this.
     let k_raw = model.flex_bend_stiffness[0];
-    let k_max = 1.0 / (model.timestep * model.timestep);
     assert!(
-        k_raw > k_max,
-        "raw stiffness {k_raw} should exceed clamp {k_max} for this test to be meaningful"
+        k_raw > 10_000.0,
+        "raw stiffness {k_raw} should be very high for this test to be meaningful"
     );
 
     assert!(model.nflexhinge > 0, "should have hinges");

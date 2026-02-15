@@ -1455,7 +1455,7 @@ pub struct Model {
     // --- Per-element arrays (length nflexelem) ---
     /// Element connectivity: vertex indices. Length varies by dim:
     /// dim=1: 2 (edge), dim=2: 3 (triangle), dim=3: 4 (tetrahedron).
-    /// Stored as flat Vec<usize> with flexelem_dataadr/datanum for indexing.
+    /// Stored as flat `Vec<usize>` with flexelem_dataadr/datanum for indexing.
     pub flexelem_data: Vec<usize>,
     /// Start index in flexelem_data for this element.
     pub flexelem_dataadr: Vec<usize>,
@@ -11371,7 +11371,6 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
     // MuJoCo computes bending as passive forces in engine_passive.c, NOT as constraint rows.
     // Force = -k_bend * (theta - theta0) - b_bend * d(theta)/dt, applied via J^T.
     let dt = model.timestep;
-    let k_max = 1.0 / (dt * dt); // Stability clamp for explicit integration
     for h in 0..model.nflexhinge {
         let [ve0, ve1, va, vb] = model.flexhinge_vert[h];
         let flex_id = model.flexhinge_flexid[h];
@@ -11381,7 +11380,6 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
         if k_bend_raw <= 0.0 && b_bend <= 0.0 {
             continue;
         }
-        let k_bend = k_bend_raw.min(k_max);
 
         let pe0 = data.flexvert_xpos[ve0];
         let pe1 = data.flexvert_xpos[ve1];
@@ -11426,7 +11424,7 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let grad_e1 = -grad_a * bary_a - grad_b * bary_b;
 
         // Spring: F = -k * angle_error
-        let spring_mag = -k_bend * angle_error;
+        let spring_mag = -k_bend_raw * angle_error;
 
         // Damper: F = -b * d(theta)/dt, where d(theta)/dt = J · qvel
         let dof_e0 = model.flexvert_dofadr[ve0];
@@ -11451,7 +11449,14 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
         let force_mag = spring_mag + damper_mag;
 
-        // Apply via J^T to qfrc_passive
+        // Apply via J^T to qfrc_passive, with per-vertex stability clamp.
+        // The force on vertex i is: F_i = force_mag * grad_i
+        // The acceleration is: a_i = F_i * invmass_i = force_mag * grad_i * invmass_i
+        // For explicit Euler stability: |a_i * dt| must not exceed the velocity scale.
+        // We clamp the per-vertex force magnitude so that:
+        //   |force_mag * |grad_i| * invmass_i * dt^2| < 1
+        // This prevents any single bending hinge from causing instability, regardless
+        // of how deformed the mesh becomes.
         let grads = [
             (ve0, dof_e0, grad_e0),
             (ve1, dof_e1, grad_e1),
@@ -11459,9 +11464,17 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
             (vb, dof_b, grad_b),
         ];
         for &(v_idx, dof, grad) in &grads {
-            if model.flexvert_invmass[v_idx] > 0.0 {
+            let invmass = model.flexvert_invmass[v_idx];
+            if invmass > 0.0 {
+                let grad_norm = grad.norm();
+                let mut fm = force_mag;
+                if grad_norm > 0.0 {
+                    // Max force_mag so that acceleration * dt doesn't exceed position scale
+                    let fm_max = 1.0 / (dt * dt * grad_norm * invmass);
+                    fm = fm.clamp(-fm_max, fm_max);
+                }
                 for ax in 0..3 {
-                    data.qfrc_passive[dof + ax] += grad[ax] * force_mag;
+                    data.qfrc_passive[dof + ax] += grad[ax] * fm;
                 }
             }
         }
