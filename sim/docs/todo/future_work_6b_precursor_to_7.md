@@ -837,31 +837,39 @@ pub flex_bend_damping: Vec<f64>,
 // MuJoCo computes bending as passive forces in engine_passive.c, NOT as constraint rows.
 // Force = -k_bend * (theta - theta0) - b_bend * d(theta)/dt, applied via J^T.
 let dt = model.timestep;
-let k_max = 1.0 / (dt * dt); // Stability clamp for explicit integration
 
 for h in 0..model.nflexhinge {
     let [ve0, ve1, va, vb] = model.flexhinge_vert[h];
     let flex_id = model.flexhinge_flexid[h];
-    let k_bend = model.flex_bend_stiffness[flex_id].min(k_max);
+    let k_bend_raw = model.flex_bend_stiffness[flex_id];
     let b_bend = model.flex_bend_damping[flex_id];
-    if k_bend <= 0.0 && b_bend <= 0.0 { continue; }
+    if k_bend_raw <= 0.0 && b_bend <= 0.0 { continue; }
 
     // Dihedral angle via atan2 (Bridson et al. 2003 gradient)
     // theta = atan2(sin_theta, cos_theta)
     // angle_error = theta - rest_angle
     // theta_dot = J · qvel
 
-    let spring_mag = -k_bend * angle_error;
+    let spring_mag = -k_bend_raw * angle_error;
     let damper_mag = -b_bend * theta_dot;
     let force_mag = spring_mag + damper_mag;
 
-    // Apply via J^T to qfrc_passive (NOT qfrc_constraint)
+    // Apply via J^T to qfrc_passive, with per-vertex stability clamp.
+    // fm_max = 1/(dt² * |grad| * invmass) — geometry-aware, prevents instability
+    // regardless of mesh deformation state or Bridson gradient magnitudes.
     let grads = [(ve0, grad_e0), (ve1, grad_e1), (va, grad_a), (vb, grad_b)];
     for &(v_idx, grad) in &grads {
-        if model.flexvert_invmass[v_idx] > 0.0 {
+        let invmass = model.flexvert_invmass[v_idx];
+        if invmass > 0.0 {
+            let grad_norm = grad.norm();
+            let mut fm = force_mag;
+            if grad_norm > 0.0 {
+                let fm_max = 1.0 / (dt * dt * grad_norm * invmass);
+                fm = fm.clamp(-fm_max, fm_max);
+            }
             let dof = model.flexvert_dofadr[v_idx];
             for ax in 0..3 {
-                data.qfrc_passive[dof + ax] += grad[ax] * force_mag;
+                data.qfrc_passive[dof + ax] += grad[ax] * fm;
             }
         }
     }
@@ -869,9 +877,14 @@ for h in 0..model.nflexhinge {
 ```
 
 The dihedral gradient uses the Bridson et al. 2003 formulation (same geometry
-as in P6 edge constraints). The stability clamp `k_bend.min(1/(dt²))` prevents
-explicit integration instability when bending stiffness is large relative to
-the timestep.
+as in P6 edge constraints). Stability is ensured by a per-vertex force magnitude
+clamp: `fm_max = 1/(dt² * |grad| * invmass)`. This accounts for the
+geometry-dependent Bridson gradient norms and per-vertex mass, preventing
+instability even as the mesh deforms and gradient magnitudes change.
+
+> **Note:** MuJoCo uses a different bending discretization (Wardetzky cotangent
+> Laplacian) that produces constant-coefficient forces and needs no clamp. See
+> [§42B](./future_work_10.md) for a spec to support both models via a trait.
 
 **Stiffness derivation from material properties:**
 
