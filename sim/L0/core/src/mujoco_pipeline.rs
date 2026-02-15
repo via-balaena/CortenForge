@@ -11021,7 +11021,7 @@ fn mj_rne(model: &Model, data: &mut Data) {
     }
 
     // Flex vertex gravity: direct force on translational DOFs
-    // Skip pinned vertices (invmass == 0, mass == INFINITY) to avoid Inf in qfrc_bias.
+    // Skip pinned vertices (invmass == 0, mass == 1e20) to avoid huge values in qfrc_bias.
     for i in 0..model.nflexvert {
         if model.flexvert_invmass[i] == 0.0 {
             continue; // Pinned vertex: skip gravity
@@ -14531,7 +14531,8 @@ fn apply_flex_constraints(model: &Model, data: &mut Data) {
         }
     }
 
-    // --- Bending constraints (dihedral angle) ---
+    // --- Bending constraints (dihedral angle, Bridson et al. 2003) ---
+    // Matches the unified Jacobian formulation in assemble_unified_constraints().
     for h in 0..model.nflexhinge {
         let [ve0, ve1, va, vb] = model.flexhinge_vert[h];
         let pe0 = data.flexvert_xpos[ve0];
@@ -14541,66 +14542,74 @@ fn apply_flex_constraints(model: &Model, data: &mut Data) {
         let rest_angle = model.flexhinge_angle0[h];
         let flex_id = model.flexhinge_flexid[h];
 
-        // Compute current dihedral angle
-        let edge = pe1 - pe0;
-        let edge_len = edge.norm();
-        if edge_len < 1e-10 {
-            continue;
-        }
-        let edge_dir = edge / edge_len;
-        let na = (pa - pe0).cross(&edge_dir);
-        let nb = (pb - pe0).cross(&edge_dir);
-        let na_len = na.norm();
-        let nb_len = nb.norm();
-        if na_len < 1e-10 || nb_len < 1e-10 {
-            continue;
-        }
-        let na_unit = na / na_len;
-        let nb_unit = nb / nb_len;
-        let cos_theta = na_unit.dot(&nb_unit).clamp(-1.0, 1.0);
-        let sin_theta = na_unit.cross(&nb_unit).dot(&edge_dir);
-        let current_angle = sin_theta.atan2(cos_theta);
-        let angle_error = current_angle - rest_angle;
-
-        let (k, b) = solref_to_penalty(model.flex_bend_solref[flex_id], default_k, default_b, dt);
-
-        // Bending force magnitude — torque on the dihedral
-        // For simplicity, apply forces perpendicular to the triangles at the flap vertices.
-        // Gradient direction for va: perpendicular to triangle (pe0, pe1, pa) → na direction
-        // Gradient direction for vb: perpendicular to triangle (pe0, pe1, vb) → -nb direction
-        // The magnitude is scaled by 1/distance from edge.
-        let da = (pa - pe0)
-            .dot(&(pa - pe0).component_mul(&nalgebra::Vector3::new(1.0, 1.0, 1.0)))
-            .sqrt();
-        let db = (pb - pe0)
-            .dot(&(pb - pe0).component_mul(&nalgebra::Vector3::new(1.0, 1.0, 1.0)))
-            .sqrt();
-
-        if da < 1e-10 || db < 1e-10 {
+        // Shared edge vector
+        let e = pe1 - pe0;
+        let e_len_sq = e.norm_squared();
+        if e_len_sq < 1e-20 {
             continue;
         }
 
-        // Velocity error (time derivative of angle): approximate via finite difference
+        // Face normals (unnormalized) — same convention as unified Jacobian
+        let offset_a = pa - pe0;
+        let offset_b = pb - pe0;
+        let normal_face_a = e.cross(&offset_a);
+        let normal_face_b = offset_b.cross(&e);
+        let norm_sq_a = normal_face_a.norm_squared();
+        let norm_sq_b = normal_face_b.norm_squared();
+        if norm_sq_a < 1e-20 || norm_sq_b < 1e-20 {
+            continue;
+        }
+
+        // Dihedral angle via atan2
+        let e_len = e_len_sq.sqrt();
+        let e_norm = e / e_len;
+        let na_hat = normal_face_a / norm_sq_a.sqrt();
+        let nb_hat = normal_face_b / norm_sq_b.sqrt();
+        let cos_theta = na_hat.dot(&nb_hat).clamp(-1.0, 1.0);
+        let sin_theta = na_hat.cross(&nb_hat).dot(&e_norm);
+        let theta = sin_theta.atan2(cos_theta);
+        let angle_error = theta - rest_angle;
+
+        // Bridson dihedral gradient (all 4 vertices)
+        let grad_a = e_len * normal_face_a / norm_sq_a;
+        let grad_b = e_len * normal_face_b / norm_sq_b;
+        let bary_a = offset_a.dot(&e) / e_len_sq;
+        let bary_b = offset_b.dot(&e) / e_len_sq;
+        let grad_e0 = -grad_a * (1.0 - bary_a) - grad_b * (1.0 - bary_b);
+        let grad_e1 = -grad_a * bary_a - grad_b * bary_b;
+
+        // Velocity error: J · qvel
+        let dof_e0 = model.flexvert_dofadr[ve0];
+        let dof_e1 = model.flexvert_dofadr[ve1];
         let dof_a = model.flexvert_dofadr[va];
         let dof_b = model.flexvert_dofadr[vb];
-        let vel_a =
-            nalgebra::Vector3::new(data.qvel[dof_a], data.qvel[dof_a + 1], data.qvel[dof_a + 2]);
-        let vel_b =
-            nalgebra::Vector3::new(data.qvel[dof_b], data.qvel[dof_b + 1], data.qvel[dof_b + 2]);
-        // Project velocities onto normal directions for angle change rate
-        let vel_error = vel_a.dot(&na_unit) / da - vel_b.dot(&nb_unit) / db;
+        let vel_e0 = Vector3::new(
+            data.qvel[dof_e0],
+            data.qvel[dof_e0 + 1],
+            data.qvel[dof_e0 + 2],
+        );
+        let vel_e1 = Vector3::new(
+            data.qvel[dof_e1],
+            data.qvel[dof_e1 + 1],
+            data.qvel[dof_e1 + 2],
+        );
+        let vel_a = Vector3::new(data.qvel[dof_a], data.qvel[dof_a + 1], data.qvel[dof_a + 2]);
+        let vel_b = Vector3::new(data.qvel[dof_b], data.qvel[dof_b + 1], data.qvel[dof_b + 2]);
+        let vel_error =
+            grad_e0.dot(&vel_e0) + grad_e1.dot(&vel_e1) + grad_a.dot(&vel_a) + grad_b.dot(&vel_b);
 
-        let force_mag = -k * angle_error - b * vel_error;
+        let (k, b_coeff) =
+            solref_to_penalty(model.flex_bend_solref[flex_id], default_k, default_b, dt);
+        let force_mag = -k * angle_error - b_coeff * vel_error;
 
-        // Apply forces at flap vertices (va, vb) in normal directions
-        if model.flexvert_invmass[va] > 0.0 {
-            for ax in 0..3 {
-                data.qfrc_constraint[dof_a + ax] += na_unit[ax] * force_mag / da;
-            }
-        }
-        if model.flexvert_invmass[vb] > 0.0 {
-            for ax in 0..3 {
-                data.qfrc_constraint[dof_b + ax] -= nb_unit[ax] * force_mag / db;
+        // Apply via J^T to all 4 vertices
+        let grads = [(ve0, grad_e0), (ve1, grad_e1), (va, grad_a), (vb, grad_b)];
+        for &(v_idx, grad) in &grads {
+            if model.flexvert_invmass[v_idx] > 0.0 {
+                let dof = model.flexvert_dofadr[v_idx];
+                for ax in 0..3 {
+                    data.qfrc_constraint[dof + ax] += grad[ax] * force_mag;
+                }
             }
         }
     }
@@ -14632,11 +14641,11 @@ fn apply_flex_constraints(model: &Model, data: &mut Data) {
         let flex_id = model.flexelem_flexid[el];
         let (k, b) = solref_to_penalty(model.flex_volume_solref[flex_id], default_k, default_b, dt);
 
-        // Volume gradient: ∂V/∂p_i
-        let grad0 = (p2 - p1).cross(&(p3 - p1)) / 6.0;
-        let grad1 = (p2 - p0).cross(&(p3 - p0)) / -6.0; // Note sign
-        let grad2 = (p1 - p0).cross(&(p3 - p0)) / 6.0;
-        let grad3 = (p1 - p0).cross(&(p2 - p0)) / -6.0;
+        // Volume gradient: ∂V/∂p_i (matches unified Jacobian in assemble_unified_constraints)
+        let grad1 = e2.cross(&e3) / 6.0; // (p2-p0) × (p3-p0) / 6
+        let grad2 = e3.cross(&e1) / 6.0; // (p3-p0) × (p1-p0) / 6
+        let grad3 = e1.cross(&e2) / 6.0; // (p1-p0) × (p2-p0) / 6
+        let grad0 = -(grad1 + grad2 + grad3);
 
         // Velocity error: ∂V/∂t = Σ grad_i · vel_i
         let verts = [i0, i1, i2, i3];
