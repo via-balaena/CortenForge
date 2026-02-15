@@ -12982,8 +12982,8 @@ fn compute_body_jacobian_at_point(
 /// directly projected onto the vertex's 3 translational DOF columns (no kinematic
 /// chain traversal). The rigid body side uses the standard `add_body_jacobian` pattern.
 ///
-/// Convention: `contact.geom1` = flex vertex index, `contact.geom2` = rigid geom index.
-/// Normal points FROM flex vertex TO rigid geom.
+/// Convention: `contact.flex_vertex` = vertex index, `contact.geom1/geom2` = rigid geom.
+/// Normal points FROM rigid surface TOWARD flex vertex (outward from rigid geom).
 fn compute_flex_contact_jacobian(
     model: &Model,
     data: &Data,
@@ -13071,30 +13071,34 @@ fn compute_flex_contact_jacobian(
         };
 
     // Row 0: normal direction
-    // Vertex contributes negatively (geom1 = flex vertex)
-    // Rigid body contributes positively (geom2 = rigid geom)
-    add_vertex_jacobian(&mut j, 0, &normal, -1.0);
-    add_body_jacobian(&mut j, 0, &normal, rigid_body, 1.0);
+    // Narrowphase normal points FROM rigid surface TOWARD flex vertex (outward).
+    // MuJoCo convention: normal FROM body1 TO body2, body1 gets -1, body2 gets +1.
+    // Here: body1 = rigid (normal points away from it), body2 = flex vertex.
+    // Vertex (body2) contributes positively, rigid (body1) negatively.
+    add_vertex_jacobian(&mut j, 0, &normal, 1.0);
+    add_body_jacobian(&mut j, 0, &normal, rigid_body, -1.0);
 
     // Rows 1-2: tangent directions (sliding friction)
     if dim >= 3 {
-        add_vertex_jacobian(&mut j, 1, &tangent1, -1.0);
-        add_body_jacobian(&mut j, 1, &tangent1, rigid_body, 1.0);
+        add_vertex_jacobian(&mut j, 1, &tangent1, 1.0);
+        add_body_jacobian(&mut j, 1, &tangent1, rigid_body, -1.0);
 
-        add_vertex_jacobian(&mut j, 2, &tangent2, -1.0);
-        add_body_jacobian(&mut j, 2, &tangent2, rigid_body, 1.0);
+        add_vertex_jacobian(&mut j, 2, &tangent2, 1.0);
+        add_body_jacobian(&mut j, 2, &tangent2, rigid_body, -1.0);
     }
 
     // Row 3: torsional friction — flex vertices have no angular DOFs, so only
     // the rigid side contributes. The vertex side is zero (no torsion).
+    // Rigid is body1, so sign is -1.0 (but friction cost is symmetric/Huber,
+    // so sign only affects direction labeling, not correctness).
     if dim >= 4 {
-        add_angular_jacobian(&mut j, 3, &normal, rigid_body, 1.0, model, data);
+        add_angular_jacobian(&mut j, 3, &normal, rigid_body, -1.0, model, data);
     }
 
     // Rows 4-5: rolling friction — same reasoning, vertex has no angular DOFs
     if dim >= 6 {
-        add_angular_jacobian(&mut j, 4, &tangent1, rigid_body, 1.0, model, data);
-        add_angular_jacobian(&mut j, 5, &tangent2, rigid_body, 1.0, model, data);
+        add_angular_jacobian(&mut j, 4, &tangent1, rigid_body, -1.0, model, data);
+        add_angular_jacobian(&mut j, 5, &tangent2, rigid_body, -1.0, model, data);
     }
 
     j
@@ -13560,10 +13564,9 @@ fn assemble_contact_system(
         // We want λ > 0 when b < 0 (i.e., when unconstrained acceleration
         // would cause penetration/violation)
 
-        // Reuse body_i1/body_i2 from above (same as model.geom_body[contact_i.geom1/2])
-        let vel1 = compute_point_velocity(data, body_i1, contact_i.pos);
-        let vel2 = compute_point_velocity(data, body_i2, contact_i.pos);
-        let rel_vel = vel2 - vel1;
+        // Relative velocity at contact point — correctly handles flex-rigid contacts
+        // by reading flex vertex velocity from qvel instead of cvel.
+        let rel_vel = compute_contact_relative_velocity(model, data, contact_i);
 
         // Use the pre-computed contact frame for consistency with the Jacobian.
         // contact.frame[] was computed during contact construction via compute_tangent_frame().
@@ -13602,20 +13605,18 @@ fn assemble_contact_system(
             b[offset_i + 2] = j_qacc_smooth[2] + vt2; // Friction tangent 2
         }
 
+        // Relative angular velocity — correctly handles flex-rigid contacts
+        // (flex vertices have zero angular velocity).
+        let rel_omega = compute_contact_relative_angular_velocity(model, data, contact_i);
+
         // Row 3: torsional (dim >= 4: angular velocity about normal)
         if dim_i >= 4 {
-            let omega1 = compute_body_angular_velocity(data, body_i1);
-            let omega2 = compute_body_angular_velocity(data, body_i2);
-            let rel_omega = omega2 - omega1;
             let omega_n = rel_omega.dot(&normal);
             b[offset_i + 3] = j_qacc_smooth[3] + omega_n;
         }
 
         // Rows 4-5: rolling (dim >= 6: angular velocity in tangent plane)
         if dim_i >= 6 {
-            let omega1 = compute_body_angular_velocity(data, body_i1);
-            let omega2 = compute_body_angular_velocity(data, body_i2);
-            let rel_omega = omega2 - omega1;
             let omega_t1 = rel_omega.dot(&tangent1);
             let omega_t2 = rel_omega.dot(&tangent2);
             b[offset_i + 4] = j_qacc_smooth[4] + omega_t1;
@@ -13740,11 +13741,8 @@ fn assemble_contact_system_island(
         }
 
         // RHS: b = J_local * qacc_smooth_island + aref
-        let body_i1 = model.geom_body[contact_i.geom1];
-        let body_i2 = model.geom_body[contact_i.geom2];
-        let vel1 = compute_point_velocity(data, body_i1, contact_i.pos);
-        let vel2 = compute_point_velocity(data, body_i2, contact_i.pos);
-        let rel_vel = vel2 - vel1;
+        // Relative velocity — correctly handles flex-rigid contacts.
+        let rel_vel = compute_contact_relative_velocity(model, data, contact_i);
 
         let normal = contact_i.normal;
         let tangent1 = contact_i.frame[0];
@@ -13768,20 +13766,17 @@ fn assemble_contact_system_island(
             b[offset_i + 2] = j_qacc_smooth[2] + vt2;
         }
 
+        // Relative angular velocity — correctly handles flex-rigid contacts.
+        let rel_omega = compute_contact_relative_angular_velocity(model, data, contact_i);
+
         // Row 3: torsional (dim >= 4)
         if dim_i >= 4 {
-            let omega1 = compute_body_angular_velocity(data, body_i1);
-            let omega2 = compute_body_angular_velocity(data, body_i2);
-            let rel_omega = omega2 - omega1;
             let omega_n = rel_omega.dot(&normal);
             b[offset_i + 3] = j_qacc_smooth[3] + omega_n;
         }
 
         // Rows 4-5: rolling (dim >= 6)
         if dim_i >= 6 {
-            let omega1 = compute_body_angular_velocity(data, body_i1);
-            let omega2 = compute_body_angular_velocity(data, body_i2);
-            let rel_omega = omega2 - omega1;
             let omega_t1 = rel_omega.dot(&tangent1);
             let omega_t2 = rel_omega.dot(&tangent2);
             b[offset_i + 4] = j_qacc_smooth[4] + omega_t1;
@@ -19199,30 +19194,12 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
                 data.solver_niter = data.solver_niter.max(niter);
                 // Apply forces and continue to next island
                 for (local_idx, lambda) in forces.iter().enumerate() {
-                    let contact = &island_contact_list[local_idx];
-                    let normal = contact.normal;
-                    let tangent1 = contact.frame[0];
-                    let tangent2 = contact.frame[1];
-                    let dim = contact.dim;
-                    let world_force = if dim >= 3 {
-                        normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
-                    } else {
-                        normal * lambda[0]
-                    };
-                    let body1 = model.geom_body[contact.geom1];
-                    let body2 = model.geom_body[contact.geom2];
-                    apply_contact_force(model, data, body1, contact.pos, -world_force);
-                    apply_contact_force(model, data, body2, contact.pos, world_force);
-                    if dim >= 4 {
-                        let torsional_torque = normal * lambda[3];
-                        apply_contact_torque(model, data, body1, -torsional_torque);
-                        apply_contact_torque(model, data, body2, torsional_torque);
-                    }
-                    if dim >= 6 {
-                        let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
-                        apply_contact_torque(model, data, body1, -rolling_torque);
-                        apply_contact_torque(model, data, body2, rolling_torque);
-                    }
+                    apply_solved_contact_lambda(
+                        model,
+                        data,
+                        &island_contact_list[local_idx],
+                        lambda,
+                    );
                 }
                 continue;
             };
@@ -19381,39 +19358,8 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
         };
 
         // Apply contact forces for this island
-        for (local_idx, (lambda, _jac)) in constraint_forces
-            .iter()
-            .zip(island_jacobians.iter())
-            .enumerate()
-        {
-            let contact = &island_contact_list[local_idx];
-            let normal = contact.normal;
-            let tangent1 = contact.frame[0];
-            let tangent2 = contact.frame[1];
-            let dim = contact.dim;
-
-            let world_force = if dim >= 3 {
-                normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
-            } else {
-                normal * lambda[0]
-            };
-
-            let body1 = model.geom_body[contact.geom1];
-            let body2 = model.geom_body[contact.geom2];
-
-            apply_contact_force(model, data, body1, contact.pos, -world_force);
-            apply_contact_force(model, data, body2, contact.pos, world_force);
-
-            if dim >= 4 {
-                let torsional_torque = normal * lambda[3];
-                apply_contact_torque(model, data, body1, -torsional_torque);
-                apply_contact_torque(model, data, body2, torsional_torque);
-            }
-            if dim >= 6 {
-                let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
-                apply_contact_torque(model, data, body1, -rolling_torque);
-                apply_contact_torque(model, data, body2, rolling_torque);
-            }
+        for (local_idx, lambda) in constraint_forces.iter().enumerate() {
+            apply_solved_contact_lambda(model, data, &island_contact_list[local_idx], lambda);
         }
     }
 
@@ -19438,30 +19384,7 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
         );
         data.solver_niter = data.solver_niter.max(niter);
         for (local_idx, lambda) in forces.iter().enumerate() {
-            let contact = &unassigned_contacts[local_idx];
-            let normal = contact.normal;
-            let tangent1 = contact.frame[0];
-            let tangent2 = contact.frame[1];
-            let dim = contact.dim;
-            let world_force = if dim >= 3 {
-                normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
-            } else {
-                normal * lambda[0]
-            };
-            let body1 = model.geom_body[contact.geom1];
-            let body2 = model.geom_body[contact.geom2];
-            apply_contact_force(model, data, body1, contact.pos, -world_force);
-            apply_contact_force(model, data, body2, contact.pos, world_force);
-            if dim >= 4 {
-                let torsional_torque = normal * lambda[3];
-                apply_contact_torque(model, data, body1, -torsional_torque);
-                apply_contact_torque(model, data, body2, torsional_torque);
-            }
-            if dim >= 6 {
-                let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
-                apply_contact_torque(model, data, body1, -rolling_torque);
-                apply_contact_torque(model, data, body2, rolling_torque);
-            }
+            apply_solved_contact_lambda(model, data, &unassigned_contacts[local_idx], lambda);
         }
     }
 
@@ -19792,50 +19715,9 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     // Restore warmstart cache
     data.efc_lambda = efc_lambda;
 
-    // DECISION: Force application uses manual world-frame conversion +
-    // apply_contact_force() instead of the pre-computed Jacobians (J^T * lambda).
-    // Both are mathematically equivalent. The manual approach is more readable
-    // and avoids dense matrix-vector multiplication, but does redundant kinematic
-    // chain traversal. Switching to J^T * lambda would be a single matvec per
-    // contact but couples force application to the Jacobian representation.
-    // qfrc_constraint += J^T * λ
-    for (i, (_jacobian, lambda)) in jacobians.iter().zip(constraint_forces.iter()).enumerate() {
-        // Use the pre-computed contact frame for consistency with Jacobian and RHS.
-        let contact = &data.contacts[i];
-        let normal = contact.normal;
-        let tangent1 = contact.frame[0];
-        let tangent2 = contact.frame[1];
-        let dim = contact.dim;
-
-        // Linear force (rows 0–2, or just row 0 for condim 1)
-        let world_force = if dim >= 3 {
-            normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
-        } else {
-            normal * lambda[0] // condim 1: normal only
-        };
-
-        // Apply via kinematic chain traversal (equivalent to J^T * lambda)
-        let body1 = model.geom_body[data.contacts[i].geom1];
-        let body2 = model.geom_body[data.contacts[i].geom2];
-        let pos = data.contacts[i].pos;
-
-        // Body1 gets negative force (Newton's third law)
-        apply_contact_force(model, data, body1, pos, -world_force);
-        apply_contact_force(model, data, body2, pos, world_force);
-
-        // Torsional torque (row 3, when dim ≥ 4)
-        if dim >= 4 {
-            let torsional_torque = normal * lambda[3];
-            apply_contact_torque(model, data, body1, -torsional_torque);
-            apply_contact_torque(model, data, body2, torsional_torque);
-        }
-
-        // Rolling torques (rows 4–5, when dim = 6)
-        if dim >= 6 {
-            let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
-            apply_contact_torque(model, data, body1, -rolling_torque);
-            apply_contact_torque(model, data, body2, rolling_torque);
-        }
+    // Apply solved contact forces: qfrc_constraint += J^T * λ
+    for (i, lambda) in constraint_forces.iter().enumerate() {
+        apply_solved_contact_lambda(model, data, &data.contacts[i].clone(), lambda);
     }
 }
 
@@ -19859,6 +19741,76 @@ fn compute_point_velocity(data: &Data, body_id: usize, point: Vector3<f64>) -> V
     let r = point - body_pos;
 
     v_linear + omega.cross(&r)
+}
+
+/// Compute the velocity of a flex vertex from `qvel`.
+///
+/// Flex vertices have 3 translational DOFs (no angular velocity).
+fn compute_flex_vertex_velocity(model: &Model, data: &Data, vertex_idx: usize) -> Vector3<f64> {
+    let dof_base = model.flexvert_dofadr[vertex_idx];
+    Vector3::new(
+        data.qvel[dof_base],
+        data.qvel[dof_base + 1],
+        data.qvel[dof_base + 2],
+    )
+}
+
+/// Compute the relative velocity at a contact, handling both rigid-rigid and flex-rigid.
+///
+/// For rigid-rigid contacts:
+///   vel1 = point_velocity(geom_body[geom1], pos)
+///   vel2 = point_velocity(geom_body[geom2], pos)
+///   rel_vel = vel2 - vel1
+///
+/// For flex-rigid contacts:
+///   The flex vertex velocity comes from `qvel` (translational only).
+///   The rigid body velocity comes from `compute_point_velocity`.
+///   Sign convention: vel_vertex - vel_rigid (positive = moving apart).
+fn compute_contact_relative_velocity(
+    model: &Model,
+    data: &Data,
+    contact: &Contact,
+) -> Vector3<f64> {
+    if let Some(vertex_idx) = contact.flex_vertex {
+        // Flex-rigid: vertex velocity from qvel, rigid velocity from cvel
+        let v_vertex = compute_flex_vertex_velocity(model, data, vertex_idx);
+        let rigid_body = model.geom_body[contact.geom1];
+        let v_rigid = compute_point_velocity(data, rigid_body, contact.pos);
+        // Convention: vertex is "body2", rigid is "body1"
+        // rel_vel = v_body2 - v_body1 = v_vertex - v_rigid
+        v_vertex - v_rigid
+    } else {
+        // Rigid-rigid: standard body velocity computation
+        let body1 = model.geom_body[contact.geom1];
+        let body2 = model.geom_body[contact.geom2];
+        let vel1 = compute_point_velocity(data, body1, contact.pos);
+        let vel2 = compute_point_velocity(data, body2, contact.pos);
+        vel2 - vel1
+    }
+}
+
+/// Compute the relative angular velocity at a contact, handling flex-rigid.
+///
+/// Flex vertices have no angular DOFs, so for flex-rigid contacts the
+/// angular velocity is 0 - omega_rigid = -omega_rigid.
+fn compute_contact_relative_angular_velocity(
+    model: &Model,
+    data: &Data,
+    contact: &Contact,
+) -> Vector3<f64> {
+    if contact.flex_vertex.is_some() {
+        // Flex has no angular velocity; rigid body is "body1"
+        let rigid_body = model.geom_body[contact.geom1];
+        let omega_rigid = compute_body_angular_velocity(data, rigid_body);
+        // rel_omega = omega_body2 - omega_body1 = 0 - omega_rigid
+        -omega_rigid
+    } else {
+        let body1 = model.geom_body[contact.geom1];
+        let body2 = model.geom_body[contact.geom2];
+        let omega1 = compute_body_angular_velocity(data, body1);
+        let omega2 = compute_body_angular_velocity(data, body2);
+        omega2 - omega1
+    }
 }
 
 /// Apply a contact force to a body by mapping it to generalized forces.
@@ -19984,6 +19936,71 @@ fn apply_contact_torque(model: &Model, data: &mut Data, body_id: usize, torque: 
             }
         }
         current_body = model.body_parent[current_body];
+    }
+}
+
+/// Apply a contact's solved lambda forces to `qfrc_constraint`.
+///
+/// Handles both flex-rigid and rigid-rigid contacts:
+/// - Flex-rigid: vertex DOFs get direct force, rigid body gets reaction via kinematic chain
+/// - Rigid-rigid: both bodies get forces via kinematic chain
+fn apply_solved_contact_lambda(
+    model: &Model,
+    data: &mut Data,
+    contact: &Contact,
+    lambda: &nalgebra::DVector<f64>,
+) {
+    let normal = contact.normal;
+    let tangent1 = contact.frame[0];
+    let tangent2 = contact.frame[1];
+    let dim = contact.dim;
+
+    // Linear force (rows 0–2, or just row 0 for condim 1)
+    let world_force = if dim >= 3 {
+        normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
+    } else {
+        normal * lambda[0]
+    };
+
+    if let Some(vertex_idx) = contact.flex_vertex {
+        // Flex-rigid: vertex DOFs get direct force, rigid body gets reaction.
+        // Narrowphase normal points FROM rigid surface TOWARD flex vertex.
+        // Vertex (body2) gets +world_force, rigid (body1) gets -world_force.
+        let dof_base = model.flexvert_dofadr[vertex_idx];
+        data.qfrc_constraint[dof_base] += world_force.x;
+        data.qfrc_constraint[dof_base + 1] += world_force.y;
+        data.qfrc_constraint[dof_base + 2] += world_force.z;
+
+        let rigid_body = model.geom_body[contact.geom1];
+        apply_contact_force(model, data, rigid_body, contact.pos, -world_force);
+
+        // Flex vertices have no angular DOFs — rigid body absorbs all torques.
+        if dim >= 4 {
+            let torsional_torque = normal * lambda[3];
+            apply_contact_torque(model, data, rigid_body, -torsional_torque);
+        }
+        if dim >= 6 {
+            let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+            apply_contact_torque(model, data, rigid_body, -rolling_torque);
+        }
+    } else {
+        // Standard rigid-rigid contact
+        let body1 = model.geom_body[contact.geom1];
+        let body2 = model.geom_body[contact.geom2];
+
+        apply_contact_force(model, data, body1, contact.pos, -world_force);
+        apply_contact_force(model, data, body2, contact.pos, world_force);
+
+        if dim >= 4 {
+            let torsional_torque = normal * lambda[3];
+            apply_contact_torque(model, data, body1, -torsional_torque);
+            apply_contact_torque(model, data, body2, torsional_torque);
+        }
+        if dim >= 6 {
+            let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+            apply_contact_torque(model, data, body1, -rolling_torque);
+            apply_contact_torque(model, data, body2, rolling_torque);
+        }
     }
 }
 

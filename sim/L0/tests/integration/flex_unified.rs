@@ -80,19 +80,26 @@ fn solid_3x3x3_mjcf() -> &'static str {
 /// Sphere is directly below vertex (0,0) to guarantee contact.
 /// Uses explicit vertices and PGS solver with soft parameters.
 fn cloth_on_sphere_mjcf() -> &'static str {
+    // Cloth falling onto a large sphere. Cloth is smaller than the sphere so
+    // all vertices can contact it. Uses separate-vertex positions so each
+    // vertex falls directly onto the sphere surface.
+    //
+    // Sphere: center at (0,0,-0.5), radius 1.0, top at z=0.5.
+    // Cloth: 4 vertices in 0.3×0.3 square at z=1.0 (centered at origin).
+    // After falling ~0.5 units, all 4 vertices contact the sphere.
     r#"
     <mujoco model="cloth_on_sphere">
         <option gravity="0 0 -9.81" timestep="0.001" solver="PGS"/>
         <worldbody>
             <body name="sphere" pos="0 0 -0.5">
-                <geom type="sphere" size="0.4" mass="10.0"/>
+                <geom type="sphere" size="1.0" mass="100.0"/>
             </body>
         </worldbody>
         <deformable>
             <flex name="cloth" dim="2" density="500" thickness="0.01" young="50"
                   damping="5.0" radius="0.02" margin="0.01" condim="3"
-                  solref="0.5 2.0">
-                <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
+                  solref="0.5 2.0" friction="0.5">
+                <vertex pos="-0.15 -0.15 1.0  0.15 -0.15 1.0  -0.15 0.15 1.0  0.15 0.15 1.0"/>
                 <element data="0 1 2  1 3 2"/>
             </flex>
         </deformable>
@@ -459,7 +466,18 @@ fn ac4_cloth_on_sphere_contact() {
     assert_eq!(model.nflex, 1);
     assert!(model.nflexvert > 0);
 
-    // Simulate to let cloth fall onto sphere
+    // Verify initial qpos contains correct vertex positions (z=1.0)
+    for i in 0..model.nflexvert {
+        let adr = model.flexvert_qposadr[i];
+        assert!(
+            data.qpos[adr + 2] >= 0.99,
+            "vertex {} initial qpos z = {}, expected >= 0.99",
+            i,
+            data.qpos[adr + 2]
+        );
+    }
+
+    // Simulate to let cloth fall onto sphere (sphere center at z=-0.5, radius 1.0, top at z=0.5)
     let mut had_flex_contacts = false;
     for step in 0..3000 {
         if let Err(e) = data.step(&model) {
@@ -487,6 +505,24 @@ fn ac4_cloth_on_sphere_contact() {
             "NaN in cloth vertex"
         );
     }
+
+    // CRITICAL: Verify contact forces actually support the cloth.
+    // Without correct contact forces, the cloth would fall through the sphere.
+    // Sphere bottom is at z = -0.5 - 1.0 = -1.5. With contacts, the cloth should
+    // rest near the sphere top (z ≈ 0.5). We use z > -2.0 as a generous bound
+    // (free-fall for 3s at g=9.81 would reach z ≈ -44, so anything above -2.0
+    // proves contacts are working).
+    let min_z = data
+        .flexvert_xpos
+        .iter()
+        .map(|v| v.z)
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        min_z > -2.0,
+        "cloth fell through sphere: min_z = {:.3}, expected > -2.0 \
+         (contact forces not supporting the cloth)",
+        min_z
+    );
 }
 
 // ============================================================================
