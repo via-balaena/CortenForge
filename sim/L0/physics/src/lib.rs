@@ -10,7 +10,7 @@
 //! - [`sim_muscle`] - Hill-type muscle actuators for biomechanical simulation
 //! - [`sim_tendon`] - Tendon and cable simulation for cable-driven robots
 //! - [`sim_sensor`] - Sensor simulation (IMU, force/torque, touch, etc.)
-//! - `sim_deformable` - Soft body, cloth, rope, and skinned mesh simulation (behind `deformable` feature)
+//! - Flex (deformable) bodies are unified into the core Model/Data pipeline via `<flex>` elements
 //!
 //! # Layer 0
 //!
@@ -106,8 +106,6 @@
 // Re-export sub-crates
 pub use sim_constraint;
 pub use sim_core;
-#[cfg(feature = "deformable")]
-pub use sim_deformable;
 pub use sim_mjcf;
 pub use sim_muscle;
 pub use sim_sensor;
@@ -344,59 +342,6 @@ pub mod prelude {
         TouchReading,
         TouchSensor,
         TouchSensorConfig,
-    };
-
-    // ========================================================================
-    // Deformable simulation from sim-deformable (optional feature)
-    // ========================================================================
-
-    #[cfg(feature = "deformable")]
-    pub use sim_deformable::{
-        BendingConstraint,
-        // Skinning
-        Bone,
-        BoneWeight,
-        // 1D: Ropes/cables
-        CapsuleChain,
-        CapsuleChainConfig,
-        // 2D: Cloth
-        Cloth,
-        ClothConfig,
-        // Constraints
-        Constraint as DeformableConstraint,
-        ConstraintType as DeformableConstraintType,
-        // Deformable body trait
-        DeformableBody,
-        // Errors
-        DeformableError,
-        // Types
-        DeformableId,
-        // Mesh types
-        DeformableMesh,
-        DistanceConstraint as DeformableDistanceConstraint,
-        Edge as DeformableEdge,
-        FlexEdgeConstraint,
-        FlexEdgeType,
-        // Materials
-        Material,
-        MaterialPreset,
-        Skeleton,
-        SkinnedMesh,
-        SkinnedMeshBuilder,
-        SkinningMethod,
-        SkinningResult,
-        // 3D: Soft bodies
-        SoftBody,
-        SoftBodyConfig,
-        // Solver
-        SolverConfig as DeformableSolverConfig,
-        Tetrahedron,
-        Triangle as DeformableTriangle,
-        Vertex,
-        VertexFlags,
-        VertexWeights,
-        VolumeConstraint,
-        XpbdSolver,
     };
 
     // ========================================================================

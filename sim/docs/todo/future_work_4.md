@@ -6,7 +6,14 @@ priority table, dependency graph, and file map.
 ---
 
 ### 11. Deformable Body Pipeline Integration
-**Status:** ✅ Complete | **Effort:** XL | **Prerequisites:** None
+**Status:** ✅ Complete → **Superseded by [§6B Flex Solver Unification](./future_work_6b_precursor_to_7.md)** | **Effort:** XL | **Prerequisites:** None
+
+> **Note:** This item integrated deformable bodies via a split-solve XPBD approach
+> with a `deformable` feature flag. This was later fully replaced by §6B, which
+> unifies flex vertex DOFs into the rigid `qpos`/`qvel` state, puts edge constraints
+> in the unified Jacobian, and computes bending as passive forces. The `sim-deformable`
+> crate and `deformable` feature flag have been deleted. This spec is retained as
+> historical documentation of the intermediate approach.
 
 *Transferred from [future_work_1.md](./future_work_1.md) #9.*
 

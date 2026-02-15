@@ -11,7 +11,7 @@
 //! - **Inertia computation**: Parallel axis theorem for composite bodies
 //! - **Capsule inertia**: Exact formula including hemispherical end caps
 
-use nalgebra::{DVector, Matrix3, Point3, UnitQuaternion, Vector3, Vector4};
+use nalgebra::{DVector, Matrix3, Point3, Quaternion, UnitQuaternion, Vector3, Vector4};
 use sim_core::HeightFieldData;
 use sim_core::mesh::TriangleMeshData;
 use sim_core::{
@@ -28,9 +28,9 @@ use crate::defaults::DefaultResolver;
 use crate::error::Result;
 use crate::types::{
     AngleUnit, InertiaFromGeom, MjcfActuator, MjcfActuatorType, MjcfBody, MjcfCompiler,
-    MjcfContact, MjcfEquality, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfHfield, MjcfInertial,
-    MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfModel, MjcfOption,
-    MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon, MjcfTendonType,
+    MjcfContact, MjcfEquality, MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfHfield,
+    MjcfInertial, MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfModel,
+    MjcfOption, MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon, MjcfTendonType,
     SpatialPathElement,
 };
 
@@ -285,6 +285,9 @@ pub fn model_from_mjcf(
 
     // Apply mass pipeline (balanceinertia, boundmass/boundinertia, settotalmass)
     builder.apply_mass_pipeline();
+
+    // Process flex deformable bodies (after mass pipeline, before build)
+    builder.process_flex_bodies(&mjcf.flex);
 
     // Build final model
     let mut model = builder.build();
@@ -583,6 +586,49 @@ struct ModelBuilder {
     contact_pairs: Vec<ContactPair>,
     contact_pair_set: HashSet<(usize, usize)>,
     contact_excludes: HashSet<(usize, usize)>,
+
+    // Flex deformable body arrays (populated by process_flex_bodies)
+    nflex: usize,
+    nflexvert: usize,
+    nflexedge: usize,
+    nflexelem: usize,
+    nflexhinge: usize,
+    flex_dim: Vec<usize>,
+    flex_vertadr: Vec<usize>,
+    flex_vertnum: Vec<usize>,
+    flex_damping: Vec<f64>,
+    flex_friction: Vec<f64>,
+    flex_condim: Vec<i32>,
+    flex_margin: Vec<f64>,
+    flex_solref: Vec<[f64; 2]>,
+    flex_solimp: Vec<[f64; 5]>,
+    flex_edge_solref: Vec<[f64; 2]>,
+    flex_edge_solimp: Vec<[f64; 5]>,
+    flex_bend_stiffness: Vec<f64>,
+    flex_bend_damping: Vec<f64>,
+    flex_young: Vec<f64>,
+    flex_poisson: Vec<f64>,
+    flex_thickness: Vec<f64>,
+    flex_density: Vec<f64>,
+    flex_selfcollide: Vec<bool>,
+    flexvert_qposadr: Vec<usize>,
+    flexvert_dofadr: Vec<usize>,
+    flexvert_mass: Vec<f64>,
+    flexvert_invmass: Vec<f64>,
+    flexvert_radius: Vec<f64>,
+    flexvert_flexid: Vec<usize>,
+    flexvert_initial_pos: Vec<Vector3<f64>>,
+    flexedge_vert: Vec<[usize; 2]>,
+    flexedge_length0: Vec<f64>,
+    flexedge_flexid: Vec<usize>,
+    flexelem_data: Vec<usize>,
+    flexelem_dataadr: Vec<usize>,
+    flexelem_datanum: Vec<usize>,
+    flexelem_volume0: Vec<f64>,
+    flexelem_flexid: Vec<usize>,
+    flexhinge_vert: Vec<[usize; 4]>,
+    flexhinge_angle0: Vec<f64>,
+    flexhinge_flexid: Vec<usize>,
 }
 
 impl ModelBuilder {
@@ -779,6 +825,48 @@ impl ModelBuilder {
             contact_pairs: vec![],
             contact_pair_set: HashSet::new(),
             contact_excludes: HashSet::new(),
+
+            nflex: 0,
+            nflexvert: 0,
+            nflexedge: 0,
+            nflexelem: 0,
+            nflexhinge: 0,
+            flex_dim: vec![],
+            flex_vertadr: vec![],
+            flex_vertnum: vec![],
+            flex_damping: vec![],
+            flex_friction: vec![],
+            flex_condim: vec![],
+            flex_margin: vec![],
+            flex_solref: vec![],
+            flex_solimp: vec![],
+            flex_edge_solref: vec![],
+            flex_edge_solimp: vec![],
+            flex_bend_stiffness: vec![],
+            flex_bend_damping: vec![],
+            flex_young: vec![],
+            flex_poisson: vec![],
+            flex_thickness: vec![],
+            flex_density: vec![],
+            flex_selfcollide: vec![],
+            flexvert_qposadr: vec![],
+            flexvert_dofadr: vec![],
+            flexvert_mass: vec![],
+            flexvert_invmass: vec![],
+            flexvert_radius: vec![],
+            flexvert_flexid: vec![],
+            flexvert_initial_pos: vec![],
+            flexedge_vert: vec![],
+            flexedge_length0: vec![],
+            flexedge_flexid: vec![],
+            flexelem_data: vec![],
+            flexelem_dataadr: vec![],
+            flexelem_datanum: vec![],
+            flexelem_volume0: vec![],
+            flexelem_flexid: vec![],
+            flexhinge_vert: vec![],
+            flexhinge_angle0: vec![],
+            flexhinge_flexid: vec![],
         }
     }
 
@@ -1043,12 +1131,18 @@ impl ModelBuilder {
         //   Auto  — compute from geoms only when no explicit <inertial>
         //   False — use explicit <inertial> or zero
         let (mass, inertia, ipos, iquat) = match self.compiler.inertiafromgeom {
-            InertiaFromGeom::True => compute_inertia_from_geoms(&resolved_geoms),
+            InertiaFromGeom::True => {
+                compute_inertia_from_geoms(&resolved_geoms, &self.mesh_name_to_id, &self.mesh_data)
+            }
             InertiaFromGeom::Auto => {
                 if let Some(ref inertial) = body.inertial {
                     extract_inertial_properties(inertial)
                 } else {
-                    compute_inertia_from_geoms(&resolved_geoms)
+                    compute_inertia_from_geoms(
+                        &resolved_geoms,
+                        &self.mesh_name_to_id,
+                        &self.mesh_data,
+                    )
                 }
             }
             InertiaFromGeom::False => {
@@ -2714,6 +2808,187 @@ impl ModelBuilder {
         }
     }
 
+    /// Process flex deformable bodies: compute vertex masses, extract edges/hinges,
+    /// populate Model flex_* arrays, and extend nq/nv for flex DOFs.
+    fn process_flex_bodies(&mut self, flex_list: &[MjcfFlex]) {
+        use std::collections::HashMap;
+
+        for flex in flex_list {
+            let flex_id = self.nflex;
+            self.nflex += 1;
+
+            let vert_start = self.nflexvert;
+
+            // Compute per-vertex masses via element-based mass lumping
+            let vertex_masses = compute_vertex_masses(flex);
+
+            // Add vertices with qpos/dof addresses
+            for (i, pos) in flex.vertices.iter().enumerate() {
+                let mass = vertex_masses[i];
+                let pinned = flex.pinned.contains(&i);
+                let inv_mass = if pinned || mass <= 0.0 {
+                    0.0
+                } else {
+                    1.0 / mass
+                };
+
+                let qpos_adr = self.nq;
+                let dof_adr = self.nv;
+                self.nq += 3;
+                self.nv += 3;
+                self.nflexvert += 1;
+
+                self.flexvert_qposadr.push(qpos_adr);
+                self.flexvert_dofadr.push(dof_adr);
+                // Pinned vertices use a very large finite mass (not INFINITY) to avoid
+                // IEEE NaN when the Newton solver computes Ma = M * qacc (INF * 0 = NaN).
+                // 1e20 kg gives qacc ≈ 1e-20 * force ≈ 0, effectively immovable.
+                self.flexvert_mass.push(if pinned { 1e20 } else { mass });
+                self.flexvert_invmass.push(inv_mass);
+                self.flexvert_radius.push(flex.radius);
+                self.flexvert_flexid.push(flex_id);
+                // Store initial positions to be copied into qpos during make_data
+                self.flexvert_initial_pos.push(*pos);
+
+                // Extend qpos0 with flex vertex positions (3 DOFs per vertex)
+                self.qpos0_values.push(pos.x);
+                self.qpos0_values.push(pos.y);
+                self.qpos0_values.push(pos.z);
+
+                // Extend per-DOF arrays for the 3 flex DOFs of this vertex.
+                // Flex DOFs are independent (no kinematic chain), so:
+                //   dof_parent = None, dof_body = world(0), dof_jnt = sentinel
+                //   armature/damping/frictionloss = 0.0
+                for _ in 0..3 {
+                    self.dof_parent.push(None);
+                    self.dof_body.push(0); // Attached to world body
+                    self.dof_jnt.push(usize::MAX); // No joint — sentinel value
+                    self.dof_armature.push(0.0);
+                    self.dof_damping.push(0.0);
+                    self.dof_frictionloss.push(0.0);
+                }
+            }
+
+            // Extract edges from element connectivity
+            let mut edge_set: HashMap<(usize, usize), bool> = HashMap::new();
+            for elem in &flex.elements {
+                let n = elem.len();
+                for i_v in 0..n {
+                    for j_v in (i_v + 1)..n {
+                        let (a, b) = if elem[i_v] < elem[j_v] {
+                            (elem[i_v], elem[j_v])
+                        } else {
+                            (elem[j_v], elem[i_v])
+                        };
+                        edge_set.entry((a, b)).or_insert(true);
+                    }
+                }
+            }
+            for &(a, b) in edge_set.keys() {
+                let rest_len = (flex.vertices[b] - flex.vertices[a]).norm();
+                self.flexedge_vert.push([vert_start + a, vert_start + b]);
+                self.flexedge_length0.push(rest_len);
+                self.flexedge_flexid.push(flex_id);
+                self.nflexedge += 1;
+            }
+
+            // Extract bending hinges from adjacent elements
+            let mut edge_elements: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+            for (elem_idx, verts) in flex.elements.iter().enumerate() {
+                let n = verts.len();
+                for i_v in 0..n {
+                    for j_v in (i_v + 1)..n {
+                        let (a, b) = if verts[i_v] < verts[j_v] {
+                            (verts[i_v], verts[j_v])
+                        } else {
+                            (verts[j_v], verts[i_v])
+                        };
+                        edge_elements.entry((a, b)).or_default().push(elem_idx);
+                    }
+                }
+            }
+            for ((ve0, ve1), elems) in &edge_elements {
+                if elems.len() != 2 {
+                    continue; // boundary edge
+                }
+                let opp_a = flex.elements[elems[0]]
+                    .iter()
+                    .find(|&&v| v != *ve0 && v != *ve1)
+                    .copied();
+                let opp_b = flex.elements[elems[1]]
+                    .iter()
+                    .find(|&&v| v != *ve0 && v != *ve1)
+                    .copied();
+                if let (Some(va), Some(vb)) = (opp_a, opp_b) {
+                    let rest_angle = compute_dihedral_angle(
+                        flex.vertices[*ve0],
+                        flex.vertices[*ve1],
+                        flex.vertices[va],
+                        flex.vertices[vb],
+                    );
+                    self.flexhinge_vert.push([
+                        vert_start + *ve0,
+                        vert_start + *ve1,
+                        vert_start + va,
+                        vert_start + vb,
+                    ]);
+                    self.flexhinge_angle0.push(rest_angle);
+                    self.flexhinge_flexid.push(flex_id);
+                    self.nflexhinge += 1;
+                }
+            }
+
+            // Process elements
+            for elem in &flex.elements {
+                let adr = self.flexelem_data.len();
+                for &v in elem {
+                    self.flexelem_data.push(vert_start + v);
+                }
+                self.flexelem_dataadr.push(adr);
+                self.flexelem_datanum.push(elem.len());
+                self.flexelem_flexid.push(flex_id);
+
+                let rest_vol = if elem.len() == 4 {
+                    let e1 = flex.vertices[elem[1]] - flex.vertices[elem[0]];
+                    let e2 = flex.vertices[elem[2]] - flex.vertices[elem[0]];
+                    let e3 = flex.vertices[elem[3]] - flex.vertices[elem[0]];
+                    // Use signed volume to match the constraint assembly formula.
+                    // Positive for right-handed vertex ordering, negative for inverted tets.
+                    e1.dot(&e2.cross(&e3)) / 6.0
+                } else {
+                    0.0
+                };
+                self.flexelem_volume0.push(rest_vol);
+                self.nflexelem += 1;
+            }
+
+            // Compute solref from material properties
+            let edge_solref = compute_edge_solref_from_material(flex);
+            let k_bend = compute_bend_stiffness_from_material(flex);
+            let b_bend = compute_bend_damping_from_material(flex, k_bend);
+
+            // Per-flex arrays
+            self.flex_dim.push(flex.dim);
+            self.flex_vertadr.push(vert_start);
+            self.flex_vertnum.push(flex.vertices.len());
+            self.flex_damping.push(flex.damping);
+            self.flex_friction.push(flex.friction);
+            self.flex_condim.push(flex.condim);
+            self.flex_margin.push(flex.margin);
+            self.flex_solref.push(flex.solref);
+            self.flex_solimp.push(flex.solimp);
+            self.flex_edge_solref.push(edge_solref);
+            self.flex_edge_solimp.push(flex.solimp);
+            self.flex_bend_stiffness.push(k_bend);
+            self.flex_bend_damping.push(b_bend);
+            self.flex_young.push(flex.young);
+            self.flex_poisson.push(flex.poisson);
+            self.flex_thickness.push(flex.thickness);
+            self.flex_density.push(flex.density);
+            self.flex_selfcollide.push(flex.selfcollide);
+        }
+    }
+
     fn build(self) -> Model {
         let njnt = self.jnt_type.len();
         let nbody = self.body_parent.len();
@@ -2721,6 +2996,20 @@ impl ModelBuilder {
         let nsite = self.site_body.len();
         let nu = self.actuator_trntype.len();
         let ntendon = self.tendon_type.len();
+
+        // Pre-compute flex address/count/crosssection tables before self is consumed.
+        let flex_edgeadr = compute_flex_address_table(&self.flexedge_flexid, self.nflex);
+        let flex_edgenum = compute_flex_count_table(&self.flexedge_flexid, self.nflex);
+        let flex_elemadr = compute_flex_address_table(&self.flexelem_flexid, self.nflex);
+        let flex_elemnum = compute_flex_count_table(&self.flexelem_flexid, self.nflex);
+        let flexedge_crosssection = compute_flexedge_crosssection(
+            &self.flexedge_flexid,
+            &self.flexedge_length0,
+            &self.flex_dim,
+            &self.flex_thickness,
+            &self.flexvert_radius,
+            &self.flex_vertadr,
+        );
 
         let mut model = Model {
             name: self.name,
@@ -2816,6 +3105,56 @@ impl ModelBuilder {
             geom_hfield: self.geom_hfield,
             // SDF index for each geom (always None from MJCF — programmatic only)
             geom_sdf: self.geom_sdf,
+
+            // Flex bodies
+            nflex: self.nflex,
+            nflexvert: self.nflexvert,
+            nflexedge: self.nflexedge,
+            nflexelem: self.nflexelem,
+            nflexhinge: self.nflexhinge,
+            nq_rigid: self.nq - self.nflexvert * 3,
+            nv_rigid: self.nv - self.nflexvert * 3,
+            flex_dim: self.flex_dim,
+            flex_vertadr: self.flex_vertadr,
+            flex_vertnum: self.flex_vertnum,
+            flex_edgeadr,
+            flex_edgenum,
+            flex_elemadr,
+            flex_elemnum,
+            flex_young: self.flex_young,
+            flex_poisson: self.flex_poisson,
+            flex_damping: self.flex_damping,
+            flex_thickness: self.flex_thickness,
+            flex_friction: self.flex_friction,
+            flex_solref: self.flex_solref,
+            flex_solimp: self.flex_solimp,
+            flex_condim: self.flex_condim,
+            flex_margin: self.flex_margin,
+            flex_selfcollide: self.flex_selfcollide,
+            flex_edge_solref: self.flex_edge_solref,
+            flex_edge_solimp: self.flex_edge_solimp,
+            flex_bend_stiffness: self.flex_bend_stiffness,
+            flex_bend_damping: self.flex_bend_damping,
+            flex_density: self.flex_density,
+            flexvert_qposadr: self.flexvert_qposadr,
+            flexvert_dofadr: self.flexvert_dofadr,
+            flexvert_mass: self.flexvert_mass,
+            flexvert_invmass: self.flexvert_invmass,
+            flexvert_radius: self.flexvert_radius,
+            flexvert_flexid: self.flexvert_flexid,
+            flexvert_bodyid: vec![usize::MAX; self.nflexvert], // Free vertices: no body attachment
+            flexedge_vert: self.flexedge_vert,
+            flexedge_length0: self.flexedge_length0,
+            flexedge_crosssection,
+            flexedge_flexid: self.flexedge_flexid,
+            flexelem_data: self.flexelem_data,
+            flexelem_dataadr: self.flexelem_dataadr,
+            flexelem_datanum: self.flexelem_datanum,
+            flexelem_volume0: self.flexelem_volume0,
+            flexelem_flexid: self.flexelem_flexid,
+            flexhinge_vert: self.flexhinge_vert,
+            flexhinge_angle0: self.flexhinge_angle0,
+            flexhinge_flexid: self.flexhinge_flexid,
 
             // Mesh assets (from MJCF <asset><mesh> elements)
             nmesh: self.mesh_data.len(),
@@ -2936,12 +3275,6 @@ impl ModelBuilder {
             noslip_tolerance: self.noslip_tolerance,
             disableflags: self.disableflags,
             enableflags: self.enableflags,
-            #[cfg(feature = "deformable")]
-            deformable_condim: 3,
-            #[cfg(feature = "deformable")]
-            deformable_solref: [0.02, 1.0],
-            #[cfg(feature = "deformable")]
-            deformable_solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
             integrator: self.integrator,
             solver_type: self.solver_type,
 
@@ -3083,6 +3416,16 @@ impl ModelBuilder {
                     let dof_count = model.body_dof_num[bid];
                     for dof in dof_start..(dof_start + dof_count) {
                         model.dof_treeid[dof] = tree_idx;
+                    }
+                }
+            }
+
+            // Set flex DOF tree IDs to sentinel (always awake, not part of any tree)
+            for vi in 0..model.nflexvert {
+                let dof_base = model.flexvert_dofadr[vi];
+                for k in 0..3 {
+                    if dof_base + k < model.nv {
+                        model.dof_treeid[dof_base + k] = usize::MAX;
                     }
                 }
             }
@@ -3247,12 +3590,10 @@ impl ModelBuilder {
                 }
             }
 
-            // §16.26.4: Deformable body policy guard. In the current architecture,
-            // deformable bodies are registered at runtime (Data::register_deformable_body),
-            // not at model construction time. Therefore, this guard cannot run here —
-            // it will need to run at Data::register_deformable_body() time instead,
-            // marking the body's tree as AutoNever. This is deferred until the
-            // deformable feature uses tree-level sleeping.
+            // §16.26.4: Flex body policy guard. Flex DOFs are assigned
+            // dof_treeid = usize::MAX (permanently awake) so they don't participate
+            // in the tree-level sleep system. If flex vertices are ever assigned to
+            // specific kinematic trees, their trees should be marked AutoNever.
 
             // Step 2b: Apply explicit body-level sleep policies from MJCF
             for body_id in 1..nbody {
@@ -4062,6 +4403,130 @@ fn convert_embedded_mesh(
     Ok(TriangleMeshData::new(vertices, indices))
 }
 
+/// Compute exact mass properties of a triangle mesh using signed tetrahedron
+/// decomposition (Mirtich 1996).
+///
+/// Returns `(volume, com, inertia_at_com)` where:
+/// - `volume` is the signed volume (positive for outward-facing normals)
+/// - `com` is the center of mass (assuming uniform density)
+/// - `inertia_at_com` is the full 3×3 inertia tensor about the COM
+///   (assuming unit density; multiply by actual density for physical values)
+#[allow(clippy::suspicious_operation_groupings)] // Formulas are correct: a²+b²+c²+ab+ac+bc
+fn compute_mesh_inertia(mesh: &TriangleMeshData) -> (f64, Vector3<f64>, Matrix3<f64>) {
+    let vertices = mesh.vertices();
+    let triangles = mesh.triangles();
+
+    let mut total_volume = 0.0;
+    let mut com_accum = Vector3::zeros();
+
+    // Second-moment integrals (products of vertex coordinates over volume)
+    let mut xx = 0.0;
+    let mut yy = 0.0;
+    let mut zz = 0.0;
+    let mut xy = 0.0;
+    let mut xz = 0.0;
+    let mut yz = 0.0;
+
+    for tri in triangles {
+        let a = vertices[tri.v0].coords;
+        let b = vertices[tri.v1].coords;
+        let c = vertices[tri.v2].coords;
+
+        // Signed volume of tetrahedron formed with origin: V = (a × b) · c / 6
+        let det = a.cross(&b).dot(&c);
+        let vol = det / 6.0;
+        total_volume += vol;
+
+        // COM contribution: centroid of tet = (a + b + c) / 4, weighted by vol
+        com_accum += vol * (a + b + c) / 4.0;
+
+        // Second-moment integrals over tetrahedron (origin, a, b, c):
+        // ∫x² dV = det/60 * (a.x² + b.x² + c.x² + a.x*b.x + a.x*c.x + b.x*c.x)
+        // ∫xy dV = det/120 * (2*a.x*a.y + 2*b.x*b.y + 2*c.x*c.y
+        //          + a.x*b.y + a.y*b.x + a.x*c.y + a.y*c.x + b.x*c.y + b.y*c.x)
+        let f60 = det / 60.0;
+        let f120 = det / 120.0;
+
+        xx += f60 * (a.x * a.x + b.x * b.x + c.x * c.x + a.x * b.x + a.x * c.x + b.x * c.x);
+        yy += f60 * (a.y * a.y + b.y * b.y + c.y * c.y + a.y * b.y + a.y * c.y + b.y * c.y);
+        zz += f60 * (a.z * a.z + b.z * b.z + c.z * c.z + a.z * b.z + a.z * c.z + b.z * c.z);
+
+        xy += f120
+            * (2.0 * a.x * a.y
+                + 2.0 * b.x * b.y
+                + 2.0 * c.x * c.y
+                + a.x * b.y
+                + a.y * b.x
+                + a.x * c.y
+                + a.y * c.x
+                + b.x * c.y
+                + b.y * c.x);
+        xz += f120
+            * (2.0 * a.x * a.z
+                + 2.0 * b.x * b.z
+                + 2.0 * c.x * c.z
+                + a.x * b.z
+                + a.z * b.x
+                + a.x * c.z
+                + a.z * c.x
+                + b.x * c.z
+                + b.z * c.x);
+        yz += f120
+            * (2.0 * a.y * a.z
+                + 2.0 * b.y * b.z
+                + 2.0 * c.y * c.z
+                + a.y * b.z
+                + a.z * b.y
+                + a.y * c.z
+                + a.z * c.y
+                + b.y * c.z
+                + b.z * c.y);
+    }
+
+    // Zero-volume fallback: degenerate mesh (coplanar triangles, etc.)
+    if total_volume.abs() < 1e-10 {
+        let (aabb_min, aabb_max) = mesh.aabb();
+        let extents = aabb_max - aabb_min;
+        let volume = extents.x * extents.y * extents.z;
+        let com = nalgebra::center(&aabb_min, &aabb_max).coords;
+        // Box inertia (unit density): I_ii = V/12 * (a² + b²)
+        let c = volume / 12.0;
+        let inertia = Matrix3::from_diagonal(&Vector3::new(
+            c * (extents.y.powi(2) + extents.z.powi(2)),
+            c * (extents.x.powi(2) + extents.z.powi(2)),
+            c * (extents.x.powi(2) + extents.y.powi(2)),
+        ));
+        return (volume, com, inertia);
+    }
+
+    let com = com_accum / total_volume;
+
+    // Build inertia tensor at origin from accumulated integrals
+    // I_origin[i,i] = sum of the other two second moments (e.g., Ixx = yy + zz)
+    // I_origin[i,j] = -cross_moment (e.g., Ixy = -xy)
+    let i_origin = Matrix3::new(
+        yy + zz,
+        -xy,
+        -xz, // row 0
+        -xy,
+        xx + zz,
+        -yz, // row 1
+        -xz,
+        -yz,
+        xx + yy, // row 2
+    );
+
+    // Shift to COM using parallel axis theorem (full tensor):
+    // I_com = I_origin - V * (d·d * I₃ - d ⊗ d)
+    // where d = com and V = total_volume (unit density, so mass = volume)
+    let d = com;
+    let d_sq = d.dot(&d);
+    let parallel_shift = total_volume * (Matrix3::identity() * d_sq - d * d.transpose());
+    let i_com = i_origin - parallel_shift;
+
+    (total_volume, com, i_com)
+}
+
 /// Extract inertial properties from MjcfInertial with full MuJoCo semantics.
 ///
 /// Handles both `diaginertia` and `fullinertia` specifications.
@@ -4344,9 +4809,59 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
     }
 }
 
+/// Resolve mesh data for a geom, if it is a mesh-type geom.
+fn resolve_mesh(
+    geom: &MjcfGeom,
+    mesh_lookup: &HashMap<String, usize>,
+    mesh_data: &[Arc<TriangleMeshData>],
+) -> Option<Arc<TriangleMeshData>> {
+    if geom.geom_type == MjcfGeomType::Mesh {
+        geom.mesh
+            .as_ref()
+            .and_then(|name| mesh_lookup.get(name))
+            .and_then(|&id| mesh_data.get(id))
+            .cloned()
+    } else {
+        None
+    }
+}
+
+/// Cached mesh mass properties: `(volume, com, inertia_at_com_unit_density)`.
+/// Avoids recomputing `compute_mesh_inertia()` multiple times per mesh geom.
+type MeshProps = (f64, Vector3<f64>, Matrix3<f64>);
+
+/// Compute the effective center of mass of a geom in the body frame.
+///
+/// For primitive geoms, the local COM is at the geom origin (`geom.pos`).
+/// For mesh geoms, the mesh may have a non-zero internal COM in mesh-local
+/// coordinates. The effective COM is `geom.pos + R * mesh_com` where R is
+/// the geom's orientation in the body frame.
+fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Vector3<f64> {
+    if let Some(&(_, mesh_com, _)) = mesh_props {
+        if mesh_com.norm() > 1e-14 {
+            let r = UnitQuaternion::from_quaternion(Quaternion::new(
+                geom.quat[0],
+                geom.quat[1],
+                geom.quat[2],
+                geom.quat[3],
+            ));
+            return geom.pos + r.transform_vector(&mesh_com);
+        }
+    }
+    geom.pos
+}
+
 /// Compute inertia from geoms (fallback when no explicit inertial).
+///
+/// Accumulates full 3×3 inertia tensor with geom orientation handling,
+/// then eigendecomposes to extract principal inertia and orientation.
+///
+/// Mesh inertia is computed once per geom and cached across the mass and
+/// inertia passes (avoids O(3n) calls to `compute_mesh_inertia`).
 fn compute_inertia_from_geoms(
     geoms: &[MjcfGeom],
+    mesh_lookup: &HashMap<String, usize>,
+    mesh_data: &[Arc<TriangleMeshData>],
 ) -> (f64, Vector3<f64>, Vector3<f64>, UnitQuaternion<f64>) {
     if geoms.is_empty() {
         // No geoms: zero mass/inertia (matches MuJoCo).
@@ -4359,41 +4874,82 @@ fn compute_inertia_from_geoms(
         );
     }
 
+    // Pre-compute mesh inertia once per geom (avoids 3× recomputation).
+    let mesh_props: Vec<Option<MeshProps>> = geoms
+        .iter()
+        .map(|geom| {
+            resolve_mesh(geom, mesh_lookup, mesh_data).map(|mesh| compute_mesh_inertia(&mesh))
+        })
+        .collect();
+
     let mut total_mass = 0.0;
     let mut com = Vector3::zeros();
 
     // First pass: compute total mass and COM
-    for geom in geoms {
-        let geom_mass = compute_geom_mass(geom);
+    // For mesh geoms, the effective center of mass in the body frame is
+    // `geom.pos + R * mesh_com` (mesh COM is in mesh-local coordinates).
+    // For primitive geoms, the local COM is at the geom origin: `geom.pos`.
+    for (geom, props) in geoms.iter().zip(mesh_props.iter()) {
+        let geom_mass = compute_geom_mass(geom, props.as_ref());
+        let effective_pos = geom_effective_com(geom, props.as_ref());
         total_mass += geom_mass;
-        com += geom.pos * geom_mass;
+        com += effective_pos * geom_mass;
     }
 
     if total_mass > 1e-10 {
         com /= total_mass;
     }
 
-    // Second pass: compute inertia about COM using parallel axis theorem
-    let mut inertia = Vector3::zeros();
-    for geom in geoms {
-        let geom_mass = compute_geom_mass(geom);
-        let geom_inertia = compute_geom_inertia(geom);
+    // Second pass: accumulate full 3×3 inertia tensor about COM
+    let mut inertia_tensor = Matrix3::zeros();
+    for (geom, props) in geoms.iter().zip(mesh_props.iter()) {
+        let geom_mass = compute_geom_mass(geom, props.as_ref());
+        let geom_inertia = compute_geom_inertia(geom, props.as_ref());
 
-        // Parallel axis: I_com = I_geom + m * d^2
-        let d = geom.pos - com;
-        let d_sq = d.component_mul(&d);
+        // 1. Rotate local inertia to body frame: I_rot = R * I_local * Rᵀ
+        let r = UnitQuaternion::from_quaternion(Quaternion::new(
+            geom.quat[0],
+            geom.quat[1],
+            geom.quat[2],
+            geom.quat[3],
+        ));
+        let rot = r.to_rotation_matrix();
+        let i_rotated = rot * geom_inertia * rot.transpose();
 
-        // For diagonal inertia, add off-axis contributions
-        inertia.x += geom_inertia.x + geom_mass * (d_sq.y + d_sq.z);
-        inertia.y += geom_inertia.y + geom_mass * (d_sq.x + d_sq.z);
-        inertia.z += geom_inertia.z + geom_mass * (d_sq.x + d_sq.y);
+        // 2. Parallel axis theorem (full tensor):
+        //    I_shifted = I_rotated + m * (d·d * I₃ - d ⊗ d)
+        //    d = displacement from body COM to geom effective COM
+        let effective_pos = geom_effective_com(geom, props.as_ref());
+        let d = effective_pos - com;
+        let d_sq = d.dot(&d);
+        let parallel_axis = geom_mass * (Matrix3::identity() * d_sq - d * d.transpose());
+        inertia_tensor += i_rotated + parallel_axis;
     }
 
-    (total_mass, inertia, com, UnitQuaternion::identity())
+    // Eigendecompose to get principal axes
+    let eigen = inertia_tensor.symmetric_eigen();
+    let principal_inertia = Vector3::new(
+        eigen.eigenvalues[0].abs(),
+        eigen.eigenvalues[1].abs(),
+        eigen.eigenvalues[2].abs(),
+    );
+
+    // Eigenvectors form rotation to principal axes
+    // Ensure right-handed coordinate system
+    let mut rot = eigen.eigenvectors;
+    if rot.determinant() < 0.0 {
+        rot.set_column(2, &(-rot.column(2)));
+    }
+    let iquat = UnitQuaternion::from_rotation_matrix(&nalgebra::Rotation3::from_matrix(&rot));
+
+    (total_mass, principal_inertia, com, iquat)
 }
 
 /// Compute mass of a single geom.
-fn compute_geom_mass(geom: &MjcfGeom) -> f64 {
+///
+/// For mesh geoms, accepts pre-computed mesh properties to avoid redundant
+/// `compute_mesh_inertia()` calls (see `MeshProps`).
+fn compute_geom_mass(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> f64 {
     if let Some(mass) = geom.mass {
         return mass;
     }
@@ -4419,27 +4975,41 @@ fn compute_geom_mass(geom: &MjcfGeom) -> f64 {
             let h = geom.size.get(1).copied().unwrap_or(0.1);
             std::f64::consts::PI * r.powi(2) * h * 2.0
         }
-        _ => 0.001, // Default small volume for other types
+        MjcfGeomType::Mesh => {
+            if let Some(&(volume, _, _)) = mesh_props {
+                volume.abs()
+            } else {
+                0.001
+            }
+        }
+        _ => 0.001, // Default small volume for other types (Plane, Hfield)
     };
 
     geom.density * volume
 }
 
-/// Compute diagonal inertia of a single geom about its center.
+/// Compute inertia tensor of a single geom about its center (geom-local frame).
+///
+/// Returns a full 3×3 matrix. Primitive geoms produce diagonal tensors;
+/// mesh geoms may have off-diagonal terms.
+///
+/// For mesh geoms, accepts pre-computed mesh properties to avoid redundant
+/// `compute_mesh_inertia()` calls (see `MeshProps`).
 ///
 /// Uses exact formulas matching MuJoCo's computation:
 /// - Sphere: I = (2/5) m r²
 /// - Box: I_x = (1/12) m (y² + z²), etc.
 /// - Cylinder: I_x = (1/12) m (3r² + h²), I_z = (1/2) m r²
 /// - Capsule: Exact formula including hemispherical end caps
-fn compute_geom_inertia(geom: &MjcfGeom) -> Vector3<f64> {
-    let mass = compute_geom_mass(geom);
+/// - Mesh: Signed tetrahedron decomposition (Mirtich 1996)
+fn compute_geom_inertia(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Matrix3<f64> {
+    let mass = compute_geom_mass(geom, mesh_props);
 
     match geom.geom_type {
         MjcfGeomType::Sphere => {
             let r = geom.size.first().copied().unwrap_or(0.1);
             let i = 0.4 * mass * r.powi(2); // (2/5) m r²
-            Vector3::new(i, i, i)
+            Matrix3::from_diagonal(&Vector3::new(i, i, i))
         }
         MjcfGeomType::Box => {
             // Full dimensions (size is half-extents)
@@ -4447,11 +5017,11 @@ fn compute_geom_inertia(geom: &MjcfGeom) -> Vector3<f64> {
             let y = geom.size.get(1).copied().unwrap_or(0.1) * 2.0;
             let z = geom.size.get(2).copied().unwrap_or(0.1) * 2.0;
             let c = mass / 12.0;
-            Vector3::new(
+            Matrix3::from_diagonal(&Vector3::new(
                 c * (y * y + z * z),
                 c * (x * x + z * z),
                 c * (x * x + y * y),
-            )
+            ))
         }
         MjcfGeomType::Cylinder => {
             let r = geom.size.first().copied().unwrap_or(0.1);
@@ -4459,7 +5029,7 @@ fn compute_geom_inertia(geom: &MjcfGeom) -> Vector3<f64> {
             // Solid cylinder about center
             let ix = mass * (3.0 * r.powi(2) + h.powi(2)) / 12.0;
             let iz = 0.5 * mass * r.powi(2);
-            Vector3::new(ix, ix, iz)
+            Matrix3::from_diagonal(&Vector3::new(ix, ix, iz))
         }
         MjcfGeomType::Capsule => {
             // Exact capsule inertia (cylinder + two hemispheres)
@@ -4494,7 +5064,7 @@ fn compute_geom_inertia(geom: &MjcfGeom) -> Vector3<f64> {
             let ix = i_cyl_x + 2.0 * i_hemi_x;
             let iz = i_cyl_z + 2.0 * i_hemi_z;
 
-            Vector3::new(ix, ix, iz)
+            Matrix3::from_diagonal(&Vector3::new(ix, ix, iz))
         }
         MjcfGeomType::Ellipsoid => {
             // Ellipsoid inertia: I_x = (1/5) m (b² + c²), etc.
@@ -4502,13 +5072,26 @@ fn compute_geom_inertia(geom: &MjcfGeom) -> Vector3<f64> {
             let b = geom.size.get(1).copied().unwrap_or(a);
             let c = geom.size.get(2).copied().unwrap_or(b);
             let coeff = mass / 5.0;
-            Vector3::new(
+            Matrix3::from_diagonal(&Vector3::new(
                 coeff * (b * b + c * c),
                 coeff * (a * a + c * c),
                 coeff * (a * a + b * b),
-            )
+            ))
         }
-        _ => Vector3::new(0.001, 0.001, 0.001), // Default small inertia
+        MjcfGeomType::Mesh => {
+            if let Some(&(volume, _, inertia_unit)) = mesh_props {
+                let mass_actual = geom.mass.unwrap_or_else(|| geom.density * volume.abs());
+                let scale = if volume.abs() > 1e-10 {
+                    mass_actual / volume.abs()
+                } else {
+                    geom.density
+                };
+                inertia_unit * scale
+            } else {
+                Matrix3::from_diagonal(&Vector3::new(0.001, 0.001, 0.001))
+            }
+        }
+        _ => Matrix3::from_diagonal(&Vector3::new(0.001, 0.001, 0.001)), // Default small inertia
     }
 }
 
@@ -4664,6 +5247,222 @@ fn sensor_datatype(t: MjSensorType) -> MjSensorDataType {
         | MjSensorType::FrameAngAcc
         | MjSensorType::User => MjSensorDataType::Acceleration,
     }
+}
+
+// ============================================================================
+// Flex helper functions
+// ============================================================================
+
+/// Compute per-edge cross-section area based on flex dimensionality.
+///
+/// - dim=1 (cable): PI * radius^2
+/// - dim=2 (shell): thickness * rest_length (dual edge cross-section)
+/// - dim=3 (solid): rest_length^2 (L^2 approximation)
+fn compute_flexedge_crosssection(
+    flexedge_flexid: &[usize],
+    flexedge_length0: &[f64],
+    flex_dim: &[usize],
+    flex_thickness: &[f64],
+    flexvert_radius: &[f64],
+    flex_vertadr: &[usize],
+) -> Vec<f64> {
+    let nedge = flexedge_flexid.len();
+    let mut crosssection = vec![1.0; nedge];
+    for i in 0..nedge {
+        let fid = flexedge_flexid[i];
+        if fid >= flex_dim.len() {
+            continue;
+        }
+        let dim = flex_dim[fid];
+        let rest_len = flexedge_length0[i];
+        crosssection[i] = match dim {
+            1 => {
+                // Cable: PI * radius^2
+                let radius = if fid < flex_vertadr.len() {
+                    let vert0 = flex_vertadr[fid];
+                    if vert0 < flexvert_radius.len() {
+                        flexvert_radius[vert0]
+                    } else {
+                        0.005
+                    }
+                } else {
+                    0.005
+                };
+                std::f64::consts::PI * radius * radius
+            }
+            2 => {
+                // Shell: thickness * rest_length
+                let thickness = flex_thickness[fid];
+                thickness * rest_len
+            }
+            3 => {
+                // Solid: L^2 approximation
+                rest_len * rest_len
+            }
+            _ => 1.0,
+        };
+    }
+    crosssection
+}
+
+/// Compute per-flex address table from a per-item `flexid` array.
+///
+/// Returns a Vec of length `nflex` where `result[i]` is the index of the first
+/// item belonging to flex `i` in the corresponding data array.
+fn compute_flex_address_table(item_flexid: &[usize], nflex: usize) -> Vec<usize> {
+    let mut adr = vec![0usize; nflex];
+    let mut offset = 0;
+    for (flex_id, a) in adr.iter_mut().enumerate() {
+        *a = offset;
+        offset += item_flexid.iter().filter(|&&fid| fid == flex_id).count();
+    }
+    adr
+}
+
+/// Compute per-flex count table from a per-item `flexid` array.
+///
+/// Returns a Vec of length `nflex` where `result[i]` is the number of items
+/// belonging to flex `i`.
+fn compute_flex_count_table(item_flexid: &[usize], nflex: usize) -> Vec<usize> {
+    let mut count = vec![0usize; nflex];
+    for &fid in item_flexid {
+        if fid < nflex {
+            count[fid] += 1;
+        }
+    }
+    count
+}
+
+/// Compute per-vertex masses via element-based mass lumping.
+fn compute_vertex_masses(flex: &MjcfFlex) -> Vec<f64> {
+    let mut masses = vec![0.0f64; flex.vertices.len()];
+
+    match flex.dim {
+        1 => {
+            let density = flex.density;
+            for elem in &flex.elements {
+                if elem.len() >= 2 {
+                    let len = (flex.vertices[elem[1]] - flex.vertices[elem[0]]).norm();
+                    let mass_per_vert = density * len / 2.0;
+                    masses[elem[0]] += mass_per_vert;
+                    masses[elem[1]] += mass_per_vert;
+                }
+            }
+        }
+        2 => {
+            let area_density = flex.density * flex.thickness;
+            for elem in &flex.elements {
+                if elem.len() >= 3 {
+                    let e1 = flex.vertices[elem[1]] - flex.vertices[elem[0]];
+                    let e2 = flex.vertices[elem[2]] - flex.vertices[elem[0]];
+                    let area = e1.cross(&e2).norm() / 2.0;
+                    let mass_per_vert = area_density * area / 3.0;
+                    masses[elem[0]] += mass_per_vert;
+                    masses[elem[1]] += mass_per_vert;
+                    masses[elem[2]] += mass_per_vert;
+                }
+            }
+        }
+        3 => {
+            let density = flex.density;
+            for elem in &flex.elements {
+                if elem.len() >= 4 {
+                    let e1 = flex.vertices[elem[1]] - flex.vertices[elem[0]];
+                    let e2 = flex.vertices[elem[2]] - flex.vertices[elem[0]];
+                    let e3 = flex.vertices[elem[3]] - flex.vertices[elem[0]];
+                    let volume = e1.dot(&e2.cross(&e3)).abs() / 6.0;
+                    let mass_per_vert = density * volume / 4.0;
+                    masses[elem[0]] += mass_per_vert;
+                    masses[elem[1]] += mass_per_vert;
+                    masses[elem[2]] += mass_per_vert;
+                    masses[elem[3]] += mass_per_vert;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // Ensure minimum mass
+    for m in &mut masses {
+        if *m < 1e-10 {
+            *m = 0.001;
+        }
+    }
+
+    masses
+}
+
+/// Compute dihedral angle between two triangles sharing an edge.
+fn compute_dihedral_angle(
+    pe0: Vector3<f64>,
+    pe1: Vector3<f64>,
+    pa: Vector3<f64>,
+    pb: Vector3<f64>,
+) -> f64 {
+    let e = pe1 - pe0;
+    let e_len_sq = e.norm_squared();
+    if e_len_sq < 1e-20 {
+        return 0.0;
+    }
+    let offset_a = pa - pe0;
+    let offset_b = pb - pe0;
+    let normal_face_a = e.cross(&offset_a);
+    let normal_face_b = offset_b.cross(&e);
+
+    let norm_sq_a = normal_face_a.norm_squared();
+    let norm_sq_b = normal_face_b.norm_squared();
+    if norm_sq_a < 1e-20 || norm_sq_b < 1e-20 {
+        return 0.0;
+    }
+
+    let e_dir = e / e_len_sq.sqrt();
+    let normal_unit_a = normal_face_a / norm_sq_a.sqrt();
+    let normal_unit_b = normal_face_b / norm_sq_b.sqrt();
+    let cos_theta = normal_unit_a.dot(&normal_unit_b).clamp(-1.0, 1.0);
+    let sin_theta = normal_unit_a.cross(&normal_unit_b).dot(&e_dir);
+    sin_theta.atan2(cos_theta)
+}
+
+/// Compute edge constraint solref from material properties.
+fn compute_edge_solref_from_material(flex: &MjcfFlex) -> [f64; 2] {
+    if flex.young <= 0.0 || flex.vertices.is_empty() || flex.elements.is_empty() {
+        return flex.solref;
+    }
+    // Use a representative stiffness: k = E * A / L
+    // For simplicity, use the flex-level solref (material-derived solref is
+    // computed per-edge during a later refinement pass; for now use defaults)
+    flex.solref
+}
+
+/// Compute bending stiffness from material properties (passive force coefficient).
+///
+/// For dim=2 (shells): Kirchhoff-Love thin plate bending stiffness
+///   D = E * t^3 / (12 * (1 - nu^2))
+/// For dim=3 (solids): characteristic stiffness D = E
+///   (the Bridson dihedral gradient provides geometric scaling)
+/// For dim=1 (cables): 0.0 (no bending)
+fn compute_bend_stiffness_from_material(flex: &MjcfFlex) -> f64 {
+    if flex.young <= 0.0 {
+        return 0.0;
+    }
+    match flex.dim {
+        2 => {
+            let nu = flex.poisson.clamp(0.0, 0.499);
+            flex.young * flex.thickness.powi(3) / (12.0 * (1.0 - nu * nu))
+        }
+        3 => flex.young,
+        _ => 0.0,
+    }
+}
+
+/// Compute bending damping from material properties.
+///
+/// Proportional damping model: b_bend = damping * k_bend.
+fn compute_bend_damping_from_material(flex: &MjcfFlex, k_bend: f64) -> f64 {
+    if flex.damping <= 0.0 || k_bend <= 0.0 {
+        return 0.0;
+    }
+    flex.damping * k_bend
 }
 
 #[cfg(test)]
@@ -5063,18 +5862,18 @@ mod tests {
             solimp: None,
         };
 
-        let inertia = compute_geom_inertia(&geom);
+        let inertia = compute_geom_inertia(&geom, None);
 
-        // Ix = Iy (axially symmetric)
-        assert!((inertia.x - inertia.y).abs() < 1e-10);
+        // Ix = Iy (axially symmetric) — diagonal elements (0,0) and (1,1)
+        assert!((inertia[(0, 0)] - inertia[(1, 1)]).abs() < 1e-10);
 
         // Iz < Ix (thin cylinder is easier to spin about long axis)
-        assert!(inertia.z < inertia.x);
+        assert!(inertia[(2, 2)] < inertia[(0, 0)]);
 
         // All positive
-        assert!(inertia.x > 0.0);
-        assert!(inertia.y > 0.0);
-        assert!(inertia.z > 0.0);
+        assert!(inertia[(0, 0)] > 0.0);
+        assert!(inertia[(1, 1)] > 0.0);
+        assert!(inertia[(2, 2)] > 0.0);
     }
 
     /// Test site parsing and model population.

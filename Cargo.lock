@@ -3310,7 +3310,6 @@ dependencies = [
  "sensor-types",
  "sim-constraint",
  "sim-core",
- "sim-deformable",
  "sim-gpu",
  "sim-mjcf",
  "sim-muscle",
@@ -3370,7 +3369,6 @@ dependencies = [
  "sensor-types",
  "sim-constraint",
  "sim-core",
- "sim-deformable",
  "sim-gpu",
  "sim-mjcf",
  "sim-muscle",
@@ -3523,7 +3521,6 @@ dependencies = [
  "mesh-slice",
  "mesh-types",
  "sim-core",
- "sim-deformable",
  "sim-types",
 ]
 
@@ -3540,7 +3537,6 @@ dependencies = [
  "mesh-slice",
  "mesh-types",
  "sim-core",
- "sim-deformable",
  "sim-types",
 ]
 
@@ -3590,7 +3586,6 @@ dependencies = [
  "sensor-types",
  "sim-constraint",
  "sim-core",
- "sim-deformable",
  "sim-gpu",
  "sim-mjcf",
  "sim-muscle",
@@ -3613,7 +3608,6 @@ dependencies = [
  "sensor-fusion",
  "sensor-types",
  "sim-core",
- "sim-deformable",
  "sim-gpu",
  "sim-sensor",
  "sim-types",
@@ -3634,7 +3628,6 @@ dependencies = [
  "sensor-types",
  "sim-constraint",
  "sim-core",
- "sim-deformable",
  "sim-gpu",
  "sim-mjcf",
  "sim-muscle",
@@ -3655,7 +3648,6 @@ dependencies = [
  "mesh-types",
  "sensor-types",
  "sim-core",
- "sim-deformable",
  "sim-sensor",
  "sim-types",
 ]
@@ -7822,7 +7814,6 @@ dependencies = [
  "approx 0.5.1",
  "nalgebra",
  "sim-core",
- "sim-deformable",
  "sim-mjcf",
  "sim-muscle",
  "sim-sensor",
@@ -7852,23 +7843,8 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "serde",
- "sim-deformable",
  "sim-simd",
  "sim-types",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sim-deformable"
-version = "0.7.0"
-dependencies = [
- "approx 0.5.1",
- "bitflags 2.10.0",
- "hashbrown 0.15.5",
- "nalgebra",
- "serde",
- "sim-types",
- "smallvec",
  "thiserror 2.0.18",
 ]
 
@@ -7923,7 +7899,6 @@ dependencies = [
  "nalgebra",
  "sim-constraint",
  "sim-core",
- "sim-deformable",
  "sim-mjcf",
  "sim-muscle",
  "sim-sensor",
@@ -8054,9 +8029,6 @@ name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "smithay-client-toolkit"

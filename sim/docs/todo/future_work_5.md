@@ -1451,8 +1451,10 @@ Phase B adds full island discovery for multi-tree constraint coupling.
 
 #### Scope Exclusions
 
-- **Deformable body sleeping:** ✅ Implemented (Phase C). Trees containing
-  deformable bodies receive `AutoNever` policy (automatic prevention).
+- **Deformable body sleeping:** ✅ Implemented (Phase C). Originally, trees
+  containing deformable bodies received `AutoNever` policy. After §6B flex
+  unification, flex DOFs are assigned `dof_treeid = usize::MAX` (permanently
+  awake) and don't participate in the tree-level sleep system.
 - **Full `sleep="init"` with island validation:** ✅ Implemented (Phase B).
   Union-find validation ensures init-sleep trees form consistent islands.
 - **Per-island constraint solving:** ✅ Implemented (Phase B/C).

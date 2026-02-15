@@ -26,7 +26,6 @@ curve-types = { workspace = true }
 sim-types = { workspace = true }
 sim-core = { workspace = true }
 sim-constraint = { workspace = true }
-sim-deformable = { workspace = true }
 sim-muscle = { workspace = true }
 sim-tendon = { workspace = true }
 sim-gpu = { workspace = true }

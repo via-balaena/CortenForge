@@ -62,6 +62,17 @@ before any runtime physics testing is meaningful.
 | 21 | `<site>` euler/axisangle/xyaxes/zaxis orientation | Medium | High | S | None | [future_work_6.md](./future_work_6.md) | ✅ Done |
 | 22 | Tendon `springlength` MJCF parsing | Low | Medium | S | None | [future_work_6.md](./future_work_6.md) | ✅ Done |
 
+#### 3A-precursor: Flex Solver Unification (Item #6B)
+
+Unifies the deformable simulation pipeline with the rigid constraint solver.
+Flex vertex DOFs join the global `qpos`/`qvel` state, edge constraints enter
+the unified Jacobian, bending acts as passive forces, and the separate XPBD
+solver is removed. Subsumes #42 (`<flex>`/`<flexcomp>` parsing).
+
+| # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
+|---|------|-----------|-------------|--------|---------------|------|--------|
+| 6B | Flex Solver Unification | Medium | **Critical** | XL | None | [future_work_6b_precursor_to_7.md](./future_work_6b_precursor_to_7.md) | ✅ Done |
+
 #### 3A-ii: Inertia + Contact Parameter Foundation (Items #23–27)
 
 Inertia computation and the contact parameter combination layer — the foundation
@@ -69,7 +80,7 @@ that all contact constraint assembly builds on.
 
 | # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
 |---|------|-----------|-------------|--------|---------------|------|--------|
-| 23 | `<compiler>` `exactmeshinertia` | Low | Medium | S | None | [future_work_7.md](./future_work_7.md) | |
+| 23 | `<compiler>` `exactmeshinertia` | Low | Medium | S | None | [future_work_7.md](./future_work_7.md) | ✅ Done |
 | 24 | Friction combination: geometric mean → element-wise max | Medium | **Critical** | S | None | [future_work_7.md](./future_work_7.md) | |
 | 25 | `geom/@priority` — contact priority | Medium | Medium | S | None (soft: after #24) | [future_work_7.md](./future_work_7.md) | |
 | 26 | `solmix` attribute | Low | Medium | S | None | [future_work_7.md](./future_work_7.md) | |
@@ -106,7 +117,8 @@ Items #28→#29→#30 form a strict dependency chain.
 | 39 | `wrap_inside` algorithm (tendon wrapping) | Low | High | M | None | [future_work_10.md](./future_work_10.md) | |
 | 40 | Fluid / aerodynamic forces | Medium | High | L | None | [future_work_10.md](./future_work_10.md) | |
 | 41 | `disableflags` — runtime disable flag effects | Low | Medium | M | None | [future_work_10.md](./future_work_10.md) | |
-| 42 | `<flex>` / `<flexcomp>` MJCF deformable parsing | Medium | Medium | L | None | [future_work_10.md](./future_work_10.md) | |
+| ~~42~~ | ~~`<flex>` / `<flexcomp>` MJCF deformable parsing~~ | — | — | — | — | [future_work_10.md](./future_work_10.md) | Subsumed by §6B |
+| 42B | Flex bending: cotangent Laplacian + trait abstraction | Medium | **Critical** | L | §6B | [future_work_10.md](./future_work_10.md) | |
 
 #### 3A-vi: Cleanup + Conformance Test Suite (Items #43–45)
 
@@ -214,11 +226,15 @@ simulation. Strict sequential chain — each phase depends on the previous.
    │ 46 │ <composite>
    └────┘
 
+   ┌─────┐
+   │ 6B  │ Flex Solver Unification  ✅ Done (subsumes #42)
+   └─────┘
+
    3A — MuJoCo alignment (all prerequisites to #45):
 
-   Tier 1 — Parser fundamentals (all independent):
+   Tier 1 — Parser fundamentals (all done):
    ┌────┐  ┌────┐  ┌────┐  ┌────┐  ┌────┐
-   │ 19 │  │ 20 │  │ 21 │  │ 22 │  │ 23 │
+   │ 19 │  │ 20 │  │ 21 │  │ 22 │  │ 23 │  ✅ All done
    └────┘  └────┘  └────┘  └────┘  └────┘
    frame   chdcls  site-o  sprlen  exactm
 
@@ -257,11 +273,11 @@ simulation. Strict sequential chain — each phase depends on the previous.
    └────┘  └────┘  └────┘
    ten-eq  ball-lm wrap-i
 
-   Tier 5 — Physics + pipeline (all independent):
+   Tier 5 — Physics + pipeline:
    ┌────┐  ┌────┐  ┌────┐
-   │ 40 │  │ 41 │  │ 42 │
+   │ 40 │  │ 41 │  │ 42 │ ✅ (subsumed by §6B)
    └────┘  └────┘  └────┘
-   fluid   dsbflg  flex
+   fluid   dsbflg  ~~flex~~
 
    Tier 6 — Cleanup (all independent):
    ┌────┐  ┌────┐
@@ -302,6 +318,83 @@ simulation. Strict sequential chain — each phase depends on the previous.
    10a done   10b FK    10c BP    10d NP    10e CS    10f Full
 ```
 
+## Recommended Implementation Order
+
+Items are grouped into implementation batches. Within each batch, items share
+enough context (same subsystem, same files) to minimize re-reading overhead.
+Review after each batch — the test suite validates the full stack at each
+checkpoint.
+
+### Batch 1 — Contact Parameters (4 items, all S effort)
+
+**Items:** #24, #25, #26, #27
+**Files:** `mujoco_pipeline.rs` (contact assembly), `model_builder.rs` (MJCF parsing)
+**Why first:** Natural next step after §6b. Small, independent, and unblock the
+constraint system overhaul. All touch the same contact combination code path.
+Batch 2-3 per session — they share enough context to reduce overhead.
+
+### Batch 2 — Constraint System (5 items, M-L effort, dependency chain)
+
+**Items:** #28 → #29 → #30 (strict chain), then #31, #32 (independent)
+**Files:** `mujoco_pipeline.rs` (constraint assembly, PGS/CG solver, Newton solver)
+**Why second:** The friction loss chain (#28→#29→#30) is the meatiest remaining
+correctness gap. Each builds on the prior. #31 and #32 are independent but
+touch the same constraint code, so batch them here.
+
+### Batch 3 — Actuator/Dynamics + Noslip (5 items, S-M effort)
+
+**Items:** #33, #34, #35, #36, #37
+**Files:** `mujoco_pipeline.rs` (actuator pipeline, passive forces), `model_builder.rs`
+**Why third:** Mostly independent of each other. #34 (`actlimited`) is highest
+RL-impact item remaining. Can parallelize within the batch.
+
+### Batch 4 — Joint/Constraint Features + Physics (5 items, M-L effort)
+
+**Items:** #38, #39, #40, #41, #43
+**Files:** `mujoco_pipeline.rs` (joint limits, tendon wrapping, fluid forces, disable flags)
+**Why fourth:** Self-contained features that don't depend on Batches 2-3. #43
+(shellinertia) is tiny and batches naturally with the joint/physics work.
+
+### Batch 5 — Cleanup + Conformance (2 items)
+
+**Items:** #44, #45
+**Files:** Legacy crate cleanup, then the conformance test suite (XL)
+**Why last in 3A:** #45 depends on all #19-44. This is the capstone — validates
+everything above against MuJoCo reference outputs.
+
+### Batch 6 — Format + Performance (3B, 5 items)
+
+**Items:** #46, #47, #48, #49, #50
+**Files:** Distributed across parser, SIMD, collision
+**Why here:** Lower priority than 3A correctness. #46 (`<composite>`) is the
+largest item. Can cherry-pick high-value items (#48 SIMD audit) earlier if
+needed for RL throughput.
+
+### Batch 7 — API Surface (3C, 9 items)
+
+**Items:** #51 → #52 (chain), #53, #54, #55, #56, #57, #58, #59
+**Why here:** Missing API surface. #58 (position derivatives) is high RL-impact
+and can be pulled forward if needed.
+
+### Batch 8 — Edge Cases (3D, 7 items)
+
+**Items:** #60-#66
+**Why last CPU:** Uncommon features. Implement on-demand as specific models need
+them, or batch before final conformance.
+
+### Batch 9 — GPU Pipeline (3E, 5 items, strict chain)
+
+**Items:** #67 → #68 → #69 → #70 → #71
+**Why last:** Independent of CPU correctness. Each phase depends on the previous.
+Start only after 3A is stable.
+
+---
+
+**High-value items to pull forward if RL throughput is urgent:**
+- #34 `actlimited`/`actrange` (Batch 3) — blocks many RL environments
+- #58 `mjd_smooth_pos` (Batch 7) — analytical position derivatives for learning
+- #48 SIMD audit (Batch 6) — throughput improvement across the board
+
 ## File Map
 
 | File | Phase | Group | Items | Description |
@@ -312,7 +405,8 @@ simulation. Strict sequential chain — each phase depends on the previous.
 | [future_work_4.md](./future_work_4.md) | 2 (complete) | C — Physics Completeness | #11–14 | Deformable bodies, analytical derivatives, full implicit integrator, keyframes/mocap |
 | [future_work_5.md](./future_work_5.md) | 2 (complete) | D — Quality of Life + Appendix | #15–16 (~~#17~~ dropped) | Newton solver, sleeping, deferred items, cross-reference |
 | [future_work_6.md](./future_work_6.md) | 3 | 3A-i — Parser Fundamentals | #18–22 | ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` + `childclass`~~ ✅, ~~`<site>` orientation~~ ✅, ~~tendon `springlength`~~ ✅ |
-| [future_work_7.md](./future_work_7.md) | 3 | 3A-ii — Inertia + Contact Parameters | #23–27 | `exactmeshinertia`, friction combination, `geom/@priority`, `solmix`, contact margin/gap |
+| [future_work_6b_precursor_to_7.md](./future_work_6b_precursor_to_7.md) | 3 | 3A-precursor — Flex Solver Unification | #6B | ~~Flex solver unification~~ ✅ (subsumes #42) |
+| [future_work_7.md](./future_work_7.md) | 3 | 3A-ii — Inertia + Contact Parameters | #23–27 | ~~`exactmeshinertia`~~ ✅, friction combination, `geom/@priority`, `solmix`, contact margin/gap |
 | [future_work_8.md](./future_work_8.md) | 3 | 3A-iii — Constraint System Overhaul | #28–32 | Friction loss (Newton + PGS/CG), PGS/CG unified constraints, `solreffriction`, pyramidal cones |
 | [future_work_9.md](./future_work_9.md) | 3 | 3A-iv — Noslip + Actuator/Dynamics | #33–37 | Noslip PGS/CG, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality |
 | [future_work_10.md](./future_work_10.md) | 3 | 3A-v — Constraint/Joint + Physics | #38–42 | Ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, flex/flexcomp |

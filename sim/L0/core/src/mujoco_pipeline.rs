@@ -88,12 +88,6 @@ use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 use std::sync::Arc;
 
-#[cfg(feature = "deformable")]
-use sim_deformable::{
-    DeformableBody, Material as DeformableMaterial, SolverConfig as XpbdSolverConfig, VertexFlags,
-    XpbdSolver,
-};
-
 /// 6D spatial vector: [angular (3), linear (3)].
 ///
 /// Following Featherstone's convention:
@@ -884,6 +878,8 @@ pub enum ConstraintType {
     ContactNonElliptic,
     /// Contact with elliptic friction cone (condim ≥ 3 and cone == elliptic).
     ContactElliptic,
+    /// Flex edge-length constraint (soft equality, matches MuJoCo's mjEQ_FLEX).
+    FlexEdge,
 }
 
 /// Constraint state per scalar row, determined by `PrimalUpdateConstraint`.
@@ -1164,6 +1160,22 @@ pub struct Model {
     /// Number of keyframes parsed from MJCF `<keyframe>`.
     pub nkeyframe: usize,
 
+    // ==================== Flex Dimensions ====================
+    /// Number of flex objects.
+    pub nflex: usize,
+    /// Total flex vertices across all flex objects.
+    pub nflexvert: usize,
+    /// Total flex edges across all flex objects.
+    pub nflexedge: usize,
+    /// Total flex elements (triangles for dim=2, tetrahedra for dim=3).
+    pub nflexelem: usize,
+    /// Total bending hinges (pairs of adjacent elements sharing an edge).
+    pub nflexhinge: usize,
+    /// Number of rigid generalized position coordinates (before flex DOFs).
+    pub nq_rigid: usize,
+    /// Number of rigid velocity DOFs (before flex DOFs).
+    pub nv_rigid: usize,
+
     // ==================== Kinematic Trees (§16.0) ====================
     /// Number of kinematic trees (excluding world body).
     pub ntree: usize,
@@ -1358,6 +1370,115 @@ pub struct Model {
     /// SDF index for each geom (`None` if not an SDF geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Sdf` have `Some(sdf_id)`.
     pub geom_sdf: Vec<Option<usize>>,
+
+    // ==================== Flex Bodies ====================
+    // --- Per-flex arrays (length nflex) ---
+    /// Dimensionality: 1 (cable), 2 (shell), 3 (solid).
+    pub flex_dim: Vec<usize>,
+    /// First vertex index in flexvert_* arrays.
+    pub flex_vertadr: Vec<usize>,
+    /// Number of vertices in this flex.
+    pub flex_vertnum: Vec<usize>,
+    /// First edge index in flexedge_* arrays.
+    pub flex_edgeadr: Vec<usize>,
+    /// Number of edges in this flex.
+    pub flex_edgenum: Vec<usize>,
+    /// First element index in flexelem_* arrays.
+    pub flex_elemadr: Vec<usize>,
+    /// Number of elements in this flex.
+    pub flex_elemnum: Vec<usize>,
+    /// Per-flex material: Young's modulus (Pa).
+    pub flex_young: Vec<f64>,
+    /// Per-flex material: Poisson's ratio (0–0.5).
+    pub flex_poisson: Vec<f64>,
+    /// Per-flex material: damping coefficient.
+    pub flex_damping: Vec<f64>,
+    /// Per-flex material: thickness (for dim=2 shells).
+    pub flex_thickness: Vec<f64>,
+    /// Per-flex: contact friction coefficient (scalar).
+    pub flex_friction: Vec<f64>,
+    /// Per-flex: contact solver reference [timeconst, dampratio].
+    pub flex_solref: Vec<[f64; 2]>,
+    /// Per-flex: contact solver impedance.
+    pub flex_solimp: Vec<[f64; 5]>,
+    /// Per-flex: contact condim (1, 3, 4, or 6).
+    pub flex_condim: Vec<i32>,
+    /// Per-flex: contact collision margin for broadphase expansion.
+    pub flex_margin: Vec<f64>,
+    /// Per-flex: self-collision enabled.
+    pub flex_selfcollide: Vec<bool>,
+    /// Per-flex: edge constraint solref (derived from young/poisson/damping).
+    pub flex_edge_solref: Vec<[f64; 2]>,
+    /// Per-flex: edge constraint solimp.
+    pub flex_edge_solimp: Vec<[f64; 5]>,
+    /// Per-flex: bending stiffness (passive spring, N·m/rad).
+    /// Derived from Young's modulus, thickness, and Poisson ratio.
+    /// dim=2 (shell): D = E·t³ / (12·(1−ν²))  (Kirchhoff-Love plate theory).
+    /// dim=3 (solid): D = E  (characteristic stiffness; gradient provides geometry).
+    pub flex_bend_stiffness: Vec<f64>,
+    /// Per-flex: bending damping (passive damper, N·m·s/rad).
+    /// Proportional damping: b = damping × k_bend.
+    pub flex_bend_damping: Vec<f64>,
+    /// Per-flex: density. Units depend on dim:
+    /// dim=1 (cable): linear density kg/m.
+    /// dim=2 (shell): volumetric density kg/m³ (multiplied by thickness for area density).
+    /// dim=3 (solid): volumetric density kg/m³.
+    pub flex_density: Vec<f64>,
+
+    // --- Per-vertex arrays (length nflexvert) ---
+    /// Start index in qpos for this vertex (3 consecutive DOFs).
+    pub flexvert_qposadr: Vec<usize>,
+    /// Start index in qvel for this vertex (3 consecutive DOFs).
+    pub flexvert_dofadr: Vec<usize>,
+    /// Vertex mass (kg).
+    pub flexvert_mass: Vec<f64>,
+    /// Inverse mass (0 for pinned vertices).
+    pub flexvert_invmass: Vec<f64>,
+    /// Collision radius per vertex.
+    pub flexvert_radius: Vec<f64>,
+    /// Which flex object this vertex belongs to (for material lookup).
+    pub flexvert_flexid: Vec<usize>,
+    /// Optional rigid body attachment (usize::MAX = free vertex).
+    pub flexvert_bodyid: Vec<usize>,
+
+    // --- Per-edge arrays (length nflexedge) ---
+    /// Edge connectivity: vertex index pair [v0, v1].
+    pub flexedge_vert: Vec<[usize; 2]>,
+    /// Rest length of each edge.
+    pub flexedge_length0: Vec<f64>,
+    /// Effective cross-section area per edge (m²). Precomputed during build():
+    /// dim=1: π * radius², dim=2: thickness * dual_edge_len, dim=3: vol^{2/3} / L.
+    pub flexedge_crosssection: Vec<f64>,
+    /// Which flex object this edge belongs to.
+    pub flexedge_flexid: Vec<usize>,
+
+    // --- Per-element arrays (length nflexelem) ---
+    /// Element connectivity: vertex indices. Length varies by dim:
+    /// dim=1: 2 (edge), dim=2: 3 (triangle), dim=3: 4 (tetrahedron).
+    /// Stored as flat `Vec<usize>` with flexelem_dataadr/datanum for indexing.
+    pub flexelem_data: Vec<usize>,
+    /// Start index in flexelem_data for this element.
+    pub flexelem_dataadr: Vec<usize>,
+    /// Number of vertex indices per element (2, 3, or 4).
+    pub flexelem_datanum: Vec<usize>,
+    /// Rest volume of each element (dim=3 only, topology data for future SVK).
+    pub flexelem_volume0: Vec<f64>,
+    /// Which flex object this element belongs to.
+    pub flexelem_flexid: Vec<usize>,
+
+    // --- Per-hinge arrays (bending topology, length nflexhinge) ---
+    // A hinge is a pair of adjacent elements sharing an edge.
+    // dim=2: two triangles sharing an edge → 4 distinct vertices.
+    // dim=3: two tetrahedra sharing a face → 5 distinct vertices (but bending
+    //         force acts on the 4 vertices of the shared face + 2 opposite,
+    //         simplified to the same 4-vertex dihedral formulation).
+    /// Hinge vertex indices: [v_e0, v_e1, v_opp_a, v_opp_b] where (v_e0, v_e1)
+    /// is the shared edge and v_opp_a, v_opp_b are opposite vertices.
+    pub flexhinge_vert: Vec<[usize; 4]>,
+    /// Rest dihedral angle (radians).
+    pub flexhinge_angle0: Vec<f64>,
+    /// Which flex object this hinge belongs to.
+    pub flexhinge_flexid: Vec<usize>,
 
     // ==================== Meshes (indexed by mesh_id) ====================
     /// Number of mesh assets.
@@ -1618,18 +1739,6 @@ pub struct Model {
     /// Enable flags (bitmask for enabling optional behaviors).
     pub enableflags: u32,
 
-    // ==================== Deformable Configuration (feature-gated) ====================
-    /// Contact dimension for deformable-rigid contacts (1, 3, 4, or 6).
-    /// Default: 3 (normal + 2D sliding friction). Applies to all deformable bodies.
-    #[cfg(feature = "deformable")]
-    pub deformable_condim: i32,
-    /// Solver reference parameters for deformable-rigid contacts.
-    #[cfg(feature = "deformable")]
-    pub deformable_solref: [f64; 2],
-    /// Solver impedance parameters for deformable-rigid contacts.
-    #[cfg(feature = "deformable")]
-    pub deformable_solimp: [f64; 5],
-
     /// Integration method.
     pub integrator: Integrator,
     /// Contact constraint solver algorithm (PGS or CG).
@@ -1780,36 +1889,10 @@ pub struct Contact {
     /// Contact frame tangent vectors (orthogonal to normal).
     /// `frame[0..3]` = t1, `frame[3..6]` = t2 (for friction cone).
     pub frame: [Vector3<f64>; 2],
-}
-
-/// A contact between a deformable vertex and a rigid geom.
-#[derive(Debug, Clone)]
-#[cfg(feature = "deformable")]
-pub struct DeformableContact {
-    /// Index into `deformable_bodies` array.
-    pub deformable_idx: usize,
-    /// Vertex index within the deformable body.
-    pub vertex_idx: usize,
-    /// Rigid geom index (into `model.geom_*` arrays).
-    pub geom_idx: usize,
-    /// Contact position in world frame (closest point on rigid geom surface).
-    pub pos: Vector3<f64>,
-    /// Contact normal (from rigid surface toward deformable vertex, unit vector).
-    pub normal: Vector3<f64>,
-    /// Penetration depth (positive = overlapping).
-    pub depth: f64,
-    /// Combined sliding friction: sqrt(material.friction * geom_friction.x).
-    pub friction: f64,
-    /// Contact dimension (from model.deformable_condim).
-    pub dim: usize,
-    /// 5-element friction vector [sliding1, sliding2, torsional, rolling1, rolling2].
-    pub mu: [f64; 5],
-    /// Solver reference parameters.
-    pub solref: [f64; 2],
-    /// Solver impedance parameters.
-    pub solimp: [f64; 5],
-    /// Tangent frame vectors for friction cone.
-    pub frame: [Vector3<f64>; 2],
+    /// If `Some(vertex_idx)`, this is a flex-rigid contact.
+    /// `geom1` and `geom2` both reference the rigid geom index.
+    /// The flex vertex index is stored here. If `None`, standard rigid-rigid contact.
+    pub flex_vertex: Option<usize>,
 }
 
 impl Contact {
@@ -1902,6 +1985,7 @@ impl Contact {
             solref,
             solimp,
             frame: [t1, t2],
+            flex_vertex: None,
         }
     }
 
@@ -1994,6 +2078,7 @@ impl Contact {
             solref,
             solimp,
             frame: [t1, t2],
+            flex_vertex: None,
         }
     }
 }
@@ -2153,6 +2238,11 @@ pub struct Data {
     pub site_xmat: Vec<Matrix3<f64>>,
     /// Site orientations in world frame (length `nsite`).
     pub site_xquat: Vec<UnitQuaternion<f64>>,
+
+    // ==================== Flex Vertex Poses ====================
+    /// World-frame flex vertex positions (copied from qpos each step).
+    /// Length `nflexvert`. Updated by `mj_fwd_position_flex()`.
+    pub flexvert_xpos: Vec<Vector3<f64>>,
 
     // ==================== Velocities (computed from qvel) ====================
     /// Body spatial velocities (length `nbody`): (angular, linear).
@@ -2397,18 +2487,6 @@ pub struct Data {
     /// Kinetic energy.
     pub energy_kinetic: f64,
 
-    // ==================== Deformable State (feature-gated) ====================
-    /// Registered deformable bodies. Boxed trait objects allow heterogeneous storage.
-    /// `Send + Sync` bounds required for rayon `par_iter_mut()` and bevy `Resource`.
-    #[cfg(feature = "deformable")]
-    pub deformable_bodies: Vec<Box<dyn DeformableBody + Send + Sync>>,
-    /// Per-body XPBD solver instances. Parallel array with `deformable_bodies`.
-    #[cfg(feature = "deformable")]
-    pub deformable_solvers: Vec<XpbdSolver>,
-    /// Deformable-rigid contacts detected this step.
-    #[cfg(feature = "deformable")]
-    pub deformable_contacts: Vec<DeformableContact>,
-
     // ==================== Sleep State (§16.1) ====================
     /// Per-tree sleep timer (length `ntree`).
     /// `< 0`: Tree is awake. Countdown from `-(1 + MIN_AWAKE)` toward `-1`.
@@ -2613,6 +2691,8 @@ impl Clone for Data {
             site_xpos: self.site_xpos.clone(),
             site_xmat: self.site_xmat.clone(),
             site_xquat: self.site_xquat.clone(),
+            // Flex vertex poses
+            flexvert_xpos: self.flexvert_xpos.clone(),
             // Velocities
             cvel: self.cvel.clone(),
             cdof: self.cdof.clone(),
@@ -2687,17 +2767,6 @@ impl Clone for Data {
             // Energy
             energy_potential: self.energy_potential,
             energy_kinetic: self.energy_kinetic,
-            // Deformable state (feature-gated)
-            #[cfg(feature = "deformable")]
-            deformable_bodies: self
-                .deformable_bodies
-                .iter()
-                .map(|b| b.clone_box())
-                .collect(),
-            #[cfg(feature = "deformable")]
-            deformable_solvers: self.deformable_solvers.clone(),
-            #[cfg(feature = "deformable")]
-            deformable_contacts: self.deformable_contacts.clone(),
             // Sleep state
             tree_asleep: self.tree_asleep.clone(),
             tree_awake: self.tree_awake.clone(),
@@ -2783,6 +2852,15 @@ impl Model {
             nmocap: 0,
             nkeyframe: 0,
 
+            // Flex dimensions (empty)
+            nflex: 0,
+            nflexvert: 0,
+            nflexedge: 0,
+            nflexelem: 0,
+            nflexhinge: 0,
+            nq_rigid: 0,
+            nv_rigid: 0,
+
             // Kinematic trees (§16.0) — empty model has no trees
             ntree: 0,
             tree_body_adr: vec![],
@@ -2866,6 +2944,49 @@ impl Model {
             geom_mesh: vec![],
             geom_hfield: vec![],
             geom_sdf: vec![],
+
+            // Flex bodies (empty)
+            flex_dim: vec![],
+            flex_vertadr: vec![],
+            flex_vertnum: vec![],
+            flex_edgeadr: vec![],
+            flex_edgenum: vec![],
+            flex_elemadr: vec![],
+            flex_elemnum: vec![],
+            flex_young: vec![],
+            flex_poisson: vec![],
+            flex_damping: vec![],
+            flex_thickness: vec![],
+            flex_friction: vec![],
+            flex_solref: vec![],
+            flex_solimp: vec![],
+            flex_condim: vec![],
+            flex_margin: vec![],
+            flex_selfcollide: vec![],
+            flex_edge_solref: vec![],
+            flex_edge_solimp: vec![],
+            flex_bend_stiffness: vec![],
+            flex_bend_damping: vec![],
+            flex_density: vec![],
+            flexvert_qposadr: vec![],
+            flexvert_dofadr: vec![],
+            flexvert_mass: vec![],
+            flexvert_invmass: vec![],
+            flexvert_radius: vec![],
+            flexvert_flexid: vec![],
+            flexvert_bodyid: vec![],
+            flexedge_vert: vec![],
+            flexedge_length0: vec![],
+            flexedge_crosssection: vec![],
+            flexedge_flexid: vec![],
+            flexelem_data: vec![],
+            flexelem_dataadr: vec![],
+            flexelem_datanum: vec![],
+            flexelem_volume0: vec![],
+            flexelem_flexid: vec![],
+            flexhinge_vert: vec![],
+            flexhinge_angle0: vec![],
+            flexhinge_flexid: vec![],
 
             // Meshes (empty)
             nmesh: 0,
@@ -2984,12 +3105,6 @@ impl Model {
             noslip_tolerance: 1e-6,        // Not yet implemented
             disableflags: 0,               // Nothing disabled
             enableflags: 0,                // Nothing extra enabled
-            #[cfg(feature = "deformable")]
-            deformable_condim: 3,
-            #[cfg(feature = "deformable")]
-            deformable_solref: [0.02, 1.0],
-            #[cfg(feature = "deformable")]
-            deformable_solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
 
@@ -3112,6 +3227,34 @@ impl Model {
         (&self.qLD_rowadr, &self.qLD_rownnz, &self.qLD_colind)
     }
 
+    /// Effective number of rigid velocity DOFs.
+    ///
+    /// Returns `nv_rigid` if flex vertices are present, otherwise `nv`
+    /// (all DOFs are rigid). This handles models built programmatically
+    /// (e.g., `n_link_pendulum`) that don't explicitly set `nv_rigid`.
+    #[inline]
+    #[must_use]
+    pub fn nv_rigid(&self) -> usize {
+        if self.nv_rigid > 0 || self.nflexvert > 0 {
+            self.nv_rigid
+        } else {
+            self.nv
+        }
+    }
+
+    /// Effective number of rigid generalized position coordinates.
+    ///
+    /// Returns `nq_rigid` if flex vertices are present, otherwise `nq`.
+    #[inline]
+    #[must_use]
+    pub fn nq_rigid(&self) -> usize {
+        if self.nq_rigid > 0 || self.nflexvert > 0 {
+            self.nq_rigid
+        } else {
+            self.nq
+        }
+    }
+
     /// Create initial Data struct for this model with all arrays pre-allocated.
     #[must_use]
     pub fn make_data(&self) -> Data {
@@ -3167,6 +3310,9 @@ impl Model {
             site_xpos: vec![Vector3::zeros(); self.nsite],
             site_xmat: vec![Matrix3::identity(); self.nsite],
             site_xquat: vec![UnitQuaternion::identity(); self.nsite],
+
+            // Flex vertex poses
+            flexvert_xpos: vec![Vector3::zeros(); self.nflexvert],
 
             // Velocities
             cvel: vec![SpatialVector::zeros(); self.nbody],
@@ -3257,14 +3403,6 @@ impl Model {
             // Energy
             energy_potential: 0.0,
             energy_kinetic: 0.0,
-
-            // Deformable state (feature-gated)
-            #[cfg(feature = "deformable")]
-            deformable_bodies: Vec::new(),
-            #[cfg(feature = "deformable")]
-            deformable_solvers: Vec::new(),
-            #[cfg(feature = "deformable")]
-            deformable_contacts: Vec::with_capacity(256),
 
             // Sleep state (§16.7) — initialized from tree sleep policies.
             // For models not built through MJCF (ntree == 0 or body_treeid not populated),
@@ -3881,8 +4019,28 @@ impl Model {
         let mut data = self.make_data();
         mj_fwd_position(self, &mut data);
         mj_crba(self, &mut data);
-        let trace: f64 = (0..self.nv).map(|i| data.qM[(i, i)]).sum();
-        self.stat_meaninertia = trace / self.nv as f64;
+        // Skip pinned flex vertex DOFs (invmass == 0, mass ≈ 1e20) to avoid
+        // their huge mass dominating the mean and collapsing Newton scale.
+        let mut pinned_dofs = vec![false; self.nv];
+        for i in 0..self.nflexvert {
+            if self.flexvert_invmass[i] == 0.0 {
+                let dof_base = self.flexvert_dofadr[i];
+                for k in 0..3 {
+                    if dof_base + k < self.nv {
+                        pinned_dofs[dof_base + k] = true;
+                    }
+                }
+            }
+        }
+        let mut trace = 0.0_f64;
+        let mut count = 0usize;
+        for i in 0..self.nv {
+            if !pinned_dofs[i] {
+                trace += data.qM[(i, i)];
+                count += 1;
+            }
+        }
+        self.stat_meaninertia = if count > 0 { trace / count as f64 } else { 1.0 };
         // Guard against degenerate models with zero inertia
         if self.stat_meaninertia <= 0.0 {
             self.stat_meaninertia = 1.0;
@@ -3946,6 +4104,8 @@ impl Model {
         // Dimensions
         model.nq = n;
         model.nv = n;
+        model.nq_rigid = n; // All DOFs are rigid (no flex vertices)
+        model.nv_rigid = n;
         model.nbody = n + 1; // world + n bodies
         model.njnt = n;
 
@@ -4054,6 +4214,8 @@ impl Model {
         // Dimensions
         model.nq = 4; // Quaternion: w, x, y, z
         model.nv = 3; // Angular velocity: omega_x, omega_y, omega_z
+        model.nq_rigid = 4; // All DOFs are rigid (no flex vertices)
+        model.nv_rigid = 3;
         model.nbody = 2; // world + pendulum
         model.njnt = 1;
 
@@ -4143,6 +4305,8 @@ impl Model {
         // Dimensions
         model.nq = 7; // position (3) + quaternion (4)
         model.nv = 6; // linear velocity (3) + angular velocity (3)
+        model.nq_rigid = 7; // All DOFs are rigid (no flex vertices)
+        model.nv_rigid = 6;
         model.nbody = 2;
         model.njnt = 1;
 
@@ -4245,17 +4409,6 @@ impl Data {
         self.ncon = 0;
         self.contacts.clear();
 
-        #[cfg(feature = "deformable")]
-        {
-            self.deformable_contacts.clear();
-            for body in &mut self.deformable_bodies {
-                for vel in body.velocities_mut() {
-                    *vel = Vector3::zeros();
-                }
-                body.clear_forces();
-            }
-        }
-
         // Reset mocap poses to model defaults (body_pos/body_quat offsets).
         let mut mocap_idx = 0;
         for (body_id, mid) in model.body_mocapid.iter().enumerate() {
@@ -4322,51 +4475,10 @@ impl Data {
         self.ncon = 0;
         self.contacts.clear();
 
-        // Feature-gated deformable clearing (matching Data::reset()).
-        #[cfg(feature = "deformable")]
-        {
-            self.deformable_contacts.clear();
-            for body in &mut self.deformable_bodies {
-                for vel in body.velocities_mut() {
-                    *vel = Vector3::zeros();
-                }
-                body.clear_forces();
-            }
-        }
-
         // Reset sleep state from model policies (§16.7).
         reset_sleep_state(model, self);
 
         Ok(())
-    }
-
-    /// Register a deformable body for simulation.
-    ///
-    /// The body is consumed and stored internally. Returns the index into
-    /// `deformable_bodies` for later reference.
-    #[cfg(feature = "deformable")]
-    pub fn register_deformable(
-        &mut self,
-        body: Box<dyn DeformableBody + Send + Sync>,
-        solver_config: XpbdSolverConfig,
-    ) -> usize {
-        let idx = self.deformable_bodies.len();
-        self.deformable_bodies.push(body);
-        self.deformable_solvers.push(XpbdSolver::new(solver_config));
-        idx
-    }
-
-    /// Get a reference to a registered deformable body.
-    #[cfg(feature = "deformable")]
-    #[must_use]
-    pub fn deformable(&self, idx: usize) -> &dyn DeformableBody {
-        self.deformable_bodies[idx].as_ref()
-    }
-
-    /// Get a mutable reference to a registered deformable body.
-    #[cfg(feature = "deformable")]
-    pub fn deformable_mut(&mut self, idx: usize) -> &mut dyn DeformableBody {
-        self.deformable_bodies[idx].as_mut()
     }
 
     /// Get total mechanical energy (kinetic + potential).
@@ -4510,6 +4622,7 @@ impl Data {
 
         // ========== Position Stage ==========
         mj_fwd_position(model, self);
+        mj_fwd_position_flex(model, self);
 
         // §16.15: If FK detected external qpos changes on sleeping bodies, wake them
         if sleep_enabled && mj_check_qpos_changed(model, self) {
@@ -4537,8 +4650,6 @@ impl Data {
             mj_update_sleep_arrays(model, self);
         }
 
-        #[cfg(feature = "deformable")]
-        mj_deformable_collision(model, self);
         if compute_sensors {
             mj_sensor_pos(model, self);
         }
@@ -4553,7 +4664,7 @@ impl Data {
 
         // ========== Acceleration Stage ==========
         mj_fwd_actuation(model, self);
-        mj_crba(model, self);
+        mj_crba(model, self); // Calls mj_crba_flex + mj_factor_flex internally
         mj_rne(model, self);
         mj_energy_vel(model, self);
         mj_fwd_passive(model, self);
@@ -4571,6 +4682,21 @@ impl Data {
         if !self.newton_solved {
             mj_fwd_acceleration(model, self)?;
         }
+
+        // Zero out qacc and qvel for pinned flex vertices (invmass == 0).
+        // With large-but-finite mass (1e20), tiny residual forces produce
+        // near-zero but nonzero qacc. Clamping to exact zero ensures pinned
+        // vertices remain perfectly stationary.
+        for i in 0..model.nflexvert {
+            if model.flexvert_invmass[i] == 0.0 {
+                let dof_base = model.flexvert_dofadr[i];
+                for k in 0..3 {
+                    self.qacc[dof_base + k] = 0.0;
+                    self.qvel[dof_base + k] = 0.0;
+                }
+            }
+        }
+
         if compute_sensors {
             mj_sensor_acc(model, self);
             mj_sensor_postprocess(model, self);
@@ -4648,13 +4774,10 @@ impl Data {
 
         // Update positions - quaternions need special handling!
         mj_integrate_pos(model, self, h);
+        mj_integrate_pos_flex(model, self, h);
 
         // Normalize quaternions to prevent drift
         mj_normalize_quat(model, self);
-
-        // Step deformable bodies (XPBD internal constraints)
-        #[cfg(feature = "deformable")]
-        mj_deformable_step(model, self);
 
         // Advance time
         self.time += h;
@@ -4714,6 +4837,7 @@ impl Data {
 
         // 3. Position integration + quaternion normalization + time advance
         mj_integrate_pos(model, self, h);
+        mj_integrate_pos_flex(model, self, h);
         mj_normalize_quat(model, self);
         self.time += h;
     }
@@ -5355,108 +5479,357 @@ fn mj_collision(model: &Model, data: &mut Data) {
     data.contacts.clear();
     data.ncon = 0;
 
-    // Early exit if no geoms or only one geom
-    if model.ngeom <= 1 {
+    // Rigid-rigid collision requires at least 2 geoms for a pair.
+    // Even with 0 or 1 geoms, flex-vertex-vs-rigid contacts are still possible.
+    if model.ngeom >= 2 {
+        // Build AABBs for all geoms
+        // This is O(n) and cache-friendly (linear memory access)
+        let aabbs: Vec<Aabb> = (0..model.ngeom)
+            .map(|geom_id| {
+                aabb_from_geom(
+                    model.geom_type[geom_id],
+                    model.geom_size[geom_id],
+                    data.geom_xpos[geom_id],
+                    data.geom_xmat[geom_id],
+                )
+            })
+            .collect();
+
+        // Sweep-and-prune broad-phase: O(n log n) worst case, O(n + k) for coherent scenes
+        let sap = SweepAndPrune::new(aabbs);
+        let candidates = sap.query_pairs();
+
+        let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+
+        // Process candidate pairs
+        // The SAP already filtered to only AABB-overlapping pairs
+        for (geom1, geom2) in candidates {
+            // Affinity check: same body, parent-child, contype/conaffinity
+            if !check_collision_affinity(model, geom1, geom2) {
+                continue;
+            }
+
+            // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
+            // Keep sleeping-vs-awake pairs — they may trigger wake detection (§16.4).
+            if sleep_enabled {
+                let b1 = model.geom_body[geom1];
+                let b2 = model.geom_body[geom2];
+                if data.body_sleep_state[b1] == SleepState::Asleep
+                    && data.body_sleep_state[b2] == SleepState::Asleep
+                {
+                    continue;
+                }
+            }
+
+            // Get world-space poses
+            let pos1 = data.geom_xpos[geom1];
+            let mat1 = data.geom_xmat[geom1];
+            let pos2 = data.geom_xpos[geom2];
+            let mat2 = data.geom_xmat[geom2];
+
+            // Narrow-phase collision detection
+            if let Some(contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
+                data.contacts.push(contact);
+                data.ncon += 1;
+            }
+        }
+
+        // Mechanism 2: explicit contact pairs (bypass kinematic + bitmask filters)
+        for pair in &model.contact_pairs {
+            let geom1 = pair.geom1;
+            let geom2 = pair.geom2;
+
+            // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
+            if sleep_enabled {
+                let b1 = model.geom_body[geom1];
+                let b2 = model.geom_body[geom2];
+                if data.body_sleep_state[b1] == SleepState::Asleep
+                    && data.body_sleep_state[b2] == SleepState::Asleep
+                {
+                    continue;
+                }
+            }
+
+            // Distance cull using bounding radii (replaces SAP broad-phase for pairs).
+            // geom_rbound is the bounding sphere radius, pre-computed per geom.
+            // For planes, rbound = INFINITY so this check always passes.
+            // Margin is added to match MuJoCo's mj_filterSphere.
+            let dist = (data.geom_xpos[geom1] - data.geom_xpos[geom2]).norm();
+            if dist > model.geom_rbound[geom1] + model.geom_rbound[geom2] + pair.margin {
+                continue;
+            }
+
+            // Narrow-phase collision detection
+            let pos1 = data.geom_xpos[geom1];
+            let mat1 = data.geom_xmat[geom1];
+            let pos2 = data.geom_xpos[geom2];
+            let mat2 = data.geom_xmat[geom2];
+
+            if let Some(mut contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
+                apply_pair_overrides(&mut contact, pair);
+                data.contacts.push(contact);
+                data.ncon += 1;
+            }
+        }
+    } // end if model.ngeom >= 2
+
+    // Mechanism 3: flex vertex vs rigid geom contacts
+    mj_collision_flex(model, data);
+}
+
+/// Detect contacts between flex vertices and rigid geoms.
+///
+/// Each flex vertex is treated as a sphere of radius `flexvert_radius[vi]`.
+/// Uses brute-force broadphase (O(V*G)) for simplicity — SAP integration
+/// deferred to when nflexvert is large enough to warrant it.
+/// No-op when nflexvert == 0.
+fn mj_collision_flex(model: &Model, data: &mut Data) {
+    if model.nflexvert == 0 {
         return;
     }
 
-    // Build AABBs for all geoms
-    // This is O(n) and cache-friendly (linear memory access)
-    let aabbs: Vec<Aabb> = (0..model.ngeom)
-        .map(|geom_id| {
-            aabb_from_geom(
-                model.geom_type[geom_id],
-                model.geom_size[geom_id],
-                data.geom_xpos[geom_id],
-                data.geom_xmat[geom_id],
-            )
-        })
-        .collect();
+    for vi in 0..model.nflexvert {
+        let vpos = data.flexvert_xpos[vi];
+        let flex_id = model.flexvert_flexid[vi];
+        let radius = model.flexvert_radius[vi];
+        let margin = model.flex_margin[flex_id];
 
-    // Sweep-and-prune broad-phase: O(n log n) worst case, O(n + k) for coherent scenes
-    let sap = SweepAndPrune::new(aabbs);
-    let candidates = sap.query_pairs();
-
-    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
-
-    // Process candidate pairs
-    // The SAP already filtered to only AABB-overlapping pairs
-    for (geom1, geom2) in candidates {
-        // Affinity check: same body, parent-child, contype/conaffinity
-        if !check_collision_affinity(model, geom1, geom2) {
+        // Skip pinned vertices (infinite mass = immovable)
+        if model.flexvert_invmass[vi] <= 0.0 {
             continue;
         }
 
-        // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
-        // Keep sleeping-vs-awake pairs — they may trigger wake detection (§16.4).
-        if sleep_enabled {
-            let b1 = model.geom_body[geom1];
-            let b2 = model.geom_body[geom2];
-            if data.body_sleep_state[b1] == SleepState::Asleep
-                && data.body_sleep_state[b2] == SleepState::Asleep
+        for gi in 0..model.ngeom {
+            // Narrowphase: vertex sphere vs rigid geom
+            let geom_pos = data.geom_xpos[gi];
+            let geom_mat = data.geom_xmat[gi];
+
+            if let Some((depth, normal, contact_pos)) =
+                narrowphase_sphere_geom(vpos, radius + margin, gi, model, geom_pos, geom_mat)
             {
-                continue;
+                let contact = make_contact_flex_rigid(model, vi, gi, contact_pos, normal, depth);
+                data.contacts.push(contact);
+                data.ncon += 1;
             }
-        }
-
-        // Get world-space poses
-        let pos1 = data.geom_xpos[geom1];
-        let mat1 = data.geom_xmat[geom1];
-        let pos2 = data.geom_xpos[geom2];
-        let mat2 = data.geom_xmat[geom2];
-
-        // Narrow-phase collision detection
-        if let Some(contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
-            data.contacts.push(contact);
-            data.ncon += 1;
-        }
-    }
-
-    // Mechanism 2: explicit contact pairs (bypass kinematic + bitmask filters)
-    for pair in &model.contact_pairs {
-        let geom1 = pair.geom1;
-        let geom2 = pair.geom2;
-
-        // §16.5b: Skip narrow-phase if BOTH geoms belong to sleeping bodies.
-        if sleep_enabled {
-            let b1 = model.geom_body[geom1];
-            let b2 = model.geom_body[geom2];
-            if data.body_sleep_state[b1] == SleepState::Asleep
-                && data.body_sleep_state[b2] == SleepState::Asleep
-            {
-                continue;
-            }
-        }
-
-        // Distance cull using bounding radii (replaces SAP broad-phase for pairs).
-        // geom_rbound is the bounding sphere radius, pre-computed per geom.
-        // For planes, rbound = INFINITY so this check always passes.
-        // Margin is added to match MuJoCo's mj_filterSphere.
-        let dist = (data.geom_xpos[geom1] - data.geom_xpos[geom2]).norm();
-        if dist > model.geom_rbound[geom1] + model.geom_rbound[geom2] + pair.margin {
-            continue;
-        }
-
-        // Narrow-phase collision detection
-        let pos1 = data.geom_xpos[geom1];
-        let mat1 = data.geom_xmat[geom1];
-        let pos2 = data.geom_xpos[geom2];
-        let mat2 = data.geom_xmat[geom2];
-
-        if let Some(mut contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
-            apply_pair_overrides(&mut contact, pair);
-            data.contacts.push(contact);
-            data.ncon += 1;
         }
     }
 }
 
-/// Narrow-phase collision between two geometries.
+/// Narrowphase collision between a sphere (flex vertex) and a rigid geom.
 ///
-/// Returns Contact if penetrating, None otherwise.
+/// Returns `(depth, normal, contact_pos)` if penetrating, `None` otherwise.
+/// The normal points from the rigid geom surface toward the vertex.
+fn narrowphase_sphere_geom(
+    sphere_pos: Vector3<f64>,
+    sphere_radius: f64,
+    geom_idx: usize,
+    model: &Model,
+    geom_pos: Vector3<f64>,
+    geom_mat: Matrix3<f64>,
+) -> Option<(f64, Vector3<f64>, Vector3<f64>)> {
+    let v = sphere_pos;
+
+    let (d_surface, normal) = match model.geom_type[geom_idx] {
+        GeomType::Plane => {
+            let plane_normal = geom_mat.column(2).into_owned();
+            let d = (v - geom_pos).dot(&plane_normal);
+            (d, plane_normal)
+        }
+        GeomType::Sphere => {
+            let radius = model.geom_size[geom_idx].x;
+            let diff = v - geom_pos;
+            let dist = diff.norm();
+            if dist < 1e-10 {
+                (-radius, Vector3::new(0.0, 0.0, 1.0))
+            } else {
+                (dist - radius, diff / dist)
+            }
+        }
+        GeomType::Box => {
+            let half = model.geom_size[geom_idx];
+            let v_local = geom_mat.transpose() * (v - geom_pos);
+            let clamped = Vector3::new(
+                v_local.x.clamp(-half.x, half.x),
+                v_local.y.clamp(-half.y, half.y),
+                v_local.z.clamp(-half.z, half.z),
+            );
+            let diff_local = v_local - clamped;
+            let dist_outside = diff_local.norm();
+            if dist_outside > 1e-10 {
+                let normal_world = geom_mat * (diff_local / dist_outside);
+                (dist_outside, normal_world)
+            } else {
+                let dx = half.x - v_local.x.abs();
+                let dy = half.y - v_local.y.abs();
+                let dz = half.z - v_local.z.abs();
+                let min_depth = dx.min(dy).min(dz);
+                let normal_local = if (dx - min_depth).abs() < 1e-10 {
+                    Vector3::new(v_local.x.signum(), 0.0, 0.0)
+                } else if (dy - min_depth).abs() < 1e-10 {
+                    Vector3::new(0.0, v_local.y.signum(), 0.0)
+                } else {
+                    Vector3::new(0.0, 0.0, v_local.z.signum())
+                };
+                (-min_depth, geom_mat * normal_local)
+            }
+        }
+        GeomType::Capsule => {
+            let radius = model.geom_size[geom_idx].x;
+            let half_len = model.geom_size[geom_idx].y;
+            let axis = geom_mat.column(2).into_owned();
+            let a = geom_pos - axis * half_len;
+            let b = geom_pos + axis * half_len;
+            let closest = closest_point_segment(a, b, v);
+            let diff = v - closest;
+            let dist = diff.norm();
+            if dist < 1e-10 {
+                (-radius, Vector3::new(0.0, 0.0, 1.0))
+            } else {
+                (dist - radius, diff / dist)
+            }
+        }
+        GeomType::Cylinder => {
+            let radius = model.geom_size[geom_idx].x;
+            let half_len = model.geom_size[geom_idx].y;
+            let v_local = geom_mat.transpose() * (v - geom_pos);
+            let radial_dist = Vector2::new(v_local.x, v_local.y).norm();
+            let on_barrel = v_local.z.abs() <= half_len;
+            let in_radial = radial_dist <= radius;
+
+            if on_barrel && in_radial {
+                let d_radial = radius - radial_dist;
+                let d_axial = half_len - v_local.z.abs();
+                if d_radial < d_axial {
+                    let nl = if radial_dist > 1e-10 {
+                        Vector3::new(v_local.x / radial_dist, v_local.y / radial_dist, 0.0)
+                    } else {
+                        Vector3::new(1.0, 0.0, 0.0)
+                    };
+                    (-d_radial, geom_mat * nl)
+                } else {
+                    let nl = Vector3::new(0.0, 0.0, v_local.z.signum());
+                    (-d_axial, geom_mat * nl)
+                }
+            } else if on_barrel {
+                let nl = if radial_dist > 1e-10 {
+                    Vector3::new(v_local.x / radial_dist, v_local.y / radial_dist, 0.0)
+                } else {
+                    Vector3::new(1.0, 0.0, 0.0)
+                };
+                (radial_dist - radius, geom_mat * nl)
+            } else if in_radial {
+                let nl = Vector3::new(0.0, 0.0, v_local.z.signum());
+                (v_local.z.abs() - half_len, geom_mat * nl)
+            } else {
+                let z_clamped = v_local.z.clamp(-half_len, half_len);
+                let closest_local = Vector3::new(
+                    v_local.x * radius / radial_dist,
+                    v_local.y * radius / radial_dist,
+                    z_clamped,
+                );
+                let diff_local = Vector3::new(v_local.x, v_local.y, v_local.z) - closest_local;
+                let dist = diff_local.norm();
+                if dist < 1e-10 {
+                    return None;
+                }
+                (dist, geom_mat * (diff_local / dist))
+            }
+        }
+        GeomType::Ellipsoid => {
+            let radii = model.geom_size[geom_idx];
+            let v_local = geom_mat.transpose() * (v - geom_pos);
+            let v_scaled = Vector3::new(
+                v_local.x / radii.x,
+                v_local.y / radii.y,
+                v_local.z / radii.z,
+            );
+            let dist_scaled = v_scaled.norm();
+            if dist_scaled < 1e-10 {
+                return None;
+            }
+            let d_approx = (dist_scaled - 1.0) * radii.x.min(radii.y).min(radii.z);
+            let grad_local = Vector3::new(
+                v_local.x / (radii.x * radii.x),
+                v_local.y / (radii.y * radii.y),
+                v_local.z / (radii.z * radii.z),
+            );
+            let grad_len = grad_local.norm();
+            if grad_len < 1e-10 {
+                return None;
+            }
+            (d_approx, geom_mat * (grad_local / grad_len))
+        }
+        // Mesh/Hfield/Sdf: not yet supported for flex-vertex collision
+        _ => return None,
+    };
+
+    let depth = sphere_radius - d_surface;
+    if depth <= 0.0 {
+        return None;
+    }
+
+    let contact_pos = v - normal * d_surface;
+    Some((depth, normal, contact_pos))
+}
+
+/// Create a Contact for a flex-rigid collision.
+fn make_contact_flex_rigid(
+    model: &Model,
+    vertex_idx: usize,
+    geom_idx: usize,
+    pos: Vector3<f64>,
+    normal: Vector3<f64>,
+    depth: f64,
+) -> Contact {
+    let flex_id = model.flexvert_flexid[vertex_idx];
+
+    // Friction: element-wise max (flex scalar applied to all components)
+    let flex_f = model.flex_friction[flex_id];
+    let rigid_f = model.geom_friction[geom_idx];
+    let sliding = flex_f.max(rigid_f.x);
+    let torsional = flex_f.max(rigid_f.y);
+    let rolling = flex_f.max(rigid_f.z);
+
+    let condim = model.flex_condim[flex_id].max(model.geom_condim[geom_idx]);
+
+    let (solref, solimp) = combine_solver_params(
+        model.flex_solref[flex_id],
+        model.flex_solimp[flex_id],
+        model.geom_solref[geom_idx],
+        model.geom_solimp[geom_idx],
+    );
+
+    let (t1, t2) = compute_tangent_frame(&normal);
+
+    let dim: usize = match condim {
+        1 => 1,
+        4 => 4,
+        _ => 3, // condim 3 and any other value default to 3D friction cone
+    };
+
+    Contact {
+        pos,
+        normal,
+        depth,
+        // For flex contacts, geom1 = geom2 = the rigid geom index.
+        // The vertex index is stored in flex_vertex.
+        // This ensures model.geom_body[contact.geom1] is always valid.
+        geom1: geom_idx,
+        geom2: geom_idx,
+        friction: sliding,
+        dim,
+        includemargin: false,
+        mu: [sliding, sliding, torsional, rolling, rolling],
+        solref,
+        solimp,
+        frame: [t1, t2],
+        flex_vertex: Some(vertex_idx),
+    }
+}
+
+/// Narrow-phase collision between two geometries.
 #[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
 #[allow(clippy::items_after_statements)] // use statement placed after special cases for readability
-#[inline]
 fn collide_geoms(
     model: &Model,
     geom1: usize,
@@ -8616,6 +8989,18 @@ fn compute_subtree_angmom(model: &Model, data: &Data, root_body: usize) -> Vecto
     angmom
 }
 
+/// Copy flex vertex positions from qpos to flexvert_xpos.
+///
+/// Flex vertices ARE their positions — no kinematic chain traversal needed.
+/// Trivial O(nflexvert), no-op when nflexvert == 0.
+fn mj_fwd_position_flex(model: &Model, data: &mut Data) {
+    for i in 0..model.nflexvert {
+        let adr = model.flexvert_qposadr[i];
+        data.flexvert_xpos[i] =
+            Vector3::new(data.qpos[adr], data.qpos[adr + 1], data.qpos[adr + 2]);
+    }
+}
+
 /// Velocity kinematics: compute body velocities from qvel.
 fn mj_fwd_velocity(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
@@ -10167,7 +10552,10 @@ fn mj_crba(model: &Model, data: &mut Data) {
         .map(|jnt_id| joint_motion_subspace(model, data, jnt_id))
         .collect();
 
-    let cdof: Vec<Vector6<f64>> = (0..model.nv)
+    // Build cdof only for rigid DOFs (flex DOFs have dof_jnt = usize::MAX,
+    // no joint subspace, and their mass is handled separately by mj_crba_flex).
+    let nv_rigid = model.nv_rigid();
+    let cdof: Vec<Vector6<f64>> = (0..nv_rigid)
         .map(|dof| {
             let jnt = model.dof_jnt[dof];
             let dof_in_jnt = dof - model.jnt_dof_adr[jnt];
@@ -10175,10 +10563,14 @@ fn mj_crba(model: &Model, data: &mut Data) {
         })
         .collect();
 
+    // Only iterate rigid DOFs for CRBA mass matrix entries.
+    // Flex vertex diagonal blocks are written by mj_crba_flex (Phase 5a).
     let nv_iter = if sleep_filter {
+        // When sleeping, awake DOFs are a subset of rigid DOFs
+        // (flex DOFs are always awake but handled by mj_crba_flex).
         data.nv_awake
     } else {
-        model.nv
+        nv_rigid
     };
     for v in 0..nv_iter {
         let dof_i = if sleep_filter {
@@ -10186,6 +10578,10 @@ fn mj_crba(model: &Model, data: &mut Data) {
         } else {
             v
         };
+        // Skip flex DOFs that might be in the awake list
+        if dof_i >= nv_rigid {
+            continue;
+        }
         let body_i = model.dof_body[dof_i];
         let ic = &data.crb_inertia[body_i];
 
@@ -10250,13 +10646,24 @@ fn mj_crba(model: &Model, data: &mut Data) {
     }
 
     // ============================================================
-    // Phase 5: Sparse L^T D L factorization
+    // Phase 5a: Fill flex vertex diagonal blocks in qM
+    // ============================================================
+    // Must run before factorization so that qM has correct flex entries.
+    mj_crba_flex(model, data);
+
+    // Phase 5b: Sparse L^T D L factorization
     // ============================================================
     // Exploits tree sparsity from dof_parent for O(n) factorization and solve.
     // Reused in mj_fwd_acceleration_explicit() and pgs_solve_contacts().
     // C3b: Selective factorization skips sleeping DOFs when sleep is enabled.
     // Sleeping DOFs' qLD entries are preserved from their last awake step.
     mj_factor_sparse_selective(model, data);
+
+    // Phase 5c: Patch LDL diagonal for flex DOFs
+    // ============================================================
+    // mj_factor_sparse doesn't touch flex DOFs (they have no kinematic chain),
+    // so we write the diagonal mass and its inverse directly.
+    mj_factor_flex(model, data);
 
     // ============================================================
     // Phase 6: Cache body effective mass/inertia from qM diagonal
@@ -10489,6 +10896,46 @@ pub(crate) fn joint_motion_subspace(
 /// to verify for correctness.
 ///
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 5
+/// Extend mass matrix M with flex vertex diagonal blocks.
+///
+/// Each vertex contributes m_i * I_3 (3 diagonal entries).
+/// No-op when nflexvert == 0.
+fn mj_crba_flex(model: &Model, data: &mut Data) {
+    for i in 0..model.nflexvert {
+        let mass = model.flexvert_mass[i];
+        let dof_base = model.flexvert_dofadr[i];
+        for k in 0..3 {
+            let dof = dof_base + k;
+            data.qM[(dof, dof)] = mass;
+        }
+    }
+}
+
+/// Extend sparse LDL factorization with flex diagonal entries.
+///
+/// For diagonal-only DOFs: L = I, D = M, so D_inv = 1/M.
+/// Pinned vertices have mass = 1e20 → D_inv ≈ 0 → near-zero acceleration.
+/// No-op when nflexvert == 0.
+#[allow(non_snake_case)]
+fn mj_factor_flex(model: &Model, data: &mut Data) {
+    for i in 0..model.nflexvert {
+        let mass = model.flexvert_mass[i];
+        let dof_base = model.flexvert_dofadr[i];
+        for k in 0..3 {
+            let dof = dof_base + k;
+            // Diagonal entry in qLD_data
+            let ld_adr = model.qLD_rowadr[dof]; // points to diagonal
+            data.qLD_data[ld_adr] = mass;
+            // Precomputed inverse
+            data.qLD_diag_inv[dof] = if mass > 0.0 { 1.0 / mass } else { 0.0 };
+        }
+    }
+    // Mark factorization as valid (spec S4, line 453)
+    if model.nflexvert > 0 {
+        data.qLD_valid = true;
+    }
+}
+
 /// Reference: MuJoCo Computation docs - mj_rne section
 #[allow(
     clippy::too_many_lines,
@@ -10564,6 +11011,19 @@ fn mj_rne(model: &Model, data: &mut Data) {
                 data.qfrc_bias[dof_adr + 4] += torque.y;
                 data.qfrc_bias[dof_adr + 5] += torque.z;
             }
+        }
+    }
+
+    // Flex vertex gravity: direct force on translational DOFs
+    // Skip pinned vertices (invmass == 0, mass == 1e20) to avoid huge values in qfrc_bias.
+    for i in 0..model.nflexvert {
+        if model.flexvert_invmass[i] == 0.0 {
+            continue; // Pinned vertex: skip gravity
+        }
+        let mass = model.flexvert_mass[i];
+        let dof_base = model.flexvert_dofadr[i];
+        for k in 0..3 {
+            data.qfrc_bias[dof_base + k] -= mass * model.gravity[k];
         }
     }
 
@@ -10893,6 +11353,132 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
             );
         }
     }
+
+    // Flex vertex damping: qfrc_passive[dof] = -damping * qvel[dof]
+    for i in 0..model.nflexvert {
+        let flex_id = model.flexvert_flexid[i];
+        let damp = model.flex_damping[flex_id];
+        if damp <= 0.0 {
+            continue;
+        }
+        let dof_base = model.flexvert_dofadr[i];
+        for k in 0..3 {
+            data.qfrc_passive[dof_base + k] -= damp * data.qvel[dof_base + k];
+        }
+    }
+
+    // Flex bending passive forces: spring-damper on dihedral angle (Bridson et al. 2003).
+    // MuJoCo computes bending as passive forces in engine_passive.c, NOT as constraint rows.
+    // Force = -k_bend * (theta - theta0) - b_bend * d(theta)/dt, applied via J^T.
+    let dt = model.timestep;
+    for h in 0..model.nflexhinge {
+        let [ve0, ve1, va, vb] = model.flexhinge_vert[h];
+        let flex_id = model.flexhinge_flexid[h];
+
+        let k_bend_raw = model.flex_bend_stiffness[flex_id];
+        let b_bend = model.flex_bend_damping[flex_id];
+        if k_bend_raw <= 0.0 && b_bend <= 0.0 {
+            continue;
+        }
+
+        let pe0 = data.flexvert_xpos[ve0];
+        let pe1 = data.flexvert_xpos[ve1];
+        let pa = data.flexvert_xpos[va];
+        let pb = data.flexvert_xpos[vb];
+        let rest_angle = model.flexhinge_angle0[h];
+
+        // Shared edge vector
+        let e = pe1 - pe0;
+        let e_len_sq = e.norm_squared();
+        if e_len_sq < 1e-20 {
+            continue;
+        }
+
+        // Face normals (unnormalized)
+        let offset_a = pa - pe0;
+        let offset_b = pb - pe0;
+        let normal_face_a = e.cross(&offset_a);
+        let normal_face_b = offset_b.cross(&e);
+        let norm_sq_a = normal_face_a.norm_squared();
+        let norm_sq_b = normal_face_b.norm_squared();
+        if norm_sq_a < 1e-20 || norm_sq_b < 1e-20 {
+            continue;
+        }
+
+        // Dihedral angle via atan2
+        let e_len = e_len_sq.sqrt();
+        let e_norm = e / e_len;
+        let normal_unit_a = normal_face_a / norm_sq_a.sqrt();
+        let normal_unit_b = normal_face_b / norm_sq_b.sqrt();
+        let cos_theta = normal_unit_a.dot(&normal_unit_b).clamp(-1.0, 1.0);
+        let sin_theta = normal_unit_a.cross(&normal_unit_b).dot(&e_norm);
+        let theta = sin_theta.atan2(cos_theta);
+        let angle_error = theta - rest_angle;
+
+        // Bridson dihedral gradient (all 4 vertices)
+        let grad_a = e_len * normal_face_a / norm_sq_a;
+        let grad_b = e_len * normal_face_b / norm_sq_b;
+        let bary_a = offset_a.dot(&e) / e_len_sq;
+        let bary_b = offset_b.dot(&e) / e_len_sq;
+        let grad_e0 = -grad_a * (1.0 - bary_a) - grad_b * (1.0 - bary_b);
+        let grad_e1 = -grad_a * bary_a - grad_b * bary_b;
+
+        // Spring: F = -k * angle_error
+        let spring_mag = -k_bend_raw * angle_error;
+
+        // Damper: F = -b * d(theta)/dt, where d(theta)/dt = J · qvel
+        let dof_e0 = model.flexvert_dofadr[ve0];
+        let dof_e1 = model.flexvert_dofadr[ve1];
+        let dof_a = model.flexvert_dofadr[va];
+        let dof_b = model.flexvert_dofadr[vb];
+        let vel_e0 = Vector3::new(
+            data.qvel[dof_e0],
+            data.qvel[dof_e0 + 1],
+            data.qvel[dof_e0 + 2],
+        );
+        let vel_e1 = Vector3::new(
+            data.qvel[dof_e1],
+            data.qvel[dof_e1 + 1],
+            data.qvel[dof_e1 + 2],
+        );
+        let vel_a = Vector3::new(data.qvel[dof_a], data.qvel[dof_a + 1], data.qvel[dof_a + 2]);
+        let vel_b = Vector3::new(data.qvel[dof_b], data.qvel[dof_b + 1], data.qvel[dof_b + 2]);
+        let theta_dot =
+            grad_e0.dot(&vel_e0) + grad_e1.dot(&vel_e1) + grad_a.dot(&vel_a) + grad_b.dot(&vel_b);
+        let damper_mag = -b_bend * theta_dot;
+
+        let force_mag = spring_mag + damper_mag;
+
+        // Apply via J^T to qfrc_passive, with per-vertex stability clamp.
+        // The force on vertex i is: F_i = force_mag * grad_i
+        // The acceleration is: a_i = F_i * invmass_i = force_mag * grad_i * invmass_i
+        // For explicit Euler stability: |a_i * dt| must not exceed the velocity scale.
+        // We clamp the per-vertex force magnitude so that:
+        //   |force_mag * |grad_i| * invmass_i * dt^2| < 1
+        // This prevents any single bending hinge from causing instability, regardless
+        // of how deformed the mesh becomes.
+        let grads = [
+            (ve0, dof_e0, grad_e0),
+            (ve1, dof_e1, grad_e1),
+            (va, dof_a, grad_a),
+            (vb, dof_b, grad_b),
+        ];
+        for &(v_idx, dof, grad) in &grads {
+            let invmass = model.flexvert_invmass[v_idx];
+            if invmass > 0.0 {
+                let grad_norm = grad.norm();
+                let mut fm = force_mag;
+                if grad_norm > 0.0 {
+                    // Max force_mag so that acceleration * dt doesn't exceed position scale
+                    let fm_max = 1.0 / (dt * dt * grad_norm * invmass);
+                    fm = fm.clamp(-fm_max, fm_max);
+                }
+                for ax in 0..3 {
+                    data.qfrc_passive[dof + ax] += grad[ax] * fm;
+                }
+            }
+        }
+    }
 }
 
 /// Check if all DOFs affected by a tendon's Jacobian belong to sleeping trees (§16.5a').
@@ -11053,7 +11639,10 @@ fn compute_body_lengths(model: &Model) -> Vec<f64> {
 pub fn compute_dof_lengths(model: &mut Model) {
     let body_length = compute_body_lengths(model);
 
-    for dof in 0..model.nv {
+    // Only compute mechanism lengths for rigid DOFs (flex DOFs have dof_jnt = usize::MAX).
+    // Flex DOFs are translational by nature and keep the default length of 1.0.
+    let nv_rigid = model.nv_rigid();
+    for dof in 0..nv_rigid {
         let jnt_id = model.dof_jnt[dof];
         let jnt_type = model.jnt_type[jnt_id];
         let offset = dof - model.jnt_dof_adr[jnt_id];
@@ -11069,6 +11658,10 @@ pub fn compute_dof_lengths(model: &mut Model) {
         } else {
             model.dof_length[dof] = 1.0; // translational: already in [m/s]
         }
+    }
+    // Flex DOFs: keep default 1.0 (translational, already in m/s)
+    for dof in nv_rigid..model.nv {
+        model.dof_length[dof] = 1.0;
     }
 }
 
@@ -11474,16 +12067,15 @@ fn mj_update_sleep_arrays(model: &Model, data: &mut Data) {
     // --- DOF awake indices (§16.17.1) ---
     let mut nv_awake = 0;
     for dof in 0..model.nv {
-        if model.dof_treeid.len() > dof {
+        let is_awake = if model.dof_treeid.len() > dof {
             let tree = model.dof_treeid[dof];
-            if tree < model.ntree && data.tree_awake[tree] {
-                if nv_awake < data.dof_awake_ind.len() {
-                    data.dof_awake_ind[nv_awake] = dof;
-                }
-                nv_awake += 1;
-            }
+            // Flex DOFs have tree == usize::MAX (no tree) → always awake
+            tree >= model.ntree || data.tree_awake[tree]
         } else {
             // No tree info → treat as awake
+            true
+        };
+        if is_awake {
             if nv_awake < data.dof_awake_ind.len() {
                 data.dof_awake_ind[nv_awake] = dof;
             }
@@ -12112,6 +12704,18 @@ fn constraint_tree(model: &Model, data: &Data, row: usize) -> usize {
             }
             sentinel
         }
+        ConstraintType::FlexEdge => {
+            // Flex constraints: scan Jacobian for nonzero DOFs and find their tree
+            for dof in 0..model.nv {
+                if data.efc_J[(row, dof)].abs() > 0.0 && dof < model.dof_treeid.len() {
+                    let tree = model.dof_treeid[dof];
+                    if tree < ntree {
+                        return tree;
+                    }
+                }
+            }
+            sentinel
+        }
     }
 }
 
@@ -12479,6 +13083,134 @@ fn compute_body_jacobian_at_point(
     jacobian
 }
 
+/// Compute the contact Jacobian for a flex-rigid contact.
+///
+/// The flex vertex side has a trivial Jacobian: the contact frame direction is
+/// directly projected onto the vertex's 3 translational DOF columns (no kinematic
+/// chain traversal). The rigid body side uses the standard `add_body_jacobian` pattern.
+///
+/// Convention: `contact.flex_vertex` = vertex index, `contact.geom1/geom2` = rigid geom.
+/// Normal points FROM rigid surface TOWARD flex vertex (outward from rigid geom).
+fn compute_flex_contact_jacobian(
+    model: &Model,
+    data: &Data,
+    contact: &Contact,
+    vertex_idx: usize,
+) -> DMatrix<f64> {
+    let nv = model.nv;
+    let dim = contact.dim;
+    let normal = contact.normal;
+    let tangent1 = contact.frame[0];
+    let tangent2 = contact.frame[1];
+
+    let mut j = DMatrix::zeros(dim, nv);
+
+    // Flex vertex side: trivial Jacobian (identity on DOF columns).
+    // The vertex's 3 translational DOFs map directly to Cartesian velocity.
+    let dof_base = model.flexvert_dofadr[vertex_idx];
+
+    // Helper: project direction onto vertex DOFs with given sign
+    let add_vertex_jacobian = |j: &mut DMatrix<f64>, row: usize, dir: &Vector3<f64>, sign: f64| {
+        j[(row, dof_base)] += sign * dir.x;
+        j[(row, dof_base + 1)] += sign * dir.y;
+        j[(row, dof_base + 2)] += sign * dir.z;
+    };
+
+    // Rigid body side: standard kinematic chain traversal.
+    let rigid_body = model.geom_body[contact.geom2];
+    let add_body_jacobian =
+        |j: &mut DMatrix<f64>, row: usize, direction: &Vector3<f64>, body_id: usize, sign: f64| {
+            if body_id == 0 {
+                return;
+            }
+            let mut current_body = body_id;
+            while current_body != 0 {
+                let jnt_start = model.body_jnt_adr[current_body];
+                let jnt_end = jnt_start + model.body_jnt_num[current_body];
+                for jnt_id in jnt_start..jnt_end {
+                    let dof_adr = model.jnt_dof_adr[jnt_id];
+                    let jnt_body = model.jnt_body[jnt_id];
+                    match model.jnt_type[jnt_id] {
+                        MjJointType::Hinge => {
+                            let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                            let jpos =
+                                data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                            let r = contact.pos - jpos;
+                            let j_col = axis.cross(&r);
+                            j[(row, dof_adr)] += sign * direction.dot(&j_col);
+                        }
+                        MjJointType::Slide => {
+                            let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                            j[(row, dof_adr)] += sign * direction.dot(&axis);
+                        }
+                        MjJointType::Ball => {
+                            let jpos =
+                                data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                            let r = contact.pos - jpos;
+                            let rot = data.xquat[jnt_body].to_rotation_matrix();
+                            for i in 0..3 {
+                                let omega_world = rot * Vector3::ith(i, 1.0);
+                                let j_col = omega_world.cross(&r);
+                                j[(row, dof_adr + i)] += sign * direction.dot(&j_col);
+                            }
+                        }
+                        MjJointType::Free => {
+                            j[(row, dof_adr)] += sign * direction.x;
+                            j[(row, dof_adr + 1)] += sign * direction.y;
+                            j[(row, dof_adr + 2)] += sign * direction.z;
+                            let jpos = Vector3::new(
+                                data.qpos[model.jnt_qpos_adr[jnt_id]],
+                                data.qpos[model.jnt_qpos_adr[jnt_id] + 1],
+                                data.qpos[model.jnt_qpos_adr[jnt_id] + 2],
+                            );
+                            let r = contact.pos - jpos;
+                            let ex = Vector3::x();
+                            let ey = Vector3::y();
+                            let ez = Vector3::z();
+                            j[(row, dof_adr + 3)] += sign * direction.dot(&ex.cross(&r));
+                            j[(row, dof_adr + 4)] += sign * direction.dot(&ey.cross(&r));
+                            j[(row, dof_adr + 5)] += sign * direction.dot(&ez.cross(&r));
+                        }
+                    }
+                }
+                current_body = model.body_parent[current_body];
+            }
+        };
+
+    // Row 0: normal direction
+    // Narrowphase normal points FROM rigid surface TOWARD flex vertex (outward).
+    // MuJoCo convention: normal FROM body1 TO body2, body1 gets -1, body2 gets +1.
+    // Here: body1 = rigid (normal points away from it), body2 = flex vertex.
+    // Vertex (body2) contributes positively, rigid (body1) negatively.
+    add_vertex_jacobian(&mut j, 0, &normal, 1.0);
+    add_body_jacobian(&mut j, 0, &normal, rigid_body, -1.0);
+
+    // Rows 1-2: tangent directions (sliding friction)
+    if dim >= 3 {
+        add_vertex_jacobian(&mut j, 1, &tangent1, 1.0);
+        add_body_jacobian(&mut j, 1, &tangent1, rigid_body, -1.0);
+
+        add_vertex_jacobian(&mut j, 2, &tangent2, 1.0);
+        add_body_jacobian(&mut j, 2, &tangent2, rigid_body, -1.0);
+    }
+
+    // Row 3: torsional friction — flex vertices have no angular DOFs, so only
+    // the rigid side contributes. The vertex side is zero (no torsion).
+    // Rigid is body1, so sign is -1.0 (but friction cost is symmetric/Huber,
+    // so sign only affects direction labeling, not correctness).
+    if dim >= 4 {
+        add_angular_jacobian(&mut j, 3, &normal, rigid_body, -1.0, model, data);
+    }
+
+    // Rows 4-5: rolling friction — same reasoning, vertex has no angular DOFs
+    if dim >= 6 {
+        add_angular_jacobian(&mut j, 4, &tangent1, rigid_body, -1.0, model, data);
+        add_angular_jacobian(&mut j, 5, &tangent2, rigid_body, -1.0, model, data);
+    }
+
+    j
+}
+
 /// Compute the full dim×nv contact Jacobian for a contact point.
 ///
 /// Returns a `contact.dim`×nv matrix where rows depend on contact dimension:
@@ -12489,6 +13221,13 @@ fn compute_body_jacobian_at_point(
 fn compute_contact_jacobian(model: &Model, data: &Data, contact: &Contact) -> DMatrix<f64> {
     let nv = model.nv;
     let dim = contact.dim;
+
+    // Flex-rigid contacts: vertex side has trivial Jacobian (identity on DOF columns),
+    // rigid side uses the standard kinematic chain traversal.
+    if let Some(vi) = contact.flex_vertex {
+        return compute_flex_contact_jacobian(model, data, contact, vi);
+    }
+
     let body1 = model.geom_body[contact.geom1];
     let body2 = model.geom_body[contact.geom2];
 
@@ -12932,10 +13671,9 @@ fn assemble_contact_system(
         // We want λ > 0 when b < 0 (i.e., when unconstrained acceleration
         // would cause penetration/violation)
 
-        // Reuse body_i1/body_i2 from above (same as model.geom_body[contact_i.geom1/2])
-        let vel1 = compute_point_velocity(data, body_i1, contact_i.pos);
-        let vel2 = compute_point_velocity(data, body_i2, contact_i.pos);
-        let rel_vel = vel2 - vel1;
+        // Relative velocity at contact point — correctly handles flex-rigid contacts
+        // by reading flex vertex velocity from qvel instead of cvel.
+        let rel_vel = compute_contact_relative_velocity(model, data, contact_i);
 
         // Use the pre-computed contact frame for consistency with the Jacobian.
         // contact.frame[] was computed during contact construction via compute_tangent_frame().
@@ -12974,20 +13712,18 @@ fn assemble_contact_system(
             b[offset_i + 2] = j_qacc_smooth[2] + vt2; // Friction tangent 2
         }
 
+        // Relative angular velocity — correctly handles flex-rigid contacts
+        // (flex vertices have zero angular velocity).
+        let rel_omega = compute_contact_relative_angular_velocity(model, data, contact_i);
+
         // Row 3: torsional (dim >= 4: angular velocity about normal)
         if dim_i >= 4 {
-            let omega1 = compute_body_angular_velocity(data, body_i1);
-            let omega2 = compute_body_angular_velocity(data, body_i2);
-            let rel_omega = omega2 - omega1;
             let omega_n = rel_omega.dot(&normal);
             b[offset_i + 3] = j_qacc_smooth[3] + omega_n;
         }
 
         // Rows 4-5: rolling (dim >= 6: angular velocity in tangent plane)
         if dim_i >= 6 {
-            let omega1 = compute_body_angular_velocity(data, body_i1);
-            let omega2 = compute_body_angular_velocity(data, body_i2);
-            let rel_omega = omega2 - omega1;
             let omega_t1 = rel_omega.dot(&tangent1);
             let omega_t2 = rel_omega.dot(&tangent2);
             b[offset_i + 4] = j_qacc_smooth[4] + omega_t1;
@@ -13112,11 +13848,8 @@ fn assemble_contact_system_island(
         }
 
         // RHS: b = J_local * qacc_smooth_island + aref
-        let body_i1 = model.geom_body[contact_i.geom1];
-        let body_i2 = model.geom_body[contact_i.geom2];
-        let vel1 = compute_point_velocity(data, body_i1, contact_i.pos);
-        let vel2 = compute_point_velocity(data, body_i2, contact_i.pos);
-        let rel_vel = vel2 - vel1;
+        // Relative velocity — correctly handles flex-rigid contacts.
+        let rel_vel = compute_contact_relative_velocity(model, data, contact_i);
 
         let normal = contact_i.normal;
         let tangent1 = contact_i.frame[0];
@@ -13140,20 +13873,17 @@ fn assemble_contact_system_island(
             b[offset_i + 2] = j_qacc_smooth[2] + vt2;
         }
 
+        // Relative angular velocity — correctly handles flex-rigid contacts.
+        let rel_omega = compute_contact_relative_angular_velocity(model, data, contact_i);
+
         // Row 3: torsional (dim >= 4)
         if dim_i >= 4 {
-            let omega1 = compute_body_angular_velocity(data, body_i1);
-            let omega2 = compute_body_angular_velocity(data, body_i2);
-            let rel_omega = omega2 - omega1;
             let omega_n = rel_omega.dot(&normal);
             b[offset_i + 3] = j_qacc_smooth[3] + omega_n;
         }
 
         // Rows 4-5: rolling (dim >= 6)
         if dim_i >= 6 {
-            let omega1 = compute_body_angular_velocity(data, body_i1);
-            let omega2 = compute_body_angular_velocity(data, body_i2);
-            let rel_omega = omega2 - omega1;
             let omega_t1 = rel_omega.dot(&tangent1);
             let omega_t2 = rel_omega.dot(&tangent2);
             b[offset_i + 4] = j_qacc_smooth[4] + omega_t1;
@@ -13848,6 +14578,70 @@ fn solref_to_penalty(solref: [f64; 2], default_k: f64, default_b: f64, dt: f64) 
     (k_clamped, b_scaled)
 }
 
+/// Apply flex edge-length constraint forces in the penalty path.
+///
+/// This is the explicit-integration counterpart of the flex edge constraint rows in
+/// `assemble_unified_constraints()`. Uses penalty-based Baumgarte stabilization:
+///   F = -k * pos_error - b * vel_error
+///
+/// Forces are applied directly to `qfrc_constraint` via Jacobian transpose.
+#[allow(clippy::similar_names)] // na/nb, na_len/nb_len, na_unit/nb_unit are intentionally paired
+fn apply_flex_edge_constraints(model: &Model, data: &mut Data) {
+    if model.nflex == 0 {
+        return;
+    }
+
+    let dt = model.timestep;
+    let default_k = model.default_eq_stiffness;
+    let default_b = model.default_eq_damping;
+
+    // --- Edge-length constraints ---
+    for e in 0..model.nflexedge {
+        let [v0, v1] = model.flexedge_vert[e];
+        let x0 = data.flexvert_xpos[v0];
+        let x1 = data.flexvert_xpos[v1];
+        let diff = x1 - x0;
+        let dist = diff.norm();
+        let rest_len = model.flexedge_length0[e];
+        let flex_id = model.flexedge_flexid[e];
+
+        if dist < 1e-10 {
+            continue; // Degenerate: zero-length edge
+        }
+
+        let direction = diff / dist;
+        let pos_error = dist - rest_len; // positive = stretched
+
+        let dof0 = model.flexvert_dofadr[v0];
+        let dof1 = model.flexvert_dofadr[v1];
+
+        // Relative velocity along edge direction
+        let vel0 =
+            nalgebra::Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2]);
+        let vel1 =
+            nalgebra::Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2]);
+        let vel_error = (vel1 - vel0).dot(&direction);
+
+        let (k, b) = solref_to_penalty(model.flex_edge_solref[flex_id], default_k, default_b, dt);
+
+        // Force magnitude: penalty on the scalar constraint
+        let force_mag = -k * pos_error - b * vel_error;
+
+        // Apply via J^T: F_v0 = -direction * force_mag, F_v1 = +direction * force_mag
+        for ax in 0..3 {
+            if model.flexvert_invmass[v0] > 0.0 {
+                data.qfrc_constraint[dof0 + ax] += -direction[ax] * force_mag;
+            }
+            if model.flexvert_invmass[v1] > 0.0 {
+                data.qfrc_constraint[dof1 + ax] += direction[ax] * force_mag;
+            }
+        }
+    }
+
+    // NOTE: Bending forces moved to mj_fwd_passive() (passive spring-damper).
+    // Volume constraints removed — MuJoCo has no dedicated volume mechanism.
+}
+
 /// Compute position-dependent impedance from solimp parameters.
 ///
 /// The sigmoid shape is derived from MuJoCo's `getimpedance()` in
@@ -14305,6 +15099,12 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
         nefc += c.dim;
     }
 
+    // Flex edge-length constraints (1 row per edge)
+    nefc += model.nflexedge;
+
+    // NOTE: Bending forces are passive (in mj_fwd_passive), not constraint rows.
+    // Volume constraints removed — MuJoCo has no dedicated volume mechanism.
+
     // === Phase 2: Allocate ===
     data.efc_J = DMatrix::zeros(nefc, nv);
     data.efc_type = Vec::with_capacity(nefc);
@@ -14634,6 +15434,63 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
         }
     }
 
+    // --- 3g: Flex edge-length constraints ---
+    for e in 0..model.nflexedge {
+        let [v0, v1] = model.flexedge_vert[e];
+        let x0 = data.flexvert_xpos[v0];
+        let x1 = data.flexvert_xpos[v1];
+        let diff = x1 - x0;
+        let dist = diff.norm();
+        let rest_len = model.flexedge_length0[e];
+        let flex_id = model.flexedge_flexid[e];
+
+        if dist < 1e-10 {
+            // Degenerate: zero-length edge, skip (fill zeros, finalize_row! handles it)
+            finalize_row!(
+                model.flex_edge_solref[flex_id],
+                model.flex_edge_solimp[flex_id],
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                ConstraintType::FlexEdge,
+                1,
+                e,
+                [0.0; 5]
+            );
+            continue;
+        }
+
+        let direction = diff / dist;
+        let pos_error = dist - rest_len; // positive = stretched, negative = compressed
+
+        // Jacobian: ∂C/∂x_v0 = -direction, ∂C/∂x_v1 = +direction
+        let dof0 = model.flexvert_dofadr[v0];
+        let dof1 = model.flexvert_dofadr[v1];
+        for k in 0..3 {
+            data.efc_J[(row, dof0 + k)] = -direction[k];
+            data.efc_J[(row, dof1 + k)] = direction[k];
+        }
+
+        // Velocity: relative velocity projected onto edge direction
+        let vel0 = Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2]);
+        let vel1 = Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2]);
+        let vel_error = (vel1 - vel0).dot(&direction);
+
+        finalize_row!(
+            model.flex_edge_solref[flex_id],
+            model.flex_edge_solimp[flex_id],
+            pos_error,
+            0.0, // margin
+            vel_error,
+            0.0, // friction loss
+            ConstraintType::FlexEdge,
+            1,        // dim
+            e,        // id (edge index)
+            [0.0; 5]  // mu (no friction on edge constraints)
+        );
+    }
+
     debug_assert_eq!(row, nefc, "Row count mismatch in constraint assembly");
     data.efc_cost = 0.0;
 }
@@ -14696,8 +15553,8 @@ fn classify_constraint_states(
         let r = data.efc_R[i];
 
         match ctype {
-            ConstraintType::Equality => {
-                // Always Quadratic
+            ConstraintType::Equality | ConstraintType::FlexEdge => {
+                // Always Quadratic (two-sided soft equality)
                 data.efc_state[i] = ConstraintState::Quadratic;
                 data.efc_force[i] = -d * jar;
                 constraint_cost += 0.5 * d * jar * jar;
@@ -15716,7 +16573,7 @@ fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> PrimalPo
     let mut i = 0;
     while i < nefc {
         match data.efc_type[i] {
-            ConstraintType::Equality => {
+            ConstraintType::Equality | ConstraintType::FlexEdge => {
                 // Always quadratic
                 quad_total[0] += pq.quad[i][0];
                 quad_total[1] += pq.quad[i][1];
@@ -16058,7 +16915,7 @@ fn evaluate_cost_at(
         let r = data.efc_R[i];
 
         match ctype {
-            ConstraintType::Equality => {
+            ConstraintType::Equality | ConstraintType::FlexEdge => {
                 constraint_cost += 0.5 * d * jar * jar;
                 i += 1;
             }
@@ -16144,9 +17001,35 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
     // === PER-STEP MEANINERTIA (Phase C) ===
     // More accurate than model-level constant for configuration-dependent inertia.
     // O(nv) — free since qM is already filled by CRBA this step.
+    // IMPORTANT: Skip pinned flex vertex DOFs (invmass == 0 → mass ≈ 1e20).
+    // Their huge mass would dominate meaninertia, collapsing the Newton
+    // convergence scale to near-zero and causing premature convergence.
     let meaninertia = if nv > 0 {
-        let trace: f64 = (0..nv).map(|i| data.qM[(i, i)]).sum();
-        let mi = trace / nv as f64;
+        // Build a set of pinned DOF indices for fast lookup
+        let mut pinned_dofs = vec![false; nv];
+        for i in 0..model.nflexvert {
+            if model.flexvert_invmass[i] == 0.0 {
+                let dof_base = model.flexvert_dofadr[i];
+                for k in 0..3 {
+                    if dof_base + k < nv {
+                        pinned_dofs[dof_base + k] = true;
+                    }
+                }
+            }
+        }
+        let mut trace = 0.0_f64;
+        let mut count = 0usize;
+        for i in 0..nv {
+            if !pinned_dofs[i] {
+                trace += data.qM[(i, i)];
+                count += 1;
+            }
+        }
+        let mi = if count > 0 {
+            trace / count as f64
+        } else {
+            model.stat_meaninertia
+        };
         if mi > 0.0 { mi } else { model.stat_meaninertia }
     } else {
         model.stat_meaninertia
@@ -17975,6 +18858,9 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
     // Equality constraint penalties
     apply_equality_constraints(model, data);
 
+    // Flex edge-length constraint penalties
+    apply_flex_edge_constraints(model, data);
+
     // ===== Per-island contact solve (§16.16.2, §16.28) =====
     if data.contacts.is_empty() {
         data.efc_lambda.clear();
@@ -18076,30 +18962,12 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
                 data.solver_niter = data.solver_niter.max(niter);
                 // Apply forces and continue to next island
                 for (local_idx, lambda) in forces.iter().enumerate() {
-                    let contact = &island_contact_list[local_idx];
-                    let normal = contact.normal;
-                    let tangent1 = contact.frame[0];
-                    let tangent2 = contact.frame[1];
-                    let dim = contact.dim;
-                    let world_force = if dim >= 3 {
-                        normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
-                    } else {
-                        normal * lambda[0]
-                    };
-                    let body1 = model.geom_body[contact.geom1];
-                    let body2 = model.geom_body[contact.geom2];
-                    apply_contact_force(model, data, body1, contact.pos, -world_force);
-                    apply_contact_force(model, data, body2, contact.pos, world_force);
-                    if dim >= 4 {
-                        let torsional_torque = normal * lambda[3];
-                        apply_contact_torque(model, data, body1, -torsional_torque);
-                        apply_contact_torque(model, data, body2, torsional_torque);
-                    }
-                    if dim >= 6 {
-                        let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
-                        apply_contact_torque(model, data, body1, -rolling_torque);
-                        apply_contact_torque(model, data, body2, rolling_torque);
-                    }
+                    apply_solved_contact_lambda(
+                        model,
+                        data,
+                        &island_contact_list[local_idx],
+                        lambda,
+                    );
                 }
                 continue;
             };
@@ -18258,39 +19126,8 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
         };
 
         // Apply contact forces for this island
-        for (local_idx, (lambda, _jac)) in constraint_forces
-            .iter()
-            .zip(island_jacobians.iter())
-            .enumerate()
-        {
-            let contact = &island_contact_list[local_idx];
-            let normal = contact.normal;
-            let tangent1 = contact.frame[0];
-            let tangent2 = contact.frame[1];
-            let dim = contact.dim;
-
-            let world_force = if dim >= 3 {
-                normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
-            } else {
-                normal * lambda[0]
-            };
-
-            let body1 = model.geom_body[contact.geom1];
-            let body2 = model.geom_body[contact.geom2];
-
-            apply_contact_force(model, data, body1, contact.pos, -world_force);
-            apply_contact_force(model, data, body2, contact.pos, world_force);
-
-            if dim >= 4 {
-                let torsional_torque = normal * lambda[3];
-                apply_contact_torque(model, data, body1, -torsional_torque);
-                apply_contact_torque(model, data, body2, torsional_torque);
-            }
-            if dim >= 6 {
-                let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
-                apply_contact_torque(model, data, body1, -rolling_torque);
-                apply_contact_torque(model, data, body2, rolling_torque);
-            }
+        for (local_idx, lambda) in constraint_forces.iter().enumerate() {
+            apply_solved_contact_lambda(model, data, &island_contact_list[local_idx], lambda);
         }
     }
 
@@ -18315,38 +19152,12 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
         );
         data.solver_niter = data.solver_niter.max(niter);
         for (local_idx, lambda) in forces.iter().enumerate() {
-            let contact = &unassigned_contacts[local_idx];
-            let normal = contact.normal;
-            let tangent1 = contact.frame[0];
-            let tangent2 = contact.frame[1];
-            let dim = contact.dim;
-            let world_force = if dim >= 3 {
-                normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
-            } else {
-                normal * lambda[0]
-            };
-            let body1 = model.geom_body[contact.geom1];
-            let body2 = model.geom_body[contact.geom2];
-            apply_contact_force(model, data, body1, contact.pos, -world_force);
-            apply_contact_force(model, data, body2, contact.pos, world_force);
-            if dim >= 4 {
-                let torsional_torque = normal * lambda[3];
-                apply_contact_torque(model, data, body1, -torsional_torque);
-                apply_contact_torque(model, data, body2, torsional_torque);
-            }
-            if dim >= 6 {
-                let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
-                apply_contact_torque(model, data, body1, -rolling_torque);
-                apply_contact_torque(model, data, body2, rolling_torque);
-            }
+            apply_solved_contact_lambda(model, data, &unassigned_contacts[local_idx], lambda);
         }
     }
 
     // Restore warmstart cache
     data.efc_lambda = efc_lambda;
-
-    #[cfg(feature = "deformable")]
-    solve_deformable_contacts(model, data);
 }
 
 /// Compute constraint forces (contacts and joint limits).
@@ -18545,6 +19356,10 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     // The forces are applied via Jacobian transpose to the appropriate DOFs.
     apply_equality_constraints(model, data);
 
+    // ========== Flex Constraints ==========
+    // Penalty-based Baumgarte stabilization for edge-length constraints.
+    apply_flex_edge_constraints(model, data);
+
     // ========== Contact Constraints ==========
     // Use PGS solver for constraint-based contact forces.
     //
@@ -18668,624 +19483,15 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
     // Restore warmstart cache
     data.efc_lambda = efc_lambda;
 
-    // DECISION: Force application uses manual world-frame conversion +
-    // apply_contact_force() instead of the pre-computed Jacobians (J^T * lambda).
-    // Both are mathematically equivalent. The manual approach is more readable
-    // and avoids dense matrix-vector multiplication, but does redundant kinematic
-    // chain traversal. Switching to J^T * lambda would be a single matvec per
-    // contact but couples force application to the Jacobian representation.
-    // qfrc_constraint += J^T * λ
-    for (i, (_jacobian, lambda)) in jacobians.iter().zip(constraint_forces.iter()).enumerate() {
-        // Use the pre-computed contact frame for consistency with Jacobian and RHS.
-        let contact = &data.contacts[i];
-        let normal = contact.normal;
-        let tangent1 = contact.frame[0];
-        let tangent2 = contact.frame[1];
-        let dim = contact.dim;
-
-        // Linear force (rows 0–2, or just row 0 for condim 1)
-        let world_force = if dim >= 3 {
-            normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
-        } else {
-            normal * lambda[0] // condim 1: normal only
-        };
-
-        // Apply via kinematic chain traversal (equivalent to J^T * lambda)
-        let body1 = model.geom_body[data.contacts[i].geom1];
-        let body2 = model.geom_body[data.contacts[i].geom2];
-        let pos = data.contacts[i].pos;
-
-        // Body1 gets negative force (Newton's third law)
-        apply_contact_force(model, data, body1, pos, -world_force);
-        apply_contact_force(model, data, body2, pos, world_force);
-
-        // Torsional torque (row 3, when dim ≥ 4)
-        if dim >= 4 {
-            let torsional_torque = normal * lambda[3];
-            apply_contact_torque(model, data, body1, -torsional_torque);
-            apply_contact_torque(model, data, body2, torsional_torque);
-        }
-
-        // Rolling torques (rows 4–5, when dim = 6)
-        if dim >= 6 {
-            let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
-            apply_contact_torque(model, data, body1, -rolling_torque);
-            apply_contact_torque(model, data, body2, rolling_torque);
-        }
+    // Apply solved contact forces: qfrc_constraint += J^T * λ
+    for (i, lambda) in constraint_forces.iter().enumerate() {
+        apply_solved_contact_lambda(model, data, &data.contacts[i].clone(), lambda);
     }
-
-    // Deformable-rigid contact resolution
-    #[cfg(feature = "deformable")]
-    solve_deformable_contacts(model, data);
 }
 
 // ============================================================================
-// Deformable Body Pipeline (feature-gated)
-// ============================================================================
 
-/// Compute error reduction parameter from solver reference parameters.
-///
-/// MuJoCo solref = [timeconst, dampratio]:
-///   erp = dt / (dt + 2 * timeconst * dampratio)
-#[cfg(feature = "deformable")]
-#[inline]
-fn compute_erp(dt: f64, solref: &[f64; 2]) -> f64 {
-    let timeconst = solref[0];
-    let dampratio = solref[1];
-    dt / (dt + 2.0 * timeconst * dampratio)
-}
-
-/// Compute the effective inverse mass of a rigid body at a contact point
-/// projected onto a contact normal direction.
-///
-/// inv_m_eff = n^T * J * M^{-1} * J^T * n
-#[cfg(feature = "deformable")]
-fn compute_rigid_inv_mass_at_point(
-    model: &Model,
-    data: &Data,
-    body_id: usize,
-    point: Vector3<f64>,
-    normal: &Vector3<f64>,
-) -> f64 {
-    if body_id == 0 {
-        return 0.0; // World body = infinite mass
-    }
-
-    // Build 3×nv translational Jacobian at point.
-    let mut jac = DMatrix::zeros(3, model.nv);
-
-    let mut current_body = body_id;
-    while current_body != 0 {
-        let jnt_start = model.body_jnt_adr[current_body];
-        let jnt_end = jnt_start + model.body_jnt_num[current_body];
-
-        for jnt_id in jnt_start..jnt_end {
-            let dof_adr = model.jnt_dof_adr[jnt_id];
-            let jnt_body = model.jnt_body[jnt_id];
-
-            match model.jnt_type[jnt_id] {
-                MjJointType::Hinge => {
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
-                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
-                    let r = point - jpos;
-                    let j_col = axis.cross(&r);
-                    jac[(0, dof_adr)] = j_col.x;
-                    jac[(1, dof_adr)] = j_col.y;
-                    jac[(2, dof_adr)] = j_col.z;
-                }
-                MjJointType::Slide => {
-                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
-                    jac[(0, dof_adr)] = axis.x;
-                    jac[(1, dof_adr)] = axis.y;
-                    jac[(2, dof_adr)] = axis.z;
-                }
-                MjJointType::Ball => {
-                    let jpos = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
-                    let r = point - jpos;
-                    let rot = data.xquat[jnt_body].to_rotation_matrix();
-                    for i in 0..3 {
-                        let omega_world = rot * Vector3::ith(i, 1.0);
-                        let j_col = omega_world.cross(&r);
-                        jac[(0, dof_adr + i)] = j_col.x;
-                        jac[(1, dof_adr + i)] = j_col.y;
-                        jac[(2, dof_adr + i)] = j_col.z;
-                    }
-                }
-                MjJointType::Free => {
-                    // Linear DOFs (translations)
-                    jac[(0, dof_adr)] = 1.0;
-                    jac[(1, dof_adr + 1)] = 1.0;
-                    jac[(2, dof_adr + 2)] = 1.0;
-                    // Angular DOFs (d(v)/d(omega) = skew(r))
-                    let jpos = data.xpos[jnt_body];
-                    let r = point - jpos;
-                    // omega_x: v = omega_x × r = (0, r.z, -r.y)
-                    jac[(1, dof_adr + 3)] = r.z;
-                    jac[(2, dof_adr + 3)] = -r.y;
-                    // omega_y: v = omega_y × r = (-r.z, 0, r.x)
-                    jac[(0, dof_adr + 4)] = -r.z;
-                    jac[(2, dof_adr + 4)] = r.x;
-                    // omega_z: v = omega_z × r = (r.y, -r.x, 0)
-                    jac[(0, dof_adr + 5)] = r.y;
-                    jac[(1, dof_adr + 5)] = -r.x;
-                }
-            }
-        }
-        current_body = model.body_parent[current_body];
-    }
-
-    if model.nv == 0 {
-        return 0.0;
-    }
-
-    // j_n = J^T * n (nv×1)
-    let n = DVector::from_column_slice(normal.as_slice());
-    let j_n = jac.transpose() * &n;
-
-    // M^{-1} * j_n via sparse factored mass matrix
-    let mut m_inv_jn = j_n.clone();
-    if data.qLD_valid {
-        let (rowadr, rownnz, colind) = model.qld_csr();
-        mj_solve_sparse(
-            rowadr,
-            rownnz,
-            colind,
-            &data.qLD_data,
-            &data.qLD_diag_inv,
-            &mut m_inv_jn,
-        );
-    } else {
-        // Fallback: use diagonal of mass matrix
-        for i in 0..model.nv {
-            let m_diag = data.qM[(i, i)];
-            if m_diag > 1e-10 {
-                m_inv_jn[i] /= m_diag;
-            }
-        }
-    }
-    j_n.dot(&m_inv_jn)
-}
-
-/// Solve deformable-rigid contact forces using Jacobi-style iteration.
-///
-/// Each deformable vertex is a 3-DOF point mass. The contact Jacobian is the
-/// identity matrix (vertex velocity maps directly to contact-frame velocity).
-///
-/// Three-phase algorithm for borrow safety:
-///
-/// 1. Read phase: iterate contacts, compute impulses into scratch buffer
-/// 2. Write phase: apply impulses to vertex velocities
-/// 3. Reaction phase: apply reaction forces to rigid bodies
-#[cfg(feature = "deformable")]
-fn solve_deformable_contacts(model: &Model, data: &mut Data) {
-    let mut impulses: Vec<(usize, Vector3<f64>)> =
-        Vec::with_capacity(data.deformable_contacts.len());
-
-    let dt = model.timestep;
-
-    for _iter in 0..model.solver_iterations {
-        let mut max_delta = 0.0_f64;
-        impulses.clear();
-
-        // Phase 1: Read-only solve
-        for (contact_idx, contact) in data.deformable_contacts.iter().enumerate() {
-            let body = &data.deformable_bodies[contact.deformable_idx];
-            let inv_m = body.inverse_masses()[contact.vertex_idx];
-
-            if inv_m <= 0.0 {
-                continue; // Pinned vertex
-            }
-
-            let v_deform = body.velocities()[contact.vertex_idx];
-
-            // Rigid body velocity at contact point
-            let rigid_body_idx = model.geom_body[contact.geom_idx];
-            let v_rigid = compute_point_velocity(data, rigid_body_idx, contact.pos);
-
-            // Relative velocity in contact frame
-            let v_rel = v_deform - v_rigid;
-            let v_n = v_rel.dot(&contact.normal);
-
-            // Normal impulse with Baumgarte correction
-            let erp = compute_erp(dt, &contact.solref);
-            let rhs = v_n + erp * contact.depth / dt;
-
-            // Effective inverse mass (deformable point mass + rigid contribution)
-            let inv_m_eff = inv_m
-                + compute_rigid_inv_mass_at_point(
-                    model,
-                    data,
-                    rigid_body_idx,
-                    contact.pos,
-                    &contact.normal,
-                );
-
-            let lambda_n = (-rhs / inv_m_eff).max(0.0);
-            max_delta = max_delta.max(lambda_n.abs());
-
-            let impulse = contact.normal * lambda_n;
-            impulses.push((contact_idx, impulse));
-        }
-
-        // Phase 2a: Apply velocity updates to deformable vertices
-        for &(contact_idx, ref impulse) in &impulses {
-            let contact = &data.deformable_contacts[contact_idx];
-            let body = &mut data.deformable_bodies[contact.deformable_idx];
-            let inv_m = body.inverse_masses()[contact.vertex_idx];
-            body.velocities_mut()[contact.vertex_idx] += impulse * inv_m;
-        }
-
-        // Phase 2b: Apply reaction impulses to rigid bodies
-        // Copy contact fields to locals before the &mut data call.
-        for &(contact_idx, ref impulse) in &impulses {
-            let geom_idx = data.deformable_contacts[contact_idx].geom_idx;
-            let pos = data.deformable_contacts[contact_idx].pos;
-            let rigid_body_idx = model.geom_body[geom_idx];
-            apply_contact_force(model, data, rigid_body_idx, pos, -*impulse);
-        }
-
-        if max_delta < model.solver_tolerance {
-            break;
-        }
-    }
-}
-
-/// Detect contacts between deformable vertices and rigid geoms.
-#[cfg(feature = "deformable")]
-fn mj_deformable_collision(model: &Model, data: &mut Data) {
-    data.deformable_contacts.clear();
-
-    if data.deformable_bodies.is_empty() {
-        return; // Zero overhead when no deformables registered
-    }
-
-    // Phase 1: Clear COLLIDING flags
-    for body in &mut data.deformable_bodies {
-        for flag in body.vertex_flags_mut() {
-            flag.remove(VertexFlags::COLLIDING);
-        }
-    }
-
-    // Phase 2: Detect contacts
-    // Pre-compute rigid geom AABBs
-    let rigid_aabbs: Vec<Aabb> = (0..model.ngeom)
-        .map(|g| {
-            aabb_from_geom(
-                model.geom_type[g],
-                model.geom_size[g],
-                data.geom_xpos[g],
-                data.geom_xmat[g],
-            )
-        })
-        .collect();
-
-    for (deform_idx, body) in data.deformable_bodies.iter().enumerate() {
-        let margin = body.collision_margin();
-        let positions = body.positions();
-        let material = body.material();
-
-        for (vert_idx, pos) in positions.iter().enumerate() {
-            // Skip pinned vertices
-            if body.inverse_masses()[vert_idx] <= 0.0 {
-                continue;
-            }
-
-            // Vertex AABB: point ± margin
-            let vert_aabb = Aabb::from_center(*pos, Vector3::new(margin, margin, margin));
-
-            // Broadphase: test vertex AABB against all rigid geom AABBs
-            for geom_idx in 0..model.ngeom {
-                // Skip broadphase for planes — they are infinite and the thin
-                // slab AABB can miss fast-moving deformable vertices.
-                if model.geom_type[geom_idx] != GeomType::Plane
-                    && !vert_aabb.overlaps(&rigid_aabbs[geom_idx])
-                {
-                    continue;
-                }
-
-                // Narrowphase: vertex-vs-geom closest point
-                if let Some(contact) = collide_vertex_geom(
-                    pos,
-                    margin,
-                    model,
-                    geom_idx,
-                    data.geom_xpos[geom_idx],
-                    data.geom_xmat[geom_idx],
-                    material,
-                    deform_idx,
-                    vert_idx,
-                ) {
-                    data.deformable_contacts.push(contact);
-                }
-            }
-        }
-    }
-
-    // Phase 3: Set COLLIDING flags on contacted vertices
-    for contact in &data.deformable_contacts {
-        data.deformable_bodies[contact.deformable_idx].vertex_flags_mut()[contact.vertex_idx]
-            .insert(VertexFlags::COLLIDING);
-    }
-
-    // Phase 4: Position-level correction
-    // Push penetrating vertices to the contact surface. The velocity-level
-    // solver in mj_fwd_constraint handles impulses, but without position
-    // correction vertices can drift into the surface over time.
-    for contact in &data.deformable_contacts {
-        let body = &mut data.deformable_bodies[contact.deformable_idx];
-        let inv_m = body.inverse_masses()[contact.vertex_idx];
-        if inv_m <= 0.0 {
-            continue; // Pinned
-        }
-        // Only correct actual surface penetration (depth > margin means
-        // the vertex is below the surface, not just within the margin zone).
-        let margin = body.collision_margin();
-        let surface_penetration = contact.depth - margin;
-        if surface_penetration > 0.0 {
-            body.positions_mut()[contact.vertex_idx] += contact.normal * surface_penetration;
-            // Also zero out the normal velocity component to prevent
-            // the vertex from immediately falling back in.
-            let v = body.velocities()[contact.vertex_idx];
-            let v_n = v.dot(&contact.normal);
-            if v_n < 0.0 {
-                body.velocities_mut()[contact.vertex_idx] -= contact.normal * v_n;
-            }
-        }
-    }
-}
-
-/// Compute contact between a deformable vertex and a rigid geom.
-///
-/// The vertex is treated as a sphere with the given margin radius.
-/// Returns `DeformableContact` if penetrating, `None` otherwise.
-#[cfg(feature = "deformable")]
-#[allow(clippy::too_many_arguments)]
-fn collide_vertex_geom(
-    vertex_pos: &Point3<f64>,
-    vertex_margin: f64,
-    model: &Model,
-    geom_idx: usize,
-    geom_pos: Vector3<f64>,
-    geom_mat: Matrix3<f64>,
-    material: &DeformableMaterial,
-    deform_idx: usize,
-    vert_idx: usize,
-) -> Option<DeformableContact> {
-    let v = vertex_pos.coords;
-
-    // Compute signed distance from vertex to geom surface and contact normal
-    let (d_surface, normal) = match model.geom_type[geom_idx] {
-        GeomType::Plane => {
-            // Plane normal is the z-axis of the geom frame
-            let plane_normal = geom_mat.column(2).into_owned();
-            let d = (v - geom_pos).dot(&plane_normal);
-            (d, plane_normal)
-        }
-
-        GeomType::Sphere => {
-            let radius = model.geom_size[geom_idx].x;
-            let diff = v - geom_pos;
-            let dist = diff.norm();
-            if dist < 1e-10 {
-                // Vertex at sphere center — use fallback normal
-                (-radius, Vector3::new(0.0, 0.0, 1.0))
-            } else {
-                let normal = diff / dist;
-                (dist - radius, normal)
-            }
-        }
-
-        GeomType::Box => {
-            let half = model.geom_size[geom_idx];
-            // Transform vertex to local box frame
-            let v_local = geom_mat.transpose() * (v - geom_pos);
-
-            // Clamp to box
-            let clamped = Vector3::new(
-                v_local.x.clamp(-half.x, half.x),
-                v_local.y.clamp(-half.y, half.y),
-                v_local.z.clamp(-half.z, half.z),
-            );
-
-            let diff_local = v_local - clamped;
-            let dist_outside = diff_local.norm();
-
-            if dist_outside > 1e-10 {
-                // Outside the box
-                let normal_local = diff_local / dist_outside;
-                let normal_world = geom_mat * normal_local;
-                (dist_outside, normal_world)
-            } else {
-                // Inside the box — find closest face
-                let dx = half.x - v_local.x.abs();
-                let dy = half.y - v_local.y.abs();
-                let dz = half.z - v_local.z.abs();
-                let min_depth = dx.min(dy).min(dz);
-
-                let normal_local = if (dx - min_depth).abs() < 1e-10 {
-                    Vector3::new(v_local.x.signum(), 0.0, 0.0)
-                } else if (dy - min_depth).abs() < 1e-10 {
-                    Vector3::new(0.0, v_local.y.signum(), 0.0)
-                } else {
-                    Vector3::new(0.0, 0.0, v_local.z.signum())
-                };
-                let normal_world = geom_mat * normal_local;
-                (-min_depth, normal_world)
-            }
-        }
-
-        GeomType::Capsule => {
-            let radius = model.geom_size[geom_idx].x;
-            let half_len = model.geom_size[geom_idx].y;
-            let axis = geom_mat.column(2).into_owned();
-            let a = geom_pos - axis * half_len;
-            let b = geom_pos + axis * half_len;
-            let closest = closest_point_segment(a, b, v);
-            let diff = v - closest;
-            let dist = diff.norm();
-            if dist < 1e-10 {
-                (-radius, Vector3::new(0.0, 0.0, 1.0))
-            } else {
-                let normal = diff / dist;
-                (dist - radius, normal)
-            }
-        }
-
-        GeomType::Cylinder => {
-            let radius = model.geom_size[geom_idx].x;
-            let half_len = model.geom_size[geom_idx].y;
-            // Transform to cylinder local frame
-            let v_local = geom_mat.transpose() * (v - geom_pos);
-
-            let radial = Vector2::new(v_local.x, v_local.y);
-            let radial_dist = radial.norm();
-            let z_clamped = v_local.z.clamp(-half_len, half_len);
-
-            // Three cases: barrel, endcap, or edge
-            let on_barrel = v_local.z.abs() <= half_len;
-            let in_radial = radial_dist <= radius;
-
-            if on_barrel && in_radial {
-                // Inside cylinder — find closest surface
-                let d_radial = radius - radial_dist;
-                let d_axial = half_len - v_local.z.abs();
-                if d_radial < d_axial {
-                    // Closer to barrel
-                    let normal_local = if radial_dist > 1e-10 {
-                        Vector3::new(v_local.x / radial_dist, v_local.y / radial_dist, 0.0)
-                    } else {
-                        Vector3::new(1.0, 0.0, 0.0)
-                    };
-                    let normal_world = geom_mat * normal_local;
-                    (-d_radial, normal_world)
-                } else {
-                    // Closer to endcap
-                    let normal_local = Vector3::new(0.0, 0.0, v_local.z.signum());
-                    let normal_world = geom_mat * normal_local;
-                    (-d_axial, normal_world)
-                }
-            } else if on_barrel {
-                // Outside radially
-                let normal_local = if radial_dist > 1e-10 {
-                    Vector3::new(v_local.x / radial_dist, v_local.y / radial_dist, 0.0)
-                } else {
-                    Vector3::new(1.0, 0.0, 0.0)
-                };
-                let normal_world = geom_mat * normal_local;
-                (radial_dist - radius, normal_world)
-            } else if in_radial {
-                // Outside axially (endcap)
-                let normal_local = Vector3::new(0.0, 0.0, v_local.z.signum());
-                let normal_world = geom_mat * normal_local;
-                (v_local.z.abs() - half_len, normal_world)
-            } else {
-                // Outside both (edge region)
-                let closest_local = Vector3::new(
-                    v_local.x * radius / radial_dist,
-                    v_local.y * radius / radial_dist,
-                    z_clamped,
-                );
-                let diff_local = Vector3::new(v_local.x, v_local.y, v_local.z) - closest_local;
-                let dist = diff_local.norm();
-                if dist < 1e-10 {
-                    return None;
-                }
-                let normal_local = diff_local / dist;
-                let normal_world = geom_mat * normal_local;
-                (dist, normal_world)
-            }
-        }
-
-        GeomType::Ellipsoid => {
-            let radii = model.geom_size[geom_idx];
-            // Transform to local frame and scale to unit sphere
-            let v_local = geom_mat.transpose() * (v - geom_pos);
-            let v_scaled = Vector3::new(
-                v_local.x / radii.x,
-                v_local.y / radii.y,
-                v_local.z / radii.z,
-            );
-            let dist_scaled = v_scaled.norm();
-            if dist_scaled < 1e-10 {
-                return None;
-            }
-            // Approximate: distance in scaled space, normal from scaled gradient
-            let d_surface_approx = (dist_scaled - 1.0) * radii.x.min(radii.y).min(radii.z);
-            let grad_local = Vector3::new(
-                v_local.x / (radii.x * radii.x),
-                v_local.y / (radii.y * radii.y),
-                v_local.z / (radii.z * radii.z),
-            );
-            let grad_len = grad_local.norm();
-            if grad_len < 1e-10 {
-                return None;
-            }
-            let normal_local = grad_local / grad_len;
-            let normal_world = geom_mat * normal_local;
-            (d_surface_approx, normal_world)
-        }
-
-        // Out of scope
-        GeomType::Mesh | GeomType::Hfield | GeomType::Sdf => {
-            return None;
-        }
-    };
-
-    // Contact generated when margin-sphere overlaps the geom
-    let depth = vertex_margin - d_surface;
-    if depth <= 0.0 {
-        return None;
-    }
-
-    // Friction combination (geometric mean, same as make_contact_from_geoms)
-    let deform_friction = material.friction;
-    let rigid_friction = model.geom_friction[geom_idx];
-    let sliding = (deform_friction * rigid_friction.x).sqrt();
-    let torsional = (deform_friction * rigid_friction.y).sqrt();
-    let rolling = (deform_friction * rigid_friction.z).sqrt();
-
-    // Tangent frame
-    let (t1, t2) = compute_tangent_frame(&normal);
-
-    let dim = model.deformable_condim.unsigned_abs() as usize;
-
-    Some(DeformableContact {
-        deformable_idx: deform_idx,
-        vertex_idx: vert_idx,
-        geom_idx,
-        pos: Point3::from(v - normal * d_surface).coords,
-        normal,
-        depth,
-        friction: sliding,
-        dim,
-        mu: [sliding, sliding, torsional, rolling, rolling],
-        solref: model.deformable_solref,
-        solimp: model.deformable_solimp,
-        frame: [t1, t2],
-    })
-}
-
-/// Step all deformable bodies through XPBD.
-///
-/// Contact impulses must already be applied to vertex velocities
-/// (in `solve_deformable_contacts`) before calling this function.
-#[cfg(feature = "deformable")]
-fn mj_deformable_step(model: &Model, data: &mut Data) {
-    if data.deformable_bodies.is_empty() {
-        return;
-    }
-
-    let gravity = model.gravity;
-    let dt = model.timestep;
-
-    for (solver, body) in data
-        .deformable_solvers
-        .iter_mut()
-        .zip(data.deformable_bodies.iter_mut())
-    {
-        solver.step(body.as_mut(), gravity, dt);
-    }
-}
+// (Deformable pipeline functions removed — replaced by unified flex solver)
 
 /// Compute the velocity of a point on a body.
 fn compute_point_velocity(data: &Data, body_id: usize, point: Vector3<f64>) -> Vector3<f64> {
@@ -19303,6 +19509,76 @@ fn compute_point_velocity(data: &Data, body_id: usize, point: Vector3<f64>) -> V
     let r = point - body_pos;
 
     v_linear + omega.cross(&r)
+}
+
+/// Compute the velocity of a flex vertex from `qvel`.
+///
+/// Flex vertices have 3 translational DOFs (no angular velocity).
+fn compute_flex_vertex_velocity(model: &Model, data: &Data, vertex_idx: usize) -> Vector3<f64> {
+    let dof_base = model.flexvert_dofadr[vertex_idx];
+    Vector3::new(
+        data.qvel[dof_base],
+        data.qvel[dof_base + 1],
+        data.qvel[dof_base + 2],
+    )
+}
+
+/// Compute the relative velocity at a contact, handling both rigid-rigid and flex-rigid.
+///
+/// For rigid-rigid contacts:
+///   vel1 = point_velocity(geom_body[geom1], pos)
+///   vel2 = point_velocity(geom_body[geom2], pos)
+///   rel_vel = vel2 - vel1
+///
+/// For flex-rigid contacts:
+///   The flex vertex velocity comes from `qvel` (translational only).
+///   The rigid body velocity comes from `compute_point_velocity`.
+///   Sign convention: vel_vertex - vel_rigid (positive = moving apart).
+fn compute_contact_relative_velocity(
+    model: &Model,
+    data: &Data,
+    contact: &Contact,
+) -> Vector3<f64> {
+    if let Some(vertex_idx) = contact.flex_vertex {
+        // Flex-rigid: vertex velocity from qvel, rigid velocity from cvel
+        let v_vertex = compute_flex_vertex_velocity(model, data, vertex_idx);
+        let rigid_body = model.geom_body[contact.geom1];
+        let v_rigid = compute_point_velocity(data, rigid_body, contact.pos);
+        // Convention: vertex is "body2", rigid is "body1"
+        // rel_vel = v_body2 - v_body1 = v_vertex - v_rigid
+        v_vertex - v_rigid
+    } else {
+        // Rigid-rigid: standard body velocity computation
+        let body1 = model.geom_body[contact.geom1];
+        let body2 = model.geom_body[contact.geom2];
+        let vel1 = compute_point_velocity(data, body1, contact.pos);
+        let vel2 = compute_point_velocity(data, body2, contact.pos);
+        vel2 - vel1
+    }
+}
+
+/// Compute the relative angular velocity at a contact, handling flex-rigid.
+///
+/// Flex vertices have no angular DOFs, so for flex-rigid contacts the
+/// angular velocity is 0 - omega_rigid = -omega_rigid.
+fn compute_contact_relative_angular_velocity(
+    model: &Model,
+    data: &Data,
+    contact: &Contact,
+) -> Vector3<f64> {
+    if contact.flex_vertex.is_some() {
+        // Flex has no angular velocity; rigid body is "body1"
+        let rigid_body = model.geom_body[contact.geom1];
+        let omega_rigid = compute_body_angular_velocity(data, rigid_body);
+        // rel_omega = omega_body2 - omega_body1 = 0 - omega_rigid
+        -omega_rigid
+    } else {
+        let body1 = model.geom_body[contact.geom1];
+        let body2 = model.geom_body[contact.geom2];
+        let omega1 = compute_body_angular_velocity(data, body1);
+        let omega2 = compute_body_angular_velocity(data, body2);
+        omega2 - omega1
+    }
 }
 
 /// Apply a contact force to a body by mapping it to generalized forces.
@@ -19428,6 +19704,71 @@ fn apply_contact_torque(model: &Model, data: &mut Data, body_id: usize, torque: 
             }
         }
         current_body = model.body_parent[current_body];
+    }
+}
+
+/// Apply a contact's solved lambda forces to `qfrc_constraint`.
+///
+/// Handles both flex-rigid and rigid-rigid contacts:
+/// - Flex-rigid: vertex DOFs get direct force, rigid body gets reaction via kinematic chain
+/// - Rigid-rigid: both bodies get forces via kinematic chain
+fn apply_solved_contact_lambda(
+    model: &Model,
+    data: &mut Data,
+    contact: &Contact,
+    lambda: &nalgebra::DVector<f64>,
+) {
+    let normal = contact.normal;
+    let tangent1 = contact.frame[0];
+    let tangent2 = contact.frame[1];
+    let dim = contact.dim;
+
+    // Linear force (rows 0–2, or just row 0 for condim 1)
+    let world_force = if dim >= 3 {
+        normal * lambda[0] + tangent1 * lambda[1] + tangent2 * lambda[2]
+    } else {
+        normal * lambda[0]
+    };
+
+    if let Some(vertex_idx) = contact.flex_vertex {
+        // Flex-rigid: vertex DOFs get direct force, rigid body gets reaction.
+        // Narrowphase normal points FROM rigid surface TOWARD flex vertex.
+        // Vertex (body2) gets +world_force, rigid (body1) gets -world_force.
+        let dof_base = model.flexvert_dofadr[vertex_idx];
+        data.qfrc_constraint[dof_base] += world_force.x;
+        data.qfrc_constraint[dof_base + 1] += world_force.y;
+        data.qfrc_constraint[dof_base + 2] += world_force.z;
+
+        let rigid_body = model.geom_body[contact.geom1];
+        apply_contact_force(model, data, rigid_body, contact.pos, -world_force);
+
+        // Flex vertices have no angular DOFs — rigid body absorbs all torques.
+        if dim >= 4 {
+            let torsional_torque = normal * lambda[3];
+            apply_contact_torque(model, data, rigid_body, -torsional_torque);
+        }
+        if dim >= 6 {
+            let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+            apply_contact_torque(model, data, rigid_body, -rolling_torque);
+        }
+    } else {
+        // Standard rigid-rigid contact
+        let body1 = model.geom_body[contact.geom1];
+        let body2 = model.geom_body[contact.geom2];
+
+        apply_contact_force(model, data, body1, contact.pos, -world_force);
+        apply_contact_force(model, data, body2, contact.pos, world_force);
+
+        if dim >= 4 {
+            let torsional_torque = normal * lambda[3];
+            apply_contact_torque(model, data, body1, -torsional_torque);
+            apply_contact_torque(model, data, body2, torsional_torque);
+        }
+        if dim >= 6 {
+            let rolling_torque = tangent1 * lambda[4] + tangent2 * lambda[5];
+            apply_contact_torque(model, data, body1, -rolling_torque);
+            apply_contact_torque(model, data, body2, rolling_torque);
+        }
     }
 }
 
@@ -20265,6 +20606,21 @@ fn mj_integrate_pos(model: &Model, data: &mut Data, h: f64) {
     model.visit_joints(&mut visitor);
 }
 
+/// Position integration for flex vertices: qpos += qvel * h.
+/// Trivial linear update (no quaternions, no SO(3) manifold).
+fn mj_integrate_pos_flex(model: &Model, data: &mut Data, h: f64) {
+    for i in 0..model.nflexvert {
+        if model.flexvert_invmass[i] == 0.0 {
+            continue; // Pinned vertex: skip integration
+        }
+        let dof_base = model.flexvert_dofadr[i];
+        let qpos_base = model.flexvert_qposadr[i];
+        for k in 0..3 {
+            data.qpos[qpos_base + k] += h * data.qvel[dof_base + k];
+        }
+    }
+}
+
 /// Visitor for position integration that handles different joint types.
 struct PositionIntegrateVisitor<'a> {
     qpos: &'a mut DVector<f64>,
@@ -20703,6 +21059,19 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
             h,
         );
 
+        // 2c-flex. Flex vertex positions: linear update from saved state
+        for vi in 0..model.nflexvert {
+            if model.flexvert_invmass[vi] == 0.0 {
+                continue; // Pinned vertex
+            }
+            let qpos_base = model.flexvert_qposadr[vi];
+            let dof_base = model.flexvert_dofadr[vi];
+            for k in 0..3 {
+                data.rk4_qpos_stage[qpos_base + k] =
+                    data.rk4_qpos_saved[qpos_base + k] + h * data.rk4_dX_vel[dof_base + k];
+            }
+        }
+
         // 2d. Velocity (linear): X[i].qvel = X[0].qvel + h * dX_acc
         // Use split_at_mut for borrow-checker disjointness on rk4_qvel.
         let (head, tail) = data.rk4_qvel.split_at_mut(1);
@@ -20782,6 +21151,20 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
         &data.rk4_dX_vel,
         h,
     );
+
+    // Flex vertex positions: linear update from saved state using weighted velocity
+    for vi in 0..model.nflexvert {
+        if model.flexvert_invmass[vi] == 0.0 {
+            continue; // Pinned vertex
+        }
+        let qpos_base = model.flexvert_qposadr[vi];
+        let dof_base = model.flexvert_dofadr[vi];
+        for k in 0..3 {
+            data.qpos[qpos_base + k] =
+                data.rk4_qpos_saved[qpos_base + k] + h * data.rk4_dX_vel[dof_base + k];
+        }
+    }
+
     mj_normalize_quat(model, data);
 
     // Advance activation from saved initial state
@@ -20812,10 +21195,6 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
     // Restore warmstart from initial solve
     data.efc_lambda = efc_lambda_saved;
     data.time = t0 + h;
-
-    // Step deformable bodies (XPBD internal constraints)
-    #[cfg(feature = "deformable")]
-    mj_deformable_step(model, data);
 
     Ok(())
 }
@@ -23863,6 +24242,7 @@ mod cg_solver_unit_tests {
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            flex_vertex: None,
         };
         let jacobian = DMatrix::from_fn(3, nv, |r, c| if r == 0 && c == 0 { 1.0 } else { 0.0 });
 
@@ -23902,6 +24282,7 @@ mod cg_solver_unit_tests {
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            flex_vertex: None,
         };
         let efc_offsets = vec![0usize];
 
@@ -23963,6 +24344,7 @@ mod cg_solver_unit_tests {
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            flex_vertex: None,
         };
         let contacts = vec![contact.clone(), contact];
         let efc_offsets = vec![0usize, 3usize];
@@ -23992,6 +24374,7 @@ mod cg_solver_unit_tests {
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            flex_vertex: None,
         };
         let contacts = vec![contact];
         let efc_offsets = vec![0usize];
@@ -24046,6 +24429,7 @@ mod cg_solver_unit_tests {
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            flex_vertex: None,
         };
         let contacts = vec![contact.clone(), contact];
         let efc_offsets = vec![0usize, 3usize];
@@ -24112,6 +24496,7 @@ mod cg_solver_unit_tests {
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            flex_vertex: None,
         };
         let contacts = vec![contact];
         let efc_offsets = vec![0usize];
@@ -24145,6 +24530,7 @@ mod cg_solver_unit_tests {
             mu: [0.0, 0.0, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            flex_vertex: None,
         };
         let efc_offsets = vec![0usize];
 
