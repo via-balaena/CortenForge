@@ -12,7 +12,6 @@ sim-constraint = { workspace = true }
 sim-muscle = { workspace = true }
 sim-tendon = { workspace = true }
 sim-gpu = { workspace = true }
-sim-deformable = { workspace = true }
 sim-mjcf = { workspace = true }
 sensor-types = { workspace = true }
 sensor-fusion = { workspace = true }

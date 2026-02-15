@@ -100,7 +100,6 @@ members = [
     "sim/L0/core",
     "sim/L0/constraint",
     "sim/L0/sensor",
-    "sim/L0/deformable",
     "sim/L0/muscle",
     "sim/L0/tendon",
     "sim/L0/mjcf",
@@ -325,7 +324,6 @@ sim-simd = { path = "sim/L0/simd" }
 sim-core = { path = "sim/L0/core" }
 sim-constraint = { path = "sim/L0/constraint" }
 sim-sensor = { path = "sim/L0/sensor" }
-sim-deformable = { path = "sim/L0/deformable" }
 sim-muscle = { path = "sim/L0/muscle" }
 sim-tendon = { path = "sim/L0/tendon" }
 sim-mjcf = { path = "sim/L0/mjcf" }

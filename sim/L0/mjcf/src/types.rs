@@ -3153,6 +3153,73 @@ impl Default for MjcfKeyframe {
 // Model
 // ============================================================================
 
+/// Parsed `<flex>` element from `<deformable>`.
+///
+/// Represents a deformable flex body with vertices, elements, and material/collision
+/// properties. Maps to MuJoCo's `<flex>` element within `<deformable>`.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfFlex {
+    /// Flex name.
+    pub name: String,
+    /// Dimensionality: 1=cable, 2=shell, 3=solid.
+    pub dim: usize,
+    /// Young's modulus [Pa].
+    pub young: f64,
+    /// Poisson's ratio.
+    pub poisson: f64,
+    /// Damping coefficient.
+    pub damping: f64,
+    /// Shell thickness [m] (dim=2 only).
+    pub thickness: f64,
+    /// Volumetric density [kg/m³] (dim=2,3) or linear density [kg/m] (dim=1).
+    pub density: f64,
+    /// Collision friction coefficient.
+    pub friction: f64,
+    /// Collision contact dimensionality (1, 3, or 4).
+    pub condim: i32,
+    /// Collision margin [m].
+    pub margin: f64,
+    /// Collision vertex radius [m].
+    pub radius: f64,
+    /// Solver reference parameters.
+    pub solref: [f64; 2],
+    /// Solver impedance parameters.
+    pub solimp: [f64; 5],
+    /// Vertex positions.
+    pub vertices: Vec<Vector3<f64>>,
+    /// Element connectivity (each element is a list of vertex indices).
+    pub elements: Vec<Vec<usize>>,
+    /// Pinned vertex indices (infinite mass, fixed in place).
+    pub pinned: Vec<usize>,
+    /// Whether self-collision is enabled for this flex body.
+    pub selfcollide: bool,
+}
+
+impl Default for MjcfFlex {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            dim: 2,
+            young: 1e6,
+            poisson: 0.0,
+            damping: 0.0,
+            thickness: 0.001,
+            density: 1000.0,
+            friction: 1.0,
+            condim: 3,
+            margin: 0.0,
+            radius: 0.005,
+            solref: [0.02, 1.0],
+            solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            vertices: Vec::new(),
+            elements: Vec::new(),
+            pinned: Vec::new(),
+            selfcollide: false,
+        }
+    }
+}
+
 /// A complete MJCF model.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -3183,6 +3250,8 @@ pub struct MjcfModel {
     pub contact: MjcfContact,
     /// Skinned meshes for visual deformation.
     pub skins: Vec<MjcfSkin>,
+    /// Flex deformable bodies.
+    pub flex: Vec<MjcfFlex>,
     /// Keyframes for quick state reset.
     #[cfg_attr(feature = "serde", serde(default))]
     pub keyframes: Vec<MjcfKeyframe>,
@@ -3204,6 +3273,7 @@ impl Default for MjcfModel {
             equality: MjcfEquality::default(),
             contact: MjcfContact::default(),
             skins: Vec::new(),
+            flex: Vec::new(),
             keyframes: Vec::new(),
         }
     }

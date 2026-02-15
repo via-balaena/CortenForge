@@ -99,14 +99,6 @@ pub mod sensors;
 pub mod validation;
 
 // ============================================================================
-// Deformable Body Pipeline Tests (§11, feature-gated)
-// ============================================================================
-
-/// Deformable-rigid contact pipeline tests.
-#[cfg(feature = "deformable")]
-pub mod deformable_contact;
-
-// ============================================================================
 // Analytical Derivatives Tests (§12, Part 1: Steps 0–7)
 // ============================================================================
 
@@ -134,3 +126,10 @@ pub mod newton_solver;
 /// Sleep deactivation tests: tree enumeration, policies, wake detection,
 /// pipeline skip, sensor freezing, batch independence.
 pub mod sleeping;
+
+// ============================================================================
+// Flex Solver Unification Tests (§6b)
+// ============================================================================
+
+/// Flex unification acceptance tests: AC1–AC15 from future_work_6b_precursor_to_7.
+pub mod flex_unified;
