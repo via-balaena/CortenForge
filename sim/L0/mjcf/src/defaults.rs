@@ -229,6 +229,34 @@ impl DefaultResolver {
                     result.conaffinity = conaffinity;
                 }
             }
+
+            // Priority: apply default if at default (0)
+            if result.priority == 0 {
+                if let Some(priority) = defaults.priority {
+                    result.priority = priority;
+                }
+            }
+
+            // Solmix: apply default if at default (1.0)
+            if (result.solmix - 1.0).abs() < 1e-10 {
+                if let Some(solmix) = defaults.solmix {
+                    result.solmix = solmix;
+                }
+            }
+
+            // Margin: apply default if at default (0.0)
+            if result.margin.abs() < 1e-10 {
+                if let Some(margin) = defaults.margin {
+                    result.margin = margin;
+                }
+            }
+
+            // Gap: apply default if at default (0.0)
+            if result.gap.abs() < 1e-10 {
+                if let Some(gap) = defaults.gap {
+                    result.gap = gap;
+                }
+            }
         }
 
         result
@@ -584,6 +612,10 @@ impl DefaultResolver {
                 rgba: c.rgba.or(p.rgba),
                 contype: c.contype.or(p.contype),
                 conaffinity: c.conaffinity.or(p.conaffinity),
+                priority: c.priority.or(p.priority),
+                solmix: c.solmix.or(p.solmix),
+                margin: c.margin.or(p.margin),
+                gap: c.gap.or(p.gap),
             }),
         }
     }

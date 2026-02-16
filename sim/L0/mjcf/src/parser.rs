@@ -611,6 +611,10 @@ fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     }
     defaults.contype = parse_int_attr(e, "contype");
     defaults.conaffinity = parse_int_attr(e, "conaffinity");
+    defaults.priority = parse_int_attr(e, "priority");
+    defaults.solmix = parse_float_attr(e, "solmix");
+    defaults.margin = parse_float_attr(e, "margin");
+    defaults.gap = parse_float_attr(e, "gap");
 
     Ok(defaults)
 }
@@ -1486,7 +1490,8 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
 
     // Contact solver parameters: solref=[timeconst, dampratio],
     // solimp=[d0, d_width, width, midpoint, power].
-    // When two geoms collide, their params are combined (min for solref, max for solimp).
+    // When two geoms collide, their params are combined via mj_contactParam:
+    // friction = element-wise max, solref/solimp = solmix-weighted average, condim = max.
     if let Some(solref) = get_attribute_opt(e, "solref") {
         let parts = parse_float_array(&solref)?;
         if parts.len() >= 2 {
@@ -1498,6 +1503,20 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
         if parts.len() >= 5 {
             geom.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
         }
+    }
+
+    // Contact parameter combination attributes (MuJoCo mj_contactParam)
+    if let Some(priority) = parse_int_attr(e, "priority") {
+        geom.priority = priority;
+    }
+    if let Some(solmix) = parse_float_attr(e, "solmix") {
+        geom.solmix = solmix;
+    }
+    if let Some(margin) = parse_float_attr(e, "margin") {
+        geom.margin = margin;
+    }
+    if let Some(gap) = parse_float_attr(e, "gap") {
+        geom.gap = gap;
     }
 
     Ok(geom)

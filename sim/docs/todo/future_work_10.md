@@ -173,7 +173,15 @@ corresponding stage.
    - `DISABLE_LIMIT`: skip joint/tendon limit enforcement.
    - `DISABLE_EQUALITY`: skip equality constraint assembly.
    - `DISABLE_FRICTIONLOSS`: skip friction loss passive force.
-   - `DISABLE_PASSIVE`: skip all passive forces.
+   - `DISABLE_SPRING` (`mjDSBL_SPRING`): skip all passive spring forces
+     (joint springs, tendon springs, flex edge spring forces from #27C, flex
+     bending forces). MuJoCo multiplies stiffness by `has_spring` derived
+     from this flag.
+   - `DISABLE_DAMPER` (`mjDSBL_DAMPER`): skip all passive damping forces
+     (joint damping, tendon damping, flex edge damping from #27C, flex vertex
+     damping). MuJoCo multiplies damping by `has_damping` derived from this
+     flag. **Note:** Spring and damper are separate flags — you can disable
+     one while keeping the other active.
    - `DISABLE_ACTUATION`: skip actuator force computation.
    - `DISABLE_SENSOR`: skip sensor evaluation.
    - `DISABLE_REFSAFE`: skip reference safety clamping.
@@ -244,6 +252,192 @@ deformable pipeline.
 #### Files
 - `sim/L0/mjcf/src/parser.rs` — parse `<flex>`, `<flexcomp>` elements
 - `sim/L0/mjcf/src/model_builder.rs` — convert to `DeformableBody`, register with pipeline
+
+---
+
+### 42A-i. Sparse Flex Edge Jacobian (`flexedge_J`)
+**Status:** Not started | **Effort:** L | **Prerequisites:** §6B ✅, #27D
+
+> **Discovery context:** Found during #27B/#27C spec review (measure-twice pass)
+> while cross-checking our edge force application against MuJoCo `engine_passive.c`.
+
+#### Current State
+
+MuJoCo uses a pre-computed sparse edge Jacobian `flexedge_J` for applying
+edge forces via `J^T * force`. This handles the general case where flex vertices
+may be attached to complex multi-DOF bodies (e.g., a flex vertex attached to a
+free-floating body has 6 DOFs, not 3 translational DOFs).
+
+**Our code** computes the Jacobian inline as `±direction` applied to
+`flexvert_dofadr`, which assumes each vertex maps to 3 consecutive translational
+DOFs. This pattern is used in three places:
+
+1. **Edge passive forces** (`mj_fwd_passive()` edge spring-damper loop)
+2. **Bending passive forces** (`mj_fwd_passive()` bending force loop, line ~11642)
+3. **Newton penalty path** (line ~14827)
+
+For free vertices (no body attachment), the `±direction` inline Jacobian is
+correct — free flex vertices always have exactly 3 translational DOFs.
+
+**For body-attached vertices** (when #27D is implemented), this is WRONG:
+- A vertex attached to a body with a free joint has 6 DOFs (3 trans + 3 rot)
+- A vertex attached to a body with a hinge joint has 1 DOF
+- The force must be projected through the body's full Jacobian at the vertex
+  position, not just applied as `±direction` to 3 DOFs
+
+#### Objective
+
+Add `flexedge_J` (sparse edge Jacobian) as a pre-computed Data field, and use
+it for edge/bending/penalty force application instead of inline `±direction`.
+
+#### Specification
+
+1. **Model field:** `flex_edge_J_rownnz`, `flex_edge_J_rowadr`, `flex_edge_J_colind`,
+   `flex_edge_J_data` — compressed sparse row (CSR) format per MuJoCo convention.
+   Each edge has 2 rows (one per endpoint vertex), each row spans the vertex's DOFs.
+
+2. **Pre-computation:** After forward kinematics (`mj_kinematics()`), compute the
+   edge Jacobian. For each edge endpoint:
+   - If vertex is free: Jacobian row is `±direction` on the 3 translational DOFs
+   - If vertex is body-attached: Jacobian row is `mj_jac()` at the vertex position
+     for the attached body, multiplied by `±1`
+
+3. **Force application:** Replace all three inline `±direction` patterns with
+   `J^T * force` using the sparse Jacobian. This is a single code path that
+   handles both free and body-attached vertices correctly.
+
+4. **`flexedge_length` / `flexedge_velocity`:** MuJoCo also pre-computes these
+   as Data fields. We currently compute them inline. Optionally pre-compute them
+   alongside the Jacobian for efficiency and MuJoCo Data field parity.
+
+#### Acceptance Criteria
+
+1. `flexedge_J` Data field exists and is computed after forward kinematics.
+2. Edge spring-damper, bending, and Newton penalty forces all use `J^T * force`
+   via the sparse Jacobian.
+3. For models with only free vertices: identical results to current inline code.
+4. For models with body-attached vertices (#27D): correct force projection
+   through body Jacobians.
+5. All existing flex tests pass (regression).
+
+#### Files
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — `Model` (sparse Jacobian fields),
+  `Data` (pre-computed Jacobian + optional length/velocity), edge/bending/penalty
+  force application paths
+
+---
+
+### 42A-ii. `flex_rigid` / `flexedge_rigid` Boolean Arrays
+**Status:** Not started | **Effort:** S | **Prerequisites:** §6B ✅
+
+> **Discovery context:** Found during #27C spec review while cross-checking
+> `engine_passive.c` loop structure.
+
+#### Current State
+
+MuJoCo pre-computes two boolean arrays:
+- `flex_rigid[f]` — `true` if ALL vertices of flex `f` are body-attached with
+  `invmass == 0` (the entire flex is rigid). Entire flex loops are skipped.
+- `flexedge_rigid[e]` — `true` if BOTH endpoints of edge `e` have `invmass == 0`.
+  Individual edge iterations are skipped.
+
+**Our code** checks `flexvert_invmass[v] == 0.0` per-vertex inside the inner
+loop. This is semantically equivalent but less efficient: we do the check per
+edge (2 vertex lookups) instead of one boolean check per flex or per edge.
+
+#### Objective
+
+Add `flex_rigid` and `flexedge_rigid` pre-computed boolean arrays for efficiency.
+
+#### Specification
+
+1. **Model fields:**
+   ```rust
+   /// Per-flex: true if all vertices have invmass == 0.
+   pub flex_rigid: Vec<bool>,
+   /// Per-edge: true if both endpoint vertices have invmass == 0.
+   pub flexedge_rigid: Vec<bool>,
+   ```
+
+2. **Computation:** During model building, after `flexvert_invmass` is populated:
+   - `flex_rigid[f]` = all `flexvert_invmass[v] == 0.0` for vertices in flex `f`
+   - `flexedge_rigid[e]` = `flexvert_invmass[v0] == 0.0 && flexvert_invmass[v1] == 0.0`
+
+3. **Usage:** Replace per-vertex invmass checks in all flex loops:
+   - Outer flex loop: `if flex_rigid[f] { continue; }`
+   - Inner edge loop: `if flexedge_rigid[e] { continue; }`
+
+#### Acceptance Criteria
+
+1. `flex_rigid` and `flexedge_rigid` fields exist on Model.
+2. Rigid flex bodies and edges are skipped without per-vertex checks.
+3. Identical simulation results (optimization only, no behavior change).
+4. All existing flex tests pass.
+
+#### Files
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — Model fields, flex loop optimizations
+- `sim/L0/mjcf/src/model_builder.rs` — pre-compute rigid flags
+
+---
+
+### 42A-iii. `flexedge_length` / `flexedge_velocity` Pre-computed Data Fields
+**Status:** Not started | **Effort:** S | **Prerequisites:** §6B ✅
+
+> **Discovery context:** Found during #27C spec review while cross-checking
+> `engine_passive.c` field access patterns.
+
+#### Current State
+
+MuJoCo pre-computes `d->flexedge_length[e]` and `d->flexedge_velocity[e]` as
+Data fields, computed during forward kinematics. Multiple consumers read these
+pre-computed values: passive forces, constraint assembly, Newton penalty.
+
+**Our code** computes both inline from `flexvert_xpos` and `qvel` at each usage
+site. This duplicates computation when multiple consumers need the same values
+(e.g., edge spring force + Newton penalty both need edge length).
+
+#### Objective
+
+Add `flexedge_length` and `flexedge_velocity` as pre-computed Data fields for
+efficiency and MuJoCo Data layout parity.
+
+#### Specification
+
+1. **Data fields:**
+   ```rust
+   /// Pre-computed edge lengths (Euclidean distance between endpoints).
+   pub flexedge_length: Vec<f64>,
+   /// Pre-computed edge elongation velocities (rate of length change).
+   pub flexedge_velocity: Vec<f64>,
+   ```
+
+2. **Computation:** After forward kinematics (when `flexvert_xpos` and `qvel`
+   are up to date):
+   ```
+   direction = flexvert_xpos[v1] - flexvert_xpos[v0]
+   length = ||direction||
+   unit_dir = direction / length
+   velocity = (qvel[dof1..dof1+3] - qvel[dof0..dof0+3]) · unit_dir
+   ```
+
+3. **Consumers:** Replace inline computation in:
+   - Edge spring-damper passive forces (`mj_fwd_passive()`)
+   - Newton penalty edge path
+   - Any future edge-based computations
+
+#### Acceptance Criteria
+
+1. `flexedge_length` and `flexedge_velocity` exist as Data fields.
+2. Computed once after forward kinematics, read by all consumers.
+3. Identical simulation results (optimization only, no behavior change).
+4. All existing flex tests pass.
+
+#### Files
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — Data fields, computation in
+  kinematics phase, consumer updates
 
 ---
 

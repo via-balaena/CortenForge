@@ -1349,6 +1349,10 @@ pub struct Model {
     pub geom_margin: Vec<f64>,
     /// Contact gap (minimum allowed separation).
     pub geom_gap: Vec<f64>,
+    /// Contact priority. When priorities differ, higher-priority geom's params win.
+    pub geom_priority: Vec<i32>,
+    /// Solver mixing weight for contact parameter combination (default 1.0).
+    pub geom_solmix: Vec<f64>,
     /// Solver impedance parameters [d0, dwidth, width, midpoint, power].
     /// Controls constraint softness and behavior.
     pub geom_solimp: Vec<[f64; 5]>,
@@ -1405,6 +1409,12 @@ pub struct Model {
     pub flex_condim: Vec<i32>,
     /// Per-flex: contact collision margin for broadphase expansion.
     pub flex_margin: Vec<f64>,
+    /// Per-flex: contact gap (buffer zone within margin).
+    pub flex_gap: Vec<f64>,
+    /// Per-flex: contact priority (default 0).
+    pub flex_priority: Vec<i32>,
+    /// Per-flex: solver mixing weight (default 1.0).
+    pub flex_solmix: Vec<f64>,
     /// Per-flex: self-collision enabled.
     pub flex_selfcollide: Vec<bool>,
     /// Per-flex: edge constraint solref (derived from young/poisson/damping).
@@ -1874,8 +1884,11 @@ pub struct Contact {
     pub friction: f64,
     /// Contact dimension: 1 (frictionless), 3 (friction), 4 (elliptic), 6 (torsional).
     pub dim: usize,
-    /// Whether margin was included in distance computation.
-    pub includemargin: bool,
+    /// Distance threshold for constraint force onset.
+    /// `includemargin = effective_margin - effective_gap`
+    /// Constraint is excluded when dist >= includemargin (MuJoCo convention).
+    /// In our depth convention (positive = overlap): excluded when depth <= -includemargin.
+    pub includemargin: f64,
     /// Friction parameters for MuJoCo-style 5-element friction.
     /// `[sliding1, sliding2, torsional, rolling1, rolling2]`
     /// - sliding1/2: tangent friction coefficients
@@ -1973,7 +1986,7 @@ impl Contact {
             geom2,
             friction,
             dim: if friction > 0.0 { 3 } else { 1 }, // 3D friction cone or frictionless
-            includemargin: false,
+            includemargin: 0.0,
             // MuJoCo 5-element friction: [sliding1, sliding2, torsional, rolling1, rolling2]
             mu: [
                 friction,
@@ -2072,7 +2085,7 @@ impl Contact {
             geom2,
             friction: sliding, // Keep legacy field for compatibility
             dim,
-            includemargin: false,
+            includemargin: 0.0,
             // MuJoCo 5-element friction: [sliding1, sliding2, torsional, rolling1, rolling2]
             mu: [sliding, sliding, torsional, rolling, rolling],
             solref,
@@ -2081,32 +2094,6 @@ impl Contact {
             flex_vertex: None,
         }
     }
-}
-
-/// Combine solver parameters from two geoms for a contact.
-///
-/// MuJoCo uses element-wise minimum for solref (stiffer constraint wins)
-/// and element-wise maximum for solimp (harder constraint wins).
-#[inline]
-fn combine_solver_params(
-    solref1: [f64; 2],
-    solimp1: [f64; 5],
-    solref2: [f64; 2],
-    solimp2: [f64; 5],
-) -> ([f64; 2], [f64; 5]) {
-    // solref: element-wise minimum (smaller timeconst = stiffer)
-    let solref = [solref1[0].min(solref2[0]), solref1[1].min(solref2[1])];
-
-    // solimp: element-wise maximum (larger d0 = harder)
-    let solimp = [
-        solimp1[0].max(solimp2[0]),
-        solimp1[1].max(solimp2[1]),
-        solimp1[2].max(solimp2[2]),
-        solimp1[3].max(solimp2[3]),
-        solimp1[4].max(solimp2[4]),
-    ];
-
-    (solref, solimp)
 }
 
 /// Compute orthonormal tangent frame from contact normal.
@@ -2937,6 +2924,8 @@ impl Model {
             geom_conaffinity: vec![],
             geom_margin: vec![],
             geom_gap: vec![],
+            geom_priority: vec![],
+            geom_solmix: vec![],
             geom_solimp: vec![],
             geom_solref: vec![],
             geom_name: vec![],
@@ -2962,6 +2951,9 @@ impl Model {
             flex_solimp: vec![],
             flex_condim: vec![],
             flex_margin: vec![],
+            flex_gap: vec![],
+            flex_priority: vec![],
+            flex_solmix: vec![],
             flex_selfcollide: vec![],
             flex_edge_solref: vec![],
             flex_edge_solimp: vec![],
@@ -5486,12 +5478,23 @@ fn mj_collision(model: &Model, data: &mut Data) {
         // This is O(n) and cache-friendly (linear memory access)
         let aabbs: Vec<Aabb> = (0..model.ngeom)
             .map(|geom_id| {
-                aabb_from_geom(
+                let mut aabb = aabb_from_geom(
                     model.geom_type[geom_id],
                     model.geom_size[geom_id],
                     data.geom_xpos[geom_id],
                     data.geom_xmat[geom_id],
-                )
+                );
+                // Expand AABB by geom margin so SAP doesn't reject pairs
+                // that are within margin distance but not overlapping.
+                let m = model.geom_margin[geom_id];
+                if m > 0.0 {
+                    let expand = Vector3::new(m, m, m);
+                    aabb = Aabb::new(
+                        Point3::from(Vector3::new(aabb.min.x, aabb.min.y, aabb.min.z) - expand),
+                        Point3::from(Vector3::new(aabb.max.x, aabb.max.y, aabb.max.z) + expand),
+                    );
+                }
+                aabb
             })
             .collect();
 
@@ -5527,8 +5530,13 @@ fn mj_collision(model: &Model, data: &mut Data) {
             let pos2 = data.geom_xpos[geom2];
             let mat2 = data.geom_xmat[geom2];
 
+            // Compute effective margin for this pair
+            let margin = model.geom_margin[geom1] + model.geom_margin[geom2];
+
             // Narrow-phase collision detection
-            if let Some(contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
+            if let Some(contact) =
+                collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
+            {
                 data.contacts.push(contact);
                 data.ncon += 1;
             }
@@ -5550,12 +5558,15 @@ fn mj_collision(model: &Model, data: &mut Data) {
                 }
             }
 
+            // Pair margin overrides geom margins
+            let margin = pair.margin;
+
             // Distance cull using bounding radii (replaces SAP broad-phase for pairs).
             // geom_rbound is the bounding sphere radius, pre-computed per geom.
             // For planes, rbound = INFINITY so this check always passes.
             // Margin is added to match MuJoCo's mj_filterSphere.
             let dist = (data.geom_xpos[geom1] - data.geom_xpos[geom2]).norm();
-            if dist > model.geom_rbound[geom1] + model.geom_rbound[geom2] + pair.margin {
+            if dist > model.geom_rbound[geom1] + model.geom_rbound[geom2] + margin {
                 continue;
             }
 
@@ -5565,7 +5576,9 @@ fn mj_collision(model: &Model, data: &mut Data) {
             let pos2 = data.geom_xpos[geom2];
             let mat2 = data.geom_xmat[geom2];
 
-            if let Some(mut contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
+            if let Some(mut contact) =
+                collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
+            {
                 apply_pair_overrides(&mut contact, pair);
                 data.contacts.push(contact);
                 data.ncon += 1;
@@ -5773,6 +5786,9 @@ fn narrowphase_sphere_geom(
 }
 
 /// Create a Contact for a flex-rigid collision.
+///
+/// Uses the unified `contact_param_flex_rigid()` function for parameter
+/// combination, mirroring `make_contact_from_geoms()` for rigid-rigid contacts.
 fn make_contact_flex_rigid(
     model: &Model,
     vertex_idx: usize,
@@ -5782,22 +5798,10 @@ fn make_contact_flex_rigid(
     depth: f64,
 ) -> Contact {
     let flex_id = model.flexvert_flexid[vertex_idx];
-
-    // Friction: element-wise max (flex scalar applied to all components)
-    let flex_f = model.flex_friction[flex_id];
-    let rigid_f = model.geom_friction[geom_idx];
-    let sliding = flex_f.max(rigid_f.x);
-    let torsional = flex_f.max(rigid_f.y);
-    let rolling = flex_f.max(rigid_f.z);
-
-    let condim = model.flex_condim[flex_id].max(model.geom_condim[geom_idx]);
-
-    let (solref, solimp) = combine_solver_params(
-        model.flex_solref[flex_id],
-        model.flex_solimp[flex_id],
-        model.geom_solref[geom_idx],
-        model.geom_solimp[geom_idx],
-    );
+    let (condim, gap, solref, solimp, mu) = contact_param_flex_rigid(model, flex_id, geom_idx);
+    // Effective margin = flex_margin + geom_margin (already used in broadphase at line 5585)
+    let margin = model.flex_margin[flex_id] + model.geom_margin[geom_idx];
+    let includemargin = margin - gap;
 
     let (t1, t2) = compute_tangent_frame(&normal);
 
@@ -5816,10 +5820,10 @@ fn make_contact_flex_rigid(
         // This ensures model.geom_body[contact.geom1] is always valid.
         geom1: geom_idx,
         geom2: geom_idx,
-        friction: sliding,
+        friction: mu[0],
         dim,
-        includemargin: false,
-        mu: [sliding, sliding, torsional, rolling, rolling],
+        includemargin,
+        mu,
         solref,
         solimp,
         frame: [t1, t2],
@@ -5830,6 +5834,7 @@ fn make_contact_flex_rigid(
 /// Narrow-phase collision between two geometries.
 #[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
 #[allow(clippy::items_after_statements)] // use statement placed after special cases for readability
+#[allow(clippy::too_many_arguments)]
 fn collide_geoms(
     model: &Model,
     geom1: usize,
@@ -5838,6 +5843,7 @@ fn collide_geoms(
     mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     let type1 = model.geom_type[geom1];
     let type2 = model.geom_type[geom2];
@@ -5850,34 +5856,36 @@ fn collide_geoms(
     // Special case: SDF collision (before mesh/hfield/plane — SDF has its own
     // contact functions for all shapes including Mesh, Hfield, and Plane)
     if type1 == GeomType::Sdf || type2 == GeomType::Sdf {
-        return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2);
+        return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
 
     // Special case: mesh collision (has its own BVH-accelerated path)
     if type1 == GeomType::Mesh || type2 == GeomType::Mesh {
-        return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2);
+        return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
 
     // Special case: height field collision
     if type1 == GeomType::Hfield || type2 == GeomType::Hfield {
-        return collide_with_hfield(model, geom1, geom2, pos1, mat1, pos2, mat2);
+        return collide_with_hfield(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
 
     // Special case: plane collision
     if type1 == GeomType::Plane || type2 == GeomType::Plane {
         return collide_with_plane(
-            model, geom1, geom2, type1, type2, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, type2, pos1, mat1, pos2, mat2, size1, size2, margin,
         );
     }
 
     // Special case: sphere-sphere collision (analytical, more robust than GJK/EPA)
     if type1 == GeomType::Sphere && type2 == GeomType::Sphere {
-        return collide_sphere_sphere(model, geom1, geom2, pos1, pos2, size1, size2);
+        return collide_sphere_sphere(model, geom1, geom2, pos1, pos2, size1, size2, margin);
     }
 
     // Special case: capsule-capsule collision (analytical, much faster than GJK/EPA)
     if type1 == GeomType::Capsule && type2 == GeomType::Capsule {
-        return collide_capsule_capsule(model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2);
+        return collide_capsule_capsule(
+            model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
+        );
     }
 
     // Special case: sphere-capsule collision
@@ -5885,7 +5893,7 @@ fn collide_geoms(
         || (type1 == GeomType::Capsule && type2 == GeomType::Sphere)
     {
         return collide_sphere_capsule(
-            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
         );
     }
 
@@ -5894,7 +5902,7 @@ fn collide_geoms(
         || (type1 == GeomType::Box && type2 == GeomType::Sphere)
     {
         return collide_sphere_box(
-            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
         );
     }
 
@@ -5903,13 +5911,15 @@ fn collide_geoms(
         || (type1 == GeomType::Box && type2 == GeomType::Capsule)
     {
         return collide_capsule_box(
-            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
         );
     }
 
     // Special case: box-box collision (SAT)
     if type1 == GeomType::Box && type2 == GeomType::Box {
-        return collide_box_box(model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2);
+        return collide_box_box(
+            model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
+        );
     }
 
     // Special case: cylinder-sphere collision (analytical)
@@ -5917,7 +5927,7 @@ fn collide_geoms(
         || (type1 == GeomType::Sphere && type2 == GeomType::Cylinder)
     {
         return collide_cylinder_sphere(
-            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
         );
     }
 
@@ -5927,7 +5937,7 @@ fn collide_geoms(
         || (type1 == GeomType::Capsule && type2 == GeomType::Cylinder)
     {
         if let Some(contact) = collide_cylinder_capsule(
-            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
         ) {
             return Some(contact);
         }
@@ -5950,7 +5960,7 @@ fn collide_geoms(
     let collision_shape2 = shape2?;
 
     if let Some(result) = gjk_epa_contact(&collision_shape1, &pose1, &collision_shape2, &pose2) {
-        if result.penetration > 0.0 {
+        if result.penetration > -margin {
             return Some(make_contact_from_geoms(
                 model,
                 Vector3::new(result.point.x, result.point.y, result.point.z),
@@ -5958,6 +5968,7 @@ fn collide_geoms(
                 result.penetration,
                 geom1,
                 geom2,
+                margin,
             ));
         }
     }
@@ -5998,7 +6009,7 @@ fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Co
 // 1. **Dispatcher functions** (e.g., `collide_with_plane`, `collide_geoms`):
 //    - Take `&Model` and geometry indices
 //    - Handle type dispatch and parameter extraction
-//    - Compute derived values like friction (geometric mean)
+//    - Compute derived values like friction (element-wise max)
 //    - Called from the main collision pipeline
 //
 // 2. **Implementation helpers** (e.g., `collide_cylinder_plane_impl`):
@@ -6039,17 +6050,169 @@ fn apply_pair_overrides(contact: &mut Contact, pair: &ContactPair) {
     contact.solimp = pair.solimp;
     // NOTE: solreffriction is NOT applied here — Contact has a single solref
     // field; per-direction solver params require solver changes (see §G).
-    // NOTE: margin/gap are NOT applied here — no runtime effect yet (see §H).
+    // Pair margin/gap override geom-derived includemargin
+    contact.includemargin = pair.margin - pair.gap;
+}
+
+/// Contact parameter combination — MuJoCo `mj_contactParam()` equivalent.
+///
+/// Computes combined contact parameters from two geoms.
+/// Handles priority (#25), solmix (#26), friction max (#24), and gap (#27).
+///
+/// Returns: (condim, gap, solref, solimp, friction\[5\])
+fn contact_param(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+) -> (i32, f64, [f64; 2], [f64; 5], [f64; 5]) {
+    // 1. Load parameters
+    let priority1 = model.geom_priority[geom1];
+    let priority2 = model.geom_priority[geom2];
+    let gap = model.geom_gap[geom1] + model.geom_gap[geom2];
+
+    // 2. Priority check — higher priority geom's params win entirely
+    if priority1 != priority2 {
+        let winner = if priority1 > priority2 { geom1 } else { geom2 };
+        let fri = model.geom_friction[winner];
+        return (
+            model.geom_condim[winner],
+            gap,
+            model.geom_solref[winner],
+            model.geom_solimp[winner],
+            [fri.x, fri.x, fri.y, fri.z, fri.z], // 3→5 unpack
+        );
+    }
+
+    // 3. Equal priority — combine
+    let condim = model.geom_condim[geom1].max(model.geom_condim[geom2]);
+
+    // 3a. Solmix weight
+    let s1 = model.geom_solmix[geom1];
+    let s2 = model.geom_solmix[geom2];
+    let mix = solmix_weight(s1, s2);
+
+    // 3b. Solref combination
+    let solref1 = model.geom_solref[geom1];
+    let solref2 = model.geom_solref[geom2];
+    let solref = combine_solref(solref1, solref2, mix);
+
+    // 3c. Solimp: weighted average
+    let solimp1 = model.geom_solimp[geom1];
+    let solimp2 = model.geom_solimp[geom2];
+    let solimp = combine_solimp(solimp1, solimp2, mix);
+
+    // 3d. Friction: element-wise max (NOT affected by solmix)
+    let f1 = model.geom_friction[geom1];
+    let f2 = model.geom_friction[geom2];
+    let fri = [
+        f1.x.max(f2.x),
+        f1.x.max(f2.x), // sliding1, sliding2
+        f1.y.max(f2.y), // torsional
+        f1.z.max(f2.z),
+        f1.z.max(f2.z), // rolling1, rolling2
+    ];
+
+    (condim, gap, solref, solimp, fri)
+}
+
+/// Contact parameter combination for flex-rigid collision pairs.
+///
+/// Mirrors `contact_param()` for geom-geom pairs, but reads `flex_*` fields
+/// for the flex entity and `geom_*` fields for the rigid entity. Follows
+/// MuJoCo's `mj_contactParam()` with f1=flex_id, f2=-1 (geom).
+fn contact_param_flex_rigid(
+    model: &Model,
+    flex_id: usize,
+    geom_idx: usize,
+) -> (i32, f64, [f64; 2], [f64; 5], [f64; 5]) {
+    let priority_flex = model.flex_priority[flex_id];
+    let priority_geom = model.geom_priority[geom_idx];
+    let gap = model.flex_gap[flex_id] + model.geom_gap[geom_idx];
+
+    if priority_flex > priority_geom {
+        let f = model.flex_friction[flex_id]; // scalar until Vec<Vector3> upgrade
+        return (
+            model.flex_condim[flex_id],
+            gap,
+            model.flex_solref[flex_id],
+            model.flex_solimp[flex_id],
+            [f, f, f, f, f], // scalar → uniform 5-element unpack
+        );
+    }
+    if priority_geom > priority_flex {
+        let f = model.geom_friction[geom_idx];
+        return (
+            model.geom_condim[geom_idx],
+            gap,
+            model.geom_solref[geom_idx],
+            model.geom_solimp[geom_idx],
+            [f.x, f.x, f.y, f.z, f.z],
+        );
+    }
+
+    // Equal priority — combine
+    let condim = model.flex_condim[flex_id].max(model.geom_condim[geom_idx]);
+
+    let s1 = model.flex_solmix[flex_id];
+    let s2 = model.geom_solmix[geom_idx];
+    let mix = solmix_weight(s1, s2);
+
+    let solref = combine_solref(model.flex_solref[flex_id], model.geom_solref[geom_idx], mix);
+    let solimp = combine_solimp(model.flex_solimp[flex_id], model.geom_solimp[geom_idx], mix);
+
+    // Friction: element-wise max (flex scalar applied to all components)
+    let ff = model.flex_friction[flex_id];
+    let gf = model.geom_friction[geom_idx];
+    let fri = [
+        ff.max(gf.x),
+        ff.max(gf.x), // sliding1, sliding2
+        ff.max(gf.y), // torsional
+        ff.max(gf.z),
+        ff.max(gf.z), // rolling1, rolling2
+    ];
+
+    (condim, gap, solref, solimp, fri)
+}
+
+/// Compute solmix weight, matching MuJoCo's edge-case handling.
+/// Returns weight for entity 1 (entity 2 weight = 1 - mix).
+fn solmix_weight(s1: f64, s2: f64) -> f64 {
+    const MJ_MINVAL: f64 = 1e-15;
+    if s1 >= MJ_MINVAL && s2 >= MJ_MINVAL {
+        s1 / (s1 + s2)
+    } else if s1 < MJ_MINVAL && s2 < MJ_MINVAL {
+        0.5
+    } else if s1 < MJ_MINVAL {
+        0.0 // entity 2 dominates
+    } else {
+        1.0 // entity 1 dominates
+    }
+}
+
+/// Combine solref using solmix weight.
+/// Standard reference (solref\[0\] > 0): weighted average.
+/// Direct reference (solref\[0\] <= 0): element-wise minimum.
+fn combine_solref(solref1: [f64; 2], solref2: [f64; 2], mix: f64) -> [f64; 2] {
+    if solref1[0] > 0.0 && solref2[0] > 0.0 {
+        [
+            mix * solref1[0] + (1.0 - mix) * solref2[0],
+            mix * solref1[1] + (1.0 - mix) * solref2[1],
+        ]
+    } else {
+        [solref1[0].min(solref2[0]), solref1[1].min(solref2[1])]
+    }
+}
+
+/// Combine solimp using solmix weight (always weighted average).
+fn combine_solimp(solimp1: [f64; 5], solimp2: [f64; 5], mix: f64) -> [f64; 5] {
+    std::array::from_fn(|i| mix * solimp1[i] + (1.0 - mix) * solimp2[i])
 }
 
 /// Create a contact with solver parameters derived from the colliding geoms.
 ///
-/// This helper combines friction (geometric mean) and solver params from both
-/// geoms according to MuJoCo conventions:
-/// - friction: geometric mean of both geoms (per friction type)
-/// - condim: maximum of both geom condim values (sufficient dimensionality)
-/// - solref: element-wise minimum (stiffer wins)
-/// - solimp: element-wise maximum (harder wins)
+/// Uses the unified `contact_param()` function (MuJoCo `mj_contactParam()`
+/// equivalent) for parameter combination: priority gating, solmix-weighted
+/// solver params, element-wise max friction, and additive gap.
 #[inline]
 fn make_contact_from_geoms(
     model: &Model,
@@ -6058,34 +6221,35 @@ fn make_contact_from_geoms(
     depth: f64,
     geom1: usize,
     geom2: usize,
+    margin: f64,
 ) -> Contact {
-    // Get friction vectors from both geoms
-    // geom_friction: [sliding, torsional, rolling]
-    let f1 = model.geom_friction[geom1];
-    let f2 = model.geom_friction[geom2];
+    let (condim, gap, solref, solimp, mu) = contact_param(model, geom1, geom2);
+    let includemargin = margin - gap;
 
-    // Compute geometric mean for each friction component
-    let sliding = (f1.x * f2.x).sqrt();
-    let torsional = (f1.y * f2.y).sqrt();
-    let rolling = (f1.z * f2.z).sqrt();
+    let dim: usize = match condim {
+        1 => 1,
+        4 => 4,
+        6 => 6,
+        _ => 3,
+    };
 
-    // Contact dimension: maximum of both geom condim values
-    // MuJoCo uses max so the contact has sufficient dimensionality
-    let condim1 = model.geom_condim[geom1];
-    let condim2 = model.geom_condim[geom2];
-    let condim = condim1.max(condim2);
+    let (t1, t2) = compute_tangent_frame(&normal);
 
-    // Combine solver parameters from both geoms
-    let (solref, solimp) = combine_solver_params(
-        model.geom_solref[geom1],
-        model.geom_solimp[geom1],
-        model.geom_solref[geom2],
-        model.geom_solimp[geom2],
-    );
-
-    Contact::with_condim(
-        pos, normal, depth, geom1, geom2, sliding, torsional, rolling, condim, solref, solimp,
-    )
+    Contact {
+        pos,
+        normal,
+        depth,
+        geom1,
+        geom2,
+        friction: mu[0],
+        dim,
+        includemargin,
+        mu,
+        solref,
+        solimp,
+        frame: [t1, t2],
+        flex_vertex: None,
+    }
 }
 
 /// Minimum norm threshold for geometric operations.
@@ -6117,6 +6281,7 @@ const CAP_COLLISION_THRESHOLD: f64 = 0.7;
 
 /// Height field collision: dispatch to the appropriate contact function
 /// based on the other geom's type, then convert to pipeline Contact.
+#[allow(clippy::too_many_arguments)]
 fn collide_with_hfield(
     model: &Model,
     geom1: usize,
@@ -6125,6 +6290,7 @@ fn collide_with_hfield(
     mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
+    margin: f64, // TODO: thread margin into heightfield helpers
 ) -> Option<Contact> {
     // Identify which geom is the hfield, which is the other
     let (hf_geom, other_geom, hf_pos, hf_mat, other_pos, other_mat) =
@@ -6185,7 +6351,15 @@ fn collide_with_hfield(
     let swapped = hf_geom != geom1;
     hf_contact.map(|c| {
         let normal = if swapped { -c.normal } else { c.normal };
-        make_contact_from_geoms(model, c.point.coords, normal, c.penetration, geom1, geom2)
+        make_contact_from_geoms(
+            model,
+            c.point.coords,
+            normal,
+            c.penetration,
+            geom1,
+            geom2,
+            margin,
+        )
     })
 }
 
@@ -6202,6 +6376,7 @@ fn collide_with_sdf(
     mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
+    margin: f64, // TODO: thread margin into SDF helpers
 ) -> Option<Contact> {
     // Identify which geom is the SDF, which is the other
     let (sdf_geom, other_geom, sdf_pos, sdf_mat, other_pos, other_mat) =
@@ -6296,7 +6471,15 @@ fn collide_with_sdf(
         } else {
             c.normal
         };
-        make_contact_from_geoms(model, c.point.coords, normal, c.penetration, geom1, geom2)
+        make_contact_from_geoms(
+            model,
+            c.point.coords,
+            normal,
+            c.penetration,
+            geom1,
+            geom2,
+            margin,
+        )
     })
 }
 
@@ -6316,6 +6499,7 @@ fn collide_with_mesh(
     mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
+    margin: f64, // TODO: thread margin into mesh helpers
 ) -> Option<Contact> {
     let type1 = model.geom_type[geom1];
     let type2 = model.geom_type[geom2];
@@ -6422,6 +6606,7 @@ fn collide_with_mesh(
             mc.penetration,
             geom1,
             geom2,
+            margin,
         )
     })
 }
@@ -6492,6 +6677,7 @@ fn collide_with_plane(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Determine which is the plane
     let (
@@ -6520,7 +6706,7 @@ fn collide_with_plane(
             let center_dist = plane_normal.dot(&other_pos) - plane_distance;
             let penetration = radius - center_dist;
 
-            if penetration > 0.0 {
+            if penetration > -margin {
                 // Contact position is at the sphere surface toward the plane
                 let contact_pos = other_pos - plane_normal * center_dist;
                 // Contact normal points from other_geom toward plane_geom (from ball into plane = -plane_normal)
@@ -6534,6 +6720,7 @@ fn collide_with_plane(
                     penetration,
                     plane_geom,
                     other_geom,
+                    margin,
                 ))
             } else {
                 None
@@ -6584,7 +6771,7 @@ fn collide_with_plane(
             let dist = plane_normal.dot(&lowest_corner) - plane_distance;
             let depth = -dist;
 
-            if depth > 0.0 {
+            if depth > -margin {
                 // Contact position on plane surface (project corner onto plane)
                 // This is consistent with sphere-plane which places contact at surface
                 let contact_pos = lowest_corner - plane_normal * dist;
@@ -6595,6 +6782,7 @@ fn collide_with_plane(
                     depth,
                     plane_geom,
                     other_geom,
+                    margin,
                 ))
             } else {
                 None
@@ -6620,7 +6808,7 @@ fn collide_with_plane(
 
             let penetration = radius - min_dist;
 
-            if penetration > 0.0 {
+            if penetration > -margin {
                 let contact_pos = closest_end - plane_normal * min_dist;
                 Some(make_contact_from_geoms(
                     model,
@@ -6629,6 +6817,7 @@ fn collide_with_plane(
                     penetration,
                     plane_geom,
                     other_geom,
+                    margin,
                 ))
             } else {
                 None
@@ -6645,6 +6834,7 @@ fn collide_with_plane(
                 other_pos,
                 other_mat,
                 other_size,
+                margin,
             )
         }
         GeomType::Ellipsoid => {
@@ -6658,6 +6848,7 @@ fn collide_with_plane(
                 other_pos,
                 other_mat,
                 other_size,
+                margin,
             )
         }
         // INVARIANT: collide_geoms() dispatches mesh collision before plane collision.
@@ -6707,6 +6898,7 @@ fn collide_cylinder_plane_impl(
     cyl_pos: Vector3<f64>,
     cyl_mat: Matrix3<f64>,
     cyl_size: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     let radius = cyl_size.x;
     let half_height = cyl_size.y;
@@ -6774,7 +6966,7 @@ fn collide_cylinder_plane_impl(
     let signed_dist = plane_normal.dot(&deepest_point) - plane_d;
     let depth = -signed_dist;
 
-    if depth <= 0.0 {
+    if depth <= -margin {
         return None;
     }
 
@@ -6788,6 +6980,7 @@ fn collide_cylinder_plane_impl(
         depth,
         plane_geom,
         cyl_geom,
+        margin,
     ))
 }
 
@@ -6830,6 +7023,7 @@ fn collide_ellipsoid_plane_impl(
     ell_pos: Vector3<f64>,
     ell_mat: Matrix3<f64>,
     ell_radii: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Transform plane normal to ellipsoid local frame
     let local_normal = ell_mat.transpose() * plane_normal;
@@ -6863,7 +7057,7 @@ fn collide_ellipsoid_plane_impl(
     let signed_dist = plane_normal.dot(&world_support) - plane_d;
     let depth = -signed_dist; // Positive = penetrating
 
-    if depth <= 0.0 {
+    if depth <= -margin {
         return None;
     }
 
@@ -6877,6 +7071,7 @@ fn collide_ellipsoid_plane_impl(
         depth,
         plane_geom,
         ell_geom,
+        margin,
     ))
 }
 
@@ -6884,6 +7079,7 @@ fn collide_ellipsoid_plane_impl(
 ///
 /// This is a simple analytical calculation that's more robust than GJK/EPA
 /// for the sphere-sphere case.
+#[allow(clippy::too_many_arguments)]
 fn collide_sphere_sphere(
     model: &Model,
     geom1: usize,
@@ -6892,6 +7088,7 @@ fn collide_sphere_sphere(
     pos2: Vector3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     let radius1 = size1.x;
     let radius2 = size2.x;
@@ -6899,11 +7096,11 @@ fn collide_sphere_sphere(
     let diff = pos2 - pos1;
     let dist = diff.norm();
 
-    // Check for penetration
+    // Check for penetration (or within margin zone)
     let sum_radii = radius1 + radius2;
     let penetration = sum_radii - dist;
 
-    if penetration > 0.0 {
+    if penetration > -margin {
         // Normal points from sphere1 to sphere2.
         // For coincident/nearly-coincident centers (degenerate case), pick +Z.
         let normal = if dist > GEOM_EPSILON {
@@ -6923,6 +7120,7 @@ fn collide_sphere_sphere(
             penetration,
             geom1,
             geom2,
+            margin,
         ))
     } else {
         None
@@ -6945,6 +7143,7 @@ fn collide_capsule_capsule(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Capsule parameters: size.x = radius, size.y = half_length
     let radius1 = size1.x;
@@ -6965,13 +7164,13 @@ fn collide_capsule_capsule(
     // Find closest points between the two line segments
     let (closest1, closest2) = closest_points_segments(p1a, p1b, p2a, p2b);
 
-    // Check distance
+    // Check distance (or within margin zone)
     let diff = closest2 - closest1;
     let dist = diff.norm();
     let sum_radii = radius1 + radius2;
     let penetration = sum_radii - dist;
 
-    if penetration > 0.0 {
+    if penetration > -margin {
         // Normal points from capsule1 toward capsule2.
         // For degenerate case (segments intersect), pick +Z.
         let normal = if dist > GEOM_EPSILON {
@@ -6988,6 +7187,7 @@ fn collide_capsule_capsule(
             penetration,
             geom1,
             geom2,
+            margin,
         ))
     } else {
         None
@@ -7007,6 +7207,7 @@ fn collide_sphere_capsule(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Determine which is sphere and which is capsule
     let (
@@ -7040,7 +7241,7 @@ fn collide_sphere_capsule(
     let sum_radii = sphere_radius + capsule_radius;
     let penetration = sum_radii - dist;
 
-    if penetration > 0.0 {
+    if penetration > -margin {
         // Normal points from capsule toward sphere.
         // For degenerate case (sphere center on capsule axis), pick +Z.
         let normal = if dist > GEOM_EPSILON {
@@ -7074,6 +7275,7 @@ fn collide_sphere_capsule(
             penetration,
             g1,
             g2,
+            margin,
         ))
     } else {
         None
@@ -7095,6 +7297,7 @@ fn collide_sphere_box(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Determine which is sphere and which is box
     let (sphere_geom, box_geom, sphere_pos, box_pos, box_mat, sphere_radius, box_half) =
@@ -7122,7 +7325,7 @@ fn collide_sphere_box(
     let dist = diff.norm();
     let penetration = sphere_radius - dist;
 
-    if penetration > 0.0 {
+    if penetration > -margin {
         // Compute normal (from box toward sphere)
         let normal = if dist > GEOM_EPSILON {
             diff / dist
@@ -7172,6 +7375,7 @@ fn collide_sphere_box(
             penetration,
             g1,
             g2,
+            margin,
         ))
     } else {
         None
@@ -7198,6 +7402,7 @@ fn collide_cylinder_sphere(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Determine which is cylinder and which is sphere
     // Note: sphere doesn't use its rotation matrix, but we need mat2 for the cylinder case
@@ -7277,7 +7482,7 @@ fn collide_cylinder_sphere(
     let dist = (sph_pos - closest_on_cyl).norm();
     let penetration = sph_radius - dist;
 
-    if penetration <= 0.0 {
+    if penetration <= -margin {
         return None;
     }
 
@@ -7298,6 +7503,7 @@ fn collide_cylinder_sphere(
         penetration,
         g1,
         g2,
+        margin,
     ))
 }
 
@@ -7326,6 +7532,7 @@ fn collide_cylinder_capsule(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Identify cylinder and capsule
     let (cyl_geom, cyl_pos, cyl_mat, cyl_size, cap_geom, cap_pos, cap_mat, cap_size) =
@@ -7384,7 +7591,7 @@ fn collide_cylinder_capsule(
     let surface_to_cap_dist = (cap_closest - cyl_surface).dot(&normal);
     let penetration = cap_radius - surface_to_cap_dist;
 
-    if penetration <= 0.0 {
+    if penetration <= -margin {
         return None;
     }
 
@@ -7405,6 +7612,7 @@ fn collide_cylinder_capsule(
         penetration,
         g1,
         g2,
+        margin,
     ))
 }
 
@@ -7424,6 +7632,7 @@ fn collide_capsule_box(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Determine which is capsule and which is box
     let (
@@ -7499,7 +7708,7 @@ fn collide_capsule_box(
 
     let penetration = capsule_radius - min_dist;
 
-    if penetration > 0.0 {
+    if penetration > -margin {
         let diff = best_capsule_point - best_box_point;
         let normal = if min_dist > GEOM_EPSILON {
             diff / min_dist
@@ -7545,6 +7754,7 @@ fn collide_capsule_box(
             penetration,
             g1,
             g2,
+            margin,
         ))
     } else {
         None
@@ -7566,6 +7776,7 @@ fn collide_box_box(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     let half1 = size1;
     let half2 = size2;
@@ -7593,8 +7804,8 @@ fn collide_box_box(
     for i in 0..3 {
         let axis = axes1[i];
         let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
-        if pen <= 0.0 {
-            return None; // Separating axis found
+        if pen <= -margin {
+            return None; // Separating axis found (beyond margin zone)
         }
         if pen < min_pen {
             min_pen = pen;
@@ -7607,7 +7818,7 @@ fn collide_box_box(
     for i in 0..3 {
         let axis = axes2[i];
         let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
-        if pen <= 0.0 {
+        if pen <= -margin {
             return None;
         }
         if pen < min_pen {
@@ -7628,7 +7839,7 @@ fn collide_box_box(
             let axis = axis / len;
 
             let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
-            if pen <= 0.0 {
+            if pen <= -margin {
                 return None;
             }
             // Edge-edge contacts have a bias - they're less stable
@@ -7682,6 +7893,7 @@ fn collide_box_box(
         min_pen,
         geom1,
         geom2,
+        margin,
     ))
 }
 
@@ -15405,9 +15617,10 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
 
         let sr = contact.solref;
         let si = contact.solimp;
-        // Contact margin is 0.0 for now — margin/gap not yet applied at contact creation
-        // (see line 4876 note). When non-zero geom_margin is supported, subtract it here.
-        let margin = 0.0_f64;
+        // includemargin = margin - gap, computed at contact creation.
+        // Flows into compute_impedance (violation threshold) and compute_aref
+        // (reference acceleration offset).
+        let margin = contact.includemargin;
         let is_elliptic = dim >= 3 && model.cone == 1 && contact.mu[0] >= 1e-10;
         let ctype = if is_elliptic {
             ConstraintType::ContactElliptic
@@ -15420,8 +15633,9 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
                 data.efc_J[(row, col)] = cj[(r, col)];
             }
 
-            // pos: row 0 = penetration depth, rows 1+ = 0
-            let pos = if r == 0 { contact.depth } else { 0.0 };
+            // pos: row 0 = signed distance (MuJoCo convention: negative = penetrating),
+            // rows 1+ = 0. Negate depth (positive = penetrating) to match MuJoCo's dist.
+            let pos = if r == 0 { -contact.depth } else { 0.0 };
             let margin_r = if r == 0 { margin } else { 0.0 };
 
             // vel: J_row · qvel
@@ -21229,6 +21443,8 @@ mod primitive_collision_tests {
         model.geom_name = vec![None; ngeom];
         model.geom_rbound = vec![1.0; ngeom];
         model.geom_mesh = vec![None; ngeom]; // No mesh geoms in test helper
+        model.geom_priority = vec![0; ngeom];
+        model.geom_solmix = vec![1.0; ngeom];
         model
     }
 
@@ -21268,6 +21484,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Cylinder should contact plane");
@@ -21302,6 +21519,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(
@@ -21382,6 +21600,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Tilted cylinder should contact plane");
@@ -21421,6 +21640,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(
@@ -21467,6 +21687,7 @@ mod primitive_collision_tests {
             ell_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Ellipsoid (sphere) should contact plane");
@@ -21502,6 +21723,7 @@ mod primitive_collision_tests {
             ell_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Tall ellipsoid should contact plane");
@@ -21536,6 +21758,7 @@ mod primitive_collision_tests {
             ell_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Wide ellipsoid should contact plane");
@@ -21603,6 +21826,7 @@ mod primitive_collision_tests {
             ell_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Rotated ellipsoid should contact plane");
@@ -21637,6 +21861,7 @@ mod primitive_collision_tests {
             ell_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(
@@ -21675,6 +21900,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         // Should still detect contact at the bottom rim
@@ -21712,6 +21938,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         )
         .expect("should have contact");
 
@@ -21957,6 +22184,8 @@ mod sensor_tests {
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
         model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
         model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
         model.geom_solref.push([0.02, 1.0]);
         model.geom_name.push(None);
@@ -22359,6 +22588,8 @@ mod sensor_tests {
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
         model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
         model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
         model.geom_solref.push([0.02, 1.0]);
         model.geom_name.push(None);
@@ -22420,6 +22651,8 @@ mod sensor_tests {
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
         model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
         model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
         model.geom_solref.push([0.02, 1.0]);
         model.geom_name.push(None);
@@ -22972,6 +23205,8 @@ mod sensor_tests {
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
         model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
         model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
         model.geom_solref.push([0.02, 1.0]);
         model.geom_name.push(None);
@@ -24238,7 +24473,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24278,7 +24513,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24340,7 +24575,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24370,7 +24605,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24425,7 +24660,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24492,7 +24727,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24526,7 +24761,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.0, // Frictionless
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.0, 0.0, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],

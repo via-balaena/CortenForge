@@ -440,6 +440,14 @@ struct ModelBuilder {
     geom_solref: Vec<[f64; 2]>,
     /// Solver impedance parameters for each geom [d0, d_width, width, midpoint, power].
     geom_solimp: Vec<[f64; 5]>,
+    /// Contact priority per geom (MuJoCo mj_contactParam).
+    geom_priority: Vec<i32>,
+    /// Solver mixing weight per geom (MuJoCo mj_contactParam).
+    geom_solmix: Vec<f64>,
+    /// Contact margin per geom (broadphase + narrow-phase activation distance).
+    geom_margin: Vec<f64>,
+    /// Contact gap per geom (buffer zone within margin).
+    geom_gap: Vec<f64>,
 
     // Mesh arrays (built from MJCF <asset><mesh> elements)
     /// Name-to-index lookup for mesh assets.
@@ -600,6 +608,9 @@ struct ModelBuilder {
     flex_friction: Vec<f64>,
     flex_condim: Vec<i32>,
     flex_margin: Vec<f64>,
+    flex_gap: Vec<f64>,
+    flex_priority: Vec<i32>,
+    flex_solmix: Vec<f64>,
     flex_solref: Vec<[f64; 2]>,
     flex_solimp: Vec<[f64; 5]>,
     flex_edge_solref: Vec<[f64; 2]>,
@@ -697,6 +708,10 @@ impl ModelBuilder {
             geom_mesh: vec![],
             geom_solref: vec![],
             geom_solimp: vec![],
+            geom_priority: vec![],
+            geom_solmix: vec![],
+            geom_margin: vec![],
+            geom_gap: vec![],
 
             mesh_name_to_id: HashMap::new(),
             mesh_name: vec![],
@@ -838,6 +853,9 @@ impl ModelBuilder {
             flex_friction: vec![],
             flex_condim: vec![],
             flex_margin: vec![],
+            flex_gap: vec![],
+            flex_priority: vec![],
+            flex_solmix: vec![],
             flex_solref: vec![],
             flex_solimp: vec![],
             flex_edge_solref: vec![],
@@ -1616,6 +1634,12 @@ impl ModelBuilder {
         // Solver parameters (fall back to MuJoCo defaults if not specified in MJCF)
         self.geom_solref.push(geom.solref.unwrap_or(DEFAULT_SOLREF));
         self.geom_solimp.push(geom.solimp.unwrap_or(DEFAULT_SOLIMP));
+
+        // Contact parameter combination fields (MuJoCo mj_contactParam)
+        self.geom_priority.push(geom.priority);
+        self.geom_solmix.push(geom.solmix);
+        self.geom_margin.push(geom.margin);
+        self.geom_gap.push(geom.gap);
 
         Ok(geom_id)
     }
@@ -2975,6 +2999,9 @@ impl ModelBuilder {
             self.flex_friction.push(flex.friction);
             self.flex_condim.push(flex.condim);
             self.flex_margin.push(flex.margin);
+            self.flex_gap.push(0.0); // MuJoCo default; not yet parsed from <flex>
+            self.flex_priority.push(0); // MuJoCo default; not yet parsed from <flex>
+            self.flex_solmix.push(1.0); // MuJoCo default; not yet parsed from <flex>
             self.flex_solref.push(flex.solref);
             self.flex_solimp.push(flex.solimp);
             self.flex_edge_solref.push(edge_solref);
@@ -3092,10 +3119,12 @@ impl ModelBuilder {
             geom_condim: self.geom_condim,
             geom_contype: self.geom_contype,
             geom_conaffinity: self.geom_conaffinity,
-            geom_margin: vec![0.0; ngeom], // Default margin
-            geom_gap: vec![0.0; ngeom],    // Default gap
-            geom_solimp: self.geom_solimp, // From parsed MJCF
-            geom_solref: self.geom_solref, // From parsed MJCF
+            geom_margin: self.geom_margin,
+            geom_gap: self.geom_gap,
+            geom_priority: self.geom_priority,
+            geom_solmix: self.geom_solmix,
+            geom_solimp: self.geom_solimp,
+            geom_solref: self.geom_solref,
             geom_name: self.geom_name,
             // Pre-computed bounding radii (computed below after we have geom_type and geom_size)
             geom_rbound: vec![0.0; ngeom],
@@ -3130,6 +3159,9 @@ impl ModelBuilder {
             flex_solimp: self.flex_solimp,
             flex_condim: self.flex_condim,
             flex_margin: self.flex_margin,
+            flex_gap: self.flex_gap,
+            flex_priority: self.flex_priority,
+            flex_solmix: self.flex_solmix,
             flex_selfcollide: self.flex_selfcollide,
             flex_edge_solref: self.flex_edge_solref,
             flex_edge_solimp: self.flex_edge_solimp,
@@ -5860,6 +5892,10 @@ mod tests {
             hfield: None,
             solref: None,
             solimp: None,
+            priority: 0,
+            solmix: 1.0,
+            margin: 0.0,
+            gap: 0.0,
         };
 
         let inertia = compute_geom_inertia(&geom, None);

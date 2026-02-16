@@ -606,6 +606,14 @@ pub struct MjcfGeomDefaults {
     pub contype: Option<i32>,
     /// Collision affinity.
     pub conaffinity: Option<i32>,
+    /// Contact priority.
+    pub priority: Option<i32>,
+    /// Solver mixing weight.
+    pub solmix: Option<f64>,
+    /// Contact margin.
+    pub margin: Option<f64>,
+    /// Contact gap.
+    pub gap: Option<f64>,
 }
 
 /// Default actuator parameters.
@@ -1031,6 +1039,14 @@ pub struct MjcfGeom {
     pub solref: Option<[f64; 2]>,
     /// Solver impedance parameters for contacts [d0, d_width, width, midpoint, power].
     pub solimp: Option<[f64; 5]>,
+    /// Contact priority. When priorities differ, higher-priority geom's params win.
+    pub priority: i32,
+    /// Solver mixing weight for contact parameter combination (default 1.0).
+    pub solmix: f64,
+    /// Contact margin — expands collision detection distance.
+    pub margin: f64,
+    /// Contact gap — creates buffer zone within margin where no force is applied.
+    pub gap: f64,
 }
 
 impl Default for MjcfGeom {
@@ -1058,6 +1074,10 @@ impl Default for MjcfGeom {
             hfield: None,
             solref: None,
             solimp: None,
+            priority: 0,
+            solmix: 1.0,
+            margin: 0.0,
+            gap: 0.0,
         }
     }
 }
