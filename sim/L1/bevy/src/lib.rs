@@ -80,7 +80,7 @@ pub mod systems;
 /// Prelude module for convenient imports.
 pub mod prelude {
     pub use crate::camera::OrbitCamera;
-    pub use crate::components::{CollisionShapeVisual, ShapeType};
+    pub use crate::components::{CollisionShapeVisual, ShapeType, VisGroup};
     pub use crate::gizmos::DebugGizmosSet;
     // Model/Data architecture (MuJoCo-style) - PREFERRED API
     pub use crate::model_data::{

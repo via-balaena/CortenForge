@@ -3804,7 +3804,7 @@ The following are explicitly **out of scope** for this item:
   `sim-sensor` crate tests; this file tests the MuJoCo pipeline's MJCF→sensor
   wiring. Must be registered in `sim/L0/tests/integration/mod.rs` as
   `pub mod mjcf_sensors;`)
-- `sim/docs/SENSOR_FIXES_SPEC.md` — reference for completed correctness fixes (no changes)
+- ~~`sim/docs/SENSOR_FIXES_SPEC.md`~~ — removed (all 4 fixes implemented, spec archived)
 
 ---
 ## Group C — Integrator & Dynamics

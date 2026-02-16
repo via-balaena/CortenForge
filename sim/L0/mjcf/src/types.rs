@@ -576,16 +576,32 @@ pub struct MjcfDefault {
 pub struct MjcfJointDefaults {
     /// Joint type.
     pub joint_type: Option<MjcfJointType>,
+    /// Joint position relative to body frame.
+    pub pos: Option<Vector3<f64>>,
     /// Position limits enabled.
     pub limited: Option<bool>,
     /// Joint axis.
     pub axis: Option<Vector3<f64>>,
+    /// Joint reference position.
+    pub ref_pos: Option<f64>,
+    /// Spring equilibrium position.
+    pub spring_ref: Option<f64>,
     /// Damping coefficient.
     pub damping: Option<f64>,
     /// Spring stiffness.
     pub stiffness: Option<f64>,
     /// Armature (rotor inertia).
     pub armature: Option<f64>,
+    /// Friction loss.
+    pub frictionloss: Option<f64>,
+    /// Visualization group (0–5).
+    pub group: Option<i32>,
+    /// Position limit range [lower, upper].
+    pub range: Option<(f64, f64)>,
+    /// Solver reference parameters for joint limits [timeconst, dampratio].
+    pub solref_limit: Option<[f64; 2]>,
+    /// Solver impedance parameters for joint limits [d0, d_width, width, midpoint, power].
+    pub solimp_limit: Option<[f64; 5]>,
 }
 
 /// Default geom parameters.
@@ -606,6 +622,42 @@ pub struct MjcfGeomDefaults {
     pub contype: Option<i32>,
     /// Collision affinity.
     pub conaffinity: Option<i32>,
+    /// Contact dimensionality.
+    pub condim: Option<i32>,
+    /// Contact priority.
+    pub priority: Option<i32>,
+    /// Solver mixing weight.
+    pub solmix: Option<f64>,
+    /// Contact margin.
+    pub margin: Option<f64>,
+    /// Contact gap.
+    pub gap: Option<f64>,
+    /// Solver reference parameters for contacts [timeconst, dampratio].
+    pub solref: Option<[f64; 2]>,
+    /// Solver impedance parameters for contacts [d0, d_width, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
+    /// Visualization group (0–5).
+    pub group: Option<i32>,
+    /// Default position.
+    pub pos: Option<Vector3<f64>>,
+    /// Default quaternion orientation (w, x, y, z).
+    pub quat: Option<Vector4<f64>>,
+    /// Default euler angles (degrees).
+    pub euler: Option<Vector3<f64>>,
+    /// Default axis-angle (x, y, z, angle).
+    pub axisangle: Option<Vector4<f64>>,
+    /// Default two-axis frame (x-axis 3, y-axis 3).
+    pub xyaxes: Option<[f64; 6]>,
+    /// Default z-axis (minimal rotation from Z).
+    pub zaxis: Option<Vector3<f64>>,
+    /// Default fromto specification [x1, y1, z1, x2, y2, z2].
+    pub fromto: Option<[f64; 6]>,
+    /// Default mesh asset name.
+    pub mesh: Option<String>,
+    /// Default height field asset name.
+    pub hfield: Option<String>,
+    /// Default material asset name.
+    pub material: Option<String>,
 }
 
 /// Default actuator parameters.
@@ -638,6 +690,19 @@ pub struct MjcfActuatorDefaults {
     pub biasprm: Option<Vec<f64>>,
     /// Dynamics parameters default for `<general>` actuators.
     pub dynprm: Option<Vec<f64>>,
+    /// Visualization group (0–5).
+    pub group: Option<i32>,
+    /// Whether activation is clamped to actrange.
+    pub actlimited: Option<bool>,
+    /// Activation clamping range [lower, upper].
+    pub actrange: Option<(f64, f64)>,
+    /// If true, activation dynamics are applied early (before constraint).
+    pub actearly: Option<bool>,
+    /// Length range for the actuator (requires tendon length range computation).
+    pub lengthrange: Option<(f64, f64)>,
+    // #todo: MuJoCo supports actuator-type-specific defaults (cylinder area/timeconst/bias,
+    // muscle force/scale/lmin/lmax/vmax/fpmax/fvmax/timeconst, adhesion gain).
+    // These fields exist on MjcfActuator but are not yet defaultable.
 }
 
 /// Default tendon parameters.
@@ -662,6 +727,16 @@ pub struct MjcfTendonDefaults {
     pub width: Option<f64>,
     /// RGBA color for visualization.
     pub rgba: Option<Vector4<f64>>,
+    /// Visualization group (0–5).
+    pub group: Option<i32>,
+    /// Solver reference parameters for tendon limits [timeconst, dampratio].
+    pub solref: Option<[f64; 2]>,
+    /// Solver impedance parameters for tendon limits [d0, d_width, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
+    /// Contact margin for tendon limits.
+    pub margin: Option<f64>,
+    /// Default material asset name.
+    pub material: Option<String>,
 }
 
 /// Default sensor parameters.
@@ -703,7 +778,7 @@ pub struct MjcfMesh {
     /// File path for external mesh (STL, OBJ, etc.).
     pub file: Option<String>,
     /// Scale factor for the mesh vertices.
-    pub scale: Vector3<f64>,
+    pub scale: Option<Vector3<f64>>,
     /// Embedded vertex data (if not loading from file).
     /// Format: flat array of xyz coordinates.
     pub vertex: Option<Vec<f64>>,
@@ -717,7 +792,7 @@ impl Default for MjcfMesh {
         Self {
             name: String::new(),
             file: None,
-            scale: Vector3::new(1.0, 1.0, 1.0),
+            scale: None,
             vertex: None,
             face: None,
         }
@@ -765,7 +840,7 @@ impl MjcfMesh {
     /// Set the scale factor.
     #[must_use]
     pub fn with_scale(mut self, scale: Vector3<f64>) -> Self {
-        self.scale = scale;
+        self.scale = Some(scale);
         self
     }
 
@@ -790,15 +865,10 @@ impl MjcfMesh {
     /// Get embedded vertices as Point3 array.
     #[must_use]
     pub fn vertices_as_points(&self) -> Vec<Point3<f64>> {
+        let scale = self.scale.unwrap_or(Vector3::new(1.0, 1.0, 1.0));
         self.vertex.as_ref().map_or_else(Vec::new, |v| {
             v.chunks_exact(3)
-                .map(|c| {
-                    Point3::new(
-                        c[0] * self.scale.x,
-                        c[1] * self.scale.y,
-                        c[2] * self.scale.z,
-                    )
-                })
+                .map(|c| Point3::new(c[0] * scale.x, c[1] * scale.y, c[2] * scale.z))
                 .collect()
         })
     }
@@ -816,6 +886,22 @@ pub struct MjcfSiteDefaults {
     pub size: Option<Vec<f64>>,
     /// RGBA color.
     pub rgba: Option<Vector4<f64>>,
+    /// Visualization group (0–5).
+    pub group: Option<i32>,
+    /// Default position.
+    pub pos: Option<Vector3<f64>>,
+    /// Default quaternion orientation (w, x, y, z).
+    pub quat: Option<Vector4<f64>>,
+    /// Default euler angles (degrees).
+    pub euler: Option<Vector3<f64>>,
+    /// Default axis-angle (x, y, z, angle).
+    pub axisangle: Option<Vector4<f64>>,
+    /// Default two-axis frame (x-axis 3, y-axis 3).
+    pub xyaxes: Option<[f64; 6]>,
+    /// Default z-axis (minimal rotation from Z).
+    pub zaxis: Option<Vector3<f64>>,
+    /// Default material asset name.
+    pub material: Option<String>,
 }
 
 /// Default pair parameters (from `<default><pair .../>`).
@@ -985,12 +1071,12 @@ pub struct MjcfGeom {
     pub name: Option<String>,
     /// Default class.
     pub class: Option<String>,
-    /// Geom type.
-    pub geom_type: MjcfGeomType,
+    /// Geom type (None = not explicitly set, inherits from defaults or falls back to Sphere).
+    pub geom_type: Option<MjcfGeomType>,
     /// Position relative to body frame.
-    pub pos: Vector3<f64>,
+    pub pos: Option<Vector3<f64>>,
     /// Orientation (quaternion: w x y z).
-    pub quat: Vector4<f64>,
+    pub quat: Option<Vector4<f64>>,
     /// Alternative orientation as euler angles (degrees, XYZ order).
     pub euler: Option<Vector3<f64>>,
     /// Alternative orientation as axis-angle (x, y, z, angle).
@@ -1009,19 +1095,19 @@ pub struct MjcfGeom {
     /// Alternative specification using fromto (start and end points).
     pub fromto: Option<[f64; 6]>,
     /// Friction coefficients [sliding, torsional, rolling].
-    pub friction: Vector3<f64>,
+    pub friction: Option<Vector3<f64>>,
     /// Density for mass computation (kg/m³).
-    pub density: f64,
+    pub density: Option<f64>,
     /// Explicit mass (overrides density).
     pub mass: Option<f64>,
     /// RGBA color.
-    pub rgba: Vector4<f64>,
+    pub rgba: Option<Vector4<f64>>,
     /// Collision type bitmask.
-    pub contype: i32,
+    pub contype: Option<i32>,
     /// Collision affinity bitmask.
-    pub conaffinity: i32,
+    pub conaffinity: Option<i32>,
     /// Contact dimensionality (condim).
-    pub condim: i32,
+    pub condim: Option<i32>,
     /// Mesh asset name (for type="mesh").
     pub mesh: Option<String>,
     /// Height field asset name (for type="hfield").
@@ -1031,6 +1117,18 @@ pub struct MjcfGeom {
     pub solref: Option<[f64; 2]>,
     /// Solver impedance parameters for contacts [d0, d_width, width, midpoint, power].
     pub solimp: Option<[f64; 5]>,
+    /// Contact priority. When priorities differ, higher-priority geom's params win.
+    pub priority: Option<i32>,
+    /// Solver mixing weight for contact parameter combination (default 1.0).
+    pub solmix: Option<f64>,
+    /// Contact margin — expands collision detection distance.
+    pub margin: Option<f64>,
+    /// Contact gap — creates buffer zone within margin where no force is applied.
+    pub gap: Option<f64>,
+    /// Visualization group (0–5). Default 0.
+    pub group: Option<i32>,
+    /// Material asset name (for rendering).
+    pub material: Option<String>,
 }
 
 impl Default for MjcfGeom {
@@ -1038,26 +1136,32 @@ impl Default for MjcfGeom {
         Self {
             name: None,
             class: None,
-            geom_type: MjcfGeomType::Sphere,
-            pos: Vector3::zeros(),
-            quat: Vector4::new(1.0, 0.0, 0.0, 0.0),
+            geom_type: None,
+            pos: None,
+            quat: None,
             euler: None,
             axisangle: None,
             xyaxes: None,
             zaxis: None,
             size: vec![0.1], // Default sphere radius
             fromto: None,
-            friction: Vector3::new(1.0, 0.005, 0.0001), // MuJoCo defaults
-            density: 1000.0,                            // Water density
+            friction: None,
+            density: None,
             mass: None,
-            rgba: Vector4::new(0.5, 0.5, 0.5, 1.0),
-            contype: 1,
-            conaffinity: 1,
-            condim: 3,
+            rgba: None,
+            contype: None,
+            conaffinity: None,
+            condim: None,
             mesh: None,
             hfield: None,
             solref: None,
             solimp: None,
+            priority: None,
+            solmix: None,
+            margin: None,
+            gap: None,
+            group: None,
+            material: None,
         }
     }
 }
@@ -1067,7 +1171,7 @@ impl MjcfGeom {
     #[must_use]
     pub fn sphere(radius: f64) -> Self {
         Self {
-            geom_type: MjcfGeomType::Sphere,
+            geom_type: Some(MjcfGeomType::Sphere),
             size: vec![radius],
             ..Default::default()
         }
@@ -1077,7 +1181,7 @@ impl MjcfGeom {
     #[must_use]
     pub fn box_shape(half_extents: Vector3<f64>) -> Self {
         Self {
-            geom_type: MjcfGeomType::Box,
+            geom_type: Some(MjcfGeomType::Box),
             size: vec![half_extents.x, half_extents.y, half_extents.z],
             ..Default::default()
         }
@@ -1087,7 +1191,7 @@ impl MjcfGeom {
     #[must_use]
     pub fn capsule(radius: f64, half_length: f64) -> Self {
         Self {
-            geom_type: MjcfGeomType::Capsule,
+            geom_type: Some(MjcfGeomType::Capsule),
             size: vec![radius, half_length],
             ..Default::default()
         }
@@ -1096,7 +1200,8 @@ impl MjcfGeom {
     /// Get quaternion as `UnitQuaternion`.
     #[must_use]
     pub fn rotation(&self) -> UnitQuaternion<f64> {
-        let q = nalgebra::Quaternion::new(self.quat[0], self.quat[1], self.quat[2], self.quat[3]);
+        let qv = self.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
+        let q = nalgebra::Quaternion::new(qv[0], qv[1], qv[2], qv[3]);
         UnitQuaternion::from_quaternion(q)
     }
 
@@ -1107,7 +1212,7 @@ impl MjcfGeom {
             return mass;
         }
 
-        let volume = match self.geom_type {
+        let volume = match self.geom_type.unwrap_or(MjcfGeomType::Sphere) {
             MjcfGeomType::Sphere => {
                 let r = self.size.first().copied().unwrap_or(0.1);
                 (4.0 / 3.0) * std::f64::consts::PI * r.powi(3)
@@ -1129,7 +1234,7 @@ impl MjcfGeom {
             _ => 0.001,                 // Default small volume for unsupported types
         };
 
-        self.density * volume
+        self.density.unwrap_or(1000.0) * volume
     }
 }
 
@@ -1198,28 +1303,30 @@ pub struct MjcfJoint {
     /// Default class.
     pub class: Option<String>,
     /// Joint type.
-    pub joint_type: MjcfJointType,
+    pub joint_type: Option<MjcfJointType>,
     /// Joint position relative to body frame.
-    pub pos: Vector3<f64>,
+    pub pos: Option<Vector3<f64>>,
     /// Joint axis (for hinge and slide).
-    pub axis: Vector3<f64>,
+    pub axis: Option<Vector3<f64>>,
     /// Whether position limits are enabled. `None` means not explicitly set
     /// (subject to autolimits inference).
     pub limited: Option<bool>,
     /// Position limit range [lower, upper].
     pub range: Option<(f64, f64)>,
     /// Joint reference position.
-    pub ref_pos: f64,
+    pub ref_pos: Option<f64>,
     /// Spring equilibrium position.
-    pub spring_ref: f64,
+    pub spring_ref: Option<f64>,
     /// Damping coefficient.
-    pub damping: f64,
+    pub damping: Option<f64>,
     /// Spring stiffness.
-    pub stiffness: f64,
+    pub stiffness: Option<f64>,
     /// Armature (rotor inertia) - added to diagonal of inertia matrix.
-    pub armature: f64,
+    pub armature: Option<f64>,
     /// Friction loss.
-    pub frictionloss: f64,
+    pub frictionloss: Option<f64>,
+    /// Visualization group (0–5). Default 0.
+    pub group: Option<i32>,
     /// Solver reference parameters for joint limits [timeconst, dampratio].
     /// Controls how stiffly/softly limits are enforced.
     pub solref_limit: Option<[f64; 2]>,
@@ -1234,17 +1341,18 @@ impl Default for MjcfJoint {
         Self {
             name: String::new(),
             class: None,
-            joint_type: MjcfJointType::Hinge,
-            pos: Vector3::zeros(),
-            axis: Vector3::z(), // Default Z-axis
+            joint_type: None,
+            pos: None,
+            axis: None,
             limited: None,
             range: None,
-            ref_pos: 0.0,
-            spring_ref: 0.0,
-            damping: 0.0,
-            stiffness: 0.0,
-            armature: 0.0,
-            frictionloss: 0.0,
+            ref_pos: None,
+            spring_ref: None,
+            damping: None,
+            stiffness: None,
+            armature: None,
+            frictionloss: None,
+            group: None,
             solref_limit: None,
             solimp_limit: None,
             body: None,
@@ -1258,8 +1366,8 @@ impl MjcfJoint {
     pub fn hinge(name: impl Into<String>, axis: Vector3<f64>) -> Self {
         Self {
             name: name.into(),
-            joint_type: MjcfJointType::Hinge,
-            axis,
+            joint_type: Some(MjcfJointType::Hinge),
+            axis: Some(axis),
             ..Default::default()
         }
     }
@@ -1269,8 +1377,8 @@ impl MjcfJoint {
     pub fn slide(name: impl Into<String>, axis: Vector3<f64>) -> Self {
         Self {
             name: name.into(),
-            joint_type: MjcfJointType::Slide,
-            axis,
+            joint_type: Some(MjcfJointType::Slide),
+            axis: Some(axis),
             ..Default::default()
         }
     }
@@ -1286,7 +1394,7 @@ impl MjcfJoint {
     /// Set damping.
     #[must_use]
     pub fn with_damping(mut self, damping: f64) -> Self {
-        self.damping = damping;
+        self.damping = Some(damping);
         self
     }
 }
@@ -1306,11 +1414,11 @@ pub struct MjcfSite {
     /// Default class.
     pub class: Option<String>,
     /// Site type (sphere, capsule, ellipsoid, cylinder, box).
-    pub site_type: String,
+    pub site_type: Option<String>,
     /// Position relative to body frame.
-    pub pos: Vector3<f64>,
+    pub pos: Option<Vector3<f64>>,
     /// Orientation (quaternion: w x y z).
-    pub quat: Vector4<f64>,
+    pub quat: Option<Vector4<f64>>,
     /// Alternative orientation as euler angles.
     pub euler: Option<Vector3<f64>>,
     /// Alternative orientation as axis-angle (x, y, z, angle).
@@ -1320,9 +1428,13 @@ pub struct MjcfSite {
     /// Alternative orientation as z-axis (minimal rotation from Z).
     pub zaxis: Option<Vector3<f64>>,
     /// Size (for visualization).
-    pub size: Vec<f64>,
+    pub size: Option<Vec<f64>>,
     /// RGBA color.
-    pub rgba: Vector4<f64>,
+    pub rgba: Option<Vector4<f64>>,
+    /// Visualization group (0–5). Default 0.
+    pub group: Option<i32>,
+    /// Material asset name (for rendering).
+    pub material: Option<String>,
 }
 
 impl Default for MjcfSite {
@@ -1330,15 +1442,17 @@ impl Default for MjcfSite {
         Self {
             name: String::new(),
             class: None,
-            site_type: "sphere".to_string(), // MuJoCo default
-            pos: Vector3::zeros(),
-            quat: Vector4::new(1.0, 0.0, 0.0, 0.0),
+            site_type: None,
+            pos: None,
+            quat: None,
             euler: None,
             axisangle: None,
             xyaxes: None,
             zaxis: None,
-            size: vec![0.01],
-            rgba: Vector4::new(1.0, 0.0, 0.0, 1.0),
+            size: None,
+            rgba: None,
+            group: None,
+            material: None,
         }
     }
 }
@@ -2087,6 +2201,16 @@ pub struct MjcfActuator {
     pub kp: f64,
     /// Velocity gain. `None` means use actuator-type default.
     pub kv: Option<f64>,
+    /// Visualization group (0–5).
+    pub group: Option<i32>,
+    /// Whether activation is clamped to actrange.
+    pub actlimited: Option<bool>,
+    /// Activation clamping range [lower, upper].
+    pub actrange: Option<(f64, f64)>,
+    /// If true, activation dynamics are applied early (before constraint).
+    pub actearly: Option<bool>,
+    /// Length range for the actuator.
+    pub lengthrange: Option<(f64, f64)>,
 
     // ========================================================================
     // Cylinder-specific attributes
@@ -2172,6 +2296,11 @@ impl Default for MjcfActuator {
             forcelimited: None,
             kp: 1.0,
             kv: None,
+            group: None,
+            actlimited: None,
+            actrange: None,
+            actearly: None,
+            lengthrange: None,
             // Cylinder defaults (MuJoCo defaults)
             area: 1.0,
             diameter: None,
@@ -2369,15 +2498,25 @@ pub struct MjcfTendon {
     /// (subject to autolimits inference).
     pub limited: Option<bool>,
     /// Stiffness coefficient.
-    pub stiffness: f64,
+    pub stiffness: Option<f64>,
     /// Damping coefficient.
-    pub damping: f64,
+    pub damping: Option<f64>,
     /// Friction loss.
-    pub frictionloss: f64,
+    pub frictionloss: Option<f64>,
     /// Tendon width for visualization.
-    pub width: f64,
+    pub width: Option<f64>,
     /// RGBA color for visualization.
-    pub rgba: Vector4<f64>,
+    pub rgba: Option<Vector4<f64>>,
+    /// Visualization group (0–5). Default 0.
+    pub group: Option<i32>,
+    /// Solver reference parameters for tendon limits [timeconst, dampratio].
+    pub solref: Option<[f64; 2]>,
+    /// Solver impedance parameters for tendon limits [d0, d_width, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
+    /// Contact margin for tendon limits.
+    pub margin: Option<f64>,
+    /// Material asset name (for rendering).
+    pub material: Option<String>,
     /// Spring rest length pair (low, high) for deadband spring.
     /// `None` = auto-compute from tendon length at qpos0 (see S3 divergence note).
     /// Single value in MJCF → both elements equal (no deadband).
@@ -2397,11 +2536,16 @@ impl Default for MjcfTendon {
             tendon_type: MjcfTendonType::default(),
             range: None,
             limited: None,
-            stiffness: 0.0,
-            damping: 0.0,
-            frictionloss: 0.0,
-            width: 0.003, // MuJoCo default
-            rgba: Vector4::new(0.5, 0.5, 0.5, 1.0),
+            stiffness: None,
+            damping: None,
+            frictionloss: None,
+            width: None,
+            rgba: None,
+            group: None,
+            solref: None,
+            solimp: None,
+            margin: None,
+            material: None,
             springlength: None,
             path_elements: Vec::new(),
             joints: Vec::new(),
@@ -2448,14 +2592,14 @@ impl MjcfTendon {
     /// Set tendon stiffness.
     #[must_use]
     pub fn with_stiffness(mut self, stiffness: f64) -> Self {
-        self.stiffness = stiffness;
+        self.stiffness = Some(stiffness);
         self
     }
 
     /// Set tendon damping.
     #[must_use]
     pub fn with_damping(mut self, damping: f64) -> Self {
-        self.damping = damping;
+        self.damping = Some(damping);
         self
     }
 
@@ -3157,65 +3301,119 @@ impl Default for MjcfKeyframe {
 ///
 /// Represents a deformable flex body with vertices, elements, and material/collision
 /// properties. Maps to MuJoCo's `<flex>` element within `<deformable>`.
+///
+/// Contact parameters come from `<flex><contact>`, elasticity from `<flex><elasticity>`,
+/// and edge spring-damper from `<flex><edge>`. Direct `<flex>` attributes are only
+/// `name`, `dim`, `radius`, `body`, `node`, `group` (plus structural data arrays).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfFlex {
+    // --- Direct <flex> attributes ---
     /// Flex name.
     pub name: String,
     /// Dimensionality: 1=cable, 2=shell, 3=solid.
     pub dim: usize,
+    /// Collision vertex radius [m].
+    pub radius: f64,
+    /// Body names for vertex attachment (one per vertex). Required on `<flex>`.
+    /// For `<flexcomp>`, auto-generated during expansion (one body per vertex).
+    pub body: Vec<String>,
+    /// Node body names (alternative to `<vertex>` positions).
+    pub node: Vec<String>,
+    /// Visualization group (0-5).
+    pub group: i32,
+
+    // --- <flex><contact> child element attributes ---
+    /// Contact priority (default 0). Higher priority geom's params win.
+    pub priority: i32,
+    /// Solver parameter mixing weight (default 1.0).
+    pub solmix: f64,
+    /// Contact gap — buffer zone within margin (default 0.0).
+    pub gap: f64,
+    /// Collision friction coefficient (sliding component only).
+    pub friction: f64,
+    /// Collision contact dimensionality (1, 3, or 4).
+    pub condim: i32,
+    /// Collision margin [m].
+    pub margin: f64,
+    /// Solver reference parameters.
+    pub solref: [f64; 2],
+    /// Solver impedance parameters.
+    pub solimp: [f64; 5],
+    /// Self-collision broadphase mode. MuJoCo keyword: [none, narrow, bvh, sap, auto].
+    /// None = absent (default "auto"); Some("none") = disabled; other = enabled.
+    pub selfcollide: Option<String>,
+
+    // --- <flex><elasticity> child element attributes ---
     /// Young's modulus [Pa].
     pub young: f64,
     /// Poisson's ratio.
     pub poisson: f64,
     /// Damping coefficient.
     pub damping: f64,
-    /// Shell thickness [m] (dim=2 only).
+    /// Shell thickness [m] (dim=2 only). -1 = "not set".
     pub thickness: f64,
+
+    // --- <flex><edge> child element attributes ---
+    /// Passive edge spring stiffness. Default 0.0 = disabled.
+    /// Used for direct spring-damper forces in the passive force path.
+    pub edge_stiffness: f64,
+    /// Passive edge damping coefficient. Default 0.0 = disabled.
+    pub edge_damping: f64,
+
+    // --- Internal / derived ---
+    /// Total mass [kg] for uniform distribution across all vertices (including pinned).
+    /// MuJoCo semantics: `mass / npnt` per vertex, pinned share silently discarded.
+    /// When `Some`, overrides element-based mass lumping from `density`.
+    pub mass: Option<f64>,
     /// Volumetric density [kg/m³] (dim=2,3) or linear density [kg/m] (dim=1).
+    /// Fallback for element-based mass lumping when `mass` is `None`.
     pub density: f64,
-    /// Collision friction coefficient.
-    pub friction: f64,
-    /// Collision contact dimensionality (1, 3, or 4).
-    pub condim: i32,
-    /// Collision margin [m].
-    pub margin: f64,
-    /// Collision vertex radius [m].
-    pub radius: f64,
-    /// Solver reference parameters.
-    pub solref: [f64; 2],
-    /// Solver impedance parameters.
-    pub solimp: [f64; 5],
+
+    // --- Structural data arrays ---
     /// Vertex positions.
     pub vertices: Vec<Vector3<f64>>,
     /// Element connectivity (each element is a list of vertex indices).
     pub elements: Vec<Vec<usize>>,
     /// Pinned vertex indices (infinite mass, fixed in place).
     pub pinned: Vec<usize>,
-    /// Whether self-collision is enabled for this flex body.
-    pub selfcollide: bool,
 }
 
 impl Default for MjcfFlex {
     fn default() -> Self {
         Self {
+            // Direct <flex> attributes
             name: String::new(),
             dim: 2,
-            young: 1e6,
-            poisson: 0.0,
-            damping: 0.0,
-            thickness: 0.001,
-            density: 1000.0,
+            radius: 0.005,
+            body: Vec::new(),
+            node: Vec::new(),
+            group: 0,
+            // <contact> child element (MuJoCo defaults)
+            priority: 0,
+            solmix: 1.0,
+            gap: 0.0,
             friction: 1.0,
             condim: 3,
             margin: 0.0,
-            radius: 0.005,
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            selfcollide: None, // MuJoCo default is "auto" (enabled)
+            // <elasticity> child element (MuJoCo defaults)
+            young: 0.0, // MuJoCo default; was 1e6
+            poisson: 0.0,
+            damping: 0.0,
+            thickness: -1.0, // MuJoCo default sentinel "not set"; was 0.001
+            // <edge> child element
+            edge_stiffness: 0.0,
+            edge_damping: 0.0,
+            // Internal
+            mass: None,
+            density: 1000.0,
+            // Structural data
             vertices: Vec::new(),
             elements: Vec::new(),
             pinned: Vec::new(),
-            selfcollide: false,
         }
     }
 }
@@ -3478,9 +3676,9 @@ mod tests {
     #[test]
     fn test_geom_computed_mass() {
         let sphere = MjcfGeom {
-            geom_type: MjcfGeomType::Sphere,
+            geom_type: Some(MjcfGeomType::Sphere),
             size: vec![0.1],
-            density: 1000.0,
+            density: Some(1000.0),
             mass: None,
             ..Default::default()
         };
@@ -3494,9 +3692,9 @@ mod tests {
     #[test]
     fn test_geom_explicit_mass() {
         let sphere = MjcfGeom {
-            geom_type: MjcfGeomType::Sphere,
+            geom_type: Some(MjcfGeomType::Sphere),
             size: vec![0.1],
-            density: 1000.0,
+            density: Some(1000.0),
             mass: Some(5.0), // Explicit mass overrides density
             ..Default::default()
         };

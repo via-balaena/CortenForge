@@ -162,6 +162,8 @@ impl BodyEntityMap {
 pub struct ViewerConfig {
     /// Whether to show collision shapes.
     pub show_collision_shapes: bool,
+    /// Which visualization groups (0–5) are visible. All enabled by default.
+    pub show_groups: [bool; 6],
     /// Whether to show contact points.
     pub show_contacts: bool,
     /// Whether to show contact normals.
@@ -218,6 +220,7 @@ impl Default for ViewerConfig {
     fn default() -> Self {
         Self {
             show_collision_shapes: true,
+            show_groups: [true; 6],
             show_contacts: true,
             show_contact_normals: true,
             show_forces: false,

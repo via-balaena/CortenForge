@@ -580,15 +580,40 @@ fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> {
     if let Some(jtype) = get_attribute_opt(e, "type") {
         defaults.joint_type = MjcfJointType::from_str(&jtype);
     }
+    if let Some(pos) = get_attribute_opt(e, "pos") {
+        defaults.pos = Some(parse_vector3(&pos)?);
+    }
     if let Some(limited) = get_attribute_opt(e, "limited") {
         defaults.limited = Some(limited == "true");
     }
     if let Some(axis) = get_attribute_opt(e, "axis") {
         defaults.axis = Some(parse_vector3(&axis)?);
     }
+    defaults.ref_pos = parse_float_attr(e, "ref");
+    defaults.spring_ref = parse_float_attr(e, "springref");
     defaults.damping = parse_float_attr(e, "damping");
     defaults.stiffness = parse_float_attr(e, "stiffness");
     defaults.armature = parse_float_attr(e, "armature");
+    defaults.frictionloss = parse_float_attr(e, "frictionloss");
+    defaults.group = parse_int_attr(e, "group");
+    if let Some(range) = get_attribute_opt(e, "range") {
+        let parts = parse_float_array(&range)?;
+        if parts.len() >= 2 {
+            defaults.range = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(solref) = get_attribute_opt(e, "solreflimit") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            defaults.solref_limit = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimplimit") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            defaults.solimp_limit = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
 
     Ok(defaults)
 }
@@ -611,6 +636,58 @@ fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     }
     defaults.contype = parse_int_attr(e, "contype");
     defaults.conaffinity = parse_int_attr(e, "conaffinity");
+    defaults.condim = parse_int_attr(e, "condim");
+    defaults.priority = parse_int_attr(e, "priority");
+    defaults.solmix = parse_float_attr(e, "solmix");
+    defaults.margin = parse_float_attr(e, "margin");
+    defaults.gap = parse_float_attr(e, "gap");
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            defaults.solref = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            defaults.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    defaults.group = parse_int_attr(e, "group");
+    if let Some(pos) = get_attribute_opt(e, "pos") {
+        defaults.pos = Some(parse_vector3(&pos)?);
+    }
+    if let Some(quat) = get_attribute_opt(e, "quat") {
+        defaults.quat = Some(parse_vector4(&quat)?);
+    }
+    if let Some(euler) = get_attribute_opt(e, "euler") {
+        defaults.euler = Some(parse_vector3(&euler)?);
+    }
+    if let Some(aa) = get_attribute_opt(e, "axisangle") {
+        defaults.axisangle = Some(parse_vector4(&aa)?);
+    }
+    if let Some(xyaxes) = get_attribute_opt(e, "xyaxes") {
+        let parts = parse_float_array(&xyaxes)?;
+        if parts.len() >= 6 {
+            defaults.xyaxes = Some([parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]]);
+        }
+    }
+    if let Some(zaxis) = get_attribute_opt(e, "zaxis") {
+        defaults.zaxis = Some(parse_vector3(&zaxis)?);
+    }
+
+    // Exotic geom defaults
+    if let Some(fromto) = get_attribute_opt(e, "fromto") {
+        let parts = parse_float_array(&fromto)?;
+        if parts.len() >= 6 {
+            defaults.fromto = Some([parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]]);
+        }
+    }
+    defaults.mesh = get_attribute_opt(e, "mesh");
+    defaults.hfield = get_attribute_opt(e, "hfield");
+
+    // Rendering
+    defaults.material = get_attribute_opt(e, "material");
 
     Ok(defaults)
 }
@@ -659,6 +736,27 @@ fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
     defaults.gainprm = parse_float_array_opt(e, "gainprm")?;
     defaults.biasprm = parse_float_array_opt(e, "biasprm")?;
     defaults.dynprm = parse_float_array_opt(e, "dynprm")?;
+
+    // Activation parameters
+    defaults.group = parse_int_attr(e, "group");
+    if let Some(actlimited) = get_attribute_opt(e, "actlimited") {
+        defaults.actlimited = Some(actlimited == "true");
+    }
+    if let Some(actrange) = get_attribute_opt(e, "actrange") {
+        let parts = parse_float_array(&actrange)?;
+        if parts.len() >= 2 {
+            defaults.actrange = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(actearly) = get_attribute_opt(e, "actearly") {
+        defaults.actearly = Some(actearly == "true");
+    }
+    if let Some(lengthrange) = get_attribute_opt(e, "lengthrange") {
+        let parts = parse_float_array(&lengthrange)?;
+        if parts.len() >= 2 {
+            defaults.lengthrange = Some((parts[0], parts[1]));
+        }
+    }
 
     Ok(defaults)
 }
@@ -721,6 +819,25 @@ fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults> {
     if let Some(rgba) = get_attribute_opt(e, "rgba") {
         defaults.rgba = Some(parse_vector4(&rgba)?);
     }
+    defaults.group = parse_int_attr(e, "group");
+
+    // Solver parameters
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            defaults.solref = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            defaults.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    defaults.margin = parse_float_attr(e, "margin");
+
+    // Rendering
+    defaults.material = get_attribute_opt(e, "material");
 
     Ok(defaults)
 }
@@ -761,6 +878,31 @@ fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
     if let Some(rgba) = get_attribute_opt(e, "rgba") {
         defaults.rgba = Some(parse_vector4(&rgba)?);
     }
+    defaults.group = parse_int_attr(e, "group");
+    if let Some(pos) = get_attribute_opt(e, "pos") {
+        defaults.pos = Some(parse_vector3(&pos)?);
+    }
+    if let Some(quat) = get_attribute_opt(e, "quat") {
+        defaults.quat = Some(parse_vector4(&quat)?);
+    }
+    if let Some(euler) = get_attribute_opt(e, "euler") {
+        defaults.euler = Some(parse_vector3(&euler)?);
+    }
+    if let Some(aa) = get_attribute_opt(e, "axisangle") {
+        defaults.axisangle = Some(parse_vector4(&aa)?);
+    }
+    if let Some(xyaxes) = get_attribute_opt(e, "xyaxes") {
+        let parts = parse_float_array(&xyaxes)?;
+        if parts.len() >= 6 {
+            defaults.xyaxes = Some([parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]]);
+        }
+    }
+    if let Some(zaxis) = get_attribute_opt(e, "zaxis") {
+        defaults.zaxis = Some(parse_vector3(&zaxis)?);
+    }
+
+    // Rendering
+    defaults.material = get_attribute_opt(e, "material");
 
     Ok(defaults)
 }
@@ -1039,7 +1181,7 @@ fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     mesh.file = get_attribute_opt(e, "file");
 
     if let Some(scale) = get_attribute_opt(e, "scale") {
-        mesh.scale = parse_vector3(&scale)?;
+        mesh.scale = Some(parse_vector3(&scale)?);
     }
 
     // Parse embedded vertex data
@@ -1345,15 +1487,16 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     joint.class = get_attribute_opt(e, "class");
 
     if let Some(jtype) = get_attribute_opt(e, "type") {
-        joint.joint_type =
-            MjcfJointType::from_str(&jtype).ok_or_else(|| MjcfError::UnknownJointType(jtype))?;
+        joint.joint_type = Some(
+            MjcfJointType::from_str(&jtype).ok_or_else(|| MjcfError::UnknownJointType(jtype))?,
+        );
     }
 
     if let Some(pos) = get_attribute_opt(e, "pos") {
-        joint.pos = parse_vector3(&pos)?;
+        joint.pos = Some(parse_vector3(&pos)?);
     }
     if let Some(axis) = get_attribute_opt(e, "axis") {
-        joint.axis = safe_normalize_axis(parse_vector3(&axis)?);
+        joint.axis = Some(safe_normalize_axis(parse_vector3(&axis)?));
     }
     if let Some(limited) = get_attribute_opt(e, "limited") {
         joint.limited = Some(limited == "true");
@@ -1364,12 +1507,13 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
             joint.range = Some((parts[0], parts[1]));
         }
     }
-    joint.ref_pos = parse_float_attr(e, "ref").unwrap_or(0.0);
-    joint.spring_ref = parse_float_attr(e, "springref").unwrap_or(0.0);
-    joint.damping = parse_float_attr(e, "damping").unwrap_or(0.0);
-    joint.stiffness = parse_float_attr(e, "stiffness").unwrap_or(0.0);
-    joint.armature = parse_float_attr(e, "armature").unwrap_or(0.0);
-    joint.frictionloss = parse_float_attr(e, "frictionloss").unwrap_or(0.0);
+    joint.ref_pos = parse_float_attr(e, "ref");
+    joint.spring_ref = parse_float_attr(e, "springref");
+    joint.damping = parse_float_attr(e, "damping");
+    joint.stiffness = parse_float_attr(e, "stiffness");
+    joint.armature = parse_float_attr(e, "armature");
+    joint.frictionloss = parse_float_attr(e, "frictionloss");
+    joint.group = parse_int_attr(e, "group");
 
     // Joint limit solver parameters: solreflimit=[timeconst, dampratio],
     // solimplimit=[d0, d_width, width, midpoint, power]
@@ -1395,7 +1539,7 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
 /// a 6-DOF free joint. It only supports `name` and `group` attributes.
 fn parse_freejoint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     let mut joint = MjcfJoint::default();
-    joint.joint_type = MjcfJointType::Free;
+    joint.joint_type = Some(MjcfJointType::Free);
     joint.name = get_attribute_opt(e, "name").unwrap_or_default();
     // Note: MuJoCo's freejoint also supports 'group' attribute, but we don't use it
     Ok(joint)
@@ -1428,14 +1572,14 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
 
     if let Some(gtype) = get_attribute_opt(e, "type") {
         geom.geom_type =
-            MjcfGeomType::from_str(&gtype).ok_or_else(|| MjcfError::UnknownGeomType(gtype))?;
+            Some(MjcfGeomType::from_str(&gtype).ok_or_else(|| MjcfError::UnknownGeomType(gtype))?);
     }
 
     if let Some(pos) = get_attribute_opt(e, "pos") {
-        geom.pos = parse_vector3(&pos)?;
+        geom.pos = Some(parse_vector3(&pos)?);
     }
     if let Some(quat) = get_attribute_opt(e, "quat") {
-        geom.quat = parse_vector4(&quat)?;
+        geom.quat = Some(parse_vector4(&quat)?);
     }
     if let Some(euler) = get_attribute_opt(e, "euler") {
         geom.euler = Some(parse_vector3(&euler)?);
@@ -1462,31 +1606,24 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
         }
     }
     if let Some(friction) = get_attribute_opt(e, "friction") {
-        geom.friction = parse_vector3(&friction)?;
+        geom.friction = Some(parse_vector3(&friction)?);
     }
-    if let Some(density) = parse_float_attr(e, "density") {
-        geom.density = density;
-    }
+    geom.density = parse_float_attr(e, "density");
     geom.mass = parse_float_attr(e, "mass");
 
     if let Some(rgba) = get_attribute_opt(e, "rgba") {
-        geom.rgba = parse_vector4(&rgba)?;
+        geom.rgba = Some(parse_vector4(&rgba)?);
     }
-    if let Some(contype) = parse_int_attr(e, "contype") {
-        geom.contype = contype;
-    }
-    if let Some(conaffinity) = parse_int_attr(e, "conaffinity") {
-        geom.conaffinity = conaffinity;
-    }
-    if let Some(condim) = parse_int_attr(e, "condim") {
-        geom.condim = condim;
-    }
+    geom.contype = parse_int_attr(e, "contype");
+    geom.conaffinity = parse_int_attr(e, "conaffinity");
+    geom.condim = parse_int_attr(e, "condim");
     geom.mesh = get_attribute_opt(e, "mesh");
     geom.hfield = get_attribute_opt(e, "hfield");
 
     // Contact solver parameters: solref=[timeconst, dampratio],
     // solimp=[d0, d_width, width, midpoint, power].
-    // When two geoms collide, their params are combined (min for solref, max for solimp).
+    // When two geoms collide, their params are combined via mj_contactParam:
+    // friction = element-wise max, solref/solimp = solmix-weighted average, condim = max.
     if let Some(solref) = get_attribute_opt(e, "solref") {
         let parts = parse_float_array(&solref)?;
         if parts.len() >= 2 {
@@ -1499,6 +1636,14 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
             geom.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
         }
     }
+
+    // Contact parameter combination attributes (MuJoCo mj_contactParam)
+    geom.priority = parse_int_attr(e, "priority");
+    geom.solmix = parse_float_attr(e, "solmix");
+    geom.margin = parse_float_attr(e, "margin");
+    geom.gap = parse_float_attr(e, "gap");
+    geom.group = parse_int_attr(e, "group");
+    geom.material = get_attribute_opt(e, "material");
 
     Ok(geom)
 }
@@ -1573,14 +1718,12 @@ fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
     site.name = get_attribute_opt(e, "name").unwrap_or_default();
     site.class = get_attribute_opt(e, "class");
 
-    if let Some(site_type) = get_attribute_opt(e, "type") {
-        site.site_type = site_type;
-    }
+    site.site_type = get_attribute_opt(e, "type");
     if let Some(pos) = get_attribute_opt(e, "pos") {
-        site.pos = parse_vector3(&pos)?;
+        site.pos = Some(parse_vector3(&pos)?);
     }
     if let Some(quat) = get_attribute_opt(e, "quat") {
-        site.quat = parse_vector4(&quat)?;
+        site.quat = Some(parse_vector4(&quat)?);
     }
     if let Some(euler) = get_attribute_opt(e, "euler") {
         site.euler = Some(parse_vector3(&euler)?);
@@ -1598,11 +1741,13 @@ fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
         site.zaxis = Some(parse_vector3(&zaxis)?);
     }
     if let Some(size) = get_attribute_opt(e, "size") {
-        site.size = parse_float_array(&size)?;
+        site.size = Some(parse_float_array(&size)?);
     }
     if let Some(rgba) = get_attribute_opt(e, "rgba") {
-        site.rgba = parse_vector4(&rgba)?;
+        site.rgba = Some(parse_vector4(&rgba)?);
     }
+    site.group = parse_int_attr(e, "group");
+    site.material = get_attribute_opt(e, "material");
 
     Ok(site)
 }
@@ -1887,6 +2032,29 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
     // ========================================================================
     if let Some(gain) = parse_float_attr(e, "gain") {
         actuator.gain = gain;
+    }
+
+    // ========================================================================
+    // Activation parameters
+    // ========================================================================
+    actuator.group = parse_int_attr(e, "group");
+    if let Some(actlimited) = get_attribute_opt(e, "actlimited") {
+        actuator.actlimited = Some(actlimited == "true");
+    }
+    if let Some(actrange) = get_attribute_opt(e, "actrange") {
+        let parts = parse_float_array(&actrange)?;
+        if parts.len() >= 2 {
+            actuator.actrange = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(actearly) = get_attribute_opt(e, "actearly") {
+        actuator.actearly = Some(actearly == "true");
+    }
+    if let Some(lengthrange) = get_attribute_opt(e, "lengthrange") {
+        let parts = parse_float_array(&lengthrange)?;
+        if parts.len() >= 2 {
+            actuator.lengthrange = Some((parts[0], parts[1]));
+        }
     }
 
     Ok(actuator)
@@ -2202,6 +2370,18 @@ fn parse_flex<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
             Ok(Event::Start(ref e)) => {
                 let elem_name = e.name().as_ref().to_vec();
                 match elem_name.as_slice() {
+                    b"contact" => {
+                        parse_flex_contact_attrs(e, &mut flex);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    b"elasticity" => {
+                        parse_flex_elasticity_attrs(e, &mut flex);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    b"edge" => {
+                        parse_flex_edge_attrs(e, &mut flex);
+                        skip_element(reader, &elem_name)?;
+                    }
                     b"vertex" => {
                         // Parse child vertex elements until end of <vertex>
                         if let Some(s) = get_attribute_opt(e, "pos") {
@@ -2254,6 +2434,9 @@ fn parse_flex<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
             Ok(Event::Empty(ref e)) => {
                 let elem_name = e.name().as_ref().to_vec();
                 match elem_name.as_slice() {
+                    b"contact" => parse_flex_contact_attrs(e, &mut flex),
+                    b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex),
+                    b"edge" => parse_flex_edge_attrs(e, &mut flex),
                     b"vertex" => {
                         if let Some(s) = get_attribute_opt(e, "pos") {
                             let floats = parse_float_array(&s)?;
@@ -2308,7 +2491,14 @@ fn parse_flex<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
     Ok(flex)
 }
 
-/// Parse `<flex>` attributes.
+/// Parse direct `<flex>` / `<flexcomp>` top-level attributes.
+///
+/// Only parses attributes that belong directly on the element: `name`, `dim`, `radius`, `mass`.
+/// Contact, elasticity, and edge attributes belong on child elements and are parsed
+/// by `parse_flex_contact_attrs`, `parse_flex_elasticity_attrs`, `parse_flex_edge_attrs`.
+///
+/// `mass` distributes total mass uniformly across all vertices (MuJoCo `<flexcomp mass="...">`).
+/// `density` is a non-standard fallback for element-based mass lumping.
 fn parse_flex_attrs(e: &BytesStart) -> MjcfFlex {
     let mut flex = MjcfFlex::default();
 
@@ -2318,32 +2508,62 @@ fn parse_flex_attrs(e: &BytesStart) -> MjcfFlex {
     if let Some(s) = get_attribute_opt(e, "dim") {
         flex.dim = s.parse().unwrap_or(2);
     }
-    if let Some(s) = get_attribute_opt(e, "young") {
-        flex.young = s.parse().unwrap_or(1e6);
+    if let Some(s) = get_attribute_opt(e, "radius") {
+        flex.radius = s.parse().unwrap_or(0.005);
     }
-    if let Some(s) = get_attribute_opt(e, "poisson") {
-        flex.poisson = s.parse().unwrap_or(0.0);
+    // Body names for vertex attachment (required on <flex>, auto-generated by <flexcomp>).
+    if let Some(s) = get_attribute_opt(e, "body") {
+        flex.body = s.split_whitespace().map(|t| t.to_string()).collect();
     }
-    if let Some(s) = get_attribute_opt(e, "damping") {
-        flex.damping = s.parse().unwrap_or(0.0);
+    // Node body names (alternative to <vertex> positions).
+    if let Some(s) = get_attribute_opt(e, "node") {
+        flex.node = s.split_whitespace().map(|t| t.to_string()).collect();
     }
-    if let Some(s) = get_attribute_opt(e, "thickness") {
-        flex.thickness = s.parse().unwrap_or(0.001);
+    // Visualization group (0-5).
+    if let Some(group) = parse_int_attr(e, "group") {
+        flex.group = group;
     }
+    // MuJoCo: <flexcomp mass="..."> distributes total mass uniformly across all vertices.
+    // When present, overrides element-based mass lumping from density.
+    if let Some(s) = get_attribute_opt(e, "mass") {
+        flex.mass = s.parse().ok();
+    }
+    // Non-standard extension: density on <flex> for element-based mass lumping.
+    // Fallback when mass attr is not present.
     if let Some(s) = get_attribute_opt(e, "density") {
         flex.density = s.parse().unwrap_or(1000.0);
     }
+
+    flex
+}
+
+/// Parse `<contact>` child element attributes into MjcfFlex.
+fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
+    if let Some(s) = get_attribute_opt(e, "priority") {
+        flex.priority = s.parse().unwrap_or(0);
+    }
+    if let Some(s) = get_attribute_opt(e, "solmix") {
+        flex.solmix = s.parse().unwrap_or(1.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "gap") {
+        flex.gap = s.parse().unwrap_or(0.0);
+    }
     if let Some(s) = get_attribute_opt(e, "friction") {
-        flex.friction = s.parse().unwrap_or(1.0);
+        // MuJoCo friction is real(3): "slide torsion rolling".
+        // MjcfFlex.friction is f64 (scalar = sliding component only).
+        // Parse first whitespace-separated value to handle both "0.5" and
+        // "0.5 0.005 0.0001" without silent parse::<f64>() failure.
+        flex.friction = s
+            .split_whitespace()
+            .next()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(1.0);
     }
     if let Some(s) = get_attribute_opt(e, "condim") {
         flex.condim = s.parse().unwrap_or(3);
     }
     if let Some(s) = get_attribute_opt(e, "margin") {
         flex.margin = s.parse().unwrap_or(0.0);
-    }
-    if let Some(s) = get_attribute_opt(e, "radius") {
-        flex.radius = s.parse().unwrap_or(0.005);
     }
     if let Some(s) = get_attribute_opt(e, "solref") {
         let vals: Vec<f64> = s
@@ -2364,10 +2584,35 @@ fn parse_flex_attrs(e: &BytesStart) -> MjcfFlex {
         }
     }
     if let Some(s) = get_attribute_opt(e, "selfcollide") {
-        flex.selfcollide = s == "true" || s == "1";
+        flex.selfcollide = Some(s);
     }
+}
 
-    flex
+/// Parse `<elasticity>` child element attributes into MjcfFlex.
+fn parse_flex_elasticity_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
+    if let Some(s) = get_attribute_opt(e, "young") {
+        flex.young = s.parse().unwrap_or(0.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "poisson") {
+        flex.poisson = s.parse().unwrap_or(0.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "damping") {
+        flex.damping = s.parse().unwrap_or(0.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "thickness") {
+        flex.thickness = s.parse().unwrap_or(-1.0);
+    }
+}
+
+/// Parse `<edge>` child element attributes into MjcfFlex.
+/// These are passive spring-damper coefficients (not constraint params).
+fn parse_flex_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
+    if let Some(s) = get_attribute_opt(e, "stiffness") {
+        flex.edge_stiffness = s.parse().unwrap_or(0.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "damping") {
+        flex.edge_damping = s.parse().unwrap_or(0.0);
+    }
 }
 
 /// Parse a `<flexcomp>` element (procedural mesh generation).
@@ -2388,10 +2633,58 @@ fn parse_flexcomp<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Res
         _ => {} // Unsupported type: leave empty
     }
 
-    // Skip to end of flexcomp element
+    // Parse child elements (<contact>, <elasticity>, <edge>, <pin>)
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                match elem_name.as_slice() {
+                    b"contact" => {
+                        parse_flex_contact_attrs(e, &mut flex);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    b"elasticity" => {
+                        parse_flex_elasticity_attrs(e, &mut flex);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    b"edge" => {
+                        parse_flex_edge_attrs(e, &mut flex);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    b"pin" => {
+                        if let Some(s) = get_attribute_opt(e, "id") {
+                            let ids: Vec<usize> = s
+                                .split_whitespace()
+                                .filter_map(|t| t.parse().ok())
+                                .collect();
+                            flex.pinned.extend(ids);
+                        }
+                        skip_element(reader, &elem_name)?;
+                    }
+                    _ => {
+                        skip_element(reader, &elem_name)?;
+                    }
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                let elem_name = e.name().as_ref().to_vec();
+                match elem_name.as_slice() {
+                    b"contact" => parse_flex_contact_attrs(e, &mut flex),
+                    b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex),
+                    b"edge" => parse_flex_edge_attrs(e, &mut flex),
+                    b"pin" => {
+                        if let Some(s) = get_attribute_opt(e, "id") {
+                            let ids: Vec<usize> = s
+                                .split_whitespace()
+                                .filter_map(|t| t.parse().ok())
+                                .collect();
+                            flex.pinned.extend(ids);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"flexcomp" => break,
             Ok(Event::Eof) => {
                 return Err(MjcfError::XmlParse("unexpected EOF in flexcomp".into()));
@@ -2855,17 +3148,9 @@ fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> Result<Mjc
         tendon.limited = Some(limited == "true");
     }
 
-    if let Some(stiffness) = parse_float_attr(e, "stiffness") {
-        tendon.stiffness = stiffness;
-    }
-
-    if let Some(damping) = parse_float_attr(e, "damping") {
-        tendon.damping = damping;
-    }
-
-    if let Some(frictionloss) = parse_float_attr(e, "frictionloss") {
-        tendon.frictionloss = frictionloss;
-    }
+    tendon.stiffness = parse_float_attr(e, "stiffness");
+    tendon.damping = parse_float_attr(e, "damping");
+    tendon.frictionloss = parse_float_attr(e, "frictionloss");
 
     // B2: Parse springlength (1 or 2 values)
     if let Some(sl_str) = get_attribute_opt(e, "springlength") {
@@ -2911,17 +3196,34 @@ fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> Result<Mjc
         }
     }
 
-    if let Some(width) = parse_float_attr(e, "width") {
-        tendon.width = width;
-    }
+    tendon.width = parse_float_attr(e, "width");
+    tendon.group = parse_int_attr(e, "group");
 
     if let Some(rgba) = get_attribute_opt(e, "rgba") {
         if let Ok(parts) = parse_float_array(&rgba) {
             if parts.len() >= 4 {
-                tendon.rgba = Vector4::new(parts[0], parts[1], parts[2], parts[3]);
+                tendon.rgba = Some(Vector4::new(parts[0], parts[1], parts[2], parts[3]));
             }
         }
     }
+
+    // Solver parameters
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            tendon.solref = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            tendon.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    tendon.margin = parse_float_attr(e, "margin");
+
+    // Rendering
+    tendon.material = get_attribute_opt(e, "material");
 
     Ok(tendon)
 }
@@ -3053,7 +3355,7 @@ mod tests {
         let base = &model.worldbody.children[0];
         assert_eq!(base.name, "base");
         assert_eq!(base.geoms.len(), 1);
-        assert_eq!(base.geoms[0].geom_type, MjcfGeomType::Sphere);
+        assert_eq!(base.geoms[0].geom_type, Some(MjcfGeomType::Sphere));
     }
 
     #[test]
@@ -3089,11 +3391,11 @@ mod tests {
 
         let joint = &body.joints[0];
         assert_eq!(joint.name, "joint1");
-        assert_eq!(joint.joint_type, MjcfJointType::Hinge);
+        assert_eq!(joint.joint_type, Some(MjcfJointType::Hinge));
         assert_eq!(joint.limited, Some(true));
         assert_eq!(joint.range, Some((-1.57, 1.57)));
-        assert_relative_eq!(joint.damping, 0.5, epsilon = 1e-10);
-        assert_relative_eq!(joint.axis.y, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(joint.damping.unwrap(), 0.5, epsilon = 1e-10);
+        assert_relative_eq!(joint.axis.unwrap().y, 1.0, epsilon = 1e-10);
     }
 
     #[test]
@@ -3195,7 +3497,7 @@ mod tests {
 
         let model = parse_mjcf_str(xml).expect("should parse");
         let geom = &model.worldbody.children[0].geoms[0];
-        assert_eq!(geom.geom_type, MjcfGeomType::Capsule);
+        assert_eq!(geom.geom_type.unwrap(), MjcfGeomType::Capsule);
 
         let fromto = geom.fromto.expect("should have fromto");
         assert_relative_eq!(fromto[5], 0.5, epsilon = 1e-10);
@@ -3858,10 +4160,8 @@ mod tests {
         let mesh = &model.meshes[0];
         assert_eq!(mesh.name, "robot_body");
         assert_eq!(mesh.file, Some("meshes/body.stl".to_string()));
-        // Default scale is 1.0
-        assert_relative_eq!(mesh.scale.x, 1.0, epsilon = 1e-10);
-        assert_relative_eq!(mesh.scale.y, 1.0, epsilon = 1e-10);
-        assert_relative_eq!(mesh.scale.z, 1.0, epsilon = 1e-10);
+        // Default scale is None (not explicitly set)
+        assert!(mesh.scale.is_none());
     }
 
     #[test]
@@ -3880,9 +4180,10 @@ mod tests {
 
         let mesh = &model.meshes[0];
         assert_eq!(mesh.name, "scaled_mesh");
-        assert_relative_eq!(mesh.scale.x, 0.001, epsilon = 1e-10);
-        assert_relative_eq!(mesh.scale.y, 0.001, epsilon = 1e-10);
-        assert_relative_eq!(mesh.scale.z, 0.001, epsilon = 1e-10);
+        let scale = mesh.scale.expect("scale should be set");
+        assert_relative_eq!(scale.x, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(scale.y, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(scale.z, 0.001, epsilon = 1e-10);
     }
 
     #[test]
@@ -3932,7 +4233,11 @@ mod tests {
         assert_eq!(model.meshes[1].name, "mesh2");
         assert_eq!(model.meshes[2].name, "mesh3");
 
-        assert_relative_eq!(model.meshes[1].scale.x, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(
+            model.meshes[1].scale.expect("scale should be set").x,
+            2.0,
+            epsilon = 1e-10
+        );
         assert_eq!(model.meshes[2].vertex_count(), 4);
     }
 
@@ -3959,7 +4264,7 @@ mod tests {
         assert_eq!(body.geoms.len(), 1);
 
         let geom = &body.geoms[0];
-        assert_eq!(geom.geom_type, MjcfGeomType::Mesh);
+        assert_eq!(geom.geom_type.unwrap(), MjcfGeomType::Mesh);
         assert_eq!(geom.mesh, Some("cube".to_string()));
     }
 
@@ -4417,9 +4722,9 @@ mod tests {
         let tendon = &model.tendons[0];
         assert_eq!(tendon.name, "cable1");
         assert_eq!(tendon.tendon_type, MjcfTendonType::Spatial);
-        assert_relative_eq!(tendon.stiffness, 1000.0, epsilon = 1e-10);
-        assert_relative_eq!(tendon.damping, 10.0, epsilon = 1e-10);
-        assert_relative_eq!(tendon.width, 0.005, epsilon = 1e-10);
+        assert_relative_eq!(tendon.stiffness.unwrap(), 1000.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon.damping.unwrap(), 10.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon.width.unwrap(), 0.005, epsilon = 1e-10);
         assert_eq!(tendon.path_elements.len(), 3);
         assert_eq!(
             tendon.path_elements[0],
@@ -4523,10 +4828,11 @@ mod tests {
 
         let model = parse_mjcf_str(xml).expect("should parse");
         let tendon = &model.tendons[0];
-        assert_relative_eq!(tendon.rgba.x, 1.0, epsilon = 1e-10);
-        assert_relative_eq!(tendon.rgba.y, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(tendon.rgba.z, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(tendon.rgba.w, 1.0, epsilon = 1e-10);
+        let rgba = tendon.rgba.unwrap();
+        assert_relative_eq!(rgba.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(rgba.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(rgba.z, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(rgba.w, 1.0, epsilon = 1e-10);
     }
 
     // ========================================================================

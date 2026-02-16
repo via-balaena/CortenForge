@@ -1171,10 +1171,7 @@ pub struct Model {
     pub nflexelem: usize,
     /// Total bending hinges (pairs of adjacent elements sharing an edge).
     pub nflexhinge: usize,
-    /// Number of rigid generalized position coordinates (before flex DOFs).
-    pub nq_rigid: usize,
-    /// Number of rigid velocity DOFs (before flex DOFs).
-    pub nv_rigid: usize,
+    // (§27F) nq_rigid/nv_rigid removed — flex DOFs are now real body DOFs.
 
     // ==================== Kinematic Trees (§16.0) ====================
     /// Number of kinematic trees (excluding world body).
@@ -1288,6 +1285,8 @@ pub struct Model {
     pub jnt_solimp: Vec<[f64; 5]>,
     /// Optional joint names.
     pub jnt_name: Vec<Option<String>>,
+    /// Visualization group (0–5) for each joint. Used by renderers for group-based filtering.
+    pub jnt_group: Vec<i32>,
 
     // ==================== DOFs (indexed by dof_id) ====================
     /// Body for this DOF.
@@ -1349,6 +1348,10 @@ pub struct Model {
     pub geom_margin: Vec<f64>,
     /// Contact gap (minimum allowed separation).
     pub geom_gap: Vec<f64>,
+    /// Contact priority. When priorities differ, higher-priority geom's params win.
+    pub geom_priority: Vec<i32>,
+    /// Solver mixing weight for contact parameter combination (default 1.0).
+    pub geom_solmix: Vec<f64>,
     /// Solver impedance parameters [d0, dwidth, width, midpoint, power].
     /// Controls constraint softness and behavior.
     pub geom_solimp: Vec<[f64; 5]>,
@@ -1370,6 +1373,10 @@ pub struct Model {
     /// SDF index for each geom (`None` if not an SDF geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Sdf` have `Some(sdf_id)`.
     pub geom_sdf: Vec<Option<usize>>,
+    /// Visualization group (0–5) for each geom. Used by renderers for group-based filtering.
+    pub geom_group: Vec<i32>,
+    /// RGBA color per geom [r, g, b, a]. Default: [0.5, 0.5, 0.5, 1.0].
+    pub geom_rgba: Vec<[f64; 4]>,
 
     // ==================== Flex Bodies ====================
     // --- Per-flex arrays (length nflex) ---
@@ -1405,9 +1412,24 @@ pub struct Model {
     pub flex_condim: Vec<i32>,
     /// Per-flex: contact collision margin for broadphase expansion.
     pub flex_margin: Vec<f64>,
+    /// Per-flex: contact gap (buffer zone within margin).
+    pub flex_gap: Vec<f64>,
+    /// Per-flex: contact priority (default 0).
+    pub flex_priority: Vec<i32>,
+    /// Per-flex: solver mixing weight (default 1.0).
+    pub flex_solmix: Vec<f64>,
     /// Per-flex: self-collision enabled.
     pub flex_selfcollide: Vec<bool>,
-    /// Per-flex: edge constraint solref (derived from young/poisson/damping).
+    /// Per-flex: passive edge spring stiffness (from `<edge stiffness="..."/>`).
+    /// Used in passive force path (spring-damper), not constraint solver.
+    pub flex_edgestiffness: Vec<f64>,
+    /// Per-flex: passive edge damping coefficient (from `<edge damping="..."/>`).
+    /// Used in passive force path (spring-damper), not constraint solver.
+    pub flex_edgedamping: Vec<f64>,
+    /// Per-flex: edge constraint solref. Uses flex-level solref (from
+    /// `<contact solref="..."/>`). MuJoCo derives this from eq_solref on the
+    /// parent equality constraint; our architecture uses flex.solref as the
+    /// default, which matches MuJoCo when no explicit equality override exists.
     pub flex_edge_solref: Vec<[f64; 2]>,
     /// Per-flex: edge constraint solimp.
     pub flex_edge_solimp: Vec<[f64; 5]>,
@@ -1424,6 +1446,8 @@ pub struct Model {
     /// dim=2 (shell): volumetric density kg/m³ (multiplied by thickness for area density).
     /// dim=3 (solid): volumetric density kg/m³.
     pub flex_density: Vec<f64>,
+    /// Visualization group (0–5) for each flex. Used by renderers for group-based filtering.
+    pub flex_group: Vec<i32>,
 
     // --- Per-vertex arrays (length nflexvert) ---
     /// Start index in qpos for this vertex (3 consecutive DOFs).
@@ -1438,7 +1462,9 @@ pub struct Model {
     pub flexvert_radius: Vec<f64>,
     /// Which flex object this vertex belongs to (for material lookup).
     pub flexvert_flexid: Vec<usize>,
-    /// Optional rigid body attachment (usize::MAX = free vertex).
+    /// Body ID for this vertex. Each flex vertex has a dedicated body created
+    /// by `process_flex_bodies()`. The body's FK gives the vertex world position.
+    /// Used by `mj_flex()` to populate `flexvert_xpos`.
     pub flexvert_bodyid: Vec<usize>,
 
     // --- Per-edge arrays (length nflexedge) ---
@@ -1519,6 +1545,10 @@ pub struct Model {
     pub site_size: Vec<Vector3<f64>>,
     /// Optional site names.
     pub site_name: Vec<Option<String>>,
+    /// Visualization group (0–5) for each site. Used by renderers for group-based filtering.
+    pub site_group: Vec<i32>,
+    /// RGBA color per site [r, g, b, a]. Default: [0.5, 0.5, 0.5, 1.0].
+    pub site_rgba: Vec<[f64; 4]>,
 
     // ==================== Sensors (indexed by sensor_id) ====================
     /// Number of sensors.
@@ -1636,6 +1666,10 @@ pub struct Model {
     /// Velocity-dependent friction loss per tendon (N).
     /// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
     pub tendon_frictionloss: Vec<f64>,
+    /// Visualization group (0–5) for each tendon. Used by renderers for group-based filtering.
+    pub tendon_group: Vec<i32>,
+    /// RGBA color per tendon [r, g, b, a]. Default: [0.5, 0.5, 0.5, 1.0].
+    pub tendon_rgba: Vec<[f64; 4]>,
     /// Number of distinct kinematic trees spanned by each tendon (§16.10.1).
     /// 0 = no bodies, 1 = single tree, 2 = two trees. Length: ntendon.
     pub tendon_treenum: Vec<usize>,
@@ -1874,8 +1908,11 @@ pub struct Contact {
     pub friction: f64,
     /// Contact dimension: 1 (frictionless), 3 (friction), 4 (elliptic), 6 (torsional).
     pub dim: usize,
-    /// Whether margin was included in distance computation.
-    pub includemargin: bool,
+    /// Distance threshold for constraint force onset.
+    /// `includemargin = effective_margin - effective_gap`
+    /// Constraint is excluded when dist >= includemargin (MuJoCo convention).
+    /// In our depth convention (positive = overlap): excluded when depth <= -includemargin.
+    pub includemargin: f64,
     /// Friction parameters for MuJoCo-style 5-element friction.
     /// `[sliding1, sliding2, torsional, rolling1, rolling2]`
     /// - sliding1/2: tangent friction coefficients
@@ -1973,7 +2010,7 @@ impl Contact {
             geom2,
             friction,
             dim: if friction > 0.0 { 3 } else { 1 }, // 3D friction cone or frictionless
-            includemargin: false,
+            includemargin: 0.0,
             // MuJoCo 5-element friction: [sliding1, sliding2, torsional, rolling1, rolling2]
             mu: [
                 friction,
@@ -2072,7 +2109,7 @@ impl Contact {
             geom2,
             friction: sliding, // Keep legacy field for compatibility
             dim,
-            includemargin: false,
+            includemargin: 0.0,
             // MuJoCo 5-element friction: [sliding1, sliding2, torsional, rolling1, rolling2]
             mu: [sliding, sliding, torsional, rolling, rolling],
             solref,
@@ -2081,32 +2118,6 @@ impl Contact {
             flex_vertex: None,
         }
     }
-}
-
-/// Combine solver parameters from two geoms for a contact.
-///
-/// MuJoCo uses element-wise minimum for solref (stiffer constraint wins)
-/// and element-wise maximum for solimp (harder constraint wins).
-#[inline]
-fn combine_solver_params(
-    solref1: [f64; 2],
-    solimp1: [f64; 5],
-    solref2: [f64; 2],
-    solimp2: [f64; 5],
-) -> ([f64; 2], [f64; 5]) {
-    // solref: element-wise minimum (smaller timeconst = stiffer)
-    let solref = [solref1[0].min(solref2[0]), solref1[1].min(solref2[1])];
-
-    // solimp: element-wise maximum (larger d0 = harder)
-    let solimp = [
-        solimp1[0].max(solimp2[0]),
-        solimp1[1].max(solimp2[1]),
-        solimp1[2].max(solimp2[2]),
-        solimp1[3].max(solimp2[3]),
-        solimp1[4].max(solimp2[4]),
-    ];
-
-    (solref, solimp)
 }
 
 /// Compute orthonormal tangent frame from contact normal.
@@ -2241,7 +2252,7 @@ pub struct Data {
 
     // ==================== Flex Vertex Poses ====================
     /// World-frame flex vertex positions (copied from qpos each step).
-    /// Length `nflexvert`. Updated by `mj_fwd_position_flex()`.
+    /// Length `nflexvert`. Updated by `mj_flex()`.
     pub flexvert_xpos: Vec<Vector3<f64>>,
 
     // ==================== Velocities (computed from qvel) ====================
@@ -2858,9 +2869,6 @@ impl Model {
             nflexedge: 0,
             nflexelem: 0,
             nflexhinge: 0,
-            nq_rigid: 0,
-            nv_rigid: 0,
-
             // Kinematic trees (§16.0) — empty model has no trees
             ntree: 0,
             tree_body_adr: vec![],
@@ -2910,6 +2918,7 @@ impl Model {
             jnt_solref: vec![],
             jnt_solimp: vec![],
             jnt_name: vec![],
+            jnt_group: vec![],
 
             // DOFs (empty)
             dof_body: vec![],
@@ -2937,6 +2946,8 @@ impl Model {
             geom_conaffinity: vec![],
             geom_margin: vec![],
             geom_gap: vec![],
+            geom_priority: vec![],
+            geom_solmix: vec![],
             geom_solimp: vec![],
             geom_solref: vec![],
             geom_name: vec![],
@@ -2944,6 +2955,8 @@ impl Model {
             geom_mesh: vec![],
             geom_hfield: vec![],
             geom_sdf: vec![],
+            geom_group: vec![],
+            geom_rgba: vec![],
 
             // Flex bodies (empty)
             flex_dim: vec![],
@@ -2962,12 +2975,18 @@ impl Model {
             flex_solimp: vec![],
             flex_condim: vec![],
             flex_margin: vec![],
+            flex_gap: vec![],
+            flex_priority: vec![],
+            flex_solmix: vec![],
             flex_selfcollide: vec![],
+            flex_edgestiffness: vec![],
+            flex_edgedamping: vec![],
             flex_edge_solref: vec![],
             flex_edge_solimp: vec![],
             flex_bend_stiffness: vec![],
             flex_bend_damping: vec![],
             flex_density: vec![],
+            flex_group: vec![],
             flexvert_qposadr: vec![],
             flexvert_dofadr: vec![],
             flexvert_mass: vec![],
@@ -3010,6 +3029,8 @@ impl Model {
             site_quat: vec![],
             site_size: vec![],
             site_name: vec![],
+            site_group: vec![],
+            site_rgba: vec![],
 
             // Sensors (empty)
             nsensor: 0,
@@ -3060,6 +3081,8 @@ impl Model {
             tendon_solref: vec![],
             tendon_solimp: vec![],
             tendon_frictionloss: vec![],
+            tendon_group: vec![],
+            tendon_rgba: vec![],
             tendon_treenum: vec![],
             tendon_tree: vec![],
             wrap_type: vec![],
@@ -3227,33 +3250,7 @@ impl Model {
         (&self.qLD_rowadr, &self.qLD_rownnz, &self.qLD_colind)
     }
 
-    /// Effective number of rigid velocity DOFs.
-    ///
-    /// Returns `nv_rigid` if flex vertices are present, otherwise `nv`
-    /// (all DOFs are rigid). This handles models built programmatically
-    /// (e.g., `n_link_pendulum`) that don't explicitly set `nv_rigid`.
-    #[inline]
-    #[must_use]
-    pub fn nv_rigid(&self) -> usize {
-        if self.nv_rigid > 0 || self.nflexvert > 0 {
-            self.nv_rigid
-        } else {
-            self.nv
-        }
-    }
-
-    /// Effective number of rigid generalized position coordinates.
-    ///
-    /// Returns `nq_rigid` if flex vertices are present, otherwise `nq`.
-    #[inline]
-    #[must_use]
-    pub fn nq_rigid(&self) -> usize {
-        if self.nq_rigid > 0 || self.nflexvert > 0 {
-            self.nq_rigid
-        } else {
-            self.nq
-        }
-    }
+    // (§27F) nv_rigid()/nq_rigid() removed — all DOFs are now "rigid" DOFs.
 
     /// Create initial Data struct for this model with all arrays pre-allocated.
     #[must_use]
@@ -4019,28 +4016,16 @@ impl Model {
         let mut data = self.make_data();
         mj_fwd_position(self, &mut data);
         mj_crba(self, &mut data);
-        // Skip pinned flex vertex DOFs (invmass == 0, mass ≈ 1e20) to avoid
-        // their huge mass dominating the mean and collapsing Newton scale.
-        let mut pinned_dofs = vec![false; self.nv];
-        for i in 0..self.nflexvert {
-            if self.flexvert_invmass[i] == 0.0 {
-                let dof_base = self.flexvert_dofadr[i];
-                for k in 0..3 {
-                    if dof_base + k < self.nv {
-                        pinned_dofs[dof_base + k] = true;
-                    }
-                }
-            }
-        }
+        // (§27F) Pinned flex vertices now have no DOFs — no need to skip them.
         let mut trace = 0.0_f64;
-        let mut count = 0usize;
         for i in 0..self.nv {
-            if !pinned_dofs[i] {
-                trace += data.qM[(i, i)];
-                count += 1;
-            }
+            trace += data.qM[(i, i)];
         }
-        self.stat_meaninertia = if count > 0 { trace / count as f64 } else { 1.0 };
+        self.stat_meaninertia = if self.nv > 0 {
+            trace / self.nv as f64
+        } else {
+            1.0
+        };
         // Guard against degenerate models with zero inertia
         if self.stat_meaninertia <= 0.0 {
             self.stat_meaninertia = 1.0;
@@ -4104,8 +4089,6 @@ impl Model {
         // Dimensions
         model.nq = n;
         model.nv = n;
-        model.nq_rigid = n; // All DOFs are rigid (no flex vertices)
-        model.nv_rigid = n;
         model.nbody = n + 1; // world + n bodies
         model.njnt = n;
 
@@ -4214,8 +4197,6 @@ impl Model {
         // Dimensions
         model.nq = 4; // Quaternion: w, x, y, z
         model.nv = 3; // Angular velocity: omega_x, omega_y, omega_z
-        model.nq_rigid = 4; // All DOFs are rigid (no flex vertices)
-        model.nv_rigid = 3;
         model.nbody = 2; // world + pendulum
         model.njnt = 1;
 
@@ -4305,8 +4286,6 @@ impl Model {
         // Dimensions
         model.nq = 7; // position (3) + quaternion (4)
         model.nv = 6; // linear velocity (3) + angular velocity (3)
-        model.nq_rigid = 7; // All DOFs are rigid (no flex vertices)
-        model.nv_rigid = 6;
         model.nbody = 2;
         model.njnt = 1;
 
@@ -4622,7 +4601,7 @@ impl Data {
 
         // ========== Position Stage ==========
         mj_fwd_position(model, self);
-        mj_fwd_position_flex(model, self);
+        mj_flex(model, self);
 
         // §16.15: If FK detected external qpos changes on sleeping bodies, wake them
         if sleep_enabled && mj_check_qpos_changed(model, self) {
@@ -4664,7 +4643,7 @@ impl Data {
 
         // ========== Acceleration Stage ==========
         mj_fwd_actuation(model, self);
-        mj_crba(model, self); // Calls mj_crba_flex + mj_factor_flex internally
+        mj_crba(model, self);
         mj_rne(model, self);
         mj_energy_vel(model, self);
         mj_fwd_passive(model, self);
@@ -4683,19 +4662,8 @@ impl Data {
             mj_fwd_acceleration(model, self)?;
         }
 
-        // Zero out qacc and qvel for pinned flex vertices (invmass == 0).
-        // With large-but-finite mass (1e20), tiny residual forces produce
-        // near-zero but nonzero qacc. Clamping to exact zero ensures pinned
-        // vertices remain perfectly stationary.
-        for i in 0..model.nflexvert {
-            if model.flexvert_invmass[i] == 0.0 {
-                let dof_base = model.flexvert_dofadr[i];
-                for k in 0..3 {
-                    self.qacc[dof_base + k] = 0.0;
-                    self.qvel[dof_base + k] = 0.0;
-                }
-            }
-        }
+        // (§27F) Pinned flex vertex DOF clamping removed — pinned vertices now have
+        // no joints/DOFs (zero body_dof_num), so no qacc/qvel entries to clamp.
 
         if compute_sensors {
             mj_sensor_acc(model, self);
@@ -4774,7 +4742,6 @@ impl Data {
 
         // Update positions - quaternions need special handling!
         mj_integrate_pos(model, self, h);
-        mj_integrate_pos_flex(model, self, h);
 
         // Normalize quaternions to prevent drift
         mj_normalize_quat(model, self);
@@ -4837,7 +4804,6 @@ impl Data {
 
         // 3. Position integration + quaternion normalization + time advance
         mj_integrate_pos(model, self, h);
-        mj_integrate_pos_flex(model, self, h);
         mj_normalize_quat(model, self);
         self.time += h;
     }
@@ -5486,12 +5452,23 @@ fn mj_collision(model: &Model, data: &mut Data) {
         // This is O(n) and cache-friendly (linear memory access)
         let aabbs: Vec<Aabb> = (0..model.ngeom)
             .map(|geom_id| {
-                aabb_from_geom(
+                let mut aabb = aabb_from_geom(
                     model.geom_type[geom_id],
                     model.geom_size[geom_id],
                     data.geom_xpos[geom_id],
                     data.geom_xmat[geom_id],
-                )
+                );
+                // Expand AABB by geom margin so SAP doesn't reject pairs
+                // that are within margin distance but not overlapping.
+                let m = model.geom_margin[geom_id];
+                if m > 0.0 {
+                    let expand = Vector3::new(m, m, m);
+                    aabb = Aabb::new(
+                        Point3::from(Vector3::new(aabb.min.x, aabb.min.y, aabb.min.z) - expand),
+                        Point3::from(Vector3::new(aabb.max.x, aabb.max.y, aabb.max.z) + expand),
+                    );
+                }
+                aabb
             })
             .collect();
 
@@ -5527,8 +5504,13 @@ fn mj_collision(model: &Model, data: &mut Data) {
             let pos2 = data.geom_xpos[geom2];
             let mat2 = data.geom_xmat[geom2];
 
+            // Compute effective margin for this pair
+            let margin = model.geom_margin[geom1] + model.geom_margin[geom2];
+
             // Narrow-phase collision detection
-            if let Some(contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
+            if let Some(contact) =
+                collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
+            {
                 data.contacts.push(contact);
                 data.ncon += 1;
             }
@@ -5550,12 +5532,15 @@ fn mj_collision(model: &Model, data: &mut Data) {
                 }
             }
 
+            // Pair margin overrides geom margins
+            let margin = pair.margin;
+
             // Distance cull using bounding radii (replaces SAP broad-phase for pairs).
             // geom_rbound is the bounding sphere radius, pre-computed per geom.
             // For planes, rbound = INFINITY so this check always passes.
             // Margin is added to match MuJoCo's mj_filterSphere.
             let dist = (data.geom_xpos[geom1] - data.geom_xpos[geom2]).norm();
-            if dist > model.geom_rbound[geom1] + model.geom_rbound[geom2] + pair.margin {
+            if dist > model.geom_rbound[geom1] + model.geom_rbound[geom2] + margin {
                 continue;
             }
 
@@ -5565,7 +5550,9 @@ fn mj_collision(model: &Model, data: &mut Data) {
             let pos2 = data.geom_xpos[geom2];
             let mat2 = data.geom_xmat[geom2];
 
-            if let Some(mut contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2) {
+            if let Some(mut contact) =
+                collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin)
+            {
                 apply_pair_overrides(&mut contact, pair);
                 data.contacts.push(contact);
                 data.ncon += 1;
@@ -5773,6 +5760,9 @@ fn narrowphase_sphere_geom(
 }
 
 /// Create a Contact for a flex-rigid collision.
+///
+/// Uses the unified `contact_param_flex_rigid()` function for parameter
+/// combination, mirroring `make_contact_from_geoms()` for rigid-rigid contacts.
 fn make_contact_flex_rigid(
     model: &Model,
     vertex_idx: usize,
@@ -5782,22 +5772,10 @@ fn make_contact_flex_rigid(
     depth: f64,
 ) -> Contact {
     let flex_id = model.flexvert_flexid[vertex_idx];
-
-    // Friction: element-wise max (flex scalar applied to all components)
-    let flex_f = model.flex_friction[flex_id];
-    let rigid_f = model.geom_friction[geom_idx];
-    let sliding = flex_f.max(rigid_f.x);
-    let torsional = flex_f.max(rigid_f.y);
-    let rolling = flex_f.max(rigid_f.z);
-
-    let condim = model.flex_condim[flex_id].max(model.geom_condim[geom_idx]);
-
-    let (solref, solimp) = combine_solver_params(
-        model.flex_solref[flex_id],
-        model.flex_solimp[flex_id],
-        model.geom_solref[geom_idx],
-        model.geom_solimp[geom_idx],
-    );
+    let (condim, gap, solref, solimp, mu) = contact_param_flex_rigid(model, flex_id, geom_idx);
+    // Effective margin = flex_margin + geom_margin (already used in broadphase at line 5585)
+    let margin = model.flex_margin[flex_id] + model.geom_margin[geom_idx];
+    let includemargin = margin - gap;
 
     let (t1, t2) = compute_tangent_frame(&normal);
 
@@ -5816,10 +5794,10 @@ fn make_contact_flex_rigid(
         // This ensures model.geom_body[contact.geom1] is always valid.
         geom1: geom_idx,
         geom2: geom_idx,
-        friction: sliding,
+        friction: mu[0],
         dim,
-        includemargin: false,
-        mu: [sliding, sliding, torsional, rolling, rolling],
+        includemargin,
+        mu,
         solref,
         solimp,
         frame: [t1, t2],
@@ -5830,6 +5808,7 @@ fn make_contact_flex_rigid(
 /// Narrow-phase collision between two geometries.
 #[allow(clippy::similar_names)] // pos1/pose1, pos2/pose2 are intentionally related
 #[allow(clippy::items_after_statements)] // use statement placed after special cases for readability
+#[allow(clippy::too_many_arguments)]
 fn collide_geoms(
     model: &Model,
     geom1: usize,
@@ -5838,6 +5817,7 @@ fn collide_geoms(
     mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     let type1 = model.geom_type[geom1];
     let type2 = model.geom_type[geom2];
@@ -5850,34 +5830,36 @@ fn collide_geoms(
     // Special case: SDF collision (before mesh/hfield/plane — SDF has its own
     // contact functions for all shapes including Mesh, Hfield, and Plane)
     if type1 == GeomType::Sdf || type2 == GeomType::Sdf {
-        return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2);
+        return collide_with_sdf(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
 
     // Special case: mesh collision (has its own BVH-accelerated path)
     if type1 == GeomType::Mesh || type2 == GeomType::Mesh {
-        return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2);
+        return collide_with_mesh(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
 
     // Special case: height field collision
     if type1 == GeomType::Hfield || type2 == GeomType::Hfield {
-        return collide_with_hfield(model, geom1, geom2, pos1, mat1, pos2, mat2);
+        return collide_with_hfield(model, geom1, geom2, pos1, mat1, pos2, mat2, margin);
     }
 
     // Special case: plane collision
     if type1 == GeomType::Plane || type2 == GeomType::Plane {
         return collide_with_plane(
-            model, geom1, geom2, type1, type2, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, type2, pos1, mat1, pos2, mat2, size1, size2, margin,
         );
     }
 
     // Special case: sphere-sphere collision (analytical, more robust than GJK/EPA)
     if type1 == GeomType::Sphere && type2 == GeomType::Sphere {
-        return collide_sphere_sphere(model, geom1, geom2, pos1, pos2, size1, size2);
+        return collide_sphere_sphere(model, geom1, geom2, pos1, pos2, size1, size2, margin);
     }
 
     // Special case: capsule-capsule collision (analytical, much faster than GJK/EPA)
     if type1 == GeomType::Capsule && type2 == GeomType::Capsule {
-        return collide_capsule_capsule(model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2);
+        return collide_capsule_capsule(
+            model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
+        );
     }
 
     // Special case: sphere-capsule collision
@@ -5885,7 +5867,7 @@ fn collide_geoms(
         || (type1 == GeomType::Capsule && type2 == GeomType::Sphere)
     {
         return collide_sphere_capsule(
-            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
         );
     }
 
@@ -5894,7 +5876,7 @@ fn collide_geoms(
         || (type1 == GeomType::Box && type2 == GeomType::Sphere)
     {
         return collide_sphere_box(
-            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
         );
     }
 
@@ -5903,13 +5885,15 @@ fn collide_geoms(
         || (type1 == GeomType::Box && type2 == GeomType::Capsule)
     {
         return collide_capsule_box(
-            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
         );
     }
 
     // Special case: box-box collision (SAT)
     if type1 == GeomType::Box && type2 == GeomType::Box {
-        return collide_box_box(model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2);
+        return collide_box_box(
+            model, geom1, geom2, pos1, mat1, pos2, mat2, size1, size2, margin,
+        );
     }
 
     // Special case: cylinder-sphere collision (analytical)
@@ -5917,7 +5901,7 @@ fn collide_geoms(
         || (type1 == GeomType::Sphere && type2 == GeomType::Cylinder)
     {
         return collide_cylinder_sphere(
-            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
         );
     }
 
@@ -5927,7 +5911,7 @@ fn collide_geoms(
         || (type1 == GeomType::Capsule && type2 == GeomType::Cylinder)
     {
         if let Some(contact) = collide_cylinder_capsule(
-            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2,
+            model, geom1, geom2, type1, pos1, mat1, pos2, mat2, size1, size2, margin,
         ) {
             return Some(contact);
         }
@@ -5950,7 +5934,7 @@ fn collide_geoms(
     let collision_shape2 = shape2?;
 
     if let Some(result) = gjk_epa_contact(&collision_shape1, &pose1, &collision_shape2, &pose2) {
-        if result.penetration > 0.0 {
+        if result.penetration > -margin {
             return Some(make_contact_from_geoms(
                 model,
                 Vector3::new(result.point.x, result.point.y, result.point.z),
@@ -5958,6 +5942,7 @@ fn collide_geoms(
                 result.penetration,
                 geom1,
                 geom2,
+                margin,
             ));
         }
     }
@@ -5998,7 +5983,7 @@ fn geom_to_collision_shape(geom_type: GeomType, size: Vector3<f64>) -> Option<Co
 // 1. **Dispatcher functions** (e.g., `collide_with_plane`, `collide_geoms`):
 //    - Take `&Model` and geometry indices
 //    - Handle type dispatch and parameter extraction
-//    - Compute derived values like friction (geometric mean)
+//    - Compute derived values like friction (element-wise max)
 //    - Called from the main collision pipeline
 //
 // 2. **Implementation helpers** (e.g., `collide_cylinder_plane_impl`):
@@ -6039,17 +6024,169 @@ fn apply_pair_overrides(contact: &mut Contact, pair: &ContactPair) {
     contact.solimp = pair.solimp;
     // NOTE: solreffriction is NOT applied here — Contact has a single solref
     // field; per-direction solver params require solver changes (see §G).
-    // NOTE: margin/gap are NOT applied here — no runtime effect yet (see §H).
+    // Pair margin/gap override geom-derived includemargin
+    contact.includemargin = pair.margin - pair.gap;
+}
+
+/// Contact parameter combination — MuJoCo `mj_contactParam()` equivalent.
+///
+/// Computes combined contact parameters from two geoms.
+/// Handles priority (#25), solmix (#26), friction max (#24), and gap (#27).
+///
+/// Returns: (condim, gap, solref, solimp, friction\[5\])
+fn contact_param(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+) -> (i32, f64, [f64; 2], [f64; 5], [f64; 5]) {
+    // 1. Load parameters
+    let priority1 = model.geom_priority[geom1];
+    let priority2 = model.geom_priority[geom2];
+    let gap = model.geom_gap[geom1] + model.geom_gap[geom2];
+
+    // 2. Priority check — higher priority geom's params win entirely
+    if priority1 != priority2 {
+        let winner = if priority1 > priority2 { geom1 } else { geom2 };
+        let fri = model.geom_friction[winner];
+        return (
+            model.geom_condim[winner],
+            gap,
+            model.geom_solref[winner],
+            model.geom_solimp[winner],
+            [fri.x, fri.x, fri.y, fri.z, fri.z], // 3→5 unpack
+        );
+    }
+
+    // 3. Equal priority — combine
+    let condim = model.geom_condim[geom1].max(model.geom_condim[geom2]);
+
+    // 3a. Solmix weight
+    let s1 = model.geom_solmix[geom1];
+    let s2 = model.geom_solmix[geom2];
+    let mix = solmix_weight(s1, s2);
+
+    // 3b. Solref combination
+    let solref1 = model.geom_solref[geom1];
+    let solref2 = model.geom_solref[geom2];
+    let solref = combine_solref(solref1, solref2, mix);
+
+    // 3c. Solimp: weighted average
+    let solimp1 = model.geom_solimp[geom1];
+    let solimp2 = model.geom_solimp[geom2];
+    let solimp = combine_solimp(solimp1, solimp2, mix);
+
+    // 3d. Friction: element-wise max (NOT affected by solmix)
+    let f1 = model.geom_friction[geom1];
+    let f2 = model.geom_friction[geom2];
+    let fri = [
+        f1.x.max(f2.x),
+        f1.x.max(f2.x), // sliding1, sliding2
+        f1.y.max(f2.y), // torsional
+        f1.z.max(f2.z),
+        f1.z.max(f2.z), // rolling1, rolling2
+    ];
+
+    (condim, gap, solref, solimp, fri)
+}
+
+/// Contact parameter combination for flex-rigid collision pairs.
+///
+/// Mirrors `contact_param()` for geom-geom pairs, but reads `flex_*` fields
+/// for the flex entity and `geom_*` fields for the rigid entity. Follows
+/// MuJoCo's `mj_contactParam()` with f1=flex_id, f2=-1 (geom).
+fn contact_param_flex_rigid(
+    model: &Model,
+    flex_id: usize,
+    geom_idx: usize,
+) -> (i32, f64, [f64; 2], [f64; 5], [f64; 5]) {
+    let priority_flex = model.flex_priority[flex_id];
+    let priority_geom = model.geom_priority[geom_idx];
+    let gap = model.flex_gap[flex_id] + model.geom_gap[geom_idx];
+
+    if priority_flex > priority_geom {
+        let f = model.flex_friction[flex_id]; // scalar until Vec<Vector3> upgrade
+        return (
+            model.flex_condim[flex_id],
+            gap,
+            model.flex_solref[flex_id],
+            model.flex_solimp[flex_id],
+            [f, f, f, f, f], // scalar → uniform 5-element unpack
+        );
+    }
+    if priority_geom > priority_flex {
+        let f = model.geom_friction[geom_idx];
+        return (
+            model.geom_condim[geom_idx],
+            gap,
+            model.geom_solref[geom_idx],
+            model.geom_solimp[geom_idx],
+            [f.x, f.x, f.y, f.z, f.z],
+        );
+    }
+
+    // Equal priority — combine
+    let condim = model.flex_condim[flex_id].max(model.geom_condim[geom_idx]);
+
+    let s1 = model.flex_solmix[flex_id];
+    let s2 = model.geom_solmix[geom_idx];
+    let mix = solmix_weight(s1, s2);
+
+    let solref = combine_solref(model.flex_solref[flex_id], model.geom_solref[geom_idx], mix);
+    let solimp = combine_solimp(model.flex_solimp[flex_id], model.geom_solimp[geom_idx], mix);
+
+    // Friction: element-wise max (flex scalar applied to all components)
+    let ff = model.flex_friction[flex_id];
+    let gf = model.geom_friction[geom_idx];
+    let fri = [
+        ff.max(gf.x),
+        ff.max(gf.x), // sliding1, sliding2
+        ff.max(gf.y), // torsional
+        ff.max(gf.z),
+        ff.max(gf.z), // rolling1, rolling2
+    ];
+
+    (condim, gap, solref, solimp, fri)
+}
+
+/// Compute solmix weight, matching MuJoCo's edge-case handling.
+/// Returns weight for entity 1 (entity 2 weight = 1 - mix).
+fn solmix_weight(s1: f64, s2: f64) -> f64 {
+    const MJ_MINVAL: f64 = 1e-15;
+    if s1 >= MJ_MINVAL && s2 >= MJ_MINVAL {
+        s1 / (s1 + s2)
+    } else if s1 < MJ_MINVAL && s2 < MJ_MINVAL {
+        0.5
+    } else if s1 < MJ_MINVAL {
+        0.0 // entity 2 dominates
+    } else {
+        1.0 // entity 1 dominates
+    }
+}
+
+/// Combine solref using solmix weight.
+/// Standard reference (solref\[0\] > 0): weighted average.
+/// Direct reference (solref\[0\] <= 0): element-wise minimum.
+fn combine_solref(solref1: [f64; 2], solref2: [f64; 2], mix: f64) -> [f64; 2] {
+    if solref1[0] > 0.0 && solref2[0] > 0.0 {
+        [
+            mix * solref1[0] + (1.0 - mix) * solref2[0],
+            mix * solref1[1] + (1.0 - mix) * solref2[1],
+        ]
+    } else {
+        [solref1[0].min(solref2[0]), solref1[1].min(solref2[1])]
+    }
+}
+
+/// Combine solimp using solmix weight (always weighted average).
+fn combine_solimp(solimp1: [f64; 5], solimp2: [f64; 5], mix: f64) -> [f64; 5] {
+    std::array::from_fn(|i| mix * solimp1[i] + (1.0 - mix) * solimp2[i])
 }
 
 /// Create a contact with solver parameters derived from the colliding geoms.
 ///
-/// This helper combines friction (geometric mean) and solver params from both
-/// geoms according to MuJoCo conventions:
-/// - friction: geometric mean of both geoms (per friction type)
-/// - condim: maximum of both geom condim values (sufficient dimensionality)
-/// - solref: element-wise minimum (stiffer wins)
-/// - solimp: element-wise maximum (harder wins)
+/// Uses the unified `contact_param()` function (MuJoCo `mj_contactParam()`
+/// equivalent) for parameter combination: priority gating, solmix-weighted
+/// solver params, element-wise max friction, and additive gap.
 #[inline]
 fn make_contact_from_geoms(
     model: &Model,
@@ -6058,34 +6195,35 @@ fn make_contact_from_geoms(
     depth: f64,
     geom1: usize,
     geom2: usize,
+    margin: f64,
 ) -> Contact {
-    // Get friction vectors from both geoms
-    // geom_friction: [sliding, torsional, rolling]
-    let f1 = model.geom_friction[geom1];
-    let f2 = model.geom_friction[geom2];
+    let (condim, gap, solref, solimp, mu) = contact_param(model, geom1, geom2);
+    let includemargin = margin - gap;
 
-    // Compute geometric mean for each friction component
-    let sliding = (f1.x * f2.x).sqrt();
-    let torsional = (f1.y * f2.y).sqrt();
-    let rolling = (f1.z * f2.z).sqrt();
+    let dim: usize = match condim {
+        1 => 1,
+        4 => 4,
+        6 => 6,
+        _ => 3,
+    };
 
-    // Contact dimension: maximum of both geom condim values
-    // MuJoCo uses max so the contact has sufficient dimensionality
-    let condim1 = model.geom_condim[geom1];
-    let condim2 = model.geom_condim[geom2];
-    let condim = condim1.max(condim2);
+    let (t1, t2) = compute_tangent_frame(&normal);
 
-    // Combine solver parameters from both geoms
-    let (solref, solimp) = combine_solver_params(
-        model.geom_solref[geom1],
-        model.geom_solimp[geom1],
-        model.geom_solref[geom2],
-        model.geom_solimp[geom2],
-    );
-
-    Contact::with_condim(
-        pos, normal, depth, geom1, geom2, sliding, torsional, rolling, condim, solref, solimp,
-    )
+    Contact {
+        pos,
+        normal,
+        depth,
+        geom1,
+        geom2,
+        friction: mu[0],
+        dim,
+        includemargin,
+        mu,
+        solref,
+        solimp,
+        frame: [t1, t2],
+        flex_vertex: None,
+    }
 }
 
 /// Minimum norm threshold for geometric operations.
@@ -6117,6 +6255,7 @@ const CAP_COLLISION_THRESHOLD: f64 = 0.7;
 
 /// Height field collision: dispatch to the appropriate contact function
 /// based on the other geom's type, then convert to pipeline Contact.
+#[allow(clippy::too_many_arguments)]
 fn collide_with_hfield(
     model: &Model,
     geom1: usize,
@@ -6125,6 +6264,7 @@ fn collide_with_hfield(
     mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
+    margin: f64, // TODO: thread margin into heightfield helpers
 ) -> Option<Contact> {
     // Identify which geom is the hfield, which is the other
     let (hf_geom, other_geom, hf_pos, hf_mat, other_pos, other_mat) =
@@ -6185,7 +6325,15 @@ fn collide_with_hfield(
     let swapped = hf_geom != geom1;
     hf_contact.map(|c| {
         let normal = if swapped { -c.normal } else { c.normal };
-        make_contact_from_geoms(model, c.point.coords, normal, c.penetration, geom1, geom2)
+        make_contact_from_geoms(
+            model,
+            c.point.coords,
+            normal,
+            c.penetration,
+            geom1,
+            geom2,
+            margin,
+        )
     })
 }
 
@@ -6202,6 +6350,7 @@ fn collide_with_sdf(
     mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
+    margin: f64, // TODO: thread margin into SDF helpers
 ) -> Option<Contact> {
     // Identify which geom is the SDF, which is the other
     let (sdf_geom, other_geom, sdf_pos, sdf_mat, other_pos, other_mat) =
@@ -6296,7 +6445,15 @@ fn collide_with_sdf(
         } else {
             c.normal
         };
-        make_contact_from_geoms(model, c.point.coords, normal, c.penetration, geom1, geom2)
+        make_contact_from_geoms(
+            model,
+            c.point.coords,
+            normal,
+            c.penetration,
+            geom1,
+            geom2,
+            margin,
+        )
     })
 }
 
@@ -6316,6 +6473,7 @@ fn collide_with_mesh(
     mat1: Matrix3<f64>,
     pos2: Vector3<f64>,
     mat2: Matrix3<f64>,
+    margin: f64, // TODO: thread margin into mesh helpers
 ) -> Option<Contact> {
     let type1 = model.geom_type[geom1];
     let type2 = model.geom_type[geom2];
@@ -6422,6 +6580,7 @@ fn collide_with_mesh(
             mc.penetration,
             geom1,
             geom2,
+            margin,
         )
     })
 }
@@ -6492,6 +6651,7 @@ fn collide_with_plane(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Determine which is the plane
     let (
@@ -6520,7 +6680,7 @@ fn collide_with_plane(
             let center_dist = plane_normal.dot(&other_pos) - plane_distance;
             let penetration = radius - center_dist;
 
-            if penetration > 0.0 {
+            if penetration > -margin {
                 // Contact position is at the sphere surface toward the plane
                 let contact_pos = other_pos - plane_normal * center_dist;
                 // Contact normal points from other_geom toward plane_geom (from ball into plane = -plane_normal)
@@ -6534,6 +6694,7 @@ fn collide_with_plane(
                     penetration,
                     plane_geom,
                     other_geom,
+                    margin,
                 ))
             } else {
                 None
@@ -6584,7 +6745,7 @@ fn collide_with_plane(
             let dist = plane_normal.dot(&lowest_corner) - plane_distance;
             let depth = -dist;
 
-            if depth > 0.0 {
+            if depth > -margin {
                 // Contact position on plane surface (project corner onto plane)
                 // This is consistent with sphere-plane which places contact at surface
                 let contact_pos = lowest_corner - plane_normal * dist;
@@ -6595,6 +6756,7 @@ fn collide_with_plane(
                     depth,
                     plane_geom,
                     other_geom,
+                    margin,
                 ))
             } else {
                 None
@@ -6620,7 +6782,7 @@ fn collide_with_plane(
 
             let penetration = radius - min_dist;
 
-            if penetration > 0.0 {
+            if penetration > -margin {
                 let contact_pos = closest_end - plane_normal * min_dist;
                 Some(make_contact_from_geoms(
                     model,
@@ -6629,6 +6791,7 @@ fn collide_with_plane(
                     penetration,
                     plane_geom,
                     other_geom,
+                    margin,
                 ))
             } else {
                 None
@@ -6645,6 +6808,7 @@ fn collide_with_plane(
                 other_pos,
                 other_mat,
                 other_size,
+                margin,
             )
         }
         GeomType::Ellipsoid => {
@@ -6658,6 +6822,7 @@ fn collide_with_plane(
                 other_pos,
                 other_mat,
                 other_size,
+                margin,
             )
         }
         // INVARIANT: collide_geoms() dispatches mesh collision before plane collision.
@@ -6707,6 +6872,7 @@ fn collide_cylinder_plane_impl(
     cyl_pos: Vector3<f64>,
     cyl_mat: Matrix3<f64>,
     cyl_size: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     let radius = cyl_size.x;
     let half_height = cyl_size.y;
@@ -6774,7 +6940,7 @@ fn collide_cylinder_plane_impl(
     let signed_dist = plane_normal.dot(&deepest_point) - plane_d;
     let depth = -signed_dist;
 
-    if depth <= 0.0 {
+    if depth <= -margin {
         return None;
     }
 
@@ -6788,6 +6954,7 @@ fn collide_cylinder_plane_impl(
         depth,
         plane_geom,
         cyl_geom,
+        margin,
     ))
 }
 
@@ -6830,6 +6997,7 @@ fn collide_ellipsoid_plane_impl(
     ell_pos: Vector3<f64>,
     ell_mat: Matrix3<f64>,
     ell_radii: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Transform plane normal to ellipsoid local frame
     let local_normal = ell_mat.transpose() * plane_normal;
@@ -6863,7 +7031,7 @@ fn collide_ellipsoid_plane_impl(
     let signed_dist = plane_normal.dot(&world_support) - plane_d;
     let depth = -signed_dist; // Positive = penetrating
 
-    if depth <= 0.0 {
+    if depth <= -margin {
         return None;
     }
 
@@ -6877,6 +7045,7 @@ fn collide_ellipsoid_plane_impl(
         depth,
         plane_geom,
         ell_geom,
+        margin,
     ))
 }
 
@@ -6884,6 +7053,7 @@ fn collide_ellipsoid_plane_impl(
 ///
 /// This is a simple analytical calculation that's more robust than GJK/EPA
 /// for the sphere-sphere case.
+#[allow(clippy::too_many_arguments)]
 fn collide_sphere_sphere(
     model: &Model,
     geom1: usize,
@@ -6892,6 +7062,7 @@ fn collide_sphere_sphere(
     pos2: Vector3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     let radius1 = size1.x;
     let radius2 = size2.x;
@@ -6899,11 +7070,11 @@ fn collide_sphere_sphere(
     let diff = pos2 - pos1;
     let dist = diff.norm();
 
-    // Check for penetration
+    // Check for penetration (or within margin zone)
     let sum_radii = radius1 + radius2;
     let penetration = sum_radii - dist;
 
-    if penetration > 0.0 {
+    if penetration > -margin {
         // Normal points from sphere1 to sphere2.
         // For coincident/nearly-coincident centers (degenerate case), pick +Z.
         let normal = if dist > GEOM_EPSILON {
@@ -6923,6 +7094,7 @@ fn collide_sphere_sphere(
             penetration,
             geom1,
             geom2,
+            margin,
         ))
     } else {
         None
@@ -6945,6 +7117,7 @@ fn collide_capsule_capsule(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Capsule parameters: size.x = radius, size.y = half_length
     let radius1 = size1.x;
@@ -6965,13 +7138,13 @@ fn collide_capsule_capsule(
     // Find closest points between the two line segments
     let (closest1, closest2) = closest_points_segments(p1a, p1b, p2a, p2b);
 
-    // Check distance
+    // Check distance (or within margin zone)
     let diff = closest2 - closest1;
     let dist = diff.norm();
     let sum_radii = radius1 + radius2;
     let penetration = sum_radii - dist;
 
-    if penetration > 0.0 {
+    if penetration > -margin {
         // Normal points from capsule1 toward capsule2.
         // For degenerate case (segments intersect), pick +Z.
         let normal = if dist > GEOM_EPSILON {
@@ -6988,6 +7161,7 @@ fn collide_capsule_capsule(
             penetration,
             geom1,
             geom2,
+            margin,
         ))
     } else {
         None
@@ -7007,6 +7181,7 @@ fn collide_sphere_capsule(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Determine which is sphere and which is capsule
     let (
@@ -7040,7 +7215,7 @@ fn collide_sphere_capsule(
     let sum_radii = sphere_radius + capsule_radius;
     let penetration = sum_radii - dist;
 
-    if penetration > 0.0 {
+    if penetration > -margin {
         // Normal points from capsule toward sphere.
         // For degenerate case (sphere center on capsule axis), pick +Z.
         let normal = if dist > GEOM_EPSILON {
@@ -7074,6 +7249,7 @@ fn collide_sphere_capsule(
             penetration,
             g1,
             g2,
+            margin,
         ))
     } else {
         None
@@ -7095,6 +7271,7 @@ fn collide_sphere_box(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Determine which is sphere and which is box
     let (sphere_geom, box_geom, sphere_pos, box_pos, box_mat, sphere_radius, box_half) =
@@ -7122,7 +7299,7 @@ fn collide_sphere_box(
     let dist = diff.norm();
     let penetration = sphere_radius - dist;
 
-    if penetration > 0.0 {
+    if penetration > -margin {
         // Compute normal (from box toward sphere)
         let normal = if dist > GEOM_EPSILON {
             diff / dist
@@ -7172,6 +7349,7 @@ fn collide_sphere_box(
             penetration,
             g1,
             g2,
+            margin,
         ))
     } else {
         None
@@ -7198,6 +7376,7 @@ fn collide_cylinder_sphere(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Determine which is cylinder and which is sphere
     // Note: sphere doesn't use its rotation matrix, but we need mat2 for the cylinder case
@@ -7277,7 +7456,7 @@ fn collide_cylinder_sphere(
     let dist = (sph_pos - closest_on_cyl).norm();
     let penetration = sph_radius - dist;
 
-    if penetration <= 0.0 {
+    if penetration <= -margin {
         return None;
     }
 
@@ -7298,6 +7477,7 @@ fn collide_cylinder_sphere(
         penetration,
         g1,
         g2,
+        margin,
     ))
 }
 
@@ -7326,6 +7506,7 @@ fn collide_cylinder_capsule(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Identify cylinder and capsule
     let (cyl_geom, cyl_pos, cyl_mat, cyl_size, cap_geom, cap_pos, cap_mat, cap_size) =
@@ -7384,7 +7565,7 @@ fn collide_cylinder_capsule(
     let surface_to_cap_dist = (cap_closest - cyl_surface).dot(&normal);
     let penetration = cap_radius - surface_to_cap_dist;
 
-    if penetration <= 0.0 {
+    if penetration <= -margin {
         return None;
     }
 
@@ -7405,6 +7586,7 @@ fn collide_cylinder_capsule(
         penetration,
         g1,
         g2,
+        margin,
     ))
 }
 
@@ -7424,6 +7606,7 @@ fn collide_capsule_box(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     // Determine which is capsule and which is box
     let (
@@ -7499,7 +7682,7 @@ fn collide_capsule_box(
 
     let penetration = capsule_radius - min_dist;
 
-    if penetration > 0.0 {
+    if penetration > -margin {
         let diff = best_capsule_point - best_box_point;
         let normal = if min_dist > GEOM_EPSILON {
             diff / min_dist
@@ -7545,6 +7728,7 @@ fn collide_capsule_box(
             penetration,
             g1,
             g2,
+            margin,
         ))
     } else {
         None
@@ -7566,6 +7750,7 @@ fn collide_box_box(
     mat2: Matrix3<f64>,
     size1: Vector3<f64>,
     size2: Vector3<f64>,
+    margin: f64,
 ) -> Option<Contact> {
     let half1 = size1;
     let half2 = size2;
@@ -7593,8 +7778,8 @@ fn collide_box_box(
     for i in 0..3 {
         let axis = axes1[i];
         let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
-        if pen <= 0.0 {
-            return None; // Separating axis found
+        if pen <= -margin {
+            return None; // Separating axis found (beyond margin zone)
         }
         if pen < min_pen {
             min_pen = pen;
@@ -7607,7 +7792,7 @@ fn collide_box_box(
     for i in 0..3 {
         let axis = axes2[i];
         let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
-        if pen <= 0.0 {
+        if pen <= -margin {
             return None;
         }
         if pen < min_pen {
@@ -7628,7 +7813,7 @@ fn collide_box_box(
             let axis = axis / len;
 
             let pen = test_sat_axis(&axis, &center_diff, &axes1, &half1, &axes2, &half2);
-            if pen <= 0.0 {
+            if pen <= -margin {
                 return None;
             }
             // Edge-edge contacts have a bias - they're less stable
@@ -7682,6 +7867,7 @@ fn collide_box_box(
         min_pen,
         geom1,
         geom2,
+        margin,
     ))
 }
 
@@ -8989,15 +9175,15 @@ fn compute_subtree_angmom(model: &Model, data: &Data, root_body: usize) -> Vecto
     angmom
 }
 
-/// Copy flex vertex positions from qpos to flexvert_xpos.
+/// Compute flex vertex world positions from body FK.
 ///
-/// Flex vertices ARE their positions — no kinematic chain traversal needed.
-/// Trivial O(nflexvert), no-op when nflexvert == 0.
-fn mj_fwd_position_flex(model: &Model, data: &mut Data) {
+/// Each flex vertex has an associated body (created by process_flex_bodies).
+/// The body's xpos (computed by standard FK) IS the vertex world position.
+/// Pinned vertices (no DOFs) use xpos directly from their static body.
+fn mj_flex(model: &Model, data: &mut Data) {
     for i in 0..model.nflexvert {
-        let adr = model.flexvert_qposadr[i];
-        data.flexvert_xpos[i] =
-            Vector3::new(data.qpos[adr], data.qpos[adr + 1], data.qpos[adr + 2]);
+        let body_id = model.flexvert_bodyid[i];
+        data.flexvert_xpos[i] = data.xpos[body_id];
     }
 }
 
@@ -10553,9 +10739,8 @@ fn mj_crba(model: &Model, data: &mut Data) {
         .collect();
 
     // Build cdof only for rigid DOFs (flex DOFs have dof_jnt = usize::MAX,
-    // no joint subspace, and their mass is handled separately by mj_crba_flex).
-    let nv_rigid = model.nv_rigid();
-    let cdof: Vec<Vector6<f64>> = (0..nv_rigid)
+    // (§27F) All DOFs now have real joints — build cdof for all DOFs.
+    let cdof: Vec<Vector6<f64>> = (0..model.nv)
         .map(|dof| {
             let jnt = model.dof_jnt[dof];
             let dof_in_jnt = dof - model.jnt_dof_adr[jnt];
@@ -10563,14 +10748,10 @@ fn mj_crba(model: &Model, data: &mut Data) {
         })
         .collect();
 
-    // Only iterate rigid DOFs for CRBA mass matrix entries.
-    // Flex vertex diagonal blocks are written by mj_crba_flex (Phase 5a).
     let nv_iter = if sleep_filter {
-        // When sleeping, awake DOFs are a subset of rigid DOFs
-        // (flex DOFs are always awake but handled by mj_crba_flex).
         data.nv_awake
     } else {
-        nv_rigid
+        model.nv
     };
     for v in 0..nv_iter {
         let dof_i = if sleep_filter {
@@ -10578,10 +10759,6 @@ fn mj_crba(model: &Model, data: &mut Data) {
         } else {
             v
         };
-        // Skip flex DOFs that might be in the awake list
-        if dof_i >= nv_rigid {
-            continue;
-        }
         let body_i = model.dof_body[dof_i];
         let ic = &data.crb_inertia[body_i];
 
@@ -10645,12 +10822,6 @@ fn mj_crba(model: &Model, data: &mut Data) {
         }
     }
 
-    // ============================================================
-    // Phase 5a: Fill flex vertex diagonal blocks in qM
-    // ============================================================
-    // Must run before factorization so that qM has correct flex entries.
-    mj_crba_flex(model, data);
-
     // Phase 5b: Sparse L^T D L factorization
     // ============================================================
     // Exploits tree sparsity from dof_parent for O(n) factorization and solve.
@@ -10659,11 +10830,7 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // Sleeping DOFs' qLD entries are preserved from their last awake step.
     mj_factor_sparse_selective(model, data);
 
-    // Phase 5c: Patch LDL diagonal for flex DOFs
-    // ============================================================
-    // mj_factor_sparse doesn't touch flex DOFs (they have no kinematic chain),
-    // so we write the diagonal mass and its inverse directly.
-    mj_factor_flex(model, data);
+    // Phase 5c: (§27F) Flex DOFs now handled by standard sparse factorization above.
 
     // ============================================================
     // Phase 6: Cache body effective mass/inertia from qM diagonal
@@ -10876,6 +11043,12 @@ pub(crate) fn joint_motion_subspace(
     s
 }
 
+// mj_crba_flex DELETED (§27F): Flex vertices are now real bodies with slide joints.
+// The standard CRBA handles their mass matrix entries automatically.
+
+// mj_factor_flex DELETED (§27F): Flex vertices are now real bodies with slide joints.
+// The standard sparse LDL factorization handles their DOFs automatically.
+
 /// Recursive Newton-Euler: compute bias forces (Coriolis + centrifugal + gravity).
 ///
 /// The bias force vector `c(q, qdot)` contains:
@@ -10896,46 +11069,7 @@ pub(crate) fn joint_motion_subspace(
 /// to verify for correctness.
 ///
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 5
-/// Extend mass matrix M with flex vertex diagonal blocks.
 ///
-/// Each vertex contributes m_i * I_3 (3 diagonal entries).
-/// No-op when nflexvert == 0.
-fn mj_crba_flex(model: &Model, data: &mut Data) {
-    for i in 0..model.nflexvert {
-        let mass = model.flexvert_mass[i];
-        let dof_base = model.flexvert_dofadr[i];
-        for k in 0..3 {
-            let dof = dof_base + k;
-            data.qM[(dof, dof)] = mass;
-        }
-    }
-}
-
-/// Extend sparse LDL factorization with flex diagonal entries.
-///
-/// For diagonal-only DOFs: L = I, D = M, so D_inv = 1/M.
-/// Pinned vertices have mass = 1e20 → D_inv ≈ 0 → near-zero acceleration.
-/// No-op when nflexvert == 0.
-#[allow(non_snake_case)]
-fn mj_factor_flex(model: &Model, data: &mut Data) {
-    for i in 0..model.nflexvert {
-        let mass = model.flexvert_mass[i];
-        let dof_base = model.flexvert_dofadr[i];
-        for k in 0..3 {
-            let dof = dof_base + k;
-            // Diagonal entry in qLD_data
-            let ld_adr = model.qLD_rowadr[dof]; // points to diagonal
-            data.qLD_data[ld_adr] = mass;
-            // Precomputed inverse
-            data.qLD_diag_inv[dof] = if mass > 0.0 { 1.0 / mass } else { 0.0 };
-        }
-    }
-    // Mark factorization as valid (spec S4, line 453)
-    if model.nflexvert > 0 {
-        data.qLD_valid = true;
-    }
-}
-
 /// Reference: MuJoCo Computation docs - mj_rne section
 #[allow(
     clippy::too_many_lines,
@@ -11014,18 +11148,8 @@ fn mj_rne(model: &Model, data: &mut Data) {
         }
     }
 
-    // Flex vertex gravity: direct force on translational DOFs
-    // Skip pinned vertices (invmass == 0, mass == 1e20) to avoid huge values in qfrc_bias.
-    for i in 0..model.nflexvert {
-        if model.flexvert_invmass[i] == 0.0 {
-            continue; // Pinned vertex: skip gravity
-        }
-        let mass = model.flexvert_mass[i];
-        let dof_base = model.flexvert_dofadr[i];
-        for k in 0..3 {
-            data.qfrc_bias[dof_base + k] -= mass * model.gravity[k];
-        }
-    }
+    // (§27F) Flex vertex gravity now handled by the joint loop above — each vertex
+    // has a body with 3 slide joints, so the standard gravity path applies automatically.
 
     // ========== Gyroscopic terms for Ball/Free joints ==========
     // τ_gyro = ω × (I * ω) - the gyroscopic torque
@@ -11356,14 +11480,91 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
     // Flex vertex damping: qfrc_passive[dof] = -damping * qvel[dof]
     for i in 0..model.nflexvert {
+        let dof_base = model.flexvert_dofadr[i];
+        if dof_base == usize::MAX {
+            continue; // Pinned vertex: no DOFs
+        }
         let flex_id = model.flexvert_flexid[i];
         let damp = model.flex_damping[flex_id];
         if damp <= 0.0 {
             continue;
         }
-        let dof_base = model.flexvert_dofadr[i];
         for k in 0..3 {
             data.qfrc_passive[dof_base + k] -= damp * data.qvel[dof_base + k];
+        }
+    }
+
+    // Flex edge passive spring-damper forces.
+    // MuJoCo architecture: <edge stiffness="..." damping="..."/> drives passive
+    // forces (engine_passive.c), separate from constraint-based edge enforcement
+    // (mjEQ_FLEX in engine_core_constraint.c which uses eq_solref/eq_solimp).
+    // Note: MuJoCo docs say <edge stiffness> is "Only for 1D flex" (cables).
+    // For 2D/3D, elasticity comes from FEM via <elasticity>. The code applies
+    // to all dims (matching MuJoCo's runtime behavior), but users should only
+    // set nonzero stiffness for dim=1 flex bodies.
+    for e in 0..model.nflexedge {
+        let flex_id = model.flexedge_flexid[e];
+        let stiffness = model.flex_edgestiffness[flex_id];
+        let damping = model.flex_edgedamping[flex_id];
+
+        if stiffness == 0.0 && damping == 0.0 {
+            continue;
+        }
+
+        let [v0, v1] = model.flexedge_vert[e];
+
+        // Skip edges where both vertices are pinned (rigid edge)
+        if model.flexvert_invmass[v0] == 0.0 && model.flexvert_invmass[v1] == 0.0 {
+            continue;
+        }
+
+        let x0 = data.flexvert_xpos[v0];
+        let x1 = data.flexvert_xpos[v1];
+        let diff = x1 - x0;
+        let dist = diff.norm();
+        if dist < 1e-10 {
+            continue;
+        }
+
+        let direction = diff / dist;
+        let rest_len = model.flexedge_length0[e];
+
+        // Spring force: stiffness * (rest_length - current_length)
+        // Positive when compressed (restoring), negative when stretched.
+        let frc_spring = stiffness * (rest_len - dist);
+
+        // Damping force: -damping * edge_velocity
+        // edge_velocity = d(dist)/dt = (v1 - v0) · direction
+        // (§27F) Pinned vertices have dofadr=usize::MAX and zero velocity.
+        let dof0 = model.flexvert_dofadr[v0];
+        let dof1 = model.flexvert_dofadr[v1];
+        let vel0 = if dof0 == usize::MAX {
+            Vector3::zeros()
+        } else {
+            Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2])
+        };
+        let vel1 = if dof1 == usize::MAX {
+            Vector3::zeros()
+        } else {
+            Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2])
+        };
+        let edge_velocity = (vel1 - vel0).dot(&direction);
+        let frc_damper = -damping * edge_velocity;
+
+        let force_mag = frc_spring + frc_damper;
+
+        // Apply via J^T: edge Jacobian is ±direction for the two endpoint DOFs.
+        // F_v0 = -direction * force_mag (pulls v0 toward v1 when stretched)
+        // F_v1 = +direction * force_mag (pulls v1 toward v0 when stretched)
+        if dof0 < model.nv {
+            for ax in 0..3 {
+                data.qfrc_passive[dof0 + ax] -= direction[ax] * force_mag;
+            }
+        }
+        if dof1 < model.nv {
+            for ax in 0..3 {
+                data.qfrc_passive[dof1 + ax] += direction[ax] * force_mag;
+            }
         }
     }
 
@@ -11427,22 +11628,22 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let spring_mag = -k_bend_raw * angle_error;
 
         // Damper: F = -b * d(theta)/dt, where d(theta)/dt = J · qvel
+        // (§27F) Pinned vertices have dofadr=usize::MAX and zero velocity.
         let dof_e0 = model.flexvert_dofadr[ve0];
         let dof_e1 = model.flexvert_dofadr[ve1];
         let dof_a = model.flexvert_dofadr[va];
         let dof_b = model.flexvert_dofadr[vb];
-        let vel_e0 = Vector3::new(
-            data.qvel[dof_e0],
-            data.qvel[dof_e0 + 1],
-            data.qvel[dof_e0 + 2],
-        );
-        let vel_e1 = Vector3::new(
-            data.qvel[dof_e1],
-            data.qvel[dof_e1 + 1],
-            data.qvel[dof_e1 + 2],
-        );
-        let vel_a = Vector3::new(data.qvel[dof_a], data.qvel[dof_a + 1], data.qvel[dof_a + 2]);
-        let vel_b = Vector3::new(data.qvel[dof_b], data.qvel[dof_b + 1], data.qvel[dof_b + 2]);
+        let read_vel = |dof: usize| -> Vector3<f64> {
+            if dof == usize::MAX {
+                Vector3::zeros()
+            } else {
+                Vector3::new(data.qvel[dof], data.qvel[dof + 1], data.qvel[dof + 2])
+            }
+        };
+        let vel_e0 = read_vel(dof_e0);
+        let vel_e1 = read_vel(dof_e1);
+        let vel_a = read_vel(dof_a);
+        let vel_b = read_vel(dof_b);
         let theta_dot =
             grad_e0.dot(&vel_e0) + grad_e1.dot(&vel_e1) + grad_a.dot(&vel_a) + grad_b.dot(&vel_b);
         let damper_mag = -b_bend * theta_dot;
@@ -11639,10 +11840,8 @@ fn compute_body_lengths(model: &Model) -> Vec<f64> {
 pub fn compute_dof_lengths(model: &mut Model) {
     let body_length = compute_body_lengths(model);
 
-    // Only compute mechanism lengths for rigid DOFs (flex DOFs have dof_jnt = usize::MAX).
-    // Flex DOFs are translational by nature and keep the default length of 1.0.
-    let nv_rigid = model.nv_rigid();
-    for dof in 0..nv_rigid {
+    // (§27F) All DOFs now have real joints — iterate all DOFs uniformly.
+    for dof in 0..model.nv {
         let jnt_id = model.dof_jnt[dof];
         let jnt_type = model.jnt_type[jnt_id];
         let offset = dof - model.jnt_dof_adr[jnt_id];
@@ -11658,10 +11857,6 @@ pub fn compute_dof_lengths(model: &mut Model) {
         } else {
             model.dof_length[dof] = 1.0; // translational: already in [m/s]
         }
-    }
-    // Flex DOFs: keep default 1.0 (translational, already in m/s)
-    for dof in nv_rigid..model.nv {
-        model.dof_length[dof] = 1.0;
     }
 }
 
@@ -13107,10 +13302,14 @@ fn compute_flex_contact_jacobian(
 
     // Flex vertex side: trivial Jacobian (identity on DOF columns).
     // The vertex's 3 translational DOFs map directly to Cartesian velocity.
+    // (§27F) Pinned vertices have no DOFs — Jacobian columns are all zero (immovable).
     let dof_base = model.flexvert_dofadr[vertex_idx];
 
     // Helper: project direction onto vertex DOFs with given sign
     let add_vertex_jacobian = |j: &mut DMatrix<f64>, row: usize, dir: &Vector3<f64>, sign: f64| {
+        if dof_base == usize::MAX {
+            return; // Pinned vertex: no DOF columns to fill
+        }
         j[(row, dof_base)] += sign * dir.x;
         j[(row, dof_base + 1)] += sign * dir.y;
         j[(row, dof_base + 2)] += sign * dir.z;
@@ -14612,14 +14811,21 @@ fn apply_flex_edge_constraints(model: &Model, data: &mut Data) {
         let direction = diff / dist;
         let pos_error = dist - rest_len; // positive = stretched
 
+        // (§27F) Pinned vertices have dofadr=usize::MAX and zero velocity.
         let dof0 = model.flexvert_dofadr[v0];
         let dof1 = model.flexvert_dofadr[v1];
 
         // Relative velocity along edge direction
-        let vel0 =
-            nalgebra::Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2]);
-        let vel1 =
-            nalgebra::Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2]);
+        let vel0 = if dof0 == usize::MAX {
+            nalgebra::Vector3::zeros()
+        } else {
+            nalgebra::Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2])
+        };
+        let vel1 = if dof1 == usize::MAX {
+            nalgebra::Vector3::zeros()
+        } else {
+            nalgebra::Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2])
+        };
         let vel_error = (vel1 - vel0).dot(&direction);
 
         let (k, b) = solref_to_penalty(model.flex_edge_solref[flex_id], default_k, default_b, dt);
@@ -14628,11 +14834,13 @@ fn apply_flex_edge_constraints(model: &Model, data: &mut Data) {
         let force_mag = -k * pos_error - b * vel_error;
 
         // Apply via J^T: F_v0 = -direction * force_mag, F_v1 = +direction * force_mag
-        for ax in 0..3 {
-            if model.flexvert_invmass[v0] > 0.0 {
+        if dof0 < model.nv {
+            for ax in 0..3 {
                 data.qfrc_constraint[dof0 + ax] += -direction[ax] * force_mag;
             }
-            if model.flexvert_invmass[v1] > 0.0 {
+        }
+        if dof1 < model.nv {
+            for ax in 0..3 {
                 data.qfrc_constraint[dof1 + ax] += direction[ax] * force_mag;
             }
         }
@@ -15405,9 +15613,10 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
 
         let sr = contact.solref;
         let si = contact.solimp;
-        // Contact margin is 0.0 for now — margin/gap not yet applied at contact creation
-        // (see line 4876 note). When non-zero geom_margin is supported, subtract it here.
-        let margin = 0.0_f64;
+        // includemargin = margin - gap, computed at contact creation.
+        // Flows into compute_impedance (violation threshold) and compute_aref
+        // (reference acceleration offset).
+        let margin = contact.includemargin;
         let is_elliptic = dim >= 3 && model.cone == 1 && contact.mu[0] >= 1e-10;
         let ctype = if is_elliptic {
             ConstraintType::ContactElliptic
@@ -15420,8 +15629,9 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
                 data.efc_J[(row, col)] = cj[(r, col)];
             }
 
-            // pos: row 0 = penetration depth, rows 1+ = 0
-            let pos = if r == 0 { contact.depth } else { 0.0 };
+            // pos: row 0 = signed distance (MuJoCo convention: negative = penetrating),
+            // rows 1+ = 0. Negate depth (positive = penetrating) to match MuJoCo's dist.
+            let pos = if r == 0 { -contact.depth } else { 0.0 };
             let margin_r = if r == 0 { margin } else { 0.0 };
 
             // vel: J_row · qvel
@@ -15465,16 +15675,31 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
         let pos_error = dist - rest_len; // positive = stretched, negative = compressed
 
         // Jacobian: ∂C/∂x_v0 = -direction, ∂C/∂x_v1 = +direction
+        // (§27F) Pinned vertices (dofadr=usize::MAX) have zero Jacobian columns.
         let dof0 = model.flexvert_dofadr[v0];
         let dof1 = model.flexvert_dofadr[v1];
-        for k in 0..3 {
-            data.efc_J[(row, dof0 + k)] = -direction[k];
-            data.efc_J[(row, dof1 + k)] = direction[k];
+        if dof0 != usize::MAX {
+            for k in 0..3 {
+                data.efc_J[(row, dof0 + k)] = -direction[k];
+            }
+        }
+        if dof1 != usize::MAX {
+            for k in 0..3 {
+                data.efc_J[(row, dof1 + k)] = direction[k];
+            }
         }
 
         // Velocity: relative velocity projected onto edge direction
-        let vel0 = Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2]);
-        let vel1 = Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2]);
+        let vel0 = if dof0 == usize::MAX {
+            Vector3::zeros()
+        } else {
+            Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2])
+        };
+        let vel1 = if dof1 == usize::MAX {
+            Vector3::zeros()
+        } else {
+            Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2])
+        };
         let vel_error = (vel1 - vel0).dot(&direction);
 
         finalize_row!(
@@ -17001,35 +17226,13 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
     // === PER-STEP MEANINERTIA (Phase C) ===
     // More accurate than model-level constant for configuration-dependent inertia.
     // O(nv) — free since qM is already filled by CRBA this step.
-    // IMPORTANT: Skip pinned flex vertex DOFs (invmass == 0 → mass ≈ 1e20).
-    // Their huge mass would dominate meaninertia, collapsing the Newton
-    // convergence scale to near-zero and causing premature convergence.
+    // (§27F) Pinned flex vertices have no DOFs — no need to skip them.
     let meaninertia = if nv > 0 {
-        // Build a set of pinned DOF indices for fast lookup
-        let mut pinned_dofs = vec![false; nv];
-        for i in 0..model.nflexvert {
-            if model.flexvert_invmass[i] == 0.0 {
-                let dof_base = model.flexvert_dofadr[i];
-                for k in 0..3 {
-                    if dof_base + k < nv {
-                        pinned_dofs[dof_base + k] = true;
-                    }
-                }
-            }
-        }
         let mut trace = 0.0_f64;
-        let mut count = 0usize;
         for i in 0..nv {
-            if !pinned_dofs[i] {
-                trace += data.qM[(i, i)];
-                count += 1;
-            }
+            trace += data.qM[(i, i)];
         }
-        let mi = if count > 0 {
-            trace / count as f64
-        } else {
-            model.stat_meaninertia
-        };
+        let mi = trace / nv as f64;
         if mi > 0.0 { mi } else { model.stat_meaninertia }
     } else {
         model.stat_meaninertia
@@ -19514,8 +19717,12 @@ fn compute_point_velocity(data: &Data, body_id: usize, point: Vector3<f64>) -> V
 /// Compute the velocity of a flex vertex from `qvel`.
 ///
 /// Flex vertices have 3 translational DOFs (no angular velocity).
+/// Pinned vertices (dofadr = usize::MAX) return zero velocity.
 fn compute_flex_vertex_velocity(model: &Model, data: &Data, vertex_idx: usize) -> Vector3<f64> {
     let dof_base = model.flexvert_dofadr[vertex_idx];
+    if dof_base == usize::MAX {
+        return Vector3::zeros(); // Pinned vertex: fixed in place
+    }
     Vector3::new(
         data.qvel[dof_base],
         data.qvel[dof_base + 1],
@@ -19734,10 +19941,13 @@ fn apply_solved_contact_lambda(
         // Flex-rigid: vertex DOFs get direct force, rigid body gets reaction.
         // Narrowphase normal points FROM rigid surface TOWARD flex vertex.
         // Vertex (body2) gets +world_force, rigid (body1) gets -world_force.
+        // (§27F) Pinned vertices have no DOFs — contact force is absorbed by the ground.
         let dof_base = model.flexvert_dofadr[vertex_idx];
-        data.qfrc_constraint[dof_base] += world_force.x;
-        data.qfrc_constraint[dof_base + 1] += world_force.y;
-        data.qfrc_constraint[dof_base + 2] += world_force.z;
+        if dof_base != usize::MAX {
+            data.qfrc_constraint[dof_base] += world_force.x;
+            data.qfrc_constraint[dof_base + 1] += world_force.y;
+            data.qfrc_constraint[dof_base + 2] += world_force.z;
+        }
 
         let rigid_body = model.geom_body[contact.geom1];
         apply_contact_force(model, data, rigid_body, contact.pos, -world_force);
@@ -20606,20 +20816,8 @@ fn mj_integrate_pos(model: &Model, data: &mut Data, h: f64) {
     model.visit_joints(&mut visitor);
 }
 
-/// Position integration for flex vertices: qpos += qvel * h.
-/// Trivial linear update (no quaternions, no SO(3) manifold).
-fn mj_integrate_pos_flex(model: &Model, data: &mut Data, h: f64) {
-    for i in 0..model.nflexvert {
-        if model.flexvert_invmass[i] == 0.0 {
-            continue; // Pinned vertex: skip integration
-        }
-        let dof_base = model.flexvert_dofadr[i];
-        let qpos_base = model.flexvert_qposadr[i];
-        for k in 0..3 {
-            data.qpos[qpos_base + k] += h * data.qvel[dof_base + k];
-        }
-    }
-}
+// mj_integrate_pos_flex DELETED (§27F): Flex vertices now have slide joints.
+// Standard mj_integrate_pos handles slide joint position integration.
 
 /// Visitor for position integration that handles different joint types.
 struct PositionIntegrateVisitor<'a> {
@@ -21059,18 +21257,8 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
             h,
         );
 
-        // 2c-flex. Flex vertex positions: linear update from saved state
-        for vi in 0..model.nflexvert {
-            if model.flexvert_invmass[vi] == 0.0 {
-                continue; // Pinned vertex
-            }
-            let qpos_base = model.flexvert_qposadr[vi];
-            let dof_base = model.flexvert_dofadr[vi];
-            for k in 0..3 {
-                data.rk4_qpos_stage[qpos_base + k] =
-                    data.rk4_qpos_saved[qpos_base + k] + h * data.rk4_dX_vel[dof_base + k];
-            }
-        }
+        // (§27F) Flex vertex positions now integrated by mj_integrate_pos_explicit
+        // above — slide joints are handled by the standard manifold integration path.
 
         // 2d. Velocity (linear): X[i].qvel = X[0].qvel + h * dX_acc
         // Use split_at_mut for borrow-checker disjointness on rk4_qvel.
@@ -21152,18 +21340,7 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
         h,
     );
 
-    // Flex vertex positions: linear update from saved state using weighted velocity
-    for vi in 0..model.nflexvert {
-        if model.flexvert_invmass[vi] == 0.0 {
-            continue; // Pinned vertex
-        }
-        let qpos_base = model.flexvert_qposadr[vi];
-        let dof_base = model.flexvert_dofadr[vi];
-        for k in 0..3 {
-            data.qpos[qpos_base + k] =
-                data.rk4_qpos_saved[qpos_base + k] + h * data.rk4_dX_vel[dof_base + k];
-        }
-    }
+    // (§27F) Flex vertex positions now integrated by mj_integrate_pos_explicit above.
 
     mj_normalize_quat(model, data);
 
@@ -21229,6 +21406,8 @@ mod primitive_collision_tests {
         model.geom_name = vec![None; ngeom];
         model.geom_rbound = vec![1.0; ngeom];
         model.geom_mesh = vec![None; ngeom]; // No mesh geoms in test helper
+        model.geom_priority = vec![0; ngeom];
+        model.geom_solmix = vec![1.0; ngeom];
         model
     }
 
@@ -21268,6 +21447,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Cylinder should contact plane");
@@ -21302,6 +21482,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(
@@ -21382,6 +21563,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Tilted cylinder should contact plane");
@@ -21421,6 +21603,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(
@@ -21467,6 +21650,7 @@ mod primitive_collision_tests {
             ell_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Ellipsoid (sphere) should contact plane");
@@ -21502,6 +21686,7 @@ mod primitive_collision_tests {
             ell_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Tall ellipsoid should contact plane");
@@ -21536,6 +21721,7 @@ mod primitive_collision_tests {
             ell_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Wide ellipsoid should contact plane");
@@ -21603,6 +21789,7 @@ mod primitive_collision_tests {
             ell_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(contact.is_some(), "Rotated ellipsoid should contact plane");
@@ -21637,6 +21824,7 @@ mod primitive_collision_tests {
             ell_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         assert!(
@@ -21675,6 +21863,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         );
 
         // Should still detect contact at the bottom rim
@@ -21712,6 +21901,7 @@ mod primitive_collision_tests {
             cyl_mat,
             model.geom_size[0],
             model.geom_size[1],
+            0.0, // margin
         )
         .expect("should have contact");
 
@@ -21957,6 +22147,8 @@ mod sensor_tests {
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
         model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
         model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
         model.geom_solref.push([0.02, 1.0]);
         model.geom_name.push(None);
@@ -22359,6 +22551,8 @@ mod sensor_tests {
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
         model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
         model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
         model.geom_solref.push([0.02, 1.0]);
         model.geom_name.push(None);
@@ -22420,6 +22614,8 @@ mod sensor_tests {
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
         model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
         model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
         model.geom_solref.push([0.02, 1.0]);
         model.geom_name.push(None);
@@ -22972,6 +23168,8 @@ mod sensor_tests {
         model.geom_conaffinity.push(1);
         model.geom_margin.push(0.0);
         model.geom_gap.push(0.0);
+        model.geom_priority.push(0);
+        model.geom_solmix.push(1.0);
         model.geom_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]);
         model.geom_solref.push([0.02, 1.0]);
         model.geom_name.push(None);
@@ -24238,7 +24436,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24278,7 +24476,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24340,7 +24538,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24370,7 +24568,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24425,7 +24623,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24492,7 +24690,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.5,
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.5, 0.5, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24526,7 +24724,7 @@ mod cg_solver_unit_tests {
             geom2: 0,
             friction: 0.0, // Frictionless
             dim: 3,
-            includemargin: false,
+            includemargin: 0.0,
             mu: [0.0, 0.0, 0.0, 0.0, 0.0],
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
@@ -24843,5 +25041,433 @@ mod jac_site_tests {
         for k in 0..3 {
             assert_relative_eq!(jac_r[(k, 0)], 0.0, epsilon = 1e-14);
         }
+    }
+}
+
+// =============================================================================
+// Unit tests — contact_param (#24–#27) Batch 1 contact parameter combination
+// =============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod contact_param_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Helper to create a Model with two geoms and configurable contact fields.
+    fn make_two_geom_model() -> Model {
+        let mut model = Model::empty();
+        model.ngeom = 2;
+        model.geom_type = vec![GeomType::Sphere; 2];
+        model.geom_body = vec![0; 2];
+        model.geom_pos = vec![Vector3::zeros(); 2];
+        model.geom_quat = vec![UnitQuaternion::identity(); 2];
+        model.geom_size = vec![Vector3::new(1.0, 1.0, 1.0); 2];
+        model.geom_name = vec![None; 2];
+        model.geom_rbound = vec![1.0; 2];
+        model.geom_mesh = vec![None; 2];
+        model.geom_contype = vec![1; 2];
+        model.geom_conaffinity = vec![1; 2];
+
+        // Defaults matching MuJoCo
+        model.geom_friction = vec![Vector3::new(1.0, 0.005, 0.0001); 2];
+        model.geom_condim = vec![3; 2];
+        model.geom_solref = vec![[0.02, 1.0]; 2];
+        model.geom_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 2];
+        model.geom_priority = vec![0; 2];
+        model.geom_solmix = vec![1.0; 2];
+        model.geom_margin = vec![0.0; 2];
+        model.geom_gap = vec![0.0; 2];
+        model
+    }
+
+    // ========================================================================
+    // #24 — Friction combination: element-wise max (NOT geometric mean)
+    // ========================================================================
+
+    #[test]
+    fn friction_uses_element_wise_max() {
+        // AC1: Asymmetric friction → max wins, not geometric mean
+        let mut model = make_two_geom_model();
+        model.geom_friction[0] = Vector3::new(0.8, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.2, 0.05, 0.003);
+
+        let (_condim, _gap, _solref, _solimp, mu) = contact_param(&model, 0, 1);
+
+        // Element-wise max: slide=max(0.8,0.2)=0.8, spin=max(0.01,0.05)=0.05, roll=max(0.001,0.003)=0.003
+        assert_relative_eq!(mu[0], 0.8, epsilon = 1e-15); // sliding1
+        assert_relative_eq!(mu[1], 0.8, epsilon = 1e-15); // sliding2
+        assert_relative_eq!(mu[2], 0.05, epsilon = 1e-15); // torsional
+        assert_relative_eq!(mu[3], 0.003, epsilon = 1e-15); // rolling1
+        assert_relative_eq!(mu[4], 0.003, epsilon = 1e-15); // rolling2
+
+        // Verify NOT geometric mean: sqrt(0.8*0.2) ≈ 0.4, which != 0.8
+        assert!((mu[0] - (0.8_f64 * 0.2).sqrt()).abs() > 0.01);
+    }
+
+    #[test]
+    fn friction_symmetric_equal() {
+        // AC2: Equal friction → max = same value
+        let mut model = make_two_geom_model();
+        model.geom_friction[0] = Vector3::new(0.5, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.5, 0.01, 0.001);
+
+        let (_, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        assert_relative_eq!(mu[0], 0.5, epsilon = 1e-15);
+        assert_relative_eq!(mu[2], 0.01, epsilon = 1e-15);
+        assert_relative_eq!(mu[3], 0.001, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn friction_zero_one_geom() {
+        // AC3: One geom zero friction → max picks the other
+        let mut model = make_two_geom_model();
+        model.geom_friction[0] = Vector3::new(0.0, 0.0, 0.0);
+        model.geom_friction[1] = Vector3::new(0.6, 0.02, 0.002);
+
+        let (_, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        assert_relative_eq!(mu[0], 0.6, epsilon = 1e-15);
+        assert_relative_eq!(mu[2], 0.02, epsilon = 1e-15);
+        assert_relative_eq!(mu[3], 0.002, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn friction_3_to_5_unpack() {
+        // Verify 3→5 unpack: [slide, slide, spin, roll, roll]
+        let mut model = make_two_geom_model();
+        model.geom_friction[0] = Vector3::new(0.7, 0.03, 0.004);
+        model.geom_friction[1] = Vector3::new(0.1, 0.01, 0.001);
+
+        let (_, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        assert_relative_eq!(mu[0], mu[1], epsilon = 1e-15); // sliding1 == sliding2
+        assert_relative_eq!(mu[3], mu[4], epsilon = 1e-15); // rolling1 == rolling2
+        assert!((mu[0] - mu[2]).abs() > 1e-10); // sliding != torsional
+        assert!((mu[2] - mu[3]).abs() > 1e-10); // torsional != rolling
+    }
+
+    #[test]
+    fn friction_not_affected_by_solmix() {
+        // AC4: Solmix weight does NOT affect friction (only affects solref/solimp)
+        let mut model = make_two_geom_model();
+        model.geom_friction[0] = Vector3::new(0.3, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.9, 0.05, 0.005);
+        model.geom_solmix[0] = 100.0; // Extreme weight toward geom 0
+        model.geom_solmix[1] = 0.001;
+
+        let (_, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        // Friction should still be element-wise max, regardless of solmix
+        assert_relative_eq!(mu[0], 0.9, epsilon = 1e-15);
+        assert_relative_eq!(mu[2], 0.05, epsilon = 1e-15);
+        assert_relative_eq!(mu[3], 0.005, epsilon = 1e-15);
+    }
+
+    // ========================================================================
+    // #25 — Priority gating: higher priority wins verbatim
+    // ========================================================================
+
+    #[test]
+    fn priority_higher_wins_verbatim() {
+        // AC1: Higher priority geom's params copied verbatim, no combination
+        let mut model = make_two_geom_model();
+        model.geom_priority[0] = 5;
+        model.geom_priority[1] = 0;
+        model.geom_friction[0] = Vector3::new(0.3, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.9, 0.05, 0.005);
+        model.geom_condim[0] = 1;
+        model.geom_condim[1] = 6;
+        model.geom_solref[0] = [0.01, 0.5];
+        model.geom_solref[1] = [0.05, 2.0];
+        model.geom_solimp[0] = [0.8, 0.9, 0.002, 0.4, 1.5];
+        model.geom_solimp[1] = [0.95, 0.99, 0.01, 0.6, 3.0];
+
+        let (condim, _gap, solref, solimp, mu) = contact_param(&model, 0, 1);
+
+        // Geom 0 wins (priority 5 > 0) — all params from geom 0
+        assert_eq!(condim, 1);
+        for (i, &expected) in [0.01, 0.5].iter().enumerate() {
+            assert_relative_eq!(solref[i], expected, epsilon = 1e-15);
+        }
+        for (i, &expected) in [0.8, 0.9, 0.002, 0.4, 1.5].iter().enumerate() {
+            assert_relative_eq!(solimp[i], expected, epsilon = 1e-15);
+        }
+        assert_relative_eq!(mu[0], 0.3, epsilon = 1e-15); // geom 0's friction
+    }
+
+    #[test]
+    fn priority_lower_index_can_lose() {
+        // AC2: Priority on geom2 > geom1 → geom2 wins
+        let mut model = make_two_geom_model();
+        model.geom_priority[0] = -1;
+        model.geom_priority[1] = 3;
+        model.geom_friction[0] = Vector3::new(0.9, 0.05, 0.005);
+        model.geom_friction[1] = Vector3::new(0.2, 0.01, 0.001);
+        model.geom_condim[0] = 6;
+        model.geom_condim[1] = 1;
+
+        let (condim, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        // Geom 1 wins (priority 3 > -1)
+        assert_eq!(condim, 1);
+        assert_relative_eq!(mu[0], 0.2, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn priority_equal_combines() {
+        // AC3: Equal priority → combination rules (not verbatim copy)
+        let mut model = make_two_geom_model();
+        model.geom_priority[0] = 2;
+        model.geom_priority[1] = 2;
+        model.geom_friction[0] = Vector3::new(0.3, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.9, 0.05, 0.005);
+        model.geom_condim[0] = 1;
+        model.geom_condim[1] = 4;
+
+        let (condim, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        // Equal priority → condim = max(1, 4) = 4
+        assert_eq!(condim, 4);
+        // Friction = max → 0.9 (not 0.3 verbatim)
+        assert_relative_eq!(mu[0], 0.9, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn priority_negative_values() {
+        // AC4: Negative priorities work correctly
+        let mut model = make_two_geom_model();
+        model.geom_priority[0] = -5;
+        model.geom_priority[1] = -2;
+        model.geom_condim[0] = 6;
+        model.geom_condim[1] = 1;
+
+        let (condim, _, _, _, _) = contact_param(&model, 0, 1);
+
+        // Geom 1 wins (priority -2 > -5) → condim from geom 1
+        assert_eq!(condim, 1);
+    }
+
+    #[test]
+    fn priority_gap_still_additive() {
+        // AC5: Gap is additive even when priority wins
+        let mut model = make_two_geom_model();
+        model.geom_priority[0] = 10;
+        model.geom_priority[1] = 0;
+        model.geom_gap[0] = 0.01;
+        model.geom_gap[1] = 0.02;
+
+        let (_, gap, _, _, _) = contact_param(&model, 0, 1);
+
+        // Gap is always additive regardless of priority
+        assert_relative_eq!(gap, 0.03, epsilon = 1e-15);
+    }
+
+    // ========================================================================
+    // #26 — Solmix: solver parameter mixing weight
+    // ========================================================================
+
+    #[test]
+    fn solmix_weight_equal_default() {
+        // AC1: Default solmix=1.0 → weight = 0.5 → equal average
+        let mix = solmix_weight(1.0, 1.0);
+        assert_relative_eq!(mix, 0.5, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solmix_weight_asymmetric() {
+        // AC2: solmix 3:1 → weight = 3/4 = 0.75 for entity 1
+        let mix = solmix_weight(3.0, 1.0);
+        assert_relative_eq!(mix, 0.75, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solmix_weight_both_below_minval() {
+        // AC3: Both below threshold → equal weight (0.5)
+        let mix = solmix_weight(1e-20, 1e-20);
+        assert_relative_eq!(mix, 0.5, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solmix_weight_one_below_minval() {
+        // AC4: s1 below threshold → entity 2 dominates (mix=0)
+        let mix = solmix_weight(0.0, 1.0);
+        assert_relative_eq!(mix, 0.0, epsilon = 1e-15);
+
+        // AC5: s2 below threshold → entity 1 dominates (mix=1)
+        let mix2 = solmix_weight(1.0, 0.0);
+        assert_relative_eq!(mix2, 1.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solmix_weight_exactly_at_minval() {
+        // Edge case: exactly at MJ_MINVAL boundary
+        let mix = solmix_weight(1e-15, 1e-15);
+        // Both at 1e-15 = MJ_MINVAL → both "valid" → s1/(s1+s2) = 0.5
+        assert_relative_eq!(mix, 0.5, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solref_combination_standard_mode() {
+        // AC6: Standard solref (both > 0) → weighted average
+        let sr1 = [0.01, 0.5];
+        let sr2 = [0.05, 2.0];
+        let mix = 0.75; // entity 1 dominates
+
+        let sr = combine_solref(sr1, sr2, mix);
+
+        // 0.75*0.01 + 0.25*0.05 = 0.0075 + 0.0125 = 0.02
+        assert_relative_eq!(sr[0], 0.02, epsilon = 1e-15);
+        // 0.75*0.5 + 0.25*2.0 = 0.375 + 0.5 = 0.875
+        assert_relative_eq!(sr[1], 0.875, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solref_combination_direct_mode() {
+        // AC7: Direct solref (at least one <= 0) → element-wise minimum
+        let sr1 = [-100.0, -5.0];
+        let sr2 = [-200.0, -3.0];
+        let mix = 0.5; // Should be ignored for direct mode
+
+        let sr = combine_solref(sr1, sr2, mix);
+
+        assert_relative_eq!(sr[0], -200.0, epsilon = 1e-15); // min(-100, -200)
+        assert_relative_eq!(sr[1], -5.0, epsilon = 1e-15); // min(-5, -3)
+    }
+
+    #[test]
+    fn solref_combination_mixed_mode_falls_to_direct() {
+        // AC8: One standard, one direct → direct mode (element-wise min)
+        let sr1 = [0.02, 1.0]; // standard (positive)
+        let sr2 = [-100.0, -5.0]; // direct (negative)
+
+        let sr = combine_solref(sr1, sr2, 0.5);
+
+        // At least one <= 0 → element-wise min
+        assert_relative_eq!(sr[0], -100.0, epsilon = 1e-15);
+        assert_relative_eq!(sr[1], -5.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solimp_combination_weighted_average() {
+        // AC9: Solimp always uses weighted average
+        let si1 = [0.8, 0.9, 0.002, 0.4, 1.5];
+        let si2 = [0.95, 0.99, 0.01, 0.6, 3.0];
+        let mix = 0.75;
+
+        let si = combine_solimp(si1, si2, mix);
+
+        for i in 0..5 {
+            let expected = 0.75 * si1[i] + 0.25 * si2[i];
+            assert_relative_eq!(si[i], expected, epsilon = 1e-15);
+        }
+    }
+
+    #[test]
+    fn solmix_affects_solref_solimp_not_friction() {
+        // AC10: Full integration — solmix weights affect solref/solimp but NOT friction
+        let mut model = make_two_geom_model();
+        model.geom_solmix[0] = 9.0;
+        model.geom_solmix[1] = 1.0;
+        // mix = 9/(9+1) = 0.9 → entity 0 has 90% weight
+
+        model.geom_solref[0] = [0.01, 0.5];
+        model.geom_solref[1] = [0.05, 2.0];
+        model.geom_solimp[0] = [0.8, 0.9, 0.002, 0.4, 1.5];
+        model.geom_solimp[1] = [0.95, 0.99, 0.01, 0.6, 3.0];
+        model.geom_friction[0] = Vector3::new(0.3, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.9, 0.05, 0.005);
+
+        let (_, _, solref, solimp, mu) = contact_param(&model, 0, 1);
+
+        // Solref: 0.9*0.01 + 0.1*0.05 = 0.009 + 0.005 = 0.014
+        assert_relative_eq!(solref[0], 0.014, epsilon = 1e-15);
+        // Solref[1]: 0.9*0.5 + 0.1*2.0 = 0.45 + 0.2 = 0.65
+        assert_relative_eq!(solref[1], 0.65, epsilon = 1e-15);
+
+        // Solimp: weighted average with mix=0.9
+        for i in 0..5 {
+            let expected = 0.9 * model.geom_solimp[0][i] + 0.1 * model.geom_solimp[1][i];
+            assert_relative_eq!(solimp[i], expected, epsilon = 1e-15);
+        }
+
+        // Friction: still element-wise max, NOT weighted
+        assert_relative_eq!(mu[0], 0.9, epsilon = 1e-15);
+        assert_relative_eq!(mu[2], 0.05, epsilon = 1e-15);
+        assert_relative_eq!(mu[3], 0.005, epsilon = 1e-15);
+    }
+
+    // ========================================================================
+    // #27 — Contact margin/gap
+    // ========================================================================
+
+    #[test]
+    fn gap_additive() {
+        // AC1: Gap is additive from both geoms
+        let mut model = make_two_geom_model();
+        model.geom_gap[0] = 0.01;
+        model.geom_gap[1] = 0.02;
+
+        let (_, gap, _, _, _) = contact_param(&model, 0, 1);
+
+        assert_relative_eq!(gap, 0.03, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn gap_default_zero() {
+        // AC2: Default gap=0.0 → no change to existing behavior
+        let model = make_two_geom_model();
+        let (_, gap, _, _, _) = contact_param(&model, 0, 1);
+
+        assert_relative_eq!(gap, 0.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn includemargin_equals_margin_minus_gap() {
+        // AC3: includemargin = margin - gap (tested via make_contact_from_geoms)
+        let mut model = make_two_geom_model();
+        model.geom_gap[0] = 0.005;
+        model.geom_gap[1] = 0.003;
+        // gap = 0.008
+
+        let margin = 0.02; // effective margin from broadphase
+        let contact =
+            make_contact_from_geoms(&model, Vector3::zeros(), Vector3::z(), 0.01, 0, 1, margin);
+
+        // includemargin = 0.02 - 0.008 = 0.012
+        assert_relative_eq!(contact.includemargin, 0.012, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn condim_max_combination() {
+        // Condim uses max when equal priority
+        let mut model = make_two_geom_model();
+        model.geom_condim[0] = 1;
+        model.geom_condim[1] = 4;
+
+        let (condim, _, _, _, _) = contact_param(&model, 0, 1);
+
+        assert_eq!(condim, 4);
+    }
+
+    #[test]
+    fn defaults_produce_standard_behavior() {
+        // AC4: All defaults → standard MuJoCo behavior
+        let model = make_two_geom_model();
+
+        let (condim, gap, solref, solimp, mu) = contact_param(&model, 0, 1);
+
+        assert_eq!(condim, 3);
+        assert_relative_eq!(gap, 0.0, epsilon = 1e-15);
+        for (i, &expected) in [0.02, 1.0].iter().enumerate() {
+            assert_relative_eq!(solref[i], expected, epsilon = 1e-15);
+        }
+        for (i, &expected) in [0.9, 0.95, 0.001, 0.5, 2.0].iter().enumerate() {
+            assert_relative_eq!(solimp[i], expected, epsilon = 1e-15);
+        }
+        assert_relative_eq!(mu[0], 1.0, epsilon = 1e-15);
+        assert_relative_eq!(mu[2], 0.005, epsilon = 1e-15);
+        assert_relative_eq!(mu[3], 0.0001, epsilon = 1e-15);
     }
 }

@@ -772,27 +772,17 @@ Called from both PGS and Newton penalty paths (before the iterative solve).
 
 ---
 
-**Constraint stiffness derivation** — during `build()`, compute edge solref
-from material properties. Currently a passthrough stub that uses the
-per-flex `solref` directly. The full material-derived per-edge solref
-(below) is deferred to a refinement pass:
+**Constraint stiffness derivation** — during `build()`, compute edge solref.
 
-```rust
-/// Derive edge constraint solref from Young's modulus and geometry.
-/// CURRENT: passthrough stub — returns flex.solref unchanged.
-/// FUTURE: per-edge derivation from material properties:
-///   solref[0] = natural period = 2π / ω, where ω = sqrt(k / m_eff)
-///   solref[1] = damping ratio from material damping
-fn compute_edge_solref_from_material(flex: &MjcfFlex) -> [f64; 2] {
-    // Full derivation (not yet implemented):
-    // let k_eff = young * cross_section / rest_len;
-    // let omega = (k_eff / mass_eff).sqrt();
-    // let period = 2.0 * PI / omega;
-    // let damping_ratio = damping / (2.0 * (k_eff * mass_eff).sqrt());
-    // [period, damping_ratio.clamp(0.0, 2.0)]
-    flex.solref // Passthrough: uses flex-level solref defaults
-}
-```
+**Correction (from #27C):** The original framing of material-derived per-edge
+solref was incorrect. MuJoCo does not derive edge constraint solref from
+Young's modulus. Instead: (1) edge constraints use eq_solref from the parent
+equality constraint, and (2) `<edge stiffness="..." damping="..."/>` drives
+passive spring-damper forces in `engine_passive.c`. See
+`future_work_7.md` #27C for details. The function has been renamed from
+`compute_edge_solref_from_material()` to `compute_edge_solref()` and is now
+a documented passthrough (using flex-level solref), not a stub awaiting
+material-derived implementation.
 
 ##### P7. Bending and Volume
 

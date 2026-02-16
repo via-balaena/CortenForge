@@ -418,7 +418,9 @@ geoms (sphere, box, capsule, cylinder, ellipsoid, plane, mesh), actuators
 (motor, position, velocity, general, muscle, cylinder, damper, adhesion),
 contype/conaffinity contact bitmasks, `<contact>` `<pair>`/`<exclude>` elements
 (two-mechanism collision architecture with per-pair parameter overrides),
-default class inheritance, `childclass` attribute (body/frame recursive
+default class inheritance with full Option<T> defaults system (`DefaultResolver`
+with four-stage pipeline: types → parser → merge → apply; 91+ defaultable
+fields across 8 element types), `childclass` attribute (body/frame recursive
 propagation with undefined-class validation), `<frame>` element (pose
 composition, childclass inheritance, recursive nesting),
 `<include>` file support, `<compiler>` element, and MJB binary format.

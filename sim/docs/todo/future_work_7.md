@@ -7,6 +7,37 @@ All items are prerequisites to #45 (MuJoCo Conformance Test Suite). This file
 covers inertia computation and the contact parameter combination layer — the
 foundation that all contact constraint assembly builds on.
 
+**Status:** ✅ All items complete (#23–27, #27B–F), including a comprehensive
+defaults system refactor completed alongside Batch 1.
+
+### Defaults System Refactor (completed alongside Batch 1)
+
+The contact parameter work exposed that the defaults system needed a full
+Option<T> refactoring pass for MuJoCo conformance. The refactor touched all
+four pipeline stages across four files (`types.rs`, `parser.rs`, `defaults.rs`,
+`model_builder.rs`) and covers all 8 element types:
+
+| Element | Defaultable Fields | Status |
+|---------|-------------------|--------|
+| Geom | 24 (type, friction, density, mass, rgba, contype/conaffinity/condim, priority, solmix, margin, gap, solref, solimp, group, pos, quat, euler, axisangle, xyaxes, zaxis, fromto, mesh, hfield, material) | ✅ Complete |
+| Joint | 14 (type, pos, axis, limited, range, ref_pos, spring_ref, damping, stiffness, armature, frictionloss, group, solref_limit, solimp_limit) | ✅ Complete |
+| Site | 11 (type, size, rgba, group, pos, quat, euler, axisangle, xyaxes, zaxis, material) | ✅ Complete |
+| Tendon | 13 (range, limited, stiffness, damping, frictionloss, springlength, width, rgba, group, solref, solimp, margin, material) | ✅ Complete |
+| Actuator | 18 (ctrlrange, forcerange, gear, kp, kv, ctrllimited, forcelimited, gaintype, biastype, dyntype, gainprm, biasprm, dynprm, group, actlimited, actrange, actearly, lengthrange) | ✅ Complete |
+| Sensor | 3 (noise, cutoff, user) | ✅ Complete |
+| Mesh | 1 (scale) | ✅ Complete |
+| Pair | 7 (condim, friction, solref, solreffriction, solimp, margin, gap) | ✅ Complete |
+
+**Key architectural changes:**
+- `MjcfGeom.pos/quat` → `Option<Vector3/Vector4>` (was concrete type)
+- `MjcfMesh.scale` → `Option<Vector3>` (was concrete type)
+- New fields on defaults structs: tendon solref/solimp/margin/material, actuator group/actlimited/actrange/actearly/lengthrange, geom fromto/mesh/hfield/material, site material
+- Model builder uses `unwrap_or(DEFAULT_SOLREF)` / `unwrap_or(DEFAULT_SOLIMP)` instead of hardcoded values
+
+**Remaining `#todo` items (in-code):**
+1. Actuator type-specific defaults (cylinder area/timeconst, muscle params) — MuJoCo supports these in `<default>` but they're not yet defaultable
+2. Sentinel-value detection for gear/kp/noise/cutoff should migrate to Option<T>
+
 ---
 
 ### 23. `<compiler>` `exactmeshinertia` + Full Inertia Tensor Pipeline
@@ -728,393 +759,3365 @@ Each step must compile and pass existing tests before proceeding.
 
 ---
 
-### 24. Friction Combination Rule: Geometric Mean → Element-Wise Max
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+## Batch 1 Interaction Model — Contact Parameter Combination (#24–#27)
 
-#### Current State
+Items #24–#27 all converge in a single MuJoCo function: `mj_contactParam()` in
+`engine_collision_driver.c`. Understanding this function as a whole is essential
+before specifying any individual item. This section documents the complete MuJoCo
+reference semantics, the shared control flow, the data flow through our codebase,
+and the shared test fixtures.
 
-There are two contact creation paths, each with its own friction combination:
+### MuJoCo Reference: `mj_contactParam()` — Complete Semantics
 
-1. **Rigid-rigid contacts** — `make_contact_from_geoms()` (`mujoco_pipeline.rs:6054`)
-   combines friction from two contacting geoms using **geometric mean**:
+MuJoCo's `mj_contactParam()` computes contact parameters (condim, gap, solref,
+solimp, friction) for a collision pair. It is called once per contact pair in
+`mj_collideGeoms()`, after narrow-phase collision detection, before contact
+finalization.
 
-   ```rust
-   let sliding = (f1.x * f2.x).sqrt();
-   let torsional = (f1.y * f2.y).sqrt();
-   let rolling = (f1.z * f2.z).sqrt();
-   ```
+**Inputs:** Two entities (geom or flex), identified by indices. Each provides:
+priority, condim, gap, solmix, solref[2], solimp[5], friction[3].
 
-2. **Flex-rigid contacts** — `make_contact_flex_rigid()` (`mujoco_pipeline.rs:5776`)
-   already uses **element-wise max** (correct):
+**Complete control flow** (from MuJoCo source):
 
-   ```rust
-   let sliding = flex_f.max(rigid_f.x);
-   let torsional = flex_f.max(rigid_f.y);
-   let rolling = flex_f.max(rigid_f.z);
-   ```
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. LOAD parameters from geom1/flex1 and geom2/flex2        │
+│     priority, condim, gap, solmix, solref, solimp, friction │
+├─────────────────────────────────────────────────────────────┤
+│  2. GAP: always additive                                    │
+│     gap = gap1 + gap2                                  #27  │
+├─────────────────────────────────────────────────────────────┤
+│  3. PRIORITY CHECK                                     #25  │
+│     if priority1 > priority2:                               │
+│       condim, solref, solimp, friction ← geom1 (verbatim)  │
+│       GOTO 6 (unpack friction)                              │
+│     if priority1 < priority2:                               │
+│       condim, solref, solimp, friction ← geom2 (verbatim)  │
+│       GOTO 6 (unpack friction)                              │
+│     // else: equal priority → fall through to combination   │
+├─────────────────────────────────────────────────────────────┤
+│  4. EQUAL PRIORITY — combine parameters                     │
+│     4a. condim = max(condim1, condim2)                      │
+│     4b. solmix weight:                                 #26  │
+│         if both >= mjMINVAL: mix = s1/(s1+s2)              │
+│         if both < mjMINVAL:  mix = 0.5                     │
+│         if only s1 < mjMINVAL: mix = 0.0                   │
+│         if only s2 < mjMINVAL: mix = 1.0                   │
+│     4c. solref combination:                            #26  │
+│         if solref1[0] > 0 AND solref2[0] > 0:             │
+│           solref[i] = mix*solref1[i] + (1-mix)*solref2[i]  │
+│         else (direct reference):                            │
+│           solref[i] = min(solref1[i], solref2[i])           │
+│     4d. solimp = mix*solimp1 + (1-mix)*solimp2        #26  │
+│     4e. friction[i] = max(friction1[i], friction2[i]) #24  │
+├─────────────────────────────────────────────────────────────┤
+│  5. UNPACK 3→5 friction                                     │
+│     mu[0]=fri[0], mu[1]=fri[0],                             │
+│     mu[2]=fri[1],                                           │
+│     mu[3]=fri[2], mu[4]=fri[2]                              │
+├─────────────────────────────────────────────────────────────┤
+│  6. SET on contact:                                         │
+│     includemargin = margin - gap                       #27  │
+│     exclude = (dist >= includemargin)                  #27  │
+└─────────────────────────────────────────────────────────────┘
+```
 
-   Flex contacts combine a scalar `flex_friction[flex_id]` with the rigid geom's
-   per-axis friction vector. Since `geom1 = geom2 = rigid_geom_idx` and the
-   vertex index is stored in `flex_vertex: Option<usize>`, there is only one
-   rigid geom involved — the combination is flex material vs. rigid geom.
+**Key constants:**
+- `mjMINVAL ≈ 1e-15` — threshold for treating solmix as zero
+- `mjNREF = 2` — solref array length
+- `mjNIMP = 5` — solimp array length
 
-MuJoCo uses **element-wise maximum** (when geom priorities are equal):
+### MuJoCo Reference: Margin/Gap Pipeline (#27)
 
-```c
-// engine_collision_driver.c — mj_contactParam()
-for (int i=0; i < 3; i++) {
-    fri[i] = mju_max(friction1[i], friction2[i]);
+Margin and gap flow through the entire collision pipeline, not just `mj_contactParam()`:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  BROADPHASE: AABB expansion                                      │
+│  makeAAMM() expands bounding box by geom_margin[i] per geom.    │
+│  This ensures margin-separated geom pairs enter narrow-phase.    │
+├──────────────────────────────────────────────────────────────────┤
+│  MIDPHASE: Bounding sphere filter                                │
+│  mj_filterSphere(): dist > rbound1 + rbound2 + margin → skip   │
+│  margin = geom_margin[g1] + geom_margin[g2]  (or pair.margin)   │
+├──────────────────────────────────────────────────────────────────┤
+│  NARROW-PHASE: Collision functions receive margin parameter      │
+│  collisionFunc(m, d, con, g1, g2, margin)                        │
+│  Functions return contacts when dist < margin (surfaces may be   │
+│  separated). con->dist is signed distance (negative = overlap).  │
+├──────────────────────────────────────────────────────────────────┤
+│  CONTACT CREATION: mj_setContact()                               │
+│  con->includemargin = margin - gap                               │
+│  con->exclude = (con->dist >= includemargin)                     │
+│  Excluded contacts exist in the array but generate no constraint │
+│  rows — they are "gap-buffered" contacts.                        │
+├──────────────────────────────────────────────────────────────────┤
+│  CONSTRAINT ASSEMBLY: mj_instantiateContact()                    │
+│  efc_pos[row] = con->dist                                        │
+│  efc_margin[row] = con->includemargin                            │
+│  getimpedance(): x = (pos - margin) / solimp[2]                 │
+│  aref = -b*vel - k*imp*(pos - margin)                            │
+│  Margin shifts the constraint equilibrium: zero force at         │
+│  dist = includemargin, force onset for dist < includemargin.     │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Our Codebase: Current State
+
+**Contact parameter combination** lives in `mujoco_pipeline.rs`:
+
+| Function | Lines | What It Does | Status |
+|----------|-------|-------------|--------|
+| `make_contact_from_geoms()` | 6054–6089 | Rigid-rigid contact creation | Friction uses geometric mean (BUG) |
+| `make_contact_flex_rigid()` | 5776–5828 | Flex-rigid contact creation | Friction uses element-wise max (correct) |
+| `combine_solver_params()` | 2091–2110 | Combine solref/solimp | Uses min/max (no solmix weighting) |
+| `apply_pair_overrides()` | 6021–6043 | Override from `<contact><pair>` | Skips margin/gap |
+| `collide_geoms()` dispatcher | ~5833 | Routes to type-specific collider | No margin parameter |
+| Broadphase (automatic) | 5500–5535 | SAP + affinity filter | No margin in AABB expansion |
+| Broadphase (explicit pairs) | 5537–5573 | Distance cull + collision | Uses `pair.margin` in distance cull |
+| `assemble_contact_system()` | ~15410 | Contact → constraint rows | `margin` hardcoded to `0.0` |
+| `compute_aref()` | 14911–14913 | Reference acceleration | Signature correct, receives `0.0` |
+| `compute_impedance()` | 14685–14744 | Position-dependent impedance | Receives `violation` (no margin offset) |
+
+**Model fields:**
+
+| Field | Exists? | Parsed from `<geom>`? | Used at Runtime? |
+|-------|---------|----------------------|-----------------|
+| `geom_friction: Vec<Vector3<f64>>` | ✅ | ✅ | ✅ (geometric mean — BUG) |
+| `geom_solref: Vec<[f64; 2]>` | ✅ | ✅ | ✅ (element-wise min) |
+| `geom_solimp: Vec<[f64; 5]>` | ✅ | ✅ | ✅ (element-wise max) |
+| `geom_condim: Vec<i32>` | ✅ | ✅ | ✅ (max) |
+| `geom_margin: Vec<f64>` | ✅ | ❌ (zeroed) | ❌ (ignored) |
+| `geom_gap: Vec<f64>` | ✅ | ❌ (zeroed) | ❌ (ignored) |
+| `geom_priority: Vec<i32>` | ❌ | — | — |
+| `geom_solmix: Vec<f64>` | ❌ | — | — |
+
+**MJCF parsing** (`parser.rs` / `model_builder.rs` / `types.rs`):
+
+| Attribute | In `MjcfGeom` struct? | Parsed? | In defaults cascade? |
+|-----------|----------------------|---------|---------------------|
+| `friction` | ✅ `Vector3<f64>` | ✅ | ✅ |
+| `solref` | ✅ `Option<[f64; 2]>` | ✅ | ❌ |
+| `solimp` | ✅ `Option<[f64; 5]>` | ✅ | ❌ |
+| `condim` | ✅ `i32` | ✅ | ❌ (only contype/conaffinity cascade) |
+| `margin` | ❌ | ❌ | ❌ |
+| `gap` | ❌ | ❌ | ❌ |
+| `priority` | ❌ | ❌ | ❌ |
+| `solmix` | ❌ | ❌ | ❌ |
+
+**Contact struct** (`mujoco_pipeline.rs:1862–1896`):
+
+| Field | Type | Status |
+|-------|------|--------|
+| `includemargin` | `bool` | Always `false`. Needs to become `f64` (#27). |
+| `mu` | `[f64; 5]` | Populated from combination rule. |
+| `solref` | `[f64; 2]` | Populated from `combine_solver_params()`. |
+| `solimp` | `[f64; 5]` | Populated from `combine_solver_params()`. |
+| `depth` | `f64` | Penetration depth (positive = overlap). |
+
+### Unified Refactoring Target: `contact_param()`
+
+All four items converge on creating a **single** `contact_param()` function that
+mirrors MuJoCo's `mj_contactParam()`. Rather than patching four pieces into
+three existing functions, we extract the parameter combination into one function:
+
+```rust
+/// Contact parameter combination — MuJoCo `mj_contactParam()` equivalent.
+///
+/// Computes combined contact parameters from two geoms.
+/// Handles priority (#25), solmix (#26), friction max (#24), and gap (#27).
+///
+/// Returns: (condim, gap, solref, solimp, friction[5])
+fn contact_param(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+) -> (i32, f64, [f64; 2], [f64; 5], [f64; 5]) {
+    // 1. Load parameters
+    let priority1 = model.geom_priority[geom1];
+    let priority2 = model.geom_priority[geom2];
+    let gap = model.geom_gap[geom1] + model.geom_gap[geom2];
+
+    // 2. Priority check
+    if priority1 != priority2 {
+        let winner = if priority1 > priority2 { geom1 } else { geom2 };
+        let fri = model.geom_friction[winner];
+        return (
+            model.geom_condim[winner],
+            gap,
+            model.geom_solref[winner],
+            model.geom_solimp[winner],
+            [fri.x, fri.x, fri.y, fri.z, fri.z],  // 3→5 unpack
+        );
+    }
+
+    // 3. Equal priority — combine
+    let condim = model.geom_condim[geom1].max(model.geom_condim[geom2]);
+
+    // 3a. Solmix weight
+    let s1 = model.geom_solmix[geom1];
+    let s2 = model.geom_solmix[geom2];
+    let mix = solmix_weight(s1, s2);
+
+    // 3b. Solref combination
+    let solref1 = model.geom_solref[geom1];
+    let solref2 = model.geom_solref[geom2];
+    let solref = if solref1[0] > 0.0 && solref2[0] > 0.0 {
+        // Standard reference: weighted average
+        [mix * solref1[0] + (1.0 - mix) * solref2[0],
+         mix * solref1[1] + (1.0 - mix) * solref2[1]]
+    } else {
+        // Direct reference: element-wise min
+        [solref1[0].min(solref2[0]), solref1[1].min(solref2[1])]
+    };
+
+    // 3c. Solimp: weighted average
+    let solimp1 = model.geom_solimp[geom1];
+    let solimp2 = model.geom_solimp[geom2];
+    let solimp = std::array::from_fn(|i| mix * solimp1[i] + (1.0 - mix) * solimp2[i]);
+
+    // 3d. Friction: element-wise max
+    let f1 = model.geom_friction[geom1];
+    let f2 = model.geom_friction[geom2];
+    let fri = [f1.x.max(f2.x), f1.x.max(f2.x),   // sliding1, sliding2
+               f1.y.max(f2.y),                      // torsional
+               f1.z.max(f2.z), f1.z.max(f2.z)];    // rolling1, rolling2
+
+    (condim, gap, solref, solimp, fri)
+}
+
+/// Compute solmix weight, matching MuJoCo's edge-case handling.
+/// Returns weight for geom1 (geom2 weight = 1 - mix).
+fn solmix_weight(s1: f64, s2: f64) -> f64 {
+    const MJ_MINVAL: f64 = 1e-15;
+    if s1 >= MJ_MINVAL && s2 >= MJ_MINVAL {
+        s1 / (s1 + s2)
+    } else if s1 < MJ_MINVAL && s2 < MJ_MINVAL {
+        0.5
+    } else if s1 < MJ_MINVAL {
+        0.0  // geom2 dominates
+    } else {
+        1.0  // geom1 dominates
+    }
 }
 ```
 
-This divergence was documented as "known non-conformance" in `future_work_2.md`
-(Decision D3) and explicitly deferred: "better done as a deliberate conformance
-task with before/after validation, not buried in a condim refactor."
+This function replaces:
+- The friction combination in `make_contact_from_geoms()` (currently geometric mean)
+- The `combine_solver_params()` function (currently min/max, no solmix)
+- Adds priority gating (currently absent)
+- Adds gap combination (currently absent)
 
-**Impact:** Every rigid-rigid contact between geoms with asymmetric friction
-values produces wrong friction coefficients. Flex-rigid contacts are already
-correct. This affects every trajectory comparison test involving rigid-rigid
-contacts.
+**`make_contact_from_geoms()` becomes a thin wrapper:**
 
-#### Objective
+```rust
+fn make_contact_from_geoms(
+    model: &Model,
+    pos: Vector3<f64>,
+    normal: Vector3<f64>,
+    depth: f64,
+    geom1: usize,
+    geom2: usize,
+    margin: f64,  // #27: effective margin for this pair
+) -> Contact {
+    let (condim, gap, solref, solimp, mu) = contact_param(model, geom1, geom2);
+    let includemargin = margin - gap;
 
-Switch rigid-rigid friction combination from geometric mean to element-wise max,
-matching MuJoCo's `mj_contactParam()` behavior for equal-priority geoms.
-Flex-rigid contacts (`make_contact_flex_rigid()`) already use `max()` — no
-change needed there.
+    Contact::with_condim_full(
+        pos, normal, depth, geom1, geom2, mu, condim, solref, solimp, includemargin,
+    )
+}
+```
+
+**`make_contact_flex_rigid()` gets an equivalent `contact_param_flex_rigid()`:**
+
+MuJoCo's `mj_contactParam()` is entity-agnostic: it uses `(f1 < 0) ? geom_* : flex_*`
+to select parameter sources. Our implementation splits into two functions (geom-geom
+and flex-rigid) rather than using sentinel indices, which is more Rust-idiomatic.
+
+**New Model fields required** (add alongside `flex_friction`, `flex_solref`, etc.):
+- `flex_priority: Vec<i32>` — per-flex contact priority (default 0)
+- `flex_solmix: Vec<f64>` — per-flex solver mix weight (default 1.0)
+- `flex_gap: Vec<f64>` — per-flex contact gap (default 0.0)
+- `flex_friction` upgrade: `Vec<f64>` → `Vec<Vector3<f64>>` — per-flex 3-component
+  friction `[slide, spin, roll]` (MuJoCo stores `nflex x 3`; our current scalar is
+  a simplification that loses torsional/rolling data)
+
+**Note:** Until `flex_friction` is upgraded to `Vec<Vector3<f64>>`, the function uses
+the scalar value for all three components (matching the current `make_contact_flex_rigid`
+behavior at line 5787–5791).
+
+```rust
+/// Compute combined contact parameters for a flex-rigid collision pair.
+///
+/// Mirrors `contact_param()` for geom-geom pairs, but reads flex_* fields
+/// for the flex entity and geom_* fields for the rigid entity. Follows
+/// MuJoCo's `mj_contactParam()` with f1=flex_id, f2=-1 (geom).
+///
+/// Returns: (condim, gap, solref, solimp, friction[5])
+fn contact_param_flex_rigid(
+    model: &Model,
+    flex_id: usize,
+    geom_idx: usize,
+) -> (i32, f64, [f64; 2], [f64; 5], [f64; 5]) {
+    // 1. Load parameters from both entities
+    let priority_flex = model.flex_priority[flex_id];
+    let priority_geom = model.geom_priority[geom_idx];
+    let gap = model.flex_gap[flex_id] + model.geom_gap[geom_idx];
+
+    // 2. Priority check — higher priority entity's params win entirely
+    if priority_flex > priority_geom {
+        let f = model.flex_friction[flex_id]; // scalar until Vec<Vector3> upgrade
+        return (
+            model.flex_condim[flex_id],
+            gap,
+            model.flex_solref[flex_id],
+            model.flex_solimp[flex_id],
+            [f, f, f, f, f],  // scalar → uniform 5-element unpack
+        );
+    }
+    if priority_geom > priority_flex {
+        let f = model.geom_friction[geom_idx];
+        return (
+            model.geom_condim[geom_idx],
+            gap,
+            model.geom_solref[geom_idx],
+            model.geom_solimp[geom_idx],
+            [f.x, f.x, f.y, f.z, f.z],  // 3→5 unpack
+        );
+    }
+
+    // 3. Equal priority — combine
+    let condim = model.flex_condim[flex_id].max(model.geom_condim[geom_idx]);
+
+    // 3a. Solmix weight (flex is entity 1, geom is entity 2)
+    let s1 = model.flex_solmix[flex_id];
+    let s2 = model.geom_solmix[geom_idx];
+    let mix = solmix_weight(s1, s2);
+
+    // 3b. Solref combination
+    let solref1 = model.flex_solref[flex_id];
+    let solref2 = model.geom_solref[geom_idx];
+    let solref = if solref1[0] > 0.0 && solref2[0] > 0.0 {
+        [mix * solref1[0] + (1.0 - mix) * solref2[0],
+         mix * solref1[1] + (1.0 - mix) * solref2[1]]
+    } else {
+        [solref1[0].min(solref2[0]), solref1[1].min(solref2[1])]
+    };
+
+    // 3c. Solimp: weighted average
+    let solimp1 = model.flex_solimp[flex_id];
+    let solimp2 = model.geom_solimp[geom_idx];
+    let solimp = std::array::from_fn(|i| mix * solimp1[i] + (1.0 - mix) * solimp2[i]);
+
+    // 3d. Friction: element-wise max
+    // Flex friction is currently scalar (applied to all components).
+    // When upgraded to Vec<Vector3<f64>>, use flex_friction[flex_id].x/.y/.z.
+    let ff = model.flex_friction[flex_id];
+    let gf = model.geom_friction[geom_idx];
+    let fri = [ff.max(gf.x), ff.max(gf.x),   // sliding1, sliding2
+               ff.max(gf.y),                    // torsional
+               ff.max(gf.z), ff.max(gf.z)];    // rolling1, rolling2
+
+    (condim, gap, solref, solimp, fri)
+}
+```
+
+**`make_contact_flex_rigid()` becomes a thin wrapper** (mirrors `make_contact_from_geoms`):
+
+```rust
+fn make_contact_flex_rigid(
+    model: &Model,
+    vertex_idx: usize,
+    geom_idx: usize,
+    pos: Vector3<f64>,
+    normal: Vector3<f64>,
+    depth: f64,
+    margin: f64,  // #27: effective margin for this pair
+) -> Contact {
+    let flex_id = model.flexvert_flexid[vertex_idx];
+    let (condim, gap, solref, solimp, mu) = contact_param_flex_rigid(model, flex_id, geom_idx);
+    let includemargin = margin - gap;
+
+    Contact::with_condim_full(
+        pos, normal, depth, geom_idx, geom_idx, mu, condim, solref, solimp, includemargin,
+    )
+}
+```
+
+### Shared Data Flow Diagram
+
+```
+   MJCF XML
+      │
+      ▼
+  ┌─────────────┐     New fields: margin, gap (#27),
+  │  parser.rs   │     priority (#25), solmix (#26)
+  │  parse_geom  │     on MjcfGeom struct
+  └──────┬───────┘
+         │
+         ▼
+  ┌──────────────────┐     New Model fields:
+  │ model_builder.rs  │     geom_priority: Vec<i32>     (#25)
+  │ process_geom()    │     geom_solmix: Vec<f64>       (#26)
+  │                   │     geom_margin: Vec<f64>        (#27, already exists, wire parsing)
+  │                   │     geom_gap: Vec<f64>           (#27, already exists, wire parsing)
+  └──────┬────────────┘
+         │
+         ▼
+  ┌──────────────────────┐
+  │ mujoco_pipeline.rs    │
+  │                       │
+  │  Broadphase:          │     #27: Add margin to AABB expansion
+  │  SAP + distance cull  │         + automatic contact distance cull
+  │         │             │
+  │         ▼             │
+  │  Narrow-phase:        │     #27: Pass margin to collide_*() functions
+  │  collide_*() funcs    │         Return contacts when dist < margin
+  │         │             │
+  │         ▼             │
+  │  contact_param()      │     #24: friction max
+  │  (NEW unified func)   │     #25: priority gating
+  │         │             │     #26: solmix weighting
+  │         │             │     #27: gap combination
+  │         ▼             │
+  │  make_contact_from_   │     #27: includemargin = margin - gap
+  │  geoms() (updated)    │         Contact.includemargin: f64
+  │         │             │
+  │         ▼             │
+  │  apply_pair_overrides │     #27: set includemargin from pair
+  │  (for explicit pairs) │
+  │         │             │
+  │         ▼             │
+  │  assemble_contact_    │     #27: efc_margin = contact.includemargin
+  │  system()             │         pos - margin in impedance + aref
+  └───────────────────────┘
+```
+
+### Implementation Order Within Batch
+
+The items must land in a specific order to avoid rework:
+
+```
+  #24 (friction max)          — foundation: fix the combination rule
+    │
+    ▼
+  #25 (priority)              — adds priority gate BEFORE combination
+    │
+    ▼
+  #26 (solmix)                — replaces combine_solver_params() with
+    │                           solmix-weighted averaging
+    │
+    ▼
+  contact_param() unification — merge #24+#25+#26 into single function,
+    │                           delete combine_solver_params()
+    │
+    ▼
+  #27 (margin/gap)            — last: broadest refactoring scope,
+                                touches narrow-phase + broadphase + assembly
+```
+
+**Why this order:**
+1. **#24 first** — 3-line fix, no new fields, no new parsing. Immediate correctness win.
+2. **#25 second** — adds `geom_priority` field + parsing. The priority gate wraps around
+   the combination rule that #24 just fixed. If #24 isn't done, the fallback path
+   (equal priority) would still use geometric mean.
+3. **#26 third** — adds `geom_solmix` field + parsing. Replaces `combine_solver_params()`
+   with solmix-weighted averaging. This is when we create the unified `contact_param()`
+   function (or refactor into it), since #24+#25+#26 are now all in place.
+4. **#27 last** — broadest scope (touches every `collide_*` function, broadphase,
+   Contact struct, constraint assembly). Depends on `contact_param()` existing to
+   get gap from it. Landing this first would create unnecessary merge conflicts
+   with #24/#25/#26.
+
+### Shared Test Fixture
+
+All four items can be validated against a single canonical test model:
+
+```xml
+<mujoco>
+  <default>
+    <geom condim="3"/>
+  </default>
+
+  <worldbody>
+    <!-- Ground plane: high friction, priority 0 (default) -->
+    <geom name="ground" type="plane" size="5 5 0.1"
+          friction="0.8 0.01 0.001"
+          solref="0.02 1.0" solimp="0.9 0.95 0.001 0.5 2.0"
+          margin="0.003" gap="0.001"
+          solmix="1.0"/>
+
+    <!-- Test body: low friction, different solver params -->
+    <body pos="0 0 0.5">
+      <freejoint/>
+      <geom name="box" type="box" size="0.1 0.1 0.1"
+            friction="0.3 0.005 0.0001"
+            solref="0.04 0.8" solimp="0.8 0.9 0.002 0.6 3.0"
+            margin="0.002" gap="0.0005"
+            solmix="2.0"/>
+    </body>
+
+    <!-- Priority test body -->
+    <body pos="0.5 0 0.5">
+      <freejoint/>
+      <geom name="priority_box" type="box" size="0.1 0.1 0.1"
+            friction="0.5 0.008 0.0003"
+            priority="1"
+            solref="0.03 0.9" solimp="0.85 0.92 0.0015 0.55 2.5"
+            margin="0.001" gap="0.0"
+            solmix="1.0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+**Expected results per item:**
+
+**#24 — Friction (ground ↔ box, equal priority):**
+- `sliding = max(0.8, 0.3) = 0.8` (not `sqrt(0.24) ≈ 0.490`)
+- `torsional = max(0.01, 0.005) = 0.01`
+- `rolling = max(0.001, 0.0001) = 0.001`
+- `mu = [0.8, 0.8, 0.01, 0.001, 0.001]`
+
+**#25 — Priority (ground ↔ priority_box):**
+- `priority_box` has `priority=1`, ground has `priority=0`
+- Winner: `priority_box` → use its params verbatim:
+  - `friction = [0.5, 0.5, 0.008, 0.0003, 0.0003]`
+  - `solref = [0.03, 0.9]`
+  - `solimp = [0.85, 0.92, 0.0015, 0.55, 2.5]`
+  - `condim = 3` (from priority_box)
+
+**#26 — Solmix (ground ↔ box, equal priority):**
+- `mix = solmix_ground / (solmix_ground + solmix_box) = 1.0 / (1.0 + 2.0) = 1/3`
+- `w_ground = 1/3, w_box = 2/3`
+- Standard reference (both `solref[0] > 0`):
+  - `solref[0] = (1/3)*0.02 + (2/3)*0.04 = 0.03333...`
+  - `solref[1] = (1/3)*1.0  + (2/3)*0.8  = 0.8666...`
+- `solimp[0] = (1/3)*0.9  + (2/3)*0.8  = 0.8333...`
+- `solimp[1] = (1/3)*0.95 + (2/3)*0.9  = 0.9166...`
+- `solimp[2] = (1/3)*0.001+ (2/3)*0.002= 0.001666...`
+- `solimp[3] = (1/3)*0.5  + (2/3)*0.6  = 0.5666...`
+- `solimp[4] = (1/3)*2.0  + (2/3)*3.0  = 2.6666...`
+
+**#27 — Margin/Gap (ground ↔ box):**
+- `effective_margin = 0.003 + 0.002 = 0.005`
+- `effective_gap = 0.001 + 0.0005 = 0.0015`
+- `includemargin = 0.005 - 0.0015 = 0.0035`
+- Contact activates when `dist < 0.005` (surfaces up to 5mm apart)
+- Contact excluded when `dist >= 0.0035` (gap buffer zone)
+- Force onset at `dist < 0.0035`
+
+### Cross-Item Edge Cases
+
+| Scenario | Items Involved | Expected Behavior |
+|----------|---------------|-------------------|
+| Both frictions zero | #24 | `max(0, 0) = 0` — frictionless contact (condim=1 behavior) |
+| One priority higher, both solmix nonzero | #25, #26 | Priority wins — solmix is NOT consulted |
+| Equal priority, both solmix zero | #26 | `mix = 0.5` — equal weighting |
+| Equal priority, one solmix zero | #26 | The nonzero-solmix geom's params used entirely |
+| Margin > 0 but gap = 0 | #27 | `includemargin = margin` — no buffer zone, force onset at `dist < margin` |
+| Margin = 0 and gap = 0 (default) | #27 | `includemargin = 0.0` — current behavior preserved exactly |
+| Pair override on prioritized contact | #25, pair | Pair overrides ALL params including priority-selected ones |
+| Direct solref (solref[0] < 0) with solmix | #26 | Uses `min()` instead of weighted average |
+| Flex-rigid with priority | #25 | Same `mj_contactParam()` logic, reads `flex_priority` |
+
+---
+
+### 24. Friction Combination Rule: Geometric Mean → Element-Wise Max
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** None
+
+#### MuJoCo Reference
+
+`engine_collision_driver.c`, `mj_contactParam()`, equal-priority branch:
+
+```c
+// friction: max
+for (int i=0; i < 3; i++) {
+    fri[i] = mju_max(friction1[i], friction2[i]);
+}
+
+// unpack 5D friction
+friction[0] = fri[0];  // sliding1
+friction[1] = fri[0];  // sliding2 (= sliding1, MuJoCo symmetry)
+friction[2] = fri[1];  // torsional
+friction[3] = fri[2];  // rolling1
+friction[4] = fri[2];  // rolling2 (= rolling1, MuJoCo symmetry)
+```
+
+MuJoCo stores 3 friction values per geom (`geom_friction[g*3 + {0,1,2}]` =
+sliding, torsional, rolling) and unpacks to 5 for the contact (`mu[5]` =
+sliding1, sliding2, torsional, rolling1, rolling2). The 3→5 unpack duplicates
+sliding and rolling into both tangent/rolling directions. This is important
+for condim=4 (elliptic cone) and condim=6 (full torsional+rolling).
+
+#### Current State
+
+Two contact creation paths use **different** friction combination rules:
+
+| Path | Function | Line | Rule | Correct? |
+|------|----------|------|------|----------|
+| Rigid-rigid | `make_contact_from_geoms()` | 6054 | `sqrt(f1 * f2)` (geometric mean) | **NO** |
+| Flex-rigid | `make_contact_flex_rigid()` | 5776 | `flex_f.max(rigid_f)` (element-wise max) | Yes |
+
+**Exact buggy code** (`make_contact_from_geoms()`, lines 6068–6070):
+```rust
+let sliding = (f1.x * f2.x).sqrt();    // WRONG: geometric mean
+let torsional = (f1.y * f2.y).sqrt();   // WRONG: geometric mean
+let rolling = (f1.z * f2.z).sqrt();     // WRONG: geometric mean
+```
+
+This was documented as known non-conformance in `future_work_2.md` (Decision D3),
+deferred from Phase 2 as "better done as a deliberate conformance task."
+
+**Impact:** Every rigid-rigid contact between geoms with asymmetric friction values
+produces wrong friction coefficients. Example: geoms with friction 0.3 and 0.7
+produce `sqrt(0.21) ≈ 0.458` instead of `0.7`. This affects all trajectory
+comparison tests involving rigid-rigid contacts.
 
 #### Specification
 
-1. **`make_contact_from_geoms()`** (`mujoco_pipeline.rs:6054`): Change three lines:
-   ```rust
-   let sliding = f1.x.max(f2.x);
-   let torsional = f1.y.max(f2.y);
-   let rolling = f1.z.max(f2.z);
-   ```
+##### S1. Fix friction combination in `make_contact_from_geoms()`
 
-2. **`make_contact_flex_rigid()`** (`mujoco_pipeline.rs:5776`): Already correct —
-   uses `flex_f.max(rigid_f.x)` etc. No change needed.
+Replace lines 6068–6070:
 
-3. **`<contact><pair>` override**: When a `<pair>` element specifies explicit
-   `friction`, it overrides the combination rule entirely — no change needed here.
+```rust
+// BEFORE (geometric mean — wrong):
+let sliding = (f1.x * f2.x).sqrt();
+let torsional = (f1.y * f2.y).sqrt();
+let rolling = (f1.z * f2.z).sqrt();
 
-4. **Geom priority**: MuJoCo uses `geom/@priority` to select which geom's
-   friction wins outright (higher priority geom's friction used directly). Our
-   parser does not read `priority`. This is out of scope — `priority` is item
-   #25. For equal-priority geoms (the only case we handle), element-wise max is
-   correct.
+// AFTER (element-wise max — matches MuJoCo):
+let sliding = f1.x.max(f2.x);
+let torsional = f1.y.max(f2.y);
+let rolling = f1.z.max(f2.z);
+```
 
-5. **Doc correction**: Update any documentation that claims geometric mean
-   "matching MuJoCo's combination rule" — this is factually wrong. State
-   element-wise max.
+No other changes to this function. The 3→5 friction unpack already happens in
+`Contact::with_condim()` which sets `mu = [sliding, sliding, torsional, rolling,
+rolling]` — this matches MuJoCo's unpack pattern.
+
+##### S2. Verify flex-rigid path is already correct
+
+`make_contact_flex_rigid()` (line 5786–5791) already uses `flex_f.max(rigid_f.x)`
+etc. No change needed. Confirm with a regression test.
+
+##### S3. No change to explicit pairs
+
+`apply_pair_overrides()` (line 6021) overwrites friction entirely from
+`ContactPair.friction` — the combination rule is bypassed. No change needed.
+
+##### S4. Doc correction
+
+Search for any comment or doc that says "geometric mean" in the context of
+friction combination. Replace with "element-wise max." Known locations:
+- Comment in `parser.rs` around line 1487: "When two geoms collide, their
+  params are combined (min for solref, max for solimp)" — this omits friction;
+  update to include friction max.
+- Any reference in `future_work_2.md` Decision D3.
 
 #### Acceptance Criteria
 
-1. `make_contact_from_geoms()` uses `f1.max(f2)` per component.
-2. `make_contact_flex_rigid()` already uses `max()` — verify no regression.
-3. Existing contact tests updated — any test that relied on geometric mean
-   behavior must be re-validated. Expected: tolerance tightening, not loosening.
-4. New test: two geoms with `friction="0.3"` and `friction="0.7"` produce
-   contact with `sliding = 0.7` (not `sqrt(0.21) ≈ 0.458`).
+1. **Unit test — asymmetric friction:** Two box geoms with `friction=[0.3, 0.005,
+   0.0001]` and `friction=[0.7, 0.01, 0.001]` collide. Verify:
+   - `contact.mu = [0.7, 0.7, 0.01, 0.001, 0.001]`
+   - NOT `[0.458, 0.458, 0.00707, 0.000316, 0.000316]` (old geometric mean)
+2. **Unit test — symmetric friction:** Two geoms with identical `friction=[0.5, 0.005,
+   0.0001]`. Both rules produce the same result (`max(x,x) = x = sqrt(x*x)`).
+   Verify `contact.mu = [0.5, 0.5, 0.005, 0.0001, 0.0001]`.
+3. **Unit test — zero friction:** One geom with `friction=[0.0, 0.0, 0.0]`, other
+   with `friction=[0.5, 0.005, 0.0001]`. Verify `contact.mu = [0.5, 0.5, 0.005,
+   0.0001, 0.0001]`. (Geometric mean would produce all zeros — this is the worst
+   case for the old bug.)
+4. **Flex-rigid regression:** Flex-rigid contact with `flex_friction=0.4` and
+   `geom_friction=[0.6, 0.008, 0.0002]`. Verify `contact.mu = [0.6, 0.6, 0.008,
+   0.0002, 0.0002]` — unchanged from before.
+5. **Pair override regression:** Explicit `<contact><pair friction="0.9 0.9 0.02
+   0.003 0.003">` overrides combination. Verify `contact.mu = [0.9, 0.9, 0.02,
+   0.003, 0.003]` regardless of geom frictions.
+6. **Existing test audit:** Run full sim test suite. Any test that hardcoded
+   geometric mean expected values must be updated to element-wise max values.
+   List affected tests in the PR.
+
+#### Implementation Risk
+
+**Minimal.** This is a 3-line change in a single function. The only risk is
+existing tests that depend on the old (wrong) geometric mean behavior — these
+must be found and updated, not suppressed.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — `make_contact_from_geoms()` (line 6054)
-- `sim/L0/tests/integration/` — contact friction tests
+- `sim/L0/core/src/mujoco_pipeline.rs` — `make_contact_from_geoms()` (lines 6068–6070)
+- `sim/L0/tests/integration/` — new `contact_friction_combination.rs` test file
+- `sim/L0/mjcf/src/parser.rs` — comment fix (line ~1487)
 
 ---
 
 ### 25. `geom/@priority` — Contact Priority
-**Status:** Not started | **Effort:** S | **Prerequisites:** None (soft dep: after #24)
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** #24
+
+#### MuJoCo Reference
+
+`engine_collision_driver.c`, `mj_contactParam()`, priority branch:
+
+```c
+// different priority: copy from item with higher priority
+if (priority1 > priority2) {
+    *condim = condim1;
+    mju_copy(solref, solref1, mjNREF);
+    mju_copy(solimp, solimp1, mjNIMP);
+    mju_copy(fri, friction1, 3);
+}
+else if (priority1 < priority2) {
+    *condim = condim2;
+    mju_copy(solref, solref2, mjNREF);
+    mju_copy(solimp, solimp2, mjNIMP);
+    mju_copy(fri, friction2, 3);
+}
+// else: equal priority → fall through to combination rules (#24, #26)
+```
+
+When priorities differ, the higher-priority geom's **condim, solref, solimp, AND
+friction** are all copied verbatim. No combination occurs. Solmix is not
+consulted. Gap is still additive (gap always adds, priority or not — see #27).
+
+MuJoCo default: `priority = 0` for all geoms.
 
 #### Current State
 
-Not parsed, not stored, not used. Zero references in codebase. Contact parameter
-combination currently always uses element-wise max for friction and element-wise
-min/max for solref/solimp, regardless of priority.
-
-#### Objective
-
-Parse `priority` from `<geom>`, store on Model, and use it in contact parameter
-combination to select the higher-priority geom's parameters outright when
-priorities differ.
+- `geom_priority` field: **does not exist** on `Model` struct.
+- `priority` attribute: **not parsed** from `<geom>` elements.
+- `MjcfGeom` struct (`types.rs:983`): no `priority` field.
+- `MjcfGeomDefaults` struct (`types.rs:594`): no `priority` field.
+- Contact parameter combination always falls through to the equal-priority
+  combination path (currently geometric mean for friction, min/max for
+  solref/solimp).
 
 #### Specification
 
-1. **MJCF parsing**: Parse `priority` (int, default 0) from `<geom>`. Also parse
-   from `<default>` class.
-2. **Model storage**: Add `geom_priority: Vec<i32>` to `Model`.
-3. **Contact parameter combination** (in `make_contact_from_geoms()` or equivalent):
-   - If `priority[g1] > priority[g2]`: use g1's friction, solref, solimp, solmix.
-   - If `priority[g1] < priority[g2]`: use g2's friction, solref, solimp, solmix.
-   - If `priority[g1] == priority[g2]`: use the existing combination rule
-     (element-wise max for friction — or weighted average after #26 solmix).
-4. **Interaction with #24 (friction combination)**: Priority check happens BEFORE
-   the combination rule. If priorities differ, no combination is needed. This is
-   why #25 has a soft dependency on #24 — the combination rule it falls back to
-   should be the correct MuJoCo rule, not the current approximation.
+##### S1. Add `priority` to `MjcfGeom` struct
+
+In `sim/L0/mjcf/src/types.rs`, add to `MjcfGeom`:
+
+```rust
+pub priority: i32,  // default: 0 (matching MuJoCo)
+```
+
+Default in `MjcfGeom::default()`: `priority: 0`.
+
+##### S2. Parse `priority` from `<geom>` elements
+
+In `sim/L0/mjcf/src/parser.rs`, in `parse_geom_attrs()`:
+
+```rust
+geom.priority = parse_int_attr(e, "priority").unwrap_or(0);
+```
+
+##### S3. Add `priority` to defaults cascade
+
+In `sim/L0/mjcf/src/types.rs`, add to `MjcfGeomDefaults`:
+
+```rust
+pub priority: Option<i32>,
+```
+
+In `sim/L0/mjcf/src/parser.rs`, in `parse_geom_defaults()`:
+
+```rust
+defaults.priority = parse_int_attr(e, "priority");
+```
+
+In `sim/L0/mjcf/src/defaults.rs`, in `apply_to_geom()`:
+
+```rust
+if geom.priority == 0 {  // still at default
+    if let Some(priority) = defaults.priority { result.priority = priority; }
+}
+```
+
+##### S4. Add `geom_priority` to `Model`
+
+In `sim/L0/core/src/mujoco_pipeline.rs`, add to `Model`:
+
+```rust
+pub geom_priority: Vec<i32>,
+```
+
+Initialize in `model_builder.rs` `process_geom()`:
+
+```rust
+self.geom_priority.push(geom.priority);
+```
+
+##### S5. Priority gate in `make_contact_from_geoms()`
+
+Add priority check **before** the friction combination (which #24 fixed to
+element-wise max). This is the first step toward the unified `contact_param()`
+function described in the Interaction Model:
+
+```rust
+fn make_contact_from_geoms(
+    model: &Model,
+    pos: Vector3<f64>,
+    normal: Vector3<f64>,
+    depth: f64,
+    geom1: usize,
+    geom2: usize,
+) -> Contact {
+    let p1 = model.geom_priority[geom1];
+    let p2 = model.geom_priority[geom2];
+
+    if p1 != p2 {
+        // Higher priority wins — use its params verbatim
+        let winner = if p1 > p2 { geom1 } else { geom2 };
+        let f = model.geom_friction[winner];
+        let condim = model.geom_condim[winner];
+        let solref = model.geom_solref[winner];
+        let solimp = model.geom_solimp[winner];
+        return Contact::with_condim(
+            pos, normal, depth, geom1, geom2,
+            f.x, f.y, f.z, condim, solref, solimp,
+        );
+    }
+
+    // Equal priority — fall through to combination rules
+    let f1 = model.geom_friction[geom1];
+    let f2 = model.geom_friction[geom2];
+    let sliding = f1.x.max(f2.x);     // #24: element-wise max
+    let torsional = f1.y.max(f2.y);
+    let rolling = f1.z.max(f2.z);
+    let condim = model.geom_condim[geom1].max(model.geom_condim[geom2]);
+    let (solref, solimp) = combine_solver_params(
+        model.geom_solref[geom1], model.geom_solimp[geom1],
+        model.geom_solref[geom2], model.geom_solimp[geom2],
+    );
+    Contact::with_condim(
+        pos, normal, depth, geom1, geom2,
+        sliding, torsional, rolling, condim, solref, solimp,
+    )
+}
+```
+
+##### S6. Priority in flex-rigid contacts
+
+`make_contact_flex_rigid()` also needs a priority check. MuJoCo's
+`mj_contactParam()` uses the same function for flex-rigid (passing flex index
+via `f1`/`f2` parameters). We need `flex_priority: Vec<i32>` on Model (default
+0), populated from `<flex>` element parsing. The same priority gate applies.
+
+**Note:** `flex_priority` does not exist yet. Add it to Model and initialize to
+0 for all flex bodies (we don't parse `<flex priority="...">` yet — matching
+MuJoCo default). This ensures flex-rigid contacts behave correctly when a geom
+has nonzero priority.
+
+##### S7. Explicit pairs bypass priority
+
+`apply_pair_overrides()` already overwrites all contact parameters (condim,
+friction, solref, solimp). Priority does not affect explicit pairs because the
+pair's parameters are specified directly. No change needed here.
 
 #### Acceptance Criteria
 
-1. Geom with `priority="1"` vs geom with `priority="0"`: the priority-1 geom's
-   friction/solver params are used verbatim.
-2. Equal priority geoms use the existing combination rule.
-3. Default priority (0) matches MuJoCo behavior.
-4. `<contact><pair>` explicit pairs respect priority overrides (if specified).
+1. **Priority wins — all params:** Geom A (`priority=1`, `friction=[0.5, 0.008,
+   0.0003]`, `solref=[0.03, 0.9]`, `solimp=[0.85, 0.92, 0.0015, 0.55, 2.5]`)
+   vs Geom B (`priority=0`, `friction=[0.8, 0.01, 0.001]`, `solref=[0.02, 1.0]`,
+   `solimp=[0.9, 0.95, 0.001, 0.5, 2.0]`). Contact uses A's params verbatim:
+   - `mu = [0.5, 0.5, 0.008, 0.0003, 0.0003]`
+   - `solref = [0.03, 0.9]`
+   - `solimp = [0.85, 0.92, 0.0015, 0.55, 2.5]`
+   - `condim = 3` (from A)
+2. **Equal priority — combination:** Both geoms `priority=0` (default). Falls
+   through to element-wise max for friction, min/max for solref/solimp. Same
+   as #24 behavior.
+3. **Default priority regression:** All existing tests pass unchanged. Default
+   `priority=0` for all geoms means all contacts use the equal-priority path,
+   which is exactly what exists today (after #24 fix).
+4. **Negative priority:** Geom A `priority=-1`, Geom B `priority=0`. B wins
+   (higher priority). MuJoCo allows negative priorities.
+5. **Priority does not affect gap:** Gap is always additive regardless of priority.
+   Geom A `priority=1, gap=0.001`, Geom B `priority=0, gap=0.002`. Combined
+   gap = 0.003 (not 0.001).
+6. **Pair override ignores priority:** Explicit `<contact><pair>` overrides all
+   params regardless of geom priorities.
+7. **Flex-rigid with priority:** Flex body (`priority=0`) vs geom (`priority=1`).
+   Geom wins — its friction/solver params are used verbatim.
+8. **MJCF round-trip:** Parse `<geom priority="2"/>`, verify
+   `model.geom_priority[i] == 2`.
+
+#### Implementation Risk
+
+**Low.** Adds a new field + parsing + a conditional branch before the existing
+combination logic. The conditional is a pure superset — it adds a new code path
+(priority differs) while leaving the existing path (equal priority) unchanged.
+Default `priority=0` means the new code path is never taken unless the model
+explicitly sets priority, so regression risk is near zero.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — parse priority
-- `sim/L0/core/src/mujoco_pipeline.rs` — Model field, contact parameter selection
+- `sim/L0/mjcf/src/types.rs` — `MjcfGeom.priority`, `MjcfGeomDefaults.priority`
+- `sim/L0/mjcf/src/parser.rs` — parse `priority` in `parse_geom_attrs()` and
+  `parse_geom_defaults()`
+- `sim/L0/mjcf/src/defaults.rs` — cascade `priority` in `apply_to_geom()`
+- `sim/L0/mjcf/src/model_builder.rs` — `self.geom_priority.push(geom.priority)`
+  in `process_geom()`
+- `sim/L0/core/src/mujoco_pipeline.rs` — `Model.geom_priority: Vec<i32>`,
+  priority gate in `make_contact_from_geoms()`, `flex_priority: Vec<i32>` on
+  Model (initialized to 0)
+- `sim/L0/tests/integration/` — new tests in `contact_priority.rs`
 
 ---
 
-### 26. `solmix` Attribute
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+### 26. `solmix` — Solver Parameter Mixing Weight
+**Status:** ✅ Done | **Effort:** S | **Prerequisites:** #24, #25
+
+#### MuJoCo Reference
+
+`engine_collision_driver.c`, `mj_contactParam()`, equal-priority branch:
+
+```c
+// compute solver mix factor
+mjtNum mix;
+if (solmix1 >= mjMINVAL && solmix2 >= mjMINVAL) {
+    mix = solmix1 / (solmix1 + solmix2);
+} else if (solmix1 < mjMINVAL && solmix2 < mjMINVAL) {
+    mix = 0.5;
+} else if (solmix1 < mjMINVAL) {
+    mix = 0.0;
+} else {
+    mix = 1.0;
+}
+
+// reference standard: mix
+if (solref1[0] > 0 && solref2[0] > 0) {
+    for (int i=0; i < mjNREF; i++) {
+        solref[i] = mix*solref1[i] + (1-mix)*solref2[i];
+    }
+}
+// reference direct: min
+else {
+    for (int i=0; i < mjNREF; i++) {
+        solref[i] = mju_min(solref1[i], solref2[i]);
+    }
+}
+
+// impedance: mix
+for (int i=0; i < mjNIMP; i++) {
+    solimp[i] = mix*solimp1[i] + (1-mix)*solimp2[i];
+}
+```
+
+Key semantics:
+- `mjMINVAL ≈ 1e-15`: threshold for treating solmix as "zero"
+- **Standard solref** (`solref[0] > 0`): weighted average using mix factor
+- **Direct solref** (`solref[0] <= 0`): element-wise minimum, ignoring solmix
+- **Solimp**: always weighted average using mix factor
+- **Friction**: NOT affected by solmix (always element-wise max)
+- **Condim**: NOT affected by solmix (always max)
+- Solmix is only consulted in the **equal-priority** branch. When priorities
+  differ (#25), the winner's params are copied verbatim.
+
+MuJoCo default: `solmix = 1.0` for all geoms. With equal solmix on both geoms,
+`mix = 0.5` — equal weighting. This gives different results from our current
+min/max approximation.
 
 #### Current State
 
-Not parsed. Current implementation uses element-wise min for solref and
-element-wise max for solimp as an approximation. Documented as known divergence
-in `future_work_2.md`.
+- `geom_solmix` field: **does not exist** on `Model`.
+- `solmix` attribute: **not parsed** from `<geom>`.
+- `MjcfGeom` struct: no `solmix` field.
+- `combine_solver_params()` (line 2091): uses element-wise min for solref and
+  element-wise max for solimp — **wrong**. Should use solmix-weighted average.
+- Documented as known divergence in `future_work_2.md`.
 
-#### Objective
-
-Parse `solmix` from `<geom>` and use it for weighted averaging of solver
-parameters in contact pairs.
+**Concrete divergence example** (default solmix=1.0 on both geoms, equal weight):
+- Our code: `solref = [min(0.02, 0.04), min(1.0, 0.8)] = [0.02, 0.8]`
+- MuJoCo:   `solref = [0.5*0.02 + 0.5*0.04, 0.5*1.0 + 0.5*0.8] = [0.03, 0.9]`
 
 #### Specification
 
-1. **MJCF parsing**: Parse `solmix` (float, default 1.0) from `<geom>`. Also
-   parse from `<default>` class.
-2. **Model storage**: Add `geom_solmix: Vec<f64>` to `Model`.
-3. **Contact parameter combination** (MuJoCo's `mj_contactParam` logic):
-   - Compute mixing weight: `w1 = solmix[g1] / (solmix[g1] + solmix[g2])`,
-     `w2 = 1 - w1`.
-   - `solref_combined = w1 * solref[g1] + w2 * solref[g2]` (weighted average).
-   - `solimp_combined = w1 * solimp[g1] + w2 * solimp[g2]` (weighted average).
-   - Friction: NOT affected by solmix — friction uses element-wise max (#24) or
-     priority override (#25).
-4. **Edge case**: If both `solmix` values are 0, use equal weights (0.5/0.5).
-5. **Interaction with #25 (priority)**: If priorities differ, the higher-priority
-   geom's parameters are used directly — solmix is not consulted. Solmix only
-   applies when priorities are equal.
+##### S1. Add `solmix` to `MjcfGeom` struct
+
+In `sim/L0/mjcf/src/types.rs`, add to `MjcfGeom`:
+
+```rust
+pub solmix: f64,  // default: 1.0 (matching MuJoCo)
+```
+
+Default in `MjcfGeom::default()`: `solmix: 1.0`.
+
+##### S2. Parse `solmix` from `<geom>` elements
+
+In `sim/L0/mjcf/src/parser.rs`, in `parse_geom_attrs()`:
+
+```rust
+geom.solmix = parse_float_attr(e, "solmix").unwrap_or(1.0);
+```
+
+##### S3. Add `solmix` to defaults cascade
+
+In `MjcfGeomDefaults`: add `pub solmix: Option<f64>`.
+Parse in `parse_geom_defaults()`: `defaults.solmix = parse_float_attr(e, "solmix")`.
+Cascade in `apply_to_geom()`:
+
+```rust
+if (geom.solmix - 1.0).abs() < 1e-10 {  // still at default
+    if let Some(solmix) = defaults.solmix { result.solmix = solmix; }
+}
+```
+
+##### S4. Add `geom_solmix` to `Model`
+
+In `sim/L0/core/src/mujoco_pipeline.rs`, add to `Model`:
+
+```rust
+pub geom_solmix: Vec<f64>,
+```
+
+Initialize in `process_geom()`:
+
+```rust
+self.geom_solmix.push(geom.solmix);
+```
+
+##### S5. Replace `combine_solver_params()` with solmix-weighted combination
+
+Delete `combine_solver_params()` (lines 2091–2110) and replace with a new
+function that implements the MuJoCo solmix logic:
+
+```rust
+/// Compute solmix weight, matching MuJoCo's edge-case handling.
+fn solmix_weight(s1: f64, s2: f64) -> f64 {
+    const MJ_MINVAL: f64 = 1e-15;
+    if s1 >= MJ_MINVAL && s2 >= MJ_MINVAL {
+        s1 / (s1 + s2)
+    } else if s1 < MJ_MINVAL && s2 < MJ_MINVAL {
+        0.5
+    } else if s1 < MJ_MINVAL {
+        0.0  // geom2 dominates
+    } else {
+        1.0  // geom1 dominates
+    }
+}
+
+/// Combine solref using solmix weight.
+/// Standard reference (solref[0] > 0): weighted average.
+/// Direct reference (solref[0] <= 0): element-wise minimum.
+fn combine_solref(
+    solref1: [f64; 2],
+    solref2: [f64; 2],
+    mix: f64,
+) -> [f64; 2] {
+    if solref1[0] > 0.0 && solref2[0] > 0.0 {
+        [mix * solref1[0] + (1.0 - mix) * solref2[0],
+         mix * solref1[1] + (1.0 - mix) * solref2[1]]
+    } else {
+        [solref1[0].min(solref2[0]),
+         solref1[1].min(solref2[1])]
+    }
+}
+
+/// Combine solimp using solmix weight (always weighted average).
+fn combine_solimp(
+    solimp1: [f64; 5],
+    solimp2: [f64; 5],
+    mix: f64,
+) -> [f64; 5] {
+    std::array::from_fn(|i| mix * solimp1[i] + (1.0 - mix) * solimp2[i])
+}
+```
+
+##### S6. Update `make_contact_from_geoms()` to use solmix
+
+In the equal-priority branch (after #25's priority gate):
+
+```rust
+// Equal priority — combine with solmix weighting
+let mix = solmix_weight(model.geom_solmix[geom1], model.geom_solmix[geom2]);
+let solref = combine_solref(
+    model.geom_solref[geom1], model.geom_solref[geom2], mix,
+);
+let solimp = combine_solimp(
+    model.geom_solimp[geom1], model.geom_solimp[geom2], mix,
+);
+
+// Friction: element-wise max (NOT affected by solmix) — #24
+let f1 = model.geom_friction[geom1];
+let f2 = model.geom_friction[geom2];
+let sliding = f1.x.max(f2.x);
+let torsional = f1.y.max(f2.y);
+let rolling = f1.z.max(f2.z);
+```
+
+##### S7. Create unified `contact_param()` function
+
+At this point, #24 (friction max), #25 (priority gate), and #26 (solmix) are all
+in place. Refactor `make_contact_from_geoms()` to call a unified `contact_param()`
+function as described in the Interaction Model. This is the natural refactoring
+point — all three parameter combination changes are complete and can be
+consolidated.
+
+Delete `combine_solver_params()` entirely.
+
+##### S8. Flex-rigid solmix
+
+Add `flex_solmix: Vec<f64>` to Model (default 1.0), analogous to #25's
+`flex_priority`. Update `make_contact_flex_rigid()` to use solmix-weighted
+combination in the equal-priority branch.
 
 #### Acceptance Criteria
 
-1. Two geoms with `solmix="1"` (default) produce equal-weighted combination.
-2. Geom with `solmix="2"` vs `solmix="1"`: first geom has 2/3 weight.
-3. Solmix=0 edge case handled without NaN/inf.
-4. `<contact><pair>` can override solref/solimp directly (bypass solmix).
-5. Existing contact tests pass with default solmix=1 (regression).
+1. **Default solmix — equal weight:** Two geoms with default `solmix=1.0`,
+   `solref=[0.02, 1.0]` and `solref=[0.04, 0.8]`. Contact `solref = [0.03, 0.9]`
+   (weighted average with mix=0.5). NOT `[0.02, 0.8]` (old min behavior).
+2. **Asymmetric solmix:** Geom A `solmix=2.0`, Geom B `solmix=1.0`. `mix =
+   2/(2+1) = 2/3`. Contact:
+   - `solref[0] = (2/3)*solref_A[0] + (1/3)*solref_B[0]`
+   - `solimp[i] = (2/3)*solimp_A[i] + (1/3)*solimp_B[i]`
+3. **Both solmix zero:** `mix = 0.5`. Equal weighting. No NaN/inf.
+4. **One solmix zero:** Geom A `solmix=0`, Geom B `solmix=1.0`. `mix = 0.0` →
+   Geom B's params used entirely. Verify `solref = solref_B`, `solimp = solimp_B`.
+5. **Direct solref (negative):** Geom A `solref=[-100, 1]`, Geom B `solref=[-200,
+   1]`. Uses element-wise min regardless of solmix: `solref = [-200, 1]`.
+6. **Mixed standard/direct solref:** Geom A `solref=[0.02, 1.0]` (standard), Geom
+   B `solref=[-100, 1]` (direct). One is positive, one is negative → `solref1[0]
+   > 0 && solref2[0] > 0` is false → uses element-wise min: `solref = [-100, 1]`.
+7. **Solmix does not affect friction:** Geom A `solmix=100, friction=[0.3, ...]`,
+   Geom B `solmix=1, friction=[0.8, ...]`. Friction = `max(0.3, 0.8) = 0.8`
+   regardless of solmix weights.
+8. **Priority bypasses solmix:** Geom A `priority=1, solmix=1`, Geom B
+   `priority=0, solmix=100`. A wins — solmix is not consulted.
+9. **Default regression:** All existing tests pass. Default `solmix=1.0` with
+   equal weights produces `(0.5*a + 0.5*b)` which differs from old `min(a,b)` /
+   `max(a,b)`. Tests that hardcoded old min/max expected values for solref/solimp
+   must be updated. List affected tests.
+10. **Pair override bypasses solmix:** Explicit `<contact><pair>` overrides
+    solref/solimp directly.
+
+#### Implementation Risk
+
+**Moderate — behavioral change.** Unlike #24 (which only changes the wrong
+geometric mean to the correct max), this changes the correct-but-approximate
+min/max combination to the correct solmix-weighted average. The default
+`solmix=1.0` produces `mix=0.5` (equal weight), which gives **different**
+results from element-wise min (solref) and max (solimp):
+
+| Parameter | Old (min/max) | New (mix=0.5) | Change |
+|-----------|---------------|---------------|--------|
+| solref[0] | min(0.02, 0.04) = 0.02 | 0.5*0.02 + 0.5*0.04 = 0.03 | +50% |
+| solref[1] | min(1.0, 0.8) = 0.8 | 0.5*1.0 + 0.5*0.8 = 0.9 | +12.5% |
+| solimp[0] | max(0.9, 0.8) = 0.9 | 0.5*0.9 + 0.5*0.8 = 0.85 | -5.6% |
+
+This means existing trajectory tests with asymmetric solver parameters will
+produce different contact forces after this change. This is **correct** (matches
+MuJoCo), but requires test updates. For models where both geoms have identical
+solver parameters, there is zero change (averaging identical values = the value).
+
+**Mitigation:** Run the full sim test suite after implementing. Any test failures
+are expected and indicate the test was relying on the old approximate behavior.
+Update expected values to match MuJoCo reference.
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — parse solmix
-- `sim/L0/core/src/mujoco_pipeline.rs` — Model field, weighted combination in
-  contact parameter assembly
+- `sim/L0/mjcf/src/types.rs` — `MjcfGeom.solmix`, `MjcfGeomDefaults.solmix`
+- `sim/L0/mjcf/src/parser.rs` — parse `solmix` in `parse_geom_attrs()` and
+  `parse_geom_defaults()`
+- `sim/L0/mjcf/src/defaults.rs` — cascade `solmix` in `apply_to_geom()`
+- `sim/L0/mjcf/src/model_builder.rs` — `self.geom_solmix.push(geom.solmix)`
+- `sim/L0/core/src/mujoco_pipeline.rs` — `Model.geom_solmix: Vec<f64>`,
+  `solmix_weight()`, `combine_solref()`, `combine_solimp()`, delete old
+  `combine_solver_params()`, create unified `contact_param()`,
+  `flex_solmix: Vec<f64>` on Model
+- `sim/L0/tests/integration/` — new tests in `contact_solmix.rs`
 
 ---
 
 ### 27. Contact Margin/Gap Runtime Effect
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+**Status:** ✅ Done | **Effort:** S–M | **Prerequisites:** #24, #25, #26
+
+#### MuJoCo Reference
+
+Margin and gap flow through four stages of the collision pipeline:
+
+**Stage 1 — Broadphase AABB expansion** (`engine_collision_driver.c`, `makeAAMM`):
+```c
+mjtNum margin = mjENABLED(mjENBL_OVERRIDE) ? 0.5*m->opt.o_margin : m->geom_margin[geom];
+_aamm[j]   = cen - m->geom_rbound[geom] - margin;
+_aamm[j+3] = cen + m->geom_rbound[geom] + margin;
+```
+
+**Stage 2 — Margin combination** (`mj_collideGeoms`):
+```c
+// Automatic contacts: sum geom margins
+margin = mj_assignMargin(m, m->geom_margin[g1] + m->geom_margin[g2]);
+// Explicit pairs: use pair margin
+margin = mj_assignMargin(m, m->pair_margin[ipair]);
+```
+
+**Stage 3 — Narrow-phase** — collision functions receive `margin` parameter:
+```c
+num = collisionFunc(m, d, con, g1, g2, margin);
+```
+Contacts are returned when `dist < margin` (surfaces may still be separated).
+
+**Stage 4 — Contact creation** (`mj_collideGeoms` + `mj_setContact`):
+```c
+// Gap from mj_contactParam (additive, unaffected by priority)
+mj_contactParam(m, &condim, &gap, solref, solimp, friction, g1, g2, -1, -1);
+
+// Set includemargin = margin - gap
+mj_setContact(m, con + i, condim, margin-gap, solref, solreffriction, solimp, friction);
+
+// In mj_setContact:
+con->includemargin = includemargin;
+con->exclude = (con->dist >= includemargin);
+```
+
+**Stage 5 — Constraint assembly** (`engine_core_constraint.c`):
+```c
+// Contact pos and margin flow into constraint rows
+efc_pos[row] = con->dist;
+efc_margin[row] = con->includemargin;
+
+// Impedance uses margin-shifted position
+x = (pos - margin) / solimp[2];  // in getimpedance()
+
+// Reference acceleration uses margin
+aref = -b*vel - k*imp*(pos - margin);
+```
+
+**Key semantics:**
+- `margin` controls **contact activation** — wider detection zone
+- `gap` controls **force onset** — creates a buffer zone within the margin where
+  contacts exist but produce no force
+- `includemargin = margin - gap` is the force onset threshold
+- `exclude = (dist >= includemargin)` — excluded contacts are detected but
+  produce no constraint rows
+- Gap is always additive from `mj_contactParam()`, unaffected by priority
+- MuJoCo defaults: `margin = 0.0`, `gap = 0.0`
+
+**con->dist vs depth convention:** In MuJoCo, `con->dist` is signed distance
+(negative = penetration). In our codebase, `Contact.depth` is penetration depth
+(positive = penetration). The relationship: `depth = -dist`. The constraint
+assembly must account for this sign convention.
 
 #### Current State
 
-`geom_margin` and `geom_gap` are stored on `Model` as `Vec<f64>` (one per geom,
-initialized to 0.0). `ContactPair` has `margin` and `gap` fields, correctly parsed
-from `<contact><pair>` MJCF elements. However, margin and gap have **no runtime
-effect** on contact activation or constraint assembly:
-
-- **Narrow-phase**: All collision functions (e.g., `collide_sphere_sphere`) generate
-  contacts only when `penetration > 0.0`. Margin is not checked.
-  (`mujoco_pipeline.rs`, `collide_sphere_sphere`, line ~6509.)
-- **Constraint assembly**: `margin` is hardcoded to `0.0` in `assemble_contact_system`
-  (`mujoco_pipeline.rs`, line ~14600: `let margin = 0.0_f64;`). The `compute_aref()`
-  function accepts a `margin` parameter but always receives 0.0.
-- **`apply_pair_overrides`**: Applies condim, friction, solref, solimp from
-  `ContactPair` but skips margin/gap. Comment at line ~5664: "margin/gap are NOT
-  applied here."
-- **Broad-phase**: `pair.margin` IS used in the bounding-sphere distance cull for
-  explicit pairs (line ~5431). This is correct and should be preserved.
-- **Geom-level parsing**: `<geom margin="..." gap="...">` attributes are NOT parsed.
-  `model_builder.rs` comment: "geom-level not yet parsed, default to 0.0."
-- **`efc_margin`**: The `Data` struct has an `efc_margin: Vec<f64>` field (per
-  constraint row), currently always populated with 0.0.
-
-MuJoCo's margin/gap system involves three distinct locations: contact detection
-(wider activation), constraint violation computation (shifted reference), and the
-`aref` stabilization formula. All three must be wired up.
-
-#### Objective
-
-Wire `margin` and `gap` into the full pipeline — MJCF parsing, contact detection,
-and constraint assembly — so that contacts activate at the correct distance and
-Baumgarte stabilization uses the correct reference point.
+| Component | Status | Location |
+|-----------|--------|----------|
+| `Model.geom_margin: Vec<f64>` | Exists, zeroed | `mujoco_pipeline.rs:1349` |
+| `Model.geom_gap: Vec<f64>` | Exists, zeroed | `mujoco_pipeline.rs:1351` |
+| `<geom margin="...">` parsing | **NOT parsed** | `model_builder.rs` TODO comment |
+| `<geom gap="...">` parsing | **NOT parsed** | `model_builder.rs` TODO comment |
+| `ContactPair.margin` | Parsed from `<pair>` | `types.rs` |
+| `ContactPair.gap` | Parsed from `<pair>` | `types.rs` |
+| Broadphase (automatic) | No margin in AABB | SAP at line 5500 |
+| Broadphase (explicit pairs) | Uses `pair.margin` ✅ | Distance cull at line 5558 |
+| `collide_*()` signatures | No margin parameter | All return `Option<Contact>` |
+| `collide_*()` activation | `penetration > 0.0` | All narrow-phase functions |
+| `Contact.includemargin` | `bool`, always `false` | `mujoco_pipeline.rs:1874` |
+| `apply_pair_overrides()` | Skips margin/gap | Comment "NOT applied here" |
+| `assemble_contact_system()` | `margin = 0.0` hardcoded | Line ~15410 |
+| `compute_aref()` | Correct signature, receives `0.0` | Line 14911 |
+| `compute_impedance()` | Receives `violation` (no margin offset) | Line 14685 |
+| `data.efc_margin` | Always `0.0` | Line ~15148 |
 
 #### Specification
 
-##### S1. Margin/gap combination rule (MuJoCo semantics)
+##### S1. Parse `margin` and `gap` from `<geom>` elements
 
-MuJoCo **sums** margins and gaps from both geoms (source:
-`engine_collision_driver.c`, `mj_collideGeoms`):
-
-```
-effective_margin = geom_margin[g1] + geom_margin[g2]
-effective_gap    = geom_gap[g1]    + geom_gap[g2]
-includemargin    = effective_margin - effective_gap
-```
-
-For explicit `<contact><pair>` contacts, the pair's `margin` and `gap` attributes
-**override** the geom-summed values entirely (pair takes precedence).
-
-The `includemargin` value is the distance threshold below which a contact generates
-a constraint. It is stored on the `Contact` struct and propagated to `efc_margin`
-during constraint assembly.
-
-##### S2. Geom-level MJCF parsing
-
-Parse `margin` and `gap` attributes from `<geom>` elements. These cascade through
-the defaults system (existing infrastructure handles attribute cascading):
-
-```xml
-<geom type="sphere" size="0.1" margin="0.002" gap="0.001"/>
-```
-
-Default values: `margin = 0.0`, `gap = 0.0` (preserves current behavior when
-attributes are absent).
-
-Update `Model.geom_margin` and `Model.geom_gap` arrays, which are already
-allocated (currently zeroed). Wire through `model_builder.rs` → `process_geom()`.
-
-##### S3. Narrow-phase contact activation
-
-Change the activation condition in all narrow-phase collision functions from:
+Add to `MjcfGeom` struct (`types.rs`):
 
 ```rust
-if penetration > 0.0 { ... }  // current
+pub margin: f64,  // default: 0.0
+pub gap: f64,     // default: 0.0
 ```
 
-to:
+Parse in `parse_geom_attrs()` (`parser.rs`):
 
 ```rust
-if penetration > -margin { ... }  // with margin
+geom.margin = parse_float_attr(e, "margin").unwrap_or(0.0);
+geom.gap = parse_float_attr(e, "gap").unwrap_or(0.0);
 ```
 
-where `margin` is the effective margin computed per S1. When a contact is generated
-with `penetration ∈ (-margin, 0]`, the contact's `depth` field stores the
-actual geometric penetration (which is negative — surfaces are separated). The
-`includemargin` field on the Contact stores the margin value.
+Add to `MjcfGeomDefaults` and cascade in `apply_to_geom()`. Only cascade when
+still at default (0.0).
 
-This means the contact exists in the constraint system but may produce zero force
-(if `depth > includemargin`, the constraint violation `r > 0` so no corrective
-force is applied). This is MuJoCo's mechanism for "pre-contact" — smooth force
-onset rather than sudden activation.
-
-Affected functions: `collide_sphere_sphere`, `collide_sphere_plane`,
-`collide_capsule_plane`, `collide_box_plane`, `collide_sphere_capsule`,
-and all other `collide_*` variants. Each function must receive the effective
-margin for the geom pair.
-
-Implementation approach: pass `margin` as a parameter to each `collide_*`
-function. Compute `margin` in the dispatch function (`collide_geoms` or explicit
-pair loop) using S1, and thread it through.
-
-##### S4. Contact struct: store `includemargin`
-
-The `Contact` struct already has a `pub includemargin: bool` field (currently
-always `false`). Replace this with a numeric field:
+Wire in `process_geom()` (`model_builder.rs`):
 
 ```rust
-/// Distance threshold used for constraint activation.
-/// `includemargin = effective_margin - effective_gap`.
-/// Constraint violation: `r = depth - includemargin`.
-/// Contact exists when `depth > -effective_margin` (see S3).
+self.geom_margin.push(geom.margin);
+self.geom_gap.push(geom.gap);
+```
+
+This replaces the current zeroed initialization.
+
+##### S2. Compute effective margin in collision dispatch
+
+In the broadphase/collision dispatch code, compute the effective margin before
+calling narrow-phase:
+
+**Automatic contacts** — modify the SAP candidate processing loop (line ~5506):
+
+```rust
+// Compute effective margin for this pair
+let margin = model.geom_margin[geom1] + model.geom_margin[geom2];
+
+// Narrow-phase — pass margin
+if let Some(contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin) {
+    data.contacts.push(contact);
+    data.ncon += 1;
+}
+```
+
+**Explicit pairs** — already uses `pair.margin` in distance cull (line 5558).
+Pass it to narrow-phase too:
+
+```rust
+let margin = pair.margin;  // pair margin overrides geom margins
+if let Some(mut contact) = collide_geoms(model, geom1, geom2, pos1, mat1, pos2, mat2, margin) {
+    apply_pair_overrides(&mut contact, pair);
+    data.contacts.push(contact);
+    data.ncon += 1;
+}
+```
+
+##### S3. Add margin to broadphase AABB expansion (automatic contacts)
+
+The SAP (sweep-and-prune) builds AABBs per geom. Currently AABBs use only
+`geom_rbound`. For margin to work, AABBs must be expanded by margin:
+
+```rust
+let margin = model.geom_margin[geom_id];
+let aabb_min = geom_pos - geom_rbound - margin;
+let aabb_max = geom_pos + geom_rbound + margin;
+```
+
+Without this, SAP may reject geom pairs that are within margin distance but
+not overlapping. The explicit pair path already handles this (line 5558).
+
+**Performance note:** Expanding AABBs by margin increases the number of
+candidate pairs that enter narrow-phase. For typical margins (1-5mm), this is
+negligible. For large margins, SAP becomes less effective — but this matches
+MuJoCo's behavior.
+
+##### S4. Thread margin through `collide_geoms()` dispatcher
+
+Update `collide_geoms()` signature to accept margin:
+
+```rust
+fn collide_geoms(
+    model: &Model,
+    geom1: usize,
+    geom2: usize,
+    pos1: Vector3<f64>,
+    mat1: Matrix3<f64>,
+    pos2: Vector3<f64>,
+    mat2: Matrix3<f64>,
+    margin: f64,  // NEW
+) -> Option<Contact>
+```
+
+Inside `collide_geoms()`, pass `margin` to the type-specific collision function.
+
+##### S5. Update all `collide_*()` function signatures
+
+Every narrow-phase function gets a `margin: f64` parameter and changes its
+activation condition:
+
+**Full list of affected functions** (from codebase audit):
+
+| Function | Line | Current Check | New Check |
+|----------|------|---------------|-----------|
+| `collide_sphere_sphere()` | ~6887 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_capsule_capsule()` | ~6938 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_sphere_capsule()` | ~6999 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_sphere_box()` | ~7087 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_capsule_box()` | ~7416 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_box_box()` | ~7559 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_cylinder_sphere()` | ~7190 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_cylinder_capsule()` | ~7318 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_with_plane()` | ~6483 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_with_mesh()` | ~6311 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_with_hfield()` | ~6120 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_with_sdf()` | ~6197 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_mesh_plane()` | ~6436 | `penetration > 0.0` | `penetration > -margin` |
+| `collide_cylinder_plane_impl()` | ~6701 | `penetration > 0.0` | `penetration > -margin` |
+
+When margin=0.0 (default), `-margin = -0.0 = 0.0`, so `penetration > -0.0` is
+equivalent to `penetration > 0.0` — **zero behavioral change for default case**.
+
+When `penetration ∈ (-margin, 0]`, the contact is created with `depth =
+penetration` (which is negative/zero). This represents a "pre-contact" — surfaces
+are separated but within the margin zone.
+
+##### S6. Change `Contact.includemargin` from `bool` to `f64`
+
+In the `Contact` struct (line 1874), replace:
+
+```rust
+// BEFORE:
+pub includemargin: bool,
+
+// AFTER:
+/// Distance threshold for constraint force onset.
+/// `includemargin = effective_margin - effective_gap`
+/// Constraint is excluded when `dist >= includemargin` (MuJoCo convention).
+/// In our depth convention (positive = overlap): excluded when
+/// `depth <= -includemargin`.
 pub includemargin: f64,
 ```
 
-Set by `make_contact_from_geoms()` or `apply_pair_overrides()`.
+**Breaking change.** Search for all uses of `contact.includemargin` in the
+codebase and update:
+- Construction sites in `Contact::new()`, `Contact::with_condim()` — change
+  `false` to `0.0`
+- Any conditional checks `if contact.includemargin` → remove or replace with
+  `if contact.includemargin > 0.0`
 
-##### S5. `apply_pair_overrides`: apply margin/gap from ContactPair
+##### S7. Set `includemargin` in contact creation
 
-In `apply_pair_overrides()`, set `contact.includemargin = pair.margin - pair.gap`
-when the contact comes from an explicit `<contact><pair>`. Remove the existing
-comment "margin/gap are NOT applied here."
-
-For automatic (Mechanism 1) contacts, set
-`contact.includemargin = (geom_margin[g1] + geom_margin[g2]) - (geom_gap[g1] + geom_gap[g2])`
-in `make_contact_from_geoms()`.
-
-##### S6. Constraint assembly: populate `efc_margin`
-
-In `assemble_contact_system` (line ~14598), replace the hardcoded
-`let margin = 0.0_f64` with:
+In `make_contact_from_geoms()` (or the unified `contact_param()` + wrapper):
 
 ```rust
+fn make_contact_from_geoms(
+    model: &Model,
+    pos: Vector3<f64>,
+    normal: Vector3<f64>,
+    depth: f64,
+    geom1: usize,
+    geom2: usize,
+    margin: f64,  // effective margin (already computed in dispatch)
+) -> Contact {
+    let (condim, gap, solref, solimp, mu) = contact_param(model, geom1, geom2);
+    let includemargin = margin - gap;
+
+    let mut contact = Contact::with_condim_full(
+        pos, normal, depth, geom1, geom2, mu, condim, solref, solimp, includemargin,
+    );
+
+    // MuJoCo exclude logic: contact exists but produces no constraint row
+    // when dist >= includemargin. In our convention: depth <= -includemargin.
+    // Note: we don't need an explicit exclude flag — the constraint assembly
+    // already handles this via impedance (violation = depth + includemargin;
+    // when violation <= 0, impedance and force are zero).
+    contact
+}
+```
+
+##### S8. Set `includemargin` in `apply_pair_overrides()`
+
+In `apply_pair_overrides()` (line 6021), add:
+
+```rust
+// Margin/gap from explicit pair
+contact.includemargin = pair.margin - pair.gap;
+```
+
+Remove the comment "margin/gap are NOT applied here."
+
+##### S9. Wire `includemargin` into constraint assembly
+
+In `assemble_contact_system()` (line ~15410), replace:
+
+```rust
+// BEFORE:
+let margin = 0.0_f64;
+
+// AFTER:
 let margin = contact.includemargin;
 ```
 
-This value flows into:
-1. `data.efc_margin[row] = margin` — per constraint row (normal direction only;
-   friction rows get `efc_margin = 0.0`, matching MuJoCo).
-2. `compute_aref(k, b, imp, pos, margin, vel)` — the existing function already
-   computes `aref = -b * vel - k * imp * (pos - margin)`. With nonzero margin,
-   the constraint equilibrium shifts to `pos = margin` instead of `pos = 0`.
+This flows into:
 
-No changes to `compute_aref()` itself — the function is already correct; it just
-needs a nonzero margin input.
+1. **`data.efc_margin[row] = margin`** — already populated at line ~15148, just
+   needs the correct value instead of 0.0.
 
-##### S7. Interaction with global `<option>` override
+2. **`compute_impedance(solimp, violation)`** — the `finalize_row!` macro already
+   computes `violation = (pos_val - margin_val).abs()` at line ~15158. With the
+   sign convention fix (`pos = -depth`) and `margin = includemargin`, this becomes:
+   ```
+   violation = |(-depth) - includemargin| = |-(depth + includemargin)| = depth + includemargin
+   ```
+   (When both `depth >= 0` and `includemargin >= 0`, which is the active constraint case.)
 
-MuJoCo supports `<option o_margin="...">` which overrides all per-geom and
-per-pair margins globally. This is a low-priority extension — defer unless existing
-models require it. Note in code with a TODO.
+   **No code change needed in the macro.** The `.abs()` makes it sign-agnostic.
+
+   Example: `depth = -0.001` (slightly separated) and `includemargin = 0.004`:
+   `violation = |(-(-0.001)) - 0.004| = |0.001 - 0.004| = 0.003` → impedance is
+   computed for 3mm of effective violation past the threshold. Correct.
+
+   Example: `depth = 0.002` (penetrating) and `includemargin = 0.004`:
+   `violation = |(-0.002) - 0.004| = |-0.006| = 0.006` → 6mm total violation. Correct.
+
+3. **`compute_aref(k, b, imp, pos, margin, vel)`** — the formula is correct but
+   the `pos` argument **must be negated** for contacts. The `finalize_row!` macro
+   at line ~15424 currently passes `contact.depth` (positive = penetrating), but
+   the `aref` formula assumes MuJoCo's signed-distance convention where
+   `pos < 0` means penetration.
+
+   **Definitive sign convention resolution:**
+
+   In MuJoCo, `efc_pos = con->dist` (negative = penetrating). The aref formula:
+   ```
+   aref = -b*vel - k*imp*(dist - includemargin)
+   ```
+   When penetrating: `dist < 0`, `includemargin >= 0`, so `dist - includemargin < 0`,
+   and `-k*imp*(negative) = +positive` → aref is positive (restorative, pushing apart).
+
+   Our code currently passes `pos = depth` (positive = penetrating):
+   ```
+   aref = -b*vel - k*imp*(depth - 0.0) = -b*vel - k*imp*depth
+   ```
+   With `depth > 0`, aref is negative — **this is a sign error** that produces
+   destabilizing acceleration (pulling objects together instead of apart).
+
+   **Fix** (line ~15424 in `mujoco_pipeline.rs`):
+   ```rust
+   // BEFORE:
+   let pos = if r == 0 { contact.depth } else { 0.0 };
+
+   // AFTER: negate depth to match MuJoCo's dist convention (negative = penetrating)
+   let pos = if r == 0 { -contact.depth } else { 0.0 };
+   ```
+
+   With the fix and `margin = includemargin`:
+   ```
+   aref = -b*vel - k*imp*(-depth - includemargin)
+        = -b*vel + k*imp*(depth + includemargin)
+   ```
+   This produces positive aref (restorative) when `depth > 0` (penetrating) or
+   when `depth + includemargin > 0` (within margin zone). Verified against MuJoCo
+   source: `mj_referenceConstraint()` in `engine_core_constraint.c`.
+
+   **Note:** The impedance computation at line ~15158 is safe — it already uses
+   `.abs()`: `let violation = (pos_val - margin_val).abs();`. With `pos = -depth`
+   and `margin = includemargin`: `violation = |(-depth) - includemargin|` =
+   `depth + includemargin` (when both positive), matching MuJoCo's absolute
+   penetration past the threshold.
+
+   **Cross-check with other constraint types:** Joint limits (line ~15289) and
+   tendon limits (line ~15350) already follow MuJoCo's `dist` convention
+   (negative = violated). Contacts were the only type passing a positive-penetration
+   value. This fix unifies the sign convention across all constraint types.
+
+##### S10. Flex-rigid margin
+
+Flex contacts already have `flex_margin: Vec<f64>` on Model (used in flex-rigid
+broadphase at line 5595). Wire this through to narrow-phase:
+
+```rust
+let margin = model.flex_margin[flex_id] + model.geom_margin[geom_idx];
+```
+
+Add `flex_gap: Vec<f64>` to Model (default 0.0) for gap combination.
+
+##### S11. Global `<option o_margin>` override (deferred)
+
+MuJoCo supports `<option o_margin="...">` which replaces all per-geom margins.
+The `mj_assignMargin()` helper checks `mjENABLED(mjENBL_OVERRIDE)` and substitutes
+`0.5 * opt.o_margin` when the override flag is set.
+
+**Defer this.** Add a TODO comment at the margin computation site. Implement when
+a model requires it. The per-geom margin system is the correct foundation.
 
 #### Acceptance Criteria
 
-1. **Margin activation**: A sphere at height 1mm above a plane with
-   `geom_margin="0.002"` (each geom) generates a contact. Effective margin =
-   `0.002 + 0.002 = 0.004 > 0.001` (distance). Contact `depth ≈ -0.001`
-   (negative, surfaces separated), `includemargin = 0.004`, constraint
-   `r = -0.001 - 0.004 = -0.005 < 0` → constraint force engages.
-2. **Gap buffer**: With `margin="0.004"` and `gap="0.003"`, `includemargin = 0.001`.
-   A sphere at distance 0.002 above the plane generates a contact (within margin)
-   but `r = -0.002 - 0.001 = -0.003 < 0` → force engages. At distance 0.0005,
-   still in contact, stronger force. Verify force magnitude scales with
-   `|r|` (deeper violation → stronger force).
-3. **Pair override**: An explicit `<contact><pair margin="0.01" gap="0.005">`
-   uses `includemargin = 0.005`, ignoring geom-level margins.
-4. **Zero margin/gap regression**: All existing tests pass unchanged (default
-   margin/gap = 0.0 preserves `penetration > 0.0` activation and
-   `efc_margin = 0.0` in assembly).
-5. **MuJoCo reference**: Compare contact count and forces against MuJoCo 3.4.0
-   for a sphere-on-plane test at 5 separation distances spanning
-   `[-0.002, +0.003]` with `margin=0.004, gap=0.001`. Contact count and
-   `qfrc_constraint` must match within tolerance `1e-8`.
-6. **`efc_margin` populated**: After `forward()`, `data.efc_margin[normal_row]`
-   equals `contact.includemargin` for every active contact.
+1. **Margin activation:** Sphere (`radius=0.05`, `margin=0.002`) above plane
+   (`margin=0.002`) at height `0.051` (surface gap = 0.001). Effective margin =
+   0.004 > 0.001 gap → contact created. `depth ≈ -0.001`. `includemargin =
+   0.004 - 0.0 = 0.004`. `violation = -0.001 + 0.004 = 0.003 > 0` → constraint
+   force engages.
+2. **No-margin regression:** Same sphere at height `0.051` with `margin=0.0` on
+   both geoms. Effective margin = 0.0. Activation: `penetration > -0.0` = 0.0 →
+   no contact (surfaces separated). All existing tests pass unchanged.
+3. **Gap buffer zone:** Sphere with `margin=0.005, gap=0.003` above plane with
+   `margin=0.005, gap=0.002`. Effective margin = 0.01, effective gap = 0.005,
+   `includemargin = 0.005`. At distance 0.006: contact created (within margin
+   0.01), `violation = -0.006 + 0.005 = -0.001 < 0` → constraint **inactive**
+   (in gap buffer). At distance 0.003: `violation = -0.003 + 0.005 = 0.002 > 0`
+   → constraint **active**.
+4. **Pair override:** Explicit `<contact><pair margin="0.01" gap="0.005">` between
+   two geoms that have `margin=0.001, gap=0.0`. Contact uses pair values:
+   `includemargin = 0.01 - 0.005 = 0.005`. Geom margins ignored.
+5. **efc_margin populated:** After `forward()`, verify `data.efc_margin[row] ==
+   contact.includemargin` for every normal-direction constraint row. Friction
+   rows have `efc_margin = 0.0`.
+6. **Force magnitude scales with violation:** Sphere descending through margin
+   zone. At 5 heights from `dist = +0.004` to `dist = -0.002` (with margin=0.005,
+   gap=0.0), constraint force increases monotonically. Plot force vs distance
+   and verify smooth onset.
+7. **Broadphase expansion:** Two geoms at distance 0.09 with `rbound=0.04` each
+   and `margin=0.01` each. Without margin: `0.09 > 0.04 + 0.04 = 0.08` → SAP
+   candidates. With margin: `0.09 < 0.04 + 0.04 + 0.01 + 0.01 = 0.1` → still
+   candidates. Verify contact is detected.
+8. **MuJoCo reference comparison:** Load a sphere-on-plane model with
+   `margin=0.004, gap=0.001` in both CortenForge and MuJoCo. At 5 separation
+   distances spanning `[-0.002, +0.003]`:
+   - Contact count matches
+   - `efc_margin` matches
+   - `qfrc_constraint` matches within `1e-8`
+9. **Breaking change audit:** All code that previously used `contact.includemargin`
+   as a bool compiles and works correctly with the f64 type.
 
-#### Implementation Notes
+#### Implementation Risk
 
-**Narrow-phase function signature change.** Every `collide_*` function currently
-takes `(model, geom1, geom2, pos1, pos2, size1, size2) -> Option<Contact>`. Add
-a `margin: f64` parameter. The dispatch function computes the effective margin
-(S1) before calling the specific collider.
+**Moderate — broad refactoring scope.** The margin parameter must be threaded
+through ~15 narrow-phase functions. Each change is mechanical (add parameter,
+change threshold), but the total surface area is large. Risks:
 
-**Existing broad-phase is correct.** The bounding-sphere cull at line ~5431
-already adds `pair.margin` to the distance check. For automatic contacts, add
-`geom_margin[g1] + geom_margin[g2]` to the broad-phase distance threshold.
+1. **Sign convention:** Our `depth` convention (positive = overlap) is opposite
+   to MuJoCo's `dist` convention (negative = overlap). The constraint assembly
+   must correctly account for this. Verify with a simple sphere-plane test.
+2. **Missing collision function:** If any `collide_*` function is missed, it will
+   not activate contacts within the margin zone for that geometry pair type.
+   Audit the full list against the table above.
+3. **Performance:** Expanding AABBs by margin increases SAP candidate count. For
+   small margins (<5mm), this is negligible. For very large margins, it could
+   slow broadphase. This is acceptable (matches MuJoCo behavior).
+4. **Breaking struct change:** `includemargin: bool → f64` will cause compile
+   errors at all construction sites and any conditional checks. This is
+   caught at compile time, so risk is low.
 
-**Breaking change to Contact struct.** Replacing `includemargin: bool` with
-`includemargin: f64` is a breaking change. Any existing code that checks
-`contact.includemargin` as a bool must be updated. Search for all uses.
+**Mitigation:** Default `margin=0.0` and `gap=0.0` produce identical behavior to
+current code (`-margin = -0.0 = 0.0`, `includemargin = 0.0`). All existing tests
+pass without change. New behavior is only activated when margin/gap are explicitly
+set in MJCF.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — all `collide_*` functions,
-  `make_contact_from_geoms()`, `apply_pair_overrides()`,
-  `assemble_contact_system()` (margin wiring), broad-phase distance check
-- `sim/L0/mjcf/src/parser.rs` — parse `margin`/`gap` from `<geom>` elements
-- `sim/L0/mjcf/src/model_builder.rs` — wire geom-level margin/gap into
-  `Model.geom_margin`/`Model.geom_gap` in `process_geom()`
-- `sim/L0/mjcf/src/defaults.rs` — ensure margin/gap cascade through defaults
-- `sim/L0/tests/integration/` — new test file `contact_margin_gap.rs`
+- `sim/L0/core/src/mujoco_pipeline.rs`:
+  - `Contact` struct — `includemargin: bool → f64`
+  - `Contact::new()`, `Contact::with_condim()` — update construction
+  - `collide_geoms()` — add `margin: f64` parameter
+  - All 14 `collide_*()` functions — add `margin: f64`, change activation check
+  - `make_contact_from_geoms()` — add `margin: f64`, set `includemargin`
+  - `make_contact_flex_rigid()` — add `margin: f64`, set `includemargin`
+  - `apply_pair_overrides()` — set `includemargin = pair.margin - pair.gap`
+  - Broadphase SAP loop — compute margin, pass to `collide_geoms()`
+  - Broadphase explicit pair loop — pass margin to `collide_geoms()`
+  - SAP AABB construction — expand by `geom_margin`
+  - `assemble_contact_system()` — replace `margin = 0.0` with
+    `margin = contact.includemargin`, fix impedance violation computation
+- `sim/L0/mjcf/src/types.rs` — `MjcfGeom.margin`, `MjcfGeom.gap`,
+  `MjcfGeomDefaults.margin`, `MjcfGeomDefaults.gap`
+- `sim/L0/mjcf/src/parser.rs` — parse `margin`/`gap` from `<geom>`
+- `sim/L0/mjcf/src/defaults.rs` — cascade `margin`/`gap`
+- `sim/L0/mjcf/src/model_builder.rs` — wire into `Model.geom_margin`/`geom_gap`
+- `sim/L0/tests/integration/` — new `contact_margin_gap.rs`
+
+---
+
+### 27B. Flex Child Element Parsing — `<contact>`, `<elasticity>`, `<edge>` Structural Fix
+**Status:** ✅ Done | **Effort:** S–M | **Prerequisites:** #27
+
+#### Problem
+
+`parse_flex_attrs()` reads nearly all attributes from the `<flex>` / `<flexcomp>`
+element directly. In MuJoCo, most of these belong on **child elements**:
+
+```xml
+<flex name="cloth" dim="2" radius="0.005">
+  <contact priority="1" solmix="2.0" gap="0.001"
+          friction="0.5 0.005 0.0001" condim="4" margin="0.01"
+          solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2"
+          selfcollide="auto"/>
+  <elasticity young="1e6" poisson="0.3" damping="0.01" thickness="0.001"/>
+  <edge stiffness="100" damping="0.5"/>
+  <vertex pos="..."/>
+  <element data="..."/>
+</flex>
+
+<flexcomp name="soft" type="grid" count="10 10 1" dim="2" radius="0.005">
+  <contact priority="1" solmix="2.0" gap="0.001"/>
+  <elasticity young="5e5" poisson="0.2"/>
+</flexcomp>
+```
+
+**Full mismatch table:**
+
+| Attribute | Our parser reads from | MuJoCo actual location | Impact |
+|-----------|----------------------|----------------------|--------|
+| `name` | `<flex>` | `<flex>` | Correct |
+| `dim` | `<flex>` | `<flex>` | Correct |
+| `radius` | `<flex>` | `<flex>` | Correct |
+| `young` | `<flex>` | `<flex><elasticity>` | **Wrong** — silently lost on conformant MJCF |
+| `poisson` | `<flex>` | `<flex><elasticity>` | **Wrong** — silently lost on conformant MJCF |
+| `damping` | `<flex>` | `<flex><elasticity>` | **Wrong** — silently lost on conformant MJCF |
+| `thickness` | `<flex>` | `<flex><elasticity>` | **Wrong** — silently lost on conformant MJCF |
+| `density` | `<flex>` | Not on `<flex>` at all | **Wrong** — deferred (see below) |
+| `friction` | `<flex>` | `<flex><contact>` | **Wrong** — silently lost on conformant MJCF |
+| `condim` | `<flex>` | `<flex><contact>` | **Wrong** — silently lost on conformant MJCF |
+| `margin` | `<flex>` | `<flex><contact>` | **Wrong** — silently lost on conformant MJCF |
+| `solref` | `<flex>` | `<flex><contact>` | **Wrong** — silently lost on conformant MJCF |
+| `solimp` | `<flex>` | `<flex><contact>` | **Wrong** — silently lost on conformant MJCF |
+| `selfcollide` | `<flex>` as `bool` | `<flex><contact>` as keyword `[none,narrow,bvh,sap,auto]` | **Wrong** — location + type |
+
+Our parser has **three child-element bugs**:
+
+1. **`<flex>` parser** (`parse_flex()`, `parser.rs:2215`): Handles `vertex`,
+   `element`, `pin` children, but `<contact>`, `<elasticity>`, and `<edge>`
+   all fall to `_ => skip_element()` — silently discarded.
+
+2. **`<flexcomp>` parser** (`parse_flexcomp()`, `parser.rs:2395`): Skips ALL
+   child elements with `Ok(_) => {}`. Everything except top-level attrs is lost.
+
+3. **`parse_flex_attrs()`**: Reads contact + elasticity attrs from the top-level
+   element. This is non-conformant — these attrs don't exist on `<flex>` or
+   `<flexcomp>` in MuJoCo. Only works if the user writes non-standard MJCF.
+
+Additionally, items #24–#27 added `flex_priority`, `flex_solmix`, and `flex_gap`
+Model fields wired into `contact_param_flex_rigid()`, but these are always
+hardcoded to defaults because parsing doesn't exist.
+
+#### MuJoCo Authoritative Semantics
+
+##### Direct `<flex>` attributes (correct in our parser)
+
+`name`, `group`, `dim`, `radius`, `material`, `rgba`, `flatskin`, `body`, `node`.
+
+Also has data arrays: `vertex`, `element`, `texcoord`, `elemtexcoord` — these
+are structural data handled by `parse_flex()`, not configuration attrs.
+
+Of these, our `MjcfFlex` supports: `name`, `dim`, `radius`. The rest are out
+of scope for #27B: `group`, `material`, `rgba`, `flatskin` are visual/
+organizational; `body` and `node` are physics-relevant (vertex-to-body and
+vertex-to-DOF mapping) but are a pre-existing parsing gap unrelated to
+child element structure. Our `model_builder` derives body/DOF mapping from
+the enclosing `<body>` hierarchy rather than the `body`/`node` attributes.
+
+##### `<flex><contact>` / `<flexcomp><contact>` attributes
+
+| Attribute | Type | Default | MjcfFlex field | Model field | Status |
+|-----------|------|---------|---------------|-------------|--------|
+| `priority` | int | 0 | **New** | `flex_priority` | Parse in #27B |
+| `solmix` | real | 1 | **New** | `flex_solmix` | Parse in #27B |
+| `gap` | real | 0 | **New** | `flex_gap` | Parse in #27B |
+| `friction` | real(3) | "1 0.005 0.0001" | `friction: f64` (scalar) | `flex_friction` | Parse in #27B (1st component) |
+| `condim` | int | 3 | `condim` | `flex_condim` | Relocate in #27B |
+| `margin` | real | 0 | `margin` | `flex_margin` | Relocate in #27B |
+| `solref` | real(2) | "0.02 1" | `solref` | `flex_solref` | Relocate in #27B |
+| `solimp` | real(5) | "0.9 0.95 0.001 0.5 2" | `solimp` | `flex_solimp` | Relocate in #27B |
+| `selfcollide` | keyword `[none,narrow,bvh,sap,auto]` | "auto" | `selfcollide: bool` -> **`Option<String>`** | `flex_selfcollide` | Fix type + relocate |
+| `contype` | int | 1 | — | — | Deferred (no runtime) |
+| `conaffinity` | int | 1 | — | — | Deferred (no runtime) |
+| `internal` | bool | false | — | — | Deferred |
+| `activelayers` | int | 1 | — | — | Deferred |
+| `vertcollide` | bool | false | — | — | Deferred |
+| `passive` | bool | false | — | — | Deferred |
+
+**Note on `selfcollide`:** MuJoCo's `selfcollide` is a keyword
+`[none, narrow, bvh, sap, auto]` controlling the self-collision broadphase
+algorithm, not a boolean. `"auto"` (the default) means MuJoCo picks;
+`"narrow"` uses pair-wise narrowphase only; `"bvh"` uses bounding volume
+hierarchy; `"sap"` uses sweep-and-prune; `"none"` disables self-collision.
+Our runtime currently checks `if model.flex_selfcollide[i]` as a simple
+enable/disable. Fix: change `MjcfFlex.selfcollide` from `bool` to
+`Option<String>`. `None` = absent (uses default "auto"); `Some(kw)` = explicit
+keyword. Model field stays `Vec<bool>` — builder maps
+`flex.selfcollide.as_deref() != Some("none")` to the bool until algorithm-specific
+support is added. Note: all keywords except `"none"` enable self-collision.
+
+**Note on `friction`:** MuJoCo's `friction` is `real(3)` — sliding, torsional,
+rolling. Our `MjcfFlex.friction` is `f64` (scalar = sliding only). The parser
+must handle multi-component input by taking the first value to avoid silent
+`parse::<f64>()` failure on `"1 0.005 0.0001"`. The upgrade from `f64` to
+`Vector3<f64>` is a pre-existing gap (noted in #24 spec) and out of scope.
+
+**Note on deferred attrs:** `contype`, `conaffinity`, `internal`,
+`activelayers`, `vertcollide`, `passive` require runtime support (flex collision
+filtering, layer-based self-collision, passive force flags) that doesn't exist.
+Parsing without runtime wiring would be misleading. Add when runtime is ready.
+
+##### `<flex><elasticity>` / `<flexcomp><elasticity>` attributes
+
+| Attribute | Type | Default | MjcfFlex field | Model field | Status |
+|-----------|------|---------|---------------|-------------|--------|
+| `young` | real | 0 | `young` | `flex_young` | Relocate in #27B |
+| `poisson` | real | 0 | `poisson` | `flex_poisson` | Relocate in #27B |
+| `damping` | real | 0 | `damping` | `flex_damping` | Relocate in #27B |
+| `thickness` | real | -1 (sentinel: "not set") | `thickness` | `flex_thickness` | Relocate in #27B |
+| `elastic2d` | keyword `[none,bend,stretch,both]` | "none" | — | — | Deferred (not implemented) |
+
+**Note on default changes:** Our `MjcfFlex::default()` currently uses `young: 1e6`
+and `thickness: 0.001`. MuJoCo defaults are `young: 0` and `thickness: -1`.
+This is a **breaking change** — models relying on our non-conformant defaults
+will need to add explicit `<elasticity young="1e6" thickness="0.001"/>`. This
+is the correct fix per CLAUDE.md: "Prefer breaking changes that fix the
+architecture over non-breaking hacks that preserve a bad interface."
+
+**Note on `selfcollide` default change:** Our `MjcfFlex::default()` currently
+uses `selfcollide: false`. MuJoCo default is `"auto"` (enabled). After this
+change, models without explicit `selfcollide` attr will have self-collision
+enabled (matching MuJoCo). This is also a breaking change but is correct.
+
+##### `<flex><edge>` attributes
+
+| Attribute | Type | Default | MjcfFlex field | Model field | Status |
+|-----------|------|---------|---------------|-------------|--------|
+| `stiffness` | real | 0 | **New** | **New** (`flex_edgestiffness`) | Parse + store + wire in #27B |
+| `damping` | real | 0 | **New** | **New** (`flex_edgedamping`) | Parse + store + wire in #27B |
+
+##### `<flexcomp><edge>` additional attributes
+
+`<flexcomp><edge>` has the same `stiffness`/`damping` plus these extra attrs
+that control edge equality constraints generated during `<flexcomp>` expansion:
+
+| Attribute | Type | Default | MjcfFlex field | Model field | Status |
+|-----------|------|---------|---------------|-------------|--------|
+| `equality` | keyword `[none,true,vert]` | "none" | — | — | Deferred (flexcomp expansion) |
+| `solref` | real(2) | "0.02 1" | — | — | Deferred (flexcomp expansion) |
+| `solimp` | real(5) | "0.9 0.95 0.001 0.5 2" | — | — | Deferred (flexcomp expansion) |
+
+**Note on `<flexcomp><edge>` extras:** In MuJoCo, `<flexcomp>` is a procedural
+generator that creates a `<flex>` plus associated equality constraints for edge
+enforcement. The `equality`/`solref`/`solimp` on `<flexcomp><edge>` control
+these generated equality constraints. `equality` is a keyword: `"none"` (no
+constraint, the default), `"true"` (per-edge equality constraints), or `"vert"`
+(averaged vertex constraints). Since our `<flexcomp>` expansion doesn't yet
+generate equality constraints, these attrs are deferred. They do NOT appear
+on `<flex><edge>` — parsed flex bodies never have these attributes.
+
+**Note on MuJoCo architecture:** `<edge stiffness>` and `<edge damping>` are
+**passive spring-damper coefficients**, NOT constraint solver parameters. In
+MuJoCo (`engine_passive.c`), these drive direct forces:
+```
+frc_spring = stiffness * (rest_length - current_length)
+frc_damper = -damping * edge_velocity
+```
+These accumulate into `qfrc_spring` / `qfrc_damper` (our `qfrc_passive`),
+applied *before* the constraint solver. They are entirely separate from the
+constraint-based `flex_edge_solref` which comes from the equality constraint
+path (`mjEQ_FLEX`, using `eq_solref`).
+
+**Note on `stiffness` scope:** MuJoCo docs state that `<edge stiffness>` is
+"Only for 1D flex" (cables/strands). For 2D/3D flex bodies, edge stiffness
+comes from the FEM elasticity model (Young's modulus + Poisson ratio via
+`<elasticity>`) or from plugins. We parse and store the value for all dims
+(matching MuJoCo's parser behavior — it accepts the attr regardless), but the
+passive force path in #27C should document that this is physically meaningful
+only for `dim=1` flex bodies.
+
+Our current `compute_edge_solref_from_material()` passthrough stub conflates
+these two mechanisms. #27C will address the runtime wiring — for now, #27B
+parses and stores the values and adds Model fields so the passive force path
+can use them.
+
+##### `density` on `MjcfFlex`
+
+MuJoCo has no `density` attribute on `<flex>` or its children. Our
+`MjcfFlex.density` field and its parsing from top-level are non-conformant.
+In MuJoCo, flex mass is set via `<flexcomp mass="...">` (total mass) or
+computed from material properties. **Out of scope for #27B** — affects mass
+computation logic, not element structure. Remove the top-level `density` parse
+from `parse_flex_attrs()` but keep the field for internal use by `<flexcomp>`
+procedural generation.
+
+**Implementation note (post-#27B):** We kept `density` parsing on `<flex>` as
+a non-standard extension because our entire flex mass computation depends on it
+and there's no other mass-setting mechanism yet. **Tracked as #27E** — see spec
+below. The parser code has `// DEFERRED(#27E)` comments marking the non-conformant
+parse.
+
+#### Implementation Plan
+
+##### S1. Update `MjcfFlex` struct
+
+Add new fields to `MjcfFlex` (`types.rs:3182`):
+
+```rust
+/// Contact priority (default 0). Higher priority geom's params win.
+pub priority: i32,
+/// Solver parameter mixing weight (default 1.0).
+pub solmix: f64,
+/// Contact gap — buffer zone within margin (default 0.0).
+pub gap: f64,
+/// Self-collision broadphase mode. MuJoCo keyword: [none, narrow, bvh, sap, auto].
+/// None = absent (default "auto"); Some("none") = disabled; other = enabled.
+pub selfcollide: Option<String>,
+/// Passive edge spring stiffness (from <edge> child). Default 0.0 = disabled.
+/// Used for direct spring-damper forces in the passive force path.
+pub edge_stiffness: f64,
+/// Passive edge damping coefficient (from <edge> child). Default 0.0 = disabled.
+pub edge_damping: f64,
+```
+
+Change existing field:
+```rust
+// BEFORE:
+pub selfcollide: bool,
+// AFTER:
+// Replaced by Option<String> above — remove the bool field
+```
+
+Update `MjcfFlex::default()` — add new fields and fix existing defaults to
+match MuJoCo:
+```rust
+// New fields:
+priority: 0,
+solmix: 1.0,
+gap: 0.0,
+selfcollide: None,    // was: selfcollide: false
+edge_stiffness: 0.0,
+edge_damping: 0.0,
+// Fix existing defaults to match MuJoCo XML spec:
+young: 0.0,          // was: 1e6 — MuJoCo default is 0
+thickness: -1.0,     // was: 0.001 — MuJoCo default is -1 (sentinel: "not set")
+```
+
+##### S2. Extract child element parsing helpers
+
+Create three helpers in `parser.rs`:
+
+```rust
+/// Parse `<contact>` child element attributes into MjcfFlex.
+fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
+    if let Some(s) = get_attribute_opt(e, "priority") {
+        flex.priority = s.parse().unwrap_or(0);
+    }
+    if let Some(s) = get_attribute_opt(e, "solmix") {
+        flex.solmix = s.parse().unwrap_or(1.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "gap") {
+        flex.gap = s.parse().unwrap_or(0.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "friction") {
+        // MuJoCo friction is real(3): "slide torsion rolling".
+        // MjcfFlex.friction is f64 (scalar = sliding component only).
+        // Parse first whitespace-separated value to handle both "0.5" and
+        // "0.5 0.005 0.0001" without silent parse::<f64>() failure.
+        flex.friction = s.split_whitespace()
+            .next()
+            .and_then(|t| t.parse().ok())
+            .unwrap_or(1.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "condim") {
+        flex.condim = s.parse().unwrap_or(3);
+    }
+    if let Some(s) = get_attribute_opt(e, "margin") {
+        flex.margin = s.parse().unwrap_or(0.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "solref") {
+        let vals: Vec<f64> = s.split_whitespace()
+            .filter_map(|t| t.parse().ok()).collect();
+        if vals.len() >= 2 { flex.solref = [vals[0], vals[1]]; }
+    }
+    if let Some(s) = get_attribute_opt(e, "solimp") {
+        let vals: Vec<f64> = s.split_whitespace()
+            .filter_map(|t| t.parse().ok()).collect();
+        if vals.len() >= 5 {
+            flex.solimp = [vals[0], vals[1], vals[2], vals[3], vals[4]];
+        }
+    }
+    if let Some(s) = get_attribute_opt(e, "selfcollide") {
+        flex.selfcollide = Some(s);
+    }
+}
+
+/// Parse `<elasticity>` child element attributes into MjcfFlex.
+fn parse_flex_elasticity_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
+    if let Some(s) = get_attribute_opt(e, "young") {
+        flex.young = s.parse().unwrap_or(0.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "poisson") {
+        flex.poisson = s.parse().unwrap_or(0.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "damping") {
+        flex.damping = s.parse().unwrap_or(0.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "thickness") {
+        flex.thickness = s.parse().unwrap_or(-1.0);
+    }
+}
+
+/// Parse `<edge>` child element attributes into MjcfFlex.
+/// These are passive spring-damper coefficients (not constraint params).
+fn parse_flex_edge_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
+    if let Some(s) = get_attribute_opt(e, "stiffness") {
+        flex.edge_stiffness = s.parse().unwrap_or(0.0);
+    }
+    if let Some(s) = get_attribute_opt(e, "damping") {
+        flex.edge_damping = s.parse().unwrap_or(0.0);
+    }
+}
+```
+
+##### S3. Wire child elements in `parse_flex()`
+
+In `parse_flex()` (`parser.rs:2215`), add arms for `contact`, `elasticity`,
+and `edge` in both `Event::Start` and `Event::Empty` match branches:
+
+```rust
+b"contact" => {
+    parse_flex_contact_attrs(e, &mut flex);
+    // For Event::Start, consume closing tag:
+    skip_element(reader, &elem_name)?;
+}
+b"elasticity" => {
+    parse_flex_elasticity_attrs(e, &mut flex);
+    skip_element(reader, &elem_name)?;
+}
+b"edge" => {
+    parse_flex_edge_attrs(e, &mut flex);
+    skip_element(reader, &elem_name)?;
+}
+```
+
+##### S4. Wire child elements in `parse_flexcomp()`
+
+In `parse_flexcomp()` (`parser.rs:2410-2422`), replace the blind `Ok(_) => {}`
+loop with proper child element dispatch:
+
+```rust
+loop {
+    match reader.read_event_into(&mut buf) {
+        Ok(Event::Start(ref e)) => {
+            let elem_name = e.name().as_ref().to_vec();
+            match elem_name.as_slice() {
+                b"contact" => {
+                    parse_flex_contact_attrs(e, &mut flex);
+                    skip_element(reader, &elem_name)?;
+                }
+                b"elasticity" => {
+                    parse_flex_elasticity_attrs(e, &mut flex);
+                    skip_element(reader, &elem_name)?;
+                }
+                b"edge" => {
+                    parse_flex_edge_attrs(e, &mut flex);
+                    skip_element(reader, &elem_name)?;
+                }
+                b"pin" => {
+                    if let Some(s) = get_attribute_opt(e, "id") {
+                        let ids: Vec<usize> = s.split_whitespace()
+                            .filter_map(|t| t.parse().ok()).collect();
+                        flex.pinned.extend(ids);
+                    }
+                    skip_element(reader, &elem_name)?;
+                }
+                _ => { skip_element(reader, &elem_name)?; }
+            }
+        }
+        Ok(Event::Empty(ref e)) => {
+            let elem_name = e.name().as_ref().to_vec();
+            match elem_name.as_slice() {
+                b"contact" => parse_flex_contact_attrs(e, &mut flex),
+                b"elasticity" => parse_flex_elasticity_attrs(e, &mut flex),
+                b"edge" => parse_flex_edge_attrs(e, &mut flex),
+                b"pin" => {
+                    if let Some(s) = get_attribute_opt(e, "id") {
+                        let ids: Vec<usize> = s.split_whitespace()
+                            .filter_map(|t| t.parse().ok()).collect();
+                        flex.pinned.extend(ids);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(Event::End(ref e)) if e.name().as_ref() == b"flexcomp" => break,
+        Ok(Event::Eof) => {
+            return Err(MjcfError::XmlParse("unexpected EOF in flexcomp".into()));
+        }
+        Ok(_) => {}
+        Err(e) => return Err(MjcfError::XmlParse(e.to_string())),
+    }
+    buf.clear();
+}
+```
+
+**Note:** Also adds `<pin>` handling to `parse_flexcomp()` — currently skipped.
+
+**Note on `parse_flexcomp_empty()`:** Self-closing `<flexcomp ... />` elements
+(`parser.rs:2431`) call `parse_flex_attrs()` but can't have children. After S5
+strips `parse_flex_attrs()`, a self-closing flexcomp correctly gets default
+values for all contact/elasticity/edge params. No changes needed — just be aware
+this path exists.
+
+##### S5. Clean up `parse_flex_attrs()`
+
+Remove all attrs that belong on child elements:
+
+**Remove** (lines 2340-2387):
+- `young`, `poisson`, `damping`, `thickness` -> now on `<elasticity>`
+- `friction`, `condim`, `margin`, `solref`, `solimp`, `selfcollide` -> now on `<contact>`
+- `density` -> not a MuJoCo `<flex>` attr (keep field, remove parse)
+
+**Keep** (lines 2334-2338, 2364-2366):
+- `name` — direct `<flex>` attr
+- `dim` — direct `<flex>` attr
+- `radius` — direct `<flex>` attr
+
+After cleanup, `parse_flex_attrs()` becomes:
+
+```rust
+fn parse_flex_attrs(e: &BytesStart) -> MjcfFlex {
+    let mut flex = MjcfFlex::default();
+    if let Some(s) = get_attribute_opt(e, "name") {
+        flex.name = s;
+    }
+    if let Some(s) = get_attribute_opt(e, "dim") {
+        flex.dim = s.parse().unwrap_or(2);
+    }
+    if let Some(s) = get_attribute_opt(e, "radius") {
+        flex.radius = s.parse().unwrap_or(0.005);
+    }
+    flex
+}
+```
+
+No existing tests use top-level flex contact or elasticity attrs (verified via
+grep). This is safe.
+
+##### S6. Update `selfcollide` throughout
+
+Change `MjcfFlex.selfcollide` from `bool` to `Option<String>`. Update
+references:
+
+- `model_builder.rs`:
+  `self.flex_selfcollide.push(flex.selfcollide.as_deref() != Some("none"))`
+  When absent (None), defaults to `true` (MuJoCo default is `"auto"` = enabled).
+  `Some("none")` maps to `false`. All other keywords map to `true`.
+  (Model field stays `Vec<bool>` — runtime semantics unchanged until algorithm
+  support is added)
+- No runtime changes — `model.flex_selfcollide[i]` remains `bool` on Model.
+
+##### S7. Wire new fields into model builder
+
+In `process_flex()` (`model_builder.rs:3002-3004`), replace hardcoded defaults
+and add new pushes:
+
+```rust
+// BEFORE:
+self.flex_gap.push(0.0);
+self.flex_priority.push(0);
+self.flex_solmix.push(1.0);
+
+// AFTER:
+self.flex_gap.push(flex.gap);
+self.flex_priority.push(flex.priority);
+self.flex_solmix.push(flex.solmix);
+```
+
+Add new fields for edge stiffness/damping in three places:
+```rust
+// 1. ModelBuilder struct (model_builder.rs, after flex_selfcollide):
+flex_edgestiffness: Vec<f64>,
+flex_edgedamping: Vec<f64>,
+
+// 2. ModelBuilder init (model_builder.rs, in new()):
+flex_edgestiffness: vec![],
+flex_edgedamping: vec![],
+
+// 3. Model struct (mujoco_pipeline.rs, after flex_selfcollide):
+pub flex_edgestiffness: Vec<f64>,  // passive edge spring stiffness
+pub flex_edgedamping: Vec<f64>,    // passive edge damping coefficient
+
+// 4. Model default init (mujoco_pipeline.rs):
+flex_edgestiffness: vec![],
+flex_edgedamping: vec![],
+
+// 5. In process_flex():
+self.flex_edgestiffness.push(flex.edge_stiffness);
+self.flex_edgedamping.push(flex.edge_damping);
+
+// 6. In build() transfer:
+flex_edgestiffness: self.flex_edgestiffness,
+flex_edgedamping: self.flex_edgedamping,
+```
+
+##### S8. No runtime changes needed for contact path
+
+The runtime contact code (`contact_param_flex_rigid()`, `make_contact_flex_rigid()`,
+constraint assembly) already reads Model fields — the contact parameter wiring
+is complete once S7 lands.
+
+The new `flex_edgestiffness` / `flex_edgedamping` Model fields are stored but
+not yet consumed by the passive force path. Wiring them into the passive force
+computation (spring-damper forces on edges, analogous to MuJoCo's
+`engine_passive.c`) is deferred to #27C.
+
+#### Acceptance Criteria
+
+1. **`<flex><contact>` round-trip:** `<flex dim="2"><contact priority="2"
+   solmix="3.0" gap="0.01" friction="0.5" condim="4" margin="0.02"
+   selfcollide="bvh"/><vertex pos="0 0 0 1 0 0 0 1 0"/><element
+   data="0 1 2"/></flex>` produces `model.flex_priority[i] == 2`,
+   `model.flex_solmix[i] == 3.0`, `model.flex_gap[i] == 0.01`,
+   `model.flex_friction[i] == 0.5`, `model.flex_condim[i] == 4`,
+   `model.flex_margin[i] == 0.02`, `model.flex_selfcollide[i] == true`.
+2. **`<flex><elasticity>` round-trip:** `<flex dim="2"><elasticity young="5e5"
+   poisson="0.3" damping="0.01" thickness="0.002"/><vertex pos="0 0 0 1 0 0
+   0 1 0"/><element data="0 1 2"/></flex>` produces `model.flex_young[i] ==
+   5e5`, `model.flex_poisson[i] == 0.3`, `model.flex_damping[i] == 0.01`,
+   `model.flex_thickness[i] == 0.002`.
+3. **`<flex><edge>` round-trip:** `<flex dim="2"><edge stiffness="100"
+   damping="0.5"/><vertex pos="0 0 0 1 0 0 0 1 0"/><element data="0 1 2"/>
+   </flex>` produces `model.flex_edgestiffness[i] == 100.0`,
+   `model.flex_edgedamping[i] == 0.5`.
+4. **`<flexcomp><contact>` round-trip:** `<flexcomp type="grid" dim="2"
+   count="3 3 1"><contact priority="1" gap="0.005"/></flexcomp>` produces
+   `model.flex_priority[i] == 1`, `model.flex_gap[i] == 0.005`.
+5. **`<flexcomp><elasticity>` round-trip:** `<flexcomp type="grid" dim="2"
+   count="3 3 1"><elasticity young="2e5"/></flexcomp>` produces
+   `model.flex_young[i] == 2e5`.
+6. **Multi-component friction:** `<flex dim="2"><contact friction="0.8 0.005
+   0.0001"/><vertex pos="0 0 0 1 0 0 0 1 0"/><element data="0 1 2"/></flex>`
+   parses `model.flex_friction[i] == 0.8` (first component, sliding).
+   Single-value `friction="0.5"` also works.
+7. **Default preservation:** Omitting all child elements produces defaults:
+   `priority=0`, `solmix=1.0`, `gap=0.0`, `friction=1.0`, `condim=3`,
+   `margin=0.0`, `solref=[0.02,1]`, `solimp=[0.9,0.95,0.001,0.5,2]`,
+   `selfcollide=true` (MuJoCo default "auto" = enabled), `young=0`,
+   `poisson=0.0`, `damping=0.0`, `thickness=-1`, `edge_stiffness=0.0`,
+   `edge_damping=0.0`.
+8. **Top-level attrs no longer parsed:** `<flex young="5e5" friction="0.5">`
+   without child elements ignores both attributes (conformant with MuJoCo).
+9. **`selfcollide` keyword:** `<flex dim="2"><contact selfcollide="auto"/>
+   <vertex pos="0 0 0 1 0 0 0 1 0"/><element data="0 1 2"/></flex>` stores
+   `flex.selfcollide == Some("auto")` and `model.flex_selfcollide[i] == true`.
+   `selfcollide="none"` produces `flex.selfcollide == Some("none")` and
+   `model.flex_selfcollide[i] == false`. Omitting `selfcollide` produces
+   `flex.selfcollide == None` and `model.flex_selfcollide[i] == true` (MuJoCo
+   default is `"auto"` = enabled).
+10. **All existing tests pass** — no regressions. (Verified: no existing tests
+    use top-level flex contact or elasticity attrs.)
+
+#### Files
+
+- `sim/L0/mjcf/src/types.rs` — add 5 fields to `MjcfFlex` (`priority`,
+  `solmix`, `gap`, `edge_stiffness`, `edge_damping`), change `selfcollide`
+  from `bool` to `Option<String>`
+- `sim/L0/mjcf/src/parser.rs` — three child-element helpers
+  (`parse_flex_contact_attrs`, `parse_flex_elasticity_attrs`,
+  `parse_flex_edge_attrs`), wire into `parse_flex()` + `parse_flexcomp()`,
+  strip `parse_flex_attrs()` to `name`/`dim`/`radius` only
+- `sim/L0/mjcf/src/model_builder.rs` — wire `flex.gap/priority/solmix`,
+  update `selfcollide` push to `flex.selfcollide.as_deref() != Some("none")`, push
+  `edge_stiffness`/`edge_damping` to new Model fields
+- `sim/L0/core/src/mujoco_pipeline.rs` — add `flex_edgestiffness: Vec<f64>`
+  and `flex_edgedamping: Vec<f64>` to Model struct
+
+---
+
+### 27C. Passive Edge Spring-Damper Forces + `compute_edge_solref()` Cleanup
+**Status:** ✅ Done | **Effort:** S–M | **Prerequisites:** #27B
+
+#### Problem
+
+MuJoCo's flex edge system uses **two separate mechanisms** for edge-length
+enforcement (verified against `engine_passive.c` and `engine_core_constraint.c`):
+
+1. **Passive spring-damper forces** (`engine_passive.c`): Controlled by
+   `flex_edgestiffness[f]` and `flex_edgedamping[f]` (from `<edge stiffness="..."
+   damping="..."/>`). Applied as direct forces to `qfrc_spring` / `qfrc_damper`
+   before the constraint solver:
+   ```
+   frc_spring = stiffness * (rest_length - current_length)
+   frc_damper = -damping * edge_velocity
+   ```
+
+2. **Equality constraints** (`engine_core_constraint.c`): Flex edge equality
+   (`mjEQ_FLEX`) creates constraint rows per non-rigid edge. Solver parameters
+   come from `eq_solref` / `eq_solimp` on the parent equality constraint, NOT
+   from material-derived values.
+
+Our codebase conflates these two mechanisms:
+- `compute_edge_solref_from_material()` is a passthrough stub that was supposed
+  to derive `flex_edge_solref` from Young's modulus. But MuJoCo does NOT derive
+  edge constraint solref from material properties — the constraint solref comes
+  from the equality constraint definition.
+- After #27B, we have `model.flex_edgestiffness` and `model.flex_edgedamping`
+  stored but not consumed by any passive force computation.
+
+#### What this task does
+
+1. **Wire passive edge spring-damper forces** into the Newton penalty path
+   and/or passive force computation:
+   - If `flex_edgestiffness[flex_id] > 0` or `flex_edgedamping[flex_id] > 0`,
+     apply spring-damper forces to each non-rigid edge
+   - Force accumulates into `qfrc_passive` (our analog of MuJoCo's
+     `qfrc_spring` + `qfrc_damper`)
+
+2. **Clean up `compute_edge_solref_from_material()`**: Either remove the stub
+   entirely (if edge constraints should just use `flex.solref` directly, which
+   is the current behavior and appears to match MuJoCo's equality constraint
+   path), or document clearly that it's an intentional passthrough, not a stub
+   awaiting implementation.
+
+3. **Document the dual-mechanism architecture** in a code comment so future
+   contributors understand the distinction between passive forces (stiffness/
+   damping) and constraint-based edge enforcement (solref/solimp).
+
+#### Reference
+
+- **MuJoCo `engine_passive.c`**: Passive spring-damper force loop over flex
+  edges — uses `flex_edgestiffness`, `flex_edgedamping`, `flexedge_length0`,
+  `flexedge_length`, `flexedge_velocity`, sparse Jacobian `flexedge_J`
+- **MuJoCo `engine_core_constraint.c`**: Flex edge equality constraints
+  (`mjEQ_FLEX`) — uses `eq_solref`/`eq_solimp`, not material-derived values
+- **Prior documentation:** `future_work_6b_precursor_to_7.md` S8 (line 138)
+  — note that the "material-derived per-edge solref" framing was incorrect;
+  MuJoCo uses a separate passive force mechanism instead
+- **MuJoCo `engine_setconst.c`**: `makeFlexSparse()` — skips Jacobian
+  computation when `!flex_edgeequality && !flex_edgedamping && !flex_edgestiffness`
+
+#### Implementation Plan
+
+##### S1. Add passive edge spring-damper forces in `mj_fwd_passive()`
+
+Add a new section in `mj_fwd_passive()` (`mujoco_pipeline.rs:11569`), after the
+flex vertex damping loop and before the flex bending passive forces. This matches
+MuJoCo's `engine_passive.c` ordering.
+
+```rust
+// Flex edge passive spring-damper forces.
+// MuJoCo architecture: <edge stiffness="..." damping="..."/> drives passive
+// forces (engine_passive.c), separate from constraint-based edge enforcement
+// (mjEQ_FLEX in engine_core_constraint.c which uses eq_solref/eq_solimp).
+for e in 0..model.nflexedge {
+    let flex_id = model.flexedge_flexid[e];
+    let stiffness = model.flex_edgestiffness[flex_id];
+    let damping = model.flex_edgedamping[flex_id];
+
+    if stiffness == 0.0 && damping == 0.0 {
+        continue;
+    }
+
+    let [v0, v1] = model.flexedge_vert[e];
+
+    // Skip edges where both vertices are pinned (rigid edge)
+    if model.flexvert_invmass[v0] == 0.0 && model.flexvert_invmass[v1] == 0.0 {
+        continue;
+    }
+
+    let x0 = data.flexvert_xpos[v0];
+    let x1 = data.flexvert_xpos[v1];
+    let diff = x1 - x0;
+    let dist = diff.norm();
+    if dist < 1e-10 {
+        continue;
+    }
+
+    let direction = diff / dist;
+    let rest_len = model.flexedge_length0[e];
+
+    // Spring force: stiffness * (rest_length - current_length)
+    // Positive when compressed (restoring), negative when stretched.
+    let frc_spring = stiffness * (rest_len - dist);
+
+    // Damping force: -damping * edge_velocity
+    // edge_velocity = d(dist)/dt = (v1 - v0) · direction
+    let dof0 = model.flexvert_dofadr[v0];
+    let dof1 = model.flexvert_dofadr[v1];
+    let vel0 = Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2]);
+    let vel1 = Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2]);
+    let edge_velocity = (vel1 - vel0).dot(&direction);
+    let frc_damper = -damping * edge_velocity;
+
+    let force_mag = frc_spring + frc_damper;
+
+    // Apply via J^T: edge Jacobian is ±direction for the two endpoint DOFs.
+    // F_v0 = -direction * force_mag (pulls v0 toward v1 when stretched)
+    // F_v1 = +direction * force_mag (pulls v1 toward v0 when stretched)
+    if model.flexvert_invmass[v0] > 0.0 {
+        for ax in 0..3 {
+            data.qfrc_passive[dof0 + ax] -= direction[ax] * force_mag;
+        }
+    }
+    if model.flexvert_invmass[v1] > 0.0 {
+        for ax in 0..3 {
+            data.qfrc_passive[dof1 + ax] += direction[ax] * force_mag;
+        }
+    }
+}
+```
+
+**Design notes:**
+- No stability clamp needed (unlike bending): edge spring forces are bounded
+  by `stiffness * rest_len` which is a sane quantity for reasonable stiffness
+  values. MuJoCo's `engine_passive.c` doesn't clamp edge forces either.
+- No `flexedge_velocity` Data field needed: we compute the scalar edge velocity
+  inline from `qvel` and the edge direction vector, same pattern as the Newton
+  penalty path (line 14835).
+- Uses `qfrc_passive` directly. MuJoCo separates into `qfrc_spring` and
+  `qfrc_damper` but our architecture combines them into `qfrc_passive`.
+- **1D scope note:** MuJoCo docs say `<edge stiffness>` is "Only for 1D flex"
+  (cables). For 2D/3D, elasticity comes from FEM via `<elasticity>`. The code
+  applies to all dims (matching MuJoCo's runtime — it doesn't gate on dim), but
+  users should only set nonzero `<edge stiffness>` for `dim=1` flex bodies.
+
+**Known architectural differences vs MuJoCo `engine_passive.c`:**
+
+These are deliberate simplifications that match our existing flex infrastructure:
+
+1. **`has_spring`/`has_damping` global flags:** MuJoCo multiplies stiffness
+   by `has_spring` (from `mjDSBL_SPRING`) and damping by `has_damping` (from
+   `mjDSBL_DAMPER`). These are **separate** disable flags — you can disable
+   springs while keeping dampers active. Our codebase has no `disableflags`-
+   based passive force gating — `mj_fwd_passive()` always runs. Same gap
+   exists for all our passive forces (bending, vertex damping, etc.). Tracked
+   as part of #41 (`disableflags`).
+
+2. **`flex_rigid[f]` / `flexedge_rigid[e]`:** MuJoCo skips entire rigid flex
+   bodies and individual rigid edges via dedicated boolean arrays. We don't have
+   these fields — we use `flexvert_invmass[v] == 0.0` per-vertex instead. This
+   is semantically equivalent for edges (a rigid edge has both endpoints with
+   `invmass == 0`), but less efficient (checks per-edge vs one check per-flex).
+   Not a correctness issue.
+
+3. **Sparse Jacobian (`flexedge_J`) vs inline `±direction`:** MuJoCo uses a
+   pre-computed sparse edge Jacobian `flexedge_J` for `J^T * force`, which
+   handles the general case where flex vertices may be attached to complex
+   multi-DOF bodies. Our code computes the Jacobian inline as `±direction`
+   applied to `flexvert_dofadr`, which assumes each vertex maps to 3 consecutive
+   translational DOFs. **This matches our existing architecture** — the bending
+   passive force loop (`mj_fwd_passive()` line 11642-11689) and the Newton
+   penalty path (line 14827-14854) both use the same `flexvert_dofadr` + 3-DOF
+   inline pattern. Adding sparse Jacobian support is a larger infrastructure
+   change that would affect all flex force paths, not just edge stiffness.
+
+4. **`flexedge_length` / `flexedge_velocity` pre-computation:** MuJoCo reads
+   pre-computed `d->flexedge_length[e]` and `d->flexedge_velocity[e]`. We
+   compute both inline from `flexvert_xpos` and `qvel`. Same results, slightly
+   less efficient but avoids adding Data fields. Matches the pattern used by
+   our Newton penalty path (line 14811-14835).
+
+##### S2. Clean up `compute_edge_solref_from_material()`
+
+Replace the stub with a clear passthrough that documents the architecture:
+
+```rust
+/// Compute per-flex edge constraint solref.
+///
+/// MuJoCo architecture note: Edge constraint solref comes from the equality
+/// constraint definition (eq_solref), not from material properties. The
+/// <edge stiffness="..." damping="..."/> attributes control passive spring-
+/// damper forces (applied in mj_fwd_passive), not constraint solver params.
+///
+/// Our current architecture uses flex-level solref for all edge constraints,
+/// which matches MuJoCo's behavior when no explicit equality constraint
+/// overrides are defined.
+fn compute_edge_solref(flex: &MjcfFlex) -> [f64; 2] {
+    flex.solref
+}
+```
+
+Changes:
+- Rename from `compute_edge_solref_from_material()` to `compute_edge_solref()`
+  — removes the misleading "from_material" suffix
+- Replace the dead-code guard (`if flex.young <= 0.0 || ...`) with a direct
+  return — the function is an intentional passthrough, not a stub
+- Update the call site at `model_builder.rs:2990`
+- Update the doc comment on `Model.flex_edge_solref` (`mujoco_pipeline.rs:1420`)
+  from "derived from young/poisson/damping" to "per-flex solref passthrough"
+
+##### S3. Update documentation comment on `flex_edge_solref`
+
+In `mujoco_pipeline.rs:1420`:
+```rust
+// BEFORE:
+/// Per-flex: edge constraint solref (derived from young/poisson/damping).
+pub flex_edge_solref: Vec<[f64; 2]>,
+
+// AFTER:
+/// Per-flex: edge constraint solref. Uses flex-level solref (from
+/// <contact solref="..."/>). MuJoCo derives this from eq_solref on the
+/// parent equality constraint; our architecture uses flex.solref as the
+/// default, which matches MuJoCo when no explicit equality override exists.
+pub flex_edge_solref: Vec<[f64; 2]>,
+```
+
+##### S4. Update `future_work_6b_precursor_to_7.md` S8 reference
+
+Add a correction note at `future_work_6b_precursor_to_7.md:775-793` marking
+the "material-derived per-edge solref" framing as superseded:
+
+```
+**Correction (from #27C):** The original framing of material-derived per-edge
+solref was incorrect. MuJoCo does not derive edge constraint solref from
+Young's modulus. Instead: (1) edge constraints use eq_solref from the parent
+equality constraint, and (2) <edge stiffness/damping> drives passive spring-
+damper forces in engine_passive.c. See future_work_7.md #27C for details.
+```
+
+#### Acceptance Criteria
+
+1. **Edge spring force applied:** A flex with `<edge stiffness="100"/>` and one
+   edge stretched to 1.1× rest length produces a nonzero `qfrc_passive`
+   contribution on both edge endpoint DOFs. Force magnitude matches:
+   `100.0 * (rest_len - 1.1 * rest_len) = -100.0 * 0.1 * rest_len`.
+2. **Edge damping force applied:** A flex with `<edge damping="10"/>` and
+   nonzero vertex velocities along an edge produces a velocity-dependent
+   `qfrc_passive` contribution.
+3. **Zero stiffness/damping skip:** A flex with default `<edge/>` (both 0.0) or
+   no `<edge>` child produces no passive edge forces — `qfrc_passive` unchanged
+   by the edge loop.
+4. **Pinned vertex skip:** An edge where both vertices are pinned
+   (`invmass == 0.0`) is skipped. An edge where one vertex is pinned applies
+   force only to the non-pinned vertex.
+5. **Rename compiles:** `compute_edge_solref_from_material` no longer exists.
+   `compute_edge_solref` used at `model_builder.rs:2990`. No other references.
+6. **Doc comment updated:** `Model.flex_edge_solref` comment no longer
+   references Young's modulus or material derivation.
+7. **6b correction note added:** `future_work_6b_precursor_to_7.md` S8 section
+   contains correction note referencing #27C.
+8. **All existing tests pass** — no regressions. The passive force is additive
+   to `qfrc_passive` and does not affect the constraint path.
+
+#### Files
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — passive edge spring-damper loop in
+  `mj_fwd_passive()`, Model field doc comment update
+- `sim/L0/mjcf/src/model_builder.rs` — rename
+  `compute_edge_solref_from_material()` → `compute_edge_solref()`, simplify body
+- `sim/docs/todo/future_work_6b_precursor_to_7.md` — correction note on S8
+
+---
+
+### 27D. Flex `body` / `node` Attribute Parsing + `flexvert_bodyid` Wiring
+**Status:** ✅ Done | **Effort:** S–M | **Prerequisites:** #27B
+
+> **Post-implementation note (Batch 1 review):** Both `body` and `node` are
+> fully implemented. `node` resolves body names → world positions for vertex
+> geometry, parents vertex bodies to the named node bodies with zero local
+> offset, and supports nested (non-worldbody) node bodies. `group` is fully
+> wired through L0 → L1: parsed for both geoms and flex, stored in
+> `Model.geom_group`/`Model.flex_group`, consumed by Bevy via `VisGroup`
+> component and `ViewerConfig.show_groups[0..6]`. AC2/AC3
+> (shared-DOF vertices) remain unimplemented — our Option A architecture
+> always creates a new body per vertex with 3 slide joints. Shared-body
+> vertices (multiple vertices referencing the same body name) would require
+> skipping body/joint creation and pointing `flexvert_dofadr` at the
+> existing body's DOFs. This is a niche use case with no current test or
+> RL workflow exercising it.
+
+#### Discovery Context
+
+Discovered during #27B/#27C spec review (measure-twice pass). MuJoCo's `<flex>`
+element has two direct attributes that our parser completely ignores:
+
+- `body` — `string(nvert)`: space-separated list of body names, one per vertex.
+  Determines which rigid body each flex vertex is attached to. Controls DOF
+  mapping: vertices attached to a body inherit that body's DOFs instead of
+  getting their own 3 translational DOFs.
+- `node` — `string(nnode)`, optional: names of bodies to use as flex nodes
+  (alternative to `<vertex>` for attaching flex vertices to existing bodies).
+
+#### Current State
+
+**Parser (`parser.rs:2331-2389`):** `parse_flex_attrs()` currently parses 14
+attributes (name, dim, young, poisson, damping, thickness, density, friction,
+condim, margin, radius, solref, solimp, selfcollide) but does NOT parse `body`
+or `node`. Both are silently ignored. **Note:** After #27B, `parse_flex_attrs()`
+will be stripped to only `name`/`dim`/`radius` — the contact/elasticity attrs
+move to child element helpers. The `body`/`node`/`group` additions in this spec
+apply to the post-#27B version of `parse_flex_attrs()`.
+
+**Model builder (`model_builder.rs:3177`):** `flexvert_bodyid` is hardcoded:
+```rust
+flexvert_bodyid: vec![usize::MAX; self.nflexvert],  // Free vertices: no body attachment
+```
+All flex vertices are treated as free (unattached to any rigid body), regardless
+of what the MJCF `body` attribute specifies. `usize::MAX` is the sentinel for
+"no body attachment".
+
+**MjcfFlex struct (`types.rs:3182-3217`):** No `body` or `node` fields exist.
+
+**Impact:** Any MJCF model that uses `<flex body="body1 body2 ...">` to attach
+flex vertices to rigid bodies will silently ignore the attachment. All vertices
+get independent translational DOFs instead of inheriting body DOFs. This produces
+wrong physics for body-attached flex models (e.g., cloth attached to a rigid
+frame, cables tethered to moving bodies).
+
+#### MuJoCo Authoritative Semantics
+
+- **S1 — `body` attribute:** `string(nvert)`, **required** on `<flex>`.
+  Space-separated list of body names, one per vertex. Length must exactly equal
+  the number of vertices. Each name references a body in the kinematic tree.
+  MuJoCo resolves this during compilation to populate `m->flexvert_bodyid[v]`
+  (integer body ID per vertex). **Key insight:** In MuJoCo, there are no truly
+  "free" flex vertices — every vertex is attached to a body. What our
+  architecture treats as "free 3-DOF vertices" corresponds to `<flexcomp>`
+  auto-generating a per-vertex body (each with its own DOFs). When multiple
+  vertices share the same body name, they share that body's DOFs and move
+  rigidly with it. When each vertex has a unique body, each gets independent
+  DOFs through its body.
+
+- **S2 — `node` attribute:** `string(nnode)`, optional. Names of bodies to serve
+  as flex nodes. Alternative to explicit `<vertex>` positions — vertex positions
+  are taken from the named bodies' positions at compile time. Also sets
+  `flexvert_bodyid` for each node vertex. Mutually exclusive with `<vertex>`
+  child element / `vertex` direct attribute.
+
+- **S3 — `group` attribute:** `int`, default `"0"`. Visualization group (0-5).
+  Out of scope for physics but should be parsed for completeness.
+
+- **S4 — DOF mapping consequences:** When `flexvert_bodyid[v] != -1` (body-
+  attached), the vertex's DOF address (`flexvert_dofadr[v]`) points to that
+  body's DOFs instead of independent translational DOFs. This means:
+  - The vertex count does NOT contribute to `nv` (total DOFs)
+  - Jacobians for forces on that vertex use the body's full Jacobian
+  - `flexvert_invmass[v]` reflects the body's inertia, not vertex mass
+  - Our current inline `±direction` force application (3 consecutive translational
+    DOFs at `flexvert_dofadr[v]`) would be WRONG for body-attached vertices
+
+- **S5 — Interaction with sparse Jacobian (§42A-i):** Body-attached vertices
+  are the primary reason MuJoCo uses the sparse `flexedge_J` Jacobian instead
+  of inline `±direction`. When a vertex is attached to a multi-DOF body (e.g.,
+  a free body with 6 DOFs), forces must be projected through the full body
+  Jacobian. This is tracked as a separate runtime gap (§42A-i).
+
+#### Specification
+
+1. **Add fields to `MjcfFlex`** (`types.rs`):
+   ```rust
+   /// Body names for vertex attachment (one per vertex). Required on <flex>.
+   /// For <flexcomp>, auto-generated during expansion (one body per vertex).
+   pub body: Vec<String>,
+   /// Node body names (alternative to <vertex> positions).
+   pub node: Vec<String>,
+   /// Visualization group (0-5).
+   pub group: i32,
+   ```
+
+2. **Parse in `parse_flex_attrs()`** (`parser.rs`):
+   ```rust
+   if let Some(s) = get_attribute_opt(e, "body") {
+       flex.body = s.split_whitespace().map(|t| t.to_string()).collect();
+   }
+   if let Some(s) = get_attribute_opt(e, "node") {
+       flex.node = s.split_whitespace().map(|t| t.to_string()).collect();
+   }
+   if let Some(s) = get_attribute_opt(e, "group") {
+       flex.group = s.parse().unwrap_or(0);
+   }
+   ```
+
+3. **Wire `flexvert_bodyid` in model builder** (`model_builder.rs`):
+   - For `<flex>`: `body` is required — resolve each body name to a body ID
+     using the existing body name → ID mapping. Populate `flexvert_bodyid[v]`
+     with the resolved ID. Validate: `flex.body.len()` must equal vertex count.
+   - For `<flexcomp>`: `body` is auto-generated during expansion — each vertex
+     gets its own auto-generated body name (e.g., `"flexname_0"`). Our current
+     `process_flex_bodies()` creates free 3-DOF vertices, which is functionally
+     equivalent to per-vertex bodies with 3 translational DOFs. The `flexcomp`
+     path should populate `body` during expansion so the model builder handles
+     both paths uniformly.
+   - Handle `node` attribute: resolve body names, extract positions as vertex
+     positions, set `flexvert_bodyid` accordingly.
+
+4. **DOF allocation adjustment** (for shared-body vertices):
+   - When multiple vertices reference the same body, they share that body's
+     DOFs — each such vertex does NOT allocate new DOFs
+   - `flexvert_dofadr[v]` should point to the body's DOF start
+   - This requires changes to the flex DOF allocation in `process_flex_bodies()`
+   - For `<flexcomp>` with per-vertex bodies (the common case), every vertex
+     has a unique body, so each still gets independent DOFs. The DOF-sharing
+     only matters when a user writes `<flex body="same same same ...">`
+   - **Note:** Full correctness for bodies with non-trivial DOFs (e.g., free
+     joint = 6 DOFs) also requires sparse Jacobian support (§42A-i). Without
+     §42A-i, body-attached vertices will have correct DOF mapping but forces
+     will still use the simplified `±direction` inline Jacobian.
+
+#### Acceptance Criteria
+
+1. `<flex body="body1 body2 body3" ...>` correctly resolves body names to IDs
+   in `flexvert_bodyid`.
+2. Vertices sharing the same body name share DOFs — no duplicate DOF allocation.
+3. `flexvert_dofadr` for shared-body vertices points to the body's DOF start.
+4. `<flex node="bodyA bodyB" ...>` resolves node body names, extracts positions,
+   and wires `flexvert_bodyid`.
+5. `group` attribute parsed and stored (even if not used for physics).
+6. Validation error if `body` length doesn't match vertex count on `<flex>`.
+7. `<flexcomp>` path still works — auto-generated per-vertex bodies produce
+   independent DOFs per vertex (same behavior as current architecture).
+8. All existing flex tests pass (existing tests use `<flexcomp>` which is
+   unaffected by the `body` attr parsing).
+
+#### Files
+
+- `sim/L0/mjcf/src/types.rs` — add `body`, `node`, `group` fields to `MjcfFlex`
+- `sim/L0/mjcf/src/parser.rs` — parse `body`, `node`, `group` in `parse_flex_attrs()`
+- `sim/L0/mjcf/src/model_builder.rs` — resolve body names → IDs, wire
+  `flexvert_bodyid`, adjust DOF allocation for body-attached vertices
+
+---
+
+### #27E — `<flexcomp mass="...">` + deprecate non-standard `density`
+
+**Status:** ✅ Done (implemented as part of §27F)
+**Prerequisite:** #27B (child element parsing)
+**Effort:** S
+
+#### Problem
+
+MuJoCo's `<flexcomp>` has a `mass` attribute that sets the total mass of the
+deformable object, distributed uniformly across auto-generated per-vertex
+bodies: `bodymass = mass / npnt`. Our parser doesn't support it. Instead, we
+parse a non-standard `density` attribute on `<flex>` and use element-based
+mass lumping (density × element volume → per-vertex accumulation). This is
+non-conformant — MuJoCo has no `density` on `<flex>`, `<flexcomp>`, or any
+child element.
+
+#### MuJoCo Architecture: Flex Mass
+
+In MuJoCo, there is **no per-vertex mass array** in `mjModel`. Flex vertices
+are attached to MuJoCo bodies (`flex_vertbodyid`), and the body's own
+`body_mass` / `body_inertia` drives the physics. Specifically:
+
+1. **`<flexcomp>`** auto-generates one body per **unpinned** vertex during
+   XML compilation (`user_flexcomp.cc`, `Make()`). Each body is a child of
+   the `<flexcomp>`'s parent body (typically worldbody). Each receives
+   `mass / npnt` and inertia `bodymass * (2 * inertiabox²) / 3` on all
+   three principal axes, plus 3 slide joints (X, Y, Z). Pinned vertices
+   stay on the parent body (no new body created).
+
+2. **`<flex>`** (bare) requires pre-existing bodies listed in the `body`
+   attribute. Those bodies must already have mass/inertia set via `<inertial>`
+   or geom-derived mass.
+
+3. `flex_vert` stores vertex positions **in local body frames**
+   (`mjmodel.h`). For the standard flexcomp case, `flex_centered = true`
+   and all offsets are zero — the body position IS the vertex position.
+
+4. The forward dynamics never references a `flexvert_mass` array — all
+   inertia comes through the body mass matrix. CRBA and RNE contain
+   **zero flex-specific code** (`engine_core_smooth.c`).
+
+**Our architecture differs:** Post-§6B unification, flex vertex DOFs are
+appended directly to `qpos`/`qvel`/`qacc` — they are not full MuJoCo bodies.
+So we maintain `flexvert_mass` / `flexvert_invmass` arrays
+(`mujoco_pipeline.rs:1453-1455`) that feed into the mass matrix and passive
+force computation. This is the correct design for `<flexcomp>` (independent
+point masses), but it means we need an explicit mass-computation path per
+vertex.
+
+> **ARCH_LIMITATION(#27F): Body-coupled flex vertices.**
+>
+> `flexvert_bodyid` is stored (#27D) but **never read at runtime**. In MuJoCo,
+> flex vertices ARE bodies — their mass participates in the CRBA (composite
+> rigid body algorithm), Coriolis terms propagate through the kinematic tree,
+> and FK uses the body's frame. In our architecture, flex vertex mass enters
+> the mass matrix as isolated diagonal `m*I₃` blocks (`mj_crba_flex`). This
+> is correct when vertices are independent (all `<flexcomp>` cases), but
+> **wrong for bare `<flex body="arm forearm hand">`** where vertices are
+> attached to bodies in a kinematic tree. **Tracked as #27F** — see spec below.
+
+#### Current vs Conformant Mass Paths
+
+**Current (non-conformant) — density-based mass lumping:**
+```
+parse_flex_attrs() → density field
+  → compute_vertex_masses() in model_builder.rs:5425
+    → dim=1: mass[v] += density * edge_length / 2
+    → dim=2: mass[v] += density * thickness * tri_area / 3
+    → dim=3: mass[v] += density * tet_volume / 4
+  → flexvert_mass / flexvert_invmass arrays
+```
+
+This is standard FEM mass lumping. It's physically reasonable but has no
+MuJoCo analog — MuJoCo never computes per-vertex mass from material density.
+
+**MuJoCo conformant — `<flexcomp mass="...">` uniform distribution:**
+```
+<flexcomp mass="M" ...>
+  → bodymass = M / nvert
+  → each auto-generated body gets mass = bodymass
+  → physics uses body_mass (no per-vertex mass array)
+```
+
+Source: `user_flexcomp.cc` — `double bodymass = mass/npnt;`
+
+#### Scope
+
+Only the `mass` attribute is in scope. Other missing `<flexcomp>` attributes:
+
+| Attribute | Type | Default | Physics? | Status |
+|-----------|------|---------|----------|--------|
+| `mass` | real | 0.0* | **Yes** | **#27E scope** |
+| `inertiabox` | real | 0.0* | Yes (body inertia: `mass/n * 2*ib²/3`) | Deferred — no rotational body inertia in our vertex-DOF arch |
+| `rigid` | bool | false | Yes (marks rigid vertices) | Deferred — relates to §42A-ii |
+| `scale` | real(3) | 1 1 1 | No (vertex transform) | Deferred |
+| `flatskin` | bool | false | No (rendering) | Deferred |
+| `pos` | real(3) | 0 0 0 | No (vertex transform) | Already handled |
+| `quat` | real(4) | 1 0 0 0 | No (vertex transform) | Deferred |
+| `file` | string | — | No (mesh source) | Deferred |
+| `material` | string | — | No (rendering) | Deferred |
+| `rgba` | real(4) | — | No (rendering) | Deferred |
+
+*MuJoCo zero-initializes via `memset`; mass=0 makes the object massless.
+In practice, `mass` is effectively required for any dynamic flexcomp.
+
+#### Conformance Notes
+
+**`mass=0` behavior:** MuJoCo zero-initializes `mass` via `memset`. A
+`<flexcomp mass="0">` produces zero-mass bodies — effectively static
+objects with zero inertia. Our min-mass floor (1e-10 → 0.001 in
+`compute_vertex_masses`) would clamp this to 0.001 kg, which is
+non-conformant. **Decision:** Skip the min-mass floor when `mass` is
+explicitly specified. The floor exists to catch the density-path case where
+zero-area elements produce zero mass — not applicable to the uniform path
+where the user explicitly chose the mass value. If the user says mass=0, we
+respect it (pinned-like behavior: `invmass = 0`).
+
+**`thickness` interaction:** When `mass` is specified, thickness is
+irrelevant for mass computation (thickness only affects the density→mass
+lumping path for dim=2). Thickness is still used for bending stiffness
+computation (`compute_bending_stiffness()`). No code change needed — just
+document that `mass` bypasses the thickness-dependent mass path.
+
+**`<flexcomp>` bodies vs our vertices:** In MuJoCo, `<flexcomp>` creates
+one body per unpinned vertex, parented to the flexcomp's parent body
+(typically worldbody), each with 3 slide joints. This is physically
+equivalent to our architecture (independent translational DOFs) when the
+parent body is worldbody. The mass computation `total / nvert` produces
+the same physics either way. The architectural difference only matters for
+body-level features (gravcomp, subtree mass, accumulators) — see #27F.
+
+**Pinned vertex mass loss:** MuJoCo computes `bodymass = mass / npnt`
+where `npnt` is the **total** vertex count (including pinned). But only
+unpinned vertices receive a body with that mass — pinned vertices are
+attached to the parent body with **no mass increment to the parent**. So
+if 2 of 10 vertices are pinned and `mass=10`, only 8 kg of the 10 kg
+total enters the dynamic system. This is intentional MuJoCo behavior (the
+parent body's inertia dominates). Our `total_mass / nvert` formula with
+the subsequent `pinned → mass=1e20, invmass=0` override in
+`process_flex_bodies()` reproduces this: the per-vertex mass share
+allocated to pinned vertices is discarded (overwritten with 1e20), so the
+same 8 kg enters the dynamic mass matrix. **Conformant.**
+
+#### Implementation Plan
+
+##### S1. Add `mass` field to `MjcfFlex`
+
+Add `mass: Option<f64>` — `None` means "not specified" (fall back to
+density-based lumping), `Some(m)` means "use MuJoCo-conformant uniform
+distribution".
+
+```rust
+// --- <flexcomp>-specific attributes ---
+/// Total mass [kg] from `<flexcomp mass="...">`. When Some, distributed
+/// uniformly: per_vertex = total / nvert (MuJoCo conformant). When None,
+/// falls back to density-based element mass lumping (non-standard extension).
+pub mass: Option<f64>,
+```
+
+Default: `None` in the `Default` impl.
+
+##### S2. Parse `mass` in `parse_flex_attrs()`
+
+```rust
+if let Some(s) = get_attribute_opt(e, "mass") {
+    flex.mass = s.parse().ok();
+}
+```
+
+This parses `mass` on both `<flex>` and `<flexcomp>` (they share
+`parse_flex_attrs`). On bare `<flex>`, `mass` is unusual but harmless —
+MuJoCo doesn't have it there, but we won't reject it.
+
+##### S3. Update `compute_vertex_masses()` in model_builder
+
+Add a uniform-distribution early return when `mass` is present:
+
+```rust
+fn compute_vertex_masses(flex: &MjcfFlex) -> Vec<f64> {
+    let nvert = flex.vertices.len();
+    if nvert == 0 {
+        return vec![];
+    }
+
+    // MuJoCo conformant: <flexcomp mass="..."> → uniform distribution.
+    // No min-mass floor — user explicitly chose this value. mass=0 → invmass=0
+    // (static vertices, same as MuJoCo's zero-initialized default).
+    if let Some(total_mass) = flex.mass {
+        let per_vertex = total_mass / nvert as f64;
+        return vec![per_vertex; nvert];
+    }
+
+    // Non-standard extension: density-based element mass lumping.
+    let mut masses = vec![0.0f64; nvert];
+    match flex.dim {
+        // ... existing dim-based lumping code unchanged ...
+    }
+
+    // Min-mass floor for density path only — catches zero-area elements.
+    for m in &mut masses {
+        if *m < 1e-10 {
+            *m = 0.001;
+        }
+    }
+
+    masses
+}
+```
+
+Key difference from density path: the min-mass floor does NOT apply to the
+`mass` attribute path. This matches MuJoCo where `mass=0` produces zero-mass
+bodies. The caller (`process_flex_bodies`) already handles zero mass correctly:
+`invmass = if pinned || mass <= 0.0 { 0.0 } else { 1.0 / mass }` — zero
+mass → zero invmass → effectively pinned. (Pinned vertices also get
+`mass = 1e20` regardless of the computed value.)
+
+##### S4. Update the `<flexcomp>` test fixture
+
+The single `<flexcomp>` fixture (`flexcomp_grid_mjcf()`, line 185) currently
+uses `density="200"`. Change to `mass="1.0"` — clean round number.
+
+```xml
+<flexcomp name="grid" type="grid" count="5 5 1" spacing="0.04"
+          dim="2" mass="1.0">
+    <elasticity young="1e5" thickness="0.001"/>
+</flexcomp>
+```
+
+AC11 test (`ac11_flexcomp_expansion`, line 826) currently doesn't check
+per-vertex mass. Add a mass assertion:
+
+```rust
+// 25 vertices, total mass 1.0 → each vertex = 0.04 kg
+assert_relative_eq!(model.flexvert_mass[0], 0.04, epsilon = 1e-10);
+```
+
+##### S5. Add a dedicated mass-distribution conformance test
+
+```rust
+/// AC: <flexcomp mass="..."> distributes total mass uniformly across vertices.
+#[test]
+fn ac_flexcomp_mass_distribution() {
+    let mjcf = r#"
+    <mujoco>
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flexcomp name="rope" type="grid" count="5 1 1" spacing="0.1"
+                      dim="1" mass="5.0">
+                <elasticity young="100"/>
+            </flexcomp>
+        </deformable>
+    </mujoco>"#;
+    let model = load_model(mjcf).expect("should load");
+    assert_eq!(model.nflexvert, 5);
+    // 5 vertices, total mass 5.0 → each vertex = 1.0 kg
+    for i in 0..5 {
+        assert_relative_eq!(model.flexvert_mass[i], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(model.flexvert_invmass[i], 1.0, epsilon = 1e-10);
+    }
+}
+
+/// AC: mass=0 produces zero-mass (effectively static) vertices.
+#[test]
+fn ac_flexcomp_mass_zero() {
+    let mjcf = r#"
+    <mujoco>
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flexcomp name="rope" type="grid" count="3 1 1" spacing="0.1"
+                      dim="1" mass="0.0">
+                <elasticity young="100"/>
+            </flexcomp>
+        </deformable>
+    </mujoco>"#;
+    let model = load_model(mjcf).expect("should load");
+    // mass=0 → per_vertex = 0.0 → invmass = 0.0 (static)
+    for i in 0..3 {
+        assert_eq!(model.flexvert_mass[i], 0.0);
+        assert_eq!(model.flexvert_invmass[i], 0.0);
+    }
+}
+
+/// AC: mass takes precedence over density when both specified.
+#[test]
+fn ac_flexcomp_mass_overrides_density() {
+    let mjcf = r#"
+    <mujoco>
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flexcomp name="rope" type="grid" count="4 1 1" spacing="0.1"
+                      dim="1" mass="8.0" density="999.0">
+                <elasticity young="100"/>
+            </flexcomp>
+        </deformable>
+    </mujoco>"#;
+    let model = load_model(mjcf).expect("should load");
+    // mass=8.0 wins over density=999.0 → per_vertex = 8.0/4 = 2.0
+    for i in 0..4 {
+        assert_relative_eq!(model.flexvert_mass[i], 2.0, epsilon = 1e-10);
+    }
+}
+```
+
+##### S6. Keep `density` on bare `<flex>` as non-standard extension
+
+The 15 test fixtures using `density` on bare `<flex>` stay as-is. For bare
+`<flex>`, MuJoCo derives mass from attached body mass/inertia — which we
+don't support (our flex vertices aren't full bodies). So `density` remains
+our mass-computation mechanism for bare `<flex>` until #27F lands.
+
+Update `// DEFERRED(#27E)` comments in `parser.rs` and `types.rs` to:
+"density on `<flexcomp>` is superseded by `mass` attribute (#27E).
+density on bare `<flex>` remains the only mass path (no body mass in our
+architecture — see #27F)."
+
+##### S7. Precedence when both `mass` and `density` are specified
+
+If a user writes `<flexcomp mass="5.0" density="1000">`, `mass` wins
+(uniform distribution). The density-based path is only used when `mass` is
+`None`. No warning needed — `density` is our non-standard extension, and
+the conformant attribute taking precedence is the correct behavior. Tested
+by `ac_flexcomp_mass_overrides_density`.
+
+#### Acceptance Criteria
+
+1. `<flexcomp mass="5.0" count="5 1 1" ...>` produces 5 vertices each with
+   mass = 1.0 kg (`total / nvert`).
+2. `<flexcomp mass="0.0" ...>` produces zero-mass vertices with invmass = 0
+   (no min-mass floor on the `mass` path — MuJoCo conformant).
+3. When both `mass` and `density` are present, `mass` takes precedence.
+4. The `<flexcomp>` fixture (`flexcomp_grid_mjcf`) uses `mass` instead of
+   `density`, with mass assertion in AC11.
+5. Three dedicated conformance tests: uniform distribution, mass=0, mass
+   overrides density.
+6. The existing density-based path still works for bare `<flex>` elements
+   (15 test fixtures unchanged).
+7. The min-mass floor (1e-10 → 0.001) applies ONLY to the density path.
+8. All existing flex tests pass (551+).
+
+#### Files
+
+- `sim/L0/mjcf/src/types.rs` — add `mass: Option<f64>` to `MjcfFlex`
+- `sim/L0/mjcf/src/parser.rs` — parse `mass` in `parse_flex_attrs()`
+- `sim/L0/mjcf/src/model_builder.rs` — early-return uniform path in
+  `compute_vertex_masses()`
+- `sim/L0/tests/integration/flex_unified.rs` — migrate flexcomp fixture,
+  add mass distribution test
+- `sim/docs/todo/future_work_7.md` — update `DEFERRED(#27E)` commentary
+
+---
+
+### #27F — Body-coupled flex vertex integration (CRBA + FK)
+
+**Status:** ✅ Done — **Option A implemented** (flex vertices promoted to real bodies with 3 slide joints)
+**Prerequisites:** #27D (body/node attr parsing), #27E (flexcomp mass)
+**Effort:** L–XL
+**RL Impact:** Low (no current RL workflow uses body-attached bare `<flex>`)
+**Correctness:** **Critical** for body-attached flex; irrelevant for `<flexcomp>`
+
+> **Post-implementation note (Batch 1 review):** The spec recommended
+> "Option C now, Option A eventually", but Option A was implemented directly.
+> Key outcomes:
+> - `mj_crba_flex`, `mj_factor_flex`, `mj_integrate_pos_flex`, RK4 flex
+>   blocks, flex gravity, pinned DOF clamping — all **deleted** (~200 LOC)
+> - `nq_rigid` / `nv_rigid` — **removed entirely**
+> - Standard CRBA/RNE/FK/integration now handles all flex physics with
+>   **zero flex-specific code** in the dynamics pipeline
+> - `mj_flex()` copies `data.xpos[body_id]` → `flexvert_xpos[i]`
+> - `flexvert_bodyid` is live runtime data used by `mj_flex()`
+> - `flex_centered` optimization not implemented (all vertices use the
+>   body-origin fast path since body_pos captures the offset)
+> - `flex_vert` (local-frame offsets) not needed — each vertex body's
+>   `body_pos` serves as the local offset from parent
+> - Remaining gap: shared-DOF vertices (AC2 from #27D) — currently every
+>   vertex always gets its own body + 3 slide joints, even if multiple
+>   vertices reference the same body name
+> - `group` attribute: fully wired for all element types — parsed from MJCF,
+>   stored in `Model.geom_group` / `Model.flex_group` / `Model.jnt_group` /
+>   `Model.site_group` / `Model.tendon_group`, consumed by `sim/L1/bevy`
+>   via `VisGroup` component and `ViewerConfig.show_groups`
+> - `rgba` attribute: wired to Model for geoms, sites, and tendons —
+>   `Model.geom_rgba` / `Model.site_rgba` / `Model.tendon_rgba` (`[f64; 4]`
+>   arrays). Renderers can query element colors.
+> - Defaults refactored: all four element types (geom, joint, site, tendon)
+>   use `Option<T>` fields. `apply_to_*()` functions use `is_none()` pattern
+>   instead of sentinel-value comparison, correctly handling explicit-default
+>   values. Missing `condim` handling added to `apply_to_geom()`.
+> - Node error handling: unknown node body names now produce a
+>   `ModelConversionError` instead of silently skipping (fixes element index
+>   misalignment bug).
+
+#### Problem
+
+In MuJoCo, every flex vertex IS a body in the kinematic tree. The core
+smooth dynamics functions (`mj_crb`, `mj_rne` in `engine_core_smooth.c`)
+contain **zero flex-specific code**. Flex mass enters the system entirely
+through `body_mass` / `body_inertia`, which participates in the standard
+CRBA, RNE, Coriolis, and gravity pipelines. There is no
+`flexvert_mass` array in MuJoCo's `mjModel`.
+
+In our architecture (post-§6B), flex vertex DOFs are appended to
+`qpos`/`qvel`/`qacc` as translational DOFs. They are NOT bodies. The mass
+enters the system through `flexvert_mass` → diagonal `m*I₃` blocks in the
+mass matrix (`mj_crba_flex`). This works correctly for `<flexcomp>` where
+all vertices are independent point masses — diagonal blocks are the right
+mass matrix structure for uncoupled translational DOFs.
+
+**But it is wrong for body-attached bare `<flex>`**, because:
+
+1. **Vertex mass doesn't contribute to body composite inertia.** In MuJoCo,
+   a vertex attached to `body_arm` adds `bodymass` to `body_arm`'s subtree
+   mass, affecting the CRBA for all ancestor joints. In our code, the vertex
+   mass is isolated — it never touches `body_mass[body_arm]`.
+
+2. **No Coriolis/centrifugal coupling.** If `body_arm` rotates, a vertex
+   attached to it should experience centrifugal force proportional to the
+   body's angular velocity. Our `mj_crba_flex` doesn't generate off-diagonal
+   terms that would couple vertex DOFs to body joint DOFs.
+
+3. **FK doesn't propagate body frame.** MuJoCo computes vertex world
+   positions from body FK results in `mj_flex()` (`engine_core_smooth.c`):
+   - `centered`: `flexvert_xpos[i] = xpos[vertbodyid[i]]`
+   - `non-centered`: `flexvert_xpos[i] = xmat[bodyid] * flex_vert[i] + xpos[bodyid]`
+   Our vertex positions live directly in `qpos` (world frame) and don't
+   track their parent body's motion. `flexvert_bodyid` is stored but never
+   read at runtime.
+
+4. **`flexvert_bodyid` is dead data.** Set during model building (#27D),
+   stored in `Model`, never indexed by any runtime function.
+
+5. **No `flex_vert` local-frame storage.** MuJoCo stores `flex_vert` as
+   per-vertex local-frame offsets relative to the attached body
+   (`mjmodel.h`: "vertex positions in local body frames"). We have no
+   equivalent — our vertex positions are absolute world coordinates in
+   `qpos`.
+
+#### Scope of Impact
+
+| Use case | Affected? | Why |
+|----------|-----------|-----|
+| `<flexcomp>` (all current tests) | **No** | Vertices are independent; diagonal mass blocks are correct |
+| Bare `<flex>` without `body` attr | **No** | Free vertices; same as flexcomp |
+| Bare `<flex body="b1 b2 b3">` | **Yes** | Body coupling missing |
+| `<flex node="b1 b2">` | **Yes** | Node resolves to body positions + bodyids |
+
+No existing test or RL workflow exercises the body-attached path. The
+`<flexcomp>` path (which generates all our flex test fixtures) is correct.
+
+#### MuJoCo Reference Architecture
+
+##### `<flexcomp>` body generation (`user_flexcomp.cc`, `Make()`)
+
+For each **unpinned** vertex with full DOF:
+```
+for each vertex i:
+    if pinned[i]:
+        vertbody[i] = parent_body   // stays on parent, no new body
+    else:
+        pb = create_body(parent=flexcomp_parent_body)  // NOT worldbody
+        pb.pos = vertex_position
+        pb.mass = total_mass / npnt
+        pb.inertia = [bodymass * (2*ib²/3)] * 3  // spherical from inertiabox
+        add 3 slide joints (X, Y, Z) to pb
+        vertbody[i] = pb
+```
+
+Key details:
+- All auto-generated bodies are **children of the `<flexcomp>`'s parent
+  body** (typically worldbody, but could be any body if flexcomp is nested).
+- Pinned vertices are attached to the parent body (no new body, no joints).
+- `flex_centered` is set to `true` when all local offsets are zero (standard
+  case for flexcomp — the body position IS the vertex position, so
+  `flex_vert` is zeroed out).
+
+##### Vertex FK (`engine_core_smooth.c`, `mj_flex()`)
+
+Called after `mj_kinematics()`. Reads already-computed body FK results:
+
+```c
+if (m->flex_centered[f]) {
+    // vertex IS body origin — just copy
+    flexvert_xpos[i] = xpos[vertbodyid[i]];
+} else {
+    // rotate local offset, then translate
+    flexvert_xpos[i] = xmat[bodyid] * flex_vert[i] + xpos[bodyid];
+}
+```
+
+This is the entire flex FK computation. No Jacobians, no special math — it
+reads from the standard body FK pipeline.
+
+##### Bare `<flex>` compilation (`user_mesh.cc`, `mjCFlex::Compile()`)
+
+The `centered` flag is determined automatically:
+- If `vert` attribute is empty or all zeros: `centered = true`. The vertex
+  position equals the body origin. No local offset stored.
+- If `vert` has non-zero values: `centered = false`. `flex_vert` stores the
+  local-frame offset. World position computed as `xmat * flex_vert + xpos`.
+
+The `body` attribute provides body names; `mjCFlex::ResolveReferences()`
+resolves them to integer IDs stored in `flex_vertbodyid`.
+
+##### CRBA and RNE: zero flex code
+
+`mj_crb()` and `mj_rne()` in `engine_core_smooth.c` contain **zero
+flex-specific code**. All flex vertex mass enters through `body_mass` /
+`body_inertia` on the per-vertex bodies, which flows into `cinert`
+(composite inertia) and through the standard recursive algorithms. Flex
+edge stiffness/damping enters through the passive force pipeline
+(`engine_passive.c` → `qfrc_passive`), not RNE.
+
+#### Our Architecture vs MuJoCo
+
+| Aspect | MuJoCo | Ours (post-§6B) |
+|--------|--------|-----------------|
+| Vertex DOF representation | Body with 3 slide joints | Appended translational DOFs in qpos |
+| Vertex mass storage | `body_mass[vertbodyid]` | `flexvert_mass[i]` |
+| Mass matrix contribution | Standard CRBA (zero flex code) | `mj_crba_flex`: diagonal `m*I₃` blocks |
+| FK for vertex positions | `mj_flex()` reads body `xpos`/`xmat` | Vertex positions ARE qpos entries |
+| Local-frame offset | `flex_vert` (local body frame) | None — world frame in qpos |
+| Coriolis/centrifugal | Standard RNE (zero flex code) | Not coupled to body joints |
+| `flex_centered` flag | Optimization for zero offsets | No equivalent |
+| Pinned vertex | Attached to parent body (no mass added) | `invmass = 0`, mass = 1e20 |
+
+**For `<flexcomp>` with independent DOFs:** The two architectures produce
+**identical physics** when the flexcomp parent body is worldbody (or any
+body with no ancestor joints). A body with 3 slide joints and mass `m` is
+dynamically equivalent to an appended translational DOF with diagonal mass
+`m*I₃`. The CRBA for a leaf body with 3 slide joints, no children, and no
+ancestor rotational DOFs produces exactly the same diagonal mass matrix
+entries as our `mj_crba_flex`. This equivalence holds because flexcomp
+bodies are leaves with no children (no subtree mass accumulation) and no
+rotational ancestor DOFs (no Coriolis coupling).
+
+Note: In MuJoCo's XML schema, `<flexcomp>` is a child of `<body>`, so it
+can inherit a non-worldbody parent (giving vertex bodies rotational
+ancestor DOFs). Our parser places `<flexcomp>` inside top-level
+`<deformable>`, so vertex DOFs are always independent. This is a separate
+parsing conformance gap — if we ever support `<flexcomp>` inside `<body>`,
+the equivalence breaks for non-worldbody parents, and Option A from #27F
+becomes required.
+
+**For body-attached bare `<flex>`:** The architectures diverge. In MuJoCo,
+the vertex body is a child of a body that may have rotational joints —
+the standard CRBA accumulates vertex mass into the parent's composite
+inertia, and RNE computes Coriolis/centrifugal forces. In our architecture,
+the vertex mass is isolated — it doesn't participate in the parent body's
+dynamics.
+
+#### Possible Approaches
+
+**Option A: Promote flex vertices to real bodies.**
+- During model building, create a body for each flex vertex (like MuJoCo).
+- Add 3 slide joints per body, parent it to the referenced body.
+- Set `body_mass` from `flexcomp mass / nvert` or from the density path.
+- Remove `flexvert_mass`/`flexvert_invmass` — mass comes through bodies.
+- Remove `mj_crba_flex`/`mj_factor_flex` — standard CRBA handles everything.
+- Add `flex_vert` (local-frame offsets) and `flex_centered` flag to Model.
+- Add `flexvert_xpos` to Data, computed in a `mj_flex()` function after FK.
+- **Pro:** Exact MuJoCo parity. Zero flex-specific code in CRBA/RNE/FK. All
+  body-level features (gravcomp, subtree mass, body accumulators, sleeping)
+  automatically work for flex vertices. Pinned vertices naturally attach to
+  parent body with no extra mass. The `flex_centered` optimization works.
+- **Con:** Massive refactor. Every flex vertex becomes a body (nbody grows
+  by nflexvert). Every flex vertex contributes 3 DOFs through the body
+  joint system rather than the appended-DOF system. The §6B unification
+  architecture changes fundamentally — `mj_crba_flex`, `mj_factor_flex`,
+  and the flex sections of `mj_rne` all get deleted, replaced by standard
+  body-joint code.
+- **Scope estimate:** ~2000-3000 LOC. Major changes in model_builder.rs
+  (body/joint creation), mujoco_pipeline.rs (delete flex-specific CRBA/RNE
+  code, add flex FK, rewire qpos/qvel allocation), flex_unified.rs
+  (rewrite all tests for body-based DOF addresses).
+
+**Option B: Add body-coupling terms to the flex path.**
+- Keep flex vertices as appended translational DOFs.
+- In `mj_crba_flex`, add off-diagonal terms that couple vertex DOFs to
+  their parent body's joint DOFs (requires computing the Jacobian from
+  body joint space to vertex position).
+- In `mj_rne` / gravity, account for body-attached vertex mass in the
+  body's composite inertia.
+- In FK, propagate body frame to vertex world position using
+  `flexvert_bodyid` and a local-frame offset stored in `flex_vert`.
+- **Pro:** Preserves §6B architecture. Incremental change.
+- **Con:** Complex. Body-coupling Jacobians are non-trivial (J maps nv_body
+  DOFs → 3 vertex DOFs). Must handle off-diagonal mass matrix blocks that
+  break the diagonal-only assumption in `mj_factor_flex`. Must handle
+  the case where a body has both its own mass AND attached vertex mass.
+  Essentially reinvents the CRBA subtree accumulation for a special case.
+
+**Option C: Document limitation + emit runtime warning.**
+
+This is the recommended near-term approach.
+
+Implementation steps (Option C):
+1. **Add runtime detection.** In `process_flex_bodies()`, after bodyid
+   resolution, check if any vertex has `bodyid != usize::MAX` (i.e., body-
+   attached). If so, set a `flex_has_body_coupling: Vec<bool>` flag per flex.
+2. **Emit a warning** at model load time when body-coupled flex is detected:
+   `"Warning: <flex '{name}'> has body-attached vertices (body='...'). Body
+   coupling (CRBA subtree mass, Coriolis, FK frame propagation) is not yet
+   implemented. Vertex physics will be approximately correct (gravity +
+   spring forces) but won't reflect parent body rotation. See §27F."`
+3. **Document** in `sim/docs/MUJOCO_GAP_ANALYSIS.md` that body-attached
+   bare `<flex>` is a known limitation with specific physics consequences.
+4. **No physics code changes.** `flexvert_bodyid` remains stored metadata.
+   The `ARCH_LIMITATION(#27F)` tags in the codebase stay.
+5. **Add a test** that loads a body-attached `<flex>` and verifies the
+   warning is emitted + physics runs (no crash, gravity works).
+- **Pro:** Honest documentation. Users know the limitation. No risk of
+  introducing bugs in the working `<flexcomp>` path.
+- **Con:** Non-conformant for body-attached `<flex>`. But this is a niche
+  use case — no current model or RL workflow requires it.
+
+#### Recommendation
+
+**Option C now, Option A eventually.** Rationale:
+
+1. Body-attached bare `<flex>` is niche. The vast majority of deformable
+   models use `<flexcomp>`, which is architecturally correct.
+2. Option A is the right long-term answer — it eliminates all flex-specific
+   CRBA/RNE code and achieves exact MuJoCo parity. But it's ~2000-3000 LOC
+   and rewires fundamental DOF allocation.
+3. Option B is the wrong answer — it adds complexity to maintain a parallel
+   code path that Option A would delete anyway.
+4. Option C is honest, safe, and cheap. It takes ~30 LOC and ensures no one
+   is silently getting wrong physics.
+
+**When to upgrade to Option A:** When an RL workflow requires body-attached
+deformables (e.g., cloth on a robot arm, tendons connecting flex vertices
+to articulated bodies). At that point, the architectural refactor is
+justified by a concrete use case.
+
+#### Acceptance Criteria — Option C (near-term)
+
+1. Body-attached `<flex>` emits a runtime warning at model load time.
+2. The warning names the flex object and lists the specific limitation
+   (no CRBA coupling, no FK propagation, no Coriolis).
+3. `MUJOCO_GAP_ANALYSIS.md` documents the limitation with the specific
+   physics consequences.
+4. A test loads a body-attached `<flex>` and verifies: (a) warning is
+   emitted, (b) simulation runs without crash, (c) gravity acts on vertices.
+5. All existing `<flexcomp>` tests still pass (regression).
+
+#### Acceptance Criteria — Option A (eventual)
+
+1. `<flexcomp>` creates one body per unpinned vertex with 3 slide joints,
+   parented to the flexcomp's parent body. Pinned vertices attach to parent.
+2. `<flex body="b1 b2 b3">` vertices participate in CRBA via their parent
+   body's composite inertia (zero flex-specific code in CRBA/RNE).
+3. `flex_vert` stores local-frame offsets. `flex_centered` flag enables
+   the zero-offset fast path.
+4. `flexvert_xpos` (Data field) computed by `mj_flex()` after FK:
+   - centered: `xpos[vertbodyid[i]]`
+   - non-centered: `xmat[bodyid] * flex_vert[i] + xpos[bodyid]`
+5. Coriolis/centrifugal forces act on body-attached vertices when the parent
+   body rotates (standard RNE, no flex-specific code).
+6. `flexvert_bodyid` is used at runtime for FK.
+7. `mj_crba_flex` and `mj_factor_flex` are deleted — CRBA handles everything.
+8. All existing `<flexcomp>` tests still pass (regression).
+9. New test: body-attached flex vertex on a rotating arm experiences
+   centrifugal force.
+10. New test: pinned vertex attached to parent body has zero DOFs.
+
+#### Files
+
+**Option C (near-term):**
+- `sim/L0/mjcf/src/model_builder.rs` — warning emission in
+  `process_flex_bodies()` after bodyid resolution
+- `sim/L0/tests/integration/flex_unified.rs` — body-attached flex test
+- `sim/docs/MUJOCO_GAP_ANALYSIS.md` — document limitation
+
+**Option A (eventual, estimated):**
+- `sim/L0/core/src/mujoco_pipeline.rs` — delete `mj_crba_flex`,
+  `mj_factor_flex`, flex sections of `mj_rne`; add `mj_flex()` FK;
+  add `flexvert_xpos` to Data; rewire DOF allocation
+- `sim/L0/mjcf/src/model_builder.rs` — create bodies/joints per flex
+  vertex; add `flex_vert`/`flex_centered` to Model; remove
+  `flexvert_mass`/`flexvert_invmass` computation
+- `sim/L0/tests/integration/flex_unified.rs` — rewrite DOF address
+  assertions, add body-attached and centrifugal tests

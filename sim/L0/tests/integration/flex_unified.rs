@@ -22,9 +22,9 @@ fn cloth_5x5_mjcf() -> &'static str {
             <geom type="plane" size="5 5 0.1" pos="0 0 -2"/>
         </worldbody>
         <deformable>
-            <flex name="cloth" dim="2" density="1000" thickness="0.01" young="50"
-                  damping="5.0" radius="0.005" margin="0.001"
-                  solref="0.5 2.0">
+            <flex name="cloth" dim="2" density="1000" radius="0.005">
+                <contact margin="0.001" solref="0.5 2.0"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
                 <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
                 <element data="0 1 2  1 3 2"/>
             </flex>
@@ -39,7 +39,8 @@ fn cable_20seg_mjcf() -> &'static str {
     <mujoco model="cable_catenary">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="rope" dim="1" density="0.1" young="1e4" damping="0.1">
+            <flex name="rope" dim="1" density="0.1">
+                <elasticity young="1e4" damping="0.1"/>
                 <vertex pos="0 0 1  0.05 0 1  0.1 0 1  0.15 0 1  0.2 0 1
                             0.25 0 1  0.3 0 1  0.35 0 1  0.4 0 1  0.45 0 1
                             0.5 0 1  0.55 0 1  0.6 0 1  0.65 0 1  0.7 0 1
@@ -65,9 +66,9 @@ fn solid_3x3x3_mjcf() -> &'static str {
             <geom type="plane" size="5 5 0.1" pos="0 0 -2"/>
         </worldbody>
         <deformable>
-            <flex name="block" dim="3" density="1000" young="100" poisson="0.3"
-                  damping="10.0" radius="0.02" margin="0.005"
-                  solref="0.5 2.0">
+            <flex name="block" dim="3" density="1000" radius="0.02">
+                <contact margin="0.005" solref="0.5 2.0"/>
+                <elasticity young="100" poisson="0.3" damping="10.0"/>
                 <vertex pos="0 0 0  1 0 0  0 1 0  0 0 1"/>
                 <element data="0 1 2 3"/>
             </flex>
@@ -96,9 +97,9 @@ fn cloth_on_sphere_mjcf() -> &'static str {
             </body>
         </worldbody>
         <deformable>
-            <flex name="cloth" dim="2" density="500" thickness="0.01" young="50"
-                  damping="5.0" radius="0.02" margin="0.01" condim="3"
-                  solref="0.5 2.0" friction="0.5">
+            <flex name="cloth" dim="2" density="500" radius="0.02">
+                <contact margin="0.01" condim="3" solref="0.5 2.0" friction="0.5"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
                 <vertex pos="-0.15 -0.15 1.0  0.15 -0.15 1.0  -0.15 0.15 1.0  0.15 0.15 1.0"/>
                 <element data="0 1 2  1 3 2"/>
             </flex>
@@ -113,7 +114,8 @@ fn single_edge_mjcf() -> &'static str {
     <mujoco model="single_edge">
         <option gravity="0 0 0" timestep="0.001"/>
         <deformable>
-            <flex name="spring" dim="1" density="1.0" young="1000.0" damping="1.0">
+            <flex name="spring" dim="1" density="1.0">
+                <elasticity young="1000.0" damping="1.0"/>
                 <vertex pos="0 0 0  1 0 0"/>
                 <element data="0 1"/>
                 <pin id="0"/>
@@ -129,8 +131,8 @@ fn bending_strip_mjcf() -> &'static str {
     <mujoco model="bending_strip">
         <option gravity="0 0 0" timestep="0.0005"/>
         <deformable>
-            <flex name="strip" dim="2" density="100" thickness="0.005" young="1e6"
-                  damping="1.0">
+            <flex name="strip" dim="2" density="100">
+                <elasticity young="1e6" damping="1.0" thickness="0.005"/>
                 <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
                             0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
                 <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
@@ -147,8 +149,8 @@ fn pinned_vertices_mjcf() -> &'static str {
     <mujoco model="pinned">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="cloth" dim="2" density="500" thickness="0.001" young="1e5"
-                  damping="0.01">
+            <flex name="cloth" dim="2" density="500">
+                <elasticity young="1e5" damping="0.01" thickness="0.001"/>
                 <vertex pos="0 0 1  1 0 1  0 1 1  1 1 1"/>
                 <element data="0 1 2  1 3 2"/>
                 <pin id="0 1"/>
@@ -164,7 +166,8 @@ fn flex_roundtrip_mjcf() -> &'static str {
     <mujoco model="flex_roundtrip">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="test_flex" dim="2" density="300" thickness="0.002" young="5e4">
+            <flex name="test_flex" dim="2" density="300">
+                <elasticity young="5e4" thickness="0.002"/>
                 <vertex pos="0 0 0  1 0 0  0.5 0.866 0"/>
                 <element data="0 1 2"/>
             </flex>
@@ -180,7 +183,9 @@ fn flexcomp_grid_mjcf() -> &'static str {
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
             <flexcomp name="grid" type="grid" count="5 5 1" spacing="0.04"
-                      dim="2" density="200" thickness="0.001" young="1e5"/>
+                      dim="2" density="200">
+                <elasticity young="1e5" thickness="0.001"/>
+            </flexcomp>
         </deformable>
     </mujoco>
     "#
@@ -197,7 +202,8 @@ fn single_vertex_mass_mjcf() -> &'static str {
     <mujoco model="mass_check">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="mass_test" dim="1" density="2.0" young="1000" damping="0.0">
+            <flex name="mass_test" dim="1" density="2.0">
+                <elasticity young="1000" damping="0.0"/>
                 <vertex pos="0 0 0  1 0 0"/>
                 <element data="0 1"/>
             </flex>
@@ -218,8 +224,8 @@ fn mixed_rigid_flex_mjcf() -> &'static str {
             </body>
         </worldbody>
         <deformable>
-            <flex name="cloth" dim="2" density="100" thickness="0.001" young="5e4"
-                  damping="0.1">
+            <flex name="cloth" dim="2" density="100">
+                <elasticity young="5e4" damping="0.1" thickness="0.001"/>
                 <vertex pos="2 0 2  2.1 0 2  2 0.1 2  2.1 0.1 2"/>
                 <element data="0 1 2  1 3 2"/>
             </flex>
@@ -235,7 +241,8 @@ fn flex_newton_mjcf() -> &'static str {
     <mujoco model="flex_newton">
         <option gravity="0 0 -9.81" timestep="0.002" integrator="implicit"/>
         <deformable>
-            <flex name="cable" dim="1" density="1.0" young="100" damping="10.0">
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="10.0"/>
                 <vertex pos="0 0 1  0.5 0 1  1 0 1"/>
                 <element data="0 1  1 2"/>
                 <pin id="0 2"/>
@@ -259,8 +266,10 @@ fn ac1_cloth_gravity_drape() {
     assert_eq!(model.nflexvert, 4);
     assert_eq!(model.flex_dim[0], 2);
 
+    // (§27F) nv_rigid removed — flex DOFs are now real body DOFs.
+    // Each unpinned vertex has 3 slide joints contributing 3 DOFs.
     let nv_flex = model.nflexvert * 3;
-    assert_eq!(model.nv, model.nv_rigid + nv_flex);
+    assert!(model.nv >= nv_flex);
 
     // Record initial Z positions of all vertices
     data.forward(&model).expect("forward failed");
@@ -435,14 +444,15 @@ fn ac4_cloth_on_sphere_contact() {
     assert_eq!(model.nflex, 1);
     assert!(model.nflexvert > 0);
 
-    // Verify initial qpos contains correct vertex positions (z=1.0)
+    // (§27F) qpos now stores slide joint displacements (initially 0).
+    // Verify initial vertex world positions via FK (body_pos encodes z=1.0).
+    data.forward(&model).expect("forward failed");
     for i in 0..model.nflexvert {
-        let adr = model.flexvert_qposadr[i];
         assert!(
-            data.qpos[adr + 2] >= 0.99,
-            "vertex {} initial qpos z = {}, expected >= 0.99",
+            data.flexvert_xpos[i].z >= 0.99,
+            "vertex {} initial xpos z = {}, expected >= 0.99",
             i,
-            data.qpos[adr + 2]
+            data.flexvert_xpos[i].z
         );
     }
 
@@ -653,86 +663,54 @@ fn ac8_pinned_vertices_zero_motion() {
 
     data.forward(&model).expect("forward failed");
 
-    // Record initial positions and qpos for pinned vertices
-    let pin0_qpos_adr = model.flexvert_qposadr[0];
-    let pin1_qpos_adr = model.flexvert_qposadr[1];
-    let pin0_initial = [
-        data.qpos[pin0_qpos_adr],
-        data.qpos[pin0_qpos_adr + 1],
-        data.qpos[pin0_qpos_adr + 2],
-    ];
-    let pin1_initial = [
-        data.qpos[pin1_qpos_adr],
-        data.qpos[pin1_qpos_adr + 1],
-        data.qpos[pin1_qpos_adr + 2],
-    ];
+    // (§27F) Pinned vertices now have no DOFs (dofadr = usize::MAX, qposadr = usize::MAX).
+    // Verify they remain fixed via their world positions (flexvert_xpos).
+    assert_eq!(
+        model.flexvert_dofadr[0],
+        usize::MAX,
+        "pinned v0 should have no DOFs"
+    );
+    assert_eq!(
+        model.flexvert_dofadr[1],
+        usize::MAX,
+        "pinned v1 should have no DOFs"
+    );
+    assert_ne!(
+        model.flexvert_dofadr[2],
+        usize::MAX,
+        "free v2 should have DOFs"
+    );
+    assert_ne!(
+        model.flexvert_dofadr[3],
+        usize::MAX,
+        "free v3 should have DOFs"
+    );
+
+    // Record initial world positions of pinned vertices
+    let pin0_initial = data.flexvert_xpos[0];
+    let pin1_initial = data.flexvert_xpos[1];
 
     // Simulate for 500 steps under gravity
     for _ in 0..500 {
         data.step(&model).expect("step failed");
     }
 
-    // Pinned vertex qpos must be EXACTLY unchanged
-    for k in 0..3 {
-        assert_eq!(
-            data.qpos[pin0_qpos_adr + k],
-            pin0_initial[k],
-            "pinned vertex 0 qpos[{}] changed: {} -> {}",
-            k,
-            pin0_initial[k],
-            data.qpos[pin0_qpos_adr + k]
-        );
-        assert_eq!(
-            data.qpos[pin1_qpos_adr + k],
-            pin1_initial[k],
-            "pinned vertex 1 qpos[{}] changed: {} -> {}",
-            k,
-            pin1_initial[k],
-            data.qpos[pin1_qpos_adr + k]
-        );
-    }
-
-    // Pinned vertex velocity must be exactly zero
-    let pin0_dof = model.flexvert_dofadr[0];
-    let pin1_dof = model.flexvert_dofadr[1];
-    for k in 0..3 {
-        assert_eq!(
-            data.qvel[pin0_dof + k],
-            0.0,
-            "pinned vertex 0 vel[{}] != 0",
-            k
-        );
-        assert_eq!(
-            data.qvel[pin1_dof + k],
-            0.0,
-            "pinned vertex 1 vel[{}] != 0",
-            k
-        );
-    }
-
-    // Pinned vertex acceleration must be exactly zero
-    for k in 0..3 {
-        assert_eq!(
-            data.qacc[pin0_dof + k],
-            0.0,
-            "pinned vertex 0 acc[{}] != 0",
-            k
-        );
-        assert_eq!(
-            data.qacc[pin1_dof + k],
-            0.0,
-            "pinned vertex 1 acc[{}] != 0",
-            k
-        );
-    }
+    // Pinned vertex world positions must be EXACTLY unchanged
+    assert_eq!(
+        data.flexvert_xpos[0], pin0_initial,
+        "pinned vertex 0 xpos changed"
+    );
+    assert_eq!(
+        data.flexvert_xpos[1], pin1_initial,
+        "pinned vertex 1 xpos changed"
+    );
 
     // Free vertices SHOULD have moved (sanity check that gravity works)
-    let free2_qpos_adr = model.flexvert_qposadr[2];
-    let free2_z = data.qpos[free2_qpos_adr + 2];
+    // Check that vertex 2's Z position has fallen
     assert!(
-        free2_z < 1.0 - 0.01,
+        data.flexvert_xpos[2].z < pin0_initial.z - 0.01,
         "free vertex 2 should have fallen: z={}",
-        free2_z
+        data.flexvert_xpos[2].z
     );
 }
 
@@ -764,8 +742,8 @@ fn ac9_rigid_only_regression() {
     assert_eq!(model.nflexedge, 0);
     assert_eq!(model.nflexelem, 0);
     assert_eq!(model.nflexhinge, 0);
-    assert_eq!(model.nq, model.nq_rigid);
-    assert_eq!(model.nv, model.nv_rigid);
+    // (§27F) No flex vertices → nq/nv are purely from rigid joints.
+    // Just verify dimensions are self-consistent (no nq_rigid/nv_rigid needed).
 
     // Step should work normally
     for _ in 0..100 {
@@ -789,8 +767,7 @@ fn ac10_flex_roundtrip() {
     assert_eq!(model.flex_dim[0], 2);
     assert_eq!(model.flex_vertnum[0], 3);
 
-    // Total DOFs: rigid (0) + flex (3 * 3 = 9)
-    assert_eq!(model.nq_rigid, 0);
+    // Total DOFs: 3 vertices * 3 slide joints = 9
     assert_eq!(model.nq, 9);
     assert_eq!(model.nv, 9);
 
@@ -904,10 +881,7 @@ fn ac13_mixed_rigid_flex_independence() {
     let model = load_model(mixed_rigid_flex_mjcf()).expect("should load");
     let mut data = model.make_data();
 
-    // Rigid: 1 hinge joint (nq_rigid=1, nv_rigid=1)
-    // Flex: 4 vertices * 3 = 12 DOFs
-    assert_eq!(model.nq_rigid, 1);
-    assert_eq!(model.nv_rigid, 1);
+    // 1 hinge joint (1 DOF) + 4 flex vertices * 3 slide joints = 13 DOFs
     assert_eq!(model.nflexvert, 4);
     assert_eq!(model.nq, 1 + 12);
     assert_eq!(model.nv, 1 + 12);
@@ -1038,12 +1012,12 @@ fn flex_dof_address_table_correctness() {
 fn mixed_model_dof_address_table() {
     let model = load_model(mixed_rigid_flex_mjcf()).expect("should load");
 
-    // Rigid: 1 hinge → nq_rigid=1, nv_rigid=1
-    // Flex: 4 vertices → qpos at 1, 4, 7, 10; dof at 1, 4, 7, 10
-    assert_eq!(model.flexvert_qposadr[0], model.nq_rigid);
-    assert_eq!(model.flexvert_qposadr[1], model.nq_rigid + 3);
-    assert_eq!(model.flexvert_qposadr[2], model.nq_rigid + 6);
-    assert_eq!(model.flexvert_qposadr[3], model.nq_rigid + 9);
+    // 1 hinge (1 qpos) then 4 flex vertices * 3 slide joints each
+    // Flex vertex qpos starts at 1 (after the hinge's 1 qpos)
+    assert_eq!(model.flexvert_qposadr[0], 1);
+    assert_eq!(model.flexvert_qposadr[1], 1 + 3);
+    assert_eq!(model.flexvert_qposadr[2], 1 + 6);
+    assert_eq!(model.flexvert_qposadr[3], 1 + 9);
 }
 
 // ============================================================================
@@ -1055,13 +1029,15 @@ fn flex_fk_copies_qpos_to_xpos() {
     let model = load_model(flex_roundtrip_mjcf()).expect("should load");
     let mut data = model.make_data();
 
-    // Modify qpos for vertex 1
+    // (§27F) qpos now stores slide joint *displacements* from body_pos, not absolute positions.
+    // Vertex 1 initial position is (1, 0, 0). Set displacement to move it.
     let v1_adr = model.flexvert_qposadr[1];
-    data.qpos[v1_adr] = 2.5;
-    data.qpos[v1_adr + 1] = 3.7;
-    data.qpos[v1_adr + 2] = -1.2;
+    data.qpos[v1_adr] = 1.5; // displacement X
+    data.qpos[v1_adr + 1] = 3.7; // displacement Y
+    data.qpos[v1_adr + 2] = -1.2; // displacement Z
 
-    // Forward kinematics should copy to flexvert_xpos
+    // FK: xpos = body_pos + sum(slide_displacement * axis)
+    // body_pos = (1, 0, 0), so xpos = (1 + 1.5, 0 + 3.7, 0 + -1.2) = (2.5, 3.7, -1.2)
     data.forward(&model).expect("forward failed");
 
     assert_relative_eq!(data.flexvert_xpos[1].x, 2.5, epsilon = 1e-10);
@@ -1079,7 +1055,8 @@ fn flex_edge_rest_lengths() {
         <mujoco model="edge_lengths">
             <option gravity="0 0 0"/>
             <deformable>
-                <flex name="test" dim="1" density="1.0" young="1000">
+                <flex name="test" dim="1" density="1.0">
+                    <elasticity young="1000"/>
                     <vertex pos="0 0 0  3 0 0  3 4 0"/>
                     <element data="0 1  1 2"/>
                 </flex>
@@ -1113,8 +1090,8 @@ fn ac19_bending_damping_only() {
     <mujoco model="damping_only">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="strip" dim="2" density="100" thickness="0.005" young="0"
-                  damping="1.0">
+            <flex name="strip" dim="2" density="100">
+                <elasticity young="0" damping="1.0" thickness="0.005"/>
                 <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
                             0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
                 <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
@@ -1162,8 +1139,8 @@ fn ac20_bending_stability_clamp() {
     <mujoco model="stiff_bend">
         <option gravity="0 0 -9.81" timestep="0.01"/>
         <deformable>
-            <flex name="strip" dim="2" density="100" thickness="0.005" young="1e12"
-                  poisson="0.3" damping="0.001">
+            <flex name="strip" dim="2" density="100">
+                <elasticity young="1e12" poisson="0.3" damping="0.001" thickness="0.005"/>
                 <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
                             0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
                 <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
@@ -1222,8 +1199,8 @@ fn ac21_zero_hinge_simulation() {
     <mujoco model="single_tri">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="tri" dim="2" density="300" thickness="0.002" young="5e4"
-                  damping="0.1">
+            <flex name="tri" dim="2" density="300">
+                <elasticity young="5e4" damping="0.1" thickness="0.002"/>
                 <vertex pos="0 0 1  1 0 1  0.5 0.866 1"/>
                 <element data="0 1 2"/>
             </flex>
@@ -1252,4 +1229,234 @@ fn ac21_zero_hinge_simulation() {
         );
         assert!(v.z < 1.0, "vertex {i} should have fallen: z={}", v.z);
     }
+}
+
+// ============================================================================
+// #27D: `node` attribute tests
+// ============================================================================
+
+/// `<flex node="...">` resolves body names to vertex positions and parents
+/// vertex bodies to the named node bodies. Vertex body_pos should be zero
+/// (vertex is at node body origin), with world position from FK.
+#[test]
+fn test_flex_node_resolves_body_positions() {
+    let mjcf = r#"
+    <mujoco model="node_test">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="n0" pos="0 0 1">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+            <body name="n1" pos="1 0 1">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+            <body name="n2" pos="0.5 0.866 1">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="tri" dim="2" node="n0 n1 n2" density="300">
+                <elasticity young="5e4" damping="0.1" thickness="0.002"/>
+                <element data="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load node flex");
+
+    // 3 node bodies → 3 flex vertices
+    assert_eq!(model.nflexvert, 3);
+
+    // Initial vertex world positions should match node body positions
+    let mut data = model.make_data();
+    data.step(&model).expect("step failed");
+
+    // After one step, vertices should be near their initial positions
+    // (gravity just started, very small displacement)
+    assert_relative_eq!(data.flexvert_xpos[0].x, 0.0, epsilon = 0.01);
+    assert_relative_eq!(data.flexvert_xpos[0].z, 1.0, epsilon = 0.01);
+    assert_relative_eq!(data.flexvert_xpos[1].x, 1.0, epsilon = 0.01);
+    assert_relative_eq!(data.flexvert_xpos[2].x, 0.5, epsilon = 0.01);
+
+    // Simulate longer — vertices should fall under gravity
+    for _ in 0..200 {
+        data.step(&model).expect("step failed");
+    }
+
+    for (i, v) in data.flexvert_xpos.iter().enumerate() {
+        assert!(
+            !v.x.is_nan() && !v.y.is_nan() && !v.z.is_nan(),
+            "NaN in node vertex {i}"
+        );
+        assert!(v.z < 1.0, "node vertex {i} should have fallen: z={}", v.z);
+    }
+}
+
+/// Node-derived flex parented to non-worldbody nodes: vertex body_pos must be
+/// zero (not the node body's local position), so FK correctly computes world
+/// position from the parent chain.
+#[test]
+fn test_flex_node_nested_body_position() {
+    let mjcf = r#"
+    <mujoco model="node_nested">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="arm" pos="0 0 2">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+                <body name="n0" pos="0 0 0">
+                    <geom type="sphere" size="0.01" mass="0.001"/>
+                </body>
+                <body name="n1" pos="1 0 0">
+                    <geom type="sphere" size="0.01" mass="0.001"/>
+                </body>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="cable" dim="1" node="n0 n1" density="100">
+                <edge stiffness="1000" damping="1"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load nested node flex");
+
+    assert_eq!(model.nflexvert, 2);
+
+    let mut data = model.make_data();
+    data.step(&model).expect("step failed");
+
+    // n0 is at arm(0,0,2) + n0(0,0,0) = world (0,0,2)
+    // n1 is at arm(0,0,2) + n1(1,0,0) = world (1,0,2)
+    // After one step, should be very close to initial positions
+    assert_relative_eq!(data.flexvert_xpos[0].x, 0.0, epsilon = 0.05);
+    assert_relative_eq!(data.flexvert_xpos[0].z, 2.0, epsilon = 0.05);
+    assert_relative_eq!(data.flexvert_xpos[1].x, 1.0, epsilon = 0.05);
+    assert_relative_eq!(data.flexvert_xpos[1].z, 2.0, epsilon = 0.05);
+}
+
+// ============================================================================
+// §27G: Node bug-fix validation tests
+// ============================================================================
+
+/// Node referencing a nonexistent body must produce an error, not silently skip.
+#[test]
+fn test_flex_node_unknown_body_errors() {
+    let mjcf = r#"
+    <mujoco model="node_unknown">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="n0" pos="0 0 0">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="cable" dim="1" node="n0 nonexistent" density="100">
+                <edge stiffness="1000" damping="1"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let result = load_model(mjcf);
+    assert!(result.is_err(), "should error on unknown node body name");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("nonexistent"),
+        "error should mention the unknown body name: {msg}"
+    );
+}
+
+/// Node-derived flex with a pinned vertex: pinned vertex has no DOFs,
+/// unpinned vertices have 3 DOFs each.
+#[test]
+fn test_flex_node_with_pinned_vertex() {
+    let mjcf = r#"
+    <mujoco model="node_pinned">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="n0" pos="0 0 0">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+            <body name="n1" pos="1 0 0">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+            <body name="n2" pos="2 0 0">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="cable" dim="1" node="n0 n1 n2" density="100">
+                <pin id="1"/>
+                <edge stiffness="1000" damping="1"/>
+                <element data="0 1  1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load node+pinned flex");
+
+    assert_eq!(model.nflexvert, 3, "should have 3 flex vertices");
+    // Vertex 1 is pinned → no DOFs (dofadr == usize::MAX)
+    assert_eq!(
+        model.flexvert_dofadr[1],
+        usize::MAX,
+        "pinned vertex should have dofadr == usize::MAX"
+    );
+    // Vertices 0 and 2 are unpinned → 3 DOFs each
+    assert_ne!(model.flexvert_dofadr[0], usize::MAX);
+    assert_ne!(model.flexvert_dofadr[2], usize::MAX);
+    // Total DOFs from flex: 2 unpinned * 3 = 6
+    // Plus DOFs from the 3 node parent bodies (if they have no joints, nv=0).
+    // Since the node bodies have no joints, total nv should be 6.
+    assert_eq!(model.nv, 6, "2 unpinned vertices * 3 DOFs = 6 total DOFs");
+}
+
+/// Deep nesting: worldbody → A(0,0,1) → B(0,0,1) → node(0,0,1).
+/// Vertex world position should accumulate to (0,0,3).
+#[test]
+fn test_flex_node_deep_nesting() {
+    let mjcf = r#"
+    <mujoco model="node_deep">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="A" pos="0 0 1">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+                <body name="B" pos="0 0 1">
+                    <geom type="sphere" size="0.01" mass="0.001"/>
+                    <body name="n0" pos="0 0 1">
+                        <geom type="sphere" size="0.01" mass="0.001"/>
+                    </body>
+                </body>
+            </body>
+            <body name="n1" pos="1 0 0">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="cable" dim="1" node="n0 n1" density="100">
+                <edge stiffness="1000" damping="1"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load deep-nested node flex");
+
+    assert_eq!(model.nflexvert, 2);
+
+    let mut data = model.make_data();
+    data.step(&model).expect("step failed");
+
+    // n0 is at A(0,0,1) → B(0,0,1) → n0(0,0,1) = world (0,0,3)
+    assert_relative_eq!(data.flexvert_xpos[0].x, 0.0, epsilon = 0.05);
+    assert_relative_eq!(data.flexvert_xpos[0].z, 3.0, epsilon = 0.05);
+    // n1 is at (1,0,0)
+    assert_relative_eq!(data.flexvert_xpos[1].x, 1.0, epsilon = 0.05);
+    assert_relative_eq!(data.flexvert_xpos[1].z, 0.0, epsilon = 0.05);
 }

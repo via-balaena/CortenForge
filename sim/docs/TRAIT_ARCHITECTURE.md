@@ -328,10 +328,11 @@ on one boundary before expanding to the next.
 
 | Phase | Trait Boundary | Spec | Status |
 |-------|---------------|------|--------|
-| **Phase A** | `FlexBendingModel` | §42B | Specified, not implemented |
-| **Phase B** | `FlexElasticityModel` | TBD | Not specified |
-| **Phase C** | `ActuatorGainModel` | TBD | Not specified |
-| **Phase D** | `SimBuilder` composition | TBD | Not specified (depends on A-C) |
+| **Phase A** | `FlexBendingModel` | [§42B](todo/future_work_10.md) | Specified, not implemented |
+| **Phase B** | `FlexElasticityModel` | [§42C](todo/future_work_10.md) | Specified, not implemented |
+| **Phase C** | `ActuatorGainModel` | [§42D](todo/future_work_10.md) | Specified, not implemented |
+| **Phase D** | `SimBuilder` composition | [§42F](todo/future_work_10.md) | Specified, not implemented (depends on A-C, E) |
+| **Phase E** | `ContactSolver` | [§42E](todo/future_work_10.md) | Specified, not implemented |
 
 Phase A is the proof-of-concept. If the bending trait works cleanly — static
 dispatch, no performance regression, clean precomputation API — then B and C

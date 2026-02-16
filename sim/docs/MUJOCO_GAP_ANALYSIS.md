@@ -21,11 +21,11 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 **Remaining gaps (Phase 3, optimal implementation order):**
 - **3A-i Parser Fundamentals** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` element~~ ✅, ~~`childclass` attribute~~ ✅, ~~`<site>` orientation~~ ✅, ~~tendon `springlength`~~ ✅
-- **3A-ii Inertia + Contact Parameters** (#23–27): ~~`exactmeshinertia`~~ ✅, friction combination (geometric mean → element-wise max), `geom/@priority`, `solmix`, contact margin/gap
+- **3A-ii Inertia + Contact Parameters** (#23–27, #27B–F): ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, ~~flex child element parsing~~ ✅, ~~passive edge forces~~ ✅, ~~flex body/node attrs~~ ✅, ~~`<flexcomp mass>`~~ ✅, ~~body-coupled flex CRBA+FK~~ ✅
 - **3A-iii Constraint System Overhaul** (#28–32): friction loss migration (Newton Huber → PGS/CG → unified constraints), `solreffriction`, pyramidal cones
 - **3A-iv Noslip + Actuator/Dynamics** (#33–37): noslip post-processor, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality
 - **3A-precursor Flex Solver Unification** (#6B): ~~flex solver unification~~ ✅ (subsumes #42)
-- **3A-v Constraint/Joint + Physics** (#38–41): ball/free joint limits, `wrap_inside`, fluid forces, `disableflags` (~~#42 flex/flexcomp~~ subsumed by §6B)
+- **3A-v Constraint/Joint + Physics** (#38–41, §42A-i–iii): ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, flex edge Jacobian (§42A-i), flex rigid flags (§42A-ii), flex pre-computed fields (§42A-iii) (~~#42 flex/flexcomp~~ subsumed by §6B)
 - **3A-vi Cleanup + Conformance** (#43–45): `shellinertia`, legacy crate deprecation, MuJoCo conformance test suite (depends on all #19–44)
 - **3B Format + Performance** (#46–50): `<composite>`, URDF completeness, SIMD audit, non-physics MJCF, CCD
 - **3C API + Pipeline** (#51–59): body accumulators, mj_inverse, step1/step2, heightfield gaps, user data, subtree fields, SDF options, position derivatives, name lookup
@@ -35,14 +35,14 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal), ImplicitFast (symmetric D, Cholesky), Implicit (asymmetric D + Coriolis, LU)
 - Constraint solver: PGS (Gauss-Seidel, MuJoCo-aligned — no SOR) + CG (preconditioned PGD with Barzilai-Borwein) + Newton (reduced primal, MJCF default), Warm Starting via `WarmstartKey`
-- Contact model (Compliant with solref/solimp, elliptic friction cones with variable condim 1/3/4/6, torsional/rolling friction, contype/conaffinity filtering, `<contact><pair>`/`<exclude>` two-mechanism architecture)
+- Contact model (Compliant with solref/solimp, elliptic friction cones with variable condim 1/3/4/6, torsional/rolling friction, contype/conaffinity filtering, `<contact><pair>`/`<exclude>` two-mechanism architecture, `contact_param()` with element-wise max friction, `geom/@priority` gating, `solmix`-weighted solver param mixing, margin/gap broadphase + narrow-phase + constraint assembly)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, **Free** — matching MuJoCo's 4 joint types; Universal/Planar/Cylindrical are CortenForge standalone extensions)
 - Actuators: All 8 shortcut types (Motor, Position, Velocity, Damper, Cylinder, Adhesion, Muscle, General) with MuJoCo-compatible gain/bias force model (`force = gain * input + bias`), GainType/BiasType dispatch, FilterExact dynamics, control/force clamping; **Site transmissions** (6D gear, refsite, Jacobian-based wrench projection, common-ancestor zeroing)
 - Sensors (32 pipeline types, all wired from MJCF): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, JointLimitFrc, TendonLimitFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer, User (0-dim)
 - Derivatives (complete): FD transition Jacobians (`mjd_transition_fd`), analytical velocity derivatives (`mjd_smooth_vel` → `Data.qDeriv`), hybrid FD+analytical transition Jacobians (`mjd_transition_hybrid`), SO(3) quaternion integration Jacobians (`mjd_quat_integrate`), public dispatch API (`mjd_transition`), validation utilities
 - Sleeping / Body Deactivation (complete): Tree-based sleeping with island discovery (DFS flood-fill), selective CRBA, partial LDL factorization, awake-index iteration, per-island block-diagonal constraint solving, 93 integration tests ([future_work_5 §16](./todo/future_work_5.md))
-- Model loading (URDF, MJCF with `<default>` class resolution, `childclass` propagation (body/frame with undefined-class validation), `<frame>` element (pose composition, recursive nesting), `<compiler>` element, `<include>` file support, **MJB binary format**) — `DefaultResolver` is wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors); `<compiler>` handles angle units, Euler sequences, asset paths, autolimits, inertia computation, mass post-processing; `<include>` supports recursive file expansion with duplicate detection
+- Model loading (URDF, MJCF with `<default>` class resolution, `childclass` propagation (body/frame with undefined-class validation), `<frame>` element (pose composition, recursive nesting), `<compiler>` element, `<include>` file support, **MJB binary format**) — `DefaultResolver` with Option<T> pattern wired into `model_builder.rs` for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair) with 91+ defaultable fields across four-stage pipeline (types → parser → merge → apply); `<compiler>` handles angle units, Euler sequences, asset paths, autolimits, inertia computation, mass post-processing; `<include>` supports recursive file expansion with duplicate detection
 
 ### Placeholder / Stub (in pipeline)
 - Pyramidal friction cones — `cone` field stored but solver uses elliptic cones (warning emitted if pyramidal requested)
@@ -86,7 +86,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Pipeline sensors (32 types) | All 32 types functional and wired from MJCF `<sensor>` elements via `model_builder.rs`; `set_options()` propagates `magnetic`/`wind`/`density`/`viscosity` | [§8](#8-sensors) |
 | Non-convex mesh collision | TriangleMesh ↔ all primitives + mesh-mesh with BVH acceleration | [§5](#5-geom-types-collision-shapes) |
 | SDF collision | All 10 shape combinations (Sphere, Capsule, Box, Cylinder, Ellipsoid, ConvexMesh, Plane, TriangleMesh, HeightField, Sdf↔Sdf) | [§5](#5-geom-types-collision-shapes) |
-| MJCF `<default>` element | ✅ Full — `DefaultResolver` wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors) | [§13](#13-model-format) |
+| MJCF `<default>` element | ✅ Full — `DefaultResolver` with Option<T> pattern, complete four-stage pipeline (types → parser → merge → apply) for all 8 element types; 91+ defaultable fields across geom/joint/site/tendon/actuator/sensor/mesh/pair | [§13](#13-model-format) |
 | MJCF `<tendon>` parsing + pipeline | Fixed + spatial tendons fully wired (kinematics, wrapping, actuation, passive, constraints, sensors) | [§13](#13-model-format) |
 | MJCF `<sensor>` parsing + wiring | 32 sensor types parsed; all 32 wired to pipeline via `process_sensors()` | [§13](#13-model-format) |
 | Muscle pipeline | MuJoCo FLV curves, activation dynamics (Millard 2013), act_dot/integrator architecture, RK4 activation | [§6](#6-actuation) |
@@ -97,6 +97,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Sleeping / Body Deactivation | Tree-based sleeping (Phases A/B/C): island discovery via DFS flood-fill, selective CRBA, partial LDL, awake-index iteration, per-island solving — 93 integration tests | [future_work_5 §16](./todo/future_work_5.md) |
 | `<include>` + `<compiler>` element | Pre-parse XML expansion (recursive, duplicate detection); `<compiler>` with angle/eulerseq/meshdir/texturedir/assetdir/autolimits/inertiafromgeom/boundmass/boundinertia/balanceinertia/settotalmass/strippath/discardvisual/fusestatic/coordinate/exactmeshinertia; section merging for duplicate top-level elements; URDF converter defaults; exact mesh inertia via signed tetrahedron decomposition (Mirtich 1996), full 3×3 tensor accumulation with geom orientation + eigendecomposition | [§13](#13-model-format), [future_work_6 §18](./todo/future_work_6.md), [future_work_7 §23](./todo/future_work_7.md) |
 | Flex Solver Unification (§6B) | Unified flex architecture: vertex DOFs in `qpos`/`qvel`, `FlexEdge` constraint rows, passive bending forces, `mj_collision_flex()`, `mj_crba_flex()`, MJCF `<flex>`/`<flexcomp>` parsing — 21 acceptance tests. Deleted `sim-deformable` crate. | [§11](#11-deformables-flex), [future_work_6b](./todo/future_work_6b_precursor_to_7.md) |
+| Contact Parameters (#24–27) | Unified `contact_param()` with element-wise max friction (#24), `geom/@priority` gating (#25), `solmix`-weighted solver param mixing (#26), margin/gap runtime effect — broadphase AABB expansion, narrow-phase activation thresholds, `includemargin` in constraint assembly, sign convention fix (`pos = -depth`) (#27) | [§3](#3-contact-physics), [future_work_7 §24–27](./todo/future_work_7.md) |
 
 **For typical robotics use cases**, collision detection, joint types, actuation (motors + muscles + filter/integrator dynamics + site transmissions), sensors (32 pipeline types, all wired from MJCF), fixed + spatial tendons (including sphere/cylinder wrapping, sidesite, pulley), and flex (deformable) bodies (unified into the rigid constraint solver with edge constraints, passive bending, and flex-rigid contacts) are functional. See [`sim/docs/todo/index.md`](./todo/index.md) for the full gap list.
 
@@ -241,7 +242,7 @@ The pipeline PGS in `mujoco_pipeline.rs` (`pgs_solve_contacts()`) correctly uses
 | Compliant contacts | Core | Inline in PGS solver (`mujoco_pipeline.rs`) | **Implemented** | - | - |
 | Spring-damper (F = k*d^p + c*v) | Core | `compute_normal_force_magnitude` | **Standalone** (in sim-simd `batch_ops.rs` only; pipeline uses constraint-based PGS, not penalty spring-damper) | - | - |
 | Nonlinear stiffness (d^p) | Core | `stiffness_power` param | **Standalone** (same as above — sim-simd only) | - | - |
-| Contact margin | Supported | `contact_margin` param | **Implemented** (field stored; effect on collision thresholds TBD) | - | - |
+| Contact margin/gap | Supported | margin/gap in `contact_param()`, broadphase AABB expansion, activation thresholds, `includemargin` constraint assembly | **Implemented** (full pipeline: broadphase → narrow-phase → constraint assembly) | - | - |
 | Elliptic friction cones | Default | `Model.cone = 1`, `project_elliptic_cone()` | **Implemented** (two-step projection: unilateral constraint + friction scaling) | - | - |
 | Pyramidal friction cones | Alternative | `Model.cone` field | **Stub** (warning emitted, falls back to elliptic — requires different system size) | - | - |
 | Variable condim (1/3/4/6) | Core | `Contact.dim`, `efc_offsets`, variable-dim solvers | **Implemented** (full variable-dimension support in PGS/CG) | - | - |
@@ -870,10 +871,18 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 | Bending (dihedral) | Yes (passive forces) | Passive spring-damper in `mj_fwd_passive()` | ✅ **Pipeline** (Bridson et al. 2003 gradient) | - | - |
 | Flex-rigid collision | Yes | `mj_collision_flex()` → regular `Contact` entries | ✅ **Pipeline** (brute-force O(V×G) vertex-vs-geom) | - | - |
 | Flex-flex collision | Yes | Not implemented | **Deferred** (self-collision for cloth) | Low | High |
+| Flex `body`/`node` attrs | Yes (`flexvert_bodyid`) | ~~Hardcoded `usize::MAX`~~ → Parsed + resolved | ✅ **Done** — [#27D](./todo/future_work_7.md) | - | - |
+| Sparse edge Jacobian (`flexedge_J`) | Yes (CSR per edge) | Inline `±direction` (3-DOF only) | **Gap** — [§42A-i](./todo/future_work_10.md) | Medium | High |
+| `flex_rigid`/`flexedge_rigid` | Yes (boolean arrays) | Per-vertex `invmass==0` check | **Gap** — [§42A-ii](./todo/future_work_10.md) (optimization) | Low | Low |
+| `flexedge_length`/`velocity` Data fields | Yes (pre-computed) | Inline computation | **Gap** — [§42A-iii](./todo/future_work_10.md) (optimization) | Low | Low |
+| Flex child element parsing (`<contact>`, `<elasticity>`, `<edge>`) | Yes | ~~Falls to skip_element~~ → Proper child dispatch | ✅ **Done** — [#27B](./todo/future_work_7.md) | - | - |
+| Passive edge spring-damper forces | Yes (`engine_passive.c`) | ~~Not implemented~~ → `mj_fwd_passive()` edge loop | ✅ **Done** — [#27C](./todo/future_work_7.md) | - | - |
+| `<flexcomp mass="...">` attribute | Yes (total mass → per-vertex) | ~~Non-standard `density` extension~~ → `mass` attr parsed, uniform `mass/npnt` distribution | ✅ **Done** — [#27E](./todo/future_work_7.md) | - | - |
+| Body-coupled flex vertex CRBA + FK | Yes (vertices ARE bodies; `mj_crb`/`mj_rne` have zero flex code) | ~~`flexvert_bodyid` stored but dead; diagonal `m*I₃` blocks only~~ → Vertices promoted to real bodies with 3 slide joints; standard CRBA/RNE/FK handles all flex physics | ✅ **Done** — [#27F](./todo/future_work_7.md) | - | - |
 
 > ✅ **Unified flex architecture (§6B).** Flex vertex DOFs are appended to `qpos`/`qvel`/`qacc` after rigid DOFs. Edge constraints enter the unified Jacobian as `FlexEdge` rows. Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries (discriminated by `flex_vertex: Option<usize>`). The previous `sim-deformable` crate (XPBD solver) has been deleted — useful code migrated to `model_builder.rs`. See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅.
 >
-> **Key pipeline functions:** `mj_collision_flex()`, `mj_crba_flex()`, `mj_factor_flex()`, `mj_fwd_position_flex()`, `mj_integrate_pos_flex()`, `apply_flex_edge_constraints()`.
+> **Key pipeline functions:** `mj_collision_flex()`, `mj_flex()` (FK → xpos), `apply_flex_edge_constraints()`. Post-§27F: `mj_crba_flex()`, `mj_factor_flex()`, `mj_fwd_position_flex()`, and `mj_integrate_pos_flex()` have been **deleted** — flex vertices are now real bodies with 3 slide joints, so the standard CRBA/RNE/FK/integration handles everything.
 >
 > **Material model:** Young's modulus → bending stiffness via Kirchhoff-Love (shells) or characteristic stiffness (solids). Proportional damping. Pinned vertices: `mass = 1e20`, `invmass = 0`.
 >
@@ -1105,7 +1114,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<compiler>` | Full | All A1–A12 attributes: `angle`, `eulerseq`, `meshdir`/`texturedir`/`assetdir`, `autolimits`, `inertiafromgeom`, `boundmass`/`boundinertia`, `balanceinertia`, `settotalmass`, `strippath`, `discardvisual`, `fusestatic`, `coordinate`, `exactmeshinertia` |
 | `<include>` | Full | Pre-parse XML expansion with recursive nested includes, duplicate file detection, path resolution relative to main model file; works inside any MJCF section |
 | `<option>` | Full | All attributes, flags, solver params, collision options |
-| `<default>` | Full | `DefaultResolver` wired into `model_builder.rs` — class defaults applied to joints, geoms, sites, actuators, tendons, sensors before per-element attributes |
+| `<default>` | Full | `DefaultResolver` with Option<T> pattern — complete four-stage pipeline (types → parser → merge → apply) for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair). 91+ defaultable fields with `is_none()` guards. Includes solver params (solref/solimp on geom/joint/tendon/pair), orientation (pos/quat/euler/axisangle/xyaxes/zaxis on geom/site), exotic attrs (fromto/mesh/hfield on geom), activation params (group/actlimited/actrange/actearly/lengthrange on actuator), and material scaffold (geom/site/tendon). |
 | `<worldbody>` | Full | Body tree root |
 | `<body>` | Full | Hierarchical bodies with pos, quat, euler |
 | `<inertial>` | Full | mass, diaginertia, fullinertia |
@@ -1262,7 +1271,7 @@ The following were completed in January 2026:
 |---------|---------|-------|
 | Non-convex mesh collision | §5 Geoms | `CollisionShape::TriangleMesh` with BVH acceleration |
 | SDF collision | §5 Geoms | All 10 shape combinations implemented |
-| MJCF `<default>` element | §13 Model Format | ✅ `DefaultResolver` wired into `model_builder.rs` for all element types |
+| MJCF `<default>` element | §13 Model Format | ✅ `DefaultResolver` with Option<T> pattern — full four-stage pipeline for all 8 element types (91+ fields) |
 | MJCF `<tendon>` parsing | §13 Model Format | Spatial and fixed tendons |
 | MJCF `<sensor>` parsing + wiring | §13 Model Format | 32 `MjcfSensorType` variants parsed; all 32 wired to pipeline via `process_sensors()` |
 
