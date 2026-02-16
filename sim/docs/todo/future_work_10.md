@@ -1,11 +1,18 @@
-# Future Work 10 — Phase 3A: Constraint/Joint Features + Physics + Pipeline (Items #38–42, #42B)
+# Future Work 10 — Phase 3A: Constraint/Joint Features + Physics + Pipeline + Trait Architecture (Items #38–42, #42B–F)
 
 Part of [Simulation Phase 3 Roadmap](./index.md). See [index.md](./index.md) for
 priority table, dependency graph, and file map.
 
-All items are prerequisites to #45 (MuJoCo Conformance Test Suite). This file
+Items #38–42B are prerequisites to #45 (MuJoCo Conformance Test Suite). This file
 covers constraint/joint features (ball/free limits, tendon wrapping), physics
-(fluid forces), pipeline flags, and deformable body MJCF parsing.
+(fluid forces), pipeline flags, deformable body MJCF parsing, and the trait
+architecture (§42C–F) described in [TRAIT_ARCHITECTURE.md](../TRAIT_ARCHITECTURE.md).
+
+§42B–F form the trait architecture rollout: §42B (Phase A) proves the pattern with
+`FlexBendingModel`, then §42C/D/E extend it to elasticity, actuators, and contact
+solvers, and §42F assembles them into the composable `SimBuilder`. §42C–F are NOT
+prerequisites to #45 — they add non-MuJoCo extensions and can proceed in parallel
+with Batches 5–9 once §42B lands.
 
 ---
 
@@ -449,6 +456,13 @@ This is computed during model compilation from element connectivity.
    bending force.
 6. **Trait dispatch**: Swapping `FlexBendingType` on a model changes force
    computation without touching any other pipeline code.
+7. **Mixed-model dispatch**: A model with two flex bodies — one cotangent, one
+   Bridson — dispatches correctly per flex body and produces correct forces for
+   both simultaneously.
+8. **Zero trait overhead**: `mj_fwd_passive()` throughput with cotangent bending
+   through the trait is within 1% of a hardcoded implementation (no performance
+   regression from the trait boundary). This validates the pattern for Phases B–E
+   of the [trait architecture](../TRAIT_ARCHITECTURE.md).
 
 #### Files
 - `sim/L0/core/src/mujoco_pipeline.rs` — `FlexBendingModel` trait,
@@ -458,3 +472,471 @@ This is computed during model compilation from element connectivity.
 - `sim/L0/mjcf/src/parser.rs` — parse `bending_model` attribute from `<flex>`
 - `sim/L0/tests/integration/flex_unified.rs` — conformance tests, stability
   tests, regression tests for Bridson path
+
+---
+
+### 42C. `FlexElasticityModel` Trait — Phase B (Membrane / Edge Elasticity)
+**Status:** Not started | **Effort:** L | **Prerequisites:** §42B
+
+#### Background
+
+The flex edge constraint currently uses a soft equality constraint with solref/solimp
+(matching MuJoCo's `mjEQ_FLEX` mechanism). This is `LinearElastic` — small-strain
+response expressed as constraint rows in the unified Jacobian.
+
+Nonlinear hyperelastic materials (Neo-Hookean, Mooney-Rivlin, Ogden) require
+strain-energy-based forces computed from deformation gradients. These cannot be
+expressed as constraint rows — they produce direct passive forces from the strain
+energy density function.
+
+The divergence:
+
+| Regime | Model | Mechanism | Use Case |
+|--------|-------|-----------|----------|
+| Small strain | Linear elastic (current) | Constraint row (`FlexEdge`) | Robotics, stiff bodies, MuJoCo conformance |
+| Large strain | Neo-Hookean / SVK | Passive force from strain energy | Soft tissue, surgical sim, rubber |
+| Hyperelastic | Mooney-Rivlin, Ogden | Passive force from strain energy invariants | Biomechanics, material characterization |
+
+#### Specification
+
+##### S1. `FlexElasticityModel` trait
+
+```rust
+pub trait FlexElasticityModel {
+    /// Per-flex precomputed data (opaque to the pipeline).
+    type Precomputed;
+
+    /// Precompute coefficients at model build time.
+    fn precompute(
+        flex_id: usize,
+        model: &Model,
+    ) -> Self::Precomputed;
+
+    /// Apply elasticity forces/constraints for this flex body.
+    /// Constraint-based models add rows to the Jacobian.
+    /// Force-based models accumulate into qfrc_passive.
+    fn apply(
+        flex_id: usize,
+        pre: &Self::Precomputed,
+        model: &Model,
+        data: &mut Data,
+    );
+}
+```
+
+##### S2. `LinearElastic` (extract current implementation)
+
+Move the existing `FlexEdge` constraint row assembly behind the trait:
+- `precompute()`: Store rest edge lengths (already computed at build time).
+- `apply()`: Assemble edge equality constraint rows into the Jacobian, exactly
+  as the current code does. No behavioral change.
+
+##### S3. `NeoHookean` (new implementation)
+
+Strain-energy-based passive force computation:
+- **Energy**: `W = μ/2 (I₁ - 3) - μ ln(J) + λ/2 (ln J)²`
+  where `I₁ = tr(FᵀF)`, `J = det(F)`, `F` is the deformation gradient.
+- **Force**: `f = -∂W/∂x` computed per element from the deformation gradient.
+- `precompute()`: Compute rest-state inverse reference matrices (`Dm⁻¹`) per element,
+  rest volumes, and material parameters (Lamé: `μ = E / (2(1+ν))`,
+  `λ = Eν / ((1+ν)(1-2ν))`).
+- `apply()`: For each element, compute deformation gradient `F = Ds * Dm⁻¹`,
+  compute first Piola-Kirchhoff stress `P = ∂W/∂F`, accumulate nodal forces
+  `f = -V₀ * P * Dm⁻ᵀ` into `qfrc_passive`.
+
+For dim=2 (shells): Use the in-plane deformation gradient (2×2 → 3×2 map)
+with thickness integrated out. For dim=3 (solids): Full 3×3 deformation gradient.
+
+##### S4. Per-flex dispatch
+
+```rust
+pub enum FlexElasticityType {
+    /// Linear elastic constraint rows (MuJoCo-conformant, default).
+    Linear,
+    /// Neo-Hookean hyperelastic passive forces.
+    NeoHookean,
+}
+```
+
+Stored per flex body in `Model.flex_elasticity_model: Vec<FlexElasticityType>`.
+
+##### S5. MJCF configuration
+
+```xml
+<flex name="tissue" dim="3" young="5e3" poisson="0.45"
+      elasticity_model="neo_hookean"/>
+```
+
+Default: `linear` (MuJoCo conformance).
+
+#### Acceptance Criteria
+
+1. `LinearElastic` through the trait produces identical constraint rows as the
+   current direct implementation (bit-exact regression).
+2. `NeoHookean` on a dim=3 cube under gravity produces physically plausible
+   large-deformation response (cube deforms, doesn't explode, conserves volume
+   approximately for ν → 0.5).
+3. `NeoHookean` on a dim=2 shell under gravity produces membrane stretch forces.
+4. Mixed model: one flex body linear, one neo-Hookean, both simulate correctly.
+5. Neo-Hookean with small strain converges to linear elastic response
+   (validation: compare forces at 1% strain, should agree within 5%).
+
+#### Files
+- `sim/L0/core/src/mujoco_pipeline.rs` — `FlexElasticityModel` trait,
+  `LinearElastic`, `NeoHookean`, dispatch in constraint assembly + passive forces
+- `sim/L0/mjcf/src/model_builder.rs` — `elasticity_model` attribute, precomputation
+- `sim/L0/mjcf/src/parser.rs` — parse `elasticity_model` from `<flex>`
+- `sim/L0/tests/integration/flex_unified.rs` — hyperelastic tests, regression tests
+
+---
+
+### 42D. `ActuatorGainModel` Trait — Phase C (Actuator Gain Models)
+**Status:** Not started | **Effort:** M | **Prerequisites:** §42B
+
+#### Background
+
+MuJoCo has three gain types dispatched by enum: `Fixed`, `Affine`, `Muscle`. The set
+is closed — adding a new gain model requires modifying the enum. Real actuator modeling
+needs an open set: series elastic actuators (SEA compliance), pneumatic actuators
+(nonlinear pressure-volume), hydraulic actuators (valve dynamics), cable-driven actuators
+(cable elasticity + friction).
+
+The existing enum dispatch is correct for the MuJoCo-compatible types and should remain.
+The trait extends it for user-defined models that can't be expressed as
+`force = gainprm[0] + gainprm[1]*length + gainprm[2]*velocity`.
+
+#### Specification
+
+##### S1. `ActuatorGainModel` trait
+
+```rust
+pub trait ActuatorGainModel {
+    type Params;
+
+    /// Compute actuator force contribution.
+    fn gain(
+        length: f64,
+        velocity: f64,
+        activation: f64,
+        ctrl: f64,
+        params: &Self::Params,
+    ) -> f64;
+
+    /// Compute ∂force/∂velocity for implicit integration.
+    fn dgain_dvel(
+        length: f64,
+        velocity: f64,
+        activation: f64,
+        ctrl: f64,
+        params: &Self::Params,
+    ) -> f64;
+}
+```
+
+##### S2. Built-in implementations
+
+Extract the existing gain computation into trait implementations:
+- `FixedGain`: `force = gainprm[0] * ctrl`
+- `AffineGain`: `force = gainprm[0] + gainprm[1]*length + gainprm[2]*velocity`
+- `MuscleGain`: Hill-type muscle model (existing `compute_muscle_gain()`)
+
+These must produce identical results to the current enum-dispatched code.
+
+##### S3. `SeriesElasticGain` (new, proof-of-concept)
+
+A simple SEA model as the second non-MuJoCo implementation:
+- `force = k_spring * (x_motor - x_joint) + d * (v_motor - v_joint)`
+- Where `x_motor = ctrl * gear_ratio`, `v_motor = d(ctrl)/dt * gear_ratio`
+- `Params`: `{ k_spring: f64, damping: f64, gear_ratio: f64 }`
+
+This is a common actuator model in legged robotics that cannot be expressed as
+MuJoCo's affine gain.
+
+##### S4. Dispatch
+
+The existing `GainType` enum stays for MuJoCo-compatible types (zero-cost match
+dispatch in the hot loop). Custom gain models use trait dispatch:
+
+```rust
+pub enum GainDispatch {
+    /// Built-in MuJoCo types (match dispatch, zero-cost).
+    Builtin(GainType),
+    /// Custom gain model (trait dispatch).
+    Custom(Box<dyn ActuatorGainModel<Params = CustomGainParams>>),
+}
+```
+
+For monomorphized dispatch (no vtable), the `SimBuilder` approach from §42F
+would eliminate the `Box<dyn>`. §42D can use dynamic dispatch as a first step
+since actuator force computation is not the innermost hot loop.
+
+##### S5. MJCF configuration
+
+Custom gain models are configured via `<general>` actuator with a custom attribute:
+
+```xml
+<general name="sea_hip" joint="hip" gaintype="custom"
+         cortenforge:gain_model="series_elastic"
+         cortenforge:gain_params="1000 10 50"/>
+```
+
+Or via the Rust API:
+```rust
+model.set_actuator_gain(actuator_id, SeriesElasticGain {
+    k_spring: 1000.0, damping: 10.0, gear_ratio: 50.0,
+});
+```
+
+#### Acceptance Criteria
+
+1. `FixedGain`, `AffineGain`, `MuscleGain` through the trait produce identical
+   forces as the current enum dispatch (bit-exact regression).
+2. `SeriesElasticGain` produces correct spring-damper forces for a 1-DOF test case.
+3. `dgain_dvel` is correct for all implementations (verify numerically with finite
+   differences).
+4. Models without custom gain types see zero overhead (existing enum path unchanged).
+5. Implicit integrator works correctly with custom gain models (uses `dgain_dvel`).
+
+#### Files
+- `sim/L0/core/src/mujoco_pipeline.rs` — `ActuatorGainModel` trait, built-in
+  implementations, `SeriesElasticGain`, dispatch in `mj_fwd_actuation()`
+- `sim/L0/mjcf/src/parser.rs` — parse custom gain attributes
+- `sim/L0/tests/` — regression tests for built-in gains, SEA model tests
+
+---
+
+### 42E. Contact Solver Trait — Phase E (Contact Formulation Extensibility)
+**Status:** Not started | **Effort:** XL | **Prerequisites:** §42B
+
+#### Background
+
+The current architecture has enum dispatch for contact solvers (`SolverType::PGS | CG
+| Newton`). This works because all three solve the same LCP formulation — they differ
+in numerics, not physics.
+
+Future solvers may differ in **formulation**, not just solution strategy:
+
+| Solver | Formulation | Physics | Use Case |
+|--------|------------|---------|----------|
+| PGS/CG/Newton | LCP (complementarity) | Rigid contact, Coulomb friction | Robotics, MuJoCo conformance |
+| XPBD | Position-based constraints | Compliant contact, regularized | Real-time, games, animation |
+| Impulse-based | Velocity-level impulses | Event-driven, exact collision | Billiards, granular media |
+| Compliant contact | Kelvin-Voigt / Hunt-Crossley | Viscoelastic contact | Soft robotics, grasping |
+
+These aren't different algorithms for the same problem — they're different **problem
+formulations**. An enum can't capture this because the input/output types differ:
+LCP solvers consume a Delassus matrix + constraint bounds, XPBD consumes position
+constraints + compliance, impulse-based solvers consume collision events + restitution.
+
+#### Specification
+
+##### S1. `ContactSolver` trait
+
+```rust
+pub trait ContactSolver {
+    /// Solver-specific configuration.
+    type Config;
+
+    /// Solver-specific per-step workspace.
+    type Workspace;
+
+    /// Allocate workspace for this step's contacts.
+    fn prepare(
+        config: &Self::Config,
+        model: &Model,
+        data: &Data,
+        contacts: &[Contact],
+    ) -> Self::Workspace;
+
+    /// Solve for contact forces / impulses / position corrections.
+    /// Modifies data.qacc (or data.qpos for position-level solvers).
+    fn solve(
+        config: &Self::Config,
+        workspace: &mut Self::Workspace,
+        model: &Model,
+        data: &mut Data,
+        contacts: &[Contact],
+    );
+}
+```
+
+##### S2. `LcpSolver` (extract current implementation)
+
+Wraps the existing PGS/CG/Newton solver behind the trait:
+- `Config`: `{ solver_type: SolverType, iterations: usize, tolerance: f64, noslip_iterations: usize }`
+- `Workspace`: The existing `ConstraintState` (Delassus matrix, lambda, residuals)
+- `prepare()`: Assemble Jacobian + Delassus (existing `mj_fwd_constraint()` logic)
+- `solve()`: Dispatch to PGS/CG/Newton based on `solver_type` (existing solver code)
+
+The internal PGS/CG/Newton enum dispatch stays — this is numerics-level dispatch within
+a single formulation.
+
+##### S3. `XpbdSolver` (new implementation)
+
+Extended Position-Based Dynamics for compliant contact:
+- `Config`: `{ iterations: usize, substeps: usize }`
+- `Workspace`: Position constraint data, compliance matrices
+- `prepare()`: Generate position-level contact constraints from penetration depths
+- `solve()`: Iterative constraint projection with compliance:
+  `Δx = -C(x) / (∇C·M⁻¹·∇Cᵀ + α/dt²)` where `α` is compliance
+
+XPBD is the standard real-time physics formulation (Macklin et al. 2016). It's
+simpler than LCP, faster per iteration, but less physically accurate.
+
+##### S4. Dispatch
+
+```rust
+pub enum ContactSolverType {
+    /// LCP solver (PGS/CG/Newton). MuJoCo-conformant.
+    Lcp(SolverType),
+    /// XPBD compliant contact. Real-time, position-based.
+    Xpbd,
+}
+```
+
+Default: `Lcp(SolverType::Newton)`.
+
+##### S5. MJCF configuration
+
+```xml
+<option solver="newton"/>  <!-- existing, unchanged -->
+<option cortenforge:solver="xpbd" cortenforge:xpbd_substeps="4"/>
+```
+
+#### Acceptance Criteria
+
+1. `LcpSolver` through the trait produces identical results as the current direct
+   implementation for PGS, CG, and Newton (bit-exact regression).
+2. `XpbdSolver` produces stable contact for a box resting on a plane.
+3. `XpbdSolver` resolves interpenetration within the specified iterations.
+4. Models using default solver see zero overhead (LCP path unchanged).
+5. Switching solver type at runtime (between steps) works correctly.
+
+#### Files
+- `sim/L0/core/src/mujoco_pipeline.rs` — `ContactSolver` trait, `LcpSolver`,
+  `XpbdSolver`, dispatch in constraint solve stage
+- `sim/L0/tests/` — regression tests for LCP, XPBD stability tests
+
+---
+
+### 42F. `SimBuilder` Composition — Phase D (Trait Assembly)
+**Status:** Not started | **Effort:** L | **Prerequisites:** §42C, §42D, §42E
+
+#### Background
+
+§42B (Phase A) and §42C/D/E (Phases B, C, E) each introduce a trait boundary.
+Phase D assembles them into a composable builder that produces a fully monomorphized
+simulation type — no vtable overhead in the inner loop.
+
+#### Specification
+
+##### S1. Generic `Sim` type
+
+```rust
+pub struct Sim<B, E, A, C>
+where
+    B: FlexBendingModel,
+    E: FlexElasticityModel,
+    A: ActuatorGainModel,
+    C: ContactSolver,
+{
+    model: Model,
+    data: Data,
+    bending: B,
+    elasticity: E,
+    actuators: A,
+    contact_solver: C,
+}
+```
+
+##### S2. `SimBuilder`
+
+```rust
+pub struct SimBuilder<B = CotangentBending, E = LinearElastic, A = DefaultGain, C = LcpSolver> {
+    bending: B,
+    elasticity: E,
+    actuators: A,
+    contact_solver: C,
+}
+
+impl SimBuilder {
+    pub fn new() -> Self { /* defaults: MuJoCo-conformant config */ }
+}
+
+impl<B, E, A, C> SimBuilder<B, E, A, C> {
+    pub fn bending<B2: FlexBendingModel>(self, b: B2) -> SimBuilder<B2, E, A, C> { ... }
+    pub fn elasticity<E2: FlexElasticityModel>(self, e: E2) -> SimBuilder<B, E2, A, C> { ... }
+    pub fn actuators<A2: ActuatorGainModel>(self, a: A2) -> SimBuilder<B, E, A2, C> { ... }
+    pub fn contact_solver<C2: ContactSolver>(self, c: C2) -> SimBuilder<B, E, A, C2> { ... }
+    pub fn build(self, model: Model) -> Result<Sim<B, E, A, C>, Error> { ... }
+}
+```
+
+##### S3. Type aliases for common configurations
+
+```rust
+/// MuJoCo-conformant defaults. This is what `Model::make_data()` + `Data::step()` uses.
+pub type MujocoSim = Sim<CotangentBending, LinearElastic, DefaultGain, LcpSolver>;
+
+/// Large-deformation cloth/animation preset.
+pub type AnimationSim = Sim<BridsonBending, LinearElastic, DefaultGain, XpbdSolver>;
+
+/// Soft robotics / biomechanics preset.
+pub type SoftBodySim = Sim<CotangentBending, NeoHookean, DefaultGain, LcpSolver>;
+```
+
+##### S4. Backward compatibility
+
+The existing `Model`/`Data` API does not change:
+- `load_model()` + `make_data()` + `step()` continues to work exactly as before.
+- Internally, this uses `MujocoSim` (the default configuration).
+- `SimBuilder` is the power-user API for non-default configurations.
+
+##### S5. `Sim::step()` pipeline
+
+`Sim::step()` calls the same pipeline stages as `Data::step()`, but dispatches
+trait calls through the generic parameters instead of hardcoded implementations:
+
+```rust
+impl<B, E, A, C> Sim<B, E, A, C>
+where
+    B: FlexBendingModel,
+    E: FlexElasticityModel,
+    A: ActuatorGainModel,
+    C: ContactSolver,
+{
+    pub fn step(&mut self) -> Result<(), Error> {
+        mj_step_common(&self.model, &mut self.data)?;
+        self.bending.apply_forces(...);
+        self.elasticity.apply(...);
+        self.actuators.gain(...);
+        self.contact_solver.solve(...);
+        mj_step_integrate(&self.model, &mut self.data)?;
+        Ok(())
+    }
+}
+```
+
+All dispatch is monomorphized — the compiler sees concrete types, not trait objects.
+
+#### Acceptance Criteria
+
+1. `SimBuilder::new().build(model)` produces a `MujocoSim` that passes all existing
+   conformance tests.
+2. `SimBuilder::new().bending(BridsonBending).build(model)` produces an `AnimationSim`
+   that uses Bridson bending.
+3. Mixing traits: `SimBuilder::new().elasticity(NeoHookean::new(mu, lambda)).contact_solver(XpbdSolver::new(4)).build(model)` compiles and runs.
+4. `Model::make_data()` + `Data::step()` is unchanged — no regression, no API break.
+5. Compile-time monomorphization: no vtables in the hot path (verify via assembly
+   inspection or `cargo-asm`).
+6. Domain randomization example: a training loop that randomly selects bending model
+   per episode compiles and produces distinct dynamics.
+
+#### Files
+- `sim/L0/core/src/sim_builder.rs` — new module: `Sim<B, E, A, C>`, `SimBuilder`,
+  type aliases
+- `sim/L0/core/src/lib.rs` — re-export `SimBuilder`, `MujocoSim`, etc.
+- `sim/L0/core/src/mujoco_pipeline.rs` — refactor pipeline stages to accept trait
+  parameters
+- `sim/L0/tests/` — builder composition tests, regression tests, domain randomization
+  example test
