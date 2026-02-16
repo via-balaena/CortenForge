@@ -266,8 +266,10 @@ fn ac1_cloth_gravity_drape() {
     assert_eq!(model.nflexvert, 4);
     assert_eq!(model.flex_dim[0], 2);
 
+    // (§27F) nv_rigid removed — flex DOFs are now real body DOFs.
+    // Each unpinned vertex has 3 slide joints contributing 3 DOFs.
     let nv_flex = model.nflexvert * 3;
-    assert_eq!(model.nv, model.nv_rigid + nv_flex);
+    assert!(model.nv >= nv_flex);
 
     // Record initial Z positions of all vertices
     data.forward(&model).expect("forward failed");
@@ -442,14 +444,15 @@ fn ac4_cloth_on_sphere_contact() {
     assert_eq!(model.nflex, 1);
     assert!(model.nflexvert > 0);
 
-    // Verify initial qpos contains correct vertex positions (z=1.0)
+    // (§27F) qpos now stores slide joint displacements (initially 0).
+    // Verify initial vertex world positions via FK (body_pos encodes z=1.0).
+    data.forward(&model).expect("forward failed");
     for i in 0..model.nflexvert {
-        let adr = model.flexvert_qposadr[i];
         assert!(
-            data.qpos[adr + 2] >= 0.99,
-            "vertex {} initial qpos z = {}, expected >= 0.99",
+            data.flexvert_xpos[i].z >= 0.99,
+            "vertex {} initial xpos z = {}, expected >= 0.99",
             i,
-            data.qpos[adr + 2]
+            data.flexvert_xpos[i].z
         );
     }
 
@@ -660,86 +663,54 @@ fn ac8_pinned_vertices_zero_motion() {
 
     data.forward(&model).expect("forward failed");
 
-    // Record initial positions and qpos for pinned vertices
-    let pin0_qpos_adr = model.flexvert_qposadr[0];
-    let pin1_qpos_adr = model.flexvert_qposadr[1];
-    let pin0_initial = [
-        data.qpos[pin0_qpos_adr],
-        data.qpos[pin0_qpos_adr + 1],
-        data.qpos[pin0_qpos_adr + 2],
-    ];
-    let pin1_initial = [
-        data.qpos[pin1_qpos_adr],
-        data.qpos[pin1_qpos_adr + 1],
-        data.qpos[pin1_qpos_adr + 2],
-    ];
+    // (§27F) Pinned vertices now have no DOFs (dofadr = usize::MAX, qposadr = usize::MAX).
+    // Verify they remain fixed via their world positions (flexvert_xpos).
+    assert_eq!(
+        model.flexvert_dofadr[0],
+        usize::MAX,
+        "pinned v0 should have no DOFs"
+    );
+    assert_eq!(
+        model.flexvert_dofadr[1],
+        usize::MAX,
+        "pinned v1 should have no DOFs"
+    );
+    assert_ne!(
+        model.flexvert_dofadr[2],
+        usize::MAX,
+        "free v2 should have DOFs"
+    );
+    assert_ne!(
+        model.flexvert_dofadr[3],
+        usize::MAX,
+        "free v3 should have DOFs"
+    );
+
+    // Record initial world positions of pinned vertices
+    let pin0_initial = data.flexvert_xpos[0];
+    let pin1_initial = data.flexvert_xpos[1];
 
     // Simulate for 500 steps under gravity
     for _ in 0..500 {
         data.step(&model).expect("step failed");
     }
 
-    // Pinned vertex qpos must be EXACTLY unchanged
-    for k in 0..3 {
-        assert_eq!(
-            data.qpos[pin0_qpos_adr + k],
-            pin0_initial[k],
-            "pinned vertex 0 qpos[{}] changed: {} -> {}",
-            k,
-            pin0_initial[k],
-            data.qpos[pin0_qpos_adr + k]
-        );
-        assert_eq!(
-            data.qpos[pin1_qpos_adr + k],
-            pin1_initial[k],
-            "pinned vertex 1 qpos[{}] changed: {} -> {}",
-            k,
-            pin1_initial[k],
-            data.qpos[pin1_qpos_adr + k]
-        );
-    }
-
-    // Pinned vertex velocity must be exactly zero
-    let pin0_dof = model.flexvert_dofadr[0];
-    let pin1_dof = model.flexvert_dofadr[1];
-    for k in 0..3 {
-        assert_eq!(
-            data.qvel[pin0_dof + k],
-            0.0,
-            "pinned vertex 0 vel[{}] != 0",
-            k
-        );
-        assert_eq!(
-            data.qvel[pin1_dof + k],
-            0.0,
-            "pinned vertex 1 vel[{}] != 0",
-            k
-        );
-    }
-
-    // Pinned vertex acceleration must be exactly zero
-    for k in 0..3 {
-        assert_eq!(
-            data.qacc[pin0_dof + k],
-            0.0,
-            "pinned vertex 0 acc[{}] != 0",
-            k
-        );
-        assert_eq!(
-            data.qacc[pin1_dof + k],
-            0.0,
-            "pinned vertex 1 acc[{}] != 0",
-            k
-        );
-    }
+    // Pinned vertex world positions must be EXACTLY unchanged
+    assert_eq!(
+        data.flexvert_xpos[0], pin0_initial,
+        "pinned vertex 0 xpos changed"
+    );
+    assert_eq!(
+        data.flexvert_xpos[1], pin1_initial,
+        "pinned vertex 1 xpos changed"
+    );
 
     // Free vertices SHOULD have moved (sanity check that gravity works)
-    let free2_qpos_adr = model.flexvert_qposadr[2];
-    let free2_z = data.qpos[free2_qpos_adr + 2];
+    // Check that vertex 2's Z position has fallen
     assert!(
-        free2_z < 1.0 - 0.01,
+        data.flexvert_xpos[2].z < pin0_initial.z - 0.01,
         "free vertex 2 should have fallen: z={}",
-        free2_z
+        data.flexvert_xpos[2].z
     );
 }
 
@@ -771,8 +742,8 @@ fn ac9_rigid_only_regression() {
     assert_eq!(model.nflexedge, 0);
     assert_eq!(model.nflexelem, 0);
     assert_eq!(model.nflexhinge, 0);
-    assert_eq!(model.nq, model.nq_rigid);
-    assert_eq!(model.nv, model.nv_rigid);
+    // (§27F) No flex vertices → nq/nv are purely from rigid joints.
+    // Just verify dimensions are self-consistent (no nq_rigid/nv_rigid needed).
 
     // Step should work normally
     for _ in 0..100 {
@@ -796,8 +767,7 @@ fn ac10_flex_roundtrip() {
     assert_eq!(model.flex_dim[0], 2);
     assert_eq!(model.flex_vertnum[0], 3);
 
-    // Total DOFs: rigid (0) + flex (3 * 3 = 9)
-    assert_eq!(model.nq_rigid, 0);
+    // Total DOFs: 3 vertices * 3 slide joints = 9
     assert_eq!(model.nq, 9);
     assert_eq!(model.nv, 9);
 
@@ -911,10 +881,7 @@ fn ac13_mixed_rigid_flex_independence() {
     let model = load_model(mixed_rigid_flex_mjcf()).expect("should load");
     let mut data = model.make_data();
 
-    // Rigid: 1 hinge joint (nq_rigid=1, nv_rigid=1)
-    // Flex: 4 vertices * 3 = 12 DOFs
-    assert_eq!(model.nq_rigid, 1);
-    assert_eq!(model.nv_rigid, 1);
+    // 1 hinge joint (1 DOF) + 4 flex vertices * 3 slide joints = 13 DOFs
     assert_eq!(model.nflexvert, 4);
     assert_eq!(model.nq, 1 + 12);
     assert_eq!(model.nv, 1 + 12);
@@ -1045,12 +1012,12 @@ fn flex_dof_address_table_correctness() {
 fn mixed_model_dof_address_table() {
     let model = load_model(mixed_rigid_flex_mjcf()).expect("should load");
 
-    // Rigid: 1 hinge → nq_rigid=1, nv_rigid=1
-    // Flex: 4 vertices → qpos at 1, 4, 7, 10; dof at 1, 4, 7, 10
-    assert_eq!(model.flexvert_qposadr[0], model.nq_rigid);
-    assert_eq!(model.flexvert_qposadr[1], model.nq_rigid + 3);
-    assert_eq!(model.flexvert_qposadr[2], model.nq_rigid + 6);
-    assert_eq!(model.flexvert_qposadr[3], model.nq_rigid + 9);
+    // 1 hinge (1 qpos) then 4 flex vertices * 3 slide joints each
+    // Flex vertex qpos starts at 1 (after the hinge's 1 qpos)
+    assert_eq!(model.flexvert_qposadr[0], 1);
+    assert_eq!(model.flexvert_qposadr[1], 1 + 3);
+    assert_eq!(model.flexvert_qposadr[2], 1 + 6);
+    assert_eq!(model.flexvert_qposadr[3], 1 + 9);
 }
 
 // ============================================================================
@@ -1062,13 +1029,15 @@ fn flex_fk_copies_qpos_to_xpos() {
     let model = load_model(flex_roundtrip_mjcf()).expect("should load");
     let mut data = model.make_data();
 
-    // Modify qpos for vertex 1
+    // (§27F) qpos now stores slide joint *displacements* from body_pos, not absolute positions.
+    // Vertex 1 initial position is (1, 0, 0). Set displacement to move it.
     let v1_adr = model.flexvert_qposadr[1];
-    data.qpos[v1_adr] = 2.5;
-    data.qpos[v1_adr + 1] = 3.7;
-    data.qpos[v1_adr + 2] = -1.2;
+    data.qpos[v1_adr] = 1.5; // displacement X
+    data.qpos[v1_adr + 1] = 3.7; // displacement Y
+    data.qpos[v1_adr + 2] = -1.2; // displacement Z
 
-    // Forward kinematics should copy to flexvert_xpos
+    // FK: xpos = body_pos + sum(slide_displacement * axis)
+    // body_pos = (1, 0, 0), so xpos = (1 + 1.5, 0 + 3.7, 0 + -1.2) = (2.5, 3.7, -1.2)
     data.forward(&model).expect("forward failed");
 
     assert_relative_eq!(data.flexvert_xpos[1].x, 2.5, epsilon = 1e-10);

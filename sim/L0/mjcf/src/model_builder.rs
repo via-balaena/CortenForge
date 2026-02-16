@@ -2838,10 +2838,15 @@ impl ModelBuilder {
         }
     }
 
-    /// Process flex deformable bodies: compute vertex masses, extract edges/hinges,
-    /// populate Model flex_* arrays, and extend nq/nv for flex DOFs.
+    /// Process flex deformable bodies: create a real body (+ 3 slide joints for unpinned
+    /// vertices) per flex vertex, extract edges/hinges, populate Model flex_* arrays.
+    ///
+    /// MuJoCo architecture: flex vertices ARE bodies in the kinematic tree. `mj_crb`/`mj_rne`
+    /// have zero flex-specific code — the standard rigid-body pipeline handles everything.
     fn process_flex_bodies(&mut self, flex_list: &[MjcfFlex]) {
         use std::collections::HashMap;
+
+        let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
 
         for flex_orig in flex_list {
             // Resolve `node` attribute: if `node` names are present and no vertices
@@ -2868,10 +2873,10 @@ impl ModelBuilder {
 
             let vert_start = self.nflexvert;
 
-            // Compute per-vertex masses via element-based mass lumping
+            // Compute per-vertex masses (uniform from mass attr, or element-based lumping)
             let vertex_masses = compute_vertex_masses(flex);
 
-            // Add vertices with qpos/dof addresses
+            // Create a body (+ joints for unpinned) per vertex
             for (i, pos) in flex.vertices.iter().enumerate() {
                 let mass = vertex_masses[i];
                 let pinned = flex.pinned.contains(&i);
@@ -2881,52 +2886,143 @@ impl ModelBuilder {
                     1.0 / mass
                 };
 
-                let qpos_adr = self.nq;
-                let dof_adr = self.nv;
-                self.nq += 3;
-                self.nv += 3;
                 self.nflexvert += 1;
 
-                self.flexvert_qposadr.push(qpos_adr);
-                self.flexvert_dofadr.push(dof_adr);
-                // Pinned vertices use a very large finite mass (not INFINITY) to avoid
-                // IEEE NaN when the Newton solver computes Ma = M * qacc (INF * 0 = NaN).
-                // 1e20 kg gives qacc ≈ 1e-20 * force ≈ 0, effectively immovable.
-                self.flexvert_mass.push(if pinned { 1e20 } else { mass });
+                // --- Create body for this vertex ---
+                let body_id = self.body_parent.len();
+
+                // Resolve parent body: for bare <flex> use the named body attr;
+                // for <flexcomp> (no body attr), parent is worldbody (0).
+                let parent_id = if i < flex.body.len() {
+                    if let Some(&bid) = self.body_name_to_id.get(&flex.body[i]) {
+                        bid
+                    } else {
+                        eprintln!(
+                            "Warning: flex '{}' vertex {} references unknown body '{}', \
+                             parenting to worldbody",
+                            flex.name, i, flex.body[i]
+                        );
+                        0
+                    }
+                } else {
+                    0 // <flexcomp> → parent is worldbody
+                };
+
+                // Each flex vertex body parented to worldbody is its own kinematic tree root.
+                // For bodies parented to a non-world body, inherit the root.
+                let root_id = if parent_id == 0 {
+                    body_id
+                } else {
+                    self.body_rootid[parent_id]
+                };
+
+                let jnt_adr = self.jnt_type.len();
+                let dof_adr = self.nv;
+                let geom_adr = self.geom_type.len();
+
+                // Push body arrays (mirrors process_body_with_world_frame pattern)
+                self.body_parent.push(parent_id);
+                self.body_rootid.push(root_id);
+                self.body_jnt_adr.push(jnt_adr);
+                self.body_dof_adr.push(dof_adr);
+                self.body_geom_adr.push(geom_adr);
+                self.body_pos.push(*pos); // vertex position relative to parent (world for flexcomp)
+                self.body_quat.push(UnitQuaternion::identity());
+                self.body_ipos.push(Vector3::zeros()); // point mass: CoM at body origin
+                self.body_iquat.push(UnitQuaternion::identity());
+                self.body_mass.push(mass);
+                self.body_inertia.push(Vector3::zeros()); // point mass: zero inertia
+                self.body_mocapid.push(None);
+                self.body_name.push(None);
+                self.body_sleep_policy.push(None);
+                self.body_world_pos.push(*pos); // world pos = parent_world_pos + body_pos (parent=world → just pos)
+                self.body_world_quat.push(UnitQuaternion::identity());
+
+                if pinned {
+                    // Pinned vertex: body exists but has no joints/DOFs.
+                    // Body is fixed at its initial position (like a welded body).
+                    self.body_jnt_num.push(0);
+                    self.body_dof_num.push(0);
+                    self.body_geom_num.push(0);
+
+                    self.flexvert_qposadr.push(usize::MAX); // sentinel: no qpos
+                    self.flexvert_dofadr.push(usize::MAX); // sentinel: no dof
+                } else {
+                    // Unpinned vertex: 3 slide joints (X, Y, Z)
+                    // dof_parent chain: first DOF has no parent (worldbody has no DOFs),
+                    // subsequent DOFs chain to previous within this vertex.
+                    let mut last_dof: Option<usize> = None;
+                    // Determine parent's last DOF for kinematic tree linkage.
+                    // Worldbody (parent_id=0) has no DOFs → None.
+                    // Non-world parent: use their last DOF.
+                    let parent_last_dof = if parent_id == 0 {
+                        None
+                    } else {
+                        let pdof_adr = self.body_dof_adr[parent_id];
+                        let pdof_num = self.body_dof_num[parent_id];
+                        if pdof_num > 0 {
+                            Some(pdof_adr + pdof_num - 1)
+                        } else {
+                            None
+                        }
+                    };
+
+                    for (axis_idx, axis) in axes.iter().enumerate() {
+                        let jnt_id = self.jnt_type.len();
+                        let qpos_adr = self.nq;
+                        let dof_idx = self.nv;
+
+                        // Joint arrays
+                        self.jnt_type.push(MjJointType::Slide);
+                        self.jnt_body.push(body_id);
+                        self.jnt_qpos_adr.push(qpos_adr);
+                        self.jnt_dof_adr.push(dof_idx);
+                        self.jnt_pos.push(Vector3::zeros());
+                        self.jnt_axis.push(*axis);
+                        self.jnt_limited.push(false);
+                        self.jnt_range
+                            .push((-std::f64::consts::PI, std::f64::consts::PI));
+                        self.jnt_stiffness.push(0.0);
+                        self.jnt_springref.push(0.0);
+                        self.jnt_damping.push(0.0);
+                        self.jnt_armature.push(0.0);
+
+                        // DOF arrays
+                        let dof_parent_val = if axis_idx == 0 {
+                            parent_last_dof // first DOF links to parent body's last DOF
+                        } else {
+                            last_dof // subsequent DOFs chain within this vertex
+                        };
+                        self.dof_parent.push(dof_parent_val);
+                        self.dof_body.push(body_id);
+                        self.dof_jnt.push(jnt_id);
+                        self.dof_armature.push(0.0);
+                        self.dof_damping.push(0.0);
+                        self.dof_frictionloss.push(0.0);
+
+                        // qpos0 = 0 for each slide DOF (body_pos encodes initial position)
+                        self.qpos0_values.push(0.0);
+
+                        self.nq += 1;
+                        self.nv += 1;
+                        last_dof = Some(dof_idx);
+                    }
+
+                    self.body_jnt_num.push(3);
+                    self.body_dof_num.push(3);
+                    self.body_geom_num.push(0);
+
+                    self.flexvert_qposadr.push(dof_adr); // first of 3 slide joint qpos addresses
+                    self.flexvert_dofadr.push(dof_adr); // first of 3 DOF addresses
+                }
+
+                // Convenience mirrors for edge/element force code
+                self.flexvert_mass.push(mass);
                 self.flexvert_invmass.push(inv_mass);
                 self.flexvert_radius.push(flex.radius);
                 self.flexvert_flexid.push(flex_id);
-                // Resolve body attachment from flex.body attr (if present).
-                // usize::MAX = free vertex (no body attachment).
-                let body_id = if i < flex.body.len() {
-                    self.body_name_to_id
-                        .get(&flex.body[i])
-                        .copied()
-                        .unwrap_or(usize::MAX)
-                } else {
-                    usize::MAX // <flexcomp> or <flex> without body attr
-                };
                 self.flexvert_bodyid.push(body_id);
-                // Store initial positions to be copied into qpos during make_data
                 self.flexvert_initial_pos.push(*pos);
-
-                // Extend qpos0 with flex vertex positions (3 DOFs per vertex)
-                self.qpos0_values.push(pos.x);
-                self.qpos0_values.push(pos.y);
-                self.qpos0_values.push(pos.z);
-
-                // Extend per-DOF arrays for the 3 flex DOFs of this vertex.
-                // Flex DOFs are independent (no kinematic chain), so:
-                //   dof_parent = None, dof_body = world(0), dof_jnt = sentinel
-                //   armature/damping/frictionloss = 0.0
-                for _ in 0..3 {
-                    self.dof_parent.push(None);
-                    self.dof_body.push(0); // Attached to world body
-                    self.dof_jnt.push(usize::MAX); // No joint — sentinel value
-                    self.dof_armature.push(0.0);
-                    self.dof_damping.push(0.0);
-                    self.dof_frictionloss.push(0.0);
-                }
             }
 
             // Extract edges from element connectivity
@@ -3182,8 +3278,6 @@ impl ModelBuilder {
             nflexedge: self.nflexedge,
             nflexelem: self.nflexelem,
             nflexhinge: self.nflexhinge,
-            nq_rigid: self.nq - self.nflexvert * 3,
-            nv_rigid: self.nv - self.nflexvert * 3,
             flex_dim: self.flex_dim,
             flex_vertadr: self.flex_vertadr,
             flex_vertnum: self.flex_vertnum,
@@ -3495,15 +3589,9 @@ impl ModelBuilder {
                 }
             }
 
-            // Set flex DOF tree IDs to sentinel (always awake, not part of any tree)
-            for vi in 0..model.nflexvert {
-                let dof_base = model.flexvert_dofadr[vi];
-                for k in 0..3 {
-                    if dof_base + k < model.nv {
-                        model.dof_treeid[dof_base + k] = usize::MAX;
-                    }
-                }
-            }
+            // (§27F) Flex vertex DOFs are now real body DOFs in the kinematic tree.
+            // Their tree IDs are set by the standard tree-building loop above.
+            // Pinned vertices (dofadr == usize::MAX) have no DOFs — nothing to set.
 
             // ===== Tendon Tree Mapping (§16.10.1) =====
             // Compute tendon_treenum/tendon_tree by scanning each tendon's waypoints.
@@ -5408,9 +5496,28 @@ fn compute_flex_count_table(item_flexid: &[usize], nflex: usize) -> Vec<usize> {
     count
 }
 
-/// Compute per-vertex masses via element-based mass lumping.
+/// Compute per-vertex masses.
+///
+/// Two paths:
+/// 1. **Uniform mass** (`flex.mass` is `Some`): distribute `mass / npnt` to every vertex
+///    (including pinned). MuJoCo conformant — pinned share is silently discarded downstream.
+/// 2. **Element-based lumping** (fallback): density * element_measure / vertices_per_element.
 fn compute_vertex_masses(flex: &MjcfFlex) -> Vec<f64> {
-    let mut masses = vec![0.0f64; flex.vertices.len()];
+    let npnt = flex.vertices.len();
+    if npnt == 0 {
+        return Vec::new();
+    }
+
+    // Path 1: uniform mass from <flexcomp mass="...">
+    if let Some(total_mass) = flex.mass {
+        #[allow(clippy::cast_precision_loss)] // npnt is vertex count, never near 2^52
+        let per_vert = total_mass / npnt as f64;
+        let per_vert = if per_vert < 1e-10 { 0.001 } else { per_vert };
+        return vec![per_vert; npnt];
+    }
+
+    // Path 2: element-based mass lumping from density
+    let mut masses = vec![0.0f64; npnt];
 
     match flex.dim {
         1 => {

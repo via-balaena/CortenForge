@@ -2580,6 +2580,12 @@ computation logic, not element structure. Remove the top-level `density` parse
 from `parse_flex_attrs()` but keep the field for internal use by `<flexcomp>`
 procedural generation.
 
+**Implementation note (post-#27B):** We kept `density` parsing on `<flex>` as
+a non-standard extension because our entire flex mass computation depends on it
+and there's no other mass-setting mechanism yet. **Tracked as #27E** — see spec
+below. The parser code has `// DEFERRED(#27E)` comments marking the non-conformant
+parse.
+
 #### Implementation Plan
 
 ##### S1. Update `MjcfFlex` struct
@@ -3386,3 +3392,655 @@ frame, cables tethered to moving bodies).
 - `sim/L0/mjcf/src/parser.rs` — parse `body`, `node`, `group` in `parse_flex_attrs()`
 - `sim/L0/mjcf/src/model_builder.rs` — resolve body names → IDs, wire
   `flexvert_bodyid`, adjust DOF allocation for body-attached vertices
+
+---
+
+### #27E — `<flexcomp mass="...">` + deprecate non-standard `density`
+
+**Status:** ✅ Done (implemented as part of §27F)
+**Prerequisite:** #27B (child element parsing)
+**Effort:** S
+
+#### Problem
+
+MuJoCo's `<flexcomp>` has a `mass` attribute that sets the total mass of the
+deformable object, distributed uniformly across auto-generated per-vertex
+bodies: `bodymass = mass / npnt`. Our parser doesn't support it. Instead, we
+parse a non-standard `density` attribute on `<flex>` and use element-based
+mass lumping (density × element volume → per-vertex accumulation). This is
+non-conformant — MuJoCo has no `density` on `<flex>`, `<flexcomp>`, or any
+child element.
+
+#### MuJoCo Architecture: Flex Mass
+
+In MuJoCo, there is **no per-vertex mass array** in `mjModel`. Flex vertices
+are attached to MuJoCo bodies (`flex_vertbodyid`), and the body's own
+`body_mass` / `body_inertia` drives the physics. Specifically:
+
+1. **`<flexcomp>`** auto-generates one body per **unpinned** vertex during
+   XML compilation (`user_flexcomp.cc`, `Make()`). Each body is a child of
+   the `<flexcomp>`'s parent body (typically worldbody). Each receives
+   `mass / npnt` and inertia `bodymass * (2 * inertiabox²) / 3` on all
+   three principal axes, plus 3 slide joints (X, Y, Z). Pinned vertices
+   stay on the parent body (no new body created).
+
+2. **`<flex>`** (bare) requires pre-existing bodies listed in the `body`
+   attribute. Those bodies must already have mass/inertia set via `<inertial>`
+   or geom-derived mass.
+
+3. `flex_vert` stores vertex positions **in local body frames**
+   (`mjmodel.h`). For the standard flexcomp case, `flex_centered = true`
+   and all offsets are zero — the body position IS the vertex position.
+
+4. The forward dynamics never references a `flexvert_mass` array — all
+   inertia comes through the body mass matrix. CRBA and RNE contain
+   **zero flex-specific code** (`engine_core_smooth.c`).
+
+**Our architecture differs:** Post-§6B unification, flex vertex DOFs are
+appended directly to `qpos`/`qvel`/`qacc` — they are not full MuJoCo bodies.
+So we maintain `flexvert_mass` / `flexvert_invmass` arrays
+(`mujoco_pipeline.rs:1453-1455`) that feed into the mass matrix and passive
+force computation. This is the correct design for `<flexcomp>` (independent
+point masses), but it means we need an explicit mass-computation path per
+vertex.
+
+> **ARCH_LIMITATION(#27F): Body-coupled flex vertices.**
+>
+> `flexvert_bodyid` is stored (#27D) but **never read at runtime**. In MuJoCo,
+> flex vertices ARE bodies — their mass participates in the CRBA (composite
+> rigid body algorithm), Coriolis terms propagate through the kinematic tree,
+> and FK uses the body's frame. In our architecture, flex vertex mass enters
+> the mass matrix as isolated diagonal `m*I₃` blocks (`mj_crba_flex`). This
+> is correct when vertices are independent (all `<flexcomp>` cases), but
+> **wrong for bare `<flex body="arm forearm hand">`** where vertices are
+> attached to bodies in a kinematic tree. **Tracked as #27F** — see spec below.
+
+#### Current vs Conformant Mass Paths
+
+**Current (non-conformant) — density-based mass lumping:**
+```
+parse_flex_attrs() → density field
+  → compute_vertex_masses() in model_builder.rs:5425
+    → dim=1: mass[v] += density * edge_length / 2
+    → dim=2: mass[v] += density * thickness * tri_area / 3
+    → dim=3: mass[v] += density * tet_volume / 4
+  → flexvert_mass / flexvert_invmass arrays
+```
+
+This is standard FEM mass lumping. It's physically reasonable but has no
+MuJoCo analog — MuJoCo never computes per-vertex mass from material density.
+
+**MuJoCo conformant — `<flexcomp mass="...">` uniform distribution:**
+```
+<flexcomp mass="M" ...>
+  → bodymass = M / nvert
+  → each auto-generated body gets mass = bodymass
+  → physics uses body_mass (no per-vertex mass array)
+```
+
+Source: `user_flexcomp.cc` — `double bodymass = mass/npnt;`
+
+#### Scope
+
+Only the `mass` attribute is in scope. Other missing `<flexcomp>` attributes:
+
+| Attribute | Type | Default | Physics? | Status |
+|-----------|------|---------|----------|--------|
+| `mass` | real | 0.0* | **Yes** | **#27E scope** |
+| `inertiabox` | real | 0.0* | Yes (body inertia: `mass/n * 2*ib²/3`) | Deferred — no rotational body inertia in our vertex-DOF arch |
+| `rigid` | bool | false | Yes (marks rigid vertices) | Deferred — relates to §42A-ii |
+| `scale` | real(3) | 1 1 1 | No (vertex transform) | Deferred |
+| `flatskin` | bool | false | No (rendering) | Deferred |
+| `pos` | real(3) | 0 0 0 | No (vertex transform) | Already handled |
+| `quat` | real(4) | 1 0 0 0 | No (vertex transform) | Deferred |
+| `file` | string | — | No (mesh source) | Deferred |
+| `material` | string | — | No (rendering) | Deferred |
+| `rgba` | real(4) | — | No (rendering) | Deferred |
+
+*MuJoCo zero-initializes via `memset`; mass=0 makes the object massless.
+In practice, `mass` is effectively required for any dynamic flexcomp.
+
+#### Conformance Notes
+
+**`mass=0` behavior:** MuJoCo zero-initializes `mass` via `memset`. A
+`<flexcomp mass="0">` produces zero-mass bodies — effectively static
+objects with zero inertia. Our min-mass floor (1e-10 → 0.001 in
+`compute_vertex_masses`) would clamp this to 0.001 kg, which is
+non-conformant. **Decision:** Skip the min-mass floor when `mass` is
+explicitly specified. The floor exists to catch the density-path case where
+zero-area elements produce zero mass — not applicable to the uniform path
+where the user explicitly chose the mass value. If the user says mass=0, we
+respect it (pinned-like behavior: `invmass = 0`).
+
+**`thickness` interaction:** When `mass` is specified, thickness is
+irrelevant for mass computation (thickness only affects the density→mass
+lumping path for dim=2). Thickness is still used for bending stiffness
+computation (`compute_bending_stiffness()`). No code change needed — just
+document that `mass` bypasses the thickness-dependent mass path.
+
+**`<flexcomp>` bodies vs our vertices:** In MuJoCo, `<flexcomp>` creates
+one body per unpinned vertex, parented to the flexcomp's parent body
+(typically worldbody), each with 3 slide joints. This is physically
+equivalent to our architecture (independent translational DOFs) when the
+parent body is worldbody. The mass computation `total / nvert` produces
+the same physics either way. The architectural difference only matters for
+body-level features (gravcomp, subtree mass, accumulators) — see #27F.
+
+**Pinned vertex mass loss:** MuJoCo computes `bodymass = mass / npnt`
+where `npnt` is the **total** vertex count (including pinned). But only
+unpinned vertices receive a body with that mass — pinned vertices are
+attached to the parent body with **no mass increment to the parent**. So
+if 2 of 10 vertices are pinned and `mass=10`, only 8 kg of the 10 kg
+total enters the dynamic system. This is intentional MuJoCo behavior (the
+parent body's inertia dominates). Our `total_mass / nvert` formula with
+the subsequent `pinned → mass=1e20, invmass=0` override in
+`process_flex_bodies()` reproduces this: the per-vertex mass share
+allocated to pinned vertices is discarded (overwritten with 1e20), so the
+same 8 kg enters the dynamic mass matrix. **Conformant.**
+
+#### Implementation Plan
+
+##### S1. Add `mass` field to `MjcfFlex`
+
+Add `mass: Option<f64>` — `None` means "not specified" (fall back to
+density-based lumping), `Some(m)` means "use MuJoCo-conformant uniform
+distribution".
+
+```rust
+// --- <flexcomp>-specific attributes ---
+/// Total mass [kg] from `<flexcomp mass="...">`. When Some, distributed
+/// uniformly: per_vertex = total / nvert (MuJoCo conformant). When None,
+/// falls back to density-based element mass lumping (non-standard extension).
+pub mass: Option<f64>,
+```
+
+Default: `None` in the `Default` impl.
+
+##### S2. Parse `mass` in `parse_flex_attrs()`
+
+```rust
+if let Some(s) = get_attribute_opt(e, "mass") {
+    flex.mass = s.parse().ok();
+}
+```
+
+This parses `mass` on both `<flex>` and `<flexcomp>` (they share
+`parse_flex_attrs`). On bare `<flex>`, `mass` is unusual but harmless —
+MuJoCo doesn't have it there, but we won't reject it.
+
+##### S3. Update `compute_vertex_masses()` in model_builder
+
+Add a uniform-distribution early return when `mass` is present:
+
+```rust
+fn compute_vertex_masses(flex: &MjcfFlex) -> Vec<f64> {
+    let nvert = flex.vertices.len();
+    if nvert == 0 {
+        return vec![];
+    }
+
+    // MuJoCo conformant: <flexcomp mass="..."> → uniform distribution.
+    // No min-mass floor — user explicitly chose this value. mass=0 → invmass=0
+    // (static vertices, same as MuJoCo's zero-initialized default).
+    if let Some(total_mass) = flex.mass {
+        let per_vertex = total_mass / nvert as f64;
+        return vec![per_vertex; nvert];
+    }
+
+    // Non-standard extension: density-based element mass lumping.
+    let mut masses = vec![0.0f64; nvert];
+    match flex.dim {
+        // ... existing dim-based lumping code unchanged ...
+    }
+
+    // Min-mass floor for density path only — catches zero-area elements.
+    for m in &mut masses {
+        if *m < 1e-10 {
+            *m = 0.001;
+        }
+    }
+
+    masses
+}
+```
+
+Key difference from density path: the min-mass floor does NOT apply to the
+`mass` attribute path. This matches MuJoCo where `mass=0` produces zero-mass
+bodies. The caller (`process_flex_bodies`) already handles zero mass correctly:
+`invmass = if pinned || mass <= 0.0 { 0.0 } else { 1.0 / mass }` — zero
+mass → zero invmass → effectively pinned. (Pinned vertices also get
+`mass = 1e20` regardless of the computed value.)
+
+##### S4. Update the `<flexcomp>` test fixture
+
+The single `<flexcomp>` fixture (`flexcomp_grid_mjcf()`, line 185) currently
+uses `density="200"`. Change to `mass="1.0"` — clean round number.
+
+```xml
+<flexcomp name="grid" type="grid" count="5 5 1" spacing="0.04"
+          dim="2" mass="1.0">
+    <elasticity young="1e5" thickness="0.001"/>
+</flexcomp>
+```
+
+AC11 test (`ac11_flexcomp_expansion`, line 826) currently doesn't check
+per-vertex mass. Add a mass assertion:
+
+```rust
+// 25 vertices, total mass 1.0 → each vertex = 0.04 kg
+assert_relative_eq!(model.flexvert_mass[0], 0.04, epsilon = 1e-10);
+```
+
+##### S5. Add a dedicated mass-distribution conformance test
+
+```rust
+/// AC: <flexcomp mass="..."> distributes total mass uniformly across vertices.
+#[test]
+fn ac_flexcomp_mass_distribution() {
+    let mjcf = r#"
+    <mujoco>
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flexcomp name="rope" type="grid" count="5 1 1" spacing="0.1"
+                      dim="1" mass="5.0">
+                <elasticity young="100"/>
+            </flexcomp>
+        </deformable>
+    </mujoco>"#;
+    let model = load_model(mjcf).expect("should load");
+    assert_eq!(model.nflexvert, 5);
+    // 5 vertices, total mass 5.0 → each vertex = 1.0 kg
+    for i in 0..5 {
+        assert_relative_eq!(model.flexvert_mass[i], 1.0, epsilon = 1e-10);
+        assert_relative_eq!(model.flexvert_invmass[i], 1.0, epsilon = 1e-10);
+    }
+}
+
+/// AC: mass=0 produces zero-mass (effectively static) vertices.
+#[test]
+fn ac_flexcomp_mass_zero() {
+    let mjcf = r#"
+    <mujoco>
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flexcomp name="rope" type="grid" count="3 1 1" spacing="0.1"
+                      dim="1" mass="0.0">
+                <elasticity young="100"/>
+            </flexcomp>
+        </deformable>
+    </mujoco>"#;
+    let model = load_model(mjcf).expect("should load");
+    // mass=0 → per_vertex = 0.0 → invmass = 0.0 (static)
+    for i in 0..3 {
+        assert_eq!(model.flexvert_mass[i], 0.0);
+        assert_eq!(model.flexvert_invmass[i], 0.0);
+    }
+}
+
+/// AC: mass takes precedence over density when both specified.
+#[test]
+fn ac_flexcomp_mass_overrides_density() {
+    let mjcf = r#"
+    <mujoco>
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <deformable>
+            <flexcomp name="rope" type="grid" count="4 1 1" spacing="0.1"
+                      dim="1" mass="8.0" density="999.0">
+                <elasticity young="100"/>
+            </flexcomp>
+        </deformable>
+    </mujoco>"#;
+    let model = load_model(mjcf).expect("should load");
+    // mass=8.0 wins over density=999.0 → per_vertex = 8.0/4 = 2.0
+    for i in 0..4 {
+        assert_relative_eq!(model.flexvert_mass[i], 2.0, epsilon = 1e-10);
+    }
+}
+```
+
+##### S6. Keep `density` on bare `<flex>` as non-standard extension
+
+The 15 test fixtures using `density` on bare `<flex>` stay as-is. For bare
+`<flex>`, MuJoCo derives mass from attached body mass/inertia — which we
+don't support (our flex vertices aren't full bodies). So `density` remains
+our mass-computation mechanism for bare `<flex>` until #27F lands.
+
+Update `// DEFERRED(#27E)` comments in `parser.rs` and `types.rs` to:
+"density on `<flexcomp>` is superseded by `mass` attribute (#27E).
+density on bare `<flex>` remains the only mass path (no body mass in our
+architecture — see #27F)."
+
+##### S7. Precedence when both `mass` and `density` are specified
+
+If a user writes `<flexcomp mass="5.0" density="1000">`, `mass` wins
+(uniform distribution). The density-based path is only used when `mass` is
+`None`. No warning needed — `density` is our non-standard extension, and
+the conformant attribute taking precedence is the correct behavior. Tested
+by `ac_flexcomp_mass_overrides_density`.
+
+#### Acceptance Criteria
+
+1. `<flexcomp mass="5.0" count="5 1 1" ...>` produces 5 vertices each with
+   mass = 1.0 kg (`total / nvert`).
+2. `<flexcomp mass="0.0" ...>` produces zero-mass vertices with invmass = 0
+   (no min-mass floor on the `mass` path — MuJoCo conformant).
+3. When both `mass` and `density` are present, `mass` takes precedence.
+4. The `<flexcomp>` fixture (`flexcomp_grid_mjcf`) uses `mass` instead of
+   `density`, with mass assertion in AC11.
+5. Three dedicated conformance tests: uniform distribution, mass=0, mass
+   overrides density.
+6. The existing density-based path still works for bare `<flex>` elements
+   (15 test fixtures unchanged).
+7. The min-mass floor (1e-10 → 0.001) applies ONLY to the density path.
+8. All existing flex tests pass (551+).
+
+#### Files
+
+- `sim/L0/mjcf/src/types.rs` — add `mass: Option<f64>` to `MjcfFlex`
+- `sim/L0/mjcf/src/parser.rs` — parse `mass` in `parse_flex_attrs()`
+- `sim/L0/mjcf/src/model_builder.rs` — early-return uniform path in
+  `compute_vertex_masses()`
+- `sim/L0/tests/integration/flex_unified.rs` — migrate flexcomp fixture,
+  add mass distribution test
+- `sim/docs/todo/future_work_7.md` — update `DEFERRED(#27E)` commentary
+
+---
+
+### #27F — Body-coupled flex vertex integration (CRBA + FK)
+
+**Status:** ✅ Done — flex vertices promoted to real bodies with 3 slide joints
+**Prerequisites:** #27D (body/node attr parsing), #27E (flexcomp mass)
+**Effort:** L–XL
+**RL Impact:** Low (no current RL workflow uses body-attached bare `<flex>`)
+**Correctness:** **Critical** for body-attached flex; irrelevant for `<flexcomp>`
+
+#### Problem
+
+In MuJoCo, every flex vertex IS a body in the kinematic tree. The core
+smooth dynamics functions (`mj_crb`, `mj_rne` in `engine_core_smooth.c`)
+contain **zero flex-specific code**. Flex mass enters the system entirely
+through `body_mass` / `body_inertia`, which participates in the standard
+CRBA, RNE, Coriolis, and gravity pipelines. There is no
+`flexvert_mass` array in MuJoCo's `mjModel`.
+
+In our architecture (post-§6B), flex vertex DOFs are appended to
+`qpos`/`qvel`/`qacc` as translational DOFs. They are NOT bodies. The mass
+enters the system through `flexvert_mass` → diagonal `m*I₃` blocks in the
+mass matrix (`mj_crba_flex`). This works correctly for `<flexcomp>` where
+all vertices are independent point masses — diagonal blocks are the right
+mass matrix structure for uncoupled translational DOFs.
+
+**But it is wrong for body-attached bare `<flex>`**, because:
+
+1. **Vertex mass doesn't contribute to body composite inertia.** In MuJoCo,
+   a vertex attached to `body_arm` adds `bodymass` to `body_arm`'s subtree
+   mass, affecting the CRBA for all ancestor joints. In our code, the vertex
+   mass is isolated — it never touches `body_mass[body_arm]`.
+
+2. **No Coriolis/centrifugal coupling.** If `body_arm` rotates, a vertex
+   attached to it should experience centrifugal force proportional to the
+   body's angular velocity. Our `mj_crba_flex` doesn't generate off-diagonal
+   terms that would couple vertex DOFs to body joint DOFs.
+
+3. **FK doesn't propagate body frame.** MuJoCo computes vertex world
+   positions from body FK results in `mj_flex()` (`engine_core_smooth.c`):
+   - `centered`: `flexvert_xpos[i] = xpos[vertbodyid[i]]`
+   - `non-centered`: `flexvert_xpos[i] = xmat[bodyid] * flex_vert[i] + xpos[bodyid]`
+   Our vertex positions live directly in `qpos` (world frame) and don't
+   track their parent body's motion. `flexvert_bodyid` is stored but never
+   read at runtime.
+
+4. **`flexvert_bodyid` is dead data.** Set during model building (#27D),
+   stored in `Model`, never indexed by any runtime function.
+
+5. **No `flex_vert` local-frame storage.** MuJoCo stores `flex_vert` as
+   per-vertex local-frame offsets relative to the attached body
+   (`mjmodel.h`: "vertex positions in local body frames"). We have no
+   equivalent — our vertex positions are absolute world coordinates in
+   `qpos`.
+
+#### Scope of Impact
+
+| Use case | Affected? | Why |
+|----------|-----------|-----|
+| `<flexcomp>` (all current tests) | **No** | Vertices are independent; diagonal mass blocks are correct |
+| Bare `<flex>` without `body` attr | **No** | Free vertices; same as flexcomp |
+| Bare `<flex body="b1 b2 b3">` | **Yes** | Body coupling missing |
+| `<flex node="b1 b2">` | **Yes** | Node resolves to body positions + bodyids |
+
+No existing test or RL workflow exercises the body-attached path. The
+`<flexcomp>` path (which generates all our flex test fixtures) is correct.
+
+#### MuJoCo Reference Architecture
+
+##### `<flexcomp>` body generation (`user_flexcomp.cc`, `Make()`)
+
+For each **unpinned** vertex with full DOF:
+```
+for each vertex i:
+    if pinned[i]:
+        vertbody[i] = parent_body   // stays on parent, no new body
+    else:
+        pb = create_body(parent=flexcomp_parent_body)  // NOT worldbody
+        pb.pos = vertex_position
+        pb.mass = total_mass / npnt
+        pb.inertia = [bodymass * (2*ib²/3)] * 3  // spherical from inertiabox
+        add 3 slide joints (X, Y, Z) to pb
+        vertbody[i] = pb
+```
+
+Key details:
+- All auto-generated bodies are **children of the `<flexcomp>`'s parent
+  body** (typically worldbody, but could be any body if flexcomp is nested).
+- Pinned vertices are attached to the parent body (no new body, no joints).
+- `flex_centered` is set to `true` when all local offsets are zero (standard
+  case for flexcomp — the body position IS the vertex position, so
+  `flex_vert` is zeroed out).
+
+##### Vertex FK (`engine_core_smooth.c`, `mj_flex()`)
+
+Called after `mj_kinematics()`. Reads already-computed body FK results:
+
+```c
+if (m->flex_centered[f]) {
+    // vertex IS body origin — just copy
+    flexvert_xpos[i] = xpos[vertbodyid[i]];
+} else {
+    // rotate local offset, then translate
+    flexvert_xpos[i] = xmat[bodyid] * flex_vert[i] + xpos[bodyid];
+}
+```
+
+This is the entire flex FK computation. No Jacobians, no special math — it
+reads from the standard body FK pipeline.
+
+##### Bare `<flex>` compilation (`user_mesh.cc`, `mjCFlex::Compile()`)
+
+The `centered` flag is determined automatically:
+- If `vert` attribute is empty or all zeros: `centered = true`. The vertex
+  position equals the body origin. No local offset stored.
+- If `vert` has non-zero values: `centered = false`. `flex_vert` stores the
+  local-frame offset. World position computed as `xmat * flex_vert + xpos`.
+
+The `body` attribute provides body names; `mjCFlex::ResolveReferences()`
+resolves them to integer IDs stored in `flex_vertbodyid`.
+
+##### CRBA and RNE: zero flex code
+
+`mj_crb()` and `mj_rne()` in `engine_core_smooth.c` contain **zero
+flex-specific code**. All flex vertex mass enters through `body_mass` /
+`body_inertia` on the per-vertex bodies, which flows into `cinert`
+(composite inertia) and through the standard recursive algorithms. Flex
+edge stiffness/damping enters through the passive force pipeline
+(`engine_passive.c` → `qfrc_passive`), not RNE.
+
+#### Our Architecture vs MuJoCo
+
+| Aspect | MuJoCo | Ours (post-§6B) |
+|--------|--------|-----------------|
+| Vertex DOF representation | Body with 3 slide joints | Appended translational DOFs in qpos |
+| Vertex mass storage | `body_mass[vertbodyid]` | `flexvert_mass[i]` |
+| Mass matrix contribution | Standard CRBA (zero flex code) | `mj_crba_flex`: diagonal `m*I₃` blocks |
+| FK for vertex positions | `mj_flex()` reads body `xpos`/`xmat` | Vertex positions ARE qpos entries |
+| Local-frame offset | `flex_vert` (local body frame) | None — world frame in qpos |
+| Coriolis/centrifugal | Standard RNE (zero flex code) | Not coupled to body joints |
+| `flex_centered` flag | Optimization for zero offsets | No equivalent |
+| Pinned vertex | Attached to parent body (no mass added) | `invmass = 0`, mass = 1e20 |
+
+**For `<flexcomp>` with independent DOFs:** The two architectures produce
+**identical physics** when the flexcomp parent body is worldbody (or any
+body with no ancestor joints). A body with 3 slide joints and mass `m` is
+dynamically equivalent to an appended translational DOF with diagonal mass
+`m*I₃`. The CRBA for a leaf body with 3 slide joints, no children, and no
+ancestor rotational DOFs produces exactly the same diagonal mass matrix
+entries as our `mj_crba_flex`. This equivalence holds because flexcomp
+bodies are leaves with no children (no subtree mass accumulation) and no
+rotational ancestor DOFs (no Coriolis coupling).
+
+Note: In MuJoCo's XML schema, `<flexcomp>` is a child of `<body>`, so it
+can inherit a non-worldbody parent (giving vertex bodies rotational
+ancestor DOFs). Our parser places `<flexcomp>` inside top-level
+`<deformable>`, so vertex DOFs are always independent. This is a separate
+parsing conformance gap — if we ever support `<flexcomp>` inside `<body>`,
+the equivalence breaks for non-worldbody parents, and Option A from #27F
+becomes required.
+
+**For body-attached bare `<flex>`:** The architectures diverge. In MuJoCo,
+the vertex body is a child of a body that may have rotational joints —
+the standard CRBA accumulates vertex mass into the parent's composite
+inertia, and RNE computes Coriolis/centrifugal forces. In our architecture,
+the vertex mass is isolated — it doesn't participate in the parent body's
+dynamics.
+
+#### Possible Approaches
+
+**Option A: Promote flex vertices to real bodies.**
+- During model building, create a body for each flex vertex (like MuJoCo).
+- Add 3 slide joints per body, parent it to the referenced body.
+- Set `body_mass` from `flexcomp mass / nvert` or from the density path.
+- Remove `flexvert_mass`/`flexvert_invmass` — mass comes through bodies.
+- Remove `mj_crba_flex`/`mj_factor_flex` — standard CRBA handles everything.
+- Add `flex_vert` (local-frame offsets) and `flex_centered` flag to Model.
+- Add `flexvert_xpos` to Data, computed in a `mj_flex()` function after FK.
+- **Pro:** Exact MuJoCo parity. Zero flex-specific code in CRBA/RNE/FK. All
+  body-level features (gravcomp, subtree mass, body accumulators, sleeping)
+  automatically work for flex vertices. Pinned vertices naturally attach to
+  parent body with no extra mass. The `flex_centered` optimization works.
+- **Con:** Massive refactor. Every flex vertex becomes a body (nbody grows
+  by nflexvert). Every flex vertex contributes 3 DOFs through the body
+  joint system rather than the appended-DOF system. The §6B unification
+  architecture changes fundamentally — `mj_crba_flex`, `mj_factor_flex`,
+  and the flex sections of `mj_rne` all get deleted, replaced by standard
+  body-joint code.
+- **Scope estimate:** ~2000-3000 LOC. Major changes in model_builder.rs
+  (body/joint creation), mujoco_pipeline.rs (delete flex-specific CRBA/RNE
+  code, add flex FK, rewire qpos/qvel allocation), flex_unified.rs
+  (rewrite all tests for body-based DOF addresses).
+
+**Option B: Add body-coupling terms to the flex path.**
+- Keep flex vertices as appended translational DOFs.
+- In `mj_crba_flex`, add off-diagonal terms that couple vertex DOFs to
+  their parent body's joint DOFs (requires computing the Jacobian from
+  body joint space to vertex position).
+- In `mj_rne` / gravity, account for body-attached vertex mass in the
+  body's composite inertia.
+- In FK, propagate body frame to vertex world position using
+  `flexvert_bodyid` and a local-frame offset stored in `flex_vert`.
+- **Pro:** Preserves §6B architecture. Incremental change.
+- **Con:** Complex. Body-coupling Jacobians are non-trivial (J maps nv_body
+  DOFs → 3 vertex DOFs). Must handle off-diagonal mass matrix blocks that
+  break the diagonal-only assumption in `mj_factor_flex`. Must handle
+  the case where a body has both its own mass AND attached vertex mass.
+  Essentially reinvents the CRBA subtree accumulation for a special case.
+
+**Option C: Document limitation + emit runtime warning.**
+
+This is the recommended near-term approach.
+
+Implementation steps (Option C):
+1. **Add runtime detection.** In `process_flex_bodies()`, after bodyid
+   resolution, check if any vertex has `bodyid != usize::MAX` (i.e., body-
+   attached). If so, set a `flex_has_body_coupling: Vec<bool>` flag per flex.
+2. **Emit a warning** at model load time when body-coupled flex is detected:
+   `"Warning: <flex '{name}'> has body-attached vertices (body='...'). Body
+   coupling (CRBA subtree mass, Coriolis, FK frame propagation) is not yet
+   implemented. Vertex physics will be approximately correct (gravity +
+   spring forces) but won't reflect parent body rotation. See §27F."`
+3. **Document** in `sim/docs/MUJOCO_GAP_ANALYSIS.md` that body-attached
+   bare `<flex>` is a known limitation with specific physics consequences.
+4. **No physics code changes.** `flexvert_bodyid` remains stored metadata.
+   The `ARCH_LIMITATION(#27F)` tags in the codebase stay.
+5. **Add a test** that loads a body-attached `<flex>` and verifies the
+   warning is emitted + physics runs (no crash, gravity works).
+- **Pro:** Honest documentation. Users know the limitation. No risk of
+  introducing bugs in the working `<flexcomp>` path.
+- **Con:** Non-conformant for body-attached `<flex>`. But this is a niche
+  use case — no current model or RL workflow requires it.
+
+#### Recommendation
+
+**Option C now, Option A eventually.** Rationale:
+
+1. Body-attached bare `<flex>` is niche. The vast majority of deformable
+   models use `<flexcomp>`, which is architecturally correct.
+2. Option A is the right long-term answer — it eliminates all flex-specific
+   CRBA/RNE code and achieves exact MuJoCo parity. But it's ~2000-3000 LOC
+   and rewires fundamental DOF allocation.
+3. Option B is the wrong answer — it adds complexity to maintain a parallel
+   code path that Option A would delete anyway.
+4. Option C is honest, safe, and cheap. It takes ~30 LOC and ensures no one
+   is silently getting wrong physics.
+
+**When to upgrade to Option A:** When an RL workflow requires body-attached
+deformables (e.g., cloth on a robot arm, tendons connecting flex vertices
+to articulated bodies). At that point, the architectural refactor is
+justified by a concrete use case.
+
+#### Acceptance Criteria — Option C (near-term)
+
+1. Body-attached `<flex>` emits a runtime warning at model load time.
+2. The warning names the flex object and lists the specific limitation
+   (no CRBA coupling, no FK propagation, no Coriolis).
+3. `MUJOCO_GAP_ANALYSIS.md` documents the limitation with the specific
+   physics consequences.
+4. A test loads a body-attached `<flex>` and verifies: (a) warning is
+   emitted, (b) simulation runs without crash, (c) gravity acts on vertices.
+5. All existing `<flexcomp>` tests still pass (regression).
+
+#### Acceptance Criteria — Option A (eventual)
+
+1. `<flexcomp>` creates one body per unpinned vertex with 3 slide joints,
+   parented to the flexcomp's parent body. Pinned vertices attach to parent.
+2. `<flex body="b1 b2 b3">` vertices participate in CRBA via their parent
+   body's composite inertia (zero flex-specific code in CRBA/RNE).
+3. `flex_vert` stores local-frame offsets. `flex_centered` flag enables
+   the zero-offset fast path.
+4. `flexvert_xpos` (Data field) computed by `mj_flex()` after FK:
+   - centered: `xpos[vertbodyid[i]]`
+   - non-centered: `xmat[bodyid] * flex_vert[i] + xpos[bodyid]`
+5. Coriolis/centrifugal forces act on body-attached vertices when the parent
+   body rotates (standard RNE, no flex-specific code).
+6. `flexvert_bodyid` is used at runtime for FK.
+7. `mj_crba_flex` and `mj_factor_flex` are deleted — CRBA handles everything.
+8. All existing `<flexcomp>` tests still pass (regression).
+9. New test: body-attached flex vertex on a rotating arm experiences
+   centrifugal force.
+10. New test: pinned vertex attached to parent body has zero DOFs.
+
+#### Files
+
+**Option C (near-term):**
+- `sim/L0/mjcf/src/model_builder.rs` — warning emission in
+  `process_flex_bodies()` after bodyid resolution
+- `sim/L0/tests/integration/flex_unified.rs` — body-attached flex test
+- `sim/docs/MUJOCO_GAP_ANALYSIS.md` — document limitation
+
+**Option A (eventual, estimated):**
+- `sim/L0/core/src/mujoco_pipeline.rs` — delete `mj_crba_flex`,
+  `mj_factor_flex`, flex sections of `mj_rne`; add `mj_flex()` FK;
+  add `flexvert_xpos` to Data; rewire DOF allocation
+- `sim/L0/mjcf/src/model_builder.rs` — create bodies/joints per flex
+  vertex; add `flex_vert`/`flex_centered` to Model; remove
+  `flexvert_mass`/`flexvert_invmass` computation
+- `sim/L0/tests/integration/flex_unified.rs` — rewrite DOF address
+  assertions, add body-attached and centrifugal tests

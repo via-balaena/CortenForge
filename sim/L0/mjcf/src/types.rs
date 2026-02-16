@@ -3238,8 +3238,12 @@ pub struct MjcfFlex {
     pub edge_damping: f64,
 
     // --- Internal / derived ---
+    /// Total mass [kg] for uniform distribution across all vertices (including pinned).
+    /// MuJoCo semantics: `mass / npnt` per vertex, pinned share silently discarded.
+    /// When `Some`, overrides element-based mass lumping from `density`.
+    pub mass: Option<f64>,
     /// Volumetric density [kg/m³] (dim=2,3) or linear density [kg/m] (dim=1).
-    /// Not a MuJoCo `<flex>` attribute — used internally by flexcomp expansion.
+    /// Fallback for element-based mass lumping when `mass` is `None`.
     pub density: f64,
 
     // --- Structural data arrays ---
@@ -3280,6 +3284,7 @@ impl Default for MjcfFlex {
             edge_stiffness: 0.0,
             edge_damping: 0.0,
             // Internal
+            mass: None,
             density: 1000.0,
             // Structural data
             vertices: Vec::new(),

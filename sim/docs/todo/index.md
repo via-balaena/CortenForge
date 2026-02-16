@@ -88,6 +88,10 @@ that all contact constraint assembly builds on.
 | 27B | Flex child element parsing (`<contact>`, `<elasticity>`, `<edge>`) | Low | Medium | S–M | #27 | [future_work_7.md](./future_work_7.md) | ✅ Done |
 | 27C | Passive edge spring-damper forces + `compute_edge_solref` cleanup | Low | Medium | S–M | #27B | [future_work_7.md](./future_work_7.md) | ✅ Done |
 | 27D | Flex `body`/`node` attr parsing + `flexvert_bodyid` wiring | Low | High | S–M | #27B | [future_work_7.md](./future_work_7.md) | ✅ Done |
+| 27E | `<flexcomp mass="...">` + deprecate non-standard `density` | Low | Medium | S | #27B | [future_work_7.md](./future_work_7.md) | ✅ Done |
+| 27F | Body-coupled flex vertex integration (CRBA + FK) | Low | **Critical**† | L–XL | #27D, #27E | [future_work_7.md](./future_work_7.md) | ✅ Done |
+
+†Critical for body-attached bare `<flex>`; irrelevant for `<flexcomp>` (all current tests).
 
 #### 3A-iii: Constraint System Overhaul (Items #28–32)
 
@@ -254,10 +258,15 @@ simulation. Strict sequential chain — each phase depends on the previous.
    └────┘  └────┘  └────┘  └────┘
    fric-mx geom-p  solmix  margin
 
-   ┌─────┐  ┌─────┐  ┌─────┐
-   │ 27B │──│ 27C │  │ 27D │  ✅ All done (flex child parsing → passive forces, body/node)
-   └─────┘  └─────┘  └──┬──┘
-                        │ unlocks #42A-i
+   ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐
+   │ 27B │──│ 27C │  │ 27D │  │ 27E │  (27B/C/D ✅ done; 27E = flexcomp mass)
+   └──┬──┘  └─────┘  └──┬──┘  └──┬──┘
+      │                  │        │
+      │                  │  ┌─────┐
+      │                  └──│ 27F │  body-coupled flex (CRBA + FK) [L–XL]
+      │                     └─────┘
+      │                  │ unlocks #42A-i
+      └──────────────────┴── 27E depends on 27B; 27F depends on 27D+27E
                         ▼
 
    ┌────┐
@@ -461,7 +470,7 @@ Start only after 3A is stable.
 | [future_work_5.md](./future_work_5.md) | 2 (complete) | D — Quality of Life + Appendix | #15–16 (~~#17~~ dropped) | Newton solver, sleeping, deferred items, cross-reference |
 | [future_work_6.md](./future_work_6.md) | 3 | 3A-i — Parser Fundamentals | #18–22 | ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` + `childclass`~~ ✅, ~~`<site>` orientation~~ ✅, ~~tendon `springlength`~~ ✅ |
 | [future_work_6b_precursor_to_7.md](./future_work_6b_precursor_to_7.md) | 3 | 3A-precursor — Flex Solver Unification | #6B | ~~Flex solver unification~~ ✅ (subsumes #42) |
-| [future_work_7.md](./future_work_7.md) | 3 | 3A-ii — Inertia + Contact Parameters | #23–27, #27B–D | ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, flex `<contact>` parsing, passive edge forces + solref cleanup, flex body/node attr parsing |
+| [future_work_7.md](./future_work_7.md) | 3 | 3A-ii — Inertia + Contact Parameters | #23–27, #27B–F | ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, ~~flex `<contact>` parsing~~ ✅, ~~passive edge forces~~ ✅, ~~flex body/node~~ ✅, `<flexcomp mass>` + density deprecation, body-coupled flex CRBA+FK |
 | [future_work_8.md](./future_work_8.md) | 3 | 3A-iii — Constraint System Overhaul | #28–32 | Friction loss (Newton + PGS/CG), PGS/CG unified constraints, `solreffriction`, pyramidal cones |
 | [future_work_9.md](./future_work_9.md) | 3 | 3A-iv — Noslip + Actuator/Dynamics | #33–37 | Noslip PGS/CG, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality |
 | [future_work_10.md](./future_work_10.md) | 3 | 3A-v — Constraint/Joint + Physics + Trait Architecture | #38–42, §42A-i–iii, §42B–F | Ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, flex edge Jacobian + rigid flags + pre-computed fields, flex bending trait, elasticity trait, actuator gain trait, contact solver trait, `SimBuilder` |

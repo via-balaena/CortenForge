@@ -1171,10 +1171,7 @@ pub struct Model {
     pub nflexelem: usize,
     /// Total bending hinges (pairs of adjacent elements sharing an edge).
     pub nflexhinge: usize,
-    /// Number of rigid generalized position coordinates (before flex DOFs).
-    pub nq_rigid: usize,
-    /// Number of rigid velocity DOFs (before flex DOFs).
-    pub nv_rigid: usize,
+    // (§27F) nq_rigid/nv_rigid removed — flex DOFs are now real body DOFs.
 
     // ==================== Kinematic Trees (§16.0) ====================
     /// Number of kinematic trees (excluding world body).
@@ -1457,7 +1454,9 @@ pub struct Model {
     pub flexvert_radius: Vec<f64>,
     /// Which flex object this vertex belongs to (for material lookup).
     pub flexvert_flexid: Vec<usize>,
-    /// Optional rigid body attachment (usize::MAX = free vertex).
+    /// Body ID for this vertex. Each flex vertex has a dedicated body created
+    /// by `process_flex_bodies()`. The body's FK gives the vertex world position.
+    /// Used by `mj_flex()` to populate `flexvert_xpos`.
     pub flexvert_bodyid: Vec<usize>,
 
     // --- Per-edge arrays (length nflexedge) ---
@@ -2237,7 +2236,7 @@ pub struct Data {
 
     // ==================== Flex Vertex Poses ====================
     /// World-frame flex vertex positions (copied from qpos each step).
-    /// Length `nflexvert`. Updated by `mj_fwd_position_flex()`.
+    /// Length `nflexvert`. Updated by `mj_flex()`.
     pub flexvert_xpos: Vec<Vector3<f64>>,
 
     // ==================== Velocities (computed from qvel) ====================
@@ -2854,9 +2853,6 @@ impl Model {
             nflexedge: 0,
             nflexelem: 0,
             nflexhinge: 0,
-            nq_rigid: 0,
-            nv_rigid: 0,
-
             // Kinematic trees (§16.0) — empty model has no trees
             ntree: 0,
             tree_body_adr: vec![],
@@ -3230,33 +3226,7 @@ impl Model {
         (&self.qLD_rowadr, &self.qLD_rownnz, &self.qLD_colind)
     }
 
-    /// Effective number of rigid velocity DOFs.
-    ///
-    /// Returns `nv_rigid` if flex vertices are present, otherwise `nv`
-    /// (all DOFs are rigid). This handles models built programmatically
-    /// (e.g., `n_link_pendulum`) that don't explicitly set `nv_rigid`.
-    #[inline]
-    #[must_use]
-    pub fn nv_rigid(&self) -> usize {
-        if self.nv_rigid > 0 || self.nflexvert > 0 {
-            self.nv_rigid
-        } else {
-            self.nv
-        }
-    }
-
-    /// Effective number of rigid generalized position coordinates.
-    ///
-    /// Returns `nq_rigid` if flex vertices are present, otherwise `nq`.
-    #[inline]
-    #[must_use]
-    pub fn nq_rigid(&self) -> usize {
-        if self.nq_rigid > 0 || self.nflexvert > 0 {
-            self.nq_rigid
-        } else {
-            self.nq
-        }
-    }
+    // (§27F) nv_rigid()/nq_rigid() removed — all DOFs are now "rigid" DOFs.
 
     /// Create initial Data struct for this model with all arrays pre-allocated.
     #[must_use]
@@ -4022,28 +3992,16 @@ impl Model {
         let mut data = self.make_data();
         mj_fwd_position(self, &mut data);
         mj_crba(self, &mut data);
-        // Skip pinned flex vertex DOFs (invmass == 0, mass ≈ 1e20) to avoid
-        // their huge mass dominating the mean and collapsing Newton scale.
-        let mut pinned_dofs = vec![false; self.nv];
-        for i in 0..self.nflexvert {
-            if self.flexvert_invmass[i] == 0.0 {
-                let dof_base = self.flexvert_dofadr[i];
-                for k in 0..3 {
-                    if dof_base + k < self.nv {
-                        pinned_dofs[dof_base + k] = true;
-                    }
-                }
-            }
-        }
+        // (§27F) Pinned flex vertices now have no DOFs — no need to skip them.
         let mut trace = 0.0_f64;
-        let mut count = 0usize;
         for i in 0..self.nv {
-            if !pinned_dofs[i] {
-                trace += data.qM[(i, i)];
-                count += 1;
-            }
+            trace += data.qM[(i, i)];
         }
-        self.stat_meaninertia = if count > 0 { trace / count as f64 } else { 1.0 };
+        self.stat_meaninertia = if self.nv > 0 {
+            trace / self.nv as f64
+        } else {
+            1.0
+        };
         // Guard against degenerate models with zero inertia
         if self.stat_meaninertia <= 0.0 {
             self.stat_meaninertia = 1.0;
@@ -4107,8 +4065,6 @@ impl Model {
         // Dimensions
         model.nq = n;
         model.nv = n;
-        model.nq_rigid = n; // All DOFs are rigid (no flex vertices)
-        model.nv_rigid = n;
         model.nbody = n + 1; // world + n bodies
         model.njnt = n;
 
@@ -4217,8 +4173,6 @@ impl Model {
         // Dimensions
         model.nq = 4; // Quaternion: w, x, y, z
         model.nv = 3; // Angular velocity: omega_x, omega_y, omega_z
-        model.nq_rigid = 4; // All DOFs are rigid (no flex vertices)
-        model.nv_rigid = 3;
         model.nbody = 2; // world + pendulum
         model.njnt = 1;
 
@@ -4308,8 +4262,6 @@ impl Model {
         // Dimensions
         model.nq = 7; // position (3) + quaternion (4)
         model.nv = 6; // linear velocity (3) + angular velocity (3)
-        model.nq_rigid = 7; // All DOFs are rigid (no flex vertices)
-        model.nv_rigid = 6;
         model.nbody = 2;
         model.njnt = 1;
 
@@ -4625,7 +4577,7 @@ impl Data {
 
         // ========== Position Stage ==========
         mj_fwd_position(model, self);
-        mj_fwd_position_flex(model, self);
+        mj_flex(model, self);
 
         // §16.15: If FK detected external qpos changes on sleeping bodies, wake them
         if sleep_enabled && mj_check_qpos_changed(model, self) {
@@ -4667,7 +4619,7 @@ impl Data {
 
         // ========== Acceleration Stage ==========
         mj_fwd_actuation(model, self);
-        mj_crba(model, self); // Calls mj_crba_flex + mj_factor_flex internally
+        mj_crba(model, self);
         mj_rne(model, self);
         mj_energy_vel(model, self);
         mj_fwd_passive(model, self);
@@ -4686,19 +4638,8 @@ impl Data {
             mj_fwd_acceleration(model, self)?;
         }
 
-        // Zero out qacc and qvel for pinned flex vertices (invmass == 0).
-        // With large-but-finite mass (1e20), tiny residual forces produce
-        // near-zero but nonzero qacc. Clamping to exact zero ensures pinned
-        // vertices remain perfectly stationary.
-        for i in 0..model.nflexvert {
-            if model.flexvert_invmass[i] == 0.0 {
-                let dof_base = model.flexvert_dofadr[i];
-                for k in 0..3 {
-                    self.qacc[dof_base + k] = 0.0;
-                    self.qvel[dof_base + k] = 0.0;
-                }
-            }
-        }
+        // (§27F) Pinned flex vertex DOF clamping removed — pinned vertices now have
+        // no joints/DOFs (zero body_dof_num), so no qacc/qvel entries to clamp.
 
         if compute_sensors {
             mj_sensor_acc(model, self);
@@ -4777,7 +4718,6 @@ impl Data {
 
         // Update positions - quaternions need special handling!
         mj_integrate_pos(model, self, h);
-        mj_integrate_pos_flex(model, self, h);
 
         // Normalize quaternions to prevent drift
         mj_normalize_quat(model, self);
@@ -4840,7 +4780,6 @@ impl Data {
 
         // 3. Position integration + quaternion normalization + time advance
         mj_integrate_pos(model, self, h);
-        mj_integrate_pos_flex(model, self, h);
         mj_normalize_quat(model, self);
         self.time += h;
     }
@@ -9212,15 +9151,15 @@ fn compute_subtree_angmom(model: &Model, data: &Data, root_body: usize) -> Vecto
     angmom
 }
 
-/// Copy flex vertex positions from qpos to flexvert_xpos.
+/// Compute flex vertex world positions from body FK.
 ///
-/// Flex vertices ARE their positions — no kinematic chain traversal needed.
-/// Trivial O(nflexvert), no-op when nflexvert == 0.
-fn mj_fwd_position_flex(model: &Model, data: &mut Data) {
+/// Each flex vertex has an associated body (created by process_flex_bodies).
+/// The body's xpos (computed by standard FK) IS the vertex world position.
+/// Pinned vertices (no DOFs) use xpos directly from their static body.
+fn mj_flex(model: &Model, data: &mut Data) {
     for i in 0..model.nflexvert {
-        let adr = model.flexvert_qposadr[i];
-        data.flexvert_xpos[i] =
-            Vector3::new(data.qpos[adr], data.qpos[adr + 1], data.qpos[adr + 2]);
+        let body_id = model.flexvert_bodyid[i];
+        data.flexvert_xpos[i] = data.xpos[body_id];
     }
 }
 
@@ -10776,9 +10715,8 @@ fn mj_crba(model: &Model, data: &mut Data) {
         .collect();
 
     // Build cdof only for rigid DOFs (flex DOFs have dof_jnt = usize::MAX,
-    // no joint subspace, and their mass is handled separately by mj_crba_flex).
-    let nv_rigid = model.nv_rigid();
-    let cdof: Vec<Vector6<f64>> = (0..nv_rigid)
+    // (§27F) All DOFs now have real joints — build cdof for all DOFs.
+    let cdof: Vec<Vector6<f64>> = (0..model.nv)
         .map(|dof| {
             let jnt = model.dof_jnt[dof];
             let dof_in_jnt = dof - model.jnt_dof_adr[jnt];
@@ -10786,14 +10724,10 @@ fn mj_crba(model: &Model, data: &mut Data) {
         })
         .collect();
 
-    // Only iterate rigid DOFs for CRBA mass matrix entries.
-    // Flex vertex diagonal blocks are written by mj_crba_flex (Phase 5a).
     let nv_iter = if sleep_filter {
-        // When sleeping, awake DOFs are a subset of rigid DOFs
-        // (flex DOFs are always awake but handled by mj_crba_flex).
         data.nv_awake
     } else {
-        nv_rigid
+        model.nv
     };
     for v in 0..nv_iter {
         let dof_i = if sleep_filter {
@@ -10801,10 +10735,6 @@ fn mj_crba(model: &Model, data: &mut Data) {
         } else {
             v
         };
-        // Skip flex DOFs that might be in the awake list
-        if dof_i >= nv_rigid {
-            continue;
-        }
         let body_i = model.dof_body[dof_i];
         let ic = &data.crb_inertia[body_i];
 
@@ -10868,12 +10798,6 @@ fn mj_crba(model: &Model, data: &mut Data) {
         }
     }
 
-    // ============================================================
-    // Phase 5a: Fill flex vertex diagonal blocks in qM
-    // ============================================================
-    // Must run before factorization so that qM has correct flex entries.
-    mj_crba_flex(model, data);
-
     // Phase 5b: Sparse L^T D L factorization
     // ============================================================
     // Exploits tree sparsity from dof_parent for O(n) factorization and solve.
@@ -10882,11 +10806,7 @@ fn mj_crba(model: &Model, data: &mut Data) {
     // Sleeping DOFs' qLD entries are preserved from their last awake step.
     mj_factor_sparse_selective(model, data);
 
-    // Phase 5c: Patch LDL diagonal for flex DOFs
-    // ============================================================
-    // mj_factor_sparse doesn't touch flex DOFs (they have no kinematic chain),
-    // so we write the diagonal mass and its inverse directly.
-    mj_factor_flex(model, data);
+    // Phase 5c: (§27F) Flex DOFs now handled by standard sparse factorization above.
 
     // ============================================================
     // Phase 6: Cache body effective mass/inertia from qM diagonal
@@ -11099,6 +11019,12 @@ pub(crate) fn joint_motion_subspace(
     s
 }
 
+// mj_crba_flex DELETED (§27F): Flex vertices are now real bodies with slide joints.
+// The standard CRBA handles their mass matrix entries automatically.
+
+// mj_factor_flex DELETED (§27F): Flex vertices are now real bodies with slide joints.
+// The standard sparse LDL factorization handles their DOFs automatically.
+
 /// Recursive Newton-Euler: compute bias forces (Coriolis + centrifugal + gravity).
 ///
 /// The bias force vector `c(q, qdot)` contains:
@@ -11119,46 +11045,7 @@ pub(crate) fn joint_motion_subspace(
 /// to verify for correctness.
 ///
 /// Reference: Featherstone, "Rigid Body Dynamics Algorithms", Chapter 5
-/// Extend mass matrix M with flex vertex diagonal blocks.
 ///
-/// Each vertex contributes m_i * I_3 (3 diagonal entries).
-/// No-op when nflexvert == 0.
-fn mj_crba_flex(model: &Model, data: &mut Data) {
-    for i in 0..model.nflexvert {
-        let mass = model.flexvert_mass[i];
-        let dof_base = model.flexvert_dofadr[i];
-        for k in 0..3 {
-            let dof = dof_base + k;
-            data.qM[(dof, dof)] = mass;
-        }
-    }
-}
-
-/// Extend sparse LDL factorization with flex diagonal entries.
-///
-/// For diagonal-only DOFs: L = I, D = M, so D_inv = 1/M.
-/// Pinned vertices have mass = 1e20 → D_inv ≈ 0 → near-zero acceleration.
-/// No-op when nflexvert == 0.
-#[allow(non_snake_case)]
-fn mj_factor_flex(model: &Model, data: &mut Data) {
-    for i in 0..model.nflexvert {
-        let mass = model.flexvert_mass[i];
-        let dof_base = model.flexvert_dofadr[i];
-        for k in 0..3 {
-            let dof = dof_base + k;
-            // Diagonal entry in qLD_data
-            let ld_adr = model.qLD_rowadr[dof]; // points to diagonal
-            data.qLD_data[ld_adr] = mass;
-            // Precomputed inverse
-            data.qLD_diag_inv[dof] = if mass > 0.0 { 1.0 / mass } else { 0.0 };
-        }
-    }
-    // Mark factorization as valid (spec S4, line 453)
-    if model.nflexvert > 0 {
-        data.qLD_valid = true;
-    }
-}
-
 /// Reference: MuJoCo Computation docs - mj_rne section
 #[allow(
     clippy::too_many_lines,
@@ -11237,18 +11124,8 @@ fn mj_rne(model: &Model, data: &mut Data) {
         }
     }
 
-    // Flex vertex gravity: direct force on translational DOFs
-    // Skip pinned vertices (invmass == 0, mass == 1e20) to avoid huge values in qfrc_bias.
-    for i in 0..model.nflexvert {
-        if model.flexvert_invmass[i] == 0.0 {
-            continue; // Pinned vertex: skip gravity
-        }
-        let mass = model.flexvert_mass[i];
-        let dof_base = model.flexvert_dofadr[i];
-        for k in 0..3 {
-            data.qfrc_bias[dof_base + k] -= mass * model.gravity[k];
-        }
-    }
+    // (§27F) Flex vertex gravity now handled by the joint loop above — each vertex
+    // has a body with 3 slide joints, so the standard gravity path applies automatically.
 
     // ========== Gyroscopic terms for Ball/Free joints ==========
     // τ_gyro = ω × (I * ω) - the gyroscopic torque
@@ -11579,12 +11456,15 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
     // Flex vertex damping: qfrc_passive[dof] = -damping * qvel[dof]
     for i in 0..model.nflexvert {
+        let dof_base = model.flexvert_dofadr[i];
+        if dof_base == usize::MAX {
+            continue; // Pinned vertex: no DOFs
+        }
         let flex_id = model.flexvert_flexid[i];
         let damp = model.flex_damping[flex_id];
         if damp <= 0.0 {
             continue;
         }
-        let dof_base = model.flexvert_dofadr[i];
         for k in 0..3 {
             data.qfrc_passive[dof_base + k] -= damp * data.qvel[dof_base + k];
         }
@@ -11631,10 +11511,19 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
 
         // Damping force: -damping * edge_velocity
         // edge_velocity = d(dist)/dt = (v1 - v0) · direction
+        // (§27F) Pinned vertices have dofadr=usize::MAX and zero velocity.
         let dof0 = model.flexvert_dofadr[v0];
         let dof1 = model.flexvert_dofadr[v1];
-        let vel0 = Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2]);
-        let vel1 = Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2]);
+        let vel0 = if dof0 == usize::MAX {
+            Vector3::zeros()
+        } else {
+            Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2])
+        };
+        let vel1 = if dof1 == usize::MAX {
+            Vector3::zeros()
+        } else {
+            Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2])
+        };
         let edge_velocity = (vel1 - vel0).dot(&direction);
         let frc_damper = -damping * edge_velocity;
 
@@ -11643,12 +11532,12 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
         // Apply via J^T: edge Jacobian is ±direction for the two endpoint DOFs.
         // F_v0 = -direction * force_mag (pulls v0 toward v1 when stretched)
         // F_v1 = +direction * force_mag (pulls v1 toward v0 when stretched)
-        if model.flexvert_invmass[v0] > 0.0 {
+        if dof0 < model.nv {
             for ax in 0..3 {
                 data.qfrc_passive[dof0 + ax] -= direction[ax] * force_mag;
             }
         }
-        if model.flexvert_invmass[v1] > 0.0 {
+        if dof1 < model.nv {
             for ax in 0..3 {
                 data.qfrc_passive[dof1 + ax] += direction[ax] * force_mag;
             }
@@ -11715,22 +11604,22 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let spring_mag = -k_bend_raw * angle_error;
 
         // Damper: F = -b * d(theta)/dt, where d(theta)/dt = J · qvel
+        // (§27F) Pinned vertices have dofadr=usize::MAX and zero velocity.
         let dof_e0 = model.flexvert_dofadr[ve0];
         let dof_e1 = model.flexvert_dofadr[ve1];
         let dof_a = model.flexvert_dofadr[va];
         let dof_b = model.flexvert_dofadr[vb];
-        let vel_e0 = Vector3::new(
-            data.qvel[dof_e0],
-            data.qvel[dof_e0 + 1],
-            data.qvel[dof_e0 + 2],
-        );
-        let vel_e1 = Vector3::new(
-            data.qvel[dof_e1],
-            data.qvel[dof_e1 + 1],
-            data.qvel[dof_e1 + 2],
-        );
-        let vel_a = Vector3::new(data.qvel[dof_a], data.qvel[dof_a + 1], data.qvel[dof_a + 2]);
-        let vel_b = Vector3::new(data.qvel[dof_b], data.qvel[dof_b + 1], data.qvel[dof_b + 2]);
+        let read_vel = |dof: usize| -> Vector3<f64> {
+            if dof == usize::MAX {
+                Vector3::zeros()
+            } else {
+                Vector3::new(data.qvel[dof], data.qvel[dof + 1], data.qvel[dof + 2])
+            }
+        };
+        let vel_e0 = read_vel(dof_e0);
+        let vel_e1 = read_vel(dof_e1);
+        let vel_a = read_vel(dof_a);
+        let vel_b = read_vel(dof_b);
         let theta_dot =
             grad_e0.dot(&vel_e0) + grad_e1.dot(&vel_e1) + grad_a.dot(&vel_a) + grad_b.dot(&vel_b);
         let damper_mag = -b_bend * theta_dot;
@@ -11927,10 +11816,8 @@ fn compute_body_lengths(model: &Model) -> Vec<f64> {
 pub fn compute_dof_lengths(model: &mut Model) {
     let body_length = compute_body_lengths(model);
 
-    // Only compute mechanism lengths for rigid DOFs (flex DOFs have dof_jnt = usize::MAX).
-    // Flex DOFs are translational by nature and keep the default length of 1.0.
-    let nv_rigid = model.nv_rigid();
-    for dof in 0..nv_rigid {
+    // (§27F) All DOFs now have real joints — iterate all DOFs uniformly.
+    for dof in 0..model.nv {
         let jnt_id = model.dof_jnt[dof];
         let jnt_type = model.jnt_type[jnt_id];
         let offset = dof - model.jnt_dof_adr[jnt_id];
@@ -11946,10 +11833,6 @@ pub fn compute_dof_lengths(model: &mut Model) {
         } else {
             model.dof_length[dof] = 1.0; // translational: already in [m/s]
         }
-    }
-    // Flex DOFs: keep default 1.0 (translational, already in m/s)
-    for dof in nv_rigid..model.nv {
-        model.dof_length[dof] = 1.0;
     }
 }
 
@@ -13395,10 +13278,14 @@ fn compute_flex_contact_jacobian(
 
     // Flex vertex side: trivial Jacobian (identity on DOF columns).
     // The vertex's 3 translational DOFs map directly to Cartesian velocity.
+    // (§27F) Pinned vertices have no DOFs — Jacobian columns are all zero (immovable).
     let dof_base = model.flexvert_dofadr[vertex_idx];
 
     // Helper: project direction onto vertex DOFs with given sign
     let add_vertex_jacobian = |j: &mut DMatrix<f64>, row: usize, dir: &Vector3<f64>, sign: f64| {
+        if dof_base == usize::MAX {
+            return; // Pinned vertex: no DOF columns to fill
+        }
         j[(row, dof_base)] += sign * dir.x;
         j[(row, dof_base + 1)] += sign * dir.y;
         j[(row, dof_base + 2)] += sign * dir.z;
@@ -14900,14 +14787,21 @@ fn apply_flex_edge_constraints(model: &Model, data: &mut Data) {
         let direction = diff / dist;
         let pos_error = dist - rest_len; // positive = stretched
 
+        // (§27F) Pinned vertices have dofadr=usize::MAX and zero velocity.
         let dof0 = model.flexvert_dofadr[v0];
         let dof1 = model.flexvert_dofadr[v1];
 
         // Relative velocity along edge direction
-        let vel0 =
-            nalgebra::Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2]);
-        let vel1 =
-            nalgebra::Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2]);
+        let vel0 = if dof0 == usize::MAX {
+            nalgebra::Vector3::zeros()
+        } else {
+            nalgebra::Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2])
+        };
+        let vel1 = if dof1 == usize::MAX {
+            nalgebra::Vector3::zeros()
+        } else {
+            nalgebra::Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2])
+        };
         let vel_error = (vel1 - vel0).dot(&direction);
 
         let (k, b) = solref_to_penalty(model.flex_edge_solref[flex_id], default_k, default_b, dt);
@@ -14916,11 +14810,13 @@ fn apply_flex_edge_constraints(model: &Model, data: &mut Data) {
         let force_mag = -k * pos_error - b * vel_error;
 
         // Apply via J^T: F_v0 = -direction * force_mag, F_v1 = +direction * force_mag
-        for ax in 0..3 {
-            if model.flexvert_invmass[v0] > 0.0 {
+        if dof0 < model.nv {
+            for ax in 0..3 {
                 data.qfrc_constraint[dof0 + ax] += -direction[ax] * force_mag;
             }
-            if model.flexvert_invmass[v1] > 0.0 {
+        }
+        if dof1 < model.nv {
+            for ax in 0..3 {
                 data.qfrc_constraint[dof1 + ax] += direction[ax] * force_mag;
             }
         }
@@ -15755,16 +15651,31 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
         let pos_error = dist - rest_len; // positive = stretched, negative = compressed
 
         // Jacobian: ∂C/∂x_v0 = -direction, ∂C/∂x_v1 = +direction
+        // (§27F) Pinned vertices (dofadr=usize::MAX) have zero Jacobian columns.
         let dof0 = model.flexvert_dofadr[v0];
         let dof1 = model.flexvert_dofadr[v1];
-        for k in 0..3 {
-            data.efc_J[(row, dof0 + k)] = -direction[k];
-            data.efc_J[(row, dof1 + k)] = direction[k];
+        if dof0 != usize::MAX {
+            for k in 0..3 {
+                data.efc_J[(row, dof0 + k)] = -direction[k];
+            }
+        }
+        if dof1 != usize::MAX {
+            for k in 0..3 {
+                data.efc_J[(row, dof1 + k)] = direction[k];
+            }
         }
 
         // Velocity: relative velocity projected onto edge direction
-        let vel0 = Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2]);
-        let vel1 = Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2]);
+        let vel0 = if dof0 == usize::MAX {
+            Vector3::zeros()
+        } else {
+            Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2])
+        };
+        let vel1 = if dof1 == usize::MAX {
+            Vector3::zeros()
+        } else {
+            Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2])
+        };
         let vel_error = (vel1 - vel0).dot(&direction);
 
         finalize_row!(
@@ -17291,35 +17202,13 @@ fn newton_solve(model: &Model, data: &mut Data) -> NewtonResult {
     // === PER-STEP MEANINERTIA (Phase C) ===
     // More accurate than model-level constant for configuration-dependent inertia.
     // O(nv) — free since qM is already filled by CRBA this step.
-    // IMPORTANT: Skip pinned flex vertex DOFs (invmass == 0 → mass ≈ 1e20).
-    // Their huge mass would dominate meaninertia, collapsing the Newton
-    // convergence scale to near-zero and causing premature convergence.
+    // (§27F) Pinned flex vertices have no DOFs — no need to skip them.
     let meaninertia = if nv > 0 {
-        // Build a set of pinned DOF indices for fast lookup
-        let mut pinned_dofs = vec![false; nv];
-        for i in 0..model.nflexvert {
-            if model.flexvert_invmass[i] == 0.0 {
-                let dof_base = model.flexvert_dofadr[i];
-                for k in 0..3 {
-                    if dof_base + k < nv {
-                        pinned_dofs[dof_base + k] = true;
-                    }
-                }
-            }
-        }
         let mut trace = 0.0_f64;
-        let mut count = 0usize;
         for i in 0..nv {
-            if !pinned_dofs[i] {
-                trace += data.qM[(i, i)];
-                count += 1;
-            }
+            trace += data.qM[(i, i)];
         }
-        let mi = if count > 0 {
-            trace / count as f64
-        } else {
-            model.stat_meaninertia
-        };
+        let mi = trace / nv as f64;
         if mi > 0.0 { mi } else { model.stat_meaninertia }
     } else {
         model.stat_meaninertia
@@ -19804,8 +19693,12 @@ fn compute_point_velocity(data: &Data, body_id: usize, point: Vector3<f64>) -> V
 /// Compute the velocity of a flex vertex from `qvel`.
 ///
 /// Flex vertices have 3 translational DOFs (no angular velocity).
+/// Pinned vertices (dofadr = usize::MAX) return zero velocity.
 fn compute_flex_vertex_velocity(model: &Model, data: &Data, vertex_idx: usize) -> Vector3<f64> {
     let dof_base = model.flexvert_dofadr[vertex_idx];
+    if dof_base == usize::MAX {
+        return Vector3::zeros(); // Pinned vertex: fixed in place
+    }
     Vector3::new(
         data.qvel[dof_base],
         data.qvel[dof_base + 1],
@@ -20024,10 +19917,13 @@ fn apply_solved_contact_lambda(
         // Flex-rigid: vertex DOFs get direct force, rigid body gets reaction.
         // Narrowphase normal points FROM rigid surface TOWARD flex vertex.
         // Vertex (body2) gets +world_force, rigid (body1) gets -world_force.
+        // (§27F) Pinned vertices have no DOFs — contact force is absorbed by the ground.
         let dof_base = model.flexvert_dofadr[vertex_idx];
-        data.qfrc_constraint[dof_base] += world_force.x;
-        data.qfrc_constraint[dof_base + 1] += world_force.y;
-        data.qfrc_constraint[dof_base + 2] += world_force.z;
+        if dof_base != usize::MAX {
+            data.qfrc_constraint[dof_base] += world_force.x;
+            data.qfrc_constraint[dof_base + 1] += world_force.y;
+            data.qfrc_constraint[dof_base + 2] += world_force.z;
+        }
 
         let rigid_body = model.geom_body[contact.geom1];
         apply_contact_force(model, data, rigid_body, contact.pos, -world_force);
@@ -20896,20 +20792,8 @@ fn mj_integrate_pos(model: &Model, data: &mut Data, h: f64) {
     model.visit_joints(&mut visitor);
 }
 
-/// Position integration for flex vertices: qpos += qvel * h.
-/// Trivial linear update (no quaternions, no SO(3) manifold).
-fn mj_integrate_pos_flex(model: &Model, data: &mut Data, h: f64) {
-    for i in 0..model.nflexvert {
-        if model.flexvert_invmass[i] == 0.0 {
-            continue; // Pinned vertex: skip integration
-        }
-        let dof_base = model.flexvert_dofadr[i];
-        let qpos_base = model.flexvert_qposadr[i];
-        for k in 0..3 {
-            data.qpos[qpos_base + k] += h * data.qvel[dof_base + k];
-        }
-    }
-}
+// mj_integrate_pos_flex DELETED (§27F): Flex vertices now have slide joints.
+// Standard mj_integrate_pos handles slide joint position integration.
 
 /// Visitor for position integration that handles different joint types.
 struct PositionIntegrateVisitor<'a> {
@@ -21349,18 +21233,8 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
             h,
         );
 
-        // 2c-flex. Flex vertex positions: linear update from saved state
-        for vi in 0..model.nflexvert {
-            if model.flexvert_invmass[vi] == 0.0 {
-                continue; // Pinned vertex
-            }
-            let qpos_base = model.flexvert_qposadr[vi];
-            let dof_base = model.flexvert_dofadr[vi];
-            for k in 0..3 {
-                data.rk4_qpos_stage[qpos_base + k] =
-                    data.rk4_qpos_saved[qpos_base + k] + h * data.rk4_dX_vel[dof_base + k];
-            }
-        }
+        // (§27F) Flex vertex positions now integrated by mj_integrate_pos_explicit
+        // above — slide joints are handled by the standard manifold integration path.
 
         // 2d. Velocity (linear): X[i].qvel = X[0].qvel + h * dX_acc
         // Use split_at_mut for borrow-checker disjointness on rk4_qvel.
@@ -21442,18 +21316,7 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
         h,
     );
 
-    // Flex vertex positions: linear update from saved state using weighted velocity
-    for vi in 0..model.nflexvert {
-        if model.flexvert_invmass[vi] == 0.0 {
-            continue; // Pinned vertex
-        }
-        let qpos_base = model.flexvert_qposadr[vi];
-        let dof_base = model.flexvert_dofadr[vi];
-        for k in 0..3 {
-            data.qpos[qpos_base + k] =
-                data.rk4_qpos_saved[qpos_base + k] + h * data.rk4_dX_vel[dof_base + k];
-        }
-    }
+    // (§27F) Flex vertex positions now integrated by mj_integrate_pos_explicit above.
 
     mj_normalize_quat(model, data);
 

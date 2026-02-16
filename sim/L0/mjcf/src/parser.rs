@@ -2344,13 +2344,12 @@ fn parse_flex<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Result<
 
 /// Parse direct `<flex>` / `<flexcomp>` top-level attributes.
 ///
-/// Only parses attributes that belong directly on the element: `name`, `dim`, `radius`.
+/// Only parses attributes that belong directly on the element: `name`, `dim`, `radius`, `mass`.
 /// Contact, elasticity, and edge attributes belong on child elements and are parsed
 /// by `parse_flex_contact_attrs`, `parse_flex_elasticity_attrs`, `parse_flex_edge_attrs`.
 ///
-/// Also parses `density` as a non-standard extension (MuJoCo has no density on `<flex>`;
-/// mass comes from `<flexcomp mass="...">` which we don't yet support). Kept for
-/// internal mass computation until flexcomp mass support is added.
+/// `mass` distributes total mass uniformly across all vertices (MuJoCo `<flexcomp mass="...">`).
+/// `density` is a non-standard fallback for element-based mass lumping.
 fn parse_flex_attrs(e: &BytesStart) -> MjcfFlex {
     let mut flex = MjcfFlex::default();
 
@@ -2375,7 +2374,13 @@ fn parse_flex_attrs(e: &BytesStart) -> MjcfFlex {
     if let Some(s) = get_attribute_opt(e, "group") {
         flex.group = s.parse().unwrap_or(0);
     }
-    // Non-standard extension: density for mass computation.
+    // MuJoCo: <flexcomp mass="..."> distributes total mass uniformly across all vertices.
+    // When present, overrides element-based mass lumping from density.
+    if let Some(s) = get_attribute_opt(e, "mass") {
+        flex.mass = s.parse().ok();
+    }
+    // Non-standard extension: density on <flex> for element-based mass lumping.
+    // Fallback when mass attr is not present.
     if let Some(s) = get_attribute_opt(e, "density") {
         flex.density = s.parse().unwrap_or(1000.0);
     }
