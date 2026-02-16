@@ -1417,7 +1417,16 @@ pub struct Model {
     pub flex_solmix: Vec<f64>,
     /// Per-flex: self-collision enabled.
     pub flex_selfcollide: Vec<bool>,
-    /// Per-flex: edge constraint solref (derived from young/poisson/damping).
+    /// Per-flex: passive edge spring stiffness (from `<edge stiffness="..."/>`).
+    /// Used in passive force path (spring-damper), not constraint solver.
+    pub flex_edgestiffness: Vec<f64>,
+    /// Per-flex: passive edge damping coefficient (from `<edge damping="..."/>`).
+    /// Used in passive force path (spring-damper), not constraint solver.
+    pub flex_edgedamping: Vec<f64>,
+    /// Per-flex: edge constraint solref. Uses flex-level solref (from
+    /// `<contact solref="..."/>`). MuJoCo derives this from eq_solref on the
+    /// parent equality constraint; our architecture uses flex.solref as the
+    /// default, which matches MuJoCo when no explicit equality override exists.
     pub flex_edge_solref: Vec<[f64; 2]>,
     /// Per-flex: edge constraint solimp.
     pub flex_edge_solimp: Vec<[f64; 5]>,
@@ -2955,6 +2964,8 @@ impl Model {
             flex_priority: vec![],
             flex_solmix: vec![],
             flex_selfcollide: vec![],
+            flex_edgestiffness: vec![],
+            flex_edgedamping: vec![],
             flex_edge_solref: vec![],
             flex_edge_solimp: vec![],
             flex_bend_stiffness: vec![],
@@ -11576,6 +11587,71 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
         let dof_base = model.flexvert_dofadr[i];
         for k in 0..3 {
             data.qfrc_passive[dof_base + k] -= damp * data.qvel[dof_base + k];
+        }
+    }
+
+    // Flex edge passive spring-damper forces.
+    // MuJoCo architecture: <edge stiffness="..." damping="..."/> drives passive
+    // forces (engine_passive.c), separate from constraint-based edge enforcement
+    // (mjEQ_FLEX in engine_core_constraint.c which uses eq_solref/eq_solimp).
+    // Note: MuJoCo docs say <edge stiffness> is "Only for 1D flex" (cables).
+    // For 2D/3D, elasticity comes from FEM via <elasticity>. The code applies
+    // to all dims (matching MuJoCo's runtime behavior), but users should only
+    // set nonzero stiffness for dim=1 flex bodies.
+    for e in 0..model.nflexedge {
+        let flex_id = model.flexedge_flexid[e];
+        let stiffness = model.flex_edgestiffness[flex_id];
+        let damping = model.flex_edgedamping[flex_id];
+
+        if stiffness == 0.0 && damping == 0.0 {
+            continue;
+        }
+
+        let [v0, v1] = model.flexedge_vert[e];
+
+        // Skip edges where both vertices are pinned (rigid edge)
+        if model.flexvert_invmass[v0] == 0.0 && model.flexvert_invmass[v1] == 0.0 {
+            continue;
+        }
+
+        let x0 = data.flexvert_xpos[v0];
+        let x1 = data.flexvert_xpos[v1];
+        let diff = x1 - x0;
+        let dist = diff.norm();
+        if dist < 1e-10 {
+            continue;
+        }
+
+        let direction = diff / dist;
+        let rest_len = model.flexedge_length0[e];
+
+        // Spring force: stiffness * (rest_length - current_length)
+        // Positive when compressed (restoring), negative when stretched.
+        let frc_spring = stiffness * (rest_len - dist);
+
+        // Damping force: -damping * edge_velocity
+        // edge_velocity = d(dist)/dt = (v1 - v0) · direction
+        let dof0 = model.flexvert_dofadr[v0];
+        let dof1 = model.flexvert_dofadr[v1];
+        let vel0 = Vector3::new(data.qvel[dof0], data.qvel[dof0 + 1], data.qvel[dof0 + 2]);
+        let vel1 = Vector3::new(data.qvel[dof1], data.qvel[dof1 + 1], data.qvel[dof1 + 2]);
+        let edge_velocity = (vel1 - vel0).dot(&direction);
+        let frc_damper = -damping * edge_velocity;
+
+        let force_mag = frc_spring + frc_damper;
+
+        // Apply via J^T: edge Jacobian is ±direction for the two endpoint DOFs.
+        // F_v0 = -direction * force_mag (pulls v0 toward v1 when stretched)
+        // F_v1 = +direction * force_mag (pulls v1 toward v0 when stretched)
+        if model.flexvert_invmass[v0] > 0.0 {
+            for ax in 0..3 {
+                data.qfrc_passive[dof0 + ax] -= direction[ax] * force_mag;
+            }
+        }
+        if model.flexvert_invmass[v1] > 0.0 {
+            for ax in 0..3 {
+                data.qfrc_passive[dof1 + ax] += direction[ax] * force_mag;
+            }
         }
     }
 

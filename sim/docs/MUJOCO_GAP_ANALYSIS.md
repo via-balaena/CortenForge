@@ -21,7 +21,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 **Remaining gaps (Phase 3, optimal implementation order):**
 - **3A-i Parser Fundamentals** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` element~~ ✅, ~~`childclass` attribute~~ ✅, ~~`<site>` orientation~~ ✅, ~~tendon `springlength`~~ ✅
-- **3A-ii Inertia + Contact Parameters** (#23–27, #27B–D): ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, flex child element parsing (#27B), passive edge forces (#27C), flex body/node attrs (#27D)
+- **3A-ii Inertia + Contact Parameters** (#23–27, #27B–D): ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, ~~flex child element parsing~~ ✅, ~~passive edge forces~~ ✅, ~~flex body/node attrs~~ ✅
 - **3A-iii Constraint System Overhaul** (#28–32): friction loss migration (Newton Huber → PGS/CG → unified constraints), `solreffriction`, pyramidal cones
 - **3A-iv Noslip + Actuator/Dynamics** (#33–37): noslip post-processor, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality
 - **3A-precursor Flex Solver Unification** (#6B): ~~flex solver unification~~ ✅ (subsumes #42)
@@ -871,12 +871,12 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 | Bending (dihedral) | Yes (passive forces) | Passive spring-damper in `mj_fwd_passive()` | ✅ **Pipeline** (Bridson et al. 2003 gradient) | - | - |
 | Flex-rigid collision | Yes | `mj_collision_flex()` → regular `Contact` entries | ✅ **Pipeline** (brute-force O(V×G) vertex-vs-geom) | - | - |
 | Flex-flex collision | Yes | Not implemented | **Deferred** (self-collision for cloth) | Low | High |
-| Flex `body`/`node` attrs | Yes (`flexvert_bodyid`) | Hardcoded `usize::MAX` (all free) | **Gap** — [#27D](./todo/future_work_7.md) | Medium | Medium |
+| Flex `body`/`node` attrs | Yes (`flexvert_bodyid`) | ~~Hardcoded `usize::MAX`~~ → Parsed + resolved | ✅ **Done** — [#27D](./todo/future_work_7.md) | - | - |
 | Sparse edge Jacobian (`flexedge_J`) | Yes (CSR per edge) | Inline `±direction` (3-DOF only) | **Gap** — [§42A-i](./todo/future_work_10.md) | Medium | High |
 | `flex_rigid`/`flexedge_rigid` | Yes (boolean arrays) | Per-vertex `invmass==0` check | **Gap** — [§42A-ii](./todo/future_work_10.md) (optimization) | Low | Low |
 | `flexedge_length`/`velocity` Data fields | Yes (pre-computed) | Inline computation | **Gap** — [§42A-iii](./todo/future_work_10.md) (optimization) | Low | Low |
-| Flex child element parsing (`<contact>`, `<elasticity>`, `<edge>`) | Yes | Falls to skip_element | **Gap** — [#27B](./todo/future_work_7.md) | Medium | Medium |
-| Passive edge spring-damper forces | Yes (`engine_passive.c`) | Not implemented | **Gap** — [#27C](./todo/future_work_7.md) | Medium | Medium |
+| Flex child element parsing (`<contact>`, `<elasticity>`, `<edge>`) | Yes | ~~Falls to skip_element~~ → Proper child dispatch | ✅ **Done** — [#27B](./todo/future_work_7.md) | - | - |
+| Passive edge spring-damper forces | Yes (`engine_passive.c`) | ~~Not implemented~~ → `mj_fwd_passive()` edge loop | ✅ **Done** — [#27C](./todo/future_work_7.md) | - | - |
 
 > ✅ **Unified flex architecture (§6B).** Flex vertex DOFs are appended to `qpos`/`qvel`/`qacc` after rigid DOFs. Edge constraints enter the unified Jacobian as `FlexEdge` rows. Bending acts as passive spring-damper forces in `mj_fwd_passive()` (matching MuJoCo `engine_passive.c`). Flex-rigid contacts are regular `Contact` entries (discriminated by `flex_vertex: Option<usize>`). The previous `sim-deformable` crate (XPBD solver) has been deleted — useful code migrated to `model_builder.rs`. See [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅.
 >

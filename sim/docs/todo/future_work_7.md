@@ -2376,7 +2376,7 @@ set in MJCF.
 ---
 
 ### 27B. Flex Child Element Parsing — `<contact>`, `<elasticity>`, `<edge>` Structural Fix
-**Status:** Not started | **Effort:** S–M | **Prerequisites:** #27
+**Status:** ✅ Done | **Effort:** S–M | **Prerequisites:** #27
 
 #### Problem
 
@@ -2959,8 +2959,8 @@ computation (spring-damper forces on edges, analogous to MuJoCo's
 
 ---
 
-### 27C. Passive Edge Spring-Damper Forces + `compute_edge_solref_from_material()` Cleanup
-**Status:** Not started | **Effort:** S–M | **Prerequisites:** #27B
+### 27C. Passive Edge Spring-Damper Forces + `compute_edge_solref()` Cleanup
+**Status:** ✅ Done | **Effort:** S–M | **Prerequisites:** #27B
 
 #### Problem
 
@@ -3235,7 +3235,7 @@ damper forces in engine_passive.c. See future_work_7.md #27C for details.
 ---
 
 ### 27D. Flex `body` / `node` Attribute Parsing + `flexvert_bodyid` Wiring
-**Status:** Not started | **Effort:** S–M | **Prerequisites:** #27B
+**Status:** ✅ Done | **Effort:** S–M | **Prerequisites:** #27B
 
 #### Discovery Context
 

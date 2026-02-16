@@ -22,9 +22,9 @@ fn cloth_5x5_mjcf() -> &'static str {
             <geom type="plane" size="5 5 0.1" pos="0 0 -2"/>
         </worldbody>
         <deformable>
-            <flex name="cloth" dim="2" density="1000" thickness="0.01" young="50"
-                  damping="5.0" radius="0.005" margin="0.001"
-                  solref="0.5 2.0">
+            <flex name="cloth" dim="2" density="1000" radius="0.005">
+                <contact margin="0.001" solref="0.5 2.0"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
                 <vertex pos="0 0 0  1 0 0  0 1 0  1 1 0"/>
                 <element data="0 1 2  1 3 2"/>
             </flex>
@@ -39,7 +39,8 @@ fn cable_20seg_mjcf() -> &'static str {
     <mujoco model="cable_catenary">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="rope" dim="1" density="0.1" young="1e4" damping="0.1">
+            <flex name="rope" dim="1" density="0.1">
+                <elasticity young="1e4" damping="0.1"/>
                 <vertex pos="0 0 1  0.05 0 1  0.1 0 1  0.15 0 1  0.2 0 1
                             0.25 0 1  0.3 0 1  0.35 0 1  0.4 0 1  0.45 0 1
                             0.5 0 1  0.55 0 1  0.6 0 1  0.65 0 1  0.7 0 1
@@ -65,9 +66,9 @@ fn solid_3x3x3_mjcf() -> &'static str {
             <geom type="plane" size="5 5 0.1" pos="0 0 -2"/>
         </worldbody>
         <deformable>
-            <flex name="block" dim="3" density="1000" young="100" poisson="0.3"
-                  damping="10.0" radius="0.02" margin="0.005"
-                  solref="0.5 2.0">
+            <flex name="block" dim="3" density="1000" radius="0.02">
+                <contact margin="0.005" solref="0.5 2.0"/>
+                <elasticity young="100" poisson="0.3" damping="10.0"/>
                 <vertex pos="0 0 0  1 0 0  0 1 0  0 0 1"/>
                 <element data="0 1 2 3"/>
             </flex>
@@ -96,9 +97,9 @@ fn cloth_on_sphere_mjcf() -> &'static str {
             </body>
         </worldbody>
         <deformable>
-            <flex name="cloth" dim="2" density="500" thickness="0.01" young="50"
-                  damping="5.0" radius="0.02" margin="0.01" condim="3"
-                  solref="0.5 2.0" friction="0.5">
+            <flex name="cloth" dim="2" density="500" radius="0.02">
+                <contact margin="0.01" condim="3" solref="0.5 2.0" friction="0.5"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
                 <vertex pos="-0.15 -0.15 1.0  0.15 -0.15 1.0  -0.15 0.15 1.0  0.15 0.15 1.0"/>
                 <element data="0 1 2  1 3 2"/>
             </flex>
@@ -113,7 +114,8 @@ fn single_edge_mjcf() -> &'static str {
     <mujoco model="single_edge">
         <option gravity="0 0 0" timestep="0.001"/>
         <deformable>
-            <flex name="spring" dim="1" density="1.0" young="1000.0" damping="1.0">
+            <flex name="spring" dim="1" density="1.0">
+                <elasticity young="1000.0" damping="1.0"/>
                 <vertex pos="0 0 0  1 0 0"/>
                 <element data="0 1"/>
                 <pin id="0"/>
@@ -129,8 +131,8 @@ fn bending_strip_mjcf() -> &'static str {
     <mujoco model="bending_strip">
         <option gravity="0 0 0" timestep="0.0005"/>
         <deformable>
-            <flex name="strip" dim="2" density="100" thickness="0.005" young="1e6"
-                  damping="1.0">
+            <flex name="strip" dim="2" density="100">
+                <elasticity young="1e6" damping="1.0" thickness="0.005"/>
                 <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
                             0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
                 <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
@@ -147,8 +149,8 @@ fn pinned_vertices_mjcf() -> &'static str {
     <mujoco model="pinned">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="cloth" dim="2" density="500" thickness="0.001" young="1e5"
-                  damping="0.01">
+            <flex name="cloth" dim="2" density="500">
+                <elasticity young="1e5" damping="0.01" thickness="0.001"/>
                 <vertex pos="0 0 1  1 0 1  0 1 1  1 1 1"/>
                 <element data="0 1 2  1 3 2"/>
                 <pin id="0 1"/>
@@ -164,7 +166,8 @@ fn flex_roundtrip_mjcf() -> &'static str {
     <mujoco model="flex_roundtrip">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="test_flex" dim="2" density="300" thickness="0.002" young="5e4">
+            <flex name="test_flex" dim="2" density="300">
+                <elasticity young="5e4" thickness="0.002"/>
                 <vertex pos="0 0 0  1 0 0  0.5 0.866 0"/>
                 <element data="0 1 2"/>
             </flex>
@@ -180,7 +183,9 @@ fn flexcomp_grid_mjcf() -> &'static str {
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
             <flexcomp name="grid" type="grid" count="5 5 1" spacing="0.04"
-                      dim="2" density="200" thickness="0.001" young="1e5"/>
+                      dim="2" density="200">
+                <elasticity young="1e5" thickness="0.001"/>
+            </flexcomp>
         </deformable>
     </mujoco>
     "#
@@ -197,7 +202,8 @@ fn single_vertex_mass_mjcf() -> &'static str {
     <mujoco model="mass_check">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="mass_test" dim="1" density="2.0" young="1000" damping="0.0">
+            <flex name="mass_test" dim="1" density="2.0">
+                <elasticity young="1000" damping="0.0"/>
                 <vertex pos="0 0 0  1 0 0"/>
                 <element data="0 1"/>
             </flex>
@@ -218,8 +224,8 @@ fn mixed_rigid_flex_mjcf() -> &'static str {
             </body>
         </worldbody>
         <deformable>
-            <flex name="cloth" dim="2" density="100" thickness="0.001" young="5e4"
-                  damping="0.1">
+            <flex name="cloth" dim="2" density="100">
+                <elasticity young="5e4" damping="0.1" thickness="0.001"/>
                 <vertex pos="2 0 2  2.1 0 2  2 0.1 2  2.1 0.1 2"/>
                 <element data="0 1 2  1 3 2"/>
             </flex>
@@ -235,7 +241,8 @@ fn flex_newton_mjcf() -> &'static str {
     <mujoco model="flex_newton">
         <option gravity="0 0 -9.81" timestep="0.002" integrator="implicit"/>
         <deformable>
-            <flex name="cable" dim="1" density="1.0" young="100" damping="10.0">
+            <flex name="cable" dim="1" density="1.0">
+                <elasticity young="100" damping="10.0"/>
                 <vertex pos="0 0 1  0.5 0 1  1 0 1"/>
                 <element data="0 1  1 2"/>
                 <pin id="0 2"/>
@@ -1079,7 +1086,8 @@ fn flex_edge_rest_lengths() {
         <mujoco model="edge_lengths">
             <option gravity="0 0 0"/>
             <deformable>
-                <flex name="test" dim="1" density="1.0" young="1000">
+                <flex name="test" dim="1" density="1.0">
+                    <elasticity young="1000"/>
                     <vertex pos="0 0 0  3 0 0  3 4 0"/>
                     <element data="0 1  1 2"/>
                 </flex>
@@ -1113,8 +1121,8 @@ fn ac19_bending_damping_only() {
     <mujoco model="damping_only">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="strip" dim="2" density="100" thickness="0.005" young="0"
-                  damping="1.0">
+            <flex name="strip" dim="2" density="100">
+                <elasticity young="0" damping="1.0" thickness="0.005"/>
                 <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
                             0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
                 <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
@@ -1162,8 +1170,8 @@ fn ac20_bending_stability_clamp() {
     <mujoco model="stiff_bend">
         <option gravity="0 0 -9.81" timestep="0.01"/>
         <deformable>
-            <flex name="strip" dim="2" density="100" thickness="0.005" young="1e12"
-                  poisson="0.3" damping="0.001">
+            <flex name="strip" dim="2" density="100">
+                <elasticity young="1e12" poisson="0.3" damping="0.001" thickness="0.005"/>
                 <vertex pos="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0
                             0 0.05 0  0.1 0.05 0  0.2 0.05 0  0.3 0.05 0"/>
                 <element data="0 1 4  1 5 4  1 2 5  2 6 5  2 3 6  3 7 6"/>
@@ -1222,8 +1230,8 @@ fn ac21_zero_hinge_simulation() {
     <mujoco model="single_tri">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <deformable>
-            <flex name="tri" dim="2" density="300" thickness="0.002" young="5e4"
-                  damping="0.1">
+            <flex name="tri" dim="2" density="300">
+                <elasticity young="5e4" damping="0.1" thickness="0.002"/>
                 <vertex pos="0 0 1  1 0 1  0.5 0.866 1"/>
                 <element data="0 1 2"/>
             </flex>

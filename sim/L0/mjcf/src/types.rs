@@ -3177,65 +3177,114 @@ impl Default for MjcfKeyframe {
 ///
 /// Represents a deformable flex body with vertices, elements, and material/collision
 /// properties. Maps to MuJoCo's `<flex>` element within `<deformable>`.
+///
+/// Contact parameters come from `<flex><contact>`, elasticity from `<flex><elasticity>`,
+/// and edge spring-damper from `<flex><edge>`. Direct `<flex>` attributes are only
+/// `name`, `dim`, `radius`, `body`, `node`, `group` (plus structural data arrays).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfFlex {
+    // --- Direct <flex> attributes ---
     /// Flex name.
     pub name: String,
     /// Dimensionality: 1=cable, 2=shell, 3=solid.
     pub dim: usize,
+    /// Collision vertex radius [m].
+    pub radius: f64,
+    /// Body names for vertex attachment (one per vertex). Required on `<flex>`.
+    /// For `<flexcomp>`, auto-generated during expansion (one body per vertex).
+    pub body: Vec<String>,
+    /// Node body names (alternative to `<vertex>` positions).
+    pub node: Vec<String>,
+    /// Visualization group (0-5).
+    pub group: i32,
+
+    // --- <flex><contact> child element attributes ---
+    /// Contact priority (default 0). Higher priority geom's params win.
+    pub priority: i32,
+    /// Solver parameter mixing weight (default 1.0).
+    pub solmix: f64,
+    /// Contact gap — buffer zone within margin (default 0.0).
+    pub gap: f64,
+    /// Collision friction coefficient (sliding component only).
+    pub friction: f64,
+    /// Collision contact dimensionality (1, 3, or 4).
+    pub condim: i32,
+    /// Collision margin [m].
+    pub margin: f64,
+    /// Solver reference parameters.
+    pub solref: [f64; 2],
+    /// Solver impedance parameters.
+    pub solimp: [f64; 5],
+    /// Self-collision broadphase mode. MuJoCo keyword: [none, narrow, bvh, sap, auto].
+    /// None = absent (default "auto"); Some("none") = disabled; other = enabled.
+    pub selfcollide: Option<String>,
+
+    // --- <flex><elasticity> child element attributes ---
     /// Young's modulus [Pa].
     pub young: f64,
     /// Poisson's ratio.
     pub poisson: f64,
     /// Damping coefficient.
     pub damping: f64,
-    /// Shell thickness [m] (dim=2 only).
+    /// Shell thickness [m] (dim=2 only). -1 = "not set".
     pub thickness: f64,
+
+    // --- <flex><edge> child element attributes ---
+    /// Passive edge spring stiffness. Default 0.0 = disabled.
+    /// Used for direct spring-damper forces in the passive force path.
+    pub edge_stiffness: f64,
+    /// Passive edge damping coefficient. Default 0.0 = disabled.
+    pub edge_damping: f64,
+
+    // --- Internal / derived ---
     /// Volumetric density [kg/m³] (dim=2,3) or linear density [kg/m] (dim=1).
+    /// Not a MuJoCo `<flex>` attribute — used internally by flexcomp expansion.
     pub density: f64,
-    /// Collision friction coefficient.
-    pub friction: f64,
-    /// Collision contact dimensionality (1, 3, or 4).
-    pub condim: i32,
-    /// Collision margin [m].
-    pub margin: f64,
-    /// Collision vertex radius [m].
-    pub radius: f64,
-    /// Solver reference parameters.
-    pub solref: [f64; 2],
-    /// Solver impedance parameters.
-    pub solimp: [f64; 5],
+
+    // --- Structural data arrays ---
     /// Vertex positions.
     pub vertices: Vec<Vector3<f64>>,
     /// Element connectivity (each element is a list of vertex indices).
     pub elements: Vec<Vec<usize>>,
     /// Pinned vertex indices (infinite mass, fixed in place).
     pub pinned: Vec<usize>,
-    /// Whether self-collision is enabled for this flex body.
-    pub selfcollide: bool,
 }
 
 impl Default for MjcfFlex {
     fn default() -> Self {
         Self {
+            // Direct <flex> attributes
             name: String::new(),
             dim: 2,
-            young: 1e6,
-            poisson: 0.0,
-            damping: 0.0,
-            thickness: 0.001,
-            density: 1000.0,
+            radius: 0.005,
+            body: Vec::new(),
+            node: Vec::new(),
+            group: 0,
+            // <contact> child element (MuJoCo defaults)
+            priority: 0,
+            solmix: 1.0,
+            gap: 0.0,
             friction: 1.0,
             condim: 3,
             margin: 0.0,
-            radius: 0.005,
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            selfcollide: None, // MuJoCo default is "auto" (enabled)
+            // <elasticity> child element (MuJoCo defaults)
+            young: 0.0, // MuJoCo default; was 1e6
+            poisson: 0.0,
+            damping: 0.0,
+            thickness: -1.0, // MuJoCo default sentinel "not set"; was 0.001
+            // <edge> child element
+            edge_stiffness: 0.0,
+            edge_damping: 0.0,
+            // Internal
+            density: 1000.0,
+            // Structural data
             vertices: Vec::new(),
             elements: Vec::new(),
             pinned: Vec::new(),
-            selfcollide: false,
         }
     }
 }

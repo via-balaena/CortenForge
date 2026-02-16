@@ -85,9 +85,9 @@ that all contact constraint assembly builds on.
 | 25 | `geom/@priority` — contact priority | Medium | Medium | S | None (soft: after #24) | [future_work_7.md](./future_work_7.md) | ✅ Done |
 | 26 | `solmix` attribute | Low | Medium | S | None | [future_work_7.md](./future_work_7.md) | ✅ Done |
 | 27 | Contact margin/gap runtime effect | Medium | **Critical** | S | None | [future_work_7.md](./future_work_7.md) | ✅ Done |
-| 27B | Flex child element parsing (`<contact>`, `<elasticity>`, `<edge>`) | Low | Medium | S–M | #27 | [future_work_7.md](./future_work_7.md) | |
-| 27C | Passive edge spring-damper forces + `compute_edge_solref` cleanup | Low | Medium | S–M | #27B | [future_work_7.md](./future_work_7.md) | |
-| 27D | Flex `body`/`node` attr parsing + `flexvert_bodyid` wiring | Low | High | S–M | #27B | [future_work_7.md](./future_work_7.md) | |
+| 27B | Flex child element parsing (`<contact>`, `<elasticity>`, `<edge>`) | Low | Medium | S–M | #27 | [future_work_7.md](./future_work_7.md) | ✅ Done |
+| 27C | Passive edge spring-damper forces + `compute_edge_solref` cleanup | Low | Medium | S–M | #27B | [future_work_7.md](./future_work_7.md) | ✅ Done |
+| 27D | Flex `body`/`node` attr parsing + `flexvert_bodyid` wiring | Low | High | S–M | #27B | [future_work_7.md](./future_work_7.md) | ✅ Done |
 
 #### 3A-iii: Constraint System Overhaul (Items #28–32)
 
@@ -255,7 +255,7 @@ simulation. Strict sequential chain — each phase depends on the previous.
    fric-mx geom-p  solmix  margin
 
    ┌─────┐  ┌─────┐  ┌─────┐
-   │ 27B │──│ 27C │  │ 27D │  (flex child parsing → passive forces, body/node)
+   │ 27B │──│ 27C │  │ 27D │  ✅ All done (flex child parsing → passive forces, body/node)
    └─────┘  └─────┘  └──┬──┘
                         │ unlocks #42A-i
                         ▼

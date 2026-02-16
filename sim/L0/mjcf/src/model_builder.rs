@@ -622,12 +622,15 @@ struct ModelBuilder {
     flex_thickness: Vec<f64>,
     flex_density: Vec<f64>,
     flex_selfcollide: Vec<bool>,
+    flex_edgestiffness: Vec<f64>,
+    flex_edgedamping: Vec<f64>,
     flexvert_qposadr: Vec<usize>,
     flexvert_dofadr: Vec<usize>,
     flexvert_mass: Vec<f64>,
     flexvert_invmass: Vec<f64>,
     flexvert_radius: Vec<f64>,
     flexvert_flexid: Vec<usize>,
+    flexvert_bodyid: Vec<usize>,
     flexvert_initial_pos: Vec<Vector3<f64>>,
     flexedge_vert: Vec<[usize; 2]>,
     flexedge_length0: Vec<f64>,
@@ -867,12 +870,15 @@ impl ModelBuilder {
             flex_thickness: vec![],
             flex_density: vec![],
             flex_selfcollide: vec![],
+            flex_edgestiffness: vec![],
+            flex_edgedamping: vec![],
             flexvert_qposadr: vec![],
             flexvert_dofadr: vec![],
             flexvert_mass: vec![],
             flexvert_invmass: vec![],
             flexvert_radius: vec![],
             flexvert_flexid: vec![],
+            flexvert_bodyid: vec![],
             flexvert_initial_pos: vec![],
             flexedge_vert: vec![],
             flexedge_length0: vec![],
@@ -2837,7 +2843,26 @@ impl ModelBuilder {
     fn process_flex_bodies(&mut self, flex_list: &[MjcfFlex]) {
         use std::collections::HashMap;
 
-        for flex in flex_list {
+        for flex_orig in flex_list {
+            // Resolve `node` attribute: if `node` names are present and no vertices
+            // exist, derive vertex positions from named body positions and set
+            // body attachment accordingly.
+            let resolved;
+            let flex = if !flex_orig.node.is_empty() && flex_orig.vertices.is_empty() {
+                resolved = {
+                    let mut f = flex_orig.clone();
+                    for node_name in &flex_orig.node {
+                        if let Some(&bid) = self.body_name_to_id.get(node_name) {
+                            f.vertices.push(self.body_pos[bid]);
+                            f.body.push(node_name.clone());
+                        }
+                    }
+                    f
+                };
+                &resolved
+            } else {
+                flex_orig
+            };
             let flex_id = self.nflex;
             self.nflex += 1;
 
@@ -2871,6 +2896,17 @@ impl ModelBuilder {
                 self.flexvert_invmass.push(inv_mass);
                 self.flexvert_radius.push(flex.radius);
                 self.flexvert_flexid.push(flex_id);
+                // Resolve body attachment from flex.body attr (if present).
+                // usize::MAX = free vertex (no body attachment).
+                let body_id = if i < flex.body.len() {
+                    self.body_name_to_id
+                        .get(&flex.body[i])
+                        .copied()
+                        .unwrap_or(usize::MAX)
+                } else {
+                    usize::MAX // <flexcomp> or <flex> without body attr
+                };
+                self.flexvert_bodyid.push(body_id);
                 // Store initial positions to be copied into qpos during make_data
                 self.flexvert_initial_pos.push(*pos);
 
@@ -2987,7 +3023,7 @@ impl ModelBuilder {
             }
 
             // Compute solref from material properties
-            let edge_solref = compute_edge_solref_from_material(flex);
+            let edge_solref = compute_edge_solref(flex);
             let k_bend = compute_bend_stiffness_from_material(flex);
             let b_bend = compute_bend_damping_from_material(flex, k_bend);
 
@@ -2999,9 +3035,9 @@ impl ModelBuilder {
             self.flex_friction.push(flex.friction);
             self.flex_condim.push(flex.condim);
             self.flex_margin.push(flex.margin);
-            self.flex_gap.push(0.0); // MuJoCo default; not yet parsed from <flex>
-            self.flex_priority.push(0); // MuJoCo default; not yet parsed from <flex>
-            self.flex_solmix.push(1.0); // MuJoCo default; not yet parsed from <flex>
+            self.flex_gap.push(flex.gap);
+            self.flex_priority.push(flex.priority);
+            self.flex_solmix.push(flex.solmix);
             self.flex_solref.push(flex.solref);
             self.flex_solimp.push(flex.solimp);
             self.flex_edge_solref.push(edge_solref);
@@ -3012,7 +3048,12 @@ impl ModelBuilder {
             self.flex_poisson.push(flex.poisson);
             self.flex_thickness.push(flex.thickness);
             self.flex_density.push(flex.density);
-            self.flex_selfcollide.push(flex.selfcollide);
+            // MuJoCo default is "auto" (enabled). Only "none" disables self-collision.
+            // None (absent) → true; Some("none") → false; all other keywords → true.
+            self.flex_selfcollide
+                .push(flex.selfcollide.as_deref() != Some("none"));
+            self.flex_edgestiffness.push(flex.edge_stiffness);
+            self.flex_edgedamping.push(flex.edge_damping);
         }
     }
 
@@ -3163,6 +3204,8 @@ impl ModelBuilder {
             flex_priority: self.flex_priority,
             flex_solmix: self.flex_solmix,
             flex_selfcollide: self.flex_selfcollide,
+            flex_edgestiffness: self.flex_edgestiffness,
+            flex_edgedamping: self.flex_edgedamping,
             flex_edge_solref: self.flex_edge_solref,
             flex_edge_solimp: self.flex_edge_solimp,
             flex_bend_stiffness: self.flex_bend_stiffness,
@@ -3174,7 +3217,7 @@ impl ModelBuilder {
             flexvert_invmass: self.flexvert_invmass,
             flexvert_radius: self.flexvert_radius,
             flexvert_flexid: self.flexvert_flexid,
-            flexvert_bodyid: vec![usize::MAX; self.nflexvert], // Free vertices: no body attachment
+            flexvert_bodyid: self.flexvert_bodyid,
             flexedge_vert: self.flexedge_vert,
             flexedge_length0: self.flexedge_length0,
             flexedge_crosssection,
@@ -5455,14 +5498,17 @@ fn compute_dihedral_angle(
     sin_theta.atan2(cos_theta)
 }
 
-/// Compute edge constraint solref from material properties.
-fn compute_edge_solref_from_material(flex: &MjcfFlex) -> [f64; 2] {
-    if flex.young <= 0.0 || flex.vertices.is_empty() || flex.elements.is_empty() {
-        return flex.solref;
-    }
-    // Use a representative stiffness: k = E * A / L
-    // For simplicity, use the flex-level solref (material-derived solref is
-    // computed per-edge during a later refinement pass; for now use defaults)
+/// Compute per-flex edge constraint solref.
+///
+/// MuJoCo architecture note: Edge constraint solref comes from the equality
+/// constraint definition (eq_solref), not from material properties. The
+/// `<edge stiffness="..." damping="..."/>` attributes control passive spring-
+/// damper forces (applied in `mj_fwd_passive`), not constraint solver params.
+///
+/// Our current architecture uses flex-level solref for all edge constraints,
+/// which matches MuJoCo's behavior when no explicit equality constraint
+/// overrides are defined.
+fn compute_edge_solref(flex: &MjcfFlex) -> [f64; 2] {
     flex.solref
 }
 
