@@ -1203,10 +1203,10 @@ determination (`model_builder.rs:1521–1526`) also hardcodes General →
 the general actuator attributes. `apply_to_actuator()` (`defaults.rs:239–296`)
 does not propagate them.
 
-**`actlimited`/`actrange` are not supported anywhere** in the codebase —
-not parsed, not stored on `Model`, not enforced at runtime. These are needed
-for stateful actuators (`dyntype != none`) where activation can grow
-unbounded. This is a **separate concern** (see Scope Exclusions).
+**`actlimited`/`actrange` parsing is complete** — parsed on `MjcfActuator`
+and `MjcfActuatorDefaults`, with full defaults pipeline (merge + apply).
+Not yet stored on `Model` or enforced at runtime. Runtime clamping is
+tracked as #34 in [future_work_9.md](./future_work_9.md).
 
 #### Objective
 
@@ -1649,16 +1649,18 @@ retain the default array values (which are 0 for indices 1–8).
   the error message is clear enough. These can be added later without API
   changes.
 - **`actlimited` / `actrange`:** Activation clamping for stateful actuators.
-  Not currently supported anywhere in the codebase (no parsing, no Model
-  field, no runtime enforcement). This is orthogonal to `<general>` attribute
-  parsing and should be a separate work item. Without `actlimited`,
-  `dyntype=integrator` actuators have unbounded activation — users must
-  manage this via `ctrlrange` or manual clamping. A warning is not emitted
-  because `actlimited` defaults to `mjLIMITED_AUTO` (=false when actrange
-  is absent) in MuJoCo, so the no-clamping behavior is technically correct.
+  **Parsing complete** — both fields are parsed on `MjcfActuator` and
+  `MjcfActuatorDefaults` with full defaults pipeline (Option<T>, merge,
+  apply). Not yet stored on `Model` or enforced at runtime. Runtime clamping
+  is tracked as #34 in [future_work_9.md](./future_work_9.md). Without
+  runtime `actlimited` enforcement, `dyntype=integrator` actuators have
+  unbounded activation — users must manage via `ctrlrange` or manual
+  clamping.
 - **`actearly`:** Controls whether activation dynamics are computed before
-  or after the control signal. MuJoCo default is false. Out of scope —
-  our pipeline always computes dynamics in the standard order.
+  or after the control signal. MuJoCo default is false. **Parsed** on
+  `MjcfActuator` and `MjcfActuatorDefaults` with full defaults pipeline,
+  but not yet wired to runtime — our pipeline always computes dynamics
+  in the standard order.
 - **`actdim`:** Number of activation variables per actuator. MuJoCo default
   is -1 (auto-detect from dyntype: 0 for none, 1 for others). Our pipeline
   hardcodes the same auto-detection logic (`model_builder.rs:1565–1571`).

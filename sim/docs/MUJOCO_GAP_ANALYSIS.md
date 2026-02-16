@@ -42,7 +42,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Sensors (32 pipeline types, all wired from MJCF): JointPos, JointVel, BallQuat, BallAngVel, FramePos, FrameQuat, FrameXAxis/YAxis/ZAxis, FrameLinVel, FrameAngVel, FrameLinAcc, FrameAngAcc, Accelerometer, Gyro, Velocimeter, SubtreeCom, SubtreeLinVel, SubtreeAngMom, ActuatorPos, ActuatorVel, ActuatorFrc, JointLimitFrc, TendonLimitFrc, TendonPos, TendonVel, Force, Torque, Touch, Rangefinder, Magnetometer, User (0-dim)
 - Derivatives (complete): FD transition Jacobians (`mjd_transition_fd`), analytical velocity derivatives (`mjd_smooth_vel` → `Data.qDeriv`), hybrid FD+analytical transition Jacobians (`mjd_transition_hybrid`), SO(3) quaternion integration Jacobians (`mjd_quat_integrate`), public dispatch API (`mjd_transition`), validation utilities
 - Sleeping / Body Deactivation (complete): Tree-based sleeping with island discovery (DFS flood-fill), selective CRBA, partial LDL factorization, awake-index iteration, per-island block-diagonal constraint solving, 93 integration tests ([future_work_5 §16](./todo/future_work_5.md))
-- Model loading (URDF, MJCF with `<default>` class resolution, `childclass` propagation (body/frame with undefined-class validation), `<frame>` element (pose composition, recursive nesting), `<compiler>` element, `<include>` file support, **MJB binary format**) — `DefaultResolver` is wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors); `<compiler>` handles angle units, Euler sequences, asset paths, autolimits, inertia computation, mass post-processing; `<include>` supports recursive file expansion with duplicate detection
+- Model loading (URDF, MJCF with `<default>` class resolution, `childclass` propagation (body/frame with undefined-class validation), `<frame>` element (pose composition, recursive nesting), `<compiler>` element, `<include>` file support, **MJB binary format**) — `DefaultResolver` with Option<T> pattern wired into `model_builder.rs` for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair) with 91+ defaultable fields across four-stage pipeline (types → parser → merge → apply); `<compiler>` handles angle units, Euler sequences, asset paths, autolimits, inertia computation, mass post-processing; `<include>` supports recursive file expansion with duplicate detection
 
 ### Placeholder / Stub (in pipeline)
 - Pyramidal friction cones — `cone` field stored but solver uses elliptic cones (warning emitted if pyramidal requested)
@@ -86,7 +86,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 | Pipeline sensors (32 types) | All 32 types functional and wired from MJCF `<sensor>` elements via `model_builder.rs`; `set_options()` propagates `magnetic`/`wind`/`density`/`viscosity` | [§8](#8-sensors) |
 | Non-convex mesh collision | TriangleMesh ↔ all primitives + mesh-mesh with BVH acceleration | [§5](#5-geom-types-collision-shapes) |
 | SDF collision | All 10 shape combinations (Sphere, Capsule, Box, Cylinder, Ellipsoid, ConvexMesh, Plane, TriangleMesh, HeightField, Sdf↔Sdf) | [§5](#5-geom-types-collision-shapes) |
-| MJCF `<default>` element | ✅ Full — `DefaultResolver` wired into `model_builder.rs` for all element types (joints, geoms, sites, actuators, tendons, sensors) | [§13](#13-model-format) |
+| MJCF `<default>` element | ✅ Full — `DefaultResolver` with Option<T> pattern, complete four-stage pipeline (types → parser → merge → apply) for all 8 element types; 91+ defaultable fields across geom/joint/site/tendon/actuator/sensor/mesh/pair | [§13](#13-model-format) |
 | MJCF `<tendon>` parsing + pipeline | Fixed + spatial tendons fully wired (kinematics, wrapping, actuation, passive, constraints, sensors) | [§13](#13-model-format) |
 | MJCF `<sensor>` parsing + wiring | 32 sensor types parsed; all 32 wired to pipeline via `process_sensors()` | [§13](#13-model-format) |
 | Muscle pipeline | MuJoCo FLV curves, activation dynamics (Millard 2013), act_dot/integrator architecture, RK4 activation | [§6](#6-actuation) |
@@ -1114,7 +1114,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<compiler>` | Full | All A1–A12 attributes: `angle`, `eulerseq`, `meshdir`/`texturedir`/`assetdir`, `autolimits`, `inertiafromgeom`, `boundmass`/`boundinertia`, `balanceinertia`, `settotalmass`, `strippath`, `discardvisual`, `fusestatic`, `coordinate`, `exactmeshinertia` |
 | `<include>` | Full | Pre-parse XML expansion with recursive nested includes, duplicate file detection, path resolution relative to main model file; works inside any MJCF section |
 | `<option>` | Full | All attributes, flags, solver params, collision options |
-| `<default>` | Full | `DefaultResolver` wired into `model_builder.rs` — class defaults applied to joints, geoms, sites, actuators, tendons, sensors before per-element attributes |
+| `<default>` | Full | `DefaultResolver` with Option<T> pattern — complete four-stage pipeline (types → parser → merge → apply) for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair). 91+ defaultable fields with `is_none()` guards. Includes solver params (solref/solimp on geom/joint/tendon/pair), orientation (pos/quat/euler/axisangle/xyaxes/zaxis on geom/site), exotic attrs (fromto/mesh/hfield on geom), activation params (group/actlimited/actrange/actearly/lengthrange on actuator), and material scaffold (geom/site/tendon). |
 | `<worldbody>` | Full | Body tree root |
 | `<body>` | Full | Hierarchical bodies with pos, quat, euler |
 | `<inertial>` | Full | mass, diaginertia, fullinertia |
@@ -1271,7 +1271,7 @@ The following were completed in January 2026:
 |---------|---------|-------|
 | Non-convex mesh collision | §5 Geoms | `CollisionShape::TriangleMesh` with BVH acceleration |
 | SDF collision | §5 Geoms | All 10 shape combinations implemented |
-| MJCF `<default>` element | §13 Model Format | ✅ `DefaultResolver` wired into `model_builder.rs` for all element types |
+| MJCF `<default>` element | §13 Model Format | ✅ `DefaultResolver` with Option<T> pattern — full four-stage pipeline for all 8 element types (91+ fields) |
 | MJCF `<tendon>` parsing | §13 Model Format | Spatial and fixed tendons |
 | MJCF `<sensor>` parsing + wiring | §13 Model Format | 32 `MjcfSensorType` variants parsed; all 32 wired to pipeline via `process_sensors()` |
 

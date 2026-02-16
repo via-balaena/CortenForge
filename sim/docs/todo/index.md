@@ -111,7 +111,7 @@ Items #28→#29→#30 form a strict dependency chain.
 | # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
 |---|------|-----------|-------------|--------|---------------|------|--------|
 | 33 | Noslip post-processor (PGS/CG) | Low | Medium | S | None | [future_work_9.md](./future_work_9.md) | |
-| 34 | `actlimited` / `actrange` — activation state clamping | **High** | **Critical** | S–M | None | [future_work_9.md](./future_work_9.md) | |
+| 34 | `actlimited` / `actrange` — activation state clamping | **High** | **Critical** | S–M | None | [future_work_9.md](./future_work_9.md) | ⚠️ Parsing done |
 | 35 | `gravcomp` — body gravity compensation | Medium | High | S–M | None | [future_work_9.md](./future_work_9.md) | |
 | 36 | Body-transmission actuators (adhesion) | Low | High | M | None | [future_work_9.md](./future_work_9.md) | |
 | 37 | Tendon equality constraints | Low | High | M | None | [future_work_9.md](./future_work_9.md) | |
@@ -382,13 +382,23 @@ enough context (same subsystem, same files) to minimize re-reading overhead.
 Review after each batch — the test suite validates the full stack at each
 checkpoint.
 
-### Batch 1 — Contact Parameters (4 items, all S effort)
+### Batch 1 — Contact Parameters + Defaults Refactor (4 items + defaults, S effort) ✅ Complete
 
-**Items:** #24, #25, #26, #27
-**Files:** `mujoco_pipeline.rs` (contact assembly), `model_builder.rs` (MJCF parsing)
+**Items:** #24, #25, #26, #27 + {27B–F flex rabbit hole} + defaults system refactor
+**Files:** `mujoco_pipeline.rs` (contact assembly), `model_builder.rs`, `types.rs`, `parser.rs`, `defaults.rs`
 **Why first:** Natural next step after §6b. Small, independent, and unblock the
 constraint system overhaul. All touch the same contact combination code path.
-Batch 2-3 per session — they share enough context to reduce overhead.
+
+**Defaults refactor (completed alongside Batch 1):**
+The contact parameter work exposed that the defaults system needed a full
+Option<T> refactoring pass. All element/defaults struct fields now use
+`Option<T>` with `is_none()` guards in apply functions (no sentinel-value
+detection for new fields). The four-stage pipeline (types → parser → merge →
+apply) is complete for all 8 element types: geom (24 fields), joint (14),
+site (11), tendon (13), actuator (18), sensor (3), mesh (1), pair (7).
+New fields added: tendon solref/solimp/margin, actuator group/actlimited/
+actrange/actearly/lengthrange, geom fromto/mesh/hfield defaults, material
+on geom/site/tendon. All 558 conformance + 281 MJCF tests passing.
 
 ### Batch 2 — Constraint System (5 items, M-L effort, dependency chain)
 

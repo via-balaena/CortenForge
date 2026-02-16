@@ -676,6 +676,19 @@ fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
         defaults.zaxis = Some(parse_vector3(&zaxis)?);
     }
 
+    // Exotic geom defaults
+    if let Some(fromto) = get_attribute_opt(e, "fromto") {
+        let parts = parse_float_array(&fromto)?;
+        if parts.len() >= 6 {
+            defaults.fromto = Some([parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]]);
+        }
+    }
+    defaults.mesh = get_attribute_opt(e, "mesh");
+    defaults.hfield = get_attribute_opt(e, "hfield");
+
+    // Rendering
+    defaults.material = get_attribute_opt(e, "material");
+
     Ok(defaults)
 }
 
@@ -723,6 +736,27 @@ fn parse_actuator_defaults(e: &BytesStart) -> Result<MjcfActuatorDefaults> {
     defaults.gainprm = parse_float_array_opt(e, "gainprm")?;
     defaults.biasprm = parse_float_array_opt(e, "biasprm")?;
     defaults.dynprm = parse_float_array_opt(e, "dynprm")?;
+
+    // Activation parameters
+    defaults.group = parse_int_attr(e, "group");
+    if let Some(actlimited) = get_attribute_opt(e, "actlimited") {
+        defaults.actlimited = Some(actlimited == "true");
+    }
+    if let Some(actrange) = get_attribute_opt(e, "actrange") {
+        let parts = parse_float_array(&actrange)?;
+        if parts.len() >= 2 {
+            defaults.actrange = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(actearly) = get_attribute_opt(e, "actearly") {
+        defaults.actearly = Some(actearly == "true");
+    }
+    if let Some(lengthrange) = get_attribute_opt(e, "lengthrange") {
+        let parts = parse_float_array(&lengthrange)?;
+        if parts.len() >= 2 {
+            defaults.lengthrange = Some((parts[0], parts[1]));
+        }
+    }
 
     Ok(defaults)
 }
@@ -787,6 +821,24 @@ fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults> {
     }
     defaults.group = parse_int_attr(e, "group");
 
+    // Solver parameters
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            defaults.solref = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            defaults.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    defaults.margin = parse_float_attr(e, "margin");
+
+    // Rendering
+    defaults.material = get_attribute_opt(e, "material");
+
     Ok(defaults)
 }
 
@@ -848,6 +900,9 @@ fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
     if let Some(zaxis) = get_attribute_opt(e, "zaxis") {
         defaults.zaxis = Some(parse_vector3(&zaxis)?);
     }
+
+    // Rendering
+    defaults.material = get_attribute_opt(e, "material");
 
     Ok(defaults)
 }
@@ -1126,7 +1181,7 @@ fn parse_mesh_attrs(e: &BytesStart) -> Result<MjcfMesh> {
     mesh.file = get_attribute_opt(e, "file");
 
     if let Some(scale) = get_attribute_opt(e, "scale") {
-        mesh.scale = parse_vector3(&scale)?;
+        mesh.scale = Some(parse_vector3(&scale)?);
     }
 
     // Parse embedded vertex data
@@ -1521,10 +1576,10 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     }
 
     if let Some(pos) = get_attribute_opt(e, "pos") {
-        geom.pos = parse_vector3(&pos)?;
+        geom.pos = Some(parse_vector3(&pos)?);
     }
     if let Some(quat) = get_attribute_opt(e, "quat") {
-        geom.quat = parse_vector4(&quat)?;
+        geom.quat = Some(parse_vector4(&quat)?);
     }
     if let Some(euler) = get_attribute_opt(e, "euler") {
         geom.euler = Some(parse_vector3(&euler)?);
@@ -1588,6 +1643,7 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     geom.margin = parse_float_attr(e, "margin");
     geom.gap = parse_float_attr(e, "gap");
     geom.group = parse_int_attr(e, "group");
+    geom.material = get_attribute_opt(e, "material");
 
     Ok(geom)
 }
@@ -1691,6 +1747,7 @@ fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
         site.rgba = Some(parse_vector4(&rgba)?);
     }
     site.group = parse_int_attr(e, "group");
+    site.material = get_attribute_opt(e, "material");
 
     Ok(site)
 }
@@ -1975,6 +2032,29 @@ fn parse_actuator_attrs(e: &BytesStart, actuator_type: MjcfActuatorType) -> Resu
     // ========================================================================
     if let Some(gain) = parse_float_attr(e, "gain") {
         actuator.gain = gain;
+    }
+
+    // ========================================================================
+    // Activation parameters
+    // ========================================================================
+    actuator.group = parse_int_attr(e, "group");
+    if let Some(actlimited) = get_attribute_opt(e, "actlimited") {
+        actuator.actlimited = Some(actlimited == "true");
+    }
+    if let Some(actrange) = get_attribute_opt(e, "actrange") {
+        let parts = parse_float_array(&actrange)?;
+        if parts.len() >= 2 {
+            actuator.actrange = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(actearly) = get_attribute_opt(e, "actearly") {
+        actuator.actearly = Some(actearly == "true");
+    }
+    if let Some(lengthrange) = get_attribute_opt(e, "lengthrange") {
+        let parts = parse_float_array(&lengthrange)?;
+        if parts.len() >= 2 {
+            actuator.lengthrange = Some((parts[0], parts[1]));
+        }
     }
 
     Ok(actuator)
@@ -3127,6 +3207,24 @@ fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> Result<Mjc
         }
     }
 
+    // Solver parameters
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            tendon.solref = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            tendon.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    tendon.margin = parse_float_attr(e, "margin");
+
+    // Rendering
+    tendon.material = get_attribute_opt(e, "material");
+
     Ok(tendon)
 }
 
@@ -4062,10 +4160,8 @@ mod tests {
         let mesh = &model.meshes[0];
         assert_eq!(mesh.name, "robot_body");
         assert_eq!(mesh.file, Some("meshes/body.stl".to_string()));
-        // Default scale is 1.0
-        assert_relative_eq!(mesh.scale.x, 1.0, epsilon = 1e-10);
-        assert_relative_eq!(mesh.scale.y, 1.0, epsilon = 1e-10);
-        assert_relative_eq!(mesh.scale.z, 1.0, epsilon = 1e-10);
+        // Default scale is None (not explicitly set)
+        assert!(mesh.scale.is_none());
     }
 
     #[test]
@@ -4084,9 +4180,10 @@ mod tests {
 
         let mesh = &model.meshes[0];
         assert_eq!(mesh.name, "scaled_mesh");
-        assert_relative_eq!(mesh.scale.x, 0.001, epsilon = 1e-10);
-        assert_relative_eq!(mesh.scale.y, 0.001, epsilon = 1e-10);
-        assert_relative_eq!(mesh.scale.z, 0.001, epsilon = 1e-10);
+        let scale = mesh.scale.expect("scale should be set");
+        assert_relative_eq!(scale.x, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(scale.y, 0.001, epsilon = 1e-10);
+        assert_relative_eq!(scale.z, 0.001, epsilon = 1e-10);
     }
 
     #[test]
@@ -4136,7 +4233,11 @@ mod tests {
         assert_eq!(model.meshes[1].name, "mesh2");
         assert_eq!(model.meshes[2].name, "mesh3");
 
-        assert_relative_eq!(model.meshes[1].scale.x, 2.0, epsilon = 1e-10);
+        assert_relative_eq!(
+            model.meshes[1].scale.expect("scale should be set").x,
+            2.0,
+            epsilon = 1e-10
+        );
         assert_eq!(model.meshes[2].vertex_count(), 4);
     }
 

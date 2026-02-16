@@ -239,7 +239,8 @@ pub fn model_from_mjcf(
 
     // Process mesh assets FIRST (before geoms can reference them)
     for mesh in &mjcf.meshes {
-        builder.process_mesh(mesh, base_path)?;
+        let mesh = builder.resolver.apply_to_mesh(mesh);
+        builder.process_mesh(&mesh, base_path)?;
     }
 
     // Process hfield assets (before geoms can reference them)
@@ -1576,7 +1577,7 @@ impl ModelBuilder {
         } else {
             // Orientation resolution: euler > axisangle > xyaxes > zaxis > quat.
             let orientation = resolve_orientation(
-                geom.quat,
+                geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
                 geom.euler,
                 geom.axisangle,
                 geom.xyaxes,
@@ -1584,7 +1585,7 @@ impl ModelBuilder {
                 &self.compiler,
             );
             (
-                geom.pos,
+                geom.pos.unwrap_or_else(Vector3::zeros),
                 orientation,
                 geom_size_to_vec3(&geom.size, geom_type),
             )
@@ -1789,8 +1790,10 @@ impl ModelBuilder {
             let default_rgba = [0.5, 0.5, 0.5, 1.0];
             self.tendon_rgba
                 .push(tendon.rgba.map_or(default_rgba, |v| [v.x, v.y, v.z, v.w]));
-            self.tendon_solref.push(DEFAULT_SOLREF);
-            self.tendon_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]); // MuJoCo defaults
+            self.tendon_solref
+                .push(tendon.solref.unwrap_or(DEFAULT_SOLREF));
+            self.tendon_solimp
+                .push(tendon.solimp.unwrap_or(DEFAULT_SOLIMP));
             // S1/S3: Use parsed springlength, or sentinel [-1, -1] for auto-compute
             self.tendon_lengthspring.push(match tendon.springlength {
                 Some(pair) => pair.into(),
@@ -4228,13 +4231,19 @@ fn expand_single_frame(
             ];
         } else {
             // Non-fromto geoms: resolve orientation, compose with frame
-            let geom_quat =
-                resolve_orientation(g.quat, g.euler, g.axisangle, g.xyaxes, g.zaxis, compiler);
-            let mut pos = g.pos;
+            let geom_quat = resolve_orientation(
+                g.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
+                g.euler,
+                g.axisangle,
+                g.xyaxes,
+                g.zaxis,
+                compiler,
+            );
+            let mut pos = g.pos.unwrap_or_else(Vector3::zeros);
             let mut quat = geom_quat;
             frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
-            g.pos = pos;
-            g.quat = quat_to_wxyz(&quat);
+            g.pos = Some(pos);
+            g.quat = Some(quat_to_wxyz(&quat));
             // Clear alternative orientations (already resolved)
             g.euler = None;
             g.axisangle = None;
@@ -4562,7 +4571,7 @@ fn convert_mjcf_mesh(
             file_path,
             base_path,
             compiler,
-            mjcf_mesh.scale,
+            mjcf_mesh.scale.unwrap_or(Vector3::new(1.0, 1.0, 1.0)),
             &mjcf_mesh.name,
         ),
         // Neither specified
@@ -4595,15 +4604,10 @@ fn convert_embedded_mesh(
     }
 
     // Apply scale while converting to Point3
+    let scale = mjcf_mesh.scale.unwrap_or(Vector3::new(1.0, 1.0, 1.0));
     let vertices: Vec<Point3<f64>> = verts
         .chunks_exact(3)
-        .map(|chunk| {
-            Point3::new(
-                chunk[0] * mjcf_mesh.scale.x,
-                chunk[1] * mjcf_mesh.scale.y,
-                chunk[2] * mjcf_mesh.scale.z,
-            )
-        })
+        .map(|chunk| Point3::new(chunk[0] * scale.x, chunk[1] * scale.y, chunk[2] * scale.z))
         .collect();
 
     // Extract and validate faces (convert u32 -> usize)
@@ -4992,10 +4996,11 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
 
             // Transform geoms into parent frame
             for g in &mut removed.geoms {
+                let gpos = g.pos.unwrap_or_else(Vector3::zeros);
                 if has_rotation {
-                    g.pos = body_quat * g.pos + body_pos;
+                    g.pos = Some(body_quat * gpos + body_pos);
                     let geom_quat = resolve_orientation(
-                        g.quat,
+                        g.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
                         g.euler,
                         g.axisangle,
                         g.xyaxes,
@@ -5003,14 +5008,14 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
                         compiler,
                     );
                     let composed = body_quat * geom_quat;
-                    g.quat = quat_to_wxyz(&composed);
+                    g.quat = Some(quat_to_wxyz(&composed));
                     // Normalize to quat-only after composition
                     g.euler = None;
                     g.axisangle = None;
                     g.xyaxes = None;
                     g.zaxis = None;
                 } else {
-                    g.pos += body_pos;
+                    g.pos = Some(gpos + body_pos);
                 }
             }
 
@@ -5097,18 +5102,15 @@ type MeshProps = (f64, Vector3<f64>, Matrix3<f64>);
 /// coordinates. The effective COM is `geom.pos + R * mesh_com` where R is
 /// the geom's orientation in the body frame.
 fn geom_effective_com(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Vector3<f64> {
+    let pos = geom.pos.unwrap_or_else(Vector3::zeros);
+    let q = geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
     if let Some(&(_, mesh_com, _)) = mesh_props {
         if mesh_com.norm() > 1e-14 {
-            let r = UnitQuaternion::from_quaternion(Quaternion::new(
-                geom.quat[0],
-                geom.quat[1],
-                geom.quat[2],
-                geom.quat[3],
-            ));
-            return geom.pos + r.transform_vector(&mesh_com);
+            let r = UnitQuaternion::from_quaternion(Quaternion::new(q[0], q[1], q[2], q[3]));
+            return pos + r.transform_vector(&mesh_com);
         }
     }
-    geom.pos
+    pos
 }
 
 /// Compute inertia from geoms (fallback when no explicit inertial).
@@ -5167,12 +5169,8 @@ fn compute_inertia_from_geoms(
         let geom_inertia = compute_geom_inertia(geom, props.as_ref());
 
         // 1. Rotate local inertia to body frame: I_rot = R * I_local * Rᵀ
-        let r = UnitQuaternion::from_quaternion(Quaternion::new(
-            geom.quat[0],
-            geom.quat[1],
-            geom.quat[2],
-            geom.quat[3],
-        ));
+        let q = geom.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
+        let r = UnitQuaternion::from_quaternion(Quaternion::new(q[0], q[1], q[2], q[3]));
         let rot = r.to_rotation_matrix();
         let i_rotated = rot * geom_inertia * rot.transpose();
 
@@ -6125,8 +6123,8 @@ mod tests {
             name: None,
             class: None,
             geom_type: Some(MjcfGeomType::Capsule),
-            pos: Vector3::zeros(),
-            quat: nalgebra::Vector4::new(1.0, 0.0, 0.0, 0.0),
+            pos: Some(Vector3::zeros()),
+            quat: Some(nalgebra::Vector4::new(1.0, 0.0, 0.0, 0.0)),
             euler: None,
             axisangle: None,
             xyaxes: None,
@@ -6149,6 +6147,7 @@ mod tests {
             margin: Some(0.0),
             gap: Some(0.0),
             group: Some(0),
+            material: None,
         };
 
         let inertia = compute_geom_inertia(&geom, None);
@@ -6587,7 +6586,7 @@ mod tests {
             file: Some(mesh_path.to_string_lossy().to_string()),
             vertex: None,
             face: None,
-            scale: Vector3::new(1.0, 1.0, 1.0),
+            scale: Some(Vector3::new(1.0, 1.0, 1.0)),
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
@@ -6611,7 +6610,7 @@ mod tests {
             file: Some("assets/model.stl".to_string()),
             vertex: None,
             face: None,
-            scale: Vector3::new(1.0, 1.0, 1.0),
+            scale: Some(Vector3::new(1.0, 1.0, 1.0)),
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, Some(temp_dir.path()), &MjcfCompiler::default());
@@ -6636,7 +6635,7 @@ mod tests {
                 1, 2, 3, // f2
                 2, 0, 3, // f3
             ]),
-            scale: Vector3::new(1.0, 1.0, 1.0),
+            scale: Some(Vector3::new(1.0, 1.0, 1.0)),
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());
@@ -6654,7 +6653,7 @@ mod tests {
             file: None,
             vertex: None,
             face: None,
-            scale: Vector3::new(1.0, 1.0, 1.0),
+            scale: Some(Vector3::new(1.0, 1.0, 1.0)),
         };
 
         let result = convert_mjcf_mesh(&mjcf_mesh, None, &MjcfCompiler::default());

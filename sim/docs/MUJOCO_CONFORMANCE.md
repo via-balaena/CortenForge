@@ -78,15 +78,15 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<size>` | ✓ | ⚠️ | Memory hints, may not apply |
 | `<visual>` | ✓ | ❌ | L1 concern (sim-bevy) |
 | `<statistic>` | ✓ | ❌ | Auto-computed |
-| `<default>` | ✓ | ✓ | Class inheritance system with `childclass` propagation (body/frame), nested hierarchy resolution, undefined class validation |
+| `<default>` | ✓ | ✓ | Full Option<T> defaults system: `DefaultResolver` with four-stage pipeline (types → parser → merge → apply) for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair); 91+ defaultable fields with `is_none()` guards; `childclass` propagation (body/frame), nested hierarchy resolution, undefined class validation |
 | `<custom>` | ✓ | ❌ | User data, low priority |
 | `<extension>` | ✓ | ❌ | Plugin system, low priority |
 | `<asset>` | ✓ | ⚠️ | Mesh, texture refs |
 | `<worldbody>` | ✓ | ✓ | Body hierarchy, `<frame>` element (pose composition, childclass, recursive nesting) |
 | `<contact>` | ✓ | ✓ | `<pair>`, `<exclude>`, contype/conaffinity bitmasks |
 | `<equality>` | ✓ | ✓ | Equality constraints |
-| `<tendon>` | ✓ | ✓ | Fixed and spatial tendons; `springlength` attribute (single or pair values); deadband spring physics; default class support |
-| `<actuator>` | ✓ | ✓ | All 8 shortcut types (motor, position, velocity, damper, cylinder, adhesion, muscle, general) with MuJoCo-compatible gain/bias force model, GainType/BiasType dispatch, FilterExact dynamics. `<general>` supports explicit `gaintype`/`biastype`/`dyntype`/`gainprm`/`biasprm`/`dynprm` attributes with default class inheritance. |
+| `<tendon>` | ✓ | ✓ | Fixed and spatial tendons; `springlength` attribute (single or pair values); deadband spring physics; default class support with solref/solimp/margin/material defaults |
+| `<actuator>` | ✓ | ✓ | All 8 shortcut types (motor, position, velocity, damper, cylinder, adhesion, muscle, general) with MuJoCo-compatible gain/bias force model, GainType/BiasType dispatch, FilterExact dynamics. `<general>` supports explicit `gaintype`/`biastype`/`dyntype`/`gainprm`/`biasprm`/`dynprm` attributes with default class inheritance. Activation params (group/actlimited/actrange/actearly/lengthrange) parsed and defaultable. |
 | `<sensor>` | ✓ | ✓ | Various sensor types |
 | `<keyframe>` | ✓ | ✓ | State snapshots: `<key>` elements with qpos/qvel/act/ctrl/mpos/mquat/time, `Data::reset_to_keyframe()` |
 | `<flex>` | ✓ | ✓ | Direct flex body specification (vertices, elements); parsed via `parse_flex()` + `process_flex()` |
@@ -113,6 +113,14 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `geom/@friction` | ✓ | ✓ | Sliding, torsional, rolling |
 | `geom/@solref` | ✓ | ✓ | Solver reference params |
 | `geom/@solimp` | ✓ | ✓ | Solver impedance params |
+| `geom/@material` | ✓ | ✓ | Parsed + defaultable (rendering scaffold; not yet forwarded to renderer) |
+| `geom/@pos/quat` | ✓ | ✓ | Option<T> with defaults support for pos, quat, euler, axisangle, xyaxes, zaxis |
+| `site/@material` | ✓ | ✓ | Parsed + defaultable (rendering scaffold) |
+| `tendon/@solref` | ✓ | ✓ | Solver reference params (parsed + defaultable, wired to model) |
+| `tendon/@solimp` | ✓ | ✓ | Solver impedance params (parsed + defaultable, wired to model) |
+| `tendon/@material` | ✓ | ✓ | Parsed + defaultable (rendering scaffold) |
+| `actuator/@actlimited` | ✓ | ✓ | Parsed + defaultable (activation clamping not yet wired to runtime) |
+| `actuator/@actrange` | ✓ | ✓ | Parsed + defaultable (activation clamping not yet wired to runtime) |
 | `joint/@type` | ✓ | ✓ | hinge, slide, ball, free |
 | `joint/@axis` | ✓ | ✓ | Joint axis |
 | `joint/@range` | ✓ | ✓ | Position limits |

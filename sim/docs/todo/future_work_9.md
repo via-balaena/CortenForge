@@ -132,28 +132,32 @@ that `noslip_postprocess()` correctly identifies friction rows in both layouts.
 ---
 
 ### 34. `actlimited` / `actrange` — Activation State Clamping
-**Status:** Not started | **Effort:** S–M | **Prerequisites:** None
+**Status:** Parsing done, runtime remaining | **Effort:** S–M | **Prerequisites:** None
 
 #### Current State
 
-Not parsed, not stored on Model, not enforced at runtime. Only muscle activations
+**Parsing complete (Batch 1 defaults refactor):** `actlimited`, `actrange`,
+`actearly`, `lengthrange`, and `group` are parsed on both `MjcfActuator` and
+`MjcfActuatorDefaults` (`types.rs`, `parser.rs`). The defaults pipeline merges
+and applies them via `merge_actuator_defaults()` / `apply_to_actuator()`
+(`defaults.rs`). All 5 fields use `Option<T>` with `is_none()` guards.
+
+**Not yet wired to runtime:** The parsed values are not forwarded to `Model`
+fields and not enforced during activation dynamics. Only muscle activations
 are clamped (hardcoded `[0, 1]`). All other stateful actuators (`dyntype=Integrator`,
-`Filter`, `FilterExact`) can grow unbounded. Our own docs (`future_work_3.md`)
-explicitly note this as a "Scope Exclusion."
+`Filter`, `FilterExact`) can grow unbounded.
 
 #### Objective
 
-Parse `actlimited` and `actrange` from MJCF, store on Model, and clamp activation
-state after dynamics integration.
+~~Parse `actlimited` and `actrange` from MJCF~~ ✅, store on Model, and clamp
+activation state after dynamics integration.
 
-#### Specification
+#### Remaining Specification
 
-1. **MJCF parsing**: Parse `actlimited` (bool, default false) and `actrange`
-   (2-element float array) from `<general>`, `<position>`, `<velocity>`, `<motor>`,
-   `<damper>`, `<intvelocity>`, `<cylinder>`, `<muscle>` actuator elements. Also
-   parse from `<default>` class inheritance chain.
+1. ~~**MJCF parsing**~~ ✅ — All 5 activation fields parsed + defaultable.
 2. **Model storage**: Add `actuator_actlimited: Vec<bool>` and
-   `actuator_actrange: Vec<[f64; 2]>` fields to `Model`.
+   `actuator_actrange: Vec<[f64; 2]>` fields to `Model`. Forward parsed values
+   from `model_builder.rs`.
 3. **Runtime clamping**: After activation dynamics integration
    (`mj_fwd_actuation` → `act_dot` → `act += dt * act_dot`), for each actuator
    where `actlimited[i] == true`, clamp `act[i]` to `actrange[i]`.
@@ -172,11 +176,12 @@ state after dynamics integration.
    explicitly set.
 4. Position servo (`<position>`) with `actlimited="true"` clamps FilterExact
    activation state.
-5. Default class inheritance works for both attributes.
+5. ~~Default class inheritance works for both attributes.~~ ✅
 
 #### Files
 
-- `sim/L0/mjcf/src/model_builder.rs` — parse actlimited/actrange from MJCF
+- ~~`sim/L0/mjcf/src/model_builder.rs` — parse actlimited/actrange from MJCF~~ ✅
+- `sim/L0/mjcf/src/model_builder.rs` — forward parsed actlimited/actrange to Model
 - `sim/L0/core/src/mujoco_pipeline.rs` — Model fields, runtime clamping after
   activation integration
 

@@ -638,10 +638,6 @@ pub struct MjcfGeomDefaults {
     pub solimp: Option<[f64; 5]>,
     /// Visualization group (0–5).
     pub group: Option<i32>,
-    // TODO(defaults): pos/orientation defaults are parsed and merged but not yet
-    // applied to individual geoms via apply_to_geom(). MuJoCo supports these in
-    // <default><geom> but they are rarely used in practice. Full wiring requires
-    // MjcfGeom.pos and MjcfGeom.quat to be refactored to Option<T>.
     /// Default position.
     pub pos: Option<Vector3<f64>>,
     /// Default quaternion orientation (w, x, y, z).
@@ -654,6 +650,14 @@ pub struct MjcfGeomDefaults {
     pub xyaxes: Option<[f64; 6]>,
     /// Default z-axis (minimal rotation from Z).
     pub zaxis: Option<Vector3<f64>>,
+    /// Default fromto specification [x1, y1, z1, x2, y2, z2].
+    pub fromto: Option<[f64; 6]>,
+    /// Default mesh asset name.
+    pub mesh: Option<String>,
+    /// Default height field asset name.
+    pub hfield: Option<String>,
+    /// Default material asset name.
+    pub material: Option<String>,
 }
 
 /// Default actuator parameters.
@@ -686,6 +690,19 @@ pub struct MjcfActuatorDefaults {
     pub biasprm: Option<Vec<f64>>,
     /// Dynamics parameters default for `<general>` actuators.
     pub dynprm: Option<Vec<f64>>,
+    /// Visualization group (0–5).
+    pub group: Option<i32>,
+    /// Whether activation is clamped to actrange.
+    pub actlimited: Option<bool>,
+    /// Activation clamping range [lower, upper].
+    pub actrange: Option<(f64, f64)>,
+    /// If true, activation dynamics are applied early (before constraint).
+    pub actearly: Option<bool>,
+    /// Length range for the actuator (requires tendon length range computation).
+    pub lengthrange: Option<(f64, f64)>,
+    // #todo: MuJoCo supports actuator-type-specific defaults (cylinder area/timeconst/bias,
+    // muscle force/scale/lmin/lmax/vmax/fpmax/fvmax/timeconst, adhesion gain).
+    // These fields exist on MjcfActuator but are not yet defaultable.
 }
 
 /// Default tendon parameters.
@@ -712,6 +729,14 @@ pub struct MjcfTendonDefaults {
     pub rgba: Option<Vector4<f64>>,
     /// Visualization group (0–5).
     pub group: Option<i32>,
+    /// Solver reference parameters for tendon limits [timeconst, dampratio].
+    pub solref: Option<[f64; 2]>,
+    /// Solver impedance parameters for tendon limits [d0, d_width, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
+    /// Contact margin for tendon limits.
+    pub margin: Option<f64>,
+    /// Default material asset name.
+    pub material: Option<String>,
 }
 
 /// Default sensor parameters.
@@ -753,7 +778,7 @@ pub struct MjcfMesh {
     /// File path for external mesh (STL, OBJ, etc.).
     pub file: Option<String>,
     /// Scale factor for the mesh vertices.
-    pub scale: Vector3<f64>,
+    pub scale: Option<Vector3<f64>>,
     /// Embedded vertex data (if not loading from file).
     /// Format: flat array of xyz coordinates.
     pub vertex: Option<Vec<f64>>,
@@ -767,7 +792,7 @@ impl Default for MjcfMesh {
         Self {
             name: String::new(),
             file: None,
-            scale: Vector3::new(1.0, 1.0, 1.0),
+            scale: None,
             vertex: None,
             face: None,
         }
@@ -815,7 +840,7 @@ impl MjcfMesh {
     /// Set the scale factor.
     #[must_use]
     pub fn with_scale(mut self, scale: Vector3<f64>) -> Self {
-        self.scale = scale;
+        self.scale = Some(scale);
         self
     }
 
@@ -840,15 +865,10 @@ impl MjcfMesh {
     /// Get embedded vertices as Point3 array.
     #[must_use]
     pub fn vertices_as_points(&self) -> Vec<Point3<f64>> {
+        let scale = self.scale.unwrap_or(Vector3::new(1.0, 1.0, 1.0));
         self.vertex.as_ref().map_or_else(Vec::new, |v| {
             v.chunks_exact(3)
-                .map(|c| {
-                    Point3::new(
-                        c[0] * self.scale.x,
-                        c[1] * self.scale.y,
-                        c[2] * self.scale.z,
-                    )
-                })
+                .map(|c| Point3::new(c[0] * scale.x, c[1] * scale.y, c[2] * scale.z))
                 .collect()
         })
     }
@@ -868,10 +888,6 @@ pub struct MjcfSiteDefaults {
     pub rgba: Option<Vector4<f64>>,
     /// Visualization group (0–5).
     pub group: Option<i32>,
-    // TODO(defaults): pos/orientation defaults are parsed and merged but not yet
-    // applied to individual sites via apply_to_site(). MuJoCo supports these in
-    // <default><site> but they are rarely used in practice. Full wiring requires
-    // orientation unification logic (quat vs euler vs axisangle etc.) in the resolver.
     /// Default position.
     pub pos: Option<Vector3<f64>>,
     /// Default quaternion orientation (w, x, y, z).
@@ -884,6 +900,8 @@ pub struct MjcfSiteDefaults {
     pub xyaxes: Option<[f64; 6]>,
     /// Default z-axis (minimal rotation from Z).
     pub zaxis: Option<Vector3<f64>>,
+    /// Default material asset name.
+    pub material: Option<String>,
 }
 
 /// Default pair parameters (from `<default><pair .../>`).
@@ -1056,9 +1074,9 @@ pub struct MjcfGeom {
     /// Geom type (None = not explicitly set, inherits from defaults or falls back to Sphere).
     pub geom_type: Option<MjcfGeomType>,
     /// Position relative to body frame.
-    pub pos: Vector3<f64>,
+    pub pos: Option<Vector3<f64>>,
     /// Orientation (quaternion: w x y z).
-    pub quat: Vector4<f64>,
+    pub quat: Option<Vector4<f64>>,
     /// Alternative orientation as euler angles (degrees, XYZ order).
     pub euler: Option<Vector3<f64>>,
     /// Alternative orientation as axis-angle (x, y, z, angle).
@@ -1109,6 +1127,8 @@ pub struct MjcfGeom {
     pub gap: Option<f64>,
     /// Visualization group (0–5). Default 0.
     pub group: Option<i32>,
+    /// Material asset name (for rendering).
+    pub material: Option<String>,
 }
 
 impl Default for MjcfGeom {
@@ -1117,8 +1137,8 @@ impl Default for MjcfGeom {
             name: None,
             class: None,
             geom_type: None,
-            pos: Vector3::zeros(),
-            quat: Vector4::new(1.0, 0.0, 0.0, 0.0),
+            pos: None,
+            quat: None,
             euler: None,
             axisangle: None,
             xyaxes: None,
@@ -1141,6 +1161,7 @@ impl Default for MjcfGeom {
             margin: None,
             gap: None,
             group: None,
+            material: None,
         }
     }
 }
@@ -1179,7 +1200,8 @@ impl MjcfGeom {
     /// Get quaternion as `UnitQuaternion`.
     #[must_use]
     pub fn rotation(&self) -> UnitQuaternion<f64> {
-        let q = nalgebra::Quaternion::new(self.quat[0], self.quat[1], self.quat[2], self.quat[3]);
+        let qv = self.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0));
+        let q = nalgebra::Quaternion::new(qv[0], qv[1], qv[2], qv[3]);
         UnitQuaternion::from_quaternion(q)
     }
 
@@ -1411,6 +1433,8 @@ pub struct MjcfSite {
     pub rgba: Option<Vector4<f64>>,
     /// Visualization group (0–5). Default 0.
     pub group: Option<i32>,
+    /// Material asset name (for rendering).
+    pub material: Option<String>,
 }
 
 impl Default for MjcfSite {
@@ -1428,6 +1452,7 @@ impl Default for MjcfSite {
             size: None,
             rgba: None,
             group: None,
+            material: None,
         }
     }
 }
@@ -2176,6 +2201,16 @@ pub struct MjcfActuator {
     pub kp: f64,
     /// Velocity gain. `None` means use actuator-type default.
     pub kv: Option<f64>,
+    /// Visualization group (0–5).
+    pub group: Option<i32>,
+    /// Whether activation is clamped to actrange.
+    pub actlimited: Option<bool>,
+    /// Activation clamping range [lower, upper].
+    pub actrange: Option<(f64, f64)>,
+    /// If true, activation dynamics are applied early (before constraint).
+    pub actearly: Option<bool>,
+    /// Length range for the actuator.
+    pub lengthrange: Option<(f64, f64)>,
 
     // ========================================================================
     // Cylinder-specific attributes
@@ -2261,6 +2296,11 @@ impl Default for MjcfActuator {
             forcelimited: None,
             kp: 1.0,
             kv: None,
+            group: None,
+            actlimited: None,
+            actrange: None,
+            actearly: None,
+            lengthrange: None,
             // Cylinder defaults (MuJoCo defaults)
             area: 1.0,
             diameter: None,
@@ -2469,6 +2509,14 @@ pub struct MjcfTendon {
     pub rgba: Option<Vector4<f64>>,
     /// Visualization group (0–5). Default 0.
     pub group: Option<i32>,
+    /// Solver reference parameters for tendon limits [timeconst, dampratio].
+    pub solref: Option<[f64; 2]>,
+    /// Solver impedance parameters for tendon limits [d0, d_width, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
+    /// Contact margin for tendon limits.
+    pub margin: Option<f64>,
+    /// Material asset name (for rendering).
+    pub material: Option<String>,
     /// Spring rest length pair (low, high) for deadband spring.
     /// `None` = auto-compute from tendon length at qpos0 (see S3 divergence note).
     /// Single value in MJCF → both elements equal (no deadband).
@@ -2494,6 +2542,10 @@ impl Default for MjcfTendon {
             width: None,
             rgba: None,
             group: None,
+            solref: None,
+            solimp: None,
+            margin: None,
+            material: None,
             springlength: None,
             path_elements: Vec::new(),
             joints: Vec::new(),

@@ -34,8 +34,8 @@ use std::collections::HashMap;
 
 use crate::types::{
     MjcfActuator, MjcfActuatorDefaults, MjcfContactPair, MjcfDefault, MjcfGeom, MjcfGeomDefaults,
-    MjcfJoint, MjcfJointDefaults, MjcfMeshDefaults, MjcfModel, MjcfPairDefaults, MjcfSensor,
-    MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfTendon, MjcfTendonDefaults,
+    MjcfJoint, MjcfJointDefaults, MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfPairDefaults,
+    MjcfSensor, MjcfSensorDefaults, MjcfSite, MjcfSiteDefaults, MjcfTendon, MjcfTendonDefaults,
 };
 
 /// Resolves and applies default classes to MJCF elements.
@@ -233,10 +233,40 @@ impl DefaultResolver {
                 result.group = defaults.group;
             }
 
-            // TODO(defaults): pos/orientation defaults (pos, quat, euler, axisangle,
-            // xyaxes, zaxis) are parsed and merged in MjcfGeomDefaults but cannot be
-            // applied here because MjcfGeom.pos and MjcfGeom.quat are non-Option types.
-            // Full wiring requires refactoring those fields to Option<T>.
+            if result.pos.is_none() {
+                result.pos = defaults.pos;
+            }
+            if result.quat.is_none() {
+                result.quat = defaults.quat;
+            }
+            if result.euler.is_none() {
+                result.euler = defaults.euler;
+            }
+            if result.axisangle.is_none() {
+                result.axisangle = defaults.axisangle;
+            }
+            if result.xyaxes.is_none() {
+                result.xyaxes = defaults.xyaxes;
+            }
+            if result.zaxis.is_none() {
+                result.zaxis = defaults.zaxis;
+            }
+
+            // Exotic geom defaults
+            if result.fromto.is_none() {
+                result.fromto = defaults.fromto;
+            }
+            if result.mesh.is_none() {
+                result.mesh.clone_from(&defaults.mesh);
+            }
+            if result.hfield.is_none() {
+                result.hfield.clone_from(&defaults.hfield);
+            }
+
+            // Rendering
+            if result.material.is_none() {
+                result.material.clone_from(&defaults.material);
+            }
         }
 
         result
@@ -248,6 +278,11 @@ impl DefaultResolver {
         let mut result = actuator.clone();
 
         if let Some(defaults) = self.actuator_defaults(actuator.class.as_deref()) {
+            // #todo: gear, kp, and sensor noise/cutoff use sentinel-value detection
+            // (== default) instead of Option<T>. Explicitly setting gear=[1,0,0,0,0,0],
+            // kp=1.0, noise=0.0, or cutoff=0.0 is indistinguishable from "unset" and
+            // will be overwritten by defaults. Migrate these to Option<T> to fix.
+
             // Gear: apply default if at default [1, 0, 0, 0, 0, 0]
             let default_gear = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
             if result
@@ -320,6 +355,23 @@ impl DefaultResolver {
             if result.dynprm.is_none() {
                 result.dynprm.clone_from(&defaults.dynprm);
             }
+
+            // Activation parameters
+            if result.group.is_none() {
+                result.group = defaults.group;
+            }
+            if result.actlimited.is_none() {
+                result.actlimited = defaults.actlimited;
+            }
+            if result.actrange.is_none() {
+                result.actrange = defaults.actrange;
+            }
+            if result.actearly.is_none() {
+                result.actearly = defaults.actearly;
+            }
+            if result.lengthrange.is_none() {
+                result.lengthrange = defaults.lengthrange;
+            }
         }
 
         result
@@ -350,9 +402,23 @@ impl DefaultResolver {
             if result.quat.is_none() {
                 result.quat = defaults.quat;
             }
-            // TODO(defaults): euler/axisangle/xyaxes/zaxis defaults require orientation
-            // unification logic — the resolver would need to reconcile these alternative
-            // representations with whatever the element specifies. Rarely used in practice.
+            if result.euler.is_none() {
+                result.euler = defaults.euler;
+            }
+            if result.axisangle.is_none() {
+                result.axisangle = defaults.axisangle;
+            }
+            if result.xyaxes.is_none() {
+                result.xyaxes = defaults.xyaxes;
+            }
+            if result.zaxis.is_none() {
+                result.zaxis = defaults.zaxis;
+            }
+
+            // Rendering
+            if result.material.is_none() {
+                result.material.clone_from(&defaults.material);
+            }
         }
 
         result
@@ -399,6 +465,22 @@ impl DefaultResolver {
             }
             if result.group.is_none() {
                 result.group = defaults.group;
+            }
+
+            // Solver parameters
+            if result.solref.is_none() {
+                result.solref = defaults.solref;
+            }
+            if result.solimp.is_none() {
+                result.solimp = defaults.solimp;
+            }
+            if result.margin.is_none() {
+                result.margin = defaults.margin;
+            }
+
+            // Rendering
+            if result.material.is_none() {
+                result.material.clone_from(&defaults.material);
             }
         }
 
@@ -467,6 +549,22 @@ impl DefaultResolver {
                 result.gap = defaults.gap;
             }
         }
+        result
+    }
+
+    /// Apply defaults to a mesh, returning a new mesh with defaults applied.
+    ///
+    /// Meshes use the root default class (meshes have no `class` attribute in MuJoCo).
+    #[must_use]
+    pub fn apply_to_mesh(&self, mesh: &MjcfMesh) -> MjcfMesh {
+        let mut result = mesh.clone();
+
+        if let Some(defaults) = self.mesh_defaults(None) {
+            if result.scale.is_none() {
+                result.scale = defaults.scale;
+            }
+        }
+
         result
     }
 
@@ -599,6 +697,10 @@ impl DefaultResolver {
                 axisangle: c.axisangle.or(p.axisangle),
                 xyaxes: c.xyaxes.or(p.xyaxes),
                 zaxis: c.zaxis.or(p.zaxis),
+                fromto: c.fromto.or(p.fromto),
+                mesh: c.mesh.clone().or_else(|| p.mesh.clone()),
+                hfield: c.hfield.clone().or_else(|| p.hfield.clone()),
+                material: c.material.clone().or_else(|| p.material.clone()),
             }),
         }
     }
@@ -625,6 +727,11 @@ impl DefaultResolver {
                 gainprm: c.gainprm.clone().or_else(|| p.gainprm.clone()),
                 biasprm: c.biasprm.clone().or_else(|| p.biasprm.clone()),
                 dynprm: c.dynprm.clone().or_else(|| p.dynprm.clone()),
+                group: c.group.or(p.group),
+                actlimited: c.actlimited.or(p.actlimited),
+                actrange: c.actrange.or(p.actrange),
+                actearly: c.actearly.or(p.actearly),
+                lengthrange: c.lengthrange.or(p.lengthrange),
             }),
         }
     }
@@ -647,6 +754,10 @@ impl DefaultResolver {
                 width: c.width.or(p.width),
                 rgba: c.rgba.or(p.rgba),
                 group: c.group.or(p.group),
+                solref: c.solref.or(p.solref),
+                solimp: c.solimp.or(p.solimp),
+                margin: c.margin.or(p.margin),
+                material: c.material.clone().or_else(|| p.material.clone()),
             }),
         }
     }
@@ -700,6 +811,7 @@ impl DefaultResolver {
                 axisangle: c.axisangle.or(p.axisangle),
                 xyaxes: c.xyaxes.or(p.xyaxes),
                 zaxis: c.zaxis.or(p.zaxis),
+                material: c.material.clone().or_else(|| p.material.clone()),
             }),
         }
     }

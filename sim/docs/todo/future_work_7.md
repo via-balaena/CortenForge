@@ -7,6 +7,37 @@ All items are prerequisites to #45 (MuJoCo Conformance Test Suite). This file
 covers inertia computation and the contact parameter combination layer — the
 foundation that all contact constraint assembly builds on.
 
+**Status:** ✅ All items complete (#23–27, #27B–F), including a comprehensive
+defaults system refactor completed alongside Batch 1.
+
+### Defaults System Refactor (completed alongside Batch 1)
+
+The contact parameter work exposed that the defaults system needed a full
+Option<T> refactoring pass for MuJoCo conformance. The refactor touched all
+four pipeline stages across four files (`types.rs`, `parser.rs`, `defaults.rs`,
+`model_builder.rs`) and covers all 8 element types:
+
+| Element | Defaultable Fields | Status |
+|---------|-------------------|--------|
+| Geom | 24 (type, friction, density, mass, rgba, contype/conaffinity/condim, priority, solmix, margin, gap, solref, solimp, group, pos, quat, euler, axisangle, xyaxes, zaxis, fromto, mesh, hfield, material) | ✅ Complete |
+| Joint | 14 (type, pos, axis, limited, range, ref_pos, spring_ref, damping, stiffness, armature, frictionloss, group, solref_limit, solimp_limit) | ✅ Complete |
+| Site | 11 (type, size, rgba, group, pos, quat, euler, axisangle, xyaxes, zaxis, material) | ✅ Complete |
+| Tendon | 13 (range, limited, stiffness, damping, frictionloss, springlength, width, rgba, group, solref, solimp, margin, material) | ✅ Complete |
+| Actuator | 18 (ctrlrange, forcerange, gear, kp, kv, ctrllimited, forcelimited, gaintype, biastype, dyntype, gainprm, biasprm, dynprm, group, actlimited, actrange, actearly, lengthrange) | ✅ Complete |
+| Sensor | 3 (noise, cutoff, user) | ✅ Complete |
+| Mesh | 1 (scale) | ✅ Complete |
+| Pair | 7 (condim, friction, solref, solreffriction, solimp, margin, gap) | ✅ Complete |
+
+**Key architectural changes:**
+- `MjcfGeom.pos/quat` → `Option<Vector3/Vector4>` (was concrete type)
+- `MjcfMesh.scale` → `Option<Vector3>` (was concrete type)
+- New fields on defaults structs: tendon solref/solimp/margin/material, actuator group/actlimited/actrange/actearly/lengthrange, geom fromto/mesh/hfield/material, site material
+- Model builder uses `unwrap_or(DEFAULT_SOLREF)` / `unwrap_or(DEFAULT_SOLIMP)` instead of hardcoded values
+
+**Remaining `#todo` items (in-code):**
+1. Actuator type-specific defaults (cylinder area/timeconst, muscle params) — MuJoCo supports these in `<default>` but they're not yet defaultable
+2. Sentinel-value detection for gear/kp/noise/cutoff should migrate to Option<T>
+
 ---
 
 ### 23. `<compiler>` `exactmeshinertia` + Full Inertia Tensor Pipeline
