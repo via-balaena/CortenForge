@@ -287,7 +287,7 @@ pub fn model_from_mjcf(
     builder.apply_mass_pipeline();
 
     // Process flex deformable bodies (after mass pipeline, before build)
-    builder.process_flex_bodies(&mjcf.flex);
+    builder.process_flex_bodies(&mjcf.flex)?;
 
     // Build final model
     let mut model = builder.build();
@@ -414,6 +414,8 @@ struct ModelBuilder {
     jnt_solref: Vec<[f64; 2]>,
     jnt_solimp: Vec<[f64; 5]>,
     jnt_name: Vec<Option<String>>,
+    /// Visualization group per joint (0–5).
+    jnt_group: Vec<i32>,
 
     // DOF arrays
     dof_body: Vec<usize>,
@@ -448,6 +450,10 @@ struct ModelBuilder {
     geom_margin: Vec<f64>,
     /// Contact gap per geom (buffer zone within margin).
     geom_gap: Vec<f64>,
+    /// Visualization group per geom (0–5).
+    geom_group: Vec<i32>,
+    /// RGBA color per geom [r, g, b, a].
+    geom_rgba: Vec<[f64; 4]>,
 
     // Mesh arrays (built from MJCF <asset><mesh> elements)
     /// Name-to-index lookup for mesh assets.
@@ -479,6 +485,10 @@ struct ModelBuilder {
     site_quat: Vec<UnitQuaternion<f64>>,
     site_size: Vec<Vector3<f64>>,
     site_name: Vec<Option<String>>,
+    /// Visualization group per site (0–5).
+    site_group: Vec<i32>,
+    /// RGBA color per site [r, g, b, a].
+    site_rgba: Vec<[f64; 4]>,
 
     // World frame tracking (for free joint qpos0 initialization)
     // Stores accumulated world positions during tree traversal
@@ -560,6 +570,10 @@ struct ModelBuilder {
     tendon_solimp: Vec<[f64; 5]>,
     tendon_num: Vec<usize>,
     tendon_adr: Vec<usize>,
+    /// Visualization group per tendon (0–5).
+    tendon_group: Vec<i32>,
+    /// RGBA color per tendon [r, g, b, a].
+    tendon_rgba: Vec<[f64; 4]>,
     wrap_type: Vec<WrapType>,
     wrap_objid: Vec<usize>,
     wrap_prm: Vec<f64>,
@@ -621,6 +635,7 @@ struct ModelBuilder {
     flex_poisson: Vec<f64>,
     flex_thickness: Vec<f64>,
     flex_density: Vec<f64>,
+    flex_group: Vec<i32>,
     flex_selfcollide: Vec<bool>,
     flex_edgestiffness: Vec<f64>,
     flex_edgedamping: Vec<f64>,
@@ -690,6 +705,7 @@ impl ModelBuilder {
             jnt_solref: vec![],
             jnt_solimp: vec![],
             jnt_name: vec![],
+            jnt_group: vec![],
 
             dof_body: vec![],
             dof_jnt: vec![],
@@ -715,6 +731,8 @@ impl ModelBuilder {
             geom_solmix: vec![],
             geom_margin: vec![],
             geom_gap: vec![],
+            geom_group: vec![],
+            geom_rgba: vec![],
 
             mesh_name_to_id: HashMap::new(),
             mesh_name: vec![],
@@ -733,6 +751,8 @@ impl ModelBuilder {
             site_quat: vec![],
             site_size: vec![],
             site_name: vec![],
+            site_group: vec![],
+            site_rgba: vec![],
 
             // World frame tracking (world body at origin)
             body_world_pos: vec![],
@@ -806,6 +826,8 @@ impl ModelBuilder {
             tendon_solimp: vec![],
             tendon_num: vec![],
             tendon_adr: vec![],
+            tendon_group: vec![],
+            tendon_rgba: vec![],
             wrap_type: vec![],
             wrap_objid: vec![],
             wrap_prm: vec![],
@@ -869,6 +891,7 @@ impl ModelBuilder {
             flex_poisson: vec![],
             flex_thickness: vec![],
             flex_density: vec![],
+            flex_group: vec![],
             flex_selfcollide: vec![],
             flex_edgestiffness: vec![],
             flex_edgedamping: vec![],
@@ -1318,17 +1341,15 @@ impl ModelBuilder {
         }
 
         // Convert joint type
-        let jnt_type = match joint.joint_type {
+        let joint_type = joint.joint_type.unwrap_or(MjcfJointType::Hinge);
+        let jnt_type = match joint_type {
             MjcfJointType::Hinge => MjJointType::Hinge,
             MjcfJointType::Slide => MjJointType::Slide,
             MjcfJointType::Ball => MjJointType::Ball,
             MjcfJointType::Free => MjJointType::Free,
             MjcfJointType::Cylindrical | MjcfJointType::Planar => {
                 return Err(ModelConversionError {
-                    message: format!(
-                        "Joint type {:?} not yet supported in Model",
-                        joint.joint_type
-                    ),
+                    message: format!("Joint type {joint_type:?} not yet supported in Model",),
                 });
             }
         };
@@ -1343,11 +1364,12 @@ impl ModelBuilder {
         self.jnt_body.push(body_id);
         self.jnt_qpos_adr.push(qpos_adr);
         self.jnt_dof_adr.push(dof_adr);
-        self.jnt_pos.push(joint.pos);
+        self.jnt_pos.push(joint.pos.unwrap_or_else(Vector3::zeros));
         // Normalize joint axis, handling zero vector edge case
         // MuJoCo defaults to Z-axis for unspecified/zero axes
-        let axis = if joint.axis.norm() > 1e-10 {
-            joint.axis.normalize()
+        let raw_axis = joint.axis.unwrap_or_else(Vector3::z);
+        let axis = if raw_axis.norm() > 1e-10 {
+            raw_axis.normalize()
         } else {
             warn!(
                 joint_name = ?joint.name,
@@ -1384,19 +1406,20 @@ impl ModelBuilder {
         } else {
             range
         });
-        self.jnt_stiffness.push(joint.stiffness);
+        self.jnt_stiffness.push(joint.stiffness.unwrap_or(0.0));
 
         // ref_pos and spring_ref: angle-valued for hinge joints only.
         // Ball joint ref is a quaternion, not angle-valued.
         let convert_ref =
             matches!(jnt_type, MjJointType::Hinge) && self.compiler.angle == AngleUnit::Degree;
+        let spring_ref = joint.spring_ref.unwrap_or(0.0);
         self.jnt_springref.push(if convert_ref {
-            joint.spring_ref * deg2rad
+            spring_ref * deg2rad
         } else {
-            joint.spring_ref
+            spring_ref
         });
-        self.jnt_damping.push(joint.damping);
-        self.jnt_armature.push(joint.armature);
+        self.jnt_damping.push(joint.damping.unwrap_or(0.0));
+        self.jnt_armature.push(joint.armature.unwrap_or(0.0));
         self.jnt_solref
             .push(joint.solref_limit.unwrap_or(DEFAULT_SOLREF));
         self.jnt_solimp
@@ -1406,6 +1429,7 @@ impl ModelBuilder {
         } else {
             Some(joint.name.clone())
         });
+        self.jnt_group.push(joint.group.unwrap_or(0));
 
         // Add DOF arrays with correct kinematic tree linkage
         // MuJoCo semantics: dof_parent forms a tree structure for CRBA/RNE
@@ -1421,24 +1445,26 @@ impl ModelBuilder {
             };
             self.dof_parent.push(parent);
 
-            self.dof_armature.push(joint.armature);
-            self.dof_damping.push(joint.damping);
-            self.dof_frictionloss.push(joint.frictionloss);
+            self.dof_armature.push(joint.armature.unwrap_or(0.0));
+            self.dof_damping.push(joint.damping.unwrap_or(0.0));
+            self.dof_frictionloss
+                .push(joint.frictionloss.unwrap_or(0.0));
         }
 
         // Add qpos0 values (default positions)
         match jnt_type {
             MjJointType::Hinge => {
+                let ref_pos = joint.ref_pos.unwrap_or(0.0);
                 let ref_val = if self.compiler.angle == AngleUnit::Degree {
-                    joint.ref_pos * deg2rad
+                    ref_pos * deg2rad
                 } else {
-                    joint.ref_pos
+                    ref_pos
                 };
                 self.qpos0_values.push(ref_val);
             }
             MjJointType::Slide => {
                 // Slide ref is translational — not angle-valued
-                self.qpos0_values.push(joint.ref_pos);
+                self.qpos0_values.push(joint.ref_pos.unwrap_or(0.0));
             }
             MjJointType::Ball => {
                 // Quaternion identity [w, x, y, z] = [1, 0, 0, 0]
@@ -1474,8 +1500,8 @@ impl ModelBuilder {
     ) -> std::result::Result<usize, ModelConversionError> {
         let geom_id = self.geom_type.len();
 
-        // Convert geom type
-        let geom_type = match geom.geom_type {
+        // Convert geom type (MuJoCo defaults to Sphere when unspecified)
+        let geom_type = match geom.geom_type.unwrap_or(MjcfGeomType::Sphere) {
             MjcfGeomType::Sphere => GeomType::Sphere,
             MjcfGeomType::Box => GeomType::Box,
             MjcfGeomType::Capsule => GeomType::Capsule,
@@ -1579,11 +1605,12 @@ impl ModelBuilder {
         self.geom_pos.push(pos);
         self.geom_quat.push(quat);
         self.geom_size.push(size);
-        self.geom_friction.push(geom.friction);
+        self.geom_friction
+            .push(geom.friction.unwrap_or(Vector3::new(1.0, 0.005, 0.0001)));
 
         // Validate and clamp condim to valid values {1, 3, 4, 6}
         // Invalid values are rounded up to the next valid value per MuJoCo convention
-        let condim = match geom.condim {
+        let condim = match geom.condim.unwrap_or(3) {
             1 => 1,
             2 => {
                 tracing::warn!(
@@ -1624,8 +1651,9 @@ impl ModelBuilder {
         self.geom_condim.push(condim);
         #[allow(clippy::cast_sign_loss)]
         {
-            self.geom_contype.push(geom.contype as u32);
-            self.geom_conaffinity.push(geom.conaffinity as u32);
+            self.geom_contype.push(geom.contype.unwrap_or(1) as u32);
+            self.geom_conaffinity
+                .push(geom.conaffinity.unwrap_or(1) as u32);
         }
         self.geom_name.push(geom.name.clone());
         if let Some(ref name) = geom.name {
@@ -1642,10 +1670,15 @@ impl ModelBuilder {
         self.geom_solimp.push(geom.solimp.unwrap_or(DEFAULT_SOLIMP));
 
         // Contact parameter combination fields (MuJoCo mj_contactParam)
-        self.geom_priority.push(geom.priority);
-        self.geom_solmix.push(geom.solmix);
-        self.geom_margin.push(geom.margin);
-        self.geom_gap.push(geom.gap);
+        self.geom_priority.push(geom.priority.unwrap_or(0));
+        self.geom_solmix.push(geom.solmix.unwrap_or(1.0));
+        self.geom_margin.push(geom.margin.unwrap_or(0.0));
+        self.geom_gap.push(geom.gap.unwrap_or(0.0));
+        self.geom_group.push(geom.group.unwrap_or(0));
+        // Default gray: MuJoCo uses [0.5, 0.5, 0.5, 1.0] for unspecified geom rgba.
+        let default_rgba = [0.5, 0.5, 0.5, 1.0];
+        self.geom_rgba
+            .push(geom.rgba.map_or(default_rgba, |v| [v.x, v.y, v.z, v.w]));
 
         Ok(geom_id)
     }
@@ -1665,7 +1698,8 @@ impl ModelBuilder {
         self.site_body.push(body_id);
 
         // Convert site type string to GeomType (sphere is the MuJoCo default)
-        let geom_type = match site.site_type.as_str() {
+        let site_type_str = site.site_type.as_deref().unwrap_or("sphere");
+        let geom_type = match site_type_str {
             "capsule" => GeomType::Capsule,
             "cylinder" => GeomType::Cylinder,
             "box" => GeomType::Box,
@@ -1674,9 +1708,9 @@ impl ModelBuilder {
         };
         self.site_type.push(geom_type);
 
-        self.site_pos.push(site.pos);
+        self.site_pos.push(site.pos.unwrap_or_else(Vector3::zeros));
         self.site_quat.push(resolve_orientation(
-            site.quat,
+            site.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
             site.euler,
             site.axisangle,
             site.xyaxes,
@@ -1685,16 +1719,17 @@ impl ModelBuilder {
         ));
 
         // Convert site size (MuJoCo uses single value for sphere, array for others)
-        let size = if site.size.is_empty() {
+        let site_size = site.size.as_deref().unwrap_or(&[0.01]);
+        let size = if site_size.is_empty() {
             Vector3::new(0.01, 0.01, 0.01) // Default small size
-        } else if site.size.len() == 1 {
-            let s = site.size[0];
+        } else if site_size.len() == 1 {
+            let s = site_size[0];
             Vector3::new(s, s, s)
         } else {
             Vector3::new(
-                site.size[0],
-                site.size.get(1).copied().unwrap_or(site.size[0]),
-                site.size.get(2).copied().unwrap_or(site.size[0]),
+                site_size[0],
+                site_size.get(1).copied().unwrap_or(site_size[0]),
+                site_size.get(2).copied().unwrap_or(site_size[0]),
             )
         };
         self.site_size.push(size);
@@ -1704,6 +1739,11 @@ impl ModelBuilder {
         } else {
             Some(site.name.clone())
         });
+        self.site_group.push(site.group.unwrap_or(0));
+        // Default site rgba: MuJoCo uses [0.5, 0.5, 0.5, 1.0] for unspecified site rgba.
+        let default_rgba = [0.5, 0.5, 0.5, 1.0];
+        self.site_rgba
+            .push(site.rgba.map_or(default_rgba, |v| [v.x, v.y, v.z, v.w]));
 
         Ok(site_id)
     }
@@ -1735,14 +1775,20 @@ impl ModelBuilder {
                 }
             };
             self.tendon_limited.push(tendon_limited);
-            self.tendon_stiffness.push(tendon.stiffness);
-            self.tendon_damping.push(tendon.damping);
-            self.tendon_frictionloss.push(tendon.frictionloss);
+            self.tendon_stiffness.push(tendon.stiffness.unwrap_or(0.0));
+            self.tendon_damping.push(tendon.damping.unwrap_or(0.0));
+            self.tendon_frictionloss
+                .push(tendon.frictionloss.unwrap_or(0.0));
             self.tendon_name.push(if tendon.name.is_empty() {
                 None
             } else {
                 Some(tendon.name.clone())
             });
+            self.tendon_group.push(tendon.group.unwrap_or(0));
+            // Default tendon rgba: MuJoCo uses [0.5, 0.5, 0.5, 1.0] for unspecified.
+            let default_rgba = [0.5, 0.5, 0.5, 1.0];
+            self.tendon_rgba
+                .push(tendon.rgba.map_or(default_rgba, |v| [v.x, v.y, v.z, v.w]));
             self.tendon_solref.push(DEFAULT_SOLREF);
             self.tendon_solimp.push([0.9, 0.95, 0.001, 0.5, 2.0]); // MuJoCo defaults
             // S1/S3: Use parsed springlength, or sentinel [-1, -1] for auto-compute
@@ -2843,29 +2889,55 @@ impl ModelBuilder {
     ///
     /// MuJoCo architecture: flex vertices ARE bodies in the kinematic tree. `mj_crb`/`mj_rne`
     /// have zero flex-specific code — the standard rigid-body pipeline handles everything.
-    fn process_flex_bodies(&mut self, flex_list: &[MjcfFlex]) {
+    fn process_flex_bodies(
+        &mut self,
+        flex_list: &[MjcfFlex],
+    ) -> std::result::Result<(), ModelConversionError> {
         use std::collections::HashMap;
 
         let axes = [Vector3::x(), Vector3::y(), Vector3::z()];
 
         for flex_orig in flex_list {
             // Resolve `node` attribute: if `node` names are present and no vertices
-            // exist, derive vertex positions from named body positions and set
-            // body attachment accordingly.
+            // exist, use the named bodies as flex vertices (MuJoCo semantics).
+            //
+            // Each node body IS the vertex. The new vertex body is parented to the
+            // node body with body_pos = zeros (vertex is at node body origin).
+            // We store the node body's world position as the vertex position so that
+            // edge rest-lengths and mass lumping use correct geometry. Then override
+            // body_pos to zeros when creating the vertex body (see `is_node_flex`
+            // flag below).
             let resolved;
+            let is_node_flex;
             let flex = if !flex_orig.node.is_empty() && flex_orig.vertices.is_empty() {
                 resolved = {
                     let mut f = flex_orig.clone();
                     for node_name in &flex_orig.node {
-                        if let Some(&bid) = self.body_name_to_id.get(node_name) {
-                            f.vertices.push(self.body_pos[bid]);
-                            f.body.push(node_name.clone());
-                        }
+                        let &bid = self.body_name_to_id.get(node_name).ok_or_else(|| {
+                            ModelConversionError {
+                                message: format!(
+                                    "flex '{}' node references undefined body '{}'",
+                                    flex_orig.name, node_name
+                                ),
+                            }
+                        })?;
+                        // World position for geometry (rest-lengths, mass lumping).
+                        // body_world_pos is indexed by (body_id - 1) since worldbody
+                        // has no entry. Node bodies are always non-world (bid >= 1).
+                        let world_pos = if bid == 0 {
+                            Vector3::zeros()
+                        } else {
+                            self.body_world_pos[bid - 1]
+                        };
+                        f.vertices.push(world_pos);
+                        f.body.push(node_name.clone());
                     }
                     f
                 };
+                is_node_flex = true;
                 &resolved
             } else {
+                is_node_flex = false;
                 flex_orig
             };
             let flex_id = self.nflex;
@@ -2926,7 +2998,12 @@ impl ModelBuilder {
                 self.body_jnt_adr.push(jnt_adr);
                 self.body_dof_adr.push(dof_adr);
                 self.body_geom_adr.push(geom_adr);
-                self.body_pos.push(*pos); // vertex position relative to parent (world for flexcomp)
+                // For node-derived vertices, body_pos = zeros (vertex is at the node
+                // body's origin; the slide joints provide displacement from there).
+                // For flexcomp/bare-flex, body_pos = vertex world position (parent is
+                // worldbody, so local offset == world position).
+                let body_pos_val = if is_node_flex { Vector3::zeros() } else { *pos };
+                self.body_pos.push(body_pos_val);
                 self.body_quat.push(UnitQuaternion::identity());
                 self.body_ipos.push(Vector3::zeros()); // point mass: CoM at body origin
                 self.body_iquat.push(UnitQuaternion::identity());
@@ -2935,7 +3012,10 @@ impl ModelBuilder {
                 self.body_mocapid.push(None);
                 self.body_name.push(None);
                 self.body_sleep_policy.push(None);
-                self.body_world_pos.push(*pos); // world pos = parent_world_pos + body_pos (parent=world → just pos)
+                // *pos is the vertex world position from node resolution or flexcomp.
+                // For flexcomp (parent=world), local offset == world position.
+                // For node-flex, *pos is the node body's world position.
+                self.body_world_pos.push(*pos);
                 self.body_world_quat.push(UnitQuaternion::identity());
 
                 if pinned {
@@ -3144,6 +3224,7 @@ impl ModelBuilder {
             self.flex_poisson.push(flex.poisson);
             self.flex_thickness.push(flex.thickness);
             self.flex_density.push(flex.density);
+            self.flex_group.push(flex.group);
             // MuJoCo default is "auto" (enabled). Only "none" disables self-collision.
             // None (absent) → true; Some("none") → false; all other keywords → true.
             self.flex_selfcollide
@@ -3151,6 +3232,7 @@ impl ModelBuilder {
             self.flex_edgestiffness.push(flex.edge_stiffness);
             self.flex_edgedamping.push(flex.edge_damping);
         }
+        Ok(())
     }
 
     fn build(self) -> Model {
@@ -3233,6 +3315,7 @@ impl ModelBuilder {
             jnt_solref: self.jnt_solref,
             jnt_solimp: self.jnt_solimp,
             jnt_name: self.jnt_name,
+            jnt_group: self.jnt_group,
 
             dof_body: self.dof_body,
             dof_jnt: self.dof_jnt,
@@ -3271,6 +3354,8 @@ impl ModelBuilder {
             geom_hfield: self.geom_hfield,
             // SDF index for each geom (always None from MJCF — programmatic only)
             geom_sdf: self.geom_sdf,
+            geom_group: self.geom_group,
+            geom_rgba: self.geom_rgba,
 
             // Flex bodies
             nflex: self.nflex,
@@ -3305,6 +3390,7 @@ impl ModelBuilder {
             flex_bend_stiffness: self.flex_bend_stiffness,
             flex_bend_damping: self.flex_bend_damping,
             flex_density: self.flex_density,
+            flex_group: self.flex_group,
             flexvert_qposadr: self.flexvert_qposadr,
             flexvert_dofadr: self.flexvert_dofadr,
             flexvert_mass: self.flexvert_mass,
@@ -3346,6 +3432,8 @@ impl ModelBuilder {
             site_quat: self.site_quat,
             site_size: self.site_size,
             site_name: self.site_name,
+            site_group: self.site_group,
+            site_rgba: self.site_rgba,
 
             // Sensors (populated by process_sensors)
             nsensor: self.nsensor,
@@ -3396,6 +3484,8 @@ impl ModelBuilder {
             tendon_num: self.tendon_num,
             tendon_adr: self.tendon_adr,
             tendon_name: self.tendon_name,
+            tendon_group: self.tendon_group,
+            tendon_rgba: self.tendon_rgba,
             tendon_solref: self.tendon_solref,
             tendon_solimp: self.tendon_solimp,
             wrap_type: self.wrap_type,
@@ -4163,13 +4253,19 @@ fn expand_single_frame(
             s.class = effective.map(|s| s.to_string());
         }
 
-        let site_quat =
-            resolve_orientation(s.quat, s.euler, s.axisangle, s.xyaxes, s.zaxis, compiler);
-        let mut pos = s.pos;
+        let site_quat = resolve_orientation(
+            s.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
+            s.euler,
+            s.axisangle,
+            s.xyaxes,
+            s.zaxis,
+            compiler,
+        );
+        let mut pos = s.pos.unwrap_or_else(Vector3::zeros);
         let mut quat = site_quat;
         frame_accum_child(&composed_pos, &composed_quat, &mut pos, &mut quat);
-        s.pos = pos;
-        s.quat = quat_to_wxyz(&quat);
+        s.pos = Some(pos);
+        s.quat = Some(quat_to_wxyz(&quat));
         s.euler = None;
         s.axisangle = None;
         s.xyaxes = None;
@@ -4763,8 +4859,8 @@ fn apply_discardvisual(mjcf: &mut MjcfModel) {
 
     fn remove_visual_geoms(body: &mut MjcfBody, protected: &HashSet<String>) {
         body.geoms.retain(|g| {
-            g.contype != 0
-                || g.conaffinity != 0
+            g.contype.unwrap_or(1) != 0
+                || g.conaffinity.unwrap_or(1) != 0
                 || g.name.as_ref().is_some_and(|n| protected.contains(n))
         });
         for child in &mut body.children {
@@ -4920,10 +5016,11 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
 
             // Transform sites into parent frame
             for s in &mut removed.sites {
+                let s_pos = s.pos.unwrap_or_else(Vector3::zeros);
                 if has_rotation {
-                    s.pos = body_quat * s.pos + body_pos;
+                    s.pos = Some(body_quat * s_pos + body_pos);
                     let site_quat = resolve_orientation(
-                        s.quat,
+                        s.quat.unwrap_or(Vector4::new(1.0, 0.0, 0.0, 0.0)),
                         s.euler,
                         s.axisangle,
                         s.xyaxes,
@@ -4931,14 +5028,14 @@ fn fuse_static_body(parent: &mut MjcfBody, protected: &HashSet<String>, compiler
                         compiler,
                     );
                     let composed = body_quat * site_quat;
-                    s.quat = quat_to_wxyz(&composed);
+                    s.quat = Some(quat_to_wxyz(&composed));
                     // Normalize to quat-only after composition
                     s.euler = None;
                     s.axisangle = None;
                     s.xyaxes = None;
                     s.zaxis = None;
                 } else {
-                    s.pos += body_pos;
+                    s.pos = Some(s_pos + body_pos);
                 }
             }
 
@@ -4978,7 +5075,7 @@ fn resolve_mesh(
     mesh_lookup: &HashMap<String, usize>,
     mesh_data: &[Arc<TriangleMeshData>],
 ) -> Option<Arc<TriangleMeshData>> {
-    if geom.geom_type == MjcfGeomType::Mesh {
+    if geom.geom_type.unwrap_or(MjcfGeomType::Sphere) == MjcfGeomType::Mesh {
         geom.mesh
             .as_ref()
             .and_then(|name| mesh_lookup.get(name))
@@ -5117,7 +5214,7 @@ fn compute_geom_mass(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> f64 {
         return mass;
     }
 
-    let volume = match geom.geom_type {
+    let volume = match geom.geom_type.unwrap_or(MjcfGeomType::Sphere) {
         MjcfGeomType::Sphere => {
             let r = geom.size.first().copied().unwrap_or(0.1);
             (4.0 / 3.0) * std::f64::consts::PI * r.powi(3)
@@ -5148,7 +5245,7 @@ fn compute_geom_mass(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> f64 {
         _ => 0.001, // Default small volume for other types (Plane, Hfield)
     };
 
-    geom.density * volume
+    geom.density.unwrap_or(1000.0) * volume
 }
 
 /// Compute inertia tensor of a single geom about its center (geom-local frame).
@@ -5168,7 +5265,7 @@ fn compute_geom_mass(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> f64 {
 fn compute_geom_inertia(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Matrix3<f64> {
     let mass = compute_geom_mass(geom, mesh_props);
 
-    match geom.geom_type {
+    match geom.geom_type.unwrap_or(MjcfGeomType::Sphere) {
         MjcfGeomType::Sphere => {
             let r = geom.size.first().copied().unwrap_or(0.1);
             let i = 0.4 * mass * r.powi(2); // (2/5) m r²
@@ -5243,11 +5340,12 @@ fn compute_geom_inertia(geom: &MjcfGeom, mesh_props: Option<&MeshProps>) -> Matr
         }
         MjcfGeomType::Mesh => {
             if let Some(&(volume, _, inertia_unit)) = mesh_props {
-                let mass_actual = geom.mass.unwrap_or_else(|| geom.density * volume.abs());
+                let density = geom.density.unwrap_or(1000.0);
+                let mass_actual = geom.mass.unwrap_or_else(|| density * volume.abs());
                 let scale = if volume.abs() > 1e-10 {
                     mass_actual / volume.abs()
                 } else {
-                    geom.density
+                    density
                 };
                 inertia_unit * scale
             } else {
@@ -5509,10 +5607,11 @@ fn compute_vertex_masses(flex: &MjcfFlex) -> Vec<f64> {
     }
 
     // Path 1: uniform mass from <flexcomp mass="...">
+    // No min-mass floor: mass=0 → per_vert=0 → invmass=0 (static vertices).
+    // This matches MuJoCo semantics where explicit mass=0 pins vertices.
     if let Some(total_mass) = flex.mass {
         #[allow(clippy::cast_precision_loss)] // npnt is vertex count, never near 2^52
         let per_vert = total_mass / npnt as f64;
-        let per_vert = if per_vert < 1e-10 { 0.001 } else { per_vert };
         return vec![per_vert; npnt];
     }
 
@@ -6025,7 +6124,7 @@ mod tests {
         let geom = MjcfGeom {
             name: None,
             class: None,
-            geom_type: MjcfGeomType::Capsule,
+            geom_type: Some(MjcfGeomType::Capsule),
             pos: Vector3::zeros(),
             quat: nalgebra::Vector4::new(1.0, 0.0, 0.0, 0.0),
             euler: None,
@@ -6034,21 +6133,22 @@ mod tests {
             zaxis: None,
             size: vec![0.1, 0.5], // radius=0.1, half-height=0.5
             fromto: None,
-            density: 1000.0,
+            density: Some(1000.0),
             mass: None,
-            friction: Vector3::new(1.0, 0.005, 0.0001),
-            rgba: nalgebra::Vector4::new(0.5, 0.5, 0.5, 1.0),
-            contype: 1,
-            conaffinity: 1,
-            condim: 3,
+            friction: Some(Vector3::new(1.0, 0.005, 0.0001)),
+            rgba: Some(nalgebra::Vector4::new(0.5, 0.5, 0.5, 1.0)),
+            contype: Some(1),
+            conaffinity: Some(1),
+            condim: Some(3),
             mesh: None,
             hfield: None,
             solref: None,
             solimp: None,
-            priority: 0,
-            solmix: 1.0,
-            margin: 0.0,
-            gap: 0.0,
+            priority: Some(0),
+            solmix: Some(1.0),
+            margin: Some(0.0),
+            gap: Some(0.0),
+            group: Some(0),
         };
 
         let inertia = compute_geom_inertia(&geom, None);
@@ -9692,5 +9792,109 @@ mod tests {
             (got.into_inner() - expected.into_inner()).norm() < 1e-10,
             "site zaxis non-unit parallel: got {got:?}, expected {expected:?}"
         );
+    }
+
+    // ========================================================================
+    // #27E — compute_vertex_masses: mass attribute path
+    // ========================================================================
+
+    /// #27E AC1: mass attribute distributes uniformly across vertices
+    #[test]
+    fn test_vertex_masses_from_mass_attribute() {
+        let mut flex = MjcfFlex::default();
+        flex.dim = 2;
+        flex.mass = Some(1.0);
+        flex.vertices = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(1.0, 1.0, 0.0),
+        ];
+        flex.elements = vec![vec![0, 1, 2], vec![1, 3, 2]];
+
+        let masses = compute_vertex_masses(&flex);
+
+        assert_eq!(masses.len(), 4);
+        // 1.0 / 4 = 0.25 per vertex
+        for &m in &masses {
+            assert!((m - 0.25).abs() < 1e-15, "expected 0.25, got {m}");
+        }
+    }
+
+    /// #27E AC2: mass=0 → per_vert=0 (static vertices, no min-mass floor)
+    #[test]
+    fn test_vertex_masses_zero_mass_produces_zero() {
+        let mut flex = MjcfFlex::default();
+        flex.dim = 2;
+        flex.mass = Some(0.0);
+        flex.vertices = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        ];
+        flex.elements = vec![vec![0, 1, 2]];
+
+        let masses = compute_vertex_masses(&flex);
+
+        assert_eq!(masses.len(), 3);
+        for &m in &masses {
+            assert!(
+                m == 0.0,
+                "mass=0 should produce per_vert=0.0 (static), got {m}"
+            );
+        }
+    }
+
+    /// #27E AC3: mass takes precedence over density
+    #[test]
+    fn test_vertex_masses_mass_overrides_density() {
+        let mut flex = MjcfFlex::default();
+        flex.dim = 2;
+        flex.mass = Some(2.0);
+        flex.density = 99999.0; // Should be ignored when mass is set
+        flex.thickness = 0.01;
+        flex.vertices = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(1.0, 1.0, 0.0),
+            Vector3::new(0.5, 0.5, 0.0),
+        ];
+        flex.elements = vec![vec![0, 1, 4], vec![1, 3, 4], vec![3, 2, 4], vec![2, 0, 4]];
+
+        let masses = compute_vertex_masses(&flex);
+
+        assert_eq!(masses.len(), 5);
+        // 2.0 / 5 = 0.4 per vertex (density is ignored)
+        for &m in &masses {
+            assert!((m - 0.4).abs() < 1e-15, "expected 0.4, got {m}");
+        }
+    }
+
+    /// #27E: density path still applies min-mass floor
+    #[test]
+    fn test_vertex_masses_density_path_has_floor() {
+        let mut flex = MjcfFlex::default();
+        flex.dim = 2;
+        flex.mass = None; // No mass attribute → density path
+        flex.density = 0.0; // Zero density → zero mass per vertex before floor
+        flex.thickness = 0.01;
+        flex.vertices = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+        ];
+        flex.elements = vec![vec![0, 1, 2]];
+
+        let masses = compute_vertex_masses(&flex);
+
+        assert_eq!(masses.len(), 3);
+        // Density=0 → element mass=0 → min-mass floor kicks in → 0.001
+        for &m in &masses {
+            assert!(
+                (m - 0.001).abs() < 1e-15,
+                "density path should apply min-mass floor 0.001, got {m}"
+            );
+        }
     }
 }

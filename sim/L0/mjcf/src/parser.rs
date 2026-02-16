@@ -580,15 +580,40 @@ fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> {
     if let Some(jtype) = get_attribute_opt(e, "type") {
         defaults.joint_type = MjcfJointType::from_str(&jtype);
     }
+    if let Some(pos) = get_attribute_opt(e, "pos") {
+        defaults.pos = Some(parse_vector3(&pos)?);
+    }
     if let Some(limited) = get_attribute_opt(e, "limited") {
         defaults.limited = Some(limited == "true");
     }
     if let Some(axis) = get_attribute_opt(e, "axis") {
         defaults.axis = Some(parse_vector3(&axis)?);
     }
+    defaults.ref_pos = parse_float_attr(e, "ref");
+    defaults.spring_ref = parse_float_attr(e, "springref");
     defaults.damping = parse_float_attr(e, "damping");
     defaults.stiffness = parse_float_attr(e, "stiffness");
     defaults.armature = parse_float_attr(e, "armature");
+    defaults.frictionloss = parse_float_attr(e, "frictionloss");
+    defaults.group = parse_int_attr(e, "group");
+    if let Some(range) = get_attribute_opt(e, "range") {
+        let parts = parse_float_array(&range)?;
+        if parts.len() >= 2 {
+            defaults.range = Some((parts[0], parts[1]));
+        }
+    }
+    if let Some(solref) = get_attribute_opt(e, "solreflimit") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            defaults.solref_limit = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimplimit") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            defaults.solimp_limit = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
 
     Ok(defaults)
 }
@@ -611,10 +636,45 @@ fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
     }
     defaults.contype = parse_int_attr(e, "contype");
     defaults.conaffinity = parse_int_attr(e, "conaffinity");
+    defaults.condim = parse_int_attr(e, "condim");
     defaults.priority = parse_int_attr(e, "priority");
     defaults.solmix = parse_float_attr(e, "solmix");
     defaults.margin = parse_float_attr(e, "margin");
     defaults.gap = parse_float_attr(e, "gap");
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            defaults.solref = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            defaults.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    defaults.group = parse_int_attr(e, "group");
+    if let Some(pos) = get_attribute_opt(e, "pos") {
+        defaults.pos = Some(parse_vector3(&pos)?);
+    }
+    if let Some(quat) = get_attribute_opt(e, "quat") {
+        defaults.quat = Some(parse_vector4(&quat)?);
+    }
+    if let Some(euler) = get_attribute_opt(e, "euler") {
+        defaults.euler = Some(parse_vector3(&euler)?);
+    }
+    if let Some(aa) = get_attribute_opt(e, "axisangle") {
+        defaults.axisangle = Some(parse_vector4(&aa)?);
+    }
+    if let Some(xyaxes) = get_attribute_opt(e, "xyaxes") {
+        let parts = parse_float_array(&xyaxes)?;
+        if parts.len() >= 6 {
+            defaults.xyaxes = Some([parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]]);
+        }
+    }
+    if let Some(zaxis) = get_attribute_opt(e, "zaxis") {
+        defaults.zaxis = Some(parse_vector3(&zaxis)?);
+    }
 
     Ok(defaults)
 }
@@ -725,6 +785,7 @@ fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults> {
     if let Some(rgba) = get_attribute_opt(e, "rgba") {
         defaults.rgba = Some(parse_vector4(&rgba)?);
     }
+    defaults.group = parse_int_attr(e, "group");
 
     Ok(defaults)
 }
@@ -764,6 +825,28 @@ fn parse_site_defaults(e: &BytesStart) -> Result<MjcfSiteDefaults> {
     }
     if let Some(rgba) = get_attribute_opt(e, "rgba") {
         defaults.rgba = Some(parse_vector4(&rgba)?);
+    }
+    defaults.group = parse_int_attr(e, "group");
+    if let Some(pos) = get_attribute_opt(e, "pos") {
+        defaults.pos = Some(parse_vector3(&pos)?);
+    }
+    if let Some(quat) = get_attribute_opt(e, "quat") {
+        defaults.quat = Some(parse_vector4(&quat)?);
+    }
+    if let Some(euler) = get_attribute_opt(e, "euler") {
+        defaults.euler = Some(parse_vector3(&euler)?);
+    }
+    if let Some(aa) = get_attribute_opt(e, "axisangle") {
+        defaults.axisangle = Some(parse_vector4(&aa)?);
+    }
+    if let Some(xyaxes) = get_attribute_opt(e, "xyaxes") {
+        let parts = parse_float_array(&xyaxes)?;
+        if parts.len() >= 6 {
+            defaults.xyaxes = Some([parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]]);
+        }
+    }
+    if let Some(zaxis) = get_attribute_opt(e, "zaxis") {
+        defaults.zaxis = Some(parse_vector3(&zaxis)?);
     }
 
     Ok(defaults)
@@ -1349,15 +1432,16 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     joint.class = get_attribute_opt(e, "class");
 
     if let Some(jtype) = get_attribute_opt(e, "type") {
-        joint.joint_type =
-            MjcfJointType::from_str(&jtype).ok_or_else(|| MjcfError::UnknownJointType(jtype))?;
+        joint.joint_type = Some(
+            MjcfJointType::from_str(&jtype).ok_or_else(|| MjcfError::UnknownJointType(jtype))?,
+        );
     }
 
     if let Some(pos) = get_attribute_opt(e, "pos") {
-        joint.pos = parse_vector3(&pos)?;
+        joint.pos = Some(parse_vector3(&pos)?);
     }
     if let Some(axis) = get_attribute_opt(e, "axis") {
-        joint.axis = safe_normalize_axis(parse_vector3(&axis)?);
+        joint.axis = Some(safe_normalize_axis(parse_vector3(&axis)?));
     }
     if let Some(limited) = get_attribute_opt(e, "limited") {
         joint.limited = Some(limited == "true");
@@ -1368,12 +1452,13 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
             joint.range = Some((parts[0], parts[1]));
         }
     }
-    joint.ref_pos = parse_float_attr(e, "ref").unwrap_or(0.0);
-    joint.spring_ref = parse_float_attr(e, "springref").unwrap_or(0.0);
-    joint.damping = parse_float_attr(e, "damping").unwrap_or(0.0);
-    joint.stiffness = parse_float_attr(e, "stiffness").unwrap_or(0.0);
-    joint.armature = parse_float_attr(e, "armature").unwrap_or(0.0);
-    joint.frictionloss = parse_float_attr(e, "frictionloss").unwrap_or(0.0);
+    joint.ref_pos = parse_float_attr(e, "ref");
+    joint.spring_ref = parse_float_attr(e, "springref");
+    joint.damping = parse_float_attr(e, "damping");
+    joint.stiffness = parse_float_attr(e, "stiffness");
+    joint.armature = parse_float_attr(e, "armature");
+    joint.frictionloss = parse_float_attr(e, "frictionloss");
+    joint.group = parse_int_attr(e, "group");
 
     // Joint limit solver parameters: solreflimit=[timeconst, dampratio],
     // solimplimit=[d0, d_width, width, midpoint, power]
@@ -1399,7 +1484,7 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
 /// a 6-DOF free joint. It only supports `name` and `group` attributes.
 fn parse_freejoint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
     let mut joint = MjcfJoint::default();
-    joint.joint_type = MjcfJointType::Free;
+    joint.joint_type = Some(MjcfJointType::Free);
     joint.name = get_attribute_opt(e, "name").unwrap_or_default();
     // Note: MuJoCo's freejoint also supports 'group' attribute, but we don't use it
     Ok(joint)
@@ -1432,7 +1517,7 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
 
     if let Some(gtype) = get_attribute_opt(e, "type") {
         geom.geom_type =
-            MjcfGeomType::from_str(&gtype).ok_or_else(|| MjcfError::UnknownGeomType(gtype))?;
+            Some(MjcfGeomType::from_str(&gtype).ok_or_else(|| MjcfError::UnknownGeomType(gtype))?);
     }
 
     if let Some(pos) = get_attribute_opt(e, "pos") {
@@ -1466,25 +1551,17 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
         }
     }
     if let Some(friction) = get_attribute_opt(e, "friction") {
-        geom.friction = parse_vector3(&friction)?;
+        geom.friction = Some(parse_vector3(&friction)?);
     }
-    if let Some(density) = parse_float_attr(e, "density") {
-        geom.density = density;
-    }
+    geom.density = parse_float_attr(e, "density");
     geom.mass = parse_float_attr(e, "mass");
 
     if let Some(rgba) = get_attribute_opt(e, "rgba") {
-        geom.rgba = parse_vector4(&rgba)?;
+        geom.rgba = Some(parse_vector4(&rgba)?);
     }
-    if let Some(contype) = parse_int_attr(e, "contype") {
-        geom.contype = contype;
-    }
-    if let Some(conaffinity) = parse_int_attr(e, "conaffinity") {
-        geom.conaffinity = conaffinity;
-    }
-    if let Some(condim) = parse_int_attr(e, "condim") {
-        geom.condim = condim;
-    }
+    geom.contype = parse_int_attr(e, "contype");
+    geom.conaffinity = parse_int_attr(e, "conaffinity");
+    geom.condim = parse_int_attr(e, "condim");
     geom.mesh = get_attribute_opt(e, "mesh");
     geom.hfield = get_attribute_opt(e, "hfield");
 
@@ -1506,18 +1583,11 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     }
 
     // Contact parameter combination attributes (MuJoCo mj_contactParam)
-    if let Some(priority) = parse_int_attr(e, "priority") {
-        geom.priority = priority;
-    }
-    if let Some(solmix) = parse_float_attr(e, "solmix") {
-        geom.solmix = solmix;
-    }
-    if let Some(margin) = parse_float_attr(e, "margin") {
-        geom.margin = margin;
-    }
-    if let Some(gap) = parse_float_attr(e, "gap") {
-        geom.gap = gap;
-    }
+    geom.priority = parse_int_attr(e, "priority");
+    geom.solmix = parse_float_attr(e, "solmix");
+    geom.margin = parse_float_attr(e, "margin");
+    geom.gap = parse_float_attr(e, "gap");
+    geom.group = parse_int_attr(e, "group");
 
     Ok(geom)
 }
@@ -1592,14 +1662,12 @@ fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
     site.name = get_attribute_opt(e, "name").unwrap_or_default();
     site.class = get_attribute_opt(e, "class");
 
-    if let Some(site_type) = get_attribute_opt(e, "type") {
-        site.site_type = site_type;
-    }
+    site.site_type = get_attribute_opt(e, "type");
     if let Some(pos) = get_attribute_opt(e, "pos") {
-        site.pos = parse_vector3(&pos)?;
+        site.pos = Some(parse_vector3(&pos)?);
     }
     if let Some(quat) = get_attribute_opt(e, "quat") {
-        site.quat = parse_vector4(&quat)?;
+        site.quat = Some(parse_vector4(&quat)?);
     }
     if let Some(euler) = get_attribute_opt(e, "euler") {
         site.euler = Some(parse_vector3(&euler)?);
@@ -1617,11 +1685,12 @@ fn parse_site_attrs(e: &BytesStart) -> Result<MjcfSite> {
         site.zaxis = Some(parse_vector3(&zaxis)?);
     }
     if let Some(size) = get_attribute_opt(e, "size") {
-        site.size = parse_float_array(&size)?;
+        site.size = Some(parse_float_array(&size)?);
     }
     if let Some(rgba) = get_attribute_opt(e, "rgba") {
-        site.rgba = parse_vector4(&rgba)?;
+        site.rgba = Some(parse_vector4(&rgba)?);
     }
+    site.group = parse_int_attr(e, "group");
 
     Ok(site)
 }
@@ -2371,8 +2440,8 @@ fn parse_flex_attrs(e: &BytesStart) -> MjcfFlex {
         flex.node = s.split_whitespace().map(|t| t.to_string()).collect();
     }
     // Visualization group (0-5).
-    if let Some(s) = get_attribute_opt(e, "group") {
-        flex.group = s.parse().unwrap_or(0);
+    if let Some(group) = parse_int_attr(e, "group") {
+        flex.group = group;
     }
     // MuJoCo: <flexcomp mass="..."> distributes total mass uniformly across all vertices.
     // When present, overrides element-based mass lumping from density.
@@ -2999,17 +3068,9 @@ fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> Result<Mjc
         tendon.limited = Some(limited == "true");
     }
 
-    if let Some(stiffness) = parse_float_attr(e, "stiffness") {
-        tendon.stiffness = stiffness;
-    }
-
-    if let Some(damping) = parse_float_attr(e, "damping") {
-        tendon.damping = damping;
-    }
-
-    if let Some(frictionloss) = parse_float_attr(e, "frictionloss") {
-        tendon.frictionloss = frictionloss;
-    }
+    tendon.stiffness = parse_float_attr(e, "stiffness");
+    tendon.damping = parse_float_attr(e, "damping");
+    tendon.frictionloss = parse_float_attr(e, "frictionloss");
 
     // B2: Parse springlength (1 or 2 values)
     if let Some(sl_str) = get_attribute_opt(e, "springlength") {
@@ -3055,14 +3116,13 @@ fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> Result<Mjc
         }
     }
 
-    if let Some(width) = parse_float_attr(e, "width") {
-        tendon.width = width;
-    }
+    tendon.width = parse_float_attr(e, "width");
+    tendon.group = parse_int_attr(e, "group");
 
     if let Some(rgba) = get_attribute_opt(e, "rgba") {
         if let Ok(parts) = parse_float_array(&rgba) {
             if parts.len() >= 4 {
-                tendon.rgba = Vector4::new(parts[0], parts[1], parts[2], parts[3]);
+                tendon.rgba = Some(Vector4::new(parts[0], parts[1], parts[2], parts[3]));
             }
         }
     }
@@ -3197,7 +3257,7 @@ mod tests {
         let base = &model.worldbody.children[0];
         assert_eq!(base.name, "base");
         assert_eq!(base.geoms.len(), 1);
-        assert_eq!(base.geoms[0].geom_type, MjcfGeomType::Sphere);
+        assert_eq!(base.geoms[0].geom_type, Some(MjcfGeomType::Sphere));
     }
 
     #[test]
@@ -3233,11 +3293,11 @@ mod tests {
 
         let joint = &body.joints[0];
         assert_eq!(joint.name, "joint1");
-        assert_eq!(joint.joint_type, MjcfJointType::Hinge);
+        assert_eq!(joint.joint_type, Some(MjcfJointType::Hinge));
         assert_eq!(joint.limited, Some(true));
         assert_eq!(joint.range, Some((-1.57, 1.57)));
-        assert_relative_eq!(joint.damping, 0.5, epsilon = 1e-10);
-        assert_relative_eq!(joint.axis.y, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(joint.damping.unwrap(), 0.5, epsilon = 1e-10);
+        assert_relative_eq!(joint.axis.unwrap().y, 1.0, epsilon = 1e-10);
     }
 
     #[test]
@@ -3339,7 +3399,7 @@ mod tests {
 
         let model = parse_mjcf_str(xml).expect("should parse");
         let geom = &model.worldbody.children[0].geoms[0];
-        assert_eq!(geom.geom_type, MjcfGeomType::Capsule);
+        assert_eq!(geom.geom_type.unwrap(), MjcfGeomType::Capsule);
 
         let fromto = geom.fromto.expect("should have fromto");
         assert_relative_eq!(fromto[5], 0.5, epsilon = 1e-10);
@@ -4103,7 +4163,7 @@ mod tests {
         assert_eq!(body.geoms.len(), 1);
 
         let geom = &body.geoms[0];
-        assert_eq!(geom.geom_type, MjcfGeomType::Mesh);
+        assert_eq!(geom.geom_type.unwrap(), MjcfGeomType::Mesh);
         assert_eq!(geom.mesh, Some("cube".to_string()));
     }
 
@@ -4561,9 +4621,9 @@ mod tests {
         let tendon = &model.tendons[0];
         assert_eq!(tendon.name, "cable1");
         assert_eq!(tendon.tendon_type, MjcfTendonType::Spatial);
-        assert_relative_eq!(tendon.stiffness, 1000.0, epsilon = 1e-10);
-        assert_relative_eq!(tendon.damping, 10.0, epsilon = 1e-10);
-        assert_relative_eq!(tendon.width, 0.005, epsilon = 1e-10);
+        assert_relative_eq!(tendon.stiffness.unwrap(), 1000.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon.damping.unwrap(), 10.0, epsilon = 1e-10);
+        assert_relative_eq!(tendon.width.unwrap(), 0.005, epsilon = 1e-10);
         assert_eq!(tendon.path_elements.len(), 3);
         assert_eq!(
             tendon.path_elements[0],
@@ -4667,10 +4727,11 @@ mod tests {
 
         let model = parse_mjcf_str(xml).expect("should parse");
         let tendon = &model.tendons[0];
-        assert_relative_eq!(tendon.rgba.x, 1.0, epsilon = 1e-10);
-        assert_relative_eq!(tendon.rgba.y, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(tendon.rgba.z, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(tendon.rgba.w, 1.0, epsilon = 1e-10);
+        let rgba = tendon.rgba.unwrap();
+        assert_relative_eq!(rgba.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(rgba.y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(rgba.z, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(rgba.w, 1.0, epsilon = 1e-10);
     }
 
     // ========================================================================

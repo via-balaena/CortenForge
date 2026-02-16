@@ -1230,3 +1230,233 @@ fn ac21_zero_hinge_simulation() {
         assert!(v.z < 1.0, "vertex {i} should have fallen: z={}", v.z);
     }
 }
+
+// ============================================================================
+// #27D: `node` attribute tests
+// ============================================================================
+
+/// `<flex node="...">` resolves body names to vertex positions and parents
+/// vertex bodies to the named node bodies. Vertex body_pos should be zero
+/// (vertex is at node body origin), with world position from FK.
+#[test]
+fn test_flex_node_resolves_body_positions() {
+    let mjcf = r#"
+    <mujoco model="node_test">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="n0" pos="0 0 1">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+            <body name="n1" pos="1 0 1">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+            <body name="n2" pos="0.5 0.866 1">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="tri" dim="2" node="n0 n1 n2" density="300">
+                <elasticity young="5e4" damping="0.1" thickness="0.002"/>
+                <element data="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load node flex");
+
+    // 3 node bodies → 3 flex vertices
+    assert_eq!(model.nflexvert, 3);
+
+    // Initial vertex world positions should match node body positions
+    let mut data = model.make_data();
+    data.step(&model).expect("step failed");
+
+    // After one step, vertices should be near their initial positions
+    // (gravity just started, very small displacement)
+    assert_relative_eq!(data.flexvert_xpos[0].x, 0.0, epsilon = 0.01);
+    assert_relative_eq!(data.flexvert_xpos[0].z, 1.0, epsilon = 0.01);
+    assert_relative_eq!(data.flexvert_xpos[1].x, 1.0, epsilon = 0.01);
+    assert_relative_eq!(data.flexvert_xpos[2].x, 0.5, epsilon = 0.01);
+
+    // Simulate longer — vertices should fall under gravity
+    for _ in 0..200 {
+        data.step(&model).expect("step failed");
+    }
+
+    for (i, v) in data.flexvert_xpos.iter().enumerate() {
+        assert!(
+            !v.x.is_nan() && !v.y.is_nan() && !v.z.is_nan(),
+            "NaN in node vertex {i}"
+        );
+        assert!(v.z < 1.0, "node vertex {i} should have fallen: z={}", v.z);
+    }
+}
+
+/// Node-derived flex parented to non-worldbody nodes: vertex body_pos must be
+/// zero (not the node body's local position), so FK correctly computes world
+/// position from the parent chain.
+#[test]
+fn test_flex_node_nested_body_position() {
+    let mjcf = r#"
+    <mujoco model="node_nested">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="arm" pos="0 0 2">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+                <body name="n0" pos="0 0 0">
+                    <geom type="sphere" size="0.01" mass="0.001"/>
+                </body>
+                <body name="n1" pos="1 0 0">
+                    <geom type="sphere" size="0.01" mass="0.001"/>
+                </body>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="cable" dim="1" node="n0 n1" density="100">
+                <edge stiffness="1000" damping="1"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load nested node flex");
+
+    assert_eq!(model.nflexvert, 2);
+
+    let mut data = model.make_data();
+    data.step(&model).expect("step failed");
+
+    // n0 is at arm(0,0,2) + n0(0,0,0) = world (0,0,2)
+    // n1 is at arm(0,0,2) + n1(1,0,0) = world (1,0,2)
+    // After one step, should be very close to initial positions
+    assert_relative_eq!(data.flexvert_xpos[0].x, 0.0, epsilon = 0.05);
+    assert_relative_eq!(data.flexvert_xpos[0].z, 2.0, epsilon = 0.05);
+    assert_relative_eq!(data.flexvert_xpos[1].x, 1.0, epsilon = 0.05);
+    assert_relative_eq!(data.flexvert_xpos[1].z, 2.0, epsilon = 0.05);
+}
+
+// ============================================================================
+// §27G: Node bug-fix validation tests
+// ============================================================================
+
+/// Node referencing a nonexistent body must produce an error, not silently skip.
+#[test]
+fn test_flex_node_unknown_body_errors() {
+    let mjcf = r#"
+    <mujoco model="node_unknown">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="n0" pos="0 0 0">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="cable" dim="1" node="n0 nonexistent" density="100">
+                <edge stiffness="1000" damping="1"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let result = load_model(mjcf);
+    assert!(result.is_err(), "should error on unknown node body name");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("nonexistent"),
+        "error should mention the unknown body name: {msg}"
+    );
+}
+
+/// Node-derived flex with a pinned vertex: pinned vertex has no DOFs,
+/// unpinned vertices have 3 DOFs each.
+#[test]
+fn test_flex_node_with_pinned_vertex() {
+    let mjcf = r#"
+    <mujoco model="node_pinned">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="n0" pos="0 0 0">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+            <body name="n1" pos="1 0 0">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+            <body name="n2" pos="2 0 0">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="cable" dim="1" node="n0 n1 n2" density="100">
+                <pin id="1"/>
+                <edge stiffness="1000" damping="1"/>
+                <element data="0 1  1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load node+pinned flex");
+
+    assert_eq!(model.nflexvert, 3, "should have 3 flex vertices");
+    // Vertex 1 is pinned → no DOFs (dofadr == usize::MAX)
+    assert_eq!(
+        model.flexvert_dofadr[1],
+        usize::MAX,
+        "pinned vertex should have dofadr == usize::MAX"
+    );
+    // Vertices 0 and 2 are unpinned → 3 DOFs each
+    assert_ne!(model.flexvert_dofadr[0], usize::MAX);
+    assert_ne!(model.flexvert_dofadr[2], usize::MAX);
+    // Total DOFs from flex: 2 unpinned * 3 = 6
+    // Plus DOFs from the 3 node parent bodies (if they have no joints, nv=0).
+    // Since the node bodies have no joints, total nv should be 6.
+    assert_eq!(model.nv, 6, "2 unpinned vertices * 3 DOFs = 6 total DOFs");
+}
+
+/// Deep nesting: worldbody → A(0,0,1) → B(0,0,1) → node(0,0,1).
+/// Vertex world position should accumulate to (0,0,3).
+#[test]
+fn test_flex_node_deep_nesting() {
+    let mjcf = r#"
+    <mujoco model="node_deep">
+        <option gravity="0 0 -9.81" timestep="0.001"/>
+        <worldbody>
+            <body name="A" pos="0 0 1">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+                <body name="B" pos="0 0 1">
+                    <geom type="sphere" size="0.01" mass="0.001"/>
+                    <body name="n0" pos="0 0 1">
+                        <geom type="sphere" size="0.01" mass="0.001"/>
+                    </body>
+                </body>
+            </body>
+            <body name="n1" pos="1 0 0">
+                <geom type="sphere" size="0.01" mass="0.001"/>
+            </body>
+        </worldbody>
+        <deformable>
+            <flex name="cable" dim="1" node="n0 n1" density="100">
+                <edge stiffness="1000" damping="1"/>
+                <element data="0 1"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+
+    let model = load_model(mjcf).expect("should load deep-nested node flex");
+
+    assert_eq!(model.nflexvert, 2);
+
+    let mut data = model.make_data();
+    data.step(&model).expect("step failed");
+
+    // n0 is at A(0,0,1) → B(0,0,1) → n0(0,0,1) = world (0,0,3)
+    assert_relative_eq!(data.flexvert_xpos[0].x, 0.0, epsilon = 0.05);
+    assert_relative_eq!(data.flexvert_xpos[0].z, 3.0, epsilon = 0.05);
+    // n1 is at (1,0,0)
+    assert_relative_eq!(data.flexvert_xpos[1].x, 1.0, epsilon = 0.05);
+    assert_relative_eq!(data.flexvert_xpos[1].z, 0.0, epsilon = 0.05);
+}

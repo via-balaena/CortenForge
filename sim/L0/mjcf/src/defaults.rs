@@ -130,47 +130,50 @@ impl DefaultResolver {
         let mut result = joint.clone();
 
         if let Some(defaults) = self.joint_defaults(joint.class.as_deref()) {
-            // Only apply defaults where the joint doesn't have an explicit value
-            // Joint type: only if still at default
-            if result.joint_type == crate::types::MjcfJointType::Hinge {
-                if let Some(jtype) = defaults.joint_type {
-                    result.joint_type = jtype;
-                }
+            // All Option<T> fields: element value wins if set, otherwise inherit default.
+            if result.joint_type.is_none() {
+                result.joint_type = defaults.joint_type;
             }
-
-            // Axis: only if still at default [0, 0, 1]
-            if result.axis == nalgebra::Vector3::z() {
-                if let Some(axis) = defaults.axis {
-                    result.axis = axis;
-                }
+            if result.pos.is_none() {
+                result.pos = defaults.pos;
             }
-
-            // Limited: apply default only if not explicitly set on element
+            if result.axis.is_none() {
+                result.axis = defaults.axis;
+            }
             if result.limited.is_none() {
                 if let Some(limited) = defaults.limited {
                     result.limited = Some(limited);
                 }
             }
-
-            // Damping: apply default if zero (assumed not explicitly set)
-            if result.damping == 0.0 {
-                if let Some(damping) = defaults.damping {
-                    result.damping = damping;
-                }
+            if result.ref_pos.is_none() {
+                result.ref_pos = defaults.ref_pos;
             }
-
-            // Stiffness: apply default if zero
-            if result.stiffness == 0.0 {
-                if let Some(stiffness) = defaults.stiffness {
-                    result.stiffness = stiffness;
-                }
+            if result.spring_ref.is_none() {
+                result.spring_ref = defaults.spring_ref;
             }
-
-            // Armature: apply default if zero
-            if result.armature == 0.0 {
-                if let Some(armature) = defaults.armature {
-                    result.armature = armature;
-                }
+            if result.damping.is_none() {
+                result.damping = defaults.damping;
+            }
+            if result.stiffness.is_none() {
+                result.stiffness = defaults.stiffness;
+            }
+            if result.armature.is_none() {
+                result.armature = defaults.armature;
+            }
+            if result.frictionloss.is_none() {
+                result.frictionloss = defaults.frictionloss;
+            }
+            if result.group.is_none() {
+                result.group = defaults.group;
+            }
+            if result.range.is_none() {
+                result.range = defaults.range;
+            }
+            if result.solref_limit.is_none() {
+                result.solref_limit = defaults.solref_limit;
+            }
+            if result.solimp_limit.is_none() {
+                result.solimp_limit = defaults.solimp_limit;
             }
         }
 
@@ -183,80 +186,57 @@ impl DefaultResolver {
         let mut result = geom.clone();
 
         if let Some(defaults) = self.geom_defaults(geom.class.as_deref()) {
-            // Geom type: only if still at default (Sphere)
-            if result.geom_type == crate::types::MjcfGeomType::Sphere {
-                if let Some(gtype) = defaults.geom_type {
-                    result.geom_type = gtype;
-                }
+            // All Option<T> fields: element value wins if set, otherwise inherit default.
+            if result.geom_type.is_none() {
+                result.geom_type = defaults.geom_type;
             }
-
-            // Friction: apply default if at MuJoCo default values
-            if (result.friction - nalgebra::Vector3::new(1.0, 0.005, 0.0001)).norm() < 1e-10 {
-                if let Some(friction) = defaults.friction {
-                    result.friction = friction;
-                }
+            if result.friction.is_none() {
+                result.friction = defaults.friction;
             }
-
-            // Density: apply default if at default (1000.0)
-            if (result.density - 1000.0).abs() < 1e-10 {
-                if let Some(density) = defaults.density {
-                    result.density = density;
-                }
+            if result.density.is_none() {
+                result.density = defaults.density;
             }
-
-            // Mass: apply default if None
             if result.mass.is_none() {
                 result.mass = defaults.mass;
             }
-
-            // RGBA: apply default if at default gray
-            if (result.rgba - nalgebra::Vector4::new(0.5, 0.5, 0.5, 1.0)).norm() < 1e-10 {
-                if let Some(rgba) = defaults.rgba {
-                    result.rgba = rgba;
-                }
+            if result.rgba.is_none() {
+                result.rgba = defaults.rgba;
+            }
+            if result.contype.is_none() {
+                result.contype = defaults.contype;
+            }
+            if result.conaffinity.is_none() {
+                result.conaffinity = defaults.conaffinity;
+            }
+            if result.condim.is_none() {
+                result.condim = defaults.condim;
+            }
+            if result.priority.is_none() {
+                result.priority = defaults.priority;
+            }
+            if result.solmix.is_none() {
+                result.solmix = defaults.solmix;
+            }
+            if result.margin.is_none() {
+                result.margin = defaults.margin;
+            }
+            if result.gap.is_none() {
+                result.gap = defaults.gap;
+            }
+            if result.solref.is_none() {
+                result.solref = defaults.solref;
+            }
+            if result.solimp.is_none() {
+                result.solimp = defaults.solimp;
+            }
+            if result.group.is_none() {
+                result.group = defaults.group;
             }
 
-            // Contype: apply default if at default (1)
-            if result.contype == 1 {
-                if let Some(contype) = defaults.contype {
-                    result.contype = contype;
-                }
-            }
-
-            // Conaffinity: apply default if at default (1)
-            if result.conaffinity == 1 {
-                if let Some(conaffinity) = defaults.conaffinity {
-                    result.conaffinity = conaffinity;
-                }
-            }
-
-            // Priority: apply default if at default (0)
-            if result.priority == 0 {
-                if let Some(priority) = defaults.priority {
-                    result.priority = priority;
-                }
-            }
-
-            // Solmix: apply default if at default (1.0)
-            if (result.solmix - 1.0).abs() < 1e-10 {
-                if let Some(solmix) = defaults.solmix {
-                    result.solmix = solmix;
-                }
-            }
-
-            // Margin: apply default if at default (0.0)
-            if result.margin.abs() < 1e-10 {
-                if let Some(margin) = defaults.margin {
-                    result.margin = margin;
-                }
-            }
-
-            // Gap: apply default if at default (0.0)
-            if result.gap.abs() < 1e-10 {
-                if let Some(gap) = defaults.gap {
-                    result.gap = gap;
-                }
-            }
+            // TODO(defaults): pos/orientation defaults (pos, quat, euler, axisangle,
+            // xyaxes, zaxis) are parsed and merged in MjcfGeomDefaults but cannot be
+            // applied here because MjcfGeom.pos and MjcfGeom.quat are non-Option types.
+            // Full wiring requires refactoring those fields to Option<T>.
         }
 
         result
@@ -351,26 +331,28 @@ impl DefaultResolver {
         let mut result = site.clone();
 
         if let Some(defaults) = self.site_defaults(site.class.as_deref()) {
-            // Type: apply default if at default sphere
-            if result.site_type == "sphere" {
-                if let Some(site_type) = &defaults.site_type {
-                    result.site_type.clone_from(site_type);
-                }
+            // All Option<T> fields: element value wins if set, otherwise inherit default.
+            if result.site_type.is_none() {
+                result.site_type.clone_from(&defaults.site_type);
             }
-
-            // Size: apply default if at default
-            if result.size == vec![0.01] {
-                if let Some(size) = &defaults.size {
-                    result.size.clone_from(size);
-                }
+            if result.size.is_none() {
+                result.size.clone_from(&defaults.size);
             }
-
-            // RGBA: apply default if at default red
-            if (result.rgba - nalgebra::Vector4::new(1.0, 0.0, 0.0, 1.0)).norm() < 1e-10 {
-                if let Some(rgba) = defaults.rgba {
-                    result.rgba = rgba;
-                }
+            if result.rgba.is_none() {
+                result.rgba = defaults.rgba;
             }
+            if result.group.is_none() {
+                result.group = defaults.group;
+            }
+            if result.pos.is_none() {
+                result.pos = defaults.pos;
+            }
+            if result.quat.is_none() {
+                result.quat = defaults.quat;
+            }
+            // TODO(defaults): euler/axisangle/xyaxes/zaxis defaults require orientation
+            // unification logic — the resolver would need to reconcile these alternative
+            // representations with whatever the element specifies. Rarely used in practice.
         }
 
         result
@@ -396,44 +378,27 @@ impl DefaultResolver {
                 }
             }
 
-            // Stiffness: apply default if zero
-            if result.stiffness == 0.0 {
-                if let Some(stiffness) = defaults.stiffness {
-                    result.stiffness = stiffness;
-                }
+            // All Option<T> fields: element value wins if set, otherwise inherit default.
+            if result.stiffness.is_none() {
+                result.stiffness = defaults.stiffness;
             }
-
-            // Damping: apply default if zero
-            if result.damping == 0.0 {
-                if let Some(damping) = defaults.damping {
-                    result.damping = damping;
-                }
+            if result.damping.is_none() {
+                result.damping = defaults.damping;
             }
-
-            // Friction loss: apply default if zero
-            if result.frictionloss == 0.0 {
-                if let Some(frictionloss) = defaults.frictionloss {
-                    result.frictionloss = frictionloss;
-                }
+            if result.frictionloss.is_none() {
+                result.frictionloss = defaults.frictionloss;
             }
-
-            // Springlength: apply default if not explicitly set
             if result.springlength.is_none() {
                 result.springlength = defaults.springlength;
             }
-
-            // Width: apply default if at default value (0.003)
-            if (result.width - 0.003).abs() < 1e-10 {
-                if let Some(width) = defaults.width {
-                    result.width = width;
-                }
+            if result.width.is_none() {
+                result.width = defaults.width;
             }
-
-            // RGBA: apply default if at default gray
-            if (result.rgba - nalgebra::Vector4::new(0.5, 0.5, 0.5, 1.0)).norm() < 1e-10 {
-                if let Some(rgba) = defaults.rgba {
-                    result.rgba = rgba;
-                }
+            if result.rgba.is_none() {
+                result.rgba = defaults.rgba;
+            }
+            if result.group.is_none() {
+                result.group = defaults.group;
             }
         }
 
@@ -587,11 +552,19 @@ impl DefaultResolver {
             (None, Some(c)) => Some(c.clone()),
             (Some(p), Some(c)) => Some(MjcfJointDefaults {
                 joint_type: c.joint_type.or(p.joint_type),
+                pos: c.pos.or(p.pos),
                 limited: c.limited.or(p.limited),
                 axis: c.axis.or(p.axis),
+                ref_pos: c.ref_pos.or(p.ref_pos),
+                spring_ref: c.spring_ref.or(p.spring_ref),
                 damping: c.damping.or(p.damping),
                 stiffness: c.stiffness.or(p.stiffness),
                 armature: c.armature.or(p.armature),
+                frictionloss: c.frictionloss.or(p.frictionloss),
+                group: c.group.or(p.group),
+                range: c.range.or(p.range),
+                solref_limit: c.solref_limit.or(p.solref_limit),
+                solimp_limit: c.solimp_limit.or(p.solimp_limit),
             }),
         }
     }
@@ -612,10 +585,20 @@ impl DefaultResolver {
                 rgba: c.rgba.or(p.rgba),
                 contype: c.contype.or(p.contype),
                 conaffinity: c.conaffinity.or(p.conaffinity),
+                condim: c.condim.or(p.condim),
                 priority: c.priority.or(p.priority),
                 solmix: c.solmix.or(p.solmix),
                 margin: c.margin.or(p.margin),
                 gap: c.gap.or(p.gap),
+                solref: c.solref.or(p.solref),
+                solimp: c.solimp.or(p.solimp),
+                group: c.group.or(p.group),
+                pos: c.pos.or(p.pos),
+                quat: c.quat.or(p.quat),
+                euler: c.euler.or(p.euler),
+                axisangle: c.axisangle.or(p.axisangle),
+                xyaxes: c.xyaxes.or(p.xyaxes),
+                zaxis: c.zaxis.or(p.zaxis),
             }),
         }
     }
@@ -663,6 +646,7 @@ impl DefaultResolver {
                 springlength: c.springlength.or(p.springlength),
                 width: c.width.or(p.width),
                 rgba: c.rgba.or(p.rgba),
+                group: c.group.or(p.group),
             }),
         }
     }
@@ -709,6 +693,13 @@ impl DefaultResolver {
                 site_type: c.site_type.clone().or_else(|| p.site_type.clone()),
                 size: c.size.clone().or_else(|| p.size.clone()),
                 rgba: c.rgba.or(p.rgba),
+                group: c.group.or(p.group),
+                pos: c.pos.or(p.pos),
+                quat: c.quat.or(p.quat),
+                euler: c.euler.or(p.euler),
+                axisangle: c.axisangle.or(p.axisangle),
+                xyaxes: c.xyaxes.or(p.xyaxes),
+                zaxis: c.zaxis.or(p.zaxis),
             }),
         }
     }
@@ -887,20 +878,20 @@ mod tests {
         };
 
         let resolved = resolver.apply_to_joint(&joint);
-        assert_relative_eq!(resolved.damping, 2.0, epsilon = 1e-10);
-        assert_relative_eq!(resolved.stiffness, 100.0, epsilon = 1e-10);
-        assert_eq!(resolved.joint_type, MjcfJointType::Slide);
+        assert_relative_eq!(resolved.damping.unwrap(), 2.0, epsilon = 1e-10);
+        assert_relative_eq!(resolved.stiffness.unwrap(), 100.0, epsilon = 1e-10);
+        assert_eq!(resolved.joint_type, Some(MjcfJointType::Slide));
 
         // Joint with explicit damping should keep it
         let joint_with_damping = MjcfJoint {
             class: Some("test".to_string()),
-            damping: 0.5, // Explicitly set
+            damping: Some(0.5), // Explicitly set
             ..Default::default()
         };
 
         let resolved = resolver.apply_to_joint(&joint_with_damping);
-        assert_relative_eq!(resolved.damping, 0.5, epsilon = 1e-10); // Kept explicit value
-        assert_relative_eq!(resolved.stiffness, 100.0, epsilon = 1e-10); // Got default
+        assert_relative_eq!(resolved.damping.unwrap(), 0.5, epsilon = 1e-10); // Kept explicit value
+        assert_relative_eq!(resolved.stiffness.unwrap(), 100.0, epsilon = 1e-10); // Got default
     }
 
     #[test]
@@ -924,9 +915,9 @@ mod tests {
         };
 
         let resolved = resolver.apply_to_geom(&geom);
-        assert_relative_eq!(resolved.rgba.x, 1.0, epsilon = 1e-10);
-        assert_relative_eq!(resolved.rgba.y, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(resolved.density, 500.0, epsilon = 1e-10);
+        assert_relative_eq!(resolved.rgba.unwrap().x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(resolved.rgba.unwrap().y, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(resolved.density.unwrap(), 500.0, epsilon = 1e-10);
     }
 
     #[test]
@@ -1046,21 +1037,21 @@ mod tests {
         };
 
         let resolved = resolver.apply_to_tendon(&tendon);
-        assert_relative_eq!(resolved.stiffness, 1000.0, epsilon = 1e-10);
-        assert_relative_eq!(resolved.damping, 10.0, epsilon = 1e-10);
-        assert_relative_eq!(resolved.width, 0.01, epsilon = 1e-10);
-        assert_relative_eq!(resolved.rgba.x, 1.0, epsilon = 1e-10);
+        assert_relative_eq!(resolved.stiffness.unwrap(), 1000.0, epsilon = 1e-10);
+        assert_relative_eq!(resolved.damping.unwrap(), 10.0, epsilon = 1e-10);
+        assert_relative_eq!(resolved.width.unwrap(), 0.01, epsilon = 1e-10);
+        assert_relative_eq!(resolved.rgba.unwrap().x, 1.0, epsilon = 1e-10);
 
         // Tendon with explicit stiffness should keep it
         let tendon_with_stiffness = MjcfTendon {
             class: Some("cable".to_string()),
-            stiffness: 500.0,
+            stiffness: Some(500.0),
             ..Default::default()
         };
 
         let resolved = resolver.apply_to_tendon(&tendon_with_stiffness);
-        assert_relative_eq!(resolved.stiffness, 500.0, epsilon = 1e-10); // Kept explicit
-        assert_relative_eq!(resolved.damping, 10.0, epsilon = 1e-10); // Got default
+        assert_relative_eq!(resolved.stiffness.unwrap(), 500.0, epsilon = 1e-10); // Kept explicit
+        assert_relative_eq!(resolved.damping.unwrap(), 10.0, epsilon = 1e-10); // Got default
     }
 
     #[test]
@@ -1137,8 +1128,8 @@ mod tests {
         };
 
         let resolved = resolver.apply_to_tendon(&tendon);
-        assert_relative_eq!(resolved.stiffness, 1000.0, epsilon = 1e-10); // From "strong"
-        assert_relative_eq!(resolved.damping, 1.0, epsilon = 1e-10); // Inherited from root
+        assert_relative_eq!(resolved.stiffness.unwrap(), 1000.0, epsilon = 1e-10); // From "strong"
+        assert_relative_eq!(resolved.damping.unwrap(), 1.0, epsilon = 1e-10); // Inherited from root
     }
 
     #[test]

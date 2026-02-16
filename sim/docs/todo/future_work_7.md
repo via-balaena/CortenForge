@@ -3243,6 +3243,20 @@ damper forces in engine_passive.c. See future_work_7.md #27C for details.
 ### 27D. Flex `body` / `node` Attribute Parsing + `flexvert_bodyid` Wiring
 **Status:** ✅ Done | **Effort:** S–M | **Prerequisites:** #27B
 
+> **Post-implementation note (Batch 1 review):** Both `body` and `node` are
+> fully implemented. `node` resolves body names → world positions for vertex
+> geometry, parents vertex bodies to the named node bodies with zero local
+> offset, and supports nested (non-worldbody) node bodies. `group` is fully
+> wired through L0 → L1: parsed for both geoms and flex, stored in
+> `Model.geom_group`/`Model.flex_group`, consumed by Bevy via `VisGroup`
+> component and `ViewerConfig.show_groups[0..6]`. AC2/AC3
+> (shared-DOF vertices) remain unimplemented — our Option A architecture
+> always creates a new body per vertex with 3 slide joints. Shared-body
+> vertices (multiple vertices referencing the same body name) would require
+> skipping body/joint creation and pointing `flexvert_dofadr` at the
+> existing body's DOFs. This is a niche use case with no current test or
+> RL workflow exercising it.
+
 #### Discovery Context
 
 Discovered during #27B/#27C spec review (measure-twice pass). MuJoCo's `<flex>`
@@ -3748,11 +3762,43 @@ by `ac_flexcomp_mass_overrides_density`.
 
 ### #27F — Body-coupled flex vertex integration (CRBA + FK)
 
-**Status:** ✅ Done — flex vertices promoted to real bodies with 3 slide joints
+**Status:** ✅ Done — **Option A implemented** (flex vertices promoted to real bodies with 3 slide joints)
 **Prerequisites:** #27D (body/node attr parsing), #27E (flexcomp mass)
 **Effort:** L–XL
 **RL Impact:** Low (no current RL workflow uses body-attached bare `<flex>`)
 **Correctness:** **Critical** for body-attached flex; irrelevant for `<flexcomp>`
+
+> **Post-implementation note (Batch 1 review):** The spec recommended
+> "Option C now, Option A eventually", but Option A was implemented directly.
+> Key outcomes:
+> - `mj_crba_flex`, `mj_factor_flex`, `mj_integrate_pos_flex`, RK4 flex
+>   blocks, flex gravity, pinned DOF clamping — all **deleted** (~200 LOC)
+> - `nq_rigid` / `nv_rigid` — **removed entirely**
+> - Standard CRBA/RNE/FK/integration now handles all flex physics with
+>   **zero flex-specific code** in the dynamics pipeline
+> - `mj_flex()` copies `data.xpos[body_id]` → `flexvert_xpos[i]`
+> - `flexvert_bodyid` is live runtime data used by `mj_flex()`
+> - `flex_centered` optimization not implemented (all vertices use the
+>   body-origin fast path since body_pos captures the offset)
+> - `flex_vert` (local-frame offsets) not needed — each vertex body's
+>   `body_pos` serves as the local offset from parent
+> - Remaining gap: shared-DOF vertices (AC2 from #27D) — currently every
+>   vertex always gets its own body + 3 slide joints, even if multiple
+>   vertices reference the same body name
+> - `group` attribute: fully wired for all element types — parsed from MJCF,
+>   stored in `Model.geom_group` / `Model.flex_group` / `Model.jnt_group` /
+>   `Model.site_group` / `Model.tendon_group`, consumed by `sim/L1/bevy`
+>   via `VisGroup` component and `ViewerConfig.show_groups`
+> - `rgba` attribute: wired to Model for geoms, sites, and tendons —
+>   `Model.geom_rgba` / `Model.site_rgba` / `Model.tendon_rgba` (`[f64; 4]`
+>   arrays). Renderers can query element colors.
+> - Defaults refactored: all four element types (geom, joint, site, tendon)
+>   use `Option<T>` fields. `apply_to_*()` functions use `is_none()` pattern
+>   instead of sentinel-value comparison, correctly handling explicit-default
+>   values. Missing `condim` handling added to `apply_to_geom()`.
+> - Node error handling: unknown node body names now produce a
+>   `ModelConversionError` instead of silently skipping (fixes element index
+>   misalignment bug).
 
 #### Problem
 

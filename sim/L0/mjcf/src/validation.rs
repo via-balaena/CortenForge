@@ -632,30 +632,30 @@ pub fn validate_tendons(model: &MjcfModel) -> Result<()> {
         }
 
         // Parameter validation
-        if tendon.stiffness < 0.0 {
+        let stiffness = tendon.stiffness.unwrap_or(0.0);
+        if stiffness < 0.0 {
             return Err(MjcfError::invalid_option(
                 "tendon",
                 format!(
-                    "Tendon '{}' has negative stiffness {}",
-                    tendon.name, tendon.stiffness
+                    "Tendon '{}' has negative stiffness {stiffness}",
+                    tendon.name
                 ),
             ));
         }
-        if tendon.damping < 0.0 {
+        let damping = tendon.damping.unwrap_or(0.0);
+        if damping < 0.0 {
             return Err(MjcfError::invalid_option(
                 "tendon",
-                format!(
-                    "Tendon '{}' has negative damping {}",
-                    tendon.name, tendon.damping
-                ),
+                format!("Tendon '{}' has negative damping {damping}", tendon.name),
             ));
         }
-        if tendon.frictionloss < 0.0 {
+        let frictionloss = tendon.frictionloss.unwrap_or(0.0);
+        if frictionloss < 0.0 {
             return Err(MjcfError::invalid_option(
                 "tendon",
                 format!(
-                    "Tendon '{}' has negative frictionloss {}",
-                    tendon.name, tendon.frictionloss
+                    "Tendon '{}' has negative frictionloss {frictionloss}",
+                    tendon.name
                 ),
             ));
         }

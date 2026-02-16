@@ -1285,6 +1285,8 @@ pub struct Model {
     pub jnt_solimp: Vec<[f64; 5]>,
     /// Optional joint names.
     pub jnt_name: Vec<Option<String>>,
+    /// Visualization group (0–5) for each joint. Used by renderers for group-based filtering.
+    pub jnt_group: Vec<i32>,
 
     // ==================== DOFs (indexed by dof_id) ====================
     /// Body for this DOF.
@@ -1371,6 +1373,10 @@ pub struct Model {
     /// SDF index for each geom (`None` if not an SDF geom).
     /// Length: ngeom. Only geoms with `geom_type == GeomType::Sdf` have `Some(sdf_id)`.
     pub geom_sdf: Vec<Option<usize>>,
+    /// Visualization group (0–5) for each geom. Used by renderers for group-based filtering.
+    pub geom_group: Vec<i32>,
+    /// RGBA color per geom [r, g, b, a]. Default: [0.5, 0.5, 0.5, 1.0].
+    pub geom_rgba: Vec<[f64; 4]>,
 
     // ==================== Flex Bodies ====================
     // --- Per-flex arrays (length nflex) ---
@@ -1440,6 +1446,8 @@ pub struct Model {
     /// dim=2 (shell): volumetric density kg/m³ (multiplied by thickness for area density).
     /// dim=3 (solid): volumetric density kg/m³.
     pub flex_density: Vec<f64>,
+    /// Visualization group (0–5) for each flex. Used by renderers for group-based filtering.
+    pub flex_group: Vec<i32>,
 
     // --- Per-vertex arrays (length nflexvert) ---
     /// Start index in qpos for this vertex (3 consecutive DOFs).
@@ -1537,6 +1545,10 @@ pub struct Model {
     pub site_size: Vec<Vector3<f64>>,
     /// Optional site names.
     pub site_name: Vec<Option<String>>,
+    /// Visualization group (0–5) for each site. Used by renderers for group-based filtering.
+    pub site_group: Vec<i32>,
+    /// RGBA color per site [r, g, b, a]. Default: [0.5, 0.5, 0.5, 1.0].
+    pub site_rgba: Vec<[f64; 4]>,
 
     // ==================== Sensors (indexed by sensor_id) ====================
     /// Number of sensors.
@@ -1654,6 +1666,10 @@ pub struct Model {
     /// Velocity-dependent friction loss per tendon (N).
     /// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
     pub tendon_frictionloss: Vec<f64>,
+    /// Visualization group (0–5) for each tendon. Used by renderers for group-based filtering.
+    pub tendon_group: Vec<i32>,
+    /// RGBA color per tendon [r, g, b, a]. Default: [0.5, 0.5, 0.5, 1.0].
+    pub tendon_rgba: Vec<[f64; 4]>,
     /// Number of distinct kinematic trees spanned by each tendon (§16.10.1).
     /// 0 = no bodies, 1 = single tree, 2 = two trees. Length: ntendon.
     pub tendon_treenum: Vec<usize>,
@@ -2902,6 +2918,7 @@ impl Model {
             jnt_solref: vec![],
             jnt_solimp: vec![],
             jnt_name: vec![],
+            jnt_group: vec![],
 
             // DOFs (empty)
             dof_body: vec![],
@@ -2938,6 +2955,8 @@ impl Model {
             geom_mesh: vec![],
             geom_hfield: vec![],
             geom_sdf: vec![],
+            geom_group: vec![],
+            geom_rgba: vec![],
 
             // Flex bodies (empty)
             flex_dim: vec![],
@@ -2967,6 +2986,7 @@ impl Model {
             flex_bend_stiffness: vec![],
             flex_bend_damping: vec![],
             flex_density: vec![],
+            flex_group: vec![],
             flexvert_qposadr: vec![],
             flexvert_dofadr: vec![],
             flexvert_mass: vec![],
@@ -3009,6 +3029,8 @@ impl Model {
             site_quat: vec![],
             site_size: vec![],
             site_name: vec![],
+            site_group: vec![],
+            site_rgba: vec![],
 
             // Sensors (empty)
             nsensor: 0,
@@ -3059,6 +3081,8 @@ impl Model {
             tendon_solref: vec![],
             tendon_solimp: vec![],
             tendon_frictionloss: vec![],
+            tendon_group: vec![],
+            tendon_rgba: vec![],
             tendon_treenum: vec![],
             tendon_tree: vec![],
             wrap_type: vec![],
@@ -25017,5 +25041,433 @@ mod jac_site_tests {
         for k in 0..3 {
             assert_relative_eq!(jac_r[(k, 0)], 0.0, epsilon = 1e-14);
         }
+    }
+}
+
+// =============================================================================
+// Unit tests — contact_param (#24–#27) Batch 1 contact parameter combination
+// =============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod contact_param_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Helper to create a Model with two geoms and configurable contact fields.
+    fn make_two_geom_model() -> Model {
+        let mut model = Model::empty();
+        model.ngeom = 2;
+        model.geom_type = vec![GeomType::Sphere; 2];
+        model.geom_body = vec![0; 2];
+        model.geom_pos = vec![Vector3::zeros(); 2];
+        model.geom_quat = vec![UnitQuaternion::identity(); 2];
+        model.geom_size = vec![Vector3::new(1.0, 1.0, 1.0); 2];
+        model.geom_name = vec![None; 2];
+        model.geom_rbound = vec![1.0; 2];
+        model.geom_mesh = vec![None; 2];
+        model.geom_contype = vec![1; 2];
+        model.geom_conaffinity = vec![1; 2];
+
+        // Defaults matching MuJoCo
+        model.geom_friction = vec![Vector3::new(1.0, 0.005, 0.0001); 2];
+        model.geom_condim = vec![3; 2];
+        model.geom_solref = vec![[0.02, 1.0]; 2];
+        model.geom_solimp = vec![[0.9, 0.95, 0.001, 0.5, 2.0]; 2];
+        model.geom_priority = vec![0; 2];
+        model.geom_solmix = vec![1.0; 2];
+        model.geom_margin = vec![0.0; 2];
+        model.geom_gap = vec![0.0; 2];
+        model
+    }
+
+    // ========================================================================
+    // #24 — Friction combination: element-wise max (NOT geometric mean)
+    // ========================================================================
+
+    #[test]
+    fn friction_uses_element_wise_max() {
+        // AC1: Asymmetric friction → max wins, not geometric mean
+        let mut model = make_two_geom_model();
+        model.geom_friction[0] = Vector3::new(0.8, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.2, 0.05, 0.003);
+
+        let (_condim, _gap, _solref, _solimp, mu) = contact_param(&model, 0, 1);
+
+        // Element-wise max: slide=max(0.8,0.2)=0.8, spin=max(0.01,0.05)=0.05, roll=max(0.001,0.003)=0.003
+        assert_relative_eq!(mu[0], 0.8, epsilon = 1e-15); // sliding1
+        assert_relative_eq!(mu[1], 0.8, epsilon = 1e-15); // sliding2
+        assert_relative_eq!(mu[2], 0.05, epsilon = 1e-15); // torsional
+        assert_relative_eq!(mu[3], 0.003, epsilon = 1e-15); // rolling1
+        assert_relative_eq!(mu[4], 0.003, epsilon = 1e-15); // rolling2
+
+        // Verify NOT geometric mean: sqrt(0.8*0.2) ≈ 0.4, which != 0.8
+        assert!((mu[0] - (0.8_f64 * 0.2).sqrt()).abs() > 0.01);
+    }
+
+    #[test]
+    fn friction_symmetric_equal() {
+        // AC2: Equal friction → max = same value
+        let mut model = make_two_geom_model();
+        model.geom_friction[0] = Vector3::new(0.5, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.5, 0.01, 0.001);
+
+        let (_, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        assert_relative_eq!(mu[0], 0.5, epsilon = 1e-15);
+        assert_relative_eq!(mu[2], 0.01, epsilon = 1e-15);
+        assert_relative_eq!(mu[3], 0.001, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn friction_zero_one_geom() {
+        // AC3: One geom zero friction → max picks the other
+        let mut model = make_two_geom_model();
+        model.geom_friction[0] = Vector3::new(0.0, 0.0, 0.0);
+        model.geom_friction[1] = Vector3::new(0.6, 0.02, 0.002);
+
+        let (_, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        assert_relative_eq!(mu[0], 0.6, epsilon = 1e-15);
+        assert_relative_eq!(mu[2], 0.02, epsilon = 1e-15);
+        assert_relative_eq!(mu[3], 0.002, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn friction_3_to_5_unpack() {
+        // Verify 3→5 unpack: [slide, slide, spin, roll, roll]
+        let mut model = make_two_geom_model();
+        model.geom_friction[0] = Vector3::new(0.7, 0.03, 0.004);
+        model.geom_friction[1] = Vector3::new(0.1, 0.01, 0.001);
+
+        let (_, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        assert_relative_eq!(mu[0], mu[1], epsilon = 1e-15); // sliding1 == sliding2
+        assert_relative_eq!(mu[3], mu[4], epsilon = 1e-15); // rolling1 == rolling2
+        assert!((mu[0] - mu[2]).abs() > 1e-10); // sliding != torsional
+        assert!((mu[2] - mu[3]).abs() > 1e-10); // torsional != rolling
+    }
+
+    #[test]
+    fn friction_not_affected_by_solmix() {
+        // AC4: Solmix weight does NOT affect friction (only affects solref/solimp)
+        let mut model = make_two_geom_model();
+        model.geom_friction[0] = Vector3::new(0.3, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.9, 0.05, 0.005);
+        model.geom_solmix[0] = 100.0; // Extreme weight toward geom 0
+        model.geom_solmix[1] = 0.001;
+
+        let (_, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        // Friction should still be element-wise max, regardless of solmix
+        assert_relative_eq!(mu[0], 0.9, epsilon = 1e-15);
+        assert_relative_eq!(mu[2], 0.05, epsilon = 1e-15);
+        assert_relative_eq!(mu[3], 0.005, epsilon = 1e-15);
+    }
+
+    // ========================================================================
+    // #25 — Priority gating: higher priority wins verbatim
+    // ========================================================================
+
+    #[test]
+    fn priority_higher_wins_verbatim() {
+        // AC1: Higher priority geom's params copied verbatim, no combination
+        let mut model = make_two_geom_model();
+        model.geom_priority[0] = 5;
+        model.geom_priority[1] = 0;
+        model.geom_friction[0] = Vector3::new(0.3, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.9, 0.05, 0.005);
+        model.geom_condim[0] = 1;
+        model.geom_condim[1] = 6;
+        model.geom_solref[0] = [0.01, 0.5];
+        model.geom_solref[1] = [0.05, 2.0];
+        model.geom_solimp[0] = [0.8, 0.9, 0.002, 0.4, 1.5];
+        model.geom_solimp[1] = [0.95, 0.99, 0.01, 0.6, 3.0];
+
+        let (condim, _gap, solref, solimp, mu) = contact_param(&model, 0, 1);
+
+        // Geom 0 wins (priority 5 > 0) — all params from geom 0
+        assert_eq!(condim, 1);
+        for (i, &expected) in [0.01, 0.5].iter().enumerate() {
+            assert_relative_eq!(solref[i], expected, epsilon = 1e-15);
+        }
+        for (i, &expected) in [0.8, 0.9, 0.002, 0.4, 1.5].iter().enumerate() {
+            assert_relative_eq!(solimp[i], expected, epsilon = 1e-15);
+        }
+        assert_relative_eq!(mu[0], 0.3, epsilon = 1e-15); // geom 0's friction
+    }
+
+    #[test]
+    fn priority_lower_index_can_lose() {
+        // AC2: Priority on geom2 > geom1 → geom2 wins
+        let mut model = make_two_geom_model();
+        model.geom_priority[0] = -1;
+        model.geom_priority[1] = 3;
+        model.geom_friction[0] = Vector3::new(0.9, 0.05, 0.005);
+        model.geom_friction[1] = Vector3::new(0.2, 0.01, 0.001);
+        model.geom_condim[0] = 6;
+        model.geom_condim[1] = 1;
+
+        let (condim, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        // Geom 1 wins (priority 3 > -1)
+        assert_eq!(condim, 1);
+        assert_relative_eq!(mu[0], 0.2, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn priority_equal_combines() {
+        // AC3: Equal priority → combination rules (not verbatim copy)
+        let mut model = make_two_geom_model();
+        model.geom_priority[0] = 2;
+        model.geom_priority[1] = 2;
+        model.geom_friction[0] = Vector3::new(0.3, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.9, 0.05, 0.005);
+        model.geom_condim[0] = 1;
+        model.geom_condim[1] = 4;
+
+        let (condim, _, _, _, mu) = contact_param(&model, 0, 1);
+
+        // Equal priority → condim = max(1, 4) = 4
+        assert_eq!(condim, 4);
+        // Friction = max → 0.9 (not 0.3 verbatim)
+        assert_relative_eq!(mu[0], 0.9, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn priority_negative_values() {
+        // AC4: Negative priorities work correctly
+        let mut model = make_two_geom_model();
+        model.geom_priority[0] = -5;
+        model.geom_priority[1] = -2;
+        model.geom_condim[0] = 6;
+        model.geom_condim[1] = 1;
+
+        let (condim, _, _, _, _) = contact_param(&model, 0, 1);
+
+        // Geom 1 wins (priority -2 > -5) → condim from geom 1
+        assert_eq!(condim, 1);
+    }
+
+    #[test]
+    fn priority_gap_still_additive() {
+        // AC5: Gap is additive even when priority wins
+        let mut model = make_two_geom_model();
+        model.geom_priority[0] = 10;
+        model.geom_priority[1] = 0;
+        model.geom_gap[0] = 0.01;
+        model.geom_gap[1] = 0.02;
+
+        let (_, gap, _, _, _) = contact_param(&model, 0, 1);
+
+        // Gap is always additive regardless of priority
+        assert_relative_eq!(gap, 0.03, epsilon = 1e-15);
+    }
+
+    // ========================================================================
+    // #26 — Solmix: solver parameter mixing weight
+    // ========================================================================
+
+    #[test]
+    fn solmix_weight_equal_default() {
+        // AC1: Default solmix=1.0 → weight = 0.5 → equal average
+        let mix = solmix_weight(1.0, 1.0);
+        assert_relative_eq!(mix, 0.5, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solmix_weight_asymmetric() {
+        // AC2: solmix 3:1 → weight = 3/4 = 0.75 for entity 1
+        let mix = solmix_weight(3.0, 1.0);
+        assert_relative_eq!(mix, 0.75, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solmix_weight_both_below_minval() {
+        // AC3: Both below threshold → equal weight (0.5)
+        let mix = solmix_weight(1e-20, 1e-20);
+        assert_relative_eq!(mix, 0.5, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solmix_weight_one_below_minval() {
+        // AC4: s1 below threshold → entity 2 dominates (mix=0)
+        let mix = solmix_weight(0.0, 1.0);
+        assert_relative_eq!(mix, 0.0, epsilon = 1e-15);
+
+        // AC5: s2 below threshold → entity 1 dominates (mix=1)
+        let mix2 = solmix_weight(1.0, 0.0);
+        assert_relative_eq!(mix2, 1.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solmix_weight_exactly_at_minval() {
+        // Edge case: exactly at MJ_MINVAL boundary
+        let mix = solmix_weight(1e-15, 1e-15);
+        // Both at 1e-15 = MJ_MINVAL → both "valid" → s1/(s1+s2) = 0.5
+        assert_relative_eq!(mix, 0.5, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solref_combination_standard_mode() {
+        // AC6: Standard solref (both > 0) → weighted average
+        let sr1 = [0.01, 0.5];
+        let sr2 = [0.05, 2.0];
+        let mix = 0.75; // entity 1 dominates
+
+        let sr = combine_solref(sr1, sr2, mix);
+
+        // 0.75*0.01 + 0.25*0.05 = 0.0075 + 0.0125 = 0.02
+        assert_relative_eq!(sr[0], 0.02, epsilon = 1e-15);
+        // 0.75*0.5 + 0.25*2.0 = 0.375 + 0.5 = 0.875
+        assert_relative_eq!(sr[1], 0.875, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solref_combination_direct_mode() {
+        // AC7: Direct solref (at least one <= 0) → element-wise minimum
+        let sr1 = [-100.0, -5.0];
+        let sr2 = [-200.0, -3.0];
+        let mix = 0.5; // Should be ignored for direct mode
+
+        let sr = combine_solref(sr1, sr2, mix);
+
+        assert_relative_eq!(sr[0], -200.0, epsilon = 1e-15); // min(-100, -200)
+        assert_relative_eq!(sr[1], -5.0, epsilon = 1e-15); // min(-5, -3)
+    }
+
+    #[test]
+    fn solref_combination_mixed_mode_falls_to_direct() {
+        // AC8: One standard, one direct → direct mode (element-wise min)
+        let sr1 = [0.02, 1.0]; // standard (positive)
+        let sr2 = [-100.0, -5.0]; // direct (negative)
+
+        let sr = combine_solref(sr1, sr2, 0.5);
+
+        // At least one <= 0 → element-wise min
+        assert_relative_eq!(sr[0], -100.0, epsilon = 1e-15);
+        assert_relative_eq!(sr[1], -5.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn solimp_combination_weighted_average() {
+        // AC9: Solimp always uses weighted average
+        let si1 = [0.8, 0.9, 0.002, 0.4, 1.5];
+        let si2 = [0.95, 0.99, 0.01, 0.6, 3.0];
+        let mix = 0.75;
+
+        let si = combine_solimp(si1, si2, mix);
+
+        for i in 0..5 {
+            let expected = 0.75 * si1[i] + 0.25 * si2[i];
+            assert_relative_eq!(si[i], expected, epsilon = 1e-15);
+        }
+    }
+
+    #[test]
+    fn solmix_affects_solref_solimp_not_friction() {
+        // AC10: Full integration — solmix weights affect solref/solimp but NOT friction
+        let mut model = make_two_geom_model();
+        model.geom_solmix[0] = 9.0;
+        model.geom_solmix[1] = 1.0;
+        // mix = 9/(9+1) = 0.9 → entity 0 has 90% weight
+
+        model.geom_solref[0] = [0.01, 0.5];
+        model.geom_solref[1] = [0.05, 2.0];
+        model.geom_solimp[0] = [0.8, 0.9, 0.002, 0.4, 1.5];
+        model.geom_solimp[1] = [0.95, 0.99, 0.01, 0.6, 3.0];
+        model.geom_friction[0] = Vector3::new(0.3, 0.01, 0.001);
+        model.geom_friction[1] = Vector3::new(0.9, 0.05, 0.005);
+
+        let (_, _, solref, solimp, mu) = contact_param(&model, 0, 1);
+
+        // Solref: 0.9*0.01 + 0.1*0.05 = 0.009 + 0.005 = 0.014
+        assert_relative_eq!(solref[0], 0.014, epsilon = 1e-15);
+        // Solref[1]: 0.9*0.5 + 0.1*2.0 = 0.45 + 0.2 = 0.65
+        assert_relative_eq!(solref[1], 0.65, epsilon = 1e-15);
+
+        // Solimp: weighted average with mix=0.9
+        for i in 0..5 {
+            let expected = 0.9 * model.geom_solimp[0][i] + 0.1 * model.geom_solimp[1][i];
+            assert_relative_eq!(solimp[i], expected, epsilon = 1e-15);
+        }
+
+        // Friction: still element-wise max, NOT weighted
+        assert_relative_eq!(mu[0], 0.9, epsilon = 1e-15);
+        assert_relative_eq!(mu[2], 0.05, epsilon = 1e-15);
+        assert_relative_eq!(mu[3], 0.005, epsilon = 1e-15);
+    }
+
+    // ========================================================================
+    // #27 — Contact margin/gap
+    // ========================================================================
+
+    #[test]
+    fn gap_additive() {
+        // AC1: Gap is additive from both geoms
+        let mut model = make_two_geom_model();
+        model.geom_gap[0] = 0.01;
+        model.geom_gap[1] = 0.02;
+
+        let (_, gap, _, _, _) = contact_param(&model, 0, 1);
+
+        assert_relative_eq!(gap, 0.03, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn gap_default_zero() {
+        // AC2: Default gap=0.0 → no change to existing behavior
+        let model = make_two_geom_model();
+        let (_, gap, _, _, _) = contact_param(&model, 0, 1);
+
+        assert_relative_eq!(gap, 0.0, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn includemargin_equals_margin_minus_gap() {
+        // AC3: includemargin = margin - gap (tested via make_contact_from_geoms)
+        let mut model = make_two_geom_model();
+        model.geom_gap[0] = 0.005;
+        model.geom_gap[1] = 0.003;
+        // gap = 0.008
+
+        let margin = 0.02; // effective margin from broadphase
+        let contact =
+            make_contact_from_geoms(&model, Vector3::zeros(), Vector3::z(), 0.01, 0, 1, margin);
+
+        // includemargin = 0.02 - 0.008 = 0.012
+        assert_relative_eq!(contact.includemargin, 0.012, epsilon = 1e-15);
+    }
+
+    #[test]
+    fn condim_max_combination() {
+        // Condim uses max when equal priority
+        let mut model = make_two_geom_model();
+        model.geom_condim[0] = 1;
+        model.geom_condim[1] = 4;
+
+        let (condim, _, _, _, _) = contact_param(&model, 0, 1);
+
+        assert_eq!(condim, 4);
+    }
+
+    #[test]
+    fn defaults_produce_standard_behavior() {
+        // AC4: All defaults → standard MuJoCo behavior
+        let model = make_two_geom_model();
+
+        let (condim, gap, solref, solimp, mu) = contact_param(&model, 0, 1);
+
+        assert_eq!(condim, 3);
+        assert_relative_eq!(gap, 0.0, epsilon = 1e-15);
+        for (i, &expected) in [0.02, 1.0].iter().enumerate() {
+            assert_relative_eq!(solref[i], expected, epsilon = 1e-15);
+        }
+        for (i, &expected) in [0.9, 0.95, 0.001, 0.5, 2.0].iter().enumerate() {
+            assert_relative_eq!(solimp[i], expected, epsilon = 1e-15);
+        }
+        assert_relative_eq!(mu[0], 1.0, epsilon = 1e-15);
+        assert_relative_eq!(mu[2], 0.005, epsilon = 1e-15);
+        assert_relative_eq!(mu[3], 0.0001, epsilon = 1e-15);
     }
 }

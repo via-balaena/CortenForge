@@ -35,6 +35,13 @@ impl CollisionShapeVisual {
     }
 }
 
+/// Visualization group (0–5), matching `MuJoCo` semantics.
+///
+/// Entities with this component can be filtered by group in [`ViewerConfig`](crate::resources::ViewerConfig).
+/// Spawners should read `model.geom_group[i]` and insert `VisGroup(group)` on geom entities.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VisGroup(pub i32);
+
 /// Type of collision shape being visualized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
