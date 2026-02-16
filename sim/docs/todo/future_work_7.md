@@ -2503,7 +2503,7 @@ Parsing without runtime wiring would be misleading. Add when runtime is ready.
 | `young` | real | 0 | `young` | `flex_young` | Relocate in #27B |
 | `poisson` | real | 0 | `poisson` | `flex_poisson` | Relocate in #27B |
 | `damping` | real | 0 | `damping` | `flex_damping` | Relocate in #27B |
-| `thickness` | real | -1 (sentinel: compute from mesh) | `thickness` | `flex_thickness` | Relocate in #27B |
+| `thickness` | real | -1 (sentinel: "not set") | `thickness` | `flex_thickness` | Relocate in #27B |
 | `elastic2d` | keyword `[none,bend,stretch,both]` | "none" | — | — | Deferred (not implemented) |
 
 **Note on default changes:** Our `MjcfFlex::default()` currently uses `young: 1e6`
@@ -2623,7 +2623,7 @@ edge_stiffness: 0.0,
 edge_damping: 0.0,
 // Fix existing defaults to match MuJoCo XML spec:
 young: 0.0,          // was: 1e6 — MuJoCo default is 0
-thickness: -1.0,     // was: 0.001 — MuJoCo default is -1 (sentinel: compute from mesh)
+thickness: -1.0,     // was: 0.001 — MuJoCo default is -1 (sentinel: "not set")
 ```
 
 ##### S2. Extract child element parsing helpers
