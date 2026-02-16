@@ -347,7 +347,6 @@ sim/L0/tests/
 │   ├── implicit_integration.rs
 │   ├── keyframes.rs
 │   ├── mjcf_sensors.rs
-│   ├── musculoskeletal.rs
 │   ├── newton_solver.rs
 │   ├── passive_forces.rs
 │   ├── rk4_integration.rs

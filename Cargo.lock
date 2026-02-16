@@ -3312,9 +3312,7 @@ dependencies = [
  "sim-core",
  "sim-gpu",
  "sim-mjcf",
- "sim-muscle",
  "sim-sensor",
- "sim-tendon",
  "sim-types",
 ]
 
@@ -3335,9 +3333,7 @@ dependencies = [
  "sim-core",
  "sim-gpu",
  "sim-mjcf",
- "sim-muscle",
  "sim-sensor",
- "sim-tendon",
  "sim-types",
 ]
 
@@ -3371,9 +3367,7 @@ dependencies = [
  "sim-core",
  "sim-gpu",
  "sim-mjcf",
- "sim-muscle",
  "sim-sensor",
- "sim-tendon",
  "sim-types",
 ]
 
@@ -3588,9 +3582,7 @@ dependencies = [
  "sim-core",
  "sim-gpu",
  "sim-mjcf",
- "sim-muscle",
  "sim-sensor",
- "sim-tendon",
  "sim-types",
 ]
 
@@ -3630,8 +3622,6 @@ dependencies = [
  "sim-core",
  "sim-gpu",
  "sim-mjcf",
- "sim-muscle",
- "sim-tendon",
  "sim-types",
 ]
 
@@ -7815,9 +7805,7 @@ dependencies = [
  "nalgebra",
  "sim-core",
  "sim-mjcf",
- "sim-muscle",
  "sim-sensor",
- "sim-tendon",
  "sim-types",
  "sim-urdf",
 ]
