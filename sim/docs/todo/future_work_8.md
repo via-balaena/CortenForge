@@ -1371,16 +1371,24 @@ computed per-row during constraint assembly, PGS/CG automatically pick up
 
 ## 32. Pyramidal Friction Cones
 
-**Status:** Stub | **Effort:** L | **Prerequisites:** None (but #29 simplifies
-the PGS path; can implement before or after #29)
+**Status:** Stub | **Effort:** L | **Prerequisites:** #29 (✅ complete), #31 (✅ complete)
 
 ### Current State
 
-`Model.cone` is stored (0=pyramidal, 1=elliptic, line 1756). When pyramidal is
-requested with contacts, the Newton solver falls back to PGS (line 19394–19400).
-There is no actual pyramidal cone implementation — the fallback uses elliptic
-cones. MuJoCo supports both; pyramidal cones linearize the friction constraint
-into facets.
+`Model.cone` is stored (0=pyramidal, 1=elliptic, line ~1771) and wired from
+`<option cone="..."/>` via `set_options()` (§31 fix). The default is `cone: 1`
+(elliptic) — note MuJoCo defaults to pyramidal; this will need changing.
+
+When `cone=0`, contacts are classified as `ContactNonElliptic` and handled as
+scalar unilateral constraints (Quadratic/Satisfied) in `classify_constraint_states`
+(line ~15171). Newton runs normally — there is no cone-specific fallback; the
+general Newton failure fallback (Cholesky/max-iter) at line ~17760 falls back
+to PGS regardless of cone type.
+
+There is no actual pyramidal cone implementation — `ContactNonElliptic` treats
+each contact row as an independent unilateral constraint without the pyramidal
+facet Jacobian structure. MuJoCo supports both; pyramidal cones linearize the
+friction constraint into facets with `2*(dim-1)` rows per contact.
 
 ### MuJoCo Reference
 
@@ -1469,16 +1477,11 @@ pyramidal contacts:
 - The HessianCone update is skipped
 - Facets are treated as independent limit-like unilateral constraints
 
-**Decision**: Match MuJoCo behavior. Newton runs with pyramidal contacts but
-uses simplified state classification (no Cone state). Each pyramidal facet is
-a unilateral constraint with `Quadratic/Satisfied` classification only. Our
-existing Newton fallback-to-PGS guard at line 19394 should be updated to
-allow Newton to run with pyramidal cones, using the simplified classification.
-
-Alternatively, keep the PGS fallback as-is for initial implementation, and
-add Newton pyramidal support in a follow-up. Both are MuJoCo-conformant at
-the solver selection level (MuJoCo does not prevent Newton with pyramidal,
-it just degrades gracefully).
+**Decision**: Match MuJoCo behavior. Newton already runs regardless of cone
+type (no cone-specific fallback exists). `ContactNonElliptic` is already
+handled as Quadratic/Satisfied in `classify_constraint_states` (line ~15171).
+The new `ContactPyramidal` variant should use the same Quadratic/Satisfied
+classification — each facet is a unilateral constraint with no Cone state.
 
 #### R diagonal scaling for pyramidal facets
 
@@ -1594,8 +1597,21 @@ Each pair of pyramidal facet rows has:
 
 #### 32.3 New ConstraintType variant
 
-Add `ContactPyramidal` and `ContactFrictionless` to the `ConstraintType` enum,
-matching MuJoCo's `mjtConstraint`:
+Current enum (line ~868):
+```rust
+pub enum ConstraintType {
+    Equality,
+    FrictionLoss,        // DOF + tendon friction (combined)
+    LimitJoint,
+    LimitTendon,
+    ContactNonElliptic,  // currently: frictionless + pyramidal fallback
+    ContactElliptic,
+    FlexEdge,
+}
+```
+
+Add `ContactPyramidal` and split `ContactNonElliptic` into
+`ContactFrictionless` + `ContactPyramidal`, matching MuJoCo's `mjtConstraint`:
 
 ```rust
 // MuJoCo correspondence:
@@ -1614,19 +1630,23 @@ pub enum ConstraintType {
     FrictionTendon,      // NEW: separate from DOF friction
     LimitJoint,
     LimitTendon,
-    ContactFrictionless, // was ContactNonElliptic
+    ContactFrictionless, // was ContactNonElliptic (condim=1 or mu≈0)
     ContactPyramidal,    // NEW: pyramidal friction cone facet
     ContactElliptic,
     FlexEdge,
 }
 ```
 
+Note: `FrictionLoss` → `FrictionDof` + `FrictionTendon` split is optional for
+§32 but recommended for MuJoCo enum parity. Can be deferred to a separate
+cleanup task if preferred.
+
 Pyramidal facets use limit-like classification (Quadratic/Satisfied), not
 the elliptic Cone state. In PGS: `f = max(0, f)`. In CG projection: same.
 
 #### 32.4 PGS/CG projection for pyramidal
 
-In the unified PGS (from #29) or the current contact PGS:
+In the unified PGS (#29, ✅ complete), add a match arm:
 
 ```rust
 ConstraintType::ContactPyramidal => {
@@ -1641,26 +1661,24 @@ for pyramidal contacts.
 
 #### 32.5 Newton with pyramidal (simplified classification)
 
-MuJoCo's Newton solver runs with pyramidal cones but uses simplified state
-classification: `Quadratic/Satisfied` only (never `Cone`). Two options:
+MuJoCo's Newton solver runs with pyramidal cones using simplified state
+classification: `Quadratic/Satisfied` only (never `Cone`). Our Newton solver
+already runs regardless of cone type (no cone-specific fallback exists), and
+`classify_constraint_states()` already handles `ContactNonElliptic` with
+Quadratic/Satisfied at line ~15171. Add `ContactPyramidal` to the same arm:
 
-**Option A (MuJoCo-conformant)**: Allow Newton to run with pyramidal contacts.
-In `classify_constraint_states()`, pyramidal facet rows use:
 ```rust
-ConstraintType::ContactPyramidal => {
-    if jar < 0.0 { ConstraintState::Quadratic }
-    else { ConstraintState::Satisfied }
+ConstraintType::LimitJoint
+| ConstraintType::LimitTendon
+| ConstraintType::ContactNonElliptic
+| ConstraintType::ContactPyramidal => {
+    // jar < 0 → Quadratic; jar >= 0 → Satisfied
+    ...
 }
 ```
 
 No HessianCone modification for pyramidal facets. Each facet is treated as
 an independent unilateral constraint (like a limit).
-
-**Option B (simpler)**: Keep the PGS fallback for pyramidal. This is also
-conformant since MuJoCo's Newton with pyramidal is effectively degraded.
-
-**Recommendation**: Option A for conformance. The implementation is simple
-since each pyramidal facet row is just a Quadratic/Satisfied constraint.
 
 #### 32.6 Force recovery for output
 
@@ -1760,18 +1778,19 @@ during penetration, so both terms contribute.
 5. Force recovery: `f_normal = Σfacets`, `f_friction = μ·(f_pos - f_neg)`.
 6. R scaling: pyramidal facet R = `2·μ_reg²·R_normal` where `μ_reg = friction[0]·√(1/impratio)` (matching MuJoCo). When `impratio=1`: `R = 2·friction[0]²·R_normal`.
 7. All facet rows share `efc_pos = con.dist` and `efc_margin = con.includemargin`.
-8. Newton with pyramidal: either runs with Quadratic/Satisfied classification
-   (Option A) or falls back to PGS (Option B). Document which option is chosen.
+8. Newton with pyramidal: runs with Quadratic/Satisfied classification
+   (no Cone state, no HessianCone). No cone-specific fallback needed.
 9. State classification: pyramidal facets never enter `Cone` state.
 10. `solreffriction` has NO effect on pyramidal contacts.
-15. Pyramidal facets have NONZERO K (unlike elliptic friction rows which get K=0).
+    (Already verified by §31 test `test_s31_pyramidal_ignores_solreffriction`.)
+11. Pyramidal facets have NONZERO K (unlike elliptic friction rows which get K=0).
     Verify `aref` includes both `-B·vel` and `-K·imp·pos` terms for each facet.
-11. Test: flat ground contact, condim=3, pyramidal vs elliptic. Total normal
+12. Test: flat ground contact, condim=3, pyramidal vs elliptic. Total normal
     force and friction force magnitude match MuJoCo 3.4.0 within 5%.
-12. Test: box on inclined plane, condim=3, pyramidal. Sliding friction force
+13. Test: box on inclined plane, condim=3, pyramidal. Sliding friction force
     direction matches MuJoCo within 5%.
-13. `ConstraintType::ContactPyramidal` variant added and handled by all solvers.
-14. `mju_decodePyramid` equivalent implemented for force recovery (converting
+14. `ConstraintType::ContactPyramidal` variant added and handled by all solvers.
+15. `mju_decodePyramid` equivalent implemented for force recovery (converting
     facet forces to physical normal+friction forces for user output).
     Note: `mju_encodePyramid` is a user-facing utility in MuJoCo, NOT used
     internally for warmstart. MuJoCo warmstarts from accelerations
@@ -1782,11 +1801,14 @@ during penetration, so both terms contribute.
 ### Files
 
 - `sim/L0/core/src/mujoco_pipeline.rs`:
-  - `ConstraintType` enum — add `ContactPyramidal`
-  - `assemble_unified_constraints()` — pyramidal contact row emission
-  - `classify_constraint_states()` — handle `ContactPyramidal` (Quadratic/Satisfied)
-  - PGS/CG projection — non-negativity for pyramidal facets
-  - Force recovery functions — pyramidal facet → physical forces
-  - `count_contact_rows()` — cone-type-dependent row count
-- `sim/L0/tests/integration/contact_solver.rs` — pyramidal cone tests
-- `sim/L0/tests/integration/newton_solver.rs` — verify PGS fallback for pyramidal
+  - `ConstraintType` enum (line ~868) — add `ContactPyramidal`, optionally split `ContactNonElliptic`
+  - `assemble_unified_constraints()` section 3f (line ~14422) — pyramidal contact row emission
+  - `classify_constraint_states()` (line ~15171) — add `ContactPyramidal` to Quadratic/Satisfied arm
+  - PGS projection (line ~14636) — non-negativity for pyramidal facets
+  - CG projection — same non-negativity treatment
+  - Noslip postprocessor (line ~16891) — handle pyramidal facets
+  - R scaling — pyramidal `Rpy = 2·μ_reg²·R_normal` after `compute_regularization`
+  - Force recovery — new `decode_pyramid()` function for physical force output
+  - Model default `cone: 1` (line ~3108) — change to `cone: 0` (MuJoCo default)
+- `sim/L0/tests/integration/unified_solvers.rs` — pyramidal cone tests (PGS, CG, Newton)
+- `sim/L0/tests/integration/newton_solver.rs` — Newton + pyramidal classification tests
