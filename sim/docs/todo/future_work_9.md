@@ -87,13 +87,11 @@ These are currently absent from our `noslip_postprocess()`. For PGS/CG conforman
 
 ##### S4. Cone projection modes
 
-The existing implementation uses elliptic cone projection. MuJoCo supports both
-pyramidal and elliptic cones in noslip. Since CortenForge uses elliptic cones
-exclusively (the `model.cone` field controls this, and pyramidal is currently only
-a fallthrough from Newton), the elliptic projection is sufficient for now.
-
-If pyramidal cone support is added later, `noslip_postprocess()` must dispatch to
-the correct projection based on `model.cone`.
+Both pyramidal (`cone: 0`, MuJoCo default, §32 ✅) and elliptic (`cone: 1`)
+friction cones are fully implemented. Pyramidal contacts skip noslip entirely
+(no separate friction rows — §32), so noslip only operates on elliptic friction
+rows. If noslip needs to support pyramidal in the future, `noslip_postprocess()`
+must dispatch to the correct projection based on `model.cone`.
 
 #### Acceptance Criteria
 

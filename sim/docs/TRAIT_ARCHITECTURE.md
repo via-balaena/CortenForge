@@ -203,7 +203,7 @@ to the same answer in the limit.
 | **Integrator** | `Euler`, `ImplicitSpringDamper`, `ImplicitFast`, `Implicit`, `RungeKutta4` | Symplectic Euler, Verlet | `Integrator` enum + match in `step()` |
 | **Contact solver** | PGS, CG, Newton | (see Tier 1d for formulation changes) | `SolverType` enum + match |
 | **Broad-phase** | Sweep-and-prune | Spatial hashing, BVH | `BroadPhase` enum + match |
-| **Friction cone** | Elliptic (linearized projection) | Pyramidal (#32) | `ConeType` enum + match |
+| **Friction cone** | Elliptic (linearized projection), Pyramidal (facet decomposition, §32 ✅) | — | `Model.cone` enum + match |
 
 These stay as enums. They're dispatch points in a hot loop. Match-based
 dispatch is zero-cost, exhaustive at compile time, and trivially inlined. A
