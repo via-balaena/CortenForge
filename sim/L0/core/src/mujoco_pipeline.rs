@@ -5575,12 +5575,14 @@ fn mj_collision_flex(model: &Model, data: &mut Data) {
             continue;
         }
 
+        // Per-flex bitmask values (invariant across the inner geom loop)
+        let fcontype = model.flex_contype[flex_id];
+        let fconaffinity = model.flex_conaffinity[flex_id];
+
         for gi in 0..model.ngeom {
             // Proper contype/conaffinity bitmask filtering (MuJoCo filterBitmask protocol).
             // Collision proceeds iff: (flex_contype & geom_conaffinity) != 0
             //                      || (geom_contype & flex_conaffinity) != 0
-            let fcontype = model.flex_contype[flex_id];
-            let fconaffinity = model.flex_conaffinity[flex_id];
             let gcontype = model.geom_contype[gi];
             let gconaffinity = model.geom_conaffinity[gi];
             if (fcontype & gconaffinity) == 0 && (gcontype & fconaffinity) == 0 {
