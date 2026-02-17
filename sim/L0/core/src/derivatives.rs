@@ -251,10 +251,6 @@ pub fn mjd_transition_fd(
     let act_0 = data.act.clone();
     let ctrl_0 = data.ctrl.clone();
     let time_0 = data.time;
-    // efc_lambda is HashMap<WarmstartKey, Vec<f64>> — clone is O(n_contacts).
-    // Acceptable because FD already does O(nx + nu) full step() calls.
-    let efc_lambda_0 = data.efc_lambda.clone();
-
     // For forward differences, compute nominal output by stepping unperturbed.
     let y_0 = if config.centered {
         None
@@ -267,7 +263,6 @@ pub fn mjd_transition_fd(
         scratch.act.copy_from(&act_0);
         scratch.ctrl.copy_from(&ctrl_0);
         scratch.time = time_0;
-        scratch.efc_lambda.clone_from(&efc_lambda_0);
         Some(y)
     };
 
@@ -285,7 +280,6 @@ pub fn mjd_transition_fd(
             &act_0,
             &ctrl_0,
             time_0,
-            &efc_lambda_0,
             i,
             eps,
             nv,
@@ -304,7 +298,6 @@ pub fn mjd_transition_fd(
                 &act_0,
                 &ctrl_0,
                 time_0,
-                &efc_lambda_0,
                 i,
                 -eps,
                 nv,
@@ -332,7 +325,6 @@ pub fn mjd_transition_fd(
         scratch.ctrl.copy_from(&ctrl_0);
         scratch.ctrl[j] += eps;
         scratch.time = time_0;
-        scratch.efc_lambda.clone_from(&efc_lambda_0);
         scratch.step(model)?;
         let y_plus = extract_state(model, &scratch, &qpos_0);
 
@@ -344,7 +336,6 @@ pub fn mjd_transition_fd(
             scratch.ctrl.copy_from(&ctrl_0);
             scratch.ctrl[j] -= eps;
             scratch.time = time_0;
-            scratch.efc_lambda.clone_from(&efc_lambda_0);
             scratch.step(model)?;
             let y_minus = extract_state(model, &scratch, &qpos_0);
 
@@ -379,7 +370,6 @@ fn apply_state_perturbation(
     act_0: &DVector<f64>,
     ctrl_0: &DVector<f64>,
     time_0: f64,
-    efc_lambda_0: &std::collections::HashMap<crate::mujoco_pipeline::WarmstartKey, Vec<f64>>,
     i: usize,
     delta: f64,
     nv: usize,
@@ -411,7 +401,6 @@ fn apply_state_perturbation(
     }
     scratch.ctrl.copy_from(ctrl_0);
     scratch.time = time_0;
-    scratch.efc_lambda.clone_from(efc_lambda_0);
 }
 
 /// Extract state vector in tangent space from simulation data.
@@ -1399,7 +1388,6 @@ pub fn mjd_transition_hybrid(
     let act_0 = data.act.clone();
     let ctrl_0 = data.ctrl.clone();
     let time_0 = data.time;
-    let efc_lambda_0 = data.efc_lambda.clone();
     let mut scratch = data.clone();
 
     // Compute nominal output for forward differences
@@ -1413,7 +1401,6 @@ pub fn mjd_transition_hybrid(
         scratch.act.copy_from(&act_0);
         scratch.ctrl.copy_from(&ctrl_0);
         scratch.time = time_0;
-        scratch.efc_lambda.clone_from(&efc_lambda_0);
         Some(y)
     };
 
@@ -1427,7 +1414,6 @@ pub fn mjd_transition_hybrid(
             &act_0,
             &ctrl_0,
             time_0,
-            &efc_lambda_0,
             i,
             eps,
             nv,
@@ -1445,7 +1431,6 @@ pub fn mjd_transition_hybrid(
                 &act_0,
                 &ctrl_0,
                 time_0,
-                &efc_lambda_0,
                 i,
                 -eps,
                 nv,
@@ -1471,7 +1456,6 @@ pub fn mjd_transition_hybrid(
             &act_0,
             &ctrl_0,
             time_0,
-            &efc_lambda_0,
             state_col,
             eps,
             nv,
@@ -1489,7 +1473,6 @@ pub fn mjd_transition_hybrid(
                 &act_0,
                 &ctrl_0,
                 time_0,
-                &efc_lambda_0,
                 state_col,
                 -eps,
                 nv,
@@ -1581,7 +1564,6 @@ pub fn mjd_transition_hybrid(
         scratch.ctrl.copy_from(&ctrl_0);
         scratch.ctrl[j] += eps;
         scratch.time = time_0;
-        scratch.efc_lambda.clone_from(&efc_lambda_0);
         scratch.step(model)?;
         let y_plus = extract_state(model, &scratch, &qpos_0);
 
@@ -1592,7 +1574,6 @@ pub fn mjd_transition_hybrid(
             scratch.ctrl.copy_from(&ctrl_0);
             scratch.ctrl[j] -= eps;
             scratch.time = time_0;
-            scratch.efc_lambda.clone_from(&efc_lambda_0);
             scratch.step(model)?;
             let y_minus = extract_state(model, &scratch, &qpos_0);
             let col = (&y_plus - &y_minus) / (2.0 * eps);

@@ -367,21 +367,19 @@ fn test_frictionloss_reduces_velocity() {
     );
 }
 
-/// Test: Friction loss magnitude scales correctly.
+/// Test: Friction loss produces deceleration and scales correctly.
 ///
-/// Higher frictionloss should produce faster deceleration.
+/// Friction loss is handled via solver constraint rows with Huber cost (§29).
+/// Use small frictionloss values so the Huber cost saturates (enters linear zone
+/// where force = ±floss), making the scaling visible after multiple steps.
 #[test]
 fn test_frictionloss_scaling() {
-    // Use PGS solver: the penalty model produces force = frictionloss * sign(vel),
-    // so doubling frictionloss doubles deceleration.  Newton solver's Huber cost
-    // has a quadratic zone whose slope (D) is independent of frictionloss, making
-    // the scaling test meaningful only under PGS.
     let make_model = |frictionloss: f64| {
         format!(
             r#"
             <mujoco model="friction_scaling">
                 <compiler angle="radian"/>
-                <option gravity="0 0 0" timestep="0.001" solver="PGS"/>
+                <option gravity="0 0 0" timestep="0.001" solver="Newton"/>
                 <worldbody>
                     <body name="pendulum" pos="0 0 0">
                         <joint name="hinge" type="hinge" axis="0 1 0"
@@ -395,27 +393,41 @@ fn test_frictionloss_scaling() {
         )
     };
 
-    // Low friction
-    let model_low = load_model(&make_model(5.0)).expect("should load");
+    // Small floss values: threshold = R*floss ≈ 28*0.01 = 0.28, |jar| ≈ 105 >> threshold.
+    // Both in linear zone, force_high = 10× force_low, so decel_high >> decel_low.
+    let model_low = load_model(&make_model(0.01)).expect("should load");
     let mut data_low = model_low.make_data();
     data_low.qvel[0] = 1.0;
     data_low.step(&model_low).expect("step failed");
     let decel_low = 1.0 - data_low.qvel[0];
 
-    // High friction (2x)
-    let model_high = load_model(&make_model(10.0)).expect("should load");
+    let model_high = load_model(&make_model(0.1)).expect("should load");
     let mut data_high = model_high.make_data();
     data_high.qvel[0] = 1.0;
     data_high.step(&model_high).expect("step failed");
     let decel_high = 1.0 - data_high.qvel[0];
 
+    // Both should decelerate
+    assert!(
+        decel_low > 0.0,
+        "Low friction should decelerate: decel={decel_low}"
+    );
+    assert!(
+        decel_high > 0.0,
+        "High friction should decelerate: decel={decel_high}"
+    );
+
     // Higher friction should produce greater deceleration
     assert!(
         decel_high > decel_low,
-        "Higher frictionloss should produce greater deceleration"
+        "Higher frictionloss should decelerate more: low={decel_low}, high={decel_high}"
     );
-    // Should be approximately 2x (within tolerance for smooth approximation)
-    assert_relative_eq!(decel_high / decel_low, 2.0, epsilon = 0.1);
+    // In linear zone: force ratio ≈ 10x, decel ratio ≈ 10x
+    let ratio = decel_high / decel_low;
+    assert!(
+        ratio > 5.0 && ratio < 15.0,
+        "Deceleration ratio should be roughly 10x, got {ratio}"
+    );
 }
 
 /// Test: Zero velocity produces zero friction force.

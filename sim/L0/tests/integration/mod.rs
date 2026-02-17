@@ -132,3 +132,10 @@ pub mod sleeping;
 
 /// Flex unification acceptance tests: AC1–AC15 from future_work_6b_precursor_to_7.
 pub mod flex_unified;
+
+// ============================================================================
+// Unified PGS/CG Solver Tests (§29)
+// ============================================================================
+
+/// Unified PGS/CG solver tests: ne/nf bookkeeping, all constraint types, cost guard, primal CG.
+pub mod unified_solvers;

@@ -186,7 +186,7 @@ completely separate from `jnt_solref`/`jnt_solimp` (joint-indexed, for limits).
 
 ## 29. PGS/CG Unified Constraint Migration
 
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** L | **Prerequisites:** None
 
 ### Current State
 

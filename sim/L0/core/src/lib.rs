@@ -154,8 +154,6 @@ pub use mujoco_pipeline::{
     StepError,
     // Tendon types
     TendonType,
-    // Warmstart key type for efc_lambda contact cache
-    WarmstartKey,
     // Wrap object types
     WrapType,
     // dof_length mechanism length computation (§16.14)
@@ -163,7 +161,6 @@ pub use mujoco_pipeline::{
     // Utility functions for position/velocity differentiation
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
-    warmstart_key,
 };
 
 pub use derivatives::{

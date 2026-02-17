@@ -1240,18 +1240,20 @@ fn ac21_zero_hinge_simulation() {
 /// (vertex is at node body origin), with world position from FK.
 #[test]
 fn test_flex_node_resolves_body_positions() {
+    // Node bodies have non-colliding geoms (contype=0) to avoid self-collision
+    // with flex vertex geoms, which would prevent free-fall under gravity.
     let mjcf = r#"
     <mujoco model="node_test">
         <option gravity="0 0 -9.81" timestep="0.001"/>
         <worldbody>
             <body name="n0" pos="0 0 1">
-                <geom type="sphere" size="0.01" mass="0.001"/>
+                <geom type="sphere" size="0.01" mass="0.001" contype="0" conaffinity="0"/>
             </body>
             <body name="n1" pos="1 0 1">
-                <geom type="sphere" size="0.01" mass="0.001"/>
+                <geom type="sphere" size="0.01" mass="0.001" contype="0" conaffinity="0"/>
             </body>
             <body name="n2" pos="0.5 0.866 1">
-                <geom type="sphere" size="0.01" mass="0.001"/>
+                <geom type="sphere" size="0.01" mass="0.001" contype="0" conaffinity="0"/>
             </body>
         </worldbody>
         <deformable>

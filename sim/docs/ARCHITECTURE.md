@@ -111,7 +111,7 @@ residual heap allocation occurs for contact vector growth and RK4 warmstart save
 | Forces | `qfrc_bias`, `qfrc_passive`, `qfrc_actuator`, `qfrc_applied`, `qfrc_constraint` | Generalized force components |
 | Actuation | `actuator_length`, `actuator_velocity`, `actuator_force`, `act_dot` | Actuator-space state and activation derivatives |
 | Acceleration | `qacc` | Computed as `M^-1 * f_total` |
-| Contacts | `contacts`, `efc_lambda` | Active contacts and warmstart cache (`HashMap<WarmstartKey, Vec<f64>>` for variable condim) |
+| Contacts | `contacts` | Active contacts (constraint forces in `efc_force` array) |
 | Derivatives | `qDeriv`, `deriv_Dcvel`, `deriv_Dcacc`, `deriv_Dcfrc` | Analytical `∂(qfrc_smooth)/∂qvel` (nv×nv) and per-body chain-rule Jacobians (6×nv each) |
 | Sleep state | `tree_asleep`, `tree_awake`, `body_sleep_state`, `ntree_awake`, `nv_awake` | Per-tree sleep timer/flag, per-body sleep state, awake counts |
 | Awake indices | `body_awake_ind`, `dof_awake_ind`, `parent_awake_ind` | Sorted index arrays for cache-friendly awake-only iteration |
@@ -166,7 +166,7 @@ forward():
                mj_factor_flex         Flex LDL factorization (diagonal)
                mj_rne                 Bias forces (Recursive Newton-Euler) + flex gravity
                mj_fwd_passive         Springs, dampers, friction loss, flex bending + vertex damping
-  Constraints  mj_fwd_constraint      Joint/tendon limits + equality + contact PGS/CG/Newton
+  Constraints  mj_fwd_constraint      Unified constraint assembly + PGS/CG/Newton solve
                mj_fwd_constraint_islands  Per-island block-diagonal solving (when islands > 1)
   Solve        mj_fwd_acceleration    qacc = M^-1 * f  (or implicit solve)
 integrate() [Euler / ImplicitFast / Implicit / ImplicitSpringDamper]:
@@ -215,13 +215,16 @@ mjd_transition():
 - `ImplicitFast` — fast implicit with symmetric D (skips Coriolis terms) and Cholesky
   factorization; faster than `Implicit` with nearly identical results for most models
 
-**Constraint enforcement:**
-- Joint/tendon limits and equality constraints use penalty + Baumgarte stabilization
-  with configurable stiffness via `solref`/`solimp` parameters
-- Contacts use PGS (Projected Gauss-Seidel), CG (preconditioned projected gradient
-  descent with Barzilai-Borwein step), or Newton (reduced primal formulation with
-  sparse LDL factorization) with friction cones and warmstart, selectable via
-  `<option solver="Newton"/>` in MJCF or `model.solver_type = SolverType::Newton`
+**Constraint enforcement (unified):**
+All constraint types (equality, friction loss, limits, contacts, flex edge) are
+routed through unified solver rows assembled by `assemble_unified_constraints()`.
+Every solver operates on the same constraint Jacobian + RHS, selectable via
+`<option solver="Newton"/>` in MJCF or `model.solver_type = SolverType::Newton`:
+- **PGS** — Dual-space Gauss-Seidel on regularized Delassus matrix AR
+- **CG** — Primal Polak-Ribiere conjugate gradient sharing `mj_sol_primal` with
+  Newton, M^-1 preconditioner
+- **Newton** — Primal solver with H^-1 preconditioner, analytical second-order
+  derivatives, sparse LDL factorization
 
 ## Collision Detection
 
@@ -312,12 +315,12 @@ The physics engine. Depends on sim-types and sim-simd. Contains:
 `ContactPoint`, `ContactManifold`, and `ContactForce` live in
 `sim-core/src/contact.rs`. These represent collision geometry output
 (position, normal, penetration, body pair) and resulting forces.
-The MuJoCo pipeline uses PGS/CG/Newton contact solvers in `mujoco_pipeline.rs`
+The MuJoCo pipeline uses unified PGS/CG/Newton solvers in `mujoco_pipeline.rs`
 with variable condim (1/3/4/6) and elliptic friction cones.
 
 ### sim-constraint
 
-Joint types, motors, limits, and CGSolver for articulated body simulation:
+Joint types, motors, limits, and constraint solver for articulated body simulation:
 
 **Joint types** (all implement `Joint` trait):
 
@@ -335,8 +338,10 @@ Joint types, motors, limits, and CGSolver for articulated body simulation:
 Also provides: `JointLimits`, `JointMotor`, `MotorMode`, equality constraints
 (connect, gear coupling, differential, tendon networks), actuator types,
 and `CGSolver` (Conjugate Gradient solver with Block Jacobi preconditioner —
-standalone library for joint-space constraints, distinct from the pipeline's CG
-contact solver in `mujoco_pipeline.rs`; see [future_work_1 #3](./todo/future_work_1.md)).
+standalone library for joint-space constraints; see [future_work_1 #3](./todo/future_work_1.md)).
+The pipeline's unified constraint solver (PGS/CG/Newton) lives in
+`mujoco_pipeline.rs` and operates on unified constraint rows assembled by
+`assemble_unified_constraints()`.
 
 ### sim-sensor
 
@@ -603,19 +608,22 @@ Phase C (selective CRBA, partial LDL, awake-index iteration, island-local solvin
 
 ### Contact Solver
 
-The pipeline supports four contact solvers selectable via `model.solver_type`:
+The pipeline supports three constraint solvers selectable via `model.solver_type`.
+All solvers share `assemble_unified_constraints()` which builds a unified constraint
+Jacobian + RHS for ALL constraint types (equality, friction loss, limits, contacts,
+flex edge). There is no separate contact-only assembly path.
 
-- **PGS** (programmatic default) — Projected Gauss-Seidel. Uses per-contact
-  inline elliptic friction cone projection inside the GS sweep.
-- **CG** — Preconditioned projected gradient descent (PGD) with Barzilai-Borwein
-  adaptive step size. Named "CG" for MuJoCo API compatibility. Falls back to PGS
-  on non-convergence, reusing the pre-assembled Delassus matrix.
-- **CGStrict** — Same as CG but returns zero forces on non-convergence instead of
-  falling back. Use in tests to detect CG regressions.
-- **Newton** (MJCF default, matching MuJoCo) — Reduced primal formulation with
-  sparse LDL factorization. Operates on unified constraint Jacobian (equality,
-  friction loss, limits, contacts). Converges in 2–3 iterations vs PGS's 20+.
-  Falls back to PGS on Cholesky failure or non-convergence.
+- **PGS** (programmatic default) — Dual-space Gauss-Seidel on regularized Delassus
+  matrix AR. Uses per-row inline elliptic friction cone projection inside the GS
+  sweep. Warmstarts from `qacc_warmstart` via `classify_constraint_states`.
+- **CG** — Primal Polak-Ribiere conjugate gradient sharing `mj_sol_primal` with
+  Newton. Uses M^-1 preconditioner. Falls back to PGS on non-convergence,
+  reusing the pre-assembled constraint system.
+- **Newton** (MJCF default, matching MuJoCo) — Primal solver with H^-1
+  preconditioner and analytical second-order derivatives. Sparse LDL
+  factorization. Shares `mj_sol_primal` infrastructure with CG. Converges in
+  2-3 iterations vs PGS's 20+. Falls back to PGS on Cholesky failure or
+  non-convergence.
 
 **Variable Contact Dimensions (condim):**
 - condim 1: Normal force only (frictionless contact)
@@ -629,15 +637,11 @@ variable-size constraint system.
 
 **Elliptic Friction Cones:**
 Projection uses a two-step physically-correct algorithm: (1) enforce unilateral constraint
-λ_n ≥ 0 (else release contact), (2) scale friction components to cone boundary if
-`||(λ_i/μ_i)|| > λ_n`. This handles anisotropic friction (different coefficients per direction).
+lambda_n >= 0 (else release contact), (2) scale friction components to cone boundary if
+`||(lambda_i/mu_i)|| > lambda_n`. This handles anisotropic friction (different coefficients
+per direction).
 
-All solvers share `assemble_contact_system()` for Delassus matrix + RHS construction,
-`WarmstartKey`-based contact correspondence, and friction cone projection. The warmstart
-key combines canonical geom pair IDs with a discretized 1 cm spatial grid cell, so
-multiple contacts within the same geom pair (e.g., box-on-plane corners) each get
-their own cached lambda (`Vec<f64>` for variable length). Contact geometry types
-(`ContactPoint`, etc.) are in `sim-core/src/contact.rs`.
+Contact geometry types (`ContactPoint`, etc.) are in `sim-core/src/contact.rs`.
 
 Solver selection: `<option solver="CG"/>` in MJCF or `model.solver_type = SolverType::CG`.
 
