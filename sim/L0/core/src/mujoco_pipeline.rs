@@ -672,11 +672,11 @@ pub enum MjSensorType {
     /// Actuator force (1D).
     ActuatorFrc,
     /// Joint limit force (scalar, 1D). MuJoCo: mjSENS_JOINTLIMITFRC.
-    /// Returns the unsigned penalty force magnitude when the joint's position
+    /// Returns the unsigned constraint force magnitude when the joint's position
     /// limit is active; 0 when within limits.
     JointLimitFrc,
     /// Tendon limit force (scalar, 1D). MuJoCo: mjSENS_TENDONLIMITFRC.
-    /// Returns the unsigned penalty force magnitude when the tendon's length
+    /// Returns the unsigned constraint force magnitude when the tendon's length
     /// limit is active; 0 when within limits.
     TendonLimitFrc,
 
@@ -1302,6 +1302,12 @@ pub struct Model {
     /// Friction loss (dry friction) for this DOF.
     /// Applied via solver constraint rows with Huber-type cost (§29).
     pub dof_frictionloss: Vec<f64>,
+    /// Per-DOF solver reference parameters for friction loss [timeconst, dampratio].
+    /// Resolved at compile time from joint solreffriction → default chain → DEFAULT_SOLREF.
+    pub dof_solref: Vec<[f64; 2]>,
+    /// Per-DOF solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
+    /// Resolved at compile time from joint solimpfriction → default chain → DEFAULT_SOLIMP.
+    pub dof_solimp: Vec<[f64; 5]>,
 
     // ==================== Sparse LDL CSR Metadata (immutable, computed once at build) =====
     // The sparsity pattern of the LDL factorization is determined by `dof_parent` chains
@@ -1657,7 +1663,7 @@ pub struct Model {
     pub tendon_type: Vec<TendonType>,
     /// Solver parameters for tendon limit constraints (2 elements per tendon).
     /// \[0\] = timeconst (>0) or -stiffness (≤0), \[1\] = dampratio or -damping.
-    /// Default: [0.0, 0.0] → uses model.default_eq_stiffness/default_eq_damping.
+    /// Default: \[0.02, 1.0\] (standard MuJoCo solref).
     pub tendon_solref: Vec<[f64; 2]>,
     /// Impedance parameters for tendon limit constraints (5 elements per tendon).
     /// [d_min, d_max, width, midpoint, power]. Default: [0.9, 0.95, 0.001, 0.5, 2.0].
@@ -1665,6 +1671,10 @@ pub struct Model {
     /// Velocity-dependent friction loss per tendon (N).
     /// When > 0, adds a friction force opposing tendon velocity: F = -frictionloss * sign(v).
     pub tendon_frictionloss: Vec<f64>,
+    /// Per-tendon solver reference parameters for friction loss [timeconst, dampratio].
+    pub tendon_solref_fri: Vec<[f64; 2]>,
+    /// Per-tendon solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
+    pub tendon_solimp_fri: Vec<[f64; 5]>,
     /// Visualization group (0–5) for each tendon. Used by renderers for group-based filtering.
     pub tendon_group: Vec<i32>,
     /// RGBA color per tendon [r, g, b, a]. Default: [0.5, 0.5, 0.5, 1.0].
@@ -1741,14 +1751,6 @@ pub struct Model {
     /// Base regularization (softness) for PGS constraint matrix diagonal (default: 1e-6).
     /// CFM scales as `regularization + (1 - impedance) * regularization * 100`.
     pub regularization: f64,
-    /// Fallback stiffness for equality constraints when solref is not specified (default: 10000.0).
-    pub default_eq_stiffness: f64,
-    /// Fallback damping for equality constraints when solref is not specified (default: 1000.0).
-    pub default_eq_damping: f64,
-    /// Maximum linear velocity change per timestep from constraint forces (m/s, default: 1.0).
-    pub max_constraint_vel: f64,
-    /// Maximum angular velocity change per timestep from constraint forces (rad/s, default: 1.0).
-    pub max_constraint_angvel: f64,
     /// DEPRECATED: Friction smoothing factor — previously used for tanh transition.
     /// Friction loss is now handled by solver constraint rows (§29).
     /// Kept for serialization compatibility; not used in simulation.
@@ -2235,18 +2237,17 @@ pub struct Data {
     pub qfrc_constraint: DVector<f64>,
 
     /// Per-joint limit force cache (length `njnt`).
-    /// Populated by `mj_fwd_constraint()`. Contains the unsigned penalty force
+    /// Populated by `mj_fwd_constraint()`. Contains the unsigned constraint force
     /// magnitude for each joint's active limit constraint. Zero when the joint is
     /// within its limits or is not limited.
     ///
-    /// This is the CortenForge equivalent of scanning MuJoCo's `efc_force[]` for
-    /// `mjCNSTR_LIMIT_JOINT` entries. Since CortenForge uses penalty forces
-    /// (not a constraint solver with per-constraint force arrays), we cache the
-    /// scalar force during computation to avoid recomputation at sensor eval time.
+    /// Extracted from `efc_force[]` by scanning for `mjCNSTR_LIMIT_JOINT` entries
+    /// after the unified constraint solver runs. Cached per-joint to avoid
+    /// re-scanning efc_force at sensor eval time.
     pub jnt_limit_frc: Vec<f64>,
 
     /// Per-tendon limit force cache (length `ntendon`).
-    /// Populated by `mj_fwd_constraint()`. Contains the unsigned penalty force
+    /// Populated by `mj_fwd_constraint()`. Contains the unsigned constraint force
     /// magnitude for each tendon's active limit constraint. Zero when the tendon
     /// is within its limits or is not limited.
     pub ten_limit_frc: Vec<f64>,
@@ -2885,6 +2886,8 @@ impl Model {
             dof_armature: vec![],
             dof_damping: vec![],
             dof_frictionloss: vec![],
+            dof_solref: vec![],
+            dof_solimp: vec![],
 
             // Sparse LDL CSR metadata (empty — populated by compute_qld_csr_metadata)
             qLD_rowadr: vec![],
@@ -3039,6 +3042,8 @@ impl Model {
             tendon_solref: vec![],
             tendon_solimp: vec![],
             tendon_frictionloss: vec![],
+            tendon_solref_fri: vec![],
+            tendon_solimp_fri: vec![],
             tendon_group: vec![],
             tendon_rgba: vec![],
             tendon_treenum: vec![],
@@ -3071,21 +3076,17 @@ impl Model {
             viscosity: 0.0, // No fluid by default
             solver_iterations: 100,
             solver_tolerance: 1e-8,
-            impratio: 1.0,                 // MuJoCo default
-            regularization: 1e-6,          // PGS constraint softness
-            default_eq_stiffness: 10000.0, // Equality constraint fallback stiffness
-            default_eq_damping: 1000.0,    // Equality constraint fallback damping
-            max_constraint_vel: 1.0,       // Max linear delta-v per step (m/s)
-            max_constraint_angvel: 1.0,    // Max angular delta-v per step (rad/s)
-            friction_smoothing: 1000.0,    // tanh transition sharpness
-            cone: 1,                       // Elliptic friction cone (pyramidal not supported)
-            stat_meaninertia: 1.0,         // Default (computed at model build from CRBA)
-            ls_iterations: 50,             // Newton line search iterations
-            ls_tolerance: 0.01,            // Newton line search gradient tolerance
-            noslip_iterations: 0,          // Not yet implemented
-            noslip_tolerance: 1e-6,        // Not yet implemented
-            disableflags: 0,               // Nothing disabled
-            enableflags: 0,                // Nothing extra enabled
+            impratio: 1.0,              // MuJoCo default
+            regularization: 1e-6,       // PGS constraint softness
+            friction_smoothing: 1000.0, // tanh transition sharpness
+            cone: 1,                    // Elliptic friction cone (pyramidal not supported)
+            stat_meaninertia: 1.0,      // Default (computed at model build from CRBA)
+            ls_iterations: 50,          // Newton line search iterations
+            ls_tolerance: 0.01,         // Newton line search gradient tolerance
+            noslip_iterations: 0,       // Not yet implemented
+            noslip_tolerance: 1e-6,     // Not yet implemented
+            disableflags: 0,            // Nothing disabled
+            enableflags: 0,             // Nothing extra enabled
             integrator: Integrator::Euler,
             solver_type: SolverType::PGS,
 
@@ -8715,7 +8716,7 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::JointLimitFrc => {
-                // Joint limit force: read cached penalty magnitude.
+                // Joint limit force: read cached constraint force magnitude.
                 // objid is the joint index (resolved by model builder).
                 if objid < data.jnt_limit_frc.len() {
                     sensor_write(&mut data.sensordata, adr, 0, data.jnt_limit_frc[objid]);
@@ -8723,7 +8724,7 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
             }
 
             MjSensorType::TendonLimitFrc => {
-                // Tendon limit force: read cached penalty magnitude.
+                // Tendon limit force: read cached constraint force magnitude.
                 // objid is the tendon index (resolved by model builder).
                 if objid < data.ten_limit_frc.len() {
                     sensor_write(&mut data.sensordata, adr, 0, data.ten_limit_frc[objid]);
@@ -13552,35 +13553,24 @@ fn project_elliptic_cone(lambda: &mut [f64], mu: &[f64; 5], dim: usize) {
 /// Compute position-dependent impedance from solimp parameters.
 ///
 /// The sigmoid shape is derived from MuJoCo's `getimpedance()` in
-/// `engine_core_constraint.c`, but the **consumption** differs:
-///
-/// - **MuJoCo** uses impedance to compute regularization in a QP constraint solver:
-///   `R = (1-d)/d * diag_approx(A)`, where `A = J M⁻¹ Jᵀ`.
-/// - **Our penalty method** uses impedance as a direct scaling factor on
-///   stiffness and damping: `F = -d(r) * k * error - d(r) * b * vel_error`.
-///
-/// These are not equivalent formulations. The penalty adaptation preserves the
-/// qualitative behavior (higher impedance → stronger constraint, position-dependent
-/// softening) but does not reproduce MuJoCo's exact constraint force magnitudes.
+/// `engine_core_constraint.c`. The impedance value is used to compute the
+/// constraint regularization: `R = (1-d)/d * diag_approx(A)`, where `A = J M⁻¹ Jᵀ`.
 ///
 /// The impedance `d ∈ (0, 1)` controls constraint effectiveness:
-/// - `d` close to 1 → strong constraint (high stiffness)
-/// - `d` close to 0 → weak constraint (low stiffness)
+/// - `d` close to 1 → strong constraint (low regularization, stiff)
+/// - `d` close to 0 → weak constraint (high regularization, soft)
 ///
 /// The impedance interpolates from `solimp[0]` (d0) to `solimp[1]` (d_width)
 /// over a transition zone of `solimp[2]` (width) meters/radians, using a
 /// split power-sigmoid controlled by `solimp[3]` (midpoint) and `solimp[4]` (power).
 ///
-/// ## Deviations from MuJoCo
+/// ## Notes
 ///
 /// - **No margin offset**: MuJoCo computes `x = (pos - margin) / width`. We pass raw
 ///   violation (no margin subtraction). This is correct for equality constraints (margin
 ///   is always 0 in MuJoCo). For contact constraints, `geom_margin` defaults to 0 so
 ///   `depth - margin = depth`, but if non-zero margins are supported in the future,
 ///   callers should subtract margin before passing the violation.
-/// - **No derivative output**: MuJoCo returns both `d(r)` and `d'(r)`. The derivative
-///   is used for impedance-modified reference acceleration in the QP solver. Our penalty
-///   method does not use `aref`, so the derivative is not needed.
 ///
 /// # Arguments
 /// * `solimp` - [d0, d_width, width, midpoint, power]
@@ -13654,11 +13644,9 @@ fn compute_impedance(solimp: [f64; 5], violation: f64) -> f64 {
 // Constraint Stability Constants
 // =============================================================================
 
-// Maximum velocity change per timestep is now configurable via model fields:
-// - model.max_constraint_vel (linear, default: 1.0 m/s)
-// - model.max_constraint_angvel (angular, default: 1.0 rad/s)
-// These limit acceleration to max_delta_v / dt to ensure stability with
-// explicit Euler integration, preventing oscillation from overshooting.
+// Constraint stability limits are applied internally by the unified solver.
+// The solver uses regularization and impedance parameters to control
+// constraint force magnitude, preventing oscillation from overshooting.
 
 /// Minimum inertia/mass threshold for numerical stability.
 ///
@@ -14231,8 +14219,8 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
         data.efc_J[(row, dof_idx)] = 1.0;
         let vel = data.qvel[dof_idx];
         finalize_row!(
-            DEFAULT_SOLREF,
-            DEFAULT_SOLIMP,
+            model.dof_solref[dof_idx],
+            model.dof_solimp[dof_idx],
             0.0,
             0.0,
             vel,
@@ -14256,8 +14244,8 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
         }
         let vel = data.ten_velocity[t];
         finalize_row!(
-            DEFAULT_SOLREF,
-            DEFAULT_SOLIMP,
+            model.tendon_solref_fri[t],
+            model.tendon_solimp_fri[t],
             0.0,
             0.0,
             vel,
@@ -17134,9 +17122,8 @@ fn get_min_rotational_inertia(model: &Model, data: &Data, body_id: usize) -> f64
 // Equality Constraint Jacobian Extraction (§15, Step 5)
 //
 // These functions extract explicit Jacobian rows, position violations, and
-// velocities from equality constraints. Used by the Newton solver's unified
-// constraint assembly. The existing apply_* functions remain unchanged for
-// PGS/CG penalty-based enforcement.
+// velocities from equality constraints. Used by the unified constraint
+// assembly for all solver types (PGS, CG, Newton).
 // =============================================================================
 
 /// Extracted equality constraint data for Newton solver assembly.
@@ -17581,8 +17568,8 @@ fn add_body_angular_jacobian_row(
 ///
 /// When island discovery has produced `nisland > 0`, contacts are partitioned
 /// by island and each island's contact system is solved independently.
-/// Penalty constraints (joint limits, tendon limits, equality) remain global
-/// since they are already per-DOF and don't benefit from island decomposition.
+/// Limit/equality constraints remain global since they are already per-DOF
+/// and don't benefit from island decomposition.
 ///
 /// Populate `efc_island` and related arrays from the current step's constraint rows.
 ///
@@ -17659,18 +17646,12 @@ fn mj_fwd_constraint_islands(model: &Model, data: &mut Data) {
     mj_fwd_constraint(model, data);
 }
 
-/// Compute constraint forces (contacts and joint limits).
-///
-/// This implements constraint-based enforcement using:
-/// - Joint limits: Soft penalty method with Baumgarte stabilization
-/// - Equality constraints: Soft penalty method with Baumgarte stabilization
-/// - Contacts: PGS solver with Coulomb friction cone
-///
-/// The constraint forces are computed via Jacobian transpose:
-///   qfrc_constraint = J^T * λ
-///
-/// where λ is found by solving the LCP with PGS.
 /// Unified constraint solver dispatcher (§29).
+///
+/// Assembles ALL constraint types (equality, friction loss, limits, contacts, flex)
+/// into unified efc_* arrays, dispatches to the configured solver (PGS, CG, Newton),
+/// and maps solver forces back to joint space:
+///   qfrc_constraint = J^T * efc_force
 ///
 /// Routes ALL constraint types through unified assembly + solver for ALL solver types.
 /// This matches MuJoCo's architecture where every solver type operates on the same

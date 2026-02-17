@@ -15,7 +15,7 @@ bug in flex-rigid collision.
 
 ## 28. Friction Loss solref/solimp: Per-DOF Parameters (MuJoCo `dof_solref`)
 
-**Status:** Partially complete | **Effort:** S | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** S | **Prerequisites:** None
 
 ### Background
 

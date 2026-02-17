@@ -425,6 +425,8 @@ struct ModelBuilder {
     dof_armature: Vec<f64>,
     dof_damping: Vec<f64>,
     dof_frictionloss: Vec<f64>,
+    dof_solref: Vec<[f64; 2]>,
+    dof_solimp: Vec<[f64; 5]>,
 
     // Geom arrays
     geom_type: Vec<GeomType>,
@@ -528,10 +530,6 @@ struct ModelBuilder {
     solver_tolerance: f64,
     impratio: f64,
     regularization: f64,
-    default_eq_stiffness: f64,
-    default_eq_damping: f64,
-    max_constraint_vel: f64,
-    max_constraint_angvel: f64,
     friction_smoothing: f64,
     cone: u8,
     ls_iterations: usize,
@@ -564,6 +562,8 @@ struct ModelBuilder {
     tendon_stiffness: Vec<f64>,
     tendon_damping: Vec<f64>,
     tendon_frictionloss: Vec<f64>,
+    tendon_solref_fri: Vec<[f64; 2]>,
+    tendon_solimp_fri: Vec<[f64; 5]>,
     tendon_lengthspring: Vec<[f64; 2]>,
     tendon_length0: Vec<f64>,
     tendon_name: Vec<Option<String>>,
@@ -714,6 +714,8 @@ impl ModelBuilder {
             dof_armature: vec![],
             dof_damping: vec![],
             dof_frictionloss: vec![],
+            dof_solref: vec![],
+            dof_solimp: vec![],
 
             geom_type: vec![],
             geom_body: vec![],
@@ -789,10 +791,6 @@ impl ModelBuilder {
             solver_tolerance: 1e-8,
             impratio: 1.0,
             regularization: 1e-6,
-            default_eq_stiffness: 10000.0,
-            default_eq_damping: 1000.0,
-            max_constraint_vel: 1.0,
-            max_constraint_angvel: 1.0,
             friction_smoothing: 1000.0,
             cone: 0,
             ls_iterations: 50,
@@ -820,6 +818,8 @@ impl ModelBuilder {
             tendon_stiffness: vec![],
             tendon_damping: vec![],
             tendon_frictionloss: vec![],
+            tendon_solref_fri: vec![],
+            tendon_solimp_fri: vec![],
             tendon_lengthspring: vec![],
             tendon_length0: vec![],
             tendon_name: vec![],
@@ -925,10 +925,6 @@ impl ModelBuilder {
         self.solver_tolerance = option.tolerance;
         self.impratio = option.impratio;
         self.regularization = option.regularization;
-        self.default_eq_stiffness = option.default_eq_stiffness;
-        self.default_eq_damping = option.default_eq_damping;
-        self.max_constraint_vel = option.max_constraint_vel;
-        self.max_constraint_angvel = option.max_constraint_angvel;
         self.friction_smoothing = option.friction_smoothing;
         self.integrator = match option.integrator {
             MjcfIntegrator::Euler => Integrator::Euler,
@@ -1450,6 +1446,10 @@ impl ModelBuilder {
             self.dof_damping.push(joint.damping.unwrap_or(0.0));
             self.dof_frictionloss
                 .push(joint.frictionloss.unwrap_or(0.0));
+            self.dof_solref
+                .push(joint.solreffriction.unwrap_or(DEFAULT_SOLREF));
+            self.dof_solimp
+                .push(joint.solimpfriction.unwrap_or(DEFAULT_SOLIMP));
         }
 
         // Add qpos0 values (default positions)
@@ -1780,6 +1780,10 @@ impl ModelBuilder {
             self.tendon_damping.push(tendon.damping.unwrap_or(0.0));
             self.tendon_frictionloss
                 .push(tendon.frictionloss.unwrap_or(0.0));
+            self.tendon_solref_fri
+                .push(tendon.solreffriction.unwrap_or(DEFAULT_SOLREF));
+            self.tendon_solimp_fri
+                .push(tendon.solimpfriction.unwrap_or(DEFAULT_SOLIMP));
             self.tendon_name.push(if tendon.name.is_empty() {
                 None
             } else {
@@ -3082,6 +3086,8 @@ impl ModelBuilder {
                         self.dof_armature.push(0.0);
                         self.dof_damping.push(0.0);
                         self.dof_frictionloss.push(0.0);
+                        self.dof_solref.push(DEFAULT_SOLREF);
+                        self.dof_solimp.push(DEFAULT_SOLIMP);
 
                         // qpos0 = 0 for each slide DOF (body_pos encodes initial position)
                         self.qpos0_values.push(0.0);
@@ -3326,6 +3332,8 @@ impl ModelBuilder {
             dof_armature: self.dof_armature,
             dof_damping: self.dof_damping,
             dof_frictionloss: self.dof_frictionloss,
+            dof_solref: self.dof_solref,
+            dof_solimp: self.dof_solimp,
 
             // Sparse LDL CSR metadata (computed below via compute_qld_csr_metadata)
             qLD_rowadr: vec![],
@@ -3479,6 +3487,8 @@ impl ModelBuilder {
             tendon_stiffness: self.tendon_stiffness,
             tendon_damping: self.tendon_damping,
             tendon_frictionloss: self.tendon_frictionloss,
+            tendon_solref_fri: self.tendon_solref_fri,
+            tendon_solimp_fri: self.tendon_solimp_fri,
             // tendon_treenum/tendon_tree computed below after tree enumeration
             tendon_treenum: vec![0; ntendon],
             tendon_tree: vec![usize::MAX; 2 * ntendon],
@@ -3524,10 +3534,6 @@ impl ModelBuilder {
             solver_tolerance: self.solver_tolerance,
             impratio: self.impratio,
             regularization: self.regularization,
-            default_eq_stiffness: self.default_eq_stiffness,
-            default_eq_damping: self.default_eq_damping,
-            max_constraint_vel: self.max_constraint_vel,
-            max_constraint_angvel: self.max_constraint_angvel,
             friction_smoothing: self.friction_smoothing,
             cone: self.cone,
             stat_meaninertia: 1.0, // Computed post-build in Step 3

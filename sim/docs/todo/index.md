@@ -100,7 +100,7 @@ All items are independent (#29 is the core architectural migration).
 
 | # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
 |---|------|-----------|-------------|--------|---------------|------|--------|
-| 28 | Friction loss solref/solimp: DEFAULT → per-joint params | Low | Medium | S | None | [future_work_8.md](./future_work_8.md) | ⚠️ Partially done (§15) |
+| 28 | Friction loss solref/solimp: per-DOF/per-tendon params | Low | Medium | S | None | [future_work_8.md](./future_work_8.md) | ✅ |
 | 29 | PGS/CG unified constraint migration (friction loss + penalty → solver rows) | Medium | **Critical** | L | None | [future_work_8.md](./future_work_8.md) | ✅ |
 | 30 | Flex collision contype/conaffinity filtering | Low | Medium | S | None | [future_work_8.md](./future_work_8.md) | |
 | 31 | `solreffriction` per-direction solver params | Low | Medium | M | None | [future_work_8.md](./future_work_8.md) | |
