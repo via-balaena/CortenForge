@@ -1114,8 +1114,8 @@ each other. This is a broadphase-level filter.
    }
    ```
 
-6. **Add self-collision bitmask gate** — wherever self-collision is dispatched,
-   add the conjunctive check:
+6. **Add self-collision bitmask gate** — deferred to §42A-iv (flex
+   self-collision dispatch). The gate code:
    ```rust
    if !model.flex_rigid[flex_id]
        && (model.flex_contype[flex_id] & model.flex_conaffinity[flex_id]) != 0
@@ -1124,10 +1124,11 @@ each other. This is a broadphase-level filter.
        // proceed with self-collision
    }
    ```
+   Requires §42A-ii (`flex_rigid` fields) as prerequisite.
 
-7. **Flex-flex filtering** (if flex-flex collision path exists): apply
-   `filterBitmask()` between the two flex objects' contype/conaffinity before
-   narrowphase. If no flex-flex path exists yet, document as future work.
+7. **Flex-flex filtering** — deferred to §42A-v (flex-flex cross-object
+   collision). Applies `filterBitmask()` between two flex objects'
+   contype/conaffinity at the broadphase level.
 
 ### Files Modified
 

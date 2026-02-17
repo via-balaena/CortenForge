@@ -1,4 +1,4 @@
-# Future Work 10 — Phase 3A: Constraint/Joint Features + Physics + Pipeline + Trait Architecture (Items #38–42, #42B–F)
+# Future Work 10 — Phase 3A: Constraint/Joint Features + Physics + Pipeline + Trait Architecture (Items #38–42, §42A-i–v, §42B–F)
 
 Part of [Simulation Phase 3 Roadmap](./index.md). See [index.md](./index.md) for
 priority table, dependency graph, and file map.
@@ -375,6 +375,10 @@ Add `flex_rigid` and `flexedge_rigid` pre-computed boolean arrays for efficiency
 3. Identical simulation results (optimization only, no behavior change).
 4. All existing flex tests pass.
 
+**Downstream dependency:** `flex_rigid` is required by §42A-iv (flex
+self-collision dispatch) as the first gate condition: `!flex_rigid[f]`.
+See §30 AC7 documentation on `flex_selfcollide` in `mujoco_pipeline.rs`.
+
 #### Files
 
 - `sim/L0/core/src/mujoco_pipeline.rs` — Model fields, flex loop optimizations
@@ -438,6 +442,191 @@ efficiency and MuJoCo Data layout parity.
 
 - `sim/L0/core/src/mujoco_pipeline.rs` — Data fields, computation in
   kinematics phase, consumer updates
+
+---
+
+### 42A-iv. Flex Self-Collision Dispatch (BVH/SAP Midphase + Narrowphase)
+**Status:** Not started | **Effort:** L | **Prerequisites:** §42A-ii (`flex_rigid`), §30 ✅
+
+> **Discovery context:** §30 implemented flex-rigid contype/conaffinity
+> filtering and documented the MuJoCo self-collision gating protocol. The
+> `flex_selfcollide` flag is parsed and stored but self-collision is not
+> dispatched. This item adds the full dispatch path.
+
+#### Current State
+
+`flex_selfcollide: Vec<bool>` exists on Model (parsed from
+`<flex><contact selfcollide="..."/>`), but no code reads it during
+collision detection. `mj_collision_flex()` only handles flex-rigid pairs.
+MuJoCo dispatches flex self-collision from `mj_collision()` in
+`engine_collision_driver.c`.
+
+#### MuJoCo Reference
+
+MuJoCo's self-collision dispatch has two independent paths, both gated
+behind the same three conditions:
+
+```c
+for (int f = 0; f < m->nflex; f++) {
+    if (!m->flex_rigid[f] && (m->flex_contype[f] & m->flex_conaffinity[f])) {
+        // Path 1: internal collisions (adjacent elements sharing vertices/edges)
+        if (m->flex_internal[f]) {
+            mj_collideFlexInternal(m, d, f);
+        }
+        // Path 2: self-collisions (non-adjacent elements)
+        if (m->flex_selfcollide[f] != mjFLEXSELF_NONE) {
+            switch (m->flex_selfcollide[f]) {
+                case mjFLEXSELF_NARROW: mj_collideFlexSelf(m, d, f); break;
+                case mjFLEXSELF_BVH:    /* BVH midphase + narrowphase */ break;
+                case mjFLEXSELF_SAP:    /* SAP midphase + narrowphase */ break;
+                case mjFLEXSELF_AUTO:   /* BVH for dim=3, SAP otherwise */ break;
+            }
+        }
+    }
+}
+```
+
+Three conjunctive gate conditions:
+1. `!flex_rigid[f]` — rigid flexes skip entirely (requires §42A-ii)
+2. `(flex_contype[f] & flex_conaffinity[f]) != 0` — self-bitmask check
+   (§30 added `flex_contype`/`flex_conaffinity` fields)
+3. `flex_selfcollide[f]` / `flex_internal[f]` — per-path enable flags
+
+`mjtFlexSelf` enum values: `NONE=0, NARROW=1, BVH=2, SAP=3, AUTO=4`.
+
+#### Implementation
+
+1. **Add `flex_internal: Vec<bool>` to Model** — parsed from
+   `<flex><contact internal="true"/>`, default `false`.
+
+2. **Add self-collision gate in collision pipeline** — after
+   `mj_collision_flex()` (flex-rigid), add flex self-collision dispatch:
+   ```rust
+   for f in 0..model.nflex {
+       if model.flex_rigid[f] { continue; }
+       if (model.flex_contype[f] & model.flex_conaffinity[f]) == 0 { continue; }
+       if model.flex_internal[f] {
+           mj_collide_flex_internal(model, data, f);
+       }
+       if model.flex_selfcollide[f] {
+           mj_collide_flex_self(model, data, f);
+       }
+   }
+   ```
+
+3. **Implement `mj_collide_flex_internal()`** — element-element narrowphase
+   for adjacent elements (sharing vertices/edges). Generates contacts
+   between element faces/edges.
+
+4. **Implement `mj_collide_flex_self()`** — non-adjacent element collision.
+   Start with brute-force narrowphase (`NARROW` mode), then add BVH/SAP
+   midphase for performance:
+   - **BVH**: Per-element AABB tree, updated per-step from `flexvert_xpos`.
+   - **SAP**: Sweep-and-prune on element AABBs along the axis of maximum
+     variance.
+   - **AUTO**: BVH for `dim=3` (solids), SAP otherwise.
+
+5. **Upgrade `flex_selfcollide` to enum** — change from `Vec<bool>` to
+   `Vec<FlexSelfCollide>` with variants matching `mjtFlexSelf`. The
+   existing `bool` is a placeholder; the enum enables algorithm selection.
+
+#### Acceptance Criteria
+
+1. §30 AC6: Self-collision disabled when `(flex_contype & flex_conaffinity) == 0`,
+   even if `selfcollide` flag is set.
+2. §30 AC7: Rigid flexes (`flex_rigid=true`) skip all self/internal collision.
+3. `internal` and `selfcollide` dispatch independently behind shared gate.
+4. `selfcollide="none"` produces zero self-contacts.
+5. `selfcollide="narrow"` produces correct element-element contacts.
+6. BVH/SAP midphase produces identical contacts to brute-force (correctness).
+7. Existing flex-rigid tests unaffected.
+
+#### Files
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — dispatch loop, `mj_collide_flex_internal()`,
+  `mj_collide_flex_self()`, `FlexSelfCollide` enum, `flex_internal` field
+- `sim/L0/mjcf/src/types.rs` — `internal` field on `MjcfFlex`
+- `sim/L0/mjcf/src/parser.rs` — parse `internal` attribute
+- `sim/L0/mjcf/src/model_builder.rs` — wire `flex_internal`, upgrade
+  `flex_selfcollide` push
+- `sim/L0/tests/integration/flex_unified.rs` — self-collision tests
+
+---
+
+### 42A-v. Flex-Flex Cross-Object Collision Filtering
+**Status:** Not started | **Effort:** M | **Prerequisites:** §42A-iv, §30 ✅
+
+> **Discovery context:** §30 spec review identified that MuJoCo filters
+> flex-flex pairs at the broadphase level via `canCollide2()`, but our
+> codebase has no flex-flex collision path at all.
+
+#### Current State
+
+`mj_collision_flex()` only handles flex-rigid pairs (flex vertex vs rigid
+geom). There is no flex-flex collision path — two flex objects cannot
+collide with each other.
+
+#### MuJoCo Reference
+
+MuJoCo uses a unified bodyflex index space where bodies occupy
+`[0, nbody)` and flexes occupy `[nbody, nbody+nflex)`. The broadphase
+generates bodyflex pairs, and `canCollide2()` filters them:
+
+```c
+static int canCollide2(const mjModel* m, int bf1, int bf2) {
+    int nbody = m->nbody;
+    int contype1 = (bf1 < nbody) ? m->body_contype[bf1] : m->flex_contype[bf1-nbody];
+    int conaffinity1 = (bf1 < nbody) ? m->body_conaffinity[bf1] : m->flex_conaffinity[bf1-nbody];
+    int contype2 = (bf2 < nbody) ? m->body_contype[bf2] : m->flex_contype[bf2-nbody];
+    int conaffinity2 = (bf2 < nbody) ? m->body_conaffinity[bf2] : m->flex_conaffinity[bf2-nbody];
+    return (!filterBitmask(contype1, conaffinity1, contype2, conaffinity2));
+}
+```
+
+Flex-flex narrowphase uses element-element collision tests (triangle-triangle
+for dim=2, tetrahedron-tetrahedron for dim=3), with BVH acceleration per
+flex object.
+
+#### Implementation
+
+1. **Add flex-flex broadphase filtering** — for each flex pair `(f1, f2)`,
+   apply `filterBitmask(flex_contype[f1], flex_conaffinity[f1],
+   flex_contype[f2], flex_conaffinity[f2])`.
+
+2. **Implement flex-flex narrowphase** — element-element collision between
+   two different flex objects. Reuse narrowphase primitives from §42A-iv.
+
+3. **Integrate into collision pipeline** — after flex-rigid and flex-self
+   collision, add flex-flex collision:
+   ```rust
+   for f1 in 0..model.nflex {
+       for f2 in (f1+1)..model.nflex {
+           let ct1 = model.flex_contype[f1];
+           let ca1 = model.flex_conaffinity[f1];
+           let ct2 = model.flex_contype[f2];
+           let ca2 = model.flex_conaffinity[f2];
+           if (ct1 & ca2) == 0 && (ct2 & ca1) == 0 { continue; }
+           mj_collide_flex_flex(model, data, f1, f2);
+       }
+   }
+   ```
+
+4. **Contact parameter combination** — add `contact_param_flex_flex()`
+   following the same priority/solmix protocol as `contact_param_flex_rigid()`.
+
+#### Acceptance Criteria
+
+1. Flex-flex pairs filtered by `filterBitmask()` protocol (same as flex-rigid).
+2. Compatible flex objects generate contacts at element-element intersections.
+3. Incompatible bitmasks produce zero flex-flex contacts.
+4. Contact parameters combined via priority + solmix (matching flex-rigid).
+5. Existing flex-rigid and flex-self tests unaffected.
+
+#### Files
+
+- `sim/L0/core/src/mujoco_pipeline.rs` — flex-flex broadphase loop,
+  `mj_collide_flex_flex()`, `contact_param_flex_flex()`
+- `sim/L0/tests/integration/flex_unified.rs` — flex-flex collision tests
 
 ---
 

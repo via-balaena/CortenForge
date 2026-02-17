@@ -102,7 +102,7 @@ All items are independent (#29 is the core architectural migration).
 |---|------|-----------|-------------|--------|---------------|------|--------|
 | 28 | Friction loss solref/solimp: per-DOF/per-tendon params | Low | Medium | S | None | [future_work_8.md](./future_work_8.md) | ✅ |
 | 29 | PGS/CG unified constraint migration (friction loss + penalty → solver rows) | Medium | **Critical** | L | None | [future_work_8.md](./future_work_8.md) | ✅ |
-| 30 | Flex collision contype/conaffinity filtering | Low | Medium | S | None | [future_work_8.md](./future_work_8.md) | |
+| 30 | Flex collision contype/conaffinity filtering | Low | Medium | S | None | [future_work_8.md](./future_work_8.md) | ✅ |
 | 31 | `solreffriction` per-direction solver params | Low | Medium | M | None | [future_work_8.md](./future_work_8.md) | |
 | 32 | Pyramidal friction cones | Low | Medium | L | None | [future_work_8.md](./future_work_8.md) | |
 
@@ -128,6 +128,8 @@ All items are independent (#29 is the core architectural migration).
 | 42A-i | Sparse flex edge Jacobian (`flexedge_J`) | Low | **Critical** | L | §6B, #27D | [future_work_10.md](./future_work_10.md) | |
 | 42A-ii | `flex_rigid` / `flexedge_rigid` boolean arrays | Low | Low | S | §6B | [future_work_10.md](./future_work_10.md) | |
 | 42A-iii | `flexedge_length` / `flexedge_velocity` Data fields | Low | Low | S | §6B | [future_work_10.md](./future_work_10.md) | |
+| 42A-iv | Flex self-collision dispatch (BVH/SAP + narrowphase) | Medium | **Critical** | L | §42A-ii, §30 | [future_work_10.md](./future_work_10.md) | |
+| 42A-v | Flex-flex cross-object collision filtering | Low | High | M | §42A-iv, §30 | [future_work_10.md](./future_work_10.md) | |
 | 42B | Flex bending: cotangent Laplacian + trait abstraction (Phase A) | Medium | **Critical** | L | §6B | [future_work_10.md](./future_work_10.md) | |
 | 42C | `FlexElasticityModel` trait (Phase B) | Medium | Medium | L | §42B | [future_work_10.md](./future_work_10.md) | |
 | 42D | `ActuatorGainModel` trait (Phase C) | Medium | Low | M | §42B | [future_work_10.md](./future_work_10.md) | |
@@ -484,7 +486,7 @@ Start only after 3A is stable.
 | [future_work_7.md](./future_work_7.md) | 3 | 3A-ii — Inertia + Contact Parameters | #23–27, #27B–F | ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, ~~flex `<contact>` parsing~~ ✅, ~~passive edge forces~~ ✅, ~~flex body/node~~ ✅, ~~`<flexcomp mass>`~~ ✅, ~~body-coupled flex CRBA+FK~~ ✅ (Option A) |
 | [future_work_8.md](./future_work_8.md) | 3 | 3A-iii — Constraint System Overhaul | #28,29,30,31,32 | ~~Friction loss solref~~ ✅, ~~PGS/CG unified constraints~~ ✅, ~~flex collision filtering~~ ✅, `solreffriction`, pyramidal cones |
 | [future_work_9.md](./future_work_9.md) | 3 | 3A-iv — Noslip + Actuator/Dynamics | #33–37 | Noslip PGS/CG, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality |
-| [future_work_10.md](./future_work_10.md) | 3 | 3A-v — Constraint/Joint + Physics + Trait Architecture | #38–42, §42A-i–iii, §42B–F | Ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, flex edge Jacobian + rigid flags + pre-computed fields, flex bending trait, elasticity trait, actuator gain trait, contact solver trait, `SimBuilder` |
+| [future_work_10.md](./future_work_10.md) | 3 | 3A-v — Constraint/Joint + Physics + Trait Architecture | #38–42, §42A-i–v, §42B–F | Ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, flex edge Jacobian + rigid flags + pre-computed fields, flex self-collision dispatch, flex-flex collision, flex bending trait, elasticity trait, actuator gain trait, contact solver trait, `SimBuilder` |
 | [future_work_11.md](./future_work_11.md) | 3 | 3A-vi — Cleanup + Conformance | #43–45 | Geom `shellinertia`, legacy crate deprecation, MuJoCo conformance test suite |
 | [future_work_12.md](./future_work_12.md) | 3 | 3B — Format Completeness + Performance | #46–50 | `<composite>`, URDF completeness, SIMD audit, non-physics MJCF, CCD |
 | [future_work_13.md](./future_work_13.md) | 3 | 3C — API + Pipeline Completeness | #51–55 | Body accumulators, `mj_inverse`, `step1`/`step2`, heightfield gaps, `*_user` data |
