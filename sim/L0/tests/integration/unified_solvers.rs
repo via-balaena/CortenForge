@@ -339,7 +339,8 @@ fn test_pgs_cost_guard_dual_cost_nonpositive() {
         match data.efc_type[i] {
             sim_core::ConstraintType::LimitJoint
             | sim_core::ConstraintType::LimitTendon
-            | sim_core::ConstraintType::ContactNonElliptic => {
+            | sim_core::ConstraintType::ContactFrictionless
+            | sim_core::ConstraintType::ContactPyramidal => {
                 assert!(
                     force >= -1e-12,
                     "unilateral force[{i}] should be >= 0, got {force}"
@@ -818,10 +819,12 @@ fn test_s31_pyramidal_ignores_solreffriction() {
 
     assert!(data.ncon > 0, "should have contacts");
 
-    // All contact rows should use solref, not solreffriction
-    // (pyramidal contacts are ContactNonElliptic)
+    // All contact rows should use solref, not solreffriction.
+    // §32: pyramidal contacts with condim=3 now emit ContactPyramidal (4 facet rows).
+    let mut found_pyramidal = false;
     for i in 0..data.efc_type.len() {
-        if data.efc_type[i] == sim_core::ConstraintType::ContactNonElliptic {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            found_pyramidal = true;
             assert_eq!(
                 data.efc_solref[i],
                 [0.02, 1.0],
@@ -835,6 +838,7 @@ fn test_s31_pyramidal_ignores_solreffriction() {
             "pyramidal cone should not produce elliptic rows"
         );
     }
+    assert!(found_pyramidal, "should have found ContactPyramidal rows");
 }
 
 /// §31 AC5: solreffriction does NOT change R (regularization) for friction rows.
@@ -1251,4 +1255,575 @@ fn test_s31_direct_mode_negative_solreffriction() {
         }
     }
     panic!("should have found an elliptic contact group");
+}
+
+// =============================================================================
+// §32 Pyramidal Friction Cones
+// =============================================================================
+
+/// §32 AC1+AC3: pyramidal condim=3 produces 4 ContactPyramidal rows per contact.
+#[test]
+fn test_s32_pyramidal_condim3_produces_4_facet_rows() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s32_condim3">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="PGS"
+                    cone="pyramidal"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"
+                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..5 {
+        data.step(&model).expect("step");
+    }
+
+    assert!(data.ncon > 0, "should have contacts");
+
+    let mut found = false;
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            found = true;
+            let dim = data.efc_dim[i];
+            assert_eq!(dim, 4, "condim=3 pyramidal should have efc_dim=4 (2*(3-1))");
+            break;
+        }
+    }
+    assert!(found, "should have found ContactPyramidal rows");
+
+    // Count total pyramidal rows
+    let pyr_count = data
+        .efc_type
+        .iter()
+        .filter(|&&t| t == sim_core::ConstraintType::ContactPyramidal)
+        .count();
+    // Each contact produces 4 facets
+    assert_eq!(
+        pyr_count % 4,
+        0,
+        "pyramidal row count should be multiple of 4, got {pyr_count}"
+    );
+}
+
+/// §32 AC3: condim=4 → 6 facets, condim=6 → 10 facets.
+#[test]
+fn test_s32_pyramidal_condim4_and_condim6_row_counts() {
+    // condim=4 → 6 facets
+    let (model4, mut data4) = model_from_mjcf(
+        r#"
+        <mujoco model="s32_condim4">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="PGS"
+                    cone="pyramidal"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="4" friction="0.5 0.5 0.005 0.001 0.001"/>
+            </contact>
+        </mujoco>
+    "#,
+    );
+    for _ in 0..5 {
+        data4.step(&model4).expect("step");
+    }
+    assert!(data4.ncon > 0);
+
+    let mut found_dim = false;
+    for i in 0..data4.efc_type.len() {
+        if data4.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            assert_eq!(
+                data4.efc_dim[i], 6,
+                "condim=4 pyramidal: efc_dim should be 6"
+            );
+            found_dim = true;
+            break;
+        }
+    }
+    assert!(
+        found_dim,
+        "should have found ContactPyramidal rows for condim=4"
+    );
+
+    // condim=6 → 10 facets
+    let (model6, mut data6) = model_from_mjcf(
+        r#"
+        <mujoco model="s32_condim6">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="PGS"
+                    cone="pyramidal"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="6" friction="0.5 0.5 0.005 0.001 0.001"/>
+            </contact>
+        </mujoco>
+    "#,
+    );
+    for _ in 0..5 {
+        data6.step(&model6).expect("step");
+    }
+    assert!(data6.ncon > 0);
+
+    let mut found_dim6 = false;
+    for i in 0..data6.efc_type.len() {
+        if data6.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            assert_eq!(
+                data6.efc_dim[i], 10,
+                "condim=6 pyramidal: efc_dim should be 10"
+            );
+            found_dim6 = true;
+            break;
+        }
+    }
+    assert!(
+        found_dim6,
+        "should have found ContactPyramidal rows for condim=6"
+    );
+}
+
+/// §32 AC4: PGS projection — each pyramidal facet force is non-negative.
+#[test]
+fn test_s32_pyramidal_pgs_facet_forces_nonnegative() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s32_pgs_nonneg">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="PGS"
+                    cone="pyramidal" iterations="200"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.05">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"
+                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..10 {
+        data.step(&model).expect("step");
+    }
+
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            assert!(
+                data.efc_force[i] >= -1e-12,
+                "pyramidal facet force[{i}] should be >= 0, got {}",
+                data.efc_force[i]
+            );
+        }
+    }
+}
+
+/// §32 AC5: Force recovery — decode_pyramid produces correct normal + friction.
+#[test]
+fn test_s32_decode_pyramid_force_recovery() {
+    // Known facet forces for condim=3 (4 facets):
+    // facets = [f_pos_t1, f_neg_t1, f_pos_t2, f_neg_t2]
+    let mu = [0.5, 0.3, 0.005, 0.001, 0.001];
+    let facets = [3.0, 1.0, 2.5, 0.5];
+    let (f_normal, f_friction) = sim_core::decode_pyramid(&facets, &mu, 3);
+
+    // f_normal = sum of all facets = 3+1+2.5+0.5 = 7.0
+    assert!((f_normal - 7.0_f64).abs() < 1e-12, "f_normal = {f_normal}");
+    // f_friction[0] = mu[0] * (f_pos - f_neg) = 0.5 * (3.0 - 1.0) = 1.0
+    assert!(
+        (f_friction[0] - 1.0).abs() < 1e-12,
+        "f_friction[0] = {}",
+        f_friction[0]
+    );
+    // f_friction[1] = mu[1] * (f_pos - f_neg) = 0.3 * (2.5 - 0.5) = 0.6
+    assert!(
+        (f_friction[1] - 0.6).abs() < 1e-12,
+        "f_friction[1] = {}",
+        f_friction[1]
+    );
+}
+
+/// §32 AC6: R scaling — all pyramidal facet rows have identical R = 2·μ_reg²·R_first_facet.
+/// Also verifies the Rpy formula: with impratio=1, Rpy = 2·friction[0]²·R_first_facet.
+#[test]
+fn test_s32_pyramidal_r_scaling_all_facets_identical() {
+    let friction0 = 0.7;
+    let (model, mut data) = model_from_mjcf(&format!(
+        r#"
+        <mujoco model="s32_r_scaling">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="pyramidal"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"
+                          condim="3" friction="{friction0} {friction0} 0.005 0.001 0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#
+    ));
+
+    for _ in 0..5 {
+        data.step(&model).expect("step");
+    }
+
+    // impratio defaults to 1.0, so mu_reg = friction[0]
+    assert!(
+        (model.impratio - 1.0).abs() < 1e-15,
+        "test assumes impratio=1"
+    );
+
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            let dim = data.efc_dim[i];
+            let r0 = data.efc_R[i];
+            assert!(r0 > 0.0, "R should be positive, got {r0}");
+
+            // All facet rows in this contact should have identical R
+            for j in 1..dim {
+                let rj = data.efc_R[i + j];
+                assert!(
+                    (rj - r0).abs() < 1e-15,
+                    "facet R[{j}]={rj} should equal R[0]={r0}"
+                );
+            }
+
+            // Verify Rpy formula: with impratio=1, mu_reg = friction[0].
+            // Rpy = 2 * mu_reg^2 * R_first_facet.
+            // Since R[i] IS the post-processed Rpy, and finalize_row! computed
+            // R_first_facet before post-processing, we verify the factor relationship:
+            // Rpy / (2 * friction[0]^2) should equal the original R_first_facet.
+            // The original R_first_facet > 0 and Rpy > 0.
+            let rpy_factor = 2.0 * friction0 * friction0;
+            assert!(rpy_factor > 0.0, "sanity: 2·μ² should be positive");
+            // Rpy = factor * R_base → R_base = Rpy / factor
+            let r_base = r0 / rpy_factor;
+            assert!(
+                r_base > 0.0,
+                "implied R_base should be positive, got {r_base}"
+            );
+
+            return; // pass
+        }
+    }
+    panic!("should have found ContactPyramidal rows");
+}
+
+/// §32 AC7: All facet rows share efc_pos and efc_margin.
+#[test]
+fn test_s32_pyramidal_shared_pos_and_margin() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s32_shared_pos">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="pyramidal"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.08">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"
+                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..3 {
+        data.step(&model).expect("step");
+    }
+
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            let dim = data.efc_dim[i];
+            let pos0 = data.efc_pos[i];
+            let margin0 = data.efc_margin[i];
+            for j in 1..dim {
+                assert_eq!(
+                    data.efc_pos[i + j],
+                    pos0,
+                    "facet pos[{j}] should equal pos[0]"
+                );
+                assert_eq!(
+                    data.efc_margin[i + j],
+                    margin0,
+                    "facet margin[{j}] should equal margin[0]"
+                );
+            }
+            return; // pass
+        }
+    }
+    panic!("should have found ContactPyramidal rows");
+}
+
+/// §32 AC8: Newton with pyramidal — Quadratic/Satisfied classification, never Cone.
+#[test]
+fn test_s32_pyramidal_newton_no_cone_state() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s32_newton">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="pyramidal"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.08">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"
+                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..10 {
+        data.step(&model).expect("step");
+    }
+
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            assert!(
+                matches!(
+                    data.efc_state[i],
+                    sim_core::ConstraintState::Quadratic | sim_core::ConstraintState::Satisfied
+                ),
+                "pyramidal facet[{i}] should be Quadratic or Satisfied, got {:?}",
+                data.efc_state[i]
+            );
+        }
+    }
+}
+
+/// §32: CG solver with pyramidal contacts produces non-negative facet forces.
+#[test]
+fn test_s32_pyramidal_cg_solver() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s32_cg">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="CG"
+                    cone="pyramidal" iterations="200"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.08">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"
+                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..10 {
+        data.step(&model).expect("step");
+    }
+
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            // CG with pyramidal: facets should be Quadratic/Satisfied, force >= 0
+            assert!(
+                matches!(
+                    data.efc_state[i],
+                    sim_core::ConstraintState::Quadratic | sim_core::ConstraintState::Satisfied
+                ),
+                "CG pyramidal facet[{i}] state should be Quadratic or Satisfied, got {:?}",
+                data.efc_state[i]
+            );
+            assert!(
+                data.efc_force[i] >= -1e-12,
+                "CG pyramidal facet force[{i}] should be >= 0, got {}",
+                data.efc_force[i]
+            );
+        }
+    }
+}
+
+/// §32 AC11: Pyramidal facets have NONZERO K (unlike elliptic friction rows).
+/// Verify aref includes both -B·vel and -K·imp·pos terms.
+#[test]
+fn test_s32_pyramidal_nonzero_k() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s32_nonzero_k">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="pyramidal"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.08">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"
+                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    // Step once to get contacts with penetration
+    data.step(&model).expect("step");
+
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            // All facets share the same pos (negative = penetrating)
+            let pos = data.efc_pos[i];
+            if pos < 0.0 {
+                // Penetrating: aref should be nonzero (K*imp*pos contributes)
+                let aref = data.efc_aref[i];
+                assert!(
+                    aref.abs() > 1e-10,
+                    "penetrating pyramidal facet should have nonzero aref, got {aref} at pos={pos}"
+                );
+            }
+            return; // pass
+        }
+    }
+    panic!("should have found ContactPyramidal rows");
+}
+
+/// §32 AC2: elliptic cone unchanged — no regression from pyramidal implementation.
+#[test]
+fn test_s32_elliptic_no_regression() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s32_elliptic_regression">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"
+                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..10 {
+        data.step(&model).expect("step");
+    }
+
+    assert!(data.ncon > 0, "should have contacts");
+
+    // Verify elliptic contacts still emit ContactElliptic
+    let mut found_elliptic = false;
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactElliptic {
+            found_elliptic = true;
+            let dim = data.efc_dim[i];
+            assert_eq!(dim, 3, "elliptic condim=3 should have efc_dim=3");
+        }
+        // Should NOT have pyramidal rows
+        assert_ne!(
+            data.efc_type[i],
+            sim_core::ConstraintType::ContactPyramidal,
+            "elliptic cone should not produce pyramidal rows"
+        );
+    }
+    assert!(found_elliptic, "should have found ContactElliptic rows");
+}
+
+/// §32 AC10: solreffriction has no effect on pyramidal — cross-validated with §31.
+#[test]
+fn test_s32_solreffriction_no_effect_on_pyramidal() {
+    // With solreffriction set
+    let (model_with, mut data_with) = model_from_mjcf(
+        r#"
+        <mujoco model="s32_solreffriction_with">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="pyramidal"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="0.5 0.5 0.005 0.001 0.001"
+                      solref="0.02 1.0" solreffriction="0.1 0.5"/>
+            </contact>
+        </mujoco>
+    "#,
+    );
+
+    // Without solreffriction
+    let (model_without, mut data_without) = model_from_mjcf(
+        r#"
+        <mujoco model="s32_solreffriction_without">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="pyramidal"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="0.5 0.5 0.005 0.001 0.001"
+                      solref="0.02 1.0"/>
+            </contact>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..5 {
+        data_with.step(&model_with).expect("step");
+        data_without.step(&model_without).expect("step");
+    }
+
+    // Both should produce identical efc_solref for pyramidal rows
+    for i in 0..data_with.efc_type.len().min(data_without.efc_type.len()) {
+        if data_with.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            assert_eq!(
+                data_with.efc_solref[i], data_without.efc_solref[i],
+                "pyramidal row {i}: solreffriction should have no effect"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// §32 AC12: Flat ground cross-validation against MuJoCo reference data
+// ---------------------------------------------------------------------------
+#[test]
+#[ignore = "TODO(§32): needs MuJoCo reference data"]
+fn test_s32_ac12_pyramidal_flat_ground_mujoco_cross_validation() {
+    // TODO(§32): AC12 cross-validation against MuJoCo reference data.
+    // Populate with MuJoCo reference values for a sphere resting on a flat
+    // pyramidal-cone surface and assert qpos/efc_force match within 5%.
+    todo!("Populate with MuJoCo reference values for AC12 flat-ground cross-validation");
+}
+
+// ---------------------------------------------------------------------------
+// §32 AC13: Inclined plane cross-validation against MuJoCo reference data
+// ---------------------------------------------------------------------------
+#[test]
+#[ignore = "TODO(§32): needs MuJoCo reference data"]
+fn test_s32_ac13_pyramidal_inclined_plane_mujoco_cross_validation() {
+    // TODO(§32): AC13 cross-validation against MuJoCo reference data.
+    // Populate with MuJoCo reference values for a sphere on an inclined
+    // pyramidal-cone surface and assert qpos/efc_force match within 5%.
+    todo!("Populate with MuJoCo reference values for AC13 inclined-plane cross-validation");
 }

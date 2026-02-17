@@ -158,6 +158,8 @@ pub use mujoco_pipeline::{
     WrapType,
     // dof_length mechanism length computation (§16.14)
     compute_dof_lengths,
+    // Pyramidal force recovery (§32)
+    decode_pyramid,
     // Utility functions for position/velocity differentiation
     mj_differentiate_pos,
     mj_integrate_pos_explicit,

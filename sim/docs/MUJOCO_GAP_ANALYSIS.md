@@ -22,7 +22,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 **Remaining gaps (Phase 3, optimal implementation order):**
 - **3A-i Parser Fundamentals** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` element~~ ✅, ~~`childclass` attribute~~ ✅, ~~`<site>` orientation~~ ✅, ~~tendon `springlength`~~ ✅
 - **3A-ii Inertia + Contact Parameters** (#23–27, #27B–F): ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, ~~flex child element parsing~~ ✅, ~~passive edge forces~~ ✅, ~~flex body/node attrs~~ ✅, ~~`<flexcomp mass>`~~ ✅, ~~body-coupled flex CRBA+FK~~ ✅
-- **3A-iii Constraint System Overhaul** (#28–32): ~~friction loss per-DOF solref/solimp~~ ✅, ~~unified PGS/CG constraint migration~~ ✅, flex collision filtering, `solreffriction` per-direction, pyramidal cones
+- **3A-iii Constraint System Overhaul** (#28–32): ~~friction loss per-DOF solref/solimp~~ ✅, ~~unified PGS/CG constraint migration~~ ✅, ~~flex collision filtering~~ ✅, ~~`solreffriction` per-direction~~ ✅, ~~pyramidal cones~~ ✅
 - **3A-iv Noslip + Actuator/Dynamics** (#33–37): noslip post-processor, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality
 - **3A-precursor Flex Solver Unification** (#6B): ~~flex solver unification~~ ✅ (subsumes #42)
 - **3A-v Constraint/Joint + Physics** (#38–41, §42A-i–iii): ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, flex edge Jacobian (§42A-i), flex rigid flags (§42A-ii), flex pre-computed fields (§42A-iii) (~~#42 flex/flexcomp~~ subsumed by §6B)
@@ -45,9 +45,11 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Model loading (URDF, MJCF with `<default>` class resolution, `childclass` propagation (body/frame with undefined-class validation), `<frame>` element (pose composition, recursive nesting), `<compiler>` element, `<include>` file support, **MJB binary format**) — `DefaultResolver` with Option<T> pattern wired into `model_builder.rs` for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair) with 91+ defaultable fields across four-stage pipeline (types → parser → merge → apply); `<compiler>` handles angle units, Euler sequences, asset paths, autolimits, inertia computation, mass post-processing; `<include>` supports recursive file expansion with duplicate detection
 
 ### Placeholder / Stub (in pipeline)
-- Pyramidal friction cones — `cone` field stored but solver uses elliptic cones (warning emitted if pyramidal requested)
+
+(none)
 
 ### Recently Implemented (previously stubs)
+- Pyramidal friction cones ✅ — `ContactPyramidal` type, 2*(dim-1) facet rows with combined Jacobians `J_normal ± μ·J_friction`, R scaling `Rpy = 2·μ²·R_first_facet`, `decode_pyramid()` force recovery, model default changed to `cone: 0` (MuJoCo default), 13 tests ([future_work_8 #32](./todo/future_work_8.md))
 - Site-transmission actuators ✅ — 6D gear, refsite, `mj_jac_site()`, `mj_transmission_site()`, `subquat()`, common-ancestor DOF zeroing, `ActuatorFrc` sensor fix, 23 integration tests + 9 unit tests ([future_work_2 #5](./todo/future_work_2.md))
 - Spatial tendon pipeline ✅ — 3D routing with `mj_fwd_tendon_spatial()`, sphere/cylinder wrapping, sidesite disambiguation, pulley divisors, free-joint Jacobians, `accumulate_point_jacobian()`, 31 acceptance tests verified against MuJoCo 3.4.0 ([future_work_2 #4](./todo/future_work_2.md))
 - General gain/bias actuator force model ✅ — all 8 shortcut types expanded to gain/bias/dynamics, `force = gain * input + bias`, GainType/BiasType dispatch, FilterExact integration ([future_work_1 #12](./todo/future_work_1.md))
@@ -264,7 +266,7 @@ f_n ≥ 0, ||(f_t1/μ_1, f_t2/μ_2, ...)|| ≤ f_n
   1. Unilateral constraint: if λ_n < 0, contact releases (all forces = 0)
   2. Friction scaling: if friction exceeds cone, scale by λ_n/s
 - `project_friction_cone()` — Dispatcher for condim 1/3/4/6
-- `Model.cone = 1` (elliptic) as default; pyramidal emits warning and falls back
+- `Model.cone = 0` (pyramidal, MuJoCo default); elliptic via `cone="elliptic"`
 - Per-contact `mu: [f64; 5]` for [sliding1, sliding2, torsional, rolling1, rolling2]
 
 **Files modified:** `sim-core/src/mujoco_pipeline.rs` (lines 13185-13220)

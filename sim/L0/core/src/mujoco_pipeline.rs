@@ -874,8 +874,12 @@ pub enum ConstraintType {
     LimitJoint,
     /// Tendon limit constraint.
     LimitTendon,
-    /// Contact with pyramidal friction cone (condim < 3 or cone == pyramidal).
-    ContactNonElliptic,
+    /// Frictionless contact (condim=1 or μ≈0). Unilateral, scalar projection.
+    ContactFrictionless,
+    /// Pyramidal friction cone facet (§32). Each facet is an independent
+    /// non-negative constraint with combined Jacobian `J_normal ± μ·J_friction`.
+    /// A condim=3 contact produces 4 facets, condim=4→6, condim=6→10.
+    ContactPyramidal,
     /// Contact with elliptic friction cone (condim ≥ 3 and cone == elliptic).
     ContactElliptic,
     /// Flex edge-length constraint (soft equality, matches MuJoCo's mjEQ_FLEX).
@@ -3105,7 +3109,7 @@ impl Model {
             impratio: 1.0,              // MuJoCo default
             regularization: 1e-6,       // PGS constraint softness
             friction_smoothing: 1000.0, // tanh transition sharpness
-            cone: 1,                    // Elliptic friction cone (pyramidal not supported)
+            cone: 0,                    // Pyramidal friction cone (MuJoCo default)
             stat_meaninertia: 1.0,      // Default (computed at model build from CRBA)
             ls_iterations: 50,          // Newton line search iterations
             ls_tolerance: 0.01,         // Newton line search gradient tolerance
@@ -8726,14 +8730,23 @@ fn mj_sensor_acc(model: &Model, data: &mut Data) {
                     let dim = data.efc_dim[ei];
                     if matches!(
                         data.efc_type[ei],
-                        ConstraintType::ContactElliptic | ConstraintType::ContactNonElliptic
+                        ConstraintType::ContactElliptic
+                            | ConstraintType::ContactFrictionless
+                            | ConstraintType::ContactPyramidal
                     ) {
                         let ci = data.efc_id[ei];
                         if ci < data.contacts.len() {
                             let c = &data.contacts[ci];
                             if c.geom1 == objid || c.geom2 == objid {
-                                // efc_force[ei] is the normal force for this contact
-                                total_force += data.efc_force[ei];
+                                if data.efc_type[ei] == ConstraintType::ContactPyramidal {
+                                    // §32: Normal force = sum of ALL facet forces
+                                    for k in 0..dim {
+                                        total_force += data.efc_force[ei + k];
+                                    }
+                                } else {
+                                    // Elliptic/frictionless: first row is normal force
+                                    total_force += data.efc_force[ei];
+                                }
                             }
                         }
                         ei += dim;
@@ -12744,7 +12757,9 @@ fn constraint_tree(model: &Model, data: &Data, row: usize) -> usize {
     let ntree = model.ntree;
 
     match ctype {
-        ConstraintType::ContactNonElliptic | ConstraintType::ContactElliptic => {
+        ConstraintType::ContactFrictionless
+        | ConstraintType::ContactPyramidal
+        | ConstraintType::ContactElliptic => {
             if id >= data.contacts.len() {
                 return sentinel;
             }
@@ -13587,6 +13602,36 @@ fn project_elliptic_cone(lambda: &mut [f64], mu: &[f64; 5], dim: usize) {
     }
 }
 
+/// Decode pyramidal facet forces into physical normal + friction forces (§32.6).
+///
+/// Matches MuJoCo's `mju_decodePyramid`:
+/// - `f_normal = Σ f_facet[k]` (sum of all facets)
+/// - `f_friction[d] = μ[d] · (f_pos[d] - f_neg[d])` for each friction direction
+///
+/// `facet_forces` is a slice of `2*(dim-1)` facet force values for one contact.
+/// `mu` is the 5-element friction array. `dim` is condim (NOT number of facets).
+///
+/// Returns `(normal_force, friction_forces)` where `friction_forces` has `dim-1` elements.
+#[must_use]
+pub fn decode_pyramid(facet_forces: &[f64], mu: &[f64; 5], dim: usize) -> (f64, Vec<f64>) {
+    let n_facets = 2 * (dim - 1);
+    debug_assert_eq!(facet_forces.len(), n_facets);
+
+    let mut f_normal = 0.0;
+    for k in 0..n_facets {
+        f_normal += facet_forces[k];
+    }
+
+    let mut f_friction = Vec::with_capacity(dim - 1);
+    for d in 0..(dim - 1) {
+        let f_pos = facet_forces[2 * d];
+        let f_neg = facet_forces[2 * d + 1];
+        f_friction.push(mu[d] * (f_pos - f_neg));
+    }
+
+    (f_normal, f_friction)
+}
+
 /// Compute position-dependent impedance from solimp parameters.
 ///
 /// The sigmoid shape is derived from MuJoCo's `getimpedance()` in
@@ -14048,8 +14093,14 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
     }
 
     // Contacts
+    // §32: pyramidal contacts emit 2*(dim-1) facet rows instead of dim rows.
     for c in &data.contacts {
-        nefc += c.dim;
+        let is_pyramidal = c.dim >= 3 && model.cone == 0 && c.mu[0] >= 1e-10;
+        if is_pyramidal {
+            nefc += 2 * (c.dim - 1);
+        } else {
+            nefc += c.dim;
+        }
     }
 
     // NOTE: Bending forces are passive (in mj_fwd_passive), not constraint rows.
@@ -14421,6 +14472,8 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
 
     // --- 3f: Contacts ---
     let contacts = data.contacts.clone(); // Clone to avoid borrow conflict
+    // §32: Track pyramidal contact ranges for R-scaling post-processing.
+    let mut pyramidal_ranges: Vec<(usize, usize, usize)> = Vec::new(); // (start_row, n_facets, contact_idx)
     for (ci, contact) in contacts.iter().enumerate() {
         let dim = contact.dim;
         let cj = compute_contact_jacobian(model, data, contact);
@@ -14432,50 +14485,126 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
         // (reference acceleration offset).
         let margin = contact.includemargin;
         let is_elliptic = dim >= 3 && model.cone == 1 && contact.mu[0] >= 1e-10;
-        let ctype = if is_elliptic {
-            ConstraintType::ContactElliptic
-        } else {
-            ConstraintType::ContactNonElliptic
-        };
+        let is_pyramidal = dim >= 3 && model.cone == 0 && contact.mu[0] >= 1e-10;
 
-        // §31: solreffriction selection for elliptic friction rows.
-        // MuJoCo uses solreffriction instead of solref for friction rows (r > 0)
-        // of elliptic contacts, but ONLY when solreffriction is nonzero
-        // (C truthiness: `solreffriction[0] || solreffriction[1]`).
-        // [0.0, 0.0] is the sentinel meaning "use solref" — this is the default
-        // for all auto-generated contacts and for <pair> without solreffriction.
-        let has_solreffriction =
-            is_elliptic && (contact.solreffriction[0] != 0.0 || contact.solreffriction[1] != 0.0);
+        if is_pyramidal {
+            // §32: Pyramidal friction cone — emit 2*(dim-1) facet rows.
+            // Each friction direction d produces two facets:
+            //   J_pos = J_normal + μ_d · J_friction_d
+            //   J_neg = J_normal - μ_d · J_friction_d
+            // All facets share pos, margin, solref (NOT solreffriction).
+            let n_facets = 2 * (dim - 1);
+            let start_row = row;
 
-        for r in 0..dim {
-            for col in 0..nv {
-                data.efc_J[(row, col)] = cj[(r, col)];
+            // MuJoCo: cpos[0] = cpos[1] = con->dist; cmargin[0] = cmargin[1] = con->includemargin;
+            // These are set ONCE before the loop, reused for ALL facet pairs.
+            let pos = -contact.depth;
+
+            for d in 1..dim {
+                let mu_d = contact.mu[d - 1]; // friction coefficient for direction d
+
+                // Positive facet: J_normal + μ_d · J_friction_d
+                for col in 0..nv {
+                    data.efc_J[(row, col)] = cj[(0, col)] + mu_d * cj[(d, col)];
+                }
+                let mut vel = 0.0;
+                for col in 0..nv {
+                    vel += data.efc_J[(row, col)] * data.qvel[col];
+                }
+                finalize_row!(
+                    sr_normal,
+                    si,
+                    pos,
+                    margin,
+                    vel,
+                    0.0,
+                    ConstraintType::ContactPyramidal,
+                    n_facets,
+                    ci,
+                    contact.mu
+                );
+
+                // Negative facet: J_normal - μ_d · J_friction_d
+                for col in 0..nv {
+                    data.efc_J[(row, col)] = cj[(0, col)] - mu_d * cj[(d, col)];
+                }
+                let mut vel = 0.0;
+                for col in 0..nv {
+                    vel += data.efc_J[(row, col)] * data.qvel[col];
+                }
+                finalize_row!(
+                    sr_normal,
+                    si,
+                    pos,
+                    margin,
+                    vel,
+                    0.0,
+                    ConstraintType::ContactPyramidal,
+                    n_facets,
+                    ci,
+                    contact.mu
+                );
             }
 
-            // pos: row 0 = signed distance (MuJoCo convention: negative = penetrating),
-            // rows 1+ = 0. Negate depth (positive = penetrating) to match MuJoCo's dist.
-            let pos = if r == 0 { -contact.depth } else { 0.0 };
-            let margin_r = if r == 0 { margin } else { 0.0 };
-
-            // §31: select solref for this row.
-            // Normal row (r=0) always uses solref. Friction rows (r>0) use
-            // solreffriction when nonzero, matching MuJoCo's mj_makeImpedance:
-            //   int elliptic_friction = (tp == mjCNSTR_CONTACT_ELLIPTIC) && (j > 0);
-            //   mjtNum* ref = elliptic_friction && (solreffriction[0] || solreffriction[1])
-            //                 ? solreffriction : solref;
-            let sr = if r > 0 && has_solreffriction {
-                contact.solreffriction
+            pyramidal_ranges.push((start_row, n_facets, ci));
+        } else {
+            // Elliptic or frictionless: emit dim rows (existing path).
+            let ctype = if is_elliptic {
+                ConstraintType::ContactElliptic
             } else {
-                sr_normal
+                ConstraintType::ContactFrictionless
             };
 
-            // vel: J_row · qvel
-            let mut vel = 0.0;
-            for col in 0..nv {
-                vel += cj[(r, col)] * data.qvel[col];
-            }
+            // §31: solreffriction selection for elliptic friction rows.
+            let has_solreffriction = is_elliptic
+                && (contact.solreffriction[0] != 0.0 || contact.solreffriction[1] != 0.0);
 
-            finalize_row!(sr, si, pos, margin_r, vel, 0.0, ctype, dim, ci, contact.mu);
+            for r in 0..dim {
+                for col in 0..nv {
+                    data.efc_J[(row, col)] = cj[(r, col)];
+                }
+
+                // pos: row 0 = signed distance, rows 1+ = 0.
+                let pos = if r == 0 { -contact.depth } else { 0.0 };
+                let margin_r = if r == 0 { margin } else { 0.0 };
+
+                // §31: select solref for this row.
+                let sr = if r > 0 && has_solreffriction {
+                    contact.solreffriction
+                } else {
+                    sr_normal
+                };
+
+                // vel: J_row · qvel
+                let mut vel = 0.0;
+                for col in 0..nv {
+                    vel += cj[(r, col)] * data.qvel[col];
+                }
+
+                finalize_row!(sr, si, pos, margin_r, vel, 0.0, ctype, dim, ci, contact.mu);
+            }
+        }
+    }
+
+    // §32: Post-process R scaling for pyramidal contacts.
+    // TODO(§32): AC12/AC13 cross-validation against MuJoCo reference data.
+    // MuJoCo's mj_makeImpedance computes R per-row from each row's own diagApprox,
+    // then overrides all facet rows with Rpy = 2 · μ_reg² · R[first_facet].
+    // R[first_facet] was already computed by finalize_row! using the first facet's
+    // actual Jacobian (J_normal + μ[0]·J_friction_0), NOT the pure normal Jacobian.
+    for &(start_row, n_facets, ci) in &pyramidal_ranges {
+        let contact = &contacts[ci];
+
+        // Use R already computed by finalize_row! for the first facet row.
+        let r_first_facet = data.efc_R[start_row];
+
+        // μ_reg = friction[0] · √(1/impratio)
+        let mu_reg = contact.mu[0] * (1.0 / model.impratio).sqrt();
+        let rpy = (2.0 * mu_reg * mu_reg * r_first_facet).max(MJ_MINVAL);
+
+        for row_idx in start_row..start_row + n_facets {
+            data.efc_R[row_idx] = rpy;
+            data.efc_D[row_idx] = 1.0 / rpy;
         }
     }
 
@@ -14687,10 +14816,11 @@ fn pgs_solve_unified(model: &Model, data: &mut Data) {
                         data.efc_force[i] = data.efc_force[i].clamp(-fl, fl);
                     }
 
-                    // Limits, non-elliptic contacts, and elliptic dim=1: unilateral (force >= 0)
+                    // Limits, frictionless/pyramidal contacts, and elliptic dim=1: unilateral (force >= 0)
                     ConstraintType::LimitJoint
                     | ConstraintType::LimitTendon
-                    | ConstraintType::ContactNonElliptic
+                    | ConstraintType::ContactFrictionless
+                    | ConstraintType::ContactPyramidal
                     | ConstraintType::ContactElliptic => {
                         data.efc_force[i] = data.efc_force[i].max(0.0);
                     }
@@ -15170,7 +15300,8 @@ fn classify_constraint_states(
 
             ConstraintType::LimitJoint
             | ConstraintType::LimitTendon
-            | ConstraintType::ContactNonElliptic => {
+            | ConstraintType::ContactFrictionless
+            | ConstraintType::ContactPyramidal => {
                 // jar < 0 → Quadratic; jar >= 0 → Satisfied
                 if jar < 0.0 {
                     data.efc_state[i] = ConstraintState::Quadratic;
@@ -16193,7 +16324,8 @@ fn primal_eval(data: &Data, pq: &PrimalQuad, jv: &[f64], alpha: f64) -> PrimalPo
 
             ConstraintType::LimitJoint
             | ConstraintType::LimitTendon
-            | ConstraintType::ContactNonElliptic => {
+            | ConstraintType::ContactFrictionless
+            | ConstraintType::ContactPyramidal => {
                 // Re-classify at trial alpha
                 let jar_trial = data.efc_jar[i] + alpha * jv[i];
                 if jar_trial < 0.0 {
@@ -16517,7 +16649,8 @@ fn evaluate_cost_at(
             }
             ConstraintType::LimitJoint
             | ConstraintType::LimitTendon
-            | ConstraintType::ContactNonElliptic => {
+            | ConstraintType::ContactFrictionless
+            | ConstraintType::ContactPyramidal => {
                 if jar < 0.0 {
                     constraint_cost += 0.5 * d * jar * jar;
                 }
@@ -16910,14 +17043,19 @@ fn noslip_postprocess(model: &Model, data: &mut Data) {
         let dim = data.efc_dim[i];
 
         match ctype {
-            ConstraintType::ContactElliptic | ConstraintType::ContactNonElliptic => {
-                // Only process contacts with friction (dim >= 3) and active normal
+            ConstraintType::ContactElliptic | ConstraintType::ContactFrictionless => {
+                // Only process elliptic contacts with friction (dim >= 3) and active normal
                 if dim >= 3 && data.efc_state[i] != ConstraintState::Satisfied {
                     for j in 1..dim {
                         friction_rows.push(i + j);
                         friction_contact.push((i, dim));
                     }
                 }
+                i += dim;
+            }
+            ConstraintType::ContactPyramidal => {
+                // §32: Pyramidal facets have no separate friction rows — skip.
+                // MuJoCo noslip only operates on elliptic friction rows.
                 i += dim;
             }
             _ => {

@@ -1153,7 +1153,7 @@ each other. This is a broadphase-level filter.
 
 ## 31. `solreffriction` Per-Direction Solver Parameters (Elliptic Contacts Only)
 
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** M | **Prerequisites:** None
 
 ### Current State
 
@@ -1371,13 +1371,13 @@ computed per-row during constraint assembly, PGS/CG automatically pick up
 
 ## 32. Pyramidal Friction Cones
 
-**Status:** Stub | **Effort:** L | **Prerequisites:** #29 (✅ complete), #31 (✅ complete)
+**Status:** ✅ Complete (AC12/AC13 cross-validation pending MuJoCo reference data) | **Effort:** L | **Prerequisites:** #29 (✅ complete), #31 (✅ complete)
 
 ### Current State
 
 `Model.cone` is stored (0=pyramidal, 1=elliptic, line ~1771) and wired from
-`<option cone="..."/>` via `set_options()` (§31 fix). The default is `cone: 1`
-(elliptic) — note MuJoCo defaults to pyramidal; this will need changing.
+`<option cone="..."/>` via `set_options()` (§31 fix). The default is `cone: 0`
+(pyramidal, MuJoCo default).
 
 When `cone=0`, contacts are classified as `ContactNonElliptic` and handled as
 scalar unilateral constraints (Quadratic/Satisfied) in `classify_constraint_states`
