@@ -1890,6 +1890,16 @@ pub struct Contact {
     pub mu: [f64; 5],
     /// Solver reference parameters (from geom pair).
     pub solref: [f64; 2],
+    /// Solver reference for friction directions (§31).
+    ///
+    /// Only meaningful for elliptic contacts from explicit `<pair>` definitions.
+    /// `[0.0, 0.0]` is the sentinel meaning "use `solref`" (MuJoCo convention).
+    /// Auto-generated contacts always have `[0.0, 0.0]`.
+    ///
+    /// When nonzero **and** the constraint is `ContactElliptic` with `row > 0`
+    /// (friction row), the KBIP computation uses `solreffriction` instead of
+    /// `solref` for the B (damping) term. K is always 0 for friction rows.
+    pub solreffriction: [f64; 2],
     /// Solver impedance parameters (from geom pair).
     pub solimp: [f64; 5],
     /// Contact frame tangent vectors (orthogonal to normal).
@@ -1989,6 +1999,7 @@ impl Contact {
                 friction * 0.001,
             ],
             solref,
+            solreffriction: [0.0, 0.0],
             solimp,
             frame: [t1, t2],
             flex_vertex: None,
@@ -2082,6 +2093,7 @@ impl Contact {
             // MuJoCo 5-element friction: [sliding1, sliding2, torsional, rolling1, rolling2]
             mu: [sliding, sliding, torsional, rolling, rolling],
             solref,
+            solreffriction: [0.0, 0.0],
             solimp,
             frame: [t1, t2],
             flex_vertex: None,
@@ -5812,6 +5824,7 @@ fn make_contact_flex_rigid(
         includemargin,
         mu,
         solref,
+        solreffriction: [0.0, 0.0],
         solimp,
         frame: [t1, t2],
         flex_vertex: Some(vertex_idx),
@@ -6035,8 +6048,9 @@ fn apply_pair_overrides(contact: &mut Contact, pair: &ContactPair) {
     // Solver params
     contact.solref = pair.solref;
     contact.solimp = pair.solimp;
-    // NOTE: solreffriction is NOT applied here — Contact has a single solref
-    // field; per-direction solver params require solver changes (see §G).
+    // §31: propagate solreffriction from pair → runtime contact.
+    // [0.0, 0.0] sentinel means "use solref" (auto-generated contacts keep this default).
+    contact.solreffriction = pair.solreffriction;
     // Pair margin/gap override geom-derived includemargin
     contact.includemargin = pair.margin - pair.gap;
 }
@@ -6233,6 +6247,7 @@ fn make_contact_from_geoms(
         includemargin,
         mu,
         solref,
+        solreffriction: [0.0, 0.0],
         solimp,
         frame: [t1, t2],
         flex_vertex: None,
@@ -14410,7 +14425,7 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
         let dim = contact.dim;
         let cj = compute_contact_jacobian(model, data, contact);
 
-        let sr = contact.solref;
+        let sr_normal = contact.solref;
         let si = contact.solimp;
         // includemargin = margin - gap, computed at contact creation.
         // Flows into compute_impedance (violation threshold) and compute_aref
@@ -14423,6 +14438,15 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
             ConstraintType::ContactNonElliptic
         };
 
+        // §31: solreffriction selection for elliptic friction rows.
+        // MuJoCo uses solreffriction instead of solref for friction rows (r > 0)
+        // of elliptic contacts, but ONLY when solreffriction is nonzero
+        // (C truthiness: `solreffriction[0] || solreffriction[1]`).
+        // [0.0, 0.0] is the sentinel meaning "use solref" — this is the default
+        // for all auto-generated contacts and for <pair> without solreffriction.
+        let has_solreffriction =
+            is_elliptic && (contact.solreffriction[0] != 0.0 || contact.solreffriction[1] != 0.0);
+
         for r in 0..dim {
             for col in 0..nv {
                 data.efc_J[(row, col)] = cj[(r, col)];
@@ -14432,6 +14456,18 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
             // rows 1+ = 0. Negate depth (positive = penetrating) to match MuJoCo's dist.
             let pos = if r == 0 { -contact.depth } else { 0.0 };
             let margin_r = if r == 0 { margin } else { 0.0 };
+
+            // §31: select solref for this row.
+            // Normal row (r=0) always uses solref. Friction rows (r>0) use
+            // solreffriction when nonzero, matching MuJoCo's mj_makeImpedance:
+            //   int elliptic_friction = (tp == mjCNSTR_CONTACT_ELLIPTIC) && (j > 0);
+            //   mjtNum* ref = elliptic_friction && (solreffriction[0] || solreffriction[1])
+            //                 ? solreffriction : solref;
+            let sr = if r > 0 && has_solreffriction {
+                contact.solreffriction
+            } else {
+                sr_normal
+            };
 
             // vel: J_row · qvel
             let mut vel = 0.0;

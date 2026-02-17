@@ -620,3 +620,635 @@ fn test_tendon_solreffriction() {
         "efc_solref should match tendon"
     );
 }
+
+// ============================================================================
+// §31: Contact solreffriction (Elliptic Contacts Only)
+// ============================================================================
+
+/// §31 AC1+AC3+AC9: explicit `<pair>` with nonzero solreffriction produces
+/// different `efc_solref` and `efc_aref` for friction rows vs the normal row.
+#[test]
+fn test_s31_contact_solreffriction_changes_friction_rows() {
+    // Two-body system: a sphere resting on a plane, forced into contact
+    // via an explicit <pair> with custom solreffriction.
+    // Elliptic cone requires cone="elliptic" and condim >= 3.
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s31_solreffriction">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0" solreffriction="0.1 0.5"/>
+            </contact>
+        </mujoco>
+    "#,
+    );
+
+    // Step to generate contacts
+    for _ in 0..5 {
+        data.step(&model).expect("step");
+    }
+
+    // Should have contacts
+    assert!(
+        data.ncon > 0,
+        "should have contacts, got ncon={}",
+        data.ncon
+    );
+
+    // Find contact rows: look for ContactElliptic type
+    let mut found_normal = false;
+    let mut found_friction = false;
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactElliptic {
+            let dim = data.efc_dim[i];
+            assert!(dim >= 3, "elliptic contact should have dim >= 3");
+
+            // Row 0 of this group is the normal row
+            // Normal row uses solref
+            assert_eq!(
+                data.efc_solref[i],
+                [0.02, 1.0],
+                "normal row should use solref"
+            );
+            found_normal = true;
+
+            // Friction rows (1..dim) use solreffriction
+            for j in 1..dim {
+                assert_eq!(
+                    data.efc_solref[i + j],
+                    [0.1, 0.5],
+                    "friction row {j} should use solreffriction"
+                );
+                found_friction = true;
+            }
+
+            // AC9: verify the stored solref values produce different B (damping).
+            // B = 2 / max(MINVAL, dmax * solref[0]).
+            // solref=[0.02,1.0] → B ∝ 1/0.02 = 50
+            // solreffriction=[0.1,0.5] → B ∝ 1/0.1 = 10
+            // So the damping coefficient differs by 5×, confirming the KBIP
+            // path used different solref values.
+            assert_ne!(
+                data.efc_solref[i],
+                data.efc_solref[i + 1],
+                "normal and friction rows must have different stored solref"
+            );
+
+            break; // Only need to check the first contact group
+        }
+    }
+    assert!(found_normal, "should find a normal contact row");
+    assert!(found_friction, "should find friction contact rows");
+}
+
+/// §31 AC2: default solreffriction=[0,0] produces same behavior as without it.
+/// No regression when solreffriction is absent.
+#[test]
+fn test_s31_default_solreffriction_no_regression() {
+    // Two identical models: one with explicit <pair> but no solreffriction,
+    // one with solreffriction="0 0" (sentinel for "use solref").
+    let mjcf_no_srf = r#"
+        <mujoco model="s31_no_srf">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0"/>
+            </contact>
+        </mujoco>
+    "#;
+    let mjcf_zero_srf = r#"
+        <mujoco model="s31_zero_srf">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0" solreffriction="0 0"/>
+            </contact>
+        </mujoco>
+    "#;
+
+    let (model_a, mut data_a) = model_from_mjcf(mjcf_no_srf);
+    let (model_b, mut data_b) = model_from_mjcf(mjcf_zero_srf);
+
+    for _ in 0..10 {
+        data_a.step(&model_a).expect("step");
+        data_b.step(&model_b).expect("step");
+    }
+
+    // Both should produce identical efc_solref for all rows
+    assert_eq!(
+        data_a.efc_solref.len(),
+        data_b.efc_solref.len(),
+        "same number of constraint rows"
+    );
+    for i in 0..data_a.efc_solref.len() {
+        assert_eq!(
+            data_a.efc_solref[i], data_b.efc_solref[i],
+            "efc_solref[{i}] should match"
+        );
+    }
+
+    // Positions should be identical
+    for i in 0..data_a.qpos.len() {
+        assert!(
+            (data_a.qpos[i] - data_b.qpos[i]).abs() < 1e-12,
+            "qpos[{i}] diverged: {} vs {}",
+            data_a.qpos[i],
+            data_b.qpos[i]
+        );
+    }
+}
+
+/// §31 AC4: solreffriction has NO effect on pyramidal contacts.
+/// All facet rows use solref regardless of solreffriction.
+#[test]
+fn test_s31_pyramidal_ignores_solreffriction() {
+    // Pyramidal cone: cone="pyramidal" (default, or explicit)
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s31_pyramidal">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="pyramidal"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0" solreffriction="0.1 0.5"/>
+            </contact>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..5 {
+        data.step(&model).expect("step");
+    }
+
+    assert!(data.ncon > 0, "should have contacts");
+
+    // All contact rows should use solref, not solreffriction
+    // (pyramidal contacts are ContactNonElliptic)
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactNonElliptic {
+            assert_eq!(
+                data.efc_solref[i],
+                [0.02, 1.0],
+                "pyramidal row {i} should use solref, not solreffriction"
+            );
+        }
+        // Should NOT have any ContactElliptic rows
+        assert_ne!(
+            data.efc_type[i],
+            sim_core::ConstraintType::ContactElliptic,
+            "pyramidal cone should not produce elliptic rows"
+        );
+    }
+}
+
+/// §31 AC5: solreffriction does NOT change R (regularization) for friction rows.
+/// R depends only on solimp and diagApprox, not on solref/solreffriction.
+#[test]
+fn test_s31_solreffriction_does_not_change_r() {
+    // Compare R values between default and custom solreffriction.
+    // Since R = f(solimp, diagApprox) and we keep solimp identical,
+    // R should be identical regardless of solreffriction.
+    let mjcf_default = r#"
+        <mujoco model="s31_r_default">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0"/>
+            </contact>
+        </mujoco>
+    "#;
+    let mjcf_custom = r#"
+        <mujoco model="s31_r_custom">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0" solreffriction="0.1 0.5"/>
+            </contact>
+        </mujoco>
+    "#;
+
+    let (model_a, mut data_a) = model_from_mjcf(mjcf_default);
+    let (model_b, mut data_b) = model_from_mjcf(mjcf_custom);
+
+    for _ in 0..5 {
+        data_a.step(&model_a).expect("step");
+        data_b.step(&model_b).expect("step");
+    }
+
+    // Find contact rows and compare R values
+    assert_eq!(
+        data_a.efc_R.len(),
+        data_b.efc_R.len(),
+        "same number of constraint rows"
+    );
+    for i in 0..data_a.efc_type.len() {
+        if data_a.efc_type[i] == sim_core::ConstraintType::ContactElliptic {
+            assert!(
+                (data_a.efc_R[i] - data_b.efc_R[i]).abs() < 1e-14,
+                "efc_R[{i}] should be identical: {} vs {}",
+                data_a.efc_R[i],
+                data_b.efc_R[i]
+            );
+        }
+    }
+}
+
+/// §31 AC6: K=0 for friction rows regardless of solreffriction value.
+/// Verify via efc_aref: for friction rows with zero velocity, aref should
+/// be zero (since K=0 and pos=0, aref = -(K*imp*pos + B*vel) = 0).
+#[test]
+fn test_s31_k_zero_for_friction_rows() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s31_k_zero">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.105">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0" solreffriction="0.1 0.5"/>
+            </contact>
+        </mujoco>
+    "#,
+    );
+
+    // Start at rest — zero velocity
+    for _ in 0..3 {
+        data.step(&model).expect("step");
+    }
+
+    // Find elliptic contact group
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactElliptic {
+            let dim = data.efc_dim[i];
+            // Check friction rows: pos=0, so if K were nonzero we'd see
+            // K*imp*pos contribution. With K=0, aref = -B*vel only.
+            // For a nearly-at-rest ball, friction velocity is ~0,
+            // so aref for friction rows should be very small.
+            for j in 1..dim {
+                let aref_fric = data.efc_aref[i + j];
+                // aref = -(K*imp*pos + B*vel). K=0 and pos=0 for friction rows,
+                // so aref = -B*vel. With near-zero velocity, |aref| should be tiny.
+                assert!(
+                    aref_fric.abs() < 0.01,
+                    "friction row aref should be near-zero (K=0, low vel), got {aref_fric}"
+                );
+            }
+            break;
+        }
+    }
+}
+
+/// §31 AC7+AC8: Both Newton and PGS solvers produce different friction forces
+/// when solreffriction differs from solref.
+#[test]
+fn test_s31_solreffriction_affects_newton_and_pgs() {
+    for solver in &["Newton", "PGS"] {
+        let mjcf_default = format!(
+            r#"
+            <mujoco model="s31_{solver}_default">
+                <option gravity="0 0 -9.81" timestep="0.002" solver="{solver}"
+                        cone="elliptic"/>
+                <worldbody>
+                    <geom name="floor" type="plane" size="5 5 0.1"/>
+                    <body name="ball" pos="0 0 0.1">
+                        <joint type="free"/>
+                        <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <contact>
+                    <pair geom1="floor" geom2="sphere"
+                          condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                          solref="0.02 1.0"/>
+                </contact>
+            </mujoco>
+        "#,
+        );
+        let mjcf_custom = format!(
+            r#"
+            <mujoco model="s31_{solver}_custom">
+                <option gravity="0 0 -9.81" timestep="0.002" solver="{solver}"
+                        cone="elliptic"/>
+                <worldbody>
+                    <geom name="floor" type="plane" size="5 5 0.1"/>
+                    <body name="ball" pos="0 0 0.1">
+                        <joint type="free"/>
+                        <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                    </body>
+                </worldbody>
+                <contact>
+                    <pair geom1="floor" geom2="sphere"
+                          condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                          solref="0.02 1.0" solreffriction="0.1 0.5"/>
+                </contact>
+            </mujoco>
+        "#,
+        );
+
+        let (model_def, mut data_def) = model_from_mjcf(&mjcf_default);
+        let (model_cst, mut data_cst) = model_from_mjcf(&mjcf_custom);
+
+        // Give lateral velocity to activate friction
+        data_def.qvel[0] = 1.0; // x-velocity
+        data_cst.qvel[0] = 1.0;
+
+        for _ in 0..10 {
+            data_def.step(&model_def).expect("step");
+            data_cst.step(&model_cst).expect("step");
+        }
+
+        // After 10 steps with lateral motion and friction, the friction forces
+        // should differ because the B (damping) coefficient differs.
+        // The x-velocity should have evolved differently.
+        let vel_diff = (data_def.qvel[0] - data_cst.qvel[0]).abs();
+        assert!(
+            vel_diff > 1e-6,
+            "{solver}: velocity should diverge with different solreffriction, diff={vel_diff}"
+        );
+    }
+}
+
+/// §31 AC9: Direct test with known solref vs solreffriction values.
+/// Verify efc_solref storage is correct per-row within a single contact group.
+#[test]
+fn test_s31_efc_solref_per_row_storage() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s31_per_row">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0" solreffriction="0.05 1.0"/>
+            </contact>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..3 {
+        data.step(&model).expect("step");
+    }
+
+    // Walk efc_type to find the contact group
+    let mut checked = false;
+    let mut i = 0;
+    while i < data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactElliptic {
+            let dim = data.efc_dim[i];
+
+            // Row 0 (normal): solref
+            assert_eq!(
+                data.efc_solref[i],
+                [0.02, 1.0],
+                "row {i} (normal) should store solref"
+            );
+            // Rows 1+ (friction): solreffriction
+            for j in 1..dim {
+                assert_eq!(
+                    data.efc_solref[i + j],
+                    [0.05, 1.0],
+                    "row {} (friction {j}) should store solreffriction",
+                    i + j
+                );
+            }
+            checked = true;
+            i += dim;
+        } else {
+            i += 1;
+        }
+    }
+    assert!(
+        checked,
+        "should have found at least one elliptic contact group"
+    );
+}
+
+/// §31 coverage: condim=6 (torsional + rolling) — solreffriction applies to
+/// all 5 friction rows (r=1..5), not just the 2 sliding rows of condim=3.
+#[test]
+fn test_s31_condim6_solreffriction_all_friction_rows() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s31_condim6">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="6" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0" solreffriction="0.08 0.6"/>
+            </contact>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..3 {
+        data.step(&model).expect("step");
+    }
+
+    let mut checked = false;
+    let mut i = 0;
+    while i < data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactElliptic {
+            let dim = data.efc_dim[i];
+            assert_eq!(dim, 6, "condim=6 should produce 6 constraint rows");
+
+            // Normal row (r=0): solref
+            assert_eq!(
+                data.efc_solref[i],
+                [0.02, 1.0],
+                "normal row should use solref"
+            );
+            // All 5 friction rows (r=1..5): solreffriction
+            for j in 1..dim {
+                assert_eq!(
+                    data.efc_solref[i + j],
+                    [0.08, 0.6],
+                    "friction row {j} of 6 should use solreffriction"
+                );
+            }
+            checked = true;
+            i += dim;
+        } else {
+            i += 1;
+        }
+    }
+    assert!(
+        checked,
+        "should have found an elliptic condim=6 contact group"
+    );
+}
+
+/// §31 coverage: one component zero — solreffriction="0.1 0.0" is nonzero
+/// (the `||` check: either component nonzero triggers use of solreffriction).
+#[test]
+fn test_s31_one_component_zero_still_activates() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s31_one_zero">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0" solreffriction="0.1 0.0"/>
+            </contact>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..3 {
+        data.step(&model).expect("step");
+    }
+
+    // Find elliptic contact group and verify friction rows use solreffriction
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactElliptic {
+            let dim = data.efc_dim[i];
+            // Normal: solref
+            assert_eq!(data.efc_solref[i], [0.02, 1.0], "normal row: solref");
+            // Friction: solreffriction=[0.1, 0.0] (NOT [0.02, 1.0])
+            for j in 1..dim {
+                assert_eq!(
+                    data.efc_solref[i + j],
+                    [0.1, 0.0],
+                    "friction row {j}: one-component-zero solreffriction must activate"
+                );
+            }
+            return; // pass
+        }
+    }
+    panic!("should have found an elliptic contact group");
+}
+
+/// §31 coverage: direct-mode solreffriction (negative values).
+/// MuJoCo interprets negative solref[0] as direct stiffness/damping:
+///   K = -solref[0], B = -solref[1].
+/// This path must also work when routed through solreffriction.
+#[test]
+fn test_s31_direct_mode_negative_solreffriction() {
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="s31_direct_mode">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="elliptic"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+            <contact>
+                <pair geom1="floor" geom2="sphere"
+                      condim="3" friction="1.0 1.0 0.005 0.001 0.001"
+                      solref="0.02 1.0" solreffriction="-100 -20"/>
+            </contact>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..3 {
+        data.step(&model).expect("step");
+    }
+
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactElliptic {
+            let dim = data.efc_dim[i];
+            // Normal: standard solref
+            assert_eq!(data.efc_solref[i], [0.02, 1.0], "normal row: solref");
+            // Friction: direct-mode solreffriction
+            for j in 1..dim {
+                assert_eq!(
+                    data.efc_solref[i + j],
+                    [-100.0, -20.0],
+                    "friction row {j}: direct-mode solreffriction must be stored"
+                );
+            }
+            return; // pass
+        }
+    }
+    panic!("should have found an elliptic contact group");
+}

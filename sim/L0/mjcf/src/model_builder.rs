@@ -28,10 +28,10 @@ use crate::defaults::DefaultResolver;
 use crate::error::Result;
 use crate::types::{
     AngleUnit, InertiaFromGeom, MjcfActuator, MjcfActuatorType, MjcfBody, MjcfCompiler,
-    MjcfContact, MjcfEquality, MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomType, MjcfHfield,
-    MjcfInertial, MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfKeyframe, MjcfMesh, MjcfModel,
-    MjcfOption, MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon, MjcfTendonType,
-    SpatialPathElement,
+    MjcfConeType, MjcfContact, MjcfEquality, MjcfFlex, MjcfFrame, MjcfGeom, MjcfGeomType,
+    MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJoint, MjcfJointType, MjcfKeyframe, MjcfMesh,
+    MjcfModel, MjcfOption, MjcfSensor, MjcfSensorType, MjcfSite, MjcfSolverType, MjcfTendon,
+    MjcfTendonType, SpatialPathElement,
 };
 
 /// Default solref parameters [timeconst, dampratio] (MuJoCo defaults).
@@ -946,6 +946,10 @@ impl ModelBuilder {
         self.ls_tolerance = option.ls_tolerance;
         self.noslip_iterations = option.noslip_iterations;
         self.noslip_tolerance = option.noslip_tolerance;
+        self.cone = match option.cone {
+            MjcfConeType::Pyramidal => 0,
+            MjcfConeType::Elliptic => 1,
+        };
         self.magnetic = option.magnetic;
         self.wind = option.wind;
         self.density = option.density;
@@ -2392,8 +2396,9 @@ impl ModelBuilder {
                 ]
             });
 
-            // solreffriction falls back to the pair's resolved solref
-            let solreffriction = pair.solreffriction.unwrap_or(solref);
+            // solreffriction: [0,0] sentinel means "use solref" (MuJoCo convention).
+            // Only explicit <pair solreffriction="..."/> sets a nonzero value.
+            let solreffriction = pair.solreffriction.unwrap_or([0.0, 0.0]);
 
             // margin/gap: geom-level not yet parsed, default to 0.0
             let margin = pair.margin.unwrap_or(0.0);

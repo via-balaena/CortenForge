@@ -1157,9 +1157,13 @@ each other. This is a broadphase-level filter.
 
 ### Current State
 
-The `Contact` struct has a `solreffriction: [f64; 2]` field (line ~1882) that
-is **parsed and stored** but **never applied** during constraint assembly.
-Comment at line ~6040: "solreffriction is NOT applied here."
+The `ContactPair` struct has a `solreffriction: [f64; 2]` field (line ~1851)
+that is **parsed and stored** from `<pair>` definitions, but **never propagated
+to the runtime `Contact` struct** and **never applied** during constraint
+assembly. The runtime `Contact` struct (line ~1865) has no `solreffriction`
+field — only `solref`. Comment at line ~6038 in `apply_pair_overrides()`:
+"solreffriction is NOT applied here — Contact has a single solref field;
+per-direction solver params require solver changes (see §31)."
 
 All contact constraint rows (normal, tangent, torsional, rolling) currently use
 the same `solref` for computing `aref`. MuJoCo supports separate
@@ -1254,17 +1258,24 @@ fallback on failure:
 
 ### Specification
 
-#### 31.1 MJCF parsing
+#### 31.1 MJCF parsing + runtime propagation
 
 `solreffriction` is only available on `<pair>`, not on `<geom>`:
 
-- `<pair solreffriction="0.05 1"/>` → `pair_solreffriction` in model →
+- `<pair solreffriction="0.05 1"/>` → `ContactPair.solreffriction` in model →
   `Contact.solreffriction` at runtime
 - Auto-generated contacts: `solreffriction = [0.0, 0.0]` always
 - `<default><pair solreffriction="..."/>` inheritance works
 
-Verify the existing `Contact.solreffriction` field is populated correctly from
-`<pair>` definitions.
+**Step 1 — Add field to `Contact`**: The runtime `Contact` struct currently
+lacks `solreffriction`. Add `pub solreffriction: [f64; 2]` (default `[0.0, 0.0]`).
+
+**Step 2 — Propagate in `apply_pair_overrides()`**: Replace the existing
+"NOT applied" comment (line ~6038) with actual propagation:
+```rust
+contact.solreffriction = pair.solreffriction;
+```
+Auto-generated (non-pair) contacts keep the default `[0.0, 0.0]`.
 
 MuJoCo's collision driver (`engine_collision_driver.c`) handles this:
 ```c
@@ -1284,24 +1295,26 @@ MuJoCo's architecture where only `pair_solreffriction` exists).
 
 #### 31.2 Constraint assembly — KBIP computation
 
-In `assemble_unified_constraints()`, where contact row KBIP is computed
-(the `compute_kbip()` or equivalent), split the solref usage for
-**elliptic contacts only**:
+In `assemble_unified_constraints()`, the contact assembly loop (section 3f,
+line ~14407) iterates `for r in 0..dim` and passes `contact.solref` to the
+`finalize_row!` macro for every row. Split the solref for **elliptic friction
+rows only**:
 
 ```rust
-// For contact row j within an elliptic contact group:
-let is_elliptic_friction = data.efc_type[row] == ConstraintType::ContactElliptic
-    && j > 0;  // j=0 is normal
-let sr = if is_elliptic_friction
-    && (contact.solreffriction[0] != 0.0 || contact.solreffriction[1] != 0.0) {
-    contact.solreffriction
-} else {
-    contact.solref
-};
+for r in 0..dim {
+    // ...existing J, pos, vel computation...
 
-// K is ALWAYS 0 for friction rows (regardless of solreffriction)
-let K = if is_elliptic_friction { 0.0 } else { compute_K(sr, dmax) };
-let B = compute_B(sr, dmax);
+    // §31: select solref for this row
+    let is_elliptic_friction = is_elliptic && r > 0;  // r=0 is normal
+    let sr = if is_elliptic_friction
+        && (contact.solreffriction[0] != 0.0 || contact.solreffriction[1] != 0.0) {
+        contact.solreffriction
+    } else {
+        contact.solref
+    };
+
+    finalize_row!(sr, si, pos, margin_r, vel, 0.0, ctype, dim, ci, contact.mu);
+}
 ```
 
 **Pyramidal contacts are NOT affected** — they use `solref` for all facet rows.
@@ -1345,8 +1358,10 @@ computed per-row during constraint assembly, PGS/CG automatically pick up
 ### Files
 
 - `sim/L0/core/src/mujoco_pipeline.rs`:
-  - `assemble_unified_constraints()` — split solref for elliptic friction rows
-  - KBIP computation — use `solreffriction` for B when applicable
+  - `Contact` struct — add `solreffriction: [f64; 2]` field (default `[0.0, 0.0]`)
+  - `apply_pair_overrides()` — propagate `ContactPair.solreffriction` → `Contact`
+  - `assemble_unified_constraints()` section 3f — split solref for elliptic friction rows
+  - `finalize_row!` / `compute_kbip()` — use `solreffriction` for B when applicable
 - `sim/L0/mjcf/src/model_builder.rs` — verify `solreffriction` on `<pair>`
 - `sim/L0/mjcf/src/types.rs` — verify field exists on parsed pair types
 - `sim/L0/tests/integration/newton_solver.rs` — solreffriction test
