@@ -7,8 +7,9 @@ All items are prerequisites to #45 (MuJoCo Conformance Test Suite). This file
 covers the constraint system migration: friction loss from passive forces to
 constraint rows, PGS/CG unification, and advanced constraint features.
 
-#28, #29, #31, #32 are all independent. #29 is the largest item (L effort)
-and is the core architectural unification.
+#28, #29, #30, #31, #32 are all independent. #29 is the largest item (L effort)
+and is the core architectural unification. #30 is a small collision filtering
+bug in flex-rigid collision.
 
 ---
 
@@ -960,6 +961,78 @@ items (#29 and #30) but are merged because:
 2. Implementing friction loss separately would create an intermediate state
    (partially unified PGS) that must be maintained temporarily
 3. One clean migration is simpler than two incremental ones
+
+---
+
+## 30. Flex Collision contype/conaffinity Filtering
+
+**Status:** Not started | **Effort:** S | **Prerequisites:** None
+
+### Bug Description
+
+`mj_collision_flex()` does not perform proper contype/conaffinity bitmask
+filtering when testing flex vertices against rigid geoms. The current code
+(line ~5564) only skips geoms where `contype=0 AND conaffinity=0` — a
+degenerate check that passes for any geom with default collision settings
+(`contype=1, conaffinity=1`).
+
+This means flex vertices collide with ALL rigid geoms regardless of collision
+group membership. In MuJoCo, flex elements have their own `contype`/`conaffinity`
+attributes on the `<flex>` element, and collision filtering follows the same
+bitmask protocol as rigid-rigid: `(flex_contype & geom_conaffinity) != 0 ||
+(geom_contype & flex_conaffinity) != 0`.
+
+**Observed symptom:** Integration tests with flex bodies near rigid geoms
+on unrelated bodies generate spurious contacts, because the flex collision
+broadphase tests every vertex against every geom with no bitmask gate.
+
+### MuJoCo Reference
+
+In MuJoCo, `<flex>` accepts `contype` and `conaffinity` attributes (default
+`contype=1, conaffinity=1`). The collision filter for flex-rigid pairs uses
+the same bitwise AND protocol as `mj_geomCanCollide()` for rigid-rigid pairs:
+
+```
+can_collide = (flex_contype & geom_conaffinity) != 0
+           || (geom_contype & flex_conaffinity) != 0
+```
+
+### Implementation
+
+1. **Add `flex_contype: Vec<i32>` and `flex_conaffinity: Vec<i32>` to Model**
+   - Parse from `<flex contype="..." conaffinity="...">` in MJCF
+   - Default: `contype=1, conaffinity=1` (matching MuJoCo)
+   - Indexed by flex_id
+
+2. **Fix `mj_collision_flex()` bitmask check** (replace lines 5564-5567):
+   ```rust
+   // Proper contype/conaffinity bitmask filtering (matches rigid-rigid protocol)
+   let flex_contype = model.flex_contype[flex_id];
+   let flex_conaffinity = model.flex_conaffinity[flex_id];
+   let geom_contype = model.geom_contype[gi];
+   let geom_conaffinity = model.geom_conaffinity[gi];
+   if (flex_contype & geom_conaffinity) == 0 && (geom_contype & flex_conaffinity) == 0 {
+       continue;
+   }
+   ```
+
+3. **Self-collision filtering**: Flex self-collision (`selfcollide` attribute)
+   should also be gated by bitmask, but this is lower priority since
+   self-collision already has a dedicated `selfcollide` flag.
+
+### Files Modified
+
+- `sim/L0/core/src/mujoco_pipeline.rs`: Model fields + `mj_collision_flex()` fix
+- `sim/L0/mjcf/src/lib.rs`: Parse `contype`/`conaffinity` on `<flex>`
+- `sim/L0/tests/integration/flex_unified.rs`: Update tests (remove workarounds)
+
+### Acceptance Criteria
+
+- AC1: `mj_collision_flex()` uses proper bitmask filtering matching rigid-rigid protocol
+- AC2: Flex vertices with `contype=0` do not collide with any geom
+- AC3: Geoms with `conaffinity=0` do not collide with any flex vertex
+- AC4: Custom bitmask groups work (e.g. `contype=2` flex vs `conaffinity=2` geom)
+- AC5: Default behavior unchanged (both default to 1, so default models still collide)
 
 ---
 
