@@ -22,7 +22,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 **Remaining gaps (Phase 3, optimal implementation order):**
 - **3A-i Parser Fundamentals** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` element~~ ✅, ~~`childclass` attribute~~ ✅, ~~`<site>` orientation~~ ✅, ~~tendon `springlength`~~ ✅
 - **3A-ii Inertia + Contact Parameters** (#23–27, #27B–F): ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, ~~flex child element parsing~~ ✅, ~~passive edge forces~~ ✅, ~~flex body/node attrs~~ ✅, ~~`<flexcomp mass>`~~ ✅, ~~body-coupled flex CRBA+FK~~ ✅
-- **3A-iii Constraint System Overhaul** (#28–32): friction loss migration (Newton Huber → PGS/CG → unified constraints), `solreffriction`, pyramidal cones
+- **3A-iii Constraint System Overhaul** (#28–32): ~~friction loss per-DOF solref/solimp~~ ✅, ~~unified PGS/CG constraint migration~~ ✅, ~~flex collision filtering~~ ✅, ~~`solreffriction` per-direction~~ ✅, ~~pyramidal cones~~ ✅
 - **3A-iv Noslip + Actuator/Dynamics** (#33–37): noslip post-processor, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality
 - **3A-precursor Flex Solver Unification** (#6B): ~~flex solver unification~~ ✅ (subsumes #42)
 - **3A-v Constraint/Joint + Physics** (#38–41, §42A-i–iii): ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, flex edge Jacobian (§42A-i), flex rigid flags (§42A-ii), flex pre-computed fields (§42A-iii) (~~#42 flex/flexcomp~~ subsumed by §6B)
@@ -34,7 +34,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 
 ### Fully Implemented (in pipeline)
 - Integration methods: Euler, RK4 (true 4-stage Runge-Kutta), ImplicitSpringDamper (diagonal), ImplicitFast (symmetric D, Cholesky), Implicit (asymmetric D + Coriolis, LU)
-- Constraint solver: PGS (Gauss-Seidel, MuJoCo-aligned — no SOR) + CG (preconditioned PGD with Barzilai-Borwein) + Newton (reduced primal, MJCF default), Warm Starting via `WarmstartKey`
+- Constraint solver: PGS (Gauss-Seidel, MuJoCo-aligned — no SOR) + CG (primal Polak-Ribiere, shares mj_sol_primal with Newton) + Newton (reduced primal, MJCF default), Warm Starting via `qacc_warmstart`
 - Contact model (Compliant with solref/solimp, elliptic friction cones with variable condim 1/3/4/6, torsional/rolling friction, contype/conaffinity filtering, `<contact><pair>`/`<exclude>` two-mechanism architecture, `contact_param()` with element-wise max friction, `geom/@priority` gating, `solmix`-weighted solver param mixing, margin/gap broadphase + narrow-phase + constraint assembly)
 - Collision detection (All primitive shapes, GJK/EPA, Height fields, BVH, **TriangleMesh, SDF**)
 - Joint types (Fixed, Revolute, Prismatic, Spherical, **Free** — matching MuJoCo's 4 joint types; Universal/Planar/Cylindrical are CortenForge standalone extensions)
@@ -45,9 +45,11 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - Model loading (URDF, MJCF with `<default>` class resolution, `childclass` propagation (body/frame with undefined-class validation), `<frame>` element (pose composition, recursive nesting), `<compiler>` element, `<include>` file support, **MJB binary format**) — `DefaultResolver` with Option<T> pattern wired into `model_builder.rs` for all 8 element types (geom, joint, site, tendon, actuator, sensor, mesh, pair) with 91+ defaultable fields across four-stage pipeline (types → parser → merge → apply); `<compiler>` handles angle units, Euler sequences, asset paths, autolimits, inertia computation, mass post-processing; `<include>` supports recursive file expansion with duplicate detection
 
 ### Placeholder / Stub (in pipeline)
-- Pyramidal friction cones — `cone` field stored but solver uses elliptic cones (warning emitted if pyramidal requested)
+
+(none)
 
 ### Recently Implemented (previously stubs)
+- Pyramidal friction cones ✅ — `ContactPyramidal` type, 2*(dim-1) facet rows with combined Jacobians `J_normal ± μ·J_friction`, R scaling `Rpy = 2·μ²·R_first_facet`, `decode_pyramid()` force recovery, model default changed to `cone: 0` (MuJoCo default), 13 tests ([future_work_8 #32](./todo/future_work_8.md))
 - Site-transmission actuators ✅ — 6D gear, refsite, `mj_jac_site()`, `mj_transmission_site()`, `subquat()`, common-ancestor DOF zeroing, `ActuatorFrc` sensor fix, 23 integration tests + 9 unit tests ([future_work_2 #5](./todo/future_work_2.md))
 - Spatial tendon pipeline ✅ — 3D routing with `mj_fwd_tendon_spatial()`, sphere/cylinder wrapping, sidesite disambiguation, pulley divisors, free-joint Jacobians, `accumulate_point_jacobian()`, 31 acceptance tests verified against MuJoCo 3.4.0 ([future_work_2 #4](./todo/future_work_2.md))
 - General gain/bias actuator force model ✅ — all 8 shortcut types expanded to gain/bias/dynamics, `force = gain * input + bias`, GainType/BiasType dispatch, FilterExact integration ([future_work_1 #12](./todo/future_work_1.md))
@@ -186,7 +188,7 @@ data.step(&model).expect("step");
 | Newton solver | Default, 2-5 iterations | `newton_solve()` in pipeline | **Implemented** (reduced primal formulation, §15; [future_work_5](./todo/future_work_5.md) ✅) | - | - |
 | Conjugate Gradient | Supported | `cg_solve_contacts()` in pipeline (PGD+BB, named "CG") | **Implemented** ([future_work_1 #3](./todo/future_work_1.md) ✅) | - | - |
 | Constraint islands | Auto-detected | `mj_island()` (pipeline DFS flood-fill) | **Implemented** (replaced old `islands.rs` with pipeline-native island discovery + per-island solving) | - | - |
-| Warm starting | Supported | `WarmstartKey` spatial hash + `efc_lambda` | **Implemented** | - | - |
+| Warm starting | Supported | `qacc_warmstart`-based warmstart (universal for all solvers) | **Implemented** | - | - |
 
 > **Note:** The pipeline has four solver variants in `SolverType` enum (`mujoco_pipeline.rs`): **Newton** (reduced primal formulation, §15 — quadratic convergence in 2-5 iterations, falls back to PGS on Cholesky failure), **PGS** (pure Gauss-Seidel, ω=1.0 — MuJoCo-aligned, no SOR), **CG** (preconditioned PGD with Barzilai-Borwein step size, falls back to PGS on non-convergence), and **CGStrict** (same as CG but returns zero forces instead of PGS fallback — used in tests to detect convergence regressions). All share `assemble_contact_system()` for Delassus assembly. PGS matches MuJoCo's `mj_solPGS` — pure GS with no SOR (verified against `engine_solver.c`; `mjOption` has no `sor` field). `CGSolver` in `sim-constraint/src/cg.rs` remains a standalone joint-space solver unrelated to the pipeline contact solvers.
 
@@ -264,7 +266,7 @@ f_n ≥ 0, ||(f_t1/μ_1, f_t2/μ_2, ...)|| ≤ f_n
   1. Unilateral constraint: if λ_n < 0, contact releases (all forces = 0)
   2. Friction scaling: if friction exceeds cone, scale by λ_n/s
 - `project_friction_cone()` — Dispatcher for condim 1/3/4/6
-- `Model.cone = 1` (elliptic) as default; pyramidal emits warning and falls back
+- `Model.cone = 0` (pyramidal, MuJoCo default); elliptic via `cone="elliptic"`
 - Per-contact `mu: [f64; 5]` for [sliding1, sliding2, torsional, rolling1, rolling2]
 
 **Files modified:** `sim-core/src/mujoco_pipeline.rs` (lines 13185-13220)
@@ -283,7 +285,6 @@ MuJoCo uses contact dimensionality (`condim`) to specify which friction componen
 - `add_angular_jacobian()` — Helper for torsional/rolling Jacobian rows
 - `apply_contact_torque()` — Maps world torque to generalized forces via angular Jacobian transpose
 - `compute_block_jacobi_preconditioner()` — Variable `dim×dim` blocks
-- `Data.efc_lambda: HashMap<WarmstartKey, Vec<f64>>` — Variable-length warmstart
 - PGS and CG solvers updated for variable-dimension indexing
 
 **Torsional Friction (condim ≥ 4):**
@@ -641,7 +642,7 @@ let torque = elbow.compute_joint_force(velocity, dt);
 | ActuatorFrc | Yes | `MjSensorType::ActuatorFrc` | **Implemented** | - |
 | Force | Yes | `MjSensorType::Force` | **Implemented** (inverse dynamics via `compute_site_force_torque()`) | - |
 | Torque | Yes | `MjSensorType::Torque` | **Implemented** (inverse dynamics via `compute_site_force_torque()`) | - |
-| Touch | Yes | `MjSensorType::Touch` | **Implemented** (sums `efc_lambda` normal forces on attached geom) | - |
+| Touch | Yes | `MjSensorType::Touch` | **Implemented** (sums `efc_force` normal forces from contact constraint rows) | - |
 | Rangefinder | Yes | `MjSensorType::Rangefinder` | **Implemented** (ray-cast along +Z with mesh support) | - |
 | Magnetometer | Yes | `MjSensorType::Magnetometer` | **Implemented** (`model.magnetic` transformed to sensor frame) | - |
 | ActuatorPos / ActuatorVel | Yes | `MjSensorType::ActuatorPos/Vel` | **Implemented** (joint, tendon, and site transmissions) | - |
@@ -785,12 +786,12 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 
 | Constraint | MuJoCo | CortenForge | Status | Priority |
 |------------|--------|-------------|--------|----------|
-| Connect (ball) | Yes | Pipeline `EqualityType::Connect` + `apply_connect_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see [#30](./todo/future_work_8.md)) | - |
-| Weld | Yes | Pipeline `EqualityType::Weld` + `apply_weld_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see [#30](./todo/future_work_8.md)) | - |
-| Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (Newton: solver rows; PGS/CG: penalty forces — divergent, see [#30](./todo/future_work_8.md)) | - |
+| Connect (ball) | Yes | Pipeline `EqualityType::Connect` + `apply_connect_constraint()` | **Implemented** (unified solver rows for all solver types) | - |
+| Weld | Yes | Pipeline `EqualityType::Weld` + `apply_weld_constraint()` | **Implemented** (unified solver rows for all solver types) | - |
+| Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (unified solver rows for all solver types) | - |
 | Joint coupling | Yes | Pipeline `EqualityType::Joint` + `apply_joint_equality_constraint()` | **Implemented** (in pipeline; standalone `JointCoupling`/`GearCoupling`/`DifferentialCoupling` in sim-constraint are unused) | - |
 | Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Standalone** (in sim-constraint; pipeline uses `EqualityType::Tendon` warning — tendon *equality* constraints not yet implemented) | - |
-| Flex (edge length) | Yes | `FlexEdge` in `ConstraintType` | ✅ **Pipeline** (unified Jacobian rows in `assemble_unified_constraints()` + penalty path in `apply_flex_edge_constraints()`; see [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅) | - |
+| Flex (edge length) | Yes | `FlexEdge` in `ConstraintType` | ✅ **Pipeline** (unified Jacobian rows in `assemble_unified_constraints()`; see [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅) | - |
 
 ### Implementation Notes: Connect (Ball) Constraint ✅ COMPLETED
 
@@ -867,7 +868,7 @@ let model = sim_mjcf::parse_mjcf_str(mjcf).expect("should parse");
 | 1D (cable) | Yes | `<flexcomp type="cable">` | ✅ **Pipeline** (unified flex architecture) | - | - |
 | 2D (shell) | Yes | `<flexcomp type="grid">` | ✅ **Pipeline** (unified flex architecture) | - | - |
 | 3D (solid) | Yes | `<flexcomp type="box">` | ✅ **Pipeline** (unified flex architecture) | - | - |
-| Edge-length constraints | Yes (`mjEQ_FLEX`) | `FlexEdge` in `ConstraintType` | ✅ **Pipeline** (unified Jacobian + penalty path) | - | - |
+| Edge-length constraints | Yes (`mjEQ_FLEX`) | `FlexEdge` in `ConstraintType` | ✅ **Pipeline** (unified Jacobian rows in `assemble_unified_constraints()`) | - | - |
 | Bending (dihedral) | Yes (passive forces) | Passive spring-damper in `mj_fwd_passive()` | ✅ **Pipeline** (Bridson et al. 2003 gradient) | - | - |
 | Flex-rigid collision | Yes | `mj_collision_flex()` → regular `Contact` entries | ✅ **Pipeline** (brute-force O(V×G) vertex-vs-geom) | - | - |
 | Flex-flex collision | Yes | Not implemented | **Deferred** (self-collision for cloth) | Low | High |
@@ -1125,7 +1126,7 @@ Created `sim-mjcf` crate for MuJoCo XML format compatibility.
 | `<tendon>` | Full | Fixed + spatial tendons fully wired into pipeline via `process_tendons()`; spatial tendons include sphere/cylinder wrapping, sidesite, pulley |
 | `<sensor>` | Full | 32 sensor types parsed (all MuJoCo types); all 32 wired into pipeline via `process_sensors()` |
 | `<contact>` | Full | `<pair>` (explicit geom pairs with per-pair condim/friction/solref/solimp overrides), `<exclude>` (body-pair exclusions), contype/conaffinity bitmasks; two-mechanism collision architecture |
-| `<equality>` | Full | `<connect>`, `<weld>`, `<joint>`, `<distance>`, `<flex>` (edge-length) — Newton solver rows + PGS/CG penalty path |
+| `<equality>` | Full | `<connect>`, `<weld>`, `<joint>`, `<distance>`, `<flex>` (edge-length) — unified solver rows for all solver types |
 | `<keyframe>` | Full | `<key>` elements with qpos/qvel/act/ctrl/mpos/mquat/time; `Data::reset_to_keyframe()` |
 | `<flex>` | Full | Direct vertex/element specification for flex bodies; parsed via `parse_flex()` + `process_flex()` |
 | `<flexcomp>` | Full | Procedural flex body generation: grid (2D shell), box (3D solid), cable (1D); parsed via `parse_flexcomp()` |
@@ -1341,7 +1342,7 @@ Focus: Internal solver improvements for better performance.
 - Automatic dense/sparse switching based on system size (threshold: 16 bodies)
 
 **Warm Starting (pipeline-native):**
-- `WarmstartKey` spatial hash (1cm grid) in pipeline PGS — `efc_lambda: HashMap<WarmstartKey, Vec<f64>>`
+- `qacc_warmstart`-based warmstart (universal for all solvers)
 - Enabled by `<flag warmstart="true"/>` (default)
 - Standalone `NewtonSolverConfig::warm_starting` was removed in Phase 3 consolidation
 
@@ -1423,7 +1424,7 @@ Focus: Advanced friction models — **originally implemented in sim-contact, rem
 - `Contact.dim: usize` — Contact dimensionality (1, 3, 4, or 6)
 - `Contact.mu: [f64; 5]` — Friction coefficients [sliding1, sliding2, torsional, rolling1, rolling2]
 - `efc_offsets: Vec<usize>` — Starting row for each contact in the constraint system
-- Variable-length warmstart with `HashMap<WarmstartKey, Vec<f64>>`
+- `qacc_warmstart`-based warmstart (universal for all solvers)
 
 **Elliptic Friction Cone Projection (`project_elliptic_cone()`):**
 - Two-step physically-correct projection:

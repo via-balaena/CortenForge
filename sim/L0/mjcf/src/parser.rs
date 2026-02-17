@@ -237,18 +237,6 @@ fn parse_option_attrs(e: &BytesStart) -> Result<MjcfOption> {
     if let Some(regularization) = parse_float_attr(e, "regularization") {
         option.regularization = regularization;
     }
-    if let Some(eq_stiffness) = parse_float_attr(e, "default_eq_stiffness") {
-        option.default_eq_stiffness = eq_stiffness;
-    }
-    if let Some(eq_damping) = parse_float_attr(e, "default_eq_damping") {
-        option.default_eq_damping = eq_damping;
-    }
-    if let Some(max_vel) = parse_float_attr(e, "max_constraint_vel") {
-        option.max_constraint_vel = max_vel;
-    }
-    if let Some(max_angvel) = parse_float_attr(e, "max_constraint_angvel") {
-        option.max_constraint_angvel = max_angvel;
-    }
     if let Some(fsmooth) = parse_float_attr(e, "friction_smoothing") {
         option.friction_smoothing = fsmooth;
     }
@@ -614,6 +602,18 @@ fn parse_joint_defaults(e: &BytesStart) -> Result<MjcfJointDefaults> {
             defaults.solimp_limit = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
         }
     }
+    if let Some(solref) = get_attribute_opt(e, "solreffriction") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            defaults.solreffriction = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimpfriction") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            defaults.solimpfriction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
 
     Ok(defaults)
 }
@@ -835,6 +835,20 @@ fn parse_tendon_defaults(e: &BytesStart) -> Result<MjcfTendonDefaults> {
         }
     }
     defaults.margin = parse_float_attr(e, "margin");
+
+    // Friction loss solver parameters
+    if let Some(solref) = get_attribute_opt(e, "solreffriction") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            defaults.solreffriction = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimpfriction") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            defaults.solimpfriction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
 
     // Rendering
     defaults.material = get_attribute_opt(e, "material");
@@ -1527,6 +1541,21 @@ fn parse_joint_attrs(e: &BytesStart) -> Result<MjcfJoint> {
         let parts = parse_float_array(&solimp)?;
         if parts.len() >= 5 {
             joint.solimp_limit = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+
+    // Joint friction loss solver parameters: solreffriction=[timeconst, dampratio],
+    // solimpfriction=[d0, d_width, width, midpoint, power]
+    if let Some(solref) = get_attribute_opt(e, "solreffriction") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            joint.solreffriction = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimpfriction") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            joint.solimpfriction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
         }
     }
 
@@ -2583,6 +2612,8 @@ fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
             flex.solimp = [vals[0], vals[1], vals[2], vals[3], vals[4]];
         }
     }
+    flex.contype = parse_int_attr(e, "contype");
+    flex.conaffinity = parse_int_attr(e, "conaffinity");
     if let Some(s) = get_attribute_opt(e, "selfcollide") {
         flex.selfcollide = Some(s);
     }
@@ -3221,6 +3252,20 @@ fn parse_tendon_attrs(e: &BytesStart, tendon_type: MjcfTendonType) -> Result<Mjc
         }
     }
     tendon.margin = parse_float_attr(e, "margin");
+
+    // Friction loss solver parameters
+    if let Some(solref) = get_attribute_opt(e, "solreffriction") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            tendon.solreffriction = Some([parts[0], parts[1]]);
+        }
+    }
+    if let Some(solimp) = get_attribute_opt(e, "solimpfriction") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            tendon.solimpfriction = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
 
     // Rendering
     tendon.material = get_attribute_opt(e, "material");

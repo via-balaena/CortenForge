@@ -398,18 +398,6 @@ pub struct MjcfOption {
     /// CFM scales as `regularization + (1 - impedance) * regularization * 100`.
     pub regularization: f64,
 
-    /// Fallback stiffness for equality constraints without solref (default: 10000.0).
-    pub default_eq_stiffness: f64,
-
-    /// Fallback damping for equality constraints without solref (default: 1000.0).
-    pub default_eq_damping: f64,
-
-    /// Maximum linear velocity change per timestep from constraints (m/s, default: 1.0).
-    pub max_constraint_vel: f64,
-
-    /// Maximum angular velocity change per timestep from constraints (rad/s, default: 1.0).
-    pub max_constraint_angvel: f64,
-
     /// Friction smoothing factor — sharpness of tanh transition (default: 1000.0).
     pub friction_smoothing: f64,
 
@@ -482,10 +470,6 @@ impl Default for MjcfOption {
 
             // Constraint solver tuning
             regularization: 1e-6,
-            default_eq_stiffness: 10000.0,
-            default_eq_damping: 1000.0,
-            max_constraint_vel: 1.0,
-            max_constraint_angvel: 1.0,
             friction_smoothing: 1000.0,
 
             // Physics environment
@@ -602,6 +586,10 @@ pub struct MjcfJointDefaults {
     pub solref_limit: Option<[f64; 2]>,
     /// Solver impedance parameters for joint limits [d0, d_width, width, midpoint, power].
     pub solimp_limit: Option<[f64; 5]>,
+    /// Solver reference parameters for friction loss [timeconst, dampratio].
+    pub solreffriction: Option<[f64; 2]>,
+    /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
+    pub solimpfriction: Option<[f64; 5]>,
 }
 
 /// Default geom parameters.
@@ -733,6 +721,10 @@ pub struct MjcfTendonDefaults {
     pub solref: Option<[f64; 2]>,
     /// Solver impedance parameters for tendon limits [d0, d_width, width, midpoint, power].
     pub solimp: Option<[f64; 5]>,
+    /// Solver reference parameters for friction loss [timeconst, dampratio].
+    pub solreffriction: Option<[f64; 2]>,
+    /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
+    pub solimpfriction: Option<[f64; 5]>,
     /// Contact margin for tendon limits.
     pub margin: Option<f64>,
     /// Default material asset name.
@@ -1332,6 +1324,10 @@ pub struct MjcfJoint {
     pub solref_limit: Option<[f64; 2]>,
     /// Solver impedance parameters for joint limits [d0, d_width, width, midpoint, power].
     pub solimp_limit: Option<[f64; 5]>,
+    /// Solver reference parameters for friction loss [timeconst, dampratio].
+    pub solreffriction: Option<[f64; 2]>,
+    /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
+    pub solimpfriction: Option<[f64; 5]>,
     /// Body this joint belongs to (set during parsing).
     pub body: Option<String>,
 }
@@ -1355,6 +1351,8 @@ impl Default for MjcfJoint {
             group: None,
             solref_limit: None,
             solimp_limit: None,
+            solreffriction: None,
+            solimpfriction: None,
             body: None,
         }
     }
@@ -2513,6 +2511,10 @@ pub struct MjcfTendon {
     pub solref: Option<[f64; 2]>,
     /// Solver impedance parameters for tendon limits [d0, d_width, width, midpoint, power].
     pub solimp: Option<[f64; 5]>,
+    /// Solver reference parameters for friction loss [timeconst, dampratio].
+    pub solreffriction: Option<[f64; 2]>,
+    /// Solver impedance parameters for friction loss [d0, d_width, width, midpoint, power].
+    pub solimpfriction: Option<[f64; 5]>,
     /// Contact margin for tendon limits.
     pub margin: Option<f64>,
     /// Material asset name (for rendering).
@@ -2544,6 +2546,8 @@ impl Default for MjcfTendon {
             group: None,
             solref: None,
             solimp: None,
+            solreffriction: None,
+            solimpfriction: None,
             margin: None,
             material: None,
             springlength: None,
@@ -3340,6 +3344,12 @@ pub struct MjcfFlex {
     pub solref: [f64; 2],
     /// Solver impedance parameters.
     pub solimp: [f64; 5],
+    /// Collision type bitmask (default 1). Used for flex-rigid and flex-flex
+    /// bitmask filtering: collision proceeds when
+    /// `(flex_contype & geom_conaffinity) != 0 || (geom_contype & flex_conaffinity) != 0`.
+    pub contype: Option<i32>,
+    /// Collision affinity bitmask (default 1). See `contype`.
+    pub conaffinity: Option<i32>,
     /// Self-collision broadphase mode. MuJoCo keyword: [none, narrow, bvh, sap, auto].
     /// None = absent (default "auto"); Some("none") = disabled; other = enabled.
     pub selfcollide: Option<String>,
@@ -3398,6 +3408,8 @@ impl Default for MjcfFlex {
             margin: 0.0,
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            contype: None,     // MuJoCo default: 1
+            conaffinity: None, // MuJoCo default: 1
             selfcollide: None, // MuJoCo default is "auto" (enabled)
             // <elasticity> child element (MuJoCo defaults)
             young: 0.0, // MuJoCo default; was 1e6

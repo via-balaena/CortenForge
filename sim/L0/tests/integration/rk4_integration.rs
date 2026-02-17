@@ -9,7 +9,7 @@
 //! - **AC #5**: Contact handling (falling ball with ground contact)
 //! - **AC #6**: Quaternion correctness (free-body rotation)
 //! - **AC #9**: Sensor non-corruption
-//! - **AC #10**: Warmstart efc_lambda preservation
+//! - **AC #10**: (removed — efc_lambda warmstart no longer exists)
 
 use approx::assert_relative_eq;
 use sim_core::Integrator;
@@ -428,64 +428,5 @@ fn test_rk4_sensor_non_corruption() {
             "qpos should have changed after step"
         );
         assert_relative_eq!(data.sensordata[0], 0.5, epsilon = 1e-10);
-    }
-}
-
-// ============================================================================
-// AC #10: Warmstart efc_lambda preservation
-// ============================================================================
-
-/// efc_lambda after step() should reflect the initial state's contact solve,
-/// not stage 3's. Verified by clone-before, compare-after.
-#[test]
-fn test_rk4_warmstart_efc_lambda_preservation() {
-    let mjcf = r#"
-        <mujoco model="warmstart_test">
-            <option gravity="0 0 -9.81" timestep="0.005" integrator="RK4"/>
-            <worldbody>
-                <geom name="ground" type="plane" size="10 10 0.1"/>
-                <body name="ball" pos="0 0 0.15">
-                    <freejoint name="ball_joint"/>
-                    <geom name="ball_geom" type="sphere" size="0.1" mass="1.0"/>
-                </body>
-            </worldbody>
-        </mujoco>
-    "#;
-
-    let model = load_model(mjcf).expect("Failed to load warmstart test model");
-    assert_eq!(model.integrator, Integrator::RungeKutta4);
-    let mut data = model.make_data();
-
-    // Place ball at ground contact (radius = 0.1)
-    data.qpos[2] = 0.1;
-
-    // Test the save/restore mechanism:
-    // 1. Call forward() to populate efc_lambda from the contact solve
-    data.forward(&model).expect("forward failed");
-    let lambda_from_forward = data.efc_lambda.clone();
-
-    // 2. Now step() from the same state. step() will:
-    //    a. Call forward() → produces same efc_lambda (same state)
-    //    b. Call mj_runge_kutta() → saves efc_lambda, runs 3 stages, restores
-    data.step(&model).expect("step failed");
-    let lambda_after_step = data.efc_lambda.clone();
-
-    // 3. efc_lambda after step should be bitwise identical to what forward() produced
-    assert_eq!(
-        lambda_from_forward, lambda_after_step,
-        "efc_lambda after RK4 step should be bitwise identical to pre-step forward() result \
-         (save/restore mechanism)"
-    );
-
-    // Verify the efc_lambda values are finite
-    for (key, lambda) in &lambda_after_step {
-        for &l in lambda {
-            assert!(
-                l.is_finite(),
-                "efc_lambda[({}, {})] contains non-finite value: {l}",
-                key.geom_lo,
-                key.geom_hi
-            );
-        }
     }
 }

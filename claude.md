@@ -30,6 +30,12 @@ final checks.
 4. Review implementation against the spec before considering it done
 5. Update relevant docs/ after completing any implementation
 
+## Git discipline
+- Commit often — after each logical unit of work (a phase, a fix, a spec).
+  Use `git add -A` to stage everything. Don't let uncommitted work accumulate
+  across long sessions; context windows can run out and lose progress.
+- Always ask for permission before committing. Never auto-commit.
+
 ## Principles
 - Foundational fixes over quick patches. If something is wrong at the root, fix it there even if it's breaking.
 - Never rush. Get it right, not fast.

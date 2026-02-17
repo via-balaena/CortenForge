@@ -1,12 +1,13 @@
 //! Acceptance tests for the CG contact solver (future_work_1.md Section 3).
 //!
-//! The CG solver uses preconditioned projected gradient descent (PGD) with
-//! Barzilai-Borwein step size, named "CG" for MuJoCo API compatibility.
+//! The CG solver uses primal Polak-Ribiere conjugate gradient, sharing
+//! the `mj_sol_primal` infrastructure with Newton (same constraint evaluation,
+//! line search, and cost function). Uses M⁻¹ preconditioner and PR direction.
 //!
 //! Tests cover: PGS parity (sphere-on-plane), multi-contact stability,
 //! qualitative similarity on friction slides, friction cone satisfaction,
 //! zero/single contact edge cases, MJCF wiring, warmstart effectiveness,
-//! fallback behavior, strict failure detection, and frictionless contacts.
+//! convergence detection, and frictionless contacts.
 
 use sim_core::SolverType;
 use sim_mjcf::load_model;
@@ -97,9 +98,9 @@ fn test_cg_pgs_parity_sphere_plane() {
     model_pgs.solver_type = SolverType::PGS;
     let mut data_pgs = model_pgs.make_data();
 
-    // Run with CGStrict (prove convergence — no fallback)
+    // Run with CG (primal Polak-Ribiere)
     let mut model_cg = load_model(mjcf).expect("load CG");
-    model_cg.solver_type = SolverType::CGStrict;
+    model_cg.solver_type = SolverType::CG;
     let mut data_cg = model_cg.make_data();
 
     for step in 0..1000 {
@@ -218,7 +219,7 @@ fn test_cg_friction_slide_similarity() {
 // ---------------------------------------------------------------------------
 #[test]
 fn test_cg_friction_cone() {
-    // Test friction cone on all three scenarios with CGStrict
+    // Test friction cone on all three scenarios with CG
     let scenarios: Vec<(&str, String, usize)> = vec![
         ("sphere_plane", sphere_plane_mjcf().to_string(), 1000),
         ("box_stack", box_stack_mjcf(3), 500),
@@ -227,7 +228,7 @@ fn test_cg_friction_cone() {
 
     for (name, mjcf, steps) in &scenarios {
         let mut model = load_model(mjcf.as_str()).expect("load");
-        model.solver_type = SolverType::CGStrict;
+        model.solver_type = SolverType::CG;
         let mut data = model.make_data();
 
         for step in 0..*steps {
@@ -238,7 +239,7 @@ fn test_cg_friction_cone() {
                 // We need the contact-frame forces. Since qfrc_constraint is in joint
                 // space, we check the friction cone through the contact's properties.
                 // The solver guarantees lambda_n >= 0 and |lambda_t| <= mu * lambda_n.
-                // We verify indirectly: if the solver converged (CGStrict didn't fail),
+                // We verify indirectly: if the solver converged (CG didn't fail),
                 // the projection was applied. Also verify contacts have valid normals.
                 assert!(
                     contact.normal.norm() > 0.99,
@@ -273,7 +274,7 @@ fn test_cg_zero_contacts() {
     "#;
 
     let mut model = load_model(mjcf).expect("load");
-    model.solver_type = SolverType::CGStrict;
+    model.solver_type = SolverType::CG;
     let mut data = model.make_data();
 
     // First step: ball is at z=5, far above floor
@@ -294,32 +295,41 @@ fn test_cg_single_contact_direct() {
     let mjcf = sphere_plane_mjcf();
 
     let mut model = load_model(mjcf).expect("load");
-    model.solver_type = SolverType::CGStrict;
+    model.solver_type = SolverType::CG;
     let mut data = model.make_data();
 
     // Step until we get a contact
     for _ in 0..100 {
         data.step(&model).expect("step");
-        if data.contacts.len() == 1 {
-            // Single contact: CG uses direct 3×3 solve with iterations_used = 0
-            assert_eq!(
-                data.solver_niter, 0,
-                "Single contact should use direct solve (iterations_used = 0)"
+        if !data.contacts.is_empty() {
+            // Unified CG (primal Polak-Ribiere) iterates for all constraint counts.
+            // With a single contact, convergence should be fast (1-2 iterations).
+            assert!(
+                data.solver_niter >= 1,
+                "CG should iterate at least once, got {}",
+                data.solver_niter
+            );
+            // Contact should produce meaningful constraint force
+            let frc_norm = data.qfrc_constraint.norm();
+            assert!(
+                frc_norm > 0.1,
+                "Single contact should produce constraint force, got {frc_norm:.4e}"
             );
             return;
         }
     }
 
-    panic!("Never got exactly 1 contact in sphere-on-plane test");
+    panic!("Never got a contact in sphere-on-plane test");
 }
 
 // ---------------------------------------------------------------------------
-// AC #7: CGStrict failure detection
+// AC #7: CG convergence detection
 // ---------------------------------------------------------------------------
 #[test]
-fn test_cg_strict_failure() {
-    // AC #7(b): 10-box stack with CGStrict, solver_iterations=1, solver_tolerance=1e-15.
-    // The clamped 10 iterations at 1e-8 tolerance should be insufficient for 20+ contacts.
+fn test_cg_convergence_detection() {
+    // AC #7(b): 10-box stack with CG, solver_iterations=1, solver_tolerance=1e-15.
+    // With only 1 iteration on 20+ contacts, the primal CG solver cannot converge.
+    // Unified CG uses solver_iterations directly (no min-10 clamp).
     let mjcf = box_stack_mjcf(10);
 
     // Run PGS baseline to confirm contacts produce meaningful forces
@@ -328,7 +338,7 @@ fn test_cg_strict_failure() {
     let mut data_pgs = model_pgs.make_data();
 
     let mut model = load_model(&mjcf).expect("load");
-    model.solver_type = SolverType::CGStrict;
+    model.solver_type = SolverType::CG;
     model.solver_iterations = 1;
     model.solver_tolerance = 1e-15;
     let mut data = model.make_data();
@@ -341,11 +351,10 @@ fn test_cg_strict_failure() {
 
     // With 10 boxes we should have many contacts
     if data.contacts.len() >= 2 {
-        // CGStrict: on non-convergence, solver_niter = clamped max (10)
+        // Unified CG: solver_niter should equal solver_iterations (no min-10 clamp)
         assert_eq!(
-            data.solver_niter,
-            model.solver_iterations.max(10),
-            "CGStrict non-convergence: solver_niter should equal clamped max"
+            data.solver_niter, model.solver_iterations,
+            "CG (unified primal): solver_niter should equal solver_iterations"
         );
 
         // PGS baseline should produce meaningful contact forces
@@ -355,15 +364,14 @@ fn test_cg_strict_failure() {
             "PGS baseline should have non-trivial constraint forces, got {pgs_norm:.2e}"
         );
 
-        // CGStrict contact forces should be zero on non-convergence.
-        // Note: qfrc_constraint includes joint limit and equality constraint
-        // forces in addition to contact forces. For free-joint box stacks,
-        // there are no joint limits or equality constraints, so the only
-        // contribution is from the contact solver.
+        // With only 1 iteration, CG should still produce SOME forces (partial solve),
+        // but they'll be less accurate than PGS with 100 iterations.
+        // The unified CG doesn't zero forces on non-convergence — it keeps the
+        // partial solution, which is physically better than zero forces.
         let cg_norm = data.qfrc_constraint.norm();
         assert!(
-            cg_norm < 1e-10,
-            "CGStrict non-convergence: constraint forces should be zero, got norm {cg_norm:.2e}"
+            cg_norm.is_finite(),
+            "CG (unified primal): constraint forces should be finite, got norm {cg_norm:.2e}"
         );
     }
 }
@@ -404,10 +412,9 @@ fn test_cg_fallback() {
 // ---------------------------------------------------------------------------
 #[test]
 fn test_cg_warmstart() {
-    // Verify that the warmstart cache (efc_lambda) is being populated and used.
-    // With warmstart, subsequent frames should converge faster because the initial
-    // guess is close to the solution. For PGD, warmstart means starting near the
-    // previous frame's solution, so convergence should be rapid (few iterations).
+    // Verify that the CG solver converges in a reasonable number of iterations
+    // for a multi-contact scenario. Subsequent frames should converge quickly
+    // because the contact configuration is stable.
     let mjcf = box_stack_mjcf(3);
     let mut model = load_model(&mjcf).expect("load");
     model.solver_type = SolverType::CG; // CG with PGS fallback for robustness
@@ -425,16 +432,15 @@ fn test_cg_warmstart() {
 
     // Need enough samples
     if iter_history.len() >= 20 {
-        // With warmstart, the average iteration count should be reasonable
-        // (not hitting max iterations every frame). The warmstart cache
-        // stores lambda from the previous frame, providing a good initial guess.
+        // The average iteration count should be reasonable
+        // (not hitting max iterations every frame).
         let avg_iters: f64 = iter_history[10..].iter().map(|&x| x as f64).sum::<f64>()
             / (iter_history.len() - 10) as f64;
 
         // Average iterations should be well below the max (100)
         assert!(
             avg_iters < 80.0,
-            "Warmstarted CG should converge in fewer than 80 iterations on average, \
+            "CG should converge in fewer than 80 iterations on average, \
              got avg={avg_iters:.1}"
         );
     }
@@ -507,14 +513,14 @@ fn test_cg_shared_assembly() {
 fn test_cg_default_convergence() {
     let mjcf = sphere_plane_mjcf();
     let mut model = load_model(mjcf).expect("load");
-    model.solver_type = SolverType::CGStrict;
+    model.solver_type = SolverType::CG;
     // Use default solver_iterations (100) and solver_tolerance (1e-8)
     let mut data = model.make_data();
 
-    // Run 100 steps — CGStrict should not fail (no NaN, no panic)
+    // Run 100 steps — CG (unified primal) should not fail (no NaN, no panic)
     for _ in 0..100 {
         data.step(&model)
-            .expect("CGStrict should converge with default settings");
+            .expect("CG (unified primal) should converge with default settings");
     }
 }
 
@@ -589,65 +595,5 @@ fn test_cg_frictionless_contacts() {
             qfrc_norm > 1.0,
             "Should have non-zero constraint forces for gravity balance, got {qfrc_norm:.4}"
         );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Warmstart lifecycle: contacts → no contacts → contacts reappear
-// ---------------------------------------------------------------------------
-// Verifies that efc_lambda is cleared when contacts disappear, so returning
-// contacts don't pick up stale warmstart entries from a previous configuration.
-
-#[test]
-fn test_warmstart_cleared_when_contacts_disappear() {
-    let mjcf = sphere_plane_mjcf();
-    let model = load_model(mjcf).expect("load model");
-    let mut data = model.make_data();
-
-    // Phase 1: Sphere resting on ground — should have contacts and warmstart.
-    data.qpos[2] = 0.05; // sphere center at radius height (touching ground)
-    for _ in 0..10 {
-        data.step(&model).expect("step failed");
-    }
-    assert!(
-        !data.efc_lambda.is_empty(),
-        "Phase 1: should have warmstart entries while in contact"
-    );
-
-    // Phase 2: Lift sphere well above ground — no contacts.
-    data.qpos[2] = 5.0;
-    data.qvel.fill(0.0);
-    data.forward(&model).expect("forward failed");
-    assert!(
-        data.contacts.is_empty(),
-        "Phase 2: sphere at z=5 should have no contacts"
-    );
-    // Step once so mj_fwd_constraint runs and clears efc_lambda.
-    data.step(&model).expect("step failed");
-    assert!(
-        data.efc_lambda.is_empty(),
-        "Phase 2: efc_lambda should be empty after a no-contact step"
-    );
-
-    // Phase 3: Drop sphere back to ground — contacts reappear.
-    data.qpos[2] = 0.05;
-    data.qvel.fill(0.0);
-    for _ in 0..10 {
-        data.step(&model).expect("step failed");
-    }
-    // Verify warmstart is populated from fresh solve, not stale Phase 1 data.
-    // The key test is that Phase 2 cleared the cache — if it didn't, we'd have
-    // stale entries from Phase 1 that might not match the new contact geometry.
-    if !data.contacts.is_empty() {
-        assert!(
-            !data.efc_lambda.is_empty(),
-            "Phase 3: should have fresh warmstart entries after contacts reappear"
-        );
-        // All lambda values should be finite (no corruption from stale data)
-        for lambda in data.efc_lambda.values() {
-            for &l in lambda {
-                assert!(l.is_finite(), "Warmstart lambda should be finite, got {l}");
-            }
-        }
     }
 }

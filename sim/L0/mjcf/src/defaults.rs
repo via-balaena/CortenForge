@@ -175,6 +175,12 @@ impl DefaultResolver {
             if result.solimp_limit.is_none() {
                 result.solimp_limit = defaults.solimp_limit;
             }
+            if result.solreffriction.is_none() {
+                result.solreffriction = defaults.solreffriction;
+            }
+            if result.solimpfriction.is_none() {
+                result.solimpfriction = defaults.solimpfriction;
+            }
         }
 
         result
@@ -474,6 +480,12 @@ impl DefaultResolver {
             if result.solimp.is_none() {
                 result.solimp = defaults.solimp;
             }
+            if result.solreffriction.is_none() {
+                result.solreffriction = defaults.solreffriction;
+            }
+            if result.solimpfriction.is_none() {
+                result.solimpfriction = defaults.solimpfriction;
+            }
             if result.margin.is_none() {
                 result.margin = defaults.margin;
             }
@@ -663,6 +675,8 @@ impl DefaultResolver {
                 range: c.range.or(p.range),
                 solref_limit: c.solref_limit.or(p.solref_limit),
                 solimp_limit: c.solimp_limit.or(p.solimp_limit),
+                solreffriction: c.solreffriction.or(p.solreffriction),
+                solimpfriction: c.solimpfriction.or(p.solimpfriction),
             }),
         }
     }
@@ -756,6 +770,8 @@ impl DefaultResolver {
                 group: c.group.or(p.group),
                 solref: c.solref.or(p.solref),
                 solimp: c.solimp.or(p.solimp),
+                solreffriction: c.solreffriction.or(p.solreffriction),
+                solimpfriction: c.solimpfriction.or(p.solimpfriction),
                 margin: c.margin.or(p.margin),
                 material: c.material.clone().or_else(|| p.material.clone()),
             }),

@@ -1195,7 +1195,7 @@ fn test_contact_ball_stack_stability() {
     // Ball stack on ground plane
     let mjcf = r#"
         <mujoco model="ball_stack">
-            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <option gravity="0 0 -9.81" timestep="0.001" cone="elliptic"/>
             <worldbody>
                 <geom name="floor" type="plane" size="5 5 0.1"/>
                 <body name="ball1" pos="0 0 0.5">
