@@ -96,13 +96,12 @@ that all contact constraint assembly builds on.
 #### 3A-iii: Constraint System Overhaul (Items #28–32)
 
 Friction loss migration, PGS/CG unification, and advanced constraint features.
-Items #28→#29→#30 form a strict dependency chain.
+All items are independent (#29 is the core architectural migration).
 
 | # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
 |---|------|-----------|-------------|--------|---------------|------|--------|
-| 28 | Friction loss: tanh passive → Huber constraint rows (Newton) | Medium | **Critical** | M | None | [future_work_8.md](./future_work_8.md) | |
-| 29 | Friction loss: tanh passive → constraint rows (PGS/CG) | Medium | **Critical** | M | #28 | [future_work_8.md](./future_work_8.md) | |
-| 30 | PGS/CG unified constraints: penalty → solver rows | Medium | **Critical** | L | #29 | [future_work_8.md](./future_work_8.md) | |
+| 28 | Friction loss solref/solimp: DEFAULT → per-joint params | Low | Medium | S | None | [future_work_8.md](./future_work_8.md) | ⚠️ Partially done (§15) |
+| 29 | PGS/CG unified constraint migration (friction loss + penalty → solver rows) | Medium | **Critical** | L | None | [future_work_8.md](./future_work_8.md) | |
 | 31 | `solreffriction` per-direction solver params | Low | Medium | M | None | [future_work_8.md](./future_work_8.md) | |
 | 32 | Pyramidal friction cones | Low | Medium | L | None | [future_work_8.md](./future_work_8.md) | |
 
@@ -400,12 +399,13 @@ New fields added: tendon solref/solimp/margin, actuator group/actlimited/
 actrange/actearly/lengthrange, geom fromto/mesh/hfield defaults, material
 on geom/site/tendon. All 558 conformance + 281 MJCF tests passing.
 
-### Batch 2 — Constraint System (5 items, M-L effort, dependency chain)
+### Batch 2 — Constraint System (4 items, S-L effort, all independent)
 
-**Items:** #28 → #29 → #30 (strict chain), then #31, #32 (independent)
+**Items:** #28, #29, #31, #32 (all independent; #29 is the core migration)
 **Files:** `mujoco_pipeline.rs` (constraint assembly, PGS/CG solver, Newton solver)
-**Why second:** The friction loss chain (#28→#29→#30) is the meatiest remaining
-correctness gap. Each builds on the prior. #31 and #32 are independent but
+**Why second:** #29 is the meatiest remaining correctness gap: unified PGS/CG
+constraint migration (friction loss tanh removal + penalty elimination in one
+pass). #28 is a small solref fix. #31 and #32 are independent features that
 touch the same constraint code, so batch them here.
 
 ### Batch 3 — Actuator/Dynamics + Noslip (5 items, S-M effort)
@@ -481,7 +481,7 @@ Start only after 3A is stable.
 | [future_work_6.md](./future_work_6.md) | 3 | 3A-i — Parser Fundamentals | #18–22 | ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` + `childclass`~~ ✅, ~~`<site>` orientation~~ ✅, ~~tendon `springlength`~~ ✅ |
 | [future_work_6b_precursor_to_7.md](./future_work_6b_precursor_to_7.md) | 3 | 3A-precursor — Flex Solver Unification | #6B | ~~Flex solver unification~~ ✅ (subsumes #42) |
 | [future_work_7.md](./future_work_7.md) | 3 | 3A-ii — Inertia + Contact Parameters | #23–27, #27B–F | ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, ~~flex `<contact>` parsing~~ ✅, ~~passive edge forces~~ ✅, ~~flex body/node~~ ✅, ~~`<flexcomp mass>`~~ ✅, ~~body-coupled flex CRBA+FK~~ ✅ (Option A) |
-| [future_work_8.md](./future_work_8.md) | 3 | 3A-iii — Constraint System Overhaul | #28–32 | Friction loss (Newton + PGS/CG), PGS/CG unified constraints, `solreffriction`, pyramidal cones |
+| [future_work_8.md](./future_work_8.md) | 3 | 3A-iii — Constraint System Overhaul | #28,29,31,32 | Friction loss solref, PGS/CG unified constraints, `solreffriction`, pyramidal cones |
 | [future_work_9.md](./future_work_9.md) | 3 | 3A-iv — Noslip + Actuator/Dynamics | #33–37 | Noslip PGS/CG, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality |
 | [future_work_10.md](./future_work_10.md) | 3 | 3A-v — Constraint/Joint + Physics + Trait Architecture | #38–42, §42A-i–iii, §42B–F | Ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, flex edge Jacobian + rigid flags + pre-computed fields, flex bending trait, elasticity trait, actuator gain trait, contact solver trait, `SimBuilder` |
 | [future_work_11.md](./future_work_11.md) | 3 | 3A-vi — Cleanup + Conformance | #43–45 | Geom `shellinertia`, legacy crate deprecation, MuJoCo conformance test suite |
