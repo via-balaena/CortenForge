@@ -3344,6 +3344,12 @@ pub struct MjcfFlex {
     pub solref: [f64; 2],
     /// Solver impedance parameters.
     pub solimp: [f64; 5],
+    /// Collision type bitmask (default 1). Used for flex-rigid and flex-flex
+    /// bitmask filtering: collision proceeds when
+    /// `(flex_contype & geom_conaffinity) != 0 || (geom_contype & flex_conaffinity) != 0`.
+    pub contype: Option<i32>,
+    /// Collision affinity bitmask (default 1). See `contype`.
+    pub conaffinity: Option<i32>,
     /// Self-collision broadphase mode. MuJoCo keyword: [none, narrow, bvh, sap, auto].
     /// None = absent (default "auto"); Some("none") = disabled; other = enabled.
     pub selfcollide: Option<String>,
@@ -3402,6 +3408,8 @@ impl Default for MjcfFlex {
             margin: 0.0,
             solref: [0.02, 1.0],
             solimp: [0.9, 0.95, 0.001, 0.5, 2.0],
+            contype: None,     // MuJoCo default: 1
+            conaffinity: None, // MuJoCo default: 1
             selfcollide: None, // MuJoCo default is "auto" (enabled)
             // <elasticity> child element (MuJoCo defaults)
             young: 0.0, // MuJoCo default; was 1e6

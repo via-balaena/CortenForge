@@ -1462,3 +1462,279 @@ fn test_flex_node_deep_nesting() {
     assert_relative_eq!(data.flexvert_xpos[1].x, 1.0, epsilon = 0.05);
     assert_relative_eq!(data.flexvert_xpos[1].z, 0.0, epsilon = 0.05);
 }
+
+// ============================================================================
+// §30: Flex Collision contype/conaffinity Bitmask Filtering
+// ============================================================================
+
+/// §30 AC1+AC5: Default contype=1/conaffinity=1 — flex vertices collide with
+/// default geoms (both default to 1, so `1 & 1 = 1`). Flex cloth should land
+/// on the plane, not fall through.
+#[test]
+fn s30_ac1_default_bitmask_collides() {
+    let mjcf = r#"
+    <mujoco model="s30_default">
+        <option gravity="0 0 -9.81" timestep="0.001" solver="PGS"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" pos="0 0 0"/>
+        </worldbody>
+        <deformable>
+            <flex name="cloth" dim="2" density="1000" radius="0.02">
+                <contact margin="0.005" solref="0.02 1.0"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <vertex pos="0 0 0.5  0.1 0 0.5  0 0.1 0.5  0.1 0.1 0.5"/>
+                <element data="0 1 2  1 3 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("default bitmask model");
+    // Verify defaults parsed correctly
+    assert_eq!(model.flex_contype[0], 1);
+    assert_eq!(model.flex_conaffinity[0], 1);
+
+    let mut data = model.make_data();
+    for _ in 0..2000 {
+        data.step(&model).expect("step");
+    }
+    // Vertices should be resting on the plane (z ≈ 0), not fallen through
+    for v in &data.flexvert_xpos {
+        assert!(v.z > -0.1, "vertex fell through plane: z={}", v.z);
+    }
+}
+
+/// §30 AC2: Flex with contype=0 does NOT collide with any geom.
+/// No contacts should be generated between flex vertices and the plane.
+#[test]
+fn s30_ac2_flex_contype_zero_no_collision() {
+    let mjcf = r#"
+    <mujoco model="s30_contype0">
+        <option gravity="0 0 -9.81" timestep="0.001" solver="PGS"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" pos="0 0 0"/>
+        </worldbody>
+        <deformable>
+            <flex name="cloth" dim="2" density="1000" radius="0.02">
+                <contact contype="0" conaffinity="0" margin="0.005"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <vertex pos="0 0 0.1  0.1 0 0.1  0 0.1 0.1  0.1 0.1 0.1"/>
+                <element data="0 1 2  1 3 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("contype=0 model");
+    assert_eq!(model.flex_contype[0], 0);
+    assert_eq!(model.flex_conaffinity[0], 0);
+
+    let mut data = model.make_data();
+    // Step enough for vertices to reach the plane (starting at z=0.1)
+    for _ in 0..500 {
+        data.step(&model).expect("step");
+    }
+    // With contype=0, no contacts should ever be generated
+    assert_eq!(
+        data.ncon, 0,
+        "no contacts should be generated with flex contype=0, conaffinity=0"
+    );
+}
+
+/// §30 AC3: Geom with conaffinity=0 does not collide with flex vertex.
+/// The flex has default contype=1 but the geom's conaffinity=0 means
+/// `(flex_contype=1 & geom_conaffinity=0) == 0`. The geom also has contype=0
+/// so the reverse check also fails. No contacts generated.
+#[test]
+fn s30_ac3_geom_conaffinity_zero_no_collision() {
+    let mjcf = r#"
+    <mujoco model="s30_geom_ca0">
+        <option gravity="0 0 -9.81" timestep="0.001" solver="PGS"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" pos="0 0 0"
+                  contype="0" conaffinity="0"/>
+        </worldbody>
+        <deformable>
+            <flex name="cloth" dim="2" density="1000" radius="0.02">
+                <contact margin="0.005"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <vertex pos="0 0 0.1  0.1 0 0.1  0 0.1 0.1  0.1 0.1 0.1"/>
+                <element data="0 1 2  1 3 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("geom conaffinity=0 model");
+    // Flex defaults to contype=1/conaffinity=1
+    assert_eq!(model.flex_contype[0], 1);
+    assert_eq!(model.flex_conaffinity[0], 1);
+
+    let mut data = model.make_data();
+    for _ in 0..500 {
+        data.step(&model).expect("step");
+    }
+    // Geom has contype=0, conaffinity=0 → no contacts
+    assert_eq!(
+        data.ncon, 0,
+        "no contacts should be generated with geom contype=0, conaffinity=0"
+    );
+}
+
+/// §30 AC4: Custom bitmask groups — collision only when bitmasks overlap.
+/// Flex contype=2 (bit 1) vs geom conaffinity=2 (bit 1) → collides.
+/// A second geom with conaffinity=4 (bit 2) → no collision.
+#[test]
+fn s30_ac4_custom_bitmask_groups() {
+    // Scene: two planes at different heights.
+    // Plane A at z=0: contype=2, conaffinity=2 (matches flex contype=2).
+    // Plane B at z=-1: contype=4, conaffinity=4 (does NOT match flex).
+    // Flex starts at z=0.5 with contype=2, conaffinity=2.
+    // Should land on plane A, not fall to plane B.
+    let mjcf = r#"
+    <mujoco model="s30_custom_bitmask">
+        <option gravity="0 0 -9.81" timestep="0.001" solver="PGS"/>
+        <worldbody>
+            <geom name="match" type="plane" size="5 5 0.1" pos="0 0 0"
+                  contype="2" conaffinity="2"/>
+            <geom name="nomatch" type="plane" size="5 5 0.1" pos="0 0 -1"
+                  contype="4" conaffinity="4"/>
+        </worldbody>
+        <deformable>
+            <flex name="cloth" dim="2" density="1000" radius="0.02">
+                <contact contype="2" conaffinity="2" margin="0.005"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <vertex pos="0 0 0.5  0.1 0 0.5  0 0.1 0.5  0.1 0.1 0.5"/>
+                <element data="0 1 2  1 3 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("custom bitmask model");
+    assert_eq!(model.flex_contype[0], 2);
+    assert_eq!(model.flex_conaffinity[0], 2);
+
+    let mut data = model.make_data();
+    for _ in 0..2000 {
+        data.step(&model).expect("step");
+    }
+    // Vertices should rest on plane A (z ≈ 0), not fall to plane B (z = -1)
+    for v in &data.flexvert_xpos {
+        assert!(
+            v.z > -0.1,
+            "vertex should land on matching plane: z={}",
+            v.z
+        );
+        assert!(v.z < 0.6, "vertex should not be above start: z={}", v.z);
+    }
+}
+
+/// §30 AC4 (negative case): Incompatible bitmasks — flex falls through.
+/// Flex contype=2, conaffinity=2 vs geom contype=4, conaffinity=4.
+/// `(2 & 4) == 0 && (4 & 2) == 0` → no collision.
+#[test]
+fn s30_ac4_incompatible_bitmask_no_collision() {
+    let mjcf = r#"
+    <mujoco model="s30_no_match">
+        <option gravity="0 0 -9.81" timestep="0.001" solver="PGS"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" pos="0 0 0"
+                  contype="4" conaffinity="4"/>
+        </worldbody>
+        <deformable>
+            <flex name="cloth" dim="2" density="1000" radius="0.02">
+                <contact contype="2" conaffinity="2" margin="0.005"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <vertex pos="0 0 0.1  0.1 0 0.1  0 0.1 0.1  0.1 0.1 0.1"/>
+                <element data="0 1 2  1 3 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("incompatible bitmask model");
+    let mut data = model.make_data();
+    for _ in 0..500 {
+        data.step(&model).expect("step");
+    }
+    // Incompatible bitmasks: (2 & 4) == 0 && (4 & 2) == 0 → no contacts
+    assert_eq!(
+        data.ncon, 0,
+        "no contacts should be generated with incompatible bitmasks (contype=2 vs conaffinity=4)"
+    );
+}
+
+/// §30 AC4: Asymmetric bitmask — flex contype matches geom conaffinity but
+/// not vice versa. This should still collide (OR logic).
+/// flex: contype=2, conaffinity=0 | geom: contype=0, conaffinity=2
+/// Check: (2 & 2) != 0 → collides.
+#[test]
+fn s30_ac4_asymmetric_bitmask_collides() {
+    let mjcf = r#"
+    <mujoco model="s30_asymmetric">
+        <option gravity="0 0 -9.81" timestep="0.001" solver="PGS"/>
+        <worldbody>
+            <geom type="plane" size="5 5 0.1" pos="0 0 0"
+                  contype="0" conaffinity="2"/>
+        </worldbody>
+        <deformable>
+            <flex name="cloth" dim="2" density="1000" radius="0.02">
+                <contact contype="2" conaffinity="0" margin="0.005"/>
+                <elasticity young="50" damping="5.0" thickness="0.01"/>
+                <vertex pos="0 0 0.5  0.1 0 0.5  0 0.1 0.5  0.1 0.1 0.5"/>
+                <element data="0 1 2  1 3 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("asymmetric bitmask model");
+    assert_eq!(model.flex_contype[0], 2);
+    assert_eq!(model.flex_conaffinity[0], 0);
+
+    let mut data = model.make_data();
+    for _ in 0..2000 {
+        data.step(&model).expect("step");
+    }
+    // flex_contype=2 & geom_conaffinity=2 → match, should collide
+    for v in &data.flexvert_xpos {
+        assert!(v.z > -0.1, "asymmetric match should collide: z={}", v.z);
+    }
+}
+
+/// §30 AC8: MJCF `<flex><contact contype="..." conaffinity="..."/>` parsed
+/// correctly with default=1 when not specified.
+#[test]
+fn s30_ac8_mjcf_parsing_defaults() {
+    // No contype/conaffinity specified → defaults to 1
+    let mjcf_default = r#"
+    <mujoco model="s30_parse_default">
+        <deformable>
+            <flex name="cloth" dim="2" density="1000">
+                <contact margin="0.001"/>
+                <elasticity young="50" thickness="0.01"/>
+                <vertex pos="0 0 0  1 0 0  0 1 0"/>
+                <element data="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf_default).expect("default parse");
+    assert_eq!(model.flex_contype[0], 1, "default contype should be 1");
+    assert_eq!(
+        model.flex_conaffinity[0], 1,
+        "default conaffinity should be 1"
+    );
+
+    // Explicit contype=3, conaffinity=5
+    let mjcf_explicit = r#"
+    <mujoco model="s30_parse_explicit">
+        <deformable>
+            <flex name="cloth" dim="2" density="1000">
+                <contact contype="3" conaffinity="5" margin="0.001"/>
+                <elasticity young="50" thickness="0.01"/>
+                <vertex pos="0 0 0  1 0 0  0 1 0"/>
+                <element data="0 1 2"/>
+            </flex>
+        </deformable>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf_explicit).expect("explicit parse");
+    assert_eq!(model.flex_contype[0], 3, "explicit contype=3");
+    assert_eq!(model.flex_conaffinity[0], 5, "explicit conaffinity=5");
+}

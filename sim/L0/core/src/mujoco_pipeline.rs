@@ -1423,7 +1423,19 @@ pub struct Model {
     pub flex_priority: Vec<i32>,
     /// Per-flex: solver mixing weight (default 1.0).
     pub flex_solmix: Vec<f64>,
-    /// Per-flex: self-collision enabled.
+    /// Per-flex: collision type bitmask (default 1). Used for flex-rigid and
+    /// flex-flex bitmask filtering per MuJoCo `filterBitmask()` protocol.
+    pub flex_contype: Vec<u32>,
+    /// Per-flex: collision affinity bitmask (default 1). See `flex_contype`.
+    pub flex_conaffinity: Vec<u32>,
+    /// Per-flex: self-collision enabled (`selfcollide != "none"`).
+    /// MuJoCo gates self-collision behind THREE conjunctive conditions:
+    ///   1. `!flex_rigid[f]` — rigid flexes skip entirely
+    ///   2. `(flex_contype[f] & flex_conaffinity[f]) != 0` — self-bitmask check
+    ///   3. `flex_selfcollide[f]` — dedicated flag
+    ///
+    /// Both `internal` (adjacent elements) and `selfcollide` (non-adjacent)
+    /// are independently gated behind conditions 1+2.
     pub flex_selfcollide: Vec<bool>,
     /// Per-flex: passive edge spring stiffness (from `<edge stiffness="..."/>`).
     /// Used in passive force path (spring-damper), not constraint solver.
@@ -2939,6 +2951,8 @@ impl Model {
             flex_gap: vec![],
             flex_priority: vec![],
             flex_solmix: vec![],
+            flex_contype: vec![],
+            flex_conaffinity: vec![],
             flex_selfcollide: vec![],
             flex_edgestiffness: vec![],
             flex_edgedamping: vec![],
@@ -5562,8 +5576,14 @@ fn mj_collision_flex(model: &Model, data: &mut Data) {
         }
 
         for gi in 0..model.ngeom {
-            // Skip geoms with contype=0 AND conaffinity=0 (non-colliding)
-            if model.geom_contype[gi] == 0 && model.geom_conaffinity[gi] == 0 {
+            // Proper contype/conaffinity bitmask filtering (MuJoCo filterBitmask protocol).
+            // Collision proceeds iff: (flex_contype & geom_conaffinity) != 0
+            //                      || (geom_contype & flex_conaffinity) != 0
+            let fcontype = model.flex_contype[flex_id];
+            let fconaffinity = model.flex_conaffinity[flex_id];
+            let gcontype = model.geom_contype[gi];
+            let gconaffinity = model.geom_conaffinity[gi];
+            if (fcontype & gconaffinity) == 0 && (gcontype & fconaffinity) == 0 {
                 continue;
             }
 

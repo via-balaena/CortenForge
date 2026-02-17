@@ -637,6 +637,8 @@ struct ModelBuilder {
     flex_thickness: Vec<f64>,
     flex_density: Vec<f64>,
     flex_group: Vec<i32>,
+    flex_contype: Vec<u32>,
+    flex_conaffinity: Vec<u32>,
     flex_selfcollide: Vec<bool>,
     flex_edgestiffness: Vec<f64>,
     flex_edgedamping: Vec<f64>,
@@ -893,6 +895,8 @@ impl ModelBuilder {
             flex_thickness: vec![],
             flex_density: vec![],
             flex_group: vec![],
+            flex_contype: vec![],
+            flex_conaffinity: vec![],
             flex_selfcollide: vec![],
             flex_edgestiffness: vec![],
             flex_edgedamping: vec![],
@@ -3234,6 +3238,9 @@ impl ModelBuilder {
             self.flex_thickness.push(flex.thickness);
             self.flex_density.push(flex.density);
             self.flex_group.push(flex.group);
+            self.flex_contype.push(flex.contype.unwrap_or(1) as u32);
+            self.flex_conaffinity
+                .push(flex.conaffinity.unwrap_or(1) as u32);
             // MuJoCo default is "auto" (enabled). Only "none" disables self-collision.
             // None (absent) → true; Some("none") → false; all other keywords → true.
             self.flex_selfcollide
@@ -3393,6 +3400,8 @@ impl ModelBuilder {
             flex_gap: self.flex_gap,
             flex_priority: self.flex_priority,
             flex_solmix: self.flex_solmix,
+            flex_contype: self.flex_contype,
+            flex_conaffinity: self.flex_conaffinity,
             flex_selfcollide: self.flex_selfcollide,
             flex_edgestiffness: self.flex_edgestiffness,
             flex_edgedamping: self.flex_edgedamping,

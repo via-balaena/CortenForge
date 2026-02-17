@@ -966,7 +966,7 @@ items (#29 and #30) but are merged because:
 
 ## 30. Flex Collision contype/conaffinity Filtering
 
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** S | **Prerequisites:** None
 
 ### Bug Description
 
@@ -978,7 +978,7 @@ degenerate check that passes for any geom with default collision settings
 
 This means flex vertices collide with ALL rigid geoms regardless of collision
 group membership. In MuJoCo, flex elements have their own `contype`/`conaffinity`
-attributes on the `<flex>` element, and collision filtering follows the same
+attributes on `<flex><contact>`, and collision filtering follows the same
 bitmask protocol as rigid-rigid: `(flex_contype & geom_conaffinity) != 0 ||
 (geom_contype & flex_conaffinity) != 0`.
 
@@ -988,23 +988,121 @@ broadphase tests every vertex against every geom with no bitmask gate.
 
 ### MuJoCo Reference
 
-In MuJoCo, `<flex>` accepts `contype` and `conaffinity` attributes (default
-`contype=1, conaffinity=1`). The collision filter for flex-rigid pairs uses
-the same bitwise AND protocol as `mj_geomCanCollide()` for rigid-rigid pairs:
+#### MJCF attribute location
 
+Attributes live on the `<contact>` sub-element of `<flex>`, not on `<flex>`
+directly:
+```xml
+<flex name="cloth">
+  <contact contype="1" conaffinity="1" condim="3" margin="0.001"/>
+</flex>
+```
+
+Defaults: `contype=1, conaffinity=1` (same as geom defaults). Confirmed in
+MuJoCo `mjs_defaultFlex()` in `user_init.c`.
+
+#### Flex-rigid collision filtering (`filterBitmask`)
+
+MuJoCo uses a unified `filterBitmask()` function in `engine_collision_driver.c`:
+
+```c
+static int filterBitmask(int contype1, int conaffinity1,
+                         int contype2, int conaffinity2) {
+    // Returns 1 to REJECT (filter out), 0 to ALLOW
+    return !(contype1 & conaffinity2) && !(contype2 & conaffinity1);
+}
+```
+
+A collision proceeds when:
 ```
 can_collide = (flex_contype & geom_conaffinity) != 0
            || (geom_contype & flex_conaffinity) != 0
 ```
 
+This is identical to the rigid-rigid protocol in `mj_geomCanCollide()`.
+
+#### Self-collision bitmask gate (required, not optional)
+
+MuJoCo gates ALL flex self-collision behind a self-bitmask check **in addition
+to** the `selfcollide` flag. From `mj_collision()` in `engine_collision_driver.c`:
+
+```c
+for (int f = 0; f < m->nflex; f++) {
+    if (!m->flex_rigid[f] && (m->flex_contype[f] & m->flex_conaffinity[f])) {
+        // internal collisions (adjacent elements sharing vertices/edges)
+        if (m->flex_internal[f]) {
+            mj_collideFlexInternal(m, d, f);
+        }
+        // self-collisions (non-adjacent elements)
+        if (m->flex_selfcollide[f] != mjFLEXSELF_NONE) {
+            // midphase: BVH for dim=3, SAP otherwise (when selfcollide=auto)
+        }
+    }
+}
+```
+
+Three conditions gate self-collision conjunctively:
+1. `!flex_rigid[f]` — rigid flexes (all vertices on same body) skip entirely
+2. `(flex_contype[f] & flex_conaffinity[f]) != 0` — self-bitmask check
+3. `selfcollide != NONE` — dedicated self-collision flag
+
+Consequence: setting `contype=2, conaffinity=4` disables self-collision even
+when `selfcollide != NONE`, because `2 & 4 = 0`.
+
+**`internal` vs `selfcollide`:** These are independent concepts. `internal`
+controls adjacent-element collision (elements sharing vertices/edges).
+`selfcollide` controls non-adjacent element collision. Both are independently
+gated behind the self-bitmask check.
+
+#### Flex-flex collision filtering
+
+MuJoCo uses a unified bodyflex index space where bodies occupy `[0, nbody)`
+and flexes occupy `[nbody, nbody+nflex)`. The `canCollide2()` function
+handles cross-object filtering for flex-flex pairs:
+
+```c
+static int canCollide2(const mjModel* m, int bf1, int bf2) {
+    // Resolve contype/conaffinity from body or flex based on index range
+    int contype1  = (bf1 < nbody) ? m->body_contype[bf1]  : m->flex_contype[bf1-nbody];
+    int conaffinity1 = ...;
+    // ...
+    return (!filterBitmask(contype1, conaffinity1, contype2, conaffinity2));
+}
+```
+
+This means two flex objects with incompatible bitmasks will not collide with
+each other. This is a broadphase-level filter.
+
 ### Implementation
 
-1. **Add `flex_contype: Vec<i32>` and `flex_conaffinity: Vec<i32>` to Model**
-   - Parse from `<flex contype="..." conaffinity="...">` in MJCF
-   - Default: `contype=1, conaffinity=1` (matching MuJoCo)
-   - Indexed by flex_id
+1. **Add `contype`/`conaffinity` to `MjcfFlex` struct** (`types.rs:3330–3349`)
+   ```rust
+   pub contype: Option<i32>,      // Collision type bitmask
+   pub conaffinity: Option<i32>,  // Collision affinity bitmask
+   ```
 
-2. **Fix `mj_collision_flex()` bitmask check** (replace lines 5564-5567):
+2. **Parse in `parse_flex_contact_attrs()`** (`parser.rs:2570–2618`)
+   ```rust
+   flex.contype = parse_int_attr(e, "contype");
+   flex.conaffinity = parse_int_attr(e, "conaffinity");
+   ```
+   Follow exact pattern from geom parsing at `parser.rs:1646–1647`.
+
+3. **Add builder arrays** (`model_builder.rs:613–642`)
+   ```rust
+   flex_contype: Vec<u32>,
+   flex_conaffinity: Vec<u32>,
+   ```
+   Push with `unwrap_or(1) as u32` default (same as `geom_contype` at
+   `model_builder.rs:1655–1657`).
+
+4. **Add Model fields** (`mujoco_pipeline.rs:1389–1455`)
+   ```rust
+   pub flex_contype: Vec<u32>,
+   pub flex_conaffinity: Vec<u32>,
+   ```
+
+5. **Fix `mj_collision_flex()` bitmask check** (replace lines 5564–5567):
    ```rust
    // Proper contype/conaffinity bitmask filtering (matches rigid-rigid protocol)
    let flex_contype = model.flex_contype[flex_id];
@@ -1016,23 +1114,39 @@ can_collide = (flex_contype & geom_conaffinity) != 0
    }
    ```
 
-3. **Self-collision filtering**: Flex self-collision (`selfcollide` attribute)
-   should also be gated by bitmask, but this is lower priority since
-   self-collision already has a dedicated `selfcollide` flag.
+6. **Add self-collision bitmask gate** — wherever self-collision is dispatched,
+   add the conjunctive check:
+   ```rust
+   if !model.flex_rigid[flex_id]
+       && (model.flex_contype[flex_id] & model.flex_conaffinity[flex_id]) != 0
+       && model.flex_selfcollide[flex_id]
+   {
+       // proceed with self-collision
+   }
+   ```
+
+7. **Flex-flex filtering** (if flex-flex collision path exists): apply
+   `filterBitmask()` between the two flex objects' contype/conaffinity before
+   narrowphase. If no flex-flex path exists yet, document as future work.
 
 ### Files Modified
 
-- `sim/L0/core/src/mujoco_pipeline.rs`: Model fields + `mj_collision_flex()` fix
-- `sim/L0/mjcf/src/lib.rs`: Parse `contype`/`conaffinity` on `<flex>`
-- `sim/L0/tests/integration/flex_unified.rs`: Update tests (remove workarounds)
+- `sim/L0/mjcf/src/types.rs`: Add `contype`/`conaffinity` to `MjcfFlex` (lines 3330–3349)
+- `sim/L0/mjcf/src/parser.rs`: Parse in `parse_flex_contact_attrs()` (lines 2570–2618)
+- `sim/L0/mjcf/src/model_builder.rs`: Add builder arrays + push logic (lines 613–642, 2899–3098)
+- `sim/L0/core/src/mujoco_pipeline.rs`: Model fields (lines 1389–1455) + `mj_collision_flex()` fix (lines 5564–5568) + self-collision gate
+- `sim/L0/tests/integration/flex_unified.rs`: New bitmask filtering tests
 
 ### Acceptance Criteria
 
-- AC1: `mj_collision_flex()` uses proper bitmask filtering matching rigid-rigid protocol
+- AC1: `mj_collision_flex()` uses proper bitmask filtering matching rigid-rigid `filterBitmask()` protocol
 - AC2: Flex vertices with `contype=0` do not collide with any geom
 - AC3: Geoms with `conaffinity=0` do not collide with any flex vertex
-- AC4: Custom bitmask groups work (e.g. `contype=2` flex vs `conaffinity=2` geom)
+- AC4: Custom bitmask groups work (e.g. `contype=2` flex vs `conaffinity=2` geom collides; `contype=2` flex vs `conaffinity=4` geom does not)
 - AC5: Default behavior unchanged (both default to 1, so default models still collide)
+- AC6: Self-collision disabled when `(flex_contype & flex_conaffinity) == 0`, even if `selfcollide` flag is set
+- AC7: Rigid flexes (`flex_rigid=true`) skip all self/internal collision regardless of bitmask
+- AC8: MJCF `<flex><contact contype="..." conaffinity="..."/>` parsed correctly with default=1
 
 ---
 

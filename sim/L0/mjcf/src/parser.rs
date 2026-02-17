@@ -2612,6 +2612,8 @@ fn parse_flex_contact_attrs(e: &BytesStart, flex: &mut MjcfFlex) {
             flex.solimp = [vals[0], vals[1], vals[2], vals[3], vals[4]];
         }
     }
+    flex.contype = parse_int_attr(e, "contype");
+    flex.conaffinity = parse_int_attr(e, "conaffinity");
     if let Some(s) = get_attribute_opt(e, "selfcollide") {
         flex.selfcollide = Some(s);
     }
