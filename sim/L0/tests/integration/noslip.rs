@@ -4,6 +4,8 @@
 //! elliptic cone projection, and pyramidal 2x2 block solve.
 
 use approx::assert_relative_eq;
+use nalgebra::DVector;
+use sim_core::ConstraintType;
 use sim_mjcf::load_model;
 
 /// Helper: load model from MJCF string.
@@ -570,4 +572,262 @@ fn test_noslip_early_exit_on_convergence() {
             max_relative = 1e-6,
         );
     }
+}
+
+// ============================================================================
+// AC9: Full-matrix residual check (conformance — uses efc_b, not efc_jar)
+// ============================================================================
+
+#[test]
+fn test_noslip_residual_uses_efc_b() {
+    // After noslip convergence with many iterations, the full-matrix residual
+    //   r[i] = efc_b[i] + Σ_j A[i,j] * efc_force[j]
+    // should be ≈ 0 for unclamped friction rows (where the GS fixed point is
+    // at the unconstrained minimum). We verify that noslip converges to the
+    // correct fixed point by checking the residual is near zero.
+    //
+    // This test would FAIL with the old efc_jar-based RHS.
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="residual_check">
+            <option gravity="0 0 -9.81" solver="PGS" cone="elliptic"
+                    iterations="200" noslip_iterations="200" noslip_tolerance="1e-14"/>
+            <worldbody>
+                <body pos="0 0 0.05">
+                    <joint type="free"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"
+                          friction="0.5 0.5 0.005"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"/>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    data.step(&model).unwrap();
+
+    // Compute full residual for friction rows: r[i] = efc_b[i] + Σ_j A[i,j]*f[j]
+    // where A[i,j] = J[i] · M⁻¹ · J[j]^T (unregularized Delassus)
+    let nefc = data.efc_type.len();
+    let nv = model.nv;
+    assert!(nefc > 0, "should have constraint rows");
+
+    // Find friction rows (noslip-eligible)
+    let mut friction_rows: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i < nefc {
+        let ctype = data.efc_type[i];
+        let dim = data.efc_dim[i];
+        match ctype {
+            ConstraintType::FrictionLoss => {
+                friction_rows.push(i);
+                i += 1;
+            }
+            ConstraintType::ContactElliptic | ConstraintType::ContactFrictionless => {
+                for j in 1..dim {
+                    friction_rows.push(i + j);
+                }
+                i += dim;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    assert!(!friction_rows.is_empty(), "should have friction rows");
+
+    // For each friction row, compute full-matrix residual
+    for &row in &friction_rows {
+        // Solve M⁻¹ · J[row]^T
+        let mut minv_j = DVector::<f64>::zeros(nv);
+        for col in 0..nv {
+            minv_j[col] = data.efc_J[(row, col)];
+        }
+        let (rowadr, rownnz, colind) = model.qld_csr();
+        sim_core::mj_solve_sparse(
+            rowadr,
+            rownnz,
+            colind,
+            &data.qLD_data,
+            &data.qLD_diag_inv,
+            &mut minv_j,
+        );
+
+        // Residual = efc_b[row] + Σ_j (J[j] · minv_j) * efc_force[j]
+        let mut residual = data.efc_b[row];
+        for j in 0..nefc {
+            let mut dot = 0.0;
+            for col in 0..nv {
+                dot += data.efc_J[(j, col)] * minv_j[col];
+            }
+            residual += dot * data.efc_force[j];
+        }
+
+        // Residual should be near zero for converged unclamped rows.
+        // Some rows may be at their clamp boundary (friction-loss at ±floss,
+        // or cone-projected), so the residual can be nonzero there.
+        // For a box on flat ground, friction should be small and unclamped.
+        assert!(
+            residual.abs() < 0.1,
+            "Full-matrix residual for friction row {row} should be small, got {residual:.6e}"
+        );
+    }
+}
+
+// ============================================================================
+// AC10: Elliptic cone forces respect cone constraint after QCQP
+// ============================================================================
+
+#[test]
+fn test_noslip_elliptic_cone_satisfied() {
+    // After noslip with QCQP, elliptic contact friction forces should satisfy
+    // the cone constraint: Σ(f_j/μ_j)² ≤ f_normal²
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="cone_check">
+            <option gravity="0 0 -9.81" solver="PGS" cone="elliptic"
+                    iterations="100" noslip_iterations="50" noslip_tolerance="1e-12"/>
+            <worldbody>
+                <body pos="0 0 0.05">
+                    <joint type="free"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"
+                          friction="0.5 0.3 0.005" condim="3"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"
+                      euler="15 0 0" friction="0.5 0.3 0.005" condim="3"/>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    // Single step with penetrating box — guaranteed contact
+    data.step(&model).unwrap();
+
+    let nefc = data.efc_type.len();
+    let mut checked = 0;
+    let mut i = 0;
+    while i < nefc {
+        let ctype = data.efc_type[i];
+        let dim = data.efc_dim[i];
+        if matches!(
+            ctype,
+            ConstraintType::ContactElliptic | ConstraintType::ContactFrictionless
+        ) && dim >= 3
+        {
+            let fn_force = data.efc_force[i];
+            let mu = data.efc_mu[i];
+
+            // Compute friction norm: sqrt(Σ (f_j/μ_j)²)
+            let mut s_sq = 0.0;
+            for j in 1..dim {
+                let mu_j = mu[j - 1];
+                if mu_j > 1e-15 {
+                    s_sq += (data.efc_force[i + j] / mu_j).powi(2);
+                }
+            }
+            let s = s_sq.sqrt();
+
+            // Cone constraint: s ≤ |fn| (with tolerance)
+            assert!(
+                s <= fn_force.abs() + 1e-6,
+                "Cone violation at contact {i}: friction_norm={s:.6e}, |fn|={:.6e}",
+                fn_force.abs()
+            );
+            checked += 1;
+            i += dim;
+        } else {
+            i += 1;
+        }
+    }
+    assert!(checked > 0, "should have checked at least one contact");
+}
+
+// ============================================================================
+// AC11: Cross-coupling — noslip with mixed constraint types
+// ============================================================================
+
+#[test]
+fn test_noslip_cross_coupling_with_limits() {
+    // Model with joint limits + contacts + friction-loss + noslip.
+    // The cross-coupling fix (efc_b + full Delassus row) matters here because
+    // limit constraint forces affect the friction rows through the Delassus matrix.
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="cross_coupling">
+            <option gravity="0 0 -9.81" solver="PGS" cone="elliptic"
+                    iterations="200" noslip_iterations="50" noslip_tolerance="1e-12"/>
+            <worldbody>
+                <body pos="0 0 0.5">
+                    <joint type="hinge" axis="0 1 0" limited="true" range="-45 45"
+                           frictionloss="0.1"/>
+                    <geom type="capsule" size="0.05 0.4" mass="1.0"
+                          friction="0.3 0.3 0.005"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"/>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    // Run enough steps for the arm to hit the limit and make contact
+    for _ in 0..100 {
+        data.step(&model).unwrap();
+    }
+
+    assert!(
+        data.qacc.iter().all(|x| x.is_finite()),
+        "cross-coupling with limits + friction-loss + contact should be finite"
+    );
+    assert!(
+        data.qvel.iter().all(|x| x.is_finite()),
+        "cross-coupling velocities should be finite"
+    );
+}
+
+// ============================================================================
+// AC12: Noslip processes contacts regardless of efc_state
+// ============================================================================
+
+#[test]
+fn test_noslip_processes_all_contacts_regardless_of_state() {
+    // Even contacts with zero normal force (Satisfied state) should be processed
+    // by noslip. The cone projection handles fn=0 gracefully (zeroes friction).
+    // This tests that removing the efc_state filter doesn't cause issues.
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="state_indep">
+            <option gravity="0 0 -9.81" solver="PGS" cone="elliptic"
+                    iterations="100" noslip_iterations="50" noslip_tolerance="1e-12"/>
+            <worldbody>
+                <body pos="0 0 0.201">
+                    <joint type="free"/>
+                    <geom type="box" size="0.1 0.1 0.1" mass="1.0"
+                          friction="0.5 0.5 0.005"/>
+                </body>
+                <geom type="plane" size="5 5 0.1"/>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    // Just barely above contact — first step may have very weak or no contact
+    data.step(&model).unwrap();
+
+    assert!(
+        data.qacc.iter().all(|x| x.is_finite()),
+        "noslip with near-zero contacts should be finite"
+    );
+    assert!(
+        data.qvel.iter().all(|x| x.is_finite()),
+        "noslip velocities should be finite"
+    );
+
+    // Continue stepping — should remain stable
+    for _ in 0..20 {
+        data.step(&model).unwrap();
+    }
+    assert!(
+        data.qacc.iter().all(|x| x.is_finite()),
+        "noslip should remain stable over many steps"
+    );
 }

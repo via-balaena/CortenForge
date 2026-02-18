@@ -163,6 +163,8 @@ pub use mujoco_pipeline::{
     // Utility functions for position/velocity differentiation
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
+    // LDL solve (for test/verification access to M⁻¹ via factored mass matrix)
+    mj_solve_sparse,
 };
 
 pub use derivatives::{
