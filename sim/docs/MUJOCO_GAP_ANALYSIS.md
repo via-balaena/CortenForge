@@ -23,7 +23,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - **3A-i Parser Fundamentals** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` element~~ ✅, ~~`childclass` attribute~~ ✅, ~~`<site>` orientation~~ ✅, ~~tendon `springlength`~~ ✅
 - **3A-ii Inertia + Contact Parameters** (#23–27, #27B–F): ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, ~~flex child element parsing~~ ✅, ~~passive edge forces~~ ✅, ~~flex body/node attrs~~ ✅, ~~`<flexcomp mass>`~~ ✅, ~~body-coupled flex CRBA+FK~~ ✅
 - **3A-iii Constraint System Overhaul** (#28–32): ~~friction loss per-DOF solref/solimp~~ ✅, ~~unified PGS/CG constraint migration~~ ✅, ~~flex collision filtering~~ ✅, ~~`solreffriction` per-direction~~ ✅, ~~pyramidal cones~~ ✅
-- **3A-iv Noslip + Actuator/Dynamics** (#33–37): noslip post-processor, `actlimited`/`actrange`, `gravcomp`, adhesion actuators, tendon equality
+- **3A-iv Noslip + Actuator/Dynamics** (#33–37): ~~noslip post-processor~~ ✅, ~~`actlimited`/`actrange`~~ ✅, ~~`gravcomp`~~ ✅, adhesion actuators, tendon equality
 - **3A-precursor Flex Solver Unification** (#6B): ~~flex solver unification~~ ✅ (subsumes #42)
 - **3A-v Constraint/Joint + Physics** (#38–41, §42A-i–iii): ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, flex edge Jacobian (§42A-i), flex rigid flags (§42A-ii), flex pre-computed fields (§42A-iii) (~~#42 flex/flexcomp~~ subsumed by §6B)
 - **3A-vi Cleanup + Conformance** (#43–45): `shellinertia`, legacy crate deprecation, MuJoCo conformance test suite (depends on all #19–44)

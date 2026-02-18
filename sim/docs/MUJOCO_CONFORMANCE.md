@@ -99,6 +99,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `body/@quat` | ✓ | ✓ | Orientation |
 | `body/@mocap` | ✓ | ✓ | Mocap body: kinematic input channel, world-child with no joints, FK override from `Data::mocap_pos`/`mocap_quat` |
 | `body/@childclass` | ✓ | ✓ | Recursive default propagation to descendant elements (geoms, joints, sites); precedence: explicit class > nearest childclass > top-level default; undefined class validated pre-expansion |
+| `body/@gravcomp` | ✓ | ✓ | Gravity compensation factor (0=none, 1=full); passive force via `mj_gravcomp()` at `xipos`, projected by `mj_apply_ft()` chain-walk (§35) |
 | `body/@sleep` | ✓ | ✓ | Sleep policy: `auto` (default), `allowed`, `never`, `init` |
 | `body/@euler` | ✓ | ✓ | Euler angles |
 | `body/@axisangle` | ✓ | ✓ | Parsed in `parser.rs` |

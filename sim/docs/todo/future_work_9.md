@@ -566,13 +566,30 @@ without requiring explicit `actlimited="true"` in MJCF.
 
 ---
 
-### 35. `gravcomp` — Body Gravity Compensation
-**Status:** ✅ Complete | **Effort:** S–M | **Prerequisites:** None
+### 35. `gravcomp` — Body Gravity Compensation ✅
+**Status:** Complete (A+ conformance) | **Effort:** S–M | **Prerequisites:** None
 
 #### Current State
 
-Not parsed, not stored, not enforced. Silently ignored when present in MJCF. Test
-assets (Apptronik Apollo) use `gravcomp="0"` which is silently dropped.
+**Fully implemented with A+ MuJoCo conformance.** Per-body gravity compensation
+as a passive force, matching MuJoCo's `mj_gravcomp()` from `engine_passive.c`.
+Fourteen integration tests verify the implementation (`gravcomp.rs`).
+
+The implementation:
+1. Parses `gravcomp` from `<body>` as `Option<f64>`, stores `body_gravcomp: Vec<f64>`
+   and `ngravcomp: usize` on Model (via model builder).
+2. Dedicated `qfrc_gravcomp: DVector<f64>` on Data, zeroed each step.
+3. `mj_gravcomp()` iterates bodies with nonzero `body_gravcomp`, computes
+   `force = -gravity * (mass * gc)` at `xipos` (body CoM), and projects via
+   `mj_apply_ft()` (Jacobian-transpose chain-walk) to `qfrc_gravcomp`.
+4. `mj_apply_ft()` is a general utility (not gravcomp-specific): walks from body
+   to root via `body_parent`, dispatches on joint type (Hinge/Slide/Ball/Free),
+   using body-frame axes for Ball/Free rotational DOFs (cdof convention).
+5. Guard: `ngravcomp == 0 || gravity.norm() == 0.0` (fast exit).
+6. Sleep filtering: bodies in sleeping trees are skipped via `tree_awake`.
+7. Routing: `qfrc_gravcomp` added to `qfrc_passive` at end of `mj_fwd_passive()`.
+   Future `jnt_actgravcomp` routing to `qfrc_actuator` is documented as TODO.
+8. `ngravcomp` intentionally uses `!= 0.0` (not MuJoCo's `> 0`) to handle negative values.
 
 #### Objective
 
