@@ -93,6 +93,14 @@ pub mod site_transmission;
 pub mod activation_clamping;
 
 // ============================================================================
+// Gravity Compensation Tests (§35 gravcomp)
+// ============================================================================
+
+/// Gravcomp tests: full/partial/over/negative compensation, kinematic chain,
+/// sleep filtering, CoM offset, Jacobian projection, qfrc_gravcomp isolation.
+pub mod gravcomp;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 

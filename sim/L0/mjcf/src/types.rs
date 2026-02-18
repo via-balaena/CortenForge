@@ -2018,6 +2018,8 @@ pub struct MjcfBody {
     pub mocap: bool,
     /// Sleep policy override for this body's kinematic tree ("auto"|"allowed"|"never"|"init").
     pub sleep: Option<String>,
+    /// Gravity compensation factor (0=none, 1=full, >1=over-compensate, <0=amplify gravity).
+    pub gravcomp: Option<f64>,
 }
 
 impl Default for MjcfBody {
@@ -2038,6 +2040,7 @@ impl Default for MjcfBody {
             childclass: None,
             mocap: false,
             sleep: None,
+            gravcomp: None,
         }
     }
 }

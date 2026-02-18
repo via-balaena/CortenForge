@@ -1470,6 +1470,15 @@ fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     if let Some(sleep) = get_attribute_opt(e, "sleep") {
         body.sleep = Some(sleep);
     }
+    if let Some(gc) = get_attribute_opt(e, "gravcomp") {
+        body.gravcomp = Some(gc.parse::<f64>().map_err(|_| {
+            crate::error::MjcfError::invalid_attribute(
+                "gravcomp",
+                "body",
+                format!("expected float, got '{gc}'"),
+            )
+        })?);
+    }
 
     Ok(body)
 }

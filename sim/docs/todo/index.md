@@ -112,7 +112,7 @@ All items are independent (#29 is the core architectural migration).
 |---|------|-----------|-------------|--------|---------------|------|--------|
 | 33 | Noslip post-processor (PGS/CG) | Low | Medium | S | None | [future_work_9.md](./future_work_9.md) | ✅ |
 | 34 | `actlimited` / `actrange` — activation state clamping | **High** | **Critical** | S–M | None | [future_work_9.md](./future_work_9.md) | ✅ |
-| 35 | `gravcomp` — body gravity compensation | Medium | High | S–M | None | [future_work_9.md](./future_work_9.md) | |
+| 35 | `gravcomp` — body gravity compensation | Medium | High | S–M | None | [future_work_9.md](./future_work_9.md) | ✅ |
 | 36 | Body-transmission actuators (adhesion) | Low | High | M | None | [future_work_9.md](./future_work_9.md) | |
 | 37 | Tendon equality constraints | Low | High | M | None | [future_work_9.md](./future_work_9.md) | |
 

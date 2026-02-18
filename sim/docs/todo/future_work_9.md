@@ -567,7 +567,7 @@ without requiring explicit `actlimited="true"` in MJCF.
 ---
 
 ### 35. `gravcomp` — Body Gravity Compensation
-**Status:** Not started | **Effort:** S–M | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** S–M | **Prerequisites:** None
 
 #### Current State
 

@@ -1250,6 +1250,11 @@ pub struct Model {
     /// which iterate bodies in order and use `enumerate()` to correlate with
     /// mocap array indices.
     pub body_mocapid: Vec<Option<usize>>,
+    /// Per-body gravity compensation factor (length `nbody`).
+    /// 0=none, 1=full, >1=over-compensate, <0=amplify gravity.
+    pub body_gravcomp: Vec<f64>,
+    /// Count of bodies with `body_gravcomp != 0.0` (early-exit optimization).
+    pub ngravcomp: usize,
 
     // ==================== Joints (indexed by jnt_id) ====================
     /// Joint type (Hinge, Slide, Ball, Free).
@@ -2273,8 +2278,11 @@ pub struct Data {
     pub qfrc_applied: DVector<f64>,
     /// Coriolis + centrifugal + gravity bias forces (length `nv`).
     pub qfrc_bias: DVector<f64>,
-    /// Passive forces (springs + dampers) (length `nv`).
+    /// Passive forces (springs + dampers + gravcomp) (length `nv`).
     pub qfrc_passive: DVector<f64>,
+    /// Gravity compensation forces (length `nv`), zeroed each step.
+    /// Stored separately for future `jnt_actgravcomp` routing.
+    pub qfrc_gravcomp: DVector<f64>,
     /// Constraint forces (contacts + joint limits) (length `nv`).
     pub qfrc_constraint: DVector<f64>,
 
@@ -2712,6 +2720,7 @@ impl Clone for Data {
             qfrc_applied: self.qfrc_applied.clone(),
             qfrc_bias: self.qfrc_bias.clone(),
             qfrc_passive: self.qfrc_passive.clone(),
+            qfrc_gravcomp: self.qfrc_gravcomp.clone(),
             qfrc_constraint: self.qfrc_constraint.clone(),
             jnt_limit_frc: self.jnt_limit_frc.clone(),
             ten_limit_frc: self.ten_limit_frc.clone(),
@@ -2902,6 +2911,8 @@ impl Model {
             body_name: vec![Some("world".to_string())],
             body_subtreemass: vec![0.0], // World subtree mass (will be total system mass)
             body_mocapid: vec![None],    // world body
+            body_gravcomp: vec![0.0],    // world body has no gravcomp
+            ngravcomp: 0,
 
             // Joints (empty)
             jnt_type: vec![],
@@ -3329,6 +3340,7 @@ impl Model {
             qfrc_applied: DVector::zeros(self.nv),
             qfrc_bias: DVector::zeros(self.nv),
             qfrc_passive: DVector::zeros(self.nv),
+            qfrc_gravcomp: DVector::zeros(self.nv),
             qfrc_constraint: DVector::zeros(self.nv),
             jnt_limit_frc: vec![0.0; self.njnt],
             ten_limit_frc: vec![0.0; self.ntendon],
@@ -9780,6 +9792,76 @@ fn mj_jac_site(model: &Model, data: &Data, site_id: usize) -> (DMatrix<f64>, DMa
     (jac_trans, jac_rot)
 }
 
+/// Project a Cartesian force + torque at a world-frame point on a body into
+/// generalized forces via the Jacobian transpose: `qfrc += J_p^T * force + J_r^T * torque`.
+///
+/// General-purpose utility matching MuJoCo's `mj_applyFT()`. Walks the kinematic
+/// chain from `body_id` to root, accumulating per-DOF contributions without
+/// materializing the full Jacobian. Follows the same chain-walk and axis conventions
+/// as `accumulate_point_jacobian()`.
+#[allow(clippy::too_many_arguments)]
+fn mj_apply_ft(
+    model: &Model,
+    xpos: &[Vector3<f64>],
+    xquat: &[UnitQuaternion<f64>],
+    force: &Vector3<f64>,
+    torque: &Vector3<f64>,
+    point: &Vector3<f64>,
+    body_id: usize,
+    qfrc: &mut DVector<f64>,
+) {
+    if body_id == 0 {
+        return;
+    }
+    let mut current = body_id;
+    while current != 0 {
+        let jnt_start = model.body_jnt_adr[current];
+        let jnt_end = jnt_start + model.body_jnt_num[current];
+        for jnt_id in jnt_start..jnt_end {
+            let dof = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let axis = xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let anchor = xpos[jnt_body] + xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - anchor;
+                    qfrc[dof] += axis.cross(&r).dot(force) + axis.dot(torque);
+                }
+                MjJointType::Slide => {
+                    let axis = xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    qfrc[dof] += axis.dot(force);
+                }
+                MjJointType::Ball => {
+                    let anchor = xpos[jnt_body] + xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - anchor;
+                    // Body-frame axes (matching MuJoCo's cdof convention for ball joints,
+                    // same as accumulate_point_jacobian)
+                    let rot = xquat[jnt_body].to_rotation_matrix();
+                    for i in 0..3 {
+                        let omega = rot * Vector3::ith(i, 1.0);
+                        qfrc[dof + i] += omega.cross(&r).dot(force) + omega.dot(torque);
+                    }
+                }
+                MjJointType::Free => {
+                    // Translation DOFs (0,1,2): world-frame x,y,z
+                    qfrc[dof] += force[0];
+                    qfrc[dof + 1] += force[1];
+                    qfrc[dof + 2] += force[2];
+                    // Rotation DOFs (3,4,5): body-frame axes (cdof convention)
+                    let anchor = xpos[jnt_body];
+                    let r = point - anchor;
+                    let rot = xquat[jnt_body].to_rotation_matrix();
+                    for i in 0..3 {
+                        let omega = rot * Vector3::ith(i, 1.0);
+                        qfrc[dof + 3 + i] += omega.cross(&r).dot(force) + omega.dot(torque);
+                    }
+                }
+            }
+        }
+        current = model.body_parent[current];
+    }
+}
+
 /// Map a scalar tendon force to generalized forces via J^T.
 ///
 /// For `TendonType::Fixed`, uses the sparse wrap-array pattern (DOF addresses
@@ -11432,6 +11514,55 @@ fn mj_rne(model: &Model, data: &mut Data) {
     }
 }
 
+/// Compute gravity compensation forces for bodies with non-zero `gravcomp`.
+///
+/// Matches MuJoCo's `mj_gravcomp()` in `engine_passive.c`. For each body with
+/// `gravcomp != 0`, applies an anti-gravity force `F = -gravity * mass * gravcomp`
+/// at the body's center of mass (`xipos`), projecting through the kinematic chain
+/// via `mj_apply_ft()` into `qfrc_gravcomp`.
+///
+/// Returns `true` if any gravcomp was applied (for conditional routing).
+fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
+    // Guard: no bodies with gravcomp, or gravity is zero
+    if model.ngravcomp == 0 || model.gravity.norm() == 0.0 {
+        return false;
+    }
+
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let mut has_gravcomp = false;
+
+    for b in 1..model.nbody {
+        let gc = model.body_gravcomp[b];
+        if gc == 0.0 {
+            continue;
+        }
+        // Sleep filtering: skip bodies in sleeping trees
+        if sleep_enabled && !data.tree_awake[model.body_treeid[b]] {
+            continue;
+        }
+        has_gravcomp = true;
+        // Anti-gravity force at body CoM (xipos, NOT xpos).
+        // Gravity acts at the CoM; using xpos would produce wrong torques
+        // for bodies whose CoM doesn't coincide with their frame origin.
+        let force = -model.gravity * (model.body_mass[b] * gc);
+        let zero_torque = Vector3::zeros();
+        let point = data.xipos[b];
+        // Project through Jacobian to generalized forces
+        mj_apply_ft(
+            model,
+            &data.xpos,
+            &data.xquat,
+            &force,
+            &zero_torque,
+            &point,
+            b,
+            &mut data.qfrc_gravcomp,
+        );
+    }
+
+    has_gravcomp
+}
+
 /// Compute passive forces (springs and dampers).
 ///
 /// Implements MuJoCo's passive force model:
@@ -11458,6 +11589,7 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
     data.qfrc_passive.fill(0.0);
+    data.qfrc_gravcomp.fill(0.0);
     // qfrc_frictionloss is now populated post-solve from efc_force (§29).
     // No longer computed in passive forces.
 
@@ -11726,6 +11858,14 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
                 }
             }
         }
+    }
+
+    // Gravity compensation: compute and route to qfrc_passive (§35).
+    // MuJoCo computes gravcomp after spring/damper/flex passive forces, then
+    // conditionally routes via jnt_actgravcomp. We unconditionally add to
+    // qfrc_passive since jnt_actgravcomp is not yet implemented.
+    if mj_gravcomp(model, data) {
+        data.qfrc_passive += &data.qfrc_gravcomp;
     }
 }
 

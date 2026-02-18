@@ -397,6 +397,8 @@ struct ModelBuilder {
     body_mocapid: Vec<Option<usize>>,
     /// Per-body sleep policy from MJCF `sleep` attribute (None = default Auto).
     body_sleep_policy: Vec<Option<SleepPolicy>>,
+    /// Per-body gravity compensation factor (0=none, 1=full).
+    body_gravcomp: Vec<f64>,
     nmocap: usize,
 
     // Joint arrays
@@ -694,6 +696,7 @@ impl ModelBuilder {
             body_name: vec![Some("world".to_string())],
             body_mocapid: vec![None],      // world body is not mocap
             body_sleep_policy: vec![None], // world body has no sleep policy
+            body_gravcomp: vec![0.0],      // world body has no gravcomp
             nmocap: 0,
 
             jnt_type: vec![],
@@ -1260,6 +1263,7 @@ impl ModelBuilder {
             }
         });
         self.body_sleep_policy.push(sleep_policy);
+        self.body_gravcomp.push(body.gravcomp.unwrap_or(0.0));
 
         // Process joints for this body, tracking the last DOF for kinematic tree linkage
         // MuJoCo semantics: first DOF of first joint links to parent body's last DOF,
@@ -3356,6 +3360,8 @@ impl ModelBuilder {
             body_name: self.body_name,
             body_subtreemass: vec![0.0; nbody], // Computed after model construction
             body_mocapid: self.body_mocapid,
+            ngravcomp: self.body_gravcomp.iter().filter(|&&gc| gc != 0.0).count(),
+            body_gravcomp: self.body_gravcomp,
 
             jnt_type: self.jnt_type,
             jnt_body: self.jnt_body,
