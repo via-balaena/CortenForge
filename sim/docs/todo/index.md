@@ -402,7 +402,7 @@ New fields added: tendon solref/solimp/margin, actuator group/actlimited/
 actrange/actearly/lengthrange, geom fromto/mesh/hfield defaults, material
 on geom/site/tendon. All 558 conformance + 281 MJCF tests passing.
 
-### Batch 2 — Constraint System (4 items, S-L effort, all independent)
+### Batch 2 — Constraint System (4 items, S-L effort, all independent) ✅ Complete
 
 **Items:** #28, #29, #30, #31, #32 (all independent; #29 is the core migration)
 **Files:** `mujoco_pipeline.rs` (constraint assembly, PGS/CG solver, Newton solver)
