@@ -587,15 +587,19 @@ MuJoCo implements gravcomp as a **passive force**, NOT a modification to
 
 ```c
 static int mj_gravcomp(const mjModel* m, mjData* d) {
-    if (!m->ngravcomp || DISABLED(mjDSBL_GRAVITY) || norm3(gravity) == 0)
+    if (!m->ngravcomp || mjDISABLED(mjDSBL_GRAVITY) || mju_norm3(m->opt.gravity) == 0)
         return 0;
 
+    // Sleep filtering
+    int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
+    int nbody = sleep_filter ? d->nbody_awake : m->nbody;
+
     for (int b = 1; b < nbody; b++) {
-        if (body_gravcomp[b]) {
-            // force = -gravity * body_mass[b] * body_gravcomp[b]
-            scl3(force, gravity, -(body_mass[b] * body_gravcomp[b]));
-            // Apply at body CoM position, project to joint space
-            mj_applyFT(m, d, force, zero_torque, xipos[b], b, qfrc_gravcomp);
+        int i = sleep_filter ? d->body_awake_ind[b] : b;
+        if (m->body_gravcomp[i]) {    // any non-zero value (including negative)
+            has_gravcomp = 1;
+            mji_scl3(force, m->opt.gravity, -(m->body_mass[i] * m->body_gravcomp[i]));
+            mj_applyFT(m, d, force, zero_torque, d->xipos + 3*i, i, d->qfrc_gravcomp);
         }
     }
     return has_gravcomp;
@@ -604,13 +608,27 @@ static int mj_gravcomp(const mjModel* m, mjData* d) {
 
 **Critical details:**
 - Uses **`body_mass[i]`** (individual body mass), NOT `body_subtreemass`.
-- Result goes to **`qfrc_gravcomp`** (a dedicated array), which is then added
-  to `qfrc_passive` or `qfrc_actuator` depending on the `jnt_actgravcomp` flag.
-- The force is applied at `xipos[b]` (body center of mass in world frame).
+- Result goes to **`qfrc_gravcomp`** (a dedicated nv-dimensional array), which
+  is then added to `qfrc_passive` or `qfrc_actuator` depending on
+  `jnt_actgravcomp`.
+- The force is applied at **`xipos[b]`** (body center of mass in world frame),
+  NOT `xpos[b]` (body frame origin). `xipos = xpos + xquat * ipos`.
 - `mj_applyFT()` projects the Cartesian force through the kinematic chain
-  Jacobian to generalized forces.
-- Gravity disable flag is respected.
+  Jacobian to generalized forces (`qfrc += J_p^T * force + J_r^T * torque`).
+- Guard checks: (1) `ngravcomp == 0`, (2) gravity disabled, (3) gravity zero.
 - World body (b=0) is skipped.
+- **Sleep filtering**: bodies in sleeping trees are skipped for efficiency.
+- The check is `body_gravcomp[i]` (any non-zero, not just positive). Negative
+  values amplify gravity; values > 1.0 over-compensate (body accelerates up).
+
+**MuJoCo `mj_passive()` orchestration order:**
+1. Zero all sub-arrays: `qfrc_spring`, `qfrc_damper`, `qfrc_gravcomp`, `qfrc_fluid`, `qfrc_passive`
+2. Compute spring/damper → `qfrc_spring`, `qfrc_damper`
+3. Compute gravcomp → `qfrc_gravcomp`
+4. Compute fluid forces → `qfrc_fluid`
+5. Accumulate: `qfrc_passive += qfrc_spring + qfrc_damper`
+6. Conditionally add gravcomp per-DOF (based on `jnt_actgravcomp`)
+7. Add fluid forces
 
 #### Specification
 
@@ -628,15 +646,24 @@ In `parser.rs`, add to `parse_body_attrs()`:
 "gravcomp" => { body.gravcomp = Some(parse_f64(value)?); }
 ```
 
-MuJoCo allows any non-negative value (not just `[0, 1]`). A value > 1.0 means
-over-compensation (the body floats upward). We match MuJoCo: no range clamping.
+MuJoCo allows any real value. No range clamping. Typical values:
+- `0` — no compensation (default)
+- `1` — full compensation (weightless)
+- `0.5` — partial (half gravity)
+- `2` — over-compensation (accelerates upward)
+- `7.2` — buoyancy simulation (air/helium density ratio)
+
+**Note:** `gravcomp` is a body attribute. It does NOT participate in MJCF
+`<default>` class inheritance (MuJoCo defaults only apply to sub-elements
+like joint, geom, etc., not to body-level attributes). No defaults handling
+needed.
 
 ##### S2. Model storage
 
 Add to `Model`:
 ```rust
-pub body_gravcomp: Vec<f64>,   // per-body, default 0.0
-pub ngravcomp: usize,          // count of bodies with gravcomp > 0 (optimization)
+pub body_gravcomp: Vec<f64>,   // per-body, default 0.0 (length nbody)
+pub ngravcomp: usize,          // count of bodies with gravcomp != 0 (early-exit)
 ```
 
 Add to `Data`:
@@ -645,11 +672,32 @@ pub qfrc_gravcomp: DVector<f64>,  // nv-dimensional, zeroed each step
 ```
 
 Forward from `MjcfBody.gravcomp` in `model_builder.rs`. Compute `ngravcomp`
-during model building for early-exit optimization.
+as the count of bodies where `body_gravcomp[b] != 0.0` for early-exit
+optimization. World body (index 0) always has `gravcomp = 0.0`.
+
+**`Model::empty()` initialization:**
+```rust
+body_gravcomp: vec![0.0],  // World body has no gravcomp
+ngravcomp: 0,
+```
+
+**`make_data()` initialization:**
+```rust
+qfrc_gravcomp: DVector::zeros(self.nv),
+```
+
+Ensure `Data::clone()` includes `qfrc_gravcomp` (the derive macro handles this
+if the field is declared in the struct).
+
+**`ngravcomp` divergence note:** MuJoCo's `engine_setconst.c` counts
+`body_gravcomp[i] > 0` (positive only). Our spec intentionally counts
+`!= 0.0` (any non-zero), so models with only negative gravcomp values still
+work. In MuJoCo, negative-only gravcomp models silently no-op due to the
+`> 0` guard — this appears to be a latent MuJoCo bug, not intentional design.
 
 **Note:** MuJoCo writes gravcomp forces to a **dedicated `qfrc_gravcomp`** array,
 NOT directly to `qfrc_passive`. This is because the routing depends on
-`jnt_actgravcomp` — see S5.
+`jnt_actgravcomp` — see S4.
 
 ##### S3. Runtime: `mj_gravcomp()` as passive force
 
@@ -657,15 +705,12 @@ Implement `mj_gravcomp()` as a function called from `mj_fwd_passive()`:
 
 ```rust
 fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
-    if model.ngravcomp == 0 {
+    // Guard: no bodies with gravcomp, or gravity is zero
+    if model.ngravcomp == 0 || model.gravity.norm() == 0.0 {
         return false;
     }
-    let gravity = model.gravity;
-    if gravity.norm() == 0.0 {
-        return false;  // gravity disabled or zero — no compensation needed
-    }
 
-    data.qfrc_gravcomp.fill(0.0);
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
     let mut has_gravcomp = false;
 
     for b in 1..model.nbody {
@@ -673,9 +718,13 @@ fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
         if gc == 0.0 {
             continue;
         }
+        // Sleep filtering: skip bodies in sleeping trees
+        if sleep_enabled && !data.tree_awake[model.body_treeid[b]] {
+            continue;
+        }
         has_gravcomp = true;
         // Anti-gravity force at body CoM (xipos, NOT xpos)
-        let force = -gravity * model.body_mass[b] * gc;
+        let force = -model.gravity * model.body_mass[b] * gc;
         // Project through Jacobian to generalized forces
         mj_apply_ft(model, data, &force, &Vector3::zeros(), &data.xipos[b], b,
                      &mut data.qfrc_gravcomp);
@@ -685,22 +734,44 @@ fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
 }
 ```
 
-**Critical:** Uses `data.xipos[b]` (body center of mass in world frame), NOT
-`data.xpos[b]` (body frame origin). MuJoCo applies the antigravity force at
-`xipos` because gravity acts at the CoM. These differ when `ipos` (body-local
-CoM offset) is nonzero. Using `xpos` instead of `xipos` would produce wrong
-torques for bodies whose CoM doesn't coincide with their frame origin.
+**Critical implementation notes:**
+
+1. Uses **`data.xipos[b]`** (body center of mass in world frame), NOT
+   `data.xpos[b]` (body frame origin). `xipos = xpos + xquat * ipos`.
+   Gravity acts at the CoM. Using `xpos` would produce wrong torques for
+   bodies whose CoM doesn't coincide with their frame origin.
+
+2. The skip condition is `gc == 0.0` (not `gc > 0.0`). Negative gravcomp
+   values amplify gravity — MuJoCo processes any non-zero value.
+
+3. `qfrc_gravcomp` is zeroed at the **top of `mj_fwd_passive()`** —
+   immediately after `data.qfrc_passive.fill(0.0)` (line 11460). The
+   `mj_gravcomp()` call and routing go **after** all existing passive force
+   blocks (after flex bending forces, around line 11729). This matches
+   MuJoCo's `mj_passive()` which zeros all sub-arrays upfront, then
+   computes spring/damper → gravcomp → fluid → accumulates.
+
+4. **Gravity disable flag**: MuJoCo checks `mjDISABLED(mjDSBL_GRAVITY)` in
+   addition to `gravity.norm() == 0.0`. Our codebase does not yet define
+   `DISABLE_GRAVITY` (only `DISABLE_ISLAND` exists at line 835). The
+   `gravity.norm() == 0.0` check suffices because `<option gravity="0 0 0"/>`
+   is the only way to disable gravity in our pipeline. When/if `DISABLE_GRAVITY`
+   is added, update this guard.
+
+5. **Zero-mass bodies**: `force = -gravity * body_mass * gc` produces zero
+   for massless bodies regardless of `gc`. This is correct — gravcomp is a
+   no-op for frame bodies (mass=0). No special handling needed.
 
 ##### S3b. `mj_apply_ft()` — Cartesian wrench to generalized forces
 
-This function computes the full translational + rotational Jacobian at a point
-on a body and projects a 6D wrench to generalized forces. It follows MuJoCo's
-`mj_applyFT` which internally calls `mj_jac()` to build `jacp` (3×nv) and
-`jacr` (3×nv), then computes `qfrc += jacp^T * force + jacr^T * torque`.
+General-purpose utility matching MuJoCo's `mj_applyFT()`. Projects a Cartesian
+force + torque at a world-frame point on a body into generalized forces via the
+Jacobian transpose: `qfrc += J_p^T * force + J_r^T * torque`.
 
-Our implementation walks the kinematic chain (same traversal as
-`accumulate_point_jacobian()`) but accumulates the full 3D force/torque
-projection per DOF instead of a scalar direction projection:
+MuJoCo's `mj_applyFT` internally calls `mj_jac()` to build the full `jacp`
+(3×nv) and `jacr` (3×nv) matrices, then multiplies. Our implementation avoids
+materializing the full Jacobian by walking the kinematic chain and accumulating
+per-DOF, matching the pattern of `accumulate_point_jacobian()` (line 9644).
 
 ```rust
 fn mj_apply_ft(
@@ -709,9 +780,7 @@ fn mj_apply_ft(
     point: &Vector3<f64>, body_id: usize,
     qfrc: &mut DVector<f64>,
 ) {
-    if body_id == 0 {
-        return;  // world body has no DOFs
-    }
+    if body_id == 0 { return; }
     let mut current = body_id;
     while current != 0 {
         let jnt_start = model.body_jnt_adr[current];
@@ -725,12 +794,9 @@ fn mj_apply_ft(
                     let anchor = data.xpos[jnt_body]
                                + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
                     let r = point - anchor;
-                    // jacp column = axis × r; jacr column = axis
-                    // qfrc = (axis × r) · force + axis · torque
                     qfrc[dof] += axis.cross(&r).dot(force) + axis.dot(torque);
                 }
                 MjJointType::Slide => {
-                    // jacp column = axis; jacr column = 0
                     let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
                     qfrc[dof] += axis.dot(force);
                 }
@@ -738,21 +804,21 @@ fn mj_apply_ft(
                     let anchor = data.xpos[jnt_body]
                                + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
                     let r = point - anchor;
-                    // Ball DOFs use body-frame axes (columns of xmat/xquat rotation)
+                    // Body-frame axes (matching MuJoCo's cdof convention for
+                    // ball joints, same as accumulate_point_jacobian)
                     let rot = data.xquat[jnt_body].to_rotation_matrix();
                     for i in 0..3 {
                         let omega = rot * Vector3::ith(i, 1.0);
-                        // jacp column = omega × r; jacr column = omega
                         qfrc[dof + i] += omega.cross(&r).dot(force)
                                         + omega.dot(torque);
                     }
                 }
                 MjJointType::Free => {
-                    // Translation DOFs (0,1,2): global x,y,z
+                    // Translation DOFs (0,1,2): world-frame x,y,z
                     qfrc[dof]     += force[0];
                     qfrc[dof + 1] += force[1];
                     qfrc[dof + 2] += force[2];
-                    // Rotation DOFs (3,4,5): body-frame axes
+                    // Rotation DOFs (3,4,5): body-frame axes (cdof convention)
                     let anchor = data.xpos[jnt_body];
                     let r = point - anchor;
                     let rot = data.xquat[jnt_body].to_rotation_matrix();
@@ -769,11 +835,15 @@ fn mj_apply_ft(
 }
 ```
 
-**Design note:** This function closely mirrors `accumulate_point_jacobian()` but
-computes the full wrench projection `J_p^T * f + J_r^T * τ` per DOF instead of
-the scalar `direction^T * J_p` used for tendon Jacobians. Both use the same
-chain walk and the same body-frame axis convention for Ball/Free joints (matching
-MuJoCo's `cdof` layout).
+**Axis convention:** Ball and Free rotational DOFs use **body-frame axes**
+(`rot * e_i`), matching MuJoCo's `cdof` layout and our
+`accumulate_point_jacobian()` (line 9644). This differs from
+`add_body_point_jacobian_row()` (line 18178) which uses world-frame axes for
+Free joints (a known pre-existing inconsistency noted at line 9691).
+
+**Design note:** This is a general-purpose utility — not gravcomp-specific.
+Place near the other Jacobian utilities (`accumulate_point_jacobian`,
+`mj_jac_site`). Future uses include `xfrc_applied` projection.
 
 ##### S4. Routing: `qfrc_gravcomp` → `qfrc_passive`
 
@@ -782,70 +852,89 @@ MuJoCo, this routing is conditional on `jnt_actgravcomp` — but since we don't
 yet support `actgravcomp`, we unconditionally add all gravcomp to passive:
 
 ```rust
-// In mj_fwd_passive(), after calling mj_gravcomp():
+// In mj_fwd_passive(), after joint/tendon/flex passive forces:
 let has_gc = mj_gravcomp(model, data);
 if has_gc {
-    // For now, add all gravcomp to passive forces.
-    // TODO(future): when jnt_actgravcomp is implemented, only add for joints
-    // where jnt_actgravcomp[dof_jntid[dof]] == false. The rest goes through
-    // the actuator system.
-    for dof in 0..model.nv {
-        data.qfrc_passive[dof] += data.qfrc_gravcomp[dof];
-    }
+    // Unconditional routing to qfrc_passive.
+    // TODO(future): when jnt_actgravcomp is implemented, only add for DOFs
+    // where jnt_actgravcomp[dof_jntid[dof]] == false. DOFs with
+    // actgravcomp=true route through qfrc_actuator instead.
+    data.qfrc_passive += &data.qfrc_gravcomp;
 }
 ```
 
-**Future-proofing note:** MuJoCo's `jnt_actgravcomp` flag controls whether a
-joint's gravity compensation is applied as a passive force or routed through
-the actuator system. We leave a TODO for this. The dedicated `qfrc_gravcomp`
-array makes the future routing change a trivial addition.
+**MuJoCo routing detail:** When `jnt_actgravcomp="true"` on a joint, that
+joint's DOFs' gravcomp forces go to `qfrc_actuator` (not `qfrc_passive`). This
+makes the gravcomp load subject to the joint's `actfrcrange` clamping.
+The dedicated `qfrc_gravcomp` array makes this future change trivial.
 
 ##### S5. Where NOT to implement
 
 Do NOT modify `mj_rne()` or `qfrc_bias`. MuJoCo computes gravcomp as a
 **separate passive force** added to `qfrc_passive` (via `qfrc_gravcomp`), not
-as a bias force adjustment. This keeps the bias force computation clean and
-makes gravcomp composable with other passive forces.
+as a bias force adjustment. Gravcomp counteracts the gravity portion of
+`qfrc_bias` through the equations of motion:
+`M * qacc = qfrc_passive + qfrc_actuator - qfrc_bias + qfrc_constraint`.
 
 #### Acceptance Criteria
 
-1. **Full compensation**: A free body with `gravcomp="1"` and no contact
-   experiences zero net gravitational acceleration (gravity + antigravity
-   cancel). Verify `qacc` has zero gravitational component after `forward()`.
-2. **No compensation**: A body with `gravcomp="0"` (default) produces
-   identical results to a body without the attribute.
-3. **Partial compensation**: A body with `gravcomp="0.5"` has half the
-   gravitational acceleration of an uncompensated body. Verify by comparing
-   `qacc` magnitudes.
-4. **Over-compensation**: A free body with `gravcomp="2"` accelerates
-   upward (against gravity). Verify `qacc` sign reversal.
-5. **Apptronik Apollo**: `gravcomp="0"` parses without warning, produces
-   no behavioral change.
-6. **Kinematic chain**: A 3-link arm with `gravcomp="1"` on all links:
-   verify `qfrc_passive` contains antigravity forces and the arm holds
-   position against gravity without actuator input.
-7. **Gravity disabled**: With `<option gravity="0 0 0">`, gravcomp produces
-   zero force regardless of `gravcomp` values.
-8. **CoM offset correctness**: A body with non-trivial `ipos` (local CoM
-   offset ≠ origin) and `gravcomp="1"`: verify force is applied at `xipos`
-   (body CoM), not `xpos` (body frame origin). The torque contribution
-   should differ from the case where `ipos = [0,0,0]`.
-9. **`qfrc_gravcomp` populated**: After `forward()`, `data.qfrc_gravcomp`
-   is nonzero for DOFs affected by bodies with `gravcomp > 0`, and zero
-   for unaffected DOFs.
-10. **MuJoCo reference**: Compare `qfrc_passive` for a body with
-    `gravcomp="0.7"` against MuJoCo. Tolerance: `1e-10`.
+1. **Full compensation (free body)**: Free body with `gravcomp="1"`, no
+   contact → `qfrc_gravcomp` exactly cancels gravity component of `qfrc_bias`.
+   Verify: `qacc` gravitational component ≈ 0 (tolerance 1e-12).
+2. **No compensation**: `gravcomp="0"` (or absent) → `qfrc_gravcomp` is all
+   zeros. Verify: identical to model without gravcomp attribute.
+3. **Partial compensation**: `gravcomp="0.5"` → `qfrc_gravcomp` is exactly
+   half the full-compensation value. Verify ratio at 1e-12.
+4. **Over-compensation**: `gravcomp="2"` → `qacc` reverses sign (body
+   accelerates upward). Verify sign of vertical qacc.
+5. **Parsing**: `gravcomp="0"` and `gravcomp="7.2"` parse without error.
+   Apptronik Apollo asset loads cleanly.
+6. **Kinematic chain**: 3-link arm with `gravcomp="1"` on all links →
+   `qfrc_passive` contains antigravity forces, arm holds static equilibrium
+   against gravity (zero qacc at rest). Tolerance 1e-10.
+7. **Gravity disabled**: `<option gravity="0 0 0"/>` with `gravcomp="1"` →
+   `qfrc_gravcomp` is all zeros.
+8. **CoM offset**: Body with `inertial pos="0 0 0.1"` (non-trivial ipos) and
+   `gravcomp="1"` on a hinge → verify torque uses `xipos` (not `xpos`).
+   Compare against analytical `J^T * (-mass * g)` at `xipos`. Tolerance 1e-12.
+9. **`qfrc_gravcomp` isolation**: After `forward()`, `qfrc_gravcomp` is
+   nonzero for affected DOFs, zero for unaffected. Verify the dedicated array
+   is populated independently of `qfrc_passive`.
+10. **Analytical free-body verification**: Free body, `gravcomp="0.7"`,
+    mass=2.0, gravity=[0,0,-9.81] → verify analytically:
+    `qfrc_gravcomp = [0, 0, +0.7*2.0*9.81, 0, 0, 0]` (force cancels 70% of
+    gravity on translation DOFs, zero on rotation DOFs since force at CoM
+    produces no torque about the free joint origin when ipos=0). Tolerance 1e-12.
+11. **Sleep filtering**: Body in a sleeping tree with `gravcomp="1"` →
+    no contribution to `qfrc_gravcomp`. Verify array stays zero for sleeping
+    tree's DOFs.
+12. **Negative gravcomp**: Free body with `gravcomp="-1"` → gravity force
+    is doubled (amplified, not compensated). Verify `qfrc_gravcomp` has same
+    sign as gravity (pushes body downward), magnitude equals `mass * g`.
+    Tolerance 1e-12.
+13. **Selective sub-chain**: Parent body `gravcomp="0"`, child body
+    `gravcomp="1"` → only the child's mass is compensated, but the force
+    projects through both the child's and parent's joints. Verify
+    `qfrc_gravcomp` is nonzero on parent's DOFs (child's gravity force
+    propagates up the chain).
+14. **Free body with CoM offset**: Free body with `gravcomp="1"` and
+    `inertial pos="0.1 0 0"` (non-zero ipos) → gravcomp force at xipos
+    produces torque on the free joint's rotational DOFs. Verify rotational
+    DOFs of `qfrc_gravcomp` are nonzero (unlike AC10 where ipos=0).
+    Tolerance 1e-12.
 
 #### Files
 
 - `sim/L0/mjcf/src/types.rs` — add `gravcomp: Option<f64>` to `MjcfBody`
 - `sim/L0/mjcf/src/parser.rs` — parse `gravcomp` in `parse_body_attrs()`
-- `sim/L0/mjcf/src/model_builder.rs` — forward to `Model.body_gravcomp`
+- `sim/L0/mjcf/src/model_builder.rs` — forward to `Model.body_gravcomp`,
+  compute `ngravcomp`
 - `sim/L0/core/src/mujoco_pipeline.rs` — add `body_gravcomp: Vec<f64>` and
   `ngravcomp: usize` to Model; add `qfrc_gravcomp: DVector<f64>` to Data;
-  implement `mj_gravcomp()` and `mj_apply_ft()`; call from
-  `mj_fwd_passive()` with routing to `qfrc_passive`
-- `sim/L0/tests/integration/` — new tests for gravcomp scenarios
+  implement `mj_apply_ft()` (general utility near Jacobian functions) and
+  `mj_gravcomp()`; call from `mj_fwd_passive()` with routing to `qfrc_passive`;
+  zero `qfrc_gravcomp` at top of `mj_fwd_passive()`
+- `sim/L0/tests/integration/` — new `gravcomp.rs` with tests for AC1-AC14
 
 ---
 
