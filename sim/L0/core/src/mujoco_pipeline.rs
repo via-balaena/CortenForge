@@ -1654,10 +1654,10 @@ pub struct Model {
     /// When true, activation is clamped to `actuator_actrange` after integration.
     /// MuJoCo reference: `m->actuator_actlimited[i]`.
     pub actuator_actlimited: Vec<bool>,
-    /// Activation clamping range [min, max] per actuator.
+    /// Activation clamping range (min, max) per actuator.
     /// Only enforced when `actuator_actlimited[i]` is true.
     /// MuJoCo reference: `m->actuator_actrange[2*i]`, `m->actuator_actrange[2*i+1]`.
-    pub actuator_actrange: Vec<[f64; 2]>,
+    pub actuator_actrange: Vec<(f64, f64)>,
     /// Whether to use predicted next-step activation for force computation.
     /// When true, force at time t uses act(t+h) instead of act(t), removing
     /// the one-timestep delay between control input and force response.
@@ -10521,7 +10521,7 @@ fn mj_next_activation(model: &Model, actuator_id: usize, current_act: f64, act_d
     // Activation clamping (§34)
     if model.actuator_actlimited[actuator_id] {
         let range = model.actuator_actrange[actuator_id];
-        act = act.clamp(range[0], range[1]);
+        act = act.clamp(range.0, range.1);
     }
 
     act
@@ -19827,7 +19827,7 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
             if model.actuator_actlimited[act_i] {
                 let range = model.actuator_actrange[act_i];
                 for k in 0..model.actuator_act_num[act_i] {
-                    data.act[act_adr + k] = data.act[act_adr + k].clamp(range[0], range[1]);
+                    data.act[act_adr + k] = data.act[act_adr + k].clamp(range.0, range.1);
                 }
             }
         }
@@ -19902,7 +19902,7 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
         if model.actuator_actlimited[act_i] {
             let range = model.actuator_actrange[act_i];
             for k in 0..model.actuator_act_num[act_i] {
-                data.act[act_adr + k] = data.act[act_adr + k].clamp(range[0], range[1]);
+                data.act[act_adr + k] = data.act[act_adr + k].clamp(range.0, range.1);
             }
         }
     }
@@ -20884,7 +20884,7 @@ mod sensor_tests {
         model.actuator_lengthrange.push((0.0, 0.0));
         model.actuator_acc0.push(0.0);
         model.actuator_actlimited.push(false);
-        model.actuator_actrange.push([0.0, 0.0]);
+        model.actuator_actrange.push((0.0, 0.0));
         model.actuator_actearly.push(false);
 
         add_sensor(
@@ -20931,7 +20931,7 @@ mod sensor_tests {
         model.actuator_lengthrange.push((0.0, 0.0));
         model.actuator_acc0.push(0.0);
         model.actuator_actlimited.push(false);
-        model.actuator_actrange.push([0.0, 0.0]);
+        model.actuator_actrange.push((0.0, 0.0));
         model.actuator_actearly.push(false);
 
         add_sensor(
@@ -22442,7 +22442,7 @@ mod muscle_tests {
         model.actuator_acc0 = vec![0.0]; // will be computed
         // Muscle default: actlimited=true, actrange=[0,1] (§34 S5)
         model.actuator_actlimited = vec![true];
-        model.actuator_actrange = vec![[0.0, 1.0]];
+        model.actuator_actrange = vec![(0.0, 1.0)];
         model.actuator_actearly = vec![false];
 
         model.qpos0 = DVector::zeros(1);
@@ -22700,7 +22700,7 @@ mod muscle_tests {
         model.actuator_lengthrange = vec![(0.0, 0.0)];
         model.actuator_acc0 = vec![0.0];
         model.actuator_actlimited = vec![false];
-        model.actuator_actrange = vec![[0.0, 0.0]];
+        model.actuator_actrange = vec![(0.0, 0.0)];
         model.actuator_actearly = vec![false];
 
         model.qpos0 = DVector::zeros(1);

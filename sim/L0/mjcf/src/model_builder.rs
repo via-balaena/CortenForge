@@ -516,7 +516,7 @@ struct ModelBuilder {
     actuator_lengthrange: Vec<(f64, f64)>,
     actuator_acc0: Vec<f64>,
     actuator_actlimited: Vec<bool>,
-    actuator_actrange: Vec<[f64; 2]>,
+    actuator_actrange: Vec<(f64, f64)>,
     actuator_actearly: Vec<bool>,
 
     // Total activation states (sum of actuator_act_num)
@@ -2130,9 +2130,9 @@ impl ModelBuilder {
         };
         self.actuator_actlimited.push(actlimited);
         self.actuator_actrange.push(if actlimited {
-            actuator.actrange.unwrap_or((0.0, 0.0)).into()
+            actuator.actrange.unwrap_or((0.0, 0.0))
         } else {
-            [0.0, 0.0] // Unused when actlimited=false
+            (0.0, 0.0) // Unused when actlimited=false
         });
         self.actuator_actearly
             .push(actuator.actearly.unwrap_or(false));
@@ -2143,7 +2143,7 @@ impl ModelBuilder {
         if actuator.actuator_type == MjcfActuatorType::Muscle && actuator.actlimited.is_none() {
             let idx = self.actuator_actlimited.len() - 1;
             self.actuator_actlimited[idx] = true;
-            self.actuator_actrange[idx] = [0.0, 1.0];
+            self.actuator_actrange[idx] = (0.0, 1.0);
         }
 
         self.actuator_name.push(if actuator.name.is_empty() {

@@ -14,7 +14,7 @@ use sim_core::Model;
 
 /// Build a minimal hinge model with one integrator actuator.
 /// `actlimited` and `actrange` are configurable.
-fn build_integrator_model(actlimited: bool, actrange: [f64; 2], actearly: bool) -> Model {
+fn build_integrator_model(actlimited: bool, actrange: (f64, f64), actearly: bool) -> Model {
     let mjcf = if actlimited {
         format!(
             r#"<mujoco>
@@ -31,8 +31,8 @@ fn build_integrator_model(actlimited: bool, actrange: [f64; 2], actearly: bool) 
              gainprm="1" biasprm="0 0 0" biastype="none"/>
   </actuator>
 </mujoco>"#,
-            actrange[0],
-            actrange[1],
+            actrange.0,
+            actrange.1,
             if actearly { "true" } else { "false" }
         )
     } else {
@@ -59,9 +59,9 @@ fn build_integrator_model(actlimited: bool, actrange: [f64; 2], actearly: bool) 
 
 /// Build a minimal hinge model with one muscle actuator.
 /// If `actrange_override` is Some, sets explicit actlimited + actrange.
-fn build_muscle_model(actrange_override: Option<[f64; 2]>) -> Model {
+fn build_muscle_model(actrange_override: Option<(f64, f64)>) -> Model {
     let actlimited_attr = match actrange_override {
-        Some(range) => format!(r#"actlimited="true" actrange="{} {}""#, range[0], range[1]),
+        Some(range) => format!(r#"actlimited="true" actrange="{} {}""#, range.0, range.1),
         None => String::new(), // muscle default: actlimited=true, actrange=[0,1]
     };
     let mjcf = format!(
@@ -83,11 +83,11 @@ fn build_muscle_model(actrange_override: Option<[f64; 2]>) -> Model {
 }
 
 /// Build a model with one position actuator (FilterExact dynamics via timeconst).
-fn build_filterexact_model(actlimited: bool, actrange: [f64; 2]) -> Model {
+fn build_filterexact_model(actlimited: bool, actrange: (f64, f64)) -> Model {
     let actlimited_attr = if actlimited {
         format!(
             r#"actlimited="true" actrange="{} {}""#,
-            actrange[0], actrange[1]
+            actrange.0, actrange.1
         )
     } else {
         r#"actlimited="false""#.to_string()
@@ -111,7 +111,7 @@ fn build_filterexact_model(actlimited: bool, actrange: [f64; 2]) -> Model {
 }
 
 /// Build a model with one filter actuator (Euler filter dynamics).
-fn build_filter_model(actlimited: bool, actrange: [f64; 2], actearly: bool) -> Model {
+fn build_filter_model(actlimited: bool, actrange: (f64, f64), actearly: bool) -> Model {
     let mjcf = format!(
         r#"<mujoco>
   <option timestep="0.001"/>
@@ -130,7 +130,7 @@ fn build_filter_model(actlimited: bool, actrange: [f64; 2], actearly: bool) -> M
         if actlimited {
             format!(
                 r#"actlimited="true" actrange="{} {}""#,
-                actrange[0], actrange[1]
+                actrange.0, actrange.1
             )
         } else {
             r#"actlimited="false""#.to_string()
@@ -146,7 +146,7 @@ fn build_filter_model(actlimited: bool, actrange: [f64; 2], actearly: bool) -> M
 
 #[test]
 fn test_integrator_clamped_to_actrange() {
-    let model = build_integrator_model(true, [-1.0, 1.0], false);
+    let model = build_integrator_model(true, (-1.0, 1.0), false);
     let mut data = model.make_data();
     data.ctrl[0] = 1.0; // act_dot = ctrl = 1.0
 
@@ -165,7 +165,7 @@ fn test_integrator_clamped_to_actrange() {
 
 #[test]
 fn test_integrator_clamped_negative() {
-    let model = build_integrator_model(true, [-1.0, 1.0], false);
+    let model = build_integrator_model(true, (-1.0, 1.0), false);
     let mut data = model.make_data();
     data.ctrl[0] = -1.0; // drive activation negative
 
@@ -186,7 +186,7 @@ fn test_integrator_clamped_negative() {
 
 #[test]
 fn test_integrator_unbounded_without_actlimited() {
-    let model = build_integrator_model(false, [0.0, 0.0], false);
+    let model = build_integrator_model(false, (0.0, 0.0), false);
     let mut data = model.make_data();
     data.ctrl[0] = 1.0;
 
@@ -217,7 +217,7 @@ fn test_muscle_default_actrange() {
     );
     assert_eq!(
         model.actuator_actrange[0],
-        [0.0, 1.0],
+        (0.0, 1.0),
         "Muscle should default to actrange=[0,1]"
     );
 }
@@ -250,10 +250,10 @@ fn test_muscle_clamped_to_default_range() {
 
 #[test]
 fn test_muscle_override_actrange() {
-    let model = build_muscle_model(Some([-0.5, 1.5]));
+    let model = build_muscle_model(Some((-0.5, 1.5)));
 
     assert!(model.actuator_actlimited[0]);
-    assert_eq!(model.actuator_actrange[0], [-0.5, 1.5]);
+    assert_eq!(model.actuator_actrange[0], (-0.5, 1.5));
 }
 
 // ============================================================================
@@ -262,7 +262,7 @@ fn test_muscle_override_actrange() {
 
 #[test]
 fn test_filterexact_clamped() {
-    let model = build_filterexact_model(true, [-0.5, 0.5]);
+    let model = build_filterexact_model(true, (-0.5, 0.5));
     let mut data = model.make_data();
     data.ctrl[0] = 10.0; // Large control to drive activation high
 
@@ -280,7 +280,7 @@ fn test_filterexact_clamped() {
 #[test]
 fn test_filterexact_uses_exact_formula() {
     // Without clamping, verify the FilterExact exponential integration is used
-    let model = build_filterexact_model(false, [0.0, 0.0]);
+    let model = build_filterexact_model(false, (0.0, 0.0));
     let mut data = model.make_data();
     data.ctrl[0] = 1.0;
 
@@ -308,8 +308,8 @@ fn test_filterexact_uses_exact_formula() {
 fn test_actearly_force_responds_immediately() {
     // With actearly=true, force at step t uses act(t+1), so force responds
     // to ctrl change one step earlier than with actearly=false.
-    let model_early = build_filter_model(false, [0.0, 0.0], true);
-    let model_late = build_filter_model(false, [0.0, 0.0], false);
+    let model_early = build_filter_model(false, (0.0, 0.0), true);
+    let model_late = build_filter_model(false, (0.0, 0.0), false);
 
     let mut data_early = model_early.make_data();
     let mut data_late = model_late.make_data();
@@ -343,7 +343,7 @@ fn test_actearly_force_responds_immediately() {
 #[test]
 fn test_actearly_with_actlimited() {
     // actearly should use the CLAMPED predicted activation
-    let model = build_integrator_model(true, [-1.0, 1.0], true);
+    let model = build_integrator_model(true, (-1.0, 1.0), true);
     let mut data = model.make_data();
     data.act[0] = 0.9995; // Near the limit
     data.ctrl[0] = 1.0; // Would push to 0.9995 + 0.001 = 1.0005, clamped to 1.0
@@ -370,7 +370,7 @@ fn test_integrator_trajectory_exact_match() {
     // for 100 steps with ctrl=1.0 at dt=0.001.
     // Expected: act[t] = min(t * dt * ctrl, 1.0) = min(t * 0.001, 1.0)
     // This is an exact analytical result — no tolerance needed beyond f64 precision.
-    let model = build_integrator_model(true, [-1.0, 1.0], false);
+    let model = build_integrator_model(true, (-1.0, 1.0), false);
     let mut data = model.make_data();
     data.ctrl[0] = 1.0;
 
@@ -417,7 +417,7 @@ fn test_actlimited_default_class_inheritance() {
     );
     assert_eq!(
         model.actuator_actrange[0],
-        [-2.0, 2.0],
+        (-2.0, 2.0),
         "actrange should be inherited from default class"
     );
 }
@@ -452,7 +452,7 @@ fn test_actlimited_autolimits_inference() {
     );
     assert_eq!(
         model.actuator_actrange[0],
-        [-3.0, 3.0],
+        (-3.0, 3.0),
         "actrange should be [-3, 3]"
     );
 }
@@ -463,7 +463,7 @@ fn test_actlimited_autolimits_inference() {
 
 #[test]
 fn test_filter_clamped_to_actrange() {
-    let model = build_filter_model(true, [-0.5, 0.5], false);
+    let model = build_filter_model(true, (-0.5, 0.5), false);
     let mut data = model.make_data();
     data.ctrl[0] = 10.0; // Large control to saturate
 
@@ -488,7 +488,7 @@ fn test_actearly_integrator_prediction() {
     // Without actearly: force = gain * act(t)
     // At t=0 with act=0, ctrl=1: actearly force = gain*(0 + 0.001*1.0) = 0.001
     //                              non-actearly force = gain*0 = 0.0
-    let model = build_integrator_model(false, [0.0, 0.0], true);
+    let model = build_integrator_model(false, (0.0, 0.0), true);
     let mut data = model.make_data();
     data.ctrl[0] = 1.0;
 
