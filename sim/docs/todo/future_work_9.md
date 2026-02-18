@@ -43,23 +43,10 @@ The implementation:
    `scale = 1/(meaninertia * max(1, nv))` (matches CG/Newton pattern).
 5. Writes back updated `efc_force` and recomputes `qfrc_constraint` and `qacc`.
 
-**What's missing:** The PGS and CG solver paths bypass noslip entirely. The solver
-dispatch calls `noslip_postprocess()` only after `NewtonResult::Converged`. The
-PGS/CG code path does not invoke noslip. This means models using `solver="PGS"`
-or `solver="CG"` with `noslip_iterations > 0` silently ignore the noslip setting.
-
-Also missing: MuJoCo's noslip processes **friction-loss rows** (`ne..ne+nf`) in
-addition to contact friction rows. Our implementation only processes contact
-friction rows.
-
 MJCF parsing is complete: `noslip_iterations` and `noslip_tolerance` are read from
 `<option>` and stored on `Model` (defaults: 0 iterations, 1e-6 tolerance).
-
-#### Objective
-
-Wire `noslip_postprocess()` into the PGS and CG solver paths so all three solver
-types support noslip when `noslip_iterations > 0`. Also add friction-loss row
-processing to match MuJoCo.
+All solver paths (PGS, CG, Newton, Newton→PGS fallback) dispatch noslip when
+`noslip_iterations > 0`.
 
 #### MuJoCo Reference (`mj_solNoSlip` in `engine_solver.c`)
 
