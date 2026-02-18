@@ -16,8 +16,8 @@ tendon equality constraints.
 
 ---
 
-### 33. Noslip Post-Processor for PGS/CG Solvers
-**Status:** Newton done, PGS/CG missing | **Effort:** S | **Prerequisites:** None
+### 33. Noslip Post-Processor for PGS/CG Solvers ✅
+**Status:** Complete | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 
@@ -59,7 +59,8 @@ processing to match MuJoCo.
 MuJoCo's noslip processes two row ranges (NOT equality rows):
 
 1. **Friction-loss rows** (`ne..ne+nf`): PGS update with interval clamping
-   `[-floss, +floss]`. Uses `ARinv[i]` (inverse of `A[i,i] + R[i]` diagonal).
+   `[-floss, +floss]`. Uses unregularized `ARinv[i]` = `1/A[i,i]` (computed
+   via `ARdiaginv` with `flg_subR=1`, which subtracts R from the AR diagonal).
 2. **Contact friction rows** (`ne+nf..nefc`): Two sub-cases:
    - **Pyramidal**: Processes friction pairs `(j, j+1)` via 2x2 block solve with
      non-negativity clamping on each pair component.
@@ -137,9 +138,9 @@ for row in 0..nefc {
     if data.efc_type[row] != ConstraintType::FrictionLoss {
         continue;
     }
-    // PGS update: force[row] -= residual * diag_inv[row]
-    let residual = compute_row_residual(data, row);
-    let diag_inv = 1.0 / (a_diag[row] + data.efc_R[row]);  // WITH regularizer for floss
+    // PGS update on UNREGULARIZED system: force[row] -= residual * diag_inv[row]
+    let residual = compute_row_residual_no_reg(data, row);  // b + A*f (no R*f)
+    let diag_inv = 1.0 / a_diag[row];  // UNREGULARIZED: 1/A[i,i], not 1/(A[i,i]+R[i])
     data.efc_force[row] -= residual * diag_inv;
     // Clamp to [-floss, +floss]
     let floss = data.efc_floss[row];
@@ -147,10 +148,16 @@ for row in 0..nefc {
 }
 ```
 
-**Key difference from contact friction:** Friction-loss noslip uses `A + R`
-(with regularizer) for the diagonal inverse, while contact friction noslip uses
-`A` alone (no regularizer). This matches MuJoCo's `ARinv` vs unregularized
-diagonal.
+**Noslip solves the unregularized system for ALL row types.** MuJoCo's
+`mj_solNoSlip` calls `ARdiaginv(m, d, ARinv, 1)` with `flg_subR=1`, which
+computes `1 / (efc_AR[i,i] - R[i])` = `1 / A[i,i]` — stripping the
+regularizer. Similarly, the residual uses `flg_subR=1`: `res = b + AR*f - R*f`
+= `b + A*f`. This applies to both friction-loss rows AND contact friction rows.
+
+This differs from the regular PGS solver (`mj_solPGS`) which calls
+`ARdiaginv(m, d, ARinv, 0)` with `flg_subR=0`, solving the regularized system
+`(A+R)*f = -b`. Noslip deliberately removes regularization to get a tighter
+(less compliant) friction solution.
 
 ##### S4. Cone projection modes
 
@@ -162,6 +169,14 @@ noslip handles both:
 Our current `noslip_postprocess()` only handles elliptic. For pyramidal support,
 add a `match model.cone` branch in the contact friction loop. Elliptic uses the
 existing QCQP path. Pyramidal uses the 2x2 block path described below.
+
+**Delassus access note:** The existing elliptic noslip builds a dense
+friction-only submatrix `a_fric` locally. For pyramidal noslip, we also need
+local Delassus entries. The approach: build a local dense matrix for all
+friction rows being processed (same pattern as existing elliptic noslip), then
+index into it. The helper names below (`compute_delassus_cross`,
+`compute_row_residual_no_reg`) represent operations on this local matrix, not
+fields on Data.
 
 **Pyramidal loop structure** (contact rows start at `ne + nf`):
 ```rust
@@ -253,13 +268,15 @@ fn noslip_pyramid_pair(data: &mut Data, a_diag: &[f64], j: usize) {
 ```
 
 **Key conformance details:**
-- The 2x2 block uses the **unregularized A** (without R on diagonal). This
-  differs from friction-loss noslip (S3) which uses `A + R`.
+- ALL noslip processing uses the **unregularized A** (without R on diagonal).
+  This applies uniformly to friction-loss rows (S3) and contact friction rows
+  (S4). MuJoCo passes `flg_subR=1` to both `ARdiaginv()` and `residual()`.
 - `mid` is held constant — normal force is preserved from the primary solver.
   Only the tangential distribution between opposing edges is optimized.
 - Cost rollback prevents the noslip iteration from worsening the solution.
-- The `compute_delassus_cross(data, j, j+1)` extracts `efc_AR[j,j+1] - δ_{j=j+1}*R[j]`
-  from the sparse Delassus matrix stored on Data.
+- The `compute_delassus_cross(data, j, j+1)` extracts the unregularized
+  off-diagonal entry. Since `efc_AR` stores `A + diag(R)`, the off-diagonal
+  entries are already `A[j,k]` (R only appears on the diagonal).
 
 #### Acceptance Criteria
 

@@ -17014,13 +17014,45 @@ fn recover_newton(
     data.qacc.copy_from(qacc);
 }
 
+/// Tag for each noslip row, used to select the correct projection.
+#[derive(Clone, Copy)]
+enum NoslipRowKind {
+    /// Friction-loss row: clamp to [-floss, +floss].
+    FrictionLoss { floss: f64 },
+    /// Elliptic contact friction row: cone projection with parent contact.
+    /// `group_start`: local index within submatrix of first friction row of this contact.
+    /// `group_len`: number of friction rows for this contact.
+    /// `contact_efc_start`: efc row index of the parent contact's normal row.
+    EllipticFriction {
+        group_start: usize,
+        group_len: usize,
+        contact_efc_start: usize,
+    },
+    /// Pyramidal contact row: 2x2 block solve on pairs.
+    /// `group_start`: local index of first row of this contact in submatrix.
+    /// `group_len`: total rows for this contact = 2*(dim-1).
+    PyramidalFriction {
+        group_start: usize,
+        group_len: usize,
+    },
+}
+
 /// Noslip post-processor: suppresses residual contact slip (§15.10).
 ///
 /// Runs a modified PGS pass on friction force rows only, without
 /// regularization, using the current normal forces as fixed cone limits.
 /// This matches MuJoCo's `mj_solNoSlip`.
 ///
-/// Called after `newton_solve()` converges when `model.noslip_iterations > 0`.
+/// Called after any solver (Newton, PGS, CG) when `model.noslip_iterations > 0`.
+/// Also called after Newton's PGS fallback path. Matches MuJoCo's `mj_solNoSlip`.
+///
+/// Processes two row ranges (NOT equality rows):
+/// 1. Friction-loss rows: PGS update with interval clamping [-floss, +floss]
+/// 2. Contact friction rows: elliptic QCQP or pyramidal 2x2 block solve
+///
+/// All noslip processing uses the UNREGULARIZED Delassus matrix A (without R).
+/// This matches MuJoCo's flg_subR=1 in ARdiaginv() and residual().
+#[allow(clippy::many_single_char_names)]
 fn noslip_postprocess(model: &Model, data: &mut Data) {
     let nv = model.nv;
     let nefc = data.efc_type.len();
@@ -17031,11 +17063,13 @@ fn noslip_postprocess(model: &Model, data: &mut Data) {
         return;
     }
 
-    // 1. Identify friction rows and their parent contacts.
-    // friction_rows[k] = efc row index of the k-th friction row
-    // friction_contact[k] = (contact_start_efc_row, dim) for the parent contact
-    let mut friction_rows: Vec<usize> = Vec::new();
-    let mut friction_contact: Vec<(usize, usize)> = Vec::new();
+    // =========================================================================
+    // 1. Identify noslip-eligible rows: friction-loss + contact friction.
+    //    Each row is tagged with its type for projection in the PGS loop.
+    // =========================================================================
+
+    let mut noslip_rows: Vec<usize> = Vec::new();
+    let mut noslip_kinds: Vec<NoslipRowKind> = Vec::new();
 
     let mut i = 0;
     while i < nefc {
@@ -17043,19 +17077,39 @@ fn noslip_postprocess(model: &Model, data: &mut Data) {
         let dim = data.efc_dim[i];
 
         match ctype {
+            ConstraintType::FrictionLoss => {
+                let floss = data.efc_floss[i];
+                noslip_rows.push(i);
+                noslip_kinds.push(NoslipRowKind::FrictionLoss { floss });
+                i += 1;
+            }
             ConstraintType::ContactElliptic | ConstraintType::ContactFrictionless => {
-                // Only process elliptic contacts with friction (dim >= 3) and active normal
                 if dim >= 3 && data.efc_state[i] != ConstraintState::Satisfied {
+                    let group_start = noslip_rows.len();
+                    let group_len = dim - 1;
                     for j in 1..dim {
-                        friction_rows.push(i + j);
-                        friction_contact.push((i, dim));
+                        noslip_rows.push(i + j);
+                        noslip_kinds.push(NoslipRowKind::EllipticFriction {
+                            group_start,
+                            group_len,
+                            contact_efc_start: i,
+                        });
                     }
                 }
                 i += dim;
             }
             ConstraintType::ContactPyramidal => {
-                // §32: Pyramidal facets have no separate friction rows — skip.
-                // MuJoCo noslip only operates on elliptic friction rows.
+                // §33 S4: Pyramidal contacts have 2*(dim-1) rows, all are friction.
+                // Include them for noslip processing.
+                let nrows = dim; // all rows are friction edges for pyramidal
+                let group_start = noslip_rows.len();
+                for j in 0..nrows {
+                    noslip_rows.push(i + j);
+                    noslip_kinds.push(NoslipRowKind::PyramidalFriction {
+                        group_start,
+                        group_len: nrows,
+                    });
+                }
                 i += dim;
             }
             _ => {
@@ -17064,16 +17118,17 @@ fn noslip_postprocess(model: &Model, data: &mut Data) {
         }
     }
 
-    let nfric = friction_rows.len();
-    if nfric == 0 {
+    let n = noslip_rows.len();
+    if n == 0 {
         return;
     }
 
-    // 2. Build friction-only Delassus matrix A (no regularization on diagonal).
-    // A[fi,fj] = J[friction_rows[fi]] · M⁻¹ · J[friction_rows[fj]]^T
-    let mut a_fric = DMatrix::<f64>::zeros(nfric, nfric);
-    for (fi, &row_i) in friction_rows.iter().enumerate() {
-        // Solve M · x = J_row_i^T via sparse LDL
+    // =========================================================================
+    // 2. Build noslip Delassus submatrix A (UNREGULARIZED — no R on diagonal).
+    //    A[fi,fj] = J[row_i] · M⁻¹ · J[row_j]^T
+    // =========================================================================
+    let mut a_sub = DMatrix::<f64>::zeros(n, n);
+    for (fi, &row_i) in noslip_rows.iter().enumerate() {
         let mut minv_ji = DVector::<f64>::zeros(nv);
         for col in 0..nv {
             minv_ji[col] = data.efc_J[(row_i, col)];
@@ -17087,77 +17142,184 @@ fn noslip_postprocess(model: &Model, data: &mut Data) {
             &data.qLD_diag_inv,
             &mut minv_ji,
         );
-
-        for (fj, &row_j) in friction_rows.iter().enumerate() {
+        for (fj, &row_j) in noslip_rows.iter().enumerate() {
             let mut dot = 0.0;
             for col in 0..nv {
                 dot += data.efc_J[(row_j, col)] * minv_ji[col];
             }
-            a_fric[(fi, fj)] = dot;
+            a_sub[(fi, fj)] = dot;
         }
     }
 
-    // 3. Extract current friction forces as starting point
-    let mut f_fric: Vec<f64> = friction_rows.iter().map(|&r| data.efc_force[r]).collect();
+    // 3. Extract current forces and RHS
+    let mut f: Vec<f64> = noslip_rows.iter().map(|&r| data.efc_force[r]).collect();
+    let b: Vec<f64> = noslip_rows.iter().map(|&r| data.efc_jar[r]).collect();
 
-    // Precompute diagonal inverse (no regularization)
-    let diag_inv: Vec<f64> = (0..nfric)
+    // Precompute unregularized diagonal inverse
+    let diag_inv: Vec<f64> = (0..n)
         .map(|fi| {
-            let d = a_fric[(fi, fi)];
+            let d = a_sub[(fi, fi)];
             if d.abs() < MJ_MINVAL { 0.0 } else { 1.0 / d }
         })
         .collect();
 
-    // 4. RHS: b[fi] = J[friction_row] · qacc (target friction acceleration = 0,
-    //    so b = J·qacc − 0 = J·qacc). For friction rows, aref is 0 (position and
-    //    margin are 0 for friction dimensions), so efc_jar = J·qacc − aref = J·qacc.
-    let b_fric: Vec<f64> = friction_rows.iter().map(|&r| data.efc_jar[r]).collect();
-
-    // 5. PGS iterations on friction rows
+    // =========================================================================
+    // 4. PGS iterations with per-type projection
+    // =========================================================================
     for _iter in 0..noslip_iter {
         let mut max_delta = 0.0_f64;
 
-        // Process contact-by-contact for correct cone projection
-        let mut fi = 0;
-        while fi < nfric {
-            let (contact_start, dim) = friction_contact[fi];
-            let fric_dim = dim - 1; // number of friction rows for this contact
-
-            // GS update for each friction row of this contact
-            for local_j in 0..fric_dim {
-                let idx = fi + local_j;
-                // residual = Σ_k A[idx,k]·f[k] + b[idx]
-                let mut residual = b_fric[idx];
-                for k in 0..nfric {
-                    residual += a_fric[(idx, k)] * f_fric[k];
+        // Phase A: Friction-loss rows — scalar PGS + interval clamping
+        for fi in 0..n {
+            if let NoslipRowKind::FrictionLoss { floss } = noslip_kinds[fi] {
+                // Unregularized residual: b + A*f
+                let mut residual = b[fi];
+                for k in 0..n {
+                    residual += a_sub[(fi, k)] * f[k];
                 }
-                let old = f_fric[idx];
-                f_fric[idx] -= residual * diag_inv[idx];
-                max_delta = max_delta.max((f_fric[idx] - old).abs());
+                let old = f[fi];
+                f[fi] -= residual * diag_inv[fi];
+                f[fi] = f[fi].clamp(-floss, floss);
+                max_delta = max_delta.max((f[fi] - old).abs());
             }
+        }
 
-            // Project friction forces onto the friction cone.
-            // Elliptic cone: Σ_j (f_j / mu_j)² ≤ f_normal²
-            let normal_force = data.efc_force[contact_start]; // Fixed from Newton
-            let mu = data.efc_mu[contact_start];
+        // Phase B: Elliptic contact friction — grouped GS + cone projection
+        {
+            let mut fi = 0;
+            while fi < n {
+                if let NoslipRowKind::EllipticFriction {
+                    group_start,
+                    group_len,
+                    contact_efc_start,
+                } = noslip_kinds[fi]
+                {
+                    if fi == group_start {
+                        // GS update for each friction row of this contact
+                        for local_j in 0..group_len {
+                            let idx = group_start + local_j;
+                            let mut residual = b[idx];
+                            for k in 0..n {
+                                residual += a_sub[(idx, k)] * f[k];
+                            }
+                            let old = f[idx];
+                            f[idx] -= residual * diag_inv[idx];
+                            max_delta = max_delta.max((f[idx] - old).abs());
+                        }
 
-            let mut s_sq = 0.0;
-            for local_j in 0..fric_dim {
-                let mu_j = mu[local_j]; // mu[0..dim-1] for friction dims
-                if mu_j > MJ_MINVAL {
-                    s_sq += (f_fric[fi + local_j] / mu_j).powi(2);
+                        // Elliptic cone projection: Σ_j (f_j / mu_j)² ≤ f_normal²
+                        let normal_force = data.efc_force[contact_efc_start];
+                        let mu = data.efc_mu[contact_efc_start];
+
+                        let mut s_sq = 0.0;
+                        for local_j in 0..group_len {
+                            let mu_j = mu[local_j];
+                            if mu_j > MJ_MINVAL {
+                                s_sq += (f[group_start + local_j] / mu_j).powi(2);
+                            }
+                        }
+                        let s = s_sq.sqrt();
+                        let fn_abs = normal_force.abs();
+                        if s > fn_abs && s > MJ_MINVAL {
+                            let cone_scale = fn_abs / s;
+                            for local_j in 0..group_len {
+                                f[group_start + local_j] *= cone_scale;
+                            }
+                        }
+
+                        fi += group_len;
+                        continue;
+                    }
                 }
+                fi += 1;
             }
-            let s = s_sq.sqrt();
-            let fn_abs = normal_force.abs();
-            if s > fn_abs && s > MJ_MINVAL {
-                let cone_scale = fn_abs / s;
-                for local_j in 0..fric_dim {
-                    f_fric[fi + local_j] *= cone_scale;
-                }
-            }
+        }
 
-            fi += fric_dim;
+        // Phase C: Pyramidal contact friction — 2x2 block solve on pairs
+        {
+            let mut fi = 0;
+            while fi < n {
+                if let NoslipRowKind::PyramidalFriction {
+                    group_start,
+                    group_len,
+                } = noslip_kinds[fi]
+                {
+                    if fi == group_start {
+                        // Process pairs: (0,1), (2,3), ..., (group_len-2, group_len-1)
+                        let mut k = 0;
+                        while k < group_len {
+                            if k + 1 >= group_len {
+                                break;
+                            }
+                            let j0 = group_start + k;
+                            let j1 = group_start + k + 1;
+
+                            let old = [f[j0], f[j1]];
+                            let mid = 0.5 * (old[0] + old[1]);
+
+                            // 2x2 block of unregularized A
+                            let a00 = a_sub[(j0, j0)];
+                            let a11 = a_sub[(j1, j1)];
+                            let a01 = a_sub[(j0, j1)];
+
+                            // Unregularized residual for both rows
+                            let mut res0 = b[j0];
+                            let mut res1 = b[j1];
+                            for c in 0..n {
+                                res0 += a_sub[(j0, c)] * f[c];
+                                res1 += a_sub[(j1, c)] * f[c];
+                            }
+
+                            // Constant part: bc = res - A * old
+                            let bc0 = res0 - a00 * old[0] - a01 * old[1];
+                            let bc1 = res1 - a01 * old[0] - a11 * old[1];
+
+                            // 1D optimization over y (change of variables: f0=mid+y, f1=mid-y)
+                            let k1 = a00 + a11 - 2.0 * a01; // curvature
+                            let k0 = mid * (a00 - a11) + bc0 - bc1; // gradient at y=0
+
+                            if k1 < MJ_MINVAL {
+                                // Degenerate curvature: split evenly
+                                f[j0] = mid;
+                                f[j1] = mid;
+                            } else {
+                                let y = -k0 / k1;
+                                // Clamp: f0 >= 0 and f1 >= 0 ⟹ |y| <= mid
+                                if y < -mid {
+                                    f[j0] = 0.0;
+                                    f[j1] = 2.0 * mid;
+                                } else if y > mid {
+                                    f[j0] = 2.0 * mid;
+                                    f[j1] = 0.0;
+                                } else {
+                                    f[j0] = mid + y;
+                                    f[j1] = mid - y;
+                                }
+                            }
+
+                            // Cost rollback: revert if cost increased
+                            let d0 = f[j0] - old[0];
+                            let d1 = f[j1] - old[1];
+                            let cost = 0.5 * (d0 * d0 * a00 + d1 * d1 * a11 + 2.0 * d0 * d1 * a01)
+                                + d0 * res0
+                                + d1 * res1;
+                            if cost > MJ_MINVAL {
+                                f[j0] = old[0];
+                                f[j1] = old[1];
+                            }
+
+                            max_delta = max_delta.max((f[j0] - old[0]).abs());
+                            max_delta = max_delta.max((f[j1] - old[1]).abs());
+
+                            k += 2;
+                        }
+
+                        fi += group_len;
+                        continue;
+                    }
+                }
+                fi += 1;
+            }
         }
 
         if max_delta < noslip_tol {
@@ -17165,25 +17327,26 @@ fn noslip_postprocess(model: &Model, data: &mut Data) {
         }
     }
 
-    // 6. Write back updated friction forces
-    for (fi, &row) in friction_rows.iter().enumerate() {
-        data.efc_force[row] = f_fric[fi];
+    // =========================================================================
+    // 5. Write back updated forces
+    // =========================================================================
+    for (fi, &row) in noslip_rows.iter().enumerate() {
+        data.efc_force[row] = f[fi];
     }
 
-    // 7. Recompute qfrc_constraint = J^T · efc_force
+    // 6. Recompute qfrc_constraint = J^T · efc_force
     data.qfrc_constraint.fill(0.0);
     for i_row in 0..nefc {
-        let f = data.efc_force[i_row];
-        if f == 0.0 {
+        let force = data.efc_force[i_row];
+        if force == 0.0 {
             continue;
         }
         for col in 0..nv {
-            data.qfrc_constraint[col] += data.efc_J[(i_row, col)] * f;
+            data.qfrc_constraint[col] += data.efc_J[(i_row, col)] * force;
         }
     }
 
-    // 8. Recompute qacc = M⁻¹ · (qfrc_smooth + qfrc_constraint)
-    // qfrc_smooth = applied + actuator + passive - bias (friction loss is in qfrc_constraint)
+    // 7. Recompute qacc = M⁻¹ · (qfrc_smooth + qfrc_constraint)
     for k in 0..nv {
         data.qacc[k] = data.qfrc_applied[k] + data.qfrc_actuator[k] + data.qfrc_passive[k]
             - data.qfrc_bias[k]
@@ -17888,7 +18051,7 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
             let result = newton_solve(model, data);
             match result {
                 NewtonResult::Converged => {
-                    // Noslip post-processor (Phase C §15.10)
+                    // Noslip post-processor (Phase C §15.10, §33)
                     if model.noslip_iterations > 0 {
                         noslip_postprocess(model, data);
                     }
@@ -17897,14 +18060,26 @@ fn mj_fwd_constraint(model: &Model, data: &mut Data) {
                 NewtonResult::CholeskyFailed | NewtonResult::MaxIterationsExceeded => {
                     // Fallback to PGS
                     pgs_solve_unified(model, data);
+                    // §33: Noslip also runs after Newton's PGS fallback
+                    if model.noslip_iterations > 0 {
+                        noslip_postprocess(model, data);
+                    }
                 }
             }
         }
         SolverType::CG => {
             cg_solve_unified(model, data);
+            // §33: Noslip post-processor for CG solver
+            if model.noslip_iterations > 0 {
+                noslip_postprocess(model, data);
+            }
         }
         SolverType::PGS => {
             pgs_solve_unified(model, data);
+            // §33: Noslip post-processor for PGS solver
+            if model.noslip_iterations > 0 {
+                noslip_postprocess(model, data);
+            }
         }
     }
 

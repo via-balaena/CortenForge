@@ -139,3 +139,10 @@ pub mod flex_unified;
 
 /// Unified PGS/CG solver tests: ne/nf bookkeeping, all constraint types, cost guard, primal CG.
 pub mod unified_solvers;
+
+// ============================================================================
+// Noslip Post-Processor Tests (§33)
+// ============================================================================
+
+/// Noslip acceptance tests: PGS/CG/Newton noslip, friction-loss, pyramidal.
+pub mod noslip;
