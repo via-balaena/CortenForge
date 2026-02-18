@@ -86,6 +86,13 @@ pub mod exactmeshinertia;
 pub mod site_transmission;
 
 // ============================================================================
+// Activation Clamping Tests (§34 actlimited/actrange/actearly)
+// ============================================================================
+
+/// Activation clamping tests: actlimited, actrange, actearly, muscle defaults.
+pub mod activation_clamping;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 

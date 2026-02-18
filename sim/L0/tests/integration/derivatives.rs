@@ -37,6 +37,9 @@ fn add_torque_actuators(model: &mut Model, n: usize) {
         model.actuator_biasprm.push([0.0; 9]);
         model.actuator_lengthrange.push((0.0, 0.0));
         model.actuator_acc0.push(0.0);
+        model.actuator_actlimited.push(false);
+        model.actuator_actrange.push([0.0, 0.0]);
+        model.actuator_actearly.push(false);
     }
     model.nu = n;
 }
@@ -69,6 +72,9 @@ fn add_affine_actuator(model: &mut Model, jnt_id: usize, gear: f64, gain_v: f64,
     });
     model.actuator_lengthrange.push((0.0, 0.0));
     model.actuator_acc0.push(0.0);
+    model.actuator_actlimited.push(false);
+    model.actuator_actrange.push([0.0, 0.0]);
+    model.actuator_actearly.push(false);
     model.nu += 1;
 }
 
@@ -99,6 +105,9 @@ fn add_filter_actuator(model: &mut Model, jnt_id: usize, tau: f64) {
     model.actuator_biasprm.push([0.0; 9]);
     model.actuator_lengthrange.push((0.0, 0.0));
     model.actuator_acc0.push(0.0);
+    model.actuator_actlimited.push(false);
+    model.actuator_actrange.push([0.0, 0.0]);
+    model.actuator_actearly.push(false);
     model.nu += 1;
     model.na += 1;
 }

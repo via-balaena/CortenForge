@@ -119,8 +119,9 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `tendon/@solref` | ✓ | ✓ | Solver reference params (parsed + defaultable, wired to model) |
 | `tendon/@solimp` | ✓ | ✓ | Solver impedance params (parsed + defaultable, wired to model) |
 | `tendon/@material` | ✓ | ✓ | Parsed + defaultable (rendering scaffold) |
-| `actuator/@actlimited` | ✓ | ✓ | Parsed + defaultable (activation clamping not yet wired to runtime) |
-| `actuator/@actrange` | ✓ | ✓ | Parsed + defaultable (activation clamping not yet wired to runtime) |
+| `actuator/@actlimited` | ✓ | ✓ | Parsed, defaultable, wired to runtime via `mj_next_activation()` (§34) |
+| `actuator/@actrange` | ✓ | ✓ | Parsed, defaultable, wired to runtime via `mj_next_activation()` (§34) |
+| `actuator/@actearly` | ✓ | ✓ | Parsed, defaultable, wired to force computation in `mj_fwd_actuation()` (§34) |
 | `joint/@type` | ✓ | ✓ | hinge, slide, ball, free |
 | `joint/@axis` | ✓ | ✓ | Joint axis |
 | `joint/@range` | ✓ | ✓ | Position limits |

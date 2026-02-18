@@ -1650,6 +1650,20 @@ pub struct Model {
     /// Computed at model build time from M^{-1} and the transmission Jacobian.
     pub actuator_acc0: Vec<f64>,
 
+    /// Whether activation clamping is enabled for each actuator.
+    /// When true, activation is clamped to `actuator_actrange` after integration.
+    /// MuJoCo reference: `m->actuator_actlimited[i]`.
+    pub actuator_actlimited: Vec<bool>,
+    /// Activation clamping range [min, max] per actuator.
+    /// Only enforced when `actuator_actlimited[i]` is true.
+    /// MuJoCo reference: `m->actuator_actrange[2*i]`, `m->actuator_actrange[2*i+1]`.
+    pub actuator_actrange: Vec<[f64; 2]>,
+    /// Whether to use predicted next-step activation for force computation.
+    /// When true, force at time t uses act(t+h) instead of act(t), removing
+    /// the one-timestep delay between control input and force response.
+    /// MuJoCo reference: `m->actuator_actearly[i]`.
+    pub actuator_actearly: Vec<bool>,
+
     // ==================== Tendons (indexed by tendon_id) ====================
     /// Number of tendons.
     pub ntendon: usize,
@@ -3055,6 +3069,9 @@ impl Model {
             actuator_biasprm: vec![],
             actuator_lengthrange: vec![],
             actuator_acc0: vec![],
+            actuator_actlimited: vec![],
+            actuator_actrange: vec![],
+            actuator_actearly: vec![],
 
             // Tendons (empty)
             ntendon: 0,
@@ -4682,30 +4699,15 @@ impl Data {
         // §16.27: Use indirection array for cache-friendly iteration over awake DOFs.
         let use_dof_ind = sleep_enabled && self.nv_awake < model.nv;
 
-        // Integrate activation per actuator, then clamp muscles to [0, 1].
+        // Integrate activation per actuator via mj_next_activation() (§34).
+        // Handles both integration (Euler/FilterExact) and actlimited clamping.
         // MuJoCo order: activation → velocity → position.
         for i in 0..model.nu {
             let act_adr = model.actuator_act_adr[i];
             let act_num = model.actuator_act_num[i];
             for k in 0..act_num {
                 let j = act_adr + k;
-                match model.actuator_dyntype[i] {
-                    ActuatorDynamics::FilterExact => {
-                        // Exact: act += act_dot * tau * (1 - exp(-h/tau))
-                        let tau = model.actuator_dynprm[i][0].max(1e-10);
-                        self.act[j] += self.act_dot[j] * tau * (1.0 - (-h / tau).exp());
-                    }
-                    _ => {
-                        // Euler: act += h * act_dot
-                        self.act[j] += h * self.act_dot[j];
-                    }
-                }
-            }
-            // Clamp muscle activation to [0, 1]
-            if model.actuator_dyntype[i] == ActuatorDynamics::Muscle {
-                for k in 0..act_num {
-                    self.act[act_adr + k] = self.act[act_adr + k].clamp(0.0, 1.0);
-                }
+                self.act[j] = mj_next_activation(model, i, self.act[j], self.act_dot[j]);
             }
         }
 
@@ -4782,26 +4784,13 @@ impl Data {
         );
         let h = model.timestep;
 
-        // 1. Activation integration (identical to integrate())
+        // 1. Activation integration via mj_next_activation() (§34, identical to integrate())
         for i in 0..model.nu {
             let act_adr = model.actuator_act_adr[i];
             let act_num = model.actuator_act_num[i];
             for k in 0..act_num {
                 let j = act_adr + k;
-                match model.actuator_dyntype[i] {
-                    ActuatorDynamics::FilterExact => {
-                        let tau = model.actuator_dynprm[i][0].max(1e-10);
-                        self.act[j] += self.act_dot[j] * tau * (1.0 - (-h / tau).exp());
-                    }
-                    _ => {
-                        self.act[j] += h * self.act_dot[j];
-                    }
-                }
-            }
-            if model.actuator_dyntype[i] == ActuatorDynamics::Muscle {
-                for k in 0..act_num {
-                    self.act[act_adr + k] = self.act[act_adr + k].clamp(0.0, 1.0);
-                }
+                self.act[j] = mj_next_activation(model, i, self.act[j], self.act_dot[j]);
             }
         }
 
@@ -10506,6 +10495,38 @@ fn muscle_activation_dynamics(ctrl: f64, act: f64, dynprm: &[f64; 3]) -> f64 {
     dctrl / tau.max(1e-10)
 }
 
+/// Compute next activation state: integrate act_dot and clamp to actrange.
+///
+/// Matches MuJoCo's `mj_nextActivation()` in `engine_forward.c`:
+/// 1. Integrates activation using Euler (all types) or exact exponential (FilterExact).
+/// 2. Clamps to `[actrange[0], actrange[1]]` when `actlimited` is true.
+///
+/// The `act_dot` input should be computed from the UNCLAMPED current activation
+/// (MuJoCo computes act_dot before clamping). Clamping only applies after integration.
+///
+/// This function is called in two contexts:
+/// - **`actearly` force computation**: predict next-step activation for force generation.
+/// - **Integration step**: update the actual activation state.
+fn mj_next_activation(model: &Model, actuator_id: usize, current_act: f64, act_dot: f64) -> f64 {
+    let mut act = current_act;
+
+    // Integration step
+    if model.actuator_dyntype[actuator_id] == ActuatorDynamics::FilterExact {
+        let tau = model.actuator_dynprm[actuator_id][0].max(1e-10);
+        act += act_dot * tau * (1.0 - (-model.timestep / tau).exp());
+    } else {
+        act += act_dot * model.timestep;
+    }
+
+    // Activation clamping (§34)
+    if model.actuator_actlimited[actuator_id] {
+        let range = model.actuator_actrange[actuator_id];
+        act = act.clamp(range[0], range[1]);
+    }
+
+    act
+}
+
 /// Compute actuator forces from control inputs, activation dynamics, and muscle FLV curves.
 ///
 /// This function:
@@ -10524,9 +10545,15 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
             ActuatorDynamics::None => ctrl,
             ActuatorDynamics::Muscle => {
                 let act_adr = model.actuator_act_adr[i];
+                // act_dot computed from UNCLAMPED current activation (MuJoCo convention)
                 data.act_dot[act_adr] =
                     muscle_activation_dynamics(ctrl, data.act[act_adr], &model.actuator_dynprm[i]);
-                data.act[act_adr] // use CURRENT activation for force
+                if model.actuator_actearly[i] {
+                    // §34: predict next-step activation (integrated + clamped)
+                    mj_next_activation(model, i, data.act[act_adr], data.act_dot[act_adr])
+                } else {
+                    data.act[act_adr]
+                }
             }
             ActuatorDynamics::Filter | ActuatorDynamics::FilterExact => {
                 // First-order filter: d(act)/dt = (ctrl - act) / tau
@@ -10535,13 +10562,21 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                 let act_adr = model.actuator_act_adr[i];
                 let tau = model.actuator_dynprm[i][0].max(1e-10);
                 data.act_dot[act_adr] = (ctrl - data.act[act_adr]) / tau;
-                data.act[act_adr] // use CURRENT activation for force
+                if model.actuator_actearly[i] {
+                    mj_next_activation(model, i, data.act[act_adr], data.act_dot[act_adr])
+                } else {
+                    data.act[act_adr]
+                }
             }
             ActuatorDynamics::Integrator => {
                 // Integrator: d(act)/dt = ctrl
                 let act_adr = model.actuator_act_adr[i];
                 data.act_dot[act_adr] = ctrl;
-                data.act[act_adr] // use CURRENT activation for force
+                if model.actuator_actearly[i] {
+                    mj_next_activation(model, i, data.act[act_adr], data.act_dot[act_adr])
+                } else {
+                    data.act[act_adr]
+                }
             }
         };
 
@@ -19788,10 +19823,11 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
                     }
                 }
             }
-            // Clamp muscle activations to [0, 1] for trial state
-            if model.actuator_dyntype[act_i] == ActuatorDynamics::Muscle {
+            // §34: Clamp activation to actrange for trial state (replaces muscle-only [0,1])
+            if model.actuator_actlimited[act_i] {
+                let range = model.actuator_actrange[act_i];
                 for k in 0..model.actuator_act_num[act_i] {
-                    data.act[act_adr + k] = data.act[act_adr + k].clamp(0.0, 1.0);
+                    data.act[act_adr + k] = data.act[act_adr + k].clamp(range[0], range[1]);
                 }
             }
         }
@@ -19862,10 +19898,11 @@ fn mj_runge_kutta(model: &Model, data: &mut Data) -> Result<(), StepError> {
                 }
             }
         }
-        // Clamp muscle activations to [0, 1]
-        if model.actuator_dyntype[act_i] == ActuatorDynamics::Muscle {
+        // §34: Clamp activation to actrange (replaces muscle-only [0,1])
+        if model.actuator_actlimited[act_i] {
+            let range = model.actuator_actrange[act_i];
             for k in 0..model.actuator_act_num[act_i] {
-                data.act[act_adr + k] = data.act[act_adr + k].clamp(0.0, 1.0);
+                data.act[act_adr + k] = data.act[act_adr + k].clamp(range[0], range[1]);
             }
         }
     }
@@ -20846,6 +20883,9 @@ mod sensor_tests {
         model.actuator_biasprm.push([0.0; 9]);
         model.actuator_lengthrange.push((0.0, 0.0));
         model.actuator_acc0.push(0.0);
+        model.actuator_actlimited.push(false);
+        model.actuator_actrange.push([0.0, 0.0]);
+        model.actuator_actearly.push(false);
 
         add_sensor(
             &mut model,
@@ -20890,6 +20930,9 @@ mod sensor_tests {
         model.actuator_biasprm.push([0.0; 9]);
         model.actuator_lengthrange.push((0.0, 0.0));
         model.actuator_acc0.push(0.0);
+        model.actuator_actlimited.push(false);
+        model.actuator_actrange.push([0.0, 0.0]);
+        model.actuator_actearly.push(false);
 
         add_sensor(
             &mut model,
@@ -22397,6 +22440,10 @@ mod muscle_tests {
         model.actuator_biasprm = vec![[0.75, 1.05, -1.0, 200.0, 0.5, 1.6, 1.5, 1.3, 1.2]];
         model.actuator_lengthrange = vec![(0.0, 0.0)]; // will be computed
         model.actuator_acc0 = vec![0.0]; // will be computed
+        // Muscle default: actlimited=true, actrange=[0,1] (§34 S5)
+        model.actuator_actlimited = vec![true];
+        model.actuator_actrange = vec![[0.0, 1.0]];
+        model.actuator_actearly = vec![false];
 
         model.qpos0 = DVector::zeros(1);
         model.timestep = 0.001;
@@ -22652,6 +22699,9 @@ mod muscle_tests {
         model.actuator_biasprm = vec![[0.0; 9]];
         model.actuator_lengthrange = vec![(0.0, 0.0)];
         model.actuator_acc0 = vec![0.0];
+        model.actuator_actlimited = vec![false];
+        model.actuator_actrange = vec![[0.0, 0.0]];
+        model.actuator_actearly = vec![false];
 
         model.qpos0 = DVector::zeros(1);
         model.gravity = Vector3::zeros(); // no gravity for clean test

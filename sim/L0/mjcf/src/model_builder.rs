@@ -515,6 +515,9 @@ struct ModelBuilder {
     actuator_biasprm: Vec<[f64; 9]>,
     actuator_lengthrange: Vec<(f64, f64)>,
     actuator_acc0: Vec<f64>,
+    actuator_actlimited: Vec<bool>,
+    actuator_actrange: Vec<[f64; 2]>,
+    actuator_actearly: Vec<bool>,
 
     // Total activation states (sum of actuator_act_num)
     na: usize,
@@ -779,6 +782,9 @@ impl ModelBuilder {
             actuator_biasprm: vec![],
             actuator_lengthrange: vec![],
             actuator_acc0: vec![],
+            actuator_actlimited: vec![],
+            actuator_actrange: vec![],
+            actuator_actearly: vec![],
 
             na: 0,
 
@@ -2109,6 +2115,36 @@ impl ModelBuilder {
         } else {
             (f64::NEG_INFINITY, f64::INFINITY)
         });
+
+        // §34: Activation clamping — actlimited / actrange / actearly.
+        // Same autolimits pattern as ctrllimited/forcelimited.
+        let actlimited = match actuator.actlimited {
+            Some(v) => v,
+            None => {
+                if self.compiler.autolimits {
+                    actuator.actrange.is_some()
+                } else {
+                    false
+                }
+            }
+        };
+        self.actuator_actlimited.push(actlimited);
+        self.actuator_actrange.push(if actlimited {
+            actuator.actrange.unwrap_or((0.0, 0.0)).into()
+        } else {
+            [0.0, 0.0] // Unused when actlimited=false
+        });
+        self.actuator_actearly
+            .push(actuator.actearly.unwrap_or(false));
+
+        // §34 S5: Muscle default actrange — MuJoCo defaults muscles to actlimited=true,
+        // actrange=[0,1] when actlimited is not explicitly set. This preserves the
+        // hardcoded [0,1] clamping behavior that muscles have always had.
+        if actuator.actuator_type == MjcfActuatorType::Muscle && actuator.actlimited.is_none() {
+            let idx = self.actuator_actlimited.len() - 1;
+            self.actuator_actlimited[idx] = true;
+            self.actuator_actrange[idx] = [0.0, 1.0];
+        }
 
         self.actuator_name.push(if actuator.name.is_empty() {
             None
@@ -3491,6 +3527,9 @@ impl ModelBuilder {
             actuator_biasprm: self.actuator_biasprm,
             actuator_lengthrange: self.actuator_lengthrange,
             actuator_acc0: self.actuator_acc0,
+            actuator_actlimited: self.actuator_actlimited,
+            actuator_actrange: self.actuator_actrange,
+            actuator_actearly: self.actuator_actearly,
 
             // Tendons (populated by process_tendons)
             ntendon: self.tendon_type.len(),
