@@ -234,7 +234,7 @@ profiles near zero velocity (smooth sigmoid vs Huber kink with flat saturation).
    - Connect, Weld, Joint, Distance types via penalty
    - Default penalty params 4× stiffer than MuJoCo (`k=10000` vs effective
      `k≈2500` from `solref=[0.02, 1.0]`)
-   - Tendon equality: stub (warning, ignored)
+   - Tendon equality: ✅ implemented (§37, `extract_tendon_equality_jacobian()`)
 
 4. **Flex edge constraints**: `apply_flex_edge_constraints()` at line 19564
 

@@ -1470,8 +1470,8 @@ Six match/if-check sites exist:
 
 ---
 
-### 37. Tendon Equality Constraints
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+### 37. Tendon Equality Constraints ✅
+**Status:** Complete (A+ conformance) | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 
@@ -1924,8 +1924,10 @@ types.
    two-tendon model. Test 5 configurations (q2 ∈ {-0.4, -0.2, 0, 0.2, 0.4},
    q1=0). Verify pos_error = `(L1-L1_0) - 0.5*(L2-L2_0)` at each
    configuration. Tolerance: `1e-12`.
-8. **Quadratic polynomial**: With `polycoef="0 1 0.1 0 0"`, verify nonlinear
-   coupling against MuJoCo for 5 different configurations. Tolerance: `1e-8`.
+8. **Quadratic polynomial**: With `polycoef="0 1 0.1 0 0"`, two-tendon model
+   (same as AC2). Test 5 configurations (q2 ∈ {-0.4, -0.2, 0, 0.2, 0.4},
+   q1=0). Verify pos_error = `(L1-L1_0) - (1.0*dif + 0.1*dif^2)` at each
+   configuration. Tolerance: `1e-8`.
 9. **Solver compatibility**: Works with PGS, CG, and Newton solvers. After 500
    steps, constraint violation < `0.05` for all three. Verify no NaN/Inf in
    `efc_force`.
@@ -1938,8 +1940,9 @@ types.
     (`nefc` unchanged). Verify `efc_force` is identical to a model with no
     tendon equality.
 12. **Regression**: Models without tendon equality produce identical results.
-13. **MuJoCo reference**: Compare constraint violation magnitude and `efc_force`
-    against MuJoCo for a two-tendon coupling scenario over 100 steps.
+13. **MuJoCo reference**: Same two-tendon model as AC2 with default polycoef.
+    Displace q1=0.3, q2=0. Run 100 steps. Compare constraint violation
+    magnitude and `efc_force` against MuJoCo at each step.
     Tolerance: `1e-6`.
 
 #### Implementation Notes

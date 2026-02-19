@@ -6211,7 +6211,7 @@ Items acknowledged but not prioritized for Phase 2:
 | Sparse mass matrix (deeper MuJoCo parity) | Phase 1 #1/#2 cover the main path. Full sparse pipeline is diminishing returns. |
 | MuJoCo conformance test suite | Important but orthogonal to features — can be built incrementally. Without this, acceptance criteria for items #1–#16 rely on ad-hoc verification rather than systematic comparison against MuJoCo reference outputs. Consider bootstrapping a minimal conformance harness (load model, step N times, compare state vectors against MuJoCo ground truth) as infrastructure that benefits all items. |
 | SIMD utilization (unused batch ops) | sim-simd exists; utilization will come naturally with #9/#10. |
-| Tendon equality constraints | Standalone in sim-constraint. Pipeline tendons work; equality coupling is rare. Runtime warning at `mujoco_pipeline.rs:8493` fires when models include them — these constraints are silently ignored. |
+| ~~Tendon equality constraints~~ | ✅ **Implemented** in §37. Pipeline `EqualityType::Tendon` + `extract_tendon_equality_jacobian()` — two-tendon polynomial coupling + single-tendon lock, fully integrated into unified solver. |
 | ~~SOR relaxation for PGS~~ | **Dropped.** Original spec incorrectly claimed MuJoCo uses SOR — it does not (`mjOption` has no `sor` field, `mj_solPGS` uses pure GS). Newton solver (§15) supersedes PGS acceleration. ODE/Bullet use SOR but lack Newton fallback. |
 
 ---

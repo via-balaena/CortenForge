@@ -13027,9 +13027,34 @@ fn equality_trees(model: &Model, eq_id: usize) -> (usize, usize) {
             (t1, t2)
         }
         EqualityType::Tendon => {
-            // Tendon equality: scan tendon waypoints
-            // For now, return sentinel (tendon equality not yet implemented)
-            (sentinel, sentinel)
+            let t1_id = model.eq_obj1id[eq_id];
+            // Primary tree for tendon 1 (sentinel if treenum == 0, i.e. static)
+            let tree1 = if model.tendon_treenum[t1_id] >= 1 {
+                model.tendon_tree[2 * t1_id]
+            } else {
+                sentinel
+            };
+
+            if model.eq_obj2id[eq_id] == usize::MAX {
+                // Single-tendon: if it spans two trees, return both
+                if model.tendon_treenum[t1_id] == 2 {
+                    (
+                        model.tendon_tree[2 * t1_id],
+                        model.tendon_tree[2 * t1_id + 1],
+                    )
+                } else {
+                    (tree1, tree1)
+                }
+            } else {
+                // Two-tendon coupling: primary tree from each tendon
+                let t2_id = model.eq_obj2id[eq_id];
+                let tree2 = if model.tendon_treenum[t2_id] >= 1 {
+                    model.tendon_tree[2 * t2_id]
+                } else {
+                    sentinel
+                };
+                (tree1, tree2)
+            }
         }
     }
 }
@@ -14549,8 +14574,7 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
         nefc += match model.eq_type[eq_id] {
             EqualityType::Connect => 3,
             EqualityType::Weld => 6,
-            EqualityType::Joint | EqualityType::Distance => 1,
-            EqualityType::Tendon => 0, // Not yet implemented
+            EqualityType::Joint | EqualityType::Distance | EqualityType::Tendon => 1,
         };
     }
 
@@ -14716,7 +14740,7 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
             EqualityType::Weld => extract_weld_jacobian(model, data, eq_id),
             EqualityType::Joint => extract_joint_equality_jacobian(model, data, eq_id),
             EqualityType::Distance => extract_distance_jacobian(model, data, eq_id),
-            EqualityType::Tendon => continue,
+            EqualityType::Tendon => extract_tendon_equality_jacobian(model, data, eq_id),
         };
 
         let sr = model.eq_solref[eq_id];
@@ -18347,6 +18371,83 @@ fn extract_joint_equality_jacobian(
 
         // Jacobian: d(q1 - c0)/d_qvel = +1 at dof1
         j[(0, dof1_adr)] = 1.0;
+
+        EqualityConstraintRows {
+            j_rows: j,
+            pos: vec![pos_error],
+            vel: vec![vel_error],
+        }
+    }
+}
+
+/// Extract tendon equality constraint Jacobian (1 row).
+///
+/// Two-tendon: constraint is `(L1-L1_0) - data[0] - P(L2-L2_0) = 0`.
+/// Jacobian: `J_tendon1 - dP/d(dif) * J_tendon2`.
+///
+/// Single-tendon: constraint is `(L1-L1_0) - data[0] = 0`.
+/// Jacobian: `J_tendon1`.
+fn extract_tendon_equality_jacobian(
+    model: &Model,
+    data: &Data,
+    eq_id: usize,
+) -> EqualityConstraintRows {
+    let nv = model.nv;
+    let t1_id = model.eq_obj1id[eq_id];
+    let eq_data = &model.eq_data[eq_id];
+
+    let l1 = data.ten_length[t1_id];
+    let l1_0 = model.tendon_length0[t1_id];
+    let j1 = &data.ten_J[t1_id]; // DVector<f64>, length nv
+
+    let has_tendon2 = model.eq_obj2id[eq_id] != usize::MAX;
+
+    let mut j = DMatrix::zeros(1, nv);
+
+    if has_tendon2 {
+        // Two-tendon coupling
+        let t2_id = model.eq_obj2id[eq_id];
+        let l2 = data.ten_length[t2_id];
+        let l2_0 = model.tendon_length0[t2_id];
+        let j2 = &data.ten_J[t2_id];
+
+        let dif = l2 - l2_0;
+
+        // Residual: (L1 - L1_0) - data[0] - P(L2 - L2_0)
+        let poly_val = eq_data[1] * dif
+            + eq_data[2] * dif * dif
+            + eq_data[3] * dif * dif * dif
+            + eq_data[4] * dif * dif * dif * dif;
+        let pos_error = (l1 - l1_0) - eq_data[0] - poly_val;
+
+        // Polynomial derivative: dP/d(dif)
+        let deriv = eq_data[1]
+            + 2.0 * eq_data[2] * dif
+            + 3.0 * eq_data[3] * dif * dif
+            + 4.0 * eq_data[4] * dif * dif * dif;
+
+        // Jacobian: J_tendon1 - deriv * J_tendon2
+        // Velocity: J · qvel (computed alongside Jacobian)
+        let mut vel_error = 0.0;
+        for d in 0..nv {
+            j[(0, d)] = j1[d] - deriv * j2[d];
+            vel_error += j[(0, d)] * data.qvel[d];
+        }
+
+        EqualityConstraintRows {
+            j_rows: j,
+            pos: vec![pos_error],
+            vel: vec![vel_error],
+        }
+    } else {
+        // Single-tendon mode: (L1 - L1_0) - data[0] = 0
+        let pos_error = (l1 - l1_0) - eq_data[0];
+
+        let mut vel_error = 0.0;
+        for d in 0..nv {
+            j[(0, d)] = j1[d];
+            vel_error += j[(0, d)] * data.qvel[d];
+        }
 
         EqualityConstraintRows {
             j_rows: j,

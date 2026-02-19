@@ -2146,10 +2146,9 @@ reset logic — it delegates directly to `Data::reset()`. If a future
 `Data::reset()` change adds/removes fields from the reset set, `BatchSim`
 inherits the change automatically.
 
-**`static WARN_ONCE` in `mj_fwd_constraint()`:** The `Once` at
-`mujoco_pipeline.rs:10435` prints a warning for unimplemented tendon equality
-constraints. `Once` is `Sync`, so concurrent calls from rayon threads are
-safe — one thread prints, others skip. No code change needed.
+**`static WARN_ONCE` in `mj_fwd_constraint()`:** The `Once` warning for
+tendon equality constraints has been removed — tendon equality is now fully
+implemented in the pipeline (§37, `extract_tendon_equality_jacobian()`).
 
 **Rayon thread pool:** `step_all()` uses the global rayon thread pool
 (default: one thread per logical core). Users who need custom thread counts

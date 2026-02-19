@@ -519,7 +519,7 @@ All equality constraints use penalty enforcement:
 | Connect | 3 | Two body points coincide (translation only) |
 | Weld | 6 | Two body frames identical (translation + rotation) |
 | Joint | varies | Polynomial coupling: `q2 = c0 + c1*q1 + c2*q1^2 + ...` |
-| Tendon | varies | Polynomial coupling between tendon lengths (**not yet implemented** — ignored with warning) |
+| Tendon | 1 | Polynomial coupling between tendon lengths (two-tendon coupling or single-tendon lock) |
 | Distance | 1 | Fixed distance between two geom centers |
 
 Stiffness and damping derive from per-constraint `solref`/`solimp` parameters,

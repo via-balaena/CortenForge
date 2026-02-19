@@ -23,7 +23,7 @@ This document provides a comprehensive comparison between MuJoCo's physics capab
 - **3A-i Parser Fundamentals** (#18–22): ~~`<include>` + `<compiler>`~~ ✅, ~~`<frame>` element~~ ✅, ~~`childclass` attribute~~ ✅, ~~`<site>` orientation~~ ✅, ~~tendon `springlength`~~ ✅
 - **3A-ii Inertia + Contact Parameters** (#23–27, #27B–F): ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, ~~flex child element parsing~~ ✅, ~~passive edge forces~~ ✅, ~~flex body/node attrs~~ ✅, ~~`<flexcomp mass>`~~ ✅, ~~body-coupled flex CRBA+FK~~ ✅
 - **3A-iii Constraint System Overhaul** (#28–32): ~~friction loss per-DOF solref/solimp~~ ✅, ~~unified PGS/CG constraint migration~~ ✅, ~~flex collision filtering~~ ✅, ~~`solreffriction` per-direction~~ ✅, ~~pyramidal cones~~ ✅
-- **3A-iv Noslip + Actuator/Dynamics** (#33–37): ~~noslip post-processor~~ ✅, ~~`actlimited`/`actrange`~~ ✅, ~~`gravcomp`~~ ✅, ~~adhesion actuators~~ ✅, tendon equality
+- **3A-iv Noslip + Actuator/Dynamics** (#33–37): ~~noslip post-processor~~ ✅, ~~`actlimited`/`actrange`~~ ✅, ~~`gravcomp`~~ ✅, ~~adhesion actuators~~ ✅, ~~tendon equality~~ ✅
 - **3A-precursor Flex Solver Unification** (#6B): ~~flex solver unification~~ ✅ (subsumes #42)
 - **3A-v Constraint/Joint + Physics** (#38–41, §42A-i–iii): ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, flex edge Jacobian (§42A-i), flex rigid flags (§42A-ii), flex pre-computed fields (§42A-iii) (~~#42 flex/flexcomp~~ subsumed by §6B)
 - **3A-vi Cleanup + Conformance** (#43–45): `shellinertia`, legacy crate deprecation, MuJoCo conformance test suite (depends on all #19–44)
@@ -791,7 +791,7 @@ let pulley = PulleyBuilder::block_and_tackle_2_1(
 | Weld | Yes | Pipeline `EqualityType::Weld` + `apply_weld_constraint()` | **Implemented** (unified solver rows for all solver types) | - |
 | Distance | Yes | Pipeline `EqualityType::Distance` + `apply_distance_constraint()` | **Implemented** (unified solver rows for all solver types) | - |
 | Joint coupling | Yes | Pipeline `EqualityType::Joint` + `apply_joint_equality_constraint()` | **Implemented** (in pipeline; standalone `JointCoupling`/`GearCoupling`/`DifferentialCoupling` in sim-constraint are unused) | - |
-| Tendon coupling | Yes | `TendonConstraint`, `TendonNetwork` | **Standalone** (in sim-constraint; pipeline uses `EqualityType::Tendon` warning — tendon *equality* constraints not yet implemented) | - |
+| Tendon coupling | Yes | Pipeline `EqualityType::Tendon` + `extract_tendon_equality_jacobian()` | **Implemented** (unified solver rows for all solver types; two-tendon polynomial coupling + single-tendon lock) | - |
 | Flex (edge length) | Yes | `FlexEdge` in `ConstraintType` | ✅ **Pipeline** (unified Jacobian rows in `assemble_unified_constraints()`; see [future_work_6b](./todo/future_work_6b_precursor_to_7.md) ✅) | - |
 
 ### Implementation Notes: Connect (Ball) Constraint ✅ COMPLETED
@@ -1665,7 +1665,7 @@ Focus: Large standalone features, each potentially its own PR.
 |---------|---------|------------|--------|-------|
 | ~~Height field collision~~ | §4 Collision, §5 Geoms | High | ✅ COMPLETED | Terrain simulation |
 | ~~Conjugate Gradient solver~~ | §2 Solvers | Medium | ✅ COMPLETED | Pipeline CG in `mujoco_pipeline.rs` (`cg_solve_contacts()`); `CGSolver` in sim-constraint remains standalone joint-space solver (see FUTURE_WORK #3 ✅) |
-| ~~Tendon coupling constraints~~ | §10 Equality | Low | ✅ COMPLETED → ⚠️ **Standalone** | In sim-constraint; pipeline tendon *equality* constraints not yet implemented (tendon kinematics/actuation/limits ARE in pipeline) |
+| ~~Tendon coupling constraints~~ | §10 Equality | Low | ✅ **COMPLETED** | Pipeline `EqualityType::Tendon` + `extract_tendon_equality_jacobian()` in unified solver; two-tendon polynomial coupling + single-tendon lock (§37) |
 | ~~Flex edge constraints~~ | §10 Equality, §11 Deformables | Low | ✅ **COMPLETED** | Unified `FlexEdge` constraint rows in `assemble_unified_constraints()` (§6B) |
 | ~~SDF collision~~ | §4 Collision, §5 Geoms | High | ✅ **COMPLETED** | All 10 shape combinations implemented (see §5 notes) |
 | ~~Skinned meshes~~ | §11 Deformables | High | ✅ **COMPLETED** | Visual deformation for rendering |
@@ -1696,13 +1696,9 @@ let result = solver.solve(&joints, get_body_state, dt);
 println!("Converged in {} iterations", result.iterations_used);
 ```
 
-**Tendon Coupling Constraints (`sim-constraint/src/equality.rs`) — ⚠️ Standalone:**
-- `TendonConstraint` - Joint-to-joint coupling via tendon mechanics
-- Moment arm modeling for each connected joint
-- Rest length and target length with slack/taut states
-- Stiffness and damping for compliant constraints
-- `TendonNetwork` - Collection of tendons for batch solving
-- Presets: `two_joint()`, `finger()`
+**Tendon Coupling Constraints — ✅ Pipeline-integrated (§37):**
+- Pipeline: `EqualityType::Tendon` + `extract_tendon_equality_jacobian()` — two-tendon polynomial coupling + single-tendon lock, unified solver rows for all solver types
+- Legacy standalone (`sim-constraint/src/equality.rs`): `TendonConstraint`, `TendonNetwork` — unused by pipeline, superseded by §37
 
 **Usage:**
 ```rust

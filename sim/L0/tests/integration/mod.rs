@@ -109,6 +109,14 @@ pub mod gravcomp;
 pub mod adhesion;
 
 // ============================================================================
+// Tendon Equality Constraint Tests (§37)
+// ============================================================================
+
+/// Tendon equality tests: two-tendon coupling, single-tendon lock, polynomial
+/// coupling, solver compatibility, solref/solimp sensitivity, inactive bypass.
+pub mod tendon_equality;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 

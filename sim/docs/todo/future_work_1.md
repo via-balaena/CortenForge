@@ -1084,7 +1084,7 @@ files are safely ignored rather than silently producing incorrect forces.
 | `ActuatorTransmission::Tendon` in `mj_fwd_actuation()` | Line 6017-6020 | No-op placeholder |
 | `MjSensorType::TendonPos` | `mj_sensor_pos()`, line 5101 | Stub, writes 0.0 |
 | `MjSensorType::TendonVel` | `mj_sensor_vel()`, line 5307 | Stub, writes 0.0 |
-| `EqualityType::Tendon` | Line 467 | Defined, not implemented (out of scope) |
+| `EqualityType::Tendon` | Line 467 | Defined; implemented in §37 (`extract_tendon_equality_jacobian()`) |
 | `WrapType` enum | Line 438-450 | Defined (Site, Geom, Joint, Pulley) |
 
 **MJCF parsing** (complete for fixed + spatial):

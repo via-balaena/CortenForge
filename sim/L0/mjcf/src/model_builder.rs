@@ -2858,6 +2858,45 @@ impl ModelBuilder {
             self.eq_name.push(dist.name.clone());
         }
 
+        // Process Tendon equality constraints
+        for ten_eq in &equality.tendons {
+            let t1_id = *self
+                .tendon_name_to_id
+                .get(ten_eq.tendon1.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Tendon equality references unknown tendon1: '{}'",
+                        ten_eq.tendon1
+                    ),
+                })?;
+
+            let t2_id = if let Some(ref t2_name) = ten_eq.tendon2 {
+                *self
+                    .tendon_name_to_id
+                    .get(t2_name.as_str())
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("Tendon equality references unknown tendon2: '{t2_name}'"),
+                    })?
+            } else {
+                usize::MAX // Sentinel: single-tendon mode
+            };
+
+            // Pack polynomial coefficients (up to 5 terms)
+            let mut data = [0.0; 11];
+            for (i, &coef) in ten_eq.polycoef.iter().take(5).enumerate() {
+                data[i] = coef;
+            }
+
+            self.eq_type.push(EqualityType::Tendon);
+            self.eq_obj1id.push(t1_id);
+            self.eq_obj2id.push(t2_id);
+            self.eq_data.push(data);
+            self.eq_active.push(ten_eq.active);
+            self.eq_solimp.push(ten_eq.solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.eq_solref.push(ten_eq.solref.unwrap_or(DEFAULT_SOLREF));
+            self.eq_name.push(ten_eq.name.clone());
+        }
+
         Ok(())
     }
 
@@ -3798,10 +3837,12 @@ impl ModelBuilder {
                     }
                 }
                 model.tendon_treenum[t] = tree_set.len();
-                if tree_set.len() == 2 {
+                if !tree_set.is_empty() {
                     let mut iter = tree_set.iter();
-                    if let (Some(&a), Some(&b)) = (iter.next(), iter.next()) {
+                    if let Some(&a) = iter.next() {
                         model.tendon_tree[2 * t] = a;
+                    }
+                    if let Some(&b) = iter.next() {
                         model.tendon_tree[2 * t + 1] = b;
                     }
                 }
