@@ -533,6 +533,8 @@ pub enum ActuatorTransmission {
     Tendon,
     /// Site-based actuation.
     Site,
+    /// Body (adhesion) actuation.
+    Body,
 }
 
 /// Actuator dynamics type.
@@ -3781,10 +3783,9 @@ impl Model {
                         self.actuator_lengthrange[i] = scale_range(lo, hi);
                     }
                 }
-                ActuatorTransmission::Site => {
-                    // Site length is configuration-dependent (full FK required).
-                    // Explicit lengthrange must be provided in MJCF for muscle
-                    // actuators with site transmission. No-op: leave at (0, 0).
+                ActuatorTransmission::Site | ActuatorTransmission::Body => {
+                    // Site: configuration-dependent (full FK required).
+                    // Body: no length concept. Both: no-op, leave at (0, 0).
                 }
             }
         }
@@ -3918,6 +3919,10 @@ impl Model {
                                 + diff_r.column(dof).dot(&wrench_r);
                         }
                     }
+                }
+                ActuatorTransmission::Body => {
+                    // At qpos0 there are no contacts, so J-vector is zero.
+                    // No-op: j_vec already initialized to zeros.
                 }
             }
 
@@ -4649,6 +4654,9 @@ impl Data {
         if sleep_enabled && mj_wake_equality(model, self) {
             mj_update_sleep_arrays(model, self);
         }
+
+        // §36: Body transmission — requires contacts from mj_collision()
+        mj_transmission_body_dispatch(model, self);
 
         if compute_sensors {
             mj_sensor_pos(model, self);
@@ -8393,8 +8401,8 @@ fn mj_sensor_pos(model: &Model, data: &mut Data) {
                             };
                             sensor_write(&mut data.sensordata, adr, 0, value);
                         }
-                        ActuatorTransmission::Site => {
-                            // Length set by mj_transmission_site (runs before this).
+                        ActuatorTransmission::Site | ActuatorTransmission::Body => {
+                            // Length set by transmission function (runs before this).
                             sensor_write(&mut data.sensordata, adr, 0, data.actuator_length[objid]);
                         }
                     }
@@ -10431,6 +10439,107 @@ fn mj_transmission_site(model: &Model, data: &mut Data) {
     }
 }
 
+/// Compute contact normal Jacobian difference: `n^T · (J_p(b2) - J_p(b1))`.
+///
+/// `b1` is the body of `geom1`, `b2` is the body of `geom2`. Follows MuJoCo's
+/// `mj_jacDifPair(b1, b2)` convention which computes `J(b2) - J(b1)` (second
+/// argument minus first). The contact normal points from `geom[0]` toward
+/// `geom[1]`.
+fn compute_contact_normal_jacobian(model: &Model, data: &Data, contact: &Contact) -> DVector<f64> {
+    let nv = model.nv;
+    let b1 = model.geom_body[contact.geom1];
+    let b2 = model.geom_body[contact.geom2];
+    let point = &contact.pos;
+    let normal = &contact.normal;
+
+    let mut j_normal = DVector::zeros(nv);
+
+    // Walk kinematic chain for body2 (+1 contribution)
+    // MuJoCo convention: jacdifp = J(b2) - J(b1)
+    accumulate_point_jacobian(
+        model,
+        &data.xpos,
+        &data.xquat,
+        &mut j_normal,
+        b2,
+        point,
+        normal,
+        1.0,
+    );
+    // Walk kinematic chain for body1 (-1 contribution)
+    accumulate_point_jacobian(
+        model,
+        &data.xpos,
+        &data.xquat,
+        &mut j_normal,
+        b1,
+        point,
+        normal,
+        -1.0,
+    );
+
+    j_normal
+}
+
+/// Compute adhesion moment arm for a single body-transmission actuator.
+///
+/// Iterates all contacts involving the target body, accumulates the contact
+/// normal Jacobians, negates and averages. The negation ensures positive ctrl
+/// produces an attractive force (toward the contact surface).
+///
+/// Gear is NOT applied — MuJoCo's `mjTRN_BODY` case omits gear entirely.
+/// Force magnitude is controlled by `gainprm[0]` (the `gain` attribute).
+fn mj_transmission_body(model: &Model, data: &mut Data, actuator_id: usize) {
+    let body_id = model.actuator_trnid[actuator_id][0];
+    let nv = model.nv;
+    let mut moment = DVector::zeros(nv);
+    let mut count = 0usize;
+
+    for c in 0..data.ncon {
+        let contact = &data.contacts[c];
+
+        // Skip flex contacts (MuJoCo: geom < 0)
+        if contact.flex_vertex.is_some() {
+            continue;
+        }
+
+        // Skip contacts not involving target body
+        let b1 = model.geom_body[contact.geom1];
+        let b2 = model.geom_body[contact.geom2];
+        if b1 != body_id && b2 != body_id {
+            continue;
+        }
+
+        // Compute normal^T · (J(b2, pos) - J(b1, pos))
+        let j_normal = compute_contact_normal_jacobian(model, data, contact);
+        moment += &j_normal;
+        count += 1;
+    }
+
+    if count > 0 {
+        // Negate and average. NO gear scaling (MuJoCo omits gear for body
+        // transmission — force magnitude is controlled by gainprm, not gear).
+        moment *= -1.0 / (count as f64);
+    }
+
+    data.actuator_moment[actuator_id] = moment;
+
+    // Body transmission has no length concept
+    data.actuator_length[actuator_id] = 0.0;
+}
+
+/// Dispatch body transmission computation for all body-transmission actuators.
+///
+/// Must run after `mj_collision()` (needs contacts) and before `mj_sensor_pos()`
+/// (which reads `actuator_length`).
+fn mj_transmission_body_dispatch(model: &Model, data: &mut Data) {
+    for i in 0..model.nu {
+        if model.actuator_trntype[i] == ActuatorTransmission::Body {
+            mj_transmission_body(model, data, i);
+        }
+    }
+}
+
 /// Compute actuator length and velocity from transmission state.
 ///
 /// For each actuator, computes `actuator_length = gear * transmission_length`
@@ -10463,6 +10572,11 @@ fn mj_actuator_length(model: &Model, data: &mut Data) {
             ActuatorTransmission::Site => {
                 // Length already set by mj_transmission_site (position stage).
                 // Velocity from cached moment:
+                data.actuator_velocity[i] = data.actuator_moment[i].dot(&data.qvel);
+            }
+            ActuatorTransmission::Body => {
+                // Length already set to 0 by mj_transmission_body (position stage).
+                // Velocity from cached moment (same as Site):
                 data.actuator_velocity[i] = data.actuator_moment[i].dot(&data.qvel);
             }
         }
@@ -10746,8 +10860,8 @@ fn mj_fwd_actuation(model: &Model, data: &mut Data) {
                     );
                 }
             }
-            ActuatorTransmission::Site => {
-                // Use cached moment vector from mj_transmission_site.
+            ActuatorTransmission::Site | ActuatorTransmission::Body => {
+                // Use cached moment vector from transmission function.
                 for dof in 0..model.nv {
                     let m = data.actuator_moment[i][dof];
                     if m != 0.0 {

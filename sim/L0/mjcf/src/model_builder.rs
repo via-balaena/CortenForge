@@ -2017,13 +2017,16 @@ impl ModelBuilder {
             };
             (ActuatorTransmission::Site, [site_id, refsite_id])
         } else if let Some(ref body_name) = actuator.body {
-            // Body transmission (adhesion actuators) not yet implemented
-            return Err(ModelConversionError {
-                message: format!(
-                    "Actuator '{}' uses body transmission '{}' which is not yet supported.",
-                    actuator.name, body_name
-                ),
-            });
+            let body_id = *self
+                .body_name_to_id
+                .get(body_name.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': body '{}' not found",
+                        actuator.name, body_name
+                    ),
+                })?;
+            (ActuatorTransmission::Body, [body_id, usize::MAX])
         } else {
             return Err(ModelConversionError {
                 message: format!(
@@ -3870,6 +3873,15 @@ impl ModelBuilder {
                         // trnid[0] is the site index
                         if trnid[0] < model.nsite {
                             Some(model.site_body[trnid[0]])
+                        } else {
+                            None
+                        }
+                    }
+                    ActuatorTransmission::Body => {
+                        // trnid[0] is the body index directly
+                        let bid = trnid[0];
+                        if bid > 0 && bid < model.nbody {
+                            Some(bid)
                         } else {
                             None
                         }

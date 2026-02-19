@@ -573,7 +573,7 @@ pub(crate) fn mjd_actuator_vel(model: &Model, data: &mut Data) {
                     }
                 }
             }
-            ActuatorTransmission::Site => {
+            ActuatorTransmission::Site | ActuatorTransmission::Body => {
                 let moment = &data.actuator_moment[i];
                 // moment is nv-dim, ∂V/∂qvel = moment
                 // ∂qfrc/∂qvel += ∂force/∂V · moment · moment^T
