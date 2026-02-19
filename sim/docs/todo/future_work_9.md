@@ -968,24 +968,33 @@ as a bias force adjustment. Gravcomp counteracts the gravity portion of
 - **Force generation**: Adhesion uses standard gain/bias: `force = gain * ctrl`.
   Clamped by `forcerange`. No activation dynamics. This already works through the
   standard `mj_fwd_actuation()` Phase 2 force computation.
-- **Error on body transmission**: `model_builder.rs` returns
+- **Error on body transmission**: `model_builder.rs` (line ~2019) returns
   `ModelConversionError` when `actuator.body` is `Some(...)`: "Actuator '...' uses
   body transmission '...' which is not yet supported." This is the **only** blocker.
+- **`actuator_moment` pre-allocated**: `make_data()` (line ~3289) initializes
+  `actuator_moment: vec![DVector::zeros(self.nv); self.nu]` for all actuators,
+  including future Body-transmission ones. No additional allocation needed.
 
 **What's missing:**
 - `ActuatorTransmission::Body` variant in the enum (currently: Joint/Tendon/Site).
 - `mj_transmission_body()` — computes moment arm from contact normal Jacobians.
-- Force application via `qfrc_actuator += moment_arm * force` in Phase 3 of
+- Force application via `qfrc_actuator += moment * force` in Phase 3 of
   `mj_fwd_actuation()`.
+- Body case in `mj_actuator_length()` for velocity computation.
 
 **Existing transmission patterns** (for reference):
 - **Joint**: `qfrc_actuator[dof] += gear * force` (direct DOF application).
+  Gear baked into moment: `moment[dof] = gear[0]`.
 - **Tendon**: `apply_tendon_force()` with cached `ten_J` Jacobian.
+  Gear baked into length/velocity: `length = gear * ten_length`.
 - **Site**: `qfrc_actuator[dof] += actuator_moment[i][dof] * force` (pre-computed
-  moment Jacobian from `mj_transmission_site()`).
+  moment Jacobian from `mj_transmission_site()`). Gear baked into moment via
+  6D wrench projection.
 
 Body transmission follows the **Site pattern** — pre-compute a moment arm vector
-in a transmission function, then apply it in Phase 3.
+in a transmission function, then apply it in Phase 3. Unlike other transmission
+types, body transmission does **not** apply gear to the moment (see MuJoCo
+Reference below).
 
 #### Objective
 
@@ -995,27 +1004,43 @@ surfaces via contact normal Jacobians.
 
 #### MuJoCo Reference (`mjTRN_BODY` in `engine_core_smooth.c`)
 
-MuJoCo's body transmission iterates all contacts and separates them into two
-categories:
+MuJoCo's body transmission in `mj_transmission()` iterates all contacts and
+separates them into two categories based on `con->exclude`:
 
-1. **Active contacts** (`!con->exclude`): Weighted into an `efc_force` vector
-   (weight 1.0 for elliptic/frictionless, `0.5/npyramid` per edge for pyramidal).
-   The Jacobian contribution is extracted via `mj_mulJacTVec(efc_force)` — this
-   effectively sums the weighted constraint Jacobian rows.
+1. **Active contacts** (`con->exclude == 0`): Weighted into a temporary
+   `efc_force` vector. Weights depend on cone type:
+   - Condim 1 (frictionless) or elliptic: `efc_force[normal_row] = 1.0`.
+   - Pyramidal: `efc_force[edge_k] = 0.5 / npyramid` for each of `2*npyramid`
+     edges. The symmetric weighting ensures the pyramid edges average back to the
+     normal Jacobian (tangential components cancel).
+   The accumulated result is extracted via `mj_mulJacTVec(efc_force)`, which
+   computes `J^T * efc_force` over the constraint Jacobian.
 
-2. **Excluded-in-gap contacts** (`con->exclude == 1`): Jacobian computed directly
-   via `mj_jacDifPair()` at the contact point, projected along contact normal
-   (`con->frame`). Accumulated into a separate `moment_exclude` buffer.
+2. **Excluded-in-gap contacts** (`con->exclude == 1`): Contacts filtered by
+   `<exclude>` but still detected because they're within the gap margin.
+   Since these have no `efc_J` rows, the Jacobian is computed directly via
+   `mj_jacDifPair()` at the contact point, projected along the contact normal
+   (`con->frame[0..3]`). Accumulated into a separate `moment_exclude` buffer.
 
-Both categories are counted, and the final moment is:
+3. **Fully excluded** (`con->exclude > 1`): Skipped entirely.
+
+Both active and excluded-in-gap categories are counted, and the final moment is:
 ```
 moment = -(1/counter) * (J_active + J_exclude)
 ```
 
 The negative sign makes positive ctrl produce an **attractive** force.
 
+**Gear is NOT applied for body transmission.** Unlike Joint (where
+`moment[dof] = gear[0]`), Tendon (where `length *= gear[0]`), and Site (where
+the 6D gear vector is projected through the wrench), the `mjTRN_BODY` case in
+`mj_transmission()` does NOT multiply gear into the moment or length. The
+`-1.0/counter` scaling is the only post-processing. Force magnitude is
+controlled entirely by `gainprm[0]` (the `gain` attribute on `<adhesion>`),
+not by `gear`. The default `gear[0] = 1` has no effect.
+
 **Contact filtering:**
-- Skip flex contacts (`geom < 0`)
+- Skip flex contacts (`geom1 < 0 || geom2 < 0`, i.e., flex vertex contacts)
 - Skip contacts not involving the target body
 - `exclude == 0`: active contact → weight into efc_force
 - `exclude == 1`: excluded but in gap → compute Jacobian directly
@@ -1023,15 +1048,15 @@ The negative sign makes positive ctrl produce an **attractive** force.
 
 **Edge cases:**
 - Zero contacts: moment is zero, actuator produces no force.
-- `actuator_length[i] = 0` always (adhesion has no length concept).
-- Only `gear[0]` is used (scalar gear for body transmission).
+- `length[i] = 0` always (adhesion has no length concept).
 
 #### Specification
 
 ##### S1. `ActuatorTransmission::Body` enum variant
 
-Add a new variant to the transmission enum. Since the body ID is already stored
-in `actuator_trnid`, we do NOT need to embed it in the enum:
+Add a new variant to the transmission enum (line ~527 in `mujoco_pipeline.rs`).
+Since the body ID is already stored in `actuator_trnid`, we do NOT need to embed
+it in the enum:
 
 ```rust
 pub enum ActuatorTransmission {
@@ -1048,21 +1073,24 @@ transmission types.
 
 ##### S2. `mj_transmission_body()` — moment arm computation
 
-Implement following MuJoCo's algorithm. We have two sub-approaches depending on
-whether `efc_J` (constraint Jacobian) is available at the call site.
+Compute the adhesion moment arm as the negated average of contact normal
+Jacobians for all contacts involving the target body.
 
-**Key architectural question:** MuJoCo calls `mj_transmission()` from the
-"smooth" phase (`mj_fwd_position` → `mj_fwd_velocity`), where contacts exist
-but constraint rows (`efc_J`) are not yet assembled. However, MuJoCo's active-
-contact path uses `efc_force` as a selector vector and `mj_mulJacTVec()` which
-reads `efc_J`. This means MuJoCo has `efc_J` available during transmission.
-
-In our pipeline, `mj_transmission_site()` runs during the position/velocity
-phase (before constraint assembly). If `efc_J` is not yet populated, we must
-use the direct Jacobian computation approach for ALL contacts (not just
-excluded-in-gap ones).
-
-**Approach: Direct Jacobian computation (safe, no efc_J dependency):**
+**Why direct Jacobian, not `efc_J`?** MuJoCo has `efc_J` available during
+`mj_transmission()` because it assembles constraint rows earlier in its
+pipeline. In our pipeline, `mj_transmission_body()` runs **after**
+`mj_collision()` (which populates `data.contacts`) but **before** constraint
+assembly (which builds `efc_J`). We therefore use direct Jacobian computation
+for ALL contacts via `accumulate_point_jacobian()`. This produces identical
+results because:
+- For active contacts, MuJoCo's `efc_force` weighting reconstructs the normal
+  Jacobian (see MuJoCo Reference above).
+- For excluded-in-gap contacts, MuJoCo already uses direct Jacobian computation.
+- Our collision pipeline filters `<exclude>` body pairs entirely out of
+  `data.contacts` (in `check_collision_affinity()`, line ~5384), so
+  `data.contacts` never contains `exclude > 0` contacts. All contacts in
+  `data.contacts` are active. This means MuJoCo's two-path approach collapses
+  to our single-path approach for the supported feature set.
 
 ```rust
 fn mj_transmission_body(
@@ -1071,37 +1099,65 @@ fn mj_transmission_body(
     actuator_id: usize,
 ) {
     let body_id = model.actuator_trnid[actuator_id][0];
-    let nv = model.nv;
     let moment = &mut data.actuator_moment[actuator_id];
     moment.fill(0.0);
     let mut count = 0usize;
 
     for c in 0..data.ncon {
         let contact = &data.contacts[c];
+
         // Skip flex contacts (MuJoCo: geom < 0)
         if contact.flex_vertex.is_some() { continue; }
 
+        // Skip contacts not involving target body
         let b1 = model.geom_body[contact.geom1];
         let b2 = model.geom_body[contact.geom2];
         if b1 != body_id && b2 != body_id { continue; }
 
-        // Compute J_diff = J(b1, contact_pos) - J(b2, contact_pos)
-        // Project along contact normal: j_normal = frame[0..3] · J_diff
+        // Compute normal^T · (J(b2, pos) - J(b1, pos))
         let j_normal = compute_contact_normal_jacobian(model, data, contact);
         *moment += &j_normal;
         count += 1;
     }
 
     if count > 0 {
-        let gear = model.actuator_gear[actuator_id][0];
-        *moment *= -gear / (count as f64);
+        // Negate and average. NO gear scaling (MuJoCo omits gear for body
+        // transmission — force magnitude is controlled by gainprm, not gear).
+        *moment *= -1.0 / (count as f64);
     }
 
+    // Body transmission has no length concept
     data.actuator_length[actuator_id] = 0.0;
 }
 ```
 
-**`compute_contact_normal_jacobian()`** helper:
+**No gear in moment.** MuJoCo's `mjTRN_BODY` case scales by `-1.0/counter`
+only — no `gear[0]` multiplication. This differs from Joint (`moment = gear`),
+Tendon (`length *= gear`), and Site (6D wrench projection includes gear).
+The adhesion shortcut (`mjs_setToAdhesion`) does not set gear; force magnitude
+is controlled by `gainprm[0]` (the `gain` attribute), not gear. The `gear`
+attribute is accepted by the parser (it's a common actuator attribute) but has
+no effect on body transmission.
+
+##### S2b. `compute_contact_normal_jacobian()` helper
+
+Computes the contact normal Jacobian difference: `n^T · (J_p(b2, pos) - J_p(b1, pos))`,
+where `J_p` is the positional Jacobian at the contact point, `b1` is the body
+of `geom1`, and `b2` is the body of `geom2`. This is a 1×nv row vector stored
+as a DVector.
+
+**Sign convention:** MuJoCo's `mj_jacDifPair(b1, b2)` computes
+`J(b2) - J(b1)` (second argument minus first). For contacts, it is called as
+`mj_jacDifPair(bid[0], bid[1])` where `bid[0]` = body of `geom[0]` and
+`bid[1]` = body of `geom[1]`, producing `J(geom1_body) - J(geom0_body)`.
+The contact normal points from `geom[0]` toward `geom[1]`. This sign convention
+ensures that the subsequent `-1/counter` negation in body transmission produces
+an **attractive** force (toward the contact surface).
+
+Our tendon Jacobian code follows the same convention:
+`accumulate_point_jacobian(body1, +1.0)` and
+`accumulate_point_jacobian(body0, -1.0)` producing `J(body1) - J(body0)`.
+For body transmission we follow the same pattern.
 
 ```rust
 fn compute_contact_normal_jacobian(
@@ -1113,64 +1169,99 @@ fn compute_contact_normal_jacobian(
     let b1 = model.geom_body[contact.geom1];
     let b2 = model.geom_body[contact.geom2];
     let point = &contact.pos;
-    let normal = &contact.normal;  // contact frame row 0
+    let normal = &contact.normal;
 
-    // J_diff_trans = J_trans(b1, point) - J_trans(b2, point)  [3 x nv]
-    // j_normal = normal^T · J_diff_trans                       [1 x nv]
     let mut j_normal = DVector::zeros(nv);
 
-    // Walk kinematic chain for body1 (+1 contribution)
+    // Walk kinematic chain for body2 (+1 contribution)
+    // MuJoCo convention: jacdifp = J(b2) - J(b1)
     accumulate_point_jacobian(
         model, &data.xpos, &data.xquat,
-        &mut j_normal, b1, point, normal, 1.0,
+        &mut j_normal, b2, point, normal, 1.0,
     );
-    // Walk kinematic chain for body2 (-1 contribution)
+    // Walk kinematic chain for body1 (-1 contribution)
     accumulate_point_jacobian(
         model, &data.xpos, &data.xquat,
-        &mut j_normal, b2, point, normal, -1.0,
+        &mut j_normal, b1, point, normal, -1.0,
     );
 
     j_normal
 }
 ```
 
-Where `accumulate_point_jacobian()` (line ~9655 in `mujoco_pipeline.rs`) walks
-the chain from `body_id` to root, accumulating `scale * (direction . joint_contribution)`
-for each joint. This function already exists and is used for tendon Jacobian
-computation. Its signature:
-```rust
-fn accumulate_point_jacobian(
-    model: &Model, xpos: &[Vector3<f64>], xquat: &[UnitQuaternion<f64>],
-    ten_j: &mut DVector<f64>, body_id: usize,
-    point: &Vector3<f64>, direction: &Vector3<f64>, scale: f64,
-)
-```
-Call it with `direction = contact.normal` and `scale = +1.0` for body1,
-`scale = -1.0` for body2.
+`accumulate_point_jacobian()` (line ~9656 in `mujoco_pipeline.rs`) is an
+existing function used for tendon Jacobian computation. It walks the kinematic
+chain from `body_id` to root, accumulating
+`scale * (direction · joint_contribution)` per DOF. For each joint type:
+- **Hinge**: `scale * axis.cross(point - anchor).dot(direction)`
+- **Slide**: `scale * axis.dot(direction)`
+- **Ball/Free rotational**: `scale * (body_frame_axis.cross(point - anchor)).dot(direction)`
+  (body-frame axes, matching `cdof` convention)
+- **Free translational**: `scale * e_i.dot(direction)` (world-frame axes)
+
+This correctly computes `n^T · J_p` because the rotational-to-translational
+coupling at the contact point is included (the cross product `omega × r` gives
+the velocity contribution from rotation). Matches MuJoCo's `mj_jacDifPair` +
+`mju_mulMatMat(jac, con->frame, jacdifp, 1, 3, NV)` for the excluded contact
+path, and equivalently reconstructs the normal Jacobian that MuJoCo's weighted
+`efc_force` approach extracts for active contacts.
+
+**Sign trace (sphere on horizontal plane, verification):**
+- `geom[0]` = plane (world body 0), `geom[1]` = sphere (body B, free joint)
+- Contact normal = `[0, 0, +1]` (upward, from plane toward sphere)
+- `j_normal = n^T · (J(sphere) - J(world))` = `[0,0,+1]^T · ([0,0,1,...] - 0)` = `+1` on sphere z DOF
+- `moment = -(1/1) * (+1) = -1` on sphere z DOF
+- `qfrc_actuator[z] = -1 * (gain * ctrl) = -100` (downward = attractive toward plane)
+- Correct: adhesion pulls sphere toward the surface.
 
 ##### S3. Call site in forward pipeline
 
-Call `mj_transmission_body()` alongside `mj_transmission_site()` in the
-position/velocity phase, before `mj_fwd_actuation()`:
+**Critical ordering:** `mj_transmission_body()` requires contacts from
+`mj_collision()`, so it CANNOT run alongside `mj_transmission_site()` (which
+runs before collision at line ~4632). It must run **after** `mj_collision()`
+and after the wake-on-contact re-collision cycle.
+
+In `forward_core()` (line ~4610), add the body transmission call after the
+collision + wake cycle (after line ~4651) and before `mj_sensor_pos()`:
 
 ```rust
-// In forward(), after collision detection and before actuation:
-for i in 0..model.nu {
-    match model.actuator_trntype[i] {
-        ActuatorTransmission::Site => mj_transmission_site(model, data, i),
-        ActuatorTransmission::Body => mj_transmission_body(model, data, i),
-        _ => {}
+// ===== Position Stage (continued) =====
+mj_transmission_site(model, self);           // line 4632 (existing)
+
+// ... tendon wake, collision, wake-on-contact, equality wake ...
+
+// Body transmission — requires contacts from mj_collision()
+mj_transmission_body_dispatch(model, self);  // NEW: after line 4651
+
+if compute_sensors {
+    mj_sensor_pos(model, self);              // existing
+}
+```
+
+Where `mj_transmission_body_dispatch` iterates body-transmission actuators:
+
+```rust
+fn mj_transmission_body_dispatch(model: &Model, data: &mut Data) {
+    for i in 0..model.nu {
+        if model.actuator_trntype[i] == ActuatorTransmission::Body {
+            mj_transmission_body(model, data, i);
+        }
     }
 }
 ```
 
+**Note:** `mj_transmission_site()` stays at its current location (line 4632)
+because it only needs FK data, not contacts. Only body transmission moves after
+collision.
+
 ##### S4. Force application in Phase 3
 
-In `mj_fwd_actuation()` Phase 3, add the Body case:
+In `mj_fwd_actuation()` Phase 3 (line ~10726), add the Body case to the
+`match model.actuator_trntype[i]` block, identical to the existing Site case:
 
 ```rust
 ActuatorTransmission::Body => {
-    // Same as Site: moment is pre-computed
+    // Same as Site: moment is pre-computed by mj_transmission_body()
     for dof in 0..model.nv {
         let m = data.actuator_moment[i][dof];
         if m != 0.0 {
@@ -1180,9 +1271,23 @@ ActuatorTransmission::Body => {
 }
 ```
 
-##### S5. Model builder: remove error, resolve body name to ID
+##### S5. Velocity computation in `mj_actuator_length()`
 
-In `model_builder.rs`, replace the error with body name resolution:
+In `mj_actuator_length()` (line ~10439), add the Body case to the
+`match model.actuator_trntype[i]` block. Body transmission has no length
+(always 0, set by `mj_transmission_body`), and velocity is moment · qvel:
+
+```rust
+ActuatorTransmission::Body => {
+    // Length already set to 0 by mj_transmission_body (position stage).
+    // Velocity from cached moment (same as Site):
+    data.actuator_velocity[i] = data.actuator_moment[i].dot(&data.qvel);
+}
+```
+
+##### S6. Model builder: remove error, resolve body name to ID
+
+In `model_builder.rs` (line ~2019), replace the error with body name resolution:
 
 ```rust
 } else if let Some(ref body_name) = actuator.body {
@@ -1195,88 +1300,168 @@ In `model_builder.rs`, replace the error with body name resolution:
 }
 ```
 
-##### S6. Contact filtering edge cases
+##### S7. Contact filtering edge cases
 
-- **No contacts**: `moment` stays zero, force has no effect. Correct.
-- **Multiple contacts**: Averaged by `count`. Prevents adhesion from scaling
-  with contact count.
-- **Flex contacts**: Skipped (`flex_vertex.is_some()`). Matches MuJoCo
-  (`geom < 0` filter).
-- **World body (body 0) as target**: If `body_id == 0` (world body), the
-  target itself has no DOFs. The chain walk for body 0 returns immediately
-  (see `accumulate_point_jacobian` body_id==0 early return). The other contact
-  body's Jacobian is subtracted from zero, producing a valid moment. This is
-  handled naturally — no special case needed.
+- **No contacts**: `moment` stays zero, `force * 0 = 0`. Actuator is inert.
+- **Multiple contacts**: Averaged by `count`. Prevents adhesion magnitude from
+  scaling with contact count (e.g., 4 box-on-plane contacts produce the same
+  moment as 1 sphere-on-plane contact, modulo Jacobian differences).
+- **Flex contacts**: Skipped via `contact.flex_vertex.is_some()`. Matches
+  MuJoCo's `geom < 0` filter (flex contacts store a vertex index instead of
+  a geom ID).
+- **World body (body 0) as target**: `accumulate_point_jacobian()` returns
+  immediately for `body_id == 0` (no DOFs). The other contact body's Jacobian
+  is subtracted from zero, producing a valid moment. No special case needed.
 - **World body as contact partner**: When one contact body is body 0 (e.g.,
-  floor), the chain walk for body 0 contributes zero Jacobian. Only the
-  movable body's DOFs appear in the result. Correct behavior, no special case.
-- **Excluded-in-gap contacts**: MuJoCo distinguishes active contacts (with
-  `efc_J` rows) from excluded-in-gap contacts (no `efc_J` rows). Our codebase
-  stores all detected contacts in `data.contacts` and decides constraint
-  inclusion during assembly (via `includemargin`). Since we use direct Jacobian
-  computation for ALL contacts (not `efc_J`), the active vs excluded-in-gap
-  distinction is irrelevant — all contacts in `data.contacts` involving the
-  target body contribute equally. This produces the correct result because
-  MuJoCo's two-path approach (efc_J for active, direct Jacobian for excluded)
-  yields the same Jacobian as our single-path approach (direct Jacobian for all).
-- **Pyramidal vs elliptic weighting**: MuJoCo weights active contacts
-  differently based on cone type when using `efc_J`. Since we use direct
-  Jacobian computation (one normal Jacobian per contact), every contact
-  contributes weight 1.0 and is divided by `count`. This produces the same
-  result as MuJoCo's approach because:
-  - Elliptic: MuJoCo sets `efc_force[normal_row] = 1.0`, then `J^T * f` gives
-    the normal Jacobian directly. Same as our direct computation.
-  - Pyramidal: MuJoCo sets each of `2*(dim-1)` edges to `0.5/(dim-1)`. The sum
-    of pyramid edges weighted this way reconstructs the normal Jacobian (edges
-    are `J_n ± μ*J_t`, the tangential parts cancel, leaving `J_n`). Same result.
-  - The mathematical equivalence holds because the tangential components cancel
-    in the symmetric weighting scheme.
+  floor), its chain walk contributes zero. Only the movable body's DOFs appear
+  in the result. Correct, no special case.
+- **`<exclude>` body pairs**: Our collision pipeline filters `<exclude>` pairs
+  entirely out of `data.contacts` in `check_collision_affinity()` (line ~5384).
+  `data.contacts` never contains excluded contacts, so the MuJoCo three-way
+  `con->exclude` dispatch (0 = active, 1 = excluded-in-gap, >1 = skip) is
+  unnecessary in our implementation. All contacts in `data.contacts` are active.
+  When `<exclude>` is extended in the future to support gap-based inclusion,
+  the direct Jacobian approach handles it naturally (no code change needed —
+  any contact in `data.contacts` gets the same treatment).
+- **Pyramidal vs elliptic equivalence**: Our direct normal Jacobian computation
+  is equivalent to MuJoCo's `efc_force` weighting because:
+  - **Elliptic/frictionless**: MuJoCo sets `efc_force[normal_row] = 1.0`, then
+    `J^T * f` extracts exactly the normal Jacobian row. Same as our direct
+    computation.
+  - **Pyramidal**: MuJoCo sets each of `2*(dim-1)` edges to `0.5/(dim-1)`.
+    Pyramid edges are `J_n ± μ*J_t` — the symmetric weighting causes
+    tangential components to cancel, leaving `J_n`. Mathematically equivalent.
+  Both approaches yield the same nv-dimensional moment vector per contact.
 
 #### Acceptance Criteria
 
 1. **Loading**: `<actuator><adhesion body="box" gain="100"/>` loads without error
-   for a model with a body named "box".
-2. **Zero force when no contact**: With `ctrl=1.0` but the body not in contact,
-   `qfrc_actuator` contribution from the adhesion actuator is zero.
-3. **Attractive force**: A sphere resting on a plane with adhesion `ctrl=1.0`
-   produces a downward `qfrc_actuator` (pulling sphere toward plane). Verify
-   sign by checking the sphere's equilibrium penetration is deeper than without
-   adhesion.
-4. **Force magnitude**: For a single contact, the generalized force equals
-   `-(gain * ctrl) * J_normal`. Compare against MuJoCo `qfrc_actuator`
-   for a sphere-on-plane adhesion scenario. Tolerance: `1e-10`.
-5. **Multiple contacts**: With 4 contacts (box on plane), moment arm is the
-   average of 4 normal Jacobians. Compare against MuJoCo.
-6. **Regression**: Models without adhesion actuators produce identical results.
-7. **`actuator_moment` populated**: After `forward()`, `data.actuator_moment[i]`
-   for a body-transmission actuator is nonzero when contacts exist and zero
-   when no contacts exist.
-8. **`actuator_length` is zero**: Body transmission always has
-   `actuator_length[i] == 0`.
-9. **Gear scaling**: Adhesion with `gear="2"` produces 2x the moment arm
-   (but the same scalar force). Verify `actuator_moment` scales with gear.
+   for a model with a body named "box". Body name resolves to correct body ID.
+2. **Zero force when no contact**: Adhesion actuator with `ctrl=1.0` but the
+   target body not in contact → `actuator_moment[i]` is all zeros,
+   `qfrc_actuator` contribution from this actuator is zero.
+3. **Attractive force sign**: A sphere resting on a plane with adhesion
+   `ctrl=1.0` → `qfrc_actuator` pushes the sphere toward the plane (downward
+   for a sphere above a horizontal plane). Verify the sign is attractive:
+   the vertical component of `qfrc_actuator` has the same sign as gravity
+   (both pull the sphere toward the surface).
+4. **Force magnitude (single contact)**: For a sphere (free joint, mass=1) on
+   a horizontal plane with a single contact, adhesion `gain=100`, `ctrl=1.0`:
+   - Scalar force: `gain * ctrl = 100`
+   - `J_normal = n^T · (J(sphere) - J(world))`: normal = `[0,0,+1]` (upward),
+     `J(sphere)` z DOF = `+1`, `J(world)` = 0, so `J_normal = [0, 0, +1, 0, 0, 0]`.
+   - Moment: `-(1/1) * J_normal = [0, 0, -1, 0, 0, 0]`.
+   - Generalized force: `moment * 100 = [0, 0, -100, 0, 0, 0]`.
+   - Verify: negative z = downward = attractive toward plane. Correct sign.
+   Verify analytically. Tolerance: `1e-12`.
+5. **Multiple contacts**: Box (4 contacts) on a plane with adhesion. Moment
+   arm is the average of 4 normal Jacobians. Verify `actuator_moment` is
+   `-(1/4) * Σ J_normal_k`. Compare scalar `qfrc_actuator` against analytical
+   expectation. Tolerance: `1e-10`.
+6. **Gear has no effect**: Adhesion with `gear="2"` produces the **same**
+   moment and generalized force as `gear="1"` (default). MuJoCo does not apply
+   gear for body transmission. Verify by comparing `actuator_moment` for
+   `gear="1"` vs `gear="2"` — they must be identical.
+7. **Gain controls magnitude**: Adhesion with `gain="200"` produces 2x the
+   scalar force (and thus 2x the generalized force) compared to `gain="100"`,
+   for the same `ctrl=1.0` and contacts. Verify ratio.
+8. **Regression**: Models without adhesion actuators produce identical results
+   to baseline (no new code paths touched for Joint/Tendon/Site actuators).
+9. **`actuator_moment` populated**: After `forward()`, `data.actuator_moment[i]`
+   for a body-transmission actuator is nonzero when contacts exist (and body is
+   involved) and all zeros when no contacts exist.
+10. **`actuator_length` is zero**: Body transmission always has
+    `actuator_length[i] == 0.0`.
+11. **`actuator_velocity` correct**: With contacts and nonzero `qvel`, verify
+    `actuator_velocity[i] == actuator_moment[i].dot(qvel)`.
+12. **Flex contacts excluded**: A body with both rigid-rigid and flex-rigid
+    contacts → only rigid-rigid contacts contribute to the adhesion moment.
+    (Test only if flex contacts are wired through collision — otherwise document
+    as future verification.)
+13. **Kinematic chain correctness**: A hinged body (not free) with adhesion on
+    a horizontal plane → `actuator_moment` has exactly one nonzero DOF entry
+    (the hinge DOF), and the value equals the projected lever arm. Verify
+    against analytical `n^T · (axis × (pos - anchor))` for the hinge joint.
+    Tolerance: `1e-12`.
+14. **Two-body contact**: Both contact bodies are non-world (e.g., sphere on a
+    movable platform). The adhesion target is the sphere. The moment arm
+    involves DOFs from both bodies (attraction pulls them together). Verify
+    `actuator_moment` is nonzero on both bodies' DOFs.
 
 #### Implementation Notes
 
-**`accumulate_point_jacobian()` reuse.** This function already exists (line ~9655)
+**`accumulate_point_jacobian()` reuse.** This function already exists (line ~9656)
 and is used for tendon Jacobians. It walks the kinematic chain and projects a
 direction vector through each joint's contribution. For body transmission, call
-it once per body per contact with `direction = contact.normal`. For `mj_apply_ft()`
-(#35), the same chain-walk pattern is needed but with wrench (force + torque)
-projection — a new function but sharing the same traversal logic.
+it once per contact body with `direction = contact.normal`, `scale = +1.0` for
+body2 (geom2's body) and `scale = -1.0` for body1 (geom1's body). This matches
+MuJoCo's `mj_jacDifPair(b1, b2)` convention which computes `J(b2) - J(b1)`,
+and matches our tendon code which uses the same `(body1, +1.0), (body0, -1.0)`
+pattern. The existing function handles all joint types (Hinge, Slide, Ball,
+Free) with correct body-frame axes for rotational DOFs. No modifications needed.
 
-**Pipeline ordering.** Contacts are detected in `mj_fwd_position()` →
-`mj_collision()`, which runs before `mj_transmission_body()`. The contacts are
-from the **current step's** collision phase (not the previous timestep).
+**Pipeline ordering.** The forward pipeline (lines 4610–4694) runs:
+1. `mj_fwd_position()` — FK, computes `xpos`, `xquat`
+2. `mj_flex()` — flex deformation
+3. `mj_transmission_site()` — site moment computation (needs FK only)
+4. Tendon wake cycle
+5. `mj_collision()` — populates `data.contacts`
+6. Wake-on-contact + re-collision cycle
+7. Equality wake cycle
+8. **`mj_transmission_body_dispatch()` — NEW (needs contacts from step 5)**
+9. `mj_sensor_pos()` — reads `actuator_length`
+10. `mj_fwd_velocity()` — velocity computation
+11. `mj_actuator_length()` — computes `actuator_velocity` (needs moment from step 8)
+12. `mj_fwd_actuation()` — Phase 2 force + Phase 3 application
+
+Body transmission must run after step 5 (collision) and before step 9 (sensors
+read `actuator_length`). The chosen location (step 8) satisfies both constraints.
+
+**`make_data()` initialization.** `actuator_moment` is already initialized as
+`vec![DVector::zeros(self.nv); self.nu]` (line ~3289), so Body-transmission
+actuators get a correctly-sized zero vector. No additional initialization needed.
+`actuator_length` defaults to 0.0 (Vec<f64> init), also correct.
+
+**Match exhaustiveness.** Adding `Body` to `ActuatorTransmission` requires
+updating all `match` expressions on this enum. The compiler will enforce this.
+Six match/if-check sites exist:
+
+1. `mj_fwd_actuation()` Phase 3 (line ~10726) — add Body arm (S4: moment-based
+   force application, identical to Site arm).
+2. `mj_actuator_length()` (line ~10442) — add Body arm (S5: velocity from
+   cached moment, length already set to 0).
+3. `compute_muscle_params()` Phase 1, lengthrange estimation (line ~3731) — add
+   `Body => {}`. Body transmission has no length concept, so lengthrange is
+   meaningless. No-op, same reasoning as the existing Site arm.
+4. `compute_muscle_params()` Phase 2, J-vector for acc0 (line ~3809) — add
+   `Body => {}`. At qpos0 (model setup time) there are no contacts, so the
+   J-vector would be zero. Leave `j_vec` as-is (already initialized to zeros).
+   Note: muscle + body transmission is an unusual combination but not prevented
+   by the parser; the zero J-vector means acc0 = 0 for such actuators, which is
+   physically correct (no contacts = no adhesion force = no acceleration).
+5. `mj_sensor_pos()` ActuatorPos sensor (line ~8373) — add Body arm that reads
+   `data.actuator_length[objid]` (always 0.0), identical to the existing Site
+   arm: `Body => { sensor_write(&mut data.sensordata, adr, 0, data.actuator_length[objid]); }`.
+6. `mj_transmission_site()` (line ~10329) — uses `if != Site { continue }`,
+   so Body actuators are already skipped. No change needed.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — add `Body` to `ActuatorTransmission`;
-  implement `mj_transmission_body()` and `compute_contact_normal_jacobian()`;
-  add Body case to Phase 3 force application; add Body case to transmission
-  dispatch in forward pipeline
-- `sim/L0/mjcf/src/model_builder.rs` — replace error with body name resolution
-- `sim/L0/tests/integration/` — new test file or section for adhesion actuators
+- `sim/L0/core/src/mujoco_pipeline.rs`:
+  - Add `Body` variant to `ActuatorTransmission` enum (line ~527)
+  - Implement `mj_transmission_body()` and `compute_contact_normal_jacobian()`
+    (new functions, place near `mj_transmission_site()` at line ~10321)
+  - Implement `mj_transmission_body_dispatch()` (thin loop wrapper)
+  - Add call to `mj_transmission_body_dispatch()` in `forward_core()` after
+    the collision + wake cycle (after line ~4651)
+  - Add `Body` arm to Phase 3 match in `mj_fwd_actuation()` (line ~10726)
+  - Add `Body` arm to `mj_actuator_length()` (line ~10442)
+  - Add `Body => {}` to both matches in `compute_muscle_params()` (lines ~3731, ~3809)
+  - Add `Body` arm to `mj_sensor_pos()` ActuatorPos sensor (line ~8373)
+- `sim/L0/mjcf/src/model_builder.rs`:
+  - Replace error (line ~2019) with body name → ID resolution
+- `sim/L0/tests/integration/`:
+  - New `adhesion.rs` test file with tests for AC1–AC14
 
 ---
 
