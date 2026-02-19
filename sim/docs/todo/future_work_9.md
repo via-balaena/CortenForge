@@ -1473,21 +1473,48 @@ Six match/if-check sites exist:
 
 #### Current State
 
-**Pipeline:** `EqualityType::Tendon` exists in the enum but is ignored during
-constraint assembly. Row count returns 0, extraction returns `continue`. Any
-model using `<equality><tendon>` silently gets no constraint enforcement.
+**Pipeline:** `EqualityType::Tendon` exists in the enum (`mujoco_pipeline.rs:611`)
+but is ignored during constraint assembly. Row count returns 0 (line 14553),
+extraction returns `continue` (line 14720). Any model using `<equality><tendon>`
+silently gets no constraint enforcement.
 
-**MJCF parser:** `MjcfEquality` has no `tendons` field. The `<tendon>` element
-inside `<equality>` is not parsed. Models with tendon equality constraints will
-fail to load or silently drop the element.
+**MJCF parser:** `MjcfEquality` (`types.rs:1859`) has no `tendons` field. The
+`<tendon>` element inside `<equality>` is explicitly skipped (`parser.rs:2132`,
+comment: "Skip other equality constraint types (tendon, flex)"). Models with
+tendon equality constraints silently drop the element.
 
-**Tendon kinematics:** `ten_length`, `ten_velocity`, `ten_J` (Jacobian) are
-fully computed for both fixed and spatial tendons. `tendon_length0` (reference
-length at qpos0) exists on Model.
+**Tendon kinematics:** Fully computed for both fixed and spatial tendons:
+- `data.ten_length: Vec<f64>` — current tendon lengths (`mujoco_pipeline.rs:2370`)
+- `data.ten_velocity: Vec<f64>` — tendon velocities (`mujoco_pipeline.rs:2373`)
+- `data.ten_J: Vec<DVector<f64>>` — tendon Jacobians, nv-dimensional per tendon
+  (`mujoco_pipeline.rs:2378`)
+- `model.tendon_length0: Vec<f64>` — reference length at qpos0
+  (`mujoco_pipeline.rs:1692`), populated for both fixed (line 3669) and spatial
+  (line 4018) tendons during model building
 
-**Existing pattern:** `extract_joint_equality_jacobian()` implements the Joint
-equality case with polynomial coupling. Tendon equality follows the same pattern
-but uses tendon lengths and Jacobians instead of joint positions and DOF columns.
+**Tendon tree mapping:** Already precomputed during model building
+(`model_builder.rs:3757–3808`):
+- `model.tendon_treenum: Vec<usize>` — trees spanned per tendon
+  (`mujoco_pipeline.rs:1721`)
+- `model.tendon_tree: Vec<usize>` — packed tree IDs, indexed as
+  `tendon_tree[2*t]` and `tendon_tree[2*t+1]`, sentinel `usize::MAX` for unused
+  slots (`mujoco_pipeline.rs:1725`)
+
+**Pre-existing bug in tendon tree builder:** The tree ID computation at
+`model_builder.rs:3801` only stores tree IDs when `tree_set.len() == 2`. For
+single-tree tendons (`treenum == 1`), `tendon_tree[2*t]` remains at the
+initialization value of `usize::MAX`. This causes the existing tendon-limit wake
+propagation code (`mujoco_pipeline.rs:12770–12771`) to silently skip single-tree
+tendons. This bug must be fixed as part of this work (see S6).
+
+**Existing pattern:** `extract_joint_equality_jacobian()` (`mujoco_pipeline.rs:18294`)
+implements the Joint equality case with polynomial coupling. Tendon equality
+follows the same pattern but uses tendon lengths and Jacobians instead of joint
+positions and DOF columns.
+
+**Name lookup:** `tendon_name_to_id: HashMap<String, usize>` exists on the model
+builder (`model_builder.rs:563`) and is populated during tendon processing
+(line 1777).
 
 #### Objective
 
@@ -1533,22 +1560,49 @@ tendons deviate equally from their reference lengths.
 
 ##### S1. MJCF parsing
 
-Add `MjcfTendonEquality` type and parse `<equality><tendon>`:
+Add `MjcfTendonEquality` type and parse `<equality><tendon>`.
 
-In `types.rs`:
+In `types.rs`, following the `MjcfJointEquality` pattern (`types.rs:1655`):
 ```rust
+/// A tendon equality constraint from `<tendon>` element within `<equality>`.
+///
+/// Constrains a tendon to its reference length, or couples two tendons
+/// with a polynomial relationship: `(L1-L1_0) = data[0] + P(L2-L2_0)`.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MjcfTendonEquality {
+    /// Optional constraint name.
     pub name: Option<String>,
-    pub tendon1: String,          // required
-    pub tendon2: Option<String>,  // optional (single-tendon mode if absent)
-    pub polycoef: [f64; 5],       // default: [0, 1, 0, 0, 0]
-    pub active: Option<bool>,
-    pub solref: Option<[f64; 2]>,
+    /// Default class for inheriting parameters.
+    pub class: Option<String>,
+    /// Name of the first (primary) tendon.
+    pub tendon1: String,
+    /// Name of the second tendon (optional, for coupling).
+    pub tendon2: Option<String>,
+    /// Polynomial coefficients: `[offset, c1, c2, c3, c4]`.
+    /// Default is `[0, 1]` meaning equal deviation from reference (trailing zeros implicit).
+    pub polycoef: Vec<f64>,
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
     pub solimp: Option<[f64; 5]>,
+    /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    pub solref: Option<[f64; 2]>,
+    /// Whether this constraint is active.
+    pub active: bool,
 }
 ```
 
-In `MjcfEquality`:
+**Design notes vs. original spec:**
+- `polycoef: Vec<f64>` (not `[f64; 5]`) — matches `MjcfJointEquality` pattern.
+  Default: `vec![0.0, 1.0]` (matching `MjcfJointEquality:1688`). Builder takes
+  up to 5 via `.take(5)` into zero-initialized `[f64; 11]`; trailing zeros are
+  implicit.
+- `active: bool` (not `Option<bool>`) — all other equality types use `bool`
+  with `true` default at parse time (`MjcfConnect:1487`, `MjcfWeld:1579`,
+  `MjcfJointEquality:1678`, `MjcfDistance:1791`).
+- `class: Option<String>` — present on all other equality types for default
+  class inheritance.
+
+Add `tendons` field to `MjcfEquality` (`types.rs:1859`):
 ```rust
 pub struct MjcfEquality {
     pub connects: Vec<MjcfConnect>,
@@ -1559,60 +1613,83 @@ pub struct MjcfEquality {
 }
 ```
 
-In `parser.rs`, parse `<tendon>` elements inside `<equality>`:
+In `parser.rs`, update `parse_equality()` (line 2102). The function currently
+matches child element names; `<tendon>` falls through to the wildcard `_ =>
+skip_element()` (line 2132, with comment "Skip other equality constraint types
+(tendon, flex)"). Add `b"tendon"` arms in both the `Event::Start` and
+`Event::Empty` branches, calling a new `parse_tendon_equality_attrs()` helper:
 - `tendon1` attribute (required)
 - `tendon2` attribute (optional)
 - `polycoef` attribute (5 floats, default `"0 1 0 0 0"`)
-- Standard equality attributes: `name`, `active`, `solref`, `solimp`
+- Standard equality attributes: `name`, `class`, `active`, `solref`, `solimp`
 
 **Parser disambiguation:** The `<tendon>` element name appears in two different
 contexts in MJCF:
-1. Top-level `<tendon>` section — contains `<spatial>` and `<fixed>` children
-   with attributes like `springlength`, `damping`, `range`, etc.
+1. Top-level `<tendon>` section — parsed by `parse_tendons()` (line 3059),
+   contains `<spatial>` and `<fixed>` children.
 2. `<equality><tendon>` — a constraint with attributes `tendon1`, `tendon2`,
    `polycoef`, `solref`, `solimp`.
 
 Our parser already handles this via nesting context: `parse_equality()` only
-processes children of `<equality>`, and `parse_tendon_section()` only processes
-the top-level `<tendon>`. When we see `<tendon>` inside an `<equality>` parse
-context, we create `MjcfTendonEquality` (not a tendon definition). The attribute
-schemas are completely disjoint, so there's no ambiguity at the attribute level.
+processes children of `<equality>`, and `parse_tendons()` only processes
+the top-level `<tendon>`. The attribute schemas are completely disjoint, so
+there is no ambiguity at any level.
 
 ##### S2. Model builder
 
-In `process_equality_constraints()`, add a branch for tendon equality:
+In `process_equality_constraints()` (`model_builder.rs:2664`), add a branch for
+tendon equality after the existing Distance block (line 2859). Follows the
+identical pattern used by Joint equality (lines 2774–2813):
 
 ```rust
+// Process Tendon equality constraints
 for ten_eq in &equality.tendons {
-    let t1_id = *self.tendon_name_to_id.get(ten_eq.tendon1.as_str())
+    let t1_id = *self
+        .tendon_name_to_id
+        .get(ten_eq.tendon1.as_str())
         .ok_or_else(|| ModelConversionError {
-            message: format!("Tendon equality: tendon1 '{}' not found", ten_eq.tendon1),
+            message: format!(
+                "Tendon equality references unknown tendon1: '{}'",
+                ten_eq.tendon1
+            ),
         })?;
-    let t2_id = ten_eq.tendon2.as_ref()
-        .map(|name| self.tendon_name_to_id.get(name.as_str())
-            .copied()
-            .ok_or_else(|| ModelConversionError {
-                message: format!("Tendon equality: tendon2 '{}' not found", name),
-            }))
-        .transpose()?;
 
-    model.eq_type.push(EqualityType::Tendon);
-    model.eq_obj1id.push(t1_id);
-    model.eq_obj2id.push(t2_id.unwrap_or(usize::MAX));  // sentinel if single-tendon
+    let t2_id = if let Some(ref t2_name) = ten_eq.tendon2 {
+        *self
+            .tendon_name_to_id
+            .get(t2_name.as_str())
+            .ok_or_else(|| ModelConversionError {
+                message: format!(
+                    "Tendon equality references unknown tendon2: '{t2_name}'"
+                ),
+            })?
+    } else {
+        usize::MAX // Sentinel: single-tendon mode
+    };
+
+    // Pack polynomial coefficients (up to 5 terms)
     let mut data = [0.0; 11];
-    data[..5].copy_from_slice(&ten_eq.polycoef);
-    model.eq_data.push(data);
-    model.eq_active.push(ten_eq.active.unwrap_or(true));
-    model.eq_solref.push(ten_eq.solref.unwrap_or(model.default_solref));
-    model.eq_solimp.push(ten_eq.solimp.unwrap_or(model.default_solimp));
-    model.eq_name.push(ten_eq.name.clone());
-    model.neq += 1;
+    for (i, &coef) in ten_eq.polycoef.iter().take(5).enumerate() {
+        data[i] = coef;
+    }
+
+    self.eq_type.push(EqualityType::Tendon);
+    self.eq_obj1id.push(t1_id);
+    self.eq_obj2id.push(t2_id);
+    self.eq_data.push(data);
+    self.eq_active.push(ten_eq.active);
+    self.eq_solimp.push(ten_eq.solimp.unwrap_or(DEFAULT_SOLIMP));
+    self.eq_solref.push(ten_eq.solref.unwrap_or(DEFAULT_SOLREF));
+    self.eq_name.push(ten_eq.name.clone());
 }
 ```
 
+Note: `neq` is computed from `self.eq_type.len()` during `build()`, not
+incremented manually.
+
 ##### S3. Constraint assembly: row counting
 
-In `assemble_unified_constraints()`, Phase 1 row counting, change:
+In `assemble_unified_constraints()` (`mujoco_pipeline.rs:14553`), change:
 
 ```rust
 EqualityType::Tendon => 0,  // was: not implemented
@@ -1626,7 +1703,9 @@ EqualityType::Tendon => 1,  // scalar constraint
 
 ##### S4. Constraint assembly: extraction
 
-Implement `extract_tendon_equality_jacobian()`:
+Implement `extract_tendon_equality_jacobian()` in `mujoco_pipeline.rs`, adjacent
+to `extract_joint_equality_jacobian()` (line 18294). The function follows the
+same signature and return type (`EqualityConstraintRows`):
 
 ```rust
 fn extract_tendon_equality_jacobian(
@@ -1640,7 +1719,7 @@ fn extract_tendon_equality_jacobian(
 
     let l1 = data.ten_length[t1_id];
     let l1_0 = model.tendon_length0[t1_id];
-    let j1 = &data.ten_J[t1_id];
+    let j1 = &data.ten_J[t1_id];  // DVector<f64>, length nv
 
     let has_tendon2 = model.eq_obj2id[eq_id] != usize::MAX;
 
@@ -1666,13 +1745,13 @@ fn extract_tendon_equality_jacobian(
                   + 3.0 * eq_data[3] * dif * dif
                   + 4.0 * eq_data[4] * dif * dif * dif;
 
-        // Jacobian: J_tendon1 + (-deriv) * J_tendon2
+        // Jacobian: J_tendon1 - deriv * J_tendon2
         let mut j = DMatrix::zeros(1, nv);
         for d in 0..nv {
             j[(0, d)] = j1[d] - deriv * j2[d];
         }
 
-        // Velocity: J · qvel
+        // Velocity: J * qvel
         let vel = j.row(0).dot(&data.qvel);
 
         (pos, vel, j)
@@ -1700,7 +1779,7 @@ fn extract_tendon_equality_jacobian(
 
 ##### S5. Constraint extraction dispatch
 
-In the extraction phase, change:
+In the extraction phase (`mujoco_pipeline.rs:14720`), change:
 
 ```rust
 EqualityType::Tendon => continue,
@@ -1712,84 +1791,102 @@ to:
 EqualityType::Tendon => extract_tendon_equality_jacobian(model, data, eq_id),
 ```
 
-##### S6. Tree detection for sleeping
+##### S6. Fix tendon tree builder + implement equality_trees for Tendon
 
-MuJoCo precomputes two fields during model setup:
-- `tendon_treenum[t]` — number of distinct kinematic trees along tendon t's path
-- `tendon_treeid[2*t]`, `tendon_treeid[2*t+1]` — first two tree IDs (or -1)
+**Background:** `tendon_treenum` and `tendon_tree` already exist on Model and
+are computed during model building (`model_builder.rs:3757–3808`). No new fields
+or computation functions are needed. However, the existing builder has a bug: it
+only stores tree IDs for two-tree tendons (`tree_set.len() == 2`), leaving
+single-tree tendons with `tendon_tree[2*t] == usize::MAX`. This breaks the
+existing wake propagation code at `mujoco_pipeline.rs:12770–12771`.
 
-These are computed by walking the tendon's wrap objects to find body → tree
-mappings. We need either (a) precomputed fields like MuJoCo, or (b) a runtime
-helper. Option (a) is cleaner and avoids repeated work.
+**S6a. Fix tendon tree builder** (`model_builder.rs:3801`):
 
-**S6a. Model fields for tendon tree membership:**
-
-Add to `Model`:
+Change:
 ```rust
-pub tendon_treenum: Vec<usize>,         // per-tendon, 0 = static
-pub tendon_treeid: Vec<[Option<usize>; 2]>,  // first two tree IDs
-```
-
-**S6b. Compute during model building (in `setconst` equivalent):**
-
-```rust
-fn compute_tendon_tree_ids(model: &mut Model) {
-    for t in 0..model.ntendon {
-        let mut seen_trees: Vec<usize> = Vec::new();
-        let adr = model.tendon_adr[t];
-        let num = model.tendon_num[t];
-        for w in adr..adr + num {
-            let body_id = match model.wrap_type[w] {
-                WrapType::Joint => model.jnt_body[model.wrap_objid[w]],
-                WrapType::Site  => model.site_body[model.wrap_objid[w]],
-                WrapType::Geom  => model.geom_body[model.wrap_objid[w]],
-                WrapType::Pulley => continue,
-            };
-            if body_id == 0 { continue; }  // world body = no tree
-            let tree_id = model.body_treeid[body_id];
-            if !seen_trees.contains(&tree_id) {
-                seen_trees.push(tree_id);
-            }
-        }
-        model.tendon_treenum[t] = seen_trees.len();
-        model.tendon_treeid[t] = [
-            seen_trees.get(0).copied(),
-            seen_trees.get(1).copied(),
-        ];
+if tree_set.len() == 2 {
+    let mut iter = tree_set.iter();
+    if let (Some(&a), Some(&b)) = (iter.next(), iter.next()) {
+        model.tendon_tree[2 * t] = a;
+        model.tendon_tree[2 * t + 1] = b;
     }
 }
 ```
 
-**S6c. Sleep state for tendon equality constraints:**
+To:
+```rust
+if tree_set.len() >= 1 {
+    let mut iter = tree_set.iter();
+    if let Some(&a) = iter.next() {
+        model.tendon_tree[2 * t] = a;
+    }
+    if let Some(&b) = iter.next() {
+        model.tendon_tree[2 * t + 1] = b;
+    }
+}
+```
 
-In `equality_trees()`, implement the Tendon case using the precomputed fields:
+This stores the tree ID for single-tree tendons in `tendon_tree[2*t]`, fixing
+both the existing wake propagation bug and enabling correct lookups for tendon
+equality constraints.
 
+**S6b. Implement equality_trees for Tendon** (`mujoco_pipeline.rs:13029`):
+
+Replace:
+```rust
+EqualityType::Tendon => {
+    // Tendon equality: scan tendon waypoints
+    // For now, return sentinel (tendon equality not yet implemented)
+    (sentinel, sentinel)
+}
+```
+
+With:
 ```rust
 EqualityType::Tendon => {
     let t1_id = model.eq_obj1id[eq_id];
-    let tree1 = model.tendon_treeid[t1_id][0];
+    // Primary tree for tendon 1 (sentinel if treenum == 0, i.e. static)
+    let tree1 = if model.tendon_treenum[t1_id] >= 1 {
+        model.tendon_tree[2 * t1_id]
+    } else {
+        sentinel
+    };
 
     if model.eq_obj2id[eq_id] != usize::MAX {
+        // Two-tendon coupling: primary tree from each tendon
         let t2_id = model.eq_obj2id[eq_id];
-        let tree2 = model.tendon_treeid[t2_id][0];
+        let tree2 = if model.tendon_treenum[t2_id] >= 1 {
+            model.tendon_tree[2 * t2_id]
+        } else {
+            sentinel
+        };
         (tree1, tree2)
     } else {
-        (tree1, tree1)  // single-tendon: same tree both sides
+        // Single-tendon: if it spans two trees, return both
+        if model.tendon_treenum[t1_id] == 2 {
+            (model.tendon_tree[2 * t1_id], model.tendon_tree[2 * t1_id + 1])
+        } else {
+            (tree1, tree1)
+        }
     }
 }
 ```
 
-**Sleep state logic** (matches MuJoCo's `mj_tendonSleepState`):
-- 0 trees: tendon is static (all waypoints on world body) → `STATIC`
-- 1 tree: awake iff that tree is awake
-- 2 trees: awake iff either tree is awake
-- 3+ trees: always treated as awake (conservative, since only 2 IDs stored)
+**Tree semantics:**
+- `treenum == 0`: tendon is static (all waypoints on world body) → returns
+  `(sentinel, sentinel)`, constraint has no sleep effect.
+- `treenum == 1`: returns `(tree, tree)` self-edge — tree wakes when disturbed.
+- `treenum == 2`: both trees returned — either waking propagates to the other.
+- `treenum >= 3`: only first two trees stored (conservative). Transitive closure
+  via the existing union-find edge propagation handles reachability.
 
 ##### S7. Wake propagation
 
-In `mj_wake_equality()`, add the Tendon case so that tendon equality constraints
-wake connected trees when one side is disturbed. Uses the same `tendon_treeid`
-fields to identify which trees to wake.
+No explicit changes needed. Wake propagation already iterates all active equality
+constraints and calls `equality_trees()` (`mujoco_pipeline.rs:12715–12732`).
+Fixing the Tendon arm in `equality_trees()` (S6b) is sufficient — the existing
+edge-propagation logic handles tree-pair waking correctly for all constraint
+types.
 
 #### Acceptance Criteria
 
@@ -1817,32 +1914,39 @@ fields to identify which trees to wake.
 
 #### Implementation Notes
 
-**Follow the Joint equality pattern.** `extract_joint_equality_jacobian()` is
-the exact template. The tendon case differs only in:
-- Uses `ten_length[t]` instead of `qpos[dof]`
-- Uses `tendon_length0[t]` for reference lengths
-- Uses `ten_J[t]` (nv-dimensional) instead of a single DOF column
+**Follow the Joint equality pattern.** `extract_joint_equality_jacobian()`
+(`mujoco_pipeline.rs:18294`) is the exact template. The tendon case differs
+only in:
+- Uses `data.ten_length[t]` instead of `data.qpos[dof]`
+- Uses `model.tendon_length0[t]` for reference lengths
+- Uses `data.ten_J[t]` (`DVector<f64>`, nv-dimensional) instead of a single DOF
+  column
 - Polynomial is evaluated on `L2 - L2_0` (second tendon deviation), not `q1`
 
 **Reference length computation.** `tendon_length0` is computed during model
-building by running FK at `qpos0` and evaluating tendon lengths. Verify this
-is populated for all tendons, not just spatial ones.
+building by running FK at `qpos0` and evaluating tendon lengths. Fixed tendons
+are computed at `model_builder.rs:3669`; spatial tendons at
+`model_builder.rs:4018`. Both are populated before constraint assembly runs.
 
-**Jacobian storage.** `ten_J[t]` is an `nv`-dimensional vector stored on Data,
-recomputed each step by `mj_fwd_tendon()`. It is available when constraint
-assembly runs (after the velocity phase).
+**Jacobian storage.** `data.ten_J[t]` is a `DVector<f64>` of length `nv`,
+recomputed each step by `mj_fwd_tendon()` (`mujoco_pipeline.rs:9362`). It is
+available when constraint assembly runs (after the velocity phase).
+
+**Tendon tree fields.** `tendon_treenum` and `tendon_tree` are precomputed
+during model building (`model_builder.rs:3757–3808`) by walking each tendon's
+wrap objects to find body → tree mappings. No new model fields are needed.
 
 #### Files
 
 - `sim/L0/mjcf/src/types.rs` — add `MjcfTendonEquality` struct, add `tendons`
   field to `MjcfEquality`
-- `sim/L0/mjcf/src/parser.rs` — parse `<equality><tendon>` elements
+- `sim/L0/mjcf/src/parser.rs` — parse `<equality><tendon>` elements (add
+  `b"tendon"` arms in `parse_equality()`, implement
+  `parse_tendon_equality_attrs()`)
 - `sim/L0/mjcf/src/model_builder.rs` — process tendon equality in
-  `process_equality_constraints()`
-- `sim/L0/core/src/mujoco_pipeline.rs` — add `tendon_treenum: Vec<usize>` and
-  `tendon_treeid: Vec<[Option<usize>; 2]>` to Model; implement
-  `compute_tendon_tree_ids()` in model setup; implement
+  `process_equality_constraints()`; fix tendon tree builder to store IDs for
+  single-tree tendons (S6a)
+- `sim/L0/core/src/mujoco_pipeline.rs` — implement
   `extract_tendon_equality_jacobian()`; update row counting (0 → 1);
-  update extraction dispatch; update `equality_trees()` for sleeping;
-  update `mj_wake_equality()` for wake propagation
+  update extraction dispatch; update `equality_trees()` Tendon arm
 - `sim/L0/tests/integration/` — new tests for tendon equality scenarios
