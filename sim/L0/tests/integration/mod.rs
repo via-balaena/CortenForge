@@ -101,6 +101,14 @@ pub mod activation_clamping;
 pub mod gravcomp;
 
 // ============================================================================
+// Body-Transmission Actuator Tests (§36 adhesion)
+// ============================================================================
+
+/// Adhesion tests: moment computation, contact normal Jacobian, force sign,
+/// gear bypass, multiple contacts, kinematic chain, two-body contacts.
+pub mod adhesion;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 

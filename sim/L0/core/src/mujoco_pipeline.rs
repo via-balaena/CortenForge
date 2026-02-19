@@ -3143,8 +3143,8 @@ impl Model {
             stat_meaninertia: 1.0,      // Default (computed at model build from CRBA)
             ls_iterations: 50,          // Newton line search iterations
             ls_tolerance: 0.01,         // Newton line search gradient tolerance
-            noslip_iterations: 0,       // Not yet implemented
-            noslip_tolerance: 1e-6,     // Not yet implemented
+            noslip_iterations: 0,       // Default: no noslip post-processing
+            noslip_tolerance: 1e-6,     // Default tolerance for noslip convergence
             disableflags: 0,            // Nothing disabled
             enableflags: 0,             // Nothing extra enabled
             integrator: Integrator::Euler,

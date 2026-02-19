@@ -22,7 +22,7 @@ tendon equality constraints.
 #### Current State
 
 The noslip post-processor is **fully implemented with A+ MuJoCo conformance** as
-`noslip_postprocess()` (`mujoco_pipeline.rs`, ~350 LOC).
+`noslip_postprocess()` (`mujoco_pipeline.rs`, ~440 LOC).
 Twenty integration tests verify it (3 in `newton_solver.rs`, 17 in `noslip.rs`):
 - PGS/CG/Newton slip reduction, zero-iterations no-op
 - Friction-loss clamping, pyramidal 2x2 block solve, elliptic QCQP
@@ -411,7 +411,7 @@ Add three fields to `Model`:
 
 ```rust
 pub actuator_actlimited: Vec<bool>,    // default: false
-pub actuator_actrange: Vec<[f64; 2]>,  // default: [0.0, 0.0]
+pub actuator_actrange: Vec<(f64, f64)>,  // default: (0.0, 0.0)
 pub actuator_actearly: Vec<bool>,      // default: false
 ```
 
