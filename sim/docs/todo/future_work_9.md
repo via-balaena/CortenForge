@@ -1475,7 +1475,7 @@ Six match/if-check sites exist:
 
 **Pipeline:** `EqualityType::Tendon` exists in the enum (`mujoco_pipeline.rs:611`)
 but is ignored during constraint assembly. Row count returns 0 (line 14553),
-extraction returns `continue` (line 14720). Any model using `<equality><tendon>`
+extraction returns `continue` (line 14719). Any model using `<equality><tendon>`
 silently gets no constraint enforcement.
 
 **MJCF parser:** `MjcfEquality` (`types.rs:1859`) has no `tendons` field. The
@@ -1779,7 +1779,7 @@ fn extract_tendon_equality_jacobian(
 
 ##### S5. Constraint extraction dispatch
 
-In the extraction phase (`mujoco_pipeline.rs:14720`), change:
+In the extraction phase (`mujoco_pipeline.rs:14719`), change:
 
 ```rust
 EqualityType::Tendon => continue,
@@ -1892,23 +1892,51 @@ types.
 
 1. **Loading**: `<equality><tendon tendon1="T1" tendon2="T2"/>` loads without
    error for a model with tendons named "T1" and "T2".
-2. **Default polycoef**: With default `polycoef="0 1 0 0 0"`, both tendons
-   maintain equal deviation from their reference lengths.
-3. **Constant offset**: With `polycoef="0.1 1 0 0 0"`, tendon1 is offset by 0.1
-   from the coupled position. Verify equilibrium position.
-4. **Single-tendon mode**: `<tendon tendon1="T1"/>` (no tendon2) constrains T1
-   to its reference length + data[0].
-5. **Polynomial coupling**: With `polycoef="0 0.5 0 0 0"`, tendon1's deviation
-   is half of tendon2's deviation. Verify ratio across a range of configurations.
-6. **Quadratic polynomial**: With `polycoef="0 1 0.1 0 0"`, verify nonlinear
+2. **Default polycoef (analytical trace)**: Two fixed tendons on separate hinge
+   joints: T1 wraps J1 (coef=1.0), T2 wraps J2 (coef=1.0). Default
+   `polycoef="0 1 0 0 0"`. Reference: L1_0 = L2_0 = 0 (both joints at qpos0=0).
+   Set q1=0.5, q2=0.2:
+   - dif = L2 - L2_0 = 0.2
+   - poly_val = 1.0 * 0.2 = 0.2
+   - pos_error = (0.5 - 0) - 0 - 0.2 = 0.3
+   - deriv = 1.0
+   - Jacobian: J = J_T1 - 1.0 * J_T2 = [1, 0] - [0, 1] = [1, -1]
+   - Velocity (qvel=[1.0, 0.5]): vel = [1, -1] · [1.0, 0.5] = 0.5
+   Verify `pos == 0.3`, `J == [1, -1]`, `vel == 0.5`. Tolerance: `1e-12`.
+3. **Default polycoef (convergence)**: Same model as AC2. Displace q1=0.5,
+   q2=0. After 1000 steps with default `solref`/`solimp`, both tendons
+   converge to equal deviation: `|(L1-L1_0) - (L2-L2_0)| < 0.05`.
+4. **Constant offset**: With `polycoef="0.1 1 0 0 0"`, same model as AC2.
+   Set q1=0.5, q2=0.2:
+   - pos_error = (0.5 - 0) - 0.1 - 1.0 * (0.2 - 0) = 0.2
+   Verify `pos == 0.2`. Tolerance: `1e-12`.
+5. **Single-tendon mode (analytical)**: `<tendon tendon1="T1"/>` (no tendon2)
+   with `polycoef="0.1 0 0 0 0"`. Fixed tendon T1 wraps hinge J1 (coef=1.0).
+   Set q1=0.4:
+   - pos_error = (0.4 - 0) - 0.1 = 0.3
+   - Jacobian: J = J_T1 = [1] (single DOF)
+   Verify analytically. Tolerance: `1e-12`.
+6. **Single-tendon mode (convergence)**: Same model as AC5. After 1000 steps
+   from q1=0, verify convergence: `|L1 - L1_0 - 0.1| < 0.05`.
+7. **Polynomial coupling (linear half-ratio)**: With `polycoef="0 0.5 0 0 0"`,
+   two-tendon model. Test 5 configurations (q2 ∈ {-0.4, -0.2, 0, 0.2, 0.4},
+   q1=0). Verify pos_error = `(L1-L1_0) - 0.5*(L2-L2_0)` at each
+   configuration. Tolerance: `1e-12`.
+8. **Quadratic polynomial**: With `polycoef="0 1 0.1 0 0"`, verify nonlinear
    coupling against MuJoCo for 5 different configurations. Tolerance: `1e-8`.
-7. **Solver compatibility**: Works with PGS, CG, and Newton solvers. Verify
-   constraint violation converges to zero for all three.
-8. **solref/solimp**: Custom `solref` and `solimp` values affect constraint
-   stiffness/damping. Verify stiffer `solref` reduces violation faster.
-9. **Inactive constraint**: `active="false"` produces no constraint effect.
-10. **Regression**: Models without tendon equality produce identical results.
-11. **MuJoCo reference**: Compare constraint violation magnitude and `efc_force`
+9. **Solver compatibility**: Works with PGS, CG, and Newton solvers. After 500
+   steps, constraint violation < `0.05` for all three. Verify no NaN/Inf in
+   `efc_force`.
+10. **solref/solimp**: Two simulations, identical model except:
+    - Stiff: `solref="0.02 1.0"` (default)
+    - Soft: `solref="0.1 1.0"`
+    After 200 steps from identical displaced initial state, measure constraint
+    violation. Verify `violation_soft / violation_stiff.max(1e-15) > 3.0`.
+11. **Inactive constraint**: `active="false"` produces no constraint rows
+    (`nefc` unchanged). Verify `efc_force` is identical to a model with no
+    tendon equality.
+12. **Regression**: Models without tendon equality produce identical results.
+13. **MuJoCo reference**: Compare constraint violation magnitude and `efc_force`
     against MuJoCo for a two-tendon coupling scenario over 100 steps.
     Tolerance: `1e-6`.
 
@@ -1935,6 +1963,21 @@ available when constraint assembly runs (after the velocity phase).
 **Tendon tree fields.** `tendon_treenum` and `tendon_tree` are precomputed
 during model building (`model_builder.rs:3757–3808`) by walking each tendon's
 wrap objects to find body → tree mappings. No new model fields are needed.
+
+**Match exhaustiveness.** `EqualityType::Tendon` appears in 3 match sites in
+`mujoco_pipeline.rs`, plus the builder. The compiler enforces exhaustiveness
+on all `EqualityType` matches, so a missing arm is a compile error.
+
+| # | Location | Current | Change | Spec |
+|---|----------|---------|--------|------|
+| 1 | `equality_trees()` (line 13029) | Returns `(sentinel, sentinel)` | Tendon tree lookup | S6b |
+| 2 | Row counting (line 14553) | Returns `0` | Returns `1` | S3 |
+| 3 | Extraction dispatch (line 14719) | `continue` | Calls `extract_tendon_equality_jacobian()` | S5 |
+| 4 | `model_builder.rs` `process_equality_constraints()` (line 2664) | No Tendon branch | Pushes `EqualityType::Tendon` + tendon IDs + polycoef | S2 |
+
+No other match sites exist. The enum definition (`mujoco_pipeline.rs:611`)
+and parser (`parser.rs`) are additive (new variant / new parse arm), not
+match-dependent.
 
 #### Files
 
