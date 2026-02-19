@@ -86,6 +86,37 @@ pub mod exactmeshinertia;
 pub mod site_transmission;
 
 // ============================================================================
+// Activation Clamping Tests (§34 actlimited/actrange/actearly)
+// ============================================================================
+
+/// Activation clamping tests: actlimited, actrange, actearly, muscle defaults.
+pub mod activation_clamping;
+
+// ============================================================================
+// Gravity Compensation Tests (§35 gravcomp)
+// ============================================================================
+
+/// Gravcomp tests: full/partial/over/negative compensation, kinematic chain,
+/// sleep filtering, CoM offset, Jacobian projection, qfrc_gravcomp isolation.
+pub mod gravcomp;
+
+// ============================================================================
+// Body-Transmission Actuator Tests (§36 adhesion)
+// ============================================================================
+
+/// Adhesion tests: moment computation, contact normal Jacobian, force sign,
+/// gear bypass, multiple contacts, kinematic chain, two-body contacts.
+pub mod adhesion;
+
+// ============================================================================
+// Tendon Equality Constraint Tests (§37)
+// ============================================================================
+
+/// Tendon equality tests: two-tendon coupling, single-tendon lock, polynomial
+/// coupling, solver compatibility, solref/solimp sensitivity, inactive bypass.
+pub mod tendon_equality;
+
+// ============================================================================
 // Existing Test Modules
 // ============================================================================
 
@@ -139,3 +170,10 @@ pub mod flex_unified;
 
 /// Unified PGS/CG solver tests: ne/nf bookkeeping, all constraint types, cost guard, primal CG.
 pub mod unified_solvers;
+
+// ============================================================================
+// Noslip Post-Processor Tests (§33)
+// ============================================================================
+
+/// Noslip acceptance tests: PGS/CG/Newton noslip, friction-loss, pyramidal.
+pub mod noslip;

@@ -3687,7 +3687,7 @@ fn segments_intersect_2d(a1, a2, b1, b2) -> bool:
 - **Pulley systems** — `WrapType::Pulley` divisor scaling is included in the path
   algorithm (4.3), but compound pulley physics (capstan friction, pulley inertia)
   from `sim-tendon/src/pulley.rs` are out of scope.
-- **Tendon equality constraints** — already noted as not implemented elsewhere.
+- **Tendon equality constraints** — implemented in §37 (`extract_tendon_equality_jacobian()`).
 - **Wrapping function derivatives** — MuJoCo does not compute derivatives of the
   wrapping function (∂tangent_points/∂q). The tangent points are treated as fixed
   on the geom body for Jacobian purposes. This is an approximation that works

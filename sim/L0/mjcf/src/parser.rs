@@ -23,7 +23,8 @@ use crate::types::{
     MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfKeyframe, MjcfMesh,
     MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults,
     MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex,
-    MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonType, MjcfWeld, SpatialPathElement,
+    MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonEquality, MjcfTendonType, MjcfWeld,
+    SpatialPathElement,
 };
 
 /// Parse an MJCF string into a model.
@@ -103,6 +104,7 @@ fn parse_mujoco<R: BufRead>(reader: &mut Reader<R>, start: &BytesStart) -> Resul
                         model.equality.welds.extend(eq.welds);
                         model.equality.joints.extend(eq.joints);
                         model.equality.distances.extend(eq.distances);
+                        model.equality.tendons.extend(eq.tendons);
                     }
                     b"deformable" => {
                         let (skins, flex) = parse_deformable(reader)?;
@@ -1470,6 +1472,15 @@ fn parse_body_attrs(e: &BytesStart) -> Result<MjcfBody> {
     if let Some(sleep) = get_attribute_opt(e, "sleep") {
         body.sleep = Some(sleep);
     }
+    if let Some(gc) = get_attribute_opt(e, "gravcomp") {
+        body.gravcomp = Some(gc.parse::<f64>().map_err(|_| {
+            crate::error::MjcfError::invalid_attribute(
+                "gravcomp",
+                "body",
+                format!("expected float, got '{gc}'"),
+            )
+        })?);
+    }
 
     Ok(body)
 }
@@ -2120,7 +2131,12 @@ fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfEquality> {
                         equality.distances.push(distance);
                         skip_element(reader, &elem_name)?;
                     }
-                    // Skip other equality constraint types (tendon, flex)
+                    b"tendon" => {
+                        let ten_eq = parse_tendon_equality_attrs(e)?;
+                        equality.tendons.push(ten_eq);
+                        skip_element(reader, &elem_name)?;
+                    }
+                    // Skip other equality constraint types (flex)
                     _ => skip_element(reader, &elem_name)?,
                 }
             }
@@ -2141,6 +2157,10 @@ fn parse_equality<R: BufRead>(reader: &mut Reader<R>) -> Result<MjcfEquality> {
                     b"distance" => {
                         let distance = parse_distance_attrs(e)?;
                         equality.distances.push(distance);
+                    }
+                    b"tendon" => {
+                        let ten_eq = parse_tendon_equality_attrs(e)?;
+                        equality.tendons.push(ten_eq);
                     }
                     _ => {} // Ignore other self-closing equality constraint types
                 }
@@ -2328,6 +2348,47 @@ fn parse_distance_attrs(e: &BytesStart) -> Result<MjcfDistance> {
     }
 
     Ok(distance)
+}
+
+/// Parse tendon equality constraint attributes.
+fn parse_tendon_equality_attrs(e: &BytesStart) -> Result<MjcfTendonEquality> {
+    let mut ten_eq = MjcfTendonEquality::default();
+
+    ten_eq.name = get_attribute_opt(e, "name");
+    ten_eq.class = get_attribute_opt(e, "class");
+
+    // tendon1 is required
+    ten_eq.tendon1 = get_attribute_opt(e, "tendon1")
+        .ok_or_else(|| MjcfError::missing_attribute("tendon1", "tendon equality"))?;
+
+    // tendon2 is optional (for coupling constraints)
+    ten_eq.tendon2 = get_attribute_opt(e, "tendon2");
+
+    // Parse polycoef (polynomial coefficients for coupling)
+    if let Some(polycoef) = get_attribute_opt(e, "polycoef") {
+        ten_eq.polycoef = parse_float_array(&polycoef)?;
+    }
+
+    // Parse solver parameters
+    if let Some(solimp) = get_attribute_opt(e, "solimp") {
+        let parts = parse_float_array(&solimp)?;
+        if parts.len() >= 5 {
+            ten_eq.solimp = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+        }
+    }
+    if let Some(solref) = get_attribute_opt(e, "solref") {
+        let parts = parse_float_array(&solref)?;
+        if parts.len() >= 2 {
+            ten_eq.solref = Some([parts[0], parts[1]]);
+        }
+    }
+
+    // Parse active flag
+    if let Some(active) = get_attribute_opt(e, "active") {
+        ten_eq.active = active != "false";
+    }
+
+    Ok(ten_eq)
 }
 
 // ============================================================================

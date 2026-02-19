@@ -397,6 +397,8 @@ struct ModelBuilder {
     body_mocapid: Vec<Option<usize>>,
     /// Per-body sleep policy from MJCF `sleep` attribute (None = default Auto).
     body_sleep_policy: Vec<Option<SleepPolicy>>,
+    /// Per-body gravity compensation factor (0=none, 1=full).
+    body_gravcomp: Vec<f64>,
     nmocap: usize,
 
     // Joint arrays
@@ -515,6 +517,9 @@ struct ModelBuilder {
     actuator_biasprm: Vec<[f64; 9]>,
     actuator_lengthrange: Vec<(f64, f64)>,
     actuator_acc0: Vec<f64>,
+    actuator_actlimited: Vec<bool>,
+    actuator_actrange: Vec<(f64, f64)>,
+    actuator_actearly: Vec<bool>,
 
     // Total activation states (sum of actuator_act_num)
     na: usize,
@@ -691,6 +696,7 @@ impl ModelBuilder {
             body_name: vec![Some("world".to_string())],
             body_mocapid: vec![None],      // world body is not mocap
             body_sleep_policy: vec![None], // world body has no sleep policy
+            body_gravcomp: vec![0.0],      // world body has no gravcomp
             nmocap: 0,
 
             jnt_type: vec![],
@@ -779,6 +785,9 @@ impl ModelBuilder {
             actuator_biasprm: vec![],
             actuator_lengthrange: vec![],
             actuator_acc0: vec![],
+            actuator_actlimited: vec![],
+            actuator_actrange: vec![],
+            actuator_actearly: vec![],
 
             na: 0,
 
@@ -1254,6 +1263,7 @@ impl ModelBuilder {
             }
         });
         self.body_sleep_policy.push(sleep_policy);
+        self.body_gravcomp.push(body.gravcomp.unwrap_or(0.0));
 
         // Process joints for this body, tracking the last DOF for kinematic tree linkage
         // MuJoCo semantics: first DOF of first joint links to parent body's last DOF,
@@ -2007,13 +2017,16 @@ impl ModelBuilder {
             };
             (ActuatorTransmission::Site, [site_id, refsite_id])
         } else if let Some(ref body_name) = actuator.body {
-            // Body transmission (adhesion actuators) not yet implemented
-            return Err(ModelConversionError {
-                message: format!(
-                    "Actuator '{}' uses body transmission '{}' which is not yet supported.",
-                    actuator.name, body_name
-                ),
-            });
+            let body_id = *self
+                .body_name_to_id
+                .get(body_name.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Actuator '{}': body '{}' not found",
+                        actuator.name, body_name
+                    ),
+                })?;
+            (ActuatorTransmission::Body, [body_id, usize::MAX])
         } else {
             return Err(ModelConversionError {
                 message: format!(
@@ -2109,6 +2122,36 @@ impl ModelBuilder {
         } else {
             (f64::NEG_INFINITY, f64::INFINITY)
         });
+
+        // §34: Activation clamping — actlimited / actrange / actearly.
+        // Same autolimits pattern as ctrllimited/forcelimited.
+        let actlimited = match actuator.actlimited {
+            Some(v) => v,
+            None => {
+                if self.compiler.autolimits {
+                    actuator.actrange.is_some()
+                } else {
+                    false
+                }
+            }
+        };
+        self.actuator_actlimited.push(actlimited);
+        self.actuator_actrange.push(if actlimited {
+            actuator.actrange.unwrap_or((0.0, 0.0))
+        } else {
+            (0.0, 0.0) // Unused when actlimited=false
+        });
+        self.actuator_actearly
+            .push(actuator.actearly.unwrap_or(false));
+
+        // §34 S5: Muscle default actrange — MuJoCo defaults muscles to actlimited=true,
+        // actrange=[0,1] when actlimited is not explicitly set. This preserves the
+        // hardcoded [0,1] clamping behavior that muscles have always had.
+        if actuator.actuator_type == MjcfActuatorType::Muscle && actuator.actlimited.is_none() {
+            let idx = self.actuator_actlimited.len() - 1;
+            self.actuator_actlimited[idx] = true;
+            self.actuator_actrange[idx] = (0.0, 1.0);
+        }
 
         self.actuator_name.push(if actuator.name.is_empty() {
             None
@@ -2815,6 +2858,45 @@ impl ModelBuilder {
             self.eq_name.push(dist.name.clone());
         }
 
+        // Process Tendon equality constraints
+        for ten_eq in &equality.tendons {
+            let t1_id = *self
+                .tendon_name_to_id
+                .get(ten_eq.tendon1.as_str())
+                .ok_or_else(|| ModelConversionError {
+                    message: format!(
+                        "Tendon equality references unknown tendon1: '{}'",
+                        ten_eq.tendon1
+                    ),
+                })?;
+
+            let t2_id = if let Some(ref t2_name) = ten_eq.tendon2 {
+                *self
+                    .tendon_name_to_id
+                    .get(t2_name.as_str())
+                    .ok_or_else(|| ModelConversionError {
+                        message: format!("Tendon equality references unknown tendon2: '{t2_name}'"),
+                    })?
+            } else {
+                usize::MAX // Sentinel: single-tendon mode
+            };
+
+            // Pack polynomial coefficients (up to 5 terms)
+            let mut data = [0.0; 11];
+            for (i, &coef) in ten_eq.polycoef.iter().take(5).enumerate() {
+                data[i] = coef;
+            }
+
+            self.eq_type.push(EqualityType::Tendon);
+            self.eq_obj1id.push(t1_id);
+            self.eq_obj2id.push(t2_id);
+            self.eq_data.push(data);
+            self.eq_active.push(ten_eq.active);
+            self.eq_solimp.push(ten_eq.solimp.unwrap_or(DEFAULT_SOLIMP));
+            self.eq_solref.push(ten_eq.solref.unwrap_or(DEFAULT_SOLREF));
+            self.eq_name.push(ten_eq.name.clone());
+        }
+
         Ok(())
     }
 
@@ -3320,6 +3402,8 @@ impl ModelBuilder {
             body_name: self.body_name,
             body_subtreemass: vec![0.0; nbody], // Computed after model construction
             body_mocapid: self.body_mocapid,
+            ngravcomp: self.body_gravcomp.iter().filter(|&&gc| gc != 0.0).count(),
+            body_gravcomp: self.body_gravcomp,
 
             jnt_type: self.jnt_type,
             jnt_body: self.jnt_body,
@@ -3491,6 +3575,9 @@ impl ModelBuilder {
             actuator_biasprm: self.actuator_biasprm,
             actuator_lengthrange: self.actuator_lengthrange,
             actuator_acc0: self.actuator_acc0,
+            actuator_actlimited: self.actuator_actlimited,
+            actuator_actrange: self.actuator_actrange,
+            actuator_actearly: self.actuator_actearly,
 
             // Tendons (populated by process_tendons)
             ntendon: self.tendon_type.len(),
@@ -3750,10 +3837,12 @@ impl ModelBuilder {
                     }
                 }
                 model.tendon_treenum[t] = tree_set.len();
-                if tree_set.len() == 2 {
+                if !tree_set.is_empty() {
                     let mut iter = tree_set.iter();
-                    if let (Some(&a), Some(&b)) = (iter.next(), iter.next()) {
+                    if let Some(&a) = iter.next() {
                         model.tendon_tree[2 * t] = a;
+                    }
+                    if let Some(&b) = iter.next() {
                         model.tendon_tree[2 * t + 1] = b;
                     }
                 }
@@ -3825,6 +3914,15 @@ impl ModelBuilder {
                         // trnid[0] is the site index
                         if trnid[0] < model.nsite {
                             Some(model.site_body[trnid[0]])
+                        } else {
+                            None
+                        }
+                    }
+                    ActuatorTransmission::Body => {
+                        // trnid[0] is the body index directly
+                        let bid = trnid[0];
+                        if bid > 0 && bid < model.nbody {
+                            Some(bid)
                         } else {
                             None
                         }

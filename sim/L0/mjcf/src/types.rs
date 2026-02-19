@@ -1856,6 +1856,99 @@ impl MjcfDistance {
     }
 }
 
+/// A tendon equality constraint from `<tendon>` element within `<equality>`.
+///
+/// Constrains a tendon to its reference length, or couples two tendons
+/// with a polynomial relationship: `(L1-L1_0) = data[0] + P(L2-L2_0)`.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MjcfTendonEquality {
+    /// Optional constraint name.
+    pub name: Option<String>,
+    /// Default class for inheriting parameters.
+    pub class: Option<String>,
+    /// Name of the first (primary) tendon.
+    pub tendon1: String,
+    /// Name of the second tendon (optional, for coupling).
+    pub tendon2: Option<String>,
+    /// Polynomial coefficients: `[offset, c1, c2, c3, c4]`.
+    /// Default is `[0, 1]` meaning equal deviation from reference (trailing zeros implicit).
+    pub polycoef: Vec<f64>,
+    /// Solver impedance parameters [dmin, dmax, width, midpoint, power].
+    pub solimp: Option<[f64; 5]>,
+    /// Solver reference parameters [timeconst, dampratio] or [stiffness, damping].
+    pub solref: Option<[f64; 2]>,
+    /// Whether this constraint is active.
+    pub active: bool,
+}
+
+impl Default for MjcfTendonEquality {
+    fn default() -> Self {
+        Self {
+            name: None,
+            class: None,
+            tendon1: String::new(),
+            tendon2: None,
+            polycoef: vec![0.0, 1.0], // Default: equal deviation from reference
+            solimp: None,
+            solref: None,
+            active: true,
+        }
+    }
+}
+
+impl MjcfTendonEquality {
+    /// Create a tendon coupling constraint (both deviate equally from reference).
+    #[must_use]
+    pub fn couple(tendon1: impl Into<String>, tendon2: impl Into<String>) -> Self {
+        Self {
+            tendon1: tendon1.into(),
+            tendon2: Some(tendon2.into()),
+            polycoef: vec![0.0, 1.0],
+            ..Default::default()
+        }
+    }
+
+    /// Create a single-tendon constraint (lock to reference length + offset).
+    #[must_use]
+    pub fn lock(tendon: impl Into<String>, offset: f64) -> Self {
+        Self {
+            tendon1: tendon.into(),
+            tendon2: None,
+            polycoef: vec![offset],
+            ..Default::default()
+        }
+    }
+
+    /// Set the constraint name.
+    #[must_use]
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// Set polynomial coefficients.
+    #[must_use]
+    pub fn with_polycoef(mut self, polycoef: Vec<f64>) -> Self {
+        self.polycoef = polycoef;
+        self
+    }
+
+    /// Set solver reference parameters.
+    #[must_use]
+    pub fn with_solref(mut self, solref: [f64; 2]) -> Self {
+        self.solref = Some(solref);
+        self
+    }
+
+    /// Set solver impedance parameters.
+    #[must_use]
+    pub fn with_solimp(mut self, solimp: [f64; 5]) -> Self {
+        self.solimp = Some(solimp);
+        self
+    }
+}
+
 /// Container for equality constraints from `<equality>` element.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -1868,6 +1961,8 @@ pub struct MjcfEquality {
     pub joints: Vec<MjcfJointEquality>,
     /// Distance constraints between geoms.
     pub distances: Vec<MjcfDistance>,
+    /// Tendon equality constraints.
+    pub tendons: Vec<MjcfTendonEquality>,
 }
 
 impl MjcfEquality {
@@ -1905,6 +2000,13 @@ impl MjcfEquality {
         self
     }
 
+    /// Add a tendon equality constraint.
+    #[must_use]
+    pub fn with_tendon(mut self, tendon: MjcfTendonEquality) -> Self {
+        self.tendons.push(tendon);
+        self
+    }
+
     /// Check if there are any equality constraints.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -1912,12 +2014,17 @@ impl MjcfEquality {
             && self.welds.is_empty()
             && self.joints.is_empty()
             && self.distances.is_empty()
+            && self.tendons.is_empty()
     }
 
     /// Get the total number of equality constraints.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.connects.len() + self.welds.len() + self.joints.len() + self.distances.len()
+        self.connects.len()
+            + self.welds.len()
+            + self.joints.len()
+            + self.distances.len()
+            + self.tendons.len()
     }
 }
 
@@ -2018,6 +2125,8 @@ pub struct MjcfBody {
     pub mocap: bool,
     /// Sleep policy override for this body's kinematic tree ("auto"|"allowed"|"never"|"init").
     pub sleep: Option<String>,
+    /// Gravity compensation factor (0=none, 1=full, >1=over-compensate, <0=amplify gravity).
+    pub gravcomp: Option<f64>,
 }
 
 impl Default for MjcfBody {
@@ -2038,6 +2147,7 @@ impl Default for MjcfBody {
             childclass: None,
             mocap: false,
             sleep: None,
+            gravcomp: None,
         }
     }
 }

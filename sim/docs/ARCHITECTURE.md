@@ -158,6 +158,7 @@ forward():
                mj_fwd_tendon         Tendon lengths + Jacobians (fixed + spatial)
                mj_collision           Broad + narrow phase contacts (skips sleeping pairs)
                                      + mj_collision_flex (vertex-vs-geom, brute-force O(V*G))
+               mj_transmission_body_dispatch  Body transmission moment arms (§36, requires contacts)
   Velocity     mj_fwd_velocity        Body spatial velocities (skips sleeping DOFs)
                mj_actuator_length     Actuator length/velocity from transmission
   Actuation    mj_fwd_actuation       act_dot computation + gain/bias force + clamping
