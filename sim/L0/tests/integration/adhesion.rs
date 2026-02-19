@@ -152,13 +152,14 @@ fn ac3_attractive_force_sign() {
 
 /// Sphere on plane, gain=100, ctrl=1. Analytical trace:
 /// - Contact normal = [0, 0, +1] (plane normal, pointing from plane toward sphere)
-/// - J_normal for free body: normal^T * (J(b2,pos) - J(b1,pos))
-///   where b2=ball, b1=world(0). J(world)=0, J(ball)=identity on translation DOFs.
-///   So J_normal = normal = [0, 0, +1, ...] (with possible rotational components
-///   from cross product of hinge axes, but for a free joint at CoM these are small).
-/// - moment = -(1/1) * J_normal ≈ [0, 0, -1, ...]
+/// - J_normal = normal^T * (J(ball) - J(world)). J(world)=0.
+///   Translation DOFs: normal directly → [0, 0, +1].
+///   Rotation DOFs: normal · (omega_i × r) where r = contact_pos - xpos ≈ (0, 0, -0.0995).
+///   Since r is parallel to normal, all cross products lie in the xy-plane and dot to zero.
+///   So J_normal = [0, 0, +1, 0, 0, 0] exactly.
+/// - moment = -(1/1) * J_normal = [0, 0, -1, 0, 0, 0]
 /// - actuator_force = gain * ctrl = 100 * 1 = 100
-/// - qfrc_actuator[z] = moment_z * force ≈ -1 * 100 = -100
+/// - qfrc_actuator[z] = moment_z * force = -1 * 100 = -100
 #[test]
 fn ac4_force_magnitude_single_contact() {
     let mjcf = r#"
@@ -187,18 +188,17 @@ fn ac4_force_magnitude_single_contact() {
     // actuator_force = gain * ctrl = 100
     assert_relative_eq!(data.actuator_force[0], 100.0, epsilon = 1e-10);
 
-    // moment z-component should be ≈ -1 (negated contact normal Jacobian).
-    // The contact point is slightly below the sphere center, so the rotational
-    // component from the cross product is small but nonzero. The translational
-    // z-component is the dominant term.
-    assert_relative_eq!(data.actuator_moment[0][2], -1.0, epsilon = 1e-10);
-
-    // qfrc_actuator z-component ≈ -1 * 100 = -100
-    assert_relative_eq!(data.qfrc_actuator[2], -100.0, epsilon = 1e-10);
-
-    // Translation x, y should be zero (contact normal is purely vertical)
+    // moment = [0, 0, -1, 0, 0, 0] — negated contact normal Jacobian.
+    // Rotational components are exactly zero because r ∥ normal (see docstring).
     assert_relative_eq!(data.actuator_moment[0][0], 0.0, epsilon = 1e-10);
     assert_relative_eq!(data.actuator_moment[0][1], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(data.actuator_moment[0][2], -1.0, epsilon = 1e-10);
+    assert_relative_eq!(data.actuator_moment[0][3], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(data.actuator_moment[0][4], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(data.actuator_moment[0][5], 0.0, epsilon = 1e-10);
+
+    // qfrc_actuator z-component = -1 * 100 = -100
+    assert_relative_eq!(data.qfrc_actuator[2], -100.0, epsilon = 1e-10);
 }
 
 // ============================================================================
@@ -240,11 +240,16 @@ fn ac5_multiple_contacts() {
         data.ncon
     );
 
-    // All contact normals are vertical (+z), so the averaged moment z-component
-    // should still be ≈ -1 (average of identical normal directions, but at
-    // different positions → different rotational Jacobian contributions).
-    // The translational z-component is always -1 regardless of contact position.
+    // Both normals are vertical → translational z-component of each J_normal = +1.
+    // Rotational components differ by sign (x-offsets ±0.3 produce ±0.3 on DOF 4)
+    // but cancel exactly in the average. Verify the full moment vector.
+    assert_relative_eq!(data.actuator_moment[0][0], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(data.actuator_moment[0][1], 0.0, epsilon = 1e-10);
     assert_relative_eq!(data.actuator_moment[0][2], -1.0, epsilon = 1e-10);
+    // Rotational DOFs: symmetric contacts cancel (±0.3 on DOF 4 from ±x offsets)
+    assert_relative_eq!(data.actuator_moment[0][3], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(data.actuator_moment[0][4], 0.0, epsilon = 1e-10);
+    assert_relative_eq!(data.actuator_moment[0][5], 0.0, epsilon = 1e-10);
 
     // Force is still gain * ctrl = 100
     assert_relative_eq!(data.actuator_force[0], 100.0, epsilon = 1e-10);
@@ -586,8 +591,8 @@ fn ac11_actuator_velocity() {
 /// The moment value should match the analytical lever arm projection.
 #[test]
 fn ac13_kinematic_chain_hinge() {
-    // Capsule endpoint reaches z=0.1 (0.5 + (-0.4) = 0.1), with capsule radius
-    // 0.02 the bottom is at z=0.08. Position the body so this penetrates the plane.
+    // Capsule fromto=(0,0,0)→(0.3,0,-0.5), body at z=0.5 → endpoint at world z=0.0.
+    // With capsule radius 0.05, the endcap bottom is at z=-0.05 → penetrates the plane.
     let mjcf = r#"
         <mujoco model="adhesion_hinge">
             <compiler angle="radian"/>
@@ -647,12 +652,10 @@ fn ac13_kinematic_chain_hinge() {
 /// collision filtering prevents adjacent bodies from colliding.
 #[test]
 fn ac14_two_body_contact() {
-    // Two sibling spheres under the world body, each with its own joint.
-    // Sphere A slides horizontally, sphere B slides horizontally in the opposite direction.
-    // They overlap at rest to guarantee a contact between them.
-    // Sphere A: center at (-0.04, 0, 0.15), radius 0.1 → extends to x=+0.06
-    // Sphere B: center at (+0.04, 0, 0.15), radius 0.1 → extends to x=-0.06
-    // Overlap = 0.06 - (-0.06) ... wait: distance = 0.08, sum radii = 0.2, penetration = 0.12
+    // Two sibling spheres (not parent-child) under the world body, each with
+    // its own slide joint along x. Centers at (±0.04, 0, 0.15), both radius 0.1.
+    // Distance = 0.08 < sum_radii = 0.2 → penetration = 0.12, guaranteed contact.
+    // Both spheres are above the plane (z=0.15-0.1=0.05 > 0) → no plane contacts.
     let mjcf = r#"
         <mujoco model="adhesion_two_body">
             <option gravity="0 0 -9.81" timestep="0.001"/>
@@ -699,17 +702,19 @@ fn ac14_two_body_contact() {
         left_body_id, data.ncon
     );
 
-    // With body-body contacts, the moment should have nonzero entries on
-    // both DOFs (since both bodies' Jacobians contribute to the contact
-    // normal Jacobian via J(b2) - J(b1)).
-    let moment_norm: f64 = data.actuator_moment[0]
-        .iter()
-        .map(|v| v * v)
-        .sum::<f64>()
-        .sqrt();
+    // Sphere-sphere contact normal is horizontal (along x). Both slide joints
+    // have axis (1,0,0). J_normal = normal·(J(b2) - J(b1)):
+    //   J(right, slide_right) = +1, J(left, slide_left) = -1
+    //   → J_normal = [-1, +1], moment = [+1, -1]
+    // Both DOFs must be individually nonzero.
     assert!(
-        moment_norm > 1e-10,
-        "expected nonzero moment with two-body contact, got norm = {}",
-        moment_norm
+        data.actuator_moment[0][0].abs() > 1e-10,
+        "expected nonzero moment on left slide DOF, got {}",
+        data.actuator_moment[0][0]
+    );
+    assert!(
+        data.actuator_moment[0][1].abs() > 1e-10,
+        "expected nonzero moment on right slide DOF, got {}",
+        data.actuator_moment[0][1]
     );
 }
