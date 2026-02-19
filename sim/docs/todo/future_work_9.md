@@ -955,31 +955,34 @@ as a bias force adjustment. Gravcomp counteracts the gravity portion of
 
 ---
 
-### 36. Body-Transmission Actuators (Adhesion)
-**Status:** Parsing done, transmission missing | **Effort:** M | **Prerequisites:** None
+### 36. Body-Transmission Actuators (Adhesion) ✅
+**Status:** Complete (A+ conformance) | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 
-**What exists:**
-- **MJCF parsing**: `<actuator><adhesion>` is fully parsed. `MjcfActuatorType::Adhesion`
-  sets `gaintype = Fixed` (with user-specified gain), `biastype = None`,
-  `dyntype = None`, `ctrllimited = true`. The `body` attribute is parsed and stored
-  as `actuator.body: Option<String>`.
-- **Force generation**: Adhesion uses standard gain/bias: `force = gain * ctrl`.
-  Clamped by `forcerange`. No activation dynamics. This already works through the
-  standard `mj_fwd_actuation()` Phase 2 force computation.
-- **Error on body transmission**: `model_builder.rs` (line ~2019) returns
-  `ModelConversionError` when `actuator.body` is `Some(...)`: "Actuator '...' uses
-  body transmission '...' which is not yet supported." This is the **only** blocker.
-- **`actuator_moment` pre-allocated**: `make_data()` (line ~3289) initializes
-  `actuator_moment: vec![DVector::zeros(self.nv); self.nu]` for all actuators,
-  including future Body-transmission ones. No additional allocation needed.
+**Fully implemented with A+ MuJoCo conformance.** Body transmission
+(`ActuatorTransmission::Body`) for adhesion actuators, matching MuJoCo's
+`mjTRN_BODY` in `engine_core_smooth.c`.
 
-**What's missing:**
-- `ActuatorTransmission::Body` variant in the enum (currently: Joint/Tendon/Site).
-- `mj_transmission_body()` — computes moment arm from contact normal Jacobians.
-- Force application via `qfrc_actuator += moment * force` in Phase 3 of
-  `mj_fwd_actuation()`.
+The implementation:
+1. `ActuatorTransmission::Body` enum variant added.
+2. `compute_contact_normal_jacobian()` — computes `J(b2) - J(b1)` via
+   `accumulate_point_jacobian()` (matching `mj_jacDifPair` sign convention).
+3. `mj_transmission_body()` — iterates contacts, accumulates normal Jacobians
+   for contacts involving the target body, applies negated average (`*= -1.0 / count`),
+   sets `actuator_length = 0`.
+4. `mj_transmission_body_dispatch()` — thin loop over `0..model.nu` filtering
+   for `Body` transmission.
+5. Pipeline insertion in `forward_core()` after `mj_collision()` and equality
+   wake cycle, before `mj_sensor_pos()`.
+6. Phase 3 force application via `qfrc += moment * force` (merged with Site arm).
+7. Model builder: body name → ID resolution replacing former `ModelConversionError`.
+8. Body arm added to all match sites: `mj_actuator_length`, `compute_muscle_params`
+   (Phase 1 & 2), `mj_sensor_pos` (ActuatorPos), derivatives (`derivatives.rs`),
+   and sleep policy resolution.
+
+**Files:** `mujoco_pipeline.rs` (7 changes), `model_builder.rs` (2 changes),
+`derivatives.rs` (1 change).
 - Body case in `mj_actuator_length()` for velocity computation.
 
 **Existing transmission patterns** (for reference):

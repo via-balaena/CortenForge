@@ -19,6 +19,7 @@ Data::step():
      a. mj_fwd_position    — Forward kinematics (skips sleeping bodies)
         mj_fwd_tendon       — Tendon lengths + Jacobians (fixed tendons)
         mj_collision        — Broad/narrow phase collision detection (skips sleeping pairs)
+        mj_transmission_body_dispatch — Body transmission moment arms (§36, requires contacts)
      b. mj_fwd_velocity    — Body + tendon velocities (skips sleeping DOFs)
         mj_actuator_length  — Actuator length/velocity from transmission state
      c. mj_fwd_actuation   — Activation dynamics (act_dot) + gain/bias force + clamping
@@ -120,6 +121,9 @@ for i in range(nu):
         (sid0, sid1) = actuator_trnid[i]    # site pair
         actuator_length[i] = mj_transmission_site(model, data, i, gear)
         actuator_velocity[i] = gear . (J @ qvel)  # via site Jacobian
+    elif transmission[i] == Body:
+        # Length/moment already set by mj_transmission_body (runs after collision)
+        actuator_velocity[i] = actuator_moment[i] . qvel
 ```
 
 ---
@@ -249,6 +253,10 @@ L^T D L factorization from CRBA at `qpos0`.
     elif transmission[i] == Site:
         J = mj_jac_site(model, data, site_id)   # 6×nv Jacobian
         qfrc_actuator += gear . J^T * force      # 6D wrench projection
+    elif transmission[i] == Body:
+        for dof in range(nv):
+            if actuator_moment[i][dof] != 0:
+                qfrc_actuator[dof] += actuator_moment[i][dof] * force
 ```
 
 ### Model Build: `compute_muscle_params()`
@@ -936,7 +944,7 @@ Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` based on
 | `jnt_solref[i]` | `[f64; 2]` | [timeconst, dampratio] for limits |
 | `jnt_solimp[i]` | `[f64; 5]` | [d0, d_width, width, midpoint, power] |
 | `actuator_dyntype[i]` | `ActuatorDynamics` | None, Filter, FilterExact, Integrator, or Muscle |
-| `actuator_trntype[i]` | `ActuatorTransmission` | Joint, Tendon, or Site |
+| `actuator_trntype[i]` | `ActuatorTransmission` | Joint, Tendon, Site, or Body |
 | `actuator_gear[i]` | `f64` | Transmission gear ratio |
 | `actuator_gaintype[i]` | `GainType` | Fixed, Affine, or Muscle — dispatches gain computation |
 | `actuator_biastype[i]` | `BiasType` | None, Affine, or Muscle — dispatches bias computation |
@@ -980,6 +988,7 @@ Dispatches to `mjd_transition_fd()` or `mjd_transition_hybrid()` based on
 | `qfrc_constraint[nv]` | `DVector` | Contact + limit + equality forces |
 | `actuator_length[nu]` | `Vec<f64>` | Gear × transmission length |
 | `actuator_velocity[nu]` | `Vec<f64>` | Gear × transmission velocity |
+| `actuator_moment[nu]` | `Vec<DVector(nv)>` | Transmission moment arm vectors (Site/Body transmissions; used for force projection and velocity) |
 | `actuator_force[nu]` | `Vec<f64>` | Scalar actuator force (after gain/bias/clamp) |
 | `act_dot[na]` | `DVector` | Activation time-derivative (integrated by Euler/RK4) |
 | `contacts[ncon]` | `Vec<Contact>` | Active contact points |

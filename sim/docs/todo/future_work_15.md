@@ -51,9 +51,9 @@ term to the mass matrix.
 
 #### Current State
 
-`ActuatorTransmission` enum has `Joint`, `Tendon`, `Site` but no `Body` variant.
-Item #36 covers adhesion (body-transmission for adhesion actuators) but not the
-slider-crank mechanism.
+`ActuatorTransmission` enum has `Joint`, `Tendon`, `Site`, `Body` but no
+`SliderCrank` variant. Item #36 covers adhesion (body-transmission for adhesion
+actuators, now complete ✅) but not the slider-crank mechanism.
 
 #### Objective
 

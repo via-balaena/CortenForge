@@ -86,7 +86,7 @@ Compare CortenForge's MJCF parser against MuJoCo's XML reference, element by ele
 | `<contact>` | ✓ | ✓ | `<pair>`, `<exclude>`, contype/conaffinity bitmasks |
 | `<equality>` | ✓ | ✓ | Equality constraints |
 | `<tendon>` | ✓ | ✓ | Fixed and spatial tendons; `springlength` attribute (single or pair values); deadband spring physics; default class support with solref/solimp/margin/material defaults |
-| `<actuator>` | ✓ | ✓ | All 8 shortcut types (motor, position, velocity, damper, cylinder, adhesion, muscle, general) with MuJoCo-compatible gain/bias force model, GainType/BiasType dispatch, FilterExact dynamics. `<general>` supports explicit `gaintype`/`biastype`/`dyntype`/`gainprm`/`biasprm`/`dynprm` attributes with default class inheritance. Activation params (group/actlimited/actrange/actearly/lengthrange) parsed and defaultable. |
+| `<actuator>` | ✓ | ✓ | All 8 shortcut types (motor, position, velocity, damper, cylinder, adhesion, muscle, general) with MuJoCo-compatible gain/bias force model, GainType/BiasType dispatch, FilterExact dynamics. `<general>` supports explicit `gaintype`/`biastype`/`dyntype`/`gainprm`/`biasprm`/`dynprm` attributes with default class inheritance. Activation params (group/actlimited/actrange/actearly/lengthrange) parsed and defaultable. Body transmission (adhesion) via `mj_transmission_body()` with contact normal Jacobian moment arms (§36). |
 | `<sensor>` | ✓ | ✓ | Various sensor types |
 | `<keyframe>` | ✓ | ✓ | State snapshots: `<key>` elements with qpos/qvel/act/ctrl/mpos/mquat/time, `Data::reset_to_keyframe()` |
 | `<flex>` | ✓ | ✓ | Direct flex body specification (vertices, elements); parsed via `parse_flex()` + `process_flex()` |
@@ -559,6 +559,37 @@ solver) has been deleted.
 | MJCF round-trip | Parse → build → verify counts and topology | ✅ |
 
 **Files:** `sim/L0/tests/integration/flex_unified.rs` (21 tests), `sim/L0/core/src/mujoco_pipeline.rs` (flex pipeline), `sim/L0/mjcf/src/model_builder.rs` (flex building)
+
+---
+
+### §36 — Body-Transmission Actuators (Adhesion)
+
+**Status:** ✅ Complete (A+ grade — MuJoCo conformance + code quality)
+
+Body transmission (`ActuatorTransmission::Body`) for adhesion actuators, matching
+MuJoCo's `mjTRN_BODY` in `engine_core_smooth.c`.
+
+| MuJoCo Function | CortenForge | Verification | Status |
+|-----------------|-------------|--------------|--------|
+| `mj_transmission()` (mjTRN_BODY case) | `mj_transmission_body()` | Contact normal Jacobian moment arms, negated average, no gear | ✅ |
+| `mj_jacDifPair()` helper | `compute_contact_normal_jacobian()` | J(b2) − J(b1) sign convention via `accumulate_point_jacobian()` | ✅ |
+| Body name → ID resolution | `model_builder.rs` body branch | Replaces former `ModelConversionError` with name lookup | ✅ |
+| Phase 3 force application | `mj_fwd_actuation()` Body arm | Moment-based `qfrc += m * force` (merged with Site arm) | ✅ |
+| Actuator velocity | `mj_actuator_length()` Body arm | `velocity = moment.dot(&qvel)`, length = 0 | ✅ |
+| Derivatives | `derivatives.rs` Body arm | Merged with Site: `qDeriv += dforce_dv * moment[r] * moment[c]` | ✅ |
+
+**Key MuJoCo conformance properties:**
+
+| Property | Verification | Status |
+|----------|--------------|--------|
+| Sign convention | `J(b2) − J(b1)` matches `mju_sub(jacdifp, jac2p, jac1p)` | ✅ |
+| No gear multiplication | Moment arms computed without gear (force magnitude from `gainprm[0]` only) | ✅ |
+| Negated average | `moment *= -1.0 / count` matches MuJoCo's adhesion sign chain | ✅ |
+| Flex contact skip | `contact.flex_vertex.is_some()` contacts excluded | ✅ |
+| Pipeline ordering | `mj_transmission_body_dispatch()` runs after `mj_collision()`, before `mj_sensor_pos()` | ✅ |
+| Zero contacts | No contacts → moment stays zero, length = 0 | ✅ |
+
+**Files:** `sim/L0/core/src/mujoco_pipeline.rs` (body transmission + dispatch), `sim/L0/core/src/derivatives.rs` (Body arm), `sim/L0/mjcf/src/model_builder.rs` (body name resolution + sleep policy)
 
 ---
 
