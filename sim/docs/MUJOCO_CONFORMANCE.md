@@ -589,7 +589,7 @@ MuJoCo's `mjTRN_BODY` in `engine_core_smooth.c`.
 | Pipeline ordering | `mj_transmission_body_dispatch()` runs after `mj_collision()`, before `mj_sensor_pos()` | ✅ |
 | Zero contacts | No contacts → moment stays zero, length = 0 | ✅ |
 
-**Files:** `sim/L0/core/src/mujoco_pipeline.rs` (body transmission + dispatch), `sim/L0/core/src/derivatives.rs` (Body arm), `sim/L0/mjcf/src/model_builder.rs` (body name resolution + sleep policy)
+**Files:** `sim/L0/core/src/mujoco_pipeline.rs` (body transmission + dispatch), `sim/L0/core/src/derivatives.rs` (Body arm), `sim/L0/mjcf/src/model_builder.rs` (body name resolution + sleep policy), `sim/L0/tests/integration/adhesion.rs` (13 tests, AC1–AC14)
 
 ---
 

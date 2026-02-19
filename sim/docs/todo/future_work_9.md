@@ -963,6 +963,8 @@ as a bias force adjustment. Gravcomp counteracts the gravity portion of
 **Fully implemented with A+ MuJoCo conformance.** Body transmission
 (`ActuatorTransmission::Body`) for adhesion actuators, matching MuJoCo's
 `mjTRN_BODY` in `engine_core_smooth.c`.
+Thirteen integration tests verify the implementation (`adhesion.rs`, AC1–AC14;
+AC12 documented skip — flex contacts not yet wired).
 
 The implementation:
 1. `ActuatorTransmission::Body` enum variant added.
