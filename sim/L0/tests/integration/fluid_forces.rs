@@ -424,7 +424,7 @@ fn t10_custom_fluidcoef_no_lift() {
         -5.955764990545676e-7,
     ];
     assert_qfrc_fluid(&data, &expected, FORCE_TOL);
-    // Verify custom fluidcoef stored: coef[3]=0 (Magnus), coef[4]=0 (Kutta)
+    // Verify custom fluidcoef stored: coef[3]=0 (Kutta), coef[4]=0 (Magnus)
     assert_eq!(
         model.geom_fluid[0][4], 0.0,
         "Kutta coefficient should be zero"
