@@ -3690,7 +3690,7 @@ The following are explicitly **out of scope** for this item:
 1. ~~**Site transmission** (Gap E)~~ — **Resolved** in [future_work_2 §5](./future_work_2.md) ✅.
    All 6 stubs filled with full 6D gear, refsite (Mode A/B), `mj_jac_site()`,
    `mj_transmission_site()`, `subquat()`, and common-ancestor zeroing.
-   23 integration tests + 9 unit tests cover criteria 1–21.
+   29 integration tests + 9 unit tests cover criteria 1–22.
 
 2. ~~**JointLimitFrc / TendonLimitFrc** (Gap C)~~ — **Resolved** in
    [future_work_3 §7](./future_work_3.md) ✅. Penalty forces cached in

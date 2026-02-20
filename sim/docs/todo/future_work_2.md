@@ -4707,4 +4707,4 @@ gear, free joint, position actuator).
 - ✅ `sim/L0/mjcf/src/model_builder.rs` — refsite → `actuator_trnid[i][1]`, 6D gear push, refsite warning for non-Site
 - ✅ `sim/L0/mjcf/src/validation.rs` — site/refsite reference validation, mutual exclusivity enforcement
 - ✅ `sim/L0/core/src/mujoco_pipeline.rs` — `actuator_gear` → `Vec<[f64; 6]>`, `actuator_trnid` → `Vec<[usize; 2]>`, `Data.site_xquat`, `Data.actuator_moment`, `mj_jac_site()`, `mj_transmission_site()`, 5 stubs filled, `ActuatorFrc` sensor fix, `subquat()`, common-ancestor zeroing, `subquat_tests` (7), `jac_site_tests` (2)
-- ✅ `sim/L0/tests/integration/site_transmission.rs` — 23 integration tests (criteria 1–21 active, criterion 22 `#[ignore]`)
+- ✅ `sim/L0/tests/integration/site_transmission.rs` — 29 integration tests (criteria 1–22 all active, criterion 22 cross-validated against MuJoCo 3.5.0)
