@@ -1784,42 +1784,68 @@ Our implementation matches this algorithm exactly, with the documented deviation
 
 Two issues exist:
 
-1. **Build-time panic** (`mujoco_pipeline.rs:4008`): `compute_spatial_tendon_length0()`
-   panics if a sidesite is inside a wrapping geometry at model build time. This is
-   treated as a fatal model error, but MuJoCo treats it as valid — "side sites can
-   be placed inside the sphere or cylinder, which causes an inverse wrap: the tendon
-   path is constrained to pass through the object instead of going around it."
+1. **Build-time panic** (`mujoco_pipeline.rs:~3990`): `compute_spatial_tendon_length0()`
+   panics if a sidesite is inside a wrapping geometry at model build time. MuJoCo
+   treats this as valid — "side sites can be placed inside the sphere or cylinder,
+   which causes an inverse wrap: the tendon path is constrained to pass through the
+   object instead of going around it."
 
-2. **Runtime silent degradation** (`mujoco_pipeline.rs:10072`): `sphere_wrap()` returns
+2. **Runtime silent degradation** (`mujoco_pipeline.rs:~10072`): `sphere_wrap()` returns
    `WrapResult::NoWrap` when an endpoint is inside the sphere. During simulation,
-   if joint motion causes the sidesite to enter a wrapping geometry, the tendon
-   silently loses its wrapping (tendon goes straight) instead of switching to the
-   inverse wrap algorithm.
+   if joint motion causes a sidesite to enter a wrapping geometry, the tendon
+   silently loses its wrapping instead of switching to the inverse wrap algorithm.
 
 #### MuJoCo Reference
 
-MuJoCo's `mju_wrap()` in `engine_util_misc.c` dispatches between two algorithms
-based on sidesite position:
+MuJoCo's `mju_wrap()` in `engine_util_misc.c` handles 3D→2D projection, then
+dispatches between two 2D algorithms based on the sidesite's **3D distance** from
+the wrapping geom center (in geom-local frame):
 
 ```c
+// s = sidesite position in geom-local 3D frame
 if (side && mju_norm3(s) < radius) {
-    wlen = wrap_inside(pnt, d, radius);   // inverse wrap
+    wlen = wrap_inside(pnt, d, radius);   // inverse wrap → wlen = 0
 } else {
-    wlen = wrap_circle(pnt, d, (side ? sd : NULL), radius);  // normal wrap
+    wlen = wrap_circle(pnt, d, (side ? sd : NULL), radius);  // normal wrap → wlen = arc_length
 }
 ```
 
-**Normal wrap** (`wrap_circle`): Tendon wraps around the exterior of the geometry.
-Already implemented as `sphere_wrap()` / `cylinder_wrap()`.
+**Key architectural facts:**
+
+1. The inside check uses `mju_norm3(s)` — the full 3D norm — for both spheres
+   and cylinders. For cylinders, the Z-component of the sidesite position
+   contributes to the inside check, even though wrapping is 2D in XY. This means
+   a sidesite inside the cylinder cross-section but far along Z (`norm3 > radius`)
+   will NOT trigger inside wrap.
+
+2. The sidesite controls **dispatch only**. Once inside `wrap_inside`, the sidesite
+   is completely unused — only the two endpoint positions and the radius matter.
+
+3. **Inverse wrap produces a single tangent point, not two.** Both output slots
+   are identical (`pnt[0..1] == pnt[2..3]`). The arc length is **zero** (`wlen = 0`).
+   The total tendon contribution is `|p0 − tangent| + 0 + |tangent − p1|` — the
+   sum of two straight segments meeting at one point on the circle surface. By
+   triangle inequality, this is always ≥ straight-line distance `|p0 − p1|`.
+
+4. The existing caller code (`mj_fwd_tendon_spatial`, line ~9539) handles this
+   correctly without modification: `total_length += dist1 + arc_length + dist3`
+   with `arc_length = 0` gives `|p0−t| + |t−p1|`. The sub-segment 2 (arc)
+   Jacobian contributes zero because both endpoints are on `geom_body`. The
+   Jacobian for segments 1 and 3 uses the point-Jacobian approach (treating
+   wrap points as fixed on the geom body), which is valid for inside wrap
+   because the tangent point is a stationary point of the path-length function
+   constrained to the circle — the first-order variation of the tangent position
+   does not contribute to length variation (same principle as exterior wrap).
+   **No caller changes are required.**
+
+**Normal wrap** (`wrap_circle`): Tendon wraps around the exterior, producing two
+distinct tangent points and a circular arc. Returns arc length. Already implemented
+as `sphere_wrap()` / `cylinder_wrap()`.
 
 **Inverse wrap** (`wrap_inside`): Tendon path passes *through* the geometry,
-creating a concave arc on the circle's surface. MuJoCo uses a Newton solver to
-find the two tangent points where the tendon enters and exits the circle.
-
-The `wrap_inside` function operates in 2D (the wrapping plane), making it
-geometry-type agnostic — both sphere and cylinder use the same 2D algorithm
-after 3D→2D projection (sphere projects to a great circle, cylinder projects
-to a cross-section circle).
+touching the circle surface at a single tangent point. Returns 0 (zero arc).
+Operates in 2D (the wrapping plane), making it geometry-agnostic — both sphere
+and cylinder use the same 2D algorithm after 3D→2D projection.
 
 #### Objective
 
@@ -1828,154 +1854,408 @@ Remove the build-time panic. Handle runtime sidesite-inside transitions.
 
 #### Specification
 
-##### S1. Newton solver: `wrap_inside()`
+##### S1. 2D Newton solver: `wrap_inside_2d()`
 
-Given two endpoint positions (2D in the wrapping plane) and the wrapping circle
-radius, find the two tangent points for an inverse (through-geometry) wrap path.
+A standalone 2D function implementing MuJoCo's `wrap_inside()` from
+`engine_util_misc.c`. Given two 2D endpoint positions and a circle radius,
+find the single tangent point for an inverse (through-geometry) wrap path.
 
-**Inputs:**
-- `p0, p1`: endpoint positions in 2D wrapping plane (from geom-local coordinates)
-- `d0 = |p0|, d1 = |p1|`: distances from circle center to each endpoint
-- `radius`: wrapping circle radius
-
-**Setup:**
+**Constants:**
 ```
-A = radius / d0
-B = radius / d1
-dd = |p1 - p0|²
-G = acos((d0² + d1² - dd) / (2 * d0 * d1))    // triangle angle at center
+ε = 1e-15    (MuJoCo's mjMINVAL — used for all near-zero checks)
 ```
 
-**Newton solve** for `z` (contact parameter):
-```
-f(z) = asin(A·z) + asin(B·z) - 2·asin(z) + G = 0
-
-f'(z) = A / sqrt(1 - z²·A²)
-      + B / sqrt(1 - z²·B²)
-      - 2 / sqrt(1 - z²)
-
-Initial guess: z = 1 - 1e-7
-Max iterations: 20
-Tolerance: |f(z)| < 1e-6
-Early exit: if f'(z) ≥ 0, no solution exists → return NoWrap
+**Signature:**
+```rust
+fn wrap_inside_2d(
+    end0: Vector2<f64>,  // endpoint 0 in 2D wrapping plane
+    end1: Vector2<f64>,  // endpoint 1 in 2D wrapping plane
+    radius: f64,
+) -> Option<Vector2<f64>>
+// Returns None (no wrap, tendon goes straight) or Some(tangent_point).
 ```
 
-**Geometric reconstruction:** From converged `z`, compute the two tangent points
-on the circle where the inverse wrap path enters and exits the surface. The angles
-from the center to each tangent point are derived from the `asin` terms in the
-Newton equation.
+`Option<Vector2<f64>>` maps directly to MuJoCo's return convention:
+`None` ↔ return `-1`, `Some(point)` ↔ return `0` with populated `pnt`.
 
-**Return:** `WrapResult::Wrapped { tangent_point_1, tangent_point_2, arc_length }`
-where `arc_length` is the interior arc between the tangent points (shorter arc
-on the center-facing side).
+**Algorithm:**
 
-##### S2. Dispatch in the wrapping pipeline
+*Step 1 — Validate inputs:*
+```
+len0 = |end0|
+len1 = |end1|
+If len0 ≤ radius OR len1 ≤ radius OR radius < ε OR len0 < ε OR len1 < ε:
+    return None
+```
 
-Modify the wrapping dispatch at `mj_fwd_tendon_spatial()` (line ~9522) to check
-for sidesite-inside before calling `sphere_wrap()` / `cylinder_wrap()`:
+Note: the endpoint check uses `≤` (less-than-or-equal), matching MuJoCo's
+`wrap_inside`. This differs from the existing `sphere_wrap` early exit which
+uses `<` (strict less-than, matching MuJoCo's `wrap_circle`). Points exactly
+on the circle are rejected by `wrap_inside` because the tangent formula
+degenerates when `len = radius` (division `A = radius/len` yields 1).
+
+*Step 2 — Segment-circle intersection check:*
+```
+dif = end1 - end0
+dd = |dif|²
+If dd > ε:
+    a = -(dif · end0) / dd          // nearest-point parameter on segment
+    If 0 < a < 1:
+        nearest = end0 + a · dif
+        If |nearest| ≤ radius:
+            return None              // straight path crosses circle
+```
+
+*Step 3 — Prepare default fallback:*
+```
+fallback = normalize(0.5 · (end0 + end1)) · radius
+```
+This projects the midpoint of the two endpoints onto the circle surface.
+It is used whenever the Newton solver encounters numerical issues — matching
+MuJoCo's behavior of returning `0` (success) with a best-effort tangent point
+rather than `-1` (no wrap) for solver failures.
+
+*Step 4 — Compute Newton equation parameters:*
+```
+A = radius / len0
+B = radius / len1
+cosG = (len0² + len1² - dd) / (2 · len0 · len1)
+
+If cosG < -1 + ε:  return None            // near-antiparallel: no solution
+If cosG >  1 - ε:  return Some(fallback)   // near-parallel / coincident: use fallback
+
+G = acos(cosG)
+```
+
+The Newton equation: `f(z) = asin(A·z) + asin(B·z) - 2·asin(z) + G = 0`
+
+where `z ∈ (0, 1)` is the sine of the tangent angle parameter. Since `A < 1`
+and `B < 1` (endpoints are outside the circle), the function is monotonically
+decreasing in the valid domain, and the Newton solver starts near the right
+boundary (`z ≈ 1`) and moves leftward.
+
+*Step 5 — Newton iteration:*
+```
+z = 1 - 1e-7                        // initial guess (near domain boundary)
+f = asin(A·z) + asin(B·z) - 2·asin(z) + G
+
+If f > 0:  return Some(fallback)     // init on wrong side of root
+
+For iter = 0..20:
+    If |f| < 1e-6:  break            // converged
+
+    df = A / max(ε, sqrt(1 - z²·A²))
+       + B / max(ε, sqrt(1 - z²·B²))
+       - 2 / max(ε, sqrt(1 - z²))
+
+    If df > -ε:  return Some(fallback)       // derivative non-negative; abort
+
+    z_new = z - f / df
+
+    If z_new > z:  return Some(fallback)     // solver moving rightward; abort
+
+    z = z_new
+    f = asin(A·z) + asin(B·z) - 2·asin(z) + G
+
+    If f > 1e-6:  return Some(fallback)      // overshot positive; abort
+
+If not converged after 20 iterations:
+    return Some(fallback)
+```
+
+All five Newton guards (init-side, df-sign, leftward-only, overshoot, maxiter)
+return `Some(fallback)` — **not** `None`. MuJoCo returns `0` (success with
+fallback point) for these cases, not `-1` (no wrap). This means the tendon
+still wraps using the best-effort fallback point.
+
+*Step 6 — Geometric reconstruction:*
+
+Compute the tangent point by rotating from one endpoint direction. The choice
+of reference endpoint depends on the orientation of the triangle (end0, O, end1):
+```
+cross = end0.x · end1.y - end0.y · end1.x
+
+If cross > 0:
+    vec = normalize(end0)
+    ang = asin(z) - asin(A · z)
+Else:
+    vec = normalize(end1)
+    ang = asin(z) - asin(B · z)
+
+tangent = radius · (cos(ang) · vec.x - sin(ang) · vec.y,
+                    sin(ang) · vec.x + cos(ang) · vec.y)
+
+return Some(tangent)
+```
+
+The 2×2 matrix is a standard counterclockwise rotation by `ang`. The angle
+`asin(z) - asin(A·z)` is the angular offset from the endpoint direction to the
+tangent point on the circle.
+
+##### S2. Extract wrapping-plane helper
+
+The existing `sphere_wrap` constructs the 2D wrapping plane inline (steps 3–4,
+~20 LOC). The inside-wrap branch needs the same construction. Extract into a
+shared helper:
 
 ```rust
-let wrap_result = match model.geom_type[geom_id] {
-    GeomType::Sphere => {
-        let r = model.geom_size[geom_id].x;
-        if let Some(ss) = sidesite_local {
-            if ss.norm() < r {
-                // Sidesite inside sphere → inverse wrap
-                return wrap_inside_sphere(p0_local, p1_local, r);
-            }
-        }
-        sphere_wrap(p0_local, p1_local, r, sidesite_local)
-    }
-    GeomType::Cylinder => {
-        let r = model.geom_size[geom_id].x;
-        if let Some(ss) = sidesite_local {
-            // Cylinder inside check: 2D XY projection
-            let ss_xy = Vector2::new(ss.x, ss.y);
-            if ss_xy.norm() < r {
-                return wrap_inside_cylinder(p0_local, p1_local, r);
-            }
-        }
-        cylinder_wrap(p0_local, p1_local, r, sidesite_local)
-    }
-    _ => unreachable!("wrapping geom type validated at model build"),
-};
+/// Construct the 2D wrapping plane for sphere wrapping.
+///
+/// Returns (axis0, axis1) where axis0 = normalize(p1) and axis1 is
+/// perpendicular to axis0 in the plane containing (origin, p1, p2).
+/// Handles the collinear degenerate case (p1, O, p2 collinear).
+fn sphere_wrapping_plane(
+    p1: Vector3<f64>,
+    p2: Vector3<f64>,
+) -> (Vector3<f64>, Vector3<f64>)
 ```
 
-For cylinders, the inside check uses the XY cross-section distance (matching
-MuJoCo's 2D projection for cylinder wrapping).
+Both the existing outside-wrap path and the new inside-wrap path call this
+helper. No behavioral change to the outside-wrap path.
 
-##### S3. Remove build-time panic
+##### S3. Integration into `sphere_wrap()`
 
-Remove the sidesite-inside validation panic from `compute_spatial_tendon_length0()`
-(lines ~3998-4014). Replace with a no-op or debug log — sidesite inside wrapping
-geometry is a valid MuJoCo configuration.
+Add an inside-wrap branch after the endpoint-inside early exit but before the
+straight-line clearance check:
 
-##### S4. Sphere `wrap_inside` implementation
+```rust
+fn sphere_wrap(
+    p1: Vector3<f64>,
+    p2: Vector3<f64>,
+    radius: f64,
+    sidesite: Option<Vector3<f64>>,
+) -> WrapResult {
+    // Existing early exits (radius ≤ 0, endpoint inside sphere)...
 
-Project the 3D sphere wrapping problem to 2D (wrapping plane through center, p0,
-p1), call the shared Newton solver from S1, then reconstruct 3D tangent points.
-Return as `WrapResult::Wrapped`.
+    // NEW: Check for sidesite inside sphere (inverse wrap).
+    // Uses 3D norm matching MuJoCo's mju_norm3(s) < radius.
+    if let Some(ss) = sidesite {
+        if ss.norm() < radius {
+            let (axis0, axis1) = sphere_wrapping_plane(p1, p2);
+            let end0 = Vector2::new(p1.dot(&axis0), p1.dot(&axis1));
+            let end1 = Vector2::new(p2.dot(&axis0), p2.dot(&axis1));
 
-##### S5. Cylinder `wrap_inside` implementation
+            return match wrap_inside_2d(end0, end1, radius) {
+                None => WrapResult::NoWrap,
+                Some(t2d) => {
+                    // Reconstruct 3D: same projection as mju_wrap
+                    let t3d = axis0 * t2d.x + axis1 * t2d.y;
+                    WrapResult::Wrapped {
+                        tangent_point_1: t3d,
+                        tangent_point_2: t3d,  // identical — single tangent point
+                        arc_length: 0.0,
+                    }
+                }
+            };
+        }
+    }
 
-Project endpoints onto the XY cross-section plane (same 2D projection as
-`cylinder_wrap`), call the shared Newton solver from S1, then reconstruct 3D
-tangent points with Z-interpolation (axial component). Return as
-`WrapResult::Wrapped`.
+    // Existing outside-wrap logic (unchanged)...
+}
+```
+
+If `wrap_inside_2d` returns `None`, we return `NoWrap` — we do NOT fall through
+to the outside-wrap algorithm. This matches MuJoCo, where `wlen < 0` from
+`wrap_inside` causes `mju_wrap` to return `-1` without trying `wrap_circle`.
+
+##### S4. Integration into `cylinder_wrap()`
+
+Add an inside-wrap branch after the endpoint-inside early exit. The inside check
+uses **3D norm** (matching MuJoCo), while the 2D solver uses XY projection
+(matching the existing cylinder wrapping plane):
+
+```rust
+fn cylinder_wrap(
+    p1: Vector3<f64>,
+    p2: Vector3<f64>,
+    radius: f64,
+    sidesite: Option<Vector3<f64>>,
+) -> WrapResult {
+    let p1_xy = Vector2::new(p1.x, p1.y);
+    let p2_xy = Vector2::new(p2.x, p2.y);
+
+    // Existing early exits (radius ≤ 0, endpoint inside cross-section)...
+
+    // NEW: Check for sidesite inside (3D norm, matching MuJoCo).
+    //
+    // Behavioral change from existing panic check: the panic used 2D XY norm,
+    // so a sidesite inside the cylinder cross-section but far along Z
+    // (e.g., ss=(0,0,5) with r=0.1, norm3=5.0 > r) currently panics but
+    // will now correctly use normal wrap instead of inside wrap. This matches
+    // MuJoCo's mju_norm3(s) < radius dispatch.
+    if let Some(ss) = sidesite {
+        if ss.norm() < radius {
+            return match wrap_inside_2d(p1_xy, p2_xy, radius) {
+                None => WrapResult::NoWrap,
+                Some(t2d) => {
+                    // Z interpolation: same formula as normal cylinder wrap
+                    // with arc_length = 0. Both points get identical Z.
+                    let l0 = (p1_xy - t2d).norm();
+                    let l1 = (p2_xy - t2d).norm();
+                    let total = l0 + l1;
+                    let tz = if total > 1e-10 {
+                        p1.z + (p2.z - p1.z) * l0 / total
+                    } else {
+                        0.5 * (p1.z + p2.z)
+                    };
+                    let t3d = Vector3::new(t2d.x, t2d.y, tz);
+                    WrapResult::Wrapped {
+                        tangent_point_1: t3d,
+                        tangent_point_2: t3d,  // identical
+                        arc_length: 0.0,       // no helical component
+                    }
+                }
+            };
+        }
+    }
+
+    // Existing outside-wrap logic (unchanged)...
+}
+```
+
+MuJoCo verification for cylinder Z with `wlen=0`: `L0/(L0+0+L1)` and
+`(L0+0)/(L0+0+L1)` produce the same ratio, so both Z values are identical.
+The helical correction `sqrt(wlen² + height²) = sqrt(0+0) = 0` confirms
+`arc_length = 0`.
+
+##### S5. Remove build-time panic
+
+Delete the sidesite-inside validation loop from `compute_spatial_tendon_length0()`
+(lines ~3981–4018). This entire loop — from `for t in 0..self.ntendon` through
+the `panic!()` — should be removed. Sidesite inside wrapping geometry is a valid
+MuJoCo configuration now handled by the runtime wrapping algorithms.
+
+The remaining code (FK, tendon_length0 copy, lengthspring sentinel) is unchanged
+and will correctly compute tendon lengths using the inside-wrap algorithm via the
+FK → `mj_fwd_tendon` → `sphere_wrap`/`cylinder_wrap` → `wrap_inside_2d` path.
 
 ##### S6. Degenerate cases
 
-- **Endpoint inside geometry** (`|p0| < radius` or `|p1| < radius`): Return
-  `WrapResult::NoWrap` (same as current behavior — endpoint inside is not the
-  same as sidesite inside).
-- **Newton solver fails** (no convergence or `f'(z) ≥ 0`): Return
-  `WrapResult::NoWrap`. The tendon goes straight. This matches MuJoCo's behavior
-  when `wrap_inside` returns `-1`.
-- **Sidesite at center** (`|ss| ≈ 0`): The inside check is `|ss| < radius`,
-  which catches this. The Newton solver handles it (A and B are well-defined as
-  long as endpoints are outside).
+| Case | Behavior | MuJoCo return |
+|------|----------|---------------|
+| Endpoint inside circle (`\|p\| ≤ radius`) | `None` — tangent formula degenerates | `-1` |
+| Segment crosses circle (nearest point `≤ radius`) | `None` — straight path already penetrates | `-1` |
+| Endpoints near-antiparallel (`cosG < -1+ε`) | `None` — no geometric solution | `-1` |
+| Endpoints near-parallel or coincident (`cosG > 1-ε`) | `Some(fallback)` — midpoint projected onto circle | `0` with default |
+| Coincident endpoints (`dd ≤ ε`) | Segment check skipped → `cosG → 1` → `Some(fallback)` | `0` with default |
+| Newton diverges / non-convergence | `Some(fallback)` — best-effort fallback point | `0` with default |
+| Sidesite at center (`\|ss\| ≈ 0`) | Inside check triggers (`0 < radius`). Solver well-defined since `A,B < 1` | ✓ |
+| Sidesite exactly at radius (`\|ss\| = radius`) | Inside check is strict `<`, so normal wrap is used | ✓ |
+| No sidesite | Inside wrap never triggered; normal wrap proceeds | ✓ |
 
 #### Acceptance Criteria
 
-1. **No panic**: A model with sidesite deliberately placed inside wrapping sphere
-   loads and simulates without panic — both at build time and runtime.
+**T1. No build-time panic (sphere):** A model with sidesite deliberately placed
+inside a wrapping sphere loads without panic. Simulate one step without crash.
 
-2. **No panic (cylinder)**: Same for sidesite inside wrapping cylinder.
+**T2. No build-time panic (cylinder):** Same for sidesite inside a wrapping cylinder.
 
-3. **Inverse wrap path**: With sidesite inside a sphere, the tendon path passes
-   through the sphere (concave arc), producing a shorter path than the exterior
-   wrap. Verify the tendon length is less than the straight-line distance between
-   endpoints (inverse wrap shortens the path).
+**T3. Single tangent point on surface:** With sidesite inside a sphere,
+`sphere_wrap` returns `WrapResult::Wrapped` with `tangent_point_1 == tangent_point_2`
+and `arc_length == 0.0`. The tangent point lies on the sphere surface
+(`|tangent| = radius ± 1e-10`).
 
-4. **Length continuity**: As a sidesite transitions from outside to inside a
-   wrapping sphere (e.g., by moving a joint), the tendon length is continuous.
-   Test: sweep a joint angle that moves a sidesite from outside to inside,
-   verify no discontinuity in `ten_length[t]` larger than `1e-6`.
+**T4. Path length correctness:** The tendon length for inside wrap equals
+`|p0 − tangent| + |tangent − p1|` (sum of two straight segments, no arc).
+Verify this value matches MuJoCo 3.4.0 reference for the same model.
 
-5. **Newton convergence**: For a test case with known geometry (sidesite at
-   half-radius inside a unit sphere, endpoints at distance 2 and 3 from center),
-   the Newton solver converges within 20 iterations. Verify tangent points lie
-   on the circle surface (`|tangent| = radius ± 1e-10`).
+**T5. Newton convergence and tangency verification:** For a reference geometry
+with `end0 = (2.0, 0.0)`, `end1 = (1.5, 2.598)` (distance 3.0 from center,
+angle G = π/3), `radius = 1.0`:
+- The Newton solver converges within 20 iterations.
+- The tangent point lies on the circle (`|t| = 1.0 ± 1e-10`).
+- The tangent point satisfies the stationarity (tangency) condition:
+  `|τ · ((t−end0)/|t−end0| + (t−end1)/|t−end1|)| < 1e-8`
+  where `τ` is the circle tangent vector (perpendicular to `t`) at the
+  tangent point. This verifies the Newton solver found the correct
+  geometric critical point.
 
-6. **MuJoCo conformance**: Compare tendon length and wrap points against MuJoCo
-   3.4.0 for a reference model with sidesite inside a wrapping sphere. Tolerance:
-   `1e-8` for tendon length, `1e-6` for wrap point positions.
+**T6. MuJoCo conformance (sphere):** Compare tendon length and wrap point
+positions against MuJoCo 3.4.0 for a reference model with sidesite inside a
+wrapping sphere. Tolerance: `1e-6` for tendon length, `1e-6` for wrap point
+positions. (Reference values to be recorded during implementation by running
+the test model in MuJoCo 3.4.0.)
 
-7. **Regression**: All 18 existing spatial tendon tests pass unchanged (these all
-   have sidesites outside wrapping geometry).
+**T7. MuJoCo conformance (cylinder):** Same for sidesite inside a wrapping
+cylinder. Tolerance: `1e-6` for tendon length, `1e-6` for wrap point positions.
+Reference values from MuJoCo 3.4.0.
 
-8. **Jacobian correctness**: The tendon Jacobian (`ten_J`) is correct for the
-   inverse wrap case. Verify via finite-difference: perturb `qpos` by `1e-7`,
-   recompute tendon length, compare `(L_perturbed - L) / eps` against `ten_J · e_i`.
-   Tolerance: `1e-5` relative.
+**T8. Length continuity at transition:** As a sidesite moves from outside to
+inside a wrapping sphere (via joint motion), the tendon length is continuous.
+Sweep a joint angle through the transition, verify no discontinuity larger than
+`1e-4` in `ten_length[t]`. Tolerance is 1e-4 (not the 1e-6 used for normal
+wrap transitions in Test 11) because the algorithm switch at the boundary is
+discrete: `wrap_circle` collapses its two tangent points + arc to approximate
+a single-point wrap, while `wrap_inside` computes the single point directly.
+Small numerical disagreement at the switchover is expected and matches MuJoCo.
+
+**T9. Regression:** All existing spatial tendon tests (Tests 1–19b) pass
+unchanged. These all have sidesites outside wrapping geometry.
+
+**T10. Jacobian correctness:** The tendon Jacobian (`ten_J`) is correct for the
+inverse wrap case. Verify via central finite difference: perturb `qpos` by
+`±1e-7`, recompute tendon length, compare `(L(q+ε) − L(q−ε)) / (2ε)` against
+`ten_J · e_i`. Tolerance: `1e-4` relative. (Looser than the `1e-5` used for
+exterior wrap because the tangent-point stationarity is satisfied to solver
+tolerance `1e-6`, introducing slightly more numerical noise in the implicit
+derivative.)
+
+**T11. Degenerate: segment crosses circle:** Construct a geometry where the
+straight line between endpoints intersects the circle (endpoints on opposite
+sides). `wrap_inside_2d` returns `None`. The tendon goes straight.
+
+**T12. Degenerate: endpoint at circle surface:** If an endpoint is exactly at
+`|p| = radius` during inside wrap, `wrap_inside_2d` returns `None` (the `≤`
+check rejects it). Verify no crash.
+
+**T13. Fallback behavior:** Construct an adversarial near-degenerate geometry
+where `A ≈ 1` and `B ≈ 1` (endpoints barely outside the circle). The Newton
+solver may not converge or may hit a guard. Verify that `wrap_inside_2d`
+returns `Some(fallback_point)` (NOT `None`), and that the fallback point lies
+on the circle surface (`|point| = radius ± 1e-10`).
+
+**T14. Boundary: sidesite exactly at radius:** Set `|sidesite| = radius`
+exactly. The inside check (`< radius`) does NOT trigger, so normal (outside)
+wrap is used. Verify no crash and that the tendon length is finite and positive.
+
+**T15. Tangency geometric verification (cylinder):** For sidesite inside a
+wrapping cylinder with Z displacement (endpoints at different Z-heights), verify
+the tangent point in the XY cross-section satisfies the same stationarity
+condition as T5, and that the Z coordinate is correctly interpolated as
+`p1.z + (p2.z − p1.z) · L0 / (L0 + L1)`.
+
+#### Test Matrix
+
+| # | Geometry | Config | Validates |
+|---|----------|--------|-----------|
+| T1 | Sphere | Sidesite inside, build-time | No panic |
+| T2 | Cylinder | Sidesite inside, build-time | No panic |
+| T3 | Sphere | Sidesite inside, runtime | Single tangent point, on-surface, arc=0 |
+| T4 | Sphere | Sidesite inside, runtime | Path length = \|p0−t\| + \|t−p1\|, matches MuJoCo |
+| T5 | Unit test | Known 2D geometry | Newton convergence + tangency condition |
+| T6 | Sphere | MuJoCo 3.4.0 ref model | Conformance: length + wrap points |
+| T7 | Cylinder | MuJoCo 3.4.0 ref model | Conformance: length + wrap points |
+| T8 | Sphere | Sweeping joint | Continuity at outside↔inside transition |
+| T9 | Both | Existing tests 1–19b | Regression |
+| T10 | Sphere | Sidesite inside | Jacobian via central finite difference |
+| T11 | Unit test | Straddling endpoints | Segment-circle intersection → None |
+| T12 | Unit test | Endpoint at \|p\|=radius | No crash, returns None |
+| T13 | Unit test | Near-degenerate A≈1, B≈1 | Fallback point on circle |
+| T14 | Sphere | Sidesite at \|ss\|=radius | Normal wrap, no crash |
+| T15 | Cylinder | Z-displaced endpoints | XY tangency + Z interpolation |
 
 #### Files
 
 - `sim/L0/core/src/mujoco_pipeline.rs`:
-  - New `wrap_inside()` function (Newton solver, ~50 LOC)
-  - New `wrap_inside_sphere()` / `wrap_inside_cylinder()` (3D→2D projection + reconstruction)
-  - Modify wrapping dispatch in `mj_fwd_tendon_spatial()` (line ~9522)
-  - Remove panic in `compute_spatial_tendon_length0()` (line ~4008)
+  - New `wrap_inside_2d()` function (2D Newton solver, ~80 LOC)
+  - New `sphere_wrapping_plane()` helper (extracted from `sphere_wrap`, ~20 LOC)
+  - Modify `sphere_wrap()`: refactor plane construction to use helper, add inside-wrap
+    branch (~20 LOC net new)
+  - Modify `cylinder_wrap()`: add inside-wrap branch (~25 LOC)
+  - Delete sidesite-inside validation in `compute_spatial_tendon_length0()` (~30 LOC removed)
+- `sim/L0/tests/integration/spatial_tendons.rs`:
+  - New test models (sphere-inside, cylinder-inside, degenerate configurations)
+  - New tests T1–T15
 
 ---
 
