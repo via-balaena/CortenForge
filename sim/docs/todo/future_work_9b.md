@@ -130,7 +130,7 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 
 ---
 
-## Group 8 — Flex / Deformable Body (8 items)
+## Group 8 — Flex / Deformable Body (14 items)
 
 | §DT | Origin | Description | Priority |
 |-----|--------|-------------|----------|
@@ -142,10 +142,16 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | DT-71 | §11 | Behavioral friction tests for deformable — deferred until DT-25 lands | Low |
 | DT-72 | §36 | Flex contacts not wired for adhesion — AC12 test documented skip | Low |
 | DT-73 | §6B | Volume constraints — no MuJoCo equivalent; emergent from continuum model | Low |
+| DT-85 | §27B | Flex `<contact>` runtime attributes not wired: `internal`, `activelayers`, `vertcollide`, `passive` | Low |
+| DT-86 | §27B | `elastic2d` keyword on `<flex><elasticity>` — model selection `[none, bend, stretch, both]` | Low |
+| DT-87 | §27D | Shared-body flex vertices — multiple vertices referencing same body's DOFs not implemented | Low |
+| DT-88 | §27E | `<flexcomp>` deferred physics attributes: `inertiabox`, `scale`, `quat`, `file` | Low |
+| DT-89 | §27E | `<flexcomp>` deferred rendering attributes: `flatskin`, `material`, `rgba` | Low |
+| DT-90 | §27E/§30 | `flex_friction` scalar → `Vector3<f64>` — torsional/rolling friction data lost | Low |
 
 ---
 
-## Group 9 — Misc Pipeline & API (11 items)
+## Group 9 — Misc Pipeline & API (13 items)
 
 | §DT | Origin | Description | Priority |
 |-----|--------|-------------|----------|
@@ -160,6 +166,8 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | DT-82 | §9 | SoA layout across environments for cache locality — deferred to GPU work | Low |
 | DT-83 | §9 | Multi-model batching — different robots in same batch (per-env dimensions) | Low |
 | DT-84 | §32 | `mju_encodePyramid` utility not implemented — API compatibility only | Low |
+| DT-91 | §2 | Warmstart `Vec<f64>` → `SmallVec<[f64; 6]>` — avoid heap allocation in warmstart vectors | Low |
+| DT-92 | §9 | Parallel reset for `BatchSim` — sequential O(nq+nv+nu+na) reset deferred | Low |
 
 ---
 
@@ -174,9 +182,9 @@ addressed by a numbered task (e.g., pyramidal cones → §32, geom priority →
 | 5. Derivatives & Analytical Methods | DT-45 – DT-55 | 11 |
 | 6. Actuator & Dynamics | DT-56 – DT-61 | 6 |
 | 7. Sensor Gaps | DT-62 – DT-65 | 4 |
-| 8. Flex / Deformable Body | DT-66 – DT-73 | 8 |
-| 9. Misc Pipeline & API | DT-74 – DT-84 | 11 |
-| **Total** | | **84** |
+| 8. Flex / Deformable Body | DT-66 – DT-73, DT-85 – DT-90 | 14 |
+| 9. Misc Pipeline & API | DT-74 – DT-84, DT-91 – DT-92 | 13 |
+| **Total** | | **92** |
 
-**Priority breakdown:** 17 Medium, 67 Low. No High — these are all sub-items
+**Priority breakdown:** 17 Medium, 75 Low. No High — these are all sub-items
 within completed tasks, not critical gaps.

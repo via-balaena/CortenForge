@@ -2070,6 +2070,7 @@ compared to a single `step_all()` (~ms per env). Parallelizing reset via
 rayon would add thread-pool overhead that exceeds the work itself. If this
 becomes a bottleneck at much larger scales, parallelization can be added
 trivially (the pattern is identical to `step_all()`).
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-92.
 
 **Design constraint — single Model:** All environments share the same
 `Arc<Model>` (same `nq`, `nv`, body tree, geom set). Multi-model batching
