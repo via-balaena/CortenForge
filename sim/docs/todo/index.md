@@ -120,7 +120,7 @@ All items are independent (#29 is the core architectural migration).
 
 | # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
 |---|------|-----------|-------------|--------|---------------|------|--------|
-| 38 | Ball / free joint limits (swing-twist cones) | Low | High | M | None | [future_work_10.md](./future_work_10.md) | |
+| 38 | Ball / free joint limits (rotation cone via quat log) | Low | High | M | None | [future_work_10.md](./future_work_10.md) | |
 | 39 | `wrap_inside` algorithm (tendon wrapping) | Low | High | M | None | [future_work_10.md](./future_work_10.md) | |
 | 40 | Fluid / aerodynamic forces | Medium | High | L | None | [future_work_10.md](./future_work_10.md) | |
 | 41 | `disableflags` — runtime disable flag effects | Low | Medium | M | None | [future_work_10.md](./future_work_10.md) | |
@@ -140,7 +140,7 @@ All items are independent (#29 is the core architectural migration).
 
 | # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
 |---|------|-----------|-------------|--------|---------------|------|--------|
-| 43 | Geom `shellinertia` | Low | Medium | S | None | [future_work_11.md](./future_work_11.md) | |
+| 43 | Mesh `inertia` attribute (shell inertia + mode enum) | Low | Medium | S–M | None | [future_work_11.md](./future_work_11.md) | |
 | 44 | Legacy crate deprecation | Low | Medium | S | None | [future_work_11.md](./future_work_11.md) | |
 | 45 | MuJoCo conformance test suite | Medium | **Critical** | XL | #19–44 | [future_work_11.md](./future_work_11.md) | |
 

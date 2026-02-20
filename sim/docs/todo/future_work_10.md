@@ -16,191 +16,952 @@ with Batches 5–9 once §42B lands.
 
 ---
 
-### 38. Ball / Free Joint Limits (Swing-Twist Cones)
+### 38. Ball / Free Joint Limits (Rotation Cone via Quaternion Logarithm)
 **Status:** Not started | **Effort:** M | **Prerequisites:** None
 
 #### Current State
+
 Limit enforcement in `mj_fwd_constraint()` silently skips ball and free joints with
-`_ => {}`. MuJoCo supports cone limits (swing-twist) for ball joints — the joint's
-rotation is decomposed into swing (away from reference axis) and twist (around
-reference axis), each independently limited. Models with `limited="true"` on ball
-joints get no limit enforcement.
+`_ => {}` (lines 14616, 14950). Hinge/slide limits work correctly — single-DOF
+scalar constraints with `J = ±1.0`. Ball and free joints with `limited="true"` get
+no limit enforcement, producing incorrect behavior for any model that relies on ball
+joint rotation limits.
+
+#### MuJoCo Reference
+
+MuJoCo implements ball joint limits in `mj_instantiateLimit()` in
+`engine_core_constraint.c`. **There is no swing-twist decomposition.** MuJoCo uses
+a single rotation-angle cone limit via the quaternion logarithm map:
+
+1. Extract axis-angle from quaternion via `mju_quat2Vel(angleAxis, quat, 1.0)`
+   (`engine_util_spatial.c`) — this is the quaternion logarithm map:
+   ```
+   axis = (q.x, q.y, q.z)
+   sin_half = normalize(axis)           // returns original norm, normalizes in-place
+   theta = 2 * atan2(sin_half, q.w)     // full rotation angle
+   if theta > π: theta -= 2π            // wrap to [-π, π]
+   angleAxis = axis * theta             // axis-angle vector
+   ```
+
+2. Extract rotation magnitude: `theta = normalize3(angleAxis)` — returns `|angleAxis|`
+   (the total rotation angle) and normalizes `angleAxis` to a unit axis.
+
+3. Compute limit distance:
+   ```
+   limit_angle = max(range[0], range[1])
+   dist = limit_angle - theta
+   ```
+   MuJoCo uses `max(range[0], range[1])` — the larger of the two range values is
+   the cone half-angle. MuJoCo documentation recommends `range[0] = 0`.
+
+4. Activate constraint when `dist < margin` (where `margin = jnt_margin[i]`).
+
+5. Jacobian: `J = -angleAxis_unit` — a 3-element vector placed at the joint's
+   3 angular DOF addresses. This is the gradient of the rotation angle w.r.t.
+   angular velocity: pushing qvel along the rotation axis increases theta,
+   so `∂dist/∂qvel = -axis`.
+
+6. Single constraint row per ball joint (unlike hinge/slide which can have 2 rows
+   for lower + upper limits). The cone limit is inherently one-sided — `theta ≥ 0`
+   always, so only the upper bound matters.
+
+Free joints use the same algorithm on the quaternion part of their state
+(`qpos[adr+3..adr+7]`), with the Jacobian placed at the 3 angular DOF addresses
+(`jnt_dof_adr[i] + 3, + 4, + 5`).
 
 #### Objective
-Implement swing-twist cone limits for ball joints and rotation limits for free joints.
+
+Implement MuJoCo-conformant rotation cone limits for ball and free joints using
+the quaternion logarithm map.
 
 #### Specification
 
-1. **Ball joint limits**: MuJoCo parameterizes ball joint limits as:
-   - `range[0]`: Maximum swing angle (rotation away from reference axis) in radians
-   - `range[1]`: Maximum twist angle (rotation around reference axis) in radians
-   - Constraint is `swing ≤ range[0]` and `|twist| ≤ range[1]`
-2. **Swing-twist decomposition**: Given quaternion `q` representing joint rotation:
-   - `twist = atan2(2*(q.w*q.z + q.x*q.y), q.w² + q.x² - q.y² - q.z²)`
-   - `swing = acos(clamp(2*(q.w² + q.z²) - 1, -1, 1))`
-   (or equivalent formulation matching MuJoCo's `mju_ball2Limit()`)
-3. **Constraint assembly**: When limit is violated, add constraint row(s) to the
-   equality/limit block with appropriate Jacobian (derivative of swing/twist w.r.t.
-   angular velocity).
-4. **Free joint limits**: Apply same logic to the quaternion DOFs of free joints
-   (indices 3-6 of the 7-DOF free joint).
+##### S1. Quaternion-to-axis-angle utility
+
+Implement `quat_to_axis_angle(quat: [f64; 4]) -> (Vector3<f64>, f64)` matching
+`mju_quat2Vel()` with `dt=1`:
+
+```rust
+fn quat_to_axis_angle(q: [f64; 4]) -> (Vector3<f64>, f64) {
+    let mut axis = Vector3::new(q[1], q[2], q[3]);
+    let sin_half = axis.normalize_mut();  // returns original norm
+    let mut theta = 2.0 * sin_half.atan2(q[0]);
+    if theta > std::f64::consts::PI {
+        theta -= 2.0 * std::f64::consts::PI;
+    }
+    // theta is signed; for limit purposes we use |theta|
+    (axis, theta)
+}
+```
+
+**Edge case:** When `theta ≈ 0` (near-identity rotation), `sin_half ≈ 0` and the
+axis is undefined. `normalize_mut()` returns 0 and leaves axis at zero. In this case
+`theta ≈ 0`, which means `dist = limit_angle - 0 > 0` (satisfied), so no constraint
+is instantiated. No special handling needed.
+
+##### S2. Constraint counting
+
+Add to the constraint counting loop (line ~14603):
+
+```rust
+MjJointType::Ball => {
+    if !model.jnt_limited[jnt_id] { continue; }
+    let adr = model.jnt_qpos_adr[jnt_id];
+    let q = [data.qpos[adr], data.qpos[adr+1], data.qpos[adr+2], data.qpos[adr+3]];
+    let (_, theta) = quat_to_axis_angle(q);
+    let limit_angle = model.jnt_range[jnt_id].0.max(model.jnt_range[jnt_id].1);
+    let dist = limit_angle - theta.abs();
+    if dist < margin {  // margin = 0.0 currently (see S5)
+        nefc += 1;
+    }
+}
+MjJointType::Free => {
+    // Same logic on quaternion part: qpos[adr+3..adr+7]
+    // ... (identical to Ball, offset by +3 in qpos)
+}
+```
+
+##### S3. Constraint assembly
+
+Add to the assembly loop (line ~14895):
+
+```rust
+MjJointType::Ball => {
+    let qpos_adr = model.jnt_qpos_adr[jnt_id];
+    let dof_adr = model.jnt_dof_adr[jnt_id];
+    let q = [data.qpos[qpos_adr], data.qpos[qpos_adr+1],
+             data.qpos[qpos_adr+2], data.qpos[qpos_adr+3]];
+    let q_norm = normalize4(q);
+    let (axis, theta) = quat_to_axis_angle(q_norm);
+    let limit_angle = model.jnt_range[jnt_id].0.max(model.jnt_range[jnt_id].1);
+    let dist = limit_angle - theta.abs();
+
+    if dist < 0.0 {  // margin = 0.0 currently
+        // Jacobian: -axis on 3 angular DOFs
+        data.efc_J[(row, dof_adr + 0)] = -axis.x;
+        data.efc_J[(row, dof_adr + 1)] = -axis.y;
+        data.efc_J[(row, dof_adr + 2)] = -axis.z;
+
+        // Velocity: J · qvel
+        let vel = -(axis.x * data.qvel[dof_adr]
+                  + axis.y * data.qvel[dof_adr + 1]
+                  + axis.z * data.qvel[dof_adr + 2]);
+
+        finalize_row!(
+            model.jnt_solref[jnt_id],
+            model.jnt_solimp[jnt_id],
+            dist,
+            0.0,  // margin
+            vel,
+            0.0,  // friction loss
+            ConstraintType::LimitJoint,
+            1,
+            jnt_id,
+            [0.0; 5]
+        );
+    }
+}
+MjJointType::Free => {
+    // Identical to Ball, but:
+    //   quaternion at qpos_adr + 3 (indices +3..+6)
+    //   angular DOFs at dof_adr + 3 (indices +3..+5)
+    let qpos_adr = model.jnt_qpos_adr[jnt_id] + 3;
+    let dof_adr = model.jnt_dof_adr[jnt_id] + 3;
+    // ... (same algorithm as Ball)
+}
+```
+
+##### S4. Tree affiliation
+
+The existing `ConstraintType::LimitJoint` tree affiliation logic (line ~13121)
+already handles arbitrary `jnt_id` → `jnt_body` → `body_treeid` mapping. No change
+needed — ball/free joint limits automatically affiliate to the correct tree.
+
+##### S5. Known limitation: `jnt_margin`
+
+MuJoCo activates joint limit constraints when `dist < jnt_margin[i]`, allowing
+soft activation before the limit is reached. Our code uses hardcoded `margin = 0.0`
+for all joint limits (lines 14919, 14940). This is a pre-existing gap affecting
+hinge/slide limits too — not introduced by this item. A future item should add
+`jnt_margin` parsing and wire it into the activation condition for all joint types.
 
 #### Acceptance Criteria
-1. A ball joint with `range="30 45"` (degrees, if `<compiler angle="degree"/>`)
-   limits swing to 30° and twist to 45°.
-2. Limit forces push the joint back within the cone.
-3. Unlimited ball joints (`limited="false"`) unchanged (regression).
-4. Swing-twist decomposition matches MuJoCo's `mju_ball2Limit()` output.
+
+1. **Cone limit active**: A ball joint with `range="0 60"` (`<compiler angle="degree"/>`)
+   constrains total rotation to 60°. Applying torque beyond the limit produces a
+   constraint force that resists further rotation. Verify `theta` stays ≤ 60° + solver
+   softness (determined by solref/solimp).
+
+2. **Range interpretation**: `range="0 60"` and `range="60 0"` produce identical
+   behavior — `max(0, 60) = 60°` is the cone half-angle.
+
+3. **Jacobian direction**: The constraint force opposes the current rotation axis.
+   Test: apply constant torque about X-axis on a ball joint with `range="0 30"`.
+   The constraint Jacobian should point along -X when the joint is rotated about X.
+
+4. **Free joint limits**: A free joint with `limited="true" range="0 45"` constrains
+   the rotational component to 45°. Translational DOFs are unaffected.
+
+5. **Near-identity regression**: A ball joint at rest (identity quaternion, `theta ≈ 0`)
+   with any `range > 0` produces no constraint row. Verify `nefc` is unchanged.
+
+6. **Unlimited regression**: Ball/free joints with `limited="false"` produce no
+   constraint rows. All existing hinge/slide limit tests pass unchanged.
+
+7. **MuJoCo conformance**: For a ball joint rotated to 50° about axis (0.6, 0.8, 0),
+   with `range="0 45"`, verify:
+   - `dist = 45° - 50° = -5°` (in radians: `π/36 - 5π/18 ≈ -0.0873`)
+   - `axis ≈ (0.6, 0.8, 0.0)` (unit rotation axis)
+   - `J = (-0.6, -0.8, 0.0)` at the 3 angular DOFs
+   - Compare constraint force magnitude against MuJoCo 3.4.0 reference value.
+
+8. **Quaternion wrap**: A ball joint rotated past 180° (e.g., `theta = 190°`) correctly
+   wraps via the `theta > π → theta -= 2π` branch, producing `theta = -170°` and
+   `|theta| = 170°`. The cone limit on `|theta|` activates correctly.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — `mj_fwd_constraint()`, limit enforcement block
+- `sim/L0/core/src/mujoco_pipeline.rs` — `mj_fwd_constraint()`: constraint counting
+  loop (~14603) and constraint assembly loop (~14895). Add `Ball` and `Free` arms.
+  Add `quat_to_axis_angle()` utility (or inline).
 
 ---
 
-### 39. `wrap_inside` Algorithm (Tendon Wrapping)
+### 39. `wrap_inside` Algorithm (Inverse Tendon Wrapping)
 **Status:** Not started | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 
-When a sidesite is inside a wrapping geometry, the code **panics** at
-`mujoco_pipeline.rs:3848` with "The wrap_inside algorithm is not implemented."
-This is a runtime crash on valid models.
+Two issues exist:
+
+1. **Build-time panic** (`mujoco_pipeline.rs:4008`): `compute_spatial_tendon_length0()`
+   panics if a sidesite is inside a wrapping geometry at model build time. This is
+   treated as a fatal model error, but MuJoCo treats it as valid — "side sites can
+   be placed inside the sphere or cylinder, which causes an inverse wrap: the tendon
+   path is constrained to pass through the object instead of going around it."
+
+2. **Runtime silent degradation** (`mujoco_pipeline.rs:10072`): `sphere_wrap()` returns
+   `WrapResult::NoWrap` when an endpoint is inside the sphere. During simulation,
+   if joint motion causes the sidesite to enter a wrapping geometry, the tendon
+   silently loses its wrapping (tendon goes straight) instead of switching to the
+   inverse wrap algorithm.
+
+#### MuJoCo Reference
+
+MuJoCo's `mju_wrap()` in `engine_util_misc.c` dispatches between two algorithms
+based on sidesite position:
+
+```c
+if (side && mju_norm3(s) < radius) {
+    wlen = wrap_inside(pnt, d, radius);   // inverse wrap
+} else {
+    wlen = wrap_circle(pnt, d, (side ? sd : NULL), radius);  // normal wrap
+}
+```
+
+**Normal wrap** (`wrap_circle`): Tendon wraps around the exterior of the geometry.
+Already implemented as `sphere_wrap()` / `cylinder_wrap()`.
+
+**Inverse wrap** (`wrap_inside`): Tendon path passes *through* the geometry,
+creating a concave arc on the circle's surface. MuJoCo uses a Newton solver to
+find the two tangent points where the tendon enters and exits the circle.
+
+The `wrap_inside` function operates in 2D (the wrapping plane), making it
+geometry-type agnostic — both sphere and cylinder use the same 2D algorithm
+after 3D→2D projection (sphere projects to a great circle, cylinder projects
+to a cross-section circle).
 
 #### Objective
 
-Implement the `wrap_inside` resolution algorithm so that tendon wrapping handles
-the sidesite-inside-geometry case gracefully instead of panicking.
+Implement MuJoCo's `wrap_inside` Newton solver for inverse tendon wrapping.
+Remove the build-time panic. Handle runtime sidesite-inside transitions.
 
 #### Specification
 
-1. **Detection**: The current code already detects the inside case (distance from
-   sidesite to wrapping geometry center < radius). The `todo!()` panic needs to
-   be replaced with the resolution algorithm.
-2. **Algorithm (sphere wrapping)**: When a sidesite is inside the wrapping sphere:
-   - Project the sidesite position onto the sphere surface along the line from
-     center to sidesite.
-   - Use the projected point as the effective sidesite for wrapping calculations.
-   - If sidesite is exactly at center (degenerate), use the previous frame's
-     wrap point or a default direction.
-3. **Algorithm (cylinder wrapping)**: When a sidesite is inside the wrapping
-   cylinder:
-   - Project radially outward to the cylinder surface.
-   - Maintain the axial component.
-4. **MuJoCo reference**: MuJoCo's `mju_wrap` handles the inside case in
-   `engine_core_smooth.c`. The key behavior: when inside, the tendon path goes
-   through the wrapping geometry center (zero-length wrap segment) rather than
-   crashing.
-5. **No panic**: Replace `todo!()` with the computed wrap-inside path. Never
-   panic on valid MJCF input.
+##### S1. Newton solver: `wrap_inside()`
+
+Given two endpoint positions (2D in the wrapping plane) and the wrapping circle
+radius, find the two tangent points for an inverse (through-geometry) wrap path.
+
+**Inputs:**
+- `p0, p1`: endpoint positions in 2D wrapping plane (from geom-local coordinates)
+- `d0 = |p0|, d1 = |p1|`: distances from circle center to each endpoint
+- `radius`: wrapping circle radius
+
+**Setup:**
+```
+A = radius / d0
+B = radius / d1
+dd = |p1 - p0|²
+G = acos((d0² + d1² - dd) / (2 * d0 * d1))    // triangle angle at center
+```
+
+**Newton solve** for `z` (contact parameter):
+```
+f(z) = asin(A·z) + asin(B·z) - 2·asin(z) + G = 0
+
+f'(z) = A / sqrt(1 - z²·A²)
+      + B / sqrt(1 - z²·B²)
+      - 2 / sqrt(1 - z²)
+
+Initial guess: z = 1 - 1e-7
+Max iterations: 20
+Tolerance: |f(z)| < 1e-6
+Early exit: if f'(z) ≥ 0, no solution exists → return NoWrap
+```
+
+**Geometric reconstruction:** From converged `z`, compute the two tangent points
+on the circle where the inverse wrap path enters and exits the surface. The angles
+from the center to each tangent point are derived from the `asin` terms in the
+Newton equation.
+
+**Return:** `WrapResult::Wrapped { tangent_point_1, tangent_point_2, arc_length }`
+where `arc_length` is the interior arc between the tangent points (shorter arc
+on the center-facing side).
+
+##### S2. Dispatch in the wrapping pipeline
+
+Modify the wrapping dispatch at `mj_fwd_tendon_spatial()` (line ~9522) to check
+for sidesite-inside before calling `sphere_wrap()` / `cylinder_wrap()`:
+
+```rust
+let wrap_result = match model.geom_type[geom_id] {
+    GeomType::Sphere => {
+        let r = model.geom_size[geom_id].x;
+        if let Some(ss) = sidesite_local {
+            if ss.norm() < r {
+                // Sidesite inside sphere → inverse wrap
+                return wrap_inside_sphere(p0_local, p1_local, r);
+            }
+        }
+        sphere_wrap(p0_local, p1_local, r, sidesite_local)
+    }
+    GeomType::Cylinder => {
+        let r = model.geom_size[geom_id].x;
+        if let Some(ss) = sidesite_local {
+            // Cylinder inside check: 2D XY projection
+            let ss_xy = Vector2::new(ss.x, ss.y);
+            if ss_xy.norm() < r {
+                return wrap_inside_cylinder(p0_local, p1_local, r);
+            }
+        }
+        cylinder_wrap(p0_local, p1_local, r, sidesite_local)
+    }
+    _ => unreachable!("wrapping geom type validated at model build"),
+};
+```
+
+For cylinders, the inside check uses the XY cross-section distance (matching
+MuJoCo's 2D projection for cylinder wrapping).
+
+##### S3. Remove build-time panic
+
+Remove the sidesite-inside validation panic from `compute_spatial_tendon_length0()`
+(lines ~3998-4014). Replace with a no-op or debug log — sidesite inside wrapping
+geometry is a valid MuJoCo configuration.
+
+##### S4. Sphere `wrap_inside` implementation
+
+Project the 3D sphere wrapping problem to 2D (wrapping plane through center, p0,
+p1), call the shared Newton solver from S1, then reconstruct 3D tangent points.
+Return as `WrapResult::Wrapped`.
+
+##### S5. Cylinder `wrap_inside` implementation
+
+Project endpoints onto the XY cross-section plane (same 2D projection as
+`cylinder_wrap`), call the shared Newton solver from S1, then reconstruct 3D
+tangent points with Z-interpolation (axial component). Return as
+`WrapResult::Wrapped`.
+
+##### S6. Degenerate cases
+
+- **Endpoint inside geometry** (`|p0| < radius` or `|p1| < radius`): Return
+  `WrapResult::NoWrap` (same as current behavior — endpoint inside is not the
+  same as sidesite inside).
+- **Newton solver fails** (no convergence or `f'(z) ≥ 0`): Return
+  `WrapResult::NoWrap`. The tendon goes straight. This matches MuJoCo's behavior
+  when `wrap_inside` returns `-1`.
+- **Sidesite at center** (`|ss| ≈ 0`): The inside check is `|ss| < radius`,
+  which catches this. The Newton solver handles it (A and B are well-defined as
+  long as endpoints are outside).
 
 #### Acceptance Criteria
 
-1. A model with sidesite inside wrapping sphere does not panic.
-2. A model with sidesite inside wrapping cylinder does not panic.
-3. Tendon length is continuous as sidesite transitions from outside to inside
-   the wrapping geometry.
-4. Existing wrapping tests (18 spatial tendon tests) pass unchanged.
-5. New test: sidesite deliberately placed inside wrap sphere, verify tendon
-   length matches MuJoCo.
+1. **No panic**: A model with sidesite deliberately placed inside wrapping sphere
+   loads and simulates without panic — both at build time and runtime.
+
+2. **No panic (cylinder)**: Same for sidesite inside wrapping cylinder.
+
+3. **Inverse wrap path**: With sidesite inside a sphere, the tendon path passes
+   through the sphere (concave arc), producing a shorter path than the exterior
+   wrap. Verify the tendon length is less than the straight-line distance between
+   endpoints (inverse wrap shortens the path).
+
+4. **Length continuity**: As a sidesite transitions from outside to inside a
+   wrapping sphere (e.g., by moving a joint), the tendon length is continuous.
+   Test: sweep a joint angle that moves a sidesite from outside to inside,
+   verify no discontinuity in `ten_length[t]` larger than `1e-6`.
+
+5. **Newton convergence**: For a test case with known geometry (sidesite at
+   half-radius inside a unit sphere, endpoints at distance 2 and 3 from center),
+   the Newton solver converges within 20 iterations. Verify tangent points lie
+   on the circle surface (`|tangent| = radius ± 1e-10`).
+
+6. **MuJoCo conformance**: Compare tendon length and wrap points against MuJoCo
+   3.4.0 for a reference model with sidesite inside a wrapping sphere. Tolerance:
+   `1e-8` for tendon length, `1e-6` for wrap point positions.
+
+7. **Regression**: All 18 existing spatial tendon tests pass unchanged (these all
+   have sidesites outside wrapping geometry).
+
+8. **Jacobian correctness**: The tendon Jacobian (`ten_J`) is correct for the
+   inverse wrap case. Verify via finite-difference: perturb `qpos` by `1e-7`,
+   recompute tendon length, compare `(L_perturbed - L) / eps` against `ten_J · e_i`.
+   Tolerance: `1e-5` relative.
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — replace `todo!()` at the wrap_inside
-  call site with proper algorithm
+- `sim/L0/core/src/mujoco_pipeline.rs`:
+  - New `wrap_inside()` function (Newton solver, ~50 LOC)
+  - New `wrap_inside_sphere()` / `wrap_inside_cylinder()` (3D→2D projection + reconstruction)
+  - Modify wrapping dispatch in `mj_fwd_tendon_spatial()` (line ~9522)
+  - Remove panic in `compute_spatial_tendon_length0()` (line ~4008)
 
 ---
 
-### 40. Fluid / Aerodynamic Forces
+### 40. Fluid / Aerodynamic Forces (Two-Model System)
 **Status:** Not started | **Effort:** L | **Prerequisites:** None
 
 #### Current State
-`density`, `viscosity`, and `wind` fields are parsed from MJCF `<option>` and stored
-on `Model`, but no fluid drag or lift computation exists in the pipeline. Any model
-that relies on these (swimming, flying, falling with drag) produces incorrect results.
 
-MuJoCo computes viscous and inertial drag in `mj_passive()` using ellipsoid
-approximations of geom shapes. The force model has two components:
-- **Viscous drag**: `F = -6π μ r v` (Stokes drag, scaled by equivalent sphere radius)
-- **Inertial drag**: `F = -½ ρ C_d A |v| v` (form drag with ellipsoid cross-section)
+`density`, `viscosity`, and `wind` fields are parsed from MJCF `<option>` and stored
+on `Model`, but no fluid force computation exists in the pipeline. Any model relying
+on fluid interaction (swimming, flying, falling with drag) produces incorrect results.
+
+The dm_control fruitfly model in our test assets uses `fluidshape="ellipsoid"` with
+`fluidcoef` for wing aerodynamics — this model is silently broken.
+
+#### MuJoCo Reference
+
+MuJoCo has **two** fluid models (`engine_passive.c`), dispatched per-geom by the
+`fluidshape` attribute:
+
+| Model | Activation | Scope | Force Components |
+|-------|-----------|-------|-----------------|
+| **Inertia-box** (legacy) | `fluidshape="none"` (default) | Per-body (uses body inertia box) | Quadratic drag + viscous resistance |
+| **Ellipsoid** (advanced) | `fluidshape="ellipsoid"` on geom | Per-geom (uses geom ellipsoid semi-axes) | Added mass + quadratic drag + Magnus lift + Kutta lift + viscous drag + viscous torque |
+
+Both models are gated by `density > 0 || viscosity > 0`. When both are zero
+(default), all fluid computation is skipped.
+
+##### Inertia-Box Model (`mj_inertiaBoxFluidModel`)
+
+Computes equivalent box dimensions from the body's diagonal inertia:
+```
+box[i] = sqrt(max(MINVAL, (I_j + I_k - I_i)) / mass * 6.0)
+```
+
+**Quadratic drag** (high Reynolds, per-axis in body frame):
+```
+f_D,i = -2 * ρ * r_j * r_k * |v_i| * v_i
+g_D,i = -0.5 * ρ * r_i * (r_j⁴ + r_k⁴) * |ω_i| * ω_i
+```
+
+**Viscous resistance** (low Reynolds):
+```
+r_eq = (r_x + r_y + r_z) / 3           // equivalent sphere radius
+f_V,i = -6 * β * π * r_eq * v_i
+g_V,i = -8 * β * π * r_eq³ * ω_i
+```
+
+Where `ρ = option.density`, `β = option.viscosity`, `v = body_vel - wind` (in
+body frame), `ω = body_angvel` (in body frame).
+
+##### Ellipsoid Model (`mj_ellipsoidFluidModel`)
+
+Per-geom computation using equivalent ellipsoid semi-axes. 6 force components:
+
+**1. Added mass** (acceleration-dependent, from Tuckerman's ellipsoid theory):
+```
+f_A = -m_A · v̇ + (m_A · v) × ω
+g_A = -I_A · ω̇ + (m_A · v) × v + (I_A · ω) × ω
+```
+Where `m_A[i] = ρ * V * α_i` (added mass coefficients from ellipsoid integrals),
+`V = 4π/3 * r_x * r_y * r_z`.
+
+**2. Viscous drag** (blunt + slender decomposition):
+```
+f_D = -ρ * [C_D_blunt * A_proj + C_D_slender * (A_max - A_proj)] * ‖v‖ * v
+```
+Where `A_proj` is the projected ellipsoid area normal to velocity.
+
+**3. Angular drag**:
+```
+g_D = -ρ * C_D_angular * [I_D + C_D_slender/C_D_angular * (I_max - I_D)] · ω
+```
+
+**4. Magnus force** (spin-induced lift):
+```
+f_M = C_M * ρ * V * (ω × v)
+```
+Zero for zero angular velocity.
+
+**5. Kutta lift** (circulation from asymmetric cross-section):
+```
+f_K = C_K * ρ * A_proj * (v̂ · n_s) * ((n_s × v) × v) / ‖v‖
+```
+Zero for spheres (all semi-axes equal). `n_s` is the ellipsoid slender axis.
+
+**6. Viscous resistance** (low Reynolds):
+```
+r_D = (r_x + r_y + r_z) / 3
+f_V = -6 * π * r_D * β * v
+g_V = -8 * π * r_D³ * β * ω
+```
+
+**5 tunable coefficients** per geom (`fluidcoef` attribute):
+
+| Index | Parameter | Default |
+|-------|-----------|---------|
+| 0 | `C_D_blunt` (blunt drag) | 0.5 |
+| 1 | `C_D_slender` (slender drag) | 0.25 |
+| 2 | `C_D_angular` (angular drag) | 1.5 |
+| 3 | `C_K` (Kutta lift) | 1.0 |
+| 4 | `C_M` (Magnus lift) | 1.0 |
+
+##### Ellipsoid semi-axes (`mju_geom2Ellipsoid`)
+
+MuJoCo computes equivalent ellipsoid semi-axes per geom type:
+
+| Geom Type | Semi-axes (r_x, r_y, r_z) |
+|-----------|--------------------------|
+| Sphere | `(r, r, r)` |
+| Capsule | `(r, r, r + l/2)` |
+| Cylinder | `(r, r, l/2)` |
+| Ellipsoid | `(r_x, r_y, r_z)` — direct |
+| Box | `(sx, sy, sz)` — half-sizes |
+
+Mesh geoms use the bounding box half-extents as the equivalent ellipsoid.
 
 #### Objective
-Implement MuJoCo-compatible fluid forces in the passive force computation.
+
+Implement both MuJoCo fluid models (inertia-box and ellipsoid) in the passive
+force pipeline.
 
 #### Specification
 
-1. **Equivalent ellipsoid**: For each geom, compute equivalent ellipsoid semi-axes
-   based on geom type and size (MuJoCo uses `mju_geom2Ellipsoid()`).
-2. **Viscous drag** (per-geom): `F_visc = -6π * viscosity * equiv_radius * vel_fluid`
-   where `vel_fluid = vel_body - wind`.
-3. **Inertial drag** (per-geom): `F_inertia = -½ * density * C_d * A_proj * |vel| * vel`
-   with projected area `A_proj` from ellipsoid cross-section normal to velocity.
-4. **Torque**: Both components produce torques via `r × F` from geom center to body COM.
-5. **Application**: Add forces in `mj_passive()` before constraint solving.
+##### S1. MJCF parsing
+
+Add to `MjcfGeom`:
+```rust
+pub fluidshape: Option<FluidShape>,      // "none" | "ellipsoid"
+pub fluidcoef: Option<[f64; 5]>,         // [C_D_blunt, C_D_slender, C_D_angular, C_K, C_M]
+```
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FluidShape {
+    #[default]
+    None,       // Use inertia-box model (body-level)
+    Ellipsoid,  // Use ellipsoid model (per-geom)
+}
+```
+
+Parse from `<geom>` element and inherit from `<default>` class.
+
+##### S2. Model storage
+
+Add to `Model`:
+```rust
+pub geom_fluidshape: Vec<FluidShape>,
+pub geom_fluidcoef: Vec<[f64; 5]>,       // defaults: [0.5, 0.25, 1.5, 1.0, 1.0]
+pub geom_fluid_ellipsoid: Vec<Vector3<f64>>,  // precomputed semi-axes
+```
+
+Precompute `geom_fluid_ellipsoid` at model build time via `mju_geom2Ellipsoid`.
+
+##### S3. Fluid force computation
+
+Add `mj_fluid()` helper called from `mj_fwd_passive()`:
+
+```rust
+fn mj_fluid(model: &Model, data: &mut Data) {
+    let rho = model.density;
+    let beta = model.viscosity;
+    if rho == 0.0 && beta == 0.0 { return; }  // early exit: no fluid
+
+    // Phase 1: Inertia-box model (body-level, for geoms with fluidshape=None)
+    for body_id in 1..model.nbody {  // skip world body
+        if !body_has_inertiabox_geoms(model, body_id) { continue; }
+        mj_inertia_box_fluid(model, data, body_id, rho, beta);
+    }
+
+    // Phase 2: Ellipsoid model (per-geom, for geoms with fluidshape=Ellipsoid)
+    for geom_id in 0..model.ngeom {
+        if model.geom_fluidshape[geom_id] != FluidShape::Ellipsoid { continue; }
+        mj_ellipsoid_fluid(model, data, geom_id, rho, beta);
+    }
+}
+```
+
+##### S4. Inertia-box implementation
+
+For each body, compute equivalent box from diagonal inertia, then apply:
+- Quadratic drag forces (body-frame, per-axis)
+- Viscous resistance forces
+- Transform to world frame, accumulate into `qfrc_passive`
+
+##### S5. Ellipsoid implementation
+
+For each ellipsoid-mode geom:
+1. Get body velocity at geom center (linear + angular)
+2. Subtract wind: `v_fluid = v_body - wind`
+3. Transform to geom-local frame
+4. Compute all 6 force components in geom-local frame
+5. Transform forces/torques to world frame
+6. Accumulate into `qfrc_passive` via body Jacobian at geom center
+
+##### S6. Implicit integration derivatives (future)
+
+MuJoCo provides full derivatives of fluid forces for implicit integration
+stability. This is important for high-density fluids and stiff scenarios.
+Mark as a sub-item for later — explicit integration is sufficient for initial
+conformance. Note: without derivatives, implicit integrator will not account
+for fluid forces in the implicit damping matrix.
 
 #### Acceptance Criteria
-1. A falling sphere in a viscous medium reaches terminal velocity.
-2. Wind produces lateral force on a stationary body.
-3. Zero density/viscosity/wind produces zero fluid force (regression).
-4. Force magnitudes match MuJoCo within 1% for a reference test case.
+
+1. **Zero fluid regression**: `density=0, viscosity=0` produces zero fluid force.
+   All existing tests pass unchanged.
+
+2. **Terminal velocity**: A sphere (`density=1000 kg/m³, radius=0.1, mass=1`)
+   falling in fluid (`option density=1.2, viscosity=1.8e-5`) reaches terminal
+   velocity. Verify steady-state velocity matches MuJoCo within 1%.
+
+3. **Wind force**: A stationary body with `wind="5 0 0"` and `density=1.2`
+   experiences a lateral force. Verify force direction and magnitude match MuJoCo.
+
+4. **Viscous Stokes drag**: A small sphere (`radius=0.001`) moving slowly in
+   `viscosity=1.0` fluid. Verify `F ≈ -6π * viscosity * r * v` (Stokes law).
+   Compare against MuJoCo within `1e-6`.
+
+5. **Ellipsoid model — drag**: A non-spherical ellipsoid (`size="0.1 0.05 0.02"`)
+   with `fluidshape="ellipsoid"` falling in fluid. Verify drag depends on
+   orientation (projected area changes with attitude).
+
+6. **Ellipsoid model — Magnus lift**: A spinning sphere (`fluidshape="ellipsoid"`)
+   moving through fluid produces a lateral force (Magnus effect). Verify
+   `f_M = C_M * ρ * V * (ω × v)` matches MuJoCo.
+
+7. **Ellipsoid model — Kutta lift**: A non-spherical ellipsoid with velocity
+   at an angle to its principal axis produces Kutta lift force. Zero for spheres.
+
+8. **Fluidcoef tuning**: Custom `fluidcoef="1.0 0.5 2.0 0.0 0.0"` zeroes
+   Magnus and Kutta while doubling blunt drag. Verify forces match MuJoCo.
+
+9. **Inertia-box model**: A body with multiple geoms (all `fluidshape="none"`)
+   uses the body-level inertia box for drag. Verify equivalent box dimensions
+   from `body_inertia` match MuJoCo's computation.
+
+10. **Mixed model**: A body with some geoms `fluidshape="none"` and others
+    `fluidshape="ellipsoid"` applies both models correctly (body-level inertia-box
+    for none-geoms, per-geom ellipsoid for ellipsoid-geoms).
+
+11. **MuJoCo conformance (comprehensive)**: Load the dm_control fruitfly model
+    (which uses `fluidshape="ellipsoid"` for wing geoms). Run 100 steps. Compare
+    `qfrc_passive` against MuJoCo 3.4.0 reference. Tolerance: `1e-6` per component.
 
 #### Files
-- `sim/L0/core/src/mujoco_pipeline.rs` — `mj_passive()` or new `mj_fluid()` helper
+
+- `sim/L0/mjcf/src/types.rs` — `FluidShape` enum, add `fluidshape`/`fluidcoef` to
+  `MjcfGeom`
+- `sim/L0/mjcf/src/parser.rs` — parse `fluidshape`, `fluidcoef` attributes
+- `sim/L0/mjcf/src/model_builder.rs` — precompute `geom_fluid_ellipsoid`,
+  wire `fluidshape`/`fluidcoef` to Model
+- `sim/L0/core/src/mujoco_pipeline.rs` — `mj_fluid()`, `mj_inertia_box_fluid()`,
+  `mj_ellipsoid_fluid()` in `mj_fwd_passive()`, Model fields
+- `sim/L0/tests/integration/` — fluid force tests (new file)
 
 ---
 
-### 41. `disableflags` — Runtime Disable Flag Effects
+### 41. `disableflags` / `enableflags` — Full Runtime Flag Wiring
 **Status:** Not started | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 
-MJCF parser parses all 21 `<flag>` attributes. But only `DISABLE_ISLAND` has a
-runtime constant and check in the pipeline. Flags like `contact="disable"`,
-`gravity="disable"`, `limit="disable"`, `equality="disable"` are parsed but have
-NO runtime effect.
+The MJCF parser (`parser.rs:441-470`) parses 21 `<flag>` attributes into `MjcfFlag`
+boolean fields. The model builder (`model_builder.rs:968-970`) wires **only**
+`ENABLE_SLEEP`. `DISABLE_ISLAND` has a runtime constant but is hardcoded, not parsed
+from `MjcfFlag.island`.
+
+**Result:** All other parsed flags (constraint, equality, frictionloss, limit, contact,
+passive, gravity, clampctrl, warmstart, filterparent, actuation, refsafe, sensor,
+midphase, nativeccd, eulerdamp, override_contacts, energy, multiccd) are parsed into
+`MjcfFlag` but **never converted to the `u32` bitfields** and never checked at runtime.
+
+Additionally, the parser has a single `passive` field but MuJoCo 3.x uses separate
+`spring` and `damper` flags. Three enable flags are not parsed: `fwdinv`, `invdiscrete`,
+`autoreset`.
+
+#### MuJoCo Reference
+
+MuJoCo uses two `u32` bitfields (`mjtDisableBit` and `mjtEnableBit`) from
+`mujoco.h`:
+
+**Disable flags** (`mjNDISABLE = 19`):
+
+| Constant | Bit | XML attr | Default | Pipeline effect |
+|----------|-----|----------|---------|----------------|
+| `mjDSBL_CONSTRAINT` | 1<<0 | `constraint` | enable | Skip **entire** constraint solver |
+| `mjDSBL_EQUALITY` | 1<<1 | `equality` | enable | Skip equality constraint assembly |
+| `mjDSBL_FRICTIONLOSS` | 1<<2 | `frictionloss` | enable | Skip friction loss constraint rows |
+| `mjDSBL_LIMIT` | 1<<3 | `limit` | enable | Skip joint and tendon limit constraints |
+| `mjDSBL_CONTACT` | 1<<4 | `contact` | enable | Skip collision detection + contact constraints |
+| `mjDSBL_SPRING` | 1<<5 | `spring`† | enable | Skip passive spring forces (joint, tendon, flex) |
+| `mjDSBL_DAMPER` | 1<<6 | `damper`† | enable | Skip passive damping forces (joint, tendon, flex) |
+| `mjDSBL_GRAVITY` | 1<<7 | `gravity` | enable | Zero gravity vector in `mj_rne()` |
+| `mjDSBL_CLAMPCTRL` | 1<<8 | `clampctrl` | enable | Skip clamping ctrl to actuator ctrlrange |
+| `mjDSBL_WARMSTART` | 1<<9 | `warmstart` | enable | Skip warm-starting solver from prev solution |
+| `mjDSBL_FILTERPARENT` | 1<<10 | `filterparent` | enable | Disable parent-child collision filtering |
+| `mjDSBL_ACTUATION` | 1<<11 | `actuation` | enable | Skip actuator force computation |
+| `mjDSBL_REFSAFE` | 1<<12 | `refsafe` | enable | Skip `solref[0] >= 2*timestep` enforcement |
+| `mjDSBL_SENSOR` | 1<<13 | `sensor` | enable | Skip all sensor evaluation |
+| `mjDSBL_MIDPHASE` | 1<<14 | `midphase` | enable | Skip BVH midphase (brute-force broadphase) |
+| `mjDSBL_EULERDAMP` | 1<<15 | `eulerdamp` | enable | Skip implicit joint damping in Euler |
+| `mjDSBL_AUTORESET` | 1<<16 | `autoreset` | enable | Skip auto-reset on NaN/divergence |
+| `mjDSBL_NATIVECCD` | 1<<17 | `nativeccd` | enable | Fall back to libccd for convex collision |
+| `mjDSBL_ISLAND` | 1<<18 | `island` | disable | Skip island discovery (global solve) |
+
+†MuJoCo 3.x split the old `passive` flag into separate `spring` and `damper` flags.
+
+**Enable flags** (`mjNENABLE = 6`):
+
+| Constant | Bit | XML attr | Default | Pipeline effect |
+|----------|-----|----------|---------|----------------|
+| `mjENBL_OVERRIDE` | 1<<0 | `override` | disable | Enable contact parameter override |
+| `mjENBL_ENERGY` | 1<<1 | `energy` | disable | Enable potential + kinetic energy computation |
+| `mjENBL_FWDINV` | 1<<2 | `fwdinv` | disable | Enable forward/inverse comparison stats |
+| `mjENBL_INVDISCRETE` | 1<<3 | `invdiscrete` | disable | Discrete-time inverse dynamics |
+| `mjENBL_MULTICCD` | 1<<4 | `multiccd` | disable | Multi-point CCD for flat surfaces |
+| `mjENBL_SLEEP` | 1<<5 | `sleep` | disable | Body sleeping/deactivation |
 
 #### Objective
 
-Wire parsed disable flags into the pipeline so each flag conditionally skips its
-corresponding stage.
+1. Define all disable/enable flag constants matching MuJoCo bit assignments
+2. Wire parsed `MjcfFlag` fields to `Model.disableflags` / `Model.enableflags`
+3. Add runtime flag checks at each pipeline stage
+4. Update parser: split `passive` into `spring`/`damper`, add missing enable flags
 
 #### Specification
 
-1. **Flag constants**: Define constants for each disable flag (some may already
-   exist as parsed values — wire them to runtime checks).
-2. **Pipeline gates**: Add flag checks at each relevant pipeline stage:
-   - `DISABLE_GRAVITY`: skip gravity contribution in `mj_rne`.
-   - `DISABLE_CONTACT`: skip collision detection and contact constraint assembly.
-   - `DISABLE_LIMIT`: skip joint/tendon limit enforcement.
-   - `DISABLE_EQUALITY`: skip equality constraint assembly.
-   - `DISABLE_FRICTIONLOSS`: skip friction loss passive force.
-   - `DISABLE_SPRING` (`mjDSBL_SPRING`): skip all passive spring forces
-     (joint springs, tendon springs, flex edge spring forces from #27C, flex
-     bending forces). MuJoCo multiplies stiffness by `has_spring` derived
-     from this flag.
-   - `DISABLE_DAMPER` (`mjDSBL_DAMPER`): skip all passive damping forces
-     (joint damping, tendon damping, flex edge damping from #27C, flex vertex
-     damping). MuJoCo multiplies damping by `has_damping` derived from this
-     flag. **Note:** Spring and damper are separate flags — you can disable
-     one while keeping the other active.
-   - `DISABLE_ACTUATION`: skip actuator force computation.
-   - `DISABLE_SENSOR`: skip sensor evaluation.
-   - `DISABLE_REFSAFE`: skip reference safety clamping.
-   - (remaining flags as documented in MuJoCo API reference)
-3. **Enable flags**: Similarly wire enable flags (`ENABLE_ENERGY`, etc.) —
-   `ENABLE_ENERGY` is already wired. Check others.
+##### S1. Flag constants
+
+Define in `mujoco_pipeline.rs`:
+
+```rust
+// Disable flags (mjtDisableBit)
+pub const DISABLE_CONSTRAINT:   u32 = 1 << 0;
+pub const DISABLE_EQUALITY:     u32 = 1 << 1;
+pub const DISABLE_FRICTIONLOSS: u32 = 1 << 2;
+pub const DISABLE_LIMIT:        u32 = 1 << 3;
+pub const DISABLE_CONTACT:      u32 = 1 << 4;
+pub const DISABLE_SPRING:       u32 = 1 << 5;
+pub const DISABLE_DAMPER:       u32 = 1 << 6;
+pub const DISABLE_GRAVITY:      u32 = 1 << 7;
+pub const DISABLE_CLAMPCTRL:    u32 = 1 << 8;
+pub const DISABLE_WARMSTART:    u32 = 1 << 9;
+pub const DISABLE_FILTERPARENT: u32 = 1 << 10;
+pub const DISABLE_ACTUATION:    u32 = 1 << 11;
+pub const DISABLE_REFSAFE:      u32 = 1 << 12;
+pub const DISABLE_SENSOR:       u32 = 1 << 13;
+pub const DISABLE_MIDPHASE:     u32 = 1 << 14;
+pub const DISABLE_EULERDAMP:    u32 = 1 << 15;
+pub const DISABLE_AUTORESET:    u32 = 1 << 16;
+pub const DISABLE_NATIVECCD:    u32 = 1 << 17;
+// DISABLE_ISLAND already exists at 1 << 18
+
+// Enable flags (mjtEnableBit)
+pub const ENABLE_OVERRIDE:    u32 = 1 << 0;
+pub const ENABLE_ENERGY:      u32 = 1 << 1;
+pub const ENABLE_FWDINV:      u32 = 1 << 2;
+pub const ENABLE_INVDISCRETE: u32 = 1 << 3;
+pub const ENABLE_MULTICCD:    u32 = 1 << 4;
+// ENABLE_SLEEP already exists at 1 << 5
+```
+
+##### S2. Parser update
+
+Update `MjcfFlag` to split `passive` into `spring` + `damper`:
+```rust
+pub spring: bool,   // was: passive (default true = enabled)
+pub damper: bool,   // was: passive (default true = enabled)
+```
+
+For backward compatibility, parse both:
+- `passive="disable"` → sets both `spring=false` and `damper=false`
+- `spring="disable"` → sets only `spring=false`
+- `damper="disable"` → sets only `damper=false`
+
+Add missing enable flag fields:
+```rust
+pub fwdinv: bool,       // default false (disabled)
+pub invdiscrete: bool,  // default false (disabled)
+pub autoreset: bool,    // default true (enabled) — disable flag, not enable
+```
+
+##### S3. Model builder wiring
+
+In `apply_options()`, convert all `MjcfFlag` booleans to bitfields:
+
+```rust
+fn flags_to_bits(flag: &MjcfFlag) -> (u32, u32) {
+    let mut disable: u32 = 0;
+    let mut enable: u32 = 0;
+
+    if !flag.constraint   { disable |= DISABLE_CONSTRAINT; }
+    if !flag.equality     { disable |= DISABLE_EQUALITY; }
+    if !flag.frictionloss { disable |= DISABLE_FRICTIONLOSS; }
+    if !flag.limit        { disable |= DISABLE_LIMIT; }
+    if !flag.contact      { disable |= DISABLE_CONTACT; }
+    if !flag.spring       { disable |= DISABLE_SPRING; }
+    if !flag.damper       { disable |= DISABLE_DAMPER; }
+    if !flag.gravity      { disable |= DISABLE_GRAVITY; }
+    if !flag.clampctrl    { disable |= DISABLE_CLAMPCTRL; }
+    if !flag.warmstart    { disable |= DISABLE_WARMSTART; }
+    if !flag.filterparent { disable |= DISABLE_FILTERPARENT; }
+    if !flag.actuation    { disable |= DISABLE_ACTUATION; }
+    if !flag.refsafe      { disable |= DISABLE_REFSAFE; }
+    if !flag.sensor       { disable |= DISABLE_SENSOR; }
+    if !flag.midphase     { disable |= DISABLE_MIDPHASE; }
+    if !flag.eulerdamp    { disable |= DISABLE_EULERDAMP; }
+    if !flag.autoreset    { disable |= DISABLE_AUTORESET; }
+    if !flag.nativeccd    { disable |= DISABLE_NATIVECCD; }
+    if !flag.island       { disable |= DISABLE_ISLAND; }
+
+    if flag.override_contacts { enable |= ENABLE_OVERRIDE; }
+    if flag.energy            { enable |= ENABLE_ENERGY; }
+    if flag.fwdinv            { enable |= ENABLE_FWDINV; }
+    if flag.invdiscrete       { enable |= ENABLE_INVDISCRETE; }
+    if flag.multiccd          { enable |= ENABLE_MULTICCD; }
+    if flag.sleep             { enable |= ENABLE_SLEEP; }
+
+    (disable, enable)
+}
+```
+
+##### S4. Runtime flag gates
+
+Add flag checks at each pipeline stage. Pattern:
+```rust
+let disabled = |flag: u32| model.disableflags & flag != 0;
+```
+
+| Stage | Guard | Location |
+|-------|-------|----------|
+| Gravity in `mj_rne()` | `if disabled(DISABLE_GRAVITY) { gravity = [0;3]; }` | bias force computation |
+| Collision detection | `if disabled(DISABLE_CONTACT) { skip mj_collision(); }` | collision driver |
+| Contact constraint assembly | `if disabled(DISABLE_CONTACT) { skip contact rows; }` | `mj_fwd_constraint()` |
+| Equality constraints | `if disabled(DISABLE_EQUALITY) { skip equality rows; }` | `mj_fwd_constraint()` |
+| Joint/tendon limits | `if disabled(DISABLE_LIMIT) { skip limit rows; }` | `mj_fwd_constraint()` |
+| Friction loss rows | `if disabled(DISABLE_FRICTIONLOSS) { skip floss rows; }` | `mj_fwd_constraint()` |
+| Entire constraint solver | `if disabled(DISABLE_CONSTRAINT) { skip solver; }` | constraint solve dispatch |
+| Passive springs | `if disabled(DISABLE_SPRING) { skip spring forces; }` | `mj_fwd_passive()` — joint, tendon, flex springs |
+| Passive dampers | `if disabled(DISABLE_DAMPER) { skip damper forces; }` | `mj_fwd_passive()` — joint, tendon, flex damping |
+| Actuator forces | `if disabled(DISABLE_ACTUATION) { skip mj_fwd_actuation(); }` | actuation stage |
+| Ctrl clamping | `if disabled(DISABLE_CLAMPCTRL) { skip ctrl clamp; }` | actuator ctrl processing |
+| Sensor evaluation | `if disabled(DISABLE_SENSOR) { skip mj_sensor_*(); }` | sensor stage |
+| Warm-start | `if disabled(DISABLE_WARMSTART) { zero warmstart; }` | solver initialization |
+| Parent-child filter | `if disabled(DISABLE_FILTERPARENT) { skip filter; }` | collision filtering |
+| BVH midphase | `if disabled(DISABLE_MIDPHASE) { brute force; }` | collision broadphase |
+| Euler implicit damp | `if disabled(DISABLE_EULERDAMP) { skip euler damp; }` | Euler integrator |
+| Solref safety | `if disabled(DISABLE_REFSAFE) { skip solref clamp; }` | constraint parameterization |
+| Auto-reset on NaN | `if disabled(DISABLE_AUTORESET) { skip reset; }` | integration step |
+| Native CCD | `if disabled(DISABLE_NATIVECCD) { use libccd; }` | narrowphase dispatch |
+| Island discovery | Already wired (`DISABLE_ISLAND`) | constraint islands |
+
+**Spring/damper separation** (critical): MuJoCo applies these as multiplicative
+factors on the force, not as skip-the-loop flags. The pattern is:
+
+```rust
+let has_spring = !disabled(DISABLE_SPRING);
+let has_damper = !disabled(DISABLE_DAMPER);
+// In passive force loop:
+let spring_force = if has_spring { stiffness * displacement } else { 0.0 };
+let damper_force = if has_damper { damping * velocity } else { 0.0 };
+qfrc_passive[dof] += spring_force + damper_force;
+```
+
+This applies to: joint springs/dampers, tendon springs/dampers, flex edge
+spring/damper forces (#27C), flex bending forces (spring component), flex
+vertex damping.
+
+##### S5. Enable flag gates
+
+| Stage | Guard | Location |
+|-------|-------|----------|
+| Energy computation | Already partially wired (`ENABLE_ENERGY`) | energy accumulators |
+| Sleep/deactivation | Already wired (`ENABLE_SLEEP`) | sleep logic |
+| Override contacts | `if enabled(ENABLE_OVERRIDE) { use override params; }` | contact parameter combination |
+| Forward/inverse stats | `if enabled(ENABLE_FWDINV) { compute inverse; }` | post-step stats |
+| Discrete inverse | `if enabled(ENABLE_INVDISCRETE) { ... }` | inverse dynamics |
+| Multi-CCD | `if enabled(ENABLE_MULTICCD) { multi-point CCD; }` | narrowphase |
 
 #### Acceptance Criteria
 
-1. `<flag contact="disable"/>` prevents contact detection.
-2. `<flag gravity="disable"/>` zeros gravitational contribution to bias forces.
-3. `<flag limit="disable"/>` prevents joint limit enforcement.
-4. All 21 parsed flags have runtime effect.
-5. Default flag values match MuJoCo defaults (all disabled flags off, all
-   enabled flags per MuJoCo spec).
+1. **Contact disable**: `<flag contact="disable"/>` produces zero contacts. No
+   collision detection runs. `data.ncon == 0`. Existing non-contact forces
+   (gravity, springs) still apply.
+
+2. **Gravity disable**: `<flag gravity="disable"/>` zeros gravitational force.
+   A free body with only gravity remains stationary. Other forces (springs,
+   actuators) still apply.
+
+3. **Limit disable**: `<flag limit="disable"/>` allows joints to exceed their
+   range without constraint forces. A hinge with `range="0 90"` rotates past
+   90° freely.
+
+4. **Equality disable**: `<flag equality="disable"/>` deactivates all equality
+   constraints (weld, joint, tendon, flex). Bodies linked by weld constraints
+   separate freely.
+
+5. **Spring/damper independence**: `<flag spring="disable" damper="enable"/>`
+   disables spring stiffness but keeps damping. A joint with `stiffness=100
+   damping=10` produces zero spring force but non-zero damping force.
+
+6. **Actuation disable**: `<flag actuation="disable"/>` zeros all actuator
+   forces. `ctrl` values have no effect.
+
+7. **Sensor disable**: `<flag sensor="disable"/>` skips sensor evaluation.
+   `sensordata` array is not updated.
+
+8. **Warmstart disable**: `<flag warmstart="disable"/>` starts solver from
+   zero (not previous solution). May increase solver iterations.
+
+9. **Constraint disable**: `<flag constraint="disable"/>` skips the entire
+   solver. No equality, limit, contact, or friction loss constraints are
+   applied. Only passive and actuator forces affect the dynamics.
+
+10. **Default values**: An unmodified `<option/>` with no `<flag>` produces
+    `disableflags == 0` (all enable) and `enableflags == 0` (all optional
+    features off). Matches MuJoCo defaults.
+
+11. **Backward compat**: `<flag passive="disable"/>` sets both `DISABLE_SPRING`
+    and `DISABLE_DAMPER` (legacy behavior).
+
+12. **MuJoCo conformance**: For each of the 19 disable flags, compare 10-step
+    trajectory against MuJoCo 3.4.0 with only that flag disabled. Tolerance:
+    `1e-10` per `qacc` component (flags should produce bit-exact gating).
 
 #### Files
 
-- `sim/L0/core/src/mujoco_pipeline.rs` — flag checks at each pipeline stage
+- `sim/L0/core/src/mujoco_pipeline.rs` — all 19+6 flag constants, runtime checks
+  at each pipeline stage (see S4 table for locations)
+- `sim/L0/mjcf/src/types.rs` — split `MjcfFlag.passive` into `spring` + `damper`,
+  add `fwdinv`, `invdiscrete`, `autoreset` fields
+- `sim/L0/mjcf/src/parser.rs` — parse `spring`, `damper` (+ backward compat
+  `passive`), `fwdinv`, `invdiscrete`, `autoreset`
+- `sim/L0/mjcf/src/model_builder.rs` — `flags_to_bits()` conversion, wire all
+  flags to `Model.disableflags` / `Model.enableflags`
+- `sim/L0/tests/integration/` — per-flag disable/enable tests
 
 ---
 
@@ -315,10 +1076,21 @@ it for edge/bending/penalty force application instead of inline `±direction`.
 1. `flexedge_J` Data field exists and is computed after forward kinematics.
 2. Edge spring-damper, bending, and Newton penalty forces all use `J^T * force`
    via the sparse Jacobian.
-3. For models with only free vertices: identical results to current inline code.
+3. For models with only free vertices: bit-identical results to current inline code
+   (the sparse Jacobian degenerates to `±direction` on 3 DOFs for free vertices).
 4. For models with body-attached vertices (#27D): correct force projection
-   through body Jacobians.
+   through body Jacobians. Verify via finite-difference: perturb `qpos` by `1e-7`,
+   recompute edge forces, compare against `J^T * analytical_force`. Tolerance: `1e-5`.
 5. All existing flex tests pass (regression).
+6. **Performance**: Pre-computing the sparse Jacobian once and reading it 3 times
+   (edge, bending, penalty) is faster than computing it inline 3 times. Verify
+   no throughput regression for the common case (free vertices only).
+
+**Note:** For models with only free vertices (all current test cases), the inline
+`±direction` and the sparse Jacobian produce identical results. The sparse Jacobian
+becomes essential only when body-attached vertices (#27D) exist — the inline pattern
+would produce wrong forces for multi-DOF bodies. This item is forward-looking but
+required for full MuJoCo Data layout parity.
 
 #### Files
 
@@ -748,19 +1520,53 @@ pub enum FlexBendingType {
 ##### S3. Precomputation (cotangent model)
 
 During model compilation in `model_builder.rs`, for each flex body with
-`bending_model == Cotangent`:
+`bending_model == Cotangent` and `dim == 2`:
 
-1. For each interior edge (edge where both adjacent triangles exist):
-   - Compute 4 cotangent weights `c[0..4]` from rest vertex positions using
-     Wardetzky's formula (cotangent of dihedral angles in the diamond stencil)
-   - Compute `volume` as sum of adjacent triangle areas
-   - Compute `mu = young / (2 * (1 + poisson))` (shear modulus)
-   - Compute `stiffness = 3 * mu * thickness³ / (24 * volume)`
-   - Compute edge vector `e0`, flap vectors `e1, e2`, tangent vectors `t0, t1`
-   - Compute `cos_theta = -dot(t0, t1) / |e0|²`
-   - Fill 4×4 matrix: `bending[4*i + j] = c[i] * c[j] * cos_theta * stiffness`
-   - Compute curved reference coefficient `bending[16]` for non-flat rest shapes
-2. For boundary edges: zero the 17 coefficients (boundary has no bending)
+**Prerequisites**: `flexedge_flap` (S7) must be computed first.
+
+For each edge `e` with two adjacent triangles (interior edge):
+
+Given the diamond stencil vertices `v = [v0, v1, va, vb]` where `(v0, v1)` is
+the shared edge, `va` is opposite in triangle 1, `vb` is opposite in triangle 2:
+
+```
+Step 1: Geometry
+  e0 = x[v1] - x[v0]           // edge vector
+  e1 = x[va] - x[v0]           // flap vector (triangle 1)
+  e2 = x[vb] - x[v0]           // flap vector (triangle 2)
+  n1 = e0 × e1                 // triangle 1 normal (unnormalized)
+  n2 = e0 × e2                 // triangle 2 normal (unnormalized)
+  area1 = |n1| / 2             // triangle 1 area
+  area2 = |n2| / 2             // triangle 2 area
+  total_area = area1 + area2   // diamond area
+
+Step 2: Cotangent weights (Wardetzky operator)
+  For each of the 4 vertices, compute the cotangent of the angle at that
+  vertex in its containing triangle(s). MuJoCo uses a specific weight formula
+  that encodes the cotangent Laplacian as a 4-element vector c[0..4].
+  (See user_mesh.cc:ComputeBending for the exact cotangent computation.)
+
+Step 3: Material stiffness
+  mu = young / (2 * (1 + poisson))                    // shear modulus
+  stiffness = 3 * mu * thickness³ / (24 * total_area)  // plate bending stiffness
+
+Step 4: Stiffness matrix (4×4)
+  For i in 0..4, j in 0..4:
+    bending[17*e + 4*i + j] = c[i] * c[j] * stiffness
+
+Step 5: Curved reference coefficient
+  cos_theta = -dot(n1_hat, n2_hat)  // cosine of dihedral angle at rest
+  If rest shape is flat (cos_theta ≈ -1): bending[17*e + 16] = 0
+  If rest shape is curved: bending[17*e + 16] = function of rest curvature
+  (Garg et al. "Cubic Shells" correction for non-zero rest curvature)
+```
+
+For boundary edges (only one adjacent triangle): zero all 17 coefficients.
+
+**Note:** The exact cotangent weight formulas and curved reference computation
+must be verified against MuJoCo's `user_mesh.cc:ComputeBending` at implementation
+time. The precomputation is compile-time-only, so matching MuJoCo exactly here is
+critical for conformance — any mismatch propagates to every bending force.
 
 ##### S4. Runtime force application (cotangent model)
 
@@ -824,10 +1630,12 @@ This is computed during model compilation from element connectivity.
 
 #### Acceptance Criteria
 
-1. **Cotangent conformance**: Bending forces match MuJoCo 3.x for a 4×4 grid
+1. **Cotangent conformance**: Bending forces match MuJoCo 3.4.0 for a 4×4 grid
    shell with `young=1e4, poisson=0.3, thickness=0.01, density=1000`. Compare
    `qfrc_spring` (MuJoCo) vs `qfrc_passive` (ours) after 1 step with gravity.
-   Tolerance: `1e-10` per component.
+   Tolerance: `1e-8` per component (the precomputation involves trig functions
+   and cotangent weights that accumulate ~8 digits of precision; runtime
+   matrix-vector multiply adds minimal further error).
 2. **Bridson equivalence**: Switching to `bending_model="bridson"` produces the
    same forces as the current implementation (regression test).
 3. **Stability without clamp**: Cotangent model with `young=1e12, dt=0.01`
