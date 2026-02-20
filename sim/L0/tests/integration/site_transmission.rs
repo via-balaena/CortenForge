@@ -828,41 +828,359 @@ fn test_site_actuator_free_joint() {
 }
 
 // ============================================================================
-// MuJoCo conformance (criterion 22) — DEFERRED
+// MuJoCo conformance (criterion 22)
+// Reference values extracted from MuJoCo 3.5.0
 // ============================================================================
 
-/// Criterion 22: Actuator length, velocity, and generalized forces match MuJoCo ≤ 1e-8.
+/// Criterion 22a: Mode A translational — length=0, velocity and qfrc match MuJoCo.
 ///
-/// Deferred: requires running MuJoCo externally to obtain reference values.
-/// Pattern: hardcode MuJoCo 3.4.0 reference values as constants (see
-/// `spatial_tendons.rs` test 16 for the established approach).
-///
-/// When implementing, test both Mode A (no refsite) and Mode B (with refsite)
-/// on a representative model (e.g. 3-link arm with site actuators).
+/// 2-link arm: j1 hinge(Y) + j2 hinge(Y), site at (0.2, 0, -0.3) on b1.
+/// gear="0 0 1 0 0 0", qpos=[0.3, -0.2], qvel=[0.5, -0.3], ctrl=1.0.
 #[test]
-#[ignore = "requires MuJoCo reference data — see MUJOCO_CONFORMANCE.md §5"]
-fn test_mujoco_conformance_site_transmission() {
-    // TODO: Obtain reference values from MuJoCo 3.4.0 for a 3-link arm model
-    // with site actuators (Mode A jet + Mode B Cartesian control).
-    //
-    // Expected pattern:
-    //   const MJCF: &str = r#"<mujoco>...</mujoco>"#;
-    //   const REF_LENGTH_MODE_A: f64 = ...; // from MuJoCo
-    //   const REF_LENGTH_MODE_B: f64 = ...; // from MuJoCo
-    //   const REF_VELOCITY: f64 = ...;
-    //   const REF_QFRC: &[f64] = &[...];
-    //
-    //   let model = load_model(MJCF).unwrap();
-    //   let mut data = model.make_data();
-    //   data.ctrl[0] = 1.0;
-    //   data.qpos[0] = 0.3;
-    //   data.qvel[0] = 0.5;
-    //   data.forward(&model).unwrap();
-    //
-    //   assert_relative_eq!(data.actuator_length[0], REF_LENGTH, epsilon = 1e-8);
-    //   assert_relative_eq!(data.actuator_velocity[0], REF_VELOCITY, epsilon = 1e-8);
-    //   for (ours, &theirs) in data.qfrc_actuator.iter().zip(REF_QFRC) {
-    //       assert_relative_eq!(ours, theirs, epsilon = 1e-8);
-    //   }
-    todo!("Populate with MuJoCo 3.4.0 reference values");
+fn test_mujoco_conformance_mode_a_translational() {
+    let mjcf = r#"
+        <mujoco model="mode_a_conformance">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+                    <site name="thrust" pos="0.2 0 -0.3"/>
+                    <body name="b2" pos="0 0 -0.5">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <general name="jet" site="thrust" gear="0 0 1 0 0 0" ctrlrange="-100 100"/>
+            </actuator>
+        </mujoco>
+    "#;
+
+    // MuJoCo 3.5.0 reference values
+    const REF_LENGTH: f64 = 0.0;
+    const REF_VELOCITY: f64 = -0.1;
+    const REF_FORCE: f64 = 1.0;
+    const REF_QFRC: [f64; 2] = [-0.2, 0.0];
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.ctrl[0] = 1.0;
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.actuator_length[0], REF_LENGTH, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_velocity[0], REF_VELOCITY, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_force[0], REF_FORCE, epsilon = 1e-8);
+    for (i, &ref_val) in REF_QFRC.iter().enumerate() {
+        assert_relative_eq!(data.qfrc_actuator[i], ref_val, epsilon = 1e-8);
+    }
+}
+
+/// Criterion 22b: Mode A rotational — torque about site y-axis.
+///
+/// Same arm geometry, gear="0 0 0 0 1 0".
+#[test]
+fn test_mujoco_conformance_mode_a_rotational() {
+    let mjcf = r#"
+        <mujoco model="mode_a_rot_conformance">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+                    <site name="torquer" pos="0.2 0 -0.3"/>
+                    <body name="b2" pos="0 0 -0.5">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4"/>
+                    </body>
+                </body>
+            </worldbody>
+            <actuator>
+                <general name="torquer" site="torquer" gear="0 0 0 0 1 0" ctrlrange="-100 100"/>
+            </actuator>
+        </mujoco>
+    "#;
+
+    // MuJoCo 3.5.0 reference values
+    const REF_LENGTH: f64 = 0.0;
+    const REF_VELOCITY: f64 = 0.5;
+    const REF_FORCE: f64 = 1.0;
+    const REF_QFRC: [f64; 2] = [1.0, 0.0];
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.ctrl[0] = 1.0;
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.actuator_length[0], REF_LENGTH, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_velocity[0], REF_VELOCITY, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_force[0], REF_FORCE, epsilon = 1e-8);
+    for (i, &ref_val) in REF_QFRC.iter().enumerate() {
+        assert_relative_eq!(data.qfrc_actuator[i], ref_val, epsilon = 1e-8);
+    }
+}
+
+/// Criterion 22c: Mode B translational — Cartesian control with refsite.
+///
+/// 2-link arm with wrist site and worldbody target. gear="0 0 1 0 0 0".
+/// Tests translational length = z-component of (ee - target) in refsite frame.
+#[test]
+fn test_mujoco_conformance_mode_b_translational() {
+    let mjcf = r#"
+        <mujoco model="mode_b_conformance">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+                    <site name="ee" pos="0 0 -0.5"/>
+                    <body name="b2" pos="0 0 -0.5">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4"/>
+                        <site name="wrist" pos="0 0 -0.2"/>
+                    </body>
+                </body>
+                <site name="target" pos="0.3 0 0.5"/>
+            </worldbody>
+            <actuator>
+                <general name="cart_z" site="wrist" refsite="target"
+                         gear="0 0 1 0 0 0" ctrlrange="-100 100"/>
+            </actuator>
+        </mujoco>
+    "#;
+
+    // MuJoCo 3.5.0 reference values
+    const REF_LENGTH: f64 = -0.176669077618408;
+    const REF_VELOCITY: f64 = 0.077873388331208;
+    const REF_FORCE: f64 = 1.0;
+    const REF_QFRC: [f64; 2] = [0.167726786660035, 0.019966683329366];
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.ctrl[0] = 1.0;
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.actuator_length[0], REF_LENGTH, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_velocity[0], REF_VELOCITY, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_force[0], REF_FORCE, epsilon = 1e-8);
+    for (i, &ref_val) in REF_QFRC.iter().enumerate() {
+        assert_relative_eq!(data.qfrc_actuator[i], ref_val, epsilon = 1e-8);
+    }
+}
+
+/// Criterion 22d: Mode B rotational — quaternion-based orientation error.
+///
+/// 2-link arm: j1 hinge(Y) + j2 hinge(X), site on b2, refsite on worldbody.
+/// gear="0 0 0 0 1 0" measures y-component of expmap orientation difference.
+#[test]
+fn test_mujoco_conformance_mode_b_rotational() {
+    let mjcf = r#"
+        <mujoco model="mode_b_rot_conformance">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+                    <site name="ee" pos="0 0 -0.3"/>
+                    <body name="b2" pos="0 0 -0.5">
+                        <joint name="j2" type="hinge" axis="1 0 0"/>
+                        <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4"/>
+                        <site name="wrist" pos="0 0 -0.2"/>
+                    </body>
+                </body>
+                <site name="target" pos="0 0 0.5"/>
+            </worldbody>
+            <actuator>
+                <general name="cart_ry" site="wrist" refsite="target"
+                         gear="0 0 0 0 1 0" ctrlrange="-100 100"/>
+            </actuator>
+        </mujoco>
+    "#;
+
+    // MuJoCo 3.5.0 reference values
+    const REF_LENGTH: f64 = 0.295977347088498;
+    const REF_VELOCITY: f64 = 0.5;
+    const REF_FORCE: f64 = 1.0;
+    const REF_QFRC: [f64; 2] = [1.0, 0.0];
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = 0.4;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.ctrl[0] = 1.0;
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.actuator_length[0], REF_LENGTH, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_velocity[0], REF_VELOCITY, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_force[0], REF_FORCE, epsilon = 1e-8);
+    for (i, &ref_val) in REF_QFRC.iter().enumerate() {
+        assert_relative_eq!(data.qfrc_actuator[i], ref_val, epsilon = 1e-8);
+    }
+}
+
+/// Criterion 22e: Mode B mixed gear — superposition of translational + rotational.
+///
+/// gear="1 0 1 0 1 0" combines x-translation, z-translation, and y-rotation.
+#[test]
+fn test_mujoco_conformance_mode_b_mixed() {
+    let mjcf = r#"
+        <mujoco model="mode_b_mixed_conformance">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+                    <site name="ee" pos="0 0 -0.3"/>
+                    <body name="b2" pos="0 0 -0.5">
+                        <joint name="j2" type="hinge" axis="1 0 0"/>
+                        <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4"/>
+                        <site name="wrist" pos="0 0 -0.2"/>
+                    </body>
+                </body>
+                <site name="target" pos="0.3 0 0.5"/>
+            </worldbody>
+            <actuator>
+                <general name="cart_mix" site="wrist" refsite="target"
+                         gear="1 0 1 0 1 0" ctrlrange="-100 100"/>
+            </actuator>
+        </mujoco>
+    "#;
+
+    // MuJoCo 3.5.0 reference values
+    const REF_LENGTH: f64 = -0.359874063120312;
+    const REF_VELOCITY: f64 = 0.245046432829009;
+    const REF_FORCE: f64 = 1.0;
+    const REF_QFRC: [f64; 2] = [0.548545650570702, 0.097421308187806];
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = 0.4;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.ctrl[0] = 1.0;
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.actuator_length[0], REF_LENGTH, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_velocity[0], REF_VELOCITY, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_force[0], REF_FORCE, epsilon = 1e-8);
+    for (i, &ref_val) in REF_QFRC.iter().enumerate() {
+        assert_relative_eq!(data.qfrc_actuator[i], ref_val, epsilon = 1e-8);
+    }
+}
+
+/// Criterion 22f: Free joint with site actuator — 6-DOF translational gear.
+///
+/// Body at (1, 0.5, 2) with free joint, site offset (0.2, 0.1, 0), gear="0 0 1 0 0 0".
+/// Tests that cross-product torque from site offset appears in rotational DOFs.
+#[test]
+fn test_mujoco_conformance_free_joint_site() {
+    let mjcf = r#"
+        <mujoco model="free_joint_conformance">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="1 0.5 2">
+                    <freejoint name="j1"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                    <site name="thrust" pos="0.2 0.1 0"/>
+                </body>
+            </worldbody>
+            <actuator>
+                <general name="jet" site="thrust" gear="0 0 1 0 0 0" ctrlrange="-100 100"/>
+            </actuator>
+        </mujoco>
+    "#;
+
+    // MuJoCo 3.5.0 reference values
+    const REF_LENGTH: f64 = 0.0;
+    const REF_VELOCITY: f64 = 0.37;
+    const REF_FORCE: f64 = 1.0;
+    // Free joint: 6 DOFs [vx, vy, vz, wx, wy, wz]
+    // gear z=1 → qfrc[2]=1.0, cross-product torque: r×F = (0.1, -0.2, 0)
+    const REF_QFRC: [f64; 6] = [0.0, 0.0, 1.0, 0.1, -0.2, 0.0];
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+    data.qvel[0] = 0.1;
+    data.qvel[1] = -0.2;
+    data.qvel[2] = 0.3;
+    data.qvel[3] = 0.5;
+    data.qvel[4] = -0.1;
+    data.qvel[5] = 0.4;
+    data.ctrl[0] = 1.0;
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.actuator_length[0], REF_LENGTH, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_velocity[0], REF_VELOCITY, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_force[0], REF_FORCE, epsilon = 1e-8);
+    for (i, &ref_val) in REF_QFRC.iter().enumerate() {
+        assert_relative_eq!(data.qfrc_actuator[i], ref_val, epsilon = 1e-8);
+    }
+}
+
+/// Criterion 22g: Position actuator (kp servo) with site + refsite.
+///
+/// kp=100, ctrl=0.0 → force = kp*(ctrl - length) = -kp*length.
+/// Tests that gain/bias model composes correctly with site transmission.
+#[test]
+fn test_mujoco_conformance_position_actuator_site() {
+    let mjcf = r#"
+        <mujoco model="pos_act_conformance">
+            <option gravity="0 0 -9.81" timestep="0.001"/>
+            <worldbody>
+                <body name="b1" pos="0 0 1">
+                    <joint name="j1" type="hinge" axis="0 1 0"/>
+                    <geom type="capsule" size="0.05" fromto="0 0 0 0 0 -0.5"/>
+                    <site name="ee" pos="0 0 -0.5"/>
+                    <body name="b2" pos="0 0 -0.5">
+                        <joint name="j2" type="hinge" axis="0 1 0"/>
+                        <geom type="capsule" size="0.04" fromto="0 0 0 0 0 -0.4"/>
+                        <site name="wrist" pos="0 0 -0.2"/>
+                    </body>
+                </body>
+                <site name="target" pos="0 0 0.5"/>
+            </worldbody>
+            <actuator>
+                <position name="servo" site="wrist" refsite="target" kp="100"
+                          gear="0 0 1 0 0 0"/>
+            </actuator>
+        </mujoco>
+    "#;
+
+    // MuJoCo 3.5.0 reference values
+    const REF_LENGTH: f64 = -0.176669077618408;
+    const REF_VELOCITY: f64 = 0.077873388331208;
+    const REF_FORCE: f64 = 17.666907761840804; // kp * (ctrl - length) = 100 * (0 - (-0.1767))
+    const REF_QFRC: [f64; 2] = [2.963213669112796, 0.352749552689787];
+
+    let model = load_model(mjcf).expect("should load");
+    let mut data = model.make_data();
+    data.qpos[0] = 0.3;
+    data.qpos[1] = -0.2;
+    data.qvel[0] = 0.5;
+    data.qvel[1] = -0.3;
+    data.ctrl[0] = 0.0;
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.actuator_length[0], REF_LENGTH, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_velocity[0], REF_VELOCITY, epsilon = 1e-8);
+    assert_relative_eq!(data.actuator_force[0], REF_FORCE, epsilon = 1e-8);
+    for (i, &ref_val) in REF_QFRC.iter().enumerate() {
+        assert_relative_eq!(data.qfrc_actuator[i], ref_val, epsilon = 1e-8);
+    }
 }
