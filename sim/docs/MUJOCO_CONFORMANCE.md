@@ -597,6 +597,23 @@ MuJoCo's `mjTRN_BODY` in `engine_core_smooth.c`.
 
 ---
 
+### §32 — Pyramidal Friction Cone Conformance
+
+**Status:** ✅ Complete (AC12/AC13 cross-validated against MuJoCo 3.5.0)
+
+Pyramidal friction cone implementation verified against MuJoCo 3.5.0 with 5%
+tolerance. Pyramidal cones linearize friction constraints into `2×(condim−1)`
+facet rows per contact, each treated as an independent unilateral constraint.
+
+| Test | Scenario | Assertions | Status |
+|------|----------|------------|--------|
+| AC12 | Sphere on flat ground, condim=3 | qpos\_z within 5%, f\_normal ≈ 10.247, f\_friction ≈ 0 | ✅ |
+| AC13 | Sphere on 30° inclined plane, condim=3 | f\_normal ≈ 8.487 within 5%, \|f\_friction\| ≈ 0.697 within 5%, friction concentrated in one tangent direction | ✅ |
+
+**Files:** `integration/unified_solvers.rs` (AC12–AC13 tests, plus 13 additional pyramidal tests for row counts, R scaling, force recovery, Newton classification, etc.)
+
+---
+
 ## References
 
 - [MuJoCo Documentation](https://mujoco.readthedocs.io/)

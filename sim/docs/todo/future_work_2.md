@@ -4363,10 +4363,9 @@ The implementation spans two commits: `828df4d` (core implementation) and
 - `ActuatorFrc` sensor bug fix (reads `actuator_force[objid]`)
 - Refsite warning for non-Site transmissions (Joint/Tendon branches)
 
-**Test coverage:** 23 integration tests (22 active + 1 `#[ignore]` conformance
-placeholder) + 9 unit tests (7 subquat + 2 jac_site). Criteria 1–21 all have
-passing tests. Criterion 22 (MuJoCo conformance ≤ 1e-8) is deferred pending
-external reference data — see `MUJOCO_CONFORMANCE.md` §5.
+**Test coverage:** 29 integration tests + 9 unit tests (7 subquat + 2 jac_site).
+Criteria 1–22 all have passing tests. Criterion 22 (MuJoCo conformance ≤ 1e-8)
+verified with 7 sub-tests against MuJoCo 3.5.0 — see `MUJOCO_CONFORMANCE.md` §5.
 
 #### Data-Model Changes
 
