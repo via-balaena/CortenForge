@@ -177,3 +177,11 @@ pub mod unified_solvers;
 
 /// Noslip acceptance tests: PGS/CG/Newton noslip, friction-loss, pyramidal.
 pub mod noslip;
+
+// ============================================================================
+// Ball Joint Limits Tests (§38)
+// ============================================================================
+
+/// Ball joint limit tests: cone constraint, Jacobian, wrapping, multi-joint,
+/// near-π, degenerate range, negative-w, unnormalized quaternion, margin anchor.
+pub mod ball_joint_limits;

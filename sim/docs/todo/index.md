@@ -120,7 +120,7 @@ All items are independent (#29 is the core architectural migration).
 
 | # | Item | RL Impact | Correctness | Effort | Prerequisites | File | Status |
 |---|------|-----------|-------------|--------|---------------|------|--------|
-| 38 | Ball / free joint limits (rotation cone via quat log) | Low | High | M | None | [future_work_10.md](./future_work_10.md) | |
+| 38 | Ball / free joint limits (rotation cone via quat log) | Low | High | M | None | [future_work_10.md](./future_work_10.md) | ✅ Complete |
 | 39 | `wrap_inside` algorithm (tendon wrapping) | Low | High | M | None | [future_work_10.md](./future_work_10.md) | |
 | 40 | Fluid / aerodynamic forces | Medium | High | L | None | [future_work_10.md](./future_work_10.md) | |
 | 41 | `disableflags` — runtime disable flag effects | Low | Medium | M | None | [future_work_10.md](./future_work_10.md) | |
@@ -420,7 +420,7 @@ RL-impact item remaining. Can parallelize within the batch.
 
 ### Batch 4 — Joint/Constraint Features + Physics + Trait Architecture (5+5+3 items)
 
-**Items:** #38, #39, #40, #41, #43 (3A prerequisites to #45)
+**Items:** ~~#38~~ ✅, #39, #40, #41, #43 (3A prerequisites to #45)
 **Also:** §42A-i, §42A-ii, §42A-iii (flex runtime infrastructure, not prerequisites to #45)
 **Also:** §42B → §42C, §42D, §42E (parallel) → §42F (trait architecture, not prerequisites to #45)
 **Files:** `mujoco_pipeline.rs` (joint limits, tendon wrapping, fluid forces, disable flags, flex runtime infra, trait extraction)
@@ -486,7 +486,7 @@ Start only after 3A is stable.
 | [future_work_7.md](./future_work_7.md) | 3 | 3A-ii — Inertia + Contact Parameters | #23–27, #27B–F | ~~`exactmeshinertia`~~ ✅, ~~friction combination~~ ✅, ~~`geom/@priority`~~ ✅, ~~`solmix`~~ ✅, ~~contact margin/gap~~ ✅, ~~flex `<contact>` parsing~~ ✅, ~~passive edge forces~~ ✅, ~~flex body/node~~ ✅, ~~`<flexcomp mass>`~~ ✅, ~~body-coupled flex CRBA+FK~~ ✅ (Option A) |
 | [future_work_8.md](./future_work_8.md) | 3 | 3A-iii — Constraint System Overhaul | #28,29,30,31,32 | ~~Friction loss solref~~ ✅, ~~PGS/CG unified constraints~~ ✅, ~~flex collision filtering~~ ✅, ~~`solreffriction`~~ ✅, ~~pyramidal cones~~ ✅ |
 | [future_work_9.md](./future_work_9.md) | 3 | 3A-iv — Noslip + Actuator/Dynamics | #33–37 | ~~Noslip PGS/CG~~ ✅, ~~`actlimited`/`actrange`~~ ✅, ~~`gravcomp`~~ ✅, ~~adhesion actuators~~ ✅, ~~tendon equality~~ ✅ |
-| [future_work_10.md](./future_work_10.md) | 3 | 3A-v — Constraint/Joint + Physics + Trait Architecture | #38–42, §42A-i–v, §42B–F | Ball/free joint limits, `wrap_inside`, fluid forces, `disableflags`, flex edge Jacobian + rigid flags + pre-computed fields, flex self-collision dispatch, flex-flex collision, flex bending trait, elasticity trait, actuator gain trait, contact solver trait, `SimBuilder` |
+| [future_work_10.md](./future_work_10.md) | 3 | 3A-v — Constraint/Joint + Physics + Trait Architecture | #38–42, §42A-i–v, §42B–F | ~~Ball/free joint limits~~ ✅, `wrap_inside`, fluid forces, `disableflags`, flex edge Jacobian + rigid flags + pre-computed fields, flex self-collision dispatch, flex-flex collision, flex bending trait, elasticity trait, actuator gain trait, contact solver trait, `SimBuilder` |
 | [future_work_11.md](./future_work_11.md) | 3 | 3A-vi — Cleanup + Conformance | #43–45 | Geom `shellinertia`, legacy crate deprecation, MuJoCo conformance test suite |
 | [future_work_12.md](./future_work_12.md) | 3 | 3B — Format Completeness + Performance | #46–50 | `<composite>`, URDF completeness, SIMD audit, non-physics MJCF, CCD |
 | [future_work_13.md](./future_work_13.md) | 3 | 3C — API + Pipeline Completeness | #51–55 | Body accumulators, `mj_inverse`, `step1`/`step2`, heightfield gaps, `*_user` data |

@@ -17,7 +17,7 @@ with Batches 5–9 once §42B lands.
 ---
 
 ### 38. Ball Joint Limits (Rotation Cone via Quaternion Logarithm)
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** M | **Prerequisites:** None
 
 #### Current State
 
@@ -405,8 +405,8 @@ it into the activation condition for all joint types.
     some within limits, some violated.
 
 11. **Limit force propagation**: After the constraint solver runs, `jnt_limit_frc[jnt_id]`
-    is non-zero for a ball joint whose limit is actively violated. The `JointLimitFrc`
-    sensor reads this value correctly.
+    is non-zero for a ball joint whose limit is actively violated, and matches
+    `efc_force` for the corresponding constraint row.
 
 12. **Mixed joint type consistency**: Hinge limits and ball limits coexist correctly
     in the same model. Counting and assembly produce the correct total `nefc` and
@@ -482,7 +482,7 @@ fn quat_from_axis_angle_deg(axis: [f64; 3], angle_deg: f64) -> [f64; 4] {
 **Test placement:** T1 + T1b unit tests (8 tests) go in a `#[cfg(test)] mod
 ball_limit_tests` module inside `mujoco_pipeline.rs` (they test private helper
 functions — matching the established pattern of `impedance_tests`,
-`subquat_tests`, etc.). T2–T22 integration tests (21 tests) go in
+`subquat_tests`, etc.). T2–T22 integration tests (22 tests) go in
 `sim/L0/tests/integration/ball_joint_limits.rs`. The `quat_from_axis_angle_deg`
 helper is defined in both locations (it's a trivial 4-line function; duplicating
 is simpler than creating a shared test utility crate).
@@ -880,7 +880,7 @@ fn test_ball_limit_enforced_over_simulation() {
     }
 
     // Extract rotation angle from quaternion
-    let angle = extract_ball_angle(&data.qpos.as_slice(), 0);
+    let angle = extract_ball_angle(data.qpos.as_slice(), 0);
     let angle_deg = angle.to_degrees();
     // The solver should push the angle back toward the 30° limit.
     // Allow ~2° solver softness (default solref/solimp spring-damper compliance).
@@ -1235,7 +1235,7 @@ fn test_ball_limit_degenerate_range_locks_joint() {
     for _ in 0..200 {
         data.step(&model).unwrap();
     }
-    let angle = extract_ball_angle(&data.qpos.as_slice(), 0);
+    let angle = extract_ball_angle(data.qpos.as_slice(), 0);
     assert!(angle.to_degrees() < 5.0,
         "degenerate range should push joint toward identity: angle={:.1}°",
         angle.to_degrees());
@@ -1296,7 +1296,7 @@ fn test_ball_limit_near_pi_rotation() {
     for _ in 0..200 {
         data.step(&model).unwrap();
     }
-    let angle = extract_ball_angle(&data.qpos.as_slice(), 0);
+    let angle = extract_ball_angle(data.qpos.as_slice(), 0);
     // Allow 3° tolerance — near-π Jacobian is less precise, solver needs more steps
     assert!(angle.to_degrees() < 173.0,
         "near-π limit should hold: angle={:.1}°, limit=170°", angle.to_degrees());
@@ -1773,7 +1773,7 @@ Our implementation matches this algorithm exactly, with the documented deviation
   tests (8 tests for the private `ball_limit_axis_angle` helper — follows the
   `impedance_tests`/`subquat_tests` precedent).
 - `sim/L0/tests/integration/` — new test file `ball_joint_limits.rs` with tests
-  T2–T22 (21 integration tests). Add `mod ball_joint_limits;` to `mod.rs`.
+  T2–T22 (22 integration tests). Add `mod ball_joint_limits;` to `mod.rs`.
 
 ---
 

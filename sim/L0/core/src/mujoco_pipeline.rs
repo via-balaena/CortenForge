@@ -14392,6 +14392,52 @@ fn compute_aref(k: f64, b: f64, imp: f64, pos: f64, margin: f64, vel: f64) -> f6
     -b * vel - k * imp * (pos - margin)
 }
 
+/// Normalize a quaternion [w, x, y, z]. Returns identity if norm < 1e-10.
+/// Matches MuJoCo's mju_normalize4 and our normalize_quaternion() convention.
+#[inline]
+fn normalize_quat4(q: [f64; 4]) -> [f64; 4] {
+    let norm = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    if norm > 1e-10 {
+        [q[0] / norm, q[1] / norm, q[2] / norm, q[3] / norm]
+    } else {
+        [1.0, 0.0, 0.0, 0.0] // identity
+    }
+}
+
+/// Compute ball joint limit quantities from a unit quaternion [w, x, y, z].
+/// Returns `(unit_dir, angle)` where:
+///   - `angle = |theta| >= 0` (unsigned rotation magnitude)
+///   - `unit_dir = sign(theta) * axis` (Jacobian direction)
+///
+/// When `angle < 1e-10` (near-identity), returns `(Vector3::z(), 0.0)`.
+/// The unit_dir value is arbitrary in this case — the caller must not use it
+/// because `dist = limit - 0 > 0` means no constraint is instantiated.
+///
+/// Matches MuJoCo's `mju_quat2Vel(angleAxis, q, 1)` followed by
+/// `value = mju_normalize3(angleAxis)`.
+fn ball_limit_axis_angle(q: [f64; 4]) -> (Vector3<f64>, f64) {
+    // Step 1: mju_quat2Vel with dt=1
+    let v = Vector3::new(q[1], q[2], q[3]);
+    let sin_half = v.norm();
+
+    // Guard: near-identity → angle ≈ 0, axis undefined.
+    if sin_half < 1e-10 {
+        return (Vector3::z(), 0.0);
+    }
+
+    let axis = v / sin_half; // unit rotation axis
+    let mut theta = 2.0 * sin_half.atan2(q[0]);
+    if theta > std::f64::consts::PI {
+        theta -= 2.0 * std::f64::consts::PI;
+    }
+
+    // Step 2: |theta * axis| = |theta|, direction = sign(theta) * axis.
+    let angle = theta.abs();
+    let unit_dir = if theta >= 0.0 { axis } else { -axis };
+
+    (unit_dir, angle)
+}
+
 /// Compute exact diagonal approximation of A = J·M⁻¹·J^T for one row (§15.12 step 2).
 ///
 /// Solves M·w = J_i^T via the sparse LDL factorization, then computes
@@ -14613,7 +14659,26 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
                     nefc += 1;
                 }
             }
-            _ => {} // Ball/Free limits not implemented
+            MjJointType::Ball => {
+                let adr = model.jnt_qpos_adr[jnt_id];
+                let q = normalize_quat4([
+                    data.qpos[adr],
+                    data.qpos[adr + 1],
+                    data.qpos[adr + 2],
+                    data.qpos[adr + 3],
+                ]);
+                let (_, angle) = ball_limit_axis_angle(q);
+                let limit = model.jnt_range[jnt_id].0.max(model.jnt_range[jnt_id].1);
+                let dist = limit - angle;
+                if dist < 0.0 {
+                    // margin = 0.0 (see S6)
+                    nefc += 1;
+                }
+            }
+            MjJointType::Free => {
+                // MuJoCo does not support free joint limits.
+                // Silently ignore — no constraint rows.
+            }
         }
     }
 
@@ -14947,7 +15012,48 @@ fn assemble_unified_constraints(model: &Model, data: &mut Data, qacc_smooth: &DV
                     );
                 }
             }
-            _ => {} // Ball/Free limits not implemented
+            MjJointType::Ball => {
+                let qpos_adr = model.jnt_qpos_adr[jnt_id];
+                let dof_adr = model.jnt_dof_adr[jnt_id];
+                let q = normalize_quat4([
+                    data.qpos[qpos_adr],
+                    data.qpos[qpos_adr + 1],
+                    data.qpos[qpos_adr + 2],
+                    data.qpos[qpos_adr + 3],
+                ]);
+                let (unit_dir, angle) = ball_limit_axis_angle(q);
+                let limit = model.jnt_range[jnt_id].0.max(model.jnt_range[jnt_id].1);
+                let dist = limit - angle;
+
+                if dist < 0.0 {
+                    // margin = 0.0 (see S6)
+                    // Jacobian: -unit_dir on 3 angular DOFs
+                    data.efc_J[(row, dof_adr)] = -unit_dir.x;
+                    data.efc_J[(row, dof_adr + 1)] = -unit_dir.y;
+                    data.efc_J[(row, dof_adr + 2)] = -unit_dir.z;
+
+                    // Constraint-space velocity: J · qvel
+                    let vel = -(unit_dir.x * data.qvel[dof_adr]
+                        + unit_dir.y * data.qvel[dof_adr + 1]
+                        + unit_dir.z * data.qvel[dof_adr + 2]);
+
+                    finalize_row!(
+                        model.jnt_solref[jnt_id],
+                        model.jnt_solimp[jnt_id],
+                        dist,
+                        0.0,
+                        vel,
+                        0.0,
+                        ConstraintType::LimitJoint,
+                        1,
+                        jnt_id,
+                        [0.0; 5]
+                    );
+                }
+            }
+            MjJointType::Free => {
+                // No limit support for free joints (matches MuJoCo).
+            }
         }
     }
 
@@ -23360,6 +23466,110 @@ mod subquat_tests {
         let res = subquat(&qa, &qb);
         // Should be zero vector (within small-angle guard)
         assert_relative_eq!(res.norm(), 0.0, epsilon = 1e-10);
+    }
+}
+
+// =============================================================================
+// Unit tests — ball_limit_axis_angle
+// =============================================================================
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod ball_limit_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use std::f64::consts::PI;
+
+    /// Build quaternion [w, x, y, z] for rotation of `angle_deg` degrees about `axis`.
+    fn quat_from_axis_angle_deg(axis: [f64; 3], angle_deg: f64) -> [f64; 4] {
+        let half = (angle_deg / 2.0_f64).to_radians();
+        let norm = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+        let s = half.sin() / norm;
+        [half.cos(), axis[0] * s, axis[1] * s, axis[2] * s]
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_90deg_about_z() {
+        // 90° rotation about Z: q = (cos(45°), 0, 0, sin(45°))
+        let q = quat_from_axis_angle_deg([0.0, 0.0, 1.0], 90.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, PI / 2.0, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.z, 1.0, epsilon = 1e-10); // +Z (theta > 0)
+        assert!(unit_dir.x.abs() < 1e-10);
+        assert!(unit_dir.y.abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_50deg_about_oblique() {
+        // 50° about axis (0.6, 0.8, 0) — matches acceptance criterion 8
+        let q = quat_from_axis_angle_deg([0.6, 0.8, 0.0], 50.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, 50.0_f64.to_radians(), epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.x, 0.6, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.y, 0.8, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.z, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_200deg_wraps() {
+        // 200° about Z → wraps to theta = -160°, angle = 160°
+        let q = quat_from_axis_angle_deg([0.0, 0.0, 1.0], 200.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, 160.0_f64.to_radians(), epsilon = 1e-10);
+        // theta < 0 after wrap, so unit_dir = sign(-) * z = -z
+        assert_relative_eq!(unit_dir.z, -1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_identity() {
+        let q = [1.0, 0.0, 0.0, 0.0];
+        let (_, angle) = ball_limit_axis_angle(q);
+        assert!(angle < 1e-10, "identity should have zero rotation angle");
+        // unit_dir is arbitrary (z-axis default) — not asserted
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_negative_quat() {
+        // -q represents the same rotation as q. Verify identical output.
+        let q = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 60.0);
+        let neg_q = [-q[0], -q[1], -q[2], -q[3]];
+        let (dir1, angle1) = ball_limit_axis_angle(q);
+        let (dir2, angle2) = ball_limit_axis_angle(neg_q);
+        assert_relative_eq!(angle1, angle2, epsilon = 1e-10);
+        assert_relative_eq!(dir1, dir2, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_exactly_180deg() {
+        // Boundary case: exactly π rotation
+        let q = quat_from_axis_angle_deg([0.0, 1.0, 0.0], 180.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, PI, epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.y, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_exact_boundary() {
+        // Rotation angle exactly equals a typical limit — verify angle is precise
+        let q = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 45.0);
+        let (unit_dir, angle) = ball_limit_axis_angle(q);
+        assert_relative_eq!(angle, 45.0_f64.to_radians(), epsilon = 1e-10);
+        assert_relative_eq!(unit_dir.x, 1.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_ball_limit_axis_angle_near_zero_quaternion() {
+        // A quaternion with near-zero norm (degenerate) should be caught by
+        // normalize_quat4 (returns identity) before reaching ball_limit_axis_angle.
+        // But ball_limit_axis_angle itself should also handle near-zero sin_half
+        // gracefully — returning angle = 0 and an arbitrary direction.
+        let q = [1.0, 1e-15, 1e-15, 1e-15]; // Nearly identity, sin_half ≈ 1.7e-15
+        let (_, angle) = ball_limit_axis_angle(q);
+        assert!(
+            angle < 1e-10,
+            "near-zero sin_half should produce angle ≈ 0: got {angle}"
+        );
+        // unit_dir is arbitrary (z-axis default) — not asserted
     }
 }
 
