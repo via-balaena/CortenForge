@@ -135,10 +135,25 @@ Inline quaternion normalization matching the existing codebase pattern
 (`QuaternionNormalizeVisitor::normalize_quaternion()`). Uses the same `1e-10`
 guard threshold, defaulting to identity for degenerate quaternions.
 
-**Threshold note:** MuJoCo's `mju_normalize4` uses `mjMINVAL` (typically `1e-14`).
+**Threshold note:** MuJoCo's `mju_normalize4` uses `mjMINVAL` (`1e-15` for f64).
 We use `1e-10` to match our existing `normalize_quaternion()` convention. The
 difference is inconsequential — both thresholds are far below any physically
 meaningful quaternion norm, and the fallback (identity) is identical.
+
+**Why not reuse `QuaternionNormalizeVisitor::normalize_quaternion()`?** That
+method operates on `&mut DVector<f64>` at an offset — it's tied to the visitor
+pattern for in-place qpos normalization during integration. The constraint
+assembly path needs a pure `[f64; 4] → [f64; 4]` function with no mutable
+borrows on `data.qpos` (which is already borrowed immutably). A standalone
+`normalize_quat4` is the correct factoring.
+
+**Why `normalize_quat4` is required (not redundant):** The pipeline calls
+`forward()` (which runs constraint assembly) BEFORE `integrate()` (which calls
+`mj_normalize_quat()`). So on the first step — or whenever `qpos` is set
+directly by user code — constraint assembly sees raw, potentially unnormalized
+quaternions. The `normalize_quat4()` call in S2/S3 is the primary defense, not
+a redundancy. MuJoCo does the same: `mj_instantiateLimit()` calls
+`mju_normalize4(quat)` on the joint quaternion before computing the axis-angle.
 
 ```rust
 /// Normalize a quaternion [w, x, y, z]. Returns identity if norm < 1e-10.
@@ -158,8 +173,9 @@ fn normalize_quat4(q: [f64; 4]) -> [f64; 4] {
 
 Mirrors MuJoCo's two-step process: compute the axis-angle vector via
 `mju_quat2Vel`, then extract magnitude and unit direction via `mju_normalize3`.
-Uses explicit norm guards (matching MuJoCo's `mjMINVAL` threshold) instead of
-nalgebra's `normalize_mut()` to avoid NaN propagation on zero/near-zero vectors.
+Uses explicit norm guards (our `1e-10` convention, more conservative than
+MuJoCo's `mjMINVAL = 1e-15`) instead of nalgebra's `normalize_mut()` to avoid
+NaN propagation on zero/near-zero vectors.
 
 ```rust
 /// Compute ball joint limit quantities from a unit quaternion [w, x, y, z].
@@ -179,7 +195,10 @@ fn ball_limit_axis_angle(q: [f64; 4]) -> (Vector3<f64>, f64) {
     let sin_half = v.norm();
 
     // Guard: near-identity → angle ≈ 0, axis undefined.
-    // MuJoCo's mju_normalize3 defaults to (0,0,1) for sub-mjMINVAL vectors.
+    // MuJoCo's mju_normalize3 defaults to (1,0,0) for sub-mjMINVAL vectors.
+    // We use (0,0,1) to match nalgebra's Vector3::z() convention — the choice
+    // is arbitrary because the caller never uses unit_dir when angle ≈ 0
+    // (dist = limit - 0 > 0 → no constraint instantiated).
     if sin_half < 1e-10 {
         return (Vector3::z(), 0.0);
     }
@@ -271,13 +290,19 @@ MjJointType::Ball => {
                   + unit_dir.y * data.qvel[dof_adr + 1]
                   + unit_dir.z * data.qvel[dof_adr + 2]);
 
+        // finalize_row! args: solref, solimp, pos, margin, vel, floss, type, dim, id, mu
+        // - margin = 0.0: hardcoded (see S6 known limitation)
+        // - floss = 0.0: limit constraints have no friction loss component
+        // - dim = 1: single constraint row (cone limit, not per-axis)
+        // - mu = [0.0; 5]: limit constraints have no friction — mu is only
+        //   meaningful for contact constraints (normal + tangential friction)
         finalize_row!(
             model.jnt_solref[jnt_id],
             model.jnt_solimp[jnt_id],
             dist,
-            0.0,  // margin
+            0.0,
             vel,
-            0.0,  // friction loss
+            0.0,
             ConstraintType::LimitJoint,
             1,
             jnt_id,
@@ -414,6 +439,31 @@ it into the activation condition for all joint types.
     assembly phase agree on the total `nefc`, and each row has the correct `efc_id`,
     Jacobian entries, and `dist` value.
 
+18. **`efc_vel` sign correctness**: The constraint-space velocity `efc_vel = J · qvel`
+    has the correct sign for both cases: angular velocity pushing *into* the limit
+    (negative `efc_vel` → solver applies stronger damping) and angular velocity
+    pulling *out of* the limit (positive `efc_vel` → solver applies less damping).
+    Incorrect sign would cause the solver to amplify instead of damp violations.
+
+19. **Unnormalized quaternion robustness**: A ball joint whose quaternion has drifted
+    from unit norm (e.g., `|q| = 1.05` after Euler integration, or user-set qpos)
+    produces identical constraint distance and Jacobian as the equivalent unit
+    quaternion, because `normalize_quat4()` in the constraint assembly code (S2/S3)
+    normalizes before computing the axis-angle. (Note: `mj_normalize_quat()` runs
+    in `integrate()`, which is AFTER `forward()` → constraint assembly. So the
+    in-assembly normalization is the primary defense, not a redundancy.)
+
+20. **Reversed range parsing**: `range="45 0"` is parsed and stored as `(45°→rad,
+    0°→rad)` without swapping. The constraint assembly correctly uses
+    `max(r0, r1) = 45°` at runtime. Parser-level and runtime-level assertions both
+    pass.
+
+21. **Margin = 0.0 regression anchor**: With the current hardcoded `margin = 0.0`,
+    a ball joint rotated 0.5° *below* the limit produces no constraint row, while
+    0.5° *above* the limit produces exactly 1 row. This documents the sharp
+    activation boundary (no soft pre-activation zone) as a regression anchor for
+    the future `jnt_margin` implementation.
+
 #### Tests
 
 All tests use `[w, x, y, z]` quaternion ordering (MuJoCo convention). Helper to
@@ -429,13 +479,35 @@ fn quat_from_axis_angle_deg(axis: [f64; 3], angle_deg: f64) -> [f64; 4] {
 }
 ```
 
-**Test placement:** T1 unit tests go in a `#[cfg(test)] mod ball_limit_tests`
-module inside `mujoco_pipeline.rs` (they test private helper functions —
-matching the established pattern of `impedance_tests`, `subquat_tests`, etc.).
-T2–T18 integration tests go in `sim/L0/tests/integration/ball_joint_limits.rs`.
-The `quat_from_axis_angle_deg` helper is defined in both locations (it's a
-trivial 4-line function; duplicating is simpler than creating a shared test
-utility crate).
+**Test placement:** T1 + T1b unit tests (8 tests) go in a `#[cfg(test)] mod
+ball_limit_tests` module inside `mujoco_pipeline.rs` (they test private helper
+functions — matching the established pattern of `impedance_tests`,
+`subquat_tests`, etc.). T2–T22 integration tests (21 tests) go in
+`sim/L0/tests/integration/ball_joint_limits.rs`. The `quat_from_axis_angle_deg`
+helper is defined in both locations (it's a trivial 4-line function; duplicating
+is simpler than creating a shared test utility crate).
+
+**Integration test helpers:** T7, T14, and T15 extract the rotation angle from
+the simulated quaternion to verify solver convergence. Since `normalize_quat4`
+and `ball_limit_axis_angle` are private to `mujoco_pipeline.rs`, the integration
+test file defines a local `extract_ball_angle(qpos: &[f64], offset: usize) -> f64`
+helper that reimplements the same quaternion-to-angle computation:
+
+```rust
+/// Extract rotation angle (radians) from quaternion at qpos[offset..offset+4].
+/// Reimplements normalize_quat4 + ball_limit_axis_angle for integration tests.
+fn extract_ball_angle(qpos: &[f64], offset: usize) -> f64 {
+    let (w, x, y, z) = (qpos[offset], qpos[offset+1], qpos[offset+2], qpos[offset+3]);
+    let norm = (w*w + x*x + y*y + z*z).sqrt();
+    let (w, x, y, z) = if norm > 1e-10 { (w/norm, x/norm, y/norm, z/norm) }
+                        else { return 0.0; };
+    let sin_half = (x*x + y*y + z*z).sqrt();
+    if sin_half < 1e-10 { return 0.0; }
+    let mut theta = 2.0 * sin_half.atan2(w);
+    if theta > std::f64::consts::PI { theta -= 2.0 * std::f64::consts::PI; }
+    theta.abs()
+}
+```
 
 ##### T1. Unit test: `ball_limit_axis_angle` (in `mujoco_pipeline.rs`)
 
@@ -766,11 +838,12 @@ fn test_unlimited_ball_joint_no_constraint() {
 
 ##### T7. Integration test: limit enforcement over time
 
-Solver softness tolerance: with default `solref = [-500.0, -1.0]` (stiff
-spring-damper) and `solimp = [0.9, 0.95, 0.001, 0.5, 2.0]`, the constraint
-allows ~1–2° of penetration under moderate velocity. The 32° threshold
-(30° limit + 2° tolerance) accounts for this softness. If default solver
-parameters change, this threshold may need adjustment.
+Solver softness tolerance: with `DEFAULT_SOLREF = [0.02, 1.0]` (timeconst =
+0.02s → 50 Hz natural frequency, dampratio = 1.0 → critical damping) and
+`DEFAULT_SOLIMP = [0.9, 0.95, 0.001, 0.5, 2.0]`, the constraint allows ~1–2°
+of penetration under moderate velocity. The 32° threshold (30° limit + 2°
+tolerance) accounts for this softness. If default solver parameters change,
+this threshold may need adjustment.
 
 ```rust
 #[test]
@@ -807,8 +880,7 @@ fn test_ball_limit_enforced_over_simulation() {
     }
 
     // Extract rotation angle from quaternion
-    let (_, angle) = ball_limit_axis_angle(normalize_quat4(
-        [data.qpos[0], data.qpos[1], data.qpos[2], data.qpos[3]]));
+    let angle = extract_ball_angle(&data.qpos.as_slice(), 0);
     let angle_deg = angle.to_degrees();
     // The solver should push the angle back toward the 30° limit.
     // Allow ~2° solver softness (default solref/solimp spring-damper compliance).
@@ -1163,8 +1235,7 @@ fn test_ball_limit_degenerate_range_locks_joint() {
     for _ in 0..200 {
         data.step(&model).unwrap();
     }
-    let (_, angle) = ball_limit_axis_angle(normalize_quat4(
-        [data.qpos[0], data.qpos[1], data.qpos[2], data.qpos[3]]));
+    let angle = extract_ball_angle(&data.qpos.as_slice(), 0);
     assert!(angle.to_degrees() < 5.0,
         "degenerate range should push joint toward identity: angle={:.1}°",
         angle.to_degrees());
@@ -1225,8 +1296,7 @@ fn test_ball_limit_near_pi_rotation() {
     for _ in 0..200 {
         data.step(&model).unwrap();
     }
-    let (_, angle) = ball_limit_axis_angle(normalize_quat4(
-        [data.qpos[0], data.qpos[1], data.qpos[2], data.qpos[3]]));
+    let angle = extract_ball_angle(&data.qpos.as_slice(), 0);
     // Allow 3° tolerance — near-π Jacobian is less precise, solver needs more steps
     assert!(angle.to_degrees() < 173.0,
         "near-π limit should hold: angle={:.1}°, limit=170°", angle.to_degrees());
@@ -1420,15 +1490,290 @@ fn test_multiple_ball_joints_simultaneously_violated() {
 }
 ```
 
+##### T19. Integration test: `efc_vel` sign with opposing angular velocity
+
+```rust
+#[test]
+fn test_ball_limit_efc_vel_opposing_velocity() {
+    // Ball joint rotated 60° about X past a 45° limit. Angular velocity is
+    // in the -X direction (opposing the violation — moving back toward compliance).
+    // efc_vel = J · qvel should be positive (indicating motion reducing violation),
+    // producing correct solver damping behavior.
+    let mjcf = r#"
+        <mujoco>
+            <compiler angle="degree"/>
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body pos="0 0 0">
+                    <joint type="ball" limited="true" range="0 45"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).unwrap();
+    let mut data = model.make_data();
+
+    // 60° about X → theta > 0, unit_dir = (+1, 0, 0), J = (-1, 0, 0)
+    let q = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 60.0);
+    data.qpos[0] = q[0]; data.qpos[1] = q[1];
+    data.qpos[2] = q[2]; data.qpos[3] = q[3];
+
+    let dof = model.jnt_dof_adr[0];
+
+    // Case 1: velocity pushing INTO the limit (+X direction, same as rotation)
+    data.qvel[dof] = 2.0;     // omega_x = +2 rad/s
+    data.qvel[dof + 1] = 0.0;
+    data.qvel[dof + 2] = 0.0;
+    data.step(&model).unwrap();
+
+    let row_into = data.efc_type.iter()
+        .position(|t| matches!(t, ConstraintType::LimitJoint))
+        .expect("should have limit row");
+    let vel_into = data.efc_vel[row_into];
+    // J · qvel = (-1)(2) + (0)(0) + (0)(0) = -2.0 (negative = pushing into limit)
+    assert!(vel_into < 0.0,
+        "velocity into limit should produce negative efc_vel: got {vel_into}");
+    assert_relative_eq!(vel_into, -2.0, epsilon = 1e-4);
+
+    // Case 2: velocity pulling OUT of the limit (-X direction, opposing rotation)
+    let mut data2 = model.make_data();
+    data2.qpos[0] = q[0]; data2.qpos[1] = q[1];
+    data2.qpos[2] = q[2]; data2.qpos[3] = q[3];
+    data2.qvel[dof] = -2.0;   // omega_x = -2 rad/s (opposing)
+    data2.qvel[dof + 1] = 0.0;
+    data2.qvel[dof + 2] = 0.0;
+    data2.step(&model).unwrap();
+
+    let row_out = data2.efc_type.iter()
+        .position(|t| matches!(t, ConstraintType::LimitJoint))
+        .expect("should have limit row");
+    let vel_out = data2.efc_vel[row_out];
+    // J · qvel = (-1)(-2) + (0)(0) + (0)(0) = +2.0 (positive = pulling out of limit)
+    assert!(vel_out > 0.0,
+        "velocity out of limit should produce positive efc_vel: got {vel_out}");
+    assert_relative_eq!(vel_out, 2.0, epsilon = 1e-4);
+}
+```
+
+##### T20. Integration test: unnormalized quaternion in constraint assembly
+
+```rust
+#[test]
+fn test_ball_limit_unnormalized_quaternion() {
+    // Quaternions can drift from unit norm during Euler integration.
+    // The normalize_quat4() call in constraint assembly must handle this
+    // gracefully — producing the same constraint distance and Jacobian as
+    // the equivalent unit quaternion.
+    let mjcf = r#"
+        <mujoco>
+            <compiler angle="degree"/>
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body pos="0 0 0">
+                    <joint type="ball" limited="true" range="0 45"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).unwrap();
+
+    // Unit quaternion for 60° about X
+    let q_unit = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 60.0);
+
+    // Run with unit quaternion
+    let mut data_unit = model.make_data();
+    data_unit.qpos[0] = q_unit[0]; data_unit.qpos[1] = q_unit[1];
+    data_unit.qpos[2] = q_unit[2]; data_unit.qpos[3] = q_unit[3];
+    data_unit.step(&model).unwrap();
+
+    // Run with scaled quaternion (norm = 1.05 — typical drift magnitude)
+    // Note: step() calls forward() (constraint assembly) BEFORE integrate()
+    // (which calls mj_normalize_quat). So on this first step, constraint
+    // assembly sees the raw scaled quaternion. The normalize_quat4() call
+    // INSIDE constraint assembly (S2/S3) is what provides correctness here.
+    // This test verifies that defense works — without it, the 5% norm error
+    // would produce a measurably different rotation angle.
+    let scale = 1.05;
+    let mut data_scaled = model.make_data();
+    data_scaled.qpos[0] = q_unit[0] * scale;
+    data_scaled.qpos[1] = q_unit[1] * scale;
+    data_scaled.qpos[2] = q_unit[2] * scale;
+    data_scaled.qpos[3] = q_unit[3] * scale;
+    data_scaled.step(&model).unwrap();
+
+    // Both should produce exactly 1 LimitJoint row
+    let row_unit = data_unit.efc_type.iter()
+        .position(|t| matches!(t, ConstraintType::LimitJoint))
+        .expect("unit quat should have limit row");
+    let row_scaled = data_scaled.efc_type.iter()
+        .position(|t| matches!(t, ConstraintType::LimitJoint))
+        .expect("scaled quat should have limit row");
+
+    // Constraint distance must match (normalization produces same rotation)
+    assert_relative_eq!(data_unit.efc_pos[row_unit],
+                        data_scaled.efc_pos[row_scaled],
+                        epsilon = 1e-8,
+                        "dist should be identical for unit and scaled quaternions");
+
+    // Jacobian must match
+    let dof = model.jnt_dof_adr[0];
+    for d in 0..3 {
+        assert_relative_eq!(
+            data_unit.efc_J[(row_unit, dof + d)],
+            data_scaled.efc_J[(row_scaled, dof + d)],
+            epsilon = 1e-8,
+            "Jacobian[{d}] should be identical for unit and scaled quaternions");
+    }
+}
+```
+
+##### T21. Integration test: `range="45 0"` parser-level verification
+
+```rust
+#[test]
+fn test_ball_limit_reversed_range_parsing() {
+    // Verify that range="45 0" (reversed order) is parsed correctly.
+    // The parser should store raw values; the constraint assembly uses
+    // max(r0, r1) at runtime to extract the cone half-angle.
+    let mjcf = r#"
+        <mujoco>
+            <compiler angle="degree"/>
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body pos="0 0 0">
+                    <joint type="ball" limited="true" range="45 0"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).unwrap();
+
+    // Verify parser stored (45°→rad, 0°→rad) — not swapped
+    assert_relative_eq!(model.jnt_range[0].0, 45.0_f64.to_radians(), epsilon = 1e-6,
+        "range[0] should be 45° in radians");
+    assert_relative_eq!(model.jnt_range[0].1, 0.0, epsilon = 1e-10,
+        "range[1] should be 0");
+
+    // Runtime: max(45°, 0°) = 45° is the effective cone half-angle
+    let mut data = model.make_data();
+    let q = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 60.0);
+    data.qpos[0] = q[0]; data.qpos[1] = q[1];
+    data.qpos[2] = q[2]; data.qpos[3] = q[3];
+    data.step(&model).unwrap();
+
+    let limit_rows = data.efc_type.iter()
+        .filter(|t| matches!(t, ConstraintType::LimitJoint)).count();
+    assert_eq!(limit_rows, 1, "reversed range should still activate limit");
+
+    // dist = max(45°, 0°) - 60° = 45° - 60° = -15° in radians
+    let limit_row = data.efc_type.iter()
+        .position(|t| matches!(t, ConstraintType::LimitJoint)).unwrap();
+    let expected_dist = 45.0_f64.to_radians() - 60.0_f64.to_radians();
+    assert_relative_eq!(data.efc_pos[limit_row], expected_dist, epsilon = 1e-4);
+}
+```
+
+##### T22. Integration test: margin = 0.0 regression anchor
+
+```rust
+#[test]
+fn test_ball_limit_margin_zero_regression() {
+    // Regression anchor for the hardcoded margin = 0.0 behavior (S6).
+    // When jnt_margin support is added in a future item, this test should
+    // be updated to verify margin-aware activation.
+    //
+    // Current behavior: constraint activates only when dist < 0.0 (strict
+    // violation). A rotation 0.5° short of the limit (dist = +0.5° > 0)
+    // should NOT produce a constraint row.
+    let mjcf = r#"
+        <mujoco>
+            <compiler angle="degree"/>
+            <option gravity="0 0 0" timestep="0.001"/>
+            <worldbody>
+                <body pos="0 0 0">
+                    <joint type="ball" limited="true" range="0 45"/>
+                    <geom type="sphere" size="0.1" mass="1.0"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#;
+    let model = load_model(mjcf).unwrap();
+    let mut data = model.make_data();
+
+    // Rotate 44.5° about X — 0.5° short of the 45° limit
+    let q = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 44.5);
+    data.qpos[0] = q[0]; data.qpos[1] = q[1];
+    data.qpos[2] = q[2]; data.qpos[3] = q[3];
+
+    data.step(&model).unwrap();
+
+    let limit_rows = data.efc_type.iter()
+        .filter(|t| matches!(t, ConstraintType::LimitJoint))
+        .count();
+    assert_eq!(limit_rows, 0,
+        "with margin=0, rotation 0.5° below limit should produce no constraint");
+
+    // Contrast: 45.5° (0.5° past limit) should activate
+    let mut data2 = model.make_data();
+    let q2 = quat_from_axis_angle_deg([1.0, 0.0, 0.0], 45.5);
+    data2.qpos[0] = q2[0]; data2.qpos[1] = q2[1];
+    data2.qpos[2] = q2[2]; data2.qpos[3] = q2[3];
+    data2.step(&model).unwrap();
+
+    let limit_rows2 = data2.efc_type.iter()
+        .filter(|t| matches!(t, ConstraintType::LimitJoint))
+        .count();
+    assert_eq!(limit_rows2, 1,
+        "with margin=0, rotation 0.5° past limit should produce 1 constraint");
+}
+```
+
+##### T1b. Unit test: `ball_limit_axis_angle` with near-zero norm quaternion (in `mujoco_pipeline.rs`)
+
+```rust
+#[test]
+fn test_ball_limit_axis_angle_near_zero_quaternion() {
+    // A quaternion with near-zero norm (degenerate) should be caught by
+    // normalize_quat4 (returns identity) before reaching ball_limit_axis_angle.
+    // But ball_limit_axis_angle itself should also handle near-zero sin_half
+    // gracefully — returning angle = 0 and an arbitrary direction.
+    // This tests the helper directly with a quaternion that has tiny imaginary part.
+    let q = [1.0, 1e-15, 1e-15, 1e-15]; // Nearly identity, sin_half ≈ 1.7e-15
+    let (_, angle) = ball_limit_axis_angle(q);
+    assert!(angle < 1e-10, "near-zero sin_half should produce angle ≈ 0: got {angle}");
+    // unit_dir is arbitrary (z-axis default) — not asserted
+}
+```
+
+#### MuJoCo Conformance Citation
+
+**Reference implementation:** MuJoCo 3.x, `engine_core_constraint.c`,
+`mj_instantiateLimit()`, `mjJNT_BALL` branch. The algorithm is:
+1. `mju_normalize4(quat)` — normalize joint quaternion
+2. `mju_quat2Vel(angleAxis, quat, 1)` — axis-angle vector via quaternion log
+3. `value = mju_normalize3(angleAxis)` — extract rotation magnitude, normalize direction
+4. `dist = mju_max(range[0], range[1]) - value` — distance to cone boundary
+5. Activate when `dist < margin`
+6. Jacobian: `mju_scl3(jac, angleAxis, -1)` — 3 entries at angular DOF addresses
+7. Single constraint row via `mj_addConstraint(..., mjCNSTR_LIMIT_JOINT, ...)`
+
+Our implementation matches this algorithm exactly, with the documented deviations:
+- Normalization threshold: `1e-10` (ours) vs `mjMINVAL = 1e-15` (MuJoCo) — inconsequential
+- Near-identity fallback direction: `(0,0,1)` (ours) vs `(1,0,0)` (MuJoCo) — never used
+- Margin: hardcoded `0.0` (ours) vs `jnt_margin[i]` (MuJoCo) — pre-existing gap (S6)
+
 #### Files
 - `sim/L0/core/src/mujoco_pipeline.rs` — `assemble_unified_constraints()`: add
   `Ball` arm to constraint counting loop and assembly loop. Add `normalize_quat4()`
   and `ball_limit_axis_angle()` helper functions. Add `Free => {}` arm (no-op,
-  matching MuJoCo). Add `#[cfg(test)] mod ball_limit_tests` with T1 unit tests
-  (7 tests for the private `ball_limit_axis_angle` helper — follows the
+  matching MuJoCo). Add `#[cfg(test)] mod ball_limit_tests` with T1 + T1b unit
+  tests (8 tests for the private `ball_limit_axis_angle` helper — follows the
   `impedance_tests`/`subquat_tests` precedent).
 - `sim/L0/tests/integration/` — new test file `ball_joint_limits.rs` with tests
-  T2–T18 (17 integration tests). Add `mod ball_joint_limits;` to `mod.rs`.
+  T2–T22 (21 integration tests). Add `mod ball_joint_limits;` to `mod.rs`.
 
 ---
 
