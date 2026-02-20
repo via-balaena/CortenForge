@@ -1838,6 +1838,13 @@ if (side && mju_norm3(s) < radius) {
    does not contribute to length variation (same principle as exterior wrap).
    **No caller changes are required.**
 
+5. **`wrap_xpos`/`wrap_obj` data storage is out of scope.** MuJoCo stores
+   tangent point world positions in `d->wrap_xpos[]` and object markers in
+   `d->wrap_obj[]` for visualization. Our implementation does not populate
+   these fields (they are not in our `Data` struct). This is already documented
+   as a separate follow-up in the spatial tendon spec (future_work_2.md §Known
+   Limitations). The physics (length, Jacobian, forces) is correct without them.
+
 **Normal wrap** (`wrap_circle`): Tendon wraps around the exterior, producing two
 distinct tangent points and a circular arc. Returns arc length. Already implemented
 as `sphere_wrap()` / `cylinder_wrap()`.
@@ -1943,6 +1950,40 @@ where `z ∈ (0, 1)` is the sine of the tangent angle parameter. Since `A < 1`
 and `B < 1` (endpoints are outside the circle), the function is monotonically
 decreasing in the valid domain, and the Newton solver starts near the right
 boundary (`z ≈ 1`) and moves leftward.
+
+**Geometric derivation of the Newton equation:**
+
+The stationarity condition for path length `L = |P0−T| + |T−P1|` constrained
+to the circle is `(û₀ + û₁) · τ = 0`, where `û₀ = (P0−T)/|P0−T|`,
+`û₁ = (P1−T)/|P1−T|`, and `τ` is the circle tangent at T. This means the two
+line segments make equal angles with the circle normal at T.
+
+Let `θ_T` be this common angle (at T, between the inward radial and each
+segment). Define `z = sin(θ_T)`. Consider triangle `(O, T, P0)` with sides
+`OT = r`, `OP0 = len0`, angle `φ₀` at `O`. By the sine rule:
+
+```
+sin(ξ₀) / r = sin(θ_T) / len0    →    ξ₀ = asin(r · z / len0) = asin(A · z)
+```
+
+where `ξ₀` is the angle at `P0`. Since angles sum to `π`:
+`φ₀ = π − θ_T − asin(A·z)`. Similarly for triangle `(O, T, P1)`:
+`φ₁ = π − θ_T − asin(B·z)`.
+
+The tangent point lies between `P0` and `P1` angularly, so `φ₀ + φ₁ = G`:
+
+```
+(π − θ_T − asin(A·z)) + (π − θ_T − asin(B·z)) = G
+```
+
+Substituting `θ_T = asin(z)` and rearranging:
+
+```
+asin(A·z) + asin(B·z) − 2·asin(z) + G = 0    ∎
+```
+
+The reconstruction angle `asin(z) − asin(A·z) = θ_T − ξ₀ = φ₀` gives the
+angular offset from the `P0` direction to `T` on the circle.
 
 *Step 5 — Newton iteration:*
 ```
@@ -2149,7 +2190,7 @@ MuJoCo verification for cylinder Z with `wlen=0`: `L0/(L0+0+L1)` and
 The helical correction `sqrt(wlen² + height²) = sqrt(0+0) = 0` confirms
 `arc_length = 0`.
 
-##### S5. Remove build-time panic
+##### S5. Remove build-time panic and retire validation rule 9
 
 Delete the sidesite-inside validation loop from `compute_spatial_tendon_length0()`
 (lines ~3981–4018). This entire loop — from `for t in 0..self.ntendon` through
@@ -2159,6 +2200,21 @@ MuJoCo configuration now handled by the runtime wrapping algorithms.
 The remaining code (FK, tendon_length0 copy, lengthspring sentinel) is unchanged
 and will correctly compute tendon lengths using the inside-wrap algorithm via the
 FK → `mj_fwd_tendon` → `sphere_wrap`/`cylinder_wrap` → `wrap_inside_2d` path.
+
+**Validation rule 9 retirement:** The spatial tendon spec (future_work_2.md
+§4.2, lines ~2641–2647) defines rule 9: "sidesite outside wrapping geometry."
+This rule was a stopgap because `wrap_inside` was not implemented. With
+`wrap_inside` now implemented, rule 9 is **retired** — sidesites inside
+wrapping geometry are valid. The following updates are required:
+
+1. `mujoco_pipeline.rs` — delete the rule 9 validation loop (lines ~3979–4015)
+   and update the `compute_spatial_tendon_length0()` doc comment (lines ~3957–3968)
+   to remove the panic mention.
+2. `future_work_2.md` — update rule 9 text (lines ~2641–2647) to note it is
+   retired: "Rule 9 (sidesite outside wrapping geometry) is retired — sidesites
+   inside wrapping geometry are now handled by the `wrap_inside` algorithm (§39)."
+3. `future_work_2.md` — update the "Known Limitations" gap note (lines ~3700–3712)
+   to mark `wrap_inside` as implemented with a cross-reference to §39.
 
 ##### S6. Degenerate cases
 
@@ -2188,7 +2244,7 @@ and `arc_length == 0.0`. The tangent point lies on the sphere surface
 
 **T4. Path length correctness:** The tendon length for inside wrap equals
 `|p0 − tangent| + |tangent − p1|` (sum of two straight segments, no arc).
-Verify this value matches MuJoCo 3.4.0 reference for the same model.
+Verify this value matches MuJoCo 3.5.0 reference for the same model.
 
 **T5. Newton convergence and tangency verification:** For a reference geometry
 with `end0 = (2.0, 0.0)`, `end1 = (1.5, 2.598)` (distance 3.0 from center,
@@ -2202,7 +2258,7 @@ angle G = π/3), `radius = 1.0`:
   geometric critical point.
 
 **T6. MuJoCo conformance (sphere):** Compare tendon length and wrap point
-positions against MuJoCo 3.4.0. Tolerance: `1e-6` for tendon length, `1e-6`
+positions against MuJoCo 3.5.0. Tolerance: `1e-6` for tendon length, `1e-6`
 for wrap point positions. Test model:
 
 ```xml
@@ -2225,6 +2281,7 @@ for wrap point positions. Test model:
       <site name="side" pos="0.05 0 0"/>  <!-- inside sphere: |ss|=0.05 < 0.15 -->
       <body name="b1">
         <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>  <!-- mass for MuJoCo validity -->
         <site name="s2" pos="0.3 0 -0.15"/>
       </body>
     </body>
@@ -2239,17 +2296,13 @@ for wrap point positions. Test model:
 </mujoco>
 ```
 
-Reference values obtained via:
-```python
-import mujoco
-m = mujoco.MjModel.from_xml_string(MODEL_XML)
-d = mujoco.MjData(m)
-mujoco.mj_forward(m, d)
-print(f"ten_length = {d.ten_length[0]:.10f}")  # tendon length
-print(f"wrap_xpos  = {d.wrap_xpos}")    # wrap point world positions
-```
+Reference values obtained via the extraction script in §39-appendix below.
 
-(Exact reference values to be recorded during implementation.)
+**MuJoCo 3.5.0 reference values:**
+```
+T6_ten_length  = 0.424264068711929   # = 0.3·√2 (two segments of length 0.15·√2)
+T6_tangent_pos = (0.15, 0.0, ~0.0)  # on sphere surface, |t| = 0.15 = radius
+```
 
 **T7. MuJoCo conformance (cylinder):** Same for sidesite inside a wrapping
 cylinder. Tolerance: `1e-6` for tendon length, `1e-6` for wrap point positions.
@@ -2273,6 +2326,7 @@ Test model:
       <site name="side_c" pos="0.05 0 0"/>  <!-- inside cylinder: |ss|_3D=0.05 < 0.15 -->
       <body name="b1">
         <joint name="j1" type="hinge" axis="0 0 1"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>  <!-- mass for MuJoCo validity -->
         <site name="s2" pos="0.3 -0.1 -0.2"/>
       </body>
     </body>
@@ -2287,8 +2341,11 @@ Test model:
 </mujoco>
 ```
 
-Reference values from MuJoCo 3.4.0 (same Python extraction as T6; exact values
-to be recorded during implementation).
+**MuJoCo 3.5.0 reference values:**
+```
+T7_ten_length  = 0.538516480713450
+T7_tangent_pos = (0.15, ~0.0, ~0.0)  # on cylinder surface, XY norm = 0.15 = radius
+```
 
 **T8. Transition robustness and dispatch correctness:** As a sidesite sweeps
 from outside to inside a wrapping sphere (via slide joint), verify:
@@ -2311,8 +2368,17 @@ from the wrapping geom, connected through a joint, so that joint motion changes
 the sidesite's distance from the geom center. (If sidesite and geom are on the
 same body, they move rigidly together and the distance never changes.)
 
-Test model uses a slide joint along X to translate the sidesite toward/away
-from the sphere center. At `qpos=0` the sidesite is just outside (`|ss|=0.16`);
+**Co-movement note:** In this model, endpoint `s2` is on the same child body
+`b1` as the sidesite `side_sweep`. As the slide joint sweeps, **both** the
+sidesite and `s2` translate by the same delta along X. This means the endpoint
+positions in geom-local frame also change during the sweep — the test is not
+a pure sidesite sweep with fixed endpoints. This is intentional and realistic:
+in biomechanical models, the sidesite is typically a bone landmark on the same
+body as a muscle attachment point. The reference values below account for this.
+
+Test model uses a slide joint along X to translate child body `b1` (carrying
+both `side_sweep` and `s2`) toward/away from the sphere center.
+At `qpos=0` the sidesite is just outside (`|ss|=0.16`);
 at `qpos=-0.01` it crosses the boundary (`|ss|=0.15=radius`); at `qpos=-0.05`
 it is well inside (`|ss|=0.11`).
 
@@ -2337,6 +2403,7 @@ it is well inside (`|ss|=0.11`).
       <site name="s1" pos="0.3 0 0.15"/>
       <body name="b1">
         <joint name="sweep" type="slide" axis="1 0 0" range="-0.05 0.05"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>  <!-- mass for MuJoCo validity -->
         <site name="side_sweep" pos="0.16 0 0"/>  <!-- just outside at qpos=0 -->
         <site name="s2" pos="0.3 0 -0.15"/>
       </body>
@@ -2358,11 +2425,23 @@ call `forward()` at each step. For each step verify:
 
 Additionally, check MuJoCo conformance at three specific positions:
 - `qpos = -0.04`: sidesite at `(0.12, 0, 0)`, `|ss|=0.12 < 0.15` → inside wrap
-- `qpos =  0.00`: sidesite at `(0.16, 0, 0)`, `|ss|=0.16 > 0.15` → outside dispatch
-- `qpos = +0.04`: sidesite at `(0.20, 0, 0)`, `|ss|=0.20 > 0.15` → outside dispatch
+- `qpos =  0.00`: sidesite at `(0.16, 0, 0)`, `|ss|=0.16 > 0.15` → NoWrap (straight line clears sphere, sidesite same side as closest point)
+- `qpos = +0.04`: sidesite at `(0.20, 0, 0)`, `|ss|=0.20 > 0.15` → NoWrap (same reason)
 
-Tolerance: `1e-6` for length conformance at the three sampled points. (Exact
-reference values to be recorded from MuJoCo 3.4.0 during implementation.)
+Tolerance: `1e-6` for length conformance at the three sampled points.
+
+**MuJoCo 3.5.0 reference values:**
+```
+T8_qpos_neg004_length = 0.397761312300161   # qpos=-0.04, |ss|=0.12 < 0.15 → inside wrap
+T8_qpos_zero_length   = 0.300000000000000   # qpos= 0.00, |ss|=0.16 > 0.15 → NoWrap (straight)
+T8_qpos_pos004_length = 0.302654919008431   # qpos=+0.04, |ss|=0.20 > 0.15 → NoWrap (straight)
+```
+
+**Discontinuity confirmed:** Between `qpos=-0.01` (L=0.300, outside) and
+`qpos=-0.02` (L=0.411, inside wrap), the tendon length jumps by ~0.11. This
+is the expected dispatch-boundary discontinuity. The full 101-point sweep
+(`qpos ∈ [-0.05, +0.05]` at 0.001 steps) produces finite positive values
+throughout — no NaN, no crash.
 
 **T9. Regression:** All existing spatial tendon tests (Tests 1–19b) pass
 unchanged. These all have sidesites outside wrapping geometry.
@@ -2428,8 +2507,8 @@ Verify no panic, solver converges, and the tangent point lies on the surface
 | T3 | Integration | Sphere | Sidesite inside, runtime | Single tangent point, on-surface, arc=0 |
 | T4 | Integration | Sphere | Sidesite inside, runtime | Path length = \|p0−t\| + \|t−p1\|, matches MuJoCo |
 | T5 | **Unit** | 2D circle | Known 2D geometry | Newton convergence + tangency condition |
-| T6 | Integration | Sphere | MuJoCo 3.4.0 ref model | Conformance: length + wrap points |
-| T7 | Integration | Cylinder | MuJoCo 3.4.0 ref model | Conformance: length + wrap points |
+| T6 | Integration | Sphere | MuJoCo 3.5.0 ref model | Conformance: length + wrap points |
+| T7 | Integration | Cylinder | MuJoCo 3.5.0 ref model | Conformance: length + wrap points |
 | T8 | Integration | Sphere | Slide joint sweep | Robustness (no NaN/crash) + dispatch correctness + MuJoCo conformance at sampled points |
 | T9 | Integration | Both | Existing tests 1–19b | Regression |
 | T10 | Integration | Sphere | Sidesite inside | Jacobian via central finite difference |
@@ -2458,6 +2537,149 @@ Verify no panic, solver converges, and the tangent point lies on the surface
   - New test models (sphere-inside, cylinder-inside, transition sweep,
     3D-norm dispatch, origin sidesite)
   - Integration tests T1–T4, T6–T10, T14–T18 (MJCF model → forward → check outputs)
+
+#### Documentation Updates (post-implementation)
+
+After implementation is complete and all tests pass, update the following:
+
+1. **`sim/docs/todo/future_work_2.md`** — Spatial tendon spec:
+   - Lines ~2641–2647: Annotate validation rule 9 as retired (§39).
+   - Lines ~3700–3712: Mark `wrap_inside` gap as resolved with `~~strikethrough~~`
+     and cross-reference to §39.
+2. **`sim/docs/MUJOCO_GAP_ANALYSIS.md`** — Line ~28:
+   - Strike through `wrap_inside` in the Phase 3A-v entry: `~~wrap_inside~~ ✅`.
+3. **`sim/docs/todo/index.md`** — Line ~124:
+   - Update §39 status column to `✅`.
+4. **`sim/docs/todo/future_work_10.md`** — This section:
+   - Update status from "Not started" to "✅ Complete".
+
+#### §39-appendix: MuJoCo Reference Value Extraction Script
+
+This script reproduces the reference values above. Run with `uv run --with mujoco --with numpy python3 script.py`.
+The models include `<geom mass="0.1"/>` on child bodies (MuJoCo requires mass on moving bodies).
+
+```python
+#!/usr/bin/env python3
+"""Extract MuJoCo reference values for §39 wrap_inside conformance tests.
+   Verified against MuJoCo 3.5.0. Run: uv run --with mujoco --with numpy python3 <script>
+"""
+import mujoco
+import numpy as np
+
+def extract(name, xml, qpos_overrides=None):
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    if qpos_overrides:
+        for idx, val in qpos_overrides.items():
+            d.qpos[idx] = val
+    mujoco.mj_forward(m, d)
+    length = d.ten_length[0]
+    nwrap = d.ten_wrapnum[0]
+    wrapadr = d.ten_wrapadr[0]
+    print("\n--- %s ---" % name)
+    print("  ten_length  = %.15f" % length)
+    print("  ten_wrapnum = %d" % nwrap)
+    max_idx = min(nwrap, d.wrap_xpos.shape[0] - wrapadr)
+    for i in range(max_idx):
+        pos = d.wrap_xpos[wrapadr + i]
+        print("  wrap_xpos[%d] = (%.15f, %.15f, %.15f)" % (i, pos[0], pos[1], pos[2]))
+    return length
+
+T6_XML = """
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_sphere" type="sphere" size="0.15"/>
+      <site name="s1" pos="0.3 0 0.15"/>
+      <site name="side" pos="0.05 0 0"/>
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="s2" pos="0.3 0 -0.15"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_inside">
+      <site site="s1"/>
+      <geom geom="wrap_sphere" sidesite="side"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+"""
+extract("T6 (sphere inside-wrap)", T6_XML)
+
+T7_XML = """
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_cyl" type="cylinder" size="0.15 0.5"/>
+      <site name="s1" pos="0.3 0.1 0.2"/>
+      <site name="side_c" pos="0.05 0 0"/>
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 0 1"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="s2" pos="0.3 -0.1 -0.2"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_inside_cyl">
+      <site site="s1"/>
+      <geom geom="wrap_cyl" sidesite="side_c"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+"""
+extract("T7 (cylinder inside-wrap)", T7_XML)
+
+T8_XML = """
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_s" type="sphere" size="0.15"/>
+      <site name="s1" pos="0.3 0 0.15"/>
+      <body name="b1">
+        <joint name="sweep" type="slide" axis="1 0 0" range="-0.05 0.05"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="side_sweep" pos="0.16 0 0"/>
+        <site name="s2" pos="0.3 0 -0.15"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_sweep">
+      <site site="s1"/>
+      <geom geom="wrap_s" sidesite="side_sweep"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+"""
+for qval, label in [(-0.04, "inside"), (0.0, "outside boundary"), (0.04, "well outside")]:
+    extract("T8 qpos=%.2f (%s)" % (qval, label), T8_XML, {0: qval})
+
+print("\n--- T8 full sweep ---")
+m = mujoco.MjModel.from_xml_string(T8_XML)
+d = mujoco.MjData(m)
+all_ok = True
+for q_milli in range(-50, 51):
+    q = q_milli * 0.001
+    d.qpos[0] = q
+    mujoco.mj_forward(m, d)
+    L = d.ten_length[0]
+    ok = np.isfinite(L) and L > 0
+    if not ok:
+        all_ok = False
+        print("  FAIL qpos=%.3f  ten_length=%.10f" % (q, L))
+    elif q_milli % 10 == 0:
+        print("  OK   qpos=%.3f  ten_length=%.10f" % (q, L))
+print("Sweep: %s" % ("ALL OK" if all_ok else "FAILURES DETECTED"))
+```
+
+Reference values above were extracted using this script on MuJoCo 3.5.0.
 
 ---
 
