@@ -2990,12 +2990,13 @@ computation.
 
 Both fluid models require the 6D velocity at a point in a local frame. MuJoCo
 provides `mj_objectVelocity(m, d, objtype, id, res, flg_local)`. Our codebase
-stores `cvel[body]` as `[ω, v]` referenced to `xpos[body]` (body origin in
-world frame). The equivalent function:
+stores `cvel[body]` as `[ω, v]` — a spatial motion vector referenced to
+`subtree_com[body_rootid]` (the center of mass of the body's kinematic
+subtree root, in world frame). The equivalent function:
 
 ```
 object_velocity_local(model, data, obj_type, obj_id) → [f64; 6]:
-    // Determine body, point, and local rotation matrix
+    // Determine body, target point, and local rotation matrix
     match obj_type:
         Body → body_id = obj_id
                 point   = data.xipos[obj_id]       // body center of mass
@@ -3004,12 +3005,14 @@ object_velocity_local(model, data, obj_type, obj_id) → [f64; 6]:
                 point   = data.geom_xpos[obj_id]   // geom center
                 R_local = data.geom_xmat[obj_id]    // geom frame rotation
 
-    // Extract body velocity at body origin (world frame)
-    ω = cvel[body_id][0..3]                         // angular velocity
-    v_origin = cvel[body_id][3..6]                  // linear velocity at xpos[body_id]
+    // Extract spatial velocity at subtree CoM (world frame)
+    root_id = model.body_rootid[body_id]
+    ω = cvel[body_id][0..3]                         // angular velocity (same everywhere)
+    v_subtree = cvel[body_id][3..6]                 // linear velocity at subtree_com
 
-    // Shift linear velocity to requested point
-    v_point = v_origin + ω × (point - data.xpos[body_id])
+    // Shift linear velocity from subtree CoM to requested point
+    // (uses mju_transformSpatial with flg_force=0)
+    v_point = v_subtree + ω × (point - data.subtree_com[root_id])
 
     // Rotate to local frame
     ω_local = R_local^T * ω
@@ -3303,7 +3306,14 @@ Parse from `<geom>` element. Inherit from `<default>` class (both `fluidshape`
 and `fluidcoef` appear in the MJCF schema under `<default><geom>`).
 
 Validation: if `fluidcoef` is provided, all 5 values must be present (MuJoCo
-rejects partial `fluidcoef`). Values must be non-negative.
+rejects partial `fluidcoef`). MuJoCo does not enforce non-negativity on
+`fluidcoef` values at parse time — arbitrary `f64` values are accepted.
+
+**Edge case:** If `fluidcoef` is provided but `fluidshape="none"` (or
+defaulted to `"none"`), the coefficients are parsed but have no effect —
+`geom_fluid` remains all zeros because `geom_fluid[0] = 0.0` (the master
+switch is off). This matches MuJoCo: `SetFluidCoefs` only writes elements
+1–5 when `fluidshape="ellipsoid"`.
 
 ##### S2. Model storage
 
@@ -3358,7 +3368,9 @@ fn mj_fluid(model: &Model, data: &mut Data) -> bool {
 
     // Sleep filtering: if sleep is enabled and some bodies are asleep,
     // iterate only over awake bodies via data.body_awake_ind[0..nbody_awake].
-    // Otherwise iterate over 1..nbody (skip world body).
+    // Otherwise iterate over 0..nbody (world body is filtered by mass guard).
+    // MuJoCo iterates from b=0; world body (id=0) has mass=0 and is skipped
+    // by the mass < mjMINVAL check below.
     let body_iter = sleep_filtered_bodies(model, data);  // see note below
 
     for body_id in body_iter {
@@ -3898,6 +3910,50 @@ later.
 </mujoco>
 ```
 
+**Model S — Multi-ellipsoid body (per-geom accumulation):**
+```xml
+<mujoco>
+  <option density="1.2" viscosity="0"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <freejoint/>
+      <geom type="ellipsoid" size="0.1 0.05 0.02" mass="0.5"
+            fluidshape="ellipsoid" pos="-0.15 0 0"/>
+      <geom type="ellipsoid" size="0.08 0.04 0.03" mass="0.5"
+            fluidshape="ellipsoid" pos="0.15 0 0"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+**Model T — Ellipsoid angular-only velocity (angular drag isolation):**
+```xml
+<mujoco>
+  <option density="1.2" viscosity="0.001"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <freejoint/>
+      <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+            fluidshape="ellipsoid"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+**Model U — Oblate spheroid (kappa validation variant):**
+```xml
+<mujoco>
+  <option density="1.2" viscosity="0"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <freejoint/>
+      <geom type="ellipsoid" size="0.1 0.1 0.03" mass="1"
+            fluidshape="ellipsoid"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
 ##### Acceptance Tests
 
 All conformance tests compare against MuJoCo 3.5.0 reference values extracted
@@ -3936,6 +3992,10 @@ via the script in the appendix. Tolerance: `1e-10` for force components
 | T28 | Integration | Q | Inertia-box with non-axis-aligned wind | `qfrc_fluid` matches MuJoCo; stresses wind rotation logic |
 | T29 | Integration | R | Ellipsoid capsule semi-axes `(r, r, h+r)` | `qfrc_fluid` matches MuJoCo; verify semi-axes = `(size[0], size[0], size[1]+size[0])` |
 | T30 | Integration | D | Ellipsoid with zero velocity (no speed guard) | `qvel=0`, `qfrc_fluid` matches MuJoCo; validates no spurious speed guard |
+| T31 | Integration | S | Multi-ellipsoid body: per-geom force accumulation | Two ellipsoid geoms on one body; `qfrc_fluid` matches MuJoCo (sum of per-geom contributions) |
+| T32 | Integration | T | Ellipsoid angular-only velocity `ω=(10,5,3)`, `v=0` | Angular drag active, Magnus/Kutta/linear drag vanish; `qfrc_fluid` matches MuJoCo |
+| T33 | Integration | U | Oblate spheroid drag, `v=(1,0.5,0)` | `qfrc_fluid` matches MuJoCo; validates kappa quadrature for oblate geometry |
+| T34 | Unit | — | Kappa quadrature for oblate spheroid `(3, 3, 1)` | Compare against closed-form oblate elliptic integral result |
 
 ##### MuJoCo Reference Value Extraction Script
 
@@ -4028,6 +4088,23 @@ MODELS = {
             <geom type="capsule" size="0.05 0.15" mass="1"
                   fluidshape="ellipsoid"/>
             </body></worldbody></mujoco>""",
+    "S": """<mujoco><option density="1.2" viscosity="0"/>
+            <worldbody><body pos="0 0 1"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="0.5"
+                  fluidshape="ellipsoid" pos="-0.15 0 0"/>
+            <geom type="ellipsoid" size="0.08 0.04 0.03" mass="0.5"
+                  fluidshape="ellipsoid" pos="0.15 0 0"/>
+            </body></worldbody></mujoco>""",
+    "T": """<mujoco><option density="1.2" viscosity="0.001"/>
+            <worldbody><body pos="0 0 1"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+            </body></worldbody></mujoco>""",
+    "U": """<mujoco><option density="1.2" viscosity="0"/>
+            <worldbody><body pos="0 0 1"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.1 0.03" mass="1"
+                  fluidshape="ellipsoid"/>
+            </body></worldbody></mujoco>""",
 }
 
 TESTS = {
@@ -4049,6 +4126,9 @@ TESTS = {
     "T28": {"model": "Q", "qvel": [0,0,0, 0,0,0]},
     "T29": {"model": "R", "qvel": [0,0,0, 0,0,-1]},
     "T30": {"model": "D", "qvel": [0,0,0, 0,0,0]},
+    "T31": {"model": "S", "qvel": [0,0,0, 1,0.5,-1]},
+    "T32": {"model": "T", "qvel": [10,5,3, 0,0,0]},
+    "T33": {"model": "U", "qvel": [0,0,0, 1,0.5,0]},
 }
 
 # T15: body mass guard (inertia-box path) — near-zero mass body
@@ -4162,6 +4242,38 @@ d.qvel[:] = [0,0,0, 0,0,-1]
 mujoco.mj_forward(m, d)
 if hasattr(d, 'qfrc_fluid'):
     print(f"  qfrc_fluid = {np.array2string(d.qfrc_fluid, precision=15)}")
+
+print("\n=== T31: Multi-ellipsoid body (per-geom accumulation) ===")
+m = mujoco.MjModel.from_xml_string(MODELS["S"])
+d = mujoco.MjData(m)
+d.qvel[:] = [0,0,0, 1,0.5,-1]
+mujoco.mj_forward(m, d)
+if hasattr(d, 'qfrc_fluid'):
+    print(f"  qfrc_fluid = {np.array2string(d.qfrc_fluid, precision=15)}")
+for g in range(m.ngeom):
+    print(f"  geom {g} fluid = {m.geom_fluid[g].tolist()}")
+
+print("\n=== T32: Angular-only velocity (angular drag isolation) ===")
+m = mujoco.MjModel.from_xml_string(MODELS["T"])
+d = mujoco.MjData(m)
+d.qvel[:] = [10,5,3, 0,0,0]
+mujoco.mj_forward(m, d)
+if hasattr(d, 'qfrc_fluid'):
+    print(f"  qfrc_fluid = {np.array2string(d.qfrc_fluid, precision=15)}")
+
+print("\n=== T33: Oblate spheroid drag ===")
+m = mujoco.MjModel.from_xml_string(MODELS["U"])
+d = mujoco.MjData(m)
+d.qvel[:] = [0,0,0, 1,0.5,0]
+mujoco.mj_forward(m, d)
+if hasattr(d, 'qfrc_fluid'):
+    print(f"  qfrc_fluid = {np.array2string(d.qfrc_fluid, precision=15)}")
+print(f"  geom_fluid = {m.geom_fluid[0].tolist()}")
+
+print("\n=== T34: Kappa for oblate spheroid (3, 3, 1) ===")
+m = mujoco.MjModel.from_xml_string(MODELS["U"])
+print(f"  virtual_mass    = {m.geom_fluid[0, 6:9].tolist()}")
+print(f"  virtual_inertia = {m.geom_fluid[0, 9:12].tolist()}")
 ```
 
 Reference values above should be extracted using this script on MuJoCo 3.5.0
@@ -4176,7 +4288,7 @@ and hardcoded into the integration tests.
 | `sim/L0/mjcf/src/defaults.rs` | modify | Add `fluidshape`/`fluidcoef` to `apply_to_geom()` default inheritance |
 | `sim/L0/mjcf/src/model_builder.rs` | modify | Precompute `geom_fluid[12]` per geom (semi-axes → kappa → virtual mass/inertia), pack into Model |
 | `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `Model::geom_fluid`, `Data::qfrc_fluid`. Add `mj_fluid()`, `mj_inertia_box_fluid()`, `mj_ellipsoid_fluid()`, `geom_semi_axes()`, `get_added_mass_kappa()`, `ellipsoid_moment()`, `rotate_spatial_to_world()`, `object_velocity_local()`. Call from `mj_fwd_passive()`. Reuse existing `mj_apply_ft()`. |
-| `sim/L0/tests/integration/fluid_forces.rs` | create | Tests T1–T30, MJCF model constants, MuJoCo 3.5.0 reference values |
+| `sim/L0/tests/integration/fluid_forces.rs` | create | Tests T1–T34, MJCF model constants, MuJoCo 3.5.0 reference values |
 
 ---
 
