@@ -1906,7 +1906,16 @@ If dd > ε:
             return None              // straight path crosses circle
 ```
 
-*Step 3 — Prepare default fallback:*
+*Step 3 — Compute Newton equation parameters:*
+```
+A = radius / len0
+B = radius / len1
+cosG = (len0² + len1² - dd) / (2 · len0 · len1)
+
+If cosG < -1 + ε:  return None            // near-antiparallel: no solution
+```
+
+*Step 4 — Prepare default fallback:*
 ```
 fallback = normalize(0.5 · (end0 + end1)) · radius
 ```
@@ -1915,13 +1924,14 @@ It is used whenever the Newton solver encounters numerical issues — matching
 MuJoCo's behavior of returning `0` (success) with a best-effort tangent point
 rather than `-1` (no wrap) for solver failures.
 
-*Step 4 — Compute Newton equation parameters:*
-```
-A = radius / len0
-B = radius / len1
-cosG = (len0² + len1² - dd) / (2 · len0 · len1)
+**Safety invariant:** The fallback is computed *after* the antiparallel check
+(`cosG < -1 + ε → None`). When `end0 ≈ -end1`, the midpoint is near-zero
+and `normalize` would produce NaN — but the antiparallel check returns `None`
+first. This reorder vs. MuJoCo's C code (which computes the default before
+the cosG check) is a deliberate Rust safety improvement that does not affect
+outputs: MuJoCo never *uses* the default when cosG ≈ -1.
 
-If cosG < -1 + ε:  return None            // near-antiparallel: no solution
+```
 If cosG >  1 - ε:  return Some(fallback)   // near-parallel / coincident: use fallback
 
 G = acos(cosG)
@@ -2010,13 +2020,34 @@ fn sphere_wrapping_plane(
 ) -> (Vector3<f64>, Vector3<f64>)
 ```
 
+**Algorithm:**
+```
+1. normal = p1 × p2
+2. If |normal| < 1e-10 · |p1| · |p2|:          // relative threshold
+     u = normalize(p1)
+     Pick cardinal axis e_k with smallest |u · e_k|
+     normal = u × e_k
+3. normal = normalize(normal)
+4. axis0 = normalize(p1)
+5. axis1 = normal × axis0
+Return (axis0, axis1)
+```
+
+The relative threshold `1e-10 · |p1| · |p2|` matches the existing `sphere_wrap`
+code (line ~10097). The degenerate fallback (step 2) constructs an arbitrary
+perpendicular plane through p1 when p1, O, p2 are collinear. The caller can
+recover `plane_normal = axis0 × axis1` if needed (e.g., for the dual-candidate
+algorithm in the existing outside-wrap path).
+
 Both the existing outside-wrap path and the new inside-wrap path call this
 helper. No behavioral change to the outside-wrap path.
 
 ##### S3. Integration into `sphere_wrap()`
 
-Add an inside-wrap branch after the endpoint-inside early exit but before the
-straight-line clearance check:
+**Insertion point:** immediately after the endpoint-inside early exit (step 2,
+line ~10072), before the coincident-sites check and straight-line clearance
+(steps 3–4). This matches MuJoCo's ordering where the sidesite dispatch in
+`mju_wrap()` occurs before `wrap_circle`'s straight-line check:
 
 ```rust
 fn sphere_wrap(
@@ -2171,34 +2202,178 @@ angle G = π/3), `radius = 1.0`:
   geometric critical point.
 
 **T6. MuJoCo conformance (sphere):** Compare tendon length and wrap point
-positions against MuJoCo 3.4.0 for a reference model with sidesite inside a
-wrapping sphere. Tolerance: `1e-6` for tendon length, `1e-6` for wrap point
-positions. (Reference values to be recorded during implementation by running
-the test model in MuJoCo 3.4.0.)
+positions against MuJoCo 3.4.0. Tolerance: `1e-6` for tendon length, `1e-6`
+for wrap point positions. Test model:
+
+```xml
+<!-- T6: Sphere inside-wrap conformance model.
+     Geometric constraint: both endpoint sites must be on the SAME angular
+     side of the sphere so the straight line between them clears the sphere
+     (does not cross the circle in 2D). This ensures wrap_inside_2d produces
+     a valid tangent point rather than returning None.
+
+     Sphere-local positions at qpos=0:
+       s1 = (0.3, 0, 0.15),  |s1| = 0.335 > 0.15 (outside)
+       s2 = (0.3, 0, -0.15), |s2| = 0.335 > 0.15 (outside)
+       side = (0.05, 0, 0),   |side| = 0.05 < 0.15 (inside)
+     Line nearest to origin: (0.3, 0, 0), distance = 0.3 > 0.15 (clears) -->
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_sphere" type="sphere" size="0.15"/>
+      <site name="s1" pos="0.3 0 0.15"/>
+      <site name="side" pos="0.05 0 0"/>  <!-- inside sphere: |ss|=0.05 < 0.15 -->
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <site name="s2" pos="0.3 0 -0.15"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_inside">
+      <site site="s1"/>
+      <geom geom="wrap_sphere" sidesite="side"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+
+Reference values obtained via:
+```python
+import mujoco
+m = mujoco.MjModel.from_xml_string(MODEL_XML)
+d = mujoco.MjData(m)
+mujoco.mj_forward(m, d)
+print(f"ten_length = {d.ten_length[0]:.10f}")  # tendon length
+print(f"wrap_xpos  = {d.wrap_xpos}")    # wrap point world positions
+```
+
+(Exact reference values to be recorded during implementation.)
 
 **T7. MuJoCo conformance (cylinder):** Same for sidesite inside a wrapping
 cylinder. Tolerance: `1e-6` for tendon length, `1e-6` for wrap point positions.
-Reference values from MuJoCo 3.4.0.
+Test model:
 
-**T8. Length continuity at transition:** As a sidesite moves from outside to
-inside a wrapping sphere (via joint motion), the tendon length is continuous.
-Sweep a joint angle through the transition, verify no discontinuity larger than
-`1e-4` in `ten_length[t]`. Tolerance is 1e-4 (not the 1e-6 used for normal
-wrap transitions in Test 11) because the algorithm switch at the boundary is
-discrete: `wrap_circle` collapses its two tangent points + arc to approximate
-a single-point wrap, while `wrap_inside` computes the single point directly.
-Small numerical disagreement at the switchover is expected and matches MuJoCo.
+```xml
+<!-- T7: Cylinder inside-wrap conformance model.
+     No euler rotation — cylinder axis is Z. Sites offset in X with slight Y
+     spread so XY projections are NOT antiparallel (both point roughly +X).
+
+     Cylinder-local positions at qpos=0:
+       s1_xy = (0.3, 0.1),  |s1_xy| = 0.316 > 0.15 (outside cross-section)
+       s2_xy = (0.3, -0.1), |s2_xy| = 0.316 > 0.15 (outside cross-section)
+       side_c = (0.05, 0, 0), |side_c|_3D = 0.05 < 0.15 (inside by 3D norm)
+     Line in XY nearest to origin: (0.3, 0), distance = 0.3 > 0.15 (clears) -->
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_cyl" type="cylinder" size="0.15 0.5"/>
+      <site name="s1" pos="0.3 0.1 0.2"/>
+      <site name="side_c" pos="0.05 0 0"/>  <!-- inside cylinder: |ss|_3D=0.05 < 0.15 -->
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 0 1"/>
+        <site name="s2" pos="0.3 -0.1 -0.2"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_inside_cyl">
+      <site site="s1"/>
+      <geom geom="wrap_cyl" sidesite="side_c"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+
+Reference values from MuJoCo 3.4.0 (same Python extraction as T6; exact values
+to be recorded during implementation).
+
+**T8. Transition robustness and dispatch correctness:** As a sidesite sweeps
+from outside to inside a wrapping sphere (via slide joint), verify:
+1. No crash, panic, or NaN at any position throughout the sweep.
+2. Correct dispatch: when `|ss_local| ≥ radius`, the result depends on
+   sidesite/line geometry (may be NoWrap or outside wrap); when
+   `|ss_local| < radius`, inside wrap is used.
+3. MuJoCo conformance at sampled points on both sides of the boundary.
+
+**Note on inherent discontinuity:** The transition at `|ss| = radius` is
+inherently discontinuous in MuJoCo's algorithm. When the sidesite is outside
+and the straight line clears the sphere, MuJoCo may return NoWrap (straight
+line); when the sidesite is inside, `wrap_inside` produces a tangent-point
+detour that is strictly longer by the triangle inequality. This is a deliberate
+algorithm-dispatch boundary, not a bug. Our implementation must reproduce
+MuJoCo's behavior exactly — including the discontinuity.
+
+**Critical model constraint:** The sidesite must be on a **different body**
+from the wrapping geom, connected through a joint, so that joint motion changes
+the sidesite's distance from the geom center. (If sidesite and geom are on the
+same body, they move rigidly together and the distance never changes.)
+
+Test model uses a slide joint along X to translate the sidesite toward/away
+from the sphere center. At `qpos=0` the sidesite is just outside (`|ss|=0.16`);
+at `qpos=-0.01` it crosses the boundary (`|ss|=0.15=radius`); at `qpos=-0.05`
+it is well inside (`|ss|=0.11`).
+
+```xml
+<!-- T8: Transition robustness and dispatch model.
+     Sphere on parent body b0, sidesite on child body b1 with slide joint.
+     The slide joint translates b1 along X, changing the sidesite's distance
+     from the sphere center.
+
+     At qpos=0:    side_sweep sphere-local = (0.16, 0, 0), |ss|=0.16 > 0.15 (outside)
+     At qpos=-0.01: side_sweep sphere-local = (0.15, 0, 0), |ss|=0.15 = radius (boundary)
+     At qpos=-0.05: side_sweep sphere-local = (0.11, 0, 0), |ss|=0.11 < 0.15 (inside)
+
+     Both endpoint sites remain outside and non-collinear throughout the sweep:
+       s1 = (0.3, 0, 0.15), |s1| = 0.335 (fixed on b0)
+       s2 at qpos=0: (0.3, 0, -0.15), at qpos=-0.05: (0.25, 0, -0.15)
+       Line nearest to origin stays > 0.25 > 0.15 throughout. -->
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_s" type="sphere" size="0.15"/>
+      <site name="s1" pos="0.3 0 0.15"/>
+      <body name="b1">
+        <joint name="sweep" type="slide" axis="1 0 0" range="-0.05 0.05"/>
+        <site name="side_sweep" pos="0.16 0 0"/>  <!-- just outside at qpos=0 -->
+        <site name="s2" pos="0.3 0 -0.15"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_sweep">
+      <site site="s1"/>
+      <geom geom="wrap_s" sidesite="side_sweep"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+
+**Procedure:** Sweep `qpos[0]` from `-0.05` to `+0.05` in steps of `0.001`,
+call `forward()` at each step. For each step verify:
+- `ten_length[0]` is finite and positive (no NaN, no negative, no panic)
+
+Additionally, check MuJoCo conformance at three specific positions:
+- `qpos = -0.04`: sidesite at `(0.12, 0, 0)`, `|ss|=0.12 < 0.15` → inside wrap
+- `qpos =  0.00`: sidesite at `(0.16, 0, 0)`, `|ss|=0.16 > 0.15` → outside dispatch
+- `qpos = +0.04`: sidesite at `(0.20, 0, 0)`, `|ss|=0.20 > 0.15` → outside dispatch
+
+Tolerance: `1e-6` for length conformance at the three sampled points. (Exact
+reference values to be recorded from MuJoCo 3.4.0 during implementation.)
 
 **T9. Regression:** All existing spatial tendon tests (Tests 1–19b) pass
 unchanged. These all have sidesites outside wrapping geometry.
 
-**T10. Jacobian correctness:** The tendon Jacobian (`ten_J`) is correct for the
-inverse wrap case. Verify via central finite difference: perturb `qpos` by
-`±1e-7`, recompute tendon length, compare `(L(q+ε) − L(q−ε)) / (2ε)` against
-`ten_J · e_i`. Tolerance: `1e-4` relative. (Looser than the `1e-5` used for
-exterior wrap because the tangent-point stationarity is satisfied to solver
-tolerance `1e-6`, introducing slightly more numerical noise in the implicit
-derivative.)
+**T10. Jacobian correctness (sphere):** The tendon Jacobian (`ten_J`) is
+correct for the sphere inverse wrap case. Verify via central finite difference:
+perturb `qpos` by `±1e-7`, recompute tendon length, compare
+`(L(q+ε) − L(q−ε)) / (2ε)` against `ten_J · e_i`. Tolerance: `1e-4`
+relative. (Looser than the `1e-5` used for exterior wrap because the
+tangent-point stationarity is satisfied to solver tolerance `1e-6`, introducing
+slightly more numerical noise in the implicit derivative.)
 
 **T11. Degenerate: segment crosses circle:** Construct a geometry where the
 straight line between endpoints intersects the circle (endpoints on opposite
@@ -2224,25 +2399,48 @@ the tangent point in the XY cross-section satisfies the same stationarity
 condition as T5, and that the Z coordinate is correctly interpolated as
 `p1.z + (p2.z − p1.z) · L0 / (L0 + L1)`.
 
+**T16. Cylinder 3D-norm dispatch:** Sidesite at `(0.05, 0, 5.0)` with cylinder
+`radius = 0.1`. The sidesite is inside the cylinder cross-section (XY norm =
+0.05 < 0.1) but outside by 3D norm (`√(0.0025 + 25) ≈ 5.0 > 0.1`). Verify
+that **normal (outside) wrap** is used, not inside wrap — the result should
+match standard `cylinder_wrap` without sidesite-inside dispatch. This validates
+the behavioral change from the current code (which uses 2D XY norm and panics)
+to the correct MuJoCo behavior (`mju_norm3(s) < radius`).
+
+**T17. Jacobian correctness (cylinder):** Same method as T10 (central finite
+difference, perturb `qpos` by `±1e-7`) but for a cylinder with sidesite inside.
+The cylinder case has Z-interpolation (`tz = p1.z + (p2.z − p1.z) · l0 / total`)
+which introduces a different Jacobian structure than sphere. Tolerance: `1e-4`
+relative.
+
+**T18. Sidesite at origin:** Sidesite at `(0, 0, 0)` — exactly at the
+sphere/cylinder center. `|ss| = 0 < radius` → inside wrap triggers. The solver
+is well-defined since `A, B < 1` (both endpoints are outside the circle).
+Verify no panic, solver converges, and the tangent point lies on the surface
+(`|tangent| = radius ± 1e-10`).
+
 #### Test Matrix
 
-| # | Geometry | Config | Validates |
-|---|----------|--------|-----------|
-| T1 | Sphere | Sidesite inside, build-time | No panic |
-| T2 | Cylinder | Sidesite inside, build-time | No panic |
-| T3 | Sphere | Sidesite inside, runtime | Single tangent point, on-surface, arc=0 |
-| T4 | Sphere | Sidesite inside, runtime | Path length = \|p0−t\| + \|t−p1\|, matches MuJoCo |
-| T5 | Unit test | Known 2D geometry | Newton convergence + tangency condition |
-| T6 | Sphere | MuJoCo 3.4.0 ref model | Conformance: length + wrap points |
-| T7 | Cylinder | MuJoCo 3.4.0 ref model | Conformance: length + wrap points |
-| T8 | Sphere | Sweeping joint | Continuity at outside↔inside transition |
-| T9 | Both | Existing tests 1–19b | Regression |
-| T10 | Sphere | Sidesite inside | Jacobian via central finite difference |
-| T11 | Unit test | Straddling endpoints | Segment-circle intersection → None |
-| T12 | Unit test | Endpoint at \|p\|=radius | No crash, returns None |
-| T13 | Unit test | Near-degenerate A≈1, B≈1 | Fallback point on circle |
-| T14 | Sphere | Sidesite at \|ss\|=radius | Normal wrap, no crash |
-| T15 | Cylinder | Z-displaced endpoints | XY tangency + Z interpolation |
+| # | Location | Geometry | Config | Validates |
+|---|----------|----------|--------|-----------|
+| T1 | Integration | Sphere | Sidesite inside, build-time | No panic |
+| T2 | Integration | Cylinder | Sidesite inside, build-time | No panic |
+| T3 | Integration | Sphere | Sidesite inside, runtime | Single tangent point, on-surface, arc=0 |
+| T4 | Integration | Sphere | Sidesite inside, runtime | Path length = \|p0−t\| + \|t−p1\|, matches MuJoCo |
+| T5 | **Unit** | 2D circle | Known 2D geometry | Newton convergence + tangency condition |
+| T6 | Integration | Sphere | MuJoCo 3.4.0 ref model | Conformance: length + wrap points |
+| T7 | Integration | Cylinder | MuJoCo 3.4.0 ref model | Conformance: length + wrap points |
+| T8 | Integration | Sphere | Slide joint sweep | Robustness (no NaN/crash) + dispatch correctness + MuJoCo conformance at sampled points |
+| T9 | Integration | Both | Existing tests 1–19b | Regression |
+| T10 | Integration | Sphere | Sidesite inside | Jacobian via central finite difference |
+| T11 | **Unit** | 2D circle | Straddling endpoints | Segment-circle intersection → None |
+| T12 | **Unit** | 2D circle | Endpoint at \|p\|=radius | No crash, returns None |
+| T13 | **Unit** | 2D circle | Near-degenerate A≈1, B≈1 | Fallback point on circle |
+| T14 | Integration | Sphere | Sidesite at \|ss\|=radius | Normal wrap, no crash |
+| T15 | Integration | Cylinder | Z-displaced endpoints | XY tangency + Z interpolation |
+| T16 | Integration | Cylinder | Sidesite inside XY, \|ss\|₃D > r | 3D norm dispatch matches MuJoCo |
+| T17 | Integration | Cylinder | Sidesite inside, finite diff | Jacobian correctness (Z-interpolation) |
+| T18 | Integration | Sphere | Sidesite at (0,0,0) | Origin edge case, solver convergence |
 
 #### Files
 
@@ -2253,9 +2451,13 @@ condition as T5, and that the Z coordinate is correctly interpolated as
     branch (~20 LOC net new)
   - Modify `cylinder_wrap()`: add inside-wrap branch (~25 LOC)
   - Delete sidesite-inside validation in `compute_spatial_tendon_length0()` (~30 LOC removed)
+  - New `#[cfg(test)] mod wrap_inside_tests` — unit tests T5, T11, T12, T13 that
+    call `wrap_inside_2d` directly with known 2D geometries. These must be in-file
+    because `wrap_inside_2d` is a private function.
 - `sim/L0/tests/integration/spatial_tendons.rs`:
-  - New test models (sphere-inside, cylinder-inside, degenerate configurations)
-  - New tests T1–T15
+  - New test models (sphere-inside, cylinder-inside, transition sweep,
+    3D-norm dispatch, origin sidesite)
+  - Integration tests T1–T4, T6–T10, T14–T18 (MJCF model → forward → check outputs)
 
 ---
 
