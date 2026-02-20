@@ -36,7 +36,9 @@ four pipeline stages across four files (`types.rs`, `parser.rs`, `defaults.rs`,
 
 **Remaining `#todo` items (in-code):**
 1. Actuator type-specific defaults (cylinder area/timeconst, muscle params) — MuJoCo supports these in `<default>` but they're not yet defaultable
+   Tracked in [future_work_9b.md](./future_work_9b.md) §DT-14.
 2. Sentinel-value detection for gear/kp/noise/cutoff should migrate to Option<T>
+   Tracked in [future_work_9b.md](./future_work_9b.md) §DT-15.
 
 ---
 
@@ -2318,6 +2320,7 @@ The `mj_assignMargin()` helper checks `mjENABLED(mjENBL_OVERRIDE)` and substitut
 
 **Defer this.** Add a TODO comment at the margin computation site. Implement when
 a model requires it. The per-geom margin system is the correct foundation.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-17.
 
 #### Acceptance Criteria
 
@@ -2444,6 +2447,7 @@ element directly. In MuJoCo, most of these belong on **child elements**:
 | `damping` | `<flex>` | `<flex><elasticity>` | **Wrong** — silently lost on conformant MJCF |
 | `thickness` | `<flex>` | `<flex><elasticity>` | **Wrong** — silently lost on conformant MJCF |
 | `density` | `<flex>` | Not on `<flex>` at all | **Wrong** — deferred (see below) |
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-16.
 | `friction` | `<flex>` | `<flex><contact>` | **Wrong** — silently lost on conformant MJCF |
 | `condim` | `<flex>` | `<flex><contact>` | **Wrong** — silently lost on conformant MJCF |
 | `margin` | `<flex>` | `<flex><contact>` | **Wrong** — silently lost on conformant MJCF |

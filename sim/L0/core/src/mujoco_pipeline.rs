@@ -1725,7 +1725,9 @@ pub struct Model {
     pub tendon_treenum: Vec<usize>,
     /// Packed tree indices for two-tree tendons (§16.10.1).
     /// For tendon t: `tendon_tree[2*t]` and `tendon_tree[2*t+1]`.
-    /// Unused entries (treenum != 2) are `usize::MAX`. Length: 2 * ntendon.
+    /// `tendon_tree[2*t]` is populated when `treenum >= 1`; `tendon_tree[2*t+1]`
+    /// is populated when `treenum == 2`. Unused slots are `usize::MAX`.
+    /// Length: 2 * ntendon.
     pub tendon_tree: Vec<usize>,
 
     // Tendon wrapping path elements (indexed by wrap_id, grouped by tendon; total length = nwrap)

@@ -215,6 +215,7 @@ can only come from the root default class. `convert_mjcf_mesh()` reads
 `mjcf_mesh.scale` directly (lines 2295, 2331). Applying root-only mesh scale defaults
 is low-value (few real models rely on it) and would require special-casing since
 there's no `apply_to_mesh()` method. Deferred.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-1.
 
 **Not in scope: equality constraint defaults.** The four equality constraint
 types (Connect, Weld, Joint, Distance) all have `class` fields in their MJCF
@@ -224,6 +225,7 @@ included in any of the defaults structs (`MjcfGeomDefaults`,
 `MjcfJointDefaults`, etc.). These are resolver gaps, not wiring gaps — they
 require extending `DefaultResolver` and the defaults types, which is a separate
 task.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-2.
 
 **Threading the resolver.** The resolver must be accessible from five call
 sites across `ModelBuilder`:
@@ -463,6 +465,7 @@ projection's Step 0 clamp zeroes all friction lambdas — physically correct
 (frictionless behavior) but wasteful (3 constraint rows for a 1D problem). A
 future optimization could detect `mu[0..dim-1] == 0` in `make_contact_from_geoms()`
 and downgrade to `condim=1`.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-18.
 
 **A.5.** Update `make_contact_from_geoms()` to pass the resolved condim and
 full 5-element friction array:
@@ -1511,6 +1514,7 @@ Jacobian: `qfrc_constraint += Jᵢᵀ * λᵢ` for each contact. This would be
 mathematically equivalent and avoid the separate torque function, but would
 couple force application to the Jacobian representation. The manual approach
 is retained for consistency with the existing design and readability.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-20.
 
 **Not in scope: pyramidal friction cones.** See sub-task D.2 rationale.
 Pyramidal cones require a fundamentally different variable count per contact
@@ -1538,6 +1542,7 @@ friction forces onto the cone. Our solver uses sequential SOC projection
 (clamp normal, then scale friction). See D.1 divergence analysis. Upgrading
 to QCQP projection would improve convergence for strongly coupled contacts
 but is a separate optimization task.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-19.
 
 **Not in scope: friction combination method.** ⚠️ Now tracked as
 [#24](./future_work_7.md) (Friction Combination Rule).
@@ -3118,6 +3123,7 @@ contribution inline during the chain walk, never materializing a full `ten_J`
 row. For initial correctness, the O(nv) scan is acceptable. A follow-up
 optimization could cache nonzero DOF indices during `mj_fwd_tendon_spatial()`
 and iterate only those indices in `apply_tendon_force`.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-34.
 
 **Apply this pattern at all three sites:**
 
@@ -3218,6 +3224,7 @@ Fix: if the spatial tendon has declared `tendon_range` limits, use those (this
 path already works). If unlimited, skip the range estimation and leave
 `lengthrange = (0, 0)` — muscle actuators on unlimited spatial tendons will
 need explicit `lengthrange` in MJCF. Log a warning.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-78.
 
 ##### 4.7 Wrapping Geometry: Sphere
 
@@ -3656,6 +3663,7 @@ fn segments_intersect_2d(a1, a2, b1, b2) -> bool:
 - **Pulley systems** — `WrapType::Pulley` divisor scaling is included in the path
   algorithm (4.3), but compound pulley physics (capstan friction, pulley inertia)
   from `sim-tendon/src/pulley.rs` are out of scope.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-30.
 - **Tendon equality constraints** — implemented in §37 (`extract_tendon_equality_jacobian()`).
 - **Wrapping function derivatives** — MuJoCo does not compute derivatives of the
   wrapping function (∂tangent_points/∂q). The tangent points are treated as fixed
@@ -3670,6 +3678,7 @@ fn segments_intersect_2d(a1, a2, b1, b2) -> bool:
   tendon path. This wrap type is uncommon and not implemented. The parser rejects
   `<joint>` inside `<spatial>` at parse time (§4.1), and validation rule 10 (§4.2)
   provides defense-in-depth.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-31.
 - ~~**`wrap_inside` code path (sidesite inside wrapping geometry)**~~ ✅ — Implemented
   in §39 (`future_work_10.md`). The `wrap_inside` Newton solver handles sidesites
   inside wrapping geometry for both spheres and cylinders. Validation rule 9 is retired.
@@ -3681,10 +3690,12 @@ fn segments_intersect_2d(a1, a2, b1, b2) -> bool:
   `<fixed>` tendon elements accept per-tendon constraint solver parameters. These
   are not parsed (pre-existing gap shared with fixed tendons). Model-default
   solver params (`tendon_solref`, `tendon_solimp`) are used for all tendon limits.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-32.
 - **Tendon `margin` attribute** — MuJoCo tendons have a `margin` attribute that
   creates an activation distance for limit constraints (constraint activates when
   `|length - limit| < margin`). Not implemented — limits activate at the exact
   boundary. This is a pre-existing gap shared with fixed tendons.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-33.
 - **Pre-existing `add_body_jacobian` free joint bug** — The existing
   `add_body_jacobian` closure (line 7923) uses world-frame unit vectors for free
   joint angular DOFs instead of body-frame `R*e_i`. This is incorrect for bodies
@@ -3692,6 +3703,7 @@ fn segments_intersect_2d(a1, a2, b1, b2) -> bool:
   correct formula (matching MuJoCo's `cdof` convention). Fixing the pre-existing
   bug in `add_body_jacobian` and the velocity computation (line 6577) is a
   separate task that should be done independently of spatial tendons.
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-75.
 
 #### Acceptance Criteria
 
@@ -4515,6 +4527,7 @@ Mode B: difference Jacobian with common-ancestor zeroing, wrench in refsite fram
 
 No-op for site transmissions — explicit `lengthrange` required in MJCF for
 muscle actuators with site transmission (matches MuJoCo behavior).
+Tracked in [future_work_9b.md](./future_work_9b.md) §DT-77.
 
 #### Bug Fix: `ActuatorFrc` Sensor (done)
 
