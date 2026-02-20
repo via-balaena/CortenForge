@@ -3062,11 +3062,10 @@ Jacobian** (`qDeriv`), assembled by `mjd_smooth_vel()` (derivatives.rs:972) from
 4. **Coriolis/centripetal derivatives** (full, asymmetric):
    `D += −∂(qfrc_bias)/∂(qvel)` via recursive Newton-Euler chain-rule
 5. **Fluid drag derivatives** (6×6 body-level): drag-velocity Jacobian per body.
-   *Not yet implemented in CortenForge — fluid drag computation exists
-   (`Model::wind` `:1153`, `density` `:1157`, `viscosity` `:1159`) but
-   `mjd_passive_vel` does not compute drag-velocity Jacobians. This is a known
-   gap — acceptable because fluid drag is rare in RL workloads. Can be added
-   later as a standalone sub-task.*
+   *Not yet implemented — tracked as §40a (`future_work_10.md`). Fluid force
+   computation is complete (§40), but `mjd_passive_vel` does not compute
+   drag-velocity Jacobians. Without these, the implicit integrator underestimates
+   D for models with non-zero `density`/`viscosity`.*
 
 The two variants differ in:
 
@@ -3629,12 +3628,11 @@ Integrator::Implicit => {
 correctly default to `can_analytical = true`, which is correct — both
 `ImplicitFast` and `Implicit` support analytical derivatives.
 
-**D.5. Fluid drag velocity derivatives:** Not yet implemented. `mjd_passive_vel`
-does not compute drag-velocity Jacobians. In MuJoCo, this contributes 6×6
-body-level coupling blocks to D via `addJTBJSparse`. For models with non-zero
-`density`/`viscosity`, the implicit integrator will underestimate D (missing drag
-linearization). Acceptable for Phase A/B — fluid drag is rare in RL workloads.
-Can be added as a follow-up sub-task when needed.
+**D.5. Fluid drag velocity derivatives:** Not yet implemented — tracked as
+§40a (`future_work_10.md`). `mjd_passive_vel` does not compute drag-velocity
+Jacobians. In MuJoCo, this contributes 6×6 body-level coupling blocks to D
+via `addJTBJSparse`. For models with non-zero `density`/`viscosity`, the
+implicit integrator will underestimate D (missing drag linearization).
 
 ##### Sub-task 13.E: Scratch Buffer Adjustments
 
@@ -3695,8 +3693,8 @@ for compilation. The `ImplicitFast` arms use `cholesky_solve_in_place` on
    Muscle FLV curve gradients are piecewise and not cleanly linearizable.
 
 3. **Fluid drag velocity derivatives not implemented** (D.5): Models with
-   non-zero `density`/`viscosity` will have incomplete D. Acceptable for
-   initial implementation; add as follow-up when drag is used in practice.
+   non-zero `density`/`viscosity` will have incomplete D. Tracked as §40a
+   (`future_work_10.md`).
 
 4. **No `skipfactor` / factorization reuse:** MuJoCo's `mj_implicitSkip` allows
    reusing a previously computed factorization when `skipfactor > 0`, amortizing

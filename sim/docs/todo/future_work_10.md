@@ -4507,9 +4507,7 @@ and hardcoded into the integration tests.
   `mj_fwd_passive()`, it should (a) replace `0..nbody` with sleep-filtered iteration
   in `mj_fluid()`, and (b) gate `mj_fluid()` on `!(DISABLE_SPRING && DISABLE_DAMPER)`.
   See §41 acceptance criteria #10 and #13.
-- **Implicit derivatives (S9)**: `qfrc_fluid` separation enables future
-  `∂qfrc_fluid/∂qvel` computation for implicit integration stability. Not urgent —
-  add when fluid-heavy models (swimming, flying) need implicit stability.
+- **Implicit derivatives (S9)**: Promoted to §40a. See below.
 - **MuJoCo 3.5.0 reference verification** (40d): **Complete** (2026-02-20).
   Verified against MuJoCo 3.5.0 (Python 3.12.12, `uv` venv).
 
@@ -4529,6 +4527,100 @@ and hardcoded into the integration tests.
      `cvel` stores velocity at `xpos[body_id]`. Fixed by using `xpos[body_id]`.
   - T11 (mixed geoms with offset) and T41 (rotated body) values updated to match
     MuJoCo 3.5.0 after bug fixes. T20 upgraded from `is_finite()` to exact values.
+
+---
+
+### 40a. Fluid Force Velocity Derivatives (Implicit Integration)
+**Status:** Not started | **Effort:** M | **Prerequisites:** §40
+
+#### Current State
+
+§40 implemented both fluid models (inertia-box and ellipsoid) with full runtime
+force computation and 42 conformance tests. The `qfrc_fluid` buffer is separated
+from `qfrc_passive` specifically to support derivative computation. However,
+`mjd_passive_vel` does not yet compute fluid drag-velocity Jacobians.
+
+Without these derivatives, the implicit integrator (`Implicit` and `ImplicitFast`)
+underestimates the D matrix for models with non-zero `density`/`viscosity`. This
+causes under-damped behaviour in fluid-heavy simulations (swimming, flying,
+underwater manipulation).
+
+#### MuJoCo Reference
+
+MuJoCo computes `∂qfrc_fluid/∂qvel` in `mjd_passive_vel()` (`engine_derivative.c`).
+For each body, it constructs a 6×6 body-level drag-velocity Jacobian (B matrix)
+and accumulates it into the D matrix via `addJTBJSparse(J^T · B · J)`:
+
+- **Inertia-box model:** Jacobian is diagonal — viscous terms are constant
+  (`-3πβ·diam`, `-πβ·diam³`) and quadratic terms have `|v|`-dependent
+  derivatives (`-ρ·A·2|v|` for linear, `-ρ·I·2|ω|` for angular).
+- **Ellipsoid model:** Full 6×6 coupling — added mass cross-products, Magnus,
+  Kutta, and drag all contribute off-diagonal terms. MuJoCo uses finite
+  differences (column-by-column perturbation of the 6D velocity) to avoid
+  analytically differentiating the 5-component force formula.
+
+The B matrix is assembled in the local frame, then projected to generalized
+coordinates via the body Jacobian: `D += J^T · B · J`.
+
+#### Objective
+
+Implement `∂qfrc_fluid/∂qvel` for both fluid models so the implicit integrator
+correctly accounts for fluid damping in the D matrix.
+
+#### Specification
+
+##### S1. Approach selection
+
+MuJoCo uses finite-difference perturbation (6 columns × 2 evaluations = 12
+force evaluations per body) for the ellipsoid model. This is simpler and less
+error-prone than analytical derivatives of the 5-component force formula.
+
+For the inertia-box model, analytical derivatives are straightforward (diagonal
+B matrix).
+
+**Recommended approach:**
+- Inertia-box: analytical derivatives (diagonal B, simple closed-form)
+- Ellipsoid: finite-difference perturbation (matching MuJoCo's approach)
+
+##### S2. Integration point
+
+Add to `mjd_passive_vel()` (or equivalent), called from
+`mj_fwd_acceleration_implicit()`. The fluid derivative computation should be
+gated on `model.density > 0.0 || model.viscosity > 0.0` (same gate as
+`mj_fluid()`).
+
+##### S3. D matrix accumulation
+
+For each body with fluid forces:
+1. Compute 6×6 B matrix (drag-velocity Jacobian in local frame)
+2. Get body Jacobian J (nv × 6)
+3. Accumulate `D += J^T · B · J`
+
+Use existing `addJTBJ` infrastructure if available, or add a dense equivalent
+for the initial implementation (nv < 100 target makes dense acceptable).
+
+#### Test Plan
+
+| # | Description | Verification |
+|---|-------------|--------------|
+| T1 | Inertia-box analytical B matrix for sphere | Compare diagonal entries against closed-form: linear `= -ρ·A·2|v| - 3πβ·diam`, angular `= -ρ·I·2|ω| - πβ·diam³` |
+| T2 | Ellipsoid finite-diff B matrix matches MuJoCo | Extract D matrix from MuJoCo via `mjd_passive_vel`, compare against our finite-diff result |
+| T3 | Implicit integrator stability with fluid | Step 1000 frames with `integrator="implicit"` on Model A (§40) — verify energy dissipation is monotonic (no spurious amplification) |
+| T4 | Zero fluid → no D contribution | `density=0, viscosity=0` → fluid derivative block is zero |
+| T5 | Regression: explicit integrator unchanged | §40 T1–T42 still pass (derivatives only affect implicit path) |
+
+#### Cross-references
+
+- §40 S9: original deferral note
+- §13 D.5 (`future_work_4.md:3632`): implicit integration known gap #5
+- §13 known limitation #3 (`future_work_4.md:3697`): listed as acceptable gap
+
+#### Files to Modify
+
+| File | Action | Changes |
+|------|--------|---------|
+| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add fluid derivative computation in `mjd_passive_vel` (or implicit acceleration path). Inertia-box analytical B, ellipsoid finite-diff B. Accumulate via J^T·B·J. |
+| `sim/L0/tests/integration/fluid_forces.rs` | modify | Add derivative-specific tests (T1–T5 above) |
 
 ---
 
