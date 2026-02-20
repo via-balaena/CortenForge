@@ -1,4 +1,4 @@
-# Future Work 15 — Phase 3D: Edge-Case Features (Items #60–64)
+# Future Work 15 — Phase 3D: Edge-Case Features (Items #60–64a)
 
 Part of [Simulation Phase 3 Roadmap](./index.md). See [index.md](./index.md) for
 priority table, dependency graph, and file map.
@@ -201,3 +201,83 @@ quaternion distance.
 #### Files
 
 - `sim/L0/core/src/mujoco_pipeline.rs` — `mj_energy_pos()` ball/free joint terms
+
+---
+
+### 64a. `jnt_margin` — Joint Limit Activation Margin
+**Status:** Not started | **Effort:** S | **Prerequisites:** None
+
+#### Current State
+
+MuJoCo activates joint limit constraints when `dist < jnt_margin[i]`, allowing
+soft pre-activation before the limit surface is reached. Our code hardcodes
+`margin = 0.0` for all joint limit types (hinge lower, hinge/slide upper, ball
+cone). The `margin` attribute on `<joint>` is not parsed, not stored, and not
+wired into the activation condition. This gap was identified and documented in
+§38 (S6) as a pre-existing limitation affecting all joint types, not specific
+to ball joints.
+
+The `finalize_row!` macro already accepts a margin parameter (stored in
+`efc_margin`, used for impedance computation via `compute_impedance`), but
+joint limit callers always pass `0.0`.
+
+#### MuJoCo Reference
+
+In `engine_core_constraint.c`, `mj_instantiateLimit()`:
+- Hinge/Slide: `if (dist < m->jnt_margin[i])` for both lower and upper limits
+- Ball: `if (dist < m->jnt_margin[i])` for the cone limit
+
+The `jnt_margin` value is also passed to the constraint row as the margin
+parameter, affecting impedance computation (the soft transition zone width).
+
+MuJoCo parses `margin` from `<joint margin="..."/>` (float, default `0.0`).
+The attribute is also available in `<default><joint margin="..."/></default>`.
+
+#### Objective
+
+Parse `margin` from `<joint>`, store as `jnt_margin`, and wire it into the
+joint limit activation condition and `finalize_row!` margin argument for all
+three joint limit types.
+
+#### Specification
+
+1. **MJCF parsing**: Parse `margin` (float, default 0.0) from `<joint>` in
+   `parse_joint_attrs()`. Also parse from `<default><joint>` in
+   `parse_joint_defaults()`.
+2. **Default resolution**: Apply class defaults in the standard cascade
+   (joint-level overrides default-level).
+3. **Model storage**: Add `jnt_margin: Vec<f64>` to `Model`. Populate in
+   `model_builder.rs` during joint compilation.
+4. **Constraint counting**: Replace `< 0.0` with `< model.jnt_margin[jnt_id]`
+   in all 3 joint limit activation checks in the counting loop:
+   - Hinge/Slide lower: `q - limit_min < margin`
+   - Hinge/Slide upper: `limit_max - q < margin`
+   - Ball cone: `limit - angle < margin`
+5. **Constraint assembly**: Replace `< 0.0` with `< model.jnt_margin[jnt_id]`
+   in all 3 assembly activation checks (must match counting exactly).
+6. **`finalize_row!` margin argument**: Pass `model.jnt_margin[jnt_id]` instead
+   of `0.0` as the margin argument to `finalize_row!` for all joint limit rows.
+   This flows into `efc_margin` and `compute_impedance`, giving the correct
+   soft transition zone.
+
+#### Acceptance Criteria
+
+1. `margin="0"` (default) produces identical behavior to current code
+   (regression anchor: T22 from §38 must still pass).
+2. `margin="0.01"` on a hinge joint activates the limit constraint 0.01 rad
+   before the joint reaches the limit surface. Verify `nefc` increases when the
+   joint is within the margin zone but not yet at the limit.
+3. `margin="0.05"` on a ball joint activates the cone limit 0.05 rad early.
+4. `efc_margin` for joint limit rows contains the actual margin value (not 0).
+5. Impedance transition zone is correctly widened by margin (the soft region
+   starts earlier).
+6. `<default><joint margin="0.02"/></default>` applies to all joints without
+   explicit margin.
+7. Explicit `margin` on a joint overrides the default class value.
+
+#### Files
+
+- `sim/L0/mjcf/src/parser.rs` — `parse_joint_attrs()`, `parse_joint_defaults()`
+- `sim/L0/mjcf/src/model_builder.rs` — `jnt_margin` storage + population
+- `sim/L0/core/src/mujoco_pipeline.rs` — `assemble_unified_constraints()`:
+  6 activation checks (3 counting + 3 assembly) + 3 `finalize_row!` margin args

@@ -184,6 +184,7 @@ Lower-priority features for uncommon models, plus extensibility infrastructure.
 | 62 | Missing sensor types (clock, jointactuatorfrc, etc.) | Low | Low | S | None | [future_work_15.md](./future_work_15.md) | |
 | 63 | `dynprm` array size (3 → 10) | Low | Low | S | None | [future_work_15.md](./future_work_15.md) | |
 | 64 | Ball/free joint spring energy | Low | Low | S | None | [future_work_15.md](./future_work_15.md) | |
+| 64a | `jnt_margin` — joint limit activation margin | Low | Medium | S | None | [future_work_15.md](./future_work_15.md) | |
 | 65 | Mesh convex hull auto-computation | Low | Low | M | None | [future_work_16.md](./future_work_16.md) | |
 | 66 | `<plugin>` / `<extension>` support | Low | Low | XL | None | [future_work_16.md](./future_work_16.md) | |
 
