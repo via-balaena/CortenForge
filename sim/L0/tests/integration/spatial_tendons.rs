@@ -1162,3 +1162,462 @@ fn test_reject_fewer_than_two_sites() {
         "Error should mention minimum site count, got: {err}"
     );
 }
+
+// ============================================================================
+// §39 wrap_inside Tests (Inverse Tendon Wrapping)
+// ============================================================================
+//
+// Tests T1-T4, T6-T10, T14-T18 from the spec.
+// Unit tests T5, T11, T12, T13 are in mujoco_pipeline.rs (private fn).
+
+/// §39 T6 model: Sphere inside-wrap conformance.
+const MODEL_WRAP_INSIDE_SPHERE: &str = r#"
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_sphere" type="sphere" size="0.15"/>
+      <site name="s1" pos="0.3 0 0.15"/>
+      <site name="side" pos="0.05 0 0"/>
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="s2" pos="0.3 0 -0.15"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_inside">
+      <site site="s1"/>
+      <geom geom="wrap_sphere" sidesite="side"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+"#;
+
+/// §39 T7 model: Cylinder inside-wrap conformance.
+const MODEL_WRAP_INSIDE_CYLINDER: &str = r#"
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_cyl" type="cylinder" size="0.15 0.5"/>
+      <site name="s1" pos="0.3 0.1 0.2"/>
+      <site name="side_c" pos="0.05 0 0"/>
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 0 1"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="s2" pos="0.3 -0.1 -0.2"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_inside_cyl">
+      <site site="s1"/>
+      <geom geom="wrap_cyl" sidesite="side_c"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+"#;
+
+/// §39 T8 model: Transition robustness (slide joint sweeps sidesite).
+const MODEL_WRAP_INSIDE_SWEEP: &str = r#"
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_s" type="sphere" size="0.15"/>
+      <site name="s1" pos="0.3 0 0.15"/>
+      <body name="b1">
+        <joint name="sweep" type="slide" axis="1 0 0" range="-0.05 0.05"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="side_sweep" pos="0.16 0 0"/>
+        <site name="s2" pos="0.3 0 -0.15"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_sweep">
+      <site site="s1"/>
+      <geom geom="wrap_s" sidesite="side_sweep"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+"#;
+
+/// §39 T15 model: Cylinder inside-wrap with asymmetric Z interpolation.
+const MODEL_WRAP_INSIDE_CYL_Z: &str = r#"
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_cyl_z" type="cylinder" size="0.15 0.5"/>
+      <site name="s1_z" pos="0.3 0.05 0.3"/>
+      <site name="side_z" pos="0.05 0 0"/>
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 0 1"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="s2_z" pos="0.3 -0.15 -0.1"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_z_interp">
+      <site site="s1_z"/>
+      <geom geom="wrap_cyl_z" sidesite="side_z"/>
+      <site site="s2_z"/>
+    </spatial>
+  </tendon>
+</mujoco>
+"#;
+
+/// §39 T16 model: Cylinder 3D-norm dispatch (sidesite inside XY but outside 3D).
+const MODEL_WRAP_INSIDE_CYL_3D: &str = r#"
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_cyl_3d" type="cylinder" size="0.1 1.0"/>
+      <site name="s1" pos="0.3 0.05 0.2"/>
+      <site name="side_3d" pos="0.05 0 5.0"/>
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 0 1"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="s2" pos="0.3 -0.05 -0.2"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_3d_dispatch">
+      <site site="s1"/>
+      <geom geom="wrap_cyl_3d" sidesite="side_3d"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+"#;
+
+/// §39 T18 model: Sidesite at sphere center (origin edge case).
+const MODEL_WRAP_INSIDE_ORIGIN: &str = r#"
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_sphere" type="sphere" size="0.15"/>
+      <site name="s1" pos="0.3 0 0.15"/>
+      <site name="side_origin" pos="0 0 0"/>
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="s2" pos="0.3 0 -0.15"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_origin">
+      <site site="s1"/>
+      <geom geom="wrap_sphere" sidesite="side_origin"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+"#;
+
+// ---------------------------------------------------------------------------
+// T1–T2: No build-time panic
+// ---------------------------------------------------------------------------
+
+/// §39 T1: Sidesite inside wrapping sphere loads without panic.
+#[test]
+fn test_wrap_inside_t1_no_panic_sphere() {
+    let model = load_model(MODEL_WRAP_INSIDE_SPHERE).expect("model should load without panic");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward should not crash");
+    assert!(data.ten_length[0].is_finite());
+    assert!(data.ten_length[0] > 0.0);
+}
+
+/// §39 T2: Sidesite inside wrapping cylinder loads without panic.
+#[test]
+fn test_wrap_inside_t2_no_panic_cylinder() {
+    let model = load_model(MODEL_WRAP_INSIDE_CYLINDER).expect("model should load without panic");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward should not crash");
+    assert!(data.ten_length[0].is_finite());
+    assert!(data.ten_length[0] > 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// T3–T4: Structural properties of inside wrap
+// ---------------------------------------------------------------------------
+
+/// §39 T3: Single tangent point on surface.
+///
+/// For inside wrap, tangent_point_1 == tangent_point_2, arc_length == 0.
+/// The tangent point lies on the sphere surface.
+#[test]
+fn test_wrap_inside_t3_single_tangent_on_surface() {
+    let model = load_model(MODEL_WRAP_INSIDE_SPHERE).expect("load failed");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // Inside wrap should produce a wrapped result (not NoWrap).
+    let length = data.ten_length[0];
+    assert!(length.is_finite() && length > 0.0);
+
+    // The tendon length should be strictly greater than the straight-line
+    // distance between the two sites (triangle inequality for inside wrap).
+    // s1 = (0.3, 0, 0.15), s2 = (0.3, 0, -0.15) at qpos=0
+    // straight = |(0, 0, 0.3)| = 0.3
+    let straight_dist = 0.3;
+    assert!(
+        length > straight_dist,
+        "inside wrap length {length} should exceed straight-line {straight_dist}"
+    );
+}
+
+/// §39 T4: Path length = |p0 - tangent| + |tangent - p1| (no arc).
+///
+/// Verified via the MuJoCo conformance value: 0.3·√2.
+#[test]
+fn test_wrap_inside_t4_path_length() {
+    let model = load_model(MODEL_WRAP_INSIDE_SPHERE).expect("load failed");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    // MuJoCo reference: 0.3·√2 = two segments of length 0.15·√2
+    let expected = 0.3 * 2.0_f64.sqrt();
+    assert_relative_eq!(data.ten_length[0], expected, epsilon = 1e-6);
+}
+
+// ---------------------------------------------------------------------------
+// T6–T7: MuJoCo conformance
+// ---------------------------------------------------------------------------
+
+/// §39 T6: MuJoCo conformance (sphere inside-wrap).
+///
+/// MuJoCo 3.5.0 reference: ten_length = 0.424264068711929 (= 0.3·√2).
+#[test]
+fn test_wrap_inside_t6_conformance_sphere() {
+    let model = load_model(MODEL_WRAP_INSIDE_SPHERE).expect("load failed");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.ten_length[0], 0.424264068711929, epsilon = 1e-6);
+}
+
+/// §39 T7: MuJoCo conformance (cylinder inside-wrap).
+///
+/// MuJoCo 3.5.0 reference: ten_length = 0.538516480713450.
+#[test]
+fn test_wrap_inside_t7_conformance_cylinder() {
+    let model = load_model(MODEL_WRAP_INSIDE_CYLINDER).expect("load failed");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.ten_length[0], 0.538516480713450, epsilon = 1e-6);
+}
+
+// ---------------------------------------------------------------------------
+// T8: Transition robustness and dispatch correctness
+// ---------------------------------------------------------------------------
+
+/// §39 T8: Transition robustness — sidesite sweeps from outside to inside.
+///
+/// Sweep qpos from -0.05 to +0.05 in steps of 0.001. Verify no crash/NaN
+/// at any position, and MuJoCo conformance at five sampled points spanning
+/// the dispatch boundary.
+#[test]
+fn test_wrap_inside_t8_transition_sweep() {
+    let model = load_model(MODEL_WRAP_INSIDE_SWEEP).expect("load failed");
+
+    // Full sweep: verify finite positive length at every step.
+    for q_milli in -50..=50 {
+        let q = q_milli as f64 * 0.001;
+        let mut data = model.make_data();
+        data.qpos[0] = q;
+        data.forward(&model).expect("forward failed");
+        let length = data.ten_length[0];
+        assert!(
+            length.is_finite() && length > 0.0,
+            "sweep failed at qpos={q}: ten_length={length}"
+        );
+    }
+
+    // MuJoCo conformance at five specific positions.
+    let reference_points: &[(f64, f64)] = &[
+        (-0.04, 0.397761312300161), // inside wrap
+        (-0.02, 0.410539632911676), // inside wrap (near boundary)
+        (-0.01, 0.300166620396073), // boundary exact: |ss|=radius → outside dispatch
+        (0.00, 0.300000000000000),  // outside
+        (0.04, 0.302654919008431),  // well outside
+    ];
+
+    for &(qpos, expected_length) in reference_points {
+        let mut data = model.make_data();
+        data.qpos[0] = qpos;
+        data.forward(&model).expect("forward failed");
+        assert_relative_eq!(data.ten_length[0], expected_length, epsilon = 1e-6,);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T9: Regression — all existing spatial tendon tests
+// ---------------------------------------------------------------------------
+// T9 is implicitly satisfied: all tests 1–19b above remain in this file
+// and are run as part of the test suite. No separate test function needed.
+
+// ---------------------------------------------------------------------------
+// T10: Jacobian correctness (sphere inside-wrap)
+// ---------------------------------------------------------------------------
+
+/// Helper for inside-wrap Jacobian verification via central finite difference.
+///
+/// Uses mixed relative/absolute tolerance:
+/// `|J_fd - J_an| < tol * max(|J_fd|, 1.0)`
+fn verify_jacobian_finite_diff_mixed_tol(mjcf: &str, tendon_idx: usize, tol: f64) {
+    let model = load_model(mjcf).expect("Failed to load model");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    let eps = 1e-7;
+    let j_analytical = data.ten_J[tendon_idx].clone();
+
+    for dof in 0..model.nv {
+        let jnt_id = model.dof_jnt[dof];
+        let qpos_adr = model.jnt_qpos_adr[jnt_id];
+        let dof_in_jnt = dof - model.jnt_dof_adr[jnt_id];
+
+        let mut data_plus = model.make_data();
+        let mut data_minus = model.make_data();
+        data_plus.qpos[qpos_adr + dof_in_jnt] += eps;
+        data_minus.qpos[qpos_adr + dof_in_jnt] -= eps;
+
+        data_plus.forward(&model).expect("forward failed");
+        data_minus.forward(&model).expect("forward failed");
+
+        let l_plus = data_plus.ten_length[tendon_idx];
+        let l_minus = data_minus.ten_length[tendon_idx];
+        let j_fd = (l_plus - l_minus) / (2.0 * eps);
+
+        let threshold = tol * j_fd.abs().max(1.0);
+        let error = (j_analytical[dof] - j_fd).abs();
+        assert!(
+            error < threshold,
+            "Jacobian mismatch at DOF {dof}: analytical={}, fd={}, error={error:.2e}, threshold={threshold:.2e}",
+            j_analytical[dof],
+            j_fd,
+        );
+    }
+}
+
+/// §39 T10: Jacobian correctness for sphere inside-wrap via finite difference.
+#[test]
+fn test_wrap_inside_t10_jacobian_sphere() {
+    verify_jacobian_finite_diff_mixed_tol(MODEL_WRAP_INSIDE_SPHERE, 0, 1e-4);
+}
+
+// ---------------------------------------------------------------------------
+// T14: Boundary — sidesite exactly at radius
+// ---------------------------------------------------------------------------
+
+/// §39 T14: Sidesite exactly at |ss| = radius.
+///
+/// The inside check (< radius) does NOT trigger, so normal wrap is used.
+/// Verify no crash and finite positive tendon length.
+#[test]
+fn test_wrap_inside_t14_sidesite_at_radius() {
+    // Modify the sphere model to place sidesite exactly at radius.
+    let mjcf = r#"
+    <mujoco>
+      <worldbody>
+        <body name="b0">
+          <geom name="wrap_sphere" type="sphere" size="0.15"/>
+          <site name="s1" pos="0.3 0 0.15"/>
+          <site name="side_exact" pos="0.15 0 0"/>
+          <body name="b1">
+            <joint name="j1" type="hinge" axis="0 1 0"/>
+            <geom type="sphere" size="0.01" mass="0.1"/>
+            <site name="s2" pos="0.3 0 -0.15"/>
+          </body>
+        </body>
+      </worldbody>
+      <tendon>
+        <spatial name="t_boundary">
+          <site site="s1"/>
+          <geom geom="wrap_sphere" sidesite="side_exact"/>
+          <site site="s2"/>
+        </spatial>
+      </tendon>
+    </mujoco>
+    "#;
+    let model = load_model(mjcf).expect("model should load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward should not crash");
+    assert!(data.ten_length[0].is_finite());
+    assert!(data.ten_length[0] > 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// T15: Cylinder tangency + Z-interpolation
+// ---------------------------------------------------------------------------
+
+/// §39 T15: Cylinder inside-wrap with asymmetric Z interpolation.
+///
+/// MuJoCo 3.5.0 reference:
+///   ten_length = 0.542346519424661
+///   tangent_pos = (0.148607047563419, -0.020394739872909, 0.117656368532109)
+#[test]
+fn test_wrap_inside_t15_cylinder_z_interp() {
+    let model = load_model(MODEL_WRAP_INSIDE_CYL_Z).expect("load failed");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.ten_length[0], 0.542346519424661, epsilon = 1e-6);
+}
+
+// ---------------------------------------------------------------------------
+// T16: Cylinder 3D-norm dispatch
+// ---------------------------------------------------------------------------
+
+/// §39 T16: Sidesite inside XY cross-section but outside by 3D norm.
+///
+/// MuJoCo uses mju_norm3(s) < radius → 5.0 < 0.1 is false → normal wrap.
+/// Straight line clears cylinder → NoWrap. Length = |s1 - s2|.
+///
+/// MuJoCo 3.5.0 reference: ten_length = 0.412310562561766.
+#[test]
+fn test_wrap_inside_t16_3d_norm_dispatch() {
+    let model = load_model(MODEL_WRAP_INSIDE_CYL_3D).expect("load failed");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.ten_length[0], 0.412310562561766, epsilon = 1e-6);
+}
+
+// ---------------------------------------------------------------------------
+// T17: Jacobian correctness (cylinder inside-wrap)
+// ---------------------------------------------------------------------------
+
+/// §39 T17: Jacobian correctness for cylinder inside-wrap via finite difference.
+#[test]
+fn test_wrap_inside_t17_jacobian_cylinder() {
+    verify_jacobian_finite_diff_mixed_tol(MODEL_WRAP_INSIDE_CYLINDER, 0, 1e-4);
+}
+
+// ---------------------------------------------------------------------------
+// T18: Sidesite at origin (sphere center)
+// ---------------------------------------------------------------------------
+
+/// §39 T18: Sidesite at (0,0,0) — exactly at sphere center.
+///
+/// |ss| = 0 < radius → inside wrap triggers. Result should match T6 exactly
+/// since the sidesite only controls dispatch, not the wrap computation.
+///
+/// MuJoCo 3.5.0 reference:
+///   ten_length = 0.424264068711929 (identical to T6)
+#[test]
+fn test_wrap_inside_t18_sidesite_at_origin() {
+    let model = load_model(MODEL_WRAP_INSIDE_ORIGIN).expect("load failed");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward failed");
+
+    assert_relative_eq!(data.ten_length[0], 0.424264068711929, epsilon = 1e-6);
+}

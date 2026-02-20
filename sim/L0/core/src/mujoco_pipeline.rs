@@ -3951,21 +3951,16 @@ impl Model {
         }
     }
 
-    /// Compute `tendon_length0` and default `lengthspring` for spatial tendons.
+    /// Compute `tendon_length0` for spatial tendons via FK at `qpos0`.
     ///
-    /// Runs FK at `qpos0` to evaluate spatial tendon paths, then:
-    /// 1. Validates rule 9 (sidesite outside wrapping geometry) using FK poses.
-    /// 2. Sets `tendon_length0[t] = ten_length[t]` from the FK result.
-    /// 3. Defaults `lengthspring` to `tendon_length0` when stiffness > 0.
+    /// 1. Sets `tendon_length0[t] = ten_length[t]` from the FK result.
+    /// 2. Defaults `lengthspring` to `tendon_length0` when stiffness > 0.
     ///
     /// Must be called after `compute_implicit_params()` and before
     /// `compute_muscle_params()` (which needs valid `tendon_length0` for all types).
     ///
-    /// # Panics
-    ///
-    /// Panics if a sidesite is inside its wrapping geometry (rule 9 validation).
-    /// This is a fatal model configuration error.
-    #[allow(clippy::panic)] // Deliberate: sidesite-inside-geometry is a fatal build error.
+    /// Note: Rule 9 (sidesite outside wrapping geometry) is retired — sidesites
+    /// inside wrapping geometry are now handled by the `wrap_inside` algorithm (§39).
     pub fn compute_spatial_tendon_length0(&mut self) {
         // Early return if no spatial tendons — avoid unnecessary FK + Data allocation.
         let has_spatial = (0..self.ntendon).any(|t| self.tendon_type[t] == TendonType::Spatial);
@@ -3975,45 +3970,6 @@ impl Model {
 
         let mut data = self.make_data();
         mj_fwd_position(self, &mut data); // runs FK + mj_fwd_tendon
-
-        // Validate rule 9: sidesite outside wrapping geometry.
-        // Requires FK because sidesite and geom may be on different bodies.
-        for t in 0..self.ntendon {
-            if self.tendon_type[t] != TendonType::Spatial {
-                continue;
-            }
-            let adr = self.tendon_adr[t];
-            let num = self.tendon_num[t];
-            for w in adr..(adr + num) {
-                if self.wrap_type[w] != WrapType::Geom {
-                    continue;
-                }
-                if self.wrap_sidesite[w] == usize::MAX {
-                    continue;
-                }
-                let geom_id = self.wrap_objid[w];
-                let ss_id = self.wrap_sidesite[w];
-                let ss_local = data.geom_xmat[geom_id].transpose()
-                    * (data.site_xpos[ss_id] - data.geom_xpos[geom_id]);
-                let r = self.geom_size[geom_id].x;
-                let inside = match self.geom_type[geom_id] {
-                    GeomType::Sphere => ss_local.norm() < r,
-                    GeomType::Cylinder => nalgebra::Vector2::new(ss_local.x, ss_local.y).norm() < r,
-                    _ => false,
-                };
-                if inside {
-                    let ss_name = self.site_name[ss_id].as_deref().unwrap_or("?");
-                    let g_name = self.geom_name[geom_id].as_deref().unwrap_or("?");
-                    let t_name = self.tendon_name[t].as_deref().unwrap_or("?");
-                    panic!(
-                        "Sidesite '{ss_name}' (site {ss_id}) is inside wrapping \
-                         geom '{g_name}' (geom {geom_id}) on tendon '{t_name}' \
-                         (tendon {t}). The wrap_inside algorithm is not implemented. \
-                         Move the sidesite outside the wrapping geometry surface."
-                    );
-                }
-            }
-        }
 
         // Compute tendon_length0 and default lengthspring for spatial tendons.
         for t in 0..self.ntendon {
@@ -10053,6 +10009,156 @@ fn compute_tangent_pair_2d(
     )
 }
 
+/// Construct the 2D wrapping plane for sphere wrapping.
+///
+/// Returns `(axis0, axis1)` where `axis0 = normalize(p1)` and `axis1` is
+/// perpendicular to `axis0` in the plane containing `(origin, p1, p2)`.
+/// Handles the collinear degenerate case (`p1`, `O`, `p2` collinear) by
+/// constructing an arbitrary perpendicular plane through `p1`.
+fn sphere_wrapping_plane(p1: Vector3<f64>, p2: Vector3<f64>) -> (Vector3<f64>, Vector3<f64>) {
+    let mut plane_normal = p1.cross(&p2);
+    if plane_normal.norm() < 1e-10 * p1.norm() * p2.norm() {
+        // Degenerate: p1, origin, p2 are collinear.
+        // Construct an arbitrary perpendicular via the least-aligned cardinal axis.
+        let u = p1.normalize();
+        let min_axis = if u.x.abs() <= u.y.abs() && u.x.abs() <= u.z.abs() {
+            Vector3::x()
+        } else if u.y.abs() <= u.z.abs() {
+            Vector3::y()
+        } else {
+            Vector3::z()
+        };
+        plane_normal = u.cross(&min_axis);
+    }
+    plane_normal = plane_normal.normalize();
+    let axis0 = p1.normalize();
+    let axis1 = plane_normal.cross(&axis0).normalize();
+    (axis0, axis1)
+}
+
+/// 2D Newton solver for inverse (inside) tendon wrapping.
+///
+/// Given two 2D endpoint positions (in the wrapping plane, circle centered at
+/// origin) and a circle radius, finds the single tangent point for an inverse
+/// wrap path — the tendon passes *through* the geometry, touching the circle
+/// surface at one point.
+///
+/// Implements MuJoCo's `wrap_inside()` from `engine_util_misc.c`.
+///
+/// Returns `None` (no wrap — tendon goes straight) or `Some(tangent_point)`.
+/// `None` maps to MuJoCo's return `-1`; `Some` maps to return `0`.
+#[allow(clippy::many_single_char_names)] // Newton solver math: z, f, g, a match MuJoCo variable names.
+fn wrap_inside_2d(end0: Vector2<f64>, end1: Vector2<f64>, radius: f64) -> Option<Vector2<f64>> {
+    const EPS: f64 = 1e-15; // MuJoCo's mjMINVAL
+
+    // Step 1 — Validate inputs.
+    let len0 = end0.norm();
+    let len1 = end1.norm();
+    if len0 <= radius || len1 <= radius || radius < EPS || len0 < EPS || len1 < EPS {
+        return None;
+    }
+
+    // Step 2 — Segment-circle intersection check.
+    let dif = end1 - end0;
+    let dd = dif.norm_squared();
+    if dd > EPS {
+        let a = -(dif.dot(&end0)) / dd;
+        if a > 0.0 && a < 1.0 {
+            let nearest = end0 + a * dif;
+            if nearest.norm() <= radius {
+                return None; // straight path crosses circle
+            }
+        }
+    }
+
+    // Step 3 — Compute Newton equation parameters.
+    let cap_a = radius / len0;
+    let cap_b = radius / len1;
+    let cos_g = (len0 * len0 + len1 * len1 - dd) / (2.0 * len0 * len1);
+
+    if cos_g < -1.0 + EPS {
+        return None; // near-antiparallel: no solution
+    }
+
+    // Step 4 — Prepare default fallback (after antiparallel check for NaN safety).
+    let mid = 0.5 * (end0 + end1);
+    let mid_norm = mid.norm();
+    let fallback = if mid_norm > EPS {
+        mid * (radius / mid_norm)
+    } else {
+        // Midpoint near-zero — should not happen after antiparallel guard,
+        // but defend against numerical edge cases.
+        return None;
+    };
+
+    if cos_g > 1.0 - EPS {
+        return Some(fallback); // near-parallel / coincident: use fallback
+    }
+
+    let g = cos_g.acos();
+
+    // Newton equation: f(z) = asin(A·z) + asin(B·z) - 2·asin(z) + G = 0
+    let mut z: f64 = 1.0 - 1e-7; // initial guess near domain boundary
+    let mut f = (cap_a * z).asin() + (cap_b * z).asin() - 2.0 * z.asin() + g;
+
+    if f > 0.0 {
+        return Some(fallback); // init on wrong side of root
+    }
+
+    // Step 5 — Newton iteration.
+    let mut converged = false;
+    for _ in 0..20 {
+        if f.abs() < 1e-6 {
+            converged = true;
+            break;
+        }
+
+        let df = cap_a / (1.0 - z * z * cap_a * cap_a).sqrt().max(EPS)
+            + cap_b / (1.0 - z * z * cap_b * cap_b).sqrt().max(EPS)
+            - 2.0 / (1.0 - z * z).sqrt().max(EPS);
+
+        if df > -EPS {
+            return Some(fallback); // derivative non-negative; abort
+        }
+
+        let z_new = z - f / df;
+
+        if z_new > z {
+            return Some(fallback); // solver moving rightward; abort
+        }
+
+        z = z_new;
+        f = (cap_a * z).asin() + (cap_b * z).asin() - 2.0 * z.asin() + g;
+
+        if f > 1e-6 {
+            return Some(fallback); // overshot positive; abort
+        }
+    }
+
+    if !converged {
+        return Some(fallback);
+    }
+
+    // Step 6 — Geometric reconstruction.
+    let cross = end0.x * end1.y - end0.y * end1.x;
+    let (vec, ang) = if cross > 0.0 {
+        let v = end0.normalize();
+        let a = z.asin() - (cap_a * z).asin();
+        (v, a)
+    } else {
+        let v = end1.normalize();
+        let a = z.asin() - (cap_b * z).asin();
+        (v, a)
+    };
+
+    let tangent = Vector2::new(
+        radius * (ang.cos() * vec.x - ang.sin() * vec.y),
+        radius * (ang.sin() * vec.x + ang.cos() * vec.y),
+    );
+
+    Some(tangent)
+}
+
 /// Compute the shortest path around a sphere between two points.
 ///
 /// Works in the geom-local frame where the sphere is centered at the origin.
@@ -10073,7 +10179,29 @@ fn sphere_wrap(
         return WrapResult::NoWrap; // endpoint inside sphere
     }
 
-    // 2. Check if the straight-line path misses the sphere.
+    // 2. Check for sidesite inside sphere (inverse wrap).
+    //    Uses 3D norm matching MuJoCo's mju_norm3(s) < radius.
+    if let Some(ss) = sidesite {
+        if ss.norm() < radius {
+            let (axis0, axis1) = sphere_wrapping_plane(p1, p2);
+            let end0 = Vector2::new(p1.dot(&axis0), p1.dot(&axis1));
+            let end1 = Vector2::new(p2.dot(&axis0), p2.dot(&axis1));
+
+            return match wrap_inside_2d(end0, end1, radius) {
+                None => WrapResult::NoWrap,
+                Some(t2d) => {
+                    let t3d = axis0 * t2d.x + axis1 * t2d.y;
+                    WrapResult::Wrapped {
+                        tangent_point_1: t3d,
+                        tangent_point_2: t3d, // identical — single tangent point
+                        arc_length: 0.0,
+                    }
+                }
+            };
+        }
+    }
+
+    // 3. Check if the straight-line path misses the sphere.
     let d = p2 - p1;
     if d.norm_squared() < 1e-20 {
         return WrapResult::NoWrap; // coincident sites
@@ -10091,27 +10219,9 @@ fn sphere_wrap(
         }
     }
 
-    // 3. Compute the wrapping plane normal.
-    //    The plane contains the sphere center (origin), p1, and p2.
-    let mut plane_normal = p1.cross(&p2);
-    if plane_normal.norm() < 1e-10 * p1.norm() * p2.norm() {
-        // Degenerate: p1, origin, p2 are collinear.
-        // Construct an arbitrary perpendicular via the least-aligned cardinal axis.
-        let u = p1.normalize();
-        let min_axis = if u.x.abs() <= u.y.abs() && u.x.abs() <= u.z.abs() {
-            Vector3::x()
-        } else if u.y.abs() <= u.z.abs() {
-            Vector3::y()
-        } else {
-            Vector3::z()
-        };
-        plane_normal = u.cross(&min_axis);
-    }
-    plane_normal = plane_normal.normalize();
-
-    // 4. Construct 2D coordinate system in the wrapping plane.
-    let axis0 = p1.normalize();
-    let axis1 = plane_normal.cross(&axis0).normalize();
+    // 4. Construct 2D wrapping plane via shared helper.
+    let (axis0, axis1) = sphere_wrapping_plane(p1, p2);
+    let plane_normal = axis0.cross(&axis1);
 
     // Project endpoints and sidesite into the 2D wrapping plane.
     let p1_2d = Vector2::new(p1.dot(&axis0), p1.dot(&axis1)); // = (||p1||, 0)
@@ -10212,6 +10322,36 @@ fn cylinder_wrap(
     }
     if p1_xy.norm() < radius || p2_xy.norm() < radius {
         return WrapResult::NoWrap; // endpoint inside cylinder cross-section
+    }
+
+    // 2b. Check for sidesite inside cylinder (inverse wrap).
+    //     Uses 3D norm matching MuJoCo's mju_norm3(s) < radius dispatch.
+    //     This differs from the previous panic check which used 2D XY norm —
+    //     a sidesite inside the cross-section but far along Z (norm3 > radius)
+    //     now correctly uses normal wrap instead of inside wrap.
+    if let Some(ss) = sidesite {
+        if ss.norm() < radius {
+            return match wrap_inside_2d(p1_xy, p2_xy, radius) {
+                None => WrapResult::NoWrap,
+                Some(t2d) => {
+                    // Z interpolation with arc_length = 0.
+                    let l0 = (p1_xy - t2d).norm();
+                    let l1 = (p2_xy - t2d).norm();
+                    let total = l0 + l1;
+                    let tz = if total > 1e-10 {
+                        p1.z + (p2.z - p1.z) * l0 / total
+                    } else {
+                        0.5 * (p1.z + p2.z)
+                    };
+                    let t3d = Vector3::new(t2d.x, t2d.y, tz);
+                    WrapResult::Wrapped {
+                        tangent_point_1: t3d,
+                        tangent_point_2: t3d, // identical — single tangent point
+                        arc_length: 0.0,      // no helical component
+                    }
+                }
+            };
+        }
     }
 
     // 3. Compute sidesite XY projection once (used in both early-exit and
@@ -24156,5 +24296,95 @@ mod contact_param_tests {
         assert_relative_eq!(mu[0], 1.0, epsilon = 1e-15);
         assert_relative_eq!(mu[2], 0.005, epsilon = 1e-15);
         assert_relative_eq!(mu[3], 0.0001, epsilon = 1e-15);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod wrap_inside_tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// T5. Newton convergence and tangency verification.
+    ///
+    /// Reference geometry: end0 = (2, 0), end1 = (1.5, 1.5√3), radius = 1.
+    /// |end0| = 2, |end1| = 3, G = π/3 exactly.
+    #[test]
+    fn t5_newton_convergence_and_tangency() {
+        let end0 = Vector2::new(2.0, 0.0);
+        let end1 = Vector2::new(1.5, 1.5 * 3.0_f64.sqrt());
+        let radius = 1.0;
+
+        let result = wrap_inside_2d(end0, end1, radius);
+        let t = result.expect("wrap_inside_2d should return Some for this geometry");
+
+        // Tangent point lies on the circle.
+        assert_relative_eq!(t.norm(), radius, epsilon = 1e-10);
+
+        // Tangency (stationarity) condition:
+        // τ · (û₀ + û₁) = 0, where τ is the circle tangent at t.
+        let tau = Vector2::new(-t.y, t.x).normalize(); // tangent = perpendicular to radial
+        let u0 = (t - end0).normalize();
+        let u1 = (t - end1).normalize();
+        let stationarity = tau.dot(&(u0 + u1)).abs();
+        assert!(
+            stationarity < 1e-8,
+            "tangency condition violated: |τ·(û₀+û₁)| = {stationarity:.2e}"
+        );
+    }
+
+    /// T11. Degenerate: segment crosses circle.
+    ///
+    /// Endpoints on opposite sides of the circle — the straight line
+    /// intersects the circle. wrap_inside_2d must return None.
+    #[test]
+    fn t11_segment_crosses_circle() {
+        let end0 = Vector2::new(2.0, 0.0);
+        let end1 = Vector2::new(-2.0, 0.1); // opposite side, segment crosses circle
+        let radius = 1.0;
+
+        let result = wrap_inside_2d(end0, end1, radius);
+        assert!(
+            result.is_none(),
+            "expected None when segment crosses circle"
+        );
+    }
+
+    /// T12. Degenerate: endpoint exactly at circle surface.
+    ///
+    /// When |endpoint| = radius, the ≤ check rejects it. Returns None.
+    #[test]
+    fn t12_endpoint_at_surface() {
+        let end0 = Vector2::new(1.0, 0.0); // exactly at radius
+        let end1 = Vector2::new(2.0, 1.0);
+        let radius = 1.0;
+
+        let result = wrap_inside_2d(end0, end1, radius);
+        assert!(
+            result.is_none(),
+            "expected None when endpoint is at circle surface"
+        );
+    }
+
+    /// T13. Fallback behavior: near-degenerate geometry.
+    ///
+    /// Endpoints barely outside the circle (A ≈ 1, B ≈ 1) and close together
+    /// on the same angular side so the connecting segment clears the circle.
+    /// This triggers the cosG > 1-ε fallback path. Must return Some(fallback)
+    /// with the fallback point on the circle surface.
+    #[test]
+    fn t13_fallback_on_circle() {
+        let r = 1.0;
+        // Both endpoints barely outside, nearly coincident (small angular separation).
+        // Segment at x ≈ 1+1e-8 clears the circle. cosG ≈ 1 → fallback.
+        let d = r + 1e-8;
+        let end0 = Vector2::new(d, 1e-6);
+        let end1 = Vector2::new(d, -1e-6);
+
+        let result = wrap_inside_2d(end0, end1, r);
+        let t = result.expect("near-degenerate should return Some(fallback), not None");
+
+        // Fallback point must lie on the circle surface.
+        assert_relative_eq!(t.norm(), r, epsilon = 1e-10);
     }
 }

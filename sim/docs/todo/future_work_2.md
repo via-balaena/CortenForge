@@ -2638,13 +2638,10 @@ For each `SpatialPathElement`:
    no segment and is a degenerate configuration that wastes a pulley division.
    Emit a warning (not an error, for MuJoCo compatibility) with the tendon
    name and branch index.
-9. Wrapping geom sidesite must be **outside** the wrapping geometry surface.
-   For sphere wrapping geoms: the sidesite position in geom-local frame must
-   satisfy `||sidesite_local|| >= geom_size[0]`. For cylinder wrapping geoms:
-   the XY-projected sidesite must satisfy `||sidesite_local_xy|| >= geom_size[0]`.
-   A sidesite inside the geometry requires MuJoCo's `wrap_inside` algorithm
-   (Newton's method solver), which this spec does not implement. Emit an error
-   with the tendon name, geom name, and sidesite name.
+9. ~~Wrapping geom sidesite must be **outside** the wrapping geometry surface.~~
+   **Retired** — sidesites inside wrapping geometry are now handled by the
+   `wrap_inside` algorithm (§39, `future_work_10.md`). The build-time
+   validation panic has been removed.
    **Validation timing:** This rule requires computing the sidesite position in
    the wrapping geom's local frame. When the sidesite and geom are on the
    **same body**, both positions are in the same body-local frame and the
@@ -3701,15 +3698,9 @@ fn segments_intersect_2d(a1, a2, b1, b2) -> bool:
   tendon path. This wrap type is uncommon and not implemented. The parser rejects
   `<joint>` inside `<spatial>` at parse time (§4.1), and validation rule 10 (§4.2)
   provides defense-in-depth.
-- **`wrap_inside` code path (sidesite inside wrapping geometry)** — MuJoCo has a
-  separate wrapping algorithm (`wrap_inside` in `engine_util_misc.c`) invoked
-  when a sidesite is present and its distance from the geometry center is less
-  than the wrapping radius (i.e., sidesite is inside the sphere/cylinder). This
-  algorithm uses a Newton's method solver for a different formulation. Our spec
-  implements only the `wrap_circle`-equivalent algorithm. To avoid incorrect
-  results, a validation rule (rule 9) rejects sidesites inside the wrapping
-  geometry. Implementing `wrap_inside` is a follow-up for models that place
-  sidesites at bone centers inside wrapping surfaces.
+- ~~**`wrap_inside` code path (sidesite inside wrapping geometry)**~~ ✅ — Implemented
+  in §39 (`future_work_10.md`). The `wrap_inside` Newton solver handles sidesites
+  inside wrapping geometry for both spheres and cylinders. Validation rule 9 is retired.
 - **Tendon visualization data (`wrap_xpos`, `wrap_obj`)** — MuJoCo stores tangent
   point positions in `d->wrap_xpos[]` and object markers in `d->wrap_obj[]`
   (indexed by `d->ten_wrapadr[i]`/`d->ten_wrapnum[i]`) for rendering the tendon
