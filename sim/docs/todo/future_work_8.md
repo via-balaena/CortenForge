@@ -1371,7 +1371,7 @@ computed per-row during constraint assembly, PGS/CG automatically pick up
 
 ## 32. Pyramidal Friction Cones
 
-**Status:** ✅ Complete (AC12/AC13 cross-validation pending MuJoCo reference data) | **Effort:** L | **Prerequisites:** #29 (✅ complete), #31 (✅ complete)
+**Status:** ✅ Complete (AC12/AC13 cross-validated against MuJoCo 3.5.0) | **Effort:** L | **Prerequisites:** #29 (✅ complete), #31 (✅ complete)
 
 ### Current State
 

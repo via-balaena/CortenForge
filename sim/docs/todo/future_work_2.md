@@ -4297,7 +4297,7 @@ not just wrong results.
 ---
 
 ### 5. Site-Transmission Actuators
-**Status:** Complete (criteria 1–21 implemented; criterion 22 deferred — requires external MuJoCo reference data) | **Effort:** L | **Prerequisites:** #4 (complete)
+**Status:** ✅ Complete (criteria 1–22 implemented; criterion 22 cross-validated against MuJoCo 3.5.0) | **Effort:** L | **Prerequisites:** #4 (complete)
 
 #### Objective
 Implement MuJoCo-conformant site-based actuator transmission. Site transmissions
@@ -4632,9 +4632,10 @@ position difference `p_site - p_ref`.
 
 #### Acceptance Criteria
 
-All criteria 1–21 have passing integration tests in
-`sim/L0/tests/integration/site_transmission.rs`. Criterion 22 has an
-`#[ignore]` placeholder pending MuJoCo reference data.
+All criteria 1–22 have passing integration tests in
+`sim/L0/tests/integration/site_transmission.rs`. Criterion 22 cross-validated
+against MuJoCo 3.5.0 with 7 sub-tests (modes A/B, translational/rotational/mixed
+gear, free joint, position actuator).
 
 **Correctness — Mode A (no refsite):**
 1. `actuator_length[i] == 0.0` regardless of configuration.

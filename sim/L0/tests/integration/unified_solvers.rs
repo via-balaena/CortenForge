@@ -1806,24 +1806,160 @@ fn test_s32_solreffriction_no_effect_on_pyramidal() {
 
 // ---------------------------------------------------------------------------
 // §32 AC12: Flat ground cross-validation against MuJoCo reference data
+// MuJoCo 3.5.0 reference values
 // ---------------------------------------------------------------------------
+
+/// §32 AC12: Sphere resting on flat ground, pyramidal condim=3.
+/// After 10 steps, total normal force and friction magnitude match MuJoCo ≤ 5%.
 #[test]
-#[ignore = "TODO(§32): needs MuJoCo reference data"]
 fn test_s32_ac12_pyramidal_flat_ground_mujoco_cross_validation() {
-    // TODO(§32): AC12 cross-validation against MuJoCo reference data.
-    // Populate with MuJoCo reference values for a sphere resting on a flat
-    // pyramidal-cone surface and assert qpos/efc_force match within 5%.
-    todo!("Populate with MuJoCo reference values for AC12 flat-ground cross-validation");
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="ac12_flat_ground">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="pyramidal"/>
+            <worldbody>
+                <geom name="floor" type="plane" size="5 5 0.1"/>
+                <body name="ball" pos="0 0 0.1">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"
+                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..10 {
+        data.step(&model).expect("step");
+    }
+
+    // MuJoCo 3.5.0: sphere nearly at rest on flat surface
+    // qpos[2] (z) ≈ 0.0997 (slight penetration from equilibrium at 0.1)
+    const MJ_QPOS_Z: f64 = 0.099743137859984;
+    // Recovered forces: f_normal ≈ 10.247, f_friction ≈ 0 (symmetric rest)
+    const MJ_F_NORMAL: f64 = 10.246730401012401;
+
+    assert!(data.ncon > 0, "should have contacts");
+
+    // Verify z-position within 5%
+    let z = data.qpos[2];
+    let z_err = (z - MJ_QPOS_Z).abs() / MJ_QPOS_Z.abs();
+    assert!(
+        z_err < 0.05,
+        "qpos z mismatch: ours={z:.10}, mujoco={MJ_QPOS_Z:.10}, err={z_err:.4}"
+    );
+
+    // Collect pyramidal facet forces and recover physical forces
+    let mut facet_forces = Vec::new();
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            facet_forces.push(data.efc_force[i]);
+        }
+    }
+    assert_eq!(
+        facet_forces.len(),
+        4,
+        "condim=3 pyramidal should have 4 facets"
+    );
+
+    let mu = [0.5, 0.5, 0.005, 0.001, 0.001];
+    let (f_normal, f_friction) = sim_core::decode_pyramid(&facet_forces, &mu, 3);
+
+    let normal_err = (f_normal - MJ_F_NORMAL).abs() / MJ_F_NORMAL.abs();
+    assert!(
+        normal_err < 0.05,
+        "normal force mismatch: ours={f_normal:.6}, mujoco={MJ_F_NORMAL:.6}, err={normal_err:.4}"
+    );
+
+    // Friction should be near zero (sphere at rest on flat surface)
+    let f_fric_mag = (f_friction[0] * f_friction[0] + f_friction[1] * f_friction[1]).sqrt();
+    assert!(
+        f_fric_mag < 0.5,
+        "friction on flat ground should be near zero, got {f_fric_mag:.6}"
+    );
 }
 
 // ---------------------------------------------------------------------------
 // §32 AC13: Inclined plane cross-validation against MuJoCo reference data
+// MuJoCo 3.5.0 reference values
 // ---------------------------------------------------------------------------
+
+/// §32 AC13: Sphere on 30° inclined plane, pyramidal condim=3.
+/// Ball starts at the ramp surface (0, 0, 0.115) ≈ radius/cos(30°) above origin.
+/// After 10 steps, sliding friction force direction matches MuJoCo ≤ 5%.
 #[test]
-#[ignore = "TODO(§32): needs MuJoCo reference data"]
 fn test_s32_ac13_pyramidal_inclined_plane_mujoco_cross_validation() {
-    // TODO(§32): AC13 cross-validation against MuJoCo reference data.
-    // Populate with MuJoCo reference values for a sphere on an inclined
-    // pyramidal-cone surface and assert qpos/efc_force match within 5%.
-    todo!("Populate with MuJoCo reference values for AC13 inclined-plane cross-validation");
+    let (model, mut data) = model_from_mjcf(
+        r#"
+        <mujoco model="ac13_inclined">
+            <option gravity="0 0 -9.81" timestep="0.002" solver="Newton"
+                    cone="pyramidal"/>
+            <worldbody>
+                <body name="ramp" pos="0 0 0" euler="0 30 0">
+                    <geom name="floor" type="plane" size="5 5 0.1"/>
+                </body>
+                <body name="ball" pos="0 0 0.115">
+                    <joint type="free"/>
+                    <geom name="sphere" type="sphere" size="0.1" mass="1.0"
+                          condim="3" friction="0.5 0.5 0.005 0.001 0.001"/>
+                </body>
+            </worldbody>
+        </mujoco>
+    "#,
+    );
+
+    for _ in 0..10 {
+        data.step(&model).expect("step");
+    }
+
+    // MuJoCo 3.5.0: sphere sliding on 30° ramp (tan30° = 0.577 > μ = 0.5)
+    // Recovered forces: f_normal ≈ 8.487, |f_friction| ≈ 0.697 (downhill along t2)
+    const MJ_F_NORMAL: f64 = 8.48731996959294;
+    const MJ_F_FRICTION_MAG: f64 = 0.697438436217572;
+
+    assert!(data.ncon > 0, "should have contacts");
+
+    // Collect pyramidal facet forces
+    let mut facet_forces = Vec::new();
+    for i in 0..data.efc_type.len() {
+        if data.efc_type[i] == sim_core::ConstraintType::ContactPyramidal {
+            facet_forces.push(data.efc_force[i]);
+        }
+    }
+    assert_eq!(
+        facet_forces.len(),
+        4,
+        "condim=3 pyramidal should have 4 facets"
+    );
+
+    let mu = [0.5, 0.5, 0.005, 0.001, 0.001];
+    let (f_normal, f_friction) = sim_core::decode_pyramid(&facet_forces, &mu, 3);
+
+    // Normal force within 5%
+    let normal_err = (f_normal - MJ_F_NORMAL).abs() / MJ_F_NORMAL.abs();
+    assert!(
+        normal_err < 0.05,
+        "normal force mismatch: ours={f_normal:.6}, mujoco={MJ_F_NORMAL:.6}, err={normal_err:.4}"
+    );
+
+    // Friction magnitude within 5%
+    let f_fric_mag = (f_friction[0] * f_friction[0] + f_friction[1] * f_friction[1]).sqrt();
+    let fric_err = (f_fric_mag - MJ_F_FRICTION_MAG).abs() / MJ_F_FRICTION_MAG.abs();
+    assert!(
+        fric_err < 0.05,
+        "|f_friction| mismatch: ours={f_fric_mag:.6}, mujoco={MJ_F_FRICTION_MAG:.6}, err={fric_err:.4}"
+    );
+
+    // Friction should be primarily in one tangent direction (downhill).
+    // The tangent frame ordering may differ between implementations, so we
+    // check that friction concentrates in one direction, not which index.
+    let f_max = f_friction[0].abs().max(f_friction[1].abs());
+    let f_min = f_friction[0].abs().min(f_friction[1].abs());
+    assert!(
+        f_max > 10.0 * f_min,
+        "friction should be concentrated in one tangent direction: f_t1={:.6}, f_t2={:.6}",
+        f_friction[0],
+        f_friction[1]
+    );
 }

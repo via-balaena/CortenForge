@@ -413,18 +413,22 @@ jobs:
 
 ### §5 — Site-Transmission Actuator Conformance
 
-**Status:** Deferred — requires MuJoCo reference data
+**Status:** ✅ Complete (7 conformance tests, MuJoCo 3.5.0 reference values)
 
-Acceptance criterion 22 of the site-transmission spec (`future_work_2.md` §5) requires
-actuator length, velocity, and generalized forces to match MuJoCo ≤ 1e-8 relative tolerance
-for both Mode A (no refsite) and Mode B (with refsite).
+Acceptance criterion 22 of the site-transmission spec (`future_work_2.md` §5) verified:
+actuator length, velocity, force, and generalized forces match MuJoCo ≤ 1e-8 tolerance.
 
-A placeholder `#[ignore]` test exists at `integration/site_transmission.rs::test_mujoco_conformance_site_transmission`.
-The established pattern for populating it is the same as `spatial_tendons.rs` test 16:
-hardcode MuJoCo 3.4.0 reference values as constants, then `assert_relative_eq!` with epsilon.
+| Test | Mode | Gear | Joints | Status |
+|------|------|------|--------|--------|
+| 22a | Mode A (no refsite) | translational `0 0 1 0 0 0` | 2× hinge(Y) | ✅ |
+| 22b | Mode A (no refsite) | rotational `0 0 0 0 1 0` | 2× hinge(Y) | ✅ |
+| 22c | Mode B (with refsite) | translational `0 0 1 0 0 0` | 2× hinge(Y) | ✅ |
+| 22d | Mode B (with refsite) | rotational `0 0 0 0 1 0` | hinge(Y) + hinge(X) | ✅ |
+| 22e | Mode B (with refsite) | mixed `1 0 1 0 1 0` | hinge(Y) + hinge(X) | ✅ |
+| 22f | Mode A (no refsite) | translational `0 0 1 0 0 0` | free joint (6-DOF) | ✅ |
+| 22g | Mode B (position kp=100) | translational `0 0 1 0 0 0` | 2× hinge(Y) | ✅ |
 
-**To unblock:** Run a 3-link arm model with site actuators through MuJoCo 3.4.0 (Python bindings),
-record `actuator_length`, `actuator_velocity`, and `qfrc_actuator`, then hardcode as constants.
+**Files:** `integration/site_transmission.rs` (tests 22a–22g)
 
 ---
 
