@@ -185,3 +185,12 @@ pub mod noslip;
 /// Ball joint limit tests: cone constraint, Jacobian, wrapping, multi-joint,
 /// near-π, degenerate range, negative-w, unnormalized quaternion, margin anchor.
 pub mod ball_joint_limits;
+
+// ============================================================================
+// Fluid / Aerodynamic Force Tests (§40)
+// ============================================================================
+
+/// Fluid force tests: inertia-box model, ellipsoid model, body dispatch,
+/// default inheritance, kappa quadrature, mass guard, zero fluid regression.
+#[allow(clippy::excessive_precision, clippy::needless_range_loop)]
+pub mod fluid_forces;

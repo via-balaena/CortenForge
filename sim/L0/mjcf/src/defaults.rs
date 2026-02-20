@@ -273,6 +273,14 @@ impl DefaultResolver {
             if result.material.is_none() {
                 result.material.clone_from(&defaults.material);
             }
+
+            // Fluid forces
+            if result.fluidshape.is_none() {
+                result.fluidshape = defaults.fluidshape;
+            }
+            if result.fluidcoef.is_none() {
+                result.fluidcoef = defaults.fluidcoef;
+            }
         }
 
         result
@@ -715,6 +723,8 @@ impl DefaultResolver {
                 mesh: c.mesh.clone().or_else(|| p.mesh.clone()),
                 hfield: c.hfield.clone().or_else(|| p.hfield.clone()),
                 material: c.material.clone().or_else(|| p.material.clone()),
+                fluidshape: c.fluidshape.or(p.fluidshape),
+                fluidcoef: c.fluidcoef.or(p.fluidcoef),
             }),
         }
     }

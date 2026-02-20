@@ -16,15 +16,15 @@ fn safe_normalize_axis(v: Vector3<f64>) -> Vector3<f64> {
     if n > 1e-10 { v / n } else { Vector3::z() }
 }
 use crate::types::{
-    AngleUnit, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType, MjcfBody,
-    MjcfCompiler, MjcfConeType, MjcfConnect, MjcfContact, MjcfContactExclude, MjcfContactPair,
-    MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfFlex, MjcfFrame, MjcfGeom,
-    MjcfGeomDefaults, MjcfGeomType, MjcfHfield, MjcfInertial, MjcfIntegrator, MjcfJacobianType,
-    MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfKeyframe, MjcfMesh,
-    MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfPairDefaults, MjcfSensor, MjcfSensorDefaults,
-    MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone, MjcfSkinVertex,
-    MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonEquality, MjcfTendonType, MjcfWeld,
-    SpatialPathElement,
+    AngleUnit, FluidShape, InertiaFromGeom, MjcfActuator, MjcfActuatorDefaults, MjcfActuatorType,
+    MjcfBody, MjcfCompiler, MjcfConeType, MjcfConnect, MjcfContact, MjcfContactExclude,
+    MjcfContactPair, MjcfDefault, MjcfDistance, MjcfEquality, MjcfFlag, MjcfFlex, MjcfFrame,
+    MjcfGeom, MjcfGeomDefaults, MjcfGeomType, MjcfHfield, MjcfInertial, MjcfIntegrator,
+    MjcfJacobianType, MjcfJoint, MjcfJointDefaults, MjcfJointEquality, MjcfJointType, MjcfKeyframe,
+    MjcfMesh, MjcfMeshDefaults, MjcfModel, MjcfOption, MjcfPairDefaults, MjcfSensor,
+    MjcfSensorDefaults, MjcfSensorType, MjcfSite, MjcfSiteDefaults, MjcfSkin, MjcfSkinBone,
+    MjcfSkinVertex, MjcfSolverType, MjcfTendon, MjcfTendonDefaults, MjcfTendonEquality,
+    MjcfTendonType, MjcfWeld, SpatialPathElement,
 };
 
 /// Parse an MJCF string into a model.
@@ -690,6 +690,22 @@ fn parse_geom_defaults(e: &BytesStart) -> Result<MjcfGeomDefaults> {
 
     // Rendering
     defaults.material = get_attribute_opt(e, "material");
+
+    // Fluid force parameters
+    if let Some(fs) = get_attribute_opt(e, "fluidshape") {
+        defaults.fluidshape = Some(match fs.as_str() {
+            "none" => FluidShape::None,
+            "ellipsoid" => FluidShape::Ellipsoid,
+            _ => return Err(MjcfError::InvalidFluidShape(fs)),
+        });
+    }
+    if let Some(coef_str) = get_attribute_opt(e, "fluidcoef") {
+        let parts = parse_float_array(&coef_str)?;
+        if parts.len() != 5 {
+            return Err(MjcfError::InvalidFluidCoef(parts.len()));
+        }
+        defaults.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+    }
 
     Ok(defaults)
 }
@@ -1684,6 +1700,22 @@ fn parse_geom_attrs(e: &BytesStart) -> Result<MjcfGeom> {
     geom.gap = parse_float_attr(e, "gap");
     geom.group = parse_int_attr(e, "group");
     geom.material = get_attribute_opt(e, "material");
+
+    // Fluid force parameters
+    if let Some(fs) = get_attribute_opt(e, "fluidshape") {
+        geom.fluidshape = Some(match fs.as_str() {
+            "none" => FluidShape::None,
+            "ellipsoid" => FluidShape::Ellipsoid,
+            _ => return Err(MjcfError::InvalidFluidShape(fs)),
+        });
+    }
+    if let Some(coef_str) = get_attribute_opt(e, "fluidcoef") {
+        let parts = parse_float_array(&coef_str)?;
+        if parts.len() != 5 {
+            return Err(MjcfError::InvalidFluidCoef(parts.len()));
+        }
+        geom.fluidcoef = Some([parts[0], parts[1], parts[2], parts[3], parts[4]]);
+    }
 
     Ok(geom)
 }

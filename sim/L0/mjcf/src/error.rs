@@ -46,6 +46,14 @@ pub enum MjcfError {
     #[error("unknown geom type: {0}")]
     UnknownGeomType(String),
 
+    /// Invalid fluidshape value (must be "none" or "ellipsoid").
+    #[error("invalid fluidshape: {0} (must be \"none\" or \"ellipsoid\")")]
+    InvalidFluidShape(String),
+
+    /// Invalid fluidcoef (must have exactly 5 values).
+    #[error("fluidcoef requires exactly 5 values, got {0}")]
+    InvalidFluidCoef(usize),
+
     /// Unknown actuator type.
     #[error("unknown actuator type: {0}")]
     UnknownActuatorType(String),

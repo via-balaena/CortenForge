@@ -4040,6 +4040,35 @@ later.
 </mujoco>
 ```
 
+**Model Z — Inertia-box with near-zero mass body (mass guard):**
+```xml
+<mujoco>
+  <option density="1.2" viscosity="0.001"/>
+  <worldbody>
+    <body pos="0 0 1">
+      <freejoint/>
+      <geom type="sphere" size="0.001" mass="1e-20"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
+**Model AA — Default class inheritance with fluidcoef:**
+```xml
+<mujoco>
+  <option density="1.2" viscosity="0.001"/>
+  <default>
+    <geom fluidshape="ellipsoid" fluidcoef="1.0 0.5 2.0 0.5 0.5"/>
+  </default>
+  <worldbody>
+    <body pos="0 0 1">
+      <freejoint/>
+      <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"/>
+    </body>
+  </worldbody>
+</mujoco>
+```
+
 ##### Acceptance Tests
 
 All conformance tests compare against MuJoCo 3.5.0 reference values extracted
@@ -4062,7 +4091,7 @@ via the script in the appendix. Tolerance: `1e-10` for force components
 | T12 | Integration | H | Body dispatch: none-geom skipped | Verified implicitly by T11: if `qfrc_fluid` matches MuJoCo, the none-geom contributed zero. Additionally assert `geom_fluid[0] == 0.0` for the sphere geom. |
 | T13 | Integration | I | Inertia-box non-spherical body (anisotropic drag) | `qfrc_fluid` matches MuJoCo; verify direction-dependent drag |
 | T14 | Integration | J | Ellipsoid combined viscous + quadratic drag | `qfrc_fluid` matches MuJoCo with both density and viscosity active |
-| T15 | Integration | — | Body mass guard (both models) | Body with `mass < mjMINVAL`: zero fluid force (applies to inertia-box AND ellipsoid paths) |
+| T15 | Integration | Z | Body mass guard (inertia-box path) | Body with `mass < mjMINVAL`: zero fluid force on inertia-box path |
 | T16 | Unit | — | `geom_semi_axes` for all geom types | Sphere, capsule, cylinder, ellipsoid, box: verify against table |
 | T17 | Unit | — | `get_added_mass_kappa` for sphere | `κ = 2/3`; `virtual_mass = V/2`; `virtual_inertia = 0` |
 | T18 | Unit | — | `ellipsoid_moment` for known geometry | `(8/15)π·s[axis]·max(other_two)⁴` verified against manual computation |
@@ -4089,6 +4118,7 @@ via the script in the appendix. Tolerance: `1e-10` for force components
 | T39 | Parse | — | Partial `fluidcoef` rejected | `fluidcoef="0.5 0.25"` (2 of 5 values) → parse error |
 | T40 | Integration | G | Zero fluid: `qfrc_fluid` buffer exists and is zeroed | `qfrc_fluid` all zeros; `qfrc_passive` unchanged from non-fluid baseline |
 | T41 | Integration | Y | Rotated body (non-identity initial orientation) | `qfrc_fluid` matches MuJoCo; stresses velocity/wind rotation with non-identity `geom_xmat` and `ximat` at rest |
+| T42 | Integration | AA | Default class inheritance of `fluidcoef` | Geom inherits both `fluidshape` and `fluidcoef` from default; `geom_fluid[1:6]` matches custom coefficients `[1.0, 0.5, 2.0, 0.5, 0.5]`; `qfrc_fluid` matches MuJoCo reference |
 
 ##### MuJoCo Reference Value Extraction Script
 
@@ -4221,6 +4251,21 @@ MODELS = {
             <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
                   fluidshape="ellipsoid"/>
             </body></worldbody></mujoco>""",
+    "Z": """<mujoco><option density="1.2" viscosity="0.001"/>
+            <worldbody><body pos="0 0 1"><freejoint/>
+            <geom type="sphere" size="0.001" mass="1e-20"/>
+            </body></worldbody></mujoco>""",
+    "O": """<mujoco><option density="1.2" viscosity="0"/>
+            <worldbody><body pos="0 0 1"><freejoint/>
+            <geom type="sphere" size="0.001" mass="1e-20"
+                  fluidshape="ellipsoid"/>
+            </body></worldbody></mujoco>""",
+    "AA": """<mujoco><option density="1.2" viscosity="0.001"/>
+            <default><geom fluidshape="ellipsoid"
+                          fluidcoef="1.0 0.5 2.0 0.5 0.5"/></default>
+            <worldbody><body pos="0 0 1"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"/>
+            </body></worldbody></mujoco>""",
 }
 
 TESTS = {
@@ -4249,19 +4294,10 @@ TESTS = {
     "T36": {"model": "W", "qvel": [10,5,3, 0,0,-1]},
     "T37": {"model": "X", "qvel": [0,0,0, 0,0,-1]},
     "T41": {"model": "Y", "qvel": [0,0,0, 1,0.5,-1]},
+    "T15": {"model": "Z", "qvel": [0,0,0, 1,0,0]},
+    "T26": {"model": "O", "qvel": [0,0,0, 1,0,0]},
+    "T42": {"model": "AA", "qvel": [0,0,0, 1,0.5,0]},
 }
-
-# T15: body mass guard (inertia-box path) — near-zero mass body
-T15_XML = """<mujoco><option density="1.2" viscosity="0.001"/>
-  <worldbody><body pos="0 0 1"><freejoint/>
-  <geom type="sphere" size="0.001" mass="1e-20"/>
-  </body></worldbody></mujoco>"""
-
-# T26: body mass guard (ellipsoid path) — near-zero mass body with fluidshape
-T26_XML = """<mujoco><option density="1.2" viscosity="0"/>
-  <worldbody><body pos="0 0 1"><freejoint/>
-  <geom type="sphere" size="0.001" mass="1e-20" fluidshape="ellipsoid"/>
-  </body></worldbody></mujoco>"""
 
 print("=== Single-step qfrc_fluid reference values ===")
 for name, cfg in sorted(TESTS.items()):
@@ -4290,7 +4326,7 @@ for i, (j, k) in enumerate([(1,2),(0,2),(0,1)]):
     print(f"  box[{i}] = {box_i:.15f}  (expect 0.2 for sphere r=0.1)")
 
 print("\n=== T15: Body mass guard — inertia-box (near-zero mass) ===")
-m = mujoco.MjModel.from_xml_string(T15_XML)
+m = mujoco.MjModel.from_xml_string(MODELS["Z"])
 d = mujoco.MjData(m)
 d.qvel[:] = [0,0,0, 1,0,0]
 mujoco.mj_forward(m, d)
@@ -4300,7 +4336,7 @@ if hasattr(d, 'qfrc_fluid'):
     print(f"  qfrc_fluid   = {np.array2string(d.qfrc_fluid, precision=15)}")
 
 print("\n=== T26: Body mass guard — ellipsoid (near-zero mass) ===")
-m = mujoco.MjModel.from_xml_string(T26_XML)
+m = mujoco.MjModel.from_xml_string(MODELS["O"])
 d = mujoco.MjData(m)
 d.qvel[:] = [0,0,0, 1,0,0]
 mujoco.mj_forward(m, d)
@@ -4438,6 +4474,17 @@ print(f"  ximat  = {d.ximat[1].tolist()}")
 print(f"  geom_xmat = {d.geom_xmat[0].tolist()}")
 if hasattr(d, 'qfrc_fluid'):
     print(f"  qfrc_fluid = {np.array2string(d.qfrc_fluid, precision=15)}")
+
+print("\n=== T42: Default class inheritance of fluidcoef ===")
+m = mujoco.MjModel.from_xml_string(MODELS["AA"])
+print(f"  geom_fluid[0] (interaction_coef) = {m.geom_fluid[0, 0]}")
+print(f"  geom_fluid[0:6]  = {m.geom_fluid[0, :6].tolist()}")
+print(f"  geom_fluid[6:12] = {m.geom_fluid[0, 6:12].tolist()}")
+d = mujoco.MjData(m)
+d.qvel[:] = [0,0,0, 1,0.5,0]
+mujoco.mj_forward(m, d)
+if hasattr(d, 'qfrc_fluid'):
+    print(f"  qfrc_fluid = {np.array2string(d.qfrc_fluid, precision=15)}")
 ```
 
 Reference values above should be extracted using this script on MuJoCo 3.5.0
@@ -4452,7 +4499,7 @@ and hardcoded into the integration tests.
 | `sim/L0/mjcf/src/defaults.rs` | modify | Add `fluidshape`/`fluidcoef` to `apply_to_geom()` default inheritance |
 | `sim/L0/mjcf/src/model_builder.rs` | modify | Precompute `geom_fluid[12]` per geom (semi-axes → kappa → virtual mass/inertia), pack into Model |
 | `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `Model::geom_fluid`, `Data::qfrc_fluid`. Add `mj_fluid()`, `mj_inertia_box_fluid()`, `mj_ellipsoid_fluid()`, `geom_semi_axes()`, `get_added_mass_kappa()`, `ellipsoid_moment()`, `rotate_spatial_to_world()`, `object_velocity_local()`. Call from `mj_fwd_passive()`. Reuse existing `mj_apply_ft()`. |
-| `sim/L0/tests/integration/fluid_forces.rs` | create | Tests T1–T41 (35 integration/unit + 2 parse error + 4 new coverage), MJCF model constants, MuJoCo 3.5.0 reference values |
+| `sim/L0/tests/integration/fluid_forces.rs` | create | Tests T1–T42 (36 integration/unit + 2 parse error + 4 new coverage), MJCF model constants, MuJoCo 3.5.0 reference values |
 
 ---
 

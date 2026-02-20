@@ -1374,6 +1374,10 @@ pub struct Model {
     /// Solver reference parameters [timeconst, dampratio] or [d, dmin].
     /// Controls constraint dynamics.
     pub geom_solref: Vec<[f64; 2]>,
+    /// Fluid interaction data per geom (12 elements, matching MuJoCo's `geom_fluid`).
+    /// Layout: `[interaction_coef, C_blunt, C_slender, C_ang, C_K, C_M,
+    ///           virtual_mass[3], virtual_inertia[3]]`.
+    pub geom_fluid: Vec<[f64; 12]>,
     /// Optional geom names.
     pub geom_name: Vec<Option<String>>,
     /// Pre-computed bounding sphere radius for each geom (in local frame).
@@ -2280,8 +2284,11 @@ pub struct Data {
     pub qfrc_applied: DVector<f64>,
     /// Coriolis + centrifugal + gravity bias forces (length `nv`).
     pub qfrc_bias: DVector<f64>,
-    /// Passive forces (springs + dampers + gravcomp) (length `nv`).
+    /// Passive forces (springs + dampers + gravcomp + fluid) (length `nv`).
     pub qfrc_passive: DVector<f64>,
+    /// Fluid forces (length `nv`), zeroed each step.
+    /// Separated from `qfrc_passive` for derivative computation.
+    pub qfrc_fluid: DVector<f64>,
     /// Gravity compensation forces (length `nv`), zeroed each step.
     /// Stored separately for future `jnt_actgravcomp` routing.
     pub qfrc_gravcomp: DVector<f64>,
@@ -2722,6 +2729,7 @@ impl Clone for Data {
             qfrc_applied: self.qfrc_applied.clone(),
             qfrc_bias: self.qfrc_bias.clone(),
             qfrc_passive: self.qfrc_passive.clone(),
+            qfrc_fluid: self.qfrc_fluid.clone(),
             qfrc_gravcomp: self.qfrc_gravcomp.clone(),
             qfrc_constraint: self.qfrc_constraint.clone(),
             jnt_limit_frc: self.jnt_limit_frc.clone(),
@@ -2973,6 +2981,7 @@ impl Model {
             geom_sdf: vec![],
             geom_group: vec![],
             geom_rgba: vec![],
+            geom_fluid: vec![],
 
             // Flex bodies (empty)
             flex_dim: vec![],
@@ -3342,6 +3351,7 @@ impl Model {
             qfrc_applied: DVector::zeros(self.nv),
             qfrc_bias: DVector::zeros(self.nv),
             qfrc_passive: DVector::zeros(self.nv),
+            qfrc_fluid: DVector::zeros(self.nv),
             qfrc_gravcomp: DVector::zeros(self.nv),
             qfrc_constraint: DVector::zeros(self.nv),
             jnt_limit_frc: vec![0.0; self.njnt],
@@ -11817,6 +11827,343 @@ fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
     has_gravcomp
 }
 
+// ============================================================================
+// §40 Fluid / Aerodynamic Forces
+// ============================================================================
+
+// MJ_MINVAL (1e-15) is defined once at module scope (Newton solver section).
+// Reused here for fluid force denomination guards.
+
+/// Compute 6D velocity at an object center in its local frame.
+///
+/// Equivalent to MuJoCo's `mj_objectVelocity(m, d, objtype, id, res, flg_local=1)`.
+/// Returns `[ω_local; v_local]`.
+fn object_velocity_local(
+    model: &Model,
+    data: &Data,
+    body_id: usize,
+    point: &Vector3<f64>,
+    rot: &Matrix3<f64>,
+) -> [f64; 6] {
+    // Static body check: world body (id=0) has mass=0 and is caught by the
+    // dispatch loop's mass guard. For extra safety, return zeros for body 0.
+    if body_id == 0 {
+        return [0.0; 6];
+    }
+
+    let root_id = model.body_rootid[body_id];
+    let cvel = &data.cvel[body_id];
+    let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
+    let v_subtree = Vector3::new(cvel[3], cvel[4], cvel[5]);
+
+    // Shift linear velocity from subtree CoM to requested point
+    let dif = point - data.subtree_com[root_id];
+    let v_point = v_subtree + omega.cross(&dif);
+
+    // Rotate to local frame
+    let omega_local = rot.transpose() * omega;
+    let v_local = rot.transpose() * v_point;
+
+    [
+        omega_local.x,
+        omega_local.y,
+        omega_local.z,
+        v_local.x,
+        v_local.y,
+        v_local.z,
+    ]
+}
+
+/// Rotate a 6D spatial vector (local frame) to world frame.
+#[inline]
+fn rotate_spatial_to_world(xmat: &Matrix3<f64>, lfrc: &[f64; 6]) -> [f64; 6] {
+    let torque = xmat * Vector3::new(lfrc[0], lfrc[1], lfrc[2]);
+    let force = xmat * Vector3::new(lfrc[3], lfrc[4], lfrc[5]);
+    [torque.x, torque.y, torque.z, force.x, force.y, force.z]
+}
+
+/// Cross product of two 3-vectors stored as slices.
+#[inline]
+fn cross3(a: &[f64], b: &[f64]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Accumulate cross product: `out += a × b`.
+#[inline]
+fn add_cross3(out: &mut [f64], a: &[f64; 3], b: &[f64]) {
+    out[0] += a[1] * b[2] - a[2] * b[1];
+    out[1] += a[2] * b[0] - a[0] * b[2];
+    out[2] += a[0] * b[1] - a[1] * b[0];
+}
+
+/// Euclidean norm of a 3-element slice.
+#[inline]
+fn norm3(v: &[f64]) -> f64 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
+/// Compute semi-axes for a geom type, matching MuJoCo's `mju_geomSemiAxes`.
+fn fluid_geom_semi_axes(geom_type: GeomType, size: &Vector3<f64>) -> [f64; 3] {
+    match geom_type {
+        GeomType::Sphere => [size.x, size.x, size.x],
+        GeomType::Capsule => [size.x, size.x, size.y + size.x],
+        GeomType::Cylinder => [size.x, size.x, size.y],
+        _ => [size.x, size.y, size.z], // Ellipsoid, Box, Mesh
+    }
+}
+
+/// Per-axis moment for angular drag: `(8/15)π · s[axis] · max(other_two)⁴`.
+/// Matches MuJoCo's `mji_ellipsoid_max_moment(size, dir)`.
+#[inline]
+fn ellipsoid_moment(s: &[f64; 3], axis: usize) -> f64 {
+    let d1 = s[(axis + 1) % 3];
+    let d2 = s[(axis + 2) % 3];
+    (8.0 / 15.0) * std::f64::consts::PI * s[axis] * d1.max(d2).powi(4)
+}
+
+/// Inertia-box fluid model (legacy, body-level).
+/// Called for bodies where no child geom has `geom_fluid[0] > 0`.
+fn mj_inertia_box_fluid(model: &Model, data: &mut Data, body_id: usize) {
+    let rho = model.density;
+    let beta = model.viscosity;
+    let mass = model.body_mass[body_id];
+    let inertia = model.body_inertia[body_id];
+
+    // 1. Equivalent box dimensions (full side lengths)
+    let bx = ((inertia.y + inertia.z - inertia.x).max(MJ_MINVAL) / mass * 6.0).sqrt();
+    let by = ((inertia.x + inertia.z - inertia.y).max(MJ_MINVAL) / mass * 6.0).sqrt();
+    let bz = ((inertia.x + inertia.y - inertia.z).max(MJ_MINVAL) / mass * 6.0).sqrt();
+
+    // 2. Local 6D velocity at body CoM in inertia frame
+    let mut lvel = object_velocity_local(
+        model,
+        data,
+        body_id,
+        &data.xipos[body_id],
+        &data.ximat[body_id],
+    );
+
+    // 3. Subtract wind (translational only, rotate to inertia frame)
+    let wind_local = data.ximat[body_id].transpose() * model.wind;
+    lvel[3] -= wind_local.x;
+    lvel[4] -= wind_local.y;
+    lvel[5] -= wind_local.z;
+
+    // 4. Compute local forces
+    let mut lfrc = [0.0f64; 6];
+
+    // Viscous resistance (assignment, matching MuJoCo's mji_scl3)
+    if beta > 0.0 {
+        let diam = (bx + by + bz) / 3.0;
+        let d3 = diam * diam * diam;
+        let pi = std::f64::consts::PI;
+        for i in 0..3 {
+            lfrc[i] = -pi * d3 * beta * lvel[i];
+        }
+        for i in 0..3 {
+            lfrc[3 + i] = -3.0 * pi * diam * beta * lvel[3 + i];
+        }
+    }
+
+    // Quadratic drag (density, subtracted from viscous result)
+    if rho > 0.0 {
+        lfrc[3] -= 0.5 * rho * by * bz * lvel[3].abs() * lvel[3];
+        lfrc[4] -= 0.5 * rho * bx * bz * lvel[4].abs() * lvel[4];
+        lfrc[5] -= 0.5 * rho * bx * by * lvel[5].abs() * lvel[5];
+
+        lfrc[0] -= rho * bx * (by.powi(4) + bz.powi(4)) / 64.0 * lvel[0].abs() * lvel[0];
+        lfrc[1] -= rho * by * (bx.powi(4) + bz.powi(4)) / 64.0 * lvel[1].abs() * lvel[1];
+        lfrc[2] -= rho * bz * (bx.powi(4) + by.powi(4)) / 64.0 * lvel[2].abs() * lvel[2];
+    }
+
+    // 5. Rotate to world frame and apply at body CoM
+    let bfrc = rotate_spatial_to_world(&data.ximat[body_id], &lfrc);
+    mj_apply_ft(
+        model,
+        &data.xpos,
+        &data.xquat,
+        &Vector3::new(bfrc[3], bfrc[4], bfrc[5]),
+        &Vector3::new(bfrc[0], bfrc[1], bfrc[2]),
+        &data.xipos[body_id],
+        body_id,
+        &mut data.qfrc_fluid,
+    );
+}
+
+/// Ellipsoid fluid model (advanced, per-geom).
+/// Called for bodies where any child geom has `geom_fluid[0] > 0`.
+#[allow(clippy::similar_names)] // d_min/d_mid/d_max are standard notation for semi-axis ordering
+fn mj_ellipsoid_fluid(model: &Model, data: &mut Data, body_id: usize) {
+    let rho = model.density;
+    let beta = model.viscosity;
+    let pi = std::f64::consts::PI;
+
+    let geom_adr = model.body_geom_adr[body_id];
+    let geom_num = model.body_geom_num[body_id];
+
+    for gid in geom_adr..geom_adr + geom_num {
+        let fluid = &model.geom_fluid[gid];
+        let interaction_coef = fluid[0];
+        if interaction_coef == 0.0 {
+            continue;
+        }
+
+        // Unpack coefficients
+        let (c_blunt, c_slender, c_ang) = (fluid[1], fluid[2], fluid[3]);
+        let (c_kutta, c_magnus) = (fluid[4], fluid[5]);
+        let vmass = [fluid[6], fluid[7], fluid[8]];
+        let vinertia = [fluid[9], fluid[10], fluid[11]];
+
+        // Semi-axes
+        let s = fluid_geom_semi_axes(model.geom_type[gid], &model.geom_size[gid]);
+
+        // Local velocity at geom center in geom frame
+        let geom_body = model.geom_body[gid];
+        let mut lvel = object_velocity_local(
+            model,
+            data,
+            geom_body,
+            &data.geom_xpos[gid],
+            &data.geom_xmat[gid],
+        );
+        let wind_local = data.geom_xmat[gid].transpose() * model.wind;
+        lvel[3] -= wind_local.x;
+        lvel[4] -= wind_local.y;
+        lvel[5] -= wind_local.z;
+
+        let w = [lvel[0], lvel[1], lvel[2]];
+        let v = [lvel[3], lvel[4], lvel[5]];
+        let mut lfrc = [0.0f64; 6];
+        let speed = norm3(&v);
+
+        // ── Component 1: Added mass (gyroscopic, accels=NULL) ──
+        let pv = [
+            rho * vmass[0] * v[0],
+            rho * vmass[1] * v[1],
+            rho * vmass[2] * v[2],
+        ];
+        let lv = [
+            rho * vinertia[0] * w[0],
+            rho * vinertia[1] * w[1],
+            rho * vinertia[2] * w[2],
+        ];
+        add_cross3(&mut lfrc[3..6], &pv, &w); // force  += p_v × ω
+        add_cross3(&mut lfrc[0..3], &pv, &v); // torque += p_v × v
+        add_cross3(&mut lfrc[0..3], &lv, &w); // torque += L_v × ω
+
+        // ── Component 2: Magnus lift ──
+        let vol = (4.0 / 3.0) * pi * s[0] * s[1] * s[2];
+        let mag = cross3(&w, &v);
+        for i in 0..3 {
+            lfrc[3 + i] += c_magnus * rho * vol * mag[i];
+        }
+
+        // ── Component 3: Kutta lift ──
+        let norm_vec = [
+            (s[1] * s[2]).powi(2) * v[0],
+            (s[2] * s[0]).powi(2) * v[1],
+            (s[0] * s[1]).powi(2) * v[2],
+        ];
+        let proj_denom = (s[1] * s[2]).powi(4) * v[0] * v[0]
+            + (s[2] * s[0]).powi(4) * v[1] * v[1]
+            + (s[0] * s[1]).powi(4) * v[2] * v[2];
+        let proj_num = (s[1] * s[2] * v[0]).powi(2)
+            + (s[2] * s[0] * v[1]).powi(2)
+            + (s[0] * s[1] * v[2]).powi(2);
+        let a_proj = pi * (proj_denom / proj_num.max(MJ_MINVAL)).sqrt();
+        let cos_alpha = proj_num / (speed * proj_denom).max(MJ_MINVAL);
+
+        let mut circ = cross3(&norm_vec, &v);
+        let kutta_scale = c_kutta * rho * cos_alpha * a_proj;
+        for i in 0..3 {
+            circ[i] *= kutta_scale;
+        }
+        let kf = cross3(&circ, &v);
+        for i in 0..3 {
+            lfrc[3 + i] += kf[i];
+        }
+
+        // ── Component 4: Combined linear drag ──
+        let eq_d = (2.0 / 3.0) * (s[0] + s[1] + s[2]);
+        let d_max = s[0].max(s[1]).max(s[2]);
+        let d_min = s[0].min(s[1]).min(s[2]);
+        let d_mid = s[0] + s[1] + s[2] - d_max - d_min;
+        let a_max = pi * d_max * d_mid;
+
+        let drag_lin = beta * 3.0 * pi * eq_d
+            + rho * speed * (a_proj * c_blunt + c_slender * (a_max - a_proj));
+        for i in 0..3 {
+            lfrc[3 + i] -= drag_lin * v[i];
+        }
+
+        // ── Component 5: Combined angular drag ──
+        let i_max = (8.0 / 15.0) * pi * d_mid * d_max.powi(4);
+        let ii = [
+            ellipsoid_moment(&s, 0),
+            ellipsoid_moment(&s, 1),
+            ellipsoid_moment(&s, 2),
+        ];
+        let mom_visc = [
+            w[0] * (c_ang * ii[0] + c_slender * (i_max - ii[0])),
+            w[1] * (c_ang * ii[1] + c_slender * (i_max - ii[1])),
+            w[2] * (c_ang * ii[2] + c_slender * (i_max - ii[2])),
+        ];
+        let drag_ang = beta * pi * eq_d.powi(3) + rho * norm3(&mom_visc);
+        for i in 0..3 {
+            lfrc[i] -= drag_ang * w[i];
+        }
+
+        // ── Scale by interaction coefficient and accumulate ──
+        for val in &mut lfrc {
+            *val *= interaction_coef;
+        }
+        let bfrc = rotate_spatial_to_world(&data.geom_xmat[gid], &lfrc);
+        mj_apply_ft(
+            model,
+            &data.xpos,
+            &data.xquat,
+            &Vector3::new(bfrc[3], bfrc[4], bfrc[5]),
+            &Vector3::new(bfrc[0], bfrc[1], bfrc[2]),
+            &data.geom_xpos[gid],
+            body_id,
+            &mut data.qfrc_fluid,
+        );
+    }
+}
+
+/// Top-level fluid force dispatch. Returns `true` if any fluid forces were computed.
+/// Matches MuJoCo's `mj_fluid()` in `engine_passive.c`.
+fn mj_fluid(model: &Model, data: &mut Data) -> bool {
+    if model.density == 0.0 && model.viscosity == 0.0 {
+        return false;
+    }
+
+    for body_id in 0..model.nbody {
+        // Mass guard — applies to both models (matches MuJoCo)
+        if model.body_mass[body_id] < MJ_MINVAL {
+            continue;
+        }
+
+        // Dispatch: does any child geom have geom_fluid[0] > 0?
+        let geom_adr = model.body_geom_adr[body_id];
+        let geom_num = model.body_geom_num[body_id];
+        let use_ellipsoid =
+            (geom_adr..geom_adr + geom_num).any(|gid| model.geom_fluid[gid][0] > 0.0);
+
+        if use_ellipsoid {
+            mj_ellipsoid_fluid(model, data, body_id);
+        } else {
+            mj_inertia_box_fluid(model, data, body_id);
+        }
+    }
+
+    true
+}
+
 /// Compute passive forces (springs and dampers).
 ///
 /// Implements MuJoCo's passive force model:
@@ -11843,6 +12190,7 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
     let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
 
     data.qfrc_passive.fill(0.0);
+    data.qfrc_fluid.fill(0.0);
     data.qfrc_gravcomp.fill(0.0);
     // qfrc_frictionloss is now populated post-solve from efc_force (§29).
     // No longer computed in passive forces.
@@ -12112,6 +12460,12 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
                 }
             }
         }
+    }
+
+    // Fluid forces (§40): compute and add to qfrc_passive.
+    // qfrc_fluid is zeroed at the top; mj_fluid accumulates into it.
+    if mj_fluid(model, data) {
+        data.qfrc_passive += &data.qfrc_fluid;
     }
 
     // Gravity compensation: compute and route to qfrc_passive (§35).
