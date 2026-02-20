@@ -123,6 +123,7 @@ All items are independent (#29 is the core architectural migration).
 | 38 | Ball / free joint limits (rotation cone via quat log) | Low | High | M | None | [future_work_10.md](./future_work_10.md) | ✅ Complete |
 | 39 | `wrap_inside` algorithm (tendon wrapping) | Low | High | M | None | [future_work_10.md](./future_work_10.md) | ✅ Complete |
 | 40 | Fluid / aerodynamic forces | Medium | High | L | None | [future_work_10.md](./future_work_10.md) | ✅ Complete |
+| 40b | Tendon visualization data (`wrap_xpos`, `wrap_obj`) | Low | Low | S | None | [future_work_10.md](./future_work_10.md) | |
 | 41 | `disableflags` — runtime disable flag effects | Low | Medium | M | None | [future_work_10.md](./future_work_10.md) | |
 | ~~42~~ | ~~`<flex>` / `<flexcomp>` MJCF deformable parsing~~ | — | — | — | — | [future_work_10.md](./future_work_10.md) | Subsumed by §6B |
 | 42A-i | Sparse flex edge Jacobian (`flexedge_J`) | Low | **Critical** | L | §6B, #27D | [future_work_10.md](./future_work_10.md) | |

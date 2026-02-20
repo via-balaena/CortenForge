@@ -4624,6 +4624,36 @@ for the initial implementation (nv < 100 target makes dense acceptable).
 
 ---
 
+### 40b. Tendon Visualization Data (`wrap_xpos`, `wrap_obj`)
+**Status:** Not started | **Effort:** S | **Prerequisites:** None
+
+#### Current State
+
+The spatial tendon pipeline computes correct physics (length, Jacobian, forces)
+but does not populate visualization data. MuJoCo stores tangent point world
+positions in `d->wrap_xpos[]` and object markers in `d->wrap_obj[]` (indexed
+by `d->ten_wrapadr[i]`/`d->ten_wrapnum[i]`) for rendering the tendon path
+through wrapping geometry. These `Data` fields are not in our `Data` struct.
+
+This was identified as a known limitation during §4 (spatial tendon pipeline,
+`future_work_2.md`) and deferred from §39 (`wrap_inside`). Numbered §40b to sort after §40a.
+
+#### Objective
+
+Add `wrap_xpos`, `wrap_obj`, `ten_wrapadr`, and `ten_wrapnum` fields to `Data`.
+Populate them during `mj_fwd_tendon_spatial()` so that downstream consumers
+(visualization, debugging) can reconstruct the tendon path through wrapping
+geometry.
+
+#### Files to Modify
+
+| File | Action | Changes |
+|------|--------|---------|
+| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `wrap_xpos`, `wrap_obj`, `ten_wrapadr`, `ten_wrapnum` to `Data`. Populate in `mj_fwd_tendon_spatial()` after computing wrap results. |
+| `sim/L0/tests/integration/spatial_tendons.rs` | modify | Add tests verifying `wrap_xpos` positions match MuJoCo reference values for existing test models. |
+
+---
+
 ### 41. `disableflags` / `enableflags` — Full Runtime Flag Wiring
 **Status:** Not started | **Effort:** M | **Prerequisites:** None
 
