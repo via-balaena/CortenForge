@@ -2261,8 +2261,10 @@ and `arc_length == 0.0`. The tangent point lies on the sphere surface
 Verify this value matches MuJoCo 3.5.0 reference for the same model.
 
 **T5. Newton convergence and tangency verification:** For a reference geometry
-with `end0 = (2.0, 0.0)`, `end1 = (1.5, 2.598)` (distance 3.0 from center,
-angle G = π/3), `radius = 1.0`:
+with `end0 = (2.0, 0.0)`, `end1 = (1.5, 1.5·√3)` (distance exactly 3.0 from
+center, angle G = π/3 exactly), `radius = 1.0`. Implementation must use
+`(1.5, 1.5 * 3.0_f64.sqrt())` — not a truncated decimal — to preserve the
+exact invariants:
 - The Newton solver converges within 20 iterations.
 - The tangent point lies on the circle (`|t| = 1.0 ± 1e-10`).
 - The tangent point satisfies the stationarity (tangency) condition:
@@ -2606,13 +2608,55 @@ The cylinder case has Z-interpolation (`tz = p1.z + (p2.z − p1.z) · l0 / tota
 which introduces a different Jacobian structure than sphere. Tolerance:
 `|J_fd − J_an| < 1e-4 · max(|J_fd|, 1.0)` (same mixed tolerance as T10).
 
-**T18. Sidesite at origin:** Sidesite at `(0, 0, 0)` — exactly at the
-sphere/cylinder center. `|ss| = 0 < radius` → inside wrap triggers. The solver
-is well-defined since `A, B < 1` (both endpoints are outside the circle).
-Verify no panic, solver converges, and the tangent point lies on the surface
-(`|tangent| = radius ± 1e-10`).
+**T18. Sidesite at origin (sphere):** Sidesite at `(0, 0, 0)` — exactly at the
+sphere center. `|ss| = 0 < radius` → inside wrap triggers. The solver is
+well-defined since `A, B < 1` (both endpoints are outside the circle). Verify
+no panic, solver converges, tangent point on surface, and MuJoCo conformance.
 
-**Rotated-geom coverage note:** All inside-wrap test models (T6–T8, T15) use
+**Sphere-only rationale:** The origin edge case tests the Newton solver's
+numerical behavior when `|ss| = 0`, not geometry-specific dispatch. Since
+`wrap_inside_2d` is shared by sphere and cylinder, and the dispatch path
+difference (3D norm) is already exercised by T16, testing sphere alone is
+sufficient.
+
+```xml
+<!-- T18: Sidesite at sphere center (origin edge case).
+     Same endpoints as T6, sidesite moved to exact center.
+     Sidesite |ss| = 0 < 0.15 → inside wrap.
+     Result should match T6 exactly — sidesite only controls dispatch. -->
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_sphere" type="sphere" size="0.15"/>
+      <site name="s1" pos="0.3 0 0.15"/>
+      <site name="side_origin" pos="0 0 0"/>  <!-- at center: |ss|=0 < 0.15 -->
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="s2" pos="0.3 0 -0.15"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_origin">
+      <site site="s1"/>
+      <geom geom="wrap_sphere" sidesite="side_origin"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+
+**MuJoCo 3.5.0 reference values:**
+```
+T18_ten_length  = 0.424264068711929   # identical to T6 — sidesite only controls dispatch
+T18_tangent_pos = (0.15, 0.0, 0.0)    # identical to T6
+```
+
+Tolerance: `1e-6` for tendon length, `1e-6` for wrap point positions.
+Reference values obtained via the extraction script in §39-appendix below.
+
+**Rotated-geom coverage note:** All inside-wrap test models (T6–T8, T15, T18) use
 wrapping geoms at default orientation. This is sufficient because the inside-wrap
 dispatch (`|ss_local| < radius`) and the 2D Newton solver operate entirely in
 geom-local coordinates — the body/geom rotation cancels in the
@@ -2641,7 +2685,7 @@ wrap, which is exercised by the existing tests 1–19b (T9 regression).
 | T15 | Integration | Cylinder | Asymmetric-Z endpoints (dedicated model) | XY tangency + nonzero Z interpolation |
 | T16 | Integration | Cylinder | Sidesite inside XY, \|ss\|₃D > r | 3D norm dispatch matches MuJoCo |
 | T17 | Integration | Cylinder | Sidesite inside, finite diff | Jacobian correctness (Z-interpolation) |
-| T18 | Integration | Sphere | Sidesite at (0,0,0) | Origin edge case, solver convergence |
+| T18 | Integration | Sphere | Sidesite at (0,0,0), MuJoCo 3.5.0 ref | Origin edge case, solver convergence, MuJoCo conformance |
 
 #### Files
 
@@ -2806,6 +2850,31 @@ T16_XML = """
 </mujoco>
 """
 extract("T16 (cylinder 3D-norm dispatch)", T16_XML)
+
+T18_XML = """
+<mujoco>
+  <worldbody>
+    <body name="b0">
+      <geom name="wrap_sphere" type="sphere" size="0.15"/>
+      <site name="s1" pos="0.3 0 0.15"/>
+      <site name="side_origin" pos="0 0 0"/>
+      <body name="b1">
+        <joint name="j1" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size="0.01" mass="0.1"/>
+        <site name="s2" pos="0.3 0 -0.15"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_origin">
+      <site site="s1"/>
+      <geom geom="wrap_sphere" sidesite="side_origin"/>
+      <site site="s2"/>
+    </spatial>
+  </tendon>
+</mujoco>
+"""
+extract("T18 (sidesite at origin)", T18_XML)
 
 T8_XML = """
 <mujoco>
