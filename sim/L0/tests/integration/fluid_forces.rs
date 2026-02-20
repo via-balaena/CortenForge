@@ -9,9 +9,14 @@
 //! - Mass guard (near-zero mass → zero fluid force)
 //! - Zero-fluid regression (`density=0, viscosity=0`)
 //!
-//! Reference values: extracted from our implementation (conformant with MuJoCo
-//! engine_passive.c algorithms). To be verified against MuJoCo 3.5.0 when
-//! available.
+//! Reference values: verified against MuJoCo 3.5.0 (mujoco==3.5.0, Python
+//! extraction script in sim/docs/todo/future_work_10.md §40d).
+//! - T1–T12, T14, T17–T42: exact match (tolerance 1e-10)
+//! - T13: 0.3% deviation due to eigendecomposition ordering in composite
+//!   body inertia (tracked separately)
+//! - T15, T26: mass-guard tests — MuJoCo rejects mass < mjMINVAL at load
+//!   time, so these test our internal guard only
+//! - T20: 50-step trajectory match within 1e-6 accumulated tolerance
 
 use approx::assert_relative_eq;
 use sim_mjcf::{MjcfError, load_model, parse_mjcf_str};
@@ -422,11 +427,11 @@ fn t10_custom_fluidcoef_no_lift() {
     // Verify custom fluidcoef stored: coef[3]=0 (Magnus), coef[4]=0 (Kutta)
     assert_eq!(
         model.geom_fluid[0][4], 0.0,
-        "Magnus coefficient should be zero"
+        "Kutta coefficient should be zero"
     );
     assert_eq!(
         model.geom_fluid[0][5], 0.0,
-        "Kutta coefficient should be zero"
+        "Magnus coefficient should be zero"
     );
 }
 
@@ -439,12 +444,12 @@ fn t10_custom_fluidcoef_no_lift() {
 fn t11_body_dispatch_mixed_geoms() {
     let (_model, data) = setup(MODEL_H, &[0.0, 0.0, 0.0, 0.0, 0.0, -1.0]);
     let expected = [
-        -3.385892099715810e-5,
-        6.597344572538565e-5,
+        -6.771784199431616e-5,
+        2.638937829015426e-4,
         0.0,
         0.0,
         0.0,
-        2.073451151369264e-5,
+        6.031857894892403e-5,
     ];
     assert_qfrc_fluid(&data, &expected, FORCE_TOL);
 }
@@ -667,42 +672,144 @@ fn t19_kappa_prolate_spheroid() {
 // T20: 50-step trajectory conformance
 // ============================================================================
 
-/// Step 50 frames for Models A and J, verify qfrc_fluid stability.
+/// Step 50 frames for Models A and J, verify qfrc_fluid against MuJoCo 3.5.0
+/// trajectory at steps 10, 20, 30, 40, 50.
 #[test]
 fn t20_trajectory_conformance() {
+    // MuJoCo 3.5.0 reference values (qfrc_fluid at each checkpoint).
+    // Trajectory tolerance: larger than FORCE_TOL to absorb accumulated
+    // floating-point differences in the integrator over 50 steps.
+    let traj_tol = 1e-6;
+
     // Model A: inertia-box
+    let refs_a: [[f64; 6]; 5] = [
+        [
+            0.0,
+            0.0,
+            4.489876468761277e-04,
+            0.0,
+            0.0,
+            3.346156836270833e-06,
+        ],
+        [
+            0.0,
+            0.0,
+            2.000843972076068e-03,
+            0.0,
+            0.0,
+            3.346044869551736e-06,
+        ],
+        [
+            0.0,
+            0.0,
+            4.660429615491173e-03,
+            0.0,
+            0.0,
+            3.345932908452377e-06,
+        ],
+        [
+            0.0,
+            0.0,
+            8.426561757951844e-03,
+            0.0,
+            0.0,
+            3.345820952972365e-06,
+        ],
+        [
+            0.0,
+            0.0,
+            1.329755843582998e-02,
+            0.0,
+            0.0,
+            3.345709003111353e-06,
+        ],
+    ];
     let model_a = load_model(MODEL_A).expect("should load");
     let mut data_a = model_a.make_data();
     data_a.qvel[5] = -1.0;
+    let mut checkpoint = 0;
     for step in 0..50 {
         data_a.step(&model_a).expect("step failed");
         if step % 10 == 9 {
             for i in 0..model_a.nv {
+                let diff = (data_a.qfrc_fluid[i] - refs_a[checkpoint][i]).abs();
                 assert!(
-                    data_a.qfrc_fluid[i].is_finite(),
-                    "qfrc_fluid[{}] not finite at step {}",
+                    diff < traj_tol,
+                    "Model A step {}: qfrc_fluid[{}] = {:.15e}, expected {:.15e}, diff = {:.3e}",
+                    step + 1,
                     i,
-                    step + 1
+                    data_a.qfrc_fluid[i],
+                    refs_a[checkpoint][i],
+                    diff,
                 );
             }
+            checkpoint += 1;
         }
     }
 
     // Model J: ellipsoid
+    let refs_j: [[f64; 6]; 5] = [
+        [
+            0.0,
+            0.0,
+            4.824685400116773e-04,
+            0.0,
+            0.0,
+            1.211133659018046e-05,
+        ],
+        [
+            0.0,
+            0.0,
+            1.707713505416047e-03,
+            0.0,
+            0.0,
+            1.210943274260629e-05,
+        ],
+        [
+            0.0,
+            0.0,
+            3.658051567817305e-03,
+            0.0,
+            0.0,
+            1.210752933580980e-05,
+        ],
+        [
+            0.0,
+            0.0,
+            6.332913989304158e-03,
+            0.0,
+            0.0,
+            1.210562636965491e-05,
+        ],
+        [
+            0.0,
+            0.0,
+            9.731518030949991e-03,
+            0.0,
+            0.0,
+            1.210372384400567e-05,
+        ],
+    ];
     let model_j = load_model(MODEL_J).expect("should load");
     let mut data_j = model_j.make_data();
     data_j.qvel[5] = -1.0;
+    checkpoint = 0;
     for step in 0..50 {
         data_j.step(&model_j).expect("step failed");
         if step % 10 == 9 {
             for i in 0..model_j.nv {
+                let diff = (data_j.qfrc_fluid[i] - refs_j[checkpoint][i]).abs();
                 assert!(
-                    data_j.qfrc_fluid[i].is_finite(),
-                    "qfrc_fluid[{}] not finite at step {}",
+                    diff < traj_tol,
+                    "Model J step {}: qfrc_fluid[{}] = {:.15e}, expected {:.15e}, diff = {:.3e}",
+                    step + 1,
                     i,
-                    step + 1
+                    data_j.qfrc_fluid[i],
+                    refs_j[checkpoint][i],
+                    diff,
                 );
             }
+            checkpoint += 1;
         }
     }
 }
@@ -1144,9 +1251,9 @@ fn t41_rotated_body() {
         0.0,
         0.0,
         0.0,
-        -1.537065385865365e-5,
-        -8.046348408358835e-6,
-        -1.658710014856468e-5,
+        -1.661239344036657e-5,
+        -7.945175241151274e-6,
+        1.539594715045554e-5,
     ];
     assert_qfrc_fluid(&data, &expected, FORCE_TOL);
 }
@@ -1166,8 +1273,8 @@ fn t42_default_class_fluidcoef() {
     assert_eq!(fluid[1], 1.0, "C_blunt from custom fluidcoef");
     assert_eq!(fluid[2], 0.5, "C_slender from custom fluidcoef");
     assert_eq!(fluid[3], 2.0, "C_ang from custom fluidcoef");
-    assert_eq!(fluid[4], 0.5, "C_M (Magnus) from custom fluidcoef");
-    assert_eq!(fluid[5], 0.5, "C_K (Kutta) from custom fluidcoef");
+    assert_eq!(fluid[4], 0.5, "C_K (Kutta) from custom fluidcoef");
+    assert_eq!(fluid[5], 0.5, "C_M (Magnus) from custom fluidcoef");
 
     let expected = [
         0.0,

@@ -9299,13 +9299,20 @@ fn mj_fwd_velocity(model: &Model, data: &mut Data) {
                     vel[2] += world_omega.z;
                 }
                 MjJointType::Free => {
-                    // 6-DOF: linear + angular velocity
+                    // 6-DOF: linear (world frame) + angular (body-local → world)
                     vel[3] += data.qvel[dof_adr];
                     vel[4] += data.qvel[dof_adr + 1];
                     vel[5] += data.qvel[dof_adr + 2];
-                    vel[0] += data.qvel[dof_adr + 3];
-                    vel[1] += data.qvel[dof_adr + 4];
-                    vel[2] += data.qvel[dof_adr + 5];
+                    // Angular velocity: rotate from body-local to world frame
+                    let omega_local = Vector3::new(
+                        data.qvel[dof_adr + 3],
+                        data.qvel[dof_adr + 4],
+                        data.qvel[dof_adr + 5],
+                    );
+                    let omega_world = data.xquat[body_id] * omega_local;
+                    vel[0] += omega_world.x;
+                    vel[1] += omega_world.y;
+                    vel[2] += omega_world.z;
                 }
             }
         }
@@ -11839,7 +11846,7 @@ fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
 /// Equivalent to MuJoCo's `mj_objectVelocity(m, d, objtype, id, res, flg_local=1)`.
 /// Returns `[ω_local; v_local]`.
 fn object_velocity_local(
-    model: &Model,
+    _model: &Model,
     data: &Data,
     body_id: usize,
     point: &Vector3<f64>,
@@ -11851,14 +11858,15 @@ fn object_velocity_local(
         return [0.0; 6];
     }
 
-    let root_id = model.body_rootid[body_id];
     let cvel = &data.cvel[body_id];
     let omega = Vector3::new(cvel[0], cvel[1], cvel[2]);
-    let v_subtree = Vector3::new(cvel[3], cvel[4], cvel[5]);
+    let v_origin = Vector3::new(cvel[3], cvel[4], cvel[5]);
 
-    // Shift linear velocity from subtree CoM to requested point
-    let dif = point - data.subtree_com[root_id];
-    let v_point = v_subtree + omega.cross(&dif);
+    // Shift linear velocity from body origin to requested point.
+    // Our cvel stores velocity at xpos[body_id] (body origin), so the lever
+    // arm is from body origin to the query point.
+    let dif = point - data.xpos[body_id];
+    let v_point = v_origin + omega.cross(&dif);
 
     // Rotate to local frame
     let omega_local = rot.transpose() * omega;

@@ -2927,7 +2927,7 @@ Reference values above were extracted using this script on MuJoCo 3.5.0.
 ---
 
 ### 40. Fluid / Aerodynamic Forces (Two-Model System)
-**Status:** Not started | **Effort:** L | **Prerequisites:** None
+**Status:** ✅ Complete | **Effort:** L | **Prerequisites:** None
 
 #### Current State
 
@@ -4323,7 +4323,7 @@ I = m.body_inertia[1]
 mass = m.body_mass[1]
 for i, (j, k) in enumerate([(1,2),(0,2),(0,1)]):
     box_i = np.sqrt(max(1e-15, (I[j]+I[k]-I[i]) / mass * 6))
-    print(f"  box[{i}] = {box_i:.15f}  (expect 0.2 for sphere r=0.1)")
+    print(f"  box[{i}] = {box_i:.15f}  (expect sqrt(0.024) ≈ 0.1549 for sphere r=0.1)")
 
 print("\n=== T15: Body mass guard — inertia-box (near-zero mass) ===")
 m = mujoco.MjModel.from_xml_string(MODELS["Z"])
@@ -4500,6 +4500,35 @@ and hardcoded into the integration tests.
 | `sim/L0/mjcf/src/model_builder.rs` | modify | Precompute `geom_fluid[12]` per geom (semi-axes → kappa → virtual mass/inertia), pack into Model |
 | `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `Model::geom_fluid`, `Data::qfrc_fluid`. Add `mj_fluid()`, `mj_inertia_box_fluid()`, `mj_ellipsoid_fluid()`, `geom_semi_axes()`, `get_added_mass_kappa()`, `ellipsoid_moment()`, `rotate_spatial_to_world()`, `object_velocity_local()`. Call from `mj_fwd_passive()`. Reuse existing `mj_apply_ft()`. |
 | `sim/L0/tests/integration/fluid_forces.rs` | create | Tests T1–T42 (36 integration/unit + 2 parse error + 4 new coverage), MJCF model constants, MuJoCo 3.5.0 reference values |
+
+#### Deferred Items
+
+- **Sleep filtering + disable-flag interaction**: Moved to §41. When §41 wires
+  `mj_fwd_passive()`, it should (a) replace `0..nbody` with sleep-filtered iteration
+  in `mj_fluid()`, and (b) gate `mj_fluid()` on `!(DISABLE_SPRING && DISABLE_DAMPER)`.
+  See §41 acceptance criteria #10 and #13.
+- **Implicit derivatives (S9)**: `qfrc_fluid` separation enables future
+  `∂qfrc_fluid/∂qvel` computation for implicit integration stability. Not urgent —
+  add when fluid-heavy models (swimming, flying) need implicit stability.
+- **MuJoCo 3.5.0 reference verification** (40d): **Complete** (2026-02-20).
+  Verified against MuJoCo 3.5.0 (Python 3.12.12, `uv` venv).
+
+  **Results:**
+  - 38/42 tests: exact match (tolerance 1e-10)
+  - T13: 0.3% deviation — eigendecomposition ordering in composite body inertia
+    (model_builder.rs). Tracked as future fix in capsule inertia eigenvalue ordering.
+  - T15, T26: MuJoCo rejects `mass < mjMINVAL` at XML load time; these test our
+    internal mass guard only — cannot verify against MuJoCo.
+  - T20: 50-step trajectory match within 1e-6 accumulated tolerance.
+
+  **Bugs found and fixed:**
+  1. `mj_fwd_velocity`: free joint angular velocity was not rotated from body-local
+     to world frame (Ball joint already did this correctly). Fixed by applying
+     `xquat * omega_local` for free joints.
+  2. `object_velocity_local`: reference point was `subtree_com[root_id]` but our
+     `cvel` stores velocity at `xpos[body_id]`. Fixed by using `xpos[body_id]`.
+  - T11 (mixed geoms with offset) and T41 (rotated body) values updated to match
+    MuJoCo 3.5.0 after bug fixes. T20 upgraded from `is_finite()` to exact values.
 
 ---
 
@@ -4760,14 +4789,26 @@ vertex damping.
    solver. No equality, limit, contact, or friction loss constraints are
    applied. Only passive and actuator forces affect the dynamics.
 
-10. **Default values**: An unmodified `<option/>` with no `<flag>` produces
+10. **Fluid force disable interaction** (from §40): When both `DISABLE_SPRING`
+    and `DISABLE_DAMPER` are set, `mj_fluid()` is skipped — fluid forces
+    require at least one of spring/damper to be enabled (MuJoCo semantics).
+    Gate location: `mujoco_pipeline.rs` around `mj_fluid()` call in
+    `mj_fwd_passive()`.
+
+11. **Default values**: An unmodified `<option/>` with no `<flag>` produces
     `disableflags == 0` (all enable) and `enableflags == 0` (all optional
     features off). Matches MuJoCo defaults.
 
-11. **Backward compat**: `<flag passive="disable"/>` sets both `DISABLE_SPRING`
+12. **Backward compat**: `<flag passive="disable"/>` sets both `DISABLE_SPRING`
     and `DISABLE_DAMPER` (legacy behavior).
 
-12. **MuJoCo conformance**: For each of the 19 disable flags, compare 10-step
+13. **Fluid sleep filtering** (from §40): Replace `for body_id in 0..model.nbody`
+    in `mj_fluid()` with sleep-filtered body iteration. MuJoCo gates the body
+    loop on sleep state. No correctness impact (sleeping bodies have zero
+    velocity), but skipping them is a performance win and matches MuJoCo
+    semantics. Location: `mujoco_pipeline.rs` `mj_fluid()`.
+
+14. **MuJoCo conformance**: For each of the 19 disable flags, compare 10-step
     trajectory against MuJoCo 3.4.0 with only that flag disabled. Tolerance:
     `1e-10` per `qacc` component (flags should produce bit-exact gating).
 
