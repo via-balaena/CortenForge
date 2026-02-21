@@ -5500,6 +5500,24 @@ wrap_obj:      [-1,     -1,     -1]
 ten_wrapnum:   3
 ```
 
+*Model L (Site–Site–Geom–Site, mixed straight + wrapping, wrapping occurs):*
+```
+Path elements: [Site(s1), Site(s2), Geom(sphere), Site(s3)]
+Data points:   [s1_pos, s2_pos, tangent₁, tangent₂, s3_pos]
+wrap_obj:      [-1,     -1,     geom_id,  geom_id,  -1]
+ten_wrapnum:   5
+Note: s2 is shared — endpoint of straight segment, leading site of wrapped segment.
+      Each segment stores only its leading site; the final site (s3) closes the path.
+```
+
+*Model L (no wrapping at configured qpos):*
+```
+Path elements: [Site(s1), Site(s2), Geom(sphere), Site(s3)]
+Data points:   [s1_pos, s2_pos, s3_pos]   (geom skipped — no wrap)
+wrap_obj:      [-1,     -1,     -1]
+ten_wrapnum:   3
+```
+
 *Model B at qpos where no wrapping occurs:*
 ```
 Path elements: [Site(s0), Geom(sphere), Site(s1)]
@@ -5538,6 +5556,13 @@ pub ten_wrapnum: Vec<usize>,
 Using `Vec<Vector3<f64>>` for `wrap_xpos` is consistent and type-safe. MuJoCo
 uses flat `mjtNum*` with `*3` indexing — the semantic mapping is direct.
 
+**Design choice — `Vec<i32>` for `wrap_obj`:** All other IDs in the codebase
+are `usize`, but `wrap_obj` uses negative sentinel values (`-2` = pulley,
+`-1` = site) alongside non-negative geom IDs. `i32` is required to represent
+this mixed domain. The cast `geom_id as i32` is safe for any practical model
+size (geom counts are bounded well below `i32::MAX`). This matches MuJoCo's
+`int*` type for `wrap_obj`.
+
 **Clone impl:** `Data` has a manual `Clone` impl (line ~2691). All four new
 fields must be added there (after `ten_J`, line ~2756). This is a `.clone()`
 call for each `Vec` field — follows the existing pattern.
@@ -5545,6 +5570,13 @@ call for each `Vec` field — follows the existing pattern.
 **`reset()` not affected:** `wrap_xpos`/`wrap_obj` are computed state
 recomputed on every `forward()` call (like `xpos`, `geom_xpos`). `reset()`
 (line ~4369) does not need modification.
+
+**Stale data beyond `wrapcount`:** After `forward()`, elements
+`wrap_xpos[wrapcount..nwrap*2]` and `wrap_obj[wrapcount..nwrap*2]` retain
+stale values (zeros from initialization or leftovers from a previous
+`forward()` with a longer path). Only
+`wrap_xpos[ten_wrapadr[t]..ten_wrapadr[t]+ten_wrapnum[t]]` is valid per
+tendon. Consumers must always index through `ten_wrapadr`/`ten_wrapnum`.
 
 ##### S2. Allocation in `make_data()`
 
@@ -5638,25 +5670,38 @@ data.ten_wrapnum[t] += 1;
 if the current segment terminates the path or precedes a pulley:
 ```rust
 // After j += 1 (Site-Site) or j += 2 (Site-Geom-Site):
+// j now points at the endpoint site of the segment just processed.
+// Re-derive the endpoint site ID from the wrap array (id1 is out of scope
+// at this point — it was declared inside the type1 branch blocks).
 let at_end = j == num - 1;
 let before_pulley = j < num - 1 && model.wrap_type[adr + j + 1] == WrapType::Pulley;
 if at_end || before_pulley {
-    // id1 is the endpoint site from the segment just processed
-    data.wrap_xpos[*wrapcount] = data.site_xpos[id1];
+    let endpoint_id = model.wrap_objid[adr + j];
+    data.wrap_xpos[*wrapcount] = data.site_xpos[endpoint_id];
     data.wrap_obj[*wrapcount] = -1;
     data.ten_wrapnum[t] += 1;
     *wrapcount += 1;
 }
 ```
 
-**Note on `id1` scope:** The variable `id1` must be accessible at the final-site
-check point. In the current code, `id1` is scoped inside the `if type1 == Site`
-and `if type1 == Geom` branches. Two options:
-1. Lift `id1` to the loop scope (set in both branches).
-2. Re-derive: `id1 = model.wrap_objid[adr + j]` (since `j` was just advanced
-   past the segment's endpoint site).
+**Why re-derive instead of lifting `id1`:** In the current code, `id1` is
+scoped inside the `if type1 == Site` (line 9436) and `if type1 == Geom`
+(line 9478) branches. Re-derivation via `model.wrap_objid[adr + j]` is
+correct because after `j += 1` (Site-Site) or `j += 2` (Site-Geom-Site),
+`j` points at the endpoint site:
+- Site-Site: endpoint was at `adr + old_j + 1`; after `j += 1`, `adr + j`
+  = `adr + old_j + 1`. ✓
+- Site-Geom-Site: endpoint was at `adr + old_j + 2`; after `j += 2`,
+  `adr + j` = `adr + old_j + 2`. ✓
 
-Option 1 is cleaner and matches MuJoCo's approach.
+This approach requires zero refactoring of existing variable scopes and is
+self-documenting at the usage site.
+
+**Note on pulley `continue`:** The `continue` at line 9422 (pulley handler)
+bypasses the final-site check. This is correct — when the preceding
+iteration's `before_pulley` guard fires, it stores the branch-ending site
+*before* the pulley is encountered on the next iteration. The pulley
+iteration itself only stores the `[0,0,0]` marker and advances `j`.
 
 ##### S5. Caller-side wiring
 
@@ -5752,9 +5797,40 @@ After forward(): ten_wrapnum[0] == 5
 ```
 
 ##### T7. No-wrap fallback (Site–Geom–Site where straight path clears geom)
-Construct or configure Model B so wrapping does not occur (e.g., sites far
-from sphere). Verify `ten_wrapnum[0] == 2` (site0 + final site1, no tangent
-points stored).
+Use a dedicated `MODEL_B_NOWRAP` where the sites are far enough from the
+sphere that `sphere_wrap` returns `WrapResult::NoWrap`:
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b1" pos="-0.5 0.5 0">
+      <joint name="j1" type="hinge" axis="0 0 1"/>
+      <site name="origin" pos="0 0 0"/>
+    </body>
+    <body name="wrap_body" pos="0 0 0">
+      <geom name="wrap_sphere" type="sphere" size="0.05"/>
+    </body>
+    <body name="b2" pos="0.5 0.5 0">
+      <joint name="j2" type="hinge" axis="0 0 1"/>
+      <site name="insertion" pos="0 0 0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_nowrap">
+      <site site="origin"/>
+      <geom geom="wrap_sphere"/>
+      <site site="insertion"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+Both sites are at y=0.5, sphere radius=0.05 at origin — straight path
+clears the sphere by a wide margin. Verify:
+```
+ten_wrapnum[0] == 2
+wrap_xpos[0] == site_xpos[origin_id]  (leading site)
+wrap_xpos[1] == site_xpos[insertion_id]  (final site)
+wrap_obj == [-1, -1]  (no geom entries)
+```
 
 ##### T8. Inside-wrap (§39 sidesite-inside models)
 For the existing inside-wrap test models (sphere inside, cylinder inside):
@@ -5770,32 +5846,135 @@ For all test models: verify `ten_wrapadr[t] + ten_wrapnum[t] == ten_wrapadr[t+1]
 non-overlapping storage.
 
 ##### T10. MuJoCo conformance — wrap_xpos positions
-For Models B, C, E, H, I, J (sphere/cylinder/sidesite/collinear wrapping at
-default qpos): compare `wrap_xpos` tangent point positions against MuJoCo 3.x
-reference values with tolerance `1e-6` (positions, not lengths — tangent
-computation involves transcendental functions so exact match is not expected).
+For Models B, C, E, H, I, J, K, L (sphere/cylinder/sidesite/collinear/free-joint/
+mixed wrapping at default qpos): compare `wrap_xpos` tangent point positions
+against **MuJoCo 3.4.0** reference values with tolerance `1e-6` (positions, not
+lengths — tangent computation involves transcendental functions so exact match
+is not expected).
 
-Reference values must be extracted from MuJoCo and embedded as test constants,
-following the same pattern as the existing `ten_length` conformance values.
+Additionally verify `wrap_obj` markers: for each wrapping model, confirm that
+tangent point entries carry the correct geom ID (not a sentinel or wrong geom).
+
+Reference values must be extracted from MuJoCo 3.4.0 and embedded as test
+constants, following the same pattern as the existing `ten_length` conformance
+values (inline comments with full precision, `assert_relative_eq!` with
+`epsilon = 1e-6`).
 
 ##### T11. Stepped conformance
 For Model B: step the simulation 5 times, verify `wrap_xpos` updates each step
-(tangent points move as the tendon path changes). Compare against MuJoCo
+(tangent points move as the tendon path changes). Compare against MuJoCo 3.4.0
 reference trajectory positions.
 
-##### T12. Fixed tendon passthrough
-Fixed tendons produce `ten_wrapnum[t] == 0` and `ten_wrapadr[t]` is set
-correctly (no gap in the address sequence).
+Extract from MuJoCo: for each of the 5 steps, record `d->wrap_xpos` tangent
+point positions (indices 1 and 2 in the tendon's path). Embed as a `const`
+array of 5 × 2 `Vector3<f64>` values. Verify with `epsilon = 1e-6`.
 
-##### T13. Multiple tendons
-Construct a test model with 2 spatial tendons (e.g., one straight Site–Site
-and one wrapped Site–Geom–Site). Verify `ten_wrapadr` and `ten_wrapnum`
-correctly partition the `wrap_xpos`/`wrap_obj` arrays:
+Pattern (following `MODEL_WRAP_INSIDE_SWEEP` from §39):
+```rust
+const MODEL_B_STEPPED_TANGENTS: [[f64; 3]; 10] = [
+    // step 0: tangent₁, tangent₂
+    [/* extract from MuJoCo */], [/* ... */],
+    // step 1: tangent₁, tangent₂
+    [/* ... */], [/* ... */],
+    // ... steps 2–4
+];
 ```
-ten_wrapadr[0] == 0, ten_wrapnum[0] == 2  (straight: 2 points)
-ten_wrapadr[1] == 2, ten_wrapnum[1] == 4  (wrapped: 4 points)
+Also verify `ten_wrapnum[0] == 4` persists across all 5 steps (wrapping
+remains active throughout the trajectory).
+
+##### T12. Fixed tendon passthrough (mixed fixed + spatial)
+Use a model with interleaved tendon types — a spatial tendon followed by a
+fixed tendon followed by a spatial tendon — to verify `wrapcount` cursor
+continuity across fixed tendons:
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b1" pos="0 0 0.5">
+      <joint name="j1" type="hinge" axis="0 1 0"/>
+      <site name="s1" pos="0 0 0"/>
+      <body name="b2" pos="0 0 -0.5">
+        <joint name="j2" type="hinge" axis="0 1 0"/>
+        <site name="s2" pos="0 0 0"/>
+        <site name="s3" pos="0 0.2 0"/>
+        <body name="b3" pos="0 0 -0.5">
+          <joint name="j3" type="hinge" axis="0 1 0"/>
+          <site name="s4" pos="0 0 0"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_spatial1">
+      <site site="s1"/>
+      <site site="s2"/>
+    </spatial>
+    <fixed name="t_fixed">
+      <joint joint="j1" coef="0.1"/>
+    </fixed>
+    <spatial name="t_spatial2">
+      <site site="s3"/>
+      <site site="s4"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+Verify:
+```
+ten_wrapadr[0] == 0, ten_wrapnum[0] == 2  (spatial: s1, s2)
+ten_wrapadr[1] == 2, ten_wrapnum[1] == 0  (fixed: no wrap points)
+ten_wrapadr[2] == 2, ten_wrapnum[2] == 2  (spatial: s3, s4)
+```
+The fixed tendon produces no gap — `ten_wrapadr[2]` picks up from where
+tendon 0 left off, with no unused slots from tendon 1.
+
+##### T13. Multiple spatial tendons
+Use a model with 2 spatial tendons — one straight (Site–Site) and one wrapped
+(Site–Geom–Site) — to verify `ten_wrapadr`/`ten_wrapnum` partitioning:
+```xml
+<mujoco>
+  <worldbody>
+    <body name="b1" pos="-0.3 0.3 0">
+      <joint name="j1" type="hinge" axis="0 0 1"/>
+      <site name="s1" pos="0 0 0"/>
+    </body>
+    <body name="b2" pos="0.3 0.3 0">
+      <joint name="j2" type="hinge" axis="0 0 1"/>
+      <site name="s2" pos="0 0 0"/>
+    </body>
+    <body name="b3" pos="-0.3 0.05 0">
+      <joint name="j3" type="hinge" axis="0 0 1"/>
+      <site name="s3" pos="0 0 0"/>
+    </body>
+    <body name="wrap_body" pos="0 0 0">
+      <geom name="wrap_sphere" type="sphere" size="0.1"/>
+    </body>
+    <body name="b4" pos="0.3 0.05 0">
+      <joint name="j4" type="hinge" axis="0 0 1"/>
+      <site name="s4" pos="0 0 0"/>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="t_straight">
+      <site site="s1"/>
+      <site site="s2"/>
+    </spatial>
+    <spatial name="t_wrapped">
+      <site site="s3"/>
+      <geom geom="wrap_sphere"/>
+      <site site="s4"/>
+    </spatial>
+  </tendon>
+</mujoco>
+```
+Verify (at default qpos, assuming wrapping occurs for tendon 1):
+```
+ten_wrapadr[0] == 0, ten_wrapnum[0] == 2  (straight: s1, s2)
+ten_wrapadr[1] == 2, ten_wrapnum[1] == 4  (wrapped: s3, t1, t2, s4)
+wrap_obj[0..2] == [-1, -1]                (tendon 0: both sites)
+wrap_obj[2..6] == [-1, geom_id, geom_id, -1]  (tendon 1: site, tangents, site)
 ```
 Each tendon's segment is independently correct and non-overlapping.
+Verify T9 (indexing consistency) holds: `ten_wrapadr[0] + ten_wrapnum[0] == ten_wrapadr[1]`.
 
 ##### T14. Path reconstruction — straight segments
 For Model A (straight): reconstruct the tendon path from `wrap_xpos` by
@@ -5804,20 +5983,45 @@ equals `ten_length[0]` within `1e-10`. (For straight-only tendons, the
 wrap_xpos points fully determine the path length.)
 
 ##### T15. Mixed segment model (Model L)
-For Model L (mixed straight + wrapping segments): verify `ten_wrapnum`
-reflects both the straight and wrapped sub-paths. The straight segment
-stores 2 points; the wrapped segment stores 4 points (if wrapping occurs).
-Verify `wrap_obj` markers correctly distinguish site points from tangent
-points across the mixed path.
+Model L has wrap array `[Site(s1), Site(s2), Geom(wrap_sphere), Site(s3)]`.
+Trace through the algorithm:
+- **j=0:** type0=Site(s1), type1=Site(s2) → Site-Site. Store leading s1.
+  j→1. Final check: `wrap_type[adr+2]` = Geom ≠ Pulley → no final site.
+- **j=1:** type0=Site(s2), type1=Geom → Site-Geom-Site. j→3. Final check:
+  j=3 = num-1 → at_end → store s3.
+
+The intermediate site s2 is *shared* — it is the endpoint of the straight
+segment AND the leading site of the wrapped segment. Each segment stores
+only its leading site; the final site is stored once at the path end.
+
+**If wrapping occurs** (default qpos):
+```
+ten_wrapnum[0] == 5
+wrap_xpos == [s1_pos, s2_pos, tangent₁, tangent₂, s3_pos]
+wrap_obj  == [-1, -1, geom_id, geom_id, -1]
+```
+- 1 point from straight segment (leading s1)
+- 3 points from wrapped segment (leading s2 + tangent₁ + tangent₂)
+- 1 final site (s3)
+
+**If no wrapping occurs** (sites positioned so `sphere_wrap` returns NoWrap):
+```
+ten_wrapnum[0] == 3
+wrap_xpos == [s1_pos, s2_pos, s3_pos]
+wrap_obj  == [-1, -1, -1]
+```
+
+Verify `wrap_obj` markers correctly distinguish site points (`-1`) from
+tangent points (`geom_id`) across the mixed path.
 
 #### Implementation Phases
 
 | Phase | Scope | Deliverable |
 |-------|-------|-------------|
 | P1 | Data fields + allocation | S1, S2 fields in `Data` + Clone impl, allocation in `make_data()`. T1. |
-| P2 | Population logic | S3–S6 changes to `mj_fwd_tendon_spatial()` + caller. T2–T9, T12–T13, T15. |
+| P2 | Population logic | S3–S6 changes to `mj_fwd_tendon_spatial()` + caller. T2–T7, T9, T12–T13, T15. |
 | P3 | Inside-wrap integration | S7 verification. T8. |
-| P4 | MuJoCo conformance | Extract reference values, T10–T11, T14. |
+| P4 | MuJoCo conformance | Extract MuJoCo 3.4.0 reference values, T10–T11, T14. |
 
 #### Files to Modify
 
