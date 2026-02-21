@@ -4531,7 +4531,7 @@ and hardcoded into the integration tests.
 ---
 
 ### 40a. Fluid Force Velocity Derivatives (Implicit Integration)
-**Status:** Not started | **Effort:** M | **Prerequisites:** §40
+**Status:** Not started | **Effort:** L | **Prerequisites:** §40
 
 #### Current State
 
@@ -4549,18 +4549,37 @@ underwater manipulation).
 
 MuJoCo computes `∂qfrc_fluid/∂qvel` in `mjd_passive_vel()` (`engine_derivative.c`).
 For each body, it constructs a 6×6 body-level drag-velocity Jacobian (B matrix)
-and accumulates it into the D matrix via `addJTBJSparse(J^T · B · J)`:
+and accumulates it into the D matrix via `addJTBJ(J^T · B · J)`:
 
-- **Inertia-box model:** Jacobian is diagonal — viscous terms are constant
-  (`-3πβ·diam`, `-πβ·diam³`) and quadratic terms have `|v|`-dependent
-  derivatives (`-ρ·A·2|v|` for linear, `-ρ·I·2|ω|` for angular).
-- **Ellipsoid model:** Full 6×6 coupling — added mass cross-products, Magnus,
-  Kutta, and drag all contribute off-diagonal terms. MuJoCo uses finite
-  differences (column-by-column perturbation of the 6D velocity) to avoid
-  analytically differentiating the 5-component force formula.
+- **Inertia-box model:** B is **diagonal** — 6 scalar entries, one per spatial
+  axis. Viscous terms are velocity-independent constants; quadratic terms have
+  `|v|`-dependent derivatives via `d(|v|·v)/dv = 2|v|`. Accumulated as 6
+  independent rank-1 updates: `D += b_k · J_k^T · J_k` for each axis k.
 
-The B matrix is assembled in the local frame, then projected to generalized
-coordinates via the body Jacobian: `D += J^T · B · J`.
+- **Ellipsoid model:** B is a **full 6×6** matrix assembled from **5 analytical
+  component derivative functions** — one per force component. MuJoCo does NOT use
+  finite differences; each component has a hand-derived analytical Jacobian:
+  - `mjd_addedMassForces()` → all four 3×3 quadrants (cross-product derivatives)
+  - `mjd_magnus_force()` → quadrants (1,0) and (1,1)
+  - `mjd_kutta_lift()` → quadrant (1,1)
+  - `mjd_viscous_drag()` → quadrant (1,1)
+  - `mjd_viscous_torque()` → quadrant (0,0)
+  Accumulated as a single `D += J^T · B · J` with full 6×6 B.
+
+The B matrix is assembled in the **local frame** (inertia frame for inertia-box,
+geom frame for ellipsoid), then projected to generalized coordinates via the body
+Jacobian rotated into that same local frame: `J_local = R^T · J_world`.
+
+**Symmetrization:** For `ImplicitFast` only, the ellipsoid B matrix is
+symmetrized: `B ← (B + B^T)/2` before projection. This is required because
+`ImplicitFast` uses Cholesky factorization of `M − h·D` (Cholesky requires SPD).
+The full `Implicit` integrator uses LU and can handle asymmetric D.
+The inertia-box B is inherently diagonal (symmetric), so no symmetrization needed.
+
+**Per-body vs per-geom:** Inertia-box derivatives use the body CoM Jacobian
+(`mj_jacBodyCom`). Ellipsoid derivatives are **per-geom** — each geom gets its
+own Jacobian (`mj_jacGeom` at `geom_xpos`), B matrix, and `J^T·B·J`
+accumulation. Multiple geoms on the same body contribute additively.
 
 #### Objective
 
@@ -4569,58 +4588,344 @@ correctly accounts for fluid damping in the D matrix.
 
 #### Specification
 
-##### S1. Approach selection
+##### S1. Approach — Fully Analytical Derivatives for Both Models
 
-MuJoCo uses finite-difference perturbation (6 columns × 2 evaluations = 12
-force evaluations per body) for the ellipsoid model. This is simpler and less
-error-prone than analytical derivatives of the 5-component force formula.
+Both models use analytical derivatives, matching MuJoCo exactly:
 
-For the inertia-box model, analytical derivatives are straightforward (diagonal
-B matrix).
+- **Inertia-box:** Closed-form diagonal B (6 scalars). Straightforward.
+- **Ellipsoid:** 5 analytical component Jacobian functions, each filling specific
+  3×3 quadrants of the 6×6 B matrix. More involved but well-defined — each
+  component's derivative is a direct application of vector calculus identities
+  (cross-product derivatives, `d(|v|·v)/dv`, projected-area derivatives).
 
-**Recommended approach:**
-- Inertia-box: analytical derivatives (diagonal B, simple closed-form)
-- Ellipsoid: finite-difference perturbation (matching MuJoCo's approach)
+No finite differences anywhere.
 
-##### S2. Integration point
+##### S2. Integration Point
 
-Add to `mjd_passive_vel()` (or equivalent), called from
-`mj_fwd_acceleration_implicit()`. The fluid derivative computation should be
-gated on `model.density > 0.0 || model.viscosity > 0.0` (same gate as
+Add a new function `mjd_fluid_vel(model, data)` in `derivatives.rs`, called from
+`mjd_passive_vel()`. This follows the existing pattern where `mjd_passive_vel`
+dispatches to per-DOF damping + tendon damping, and now also fluid derivatives.
+
+**Gate condition:** `model.density > 0.0 || model.viscosity > 0.0` (same as
 `mj_fluid()`).
 
-##### S3. D matrix accumulation
+**Call chain:**
+```
+mj_fwd_acceleration_implicitfast() / mj_fwd_acceleration_implicit_full()
+  → mjd_passive_vel()
+    → mjd_fluid_vel()     ← NEW
+  → mjd_actuator_vel()
+  → mjd_rne_vel()         (implicit_full only)
+```
 
-For each body with fluid forces:
-1. Compute 6×6 B matrix (drag-velocity Jacobian in local frame)
-2. Get body Jacobian J (nv × 6)
-3. Accumulate `D += J^T · B · J`
+##### S3. Body Jacobian Construction (6×nv)
 
-Use existing `addJTBJ` infrastructure if available, or add a dense equivalent
-for the initial implementation (nv < 100 target makes dense acceptable).
+Add a helper `mj_jac_body_com(model, data, body_id) -> DMatrix<f64>` that returns
+a 6×nv Jacobian mapping `qvel → [ω; v]` at the body CoM (`xipos[body_id]`),
+following the layout convention `[angular(3); linear(3)]`.
+
+Similarly, for the ellipsoid model, we need `mj_jac_geom(model, data, geom_id)`
+at `geom_xpos[geom_id]`.
+
+Both reuse the existing chain-walk pattern from `mj_jac_site` but at different
+reference points. The implementation is:
+
+```rust
+fn mj_jac_body_com(model: &Model, data: &Data, body_id: usize) -> DMatrix<f64> {
+    // Returns 6×nv: rows 0-2 = angular, rows 3-5 = linear
+    // Chain-walk from body_id to root, same pattern as mj_jac_site
+    // Reference point = data.xipos[body_id]
+}
+```
+
+After computing the world-frame Jacobian, rotate into the local frame:
+```rust
+// J_local[0:3, :] = R^T · J_world[0:3, :]   (angular)
+// J_local[3:6, :] = R^T · J_world[3:6, :]   (linear)
+```
+where R = `ximat[body_id]` for inertia-box, `geom_xmat[gid]` for ellipsoid.
+
+##### S4. Inertia-Box B Matrix (Diagonal, Per-Body)
+
+The inertia-box forward force per axis `k` has the form `f_k = c_k · v_k` (viscous)
+plus `f_k = -q_k · |v_k| · v_k` (quadratic). The derivative is:
+
+```
+∂f_k/∂v_k = c_k + q_k · d(|v|·v)/dv = c_k − 2·q_k·|v_k|
+```
+
+where `d(|v|·v)/dv = 2|v|` for scalar v (valid even at v=0 since 2·|0|=0).
+
+**Angular axes (k = 0,1,2):**
+```
+b_k = −π·diam³·β − 2·ρ·box[k]·(box[j]⁴+box[l]⁴)/64 · |ω_k|
+```
+where `(j,l)` are the other two axes, diam = (box[0]+box[1]+box[2])/3.
+
+**Linear axes (k = 3,4,5), mapping to box axes (0,1,2):**
+```
+b₃ = −3π·diam·β − 2·0.5·ρ·box[1]·box[2] · |v₀|
+b₄ = −3π·diam·β − 2·0.5·ρ·box[0]·box[2] · |v₁|
+b₅ = −3π·diam·β − 2·0.5·ρ·box[0]·box[1] · |v₂|
+```
+
+**Accumulation:** Per-axis rank-1 update. For each axis k:
+```
+qDeriv += b_k · J_local[k,:]^T · J_local[k,:]
+```
+This is 6 rank-1 outer products per body. More efficient than a single 6×6 `J^T·B·J`
+because B is diagonal.
+
+##### S5. Ellipsoid B Matrix (Full 6×6, Per-Geom, Analytical Components)
+
+The 6×6 B matrix uses spatial vector ordering `[angular(3), linear(3)]`, organized
+in four 3×3 quadrants:
+
+```
+B = [ Q(0,0): ∂torque/∂ω    Q(0,1): ∂torque/∂v  ]
+    [ Q(1,0): ∂force/∂ω     Q(1,1): ∂force/∂v   ]
+```
+
+Initialize `B = zeros(6,6)`, then accumulate 5 component derivatives:
+
+**Component 1 — Added mass (gyroscopic) derivatives: `mjd_addedMassForces`**
+
+Forward forces:
+```
+force  = (ρ·vm·v) × ω       → ∂/∂ω fills Q(1,0), ∂/∂v fills Q(1,1)
+torque = (ρ·vm·v) × v       → ∂/∂v fills Q(0,1)
+torque += (ρ·vi·ω) × ω      → ∂/∂ω fills Q(0,0)
+```
+
+Uses `∂(a×b)/∂a = [b]×^T` (skew-symmetric transpose of b) and
+`∂(a×b)/∂b = −[a]×^T`. After forming the cross-product Jacobian, scale columns
+by `ρ·vm[i]` or `ρ·vi[i]` (the virtual mass/inertia coefficients are per-axis
+scalars, not isotropic).
+
+Helper needed — `mjd_cross(a, b) -> (Da, Db)`:
+```rust
+fn mjd_cross(a: &[f64; 3], b: &[f64; 3]) -> ([f64; 9], [f64; 9]) {
+    // Da = ∂(a×b)/∂a = [b]×^T (3×3 column-major)
+    // Da[col i, row j] = ε_{jik} · b[k]
+    let Da = [
+         0.0,    b[2],  -b[1],   // col 0
+        -b[2],   0.0,    b[0],   // col 1
+         b[1],  -b[0],   0.0,    // col 2
+    ];
+    // Db = ∂(a×b)/∂b = −[a]×^T
+    let Db = [
+         0.0,   -a[2],   a[1],
+         a[2],   0.0,   -a[0],
+        -a[1],   a[0],   0.0,
+    ];
+    (Da, Db)
+}
+```
+
+For `force = p × ω` where `p = ρ·[vm₀·v₀, vm₁·v₁, vm₂·v₂]`:
+- `∂force/∂ω = Da` from `mjd_cross(p, ω)` → add to Q(1,0)
+- `∂force/∂v`: need `∂p/∂v = diag(ρ·vm)`, then `∂force/∂v_i = ∂(p×ω)/∂p · ∂p/∂v_i`
+  = `Dp` from `mjd_cross(p, ω)` with columns scaled by `ρ·vm[i]` → add to Q(1,1)
+
+Same pattern for the torque terms.
+
+**Component 2 — Magnus lift: `mjd_magnus_force`**
+
+Forward: `F = c_mag · ρ · V · (ω × v)` where V = ellipsoid volume.
+
+```
+∂F/∂ω = c_mag·ρ·V · ∂(ω×v)/∂ω = c_mag·ρ·V · [v]×^T  → Q(1,0)
+∂F/∂v = c_mag·ρ·V · ∂(ω×v)/∂v = c_mag·ρ·V · (−[ω]×^T) → Q(1,1)
+```
+
+**Component 3 — Kutta lift: `mjd_kutta_lift`**
+
+Forward: `F = kutta_scale · (n×v) × v` where `n = [(s₁s₂)²v₀, (s₂s₀)²v₁, (s₀s₁)²v₂]`,
+`kutta_scale = c_kutta·ρ·cos_α·A_proj`.
+
+This is the most complex component. The derivative `∂F/∂v` (3×3, fills Q(1,1))
+requires differentiating:
+1. The circulation vector `circ = kutta_scale · (n × v)`
+2. The projected area `A_proj(v)` which depends on velocity direction
+3. The angle factor `cos_α(v)` which depends on velocity direction
+4. The final cross product `circ × v`
+
+The full expression involves `d(|v|)/dv = v/|v|`, the projected-area gradient
+`∂A_proj/∂v`, and the chain-rule through the two nested cross products. MuJoCo
+implements this as a single function with all partial derivatives expanded inline.
+
+**Component 4 — Combined linear drag: `mjd_viscous_drag`**
+
+Forward: `F_i = −drag_lin · v_i` where `drag_lin = β·3π·d_eq + ρ·|v|·(A_proj·c_b + c_s·(A_max−A_proj))`.
+
+Derivative (3×3, fills Q(1,1)):
+```
+∂F_i/∂v_j = −drag_lin · δ_{ij}
+           − v_i · ∂drag_lin/∂v_j
+```
+where `∂drag_lin/∂v_j` involves `∂|v|/∂v_j = v_j/|v|` and `∂A_proj/∂v_j`.
+
+The `∂(|v|·v)/∂v` identity gives:
+```
+∂(|v|·v_i)/∂v_j = v_i·v_j/|v| + |v|·δ_{ij}
+```
+
+**Component 5 — Combined angular drag: `mjd_viscous_torque`**
+
+Forward: `τ_i = −drag_ang · ω_i` where `drag_ang = β·π·d_eq³ + ρ·|mom_visc|`.
+
+Derivative (3×3, fills Q(0,0)):
+```
+∂τ_i/∂ω_j = −drag_ang · δ_{ij}
+           − ω_i · ∂drag_ang/∂ω_j
+```
+where `∂drag_ang/∂ω_j` involves `∂|mom_visc|/∂ω_j` and the per-axis moment
+coefficients.
+
+**Accumulation:** After assembling all 5 components into B:
+1. If `integrator == ImplicitFast`: symmetrize `B ← (B + B^T) / 2`
+2. Scale by `interaction_coef`: `B *= interaction_coef`
+3. Project: `qDeriv += J_local^T · B · J_local`
+
+##### S6. Dense `J^T·B·J` Accumulation
+
+Add a helper function for the `J^T · B · J` projection:
+
+```rust
+/// Accumulate J^T · B · J into qDeriv.
+/// J is 6×nv (row-major), B is 6×6 (column-major matching MuJoCo).
+fn add_JTBJ(qDeriv: &mut DMatrix<f64>, J: &DMatrix<f64>, B: &[[f64; 6]; 6], nv: usize) {
+    // BJ = B · J  (6×nv)
+    // qDeriv += J^T · BJ  (nv×nv)
+    // Dense implementation — acceptable for nv < 200 target.
+}
+```
+
+For the inertia-box per-axis case, use a simpler rank-1 helper:
+```rust
+/// Accumulate b · row^T · row into qDeriv (rank-1 update).
+fn add_rank1(qDeriv: &mut DMatrix<f64>, b: f64, row: &[f64], nv: usize) {
+    for r in 0..nv {
+        if row[r] == 0.0 { continue; }
+        let br = b * row[r];
+        for c in 0..nv {
+            if row[c] == 0.0 { continue; }
+            qDeriv[(r, c)] += br * row[c];
+        }
+    }
+}
+```
+
+Both skip zero entries for efficiency (body Jacobians are sparse — only ancestor
+DOFs are nonzero).
+
+##### S7. Top-Level Dispatch: `mjd_fluid_vel`
+
+```rust
+pub(crate) fn mjd_fluid_vel(model: &Model, data: &mut Data) {
+    if model.density == 0.0 && model.viscosity == 0.0 {
+        return;
+    }
+
+    for body_id in 0..model.nbody {
+        if model.body_mass[body_id] < MJ_MINVAL { continue; }
+
+        let use_ellipsoid = (model.body_geom_adr[body_id]
+            ..model.body_geom_adr[body_id] + model.body_geom_num[body_id])
+            .any(|gid| model.geom_fluid[gid][0] > 0.0);
+
+        if use_ellipsoid {
+            mjd_ellipsoid_fluid(model, data, body_id);
+        } else {
+            mjd_inertia_box_fluid(model, data, body_id);
+        }
+    }
+}
+```
+
+Called from `mjd_passive_vel()` after per-DOF damping and tendon damping.
+
+##### S8. Velocity Extraction and Wind Subtraction
+
+Both derivative functions need the same local-frame velocity used by the forward
+computation. Reuse `object_velocity_local()` from `mujoco_pipeline.rs` and apply
+the same wind subtraction (translational only, rotated to local frame).
+
+Critical: the derivative functions must use **identical** velocity values as the
+forward computation. Any mismatch (e.g., different wind handling or reference
+point) would produce incorrect derivatives.
+
+##### S9. Zero-Velocity Safety
+
+When `|v| = 0`, terms involving `d(|v|·v)/dv = 2|v|` naturally evaluate to zero.
+No special guard is needed for zero velocity in the derivative formulas.
+
+For the Kutta lift and viscous drag derivatives, denominators like `|v|` appear in
+`∂A_proj/∂v`. Guard with `|v| < MJ_MINVAL → skip quadratic contribution` (matching
+the forward computation's `speed.max(MJ_MINVAL)` guard).
 
 #### Test Plan
 
-| # | Description | Verification |
-|---|-------------|--------------|
-| T1 | Inertia-box analytical B matrix for sphere | Compare diagonal entries against closed-form: linear `= -ρ·A·2|v| - 3πβ·diam`, angular `= -ρ·I·2|ω| - πβ·diam³` |
-| T2 | Ellipsoid finite-diff B matrix matches MuJoCo | Extract D matrix from MuJoCo via `mjd_passive_vel`, compare against our finite-diff result |
-| T3 | Implicit integrator stability with fluid | Step 1000 frames with `integrator="implicit"` on Model A (§40) — verify energy dissipation is monotonic (no spurious amplification) |
-| T4 | Zero fluid → no D contribution | `density=0, viscosity=0` → fluid derivative block is zero |
-| T5 | Regression: explicit integrator unchanged | §40 T1–T42 still pass (derivatives only affect implicit path) |
+| # | Category | Description | Verification |
+|---|----------|-------------|--------------|
+| **Inertia-box derivatives** ||||
+| T1 | Unit | Diagonal B entries for sphere (β>0, ρ=0) | Viscous-only: each b_k = closed-form constant. Compare 6 scalar values. |
+| T2 | Unit | Diagonal B entries for box (β=0, ρ>0) | Density-only: b_k depends on `2|v_k|`. Compare at known velocity. |
+| T3 | Unit | Diagonal B entries for box (β>0, ρ>0) | Combined: sum of viscous + quadratic terms. |
+| T4 | FD validation | Inertia-box B matches FD | Perturb each of 6 velocity components by ε=1e-6, compute `(f(v+ε)−f(v−ε))/(2ε)`, compare against analytical B diagonal. Tol: 1e-5. |
+| T5 | D matrix | Inertia-box qDeriv matches MuJoCo | Free-floating box, non-zero velocity. Extract `qDeriv` after `mjd_passive_vel`, compare against MuJoCo reference. Tol: 1e-10. |
+| **Ellipsoid derivatives** ||||
+| T6 | Unit | `mjd_cross` helper | Verify `∂(a×b)/∂a` and `∂(a×b)/∂b` against FD perturbation. |
+| T7 | Unit | Added mass derivatives | Single ellipsoid, non-zero ω and v. Compare Q(0,0), Q(0,1), Q(1,0), Q(1,1) from `mjd_addedMassForces` against FD of forward added-mass forces. |
+| T8 | Unit | Magnus derivatives | Verify `mjd_magnus_force` Q(1,0) and Q(1,1) against FD. |
+| T9 | Unit | Kutta lift derivatives | Verify `mjd_kutta_lift` Q(1,1) against FD. Use non-axis-aligned velocity. |
+| T10 | Unit | Viscous drag derivatives | Verify `mjd_viscous_drag` Q(1,1) against FD. Both viscous-only and quadratic cases. |
+| T11 | Unit | Viscous torque derivatives | Verify `mjd_viscous_torque` Q(0,0) against FD. |
+| T12 | FD validation | Full ellipsoid 6×6 B matches FD | Assemble all 5 components into B. Perturb 6D velocity, compute full 6×6 FD Jacobian. Compare entry-wise. Tol: 1e-5. |
+| T13 | D matrix | Ellipsoid qDeriv matches MuJoCo | Free-floating ellipsoid, non-zero velocity. Extract `qDeriv`, compare against MuJoCo. Tol: 1e-10. |
+| T14 | D matrix | Multi-geom body | Body with 2 ellipsoid geoms. Verify additive accumulation. |
+| **Symmetrization** ||||
+| T15 | Symmetry | ImplicitFast B is symmetric | Ellipsoid B after symmetrization: `B[i][j] == B[j][i]` for all entries. |
+| T16 | Asymmetry | Full Implicit B is not symmetrized | Full Implicit path: B retains asymmetric Coriolis-like terms. Verify B[i][j] ≠ B[j][i] for at least one entry with non-trivial velocity. |
+| **Integration / whole-pipeline** ||||
+| T17 | Conformance | ImplicitFast qDeriv matches MuJoCo | Humanoid model with `density=1000`, `integrator="implicitfast"`. Compare full `qDeriv` matrix against MuJoCo reference. Tol: 1e-8. |
+| T18 | Conformance | Implicit qDeriv matches MuJoCo | Same model, `integrator="implicit"`. Compare `qDeriv`. Tol: 1e-8. |
+| T19 | Stability | Implicit + fluid energy dissipation | Step 1000 frames, `integrator="implicit"`, Model A (§40). KE must be monotonically non-increasing (no spurious amplification). |
+| T20 | Stability | ImplicitFast + fluid energy dissipation | Same test with `integrator="implicitfast"`. |
+| **Guards and edge cases** ||||
+| T21 | Gate | Zero fluid → no D contribution | `density=0, viscosity=0` → `qDeriv` unchanged by `mjd_fluid_vel`. |
+| T22 | Gate | Zero velocity → zero quadratic B | At rest: quadratic diagonal entries = 0, viscous entries unchanged. |
+| T23 | Guard | Massless body skipped | `body_mass < MJ_MINVAL` → no fluid derivative contribution. |
+| T24 | Guard | `interaction_coef=0` geom skipped | Ellipsoid geom with `fluid[0]=0` → no derivative contribution. |
+| **Regression** ||||
+| T25 | Regression | §40 T1–T42 still pass | Explicit integrator path unchanged — derivatives only affect implicit path. |
+| T26 | Regression | Existing derivative tests pass | `mjd_smooth_vel` tests in `derivatives.rs` remain green. |
 
 #### Cross-references
 
 - §40 S9: original deferral note
 - §13 D.5 (`future_work_4.md:3632`): implicit integration known gap #5
 - §13 known limitation #3 (`future_work_4.md:3697`): listed as acceptable gap
+- MuJoCo `engine_derivative.c`: `mjd_passive_vel`, `mjd_inertiaBoxFluid`, `mjd_ellipsoidFluid`
+- MuJoCo `engine_derivative.c`: `mjd_cross`, `mjd_magnus_force`, `mjd_kutta_lift`, `mjd_viscous_drag`, `mjd_viscous_torque`, `mjd_addedMassForces`
 
 #### Files to Modify
 
 | File | Action | Changes |
 |------|--------|---------|
-| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add fluid derivative computation in `mjd_passive_vel` (or implicit acceleration path). Inertia-box analytical B, ellipsoid finite-diff B. Accumulate via J^T·B·J. |
-| `sim/L0/tests/integration/fluid_forces.rs` | modify | Add derivative-specific tests (T1–T5 above) |
+| `sim/L0/core/src/derivatives.rs` | modify | Add `mjd_fluid_vel()` (top-level dispatch), `mjd_inertia_box_fluid_deriv()`, `mjd_ellipsoid_fluid_deriv()`, and 5 component Jacobian helpers (`mjd_cross`, `mjd_magnus_force`, `mjd_kutta_lift`, `mjd_viscous_drag`, `mjd_viscous_torque`, `mjd_added_mass_forces`). Add `add_JTBJ()` and `add_rank1()` dense accumulation helpers. Call `mjd_fluid_vel` from `mjd_passive_vel`. |
+| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `mj_jac_body_com()` and `mj_jac_geom()` helpers returning 6×nv Jacobian (angular + translational). Make `object_velocity_local()` and related fluid helpers `pub(crate)` so `derivatives.rs` can reuse them. |
+| `sim/L0/tests/integration/fluid_forces.rs` | modify | Add derivative-specific tests T1–T26 above. |
+
+#### Implementation Phases
+
+| Phase | Scope | Deliverable |
+|-------|-------|-------------|
+| P1 | Infrastructure | `mj_jac_body_com`, `mj_jac_geom`, `add_JTBJ`, `add_rank1`, `mjd_cross` helper. Unit tests T6. |
+| P2 | Inertia-box derivatives | `mjd_inertia_box_fluid_deriv`. Tests T1–T5. |
+| P3 | Ellipsoid component derivatives | 5 component Jacobian functions. Tests T7–T11. |
+| P4 | Ellipsoid assembly + integration | `mjd_ellipsoid_fluid_deriv`, symmetrization, `mjd_fluid_vel` dispatch. Tests T12–T16. |
+| P5 | Pipeline integration + conformance | Wire into `mjd_passive_vel`. Tests T17–T26. |
 
 ---
 
