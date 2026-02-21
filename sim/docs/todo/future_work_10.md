@@ -5407,28 +5407,538 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 
 #### Current State
 
-The spatial tendon pipeline computes correct physics (length, Jacobian, forces)
-but does not populate visualization data. MuJoCo stores tangent point world
-positions in `d->wrap_xpos[]` and object markers in `d->wrap_obj[]` (indexed
-by `d->ten_wrapadr[i]`/`d->ten_wrapnum[i]`) for rendering the tendon path
-through wrapping geometry. These `Data` fields are not in our `Data` struct.
+The spatial tendon pipeline (`mj_fwd_tendon_spatial()`, line ~9396 of
+`mujoco_pipeline.rs`) computes correct physics — length, Jacobian, forces —
+but discards the intermediate geometric results needed for visualization.
+Specifically, tangent points computed during `sphere_wrap()` / `cylinder_wrap()`
+are transformed to world frame (lines 9521–9522) and used for Jacobian
+accumulation, then thrown away.
 
-This was identified as a known limitation during §4 (spatial tendon pipeline,
-`future_work_2.md`) and deferred from §39 (`wrap_inside`). Numbered §40b to sort after §40a.
+MuJoCo stores these path points in four `Data` arrays:
+- `d->wrap_xpos[]` — world-frame 3D positions of all tendon path points
+- `d->wrap_obj[]` — object marker per path point (`-2` = pulley, `-1` = site,
+  `≥ 0` = geom id)
+- `d->ten_wrapadr[i]` — start index in `wrap_xpos`/`wrap_obj` for tendon `i`
+- `d->ten_wrapnum[i]` — number of path points for tendon `i`
+
+None of these fields exist in our `Data` struct. Without them, downstream
+consumers (visualization, debugging, path inspection) cannot reconstruct the
+tendon path through wrapping geometry.
+
+**Provenance:** Identified as a known limitation during §4 (spatial tendon
+pipeline, `future_work_2.md`) and deferred from §39 (`wrap_inside`).
 
 #### Objective
 
 Add `wrap_xpos`, `wrap_obj`, `ten_wrapadr`, and `ten_wrapnum` fields to `Data`.
-Populate them during `mj_fwd_tendon_spatial()` so that downstream consumers
-(visualization, debugging) can reconstruct the tendon path through wrapping
-geometry.
+Populate them during `mj_fwd_tendon_spatial()` by capturing the path points
+that are already computed but currently discarded.
+
+#### MuJoCo Reference — Data Layout
+
+Source: `engine_core_smooth.c:mj_tendon()`, `mjdata.h`.
+
+**Allocation (in `mjData`):**
+```
+wrap_xpos:  mjtNum*  (allocated: nwrap * 6 floats = nwrap * 2 points * 3 coords)
+wrap_obj:   int*     (allocated: nwrap * 2 ints)
+ten_wrapadr: int*    (length: ntendon)
+ten_wrapnum: int*    (length: ntendon)
+```
+
+Where `nwrap` is the **model**'s total wrap path elements (sites + geoms +
+pulleys across all tendons). The `2x` factor is an upper bound: a Site
+produces at most 1 leading + 1 final = 2 data points; a Geom produces 0
+(no-wrap) or 2 (tangent points) data points; a Pulley produces 1. No model
+element exceeds 2 data points, so `nwrap * 2` is always sufficient.
+
+**Indexing:** `wrap_xpos` is indexed by `wrapcount * 3` (3 floats per point).
+`wrap_obj` is indexed by `wrapcount` (1 int per point). `ten_wrapadr[t]` gives
+the starting `wrapcount` for tendon `t`; `ten_wrapnum[t]` gives the count.
+
+**Per-segment path point rules (from `engine_core_smooth.c:mj_tendon()`):**
+
+| Segment type | Points stored | `wrap_obj` values | Notes |
+|--------------|---------------|-------------------|-------|
+| **Pulley** (type0 == Pulley) | 1: zero position `[0,0,0]` | `[-2]` | Marks divisor change |
+| **Site–Site** (straight, no geom) | 1: site0 world pos | `[-1]` | Only the leading site |
+| **Site–Geom–Site** (wrapping, `wlen ≥ 0`) | 3: site0, tangent₁, tangent₂ | `[-1, geom_id, geom_id]` | Tangents in world frame |
+| **Site–Geom–Site** (no wrap, `wlen < 0`) | 1: site0 world pos | `[-1]` | Falls back to straight |
+| **Final site** (last in path, or before pulley) | 1: site1 world pos | `[-1]` | Closes the path |
+
+**Example traces:**
+
+*Model B (Site–Sphere–Site, wrapping occurs):*
+```
+Path elements: [Site(s0), Geom(sphere), Site(s1)]
+Data points:   [s0_pos, tangent₁, tangent₂, s1_pos]
+wrap_obj:      [-1,     geom_id,  geom_id,  -1]
+ten_wrapnum:   4
+```
+
+*Model A (Site–Site, straight):*
+```
+Path elements: [Site(s0), Site(s1)]
+Data points:   [s0_pos, s1_pos]
+wrap_obj:      [-1,     -1]
+ten_wrapnum:   2
+```
+
+*Model D (Site–Site–Pulley–Site–Site):*
+```
+Path elements: [Site(s1), Site(s2), Pulley(div=2), Site(s3), Site(s4)]
+Data points:   [s1_pos, s2_pos, [0,0,0], s3_pos, s4_pos]
+wrap_obj:      [-1,     -1,     -2,      -1,     -1]
+ten_wrapnum:   5
+```
+
+*Model F (Site–Site–Site, multi-site):*
+```
+Path elements: [Site(s1), Site(s2), Site(s3)]
+Data points:   [s1_pos, s2_pos, s3_pos]
+wrap_obj:      [-1,     -1,     -1]
+ten_wrapnum:   3
+```
+
+*Model B at qpos where no wrapping occurs:*
+```
+Path elements: [Site(s0), Geom(sphere), Site(s1)]
+Data points:   [s0_pos, s1_pos]    (geom skipped — no wrap)
+wrap_obj:      [-1,     -1]
+ten_wrapnum:   2
+```
+
+#### Specification
+
+##### S1. Data struct fields
+
+Add to `Data` (in the "Tendon State" section, after `ten_J`):
+
+```rust
+/// Tendon wrap path point positions in world frame.
+/// Flat storage: `wrap_xpos[ten_wrapadr[t] .. ten_wrapadr[t] + ten_wrapnum[t]]`
+/// gives the ordered path points for tendon `t`.
+/// Allocated with capacity `nwrap * 2` (upper bound).
+pub wrap_xpos: Vec<Vector3<f64>>,
+
+/// Object marker for each wrap path point.
+/// -2 = pulley, -1 = site, ≥ 0 = geom id (tangent point on wrapping surface).
+/// Parallel to `wrap_xpos`.
+pub wrap_obj: Vec<i32>,
+
+/// Start index in `wrap_xpos`/`wrap_obj` for each tendon (length `ntendon`).
+pub ten_wrapadr: Vec<usize>,
+
+/// Number of path points for each tendon (length `ntendon`).
+pub ten_wrapnum: Vec<usize>,
+```
+
+**Design choice — `Vec<Vector3<f64>>` vs flat `Vec<f64>`:** Our codebase uses
+`Vector3<f64>` for all spatial positions (`site_xpos`, `geom_xpos`, `xpos`).
+Using `Vec<Vector3<f64>>` for `wrap_xpos` is consistent and type-safe. MuJoCo
+uses flat `mjtNum*` with `*3` indexing — the semantic mapping is direct.
+
+**Clone impl:** `Data` has a manual `Clone` impl (line ~2691). All four new
+fields must be added there (after `ten_J`, line ~2756). This is a `.clone()`
+call for each `Vec` field — follows the existing pattern.
+
+**`reset()` not affected:** `wrap_xpos`/`wrap_obj` are computed state
+recomputed on every `forward()` call (like `xpos`, `geom_xpos`). `reset()`
+(line ~4369) does not need modification.
+
+##### S2. Allocation in `make_data()`
+
+In `make_data()`, allocate with the `nwrap * 2` upper bound:
+
+```rust
+// Tendon wrap visualization data
+wrap_xpos: vec![Vector3::zeros(); self.nwrap * 2],
+wrap_obj: vec![0i32; self.nwrap * 2],
+ten_wrapadr: vec![0usize; self.ntendon],
+ten_wrapnum: vec![0usize; self.ntendon],
+```
+
+The actual number of path points is computed at runtime and stored in
+`ten_wrapnum`. The allocated capacity (`nwrap * 2`) is never exceeded because
+each model wrap element produces at most 2 data points.
+
+##### S3. Signature change for `mj_fwd_tendon_spatial()`
+
+The current signature:
+```rust
+fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize)
+```
+
+Add a `wrapcount: &mut usize` parameter to track the global write cursor
+across tendon calls:
+
+```rust
+fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount: &mut usize)
+```
+
+The caller (`mj_fwd_tendon` or the tendon loop) initializes `wrapcount = 0`
+before the first tendon and passes it through each call.
+
+##### S4. Population logic in `mj_fwd_tendon_spatial()`
+
+At the top of the function, record the start address:
+
+```rust
+data.ten_wrapadr[t] = *wrapcount;
+data.ten_wrapnum[t] = 0;
+```
+
+Then at each point in the existing control flow, store path points:
+
+**Pulley case** (existing lines 9417–9423):
+```rust
+if type0 == WrapType::Pulley {
+    divisor = model.wrap_prm[adr + j];
+    // §40b: store pulley marker
+    data.wrap_xpos[*wrapcount] = Vector3::zeros();
+    data.wrap_obj[*wrapcount] = -2;
+    data.ten_wrapnum[t] += 1;
+    *wrapcount += 1;
+}
+```
+
+**Site–Site case** (existing lines 9434–9469, store leading site):
+```rust
+// Before the existing distance/Jacobian computation:
+data.wrap_xpos[*wrapcount] = p0;
+data.wrap_obj[*wrapcount] = -1;
+data.ten_wrapnum[t] += 1;
+*wrapcount += 1;
+```
+
+**Site–Geom–Site, `WrapResult::Wrapped`** (existing lines 9515–9583):
+```rust
+// After computing t1, t2 in world frame (lines 9521–9522):
+// Store 3 points: site0, tangent₁, tangent₂
+data.wrap_xpos[*wrapcount] = p0;
+data.wrap_obj[*wrapcount] = -1;
+data.wrap_xpos[*wrapcount + 1] = t1;
+data.wrap_obj[*wrapcount + 1] = geom_id as i32;
+data.wrap_xpos[*wrapcount + 2] = t2;
+data.wrap_obj[*wrapcount + 2] = geom_id as i32;
+data.ten_wrapnum[t] += 3;
+*wrapcount += 3;
+```
+
+**Site–Geom–Site, `WrapResult::NoWrap`** (existing lines 9584–9612):
+```rust
+// Store 1 point: site0 only (straight line, no tangent points)
+data.wrap_xpos[*wrapcount] = p0;
+data.wrap_obj[*wrapcount] = -1;
+data.ten_wrapnum[t] += 1;
+*wrapcount += 1;
+```
+
+**Final site** — after the `j` advance at the end of each iteration, check
+if the current segment terminates the path or precedes a pulley:
+```rust
+// After j += 1 (Site-Site) or j += 2 (Site-Geom-Site):
+let at_end = j == num - 1;
+let before_pulley = j < num - 1 && model.wrap_type[adr + j + 1] == WrapType::Pulley;
+if at_end || before_pulley {
+    // id1 is the endpoint site from the segment just processed
+    data.wrap_xpos[*wrapcount] = data.site_xpos[id1];
+    data.wrap_obj[*wrapcount] = -1;
+    data.ten_wrapnum[t] += 1;
+    *wrapcount += 1;
+}
+```
+
+**Note on `id1` scope:** The variable `id1` must be accessible at the final-site
+check point. In the current code, `id1` is scoped inside the `if type1 == Site`
+and `if type1 == Geom` branches. Two options:
+1. Lift `id1` to the loop scope (set in both branches).
+2. Re-derive: `id1 = model.wrap_objid[adr + j]` (since `j` was just advanced
+   past the segment's endpoint site).
+
+Option 1 is cleaner and matches MuJoCo's approach.
+
+##### S5. Caller-side wiring
+
+The tendon loop in the forward pass (wherever `mj_fwd_tendon_spatial` is called
+for each tendon) must:
+
+```rust
+let mut wrapcount: usize = 0;
+for t in 0..model.ntendon {
+    match model.tendon_type[t] {
+        TendonType::Spatial => {
+            mj_fwd_tendon_spatial(model, data, t, &mut wrapcount);
+        }
+        TendonType::Fixed => {
+            // Fixed tendons have no wrap path — zero out
+            data.ten_wrapadr[t] = wrapcount;
+            data.ten_wrapnum[t] = 0;
+            // (existing fixed tendon logic unchanged)
+        }
+    }
+}
+```
+
+##### S6. Degenerate tendon (num < 2)
+
+For the early return at line 9403 (`if num < 2`), still set the wrap address:
+```rust
+data.ten_wrapadr[t] = *wrapcount;
+data.ten_wrapnum[t] = 0;
+```
+
+##### S7. Inside-wrap handling (§39)
+
+When `sphere_wrap` or `cylinder_wrap` returns `WrapResult::Wrapped` with
+`tangent_point_1 == tangent_point_2` and `arc_length == 0.0` (the inside-wrap
+case from §39), the path point storage is identical to the normal wrapped case:
+3 points `[site0, tangent, tangent]` with `wrap_obj = [-1, geom_id, geom_id]`.
+The two tangent points happen to be identical, but the storage format is
+unchanged. No special-casing needed.
+
+#### Acceptance Criteria
+
+##### T1. Field existence and allocation
+- `Data` has fields `wrap_xpos`, `wrap_obj`, `ten_wrapadr`, `ten_wrapnum`.
+- After `make_data()`, `wrap_xpos.len() == nwrap * 2`,
+  `wrap_obj.len() == nwrap * 2`, `ten_wrapadr.len() == ntendon`,
+  `ten_wrapnum.len() == ntendon`.
+
+##### T2. Straight tendon path (Model A: Site–Site)
+```
+After forward(): ten_wrapnum[0] == 2
+  wrap_xpos[0] == site_xpos[s1_id]  (leading site)
+  wrap_xpos[1] == site_xpos[s2_id]  (final site)
+  wrap_obj[0] == -1, wrap_obj[1] == -1
+```
+
+##### T3. Multi-site straight tendon (Model F: Site–Site–Site)
+```
+After forward(): ten_wrapnum[0] == 3
+  wrap_xpos[0..3] == [s1_pos, s2_pos, s3_pos]
+  wrap_obj[0..3] == [-1, -1, -1]
+```
+
+##### T4. Sphere wrapping (Model B: Site–Sphere–Site)
+```
+After forward(): ten_wrapnum[0] == 4
+  wrap_xpos[0] == origin site position
+  wrap_xpos[1] == tangent₁ (on sphere surface, world frame)
+  wrap_xpos[2] == tangent₂ (on sphere surface, world frame)
+  wrap_xpos[3] == insertion site position
+  wrap_obj == [-1, geom_id, geom_id, -1]
+Verify: |tangent₁| ≈ sphere_radius (within geom frame)
+Verify: tangent₁ and tangent₂ differ (not inside-wrap case at default qpos)
+```
+
+##### T5. Cylinder wrapping (Model C: Site–Cylinder–Site)
+```
+After forward(): ten_wrapnum[0] == 4
+  wrap_xpos layout same as T4 but for cylinder
+  wrap_obj == [-1, cyl_geom_id, cyl_geom_id, -1]
+Verify: tangent points lie on cylinder surface (distance from axis ≈ radius)
+```
+
+##### T6. Pulley (Model D: Site–Site–Pulley–Site–Site)
+```
+After forward(): ten_wrapnum[0] == 5
+  wrap_xpos[0] == s1_pos
+  wrap_xpos[1] == s2_pos  (final site of first branch)
+  wrap_xpos[2] == [0,0,0] (pulley marker)
+  wrap_xpos[3] == s3_pos
+  wrap_xpos[4] == s4_pos  (final site of second branch)
+  wrap_obj == [-1, -1, -2, -1, -1]
+```
+
+##### T7. No-wrap fallback (Site–Geom–Site where straight path clears geom)
+Construct or configure Model B so wrapping does not occur (e.g., sites far
+from sphere). Verify `ten_wrapnum[0] == 2` (site0 + final site1, no tangent
+points stored).
+
+##### T8. Inside-wrap (§39 sidesite-inside models)
+For the existing inside-wrap test models (sphere inside, cylinder inside):
+```
+ten_wrapnum[0] == 4
+wrap_xpos[1] == wrap_xpos[2]  (identical tangent points)
+wrap_obj[1] == wrap_obj[2] == geom_id
+```
+
+##### T9. Indexing consistency
+For all test models: verify `ten_wrapadr[t] + ten_wrapnum[t] == ten_wrapadr[t+1]`
+(or `== total_wrapcount` for the last tendon). This ensures contiguous,
+non-overlapping storage.
+
+##### T10. MuJoCo conformance — wrap_xpos positions
+For Models B, C, E, H, I, J (sphere/cylinder/sidesite/collinear wrapping at
+default qpos): compare `wrap_xpos` tangent point positions against MuJoCo 3.x
+reference values with tolerance `1e-6` (positions, not lengths — tangent
+computation involves transcendental functions so exact match is not expected).
+
+Reference values must be extracted from MuJoCo and embedded as test constants,
+following the same pattern as the existing `ten_length` conformance values.
+
+##### T11. Stepped conformance
+For Model B: step the simulation 5 times, verify `wrap_xpos` updates each step
+(tangent points move as the tendon path changes). Compare against MuJoCo
+reference trajectory positions.
+
+##### T12. Fixed tendon passthrough
+Fixed tendons produce `ten_wrapnum[t] == 0` and `ten_wrapadr[t]` is set
+correctly (no gap in the address sequence).
+
+##### T13. Multiple tendons
+Construct a test model with 2 spatial tendons (e.g., one straight Site–Site
+and one wrapped Site–Geom–Site). Verify `ten_wrapadr` and `ten_wrapnum`
+correctly partition the `wrap_xpos`/`wrap_obj` arrays:
+```
+ten_wrapadr[0] == 0, ten_wrapnum[0] == 2  (straight: 2 points)
+ten_wrapadr[1] == 2, ten_wrapnum[1] == 4  (wrapped: 4 points)
+```
+Each tendon's segment is independently correct and non-overlapping.
+
+##### T14. Path reconstruction — straight segments
+For Model A (straight): reconstruct the tendon path from `wrap_xpos` by
+summing Euclidean distances between consecutive points. Verify the sum
+equals `ten_length[0]` within `1e-10`. (For straight-only tendons, the
+wrap_xpos points fully determine the path length.)
+
+##### T15. Mixed segment model (Model L)
+For Model L (mixed straight + wrapping segments): verify `ten_wrapnum`
+reflects both the straight and wrapped sub-paths. The straight segment
+stores 2 points; the wrapped segment stores 4 points (if wrapping occurs).
+Verify `wrap_obj` markers correctly distinguish site points from tangent
+points across the mixed path.
+
+#### Implementation Phases
+
+| Phase | Scope | Deliverable |
+|-------|-------|-------------|
+| P1 | Data fields + allocation | S1, S2 fields in `Data` + Clone impl, allocation in `make_data()`. T1. |
+| P2 | Population logic | S3–S6 changes to `mj_fwd_tendon_spatial()` + caller. T2–T9, T12–T13, T15. |
+| P3 | Inside-wrap integration | S7 verification. T8. |
+| P4 | MuJoCo conformance | Extract reference values, T10–T11, T14. |
 
 #### Files to Modify
 
 | File | Action | Changes |
 |------|--------|---------|
-| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `wrap_xpos`, `wrap_obj`, `ten_wrapadr`, `ten_wrapnum` to `Data`. Populate in `mj_fwd_tendon_spatial()` after computing wrap results. |
-| `sim/L0/tests/integration/spatial_tendons.rs` | modify | Add tests verifying `wrap_xpos` positions match MuJoCo reference values for existing test models. |
+| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `wrap_xpos`, `wrap_obj`, `ten_wrapadr`, `ten_wrapnum` to `Data` struct (S1). Update manual `Clone` impl (line ~2756). Allocate in `make_data()` (S2). Add `wrapcount` parameter to `mj_fwd_tendon_spatial()` and populate path points (S3–S6). Wire `wrapcount` through tendon loop (S5). |
+| `sim/L0/tests/integration/spatial_tendons.rs` | modify | Add tests T2–T15 verifying wrap path points for all existing test models. Extract and embed MuJoCo reference values for tangent positions. |
+
+#### Cross-references
+
+- §4 spatial tendon pipeline (`future_work_2.md`): original deferral
+- §39 `wrap_inside` (`future_work_10.md`): inside-wrap tangent points (S7)
+- MuJoCo `engine_core_smooth.c:mj_tendon()`: reference implementation
+- MuJoCo `mjdata.h`: `wrap_xpos` (`nwrap x 6`), `wrap_obj` (`nwrap x 2`)
+- MuJoCo `mjmodel.h`: `nwrap`, `wrap_type`, `wrap_objid`, `wrap_prm`
+- Downstream consumer: `sim/L1/bevy/src/resources.rs:441` (`TendonVisualData.path`)
+  and `sim/L1/bevy/src/gizmos.rs:156` (`draw_tendons`) — primary visualization
+  consumer of `wrap_xpos`. `TendonVisualData.path: Vec<Point3<f64>>` maps
+  directly to `wrap_xpos[ten_wrapadr[t]..+ten_wrapnum[t]]`.
+
+---
+
+### 40c. Sleep Filtering for Fluid Derivatives
+**Status:** Not started | **Effort:** S | **Prerequisites:** Sleep system (global)
+
+#### Current State
+
+MuJoCo's `mjd_passive_vel` supports sleep filtering via `d->body_awake_ind` and
+`d->nbody_awake` to skip sleeping bodies during derivative computation. Our
+codebase does not yet implement sleep state tracking, so `mjd_fluid_vel` iterates
+all bodies unconditionally.
+
+Deferred from §40a (S7) as a performance optimization that does not affect
+correctness.
+
+#### Objective
+
+Once a global sleep system is implemented, gate the fluid derivative body loop
+in `mjd_fluid_vel` on the body's awake state. Skip sleeping bodies whose
+velocities are clamped to zero — their fluid derivatives are necessarily zero.
+
+#### Scope
+
+- Add `body_awake_ind` / `nbody_awake` to `Data` (or equivalent sleep state)
+- Gate body loop in `mjd_fluid_vel` on awake state
+- Verify no conformance regression (sleeping bodies should produce identical
+  results since their velocities are zero)
+
+#### Cross-references
+
+- §40a S7 (`future_work_10.md:5173`): deferral note
+- MuJoCo `engine_derivative.c`: `mjd_passive_vel` sleep filtering loop
+
+---
+
+### 40d. Sparse Jacobian Support for Fluid Derivatives
+**Status:** Not started | **Effort:** M | **Prerequisites:** None
+
+#### Current State
+
+MuJoCo supports both dense and sparse Jacobian paths for fluid derivative
+accumulation (`addJTBJ` vs `addJTBJSparse`), selectable via `mj_isSparse(m)`.
+Our implementation uses dense Jacobians only (`DMatrix<f64>` for the 6×nv
+Jacobian and `nv×nv` qDeriv). The current `add_jtbj` and `add_rank1` helpers
+exploit Jacobian sparsity via zero-skipping but still operate on dense storage.
+
+Deferred from §40a (S6) as a constant-factor speedup for large `nv`. Dense is
+acceptable for target model sizes (`nv < 200`).
+
+#### Objective
+
+Implement sparse Jacobian storage and sparse `J^T·B·J` accumulation to improve
+fluid derivative performance for models with `nv > 200`. This mirrors MuJoCo's
+`addJTBJSparse` which operates on CSR-format qDeriv.
+
+#### Scope
+
+- Implement CSR or equivalent sparse storage for qDeriv
+- Add `add_jtbj_sparse` and `add_rank1_sparse` variants
+- Gate on model size or `mj_isSparse`-equivalent heuristic
+- Benchmark: demonstrate speedup on a model with `nv ≈ 300–500`
+- Verify exact numerical equivalence with dense path
+
+#### Cross-references
+
+- §40a S6 (`future_work_10.md:5140`): deferral note
+- MuJoCo `engine_derivative.c`: `addJTBJSparse`, `mj_isSparse`
+
+---
+
+### 40e. Refactor `mj_jac_site` to Use `mj_jac_point` Kernel
+**Status:** Not started | **Effort:** S | **Prerequisites:** None
+
+#### Current State
+
+`mj_jac_site` in `mujoco_pipeline.rs` implements its own chain-walk algorithm,
+returning two separate 3×nv matrices `(jac_trans, jac_rot)`. The §40a
+implementation added `mj_jac_point` as a shared 6×nv Jacobian kernel using the
+same chain-walk pattern. Both functions are correct but the duplicated chain-walk
+logic is a maintenance burden.
+
+Deferred from §40a (S3) to avoid widening the blast radius of the fluid
+derivative implementation.
+
+#### Objective
+
+Refactor `mj_jac_site` to call `mj_jac_point` internally and split the 6×nv
+result into the existing `(jac_trans, jac_rot)` return format. This eliminates
+the duplicated chain-walk code.
+
+#### Scope
+
+- Refactor `mj_jac_site` to delegate to `mj_jac_point`
+- Split rows 0–2 (angular) → `jac_rot`, rows 3–5 (linear) → `jac_trans`
+- Verify T32 (`mj_jac_point` vs `mj_jac_site` exact match) still passes
+- Run full `sim-conformance-tests` to confirm no regression
+
+#### Cross-references
+
+- §40a S3 (`future_work_10.md:4770`): deferral note
+- §40a T32: `mj_jac_point` vs `mj_jac_site` exact match test
 
 ---
 
@@ -6894,103 +7404,3 @@ All dispatch is monomorphized — the compiler sees concrete types, not trait ob
   example test
 
 ---
-
-### 40c. Sleep Filtering for Fluid Derivatives
-**Status:** Not started | **Effort:** S | **Prerequisites:** Sleep system (global)
-
-#### Current State
-
-MuJoCo's `mjd_passive_vel` supports sleep filtering via `d->body_awake_ind` and
-`d->nbody_awake` to skip sleeping bodies during derivative computation. Our
-codebase does not yet implement sleep state tracking, so `mjd_fluid_vel` iterates
-all bodies unconditionally.
-
-Deferred from §40a (S7) as a performance optimization that does not affect
-correctness.
-
-#### Objective
-
-Once a global sleep system is implemented, gate the fluid derivative body loop
-in `mjd_fluid_vel` on the body's awake state. Skip sleeping bodies whose
-velocities are clamped to zero — their fluid derivatives are necessarily zero.
-
-#### Scope
-
-- Add `body_awake_ind` / `nbody_awake` to `Data` (or equivalent sleep state)
-- Gate body loop in `mjd_fluid_vel` on awake state
-- Verify no conformance regression (sleeping bodies should produce identical
-  results since their velocities are zero)
-
-#### Cross-references
-
-- §40a S7 (`future_work_10.md:5173`): deferral note
-- MuJoCo `engine_derivative.c`: `mjd_passive_vel` sleep filtering loop
-
----
-
-### 40d. Sparse Jacobian Support for Fluid Derivatives
-**Status:** Not started | **Effort:** M | **Prerequisites:** None
-
-#### Current State
-
-MuJoCo supports both dense and sparse Jacobian paths for fluid derivative
-accumulation (`addJTBJ` vs `addJTBJSparse`), selectable via `mj_isSparse(m)`.
-Our implementation uses dense Jacobians only (`DMatrix<f64>` for the 6×nv
-Jacobian and `nv×nv` qDeriv). The current `add_jtbj` and `add_rank1` helpers
-exploit Jacobian sparsity via zero-skipping but still operate on dense storage.
-
-Deferred from §40a (S6) as a constant-factor speedup for large `nv`. Dense is
-acceptable for target model sizes (`nv < 200`).
-
-#### Objective
-
-Implement sparse Jacobian storage and sparse `J^T·B·J` accumulation to improve
-fluid derivative performance for models with `nv > 200`. This mirrors MuJoCo's
-`addJTBJSparse` which operates on CSR-format qDeriv.
-
-#### Scope
-
-- Implement CSR or equivalent sparse storage for qDeriv
-- Add `add_jtbj_sparse` and `add_rank1_sparse` variants
-- Gate on model size or `mj_isSparse`-equivalent heuristic
-- Benchmark: demonstrate speedup on a model with `nv ≈ 300–500`
-- Verify exact numerical equivalence with dense path
-
-#### Cross-references
-
-- §40a S6 (`future_work_10.md:5140`): deferral note
-- MuJoCo `engine_derivative.c`: `addJTBJSparse`, `mj_isSparse`
-
----
-
-### 40e. Refactor `mj_jac_site` to Use `mj_jac_point` Kernel
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
-
-#### Current State
-
-`mj_jac_site` in `mujoco_pipeline.rs` implements its own chain-walk algorithm,
-returning two separate 3×nv matrices `(jac_trans, jac_rot)`. The §40a
-implementation added `mj_jac_point` as a shared 6×nv Jacobian kernel using the
-same chain-walk pattern. Both functions are correct but the duplicated chain-walk
-logic is a maintenance burden.
-
-Deferred from §40a (S3) to avoid widening the blast radius of the fluid
-derivative implementation.
-
-#### Objective
-
-Refactor `mj_jac_site` to call `mj_jac_point` internally and split the 6×nv
-result into the existing `(jac_trans, jac_rot)` return format. This eliminates
-the duplicated chain-walk code.
-
-#### Scope
-
-- Refactor `mj_jac_site` to delegate to `mj_jac_point`
-- Split rows 0–2 (angular) → `jac_rot`, rows 3–5 (linear) → `jac_trans`
-- Verify T32 (`mj_jac_point` vs `mj_jac_site` exact match) still passes
-- Run full `sim-conformance-tests` to confirm no regression
-
-#### Cross-references
-
-- §40a S3 (`future_work_10.md:4770`): deferral note
-- §40a T32: `mj_jac_point` vs `mj_jac_site` exact match test
