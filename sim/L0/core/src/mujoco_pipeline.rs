@@ -9704,7 +9704,10 @@ fn accumulate_point_jacobian(
 /// Analogous to MuJoCo's `mj_jacSite`. Walks the kinematic chain from
 /// `site_body[site_id]` to root, accumulating per-joint contributions.
 /// Returns `(jac_trans, jac_rot)` where each is a 3×nv `DMatrix`.
-fn mj_jac_site(model: &Model, data: &Data, site_id: usize) -> (DMatrix<f64>, DMatrix<f64>) {
+/// Compute site Jacobian: (jac_trans 3×nv, jac_rot 3×nv).
+#[doc(hidden)]
+#[must_use]
+pub fn mj_jac_site(model: &Model, data: &Data, site_id: usize) -> (DMatrix<f64>, DMatrix<f64>) {
     let mut jac_trans = DMatrix::zeros(3, model.nv);
     let mut jac_rot = DMatrix::zeros(3, model.nv);
 
@@ -9773,6 +9776,96 @@ fn mj_jac_site(model: &Model, data: &Data, site_id: usize) -> (DMatrix<f64>, DMa
     }
 
     (jac_trans, jac_rot)
+}
+
+/// Compute combined 6×nv world-frame Jacobian at `point` on the chain rooted at `body_id`.
+///
+/// Layout: rows 0–2 = angular (ω), rows 3–5 = linear (v).
+/// Same chain-walk as `mj_jac_site` but returns a single 6×nv matrix for `J^T·B·J` projection.
+/// Compute 6×nv Jacobian at a world-frame point on a body's kinematic chain.
+#[doc(hidden)]
+#[must_use]
+pub fn mj_jac_point(
+    model: &Model,
+    data: &Data,
+    body_id: usize,
+    point: &Vector3<f64>,
+) -> DMatrix<f64> {
+    let mut jac = DMatrix::zeros(6, model.nv);
+
+    let mut current = body_id;
+    while current != 0 {
+        let jnt_start = model.body_jnt_adr[current];
+        let jnt_end = jnt_start + model.body_jnt_num[current];
+
+        for jnt_id in jnt_start..jnt_end {
+            let dof = model.jnt_dof_adr[jnt_id];
+            let jnt_body = model.jnt_body[jnt_id];
+
+            match model.jnt_type[jnt_id] {
+                MjJointType::Hinge => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    let anchor = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - anchor;
+                    let cross = axis.cross(&r);
+                    for k in 0..3 {
+                        jac[(k, dof)] += axis[k]; // angular
+                        jac[(k + 3, dof)] += cross[k]; // linear
+                    }
+                }
+                MjJointType::Slide => {
+                    let axis = data.xquat[jnt_body] * model.jnt_axis[jnt_id];
+                    for k in 0..3 {
+                        jac[(k + 3, dof)] += axis[k]; // linear only
+                    }
+                }
+                MjJointType::Ball => {
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    let anchor = data.xpos[jnt_body] + data.xquat[jnt_body] * model.jnt_pos[jnt_id];
+                    let r = point - anchor;
+                    for i in 0..3 {
+                        let omega = rot * Vector3::ith(i, 1.0);
+                        let cross = omega.cross(&r);
+                        for k in 0..3 {
+                            jac[(k, dof + i)] += omega[k]; // angular
+                            jac[(k + 3, dof + i)] += cross[k]; // linear
+                        }
+                    }
+                }
+                MjJointType::Free => {
+                    // Translation DOFs (dof+0..dof+3): identity in linear rows
+                    for i in 0..3 {
+                        jac[(i + 3, dof + i)] += 1.0;
+                    }
+                    // Rotation DOFs (dof+3..dof+6): body-frame axes
+                    let rot = data.xquat[jnt_body].to_rotation_matrix();
+                    let r = point - data.xpos[jnt_body];
+                    for i in 0..3 {
+                        let omega = rot * Vector3::ith(i, 1.0);
+                        let cross = omega.cross(&r);
+                        for k in 0..3 {
+                            jac[(k, dof + 3 + i)] += omega[k]; // angular
+                            jac[(k + 3, dof + 3 + i)] += cross[k]; // linear
+                        }
+                    }
+                }
+            }
+        }
+        current = model.body_parent[current];
+    }
+
+    jac
+}
+
+/// Compute 6×nv Jacobian at body CoM. Used by inertia-box derivatives.
+pub(crate) fn mj_jac_body_com(model: &Model, data: &Data, body_id: usize) -> DMatrix<f64> {
+    mj_jac_point(model, data, body_id, &data.xipos[body_id])
+}
+
+/// Compute 6×nv Jacobian at geom center. Used by ellipsoid derivatives.
+pub(crate) fn mj_jac_geom(model: &Model, data: &Data, geom_id: usize) -> DMatrix<f64> {
+    let body_id = model.geom_body[geom_id];
+    mj_jac_point(model, data, body_id, &data.geom_xpos[geom_id])
 }
 
 /// Project a Cartesian force + torque at a world-frame point on a body into
@@ -11847,7 +11940,7 @@ fn mj_gravcomp(model: &Model, data: &mut Data) -> bool {
 ///
 /// Equivalent to MuJoCo's `mj_objectVelocity(m, d, objtype, id, res, flg_local=1)`.
 /// Returns `[ω_local; v_local]`.
-fn object_velocity_local(
+pub(crate) fn object_velocity_local(
     _model: &Model,
     data: &Data,
     body_id: usize,
@@ -11912,12 +12005,12 @@ fn add_cross3(out: &mut [f64], a: &[f64; 3], b: &[f64]) {
 
 /// Euclidean norm of a 3-element slice.
 #[inline]
-fn norm3(v: &[f64]) -> f64 {
+pub(crate) fn norm3(v: &[f64]) -> f64 {
     (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
 /// Compute semi-axes for a geom type, matching MuJoCo's `mju_geomSemiAxes`.
-fn fluid_geom_semi_axes(geom_type: GeomType, size: &Vector3<f64>) -> [f64; 3] {
+pub(crate) fn fluid_geom_semi_axes(geom_type: GeomType, size: &Vector3<f64>) -> [f64; 3] {
     match geom_type {
         GeomType::Sphere => [size.x, size.x, size.x],
         GeomType::Capsule => [size.x, size.x, size.y + size.x],
@@ -11929,7 +12022,7 @@ fn fluid_geom_semi_axes(geom_type: GeomType, size: &Vector3<f64>) -> [f64; 3] {
 /// Per-axis moment for angular drag: `(8/15)π · s[axis] · max(other_two)⁴`.
 /// Matches MuJoCo's `mji_ellipsoid_max_moment(size, dir)`.
 #[inline]
-fn ellipsoid_moment(s: &[f64; 3], axis: usize) -> f64 {
+pub(crate) fn ellipsoid_moment(s: &[f64; 3], axis: usize) -> f64 {
     let d1 = s[(axis + 1) % 3];
     let d2 = s[(axis + 2) % 3];
     (8.0 / 15.0) * std::f64::consts::PI * s[axis] * d1.max(d2).powi(4)
@@ -14846,7 +14939,7 @@ fn quaternion_to_axis_angle(quat: &UnitQuaternion<f64>) -> Vector3<f64> {
 // =============================================================================
 
 /// Minimum value to prevent division by zero (matches MuJoCo's mjMINVAL).
-const MJ_MINVAL: f64 = 1e-15;
+pub(crate) const MJ_MINVAL: f64 = 1e-15;
 
 /// Compute KBIP stiffness K and damping B from solref parameters (§15.1).
 ///

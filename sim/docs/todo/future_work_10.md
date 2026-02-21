@@ -4817,10 +4817,12 @@ Initialize `B = [[0.0; 6]; 6]`, then accumulate 5 component derivatives:
 
 **Component 1 — Added mass (gyroscopic) derivatives: `mjd_addedMassForces`**
 
-The forward computation has three cross-product terms:
+The forward computation (`mj_ellipsoid_fluid`, Component 1) has three cross-product
+terms. Variable mapping: forward code `lv` = spec `p_ang`, forward code `pv` = spec
+`p_lin`:
 ```
-torque += p_ang × ω       where p_ang = ρ·[vi₀·ω₀, vi₁·ω₁, vi₂·ω₂]
-torque += p_lin × v        where p_lin = ρ·[vm₀·v₀, vm₁·v₁, vm₂·v₂]
+torque += p_ang × ω       where p_ang = ρ·[vi₀·ω₀, vi₁·ω₁, vi₂·ω₂]   (forward: lv)
+torque += p_lin × v        where p_lin = ρ·[vm₀·v₀, vm₁·v₁, vm₂·v₂]   (forward: pv)
 force  += p_lin × ω
 ```
 
@@ -4911,7 +4913,8 @@ Shorthand:
   proj_num   = a·xx + b·yy + c·zz
   norm2      = xx + yy + zz
 
-Common factor (derivation from forward code, `mujoco_pipeline.rs:12087–12088`):
+Common factor (derivation from `mj_ellipsoid_fluid` Component 3, the two lines
+  computing `a_proj` and `cos_alpha`):
   cos_α  = proj_num / max(MJ_MINVAL, speed · proj_denom)
   A_proj = π · √(proj_denom / max(MJ_MINVAL, proj_num))
   cos_α · A_proj = π · √proj_num / (speed · √proj_denom)
@@ -5287,7 +5290,7 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 | **Integration / whole-pipeline** ||||
 | T17 | Conformance | ImplicitFast qDeriv matches MuJoCo | Humanoid model with `density=1000`, `integrator="implicitfast"`. Compare full `qDeriv` matrix against MuJoCo reference. Tol: 1e-8. |
 | T18 | Conformance | Implicit qDeriv matches MuJoCo | Same model, `integrator="implicit"`. Compare `qDeriv`. Tol: 1e-8. |
-| T19 | Stability | Implicit + fluid energy dissipation | Model A (§40), qvel = `[1.0, -0.5, 0.3, 0.5, -1.1, 0.8]`, `dt=0.002`, `integrator="implicit"`. Step 1000 frames. Acceptance: `KE[t+1] ≤ KE[t] + 1e-12` at every step (machine-epsilon drift allowed). Failure if any single-step KE increase exceeds 1e-12. |
+| T19 | Stability | Implicit + fluid energy dissipation | §40 `MODEL_A` (`fluid_forces.rs:36`: free-floating sphere, `density=1.2`), qvel = `[1.0, -0.5, 0.3, 0.5, -1.1, 0.8]`, `dt=0.002`, `integrator="implicit"`. Step 1000 frames. Acceptance: `KE[t+1] ≤ KE[t] + 1e-12` at every step (machine-epsilon drift allowed). Failure if any single-step KE increase exceeds 1e-12. |
 | T20 | Stability | ImplicitFast + fluid energy dissipation | Same configuration as T19 with `integrator="implicitfast"`. Same acceptance criterion. |
 | **Guards and edge cases** ||||
 | T21 | Gate | Zero fluid → no D contribution | `density=0, viscosity=0` → `qDeriv` unchanged by `mjd_fluid_vel`. |

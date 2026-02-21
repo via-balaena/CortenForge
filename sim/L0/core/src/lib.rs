@@ -163,14 +163,17 @@ pub use mujoco_pipeline::{
     // Utility functions for position/velocity differentiation
     mj_differentiate_pos,
     mj_integrate_pos_explicit,
+    // Jacobian infrastructure (§40a derivative tests)
+    mj_jac_point,
+    mj_jac_site,
     // LDL solve (for test/verification access to M⁻¹ via factored mass matrix)
     mj_solve_sparse,
 };
 
 pub use derivatives::{
     DerivativeConfig, TransitionMatrices, fd_convergence_check, max_relative_error,
-    mjd_quat_integrate, mjd_smooth_vel, mjd_transition, mjd_transition_fd, mjd_transition_hybrid,
-    validate_analytical_vs_fd,
+    mjd_passive_vel, mjd_quat_integrate, mjd_smooth_vel, mjd_transition, mjd_transition_fd,
+    mjd_transition_hybrid, validate_analytical_vs_fd,
 };
 
 // Re-export key types from sim-types for convenience

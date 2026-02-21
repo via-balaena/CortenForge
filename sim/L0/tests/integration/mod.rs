@@ -194,3 +194,12 @@ pub mod ball_joint_limits;
 /// default inheritance, kappa quadrature, mass guard, zero fluid regression.
 #[allow(clippy::excessive_precision, clippy::needless_range_loop)]
 pub mod fluid_forces;
+
+// ============================================================================
+// Fluid Force Velocity Derivative Tests (§40a)
+// ============================================================================
+
+/// Fluid derivative tests: ∂qfrc_fluid/∂qvel for both models, FD validation,
+/// energy dissipation, symmetry, guards, joint types, multi-body.
+#[allow(clippy::excessive_precision, clippy::needless_range_loop)]
+pub mod fluid_derivatives;
