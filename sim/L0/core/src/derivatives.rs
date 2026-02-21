@@ -58,6 +58,7 @@ use crate::mujoco_pipeline::{
     ActuatorTransmission,
     BiasType,
     Data,
+    ENABLE_SLEEP,
     GainType,
     Integrator,
     // §40a fluid derivative infrastructure
@@ -81,6 +82,7 @@ use crate::mujoco_pipeline::{
     norm3,
     object_velocity_local,
     spatial_cross_motion,
+    tendon_all_dofs_sleeping,
 };
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix6, UnitQuaternion, Vector3};
 
@@ -471,21 +473,36 @@ fn extract_state(model: &Model, data: &Data, qpos_ref: &DVector<f64>) -> DVector
 /// and implicit velocity derivative formulas).
 #[allow(non_snake_case)]
 pub fn mjd_passive_vel(model: &Model, data: &mut Data) {
-    // 1. Fluid derivatives (before per-DOF damping, matching MuJoCo dispatch order)
+    // §40c: Sleep filtering — compute once, used by per-DOF and tendon loops.
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let use_dof_ind = sleep_enabled && data.nv_awake < model.nv;
+
+    // 1. Fluid derivatives (has its own internal body-level sleep filtering)
     mjd_fluid_vel(model, data);
 
     // 2. Per-DOF damping: diagonal entries.
-    for i in 0..model.nv {
+    // §40c: Use dof_awake_ind indirection to skip sleeping DOFs.
+    let nv = if use_dof_ind { data.nv_awake } else { model.nv };
+    for idx in 0..nv {
+        let i = if use_dof_ind {
+            data.dof_awake_ind[idx]
+        } else {
+            idx
+        };
         data.qDeriv[(i, i)] += -model.implicit_damping[i];
     }
 
-    // Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
+    // 3. Tendon damping: −b · J^T · J (rank-1 outer product per tendon).
     // Skipped in implicit mode: mj_fwd_passive skips tendon damping forces
     // when implicit_mode is true, so there is no tendon damping contribution
     // to differentiate.
     let implicit_mode = model.integrator == Integrator::ImplicitSpringDamper;
     if !implicit_mode {
         for t in 0..model.ntendon {
+            // §40c: Skip tendon if ALL target DOFs are sleeping.
+            if sleep_enabled && tendon_all_dofs_sleeping(model, data, t) {
+                continue;
+            }
             let b = model.tendon_damping[t];
             if b <= 0.0 {
                 continue;
@@ -2339,7 +2356,22 @@ fn mjd_fluid_vel(model: &Model, data: &mut Data) {
         return;
     }
 
-    for body_id in 0..model.nbody {
+    // §40c: Sleep filtering — skip sleeping bodies (MuJoCo engine_derivative.c pattern)
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+    let nbody = if sleep_filter {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+
+    for idx in 0..nbody {
+        let body_id = if sleep_filter {
+            data.body_awake_ind[idx]
+        } else {
+            idx
+        };
+
         if model.body_mass[body_id] < MJ_MINVAL {
             continue;
         }

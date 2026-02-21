@@ -1286,3 +1286,374 @@ fn t42_default_class_fluidcoef() {
     ];
     assert_qfrc_fluid(&data, &expected, FORCE_TOL);
 }
+
+// ============================================================================
+// §40c Sleep Filtering Tests (T44–T51)
+// ============================================================================
+//
+// Verifies that sleep filtering in `mj_fluid` correctly skips sleeping
+// bodies while preserving identical results for awake bodies.
+
+use sim_core::SleepState;
+
+// §40c test model constants (duplicated from fluid_derivatives.rs for test-file independence)
+
+/// §40c: Two free-joint bodies, inertia-box, sleep enabled, body 2 sleeping.
+const SLEEP_IBOX_2BODY_FWD: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="awake_box" pos="0 0 1"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+        <body name="sleeping_box" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// §40c: Two free-joint bodies, ellipsoid model, sleep enabled, body 2 sleeping.
+const SLEEP_ELLIPSOID_2BODY_FWD: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="awake_ell" pos="0 0 1"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+        <body name="sleeping_ell" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// §40c: Mixed fluid models — body 1 inertia-box (awake), body 2 ellipsoid (sleeping).
+const SLEEP_MIXED_2BODY_FWD: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="awake_box" pos="0 0 1"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+        <body name="sleeping_ell" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// §40c: Wind + inertia-box + sleep. Body 2 sleeping in wind field.
+const SLEEP_WIND_2BODY_FWD: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit" wind="1 0 0">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="awake_box" pos="0 0 1"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+        <body name="sleeping_box" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// §40c: All non-world bodies sleeping.
+const SLEEP_ALL_ASLEEP_FWD: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="body_a" pos="0 0 1" sleep="init"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+        <body name="body_b" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// §40c: Single-body inertia-box reference (identical to IBOX_COMBINED in fluid_derivatives.rs).
+const IBOX_SINGLE: &str = r#"<mujoco><option density="1.2" viscosity="0.001" integrator="implicit"/>
+    <worldbody><body pos="0 0 1"><freejoint/>
+    <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+    </body></worldbody></mujoco>"#;
+
+/// T50: qfrc_fluid for awake body with sleeping neighbor.
+/// Model: SLEEP_IBOX_2BODY, qvel = [0.5,-1.1,0.8,1.2,-0.7,0.3,0,0,0,0,0,0].
+/// Verified against MuJoCo 3.5.0 (mj_forward). Matches single-body exactly.
+#[rustfmt::skip]
+const MUJOCO_FLUID_FORCE_T50: [f64; 6] = [
+    -1.29977871437821362e-03, 8.46951317163207110e-03, -8.55964594300514213e-03,
+    -6.56022933434054811e-06, 4.96785513253198644e-06, -1.64005733358513724e-06,
+];
+
+// ============================================================================
+// T44: Sleeping body — qfrc_fluid for sleeping DOFs is zero
+// ============================================================================
+
+/// Body 2 (DOFs 6–11) starts asleep. Sleeping DOF qfrc_fluid must be zero.
+#[test]
+fn t44_sleeping_body_qfrc_fluid_zero() {
+    let (_, data) = setup(
+        SLEEP_IBOX_2BODY_FWD,
+        &[0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    );
+
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    for i in 6..12 {
+        assert_eq!(
+            data.qfrc_fluid[i], 0.0,
+            "T44 qfrc_fluid[{}] should be zero for sleeping body, got {:.17e}",
+            i, data.qfrc_fluid[i]
+        );
+    }
+}
+
+// ============================================================================
+// T45: Sleeping body — awake qfrc_fluid matches single-body reference
+// ============================================================================
+
+/// Awake body's qfrc_fluid[0..6] matches single-body IBOX_SINGLE reference.
+#[test]
+fn t45_sleeping_body_awake_forces_match_single() {
+    let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3];
+
+    // Single-body reference
+    let (_, ref_data) = setup(IBOX_SINGLE, &qvel);
+
+    // Two-body sleep model
+    let (_, data) = setup(
+        SLEEP_IBOX_2BODY_FWD,
+        &[0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    );
+
+    for i in 0..6 {
+        assert!(
+            (data.qfrc_fluid[i] - ref_data.qfrc_fluid[i]).abs() <= FORCE_TOL,
+            "T45 qfrc_fluid[{}]: two-body={:.15e}, single={:.15e}, diff={:.3e}",
+            i,
+            data.qfrc_fluid[i],
+            ref_data.qfrc_fluid[i],
+            (data.qfrc_fluid[i] - ref_data.qfrc_fluid[i]).abs()
+        );
+    }
+}
+
+// ============================================================================
+// T46: Ellipsoid + sleep — sleeping body produces zero qfrc_fluid
+// ============================================================================
+
+/// Ellipsoid fluid model: sleeping DOFs zero, awake DOFs nonzero.
+#[test]
+fn t46_ellipsoid_sleep_qfrc_fluid_zero() {
+    let (_, data) = setup(
+        SLEEP_ELLIPSOID_2BODY_FWD,
+        &[0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    );
+
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    // Sleeping DOFs zero
+    for i in 6..12 {
+        assert_eq!(
+            data.qfrc_fluid[i], 0.0,
+            "T46 qfrc_fluid[{}] should be zero for sleeping ellipsoid, got {:.17e}",
+            i, data.qfrc_fluid[i]
+        );
+    }
+
+    // Awake DOFs nonzero
+    let mut any_nonzero = false;
+    for i in 0..6 {
+        if data.qfrc_fluid[i] != 0.0 {
+            any_nonzero = true;
+        }
+    }
+    assert!(any_nonzero, "T46 awake body should have nonzero qfrc_fluid");
+}
+
+// ============================================================================
+// T47: Wind + sleep — sleeping body in wind has zero qfrc_fluid
+// ============================================================================
+
+/// Sleeping body with wind has nonzero local velocity but zero qfrc_fluid.
+#[test]
+fn t47_wind_sleep_qfrc_fluid_zero() {
+    let (_, data) = setup(
+        SLEEP_WIND_2BODY_FWD,
+        &[0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    );
+
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    // Sleeping DOFs zero despite wind
+    for i in 6..12 {
+        assert_eq!(
+            data.qfrc_fluid[i], 0.0,
+            "T47 qfrc_fluid[{}] should be zero for sleeping body in wind, got {:.17e}",
+            i, data.qfrc_fluid[i]
+        );
+    }
+
+    // Awake body has nonzero forces (velocity + wind)
+    let mut any_nonzero = false;
+    for i in 0..6 {
+        if data.qfrc_fluid[i] != 0.0 {
+            any_nonzero = true;
+        }
+    }
+    assert!(
+        any_nonzero,
+        "T47 awake body should have nonzero qfrc_fluid with wind"
+    );
+}
+
+// ============================================================================
+// T48: Mixed fluid models + sleep — dispatch under indirection
+// ============================================================================
+
+/// Body 1 (ibox, awake) + Body 2 (ellipsoid, sleeping). Sleeping DOFs zero,
+/// awake forces match single-body IBOX_SINGLE reference.
+#[test]
+fn t48_mixed_sleep_dispatch_forces() {
+    let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3];
+
+    // Single-body ibox reference
+    let (_, ref_data) = setup(IBOX_SINGLE, &qvel);
+
+    // Mixed sleep model
+    let (_, data) = setup(
+        SLEEP_MIXED_2BODY_FWD,
+        &[0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    );
+
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    // Sleeping DOFs zero
+    for i in 6..12 {
+        assert_eq!(
+            data.qfrc_fluid[i], 0.0,
+            "T48 qfrc_fluid[{}] should be zero for sleeping body, got {:.17e}",
+            i, data.qfrc_fluid[i]
+        );
+    }
+
+    // Awake forces match single-body
+    for i in 0..6 {
+        assert!(
+            (data.qfrc_fluid[i] - ref_data.qfrc_fluid[i]).abs() <= FORCE_TOL,
+            "T48 qfrc_fluid[{}]: two-body={:.15e}, single={:.15e}, diff={:.3e}",
+            i,
+            data.qfrc_fluid[i],
+            ref_data.qfrc_fluid[i],
+            (data.qfrc_fluid[i] - ref_data.qfrc_fluid[i]).abs()
+        );
+    }
+}
+
+// ============================================================================
+// T49: All bodies sleeping — qfrc_fluid is entirely zero
+// ============================================================================
+
+/// Both bodies asleep. Entire qfrc_fluid vector should be zero.
+#[test]
+fn t49_all_asleep_qfrc_fluid_zero() {
+    let model = load_model(SLEEP_ALL_ASLEEP_FWD).expect("should load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert_eq!(
+        data.body_sleep_state[1],
+        SleepState::Asleep,
+        "body 1 should be asleep"
+    );
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    for i in 0..data.qfrc_fluid.len() {
+        assert_eq!(
+            data.qfrc_fluid[i], 0.0,
+            "T49 qfrc_fluid[{}] should be zero, got {:.17e}",
+            i, data.qfrc_fluid[i]
+        );
+    }
+}
+
+// ============================================================================
+// T50: MuJoCo conformance — qfrc_fluid with sleep matches MuJoCo 3.5.0
+// ============================================================================
+
+/// Awake body's qfrc_fluid matches MuJoCo reference values.
+#[test]
+fn t50_mujoco_conformance_qfrc_fluid_sleep() {
+    let (_, data) = setup(
+        SLEEP_IBOX_2BODY_FWD,
+        &[0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    );
+
+    for i in 0..6 {
+        assert!(
+            (data.qfrc_fluid[i] - MUJOCO_FLUID_FORCE_T50[i]).abs() <= FORCE_TOL,
+            "T50 qfrc_fluid[{}]: ours={:.17e}, mj={:.17e}, diff={:.3e}",
+            i,
+            data.qfrc_fluid[i],
+            MUJOCO_FLUID_FORCE_T50[i],
+            (data.qfrc_fluid[i] - MUJOCO_FLUID_FORCE_T50[i]).abs()
+        );
+    }
+}
+
+// ============================================================================
+// T51: Wind cannot wake sleeping body
+// ============================================================================
+
+/// Wind forces never trigger wake — only qpos/qvel/qfrc_applied/xfrc_applied
+/// modification, contacts, or equality constraints can wake.
+#[test]
+fn t51_wind_cannot_wake() {
+    let model = load_model(SLEEP_WIND_2BODY_FWD).expect("should load");
+    let mut data = model.make_data();
+
+    // No qvel set (all zero). Wind is the only external influence.
+    data.forward(&model).expect("forward");
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should start asleep"
+    );
+
+    for step in 0..10 {
+        data.step(&model).expect("step");
+        assert_eq!(
+            data.body_sleep_state[2],
+            SleepState::Asleep,
+            "T51 body 2 should remain asleep after step {} (wind cannot wake)",
+            step
+        );
+    }
+}

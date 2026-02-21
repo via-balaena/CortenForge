@@ -12352,7 +12352,22 @@ fn mj_fluid(model: &Model, data: &mut Data) -> bool {
         return false;
     }
 
-    for body_id in 0..model.nbody {
+    // §40c: Sleep filtering — skip sleeping bodies (MuJoCo engine_passive.c pattern)
+    let sleep_enabled = model.enableflags & ENABLE_SLEEP != 0;
+    let sleep_filter = sleep_enabled && data.nbody_awake < model.nbody;
+    let nbody = if sleep_filter {
+        data.nbody_awake
+    } else {
+        model.nbody
+    };
+
+    for idx in 0..nbody {
+        let body_id = if sleep_filter {
+            data.body_awake_ind[idx]
+        } else {
+            idx
+        };
+
         // Mass guard — applies to both models (matches MuJoCo)
         if model.body_mass[body_id] < MJ_MINVAL {
             continue;
@@ -12688,7 +12703,7 @@ fn mj_fwd_passive(model: &Model, data: &mut Data) {
 }
 
 /// Check if all DOFs affected by a tendon's Jacobian belong to sleeping trees (§16.5a').
-fn tendon_all_dofs_sleeping(model: &Model, data: &Data, t: usize) -> bool {
+pub(crate) fn tendon_all_dofs_sleeping(model: &Model, data: &Data, t: usize) -> bool {
     let ten_j = &data.ten_J[t];
     for dof in 0..model.nv {
         if ten_j[dof] != 0.0 && data.tree_awake[model.dof_treeid[dof]] {

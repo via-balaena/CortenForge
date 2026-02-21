@@ -2002,3 +2002,1072 @@ fn t32_jac_point_matches_jac_site() {
         }
     }
 }
+
+// ============================================================================
+// §40c Sleep Filtering Tests (T33–T43)
+// ============================================================================
+//
+// Verifies that sleep filtering in `mjd_fluid_vel` correctly skips sleeping
+// bodies while preserving identical results for awake bodies.
+
+use sim_core::SleepState;
+
+// §40c test model constants
+
+/// §40c: Two free-joint bodies, inertia-box, sleep enabled, body 2 sleeping.
+/// Body 1: box with density=1.2, viscosity=0.001 (matches IBOX_COMBINED).
+/// Body 2: box with same fluid params, starts asleep via sleep="init".
+/// Integrator: implicit (matches existing conformance tests T5, T27).
+const SLEEP_IBOX_2BODY: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="awake_box" pos="0 0 1"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+        <body name="sleeping_box" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// §40c: Same geometry as SLEEP_IBOX_2BODY but with sleep disabled.
+/// Used as baseline reference for T33 (no-regression).
+const NOSLEEP_IBOX_2BODY: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit"/>
+    <worldbody>
+        <body name="awake_box" pos="0 0 1"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+        <body name="sleeping_box" pos="2 0 1"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// §40c: Two free-joint bodies, ellipsoid model, sleep enabled, body 2 sleeping.
+const SLEEP_ELLIPSOID_2BODY: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="awake_ell" pos="0 0 1"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+        <body name="sleeping_ell" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// §40c: Mixed fluid models — body 1 inertia-box (awake), body 2 ellipsoid (sleeping).
+const SLEEP_MIXED_2BODY: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="awake_box" pos="0 0 1"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+        <body name="sleeping_ell" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// §40c: Wind + inertia-box + sleep. Body 2 sleeping in wind field.
+const SLEEP_WIND_2BODY: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit" wind="1 0 0">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="awake_box" pos="0 0 1"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+        <body name="sleeping_box" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// §40c: Wind + ellipsoid + sleep. Body 2 sleeping ellipsoid in wind field.
+const SLEEP_WIND_ELLIPSOID_2BODY: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit" wind="1 0 0">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="awake_ell" pos="0 0 1"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+        <body name="sleeping_ell" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// §40c: All non-world bodies sleeping. Edge case: loop iterates only
+/// body 0 (world), which is skipped by mass guard → zero fluid output.
+const SLEEP_ALL_ASLEEP: &str = r#"<mujoco>
+    <option density="1.2" viscosity="0.001" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="body_a" pos="0 0 1" sleep="init"><freejoint/>
+            <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body>
+        <body name="body_b" pos="2 0 1" sleep="init"><freejoint/>
+            <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"
+                  fluidshape="ellipsoid"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+// ============================================================================
+// T33: Sleep disabled baseline — qDeriv matches no-sleep reference
+// ============================================================================
+
+/// No regression when ENABLE_SLEEP is off: sleep_filter = false path
+/// produces identical qDeriv to a model without sleep enabled at all.
+#[test]
+fn t33_sleep_disabled_baseline() {
+    let qvel = [
+        0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.5, -1.1, 0.8, 1.2, -0.7, 0.3,
+    ];
+    let (model, data) = setup(NOSLEEP_IBOX_2BODY, &qvel);
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    // Validate against FD
+    let fd = qderiv_fd(&model, &data, 1e-6);
+    let nv = model.nv;
+    assert_eq!(nv, 12);
+    for i in 0..nv {
+        for j in 0..nv {
+            let ours = work.qDeriv[(i, j)];
+            let fd_val = fd[(i, j)];
+            assert!(
+                (ours - fd_val).abs() < FD_TOL,
+                "T33 FD mismatch at ({},{}): ours={:.10e}, fd={:.10e}, diff={:.3e}",
+                i,
+                j,
+                ours,
+                fd_val,
+                (ours - fd_val).abs()
+            );
+        }
+    }
+}
+
+// ============================================================================
+// T34: Sleep enabled, all awake — qDeriv identical to sleep-disabled
+// ============================================================================
+
+/// Wake body 2 via xfrc_applied, then verify qDeriv matches no-sleep baseline.
+/// Fast-path: nbody_awake == nbody → sleep_filter = false, identical code path.
+#[test]
+fn t34_sleep_enabled_all_awake() {
+    let qvel = [
+        0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.5, -1.1, 0.8, 1.2, -0.7, 0.3,
+    ];
+
+    // Reference: no-sleep model
+    let (ref_model, ref_data) = setup(NOSLEEP_IBOX_2BODY, &qvel);
+    let mut ref_work = ref_data.clone();
+    ref_work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&ref_model, &mut ref_work);
+
+    // Sleep model: wake body 2 via xfrc_applied
+    let model = load_model(SLEEP_IBOX_2BODY).expect("should load");
+    let mut data = model.make_data();
+    data.xfrc_applied[2][2] = 10.0; // Force in Z to wake body 2
+    data.step(&model).expect("step");
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Awake,
+        "body 2 should be awake"
+    );
+
+    // Clear xfrc_applied, set qvel, run forward
+    data.xfrc_applied[2][2] = 0.0;
+    for (i, &v) in qvel.iter().enumerate() {
+        data.qvel[i] = v;
+    }
+    data.forward(&model).expect("forward");
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    // Compare: should be bit-identical (orientation stays identity)
+    let nv = model.nv;
+    assert_eq!(nv, 12);
+    for i in 0..nv {
+        for j in 0..nv {
+            let ours = work.qDeriv[(i, j)];
+            let reference = ref_work.qDeriv[(i, j)];
+            assert!(
+                (ours - reference).abs() < 1e-14,
+                "T34 mismatch at ({},{}): ours={:.17e}, ref={:.17e}, diff={:.3e}",
+                i,
+                j,
+                ours,
+                reference,
+                (ours - reference).abs()
+            );
+        }
+    }
+}
+
+// ============================================================================
+// T35: Sleeping body — qDeriv for sleeping DOFs is zero
+// ============================================================================
+
+/// Body 2 (DOFs 6–11) starts asleep. Sleeping DOF entries of qDeriv must be zero.
+#[test]
+fn t35_sleeping_body_qderiv_zero() {
+    let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let (model, data) = setup(SLEEP_IBOX_2BODY, &qvel);
+
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    let nv = model.nv;
+    assert_eq!(nv, 12);
+    for i in 0..nv {
+        for j in 0..nv {
+            if i >= 6 || j >= 6 {
+                // Cross-body and sleeping-body entries should be zero
+                // (independent trees + sleeping body skipped)
+                assert_eq!(
+                    work.qDeriv[(i, j)],
+                    0.0,
+                    "T35 sleeping DOF entry ({},{}) should be zero, got {:.17e}",
+                    i,
+                    j,
+                    work.qDeriv[(i, j)]
+                );
+            }
+        }
+    }
+}
+
+// ============================================================================
+// T36: Sleeping body — awake DOFs match single-body reference
+// ============================================================================
+
+/// Awake body's 6×6 qDeriv block matches single-body IBOX_COMBINED reference.
+#[test]
+fn t36_sleeping_body_awake_block_matches_single() {
+    let qvel_awake = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3];
+    let qvel_full = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
+    // Single-body reference
+    let (ref_model, ref_data) = setup(IBOX_COMBINED, &qvel_awake);
+    let mut ref_work = ref_data.clone();
+    ref_work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&ref_model, &mut ref_work);
+
+    // Two-body sleep model
+    let (model, data) = setup(SLEEP_IBOX_2BODY, &qvel_full);
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    // Compare awake 6×6 block
+    for i in 0..6 {
+        for j in 0..6 {
+            let ours = work.qDeriv[(i, j)];
+            let reference = ref_work.qDeriv[(i, j)];
+            assert!(
+                (ours - reference).abs() < 1e-14,
+                "T36 awake block ({},{}): ours={:.17e}, ref={:.17e}, diff={:.3e}",
+                i,
+                j,
+                ours,
+                reference,
+                (ours - reference).abs()
+            );
+        }
+    }
+}
+
+// ============================================================================
+// T37: Ellipsoid + sleep — sleeping body skipped
+// ============================================================================
+
+/// Ellipsoid fluid model: sleeping DOFs zero, awake DOFs match single-body.
+#[test]
+fn t37_ellipsoid_sleep_skipped() {
+    let qvel_awake = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3];
+    let qvel_full = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
+    // Single-body ellipsoid reference
+    let (ref_model, ref_data) = setup(ELLIPSOID_BASIC, &qvel_awake);
+    let mut ref_work = ref_data.clone();
+    ref_work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&ref_model, &mut ref_work);
+
+    // Two-body ellipsoid sleep model
+    let (model, data) = setup(SLEEP_ELLIPSOID_2BODY, &qvel_full);
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    let nv = model.nv;
+    assert_eq!(nv, 12);
+
+    // Sleeping DOFs zero
+    for i in 0..nv {
+        for j in 0..nv {
+            if i >= 6 || j >= 6 {
+                assert_eq!(
+                    work.qDeriv[(i, j)],
+                    0.0,
+                    "T37 sleeping DOF entry ({},{}) should be zero, got {:.17e}",
+                    i,
+                    j,
+                    work.qDeriv[(i, j)]
+                );
+            }
+        }
+    }
+
+    // Awake block matches single-body reference
+    for i in 0..6 {
+        for j in 0..6 {
+            let ours = work.qDeriv[(i, j)];
+            let reference = ref_work.qDeriv[(i, j)];
+            assert!(
+                (ours - reference).abs() < 1e-14,
+                "T37 awake block ({},{}): ours={:.17e}, ref={:.17e}, diff={:.3e}",
+                i,
+                j,
+                ours,
+                reference,
+                (ours - reference).abs()
+            );
+        }
+    }
+}
+
+// ============================================================================
+// T38: Wind + sleep (ibox) — sleeping body in wind has zero derivatives
+// ============================================================================
+
+/// Wind creates nonzero v_local = −wind_local for sleeping bodies, but sleep
+/// overrides wind. Sleeping DOF qDeriv entries must be zero.
+#[test]
+fn t38_wind_sleep_ibox_zero_derivatives() {
+    let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let (model, data) = setup(SLEEP_WIND_2BODY, &qvel);
+
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    let nv = model.nv;
+
+    // Sleeping DOFs (6–11) must be zero despite wind
+    for i in 0..nv {
+        for j in 0..nv {
+            if i >= 6 || j >= 6 {
+                assert_eq!(
+                    work.qDeriv[(i, j)],
+                    0.0,
+                    "T38 sleeping DOF entry ({},{}) should be zero despite wind, got {:.17e}",
+                    i,
+                    j,
+                    work.qDeriv[(i, j)]
+                );
+            }
+        }
+    }
+
+    // Awake body derivatives should be nonzero (has velocity + wind)
+    let mut any_nonzero = false;
+    for i in 0..6 {
+        for j in 0..6 {
+            if work.qDeriv[(i, j)] != 0.0 {
+                any_nonzero = true;
+            }
+        }
+    }
+    assert!(
+        any_nonzero,
+        "T38 awake body should have nonzero derivatives"
+    );
+}
+
+// ============================================================================
+// T39: Wind + sleep (ellipsoid) — sleeping ellipsoid in wind has zero derivatives
+// ============================================================================
+
+/// Ellipsoid force path (added mass, Magnus, Kutta, viscous) under wind+sleep.
+/// Sleeping DOF qDeriv entries must be zero despite nonzero wind.
+#[test]
+fn t39_wind_sleep_ellipsoid_zero_derivatives() {
+    let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let (model, data) = setup(SLEEP_WIND_ELLIPSOID_2BODY, &qvel);
+
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    let nv = model.nv;
+
+    // Sleeping DOFs (6–11) must be zero despite wind
+    for i in 0..nv {
+        for j in 0..nv {
+            if i >= 6 || j >= 6 {
+                assert_eq!(
+                    work.qDeriv[(i, j)],
+                    0.0,
+                    "T39 sleeping DOF entry ({},{}) should be zero despite wind, got {:.17e}",
+                    i,
+                    j,
+                    work.qDeriv[(i, j)]
+                );
+            }
+        }
+    }
+
+    // Awake body derivatives should be nonzero
+    let mut any_nonzero = false;
+    for i in 0..6 {
+        for j in 0..6 {
+            if work.qDeriv[(i, j)] != 0.0 {
+                any_nonzero = true;
+            }
+        }
+    }
+    assert!(
+        any_nonzero,
+        "T39 awake body should have nonzero derivatives"
+    );
+}
+
+// ============================================================================
+// T40: Mixed fluid models + sleep — dispatch under indirection
+// ============================================================================
+
+/// Body 1 (ibox, awake) + Body 2 (ellipsoid, sleeping). Sleeping DOFs zero,
+/// awake block matches IBOX_COMBINED single-body reference.
+#[test]
+fn t40_mixed_sleep_dispatch() {
+    let qvel_awake = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3];
+    let qvel_full = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
+    // Single-body ibox reference
+    let (ref_model, ref_data) = setup(IBOX_COMBINED, &qvel_awake);
+    let mut ref_work = ref_data.clone();
+    ref_work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&ref_model, &mut ref_work);
+
+    // Mixed sleep model
+    let (model, data) = setup(SLEEP_MIXED_2BODY, &qvel_full);
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    let nv = model.nv;
+    assert_eq!(nv, 12);
+
+    // Sleeping DOFs zero
+    for i in 0..nv {
+        for j in 0..nv {
+            if i >= 6 || j >= 6 {
+                assert_eq!(
+                    work.qDeriv[(i, j)],
+                    0.0,
+                    "T40 sleeping DOF entry ({},{}) should be zero, got {:.17e}",
+                    i,
+                    j,
+                    work.qDeriv[(i, j)]
+                );
+            }
+        }
+    }
+
+    // Awake block matches ibox single-body
+    for i in 0..6 {
+        for j in 0..6 {
+            let ours = work.qDeriv[(i, j)];
+            let reference = ref_work.qDeriv[(i, j)];
+            assert!(
+                (ours - reference).abs() < 1e-14,
+                "T40 awake block ({},{}): ours={:.17e}, ref={:.17e}, diff={:.3e}",
+                i,
+                j,
+                ours,
+                reference,
+                (ours - reference).abs()
+            );
+        }
+    }
+}
+
+// ============================================================================
+// T41: Wake transition — correct derivatives on first awake step
+// ============================================================================
+
+/// Wake sleeping body, verify derivatives match all-awake reference.
+#[test]
+fn t41_wake_transition_derivatives() {
+    let qvel = [
+        0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.5, -1.1, 0.8, 1.2, -0.7, 0.3,
+    ];
+
+    // Reference: no-sleep model
+    let (ref_model, ref_data) = setup(NOSLEEP_IBOX_2BODY, &qvel);
+    let mut ref_work = ref_data.clone();
+    ref_work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&ref_model, &mut ref_work);
+
+    // Sleep model: verify asleep, then wake
+    let model = load_model(SLEEP_IBOX_2BODY).expect("should load");
+    let mut data = model.make_data();
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should start asleep"
+    );
+
+    // Wake via xfrc_applied
+    data.xfrc_applied[2][2] = 10.0;
+    data.step(&model).expect("step");
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Awake,
+        "body 2 should be awake after wake"
+    );
+
+    // Clear xfrc_applied, set qvel, run forward
+    data.xfrc_applied[2][2] = 0.0;
+    for (i, &v) in qvel.iter().enumerate() {
+        data.qvel[i] = v;
+    }
+    data.forward(&model).expect("forward");
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    // Compare full 12×12 qDeriv
+    let nv = model.nv;
+    assert_eq!(nv, 12);
+    for i in 0..nv {
+        for j in 0..nv {
+            let ours = work.qDeriv[(i, j)];
+            let reference = ref_work.qDeriv[(i, j)];
+            assert!(
+                (ours - reference).abs() < 1e-14,
+                "T41 mismatch at ({},{}): ours={:.17e}, ref={:.17e}, diff={:.3e}",
+                i,
+                j,
+                ours,
+                reference,
+                (ours - reference).abs()
+            );
+        }
+    }
+}
+
+// ============================================================================
+// T42: MuJoCo conformance — qDeriv with sleep matches MuJoCo 3.5.0
+// ============================================================================
+
+/// Awake body's 6×6 fluid-only qDeriv matches MUJOCO_FLUID_T5 reference.
+/// Sleeping body entries are zero (verified by T35).
+#[test]
+fn t42_mujoco_conformance_sleep() {
+    let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let (model, data) = setup(SLEEP_IBOX_2BODY, &qvel);
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    // Compare awake block against MuJoCo T5 reference
+    for i in 0..6 {
+        for j in 0..6 {
+            let ours = work.qDeriv[(i, j)];
+            let mj = MUJOCO_FLUID_T5[i * 6 + j];
+            assert!(
+                (ours - mj).abs() < MJ_TOL,
+                "T42 MuJoCo mismatch at ({},{}): ours={:.17e}, mj={:.17e}, diff={:.3e}",
+                i,
+                j,
+                ours,
+                mj,
+                (ours - mj).abs()
+            );
+        }
+    }
+}
+
+// ============================================================================
+// T43: All bodies sleeping — qDeriv is entirely zero
+// ============================================================================
+
+/// Both bodies start asleep. nbody_awake == 1 (world only).
+/// Entire qDeriv matrix should be zero.
+#[test]
+fn t43_all_asleep_qderiv_zero() {
+    let model = load_model(SLEEP_ALL_ASLEEP).expect("should load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert_eq!(
+        data.body_sleep_state[1],
+        SleepState::Asleep,
+        "body 1 should be asleep"
+    );
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    let nv = model.nv;
+    assert_eq!(nv, 12);
+    for i in 0..nv {
+        for j in 0..nv {
+            assert_eq!(
+                work.qDeriv[(i, j)],
+                0.0,
+                "T43 qDeriv({},{}) should be zero, got {:.17e}",
+                i,
+                j,
+                work.qDeriv[(i, j)]
+            );
+        }
+    }
+}
+
+// ============================================================================
+// §40c-damping: Sleep Filtering for Per-DOF and Tendon Damping Derivatives
+// ============================================================================
+//
+// T52–T57 validate that mjd_passive_vel correctly gates per-DOF damping
+// and tendon damping on sleep state, closing the conformance gaps in S3
+// of the §40c spec (future_work_10.md).
+
+// -- Test model constants --
+
+/// Two hinge joints in separate trees, joint damping only, no fluid, no tendons.
+/// Body 2 starts asleep. nv=2: DOF 0 = j1 (awake, damping=2.0), DOF 1 = j2 (sleeping, damping=3.0).
+const SLEEP_DAMPED_2HINGE: &str = r#"<mujoco>
+    <option density="0" viscosity="0" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="awake" pos="0 0 1">
+            <joint name="j1" type="hinge" axis="0 1 0" damping="2.0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="sleeping" pos="2 0 1" sleep="init">
+            <joint name="j2" type="hinge" axis="0 1 0" damping="3.0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// Same geometry as SLEEP_DAMPED_2HINGE but both bodies sleeping.
+const SLEEP_DAMPED_2HINGE_ALL_ASLEEP: &str = r#"<mujoco>
+    <option density="0" viscosity="0" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="body1" pos="0 0 1" sleep="init">
+            <joint name="j1" type="hinge" axis="0 1 0" damping="2.0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="body2" pos="2 0 1" sleep="init">
+            <joint name="j2" type="hinge" axis="0 1 0" damping="3.0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+</mujoco>"#;
+
+/// Single sleeping tree with tendon, no joint damping, no fluid.
+/// Both joints belong to the same sleeping tree → tendon_all_dofs_sleeping returns true.
+const SLEEP_TENDON_ALL_ASLEEP: &str = r#"<mujoco>
+    <option density="0" viscosity="0" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="link1" pos="0 0 1" sleep="init">
+            <joint name="j1" type="hinge" axis="0 1 0" damping="0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+            <body name="link2" pos="0 0 -0.5">
+                <joint name="j2" type="hinge" axis="0 1 0" damping="0"/>
+                <geom type="sphere" size="0.1" mass="0.5"/>
+            </body>
+        </body>
+    </worldbody>
+    <tendon>
+        <fixed name="t0" damping="5.0">
+            <joint joint="j1" coef="0.7"/>
+            <joint joint="j2" coef="0.3"/>
+        </fixed>
+    </tendon>
+</mujoco>"#;
+
+/// Two separate trees, tendon spans both, both start asleep (coupled group
+/// requires uniform sleep="init"). T56 wakes body 1 at runtime so
+/// tendon_all_dofs_sleeping returns false; T57 leaves both asleep.
+const SLEEP_TENDON_CROSS_TREE: &str = r#"<mujoco>
+    <option density="0" viscosity="0" integrator="implicit">
+        <flag sleep="enable"/>
+    </option>
+    <worldbody>
+        <body name="body1" pos="0 0 1" sleep="init">
+            <joint name="j1" type="hinge" axis="0 1 0" damping="0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+        <body name="body2" pos="2 0 1" sleep="init">
+            <joint name="j2" type="hinge" axis="0 1 0" damping="0"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+        </body>
+    </worldbody>
+    <tendon>
+        <fixed name="t0" damping="5.0">
+            <joint joint="j1" coef="0.7"/>
+            <joint joint="j2" coef="0.3"/>
+        </fixed>
+    </tendon>
+</mujoco>"#;
+
+// ============================================================================
+// T52: Per-DOF damping — sleeping DOF diagonal is zero
+// ============================================================================
+
+/// Body 2 (DOF 1) is asleep. Its damping (3.0) should NOT appear in qDeriv.
+/// Body 1 (DOF 0) is awake. Its damping (2.0) should appear as qDeriv[(0,0)] = -2.0.
+#[test]
+fn t52_per_dof_damping_sleeping_skipped() {
+    let model = load_model(SLEEP_DAMPED_2HINGE).expect("should load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert_eq!(model.nv, 2);
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should start asleep"
+    );
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    assert!(
+        (work.qDeriv[(0, 0)] - (-2.0)).abs() < 1e-14,
+        "T52 awake DOF 0 should have damping -2.0, got {:.17e}",
+        work.qDeriv[(0, 0)]
+    );
+    assert_eq!(
+        work.qDeriv[(1, 1)],
+        0.0,
+        "T52 sleeping DOF 1 should have zero damping, got {:.17e}",
+        work.qDeriv[(1, 1)]
+    );
+}
+
+// ============================================================================
+// T53: Per-DOF damping — awake DOFs match no-sleep baseline
+// ============================================================================
+
+/// Wake body 2 via xfrc_applied, then verify qDeriv matches a no-sleep model.
+#[test]
+fn t53_per_dof_damping_awake_matches_baseline() {
+    // No-sleep baseline: same geometry without sleep="enable"
+    let nosleep_xml = r#"<mujoco>
+        <option density="0" viscosity="0" integrator="implicit"/>
+        <worldbody>
+            <body name="awake" pos="0 0 1">
+                <joint name="j1" type="hinge" axis="0 1 0" damping="2.0"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+            <body name="sleeping" pos="2 0 1">
+                <joint name="j2" type="hinge" axis="0 1 0" damping="3.0"/>
+                <geom type="sphere" size="0.1" mass="1"/>
+            </body>
+        </worldbody>
+    </mujoco>"#;
+
+    let ref_model = load_model(nosleep_xml).expect("load ref");
+    let mut ref_data = ref_model.make_data();
+    ref_data.qvel[0] = 1.0;
+    ref_data.qvel[1] = -0.5;
+    ref_data.forward(&ref_model).expect("forward ref");
+    ref_data.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&ref_model, &mut ref_data);
+
+    // Sleep model: wake body 2 first
+    let model = load_model(SLEEP_DAMPED_2HINGE).expect("load sleep");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    // Wake body 2
+    data.xfrc_applied[2][2] = 10.0;
+    data.step(&model).expect("step");
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Awake,
+        "body 2 should be awake after wake"
+    );
+
+    // Set qvel, forward, compute derivatives
+    data.xfrc_applied[2][2] = 0.0;
+    data.qvel[0] = 1.0;
+    data.qvel[1] = -0.5;
+    data.forward(&model).expect("forward");
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    // Compare 2×2 qDeriv
+    for i in 0..2 {
+        for j in 0..2 {
+            let ours = work.qDeriv[(i, j)];
+            let reference = ref_data.qDeriv[(i, j)];
+            assert!(
+                (ours - reference).abs() < 1e-14,
+                "T53 mismatch at ({},{}): ours={:.17e}, ref={:.17e}, diff={:.3e}",
+                i,
+                j,
+                ours,
+                reference,
+                (ours - reference).abs()
+            );
+        }
+    }
+}
+
+// ============================================================================
+// T54: Per-DOF damping — all sleeping → zero qDeriv
+// ============================================================================
+
+/// Both bodies start asleep with nonzero damping. Entire qDeriv should be zero.
+#[test]
+fn t54_per_dof_damping_all_sleeping_zero() {
+    let model = load_model(SLEEP_DAMPED_2HINGE_ALL_ASLEEP).expect("should load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert_eq!(model.nv, 2);
+    assert_eq!(
+        data.body_sleep_state[1],
+        SleepState::Asleep,
+        "body 1 should be asleep"
+    );
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    for i in 0..model.nv {
+        for j in 0..model.nv {
+            assert_eq!(
+                work.qDeriv[(i, j)],
+                0.0,
+                "T54 qDeriv({},{}) should be zero, got {:.17e}",
+                i,
+                j,
+                work.qDeriv[(i, j)]
+            );
+        }
+    }
+}
+
+// ============================================================================
+// T55: Tendon — all target DOFs sleeping → tendon skipped
+// ============================================================================
+
+/// Both joints in one sleeping tree with tendon damping=5.0.
+/// tendon_all_dofs_sleeping is true → tendon damping skipped → qDeriv is zero.
+#[test]
+fn t55_tendon_all_asleep_skipped() {
+    let model = load_model(SLEEP_TENDON_ALL_ASLEEP).expect("should load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert_eq!(model.nv, 2);
+    assert_eq!(model.ntendon, 1);
+    assert_eq!(
+        data.body_sleep_state[1],
+        SleepState::Asleep,
+        "link1 should be asleep"
+    );
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    for i in 0..model.nv {
+        for j in 0..model.nv {
+            assert_eq!(
+                work.qDeriv[(i, j)],
+                0.0,
+                "T55 qDeriv({},{}) should be zero (tendon skipped), got {:.17e}",
+                i,
+                j,
+                work.qDeriv[(i, j)]
+            );
+        }
+    }
+}
+
+// ============================================================================
+// T56: Tendon — cross-tree with sleeping body → NOT skipped
+// ============================================================================
+
+/// Both bodies start asleep. Wake body 1 via xfrc_applied so j1 is awake, j2
+/// sleeping → tendon_all_dofs_sleeping is false → tendon NOT skipped.
+/// For a fixed tendon with coefs [0.7, 0.3] and damping 5.0:
+///   qDeriv += -5.0 * J^T * J
+/// Expected: qDeriv[(0,0)] = -5.0*0.7*0.7 = -2.45
+///           qDeriv[(0,1)] = -5.0*0.7*0.3 = -1.05
+///           qDeriv[(1,0)] = -5.0*0.3*0.7 = -1.05
+///           qDeriv[(1,1)] = -5.0*0.3*0.3 = -0.45
+#[test]
+fn t56_tendon_cross_tree_not_skipped() {
+    let model = load_model(SLEEP_TENDON_CROSS_TREE).expect("should load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert_eq!(model.nv, 2);
+    assert_eq!(model.ntendon, 1);
+
+    // Wake body 1 via xfrc_applied
+    data.xfrc_applied[1][2] = 10.0;
+    data.step(&model).expect("step");
+    assert_eq!(
+        data.body_sleep_state[1],
+        SleepState::Awake,
+        "body 1 should be awake after wake"
+    );
+
+    // Clear force, forward, compute derivatives
+    data.xfrc_applied[1][2] = 0.0;
+    data.forward(&model).expect("forward");
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    let tol = 1e-14;
+    assert!(
+        (work.qDeriv[(0, 0)] - (-2.45)).abs() < tol,
+        "T56 qDeriv(0,0) expected -2.45, got {:.17e}",
+        work.qDeriv[(0, 0)]
+    );
+    assert!(
+        (work.qDeriv[(0, 1)] - (-1.05)).abs() < tol,
+        "T56 qDeriv(0,1) expected -1.05, got {:.17e}",
+        work.qDeriv[(0, 1)]
+    );
+    assert!(
+        (work.qDeriv[(1, 0)] - (-1.05)).abs() < tol,
+        "T56 qDeriv(1,0) expected -1.05, got {:.17e}",
+        work.qDeriv[(1, 0)]
+    );
+    assert!(
+        (work.qDeriv[(1, 1)] - (-0.45)).abs() < tol,
+        "T56 qDeriv(1,1) expected -0.45, got {:.17e}",
+        work.qDeriv[(1, 1)]
+    );
+}
+
+// ============================================================================
+// T57: Tendon — all-asleep cross-tree → tendon skipped
+// ============================================================================
+
+/// Both bodies sleeping, cross-tree tendon with damping=5.0.
+/// tendon_all_dofs_sleeping is true → tendon skipped → qDeriv is zero.
+#[test]
+fn t57_tendon_cross_tree_all_asleep_skipped() {
+    let model = load_model(SLEEP_TENDON_CROSS_TREE).expect("should load");
+    let mut data = model.make_data();
+    data.forward(&model).expect("forward");
+
+    assert_eq!(model.nv, 2);
+    assert_eq!(model.ntendon, 1);
+    assert_eq!(
+        data.body_sleep_state[1],
+        SleepState::Asleep,
+        "body 1 should be asleep"
+    );
+    assert_eq!(
+        data.body_sleep_state[2],
+        SleepState::Asleep,
+        "body 2 should be asleep"
+    );
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    for i in 0..model.nv {
+        for j in 0..model.nv {
+            assert_eq!(
+                work.qDeriv[(i, j)],
+                0.0,
+                "T57 qDeriv({},{}) should be zero (tendon skipped), got {:.17e}",
+                i,
+                j,
+                work.qDeriv[(i, j)]
+            );
+        }
+    }
+}
