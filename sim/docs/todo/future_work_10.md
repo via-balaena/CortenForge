@@ -4581,6 +4581,22 @@ The inertia-box B is inherently diagonal (symmetric), so no symmetrization neede
 own Jacobian (`mj_jacGeom` at `geom_xpos`), B matrix, and `J^T·B·J`
 accumulation. Multiple geoms on the same body contribute additively.
 
+**qDeriv storage:** MuJoCo stores `qDeriv` in compressed sparse row format
+(`D_rowadr`, `D_colind`, `D_rownnz`). Our codebase uses a dense `DMatrix<f64>`
+(`nv × nv`). This simplifies `J^T·B·J` accumulation to standard dense matrix
+operations. Dense is acceptable for target model sizes (`nv < 200`).
+
+**Dispatch order in MuJoCo's `mjd_passive_vel`:**
+1. Fluid derivatives (density/viscosity check)
+2. Per-DOF damping (damper disable check)
+3. Flex edge damping
+4. Tendon damping
+
+Our `mjd_passive_vel` currently has per-DOF damping (1) then tendon damping (2).
+The new `mjd_fluid_vel` call must be inserted **before** per-DOF damping to match
+MuJoCo's dispatch order. All contributions are additive so order doesn't affect
+correctness, but matching MuJoCo simplifies future auditing.
+
 #### Objective
 
 Implement `∂qfrc_fluid/∂qvel` for both fluid models so the implicit integrator
@@ -4603,47 +4619,105 @@ No finite differences anywhere.
 ##### S2. Integration Point
 
 Add a new function `mjd_fluid_vel(model, data)` in `derivatives.rs`, called from
-`mjd_passive_vel()`. This follows the existing pattern where `mjd_passive_vel`
-dispatches to per-DOF damping + tendon damping, and now also fluid derivatives.
+`mjd_passive_vel()` **before** per-DOF damping and tendon damping, matching
+MuJoCo's dispatch order in `mjd_passive_vel()` where fluid derivatives are
+computed first.
 
 **Gate condition:** `model.density > 0.0 || model.viscosity > 0.0` (same as
 `mj_fluid()`).
 
+**Updated `mjd_passive_vel` structure:**
+```rust
+pub(crate) fn mjd_passive_vel(model: &Model, data: &mut Data) {
+    // 1. Fluid derivatives (NEW — before per-DOF damping)
+    mjd_fluid_vel(model, data);
+
+    // 2. Per-DOF damping: diagonal entries (existing)
+    for i in 0..model.nv {
+        data.qDeriv[(i, i)] += -model.implicit_damping[i];
+    }
+
+    // 3. Tendon damping (existing)
+    // ...
+}
+```
+
 **Call chain:**
 ```
 mj_fwd_acceleration_implicitfast() / mj_fwd_acceleration_implicit_full()
+  → data.qDeriv.fill(0.0)
   → mjd_passive_vel()
-    → mjd_fluid_vel()     ← NEW
+    → mjd_fluid_vel()     ← NEW (first in mjd_passive_vel)
+    → per-DOF damping
+    → tendon damping
   → mjd_actuator_vel()
   → mjd_rne_vel()         (implicit_full only)
 ```
 
+Note: `mj_fwd_acceleration_implicitfast` and `mj_fwd_acceleration_implicit_full`
+call `mjd_passive_vel` directly (not through `mjd_smooth_vel`). They clear
+`qDeriv` themselves before calling the derivative functions.
+
 ##### S3. Body Jacobian Construction (6×nv)
 
-Add a helper `mj_jac_body_com(model, data, body_id) -> DMatrix<f64>` that returns
-a 6×nv Jacobian mapping `qvel → [ω; v]` at the body CoM (`xipos[body_id]`),
-following the layout convention `[angular(3); linear(3)]`.
+Add a shared Jacobian kernel `mj_jac_point(model, data, body_id, point)` that
+returns a 6×nv Jacobian mapping `qvel → [ω; v]` at an arbitrary world-frame
+point on the body's kinematic chain. Then wrap it as:
 
-Similarly, for the ellipsoid model, we need `mj_jac_geom(model, data, geom_id)`
-at `geom_xpos[geom_id]`.
+- `mj_jac_body_com(model, data, body_id)` → calls `mj_jac_point` at
+  `xipos[body_id]` (body CoM) — used by inertia-box
+- `mj_jac_geom(model, data, geom_id)` → calls `mj_jac_point` at
+  `geom_xpos[geom_id]` with `geom_body[geom_id]` — used by ellipsoid
 
-Both reuse the existing chain-walk pattern from `mj_jac_site` but at different
-reference points. The implementation is:
+**Return format:** A single `DMatrix<f64>` of shape 6×nv:
+- Rows 0–2: rotational Jacobian `J_rot` (angular velocity contribution)
+- Rows 3–5: translational Jacobian `J_trans` (linear velocity contribution)
 
+This differs from the existing `mj_jac_site()` which returns `(jac_trans, jac_rot)`
+as two separate 3×nv matrices. The combined 6×nv format is required for the
+`J^T·B·J` projection where B is 6×6.
+
+**Shared kernel:**
 ```rust
-fn mj_jac_body_com(model: &Model, data: &Data, body_id: usize) -> DMatrix<f64> {
-    // Returns 6×nv: rows 0-2 = angular, rows 3-5 = linear
-    // Chain-walk from body_id to root, same pattern as mj_jac_site
-    // Reference point = data.xipos[body_id]
+/// Compute 6×nv world-frame Jacobian at `point` on the chain rooted at `body_id`.
+/// Layout: rows 0–2 = angular, rows 3–5 = linear.
+/// Chain-walks from body_id to root (same pattern as mj_jac_site / mj_apply_ft).
+fn mj_jac_point(model: &Model, data: &Data, body_id: usize, point: &Vector3<f64>) -> DMatrix<f64> {
+    let mut J = DMatrix::zeros(6, model.nv);
+    let mut current = body_id;
+    while current != 0 {
+        // Walk joints of current body, fill J rows 0–2 (rot) and 3–5 (trans)
+        // Same joint-type dispatch as mj_jac_site:
+        //   Hinge:  J_rot[:,dof] += axis;  J_trans[:,dof] += axis × (point − anchor)
+        //   Slide:  J_trans[:,dof] += axis
+        //   Ball:   3 columns (local basis rotated to world)
+        //   Free:   3 trans identity columns + 3 rot columns with cross product
+        current = model.body_parent[current];
+    }
+    J
 }
 ```
 
-After computing the world-frame Jacobian, rotate into the local frame:
+**Location:** `mujoco_pipeline.rs` alongside existing `mj_jac_site` and
+`mj_apply_ft`. The derivative code in `derivatives.rs` calls these via
+`pub(crate)` visibility.
+
+**Local-frame rotation:** After computing the world-frame Jacobian, rotate into
+the local frame before constructing B:
 ```rust
-// J_local[0:3, :] = R^T · J_world[0:3, :]   (angular)
-// J_local[3:6, :] = R^T · J_world[3:6, :]   (linear)
+// For each 3-row block: J_local[block] = R^T · J_world[block]
+// R = ximat[body_id]    for inertia-box
+// R = geom_xmat[gid]    for ellipsoid
+fn rotate_jac_to_local(J: &mut DMatrix<f64>, R: &Matrix3<f64>) {
+    let Rt = R.transpose();
+    // Rotate angular rows (0–2)
+    let ang = Rt * J.rows(0, 3);
+    J.rows_mut(0, 3).copy_from(&ang);
+    // Rotate linear rows (3–5)
+    let lin = Rt * J.rows(3, 3);
+    J.rows_mut(3, 3).copy_from(&lin);
+}
 ```
-where R = `ximat[body_id]` for inertia-box, `geom_xmat[gid]` for ellipsoid.
 
 ##### S4. Inertia-Box B Matrix (Diagonal, Per-Body)
 
@@ -4669,6 +4743,13 @@ b₄ = −3π·diam·β − 2·0.5·ρ·box[0]·box[2] · |v₁|
 b₅ = −3π·diam·β − 2·0.5·ρ·box[0]·box[1] · |v₂|
 ```
 
+**MuJoCo equivalence:** MuJoCo applies viscous and quadratic terms as separate
+rank-1 updates (up to 12 total: 6 viscous + 6 quadratic). Our formulation
+combines them into 6 total rank-1 updates by summing `b_k = viscous_k + quad_k`.
+This is mathematically identical: `(b₁+b₂)·JᵀJ = b₁·JᵀJ + b₂·JᵀJ`. When
+only `viscosity > 0` the quadratic term is zero and vice versa, so the combined
+formula naturally handles single-source cases.
+
 **Accumulation:** Per-axis rank-1 update. For each axis k:
 ```
 qDeriv += b_k · J_local[k,:]^T · J_local[k,:]
@@ -4689,11 +4770,30 @@ B = [ Q(0,0): ∂torque/∂ω    Q(0,1): ∂torque/∂v  ]
 **Quadrant placement convention:** Our spec uses `Q(row_block, col_block)` where
 row_block 0 = torque (angular force), row_block 1 = linear force, col_block 0 =
 angular velocity, col_block 1 = linear velocity. This is the natural Jacobian
-layout `Q(output, input)`. Note: MuJoCo's `addToQuadrant(B, D, col_quad, row_quad)`
-has misleading parameter names — its `col_quad` actually selects the **row** block
-and vice versa. Our implementation uses the intuitive `(row_block, col_block)`.
+layout `Q(output, input)`.
 
-Initialize `B = zeros(6,6)`, then accumulate 5 component derivatives:
+**Mapping to MuJoCo's `addToQuadrant(B, D, col_quad, row_quad)`:** MuJoCo's
+parameter names are misleading — `col_quad` selects the **row** block and
+`row_quad` selects the **column** block. Verified by tracing the implementation:
+`B[6*(3*col_quad+i) + (3*row_quad+j)] += D[3*i+j]` with row-major B gives
+`B_{3*col_quad+i, 3*row_quad+j} += D_{i,j}`. Our implementation MUST use the
+intuitive `(row_block, col_block)` convention, not replicate MuJoCo's swapped
+parameter order:
+
+```rust
+/// Add 3×3 matrix D (row-major) to B at block position (row_block, col_block).
+fn add_to_quadrant(B: &mut [[f64; 6]; 6], D: &[f64; 9], row_block: usize, col_block: usize) {
+    let r = 3 * row_block;
+    let c = 3 * col_block;
+    for i in 0..3 {
+        for j in 0..3 {
+            B[r + i][c + j] += D[3 * i + j];
+        }
+    }
+}
+```
+
+Initialize `B = [[0.0; 6]; 6]`, then accumulate 5 component derivatives:
 
 **Component 1 — Added mass (gyroscopic) derivatives: `mjd_addedMassForces`**
 
@@ -4707,20 +4807,19 @@ force  += p_lin × ω
 **Helper — `mjd_cross(a, b) -> (Da, Db)`:**
 
 ```rust
+/// Cross-product Jacobians: Da = ∂(a×b)/∂a, Db = ∂(a×b)/∂b.
+/// Both are 3×3 row-major: M[i*3+j] = ∂(a×b)_i / ∂(var)_j.
+/// Da = [b]×^T (skew-transpose of b), Db = −[a]×^T.
 fn mjd_cross(a: &[f64; 3], b: &[f64; 3]) -> ([f64; 9], [f64; 9]) {
-    // Da = ∂(a×b)/∂a (3×3 row-major, matching MuJoCo)
-    // Da[i*3+j] = ∂(a×b)_i / ∂a_j
     let Da = [
          0.0,    b[2],  -b[1],   // row 0: ∂(a×b)₀/∂a_{0,1,2}
         -b[2],   0.0,    b[0],   // row 1: ∂(a×b)₁/∂a_{0,1,2}
          b[1],  -b[0],   0.0,    // row 2: ∂(a×b)₂/∂a_{0,1,2}
     ];
-    // Db = ∂(a×b)/∂b (3×3 row-major)
-    // Db[i*3+j] = ∂(a×b)_i / ∂b_j
     let Db = [
-         0.0,   -a[2],   a[1],   // row 0
-         a[2],   0.0,   -a[0],   // row 1
-        -a[1],   a[0],   0.0,    // row 2
+         0.0,   -a[2],   a[1],   // row 0: ∂(a×b)₀/∂b_{0,1,2}
+         a[2],   0.0,   -a[0],   // row 1: ∂(a×b)₁/∂b_{0,1,2}
+        -a[1],   a[0],   0.0,    // row 2: ∂(a×b)₂/∂b_{0,1,2}
     ];
     (Da, Db)
 }
@@ -4767,6 +4866,13 @@ Forward: `F = c_mag · ρ · V · (ω × v)` where V = ellipsoid volume.
 ∂F/∂ω = c_mag·ρ·V · ∂(ω×v)/∂ω = c_mag·ρ·V · [v]×^T  → Q(1,0)
 ∂F/∂v = c_mag·ρ·V · ∂(ω×v)/∂v = c_mag·ρ·V · (−[ω]×^T) → Q(1,1)
 ```
+
+**Implementation via pre-scaling (matching MuJoCo):** Set `c = c_mag·ρ·V`, then
+`scaled_ω = c·ω`, `scaled_v = c·v`, and call `mjd_cross(scaled_ω, scaled_v)`.
+Because `∂(a×b)/∂a` depends only on `b` (and vice versa), evaluating at
+`(c·ω, c·v)` directly yields `Da = [c·v]×^T = c·[v]×^T = ∂F/∂ω` and
+`Db = −[c·ω]×^T = −c·[ω]×^T = ∂F/∂v`. Single `mjd_cross` call, no separate
+scaling step needed. This is exactly what MuJoCo's `mjd_magnus_force` does.
 
 **Component 3 — Kutta lift: `mjd_kutta_lift`**
 
@@ -4906,45 +5012,66 @@ captures both the linear drag and the isotropic part of the quadratic drag.
 
 **Accumulation:** After assembling all 5 components into B:
 1. If `integrator == ImplicitFast`: symmetrize `B ← (B + B^T) / 2`
+   *(MuJoCo calls `mju_symmetrize(B, B, 6)` inside `mjd_ellipsoidFluid`.
+   The symmetrization happens per-geom before projection, not on the final
+   qDeriv. The qDeriv-level symmetrization in `mj_fwd_acceleration_implicitfast`
+   is a separate step handled by existing infrastructure.)*
 2. Scale by `interaction_coef`: `B *= interaction_coef`
-   *(Note: MuJoCo's `mjd_ellipsoidFluid` omits this scaling — it only uses
-   `interaction_coef` as a 0/1 gate. Our forward code scales by
-   `interaction_coef`, so our derivatives must include this factor for
-   mathematical correctness. In practice, `interaction_coef` is always
-   0.0 or 1.0, so the numerical effect is identical.)*
+   *(MuJoCo's `mjd_ellipsoidFluid` uses `interaction_coef` only as a 0/1 gate
+   (`if (geom_interaction_coef == 0.0) continue`). Our forward code
+   (`mujoco_pipeline.rs:12131`) scales forces by `interaction_coef`, so our
+   derivatives must include this factor for mathematical correctness:
+   `∂(c·f)/∂v = c · ∂f/∂v`. Since `interaction_coef ∈ {0.0, 1.0}` in all
+   valid models, the numerical result is identical to MuJoCo.)*
 3. Project: `qDeriv += J_local^T · B · J_local`
 
 ##### S6. Dense `J^T·B·J` Accumulation
 
-Add a helper function for the `J^T · B · J` projection:
+**Full 6×6 projection (ellipsoid):**
 
 ```rust
 /// Accumulate J^T · B · J into qDeriv.
-/// J is 6×nv, B is 6×6 row-major: B[i][j] = ∂force_i/∂vel_j (matching MuJoCo).
-fn add_JTBJ(qDeriv: &mut DMatrix<f64>, J: &DMatrix<f64>, B: &[[f64; 6]; 6], nv: usize) {
-    // BJ = B · J  (6×nv)
-    // qDeriv += J^T · BJ  (nv×nv)
-    // Dense implementation — acceptable for nv < 200 target.
-}
-```
-
-For the inertia-box per-axis case, use a simpler rank-1 helper:
-```rust
-/// Accumulate b · row^T · row into qDeriv (rank-1 update).
-fn add_rank1(qDeriv: &mut DMatrix<f64>, b: f64, row: &[f64], nv: usize) {
+/// J: 6×nv DMatrix, B: 6×6 row-major [[f64; 6]; 6].
+fn add_jtbj(qDeriv: &mut DMatrix<f64>, J: &DMatrix<f64>, B: &[[f64; 6]; 6]) {
+    let nv = J.ncols();
+    // Convert B to nalgebra matrix for clean multiply
+    let b_mat = Matrix6::from_fn(|i, j| B[i][j]);
+    let bj = b_mat * J;             // 6×nv
+    // qDeriv += J^T · BJ           // nv×nv
     for r in 0..nv {
-        if row[r] == 0.0 { continue; }
-        let br = b * row[r];
-        for c in 0..nv {
-            if row[c] == 0.0 { continue; }
-            qDeriv[(r, c)] += br * row[c];
+        for k in 0..6 {
+            let jtk = J[(k, r)];     // J^T[r, k]
+            if jtk == 0.0 { continue; }
+            for c in 0..nv {
+                qDeriv[(r, c)] += jtk * bj[(k, c)];
+            }
         }
     }
 }
 ```
 
-Both skip zero entries for efficiency (body Jacobians are sparse — only ancestor
-DOFs are nonzero).
+The inner loop skips zero entries for efficiency — body Jacobians are sparse
+(only ancestor DOFs are nonzero). For a free-floating body with `nv_chain ≈ 6`,
+this runs ~216 multiplies per geom instead of 6·nv² for the full dense product.
+
+**Rank-1 update (inertia-box):**
+
+```rust
+/// Accumulate b · row^T · row into qDeriv (rank-1 update).
+fn add_rank1(qDeriv: &mut DMatrix<f64>, b: f64, row: DMatrixSlice<f64>) {
+    let nv = row.ncols();
+    for r in 0..nv {
+        let jr = row[(0, r)];
+        if jr == 0.0 { continue; }
+        let br = b * jr;
+        for c in 0..nv {
+            let jc = row[(0, c)];
+            if jc == 0.0 { continue; }
+            qDeriv[(r, c)] += br * jc;
+        }
+    }
+}
+```
 
 **Sparse Jacobian deferral:** MuJoCo supports both dense and sparse Jacobian paths
 (`addJTBJ` vs `addJTBJSparse`) selectable via `mj_isSparse(m)`. This
@@ -4976,17 +5103,45 @@ pub(crate) fn mjd_fluid_vel(model: &Model, data: &mut Data) {
 }
 ```
 
-Called from `mjd_passive_vel()` after per-DOF damping and tendon damping.
+Called from `mjd_passive_vel()` **before** per-DOF damping and tendon damping
+(matching MuJoCo's dispatch order — see S2).
+
+**Sleep filtering deferral:** MuJoCo's `mjd_passive_vel` supports sleep filtering
+(`d->body_awake_ind`, `d->nbody_awake`) to skip sleeping bodies. Our codebase
+does not yet implement sleep. This is a performance optimization that does not
+affect correctness — deferred.
 
 ##### S8. Velocity Extraction and Wind Subtraction
 
 Both derivative functions need the same local-frame velocity used by the forward
 computation. Reuse `object_velocity_local()` from `mujoco_pipeline.rs` and apply
-the same wind subtraction (translational only, rotated to local frame).
+the same wind subtraction (translational only, rotated to local frame):
+
+```rust
+// Inertia-box: velocity at body CoM in body inertia frame
+let mut lvel = object_velocity_local(model, data, body_id, &data.xipos[body_id], &data.ximat[body_id]);
+let wind_local = data.ximat[body_id].transpose() * model.wind;
+lvel[3] -= wind_local.x;
+lvel[4] -= wind_local.y;
+lvel[5] -= wind_local.z;
+
+// Ellipsoid: velocity at geom center in geom frame
+let mut lvel = object_velocity_local(model, data, geom_body, &data.geom_xpos[gid], &data.geom_xmat[gid]);
+let wind_local = data.geom_xmat[gid].transpose() * model.wind;
+lvel[3] -= wind_local.x;
+lvel[4] -= wind_local.y;
+lvel[5] -= wind_local.z;
+```
+
+**Wind is constant** — it does not depend on `qvel`, so `∂wind/∂qvel = 0`. The
+derivative formulas use the wind-subtracted velocity (relative velocity) as their
+input, which is correct: `∂f(v_rel)/∂qvel = ∂f/∂v_rel · ∂v_rel/∂qvel` and
+`∂v_rel/∂qvel = ∂v_body/∂qvel` since `∂wind/∂qvel = 0`.
 
 Critical: the derivative functions must use **identical** velocity values as the
-forward computation. Any mismatch (e.g., different wind handling or reference
-point) would produce incorrect derivatives.
+forward computation. The velocity extraction code (reference point, wind
+subtraction, rotation matrix) must match `mj_inertia_box_fluid` and
+`mj_ellipsoid_fluid` exactly.
 
 ##### S9. Zero-Velocity Safety
 
@@ -4999,27 +5154,76 @@ the forward computation's `speed.max(MJ_MINVAL)` guard).
 
 #### Test Plan
 
+##### Reference Value Generation
+
+MuJoCo reference values for conformance tests (T5, T13, T14, T17, T18, T25–T31)
+are generated using the following procedure:
+
+1. Pin MuJoCo version: **3.5.0** (matching §40 forward conformance tests)
+2. Python extraction script using `mujoco` package:
+   ```python
+   import mujoco
+   import numpy as np
+   m = mujoco.MjModel.from_xml_string(MODEL_XML)
+   d = mujoco.MjData(m)
+   # Model must use implicit integrator for qDeriv to be populated.
+   # mj_forward → mj_fwd_acceleration → mjd_passive_vel populates qDeriv.
+   assert m.opt.integrator in (mujoco.mjtIntegrator.mjINT_IMPLICIT,
+                                mujoco.mjtIntegrator.mjINT_IMPLICITFAST)
+   # Set qpos, qvel to test state, then run full forward dynamics
+   d.qpos[:] = TEST_QPOS
+   d.qvel[:] = TEST_QVEL
+   mujoco.mj_forward(m, d)
+   # Extract qDeriv (sparse → dense conversion)
+   qDeriv_dense = np.zeros((m.nv, m.nv))
+   for i in range(m.nv):
+       for s in range(m.D_rownnz[i]):
+           j = m.D_colind[m.D_rowadr[i] + s]
+           qDeriv_dense[i, j] = d.qDeriv[m.D_rowadr[i] + s]
+   ```
+3. Store as `const` arrays in test source files (same pattern as §40 tests)
+4. For FD validation tests (T4, T6–T12), reference values are computed by the
+   test itself — no external MuJoCo dependency needed
+
+##### FD Validation Methodology
+
+All FD validation tests (T4, T6–T12) use centered finite differences:
+
+```
+∂f_i/∂v_j ≈ (f_i(v + ε·e_j) − f_i(v − ε·e_j)) / (2ε)
+```
+
+- **ε = 1e-6** (balances truncation vs roundoff for f64)
+- Perturbation applied to each velocity component independently
+- Forward force computed by calling the component function directly (not through
+  full pipeline), using the same geometric constants and coefficients
+- Test velocities: **non-axis-aligned** (e.g., `v = [1.2, -0.7, 0.3]`,
+  `ω = [0.5, -1.1, 0.8]`) to exercise all cross-terms
+- Comparison: entry-wise absolute tolerance **1e-5**
+
+##### Test Matrix
+
 | # | Category | Description | Verification |
 |---|----------|-------------|--------------|
 | **Inertia-box derivatives** ||||
 | T1 | Unit | Diagonal B entries for sphere (β>0, ρ=0) | Viscous-only: each b_k = closed-form constant. Compare 6 scalar values. |
 | T2 | Unit | Diagonal B entries for box (β=0, ρ>0) | Density-only: b_k depends on `2|v_k|`. Compare at known velocity. |
 | T3 | Unit | Diagonal B entries for box (β>0, ρ>0) | Combined: sum of viscous + quadratic terms. |
-| T4 | FD validation | Inertia-box B matches FD | Perturb each of 6 velocity components by ε=1e-6, compute `(f(v+ε)−f(v−ε))/(2ε)`, compare against analytical B diagonal. Tol: 1e-5. |
+| T4 | FD validation | Inertia-box B matches FD | Perturb each of 6 velocity components, compare FD of forward inertia-box force against analytical B diagonal. Tol: 1e-5. |
 | T5 | D matrix | Inertia-box qDeriv matches MuJoCo | Free-floating box, non-zero velocity. Extract `qDeriv` after `mjd_passive_vel`, compare against MuJoCo reference. Tol: 1e-10. |
 | **Ellipsoid derivatives** ||||
-| T6 | Unit | `mjd_cross` helper | Verify `∂(a×b)/∂a` and `∂(a×b)/∂b` against FD perturbation. |
+| T6 | Unit | `mjd_cross` helper | Verify `∂(a×b)/∂a` and `∂(a×b)/∂b` against FD perturbation. Multiple vector pairs including zero components. |
 | T7 | Unit | Added mass derivatives | Single ellipsoid, non-zero ω and v. Compare Q(0,0), Q(0,1), Q(1,0), Q(1,1) from `mjd_addedMassForces` against FD of forward added-mass forces. |
 | T8 | Unit | Magnus derivatives | Verify `mjd_magnus_force` Q(1,0) and Q(1,1) against FD. |
-| T9 | Unit | Kutta lift derivatives | Verify `mjd_kutta_lift` Q(1,1) against FD. Use non-axis-aligned velocity. |
-| T10 | Unit | Viscous drag derivatives | Verify `mjd_viscous_drag` Q(1,1) against FD. Both viscous-only and quadratic cases. |
+| T9 | Unit | Kutta lift derivatives | Verify `mjd_kutta_lift` Q(1,1) against FD. Use non-axis-aligned velocity to exercise all cross-terms and avoid degenerate proj_denom. |
+| T10 | Unit | Viscous drag derivatives | Verify `mjd_viscous_drag` Q(1,1) against FD. Both viscous-only (β>0,ρ=0) and combined (β>0,ρ>0) cases. |
 | T11 | Unit | Viscous torque derivatives | Verify `mjd_viscous_torque` Q(0,0) against FD. |
 | T12 | FD validation | Full ellipsoid 6×6 B matches FD | Assemble all 5 components into B. Perturb 6D velocity, compute full 6×6 FD Jacobian. Compare entry-wise. Tol: 1e-5. |
 | T13 | D matrix | Ellipsoid qDeriv matches MuJoCo | Free-floating ellipsoid, non-zero velocity. Extract `qDeriv`, compare against MuJoCo. Tol: 1e-10. |
-| T14 | D matrix | Multi-geom body | Body with 2 ellipsoid geoms. Verify additive accumulation. |
+| T14 | D matrix | Multi-geom body | Body with 2 ellipsoid geoms. Verify additive accumulation matches MuJoCo. |
 | **Symmetrization** ||||
 | T15 | Symmetry | ImplicitFast B is symmetric | Ellipsoid B after symmetrization: `B[i][j] == B[j][i]` for all entries. |
-| T16 | Asymmetry | Full Implicit B is not symmetrized | Full Implicit path: B retains asymmetric Coriolis-like terms. Verify B[i][j] ≠ B[j][i] for at least one entry with non-trivial velocity. |
+| T16 | Asymmetry | Full Implicit B is not symmetrized | Full Implicit path: B retains asymmetric terms. Verify `B[i][j] ≠ B[j][i]` for at least one entry with non-trivial velocity. |
 | **Integration / whole-pipeline** ||||
 | T17 | Conformance | ImplicitFast qDeriv matches MuJoCo | Humanoid model with `density=1000`, `integrator="implicitfast"`. Compare full `qDeriv` matrix against MuJoCo reference. Tol: 1e-8. |
 | T18 | Conformance | Implicit qDeriv matches MuJoCo | Same model, `integrator="implicit"`. Compare `qDeriv`. Tol: 1e-8. |
@@ -5030,37 +5234,33 @@ the forward computation's `speed.max(MJ_MINVAL)` guard).
 | T22 | Gate | Zero velocity → zero quadratic B | At rest: quadratic diagonal entries = 0, viscous entries unchanged. |
 | T23 | Guard | Massless body skipped | `body_mass < MJ_MINVAL` → no fluid derivative contribution. |
 | T24 | Guard | `interaction_coef=0` geom skipped | Ellipsoid geom with `fluid[0]=0` → no derivative contribution. |
-| **Wind handling** ||||
-| T25 | Wind | Inertia-box derivatives with non-zero wind | Free-floating box, `opt.wind = [1,2,3]`, non-zero velocity. Verify analytical B diagonal accounts for wind-subtracted velocity. Compare against FD of forward forces with same wind. Tol: 1e-5. |
-| T26 | Wind | Ellipsoid derivatives with non-zero wind | Ellipsoid geom, `opt.wind = [1,2,3]`, non-zero velocity. Full 6×6 B via FD validation. Tol: 1e-5. |
+| **Jacobian reference point and geometry** ||||
+| T25 | Conformance | Geom offset from body CoM | Ellipsoid geom with `pos="1 0.5 0"` (offset from body origin). Verify qDeriv matches MuJoCo — confirms Jacobian is computed at `geom_xpos`, not `xipos`. Tol: 1e-10. |
+| T26 | Conformance | Wind + fluid derivative | Non-zero `wind="5 0 0"`, free-floating ellipsoid with velocity. Verify qDeriv matches MuJoCo — confirms velocity is correctly wind-subtracted before derivative computation. Tol: 1e-10. |
+| T27 | Conformance | Mixed-type multi-body | Model with body A (inertia-box, no fluidshape) and body B (ellipsoid, fluidshape="ellipsoid"). Both moving. Verify both contribute to qDeriv independently and match MuJoCo. Tol: 1e-10. |
+| T28 | Edge case | Single-axis velocity | Only `v_x ≠ 0`, all other components zero. Tests degenerate Kutta/viscous-drag proj_denom. Verify qDeriv matches MuJoCo (guards produce correct result, no NaN). Tol: 1e-10. |
 | **Joint-type and multi-body coverage** ||||
-| T27 | D matrix | Hinge joint Jacobian | Single body on hinge joint, inertia-box, density=1000. Verify 1D Jacobian row produces correct rank-1 qDeriv update (single nonzero entry). Compare against MuJoCo. Tol: 1e-10. |
-| T28 | D matrix | Ball joint Jacobian | Single body on ball joint, ellipsoid geom. Verify 3-DOF Jacobian structure in 3×3 qDeriv block. Compare against MuJoCo. Tol: 1e-10. |
-| T29 | D matrix | Multi-body chain | 3-body chain (hinge joints), density=1000, non-zero velocity. Verify qDeriv has contributions from all 3 bodies at correct DOF intersections (lower-triangular ancestor pattern). Compare against MuJoCo. Tol: 1e-10. |
+| T29 | D matrix | Hinge joint Jacobian | Single body on hinge joint, inertia-box, density=1000. Verify 1D Jacobian row produces correct rank-1 qDeriv update (single nonzero entry). Compare against MuJoCo. Tol: 1e-10. |
+| T30 | D matrix | Ball joint Jacobian | Single body on ball joint, ellipsoid geom. Verify 3-DOF Jacobian structure in 3×3 qDeriv block. Compare against MuJoCo. Tol: 1e-10. |
+| T31 | D matrix | Multi-body chain | 3-body chain (hinge joints), density=1000, non-zero velocity. Verify qDeriv has contributions from all 3 bodies at correct DOF intersections (lower-triangular ancestor pattern). Compare against MuJoCo. Tol: 1e-10. |
 | **Regression** ||||
-| T30 | Regression | §40 T1–T42 still pass | Explicit integrator path unchanged — derivatives only affect implicit path. |
-| T31 | Regression | Existing derivative tests pass | `mjd_smooth_vel` tests in `derivatives.rs` remain green. |
+| T32 | Regression | §40 T1–T42 still pass | Explicit integrator path unchanged — derivatives only affect implicit path. |
+| T33 | Regression | Existing derivative tests pass | `mjd_smooth_vel` tests in `derivatives.rs` remain green. |
 
-**Reference data acquisition:** Tests comparing against MuJoCo (T5, T13, T17–T18,
-T27–T29) obtain reference values via a Python script using `mujoco` (pip package).
-The script loads the test model, sets `qpos`/`qvel` to the test state, calls
-`mj_forward()` then `mjd_smooth_vel()`, and extracts `d.qDeriv` as a dense
-`nv×nv` matrix. Reference values are hardcoded as `const` arrays in the test file
-(same pattern as §40 T1–T42 and the existing derivative conformance tests).
+##### Tolerance Justification
 
-**Tolerance justification:**
-- **1e-10** (MuJoCo direct comparison, T5/T13/T27–T29): Both implementations use
-  identical analytical formulas operating on identical floating-point state. Only
-  source of error is accumulation order differences. This matches the tolerance
-  used throughout the existing derivative conformance tests.
+- **1e-10** (MuJoCo direct comparison, T5/T13/T14/T25–T31): Both implementations
+  use identical analytical formulas operating on identical floating-point state.
+  Only source of error is accumulation order differences. This matches the
+  tolerance used throughout the existing derivative conformance tests.
 - **1e-8** (pipeline conformance, T17–T18): Full pipeline runs forward kinematics
   → RNE → passive → derivatives, accumulating rounding across more stages.
   Slightly relaxed from 1e-10 to account for cross-stage accumulation.
-- **1e-5** (FD validation, T4/T12/T25–T26): Central finite differences with
-  `ε=1e-6` have truncation error `O(ε²) ≈ 1e-12` but the perturbation interacts
-  with `max(MJ_MINVAL, ·)` guards in nonlinear terms (Kutta, area gradient),
-  producing `O(ε)` error at guard boundaries. 1e-5 allows for this while still
-  catching formula errors (which typically produce `O(1)` discrepancies).
+- **1e-5** (FD validation, T4/T6–T12): Central finite differences with `ε=1e-6`
+  have truncation error `O(ε²) ≈ 1e-12` but the perturbation interacts with
+  `max(MJ_MINVAL, ·)` guards in nonlinear terms (Kutta, area gradient), producing
+  `O(ε)` error at guard boundaries. 1e-5 allows for this while still catching
+  formula errors (which typically produce `O(1)` discrepancies).
 
 #### Cross-references
 
@@ -5074,19 +5274,19 @@ The script loads the test model, sets `qpos`/`qvel` to the test state, calls
 
 | File | Action | Changes |
 |------|--------|---------|
-| `sim/L0/core/src/derivatives.rs` | modify | Add `mjd_fluid_vel()` (top-level dispatch), `mjd_inertia_box_fluid()`, `mjd_ellipsoid_fluid()`, and 5 component Jacobian helpers (`mjd_cross`, `mjd_magnus_force`, `mjd_kutta_lift`, `mjd_viscous_drag`, `mjd_viscous_torque`, `mjd_added_mass_forces`). Add `add_JTBJ()` and `add_rank1()` dense accumulation helpers. Call `mjd_fluid_vel` from `mjd_passive_vel`. |
-| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `mj_jac_body_com()` and `mj_jac_geom()` helpers returning 6×nv Jacobian (angular + translational). Make `object_velocity_local()` and related fluid helpers `pub(crate)` so `derivatives.rs` can reuse them. |
-| `sim/L0/tests/integration/fluid_forces.rs` | modify | Add derivative-specific tests T1–T31 above. |
+| `sim/L0/core/src/derivatives.rs` | modify | Add `mjd_fluid_vel()` (top-level dispatch), `mjd_inertia_box_fluid()`, `mjd_ellipsoid_fluid()`, and 5 component Jacobian helpers (`mjd_cross`, `mjd_magnus_force`, `mjd_kutta_lift`, `mjd_viscous_drag`, `mjd_viscous_torque`, `mjd_added_mass_forces`). Add `add_jtbj()`, `add_rank1()`, `add_to_quadrant()` helpers. Insert `mjd_fluid_vel` call at top of `mjd_passive_vel` (before per-DOF damping). |
+| `sim/L0/core/src/mujoco_pipeline.rs` | modify | Add `mj_jac_point()` shared kernel, `mj_jac_body_com()`, `mj_jac_geom()`, `rotate_jac_to_local()`. Make `object_velocity_local()`, `fluid_geom_semi_axes()`, `ellipsoid_moment()`, and related fluid helpers `pub(crate)` so `derivatives.rs` can reuse them. |
+| `sim/L0/tests/integration/fluid_forces.rs` | modify | Add derivative-specific tests T1–T33 above. |
 
 #### Implementation Phases
 
 | Phase | Scope | Deliverable |
 |-------|-------|-------------|
-| P1 | Infrastructure | `mj_jac_body_com`, `mj_jac_geom`, `add_JTBJ`, `add_rank1`, `mjd_cross` helper. Unit tests T6. |
-| P2 | Inertia-box derivatives | `mjd_inertia_box_fluid`. Tests T1–T5, T25. |
-| P3 | Ellipsoid component derivatives | 5 component Jacobian functions. Tests T7–T11, T26. |
+| P1 | Infrastructure | `mj_jac_point`, `mj_jac_body_com`, `mj_jac_geom`, `rotate_jac_to_local`, `add_jtbj`, `add_rank1`, `add_to_quadrant`, `mjd_cross`. Unit tests T6. |
+| P2 | Inertia-box derivatives | `mjd_inertia_box_fluid`. Tests T1–T5. |
+| P3 | Ellipsoid component derivatives | 5 component Jacobian functions. Tests T7–T11. |
 | P4 | Ellipsoid assembly + integration | `mjd_ellipsoid_fluid`, symmetrization, `mjd_fluid_vel` dispatch. Tests T12–T16. |
-| P5 | Pipeline integration + conformance | Wire into `mjd_passive_vel`. Tests T17–T24, T27–T31. |
+| P5 | Pipeline integration + conformance | Wire into `mjd_passive_vel`. Tests T17–T33. |
 
 ---
 
