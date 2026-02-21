@@ -1075,13 +1075,15 @@ The existing `efc_lambda` warmstart cache (keyed by `WarmstartKey`) remains
 for PGS/CG. The Newton solver does not use it — it works in `qacc` space.
 Constraint forces are recovered from `qacc` after convergence.
 
-##### 15.10 Noslip Post-Processor (deferred)
+##### 15.10 Noslip Post-Processor ✅ (Implemented in §33)
 
 MuJoCo's `noslip_iterations` option runs a modified PGS pass after the main
 solve that updates only friction forces without regularization, suppressing
-slip from soft contacts. This is an ad hoc post-processor (not a well-defined
-optimization) and is deferred to a follow-up. The `noslip_iterations` MJCF
-field should be parsed and stored but ignored with a warning.
+slip from soft contacts. Fully implemented in §33 (`noslip_postprocess()` in
+`mujoco_pipeline.rs`) with PGS iteration, QCQP cone projection, and
+cost-based convergence for both elliptic and pyramidal friction cones. The
+`noslip_iterations` and `noslip_tolerance` MJCF fields are parsed and stored
+in `Model`, and the post-processor is dispatched after all solver types.
 
 ##### 15.11 Integration Points ✅
 
