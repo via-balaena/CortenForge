@@ -36,6 +36,12 @@ final checks.
   across long sessions; context windows can run out and lose progress.
 - Always ask for permission before committing. Never auto-commit.
 
+## Python
+- Always use `uv` instead of `pip`, `pip install`, `python -m pip`, or `python -m venv`.
+- Install packages: `uv pip install <package>`
+- Run scripts: `uv run <script.py>`
+- Create venvs: `uv venv`
+
 ## Principles
 - Foundational fixes over quick patches. If something is wrong at the root, fix it there even if it's breaking.
 - Never rush. Get it right, not fast.
