@@ -5403,7 +5403,7 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 ---
 
 ### 40b. Tendon Visualization Data (`wrap_xpos`, `wrap_obj`)
-**Status:** Not started | **Effort:** S | **Prerequisites:** None
+**Status:** Done | **Effort:** S | **Prerequisites:** None
 
 #### Current State
 

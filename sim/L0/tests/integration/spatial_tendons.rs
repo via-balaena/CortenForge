@@ -2101,6 +2101,10 @@ fn test_40b_t10_wrap_xpos_conformance() {
             -0.013280251722640,
             epsilon = 1e-6
         );
+        // Verify wrap_obj markers
+        let geom_id = data.wrap_obj[adr + 1];
+        assert!(geom_id >= 0);
+        assert_eq!(data.wrap_obj[adr + 2], geom_id);
     }
 
     // Model E: sphere sidesite wrapping
@@ -2118,6 +2122,10 @@ fn test_40b_t10_wrap_xpos_conformance() {
         assert_relative_eq!(data.wrap_xpos[adr + 2].x, 0.047958277423076, epsilon = 1e-6);
         assert_relative_eq!(data.wrap_xpos[adr + 2].y, 0.087749664538455, epsilon = 1e-6);
         assert_relative_eq!(data.wrap_xpos[adr + 2].z, 0.0, epsilon = 1e-6);
+        // Verify wrap_obj markers
+        let geom_id = data.wrap_obj[adr + 1];
+        assert!(geom_id >= 0);
+        assert_eq!(data.wrap_obj[adr + 2], geom_id);
     }
 
     // Model H: collinear degenerate
@@ -2147,6 +2155,32 @@ fn test_40b_t10_wrap_xpos_conformance() {
         assert_relative_eq!(t2_local.norm(), radius, epsilon = 1e-10);
     }
 
+    // Model I: cylinder sidesite wrapping
+    {
+        let model = load_model(MODEL_I).expect("load failed");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward failed");
+
+        let adr = data.ten_wrapadr[0];
+        assert_eq!(data.ten_wrapnum[0], 4);
+        // MuJoCo 3.5.0: tangent₁ = (0.005275293665245, 0.079825880995736, 0.005317640178297)
+        assert_relative_eq!(data.wrap_xpos[adr + 1].x, 0.005275293665245, epsilon = 1e-6);
+        assert_relative_eq!(data.wrap_xpos[adr + 1].y, 0.079825880995736, epsilon = 1e-6);
+        assert_relative_eq!(data.wrap_xpos[adr + 1].z, 0.005317640178297, epsilon = 1e-6);
+        // MuJoCo 3.5.0: tangent₂ = (0.033445535784753, 0.072673214708521, -0.013280251722640)
+        assert_relative_eq!(data.wrap_xpos[adr + 2].x, 0.033445535784753, epsilon = 1e-6);
+        assert_relative_eq!(data.wrap_xpos[adr + 2].y, 0.072673214708521, epsilon = 1e-6);
+        assert_relative_eq!(
+            data.wrap_xpos[adr + 2].z,
+            -0.013280251722640,
+            epsilon = 1e-6
+        );
+        // Verify wrap_obj markers
+        let geom_id = data.wrap_obj[adr + 1];
+        assert!(geom_id >= 0);
+        assert_eq!(data.wrap_obj[adr + 2], geom_id);
+    }
+
     // Model J: sidesite-forced wrapping
     {
         let model = load_model(MODEL_J).expect("load failed");
@@ -2174,6 +2208,31 @@ fn test_40b_t10_wrap_xpos_conformance() {
             epsilon = 1e-6
         );
         assert_relative_eq!(data.wrap_xpos[adr + 2].z, 0.0, epsilon = 1e-6);
+        // Verify wrap_obj markers
+        let geom_id = data.wrap_obj[adr + 1];
+        assert!(geom_id >= 0);
+        assert_eq!(data.wrap_obj[adr + 2], geom_id);
+    }
+
+    // Model K: free-joint straight tendon (no wrapping geometry)
+    {
+        let model = load_model(MODEL_K).expect("load failed");
+        let mut data = model.make_data();
+        data.forward(&model).expect("forward failed");
+
+        let adr = data.ten_wrapadr[0];
+        assert_eq!(data.ten_wrapnum[0], 2);
+        assert_eq!(data.wrap_obj[adr], -1);
+        assert_eq!(data.wrap_obj[adr + 1], -1);
+        // Site positions match
+        let s0_id = model.wrap_objid[model.tendon_adr[0]];
+        let s1_id = model.wrap_objid[model.tendon_adr[0] + 1];
+        assert_relative_eq!(data.wrap_xpos[adr], data.site_xpos[s0_id], epsilon = 1e-10);
+        assert_relative_eq!(
+            data.wrap_xpos[adr + 1],
+            data.site_xpos[s1_id],
+            epsilon = 1e-10
+        );
     }
 
     // Model L: mixed straight + wrapping
@@ -2192,6 +2251,13 @@ fn test_40b_t10_wrap_xpos_conformance() {
         assert_relative_eq!(data.wrap_xpos[adr + 3].x, 0.0, epsilon = 1e-6);
         assert_relative_eq!(data.wrap_xpos[adr + 3].y, 0.073321211119293, epsilon = 1e-6);
         assert_relative_eq!(data.wrap_xpos[adr + 3].z, 0.268000000000000, epsilon = 1e-6);
+        // Verify wrap_obj markers
+        assert_eq!(data.wrap_obj[adr], -1); // s1
+        assert_eq!(data.wrap_obj[adr + 1], -1); // s2
+        let geom_id = data.wrap_obj[adr + 2];
+        assert!(geom_id >= 0); // tangent₁
+        assert_eq!(data.wrap_obj[adr + 3], geom_id); // tangent₂
+        assert_eq!(data.wrap_obj[adr + 4], -1); // s3
     }
 }
 
