@@ -385,6 +385,49 @@ fn t01_inertia_box_viscous_b_scalars() {
             );
         }
     }
+
+    // === Analytical B scalar validation ===
+    // IBOX_VISCOUS: sphere r=0.01, mass=0.001, density=0, viscosity=1.0
+    // Sphere inertia: I = 2/5·m·r² (same for all axes)
+    // Box dims from inertia: bx = sqrt((Iy+Iz-Ix)/m·6) = sqrt(I/m·6) for sphere
+    // All box dims equal → diam = bx
+    let r = 0.01_f64;
+    let m = 0.001_f64;
+    let beta = 1.0_f64;
+    let inertia = 2.0 / 5.0 * m * r * r;
+    let box_dim = ((inertia / m) * 6.0).sqrt();
+    let diam = box_dim; // all axes equal for sphere
+
+    let b_angular = -std::f64::consts::PI * diam.powi(3) * beta;
+    let b_linear = -3.0 * std::f64::consts::PI * diam * beta;
+
+    // Get analytical qDeriv via mjd_passive_vel
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    // For free joint at identity qpos, diagonal entries equal B scalars:
+    // DOFs 0–2 (linear) → b_linear, DOFs 3–5 (angular) → b_angular
+    for i in 0..3 {
+        assert!(
+            (work.qDeriv[(i, i)] - b_linear).abs() < 1e-12,
+            "T1: Linear B scalar mismatch at ({},{}): got={:.10e}, expected={:.10e}",
+            i,
+            i,
+            work.qDeriv[(i, i)],
+            b_linear
+        );
+    }
+    for i in 3..6 {
+        assert!(
+            (work.qDeriv[(i, i)] - b_angular).abs() < 1e-12,
+            "T1: Angular B scalar mismatch at ({},{}): got={:.10e}, expected={:.10e}",
+            i,
+            i,
+            work.qDeriv[(i, i)],
+            b_angular
+        );
+    }
 }
 
 // ============================================================================
@@ -397,14 +440,45 @@ fn t02_inertia_box_density_b_scalars() {
     let qvel = [0.0, 0.0, 0.0, 0.0, 0.0, -1.0];
     let (model, data) = setup(IBOX_SPHERE, &qvel);
 
-    let fd = qderiv_fd(&model, &data, 1e-6);
+    // === Analytical validation ===
+    // IBOX_SPHERE: sphere r=0.1, mass=1, density=1.2, viscosity=0
+    // qvel = [0,0,0,0,0,-1] → DOFs [v_x,v_y,v_z,ω_x,ω_y,ω_z] → ω_z = -1
+    // lvel = [ω_x=0, ω_y=0, ω_z=-1, v_x=0, v_y=0, v_z=0]
+    //
+    // Only angular axis k=2 has nonzero velocity.
+    // Quadratic angular: b[k] = -2·ρ·d_k·(d_j⁴ + d_l⁴)/64 · |ω_k|
+    // For sphere all box dims equal (d), so:
+    //   b[2] = -2·ρ·d·2d⁴/64·|ω_z| = -ρ·d⁵/16
+    let r = 0.1_f64;
+    let m = 1.0_f64;
+    let rho = 1.2_f64;
+    let inertia = 2.0 / 5.0 * m * r * r;
+    let d = ((inertia / m) * 6.0).sqrt(); // all box dims equal for sphere
 
-    // qDeriv should be nonzero (density > 0, velocity nonzero → quadratic drag)
-    let max_abs = fd.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    let b_angular_z = -2.0 * rho * d * (d.powi(4) + d.powi(4)) / 64.0 * 1.0; // |ω_z| = 1
+
+    let mut work = data.clone();
+    work.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model, &mut work);
+
+    // At identity qpos, b[2] (angular axis 2) maps to qDeriv[(5,5)] (ω_z DOF)
     assert!(
-        max_abs > 1e-10,
-        "qDeriv should have nonzero entries for density>0"
+        (work.qDeriv[(5, 5)] - b_angular_z).abs() < 1e-12,
+        "T2: Angular ω_z B scalar mismatch: got={:.10e}, expected={:.10e}",
+        work.qDeriv[(5, 5)],
+        b_angular_z
     );
+
+    // Other diagonal entries should be zero: no viscosity, no velocity on those axes
+    for i in 0..5 {
+        assert!(
+            work.qDeriv[(i, i)].abs() < 1e-14,
+            "T2: Diagonal ({},{}) should be zero (no viscosity, no velocity): got={:.10e}",
+            i,
+            i,
+            work.qDeriv[(i, i)]
+        );
+    }
 }
 
 // ============================================================================
@@ -415,12 +489,56 @@ fn t02_inertia_box_density_b_scalars() {
 #[test]
 fn t03_inertia_box_combined_b_scalars() {
     let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3];
-    let (model, data) = setup(IBOX_COMBINED, &qvel);
 
-    let fd = qderiv_fd(&model, &data, 1e-6);
+    // === Additivity: combined = viscous-only + density-only ===
+    // The B scalar formula is b_k = viscous_k + quadratic_k, and the qDeriv
+    // projection J^T·diag(b)·J is linear, so the combined qDeriv must equal
+    // the sum of viscous-only and density-only qDeriv (exactly, since both use
+    // identical qpos/Jacobians and the formulas are purely analytical).
 
-    let max_abs = fd.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-    assert!(max_abs > 1e-10, "Combined qDeriv should be nonzero");
+    // 1. Combined (β=0.001, ρ=1.2) — original model
+    let (model_c, data_c) = setup(IBOX_COMBINED, &qvel);
+    let mut work_c = data_c.clone();
+    work_c.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model_c, &mut work_c);
+
+    // 2. Viscous-only (β=0.001, ρ=0) — same box geometry
+    let mjcf_viscous = r#"<mujoco><option density="0" viscosity="0.001" integrator="implicit"/>
+        <worldbody><body pos="0 0 1"><freejoint/>
+        <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body></worldbody></mujoco>"#;
+    let (model_v, data_v) = setup(mjcf_viscous, &qvel);
+    let mut work_v = data_v.clone();
+    work_v.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model_v, &mut work_v);
+
+    // 3. Density-only (β=0, ρ=1.2) — same box geometry
+    let mjcf_density = r#"<mujoco><option density="1.2" viscosity="0" integrator="implicit"/>
+        <worldbody><body pos="0 0 1"><freejoint/>
+        <geom type="box" size="0.1 0.05 0.025" mass="1"/>
+        </body></worldbody></mujoco>"#;
+    let (model_d, data_d) = setup(mjcf_density, &qvel);
+    let mut work_d = data_d.clone();
+    work_d.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model_d, &mut work_d);
+
+    // Verify: combined ≈ viscous + density (tolerance 1e-10, both analytical)
+    let nv = model_c.nv;
+    for i in 0..nv {
+        for j in 0..nv {
+            let combined = work_c.qDeriv[(i, j)];
+            let sum = work_v.qDeriv[(i, j)] + work_d.qDeriv[(i, j)];
+            assert!(
+                (combined - sum).abs() < 1e-10,
+                "T3: Additivity failed at ({},{}): combined={:.10e}, viscous+density={:.10e}, diff={:.3e}",
+                i,
+                j,
+                combined,
+                sum,
+                (combined - sum).abs()
+            );
+        }
+    }
 }
 
 // ============================================================================
@@ -1015,25 +1133,42 @@ fn t16_implicit_b_asymmetric() {
     let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3];
     let (model, data) = setup(ELLIPSOID_BASIC, &qvel);
 
-    // For the full implicit path, B is NOT symmetrized
-    // Check that qDeriv has at least one asymmetric entry
-    let mut has_asymmetric = false;
-    for i in 0..model.nv {
-        for j in (i + 1)..model.nv {
-            if (data.qDeriv[(i, j)] - data.qDeriv[(j, i)]).abs() > 1e-14 {
-                has_asymmetric = true;
+    // For the full implicit path, B is NOT symmetrized.
+    // Added-mass gyroscopic cross-product derivatives produce O(1) asymmetry.
+
+    // Quantify the maximum asymmetry across all off-diagonal pairs
+    let nv = model.nv;
+    let mut max_asym = 0.0_f64;
+    for i in 0..nv {
+        for j in (i + 1)..nv {
+            let asym = (data.qDeriv[(i, j)] - data.qDeriv[(j, i)]).abs();
+            max_asym = max_asym.max(asym);
+        }
+    }
+    assert!(
+        max_asym > 1e-4,
+        "T16: Maximum asymmetry should exceed 1e-4 (got {:.3e})",
+        max_asym
+    );
+
+    // Verify asymmetry is concentrated in the angular-linear coupling block
+    // (rows 0–2 = linear DOFs, cols 3–5 = angular DOFs) where the added mass
+    // cross-product derivatives live.
+    let mut has_coupling_asymmetry = false;
+    for i in 0..3 {
+        for j in 3..6 {
+            if (data.qDeriv[(i, j)] - data.qDeriv[(j, i)]).abs() > 1e-10 {
+                has_coupling_asymmetry = true;
                 break;
             }
         }
-        if has_asymmetric {
+        if has_coupling_asymmetry {
             break;
         }
     }
-    // With Coriolis + added mass cross terms, the implicit path should produce
-    // asymmetric qDeriv (Coriolis is inherently asymmetric)
     assert!(
-        has_asymmetric,
-        "T16: Full Implicit qDeriv should have asymmetric entries"
+        has_coupling_asymmetry,
+        "T16: Asymmetry should appear in the linear-angular coupling block (rows 0–2, cols 3–5)"
     );
 }
 
@@ -1161,18 +1296,88 @@ fn t22_zero_velocity_zero_quadratic() {
     work.qDeriv.fill(0.0);
     sim_core::mjd_smooth_vel(&model, &mut work);
 
-    // With zero velocity, quadratic terms vanish.
-    // Only viscous (velocity-independent) terms should remain.
-    // The qDeriv should still be nonzero due to viscous terms + per-DOF damping.
-    // Actually, for a free joint with no springs/dampers, per-DOF damping = 0.
-    // But viscous fluid drag contributes negative diagonal entries.
-    // Just verify no NaN/Inf
-    for i in 0..model.nv {
-        for j in 0..model.nv {
+    let nv = model.nv;
+
+    // 1. All entries must be finite
+    for i in 0..nv {
+        for j in 0..nv {
             assert!(
                 work.qDeriv[(i, j)].is_finite(),
                 "T22: qDeriv should be finite at zero velocity"
             );
+        }
+    }
+
+    // 2. Diagonal entries must be negative (viscous drag opposes motion)
+    for i in 0..nv {
+        assert!(
+            work.qDeriv[(i, i)] < 0.0,
+            "T22: Diagonal ({},{}) should be negative: got={:.10e}",
+            i,
+            i,
+            work.qDeriv[(i, i)]
+        );
+    }
+
+    // 3. Verify diagonal values match viscous-only B scalars analytically.
+    // IBOX_COMBINED: box 0.1×0.05×0.025, mass=1, β=0.001
+    // At zero velocity, quadratic terms vanish — only viscous terms remain.
+    //
+    // Box inertia → equivalent box dims:
+    //   I_xx = m(b²+c²)/3, I_yy = m(a²+c²)/3, I_zz = m(a²+b²)/3
+    //   bx = sqrt((Iy+Iz-Ix)/m·6), by = sqrt((Ix+Iz-Iy)/m·6), bz = sqrt((Ix+Iy-Iz)/m·6)
+    // For half-sizes (0.1, 0.05, 0.025): bx=0.2, by=0.1, bz=0.05
+    let a = 0.1_f64;
+    let b = 0.05_f64;
+    let c = 0.025_f64;
+    let m = 1.0_f64;
+    let beta = 0.001_f64;
+    let i_xx = m * (b * b + c * c) / 3.0;
+    let i_yy = m * (a * a + c * c) / 3.0;
+    let i_zz = m * (a * a + b * b) / 3.0;
+    let bx = ((i_yy + i_zz - i_xx) / m * 6.0).sqrt();
+    let by = ((i_xx + i_zz - i_yy) / m * 6.0).sqrt();
+    let bz = ((i_xx + i_yy - i_zz) / m * 6.0).sqrt();
+    let diam = (bx + by + bz) / 3.0;
+
+    let b_angular = -std::f64::consts::PI * diam.powi(3) * beta;
+    let b_linear = -3.0 * std::f64::consts::PI * diam * beta;
+
+    // DOFs 0–2 (linear) → b_linear, DOFs 3–5 (angular) → b_angular
+    for i in 0..3 {
+        assert!(
+            (work.qDeriv[(i, i)] - b_linear).abs() < 1e-12,
+            "T22: Linear viscous B mismatch at ({},{}): got={:.10e}, expected={:.10e}",
+            i,
+            i,
+            work.qDeriv[(i, i)],
+            b_linear
+        );
+    }
+    for i in 3..6 {
+        assert!(
+            (work.qDeriv[(i, i)] - b_angular).abs() < 1e-12,
+            "T22: Angular viscous B mismatch at ({},{}): got={:.10e}, expected={:.10e}",
+            i,
+            i,
+            work.qDeriv[(i, i)],
+            b_angular
+        );
+    }
+
+    // 4. Off-diagonal entries must be zero (inertia-box at identity qpos with
+    // free joint and zero velocity → diagonal qDeriv only)
+    for i in 0..nv {
+        for j in 0..nv {
+            if i != j {
+                assert!(
+                    work.qDeriv[(i, j)].abs() < 1e-14,
+                    "T22: Off-diagonal ({},{}) should be zero: got={:.10e}",
+                    i,
+                    j,
+                    work.qDeriv[(i, j)]
+                );
+            }
         }
     }
 }
@@ -1212,14 +1417,39 @@ fn t23_massless_body_skipped() {
 #[test]
 fn t24_zero_interaction_coef() {
     let qvel = [0.5, -1.1, 0.8, 1.2, -0.7, 0.3];
-    let (model, data) = setup(ZERO_INTERACTION, &qvel);
 
-    // fluidshape="none" means geom_fluid[0]=0 → inertia-box path used (no ellipsoid).
-    // The inertia-box path computes body-level forces. This test just validates no crash.
-    let fd = qderiv_fd(&model, &data, 1e-6);
-    let max_abs = fd.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-    // Should be nonzero because inertia-box still contributes
-    assert!(max_abs.is_finite(), "T24: qDeriv should be finite");
+    // ZERO_INTERACTION: ellipsoid with fluidshape="none" → geom_fluid[0]=0
+    // → ellipsoid path skips this geom, falls back to inertia-box path.
+    let (model_none, data_none) = setup(ZERO_INTERACTION, &qvel);
+    let mut work_none = data_none.clone();
+    work_none.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model_none, &mut work_none);
+
+    // Matching inertia-box model: same geom without fluidshape attr (defaults to inertia-box)
+    let mjcf_ibox = r#"<mujoco><option density="1.2" viscosity="0.001" integrator="implicit"/>
+        <worldbody><body pos="0 0 1"><freejoint/>
+        <geom type="ellipsoid" size="0.1 0.05 0.02" mass="1"/>
+        </body></worldbody></mujoco>"#;
+    let (model_ibox, data_ibox) = setup(mjcf_ibox, &qvel);
+    let mut work_ibox = data_ibox.clone();
+    work_ibox.qDeriv.fill(0.0);
+    sim_core::mjd_passive_vel(&model_ibox, &mut work_ibox);
+
+    // Both must produce identical qDeriv — proving the ellipsoid path was
+    // skipped and the inertia-box fallback ran identically.
+    let nv = model_none.nv;
+    for i in 0..nv {
+        for j in 0..nv {
+            assert!(
+                (work_none.qDeriv[(i, j)] - work_ibox.qDeriv[(i, j)]).abs() < 1e-10,
+                "T24: fluidshape=none should match inertia-box at ({},{}): none={:.10e}, ibox={:.10e}",
+                i,
+                j,
+                work_none.qDeriv[(i, j)],
+                work_ibox.qDeriv[(i, j)]
+            );
+        }
+    }
 }
 
 // ============================================================================

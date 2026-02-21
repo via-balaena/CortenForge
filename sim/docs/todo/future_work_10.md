@@ -4550,15 +4550,22 @@ fluid damping in the D matrix (`M − h·D`).
 - Jacobian infrastructure: `mj_jac_point` (6×nv), `mj_jac_body_com`,
   `mj_jac_geom` in `mujoco_pipeline.rs`
 - 31 integration tests in `fluid_derivatives.rs` (T1–T32, no T18/T33/T34):
-  - T1–T3: inertia-box B scalar unit tests
+  - T1–T3: inertia-box B scalar analytical validation (T1: viscous formula +
+    velocity-independence, T2: density formula at known velocity, T3: viscous +
+    density additivity proof via three-model decomposition)
   - T4–T5: inertia-box FD validation + MuJoCo conformance
   - T6: `mjd_cross` helper FD validation
   - T7–T11: per-component ellipsoid FD validation
   - T12–T14: full ellipsoid FD + MuJoCo conformance + multi-geom
-  - T15–T16: symmetry verification (ImplicitFast symmetric, Implicit asymmetric)
+  - T15–T16: symmetry verification (T15: ImplicitFast symmetric, T16: Implicit
+    asymmetric — quantified max asymmetry > 1e-4, localized to angular-linear
+    coupling block)
   - T17: ImplicitFast MuJoCo conformance
   - T19–T20: energy dissipation stability (Implicit + ImplicitFast)
-  - T21–T24: guards and edge cases (zero fluid, zero velocity, massless, interaction_coef=0)
+  - T21–T24: guards and edge cases (T21: zero fluid, T22: zero velocity →
+    analytical viscous-only B scalar validation + zero off-diagonal, T23:
+    massless body, T24: interaction_coef=0 → inertia-box fallback equivalence
+    proof via two-model comparison)
   - T25–T28: Jacobian geometry (geom offset, wind, mixed multi-body, single-axis)
   - T29–T31: joint-type coverage (hinge, ball, multi-body chain)
   - T32: `mj_jac_point` vs `mj_jac_site` exact match
@@ -4769,8 +4776,8 @@ fn rotate_jac_to_local(J: &mut DMatrix<f64>, R: &Matrix3<f64>) {
 
 **Refactor deferral:** `mj_jac_site` currently implements its own chain-walk
 returning `(3×nv, 3×nv)`. A future cleanup could refactor it to call
-`mj_jac_point` and split the 6×nv result. Deferred to avoid widening §40a's
-blast radius.
+`mj_jac_point` and split the 6×nv result. Deferred to §40e to avoid widening
+§40a's blast radius.
 
 ##### S4. Inertia-Box B Matrix (Diagonal, Per-Body)
 
@@ -5139,9 +5146,9 @@ fn add_rank1(qDeriv: &mut DMatrix<f64>, b: f64, row: DMatrixSlice<f64>) {
 
 **Sparse Jacobian deferral:** MuJoCo supports both dense and sparse Jacobian paths
 (`addJTBJ` vs `addJTBJSparse`) selectable via `mj_isSparse(m)`. This
-implementation uses dense Jacobians only. Sparse support is deferred — it provides
-a constant-factor speedup for large `nv` but does not affect correctness. Dense is
-acceptable for the target model sizes (`nv < 200`).
+implementation uses dense Jacobians only. Sparse support is deferred to §40d — it
+provides a constant-factor speedup for large `nv` but does not affect correctness.
+Dense is acceptable for the target model sizes (`nv < 200`).
 
 ##### S7. Top-Level Dispatch: `mjd_fluid_vel`
 
@@ -5173,7 +5180,7 @@ Called from `mjd_passive_vel()` **before** per-DOF damping and tendon damping
 **Sleep filtering deferral:** MuJoCo's `mjd_passive_vel` supports sleep filtering
 (`d->body_awake_ind`, `d->nbody_awake`) to skip sleeping bodies. Our codebase
 does not yet implement sleep. This is a performance optimization that does not
-affect correctness — deferred.
+affect correctness — deferred to §40c.
 
 ##### S8. Velocity Extraction and Wind Subtraction
 
@@ -5302,9 +5309,9 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 | # | Category | Description | Verification |
 |---|----------|-------------|--------------|
 | **Inertia-box derivatives** ||||
-| T1 | Unit | Diagonal B entries for sphere (β>0, ρ=0) | Viscous-only: each b_k = closed-form constant. Compare 6 scalar values. |
-| T2 | Unit | Diagonal B entries for box (β=0, ρ>0) | Density-only: b_k depends on `2|v_k|`. Compare at known velocity. |
-| T3 | Unit | Diagonal B entries for box (β>0, ρ>0) | Combined: sum of viscous + quadratic terms. |
+| T1 | Unit | Viscous B scalars (sphere, β>0, ρ=0) | Two-part: (1) velocity-independence — FD Jacobian identical at two velocities. (2) Analytical formula validation — compute `b_angular = −π·diam³·β`, `b_linear = −3π·diam·β` from sphere geometry, verify `mjd_passive_vel` diagonal matches at 1e-12. |
+| T2 | Unit | Density B scalars (sphere, β=0, ρ>0) | Analytical formula: at qvel=[0,0,0,0,0,−1] (ω_z=−1), compute `b[2] = −2ρd(d⁴+d⁴)/64·|ω_z|` from sphere geometry, verify `qDeriv[(5,5)]` matches at 1e-12. Assert other 5 diagonal entries are zero (no viscosity, no velocity). |
+| T3 | Unit | Combined B scalars (box, β>0, ρ>0) | Additivity proof: run `mjd_passive_vel` on three models (combined, viscous-only ρ=0, density-only β=0) with identical box geometry. Assert `qDeriv_combined = qDeriv_viscous + qDeriv_density` at 1e-10 (exact additivity through linear J^T·diag(b)·J projection). |
 | T4 | FD validation | Inertia-box B matches FD | Perturb each of 6 velocity components, compare FD of forward inertia-box force against analytical B diagonal. Tol: 1e-5. |
 | T5 | D matrix | Inertia-box qDeriv matches MuJoCo | Free-floating box, non-zero velocity. Extract `qDeriv` after `mjd_passive_vel`, compare against MuJoCo reference. Tol: 1e-10. |
 | **Ellipsoid derivatives** ||||
@@ -5319,7 +5326,7 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 | T14 | D matrix | Multi-geom body | Body with 2 ellipsoid geoms. Verify additive accumulation via FD validation. |
 | **Symmetrization** ||||
 | T15 | Symmetry | ImplicitFast B is symmetric | Ellipsoid B after symmetrization: `B[i][j] == B[j][i]` for all entries. |
-| T16 | Asymmetry | Full Implicit B is not symmetrized | Full Implicit path: B retains asymmetric terms. Verify `B[i][j] ≠ B[j][i]` for at least one entry with non-trivial velocity. |
+| T16 | Asymmetry | Full Implicit B is not symmetrized | Quantified: `max_{i<j} |qDeriv[i,j]−qDeriv[j,i]| > 1e-4` (added-mass gyroscopic cross-terms produce O(1) asymmetry). Localized: at least one asymmetric pair in the linear-angular coupling block (rows 0–2, cols 3–5). |
 | **Integration / whole-pipeline** ||||
 | T17 | Conformance | ImplicitFast qDeriv matches MuJoCo | Free-floating ellipsoid with `density=1.2`, `integrator="implicitfast"`. Compare fluid-only `qDeriv` against MuJoCo reference. Tol: 1e-8. |
 | ~~T18~~ | ~~Conformance~~ | ~~Implicit qDeriv matches MuJoCo~~ | Not implemented separately — T13 covers implicit ellipsoid conformance. |
@@ -5327,9 +5334,9 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 | T20 | Stability | ImplicitFast + fluid energy dissipation | Same configuration as T19 with `integrator="implicitfast"`. Same acceptance criterion. |
 | **Guards and edge cases** ||||
 | T21 | Gate | Zero fluid → no D contribution | `density=0, viscosity=0` → `qDeriv` unchanged by `mjd_fluid_vel`. |
-| T22 | Gate | Zero velocity → zero quadratic B | At rest: quadratic diagonal entries = 0, viscous entries unchanged. |
+| T22 | Gate | Zero velocity → viscous-only B | Four checks: (1) all finite, (2) all diagonals negative, (3) diagonal values match analytical viscous B scalars (`−π·diam³·β` angular, `−3π·diam·β` linear) from box geometry at 1e-12, (4) all off-diagonal entries zero (inertia-box at identity qpos, free joint, zero velocity → diagonal-only qDeriv). |
 | T23 | Guard | Massless body skipped | `body_mass < MJ_MINVAL` → no fluid derivative contribution. |
-| T24 | Guard | `interaction_coef=0` geom skipped | Ellipsoid geom with `fluid[0]=0` → no derivative contribution. |
+| T24 | Guard | `interaction_coef=0` → inertia-box fallback | Equivalence proof: run `mjd_passive_vel` on `fluidshape="none"` model and matching plain inertia-box model (same ellipsoid geometry, no fluidshape attr). Assert identical qDeriv at 1e-10 — proves ellipsoid path was skipped, inertia-box fallback ran identically. |
 | **Jacobian reference point and geometry** ||||
 | T25 | Conformance | Geom offset from body CoM | Ellipsoid geom with `pos="1 0.5 0"` (offset from body origin). Verify qDeriv matches MuJoCo — confirms Jacobian is computed at `geom_xpos`, not `xipos`. Tol: 1e-10. |
 | T26 | Conformance | Wind + fluid derivative | Non-zero `wind="5 0 0"`, free-floating ellipsoid with velocity. Verify qDeriv matches MuJoCo — confirms velocity is correctly wind-subtracted before derivative computation. Tol: 1e-10. |
@@ -5367,6 +5374,11 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 - §13 known limitation #3 (`future_work_4.md:3697`): listed as acceptable gap
 - MuJoCo `engine_derivative.c`: `mjd_passive_vel`, `mjd_inertiaBoxFluid`, `mjd_ellipsoidFluid`
 - MuJoCo `engine_derivative.c`: `mjd_cross`, `mjd_magnus_force`, `mjd_kutta_lift`, `mjd_viscous_drag`, `mjd_viscous_torque`, `mjd_addedMassForces`
+
+**Deferred follow-ups (performance, not correctness):**
+- §40c: Sleep filtering for fluid derivatives (S7 deferral)
+- §40d: Sparse Jacobian support for fluid derivatives (S6 deferral)
+- §40e: Refactor `mj_jac_site` to use `mj_jac_point` kernel (S3 deferral)
 
 #### Files Modified
 
@@ -6880,3 +6892,105 @@ All dispatch is monomorphized — the compiler sees concrete types, not trait ob
   parameters
 - `sim/L0/tests/` — builder composition tests, regression tests, domain randomization
   example test
+
+---
+
+### 40c. Sleep Filtering for Fluid Derivatives
+**Status:** Not started | **Effort:** S | **Prerequisites:** Sleep system (global)
+
+#### Current State
+
+MuJoCo's `mjd_passive_vel` supports sleep filtering via `d->body_awake_ind` and
+`d->nbody_awake` to skip sleeping bodies during derivative computation. Our
+codebase does not yet implement sleep state tracking, so `mjd_fluid_vel` iterates
+all bodies unconditionally.
+
+Deferred from §40a (S7) as a performance optimization that does not affect
+correctness.
+
+#### Objective
+
+Once a global sleep system is implemented, gate the fluid derivative body loop
+in `mjd_fluid_vel` on the body's awake state. Skip sleeping bodies whose
+velocities are clamped to zero — their fluid derivatives are necessarily zero.
+
+#### Scope
+
+- Add `body_awake_ind` / `nbody_awake` to `Data` (or equivalent sleep state)
+- Gate body loop in `mjd_fluid_vel` on awake state
+- Verify no conformance regression (sleeping bodies should produce identical
+  results since their velocities are zero)
+
+#### Cross-references
+
+- §40a S7 (`future_work_10.md:5173`): deferral note
+- MuJoCo `engine_derivative.c`: `mjd_passive_vel` sleep filtering loop
+
+---
+
+### 40d. Sparse Jacobian Support for Fluid Derivatives
+**Status:** Not started | **Effort:** M | **Prerequisites:** None
+
+#### Current State
+
+MuJoCo supports both dense and sparse Jacobian paths for fluid derivative
+accumulation (`addJTBJ` vs `addJTBJSparse`), selectable via `mj_isSparse(m)`.
+Our implementation uses dense Jacobians only (`DMatrix<f64>` for the 6×nv
+Jacobian and `nv×nv` qDeriv). The current `add_jtbj` and `add_rank1` helpers
+exploit Jacobian sparsity via zero-skipping but still operate on dense storage.
+
+Deferred from §40a (S6) as a constant-factor speedup for large `nv`. Dense is
+acceptable for target model sizes (`nv < 200`).
+
+#### Objective
+
+Implement sparse Jacobian storage and sparse `J^T·B·J` accumulation to improve
+fluid derivative performance for models with `nv > 200`. This mirrors MuJoCo's
+`addJTBJSparse` which operates on CSR-format qDeriv.
+
+#### Scope
+
+- Implement CSR or equivalent sparse storage for qDeriv
+- Add `add_jtbj_sparse` and `add_rank1_sparse` variants
+- Gate on model size or `mj_isSparse`-equivalent heuristic
+- Benchmark: demonstrate speedup on a model with `nv ≈ 300–500`
+- Verify exact numerical equivalence with dense path
+
+#### Cross-references
+
+- §40a S6 (`future_work_10.md:5140`): deferral note
+- MuJoCo `engine_derivative.c`: `addJTBJSparse`, `mj_isSparse`
+
+---
+
+### 40e. Refactor `mj_jac_site` to Use `mj_jac_point` Kernel
+**Status:** Not started | **Effort:** S | **Prerequisites:** None
+
+#### Current State
+
+`mj_jac_site` in `mujoco_pipeline.rs` implements its own chain-walk algorithm,
+returning two separate 3×nv matrices `(jac_trans, jac_rot)`. The §40a
+implementation added `mj_jac_point` as a shared 6×nv Jacobian kernel using the
+same chain-walk pattern. Both functions are correct but the duplicated chain-walk
+logic is a maintenance burden.
+
+Deferred from §40a (S3) to avoid widening the blast radius of the fluid
+derivative implementation.
+
+#### Objective
+
+Refactor `mj_jac_site` to call `mj_jac_point` internally and split the 6×nv
+result into the existing `(jac_trans, jac_rot)` return format. This eliminates
+the duplicated chain-walk code.
+
+#### Scope
+
+- Refactor `mj_jac_site` to delegate to `mj_jac_point`
+- Split rows 0–2 (angular) → `jac_rot`, rows 3–5 (linear) → `jac_trans`
+- Verify T32 (`mj_jac_point` vs `mj_jac_site` exact match) still passes
+- Run full `sim-conformance-tests` to confirm no regression
+
+#### Cross-references
+
+- §40a S3 (`future_work_10.md:4770`): deferral note
+- §40a T32: `mj_jac_point` vs `mj_jac_site` exact match test
