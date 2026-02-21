@@ -4545,6 +4545,11 @@ underestimates the D matrix for models with non-zero `density`/`viscosity`. This
 causes under-damped behaviour in fluid-heavy simulations (swimming, flying,
 underwater manipulation).
 
+`ImplicitSpringDamper` uses a diagonal-only implicit scheme (`M + h·D + h²·K`
+with per-DOF D) that does not build the full `qDeriv` matrix. It is unaffected
+by this work — its fluid damping gap is a pre-existing limitation of the diagonal
+approximation.
+
 #### MuJoCo Reference
 
 MuJoCo computes `∂qfrc_fluid/∂qvel` in `mjd_passive_vel()` (`engine_derivative.c`).
@@ -4604,6 +4609,10 @@ correctly accounts for fluid damping in the D matrix.
 
 #### Specification
 
+**Notation used throughout:**
+- `ρ` = `model.density` (fluid density, kg/m³)
+- `β` = `model.viscosity` (dynamic viscosity, Pa·s)
+
 ##### S1. Approach — Fully Analytical Derivatives for Both Models
 
 Both models use analytical derivatives, matching MuJoCo exactly:
@@ -4657,6 +4666,12 @@ mj_fwd_acceleration_implicitfast() / mj_fwd_acceleration_implicit_full()
 Note: `mj_fwd_acceleration_implicitfast` and `mj_fwd_acceleration_implicit_full`
 call `mjd_passive_vel` directly (not through `mjd_smooth_vel`). They clear
 `qDeriv` themselves before calling the derivative functions.
+
+**Phase D benefit:** `mjd_passive_vel` is also called by `mjd_smooth_vel()`
+(used by `mjd_transition_hybrid` for transition Jacobian computation and
+exposed as a `pub` API). Fluid derivatives automatically improve transition
+Jacobians for all integrator modes, not just the implicit D matrix — no
+additional wiring needed.
 
 ##### S3. Body Jacobian Construction (6×nv)
 
@@ -4718,6 +4733,11 @@ fn rotate_jac_to_local(J: &mut DMatrix<f64>, R: &Matrix3<f64>) {
     J.rows_mut(3, 3).copy_from(&lin);
 }
 ```
+
+**Refactor deferral:** `mj_jac_site` currently implements its own chain-walk
+returning `(3×nv, 3×nv)`. A future cleanup could refactor it to call
+`mj_jac_point` and split the 6×nv result. Deferred to avoid widening §40a's
+blast radius.
 
 ##### S4. Inertia-Box B Matrix (Diagonal, Per-Body)
 
@@ -5227,8 +5247,8 @@ All FD validation tests (T4, T6–T12) use centered finite differences:
 | **Integration / whole-pipeline** ||||
 | T17 | Conformance | ImplicitFast qDeriv matches MuJoCo | Humanoid model with `density=1000`, `integrator="implicitfast"`. Compare full `qDeriv` matrix against MuJoCo reference. Tol: 1e-8. |
 | T18 | Conformance | Implicit qDeriv matches MuJoCo | Same model, `integrator="implicit"`. Compare `qDeriv`. Tol: 1e-8. |
-| T19 | Stability | Implicit + fluid energy dissipation | Step 1000 frames, `integrator="implicit"`, Model A (§40). KE must be monotonically non-increasing (no spurious amplification). |
-| T20 | Stability | ImplicitFast + fluid energy dissipation | Same test with `integrator="implicitfast"`. |
+| T19 | Stability | Implicit + fluid energy dissipation | Model A (§40), qvel = `[1.0, -0.5, 0.3, 0.5, -1.1, 0.8]`, `dt=0.002`, `integrator="implicit"`. Step 1000 frames. Acceptance: `KE[t+1] ≤ KE[t] + 1e-12` at every step (machine-epsilon drift allowed). Failure if any single-step KE increase exceeds 1e-12. |
+| T20 | Stability | ImplicitFast + fluid energy dissipation | Same configuration as T19 with `integrator="implicitfast"`. Same acceptance criterion. |
 | **Guards and edge cases** ||||
 | T21 | Gate | Zero fluid → no D contribution | `density=0, viscosity=0` → `qDeriv` unchanged by `mjd_fluid_vel`. |
 | T22 | Gate | Zero velocity → zero quadratic B | At rest: quadratic diagonal entries = 0, viscous entries unchanged. |
