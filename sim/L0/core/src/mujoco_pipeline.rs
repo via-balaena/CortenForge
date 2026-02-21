@@ -2386,6 +2386,23 @@ pub struct Data {
     /// Maps tendon length changes to joint velocities.
     pub ten_J: Vec<DVector<f64>>,
 
+    /// Tendon wrap path point positions in world frame.
+    /// Flat storage: `wrap_xpos[ten_wrapadr[t] .. ten_wrapadr[t] + ten_wrapnum[t]]`
+    /// gives the ordered path points for tendon `t`.
+    /// Allocated with capacity `nwrap * 2` (upper bound).
+    pub wrap_xpos: Vec<Vector3<f64>>,
+
+    /// Object marker for each wrap path point.
+    /// -2 = pulley, -1 = site, >= 0 = geom id (tangent point on wrapping surface).
+    /// Parallel to `wrap_xpos`.
+    pub wrap_obj: Vec<i32>,
+
+    /// Start index in `wrap_xpos`/`wrap_obj` for each tendon (length `ntendon`).
+    pub ten_wrapadr: Vec<usize>,
+
+    /// Number of path points for each tendon (length `ntendon`).
+    pub ten_wrapnum: Vec<usize>,
+
     // ==================== Equality Constraint State ====================
     /// Equality constraint violation (length `neq` * max_dim).
     /// For Connect: 3D position error. For Weld: 6D pose error.
@@ -2754,6 +2771,11 @@ impl Clone for Data {
             ten_velocity: self.ten_velocity.clone(),
             ten_force: self.ten_force.clone(),
             ten_J: self.ten_J.clone(),
+            // Tendon wrap visualization
+            wrap_xpos: self.wrap_xpos.clone(),
+            wrap_obj: self.wrap_obj.clone(),
+            ten_wrapadr: self.ten_wrapadr.clone(),
+            ten_wrapnum: self.ten_wrapnum.clone(),
             // Equality constraints
             eq_violation: self.eq_violation.clone(),
             eq_force: self.eq_force.clone(),
@@ -3382,6 +3404,12 @@ impl Model {
             ten_velocity: vec![0.0; self.ntendon],
             ten_force: vec![0.0; self.ntendon],
             ten_J: vec![DVector::zeros(self.nv); self.ntendon],
+
+            // Tendon wrap visualization data
+            wrap_xpos: vec![Vector3::zeros(); self.nwrap * 2],
+            wrap_obj: vec![0i32; self.nwrap * 2],
+            ten_wrapadr: vec![0usize; self.ntendon],
+            ten_wrapnum: vec![0usize; self.ntendon],
 
             // Equality constraint state
             eq_violation: vec![0.0; self.neq * 6], // max 6 DOF per constraint (weld)
@@ -9339,13 +9367,16 @@ fn mj_fwd_tendon(model: &Model, data: &mut Data) {
         return;
     }
 
+    let mut wrapcount: usize = 0;
     for t in 0..model.ntendon {
         match model.tendon_type[t] {
             TendonType::Fixed => {
+                data.ten_wrapadr[t] = wrapcount;
+                data.ten_wrapnum[t] = 0;
                 mj_fwd_tendon_fixed(model, data, t);
             }
             TendonType::Spatial => {
-                mj_fwd_tendon_spatial(model, data, t);
+                mj_fwd_tendon_spatial(model, data, t, &mut wrapcount);
             }
         }
     }
@@ -9393,12 +9424,17 @@ fn mj_fwd_tendon_fixed(model: &Model, data: &mut Data, t: usize) {
 ///
 /// Algorithm follows MuJoCo's pairwise loop over the wrap array
 /// (`engine_core_smooth.c`, function `mj_tendon`).
-fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
+#[allow(clippy::cast_possible_wrap)] // geom_id as i32: safe for any practical model size (< i32::MAX geoms)
+fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize, wrapcount: &mut usize) {
     let adr = model.tendon_adr[t];
     let num = model.tendon_num[t];
     data.ten_J[t].fill(0.0);
     let mut total_length = 0.0;
     let mut divisor: f64 = 1.0;
+
+    // §40b: record wrap path start address
+    data.ten_wrapadr[t] = *wrapcount;
+    data.ten_wrapnum[t] = 0;
 
     if num < 2 {
         data.ten_length[t] = 0.0;
@@ -9417,6 +9453,17 @@ fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
         if type0 == WrapType::Pulley || type1 == WrapType::Pulley {
             if type0 == WrapType::Pulley {
                 divisor = model.wrap_prm[adr + j];
+                // §40b: store pulley marker
+                debug_assert!(
+                    *wrapcount < data.wrap_xpos.len(),
+                    "wrap path overflow: wrapcount={} >= capacity={}",
+                    *wrapcount,
+                    data.wrap_xpos.len()
+                );
+                data.wrap_xpos[*wrapcount] = Vector3::zeros();
+                data.wrap_obj[*wrapcount] = -2;
+                data.ten_wrapnum[t] += 1;
+                *wrapcount += 1;
             }
             j += 1;
             continue;
@@ -9436,6 +9483,18 @@ fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
             let id1 = model.wrap_objid[adr + j + 1];
             let p1 = data.site_xpos[id1];
             let body1 = model.site_body[id1];
+
+            // §40b: store leading site
+            debug_assert!(
+                *wrapcount < data.wrap_xpos.len(),
+                "wrap path overflow: wrapcount={} >= capacity={}",
+                *wrapcount,
+                data.wrap_xpos.len()
+            );
+            data.wrap_xpos[*wrapcount] = p0;
+            data.wrap_obj[*wrapcount] = -1;
+            data.ten_wrapnum[t] += 1;
+            *wrapcount += 1;
 
             let diff = p1 - p0;
             let dist = diff.norm();
@@ -9521,6 +9580,22 @@ fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
                     let t1 = geom_pos + geom_mat * tangent_point_1;
                     let t2 = geom_pos + geom_mat * tangent_point_2;
 
+                    // §40b: store 3 points: site0, tangent₁, tangent₂
+                    debug_assert!(
+                        *wrapcount + 2 < data.wrap_xpos.len(),
+                        "wrap path overflow: wrapcount+2={} >= capacity={}",
+                        *wrapcount + 2,
+                        data.wrap_xpos.len()
+                    );
+                    data.wrap_xpos[*wrapcount] = p0;
+                    data.wrap_obj[*wrapcount] = -1;
+                    data.wrap_xpos[*wrapcount + 1] = t1;
+                    data.wrap_obj[*wrapcount + 1] = geom_id as i32;
+                    data.wrap_xpos[*wrapcount + 2] = t2;
+                    data.wrap_obj[*wrapcount + 2] = geom_id as i32;
+                    data.ten_wrapnum[t] += 3;
+                    *wrapcount += 3;
+
                     // 3 sub-segments: [p0→t1, t1→t2 (arc), t2→p1]
                     let d1 = t1 - p0;
                     let dist1 = d1.norm();
@@ -9582,6 +9657,18 @@ fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
                     }
                 }
                 WrapResult::NoWrap => {
+                    // §40b: store 1 point: site0 only (straight line, no tangent points)
+                    debug_assert!(
+                        *wrapcount < data.wrap_xpos.len(),
+                        "wrap path overflow: wrapcount={} >= capacity={}",
+                        *wrapcount,
+                        data.wrap_xpos.len()
+                    );
+                    data.wrap_xpos[*wrapcount] = p0;
+                    data.wrap_obj[*wrapcount] = -1;
+                    data.ten_wrapnum[t] += 1;
+                    *wrapcount += 1;
+
                     // No wrapping — straight segment p0 → p1
                     let diff = p1 - p0;
                     let dist = diff.norm();
@@ -9619,6 +9706,25 @@ fn mj_fwd_tendon_spatial(model: &Model, data: &mut Data, t: usize) {
                  validation ensures path starts with Site and \
                  geoms are always followed by sites"
             );
+        }
+
+        // §40b: store final site (endpoint of current segment)
+        // After j advance, j points at the endpoint site. Store it if this
+        // is the last element or the next element is a pulley.
+        let at_end = j == num - 1;
+        let before_pulley = j < num - 1 && model.wrap_type[adr + j + 1] == WrapType::Pulley;
+        if at_end || before_pulley {
+            let endpoint_id = model.wrap_objid[adr + j];
+            debug_assert!(
+                *wrapcount < data.wrap_xpos.len(),
+                "wrap path overflow: wrapcount={} >= capacity={}",
+                *wrapcount,
+                data.wrap_xpos.len()
+            );
+            data.wrap_xpos[*wrapcount] = data.site_xpos[endpoint_id];
+            data.wrap_obj[*wrapcount] = -1;
+            data.ten_wrapnum[t] += 1;
+            *wrapcount += 1;
         }
     }
 

@@ -5594,6 +5594,11 @@ The actual number of path points is computed at runtime and stored in
 `ten_wrapnum`. The allocated capacity (`nwrap * 2`) is never exceeded because
 each model wrap element produces at most 2 data points.
 
+**Trivial `nwrap == 0` case:** When no spatial tendons have wrap elements
+(or there are no spatial tendons at all), `nwrap == 0` and all four arrays
+are empty (`Vec` with length 0). `wrapcount` stays 0 throughout the tendon
+loop. This is trivially correct — no special-casing needed.
+
 ##### S3. Signature change for `mj_fwd_tendon_spatial()`
 
 The current signature:
@@ -5622,11 +5627,23 @@ data.ten_wrapnum[t] = 0;
 
 Then at each point in the existing control flow, store path points:
 
+**Bounds safety:** All path point writes must be guarded by a debug assertion
+to catch any allocation miscalculation during development:
+```rust
+debug_assert!(*wrapcount < data.wrap_xpos.len(),
+    "wrap path overflow: wrapcount={} >= capacity={}",
+    *wrapcount, data.wrap_xpos.len());
+```
+This follows the codebase's existing `debug_assert!` pattern (e.g., line 9473).
+Place one assertion before the first write in each storage block (Pulley,
+Site–Site, Site–Geom–Site wrapped, Site–Geom–Site no-wrap, final site).
+
 **Pulley case** (existing lines 9417–9423):
 ```rust
 if type0 == WrapType::Pulley {
     divisor = model.wrap_prm[adr + j];
     // §40b: store pulley marker
+    debug_assert!(*wrapcount < data.wrap_xpos.len());
     data.wrap_xpos[*wrapcount] = Vector3::zeros();
     data.wrap_obj[*wrapcount] = -2;
     data.ten_wrapnum[t] += 1;
@@ -5637,6 +5654,7 @@ if type0 == WrapType::Pulley {
 **Site–Site case** (existing lines 9434–9469, store leading site):
 ```rust
 // Before the existing distance/Jacobian computation:
+debug_assert!(*wrapcount < data.wrap_xpos.len());
 data.wrap_xpos[*wrapcount] = p0;
 data.wrap_obj[*wrapcount] = -1;
 data.ten_wrapnum[t] += 1;
@@ -5647,6 +5665,7 @@ data.ten_wrapnum[t] += 1;
 ```rust
 // After computing t1, t2 in world frame (lines 9521–9522):
 // Store 3 points: site0, tangent₁, tangent₂
+debug_assert!(*wrapcount + 2 < data.wrap_xpos.len());
 data.wrap_xpos[*wrapcount] = p0;
 data.wrap_obj[*wrapcount] = -1;
 data.wrap_xpos[*wrapcount + 1] = t1;
@@ -5660,6 +5679,7 @@ data.ten_wrapnum[t] += 3;
 **Site–Geom–Site, `WrapResult::NoWrap`** (existing lines 9584–9612):
 ```rust
 // Store 1 point: site0 only (straight line, no tangent points)
+debug_assert!(*wrapcount < data.wrap_xpos.len());
 data.wrap_xpos[*wrapcount] = p0;
 data.wrap_obj[*wrapcount] = -1;
 data.ten_wrapnum[t] += 1;
@@ -5677,6 +5697,7 @@ let at_end = j == num - 1;
 let before_pulley = j < num - 1 && model.wrap_type[adr + j + 1] == WrapType::Pulley;
 if at_end || before_pulley {
     let endpoint_id = model.wrap_objid[adr + j];
+    debug_assert!(*wrapcount < data.wrap_xpos.len());
     data.wrap_xpos[*wrapcount] = data.site_xpos[endpoint_id];
     data.wrap_obj[*wrapcount] = -1;
     data.ten_wrapnum[t] += 1;
@@ -5833,7 +5854,9 @@ wrap_obj == [-1, -1]  (no geom entries)
 ```
 
 ##### T8. Inside-wrap (§39 sidesite-inside models)
-For the existing inside-wrap test models (sphere inside, cylinder inside):
+For the existing inside-wrap test models (`MODEL_WRAP_INSIDE_SPHERE`,
+`MODEL_WRAP_INSIDE_CYLINDER` — defined in `spatial_tendons.rs` at lines
+1174 and 1199):
 ```
 ten_wrapnum[0] == 4
 wrap_xpos[1] == wrap_xpos[2]  (identical tangent points)
