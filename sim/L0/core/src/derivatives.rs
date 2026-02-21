@@ -451,8 +451,8 @@ fn extract_state(model: &Model, data: &Data, qpos_ref: &DVector<f64>) -> DVector
 /// Compute ∂(qfrc_passive)/∂qvel and add to data.qDeriv.
 ///
 /// Per-DOF damping (all joint types):
-///   qfrc_passive[i] -= damping[i] · qvel[i]
-///   ⇒ ∂/∂qvel[i] = −damping[i]  (diagonal)
+///   qfrc_passive\[i\] -= damping\[i\] · qvel\[i\]
+///   ⇒ ∂/∂qvel\[i\] = −damping\[i\]  (diagonal)
 ///
 /// Tendon damping (explicit mode only):
 ///   qfrc_passive += J^T · (−b · J · qvel)
