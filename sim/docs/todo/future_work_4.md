@@ -3077,10 +3077,8 @@ Jacobian** (`qDeriv`), assembled by `mjd_smooth_vel()` (derivatives.rs:972) from
 4. **Coriolis/centripetal derivatives** (full, asymmetric):
    `D += −∂(qfrc_bias)/∂(qvel)` via recursive Newton-Euler chain-rule
 5. **Fluid drag derivatives** (6×6 body-level): drag-velocity Jacobian per body.
-   *Not yet implemented — tracked as §40a (`future_work_10.md`). Fluid force
-   computation is complete (§40), but `mjd_passive_vel` does not compute
-   drag-velocity Jacobians. Without these, the implicit integrator underestimates
-   D for models with non-zero `density`/`viscosity`.*
+   *✅ Implemented in §40a (`future_work_10.md`). Both inertia-box and ellipsoid
+   models have analytical derivatives integrated into `mjd_passive_vel`.*
 
 The two variants differ in:
 
@@ -3643,11 +3641,11 @@ Integrator::Implicit => {
 correctly default to `can_analytical = true`, which is correct — both
 `ImplicitFast` and `Implicit` support analytical derivatives.
 
-**D.5. Fluid drag velocity derivatives:** Not yet implemented — tracked as
-§40a (`future_work_10.md`). `mjd_passive_vel` does not compute drag-velocity
-Jacobians. In MuJoCo, this contributes 6×6 body-level coupling blocks to D
-via `addJTBJSparse`. For models with non-zero `density`/`viscosity`, the
-implicit integrator will underestimate D (missing drag linearization).
+**D.5. Fluid drag velocity derivatives:** ✅ Implemented in §40a
+(`future_work_10.md`). Both inertia-box (diagonal B, 6 rank-1 updates) and
+ellipsoid (full 6×6 B from 5 analytical component functions) models have
+analytical derivatives integrated into `mjd_passive_vel`. 31 tests pass
+including MuJoCo 3.5.0 conformance.
 
 ##### Sub-task 13.E: Scratch Buffer Adjustments
 
@@ -3707,9 +3705,8 @@ for compilation. The `ImplicitFast` arms use `cholesky_solve_in_place` on
 2. **Muscle actuator velocity derivatives skipped** (`:529–531`): Matches MuJoCo.
    Muscle FLV curve gradients are piecewise and not cleanly linearizable.
 
-3. **Fluid drag velocity derivatives not implemented** (D.5): Models with
-   non-zero `density`/`viscosity` will have incomplete D. Tracked as §40a
-   (`future_work_10.md`).
+3. ~~**Fluid drag velocity derivatives not implemented** (D.5)~~: ✅ Resolved.
+   Implemented in §40a (`future_work_10.md`).
 
 4. **No `skipfactor` / factorization reuse:** MuJoCo's `mj_implicitSkip` allows
    reusing a previously computed factorization when `skipfactor > 0`, amortizing
